@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "MSRJD Field Theory Framework"
+abstract: >-
+  A model-agnostic framework for automated Feynman diagram computation
+  in MSRJD (Martin-Siggia-Rose-Janssen-de Dominicis) field theories,
+  built on SageMath.
+type: software
+authors:
+  - family-names: Szuromi
+    given-names: Matthew
+    affiliation: "Boston University"
+  - family-names: Ocker
+    given-names: Gabriel K.
+    affiliation: "Boston University"
+license: BSD-3-Clause
+repository-code: "https://github.com/matthewszuromi/msrjd"
+date-released: "2026-01-01"
+keywords:
+  - field theory
+  - Feynman diagrams
+  - MSRJD
+  - stochastic processes
+  - SageMath
+  - computational physics
