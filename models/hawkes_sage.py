@@ -181,6 +181,35 @@ HAWKES_MODEL: dict = {
     'time_dependent_parameters': [],
 
     # -----------------------------------------------------------------------
+    # Noise structure
+    #
+    # Describes the temporal structure of the noise kernel at source
+    # vertices.  A source vertex with k outgoing legs represents a
+    # k-point cumulant density κ(t_1, ..., t_k), where each leg carries
+    # its OWN time variable (unlike interaction vertices, which are
+    # local in time and share a single t_v across all legs).
+    #
+    # 'temporal_type' options:
+    #   'white'   — κ(t_1, t_2) = c · δ(t_1 - t_2)
+    #               The delta collapses the two leg-times into one.
+    #               In frequency domain: constant (no ω dependence).
+    #   'colored' — κ(t_1, t_2) = C(t_1 - t_2)  (stationary, not delta)
+    #               Must supply 'kernel_expr' or 'kernel_ft' (Fourier).
+    #   'general' — κ(t_1, t_2) with no simplification.
+    #               Must supply 'kernel_expr'(t_1, t_2).
+    #
+    # 'amplitude_params': list of parameter name prefixes that enter
+    #   the noise amplitude.  Used by classify_coefficient_factors to
+    #   determine which parts of the source coefficient are time-dependent.
+    #
+    # For the Hawkes model: Poisson white noise, amplitude = nstar_i.
+    # -----------------------------------------------------------------------
+    'noise_structure': {
+        'temporal_type': 'white',
+        'amplitude_params': ['nstar'],
+    },
+
+    # -----------------------------------------------------------------------
     # Background rate convention
     # -----------------------------------------------------------------------
     'background_rate_convention': (

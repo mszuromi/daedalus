@@ -335,10 +335,11 @@ def test_no_internal_vertices_m_one():
 
 # ── Tests: classify_coefficient_factors ───────────────────────────────────
 
-def test_classify_stationary_all_constant():
+def test_classify_stationary_white_noise():
     """
-    Stationary case (no time_dep_params): everything is constant,
+    Stationary white noise (default): everything is constant,
     scalar_prefactor = M × product of all coefficients.
+    Source has per-leg time info but is stationary.
     """
     nstar1 = SR.var('nstar1')
     st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
@@ -348,11 +349,17 @@ def test_classify_stationary_all_constant():
         ext_legs={0: ('dn', 1), 1: ('dn', 2)},
         prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
     )
-    winfo = classify_coefficient_factors(td, time_dep_params=[])
+    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
+    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
     assert winfo['M'] == 2
     assert winfo['is_stationary'] is True
     assert winfo['vertex_time_factors'] == {}
     assert winfo['scalar_prefactor'] == 2 * (nstar1 / 2)  # = nstar1
+    # Source time info present with per-leg metadata
+    assert 2 in winfo['source_time_info']
+    assert winfo['source_time_info'][2]['n_legs'] == 2
+    assert winfo['source_time_info'][2]['temporal_type'] == 'white'
+    assert winfo['source_time_info'][2]['amplitude_is_time_dep'] is False
 
 
 def test_classify_stationary_none():
@@ -367,11 +374,10 @@ def test_classify_stationary_none():
     assert winfo['is_stationary'] is True
 
 
-def test_classify_nonstationary_splits_factors():
+def test_classify_source_per_leg_times():
     """
-    Nonstationary: nstar1 is time-dependent.
-    Coefficient = nstar1/2 → constant part = 1/2, time-dep part = nstar1.
-    scalar_prefactor = M × (1/2) = 2 × 1/2 = 1.
+    Source with 2 outgoing legs: source_time_info records n_legs=2
+    and the temporal type.  Each leg gets its own time in the integrand.
     """
     nstar1 = SR.var('nstar1')
     st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
@@ -381,21 +387,59 @@ def test_classify_nonstationary_splits_factors():
         ext_legs={0: ('dn', 1), 1: ('dn', 2)},
         prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
     )
-    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
-    assert winfo['M'] == 2
+    ns = {'temporal_type': 'colored', 'amplitude_params': []}
+    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
+    assert winfo['is_stationary'] is False  # colored noise → nonstationary
+    sinfo = winfo['source_time_info'][2]
+    assert sinfo['n_legs'] == 2
+    assert sinfo['temporal_type'] == 'colored'
+    assert sinfo['amplitude_is_time_dep'] is False
+
+
+def test_classify_source_time_dep_amplitude():
+    """
+    Nonstationary noise: amplitude nstar1 depends on leg times.
+    """
+    nstar1 = SR.var('nstar1')
+    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
+    td = _make_td(
+        edges=[(2, 0), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: st},
+        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
+        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
+    )
+    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
+    winfo = classify_coefficient_factors(
+        td, time_dep_params=['nstar'], noise_structure=ns)
+    assert winfo['is_stationary'] is False
+    sinfo = winfo['source_time_info'][2]
+    assert sinfo['amplitude_is_time_dep'] is True
+    assert sinfo['n_legs'] == 2
+
+
+def test_classify_interaction_single_vertex_time():
+    """
+    Interaction vertex: coefficient depends on single vertex time t_v.
+    Not in source_time_info (interaction, not source).
+    """
+    phi1_1 = SR.var('phi1_1')
+    vt = VertexType(phi1_1, [('nt', 1)], [('dn', 1)], (1, 1))
+    td = _make_td(
+        edges=[(0, 2), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: vt},
+        ext_legs={0: ('nt', 1), 1: ('dn', 1)},
+        prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
+    )
+    winfo = classify_coefficient_factors(td, time_dep_params=['phi1'])
     assert winfo['is_stationary'] is False
     assert 2 in winfo['vertex_time_factors']
-    # The time-dep factor for vertex 2 should contain nstar1
-    td_factor = winfo['vertex_time_factors'][2]
-    assert nstar1 in td_factor.variables()
-    # Scalar prefactor should NOT contain nstar1
-    sp_vars = winfo['scalar_prefactor'].variables()
-    assert nstar1 not in sp_vars
+    assert 2 not in winfo['source_time_info']  # not a source
 
 
-def test_classify_multi_vertex_nonstationary():
+def test_classify_mixed_source_and_interaction():
     """
-    Two vertices, one with time-dependent coefficient, one without.
+    Source with time-dep amplitude + interaction with time-dep coeff.
+    Both are nonstationary, tracked in different output dicts.
     """
     nstar1 = SR.var('nstar1')
     phi1_1 = SR.var('phi1_1')
@@ -407,13 +451,15 @@ def test_classify_multi_vertex_nonstationary():
         ext_legs={0: ('dn', 1), 1: ('dn', 1)},
         prop_indices={(2, 0): (0, 0), (2, 3): (0, 0), (3, 1): (0, 0)},
     )
-    # Only nstar is time-dependent, phi1 is NOT
-    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
+    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
+    winfo = classify_coefficient_factors(
+        td, time_dep_params=['phi1'], noise_structure=ns)
     assert winfo['is_stationary'] is False
-    assert 2 in winfo['vertex_time_factors']  # source has nstar1
-    assert 3 not in winfo['vertex_time_factors']  # vt has phi1_1, not nstar
-    # phi1_1 should be in the scalar prefactor
-    assert phi1_1 in winfo['scalar_prefactor'].variables()
+    # Source in source_time_info, interaction in vertex_time_factors
+    assert 2 in winfo['source_time_info']
+    assert 3 in winfo['vertex_time_factors']
+    assert 2 not in winfo['vertex_time_factors']
+    assert 3 not in winfo['source_time_info']
 
 
 def test_classify_no_vertices_stationary():
@@ -428,3 +474,4 @@ def test_classify_no_vertices_stationary():
     assert winfo['M'] == 1
     assert winfo['is_stationary'] is True
     assert winfo['scalar_prefactor'] == 1
+    assert winfo['source_time_info'] == {}

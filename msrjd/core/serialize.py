@@ -108,6 +108,10 @@ def save_theory(path, ft, propagator_data=None, stationarity=True,
         # Stationarity and time-dependence
         'stationarity':      stationarity,
         'time_dependent_parameters': m.get('time_dependent_parameters', []),
+        'noise_structure':   m.get('noise_structure', {
+            'temporal_type': 'white',
+            'amplitude_params': [],
+        }),
 
         # Propagator info
         'nf':                pd.get('nf', None),

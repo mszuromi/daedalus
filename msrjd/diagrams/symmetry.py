@@ -219,27 +219,51 @@ def _symbols_matching_prefixes(expr, prefixes):
     return matches
 
 
-def classify_coefficient_factors(typed_diagram, time_dep_params=None):
-    """
+def _is_source_type(vtype):
+    """Check if a vertex type is a SourceType (has no physical_legs)."""
+    return not hasattr(vtype, 'physical_legs')
+
+
+def classify_coefficient_factors(typed_diagram, time_dep_params=None,
+                                 noise_structure=None):
+    r"""
     Partition each vertex coefficient into constant and time-dependent
-    symbolic factors.
+    symbolic factors, respecting the different time structures of
+    interaction vertices vs source vertices.
 
-    In the **stationary** case (``time_dep_params`` is empty or None),
-    every coefficient is constant and the full product can be pulled
-    outside the propagator integral.
+    **Interaction vertices** are local in time: all legs share one time
+    variable $t_v$.  If any symbol in the coefficient matches
+    ``time_dep_params``, it becomes $c_v(t_v)$ inside the integral.
 
-    In the **nonstationary** case, symbols whose names start with any
-    prefix in ``time_dep_params`` are time-dependent — they inherit the
-    time variable of the vertex they sit on and must stay **inside**
-    the integral.
+    **Source vertices** represent multi-point cumulant densities: each
+    outgoing leg carries its **own** time variable.  A source with $k$
+    legs contributes $\kappa(t_1, \ldots, t_k)$ to the integrand.  The
+    temporal structure (white, colored, general) determines how the
+    amplitude and the time dependence factor:
+
+    - ``'white'``:  $\kappa(t_1, t_2) = c \cdot \delta(t_1 - t_2)$.
+      The $\delta$ collapses the two leg-times; in frequency domain the
+      source contributes no $\omega$ dependence.
+    - ``'colored'``:  $\kappa(t_1, t_2) = C(t_1 - t_2)$ (stationary
+      but not delta-correlated).  The kernel Fourier transform enters
+      the frequency integral.
+    - ``'general'``:  $\kappa(t_1, t_2)$ with no simplification — both
+      leg-times are independent integration variables.
 
     Parameters
     ----------
     typed_diagram : TypedDiagram
     time_dep_params : list of str or None
-        Parameter name prefixes that are time-dependent
-        (e.g. ``['nstar', 'phi1', 'phi2']``).
-        If None or empty, all coefficients are treated as constant.
+        Parameter name prefixes that are time-dependent at interaction
+        vertices (e.g. ``['nstar', 'phi1', 'phi2']``).
+        If None or empty, all interaction coefficients are constant.
+    noise_structure : dict or None
+        Noise temporal structure from the model dict.  Expected keys:
+            ``'temporal_type'``: ``'white'``, ``'colored'``, or ``'general'``
+            ``'amplitude_params'``: list of parameter prefixes in the
+                noise amplitude that may be time-dependent
+        If None, defaults to ``{'temporal_type': 'white',
+        'amplitude_params': []}``.
 
     Returns
     -------
@@ -248,45 +272,114 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None):
             Combinatorial factor M(Γ).
         ``'scalar_prefactor'`` : SR expression
             Product of all constant (time-independent) factors across
-            all vertices.  In the stationary case this equals
+            all vertices.  In the fully stationary case this equals
             M(Γ) × ∏_v coeff(v).
         ``'vertex_time_factors'`` : dict
-            ``{vertex_id: SR expression}`` for each vertex whose
-            coefficient contains time-dependent symbols.  Empty dict
-            in the stationary case.
+            ``{vertex_id: SR expression}`` for each **interaction**
+            vertex whose coefficient contains time-dependent symbols.
+            Each factor depends on a single vertex time $t_v$.
+            Empty dict in the stationary case.
+        ``'source_time_info'`` : dict
+            ``{vertex_id: info_dict}`` for each **source** vertex.
+            Each ``info_dict`` has keys:
+                ``'n_legs'``: int — number of outgoing legs (= number of
+                    independent time variables, before any δ collapse)
+                ``'temporal_type'``: str — ``'white'``, ``'colored'``,
+                    or ``'general'``
+                ``'amplitude'``: SR expression — the amplitude factor
+                    (may be time-dependent or constant)
+                ``'amplitude_is_time_dep'``: bool — whether amplitude
+                    depends on leg times
+            Empty dict when no source vertices are present.
         ``'is_stationary'`` : bool
-            True when no vertex has time-dependent symbols.
+            True when no vertex has time-dependent symbols AND
+            noise is white with constant amplitude.
     """
     prefixes = list(time_dep_params or [])
+    ns = noise_structure or {'temporal_type': 'white', 'amplitude_params': []}
+    noise_type = ns.get('temporal_type', 'white')
+    noise_amp_prefixes = list(ns.get('amplitude_params', []))
+
     M = combinatorial_factor(typed_diagram)
 
     scalar_parts = [SR(M)]
-    time_factors = {}
+    vertex_time_factors = {}
+    source_time_info = {}
+    has_time_dep = False
 
     for v, vtype in typed_diagram.vertex_assignments.items():
         coeff = SR(vtype.coefficient)
-        td_syms = _symbols_matching_prefixes(coeff, prefixes)
 
-        if not td_syms:
-            # Entirely constant — goes into scalar prefactor
-            scalar_parts.append(coeff)
+        if _is_source_type(vtype):
+            # ── Source vertex: per-leg time structure ──
+            # Each outgoing leg gets its own time variable (unlike
+            # interaction vertices which share one vertex time).
+            #
+            # The amplitude is time-dependent only if the noise
+            # amplitude symbols are ALSO declared time-dependent
+            # in the model's time_dep_params list.
+            n_legs = len(vtype.response_legs)
+            # Symbols in coeff that are noise amplitudes
+            amp_syms = _symbols_matching_prefixes(coeff, noise_amp_prefixes)
+            # Of those, which are also declared time-dependent?
+            amp_td_syms = _symbols_matching_prefixes(coeff,
+                [p for p in noise_amp_prefixes if p in prefixes])
+            amp_is_td = len(amp_td_syms) > 0
+
+            if not amp_is_td and noise_type == 'white':
+                # Fully stationary white noise: amplitude is constant,
+                # δ(t₁-t₂) collapses times → no time dependence
+                scalar_parts.append(coeff)
+            else:
+                # Factor out constant part of amplitude
+                const_part = coeff.subs({s: SR(1) for s in amp_td_syms}) if amp_td_syms else coeff
+                td_part = coeff / const_part if (amp_td_syms and not const_part.is_zero()) else coeff
+
+                if amp_td_syms and not const_part.is_one() and not const_part.is_zero():
+                    scalar_parts.append(const_part)
+                elif not amp_td_syms:
+                    scalar_parts.append(coeff)
+                    td_part = SR(1)
+
+                has_time_dep = True
+
+            source_time_info[v] = {
+                'n_legs': n_legs,
+                'temporal_type': noise_type,
+                'amplitude': coeff,
+                'amplitude_is_time_dep': amp_is_td,
+            }
+
         else:
-            # Factor out the constant part
-            # Use substitution: set all time-dep symbols to 1 → constant part
-            const_part = coeff.subs({s: SR(1) for s in td_syms})
-            # The time-dependent part = coeff / const_part
-            td_part = coeff / const_part if not const_part.is_zero() else coeff
+            # ── Interaction vertex: single vertex time ──
+            td_syms = _symbols_matching_prefixes(coeff, prefixes)
 
-            if not const_part.is_one() and not const_part.is_zero():
-                scalar_parts.append(const_part)
+            if not td_syms:
+                scalar_parts.append(coeff)
+            else:
+                const_part = coeff.subs({s: SR(1) for s in td_syms})
+                td_part = coeff / const_part if not const_part.is_zero() else coeff
 
-            time_factors[v] = td_part.simplify_rational()
+                if not const_part.is_one() and not const_part.is_zero():
+                    scalar_parts.append(const_part)
+
+                vertex_time_factors[v] = td_part.simplify_rational()
+                has_time_dep = True
 
     scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+
+    # Stationary = no time-dep interaction factors AND noise is white
+    # with constant amplitude
+    is_stationary = (
+        len(vertex_time_factors) == 0
+        and all(not info['amplitude_is_time_dep'] for info in source_time_info.values())
+        and all(info['temporal_type'] == 'white' for info in source_time_info.values())
+    )
 
     return {
         'M': M,
         'scalar_prefactor': scalar_prefactor,
-        'vertex_time_factors': time_factors,
-        'is_stationary': len(time_factors) == 0,
+        'vertex_time_factors': vertex_time_factors,
+        'source_time_info': source_time_info,
+        'is_stationary': is_stationary,
     }
