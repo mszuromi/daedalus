@@ -335,11 +335,11 @@ def test_no_internal_vertices_m_one():
 
 # ── Tests: classify_coefficient_factors ───────────────────────────────────
 
-def test_classify_stationary_white_noise():
+def test_classify_white_constant_amplitude():
     """
-    Stationary white noise (default): everything is constant,
-    scalar_prefactor = M × product of all coefficients.
-    Source has per-leg time info but is stationary.
+    White noise + constant amplitude: source coefficient comes out of
+    integral as a scalar.  This is the only case where source factors
+    can be fully pulled out.
     """
     nstar1 = SR.var('nstar1')
     st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
@@ -353,13 +353,13 @@ def test_classify_stationary_white_noise():
     winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
     assert winfo['M'] == 2
     assert winfo['is_stationary'] is True
-    assert winfo['vertex_time_factors'] == {}
     assert winfo['scalar_prefactor'] == 2 * (nstar1 / 2)  # = nstar1
-    # Source time info present with per-leg metadata
-    assert 2 in winfo['source_time_info']
-    assert winfo['source_time_info'][2]['n_legs'] == 2
-    assert winfo['source_time_info'][2]['temporal_type'] == 'white'
-    assert winfo['source_time_info'][2]['amplitude_is_time_dep'] is False
+    # Source info present with per-leg metadata
+    sinfo = winfo['source_time_info'][2]
+    assert sinfo['n_legs'] == 2
+    assert sinfo['temporal_type'] == 'white'
+    assert sinfo['amplitude_is_time_dep'] is False
+    assert sinfo['in_integrand'] is False  # white + constant → scalar
 
 
 def test_classify_stationary_none():
@@ -374,10 +374,11 @@ def test_classify_stationary_none():
     assert winfo['is_stationary'] is True
 
 
-def test_classify_source_per_leg_times():
+def test_classify_colored_stationary_but_in_integrand():
     """
-    Source with 2 outgoing legs: source_time_info records n_legs=2
-    and the temporal type.  Each leg gets its own time in the integrand.
+    Colored noise: stationary (κ(t₁-t₂) → Fourier-transformable) but
+    the kernel κ̂(ω) stays IN the frequency integrand — it is NOT a
+    scalar that can be pulled out.
     """
     nstar1 = SR.var('nstar1')
     st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
@@ -389,16 +390,40 @@ def test_classify_source_per_leg_times():
     )
     ns = {'temporal_type': 'colored', 'amplitude_params': []}
     winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
-    assert winfo['is_stationary'] is False  # colored noise → nonstationary
+    # Colored IS stationary (Fourier-transformable)
+    assert winfo['is_stationary'] is True
     sinfo = winfo['source_time_info'][2]
-    assert sinfo['n_legs'] == 2
     assert sinfo['temporal_type'] == 'colored'
-    assert sinfo['amplitude_is_time_dep'] is False
+    # But it stays in the integrand — not a scalar
+    assert sinfo['in_integrand'] is True
+    # The amplitude should NOT be in scalar_prefactor
+    # (the whole source kernel is in the integrand)
+    assert winfo['scalar_prefactor'] == 2  # only M
+
+
+def test_classify_general_noise_nonstationary():
+    """
+    General noise: κ(t₁, t₂) with no simplification.
+    NOT stationary, stays in integrand.
+    """
+    nstar1 = SR.var('nstar1')
+    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
+    td = _make_td(
+        edges=[(2, 0), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: st},
+        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
+        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
+    )
+    ns = {'temporal_type': 'general', 'amplitude_params': []}
+    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
+    assert winfo['is_stationary'] is False  # general → nonstationary
+    assert winfo['source_time_info'][2]['in_integrand'] is True
 
 
 def test_classify_source_time_dep_amplitude():
     """
-    Nonstationary noise: amplitude nstar1 depends on leg times.
+    White noise but amplitude is time-dependent: nstar in time_dep_params.
+    Not stationary, stays in integrand.
     """
     nstar1 = SR.var('nstar1')
     st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
@@ -414,13 +439,14 @@ def test_classify_source_time_dep_amplitude():
     assert winfo['is_stationary'] is False
     sinfo = winfo['source_time_info'][2]
     assert sinfo['amplitude_is_time_dep'] is True
+    assert sinfo['in_integrand'] is True
     assert sinfo['n_legs'] == 2
 
 
 def test_classify_interaction_single_vertex_time():
     """
-    Interaction vertex: coefficient depends on single vertex time t_v.
-    Not in source_time_info (interaction, not source).
+    Interaction vertex with time-dep coefficient.
+    Not in source_time_info (it's an interaction, not a source).
     """
     phi1_1 = SR.var('phi1_1')
     vt = VertexType(phi1_1, [('nt', 1)], [('dn', 1)], (1, 1))
@@ -433,13 +459,13 @@ def test_classify_interaction_single_vertex_time():
     winfo = classify_coefficient_factors(td, time_dep_params=['phi1'])
     assert winfo['is_stationary'] is False
     assert 2 in winfo['vertex_time_factors']
-    assert 2 not in winfo['source_time_info']  # not a source
+    assert 2 not in winfo['source_time_info']
 
 
 def test_classify_mixed_source_and_interaction():
     """
-    Source with time-dep amplitude + interaction with time-dep coeff.
-    Both are nonstationary, tracked in different output dicts.
+    Source (white, constant amp) + interaction (time-dep coeff).
+    Source is scalar, interaction stays in integrand.
     """
     nstar1 = SR.var('nstar1')
     phi1_1 = SR.var('phi1_1')
@@ -454,12 +480,13 @@ def test_classify_mixed_source_and_interaction():
     ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
     winfo = classify_coefficient_factors(
         td, time_dep_params=['phi1'], noise_structure=ns)
-    assert winfo['is_stationary'] is False
-    # Source in source_time_info, interaction in vertex_time_factors
-    assert 2 in winfo['source_time_info']
+    assert winfo['is_stationary'] is False  # interaction is time-dep
+    # Source is white + constant amp → scalar, not in integrand
+    assert winfo['source_time_info'][2]['in_integrand'] is False
+    # Interaction has phi1_1 time-dep
     assert 3 in winfo['vertex_time_factors']
-    assert 2 not in winfo['vertex_time_factors']
-    assert 3 not in winfo['source_time_info']
+    # nstar1 should be in scalar prefactor (source is scalar)
+    assert nstar1 in winfo['scalar_prefactor'].variables()
 
 
 def test_classify_no_vertices_stationary():
