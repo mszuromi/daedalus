@@ -167,18 +167,22 @@ def add_edges_to_tree(tree, edge_multiset):
     return G
 
 
-def check_topology_constraints(G, k):
+def check_topology_constraints(G, k, ell=None):
     leaves, internal, degree_2, degree_3plus = classify_vertices_sage(G)
     if len(leaves) != k:
         return False
     if not G.is_connected():
         return False
-    if has_adjacent_degree2_sage(G, degree_2):
-        return False
-    if not check_deg3_has_non_deg2_neighbor(G, degree_3plus, degree_2):
-        return False
-    if not check_leaf_neighbors_not_all_deg2(G, leaves, degree_2):
-        return False
+    # Degree-2 pruning constraints avoid redundant topologies when edges
+    # will be added (ell >= 1).  At tree level (ell=0) the tree IS the
+    # topology — no contraction ambiguity — so skip these checks.
+    if ell is None or ell > 0:
+        if has_adjacent_degree2_sage(G, degree_2):
+            return False
+        if not check_deg3_has_non_deg2_neighbor(G, degree_3plus, degree_2):
+            return False
+        if not check_leaf_neighbors_not_all_deg2(G, leaves, degree_2):
+            return False
     return True
 
 
@@ -194,7 +198,7 @@ def process_tree_parallel(args):
         G = add_edges_to_tree(tree, edge_multiset)
         if count_cycles_sage(G) != ell:
             continue
-        if not check_topology_constraints(G, k):
+        if not check_topology_constraints(G, k, ell=ell):
             continue
         G_relabeled, _ = relabel_leaves_first(G)
         leaves_final, internal_final, _, _ = classify_vertices_sage(G_relabeled)
