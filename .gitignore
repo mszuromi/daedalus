@@ -27,3 +27,4 @@ saved_theories/diagrams_*/
 # Temporary
 *.tmp
 *.bak
+~$*
