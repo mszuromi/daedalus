@@ -11,7 +11,7 @@ Run with:
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sage.all import SR, DiGraph, matrix, I, pi, var
+from sage.all import SR, DiGraph, matrix, I, pi, var, exp
 
 from msrjd.integration.symbolic import (
     check_propagator_available,
@@ -21,6 +21,7 @@ from msrjd.integration.symbolic import (
     build_integrand,
     build_integrand_stationary,
     integrate_tree_level,
+    integrate_to_time_domain,
 )
 from msrjd.diagrams.type_assignment import TypedDiagram
 from msrjd.core.vertices import VertexType, SourceType
@@ -47,7 +48,7 @@ def _make_td(edges, leaves, vert_assignments=None, edge_types=None,
 def _simple_propagator_data():
     """
     Build a minimal 2×2 propagator for testing.
-    G_ft[i,j] = 1/(i*omega - p_ij) for distinct poles.
+    G_ft[i,j] = 1/(i*omega + alpha_j) — poles in the upper half-plane.
     """
     omega = SR.var('omega')
     alpha1 = SR.var('alpha1', domain='positive')
@@ -232,7 +233,7 @@ def test_build_integrand_tree():
 # ── Tests: full assembly ─────────────────────────────────────────────────────
 
 def test_build_integrand_stationary_tree():
-    """Full assembly for a tree-level diagram."""
+    """Full assembly for a tree-level diagram includes time variables."""
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
     td = _make_td(
         edges=[(0, 2), (2, 1)], leaves=[0, 1],
@@ -246,15 +247,21 @@ def test_build_integrand_stationary_tree():
 
     assert result['loop_number'] == 0
     assert len(result['loop_freqs']) == 0
-    assert result['fourier_prefactor'] == 1
     assert 'scalar_prefactor' in result
     assert 'integrand' in result
+    assert 'full_integrand' in result
+    assert 'ext_times' in result
+    assert len(result['ext_times']) == 2
+    # For 2-pt tree: 1 independent ext freq, 0 loop freqs → 1 integral
+    assert len(result['ext_freqs_independent']) == 1
+    # Fourier prefactor = 1/(2π) for the 1 ext freq integral
+    assert result['fourier_prefactor'] == SR(1) / (2 * pi)
 
 
-# ── Tests: tree-level integration ────────────────────────────────────────────
+# ── Tests: tree-level integration (time domain) ─────────────────────────────
 
 def test_integrate_tree_level():
-    """Tree-level integration returns scalar_prefactor × integrand."""
+    """Tree-level integration returns a function of external times."""
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
     td = _make_td(
         edges=[(0, 2), (2, 1)], leaves=[0, 1],
@@ -267,12 +274,17 @@ def test_integrate_tree_level():
     result = build_integrand_stationary(td, pd, k=2)
     contribution = integrate_tree_level(result)
 
-    # Should be a rational function of external freq(s) and parameters
+    # Result should be a function of external TIMES, not frequencies
     assert contribution is not None
     contrib_vars = set(contribution.variables())
-    ext_var_set = set(result['ext_freqs'])
-    assert contrib_vars & ext_var_set, \
-        f"Contribution doesn't depend on any external frequency"
+    time_var_set = set(result['ext_times'])
+    # Should depend on at least one time variable
+    assert contrib_vars & time_var_set, \
+        f"Contribution {contribution} doesn't depend on any external time"
+    # Should NOT depend on external frequency variables
+    ext_freq_set = set(result['ext_freqs'])
+    assert not (contrib_vars & ext_freq_set), \
+        f"Contribution should not depend on frequency variables, got {contrib_vars & ext_freq_set}"
 
 
 def test_integrate_tree_level_rejects_loops():
@@ -281,6 +293,29 @@ def test_integrate_tree_level_rejects_loops():
     result = {'loop_number': 1, 'scalar_prefactor': SR(1), 'integrand': SR(1)}
     with pytest.raises(ValueError, match='tree-level'):
         integrate_tree_level(result)
+
+
+# ── Tests: time-domain integration structure ─────────────────────────────────
+
+def test_integrate_to_time_domain_tree():
+    """integrate_to_time_domain returns dict with time_domain_result."""
+    vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
+    td = _make_td(
+        edges=[(0, 2), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: vt},
+        edge_types={(0, 2): (('nt', 1), ('dn', 1)), (2, 1): (('nt', 1), ('dn', 1))},
+        ext_legs={0: ('nt', 1), 1: ('dn', 1)},
+        prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
+    )
+    pd = _simple_propagator_data()
+    ir = build_integrand_stationary(td, pd, k=2)
+    result = integrate_to_time_domain(ir)
+
+    assert 'time_domain_result' in result
+    assert 'frequency_domain_integrand' in result
+    assert 'integration_variables' in result
+    assert 'ext_times' in result
+    assert result['status'] in ('ok', 'partial')
 
 
 # ── Tests: source vertex conservation ────────────────────────────────────────
