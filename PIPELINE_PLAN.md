@@ -220,16 +220,18 @@ For each diagram, construct the integral expression:
 
 | Phase | Task | Depends on | Status |
 |---|---|---|---|
-| **A** | **Serialization:** save/load theory to disk. SageMath `.sobj` for symbolic objects + JSON sidecar for metadata. Design the theory file format. | `field_theory_sage.py` | Not started |
-| **B** | **Vertex decomposition:** new function to split bigrade polynomial sectors into individual typed monomials with field-leg metadata (VertexType / SourceType data structures). | `field_theory_sage.py` | Not started |
-| **C** | **Bridge — max-degree scan & Taylor order feedback:** scan prediagrams for max vertex degree, compare to stored Taylor order, re-expand if needed. Connects enumeration output to theory data. | A, B, `loop_diagram_enumeration.py` | Not started |
-| **D** | **Prediagram filtering:** remove prediagrams with vertex degrees not available in the theory's vertex/source sets. Fast set-membership check. | B, C | Not started |
-| **E** | **Type assignment engine:** enumerate all valid field-type assignments on edges, vertices, and external legs. Constraint-satisfaction over the prediagram structure. This is the hardest algorithmic piece. | B, D | Not started |
-| **F** | **Causality filter:** check retarded propagator consistency and pole-structure compatibility for each typed diagram. | E | Not started |
-| **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | Not started |
+| **A** | **Serialization:** save/load theory to disk. SageMath `.sobj` for symbolic objects + JSON sidecar for metadata. Design the theory file format. | `field_theory_sage.py` | ✅ Complete |
+| **B** | **Vertex decomposition:** new function to split bigrade polynomial sectors into individual typed monomials with field-leg metadata (VertexType / SourceType data structures). | `field_theory_sage.py` | ✅ Complete |
+| **C** | **Bridge — max-degree scan & Taylor order feedback:** scan prediagrams for max vertex degree, compare to stored Taylor order, re-expand if needed. Connects enumeration output to theory data. | A, B, `loop_diagram_enumeration.py` | ✅ Complete |
+| **D** | **Prediagram filtering:** remove prediagrams with vertex degrees not available in the theory's vertex/source sets. Fast set-membership check. | B, C | ✅ Complete |
+| **E** | **Type assignment engine:** enumerate all valid field-type assignments on edges, vertices, and external legs. Constraint-satisfaction over the prediagram structure. This is the hardest algorithmic piece. | B, D | ✅ Complete |
+| **F** | **Causality filter:** check retarded propagator consistency and pole-structure compatibility for each typed diagram. | E | ✅ Complete |
+| **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | ✅ Complete |
 | **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems, time domain otherwise. Frequency conservation at vertices. | E, G | Not started |
 | **I** | **Numerical integration fallback:** user supplies parameter values; adaptive quadrature or Monte Carlo for loop integrals. | H | Not started |
 | **J** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
+
+**Detailed outlines for each phase:** see [`BUILD_PHASE_OUTLINES.md`](BUILD_PHASE_OUTLINES.md).
 
 **Parallelism:** A and B are independent and can be built simultaneously. F and G are independent once E is complete. Everything else is sequential along the dependency chain.
 
