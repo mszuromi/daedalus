@@ -105,8 +105,9 @@ def save_theory(path, ft, propagator_data=None, stationarity=True,
         'kernel_specs':      _strip_callables(m.get('kernels', [])),
         'operator_specs':    _strip_callables(m.get('operators', [])),
 
-        # Stationarity
+        # Stationarity and time-dependence
         'stationarity':      stationarity,
+        'time_dependent_parameters': m.get('time_dependent_parameters', []),
 
         # Propagator info
         'nf':                pd.get('nf', None),

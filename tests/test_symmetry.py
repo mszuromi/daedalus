@@ -19,6 +19,7 @@ from sage.all import SR, DiGraph
 from msrjd.diagrams.symmetry import (
     combinatorial_factor, compute_all_combinatorial_factors,
     diagram_signature, deduplicate_typed_diagrams,
+    classify_coefficient_factors,
 )
 from msrjd.diagrams.type_assignment import TypedDiagram
 from msrjd.core.vertices import VertexType, SourceType
@@ -330,3 +331,100 @@ def test_no_internal_vertices_m_one():
         prop_indices={(0, 1): (0, 0)},
     )
     assert combinatorial_factor(td) == 1
+
+
+# ── Tests: classify_coefficient_factors ───────────────────────────────────
+
+def test_classify_stationary_all_constant():
+    """
+    Stationary case (no time_dep_params): everything is constant,
+    scalar_prefactor = M × product of all coefficients.
+    """
+    nstar1 = SR.var('nstar1')
+    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
+    td = _make_td(
+        edges=[(2, 0), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: st},
+        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
+        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
+    )
+    winfo = classify_coefficient_factors(td, time_dep_params=[])
+    assert winfo['M'] == 2
+    assert winfo['is_stationary'] is True
+    assert winfo['vertex_time_factors'] == {}
+    assert winfo['scalar_prefactor'] == 2 * (nstar1 / 2)  # = nstar1
+
+
+def test_classify_stationary_none():
+    """time_dep_params=None treated same as empty list."""
+    st = SourceType(SR(1)/2, [('nt', 1), ('nt', 1)], (2, 0))
+    td = _make_td(
+        edges=[(2, 0), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: st},
+        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
+    )
+    winfo = classify_coefficient_factors(td, time_dep_params=None)
+    assert winfo['is_stationary'] is True
+
+
+def test_classify_nonstationary_splits_factors():
+    """
+    Nonstationary: nstar1 is time-dependent.
+    Coefficient = nstar1/2 → constant part = 1/2, time-dep part = nstar1.
+    scalar_prefactor = M × (1/2) = 2 × 1/2 = 1.
+    """
+    nstar1 = SR.var('nstar1')
+    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
+    td = _make_td(
+        edges=[(2, 0), (2, 1)], leaves=[0, 1],
+        vert_assignments={2: st},
+        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
+        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
+    )
+    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
+    assert winfo['M'] == 2
+    assert winfo['is_stationary'] is False
+    assert 2 in winfo['vertex_time_factors']
+    # The time-dep factor for vertex 2 should contain nstar1
+    td_factor = winfo['vertex_time_factors'][2]
+    assert nstar1 in td_factor.variables()
+    # Scalar prefactor should NOT contain nstar1
+    sp_vars = winfo['scalar_prefactor'].variables()
+    assert nstar1 not in sp_vars
+
+
+def test_classify_multi_vertex_nonstationary():
+    """
+    Two vertices, one with time-dependent coefficient, one without.
+    """
+    nstar1 = SR.var('nstar1')
+    phi1_1 = SR.var('phi1_1')
+    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
+    vt = VertexType(phi1_1, [('nt', 1)], [('dn', 1)], (1, 1))
+    td = _make_td(
+        edges=[(2, 0), (2, 3), (3, 1)], leaves=[0, 1],
+        vert_assignments={2: st, 3: vt},
+        ext_legs={0: ('dn', 1), 1: ('dn', 1)},
+        prop_indices={(2, 0): (0, 0), (2, 3): (0, 0), (3, 1): (0, 0)},
+    )
+    # Only nstar is time-dependent, phi1 is NOT
+    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
+    assert winfo['is_stationary'] is False
+    assert 2 in winfo['vertex_time_factors']  # source has nstar1
+    assert 3 not in winfo['vertex_time_factors']  # vt has phi1_1, not nstar
+    # phi1_1 should be in the scalar prefactor
+    assert phi1_1 in winfo['scalar_prefactor'].variables()
+
+
+def test_classify_no_vertices_stationary():
+    """Diagram with no internal vertices: always stationary, M = 1."""
+    td = _make_td(
+        edges=[(0, 1)], leaves=[0, 1],
+        vert_assignments={},
+        ext_legs={0: ('nt', 1), 1: ('dn', 1)},
+        prop_indices={(0, 1): (0, 0)},
+    )
+    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
+    assert winfo['M'] == 1
+    assert winfo['is_stationary'] is True
+    assert winfo['scalar_prefactor'] == 1

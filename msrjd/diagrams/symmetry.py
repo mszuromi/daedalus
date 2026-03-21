@@ -44,7 +44,11 @@ Build Phase G.
 """
 
 from collections import Counter
+from functools import reduce
 from math import factorial
+from operator import mul
+
+from sage.all import SR
 
 
 # ── Combinatorial factor ────────────────────────────────────────────────────
@@ -193,3 +197,96 @@ def deduplicate_typed_diagrams(typed_diagrams):
             seen.add(sig)
             unique.append(td)
     return unique
+
+
+# ── Coefficient classification ──────────────────────────────────────────────
+
+def _symbols_matching_prefixes(expr, prefixes):
+    """
+    Return the set of free SR variables in *expr* whose string name
+    starts with any of the given prefixes.
+
+    >>> _symbols_matching_prefixes(SR('nstar1 * phi1_1'), ['nstar'])
+    {nstar1}
+    """
+    if not prefixes:
+        return set()
+    matches = set()
+    for sym in expr.variables():
+        name = str(sym)
+        if any(name.startswith(p) for p in prefixes):
+            matches.add(sym)
+    return matches
+
+
+def classify_coefficient_factors(typed_diagram, time_dep_params=None):
+    """
+    Partition each vertex coefficient into constant and time-dependent
+    symbolic factors.
+
+    In the **stationary** case (``time_dep_params`` is empty or None),
+    every coefficient is constant and the full product can be pulled
+    outside the propagator integral.
+
+    In the **nonstationary** case, symbols whose names start with any
+    prefix in ``time_dep_params`` are time-dependent — they inherit the
+    time variable of the vertex they sit on and must stay **inside**
+    the integral.
+
+    Parameters
+    ----------
+    typed_diagram : TypedDiagram
+    time_dep_params : list of str or None
+        Parameter name prefixes that are time-dependent
+        (e.g. ``['nstar', 'phi1', 'phi2']``).
+        If None or empty, all coefficients are treated as constant.
+
+    Returns
+    -------
+    dict with keys:
+        ``'M'`` : int
+            Combinatorial factor M(Γ).
+        ``'scalar_prefactor'`` : SR expression
+            Product of all constant (time-independent) factors across
+            all vertices.  In the stationary case this equals
+            M(Γ) × ∏_v coeff(v).
+        ``'vertex_time_factors'`` : dict
+            ``{vertex_id: SR expression}`` for each vertex whose
+            coefficient contains time-dependent symbols.  Empty dict
+            in the stationary case.
+        ``'is_stationary'`` : bool
+            True when no vertex has time-dependent symbols.
+    """
+    prefixes = list(time_dep_params or [])
+    M = combinatorial_factor(typed_diagram)
+
+    scalar_parts = [SR(M)]
+    time_factors = {}
+
+    for v, vtype in typed_diagram.vertex_assignments.items():
+        coeff = SR(vtype.coefficient)
+        td_syms = _symbols_matching_prefixes(coeff, prefixes)
+
+        if not td_syms:
+            # Entirely constant — goes into scalar prefactor
+            scalar_parts.append(coeff)
+        else:
+            # Factor out the constant part
+            # Use substitution: set all time-dep symbols to 1 → constant part
+            const_part = coeff.subs({s: SR(1) for s in td_syms})
+            # The time-dependent part = coeff / const_part
+            td_part = coeff / const_part if not const_part.is_zero() else coeff
+
+            if not const_part.is_one() and not const_part.is_zero():
+                scalar_parts.append(const_part)
+
+            time_factors[v] = td_part.simplify_rational()
+
+    scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+
+    return {
+        'M': M,
+        'scalar_prefactor': scalar_prefactor,
+        'vertex_time_factors': time_factors,
+        'is_stationary': len(time_factors) == 0,
+    }

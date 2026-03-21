@@ -167,6 +167,20 @@ HAWKES_MODEL: dict = {
     },
 
     # -----------------------------------------------------------------------
+    # Time-dependent parameters
+    #
+    # List of parameter name prefixes whose values may depend on the time
+    # at their vertex.  Empty for the stationary Hawkes model — all MF
+    # quantities (nstar, phi derivatives) are constants.
+    #
+    # In a nonstationary model this might be:
+    #   'time_dependent_parameters': ['nstar', 'phi0', 'phi1', 'phi2'],
+    # meaning that nstar1(t_v), phi1_1(t_v), etc. are functions of the
+    # vertex time and must stay inside the time integral.
+    # -----------------------------------------------------------------------
+    'time_dependent_parameters': [],
+
+    # -----------------------------------------------------------------------
     # Background rate convention
     # -----------------------------------------------------------------------
     'background_rate_convention': (
