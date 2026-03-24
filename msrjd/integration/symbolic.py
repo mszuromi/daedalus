@@ -637,10 +637,11 @@ def integrate_to_time_domain(integrand_result):
     Performs all frequency integrals (free loop + external) by residues,
     returning C(t₁, ..., tₖ) — a function of the external times.
 
-    For the 2-point function, the result is:
-        C(t₁, t₂) = scalar_prefactor × (1/2π)^n
-            × ∫ dω  e^{iω(t₂−t₁)} × Ĝ(ω)²
-        = scalar_prefactor × Θ(t₂−t₁) × [time-domain expression]
+    For each external frequency integral, the contour closure direction
+    depends on the sign of the time argument τ in the exponential
+    e^{iωτ}.  Both upper- and lower-half-plane residues contribute,
+    combined via Heaviside step functions: Θ(τ)×(upper) + Θ(−τ)×(lower).
+    For the covariance this typically simplifies to an expression in |τ|.
 
     Parameters
     ----------
