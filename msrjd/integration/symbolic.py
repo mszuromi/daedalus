@@ -81,14 +81,13 @@ def check_propagator_available(propagator_data):
 # Frequency assignment and conservation
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _edge_key(u, v, lbl, has_multiedges):
-    """Canonical dict key for an edge."""
-    return (u, v, lbl) if has_multiedges else (u, v)
-
-
 def assign_frequencies(typed_diagram, k):
     r"""
     Create a symbolic frequency variable for every edge.
+
+    Each edge gets a unique key ``(idx, u, v)`` where ``idx`` is the
+    position in ``D.edges()``.  This avoids collisions when parallel
+    edges share the same (u, v, label) tuple.
 
     Each leaf has exactly one edge connecting it to the diagram.
     The frequency on that edge is the external frequency for that leaf.
@@ -102,19 +101,16 @@ def assign_frequencies(typed_diagram, k):
     Returns
     -------
     edge_freqs : dict
-        {edge_key: SR variable} for every edge.
+        {(idx, u, v): SR variable} for every edge.
     leaf_edge_freq : dict
         {leaf_vertex: SR variable} — the frequency on the edge at each leaf.
     """
     D = typed_diagram.prediagram[0]
     leaves = typed_diagram.prediagram[2]
-    leaf_set = set(leaves)
-    has_me = (D.has_multiple_edges()
-              if hasattr(D, 'has_multiple_edges') else False)
 
     edge_freqs = {}
     for idx, (u, v, lbl) in enumerate(D.edges()):
-        ek = _edge_key(u, v, lbl, has_me)
+        ek = (idx, u, v)
         edge_freqs[ek] = SR.var(f'omega_e{idx}',
                                 latex_name=rf'\omega_{{e_{{{idx}}}}}')
 
@@ -122,7 +118,7 @@ def assign_frequencies(typed_diagram, k):
     leaf_edge_freq = {}
     for lf in leaves:
         for ek, w in edge_freqs.items():
-            u, v = ek[0], ek[1]
+            _, u, v = ek
             if u == lf or v == lf:
                 leaf_edge_freq[lf] = w
                 break
@@ -165,19 +161,18 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     D = typed_diagram.prediagram[0]
     leaves = typed_diagram.prediagram[2]
     leaf_set = set(leaves)
-    has_me = (D.has_multiple_edges()
-              if hasattr(D, 'has_multiple_edges') else False)
 
     # Identify which edge frequency variables are external vs internal
     leaf_freq_set = set(leaf_edge_freq.values())
     internal_freq_vars = [w for w in edge_freqs.values()
                           if w not in leaf_freq_set]
 
-    # Build conservation equations at internal vertices only
+    # Build conservation equations at internal vertices only.
+    # edge_freqs keys are (idx, u, v) from assign_frequencies.
     in_ekeys = {v: [] for v in D.vertices()}
     out_ekeys = {v: [] for v in D.vertices()}
-    for (u, v, lbl) in D.edges():
-        ek = _edge_key(u, v, lbl, has_me)
+    for ek in edge_freqs:
+        _, u, v = ek
         out_ekeys[u].append(ek)
         in_ekeys[v].append(ek)
 
@@ -235,20 +230,26 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     # Any remaining unknowns are free (loop frequencies)
     free_freqs = list(remaining_unknowns)
 
-    # Check for overall conservation: substitute solution back into
-    # a leaf-vertex conservation equation to find the constraint
-    # among external frequencies.
-    for lf in leaves:
-        in_sum = sum(edge_freqs[ek] for ek in in_ekeys[lf])
-        out_sum = sum(edge_freqs[ek] for ek in out_ekeys[lf])
-        if in_sum != 0 or out_sum != 0:
-            cons = (in_sum - out_sum).subs(substitutions)
-            # If this equation involves only external freqs,
-            # it's an overall conservation relation
-            cons_vars = set(cons.variables())
-            if cons_vars and cons_vars.issubset(leaf_freq_set):
-                overall_conservation = cons
-                break
+    # Detect overall conservation: substitute solution into ALL vertex
+    # conservation equations (including internal ones that became
+    # redundant) and look for a nontrivial relation among external
+    # frequencies only.
+    free_set = set(free_freqs)
+    for v in D.vertices():
+        in_sum = sum(edge_freqs[ek] for ek in in_ekeys[v])
+        out_sum = sum(edge_freqs[ek] for ek in out_ekeys[v])
+        if in_sum == 0 and out_sum == 0:
+            continue
+        cons = (in_sum - out_sum).subs(substitutions)
+        if cons == 0:
+            continue
+        cons_vars = set(cons.variables())
+        # Must involve at least two external freqs and no free (loop) freqs
+        ext_in_cons = cons_vars & leaf_freq_set
+        free_in_cons = cons_vars & free_set
+        if len(ext_in_cons) >= 2 and not free_in_cons:
+            overall_conservation = cons
+            break
 
     return substitutions, free_freqs, overall_conservation
 
@@ -287,6 +288,7 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
     ----------
     typed_diagram : TypedDiagram
     edge_freqs : dict
+        Keys are ``(idx, u, v)`` from ``assign_frequencies``.
     substitutions : dict
     propagator_data : dict
     omega_symbol : SR variable or None
@@ -303,24 +305,52 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
     ns = noise_structure or {'temporal_type': 'white'}
     noise_type = ns.get('temporal_type', 'white')
 
+    # Build a map from typed_diagram edge keys to edge_freqs keys.
+    # typed_diagram.edge_types has keys (u,v) or (u,v,lbl);
+    # edge_freqs has keys (idx, u, v).  We match by iterating over
+    # D.edges() in the same order as assign_frequencies.
+    td_edge_keys = list(typed_diagram.edge_types.keys())
+    ef_keys_sorted = sorted(edge_freqs.keys())  # sorted by idx
+
+    # Both should correspond to D.edges() in order.  Build the pairing.
+    edge_list = list(D.edges())
+    # Map: for each edge in D.edges(), find its typed_diagram key and
+    # its edge_freqs key.
+    td_key_for_edge = {}
+    for td_ek in td_edge_keys:
+        # td_ek is (u,v) or (u,v,lbl)
+        u, v = td_ek[0], td_ek[1]
+        lbl = td_ek[2] if len(td_ek) > 2 else None
+        td_key_for_edge.setdefault((u, v, lbl), []).append(td_ek)
+
     integrand = SR(1)
 
-    for edge_key in typed_diagram.edge_types:
-        ri, pi = typed_diagram.propagator_indices[edge_key]
+    for idx, (u, v, lbl) in enumerate(edge_list):
+        ef_key = (idx, u, v)
+        if ef_key not in edge_freqs:
+            continue
 
-        # Find matching edge frequency
-        if edge_key in edge_freqs:
-            omega_e = edge_freqs[edge_key]
-        else:
-            u, v = edge_key[0], edge_key[1]
-            matched = [ek for ek in edge_freqs
-                       if ek[0] == u and ek[1] == v]
-            if matched:
-                omega_e = edge_freqs[matched[0]]
-            else:
-                raise KeyError(f'No frequency variable for edge {edge_key}')
+        # Find matching typed_diagram key
+        candidates = td_key_for_edge.get((u, v, lbl), [])
+        if not candidates:
+            candidates = td_key_for_edge.get((u, v, None), [])
+        if not candidates:
+            # Try without label
+            for k_try in td_edge_keys:
+                if k_try[0] == u and k_try[1] == v:
+                    candidates = [k_try]
+                    break
+        if not candidates:
+            raise KeyError(f'No type info for edge ({u}, {v}, {lbl})')
 
-        omega_val = omega_e.subs(substitutions)
+        td_ek = candidates.pop(0)
+        # Remove used key so parallel edges are matched one-to-one
+        key_group = (u, v, lbl)
+        if key_group in td_key_for_edge and not td_key_for_edge[key_group]:
+            pass  # already empty
+
+        ri, pi = typed_diagram.propagator_indices[td_ek]
+        omega_val = edge_freqs[ef_key].subs(substitutions)
         prop_entry = _get_propagator_entry(
             ri, pi, omega_val, propagator_data, omega_symbol
         )
@@ -337,7 +367,10 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
         for v, vtype in typed_diagram.vertex_assignments.items():
             if D.in_degree(v) > 0:
                 continue
-            out_ekeys = [ek for ek in edge_freqs if ek[0] == v]
+            out_ekeys = [ek for ek in edge_freqs if ek[2] == v
+                         or ek[1] == v]
+            # source vertex: only outgoing edges (ek[1] == v means v is src)
+            out_ekeys = [ek for ek in edge_freqs if ek[1] == v]
             if out_ekeys:
                 omega_val = edge_freqs[out_ekeys[0]].subs(substitutions)
                 integrand *= SR(kernel_ft_expr).subs(
@@ -432,6 +465,11 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         cons_sol = sage_solve(overall_cons == 0, target, solution_dict=True)
         if cons_sol:
             overall_cons_sub = cons_sol[0]
+            # Re-substitute overall conservation into existing solutions
+            # so that e.g. ω_e2 = ω_e0 + ω_e1 - ω_e3 with ω_e1 = -ω_e0
+            # becomes ω_e2 = -ω_e3.
+            for var_key in list(subs):
+                subs[var_key] = subs[var_key].subs(overall_cons_sub)
             subs.update(overall_cons_sub)
 
     ext_freqs = [w for w in ext_freqs_all if w not in overall_cons_sub]
