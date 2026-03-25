@@ -465,14 +465,22 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         cons_sol = sage_solve(overall_cons == 0, target, solution_dict=True)
         if cons_sol:
             overall_cons_sub = cons_sol[0]
-            # Re-substitute overall conservation into existing solutions
-            # so that e.g. ω_e2 = ω_e0 + ω_e1 - ω_e3 with ω_e1 = -ω_e0
-            # becomes ω_e2 = -ω_e3.
-            for var_key in list(subs):
-                subs[var_key] = subs[var_key].subs(overall_cons_sub)
             subs.update(overall_cons_sub)
 
     ext_freqs = [w for w in ext_freqs_all if w not in overall_cons_sub]
+
+    # Close the substitution chain: repeatedly apply subs to its own
+    # right-hand sides until convergence.  This resolves chains like
+    # ω_e0 = -ω_e1, ω_e1 = -ω_e2 - ω_e3  →  ω_e0 = ω_e2 + ω_e3.
+    for _ in range(10):
+        changed = False
+        for var_key in list(subs):
+            new_val = subs[var_key].subs(subs)
+            if new_val != subs[var_key]:
+                subs[var_key] = new_val
+                changed = True
+        if not changed:
+            break
 
     # Build propagator integrand (with all substitutions applied)
     integrand = build_integrand(
