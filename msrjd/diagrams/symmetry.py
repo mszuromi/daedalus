@@ -1,160 +1,120 @@
 """
 msrjd.diagrams.symmetry
 ========================
-Symmetry factor computation for fully-typed labeled diagrams.
+Combinatorial factor M(Γ) for fully-typed labeled diagrams, and
+deduplication of typed diagrams into unique representatives.
 
-The symmetry factor S counts the number of leg permutations at each
-vertex that produce an identical diagram (same edge types and propagator
-assignments).  For a vertex with groups of identical legs, each group
-of k identical legs contributes k! to S.
+Definition (Attachment)
+-----------------------
+Given a typed diagram Γ with directed graph D = (V, E) and a fixed
+propagator type on each edge, the combinatorial factor M(Γ) counts
+the number of ways to permute the *outgoing* (response) legs at each
+vertex that yield the same typed diagram — i.e. the same multiset of
+(response_type, physical_type) pairings on the outgoing edges.
 
-The total symmetry factor is the product over all vertices.  This factor
-cancels the 1/n! denominators from the Taylor expansion of the action,
-so the diagram's weight is  S × (product of vertex coefficients).
+For a single vertex v with outgoing edges, let each edge carry a
+pairing (r, p) where r is the response leg type at v and p is the
+physical leg type at the target vertex. Define:
 
-Additionally, graph-level automorphisms (e.g. exchanging identical
-parallel edges in a bubble diagram) contribute to S via the subdivision
-graph method.
+    n_r     = number of response legs of type r at v
+    n[r][p] = number of outgoing edges with pairing (r, p)
+    m_p     = number of outgoing edges targeting physical type p
+
+Then the per-vertex factor is:
+
+    M_v = [∏_r  n_r! / ∏_p n[r][p]!]  ×  [∏_p  m_p!]
+
+and the full combinatorial factor is:
+
+    M(Γ) = ∏_v  M_v
+
+The diagram's contribution to the k-point function is:
+
+    weight(Γ) = M(Γ) × ∏_v coeff(v) × ∫(propagators)
+
+where the vertex coefficients already contain 1/n! from the Taylor
+expansion of the action.
 
 Build Phase G.
 """
 
 from collections import Counter
+from functools import reduce
 from math import factorial
+from operator import mul
 
-from sage.all import DiGraph
+from sage.all import SR
 
 
-def _vertex_leg_symmetry(vertex_type):
+# ── Combinatorial factor ────────────────────────────────────────────────────
+
+def _vertex_combinatorial_factor(vertex, typed_diagram):
     """
-    Compute the leg-permutation symmetry factor for a single vertex.
+    Count the number of response-leg permutations at *vertex* that
+    preserve the same typed diagram.
 
-    Returns the number of permutations of identical legs that leave the
-    vertex's edge assignments unchanged = product of k! for each group
-    of k identical response legs, times the same for physical legs.
-    """
-    resp_legs = vertex_type.response_legs
-    has_phys = hasattr(vertex_type, 'physical_legs')
-    phys_legs = vertex_type.physical_legs if has_phys else []
+    For each outgoing edge (vertex → w), the pairing is
+    (resp_type, phys_type) where resp_type is the response leg used
+    at *vertex* and phys_type is the physical leg at w.
 
-    S = 1
-    for count in Counter(resp_legs).values():
-        S *= factorial(count)
-    for count in Counter(phys_legs).values():
-        S *= factorial(count)
-    return S
+    M_v = [∏_r  n_r! / ∏_p n[r][p]!]  ×  [∏_p  m_p!]
 
-
-def build_subdivision_graph(typed_diagram):
-    """
-    Build a subdivision DiGraph where each edge becomes a vertex.
-
-    This converts edge-exchange symmetries (relevant for multigraphs
-    like self-energy bubbles) into vertex permutation symmetries.
+    Parameters
+    ----------
+    vertex : hashable
+        Vertex id within the typed diagram.
+    typed_diagram : TypedDiagram
 
     Returns
     -------
-    S : DiGraph
-        Subdivision graph (no multiedges).
-    partition : list of list
-        Vertex partition for automorphism_group.
+    int
+        Per-vertex combinatorial factor (always >= 1).
     """
-    D = typed_diagram.prediagram[0]
-    leaves = typed_diagram.prediagram[2]
-    leaf_set = set(leaves)
+    edge_types = typed_diagram.edge_types
 
-    S = DiGraph()
+    # Collect (resp_type, phys_type) for every outgoing edge from vertex.
+    # Edge keys may be 2-tuples (u, v) or 3-tuples (u, v, label).
+    pairings = []
+    for edge_key, (resp_leg, phys_leg) in edge_types.items():
+        u = edge_key[0]
+        if u == vertex:
+            pairings.append((resp_leg, phys_leg))
 
-    # Add original vertices
-    for v in D.vertices():
-        S.add_vertex(v)
-
-    # Add edge vertices (offset to avoid collision with original vertices)
-    max_v = max(D.vertices()) if D.vertices() else -1
-    edge_offset = max_v + 1
-
-    edge_list = list(D.edges())
-    edge_verts_by_color = {}  # group edge vertices by propagator type
-
-    for i, (u, v, lbl) in enumerate(edge_list):
-        ev = edge_offset + i
-        S.add_vertex(ev)
-        S.add_edge(u, ev)
-        S.add_edge(ev, v)
-
-        # Edge color = propagator type
-        # For multiedge graphs, try (u, v, lbl) first, then (u, v)
-        prop_idx = typed_diagram.propagator_indices.get(
-            (u, v, lbl),
-            typed_diagram.propagator_indices.get((u, v), (0, 0))
-        )
-        edge_verts_by_color.setdefault(prop_idx, []).append(ev)
-
-    # Build partition
-    # 1. External legs: each in its own singleton (fixed)
-    # 2. Internal vertices: grouped by type identity
-    # 3. Edge vertices: grouped by propagator type
-
-    partition = []
-
-    # External legs — singleton partitions
-    for lf in sorted(leaves):
-        partition.append([lf])
-
-    # Internal vertices — grouped by type
-    type_to_verts = {}
-    for v in D.vertices():
-        if v in leaf_set:
-            continue
-        vtype = typed_diagram.vertex_assignments.get(v)
-        if vtype is not None:
-            has_phys = hasattr(vtype, 'physical_legs')
-            key = (type(vtype).__name__, vtype.bigrade,
-                   str(vtype.coefficient),
-                   tuple(vtype.response_legs),
-                   tuple(vtype.physical_legs) if has_phys else ())
-        else:
-            key = ('none', v)
-        type_to_verts.setdefault(key, []).append(v)
-
-    for key in sorted(type_to_verts.keys(), key=str):
-        partition.append(sorted(type_to_verts[key]))
-
-    # Edge vertices — grouped by propagator type
-    for prop_key in sorted(edge_verts_by_color.keys(), key=str):
-        partition.append(sorted(edge_verts_by_color[prop_key]))
-
-    return S, partition
-
-
-def _graph_automorphism_factor(typed_diagram):
-    """
-    Compute the graph-level automorphism factor using the subdivision
-    graph method.  This detects symmetries like exchanging identical
-    parallel edges in bubble diagrams.
-    """
-    S_graph, partition = build_subdivision_graph(typed_diagram)
-    try:
-        aut_group = S_graph.automorphism_group(partition=partition)
-        return aut_group.order()
-    except Exception:
+    if not pairings:
         return 1
 
+    # n_r: total count of each response type
+    resp_counts = Counter(r for r, p in pairings)
+    # n[r][p]: count of each (resp, phys) pairing
+    pair_counts = Counter(pairings)
+    # m_p: count of each physical type across outgoing edges
+    phys_counts = Counter(p for r, p in pairings)
 
-def symmetry_factor(typed_diagram):
-    """
-    Compute the symmetry factor S for a typed diagram.
+    m = 1
+    # ∏_r [ n_r! / ∏_p n[r][p]! ]
+    for r, n_r in resp_counts.items():
+        m *= factorial(n_r)
+        for p in phys_counts:
+            n_rp = pair_counts.get((r, p), 0)
+            if n_rp > 1:
+                m //= factorial(n_rp)
+    # ∏_p m_p!
+    for m_p in phys_counts.values():
+        m *= factorial(m_p)
 
-    S = product over all vertices of (leg-permutation factor).
+    return m
 
-    The leg-permutation factor for each vertex is the product of k!
-    for each group of k identical response legs, times the same for
-    physical legs.  This counts how many of the enumerated leg
-    permutations produce the same fully-labeled diagram.
 
-    When multiplied by the vertex coefficients (which contain 1/n!
-    from the Taylor expansion), S cancels the factorial denominators
-    for groups of identical legs.
+def combinatorial_factor(typed_diagram):
+    r"""
+    Compute M(Γ) — the number of response-leg permutations across all
+    vertices that preserve the same typed diagram.
+
+    M(Γ) = ∏_v M_v
+
+    This factor **multiplies** the diagram's contribution:
+
+        weight = M(Γ) × ∏(vertex coefficients) × ∫(propagators)
 
     Parameters
     ----------
@@ -162,18 +122,18 @@ def symmetry_factor(typed_diagram):
 
     Returns
     -------
-    S : int
-        The symmetry factor (always >= 1).
+    int
+        The combinatorial factor (always >= 1).
     """
-    S = 1
-    for v, vtype in typed_diagram.vertex_assignments.items():
-        S *= _vertex_leg_symmetry(vtype)
-    return S
+    m = 1
+    for v in typed_diagram.vertex_assignments:
+        m *= _vertex_combinatorial_factor(v, typed_diagram)
+    return m
 
 
-def compute_all_symmetry_factors(typed_diagrams):
+def compute_all_combinatorial_factors(typed_diagrams):
     """
-    Compute symmetry factors for all typed diagrams.
+    Compute M(Γ) for each typed diagram.
 
     Parameters
     ----------
@@ -181,7 +141,187 @@ def compute_all_symmetry_factors(typed_diagrams):
 
     Returns
     -------
-    factors : list of int
-        Symmetry factor for each diagram, same order as input.
+    list of int
+        Combinatorial factor for each diagram, same order as input.
     """
-    return [symmetry_factor(td) for td in typed_diagrams]
+    return [combinatorial_factor(td) for td in typed_diagrams]
+
+
+# ── Deduplication ───────────────────────────────────────────────────────────
+
+def diagram_signature(td):
+    """
+    Build a hashable canonical signature for a typed diagram.
+
+    Two typed diagrams with the same signature are identical — they
+    represent the same Feynman diagram Γ and differ only in the
+    internal choice of which identical leg was assigned to which edge
+    (an attachment degree of freedom).
+
+    The signature encodes:
+      - External leg assignments  (which field at each leaf)
+      - Vertex type at each internal vertex  (coefficient, legs, bigrade)
+      - Propagator indices on every edge
+
+    Parameters
+    ----------
+    td : TypedDiagram
+
+    Returns
+    -------
+    tuple
+        Hashable canonical signature.
+    """
+    # External legs: sorted (leaf, field) pairs
+    ext = tuple(sorted(td.external_legs.items()))
+
+    # Vertex assignments: sorted (vertex, type_key) pairs
+    verts = []
+    for v, vtype in sorted(td.vertex_assignments.items()):
+        tname = type(vtype).__name__
+        resp = tuple(vtype.response_legs)
+        phys = tuple(vtype.physical_legs) if hasattr(vtype, 'physical_legs') else ()
+        verts.append((v, tname, str(vtype.coefficient), vtype.bigrade, resp, phys))
+    verts = tuple(verts)
+
+    # Edge propagator assignments: sorted (edge, prop_indices) pairs
+    edges = tuple(sorted(
+        ((u, v), td.propagator_indices[(u, v)])
+        for (u, v) in td.edge_types
+    ))
+
+    return (ext, verts, edges)
+
+
+def deduplicate_typed_diagrams(typed_diagrams):
+    """
+    Remove duplicate typed diagrams, keeping one representative per
+    unique diagram Γ.
+
+    Two TypedDiagrams are duplicates if they have identical external
+    leg assignments, vertex type assignments, and propagator indices
+    on every edge — i.e. they differ only in the internal leg-to-edge
+    bijection (attachment).
+
+    Parameters
+    ----------
+    typed_diagrams : list of TypedDiagram
+
+    Returns
+    -------
+    unique : list of TypedDiagram
+        One representative per unique diagram.
+    """
+    seen = set()
+    unique = []
+    for td in typed_diagrams:
+        sig = diagram_signature(td)
+        if sig not in seen:
+            seen.add(sig)
+            unique.append(td)
+    return unique
+
+
+# ── Coefficient classification ──────────────────────────────────────────────
+
+def _symbols_matching_prefixes(expr, prefixes):
+    """
+    Return the set of free SR variables in *expr* whose string name
+    starts with any of the given prefixes.
+    """
+    if not prefixes:
+        return set()
+    matches = set()
+    for sym in expr.variables():
+        name = str(sym)
+        if any(name.startswith(p) for p in prefixes):
+            matches.add(sym)
+    return matches
+
+
+def _is_source_type(vtype):
+    """Check if a vertex type is a SourceType (has no physical_legs)."""
+    return not hasattr(vtype, 'physical_legs')
+
+
+def classify_coefficient_factors(typed_diagram, time_dep_params=None,
+                                 noise_structure=None):
+    r"""
+    Partition each vertex coefficient into factors that can be pulled
+    outside the integral vs factors that must stay inside.
+
+    Returns
+    -------
+    dict with keys:
+        'M', 'scalar_prefactor', 'vertex_time_factors',
+        'source_time_info', 'is_stationary'
+    """
+    prefixes = list(time_dep_params or [])
+    ns = noise_structure or {'temporal_type': 'white', 'amplitude_params': []}
+    noise_type = ns.get('temporal_type', 'white')
+    noise_amp_prefixes = list(ns.get('amplitude_params', []))
+
+    M = combinatorial_factor(typed_diagram)
+
+    scalar_parts = [SR(M)]
+    vertex_time_factors = {}
+    source_time_info = {}
+
+    for v, vtype in typed_diagram.vertex_assignments.items():
+        # Z = ∫ exp(-S), so each vertex factor from S_V acquires (-1).
+        coeff = -SR(vtype.coefficient)
+
+        if _is_source_type(vtype):
+            n_legs = len(vtype.response_legs)
+            amp_td_syms = _symbols_matching_prefixes(coeff,
+                [p for p in noise_amp_prefixes if p in prefixes])
+            amp_is_td = len(amp_td_syms) > 0
+            can_pull_out = (noise_type == 'white' and not amp_is_td)
+
+            if can_pull_out:
+                scalar_parts.append(coeff)
+            else:
+                if amp_td_syms:
+                    const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
+                    if not const_part.is_one() and not const_part.is_zero():
+                        scalar_parts.append(const_part)
+
+            source_time_info[v] = {
+                'n_legs': n_legs,
+                'temporal_type': noise_type,
+                'amplitude': coeff,
+                'amplitude_is_time_dep': amp_is_td,
+                'in_integrand': not can_pull_out,
+            }
+
+        else:
+            td_syms = _symbols_matching_prefixes(coeff, prefixes)
+
+            if not td_syms:
+                scalar_parts.append(coeff)
+            else:
+                const_part = coeff.subs({s: SR(1) for s in td_syms})
+                td_part = coeff / const_part if not const_part.is_zero() else coeff
+
+                if not const_part.is_one() and not const_part.is_zero():
+                    scalar_parts.append(const_part)
+
+                vertex_time_factors[v] = td_part.simplify_rational()
+
+    scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+
+    is_stationary = (
+        len(vertex_time_factors) == 0
+        and all(not info['amplitude_is_time_dep']
+                for info in source_time_info.values())
+        and all(info['temporal_type'] in ('white', 'colored')
+                for info in source_time_info.values())
+    )
+
+    return {
+        'M': M,
+        'scalar_prefactor': scalar_prefactor,
+        'vertex_time_factors': vertex_time_factors,
+        'source_time_info': source_time_info,
+        'is_stationary': is_stationary,
+    }
