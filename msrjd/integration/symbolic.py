@@ -39,6 +39,8 @@ FT convention:  F̂(ω) = ∫ f(t) e^{iωt} dt,  IFT: f(t) = ∫ F̂(ω) e^{-iω
 Build Phase H.
 """
 
+from collections import defaultdict
+
 from sage.all import SR, I, pi, exp
 
 from msrjd.diagrams.symmetry import classify_coefficient_factors
@@ -52,18 +54,9 @@ def check_propagator_available(propagator_data):
     """
     Verify that frequency-domain propagator data is available.
 
-    Parameters
-    ----------
-    propagator_data : dict
-        Must contain 'G_ft' or both 'adj_ft' and 'D_omega'.
-
     Returns
     -------
     'explicit' or 'implicit'
-
-    Raises
-    ------
-    ValueError if neither form is available.
     """
     if propagator_data.get('G_ft') is not None:
         return 'explicit'
@@ -86,17 +79,7 @@ def assign_frequencies(typed_diagram, k):
     Create a symbolic frequency variable for every edge.
 
     Each edge gets a unique key ``(idx, u, v)`` where ``idx`` is the
-    position in ``D.edges()``.  This avoids collisions when parallel
-    edges share the same (u, v, label) tuple.
-
-    Each leaf has exactly one edge connecting it to the diagram.
-    The frequency on that edge is the external frequency for that leaf.
-
-    Parameters
-    ----------
-    typed_diagram : TypedDiagram
-    k : int
-        Number of external legs (= number of leaves).
+    position in ``D.edges()``.
 
     Returns
     -------
@@ -114,7 +97,6 @@ def assign_frequencies(typed_diagram, k):
         edge_freqs[ek] = SR.var(f'omega_e{idx}',
                                 latex_name=rf'\omega_{{e_{{{idx}}}}}')
 
-    # Identify the frequency variable on the edge at each leaf
     leaf_edge_freq = {}
     for lf in leaves:
         for ek, w in edge_freqs.items():
@@ -130,45 +112,20 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     r"""
     Solve frequency conservation at internal vertices.
 
-    Conservation at each internal vertex:
-        Σ(incoming ω_e) = Σ(outgoing ω_e)
-
-    The unknowns are the internal edge frequencies (edges not connected
-    to any leaf).  The leaf-edge frequencies are the external frequencies
-    — they are parameters, not unknowns.
-
-    If the diagram has loops, some internal edge frequencies remain
-    free after solving.  These are the loop integration variables.
-
-    Parameters
-    ----------
-    typed_diagram : TypedDiagram
-    edge_freqs : dict
-        {edge_key: ω_e} from assign_frequencies.
-    leaf_edge_freq : dict
-        {leaf_vertex: ω_e} from assign_frequencies.
-
     Returns
     -------
     substitutions : dict
-        {ω_e: expr(external freqs, free freqs)} for all solved edges.
     free_freqs : list of SR variable
-        Internal edge frequencies not determined by conservation
-        (one per independent loop).
     overall_conservation : SR expression or None
-        Redundant equation among external frequencies (= 0).
     """
     D = typed_diagram.prediagram[0]
     leaves = typed_diagram.prediagram[2]
     leaf_set = set(leaves)
 
-    # Identify which edge frequency variables are external vs internal
     leaf_freq_set = set(leaf_edge_freq.values())
     internal_freq_vars = [w for w in edge_freqs.values()
                           if w not in leaf_freq_set]
 
-    # Build conservation equations at internal vertices only.
-    # edge_freqs keys are (idx, u, v) from assign_frequencies.
     in_ekeys = {v: [] for v in D.vertices()}
     out_ekeys = {v: [] for v in D.vertices()}
     for ek in edge_freqs:
@@ -179,14 +136,11 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     equations = []
     for v in D.vertices():
         if v in leaf_set:
-            continue  # skip leaves — their edge freqs are external
+            continue
         in_sum = sum(edge_freqs[ek] for ek in in_ekeys[v])
         out_sum = sum(edge_freqs[ek] for ek in out_ekeys[v])
         equations.append(in_sum - out_sum)
 
-    # Solve for internal edge frequencies using sequential elimination.
-    # SageMath's solve() returns [] for underdetermined systems,
-    # so we solve one equation at a time, substituting as we go.
     from sage.all import solve as sage_solve
 
     substitutions = {}
@@ -194,7 +148,6 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     overall_conservation = None
 
     if not internal_freq_vars:
-        # No internal edges (e.g. source directly to leaves)
         if equations:
             overall_conservation = equations[0]
         return substitutions, free_freqs, overall_conservation
@@ -202,19 +155,15 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     remaining_unknowns = list(internal_freq_vars)
     remaining_eqs = list(equations)
 
-    # Sequential elimination: for each equation, solve for one unknown
     changed = True
     while changed and remaining_eqs and remaining_unknowns:
         changed = False
         for eq_idx, eq in enumerate(remaining_eqs):
-            # Apply current substitutions
             eq_sub = eq.subs(substitutions)
             if eq_sub == 0:
-                # Redundant equation
                 remaining_eqs.pop(eq_idx)
                 changed = True
                 break
-            # Try to solve for any remaining unknown
             for unk in remaining_unknowns:
                 if unk in set(eq_sub.variables()):
                     sol = sage_solve(eq_sub == 0, unk, solution_dict=True)
@@ -227,13 +176,8 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
             if changed:
                 break
 
-    # Any remaining unknowns are free (loop frequencies)
     free_freqs = list(remaining_unknowns)
 
-    # Detect overall conservation: substitute solution into ALL vertex
-    # conservation equations (including internal ones that became
-    # redundant) and look for a nontrivial relation among external
-    # frequencies only.
     free_set = set(free_freqs)
     for v in D.vertices():
         in_sum = sum(edge_freqs[ek] for ek in in_ekeys[v])
@@ -244,7 +188,6 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
         if cons == 0:
             continue
         cons_vars = set(cons.variables())
-        # Must involve at least two external freqs and no free (loop) freqs
         ext_in_cons = cons_vars & leaf_freq_set
         free_in_cons = cons_vars & free_set
         if len(ext_in_cons) >= 2 and not free_in_cons:
@@ -252,6 +195,54 @@ def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
             break
 
     return substitutions, free_freqs, overall_conservation
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Edge matching helper (shared by build_integrand and extract_prop_factors)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _resolve_edge_propagator_data(typed_diagram, edge_freqs, substitutions):
+    """
+    Match each edge in D.edges() to its typed_diagram propagator info
+    and resolve the frequency via conservation substitutions.
+
+    Returns
+    -------
+    list of (td_edge_key, matrix_row, matrix_col, resolved_freq)
+        One entry per edge in D.edges() order.
+    """
+    D = typed_diagram.prediagram[0]
+    td_edge_keys = list(typed_diagram.edge_types.keys())
+
+    td_key_for_edge = {}
+    for td_ek in td_edge_keys:
+        u, v = td_ek[0], td_ek[1]
+        lbl = td_ek[2] if len(td_ek) > 2 else None
+        td_key_for_edge.setdefault((u, v, lbl), []).append(td_ek)
+
+    result = []
+    for idx, (u, v, lbl) in enumerate(D.edges()):
+        ef_key = (idx, u, v)
+        if ef_key not in edge_freqs:
+            continue
+
+        candidates = td_key_for_edge.get((u, v, lbl), [])
+        if not candidates:
+            candidates = td_key_for_edge.get((u, v, None), [])
+        if not candidates:
+            for k_try in td_edge_keys:
+                if k_try[0] == u and k_try[1] == v:
+                    candidates = [k_try]
+                    break
+        if not candidates:
+            raise KeyError(f'No type info for edge ({u}, {v}, {lbl})')
+
+        td_ek = candidates.pop(0)
+        ri, pi = typed_diagram.propagator_indices[td_ek]
+        omega_val = edge_freqs[ef_key].subs(substitutions)
+        result.append((td_ek, ri, pi, omega_val))
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -283,20 +274,6 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
     All edge frequencies are substituted via the conservation solution,
     so the result depends only on external frequencies and any free
     (loop) frequencies.
-
-    Parameters
-    ----------
-    typed_diagram : TypedDiagram
-    edge_freqs : dict
-        Keys are ``(idx, u, v)`` from ``assign_frequencies``.
-    substitutions : dict
-    propagator_data : dict
-    omega_symbol : SR variable or None
-    noise_structure : dict or None
-
-    Returns
-    -------
-    SR expression
     """
     if omega_symbol is None:
         omega_symbol = SR.var('omega')
@@ -305,52 +282,12 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
     ns = noise_structure or {'temporal_type': 'white'}
     noise_type = ns.get('temporal_type', 'white')
 
-    # Build a map from typed_diagram edge keys to edge_freqs keys.
-    # typed_diagram.edge_types has keys (u,v) or (u,v,lbl);
-    # edge_freqs has keys (idx, u, v).  We match by iterating over
-    # D.edges() in the same order as assign_frequencies.
-    td_edge_keys = list(typed_diagram.edge_types.keys())
-    ef_keys_sorted = sorted(edge_freqs.keys())  # sorted by idx
-
-    # Both should correspond to D.edges() in order.  Build the pairing.
-    edge_list = list(D.edges())
-    # Map: for each edge in D.edges(), find its typed_diagram key and
-    # its edge_freqs key.
-    td_key_for_edge = {}
-    for td_ek in td_edge_keys:
-        # td_ek is (u,v) or (u,v,lbl)
-        u, v = td_ek[0], td_ek[1]
-        lbl = td_ek[2] if len(td_ek) > 2 else None
-        td_key_for_edge.setdefault((u, v, lbl), []).append(td_ek)
+    resolved = _resolve_edge_propagator_data(
+        typed_diagram, edge_freqs, substitutions
+    )
 
     integrand = SR(1)
-
-    for idx, (u, v, lbl) in enumerate(edge_list):
-        ef_key = (idx, u, v)
-        if ef_key not in edge_freqs:
-            continue
-
-        # Find matching typed_diagram key
-        candidates = td_key_for_edge.get((u, v, lbl), [])
-        if not candidates:
-            candidates = td_key_for_edge.get((u, v, None), [])
-        if not candidates:
-            # Try without label
-            for k_try in td_edge_keys:
-                if k_try[0] == u and k_try[1] == v:
-                    candidates = [k_try]
-                    break
-        if not candidates:
-            raise KeyError(f'No type info for edge ({u}, {v}, {lbl})')
-
-        td_ek = candidates.pop(0)
-        # Remove used key so parallel edges are matched one-to-one
-        key_group = (u, v, lbl)
-        if key_group in td_key_for_edge and not td_key_for_edge[key_group]:
-            pass  # already empty
-
-        ri, pi = typed_diagram.propagator_indices[td_ek]
-        omega_val = edge_freqs[ef_key].subs(substitutions)
+    for td_ek, ri, pi, omega_val in resolved:
         prop_entry = _get_propagator_entry(
             ri, pi, omega_val, propagator_data, omega_symbol
         )
@@ -367,9 +304,6 @@ def build_integrand(typed_diagram, edge_freqs, substitutions,
         for v, vtype in typed_diagram.vertex_assignments.items():
             if D.in_degree(v) > 0:
                 continue
-            out_ekeys = [ek for ek in edge_freqs if ek[2] == v
-                         or ek[1] == v]
-            # source vertex: only outgoing edges (ek[1] == v means v is src)
             out_ekeys = [ek for ek in edge_freqs if ek[1] == v]
             if out_ekeys:
                 omega_val = edge_freqs[out_ekeys[0]].subs(substitutions)
@@ -396,21 +330,6 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         C(t₁,...,tₖ) = scalar_prefactor × ∏ ∫(dω_free/(2π))
                      × [∏ e^{±iω_leaf t_j}] × ∏ Ĝ(ω_e)
 
-    The exponential factors come from the IFT at each external leg.
-    The sign depends on the leaf directionality:
-      - tail (outgoing into diagram): e^{-iωt}
-      - head (incoming from diagram): e^{+iωt}
-
-    Parameters
-    ----------
-    typed_diagram : TypedDiagram
-    propagator_data : dict
-    k : int
-        Number of external legs.
-    omega_symbol : SR variable or None
-    time_dep_params : list of str or None
-    noise_structure : dict or None
-
     Returns
     -------
     dict with keys:
@@ -425,7 +344,6 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
     if omega_symbol is None:
         omega_symbol = SR.var('omega')
 
-    # Coefficient classification
     coeff_info = classify_coefficient_factors(
         typed_diagram,
         time_dep_params=time_dep_params,
@@ -440,24 +358,17 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
     D = typed_diagram.prediagram[0]
     leaves = typed_diagram.prediagram[2]
 
-    # Frequency assignment
     edge_freqs, leaf_edge_freq = assign_frequencies(typed_diagram, k)
 
-    # Solve conservation at internal vertices
     subs, free_freqs, overall_cons = solve_conservation(
         typed_diagram, edge_freqs, leaf_edge_freq
     )
 
-    # External frequencies and times
     ext_freqs_all = [leaf_edge_freq[lf] for lf in leaves]
     ext_times = []
     for j in range(k):
         ext_times.append(SR.var(f't_{j+1}', latex_name=rf't_{{{j+1}}}'))
 
-    # Apply overall conservation to reduce external frequencies.
-    # Overall conservation is an equation among the leaf-edge frequencies
-    # (e.g. ω_e0 - ω_e1 = 0 for the 2-pt tree).
-    # Solve for the last ext freq in terms of the others.
     overall_cons_sub = {}
     if overall_cons is not None and len(ext_freqs_all) >= 2:
         from sage.all import solve as sage_solve
@@ -469,9 +380,7 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
 
     ext_freqs = [w for w in ext_freqs_all if w not in overall_cons_sub]
 
-    # Close the substitution chain: repeatedly apply subs to its own
-    # right-hand sides until convergence.  This resolves chains like
-    # ω_e0 = -ω_e1, ω_e1 = -ω_e2 - ω_e3  →  ω_e0 = ω_e2 + ω_e3.
+    # Close the substitution chain
     for _ in range(10):
         changed = False
         for var_key in list(subs):
@@ -482,7 +391,6 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         if not changed:
             break
 
-    # Build propagator integrand (with all substitutions applied)
     integrand = build_integrand(
         typed_diagram, edge_freqs, subs,
         propagator_data, omega_symbol, noise_structure,
@@ -500,7 +408,6 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
 
     full_integrand = integrand * exp_factor
 
-    # Integration variables = free internal freqs + independent ext freqs
     loop_number = len(free_freqs)
     n_integrals = len(free_freqs) + len(ext_freqs)
     fourier_prefactor = SR(1) / (2 * pi) ** n_integrals
@@ -620,18 +527,12 @@ def _integrate_by_residues(expr, var, close_upper=True):
 def _extract_time_argument(full_integrand, integrand, omega_var):
     r"""
     Extract the effective time argument τ from the exponential factor.
-
-    The full_integrand = integrand × exp(i ω τ + ...).
-    We extract τ as the coefficient of (i × omega_var) in the exponent.
-
-    Returns τ (SR expression) or None.
     """
     from sage.all import log
     try:
         exp_factor = (full_integrand / integrand).simplify_rational()
         log_exp = log(exp_factor)
         d_log = log_exp.diff(omega_var).simplify()
-        # d_log = i*τ → τ = -i * d_log
         tau = (-I * d_log).simplify()
         return tau
     except Exception:
@@ -642,28 +543,7 @@ def integrate_to_time_domain(integrand_result):
     r"""
     Evaluate the full time-domain cumulant contribution from a diagram.
 
-    Performs all frequency integrals (free loop + external) by residues,
-    returning C(t₁, ..., tₖ) — a function of the external times.
-
-    For each external frequency integral, the contour closure direction
-    depends on the sign of the time argument τ in the exponential
-    e^{iωτ}.  Both upper- and lower-half-plane residues contribute,
-    combined via Heaviside step functions: Θ(τ)×(upper) + Θ(−τ)×(lower).
-    For the covariance this typically simplifies to an expression in |τ|.
-
-    Parameters
-    ----------
-    integrand_result : dict
-        Output from build_integrand_stationary.
-
-    Returns
-    -------
-    dict with keys:
-        'time_domain_result' : SR expression
-        'frequency_domain_integrand' : SR expression
-        'integration_variables' : list of SR variable
-        'ext_times' : list of SR variable
-        'status' : str
+    Performs all frequency integrals (free loop + external) by residues.
     """
     from sage.all import heaviside
 
@@ -675,13 +555,11 @@ def integrate_to_time_domain(integrand_result):
     full_integrand = integrand_result['full_integrand']
     integrand = integrand_result['integrand']
 
-    # All integration variables: free (loop) frequencies, then external
     int_vars = list(free_freqs) + list(ext_freqs)
 
     current_expr = full_integrand
     status = 'ok'
 
-    # Integrate over free (loop) frequencies first
     for lf in free_freqs:
         try:
             current_expr = current_expr.simplify_rational()
@@ -692,9 +570,6 @@ def integrate_to_time_domain(integrand_result):
             result = _integrate_by_residues(current_expr, lf, close_upper=False)
         current_expr = result
 
-    # Integrate over external frequencies
-    # The exponentials e^{±iωt} determine contour closure direction.
-    # Extract the time argument for each external frequency to decide.
     for omega_ext in ext_freqs:
         try:
             current_expr = current_expr.simplify_rational()
@@ -710,7 +585,6 @@ def integrate_to_time_domain(integrand_result):
             status = 'partial'
             break
 
-        # Determine time argument τ for this frequency
         tau_arg = _extract_time_argument(full_integrand, integrand, omega_ext)
 
         if tau_arg is not None:
@@ -722,7 +596,6 @@ def integrate_to_time_domain(integrand_result):
             current_expr = result_upper
             status = 'partial'
 
-    # Multiply by prefactors
     result = prefactor * fourier_pf * current_expr
     try:
         result = result.simplify_full()
@@ -765,7 +638,283 @@ def integrate_one_loop_residues(integrand_result, pole_vals=None,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Compute full correction
+# Propagator factor extraction (opaque representation)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def extract_propagator_factors(typed_diagram, edge_freqs, substitutions,
+                               noise_structure=None):
+    r"""
+    Extract the structural propagator factor list for the integrand,
+    WITHOUT expanding propagator entries into their rational form.
+
+    Each edge produces an opaque factor ``('prop', row, col, ω_resolved)``
+    representing ``Ĝ_{row,col}(ω_resolved)``.  Colored-noise source
+    vertices produce ``('noise', ω_resolved)``.
+
+    Parameters
+    ----------
+    typed_diagram : TypedDiagram
+    edge_freqs : dict
+        From ``assign_frequencies``.
+    substitutions : dict
+        From ``solve_conservation`` (with overall conservation applied).
+    noise_structure : dict or None
+
+    Returns
+    -------
+    list of tuples
+        Each element is ``('prop', int, int, SR)`` or ``('noise', SR)``.
+    """
+    D = typed_diagram.prediagram[0]
+    ns = noise_structure or {'temporal_type': 'white'}
+    noise_type = ns.get('temporal_type', 'white')
+
+    resolved = _resolve_edge_propagator_data(
+        typed_diagram, edge_freqs, substitutions
+    )
+
+    factors = []
+    for td_ek, ri, pi, omega_val in resolved:
+        factors.append(('prop', ri, pi, omega_val))
+
+    # Colored noise kernel factors
+    if noise_type == 'colored':
+        for v, vtype in typed_diagram.vertex_assignments.items():
+            if D.in_degree(v) > 0:
+                continue
+            out_ekeys = [ek for ek in edge_freqs if ek[1] == v]
+            if out_ekeys:
+                omega_val = edge_freqs[out_ekeys[0]].subs(substitutions)
+                factors.append(('noise', omega_val))
+
+    return factors
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Canonicalization and loop kernel signatures
+# ═══════════════════════════════════════════════════════════════════════════
+
+def canonicalize_prop_factors(prop_factors, ext_freqs, free_freqs):
+    r"""
+    Replace diagram-specific frequency variable names with canonical ones.
+
+    External frequencies → ``w_0, w_1, ...`` (in the order given).
+    Loop frequencies → ``L_0, L_1, ...`` (in the order given).
+
+    Parameters
+    ----------
+    prop_factors : list of tuples
+        From ``extract_propagator_factors``.
+    ext_freqs : list of SR variable
+    free_freqs : list of SR variable
+
+    Returns
+    -------
+    canonical_factors : list of tuples
+        Same structure as input but with canonical frequency variables.
+    canonical_ext : list of SR variable
+        ``[w_0, w_1, ...]``
+    canonical_loop : list of SR variable
+        ``[L_0, L_1, ...]``
+    """
+    canonical_ext = [SR.var(f'w_{i}', latex_name=rf'w_{{{i}}}')
+                     for i in range(len(ext_freqs))]
+    canonical_loop = [SR.var(f'L_{i}', latex_name=rf'L_{{{i}}}')
+                      for i in range(len(free_freqs))]
+
+    var_map = {}
+    for old, new in zip(ext_freqs, canonical_ext):
+        var_map[old] = new
+    for old, new in zip(free_freqs, canonical_loop):
+        var_map[old] = new
+
+    canonical_factors = []
+    for factor in prop_factors:
+        if factor[0] == 'prop':
+            _, ri, pi, omega_val = factor
+            canonical_factors.append(
+                ('prop', ri, pi, omega_val.subs(var_map))
+            )
+        elif factor[0] == 'noise':
+            _, omega_val = factor
+            canonical_factors.append(
+                ('noise', omega_val.subs(var_map))
+            )
+        else:
+            canonical_factors.append(factor)
+
+    return canonical_factors, canonical_ext, canonical_loop
+
+
+def _factor_depends_on(factor, variables):
+    """Check if a propagator factor depends on any of the given variables."""
+    var_set = set(variables)
+    if factor[0] == 'prop':
+        return bool(set(factor[3].variables()) & var_set)
+    elif factor[0] == 'noise':
+        return bool(set(factor[1].variables()) & var_set)
+    return False
+
+
+def _factor_to_hashable(factor):
+    """Convert a propagator factor to a hashable form for signatures."""
+    if factor[0] == 'prop':
+        return ('prop', factor[1], factor[2], str(factor[3].expand()))
+    elif factor[0] == 'noise':
+        return ('noise', str(factor[1].expand()))
+    return factor
+
+
+def loop_kernel_signature(prop_factors_canonical, free_freqs_canonical):
+    r"""
+    Build a hierarchical, hashable signature for the loop integrand.
+
+    The signature is constructed level by level, from the innermost
+    loop variable to the outermost:
+
+    - At each level, factors are partitioned into those that depend on
+      the current loop variable (``loop_factors``) and those that do
+      not (``outer_factors``).
+    - The ``loop_factors`` form the signature at this nesting level.
+    - The ``outer_factors`` are passed to the next (outer) level.
+
+    For a 1-loop diagram, the result is::
+
+        (external_sig, loop_0_sig)
+
+    For a 2-loop diagram (future)::
+
+        (external_sig, loop_0_sig, loop_1_sig)
+
+    where each ``*_sig`` is a sorted tuple of hashable factor
+    representations.  Two diagrams with the same signature have
+    identical loop integrals (as functions of the external frequency).
+
+    Parameters
+    ----------
+    prop_factors_canonical : list of tuples
+        Canonicalized propagator factors.
+    free_freqs_canonical : list of SR variable
+        ``[L_0, L_1, ...]`` — ordered innermost-first.
+
+    Returns
+    -------
+    tuple
+        Hashable hierarchical signature.
+    """
+    remaining = list(prop_factors_canonical)
+    level_sigs = []
+
+    # Process from innermost loop variable to outermost.
+    for loop_var in reversed(free_freqs_canonical):
+        loop_factors = [f for f in remaining
+                        if _factor_depends_on(f, [loop_var])]
+        remaining = [f for f in remaining
+                     if not _factor_depends_on(f, [loop_var])]
+        level_sig = tuple(sorted(_factor_to_hashable(f) for f in loop_factors))
+        level_sigs.append(level_sig)
+
+    # Whatever's left depends only on external frequencies.
+    ext_sig = tuple(sorted(_factor_to_hashable(f) for f in remaining))
+
+    return (ext_sig,) + tuple(level_sigs)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Diagram grouping by loop kernel
+# ═══════════════════════════════════════════════════════════════════════════
+
+def group_diagrams_by_kernel(unique_diagrams, propagator_data, k,
+                              omega_symbol=None, time_dep_params=None,
+                              noise_structure=None):
+    r"""
+    Build integrands for all diagrams and group by loop kernel signature.
+
+    Diagrams sharing the same loop kernel (same product of propagator
+    entries with the same frequency routing) differ only in their scalar
+    prefactors.  Summing the prefactors within each group eliminates
+    redundant numerical integrations.
+
+    Parameters
+    ----------
+    unique_diagrams : list of TypedDiagram
+    propagator_data : dict
+    k : int
+        Number of external legs.
+    omega_symbol, time_dep_params, noise_structure :
+        Passed through to ``build_integrand_stationary``.
+
+    Returns
+    -------
+    list of dict
+        One entry per unique kernel, with keys:
+
+        ``'signature'`` : tuple
+            The hierarchical loop kernel signature.
+        ``'combined_prefactor'`` : SR expression
+            Sum of scalar prefactors over all diagrams in the group.
+        ``'representative_ir'`` : dict
+            Integrand result from ``build_integrand_stationary`` for
+            one representative diagram (use for numerical evaluation).
+        ``'diagrams'`` : list of TypedDiagram
+            All diagrams in the group.
+        ``'individual_prefactors'`` : list of SR expression
+        ``'n_diagrams'`` : int
+        ``'loop_number'`` : int
+        ``'prop_factors'`` : list of tuples
+            Canonical propagator factor list for this kernel.
+    """
+    groups = defaultdict(lambda: {
+        'prefactors': [],
+        'diagrams': [],
+        'ir': None,
+        'prop_factors': None,
+        'loop_number': None,
+    })
+
+    for td in unique_diagrams:
+        ir = build_integrand_stationary(
+            td, propagator_data, k,
+            omega_symbol=omega_symbol,
+            time_dep_params=time_dep_params,
+            noise_structure=noise_structure,
+        )
+        pf = extract_propagator_factors(
+            td, ir['edge_freqs'], ir['substitutions'],
+            noise_structure=noise_structure,
+        )
+        cpf, c_ext, c_loop = canonicalize_prop_factors(
+            pf, ir['ext_freqs'], ir['free_freqs']
+        )
+        sig = loop_kernel_signature(cpf, c_loop)
+
+        g = groups[sig]
+        g['prefactors'].append(ir['scalar_prefactor'])
+        g['diagrams'].append(td)
+        if g['ir'] is None:
+            g['ir'] = ir
+            g['prop_factors'] = cpf
+            g['loop_number'] = ir['loop_number']
+
+    result = []
+    for sig, g in groups.items():
+        combined = sum(g['prefactors'][1:], g['prefactors'][0])
+        result.append({
+            'signature': sig,
+            'combined_prefactor': combined,
+            'representative_ir': g['ir'],
+            'diagrams': g['diagrams'],
+            'individual_prefactors': g['prefactors'],
+            'n_diagrams': len(g['diagrams']),
+            'loop_number': g['loop_number'],
+            'prop_factors': g['prop_factors'],
+        })
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Compute full correction (with deduplication)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compute_correction(typed_diagrams, propagator_data, k,

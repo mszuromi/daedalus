@@ -19,7 +19,6 @@ from sage.all import SR, DiGraph
 from msrjd.diagrams.symmetry import (
     combinatorial_factor, compute_all_combinatorial_factors,
     diagram_signature, deduplicate_typed_diagrams,
-    classify_coefficient_factors,
 )
 from msrjd.diagrams.type_assignment import TypedDiagram
 from msrjd.core.vertices import VertexType, SourceType
@@ -48,13 +47,14 @@ def _make_td(edges, leaves, vert_assignments=None, edge_types=None,
 def test_all_distinct_legs_m_equals_one():
     """
     Vertex with all distinct legs → only 1 valid attachment.
-    M(Γ) = 1! × 1! × 1! = 1.
+    M(Γ) = 1.
     """
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
     td = _make_td(
         edges=[(0, 2), (2, 1)],
         leaves=[0, 1],
         vert_assignments={2: vt},
+        edge_types={(0, 2): (('nt', 1), ('dn', 1)), (2, 1): (('nt', 1), ('dn', 1))},
         ext_legs={0: ('nt', 1), 1: ('dn', 1)},
         prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
     )
@@ -69,6 +69,11 @@ def test_distinct_vertex_types_m_equals_one():
         edges=[(0, 2), (2, 3), (3, 1)],
         leaves=[0, 1],
         vert_assignments={2: vt1, 3: vt2},
+        edge_types={
+            (0, 2): (('nt', 1), ('dn', 1)),
+            (2, 3): (('nt', 1), ('dn', 2)),
+            (3, 1): (('nt', 2), ('dn', 1)),
+        },
         ext_legs={0: ('nt', 1), 1: ('dn', 1)},
         prop_indices={(0, 2): (0, 0), (2, 3): (0, 0), (3, 1): (0, 0)},
     )
@@ -79,16 +84,42 @@ def test_distinct_vertex_types_m_equals_one():
 
 def test_two_identical_response_legs():
     """
-    Vertex with 2 identical response legs (nt, 1).
-    Either leg can attach to either outgoing edge → M = 2! = 2.
+    Vertex with 2 identical response legs (nt, 1) going to different
+    physical types → M = 2!/(1!×1!) × (1!×1!) = 2.
     """
     vt = VertexType(SR(1), [('nt', 1), ('nt', 1)], [('dn', 1)], (2, 1))
     td = _make_td(
         edges=[(0, 2), (2, 1), (2, 3)],
         leaves=[0, 1, 3],
         vert_assignments={2: vt},
+        edge_types={
+            (0, 2): (('dn', 1), ('nt', 1)),
+            (2, 1): (('nt', 1), ('dn', 1)),
+            (2, 3): (('nt', 1), ('dn', 2)),
+        },
         ext_legs={0: ('dn', 1), 1: ('dn', 1), 3: ('dn', 2)},
         prop_indices={(0, 2): (0, 0), (2, 1): (0, 0), (2, 3): (0, 1)},
+    )
+    assert combinatorial_factor(td) == 2
+
+
+def test_two_identical_response_legs_same_target():
+    """
+    Vertex with 2 identical response legs both going to the same
+    physical type → M = 2!/2! × 2! = 2.
+    """
+    vt = VertexType(SR(1), [('nt', 1), ('nt', 1)], [('dn', 1)], (2, 1))
+    td = _make_td(
+        edges=[(0, 2), (2, 1), (2, 3)],
+        leaves=[0, 1, 3],
+        vert_assignments={2: vt},
+        edge_types={
+            (0, 2): (('dn', 1), ('nt', 1)),
+            (2, 1): (('nt', 1), ('dn', 1)),
+            (2, 3): (('nt', 1), ('dn', 1)),
+        },
+        ext_legs={0: ('dn', 1), 1: ('dn', 1), 3: ('dn', 1)},
+        prop_indices={(0, 2): (0, 0), (2, 1): (0, 0), (2, 3): (0, 0)},
     )
     assert combinatorial_factor(td) == 2
 
@@ -96,42 +127,54 @@ def test_two_identical_response_legs():
 def test_three_identical_response_legs():
     """
     Vertex with 3 identical response legs → M = 3! = 6.
+    (For a single response type, M_v = n_r! regardless of phys targets.)
     """
     vt = VertexType(SR(1), [('nt', 1), ('nt', 1), ('nt', 1)], [('dn', 1)], (3, 1))
     td = _make_td(
         edges=[(0, 2), (2, 1), (2, 3), (2, 4)],
         leaves=[0, 1, 3, 4],
         vert_assignments={2: vt},
+        edge_types={
+            (0, 2): (('dn', 1), ('nt', 1)),
+            (2, 1): (('nt', 1), ('dn', 1)),
+            (2, 3): (('nt', 1), ('dn', 1)),
+            (2, 4): (('nt', 1), ('dn', 1)),
+        },
         prop_indices={(0, 2): (0, 0), (2, 1): (0, 0), (2, 3): (0, 1), (2, 4): (0, 2)},
     )
     assert combinatorial_factor(td) == 6
 
 
-# ── Tests: identical physical legs ─────────────────────────────────────────
+# ── Tests: physical legs no longer counted ────────────────────────────────
 
-def test_two_identical_physical_legs():
+def test_two_identical_physical_legs_not_counted():
     """
-    Vertex with 2 identical physical legs (dn, 1).
-    Either leg can attach to either incoming edge → M = 2! = 2.
+    Vertex with 2 identical physical legs but only 1 outgoing edge.
+    Physical leg permutations are NOT counted → M = 1.
     """
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1), ('dn', 1)], (1, 2))
     td = _make_td(
         edges=[(0, 2), (3, 2), (2, 1)],
         leaves=[0, 1, 3],
         vert_assignments={2: vt},
+        edge_types={
+            (0, 2): (('nt', 1), ('dn', 1)),
+            (3, 2): (('nt', 1), ('dn', 1)),
+            (2, 1): (('nt', 1), ('dn', 1)),
+        },
         prop_indices={(0, 2): (0, 0), (3, 2): (0, 0), (2, 1): (0, 0)},
     )
-    assert combinatorial_factor(td) == 2
+    assert combinatorial_factor(td) == 1
 
 
 # ── Tests: multiple vertex product ─────────────────────────────────────────
 
 def test_multi_vertex_product():
     """
-    M(Γ) is the product of attachment counts over all vertices.
-    Vertex 2: 2 identical resp legs → 2.
-    Vertex 3: 2 identical phys legs → 2.
-    Total M = 2 × 2 = 4.
+    M(Γ) is the product across all vertices (response legs only).
+    Vertex 2: 2 identical resp legs → M_2 = 2.
+    Vertex 3: 1 resp leg (phys legs not counted) → M_3 = 1.
+    Total M = 2 × 1 = 2.
     """
     vt_out = VertexType(SR(1), [('nt', 1), ('nt', 1)], [('dn', 1)], (2, 1))
     vt_in  = VertexType(SR(1), [('nt', 1)], [('dn', 1), ('dn', 1)], (1, 2))
@@ -141,17 +184,25 @@ def test_multi_vertex_product():
     G = D.to_undirected()
     pd = (D, G, [0, 1], [2, 3])
 
+    edge_types = {
+        (0, 2, 0): (('nt', 1), ('dn', 1)),
+        (2, 3, 0): (('nt', 1), ('dn', 1)),
+        (2, 3, 1): (('nt', 1), ('dn', 1)),
+        (3, 1, 0): (('nt', 1), ('dn', 1)),
+    }
+
     td = TypedDiagram(
-        pd, {2: vt_out, 3: vt_in}, {},
+        pd, {2: vt_out, 3: vt_in}, edge_types,
         {0: ('nt', 1), 1: ('dn', 1)},
         {(0, 2): (0, 0), (2, 3): (0, 0), (3, 1): (0, 0)},
     )
-    assert combinatorial_factor(td) == 4
+    assert combinatorial_factor(td) == 2
 
 
 def test_bubble_different_propagators():
     """
-    Bubble with distinct legs at each vertex → M = 1.
+    Bubble with distinct resp legs at vertex 2 → M_2 = 1.
+    Vertex 3 has 1 resp leg → M_3 = 1.  Total M = 1.
     """
     vt_out = VertexType(SR(1), [('nt', 1), ('nt', 2)], [('dn', 1)], (2, 1))
     vt_in  = VertexType(SR(1), [('nt', 1)], [('dn', 1), ('dn', 2)], (1, 2))
@@ -161,8 +212,15 @@ def test_bubble_different_propagators():
     G = D.to_undirected()
     pd = (D, G, [0, 1], [2, 3])
 
+    edge_types = {
+        (0, 2, None): (('nt', 1), ('dn', 1)),
+        (2, 3, 0): (('nt', 1), ('dn', 1)),
+        (2, 3, 1): (('nt', 2), ('dn', 2)),
+        (3, 1, None): (('nt', 1), ('dn', 1)),
+    }
+
     td = TypedDiagram(
-        pd, {2: vt_out, 3: vt_in}, {},
+        pd, {2: vt_out, 3: vt_in}, edge_types,
         {0: ('nt', 1), 1: ('dn', 1)},
         {(0, 2, None): (0, 0), (2, 3, 0): (0, 0), (2, 3, 1): (0, 1),
          (3, 1, None): (0, 0)},
@@ -174,14 +232,19 @@ def test_bubble_different_propagators():
 
 def test_source_two_identical_legs():
     """
-    Source vertex with 2 identical response legs.
-    M = 2! = 2.  Together with coefficient 1/2: M × coeff = 2 × 1/2 = 1.
+    Source vertex with 2 identical response legs going to different
+    physical types → M = 2!/(1!×1!) × (1!×1!) = 2.
+    Together with coefficient 1/2: M × coeff = 2 × 1/2 = 1.
     """
     st = SourceType(SR(1)/2, [('nt', 1), ('nt', 1)], (2, 0))
     td = _make_td(
         edges=[(2, 0), (2, 1)],
         leaves=[0, 1],
         vert_assignments={2: st},
+        edge_types={
+            (2, 0): (('nt', 1), ('dn', 1)),
+            (2, 1): (('nt', 1), ('dn', 2)),
+        },
         ext_legs={0: ('dn', 1), 1: ('dn', 2)},
         prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
     )
@@ -200,6 +263,10 @@ def test_source_distinct_legs():
         edges=[(2, 0), (2, 1)],
         leaves=[0, 1],
         vert_assignments={2: st},
+        edge_types={
+            (2, 0): (('nt', 1), ('dn', 1)),
+            (2, 1): (('nt', 2), ('dn', 2)),
+        },
         ext_legs={0: ('dn', 1), 1: ('dn', 2)},
         prop_indices={(2, 0): (0, 0), (2, 1): (1, 1)},
     )
@@ -212,10 +279,13 @@ def test_compute_all_combinatorial_factors():
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
     td1 = _make_td(
         edges=[(0, 2), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: vt}, prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
+        vert_assignments={2: vt},
+        edge_types={(0, 2): (('nt', 1), ('dn', 1)), (2, 1): (('nt', 1), ('dn', 1))},
+        prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
     )
     td2 = _make_td(
         edges=[(0, 1)], leaves=[0, 1],
+        edge_types={(0, 1): (('nt', 1), ('dn', 1))},
         prop_indices={(0, 1): (0, 0)},
     )
     factors = compute_all_combinatorial_factors([td1, td2])
@@ -322,183 +392,59 @@ def test_m_matches_multiplicity():
     assert combinatorial_factor(unique[0]) == 2
 
 
+def test_mixed_response_legs_distinct_pairings():
+    """
+    Vertex x̃²ỹ with pairings (x̃,x),(x̃,y),(ỹ,x).
+    M = [2!/(1!×1!) × 1!/1!] × [2!×1!] = 2 × 2 = 4.
+    """
+    vt = VertexType(SR(1), [('nt', 1), ('nt', 1), ('nt', 2)],
+                    [('dn', 1)], (3, 1))
+    td = _make_td(
+        edges=[(0, 3), (3, 1), (3, 2), (3, 4)],
+        leaves=[0, 1, 2, 4],
+        vert_assignments={3: vt},
+        edge_types={
+            (0, 3): (('dn', 1), ('nt', 1)),
+            (3, 1): (('nt', 1), ('dn', 1)),   # (x̃, x)
+            (3, 2): (('nt', 1), ('dn', 2)),   # (x̃, y)
+            (3, 4): (('nt', 2), ('dn', 1)),   # (ỹ, x)
+        },
+        ext_legs={0: ('dn', 1), 1: ('dn', 1), 2: ('dn', 2), 4: ('dn', 1)},
+        prop_indices={(0, 3): (0, 0), (3, 1): (0, 0), (3, 2): (0, 1), (3, 4): (1, 0)},
+    )
+    assert combinatorial_factor(td) == 4
+
+
+def test_mixed_response_legs_repeated_pairing():
+    """
+    Vertex x̃²ỹ with pairings (x̃,x),(ỹ,y),(x̃,x).
+    M = [2!/(2!×0!) × 1!/(0!×1!)] × [2!×1!] = 1 × 2 = 2.
+    """
+    vt = VertexType(SR(1), [('nt', 1), ('nt', 1), ('nt', 2)],
+                    [('dn', 1)], (3, 1))
+    td = _make_td(
+        edges=[(0, 3), (3, 1), (3, 2), (3, 4)],
+        leaves=[0, 1, 2, 4],
+        vert_assignments={3: vt},
+        edge_types={
+            (0, 3): (('dn', 1), ('nt', 1)),
+            (3, 1): (('nt', 1), ('dn', 1)),   # (x̃, x)
+            (3, 2): (('nt', 2), ('dn', 2)),   # (ỹ, y)
+            (3, 4): (('nt', 1), ('dn', 1)),   # (x̃, x)
+        },
+        ext_legs={0: ('dn', 1), 1: ('dn', 1), 2: ('dn', 2), 4: ('dn', 1)},
+        prop_indices={(0, 3): (0, 0), (3, 1): (0, 0), (3, 2): (1, 1), (3, 4): (0, 0)},
+    )
+    assert combinatorial_factor(td) == 2
+
+
 def test_no_internal_vertices_m_one():
     """A diagram with no internal vertices has M = 1 (empty product)."""
     td = _make_td(
         edges=[(0, 1)], leaves=[0, 1],
         vert_assignments={},
+        edge_types={(0, 1): (('nt', 1), ('dn', 1))},
         ext_legs={0: ('nt', 1), 1: ('dn', 1)},
         prop_indices={(0, 1): (0, 0)},
     )
     assert combinatorial_factor(td) == 1
-
-
-# ── Tests: classify_coefficient_factors ───────────────────────────────────
-
-def test_classify_white_constant_amplitude():
-    """
-    White noise + constant amplitude: source coefficient comes out of
-    integral as a scalar.  This is the only case where source factors
-    can be fully pulled out.
-    """
-    nstar1 = SR.var('nstar1')
-    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
-    td = _make_td(
-        edges=[(2, 0), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: st},
-        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
-        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
-    )
-    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
-    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
-    assert winfo['M'] == 2
-    assert winfo['is_stationary'] is True
-    assert winfo['scalar_prefactor'] == 2 * (nstar1 / 2)  # = nstar1
-    # Source info present with per-leg metadata
-    sinfo = winfo['source_time_info'][2]
-    assert sinfo['n_legs'] == 2
-    assert sinfo['temporal_type'] == 'white'
-    assert sinfo['amplitude_is_time_dep'] is False
-    assert sinfo['in_integrand'] is False  # white + constant → scalar
-
-
-def test_classify_stationary_none():
-    """time_dep_params=None treated same as empty list."""
-    st = SourceType(SR(1)/2, [('nt', 1), ('nt', 1)], (2, 0))
-    td = _make_td(
-        edges=[(2, 0), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: st},
-        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
-    )
-    winfo = classify_coefficient_factors(td, time_dep_params=None)
-    assert winfo['is_stationary'] is True
-
-
-def test_classify_colored_stationary_but_in_integrand():
-    """
-    Colored noise: stationary (κ(t₁-t₂) → Fourier-transformable) but
-    the kernel κ̂(ω) stays IN the frequency integrand — it is NOT a
-    scalar that can be pulled out.
-    """
-    nstar1 = SR.var('nstar1')
-    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
-    td = _make_td(
-        edges=[(2, 0), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: st},
-        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
-        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
-    )
-    ns = {'temporal_type': 'colored', 'amplitude_params': []}
-    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
-    # Colored IS stationary (Fourier-transformable)
-    assert winfo['is_stationary'] is True
-    sinfo = winfo['source_time_info'][2]
-    assert sinfo['temporal_type'] == 'colored'
-    # But it stays in the integrand — not a scalar
-    assert sinfo['in_integrand'] is True
-    # The amplitude should NOT be in scalar_prefactor
-    # (the whole source kernel is in the integrand)
-    assert winfo['scalar_prefactor'] == 2  # only M
-
-
-def test_classify_general_noise_nonstationary():
-    """
-    General noise: κ(t₁, t₂) with no simplification.
-    NOT stationary, stays in integrand.
-    """
-    nstar1 = SR.var('nstar1')
-    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
-    td = _make_td(
-        edges=[(2, 0), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: st},
-        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
-        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
-    )
-    ns = {'temporal_type': 'general', 'amplitude_params': []}
-    winfo = classify_coefficient_factors(td, time_dep_params=[], noise_structure=ns)
-    assert winfo['is_stationary'] is False  # general → nonstationary
-    assert winfo['source_time_info'][2]['in_integrand'] is True
-
-
-def test_classify_source_time_dep_amplitude():
-    """
-    White noise but amplitude is time-dependent: nstar in time_dep_params.
-    Not stationary, stays in integrand.
-    """
-    nstar1 = SR.var('nstar1')
-    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
-    td = _make_td(
-        edges=[(2, 0), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: st},
-        ext_legs={0: ('dn', 1), 1: ('dn', 2)},
-        prop_indices={(2, 0): (0, 0), (2, 1): (0, 1)},
-    )
-    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
-    winfo = classify_coefficient_factors(
-        td, time_dep_params=['nstar'], noise_structure=ns)
-    assert winfo['is_stationary'] is False
-    sinfo = winfo['source_time_info'][2]
-    assert sinfo['amplitude_is_time_dep'] is True
-    assert sinfo['in_integrand'] is True
-    assert sinfo['n_legs'] == 2
-
-
-def test_classify_interaction_single_vertex_time():
-    """
-    Interaction vertex with time-dep coefficient.
-    Not in source_time_info (it's an interaction, not a source).
-    """
-    phi1_1 = SR.var('phi1_1')
-    vt = VertexType(phi1_1, [('nt', 1)], [('dn', 1)], (1, 1))
-    td = _make_td(
-        edges=[(0, 2), (2, 1)], leaves=[0, 1],
-        vert_assignments={2: vt},
-        ext_legs={0: ('nt', 1), 1: ('dn', 1)},
-        prop_indices={(0, 2): (0, 0), (2, 1): (0, 0)},
-    )
-    winfo = classify_coefficient_factors(td, time_dep_params=['phi1'])
-    assert winfo['is_stationary'] is False
-    assert 2 in winfo['vertex_time_factors']
-    assert 2 not in winfo['source_time_info']
-
-
-def test_classify_mixed_source_and_interaction():
-    """
-    Source (white, constant amp) + interaction (time-dep coeff).
-    Source is scalar, interaction stays in integrand.
-    """
-    nstar1 = SR.var('nstar1')
-    phi1_1 = SR.var('phi1_1')
-    st = SourceType(nstar1 / 2, [('nt', 1), ('nt', 1)], (2, 0))
-    vt = VertexType(phi1_1, [('nt', 1)], [('dn', 1)], (1, 1))
-    td = _make_td(
-        edges=[(2, 0), (2, 3), (3, 1)], leaves=[0, 1],
-        vert_assignments={2: st, 3: vt},
-        ext_legs={0: ('dn', 1), 1: ('dn', 1)},
-        prop_indices={(2, 0): (0, 0), (2, 3): (0, 0), (3, 1): (0, 0)},
-    )
-    ns = {'temporal_type': 'white', 'amplitude_params': ['nstar']}
-    winfo = classify_coefficient_factors(
-        td, time_dep_params=['phi1'], noise_structure=ns)
-    assert winfo['is_stationary'] is False  # interaction is time-dep
-    # Source is white + constant amp → scalar, not in integrand
-    assert winfo['source_time_info'][2]['in_integrand'] is False
-    # Interaction has phi1_1 time-dep
-    assert 3 in winfo['vertex_time_factors']
-    # nstar1 should be in scalar prefactor (source is scalar)
-    assert nstar1 in winfo['scalar_prefactor'].variables()
-
-
-def test_classify_no_vertices_stationary():
-    """Diagram with no internal vertices: always stationary, M = 1."""
-    td = _make_td(
-        edges=[(0, 1)], leaves=[0, 1],
-        vert_assignments={},
-        ext_legs={0: ('nt', 1), 1: ('dn', 1)},
-        prop_indices={(0, 1): (0, 0)},
-    )
-    winfo = classify_coefficient_factors(td, time_dep_params=['nstar'])
-    assert winfo['M'] == 1
-    assert winfo['is_stationary'] is True
-    assert winfo['scalar_prefactor'] == 1
-    assert winfo['source_time_info'] == {}
