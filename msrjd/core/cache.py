@@ -150,19 +150,29 @@ class PipelineCache:
     def _manifest_path(self):
         return os.path.join(self.root, 'manifest.json')
 
-    def _update_manifest(self, stage, k, loop_order):
-        """Append an entry to the JSON manifest."""
+    def _load_manifest(self):
+        """Load manifest, returning empty structure on missing or corrupt file."""
         mp = self._manifest_path()
-        if os.path.isfile(mp):
+        if not os.path.isfile(mp):
+            return {'entries': [], 'created': datetime.now().isoformat()}
+        try:
             with open(mp) as f:
                 manifest = json.load(f)
-        else:
-            manifest = {'entries': [], 'created': datetime.now().isoformat()}
+            if not isinstance(manifest, dict):
+                raise ValueError
+            return manifest
+        except (json.JSONDecodeError, ValueError):
+            # Corrupt manifest — start fresh.
+            return {'entries': [], 'created': datetime.now().isoformat()}
+
+    def _update_manifest(self, stage, k, loop_order):
+        """Append an entry to the JSON manifest."""
+        manifest = self._load_manifest()
 
         key = self._stage_key(stage, k, loop_order)
         # Remove old entry for this key if present.
         manifest['entries'] = [
-            e for e in manifest['entries'] if e.get('key') != key
+            e for e in manifest.get('entries', []) if e.get('key') != key
         ]
         manifest['entries'].append({
             'key': key,
@@ -173,17 +183,13 @@ class PipelineCache:
         })
         manifest['updated'] = datetime.now().isoformat()
 
+        mp = self._manifest_path()
         with open(mp, 'w') as f:
             json.dump(manifest, f, indent=2)
 
     def list_cached(self):
         """Return a list of dicts describing all cached entries."""
-        mp = self._manifest_path()
-        if not os.path.isfile(mp):
-            return []
-        with open(mp) as f:
-            manifest = json.load(f)
-        return manifest.get('entries', [])
+        return self._load_manifest().get('entries', [])
 
     def clear(self, stage=None, k=None, loop_order=None):
         """
@@ -205,8 +211,7 @@ class PipelineCache:
         mp = self._manifest_path()
         if os.path.isfile(mp):
             key = self._stage_key(stage, k, loop_order)
-            with open(mp) as f:
-                manifest = json.load(f)
+            manifest = self._load_manifest()
             manifest['entries'] = [
                 e for e in manifest['entries'] if e.get('key') != key
             ]
