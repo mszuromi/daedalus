@@ -50,6 +50,14 @@ class TypedDiagram:
         self.external_legs      = external_legs
         self.propagator_indices = propagator_indices
 
+    # Pickle support for __slots__
+    def __getstate__(self):
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    def __setstate__(self, state):
+        for s, v in state.items():
+            object.__setattr__(self, s, v)
+
     def __repr__(self):
         D = self.prediagram[0]
         return (f'TypedDiagram(vertices={len(D.vertices())}, '
