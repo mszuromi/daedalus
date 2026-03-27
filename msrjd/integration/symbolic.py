@@ -857,6 +857,22 @@ def loop_kernel_signature(prop_factors_canonical, free_freqs_canonical):
     return (ext_sig,) + tuple(level_sigs)
 
 
+def loop_only_signature(full_signature):
+    r"""
+    Extract only the loop-dependent part of a kernel signature.
+
+    ``full_signature`` has the form ``(ext_sig, loop_0_sig, ...)``.
+    This returns ``(loop_0_sig, ...)`` — the part that determines the
+    numerical loop integral.  Two diagrams with the same loop-only
+    signature require only **one** numerical integration, even if their
+    external propagator factors differ.
+
+    Tree-level diagrams (no loop levels) return ``()``.
+    """
+    # Element 0 is ext_sig; everything after is loop levels.
+    return full_signature[1:]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Diagram grouping by loop kernel
 # ═══════════════════════════════════════════════════════════════════════════
