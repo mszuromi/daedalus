@@ -60,8 +60,17 @@ class PipelineCache:
     # ── Key helpers ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _stage_key(stage, k=None, loop_order=None):
+    def _to_int(val):
+        """Coerce SageMath Integer / numpy int to plain Python int."""
+        if val is None:
+            return None
+        return int(val)
+
+    @classmethod
+    def _stage_key(cls, stage, k=None, loop_order=None):
         """Build a filename stem from stage name and optional (k, ℓ)."""
+        k = cls._to_int(k)
+        loop_order = cls._to_int(loop_order)
         parts = [stage]
         if k is not None:
             parts.append(f'k{k}')
@@ -158,8 +167,8 @@ class PipelineCache:
         manifest['entries'].append({
             'key': key,
             'stage': stage,
-            'k': k,
-            'loop_order': loop_order,
+            'k': self._to_int(k),
+            'loop_order': self._to_int(loop_order),
             'saved_at': datetime.now().isoformat(),
         })
         manifest['updated'] = datetime.now().isoformat()
