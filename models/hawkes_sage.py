@@ -4,7 +4,7 @@ models/hawkes_sage.py
 Model specification for the nonlinear Hawkes process (SageMath version).
 
 Action (before MF expansion):
-  S = sum_i { ñ_i ṅ_i  +  (e^{ñ_i} - 1) φ_i(v_i)
+  S = sum_i { ñ_i ṅ_i  -  (e^{ñ_i} - 1) φ_i(v_i)
             + ṽ_i [(τ ∂_t + 1) v_i  -  E_i  -  Σ_j w_{ij} (g ∗ ṅ_j)] }
 
 MF expansion:
@@ -136,8 +136,8 @@ HAWKES_MODEL: dict = {
         },
         {
             'name':  'ndot_bg',
-            # MF Poisson saddle:  ṅ_i* = -φ_i(v_i*) = -nstar_i
-            'value': lambda ns: [-ns.nstar[i] for i in ns.pop],
+            # MF Poisson saddle:  ṅ_i* = +φ_i(v_i*) = +nstar_i
+            'value': lambda ns: [+ns.nstar[i] for i in ns.pop],
         },
     ],
 
@@ -196,8 +196,8 @@ HAWKES_MODEL: dict = {
     # Background rate convention
     # -----------------------------------------------------------------------
     'background_rate_convention': (
-        'ṅ_i* = -φ_i(v_i*)  '
-        '[positive Poisson term:  +ñ_i ṅ_i + (e^{ñ_i}-1) φ_i]'
+        'ṅ_i* = +φ_i(v_i*)  '
+        '[negative Poisson term:  +ñ_i ṅ_i - (e^{ñ_i}-1) φ_i]'
     ),
 
     # -----------------------------------------------------------------------
@@ -209,8 +209,8 @@ HAWKES_MODEL: dict = {
     'action': lambda ns: sum(
         # S1: ñ_i (ṅ_i* + δṅ_i)
         ns.nt[i] * (ns.ndot_bg[i] + ns.dn[i])
-        # S2: (e^{ñ_i} - 1) φ_i(δv_i)      ← exp and phi auto-expanded
-        + (exp(ns.nt[i]) - 1) * ns.phi(i, ns.dv[i])
+        # S2: -(e^{ñ_i} - 1) φ_i(δv_i)     ← exp and phi auto-expanded
+        - (exp(ns.nt[i]) - 1) * ns.phi(i, ns.dv[i])
         # S3: ṽ_i [(τ ∂_t + 1) δv_i  +  v_i* - E_i  -  Σ_j w_{ij} g (n*_j + δṅ_j)]
         + ns.vt[i] * (
             (ns.tau * ns.Dt + 1) * ns.dv[i]
