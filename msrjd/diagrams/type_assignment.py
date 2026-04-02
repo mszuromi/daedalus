@@ -32,11 +32,12 @@ class TypedDiagram:
     vertex_assignments : dict
         {vertex_id: VertexType or SourceType}.
     edge_types : dict
-        {(u, v): (resp_leg, phys_leg)} where each leg is (field_base, pop_idx).
+        {(u, v, label): (resp_leg, phys_leg)} where each leg is (field_base, pop_idx).
+        Uses 3-tuple edge keys to support multi-edges.
     external_legs : dict
         {leaf_vertex: (field_base, pop_idx)}.
     propagator_indices : dict
-        {(u, v): (resp_matrix_idx, phys_matrix_idx)} — row/col into G_ft.
+        {(u, v, label): (resp_matrix_idx, phys_matrix_idx)} — row/col into G_ft.
     """
 
     __slots__ = ('prediagram', 'vertex_assignments', 'edge_types',
@@ -133,7 +134,7 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
     """
     D, G_graph, leaves, internal = prediagram
     leaf_set = set(leaves)
-    edges = [(u, v) for (u, v, _) in D.edges()]
+    edges = list(D.edges())  # 3-tuples (u, v, label) — preserves multi-edges
 
     # Classify non-leaf vertices
     source_verts = []
@@ -147,12 +148,12 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
             interaction_verts.append(v)
     ordered_internal = source_verts + interaction_verts
 
-    # Precompute outgoing/incoming edge lists per vertex
+    # Precompute outgoing/incoming edge lists per vertex (with labels for multi-edges)
     out_edges_of = {}
     in_edges_of = {}
     for v in D.vertices():
-        out_edges_of[v] = [(v, u) for u in D.neighbors_out(v)]
-        in_edges_of[v]  = [(u, v) for u in D.neighbors_in(v)]
+        out_edges_of[v] = list(D.outgoing_edges(v))
+        in_edges_of[v]  = list(D.incoming_edges(v))
 
     # Build candidate types for each non-leaf vertex
     candidates = {}
@@ -236,7 +237,8 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
     edge_types = {}
     prop_indices = {}
 
-    for (u, v) in edges:
+    for edge in edges:
+        u, v = edge[0], edge[1]
         # u is tail → contributes response leg
         # v is head → contributes physical leg
         resp_field = ext_assignment.get(u)
@@ -258,8 +260,8 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
             if bool(SR(G_ft[ri, pi]).is_zero()):
                 return
 
-        edge_types[(u, v)] = (resp_field, phys_field)
-        prop_indices[(u, v)] = (ri, pi)
+        edge_types[edge] = (resp_field, phys_field)
+        prop_indices[edge] = (ri, pi)
 
     yield TypedDiagram(prediagram, {}, edge_types,
                        dict(ext_assignment), prop_indices)
@@ -343,10 +345,11 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
         edge_types = {}
         prop_indices = {}
 
-        for (u, v) in edges:
+        for edge in edges:
+            u, v = edge[0], edge[1]
             # Determine resp leg (from tail u)
-            if (u, v) in assigned_resp:
-                resp_leg = assigned_resp[(u, v)]
+            if edge in assigned_resp:
+                resp_leg = assigned_resp[edge]
             elif u in leaf_set:
                 resp_leg = ext_assignment.get(u)
                 if resp_leg is None or resp_leg not in resp_index:
@@ -355,8 +358,8 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                 return  # should not happen
 
             # Determine phys leg (from head v)
-            if (u, v) in assigned_phys:
-                phys_leg = assigned_phys[(u, v)]
+            if edge in assigned_phys:
+                phys_leg = assigned_phys[edge]
             elif v in leaf_set:
                 phys_leg = ext_assignment.get(v)
                 if phys_leg is None or phys_leg not in phys_index:
@@ -372,8 +375,8 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
             if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
                 return
 
-            edge_types[(u, v)] = (resp_leg, phys_leg)
-            prop_indices[(u, v)] = (ri, pi)
+            edge_types[edge] = (resp_leg, phys_leg)
+            prop_indices[edge] = (ri, pi)
 
         yield TypedDiagram(prediagram, dict(vert_assignment), edge_types,
                            dict(ext_assignment), prop_indices)
@@ -398,7 +401,7 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                 if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
                     consistent = False; break
             # Also check edges where one side is from a leaf
-            u, v = edge
+            u, v = edge[0], edge[1]
             if edge in new_resp and v in leaf_set:
                 phys_leg = ext_assignment.get(v)
                 if phys_leg is not None and phys_leg in phys_index:

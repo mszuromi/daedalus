@@ -186,8 +186,8 @@ def diagram_signature(td):
 
     # Edge propagator assignments: sorted (edge, prop_indices) pairs
     edges = tuple(sorted(
-        ((u, v), td.propagator_indices[(u, v)])
-        for (u, v) in td.edge_types
+        ((edge_key[0], edge_key[1]), td.propagator_indices[edge_key])
+        for edge_key in td.edge_types
     ))
 
     return (ext, verts, edges)
