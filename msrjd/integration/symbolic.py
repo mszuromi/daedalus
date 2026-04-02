@@ -415,8 +415,11 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         ext_times.append(SR.var(f't_{j+1}', latex_name=rf't_{{{j+1}}}'))
 
     overall_cons_sub = {}
-    if overall_cons is not None and len(ext_freqs_all) >= 2:
+    if overall_cons is not None:
         from sage.all import solve as sage_solve
+        # Pick the last external freq as the elimination target (for k>=2
+        # this expresses ω_k in terms of ω_1..ω_{k-1}; for k=1 it sets
+        # the single external freq to zero).
         target = ext_freqs_all[-1]
         cons_sol = sage_solve(overall_cons == 0, target, solution_dict=True)
         if cons_sol:
