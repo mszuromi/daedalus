@@ -256,9 +256,9 @@ def orient_edges(G, orientation_bits):
     D.add_vertices(G.vertices())
     for i, (u, v) in enumerate(G.edges(labels=False)):
         if orientation_bits[i] == 0:
-            D.add_edge(u, v)
+            D.add_edge(u, v, i)
         else:
-            D.add_edge(v, u)
+            D.add_edge(v, u, i)
     return D
 
 
