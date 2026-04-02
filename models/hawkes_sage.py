@@ -82,6 +82,8 @@ HAWKES_MODEL: dict = {
          'description': 'external drive'},
         {'name': 'tau',   'indexed': False, 'domain': 'positive',
          'description': 'membrane time constant'},
+        {'name': 'a',     'indexed': True,  'domain': 'positive',
+         'description': 'quadratic gain coefficient: phi_i(v) = (a_i/2) v^2'},
     ],
 
     # -----------------------------------------------------------------------
@@ -165,6 +167,30 @@ HAWKES_MODEL: dict = {
            for i in ns.pop},
         ns.g: ns.delta_D,
     },
+
+    # -----------------------------------------------------------------------
+    # Concrete transfer function  (for numerical evaluation)
+    #
+    # phi_i(v) = (a_i / 2) v^2      (pure quadratic, no linear/constant)
+    # The notebook differentiates this symbolically to the required Taylor
+    # order — derivatives are NEVER hard-coded here.
+    # -----------------------------------------------------------------------
+    'phi_concrete': lambda ns, i, v: (ns.a[i] / SR(2)) * v**2,
+
+    # -----------------------------------------------------------------------
+    # Mean-field self-consistency equations  (may require numerical solution)
+    #
+    # v*_i  = E_i + Σ_j w_{ij} n*_j       (voltage background EOM, g = δ)
+    # n*_i  = φ_i(v*_i)                    (Poisson saddle condition)
+    #
+    # Combined: n*_i = (a_i / 2) (E_i + Σ_j w_{ij} n*_j)^2
+    # -----------------------------------------------------------------------
+    'mf_equations': lambda ns: [
+        ns.nstar[i] == (ns.a[i] / SR(2)) * (
+            ns.E[i] + sum(ns.w[i][j] * ns.nstar[j] for j in ns.pop)
+        )**2
+        for i in ns.pop
+    ],
 
     # -----------------------------------------------------------------------
     # Background rate convention
