@@ -184,50 +184,51 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
         else:
             leaf_directions[lf] = 'both'
 
-    # Enumerate external leg assignments
-    for ext_perm in permutations(range(len(external_fields))):
-        ext_assignment = {}
-        valid_ext = True
+    # External leg assignment: leaf i gets external_fields[i] (fixed, not permuted).
+    # External legs are labeled — leg 0 is field 0, leg 1 is field 1, etc.
+    # Permuting would generate diagrams for different correlators
+    # (e.g. <dn2 dn1> instead of <dn1 dn2>).
+    ext_assignment = {}
+    valid_ext = True
+    for leaf_idx in range(len(external_fields)):
+        lf = leaves[leaf_idx]
+        field = external_fields[leaf_idx]
+        direction = leaf_directions[lf]
 
-        for leaf_idx, field_idx in enumerate(ext_perm):
-            lf = leaves[leaf_idx]
-            field = external_fields[field_idx]
-            direction = leaf_directions[lf]
-
-            if direction == 'resp' and field not in resp_index:
+        if direction == 'resp' and field not in resp_index:
+            valid_ext = False; break
+        if direction == 'phys' and field not in phys_index:
+            valid_ext = False; break
+        if direction == 'both':
+            if field not in resp_index and field not in phys_index:
                 valid_ext = False; break
-            if direction == 'phys' and field not in phys_index:
-                valid_ext = False; break
-            if direction == 'both':
-                if field not in resp_index and field not in phys_index:
-                    valid_ext = False; break
 
-            ext_assignment[lf] = field
+        ext_assignment[lf] = field
 
-        if not valid_ext:
-            continue
+    if not valid_ext:
+        return
 
-        if not ordered_internal:
-            # No internal vertices — just external legs connected by edges
-            yield from _try_build_diagram_no_internal(
-                prediagram, edges, ext_assignment, leaf_set, leaf_directions,
-                G_ft, resp_index, phys_index,
-            )
-            continue
+    if not ordered_internal:
+        # No internal vertices — just external legs connected by edges
+        yield from _try_build_diagram_no_internal(
+            prediagram, edges, ext_assignment, leaf_set, leaf_directions,
+            G_ft, resp_index, phys_index,
+        )
+        return
 
-        # Enumerate vertex type assignments (Cartesian product)
-        candidate_lists = [candidates[v] for v in ordered_internal]
+    # Enumerate vertex type assignments (Cartesian product)
+    candidate_lists = [candidates[v] for v in ordered_internal]
 
-        for combo in product(*candidate_lists):
-            vert_assignment = {ordered_internal[i]: combo[i]
-                               for i in range(len(ordered_internal))}
+    for combo in product(*candidate_lists):
+        vert_assignment = {ordered_internal[i]: combo[i]
+                           for i in range(len(ordered_internal))}
 
-            yield from _try_build_diagram(
-                prediagram, edges, ext_assignment, vert_assignment,
-                ordered_internal, leaf_set, leaf_directions,
-                out_edges_of, in_edges_of,
-                G_ft, resp_index, phys_index,
-            )
+        yield from _try_build_diagram(
+            prediagram, edges, ext_assignment, vert_assignment,
+            ordered_internal, leaf_set, leaf_directions,
+            out_edges_of, in_edges_of,
+            G_ft, resp_index, phys_index,
+        )
 
 
 def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
