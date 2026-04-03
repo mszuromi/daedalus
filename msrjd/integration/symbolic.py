@@ -295,14 +295,23 @@ def _resolve_edge_propagator_data(typed_diagram, edge_freqs, substitutions):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_propagator_entry(i, j, omega_var, propagator_data, omega_symbol):
-    """Look up Ĝ_{i,j}(ω) and substitute omega_var for ω."""
+    r"""Look up the retarded propagator Ĝ^R_{j,i}(ω) and substitute omega_var.
+
+    The kernel matrix K has rows = response fields, cols = physical fields,
+    so G = K^{-1} has the same layout: G[resp, phys].  But the *retarded*
+    propagator — "response of physical field j to response-field source i" —
+    is G^R_{j←i} = G[j, i] (physical row, response col) = G^T[i, j].
+
+    To obtain the correct Feynman-rule factor we therefore read G[j, i],
+    transposing the (resp, phys) indices supplied by the typed diagram.
+    """
     G_ft = propagator_data.get('G_ft')
     if G_ft is not None:
-        entry = SR(G_ft[i, j])
+        entry = SR(G_ft[j, i])          # transposed: G[phys, resp]
     else:
         adj = propagator_data['adj_ft']
         det = propagator_data['D_omega']
-        entry = SR(adj[i, j]) / SR(det)
+        entry = SR(adj[j, i]) / SR(det)  # transposed
     return entry.subs({omega_symbol: omega_var})
 
 
