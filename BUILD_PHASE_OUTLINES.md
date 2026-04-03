@@ -1,8 +1,8 @@
 # Build Phase Outlines — Detailed Implementation Plans
 
-**Last updated:** 2026-03-20
+**Last updated:** 2026-04-03
 
-Each section below gives a detailed implementation outline for one phase of the build order defined in `PIPELINE_PLAN.md`. Outlines are written before implementation begins and updated as design decisions solidify.
+Each section below gives a detailed implementation outline for one phase of the build order defined in `PIPELINE_PLAN.md`. Outlines are written before implementation begins and updated as design decisions solidify. Phases A–I are now complete; see `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
 
 ---
 
@@ -399,11 +399,17 @@ Compute the symmetry factor S for each typed diagram. The diagram contributes wi
 
 ---
 
-## Phase H — Symbolic Integration
+## Phase H — Symbolic Integration ✅ COMPLETE
 
 **File:** `msrjd/integration/symbolic.py`
 **Tests:** `tests/test_integration.py`
 **Depends on:** Phase E (TypedDiagram), Phase G (symmetry factors)
+
+### Critical implementation notes (from debugging 2026-04-03)
+
+- **Propagator transposition:** `_get_propagator_entry(i, j, ...)` reads `G_ft[j, i]` (transposed). The kernel matrix K has rows=response, cols=physical, so G=K⁻¹ has the same layout. The retarded propagator G^R_{phys_j ← resp_i} = G[j,i]. This transposition is essential for correct amplitudes.
+- **Frequency conservation for k=1:** The guard `len(ext_freqs) >= 2` was removed so that overall conservation (ω_ext = 0) is applied for tadpole diagrams.
+- **Kernel grouping:** `group_diagrams_by_kernel` groups diagrams by full kernel signature (external + loop). `loop_only_signature` further groups by loop-only part. The factored evaluation precomputes unique loop integrals and multiplies by diagram-specific external propagators.
 
 ### Goal
 
@@ -466,7 +472,7 @@ Construct and evaluate the integral expression for each typed diagram's contribu
 
 ---
 
-## Phase I — Numerical Integration Fallback
+## Phase I — Numerical Integration ✅ COMPLETE (in notebook)
 
 **File:** `msrjd/integration/numerical.py`
 **Tests:** `tests/test_numerical.py`

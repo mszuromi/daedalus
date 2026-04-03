@@ -1,7 +1,7 @@
 # Automated Feynman Diagram Pipeline — Architecture & Build Plan
 
-**Last updated:** 2026-03-20
-**Status:** Planning phase. Phase 1 (propagator precomputation) largely complete. Phase 2 not yet started.
+**Last updated:** 2026-04-03
+**Status:** Phases A–H implemented and debugged. Tree-level 2-point function validated against simulation for linear Hawkes. 1-loop evaluation implemented but awaiting validation. See `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
 
 ---
 
@@ -148,7 +148,7 @@ For each surviving prediagram, enumerate all valid fully-typed assignments. This
 
 **What needs to be assigned:**
 
-1. **External legs:** Try all assignments of the user's k chosen field variables to the k leaf vertices.
+1. **External legs:** Leaf vertex i is assigned `external_fields[i]` (fixed, not permuted). External legs are labeled and correspond to specific positions in the k-point function.
 
 2. **Interaction vertices:** For each internal vertex with `(in_deg, out_deg)`, try all vertex types from Step 4 that match those degrees.
 
@@ -158,7 +158,7 @@ For each surviving prediagram, enumerate all valid fully-typed assignments. This
    - A response-field out-leg of vertex u (the tail)
    - A physical-field in-leg of vertex v (the head)
 
-   For each candidate assignment of vertices, check every edge: look up G_ft[response_field_index, physical_field_index]. If that propagator entry is zero, the assignment is invalid.
+   For each candidate assignment of vertices, check every edge: look up G_ft[physical_field_index, response_field_index] (transposed — the retarded propagator). If that entry is zero, the assignment is invalid.
 
 5. **Leg matching at each vertex:** The specific field legs of the chosen vertex type must be consistently assignable to the edges incident on that vertex. This is a constraint-satisfaction problem at each vertex.
 
@@ -203,16 +203,24 @@ For each diagram, construct the integral expression:
 
 ---
 
-## Existing Codebase
+## Codebase
 
 | File | What it does | Status |
 |---|---|---|
-| `Field Theory Framework/field_theory_sage.py` | SageMath expansion framework: namespace builder, Taylor expansion, bigrade classification, `fourier_transform`, `inverse_fourier_transform` | Complete. Core of Phase 1. |
-| `Field Theory Framework/models/hawkes_sage.py` | Hawkes 2-population model specification | Complete. Reference model. |
-| `Field Theory Framework/field_theory_sage_demo.ipynb` | Demo notebook: expansion, K matrix, FT, propagator, inverse FT with full branching logic | Complete. Phase 1 demonstration. |
-| `Enumeration Code/loop_diagram_enumeration.py` | SageMath prediagram enumeration: trees -> topologies -> oriented prediagrams | Complete. Core of Phase 2 Step 2. |
-| `Theory Builder/theory_builder.py` | SymPy-based interactive UI for theory specification | Exists but SymPy-based. Will be replaced/reworked for SageMath in Phase J. |
-| `Field Theory Framework/field_theory.py` | SymPy version of expansion framework | Legacy. Superseded by `field_theory_sage.py`. |
+| `msrjd/core/field_theory.py` | SageMath expansion framework: namespace builder, Taylor expansion, bigrade classification, `fourier_transform`, `inverse_fourier_transform` | Complete. Core of Phase 1. |
+| `msrjd/core/vertices.py` | Vertex/source type extraction from expanded action. `VertexType`, `SourceType` data structures. | Complete. Phase B. |
+| `msrjd/core/serialize.py` | Save/load theory to disk (JSON + `.sobj`). | Complete. Phase A. |
+| `msrjd/core/cache.py` | Pipeline cache for intermediate results (prediagrams, typed diagrams). | Complete. |
+| `msrjd/enumeration/loop_diagram_enumeration.py` | Prediagram enumeration: trees → topologies → oriented DAGs. | Complete. Phase 2 Step 2. |
+| `msrjd/diagrams/filter.py` | Filter prediagrams by vertex availability. | Complete. Phase D. |
+| `msrjd/diagrams/type_assignment.py` | Enumerate all valid typed assignments (vertex types, edge types, external legs). | Complete. Phase E. Fixed: external legs not permuted, multi-edge support. |
+| `msrjd/diagrams/causality.py` | Causality filter: check retarded propagator consistency. | Complete. Phase F. |
+| `msrjd/diagrams/symmetry.py` | Symmetry factors, deduplication, coefficient classification. | Complete. Phase G. |
+| `msrjd/integration/symbolic.py` | Symbolic integration: frequency conservation, integrand construction, kernel grouping, loop signatures. | Complete. Phase H. Fixed: propagator transposition, conservation for k=1. |
+| `models/hawkes_sage.py` | Nonlinear Hawkes 2-population model (quadratic φ). | Complete. Fixed: action sign. |
+| `models/hawkes_linear_sage.py` | Linear Hawkes 2-population model (φ(v) = v). | Complete. For validation. |
+| `notebooks/hawkes_2pt_pipeline_demo.ipynb` | Full pipeline demo: enumeration → integration → numerical evaluation → simulation comparison. | Complete. Nonlinear model. |
+| `notebooks/hawkes_linear_phi_test.ipynb` | Linear model pipeline + simulation validation. | Complete. Tree-level validated. |
 
 ---
 
@@ -227,8 +235,8 @@ For each diagram, construct the integral expression:
 | **E** | **Type assignment engine:** enumerate all valid field-type assignments on edges, vertices, and external legs. Constraint-satisfaction over the prediagram structure. This is the hardest algorithmic piece. | B, D | ✅ Complete |
 | **F** | **Causality filter:** check retarded propagator consistency and pole-structure compatibility for each typed diagram. | E | ✅ Complete |
 | **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | ✅ Complete |
-| **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems, time domain otherwise. Frequency conservation at vertices. | E, G | Not started |
-| **I** | **Numerical integration fallback:** user supplies parameter values; adaptive quadrature or Monte Carlo for loop integrals. | H | Not started |
+| **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems. Frequency conservation at vertices. | E, G | ✅ Complete |
+| **I** | **Numerical integration:** user supplies fundamental parameters; MF solver derives n*, phi derivatives; FFT-based spectral grid + IFT for k≥2; scalar loop integral for k=1. Factored evaluation: precompute unique loop integrands, multiply by external propagators. | H | ✅ Complete (tree validated, loop awaiting validation) |
 | **J** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
 
 **Detailed outlines for each phase:** see [`BUILD_PHASE_OUTLINES.md`](BUILD_PHASE_OUTLINES.md).
@@ -239,12 +247,17 @@ For each diagram, construct the integral expression:
 
 ## Design Decisions & Conventions
 
-- **Fourier transform convention:** angular frequency, no 2pi factor. FT: exp(-i omega t), IFT: exp(+i omega t) / (2pi). Gives delta(t) -> 1, delta'(t) -> i omega.
+- **Fourier transform convention:** angular frequency, no 2π factor. FT: exp(−iωt), IFT: exp(+iωt)/(2π). Gives δ(t) → 1, δ'(t) → iω.
 - **Bigrade convention:** (n_tilde, n_phys) where n_tilde = number of response fields, n_phys = number of physical fields. Ring generators ordered [tilde_gens..., phys_gens...].
-- **Propagator direction:** G_{ij} connects response field i (output of source vertex) to physical field j (input of next vertex). Edges are directed from earlier to later in the causal ordering.
+- **Kernel matrix K:** `S_free = ã^T K a` where ã = response fields, a = physical fields. K has rows = response, cols = physical.
+- **Propagator G = K⁻¹:** Same layout (rows=response, cols=physical). `G[resp_i, phys_j]` gives `⟨phys_j resp_i⟩`. **Important:** the *retarded* propagator (how physical field j responds to response-field source i) is `G^R_{j←i} = G[j, i]` — the TRANSPOSED entry. The `_get_propagator_entry` function handles this transposition.
+- **External legs are labeled:** Leaf vertex `i` is always assigned `external_fields[i]`. External fields are NOT permuted — permuting would compute a different correlator.
+- **MSR-JD action sign:** `S = ñ ṅ − (e^ñ − 1)φ + ṽ[...]`. The Poisson term has a MINUS sign. Saddle condition: ṅ* = +φ(v*) = +n*.
+- **Time convention for IFT:** The MSR-JD phase is `exp(+iω(t₁−t₂))`. The IFT naturally gives C(t₁−t₂). We flip the output to get C(t₂−t₁) matching the simulation convention (positive τ = second field later).
 - **Vacuum diagrams:** assumed to cancel in normalized correlation functions. Not computed.
 - **Connected diagrams only:** enforced by the connectivity requirement in prediagram enumeration.
 - **SageMath throughout:** all symbolic computation in SageMath. SymPy used only as a fallback integration backend via `algorithm='sympy'`.
+- **Model file structure:** contains fields, response fields, parameters, functions (phi), kernels, operators, MF equations, the full action, concrete phi for numerical evaluation, and specializations. The model declares *what* phi is; the notebook computes derivatives and solves MF equations generically.
 
 ---
 
