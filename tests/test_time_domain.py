@@ -8,6 +8,12 @@ by `msrjd.integration.time_domain`. Loop kernel reduction, kernel
 caching, and parent-diagram contraction are NOT yet implemented and
 those paths should raise or be marked 'skipped'.
 
+The tree evaluator uses explicit numerical quadrature
+(`scipy.integrate.quad` / `nquad`) on a `fast_callable` version of the
+integrand, with polytope bounds extracted from the retarded Heaviside
+factors. It returns a Python callable `f(*ext_time_values) -> complex`,
+not a symbolic SR expression — these tests call that callable directly.
+
 Run with:
     cd "Automated Feynman Calculations"
     sage -python -m pytest tests/test_time_domain.py -v
@@ -89,11 +95,8 @@ def _propagator_data_2pop_diagonal():
     r"""
     Diagonal 2×2 propagator: K(ω) = diag(1 + iω, 1 + 2 iω).
 
-    Pole analysis must be done carefully for a diagonal K because
-    det(K) = (1 + iω)(1 + 2iω) has poles at ω₁ = I and ω₂ = I/2. The
-    residue matrices at each pole are not diagonal in general — at
-    ω₁ = I the (0,0) entry dominates and the (1,1) entry vanishes (and
-    vice versa at ω₂).
+    Poles at ω₁ = I and ω₂ = I/2. Not used by every test but useful
+    as a sanity-check fixture.
     """
     omega = SR.var('omega')
     K = matrix(SR, 2, 2, [
@@ -190,7 +193,6 @@ def test_G_t_matrix_single_pole():
     val = G_t[0, 0].subs({t: 1})
     expected = float(exp(-1))
     assert abs(float(val.real()) - expected) < 1e-12
-    # Symbolically, simplify_full should give exp(-t)
     assert bool((G_t[0, 0] - exp(-t)).simplify_full().is_zero())
 
 
@@ -231,7 +233,6 @@ def test_subgraph_tree_case_returns_empty():
     td = _tree_k2_single_population()
     pd = _propagator_data_1pop()
     ir = build_integrand_stationary(td, pd, k=2)
-    # Tree-level: free_freqs is empty.
     assert ir['loop_number'] == 0
     result = identify_loop_subgraphs(ir, td)
     assert result == []
@@ -249,8 +250,10 @@ def test_k2_tree_single_integration_analytical():
                   = ∫_{-∞}^{min(t₁,t₂)} ds exp(-(t₁+t₂) + 2s)
                   = (1/2) exp(-|t₁ - t₂|)
 
-    is the standard convolution result. The Phase J tree evaluator with
-    combined_prefactor = 1 should reproduce this at several τ values.
+    is the standard convolution result. The Phase J tree evaluator
+    with combined_prefactor = 1 should reproduce this at several τ
+    values. The returned contribution is a Python callable
+    (numerical quadrature) — we invoke it directly.
     """
     td = _tree_k2_single_population()
     pd = _propagator_data_1pop()
@@ -265,29 +268,27 @@ def test_k2_tree_single_integration_analytical():
         ext_time_vars=[t1, t2],
         num_params=None,
         origin_leaf_idx=1,  # pin t2 → 0
-        timeout_sec=60,
     )
 
     assert result['status'] == 'ok', (
-        f"Tree integration did not succeed: status={result['status']}, "
-        f"got {result['contribution']}"
+        f"Tree integration did not succeed: status={result['status']}"
     )
 
     contribution = result['contribution']
-    # With t2 pinned to 0, the result should depend only on t1.
-    # Compare against (1/2) exp(-|t1|) at a handful of points.
+    # Positional call: (value_for_t1, value_for_t2) — the t2 slot is
+    # ignored because it was pinned to 0 internally.
     for t1_val in (0.5, 1.0, 2.5):
-        phase_j_val = float(SR(contribution).subs({t1: t1_val}).real())
+        phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val - expected) < 1e-8, (
-            f"At t1={t1_val}: Phase J = {phase_j_val}, "
+        assert abs(phase_j_val.real - expected) < 1e-8, (
+            f"At t1={t1_val}: Phase J = {phase_j_val.real}, "
             f"expected = {expected}"
         )
-    # And for negative t1 (origin leaf still at 0):
+        assert abs(phase_j_val.imag) < 1e-10
     for t1_val in (-0.5, -2.0):
-        phase_j_val = float(SR(contribution).subs({t1: t1_val}).real())
+        phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val - expected) < 1e-8
+        assert abs(phase_j_val.real - expected) < 1e-8
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -314,19 +315,19 @@ def test_k2_tree_translation_invariance():
         ext_time_vars=[t1, t2],
         num_params=None,
         origin_leaf_idx=None,  # keep both free
-        timeout_sec=60,
     )
 
     assert result['status'] == 'ok'
-    contribution = SR(result['contribution'])
+    contribution = result['contribution']
 
-    val_a = float(contribution.subs({t1: 1, t2: 0}).real())
-    val_b = float(contribution.subs({t1: 6, t2: 5}).real())
+    val_a = complex(contribution(1.0, 0.0))
+    val_b = complex(contribution(6.0, 5.0))
 
-    assert abs(val_a - val_b) < 1e-8, (
+    assert abs(val_a.real - val_b.real) < 1e-8, (
         f"Translation invariance violated: "
-        f"(t1=1,t2=0) → {val_a}, (t1=6,t2=5) → {val_b}"
+        f"(t1=1,t2=0) → {val_a.real}, (t1=6,t2=5) → {val_b.real}"
     )
+    assert abs(val_a.imag) < 1e-10 and abs(val_b.imag) < 1e-10
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -341,7 +342,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
       - Phase I (integrate_to_time_domain) computes C(t₁, t₂) via
         residue integration in frequency space.
       - Phase J (compute_correction_td) computes C(t₁, t₂) via
-        vertex-time integration in the time domain.
+        numerical vertex-time integration in the time domain.
 
     Both must agree to within 1e-6 absolute tolerance at a handful of
     τ values.
@@ -355,7 +356,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
     phase_i_expr = td_result['time_domain_result']
     phase_i_t1, phase_i_t2 = ir['ext_times']
 
-    # Phase J time-domain result — reuse the same kernel group structure
+    # Phase J numerical result — reuse the same kernel group structure
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     assert len(kernel_groups) == 1
     assert kernel_groups[0]['loop_number'] == 0
@@ -368,17 +369,16 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
         num_params=None,
         ext_time_vars=[j_t1, j_t2],
         origin_leaf_idx=1,
-        timeout_sec=60,
     )
     assert not j_result['skipped_kernel_ids']
-    phase_j_expr = SR(j_result['total_C'])
+    total_C_fn = j_result['total_C']
 
     # Compare at several τ > 0 values (with t2 = 0 pinned in Phase J).
     for t1_val in (0.25, 0.75, 1.5, 3.0):
         pi_val = float(SR(phase_i_expr).subs(
             {phase_i_t1: t1_val, phase_i_t2: 0}
         ).real())
-        pj_val = float(phase_j_expr.subs({j_t1: t1_val}).real())
+        pj_val = complex(total_C_fn(t1_val, 0.0)).real
         assert abs(pi_val - pj_val) < 1e-6, (
             f"Phase I vs Phase J mismatch at τ={t1_val}: "
             f"PI={pi_val}, PJ={pj_val}"

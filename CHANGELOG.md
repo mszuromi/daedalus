@@ -4,6 +4,116 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J numerical quadrature (replaces symbolic integration)
+
+The Phase J tree-level evaluator no longer uses SageMath's symbolic
+`integrate()` — it now does explicit **numerical quadrature** via
+`scipy.integrate.quad` / `nquad` on a `fast_callable` JIT'd version of
+the stripped integrand, with polytope bounds extracted from the
+retarded Heaviside factors. The public API contract of the
+`time_domain` subpackage is unchanged (same module layout, same
+function signatures) but the type of the returned `contribution` and
+`total_C` has flipped from SageMath `SR` to plain Python callables.
+
+### Why
+
+The previous MVP handed the symbolic integrand
+`combined_prefactor · ∏ exp(...) · heaviside(...)` to
+`sage.all.integrate(..., -oo, +oo)`, which returns an **unevaluated**
+`integrate(...)` SR object whenever the integration bounds depend on
+the sign of a symbolic external time (e.g. `min(0, t₁)` for the k=2
+tree). The tests still passed because the downstream code called
+`.subs({t₁: value}).real()` at each τ point, which silently
+re-triggered Maxima to resolve the polytope at that specific t₁ —
+closed-form symbolic work per τ point. Correct, but:
+
+- it's slow — Maxima is re-doing symbolic integration for every τ point;
+- it's fragile — Maxima routinely hangs on Heaviside-gated integrands
+  with more than a couple of variables;
+- it's not what "done numerically" means; there was never a call to
+  `scipy.integrate.quad` or any numerical quadrature routine.
+
+The user flagged this and asked for explicit numerical quadrature
+instead. This change implements the "mature engine" path that was
+already sketched in the Phase J plan (`spicy-seeking-shore.md`).
+
+### What changed
+
+- `msrjd/integration/time_domain/final_integral.py` — full rewrite of
+  `integrate_tree_diagram`:
+  1. `G_t_entry` is now called with `include_heaviside=False`, so each
+     edge factor is a pure exponential. The Heaviside argument
+     `dt_e = t_v − t_u` is collected separately as an **explicit
+     linear inequality constraint** on the vertex-time variables.
+  2. The stripped integrand is JIT-compiled via
+     `sage.all.fast_callable(expr, vars=[s_1, ..., s_m, t_1, ..., t_k],
+     domain=CDF)` — evaluation becomes a C-level op on concrete floats.
+  3. Linear coefficients `(a_int, a_ext, c₀)` are extracted from each
+     constraint by `.coefficient()` + origin substitution, so the
+     constraints can be resolved to concrete numeric half-space
+     inequalities in `s` once external times are supplied.
+  4. `_integrate_polytope` dispatches to `_integrate_1d_polytope`
+     (single `scipy.integrate.quad` call) or `_integrate_2d_polytope`
+     (nested `scipy.integrate.nquad` with inner bounds computed by
+     `_resolve_1d_bounds` given the outer value). Real and imaginary
+     parts are integrated separately so the path handles
+     complex-valued residues cleanly.
+  5. `integrate_tree_diagram` returns a Python closure
+     `contribution(*ext_time_values) -> complex` instead of an SR
+     expression. The closure captures the `fast_callable` integrand,
+     the linear constraint data, and the pin / free-index bookkeeping.
+  6. For `m ≥ 3` (not exercised by the MVP) the polytope integrator
+     raises `NotImplementedError` so the orchestrator can fall back to
+     Phase I. Extension 1 will generalize to arbitrary `m`.
+- `msrjd/integration/time_domain/pipeline.py` — `compute_correction_td`:
+  - `total_C` is now itself a Python callable that sums each group's
+    contribution callable; it takes `k` positional arguments and
+    returns a complex.
+  - `representation` on each tree-evaluated group is now
+    `'numerical'` (was `'symbolic'`).
+  - The SIGALRM watchdog and `timeout_sec` parameter are kept in the
+    API for compatibility but are no longer used — the numerical path
+    cannot hang on symbolic integration.
+- `tests/test_time_domain.py` — all 6 tests updated to call the new
+  callable directly (e.g. `contribution(t1_val, 0.0)` instead of
+  `SR(contribution).subs(...).real()`). Tolerances are unchanged.
+- `notebooks/hawkes_linear_phi_test.ipynb` Section 8 — cell 8.1
+  replaces the `SR.subs` loop with a direct callable invocation on
+  the same τ grid used by the Phase I residue IFT path. Cell 8.2
+  (overlay plot) needs no changes since it only consumes
+  `tau_phase_j` / `C_tree_phase_j` arrays.
+
+### Numerical validation
+
+All tests pass (124 total):
+
+- `tests/test_time_domain.py` — 6 Phase J tests, all green.
+  - `test_k2_tree_single_integration_analytical` agrees with the
+    closed-form `(1/2) exp(-|τ|)` within `1e-8` at six τ values.
+  - `test_k2_tree_translation_invariance` confirms the unpinned k=2
+    tree result depends only on `τ = t1 − t2`.
+  - `test_phase_J_vs_phase_I_linear_hawkes_tree` agrees with Phase I
+    within `1e-6` (actually matches to `0.0` or `~1e-17`).
+- 2-population diagonal smoke test (not in the pytest suite; ran by
+  hand): Phase I vs Phase J agree to `0.0` / `~1e-17` / `~1e-14`
+  at five τ values, and the Phase J callable runs at **~0.95 ms per
+  evaluation** (vs several seconds per τ point for the old symbolic
+  path on nontrivial diagrams).
+- Full suite: 124 passing in 15 s (was 42 s on the symbolic path —
+  the speedup is mostly in the Phase J tests themselves, but the
+  tree evaluator is called in `test_phase_J_vs_phase_I_linear_hawkes_tree`
+  where it is now ~10× faster).
+
+### Known gap
+
+Polytope integration for `m ≥ 3` integration variables is not yet
+implemented. This does not affect any tree-level linear Hawkes case
+(which is `m = 1`) nor the upcoming ℓ = 1 bubble extension (which is
+`m ≤ 2` for k = 2). It will be added when the first diagram needing it
+appears.
+
+---
+
 ## 2026-04-08 — Phase J MVP: hybrid loop-kernel reduction (tree-level only)
 
 ### New parallel time-domain backend

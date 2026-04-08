@@ -11,16 +11,20 @@ MVP dispatch rule
 -----------------
 - `loop_number == 0` — bypass Phases 3-5 (kernel reduction, kernel
   caching, parent contraction) and evaluate the group directly via
-  `integrate_tree_diagram` (Phase 6 only).
+  `integrate_tree_diagram` (Phase 6 only). The tree evaluator uses
+  explicit numerical quadrature (scipy.integrate.quad / nquad) on a
+  `fast_callable` version of the integrand, with polytope bounds
+  extracted from the retarded Heaviside factors; it returns a Python
+  callable `f(*ext_time_values) -> complex`.
 - `loop_number > 0` — not in MVP scope. The group is marked `'skipped'`
   and added to `skipped_kernel_ids`; the caller should fall back to
   Phase I's residue backend for those groups.
 
-This lets the MVP validate the full Phase J evaluation layer
-(time-domain propagator extraction, vertex-time integration, direction
-conventions, translation fixing, dispatch) on tree-level diagrams
-WITHOUT needing the kernel-reduction / contraction machinery that
-Extension 1 will build.
+`total_C` in the returned dict is itself a Python callable that sums
+every tree-group contribution at a given external-time point. Pass
+`k` positional arguments (one per external time) to evaluate it; if
+any group was called with a pinned origin, the value at that position
+is ignored.
 """
 
 from sage.all import SR
@@ -41,7 +45,7 @@ def compute_correction_td(
 ):
     r"""
     Phase J entry point: evaluate a set of kernel groups in the time
-    domain.
+    domain via explicit numerical quadrature.
 
     Dispatch per kernel group:
     - `loop_number == 0` → bypass Phases 3-5 and call
@@ -60,45 +64,50 @@ def compute_correction_td(
     k : int
         Number of external legs in the correlator.
     num_params : dict or None
-        Numerical parameter substitutions; passed through to the tree
-        evaluator so the propagator matrix is built numerically.
+        Numerical parameter substitutions. Passed through to the tree
+        evaluator so the propagator matrix and combined prefactor are
+        built numerically. Required for any diagram whose propagator
+        or prefactor contains free symbolic parameters.
     ext_time_vars : list of SR or None
         External time variables (one per external leg). If None,
-        defaults to `[t_1, t_2, ..., t_k]` matching the Phase I
-        convention in `build_integrand_stationary`.
+        defaults to `[t_1, t_2, ..., t_k]`. These symbols show up
+        only inside `integrate_tree_diagram` for coefficient
+        extraction and polytope parameterization — the returned
+        callable takes numeric values, not symbolic.
     origin_leaf_idx : int or None
         Which external leaf's time to pin to zero. Default 0. Pass None
         to leave all external times free.
     timeout_sec : int
-        Per-integration wall-clock timeout (see
-        `integrate_tree_diagram`).
+        Unused on the numerical path; kept for API compatibility with
+        earlier symbolic-integration builds.
 
     Returns
     -------
     dict with keys:
-        'total_C' : SR expression
-            Sum of Phase J contributions across all kernel groups that
-            were handled (i.e., tree-level groups in the MVP).
+        'total_C' : callable
+            `f(*ext_time_values) -> complex`. Sums the contributions of
+            every tree kernel group that was successfully evaluated.
+            Returns `0+0j` when there are no evaluated groups.
         'groups' : list of dict
             Per-group diagnostics with keys:
-              - 'kernel_id' : the group signature (tuple)
-              - 'loop_number' : int
-              - 'n_diagrams' : int
-              - 'handled_by' : 'tree_evaluator' | 'skipped'
-              - 'reason' : str
-              - 'representation' : 'symbolic' | 'numerical' | None
-              - 'contribution' : SR expression or None
-                (Contract: evaluable as a function of external times —
-                either a Sage SR expression in the external time
-                symbols, or a Python callable f(*ext_times). In the MVP
-                the tree evaluator returns SR, but later hybrid kernels
-                may return callable-only, and downstream plotting code
-                should inspect 'representation' and dispatch accordingly.)
+              - 'kernel_id'       : the group signature (tuple)
+              - 'loop_number'     : int
+              - 'n_diagrams'      : int
+              - 'handled_by'      : 'tree_evaluator' | 'skipped'
+              - 'reason'          : str
+              - 'representation'  : 'numerical' | None
+              - 'contribution'    : callable or None
+                (Contract: `contribution` must be a Python callable
+                `f(*ext_time_values) -> complex`. The numerical tree
+                evaluator always returns a callable; later hybrid
+                kernels — polyhedral-exponential, scipy.quad on a
+                reduced kernel, etc. — will do the same.)
         'skipped_kernel_ids' : list of tuple
             Kernel signatures that were NOT evaluated by Phase J — the
             caller should fall back to Phase I for these.
         'ext_time_vars' : list of SR
-            The external time variables the result is expressed in.
+            The external time variables used internally during
+            coefficient extraction.
     """
     if ext_time_vars is None:
         ext_time_vars = [
@@ -106,7 +115,7 @@ def compute_correction_td(
             for j in range(k)
         ]
 
-    total_C = SR(0)
+    tree_callables = []
     groups_out = []
     skipped = []
 
@@ -145,14 +154,14 @@ def compute_correction_td(
             )
             if result['status'] == 'ok':
                 contribution = result['contribution']
-                total_C = total_C + contribution
+                tree_callables.append(contribution)
                 groups_out.append({
                     'kernel_id': signature,
                     'loop_number': loop_number,
                     'n_diagrams': n_diagrams,
                     'handled_by': 'tree_evaluator',
                     'reason': '',
-                    'representation': 'symbolic',
+                    'representation': 'numerical',
                     'contribution': contribution,
                 })
             else:
@@ -162,8 +171,9 @@ def compute_correction_td(
                     'n_diagrams': n_diagrams,
                     'handled_by': 'skipped',
                     'reason': (
-                        f'tree evaluator returned status '
-                        f"'{result['status']}'"
+                        f"tree evaluator status={result['status']}"
+                        + (f" ({result['reason']})"
+                           if 'reason' in result else '')
                     ),
                     'representation': None,
                     'contribution': None,
@@ -180,6 +190,18 @@ def compute_correction_td(
                 'contribution': None,
             })
             skipped.append(signature)
+
+    # Build the combined callable: sum of all evaluated tree group
+    # contributions. Each group's callable takes k positional arguments
+    # (one per ext_time_var); total_C has the same signature.
+    def total_C(*ext_time_values):
+        if not tree_callables:
+            return 0.0 + 0.0j
+        total = 0.0 + 0.0j
+        for fn in tree_callables:
+            val = fn(*ext_time_values)
+            total = total + complex(val)
+        return total
 
     return {
         'total_C': total_C,
