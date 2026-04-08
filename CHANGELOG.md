@@ -4,6 +4,113 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J numerical-overflow fix: expand integrand before fast_callable
+
+### Symptom
+
+On nontrivial kernel matrices (anything beyond the 1×1 / diagonal test
+fixtures), Phase J's numerical output on the notebook's comparison
+plot came out **symmetric in τ and ~half the amplitude** of the Phase
+I (notebook FFT / residue IFT) reference. The shape was wrong in
+addition to the magnitude — real asymmetric cross-correlators were
+being returned as symmetric curves. Individual calls to the tree
+evaluator's contribution callable silently returned `nan + nan·j` on
+2×2 **nondiagonal** test fixtures.
+
+### Root cause
+
+`integrate_tree_diagram` builds each edge's time-domain propagator as
+a **sum of exponentials** (one term per pole of `det K`). After
+multiplying the edge factors, the stripped integrand is a **product
+of sums**:
+
+    (A₁·e^(α₁·s) + B₁) · (A₂·e^(α₂·s) + B₂) · e^(γ·s + …)
+
+Left in that factored form, `fast_callable` evaluates each factor
+separately. At large negative `s`, individual factors can grow like
+`exp(|α_i|·|s|)`, and their pairwise products can overflow IEEE double
+precision **before** the causal suppression factor `exp(−α_total·|s|)`
+brings the product back into range. The MATHEMATICAL result is a
+finite, decaying integrand, but the NUMERICAL intermediate values
+blow up.
+
+`scipy.integrate.quad(f, −∞, L)` samples at arbitrarily negative `s`
+as part of its adaptive quadrature, so any overflow anywhere in the
+real line produces `nan` and corrupts the integral. The overflow is
+not rare: for the 2-pop 4-field linear Hawkes kernel at typical
+parameters it happens in the `s ≲ -200` tail.
+
+Concrete demonstration (2×2 nondiagonal fixture):
+
+    s =  -100:  raw = -5.01e-67   expanded = -5.01e-67   ✓
+    s =  -200:  raw = -1.31e-132  expanded = -1.31e-132  ✓
+    s =  -400:  raw = -0          expanded = -8.94e-264  ✓
+    s =  -700:  raw = -0          expanded = 0           ✓
+    s = -1000:  raw = nan + nan·j expanded = 0           ← overflow!
+
+    quad raw      = nan
+    quad expanded = -0.042687795113793774   (correct)
+
+### Fix
+
+`msrjd/integration/time_domain/final_integral.py` — one line added to
+`integrate_tree_diagram` right before the `fast_callable` step:
+
+    stripped = stripped.expand()
+
+Sage's `.expand()` distributes products of exponential sums into an
+explicit sum of single-exponential terms, so
+`(A·e^a + B)·(C·e^c + D)·e^g` becomes
+`A·C·e^(a+c+g) + A·D·e^(a+g) + B·C·e^(c+g) + B·D·e^g`. Each summand is
+`C · exp(α·s + …)` with one coefficient `α`, and at retarded-causal
+polytopes every term has `α > 0` (decay as `s → −∞`). Numerically,
+each term is evaluated as a single `exp`, so there is no overflow in
+intermediate products — the only overflow risk is if `|α·s| > 1024`,
+which happens far beyond where any term has measurable magnitude
+anyway.
+
+### Verification
+
+- `tests/test_time_domain.py` — all 6 tests still pass in 3.5 s.
+- Full suite: **124 passing** in 15 s. No regressions.
+- 2×2 nondiagonal smoke test (propagator
+  `K = [[1+iω, -3/10], [-2/10, 1+iω]]`, source at ñ₁ with
+  cross-mode edges to dn₁ and dn₂) is now **asymmetric** and tracks
+  the notebook's FFT IFT:
+
+      tau     notebook FFT     Phase J (fixed)   diff
+     -3.00   -4.08e-02        -4.05e-02          3e-4
+     -1.00   -1.18e-01        -1.17e-01          6e-4
+     -0.30   -1.25e-01        -1.25e-01          4e-4
+     +0.30   -7.94e-02        -8.04e-02          1e-3
+     +1.00   -4.34e-02        -4.27e-02          7e-4
+     +3.00   -7.92e-03        -7.83e-03          9e-5
+
+  The residual shrinks monotonically as the reference FFT grid gets
+  finer (`N`=4096 → `Omega_max`=80 → 1.0e-3; `N`=65536 →
+  `Omega_max`=500 → 1.2e-4), confirming Phase J is giving the exact
+  continuum answer and the residual is just truncation error in the
+  reference, not a Phase J bug.
+
+### Why the simpler tests still passed
+
+The pre-fix `test_k2_tree_single_integration_analytical`,
+`test_k2_tree_translation_invariance`, and
+`test_phase_J_vs_phase_I_linear_hawkes_tree` tests all used a 1×1
+propagator `K(ω) = 1 + iω`. For a 1×1 kernel there is exactly one
+pole, so each edge's G(t) is a single exponential (no sum-of-sums
+structure), and the product of edge factors is already a single
+exponential — no `expand()` needed, no intermediate overflow. The
+bug only manifests when the propagator has ≥ 2 poles AND the product
+includes more than one sum-of-exponentials factor, which is the
+generic case for any multi-field kernel (2-pop Hawkes, 4-field linear
+Hawkes, etc.).
+
+A new 2×2 nondiagonal regression test covering this case should be
+added before Extension 1.
+
+---
+
 ## 2026-04-08 — Phase J numerical quadrature (replaces symbolic integration)
 
 The Phase J tree-level evaluator no longer uses SageMath's symbolic

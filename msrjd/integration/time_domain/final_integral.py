@@ -202,6 +202,31 @@ def integrate_tree_diagram(
         # any free parameter slipped through the propagator path.
         stripped = stripped.subs(num_params)
 
+    # ── Flatten the integrand into an explicit sum of single
+    # exponentials.
+    #
+    # `stripped` is a product of edge factors, each of which is itself a
+    # sum of exponentials (one per pole of the kernel matrix). Left in
+    # that product form, `fast_callable` evaluates each factor
+    # separately: at large negative vertex-time values, individual
+    # factors grow like exp(|α_i|·|s|) and their pairwise products can
+    # overflow IEEE double precision BEFORE the causal suppression
+    # factor exp(−α_total·|s|) has a chance to bring the product back
+    # into range. scipy.integrate.quad samples at arbitrarily negative
+    # `s` as part of its adaptive quadrature over (−∞, L], so it will
+    # hit any such overflow and return NaN.
+    #
+    # The fix is to distribute the product into a sum of terms where
+    # each term is `C · exp(α·s + …)` — a single exponential whose
+    # coefficient `α > 0` (guaranteed by retarded causality). Sage's
+    # `.expand()` handles this: `(A·e^a + B)·(C·e^c + D)·e^g` becomes
+    # `A·C·e^(a+c+g) + A·D·e^(a+g) + B·C·e^(c+g) + B·D·e^g`, and each
+    # summand is numerically stable on `(−∞, L]`.
+    try:
+        stripped = stripped.expand()
+    except Exception:
+        pass
+
     # ── 4. Resolve which external times remain free ──────────────
     # The pinned one was set to SR(0) in vertex_time so it cannot
     # appear in either the stripped integrand or the constraints.

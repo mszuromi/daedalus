@@ -331,6 +331,170 @@ def test_k2_tree_translation_invariance():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Test 6b: Nondiagonal 2×2 propagator — regression test for the
+#          numerical-overflow bug that shipped on 2026-04-08.
+# ═══════════════════════════════════════════════════════════════════════
+
+def _propagator_data_2pop_nondiagonal():
+    r"""
+    Non-diagonal 2×2 propagator with cross-population coupling:
+
+        K(ω) = [[1 + iω,   -3/10 ],
+                [ -2/10,   1 + iω]]
+
+    This is the minimal fixture whose time-domain integrand is a
+    product of **multiple** sums of exponentials — exactly the
+    configuration where the fast_callable evaluator overflows IEEE
+    double precision at large negative `s` if the integrand is not
+    expanded into a sum of single exponentials before JIT-compiling.
+
+    Pole check: det K = (1+iω)² − 6/100, so poles are at
+    ω = i(1 ± √6/10), both with Im > 0 (retarded).
+    """
+    omega = SR.var('omega')
+    K = matrix(SR, 2, 2, [
+        [1 + I * omega,       -SR(3)/10],
+        [-SR(2)/10,            1 + I * omega],
+    ])
+    adj = K.adjugate()
+    D_omega = K.det().expand()
+    D_prime = D_omega.diff(omega)
+
+    pole_eqs = sage_solve(D_omega == 0, omega)
+    pole_vals = [eq.rhs() for eq in pole_eqs]
+
+    C_mats = []
+    for w in pole_vals:
+        Cm = [[SR(0)] * 2 for _ in range(2)]
+        for i in range(2):
+            for j in range(2):
+                num = adj[i, j].subs({omega: w})
+                den = D_prime.subs({omega: w})
+                if num != 0:
+                    Cm[i][j] = (I * num / den).factor()
+        C_mats.append(matrix(SR, Cm))
+
+    return {
+        'G_ft': K.inverse(),
+        'G_ft_explicit': True,
+        'adj_ft': adj,
+        'D_omega': D_omega,
+        'pole_vals': pole_vals,
+        'C_mats': C_mats,
+        'nf': 2,
+    }
+
+
+def _tree_k2_cross_population():
+    r"""
+    Tree-level k=2 diagram whose two outgoing edges from the source
+    point at DIFFERENT physical fields (dn_1 and dn_2), forcing the
+    tree evaluator to multiply two time-domain propagators with
+    DIFFERENT pole decompositions — reproducing the nondiagonal case
+    that triggered the fast_callable overflow bug.
+
+    Edge (0, 1): (resp_row=0, phys_col=0) → G_t[0, 0]
+    Edge (0, 2): (resp_row=0, phys_col=1) → G_t[1, 0]   (off-diagonal)
+    """
+    st = SourceType(SR(1), [('nt', 1), ('nt', 1)], (2, 0))
+    D = DiGraph()
+    D.add_edges([(0, 1), (0, 2)])
+    pd = (D, D.to_undirected(), [1, 2], [0])
+    return TypedDiagram(
+        prediagram=pd,
+        vertex_assignments={0: st},
+        edge_types={
+            (0, 1, None): (('nt', 1), ('dn', 1)),
+            (0, 2, None): (('nt', 1), ('dn', 2)),
+        },
+        external_legs={1: ('dn', 1), 2: ('dn', 2)},
+        propagator_indices={
+            (0, 1, None): (0, 0),
+            (0, 2, None): (0, 1),
+        },
+    )
+
+
+def test_phase_J_nondiagonal_2x2_does_not_overflow():
+    r"""
+    Regression test for the 2026-04-08 overflow bug.
+
+    Phase J on a 2×2 nondiagonal propagator used to return `nan` (or,
+    after silently failing to expand the exponential product, to
+    return a symmetric curve that was half the correct amplitude).
+    Verify that the tree evaluator now returns finite values at
+    several τ points AND that the result is **asymmetric** in τ (the
+    off-diagonal coupling breaks the τ → −τ symmetry present only for
+    fully diagonal kernels).
+    """
+    from sage.all import fast_callable, CDF
+
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    assert len(kernel_groups) == 1
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    assert not j_result['skipped_kernel_ids']
+    total_C = j_result['total_C']
+
+    # Finite values at a grid of τ points (no NaN)
+    tau_vals = [-3.0, -1.0, -0.3, 0.3, 1.0, 3.0]
+    results = {}
+    for tv in tau_vals:
+        val = complex(total_C(tv, 0.0)).real
+        assert not (val != val), f'Phase J returned NaN at τ={tv}'
+        assert abs(val) < 1e3, f'Phase J returned unreasonable value at τ={tv}: {val}'
+        results[tv] = val
+
+    # Asymmetry: the nondiagonal propagator breaks τ → −τ symmetry.
+    # The absolute values at ±τ should differ at the several-percent level.
+    for pos_t in (0.3, 1.0, 3.0):
+        diff = abs(results[pos_t] - results[-pos_t])
+        rel = diff / max(abs(results[pos_t]), abs(results[-pos_t]), 1e-12)
+        assert rel > 1e-3, (
+            f'Phase J output symmetric in τ at ±{pos_t}, but the '
+            f'nondiagonal propagator should break symmetry: '
+            f'C(+{pos_t}) = {results[pos_t]}, C(-{pos_t}) = {results[-pos_t]}'
+        )
+
+    # Cross-check against a direct numerical FFT of the frequency-domain
+    # integrand (notebook-style Phase I reference). They should agree to
+    # FFT-grid-resolution accuracy (~1e-3 at N=4096, Omega_max=80).
+    ir = build_integrand_stationary(td, pd, k=2)
+    ext_var = ir['ext_freqs'][0]
+    f_spectrum = fast_callable(ir['integrand'], vars=[ext_var], domain=CDF)
+
+    import numpy as np
+    N, Omega_max = 16384, 200.0
+    d_omega = 2 * Omega_max / N
+    omega_grid = np.linspace(-Omega_max + d_omega / 2,
+                             Omega_max - d_omega / 2, N)
+    S_vals = np.array([complex(f_spectrum(w)) for w in omega_grid])
+    Delta_omega = omega_grid[1] - omega_grid[0]
+    tau_grid = np.fft.fftshift(
+        np.fft.fftfreq(N, d=Delta_omega / (2 * np.pi)))
+    scale = N * Delta_omega / (2 * np.pi)
+    C_fft = (np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(S_vals)))
+             * scale * float(ir['scalar_prefactor']))
+
+    for tv in tau_vals:
+        idx = int(np.argmin(np.abs(tau_grid - tv)))
+        fft_val = C_fft[idx].real
+        pj_val = results[tv]
+        assert abs(fft_val - pj_val) < 5e-3, (
+            f'Phase J disagrees with notebook FFT IFT at τ={tv}: '
+            f'FFT={fft_val}, PhaseJ={pj_val}'
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Test 6: End-to-end Phase J vs Phase I on the k=2 tree
 # ═══════════════════════════════════════════════════════════════════════
 
