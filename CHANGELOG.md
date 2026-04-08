@@ -4,6 +4,151 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J MVP: hybrid loop-kernel reduction (tree-level only)
+
+### New parallel time-domain backend
+
+Phase J is introduced as a **new, parallel** evaluation backend living in
+`msrjd/integration/time_domain/`. It is a hybrid pipeline: frequency
+space is reused only for unique loop-kernel identification and algebraic
+grouping (via the existing `group_diagrams_by_kernel` / `loop_only_signature`
+machinery from `msrjd/integration/symbolic.py`), and actual integration is
+performed in the time domain via vertex-time integration of retarded
+exponential propagators.
+
+Nothing in Phase I (`msrjd/integration/symbolic.py`, notebook cell 28, the
+residue-based IFT path) is touched — Phase I remains the default backend
+and the fallback for kernel groups Phase J does not yet handle.
+
+**MVP scope**: the first build validates **only** the Phase J evaluation
+layer — time-domain propagator extraction, vertex-time integration,
+convention handling (Fourier sign, Heaviside at zero, propagator
+transpose), translation fixing, and orchestrator dispatch — on
+**tree-level** (`loop_number == 0`) kernel groups. Loop kernel reduction,
+kernel caching, and parent-diagram contraction (Phases 3-5 of the full
+hybrid pipeline) are not yet implemented and are the target of Extension 1.
+
+### Module layout
+
+- `msrjd/integration/time_domain/propagator_td.py`
+  - `build_G_t_matrix(propagator_data, t_var, num_params)`: symbolic G(t)
+    matrix via pole-residue sum `G(t) = Σ_k C_k · exp(I · p_k · t)`. Does
+    **not** apply Heaviside; the caller must multiply by `heaviside(t)` to
+    get the retarded propagator. Under the Fourier convention
+    `G(t) = (1/2π) ∫ dω exp(+iωt) Ĝ(ω)`, the pipeline's causality filter
+    guarantees Im(p_k) > 0 and thus decay for t > 0.
+  - `G_t_entry(G_t_matrix, phys_idx, resp_idx, t_expr)`: retarded edge
+    propagator lookup. Reads `G_t_matrix[phys, resp]` — the TRANSPOSE of
+    the natural `[resp, phys]` layout, matching `_get_propagator_entry` in
+    `symbolic.py:305`. Multiplies by `heaviside(t_expr)` by default.
+- `msrjd/integration/time_domain/subgraph.py`
+  - `identify_loop_subgraphs(ir, td)`: returns `[]` for tree-level;
+    raises `NotImplementedError` for any diagram with free/loop
+    frequencies, including the message for the orchestrator to fall back
+    to Phase I. Extension 1 will flesh out the connected-closure
+    algorithm per the plan file.
+  - `LoopSubgraph` dataclass is the data model for the eventual
+    attachment-point / internal-vertex split.
+- `msrjd/integration/time_domain/final_integral.py`
+  - `integrate_tree_diagram(typed_diagram, representative_ir,
+    propagator_data, combined_prefactor, ext_time_vars, num_params,
+    origin_leaf_idx, timeout_sec)`: builds the symbolic time-domain
+    integrand `combined_prefactor · ∏_e G_R(t_v − t_u)` and integrates
+    the non-leaf vertex times. Asserts `loop_number == 0` inside the
+    function as a safety net against future misuse. Integration uses
+    SageMath's symbolic `integrate(..., -oo, +oo)` and relies on the
+    Heaviside factors to cut the polyhedral region; each call is wrapped
+    in a `SIGALRM` watchdog (default 30s) so Sage hangs don't block
+    downstream work.
+- `msrjd/integration/time_domain/pipeline.py`
+  - `compute_correction_td(kernel_groups, propagator_data, k, ...)`:
+    Phase J orchestrator. For `loop_number == 0` groups it bypasses
+    Phases 3-5 entirely and calls the tree evaluator directly; for
+    `loop_number > 0` groups it marks them `'skipped'` with a reason and
+    returns them in `skipped_kernel_ids` for Phase I fallback.
+    Returns a debug-friendly dict with per-group diagnostics so
+    downstream code can tell exactly which kernels Phase J handled.
+
+### Conventions (fixed pipeline-wide)
+
+- **Fourier convention**: `G(t) = (1/2π) ∫ dω exp(+iωt) Ĝ(ω)`. Retarded
+  poles have Im(ω) > 0. This matches what notebook cell 8 actually
+  constructs for `G_t` and is the convention assumed by the entire
+  `time_domain` subpackage.
+- **Heaviside at zero**: SageMath's default (`1/2`). Treated as frozen
+  across the whole pipeline — no monkey-patching or `unit_step`
+  substitutions.
+- **Transpose**: `G_t_entry(phys=j, resp=i, t)` reads `G_t_matrix[j, i]`
+  — the physical-row, response-column entry, matching the retarded
+  propagator "response of physical j to response-field source i".
+
+### MVP tests
+
+Six new tests in `tests/test_time_domain.py`, all passing:
+
+1. `test_G_t_matrix_single_pole` — `G(t)` for `K(ω) = 1 + iω` gives
+   `exp(-t)` at t = 1 (agreement to 1e-12, symbolic check via
+   `simplify_full`).
+2. `test_G_t_entry_retarded` — `G_t_entry(t_expr=-1)` is killed by
+   Heaviside; `t_expr=+1` returns `exp(-1)`.
+3. `test_subgraph_tree_case_returns_empty` — tree-level diagram →
+   `identify_loop_subgraphs` returns `[]`.
+4. `test_k2_tree_single_integration_analytical` — k=2 tree with
+   `G_R(t) = Θ(t) exp(-t)` integrates to the closed-form
+   `(1/2) exp(-|τ|)` at six τ values (positive and negative), agreement
+   below 1e-8.
+5. `test_k2_tree_translation_invariance` — Phase J k=2 tree result
+   evaluated at `(t1=1, t2=0)` and `(t1=6, t2=5)` agrees to below 1e-8
+   (both should be the same value since the result depends only on
+   `τ = t1 − t2`).
+6. `test_phase_J_vs_phase_I_linear_hawkes_tree` — **end-to-end MVP
+   validation**. Same tree k=2 diagram, same `propagator_data`:
+   - Phase I (`integrate_to_time_domain`) computes `C(τ)` via residue
+     integration in frequency space.
+   - Phase J (`compute_correction_td`) computes `C(τ)` via vertex-time
+     integration.
+   Both agree within `1e-6` absolute tolerance at four τ > 0 values.
+   In practice the agreement is several orders of magnitude tighter
+   (~1e-16) on a 2-population diagonal-propagator smoke test.
+
+All 124 tests pass (118 pre-existing + 6 new Phase J).
+
+### Notebook integration
+
+`notebooks/hawkes_linear_phi_test.ipynb` gets a new **Section 9** at the
+end:
+- Cell 9.1: imports `compute_correction_td`, runs it on the existing
+  `kernel_groups` with `num_params` substituted, pins `t_2 = 0` so the
+  result is a function of `τ = t_1`, and evaluates on the same
+  `tau_residue` grid used by the Phase I residue IFT path (cell 28).
+  Prints per-group diagnostics (which kernel groups were handled by the
+  tree evaluator vs skipped) and `max|Phase J − Phase I residue|` over
+  the grid.
+- Cell 9.2: overlays the Phase J result on the k=2 tree plot next to
+  the Phase I FFT and Phase I residue curves. Expected outcome: the
+  Phase J curve overlays the Phase I residue curve exactly.
+
+The existing Phase I cells (1-30) are untouched; Section 9 only appends.
+
+### Deferred (Extension 1+)
+
+- `kernel_reduce.py` — symbolic/numerical integration of internal loop
+  vertex times → `K(τ_1, ..., τ_{p-1})` for p-attachment subgraphs.
+- `kernel_cache.py` — cache keyed on `loop_only_signature`. Before
+  Extension 1 is merged, the invariant that `loop_only_signature`
+  distinguishes (a) internal edge propagator types, (b) loop routing
+  connectivity, and (c) external attachment pattern must be verified;
+  if the existing signature is missing any of these, `kernel_cache.py`
+  must extend the key.
+- `contraction.py` — parent diagram → contracted diagram with
+  fundamental edges + effective general-p hyper-edges. Design principle
+  (already written into the plan): the kernel abstraction is general-p
+  from the start, APIs must not implicitly assume 2-point kernels.
+- Polyhedral / exponential-integration engine to replace the provisional
+  Sage `integrate()` path once tree / bubble cases saturate it.
+
+---
+
 ## 2026-04-07 — k=3 support, residue-based IFT, and structured residue exploration
 
 ### Multi-frequency (k=3) numerical evaluation
