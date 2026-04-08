@@ -4,6 +4,139 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-07 — k=3 support, residue-based IFT, and structured residue exploration
+
+### Multi-frequency (k=3) numerical evaluation
+
+- **Generalized `spectrum_tree`** to handle multiple external frequencies. For
+  k=2 (n_ext=1) returns a 1D array; for k=3 (n_ext=2) evaluates on an N×N grid.
+  Falls back to per-slice evaluation when fine 2D grids would be too costly.
+- **Generalized `inverse_fourier`** to handle 1D (`ifft`) and 2D (`ifft2`)
+  spectra with appropriate `(N·Δω/(2π))^n_ext` scaling.
+- **Adaptive grid by k** in cell 28: k=2 uses `T_max=80, Δτ=0.05` (N≈4096);
+  k≥3 currently set to the same fine grid (`Δτ=0.02 → N=8192`, ~67M 2D points).
+- **k=3 plotting**: extracts 1D slices `C(τ₁, τ₂=0)` and `C(τ₁=0, τ₂)` from the
+  full 2D `C(τ₁,τ₂)` surface. Two-panel layout matching the n_τ slices.
+- **k=3 simulation cumulant**: For each slice, compute the connected 3rd cumulant
+  via FFT — slice 0 cross-correlates `dn_a · dn_c` (product) with `dn_b`, slice 1
+  uses `dn_a · dn_b` × `dn_c`. The product trick reduces the 3-point cumulant
+  to a 2-point correlation since means are subtracted.
+- **Adaptive comparison plot**: simulation cell now reads `external_fields` from
+  the config and computes the appropriate auto/cross/3-point statistic. Same
+  notebook handles k=1, 2, 3 with no edits.
+
+### Residue-based IFT for k=2 (exact, no Gibbs ringing)
+
+- **`find_spectrum_poles(propagator_data, num_params)`**: Returns all poles of
+  the spectrum from the propagator. Poles of det(K(ω))=0 are already known
+  symbolically; the spectrum has additional poles at their negatives from
+  det(K(−ω))=0. Substitutes parameters for numerical pole values.
+- **`compute_numerical_residues(f, poles)`**: Computes residues at simple poles
+  via the limit `(z − pole) · f(z)` evaluated at `z = pole + ε`.
+- **`ift_via_residues(f, poles, tau_grid)`**: Closes contour in the upper
+  half-plane for τ>0 (returns `+i · Σ_upper residue · exp(iωτ)`) and lower
+  half-plane for τ<0. Exact, no truncation artifacts, evaluable at any τ.
+- **Delta-spike detection**: For auto-correlators, the Poisson shot noise
+  contributes `n* · δ(τ)`. This shows up as a constant `S(ω→∞)` with no poles.
+  Detected by evaluating `S` at large ω and added as `S∞ / Δτ` at τ=0 to match
+  the binned simulation convention.
+- **Validation**: For linear Hawkes k=2 cross-correlator, the residue IFT
+  matches the FFT IFT to ~0.1% across all τ values (smooth part) and the
+  delta-spike heights match exactly when the τ grids share `Δτ`.
+
+### Sequential residue integration prototype (k=3, partial)
+
+Explored a fully exact residue-based path for k=3 ("Path C2"). The goal:
+integrate over external frequencies one at a time via residues, eliminating
+both FFTs entirely. Two implementations were tested:
+
+1. **Pure-symbolic chained**: Build `J(ω₀, t₂) = i·Σ_upper res(ω₁=p_k(ω₀))
+   · exp(i·p_k(ω₀)·t₂)` symbolically, then attempt second integration. Sage's
+   `solve()` and `simplify_rational()` choked on rational expressions with
+   embedded exponentials — calls timed out at ~10 minutes.
+
+2. **Structured `Term` objects**: Each term tracks `(rational_part, exp_factors)`
+   where `exp_factors` is a list of `(linear_combo, time_var)` representing
+   `exp(i·linear_combo·time_var)` factors accumulated over residue substitutions.
+   The rational part stays rational in the surviving omega vars, so `solve()`
+   works at every step. Successfully completed both integrations for k=3 without
+   symbolic blowup. Inner integration (over ω₁) yielded 4 upper / 2 lower poles,
+   each with the expected shift structure (`p_intrinsic − ω₀` from mixed
+   propagator factors, `±p_intrinsic` from single-variable factors).
+
+**Status**: The architecture works (terms propagate cleanly through both
+integrations) but the **contour direction logic for the outer integral has
+bugs**. The effective time at the outer step is `t₁ + (coefficient_of_ω₀_in_existing_phases)·t₂`,
+and different terms have different effective signs depending on (t₁, t₂).
+Test values for k=3 were off by varying factors (0.5–0.85) and sometimes wrong
+sign. The architecture needs more debugging on the sign accumulation across
+the two residue closures.
+
+**Verification at k=2**: The same machinery works perfectly for k=2 (matches
+FFT to 0.1%), confirming the basic residue-via-`N(p)/D'(p)` and Term substitution
+logic are correct. The k=3 issues are specific to handling the second
+contour direction with carried-over exp factors.
+
+### Pipeline architecture
+
+- **Adaptive evaluation cell** (`hawkes_linear_phi_test.ipynb` cell 28): now
+  computes residue-based C(τ) alongside FFT-based C(τ) for k=2 and overlays
+  both in the comparison plot. Three-curve overlay (sim, FFT-tree, residue-tree).
+- **`_param_subs` model-agnostic phi differentiation**: previously hardcoded
+  `ns.a[i]` substitutions in the MF solver; now iterates `HAWKES_MODEL['parameters']`
+  and substitutes any fundamental parameter into the symbolic phi derivative
+  expressions. Works for any phi form without code changes.
+- **Cache directory keys**: now include `external_fields` so switching from
+  `[(dn,1),(dn,2)]` to `[(dn,1),(dn,1)]` doesn't pull stale diagrams.
+
+### Documentation
+
+- **CHANGELOG.md** updated with all 2026-04-03 critical fixes and 2026-04-07 work
+- **PIPELINE_PLAN.md**: status updated to reflect Phases A–I complete; design
+  decisions section now documents propagator transposition, external leg labeling,
+  action sign convention, and IFT time convention
+- **BUILD_PHASE_OUTLINES.md**: Phases H and I marked complete with critical
+  implementation notes from debugging
+
+### Known issues / open questions
+
+- **k=3 sequential residue (Path C2)**: contour-direction sign bug, see above.
+  Architecture is correct but implementation needs debugging of sign accumulation
+  across sequential residue closures with mixed effective times.
+- **k≥3 evaluation cost**: full 2D FFT is the only working option, ~67M points
+  per evaluation at the current grid. Acceptable but slow.
+- **Fourier artifacts at τ≈0**: Sharp features (delta-function shot noise)
+  cause Gibbs ringing in the FFT path. Residue path has no ringing for k=2.
+- **Time-domain integration not yet attempted**: For systems with known
+  symbolic time-domain propagators, direct vertex-time or edge-duration
+  integration would sidestep the residue-chasing complexity entirely. See
+  user notes in 2026-04-07 design discussion (spanning-tree time reduction,
+  V−1 independent time variables, polyhedral integration regions for
+  exponential propagators).
+
+### Design discussion: time-domain integration as the primary path
+
+User has proposed shifting the priority of the integration backend.
+For stationary connected diagrams, the following equivalence holds:
+
+- **Frequency-space path**: assign edge frequencies → conservation at vertices →
+  reduce to k−1 external + ℓ loop frequencies → IFT to time domain.
+- **Time-domain path**: assign vertex times → fix one as origin (global
+  translation invariance) → use V−1 independent vertex times OR equivalently
+  E−ℓ edge durations after applying loop closure constraints.
+
+Both routes give the same number of independent integrations (V−1 for a
+connected diagram with V vertices). The time-domain route is preferred when:
+- Symbolic G(t) is available (e.g., sums of exponentials, our linear Hawkes case)
+- Causality / Heaviside structure restricts the integration region
+- Pole structure across multiple frequencies becomes hard to track
+
+The time-domain route gives a polyhedral integration region with products of
+exponentials, which often admits exact piecewise formulas. This is the
+proposed Phase J for v2 of the framework. Not yet started.
+
+---
+
 ## 2026-04-03 — Critical bug fixes and simulation validation
 
 ### Critical fixes (affect all numerical results)

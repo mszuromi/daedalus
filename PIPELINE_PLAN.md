@@ -236,8 +236,9 @@ For each diagram, construct the integral expression:
 | **F** | **Causality filter:** check retarded propagator consistency and pole-structure compatibility for each typed diagram. | E | ✅ Complete |
 | **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | ✅ Complete |
 | **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems. Frequency conservation at vertices. | E, G | ✅ Complete |
-| **I** | **Numerical integration:** user supplies fundamental parameters; MF solver derives n*, phi derivatives; FFT-based spectral grid + IFT for k≥2; scalar loop integral for k=1. Factored evaluation: precompute unique loop integrands, multiply by external propagators. | H | ✅ Complete (tree validated, loop awaiting validation) |
-| **J** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
+| **I** | **Numerical integration (frequency-domain):** user supplies fundamental parameters; MF solver derives n*, phi derivatives; FFT-based spectral grid + IFT for k≥2; scalar loop integral for k=1. Factored evaluation: precompute unique loop integrands, multiply by external propagators. **Residue-based IFT** for k=2 (exact, no Gibbs ringing). | H | ✅ Complete (k=1,2 validated; k=3 working but only via FFT; sequential residue for k=3 attempted, contour-direction bug) |
+| **J** | **Time-domain integration (proposed v2 priority):** Direct vertex-time / edge-duration integration for stationary connected diagrams. For systems with symbolic G(t), reduce to V−1 independent vertex times via spanning tree, then integrate the polyhedral region of products of exponentials. Sidesteps frequency-side residue chasing entirely. | A, E, G + symbolic G(t) | Not started |
+| **K** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
 
 **Detailed outlines for each phase:** see [`BUILD_PHASE_OUTLINES.md`](BUILD_PHASE_OUTLINES.md).
 
@@ -258,6 +259,111 @@ For each diagram, construct the integral expression:
 - **Connected diagrams only:** enforced by the connectivity requirement in prediagram enumeration.
 - **SageMath throughout:** all symbolic computation in SageMath. SymPy used only as a fallback integration backend via `algorithm='sympy'`.
 - **Model file structure:** contains fields, response fields, parameters, functions (phi), kernels, operators, MF equations, the full action, concrete phi for numerical evaluation, and specializations. The model declares *what* phi is; the notebook computes derivatives and solves MF equations generically.
+
+---
+
+## Phase J — Time-domain integration (proposed v2 priority)
+
+Frequency-space integration becomes algebraically painful for k≥3 because pole
+structure across multiple sequential residue integrations is hard to track —
+each residue substitution carries forward exponential factors that affect the
+contour direction of the next integration. For systems where we already have
+symbolic time-domain propagators G(t) (e.g., causal exponential kernels in
+linear Hawkes), direct time-domain integration is mathematically equivalent
+and often algebraically much cleaner.
+
+### Equivalence with frequency-space reduction
+
+For a connected stationary diagram with V vertices and E edges:
+- Frequency space: assign edge frequencies, apply conservation at vertices,
+  reduce to k−1 external + ℓ loop frequencies. (k−1+ℓ independent integrations.)
+- Time domain: assign vertex times, fix one as origin (global translation
+  invariance), reduce to V−1 independent vertex times. Equivalently, use
+  E edge durations minus ℓ loop closure constraints, giving E−ℓ = V−1.
+
+Both routes give the same number of independent integrations.
+
+### Direct time-domain reduction algorithm
+
+For a connected stationary diagram:
+
+1. **Choose a root vertex** and set its time to 0 (uses global translation
+   invariance to remove one variable).
+2. **Choose a spanning tree** of the graph.
+3. **Use vertex times** of the non-root vertices as independent variables
+   (V−1 total). Equivalently, use the times along tree edges.
+4. **For each non-tree (loop-closing) edge**, express its duration as a linear
+   combination of the independent variables via the loop constraint
+   (signed sum of edge durations around each independent cycle = 0).
+5. **Substitute** into the propagators G_e(s_e) to get an integrand that is a
+   product of propagators of linear functions of the V−1 independent times.
+6. **Integration region**: each propagator may carry a Heaviside (causality
+   restriction). The intersection is a polyhedral region in (V−1)-dimensional
+   time space.
+7. **Evaluate the integral** symbolically (when propagators are sums of
+   exponentials) or numerically (general case).
+
+### When this is preferable over frequency-space
+
+- **Symbolic G(t) is available**: e.g., sums of exponentials from residue
+  evaluation of `G_hat(omega)`. The Hawkes voltage kernel `(1/τ)e^{−t/τ}θ(t)`
+  is a single exponential.
+- **Causal kernels**: Heaviside structure restricts the integration region,
+  often making the polyhedral domain easier than chasing poles in multiple
+  complex integrations.
+- **Sums of exponentials**: integration over a polyhedral region of products
+  of exponentials reduces to known piecewise formulas — no Gibbs ringing,
+  no contour direction ambiguity.
+- **k ≥ 3**: where frequency-space residue chasing becomes intractable.
+
+### When frequency-space is still useful
+
+- **G(t) is awkward but Ĝ(ω) is clean**: some kernels have ugly time-domain
+  expressions but rational frequency-domain forms.
+- **Loop factorization is already implemented in frequency variables**: kernel
+  grouping (`group_diagrams_by_kernel`) and unique loop integrand identification
+  (`loop_only_signature`) work well in frequency space.
+- **Subgraph reuse**: contracting self-energies / bubbles is naturally a
+  frequency-space operation.
+
+The two routes are mathematically equivalent — the choice is methodological,
+based on which gives less algebraic pain for the diagram class at hand.
+
+### Implementation outline (when starting Phase J)
+
+1. **Time-domain propagator extraction**: For each pole `omega_k` of det(K(omega))
+   with residue matrix `C_k`, the propagator is `G_t(t) = Σ_k C_k * exp(I*omega_k*t)`
+   for retarded boundary conditions. Already partially implemented in
+   `field_theory.py` (Branch 2 of inverse_fourier_transform).
+2. **Vertex-time integrand construction**: For each typed diagram, build the
+   integrand as a product of `G_e(t_v − t_u)` where (u,v) are the edge endpoints.
+3. **Spanning tree selection**: Use SageMath's `D.spanning_tree()` to pick a tree.
+4. **Loop closure equations**: For each non-tree edge, identify the unique cycle
+   it closes with the tree, write the constraint, solve for the dependent
+   duration in terms of independent ones.
+5. **Coordinate change**: Substitute the dependent durations into the integrand,
+   yielding an expression in V−1 free variables plus external times.
+6. **Integration region**: Collect Heaviside constraints from each causal
+   propagator, build the polyhedral domain.
+7. **Symbolic integration**: For sum-of-exponentials integrands over polyhedral
+   regions, integrate piecewise. SageMath's `integral()` may handle simple cases;
+   more complex cases need a custom polyhedral exponential integrator.
+8. **Numerical fallback**: For non-exponential propagators or non-trivial
+   regions, fall back to numerical multi-dimensional integration over the
+   reduced V−1 dimensional space.
+
+### Why it might be the "first" approach for the paper
+
+- All current pipeline phases (A–H, type assignment, symmetry, etc.) are
+  reused unchanged.
+- The "exact analytical result" story is much cleaner — for linear Hawkes the
+  answer is a sum of products of exponentials evaluated on a polyhedron.
+- Avoids the entire residue / Gibbs ringing / piecewise contour problem at k≥3.
+- For paper: the "stationary + symbolic time-domain propagator" branch of the
+  flowchart is a self-contained, defensible scope.
+
+This phase has **not been started**. The frequency-domain path (Phase I) is the
+current working backend.
 
 ---
 
