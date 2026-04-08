@@ -237,7 +237,7 @@ For each diagram, construct the integral expression:
 | **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | ✅ Complete |
 | **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems. Frequency conservation at vertices. | E, G | ✅ Complete |
 | **I** | **Numerical integration (frequency-domain):** user supplies fundamental parameters; MF solver derives n*, phi derivatives; FFT-based spectral grid + IFT for k≥2; scalar loop integral for k=1. Factored evaluation: precompute unique loop integrands, multiply by external propagators. **Residue-based IFT** for k=2 (exact, no Gibbs ringing). | H | ✅ Complete (k=1,2 validated; k=3 working but only via FFT; sequential residue for k=3 attempted, contour-direction bug) |
-| **J** | **Time-domain integration (proposed v2 priority):** Direct vertex-time / edge-duration integration for stationary connected diagrams. For systems with symbolic G(t), reduce to V−1 independent vertex times via spanning tree, then integrate the polyhedral region of products of exponentials. Sidesteps frequency-side residue chasing entirely. | A, E, G + symbolic G(t) | Not started |
+| **J** | **Hybrid loop-kernel reduction (proposed v2 priority):** Frequency space identifies and dedupes unique loop subgraphs (reuses Phase I kernel grouping); time domain reduces each unique kernel via internal vertex-time integration; substitution contracts each subgraph into the parent diagram as an effective edge/kernel; final parent diagram integrated in time domain via spanning-tree reduction. Combines frequency-space deduplication with time-domain integrability. | A, E, G, I (kernel grouping) + symbolic G(t) | Not started |
 | **K** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
 
 **Detailed outlines for each phase:** see [`BUILD_PHASE_OUTLINES.md`](BUILD_PHASE_OUTLINES.md).
@@ -262,110 +262,189 @@ For each diagram, construct the integral expression:
 
 ---
 
-## Phase J — Time-domain integration (proposed v2 priority)
+## Phase J — Hybrid loop-kernel reduction (proposed v2 priority)
 
-Frequency-space integration becomes algebraically painful for k≥3 because pole
-structure across multiple sequential residue integrations is hard to track —
-each residue substitution carries forward exponential factors that affect the
-contour direction of the next integration. For systems where we already have
-symbolic time-domain propagators G(t) (e.g., causal exponential kernels in
-linear Hawkes), direct time-domain integration is mathematically equivalent
-and often algebraically much cleaner.
+The frequency- and time-domain integration backends each have natural
+strengths. Frequency space is best for **identifying repeated subintegrals**
+(unique loop kernels); time domain is best for **actually evaluating** integrals
+of causal stationary propagators (especially sums of exponentials, which give
+piecewise-closed-form polyhedral integrals). Phase J is a hybrid pipeline that
+uses each domain for what it does best.
 
-### Equivalence with frequency-space reduction
+### Architecture
 
-For a connected stationary diagram with V vertices and E edges:
-- Frequency space: assign edge frequencies, apply conservation at vertices,
-  reduce to k−1 external + ℓ loop frequencies. (k−1+ℓ independent integrations.)
-- Time domain: assign vertex times, fix one as origin (global translation
-  invariance), reduce to V−1 independent vertex times. Equivalently, use
-  E edge durations minus ℓ loop closure constraints, giving E−ℓ = V−1.
+The hybrid pipeline reuses Phases 1–2 (compilation and unique loop kernel
+identification, both in frequency space) and adds three new stages: kernel
+reduction (Phase 3), kernel evaluation (Phase 4), and substitution + final
+diagram evaluation (Phases 5–6) in time domain.
 
-Both routes give the same number of independent integrations.
+**Phase 1 — Diagram compilation** *(existing — `build_integrand_stationary`)*
 
-### Direct time-domain reduction algorithm
+From the typed directed multigraph:
+- Construct the full frequency-space diagram expression.
+- Assign edge frequencies, apply vertex frequency conservation.
+- Eliminate dependent frequencies, leaving (k−1) external + ℓ loop frequencies.
+- Result: minimal routed integrand `S(ω_ext, Ω_loop)`.
 
-For a connected stationary diagram:
+**Phase 2 — Unique loop-kernel identification** *(existing — `group_diagrams_by_kernel`, `loop_only_signature`, `loop_integrand_groups`)*
 
-1. **Choose a root vertex** and set its time to 0 (uses global translation
-   invariance to remove one variable).
-2. **Choose a spanning tree** of the graph.
-3. **Use vertex times** of the non-root vertices as independent variables
-   (V−1 total). Equivalently, use the times along tree edges.
-4. **For each non-tree (loop-closing) edge**, express its duration as a linear
-   combination of the independent variables via the loop constraint
-   (signed sum of edge durations around each independent cycle = 0).
-5. **Substitute** into the propagators G_e(s_e) to get an integrand that is a
-   product of propagators of linear functions of the V−1 independent times.
-6. **Integration region**: each propagator may carry a Heaviside (causality
-   restriction). The intersection is a polyhedral region in (V−1)-dimensional
-   time space.
-7. **Evaluate the integral** symbolically (when propagators are sums of
-   exponentials) or numerically (general case).
+Working symbolically on the integrand:
+- Identify the **loop-dependent** subgraph for each diagram via the routing
+  matrix `A_e`. For each loop variable `Ω_r`, take all edges with `A_{e,r} ≠ 0`
+  and form their connected closure. This is the **subgraph** that gets
+  contracted into a single effective kernel.
+- Identify the subgraph's **attachment vertices**: vertices in the subgraph
+  that connect to edges *outside* it. These become the kernel's "ports".
+- Internal vertices (entirely within the subgraph) get integrated out.
+- Canonicalize the loop integrand symbolically and assign a **unique kernel
+  ID**. Two subgraphs with the same canonical form → same kernel ID, computed
+  only once.
+- Output: a registry mapping `kernel_id → (canonical_subgraph, p_attachments)`,
+  plus a mapping from each parent diagram to which kernel IDs it contains and
+  where they attach.
 
-### When this is preferable over frequency-space
+**Phase 3 — Kernel reduction (frequency → time)** *(NEW)*
 
-- **Symbolic G(t) is available**: e.g., sums of exponentials from residue
-  evaluation of `G_hat(omega)`. The Hawkes voltage kernel `(1/τ)e^{−t/τ}θ(t)`
-  is a single exponential.
-- **Causal kernels**: Heaviside structure restricts the integration region,
-  often making the polyhedral domain easier than chasing poles in multiple
-  complex integrations.
-- **Sums of exponentials**: integration over a polyhedral region of products
-  of exponentials reduces to known piecewise formulas — no Gibbs ringing,
-  no contour direction ambiguity.
-- **k ≥ 3**: where frequency-space residue chasing becomes intractable.
+For each unique loop kernel `K_id` with `p` attachment points and frequency-space form
 
-### When frequency-space is still useful
+    K̂(ν₁, …, ν_{p−1}) = ∫ dΩ_loop / (2π)^ℓ · ∏_{e ∈ subgraph} Ĝ_e(linear combos of Ω, ν)
 
-- **G(t) is awkward but Ĝ(ω) is clean**: some kernels have ugly time-domain
-  expressions but rational frequency-domain forms.
-- **Loop factorization is already implemented in frequency variables**: kernel
-  grouping (`group_diagrams_by_kernel`) and unique loop integrand identification
-  (`loop_only_signature`) work well in frequency space.
-- **Subgraph reuse**: contracting self-energies / bubbles is naturally a
-  frequency-space operation.
+compute the **time-domain reduced kernel**:
 
-The two routes are mathematically equivalent — the choice is methodological,
-based on which gives less algebraic pain for the diagram class at hand.
+    K(τ₁, …, τ_{p−1}) = ∫ dτ_internal · ∏_{e ∈ subgraph} G_e(linear combos of τ_internal, τ_attachment)
 
-### Implementation outline (when starting Phase J)
+where:
+- `τ₁, …, τ_{p−1}` are the `p−1` independent time differences between attachment
+  vertices (stationarity reduces from `p` absolute attachment times to `p−1`
+  differences).
+- The internal time integration runs over the internal vertices of the subgraph.
+- Time-domain propagators `G_e(t)` are inserted in place of `Ĝ_e(ω)` — for
+  systems with symbolic causal exponential kernels (e.g., linear Hawkes voltage
+  filter `(1/τ)e^{−t/τ}θ(t)`), the result is a polyhedral integral of products
+  of exponentials.
 
-1. **Time-domain propagator extraction**: For each pole `omega_k` of det(K(omega))
-   with residue matrix `C_k`, the propagator is `G_t(t) = Σ_k C_k * exp(I*omega_k*t)`
-   for retarded boundary conditions. Already partially implemented in
-   `field_theory.py` (Branch 2 of inverse_fourier_transform).
-2. **Vertex-time integrand construction**: For each typed diagram, build the
-   integrand as a product of `G_e(t_v − t_u)` where (u,v) are the edge endpoints.
-3. **Spanning tree selection**: Use SageMath's `D.spanning_tree()` to pick a tree.
-4. **Loop closure equations**: For each non-tree edge, identify the unique cycle
-   it closes with the tree, write the constraint, solve for the dependent
-   duration in terms of independent ones.
-5. **Coordinate change**: Substitute the dependent durations into the integrand,
-   yielding an expression in V−1 free variables plus external times.
-6. **Integration region**: Collect Heaviside constraints from each causal
-   propagator, build the polyhedral domain.
-7. **Symbolic integration**: For sum-of-exponentials integrands over polyhedral
-   regions, integrate piecewise. SageMath's `integral()` may handle simple cases;
-   more complex cases need a custom polyhedral exponential integrator.
-8. **Numerical fallback**: For non-exponential propagators or non-trivial
-   regions, fall back to numerical multi-dimensional integration over the
-   reduced V−1 dimensional space.
+This reduction is done **symbolically** when possible. The output is a
+representation of `K(τ₁, …, τ_{p−1})` — analytical when feasible, or a
+fast-callable / lookup table otherwise.
 
-### Why it might be the "first" approach for the paper
+**Phase 4 — Kernel evaluation** *(NEW)*
 
-- All current pipeline phases (A–H, type assignment, symmetry, etc.) are
-  reused unchanged.
-- The "exact analytical result" story is much cleaner — for linear Hawkes the
-  answer is a sum of products of exponentials evaluated on a polyhedron.
-- Avoids the entire residue / Gibbs ringing / piecewise contour problem at k≥3.
-- For paper: the "stationary + symbolic time-domain propagator" branch of the
-  flowchart is a self-contained, defensible scope.
+For each unique reduced kernel from Phase 3:
+- **Analytic case**: SageMath integration of products of exponentials over the
+  polyhedral region. For sums of exponentials this gives piecewise closed forms.
+- **Numerical case**: Build a fast-callable from the symbolic reduced form, or
+  for tabular kernels, evaluate on a grid of attachment time differences.
+- Each unique kernel computed **once**, cached, reused across all parent
+  diagrams that contain it.
 
-This phase has **not been started**. The frequency-domain path (Phase I) is the
-current working backend.
+**Phase 5 — Substitution / contraction** *(NEW)*
 
----
+For each parent diagram:
+- For each subgraph instance flagged in Phase 2, perform a **graph contraction**:
+  - Remove the subgraph's internal vertices and internal edges.
+  - Keep the attachment vertices.
+  - Insert an **effective edge** (or hyper-edge for `p ≥ 3` kernels) connecting
+    the attachment vertices, carrying the precomputed kernel `K` from Phase 4.
+- The contracted parent diagram has a mix of edges:
+  - **Fundamental edges**: original `G_e(t)` for tree-level / non-loop edges.
+  - **Effective edges**: reduced kernels `K_e(τ₁, …)` for contracted subgraphs.
+- **Same kernel ID ≠ same edge occurrence**: if two distinct subgraphs in the
+  parent share a kernel ID, they each get an independent effective edge that
+  evaluates the same `K` on their respective parent-time arguments.
+- **Coincident-attachment / tadpole case**: when a kernel's attachment vertices
+  collapse onto the same parent vertex, the kernel is evaluated on the diagonal
+  (`K(0)` for `p=2`). Cleaner representation: treat it as a **vertex-local
+  multiplicative factor** rather than a self-loop edge. (Caveat: pipeline should
+  allow either ordinary finite evaluation or a flagged "contact" treatment in
+  case `K(0)` has contact-term issues for the propagator class.)
+
+**Phase 6 — Final diagram evaluation (time domain)** *(NEW)*
+
+The contracted parent diagram is now a tree-like object (or low-loop, depending
+on what was contracted) with mixed propagators. Apply the time-domain spanning
+tree reduction:
+
+1. Choose a root vertex, set its time to 0 (uses global translation invariance).
+2. Choose a spanning tree of the contracted graph.
+3. Use the `V_contracted − 1` non-root vertex times as independent variables.
+4. For each non-tree (loop-closing) edge, express its duration via the loop
+   constraint. (After Phase 5 contraction, the parent should have ≤ original
+   loop count remaining; often it becomes purely tree-like.)
+5. Substitute into the propagators (`G_e` and effective `K_e`).
+6. Collect Heaviside constraints from each causal propagator/kernel → polyhedral
+   region in `V_contracted − 1` time variables.
+7. Integrate the resulting polyhedral exponential integrand:
+   - **Analytic**: SageMath integration for sum-of-exponentials integrands.
+   - **Numerical fallback**: multi-dimensional quadrature over the polyhedral
+     region in the reduced time space.
+
+### Equivalence with pure-frequency and pure-time approaches
+
+For a connected stationary diagram with `V` vertices and `E` edges:
+- Frequency space: `(k−1) + ℓ` independent integrations.
+- Time domain: `V − 1` independent vertex times (= `E − ℓ` edge durations after
+  loop closure).
+
+Both give the same count. The hybrid pipeline does the loop integrations
+"early" (Phase 3 — at the kernel level) and the parent integrations "late"
+(Phase 6 — in time domain), but the total integration count is the same.
+
+### Why this is the right architecture
+
+1. **Reuses everything we have built (Phases A–H, I)**: nothing in the existing
+   enumeration → type assignment → symmetry → frequency-space kernel grouping
+   pipeline gets thrown away.
+2. **Loop kernels computed once**: the deduplication advantage of frequency-space
+   identification is preserved. If 10 parent diagrams share the same one-loop
+   bubble, the bubble is reduced once.
+3. **Time-domain final integration**: the parent (after contraction) is either
+   tree-like or low-loop, integrated using vertex-time spanning-tree reduction.
+   For causal exponential propagators this gives closed-form polyhedral
+   exponential integrals — no Gibbs ringing, no residue contour direction
+   ambiguity, no piecewise pole tracking.
+4. **Hybrid sweet spot**: each domain used for what it does best:
+   - Frequency: routing, conservation, kernel identification, deduplication.
+   - Time: actually computing the integrals.
+
+### Fallback hierarchy
+
+1. **Best case**: every unique kernel reduces analytically in Phase 3, every
+   parent integrates analytically in Phase 6 → exact closed-form result.
+2. **Mixed**: some kernels analytical, some numerical (Phase 3); parent
+   analytical or numerical (Phase 6).
+3. **Numerical multi-D fallback**: if a parent's contracted diagram has too
+   many remaining time integrations to handle analytically, fall back to
+   numerical quadrature over the reduced `V−1`-dimensional time space.
+4. **Pure frequency-space (Phase I)**: if a system has awkward `G(t)` but clean
+   `Ĝ(ω)`, the existing frequency-space path remains as a backend.
+
+### Implementation outline
+
+1. **Time-domain propagator extraction**: For each pole `ω_k` of `det(K(ω))`
+   with residue matrix `C_k`, the retarded propagator is
+   `G_t(t) = Σ_k C_k · exp(i ω_k t) · θ(t)`. Already partially implemented in
+   `field_theory.py` (Branch 2 of `inverse_fourier_transform`).
+2. **Subgraph identification**: From `loop_integrand_groups` and the routing
+   matrix in `prop_factors`, identify the loop-dependent edges and vertices for
+   each unique kernel. Compute the connected closure to get the subgraph and
+   its attachment vertices.
+3. **Kernel reduction (Phase 3)**: For each unique kernel:
+   - Build the time-domain integrand as a product of `G_e(linear combo of τ_internal, τ_attachment)`.
+   - Choose a spanning tree of the subgraph rooted at one attachment.
+   - Reduce internal degrees of freedom via loop closure equations.
+   - Integrate the resulting polyhedral exponential integrand.
+4. **Kernel registry**: Cache the reduced `K(τ_attachment_diffs)` indexed by
+   kernel ID, so repeated occurrences across parent diagrams hit the cache.
+5. **Parent contraction (Phase 5)**: For each parent diagram, replace each
+   subgraph instance with an effective edge / hyper-edge / vertex-local factor.
+6. **Final time-domain integration (Phase 6)**: Run vertex-time spanning-tree
+   reduction on the contracted parent, integrate the resulting polyhedral
+   exponential integrand.
+
+### Status
+
+Not yet started. The frequency-domain Phase I pipeline (FFT-based + residue IFT
+for k=2) is the current working backend. Phase J is the proposed v2 work.
 
 ## Open Questions
 

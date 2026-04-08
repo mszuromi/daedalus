@@ -114,26 +114,46 @@ contour direction with carried-over exp factors.
   V−1 independent time variables, polyhedral integration regions for
   exponential propagators).
 
-### Design discussion: time-domain integration as the primary path
+### Design discussion: hybrid loop-kernel reduction (Phase J)
 
-User has proposed shifting the priority of the integration backend.
-For stationary connected diagrams, the following equivalence holds:
+After exploring both pure-frequency residue paths (with the contour-direction
+bug at k=3) and considering pure-time-domain vertex-time reduction, the design
+that emerged combines both: **frequency space for loop-kernel identification
+and deduplication, time domain for actual integration**.
 
-- **Frequency-space path**: assign edge frequencies → conservation at vertices →
-  reduce to k−1 external + ℓ loop frequencies → IFT to time domain.
-- **Time-domain path**: assign vertex times → fix one as origin (global
-  translation invariance) → use V−1 independent vertex times OR equivalently
-  E−ℓ edge durations after applying loop closure constraints.
+**Architecture summary** (full description in `PIPELINE_PLAN.md` Phase J):
 
-Both routes give the same number of independent integrations (V−1 for a
-connected diagram with V vertices). The time-domain route is preferred when:
-- Symbolic G(t) is available (e.g., sums of exponentials, our linear Hawkes case)
-- Causality / Heaviside structure restricts the integration region
-- Pole structure across multiple frequencies becomes hard to track
+1. **Phase 1 — Diagram compilation** (existing): build frequency-space integrand
+   with conservation applied.
+2. **Phase 2 — Unique loop-kernel identification** (existing): use the routing
+   matrix to identify the loop-dependent subgraph for each loop variable, find
+   the connected closure, identify attachment vertices, canonicalize, dedupe.
+3. **Phase 3 — Kernel reduction (new)**: for each unique loop kernel, switch
+   from `Ĝ_e(ω)` to `G_e(t)` and integrate out the internal vertex times of the
+   subgraph. Result is a reduced time-domain kernel `K(τ₁, …, τ_{p−1})` where
+   `p` is the number of attachment points.
+4. **Phase 4 — Kernel evaluation (new)**: compute each unique reduced kernel
+   once (analytically when possible, numerically otherwise).
+5. **Phase 5 — Substitution / contraction (new)**: replace each subgraph
+   instance in the parent diagram with an effective edge/hyper-edge carrying
+   the precomputed kernel. Tadpole/coincident-attachment cases collapse to
+   vertex-local multiplicative factors.
+6. **Phase 6 — Final time-domain integration (new)**: vertex-time spanning-tree
+   reduction on the contracted parent. For causal exponential propagators this
+   gives polyhedral exponential integrals (closed form).
 
-The time-domain route gives a polyhedral integration region with products of
-exponentials, which often admits exact piecewise formulas. This is the
-proposed Phase J for v2 of the framework. Not yet started.
+**Key design decisions**:
+- Same kernel ID ≠ same edge occurrence: distinct subgraphs in the parent that
+  share a kernel ID get independent effective edges, all evaluating the same
+  precomputed `K` on different parent-time arguments.
+- Coincident attachment ("tadpole") = kernel evaluated on the diagonal,
+  represented as a vertex-local factor rather than a self-loop edge.
+- The integration count is the same as pure frequency or pure time space
+  (`V−1` for connected diagrams), but the loop integrations are done "early"
+  at the kernel level and the parent integrations "late" in time domain.
+
+This is the proposed v2 priority. Not yet started. The frequency-domain
+Phase I pipeline remains the current working backend.
 
 ---
 
