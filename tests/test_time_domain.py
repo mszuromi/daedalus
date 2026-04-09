@@ -850,6 +850,113 @@ def _tree_k3_single_source_1pop():
     )
 
 
+def test_phase_J_2d_polytope_decays_at_large_tau():
+    r"""
+    Regression for the 2026-04-08 polytope-bounds sentinel bug.
+
+    The 2D polytope integrator `_integrate_2d_polytope` uses a bounds
+    function for the inner variable. When that function returned an
+    "infeasible" sentinel of `(+inf, -inf)`, `scipy.nquad` would call
+    `scipy.quad(..., +inf, -inf)`, which silently returns the NEGATIVE
+    of the full real-line integral rather than 0. This polluted the
+    outer integration whenever part of the outer range projected
+    outside the feasible polytope, producing Phase J output that grew
+    unboundedly at large |τ| on non-star tree topologies.
+
+    The fix replaces the `(+inf, -inf)` sentinel with a degenerate
+    empty interval `(0, 0)`, which scipy.quad handles correctly.
+
+    This regression test builds a minimal non-star tree with two
+    internal vertices (forcing `m = 2` polytope integration) and
+    verifies the result decays at large |τ|.
+    """
+    # VertexType is imported from msrjd.core.vertices at the top of this file
+
+    # Build a 2×2 propagator with two retarded poles
+    omega = SR.var('omega')
+    # K = diag(1+iω, 1+iω/2) → two separate modes
+    K = matrix(SR, 2, 2, [
+        [1 + I * omega, 0],
+        [0, 1 + I * omega / 2],
+    ])
+    adj = K.adjugate()
+    D_omega = K.det().expand()
+    D_prime = D_omega.diff(omega)
+    pole_eqs = sage_solve(D_omega == 0, omega)
+    pole_vals = [eq.rhs() for eq in pole_eqs]
+    C_mats = []
+    for w in pole_vals:
+        Cm = [[SR(0)] * 2 for _ in range(2)]
+        for i in range(2):
+            for j in range(2):
+                num = adj[i, j].subs({omega: w})
+                den = D_prime.subs({omega: w})
+                if num != 0:
+                    Cm[i][j] = (I * num / den).factor()
+        C_mats.append(matrix(SR, Cm))
+    pd = {
+        'G_ft': K.inverse(), 'G_ft_explicit': True, 'adj_ft': adj,
+        'D_omega': D_omega, 'pole_vals': pole_vals, 'C_mats': C_mats,
+        'nf': 2,
+    }
+
+    # Build a k=2 tree with an intermediate vertex:
+    # source (vertex 3) → interaction (vertex 0) → leaf 1
+    # source (vertex 3) → leaf 2
+    # This gives 2 internal vertices (3, 0) and a 2D polytope.
+    source_type = SourceType(SR(1), [('nt', 1), ('nt', 1)], (2, 0))
+    # Internal interaction vertex: 1 incoming (from source) + 1 outgoing (to leaf)
+    vertex_type = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
+
+    D = DiGraph()
+    D.add_edges([(3, 0), (0, 1), (3, 2)])
+    pd_prediag = (D, D.to_undirected(), [1, 2], [0, 3])
+    td = TypedDiagram(
+        prediagram=pd_prediag,
+        vertex_assignments={3: source_type, 0: vertex_type},
+        edge_types={
+            (3, 0, None): (('nt', 1), ('dn', 1)),
+            (0, 1, None): (('nt', 1), ('dn', 1)),
+            (3, 2, None): (('nt', 1), ('dn', 1)),
+        },
+        external_legs={1: ('dn', 1), 2: ('dn', 1)},
+        propagator_indices={
+            (3, 0, None): (0, 0),
+            (0, 1, None): (0, 0),
+            (3, 2, None): (0, 0),
+        },
+    )
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    total_C = j_result['total_C']
+
+    # Assert decay at large |τ|: the value at τ=±50 should be many
+    # orders of magnitude smaller than the value at τ=0.
+    import math
+    c0 = abs(complex(total_C(0.0, 0.0)).real)
+    c_pos = abs(complex(total_C(50.0, 0.0)).real)
+    c_neg = abs(complex(total_C(-50.0, 0.0)).real)
+    assert c_pos < c0, (
+        f'Phase J at τ=+50 is {c_pos}, larger than at τ=0 ({c0}) — '
+        f'not decaying. The 2D polytope bounds sentinel bug is back.'
+    )
+    assert c_neg < c0, (
+        f'Phase J at τ=-50 is {c_neg}, larger than at τ=0 ({c0}) — '
+        f'not decaying.'
+    )
+    # Both tails should be at least 100x smaller than τ=0 for poles
+    # with Im ~ 0.5-1.0 and a 50-unit lag (~ exp(-25) × ~1 ≈ 1e-11).
+    assert c_pos < 0.01 * c0, f'tail at +50 is {c_pos}, too large'
+    assert c_neg < 0.01 * c0, f'tail at -50 is {c_neg}, too large'
+
+
 def test_phase_J_k3_star_tree_finite_and_stationary():
     r"""
     Sanity test for k=3 on a single-population single-pole fixture:

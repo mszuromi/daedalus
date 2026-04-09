@@ -820,15 +820,27 @@ def _resolve_1d_bounds(s_constraints, s_index):
     coefficients are zero (i.e., the caller has already substituted
     them).
 
-    Returns (L, U). If infeasible, L >= U and the caller should return
-    0 without running the quadrature.
+    Returns (L, U). If the intersection is infeasible we return a
+    DEGENERATE empty interval `(0.0, 0.0)` rather than a flipped
+    (inf, -inf) sentinel. This matters because `scipy.quad(f, 0, 0)`
+    returns 0 correctly, while `scipy.quad(f, +inf, -inf)` returns
+    `-quad(f, -inf, +inf)` — the full real-line integral with a
+    sign flip, which silently poisons any outer quadrature
+    (`scipy.nquad`) that feeds this bounds function into
+    `scipy.quad`. The 1D code path catches infeasible ranges
+    up-front via `if L >= U: return 0`, so this degenerate form is
+    indistinguishable from the old sentinel for the 1D path; but
+    the 2D path needs the degenerate-empty form so that the inner
+    integral returns 0 where the projection is empty.
     """
     L, U = -math.inf, math.inf
+    infeasible = False
     for (a_int, c_eff) in s_constraints:
         a = a_int[s_index]
         if abs(a) < 1e-15:
             if c_eff <= 0:
-                return math.inf, -math.inf  # infeasible sentinel
+                infeasible = True
+                break
             continue
         bound = -c_eff / a
         if a > 0:
@@ -837,6 +849,8 @@ def _resolve_1d_bounds(s_constraints, s_index):
         else:
             if bound < U:
                 U = bound
+    if infeasible or L >= U:
+        return 0.0, 0.0   # degenerate empty interval
     return L, U
 
 

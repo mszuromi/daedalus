@@ -4,6 +4,109 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J 2D polytope bounds-sentinel fix (non-star trees)
+
+### Symptom
+
+On k=3 (and any tree with `m >= 2` integration variables), Phase J
+produced output that **grew unboundedly** at large |τ|, diverging
+into large negative values. This was immediately visible on the
+linear Hawkes k=3 autocorrelator-like slices: both slice 0 and
+slice 1 reached −5e-3 to −8e-3 at τ = ±50 — roughly 5× larger in
+magnitude than the peak value near τ = 0, and with the wrong sign.
+
+A per-kernel breakdown revealed that the divergent behavior came
+**only from kernel groups with two internal (non-leaf) vertices** —
+i.e., non-star trees where there's an interaction vertex between
+the source and some of the leaves. Groups with a single source
+vertex (pure star trees, `m = 1` integration variables) decayed
+correctly.
+
+### Root cause
+
+`_resolve_1d_bounds` returned the sentinel `(math.inf, -math.inf)`
+to signal "infeasible half-space intersection". For the 1D polytope
+integrator this was fine because `_integrate_1d_polytope` checks
+`if L >= U: return 0` **before** calling `scipy.integrate.quad`.
+
+But for the **2D** polytope integrator, the inner-bounds function
+`bounds_s0(s_1_val)` is passed directly to `scipy.integrate.nquad`.
+When part of the outer variable's range is outside the polytope
+projection, `bounds_s0` returns the infeasible sentinel —
+`scipy.nquad` then calls `scipy.quad(f, +inf, -inf)` on the inner
+axis, which silently returns **the negative of the full real-line
+integral**, not zero:
+
+    scipy.quad(exp(-x²), +inf, -inf) = −1.7724… (= −√π)
+
+The full real-line integrand is multiplied by all other factors
+evaluated at that s_1 value, and this nonzero "phantom" contribution
+is then integrated over the outer variable. The result accumulates
+a large, oscillating wrong value that dominates the physical
+contribution at large |τ|.
+
+This bug was not caught earlier because the existing non-regression
+Phase J fixtures all used simple star trees (`m = 1`). The k=2 tests
+never exercised `_integrate_2d_polytope` at all.
+
+### Fix
+
+`msrjd/integration/time_domain/final_integral.py` —
+`_resolve_1d_bounds` now returns a **degenerate empty interval**
+`(0.0, 0.0)` when the half-space intersection is infeasible, instead
+of `(math.inf, -math.inf)`. `scipy.quad(f, 0, 0)` correctly returns
+0, so the 2D outer integration gets a clean 0 from the inner
+integrator on the infeasible portion of the outer range — which is
+the mathematically correct behavior.
+
+The 1D polytope integrator still catches `L >= U` up-front, so
+changing the sentinel form doesn't affect 1D-path behavior.
+
+### Verification
+
+- `msrjd/integration/time_domain/final_integral.py` was the only
+  file changed.
+- On the linear Hawkes k=3 `[('dn', 1), ('dn', 1), ('dn', 2)]`
+  fixture, Phase J now produces decaying slices:
+
+      τ       slice 0 (vary t_2)    slice 1 (vary t_3)
+     −50      1.96e−05              5.10e−05
+     −25      2.10e−04              5.23e−04
+     −10      8.61e−04              2.02e−03
+     −1       1.99e−03              4.38e−03
+      0       1.05e−03              1.05e−03
+     +1       2.11e−03              1.46e−03
+     +10      1.43e−03              9.60e−04
+     +25      7.27e−04              4.73e−04
+     +50      2.26e−04              1.44e−04
+
+  Both tails shrink to O(1e−4) at |τ|=50 vs O(1e−3) near τ=0 —
+  the expected stationary-correlator decay.
+
+- `tests/test_time_domain.py` — new test
+  `test_phase_J_2d_polytope_decays_at_large_tau`:
+  1. Builds a 2×2 diagonal propagator (two retarded poles with
+     different decay rates).
+  2. Constructs a minimal non-star k=2 tree with an interaction
+     vertex between the source and one of the leaves, forcing
+     `m = 2` polytope integration.
+  3. Asserts `|C(τ=±50, 0)| < 0.01 × |C(0, 0)|` — catches both the
+     old divergence (which had the tail much larger than τ=0) and
+     any weaker failure to decay.
+
+- Full suite: **130 passing** (was 129, +1 new regression test).
+
+### Note on the symbolic integrands
+
+Per the user's observation: the `format_td_integral_latex` symbolic
+integrand display for each k=3 kernel group was already correct —
+the prefactor, the product of `G_R` factors, and the retardation
+Θ-constraints were all right. The bug was purely in the numerical
+quadrature's handling of the infeasible-bounds sentinel, not in
+how the integrand was built.
+
+---
+
 ## 2026-04-08 — Phase J k=3 support: skip Phase I pole/FFT IFT at k>=3, evaluate time-domain slices vs simulation
 
 ### Context
