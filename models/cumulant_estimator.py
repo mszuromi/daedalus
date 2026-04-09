@@ -81,9 +81,15 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     Returns
     -------
     tau_grid : np.ndarray (2*max_lag_bins + 1,)
-        Lag values in time units.
+        Lag values in time units (= lag_index × dt_bin).
     C_slice : np.ndarray (2*max_lag_bins + 1,)
-        Cumulant slice values (real).
+        Cumulant slice values in **Hz^k** (= s^{-k}), where k is the
+        number of fields (= len(pop_indices)). Each field's count is
+        divided by dt_bin to convert to rate; factorial corrections
+        ensure the result is dt_bin-independent for the smooth part.
+        This is the continuous-time cumulant density estimate, directly
+        comparable to the theory's C^{(k)}(τ₁, …, τ_{k-1}) which is
+        also in Hz^k.
     """
     k = len(pop_indices)
     assert len(lag_bins) == k
