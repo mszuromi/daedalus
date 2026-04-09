@@ -602,64 +602,78 @@ def eval_delta_contributions_on_tau_grid(
     delta_contributions,
     tau_grid,
     free_ext_dim=1,
-    pinned_values=None,
+    vary_index=0,
+    fixed_values=None,
 ):
     r"""
     Convert a list of symbolic δ-spike contributions (from
     `integrate_tree_diagram` or `compute_correction_td`) into a
-    discretized contribution on a 1D τ grid.
+    discretized contribution on a 1D τ grid, optionally restricted to
+    a slice of a higher-dimensional external-time space.
 
-    For each delta contribution the equality is interpreted as
-    `a · x + c = 0` where `x` is the vector of free external time
-    values; we solve for the single free value at which the delta
-    fires, compute the delta's `1/|a|` Jacobian factor, evaluate the
-    (symbolic) coefficient factor at that point, check any retardation
-    half-spaces, and add `coeff / |a| / Δτ` to the nearest grid bin.
-
-    Supports the MVP case where there is exactly ONE free external
-    time (`free_ext_dim == 1`), which covers k=2 with one external
-    leaf pinned as the origin. For k ≥ 3, the delta's hypersurface is
-    higher-dimensional and this helper raises `NotImplementedError`;
-    that case can be added when needed.
+    Each delta contribution stores a linear equality
+    `a · x + c = 0` in the free-external-time vector `x` (of length
+    `free_ext_dim`). On a 1D slice where all-but-one entry of `x` is
+    fixed, the equality collapses to `a_vary · τ + c' = 0` where
+    `c' = c + Σ_{j ≠ vary_index} a_j · fixed_values[j]`. We solve
+    `τ_fire = −c' / a_vary`, evaluate the coefficient callable at the
+    (fixed + varying) point, check any retardation half-spaces, and
+    deposit `coeff / |a_vary| / Δτ` into the nearest bin on
+    `tau_grid`.
 
     Parameters
     ----------
     delta_contributions : list of dict
-        As returned by `integrate_tree_diagram` (under
-        `delta_contributions`) or `compute_correction_td` (same key).
+        As returned by `integrate_tree_diagram` under
+        `delta_contributions` or `compute_correction_td` under the
+        same key. Each entry has `equality_a`, `equality_c`,
+        `coeff_fc`, and `retardation_data`.
     tau_grid : 1-D numpy array
-        Uniformly spaced grid of τ values. Bin width is inferred as
-        `tau_grid[1] - tau_grid[0]`.
-    free_ext_dim : int
-        Number of free external-time dimensions. MVP supports 1.
-    pinned_values : dict or None
-        Reserved for future use (mapping pinned-index → value). Not
-        used in the MVP.
+        Uniformly spaced grid of τ values along the axis being varied.
+        Bin width is inferred as `tau_grid[1] - tau_grid[0]`.
+    free_ext_dim : int, default 1
+        Number of free-external-time dimensions that each
+        `delta_contribution['equality_a']` is parameterized over.
+        For k=2 with one leaf pinned this is 1; for k=3 it is 2.
+    vary_index : int, default 0
+        Which component of the free-external-time vector is swept by
+        `tau_grid`. All other components are pinned to the
+        corresponding value in `fixed_values`.
+    fixed_values : dict or None
+        Mapping `{j: value}` for indices `j ≠ vary_index`. Any index
+        not supplied is pinned to 0.0. For the common k=3 "slice
+        through the origin" the default (all zeros) is usually what
+        the caller wants.
 
     Returns
     -------
     numpy.ndarray (complex)
         An array the same length as `tau_grid`, with zeros everywhere
-        except at the bins where δ contributions fire. Caller should
-        add this to the smooth Phase J evaluation of `total_C` on the
-        same grid.
+        except at the bins where δ contributions fire.
 
     Notes
     -----
-    Because δ contributions are concentrated at a single τ point but
-    the output grid has finite bin width Δτ, the integer weight of the
-    δ (`coeff / |a|`) is spread across a single bin as a density of
-    `(coeff / |a|) / Δτ`. This matches the discretization convention
-    used by the notebook's `ift_via_residues` to draw shot-noise
-    spikes at τ = 0.
+    A δ contribution whose equality is IDENTICALLY zero on the chosen
+    slice (i.e., `a_vary == 0` but the remaining slice residual is
+    also zero) corresponds to a "δ along the whole slice" — the
+    contribution is continuous along the varying axis rather than
+    concentrated at a single bin. These contributions are **skipped**
+    by this helper with a silent pass; they should be handled by a
+    full 2D grid evaluator or by adding an explicit continuous
+    contribution to the smooth total. Callers can inspect
+    `delta_contributions` directly to detect this case.
     """
     import numpy as np
 
-    if free_ext_dim != 1:
-        raise NotImplementedError(
-            f"eval_delta_contributions_on_tau_grid: free_ext_dim="
-            f"{free_ext_dim} not yet supported (MVP = 1)"
+    if free_ext_dim < 1:
+        raise ValueError(f"free_ext_dim must be >= 1, got {free_ext_dim}")
+    if not (0 <= vary_index < free_ext_dim):
+        raise ValueError(
+            f"vary_index={vary_index} out of range for "
+            f"free_ext_dim={free_ext_dim}"
         )
+    if fixed_values is None:
+        fixed_values = {}
 
     tau_grid = np.asarray(tau_grid, dtype=float)
     if tau_grid.size < 2:
@@ -667,42 +681,59 @@ def eval_delta_contributions_on_tau_grid(
     dtau = float(tau_grid[1] - tau_grid[0])
     out = np.zeros_like(tau_grid, dtype=complex)
 
+    # Build the full fixed-values vector (length free_ext_dim, with
+    # vary_index slot filled in per-evaluation).
+    other_indices = [j for j in range(free_ext_dim) if j != vary_index]
+    fixed_vec_template = [0.0] * free_ext_dim
+    for j in other_indices:
+        fixed_vec_template[j] = float(fixed_values.get(j, 0.0))
+
     for dc in delta_contributions:
         eq_a = dc['equality_a']
         eq_c = dc['equality_c']
-        if len(eq_a) != 1:
-            # Should match free_ext_dim. Silently skip mismatch.
+        if len(eq_a) != free_ext_dim:
+            # Dimension mismatch between the delta contribution and
+            # the caller's advertised free_ext_dim. Silently skip.
             continue
-        a0 = eq_a[0]
-        if abs(a0) < 1e-15:
-            # Degenerate equality: either identically satisfied
-            # (shouldn't happen — was filtered as trivial upstream)
-            # or infeasible. Skip.
-            continue
-        tau_fire = -eq_c / a0
 
-        # Evaluate the coefficient at the fire point
+        a_vary = eq_a[vary_index]
+        c_eff = eq_c + sum(
+            eq_a[j] * fixed_vec_template[j] for j in other_indices
+        )
+
+        if abs(a_vary) < 1e-15:
+            # On the chosen slice the equality is either identically
+            # satisfied (c_eff ≈ 0 → δ along the whole slice, skipped)
+            # or infeasible (c_eff ≠ 0 → no contribution).
+            continue
+        tau_fire = -c_eff / a_vary
+
+        # Build the full point in free-ext-time space for evaluating
+        # the coefficient callable
+        eval_vec = list(fixed_vec_template)
+        eval_vec[vary_index] = float(tau_fire)
+
         coeff_fc = dc['coeff_fc']
         try:
-            coeff_val = complex(coeff_fc(float(tau_fire)))
+            coeff_val = complex(coeff_fc(*eval_vec))
         except Exception:
             continue
 
         # Check retardation constraints at the fire point
         retard_ok = True
         for (a_list, c0) in dc.get('retardation_data', []):
-            if len(a_list) != 1:
+            if len(a_list) != free_ext_dim:
                 retard_ok = False
                 break
-            val = a_list[0] * tau_fire + c0
+            val = c0 + sum(a_list[j] * eval_vec[j] for j in range(free_ext_dim))
             if val <= 0:
                 retard_ok = False
                 break
         if not retard_ok:
             continue
 
-        # δ(a · τ + c) = δ(τ − τ_fire) / |a|
-        weight = coeff_val / abs(a0)
+        # δ(a_vary · τ + c_eff) = δ(τ − τ_fire) / |a_vary|
+        weight = coeff_val / abs(a_vary)
 
         # Find the nearest grid bin and add weight / dtau
         idx = int(np.argmin(np.abs(tau_grid - tau_fire)))

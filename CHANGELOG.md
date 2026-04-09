@@ -4,6 +4,131 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J k=3 support: skip Phase I pole/FFT IFT at k>=3, evaluate time-domain slices vs simulation
+
+### Context
+
+Phase I's pole/FFT inverse-Fourier-transform path is unreliable for
+`k >= 3`: the nD spectrum grid aliases badly on anything but a very
+fine ω grid, and the residue IFT doesn't generalize cleanly to
+multi-dimensional time arguments (`C(τ_1, τ_2, ...)` with multiple
+time differences). The user asked for the notebook to skip Phase I
+entirely at `k >= 3` and compare the Phase J time-domain evaluator
+directly against the simulation cumulant slices.
+
+### What changed
+
+- `msrjd/integration/time_domain/final_integral.py` —
+  `eval_delta_contributions_on_tau_grid` is generalized from
+  `free_ext_dim == 1` to arbitrary `free_ext_dim`, with two new
+  parameters:
+    - `vary_index` (int): which component of the free-external-time
+      vector is swept along `tau_grid`.
+    - `fixed_values` (dict): `{j: value}` pinning the other
+      components to fixed values (default 0.0 each).
+  A δ contribution whose equality collapses to `0 = 0` on the chosen
+  slice (a "δ along the whole slice") is silently skipped — it can't
+  be represented as a single-bin spike. Single-point-on-slice spikes
+  continue to work as before.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` cell 28 — the `k >= 2`
+  frequency-domain evaluation block is gated on `k == 2`. For
+  `k >= 3` a short prelude creates a τ grid and sets every Phase I
+  output variable (`C_tree_tau`, `C_total_tau`, `C_tree_residue`,
+  `C_tree_tau_slices`, `C_total_tau_slices`) to `None`, so
+  downstream cells can detect Phase I's absence and fall back to
+  Phase J. The existing k=2 code is indented under `else:` and is
+  otherwise untouched.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` cell 30 (Phase J 8.1) —
+  now has three branches:
+    - `k == 1`: no-op (deferred)
+    - `k == 2`: single-slice evaluation with `t_2` pinned to origin,
+      δ spikes inserted via `eval_delta_contributions_on_tau_grid`
+      at `free_ext_dim=1`.
+    - `k == 3`: `origin_leaf_idx=None`, evaluate two slices that
+      match the simulation cell's convention
+      (`C(0, τ, 0)` for slice 0 and `C(0, 0, τ)` for slice 1 —
+      varying leaf 1's and leaf 2's times respectively). δ spikes
+      are inserted per slice via
+      `eval_delta_contributions_on_tau_grid(..., free_ext_dim=3,
+      vary_index=1 or 2, fixed_values={other_two: 0.0})`. Results
+      are stored in a new `C_tree_phase_j_slices = {0: …, 1: …}`
+      dict.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` cell 31 (Phase J 8.2
+  plot) — a new k=3 branch draws both slices in a 2-panel figure
+  labelled `C^{(3)}(τ_1, 0)` and `C^{(3)}(0, τ_2)`. The k=2 overlay
+  now also guards `C_tree_tau is not None` so it degrades gracefully
+  if Phase I was skipped.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` cell 33 (simulation
+  comparison) — the theory-plot block now guards every Phase I
+  reference on `is not None` and overlays Phase J whenever it's
+  available. For k=2 the Phase J curve is plotted as a dotted magenta
+  line on top of the Phase I curves; for k=3 it's plotted as a
+  solid magenta line (since Phase I is absent). The simulation
+  curve is unchanged.
+
+- `tests/test_time_domain.py` — new test
+  `test_phase_J_k3_star_tree_finite_and_stationary`:
+  1. Builds the minimal k=3 fixture — a 1-population 1-pole
+     propagator with a single source vertex feeding three outgoing
+     edges to three leaves (all via the same G_R entry).
+  2. Runs `compute_correction_td(..., origin_leaf_idx=None)`.
+  3. Asserts the result is finite and stationary:
+     `C(t_1+Δ, t_2+Δ, t_3+Δ) == C(t_1, t_2, t_3)` for several Δ, to
+     within `1e-8`.
+
+### Numerical sanity
+
+On the notebook's linear Hawkes 4-field k=3 fixture with
+`external_fields = [('dn', 1), ('dn', 1), ('dn', 2)]` and the
+fundamental parameters `E=[1, 0.5], w=[[0.3, 0.5], [0.1, 0.3]],
+tau=10`:
+
+- 6 kernel groups, all handled by `tree_evaluator`, 0 skipped.
+- 1 shot-noise δ contribution produced with equality
+  `−t_1 + t_2 = 0` (i.e., the "t_1 = t_2" shot-noise hyperplane from
+  the two identical `dn_1` leaves).
+- Phase J slice values at (t_1, t_2, t_3) = (0, 0, 0) agree between
+  the two slices (1.048e-03), as expected when both slices intersect
+  at the origin.
+- Slice 0 (vary leaf 1) and slice 1 (vary leaf 2) both decay at
+  large |τ|.
+
+### Limitations / known caveats
+
+- **Degenerate δ-on-slice**: for the k=3 autocorrelator-like case,
+  the δ contribution's equality can collapse to `0 = 0` on one of
+  the two chosen slices. For
+  `external_fields = [('dn', 1), ('dn', 1), ('dn', 2)]` the single
+  δ equality is `t_1 = t_2`; on slice 0 (which fixes t_1 = 0 and
+  varies t_2) the δ fires at τ = 0 as a single-bin spike, but on
+  slice 1 (which fixes t_1 = t_2 = 0 and varies t_3) the equality
+  is satisfied *for every* τ_3 — i.e., the δ lies "along the whole
+  slice". The helper silently drops this case. The physical
+  interpretation is that this subset contributes a continuous
+  function (not a spike) along the slice, which the discrete
+  single-bin insertion can't represent. It will show up as a
+  systematic offset on slice 1 only if the contribution is large.
+  Proper handling requires either a full 2D grid evaluator or
+  reformulating that subset as a smooth contribution — deferred.
+
+- **Leaf-label symmetry for identical external fields**: the
+  diagram enumeration treats leaves as distinguishable (`leaf i`
+  gets `external_fields[i]` fixed, not permuted). For identical
+  external fields at leaves 0 and 1, this means Phase J's result
+  is not automatically symmetric under `t_1 ↔ t_2`. Stationarity
+  (verified by the new test) still holds, and the sum over kernel
+  groups does include both orderings at the DIAGRAM level, so the
+  grand total should be correct — but individual slices may show
+  small non-symmetries depending on whether the per-group
+  enumeration covers both orderings. This is a pre-existing
+  property of the enumeration layer, not a Phase J issue.
+
+---
+
 ## 2026-04-08 — Phase J shot-noise δ(τ) spike: expose and discretize
 
 ### Symptom
