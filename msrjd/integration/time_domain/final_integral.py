@@ -691,6 +691,7 @@ def eval_delta_contributions_on_tau_grid(
     for dc in delta_contributions:
         eq_a = dc['equality_a']
         eq_c = dc['equality_c']
+        coeff_fc = dc['coeff_fc']
         if len(eq_a) != free_ext_dim:
             # Dimension mismatch between the delta contribution and
             # the caller's advertised free_ext_dim. Silently skip.
@@ -702,9 +703,40 @@ def eval_delta_contributions_on_tau_grid(
         )
 
         if abs(a_vary) < 1e-15:
-            # On the chosen slice the equality is either identically
-            # satisfied (c_eff ≈ 0 → δ along the whole slice, skipped)
-            # or infeasible (c_eff ≠ 0 → no contribution).
+            if abs(c_eff) > 1e-12:
+                # Infeasible: the δ surface doesn't intersect this
+                # slice at all → zero contribution.
+                continue
+            # DEGENERATE: the δ equality is satisfied EVERYWHERE on
+            # this slice. The contribution is NOT a spike — it's a
+            # smooth continuous function along the varying axis:
+            #   C_degenerate(τ) = coeff_fc(τ) (no 1/dtau divisor)
+            # This is the "pair-driven" piece: e.g. for two identical
+            # pop-1 fields at the same time (δ(τ₁) on the τ₁=0
+            # slice), the remaining smooth propagator to pop-2 gives
+            # a decaying function of τ₂.
+            for i_tau, tau_val in enumerate(tau_grid):
+                eval_vec = list(fixed_vec_template)
+                eval_vec[vary_index] = float(tau_val)
+                try:
+                    val = complex(coeff_fc(*eval_vec))
+                except Exception:
+                    continue
+                # Check retardation constraints at this point
+                retard_ok = True
+                for (a_list, c0) in dc.get('retardation_data', []):
+                    if len(a_list) != free_ext_dim:
+                        retard_ok = False
+                        break
+                    r_val = c0 + sum(
+                        a_list[j] * eval_vec[j]
+                        for j in range(free_ext_dim)
+                    )
+                    if r_val <= 0:
+                        retard_ok = False
+                        break
+                if retard_ok:
+                    out[i_tau] = out[i_tau] + val
             continue
         tau_fire = -c_eff / a_vary
 
