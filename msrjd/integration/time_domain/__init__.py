@@ -43,8 +43,13 @@ multiplying the analytic pole-residue sum by `heaviside(t)`.
 
 Public API
 ----------
-- `propagator_td.build_G_t_matrix` — symbolic G(t) matrix via pole-residue sum
-- `propagator_td.G_t_entry`         — retarded edge propagator lookup (transposed)
+- `propagator_td.build_G_t_matrix` — dict {'smooth', 'delta', 't_var'}
+  with the pole-residue sum for the smooth part and the ω→∞ limits
+  for the δ(t) coefficients.
+- `propagator_td.G_t_entry`         — retarded edge propagator lookup
+  (smooth part only; accepts either the new dict or a bare matrix)
+- `propagator_td.G_t_delta_coeff`   — δ(t) coefficient lookup for
+  an instantaneous response entry
 - `subgraph.identify_loop_subgraphs` — loop subgraph identification (stub at MVP)
 - `final_integral.integrate_tree_diagram` — vertex-time integration (tree only)
 - `pipeline.compute_correction_td`  — Phase J entry point / orchestrator
@@ -53,6 +58,7 @@ Public API
 from msrjd.integration.time_domain.propagator_td import (
     build_G_t_matrix,
     G_t_entry,
+    G_t_delta_coeff,
 )
 from msrjd.integration.time_domain.subgraph import (
     LoopSubgraph,
@@ -60,6 +66,7 @@ from msrjd.integration.time_domain.subgraph import (
 )
 from msrjd.integration.time_domain.final_integral import (
     integrate_tree_diagram,
+    format_td_integral_latex,
 )
 from msrjd.integration.time_domain.pipeline import (
     compute_correction_td,
@@ -68,8 +75,10 @@ from msrjd.integration.time_domain.pipeline import (
 __all__ = [
     'build_G_t_matrix',
     'G_t_entry',
+    'G_t_delta_coeff',
     'LoopSubgraph',
     'identify_loop_subgraphs',
     'integrate_tree_diagram',
+    'format_td_integral_latex',
     'compute_correction_td',
 ]

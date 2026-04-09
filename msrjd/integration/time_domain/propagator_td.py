@@ -41,51 +41,76 @@ Conventions (fixed pipeline-wide)
    matches `_get_propagator_entry` in `msrjd/integration/symbolic.py`.
 """
 
-from sage.all import SR, I, exp, heaviside
+from sage.all import SR, I, exp, heaviside, matrix, CDF
 
 
 def build_G_t_matrix(propagator_data, t_var, num_params=None):
     r"""
-    Build the symbolic time-domain propagator matrix G(t) via the
-    pole-residue sum.
+    Build the full time-domain retarded propagator `G_R(t)` as a
+    decomposition
 
-    The pole-residue form gives the ANALYTIC exponential part of the
-    time-domain propagator:
+        G_R[i, j](t)  =  delta_coeffs[i, j] · δ(t)
+                       + heaviside(t) · (Σ_k C_mats[k][i, j] · exp(I · p_k · t))
 
-        G_analytic[i, j](t) = Σ_k  C_mats[k][i, j] · exp(I · pole_vals[k] · t)
+    The SECOND piece is the "smooth" pole-residue sum and is returned as
+    a SageMath SR matrix. The FIRST piece is the instantaneous
+    δ-function response that shows up for any entry whose
+    frequency-domain propagator has a nonzero limit at `ω → ∞` (e.g.
+    the `ñ_i × δn_i` coupling in the MSR-JD action, where a ñ source at
+    time `t` produces an *immediate* δn response at the same time `t`).
+    Its coefficients are returned as a SageMath matrix of complex
+    constants `delta_coeffs[i, j] = lim_{ω→∞} Ĝ[i, j](ω)`.
 
-    Causality (retarded boundary condition) is **not** applied here — the
-    caller must multiply by `heaviside(t)` to obtain the physical
-    retarded propagator G_R(t) = Θ(t) · G_analytic(t). Under the Fourier
-    convention documented at the top of this module, the causality
-    filter guarantees Im(pole_vals[k]) > 0, so `G_analytic(t)` decays
-    for t > 0 and grows for t < 0; the Heaviside is what makes the
-    product well-defined on the whole real line and enforces retarded
-    time ordering.
+    The caller is responsible for handling the Heaviside (by
+    multiplication or by polytope constraint) and the δ-function (by
+    subset enumeration in the tree integrator, where a δ edge collapses
+    one integration variable).
+
+    Fourier convention (fixed pipeline-wide): the causality filter
+    guarantees every pole in `propagator_data['pole_vals']` has
+    `Im(p) > 0`, so each summand `C_k · exp(I·p_k·t)` decays for t > 0
+    and grows for t < 0. The Heaviside in the retarded convention is
+    what makes this well-defined on the real line.
 
     Parameters
     ----------
     propagator_data : dict
-        Must contain keys 'pole_vals' (list of SR) and 'C_mats' (list of
-        SageMath matrices, one per pole). This is the same dict consumed
-        by `msrjd.integration.symbolic`.
+        Must contain keys 'pole_vals' (list of SR), 'C_mats' (list of
+        SageMath matrices, one per pole), and 'G_ft' (the full
+        frequency-domain propagator, required to compute the
+        ω→∞ limits for the delta coefficients). This is the same dict
+        consumed by `msrjd.integration.symbolic`.
     t_var : SR variable
-        The symbolic time variable to build G(t) in.
+        The symbolic time variable to build the smooth G(t) in.
     num_params : dict or None
-        If provided, each pole value and residue matrix entry is
-        substituted with these numerical parameters BEFORE the symbolic
-        matrix is assembled. This is usually the right call for numerical
-        work — symbolic propagator entries with fully symbolic parameters
-        produce a blow-up of terms downstream.
+        If provided, each pole value, residue matrix entry, and
+        delta-coefficient entry is substituted with these numerical
+        parameters BEFORE the matrices are assembled.
 
     Returns
     -------
-    G_t : SageMath matrix (SR)
-        Symbolic time-domain propagator matrix (analytic part; no
-        Heaviside applied).
+    dict with keys:
+        'smooth' : SageMath matrix (SR)
+            `G_smooth[i, j](t) = Σ_k C_k[i,j] · exp(I·p_k·t)`
+            The "analytic part" — caller must multiply by `heaviside(t)`
+            to enforce retardation.
+        'delta'  : SageMath matrix (SR)
+            `delta[i, j] = lim_{ω→∞} Ĝ[i, j](ω)`, as a matrix of
+            complex constants. Most entries are zero; any nonzero
+            entry encodes a δ(t) component of `G_R[i, j](t)`.
+        't_var'  : SR variable
+            The time variable used to build `smooth` (so downstream
+            code can substitute into it).
+
+    Notes
+    -----
+    For backward compatibility, passing the returned dict back into
+    `G_t_entry` is supported; `G_t_entry` also accepts a bare matrix
+    (treated as the smooth part only).
     """
     pole_vals = propagator_data['pole_vals']
     C_mats = propagator_data['C_mats']
+    G_ft = propagator_data.get('G_ft')
 
     if num_params:
         pole_vals = [SR(p).subs(num_params) for p in pole_vals]
@@ -94,42 +119,110 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
             for C in C_mats
         ]
 
-    G_t = sum(
+    smooth = sum(
         C_mats[k] * exp(I * pole_vals[k] * t_var)
         for k in range(len(pole_vals))
     )
     try:
-        G_t = G_t.apply_map(lambda e: e.simplify_full())
+        smooth = smooth.apply_map(lambda e: e.simplify_full())
     except Exception:
         # simplify_full may fail on expressions with numerical complex
         # coefficients; fall back to unsimplified form.
         pass
-    return G_t
+
+    # Compute delta coefficients: the ω → ∞ limit of each entry of G_ft.
+    # For a rational propagator num(ω) / den(ω), the limit is nonzero iff
+    # deg(num) == deg(den). We detect this numerically by evaluating at a
+    # "large" ω and at an even larger ω and checking that the ratio is
+    # ~ 1 (constant) vs ~ 1/2 (1/ω decay) vs ~ 1/4 (1/ω² decay), etc.
+    # This works on rational or partial-rational expressions without
+    # requiring symbolic limit() machinery (which is slow and fragile).
+    nrows, ncols = (G_ft.dimensions() if G_ft is not None
+                    else smooth.dimensions())
+    delta_data = [[SR(0)] * ncols for _ in range(nrows)]
+    if G_ft is not None:
+        # Work out which symbol is ω by finding the unique non-param
+        # variable in G_ft entries.
+        omega_sym = _infer_omega_variable(G_ft, num_params)
+        if omega_sym is not None:
+            big1 = 1e12
+            big2 = 2e12
+            for i in range(nrows):
+                for j in range(ncols):
+                    entry = SR(G_ft[i, j])
+                    if num_params:
+                        entry = entry.subs(num_params)
+                    try:
+                        v1 = complex(CDF(entry.subs({omega_sym: big1})))
+                        v2 = complex(CDF(entry.subs({omega_sym: big2})))
+                    except Exception:
+                        continue
+                    # If both values are ~equal and finite, that's the limit.
+                    if abs(v1) > 1e-9 and abs(v1 - v2) < 1e-6 * abs(v1):
+                        # Nonzero limit → δ(t) component
+                        delta_data[i][j] = SR(v1)
+                    # else: limit is zero (pure rational decay)
+    delta_coeffs = matrix(SR, delta_data)
+
+    return {
+        'smooth': smooth,
+        'delta': delta_coeffs,
+        't_var': t_var,
+    }
 
 
-def G_t_entry(G_t_matrix, phys_idx, resp_idx, t_expr,
+def _infer_omega_variable(G_ft, num_params):
+    """
+    Find the unique free variable in G_ft (after num_params substitution)
+    that is assumed to be the frequency symbol ω.
+    """
+    free = set()
+    nrows, ncols = G_ft.dimensions()
+    for i in range(nrows):
+        for j in range(ncols):
+            entry = SR(G_ft[i, j])
+            if num_params:
+                entry = entry.subs(num_params)
+            try:
+                free.update(entry.variables())
+            except Exception:
+                pass
+    if not free:
+        return None
+    # Prefer a variable literally named 'omega' if one exists.
+    for v in free:
+        if str(v) == 'omega':
+            return v
+    # Otherwise just take the first one.
+    return sorted(free, key=str)[0]
+
+
+def G_t_entry(G_t_obj, phys_idx, resp_idx, t_expr,
               include_heaviside=True):
     r"""
-    Look up the retarded propagator 'response of physical field
-    phys_idx to response-field source resp_idx' at time `t_expr`.
+    Look up the SMOOTH retarded-propagator entry 'response of physical
+    field `phys_idx` to response-field source `resp_idx`' at time
+    `t_expr`. This returns **only the smooth (pole-residue) part** —
+    any δ(t) component of the full retarded propagator is handled
+    separately by the tree evaluator (see `final_integral.py`).
 
-    Returns `G_t_matrix[phys_idx, resp_idx]` with `t_var` substituted to
-    `t_expr`, optionally multiplied by `heaviside(t_expr)` to enforce
-    retarded time ordering (the default).
+    Returns `smooth[phys_idx, resp_idx]` with its internal time
+    variable substituted to `t_expr`, optionally multiplied by
+    `heaviside(t_expr)` to enforce retarded time ordering.
 
-    This reads the (phys, resp) entry of the matrix — i.e., the
-    TRANSPOSE of the (resp, phys) convention natural to the kernel
-    matrix K. This transpose matches `_get_propagator_entry` in
+    This reads the (phys, resp) entry — i.e., the TRANSPOSE of the
+    (resp, phys) convention natural to the kernel matrix K. This
+    transpose matches `_get_propagator_entry` in
     `msrjd/integration/symbolic.py` line ~305; both paths (Phase I and
     Phase J) must use the same transpose convention.
 
     Parameters
     ----------
-    G_t_matrix : SageMath matrix (SR)
-        Output of `build_G_t_matrix`. The caller passes the matrix
-        explicitly (rather than the raw `propagator_data` dict) so that
-        numerically-substituted matrices can be reused across many edge
-        lookups without recomputing.
+    G_t_obj : dict or SageMath matrix (SR)
+        Output of `build_G_t_matrix`. If a dict (the current format),
+        the `'smooth'` entry is used. If a bare SR matrix is passed,
+        it is treated as the smooth part directly (backward compat for
+        tests and external callers).
     phys_idx : int
         Row index (physical field at the head of the edge).
     resp_idx : int
@@ -144,10 +237,11 @@ def G_t_entry(G_t_matrix, phys_idx, resp_idx, t_expr,
     -------
     SR expression
     """
-    # G_t_matrix was built in terms of a single time variable (often
-    # called 't'); recover it so we can substitute t -> t_expr.
-    # We locate the unique variable in G_t_matrix that is not among the
-    # numerical-parameter symbols by inspecting any nonzero entry.
+    if isinstance(G_t_obj, dict):
+        G_t_matrix = G_t_obj['smooth']
+    else:
+        G_t_matrix = G_t_obj
+
     t_var = _infer_time_variable(G_t_matrix)
     entry = SR(G_t_matrix[phys_idx, resp_idx])
     if t_var is not None:
@@ -155,6 +249,32 @@ def G_t_entry(G_t_matrix, phys_idx, resp_idx, t_expr,
     if include_heaviside:
         entry = entry * heaviside(t_expr)
     return entry
+
+
+def G_t_delta_coeff(G_t_obj, phys_idx, resp_idx):
+    """
+    Return the δ(t) coefficient of the retarded propagator entry
+    `G_R[phys_idx, resp_idx](t)` — i.e., `lim_{ω→∞} Ĝ[phys_idx,
+    resp_idx](ω)`. This is the instantaneous-response weight that the
+    tree evaluator uses when enumerating δ-edge subsets.
+
+    Returns a Python complex number (or a real number if the imaginary
+    part is negligible). Returns 0 if there is no δ component or the
+    input is a bare smooth matrix without delta info.
+    """
+    if not isinstance(G_t_obj, dict):
+        return 0.0 + 0.0j
+    delta_matrix = G_t_obj.get('delta')
+    if delta_matrix is None:
+        return 0.0 + 0.0j
+    val = delta_matrix[phys_idx, resp_idx]
+    try:
+        c = complex(CDF(val))
+    except Exception:
+        return 0.0 + 0.0j
+    if abs(c.imag) < 1e-12 * max(abs(c.real), 1.0):
+        return float(c.real)
+    return c
 
 
 def _infer_time_variable(G_t_matrix):

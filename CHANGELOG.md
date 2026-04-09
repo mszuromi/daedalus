@@ -4,6 +4,180 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J δ(t)-component fix: handle instantaneous propagator entries
+
+### Symptom
+
+After the earlier overflow fix (see below), Phase J still produced a
+**symmetric curve at ~1/3 the correct amplitude** on the full linear
+Hawkes k=2 notebook run, while matching on the 1×1 and 2×2 regression
+fixtures. The mismatch was specific to propagators whose frequency-
+domain entries have a nonzero `ω → ∞` limit (i.e., instantaneous
+couplings like `ñ_i × δn_i` in the MSR-JD Hawkes action).
+
+### Root cause
+
+`build_G_t_matrix` constructed the time-domain retarded propagator as
+the pole-residue sum
+
+    G_R[i, j](t) ≈ Σ_k C_mats[k][i, j] · exp(I · p_k · t) · Θ(t)
+
+which is the correct smooth decay component — **but misses a δ(t)
+contribution** whenever `lim_{ω→∞} Ĝ[i, j](ω) ≠ 0`. The physical
+meaning is that an instantaneous coupling in the action (like ñ × δn)
+means a ñ source at time `t` produces an *immediate* δn response at
+the same time `t`, not a delayed exponential. The full retarded
+propagator decomposition is
+
+    G_R[i, j](t)  =  delta_coeff[i, j] · δ(t)
+                  +  Θ(t) · smooth[i, j](t)
+
+where `delta_coeff[i, j] = lim_{ω→∞} Ĝ[i, j](ω)`.
+
+For the linear Hawkes 2-pop fixture, `G_ft[nt_i, dn_i] = 1 + O(1/ω)`,
+so `delta_coeff[nt_i, dn_i] = 1` — these entries carry a δ(t) that
+was being silently dropped from the time-domain integrand.
+
+For the k=2 ⟨δn₁ δn₂⟩ tree diagram with source at `nt_1`, edge 1
+(source → leaf₁) uses `G_R[dn₁, nt₁]` which has δ(t), while edge 2
+(source → leaf₂) uses `G_R[dn₂, nt₁]` which is smooth. The full
+contribution has **four** terms from the 2² = 4 choices of which
+edges use their δ component vs their smooth component:
+
+    Σ_{S ⊆ edges}  ∫ ds (∏_{e∈S} c_e·δ(dt_e)) · (∏_{e∉S} smooth_e · Θ)
+
+For this particular diagram:
+- `S = ∅`: the smooth-smooth convolution (what Phase J computed before).
+- `S = {edge₁}`: δ pins `s = t₁`, contribution
+  `c₁ · G_R[dn₂, nt₁](t₂ − t₁)` nonzero only for `τ < 0`.
+- `S = {edge₂}`: δ coefficient is 0, drops out.
+- `S = {both}`: edge₂ has no δ, drops out.
+
+The missing `S = {edge₁}` term accounted for exactly the observed
+discrepancy at `τ < 0` in the notebook plot. Direct verification:
+at `τ = −1` Phase J returned `6.58e-3`, direct scipy IFT returned
+`2.73e-2`, and the analytical `c₁ · G_R[dn₂, nt₁](1)` correction
+was `2.07e-2`. Sum: `6.58e-3 + 2.07e-2 = 2.73e-2` ✓.
+
+### What changed
+
+- `msrjd/integration/time_domain/propagator_td.py` — `build_G_t_matrix`
+  now returns a dict `{'smooth', 'delta', 't_var'}` instead of a bare
+  matrix. The `'smooth'` entry is the old pole-residue sum; the new
+  `'delta'` entry is a matrix of numeric constants `c_{ij} = lim_{ω→∞}
+  Ĝ[i,j](ω)` computed by evaluating at a large ω and checking for a
+  stable (non-decaying) limit. A new helper `G_t_delta_coeff(G_t_obj,
+  pi, ri)` returns the δ coefficient for one entry; `G_t_entry` accepts
+  either the new dict or a bare matrix (for backward compat).
+- `msrjd/integration/time_domain/final_integral.py` — `integrate_tree_diagram`
+  is rewritten to enumerate the `2^|E|` subsets of edges that take
+  their δ component. For each subset:
+  1. The δ-edge equalities `dt_e = 0` are solved via `sage.all.solve`
+     to eliminate integration variables by substitution (on the MVP
+     star tree, δ edges pin the source time to a leaf time).
+  2. If the residual constraints force equality among external times,
+     that subset contributes a `δ(τ)` shot-noise spike — it's counted
+     in `n_shotnoise_skipped` and excluded from the continuous
+     callable, matching how the notebook's `ift_via_residues` and the
+     Phase I residue path handle shot noise separately.
+  3. The remaining smooth-factor product is `.expand()`'d into a sum
+     of single exponentials (to preserve the earlier overflow fix)
+     and JIT-compiled via `fast_callable` over the reduced polytope.
+  4. All subset contributions are summed in the final callable.
+
+  The `.is_trivial_zero()` check replaces `subset_factor == 0` because
+  the latter triggers Sage's `simplify_full()` which invokes Maxima
+  and can hang / throw ECL errors on the deeply nested symbolic
+  expressions produced by the 4-field linear Hawkes kernel.
+
+- `msrjd/integration/time_domain/__init__.py` — now exports
+  `G_t_delta_coeff` and `format_td_integral_latex`.
+
+- `msrjd/integration/time_domain/final_integral.py` — new helper
+  `format_td_integral_latex(tree_result, …)` produces a LaTeX string
+  summarizing the Phase J integrand structure for a tree diagram in
+  the same style as the notebook's `show_integral` helper for the
+  frequency-domain Phase I integrand. It shows the vertex-time
+  assignment, the `∫ds · ∏ G_R · Θ` form, and any nonzero δ edge
+  coefficients.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` Section 8.1 — now calls
+  `format_td_integral_latex` for each tree kernel group and
+  `display(Math(...))`s it, so the Phase J integrand structure is
+  visible in the notebook output alongside the numerical result.
+
+- `tests/test_time_domain.py` — two new regression tests:
+  1. `test_G_t_matrix_detects_delta_component` — on a minimal 2×2
+     fixture with `G_ft[0,0] = (1+iω)/(1+a+iω) → 1` at `ω → ∞`,
+     verifies `build_G_t_matrix` returns a dict with the correct
+     `delta[0,0] = 1` coefficient.
+  2. `test_phase_J_delta_component_asymmetric_cross_correlator` —
+     end-to-end: constructs a tree diagram whose two edges use
+     different matrix entries (one with δ, one without), runs
+     Phase J, and compares the callable output to a closed-form
+     analytic result derived by hand from the δ-subset expansion.
+     Agreement is `< 1e-10` (machine precision) at six τ values
+     spanning both signs. Also asserts the result is asymmetric at
+     `± τ` — the canonical symptom of the bug before the fix.
+
+  The earlier `test_G_t_matrix_single_pole` test was updated to index
+  into `G_t_obj['smooth']` and to assert `delta[0,0] == 0` for the
+  non-instantaneous 1×1 propagator.
+
+### Numerical validation
+
+- Full suite: **127 passing** in 15 s (was 125 — two new regression
+  tests).
+- End-to-end on the linear Hawkes 4-field k=2 pipeline: Phase J now
+  matches direct `scipy.integrate.quad` IFT of the frequency-domain
+  integrand to **~1e-5 absolute accuracy** at all τ values tested.
+  Sample asymmetric output:
+
+      tau         scipy IFT          Phase J            diff       ratio
+       -5.00   3.5727e-02        3.5724e-02         2.86e-06    0.9999
+       -2.00   4.0905e-02        4.0900e-02         5.30e-06    0.9999
+       -0.50   4.3752e-02        4.3743e-02         8.91e-06    0.9998
+        0.50   7.2734e-02        7.2743e-02         8.93e-06    1.0001
+        2.00   6.8294e-02        6.8299e-02         5.29e-06    1.0001
+        5.00   6.0100e-02        6.0103e-02         2.86e-06    1.0000
+
+  Compare to pre-fix:
+
+      tau         scipy IFT          Phase J            ratio
+       -5.00   3.5727e-02        1.8127e-02         0.5074
+       -2.00   4.0905e-02        2.0984e-02         0.5130
+       -0.50   4.3752e-02        2.2581e-02         0.5161
+        0.50   7.2734e-02        2.2622e-02         0.3110
+        2.00   6.8294e-02        2.1131e-02         0.3094
+        5.00   6.0100e-02        1.8425e-02         0.3066
+
+  The asymmetry is now correctly captured (3.57e-2 at τ=−5 vs 6.01e-2
+  at τ=+5), matching the Phase I residue and FFT IFT outputs visible
+  in the notebook's cell 8.2 overlay plot.
+
+### Limitations / deferred
+
+- **Shot-noise δ(τ=0) spike**: when two or more edges with δ
+  components share a source vertex, the δ-subset enumeration forces
+  equality among external leaf times, producing a `δ(t_1 − t_2)`
+  spike. Phase J counts but **does not represent** this spike in the
+  continuous callable. It is reported in `tree_result['n_shotnoise_skipped']`
+  for downstream handling. The notebook's `ift_via_residues` path
+  handles this separately by adding an explicit delta at `τ = 0` to
+  the residue IFT output; Phase J will eventually need the same
+  treatment if a downstream caller needs the autocorrelation value
+  at `τ = 0`.
+
+- **Non-star trees**: the δ-subset solver currently uses `sage.all.solve`
+  to eliminate integration variables one at a time. For star trees
+  (all non-leaf vertices are the source) every δ edge pins the source
+  time directly, which always succeeds. For trees with interaction
+  vertices between the source and the leaves, some subsets may yield
+  unsolvable systems or residual integrations over reduced variables;
+  those cases should be flagged and verified when they first appear.
+
+---
+
 ## 2026-04-08 — Phase J numerical-overflow fix: expand integrand before fast_callable
 
 ### Symptom

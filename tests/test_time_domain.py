@@ -183,17 +183,24 @@ def _tree_k2_single_population(prop_idx=(0, 0)):
 
 def test_G_t_matrix_single_pole():
     """
-    For K(ω) = 1 + iω, the time-domain propagator should be exp(-t).
-    Numerically check at t = 1 against exp(-1).
+    For K(ω) = 1 + iω, the smooth time-domain propagator should be
+    exp(-t), and the δ(t) coefficient should be zero (this propagator
+    has no instantaneous response — G_ft decays as 1/ω at ω → ∞).
     """
     pd = _propagator_data_1pop()
     t = SR.var('t')
-    G_t = build_G_t_matrix(pd, t)
+    G_t_obj = build_G_t_matrix(pd, t)
 
-    val = G_t[0, 0].subs({t: 1})
+    assert isinstance(G_t_obj, dict)
+    smooth = G_t_obj['smooth']
+    delta = G_t_obj['delta']
+
+    val = smooth[0, 0].subs({t: 1})
     expected = float(exp(-1))
     assert abs(float(val.real()) - expected) < 1e-12
-    assert bool((G_t[0, 0] - exp(-t)).simplify_full().is_zero())
+    assert bool((smooth[0, 0] - exp(-t)).simplify_full().is_zero())
+    # No δ component for a 1/(α + iω) propagator (decays as 1/ω)
+    assert complex(delta[0, 0]) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -491,6 +498,208 @@ def test_phase_J_nondiagonal_2x2_does_not_overflow():
         assert abs(fft_val - pj_val) < 5e-3, (
             f'Phase J disagrees with notebook FFT IFT at τ={tv}: '
             f'FFT={fft_val}, PhaseJ={pj_val}'
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 6c: δ(t) component fix — Hawkes-style "instantaneous response"
+# ═══════════════════════════════════════════════════════════════════════
+
+def _propagator_data_instantaneous_pair():
+    r"""
+    Minimal 2×2 kernel whose frequency-domain inverse has an entry
+    with a nonzero `ω → ∞` limit — i.e., a δ(t) component in the
+    retarded time-domain propagator:
+
+        K(ω) = [[1,      1       ],
+                [-a,     1 + iω  ]]
+
+    `det K = (1 + iω) + a`, so the unique pole is at
+    `ω = i·(a − 1)`; it sits in the upper half plane for `a < 1`.
+
+    Inverse: G_ft[0,0] = (1 + iω) / (1 + iω + a) → 1 as ω → ∞, so
+    `G_R[0,0](t)` has a δ(t) component of weight 1. This mimics the
+    `ñ × δn` coupling in the MSR-JD Hawkes action, where a ñ source
+    at time t produces an immediate δn response at the same time t.
+
+    `G_ft[1,0] = a / (1 + iω + a)` has lim → 0, so `G_R[1,0](t)` is
+    smooth (no δ).
+    """
+    omega = SR.var('omega')
+    a = SR(3) / 10
+    K = matrix(SR, 2, 2, [
+        [SR(1),   SR(1)],
+        [-a,      1 + I * omega],
+    ])
+    adj = K.adjugate()
+    D_omega = K.det().expand()
+    D_prime = D_omega.diff(omega)
+
+    pole_eqs = sage_solve(D_omega == 0, omega)
+    pole_vals = [eq.rhs() for eq in pole_eqs]
+
+    C_mats = []
+    for w in pole_vals:
+        Cm = [[SR(0)] * 2 for _ in range(2)]
+        for i in range(2):
+            for j in range(2):
+                num = adj[i, j].subs({omega: w})
+                den = D_prime.subs({omega: w})
+                if num != 0:
+                    Cm[i][j] = (I * num / den).factor()
+        C_mats.append(matrix(SR, Cm))
+
+    return {
+        'G_ft': K.inverse(),
+        'G_ft_explicit': True,
+        'adj_ft': adj,
+        'D_omega': D_omega,
+        'pole_vals': pole_vals,
+        'C_mats': C_mats,
+        'nf': 2,
+    }
+
+
+def test_G_t_matrix_detects_delta_component():
+    """
+    Regression test for the 2026-04-08 "missing δ(t) component" bug.
+
+    `build_G_t_matrix` must return a dict with both 'smooth' and
+    'delta' keys. The delta matrix must be nonzero exactly on the
+    (row, col) entries whose frequency-domain propagator has a
+    nonzero `ω → ∞` limit.
+    """
+    pd = _propagator_data_instantaneous_pair()
+    t = SR.var('t')
+    obj = build_G_t_matrix(pd, t)
+
+    assert isinstance(obj, dict)
+    assert 'smooth' in obj and 'delta' in obj
+
+    delta = obj['delta']
+    d00 = complex(delta[0, 0])
+    d01 = complex(delta[0, 1])
+    d10 = complex(delta[1, 0])
+    d11 = complex(delta[1, 1])
+
+    # G_ft[0,0] = (1+iω)/(1+iω+a) → 1 as ω→∞ → δ(t) coeff = 1
+    assert abs(d00 - 1.0) < 1e-6, (
+        f'Expected δ coeff at [0,0] to be ~1, got {d00}'
+    )
+    # All other entries have lim → 0 → no δ
+    assert abs(d01) < 1e-6
+    assert abs(d10) < 1e-6
+    assert abs(d11) < 1e-6
+
+
+def test_phase_J_delta_component_asymmetric_cross_correlator():
+    r"""
+    End-to-end regression: the δ(t) component of an instantaneous
+    propagator entry was missing from Phase J before the 2026-04-08
+    fix, causing the resulting C(τ) to be symmetric and ~half the
+    correct amplitude. After the fix, Phase J should match the
+    analytical closed-form answer derived by hand from the δ-edge
+    subset expansion.
+
+    Fixture: 2×2 "instantaneous" K (see _propagator_data_instantaneous_pair).
+    Tree diagram: single source with two outgoing edges to distinct
+    leaves, using different matrix entries — one with a δ component
+    (G_ft[0,0]) and one without (G_ft[1,0]).
+
+    NB: we do NOT compare against `scipy.integrate.quad` IFT for this
+    fixture because the spectrum decays only as 1/ω at infinity
+    (from the `+1` constant in G_ft[0,0]), so the oscillatory integral
+    converges very slowly and scipy's adaptive quadrature is unreliable
+    as a reference. The analytical formula is derived from explicit
+    decomposition of G_R into its δ and smooth parts:
+
+        G_R[0,0](t) = δ(t) − a · exp(-(1+a)·t) · Θ(t)
+        G_R[1,0](t) =         a · exp(-(1+a)·t) · Θ(t)
+
+    with a = 3/10. Convolving (∫ G_R[0,0](t_1 − s) · G_R[1,0](−s) ds)
+    and multiplying by the pipeline's scalar_prefactor gives:
+
+        τ > 0:  pref · (−a² / (2(1+a))) · exp(−(1+a)τ)
+        τ < 0:  pref · a · exp((1+a)τ) · (2 + a) / (2(1+a))
+
+    These are asymmetric because the δ edge contribution at τ < 0 is
+    not mirrored at τ > 0.
+    """
+    from sage.all import exp as sexp
+    import math
+
+    pd = _propagator_data_instantaneous_pair()
+
+    # Tree k=2 diagram: source → leaf_1 via (ri=0, pi=0), source → leaf_2 via (ri=0, pi=1)
+    st = SourceType(SR(1), [('nt', 1), ('nt', 1)], (2, 0))
+    D = DiGraph()
+    D.add_edges([(0, 1), (0, 2)])
+    pd_prediag = (D, D.to_undirected(), [1, 2], [0])
+    td = TypedDiagram(
+        prediagram=pd_prediag,
+        vertex_assignments={0: st},
+        edge_types={
+            (0, 1, None): (('nt', 1), ('dn', 1)),
+            (0, 2, None): (('nt', 1), ('dn', 2)),
+        },
+        external_legs={1: ('dn', 1), 2: ('dn', 2)},
+        propagator_indices={
+            (0, 1, None): (0, 0),
+            (0, 2, None): (0, 1),
+        },
+    )
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    assert len(kernel_groups) == 1
+
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    assert not j_result['skipped_kernel_ids']
+    total_C_J = j_result['total_C']
+
+    # Pipeline prefactor (same as what Phase J uses internally)
+    ir = build_integrand_stationary(td, pd, k=2)
+    pref = float(ir['scalar_prefactor'])
+
+    a = 0.3
+    one_plus_a = 1.0 + a
+
+    def C_analytic(tau):
+        if tau > 0:
+            return pref * (-a * a / (2.0 * one_plus_a)) * math.exp(-one_plus_a * tau)
+        elif tau < 0:
+            coeff = a * (2.0 + a) / (2.0 * one_plus_a)
+            return pref * coeff * math.exp(one_plus_a * tau)
+        else:
+            # τ = 0: shot-noise δ contribution, not captured by callable.
+            # Phase J returns the limit of the smooth τ → 0⁺ piece.
+            return pref * (-a * a / (2.0 * one_plus_a))
+
+    tau_vals = [-3.0, -1.0, -0.3, 0.3, 1.0, 3.0]
+    for tv in tau_vals:
+        exp_val = C_analytic(tv)
+        pj_val = complex(total_C_J(tv, 0.0)).real
+        assert abs(exp_val - pj_val) < 1e-10, (
+            f'Phase J does not match analytic at τ={tv}: '
+            f'analytic={exp_val}, PhaseJ={pj_val}, '
+            f'diff={abs(exp_val-pj_val):.2e}'
+        )
+
+    # Also verify the result is actually ASYMMETRIC (the old bug made
+    # it symmetric). Compare C(+τ) vs C(-τ) at two τ values.
+    for tv in (1.0, 3.0):
+        c_pos = complex(total_C_J(tv, 0.0)).real
+        c_neg = complex(total_C_J(-tv, 0.0)).real
+        rel = abs(c_pos - c_neg) / max(abs(c_pos), abs(c_neg), 1e-12)
+        assert rel > 1e-2, (
+            f'Phase J output is symmetric at ±{tv}, but the δ edge '
+            f'must break τ → −τ symmetry: '
+            f'C(+{tv}) = {c_pos}, C(-{tv}) = {c_neg}'
         )
 
 
