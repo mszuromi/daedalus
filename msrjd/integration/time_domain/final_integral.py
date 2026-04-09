@@ -88,6 +88,24 @@ from msrjd.integration.time_domain.propagator_td import (
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Quadrature accuracy knob
+# ───────────────────────────────────────────────────────────────────────
+# Controls scipy.integrate.quad / nquad parameters for the vertex-time
+# integrals. Loosen these for fast iterative checks; tighten for
+# publication-quality results.
+#
+# Usage from a notebook cell (BEFORE running the numerics cell):
+#   from msrjd.integration.time_domain import final_integral
+#   final_integral.QUAD_OPTS = {'limit': 30, 'epsrel': 1e-3}
+#
+QUAD_OPTS = {
+    'limit': 50,       # max subintervals (scipy default: 50; old value: 200)
+    'epsrel': 1e-4,    # relative tolerance (scipy default: 1.49e-8)
+    # 'epsabs': ...    # absolute tolerance (leave unset to use scipy default)
+}
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Tree-level vertex-time integration
 # ───────────────────────────────────────────────────────────────────────
 
@@ -832,9 +850,9 @@ def _complex_quad(integrand_callable, s_slot_index, other_args, lower, upper):
     def f_im(s_val):
         return _eval(s_val).imag
 
-    re_val, _ = quad(f_re, lower, upper, limit=200)
+    re_val, _ = quad(f_re, lower, upper, **QUAD_OPTS)
     try:
-        im_val, _ = quad(f_im, lower, upper, limit=200)
+        im_val, _ = quad(f_im, lower, upper, **QUAD_OPTS)
     except Exception:
         im_val = 0.0
     return complex(re_val, im_val)
@@ -955,9 +973,9 @@ def _integrate_2d_polytope(integrand_callable, s_constraints, free_ext_vals):
         args = [float(s_0), float(s_1)] + list(free_ext_vals)
         return complex(integrand_callable(*args)).imag
 
-    re_val, _ = nquad(f_re, [bounds_s0, (L1, U1)], opts={'limit': 200})
+    re_val, _ = nquad(f_re, [bounds_s0, (L1, U1)], opts=QUAD_OPTS)
     try:
-        im_val, _ = nquad(f_im, [bounds_s0, (L1, U1)], opts={'limit': 200})
+        im_val, _ = nquad(f_im, [bounds_s0, (L1, U1)], opts=QUAD_OPTS)
     except Exception:
         im_val = 0.0
     return complex(re_val, im_val)
