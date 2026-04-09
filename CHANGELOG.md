@@ -4,6 +4,122 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-08 — Phase J shot-noise δ(τ) spike: expose and discretize
+
+### Symptom
+
+After the earlier δ(t)-component fix, Phase J correctly computed the
+asymmetric cross-correlator `⟨δn₁ δn₂⟩` on the linear Hawkes notebook.
+But for the **autocorrelator** case `external_fields = [('dn', 1),
+('dn', 1)]`, Phase J's output was missing the **shot-noise δ spike at
+τ = 0** that Phase I produces via its residue IFT path. The
+continuous Phase J curve matched Phase I everywhere except at the
+origin, where Phase I shows a large spike and Phase J showed nothing.
+
+### Root cause
+
+For the autocorrelator tree diagram with a source at `nt_1`, BOTH
+edges `(source → leaf_1)` and `(source → leaf_2)` read the same
+`G_R[dn_1, nt_1]` matrix entry — and that entry has `δ(t)` coefficient
+`c_δ = lim_{ω→∞} G_ft[nt_1, dn_1] = 1`. So in the δ-subset
+enumeration, the subset `S = {both edges}` pins both edges' time
+differences to zero simultaneously, which forces `s = t_1` AND
+`s = t_2`, i.e., `t_1 = t_2` (τ = 0). This is a **pure shot-noise
+delta** `combined_pf · c_δ² · δ(t_1 − t_2)`.
+
+In the previous fix (the asymmetry fix for cross-correlators), I
+explicitly **skipped** shot-noise subsets because a `δ(τ)` cannot be
+represented as a continuous Python callable. That skip was correct
+for the `⟨δn₁ δn₂⟩` case (which has no shot-noise subset since edge 2
+has `c_δ = 0`), but **wrong** for `⟨δn₁ δn₁⟩` where the subset has a
+nonzero weight.
+
+### What changed
+
+- `msrjd/integration/time_domain/final_integral.py` — shot-noise
+  subsets are no longer silently skipped. Instead, the tree
+  evaluator builds a structured `delta_contributions` entry for each
+  shot-noise subset with exactly one non-trivial residual equality
+  among external times:
+
+      {
+        'coeff_fc': fast_callable over the free ext-time symbols,
+        'equality_a': list of float (linear coeffs in free ext times),
+        'equality_c': float,
+        'retardation_data': [(a_list, c0), ...],
+        'equality_symbolic': SR,
+        'delta_edges': list of edge indices,
+        'free_ext_idx': list,
+      }
+
+  This encodes `coeff_fc · δ(Σ aᵢ·xᵢ + c)` as a distribution on the
+  free-external-time space, with additional retardation half-space
+  checks. The continuous `contribution` callable still represents the
+  smooth part only; the spike is returned alongside it.
+
+  Multi-equality subsets (rare at tree level; would correspond to
+  `δ(τ_a − τ_b) · δ(τ_c − τ_d)` style double spikes) are detected
+  and deferred with a diagnostic entry.
+
+- New helper `eval_delta_contributions_on_tau_grid(delta_list, tau_grid,
+  free_ext_dim=1)`. Takes the list of structured δ contributions
+  together with a uniformly-spaced 1-D τ grid and returns a numpy
+  array the same length as `tau_grid` with the spike weights inserted
+  into the correct bins (respecting retardation half-space
+  constraints). Each spike is normalized as `coeff / |a| / Δτ` so
+  that the bin height times the bin width recovers the analytic δ
+  weight. Supports `free_ext_dim == 1` (k=2 with one leaf pinned as
+  origin); higher `k` raises `NotImplementedError`.
+
+- `msrjd/integration/time_domain/pipeline.py` — `compute_correction_td`
+  now aggregates `delta_contributions` across all tree kernel groups
+  and returns them under the same key in its result dict. Per-group
+  diagnostics also include `n_delta_contributions`.
+
+- `msrjd/integration/time_domain/__init__.py` — exports
+  `eval_delta_contributions_on_tau_grid`.
+
+- `notebooks/hawkes_linear_phi_test.ipynb` Section 8.1 — after
+  evaluating the smooth `total_C` on the Phase I residue IFT τ grid,
+  calls `eval_delta_contributions_on_tau_grid` to build the discrete
+  δ-spike array and adds it to `C_tree_phase_j`. Both the
+  "smooth only" and "smooth + δ" values of `C(0)` are printed so the
+  user can see which portion comes from the shot-noise spike.
+
+- `tests/test_time_domain.py` — new regression
+  `test_phase_J_autocorrelator_delta_spike_at_origin`:
+  1. Runs Phase J on the 2×2 instantaneous fixture with
+     autocorrelator edges (both edges → `G_ft[0,0]`).
+  2. Asserts exactly one `delta_contributions` entry is produced.
+  3. Asserts the equality fires at τ = 0.
+  4. Asserts the coefficient is `-2` (= `combined_prefactor × c_δ²`
+     for the pipeline's `SourceType(SR(1), [ñ, ñ], (2, 0))`).
+  5. Discretizes onto a 501-point τ grid in [−5, 5], asserts the
+     nonzero bin is at τ=0, and verifies that the bin-height × Δτ
+     integrated weight equals the analytic `-2`.
+
+### Limitations / future work
+
+- **Non-origin δ spikes in higher-k correlators**: for k ≥ 3 a
+  shot-noise subset could fire on a hyperplane in (τ_1, τ_2, ...)
+  space rather than at a single point. `eval_delta_contributions_on_tau_grid`
+  currently supports only `free_ext_dim == 1`. Extension to higher-k
+  will need a Jacobian determinant (not just `1/|a|`) and a suitable
+  "thick hyperplane" bin assignment rule.
+
+- **Multi-equality shot-noise subsets**: a subset with more than one
+  residual ext-time equality would correspond to a product of deltas.
+  Currently detected and skipped with a diagnostic; should be added
+  when a physical case requires it.
+
+- **Retardation checks at non-star trees**: the retardation data for
+  shot-noise subsets with surviving smooth edges uses the same linear
+  form as the smooth polytope. It has not been exercised yet because
+  the MVP trees are stars (all edges directly from the source to
+  leaves).
+
+---
+
 ## 2026-04-08 — Phase J δ(t)-component fix: handle instantaneous propagator entries
 
 ### Symptom

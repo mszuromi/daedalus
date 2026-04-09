@@ -67,6 +67,7 @@ from msrjd.integration.time_domain.subgraph import (
 from msrjd.integration.time_domain.final_integral import (
     integrate_tree_diagram,
     format_td_integral_latex,
+    eval_delta_contributions_on_tau_grid,
 )
 from msrjd.integration.time_domain.pipeline import (
     compute_correction_td,
@@ -80,5 +81,6 @@ __all__ = [
     'identify_loop_subgraphs',
     'integrate_tree_diagram',
     'format_td_integral_latex',
+    'eval_delta_contributions_on_tau_grid',
     'compute_correction_td',
 ]

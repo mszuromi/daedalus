@@ -118,6 +118,7 @@ def compute_correction_td(
     tree_callables = []
     groups_out = []
     skipped = []
+    all_delta_contributions = []  # shot-noise δ spikes (see final_integral)
 
     for g in kernel_groups:
         loop_number = g.get('loop_number', 0)
@@ -155,6 +156,14 @@ def compute_correction_td(
             if result['status'] == 'ok':
                 contribution = result['contribution']
                 tree_callables.append(contribution)
+                # Aggregate any shot-noise δ spikes the tree evaluator
+                # produced for this group. Each is a structured dict
+                # that the caller can feed to
+                # `eval_delta_contributions_on_tau_grid` to add a
+                # discrete spike to a τ grid.
+                all_delta_contributions.extend(
+                    result.get('delta_contributions', [])
+                )
                 groups_out.append({
                     'kernel_id': signature,
                     'loop_number': loop_number,
@@ -163,6 +172,9 @@ def compute_correction_td(
                     'reason': '',
                     'representation': 'numerical',
                     'contribution': contribution,
+                    'n_delta_contributions': len(
+                        result.get('delta_contributions', [])
+                    ),
                 })
             else:
                 groups_out.append({
@@ -205,6 +217,7 @@ def compute_correction_td(
 
     return {
         'total_C': total_C,
+        'delta_contributions': all_delta_contributions,
         'groups': groups_out,
         'skipped_kernel_ids': skipped,
         'ext_time_vars': ext_time_vars,

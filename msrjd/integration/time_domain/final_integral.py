@@ -239,8 +239,9 @@ def integrate_tree_diagram(
         pass
     display_constraints = [ei['dt_sym'] for ei in edge_info]
 
-    # Accumulators: one callable per non-trivial subset
-    subset_contributions = []
+    # Accumulators
+    subset_contributions = []   # continuous smooth contributions (callable)
+    delta_contributions = []    # shot-noise δ spikes (structured dicts)
     n_shotnoise_skipped = 0
     subset_diagnostics = []
 
@@ -303,9 +304,13 @@ def integrate_tree_diagram(
 
         # Shot-noise check: any nontrivial residual equality among
         # external times means this subset contributes a δ(τ) spike
-        # and cannot be represented as a continuous callable. Skip it
-        # (but count for diagnostics).
+        # at the hypersurface where that equality holds. Instead of
+        # skipping it, compute a structured δ-contribution: a numeric
+        # coefficient together with the linear equality and any
+        # retardation half-space constraints, so downstream code can
+        # insert it into a discrete τ grid.
         has_shotnoise = False
+        nontrivial_equalities = []
         for eq in ext_time_equalities:
             try:
                 if bool(eq.is_zero()):
@@ -314,7 +319,7 @@ def integrate_tree_diagram(
                 pass
             # Nontrivial equation → shot-noise
             has_shotnoise = True
-            break
+            nontrivial_equalities.append(SR(eq))
         if has_shotnoise:
             n_shotnoise_skipped += 1
             subset_diagnostics.append({
@@ -322,6 +327,119 @@ def integrate_tree_diagram(
                 'smooth_edges': smooth_edges,
                 'status': 'shotnoise',
                 'ext_time_equalities': ext_time_equalities,
+            })
+
+            # For the MVP we only support the single-equality case
+            # (one δ(a · τ + c) spike per subset). Multi-equality cases
+            # would correspond to δ(τ_a − τ_b) · δ(τ_c − τ_d) style
+            # "double-delta" spikes which are rare at tree level and
+            # deferred to Extension 1.
+            if len(nontrivial_equalities) != 1:
+                continue
+
+            # Build the numeric coefficient: combined_pf × ∏ δ-coeffs
+            #                               × (smooth factors with δ subs applied)
+            subset_factor_delta = cp
+            for ei_idx in delta_edges:
+                subset_factor_delta = (
+                    subset_factor_delta
+                    * SR(edge_info[ei_idx]['delta_coeff'])
+                )
+            for ei_idx in smooth_edges:
+                subset_factor_delta = (
+                    subset_factor_delta
+                    * edge_info[ei_idx]['smooth_factor']
+                )
+            subset_factor_delta = subset_factor_delta.subs(substitutions)
+            if num_params:
+                subset_factor_delta = subset_factor_delta.subs(num_params)
+            try:
+                subset_factor_delta = subset_factor_delta.expand()
+            except Exception:
+                pass
+
+            # At the shot-noise hypersurface, any remaining integration
+            # variables must already have been eliminated (otherwise it
+            # wouldn't be a pure δ contribution — m_sub > 0 after all
+            # deltas applied means we'd need to integrate further).
+            # For the MVP star tree, this condition always holds.
+            if remaining_int_vars:
+                subset_diagnostics.append({
+                    'status': 'shotnoise_with_remaining_int_vars',
+                    'delta_edges': delta_edges,
+                    'remaining': list(remaining_int_vars),
+                })
+                continue
+
+            # Extract the linear form of the equality in terms of
+            # free_ext_syms: a · x + c = 0.
+            eq = nontrivial_equalities[0]
+            try:
+                eq_a = [float(eq.coefficient(s)) for s in free_ext_syms]
+                eq_c = float(eq.subs({s: 0 for s in free_ext_syms}))
+            except (TypeError, ValueError):
+                continue
+
+            # Check the equality is actually nontrivial (not all zero)
+            if all(abs(a) < 1e-15 for a in eq_a):
+                # Pure numeric residual: if nonzero, no contribution;
+                # if zero, it's trivially satisfied (shouldn't happen
+                # because we already filtered `is_zero()` above).
+                continue
+
+            # The symbolic factor evaluated at the δ surface is just
+            # subset_factor_delta — it already has all the pin-substitutions
+            # applied and can be evaluated numerically once free_ext_vals
+            # are supplied. For the MVP case where remaining_int_vars is
+            # empty, subset_factor_delta depends only on free_ext_syms
+            # (or is a constant).
+            try:
+                coeff_free_vars = set(subset_factor_delta.variables())
+            except AttributeError:
+                coeff_free_vars = set()
+            unexpected_in_coeff = coeff_free_vars - set(free_ext_syms)
+            if unexpected_in_coeff:
+                # Can't build a callable coefficient with free params left
+                continue
+
+            try:
+                coeff_fc = fast_callable(
+                    subset_factor_delta,
+                    vars=list(free_ext_syms),
+                    domain=CDF,
+                )
+            except Exception:
+                continue
+
+            # Retardation constraints at the δ point: for the MVP's
+            # shot-noise subset (all edges δ, no smooth), there are
+            # no retardation constraints. But in principle a mixed
+            # δ+smooth shot-noise subset could have them.
+            retard_data_delta = []
+            for ei_idx in smooth_edges:
+                c_retard = SR(
+                    edge_info[ei_idx]['dt_sym']
+                ).subs(substitutions)
+                try:
+                    a_ext = [
+                        float(c_retard.coefficient(s))
+                        for s in free_ext_syms
+                    ]
+                    c0 = float(c_retard.subs(
+                        {s: 0 for s in free_ext_syms}
+                    ))
+                except (TypeError, ValueError):
+                    continue
+                retard_data_delta.append((a_ext, c0))
+
+            delta_contributions.append({
+                'coeff_fc': coeff_fc,
+                'equality_a': eq_a,
+                'equality_c': eq_c,
+                'equality_symbolic': eq,
+                'retardation_data': retard_data_delta,
+                'delta_edges': list(delta_edges),
+                'free_ext_idx': list(free_ext_idx),
             })
             continue
 
@@ -468,14 +586,129 @@ def integrate_tree_diagram(
     return {
         'status': 'ok',
         'contribution': contribution,
+        'delta_contributions': delta_contributions,
         'integration_vars': integration_vars,
         'stripped_integrand': display_stripped,
         'constraints': display_constraints,
         'edge_info': edge_info,
         'n_subsets_evaluated': len(subset_contributions),
+        'n_delta_contributions': len(delta_contributions),
         'n_shotnoise_skipped': n_shotnoise_skipped,
         'subset_diagnostics': subset_diagnostics,
     }
+
+
+def eval_delta_contributions_on_tau_grid(
+    delta_contributions,
+    tau_grid,
+    free_ext_dim=1,
+    pinned_values=None,
+):
+    r"""
+    Convert a list of symbolic δ-spike contributions (from
+    `integrate_tree_diagram` or `compute_correction_td`) into a
+    discretized contribution on a 1D τ grid.
+
+    For each delta contribution the equality is interpreted as
+    `a · x + c = 0` where `x` is the vector of free external time
+    values; we solve for the single free value at which the delta
+    fires, compute the delta's `1/|a|` Jacobian factor, evaluate the
+    (symbolic) coefficient factor at that point, check any retardation
+    half-spaces, and add `coeff / |a| / Δτ` to the nearest grid bin.
+
+    Supports the MVP case where there is exactly ONE free external
+    time (`free_ext_dim == 1`), which covers k=2 with one external
+    leaf pinned as the origin. For k ≥ 3, the delta's hypersurface is
+    higher-dimensional and this helper raises `NotImplementedError`;
+    that case can be added when needed.
+
+    Parameters
+    ----------
+    delta_contributions : list of dict
+        As returned by `integrate_tree_diagram` (under
+        `delta_contributions`) or `compute_correction_td` (same key).
+    tau_grid : 1-D numpy array
+        Uniformly spaced grid of τ values. Bin width is inferred as
+        `tau_grid[1] - tau_grid[0]`.
+    free_ext_dim : int
+        Number of free external-time dimensions. MVP supports 1.
+    pinned_values : dict or None
+        Reserved for future use (mapping pinned-index → value). Not
+        used in the MVP.
+
+    Returns
+    -------
+    numpy.ndarray (complex)
+        An array the same length as `tau_grid`, with zeros everywhere
+        except at the bins where δ contributions fire. Caller should
+        add this to the smooth Phase J evaluation of `total_C` on the
+        same grid.
+
+    Notes
+    -----
+    Because δ contributions are concentrated at a single τ point but
+    the output grid has finite bin width Δτ, the integer weight of the
+    δ (`coeff / |a|`) is spread across a single bin as a density of
+    `(coeff / |a|) / Δτ`. This matches the discretization convention
+    used by the notebook's `ift_via_residues` to draw shot-noise
+    spikes at τ = 0.
+    """
+    import numpy as np
+
+    if free_ext_dim != 1:
+        raise NotImplementedError(
+            f"eval_delta_contributions_on_tau_grid: free_ext_dim="
+            f"{free_ext_dim} not yet supported (MVP = 1)"
+        )
+
+    tau_grid = np.asarray(tau_grid, dtype=float)
+    if tau_grid.size < 2:
+        raise ValueError("tau_grid must have at least 2 points")
+    dtau = float(tau_grid[1] - tau_grid[0])
+    out = np.zeros_like(tau_grid, dtype=complex)
+
+    for dc in delta_contributions:
+        eq_a = dc['equality_a']
+        eq_c = dc['equality_c']
+        if len(eq_a) != 1:
+            # Should match free_ext_dim. Silently skip mismatch.
+            continue
+        a0 = eq_a[0]
+        if abs(a0) < 1e-15:
+            # Degenerate equality: either identically satisfied
+            # (shouldn't happen — was filtered as trivial upstream)
+            # or infeasible. Skip.
+            continue
+        tau_fire = -eq_c / a0
+
+        # Evaluate the coefficient at the fire point
+        coeff_fc = dc['coeff_fc']
+        try:
+            coeff_val = complex(coeff_fc(float(tau_fire)))
+        except Exception:
+            continue
+
+        # Check retardation constraints at the fire point
+        retard_ok = True
+        for (a_list, c0) in dc.get('retardation_data', []):
+            if len(a_list) != 1:
+                retard_ok = False
+                break
+            val = a_list[0] * tau_fire + c0
+            if val <= 0:
+                retard_ok = False
+                break
+        if not retard_ok:
+            continue
+
+        # δ(a · τ + c) = δ(τ − τ_fire) / |a|
+        weight = coeff_val / abs(a0)
+
+        # Find the nearest grid bin and add weight / dtau
+        idx = int(np.argmin(np.abs(tau_grid - tau_fire)))
+        out[idx] = out[idx] + weight / dtau
+
+    return out
 
 
 # ───────────────────────────────────────────────────────────────────────

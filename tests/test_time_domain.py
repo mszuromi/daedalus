@@ -41,6 +41,7 @@ from msrjd.integration.time_domain import (
     identify_loop_subgraphs,
     integrate_tree_diagram,
     compute_correction_td,
+    eval_delta_contributions_on_tau_grid,
 )
 
 
@@ -701,6 +702,118 @@ def test_phase_J_delta_component_asymmetric_cross_correlator():
             f'must break τ → −τ symmetry: '
             f'C(+{tv}) = {c_pos}, C(-{tv}) = {c_neg}'
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 6d: Shot-noise δ(τ) spike on the k=2 autocorrelator
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_phase_J_autocorrelator_delta_spike_at_origin():
+    r"""
+    Regression for the "missing δ(τ) spike" symptom on a k=2
+    autocorrelator `⟨δn₁(t₁) δn₁(t₂)⟩`.
+
+    With both tree edges reading the same instantaneous matrix entry
+    `G_ft[0,0]`, the subset `S = {both edges}` pins s = t₁ = t₂ and
+    produces a pure δ(t₁ - t₂) shot-noise spike at τ = 0. The
+    continuous Phase J callable cannot represent this; instead, the
+    spike is returned as a structured `delta_contributions` entry
+    that the caller can insert into a discrete τ grid via
+    `eval_delta_contributions_on_tau_grid`.
+
+    This test:
+      1. Runs Phase J on the 2×2 instantaneous fixture, autocorrelator edges.
+      2. Asserts exactly one `delta_contributions` entry is produced.
+      3. Asserts the equality fires at τ = 0.
+      4. Asserts the coefficient is `combined_prefactor × c_δ²` where
+         `c_δ = lim_{ω→∞} G_ft[0,0] = 1`.
+      5. Runs the discrete-grid helper and verifies that the spike
+         height times the bin width recovers the analytic total weight.
+    """
+    import numpy as np
+
+    pd = _propagator_data_instantaneous_pair()
+
+    # Autocorrelator: both edges → G_ft[0,0] (has δ component)
+    st = SourceType(SR(1), [('nt', 1), ('nt', 1)], (2, 0))
+    D = DiGraph()
+    D.add_edges([(0, 1), (0, 2)])
+    pd_prediag = (D, D.to_undirected(), [1, 2], [0])
+    td = TypedDiagram(
+        prediagram=pd_prediag,
+        vertex_assignments={0: st},
+        edge_types={
+            (0, 1, None): (('nt', 1), ('dn', 1)),
+            (0, 2, None): (('nt', 1), ('dn', 1)),
+        },
+        external_legs={1: ('dn', 1), 2: ('dn', 1)},
+        propagator_indices={
+            (0, 1, None): (0, 0),
+            (0, 2, None): (0, 0),
+        },
+    )
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    assert len(kernel_groups) == 1
+
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+
+    delta_contribs = j_result['delta_contributions']
+    assert len(delta_contribs) == 1, (
+        f'Expected exactly one δ contribution for the autocorrelator, '
+        f'got {len(delta_contribs)}'
+    )
+
+    dc = delta_contribs[0]
+    # Equality: should fire at τ = 0 (the ±t₁ = 0 constraint)
+    a0 = dc['equality_a'][0]
+    c0 = dc['equality_c']
+    assert abs(a0) > 1e-12
+    tau_fire = -c0 / a0
+    assert abs(tau_fire) < 1e-12, (
+        f'δ spike should fire at τ=0, got {tau_fire}'
+    )
+
+    # Coefficient at the fire point
+    coeff_val = complex(dc['coeff_fc'](float(tau_fire)))
+    # For this diagram:
+    #   combined_prefactor = scalar_prefactor = -2 (the standard MSR-JD
+    #     source factor for SourceType(SR(1), [ñ,ñ], (2,0)))
+    #   c_δ = G_ft[0,0](∞) = 1
+    #   both-δ weight = combined_pf × c_δ × c_δ × (no smooth factors) = -2
+    assert abs(coeff_val.real - (-2.0)) < 1e-10, (
+        f'δ coefficient at τ=0 should be -2, got {coeff_val}'
+    )
+    assert abs(coeff_val.imag) < 1e-10
+
+    # Discretize onto a τ grid and check the spike integrates correctly
+    tau_grid = np.linspace(-5.0, 5.0, 501)
+    spikes = eval_delta_contributions_on_tau_grid(
+        delta_contribs, tau_grid, free_ext_dim=1,
+    )
+    dtau = float(tau_grid[1] - tau_grid[0])
+
+    # Most bins should be zero
+    nonzero_idx = np.nonzero(np.abs(spikes) > 1e-10)[0]
+    assert len(nonzero_idx) == 1, (
+        f'Expected spike in exactly one bin, got {len(nonzero_idx)}'
+    )
+    # The nonzero bin should be at τ = 0
+    assert abs(tau_grid[nonzero_idx[0]]) < 1e-10, (
+        f'Spike should be at τ=0, got τ={tau_grid[nonzero_idx[0]]}'
+    )
+    # Bin height × bin width should recover the analytic weight (-2)
+    integrated_weight = complex(spikes[nonzero_idx[0]]) * dtau
+    assert abs(integrated_weight.real - (-2.0)) < 1e-10, (
+        f'Integrated δ weight should be -2, got {integrated_weight}'
+    )
+    assert abs(integrated_weight.imag) < 1e-10
 
 
 # ═══════════════════════════════════════════════════════════════════════
