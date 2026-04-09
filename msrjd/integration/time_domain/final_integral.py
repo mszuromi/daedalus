@@ -99,11 +99,7 @@ from msrjd.integration.time_domain.propagator_td import (
 #   final_integral.QUAD_OPTS = {'limit': 30, 'epsrel': 1e-3}
 #
 QUAD_OPTS = {
-    'limit': 100,      # max subintervals (scipy default: 50)
-    # Leave epsrel/epsabs at scipy defaults (1.49e-8) for reliable results.
-    # The speed knob is `limit`: 50 is fast, 100 is safe, 200 is overkill.
-    # Do NOT loosen epsrel below ~1e-6 — the 2D nquad path (non-star trees)
-    # is sensitive and produces artifacts (dips/spikes) at loose tolerances.
+    'limit': 200,      # max subintervals for scipy.integrate.quad / nquad
 }
 
 
