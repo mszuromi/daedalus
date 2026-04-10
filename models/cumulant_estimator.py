@@ -199,10 +199,11 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     F_product = np.fft.fft(product, n=n_fft)
     F_sweep = np.fft.fft(sweep_rate, n=n_fft)
 
-    # ifft(F_product × conj(F_sweep))[lag] = Σ_t product(t) × sweep(t − lag)
-    # We want Σ_t product(t) × sweep(t + lag), so flip the lag axis.
+    # ifft(F_product × conj(F_sweep))[L] = Σ_t product(t) × sweep(t − L)
+    # We want C(+lag) = Σ_t product(t) × sweep(t + lag), which is the
+    # value at L = −lag in the raw output. Access as raw[(-lag) % n_fft].
+    # Do NOT use [::-1] — that shifts the index by 1 bin.
     raw_xcorr = np.fft.ifft(F_product * np.conj(F_sweep)).real
-    raw_xcorr = raw_xcorr[::-1]
 
     # ── Extract the lag window with lag-dependent normalization ──
     tau_grid = np.arange(-max_lag_bins, max_lag_bins + 1) * dt_bin
@@ -214,8 +215,98 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
         if n_overlap <= 0:
             C_slice[idx_lag] = 0.0
             continue
-        # Lag-dependent normalization: divide by the actual number of
-        # overlapping bins, not the total n_bins or n_valid.
-        C_slice[idx_lag] = raw_xcorr[lag % n_fft] / n_overlap
+        C_slice[idx_lag] = raw_xcorr[(-lag) % n_fft] / n_overlap
+
+    return tau_grid, C_slice
+
+
+def compute_kpoint_slice_direct(binned_counts, dt_bin, pop_indices, lag_bins,
+                                max_lag_bins):
+    """
+    Direct (non-FFT) k-point factorial cumulant density estimator.
+
+    Same interface and output as ``compute_kpoint_slice`` but uses an
+    explicit double loop over time bins and sweep lags. Slower for large
+    datasets (O(n_bins × n_lags) vs O(n_bins log n_bins) for FFT) but
+    free of any FFT-related issues (circular wrap, zero-padding
+    artifacts, spectral leakage). Use this to cross-check the FFT
+    estimator.
+
+    Parameters / Returns: same as ``compute_kpoint_slice``.
+    """
+    k = len(pop_indices)
+    assert len(lag_bins) == k
+    sweep_idx = [i for i, lb in enumerate(lag_bins) if lb is None]
+    assert len(sweep_idx) == 1
+    sweep_idx = sweep_idx[0]
+
+    npop, n_bins = binned_counts.shape
+    sweep_pop = pop_indices[sweep_idx]
+
+    # Fixed legs and their lags
+    fixed_legs = [(i, lag_bins[i]) for i in range(k) if i != sweep_idx]
+    sweep_lag_of = lag_bins  # will use None for sweep
+
+    # Group fixed legs by (lag, population) for factorial correction
+    lag_to_legs = {}
+    for (i, lag) in fixed_legs:
+        lag_to_legs.setdefault(lag, []).append(i)
+
+    # Mean counts (full array)
+    mean_counts = binned_counts.mean(axis=1)  # (npop,)
+
+    tau_grid = np.arange(-max_lag_bins, max_lag_bins + 1) * dt_bin
+    C_slice = np.zeros(2 * max_lag_bins + 1)
+
+    for idx_lag, sweep_lag in enumerate(range(-max_lag_bins, max_lag_bins + 1)):
+        # For each reference time t, ALL fields must be within [0, n_bins).
+        # Determine the valid range of t.
+        all_lags = [lag_bins[i] if i != sweep_idx else sweep_lag
+                    for i in range(k)]
+        min_lag = min(all_lags)
+        max_lag_val = max(all_lags)
+        t_start = max(0, -min_lag)
+        t_end = n_bins - max(0, max_lag_val)
+        n_overlap = t_end - t_start
+
+        if n_overlap <= 0:
+            C_slice[idx_lag] = 0.0
+            continue
+
+        # Build the product for each valid t
+        accumulator = 0.0
+        for t in range(t_start, t_end):
+            val = 1.0
+
+            # Fixed-leg groups (with factorial correction for same-bin same-pop)
+            for lag_val, leg_indices in lag_to_legs.items():
+                bin_idx = t + lag_val
+                pop_mults = Counter(pop_indices[i] for i in leg_indices)
+                for pop, m in pop_mults.items():
+                    n = binned_counts[pop, bin_idx]
+                    mean_n = mean_counts[pop]
+                    if m == 1:
+                        val *= (n - mean_n) / dt_bin
+                    else:
+                        # Factorial: n(n-1)...(n-m+1) / dt^m, centered
+                        ff = 1.0
+                        for j in range(m):
+                            ff *= (n - j)
+                        ff /= dt_bin**m
+                        # Subtract the population mean of the factorial product
+                        # (approximated by the full-array mean for efficiency)
+                        ff_mean = falling_factorial_array(
+                            binned_counts[pop], m
+                        ).mean() / dt_bin**m
+                        val *= (ff - ff_mean)
+
+            # Sweep leg
+            sweep_bin = t + sweep_lag
+            n_s = binned_counts[sweep_pop, sweep_bin]
+            val *= (n_s - mean_counts[sweep_pop]) / dt_bin
+
+            accumulator += val
+
+        C_slice[idx_lag] = accumulator / n_overlap
 
     return tau_grid, C_slice
