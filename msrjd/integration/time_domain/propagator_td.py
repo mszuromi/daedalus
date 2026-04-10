@@ -130,38 +130,63 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
         # coefficients; fall back to unsimplified form.
         pass
 
-    # Compute delta coefficients: the ω → ∞ limit of each entry of G_ft.
-    # For a rational propagator num(ω) / den(ω), the limit is nonzero iff
-    # deg(num) == deg(den). We detect this numerically by evaluating at a
-    # "large" ω and at an even larger ω and checking that the ratio is
-    # ~ 1 (constant) vs ~ 1/2 (1/ω decay) vs ~ 1/4 (1/ω² decay), etc.
-    # This works on rational or partial-rational expressions without
-    # requiring symbolic limit() machinery (which is slow and fragile).
+    # Compute delta coefficients via the polynomial part of Ĝ(ω).
+    #
+    # The key identity (see Daley & Vere-Jones Ch. 5):
+    #   Ĝ(ω) = Q(iω) + Ĝ_proper(ω)
+    # where Q is a polynomial in iω and Ĝ_proper is strictly proper
+    # (deg num < deg den). Then:
+    #   G(t) = Q(∂_t) δ(t) + Θ(t) · [residue sum]
+    #
+    # For the common case where Q is at most a constant:
+    #   D[i,j] = lim_{ω→∞} Ĝ[i,j](ω) = coefficient of δ(t)
+    #
+    # We compute this using Sage's symbolic limit when parameters are
+    # still symbolic, or by numerical evaluation at large ω when
+    # num_params has been substituted. The symbolic path is preferred
+    # because it is exact and avoids floating-point fragility.
+    from sage.all import limit as _limit, oo as _oo
+
     nrows, ncols = (G_ft.dimensions() if G_ft is not None
                     else smooth.dimensions())
     delta_data = [[SR(0)] * ncols for _ in range(nrows)]
     if G_ft is not None:
-        # Work out which symbol is ω by finding the unique non-param
-        # variable in G_ft entries.
         omega_sym = _infer_omega_variable(G_ft, num_params)
         if omega_sym is not None:
-            big1 = 1e12
-            big2 = 2e12
             for i in range(nrows):
                 for j in range(ncols):
                     entry = SR(G_ft[i, j])
-                    if num_params:
-                        entry = entry.subs(num_params)
-                    try:
-                        v1 = complex(CDF(entry.subs({omega_sym: big1})))
-                        v2 = complex(CDF(entry.subs({omega_sym: big2})))
-                    except Exception:
+                    if entry.is_zero():
                         continue
-                    # If both values are ~equal and finite, that's the limit.
-                    if abs(v1) > 1e-9 and abs(v1 - v2) < 1e-6 * abs(v1):
-                        # Nonzero limit → δ(t) component
-                        delta_data[i][j] = SR(v1)
-                    # else: limit is zero (pure rational decay)
+                    # Try symbolic limit first (works with or without
+                    # num_params — exact and robust).
+                    try:
+                        entry_sub = entry.subs(num_params) if num_params else entry
+                        lim_val = _limit(entry_sub,
+                                         **{str(omega_sym): _oo})
+                        if not SR(lim_val).is_zero():
+                            # Substitute num_params into the limit result
+                            # in case it contains model parameters.
+                            if num_params:
+                                lim_val = SR(lim_val).subs(num_params)
+                            delta_data[i][j] = SR(lim_val)
+                            continue
+                    except Exception:
+                        pass
+                    # Fallback: numerical evaluation at large ω (only
+                    # works if num_params has been substituted so the
+                    # entry is purely numeric in ω).
+                    if num_params:
+                        try:
+                            v1 = complex(CDF(entry.subs(num_params).subs(
+                                {omega_sym: 1e12})))
+                            v2 = complex(CDF(entry.subs(num_params).subs(
+                                {omega_sym: 2e12})))
+                            if (abs(v1) > 1e-9
+                                    and abs(v1 - v2) < 1e-6 * abs(v1)):
+                                delta_data[i][j] = SR(v1)
+                        except Exception:
+                            pass
     delta_coeffs = matrix(SR, delta_data)
 
     return {
