@@ -790,6 +790,184 @@ def eval_delta_contributions_on_tau_grid(
     return out
 
 
+def eval_delta_contributions_on_2d_grid(
+    delta_contributions,
+    tau1_grid,
+    tau2_grid,
+    free_ext_dim=3,
+    grid_axes=(1, 2),
+    fixed_values=None,
+):
+    r"""
+    Discretize δ-spike contributions onto a 2D grid for heatmap display.
+
+    For each delta contribution with linear equality `a · x + c = 0`
+    in the free-external-time vector `x`, this helper finds all 2D
+    grid points where the equality is approximately satisfied (within
+    half a grid step) and deposits the coefficient value there.
+
+    Parameters
+    ----------
+    delta_contributions : list of dict
+        As returned by `compute_correction_td` under `delta_contributions`.
+    tau1_grid, tau2_grid : 1-D numpy arrays
+        The two axes of the 2D heatmap grid. Must be uniformly spaced.
+    free_ext_dim : int
+        Total number of free external-time dimensions.
+    grid_axes : tuple of two ints
+        Which components of the free-ext vector correspond to the two
+        grid axes. Default (1, 2) for k=3 with t_a=0 pinned.
+    fixed_values : dict or None
+        Values for any free-ext components NOT on the grid axes.
+        Default: {0: 0.0} (the reference field at time 0).
+
+    Returns
+    -------
+    numpy.ndarray (complex), shape (len(tau1_grid), len(tau2_grid))
+        The discretized delta contributions. Add to the smooth `total_C`
+        heatmap to get the full theory prediction.
+    """
+    import numpy as np
+
+    if fixed_values is None:
+        fixed_values = {0: 0.0}
+
+    tau1 = np.asarray(tau1_grid, dtype=float)
+    tau2 = np.asarray(tau2_grid, dtype=float)
+    dt1 = float(tau1[1] - tau1[0]) if len(tau1) > 1 else 1.0
+    dt2 = float(tau2[1] - tau2[0]) if len(tau2) > 1 else 1.0
+    ax1, ax2 = grid_axes
+
+    out = np.zeros((len(tau1), len(tau2)), dtype=complex)
+
+    for dc in delta_contributions:
+        eq_a = dc['equality_a']
+        eq_c = dc['equality_c']
+        coeff_fc = dc['coeff_fc']
+        if len(eq_a) != free_ext_dim:
+            continue
+
+        a1 = eq_a[ax1]  # coefficient on the first grid axis
+        a2 = eq_a[ax2]  # coefficient on the second grid axis
+
+        # Contribution from fixed (non-grid) axes to the equality
+        c_fixed = eq_c
+        for idx in range(free_ext_dim):
+            if idx != ax1 and idx != ax2:
+                c_fixed += eq_a[idx] * float(fixed_values.get(idx, 0.0))
+
+        # The equality on the grid is: a1·τ₁ + a2·τ₂ + c_fixed = 0
+        # This is a line in the (τ₁, τ₂) plane. We find grid bins
+        # that this line passes through.
+
+        if abs(a1) < 1e-15 and abs(a2) < 1e-15:
+            # No dependence on grid axes — either always or never fires
+            if abs(c_fixed) < 1e-12:
+                # Fires everywhere — evaluate coeff at every point
+                for i, t1 in enumerate(tau1):
+                    for j, t2 in enumerate(tau2):
+                        eval_vec = [0.0] * free_ext_dim
+                        for k_idx, v in fixed_values.items():
+                            eval_vec[k_idx] = float(v)
+                        eval_vec[ax1] = float(t1)
+                        eval_vec[ax2] = float(t2)
+                        try:
+                            val = complex(coeff_fc(*eval_vec))
+                        except Exception:
+                            continue
+                        # Check retardation
+                        retard_ok = True
+                        for (a_list, c0) in dc.get('retardation_data', []):
+                            if len(a_list) != free_ext_dim:
+                                retard_ok = False; break
+                            rv = c0 + sum(a_list[m] * eval_vec[m]
+                                          for m in range(free_ext_dim))
+                            if rv <= 0:
+                                retard_ok = False; break
+                        if retard_ok:
+                            # This is a 2D degenerate — the delta fires
+                            # on the full 2D grid. No 1/dt divisor
+                            # (the delta is in a direction orthogonal
+                            # to the grid plane).
+                            out[i, j] += val
+            continue
+
+        # The delta line a1·τ₁ + a2·τ₂ + c_fixed = 0 crosses the grid.
+        # For each row i (fixed τ₁), solve for τ₂:
+        #   τ₂_fire = -(a1·τ₁[i] + c_fixed) / a2
+        # OR for each column j (fixed τ₂), solve for τ₁:
+        #   τ₁_fire = -(a2·τ₂[j] + c_fixed) / a1
+        # Use whichever axis has the larger coefficient (better resolved).
+
+        if abs(a2) >= abs(a1):
+            # Sweep along τ₁ axis, solve for τ₂ at each row
+            for i, t1 in enumerate(tau1):
+                t2_fire = -(a1 * t1 + c_fixed) / a2
+                j = int(np.argmin(np.abs(tau2 - t2_fire)))
+                if abs(tau2[j] - t2_fire) > dt2:
+                    continue  # not within a grid cell
+
+                eval_vec = [0.0] * free_ext_dim
+                for k_idx, v in fixed_values.items():
+                    eval_vec[k_idx] = float(v)
+                eval_vec[ax1] = float(t1)
+                eval_vec[ax2] = float(t2_fire)
+                try:
+                    val = complex(coeff_fc(*eval_vec))
+                except Exception:
+                    continue
+
+                retard_ok = True
+                for (a_list, c0) in dc.get('retardation_data', []):
+                    if len(a_list) != free_ext_dim:
+                        retard_ok = False; break
+                    rv = c0 + sum(a_list[m] * eval_vec[m]
+                                  for m in range(free_ext_dim))
+                    if rv <= 0:
+                        retard_ok = False; break
+                if not retard_ok:
+                    continue
+
+                # The delta δ(a2·τ₂ + ...) has Jacobian 1/|a2|.
+                # On the grid with spacing dt2, the bin density is
+                # coeff / (|a2| · dt2).
+                weight = val / (abs(a2) * dt2)
+                out[i, j] += weight
+        else:
+            # Sweep along τ₂ axis, solve for τ₁ at each column
+            for j, t2 in enumerate(tau2):
+                t1_fire = -(a2 * t2 + c_fixed) / a1
+                i = int(np.argmin(np.abs(tau1 - t1_fire)))
+                if abs(tau1[i] - t1_fire) > dt1:
+                    continue
+
+                eval_vec = [0.0] * free_ext_dim
+                for k_idx, v in fixed_values.items():
+                    eval_vec[k_idx] = float(v)
+                eval_vec[ax1] = float(t1_fire)
+                eval_vec[ax2] = float(t2)
+                try:
+                    val = complex(coeff_fc(*eval_vec))
+                except Exception:
+                    continue
+
+                retard_ok = True
+                for (a_list, c0) in dc.get('retardation_data', []):
+                    if len(a_list) != free_ext_dim:
+                        retard_ok = False; break
+                    rv = c0 + sum(a_list[m] * eval_vec[m]
+                                  for m in range(free_ext_dim))
+                    if rv <= 0:
+                        retard_ok = False; break
+                if not retard_ok:
+                    continue
+
+                weight = val / (abs(a1) * dt1)
+                out[i, j] += weight
+
+    return out
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Polytope-integration helpers
 # ───────────────────────────────────────────────────────────────────────

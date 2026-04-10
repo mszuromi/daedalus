@@ -68,6 +68,7 @@ from msrjd.integration.time_domain.final_integral import (
     integrate_tree_diagram,
     format_td_integral_latex,
     eval_delta_contributions_on_tau_grid,
+    eval_delta_contributions_on_2d_grid,
 )
 from msrjd.integration.time_domain.pipeline import (
     compute_correction_td,
