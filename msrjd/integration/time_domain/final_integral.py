@@ -982,9 +982,9 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m):
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or
-        # infeasible).
+        # infeasible).  Ito convention: Θ(0) = 1, so c_eff = 0 passes.
         for (a_int, c_eff) in s_constraints:
-            if c_eff <= 0:
+            if c_eff < 0:
                 return 0.0 + 0.0j
         val = integrand_callable(*free_ext_vals)
         return complex(val)
@@ -1064,7 +1064,8 @@ def _resolve_1d_bounds(s_constraints, s_index):
     for (a_int, c_eff) in s_constraints:
         a = a_int[s_index]
         if abs(a) < 1e-15:
-            if c_eff <= 0:
+            # Ito convention: Θ(0) = 1, so c_eff = 0 passes.
+            if c_eff < 0:
                 infeasible = True
                 break
             continue
@@ -1126,7 +1127,8 @@ def _integrate_2d_polytope(integrand_callable, s_constraints, free_ext_vals):
             pure_s1_found = True
             a = a_int[1]
             if abs(a) < 1e-15:
-                if c_eff <= 0:
+                # Ito convention: Θ(0) = 1, so c_eff = 0 passes.
+                if c_eff < 0:
                     return 0.0 + 0.0j
                 continue
             bound = -c_eff / a
