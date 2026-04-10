@@ -130,64 +130,55 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
         # coefficients; fall back to unsimplified form.
         pass
 
-    # Compute delta coefficients via the polynomial part of Ĝ(ω).
+    # Delta coefficients: the polynomial (non-proper) part of Ĝ(ω).
     #
-    # The key identity (see Daley & Vere-Jones Ch. 5):
+    # The key identity:
     #   Ĝ(ω) = Q(iω) + Ĝ_proper(ω)
-    # where Q is a polynomial in iω and Ĝ_proper is strictly proper
-    # (deg num < deg den). Then:
+    # where Q is polynomial and Ĝ_proper is strictly proper. Then:
     #   G(t) = Q(∂_t) δ(t) + Θ(t) · [residue sum]
     #
-    # For the common case where Q is at most a constant:
+    # For the common case Q = constant:
     #   D[i,j] = lim_{ω→∞} Ĝ[i,j](ω) = coefficient of δ(t)
     #
-    # We compute this using Sage's symbolic limit when parameters are
-    # still symbolic, or by numerical evaluation at large ω when
-    # num_params has been substituted. The symbolic path is preferred
-    # because it is exact and avoids floating-point fragility.
+    # If propagator_data already has 'D_delta' (computed upstream via
+    # symbolic polynomial division / limit), use it directly. Otherwise
+    # compute it here via Sage's symbolic limit.
     from sage.all import limit as _limit, oo as _oo
 
-    nrows, ncols = (G_ft.dimensions() if G_ft is not None
-                    else smooth.dimensions())
-    delta_data = [[SR(0)] * ncols for _ in range(nrows)]
-    if G_ft is not None:
-        omega_sym = _infer_omega_variable(G_ft, num_params)
-        if omega_sym is not None:
-            for i in range(nrows):
-                for j in range(ncols):
-                    entry = SR(G_ft[i, j])
-                    if entry.is_zero():
-                        continue
-                    # Try symbolic limit first (works with or without
-                    # num_params — exact and robust).
-                    try:
-                        entry_sub = entry.subs(num_params) if num_params else entry
-                        lim_val = _limit(entry_sub,
-                                         **{str(omega_sym): _oo})
-                        if not SR(lim_val).is_zero():
-                            # Substitute num_params into the limit result
-                            # in case it contains model parameters.
-                            if num_params:
-                                lim_val = SR(lim_val).subs(num_params)
-                            delta_data[i][j] = SR(lim_val)
+    D_precomputed = propagator_data.get('D_delta')
+    if D_precomputed is not None:
+        # Use the precomputed delta matrix. Apply num_params if needed.
+        if num_params:
+            delta_coeffs = D_precomputed.apply_map(
+                lambda e: SR(e).subs(num_params) if not SR(e).is_zero() else SR(0)
+            )
+        else:
+            delta_coeffs = D_precomputed
+    else:
+        # Compute from G_ft via symbolic limit.
+        nrows, ncols = (G_ft.dimensions() if G_ft is not None
+                        else smooth.dimensions())
+        delta_data = [[SR(0)] * ncols for _ in range(nrows)]
+        if G_ft is not None:
+            omega_sym = _infer_omega_variable(G_ft, num_params)
+            if omega_sym is not None:
+                for i in range(nrows):
+                    for j in range(ncols):
+                        entry = SR(G_ft[i, j])
+                        if entry.is_zero():
                             continue
-                    except Exception:
-                        pass
-                    # Fallback: numerical evaluation at large ω (only
-                    # works if num_params has been substituted so the
-                    # entry is purely numeric in ω).
-                    if num_params:
                         try:
-                            v1 = complex(CDF(entry.subs(num_params).subs(
-                                {omega_sym: 1e12})))
-                            v2 = complex(CDF(entry.subs(num_params).subs(
-                                {omega_sym: 2e12})))
-                            if (abs(v1) > 1e-9
-                                    and abs(v1 - v2) < 1e-6 * abs(v1)):
-                                delta_data[i][j] = SR(v1)
+                            entry_sub = (entry.subs(num_params)
+                                         if num_params else entry)
+                            lim_val = _limit(entry_sub,
+                                             **{str(omega_sym): _oo})
+                            if not SR(lim_val).is_zero():
+                                if num_params:
+                                    lim_val = SR(lim_val).subs(num_params)
+                                delta_data[i][j] = SR(lim_val)
                         except Exception:
                             pass
-    delta_coeffs = matrix(SR, delta_data)
+        delta_coeffs = matrix(SR, delta_data)
 
     return {
         'smooth': smooth,
