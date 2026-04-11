@@ -42,6 +42,7 @@ def compute_correction_td(
     ext_time_vars=None,
     origin_leaf_idx=0,
     timeout_sec=30,
+    external_fields=None,
 ):
     r"""
     Phase J entry point: evaluate a set of kernel groups in the time
@@ -152,6 +153,7 @@ def compute_correction_td(
                 num_params=num_params,
                 origin_leaf_idx=origin_leaf_idx,
                 timeout_sec=timeout_sec,
+                external_fields=external_fields,
             )
             if result['status'] == 'ok':
                 contribution = result['contribution']

@@ -116,6 +116,7 @@ def integrate_tree_diagram(
     num_params=None,
     origin_leaf_idx=0,
     timeout_sec=30,  # unused on the numerical path; kept for API compat.
+    external_fields=None,
 ):
     r"""
     Vertex-time integration for a TREE-LEVEL typed diagram, evaluated
@@ -125,10 +126,10 @@ def integrate_tree_diagram(
 
         f(*ext_time_values) -> complex
 
-    taking `k` positional arguments (one per entry in `ext_time_vars`,
-    in the same order). If `origin_leaf_idx` is not None, the value
-    supplied at that position is ignored (it was pinned to zero during
-    integrand construction).
+    taking `k` positional arguments in **canonical** order: position i
+    is the time of ``external_fields[i]``.  If `origin_leaf_idx` is
+    not None, the value supplied at that position is ignored (it was
+    pinned to zero during integrand construction).
 
     Parameters
     ----------
@@ -144,7 +145,8 @@ def integrate_tree_diagram(
     combined_prefactor : SR or numeric
         Sum of scalar prefactors over diagrams in the kernel group.
     ext_time_vars : list of SR
-        `k` external time variables, one per leaf (in `leaves` order).
+        `k` external time variables in canonical order:
+        ``ext_time_vars[i]`` is the time of ``external_fields[i]``.
     num_params : dict or None
         Numerical parameter substitutions for the propagator matrix AND
         the combined prefactor. Required if either the propagator
@@ -153,12 +155,19 @@ def integrate_tree_diagram(
         except the integration variables and external times has been
         substituted.
     origin_leaf_idx : int or None
-        Which external leaf's time to pin to zero. Default 0. Pass None
-        to leave all external times free — the returned callable will
-        then depend on all `k` external times.
+        Which canonical position to pin to zero (i.e., which entry of
+        `external_fields` provides the base time). Default 0.
     timeout_sec : int
         Unused on the numerical quadrature path (kept for API
         compatibility with earlier symbolic-integration builds).
+    external_fields : list of tuple or None
+        The canonical external field list as specified by the user,
+        e.g. ``[('dn',1), ('dn',1), ('dn',2)]``.  Used to map each
+        leaf to its canonical position so that ``contribution(t_1,
+        t_2, t_3)`` always has position i = time of
+        ``external_fields[i]``, regardless of the diagram's internal
+        leaf ordering.  If None, falls back to position-based mapping
+        (leaf j → ext_time_vars[j]).
 
     Returns
     -------
@@ -199,12 +208,37 @@ def integrate_tree_diagram(
     G_t_obj = build_G_t_matrix(propagator_data, t_sym, num_params=num_params)
 
     # ── 2. Assign a time symbol to every vertex ──────────────────
+    # Canonical remapping: each leaf carries a specific external field.
+    # Map each leaf to the canonical position of that field in
+    # external_fields, so that contribution(t_1,...,t_k) always has
+    # position i = time of external_fields[i].
     vertex_time = {}
-    for j, lf in enumerate(leaves):
-        t_ext = ext_time_vars[j]
-        if origin_leaf_idx is not None and j == origin_leaf_idx:
-            t_ext = SR(0)
-        vertex_time[lf] = t_ext
+    if external_fields is not None and len(external_fields) == len(leaves):
+        _used_canon = set()
+        _leaf_to_canon = {}
+        for j, lf in enumerate(leaves):
+            field = typed_diagram.external_legs.get(lf)
+            for cp in range(len(external_fields)):
+                if cp not in _used_canon and external_fields[cp] == field:
+                    _leaf_to_canon[j] = cp
+                    _used_canon.add(cp)
+                    break
+            else:
+                # Fallback: no match found (shouldn't happen)
+                _leaf_to_canon[j] = j
+        for j, lf in enumerate(leaves):
+            canon_pos = _leaf_to_canon[j]
+            t_ext = ext_time_vars[canon_pos]
+            if origin_leaf_idx is not None and canon_pos == origin_leaf_idx:
+                t_ext = SR(0)
+            vertex_time[lf] = t_ext
+    else:
+        # Legacy path: position-based mapping
+        for j, lf in enumerate(leaves):
+            t_ext = ext_time_vars[j]
+            if origin_leaf_idx is not None and j == origin_leaf_idx:
+                t_ext = SR(0)
+            vertex_time[lf] = t_ext
 
     internal_vertices = [v for v in D.vertices() if v not in leaf_set]
     integration_vars = []
