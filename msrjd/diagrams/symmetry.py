@@ -154,14 +154,22 @@ def diagram_signature(td):
     Build a hashable canonical signature for a typed diagram.
 
     Two typed diagrams with the same signature are identical — they
-    represent the same Feynman diagram Γ and differ only in the
+    represent the same Feynman diagram Gamma and differ only in the
     internal choice of which identical leg was assigned to which edge
     (an attachment degree of freedom).
 
-    The signature encodes:
-      - External leg assignments  (which field at each leaf)
-      - Vertex type at each internal vertex  (coefficient, legs, bigrade)
-      - Propagator indices on every edge
+    The signature encodes, for each internal vertex:
+      - vertex type (coefficient, legs, bigrade)
+      - the sorted multiset of (external_field, propagator_index) for
+        every leaf attached to that vertex
+    and for internal (non-leaf) edges:
+      - propagator indices
+
+    Crucially, the per-vertex leaf grouping ensures that two diagrams
+    which differ in which leaf connects to which vertex (e.g. dn2 at
+    a source vertex vs at an interaction vertex) are NOT merged.
+    The vertex information is sorted by type (not by vertex id) to be
+    invariant under vertex relabeling.
 
     Parameters
     ----------
@@ -172,25 +180,44 @@ def diagram_signature(td):
     tuple
         Hashable canonical signature.
     """
-    # External legs: sorted (leaf, field) pairs
-    ext = tuple(sorted(td.external_legs.items()))
+    leaf_set = set(td.external_legs.keys())
 
-    # Vertex assignments: sorted (vertex, type_key) pairs
+    # For each internal vertex, collect the multiset of (field, prop_idx)
+    # for its leaf edges.
+    vertex_leaf_map = {}
+    for v in td.vertex_assignments:
+        leaf_edges = []
+        for ek, et in td.edge_types.items():
+            # Edge from internal vertex v to a leaf
+            if ek[0] == v and ek[1] in leaf_set:
+                field = td.external_legs[ek[1]]
+                prop = td.propagator_indices[ek]
+                leaf_edges.append((field, prop))
+            # Edge from a leaf to internal vertex v (rare but possible)
+            elif ek[1] == v and ek[0] in leaf_set:
+                field = td.external_legs[ek[0]]
+                prop = td.propagator_indices[ek]
+                leaf_edges.append((field, prop))
+        vertex_leaf_map[v] = tuple(sorted(leaf_edges))
+
+    # Vertex assignments with leaf info, sorted by type (not by id)
     verts = []
-    for v, vtype in sorted(td.vertex_assignments.items()):
+    for v, vtype in td.vertex_assignments.items():
         tname = type(vtype).__name__
         resp = tuple(vtype.response_legs)
         phys = tuple(vtype.physical_legs) if hasattr(vtype, 'physical_legs') else ()
-        verts.append((v, tname, str(vtype.coefficient), vtype.bigrade, resp, phys))
-    verts = tuple(verts)
+        verts.append((tname, str(vtype.coefficient), vtype.bigrade, resp, phys,
+                      vertex_leaf_map.get(v, ())))
+    verts = tuple(sorted(verts))
 
-    # Edge propagator assignments: sorted (edge, prop_indices) pairs
-    edges = tuple(sorted(
-        ((edge_key[0], edge_key[1]), td.propagator_indices[edge_key])
-        for edge_key in td.edge_types
+    # Internal edges: edges between non-leaf vertices (sorted by prop index)
+    internal_edges = tuple(sorted(
+        td.propagator_indices[ek]
+        for ek in td.edge_types
+        if ek[0] not in leaf_set and ek[1] not in leaf_set
     ))
 
-    return (ext, verts, edges)
+    return (verts, internal_edges)
 
 
 def deduplicate_typed_diagrams(typed_diagrams):

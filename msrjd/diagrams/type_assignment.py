@@ -19,6 +19,11 @@ from itertools import permutations, product
 from sage.all import SR
 
 
+def _distinct_permutations(seq):
+    """Yield each distinct permutation of *seq* exactly once."""
+    return set(permutations(seq))
+
+
 # ── Data structures ──────────────────────────────────────────────────────────
 
 class TypedDiagram:
@@ -184,51 +189,56 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
         else:
             leaf_directions[lf] = 'both'
 
-    # External leg assignment: leaf i gets external_fields[i] (fixed, not permuted).
-    # External legs are labeled — leg 0 is field 0, leg 1 is field 1, etc.
-    # Permuting would generate diagrams for different correlators
-    # (e.g. <dn2 dn1> instead of <dn1 dn2>).
-    ext_assignment = {}
-    valid_ext = True
-    for leaf_idx in range(len(external_fields)):
-        lf = leaves[leaf_idx]
-        field = external_fields[leaf_idx]
-        direction = leaf_directions[lf]
+    # External leg assignment: enumerate ALL distinct permutations of the
+    # external fields across leaves.  The prediagram isomorphism dedup
+    # treats all leaves as interchangeable, so a single prediagram
+    # represents every leaf permutation.  We must enumerate them here
+    # so that diagrams differing in which leaf carries which field
+    # (e.g. dn₂ at a source-leaf vs at an interaction-leaf) are all
+    # generated.  The downstream dedup (deduplicate_typed_diagrams)
+    # will then merge any that are truly identical.
+    for ext_perm in _distinct_permutations(tuple(external_fields)):
+        ext_assignment = {}
+        valid_ext = True
+        for leaf_idx in range(len(ext_perm)):
+            lf = leaves[leaf_idx]
+            field = ext_perm[leaf_idx]
+            direction = leaf_directions[lf]
 
-        if direction == 'resp' and field not in resp_index:
-            valid_ext = False; break
-        if direction == 'phys' and field not in phys_index:
-            valid_ext = False; break
-        if direction == 'both':
-            if field not in resp_index and field not in phys_index:
+            if direction == 'resp' and field not in resp_index:
                 valid_ext = False; break
+            if direction == 'phys' and field not in phys_index:
+                valid_ext = False; break
+            if direction == 'both':
+                if field not in resp_index and field not in phys_index:
+                    valid_ext = False; break
 
-        ext_assignment[lf] = field
+            ext_assignment[lf] = field
 
-    if not valid_ext:
-        return
+        if not valid_ext:
+            continue
 
-    if not ordered_internal:
-        # No internal vertices — just external legs connected by edges
-        yield from _try_build_diagram_no_internal(
-            prediagram, edges, ext_assignment, leaf_set, leaf_directions,
-            G_ft, resp_index, phys_index,
-        )
-        return
+        if not ordered_internal:
+            # No internal vertices — just external legs connected by edges
+            yield from _try_build_diagram_no_internal(
+                prediagram, edges, ext_assignment, leaf_set, leaf_directions,
+                G_ft, resp_index, phys_index,
+            )
+            continue
 
-    # Enumerate vertex type assignments (Cartesian product)
-    candidate_lists = [candidates[v] for v in ordered_internal]
+        # Enumerate vertex type assignments (Cartesian product)
+        candidate_lists = [candidates[v] for v in ordered_internal]
 
-    for combo in product(*candidate_lists):
-        vert_assignment = {ordered_internal[i]: combo[i]
-                           for i in range(len(ordered_internal))}
+        for combo in product(*candidate_lists):
+            vert_assignment = {ordered_internal[i]: combo[i]
+                               for i in range(len(ordered_internal))}
 
-        yield from _try_build_diagram(
-            prediagram, edges, ext_assignment, vert_assignment,
-            ordered_internal, leaf_set, leaf_directions,
-            out_edges_of, in_edges_of,
-            G_ft, resp_index, phys_index,
-        )
+            yield from _try_build_diagram(
+                prediagram, edges, ext_assignment, vert_assignment,
+                ordered_internal, leaf_set, leaf_directions,
+                out_edges_of, in_edges_of,
+                G_ft, resp_index, phys_index,
+            )
 
 
 def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
