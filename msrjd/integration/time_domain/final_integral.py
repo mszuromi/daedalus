@@ -107,16 +107,25 @@ QUAD_OPTS = {
 # Tree-level vertex-time integration
 # ───────────────────────────────────────────────────────────────────────
 
+def _loop_number_from_graph(typed_diagram):
+    """Compute loop number from the diagram's graph structure.
+
+    For a connected graph: L = |E| - |V| + 1.
+    This avoids any frequency-domain dependency.
+    """
+    D = typed_diagram.prediagram[0]
+    return D.num_edges() - D.num_verts() + 1
+
+
 def integrate_tree_diagram(
     typed_diagram,
-    representative_ir,
     propagator_data,
     combined_prefactor,
     ext_time_vars,
     num_params=None,
     origin_leaf_idx=0,
-    timeout_sec=30,  # unused on the numerical path; kept for API compat.
     external_fields=None,
+    representative_ir=None,  # deprecated, kept for backward compat
 ):
     r"""
     Vertex-time integration for a TREE-LEVEL typed diagram, evaluated
@@ -134,14 +143,11 @@ def integrate_tree_diagram(
     Parameters
     ----------
     typed_diagram : TypedDiagram
-        Must have `loop_number == 0` (asserted below). Needed for the
-        prediagram `D`, leaf list, and `propagator_indices`.
-    representative_ir : dict
-        Output of `build_integrand_stationary`. Used only for the
-        loop_number sanity check.
+        Must be tree-level (loop_number == 0, asserted below). Needed
+        for the prediagram `D`, leaf list, and `propagator_indices`.
     propagator_data : dict
-        Standard pipeline propagator dict with keys `'pole_vals'` and
-        `'C_mats'`.
+        Must contain `'pole_vals'`, `'C_mats'`, and optionally
+        `'D_delta'` (for delta-coefficient detection).
     combined_prefactor : SR or numeric
         Sum of scalar prefactors over diagrams in the kernel group.
     ext_time_vars : list of SR
@@ -186,7 +192,7 @@ def integrate_tree_diagram(
             linear combination `t_head - t_tail` that must be positive
             for the integrand to be nonzero.
     """
-    loop_number = representative_ir.get('loop_number', 0)
+    loop_number = _loop_number_from_graph(typed_diagram)
     assert loop_number == 0, (
         "integrate_tree_diagram only handles tree-level diagrams; "
         f"got loop_number = {loop_number}. Loop cases must go through "

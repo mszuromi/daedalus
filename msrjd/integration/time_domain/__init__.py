@@ -1,58 +1,64 @@
 """
 msrjd.integration.time_domain
 =============================
-Phase J — hybrid loop-kernel reduction pipeline.
+Time-domain tree-level correlator evaluation.
 
-Frequency space is used for unique loop kernel identification and
-deduplication (reusing Phase I's `group_diagrams_by_kernel` /
-`loop_only_signature` machinery). Actual integration is performed in the
-time domain, where causal exponential propagators reduce to polyhedral
-exponential integrals that admit closed-form solutions.
+This module evaluates Feynman diagrams directly in the time domain via
+explicit numerical quadrature of vertex-time integrals.  The pipeline
+works from:
 
-MVP scope (tree-level only)
----------------------------
-The initial build validates the Phase J *evaluation layer* only — it
-handles typed diagrams with `loop_number == 0` by:
+  1. A list of typed diagrams (from the enumeration pipeline in
+     ``msrjd.diagrams``).
+  2. Their scalar prefactors (from ``classify_coefficient_factors``
+     in ``msrjd.diagrams.symmetry``).
+  3. The retarded propagator in pole-residue form: ``pole_vals``,
+     ``C_mats``, ``D_delta`` (computed once from the kernel matrix
+     ``K(ω)`` via eigenvalue decomposition).
 
-  1. reading the time-domain retarded propagator matrix G_R(t) from
-     `propagator_data` via pole-residue reconstruction;
-  2. assigning a symbolic time variable to every vertex, pinning one
-     external leaf's time as the origin, and integrating over the
-     remaining vertex times;
-  3. summing the result across all tree-level kernel groups with their
-     combined prefactors.
+No frequency-domain integral construction or loop-kernel grouping is
+used.  The frequency-domain code in ``msrjd.integration.symbolic`` is
+preserved for future extensions but is NOT called by this module.
 
-Loop kernel reduction, kernel caching, and parent-diagram contraction
-(Phases 3-5 of the full hybrid pipeline) are intentionally deferred to
-Extension 1 of the build plan; tree-level diagrams bypass those phases
-entirely because they have no loop kernels to reduce.
+Convention
+----------
+``total_C(t_1, t_2, ..., t_k)`` returns the tree-level correlator.
+Position i is ALWAYS the time of ``external_fields[i]``:
 
-Phase I (the frequency-domain residue backend in
-`msrjd.integration.symbolic`) is untouched and remains the default /
-fallback backend.
+  - ``external_fields[0]`` → ``t_1`` (base time, pinned to 0 for
+    stationary systems)
+  - ``external_fields[n]`` → ``t_{n+1}``,  ``τ_n = t_{n+1} - t_1``
+
+This is enforced by the canonical time remapping in
+``integrate_tree_diagram``.
+
+Propagator decomposition
+------------------------
+Each retarded propagator entry is decomposed as:
+
+    G_R[p, r](t) = c_δ · δ(t) + Θ(t) · G_smooth[p, r](t)
+
+where ``G_smooth = Σ_k C_k[p, r] · exp(i ω_k t)`` is the pole-residue
+sum.  The Ito convention ``Θ(0) = 1`` is used throughout.
+
+For tree diagrams with ``|E|`` edges, the product of propagators is
+expanded into ``2^|E|`` subsets (each edge either δ or smooth).  Deltas
+with integration-variable arguments are integrated symbolically; any
+deltas that survive as functions of external times only (e.g., δ(τ₁))
+are reported but NOT added to the smooth callable ``total_C``.
 
 Fourier convention (fixed pipeline-wide)
 ----------------------------------------
     G(t) = (1 / 2π) ∫ dω  exp(i ω t)  Ĝ(ω)
 
-Under this convention poles with Im(ω) > 0 yield decaying exponentials
-for t > 0 and growing exponentials for t < 0. The pipeline's causality
-filter (`msrjd.diagrams.causality`) guarantees that the kernel matrix's
-pole values all have Im > 0 — the retarded propagator then follows by
-multiplying the analytic pole-residue sum by `heaviside(t)`.
+Poles with Im(ω) > 0 yield decaying exponentials for t > 0.
 
 Public API
 ----------
-- `propagator_td.build_G_t_matrix` — dict {'smooth', 'delta', 't_var'}
-  with the pole-residue sum for the smooth part and the ω→∞ limits
-  for the δ(t) coefficients.
-- `propagator_td.G_t_entry`         — retarded edge propagator lookup
-  (smooth part only; accepts either the new dict or a bare matrix)
-- `propagator_td.G_t_delta_coeff`   — δ(t) coefficient lookup for
-  an instantaneous response entry
-- `subgraph.identify_loop_subgraphs` — loop subgraph identification (stub at MVP)
-- `final_integral.integrate_tree_diagram` — vertex-time integration (tree only)
-- `pipeline.compute_correction_td`  — Phase J entry point / orchestrator
+- ``propagator_td.build_G_t_matrix``       — pole-residue + delta matrix
+- ``propagator_td.G_t_entry``              — single propagator entry lookup
+- ``propagator_td.G_t_delta_coeff``        — delta coefficient lookup
+- ``final_integral.integrate_tree_diagram`` — tree-level vertex-time integrator
+- ``pipeline.compute_correction_td``       — entry point / orchestrator
 """
 
 from msrjd.integration.time_domain.propagator_td import (
@@ -60,12 +66,9 @@ from msrjd.integration.time_domain.propagator_td import (
     G_t_entry,
     G_t_delta_coeff,
 )
-from msrjd.integration.time_domain.subgraph import (
-    LoopSubgraph,
-    identify_loop_subgraphs,
-)
 from msrjd.integration.time_domain.final_integral import (
     integrate_tree_diagram,
+    _loop_number_from_graph,
     format_td_integral_latex,
     eval_delta_contributions_on_tau_grid,
     eval_delta_contributions_on_2d_grid,
@@ -78,10 +81,10 @@ __all__ = [
     'build_G_t_matrix',
     'G_t_entry',
     'G_t_delta_coeff',
-    'LoopSubgraph',
-    'identify_loop_subgraphs',
     'integrate_tree_diagram',
+    '_loop_number_from_graph',
     'format_td_integral_latex',
     'eval_delta_contributions_on_tau_grid',
+    'eval_delta_contributions_on_2d_grid',
     'compute_correction_td',
 ]
