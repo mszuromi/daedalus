@@ -395,6 +395,13 @@ def test_m_matches_multiplicity():
 def test_mixed_response_legs_distinct_pairings():
     """
     Vertex x̃²ỹ with pairings (x̃,x),(x̃,y),(ỹ,x).
+
+    Under the position-aware convention (external leaves are
+    distinguishable by position), each leaf target is unique.
+    The two x̃ legs go to two distinct leaf positions, giving
+    M = [2!/(1!×1!) × 1!/1!] × [1!×1!×1!] = 2 × 1 = 2.
+
+    Single-vertex diagram: M uses field-type pairings (not positions).
     M = [2!/(1!×1!) × 1!/1!] × [2!×1!] = 2 × 2 = 4.
     """
     vt = VertexType(SR(1), [('nt', 1), ('nt', 1), ('nt', 2)],

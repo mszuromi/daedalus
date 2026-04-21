@@ -42,6 +42,14 @@ class VertexType:
         self.physical_legs = list(physical_legs)
         self.bigrade       = tuple(bigrade)
 
+    # Pickle support for __slots__
+    def __getstate__(self):
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    def __setstate__(self, state):
+        for s, v in state.items():
+            object.__setattr__(self, s, v)
+
     @property
     def in_degree(self):
         """Number of physical (incoming) legs."""
@@ -80,6 +88,14 @@ class SourceType:
         self.coefficient   = coefficient
         self.response_legs = list(response_legs)
         self.bigrade       = tuple(bigrade)
+
+    # Pickle support for __slots__
+    def __getstate__(self):
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    def __setstate__(self, state):
+        for s, v in state.items():
+            object.__setattr__(self, s, v)
 
     @property
     def out_degree(self):

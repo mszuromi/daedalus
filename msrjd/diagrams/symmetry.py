@@ -53,11 +53,16 @@ def _vertex_combinatorial_factor(vertex, typed_diagram):
     Count the number of response-leg permutations at *vertex* that
     preserve the same typed diagram.
 
-    For each outgoing edge (vertex → w), the pairing is
-    (resp_type, phys_type) where resp_type is the response leg used
-    at *vertex* and phys_type is the physical leg at w.
+    Each external leaf is treated as a UNIQUE endpoint (distinguished
+    by its position in the prediagram leaf list), because different
+    leaf positions correspond to different spacetime points.  Internal
+    (non-leaf) targets are identified by their (resp, phys) field-type
+    pairing as before.
 
-    M_v = [∏_r  n_r! / ∏_p n[r][p]!]  ×  [∏_p  m_p!]
+    M_v = [∏_r  n_r! / ∏_t n[r][t]!]  ×  [∏_t  m_t!]
+
+    where t ranges over unique targets (leaf positions for external
+    edges, (resp, phys) field types for internal edges).
 
     Parameters
     ----------
@@ -73,7 +78,9 @@ def _vertex_combinatorial_factor(vertex, typed_diagram):
     edge_types = typed_diagram.edge_types
 
     # Collect (resp_type, phys_type) for every outgoing edge from vertex.
-    # Edge keys may be 2-tuples (u, v) or 3-tuples (u, v, label).
+    # M counts response-leg permutations that preserve the (resp, phys)
+    # field-type pairing — i.e. within-vertex Wick contractions that
+    # give the same integrand by commutativity.
     pairings = []
     for edge_key, (resp_leg, phys_leg) in edge_types.items():
         u = edge_key[0]
@@ -84,23 +91,23 @@ def _vertex_combinatorial_factor(vertex, typed_diagram):
         return 1
 
     # n_r: total count of each response type
-    resp_counts = Counter(r for r, p in pairings)
-    # n[r][p]: count of each (resp, phys) pairing
+    resp_counts = Counter(r for r, t in pairings)
+    # n[r][t]: count of each (resp, target) pairing
     pair_counts = Counter(pairings)
-    # m_p: count of each physical type across outgoing edges
-    phys_counts = Counter(p for r, p in pairings)
+    # m_t: count of each target across outgoing edges
+    target_counts = Counter(t for r, t in pairings)
 
     m = 1
-    # ∏_r [ n_r! / ∏_p n[r][p]! ]
+    # ∏_r [ n_r! / ∏_t n[r][t]! ]
     for r, n_r in resp_counts.items():
         m *= factorial(n_r)
-        for p in phys_counts:
-            n_rp = pair_counts.get((r, p), 0)
-            if n_rp > 1:
-                m //= factorial(n_rp)
-    # ∏_p m_p!
-    for m_p in phys_counts.values():
-        m *= factorial(m_p)
+        for t in target_counts:
+            n_rt = pair_counts.get((r, t), 0)
+            if n_rt > 1:
+                m //= factorial(n_rt)
+    # ∏_t m_t!
+    for m_t in target_counts.values():
+        m *= factorial(m_t)
 
     return m
 
@@ -154,14 +161,22 @@ def diagram_signature(td):
     Build a hashable canonical signature for a typed diagram.
 
     Two typed diagrams with the same signature are identical — they
-    represent the same Feynman diagram Γ and differ only in the
+    represent the same Feynman diagram Gamma and differ only in the
     internal choice of which identical leg was assigned to which edge
     (an attachment degree of freedom).
 
-    The signature encodes:
-      - External leg assignments  (which field at each leaf)
-      - Vertex type at each internal vertex  (coefficient, legs, bigrade)
-      - Propagator indices on every edge
+    The signature encodes, for each internal vertex:
+      - vertex type (coefficient, legs, bigrade)
+      - the sorted multiset of (external_field, propagator_index) for
+        every leaf attached to that vertex
+    and for internal (non-leaf) edges:
+      - propagator indices
+
+    Crucially, the per-vertex leaf grouping ensures that two diagrams
+    which differ in which leaf connects to which vertex (e.g. dn2 at
+    a source vertex vs at an interaction vertex) are NOT merged.
+    The vertex information is sorted by type (not by vertex id) to be
+    invariant under vertex relabeling.
 
     Parameters
     ----------
@@ -172,25 +187,45 @@ def diagram_signature(td):
     tuple
         Hashable canonical signature.
     """
-    # External legs: sorted (leaf, field) pairs
-    ext = tuple(sorted(td.external_legs.items()))
+    leaf_set = set(td.external_legs.keys())
 
-    # Vertex assignments: sorted (vertex, type_key) pairs
+    # Field-type-based deduplication.  Two diagrams that differ only
+    # by permuting same-type leaves (within or across internal
+    # vertices) are merged here; the inter-vertex Wick contractions
+    # are enumerated separately in integrate_tree_diagram, with a
+    # compensation factor for same-vertex permutations.
+    vertex_leaf_map = {}
+    for v in td.vertex_assignments:
+        leaf_edges = []
+        for ek, et in td.edge_types.items():
+            if ek[0] == v and ek[1] in leaf_set:
+                field = td.external_legs[ek[1]]
+                prop = td.propagator_indices[ek]
+                leaf_edges.append((field, prop))
+            elif ek[1] == v and ek[0] in leaf_set:
+                field = td.external_legs[ek[0]]
+                prop = td.propagator_indices[ek]
+                leaf_edges.append((field, prop))
+        vertex_leaf_map[v] = tuple(sorted(leaf_edges))
+
+    # Vertex assignments with leaf info, sorted by type (not by id)
     verts = []
-    for v, vtype in sorted(td.vertex_assignments.items()):
+    for v, vtype in td.vertex_assignments.items():
         tname = type(vtype).__name__
         resp = tuple(vtype.response_legs)
         phys = tuple(vtype.physical_legs) if hasattr(vtype, 'physical_legs') else ()
-        verts.append((v, tname, str(vtype.coefficient), vtype.bigrade, resp, phys))
-    verts = tuple(verts)
+        verts.append((tname, str(vtype.coefficient), vtype.bigrade, resp, phys,
+                      vertex_leaf_map.get(v, ())))
+    verts = tuple(sorted(verts))
 
-    # Edge propagator assignments: sorted (edge, prop_indices) pairs
-    edges = tuple(sorted(
-        ((u, v), td.propagator_indices[(u, v)])
-        for (u, v) in td.edge_types
+    # Internal edges: edges between non-leaf vertices (sorted by prop index)
+    internal_edges = tuple(sorted(
+        td.propagator_indices[ek]
+        for ek in td.edge_types
+        if ek[0] not in leaf_set and ek[1] not in leaf_set
     ))
 
-    return (ext, verts, edges)
+    return (verts, internal_edges)
 
 
 def deduplicate_typed_diagrams(typed_diagrams):

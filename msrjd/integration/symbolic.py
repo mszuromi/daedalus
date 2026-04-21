@@ -41,7 +41,7 @@ Build Phase H.
 
 from collections import defaultdict
 
-from sage.all import SR, I, pi, exp
+from sage.all import SR, I, pi, exp, matrix, QQ
 
 from msrjd.diagrams.symmetry import classify_coefficient_factors
 
@@ -110,89 +110,134 @@ def assign_frequencies(typed_diagram, k):
 
 def solve_conservation(typed_diagram, edge_freqs, leaf_edge_freq):
     r"""
-    Solve frequency conservation at internal vertices.
+    Solve frequency conservation at internal vertices using linear algebra.
+
+    At each internal vertex v the conservation equation is
+    ``Σ ω_in − Σ ω_out = 0``.  These are linear in the edge
+    frequencies, so they can be written as a matrix equation
+
+        M_int · ω_int + M_ext · ω_ext = 0
+
+    where ``ω_ext`` are the (known) external-leg frequencies and
+    ``ω_int`` are the internal-edge frequencies to solve for.
+    Row-reducing the augmented matrix ``[M_int | M_ext]`` over ℚ
+    yields:
+
+    * **pivot columns < n_int** → determined internal frequencies
+      (expressed in terms of free + external frequencies),
+    * **non-pivot columns < n_int** → free (loop) frequencies,
+    * **pivot in external columns** → overall conservation among
+      external frequencies.
 
     Returns
     -------
     substitutions : dict
+        ``{ω_internal: expression_in_ext_and_free}``.
     free_freqs : list of SR variable
+        Loop integration variables (one per independent loop).
     overall_conservation : SR expression or None
+        Constraint among external frequencies, if one exists.
     """
     D = typed_diagram.prediagram[0]
     leaves = typed_diagram.prediagram[2]
     leaf_set = set(leaves)
 
     leaf_freq_set = set(leaf_edge_freq.values())
-    internal_freq_vars = [w for w in edge_freqs.values()
-                          if w not in leaf_freq_set]
 
-    in_ekeys = {v: [] for v in D.vertices()}
-    out_ekeys = {v: [] for v in D.vertices()}
-    for ek in edge_freqs:
-        _, u, v = ek
-        out_ekeys[u].append(ek)
-        in_ekeys[v].append(ek)
+    # Partition edge keys into external (touch a leaf) and internal.
+    all_ekeys = sorted(edge_freqs.keys())          # sorted by edge index
+    ext_ekeys = [ek for ek in all_ekeys if edge_freqs[ek] in leaf_freq_set]
+    int_ekeys = [ek for ek in all_ekeys if edge_freqs[ek] not in leaf_freq_set]
 
-    equations = []
-    for v in D.vertices():
-        if v in leaf_set:
-            continue
-        in_sum = sum(edge_freqs[ek] for ek in in_ekeys[v])
-        out_sum = sum(edge_freqs[ek] for ek in out_ekeys[v])
-        equations.append(in_sum - out_sum)
+    internal_vertices = sorted(v for v in D.vertices() if v not in leaf_set)
 
-    from sage.all import solve as sage_solve
+    n_eqs = len(internal_vertices)
+    n_int = len(int_ekeys)
+    n_ext = len(ext_ekeys)
 
+    if n_eqs == 0:
+        return {}, [], None
+
+    # ── Build incidence sub-matrices over ℚ ──────────────────────────────
+    # Convention: edge entering v → +1, edge leaving v → −1.
+    M_int = matrix(QQ, n_eqs, max(n_int, 1))  # at least 1 col for Sage
+    M_ext = matrix(QQ, n_eqs, max(n_ext, 1))
+
+    for i, v in enumerate(internal_vertices):
+        for j, ek in enumerate(int_ekeys):
+            _, u, w = ek
+            if w == v:
+                M_int[i, j] += 1
+            if u == v:
+                M_int[i, j] -= 1
+        for j, ek in enumerate(ext_ekeys):
+            _, u, w = ek
+            if w == v:
+                M_ext[i, j] += 1
+            if u == v:
+                M_ext[i, j] -= 1
+
+    # Trim dummy columns if n_int or n_ext was 0
+    if n_int == 0:
+        M_int = matrix(QQ, n_eqs, 0)
+    if n_ext == 0:
+        M_ext = matrix(QQ, n_eqs, 0)
+
+    # ── Row-reduce augmented matrix [M_int | M_ext] ─────────────────────
+    aug = M_int.augment(M_ext)
+    rref = aug.echelon_form()
+    pivots = rref.pivots()
+
+    pivot_set = set(pivots)
+    free_int_cols = [j for j in range(n_int) if j not in pivot_set]
+    free_freqs = [edge_freqs[int_ekeys[j]] for j in free_int_cols]
+
+    # ── Read off substitutions and overall conservation ──────────────────
     substitutions = {}
-    free_freqs = []
     overall_conservation = None
 
-    if not internal_freq_vars:
-        if equations:
-            overall_conservation = equations[0]
-        return substitutions, free_freqs, overall_conservation
-
-    remaining_unknowns = list(internal_freq_vars)
-    remaining_eqs = list(equations)
-
-    changed = True
-    while changed and remaining_eqs and remaining_unknowns:
-        changed = False
-        for eq_idx, eq in enumerate(remaining_eqs):
-            eq_sub = eq.subs(substitutions)
-            if eq_sub == 0:
-                remaining_eqs.pop(eq_idx)
-                changed = True
-                break
-            for unk in remaining_unknowns:
-                if unk in set(eq_sub.variables()):
-                    sol = sage_solve(eq_sub == 0, unk, solution_dict=True)
-                    if sol:
-                        substitutions[unk] = sol[0][unk]
-                        remaining_unknowns.remove(unk)
-                        remaining_eqs.pop(eq_idx)
-                        changed = True
-                        break
-            if changed:
-                break
-
-    free_freqs = list(remaining_unknowns)
-
-    free_set = set(free_freqs)
-    for v in D.vertices():
-        in_sum = sum(edge_freqs[ek] for ek in in_ekeys[v])
-        out_sum = sum(edge_freqs[ek] for ek in out_ekeys[v])
-        if in_sum == 0 and out_sum == 0:
-            continue
-        cons = (in_sum - out_sum).subs(substitutions)
-        if cons == 0:
-            continue
-        cons_vars = set(cons.variables())
-        ext_in_cons = cons_vars & leaf_freq_set
-        free_in_cons = cons_vars & free_set
-        if len(ext_in_cons) >= 2 and not free_in_cons:
-            overall_conservation = cons
+    for row_idx, pivot_col in enumerate(pivots):
+        if row_idx >= rref.nrows():
             break
+
+        if pivot_col < n_int:
+            # Pivot is an internal frequency → solve for it.
+            expr = SR(0)
+            for j in range(rref.ncols()):
+                if j == pivot_col:
+                    continue
+                coeff = rref[row_idx, j]
+                if coeff == 0:
+                    continue
+                if j < n_int:
+                    expr -= SR(coeff) * edge_freqs[int_ekeys[j]]
+                else:
+                    expr -= SR(coeff) * edge_freqs[ext_ekeys[j - n_int]]
+            substitutions[edge_freqs[int_ekeys[pivot_col]]] = expr
+
+        else:
+            # Pivot in an external column → overall conservation.
+            if overall_conservation is None:
+                cons = SR(0)
+                for j in range(n_int, rref.ncols()):
+                    coeff = rref[row_idx, j]
+                    if coeff != 0:
+                        cons += SR(coeff) * edge_freqs[ext_ekeys[j - n_int]]
+                if not cons.is_zero():
+                    overall_conservation = cons
+
+    # If no pivot fell in external columns, check for a redundant-row
+    # conservation (all internal entries zero, external entries nonzero).
+    if overall_conservation is None and n_int == 0 and n_ext >= 2:
+        for row_idx in range(rref.nrows()):
+            cons = SR(0)
+            for j in range(rref.ncols()):
+                coeff = rref[row_idx, j]
+                if coeff != 0:
+                    cons += SR(coeff) * edge_freqs[ext_ekeys[j]]
+            if not cons.is_zero():
+                overall_conservation = cons
+                break
 
     return substitutions, free_freqs, overall_conservation
 
@@ -250,14 +295,23 @@ def _resolve_edge_propagator_data(typed_diagram, edge_freqs, substitutions):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_propagator_entry(i, j, omega_var, propagator_data, omega_symbol):
-    """Look up Ĝ_{i,j}(ω) and substitute omega_var for ω."""
+    r"""Look up the retarded propagator Ĝ^R_{j,i}(ω) and substitute omega_var.
+
+    The kernel matrix K has rows = response fields, cols = physical fields,
+    so G = K^{-1} has the same layout: G[resp, phys].  But the *retarded*
+    propagator — "response of physical field j to response-field source i" —
+    is G^R_{j←i} = G[j, i] (physical row, response col) = G^T[i, j].
+
+    To obtain the correct Feynman-rule factor we therefore read G[j, i],
+    transposing the (resp, phys) indices supplied by the typed diagram.
+    """
     G_ft = propagator_data.get('G_ft')
     if G_ft is not None:
-        entry = SR(G_ft[i, j])
+        entry = SR(G_ft[j, i])          # transposed: G[phys, resp]
     else:
         adj = propagator_data['adj_ft']
         det = propagator_data['D_omega']
-        entry = SR(adj[i, j]) / SR(det)
+        entry = SR(adj[j, i]) / SR(det)  # transposed
     return entry.subs({omega_symbol: omega_var})
 
 
@@ -370,26 +424,21 @@ def build_integrand_stationary(typed_diagram, propagator_data, k,
         ext_times.append(SR.var(f't_{j+1}', latex_name=rf't_{{{j+1}}}'))
 
     overall_cons_sub = {}
-    if overall_cons is not None and len(ext_freqs_all) >= 2:
+    if overall_cons is not None:
         from sage.all import solve as sage_solve
+        # Pick the last external freq as the elimination target (for k>=2
+        # this expresses ω_k in terms of ω_1..ω_{k-1}; for k=1 it sets
+        # the single external freq to zero).
         target = ext_freqs_all[-1]
         cons_sol = sage_solve(overall_cons == 0, target, solution_dict=True)
         if cons_sol:
             overall_cons_sub = cons_sol[0]
+            # Substitute the eliminated external freq into existing subs.
+            for var_key in list(subs):
+                subs[var_key] = subs[var_key].subs(overall_cons_sub)
             subs.update(overall_cons_sub)
 
     ext_freqs = [w for w in ext_freqs_all if w not in overall_cons_sub]
-
-    # Close the substitution chain
-    for _ in range(10):
-        changed = False
-        for var_key in list(subs):
-            new_val = subs[var_key].subs(subs)
-            if new_val != subs[var_key]:
-                subs[var_key] = new_val
-                changed = True
-        if not changed:
-            break
 
     integrand = build_integrand(
         typed_diagram, edge_freqs, subs,
@@ -818,6 +867,22 @@ def loop_kernel_signature(prop_factors_canonical, free_freqs_canonical):
     ext_sig = tuple(sorted(_factor_to_hashable(f) for f in remaining))
 
     return (ext_sig,) + tuple(level_sigs)
+
+
+def loop_only_signature(full_signature):
+    r"""
+    Extract only the loop-dependent part of a kernel signature.
+
+    ``full_signature`` has the form ``(ext_sig, loop_0_sig, ...)``.
+    This returns ``(loop_0_sig, ...)`` — the part that determines the
+    numerical loop integral.  Two diagrams with the same loop-only
+    signature require only **one** numerical integration, even if their
+    external propagator factors differ.
+
+    Tree-level diagrams (no loop levels) return ``()``.
+    """
+    # Element 0 is ext_sig; everything after is loop levels.
+    return full_signature[1:]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

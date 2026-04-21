@@ -1,29 +1,43 @@
 """
-models/hawkes_sage.py
-=====================
-Model specification for the nonlinear Hawkes process (SageMath version).
+models/hawkes_quad_expg.py
+==========================
+**Quadratic** Hawkes 2-population model with gain ``a`` and exponential
+synaptic filter ``g(t) = (1/tau_g) exp(-t/tau_g) Theta(t)``.
+
+Transfer function:
+    phi_i(v) = a * v^2                (quadratic)
+
+    => phi^{(0)}(v_i*)  =  a v_i*^2  (= n_i* by the Poisson saddle)
+       phi^{(1)}(v_i*)  =  2 a v_i*
+       phi^{(2)}(v_i*)  =  2 a
+       phi^{(k)}(v_i*)  =  0  for  k >= 3
+
+Unlike the linear variants, ``phi^{(2)} != 0``.  This surfaces a
+``n~ dv^2`` cubic interaction vertex in the MSR-JD action, which
+enables 1-loop diagrams from the quadratic nonlinearity -- distinct
+from the `e^{n~}` Poisson-nonlinearity loops that the linear models
+already had.  With this model the notebook's ``max_ell = 1``
+enumerator will produce a richer set of 1-loop topologies whose
+evaluation stress-tests the loop-subgraph integrator.
+
+Synaptic filter (unit integral, same as hawkes_linear_expg):
+    g(t) = (1/tau_g) exp(-t/tau_g) Theta(t)
+    g_hat(omega) = 1 / (1 + i * omega * tau_g)
 
 Action (before MF expansion):
-  S = sum_i { ñ_i ṅ_i  -  (e^{ñ_i} - 1) φ_i(v_i)
-            + ṽ_i [(τ ∂_t + 1) v_i  -  E_i  -  Σ_j w_{ij} (g ∗ ṅ_j)] }
+    S = sum_i { n~_i n_dot_i - (e^{n~_i} - 1) phi_i(v_i)
+              + v~_i [(tau d_t + 1) v_i - E_i
+                      - sum_j w_{ij} (g * n_dot_j)] }
 
-MF expansion:
-  ṅ_i = ṅ_i* + δṅ_i   (physical: expanded around background)
-  v_i = v_i* + δv_i
-  ñ_i, ṽ_i             (response: full integration variables, NOT expanded)
-
-The action lambda uses:
-  - exp(ns.nt[i]) - 1   — SageMath's exp(), Taylor-expanded automatically
-  - ns.phi(i, ns.dv[i]) — formal SageMath function phi_{i+1}(dv_i),
-                           Taylor-expanded automatically with derivative
-                           symbols phi0_{i+1}, phi1_{i+1}, phi2_{i+1}, ...
-
-MF saddle conditions applied via 'mf_bg_conditions':
-  phi0_i  →  nstar_i          (Poisson saddle: φ_i(v_i*) = nstar_i)
-  vstar_i →  E_i + Σ_j w_ij g nstar_j   (voltage background EOM)
+MF saddle:
+    n*_i = phi_i(v*_i) = a * (v*_i)^2
+    v*_i = E_i + sum_j w_{ij} * int(g) * n*_j
+         = E_i + sum_j w_{ij} * n*_j                (kernel integrates to 1)
+Combined (nonlinear, fsolve):
+    n*_i = a * ( E_i + sum_j w_{ij} * n*_j )^2
 """
 
-from sage.all import SR, exp, function
+from sage.all import SR, exp, function, I
 
 # ---------------------------------------------------------------------------
 # Population count
@@ -43,7 +57,7 @@ _g     = SR.var('g')
 # ---------------------------------------------------------------------------
 HAWKES_MODEL: dict = {
 
-    'name': 'Nonlinear Hawkes 2-population',
+    'name': 'Quadratic Hawkes 2-population (phi = a v^2, exp filter tau_g)',
 
     # -----------------------------------------------------------------------
     # Index sets
@@ -51,7 +65,7 @@ HAWKES_MODEL: dict = {
     'index_sets': {'pop': _pop},
 
     # -----------------------------------------------------------------------
-    # Response fields  (NOT expanded — full integration variables)
+    # Response fields  (full integration variables)
     # -----------------------------------------------------------------------
     'response_fields': [
         {'name': 'nt', 'indexed': True, 'latex': r'\tilde{n}',
@@ -71,28 +85,34 @@ HAWKES_MODEL: dict = {
     ],
 
     # -----------------------------------------------------------------------
-    # Scalar parameters  (SR symbols — coefficients of the polynomial ring)
+    # Scalar parameters
+    #
+    #   a      -- gain of the quadratic transfer function phi(v) = a v^2
+    #   tau_g  -- exponential synaptic filter timescale
     # -----------------------------------------------------------------------
     'parameters': [
         {'name': 'nstar', 'indexed': True,  'domain': 'positive',
-         'description': 'background firing rate  nstar_i = phi_i(vstar_i)'},
+         'description': 'background firing rate  n*_i = phi_i(v*_i) = a * (v*_i)^2'},
         {'name': 'vstar', 'indexed': True,
          'description': 'background voltage'},
         {'name': 'E',     'indexed': True,
          'description': 'external drive'},
         {'name': 'tau',   'indexed': False, 'domain': 'positive',
          'description': 'membrane time constant'},
-        {'name': 'a',     'indexed': True,  'domain': 'positive',
-         'description': 'quadratic gain coefficient: phi_i(v) = (a_i/2) v^2'},
+        {'name': 'a',     'indexed': False,
+         'description': 'quadratic transfer-function gain: phi(v) = a v^2'},
+        {'name': 'tau_g', 'indexed': False, 'domain': 'positive',
+         'description': 'synaptic exponential filter timescale'},
+        {'name': 'w',     'indexed': True,
+         'description': 'synaptic weight matrix w_{ij}'},
     ],
 
     # -----------------------------------------------------------------------
     # Kernels
-    # sage_name 'z_g' sorts after 'w' so products render as w_{ij} g, not g w_{ij}
     # -----------------------------------------------------------------------
     'kernels': [
         {'name': 'g', 'sage_name': 'z_g', 'latex_name': 'g',
-         'description': 'synaptic filter kernel g(t)'},
+         'description': 'exponential synaptic filter, unit integral'},
     ],
 
     # -----------------------------------------------------------------------
@@ -100,19 +120,17 @@ HAWKES_MODEL: dict = {
     # -----------------------------------------------------------------------
     'operators': [
         {'name': 'Dt', 'sage_name': 'Dt', 'latex_name': r'\partial_t',
-         'description': r'∂_t  (algebraic placeholder for the time-derivative operator)'},
+         'description': r'd/dt  (algebraic placeholder for the time-derivative operator)'},
     ],
 
     # -----------------------------------------------------------------------
     # Nonlinear functions
-    #
-    # 'expression': lambda i, v -> SR expression in v
-    #   Here phi_i is specified as a formal SageMath function symbol.
-    #   The framework Taylor-expands phi_{i+1}(dv_i) around dv_i = 0 and
-    #   renames derivatives using 'latex' as the base symbol:
-    #     phi_{i+1}(0)             →  phi0_{i+1}   displayed as  φ_{i}
-    #     D[0](phi_{i+1})(0)       →  phi1_{i+1}   displayed as  φ'_{i}
-    #     D[0,0](phi_{i+1})(0)     →  phi2_{i+1}   displayed as  φ''_{i}  ...
+    # phi_i(v) = a v^2  (quadratic gain)
+    # Taylor around v = v*_i:  phi = a v*^2 + 2 a v* dv + a dv^2 + 0 + ...
+    # The framework Taylor-expands formally; the derivative symbols
+    # phi0_i, phi1_i, phi2_i, ... land in the action, then ``mf_bg_conditions``
+    # shifts phi0_i -> nstar_i (Poisson saddle) and ``specializations`` fixes
+    # the higher derivatives to their concrete values.
     # -----------------------------------------------------------------------
     'functions': [
         {
@@ -120,13 +138,13 @@ HAWKES_MODEL: dict = {
             'indexed':      True,
             'deriv_prefix': 'phi',
             'latex':        r'\varphi',
-            'description':  'nonlinear gain function φ_i(δv_i)',
+            'description':  'quadratic gain function phi_i(v) = a v^2',
             'expression':   lambda i, v: function(f'phi_{i+1}')(v),
         },
     ],
 
     # -----------------------------------------------------------------------
-    # Namespace-level substitutions  (run once at namespace build)
+    # Namespace-level substitutions
     # -----------------------------------------------------------------------
     'mf_substitutions': [
         {
@@ -136,57 +154,69 @@ HAWKES_MODEL: dict = {
         },
         {
             'name':  'ndot_bg',
-            # MF Poisson saddle:  ṅ_i* = +φ_i(v_i*) = +nstar_i
+            # MF Poisson saddle:  n_dot_i* = +phi_i(v_i*) = +nstar_i
             'value': lambda ns: [+ns.nstar[i] for i in ns.pop],
         },
     ],
 
     # -----------------------------------------------------------------------
-    # MF background conditions  (SR substitutions applied after expansion)
-    #
-    # 1. Poisson saddle:  phi0_i ≡ phi_i(v_i*) = nstar_i
-    # 2. Voltage EOM:     vstar_i = E_i + Σ_j w_{ij} g nstar_j
+    # MF background conditions
     # -----------------------------------------------------------------------
     'mf_bg_conditions': lambda ns: {
-        **{SR.var(f'phi0_{i+1}'): ns.nstar[i]        for i in ns.pop},
+        **{SR.var(f'phi0_{i+1}'): ns.nstar[i] for i in ns.pop},
         **{ns.vstar[i]: ns.E[i] + sum(ns.w[i][j] * ns.g * ns.nstar[j]
                                       for j in ns.pop)
            for i in ns.pop},
     },
 
     # -----------------------------------------------------------------------
-    # Specializations  (SR substitutions applied after MF background conditions)
+    # Specializations
     #
-    # phi quadratic:  φ_i(v) = nstar_i + φ1_i v + φ2_i/2 v²
-    #   → cubic and higher Taylor coefficients are zero
-    # g = δ(t):  instantaneous synaptic coupling
+    # phi quadratic:  phi1_i = 2 a v*_i,  phi2_i = 2 a,  phi_k_i = 0 for k >= 3
+    #
+    # We symbolically express phi1_i in terms of ``a`` and ``ns.vstar[i]``;
+    # ``mf_bg_conditions`` then further rewrites ns.vstar[i] into ``E_i +
+    # sum_j w_{ij} g n*_j``, so the final action has only (E, w, nstar, a,
+    # tau, tau_g) as symbolic parameters + the g kernel symbol.
+    #
+    # Synaptic kernel g is NOT specialized in the time domain -- the
+    # notebook's cell 8 substitutes its frequency-space image via the
+    # 'kernel_ft_image' hook below.
     # -----------------------------------------------------------------------
     'specializations': lambda ns: {
+        **{SR.var(f'phi1_{i+1}'): 2 * SR.var('a') * ns.vstar[i]
+           for i in ns.pop},
+        **{SR.var(f'phi2_{i+1}'): 2 * SR.var('a') for i in ns.pop},
         **{SR.var(f'phi{k}_{i+1}'): SR(0)
            for k in range(3, ns._taylor_order + 1)
            for i in ns.pop},
-        ns.g: ns.delta_D,
     },
 
     # -----------------------------------------------------------------------
-    # Concrete transfer function  (for numerical evaluation)
+    # Kernel frequency-space image  (used by notebook cell 8)
     #
-    # phi_i(v) = (a_i / 2) v^2      (pure quadratic, no linear/constant)
-    # The notebook differentiates this symbolically to the required Taylor
-    # order — derivatives are NEVER hard-coded here.
+    #     g(t) = (1/tau_g) exp(-t/tau_g) Theta(t)
+    #     g_hat(omega) = 1 / (1 + i omega tau_g)
     # -----------------------------------------------------------------------
-    'phi_concrete': lambda ns, i, v: (ns.a[i] / SR(2)) * v**2,
+    'kernel_ft_image': lambda ns, omega: {
+        ns.g: SR(1) / (SR(1) + I * omega * ns.tau_g),
+    },
 
     # -----------------------------------------------------------------------
-    # Mean-field self-consistency equations  (may require numerical solution)
-    #
-    # v*_i  = E_i + Σ_j w_{ij} n*_j       (voltage background EOM, g = δ)
-    # n*_i  = φ_i(v*_i)                    (Poisson saddle condition)
-    #
-    # Combined: n*_i = (a_i / 2) (E_i + Σ_j w_{ij} n*_j)^2
+    # Concrete transfer function  (for numerical MF evaluation in cell 23)
+    # phi_i(v) = a * v^2
+    # -----------------------------------------------------------------------
+    'phi_concrete': lambda ns, i, v: SR.var('a') * v**2,
+
+    # -----------------------------------------------------------------------
+    # Mean-field self-consistency equations
+    # n*_i = phi_i(v*_i) = a * (v*_i)^2
+    # v*_i = E_i + sum_j w_{ij} * n*_j
+    # Combined (nonlinear -- fsolve in cell 23):
+    # n*_i = a * (E_i + sum_j w_{ij} * n*_j)^2
     # -----------------------------------------------------------------------
     'mf_equations': lambda ns: [
-        ns.nstar[i] == (ns.a[i] / SR(2)) * (
+        ns.nstar[i] == SR.var('a') * (
             ns.E[i] + sum(ns.w[i][j] * ns.nstar[j] for j in ns.pop)
         )**2
         for i in ns.pop
@@ -196,22 +226,20 @@ HAWKES_MODEL: dict = {
     # Background rate convention
     # -----------------------------------------------------------------------
     'background_rate_convention': (
-        'ṅ_i* = +φ_i(v_i*)  '
-        '[negative Poisson term:  +ñ_i ṅ_i - (e^{ñ_i}-1) φ_i]'
+        'n_dot_i* = +phi_i(v_i*) = a * (v_i*)^2  '
+        '[negative Poisson term:  +n~_i n_dot_i - (e^{n~_i}-1) phi_i]'
     ),
 
     # -----------------------------------------------------------------------
-    # Action  (callable; receives namespace ns; returns SR expression)
-    #
-    # exp(ns.nt[i]) and ns.phi(i, ns.dv[i]) are nonlinear in the field
-    # variables — the framework Taylor-expands them automatically.
+    # Action
     # -----------------------------------------------------------------------
     'action': lambda ns: sum(
-        # S1: ñ_i (ṅ_i* + δṅ_i)
+        # S1: n~_i (n_dot_i* + dn_i)
         ns.nt[i] * (ns.ndot_bg[i] + ns.dn[i])
-        # S2: -(e^{ñ_i} - 1) φ_i(δv_i)     ← exp and phi auto-expanded
+        # S2: -(e^{n~_i} - 1) phi_i(dv_i)
         - (exp(ns.nt[i]) - 1) * ns.phi(i, ns.dv[i])
-        # S3: ṽ_i [(τ ∂_t + 1) δv_i  +  v_i* - E_i  -  Σ_j w_{ij} g (n*_j + δṅ_j)]
+        # S3: v~_i [(tau d_t + 1) dv_i + v_i* - E_i
+        #          - sum_j w_{ij} g (n*_j + dn_j)]
         + ns.vt[i] * (
             (ns.tau * ns.Dt + 1) * ns.dv[i]
             + ns.vstar[i] - ns.E[i]

@@ -1,8 +1,8 @@
 # Build Phase Outlines — Detailed Implementation Plans
 
-**Last updated:** 2026-03-20
+**Last updated:** 2026-04-03
 
-Each section below gives a detailed implementation outline for one phase of the build order defined in `PIPELINE_PLAN.md`. Outlines are written before implementation begins and updated as design decisions solidify.
+Each section below gives a detailed implementation outline for one phase of the build order defined in `PIPELINE_PLAN.md`. Outlines are written before implementation begins and updated as design decisions solidify. Phases A–I are now complete; see `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
 
 ---
 
@@ -350,15 +350,40 @@ Verify that each typed diagram is consistent with retarded (causal) propagators.
 
 ---
 
-## Phase G — Symmetry Factor Computation
+## Phase G — Combinatorial Factor & Field-Type Deduplication ✅ COMPLETE
 
 **File:** `msrjd/diagrams/symmetry.py`
-**Tests:** `tests/test_symmetry.py`
+**Tests:** `tests/test_symmetry.py` (18 tests, all passing)
 **Depends on:** Phase E (TypedDiagram)
 
 ### Goal
 
-Compute the symmetry factor S for each typed diagram. The diagram contributes with weight `1/S` times the product of vertex coefficients. S = |Aut(diagram)| where Aut is the automorphism group of the fully labeled, fully typed diagram.
+Compute the combinatorial factor M for each typed diagram and deduplicate equivalent diagrams. M counts response-leg permutations at each vertex that preserve the `(resp_type, phys_type)` field-type pairing — the within-vertex Wick contractions that give the same integrand by commutativity. The diagram contributes with weight `M × ∏(-vertex_coefficient)` (sign flip for exp(-S) convention).
+
+### What was built
+
+**Field-type deduplication** (`diagram_signature` + `deduplicate_typed_diagrams`):
+- Signature encodes, for each internal vertex: the sorted multiset of `(field_type, propagator_index)` for every leaf attached to that vertex, plus vertex type info and internal edges.
+- Two TypedDiagrams that differ only by permuting same-type leaves (within or across internal vertices) are merged into a single representative.
+- The inter-vertex Wick contractions that get merged here are re-enumerated in Phase J integration.
+
+**Combinatorial factor M** (`_vertex_combinatorial_factor`):
+- Pairings: `(resp_type, phys_type)` for every outgoing edge.
+- Formula: `M_v = [∏_r n_r! / ∏_p n[r][p]!] × [∏_p m_p!]` where `n_r` = total count of response type r, `n[r][p]` = count of (resp r, phys p) pairings, `m_p` = count of phys type p.
+- M counts within-vertex permutations of identical response legs that preserve the field-type pairing — these give the same integrand by commutativity of the product.
+
+**Coefficient classification** (`classify_coefficient_factors`):
+- Partitions each diagram's prefactor into scalar (parameter-only) and frequency/time-dependent parts.
+- Extracts `scalar_prefactor = M × ∏(-vertex_coefficient)` for each vertex.
+
+### Design rationale (2026-04-14)
+
+An earlier revision (2026-04-13) attempted position-aware dedup to distinguish diagrams where same-type leaves connect to different internal vertices.  This kept 14 TypedDiagrams for k=3 linear Hawkes, but the pipeline's canonical remapping in `integrate_tree_diagram` caused groups of these diagrams to evaluate identically — accidentally double-counting Mapping_1 Wick contractions while missing Mapping_2.
+
+The current design (2026-04-14) puts deduplication at the field-type level (merging to 10 diagrams) and handles inter-vertex Wick contractions explicitly in Phase J integration (see `integrate_tree_diagram` docs).  This is cleaner because:
+- The "which dn₁ leg is at which vertex" distinction is handled where it matters — in the integration — rather than duplicated in the diagram list.
+- `integrate_tree_diagram` enumerates ALL canonical-to-leaf mappings and sums them, with a compensation factor that removes overcounting of same-vertex permutations (which M already accounts for).
+- This correctly gives Mapping_1 + Mapping_2 for Configuration B (cross-vertex) and single-integrand-with-compensation for Configuration A (same-vertex).
 
 ### Implementation steps
 
@@ -399,11 +424,17 @@ Compute the symmetry factor S for each typed diagram. The diagram contributes wi
 
 ---
 
-## Phase H — Symbolic Integration
+## Phase H — Symbolic Integration ✅ COMPLETE
 
 **File:** `msrjd/integration/symbolic.py`
 **Tests:** `tests/test_integration.py`
 **Depends on:** Phase E (TypedDiagram), Phase G (symmetry factors)
+
+### Critical implementation notes (from debugging 2026-04-03)
+
+- **Propagator transposition:** `_get_propagator_entry(i, j, ...)` reads `G_ft[j, i]` (transposed). The kernel matrix K has rows=response, cols=physical, so G=K⁻¹ has the same layout. The retarded propagator G^R_{phys_j ← resp_i} = G[j,i]. This transposition is essential for correct amplitudes.
+- **Frequency conservation for k=1:** The guard `len(ext_freqs) >= 2` was removed so that overall conservation (ω_ext = 0) is applied for tadpole diagrams.
+- **Kernel grouping:** `group_diagrams_by_kernel` groups diagrams by full kernel signature (external + loop). `loop_only_signature` further groups by loop-only part. The factored evaluation precomputes unique loop integrals and multiplies by diagram-specific external propagators.
 
 ### Goal
 
@@ -466,7 +497,7 @@ Construct and evaluate the integral expression for each typed diagram's contribu
 
 ---
 
-## Phase I — Numerical Integration Fallback
+## Phase I — Numerical Integration ✅ COMPLETE (in notebook)
 
 **File:** `msrjd/integration/numerical.py`
 **Tests:** `tests/test_numerical.py`
@@ -523,7 +554,93 @@ When symbolic integration fails, allow the user to supply numerical parameter va
 
 ---
 
-## Phase J — SageMath-Native Specification UI
+## Phase J — Time-Domain Integration ✅ COMPLETE
+
+**Files:**
+- `msrjd/integration/time_domain/__init__.py`
+- `msrjd/integration/time_domain/pipeline.py` — orchestrator
+- `msrjd/integration/time_domain/final_integral.py` — tree integration
+- `msrjd/integration/time_domain/propagator_td.py` — G(t) decomposition
+- `msrjd/integration/time_domain/subgraph.py` — loop reduction (WIP)
+
+**Depends on:** Phases B, E, G (TypedDiagram, scalar prefactor, combinatorial factor M).
+
+### Goal
+
+Evaluate tree-level k-point functions via direct time-domain integration, bypassing the frequency-domain IFT.  Critical for systems where the frequency-domain propagator has an instantaneous δ component (e.g. the ñ × δn coupling in the MSR-JD Hawkes action), which creates polynomial divergences in the FFT-based path.
+
+### What was built
+
+**Propagator decomposition** (`build_G_t_matrix`):
+- `G^R_{p,r}(t) = c_δ · δ(t) + Θ(t) · G^{sm}_{p,r}(t)`
+- Smooth part = pole-residue sum `Σ_k C_k[p,r] · exp(I · pole_k · t)` from Phase 1.2 propagator.
+- Delta coefficient `c_δ = lim_{ω→∞} Ĝ(ω)` captures instantaneous couplings.
+- Heaviside retardation is enforced via polytope bounds during integration (not via symbolic `heaviside(t)`, which `fast_callable` cannot compile).
+
+**Subset enumeration** (`integrate_tree_diagram`):
+- For each tree diagram with |E| edges, expand the product `∏_e G^R_e = ∏_e (c_δ δ + Θ G^{sm})`.
+- Enumerate `2^|E|` subsets; each subset chooses δ or smooth per edge.
+- δ-chosen edges pin integration variables via sifting: `δ(t_head - t_tail) = 0` → t_tail = t_head.  If a δ remains after variable elimination, it's a residual external-time equality (shot noise) — separated into `delta_contributions` for later discrete evaluation on τ grid.
+- Smooth-chosen edges contribute `Θ(Δt_e)` constraints, forming a polytope for the remaining integration variables.
+- Each subset's integrand is JIT-compiled via `fast_callable` (Sage → CDF) and integrated with `scipy.integrate.quad`/`nquad` using analytical polytope bounds (`_resolve_1d_bounds`, `_integrate_2d_polytope`).
+
+**Inter-vertex Wick contraction enumeration** (added 2026-04-14):
+- For correlators with repeated external field types (e.g. two `dn₁` legs at different spacetime points), each distinct canonical-to-leaf mapping is a separate Wick contraction.
+- Enumerate all permutations of canonical positions within each same-type field group.  For each mapping, evaluate the integrand with appropriately permuted positional arguments.
+- Sum over mappings, divide by compensation factor = product over internal vertices V of `(∏_f n_{V,f}!)`, where `n_{V,f}` is the number of same-type-f leaves at V.
+- **Same-vertex case** (e.g. both `dn₁` at one vertex): mappings give same integrand by commutativity.  Compensation removes the overcounting → same result as before.
+- **Cross-vertex case** (e.g. one `dn₁` at source, one at interaction): mappings give genuinely different integrands (different time arguments at different vertices).  Compensation = 1 → correct sum of distinct Wick contractions.
+
+**Shot-noise separation**:
+- Residual δ on external times → `delta_contributions` list.
+- Each entry stores: coefficient callable, linear form `a·τ + c = 0` for the equality, retardation data.
+- Evaluated discretely on a τ grid via `eval_delta_contributions_on_tau_grid`.
+
+**Pipeline orchestration** (`compute_correction_td`):
+- Iterates over all typed diagrams (tree-level only; loops skipped).
+- Collects per-diagram `contribution` callables and δ-contribution structures.
+- Returns `total_C(*ext_time_values) → complex` that sums all diagram contributions.
+
+### Critical fixes (chronological)
+
+- **2026-04-08**: 2D polytope bounds sentinel fix (non-star trees were diverging at large |τ|).  Fixed `_resolve_1d_bounds` infeasibility sentinel and 2D polytope bound propagation.
+- **2026-04-13**: Leaf-time assignment respects per-diagram leaf-field mapping (was: naive positional mapping that broke for diagrams with same-type leaves at different vertices).
+- **2026-04-14**: Inter-vertex Wick contraction enumeration for repeated external field types.  Fixes ~15% theory underestimate at large negative τ for k=3 linear Hawkes with `[dn₁, dn₁, dn₂]` external fields.
+- **2026-04-15 (k=4 hardening session)**: four bugs in the polytope integration path fixed together, validated end-to-end at k=4 for all tested external-field configurations:
+  - **`_integrate_nd_polytope._make_bound_fn` cross-axis filter**: constraints that still couple to a more-inner axis (j < k_var) are now skipped at the current nesting level and deferred to the deeper level where that axis becomes the resolution target.  Without the filter, `_resolve_1d_bounds` treated such constraints as pure residuals and spuriously declared the polytope infeasible.  First exercised at k=4 with m=3 trees (3 internal vertices).
+  - **Heaviside-filtered integrand wrapper** (`_make_heaviside_filtered_integrand`): polytope bounds are now an optimization (tightening the quadrature domain for speed); correctness is guaranteed by an explicit Heaviside product check inside the integrand.  Previously, when deferred constraints forced a ±OUTER_CAP fallback, scipy would sample outside the true polytope where `G^sm(Δt)` GROWS (retarded poles with Im(ω)>0 give `exp(-γ Δt)` which grows for `Δt < 0`), producing cap-sensitive spurious contributions.  The filter zeros out any sample outside the true polytope.
+  - **`_integrate_2d_polytope` `pure_s1_found` fix**: the flag was being set as soon as `a_int[0] ≈ 0` without verifying `a_int[1] ≠ 0`.  A pure-external constraint (both coefficients zero) was wrongly flagging, skipping the `OUTER_CAP` fallback and pushing scipy.nquad onto an unbounded outer axis where its tanh-sinh variable transform biases the integral.  At k=4, δ-sifting can pin an integration variable to external times and leave residual pure-external constraints in subsets that reach this path — the triggering condition.
+  - **`_two_point` factorial-correction branch** (in `models/cumulant_estimator.py`): for same-pop same-ft='dn' same-lag spike pairs, the subtraction now uses `n(n-1)/dt² − ⟨n/dt⟩²` instead of ordinary `(n−mean)²`.  Matches the 4-point product's factorial-corrected handling of coincident spike legs.  None of the configurations tested to date trigger the path; it's a latent consistency patch.
+
+### Known caveats (not bugs)
+
+- **Bin-averaging bias in the simulation estimator**: the sim measures the BIN-AVERAGED cumulant density over a 4-dimensional box of side `dt_bin`, while theory evaluates the POINT value.  For smooth κ_n with timescale τ, the systematic shift is `O((dt_bin/τ)²)` per axis.  At `dt_bin = 2.0, τ = 10` this is ~4% per axis, compounding to ~10-15% at k=4.  Halving `dt_bin` reduces it ~4×.  The cell 31 default is now `dt_bin = 1.0`.
+
+### Known limitations
+
+- **Loop-level diagrams** (`loop_number > 0`): skipped.  Loop reduction via the frequency-domain Phase 2 pipeline is the fallback.
+- **Non-linear retardation**: only handles edges with linear `a·s + b` retardation constraints.  Extension to arbitrary polyhedra would require a proper polytope library.
+- **Hand-integration match** (notebook cell 26): analytical polytope bounds match pipeline for 1D integrals (stars).  For 2D/3D integrals, hand-integration via `nquad` is slower and less accurate than the pipeline's unified polytope integrator.  Pipeline values are authoritative.
+
+### Tests
+
+- `tests/test_time_domain.py` — regression tests:
+  - `test_phase_J_nd_polytope_preserves_deferred_constraints` — 3D polytope volume with cross-axis constraint (catches `_make_bound_fn` cross-axis-filter regression).
+  - `test_phase_J_nd_polytope_simplex_gaussian` — quantitative 3D Gaussian on ordered simplex.
+  - `test_phase_J_heaviside_filter_kills_overshoot` — 3D exponential on ordered simplex (catches any Heaviside-filter regression).
+  - `test_phase_J_2d_polytope_pure_external_constraint` — 2D box with pure-external residual (catches `pure_s1_found` regression).
+  - Plus earlier tests for contribution callable, delta contribution structure, retardation handling, Configuration A/B distinction.
+
+### Validated configurations (as of 2026-04-15)
+
+All within ~1σ of theory/sim = 1.0 with randomized seeds:
+- k=2: `[dn₁, dn₂]`, mixed `[dn, dv]`
+- k=3: `[dn₁, dn₁, dn₂]`, mixed
+- k=4: `[dn₁, dn₂, dv₁, dv₂]` (all-distinct), `[dn₁, dn₁, dn₂, dn₂]` (two same-type pairs), `[dn₁, dn₂, dn₂, dn₁]` (interleaved pairs)
+
+---
+
+## Phase K — SageMath-Native Specification UI
 
 **File:** `msrjd/ui/theory_builder.py`
 **Tests:** `tests/test_ui.py`

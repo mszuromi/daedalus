@@ -19,10 +19,22 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
 
-# Saved theories (binary data — gitignored by default)
-saved_theories/*.sobj
-saved_theories/diagrams_*/
+# Saved theories / results (cache artifacts — regenerable)
+saved_theories/
+saved_results/
+notebooks/saved_theories/
+notebooks/saved_results/
+Enumeration Code/counts/
+Enumeration Code/diagrams_*/
+
+# Build / compilation output
+notebooks/*.pdf
+Test Figures/
+*.drawio.bkp
+*.drawio.dtmp
+.$*
 
 # Temporary
 *.tmp

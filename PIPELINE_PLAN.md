@@ -1,7 +1,7 @@
 # Automated Feynman Diagram Pipeline — Architecture & Build Plan
 
-**Last updated:** 2026-03-20
-**Status:** Planning phase. Phase 1 (propagator precomputation) largely complete. Phase 2 not yet started.
+**Last updated:** 2026-04-03
+**Status:** Phases A–H implemented and debugged. Tree-level 2-point function validated against simulation for linear Hawkes. 1-loop evaluation implemented but awaiting validation. See `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
 
 ---
 
@@ -148,7 +148,7 @@ For each surviving prediagram, enumerate all valid fully-typed assignments. This
 
 **What needs to be assigned:**
 
-1. **External legs:** Try all assignments of the user's k chosen field variables to the k leaf vertices.
+1. **External legs:** Leaf vertex i is assigned `external_fields[i]` (fixed, not permuted). External legs are labeled and correspond to specific positions in the k-point function.
 
 2. **Interaction vertices:** For each internal vertex with `(in_deg, out_deg)`, try all vertex types from Step 4 that match those degrees.
 
@@ -158,7 +158,7 @@ For each surviving prediagram, enumerate all valid fully-typed assignments. This
    - A response-field out-leg of vertex u (the tail)
    - A physical-field in-leg of vertex v (the head)
 
-   For each candidate assignment of vertices, check every edge: look up G_ft[response_field_index, physical_field_index]. If that propagator entry is zero, the assignment is invalid.
+   For each candidate assignment of vertices, check every edge: look up G_ft[physical_field_index, response_field_index] (transposed — the retarded propagator). If that entry is zero, the assignment is invalid.
 
 5. **Leg matching at each vertex:** The specific field legs of the chosen vertex type must be consistently assignable to the edges incident on that vertex. This is a constraint-satisfaction problem at each vertex.
 
@@ -172,13 +172,20 @@ For each typed diagram:
 - Verify that for each assigned propagator component G_{ij}, the pole structure is consistent with retarded (causal) boundary conditions — poles should lie in the upper half-plane for the contour closure used in Branch 2.
 - Reject any diagram where causality is violated.
 
-### Step 8 — Symmetry Factors
+### Step 8 — Combinatorial Factor & Field-Type Deduplication
 
-For each valid diagram, compute the symmetry factor S:
-- S = |Aut(diagram)| where Aut is the automorphism group of the fully-typed labeled diagram.
-- Automorphisms must preserve: vertex types, edge types (propagator components), edge orientations, and external leg labels.
-- The combinatorial prefactors from the action (1/n! from Taylor expansion) are already absorbed into the vertex coefficients from Step 4.
-- The diagram contributes with weight 1/S times the product of vertex coefficients.
+For each valid diagram, compute the combinatorial factor M and deduplicate by field-type signature:
+
+**Deduplication** (`diagram_signature` + `deduplicate_typed_diagrams`):
+- Signature encodes, for each internal vertex: the sorted multiset of `(field_type, propagator_index)` for every leaf attached to that vertex, plus vertex type info.
+- Two diagrams that differ only by permuting same-type leaves (within or across internal vertices) are merged into a single TypedDiagram.
+- The surviving TypedDiagram has the leaves in a canonical ordering; the inter-vertex Wick contractions that were merged here are re-enumerated in Step 9 via permutation of canonical positions.
+
+**Combinatorial factor M** (`_vertex_combinatorial_factor`):
+- M counts response-leg permutations at each vertex that preserve the `(resp_type, phys_type)` field-type pairing — i.e. within-vertex Wick contractions that give the same integrand by commutativity.
+- Formula: `M_v = [∏_r n_r! / ∏_p n[r][p]!] × [∏_p m_p!]` where r indexes response types and p indexes physical types.
+- The 1/n! factors from Taylor expansion are already absorbed into each vertex type's coefficient (Step 4).
+- The diagram contributes with weight `M × ∏(-vertex_coefficient)` (sign flip for exp(-S) convention).
 
 ### Step 9 — Integration
 
@@ -191,10 +198,14 @@ For each diagram, construct the integral expression:
 - The integrand is: product over edges of G_hat_{ij}(omega_e) * product over vertices of (vertex coefficient) * product over sources of (source coefficient).
 - Integrate over the ell loop frequencies.
 
-**Non-stationary systems (time domain):**
-- Each edge carries a time difference.
-- The integrand involves convolutions of G_{ij}(t) along the diagram structure.
-- Integrate over internal time variables.
+**Non-stationary systems (time domain) — Phase J:**
+- Each edge carries a time difference `Δt = t_head - t_tail`.
+- Retarded propagator decomposes as `G^R(Δt) = c_δ δ(Δt) + Θ(Δt) G^{sm}(Δt)`.
+- For each tree diagram, enumerate all `2^|E|` subsets (choose δ or smooth per edge).  Each subset's δ-edges pin integration variables (sifting property); each subset's smooth edges contribute retardation constraints Θ, forming a polytope for the remaining integration variables.
+- Each subset is integrated via `scipy.integrate.quad`/`nquad`.  The polytope bounds serve as a quadrature-domain optimization only — correctness is guaranteed by a **Heaviside-filter integrand wrapper** (`_make_heaviside_filtered_integrand`) that evaluates to 0 whenever any retardation constraint is violated.  This makes the integrator cap-insensitive: `OUTER_CAP = 200` is set large enough for the retarded tails of `G^sm` to vanish, and any region geometrically outside the true polytope contributes exactly zero via the filter.
+- For `m ≥ 3` integration axes (first exercised at k=4 trees with 3 internal vertices), `_integrate_nd_polytope` uses nested bound closures (`_make_bound_fn`).  Each closure only uses constraints pure in the current axis, DEFERRING cross-axis constraints (those coupling to more-inner axes) to the deeper nesting level.  Without this filter, `_resolve_1d_bounds` would misread deferred constraints as pure residuals and spuriously declare the polytope infeasible.
+- Shot-noise subsets (residual δ on external times) are collected separately and evaluated on a τ grid as discrete spikes.
+- **Inter-vertex Wick contraction enumeration:** For correlators with repeated external field types (e.g. two `dn₁` legs at different spacetime points), each distinct canonical-to-leaf mapping is a separate Wick contraction that contributes to the connected correlator.  `integrate_tree_diagram` enumerates all such mappings (permutations of canonical positions within each same-type field group) and sums them, divided by a compensation factor = product over internal vertices V of `(∏_f n_{V,f}!)` where `n_{V,f}` is the number of same-type leaves of field f at vertex V.  For same-vertex permutations, this compensation removes overcounting of commutative swaps; for cross-vertex permutations, it correctly sums distinct integrands.
 
 **Evaluation strategy:**
 1. Attempt full symbolic integration. If successful, return the symbolic k-point function correction at this loop level.
@@ -203,16 +214,26 @@ For each diagram, construct the integral expression:
 
 ---
 
-## Existing Codebase
+## Codebase
 
 | File | What it does | Status |
 |---|---|---|
-| `Field Theory Framework/field_theory_sage.py` | SageMath expansion framework: namespace builder, Taylor expansion, bigrade classification, `fourier_transform`, `inverse_fourier_transform` | Complete. Core of Phase 1. |
-| `Field Theory Framework/models/hawkes_sage.py` | Hawkes 2-population model specification | Complete. Reference model. |
-| `Field Theory Framework/field_theory_sage_demo.ipynb` | Demo notebook: expansion, K matrix, FT, propagator, inverse FT with full branching logic | Complete. Phase 1 demonstration. |
-| `Enumeration Code/loop_diagram_enumeration.py` | SageMath prediagram enumeration: trees -> topologies -> oriented prediagrams | Complete. Core of Phase 2 Step 2. |
-| `Theory Builder/theory_builder.py` | SymPy-based interactive UI for theory specification | Exists but SymPy-based. Will be replaced/reworked for SageMath in Phase J. |
-| `Field Theory Framework/field_theory.py` | SymPy version of expansion framework | Legacy. Superseded by `field_theory_sage.py`. |
+| `msrjd/core/field_theory.py` | SageMath expansion framework: namespace builder, Taylor expansion, bigrade classification, `fourier_transform`, `inverse_fourier_transform` | Complete. Core of Phase 1. |
+| `msrjd/core/vertices.py` | Vertex/source type extraction from expanded action. `VertexType`, `SourceType` data structures. | Complete. Phase B. |
+| `msrjd/core/serialize.py` | Save/load theory to disk (JSON + `.sobj`). | Complete. Phase A. |
+| `msrjd/core/cache.py` | Pipeline cache for intermediate results (prediagrams, typed diagrams). | Complete. |
+| `msrjd/enumeration/loop_diagram_enumeration.py` | Prediagram enumeration: trees → topologies → oriented DAGs. | Complete. Phase 2 Step 2. |
+| `msrjd/diagrams/filter.py` | Filter prediagrams by vertex availability. | Complete. Phase D. |
+| `msrjd/diagrams/type_assignment.py` | Enumerate all valid typed assignments (vertex types, edge types, external legs). | Complete. Phase E. Fixed: external legs not permuted, multi-edge support. |
+| `msrjd/diagrams/causality.py` | Causality filter: check retarded propagator consistency. | Complete. Phase F. |
+| `msrjd/diagrams/symmetry.py` | Field-type deduplication, combinatorial factor M, coefficient classification. Merges diagrams that differ only by permuting same-type leaves; inter-vertex Wick contractions are enumerated in Phase J integration. | Complete. Phase G. Refactored 2026-04-14: field-type dedup + Wick enumeration in integration (was position-aware 2026-04-13). |
+| `msrjd/integration/symbolic.py` | Symbolic integration: frequency conservation, integrand construction, kernel grouping, loop signatures. | Complete. Phase H. Fixed: propagator transposition, conservation for k=1. |
+| `msrjd/integration/time_domain/final_integral.py` | Time-domain tree integration: 2^{\|E\|} δ/smooth decomposition, polytope-bounded quadrature (with explicit Heaviside-filter integrand wrapper for correctness-independent cap), shot-noise separation, inter-vertex Wick contraction enumeration with same-vertex compensation. | Complete. Phase J. Validated at k=2, 3, 4 (2026-04-15). Fixes: 2026-04-14 inter-vertex Wick enumeration; 2026-04-15 (four bugs: `_make_bound_fn` cross-axis filter for m≥3, Heaviside-filter wrapper on all integrators, `_integrate_2d_polytope` `pure_s1_found` pure-external guard, `_two_point` factorial correction for same-pop same-ft same-lag). |
+| `msrjd/integration/time_domain/pipeline.py` | Orchestrator: iterates diagrams, builds `total_C` callable, collects δ contributions. | Complete. Phase J. |
+| `models/hawkes_sage.py` | Nonlinear Hawkes 2-population model (quadratic φ). | Complete. Fixed: action sign. |
+| `models/hawkes_linear_sage.py` | Linear Hawkes 2-population model (φ(v) = v). | Complete. For validation. |
+| `notebooks/hawkes_2pt_pipeline_demo.ipynb` | Full pipeline demo: enumeration → integration → numerical evaluation → simulation comparison. | Complete. Nonlinear model. |
+| `notebooks/hawkes_linear_phi_test.ipynb` | Linear model pipeline + simulation validation. | Complete. Tree-level validated. |
 
 ---
 
@@ -227,9 +248,10 @@ For each diagram, construct the integral expression:
 | **E** | **Type assignment engine:** enumerate all valid field-type assignments on edges, vertices, and external legs. Constraint-satisfaction over the prediagram structure. This is the hardest algorithmic piece. | B, D | ✅ Complete |
 | **F** | **Causality filter:** check retarded propagator consistency and pole-structure compatibility for each typed diagram. | E | ✅ Complete |
 | **G** | **Symmetry factor computation:** automorphism group of labeled typed diagrams. | E | ✅ Complete |
-| **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems, time domain otherwise. Frequency conservation at vertices. | E, G | Not started |
-| **I** | **Numerical integration fallback:** user supplies parameter values; adaptive quadrature or Monte Carlo for loop integrals. | H | Not started |
-| **J** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
+| **H** | **Diagram integration — symbolic:** construct and evaluate integral expressions. Frequency domain for stationary systems. Frequency conservation at vertices. | E, G | ✅ Complete |
+| **I** | **Numerical integration (frequency-domain):** user supplies fundamental parameters; MF solver derives n*, phi derivatives; FFT-based spectral grid + IFT for k≥2; scalar loop integral for k=1. Factored evaluation: precompute unique loop integrands, multiply by external propagators. **Residue-based IFT** for k=2 (exact, no Gibbs ringing). | H | ✅ Complete (k=1,2 validated; k=3 working but only via FFT; sequential residue for k=3 attempted, contour-direction bug) |
+| **J** | **Hybrid loop-kernel reduction (proposed v2 priority):** Frequency space identifies and dedupes unique loop subgraphs (reuses Phase I kernel grouping); time domain reduces each unique kernel via internal vertex-time integration; substitution contracts each subgraph into the parent diagram as an effective edge/kernel; final parent diagram integrated in time domain via spanning-tree reduction. Combines frequency-space deduplication with time-domain integrability. | A, E, G, I (kernel grouping) + symbolic G(t) | Not started |
+| **K** | **SageMath-native specification UI:** replace/rework the SymPy Theory Builder with a SageMath-native interface. Lowest priority — the model dict format already works. | A | Not started |
 
 **Detailed outlines for each phase:** see [`BUILD_PHASE_OUTLINES.md`](BUILD_PHASE_OUTLINES.md).
 
@@ -239,14 +261,203 @@ For each diagram, construct the integral expression:
 
 ## Design Decisions & Conventions
 
-- **Fourier transform convention:** angular frequency, no 2pi factor. FT: exp(-i omega t), IFT: exp(+i omega t) / (2pi). Gives delta(t) -> 1, delta'(t) -> i omega.
+- **Fourier transform convention:** angular frequency, no 2π factor. FT: exp(−iωt), IFT: exp(+iωt)/(2π). Gives δ(t) → 1, δ'(t) → iω.
 - **Bigrade convention:** (n_tilde, n_phys) where n_tilde = number of response fields, n_phys = number of physical fields. Ring generators ordered [tilde_gens..., phys_gens...].
-- **Propagator direction:** G_{ij} connects response field i (output of source vertex) to physical field j (input of next vertex). Edges are directed from earlier to later in the causal ordering.
+- **Kernel matrix K:** `S_free = ã^T K a` where ã = response fields, a = physical fields. K has rows = response, cols = physical.
+- **Propagator G = K⁻¹:** Same layout (rows=response, cols=physical). `G[resp_i, phys_j]` gives `⟨phys_j resp_i⟩`. **Important:** the *retarded* propagator (how physical field j responds to response-field source i) is `G^R_{j←i} = G[j, i]` — the TRANSPOSED entry. The `_get_propagator_entry` function handles this transposition.
+- **External legs are labeled:** Leaf vertex `i` is always assigned `external_fields[i]`. External fields are NOT permuted — permuting would compute a different correlator.
+- **MSR-JD action sign:** `S = ñ ṅ − (e^ñ − 1)φ + ṽ[...]`. The Poisson term has a MINUS sign. Saddle condition: ṅ* = +φ(v*) = +n*.
+- **Time convention for IFT:** The MSR-JD phase is `exp(+iω(t₁−t₂))`. The IFT naturally gives C(t₁−t₂). We flip the output to get C(t₂−t₁) matching the simulation convention (positive τ = second field later).
 - **Vacuum diagrams:** assumed to cancel in normalized correlation functions. Not computed.
 - **Connected diagrams only:** enforced by the connectivity requirement in prediagram enumeration.
 - **SageMath throughout:** all symbolic computation in SageMath. SymPy used only as a fallback integration backend via `algorithm='sympy'`.
+- **Model file structure:** contains fields, response fields, parameters, functions (phi), kernels, operators, MF equations, the full action, concrete phi for numerical evaluation, and specializations. The model declares *what* phi is; the notebook computes derivatives and solves MF equations generically.
 
 ---
+
+## Phase J — Hybrid loop-kernel reduction (proposed v2 priority)
+
+The frequency- and time-domain integration backends each have natural
+strengths. Frequency space is best for **identifying repeated subintegrals**
+(unique loop kernels); time domain is best for **actually evaluating** integrals
+of causal stationary propagators (especially sums of exponentials, which give
+piecewise-closed-form polyhedral integrals). Phase J is a hybrid pipeline that
+uses each domain for what it does best.
+
+### Architecture
+
+The hybrid pipeline reuses Phases 1–2 (compilation and unique loop kernel
+identification, both in frequency space) and adds three new stages: kernel
+reduction (Phase 3), kernel evaluation (Phase 4), and substitution + final
+diagram evaluation (Phases 5–6) in time domain.
+
+**Phase 1 — Diagram compilation** *(existing — `build_integrand_stationary`)*
+
+From the typed directed multigraph:
+- Construct the full frequency-space diagram expression.
+- Assign edge frequencies, apply vertex frequency conservation.
+- Eliminate dependent frequencies, leaving (k−1) external + ℓ loop frequencies.
+- Result: minimal routed integrand `S(ω_ext, Ω_loop)`.
+
+**Phase 2 — Unique loop-kernel identification** *(existing — `group_diagrams_by_kernel`, `loop_only_signature`, `loop_integrand_groups`)*
+
+Working symbolically on the integrand:
+- Identify the **loop-dependent** subgraph for each diagram via the routing
+  matrix `A_e`. For each loop variable `Ω_r`, take all edges with `A_{e,r} ≠ 0`
+  and form their connected closure. This is the **subgraph** that gets
+  contracted into a single effective kernel.
+- Identify the subgraph's **attachment vertices**: vertices in the subgraph
+  that connect to edges *outside* it. These become the kernel's "ports".
+- Internal vertices (entirely within the subgraph) get integrated out.
+- Canonicalize the loop integrand symbolically and assign a **unique kernel
+  ID**. Two subgraphs with the same canonical form → same kernel ID, computed
+  only once.
+- Output: a registry mapping `kernel_id → (canonical_subgraph, p_attachments)`,
+  plus a mapping from each parent diagram to which kernel IDs it contains and
+  where they attach.
+
+**Phase 3 — Kernel reduction (frequency → time)** *(NEW)*
+
+For each unique loop kernel `K_id` with `p` attachment points and frequency-space form
+
+    K̂(ν₁, …, ν_{p−1}) = ∫ dΩ_loop / (2π)^ℓ · ∏_{e ∈ subgraph} Ĝ_e(linear combos of Ω, ν)
+
+compute the **time-domain reduced kernel**:
+
+    K(τ₁, …, τ_{p−1}) = ∫ dτ_internal · ∏_{e ∈ subgraph} G_e(linear combos of τ_internal, τ_attachment)
+
+where:
+- `τ₁, …, τ_{p−1}` are the `p−1` independent time differences between attachment
+  vertices (stationarity reduces from `p` absolute attachment times to `p−1`
+  differences).
+- The internal time integration runs over the internal vertices of the subgraph.
+- Time-domain propagators `G_e(t)` are inserted in place of `Ĝ_e(ω)` — for
+  systems with symbolic causal exponential kernels (e.g., linear Hawkes voltage
+  filter `(1/τ)e^{−t/τ}θ(t)`), the result is a polyhedral integral of products
+  of exponentials.
+
+This reduction is done **symbolically** when possible. The output is a
+representation of `K(τ₁, …, τ_{p−1})` — analytical when feasible, or a
+fast-callable / lookup table otherwise.
+
+**Phase 4 — Kernel evaluation** *(NEW)*
+
+For each unique reduced kernel from Phase 3:
+- **Analytic case**: SageMath integration of products of exponentials over the
+  polyhedral region. For sums of exponentials this gives piecewise closed forms.
+- **Numerical case**: Build a fast-callable from the symbolic reduced form, or
+  for tabular kernels, evaluate on a grid of attachment time differences.
+- Each unique kernel computed **once**, cached, reused across all parent
+  diagrams that contain it.
+
+**Phase 5 — Substitution / contraction** *(NEW)*
+
+For each parent diagram:
+- For each subgraph instance flagged in Phase 2, perform a **graph contraction**:
+  - Remove the subgraph's internal vertices and internal edges.
+  - Keep the attachment vertices.
+  - Insert an **effective edge** (or hyper-edge for `p ≥ 3` kernels) connecting
+    the attachment vertices, carrying the precomputed kernel `K` from Phase 4.
+- The contracted parent diagram has a mix of edges:
+  - **Fundamental edges**: original `G_e(t)` for tree-level / non-loop edges.
+  - **Effective edges**: reduced kernels `K_e(τ₁, …)` for contracted subgraphs.
+- **Same kernel ID ≠ same edge occurrence**: if two distinct subgraphs in the
+  parent share a kernel ID, they each get an independent effective edge that
+  evaluates the same `K` on their respective parent-time arguments.
+- **Coincident-attachment / tadpole case**: when a kernel's attachment vertices
+  collapse onto the same parent vertex, the kernel is evaluated on the diagonal
+  (`K(0)` for `p=2`). Cleaner representation: treat it as a **vertex-local
+  multiplicative factor** rather than a self-loop edge. (Caveat: pipeline should
+  allow either ordinary finite evaluation or a flagged "contact" treatment in
+  case `K(0)` has contact-term issues for the propagator class.)
+
+**Phase 6 — Final diagram evaluation (time domain)** *(NEW)*
+
+The contracted parent diagram is now a tree-like object (or low-loop, depending
+on what was contracted) with mixed propagators. Apply the time-domain spanning
+tree reduction:
+
+1. Choose a root vertex, set its time to 0 (uses global translation invariance).
+2. Choose a spanning tree of the contracted graph.
+3. Use the `V_contracted − 1` non-root vertex times as independent variables.
+4. For each non-tree (loop-closing) edge, express its duration via the loop
+   constraint. (After Phase 5 contraction, the parent should have ≤ original
+   loop count remaining; often it becomes purely tree-like.)
+5. Substitute into the propagators (`G_e` and effective `K_e`).
+6. Collect Heaviside constraints from each causal propagator/kernel → polyhedral
+   region in `V_contracted − 1` time variables.
+7. Integrate the resulting polyhedral exponential integrand:
+   - **Analytic**: SageMath integration for sum-of-exponentials integrands.
+   - **Numerical fallback**: multi-dimensional quadrature over the polyhedral
+     region in the reduced time space.
+
+### Equivalence with pure-frequency and pure-time approaches
+
+For a connected stationary diagram with `V` vertices and `E` edges:
+- Frequency space: `(k−1) + ℓ` independent integrations.
+- Time domain: `V − 1` independent vertex times (= `E − ℓ` edge durations after
+  loop closure).
+
+Both give the same count. The hybrid pipeline does the loop integrations
+"early" (Phase 3 — at the kernel level) and the parent integrations "late"
+(Phase 6 — in time domain), but the total integration count is the same.
+
+### Why this is the right architecture
+
+1. **Reuses everything we have built (Phases A–H, I)**: nothing in the existing
+   enumeration → type assignment → symmetry → frequency-space kernel grouping
+   pipeline gets thrown away.
+2. **Loop kernels computed once**: the deduplication advantage of frequency-space
+   identification is preserved. If 10 parent diagrams share the same one-loop
+   bubble, the bubble is reduced once.
+3. **Time-domain final integration**: the parent (after contraction) is either
+   tree-like or low-loop, integrated using vertex-time spanning-tree reduction.
+   For causal exponential propagators this gives closed-form polyhedral
+   exponential integrals — no Gibbs ringing, no residue contour direction
+   ambiguity, no piecewise pole tracking.
+4. **Hybrid sweet spot**: each domain used for what it does best:
+   - Frequency: routing, conservation, kernel identification, deduplication.
+   - Time: actually computing the integrals.
+
+### Fallback hierarchy
+
+1. **Best case**: every unique kernel reduces analytically in Phase 3, every
+   parent integrates analytically in Phase 6 → exact closed-form result.
+2. **Mixed**: some kernels analytical, some numerical (Phase 3); parent
+   analytical or numerical (Phase 6).
+3. **Numerical multi-D fallback**: if a parent's contracted diagram has too
+   many remaining time integrations to handle analytically, fall back to
+   numerical quadrature over the reduced `V−1`-dimensional time space.
+4. **Pure frequency-space (Phase I)**: if a system has awkward `G(t)` but clean
+   `Ĝ(ω)`, the existing frequency-space path remains as a backend.
+
+### Implementation outline
+
+1. **Time-domain propagator extraction**: For each pole `ω_k` of `det(K(ω))`
+   with residue matrix `C_k`, the retarded propagator is
+   `G_t(t) = Σ_k C_k · exp(i ω_k t) · θ(t)`. Already partially implemented in
+   `field_theory.py` (Branch 2 of `inverse_fourier_transform`).
+2. **Subgraph identification**: From `loop_integrand_groups` and the routing
+   matrix in `prop_factors`, identify the loop-dependent edges and vertices for
+   each unique kernel. Compute the connected closure to get the subgraph and
+   its attachment vertices.
+3. **Kernel reduction (Phase 3)**: For each unique kernel:
+   - Build the time-domain integrand as a product of `G_e(linear combo of τ_internal, τ_attachment)`.
+   - Choose a spanning tree of the subgraph rooted at one attachment.
+   - Reduce internal degrees of freedom via loop closure equations.
+   - Integrate the resulting polyhedral exponential integrand.
+4. **Kernel registry**: Cache the reduced `K(τ_attachment_diffs)` indexed by
+   kernel ID, so repeated occurrences across parent diagrams hit the cache.
+5. **Parent contraction (Phase 5)**: For each parent diagram, replace each
+   subgraph instance with an effective edge / hyper-edge / vertex-local factor.
+6. **Final time-domain integration (Phase 6)**: Run vertex-time spanning-tree
+   reduction on the contracted parent, integrate the resulting polyhedral
+   exponential integrand.
+
+### Status
+
+Not yet started. The frequency-domain Phase I pipeline (FFT-based + residue IFT
+for k=2) is the current working backend. Phase J is the proposed v2 work.
 
 ## Open Questions
 
