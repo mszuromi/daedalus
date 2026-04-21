@@ -4,6 +4,160 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-21 — Audit Fix #E: bypass `fast_callable` on the integrand hot path
+
+### What changed
+
+Phase J's per-subset numerical integrand is, structurally,
+
+```
+  subset_factor(s, t)  =  P · Π_e  Σ_k  C_e^{(k)} · exp(I · p_k · Δt_e(s, t))
+```
+
+where `P` folds in the combined prefactor and every δ-edge
+coefficient, the outer product runs over smooth edges, and the
+inner sum over poles.  Prior to this fix, the code in
+`integrate_diagram` (`msrjd/integration/time_domain/final_integral.py`)
+built `subset_factor` as an SR expression, called `.expand()` on it
+to distribute the product into a sum of single exponentials, and
+JIT-compiled that with `fast_callable`.
+
+The distribution is brutal for anything bigger than a tree.  On a
+5-edge 1-loop diagram with 4 poles:
+
+- unexpanded SR str length:  3 184 chars
+- `.expand()`ed SR str length: 303 708 chars
+- top-level sum terms after expand: **988** (≈ 4^5 cross-product
+  of pole choices per edge)
+
+`fast_callable` then walks all 988 single-exp terms on every
+scipy.quad/nquad sample.  cProfile of the k=2 ell=1 quadratic
+Hawkes V=5 diagram (2026-04-21) measured ~18 µs per integrand call
+and 752 766 calls across 3 τ points → **13.5 of 14.1 seconds of
+Phase J wall time** inside the single `filtered(...)` frame.
+
+The `.expand()` itself was a correctness fix (commit 388fa7c,
+2026-04-08) added because unexpanded products of pole-sum factors
+overflowed IEEE double precision inside fast_callable's evaluation
+tree at large negative vertex times — individual pole factors grew
+like `exp(|α|·|s|)` before the retarded causality cancellation
+kicked in.
+
+Fix E replaces the fast_callable + expand combo on the hot path
+with a dedicated per-edge numerical evaluator,
+`_build_fast_subset_evaluator`.  The evaluator:
+
+- Pulls `pole_vals` and `C_mats` straight from `propagator_data`
+  (no SR intermediate).
+- Reads the per-smooth-edge `(ri, pi)` index, sampling the
+  corresponding residue column out of each `C_mats[k]`.
+- Reuses the already-extracted per-edge
+  `subset_constraint_data` tuple `(a_int, a_ext, c0)` to get the
+  linear form of `Δt_e`.  Converts these to sparse `(position,
+  coef)` pairs so the per-call dot runs over the 1–2 nonzero axes
+  per retardation vector instead of the full `m` axes.
+- On every scipy call, computes
+
+    dt_e      = c0 + Σ_i a_int[i]·s_i + Σ_j a_ext[j]·t_f_j
+    edge_val  = Σ_k residues[k] · cmath.exp(1j · poles[k] · dt_e)
+    result   *= edge_val
+
+  and returns `P · Π_e edge_val`.
+
+The overflow concern is defused by construction: the Heaviside-
+filtered integrand wrapper (Fix D / 2026-04-15b) guarantees that
+`integrand_callable` is only invoked on samples where every
+retardation `Δt_e > 0`, so each `|exp(-Im(p_k)·Δt_e)| ≤ 1` and
+`|edge_val| ≤ Σ_k |C_e^{(k)}|` is bounded independently of where
+scipy samples inside the polytope.
+
+The fast_callable path is preserved as a fallback: if the
+numerical extraction fails (non-numerical prefactor, missing
+propagator data, etc.), `_build_fast_subset_evaluator` returns
+`None` and the caller uses `integrand_fc_sub` as before.  The
+`.expand()` + fast_callable compilation also still runs so the
+zero-check and free-variable check that guarded the old path are
+unchanged.
+
+### Measured speedup
+
+Micro-benchmark (100 000 calls, 5 edges × 4 poles, m=3 axes + 2
+external times):
+
+| Approach                    | Time/call | Speedup vs expand+fc |
+|-----------------------------|-----------|----------------------|
+| `fast_callable(.expand())`  | 42.45 µs  | 1.0×                 |
+| `fast_callable(unexpanded)` | 1.47 µs   | 29.0× (UNSAFE — overflows) |
+| numpy per-edge              | 16.96 µs  | 2.5× (numpy overhead dominates at tiny array sizes) |
+| **Fix E cmath per-edge**    | **2.89 µs** | **14.7×** |
+
+`fast_callable(unexpanded)` is faster per call but reintroduces the
+2026-04-08 overflow bug on the nondiagonal 2×2 fixture
+(test_phase_J_nondiagonal_2x2_does_not_overflow → NaN at τ=-3.0).
+Fix E sits between the two: per-call cost within ~2× of the
+unexpanded fast_callable, AND guaranteed overflow-safe under the
+Heaviside-filtered polytope regime.
+
+End-to-end evaluation (quadratic Hawkes k=2 ell=1, 7 1-loop
+diagrams, τ ∈ {-10, -5, 0, 5, 10}):
+
+| Diagram       | BEFORE  | AFTER   | ratio  |
+|---------------|---------|---------|--------|
+| [0] V=4 E=4   | 0.514s  | 0.337s  | 1.52×  |
+| [1] V=5 E=5   | 24.69s  | 2.534s  | 9.74×  |
+| [2] V=5 E=5   | 34.65s  | 1.890s  | 18.3×  |
+| **TOTAL (3)** | **59.83s** | **4.761s** | **12.6×** |
+
+Numerical outputs are bit-identical (same τ-summed `sum` values
+across all three diagrams), because Fix E and the pre-existing
+fast_callable path both evaluate the same structural expression —
+just in different orderings of complex arithmetic.
+
+### Verification
+
+- All 18 pre-existing tests in `tests/test_time_domain.py` pass
+  unchanged, including:
+    - `test_phase_J_nondiagonal_2x2_does_not_overflow` — the exact
+      regression that motivated the original `.expand()` fix.
+      Fix E passes this without expand on the hot path, because
+      overflow is prevented at a different layer (Heaviside filter).
+    - `test_phase_J_vs_phase_I_linear_hawkes_tree` — cross-validates
+      Phase J (time domain) against Phase I (frequency domain FFT).
+- One new Fix E regression added (total now 19 tests):
+    - `test_phase_J_fix_E_fast_evaluator_matches_fast_callable` —
+      pins NaN-free output on the nondiagonal 2×2 fixture and
+      checks that `_build_fast_subset_evaluator` correctly returns
+      `None` for a non-numerical prefactor (preserves the fallback
+      safety net).
+
+### Files changed
+
+- `msrjd/integration/time_domain/final_integral.py`
+    - New helper `_build_fast_subset_evaluator` — builds the
+      numerical per-edge callable from propagator data + constraint
+      linear coefficients + the combined prefactor.
+    - Subset loop in `integrate_diagram` prefers the fast evaluator
+      (falls back to fast_callable transparently on extraction
+      failure).  The evaluator choice is recorded in
+      `subset_diagnostics[*]['evaluator']` for debugging.
+- `tests/test_time_domain.py` — one new regression test appended
+  before `test_phase_J_k3_star_tree_finite_and_stationary`.
+
+### Why this is the real Fix-D follow-up
+
+Fix D targeted the filter's constraint scan and the bound
+functions — which micro-benchmarks said were the biggest call-
+count hot spots (`filtered()` called hundreds of thousands of
+times per τ point).  But cProfile after Fix D showed that 13.5 of
+14.1 s of wall time attributed to `filtered()` was really the
+fast_callable *call from inside* filtered, not the scan itself.
+Fix E cuts that cost at the root by replacing the fast_callable
+with a much cheaper per-edge evaluator.  Fix D's scan speedup
+still helps — just less dramatically than its micro-profile
+suggested — now that the integrand call is no longer 40+ µs.
+
+---
+
 ## 2026-04-21 — Audit Fix #D: vectorise polytope-bounds and Heaviside filter
 
 ### What changed

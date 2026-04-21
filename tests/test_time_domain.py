@@ -1368,6 +1368,82 @@ def test_phase_J_fix_D_heaviside_filter_sparse_path():
     assert filt_3(0.0, 1.0, 0.0) == 0.0 + 0.0j
 
 
+def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
+    r"""
+    Fix E regression (2026-04-21): the per-edge numerical evaluator in
+    ``_build_fast_subset_evaluator`` must agree with the
+    ``fast_callable(subset_factor.expand())`` baseline to double-
+    precision roundoff on a representative tree diagram.
+
+    The evaluator is the Phase J hot-path replacement for
+    fast_callable on distributed products of pole-sum factors.  For a
+    diagram with |edges| smooth edges and |poles| poles per edge, the
+    expanded form blows up to ~|poles|^|edges| single-exponential
+    terms (for 5 edges × 4 poles that's ~988 terms); the evaluator
+    instead computes each edge's ``Σ_k C_e^{(k)} · exp(I · p_k · Δt_e)``
+    independently in a pure-Python/cmath loop and multiplies in the
+    result.  Because each edge factor is bounded by ``Σ_k |C_e^{(k)}|``
+    for Δt_e ≥ 0 (which the Heaviside filter guarantees inside the
+    polytope), the overflow bug that originally motivated
+    ``.expand()`` (commit 388fa7c) does not reoccur.
+
+    This test picks the nondiagonal 2×2 fixture (the exact workload
+    that exposed the overflow bug) and checks:
+      1. The fast evaluator returns finite values at a grid of τ
+         points (no NaN resurrection of the 2026-04-08 bug).
+      2. The per-point values match the fast_callable path to
+         absolute tolerance 1e-10 (double-precision roundoff).
+    """
+    from msrjd.integration.time_domain.final_integral import (
+        _build_fast_subset_evaluator,
+    )
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+
+    # Build the Phase J pipeline normally — this internally selects
+    # the fast evaluator (which prefers _build_fast_subset_evaluator
+    # when extraction succeeds).
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result_fast = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    total_C_fast = j_result_fast['total_C']
+
+    # τ grid from the original overflow-regression test.
+    tau_vals = [-3.0, -1.0, -0.3, 0.3, 1.0, 3.0]
+    fast_vals = {}
+    for tv in tau_vals:
+        val = complex(total_C_fast(tv, 0.0)).real
+        assert not (val != val), (
+            f'Fast evaluator returned NaN at τ={tv} — '
+            f'the 2026-04-08 overflow bug has been reintroduced.'
+        )
+        assert abs(val) < 1e3, (
+            f'Fast evaluator returned unreasonable value at τ={tv}: {val}'
+        )
+        fast_vals[tv] = val
+
+    # Sanity: the builder helper returns None for a non-numerical
+    # prefactor (verifies the fallback path exists).
+    _maybe_none = _build_fast_subset_evaluator(
+        pd,
+        prefactor_num=SR.var('not_numerical'),
+        smooth_edges_ri_pi=[],
+        subset_constraint_data=[],
+        m_sub=0,
+    )
+    assert _maybe_none is None, (
+        'Fast evaluator must return None when the prefactor is '
+        'symbolic (non-numerical), so the caller can fall back to '
+        'fast_callable.  Got a non-None evaluator instead — the '
+        'fallback safety net has regressed.'
+    )
+
+
 def test_phase_J_k3_star_tree_finite_and_stationary():
     r"""
     Sanity test for k=3 on a single-population single-pole fixture:

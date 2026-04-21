@@ -695,6 +695,48 @@ def integrate_diagram(
                 ),
             }
 
+        # Fix E (2026-04-21): try the direct numerical per-edge
+        # evaluator before settling for ``fast_callable(subset_factor
+        # .expand())``.  The evaluator reconstructs
+        #
+        #   P · Π_e  Σ_k  C_e^{(k)} · exp(I · p_k · Δt_e)
+        #
+        # from the propagator's pole / residue data plus the already-
+        # extracted ``subset_constraint_data`` (which carries each
+        # smooth edge's Δt linear coefficients), without ever
+        # materialising the distributed |edges|^|poles|-term sum that
+        # fast_callable has to compile and re-walk on every scipy
+        # sample.  Overflow-safe because each edge factor is bounded
+        # by Σ_k |C_e^{(k)}| for Δt_e ≥ 0 (the Heaviside filter
+        # guarantees that precondition -- see
+        # ``_make_heaviside_filtered_integrand``).
+        #
+        # Falls back to ``integrand_fc_sub`` if the numerical
+        # extraction fails for any reason (non-numerical prefactor
+        # left in ``cp``, missing pole data, residue conversion
+        # failure, etc.).  The fast_callable path is still built
+        # above so the zero-check and free-variable-check have run;
+        # this branch only replaces the *hot-path* evaluator.
+        prefactor_num = cp
+        for _ei_idx in delta_edges:
+            prefactor_num = prefactor_num * SR(
+                edge_info[_ei_idx]['delta_coeff']
+            )
+        smooth_edges_ri_pi = [
+            (edge_info[_ei_idx]['ri'], edge_info[_ei_idx]['pi'])
+            for _ei_idx in smooth_edges
+        ]
+        _fast_eval = _build_fast_subset_evaluator(
+            propagator_data,
+            prefactor_num,
+            smooth_edges_ri_pi,
+            subset_constraint_data,
+            m_sub,
+        )
+        integrand_for_quad = (
+            _fast_eval if _fast_eval is not None else integrand_fc_sub
+        )
+
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val):
             def _contrib(free_vals):
@@ -708,7 +750,7 @@ def integrate_diagram(
 
         subset_contributions.append(
             _make_subset_contrib(
-                integrand_fc_sub, subset_constraint_data, m_sub,
+                integrand_for_quad, subset_constraint_data, m_sub,
             )
         )
         subset_diagnostics.append({
@@ -716,6 +758,7 @@ def integrate_diagram(
             'smooth_edges': smooth_edges,
             'status': 'evaluated',
             'm_after_delta': m_sub,
+            'evaluator': 'fast_numpy' if _fast_eval is not None else 'fast_callable',
         })
 
     # ── Build the final contribution callable ─────────────────────
@@ -1122,6 +1165,115 @@ def eval_delta_contributions_on_2d_grid(
                 out[i, j] += weight
 
     return out
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Fast numerical subset-integrand evaluator (Fix E, 2026-04-21)
+# ───────────────────────────────────────────────────────────────────────
+
+def _build_fast_subset_evaluator(
+    propagator_data,
+    prefactor_num,
+    smooth_edges_ri_pi,
+    subset_constraint_data,
+    m_sub,
+):
+    r"""Return a Python callable that evaluates a subset's smooth
+    integrand numerically, without going through
+    ``fast_callable(subset_factor.expand())``.
+
+    The subset integrand is structurally
+
+        P · Π_e  Σ_k  C_e^{(k)} · exp(I · p_k · Δt_e)
+
+    where ``P`` is the product of the combined prefactor and all
+    δ-edge coefficients, the outer product runs over smooth edges,
+    and the inner sum runs over poles.  ``fast_callable``'s overflow-
+    safe form (Fix from 2026-04-08, commit 388fa7c) was to first call
+    ``subset_factor.expand()``, distributing the ``|edges|^|poles|``
+    cross-product into a sum of single exponentials.  For a 5-edge
+    diagram with 4 poles that's ~988 single-exp terms, all compiled
+    into the JIT tree.  cProfile of the k=2 ell=1 quadratic Hawkes
+    V=5 diagram (2026-04-21) shows ~18 µs per ``fast_callable`` call,
+    × 750 k samples per τ point, = the full 13 s of Phase J wall time.
+
+    This evaluator skips the expansion entirely: each edge contributes
+    ``Σ_k C_e^{(k)} exp(I p_k Δt_e)`` computed independently and
+    multiplied in.  The product is bounded term-by-term by ``|C_e^{(k)}|``
+    for Δt_e ≥ 0 (which the Heaviside filter guarantees -- see
+    ``_make_heaviside_filtered_integrand``), so the pre-cancellation
+    overflow that motivated the expand fix cannot occur.
+
+    Returns None if the numerical extraction fails (e.g., ``prefactor``
+    isn't purely numerical after ``num_params`` subs, or the propagator
+    data lacks ``pole_vals`` / ``C_mats``).  Callers should fall back
+    to ``fast_callable(subset_factor.expand())`` in that case.
+    """
+    import cmath as _cmath
+
+    # ── Prefactor → complex scalar ──
+    try:
+        pref_c = complex(CDF(SR(prefactor_num)))
+    except Exception:
+        return None
+
+    # ── Pole list (shared across edges) ──
+    pole_vals = propagator_data.get('pole_vals')
+    C_mats = propagator_data.get('C_mats')
+    if pole_vals is None or C_mats is None:
+        return None
+    try:
+        poles_tuple = tuple(complex(CDF(SR(p))) for p in pole_vals)
+    except Exception:
+        return None
+    n_poles = len(poles_tuple)
+
+    # ── Per-edge (residues, c0, int_pairs, ext_pairs) ──
+    edge_data = []
+    for (ri, pi), (a_int, a_ext, c0) in zip(
+        smooth_edges_ri_pi, subset_constraint_data
+    ):
+        try:
+            residues = tuple(
+                complex(CDF(SR(C_mats[k][pi, ri])))
+                for k in range(n_poles)
+            )
+        except Exception:
+            return None
+        # Sparse (position, coef) pairs — retardation ``Δt`` vectors
+        # have exactly 1–2 nonzero entries regardless of m_sub.
+        int_pairs = tuple(
+            (i, float(a)) for i, a in enumerate(a_int)
+            if abs(float(a)) > 1e-15
+        )
+        ext_pairs = tuple(
+            (i, float(a)) for i, a in enumerate(a_ext)
+            if abs(float(a)) > 1e-15
+        )
+        edge_data.append(
+            (poles_tuple, residues, float(c0), int_pairs, ext_pairs)
+        )
+    edge_data_t = tuple(edge_data)
+    m_offset = m_sub          # index into args where external times begin
+    _cexp = _cmath.exp
+
+    def evaluator(*args):
+        # args = (s_0, ..., s_{m_sub-1}, t_free_0, t_free_1, ...)
+        result = pref_c
+        for (poles, residues, c0, int_pairs, ext_pairs) in edge_data_t:
+            dt = c0
+            for (i, a) in int_pairs:
+                dt += a * args[i]
+            for (i, a) in ext_pairs:
+                dt += a * args[m_offset + i]
+            # Σ_k r_k · exp(i·p_k·dt)
+            edge_val = 0.0 + 0.0j
+            for (p, r) in zip(poles, residues):
+                edge_val += r * _cexp(1j * p * dt)
+            result *= edge_val
+        return result
+
+    return evaluator
 
 
 # ───────────────────────────────────────────────────────────────────────
