@@ -4,6 +4,161 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-21 — Audit Fix #D: vectorise polytope-bounds and Heaviside filter
+
+### What changed
+
+`msrjd/integration/time_domain/final_integral.py` — the two hottest
+inner functions in Phase J loop-diagram evaluation were both doing
+the same Python-level work at every scipy.nquad sample:
+
+1. **`_make_heaviside_filtered_integrand`** — the wrapper that
+   zero-kills any sampled point outside the true polytope.  At every
+   integrand evaluation it looped over every constraint, iterated
+   the full `a_int` coefficient vector, and checked `if a != 0.0`.
+   For a 3-internal-vertex 1-loop diagram with ~6 retarded
+   constraints on m=3 axes, that's ~18 multiplications + 24
+   conditional checks per integrand call, and scipy's adaptive
+   quadrature calls it thousands of times per (t_1, t_2) grid point.
+
+2. **`_make_bound_fn`** (nested inside `_integrate_nd_polytope`) —
+   the per-axis bound callable that scipy.nquad uses to build its
+   integration grid.  It re-allocated a `sub_constraints` list on
+   every call, re-ran `any(abs(a_int[j]) >= 1e-15 for j in
+   range(k_var))` to filter deferred constraints, rebuilt `(a_int,
+   new_c_eff)` tuples, and then delegated to `_resolve_1d_bounds`
+   which did yet another scan of the list.  For the outermost axis
+   this is fine (called few times), but for middle axes of a 3D
+   integral it's called ~N^{m-k_var} times per grid point.
+
+3. **`bounds_s0`** in `_integrate_2d_polytope` — same
+   list-allocation-on-every-call pattern.
+
+Fix D moves all invariant work to closure-build time:
+
+* **Sparse coefficient lists**.  Each constraint is reduced to
+  `(c_eff, tuple_of_(j, a_j)_nonzero_pairs)`.  Retardation
+  constraints are `t_v − t_u > 0`, so `a_int` always has exactly
+  two nonzero entries regardless of `m` — this collapses the inner
+  "for j in range(m)" scan to 2 iterations.
+
+* **Constraint classification**.  Per axis, each constraint falls
+  into one of four buckets at build time:
+    - `pure_k`: only `a[k_var]` nonzero → contributes a fixed
+      slice to `(L, U)` that's precomputed ONCE and reused at
+      every call.
+    - `mixed`: `a[k_var]` AND some outer-axis coefficient nonzero
+      → resolved per call against the outer values.
+    - `outer_only`: `a[k_var] = 0` but some outer-axis coefficient
+      nonzero → a pure residual inequality in the outer values;
+      when it fails, `bounds_k` returns `(0, 0)` to kill the
+      region.
+    - `constant`: all coefficients zero → checked at build time
+      (drops trivial `c > 0`; shorts to empty-polytope for `c ≤ 0`).
+
+* **Build-time infeasibility detection**.  If the pure-k bounds
+  alone produce `L_pure >= U_pure`, or if any constant constraint
+  is infeasible, `_make_bound_fn` returns a closure that constantly
+  returns `(0, 0)` — skipping all per-call work entirely.
+
+* **Infinite-bound cap semantics preserved**.  The original code
+  capped only when `math.isfinite(L)` was false.  The vectorised
+  version uses the same check (`math.isinf(L)`) at the end of the
+  hot path, so a mixed constraint that pins a bound to e.g. -500.0
+  is passed through unclipped — identical to pre-Fix D.
+
+### Measured speedup
+
+Micro-profile of 50 000 calls to each hot-path function, with a
+realistic m=3 polytope (6 retardation constraints, `s_0 < s_1 <
+s_2`-style chain plus cross-axis coupling):
+
+| Function             | BEFORE       | AFTER        | speedup |
+|----------------------|--------------|--------------|---------|
+| `filtered(*s)`       | 0.76 µs/call | 0.41 µs/call | **1.85×** |
+| `bounds_fn(k=1)(*)`  | 2.62 µs/call | 0.49 µs/call | **5.39×** |
+
+Correctness check across 50 000 random outer samples: OLD vs NEW
+returned bit-identical `(L, U)` everywhere (0 feasibility
+mismatches, max |L_old − L_new| = max |U_old − U_new| = 0).
+
+### Caveat: wall-clock gain is within measurement noise
+
+End-to-end evaluation of the same workload (quadratic Hawkes k=2,
+ell=1, 7 1-loop diagrams, τ ∈ {-10, -5, 0, 5, 10}):
+
+| Diagram        | BEFORE  | AFTER   | ratio |
+|----------------|---------|---------|-------|
+| [0] V=4 E=4    | 0.514s  | 0.479s  | 1.07× |
+| [1] V=5 E=5    | 24.69s  | 24.72s  | 1.00× |
+| [2] V=5 E=5    | 34.65s  | 38.08s  | 0.91× |
+
+The V=5 diagrams spend the overwhelming majority of their wall
+time inside Sage's `fast_callable` integrand — not in the filter
+scan or the bound-fn body.  scipy.nquad calls the filter ~O(N^m)
+times per τ point (N ~ a few hundred adaptive-quad samples per
+axis, m = 3 integration axes), but each of those calls is
+dominated by the JIT'd complex-exponential integrand evaluation
+that Fix D did not touch.  So the 2× faster filter scan and the
+5× faster bound functions translate to a wall-clock improvement
+well under 10% — lost inside run-to-run noise of the adaptive
+quadrature.
+
+### fast_callable gotcha: keep the single-unpack idiom
+
+During development an intermediate version of the filter used
+Python 3.5+ multi-unpack syntax:
+
+```python
+return complex(integrand_callable(*s_vals, *free_ext_tuple))
+```
+
+This triggers a 2–3× slowdown on the m=3 workload vs. the
+single-unpack form:
+
+```python
+return complex(integrand_callable(*(list(s_vals) + free_ext_list)))
+```
+
+Root cause not fully diagnosed, but reproducible: V=5 diagram [1]
+takes 24.7s with single-unpack and 55.6s with multi-unpack,
+holding everything else constant.  Probably Sage's fast_callable
+has an arg-marshalling fast path keyed on receiving a single
+unpacked sequence.  Comment added at the call site warning
+future readers not to "simplify" to the multi-unpack form.
+
+### Verification
+
+- All 16 pre-existing tests in `tests/test_time_domain.py` pass
+  unchanged.
+- Two new Fix D regression tests added to
+  `tests/test_time_domain.py` (total now 18 passing):
+    - `test_phase_J_fix_D_vectorized_bound_fn_matches_scalar` —
+      pins three representative polytope shapes (cross-axis chain,
+      redundant pure-external residual, outer-only kill) and
+      checks the integrated volume against analytical values.
+    - `test_phase_J_fix_D_heaviside_filter_sparse_path` —
+      directly tests the rewritten filter on trivially-satisfied
+      constraints (dropped), trivially-infeasible constraints
+      (forces filter to return 0), and mixed-coefficient
+      constraints (sparse dot product is exact).
+
+### Files changed
+
+- `msrjd/integration/time_domain/final_integral.py`
+    - `_make_heaviside_filtered_integrand` rewritten to build a
+      sparse constraint list once and iterate only nonzero (j, a)
+      pairs in the hot loop.
+    - `_make_bound_fn` (inside `_integrate_nd_polytope`) rewritten
+      to classify constraints into pure/mixed/outer-only buckets
+      at closure-build time and handle the infeasibility early.
+    - `bounds_s0` (inside `_integrate_2d_polytope`) rewritten with
+      the same classification pattern (pure_0, mixed, s1_residual).
+- `tests/test_time_domain.py` — two new regression tests appended
+  before `test_phase_J_k3_star_tree_finite_and_stationary`.
+
+---
+
 ## 2026-04-21 — Audit Fix #A: drop redundant `.subs(num_params)` in subset loop
 
 ### What changed

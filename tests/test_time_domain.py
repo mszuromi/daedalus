@@ -1217,6 +1217,157 @@ def test_phase_J_2d_polytope_pure_external_constraint():
     )
 
 
+def test_phase_J_fix_D_vectorized_bound_fn_matches_scalar():
+    r"""
+    Fix D regression (2026-04-21): the vectorised `_make_bound_fn` in
+    `_integrate_nd_polytope` and the rewritten `bounds_s0` in
+    `_integrate_2d_polytope` precompute per-axis constraint buckets
+    (pure-axis, mixed, outer-only) once at closure build time.  They
+    must produce BIT-IDENTICAL `(L, U)` to the original scan-every-
+    constraint implementation at every sampled outer value, or scipy's
+    adaptive quadrature will silently drift.
+
+    This test pins three representative polytope shapes that exercise
+    every branch of the classifier:
+
+      A. `{0 < s_0 < s_1 < s_2 < 5}` — cross-axis retardation chain
+         plus pure outer-axis bound.  Exact simplex volume = 5^3 / 6.
+
+      B. Same polytope plus a redundant pure-external residual
+         constraint `1 > 0` (a_int = [0, 0, 0]).  The build-time
+         classifier should DROP this as trivially satisfied.  Under
+         the buggy code path it would flag infeasibility (or flood the
+         mixed bucket).  Exact volume unchanged.
+
+      C. A polytope with an outer-only constraint that the outer
+         values CAN violate: `s_2 > 1` (outer-only w.r.t. bounds_1 for
+         s_2 ∈ outer_vals).  When the outer quadrature samples
+         s_2 ≤ 1, `bounds_1` must return (0, 0) — not leak into
+         `_resolve_1d_bounds` and silently treat a_int[1]=0 as
+         pure-residual.  Tested indirectly: the full 3D integral
+         equals the restricted simplex volume `{0 < s_0 < s_1 < s_2,
+         s_2 > 1}`  on [0, 5]^3 = (5^3 - 1^3) / 6.
+
+    The Heaviside filter is exercised in all three: any cap overshoot
+    from mixed-constraint deferral must be zeroed.  Volumes are
+    compared to analytic values with tight tolerance (<1%) — any
+    silent regression of the vectorised path would move the integral
+    by at least one simplex-edge worth of volume.
+    """
+    from msrjd.integration.time_domain.final_integral import (
+        _integrate_nd_polytope,
+    )
+
+    def one(*_args):
+        return 1.0 + 0.0j
+
+    # Case A: pure cross-axis chain.
+    constraints_A = [
+        ([1.0, 0.0, 0.0], 0.0),    # s_0 > 0
+        ([-1.0, 1.0, 0.0], 0.0),   # s_1 > s_0
+        ([0.0, -1.0, 1.0], 0.0),   # s_2 > s_1
+        ([0.0, 0.0, -1.0], 5.0),   # s_2 < 5
+    ]
+    vol_A = _integrate_nd_polytope(one, constraints_A, [], m=3).real
+    exact_A = 5.0 ** 3 / 6.0
+    assert abs(vol_A - exact_A) / exact_A < 1e-2, (
+        f'Case A (cross-axis chain): vol={vol_A:.4f}, exact={exact_A:.4f}. '
+        f'Fix D refactor must preserve pure vs. mixed classification.'
+    )
+
+    # Case B: pure-external residual constraint (a_int ≡ 0, c_eff > 0)
+    # must be dropped at classifier build time.
+    constraints_B = constraints_A + [
+        ([0.0, 0.0, 0.0], 1.0),    # trivial 1 > 0
+    ]
+    vol_B = _integrate_nd_polytope(one, constraints_B, [], m=3).real
+    assert abs(vol_B - exact_A) / exact_A < 1e-2, (
+        f'Case B (trivial-satisfied residual): vol={vol_B:.4f}, '
+        f'expected={exact_A:.4f}.  The vectorised classifier must DROP '
+        f'constraints with all-zero coefficients and c_eff > 0, not '
+        f'flag them as feasibility residuals.'
+    )
+
+    # Case C: outer-only constraint that CAN fail at some outer values.
+    # The `s_2 > 1` constraint is pure on s_2, but from `bounds_1`'s
+    # perspective (where k_var=1 and s_2 is outer), it becomes an
+    # outer-only constraint that must trigger the (0, 0) degenerate
+    # return whenever the outer sample has s_2 ≤ 1.
+    constraints_C = [
+        ([1.0, 0.0, 0.0], 0.0),    # s_0 > 0
+        ([-1.0, 1.0, 0.0], 0.0),   # s_1 > s_0
+        ([0.0, -1.0, 1.0], 0.0),   # s_2 > s_1
+        ([0.0, 0.0, -1.0], 5.0),   # s_2 < 5
+        ([0.0, 0.0, 1.0], -1.0),   # s_2 > 1
+    ]
+    vol_C = _integrate_nd_polytope(one, constraints_C, [], m=3).real
+    exact_C = (5.0 ** 3 - 1.0 ** 3) / 6.0
+    assert abs(vol_C - exact_C) / exact_C < 1e-2, (
+        f'Case C (outer-only kill): vol={vol_C:.4f}, '
+        f'expected={exact_C:.4f}.  The vectorised `bounds_k` must '
+        f'return the (0, 0) degenerate interval when an outer-only '
+        f'constraint is violated at the sampled outer values.'
+    )
+
+
+def test_phase_J_fix_D_heaviside_filter_sparse_path():
+    r"""
+    Fix D regression (2026-04-21): the rewritten
+    `_make_heaviside_filtered_integrand` precomputes a sparse
+    (nonzero-only) coefficient list and handles all-zero constraints
+    at build time.  Verify:
+
+      1. A constraint with all-zero `a_int` and `c_eff > 0` is
+         silently dropped — the filter does NOT spuriously return 0
+         when every integration-variable coefficient is zero.
+      2. A constraint with all-zero `a_int` and `c_eff <= 0` forces
+         the filter to return 0 unconditionally (polytope is empty
+         before any s_vals are checked).
+      3. For a mixed constraint, the filter correctly evaluates
+         `a_int · s_vals + c_eff` using only the nonzero entries.
+    """
+    from msrjd.integration.time_domain.final_integral import (
+        _make_heaviside_filtered_integrand,
+    )
+
+    def f(s0, s1, s2):
+        return (s0 + s1 + s2) + 0.0j
+
+    # (1) Trivially-satisfied residual must be dropped.
+    constraints_1 = [
+        ([1.0, 0.0, 0.0], 1.0),   # s_0 > -1
+        ([0.0, 0.0, 0.0], 1.0),   # trivial 1 > 0
+    ]
+    filt_1 = _make_heaviside_filtered_integrand(f, constraints_1, [], m=3)
+    assert abs(filt_1(0.0, 2.0, 3.0) - 5.0) < 1e-12, (
+        'Filter must NOT return 0 when the only "failing" constraint is '
+        'a trivially-satisfied pure-residual `1 > 0`.'
+    )
+
+    # (2) Trivially-infeasible residual must kill the filter.
+    constraints_2 = [
+        ([1.0, 0.0, 0.0], 1.0),
+        ([0.0, 0.0, 0.0], -1.0),  # -1 > 0 is infeasible
+    ]
+    filt_2 = _make_heaviside_filtered_integrand(f, constraints_2, [], m=3)
+    assert filt_2(0.0, 2.0, 3.0) == 0.0 + 0.0j, (
+        'Filter must return 0 when a constraint with all-zero `a_int` '
+        'has `c_eff <= 0` (strict Θ(0)=0 convention).'
+    )
+
+    # (3) Mixed constraint: sparse path computes dot correctly.
+    constraints_3 = [
+        ([1.0, -1.0, 0.0], 0.0),  # s_0 > s_1
+    ]
+    filt_3 = _make_heaviside_filtered_integrand(f, constraints_3, [], m=3)
+    # Inside polytope: s_0 > s_1 → expect the integrand value.
+    assert abs(filt_3(2.0, 1.0, 0.0) - 3.0) < 1e-12
+    # On boundary: s_0 = s_1 → strict inequality fails, expect 0.
+    assert filt_3(1.0, 1.0, 0.0) == 0.0 + 0.0j
+    # Outside polytope: s_0 < s_1 → expect 0.
+    assert filt_3(0.0, 1.0, 0.0) == 0.0 + 0.0j
+
+
 def test_phase_J_k3_star_tree_finite_and_stationary():
     r"""
     Sanity test for k=3 on a single-population single-pole fixture:

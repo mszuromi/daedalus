@@ -1210,20 +1210,62 @@ def _make_heaviside_filtered_integrand(integrand_callable, s_constraints,
     # Convention: Θ(0) = 0.  A constraint `a_int · s + c_eff > 0` is
     # STRICTLY required: the boundary `Δt = 0` is excluded.  Use `dt <= 0`
     # to kill both the exterior (strictly infeasible) AND the boundary.
-    # Pre-extract into tuples for fast access in the hot loop.
-    c_list = [(tuple(a_int), float(c_eff)) for (a_int, c_eff) in s_constraints]
+    #
+    # Fix D (2026-04-21): pre-extract constraints in SPARSE form so the
+    # hot loop skips zero-coefficient axes entirely.  For retarded
+    # propagators each constraint is `t_v − t_u > 0` which has exactly
+    # two nonzero entries in `a_int` (regardless of `m`), so this
+    # collapses an inner `for j in range(m)` loop into 2 iterations.
+    #
+    # A pre-check here handles constraints that are purely trivial
+    # (all `a` zero): if `c_eff > 0` the constraint is always satisfied
+    # and we drop it; if `c_eff <= 0` the polytope is empty and the
+    # filter always returns 0.
+    sparse = []
+    always_empty = False
+    for (a_int, c_eff) in s_constraints:
+        c_eff_f = float(c_eff)
+        pairs = tuple((j, float(a)) for j, a in enumerate(a_int)
+                      if abs(float(a)) > 1e-15)
+        if not pairs:
+            # Pure constant constraint.  Θ(0) = 0: strict c_eff > 0.
+            if c_eff_f <= 0.0:
+                always_empty = True
+                break
+            # Trivially satisfied — drop.
+            continue
+        sparse.append((c_eff_f, pairs))
+    # Tuple-of-tuples for slightly faster iteration than list-of-tuples
+    # (CPython's FOR_ITER has a specialized path for tuples).
+    sparse_constraints = tuple(sparse)
+    free_ext_tuple = tuple(free_ext_vals)
+
+    if always_empty:
+        def filtered_empty(*s_vals):
+            return 0.0 + 0.0j
+        return filtered_empty
+
+    # Capture `free_ext_vals` as a LIST (not tuple) in the closure so
+    # the argument-packing style matches the pre-Fix D code exactly —
+    # `integrand_callable(*args)` with `args = list(s_vals) +
+    # free_ext_list`.  Measured: `integrand_callable(*s_vals,
+    # *free_ext_tuple)` (Python 3.5+ multi-unpack) triggers a slow
+    # path inside Sage's fast_callable on the 1-loop m=3 workload
+    # (~2× wall-clock regression vs. baseline) for reasons not yet
+    # root-caused.  Empirically the single-unpack form matches
+    # baseline performance while still benefiting from the sparse-
+    # scan speedup below.
+    free_ext_list = list(free_ext_vals)
 
     def filtered(*s_vals):
         # Heaviside check: every constraint must be > 0 (Θ(0) = 0).
-        for (a_int, c_eff) in c_list:
+        for c_eff, nzs in sparse_constraints:
             dt = c_eff
-            for j, a in enumerate(a_int):
-                if a != 0.0:
-                    dt += a * s_vals[j]
+            for (j, a) in nzs:
+                dt += a * s_vals[j]
             if dt <= 0.0:
                 return 0.0 + 0.0j
-        args = list(s_vals) + list(free_ext_vals)
-        return complex(integrand_callable(*args))
+        return complex(integrand_callable(*(list(s_vals) + free_ext_list)))
 
     return filtered
 
@@ -1354,14 +1396,69 @@ def _integrate_2d_polytope(integrand_callable, s_constraints, free_ext_vals):
     """
     from scipy.integrate import nquad
 
-    # Bounds on s_0 given s_1
-    def bounds_s0(s_1_val):
-        # Substitute s_1 into each constraint: a_0 s_0 + a_1 s_1 + c_eff > 0
-        sub_constraints = []
-        for (a_int, c_eff) in s_constraints:
-            new_c_eff = c_eff + a_int[1] * s_1_val
-            sub_constraints.append(([a_int[0], 0.0], new_c_eff))
-        return _resolve_1d_bounds(sub_constraints, s_index=0)
+    # ── Pre-split 2D constraints by role w.r.t. s_0 (Fix D) ──────
+    # For each constraint `a_0 s_0 + a_1 s_1 + c_eff > 0` we
+    # classify:
+    #   pure_0      : a_1 ≈ 0, a_0 ≠ 0 → precomputed (L, U) on s_0.
+    #   mixed       : both a_0 ≠ 0 and a_1 ≠ 0 → resolve per s_1 call.
+    #   s1_only     : a_0 ≈ 0, a_1 ≠ 0 → pure residual inequality in s_1.
+    #   constant    : a_0 ≈ 0, a_1 ≈ 0 → constant check (handled at build).
+    pure_0_L = -math.inf
+    pure_0_U = math.inf
+    mixed_s0 = []       # list of (a_0, c_eff, a_1)
+    s1_residual = []    # list of (a_1, c_eff): constraint reduces to a_1 s_1 + c_eff > 0
+    bounds_s0_always_empty = False
+    for (a_int, c_eff) in s_constraints:
+        a_0 = float(a_int[0])
+        a_1 = float(a_int[1])
+        c_f = float(c_eff)
+        if abs(a_0) < 1e-15 and abs(a_1) < 1e-15:
+            # Constant constraint; Θ(0) = 0 wants c_eff > 0.
+            if c_f <= 0.0:
+                bounds_s0_always_empty = True
+                break
+            # Trivially satisfied — drop.
+            continue
+        if abs(a_0) < 1e-15:
+            s1_residual.append((a_1, c_f))
+            continue
+        if abs(a_1) < 1e-15:
+            bound = -c_f / a_0
+            if a_0 > 0.0:
+                if bound > pure_0_L:
+                    pure_0_L = bound
+            else:
+                if bound < pure_0_U:
+                    pure_0_U = bound
+        else:
+            mixed_s0.append((a_0, c_f, a_1))
+
+    mixed_s0_t = tuple(mixed_s0)
+    s1_residual_t = tuple(s1_residual)
+
+    if bounds_s0_always_empty or pure_0_L >= pure_0_U:
+        # Entire polytope empty.
+        def bounds_s0(s_1_val):
+            return 0.0, 0.0
+    else:
+        def bounds_s0(s_1_val):
+            # Check s_1-only residual constraints (pure a_1 s_1 + c > 0).
+            for (a_1, c_f) in s1_residual_t:
+                if a_1 * s_1_val + c_f <= 0.0:
+                    return 0.0, 0.0
+            L = pure_0_L
+            U = pure_0_U
+            for (a_0, c_f, a_1) in mixed_s0_t:
+                bound = -(c_f + a_1 * s_1_val) / a_0
+                if a_0 > 0.0:
+                    if bound > L:
+                        L = bound
+                else:
+                    if bound < U:
+                        U = bound
+            if L >= U:
+                return 0.0, 0.0
+            return L, U
 
     # Bounds on s_1: use constraints where a_0 = 0 AND a_1 != 0
     # (genuinely pure-s_1); else fall back to the ±OUTER_CAP
@@ -1469,40 +1566,118 @@ def _integrate_nd_polytope(integrand_callable, s_constraints, free_ext_vals, m):
 
         Regression: test_phase_J_nd_polytope_preserves_deferred_constraints
         in tests/test_time_domain.py.
+
+        Fix D (2026-04-21): constraint classification and sparse-
+        coefficient extraction happen ONCE at closure-build time, not
+        on every call.  Constraints with only `s_{k_var}` nonzero
+        (no outer coupling) contribute a fixed slice to (L, U) that we
+        precompute.  The per-call path now only iterates constraints
+        whose bound actually varies with the outer values.
         """
-        def bounds_k(*outer_vals):
-            # outer_vals[i] corresponds to s_{k_var + 1 + i}
-            sub_constraints = []
-            for (a_int, c_eff) in s_constraints:
-                # Skip constraints that still couple to a more-inner
-                # axis.  Those will be resolved at a deeper nesting
-                # level where that axis becomes the resolution target.
-                if any(abs(a_int[j]) >= 1e-15 for j in range(k_var)):
+        # ── Classify constraints by their role w.r.t. axis k_var ──
+        # Four buckets (after filtering deferred-inner constraints):
+        #   pure_k      : a[k_var] != 0, no outer coupling → precomputed
+        #                 contribution to (L, U).
+        #   mixed       : a[k_var] != 0, some outer axes coupled →
+        #                 resolve per call using outer vals.
+        #   outer_only  : a[k_var] == 0, some outer axes coupled →
+        #                 pure residual inequality; kills polytope when
+        #                 negative at this outer point.
+        #   (trivial satisfied or trivially infeasible constraints
+        #    are resolved at build time.)
+        pure_k_L = -math.inf
+        pure_k_U = math.inf
+        mixed = []         # list of (a_k, c_eff, outer_pairs)
+        outer_only = []    # list of (c_eff, outer_pairs)
+        infeasible_at_build = False
+        for (a_int, c_eff) in s_constraints:
+            # Skip constraints that still couple to a more-inner axis.
+            deferred = False
+            for j in range(k_var):
+                if abs(a_int[j]) >= 1e-15:
+                    deferred = True
+                    break
+            if deferred:
+                continue
+            a_k = float(a_int[k_var])
+            # Sparse outer-axis coefficients: tuple of (outer_index, coeff)
+            # where outer_index is the position in *outer_vals (not the
+            # absolute axis index).  nquad passes outer_vals with
+            # outer_vals[0] = s_{k_var+1}, [1] = s_{k_var+2}, etc.,
+            # which matches the original `j = k_var + 1 + i_outer`
+            # indexing.
+            outer_pairs = tuple(
+                (j - (k_var + 1), float(a_int[j]))
+                for j in range(k_var + 1, len(a_int))
+                if abs(float(a_int[j])) >= 1e-15
+            )
+            c_eff_f = float(c_eff)
+            if abs(a_k) < 1e-15:
+                if not outer_pairs:
+                    # Constant constraint: Θ(0)=0 wants c_eff > 0.
+                    if c_eff_f <= 0.0:
+                        infeasible_at_build = True
+                        break
+                    # Trivially satisfied → drop.
                     continue
-                # Substitute outer s_j into the constraint:
-                #   a_int[k_var] * s_{k_var} + (sum over j>k_var of a_int[j] * outer)
-                #     + c_eff > 0
-                new_c_eff = c_eff
-                for i_outer, val in enumerate(outer_vals):
-                    j = k_var + 1 + i_outer
-                    new_c_eff += a_int[j] * float(val)
-                # By this point a_int has zero coefficients on all
-                # indices j < k_var (filtered above), and the outer
-                # axes (j > k_var) have been folded into new_c_eff.
-                # `_resolve_1d_bounds` only consults a_int[k_var] via
-                # s_index so passing the original a_int is safe.
-                sub_constraints.append((a_int, new_c_eff))
-            L, U = _resolve_1d_bounds(sub_constraints, s_index=k_var)
-            # Cap any infinite bound to ±OUTER_CAP.  After filtering
-            # cross-axis constraints, the remaining pure-k_var constraints
-            # may not provide both a lower and upper bound — e.g. only
-            # "s_1 < s_2" survives but "s_1 > s_0" was deferred to the
-            # inner axis.  Without the cap, scipy.quad would integrate
-            # over (-inf, s_2_val) which is technically convergent for
-            # exponentially decaying integrands but catastrophically slow.
-            if not math.isfinite(L):
+                outer_only.append((c_eff_f, outer_pairs))
+            else:
+                if outer_pairs:
+                    mixed.append((a_k, c_eff_f, outer_pairs))
+                else:
+                    bound = -c_eff_f / a_k
+                    if a_k > 0.0:
+                        if bound > pure_k_L:
+                            pure_k_L = bound
+                    else:
+                        if bound < pure_k_U:
+                            pure_k_U = bound
+
+        # If the polytope is empty under Θ(0)=0 irrespective of outer
+        # values, or the pure-k_var bounds are crossed, return a
+        # constant-zero bounds function — scipy.quad(a, a) is 0, so
+        # this cleanly kills the outer integral over the empty region.
+        if infeasible_at_build or pure_k_L >= pure_k_U:
+            def _bounds_infeas(*outer_vals):
+                return 0.0, 0.0
+            return _bounds_infeas
+
+        mixed_t = tuple(mixed)
+        outer_only_t = tuple(outer_only)
+
+        def bounds_k(*outer_vals):
+            # Start from the precomputed pure-axis bounds (may be ±inf
+            # if no pure-k constraint is present on that side — mixed
+            # constraints below may finitely bound the axis instead).
+            L = pure_k_L
+            U = pure_k_U
+            # Check outer-only constraints first (cheap polytope kill).
+            for c_eff, outer_pairs in outer_only_t:
+                val = c_eff
+                for (oi, a) in outer_pairs:
+                    val += a * outer_vals[oi]
+                if val <= 0.0:
+                    return 0.0, 0.0
+            # Apply mixed (outer-coupled on-axis) constraints.
+            for a_k, c_eff, outer_pairs in mixed_t:
+                total_c = c_eff
+                for (oi, a) in outer_pairs:
+                    total_c += a * outer_vals[oi]
+                bound = -total_c / a_k
+                if a_k > 0.0:
+                    if bound > L:
+                        L = bound
+                else:
+                    if bound < U:
+                        U = bound
+            if L >= U:
+                return 0.0, 0.0
+            # Cap infinite bounds only when still unbounded.  Matches
+            # the original post-`_resolve_1d_bounds` behaviour where a
+            # cap never clips a finite constraint-derived bound.
+            if math.isinf(L):
                 L = -OUTER_CAP
-            if not math.isfinite(U):
+            if math.isinf(U):
                 U = OUTER_CAP
             return L, U
         return bounds_k
