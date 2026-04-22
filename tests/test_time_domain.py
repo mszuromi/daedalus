@@ -1523,6 +1523,71 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
     )
 
 
+def test_phase_J_total_C_batch_nested_matches_serial():
+    r"""
+    Nested per-(τ, diagram) parallel regression (parallel-eval branch,
+    2026-04-22): when the τ batch is smaller than the worker pool,
+    ``total_C_batch`` switches to per-(τ, diagram) parallelism so the
+    workers are all used even with a 1-point batch.  The result must
+    be bit-identical to a serial sum over the same diagram order.
+
+    Why this matters: the 2026-04-21 initial ``total_C_batch``
+    parallelized across τ points.  On ``SIM_MODE='point'`` (1-4 τ
+    points), that gave zero speedup — the pool had more workers than
+    tasks, so most cores sat idle while the full 106-diagram sum ran
+    serially on one worker.  The nested path fixes that.
+
+    Test fixture: same nondiagonal 2×2 propagator + cross-population
+    tree used by the existing per-τ bit-identity test.  Forces the
+    nested code path by requesting 6 workers on a 1-τ batch (more
+    workers than tau points triggers nested).
+    """
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    assert 'total_C_batch' in j_result
+    total_C_batch = j_result['total_C_batch']
+
+    # Single-point batch — forces nested path with n_workers > 1
+    single_pt = [(0.5, 0.0)]
+    serial_val_list = total_C_batch(single_pt, parallel=False)
+    nested_val_list = total_C_batch(single_pt, parallel=True, n_workers=4)
+
+    assert len(serial_val_list) == 1
+    assert len(nested_val_list) == 1
+    d = abs(complex(serial_val_list[0]) - complex(nested_val_list[0]))
+    assert d == 0.0, (
+        f'1-point nested parallel vs serial diff = {d!r}, expected 0.0.  '
+        f'Check that the aggregation inside total_C_batch sums diagrams '
+        f'in the same order as the serial total_C.'
+    )
+
+    # Small multi-point batch that still triggers nested (n_workers
+    # larger than n_tau)
+    multi_pt = [(0.5, 0.0), (1.0, 0.0), (2.0, 0.0)]
+    serial_vals = total_C_batch(multi_pt, parallel=False)
+    nested_vals = total_C_batch(multi_pt, parallel=True, n_workers=6)
+
+    assert len(serial_vals) == len(nested_vals) == len(multi_pt)
+    max_abs_diff = 0.0
+    for s, p in zip(serial_vals, nested_vals):
+        d = abs(complex(s) - complex(p))
+        if d > max_abs_diff:
+            max_abs_diff = d
+    assert max_abs_diff == 0.0, (
+        f'small-batch nested parallel vs serial max |diff| = {max_abs_diff!r}, '
+        f'expected 0.0.  Aggregation order mismatch?'
+    )
+
+
 def test_phase_J_k3_star_tree_finite_and_stationary():
     r"""
     Sanity test for k=3 on a single-population single-pole fixture:

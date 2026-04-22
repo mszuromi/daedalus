@@ -126,6 +126,22 @@ def _worker_eval_total_C(tau_tuple):
     return complex(fn(*tau_tuple))
 
 
+def _worker_eval_one_diagram(task):
+    """Worker entry point for the nested-parallel small-batch path:
+    evaluate ONE diagram's contribution at ONE τ tuple.
+
+    Task format: ``(tau_idx, diagram_idx, tau_tuple)``.
+
+    The per-diagram ``contribution`` callables live in
+    ``_WORKER_STATE['tree_callables']`` (inherited via fork).  Returns
+    ``(tau_idx, diagram_idx, complex_value)`` so the parent can
+    aggregate deterministically.
+    """
+    tau_idx, diagram_idx, tau_tuple = task
+    fn = _WORKER_STATE['tree_callables'][diagram_idx]
+    return (tau_idx, diagram_idx, complex(fn(*tau_tuple)))
+
+
 def compute_correction_td(
     typed_diagrams=None,
     prefactors=None,
@@ -283,6 +299,24 @@ def compute_correction_td(
         """Evaluate ``total_C`` on a list of τ points, optionally in
         parallel across processes.
 
+        Two parallelism strategies, auto-selected by batch shape:
+
+        * **Per-τ parallelism** — each worker evaluates the FULL
+          ``total_C(τ_i)`` (summing all diagrams serially inside the
+          worker).  Used when ``len(tau_points) >= n_workers`` — the
+          simpler, cheaper coordination path.  Matches the 2026-04-21
+          initial design.
+
+        * **Per-(τ, diagram) nested parallelism** — each worker
+          evaluates ONE diagram's contribution at ONE τ tuple; the
+          parent aggregates.  Used when ``len(tau_points) <
+          n_workers`` so even a single-τ call can still use many cores.
+          Essential for ``SIM_MODE='point'`` where the batch is 1-4 τ
+          points — the old code ran serial on those, wasting all
+          available parallelism.
+
+        The decision is made once per call based on total task count.
+
         Parameters
         ----------
         tau_points : iterable of tuples
@@ -294,7 +328,7 @@ def compute_correction_td(
             ``[total_C(*pt) for pt in tau_points]``).
         n_workers : int or None, default None
             Worker process count.  ``None`` picks
-            ``min(os.cpu_count(), len(tau_points))``.
+            ``min(os.cpu_count(), total_tasks)``.
         start_method : {'fork', 'spawn', 'forkserver'}, default 'fork'
             Multiprocessing start method.  ``'fork'`` is required for
             the current design because the per-diagram ``contribution``
@@ -313,11 +347,14 @@ def compute_correction_td(
         ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` automatically to
         defuse Objective-C fork-after-init crashes.  Bit-identity with
         the serial path is pinned by
-        ``test_phase_J_total_C_batch_parallel_matches_serial``.
+        ``test_phase_J_total_C_batch_parallel_matches_serial`` (per-τ)
+        and ``test_phase_J_total_C_batch_nested_matches_serial``
+        (nested).
         """
         tau_list = [tuple(pt) for pt in tau_points]
-        if not parallel or len(tau_list) <= 1:
+        if not parallel or len(tau_list) == 0:
             return [total_C(*pt) for pt in tau_list]
+
         import multiprocessing as mp
         import os
         # Fork-after-init safety on macOS + Sage + any Objective-C
@@ -326,21 +363,121 @@ def compute_correction_td(
         os.environ.setdefault(
             'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
         )
-        # Publish ``total_C`` to module globals so fork workers inherit
-        # it.  Intentionally NOT thread-safe — calling total_C_batch
-        # from two threads concurrently on different ``result`` objects
-        # would race on this dict.  Sage's Phase J workflow is
-        # single-threaded at the notebook level, so this is fine.
-        _WORKER_STATE['total_C'] = total_C
+
+        n_diag = len(tree_callables)
+        if n_diag == 0:
+            return [0.0 + 0.0j] * len(tau_list)
+
+        n_w_cap = (n_workers if n_workers is not None
+                   else (os.cpu_count() or 4))
+        total_tasks = len(tau_list) * n_diag
+
+        # Serial fast path: not enough work to amortise pool setup.
+        # A fork+join costs ~50-200 ms on macOS/Linux; require at least
+        # a handful of tasks per worker before it pays off.
+        if total_tasks < max(4, 2 * n_w_cap):
+            return [total_C(*pt) for pt in tau_list]
+
         ctx = mp.get_context(start_method)
-        n_w = (n_workers if n_workers is not None
-               else min(os.cpu_count() or 4, len(tau_list)))
+
+        if len(tau_list) >= n_w_cap:
+            # ── Per-τ parallel path (original design) ────────────────
+            # Enough τ points to fill the worker pool.  Each worker
+            # handles its share of τ's and sums all diagrams serially
+            # within the worker.  Simpler coordination, same bit-
+            # identity as serial.
+            _WORKER_STATE['total_C'] = total_C
+            n_w = min(n_w_cap, len(tau_list))
+            with ctx.Pool(processes=n_w) as pool:
+                return pool.map(_worker_eval_total_C, tau_list)
+
+        # ── Per-(τ, diagram) nested parallel path (small-batch) ──
+        # Fewer τ points than workers.  Spread ALL (τ, diagram) pairs
+        # across workers and aggregate in the parent.  This is the
+        # right strategy for SIM_MODE='point' (1-4 τ points).
+        _WORKER_STATE['tree_callables'] = tree_callables
+        tasks = [(p_idx, d_idx, pt)
+                 for p_idx, pt in enumerate(tau_list)
+                 for d_idx in range(n_diag)]
+        n_w = min(n_w_cap, len(tasks))
         with ctx.Pool(processes=n_w) as pool:
-            return pool.map(_worker_eval_total_C, tau_list)
+            partial = pool.map(_worker_eval_one_diagram, tasks)
+        # Aggregate into (n_tau,) complex array.  Sum per τ in the
+        # SAME diagram order as serial ``total_C`` (ascending d_idx),
+        # so floating-point accumulation is bit-identical.
+        out = [0.0 + 0.0j] * len(tau_list)
+        buckets = [[None] * n_diag for _ in tau_list]
+        for (p_idx, d_idx, val) in partial:
+            buckets[p_idx][d_idx] = val
+        for p_idx in range(len(tau_list)):
+            s = 0.0 + 0.0j
+            for d_idx in range(n_diag):
+                s = s + buckets[p_idx][d_idx]
+            out[p_idx] = s
+        return out
+
+    def eval_per_diagram_batch(tau_points, parallel=True, n_workers=None,
+                                start_method='fork'):
+        """Evaluate EACH diagram's contribution at EACH τ point, in
+        parallel, returning the full (n_tau, n_diagram) grid.
+
+        Useful when downstream code needs BOTH the per-diagram breakdown
+        AND the total: call this once, then aggregate in the caller.
+        Without this helper, cell 31-style workflows would run scipy
+        serially for every (τ, diagram) pair — prohibitive at k=2
+        ell=1 (100+ diagrams) and painful at k=3.
+
+        Returns
+        -------
+        vals : list of list of complex
+            ``vals[tau_idx][diag_idx]`` is the diagram-level contribution
+            at ``tau_points[tau_idx]``.  Skipped diagrams get 0+0j.
+        diag_loop_numbers : list of int
+            ``loop_number`` per diagram, same order as the inner lists.
+        """
+        tau_list = [tuple(pt) for pt in tau_points]
+        n_diag = len(tree_callables)
+        loop_nums = [g.get('loop_number', 0) for g in groups_out
+                     if g.get('contribution') is not None]
+        if n_diag == 0 or len(tau_list) == 0:
+            return [[] for _ in tau_list], loop_nums
+
+        total_tasks = len(tau_list) * n_diag
+        n_w_cap = (n_workers if n_workers is not None
+                   else (__import__('os').cpu_count() or 4))
+
+        if (not parallel) or total_tasks < max(4, 2 * n_w_cap):
+            # Serial path.  Still honours original diagram order.
+            vals = []
+            for pt in tau_list:
+                row = []
+                for fn in tree_callables:
+                    row.append(complex(fn(*pt)))
+                vals.append(row)
+            return vals, loop_nums
+
+        import multiprocessing as mp
+        import os
+        os.environ.setdefault(
+            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
+        )
+        _WORKER_STATE['tree_callables'] = tree_callables
+        tasks = [(p_idx, d_idx, pt)
+                 for p_idx, pt in enumerate(tau_list)
+                 for d_idx in range(n_diag)]
+        ctx = mp.get_context(start_method)
+        n_w = min(n_w_cap, len(tasks))
+        with ctx.Pool(processes=n_w) as pool:
+            partial = pool.map(_worker_eval_one_diagram, tasks)
+        vals = [[0.0 + 0.0j] * n_diag for _ in tau_list]
+        for (p_idx, d_idx, val) in partial:
+            vals[p_idx][d_idx] = val
+        return vals, loop_nums
 
     return {
         'total_C': total_C,
         'total_C_batch': total_C_batch,
+        'eval_per_diagram_batch': eval_per_diagram_batch,
         'delta_contributions': all_delta_contributions,
         'groups': groups_out,
         'skipped_kernel_ids': skipped,
