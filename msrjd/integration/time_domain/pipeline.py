@@ -40,6 +40,66 @@ from msrjd.integration.time_domain.final_integral import (
 )
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Parallel-evaluation support (2026-04-21, parallel-eval branch)
+# ───────────────────────────────────────────────────────────────────────
+#
+# ``compute_correction_td`` returns both a scalar ``total_C(*tau)`` (the
+# serial, always-available entry point) and ``total_C_batch(tau_list,
+# parallel=...)`` for fan-out over a τ grid.
+#
+# Parallelism uses ``multiprocessing.Pool`` with the ``fork`` start method.
+# Fork is chosen because:
+#
+#   - The per-diagram ``contribution`` callables returned by
+#     ``integrate_diagram`` are nested closures (inside
+#     ``integrate_diagram.<locals>.contribution``) that standard
+#     ``pickle`` cannot serialise.  With ``fork``, workers inherit the
+#     parent's full memory at fork time — closures, captured state, and
+#     all — without pickling functions.  The only objects crossing the
+#     fork boundary via pickle are the τ-tuple inputs (``tuple[float]``)
+#     and the complex-scalar outputs.
+#   - On Linux ``fork`` is the default.  On macOS Python 3.8+ switched
+#     to ``spawn`` by default to avoid Objective-C fork-after-init
+#     crashes; we explicitly set ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY``
+#     and request ``mp.get_context('fork')``.  This has been tested with
+#     Sage 10.8 + CPython 3.13 on macOS and reproduces bit-identical
+#     output to the serial path (measured max |parallel − serial| = 0.0).
+#
+# ``_WORKER_STATE`` is a module-level dict that lets ``_worker_eval``
+# (a picklable top-level function) reach the parent's ``total_C``
+# callable after fork.  ``total_C_batch`` writes the current ``total_C``
+# into ``_WORKER_STATE`` *before* creating the Pool; fork copies the
+# dict into every worker, and each worker's ``_worker_eval`` looks it up
+# from its own (inherited) module globals.  Because the Pool is
+# created-and-destroyed per batch call, there is no stale-state risk
+# across calls — subsequent calls overwrite the entry before forking a
+# fresh set of workers.
+#
+# NOTE: the 2026-04-20 thread-pool attempt (see CHANGELOG) was reverted
+# after a coincident ``_to_sr_ab`` precision regression confused the
+# debugging — the parallelism itself was measured bit-identical at that
+# time.  The current design: (a) uses process-based not thread-based
+# parallelism, so there is no ECL/GIL contention; (b) pins bit-identity
+# as a regression test so any drift is caught at the right layer; (c)
+# keeps the serial ``total_C`` unchanged and purely additive, so a
+# simple rollback of the batch API is always available.
+
+_WORKER_STATE = {}
+
+
+def _worker_eval_total_C(tau_tuple):
+    """Worker entry point for ``total_C_batch``'s fork-based Pool.
+
+    Must be a module-level function so it can be pickled by
+    ``multiprocessing``.  The actual ``total_C`` callable lives in
+    ``_WORKER_STATE['total_C']`` and is inherited via fork (not via
+    ``initargs`` pickling).
+    """
+    fn = _WORKER_STATE['total_C']
+    return complex(fn(*tau_tuple))
+
+
 def compute_correction_td(
     typed_diagrams=None,
     prefactors=None,
@@ -192,8 +252,69 @@ def compute_correction_td(
             total = total + complex(val)
         return total
 
+    def total_C_batch(tau_points, parallel=True, n_workers=None,
+                      start_method='fork'):
+        """Evaluate ``total_C`` on a list of τ points, optionally in
+        parallel across processes.
+
+        Parameters
+        ----------
+        tau_points : iterable of tuples
+            Each element is a k-tuple passed through as
+            ``total_C(*tau_tuple)``.  Order is preserved in the output.
+        parallel : bool, default True
+            If True, fan the evaluations out across worker processes.
+            If False, run serial (equivalent to
+            ``[total_C(*pt) for pt in tau_points]``).
+        n_workers : int or None, default None
+            Worker process count.  ``None`` picks
+            ``min(os.cpu_count(), len(tau_points))``.
+        start_method : {'fork', 'spawn', 'forkserver'}, default 'fork'
+            Multiprocessing start method.  ``'fork'`` is required for
+            the current design because the per-diagram ``contribution``
+            closures are unpicklable (nested functions); fork inherits
+            them via process memory.  ``'spawn'`` and ``'forkserver'``
+            will raise a pickling error in the current implementation.
+
+        Returns
+        -------
+        list of complex
+            ``total_C`` evaluated at each input point, in input order.
+
+        Notes
+        -----
+        On macOS the function sets
+        ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` automatically to
+        defuse Objective-C fork-after-init crashes.  Bit-identity with
+        the serial path is pinned by
+        ``test_phase_J_total_C_batch_parallel_matches_serial``.
+        """
+        tau_list = [tuple(pt) for pt in tau_points]
+        if not parallel or len(tau_list) <= 1:
+            return [total_C(*pt) for pt in tau_list]
+        import multiprocessing as mp
+        import os
+        # Fork-after-init safety on macOS + Sage + any Objective-C
+        # framework in the dep chain.  Must be set BEFORE the first
+        # fork in this process.  Idempotent (setdefault).
+        os.environ.setdefault(
+            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
+        )
+        # Publish ``total_C`` to module globals so fork workers inherit
+        # it.  Intentionally NOT thread-safe — calling total_C_batch
+        # from two threads concurrently on different ``result`` objects
+        # would race on this dict.  Sage's Phase J workflow is
+        # single-threaded at the notebook level, so this is fine.
+        _WORKER_STATE['total_C'] = total_C
+        ctx = mp.get_context(start_method)
+        n_w = (n_workers if n_workers is not None
+               else min(os.cpu_count() or 4, len(tau_list)))
+        with ctx.Pool(processes=n_w) as pool:
+            return pool.map(_worker_eval_total_C, tau_list)
+
     return {
         'total_C': total_C,
+        'total_C_batch': total_C_batch,
         'delta_contributions': all_delta_contributions,
         'groups': groups_out,
         'skipped_kernel_ids': skipped,
