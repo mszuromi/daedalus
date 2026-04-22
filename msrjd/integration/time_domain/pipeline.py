@@ -66,6 +66,32 @@ from msrjd.integration.time_domain.final_integral import (
 #     Sage 10.8 + CPython 3.13 on macOS and reproduces bit-identical
 #     output to the serial path (measured max |parallel − serial| = 0.0).
 #
+# ─── Windows support: DEFERRED ─────────────────────────────────────────
+# Windows does NOT support the ``fork`` start method at all — Python's
+# ``multiprocessing`` on Windows is always ``spawn``, which re-imports
+# the parent module in a fresh interpreter and then pickles arguments
+# across the boundary.  Because our per-diagram closures are not
+# picklable (see above), ``total_C_batch(parallel=True)`` will raise
+# ``ValueError: cannot find context for 'fork'`` if invoked on Windows.
+#
+# When we revisit Windows support the two viable options are:
+#
+#   1. Add ``cloudpickle`` as an optional dependency and route closure
+#      serialisation through it.  ``cloudpickle`` handles nested
+#      functions, lambdas, and Sage objects that stdlib ``pickle``
+#      rejects.  Would let us switch ``total_C_batch`` to ``spawn`` on
+#      Windows transparently while leaving fork as the fast path on
+#      POSIX.
+#   2. Refactor the per-diagram / per-subset closures into top-level
+#      ``pickle``-compatible classes (e.g. ``FastSubsetEvaluator`` and
+#      ``DiagramContribution`` as module-level ``class``es with
+#      explicit ``__init__`` / ``__call__`` / ``__getstate__``).
+#      More invasive but no new runtime dependency.
+#
+# For now, POSIX-only is fine for the current user base (macOS / Linux
+# lab machines).  Windows users get a clear error at runtime rather
+# than silent non-determinism.
+#
 # ``_WORKER_STATE`` is a module-level dict that lets ``_worker_eval``
 # (a picklable top-level function) reach the parent's ``total_C``
 # callable after fork.  ``total_C_batch`` writes the current ``total_C``
