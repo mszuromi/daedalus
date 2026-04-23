@@ -1,7 +1,46 @@
 # Automated Feynman Diagram Pipeline — Architecture & Build Plan
 
-**Last updated:** 2026-04-03
-**Status:** Phases A–H implemented and debugged. Tree-level 2-point function validated against simulation for linear Hawkes. 1-loop evaluation implemented but awaiting validation. See `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
+**Last updated:** 2026-04-23
+**Status:** Phases A–J complete and running in production on three
+notebooks (`hawkes_td_only`, `hawkes_td_only_expg`,
+`hawkes_td_only_quad_expg`).  Tree-level 2- and 3-point correlators
+validated against simulation for linear and quadratic Hawkes with
+exponential synaptic filter.  1-loop evaluation implemented,
+numerically validated against simulation at the ~5-10% level for k=2
+quadratic Hawkes.  Arbitrary-`max_ell` display code now generalised
+(cumulative loop-order truncation curves on k≥2 slice plots,
+per-ell stacked bars on k=1).  See `CHANGELOG.md` for chronological
+fix log.
+
+### Recent performance work (2026-04-21 → 2026-04-22)
+
+* **Audit Fix A** (`final_integral.py`): drop redundant
+  `.subs(num_params)` in the 2^|E| subset loop.  ~6% speedup on k=2
+  ell=1 construction.
+* **Audit Fix D** (`final_integral.py`): vectorise polytope bounds
+  and Heaviside filter via per-axis constraint classification.  ~5×
+  per-call speedup on `_make_bound_fn`; ~2× on filter scan.
+* **Audit Fix E** (`final_integral.py`): bypass `fast_callable +
+  .expand()` on the integrand hot path with a dedicated per-edge
+  numerical evaluator (`_build_fast_subset_evaluator`).  ~14.7×
+  per-call; ~12.6× wall-clock end-to-end on 3-diagram V=5 1-loop
+  benchmark.  The Heaviside-filter wrapper guarantees overflow safety
+  without the expand.
+* **Parallel-eval branch** (`pipeline.py` + notebooks): fork-
+  ProcessPool evaluation of `total_C_batch` and a new
+  `eval_per_diagram_batch`.  Auto-selects per-τ vs nested per-(τ,
+  diagram) parallelism based on batch shape.  7-18× wall-clock on
+  representative k=2/k=3 Hawkes workloads.  POSIX-only; Windows
+  support deferred with documented future fixes in `pipeline.py`.
+* **Known next target (enumeration-speedup branch, WIP):**
+  `enumerate_typed_diagrams` in `msrjd/diagrams/type_assignment.py`
+  over-generates ~15-20× by iterating all leg-bijection
+  permutations and later deduplicating.  Replacement via sympy's
+  `multiset_permutations` is correctness-safe (the physics weight
+  `M(Γ)` from `symmetry.py::combinatorial_factor` already accounts
+  for the leg-orbit), giving ~3-5× per prediagram.  Combined with
+  per-prediagram ProcessPool parallelism → ~25-50× cold-start
+  enumeration speedup.
 
 ---
 

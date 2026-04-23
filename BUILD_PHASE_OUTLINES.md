@@ -1,8 +1,15 @@
 # Build Phase Outlines — Detailed Implementation Plans
 
-**Last updated:** 2026-04-03
+**Last updated:** 2026-04-23
 
-Each section below gives a detailed implementation outline for one phase of the build order defined in `PIPELINE_PLAN.md`. Outlines are written before implementation begins and updated as design decisions solidify. Phases A–I are now complete; see `CHANGELOG.md` for critical bug fixes applied 2026-04-03.
+Each section below gives a detailed implementation outline for one
+phase of the build order defined in `PIPELINE_PLAN.md`.  Outlines are
+written before implementation begins and updated as design decisions
+solidify.  Phases A–J are complete; see `CHANGELOG.md` for the
+chronological fix log, including the 2026-04-21 Audit Fix A/D/E
+performance passes and the 2026-04-22 `parallel-eval` branch merge
+(fork-ProcessPool evaluation, 7-18× wall-clock speedup on
+representative Hawkes workloads).
 
 ---
 
