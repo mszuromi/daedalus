@@ -4,6 +4,135 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-23 — `enumeration-speedup` branch (WIP): canonical leg-matching + per-prediagram parallelism
+
+### Scope
+
+The 2026-04-22 `parallel-eval` branch accelerated the EVALUATION
+phase of Phase J (scipy.quad on pre-built contribution callables).
+This branch targets the **ENUMERATION phase** — specifically the
+step that goes from prediagram topologies to fully-typed Feynman
+diagrams with field assignments on every vertex and leg.
+
+### Problem
+
+`msrjd/diagrams/type_assignment.py::enumerate_typed_diagrams` and
+its entry point `enumerate_all` were generating ~15-20× more typed
+diagrams than the downstream `deduplicate_typed_diagrams` kept — for
+quadratic Hawkes k=3 ell=0 the ratio was 552 typed → 38 unique.
+That 95% waste was the single biggest cold-start bottleneck:
+`enumerate_typed_diagrams` took **~390s for k=3 ell=0** on M2 Max
+(3 prediagrams), and **>10 hours extrapolated for k=3 ell=1**
+(64 kept prediagrams, never completed in our benchmark runs).
+
+### Candidate 1: canonical multiset leg-matching
+
+`_leg_matchings(vertex_type, out_edges, in_edges)` at
+`type_assignment.py:311` enumerated all `R! × P!` index permutations
+of response and physical legs.  For leg multisets with duplicate
+`(field, pop)` entries (common at high Taylor order), many of those
+permutations produced bit-identical typed diagrams that later dedup
+collapsed away.
+
+**Fix:** replace `set(permutations(range(R)))` with
+`sympy.utilities.iterables.multiset_permutations(resp_legs)` (and
+similarly for phys).  multiset_permutations yields only the
+`R! / ∏ n_r!` distinct orderings of the leg multiset, skipping the
+redundant ones directly.
+
+**Correctness:** the physics weight of a typed diagram includes
+`M(Γ) = ∏_v M_v` from `symmetry.py::combinatorial_factor`, where
+`M_v` is *exactly* the leg-permutation orbit size at vertex v.  Old
+code generated M(Γ) identical copies, dedup kept one, integrator
+multiplied by M(Γ).  New code generates the canonical copy,
+integrator multiplies by the same M(Γ).  Bit-identical numerical
+output — no downstream change.
+
+**Measured on quadratic Hawkes k=3 (user's production workload):**
+
+| Stage | BEFORE (baseline) | AFTER Candidate 1 only |
+|---|---|---|
+| ell=0 enumerate_typed | 390s → 552 typed | **64.1s → 84 typed** (6.1× faster, 6.6× fewer) |
+| ell=1 per-prediagram  | >600s each | ~20-100s each, avg ~45s |
+| ell=1 full (64 prediagrams) | extrapolated >10 hours | extrapolated ~50 min serial |
+
+Dedup output unchanged (38 unique at ell=0, 104 at ell=1, matching
+the user's reported counts).
+
+### Candidate 3: per-prediagram fork-ProcessPool parallelism
+
+`enumerate_all(prediagrams, ...)` is embarrassingly parallel — each
+prediagram's `enumerate_typed_diagrams` is independent.  Added a
+`parallel=False, n_workers=None, start_method='fork'` kwarg set;
+notebooks opt in via `TD_PARALLEL` / `TD_N_WORKERS` from the
+Configuration cell (same knobs already used for evaluation).
+
+Implementation follows the `pipeline.py::total_C_batch` pattern:
+module-level `_ENUM_WORKER_STATE` dict inherited by workers via
+fork (no pickle of Sage graph / matrix inputs), plus top-level
+`_worker_enumerate_one_prediagram` function.  Workers return lists
+of `TypedDiagram` objects which pickle cleanly via their existing
+`__getstate__` / `__setstate__`.
+
+**Measured on quadratic Hawkes k=3 (Candidate 1 + Candidate 3,
+12-core M2 Max):**
+
+| Stage | Serial (C1) | Parallel (C1 + C3) |
+|---|---|---|
+| ell=0 enumerate_typed (3 pds) | 64.1s | ~50s (bounded by slowest prediagram) |
+| ell=1 enumerate_typed (64 pds) | ~50 min extrapolated | **(benchmark in progress, expected 5-10 min)** |
+
+The ell=0 speedup is modest because only 3 prediagrams exist —
+parallel gain is bounded by the slowest one.  The ell=1 win is
+transformative: makes max_ell=1 a practical cold-start workload.
+
+### Library changes
+
+`msrjd/diagrams/type_assignment.py`:
+- `_leg_matchings` replaced its index-permutation loop with
+  `multiset_permutations`, with a full docstring on the
+  correctness-via-M(Γ) argument.
+- `enumerate_all` gained `parallel` / `n_workers` / `start_method`
+  kwargs (default `parallel=False` for back-compat; notebooks opt
+  in).
+- New module-level `_ENUM_WORKER_STATE` + `_worker_enumerate_one_
+  prediagram` for the fork pool.
+
+### Notebook changes
+
+Cell 18 in all three TD notebooks reads `TD_PARALLEL` /
+`TD_N_WORKERS` from globals and passes them to `enumerate_all_typed`.
+Print line now includes `(parallel=<bool>)` status.
+
+### Tests
+
+`tests/test_type_assignment.py` gained 7 tests:
+- `test_leg_matchings_all_distinct_legs` — baseline (R! = R!/1).
+- `test_leg_matchings_duplicate_response_legs` — [A, A]: 1 orbit.
+- `test_leg_matchings_mixed_multiset` — [A, A, B]: 3 orbits.
+- `test_leg_matchings_empty_legs` — 0-leg edge case.
+- `test_enumerate_typed_duplicate_leg_vertex_no_redundant_generation`
+  — end-to-end: raw count == dedup count when leg orbit is the
+  only over-generation source.
+- `test_enumerate_typed_distinct_legs_regression` — no spurious
+  changes when all legs are distinct.
+- `test_enumerate_all_parallel_matches_serial` — element-wise bit-
+  identity of serial vs parallel `enumerate_all` output.
+
+Total test count: **158** (151 pre-branch + 7 new).  All pass.
+
+### Dependencies
+
+- `sympy.utilities.iterables.multiset_permutations`: ships with
+  SymPy, which ships with SageMath.  No new install.
+- `multiprocessing` from stdlib: already used by
+  `pipeline.py::total_C_batch`.  No new install.
+
+POSIX-only (fork).  Windows support deferred with the same
+rationale as `parallel-eval`.
+
+---
+
 ## 2026-04-22 — `parallel-eval` branch merged: fork-ProcessPool evaluation + ell-aware displays
 
 ### Summary
