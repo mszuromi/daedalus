@@ -77,14 +77,18 @@ of `TypedDiagram` objects which pickle cleanly via their existing
 **Measured on quadratic Hawkes k=3 (Candidate 1 + Candidate 3,
 12-core M2 Max):**
 
-| Stage | Serial (C1) | Parallel (C1 + C3) |
-|---|---|---|
-| ell=0 enumerate_typed (3 pds) | 64.1s | ~50s (bounded by slowest prediagram) |
-| ell=1 enumerate_typed (64 pds) | ~50 min extrapolated | **(benchmark in progress, expected 5-10 min)** |
+| Stage | Serial (C1) | Parallel (C1 + C3) | Speedup |
+|---|---|---|---|
+| ell=0 enumerate_typed (3 pds) | 64.1s | 50.3s | 1.3× (bounded by slowest pd) |
+| ell=1 enumerate_typed (8-pd subset) | **343.55s** | **67.58s** | **5.08×** (336 typed, bit-identical) |
+| ell=1 extrapolated (64 pds full) | ~46 min | **~7-8 min** | ~6-7× parallel + 10-30× vs pre-branch |
 
 The ell=0 speedup is modest because only 3 prediagrams exist —
 parallel gain is bounded by the slowest one.  The ell=1 win is
-transformative: makes max_ell=1 a practical cold-start workload.
+transformative: cold-start enumeration for max_ell=1 goes from
+>10 hours (pre-branch) to ~8 minutes.  Bit-identity verified on the
+8-prediagram subset: element-wise signature match across all 336
+typed diagrams in serial vs parallel runs.
 
 ### Library changes
 
