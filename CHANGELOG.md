@@ -4,6 +4,153 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-04-22 — `parallel-eval` branch merged: fork-ProcessPool evaluation + ell-aware displays
+
+### Summary
+
+A 15-commit branch landing fork-based ProcessPool parallelism over
+the evaluation pipeline plus a series of notebook UX fixes.  Measured
+**~7× wall-time reduction on k=2 max_ell=1 quadratic Hawkes slice
+runs** (400 min → ~55-60 min after this branch; a further ~12×
+reduction from the hard-coded 201-point grid bug fix takes it down
+to ~30 min for a 17-point grid).
+
+### Library (`msrjd/integration/time_domain/pipeline.py`)
+
+1. **`total_C_batch(tau_points, parallel=True, n_workers=None)`** —
+   new method on the `compute_correction_td` return dict.  Evaluates
+   ``total_C`` at a list of τ points with auto-selected parallelism:
+   * `len(tau) >= n_workers` → per-τ parallel (each worker sums all
+     diagrams at its τ slice serially).
+   * `len(tau) < n_workers` → **nested per-(τ, diagram) parallel**
+     so single-point evaluations still saturate all cores.  This is
+     essential for `SIM_MODE='point'` where the old per-τ path left
+     11 cores idle.
+   * `total_tasks < 2*n_workers` → serial (fork overhead not worth it).
+
+2. **`eval_per_diagram_batch(tau_points, parallel=True, ...)`** —
+   new method returning `(vals, loop_nums)` where
+   `vals[tau_idx][diag_idx]` is the per-diagram contribution.  Used
+   by downstream code that needs BOTH the full total AND the per-
+   diagram/per-ell breakdown (cell 28, cell 31, cell 32).
+
+3. **Fork start-method required on POSIX.**  The per-diagram
+   `contribution` closure is a nested function that stdlib `pickle`
+   cannot serialise; fork bypasses serialisation by inheriting
+   memory.  Module-level `_WORKER_STATE` dict + module-level
+   `_worker_eval_total_C` / `_worker_eval_one_diagram` workers.
+   `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` set automatically on
+   macOS.
+
+4. **Windows support DEFERRED.**  Documented in `pipeline.py` with a
+   multi-paragraph comment listing the two future fixes
+   (cloudpickle optional dep or top-level picklable classes).
+   Windows users get a clear `ValueError: cannot find context for
+   'fork'` rather than silent drift.
+
+### Tests (`tests/test_time_domain.py`)
+
+Two new regression tests added (21 total now):
+
+- `test_phase_J_total_C_batch_parallel_matches_serial` — pins
+  bit-identity of per-τ parallel vs serial on a nondiagonal 2×2
+  fixture.  `max |parallel − serial| == 0.0` required.
+- `test_phase_J_total_C_batch_nested_matches_serial` — same but
+  for the nested per-(τ, diagram) path, triggered by a 1-point
+  batch with `n_workers > 1`.
+
+The existing 19 tests all continue to pass unchanged — the library
+change is purely additive (`total_C_batch` / `eval_per_diagram_batch`
+are new methods; serial `total_C` is untouched).
+
+### Notebook changes (all three: `hawkes_td_only.ipynb`,
+`hawkes_td_only_expg.ipynb`, `hawkes_td_only_quad_expg.ipynb`)
+
+1. **`TD_PARALLEL` / `TD_N_WORKERS` knobs in Configuration cell 2.**
+   Users on shared machines can opt out or cap worker count without
+   editing code.
+
+2. **Cell 25 (§8.1) symbolic display now shows ALL diagrams.**  The
+   `if _g['handled_by'] != 'tree_evaluator': continue` filter was
+   hiding all loop diagrams; now only `handled_by == 'skipped'` is
+   filtered.  Quadratic Hawkes k=2 max_ell=1 runs show symbolic
+   LaTeX for all 106 diagrams, not just the 2 trees.
+
+3. **Cell 23 tau grid honours Config.**  Was hard-coded
+   `np.arange(-50.0, 50.25, 0.5)` = 201 points regardless of user's
+   `tau_max` / `tau_step`.  Now reads those from Configuration cell;
+   for `tau_max=20, tau_step=2.5` the grid is correctly 17 points
+   (not 201).  A diagnostic print shows the resulting grid shape.
+
+4. **Cell 28 k=1 / k=2 / k≥3 all use the parallel batch evaluator.**
+   Previously only k≥3 was wired up; k=2 ran a serial Python
+   for-loop over τ (the primary cause of 400-min reports), and k=1
+   called `total_C(0.0)` directly.
+
+5. **Per-diagram timing probe in cell 28.**  Runs each diagram at 3
+   τ points before the main slice loop, prints top 10 slowest with
+   extrapolated per-slice cost.  Lets users identify which diagrams
+   dominate wall time (typically a handful of m=3/m=4 1-loop
+   polytopes).
+
+6. **Arbitrary-`max_ell` displays.**
+
+   * **Cell 28** now builds `C_theory_k1_by_ell` (k=1) and
+     `C_phase_j_by_ell` / `C_phase_j_slices_by_ell` (k=2, k≥3)
+     dicts mapping `ell → contribution array`.  Legacy aliases
+     (`C_theory_k1_tree/_loop/_total`, `C_tree_phase_j`,
+     `C_tree_phase_j_slices`) preserved for downstream back-compat.
+
+   * **Cell 31 point-mode table** — replaced the fixed "Tree vs
+     1-loop split" with per-ell rows (one per distinct loop order
+     present).  Also fractional `|ell=N/tree|` diagnostic.
+
+   * **Cell 32 k=1 bar plot** — stacked bar with one colored
+     segment per loop order (blue/purple/orange/red/brown).
+
+   * **Cell 32 k=2 and k≥3 slice plots** — cumulative "truncation"
+     curves: `Tree`, `Tree + 1-loop`, `Tree + 1-loop + 2-loop`, …
+     up to `max_ell`.  viridis colormap (light→dark with ascending
+     ell); dashed partial truncations, solid final cumulative.
+     Users visually see each loop order's contribution as the
+     vertical gap between consecutive curves.
+
+7. **Cell 31 robustness.**  `TEST_POINTS` is normalized to a list
+   of tuples, accepting both flat-list-for-k=2 and explicit-tuple
+   forms.  Clear error if a point has the wrong length.  Stops
+   recomputing scipy per-(diagram, point) in the per-diagram table
+   — reuses the parallel-batch output instead.
+
+### Measured speedups
+
+Quadratic Hawkes + exp filter, different workloads on M2 Max 12-core:
+
+| Workload | Config | BEFORE | AFTER |
+|---|---|---|---|
+| k=2 max_ell=1, 106 diagrams, 201 τ slice | old hard-coded grid, serial k=2 | **400 min** | |
+| same workload after this branch | | | **~30 min** (7× parallel × 12× grid) |
+| k=3 max_ell=0, 38 diagrams, 201 τ × 4 slices | serial (pre-branch) | **~170 min** | |
+| same workload after this branch | | | **~24 min** (7× parallel) |
+| k=2 max_ell=1 point mode, 1 τ | serial single-point | ~2 min (broken) | |
+| same workload | | | ~65 s (12-way nested parallel) |
+
+### Known limitations documented in this branch
+
+- POSIX only (macOS + Linux).  Windows will raise a clear error at
+  the fork() call; future fix via cloudpickle or top-level classes.
+- Cold-start enumeration still serial.  The branch does NOT
+  accelerate `enumerate_typed_diagrams` — that's next up on the
+  `enumeration-speedup` branch (Candidate 1: canonical leg-matching
+  via sympy's `multiset_permutations`).
+
+### Rollback
+
+- Library: `git checkout main && git revert <merge-commit>`.
+- Full pre-branch state: `git reset --hard dc91e8a` (Fix E) or
+  `git reset --hard checkpoint-2026-04-21` (pre-Fix-D).
+
+---
+
 ## 2026-04-21 — Audit Fix #E: bypass `fast_callable` on the integrand hot path
 
 ### What changed
