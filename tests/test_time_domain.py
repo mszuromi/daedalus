@@ -1444,6 +1444,150 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
     )
 
 
+def test_phase_J_total_C_batch_parallel_matches_serial():
+    r"""
+    Parallel-eval regression (parallel-eval branch, 2026-04-21):
+    ``total_C_batch(parallel=True)`` must return bit-identical output to
+    ``total_C_batch(parallel=False)`` (equivalently, to a plain Python
+    ``[total_C(*pt) for pt in tau_points]`` loop).
+
+    Background: the 2026-04-20 thread-pool parallelism attempt was
+    reverted amid confusion — the observed k=3 theory-vs-sim drift at
+    the time was ACTUALLY an unrelated ``_to_sr_ab`` precision
+    regression that happened to land in the same commit, but the
+    debugging couldn't cleanly separate the two.  Pinning this test as
+    part of any future parallelism landing ensures any real drift is
+    caught at the correct layer before it propagates into a user-facing
+    symptom.
+
+    Why fork-based process parallelism is deterministic:
+      - Each worker is a forked copy of the parent memory, so the
+        ``tree_callables`` list and all its closures are bit-identical
+        across workers.
+      - ``Pool.map`` preserves input order in the output, and inside
+        each worker the per-diagram summation iterates
+        ``tree_callables`` in the same order as serial ``total_C``.
+      - Floating-point arithmetic is deterministic for a fixed input
+        sequence, and ``scipy.integrate.quad`` is deterministic for
+        fixed bounds and a deterministic integrand.
+
+    This test uses the nondiagonal 2×2 fixture (a realistic Phase J
+    workload with multi-pole residues + nontrivial polytopes) and
+    checks:
+      1. The parallel and serial results are bit-identical
+         (``max |serial − parallel| == 0.0``).
+      2. Both paths produce finite, non-NaN output.
+    """
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    assert 'total_C_batch' in j_result, (
+        '``total_C_batch`` is missing from the compute_correction_td '
+        'return dict — the parallel-eval API has been removed.'
+    )
+    total_C_batch = j_result['total_C_batch']
+
+    # τ grid that exercises both negative and positive values — the
+    # nondiagonal 2×2 fixture's asymmetry means different samples hit
+    # different polytope shapes, so any parallel-specific drift would
+    # show up across at least some samples.
+    tau_points = [(tv, 0.0) for tv in
+                  (-3.0, -1.0, -0.3, 0.3, 1.0, 3.0, 5.0, 7.0)]
+
+    serial_vals = total_C_batch(tau_points, parallel=False)
+    parallel_vals = total_C_batch(tau_points, parallel=True, n_workers=3)
+
+    assert len(serial_vals) == len(parallel_vals) == len(tau_points)
+    max_abs_diff = 0.0
+    for s, p, pt in zip(serial_vals, parallel_vals, tau_points):
+        assert not (s != s), f'serial NaN at {pt}'      # NaN check
+        assert not (p != p), f'parallel NaN at {pt}'
+        d = abs(complex(s) - complex(p))
+        if d > max_abs_diff:
+            max_abs_diff = d
+
+    assert max_abs_diff == 0.0, (
+        f'parallel vs serial max |diff| = {max_abs_diff!r}, expected '
+        f'exactly 0.0.  A nonzero value means the parallel path has '
+        f'introduced nondeterminism, floating-point re-ordering, or a '
+        f'subtle data-sharing bug — investigate before promoting to '
+        f'the default evaluation path.'
+    )
+
+
+def test_phase_J_total_C_batch_nested_matches_serial():
+    r"""
+    Nested per-(τ, diagram) parallel regression (parallel-eval branch,
+    2026-04-22): when the τ batch is smaller than the worker pool,
+    ``total_C_batch`` switches to per-(τ, diagram) parallelism so the
+    workers are all used even with a 1-point batch.  The result must
+    be bit-identical to a serial sum over the same diagram order.
+
+    Why this matters: the 2026-04-21 initial ``total_C_batch``
+    parallelized across τ points.  On ``SIM_MODE='point'`` (1-4 τ
+    points), that gave zero speedup — the pool had more workers than
+    tasks, so most cores sat idle while the full 106-diagram sum ran
+    serially on one worker.  The nested path fixes that.
+
+    Test fixture: same nondiagonal 2×2 propagator + cross-population
+    tree used by the existing per-τ bit-identity test.  Forces the
+    nested code path by requesting 6 workers on a 1-τ batch (more
+    workers than tau points triggers nested).
+    """
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups,
+        propagator_data=pd,
+        k=2,
+        num_params=None,
+        origin_leaf_idx=1,
+    )
+    assert 'total_C_batch' in j_result
+    total_C_batch = j_result['total_C_batch']
+
+    # Single-point batch — forces nested path with n_workers > 1
+    single_pt = [(0.5, 0.0)]
+    serial_val_list = total_C_batch(single_pt, parallel=False)
+    nested_val_list = total_C_batch(single_pt, parallel=True, n_workers=4)
+
+    assert len(serial_val_list) == 1
+    assert len(nested_val_list) == 1
+    d = abs(complex(serial_val_list[0]) - complex(nested_val_list[0]))
+    assert d == 0.0, (
+        f'1-point nested parallel vs serial diff = {d!r}, expected 0.0.  '
+        f'Check that the aggregation inside total_C_batch sums diagrams '
+        f'in the same order as the serial total_C.'
+    )
+
+    # Small multi-point batch that still triggers nested (n_workers
+    # larger than n_tau)
+    multi_pt = [(0.5, 0.0), (1.0, 0.0), (2.0, 0.0)]
+    serial_vals = total_C_batch(multi_pt, parallel=False)
+    nested_vals = total_C_batch(multi_pt, parallel=True, n_workers=6)
+
+    assert len(serial_vals) == len(nested_vals) == len(multi_pt)
+    max_abs_diff = 0.0
+    for s, p in zip(serial_vals, nested_vals):
+        d = abs(complex(s) - complex(p))
+        if d > max_abs_diff:
+            max_abs_diff = d
+    assert max_abs_diff == 0.0, (
+        f'small-batch nested parallel vs serial max |diff| = {max_abs_diff!r}, '
+        f'expected 0.0.  Aggregation order mismatch?'
+    )
+
+
 def test_phase_J_k3_star_tree_finite_and_stationary():
     r"""
     Sanity test for k=3 on a single-population single-pole fixture:
