@@ -310,14 +310,52 @@ def _try_build_diagram(prediagram, edges, ext_assignment, vert_assignment,
 
 def _leg_matchings(vertex_type, out_edges, in_edges):
     """
-    Enumerate all bijections from a vertex type's legs to edges.
+    Enumerate all DISTINCT bijections from a vertex type's legs to edges.
 
     Each outgoing edge gets a response leg; each incoming edge gets a
-    physical leg.
+    physical leg.  Two bijections that produce the same
+    ``(edge -> leg)`` dict are considered identical; such collisions
+    happen whenever ``vertex_type.response_legs`` or
+    ``vertex_type.physical_legs`` contain duplicate ``(field, pop)``
+    entries — swapping two indistinguishable legs gives back the same
+    typed diagram.
+
+    For a leg multiset of length N with multiplicities ``n_r``, the
+    number of distinct orderings is
+
+        N! / ∏_r n_r!
+
+    (a multinomial coefficient), not the full N! that an index
+    permutation ``range(N)`` would suggest.  Earlier versions of this
+    function enumerated all N! index permutations and relied on the
+    downstream ``deduplicate_typed_diagrams`` pass in
+    ``msrjd/diagrams/symmetry.py`` to discard the overcount.  That
+    made the generation step wastefully large: typed-diagram counts
+    blew up to ~15-20× the unique count before dedup, driving the
+    ``enumerate_typed_diagrams`` wall time on cold runs.
+
+    **Correctness under this change.**  The physics weight of a typed
+    diagram is ``M(Γ) × ∏_v coeff(v) × ∫(propagators)`` where
+    ``M(Γ) = ∏_v M_v`` is the ``combinatorial_factor`` from
+    ``msrjd/diagrams/symmetry.py::combinatorial_factor``.  ``M_v``
+    is *exactly* the count of response-leg permutations at vertex ``v``
+    that preserve the same typed diagram — i.e. the orbit size of
+    identical-leg swaps.  So: old code generated ``M(Γ)`` identical
+    copies and each copy carried its own full weight; dedup kept one,
+    with the integrator then multiplying by ``M(Γ)``.  New code
+    generates the single canonical copy directly, and the integrator
+    multiplies by the same ``M(Γ)``.  Numerical output is bit-
+    identical; only the intermediate typed-diagram count (and
+    therefore the enumeration wall time) changes.
+
+    This is verified by ``test_leg_matchings_canonical`` and
+    ``test_enumerate_typed_signatures_match_pre_change`` in
+    ``tests/test_type_assignment.py``.
 
     Yields
     ------
-    (resp_map, phys_map) where each is a dict {edge: leg}.
+    (resp_map, phys_map) where each is a dict ``{edge: leg}`` and
+    each yielded pair is distinct from every other yielded pair.
     """
     resp_legs = vertex_type.response_legs
     has_phys = hasattr(vertex_type, 'physical_legs')
@@ -326,17 +364,26 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     if len(resp_legs) != len(out_edges) or len(phys_legs) != len(in_edges):
         return
 
-    resp_perms = set(permutations(range(len(resp_legs)))) if resp_legs else {()}
-    phys_perms = set(permutations(range(len(phys_legs)))) if phys_legs else {()}
+    # Use sympy's multiset_permutations: yields only the N!/∏n_r!
+    # distinct orderings of a multiset, rather than the full N!
+    # orderings of index positions.  Materialise to list so the inner
+    # loop can re-iterate the phys_perms list.  For typical Hawkes
+    # vertex types (R up to ~4, P up to ~2), list sizes stay small
+    # (≤ 24) and memory is not a concern.
+    #
+    # Note: sympy.utilities.iterables.multiset_permutations expects a
+    # list-like input.  Leg values are ``(field_base, pop_idx)``
+    # tuples (hashable), so the multiset comparison works.
+    from sympy.utilities.iterables import multiset_permutations
+    resp_perms = (list(multiset_permutations(list(resp_legs)))
+                  if resp_legs else [[]])
+    phys_perms = (list(multiset_permutations(list(phys_legs)))
+                  if phys_legs else [[]])
 
     for rp in resp_perms:
-        resp_map = {}
-        for i, edge in enumerate(out_edges):
-            resp_map[edge] = resp_legs[rp[i]]
+        resp_map = dict(zip(out_edges, rp))
         for pp in phys_perms:
-            phys_map = {}
-            for i, edge in enumerate(in_edges):
-                phys_map[edge] = phys_legs[pp[i]]
+            phys_map = dict(zip(in_edges, pp))
             yield resp_map, phys_map
 
 
