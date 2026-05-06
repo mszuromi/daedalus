@@ -453,6 +453,14 @@ def integrate_diagram(
                 # like ns.lambda_X, ns.mu_shift_diff have been
                 # introduced via kernel_fn evaluation.
                 cp = cp.subs(num_params)
+            # Try to combine like terms (e.g. ordered pairs (i,j) and
+            # (j,i) with symmetric kernels collapse to a single term).
+            # simplify_full can be expensive but the cumulant prefactor
+            # is a small SR expression so it's cheap here.
+            try:
+                cp = cp.simplify_full()
+            except (ValueError, RuntimeError, AttributeError):
+                pass
 
     # ── 4. External-time bookkeeping ─────────────────────────────
     free_ext_idx = [
@@ -912,6 +920,14 @@ def integrate_diagram(
                 total = total + complex(cfn(free_vals))
         return total / _comp
 
+    # If non-local cumulant kernels were substituted in cp, expose
+    # the τ-dependent prefactor (= the substituted, simplified cp,
+    # already num_params-substituted) so the display layer can place
+    # it inside the integral with the propagator factors.  When no
+    # NoiseSourceType vertex is present, this is just cp (==
+    # combined_prefactor.subs(num_params)) and the display layer
+    # treats it as a τ-independent prefactor outside the integral.
+    has_cumulant_kernel = bool(noise_source_specs)
     return {
         'status': 'ok',
         'contribution': contribution,
@@ -924,6 +940,8 @@ def integrate_diagram(
         'n_delta_contributions': len(delta_contributions),
         'n_shotnoise_skipped': n_shotnoise_skipped,
         'subset_diagnostics': subset_diagnostics,
+        'cumulant_prefactor':       cp if has_cumulant_kernel else None,
+        'has_cumulant_kernel':      has_cumulant_kernel,
     }
 
 
@@ -2116,9 +2134,23 @@ def format_td_integral_latex(
     else:
         integrals_tex = ''
 
-    # Combined prefactor (optional)
+    # Combined prefactor.  For diagrams with a non-local cumulant
+    # kernel (NoiseSourceType vertex), the substituted, simplified
+    # τ-dependent prefactor lives in ``tree_result['cumulant_prefactor']``
+    # and goes INSIDE the integral as a kernel factor.  For ordinary
+    # diagrams the kappa machinery is absent and the user-supplied
+    # ``combined_prefactor`` (τ-independent scalar) goes OUTSIDE.
     pref_tex = ''
-    if combined_prefactor is not None:
+    inside_kernel_tex = ''
+    cumulant_pref = tree_result.get('cumulant_prefactor', None)
+    has_cumulant = tree_result.get('has_cumulant_kernel', False)
+    if has_cumulant and cumulant_pref is not None:
+        # The cumulant prefactor is τ-dependent — render it inside the
+        # integral, parenthesised, before the propagator product.
+        inside_kernel_tex = (
+            r'\bigl[' + latex(SR(cumulant_pref)) + r'\bigr] \cdot '
+        )
+    elif combined_prefactor is not None:
         pref_tex = latex(combined_prefactor) + r'\;'
 
     # Build the edge-factor product
@@ -2147,11 +2179,12 @@ def format_td_integral_latex(
 
     product_tex = r' \cdot '.join(factor_bits) if factor_bits else r'1'
 
-    # Main equation: C_Γ = pref × ∫ds × ∏ G_R × Θ
+    # Main equation: C_Γ = pref × ∫ds × [κ(τ)] × ∏ G_R × Θ
     lines.append(
         r'C_{\Gamma}(t) \;=\; '
         + pref_tex
         + integrals_tex
+        + inside_kernel_tex
         + product_tex
     )
 
