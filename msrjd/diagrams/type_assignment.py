@@ -264,11 +264,13 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
         if phys_field not in phys_index:
             return
 
-        # Check propagator
+        # Check propagator.  G_ft = K_ft^{-1} has rows = physical, cols
+        # = response by linear-algebra convention; the propagator on an
+        # edge resp-tail → phys-head is ⟨φ_phys ñ_resp⟩ = G_ft[pi, ri].
         ri = resp_index[resp_field]
         pi = phys_index[phys_field]
         if G_ft is not None:
-            if bool(SR(G_ft[ri, pi]).is_zero()):
+            if bool(SR(G_ft[pi, ri]).is_zero()):
                 return
 
         edge_types[edge] = (resp_field, phys_field)
@@ -378,12 +380,13 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
             else:
                 return  # should not happen
 
-            # Check propagator
+            # Check propagator (phys row, resp col — see top of
+            # _backtrack for convention notes).
             ri = resp_index.get(resp_leg)
             pi = phys_index.get(phys_leg)
             if ri is None or pi is None:
                 return
-            if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
+            if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
                 return
 
             edge_types[edge] = (resp_leg, phys_leg)
@@ -409,7 +412,20 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                 pi = phys_index.get(phys_leg)
                 if ri is None or pi is None:
                     consistent = False; break
-                if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
+                # Convention: G_ft = K_ft^{-1} has rows = physical, cols =
+                # response (the natural inverse of K's rows = response,
+                # cols = physical), so G_ft[i, j] = ⟨φ_i ñ_j⟩.  Edge
+                # propagator from a resp-tail to a phys-head is
+                # ⟨φ_phys ñ_resp⟩ = G_ft[pi, ri].  (See also
+                # final_integral.integrate_diagram which already calls
+                # G_t_entry(G_t_obj, pi, ri, ...).)  For quad_expg with
+                # diagonal couplings (nt↔dn, vt↔dv) the integer indices
+                # coincide and the buggy [ri, pi] order happened to read
+                # the right entry; off-diagonal cases (e.g. GTaS m̃→δn,
+                # phys idx 0, resp idx 4) trip the bug and silently
+                # filter out diagrams with G_ft[ri, pi] == 0 even when
+                # G_ft[pi, ri] is nonzero.
+                if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
                     consistent = False; break
             # Also check edges where one side is from a leaf
             u, v = edge[0], edge[1]
@@ -421,7 +437,7 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                     pi = phys_index.get(phys_leg)
                     if ri is None or pi is None:
                         consistent = False; break
-                    if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
+                    if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
                         consistent = False; break
             if edge in new_phys and u in leaf_set:
                 resp_leg = ext_assignment.get(u)
@@ -431,7 +447,7 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                     pi = phys_index.get(phys_leg)
                     if ri is None or pi is None:
                         consistent = False; break
-                    if G_ft is not None and bool(SR(G_ft[ri, pi]).is_zero()):
+                    if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
                         consistent = False; break
 
         if consistent:

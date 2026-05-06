@@ -217,6 +217,10 @@ HAWKES_MODEL: dict = {
          'description': 'background firing rate  n*_i = a (v*_i)^2'},
         {'name': 'vstar', 'indexed': True,
          'description': 'background voltage'},
+        {'name': 'mstar', 'indexed': True, 'domain': 'positive',
+         'description': 'background external rate  m*_i = b_X = '
+                        'lambda_X * p_part (marginal Poisson rate per '
+                        'external cell)'},
         {'name': 'E',     'indexed': True,
          'description': 'external constant drive (cortical)'},
         {'name': 'tau',   'indexed': False, 'domain': 'positive',
@@ -338,7 +342,16 @@ HAWKES_MODEL: dict = {
 
     # -----------------------------------------------------------------------
     # Mean-field self-consistency equations
-    # n*_i = a * (E_i + sum_j w_{ij} * n*_j + w_X * lambda_X * p_part)^2
+    #
+    #   n*_i = a · (E_i + Σ_j w_{ij} · n*_j + w_X · lambda_X · p_part)^2
+    #                                                              (cortical)
+    #   m*_i = b_X = lambda_X · p_part                         (external)
+    #
+    # The cortical equation keeps ``lambda_X · p_part`` inline (the
+    # value the action's mf_bg_conditions absorbs into vstar) so the
+    # solve is identical to the historical one.  The external
+    # equation ``m*_i = b_X`` is reported alongside, so the MF table
+    # explicitly shows the GTaS mean rate per cell.
     # -----------------------------------------------------------------------
     'mf_equations': lambda ns: [
         ns.nstar[i] == SR.var('a') * (
@@ -347,15 +360,18 @@ HAWKES_MODEL: dict = {
             + SR.var('w_X') * SR.var('lambda_X') * SR.var('p_part')
         )**2
         for i in ns.pop
+    ] + [
+        ns.mstar[i] == SR.var('lambda_X') * SR.var('p_part')
+        for i in ns.pop
     ],
 
     # -----------------------------------------------------------------------
     # Background rate convention
     # -----------------------------------------------------------------------
     'background_rate_convention': (
-        'n_dot_i* = +phi_i(v_i*) = a * (v_i*)^2     '
-        '[Hawkes saddle, with feedforward mean shift '
-        ' v*_i += w_X * lambda_X * p_part]'
+        'n_dot_i* = +phi_i(v_i*) = a * (v_i*)^2,     '
+        'm_dot_i* = b_X = lambda_X * p_part     '
+        '[Hawkes cortical saddle + GTaS external mean]'
     ),
 
     # -----------------------------------------------------------------------
