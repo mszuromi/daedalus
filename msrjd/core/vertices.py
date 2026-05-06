@@ -304,7 +304,8 @@ def extract_source_types(ft):
     ft._require_expanded()
     stypes = []
 
-    cumulant_kernels = getattr(ft._ns, '_cumulant_kernels', {}) or {}
+    ns = ft._ns
+    cumulant_kernels = getattr(ns, '_cumulant_kernels', {}) or {}
     correlated_noises = ft.model.get('correlated_noises', {}) or {}
     # Look up the response-field name for each registered (noise, order)
     # so we can match leg-tuples in the source's response_legs.
@@ -344,9 +345,18 @@ def extract_source_types(ft):
                     sign = SR(0)
                 if sign == 0:
                     continue
+                # Bind `ns` into the kernel-fn closure so the
+                # downstream Phase J integrator can call
+                # ``kernel_fn(i, j, tau)`` without needing the
+                # FieldTheory namespace.  The user's lambda has
+                # signature ``(ns, i, j, tau) -> SR``.
+                _user_kf = spec['kernel_fn']
+                bound_kernel = (
+                    lambda *args, _kf=_user_kf, _ns=ns: _kf(_ns, *args)
+                )
                 matched_specs.append({
                     'symbol':    sym,
-                    'kernel_fn': spec['kernel_fn'],
+                    'kernel_fn': bound_kernel,
                     'legs':      spec['legs'],
                     'tau_var':   spec['tau_var'],
                     'sign':      sign,

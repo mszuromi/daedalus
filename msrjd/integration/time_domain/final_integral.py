@@ -85,6 +85,7 @@ from msrjd.integration.time_domain.propagator_td import (
     G_t_entry,
     G_t_delta_coeff,
 )
+from msrjd.core.vertices import NoiseSourceType
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -330,12 +331,82 @@ def integrate_diagram(
         vertex_time[v] = s_v
         integration_vars.append(s_v)
 
+    # ── 2b. Non-local cumulant noise sources: per-leg time map ────
+    # For each NoiseSourceType vertex, the response legs sit at
+    # *independent* times coupled by a non-local kernel κ^{(n)}(τ).
+    # We anchor the vertex at its existing time symbol (= leg-0
+    # time) and introduce one extra integration variable τ per
+    # noise source, with leg-1 time = anchor − τ.  Edges leaving
+    # this vertex through leg 1 (matched by their resp_leg pop_idx)
+    # are routed through the leg-1 time symbol.  Plain SourceType
+    # vertices (cortical Poisson, GTaS auto-cumulant) keep the
+    # single-time semantics — vertex_leg_time stays empty for them
+    # and the existing edge-build code path is unaffected.
+    vertex_leg_time = {}        # {v: {leg_pop_idx_0based: SR time}}
+    noise_source_specs = {}     # {v: list of cumulant_specs dicts}
+    extra_tau_syms = []         # list of (tau_sym, vertex) pairs
+    vertex_assignments = (
+        getattr(typed_diagram, 'vertex_assignments', None) or {}
+    )
+    for v, vtype in vertex_assignments.items():
+        if not isinstance(vtype, NoiseSourceType):
+            continue
+        if not vtype.cumulant_specs:
+            continue
+        # All specs on this vertex share the same leg multiset
+        # (they were grouped by extract_source_types).  Read the
+        # 0-based leg ordering from the first spec.
+        legs0 = vtype.cumulant_specs[0]['legs']    # e.g. (0, 1)
+        anchor_leg = legs0[0]
+        other_leg  = legs0[1] if len(legs0) > 1 else legs0[0]
+        if anchor_leg == other_leg:
+            # Auto-cumulant survived as non-local (kernel had no
+            # delta, but legs are equal) — treat both legs at the
+            # anchor time and leave τ-integration in.  Rare in
+            # practice; keeps the code uniform.
+            other_leg = anchor_leg
+        # Anchor time = the existing internal-vertex symbol
+        anchor_time = vertex_time[v]
+        # τ symbol — distinct per noise vertex
+        tau_sym = SR.var(
+            f's_v{v}_tau_td_', latex_name=rf'\tau_{{v_{{{v}}}}}'
+        )
+        extra_tau_syms.append((tau_sym, v))
+        integration_vars.append(tau_sym)
+        # Per-leg time map: leg-0 = anchor; leg-1 = anchor − τ
+        vertex_leg_time[v] = {
+            anchor_leg: anchor_time,
+            other_leg:  anchor_time - tau_sym,
+        }
+        noise_source_specs[v] = list(vtype.cumulant_specs)
+
     # ── 3. Gather per-edge info: ri, pi, dt, delta_coeff, smooth factor
     edges = list(D.edges())
     edge_info = []
     for (u, v, lbl) in edges:
         ri, pi = _lookup_prop_indices(typed_diagram, (u, v, lbl))
-        dt = SR(vertex_time[v] - vertex_time[u])
+        # Route edge tail through per-leg time when u is a non-local
+        # noise source; otherwise use the standard single-time map.
+        if u in vertex_leg_time:
+            edge_resp_leg, _ = typed_diagram.edge_types[(u, v, lbl)]
+            edge_pop_idx = edge_resp_leg[1] - 1  # 0-based
+            t_u = vertex_leg_time[u].get(
+                edge_pop_idx, vertex_time[u]
+            )
+        else:
+            t_u = vertex_time[u]
+        # Edge head: same logic (head can be a noise source if the
+        # diagram has source-to-source edges, which doesn't arise
+        # for current models; harmless in any case).
+        if v in vertex_leg_time:
+            edge_resp_leg_v, _ = typed_diagram.edge_types[(u, v, lbl)]
+            edge_pop_idx_v = edge_resp_leg_v[1] - 1
+            t_v = vertex_leg_time[v].get(
+                edge_pop_idx_v, vertex_time[v]
+            )
+        else:
+            t_v = vertex_time[v]
+        dt = SR(t_v - t_u)
         delta_c = G_t_delta_coeff(G_t_obj, pi, ri)
         smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
         edge_info.append({
@@ -350,6 +421,38 @@ def integrate_diagram(
     cp = SR(combined_prefactor) if combined_prefactor is not None else SR(1)
     if num_params:
         cp = cp.subs(num_params)
+
+    # ── 3b. Non-local cumulant kernel substitution ────────────────
+    # For each NoiseSourceType vertex, replace each placeholder
+    # symbol ``z_kappa_<noise>_<order>_<i>_<j>`` in ``cp`` with the
+    # actual kernel SR expression returned by the user's kernel_fn,
+    # evaluated at the per-vertex τ integration symbol.  The signs
+    # and combinatorial factors that ``_build_cumulant_action``
+    # multiplied onto each placeholder (typically -1/2) are already
+    # in ``cp``; the substitution carries them through.  The result
+    # is a cp that is now an explicit function of the τ symbols,
+    # which the existing fast_callable / nquad path handles
+    # naturally because each τ is in ``integration_vars``.
+    if noise_source_specs:
+        kappa_subs = {}
+        for v, specs in noise_source_specs.items():
+            tau_sym_v = next(
+                (ts for ts, vv in extra_tau_syms if vv == v), None
+            )
+            if tau_sym_v is None:
+                continue
+            for spec in specs:
+                i_leg, j_leg = spec['legs'][0], spec['legs'][1]
+                kappa_subs[spec['symbol']] = SR(
+                    spec['kernel_fn'](i_leg, j_leg, tau_sym_v)
+                )
+        if kappa_subs:
+            cp = cp.subs(kappa_subs)
+            if num_params:
+                # Re-substitute num_params now that kernel symbols
+                # like ns.lambda_X, ns.mu_shift_diff have been
+                # introduced via kernel_fn evaluation.
+                cp = cp.subs(num_params)
 
     # ── 4. External-time bookkeeping ─────────────────────────────
     free_ext_idx = [
@@ -726,13 +829,24 @@ def integrate_diagram(
             (edge_info[_ei_idx]['ri'], edge_info[_ei_idx]['pi'])
             for _ei_idx in smooth_edges
         ]
-        _fast_eval = _build_fast_subset_evaluator(
-            propagator_data,
-            prefactor_num,
-            smooth_edges_ri_pi,
-            subset_constraint_data,
-            m_sub,
-        )
+        if vertex_leg_time:
+            # Non-local cumulant kernel(s) are present in this
+            # diagram (NoiseSourceType vertex with smooth κ kernel).
+            # The fast pole/residue evaluator assumes the integrand
+            # factorises as P · Π_e Σ_k C_e^{(k)} exp(i p_k Δt_e),
+            # which doesn't hold once a Gaussian (or other
+            # non-rational) kernel is in play.  Fall through to the
+            # generic fast_callable path.  Plain (cortical / GTaS
+            # auto) diagrams keep the fast evaluator.
+            _fast_eval = None
+        else:
+            _fast_eval = _build_fast_subset_evaluator(
+                propagator_data,
+                prefactor_num,
+                smooth_edges_ri_pi,
+                subset_constraint_data,
+                m_sub,
+            )
         integrand_for_quad = (
             _fast_eval if _fast_eval is not None else integrand_fc_sub
         )
