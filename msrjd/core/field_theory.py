@@ -21,6 +21,8 @@ Usage
     ft.summary()
 """
 
+import warnings
+
 from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
     diff, function, exp, dirac_delta, integrate, oo, I, pi
@@ -220,6 +222,125 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
 # Bigrade classification
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Correlated-noise cumulant injection  (Option A: read declarative
+# ``correlated_noises`` block, append -W_m[mt] to the action symbolically)
+# ---------------------------------------------------------------------------
+
+def _build_cumulant_action(ns, model):
+    r"""
+    Construct the symbolic contribution
+
+        S_cum  =  - sum_n  (1/n!)  \int dt_1 ... dt_n
+                    \sum_{i_1...i_n}  kappa^{(n)}_{i_1...i_n}(\tau\text{'s})
+                                      \tilde m_{i_1}(t_1) ... \tilde m_{i_n}(t_n)
+
+    for each noise process declared in ``model['correlated_noises']``.
+
+    Per ordered leg-tuple, the user-supplied kernel function is called
+    with a placeholder relative-time variable ``\tau``.  The result is
+    decomposed as
+
+        K(tau)  =  c_local * dirac_delta(tau)  +  K_smooth(tau)
+
+    via ``K.coefficient(dirac_delta(tau))``:
+
+      * ``c_local`` (dirac residue) collapses the time integral and
+        contributes  -(1/2) * c_local * mt[i] * mt[j]  directly to S_cum
+        (a *local* noise-kernel term — same format as the cortical
+        Poisson  -1/2 nstar_i * nt_i^2);
+      * ``K_smooth`` introduces an SR coefficient symbol
+        ``z_kappa_<noise>_<order>_<i+1>_<j+1>`` (analogous to ``z_g``
+        for the synaptic filter) representing the implicit two-time
+        integration; the kernel function is registered on
+        ``ns._cumulant_kernels[(noise, order, (i, j))]`` for the
+        downstream pipeline to consume.
+
+    Only order n = 2 is implemented in this commit (covers the GTaS
+    Bernoulli + Gaussian case).  Higher orders fire a warning and are
+    skipped — that's fine for N=2 GTaS where κ^(n)=0 for n≥3.
+
+    Returns an SR expression; SR(0) when the model has no
+    ``correlated_noises`` declaration (i.e. plain quad_expg, linear, …).
+    """
+    cn = model.get('correlated_noises', None)
+    ns._cumulant_kernels = {}
+    if not cn:
+        return SR(0)
+
+    S_cum = SR(0)
+
+    for noise_name, spec in cn.items():
+        phys_name = spec['physical_field']
+        resp_name = spec['response_field']
+        if not hasattr(ns, resp_name):
+            raise ValueError(
+                f"correlated_noises[{noise_name!r}]: response_field "
+                f"{resp_name!r} is not declared in response_fields"
+            )
+        if not hasattr(ns, phys_name):
+            raise ValueError(
+                f"correlated_noises[{noise_name!r}]: physical_field "
+                f"{phys_name!r} is not declared in physical_fields"
+            )
+        resp_field = getattr(ns, resp_name)
+        if not isinstance(resp_field, list):
+            resp_field = [resp_field]
+        legs = list(range(len(resp_field)))
+
+        # κ^(1) (mean) is informational — already absorbed into the saddle
+        # by the model's mf_bg_conditions.  Skip explicit injection.
+
+        for order, kernel_fn in spec.get('cumulants', {}).items():
+            if order < 2:
+                continue
+            if order != 2:
+                warnings.warn(
+                    f"correlated_noises[{noise_name!r}] cumulant order "
+                    f"{order}: only n=2 supported in v1, skipping. "
+                    f"(Higher orders need n-1 relative time variables — "
+                    f"defer until the integration pipeline learns them.)",
+                    stacklevel=3,
+                )
+                continue
+
+            tau_sym = SR.var(f'_tau_{noise_name}', latex_name=r'\tau')
+            for i in legs:
+                for j in legs:
+                    K = SR(kernel_fn(ns, i, j, tau_sym)).expand()
+                    # Local part: residue at delta(tau)
+                    c_local = K.coefficient(dirac_delta(tau_sym))
+                    K_smooth = (K - c_local * dirac_delta(tau_sym))
+                    try:
+                        K_smooth = K_smooth.simplify_full()
+                    except (ValueError, RuntimeError):
+                        pass
+
+                    # Local (delta-correlated) contribution
+                    if c_local != 0:
+                        S_cum += (-SR(1)/2 * c_local
+                                  * resp_field[i] * resp_field[j])
+
+                    # Smooth (non-local) contribution: kernel symbol
+                    if K_smooth != 0:
+                        sym_name = (f'z_kappa_{noise_name}_{order}'
+                                    f'_{i+1}_{j+1}')
+                        latex_name = (rf'\kappa^{{({order})}}_{{{i+1}{j+1}}}')
+                        sym = SR.var(sym_name, latex_name=latex_name)
+                        S_cum += (-SR(1)/2 * sym
+                                  * resp_field[i] * resp_field[j])
+                        ns._cumulant_kernels[
+                            (noise_name, order, (i, j))
+                        ] = {
+                            'symbol':    sym,
+                            'kernel_fn': kernel_fn,
+                            'legs':      (i, j),
+                            'tau_var':   tau_sym,
+                        }
+
+    return S_cum
+
+
 def _collect_bigrade(poly, n_tilde: int) -> dict:
     """
     Split a PolynomialRing element into {(n_tilde, n_phys): poly} sectors.
@@ -282,6 +403,13 @@ class FieldTheory:
 
         # Evaluate action — result is an SR expression
         S_sr = SR(self.model['action'](ns))
+
+        # Inject -W_m[mt] cumulant series from correlated_noises declarations
+        # (Option A: user writes ns.dm[i] / ns.mt[i] in the action, the
+        # framework appends the non-local cumulant terms here from the
+        # declarative spec).  Returns SR(0) when the model has no
+        # correlated_noises block, so existing models are untouched.
+        S_sr = S_sr + _build_cumulant_action(ns, self.model)
 
         # Auto Taylor-expand in each field variable around 0 (sequential)
         for var in ns._all_field_sr_vars:
