@@ -107,6 +107,75 @@ class SourceType:
                 f'resp={self.response_legs}, coeff={self.coefficient})')
 
 
+class NoiseSourceType(SourceType):
+    """
+    Source vertex backed by a non-local cumulant kernel.
+
+    Same role as SourceType (n_tilde response legs, no physical legs)
+    but the response legs sit at *independent* times — they are
+    coupled by the cumulant kernel ``κ^{(n)}(τ_1, …, τ_{n-1})``.  This
+    arises from the GTaS / correlated-input cumulant generating
+    functional ``-W_m[mt]`` injected by ``FieldTheory.expand``.
+
+    Locally-correlated (delta) cumulants stay as plain ``SourceType``
+    (their τ-integral collapses inside ``_build_cumulant_action``);
+    only the smooth, non-local part requires per-leg time treatment
+    in the Phase J integrator.
+
+    Attributes
+    ----------
+    cumulant_specs : list of dict
+        One entry per ``z_kappa`` placeholder symbol that contributes
+        to ``coefficient``.  Each dict has:
+
+          * ``'symbol'``     — the SR placeholder (the same symbol the
+                               coefficient still references; the
+                               integrator substitutes it with 1 and
+                               multiplies in the actual kernel_fn).
+          * ``'kernel_fn'``  — callable ``(ns, i, j, ..., tau) -> SR``;
+                               evaluated with the cumulant's relative-
+                               time variable to produce the integrand
+                               kernel factor.
+          * ``'legs'``       — leg-index tuple, 0-based, matching the
+                               kernel_fn's leg arguments (e.g.
+                               ``(0, 1)`` for cross-cumulant 1↔2).
+          * ``'tau_var'``    — the SR symbol used for the cumulant's
+                               relative time when the kernel was
+                               registered (for hashability of bounds).
+          * ``'sign'``       — SR scalar pulled out of the source's
+                               coefficient as the prefactor of
+                               ``symbol`` (typically ``-1/2``).
+          * ``'noise'``      — noise-process name (e.g. ``'X'``).
+          * ``'order'``      — cumulant order (e.g. ``2``).
+    """
+
+    __slots__ = ('cumulant_specs',)
+
+    def __init__(self, coefficient, response_legs, bigrade,
+                 cumulant_specs):
+        super().__init__(coefficient, response_legs, bigrade)
+        self.cumulant_specs = list(cumulant_specs)
+
+    # Pickle support — extend SourceType's via __slots__ chain
+    def __getstate__(self):
+        state = super().__getstate__()
+        state['cumulant_specs'] = self.cumulant_specs
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(
+            {s: state[s] for s in SourceType.__slots__ if s in state}
+        )
+        object.__setattr__(self, 'cumulant_specs',
+                           state.get('cumulant_specs', []))
+
+    def __repr__(self):
+        legs = [s.get('legs') for s in self.cumulant_specs]
+        return (f'NoiseSourceType(bigrade={self.bigrade}, '
+                f'resp={self.response_legs}, '
+                f'cumulant_legs={legs}, coeff={self.coefficient})')
+
+
 # ── Ring variable name parsing ───────────────────────────────────────────────
 
 def _parse_field_name(ring_var_name):
@@ -211,6 +280,17 @@ def extract_source_types(ft):
     """
     Extract all SourceType objects from a FieldTheory's noise kernel.
 
+    Sources whose coefficient carries a non-local cumulant placeholder
+    symbol ``z_kappa_<noise>_<order>_<i>_<j>`` (registered on
+    ``ft._ns._cumulant_kernels`` by ``_build_cumulant_action``) are
+    upgraded to ``NoiseSourceType`` records carrying the kernel
+    function and leg metadata, so the Phase J integrator can treat
+    them with per-leg times and a kernel factor.
+
+    Local (delta-collapsed) auto-cumulants stay as plain ``SourceType`` —
+    their kernel placeholder was already eliminated at extraction time
+    in ``_build_cumulant_action``.
+
     Parameters
     ----------
     ft : FieldTheory
@@ -218,14 +298,70 @@ def extract_source_types(ft):
 
     Returns
     -------
-    list of SourceType
+    list of SourceType (with NoiseSourceType subclass instances mixed
+    in for non-local sources)
     """
     ft._require_expanded()
     stypes = []
+
+    cumulant_kernels = getattr(ft._ns, '_cumulant_kernels', {}) or {}
+    correlated_noises = ft.model.get('correlated_noises', {}) or {}
+    # Look up the response-field name for each registered (noise, order)
+    # so we can match leg-tuples in the source's response_legs.
+    noise_resp_field = {
+        noise_name: spec['response_field']
+        for noise_name, spec in correlated_noises.items()
+    }
+
     for (n_t, n_p), poly in ft.noise_kernel().items():
         monomials = decompose_sector(poly, ft._n_tilde, list(ft._ns._ring_var_names))
         for m in monomials:
-            if isinstance(m, SourceType):
+            if not isinstance(m, SourceType):
+                continue
+
+            # Match the response-leg multiset against every registered
+            # cumulant spec.  Specs whose (noise, order, legs) leg-tuple
+            # produces the SAME leg multiset as ``m.response_legs`` AND
+            # whose placeholder symbol still appears in ``m.coefficient``
+            # contribute to this source.
+            matched_specs = []
+            m_leg_multiset = sorted(m.response_legs)
+            for (noise_name, order, leg_tuple), spec in cumulant_kernels.items():
+                resp_field_name = noise_resp_field.get(noise_name)
+                if resp_field_name is None:
+                    continue
+                # 0-based legs → 1-based pop_idx leg-tuple to compare
+                spec_legs = sorted(
+                    [(resp_field_name, k + 1) for k in leg_tuple]
+                )
+                if spec_legs != m_leg_multiset:
+                    continue
+                # Verify the placeholder symbol is actually in coeff
+                sym = spec['symbol']
+                try:
+                    sign = SR(m.coefficient).coefficient(sym)
+                except (ValueError, TypeError):
+                    sign = SR(0)
+                if sign == 0:
+                    continue
+                matched_specs.append({
+                    'symbol':    sym,
+                    'kernel_fn': spec['kernel_fn'],
+                    'legs':      spec['legs'],
+                    'tau_var':   spec['tau_var'],
+                    'sign':      sign,
+                    'noise':     noise_name,
+                    'order':     order,
+                })
+
+            if matched_specs:
+                stypes.append(NoiseSourceType(
+                    coefficient   = m.coefficient,
+                    response_legs = m.response_legs,
+                    bigrade       = m.bigrade,
+                    cumulant_specs= matched_specs,
+                ))
+            else:
                 stypes.append(m)
     return stypes
 
