@@ -62,30 +62,42 @@ possible at this network size).
 
 Status of the field-theory side
 -------------------------------
-**This model file is currently a SCAFFOLD.**  The action below is
-identical to ``hawkes_quad_expg``'s action plus a constant
-feedforward mean folded into ``E_i`` (so the existing pipeline runs
-unchanged and treats the externals as if they were uncorrelated
-mean drift).  The GTaS-specific cumulant structure has *not* yet
-been wired into:
+**Spike v0 (Option A — write the action, pull out vertices
+automatically).**  This model file declares the GTaS coupling
+**inside the action lambda** — the user writes ``ns.dm[i]`` and
+``ns.mt[i]`` directly, just like ordinary physical / response
+fields.  The non-local cumulant statistics live in a separate
+``correlated_noises`` block (declarative, one place per noise
+process).  The constant feedforward mean is absorbed into
+``vstar`` via ``mf_bg_conditions`` so ``dm[i]`` is the
+*fluctuation* (zero-mean by construction).
 
-  * ``msrjd.core.field_theory.FieldTheory`` (no expansion of
-    ``W_m[m̃]`` cumulant generating functional yet)
-  * ``msrjd.integration.time_domain.propagator_td.build_G_t_matrix``
-    (no ``δm̃-δm`` propagator block yet)
-  * ``msrjd.diagrams.type_assignment`` (no NoiseVertexType yet)
-  * ``msrjd.integration.time_domain.final_integral`` (no non-local
-    kernel handler in Phase J yet)
+What's wired up at v0:
 
-Until those pieces land, the **theory side will under-predict the
-sim cross-covariance** by exactly the GTaS contribution — that
-mismatch is the validation target for the next commits.
+  * Field symbols ``ns.dm[i]`` (physical) and ``ns.mt[i]``
+    (response) — recognised by ``FieldTheory._build_namespace`` as
+    ordinary indexed fields, so the cortical/local part of the
+    action expands and bigrades correctly.
+  * ``correlated_noises`` block — declarative spec the expander
+    will read to inject the cumulant series ``-W_m[mt]`` in the
+    next commit.
+  * Saddle shift ``v* += W_X * b_X`` retained in
+    ``mf_bg_conditions``.
 
-The new model parameters are listed in ``parameters`` (so the
-framework's symbol-discovery code sees them and the cache key
-distinguishes this model from ``hawkes_quad_expg``), and a
-documentation-only ``external_correlations`` block is included for
-future field-theory code to consume.
+What's still missing (next commits):
+
+  * ``FieldTheory.expand`` does not yet read ``correlated_noises``
+    and append ``-W_m[mt]`` to the action — until then, the
+    (n_tilde >= 2, 0) sectors will *not* contain GTaS noise
+    vertices, so the theory still under-predicts the sim cross-
+    covariance.
+  * ``NoiseVertexType`` / leg-indexed time map / Phase J Gaussian
+    integration — pipeline plumbing for non-local kernels.
+
+Until the cumulant-injection commit lands, FieldTheory.expand()
+runs to completion on this model but the noise side is still
+trivial — useful for sanity-checking the (1,1) free action (the
+new ``mt-dm`` block + ``vt-dm`` coupling).
 
 Usage
 -----
@@ -98,7 +110,15 @@ The notebook ``notebooks/hawkes_td_quad_gtas.ipynb`` is a fresh
 clone configured for this model.
 """
 
-from sage.all import SR, exp, function, I
+from sage.all import SR, exp, function, I, sqrt, pi, dirac_delta
+
+
+# ---------------------------------------------------------------------------
+# Local helper: Gaussian kernel  N(tau; mu, sigma^2)
+# ---------------------------------------------------------------------------
+def _gauss(tau, mu, sigma_sq):
+    """Unit-area Gaussian density used by the GTaS cross-cumulant kernel."""
+    return exp(-(tau - mu)**2 / (2 * sigma_sq)) / sqrt(2 * pi * sigma_sq)
 
 # ---------------------------------------------------------------------------
 # Population count (cortical only — externals are scalar-indexed below)
@@ -127,27 +147,50 @@ HAWKES_MODEL: dict = {
     'index_sets': {'pop': _pop},
 
     # -----------------------------------------------------------------------
-    # Response fields  (full integration variables) — UNCHANGED from
-    # hawkes_quad_expg.  The future ``mt`` (m-tilde) response field
-    # will be added here when the field-theory side learns about it.
+    # Response fields  (full integration variables)
+    #
+    # ``nt``, ``vt`` — cortical conjugates (unchanged from hawkes_quad_expg).
+    # ``mt``        — conjugate of the GTaS external fluctuation field
+    #                  ``dm``.  Declared here so the user can write
+    #                  ``ns.mt[i]`` directly in the action lambda;
+    #                  the cumulant series ``-W_m[mt]`` is auto-injected
+    #                  by the FieldTheory expander using the
+    #                  ``correlated_noises`` block below (Option A: one
+    #                  place to write the physics).
     # -----------------------------------------------------------------------
     'response_fields': [
         {'name': 'nt', 'indexed': True, 'latex': r'\tilde{n}',
          'description': 'response field conjugate to spike train'},
         {'name': 'vt', 'indexed': True, 'latex': r'\tilde{v}',
          'description': 'response field conjugate to voltage'},
+        {'name': 'mt', 'indexed': True, 'latex': r'\tilde{m}',
+         'description': 'response field conjugate to GTaS external '
+                        'fluctuation dm (one per cortical leg)'},
     ],
 
     # -----------------------------------------------------------------------
-    # Physical fluctuation fields  (expanded around MF background) —
-    # UNCHANGED.  Future: ``dm`` (delta m) for the correlated external
-    # spike fluctuation field will be added.
+    # Physical fluctuation fields  (expanded around MF background)
+    #
+    # ``dn``, ``dv`` — cortical fluctuations (unchanged).
+    # ``dm``        — GTaS external fluctuation, *zero-mean by
+    #                  construction*.  The constant mean ``b_X = lambda_X *
+    #                  p_part`` is folded into ``vstar`` via
+    #                  ``mf_bg_conditions``; ``dm[i]`` represents the
+    #                  fluctuation around that mean.  Treated like any
+    #                  other physical field at the namespace level: gets
+    #                  Taylor-expanded around 0 and contributes to the
+    #                  bigrade analysis.  Its (non-Gaussian) statistics
+    #                  enter via the ``correlated_noises`` block below.
     # -----------------------------------------------------------------------
     'physical_fields': [
         {'name': 'dn', 'indexed': True, 'latex': r'\delta\dot{n}',
          'description': 'spike-train fluctuation around MF background'},
         {'name': 'dv', 'indexed': True, 'latex': r'\delta v',
          'description': 'voltage fluctuation around MF background'},
+        {'name': 'dm', 'indexed': True, 'latex': r'\delta m',
+         'description': 'GTaS external fluctuation around mean b_X = '
+                        'lambda_X * p_part (one per cortical leg, '
+                        'zero-mean by construction)'},
     ],
 
     # -----------------------------------------------------------------------
@@ -249,20 +292,23 @@ HAWKES_MODEL: dict = {
     # MF background conditions
     #
     # Cortical voltage now includes the GTaS feedforward mean:
-    #   v*_i = E_i + sum_j w_{ij} g n*_j   +   W_X * (lambda_X * p_part)
-    #                                       \____________________/
-    #                                       feedforward mean (constant)
+    #   v*_i = E_i + sum_j w_{ij} g n*_j   +   W_X * g * (lambda_X * p_part)
+    #                                       \________________________/
+    #                                       feedforward mean (constant
+    #                                       through the unit-integral filter g)
     #
-    # The feedforward mean is the constant marginal external rate
-    # b_X = lambda_X * p_part, fed through the unit-integral filter g
-    # (so the time-integrated contribution is just W_X * b_X).
+    # The ``g`` kernel symbol is kept on both terms so the saddle
+    # cancels the action's feedforward block exactly at the symbolic
+    # level (the constant-input limit ``g * const = const`` is applied
+    # downstream, not here).  Tadpole sanity check passes only with
+    # this exact symbolic match.
     # -----------------------------------------------------------------------
     'mf_bg_conditions': lambda ns: {
         **{SR.var(f'phi0_{i+1}'): ns.nstar[i] for i in ns.pop},
         **{ns.vstar[i]: (ns.E[i]
                          + sum(ns.w[i][j] * ns.g * ns.nstar[j]
                                for j in ns.pop)
-                         + SR.var('W_X') * SR.var('lambda_X') * SR.var('p_part'))
+                         + ns.W_X * ns.g * ns.lambda_X * ns.p_part)
            for i in ns.pop},
     },
 
@@ -315,54 +361,90 @@ HAWKES_MODEL: dict = {
     # -----------------------------------------------------------------------
     # Action
     #
-    # Identical to hawkes_quad_expg's action.  The GTaS feedforward
-    # appears only via the constant ``vstar`` shift in
-    # ``mf_bg_conditions`` for now.  When the field-theory side gains
-    # support for non-local interaction vertices, this will gain:
+    # Same cortical structure as hawkes_quad_expg, plus the GTaS
+    # external coupling.  Following Option A of the design:
     #
-    #   + ns.mt[i]^T * ns.dm[i]                              (free term)
-    #   - ns.vt[i] * (ns.W_X * ns.g * ns.dm[sigma(i)])       (coupling)
-    #   + cumulant W_m[m̃] series                             (vertices)
+    #   * The user writes ``ns.dm[i]`` and ``ns.mt[i]`` directly in the
+    #     action lambda — they look like ordinary physical / response
+    #     fields.
+    #   * The constant feedforward mean ``W_X * g * b_X`` is absorbed
+    #     into ``vstar`` via ``mf_bg_conditions``; ``dm[i]`` here is the
+    #     *fluctuation* around that mean (zero-mean by construction).
+    #   * The MSR pairing ``+ mt[i] * dm[i]`` makes ``mt`` the conjugate
+    #     of ``dm`` (delta-correlated propagator G_R(dm,mt) = δ(τ)).
+    #   * The non-local cumulant series ``-W_m[mt]`` is **not** written
+    #     here — it is auto-injected by the FieldTheory expander based
+    #     on the ``correlated_noises`` block below.  That keeps "write
+    #     the physics, pull out vertices automatically" as the user
+    #     contract.
     # -----------------------------------------------------------------------
     'action': lambda ns: sum(
+        # Cortical Poisson term  (unchanged)
         ns.nt[i] * (ns.ndot_bg[i] + ns.dn[i])
         - (exp(ns.nt[i]) - 1) * ns.phi(i, ns.dv[i])
+        # Cortical voltage equation  (now driven by W_X * g * dm[i])
         + ns.vt[i] * (
             (ns.tau * ns.Dt + 1) * ns.dv[i]
             + ns.vstar[i] - ns.E[i]
             - sum(ns.w[i][j] * ns.g * (ns.nstar[j] + ns.dn[j])
                   for j in ns.pop)
-            - SR.var('W_X') * ns.g * SR.var('lambda_X') * SR.var('p_part')
+            - ns.W_X * ns.g * (ns.lambda_X * ns.p_part + ns.dm[i])
         )
+        # MSR source-pairing for the external fluctuation field
+        + ns.mt[i] * ns.dm[i]
         for i in ns.pop
     ),
 
     # -----------------------------------------------------------------------
-    # External correlations spec  (DOCUMENTATION ONLY, not yet consumed
-    # by the field-theory pipeline).  Future field-theory code can
-    # iterate over ``cumulants`` to generate noise-vertex types.
+    # Correlated-noise declarations
     #
-    # Each entry describes one nontrivial cumulant kernel of the GTaS
-    # process.  ``order`` = chi (the cumulant order); ``indices`` lists
-    # which external cells the cumulant connects; ``kernel`` is a
-    # symbolic expression in time-lag variables tau_2, ..., tau_chi.
+    # One entry per stochastic external process whose statistics are
+    # specified by cumulants rather than by a kinetic equation.  The
+    # FieldTheory expander reads this block and:
+    #
+    #   1. confirms the named ``physical_field`` and ``response_field``
+    #      exist;
+    #   2. registers cumulant kernels on the namespace
+    #      (``ns._correlated_noises``);
+    #   3. auto-appends ``-W_m[mt]`` (the cumulant generating
+    #      functional) to the action so noise vertices appear in the
+    #      (n_tilde >= 2, 0) bigrade sectors with the correct non-local
+    #      kernels.  *Spike v0: the namespace and saddle wiring is
+    #      live; the ``-W_m[mt]`` injection lands in the next commit.*
+    #
+    # ``cumulants[n]`` signature:  ``(ns, *indices, *taus) -> SR scalar``
+    # where ``indices`` is an ``n``-tuple of leg indices (0-based,
+    # matching the indexed physical-field's primary index set) and
+    # ``taus`` is a length-``(n-1)`` tuple of relative time lags
+    # ``tau_k = t_k - t_1`` (so the first time argument is implicit
+    # via translation invariance).  The kernel can use ``dirac_delta``
+    # for local pieces (e.g. Poisson auto-correlation).
     # -----------------------------------------------------------------------
-    'external_correlations': {
-        'one_to_one_map': lambda ns: {i: i for i in ns.pop},
-        'feedforward_weight_symbol': 'W_X',
-        'mean_rate_per_cell': lambda ns: SR.var('lambda_X') * SR.var('p_part'),
-        'cumulants': [
-            {
-                'order': 2,
-                'indices': (0, 1),
-                # kappa^(2)_{12}(tau) = lambda_X * p_part^2 *
-                #   N(tau; mu_shift_diff, sigma_shift_diff_sq)
-                'kernel_type': 'gaussian',
-                'amplitude': lambda ns: (SR.var('lambda_X')
-                                         * SR.var('p_part')**2),
-                'mean_symbol':     'mu_shift_diff',
-                'variance_symbol': 'sigma_shift_diff_sq',
+    'correlated_noises': {
+        'X': {
+            'physical_field':  'dm',
+            'response_field':  'mt',
+            # First cumulant (mean rate per cell); informational here —
+            # already absorbed into vstar via mf_bg_conditions.
+            'mean': lambda ns: ns.lambda_X * ns.p_part,
+            # Central cumulants (orders >= 2).  For a 2-cell GTaS with
+            # Bernoulli participation + Gaussian shifts, only order 2
+            # is nontrivial.
+            'cumulants': {
+                # κ^{(2)}_{ij}(τ) =
+                #   {  b_X · δ(τ),                            i == j  (Poisson auto)
+                #   {  λ_X · p_part^2 · N(τ; μ_diff, σ_diff²), i != j (GTaS cross)
+                2: lambda ns, i, j, tau: (
+                    ns.lambda_X * ns.p_part * dirac_delta(tau)
+                    if i == j else
+                    ns.lambda_X * ns.p_part**2 * _gauss(
+                        tau, ns.mu_shift_diff, ns.sigma_shift_diff_sq
+                    )
+                ),
+                # 3rd, 4th central cumulants vanish identically for
+                # N=2 Bernoulli + Gaussian — omit.
             },
-        ],
+        },
     },
+
 }
