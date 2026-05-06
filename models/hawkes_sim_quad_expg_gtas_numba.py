@@ -54,13 +54,13 @@ from EXACTLY ONE external (one-to-one):
 
     cortical i ← external (i)         (i.e. sigma(i) = i)
 
-The synaptic strength is the scalar ``W_X``.
+The synaptic strength is the scalar ``w_X``.
 
 Continuous-time dynamics
 ------------------------
     dF_j     /dt =  -F_j     /tau_g + n_j(t)/tau_g            (recurrent filter)
     dF_X_i   /dt =  -F_X_i   /tau_g + n_X_i(t)/tau_g          (feedforward filter)
-    dv_i     /dt =  (1/tau)*(-v_i + E_i + sum_j w_ij F_j + W_X * F_X_i)
+    dv_i     /dt =  (1/tau)*(-v_i + E_i + sum_j w_ij F_j + w_X * F_X_i)
     lambda_i (t) =  max(a * v_i^2, 0)
     n_i(t)       ~  Poisson(lambda_i(t) dt)
 
@@ -83,7 +83,7 @@ Usage (from a Sage notebook cell)
     )
     binned, voltage, totals, ext_binned = sim_hawkes_quad_expg_gtas_numba(
         int(n_steps), float(dt_sim), float(tau), float(tau_g),
-        float(a), float(W_X), E_arr, W_arr, v_init.copy(),
+        float(a), float(w_X), E_arr, W_arr, v_init.copy(),
         ext_spike_grid,
         int(bin_size_steps), int(n_bins), int(seed),
     )
@@ -205,7 +205,7 @@ def sample_gtas_external_spikes(T_total, dt_sim, lambda_X, p_part,
 # ---------------------------------------------------------------------------
 
 @numba.njit
-def sim_hawkes_quad_expg_gtas_numba(n_steps, dt_sim, tau, tau_g, a, W_X,
+def sim_hawkes_quad_expg_gtas_numba(n_steps, dt_sim, tau, tau_g, a, w_X,
                                     E, W, v_init,
                                     ext_spike_grid,
                                     bin_size_steps, n_bins, seed):
@@ -223,7 +223,7 @@ def sim_hawkes_quad_expg_gtas_numba(n_steps, dt_sim, tau, tau_g, a, W_X,
         Membrane and synaptic-filter time constants.
     a : float
         Quadratic transfer-function gain.
-    W_X : float
+    w_X : float
         Feedforward weight (one-to-one external -> cortical).
     E : np.ndarray (npop,)
         Constant external drive per cortical population.
@@ -310,7 +310,7 @@ def sim_hawkes_quad_expg_gtas_numba(n_steps, dt_sim, tau, tau_g, a, W_X,
             drive = E[i]
             for j in range(npop):
                 drive += W[i, j] * F[j]
-            drive += W_X * F_X[i]
+            drive += w_X * F_X[i]
             v[i] += dt_tau * (-v[i] + drive)
 
     return binned_counts, voltage_bins, total_spikes, ext_binned_counts
