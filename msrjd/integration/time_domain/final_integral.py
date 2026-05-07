@@ -103,6 +103,26 @@ QUAD_OPTS = {
     'limit': 200,      # max subintervals for scipy.integrate.quad / nquad
 }
 
+# ───────────────────────────────────────────────────────────────────────
+# Cumulant-kernel τ_v integration cap (non-local noise sources)
+# ───────────────────────────────────────────────────────────────────────
+# Diagrams with a NoiseSourceType vertex carry an extra integration
+# variable τ_v parametrising the relative time between the source's
+# legs (per-leg time map for non-local cumulant kernels).  The
+# kernel itself decays on its natural timescale (e.g., σ for a
+# Gaussian), so integrating τ_v over a half-infinite range
+# (retard_L, +∞) — which is what the polytope alone gives —
+# leaves scipy.quad's tan-substitution coordinate transform free
+# to compress the kernel's central peak near the boundary, where
+# adaptive sampling intermittently misses it.  Capping τ_v ∈
+# (-CAP, +CAP) collapses the range to a finite interval where
+# adaptive quadrature is well-behaved.  ±50 is safe for kernels
+# with σ ≤ 5; loosen to ±200 (the polytope OUTER_CAP) if your
+# kernel has heavy tails:
+#   from msrjd.integration.time_domain import final_integral
+#   final_integral.TAU_KERNEL_CAP = 200.0
+TAU_KERNEL_CAP = 50.0
+
 
 # ───────────────────────────────────────────────────────────────────────
 # Tree-level vertex-time integration
@@ -793,6 +813,42 @@ def integrate_diagram(
                 constraint_err = exc
                 break
             subset_constraint_data.append((a_int, a_ext, c0))
+
+        # ── Cap each surviving τ_v integration variable to a finite
+        # range ──────────────────────────────────────────────────────
+        # Cumulant kernels (Gaussian, etc.) decay rapidly on a
+        # kernel-natural timescale.  Without a finite cap, scipy.quad
+        # integrates over (retard_L, +∞), and the adaptive Cauchy /
+        # tan-substitution coordinate transform compresses the
+        # kernel's central peak near the upper boundary of the
+        # transformed parameter range.  The peak then gets
+        # intermittently missed by the sampling — producing the
+        # spurious spikes seen in non-local diagram contributions
+        # at τ values where the external time t puts the kernel
+        # peak in the "danger zone."  Capping τ_v ∈ (−CAP, +CAP)
+        # collapses the integration to a finite interval where
+        # adaptive quad is well-behaved.  Outside ±5σ a Gaussian
+        # is < 1e-6 of its peak; ±50 with σ ~ 1 is overkill and
+        # safe for any kernel with σ < 10.
+        if extra_tau_syms and remaining_int_vars:
+            n_iv = len(remaining_int_vars)
+            n_ext = len(free_ext_syms)
+            for (tau_s, _v) in extra_tau_syms:
+                if tau_s not in remaining_int_vars:
+                    continue
+                idx = remaining_int_vars.index(tau_s)
+                # Upper cap:  -τ_v + CAP > 0  ⇒  τ_v < CAP
+                a_up  = [0.0] * n_iv
+                a_up[idx] = -1.0
+                subset_constraint_data.append(
+                    (a_up, [0.0] * n_ext, TAU_KERNEL_CAP)
+                )
+                # Lower cap:  +τ_v + CAP > 0  ⇒  τ_v > -CAP
+                a_lo  = [0.0] * n_iv
+                a_lo[idx] = +1.0
+                subset_constraint_data.append(
+                    (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
+                )
         if constraint_err is not None:
             return {
                 'status': 'failed',
