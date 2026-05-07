@@ -308,6 +308,24 @@ HAWKES_MODEL: dict = {
                         tau, ns.mu_shift_diff, ns.sigma_shift_diff_sq
                     )
                 ),
+                # κ^{(3)}_{ijk}(τ_1, τ_2): for Bernoulli + Gaussian GTaS
+                # at N=2, only the AUTO-cumulant is nonzero.  Each cell
+                # is marginally Poisson at rate b_X, so its 3rd cumulant
+                # density is b_X · δ(τ_1) · δ(τ_2).  Mixed indices
+                # require ≥ 2 spikes from the same cell within a single
+                # mother event — impossible since marking is binary.
+                3: lambda ns, i, j, k, t1, t2: (
+                    ns.lambda_X * ns.p_part
+                    * dirac_delta(t1) * dirac_delta(t2)
+                    if (i == j == k) else SR(0)
+                ),
+                # κ^{(4)}_{ijkl}(τ_1, τ_2, τ_3): same logic — only
+                # auto-cumulant is nonzero (Poisson statistics).
+                4: lambda ns, i, j, k, l, t1, t2, t3: (
+                    ns.lambda_X * ns.p_part
+                    * dirac_delta(t1) * dirac_delta(t2) * dirac_delta(t3)
+                    if (i == j == k == l) else SR(0)
+                ),
             },
         },
     },

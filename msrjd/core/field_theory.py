@@ -294,49 +294,100 @@ def _build_cumulant_action(ns, model):
         for order, kernel_fn in spec.get('cumulants', {}).items():
             if order < 2:
                 continue
-            if order != 2:
-                warnings.warn(
-                    f"correlated_noises[{noise_name!r}] cumulant order "
-                    f"{order}: only n=2 supported in v1, skipping. "
-                    f"(Higher orders need n-1 relative time variables — "
-                    f"defer until the integration pipeline learns them.)",
-                    stacklevel=3,
-                )
-                continue
 
-            tau_sym = SR.var(f'_tau_{noise_name}', latex_name=r'\tau')
-            for i in legs:
-                for j in legs:
-                    K = SR(kernel_fn(ns, i, j, tau_sym)).expand()
-                    # Local part: residue at delta(tau)
-                    c_local = K.coefficient(dirac_delta(tau_sym))
-                    K_smooth = (K - c_local * dirac_delta(tau_sym))
+            # Cumulant order n needs n-1 relative time variables.
+            tau_syms = [SR.var(f'_tau_{noise_name}_{k}',
+                               latex_name=rf'\tau_{{{k}}}')
+                        for k in range(order - 1)]
+            n_fact = factorial(order)
+            from itertools import product as _iter_product
+
+            for idx_tuple in _iter_product(legs, repeat=order):
+                # Evaluate the kernel at placeholder τ symbols.
+                try:
+                    K = SR(kernel_fn(ns, *idx_tuple, *tau_syms))
+                except TypeError:
+                    # Backward-compat: order 2 callers may use the old
+                    # (ns, i, j, tau) signature with a single τ; expand.
+                    if order == 2 and len(tau_syms) == 1:
+                        K = SR(kernel_fn(ns, idx_tuple[0], idx_tuple[1],
+                                         tau_syms[0]))
+                    else:
+                        raise
+                K = K.expand()
+
+                # Iteratively peel off δ(τ_k) coefficients.  After n-1
+                # steps, what remains in ``c_local`` is the multiplier
+                # of the FULL delta product  ∏ δ(τ_k).
+                c_local = K
+                for tau_k in tau_syms:
                     try:
-                        K_smooth = K_smooth.simplify_full()
-                    except (ValueError, RuntimeError):
-                        pass
+                        c_local = c_local.coefficient(dirac_delta(tau_k))
+                    except (AttributeError, TypeError):
+                        c_local = SR(0)
+                        break
+                # Residual = K minus the all-delta contribution
+                delta_product = SR(1)
+                for tau_k in tau_syms:
+                    delta_product = delta_product * dirac_delta(tau_k)
+                K_residual = (K - c_local * delta_product)
+                try:
+                    K_residual = K_residual.simplify_full()
+                except (ValueError, RuntimeError, AttributeError):
+                    pass
 
-                    # Local (delta-correlated) contribution
-                    if c_local != 0:
-                        S_cum += (-SR(1)/2 * c_local
-                                  * resp_field[i] * resp_field[j])
+                # ── Local (fully delta-correlated) contribution ──────
+                # All time integrals collapse;  -(1/n!) c_local m̃_{i₁}…m̃_{iₙ}
+                # at a single time gets injected directly into S_cum.
+                if c_local != 0:
+                    factor = -SR(1) / n_fact * SR(c_local)
+                    for k_idx in idx_tuple:
+                        factor = factor * resp_field[k_idx]
+                    S_cum = S_cum + factor
 
-                    # Smooth (non-local) contribution: kernel symbol
-                    if K_smooth != 0:
-                        sym_name = (f'z_kappa_{noise_name}_{order}'
-                                    f'_{i+1}_{j+1}')
-                        latex_name = (rf'\kappa^{{({order})}}_{{{i+1}{j+1}}}')
+                # ── Smooth (non-local) residual ──────────────────────
+                # Currently only handled at order 2 (the integrator uses
+                # one τ_v per noise vertex).  For order ≥ 3 with a
+                # smooth residual, warn — the integrator's per-leg time
+                # map is ordered-by-leg; we'd need an n-leg time map.
+                # For Bernoulli + Gaussian GTaS at N=2, all order-≥3
+                # cumulants are FULLY LOCAL so this branch never fires
+                # in practice; future non-local higher-order kernels
+                # need integrator extension before they can be used.
+                if K_residual != 0:
+                    if order == 2:
+                        sym_name = (
+                            f'z_kappa_{noise_name}_{order}'
+                            f'_{idx_tuple[0]+1}_{idx_tuple[1]+1}'
+                        )
+                        latex_name = (
+                            rf'\kappa^{{({order})}}_'
+                            rf'{{{idx_tuple[0]+1}{idx_tuple[1]+1}}}'
+                        )
                         sym = SR.var(sym_name, latex_name=latex_name)
-                        S_cum += (-SR(1)/2 * sym
-                                  * resp_field[i] * resp_field[j])
+                        S_cum = S_cum + (
+                            -SR(1) / n_fact * sym
+                            * resp_field[idx_tuple[0]]
+                            * resp_field[idx_tuple[1]]
+                        )
                         ns._cumulant_kernels[
-                            (noise_name, order, (i, j))
+                            (noise_name, order, tuple(idx_tuple))
                         ] = {
                             'symbol':    sym,
                             'kernel_fn': kernel_fn,
-                            'legs':      (i, j),
-                            'tau_var':   tau_sym,
+                            'legs':      tuple(idx_tuple),
+                            'tau_var':   tau_syms[0],
                         }
+                    else:
+                        warnings.warn(
+                            f"correlated_noises[{noise_name!r}] "
+                            f"cumulant order {order} legs "
+                            f"{idx_tuple}: kernel has a non-local "
+                            f"smooth residual that requires an n-leg "
+                            f"time map in the integrator (currently "
+                            f"only n=2 implemented).  Skipping.",
+                            stacklevel=3,
+                        )
 
     return S_cum
 

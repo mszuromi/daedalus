@@ -444,8 +444,16 @@ HAWKES_MODEL: dict = {
             # already absorbed into vstar via mf_bg_conditions.
             'mean': lambda ns: ns.lambda_X * ns.p_part,
             # Central cumulants (orders >= 2).  For a 2-cell GTaS with
-            # Bernoulli participation + Gaussian shifts, only order 2
-            # is nontrivial.
+            # Bernoulli participation + Gaussian shifts:
+            #   * κ^{(2)} has nontrivial cross (Gaussian smear) and a
+            #     local auto piece (Poisson b_X · δ).
+            #   * κ^{(n>=3)} cross-cumulants VANISH (binary marking
+            #     means a single mother event can produce at most one
+            #     spike per cell, so ≥3 indices with at least two
+            #     distinct cells require ≥2 mother events whose
+            #     contributions are independent → connected = 0).
+            #   * κ^{(n>=3)} AUTO-cumulants are b_X · δ(τ_1)…δ(τ_{n-1})
+            #     — just the Poisson statistics of the marginal.
             'cumulants': {
                 # κ^{(2)}_{ij}(τ) =
                 #   {  b_X · δ(τ),                            i == j  (Poisson auto)
@@ -457,8 +465,18 @@ HAWKES_MODEL: dict = {
                         tau, ns.mu_shift_diff, ns.sigma_shift_diff_sq
                     )
                 ),
-                # 3rd, 4th central cumulants vanish identically for
-                # N=2 Bernoulli + Gaussian — omit.
+                # κ^{(3)}_{ijk}(τ_1, τ_2): only AUTO is nonzero.
+                3: lambda ns, i, j, k, t1, t2: (
+                    ns.lambda_X * ns.p_part
+                    * dirac_delta(t1) * dirac_delta(t2)
+                    if (i == j == k) else SR(0)
+                ),
+                # κ^{(4)}_{ijkl}(τ_1, τ_2, τ_3): only AUTO is nonzero.
+                4: lambda ns, i, j, k, l, t1, t2, t3: (
+                    ns.lambda_X * ns.p_part
+                    * dirac_delta(t1) * dirac_delta(t2) * dirac_delta(t3)
+                    if (i == j == k == l) else SR(0)
+                ),
             },
         },
     },
