@@ -203,6 +203,128 @@ class TheoryBuilder:
         self._correlated_noises[name] = kwargs
         return self
 
+    # ── High-level template wiring ─────────────────────────────────
+    def use_action_template(self, template):
+        """Apply a HawkesAction (or compatible) template.  The template
+        emits the action / mf_bg_conditions / mf_equations /
+        specializations / phi_concrete / mf_substitutions / functions
+        block; everything is registered on this builder.
+        """
+        self._action          = template.action()
+        self._phi_concrete    = template.phi_concrete()
+        self._specializations = template.specializations()
+        self._mf_bg           = template.mf_bg_conditions()
+        self._mf_equations    = template.mf_equations()
+        self._mf_substitutions = template.mf_substitutions()
+        self._functions       = list(template.functions_list())
+        return self
+
+    def use_synaptic_kernel(self, template):
+        """Apply an ExpSynapticKernel (or DeltaKernel) template.
+
+        For ExpSynapticKernel, sets the model's ``kernel_ft_image`` hook
+        so the FT of g symbolically becomes 1 / (1 + iωτ_g).
+
+        For DeltaKernel, no FT image is needed; instead the template
+        contributes an EXTRA specialization ``g → delta_D`` that gets
+        merged into the action template's specializations dict so the
+        kernel acts as δ(t) at cell-8 propagator-construction time.
+        """
+        ft_hook = template.kernel_ft_image()
+        if ft_hook is not None:
+            self._kernel_ft_image = ft_hook
+
+        # Merge any kernel-side specializations into the action's
+        # specializations dict.  Capture the current specs lambda and
+        # extend it.
+        extra_specs = (template.extra_specializations()
+                       if hasattr(template, 'extra_specializations')
+                       else None)
+        if extra_specs is not None and self._specializations is not None:
+            base_specs = self._specializations
+            self._specializations = (
+                lambda ns, _base=base_specs, _extra=extra_specs: {
+                    **_base(ns), **_extra(ns),
+                }
+            )
+        return self
+
+    def add_gtas_noise(self, template):
+        """Apply a GTaSNoise template.  Adds the dm/mt fields, the
+        mstar parameter, the GTaS feedforward terms in the action /
+        saddle / MF equations (via the HawkesAction template's
+        ``_gtas`` hook), and the correlated_noises block."""
+        # Register the GTaS metadata so the HawkesAction template
+        # picks up the feedforward + saddle terms when its lambdas
+        # are emitted.  Do this BEFORE use_action_template() if the
+        # user calls them in the wrong order, but supporting the more
+        # convenient order (action then noise) too.
+        self._pending_gtas = template
+
+        # Add the dm physical field + mt response field automatically.
+        self.physical_field(
+            template.physical_field, indexed=True,
+            latex=r'\delta m',
+            description='GTaS external rate fluctuation (zero-mean)',
+        )
+        self.response_field(
+            template.response_field, indexed=True,
+            latex=r'\tilde m',
+            description='GTaS response field conjugate to dm',
+        )
+
+        # Add the GTaS parameters automatically (with sane defaults
+        # the user can override via .parameter() before .build()).
+        for pname, default, dom in [
+            (template.feedforward_weight, 0.25,  None),
+            (template.mother_rate,        1.7,   'positive'),
+            (template.participation,      0.6,   'positive'),
+        ]:
+            if not any(p.name == pname for p in self.parameters):
+                self.parameter(pname, default=default, domain=dom)
+        if template.mu_diff is not None and not any(
+                p.name == template.mu_diff for p in self.parameters):
+            self.parameter(template.mu_diff, default=0.0)
+        if template.sigma_diff_sq is not None and not any(
+                p.name == template.sigma_diff_sq for p in self.parameters):
+            self.parameter(template.sigma_diff_sq, default=1.0,
+                           domain='positive')
+        if template.background_param is not None and not any(
+                p.name == template.background_param for p in self.parameters):
+            self.parameter(template.background_param, indexed=True,
+                           domain='positive',
+                           description=f'background external rate b_X = '
+                                       f'{template.mother_rate} · '
+                                       f'{template.participation}')
+
+        self._correlated_noises.update(template.correlated_noises_block())
+
+        # Re-emit the action with the GTaS hook now wired in.  The
+        # HawkesAction template stores ``_gtas`` so the emitted
+        # lambdas know to add feedforward terms.
+        if hasattr(self, '_action_template'):
+            self._action_template._gtas = template
+            # Rebuild the lambdas
+            self.use_action_template(self._action_template)
+        return self
+
+    def use_action_template(self, template):
+        """Override the previous use_action_template to remember the
+        template object so add_gtas_noise() can re-emit with the GTaS
+        hook installed."""
+        self._action_template = template
+        # Apply any pending GTaS hook
+        if getattr(self, '_pending_gtas', None) is not None:
+            template._gtas = self._pending_gtas
+        self._action          = template.action()
+        self._phi_concrete    = template.phi_concrete()
+        self._specializations = template.specializations()
+        self._mf_bg           = template.mf_bg_conditions()
+        self._mf_equations    = template.mf_equations()
+        self._mf_substitutions = template.mf_substitutions()
+        self._functions       = list(template.functions_list())
+        return self
+
     # ── Build the HAWKES_MODEL dict ───────────────────────────────
     def build(self) -> dict:
         """Emit a HAWKES_MODEL dict.
@@ -213,8 +335,9 @@ class TheoryBuilder:
         missing = []
         if self._action is None:           missing.append('action')
         if self._phi_concrete is None:     missing.append('phi_concrete')
-        if self._kernel_ft_image is None and self.kernels:
-            missing.append('kernel_ft_image')
+        # kernel_ft_image is OPTIONAL: the DeltaKernel template
+        # intentionally returns no image (the symbol is treated as
+        # δ(t) directly by the cell-8 propagator construction).
         if missing:
             raise ValueError(
                 f'TheoryBuilder("{self.name}").build(): missing required '
