@@ -46,32 +46,45 @@ def _draw_prediagram(td, ax):
         return
 
     # prediagram tuple is (D, G, leaves, internal)
+    # IMPORTANT: D is a Sage DiGraph and its vertex IDs are Sage
+    # Integer types.  Passing those through to networkx → matplotlib
+    # eventually leaks Sage RealLiteral into matplotlib's PDF
+    # graphics-state dict, which the PDF backend can't serialize
+    # ("TypeError: Don't know a PDF representation for
+    # <class 'sage.rings.real_mpfr.RealLiteral'> objects").  Cast every
+    # vertex / edge endpoint to plain Python int up front so the
+    # downstream matplotlib pipeline only ever sees pure Python types.
     D = td.prediagram[0]
-    leaves = td.prediagram[2]
-    leaf_set = set(leaves)
+    leaves_sage = list(td.prediagram[2])
+    leaves      = [int(v) for v in leaves_sage]
+    leaf_set    = set(leaves)
+    # vertex-id mapping (sage → int) used everywhere below
+    _vmap       = {v: int(v) for v in D.vertices()}
+
     G_nx = nx.MultiDiGraph()
     for v in D.vertices():
-        G_nx.add_node(v)
+        G_nx.add_node(_vmap[v])
     for u, v, lbl in D.edges():
-        G_nx.add_edge(u, v, key=lbl)
+        G_nx.add_edge(_vmap[u], _vmap[v], key=str(lbl))
 
     # Layout: leaves at top (y=1), internal vertices at bottom (y=0)
     pos = {}
-    leaf_xs = np.linspace(0, 1, max(len(leaves), 2))
+    leaf_xs = np.linspace(0.0, 1.0, max(len(leaves), 2))
     for j, lf in enumerate(leaves):
-        pos[lf] = (leaf_xs[j], 1.0)
-    internal = [v for v in D.vertices() if v not in leaf_set]
+        pos[lf] = (float(leaf_xs[j]), 1.0)
+    internal = [int(v) for v in D.vertices() if int(v) not in leaf_set]
     int_xs = np.linspace(0.2, 0.8, max(len(internal), 1))
     for j, v in enumerate(internal):
-        pos[v] = (int_xs[j], 0.0)
+        pos[v] = (float(int_xs[j]), 0.0)
 
     # Node colors: leaves green, source vertex blue, interaction red
     node_colors = []
-    for v in D.vertices():
+    for v_sage in D.vertices():
+        v = _vmap[v_sage]
         if v in leaf_set:
             node_colors.append('#2ECC71')        # green = leaf
         else:
-            vt = td.vertex_assignments.get(v)
+            vt = td.vertex_assignments.get(v_sage)
             if vt is None:
                 node_colors.append('#999999')
             elif hasattr(vt, 'physical_legs'):
@@ -87,15 +100,15 @@ def _draw_prediagram(td, ax):
         G_nx, pos, ax=ax, font_size=10, font_color='white',
         font_weight='bold',
     )
-    # Draw edges with labels
+    # Draw edges with labels — keys are Python (int, int) tuples
     edge_labels = {}
     for u, v, lbl in D.edges():
         et = td.edge_types.get((u, v, lbl))
         if et is not None:
             resp_leg, phys_leg = et
-            edge_labels[(u, v)] = (
-                rf'${resp_leg[0]}_{resp_leg[1]}\!\to\!'
-                rf'\,{phys_leg[0]}_{phys_leg[1]}$'
+            edge_labels[(_vmap[u], _vmap[v])] = (
+                rf'${resp_leg[0]}_{int(resp_leg[1])}\!\to\!'
+                rf'\,{phys_leg[0]}_{int(phys_leg[1])}$'
             )
     nx.draw_networkx_edges(
         G_nx, pos, ax=ax, edge_color='#444444',
@@ -173,16 +186,19 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
         family='monospace',
     )
 
-    # Total slice plot (k=2)
+    # Total slice plot (k=2).  Defensive numpy cast: any Sage RealLiteral
+    # in the C_tau array would later leak into matplotlib's PDF graphics
+    # state and crash PdfPages.close().
     ax_slice = fig.add_subplot(gs[2, :])
     if result['C_tau'] is not None:
-        tau_grid = result['tau_grid']
-        ax_slice.plot(tau_grid, result['C_tau'].real, color='#2266CC',
+        tau_grid = np.asarray(result['tau_grid'], dtype=float)
+        c_arr    = np.asarray(result['C_tau'], dtype=complex)
+        ax_slice.plot(tau_grid, c_arr.real.astype(float), color='#2266CC',
                       linewidth=1.6, label=r'$\mathrm{Re}\, C^{(k)}(\tau)$')
-        if np.any(np.abs(result['C_tau'].imag) > 1e-9):
-            ax_slice.plot(tau_grid, result['C_tau'].imag, color='#CC4422',
-                          linewidth=1.0, linestyle='--', alpha=0.8,
-                          label=r'$\mathrm{Im}$')
+        if np.any(np.abs(c_arr.imag) > 1e-9):
+            ax_slice.plot(tau_grid, c_arr.imag.astype(float),
+                          color='#CC4422', linewidth=1.0, linestyle='--',
+                          alpha=0.8, label=r'$\mathrm{Im}$')
         ax_slice.axhline(0, color='gray', linewidth=0.5)
         ax_slice.set_xlabel(r'$\tau$')
         ax_slice.set_ylabel(rf'$C^{{({k})}}(\tau)$')
@@ -255,12 +271,12 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k):
             tree_callables = phase_j.get('tree_callables', [])
             if idx - 1 < len(tree_callables):
                 contrib = tree_callables[idx - 1]
-                tau_grid = result['tau_grid']
+                tau_grid = np.asarray(result['tau_grid'], dtype=float)
                 C_diag = np.array([
                     complex(contrib(0.0, float(t))) for t in tau_grid
                 ], dtype=complex)
-                ax_contrib.plot(tau_grid, C_diag.real, color='#0066CC',
-                                linewidth=1.4)
+                ax_contrib.plot(tau_grid, C_diag.real.astype(float),
+                                color='#0066CC', linewidth=1.4)
                 ax_contrib.axhline(0, color='gray', linewidth=0.5)
                 ax_contrib.set_xlabel(r'$\tau$')
                 ax_contrib.set_ylabel(r'$C^{(\Gamma)}_{\mathrm{Re}}$')
