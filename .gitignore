@@ -29,6 +29,9 @@ notebooks/saved_results/
 Enumeration Code/counts/
 Enumeration Code/diagrams_*/
 
+# pipeline package run outputs (npz / pdf artifacts; regenerable)
+pipeline_outputs/
+
 # Build / compilation output
 notebooks/*.pdf
 Test Figures/
