@@ -83,7 +83,8 @@ def falling_factorial_array(n_arr, m):
 
 def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                          max_lag_bins, n_fft=None,
-                         field_types=None, voltage_bins=None):
+                         field_types=None, voltage_bins=None,
+                         ext_binned_counts=None):
     """
     Compute a 1-D slice of the factorial cumulant density from binned
     point-process (and optionally voltage) data.
@@ -91,7 +92,8 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     Parameters
     ----------
     binned_counts : np.ndarray (npop, n_bins)
-        Raw (UN-subtracted) spike counts per bin per population.
+        Raw (UN-subtracted) cortical spike counts per bin per
+        population.
     dt_bin : float
         Effective bin width in time units (use dt_bin_eff, not nominal).
     pop_indices : list of int
@@ -104,12 +106,25 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     n_fft : int or None
         FFT length for zero-padding (default: next power of 2 ≥ 2×n_valid).
     field_types : list of str or None
-        Field base name for each external leg ('dn' for spike fields,
-        'dv' for voltage fields).  If None, all legs are treated as
-        spike fields (backward compatibility).
+        Field base name for each external leg.  Supported values:
+
+          * ``'dn'`` — cortical spike-train fluctuation (counts in
+            ``binned_counts``).  Discrete shot-noise; same-bin spike
+            multiplets get the factorial correction.
+          * ``'dv'`` — cortical voltage fluctuation (smooth, in
+            ``voltage_bins``).  Linear centering, no factorial.
+          * ``'dm'`` — external GTaS rate fluctuation (spike-like, in
+            ``ext_binned_counts``).  Same shot-noise treatment as
+            ``'dn'``: discrete counts, dt_bin denominator, factorial
+            correction on same-bin multiplets.
+
+        If None, all legs default to ``'dn'`` (backward compatibility).
     voltage_bins : np.ndarray (npop, n_bins) or None
-        Bin-averaged voltage per population.  Required if any
-        ``field_types`` entry is 'dv'.
+        Bin-averaged cortical voltage per population.  Required if any
+        ``field_types`` entry is ``'dv'``.
+    ext_binned_counts : np.ndarray (npop, n_bins) or None
+        Binned external (GTaS) spike counts per population.  Required
+        if any ``field_types`` entry is ``'dm'``.
 
     Returns
     -------
@@ -117,8 +132,8 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
         Lag values in time units (= lag_index × dt_bin).
     C_slice : np.ndarray (2*max_lag_bins + 1,)
         Factorial cumulant density slice.  For spike-only legs, units
-        are Hz^k.  For mixed spike/voltage legs, units are Hz^(#dn) ×
-        V^(#dv).  The smooth (off-diagonal) part of the k-point
+        are Hz^k.  For mixed spike/voltage legs, units are Hz^(#dn+#dm)
+        × V^(#dv).  The smooth (off-diagonal) part of the k-point
         cumulant with self-spike contributions removed.
     """
     k = len(pop_indices)
@@ -139,16 +154,33 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                 "field_types contains 'dv' but voltage_bins is None. "
                 "Pass bin-averaged voltage traces from sim_hawkes_numba."
             )
+    if any(ft == 'dm' for ft in field_types):
+        if ext_binned_counts is None:
+            raise ValueError(
+                "field_types contains 'dm' but ext_binned_counts is None. "
+                "Pass GTaS external spike counts from "
+                "sim_hawkes_<...>_gtas_numba (the fourth return value, "
+                "e.g. ``ext_binned_run``)."
+            )
 
     def _data_for(leg_idx):
         """Return the binned data array for leg leg_idx based on its field type."""
-        if field_types[leg_idx] == 'dv':
+        ft = field_types[leg_idx]
+        if ft == 'dv':
             return voltage_bins
-        return binned_counts
+        if ft == 'dm':
+            return ext_binned_counts
+        return binned_counts  # 'dn' (default)
+
+    def _is_spike_ft(ft):
+        """True if the field is a discrete spike-counting field (gets
+        factorial correction at coincident bins)."""
+        return ft in ('dn', 'dm')
 
     def _centering_denom(leg_idx):
-        """Return dt_bin for spike fields (rate conversion), 1.0 for voltage."""
-        return dt_bin if field_types[leg_idx] == 'dn' else 1.0
+        """Return dt_bin for spike-counting fields (rate conversion),
+        1.0 for voltage."""
+        return dt_bin if _is_spike_ft(field_types[leg_idx]) else 1.0
 
     npop, n_bins = binned_counts.shape
 
@@ -180,6 +212,14 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             data = _data_for(leg_idx)
             mean_by_pop_ft[key] = float(data[pop, valid_start:valid_end].mean())
 
+    # Helper: pick the data array for a given (pop, field_type) key
+    def _data_for_ft(ft):
+        if ft == 'dv':
+            return voltage_bins
+        if ft == 'dm':
+            return ext_binned_counts
+        return binned_counts
+
     # ── Build the "product" time series on the VALID window ──
     fixed_legs = [(i, lag_bins[i]) for i in range(k) if i != sweep_idx]
     sweep_pop = pop_indices[sweep_idx]
@@ -202,10 +242,10 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             (pop_indices[i], field_types[i]) for i in leg_indices)
 
         for (pop, ft), m in pop_ft_multiplicities.items():
-            data = voltage_bins if ft == 'dv' else binned_counts
+            data = _data_for_ft(ft)
             n_arr = data[pop, offset:offset + n_valid].copy()
             mean_n = mean_by_pop_ft[(pop, ft)]
-            denom = dt_bin if ft == 'dn' else 1.0
+            denom = dt_bin if _is_spike_ft(ft) else 1.0
 
             if m == 1 or ft == 'dv':
                 # Voltage fields: linear centering (not factorial)
@@ -214,17 +254,18 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                 if m > 1:
                     factor = factor ** m
             else:
-                # Spike field, m >= 2: factorial correction
+                # Spike-counting field (dn or dm), m >= 2: factorial
+                # correction to remove same-bin shot-noise multiplets.
                 raw = falling_factorial_array(n_arr, m) / denom**m
                 factor = raw - raw.mean()
 
             product *= factor
 
     # ── Build the sweep time series on the valid window ──
-    sweep_data = voltage_bins if sweep_ft == 'dv' else binned_counts
+    sweep_data = _data_for_ft(sweep_ft)
     sweep_arr = sweep_data[sweep_pop, valid_start:valid_end].copy()
     sweep_mean = mean_by_pop_ft[(sweep_pop, sweep_ft)]
-    sweep_denom = dt_bin if sweep_ft == 'dn' else 1.0
+    sweep_denom = dt_bin if _is_spike_ft(sweep_ft) else 1.0
     sweep_rate = (sweep_arr - sweep_mean) / sweep_denom
 
     # ── Linear (non-circular) cross-correlation via zero-padded FFT ──
@@ -300,21 +341,23 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             ftb = field_types[leg_b]
 
             # ── Factorial-corrected same-pop same-ft same-lag spike pair ──
-            # Only spike fields have shot noise; only same-pop same-bin
-            # coincidences produce a contact diagonal that needs removing.
-            if (fta == 'dn' and ftb == 'dn' and pa == pb and la == lb):
-                arr = binned_counts[pa, :].astype(float)
+            # Only discrete-spike fields ('dn' / 'dm') have shot noise;
+            # only same-pop same-bin coincidences produce a contact
+            # diagonal that needs removing.
+            if (_is_spike_ft(fta) and _is_spike_ft(ftb)
+                    and fta == ftb and pa == pb and la == lb):
+                arr = _data_for_ft(fta)[pa, :].astype(float)
                 fact_rate_sq = arr * (arr - 1.0) / (dt_bin ** 2)
                 mean_rate = mean_by_pop_ft[(pa, fta)] / dt_bin
                 return float(fact_rate_sq.mean() - mean_rate * mean_rate)
 
             # ── Ordinary covariance for all other cases ──
-            data_a = voltage_bins if fta == 'dv' else binned_counts
-            data_b = voltage_bins if ftb == 'dv' else binned_counts
+            data_a = _data_for_ft(fta)
+            data_b = _data_for_ft(ftb)
             mean_a = mean_by_pop_ft[(pa, fta)]
             mean_b = mean_by_pop_ft[(pb, ftb)]
-            denom_a = dt_bin if fta == 'dn' else 1.0
-            denom_b = dt_bin if ftb == 'dn' else 1.0
+            denom_a = dt_bin if _is_spike_ft(fta) else 1.0
+            denom_b = dt_bin if _is_spike_ft(ftb) else 1.0
 
             # Effective lag difference: shift b relative to a.
             delta = lb - la
