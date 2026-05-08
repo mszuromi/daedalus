@@ -22,17 +22,8 @@ from msrjd.core.field_theory import FieldTheory
 from msrjd.core.vertices import (
     extract_vertex_types, extract_source_types, NoiseSourceType,
 )
-from msrjd.diagrams.type_assignment import (
-    enumerate_all as enumerate_all_typed,
-    build_field_index_map,
-)
-from msrjd.diagrams.causality import filter_causal
-from msrjd.diagrams.symmetry import (
-    deduplicate_typed_diagrams, classify_coefficient_factors,
-)
-from msrjd.enumeration.loop_diagram_enumeration import (
-    enumerate_all as enumerate_prediagrams_all,
-)
+from msrjd.diagrams.type_assignment import build_field_index_map
+from msrjd.diagrams.symmetry import classify_coefficient_factors
 from msrjd.integration.time_domain.pipeline import (
     compute_correction_td,
 )
@@ -40,6 +31,7 @@ from msrjd.integration.time_domain.pipeline import (
 # Pipeline-package helpers
 from pipeline._propagator import build_propagator, compute_poles_and_residues
 from pipeline._mean_field import solve_mean_field
+from pipeline._diagrams import enumerate_unique_diagrams
 
 
 def compute_cumulants(
@@ -95,7 +87,9 @@ def compute_cumulants(
     output_npz : str or None
         If given, save the result dict to this .npz path.
     use_cache : bool
-        Whether to reuse a cached propagator (per (model name, taylor)).
+        Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
+        and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
+        Both caches live under ``saved_theories/<model-tag>_taylor<N>/``.
     parallel : bool
         Pass-through to compute_correction_td for multi-process eval.
     verbose : bool
@@ -171,25 +165,19 @@ def compute_cumulants(
                 f'{sorted(phys_idx.keys())}'
             )
 
-    unique_by_ell: dict[int, list] = {}
-    all_unique = []
-    for ell in range(max_ell + 1):
-        _, _, prediagrams, _ = enumerate_prediagrams_all(
-            k=k, ell=ell, verbose=False,
-        )
-        typed = enumerate_all_typed(
-            prediagrams, external_fields, vtypes, stypes,
-            G_ft=prop['G_ft'],
-            resp_index=resp_idx, phys_index=phys_idx,
-        )
-        causal, n_disc, _ = filter_causal(typed)
-        unique = deduplicate_typed_diagrams(causal)
-        unique_by_ell[ell] = unique
-        all_unique.extend(unique)
-        if verbose:
-            print(f'      ell={ell}: {len(prediagrams)} prediag → '
-                  f'{len(typed)} typed → {len(causal)} causal → '
-                  f'{len(unique)} unique')
+    unique_by_ell, all_unique = enumerate_unique_diagrams(
+        ft, model,
+        k               = k,
+        max_ell         = max_ell,
+        external_fields = external_fields,
+        G_ft            = prop['G_ft'],
+        resp_idx        = resp_idx,
+        phys_idx        = phys_idx,
+        vtypes          = vtypes,
+        stypes          = stypes,
+        use_cache       = use_cache,
+        verbose         = verbose,
+    )
 
     # ── 6. Diagram-level prefactor classification + kernel groups ─
     if verbose:
