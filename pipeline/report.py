@@ -30,6 +30,53 @@ from matplotlib.backends.backend_pdf import PdfPages
 from pipeline.compute import compute_cumulants
 
 
+# ───────────────────────────────────────────────────────────────────────
+# matplotlib PDF backend monkey-patch
+# ───────────────────────────────────────────────────────────────────────
+# Defensive cleanups in this file (Sage Integer → Python int casts in
+# _draw_prediagram, plt.close('all') around PdfPages, ...) catch most
+# Sage objects before they reach matplotlib.  But matplotlib's text
+# layout / mathtext path can still pull in Sage RealLiteral values via
+# layout calls (tight_layout uses the renderer's text-metric machinery)
+# in a Jupyter-notebook context that has previously rendered Sage
+# expressions inline — those leak into the per-Figure alphaStates dict
+# and only surface at PdfPages.finalize() → writeExtGSTates() →
+# pdfRepr(dict) with
+#
+#     TypeError: Don't know a PDF representation for
+#                <class 'sage.rings.real_mpfr.RealLiteral'> objects
+#
+# We can't reach into matplotlib's text-metric cache, but we can teach
+# its pdfRepr() to coerce Sage RealLiteral (and any Sage type with a
+# __float__) to a plain Python float before serialization.  This is
+# applied once at module import; subsequent generate_report() calls
+# pick it up automatically.
+def _install_pdf_repr_sage_fallback():
+    from matplotlib.backends import backend_pdf as _bp
+    _orig_pdfRepr = _bp.pdfRepr
+
+    def _patched(obj):
+        try:
+            return _orig_pdfRepr(obj)
+        except TypeError:
+            # Last resort: any object that quacks like a real number.
+            # Sage RealLiteral has __float__; SR scalars do too.
+            try:
+                return _orig_pdfRepr(float(obj))
+            except (TypeError, ValueError):
+                pass
+            try:
+                return _orig_pdfRepr(complex(obj))
+            except (TypeError, ValueError):
+                pass
+            raise
+
+    if getattr(_bp.pdfRepr, '__name__', '') != '_patched':
+        _bp.pdfRepr = _patched
+
+_install_pdf_repr_sage_fallback()
+
+
 def _draw_prediagram(td, ax):
     """Render a single typed prediagram on the provided matplotlib axis.
 
