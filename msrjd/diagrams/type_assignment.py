@@ -507,20 +507,133 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
 
 
 # ── Convenience: enumerate across all prediagrams ────────────────────────────
+#
+# Parallelism rationale (2026-04-23, enumeration-speedup branch):
+# ``enumerate_typed_diagrams`` is embarrassingly parallel across
+# prediagrams — no shared mutable state, no cross-prediagram
+# dependencies.  For cold-start workloads the outer loop is the
+# dominant cost (60s+ per prediagram on quadratic Hawkes k=3 ell=1),
+# so fork-ProcessPool parallelism stacks cleanly with the canonical-
+# leg-matching change.
+#
+# Fork is required because Sage ``DiGraph`` objects, ``VertexType`` /
+# ``SourceType`` instances, and the propagator matrix may not all
+# pickle cleanly through stdlib ``pickle``.  With fork, workers
+# inherit those from the parent's memory — no cross-process pickling
+# on the inputs.  Only the RETURN value (list of ``TypedDiagram``)
+# is pickled, and ``TypedDiagram`` has explicit ``__getstate__`` /
+# ``__setstate__`` via ``__slots__`` for that purpose.
+#
+# Windows support deferred — same constraints as
+# ``msrjd/integration/time_domain/pipeline.py``'s ``total_C_batch``.
+
+_ENUM_WORKER_STATE = {}
+
+
+def _worker_enumerate_one_prediagram(pd_idx):
+    """Worker entry point for ``enumerate_all``'s fork pool.
+
+    Must be a module-level function so it's picklable by
+    ``multiprocessing``.  The actual input data lives in
+    ``_ENUM_WORKER_STATE`` and is inherited via fork (not via
+    ``initargs`` pickling).
+    """
+    state = _ENUM_WORKER_STATE
+    pd = state['prediagrams'][pd_idx]
+    return list(enumerate_typed_diagrams(
+        pd, state['external_fields'],
+        state['vertex_types'], state['source_types'],
+        state['G_ft'], state['resp_index'], state['phys_index'],
+    ))
+
 
 def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
-                  G_ft, resp_index, phys_index):
+                  G_ft, resp_index, phys_index,
+                  parallel=False, n_workers=None, start_method='fork'):
     """
     Enumerate typed diagrams across all prediagrams.
+
+    Parameters
+    ----------
+    prediagrams : list of tuple
+        ``(D, G, leaves, internal)`` per prediagram.
+    external_fields, vertex_types, source_types, G_ft, resp_index,
+    phys_index :
+        Passed through to ``enumerate_typed_diagrams``.
+    parallel : bool, default False
+        If ``True``, fan the per-prediagram enumeration out across a
+        fork-based ``multiprocessing.Pool``.  Each worker runs the
+        full ``enumerate_typed_diagrams`` on one prediagram; the
+        parent aggregates the resulting ``TypedDiagram`` lists.
+        Default is ``False`` to preserve the pre-2026-04-23 serial
+        behaviour for existing callers; flip to ``True`` (or set the
+        kwarg at the cached-enumeration site in notebook cell 18)
+        to get the speedup.
+    n_workers : int or None, default None
+        Cap on worker-process count when ``parallel=True``.  ``None``
+        picks ``min(os.cpu_count(), len(prediagrams))``.
+    start_method : {'fork'}, default 'fork'
+        Multiprocessing start method.  Only ``'fork'`` is supported:
+        ``'spawn'`` would require pickling Sage graph / matrix inputs
+        across workers, which is not guaranteed to work cleanly.
 
     Returns
     -------
     list of TypedDiagram
+        In the same order as the serial path: concatenation of
+        per-prediagram results in prediagram-index order.
+
+    Notes
+    -----
+    Numerical output is bit-identical between the serial and parallel
+    paths — per-prediagram order and within-prediagram order of
+    emission are both preserved.  Pinned by
+    ``test_enumerate_all_parallel_matches_serial`` in
+    ``tests/test_type_assignment.py``.
     """
+    if not parallel or len(prediagrams) <= 1:
+        # Serial path.  Keeps 'prediagrams' iteration for back-compat
+        # with any downstream code that relies on yield ordering.
+        results = []
+        for pd in prediagrams:
+            for td in enumerate_typed_diagrams(
+                pd, external_fields, vertex_types, source_types,
+                G_ft, resp_index, phys_index,
+            ):
+                results.append(td)
+        return results
+
+    import multiprocessing as mp
+    import os
+    os.environ.setdefault(
+        'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
+    )
+
+    # Populate _ENUM_WORKER_STATE BEFORE forking so children inherit it.
+    # Not thread-safe — ``enumerate_all`` should not be called from two
+    # threads concurrently.  In the Sage Phase J workflow this is a
+    # single-threaded notebook call, so that's fine.
+    _ENUM_WORKER_STATE['prediagrams'] = list(prediagrams)
+    _ENUM_WORKER_STATE['external_fields'] = external_fields
+    _ENUM_WORKER_STATE['vertex_types'] = vertex_types
+    _ENUM_WORKER_STATE['source_types'] = source_types
+    _ENUM_WORKER_STATE['G_ft'] = G_ft
+    _ENUM_WORKER_STATE['resp_index'] = resp_index
+    _ENUM_WORKER_STATE['phys_index'] = phys_index
+
+    ctx = mp.get_context(start_method)
+    n_w_cap = (n_workers if n_workers is not None
+               else min(os.cpu_count() or 4, len(prediagrams)))
+
+    with ctx.Pool(processes=n_w_cap) as pool:
+        per_pd_results = pool.map(
+            _worker_enumerate_one_prediagram,
+            range(len(prediagrams)),
+        )
+
+    # Flatten in prediagram-index order (Pool.map preserves input
+    # order in the output), so the final list matches the serial path.
     results = []
-    for pd in prediagrams:
-        for td in enumerate_typed_diagrams(pd, external_fields, vertex_types,
-                                           source_types, G_ft,
-                                           resp_index, phys_index):
-            results.append(td)
+    for sublist in per_pd_results:
+        results.extend(sublist)
     return results

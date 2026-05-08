@@ -380,6 +380,66 @@ def test_enumerate_typed_duplicate_leg_vertex_no_redundant_generation():
     )
 
 
+def test_enumerate_all_parallel_matches_serial():
+    """Parallel (fork-ProcessPool) per-prediagram enumeration must
+    produce bit-identical output to the serial path.  Per-prediagram
+    ordering and within-prediagram emission order are both preserved,
+    so ``diagram_signature(td)`` lists from serial and parallel must
+    match element-wise (not just set-wise).
+
+    Test fixture: multiple distinct prediagrams + vertex types with
+    both response and physical legs, so each prediagram's
+    enumerate_typed_diagrams emits a non-trivial list.  The parallel
+    path uses ``start_method='fork'`` which is required on macOS +
+    Sage (see type_assignment.py docstring).
+    """
+    from msrjd.diagrams.type_assignment import enumerate_all
+    from msrjd.diagrams.symmetry import diagram_signature
+    import os
+    os.environ.setdefault('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES')
+
+    # Build a small but non-trivial fixture: 3 distinct prediagrams.
+    pd1 = _make_pd([(0, 1)], leaves=[0, 1])
+    pd2 = _make_pd([(0, 2), (2, 1)], leaves=[0, 1])  # 1-interaction
+    pd3 = _make_pd([(2, 0), (2, 1)], leaves=[0, 1])  # source
+    prediagrams = [pd1, pd2, pd3]
+
+    resp_idx, phys_idx = _simple_index_maps()
+    G_ft = _full_propagator_2x2()
+    vtypes = [
+        VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1)),
+        VertexType(SR(1), [('nt', 2)], [('dn', 2)], (1, 1)),
+    ]
+    stypes = [SourceType(SR(1), [('nt', 1), ('nt', 2)], (2, 0))]
+    external_fields = [('nt', 1), ('dn', 1)]
+
+    serial = enumerate_all(
+        prediagrams, external_fields, vtypes, stypes,
+        G_ft, resp_idx, phys_idx,
+        parallel=False,
+    )
+    parallel = enumerate_all(
+        prediagrams, external_fields, vtypes, stypes,
+        G_ft, resp_idx, phys_idx,
+        parallel=True, n_workers=3,
+    )
+
+    assert len(serial) == len(parallel), (
+        f'Serial produced {len(serial)} diagrams; parallel produced '
+        f'{len(parallel)}.  Pool.map must preserve length and order.'
+    )
+    # Element-wise signature check (tighter than set equality: order
+    # must match too).
+    for i, (s_td, p_td) in enumerate(zip(serial, parallel)):
+        s_sig = diagram_signature(s_td)
+        p_sig = diagram_signature(p_td)
+        assert s_sig == p_sig, (
+            f'Element {i}: serial signature != parallel signature.  '
+            f'Fork pool should inherit prediagram ordering; mismatch '
+            f'suggests a worker processed out-of-order or state leaked.'
+        )
+
+
 def test_enumerate_typed_distinct_legs_regression():
     """Regression: when all legs are distinct, the canonical change
     must produce the EXACT same set of typed diagrams as the old
