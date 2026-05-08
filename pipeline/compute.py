@@ -48,6 +48,7 @@ def compute_cumulants(
     output_npz: str = None,
     use_cache: bool = True,
     parallel: bool = True,
+    n_workers: int = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """
@@ -90,8 +91,15 @@ def compute_cumulants(
         Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
         and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
         Both caches live under ``saved_theories/<model-tag>_taylor<N>/``.
-    parallel : bool
-        Pass-through to compute_correction_td for multi-process eval.
+    parallel : bool, default True
+        Enable fork-based multiprocessing for the two heavy stages
+        that support it: per-prediagram type assignment in step [5]
+        and per-τ Phase J evaluation in step [7].  Both stages share
+        the same flag.
+    n_workers : int or None, default None
+        Worker process count when ``parallel=True``.  ``None`` lets
+        each stage pick its own default (``min(os.cpu_count(),
+        n_tasks)``).
     verbose : bool
         Print progress messages.
 
@@ -176,6 +184,8 @@ def compute_cumulants(
         vtypes          = vtypes,
         stypes          = stypes,
         use_cache       = use_cache,
+        parallel        = parallel,
+        n_workers       = n_workers,
         verbose         = verbose,
     )
 
@@ -244,14 +254,20 @@ def compute_cumulants(
     )
 
     # ── Build a τ-grid evaluation of total_C ──────────────────────
-    total_C = td_result['total_C']
+    # Uses ``total_C_batch`` so the caller's ``parallel`` / ``n_workers``
+    # flags fan the per-τ work out across processes.
+    total_C       = td_result['total_C']
+    total_C_batch = td_result['total_C_batch']
     if k == 2:
-        # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned
-        C_tau = np.array([
-            complex(total_C(0.0, float(t))) for t in tau_grid
-        ], dtype=complex)
+        # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned.
+        tau_points = [(0.0, float(t)) for t in tau_grid]
+        C_tau = np.array(
+            total_C_batch(tau_points, parallel=parallel, n_workers=n_workers),
+            dtype=complex,
+        )
     else:
-        # k>=3: leave evaluation up to caller — total_C is a callable
+        # k>=3: leave evaluation up to caller — total_C / total_C_batch
+        # are exposed in the result dict.
         C_tau = None
 
     result = {

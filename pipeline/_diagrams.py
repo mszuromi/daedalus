@@ -58,6 +58,8 @@ def enumerate_unique_diagrams(
     stypes,
     cache_dir_root: str = 'saved_theories',
     use_cache: bool = True,
+    parallel: bool = False,
+    n_workers: int | None = None,
     verbose: bool = True,
 ):
     """
@@ -84,6 +86,15 @@ def enumerate_unique_diagrams(
     cache_dir_root : str
     use_cache : bool
         If False, always recompute and never write.
+    parallel : bool, default False
+        If True, fan the per-prediagram type-assignment stage across a
+        fork-based ``multiprocessing.Pool`` (see
+        ``msrjd.diagrams.type_assignment.enumerate_all``).  Skipped on
+        cache hits.
+    n_workers : int or None, default None
+        Worker count when ``parallel=True``.  ``None`` lets the
+        underlying enumerator pick
+        ``min(os.cpu_count(), len(prediagrams))``.
     verbose : bool
 
     Returns
@@ -125,6 +136,7 @@ def enumerate_unique_diagrams(
             prediagrams, external_fields, vtypes, stypes,
             G_ft=G_ft,
             resp_index=resp_idx, phys_index=phys_idx,
+            parallel=parallel, n_workers=n_workers,
         )
         causal, n_disc, _ = filter_causal(typed)
         unique = deduplicate_typed_diagrams(causal)
