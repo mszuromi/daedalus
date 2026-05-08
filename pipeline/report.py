@@ -346,12 +346,34 @@ def generate_report(
 
     os.makedirs(os.path.dirname(os.path.abspath(output_pdf)) or '.',
                 exist_ok=True)
-    with PdfPages(output_pdf) as pdf:
-        _draw_cover_page(pdf, model, k, max_ell, fundamental,
-                         external_fields, result)
-        n_diag = len(result['diagrams'])
-        for idx, td_record in enumerate(result['diagrams'], 1):
-            _draw_diagram_page(pdf, idx, n_diag, td_record, result, k)
+
+    # ── Defensive matplotlib state reset ───────────────────────────
+    # When generate_report is called from inside a Jupyter notebook
+    # AFTER prior cells have produced inline figures (e.g. a
+    # `plt.subplots(); plt.show()` overlay), matplotlib retains
+    # figure references and a mathtext cache that can hold non-PDF-
+    # serializable objects (notably Sage RealLiteral values that
+    # entered through axis-label / text rendering somewhere upstream).
+    # The pollution only manifests at PdfPages.close() / finalize()
+    # because that's when the cumulative ExtGState dict gets dumped.
+    # Closing ALL existing figures forces a clean slate for the PDF
+    # we're about to write.  Standalone scripts won't notice; only
+    # notebook re-runs benefit.
+    plt.close('all')
+
+    # Build the report inside a "pdf" backend rcParams scope so
+    # matplotlib doesn't try to share mathtext caches with the
+    # inline / agg backends used by the calling notebook.
+    import matplotlib as _mpl
+    with _mpl.rc_context({'text.usetex': False}):
+        with PdfPages(output_pdf) as pdf:
+            _draw_cover_page(pdf, model, k, max_ell, fundamental,
+                             external_fields, result)
+            n_diag = len(result['diagrams'])
+            for idx, td_record in enumerate(result['diagrams'], 1):
+                _draw_diagram_page(pdf, idx, n_diag, td_record,
+                                   result, k)
+    plt.close('all')
 
     if verbose:
         print(f'[report] done.')
