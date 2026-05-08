@@ -258,7 +258,17 @@ def compute_cumulants(
     # flags fan the per-τ work out across processes.
     total_C       = td_result['total_C']
     total_C_batch = td_result['total_C_batch']
-    if k == 2:
+    if k == 1:
+        # k=1 is the rate (tree) or rate + loop correction (max_ell≥1).
+        # For stationary systems it's τ-independent, but we evaluate on
+        # the grid for API consistency with k=2 (downstream code can
+        # ``.mean()`` if it just wants the scalar).
+        tau_points = [(float(t),) for t in tau_grid]
+        C_tau = np.array(
+            total_C_batch(tau_points, parallel=parallel, n_workers=n_workers),
+            dtype=complex,
+        )
+    elif k == 2:
         # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned.
         tau_points = [(0.0, float(t)) for t in tau_grid]
         C_tau = np.array(
