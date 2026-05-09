@@ -65,6 +65,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from sage.all import SR
+
 
 @dataclass
 class FieldSpec:
@@ -123,6 +125,19 @@ class TheoryBuilder:
         self._functions: list[dict] = []
         self._operators: list[dict] = []
         self._correlated_noises: dict = {}
+
+        # Text-driven declarations (used by the UI and by
+        # ``define_function`` / ``set_action_text`` / etc.).  When any
+        # of these are populated, ``build()`` compiles them to lambdas
+        # via ``pipeline.theory_compiler``, overriding the lambda hooks
+        # above.  Empty by default → existing template-based flow runs
+        # unchanged.
+        self._function_specs:   list[dict] = []
+        self._kernel_specs:     list[dict] = []   # text time/freq exprs
+        self._action_text:      Optional[str] = None
+        self._mf_eqs_text:      dict[str, str] = {}
+        self._cgf_terms:        list[dict] = []
+        self._phi_function_name: Optional[str] = None
 
     # ── Field declarations ─────────────────────────────────────────
     def response_field(self, name: str, indexed: bool = True,
@@ -201,6 +216,148 @@ class TheoryBuilder:
             latex_name=latex_name or name,
             frequency_image=frequency_image, description=description,
         ))
+        return self
+
+    # ── Text-driven theory declaration (UI-friendly) ──────────────
+    # Each method below stores a Sage-syntax text string.  At
+    # ``.build()`` time the strings are compiled to Python lambdas via
+    # ``pipeline.theory_compiler`` and dropped into the model dict.
+    # Calling any of these overrides the corresponding lambda hook.
+
+    def define_function(self, name: str, args: list[str],
+                        expression: str, latex: str = None,
+                        description: str = ''):
+        """Declare a function of field variables (and parameters).
+
+        Parameters
+        ----------
+        name : str
+            Function name as referenced inside the action / MF
+            equations (e.g. ``'phi'``).
+        args : list of str
+            Field-variable names that are formal arguments
+            (e.g. ``['v']``).  The function body may also reference
+            any declared parameter by name.
+        expression : str
+            Sage-syntax body, e.g. ``'a*v^2'`` or
+            ``'1 / (1 + exp(-v/v_thresh))'``.
+        latex : str, optional
+            Display form (defaults to ``name``).
+        """
+        self._function_specs.append({
+            'name':        name,
+            'args':        list(args),
+            'expression':  expression,
+            'latex':       latex or name,
+            'description': description,
+        })
+        return self
+
+    def define_kernel(self, name: str, *, time_expr: str = None,
+                      freq_image: str = None, latex_name: str = '',
+                      sage_name: str = '', description: str = ''):
+        """Declare a convolution kernel via either its time-domain
+        expression OR its frequency image (or both).
+
+        At least one of ``time_expr`` / ``freq_image`` must be given.
+        ``freq_image`` is preferred because it's used directly by
+        the propagator construction; if only ``time_expr`` is given,
+        the build will warn that the FT must be supplied.
+
+        The kernel is also registered as a regular ``kernel(...)``
+        symbol for the MSR-JD framework's name resolution.
+        """
+        if time_expr is None and freq_image is None:
+            raise ValueError(
+                f"define_kernel({name!r}): supply at least one of "
+                f"time_expr= or freq_image=")
+        # Register the kernel symbol with the regular .kernel() call
+        if not any(k.name == name for k in self.kernels):
+            self.kernel(name, sage_name=sage_name or f'z_{name}',
+                        latex_name=latex_name or name,
+                        description=description)
+        self._kernel_specs.append({
+            'name':       name,
+            'time_expr':  time_expr,
+            'freq_image': freq_image,
+        })
+        return self
+
+    def set_action_text(self, text: str):
+        """Set the per-population action integrand ``S_i`` as a
+        Sage-syntax string.
+
+        ``i`` is the implicit free index — at build time the integrand
+        is summed over ``i in range(n_populations)``.  Inner sums use
+        Python comprehension syntax::
+
+            nt[i] * (Dt + 1/tau) * dn[i]
+            - nt[i] * phi(vstar[i] + dv[i])
+            + vt[i] * (Dt + 1/tau) * dv[i]
+            - vt[i] * sum(w[i, j] * g * dn[j] for j in pop)
+
+        ``pop = range(n_populations)`` is pre-bound for inner sums.
+        """
+        self._action_text = text
+        return self
+
+    def set_mf_equation(self, saddle_name: str, rhs_text: str):
+        """Declare a per-population mean-field equation.
+
+        ``saddle_name`` is the parameter name (e.g. ``'vstar'``,
+        ``'nstar'``, ``'mstar'``) that the equation defines.  The RHS
+        is a Sage-syntax string in terms of ``i``, parameters, and
+        other saddles::
+
+            set_mf_equation('vstar',
+                'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)')
+            set_mf_equation('nstar', 'phi(vstar[i])')
+
+        The framework also auto-emits ``phi0_<i> = nstar[i]`` for the
+        EOM closure, so users don't need to declare that.
+        """
+        self._mf_eqs_text[saddle_name] = rhs_text
+        return self
+
+    def declare_cgf_term(self, name: str, response_field: str, order: int,
+                         coefficient: str, kernel: str = None):
+        """Add one term to a non-closed-form cumulant generating
+        functional (e.g. GTaS noise).
+
+        Parameters
+        ----------
+        name : str
+            CGF identifier — multiple rows with the same name + order
+            sum into a single cumulant.
+        response_field : str
+            The response-field this CGF couples to (e.g. ``'mt'``).
+        order : int
+            Cumulant order: 2 for κ⁽²⁾, 3 for κ⁽³⁾, 4 for κ⁽⁴⁾, ...
+        coefficient : str
+            Sage-syntax expression for the cumulant coefficient
+            (e.g. ``'lambda_X * p_part'``).
+        kernel : str, optional
+            Optional time-domain kernel multiplier
+            (e.g. ``'_gauss(tau, mu_shift, sigma_sq)'`` for a
+            cross-cumulant Gaussian factor).
+        """
+        self._cgf_terms.append({
+            'name':           name,
+            'response_field': response_field,
+            'order':          int(order),
+            'coefficient':    coefficient,
+            'kernel':         kernel,
+        })
+        return self
+
+    def set_transfer_function(self, name: str = 'phi'):
+        """Mark which declared function plays the role of the MSR-JD
+        ``phi_concrete`` (the saddle-point Taylor-expansion target).
+
+        Defaults to ``'phi'``; only needed if you've named the transfer
+        function differently.
+        """
+        self._phi_function_name = name
         return self
 
     # ── Lambda hooks for the harder stuff (until templates land) ───
@@ -372,13 +529,149 @@ class TheoryBuilder:
         self._functions       = list(template.functions_list())
         return self
 
+    # ── Text → lambda compilation ─────────────────────────────────
+    def _compile_text_declarations(self) -> None:
+        """Walk the text-based declarations and compile each into the
+        corresponding lambda hook.  No-op if no text declarations
+        were made (template-only builders go through unchanged)."""
+        if not (self._action_text or self._function_specs
+                or self._kernel_specs or self._mf_eqs_text
+                or self._cgf_terms):
+            return
+
+        from pipeline.theory_compiler import (
+            make_action_lambda,
+            make_phi_concrete_lambda,
+            make_specializations_lambda,
+            make_mf_bg_conditions_lambda,
+            make_mf_equations_lambda,
+            make_kernel_ft_image_lambda,
+            make_correlated_noises_block,
+        )
+
+        n_pop = self.n_populations
+        field_names  = ([f.name for f in self.response_fields]
+                        + [f.name for f in self.physical_fields])
+        param_names  = [p.name for p in self.parameters]
+        kernel_names = [k.name for k in self.kernels]
+
+        # Identify the transfer function (defaults to one named 'phi')
+        phi_name = self._phi_function_name or 'phi'
+        phi_spec = next((f for f in self._function_specs
+                         if f['name'] == phi_name), None)
+
+        # Action — bind ``phi`` in formal mode so FieldTheory can
+        # auto-Taylor-expand it.
+        if self._action_text is not None:
+            self._action = make_action_lambda(
+                self._action_text,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                transfer_function = phi_spec,
+            )
+
+        # phi_concrete (concrete expression for Taylor derivatives at
+        # the saddle) + specializations (auto-derived derivative subs)
+        if phi_spec is not None:
+            self._phi_concrete = make_phi_concrete_lambda(
+                phi_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+            self._specializations = make_specializations_lambda(
+                phi_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+
+            # Register the transfer function as a FORMAL indexed entry
+            # in model['functions'] so FieldTheory's auto-Taylor pass
+            # produces phi0_<i>, phi1_<i>, … derivative symbols (which
+            # mf_bg_conditions / specializations then substitute).
+            from sage.all import function as sr_function
+            self._functions = [{
+                'name':         phi_spec['name'],
+                'indexed':      True,
+                'deriv_prefix': phi_spec['name'],
+                'latex':        phi_spec.get('latex', phi_spec['name']),
+                'description':  phi_spec.get('description',
+                                             'transfer function'),
+                'expression':   (lambda i, v, _t=phi_spec['name']:
+                                 sr_function(f'{_t}_{i+1}')(v)),
+            }]
+
+        # Mean-field equations — phi bound in CONCRETE mode here.
+        if self._mf_eqs_text:
+            self._mf_bg = make_mf_bg_conditions_lambda(
+                self._mf_eqs_text, phi_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+            self._mf_equations = make_mf_equations_lambda(
+                self._mf_eqs_text, phi_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+
+        # Kernel frequency images
+        if self._kernel_specs:
+            self._kernel_ft_image = make_kernel_ft_image_lambda(
+                self._kernel_specs,
+                param_names = param_names,
+            )
+
+        # Correlated noises (CGF cumulant terms)
+        if self._cgf_terms:
+            self._correlated_noises.update(
+                make_correlated_noises_block(
+                    self._cgf_terms, param_names=param_names))
+
+        # ``mf_substitutions`` for the recurrent weight matrix expansion.
+        # The MSR-JD framework expects each indexed='matrix' parameter
+        # to have a substitution that produces ``[[w_{i+1}{j+1}] for j]
+        # for i]`` (the elementwise SR var grid).  Auto-generate these
+        # for every matrix parameter declared in the builder.
+        for p in self.parameters:
+            if p.matrix:
+                wname = p.name
+                self._mf_substitutions.append({
+                    'name':  wname,
+                    'value': (lambda ns, _w=wname: [
+                        [SR.var(f'{_w}{i+1}{j+1}') for j in ns.pop]
+                        for i in ns.pop
+                    ]),
+                })
+
     # ── Build the HAWKES_MODEL dict ───────────────────────────────
     def build(self) -> dict:
         """Emit a HAWKES_MODEL dict.
 
-        Validates that all required hooks have been provided.  Raises
-        ValueError with a clear message if anything is missing.
+        Compiles text-based declarations (set_action_text,
+        define_function, set_mf_equation, declare_cgf_term, …) to
+        lambdas and uses them in place of the corresponding lambda
+        hooks.  Validates that all required hooks ended up populated.
+        Raises ValueError with a clear message if anything is missing.
         """
+        # Compile any text declarations into lambdas.  Done here, not
+        # in the setters, so that all decls are available when each
+        # lambda's namespace is assembled.
+        self._compile_text_declarations()
+
         missing = []
         if self._action is None:           missing.append('action')
         if self._phi_concrete is None:     missing.append('phi_concrete')
