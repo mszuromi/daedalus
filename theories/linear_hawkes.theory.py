@@ -34,12 +34,12 @@ def build():
 
         .set_action_text('''
             sum(
-                nt[i] * (nstar[i] + dn[i])
-                - (exp(nt[i]) - 1) * phi[i](dv[i])
+                nt[i] * n[i]
+                - (exp(nt[i]) - 1) * phi[i](v[i])
                 + vt[i] * (
-                    (tau * Dt + 1) * dv[i]
-                    + vstar[i] - E[i]
-                    - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+                    (tau * Dt + 1) * v[i]
+                    - E[i]
+                    - sum(w[i, j] * g * n[j] for j in pop)
                 )
                 for i in pop
             )

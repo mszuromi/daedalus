@@ -52,17 +52,21 @@ def build():
                        latex_name='g')
 
         # ── Action ───────────────────────────────────────────────
-        # Hawkes Poisson MSR-JD action.  Sums are explicit; ``i`` is
-        # bound by Python comprehension.  ``phi[i](dv[i])`` is the
-        # indexed formal call FieldTheory's auto-Taylor pass expands.
+        # Hawkes Poisson MSR-JD action written in physical fields.
+        # ``n[i]`` (full field) is automatically expanded to
+        # ``nstar[i] + dn[i]`` by the compiler, and ``phi[i](v[i])``
+        # is recognized as the saddle-shifted formal Taylor target
+        # (the framework adds renames at vstar[i] so the
+        # phi0_<i+1>, phi1_<i+1>, ... substitution pipeline applies
+        # transparently).
         .set_action_text('''
             sum(
-                nt[i] * (nstar[i] + dn[i])
-                - (exp(nt[i]) - 1) * phi[i](dv[i])
+                nt[i] * n[i]
+                - (exp(nt[i]) - 1) * phi[i](v[i])
                 + vt[i] * (
-                    (tau * Dt + 1) * dv[i]
-                    + vstar[i] - E[i]
-                    - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+                    (tau * Dt + 1) * v[i]
+                    - E[i]
+                    - sum(w[i, j] * g * n[j] for j in pop)
                 )
                 for i in pop
             )

@@ -614,16 +614,25 @@ class TheoryBuilder:
         phi_spec = next((f for f in self._function_specs
                          if f['name'] == phi_name), None)
 
-        # Pre-compute the naming convention dict (also stored in
-        # model['naming_convention']) so the compiler can expose
-        # natural-name fluctuation aliases (n → dn, v → dv) in the
-        # action's eval namespace.
+        # Pre-compute the naming convention so the compiler can expose
+        # natural-name aliases (n, v, m) in the action's eval namespace
+        # AND find each saddle quantity for full-field expansion
+        # (n[i] → nstar[i] + dn[i]).
         _fluct_map: dict[str, str] = {}
         for f in self.physical_fields:
             if f.natural_name:
                 _fluct_map[f.natural_name] = f.name
+        _saddle_map: dict[str, str] = {}
+        _mf_param_names: list[str] = []
+        for p in self.parameters:
+            if p.mean_field:
+                _mf_param_names.append(p.name)
+                if p.natural_name:
+                    _saddle_map[p.natural_name] = p.name
         _action_naming_convention = {
             'fluctuation_fields': _fluct_map,
+            'mean_field_saddles': _saddle_map,
+            'mf_parameters':      _mf_param_names,
         }
 
         # Action — write the FULL action; framework no longer wraps

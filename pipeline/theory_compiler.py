@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from sage.all import (
     SR, sage_eval, exp, log, sin, cos, tan, sqrt,
-    heaviside, dirac_delta, I, pi, function as sr_function,
+    heaviside, dirac_delta, I, pi, function as sr_function, diff,
 )
 
 
@@ -74,6 +74,38 @@ class _IndexedFormalFunction:
         def _call(arg, _n=full_name):
             return sr_function(_n)(arg)
         return _call
+
+
+class _FullPhysicalField:
+    """Exposes ``n[i] = nstar[i] + dn[i]`` (full physical field as
+    saddle + fluctuation) in user-facing action expressions.
+
+    The user writes the action in physical observables:
+      ``nt[i] * n[i]``   instead of   ``nt[i] * (nstar[i] + dn[i])``
+      ``phi[i](v[i])``   instead of   ``phi[i](dv[i])``
+
+    The saddle-fluctuation split is handled by the framework: ``n``,
+    ``v``, ``m`` etc. are bound to ``_FullPhysicalField`` objects in
+    the action namespace, while ``dn``, ``dv``, ``dm`` (pure
+    fluctuations) and ``nstar``, ``vstar``, ``mstar`` (pure saddles)
+    remain accessible under their internal names for users who
+    prefer the explicit form.
+    """
+    __slots__ = ('_saddle', '_fluct')
+
+    def __init__(self, saddle_array, fluct_array):
+        self._saddle = saddle_array
+        self._fluct  = fluct_array
+
+    def __getitem__(self, i):
+        if isinstance(i, tuple):
+            # Chained subscript, e.g. multi-index — generally not
+            # used for physical fields, but support gracefully.
+            return self._saddle[i] + self._fluct[i]
+        return self._saddle[i] + self._fluct[i]
+
+    def __len__(self):
+        return len(self._fluct)
 
 
 class _MatrixView:
@@ -121,15 +153,27 @@ def _builtin_namespace() -> dict[str, Any]:
 
 
 def _ns_var_namespace(ns, field_names, param_names, kernel_names,
-                      naming_convention=None) -> dict[str, Any]:
+                      naming_convention=None,
+                      expand_to_full=False) -> dict[str, Any]:
     """Assemble user-name → ns-attribute dict.
 
     For each declared field/parameter/kernel ``name`` the corresponding
     ``ns.<name>`` is exposed under that name.  When a
     ``naming_convention`` dict is supplied, fields are ALSO exposed
-    under their natural names (e.g. ``ns.dn`` accessible as both
-    ``dn`` and ``n`` in user expressions).  Matrix-shaped parameters
-    are wrapped in :class:`_MatrixView` for tuple-subscript access.
+    under their natural names — but the binding depends on
+    ``expand_to_full``:
+
+    - ``expand_to_full=False`` (default; MF equations, etc.): natural
+      name is an alias for the fluctuation field.  ``n[i]`` returns
+      ``ns.dn[i]``.
+    - ``expand_to_full=True`` (action context): natural name is bound
+      to ``_FullPhysicalField(ns.<saddle>, ns.<fluct>)``.  ``n[i]``
+      returns ``nstar[i] + dn[i]`` (the full physical observable).
+      The internal names ``dn``, ``dv`` remain accessible for
+      explicit fluctuation references.
+
+    Matrix-shaped parameters are wrapped in :class:`_MatrixView` for
+    tuple-subscript access.
     """
     out: dict[str, Any] = {}
 
@@ -137,6 +181,8 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
     # under natural name when the model declares a translation.
     fluct_natural_to_internal = (
         (naming_convention or {}).get('fluctuation_fields') or {})
+    saddle_natural_to_internal = (
+        (naming_convention or {}).get('mean_field_saddles') or {})
     fluct_internal_to_natural = {v: k
                                  for k, v in fluct_natural_to_internal.items()}
 
@@ -145,10 +191,20 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
             continue
         val = getattr(ns, fname)
         out[fname] = val
-        # Also expose under natural name if there's a mapping
+        # Also expose under natural name if there's a mapping.
+        # In action context, natural name is the FULL field
+        # (saddle + fluctuation); elsewhere it aliases the fluctuation.
         natural = fluct_internal_to_natural.get(fname)
         if natural and natural != fname:
-            out[natural] = val
+            if expand_to_full:
+                saddle_internal = saddle_natural_to_internal.get(natural)
+                if saddle_internal and hasattr(ns, saddle_internal):
+                    out[natural] = _FullPhysicalField(
+                        getattr(ns, saddle_internal), val)
+                else:
+                    out[natural] = val
+            else:
+                out[natural] = val
 
     # Parameters — promote 2D lists to MatrixView for w[i,j] access.
     # Saddle parameters are also exposed under their natural names
@@ -200,9 +256,11 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
       saddle-solver can use).
     """
     nsdict = _builtin_namespace()
-    nsdict.update(_ns_var_namespace(ns, field_names, param_names,
-                                    kernel_names,
-                                    naming_convention=naming_convention))
+    nsdict.update(_ns_var_namespace(
+        ns, field_names, param_names, kernel_names,
+        naming_convention=naming_convention,
+        expand_to_full=(transfer_function_mode == 'action'),
+    ))
     nsdict['pop'] = list(range(n_pop))
 
     # Compile each user-defined function into a Python callable.
@@ -325,24 +383,22 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
                        naming_convention=None):
     """Build the ``model['action']`` lambda from the user's action text.
 
-    The action is evaluated as a single Sage expression — the user
-    writes the **full** action including any sums over populations.
-    Population iteration uses Python comprehension syntax::
+    The action is evaluated as a single Sage expression — user writes
+    the **full** action including all sums.  Population iteration
+    uses Python comprehension against pre-bound ``pop``::
 
-        sum(nt[i] * (nstar[i] + dn[i]) - (exp(nt[i]) - 1) * phi[i](dv[i])
+        sum(nt[i] * n[i] - (exp(nt[i]) - 1) * phi[i](v[i])
             + vt[i] * (...)
             for i in pop)
 
-    Convention: ``pop = range(n_populations)`` is pre-bound.  Terms
-    that don't sum over ``pop`` (e.g. external-noise couplings to a
-    different population set) are written outside any sum.
-
-    Transfer functions are accessed with **indexed** syntax —
-    ``phi[i](dv[i])`` — because the action evaluator no longer has
-    an outer ``i`` loop; the index comes from the user's own
-    comprehension.  ``phi[i]`` produces a formal Sage function call
-    ``function(f'phi_{i+1}')(arg)`` that FieldTheory's auto-Taylor
-    pass expands.  Non-transfer functions are bound concretely.
+    Field references are FULL physical observables: ``n[i]`` resolves
+    to ``nstar[i] + dn[i]`` automatically, and ``phi[i](v[i])`` works
+    correctly because the Taylor-rename map is augmented to include
+    saddle-point expansions (``phi(vstar[i] + dv[i])`` Taylor-expands
+    in ``dv[i]`` around 0, producing terms like
+    ``function('phi_<i+1>')(vstar[i])``, which we map to the same
+    ``phi0_<i+1>`` / ``phi1_<i+1>`` / ... formal symbols that
+    ``mf_bg_conditions`` and ``specializations`` substitute).
     """
     def _action(ns):
         nsdict = _build_namespace_for_eval(
@@ -356,9 +412,103 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
             transfer_function_mode = 'action',
             naming_convention = naming_convention,
         )
-        return _safe_eval(action_text, nsdict, 'action')
+        s = _safe_eval(action_text, nsdict, 'action')
+
+        # Kill Dt * <saddle>[i] * (anything) terms — saddle quantities
+        # are time-constant by definition.  Necessary because the user
+        # writes the action in physical fields (n[i] = nstar[i] + dn[i],
+        # v[i] = vstar[i] + dv[i]); operators like (tau*Dt + 1) * v[i]
+        # expand to tau*Dt*vstar[i] + tau*Dt*dv[i] + vstar[i] + dv[i],
+        # and the framework needs ``tau*Dt*vstar[i] = 0`` enforced.
+        # Done here (in the action lambda, BEFORE field_theory.py's
+        # mf_bg substitution of vstar) so the kill rules match the raw
+        # vstar1, vstar2, ... symbols rather than their saddle-equation
+        # expansions.
+        if hasattr(ns, 'Dt'):
+            saddle_internals = (
+                (naming_convention or {}).get('mf_parameters') or [])
+            if saddle_internals:
+                W = SR.wild()
+                kill: dict = {}
+                for sname in saddle_internals:
+                    if not hasattr(ns, sname):
+                        continue
+                    arr = getattr(ns, sname)
+                    if not isinstance(arr, (list, tuple)):
+                        continue
+                    for elem in arr:
+                        kill[ns.Dt * elem]     = SR(0)
+                        kill[ns.Dt * elem * W] = SR(0)
+                if kill:
+                    # Sage's subs with Mul-pattern matching is more
+                    # reliable on the EXPANDED form (each term laid out
+                    # as an explicit Mul rather than nested in
+                    # parentheses).  Expand → subs → no-op if already
+                    # expanded.
+                    s = SR(s).expand().subs(kill)
+
+        # Augment ns._deriv_rename_subs with saddle-point Taylor renames.
+        # Without this, writing ``phi[i](v[i])`` (where v[i] = vstar[i]
+        # + dv[i]) produces formal terms like
+        # ``function('phi_<i+1>')(vstar[i])`` after Taylor expansion —
+        # which the existing renames (keyed on derivatives at 0) don't
+        # capture.  We add entries keyed on derivatives at vstar[i],
+        # mapping to the same ``phi<k>_<i+1>`` target symbols, so the
+        # downstream substitution pipeline works for both the legacy
+        # ``phi[i](dv[i])`` form and the new ``phi[i](v[i])`` form.
+        if (transfer_function is not None
+                and hasattr(ns, '_deriv_rename_subs')):
+            _augment_saddle_renames(
+                ns, transfer_function,
+                naming_convention=naming_convention,
+                taylor_order=getattr(ns, '_taylor_order', 4),
+            )
+
+        return s
 
     return _action
+
+
+def _augment_saddle_renames(ns, transfer_function, *,
+                            naming_convention=None,
+                            taylor_order=4):
+    """Add saddle-point Taylor-rename entries to ``ns._deriv_rename_subs``.
+
+    For each population ``i``, registers::
+
+        function('phi_<i+1>')(vstar[i])      → phi0_<i+1>
+        D[0](function('phi_<i+1>'))(vstar[i]) → phi1_<i+1>
+        D[0,0](...)(vstar[i])                 → phi2_<i+1>
+        ...
+
+    where ``vstar`` is the saddle of the transfer function's first arg
+    (looked up via the model's naming_convention).
+    """
+    tname = transfer_function['name']
+    arg_names = transfer_function.get('args') or []
+    if not arg_names:
+        return
+
+    # Saddle for the transfer function's first arg.  E.g. for phi(v),
+    # this is ns.vstar.
+    arg_natural = arg_names[0]
+    saddle_map = (naming_convention or {}).get('mean_field_saddles') or {}
+    saddle_internal = saddle_map.get(arg_natural, f'{arg_natural}star')
+    if not hasattr(ns, saddle_internal):
+        return
+    saddle_array = getattr(ns, saddle_internal)
+
+    # Build the saddle-shifted Taylor renames.
+    x_dum = SR.var('_xdum_saddle_')
+    for i in range(len(ns.pop)):
+        fe = sr_function(f'{tname}_{i + 1}')(x_dum)
+        for k in range(taylor_order + 1):
+            if k == 0:
+                val = fe.subs({x_dum: saddle_array[i]})
+            else:
+                val = diff(fe, x_dum, k).subs({x_dum: saddle_array[i]})
+            target = SR.var(f'{tname}{k}_{i + 1}')
+            ns._deriv_rename_subs[val] = target
 
 
 def make_phi_concrete_lambda(phi_fn_spec: dict, *, field_names, param_names,
@@ -494,6 +644,24 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
         if hasattr(ns, 'nstar') and phi_fn_spec is not None:
             for i in range(n_pop):
                 out[SR.var(f'phi{0}_{i+1}')] = ns.nstar[i]
+
+        # Dt * <saddle>[i] → 0  (saddle quantities are time-constant
+        # by definition).  Necessary because the user writes the action
+        # in physical fields ``v[i] = vstar[i] + dv[i]``; multiplying
+        # by a kinetic operator ``(tau*Dt + 1) * v[i]`` produces a
+        # spurious ``tau*Dt*vstar[i]`` term that the framework must
+        # zero out.  We use a wild-card subs so factors like
+        # ``tau * Dt * vstar1`` (Mul of multiple terms) are captured
+        # alongside the bare two-factor case.
+        if hasattr(ns, 'Dt'):
+            W = SR.wild()
+            for saddle_name in mf_eqs.keys():
+                if not hasattr(ns, saddle_name):
+                    continue
+                arr = getattr(ns, saddle_name)
+                for i in range(n_pop):
+                    out[ns.Dt * arr[i]]     = SR(0)
+                    out[ns.Dt * arr[i] * W] = SR(0)
         return out
 
     return _bg

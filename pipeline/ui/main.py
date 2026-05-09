@@ -264,17 +264,17 @@ class TheoryUI:
             self._tbl_cgfs.show(),
         ])
 
-        # Tab 7: Action — full S as one expression with explicit sums
+        # Tab 7: Action — full S in physical fields, with explicit sums.
         self._w_action = textarea_input(
             'Action S',
             placeholder=(
                 "sum(\n"
-                "    nt[i] * (nstar[i] + dn[i])\n"
-                "    - (exp(nt[i]) - 1) * phi[i](dv[i])\n"
+                "    nt[i] * n[i]\n"
+                "    - (exp(nt[i]) - 1) * phi[i](v[i])\n"
                 "    + vt[i] * (\n"
-                "        (tau * Dt + 1) * dv[i]\n"
-                "        + vstar[i] - E[i]\n"
-                "        - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)\n"
+                "        (tau * Dt + 1) * v[i]\n"
+                "        - E[i]\n"
+                "        - sum(w[i, j] * g * n[j] for j in pop)\n"
                 "    )\n"
                 "    for i in pop\n"
                 ")"
@@ -287,9 +287,10 @@ class TheoryUI:
                 '<h4>Action S</h4>'
                 '<p style="color:#555;font-size:90%;">'
                 "Write the <strong>full</strong> action as a single Sage "
-                "expression.  All sums over populations are explicit — "
-                "use Python comprehension syntax against the pre-bound "
-                "<code>pop = range(N_populations)</code>:"
+                "expression in physical observables (<code>n[i]</code>, "
+                "<code>v[i]</code>, …).  All sums over populations are "
+                "explicit — use Python comprehension syntax against the "
+                "pre-bound <code>pop = range(N_populations)</code>:"
                 "<pre style='background:#f5f5f5;padding:8px;'>"
                 "sum(... for i in pop)\n"
                 "sum(... for j in pop)\n"
@@ -301,22 +302,24 @@ class TheoryUI:
                 '<p style="color:#555;font-size:90%;">'
                 'Conventions:'
                 '<ul style="margin-top:2px;">'
+                '<li><strong>Use physical observables</strong>: write '
+                '<code>n[i]</code>, <code>v[i]</code> — the framework '
+                'expands these to <code>nstar[i] + dn[i]</code>, '
+                '<code>vstar[i] + dv[i]</code> behind the scenes.  '
+                'The user does not type <code>nstar</code>, <code>dn</code>, '
+                'or any saddle-fluctuation decomposition.</li>'
                 '<li><strong>Transfer functions are indexed</strong>: '
-                'write <code>phi[i](dv[i])</code> '
-                '(not <code>phi(dv[i])</code>).  Each <code>phi[i]</code> '
-                'is a formal Sage function symbol that '
-                'FieldTheory auto-Taylor-expands; the constant '
-                '<code>phi[i](0)</code> is substituted with '
-                '<code>nstar[i]</code> at the saddle.</li>'
-                '<li><strong>Field arguments are fluctuations</strong>: '
-                'pass <code>dv[i]</code>, not <code>vstar[i] + dv[i]</code>. '
-                'The saddle shift is handled implicitly.</li>'
+                'write <code>phi[i](v[i])</code>.  Pass the full physical '
+                'field as the argument; the framework Taylor-expands '
+                'around the saddle and substitutes '
+                '<code>phi[i](vstar[i]) → nstar[i]</code> automatically.</li>'
                 '<li><strong>Matrix subscript</strong>: '
                 '<code>w[i, j]</code> (tuple) or <code>w[i][j]</code> '
                 '(chained) — both work.</li>'
-                '<li><strong>Field name aliases</strong>: '
-                '<code>n[i]</code> and <code>dn[i]</code> are equivalent '
-                '(both refer to the fluctuation field).</li>'
+                '<li><strong>Differential operators</strong>: '
+                '<code>Dt</code> is the time derivative ∂<sub>t</sub>. '
+                'Compose as a regular Sage operator: '
+                '<code>(tau * Dt + 1) * v[i]</code>.</li>'
                 '</ul>'
                 '</p>'),
             self._w_action,
