@@ -110,19 +110,37 @@ def _emit_response_field(f: dict) -> str:
 
 
 def _emit_field(method: str, f: dict, *, with_natural: bool) -> str:
-    """Emit a ``.<method>('name', kwarg=...)`` line."""
-    kwargs = _kw_chain(
-        ('indexed', f.get('indexed', True)),
-        ('natural_name', f.get('natural_name')) if with_natural else (None, None),
-        ('latex', f.get('latex')),
+    """Emit a ``.<method>('name', kwarg=...)`` line.
+
+    For physical fields (``method='physical_field'``), the ``name``
+    arg is treated as the user-facing natural letter — TheoryBuilder
+    auto-prefixes ``d`` to get the internal fluctuation name and
+    auto-creates the response field + saddle parameter.
+    """
+    pairs = [('indexed', f.get('indexed', True))]
+    if with_natural:
+        # Only include natural_name if it differs from name (legacy
+        # support for files that explicitly declare the d-prefixed
+        # internal name); the new style omits natural_name entirely.
+        nn = f.get('natural_name')
+        if nn and nn != f['name']:
+            pairs.append(('natural_name', nn))
+    pairs += [
+        ('latex',       f.get('latex')),
         ('description', f.get('description')),
-    )
+    ]
+    kwargs = _kw_chain(*pairs)
     head = f'.{method}({_py_repr(f["name"])}'
     return head + (', ' + kwargs if kwargs else '') + ')'
 
 
 def _emit_parameter(p: dict) -> str:
-    """Emit a ``.parameter(...)`` call."""
+    """Emit a ``.parameter(...)`` call.
+
+    Saddle parameters (``mean_field=True``) are NOT emitted — the
+    framework auto-creates them when their physical field is
+    declared.  We filter those out at the spec collection layer.
+    """
     # Map UI 'type' to TheoryBuilder's indexed= argument
     ptype = p.get('type', 'scalar')
     if ptype == 'scalar':
@@ -203,6 +221,16 @@ def render_theory_file(spec: dict) -> str:
     response_fields = spec.get('response_fields', []) or []
     physical_fields = spec.get('physical_fields', []) or []
     parameters      = spec.get('parameters', [])      or []
+    # Auto-filter saddle parameters and parameters whose names match
+    # the auto-generated saddle naming convention (<natural>star) —
+    # the framework re-creates these from the physical-field
+    # declarations.
+    physical_natural = {f.get('natural_name') or f['name']
+                        for f in physical_fields}
+    auto_saddle_names = {f'{nat}star' for nat in physical_natural}
+    parameters = [p for p in parameters
+                  if not p.get('mean_field')
+                  and p['name'] not in auto_saddle_names]
     functions       = spec.get('functions', [])       or []
     kernels         = spec.get('kernels', [])         or []
     cgf_terms       = spec.get('cgf_terms', [])       or []
@@ -232,6 +260,9 @@ def render_theory_file(spec: dict) -> str:
     out.append(f'    return (')
     out.append(f'        TheoryBuilder({_py_repr(name)}, n_populations={n_pop})')
 
+    # Response fields: only emit if user explicitly declared them.
+    # The new natural-name style relies on TheoryBuilder.physical_field
+    # to auto-create the conjugate response.
     for f in response_fields:
         out.append(f'        {_emit_field("response_field", f, with_natural=False)}')
     for f in physical_fields:

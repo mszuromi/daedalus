@@ -31,18 +31,14 @@ def build():
         TheoryBuilder('Quadratic Hawkes 2-pop', n_populations=2)
 
         # ── Field variables ───────────────────────────────────────
-        .response_field('nt', indexed=True, latex=r'\tilde n')
-        .response_field('vt', indexed=True, latex=r'\tilde v')
-        .physical_field('dn', indexed=True, natural_name='n',
-                        latex=r'\delta\dot n')
-        .physical_field('dv', indexed=True, natural_name='v',
-                        latex=r'\delta v')
+        # Just declare the natural physical fields — the framework
+        # auto-creates the fluctuation field (d-prefixed), the
+        # conjugate response field (-t suffixed), and the saddle
+        # parameter (-star suffixed).
+        .physical_field('n')
+        .physical_field('v')
 
         # ── Parameters ────────────────────────────────────────────
-        .parameter('nstar', indexed=True, domain='positive',
-                   mean_field=True, natural_name='n')
-        .parameter('vstar', indexed=True,
-                   mean_field=True, natural_name='v')
         .parameter('E',     indexed=True)
         .parameter('tau',   default=10.0, domain='positive')
         .parameter('a',     default=0.44)
@@ -55,16 +51,20 @@ def build():
         .define_kernel('g', freq_image='1 / (1 + I*omega*tau_g)',
                        latex_name='g')
 
-        # ── Action S_i (per-population integrand) ────────────────
-        # Hawkes Poisson MSR-JD action.  ``phi(dv[i])`` is the formal
-        # Taylor target; framework substitutes phi(0) → nstar[i].
+        # ── Action ───────────────────────────────────────────────
+        # Hawkes Poisson MSR-JD action.  Sums are explicit; ``i`` is
+        # bound by Python comprehension.  ``phi[i](dv[i])`` is the
+        # indexed formal call FieldTheory's auto-Taylor pass expands.
         .set_action_text('''
-            nt[i] * (nstar[i] + dn[i])
-            - (exp(nt[i]) - 1) * phi(dv[i])
-            + vt[i] * (
-                (tau * Dt + 1) * dv[i]
-                + vstar[i] - E[i]
-                - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+            sum(
+                nt[i] * (nstar[i] + dn[i])
+                - (exp(nt[i]) - 1) * phi[i](dv[i])
+                + vt[i] * (
+                    (tau * Dt + 1) * dv[i]
+                    + vstar[i] - E[i]
+                    - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+                )
+                for i in pop
             )
         ''')
 

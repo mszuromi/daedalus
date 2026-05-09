@@ -84,101 +84,92 @@ class TheoryUI:
                             self._w_description])
 
         # Tab 2: Field variables
-        self._tbl_response = DynamicTable(
-            columns=[
-                {'name': 'name',         'kind': 'text',
-                 'placeholder': 'nt',    'width': '100px'},
-                {'name': 'indexed',      'kind': 'bool',
-                 'default': True,        'width': '60px'},
-                {'name': 'latex',        'kind': 'text',
-                 'placeholder': r'\tilde n', 'width': '100px'},
-                {'name': 'description',  'kind': 'text',
-                 'placeholder': 'response field', 'width': '240px'},
-            ],
-            initial=[
-                {'name': 'nt', 'indexed': True, 'latex': r'\tilde n'},
-                {'name': 'vt', 'indexed': True, 'latex': r'\tilde v'},
-            ],
-        )
+        # Just declare the natural physical-observable names (n, v, m,
+        # whatever).  The framework auto-creates:
+        #   - the d-prefixed fluctuation field used in the action (dn, dv, …)
+        #   - the conjugate response field (-t suffixed: nt, vt, …)
+        #   - the saddle parameter (-star suffixed: nstar, vstar, …)
+        # so the user never types those internal names.
         self._tbl_physical = DynamicTable(
             columns=[
                 {'name': 'name',         'kind': 'text',
-                 'placeholder': 'dn',    'width': '100px'},
-                {'name': 'natural_name', 'kind': 'text',
-                 'placeholder': 'n',     'width': '90px'},
+                 'placeholder': 'n',     'width': '100px'},
                 {'name': 'indexed',      'kind': 'bool',
-                 'default': True,        'width': '60px'},
+                 'default': True,        'width': '70px'},
                 {'name': 'latex',        'kind': 'text',
-                 'placeholder': r'\delta\dot n', 'width': '100px'},
+                 'placeholder': '(auto: \\delta n)', 'width': '120px'},
                 {'name': 'description',  'kind': 'text',
-                 'placeholder': 'fluctuation field', 'width': '200px'},
+                 'placeholder': '',      'width': '300px'},
             ],
             initial=[
-                {'name': 'dn', 'natural_name': 'n', 'indexed': True,
-                 'latex': r'\delta\dot n'},
-                {'name': 'dv', 'natural_name': 'v', 'indexed': True,
-                 'latex': r'\delta v'},
+                {'name': 'n', 'indexed': True,
+                 'description': 'firing rate'},
+                {'name': 'v', 'indexed': True,
+                 'description': 'voltage'},
             ],
         )
         tab_fields = W.VBox([
-            W.HTML('<h4>Response fields</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   '"Tilde" fields conjugate to physical observables. '
-                   'Typically one per physical field.'
-                   '</p>'),
-            self._tbl_response.show(),
-            W.HTML('<br><h4>Physical fields</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   'Fluctuation variables (`dn`, `dv`, …) used in the action. '
-                   '<code>natural_name</code> is the user-facing letter '
-                   '(e.g. <code>n</code>) external_fields uses.'
-                   '</p>'),
+            W.HTML(
+                '<h4>Physical fields</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                'Declare the natural physical-observable letters '
+                '(<code>n</code>, <code>v</code>, <code>m</code>, …). '
+                'The framework automatically creates:'
+                '<ul style="margin-top:2px;">'
+                '<li>the fluctuation field <code>d&lt;name&gt;</code> '
+                '(used in the action — write <code>n[i]</code> or '
+                '<code>dn[i]</code>; both refer to the fluctuation)</li>'
+                '<li>the conjugate response field '
+                '<code>&lt;name&gt;t</code> (e.g. <code>nt</code>, '
+                '<code>vt</code>) — used as MSR-pairing factors '
+                'in the action</li>'
+                '<li>the saddle parameter '
+                '<code>&lt;name&gt;star</code> (e.g. <code>nstar</code>, '
+                '<code>vstar</code>) — solved numerically by the saddle '
+                'solver during pipeline execution</li>'
+                '</ul></p>'),
             self._tbl_physical.show(),
         ])
 
-        # Tab 3: Parameters
+        # Tab 3: Parameters — just name + type + default value.
+        # Saddle quantities (n*, v*, …) are auto-created by the
+        # framework when their physical field is declared in tab 2;
+        # they're not entered here.  domain/mean_field/natural_name
+        # are inferred or default-resolved by the framework.
         self._tbl_parameters = DynamicTable(
             columns=[
                 {'name': 'name',         'kind': 'text',
-                 'placeholder': 'tau',   'width': '90px'},
+                 'placeholder': 'tau',   'width': '120px'},
                 {'name': 'type',         'kind': 'select',
                  'options': ['scalar', 'vector', 'matrix'],
-                 'default': 'scalar',    'width': '90px'},
+                 'default': 'scalar',    'width': '110px'},
                 {'name': 'default',      'kind': 'text',
-                 'placeholder': '10.0 / [0.5, 0.5] / [[..]]',
-                 'width': '180px'},
-                {'name': 'mean_field',   'kind': 'bool',
-                 'default': False,       'width': '80px'},
-                {'name': 'natural_name', 'kind': 'text',
-                 'placeholder': 'n / v / m', 'width': '90px'},
-                {'name': 'domain',       'kind': 'text',
-                 'placeholder': 'positive (or blank)', 'width': '130px'},
-                {'name': 'description',  'kind': 'text',
-                 'placeholder': '',       'width': '180px'},
+                 'placeholder': '10.0 / [0.5, 0.5] / [[0.1, 0.2], [..]]',
+                 'width': '320px'},
             ],
             initial=[
-                {'name': 'nstar', 'type': 'vector', 'mean_field': True,
-                 'natural_name': 'n', 'domain': 'positive'},
-                {'name': 'vstar', 'type': 'vector', 'mean_field': True,
-                 'natural_name': 'v'},
-                {'name': 'E',     'type': 'vector'},
-                {'name': 'tau',   'type': 'scalar', 'default': '10.0',
-                 'domain': 'positive'},
+                {'name': 'E',     'type': 'vector', 'default': '[0.78, 0.81]'},
+                {'name': 'tau',   'type': 'scalar', 'default': '10.0'},
                 {'name': 'a',     'type': 'scalar', 'default': '1.0'},
-                {'name': 'tau_g', 'type': 'scalar', 'default': '2.5',
-                 'domain': 'positive'},
-                {'name': 'w',     'type': 'matrix'},
+                {'name': 'tau_g', 'type': 'scalar', 'default': '2.5'},
+                {'name': 'w',     'type': 'matrix',
+                 'default': '[[0.30, 0.25], [0.30, 0.35]]'},
             ],
         )
         tab_params = W.VBox([
-            W.HTML('<h4>Parameters</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   "Saddle quantities (n*, v*, …) need <code>mean_field=True</code> "
-                   "and a <code>natural_name</code> so <code>mf['n', i]</code> works. "
-                   '<code>default</code> is parsed by Python: <code>10.0</code> for '
-                   'scalars, <code>[0.5, 0.5]</code> for vectors, '
-                   '<code>[[0.3, 0.25], [0.3, 0.35]]</code> for matrices.'
-                   '</p>'),
+            W.HTML(
+                '<h4>Parameters</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Numerical-parameter declarations.  Default values are "
+                'parsed as Python literals: <code>10.0</code> for scalars, '
+                '<code>[0.5, 0.5]</code> for vectors, '
+                '<code>[[0.3, 0.25], [0.3, 0.35]]</code> for matrices. '
+                "Mean-field saddles (<code>nstar</code>, <code>vstar</code>) "
+                'are <strong>not</strong> declared here — the framework '
+                'auto-creates them from the physical-field declarations '
+                'in tab 2 and solves for them numerically during pipeline '
+                'execution.'
+                '</p>'),
             self._tbl_parameters.show(),
         ])
 
@@ -273,30 +264,60 @@ class TheoryUI:
             self._tbl_cgfs.show(),
         ])
 
-        # Tab 7: Action
+        # Tab 7: Action — full S as one expression with explicit sums
         self._w_action = textarea_input(
-            'Action S_i (per-population integrand)',
-            placeholder=("nt[i] * (nstar[i] + dn[i])\n"
-                         "- (exp(nt[i]) - 1) * phi(dv[i])\n"
-                         "+ vt[i] * ( (tau*Dt + 1) * dv[i]\n"
-                         "           + vstar[i] - E[i]\n"
-                         "           - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop) )"),
-            rows=12,
-            width='760px',
+            'Action S',
+            placeholder=(
+                "sum(\n"
+                "    nt[i] * (nstar[i] + dn[i])\n"
+                "    - (exp(nt[i]) - 1) * phi[i](dv[i])\n"
+                "    + vt[i] * (\n"
+                "        (tau * Dt + 1) * dv[i]\n"
+                "        + vstar[i] - E[i]\n"
+                "        - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)\n"
+                "    )\n"
+                "    for i in pop\n"
+                ")"
+            ),
+            rows=14,
+            width='820px',
         )
         tab_action = W.VBox([
             W.HTML(
-                '<h4>Action S<sub>i</sub></h4>'
+                '<h4>Action S</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "Per-population integrand.  Framework wraps "
-                "<code>sum(... for i in pop)</code>.  "
-                "<code>i</code> is reserved as the implicit free index. "
-                "Inner sums use Python comprehension syntax: "
-                "<code>sum(w[i, j] * dn[j] for j in pop)</code>. "
-                "Transfer-function arguments are <strong>fluctuations</strong>: "
-                "write <code>phi(dv[i])</code>, not <code>phi(vstar[i] + dv[i])</code> — "
-                "the framework auto-Taylor-expands and substitutes "
-                "<code>phi(0) → nstar[i]</code>."
+                "Write the <strong>full</strong> action as a single Sage "
+                "expression.  All sums over populations are explicit — "
+                "use Python comprehension syntax against the pre-bound "
+                "<code>pop = range(N_populations)</code>:"
+                "<pre style='background:#f5f5f5;padding:8px;'>"
+                "sum(... for i in pop)\n"
+                "sum(... for j in pop)\n"
+                "sum(... for i in pop for j in pop)</pre>"
+                "Terms that don't iterate over <code>pop</code> "
+                "(e.g. couplings to a different external population set) "
+                "go outside any sum and add normally."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                'Conventions:'
+                '<ul style="margin-top:2px;">'
+                '<li><strong>Transfer functions are indexed</strong>: '
+                'write <code>phi[i](dv[i])</code> '
+                '(not <code>phi(dv[i])</code>).  Each <code>phi[i]</code> '
+                'is a formal Sage function symbol that '
+                'FieldTheory auto-Taylor-expands; the constant '
+                '<code>phi[i](0)</code> is substituted with '
+                '<code>nstar[i]</code> at the saddle.</li>'
+                '<li><strong>Field arguments are fluctuations</strong>: '
+                'pass <code>dv[i]</code>, not <code>vstar[i] + dv[i]</code>. '
+                'The saddle shift is handled implicitly.</li>'
+                '<li><strong>Matrix subscript</strong>: '
+                '<code>w[i, j]</code> (tuple) or <code>w[i][j]</code> '
+                '(chained) — both work.</li>'
+                '<li><strong>Field name aliases</strong>: '
+                '<code>n[i]</code> and <code>dn[i]</code> are equivalent '
+                '(both refer to the fluctuation field).</li>'
+                '</ul>'
                 '</p>'),
             self._w_action,
         ])
@@ -381,7 +402,7 @@ class TheoryUI:
         ])
         for i, title in enumerate([
             '1. Model', '2. Fields', '3. Parameters', '4. Functions',
-            '5. Kernels', '6. CGFs', '7. Action', '8. MF eqs', '9. Defaults',
+            '5. Kernels', '6. CGFs', '7. Action', '8. MF', '9. Defaults',
         ]):
             self._tabs.set_title(i, title)
 
@@ -453,6 +474,9 @@ class TheoryUI:
             return obj
 
         # Parse parameter defaults — each is a string the user typed.
+        # The form only collects {name, type, default}; mean_field /
+        # natural_name / domain / description are inferred or filled
+        # in by the framework / serializer when needed.
         params = []
         for row in self._tbl_parameters.get_rows():
             entry = {'name': row['name'], 'type': row.get('type', 'scalar')}
@@ -462,10 +486,6 @@ class TheoryUI:
                     entry['default'] = eval(d, {'__builtins__': {}}, {})
                 except Exception:
                     entry['default'] = d   # leave as string if unparseable
-            for k in ('mean_field', 'natural_name', 'domain', 'description'):
-                v = row.get(k)
-                if v not in (None, '', False):
-                    entry[k] = v
             params.append(entry)
 
         # Functions: split args by comma
@@ -494,7 +514,9 @@ class TheoryUI:
             'name':            self._w_name.value,
             'n_populations':   int(self._w_npop.value),
             'description':     self._w_description.value,
-            'response_fields': self._tbl_response.get_rows(),
+            # Response fields are auto-generated by the framework from
+            # the physical fields — no UI tab for them.
+            'response_fields': [],
             'physical_fields': self._tbl_physical.get_rows(),
             'parameters':      params,
             'functions':       functions,

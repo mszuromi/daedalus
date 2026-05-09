@@ -18,17 +18,9 @@ def build():
     return (
         TheoryBuilder('Linear Hawkes 2-pop', n_populations=2)
 
-        .response_field('nt', indexed=True, latex=r'\tilde n')
-        .response_field('vt', indexed=True, latex=r'\tilde v')
-        .physical_field('dn', indexed=True, natural_name='n',
-                        latex=r'\delta\dot n')
-        .physical_field('dv', indexed=True, natural_name='v',
-                        latex=r'\delta v')
+        .physical_field('n')
+        .physical_field('v')
 
-        .parameter('nstar', indexed=True, domain='positive',
-                   mean_field=True, natural_name='n')
-        .parameter('vstar', indexed=True,
-                   mean_field=True, natural_name='v')
         .parameter('E',     indexed=True)
         .parameter('tau',   default=10.0, domain='positive')
         .parameter('a',     default=1.0)
@@ -41,12 +33,15 @@ def build():
                        latex_name='g')
 
         .set_action_text('''
-            nt[i] * (nstar[i] + dn[i])
-            - (exp(nt[i]) - 1) * phi(dv[i])
-            + vt[i] * (
-                (tau * Dt + 1) * dv[i]
-                + vstar[i] - E[i]
-                - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+            sum(
+                nt[i] * (nstar[i] + dn[i])
+                - (exp(nt[i]) - 1) * phi[i](dv[i])
+                + vt[i] * (
+                    (tau * Dt + 1) * dv[i]
+                    + vstar[i] - E[i]
+                    - sum(w[i, j] * g * (nstar[j] + dn[j]) for j in pop)
+                )
+                for i in pop
             )
         ''')
 

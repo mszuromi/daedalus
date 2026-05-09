@@ -150,24 +150,78 @@ class TheoryBuilder:
 
     def physical_field(self, name: str, indexed: bool = True,
                        latex: str = '', description: str = '',
-                       natural_name: str = None):
+                       natural_name: str = None,
+                       auto_response: bool = True,
+                       auto_saddle: bool = True):
         """Declare a physical field.
 
-        Parameters
-        ----------
-        name : str
-            Internal field name as it appears in the action (typically
-            with a ``d`` prefix denoting fluctuation, e.g. ``'dn'``).
-        natural_name : str, optional
-            User-facing letter that callers use in ``external_fields``,
-            e.g. ``'n'`` so they can pass ``[('n', 1)]`` instead of
-            ``[('dn', 1)]``.  If omitted, ``name`` is used directly.
+        Two calling styles, distinguished by whether ``natural_name``
+        is supplied:
+
+        **New style** (recommended; what the UI emits)::
+
+            .physical_field('n')                # name IS the natural letter
+            .physical_field('v', latex='v')
+
+        Framework derives the **internal** fluctuation name as ``d<name>``
+        (so user types ``n`` here, action uses ``n[i]`` or ``dn[i]``,
+        both refer to the fluctuation field).  Auto-generates the
+        conjugate response field ``<name>t`` and the saddle parameter
+        ``<name>star`` (with ``mean_field=True``).
+
+        **Legacy style** (existing hand-written theory files)::
+
+            .physical_field('dn', natural_name='n', latex=r'\\delta\\dot n')
+
+        ``name`` is the literal internal name; ``natural_name`` is the
+        separate user-facing letter.  Auto-response and auto-saddle
+        also fire (with ``natural_name`` as the base) unless
+        ``auto_response=False`` / ``auto_saddle=False`` is passed.
         """
+        if natural_name is None:
+            # New style — name is the natural letter.
+            natural_name  = name
+            internal_name = f'd{name}'
+        else:
+            # Legacy — name is the internal fluctuation name.
+            internal_name = name
+
         self.physical_fields.append(FieldSpec(
-            name=name, indexed=indexed,
-            latex=latex or name, description=description,
+            name=internal_name, indexed=indexed,
+            latex=latex or rf'\delta {natural_name}',
+            description=description,
             natural_name=natural_name,
         ))
+
+        # Auto-generate the conjugate response field as ``<natural>t``
+        # (matching the existing nt/vt/mt convention).  Skipped if the
+        # user already declared a response field with that name.
+        if auto_response:
+            response_name = f'{natural_name}t'
+            if not any(f.name == response_name for f in self.response_fields):
+                self.response_field(
+                    response_name, indexed=indexed,
+                    latex=rf'\tilde {natural_name}',
+                    description=f'response field conjugate to {natural_name}',
+                )
+
+        # Auto-generate the saddle parameter ``<natural>star``.  Default
+        # domain is ``positive`` for ``n`` (rates) and free for others;
+        # the user can override by declaring the parameter explicitly
+        # before / after this call (the duplicate check below skips
+        # re-adding).
+        if auto_saddle:
+            saddle_name = f'{natural_name}star'
+            if not any(p.name == saddle_name for p in self.parameters):
+                # Heuristic: rates are positive; voltages and other
+                # fields are free.  Users can edit the parameter row
+                # in the UI to refine.
+                domain = 'positive' if natural_name == 'n' else None
+                self.parameter(
+                    saddle_name, indexed=True, domain=domain,
+                    mean_field=True, natural_name=natural_name,
+                    description=f'mean-field saddle value of {natural_name}',
+                )
         return self
 
     # ── Parameter declarations ─────────────────────────────────────
@@ -560,8 +614,21 @@ class TheoryBuilder:
         phi_spec = next((f for f in self._function_specs
                          if f['name'] == phi_name), None)
 
-        # Action — bind ``phi`` in formal mode so FieldTheory can
-        # auto-Taylor-expand it.
+        # Pre-compute the naming convention dict (also stored in
+        # model['naming_convention']) so the compiler can expose
+        # natural-name fluctuation aliases (n → dn, v → dv) in the
+        # action's eval namespace.
+        _fluct_map: dict[str, str] = {}
+        for f in self.physical_fields:
+            if f.natural_name:
+                _fluct_map[f.natural_name] = f.name
+        _action_naming_convention = {
+            'fluctuation_fields': _fluct_map,
+        }
+
+        # Action — write the FULL action; framework no longer wraps
+        # with sum-over-i.  ``phi[i](dv[i])`` is the canonical syntax
+        # for the transfer function (indexed formal call).
         if self._action_text is not None:
             self._action = make_action_lambda(
                 self._action_text,
@@ -571,6 +638,7 @@ class TheoryBuilder:
                 functions    = self._function_specs,
                 n_pop        = n_pop,
                 transfer_function = phi_spec,
+                naming_convention = _action_naming_convention,
             )
 
         # phi_concrete (concrete expression for Taylor derivatives at

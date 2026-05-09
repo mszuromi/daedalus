@@ -45,6 +45,37 @@ from sage.all import (
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+class _IndexedFormalFunction:
+    """Generates Sage formal function calls indexed by population.
+
+    Usage in compiler-bound action namespace::
+
+        phi = _IndexedFormalFunction('phi')
+        phi[i](dv[i])     # → function(f'phi_{i+1}')(dv[i])
+        phi[i, j](dv[i])  # → function(f'phi_{i+1}_{j+1}')(dv[i])
+
+    Each indexed call returns a Python callable so the user can then
+    apply it to the field argument.  This supports both scalar (one
+    transfer function for all populations, distinguished by index for
+    auto-Taylor) and per-pair (e.g., synaptic-pair-specific) variants
+    when the function is declared with explicit indexing.
+    """
+    __slots__ = ('_name',)
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def __getitem__(self, idx):
+        if isinstance(idx, tuple):
+            sfx = '_'.join(str(int(k) + 1) for k in idx)
+        else:
+            sfx = str(int(idx) + 1)
+        full_name = f'{self._name}_{sfx}'
+        def _call(arg, _n=full_name):
+            return sr_function(_n)(arg)
+        return _call
+
+
 class _MatrixView:
     """Wrap a list-of-lists ``rows`` so it accepts both tuple subscript
     ``w[i, j]`` and chained subscript ``w[i][j]``.  Lets users write
@@ -89,21 +120,40 @@ def _builtin_namespace() -> dict[str, Any]:
     }
 
 
-def _ns_var_namespace(ns, field_names, param_names, kernel_names) -> dict[str, Any]:
+def _ns_var_namespace(ns, field_names, param_names, kernel_names,
+                      naming_convention=None) -> dict[str, Any]:
     """Assemble user-name → ns-attribute dict.
 
     For each declared field/parameter/kernel ``name`` the corresponding
-    ``ns.<name>`` is exposed under that name.  Matrix-shaped parameters
+    ``ns.<name>`` is exposed under that name.  When a
+    ``naming_convention`` dict is supplied, fields are ALSO exposed
+    under their natural names (e.g. ``ns.dn`` accessible as both
+    ``dn`` and ``n`` in user expressions).  Matrix-shaped parameters
     are wrapped in :class:`_MatrixView` for tuple-subscript access.
     """
     out: dict[str, Any] = {}
 
-    # Fields (vectors of SR vars)
-    for fname in field_names:
-        if hasattr(ns, fname):
-            out[fname] = getattr(ns, fname)
+    # Fields (vectors of SR vars).  Expose under internal name AND
+    # under natural name when the model declares a translation.
+    fluct_natural_to_internal = (
+        (naming_convention or {}).get('fluctuation_fields') or {})
+    fluct_internal_to_natural = {v: k
+                                 for k, v in fluct_natural_to_internal.items()}
 
-    # Parameters — promote 2D lists to MatrixView for w[i,j] access
+    for fname in field_names:
+        if not hasattr(ns, fname):
+            continue
+        val = getattr(ns, fname)
+        out[fname] = val
+        # Also expose under natural name if there's a mapping
+        natural = fluct_internal_to_natural.get(fname)
+        if natural and natural != fname:
+            out[natural] = val
+
+    # Parameters — promote 2D lists to MatrixView for w[i,j] access.
+    # Saddle parameters are also exposed under their natural names
+    # so users can write nstar[i] OR n_star[i].  We expose under the
+    # internal name (nstar) only since the latter is more standard.
     for pname in param_names:
         if not hasattr(ns, pname):
             continue
@@ -128,7 +178,7 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names) -> dict[str, A
 def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
                               functions, n_pop, transfer_function=None,
                               transfer_function_mode='formal', i=None,
-                              extra=None):
+                              naming_convention=None, extra=None):
     """Full namespace dict to feed ``sage_eval`` as ``locals=...``.
 
     Includes built-ins, ns-derived symbols, compiled functions, and
@@ -150,7 +200,9 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
       saddle-solver can use).
     """
     nsdict = _builtin_namespace()
-    nsdict.update(_ns_var_namespace(ns, field_names, param_names, kernel_names))
+    nsdict.update(_ns_var_namespace(ns, field_names, param_names,
+                                    kernel_names,
+                                    naming_convention=naming_convention))
     nsdict['pop'] = list(range(n_pop))
 
     # Compile each user-defined function into a Python callable.
@@ -164,17 +216,18 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # Bind the transfer function based on context.
     if transfer_function is not None:
         tname = transfer_function['name']
-        if transfer_function_mode == 'formal':
-            # The user writes ``phi(dv[i])`` in the action — argument
-            # is the FLUCTUATION field; FieldTheory Taylor-expands.
-            # We need to know ``i`` to generate the right per-population
-            # formal symbol.
+        if transfer_function_mode == 'action':
+            # User writes ``phi[i](dv[i])`` in the action — the
+            # comprehension binds ``i`` to a population index, and
+            # ``phi[i]`` returns a formal Sage callable that
+            # FieldTheory's auto-Taylor pass expands.
+            nsdict[tname] = _IndexedFormalFunction(tname)
+        elif transfer_function_mode == 'formal':
+            # Legacy: per-i loop in compiler binds i externally.
             if i is not None:
                 nsdict[tname] = (lambda x, _i=i, _t=tname:
                                  sr_function(f'{_t}_{_i + 1}')(x))
             else:
-                # Fall back to indexed callable when caller hasn't
-                # bound ``i`` (rare — most callers iterate over i).
                 nsdict[tname] = (lambda x, _t=tname:
                                  sr_function(f'{_t}_1')(x))
         else:    # 'concrete'
@@ -268,31 +321,42 @@ def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
 
 def make_action_lambda(action_text: str, *, field_names, param_names,
                        kernel_names, functions, n_pop,
-                       transfer_function=None):
-    """Build the ``model['action']`` lambda from the per-i action text.
+                       transfer_function=None,
+                       naming_convention=None):
+    """Build the ``model['action']`` lambda from the user's action text.
 
-    Sums the user's per-population integrand ``S_i`` over ``i`` in
-    ``range(N_pop)``.  ``transfer_function``, if given, is bound in
-    *formal* mode so FieldTheory's auto-expander generates
-    ``{name}{k}_{i+1}`` derivative symbols for the saddle expansion.
+    The action is evaluated as a single Sage expression — the user
+    writes the **full** action including any sums over populations.
+    Population iteration uses Python comprehension syntax::
+
+        sum(nt[i] * (nstar[i] + dn[i]) - (exp(nt[i]) - 1) * phi[i](dv[i])
+            + vt[i] * (...)
+            for i in pop)
+
+    Convention: ``pop = range(n_populations)`` is pre-bound.  Terms
+    that don't sum over ``pop`` (e.g. external-noise couplings to a
+    different population set) are written outside any sum.
+
+    Transfer functions are accessed with **indexed** syntax —
+    ``phi[i](dv[i])`` — because the action evaluator no longer has
+    an outer ``i`` loop; the index comes from the user's own
+    comprehension.  ``phi[i]`` produces a formal Sage function call
+    ``function(f'phi_{i+1}')(arg)`` that FieldTheory's auto-Taylor
+    pass expands.  Non-transfer functions are bound concretely.
     """
     def _action(ns):
-        total = SR(0)
-        for i in range(n_pop):
-            ns_i = _build_namespace_for_eval(
-                ns,
-                field_names = field_names,
-                param_names = param_names,
-                kernel_names = kernel_names,
-                functions   = functions,
-                n_pop       = n_pop,
-                transfer_function = transfer_function,
-                transfer_function_mode = 'formal',
-                i           = i,
-            )
-            total = total + _safe_eval(
-                action_text, {**ns_i, 'i': i}, 'action S_i')
-        return total
+        nsdict = _build_namespace_for_eval(
+            ns,
+            field_names = field_names,
+            param_names = param_names,
+            kernel_names = kernel_names,
+            functions   = functions,
+            n_pop       = n_pop,
+            transfer_function = transfer_function,
+            transfer_function_mode = 'action',
+            naming_convention = naming_convention,
+        )
+        return _safe_eval(action_text, nsdict, 'action')
 
     return _action
 
