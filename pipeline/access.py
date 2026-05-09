@@ -2,64 +2,127 @@
 pipeline.access — natural-name accessors for compute_cumulants results.
 
 Hides the MSR-JD internal naming (``dn`` for fluctuations, ``nstar``
-for saddle values, etc.) behind a single user-facing convention:
+for saddle values, etc.) behind the model's declared user-facing
+naming convention.
 
-  - **Field base names** are the physical letters: ``'n'`` for the
-    spike train, ``'v'`` for voltage, ``'m'`` for an external rate.
-  - **Fluctuation fields** prepend ``d``: ``'dn'``, ``'dv'``, ``'dm'``.
-    These are what the action expansion uses internally.
-  - **Mean-field saddle values** append ``star``: ``'nstar'``,
-    ``'vstar'``, ``'mstar'``.
+Source of truth
+---------------
+The mapping comes from ``model['naming_convention']``, which is built
+by ``TheoryBuilder.build()`` from the ``natural_name=`` declarations
+on physical fields and parameters::
 
-Three things are exposed:
+    .physical_field('dn', natural_name='n', ...)
+    .parameter('nstar', mean_field=True, natural_name='n', ...)
 
-  - :class:`MeanField` — ``mf['v', 1]`` returns ``v*_1``, ``mf['n']``
-    returns the whole nstar vector.
-  - :class:`Parameters` — ``params['E', 1]``, ``params['w', 1, 2]``,
-    ``params['tau']``.
-  - :func:`normalize_external_fields` — translates user-facing
-    ``[('n', 1), ('n', 2)]`` to internal ``[('dn', 1), ('dn', 2)]``.
-    Already-internal names pass through unchanged for back-compat.
+This produces::
 
-Convention is hard-coded (``'n' → 'dn'``, ``'n' → 'nstar'``).  This
-covers the 5 standardized theory files; future models that use
-different physical letters can extend ``_BASE_TO_FLUCT`` /
-``_BASE_TO_MF``.
+    naming_convention = {
+        'fluctuation_fields': {'n': 'dn', ...},     # natural → internal
+        'mean_field_saddles': {'n': 'nstar', ...},  # natural → internal
+        'mf_parameters': ['nstar', 'vstar', ...],   # internal names
+    }
+
+Models that don't declare a naming convention fall back to the
+classic Hawkes ``n``/``v``/``m`` map below — so existing model files
+without ``natural_name=`` annotations keep working.
+
+User-facing primitives
+----------------------
+- :class:`MeanField` — ``mf['v', 1]`` returns ``v*_1``, ``mf['n']``
+  returns the whole nstar vector.
+- :class:`Parameters` — ``params['E', 1]``, ``params['w', 1, 2]``,
+  ``params['tau']``.
+- :func:`normalize_external_fields` — translates user-facing
+  ``[('n', 1), ('n', 2)]`` to internal ``[('dn', 1), ('dn', 2)]``.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Optional
 
 
-# Convention map — base physical letter → internal naming.
-_BASE_TO_FLUCT = {
-    'n': 'dn',  'dn': 'dn',
-    'v': 'dv',  'dv': 'dv',
-    'm': 'dm',  'dm': 'dm',
+# ── Default fallback naming map ───────────────────────────────────────
+# Used when a model dict has no ``naming_convention`` (i.e. older
+# hand-written model files in models/).  Covers the classic Hawkes
+# letters n/v/m.  Extend this only if you want to bake new defaults
+# into the pipeline itself; the preferred path for new physics is to
+# declare ``natural_name=`` in the TheoryBuilder.
+
+_DEFAULT_FLUCT = {
+    'n':  'dn',  'dn': 'dn',
+    'v':  'dv',  'dv': 'dv',
+    'm':  'dm',  'dm': 'dm',
 }
 
-_BASE_TO_MF = {
+_DEFAULT_SADDLE = {
     'n': 'nstar',  'nstar': 'nstar',
     'v': 'vstar',  'vstar': 'vstar',
     'm': 'mstar',  'mstar': 'mstar',
 }
 
 
-def normalize_external_fields(external_fields):
-    """Translate user-facing ``[('n', 1), ('v', 2)]`` to internal
-    fluctuation names ``[('dn', 1), ('dv', 2)]``.
+def _build_fluct_map(naming_convention: Optional[dict]) -> dict[str, str]:
+    """Compose the natural→internal fluctuation map.
 
-    Already-internal names pass through unchanged so old code keeps
-    working::
-
-        >>> normalize_external_fields([('dn', 1)])
-        [('dn', 1)]
-        >>> normalize_external_fields([('n', 1), ('v', 2)])
-        [('dn', 1), ('dv', 2)]
+    Order of precedence (later wins):
+      1. ``_DEFAULT_FLUCT`` (n/v/m fallback)
+      2. ``naming_convention['fluctuation_fields']`` (model declarations)
+      3. internal-name passthrough (each declared internal name maps to
+         itself, so users can pass either form)
     """
+    out = dict(_DEFAULT_FLUCT)
+    if naming_convention:
+        for natural, internal in (naming_convention.get(
+                'fluctuation_fields') or {}).items():
+            out[natural]  = internal
+            out[internal] = internal
+    return out
+
+
+def _build_saddle_map(naming_convention: Optional[dict]) -> dict[str, str]:
+    """Compose the natural→internal mean-field saddle map.
+
+    Same precedence story as ``_build_fluct_map``.
+    """
+    out = dict(_DEFAULT_SADDLE)
+    if naming_convention:
+        for natural, internal in (naming_convention.get(
+                'mean_field_saddles') or {}).items():
+            out[natural]  = internal
+            out[internal] = internal
+    return out
+
+
+def _build_reverse_saddle_map(saddle_map: dict[str, str]) -> dict[str, str]:
+    """Reverse map for display: internal → natural.
+
+    Picks the SHORTEST natural name pointing at each internal value
+    (so 'nstar' → 'n' and not 'nstar' → 'nstar').
+    """
+    rev: dict[str, str] = {}
+    for natural, internal in saddle_map.items():
+        if internal in rev and len(rev[internal]) <= len(natural):
+            continue
+        rev[internal] = natural
+    return rev
+
+
+def normalize_external_fields(external_fields,
+                              naming_convention: Optional[dict] = None):
+    """Translate user-facing external fields to internal fluctuation
+    names::
+
+        normalize_external_fields([('n', 1)])              → [('dn', 1)]
+        normalize_external_fields([('r', 1)],              # custom letter
+            naming_convention={'fluctuation_fields': {'r': 'dr'}})
+                                                            → [('dr', 1)]
+
+    Already-internal names pass through unchanged.  When
+    ``naming_convention`` is omitted, the n/v/m fallback applies.
+    """
+    fluct_map = _build_fluct_map(naming_convention)
     out = []
     for name, pop in external_fields:
-        canonical = _BASE_TO_FLUCT.get(name, name)
+        canonical = fluct_map.get(name, name)
         out.append((canonical, int(pop)))
     return out
 
@@ -72,81 +135,73 @@ class MeanField:
     --------
     Tuple indexing with 1-based population numbers::
 
-        mf['n', 1]   →  n*_1   (first population's mean firing rate)
-        mf['v', 2]   →  v*_2   (second population's voltage)
-        mf['m', 1]   →  m*_1   (only when the model declares mstar)
+        mf['n', 1]   →  n*_1   (first population's saddle for natural 'n')
+        mf['v', 2]   →  v*_2
 
     Bare-string indexing returns the whole length-npop vector::
 
         mf['n']      →  [n*_1, n*_2, ...]
-        mf['v']      →  [v*_1, v*_2, ...]
 
     Both natural and internal names work — ``mf['v', 1]`` and
-    ``mf['vstar', 1]`` are equivalent.
+    ``mf['vstar', 1]`` are equivalent (when 'v' is declared as
+    natural_name for vstar).
 
-    Iteration / membership
-    ----------------------
-    ``for name in mf`` yields the natural keys present, e.g.
-    ``['n', 'v']`` for a Hawkes model and ``['n', 'v', 'm']`` for GTaS.
-    ``'v' in mf`` works.
-
-    Plain-dict view
-    ---------------
-    ``mf.as_dict()`` returns ``{name: list_of_values}`` keyed by
-    natural name — handy for templating into prints or saves.
+    Construction
+    ------------
+    ``MeanField(mf_values, naming_convention=...)`` consumes the
+    adaptive ``{internal_name: [v1, v2, ...]}`` dict that
+    ``compute_cumulants`` builds, plus the model's naming convention.
     """
 
-    # Reverse lookup: internal → natural.  Take the first base entry
-    # for each internal so 'nstar' → 'n' (not 'nstar' → 'nstar').
-    _MF_TO_BASE = {'nstar': 'n', 'vstar': 'v', 'mstar': 'm'}
+    def __init__(self, mf_values: dict[str, list],
+                 naming_convention: Optional[dict] = None):
+        self._saddle_map = _build_saddle_map(naming_convention)
+        self._reverse    = _build_reverse_saddle_map(self._saddle_map)
 
-    def __init__(self, mf_values: dict[str, list]):
-        # Source of truth: the adaptive {internal_name: [v1, v2, ...]}
-        # dict that compute_cumulants builds.  Keys may already be
-        # internal ('nstar') or natural ('n') depending on caller —
-        # we normalize to internal for storage.
+        # Normalize keys to internal form for storage.
         self._by_internal: dict[str, list[float]] = {}
         for k, v in (mf_values or {}).items():
-            internal = _BASE_TO_MF.get(k, k)
-            self._by_internal[internal] = list(v) if v is not None else None
+            internal = self._saddle_map.get(k, k)
+            self._by_internal[internal] = (
+                list(v) if v is not None else None)
+
+    def _resolve(self, name: str) -> str:
+        """Translate either natural or internal name to internal."""
+        return self._saddle_map.get(name, name)
 
     def __getitem__(self, key):
         if isinstance(key, tuple):
             name, pop = key[0], int(key[1])
-            internal = _BASE_TO_MF.get(name, name)
+            internal = self._resolve(name)
             vals = self._by_internal.get(internal)
             if vals is None:
                 raise KeyError(f'unknown mean-field key: {name!r}')
             return float(vals[pop - 1])
 
-        # Bare string → whole vector
-        internal = _BASE_TO_MF.get(key, key)
+        internal = self._resolve(key)
         vals = self._by_internal.get(internal)
         if vals is None:
             raise KeyError(f'unknown mean-field key: {key!r}')
         return list(vals)
 
     def __contains__(self, key):
-        if isinstance(key, tuple):
-            name = key[0]
-        else:
-            name = key
-        internal = _BASE_TO_MF.get(name, name)
-        return internal in self._by_internal and \
-               self._by_internal[internal] is not None
+        name = key[0] if isinstance(key, tuple) else key
+        internal = self._resolve(name)
+        return (internal in self._by_internal
+                and self._by_internal[internal] is not None)
 
     def __iter__(self):
         for internal in self._by_internal:
             if self._by_internal[internal] is None:
                 continue
-            yield self._MF_TO_BASE.get(internal, internal)
+            yield self._reverse.get(internal, internal)
 
     def keys(self):
         return list(iter(self))
 
     def as_dict(self) -> dict[str, list[float]]:
         """Plain ``{natural_name: [v1, v2, ...]}`` dict view."""
-        return {self._MF_TO_BASE.get(k, k): list(v)
+        return {self._reverse.get(k, k): list(v)
                 for k, v in self._by_internal.items()
                 if v is not None}
 
@@ -165,10 +220,7 @@ class Parameters:
       - Matrices (e.g. ``w``)::                 ``params['w', 1, 2]``
 
     All array indices are 1-based to match population numbering.
-    Bare-string indexing returns the raw value::
-
-        params['E']    →  [0.78, 0.81]
-        params['w']    →  [[0.30, 0.25], [0.30, 0.35]]
+    Bare-string indexing returns the raw value.
     """
 
     def __init__(self, fundamental: dict):

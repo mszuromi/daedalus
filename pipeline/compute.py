@@ -153,11 +153,15 @@ def compute_cumulants(
             f'external_fields has {len(external_fields)} entries but k={k}'
         )
 
-    # Accept user-facing natural names ('n', 'v', 'm') and translate to
-    # the internal fluctuation names ('dn', 'dv', 'dm') the action and
-    # propagator-typing code expect.  Already-internal names pass through.
+    # Accept user-facing natural names and translate to the internal
+    # fluctuation names the action / propagator-typing code expect.
+    # The mapping comes from ``model['naming_convention']`` (declared
+    # by TheoryBuilder); pipeline falls back to a classic n/v/m map
+    # when the model doesn't declare its own.
+    naming_convention   = model.get('naming_convention')
     external_fields_user = list(external_fields)
-    external_fields = normalize_external_fields(external_fields)
+    external_fields      = normalize_external_fields(
+        external_fields, naming_convention=naming_convention)
 
     # ── 1. FieldTheory expansion ──────────────────────────────────
     if verbose:
@@ -333,18 +337,33 @@ def compute_cumulants(
         C_tau = None
 
     # ── Adaptive mean-field dict ──────────────────────────────────
-    # The model decides which mean-field quantities exist; we walk the
-    # ``num_params`` substitution dict from solve_mean_field to pick up
-    # every n*_i / v*_i / m*_i / etc. and group them by symbol prefix.
-    # Avoids hard-coding {'nstar', 'vstar', 'mstar'}.
-    mf_values: dict[str, list] = {}
+    # Discover MF saddle quantities from the model itself.  Two paths:
+    #   1. ``model['naming_convention']['mf_parameters']`` (preferred,
+    #      written by TheoryBuilder when ``mean_field=True`` is set)
+    #   2. ``parameters[i]['mean_field']`` flag (the same data)
+    #   3. Classic n/v/m fallback for hand-written model files that
+    #      pre-date the declarative API.
     npop = len(ft._ns.pop)
-    for prefix, ns_attr in (('nstar', 'nstar'),
-                            ('vstar', 'vstar'),
-                            ('mstar', 'mstar')):
-        if not hasattr(ft._ns, ns_attr):
+
+    mf_param_names: list[str] = []
+    if naming_convention and naming_convention.get('mf_parameters'):
+        mf_param_names = list(naming_convention['mf_parameters'])
+    else:
+        # Walk model['parameters'] looking for the flag
+        for pspec in model.get('parameters', []) or []:
+            if pspec.get('mean_field'):
+                mf_param_names.append(pspec['name'])
+        # Last-resort fallback for legacy models
+        if not mf_param_names:
+            for legacy in ('nstar', 'vstar', 'mstar'):
+                if hasattr(ft._ns, legacy):
+                    mf_param_names.append(legacy)
+
+    mf_values: dict[str, list] = {}
+    for pname in mf_param_names:
+        if not hasattr(ft._ns, pname):
             continue
-        ns_syms = getattr(ft._ns, ns_attr)
+        ns_syms = getattr(ft._ns, pname)
         vals: list[float] = []
         for i in ft._ns.pop:
             sym = ns_syms[i]
@@ -352,10 +371,11 @@ def compute_cumulants(
                 vals.append(float(num_params[sym]))
             else:
                 vals.append(float('nan'))
-        # Skip if every entry is nan (model declares the symbol but
-        # never substitutes; mstar in non-GTaS models works this way).
-        if not all(v != v for v in vals):    # not-all-nan
-            mf_values[prefix] = vals
+        # Drop entries that are entirely NaN (model declared the
+        # symbol but the MF solver never substituted — e.g. mstar
+        # in a non-GTaS model that still ships an mstar declaration).
+        if not all(v != v for v in vals):
+            mf_values[pname] = vals
 
     result = {
         'total_C':         total_C,
@@ -364,7 +384,8 @@ def compute_cumulants(
         'C_tau_by_ell':    C_tau_by_ell,
         'tau_grid':        tau_grid,
         'mf_values':       mf_values,
-        'mf':              MeanField(mf_values),
+        'mf':              MeanField(mf_values,
+                                     naming_convention=naming_convention),
         'params':          Parameters(fundamental),
         'num_params':      num_params,
         'propagator':      prop,

@@ -72,6 +72,7 @@ class FieldSpec:
     indexed: bool
     latex: str
     description: str = ''
+    natural_name: Optional[str] = None   # e.g. 'dn' has natural_name='n'
 
 
 @dataclass
@@ -82,6 +83,8 @@ class ParameterSpec:
     domain: Optional[str] = None
     default: Any = None
     description: str = ''
+    mean_field: bool = False      # True for saddle-point quantities (n*, v*, ...)
+    natural_name: Optional[str] = None   # e.g. 'nstar' has natural_name='n'
 
 
 @dataclass
@@ -131,21 +134,61 @@ class TheoryBuilder:
         return self
 
     def physical_field(self, name: str, indexed: bool = True,
-                       latex: str = '', description: str = ''):
+                       latex: str = '', description: str = '',
+                       natural_name: str = None):
+        """Declare a physical field.
+
+        Parameters
+        ----------
+        name : str
+            Internal field name as it appears in the action (typically
+            with a ``d`` prefix denoting fluctuation, e.g. ``'dn'``).
+        natural_name : str, optional
+            User-facing letter that callers use in ``external_fields``,
+            e.g. ``'n'`` so they can pass ``[('n', 1)]`` instead of
+            ``[('dn', 1)]``.  If omitted, ``name`` is used directly.
+        """
         self.physical_fields.append(FieldSpec(
             name=name, indexed=indexed,
             latex=latex or name, description=description,
+            natural_name=natural_name,
         ))
         return self
 
     # ── Parameter declarations ─────────────────────────────────────
     def parameter(self, name: str, default: Any = None,
-                  indexed=False, domain: str = None, description: str = ''):
+                  indexed=False, domain: str = None, description: str = '',
+                  mean_field: bool = False, natural_name: str = None):
+        """Declare a model parameter.
+
+        Parameters
+        ----------
+        name : str
+            Internal parameter name (e.g. ``'nstar'`` for the saddle
+            firing rate, ``'tau'`` for a time constant).
+        default : Any, optional
+            Default numerical value (scalar / list / matrix).
+        indexed : bool or 'vector' or 'matrix', default False
+            Whether the parameter is per-population (vector) or
+            per-pair-of-populations (matrix).
+        domain : str, optional
+            ``'positive'`` etc.  Used by the FieldTheory builder.
+        mean_field : bool, default False
+            ``True`` flags this parameter as a saddle-point quantity
+            (``n*``, ``v*``, ``m*``, ...) so the pipeline's MF
+            accessor and saver can discover it without hardcoded
+            name lookups.
+        natural_name : str, optional
+            User-facing letter for MF accessor lookup.  If
+            ``parameter('nstar', mean_field=True, natural_name='n')``
+            is declared, ``mf['n', 1]`` returns ``n*_1``.
+        """
         is_vec = (indexed in (True, 'vector'))
         is_mat = (indexed == 'matrix')
         self.parameters.append(ParameterSpec(
             name=name, indexed=(is_vec or is_mat), matrix=is_mat,
             domain=domain, default=default, description=description,
+            mean_field=mean_field, natural_name=natural_name,
         ))
         return self
 
@@ -262,10 +305,13 @@ class TheoryBuilder:
         self._pending_gtas = template
 
         # Add the dm physical field + mt response field automatically.
+        # natural_name='m' lets users say external_fields=[('m', 1)]
+        # and mf['m', 1] without remembering the 'dm'/'mstar' internals.
         self.physical_field(
             template.physical_field, indexed=True,
             latex=r'\delta m',
             description='GTaS external rate fluctuation (zero-mean)',
+            natural_name='m',
         )
         self.response_field(
             template.response_field, indexed=True,
@@ -293,6 +339,7 @@ class TheoryBuilder:
                 p.name == template.background_param for p in self.parameters):
             self.parameter(template.background_param, indexed=True,
                            domain='positive',
+                           mean_field=True, natural_name='m',
                            description=f'background external rate b_X = '
                                        f'{template.mother_rate} · '
                                        f'{template.participation}')
@@ -344,6 +391,30 @@ class TheoryBuilder:
                 f'hooks: {missing}.  Use set_<hook>(...) before .build().'
             )
 
+        # Naming convention — lets the pipeline accessors translate
+        # between user-facing physical letters ('n', 'v', 'r', ...) and
+        # the internal MSR-JD names ('dn', 'vstar', etc.).  Built only
+        # from explicit user declarations; the pipeline applies a
+        # sensible n/v/m fallback when this dict is absent.
+        fluct_map: dict[str, str] = {}
+        for f in self.physical_fields:
+            if f.natural_name:
+                fluct_map[f.natural_name] = f.name
+
+        saddle_map: dict[str, str] = {}
+        mf_param_names: list[str] = []
+        for p in self.parameters:
+            if p.mean_field:
+                mf_param_names.append(p.name)
+                if p.natural_name:
+                    saddle_map[p.natural_name] = p.name
+
+        naming_convention = {
+            'fluctuation_fields': fluct_map,    # natural → internal
+            'mean_field_saddles': saddle_map,   # natural → internal
+            'mf_parameters':      mf_param_names,   # internal names
+        }
+
         model = {
             'name':            self.name,
             'index_sets':      {'pop': list(range(self.n_populations))},
@@ -359,6 +430,7 @@ class TheoryBuilder:
             'mf_substitutions': self._mf_substitutions,
             'phi_concrete':    self._phi_concrete,
             'action':          self._action,
+            'naming_convention': naming_convention,
         }
         if self._mf_bg is not None:
             model['mf_bg_conditions'] = self._mf_bg
@@ -378,6 +450,8 @@ class TheoryBuilder:
         d = {'name': f.name, 'indexed': f.indexed, 'latex': f.latex}
         if f.description:
             d['description'] = f.description
+        if f.natural_name:
+            d['natural_name'] = f.natural_name
         return d
 
     @staticmethod
@@ -387,6 +461,10 @@ class TheoryBuilder:
             d['domain'] = p.domain
         if p.description:
             d['description'] = p.description
+        if p.mean_field:
+            d['mean_field'] = True
+        if p.natural_name:
+            d['natural_name'] = p.natural_name
         return d
 
     @staticmethod

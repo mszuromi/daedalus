@@ -22,11 +22,11 @@ _t = (
     )
     .response_field('nt', indexed=True, latex=r'\tilde{n}')
     .response_field('vt', indexed=True, latex=r'\tilde{v}')
-    .physical_field('dn', indexed=True, latex=r'\delta\dot{n}')
-    .physical_field('dv', indexed=True, latex=r'\delta v')
-    .parameter('nstar', indexed=True, domain='positive',
+    .physical_field('dn', natural_name='n', indexed=True, latex=r'\delta\dot{n}')
+    .physical_field('dv', natural_name='v', indexed=True, latex=r'\delta v')
+    .parameter('nstar', mean_field=True, natural_name='n', indexed=True, domain='positive',
                description='background firing rate  n*_i = a · (v*_i)²')
-    .parameter('vstar', indexed=True, description='background voltage')
+    .parameter('vstar', mean_field=True, natural_name='v', indexed=True, description='background voltage')
     .parameter('E',     indexed=True)
     .parameter('tau',   default=10.0, domain='positive')
     .parameter('a',     default=0.44,

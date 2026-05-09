@@ -23,13 +23,13 @@ _t = (
                     description='response field conjugate to spike train')
     .response_field('vt', indexed=True, latex=r'\tilde{v}',
                     description='response field conjugate to voltage')
-    .physical_field('dn', indexed=True, latex=r'\delta\dot{n}',
+    .physical_field('dn', natural_name='n', indexed=True, latex=r'\delta\dot{n}',
                     description='spike-train fluctuation')
-    .physical_field('dv', indexed=True, latex=r'\delta v',
+    .physical_field('dv', natural_name='v', indexed=True, latex=r'\delta v',
                     description='voltage fluctuation')
-    .parameter('nstar', indexed=True, domain='positive',
+    .parameter('nstar', mean_field=True, natural_name='n', indexed=True, domain='positive',
                description='background firing rate  n*_i = a · (v*_i)²')
-    .parameter('vstar', indexed=True,
+    .parameter('vstar', mean_field=True, natural_name='v', indexed=True,
                description='background voltage')
     .parameter('E',     indexed=True,
                description='external constant drive')
