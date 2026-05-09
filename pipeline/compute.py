@@ -31,7 +31,10 @@ from msrjd.integration.time_domain.pipeline import (
 # Pipeline-package helpers
 from pipeline._propagator import build_propagator, compute_poles_and_residues
 from pipeline._mean_field import solve_mean_field
-from pipeline._diagrams import enumerate_unique_diagrams
+from pipeline._diagrams  import enumerate_unique_diagrams
+from pipeline.access     import (
+    MeanField, Parameters, normalize_external_fields,
+)
 
 
 def compute_cumulants(
@@ -46,6 +49,7 @@ def compute_cumulants(
     taylor_order: int = 4,
     origin_leaf_idx: int = 0,
     output_npz: str = None,
+    output_csv: str = None,
     use_cache: bool = True,
     parallel: bool = True,
     n_workers: int = None,
@@ -86,7 +90,14 @@ def compute_cumulants(
     origin_leaf_idx : int
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
-        If given, save the result dict to this .npz path.
+        If given, save the result to this ``.npz`` path via
+        ``pipeline.save.save_npz``.  See that module for the schema —
+        per-loop-order curves (``C_tree``, ``C_1_loop``, ...,
+        ``C_total``), adaptive mean-field arrays, parameter keys.
+    output_csv : str or None
+        If given, save a wide-format CSV companion to ``output_npz``
+        via ``pipeline.save.save_csv`` (parameter / mean-field
+        metadata as comment lines, then a τ-grid table).
     use_cache : bool
         Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
         and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
@@ -106,16 +117,32 @@ def compute_cumulants(
     Returns
     -------
     dict with keys:
-        'total_C'        : callable(*tau)
-        'C_tau'          : ndarray of total_C on the τ-grid (k=2 only;
-                            for k≥3 a dict of slices)
-        'tau_grid'       : ndarray of τ values
-        'mf_values'      : {'nstar': [..], 'vstar': [..], 'mstar': [..]}
-        'num_params'     : {SR symbol: float}
-        'propagator'     : the propagator data dict
-        'diagrams'       : list of TypedDiagram with classify info
-        'kernel_groups'  : list of dicts as fed to compute_correction_td
-        'config'         : input args echoed back
+        'total_C'         : callable(*tau) — full sum across ells
+        'total_C_by_ell'  : {ell: callable(*tau)} — per-loop-order
+        'C_tau'           : ndarray of total_C on the τ-grid (k=1, 2;
+                             None for k≥3 — caller uses total_C / per-
+                             ell callables instead)
+        'C_tau_by_ell'    : {ell: ndarray or None} — per-loop-order
+                             grid eval; ``C_tau == sum(values())``
+        'tau_grid'        : ndarray of τ values
+        'mf_values'       : raw {internal_name: [v_pop1, ...]}, adaptive
+        'mf'              : :class:`pipeline.access.MeanField` accessor —
+                             ``mf['v', 1]`` returns ``v*_1``,
+                             ``mf['n']`` returns the whole nstar vector
+        'params'          : :class:`pipeline.access.Parameters` accessor —
+                             ``params['E', 1]``, ``params['w', 1, 2]``,
+                             ``params['tau']`` (1-based indexing)
+        'num_params'      : {SR symbol: float}
+        'propagator'      : the propagator data dict
+        'diagrams'        : list of dicts {'typed_diagram', 'classify',
+                             'combined_prefactor', 'ell'}
+        'kernel_groups'   : list of dicts as fed to compute_correction_td
+        'phase_j_by_ell'  : {ell: td_result dict}
+        'config'          : input args echoed back; in addition to the
+                             obvious keys, ``external_fields_in`` echoes
+                             the user-passed form (e.g. ``[('n', 1)]``)
+                             while ``external_fields`` stores the
+                             internal form (e.g. ``[('dn', 1)]``).
     """
     if fundamental is None:
         fundamental = {}
@@ -125,6 +152,12 @@ def compute_cumulants(
         raise ValueError(
             f'external_fields has {len(external_fields)} entries but k={k}'
         )
+
+    # Accept user-facing natural names ('n', 'v', 'm') and translate to
+    # the internal fluctuation names ('dn', 'dv', 'dm') the action and
+    # propagator-typing code expect.  Already-internal names pass through.
+    external_fields_user = list(external_fields)
+    external_fields = normalize_external_fields(external_fields)
 
     # ── 1. FieldTheory expansion ──────────────────────────────────
     if verbose:
@@ -199,29 +232,31 @@ def compute_cumulants(
 
     diagram_records = []
     kernel_groups = []
-    for td in all_unique:
-        info = classify_coefficient_factors(
-            td, time_dep_params, noise_structure
-        )
-        # combined_prefactor for compute_correction_td is the scalar
-        # prefactor returned by classify_coefficient_factors
-        combined_prefactor = SR(info['scalar_prefactor'])
-        kernel_groups.append({
-            'diagrams':           [td],
-            'combined_prefactor': combined_prefactor,
-        })
-        diagram_records.append({
-            'typed_diagram':      td,
-            'classify':           info,
-            'combined_prefactor': combined_prefactor,
-        })
+    # Walk by ell so each record carries the ell tag — needed for the
+    # per-loop-order Phase J decomposition in step [7].
+    for ell in sorted(unique_by_ell.keys()):
+        for td in unique_by_ell[ell]:
+            info = classify_coefficient_factors(
+                td, time_dep_params, noise_structure
+            )
+            combined_prefactor = SR(info['scalar_prefactor'])
+            kernel_groups.append({
+                'diagrams':           [td],
+                'combined_prefactor': combined_prefactor,
+            })
+            diagram_records.append({
+                'typed_diagram':      td,
+                'classify':           info,
+                'combined_prefactor': combined_prefactor,
+                'ell':                ell,
+            })
 
-    # ── 7. Phase J time-domain integration ────────────────────────
+    # ── 7. Phase J time-domain integration (per ell) ──────────────
     if verbose:
-        print('[7/7] Phase J: compute_correction_td on τ-grid...')
+        print(f'[7/7] Phase J: compute_correction_td per ell '
+              f'(0..{max_ell})...')
     tau_grid = np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
 
-    # Build typed_diagrams + prefactors lists (legacy unpack interface)
     propagator_data = {
         'K_ker':   prop['K_ker'],
         'K_ft':    prop['K_ft'],
@@ -236,102 +271,130 @@ def compute_cumulants(
         'C_mats':    prop['C_mats'],
     }
 
-    # Build typed_diagrams + prefactors lists (the preferred direct
-    # interface — kernel_groups is the legacy unpack format).
-    typed_diagrams_list = [td_record['typed_diagram']
-                           for td_record in diagram_records]
-    prefactors_list     = [td_record['combined_prefactor']
-                           for td_record in diagram_records]
-
-    td_result = compute_correction_td(
-        typed_diagrams   = typed_diagrams_list,
-        prefactors       = prefactors_list,
-        k                = k,
-        propagator_data  = propagator_data,
-        external_fields  = external_fields,
-        num_params       = num_params,
-        origin_leaf_idx  = origin_leaf_idx,
-    )
-
-    # ── Build a τ-grid evaluation of total_C ──────────────────────
-    # Uses ``total_C_batch`` so the caller's ``parallel`` / ``n_workers``
-    # flags fan the per-τ work out across processes.
-    total_C       = td_result['total_C']
-    total_C_batch = td_result['total_C_batch']
+    # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
-        # k=1 is the rate (tree) or rate + loop correction (max_ell≥1).
-        # For stationary systems it's τ-independent, but we evaluate on
-        # the grid for API consistency with k=2 (downstream code can
-        # ``.mean()`` if it just wants the scalar).
         tau_points = [(float(t),) for t in tau_grid]
-        C_tau = np.array(
-            total_C_batch(tau_points, parallel=parallel, n_workers=n_workers),
-            dtype=complex,
-        )
     elif k == 2:
         # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned.
         tau_points = [(0.0, float(t)) for t in tau_grid]
-        C_tau = np.array(
-            total_C_batch(tau_points, parallel=parallel, n_workers=n_workers),
-            dtype=complex,
-        )
     else:
-        # k>=3: leave evaluation up to caller — total_C / total_C_batch
-        # are exposed in the result dict.
+        tau_points = None   # k≥3: caller handles grid evaluation
+
+    # Run Phase J once per ell so we get the per-loop-order
+    # decomposition the saver / notebook plots need.  Diagrams within
+    # an ell are summed in that ell's total_C; the master total_C is
+    # the sum across ells.
+    phase_j_by_ell  = {}
+    total_C_by_ell  = {}
+    C_tau_by_ell    = {}
+    for ell in sorted(unique_by_ell.keys()):
+        records_ell = [r for r in diagram_records if r['ell'] == ell]
+        if not records_ell:
+            # No diagrams at this ell (e.g. tree-level for some
+            # subset configs).  Contribute zero.
+            total_C_by_ell[ell] = (lambda *t: 0.0 + 0.0j)
+            phase_j_by_ell[ell] = None
+            if tau_points is not None:
+                C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+            else:
+                C_tau_by_ell[ell] = None
+            continue
+
+        td_result_ell = compute_correction_td(
+            typed_diagrams   = [r['typed_diagram']      for r in records_ell],
+            prefactors       = [r['combined_prefactor'] for r in records_ell],
+            k                = k,
+            propagator_data  = propagator_data,
+            external_fields  = external_fields,
+            num_params       = num_params,
+            origin_leaf_idx  = origin_leaf_idx,
+        )
+        total_C_by_ell[ell] = td_result_ell['total_C']
+        phase_j_by_ell[ell] = td_result_ell
+
+        if tau_points is not None:
+            C_tau_by_ell[ell] = np.array(
+                td_result_ell['total_C_batch'](
+                    tau_points, parallel=parallel, n_workers=n_workers),
+                dtype=complex,
+            )
+        else:
+            C_tau_by_ell[ell] = None
+
+    # Master total_C: sum across ell (for caller convenience)
+    def total_C(*ext_time_values):
+        return sum(complex(fn(*ext_time_values))
+                   for fn in total_C_by_ell.values())
+
+    # Aggregate τ-grid C(τ) = Σ_ell C_ell(τ)
+    if tau_points is not None:
+        C_tau = sum(C_tau_by_ell[ell] for ell in C_tau_by_ell)
+    else:
         C_tau = None
 
+    # ── Adaptive mean-field dict ──────────────────────────────────
+    # The model decides which mean-field quantities exist; we walk the
+    # ``num_params`` substitution dict from solve_mean_field to pick up
+    # every n*_i / v*_i / m*_i / etc. and group them by symbol prefix.
+    # Avoids hard-coding {'nstar', 'vstar', 'mstar'}.
+    mf_values: dict[str, list] = {}
+    npop = len(ft._ns.pop)
+    for prefix, ns_attr in (('nstar', 'nstar'),
+                            ('vstar', 'vstar'),
+                            ('mstar', 'mstar')):
+        if not hasattr(ft._ns, ns_attr):
+            continue
+        ns_syms = getattr(ft._ns, ns_attr)
+        vals: list[float] = []
+        for i in ft._ns.pop:
+            sym = ns_syms[i]
+            if sym in num_params:
+                vals.append(float(num_params[sym]))
+            else:
+                vals.append(float('nan'))
+        # Skip if every entry is nan (model declares the symbol but
+        # never substitutes; mstar in non-GTaS models works this way).
+        if not all(v != v for v in vals):    # not-all-nan
+            mf_values[prefix] = vals
+
     result = {
-        'total_C':        total_C,
-        'C_tau':          C_tau,
-        'tau_grid':       tau_grid,
-        'mf_values': {
-            'nstar': mf['nstar_vals'],
-            'vstar': mf['vstar_vals'],
-            'mstar': [
-                fundamental['lambda_X'] * fundamental['p_part']
-                for _ in ft._ns.pop
-            ] if 'lambda_X' in fundamental else None,
-        },
-        'num_params':     num_params,
-        'propagator':     prop,
-        'diagrams':       diagram_records,
-        'kernel_groups':  kernel_groups,
-        'phase_j_result': td_result,
+        'total_C':         total_C,
+        'total_C_by_ell':  total_C_by_ell,
+        'C_tau':           C_tau,
+        'C_tau_by_ell':    C_tau_by_ell,
+        'tau_grid':        tau_grid,
+        'mf_values':       mf_values,
+        'mf':              MeanField(mf_values),
+        'params':          Parameters(fundamental),
+        'num_params':      num_params,
+        'propagator':      prop,
+        'diagrams':        diagram_records,
+        'kernel_groups':   kernel_groups,
+        'phase_j_by_ell':  phase_j_by_ell,
         'config': {
-            'k':               k,
-            'max_ell':         max_ell,
-            'fundamental':     fundamental,
-            'external_fields': external_fields,
-            'tau_max':         tau_max,
-            'tau_step':        tau_step,
-            'taylor_order':    taylor_order,
-            'model_name':      model.get('name', '<unnamed>'),
+            'k':                  k,
+            'max_ell':            max_ell,
+            'fundamental':        fundamental,
+            'external_fields':    external_fields,        # internal names
+            'external_fields_in': external_fields_user,   # as user passed
+            'tau_max':            tau_max,
+            'tau_step':           tau_step,
+            'taylor_order':       taylor_order,
+            'model_name':         model.get('name', '<unnamed>'),
         },
     }
 
-    # ── Optional .npz save ────────────────────────────────────────
-    if output_npz:
-        save_payload = {
-            'tau_grid':       tau_grid,
-            'C_tau_real':     (C_tau.real if C_tau is not None
-                               else np.array([])),
-            'C_tau_imag':     (C_tau.imag if C_tau is not None
-                               else np.array([])),
-            'nstar':          np.array(mf['nstar_vals'], dtype=float),
-            'vstar':          np.array(mf['vstar_vals'], dtype=float),
-            'k':              np.array([k], dtype=int),
-            'max_ell':        np.array([max_ell], dtype=int),
-            'model_name':     np.array([model.get('name', '')]),
-        }
-        if 'lambda_X' in fundamental and 'p_part' in fundamental:
-            save_payload['mstar'] = np.array(
-                [fundamental['lambda_X'] * fundamental['p_part']
-                 for _ in ft._ns.pop], dtype=float)
-        os.makedirs(os.path.dirname(os.path.abspath(output_npz)) or '.',
-                    exist_ok=True)
-        np.savez(output_npz, **save_payload)
-        if verbose:
-            print(f'\nSaved: {output_npz}')
+    # ── Optional NPZ / CSV save (pipeline.save handles the schema) ─
+    if output_npz or output_csv:
+        from pipeline.save import save_npz, save_csv
+        if output_npz:
+            save_npz(result, output_npz)
+            if verbose:
+                print(f'\nSaved NPZ: {output_npz}')
+        if output_csv:
+            save_csv(result, output_csv)
+            if verbose:
+                print(f'\nSaved CSV: {output_csv}')
 
     if verbose:
         print(f'\nDone.  k={k}, max_ell={max_ell}, '
