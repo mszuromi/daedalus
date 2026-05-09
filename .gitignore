@@ -26,15 +26,15 @@ saved_theories/
 saved_results/
 notebooks/saved_theories/
 notebooks/saved_results/
-Enumeration Code/counts/
-Enumeration Code/diagrams_*/
+legacy/Enumeration Code/counts/
+legacy/Enumeration Code/diagrams_*/
 
 # pipeline package run outputs (npz / pdf artifacts; regenerable)
 pipeline_outputs/
 
 # Build / compilation output
 notebooks/*.pdf
-Test Figures/
+docs/figures/test_runs/
 *.drawio.bkp
 *.drawio.dtmp
 .$*
