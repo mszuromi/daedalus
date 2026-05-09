@@ -76,6 +76,54 @@ class _IndexedFormalFunction:
         return _call
 
 
+class _IndexedSaddleRename:
+    """Maps ``f(arg)`` and ``f[i](arg)`` directly to the formal
+    Taylor-rename target ``SR.var(f'{name}0_<i+1>')`` instead of going
+    through Sage's symbolic Taylor expansion.
+
+    Used in mf_bg saddle-substitution evaluation: when the user writes
+    ``set_mf_equation('nstar', 'phi(vstar[i])')``, we want mf_bg to
+    return ``{nstar[i]: phi0_<i+1>}`` so the action's ``nt[i] * nstar[i]``
+    cancels symbolically against the Taylor-expanded
+    ``nt[i] * phi0_<i+1>`` term from the Poisson cumulant.
+    """
+    __slots__ = ('_name',)
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def __call__(self, arg, i=None):
+        # Bare-call form: phi(vstar[i]).  Caller binds ``i`` via the
+        # outer for-loop in mf_bg evaluation.
+        if i is None:
+            # Fallback: try to infer from arg's variable name if it
+            # ends in a digit (e.g. vstar1 → 0).  Conservative.
+            try:
+                s = str(arg)
+                # Last digits in the variable name
+                import re
+                m = re.search(r'(\d+)\s*$', s)
+                if m:
+                    i = int(m.group(1)) - 1
+                else:
+                    i = 0
+            except Exception:
+                i = 0
+        return SR.var(f'{self._name}0_{int(i) + 1}')
+
+    def __getitem__(self, idx):
+        # Indexed form: phi[i](vstar[i]) — directly returns the
+        # rename target for this i.
+        if isinstance(idx, tuple):
+            sfx = '_'.join(str(int(k) + 1) for k in idx)
+        else:
+            sfx = str(int(idx) + 1)
+        target = SR.var(f'{self._name}0_{sfx}')
+        def _call(arg, _t=target):
+            return _t
+        return _call
+
+
 class _FullPhysicalField:
     """Exposes ``n[i] = nstar[i] + dn[i]`` (full physical field as
     saddle + fluctuation) in user-facing action expressions.
@@ -263,33 +311,29 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     ))
     nsdict['pop'] = list(range(n_pop))
 
-    # Compile each user-defined function into a Python callable.
-    # Helper functions (non-transfer) always get the concrete binding
-    # — they're not Taylor-expanded by the framework.
+    # Bind every user-defined function.  In the **action** context all
+    # functions become formal indexed Sage symbols ('action' mode) so
+    # FieldTheory's auto-Taylor pass produces ``<name>0_<i+1>``,
+    # ``<name>1_<i+1>``, ... derivative symbols for every function.
+    # In other contexts (MF equations, etc.) functions are bound
+    # CONCRETELY by default — but a caller can request the formal-rename
+    # mode by passing ``transfer_function_mode='mf_formal_rename'``,
+    # which makes ``f(arg)`` evaluate to ``SR.var(f'{name}0_<i+1>')``
+    # (the formal Taylor-coefficient symbol that mf_bg's saddle-EOM
+    # closure substitutes into the action).
     for fn in functions:
-        if transfer_function and fn['name'] == transfer_function['name']:
-            continue   # bound separately below
-        nsdict[fn['name']] = _make_function_callable(fn, nsdict)
-
-    # Bind the transfer function based on context.
-    if transfer_function is not None:
-        tname = transfer_function['name']
+        fname = fn['name']
         if transfer_function_mode == 'action':
-            # User writes ``phi[i](dv[i])`` in the action — the
-            # comprehension binds ``i`` to a population index, and
-            # ``phi[i]`` returns a formal Sage callable that
-            # FieldTheory's auto-Taylor pass expands.
-            nsdict[tname] = _IndexedFormalFunction(tname)
-        elif transfer_function_mode == 'formal':
-            # Legacy: per-i loop in compiler binds i externally.
-            if i is not None:
-                nsdict[tname] = (lambda x, _i=i, _t=tname:
-                                 sr_function(f'{_t}_{_i + 1}')(x))
-            else:
-                nsdict[tname] = (lambda x, _t=tname:
-                                 sr_function(f'{_t}_1')(x))
-        else:    # 'concrete'
-            nsdict[tname] = _make_function_callable(transfer_function, nsdict)
+            nsdict[fname] = _IndexedFormalFunction(fname)
+        elif transfer_function_mode == 'mf_formal_rename':
+            nsdict[fname] = _IndexedSaddleRename(fname)
+        else:    # 'concrete' (default for MF eq evaluation)
+            nsdict[fname] = _make_function_callable(fn, nsdict)
+
+    # Backward-compatible: if a caller still passes a legacy
+    # ``transfer_function``, leave the existing binding in place (it's
+    # already covered by the loop above when the function is in
+    # ``functions``).
 
     if extra:
         nsdict.update(extra)
@@ -447,19 +491,15 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
                     # expanded.
                     s = SR(s).expand().subs(kill)
 
-        # Augment ns._deriv_rename_subs with saddle-point Taylor renames.
-        # Without this, writing ``phi[i](v[i])`` (where v[i] = vstar[i]
-        # + dv[i]) produces formal terms like
-        # ``function('phi_<i+1>')(vstar[i])`` after Taylor expansion —
-        # which the existing renames (keyed on derivatives at 0) don't
-        # capture.  We add entries keyed on derivatives at vstar[i],
-        # mapping to the same ``phi<k>_<i+1>`` target symbols, so the
-        # downstream substitution pipeline works for both the legacy
-        # ``phi[i](dv[i])`` form and the new ``phi[i](v[i])`` form.
-        if (transfer_function is not None
-                and hasattr(ns, '_deriv_rename_subs')):
+        # Augment ns._deriv_rename_subs with saddle-point Taylor renames
+        # for EVERY declared function.  This makes
+        # ``f[i](v[i])`` (where v[i] = vstar[i] + dv[i]) Taylor-expand
+        # cleanly: the formal terms produced by Sage's taylor() at
+        # vstar[i] (rather than at 0) get mapped to the framework's
+        # ``f<k>_<i+1>`` rename targets.
+        if hasattr(ns, '_deriv_rename_subs'):
             _augment_saddle_renames(
-                ns, transfer_function,
+                ns, functions,
                 naming_convention=naming_convention,
                 taylor_order=getattr(ns, '_taylor_order', 4),
             )
@@ -469,46 +509,52 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
     return _action
 
 
-def _augment_saddle_renames(ns, transfer_function, *,
+def _augment_saddle_renames(ns, functions, *,
                             naming_convention=None,
                             taylor_order=4):
-    """Add saddle-point Taylor-rename entries to ``ns._deriv_rename_subs``.
+    """Add saddle-point Taylor-rename entries to ``ns._deriv_rename_subs``
+    for **every** declared function.
 
-    For each population ``i``, registers::
+    For each function ``f`` (any user-chosen name) and each population
+    ``i``, registers::
 
-        function('phi_<i+1>')(vstar[i])      → phi0_<i+1>
-        D[0](function('phi_<i+1>'))(vstar[i]) → phi1_<i+1>
-        D[0,0](...)(vstar[i])                 → phi2_<i+1>
+        function('f_<i+1>')(<saddle>[i])      → f0_<i+1>
+        D[0](function('f_<i+1>'))(<saddle>[i]) → f1_<i+1>
+        D[0,0](...)(<saddle>[i])               → f2_<i+1>
         ...
 
-    where ``vstar`` is the saddle of the transfer function's first arg
-    (looked up via the model's naming_convention).
+    where ``<saddle>`` is the saddle of the function's first argument
+    (looked up via the model's naming_convention).  This means writing
+    ``f[i](v[i])`` in the action — where ``v[i]`` expands to
+    ``vstar[i] + dv[i]`` — Taylor-expands cleanly via the framework's
+    rename machinery, regardless of the user's chosen function name.
     """
-    tname = transfer_function['name']
-    arg_names = transfer_function.get('args') or []
-    if not arg_names:
+    if not functions:
         return
-
-    # Saddle for the transfer function's first arg.  E.g. for phi(v),
-    # this is ns.vstar.
-    arg_natural = arg_names[0]
     saddle_map = (naming_convention or {}).get('mean_field_saddles') or {}
-    saddle_internal = saddle_map.get(arg_natural, f'{arg_natural}star')
-    if not hasattr(ns, saddle_internal):
-        return
-    saddle_array = getattr(ns, saddle_internal)
-
-    # Build the saddle-shifted Taylor renames.
     x_dum = SR.var('_xdum_saddle_')
-    for i in range(len(ns.pop)):
-        fe = sr_function(f'{tname}_{i + 1}')(x_dum)
-        for k in range(taylor_order + 1):
-            if k == 0:
-                val = fe.subs({x_dum: saddle_array[i]})
-            else:
-                val = diff(fe, x_dum, k).subs({x_dum: saddle_array[i]})
-            target = SR.var(f'{tname}{k}_{i + 1}')
-            ns._deriv_rename_subs[val] = target
+
+    for fn_spec in functions:
+        tname = fn_spec['name']
+        arg_names = fn_spec.get('args') or []
+        if not arg_names:
+            continue
+        # Saddle for this function's first arg.
+        arg_natural = arg_names[0]
+        saddle_internal = saddle_map.get(arg_natural, f'{arg_natural}star')
+        if not hasattr(ns, saddle_internal):
+            continue
+        saddle_array = getattr(ns, saddle_internal)
+
+        for i in range(len(ns.pop)):
+            fe = sr_function(f'{tname}_{i + 1}')(x_dum)
+            for k in range(taylor_order + 1):
+                if k == 0:
+                    val = fe.subs({x_dum: saddle_array[i]})
+                else:
+                    val = diff(fe, x_dum, k).subs({x_dum: saddle_array[i]})
+                target = SR.var(f'{tname}{k}_{i + 1}')
+                ns._deriv_rename_subs[val] = target
 
 
 def make_phi_concrete_lambda(phi_fn_spec: dict, *, field_names, param_names,
@@ -546,22 +592,40 @@ def make_phi_concrete_lambda(phi_fn_spec: dict, *, field_names, param_names,
     return _phi_concrete
 
 
-def make_specializations_lambda(phi_fn_spec: dict, *, field_names, param_names,
-                                kernel_names, functions, n_pop):
-    """Auto-derive ``model['specializations']`` from the transfer
-    function by Taylor-expanding ``phi(v)`` around ``vstar[i]``.
+def make_specializations_lambda(phi_fn_spec: dict | None, *,
+                                field_names, param_names,
+                                kernel_names, functions, n_pop,
+                                naming_convention=None,
+                                mf_eqs: dict[str, str] = None):
+    # Note: ``mf_eqs`` parameter retained for API compatibility but
+    # no longer used — closure substitution is handled by mf_bg.
+    """Auto-derive ``model['specializations']`` for every declared
+    function.
 
-    Produces the substitutions::
+    For each function ``f`` (any name) and each population ``i``,
+    produces:
 
-        phi1_<i> = phi'(vstar[i])
-        phi2_<i> = phi''(vstar[i])
-        ...
-        phi<k>_<i> = 0   for k > order(phi)
+      * ``f<k>_<i+1>  →  f^(k)(<saddle>[i])`` for k = 1, 2, ..., order
+        — the kth derivative of f's concrete expression evaluated at
+        the saddle of f's first arg.
 
-    that the FieldTheory expander needs.
+      * ``f0_<i+1>``  →  one of two forms:
+
+        - **closure form** (``f0_<i+1> → ns.<closure_saddle>[i]``):
+          if the user declared ``set_mf_equation('<saddle>',
+          'f(<arg>)')``, then f is the saddle-EOM closure for
+          ``<saddle>``.  The framework substitutes ``f0`` with the
+          ``<saddle>`` iteration variable, ensuring the (1, 0) tadpole
+          on the response field cancels symbolically.
+
+        - **concrete form** (``f0_<i+1> → f(<saddle>[i])``):
+          if no mf_equation closes f, substitute the literal value
+          of f at the saddle.
+
+    The function name is just a label — ``phi``, ``f``, ``response_fn``
+    all behave identically.
     """
-    expr_text = phi_fn_spec['expression']
-    arg_name  = phi_fn_spec['args'][0]
+    saddle_map = (naming_convention or {}).get('mean_field_saddles') or {}
 
     def _specs(ns):
         base_ns = _build_namespace_for_eval(
@@ -572,21 +636,115 @@ def make_specializations_lambda(phi_fn_spec: dict, *, field_names, param_names,
             functions   = [],
             n_pop       = n_pop,
         )
-        v_sym = SR.var('_phi_taylor_v')
-        phi_at_v = _safe_eval(
-            expr_text, {**base_ns, arg_name: v_sym},
-            f'phi({arg_name}) Taylor expansion')
-
         out: dict = {}
         order = ns._taylor_order
-        for i in range(n_pop):
-            for k in range(1, order + 1):
-                deriv_at_v = phi_at_v.derivative(v_sym, k)
-                deriv_at_saddle = deriv_at_v.subs({v_sym: ns.vstar[i]})
-                out[SR.var(f'phi{k}_{i+1}')] = deriv_at_saddle
+
+        for fn_spec in (functions or []):
+            tname = fn_spec['name']
+            arg_names = fn_spec.get('args') or []
+            if not arg_names:
+                continue
+            arg_name = arg_names[0]
+            saddle_internal = saddle_map.get(arg_name,
+                                             f'{arg_name}star')
+            if not hasattr(ns, saddle_internal):
+                continue
+            saddle_array = getattr(ns, saddle_internal)
+
+            # Pre-compute Taylor-coefficient values at the saddle.
+            v_sym = SR.var(f'_{tname}_taylor_arg')
+            f_at_v = _safe_eval(
+                fn_spec['expression'],
+                {**base_ns, arg_name: v_sym},
+                f'{tname}({arg_name}) Taylor expansion')
+
+            # Always-concrete substitution: f<k>_<i+1> → kth derivative
+            # of f's concrete expression evaluated at the saddle.
+            # k=0 gives ``f(<saddle>[i])``, k=1 gives
+            # ``f'(<saddle>[i])``, etc.  No saddle-name shortcut —
+            # the action-side mf_bg has already substituted the
+            # iteration saddle with its formal-rename target, so the
+            # tadpole cancellation works without specs needing to
+            # know about closures.
+            for i in range(n_pop):
+                for k in range(0, order + 1):
+                    sym = SR.var(f'{tname}{k}_{i+1}')
+                    if k == 0:
+                        out[sym] = f_at_v.subs(
+                            {v_sym: saddle_array[i]})
+                    else:
+                        deriv_at_v = f_at_v.derivative(v_sym, k)
+                        out[sym] = deriv_at_v.subs(
+                            {v_sym: saddle_array[i]})
         return out
 
     return _specs
+
+
+_SINGLE_CALL_RE = None   # lazy-compiled below
+
+
+def _is_single_function_call(rhs_text: str) -> bool:
+    """True iff the RHS text is exactly one function call ``f(arg)`` —
+    no surrounding arithmetic.  Used to detect saddle-EOM closures
+    (e.g. ``nstar = phi(vstar[i])``) so the framework can substitute
+    the iteration saddle with the formal Taylor-rename target
+    ``<func>0_<i+1>`` instead of the concrete derivative value.
+
+    Returns False for compound expressions like ``a*phi(v) + b`` or
+    ``E + sum(w*g*nstar)``.
+    """
+    global _SINGLE_CALL_RE
+    if _SINGLE_CALL_RE is None:
+        import re
+        # Match: optional whitespace, identifier, optional [i] / [i,j],
+        # opening paren, anything balanced, closing paren, optional ws.
+        # Crude check: balanced parens by character count.
+        _SINGLE_CALL_RE = re.compile(
+            r'^\s*\w+\s*(\[[^\]]+\]\s*)?\((.+)\)\s*$', re.DOTALL)
+    text = (rhs_text or '').strip()
+    m = _SINGLE_CALL_RE.match(text)
+    if not m:
+        return False
+    # Confirm parens are balanced AT THE TOP level — else 'a*f(x) + b'
+    # could be matched due to outer parens of the whole expression.
+    depth = 0
+    for ch in text:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle: str) -> dict:
+    """Split mf_eqs into (closure_saddles, compound_saddles).
+
+    * **closure saddles**: their RHS expresses the saddle in terms of
+      function calls (e.g. ``nstar = phi(v) + b``).  These get
+      substituted in the action via formal-rename evaluation
+      (``nstar → phi0_<i+1> + b``) — the formal-rename target gets
+      Taylor-expanded by the framework.
+
+    * **compound saddles**: their RHS is a parameter / saddle
+      expression (e.g. ``vstar = E + sum(w·g·nstar)``).  These get
+      substituted concretely.
+
+    The default convention treats the iteration_saddle (typically
+    ``'nstar'``) as a closure saddle if its mf_eq is present, since
+    that's the saddle the solver iterates on while everything else
+    follows from it.  Any other saddle is compound.
+    """
+    closure = {}
+    compound = {}
+    for saddle_name, rhs_text in mf_eqs.items():
+        if saddle_name == iteration_saddle:
+            closure[saddle_name] = rhs_text
+        else:
+            compound[saddle_name] = rhs_text
+    return {'closure': closure, 'compound': compound}
 
 
 def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
@@ -595,55 +753,94 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                                  field_names, param_names, kernel_names,
                                  functions, n_pop,
                                  iteration_saddle: str = 'nstar'):
-    """Build ``model['mf_bg_conditions']`` from the user's per-saddle
-    equations.
+    """Build the **action-side** ``mf_bg_conditions`` lambda.
 
-    The transfer function (``phi``) is bound in CONCRETE mode here.
-    Auto-emits ``phi0_<i> = ns.nstar[i]`` to close the EOM at the
-    saddle for FieldTheory's auto-Taylor pass.
+    Two-pass design that handles both simple Hawkes-style closures
+    (``nstar = phi(v)``) and compound forms (``nstar = phi(v) + b``)
+    uniformly:
 
-    Convention: ``iteration_saddle`` (default ``'nstar'``) is the
-    saddle that ``solve_mean_field`` iterates on numerically.  Its
-    own equation (e.g. ``nstar[i] = phi(vstar[i])``) is **not**
-    substituted into the action — doing so would break the
-    saddle-tadpole cancellation that the framework relies on.  The
-    self-consistency ``nstar = phi(vstar)`` is instead encoded
-    implicitly via ``phi0_<i> → nstar[i]`` (which is the
-    Taylor-coefficient-renaming substitution).  ``solve_mean_field``
-    then uses ``phi_concrete`` to evaluate ``phi(vstar)`` numerically
-    while iterating ``nstar``.
+      1. **Closure pass**: the iteration saddle's mf_eq RHS is
+         evaluated in *formal-rename* mode (function calls return the
+         formal Taylor-coefficient target ``f0_<i+1>``).  Result for
+         compound: ``nstar[i] → phi0_<i+1> + b``.
+
+      2. **Compound pass**: every other saddle's mf_eq RHS is
+         evaluated concretely, then the closure substitution is
+         applied to the result.  E.g., ``vstar[i] → E[i] + sum(w·g·
+         nstar[j])`` becomes ``vstar[i] → E[i] + sum(w·g·(phi0_<j+1>
+         + b))`` after baking in the closure.
+
+    Both substitutions get applied to the symbolic action with
+    Sage single-pass subs.  Because vstar's RHS no longer has raw
+    nstar (it's been pre-baked with the closure), the (1, 0) tadpole
+    cancels symbolically regardless of the saddle EOM form.
+
+    The companion :func:`make_mf_bg_solver_lambda` builds the
+    SOLVER-friendly version (raw concrete, no closure).
     """
+    classification = _classify_mf_eqs(mf_eqs, iteration_saddle)
+    closure_eqs  = classification['closure']
+    compound_eqs = classification['compound']
+
     def _bg(ns):
-        out: dict = {}
-        for saddle_name, rhs_text in mf_eqs.items():
-            if saddle_name == iteration_saddle:
-                # Skip — solver iterates this saddle.  Substituting
-                # it would break the (1,0) tadpole cancellation.
-                continue
+        # ── Pass 1: closure saddles (formal-rename eval) ──────────
+        # nstar (or whichever the iteration saddle is) gets
+        # substituted with the formal-rename eval of its mf_eq RHS.
+        # Works for any RHS form:
+        #   set_mf_equation('nstar', 'phi(vstar[i])')      → phi0_<i+1>
+        #   set_mf_equation('nstar', 'phi(vstar[i]) + b')  → phi0_<i+1>+b
+        #   set_mf_equation('nstar', 'a*phi(vstar[i])^2')  → a*phi0_<i+1>^2
+        closure_subs: dict = {}
+        for saddle_name, rhs_text in closure_eqs.items():
             if not hasattr(ns, saddle_name):
                 continue
             saddle_array = getattr(ns, saddle_name)
             for i in range(n_pop):
                 ns_i = _build_namespace_for_eval(
                     ns,
-                    field_names = field_names,
-                    param_names = param_names,
+                    field_names  = field_names,
+                    param_names  = param_names,
                     kernel_names = kernel_names,
-                    functions   = functions,
-                    n_pop       = n_pop,
+                    functions    = functions,
+                    n_pop        = n_pop,
+                    transfer_function = phi_fn_spec,
+                    transfer_function_mode = 'mf_formal_rename',
+                    i           = i,
+                )
+                rhs = _safe_eval(
+                    rhs_text, {**ns_i, 'i': i},
+                    f'MF equation {saddle_name}[i] (closure)')
+                closure_subs[saddle_array[i]] = rhs
+
+        # ── Pass 2: compound saddles (concrete eval, closure-baked) ─
+        # vstar (and any other compound saddle) is evaluated concretely.
+        # Then the closure substitutions are applied to the result so
+        # raw nstar references inside vstar's RHS get replaced with
+        # the formal-rename closure form (preventing the single-pass-
+        # subs problem in field_theory's symbolic action substitution).
+        out: dict = dict(closure_subs)
+        for saddle_name, rhs_text in compound_eqs.items():
+            if not hasattr(ns, saddle_name):
+                continue
+            saddle_array = getattr(ns, saddle_name)
+            for i in range(n_pop):
+                ns_i = _build_namespace_for_eval(
+                    ns,
+                    field_names  = field_names,
+                    param_names  = param_names,
+                    kernel_names = kernel_names,
+                    functions    = functions,
+                    n_pop        = n_pop,
                     transfer_function = phi_fn_spec,
                     transfer_function_mode = 'concrete',
                     i           = i,
                 )
                 rhs = _safe_eval(
                     rhs_text, {**ns_i, 'i': i},
-                    f'MF equation {saddle_name}[i]')
+                    f'MF equation {saddle_name}[i] (compound)')
+                if closure_subs:
+                    rhs = SR(rhs).subs(closure_subs)
                 out[saddle_array[i]] = rhs
-
-        # phi0_<i> = nstar[i] — closes the EOM at the saddle.
-        if hasattr(ns, 'nstar') and phi_fn_spec is not None:
-            for i in range(n_pop):
-                out[SR.var(f'phi{0}_{i+1}')] = ns.nstar[i]
 
         # Dt * <saddle>[i] → 0  (saddle quantities are time-constant
         # by definition).  Necessary because the user writes the action
@@ -665,6 +862,58 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
         return out
 
     return _bg
+
+
+def make_mf_bg_solver_lambda(mf_eqs: dict[str, str],
+                             phi_fn_spec: dict | None,
+                             *,
+                             field_names, param_names, kernel_names,
+                             functions, n_pop,
+                             iteration_saddle: str = 'nstar'):
+    """Build the **solver-friendly** ``mf_bg_conditions`` lambda.
+
+    Returns a dict with EVERY saddle entry (both compound and
+    iteration) in raw concrete form (with all other saddles still
+    as their raw SR symbols).  The iteration saddle's entry is the
+    user's mf_eq RHS evaluated concretely — e.g. for
+    ``set_mf_equation('nstar', 'phi(vstar) + b')`` the entry is
+    ``ns.nstar[i] → a*ns.vstar[i]**2 + b``.  ``solve_mean_field``
+    reads this entry and uses it as the iteration target.
+
+    Concretely::
+
+        # Hawkes simple:
+        out[ns.vstar[i]] = E[i] + sum(w[i,j]*g*ns.nstar[j])
+        out[ns.nstar[i]] = a * ns.vstar[i]**2
+
+        # Compound (nstar = phi(v) + b):
+        out[ns.nstar[i]] = a * ns.vstar[i]**2 + b
+    """
+    def _bg_solver(ns):
+        out: dict = {}
+        for saddle_name, rhs_text in mf_eqs.items():
+            if not hasattr(ns, saddle_name):
+                continue
+            saddle_array = getattr(ns, saddle_name)
+            for i in range(n_pop):
+                ns_i = _build_namespace_for_eval(
+                    ns,
+                    field_names  = field_names,
+                    param_names  = param_names,
+                    kernel_names = kernel_names,
+                    functions    = functions,
+                    n_pop        = n_pop,
+                    transfer_function = phi_fn_spec,
+                    transfer_function_mode = 'concrete',
+                    i           = i,
+                )
+                rhs = _safe_eval(
+                    rhs_text, {**ns_i, 'i': i},
+                    f'MF equation {saddle_name}[i] (solver)')
+                out[saddle_array[i]] = rhs
+        return out
+
+    return _bg_solver
 
 
 def make_mf_equations_lambda(mf_eqs: dict[str, str],

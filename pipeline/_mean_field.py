@@ -85,9 +85,32 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
         sub = {ns.nstar[j]: float(nstar_vec[j]) for j in ns.pop}
         return float(vstar_baked[i].subs(sub))
 
-    # ── fsolve the self-consistency  n*_i = phi_i(v*_i(n*_j)) ────
+    # ── Build the iteration target for nstar ────────────────────
+    # If the user's mf_eq for nstar is in the dict (compound or
+    # otherwise), use it as the iteration target.  Otherwise fall
+    # back to the legacy ``n* = phi(v*)`` hardcode.
+    nstar_rhs_baked = None
+    if hasattr(ns, 'nstar') and ns.nstar[0] in vstar_subs_dict:
+        nstar_rhs_baked = {
+            i: SR(vstar_subs_dict[ns.nstar[i]])
+                 .subs(g_to_one)
+                 .subs(param_subs)
+            for i in ns.pop
+        }
+
+    def nstar_target(i, nstar_vec):
+        """Evaluate the user-declared RHS of nstar's mf_eq at the
+        current iteration point."""
+        if nstar_rhs_baked is None:
+            # Legacy: assume n* = phi(v*).
+            return phi_num(i, vstar_num(i, nstar_vec))
+        v_vals = {ns.vstar[j]: vstar_num(j, nstar_vec) for j in ns.pop}
+        n_vals = {ns.nstar[j]: float(nstar_vec[j]) for j in ns.pop}
+        return float(nstar_rhs_baked[i].subs(v_vals).subs(n_vals))
+
+    # ── fsolve the self-consistency  n*_i = <user RHS>(n*_j) ────
     def mf_residual(nstar_vec):
-        return [nstar_vec[i] - phi_num(i, vstar_num(i, nstar_vec))
+        return [nstar_vec[i] - nstar_target(i, nstar_vec)
                 for i in ns.pop]
 
     npop = len(ns.pop)

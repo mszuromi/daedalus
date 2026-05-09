@@ -195,13 +195,28 @@ class TheoryUI:
             ],
         )
         tab_functions = W.VBox([
-            W.HTML('<h4>Functions of field variables</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   "Function name <code>phi</code> is reserved as the "
-                   "saddle-point transfer function (auto-Taylor-expanded). "
-                   "Other functions are evaluated concretely. "
-                   "<code>args</code> = comma-separated field-variable names."
-                   '</p>'),
+            W.HTML(
+                '<h4>Functions of field variables</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Declare any function of field variables.  Name them "
+                "anything you like — <code>phi</code>, <code>f</code>, "
+                "<code>response</code>, <code>kernel_response</code>, …  "
+                "There is no reserved name."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                "Every declared function is auto-Taylor-expanded around "
+                "the saddle of its argument when used in the action.  "
+                "Write <code>myfunc[i](v[i])</code> in the action — the "
+                "framework expands ``v[i] = vstar[i] + dv[i]`` and "
+                "Taylor-expands the function around the saddle, "
+                "producing the diagrammatic vertices automatically."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                "<code>args</code> = comma-separated field-variable "
+                "names (one per arg).  The first arg's natural name "
+                "determines the saddle the function is expanded around: "
+                "for <code>f(v)</code>, that's <code>vstar</code>."
+                '</p>'),
             self._tbl_functions.show(),
         ])
 

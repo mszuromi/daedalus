@@ -472,8 +472,15 @@ class FieldTheory:
             S_sr = S_sr.subs(ns._deriv_rename_subs)
 
         # Apply MF background conditions (SR substitutions)
-        if 'mf_bg_conditions' in self.model:
-            S_sr = S_sr.subs(self.model['mf_bg_conditions'](ns))
+        # Prefer the action-specific mf_bg dict (closure-baked, so
+        # the symbolic (1, 0) tadpole vanishes for any saddle EOM
+        # form).  Falls back to the legacy ``mf_bg_conditions`` key
+        # for old hand-written model files.
+        mf_bg_key = ('mf_bg_conditions_action'
+                     if 'mf_bg_conditions_action' in self.model
+                     else 'mf_bg_conditions')
+        if mf_bg_key in self.model:
+            S_sr = S_sr.subs(self.model[mf_bg_key](ns))
 
         # Apply optional specializations (e.g. quadratic phi, delta g)
         if 'specializations' in self.model:

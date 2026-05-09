@@ -117,6 +117,7 @@ class TheoryBuilder:
         self.kernels:         list[KernelSpec] = []
         self._action: Optional[Callable] = None
         self._mf_bg: Optional[Callable] = None
+        self._mf_bg_solver: Optional[Callable] = None
         self._mf_equations: Optional[Callable] = None
         self._kernel_ft_image: Optional[Callable] = None
         self._phi_concrete: Optional[Callable] = None
@@ -598,6 +599,7 @@ class TheoryBuilder:
             make_phi_concrete_lambda,
             make_specializations_lambda,
             make_mf_bg_conditions_lambda,
+            make_mf_bg_solver_lambda,
             make_mf_equations_lambda,
             make_kernel_ft_image_lambda,
             make_correlated_noises_block,
@@ -608,11 +610,6 @@ class TheoryBuilder:
                         + [f.name for f in self.physical_fields])
         param_names  = [p.name for p in self.parameters]
         kernel_names = [k.name for k in self.kernels]
-
-        # Identify the transfer function (defaults to one named 'phi')
-        phi_name = self._phi_function_name or 'phi'
-        phi_spec = next((f for f in self._function_specs
-                         if f['name'] == phi_name), None)
 
         # Pre-compute the naming convention so the compiler can expose
         # natural-name aliases (n, v, m) in the action's eval namespace
@@ -635,9 +632,22 @@ class TheoryBuilder:
             'mf_parameters':      _mf_param_names,
         }
 
-        # Action — write the FULL action; framework no longer wraps
-        # with sum-over-i.  ``phi[i](dv[i])`` is the canonical syntax
-        # for the transfer function (indexed formal call).
+        # Pick a "primary" function for legacy phi_concrete plumbing
+        # (one of the user's functions becomes phi_concrete for the
+        # saddle solver).  Default: the first declared function, or
+        # one explicitly named via ``set_transfer_function``.  This
+        # is the ONLY place where one function is selected — the
+        # action-side Taylor expansion treats all functions
+        # uniformly.
+        primary_fn_name = (self._phi_function_name
+                           or (self._function_specs[0]['name']
+                               if self._function_specs else None))
+        primary_fn_spec = next(
+            (f for f in self._function_specs
+             if f['name'] == primary_fn_name), None)
+
+        # Action — every declared function becomes an indexed formal
+        # Sage symbol that FieldTheory's auto-Taylor pass expands.
         if self._action_text is not None:
             self._action = make_action_lambda(
                 self._action_text,
@@ -646,15 +656,38 @@ class TheoryBuilder:
                 kernel_names = kernel_names,
                 functions    = self._function_specs,
                 n_pop        = n_pop,
-                transfer_function = phi_spec,
+                transfer_function = primary_fn_spec,
                 naming_convention = _action_naming_convention,
             )
 
-        # phi_concrete (concrete expression for Taylor derivatives at
-        # the saddle) + specializations (auto-derived derivative subs)
-        if phi_spec is not None:
+        # Register EVERY declared function as a formal indexed entry in
+        # model['functions'].  FieldTheory's auto-Taylor pass walks this
+        # list and produces ``<name>0_<i+1>``, ``<name>1_<i+1>``,
+        # ``<name>2_<i+1>``, … derivative symbols for each function ×
+        # population pair.  No function is "special" — phi is no
+        # different from a user-named ``f`` or ``my_response``.
+        from sage.all import function as sr_function
+        self._functions = []
+        for fn_spec in self._function_specs:
+            fname = fn_spec['name']
+            self._functions.append({
+                'name':         fname,
+                'indexed':      True,
+                'deriv_prefix': fname,
+                'latex':        fn_spec.get('latex', fname),
+                'description':  fn_spec.get('description',
+                                            f'declared function {fname}'),
+                'expression':   (lambda i, v, _t=fname:
+                                 sr_function(f'{_t}_{i+1}')(v)),
+            })
+
+        # phi_concrete + specializations: needed for the saddle solver
+        # and for the Taylor-rename derivative substitutions
+        # (specializations registers <fn><k>_<i+1> → kth derivative at
+        # saddle for every function).
+        if primary_fn_spec is not None:
             self._phi_concrete = make_phi_concrete_lambda(
-                phi_spec,
+                primary_fn_spec,
                 field_names  = field_names,
                 param_names  = param_names,
                 kernel_names = kernel_names,
@@ -662,34 +695,42 @@ class TheoryBuilder:
                 n_pop        = n_pop,
             )
             self._specializations = make_specializations_lambda(
-                phi_spec,
+                primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                naming_convention = _action_naming_convention,
+                mf_eqs       = self._mf_eqs_text,
+            )
+
+        # Mean-field equations.  We produce TWO substitution lambdas:
+        #
+        # - ``self._mf_bg`` (action-side): closures baked in.  The
+        #   iteration saddle's mf_eq RHS is evaluated in formal-rename
+        #   mode (so e.g. ``nstar = phi(v) + b`` becomes
+        #   ``nstar → phi0_<i+1> + b``).  Compound saddles like vstar
+        #   are evaluated concretely with the closure substitution
+        #   applied to the result, eliminating raw nstar from vstar's
+        #   substitution.  This makes the (1, 0) tadpole vanish
+        #   symbolically for any saddle EOM form.
+        #
+        # - ``self._mf_bg_solver`` (numerical solver): vstar in raw
+        #   concrete form (with raw nstar so ``solve_mean_field`` can
+        #   iterate on it).  The iteration saddle (nstar) is NOT
+        #   substituted in this dict.
+        if self._mf_eqs_text:
+            self._mf_bg = make_mf_bg_conditions_lambda(
+                self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
                 param_names  = param_names,
                 kernel_names = kernel_names,
                 functions    = self._function_specs,
                 n_pop        = n_pop,
             )
-
-            # Register the transfer function as a FORMAL indexed entry
-            # in model['functions'] so FieldTheory's auto-Taylor pass
-            # produces phi0_<i>, phi1_<i>, … derivative symbols (which
-            # mf_bg_conditions / specializations then substitute).
-            from sage.all import function as sr_function
-            self._functions = [{
-                'name':         phi_spec['name'],
-                'indexed':      True,
-                'deriv_prefix': phi_spec['name'],
-                'latex':        phi_spec.get('latex', phi_spec['name']),
-                'description':  phi_spec.get('description',
-                                             'transfer function'),
-                'expression':   (lambda i, v, _t=phi_spec['name']:
-                                 sr_function(f'{_t}_{i+1}')(v)),
-            }]
-
-        # Mean-field equations — phi bound in CONCRETE mode here.
-        if self._mf_eqs_text:
-            self._mf_bg = make_mf_bg_conditions_lambda(
-                self._mf_eqs_text, phi_spec,
+            self._mf_bg_solver = make_mf_bg_solver_lambda(
+                self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
                 param_names  = param_names,
                 kernel_names = kernel_names,
@@ -697,7 +738,7 @@ class TheoryBuilder:
                 n_pop        = n_pop,
             )
             self._mf_equations = make_mf_equations_lambda(
-                self._mf_eqs_text, phi_spec,
+                self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
                 param_names  = param_names,
                 kernel_names = kernel_names,
@@ -803,6 +844,17 @@ class TheoryBuilder:
             'naming_convention': naming_convention,
         }
         if self._mf_bg is not None:
+            # Action-side dict (closure-baked): used by
+            # FieldTheory.expand for the symbolic action substitution.
+            model['mf_bg_conditions_action'] = self._mf_bg
+        if self._mf_bg_solver is not None:
+            # Solver-friendly dict (raw concrete vstar, no nstar):
+            # used by solve_mean_field.  Stored under the legacy key
+            # name ``mf_bg_conditions`` so existing loaders keep
+            # working.
+            model['mf_bg_conditions'] = self._mf_bg_solver
+        elif self._mf_bg is not None:
+            # Fallback: only one mf_bg exists (legacy template path).
             model['mf_bg_conditions'] = self._mf_bg
         if self._mf_equations is not None:
             model['mf_equations'] = self._mf_equations
