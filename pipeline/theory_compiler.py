@@ -345,7 +345,20 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
         naming_convention=naming_convention,
         expand_to_full=(transfer_function_mode == 'action'),
     ))
+    # Iteration ranges.
+    #   * ``pop`` — legacy single-population flat index, always bound.
+    #   * ``pop_<name>`` — per-population index, e.g. ``pop_E``.
+    #   * ``<name>``      — plain-name alias, e.g. ``E`` ↔ pop_E.  This
+    #     lets heterogeneous-pop action text say ``for i in E``
+    #     instead of ``for i in pop_E``.  Plain aliases shadow any
+    #     equally-named parameter — users should pick non-conflicting
+    #     population names.
     nsdict['pop'] = list(range(n_pop))
+    pop_local_idx = getattr(ns, '_pop_local_idx', {}) or {}
+    for pname, plist in pop_local_idx.items():
+        nsdict[f'pop_{pname}'] = list(plist)
+        if pname not in nsdict:
+            nsdict[pname] = list(plist)
 
     # Bind every user-defined function.  In the **action** context all
     # functions become formal indexed Sage symbols ('action' mode) so
@@ -383,29 +396,66 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     return nsdict
 
 
-def _make_function_callable(fn_spec: dict, parent_ns: dict) -> Callable:
-    """Turn a ``define_function`` spec into a Python callable.
+class _IndexableCallable:
+    """Concrete function exposing both ``phi(v)`` and ``phi[i](v)``
+    syntax.  In heterogeneous-population theories the function body
+    may reference per-population parameters like ``a[i] * v^2``, so
+    the ``[i]`` on the call site has to propagate the index into the
+    eval scope.
 
-    ``fn_spec = {'name': 'phi', 'args': ['v'], 'expression': 'a*v^2'}``
-    yields a function ``phi(v_value)`` that returns the SR expression
-    ``a * v_value^2`` (with ``a`` resolved against the parent namespace).
+    Behavior:
+      * ``phi[i]``  →  returns a new wrapper carrying ``fixed_i = i``.
+      * ``phi(v)``  →  evaluates the expression body with ``v``
+        bound to the formal argument and (if set) ``i = fixed_i``
+        added to the eval namespace.  Single-index ``[i]`` and the
+        tuple form ``[i, j]`` are both supported.
     """
-    args = fn_spec['args']
-    expr_text = fn_spec['expression']
+    __slots__ = ('_name', '_args', '_expr_text', '_parent_ns', '_fixed_idx')
 
-    def _callable(*arg_values):
-        if len(arg_values) != len(args):
+    def __init__(self, fn_spec, parent_ns, fixed_idx=None):
+        self._name      = fn_spec['name']
+        self._args      = list(fn_spec.get('args') or [])
+        self._expr_text = fn_spec['expression']
+        self._parent_ns = parent_ns
+        self._fixed_idx = fixed_idx       # None / int / tuple
+
+    def __getitem__(self, idx):
+        return _IndexableCallable(
+            {'name': self._name, 'args': self._args,
+             'expression': self._expr_text},
+            self._parent_ns, fixed_idx=idx)
+
+    def __call__(self, *arg_values):
+        if len(arg_values) != len(self._args):
             raise TypeError(
-                f'{fn_spec["name"]}() expects {len(args)} args ({args}); '
-                f'got {len(arg_values)}'
+                f'{self._name}() expects {len(self._args)} args '
+                f'({self._args}); got {len(arg_values)}'
             )
-        local_ns = dict(parent_ns)
-        for argname, argval in zip(args, arg_values):
+        local_ns = dict(self._parent_ns)
+        for argname, argval in zip(self._args, arg_values):
             local_ns[argname] = argval
-        return sage_eval(expr_text, locals=local_ns)
+        # Bind the indexed call-site's population index(es) into the
+        # function-body's eval scope so expressions like ``a[i] * v``
+        # resolve correctly.
+        if self._fixed_idx is not None:
+            if isinstance(self._fixed_idx, tuple):
+                # phi[i, j] — bind both axes by position.
+                if len(self._fixed_idx) >= 1:
+                    local_ns['i'] = int(self._fixed_idx[0])
+                if len(self._fixed_idx) >= 2:
+                    local_ns['j'] = int(self._fixed_idx[1])
+            else:
+                local_ns['i'] = int(self._fixed_idx)
+        return sage_eval(self._expr_text, locals=local_ns)
 
-    _callable.__name__ = fn_spec['name']
-    return _callable
+    def __repr__(self):
+        return f'<_IndexableCallable {self._name}({", ".join(self._args)})>'
+
+
+def _make_function_callable(fn_spec: dict, parent_ns: dict):
+    """Turn a ``define_function`` spec into a callable that supports
+    both ``f(v)`` and ``f[i](v)`` syntax."""
+    return _IndexableCallable(fn_spec, parent_ns)
 
 
 def _normalize_expr_text(text: str) -> str:
@@ -595,6 +645,8 @@ def _augment_saddle_renames(ns, functions, *,
         return
     saddle_map = (naming_convention or {}).get('mean_field_saddles') or {}
 
+    pop_size_map = getattr(ns, '_pop_size', {}) or {}
+
     for fn_spec in functions:
         tname     = fn_spec['name']
         arg_names = fn_spec.get('args') or []
@@ -619,7 +671,16 @@ def _augment_saddle_renames(ns, functions, *,
         arg_dums = [SR.var(f'_xdum_saddle_{tname}_{j}')
                     for j in range(n_args)]
 
-        for i in range(len(ns.pop)):
+        # Function index range: prefer the function's declared
+        # population (heterogeneous-pop path), else the smallest
+        # saddle array (= per-arg population), else legacy flat pop.
+        fn_pop = fn_spec.get('population')
+        if fn_pop and fn_pop in pop_size_map:
+            n_indices = pop_size_map[fn_pop]
+        else:
+            n_indices = min(len(a) for a in saddle_arrays)
+
+        for i in range(n_indices):
             fe = sr_function(f'{tname}_{i + 1}')(*arg_dums)
             saddle_subs = {arg_dums[j]: saddle_arrays[j][i]
                            for j in range(n_args)}

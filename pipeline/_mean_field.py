@@ -35,20 +35,43 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     taylor_order = ft.taylor_order
 
     # ── Build basic param substitution dict ──────────────────────
+    # For each parameter, resolve its axis sizes from the spec:
+    #   * ``indexed_by=['A', 'B']``  → use pop sizes of A, B.
+    #   * legacy ``indexed=True/'matrix'``  → use len(ns.pop) for
+    #     every axis (legacy single-population path).
+    # The user's numerical value's actual shape determines whether we
+    # iterate as scalar / vector / matrix; the spec just tells us
+    # where the SR vars came from.
+    pop_size_map = getattr(ns, '_pop_size', {}) or {}
     param_subs = {}
     for pspec in model.get('parameters', []):
         pname = pspec['name']
         if pname not in fundamental:
             continue
         val = fundamental[pname]
-        if pspec.get('indexed', False):
+        ib = pspec.get('indexed_by')
+        if ib:
+            # Heterogeneous-pop path.
+            if len(ib) == 2:
+                n_rows = pop_size_map.get(ib[0], len(ns.pop))
+                n_cols = pop_size_map.get(ib[1], len(ns.pop))
+                for i in range(n_rows):
+                    for j in range(n_cols):
+                        param_subs[SR.var(f'{pname}{i+1}{j+1}')] = val[i][j]
+            elif len(ib) == 1:
+                n = pop_size_map.get(ib[0], len(ns.pop))
+                for i in range(n):
+                    param_subs[SR.var(f'{pname}{i+1}')] = val[i]
+            else:
+                # Scalar via empty indexed_by — treat like un-indexed.
+                param_subs[SR.var(pname)] = val
+        elif pspec.get('indexed', False):
+            # Legacy single-pop path.
             if isinstance(val, list) and val and isinstance(val[0], list):
-                # 2D matrix-valued (e.g. w[i][j])
                 for i in ns.pop:
                     for j in ns.pop:
                         param_subs[SR.var(f'{pname}{i+1}{j+1}')] = val[i][j]
             else:
-                # 1D vector-valued (e.g. E[i])
                 for i in ns.pop:
                     param_subs[SR.var(f'{pname}{i+1}')] = val[i]
         else:

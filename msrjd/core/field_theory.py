@@ -654,6 +654,62 @@ class FieldTheory:
             setattr(ns, name, list(lst))
         primary_idx = list(list(idx.values())[0])
 
+        # ── Population-aware sizing ────────────────────────────
+        # For heterogeneous theories, every population in
+        # ``model['populations']`` has its own index range
+        # ``[0, ..., size-1]`` exposed on the namespace under both
+        # ``pop_<name>`` and (for ergonomic action text) ``<name>``.
+        # Legacy theories have an empty ``populations`` list and
+        # fall back to the single flat ``pop`` index.
+        populations = m.get('populations') or []
+        pop_size = {p['name']: int(p.get('size', 1)) for p in populations}
+        pop_local_idx = {name: list(range(sz))
+                         for name, sz in pop_size.items()}
+        # Bind plain-name iterables for use in action text:
+        # ``for i in E`` and ``for j in I`` work as written.
+        for pname, plist in pop_local_idx.items():
+            if not hasattr(ns, pname):
+                setattr(ns, pname, list(plist))
+            # Also bind under the ``pop_<name>`` alias for callers
+            # that prefer the explicit form.
+            alias = f'pop_{pname}'
+            if not hasattr(ns, alias):
+                setattr(ns, alias, list(plist))
+
+        def _field_indices(fspec):
+            """Indices over which a field's SR vars range.  Uses
+            ``fspec['population']`` when given (per-pop sizing); falls
+            back to ``primary_idx`` for legacy fields."""
+            pop = fspec.get('population')
+            if pop and pop in pop_local_idx:
+                return pop_local_idx[pop]
+            return primary_idx
+
+        def _entity_axis_sizes(spec):
+            """Resolve the per-axis size list for a parameter / kernel.
+
+            Returns ``[]`` for scalar, ``[N_a]`` for vector, ``[N_a, N_b]``
+            for matrix.  ``indexed_by`` (heterogeneous-pop) wins over
+            legacy ``indexed=`` when both are present.
+            """
+            ib = spec.get('indexed_by')
+            if ib:
+                return [pop_size.get(p, len(primary_idx)) for p in ib]
+            indexed = spec.get('indexed', False)
+            if indexed == 'matrix':
+                return [len(primary_idx), len(primary_idx)]
+            if indexed is True or indexed == 'vector':
+                return [len(primary_idx)]
+            return []
+
+        # Stash for downstream code (mf_substitutions, _mean_field, etc.).
+        ns._populations    = populations
+        ns._pop_size       = pop_size
+        ns._pop_local_idx  = pop_local_idx
+        # Expose the axis-size helper so per-pop param / kernel iterators
+        # in pipeline code can reuse the same resolution rules.
+        ns._entity_axis_sizes = _entity_axis_sizes
+
         # ---- Field variables as SR symbols ----
         tilde_sr_vars: list = []
         phys_sr_vars:  list = []
@@ -665,11 +721,12 @@ class FieldTheory:
             indexed = fspec.get('indexed', True)
             lx      = fspec.get('latex', fname)
             if indexed:
+                idx_list = _field_indices(fspec)
                 arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
-                       for i in primary_idx]
+                       for i in idx_list]
                 setattr(ns, fname, arr)
                 tilde_sr_vars.extend(arr)
-                tilde_names.extend(f"{fname}{i+1}" for i in primary_idx)
+                tilde_names.extend(f"{fname}{i+1}" for i in idx_list)
             else:
                 v = SR.var(fname, latex_name=lx)
                 setattr(ns, fname, v)
@@ -681,11 +738,12 @@ class FieldTheory:
             indexed = fspec.get('indexed', True)
             lx      = fspec.get('latex', fname)
             if indexed:
+                idx_list = _field_indices(fspec)
                 arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
-                       for i in primary_idx]
+                       for i in idx_list]
                 setattr(ns, fname, arr)
                 phys_sr_vars.extend(arr)
-                phys_names.extend(f"{fname}{i+1}" for i in primary_idx)
+                phys_names.extend(f"{fname}{i+1}" for i in idx_list)
             else:
                 v = SR.var(fname, latex_name=lx)
                 setattr(ns, fname, v)
@@ -703,48 +761,60 @@ class FieldTheory:
         R                    = PolynomialRing(SR, ring_var_names)
 
         # ---- SR parameters ----
+        # Vector params get a flat list of SR vars sized by their
+        # ``indexed_by`` population (or the legacy primary_idx).
+        # Matrix params get a 1D placeholder list; the actual 2D
+        # element-naming grid is set later by ``mf_substitutions``,
+        # which also knows about ``indexed_by`` for per-pop sizing.
         for pspec in m.get('parameters', []):
             pname   = pspec['name']
             domain  = pspec.get('domain', None)
-            indexed = pspec.get('indexed', False)
-            if indexed:
-                arr = ([SR.var(f"{pname}{i+1}", domain=domain) for i in primary_idx]
-                       if domain else
-                       [SR.var(f"{pname}{i+1}") for i in primary_idx])
-                setattr(ns, pname, arr)
-            else:
+            axis_sizes = _entity_axis_sizes(pspec)
+            if not axis_sizes:
                 sym = SR.var(pname, domain=domain) if domain else SR.var(pname)
                 setattr(ns, pname, sym)
+            else:
+                # For vector: axis_sizes = [N_a].
+                # For matrix: take the first axis; the 2D structure
+                # gets installed by mf_substitutions.
+                n = axis_sizes[0]
+                arr = ([SR.var(f"{pname}{i+1}", domain=domain)
+                        for i in range(n)]
+                       if domain else
+                       [SR.var(f"{pname}{i+1}") for i in range(n)])
+                setattr(ns, pname, arr)
 
         # ---- Kernels and operators ----
         # Kernels can be:
         #   * scalar (default):  one SR symbol  ns.g  used as ``g`` in action.
-        #   * vector (indexed=True/'vector'):  N SR symbols ``g_<i+1>``,
-        #     namespace exposes ``ns.g = [g_1, g_2, ...]`` for ``g[i]`` syntax.
-        #   * matrix (indexed='matrix'):  N×N SR symbols ``g_<i+1>_<j+1>``,
-        #     namespace exposes ``ns.g`` as a list-of-lists wrapper for
-        #     ``g[i, j]`` syntax.  The companion ``kernel_ft_image`` lambda
-        #     populates each symbol's frequency image (potentially with
-        #     per-pair parameters like ``tau_g[i, j]``).
+        #   * vector (indexed=True/'vector' or indexed_by=['X']):
+        #     N_X SR symbols ``g_<i+1>``, namespace exposes
+        #     ``ns.g = [g_1, ...]`` for ``g[i]`` syntax.
+        #   * matrix (indexed='matrix' or indexed_by=['X', 'Y']):
+        #     N_X × N_Y SR symbols ``g_<i+1>_<j+1>``, namespace
+        #     exposes ``ns.g`` as a list-of-lists for ``g[i, j]`` syntax.
+        #     The companion ``kernel_ft_image`` lambda evaluates the
+        #     frequency image per (i, j) pair so per-pair parameters
+        #     like ``tau_g[i, j]`` resolve correctly.
         for kspec in m.get('kernels', []):
             kname    = kspec['name']
             klx_base = kspec.get('latex_name', None) or kname
-            indexed  = kspec.get('indexed', False)
-            matrix_k = kspec.get('matrix', False) or (indexed == 'matrix')
-            vector_k = (indexed is True or indexed == 'vector') and not matrix_k
-            if matrix_k:
+            axis_sizes = _entity_axis_sizes(kspec)
+            if len(axis_sizes) == 2:
+                n_rows, n_cols = axis_sizes
                 rows = []
-                for i in primary_idx:
+                for i in range(n_rows):
                     row = []
-                    for j in primary_idx:
-                        sn   = f'{kspec.get("sage_name", "z_" + kname)}_{i+1}_{j+1}'
-                        lx   = f'{klx_base}_{{{i+1}{j+1}}}'
+                    for j in range(n_cols):
+                        sn = (f'{kspec.get("sage_name", "z_" + kname)}'
+                              f'_{i+1}_{j+1}')
+                        lx = f'{klx_base}_{{{i+1}{j+1}}}'
                         row.append(SR.var(sn, latex_name=lx))
                     rows.append(row)
                 setattr(ns, kname, rows)
-            elif vector_k:
+            elif len(axis_sizes) == 1:
                 arr = []
-                for i in primary_idx:
+                for i in range(axis_sizes[0]):
                     sn = f'{kspec.get("sage_name", "z_" + kname)}_{i+1}'
                     lx = f'{klx_base}_{{{i+1}}}'
                     arr.append(SR.var(sn, latex_name=lx))

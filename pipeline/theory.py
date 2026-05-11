@@ -185,10 +185,12 @@ class TheoryBuilder:
 
     # ── Field declarations ─────────────────────────────────────────
     def response_field(self, name: str, indexed: bool = True,
-                       latex: str = '', description: str = ''):
+                       latex: str = '', description: str = '',
+                       population: str = None):
         self.response_fields.append(FieldSpec(
             name=name, indexed=indexed,
             latex=latex or name, description=description,
+            population=population,
         ))
         return self
 
@@ -242,6 +244,8 @@ class TheoryBuilder:
         # Auto-generate the conjugate response field as ``<natural>t``
         # (matching the existing nt/vt/mt convention).  Skipped if the
         # user already declared a response field with that name.
+        # Heterogeneous-pop: the response field inherits the physical
+        # field's population so its SR-var array has the right size.
         if auto_response:
             response_name = f'{natural_name}t'
             if not any(f.name == response_name for f in self.response_fields):
@@ -249,25 +253,25 @@ class TheoryBuilder:
                     response_name, indexed=indexed,
                     latex=rf'\tilde {natural_name}',
                     description=f'response field conjugate to {natural_name}',
+                    population=population,
                 )
 
         # Auto-generate the saddle parameter ``<natural>star``.  Default
-        # domain is ``positive`` for ``n`` (rates) and free for others;
-        # the user can override by declaring the parameter explicitly
-        # before / after this call (the duplicate check below skips
-        # re-adding).
+        # domain is ``positive`` for ``n`` (rates) and free for others.
+        # Heterogeneous-pop: the saddle is indexed by the field's
+        # population so the SR-var array has the right size.
         if auto_saddle:
             saddle_name = f'{natural_name}star'
             if not any(p.name == saddle_name for p in self.parameters):
-                # Heuristic: rates are positive; voltages and other
-                # fields are free.  Users can edit the parameter row
-                # in the UI to refine.
                 domain = 'positive' if natural_name == 'n' else None
-                self.parameter(
-                    saddle_name, indexed=True, domain=domain,
+                kwargs = dict(
+                    indexed=True, domain=domain,
                     mean_field=True, natural_name=natural_name,
                     description=f'mean-field saddle value of {natural_name}',
                 )
+                if population:
+                    kwargs['indexed_by'] = [population]
+                self.parameter(saddle_name, **kwargs)
         return self
 
     # ── Parameter declarations ─────────────────────────────────────
@@ -913,28 +917,45 @@ class TheoryBuilder:
                     self._cgf_terms, param_names=param_names))
 
         # ``mf_substitutions`` for matrix-shaped parameters.  The
-        # MSR-JD framework expects each indexed='matrix' parameter
-        # to have a substitution that produces ``[[w_{i+1}{j+1}] for j]
-        # for i]`` — the elementwise SR-var grid.  We carry the
-        # declared ``domain`` (e.g. ``'positive'``) down to each
-        # element so the symbolic FT integrator can dispatch the
-        # right Maxima assumption when these vars appear in kernel
-        # time-domain expressions (a τ-like parameter needs to be
-        # positive for the FT integral to converge).
+        # MSR-JD framework expects each matrix-indexed parameter
+        # to have a substitution that produces ``[[w_{i+1}{j+1}]
+        # for j] for i]`` — the elementwise SR-var grid.
+        #
+        # Sizing rules (in priority order):
+        #   * ``indexed_by=[A, B]``  → axes use pop sizes of A, B
+        #     (heterogeneous-population path).  Reads
+        #     ``ns._pop_size`` if available, else falls back to
+        #     ``ns.pop``.
+        #   * legacy ``matrix=True`` only  → both axes use ``ns.pop``.
+        #
+        # The ``domain`` (e.g. 'positive') is propagated to every
+        # element SR var so symbolic FT / Maxima can dispatch the
+        # right assumption.
         for p in self.parameters:
-            if p.matrix:
-                wname  = p.name
-                wdom   = p.domain
-                def _matrix_subst(ns, _w=wname, _d=wdom):
-                    if _d:
-                        return [[SR.var(f'{_w}{i+1}{j+1}', domain=_d)
-                                 for j in ns.pop] for i in ns.pop]
-                    return [[SR.var(f'{_w}{i+1}{j+1}')
-                             for j in ns.pop] for i in ns.pop]
-                self._mf_substitutions.append({
-                    'name':  wname,
-                    'value': _matrix_subst,
-                })
+            if not p.matrix:
+                continue
+            wname = p.name
+            wdom  = p.domain
+            wib   = p.indexed_by    # ['A', 'B'] or None
+            def _matrix_subst(ns, _w=wname, _d=wdom, _ib=wib):
+                # Resolve the row / column index sets.
+                if _ib:
+                    pop_size = getattr(ns, '_pop_size', {}) or {}
+                    n_rows = pop_size.get(_ib[0], len(ns.pop))
+                    n_cols = pop_size.get(_ib[1], len(ns.pop))
+                else:
+                    n_rows = n_cols = len(ns.pop)
+                if _d:
+                    return [[SR.var(f'{_w}{i+1}{j+1}', domain=_d)
+                             for j in range(n_cols)]
+                            for i in range(n_rows)]
+                return [[SR.var(f'{_w}{i+1}{j+1}')
+                         for j in range(n_cols)]
+                        for i in range(n_rows)]
+            self._mf_substitutions.append({
+                'name':  wname,
+                'value': _matrix_subst,
+            })
 
     # ── Build the HAWKES_MODEL dict ───────────────────────────────
     def build(self) -> dict:
@@ -998,21 +1019,21 @@ class TheoryBuilder:
 
         # Heterogeneous-population index sets.  When .population() has
         # been called, ``populations`` lists ``{'name', 'size'}`` per
-        # group; we expose them as ``model['populations']`` for the
-        # eventual per-pop pipeline.  ``index_sets`` keeps the legacy
-        # 'pop' key (used everywhere downstream today) flattened across
-        # all populations until the pipeline knows about heterogeneity.
+        # group.  Index conventions:
+        #
+        #   * ``pop_<name>`` — LOCAL indices into population <name>,
+        #     i.e. ``[0, 1, ..., size-1]``.  Fields, parameters, and
+        #     kernels indexed by population <name> use these — e.g.
+        #     ``nE[i]`` for ``i in pop_E`` picks the i-th E element.
+        #   * ``pop`` — flat catch-all, sized ``sum(sizes)``.  Kept for
+        #     legacy callers that don't yet know about per-population
+        #     structure (the diagram engine, etc.).
         if self.populations:
             total_size = sum(int(p.get('size', 1)) for p in self.populations)
             flat_pop = list(range(total_size))
-            per_pop_idx: dict = {}
-            offset = 0
-            for p in self.populations:
-                sz = int(p.get('size', 1))
-                per_pop_idx[p['name']] = list(range(offset, offset + sz))
-                offset += sz
             extra_index_sets: dict = {
-                f'pop_{name}': idx for name, idx in per_pop_idx.items()
+                f'pop_{p["name"]}': list(range(int(p.get('size', 1))))
+                for p in self.populations
             }
         else:
             flat_pop = list(range(self.n_populations))
