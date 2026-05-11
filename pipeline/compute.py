@@ -46,7 +46,7 @@ def compute_cumulants(
     *,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
-    taylor_order: int = 4,
+    taylor_order: int = None,
     origin_leaf_idx: int = 0,
     output_npz: str = None,
     output_csv: str = None,
@@ -85,8 +85,17 @@ def compute_cumulants(
         Length-k list of leaf field tuples, e.g. ``[('dn', 1), ('dn', 2)]``.
     tau_max, tau_step : float
         τ-grid extent and spacing for the Phase J slice evaluation.
-    taylor_order : int
+    taylor_order : int or None
         Truncation order for FieldTheory's nonlinear-function Taylor.
+        ``None`` (default) auto-picks ``max(k + 2 * max_ell, 4)``,
+        which is the smallest order that captures every vertex needed
+        for a connected diagram with ``k`` external legs at ``ell``
+        loops (max vertex order ≤ ``k + 2·ell``), with a 4-floor so
+        common 1-loop 2-cumulant calculations share the same
+        ``saved_theories/<...>_taylor4`` cache directory.  Pass an
+        explicit integer to override (e.g. for non-standard
+        diagrammatic content or when probing higher-order vertices
+        for cache invalidation testing).
     origin_leaf_idx : int
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
@@ -152,6 +161,15 @@ def compute_cumulants(
         raise ValueError(
             f'external_fields has {len(external_fields)} entries but k={k}'
         )
+
+    # Auto-pick a Taylor budget that covers every vertex the
+    # prediagram enumerator could ask for at the chosen (k, max_ell).
+    # Connected diagrams with k external legs at ell loops have at
+    # most ``k + 2·ell``-leg vertices, so that's the tight upper
+    # bound — clamp at 4 below so the saved-theories cache directory
+    # stays at ``_taylor4`` for the common 1-loop 2-cumulant case.
+    if taylor_order is None:
+        taylor_order = max(k + 2 * max_ell, 4)
 
     # Accept user-facing natural names and translate to the internal
     # fluctuation names the action / propagator-typing code expect.

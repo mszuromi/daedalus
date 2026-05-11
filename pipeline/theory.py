@@ -96,6 +96,8 @@ class KernelSpec:
     latex_name: str = ''
     frequency_image: Optional[Callable] = None  # lambda omega, params: SR
     description: str = ''
+    indexed: bool = False         # True / 'vector' for g[i]; 'matrix' for g[i, j]
+    matrix:  bool = False         # True ⇒ N×N per-pair kernel (g[i, j])
 
 
 class TheoryBuilder:
@@ -265,11 +267,26 @@ class TheoryBuilder:
     # ── Kernel declaration ─────────────────────────────────────────
     def kernel(self, name: str, frequency_image: Callable = None,
                sage_name: str = '', latex_name: str = '',
-               description: str = ''):
+               description: str = '', indexed=False):
+        """Declare a convolution kernel symbol.
+
+        ``indexed`` controls per-population structure:
+          * ``False`` (default)  — single shared symbol, used as ``g``.
+          * ``True`` / ``'vector'`` — one symbol per population, ``g[i]``.
+          * ``'matrix'``         — N×N per-pair grid, ``g[i, j]``.
+
+        Indexed kernels let each population (or pair) have its own
+        frequency image, declared via ``define_kernel(... freq_image=...)``
+        whose expression may reference ``i`` (and ``j`` for matrix) and
+        indexed parameters like ``tau_g[i, j]``.
+        """
+        is_vec = (indexed in (True, 'vector'))
+        is_mat = (indexed == 'matrix')
         self.kernels.append(KernelSpec(
             name=name, sage_name=sage_name or f'z_{name}',
             latex_name=latex_name or name,
             frequency_image=frequency_image, description=description,
+            indexed=(is_vec or is_mat), matrix=is_mat,
         ))
         return self
 
@@ -310,7 +327,8 @@ class TheoryBuilder:
 
     def define_kernel(self, name: str, *, time_expr: str = None,
                       freq_image: str = None, latex_name: str = '',
-                      sage_name: str = '', description: str = ''):
+                      sage_name: str = '', description: str = '',
+                      indexed=False):
         """Declare a convolution kernel via either its time-domain
         expression OR its frequency image (or both).
 
@@ -318,6 +336,27 @@ class TheoryBuilder:
         ``freq_image`` is preferred because it's used directly by
         the propagator construction; if only ``time_expr`` is given,
         the build will warn that the FT must be supplied.
+
+        Parameters
+        ----------
+        name : str
+            Kernel symbol name (referenced in the action as ``<name>``
+            for scalar kernels, ``<name>[i]`` for vector, or
+            ``<name>[i, j]`` for matrix).
+        time_expr, freq_image : str
+            Sage-syntax expressions.  May reference ``i`` (and ``j``
+            for matrix-indexed kernels) and any declared parameter.
+            E.g. ``'1/(1 + I*omega*tau_g[i, j])'`` for a per-pair
+            exponential synapse with matrix time constants.
+        indexed : bool / 'vector' / 'matrix', default False
+            * ``False`` — single shared kernel (default).
+            * ``True`` / ``'vector'`` — per-population kernel ``g[i]``.
+            * ``'matrix'`` — per-pair kernel ``g[i, j]``.
+
+            Indexed kernels produce ``N`` (or ``N*N``) SR symbols
+            internally (``g_<i+1>``, ``g_<i+1>_<j+1>``); the
+            propagator builder substitutes each with its own
+            frequency image evaluated at the corresponding ``i`` / ``j``.
 
         The kernel is also registered as a regular ``kernel(...)``
         symbol for the MSR-JD framework's name resolution.
@@ -330,11 +369,12 @@ class TheoryBuilder:
         if not any(k.name == name for k in self.kernels):
             self.kernel(name, sage_name=sage_name or f'z_{name}',
                         latex_name=latex_name or name,
-                        description=description)
+                        description=description, indexed=indexed)
         self._kernel_specs.append({
             'name':       name,
             'time_expr':  time_expr,
             'freq_image': freq_image,
+            'indexed':    indexed,
         })
         return self
 
@@ -639,12 +679,30 @@ class TheoryBuilder:
         # is the ONLY place where one function is selected — the
         # action-side Taylor expansion treats all functions
         # uniformly.
-        primary_fn_name = (self._phi_function_name
-                           or (self._function_specs[0]['name']
-                               if self._function_specs else None))
+        #
+        # ``phi_concrete`` requires a SINGLE-argument function (the
+        # saddle solver inverts ``nstar = phi(vstar)`` along one
+        # variable), so the auto-pick prefers the first single-arg
+        # function rather than blindly grabbing the first declared.
+        # Multi-arg functions still participate in the action-side
+        # Taylor expansion via FieldTheory's rename machinery.
+        if self._phi_function_name:
+            primary_fn_name = self._phi_function_name
+        else:
+            primary_fn_name = next(
+                (f['name'] for f in self._function_specs
+                 if len(f.get('args') or []) == 1),
+                (self._function_specs[0]['name']
+                 if self._function_specs else None))
         primary_fn_spec = next(
             (f for f in self._function_specs
              if f['name'] == primary_fn_name), None)
+        # If the chosen primary is multi-arg (because no single-arg
+        # function exists), skip phi_concrete plumbing — saddle solving
+        # then falls back to using the user's mf_eq RHS directly.
+        if primary_fn_spec is not None and \
+                len(primary_fn_spec.get('args') or []) != 1:
+            primary_fn_spec = None
 
         # Action — every declared function becomes an indexed formal
         # Sage symbol that FieldTheory's auto-Taylor pass expands.
@@ -662,23 +720,28 @@ class TheoryBuilder:
 
         # Register EVERY declared function as a formal indexed entry in
         # model['functions'].  FieldTheory's auto-Taylor pass walks this
-        # list and produces ``<name>0_<i+1>``, ``<name>1_<i+1>``,
-        # ``<name>2_<i+1>``, … derivative symbols for each function ×
-        # population pair.  No function is "special" — phi is no
-        # different from a user-named ``f`` or ``my_response``.
+        # list and, for every multi-index (k_1, ..., k_n) of partial
+        # derivative orders with sum ≤ taylor_order, produces a clean
+        # rename target ``<name><k_1><k_2>...<k_n>_<i+1>``.  Single-arg
+        # functions (n=1) collapse to the legacy ``<name><k>_<i+1>``
+        # naming, so existing models are unaffected.  Multi-arg
+        # functions (n≥2) are supported natively via Sage's true
+        # multivariate ``taylor()`` — no chained single-variable Taylor.
         from sage.all import function as sr_function
         self._functions = []
         for fn_spec in self._function_specs:
-            fname = fn_spec['name']
+            fname  = fn_spec['name']
+            n_args = len(fn_spec.get('args') or [])
             self._functions.append({
                 'name':         fname,
                 'indexed':      True,
                 'deriv_prefix': fname,
+                'n_args':       n_args,
                 'latex':        fn_spec.get('latex', fname),
                 'description':  fn_spec.get('description',
                                             f'declared function {fname}'),
-                'expression':   (lambda i, v, _t=fname:
-                                 sr_function(f'{_t}_{i+1}')(v)),
+                'expression':   (lambda i, *xs, _t=fname:
+                                 sr_function(f'{_t}_{i+1}')(*xs)),
             })
 
         # phi_concrete + specializations: needed for the saddle solver
@@ -792,7 +855,16 @@ class TheoryBuilder:
 
         missing = []
         if self._action is None:           missing.append('action')
-        if self._phi_concrete is None:     missing.append('phi_concrete')
+        # ``phi_concrete`` is required only when there is at least one
+        # single-arg function in the model — the saddle solver uses it
+        # to evaluate ``phi(v*)`` numerically.  If every declared
+        # function is multi-arg, ``phi_concrete`` is not applicable
+        # (saddle solving falls back to the user's mf_eq RHS via the
+        # ``nstar_target`` path in ``solve_mean_field``).
+        any_single_arg = any(len(f.get('args') or []) == 1
+                             for f in self._function_specs)
+        if self._phi_concrete is None and any_single_arg:
+            missing.append('phi_concrete')
         # kernel_ft_image is OPTIONAL: the DeltaKernel template
         # intentionally returns no image (the symbol is treated as
         # δ(t) directly by the cell-8 propagator construction).
@@ -898,4 +970,13 @@ class TheoryBuilder:
         }
         if k.description:
             d['description'] = k.description
+        # Encode indexing so FieldTheory._build_namespace and
+        # make_kernel_ft_image_lambda can create the right symbol
+        # shape.  ``matrix`` takes precedence over ``vector`` because
+        # KernelSpec stores them as two independent bools (``matrix``
+        # implies ``indexed``).  Scalar (default) is omitted.
+        if k.matrix:
+            d['indexed'] = 'matrix'
+        elif k.indexed:
+            d['indexed'] = 'vector'
         return d

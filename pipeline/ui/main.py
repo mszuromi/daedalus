@@ -225,6 +225,9 @@ class TheoryUI:
             columns=[
                 {'name': 'name',        'kind': 'text',
                  'placeholder': 'g',    'width': '80px'},
+                {'name': 'indexed',     'kind': 'select',
+                 'options': ['scalar', 'vector', 'matrix'],
+                 'default': 'scalar',   'width': '90px'},
                 {'name': 'time_expr',   'kind': 'text',
                  'placeholder': '(1/tau_g)*exp(-t/tau_g)*heaviside(t)',
                  'width': '300px'},
@@ -235,7 +238,8 @@ class TheoryUI:
                  'placeholder': 'g',    'width': '80px'},
             ],
             initial=[
-                {'name': 'g', 'freq_image': '1/(1+I*omega*tau_g)',
+                {'name': 'g', 'indexed': 'scalar',
+                 'freq_image': '1/(1+I*omega*tau_g)',
                  'latex_name': 'g'},
             ],
         )
@@ -247,6 +251,21 @@ class TheoryUI:
                    "<code>freq_image</code> (in <code>omega</code> + parameters). "
                    "<code>freq_image</code> is preferred — it's used directly by "
                    "propagator construction."
+                   '</p>'
+                   '<p style="color:#555;font-size:90%;">'
+                   "<code>indexed</code> controls per-population shape:"
+                   "<ul style='margin-top:4px;'>"
+                   "<li><b>scalar</b> (default): one shared kernel — "
+                   "use <code>g</code> in the action.</li>"
+                   "<li><b>vector</b>: per-population kernel — use "
+                   "<code>g[i]</code> in the action; expression may "
+                   "reference <code>i</code> and indexed params like "
+                   "<code>tau_g[i]</code>.</li>"
+                   "<li><b>matrix</b>: per-pair kernel — use "
+                   "<code>g[i, j]</code> in the action; expression may "
+                   "reference <code>i, j</code> and matrix params like "
+                   "<code>tau_g[i, j]</code>.</li>"
+                   "</ul>"
                    '</p>'),
             self._tbl_kernels.show(),
         ])
@@ -526,6 +545,11 @@ class TheoryUI:
                 v = row.get(k)
                 if v:
                     entry[k] = v
+            # 'scalar' is the legacy default — encoded as indexed=False.
+            # 'vector' / 'matrix' map to indexed='vector' / 'matrix'.
+            idx = row.get('indexed') or 'scalar'
+            if idx != 'scalar':
+                entry['indexed'] = idx
             kernels.append(entry)
 
         return {

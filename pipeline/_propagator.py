@@ -28,15 +28,145 @@ from msrjd.core.cache import PipelineCache
 from msrjd.core.field_theory import fourier_transform
 
 
-def _safe_factor(e):
-    """Per-entry factor() that tolerates Maxima aborts on complex 6×6
-    inverse entries (the GTaS model triggers these regularly).  factor()
+def factor_propagator(prop, *,
+                      per_entry_timeout: float = 5.0,
+                      slow_entry_threshold: float = 0.5,
+                      verbose: bool = False):
+    """Return a copy of the propagator dict with the ``G_ft`` matrix
+    re-applied through ``_safe_factor``, producing a cosmetically
+    factored form for display in reports.
+
+    The pipeline's :func:`build_propagator` deliberately returns the
+    *raw* inverse because ``factor()`` is known to hang or segfault
+    on rich symbolic structures (Sage / Singular issue, not
+    interruptible from Python).  This helper applies factoring
+    after the fact, with two layers of protection:
+
+      1. Each ``factor()`` call is wrapped by ``_safe_factor``,
+         which uses a cysignals ``alarm()`` and catches Sage
+         signal-errors / timeouts to fall back to the unfactored
+         entry.  (Note: the alarm does not always interrupt
+         Singular's native loop — see (2).)
+      2. After any single entry takes longer than
+         ``slow_entry_threshold`` seconds (whether it succeeded or
+         not), a one-shot bail flag flips and the remaining entries
+         skip factoring entirely.  This caps the total cost to
+         roughly one slow-entry's worth of compute even when the
+         alarm fails to interrupt.
+
+    Returns a NEW dict with ``G_ft`` replaced; the input is untouched.
+    """
+    import time as _time
+    G_ft = prop.get('G_ft')
+    if G_ft is None:
+        return prop
+    bail = [False]
+    n_factored = [0]
+    n_skipped  = [0]
+    def _factor_with_bail(e):
+        if bail[0]:
+            n_skipped[0] += 1
+            return e
+        t0 = _time.perf_counter()
+        out = _safe_factor(e, timeout=per_entry_timeout)
+        dt = _time.perf_counter() - t0
+        if dt > slow_entry_threshold:
+            bail[0] = True
+        else:
+            n_factored[0] += 1
+        return out
+    G_ft_factored = G_ft.apply_map(_factor_with_bail)
+    if verbose:
+        print(f'[factor_propagator] factored={n_factored[0]} '
+              f'skipped={n_skipped[0]} bailed={bail[0]}')
+    out = dict(prop)
+    out['G_ft'] = G_ft_factored
+    return out
+
+
+def _safe_factor(e, timeout=5.0):
+    """Per-entry factor() that tolerates Maxima/Singular aborts on the
+    complex 6×6 inverse entries that bigger actions produce.  factor()
     is purely cosmetic for display — the integrator does not require
-    factored form."""
+    factored form, so any failure just falls back to the unfactored
+    entry.
+
+    Wraps the call in :func:`cysignals.alarm.alarm` so a runaway
+    Singular routine (which can otherwise loop indefinitely while
+    spewing Flint divide-by-zero warnings, observed with spike-reset
+    models whose ``-n*v`` term enriches the kinetic matrix inverse)
+    is forcibly interrupted after ``timeout`` seconds.
+
+    Catches:
+      * the usual symbolic-error tuple,
+      * ``cysignals.signals.SignalError`` (Sage's wrapper around
+        native segfaults from Singular/Pynac),
+      * ``cysignals.alarm.AlarmInterrupt`` (the timeout firing).
+    """
+    from cysignals.alarm import alarm, cancel_alarm, AlarmInterrupt
     try:
-        return e.factor()
-    except (RuntimeError, ValueError, TypeError, ArithmeticError):
+        alarm(timeout)
+        try:
+            return e.factor()
+        finally:
+            cancel_alarm()
+    except (RuntimeError, ValueError, TypeError, ArithmeticError,
+            AlarmInterrupt):
         return e
+    except BaseException as exc:
+        # cysignals.signals.SignalError isn't a subclass of Exception
+        # in some Sage builds — catch via BaseException + name check
+        # to avoid accidentally swallowing KeyboardInterrupt / SystemExit.
+        if exc.__class__.__name__ == 'SignalError':
+            return e
+        raise
+
+
+def _omega_inf_limit_fast(expr, omega_var):
+    """Fast computation of  lim_{ω → ∞} expr(ω)  for SR rational
+    expressions in ``omega_var``.
+
+    Avoids calling :func:`sage.limit` (which routes through Maxima
+    and is dramatically slow on raw cofactor/det rational entries —
+    triggers thousands of Flint divide-by-zero warnings + Singular
+    thrashing for rich models like spike-reset).  Instead, extract
+    numerator + denominator, compare their omega-degree, and return
+    the leading-coefficient ratio (matching the textbook recipe for
+    rational-function limits).
+
+    Returns:
+      * ``SR(0)`` when ``deg(num) < deg(den)``,
+      * ``num_lc / den_lc`` when ``deg(num) == deg(den)``,
+      * ``None`` when ``deg(num) > deg(den)`` (caller decides what
+        to do — for a physical propagator this branch shouldn't
+        fire, but the helper stays honest about it),
+      * ``None`` if the expression isn't cleanly a polynomial ratio
+        in ``omega_var`` (e.g. transcendental kernels left unevaluated)
+        so callers can fall back to ``sage.limit``.
+    """
+    expr = SR(expr)
+    try:
+        num = expr.numerator()
+        den = expr.denominator()
+        num_deg = int(num.degree(omega_var))
+        den_deg = int(den.degree(omega_var))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if num_deg < den_deg:
+        return SR(0)
+    if num_deg > den_deg:
+        return None
+    # Same degree: leading-coefficient ratio.
+    try:
+        num_lc = (num.coefficient(omega_var, num_deg)
+                  if num_deg > 0 else SR(num))
+        den_lc = (den.coefficient(omega_var, den_deg)
+                  if den_deg > 0 else SR(den))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if SR(den_lc).is_zero():
+        return None
+    return SR(num_lc) / SR(den_lc)
 
 
 def _to_kernel(c, Dt, delta_D, delta_Dp):
@@ -152,25 +282,76 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
         K_ft = K_ft.apply_map(lambda e: SR(e).subs(kft_subs))
 
     # ── Propagator inverse ────────────────────────────────────────
-    G_ft = K_ft.inverse().apply_map(_safe_factor)
+    # Use the raw inverse — no ``factor()`` in the pipeline path.
+    # Previously ``factor()`` was needed to make the D_delta limit
+    # tractable (Maxima's general ``sage.limit`` is slow on raw
+    # cofactor/det rational expressions); now that the D_delta loop
+    # below uses ``_omega_inf_limit_fast`` (leading-coefficient
+    # ratio in ω), it works just as fast on unfactored entries —
+    # and we no longer depend on Singular's ``factor()``, which
+    # hangs uninterruptibly on rich actions (e.g. spike-reset's
+    # ``-n*v`` bilinear vertex).  Cosmetic factored form is still
+    # available on demand via :func:`factor_propagator`, with its
+    # own bail-out for report generation.
+    G_ft = K_ft.inverse()
 
     # ── Adjugate, det, δ-coefficient matrix ───────────────────────
     adj_ft  = K_ft.adjugate()
     D_omega = K_ft.det()
 
-    D_delta_data = [[SR(0)] * nf for _ in range(nf)]
-    for i in range(nf):
-        for j in range(nf):
-            entry = SR(G_ft[i, j])
-            if entry.is_zero():
-                continue
-            try:
-                lim_val = _sage_limit(entry, **{str(omega): oo})
-                if not lim_val.is_zero():
+    # ── D_delta = lim_{ω → ∞} G_ft  (the instantaneous part) ──────
+    # Try the fast leading-coefficient ratio symbolically — works for
+    # simple models, completes in ~ms.  If any entry can't be handled
+    # symbolically (``.numerator()`` / ``.denominator()`` hang on rich
+    # rational structures, e.g. spike-reset's bilinear-coupled
+    # inverse), abort the symbolic pass and set ``D_delta = None``.
+    # The integrator (``msrjd.integration.time_domain.propagator_td``)
+    # then computes D_delta lazily AFTER numerical-parameter
+    # substitution, where every G_ft entry is a clean rational
+    # function in ω alone and the limit is trivial.
+    #
+    # The symbolic pass uses a wall-clock budget per entry — if any
+    # one entry exceeds the budget, we bail out.  We CAN'T rely on a
+    # cysignals alarm to interrupt mid-call (Singular's native loop
+    # doesn't yield to Python signals).
+    import time as _time
+    D_delta = None
+    try:
+        D_delta_data = [[SR(0)] * nf for _ in range(nf)]
+        per_entry_budget = 1.0
+        for i in range(nf):
+            for j in range(nf):
+                entry = SR(G_ft[i, j])
+                if entry.is_zero():
+                    continue
+                t_e = _time.perf_counter()
+                lim_val = _omega_inf_limit_fast(entry, omega)
+                if _time.perf_counter() - t_e > per_entry_budget:
+                    # If the fast path itself was slow on a single entry,
+                    # subsequent entries will likely be slow too — bail.
+                    raise TimeoutError(f'_omega_inf_limit_fast on '
+                                       f'entry ({i},{j}) exceeded '
+                                       f'{per_entry_budget}s budget')
+                if lim_val is None:
+                    # Skip — integrator will compute this entry post-
+                    # num_params substitution.
+                    continue
+                if not SR(lim_val).is_zero():
                     D_delta_data[i][j] = lim_val
-            except Exception:
-                pass
-    D_delta = matrix(SR, D_delta_data)
+        D_delta = matrix(SR, D_delta_data)
+    except (TimeoutError, Exception) as exc:
+        if verbose:
+            print(f'      D_delta symbolic pass bailed ({type(exc).__name__}: '
+                  f'{exc}) — integrator will compute lazily.')
+        D_delta = None
+    except BaseException as exc:
+        if exc.__class__.__name__ == 'SignalError':
+            if verbose:
+                print(f'      D_delta symbolic pass aborted '
+                      f'(SignalError) — integrator will compute lazily.')
+            D_delta = None
+        else:
+            raise
 
     prop = {
         'K_ker':         K_ker,

@@ -175,12 +175,26 @@ def _emit_function(fn: dict) -> str:
 
 
 def _emit_kernel(k: dict) -> str:
+    # Translate ``indexed`` from the UI's user-facing words to the
+    # ``define_kernel(indexed=...)`` kwarg the builder expects.  Pass a
+    # plain Python string ('vector' / 'matrix'); _py_repr will quote
+    # it.  Default ('scalar' / False / None) is omitted entirely.
+    indexed = k.get('indexed')
+    if indexed in (None, False, 'scalar'):
+        indexed_value = None              # → _kw_chain omits the kwarg
+    elif indexed is True or indexed == 'vector':
+        indexed_value = 'vector'
+    elif indexed == 'matrix':
+        indexed_value = 'matrix'
+    else:
+        indexed_value = indexed
     kwargs = _kw_chain(
         ('time_expr',   k.get('time_expr')),
         ('freq_image',  k.get('freq_image')),
         ('latex_name',  k.get('latex_name') or k.get('latex')),
         ('sage_name',   k.get('sage_name')),
         ('description', k.get('description')),
+        ('indexed',     indexed_value),
     )
     head = f'.define_kernel({_py_repr(k["name"])}'
     return head + (', ' + kwargs if kwargs else '') + ')'

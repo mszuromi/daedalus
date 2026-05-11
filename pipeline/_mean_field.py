@@ -109,19 +109,80 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
         return float(nstar_rhs_baked[i].subs(v_vals).subs(n_vals))
 
     # ── fsolve the self-consistency  n*_i = <user RHS>(n*_j) ────
+    # Wrap mf_residual so symbolic singularities (e.g. division by
+    # zero when an mf_eq RHS like ``1/(1 - nstar)`` is evaluated at
+    # the wrong point) become large finite residuals instead of
+    # raising — that lets fsolve back away from the singularity and
+    # keep searching rather than aborting the whole solve.
     def mf_residual(nstar_vec):
-        return [nstar_vec[i] - nstar_target(i, nstar_vec)
-                for i in ns.pop]
+        try:
+            return [nstar_vec[i] - nstar_target(i, nstar_vec)
+                    for i in ns.pop]
+        except (ValueError, ZeroDivisionError):
+            return [1e10] * len(ns.pop)
 
     npop = len(ns.pop)
-    sol = fsolve(mf_residual, [1.0] * npop, full_output=True)
+
+    # Try a sequence of initial guesses, starting with small values
+    # safe for mf_eqs that have singularities at large nstar (e.g.
+    # spike-reset with vstar = ... / (1 - nstar)), and falling back
+    # to the legacy [1.0] guess for theories whose saddle lives
+    # there.  ``fsolve`` returns ier=1 on clean convergence; we
+    # keep the first ier=1 result and otherwise fall through with
+    # the last attempt.
+    initial_guesses = [
+        [0.1]  * npop,
+        [0.5]  * npop,
+        [1.0]  * npop,    # legacy default
+        [0.01] * npop,
+    ]
+    sol = None
+    for x0 in initial_guesses:
+        try:
+            attempt = fsolve(mf_residual, x0, full_output=True)
+        except (ValueError, ZeroDivisionError):
+            continue
+        sol = attempt
+        if attempt[2] == 1:    # ier == 1  ⇒  converged
+            break
+
+    if sol is None:
+        raise RuntimeError(
+            'solve_mean_field: fsolve failed on every initial guess.  '
+            'Check the mf_eq for symbolic singularities or supply a '
+            'custom starting point.')
     nstar_vals = [float(x) for x in sol[0]]
+
+    # ── Sanity-check the recovered saddle ─────────────────────────
+    # Non-finite or wildly large values mean fsolve diverged into a
+    # symbolic singularity (e.g. spike-reset's ``1/(1 - n*)`` blows
+    # up as n* → 1).  Catch that explicitly rather than handing
+    # garbage downstream to the propagator / Phase J machinery.
+    if not all(__import__('math').isfinite(x) for x in nstar_vals):
+        raise RuntimeError(
+            f'solve_mean_field: fsolve returned non-finite n* = '
+            f'{nstar_vals!r}.  The mf_eq probably has a singularity '
+            f'within the iteration basin; check parameter values.')
+    # Heuristic warning: if ier != 1 we may have a non-converged point.
+    sol_ier = sol[2]
+    if sol_ier != 1:
+        msg = sol[3] if len(sol) > 3 else 'fsolve reported non-convergence'
+        if verbose:
+            print(f'  ⚠ solve_mean_field: fsolve ier={sol_ier} '
+                  f'({msg!r}) — saddle may be unreliable.')
 
     # ── Evaluate v* and phi derivatives at the fixed point ──────
     vstar_vals = []
     phi_deriv_vals = {}
     for i in ns.pop:
         vi = vstar_num(i, nstar_vals)
+        if not __import__('math').isfinite(vi):
+            raise RuntimeError(
+                f'solve_mean_field: vstar[{i}] = {vi!r} is non-finite. '
+                f'Likely cause: nstar = {nstar_vals[i]:.6g} is near a '
+                f'pole of the v-saddle equation (e.g. spike-reset '
+                f'1/(1 - n*) ).  Reduce excitation or supply a custom '
+                f'initial guess.')
         vstar_vals.append(vi)
         for dk in range(taylor_order + 1):
             phi_deriv_vals[(dk, i)] = float(

@@ -51,14 +51,17 @@ class _IndexedFormalFunction:
     Usage in compiler-bound action namespace::
 
         phi = _IndexedFormalFunction('phi')
-        phi[i](dv[i])     # → function(f'phi_{i+1}')(dv[i])
-        phi[i, j](dv[i])  # → function(f'phi_{i+1}_{j+1}')(dv[i])
+        phi[i](dv[i])           # → function(f'phi_{i+1}')(dv[i])
+        phi[i, j](dv[i])        # → function(f'phi_{i+1}_{j+1}')(dv[i])
+        f[i](v[i], n[i])        # → function(f'f_{i+1}')(v[i], n[i])
 
-    Each indexed call returns a Python callable so the user can then
-    apply it to the field argument.  This supports both scalar (one
-    transfer function for all populations, distinguished by index for
-    auto-Taylor) and per-pair (e.g., synaptic-pair-specific) variants
-    when the function is declared with explicit indexing.
+    Each indexed call returns a variadic callable so the user can then
+    apply the formal function to one OR multiple field arguments.
+    Multi-arg formal calls are picked up by Sage's multivariate
+    ``taylor()`` in :func:`field_theory.expand` — every partial
+    derivative ``∂^α f / ∂x_1^{α_1} ... ∂x_n^{α_n}`` at the saddle
+    expansion point gets renamed to ``f<α_1>...<α_n>_<i+1>`` by the
+    framework's auto-Taylor pass.
     """
     __slots__ = ('_name',)
 
@@ -71,36 +74,59 @@ class _IndexedFormalFunction:
         else:
             sfx = str(int(idx) + 1)
         full_name = f'{self._name}_{sfx}'
-        def _call(arg, _n=full_name):
-            return sr_function(_n)(arg)
+        def _call(*args, _n=full_name):
+            return sr_function(_n)(*args)
         return _call
 
 
 class _IndexedSaddleRename:
-    """Maps ``f(arg)`` and ``f[i](arg)`` directly to the formal
-    Taylor-rename target ``SR.var(f'{name}0_<i+1>')`` instead of going
-    through Sage's symbolic Taylor expansion.
+    """Maps formal function calls in mf_bg evaluation directly to the
+    framework's Taylor-rename target — bypassing Sage's symbolic
+    expansion — so the action-side closure substitution lines up with
+    the bigrade pass's symbolic vertex names.
 
-    Used in mf_bg saddle-substitution evaluation: when the user writes
-    ``set_mf_equation('nstar', 'phi(vstar[i])')``, we want mf_bg to
-    return ``{nstar[i]: phi0_<i+1>}`` so the action's ``nt[i] * nstar[i]``
-    cancels symbolically against the Taylor-expanded
-    ``nt[i] * phi0_<i+1>`` term from the Poisson cumulant.
+    Single-arg example::
+
+        set_mf_equation('nstar', 'phi(vstar[i])')
+        # mf_bg returns {nstar[i]: phi0_<i+1>}, which cancels the
+        # action's nt[i]*nstar[i] tadpole against the Poisson
+        # Taylor's nt[i]*phi0_<i+1>.
+
+    Multi-arg example (now supported)::
+
+        set_mf_equation('nstar', 'f(vstar[i], nstar[i])')
+        # mf_bg returns {nstar[i]: f00_<i+1>} — the zeroth multi-
+        # derivative of the 2-arg formal f.  Multi-arg auto-Taylor
+        # in FieldTheory.expand() produces the same f00_<i+1>
+        # symbol, so the tadpole cancellation still works.
+
+    ``n_args`` (default 1) controls the trailing-zero count in the
+    rename suffix — `'0' * n_args`.  For single-arg the suffix is
+    ``0`` (legacy behavior); for n-arg it is ``00...0`` (n times).
+    Multi-arg calls that don't match ``n_args`` exactly fall back
+    to whatever ``len(args)`` is at call time, since that's the
+    authoritative count from the user's mf_eq syntax.
     """
-    __slots__ = ('_name',)
+    __slots__ = ('_name', '_n_args')
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, n_args: int = 1):
         self._name = name
+        self._n_args = max(int(n_args), 1)
 
-    def __call__(self, arg, i=None):
-        # Bare-call form: phi(vstar[i]).  Caller binds ``i`` via the
+    def _build_target(self, n_args: int, i: int) -> 'SR':
+        suffix = '0' * max(n_args, 1)
+        return SR.var(f'{self._name}{suffix}_{int(i) + 1}')
+
+    def __call__(self, *args, i=None):
+        # Bare-call form: phi(vstar[i]) — or for multi-arg,
+        # f(vstar[i], nstar[i]).  Caller binds ``i`` via the
         # outer for-loop in mf_bg evaluation.
+        n_args = len(args) if args else self._n_args
         if i is None:
-            # Fallback: try to infer from arg's variable name if it
-            # ends in a digit (e.g. vstar1 → 0).  Conservative.
+            # Fallback: try to infer from the first arg's variable
+            # name if it ends in a digit (e.g. vstar1 → 0).
             try:
-                s = str(arg)
-                # Last digits in the variable name
+                s = str(args[0]) if args else ''
                 import re
                 m = re.search(r'(\d+)\s*$', s)
                 if m:
@@ -109,18 +135,22 @@ class _IndexedSaddleRename:
                     i = 0
             except Exception:
                 i = 0
-        return SR.var(f'{self._name}0_{int(i) + 1}')
+        return self._build_target(n_args, i)
 
     def __getitem__(self, idx):
-        # Indexed form: phi[i](vstar[i]) — directly returns the
-        # rename target for this i.
+        # Indexed form: phi[i](vstar[i]) — or, for multi-arg,
+        # f[i](vstar[i], nstar[i]).  Returns a variadic callable
+        # so it accepts however many args the user's mf_eq passes.
         if isinstance(idx, tuple):
-            sfx = '_'.join(str(int(k) + 1) for k in idx)
+            sfx_pop = '_'.join(str(int(k) + 1) for k in idx)
         else:
-            sfx = str(int(idx) + 1)
-        target = SR.var(f'{self._name}0_{sfx}')
-        def _call(arg, _t=target):
-            return _t
+            sfx_pop = str(int(idx) + 1)
+        name      = self._name
+        default_n = self._n_args
+        def _call(*args, _name=name, _pop=sfx_pop, _default_n=default_n):
+            n_args = len(args) if args else _default_n
+            suffix = '0' * max(n_args, 1)
+            return SR.var(f'{_name}{suffix}_{_pop}')
         return _call
 
 
@@ -267,10 +297,16 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
         else:
             out[pname] = val
 
-    # Kernels (single SR symbols)
+    # Kernels can be scalar, vector (list), or matrix (list-of-lists).
+    # Wrap list-of-lists in _MatrixView so ``g[i, j]`` tuple subscript
+    # works the same way it does for matrix-valued parameters.
     for kname in kernel_names:
         if hasattr(ns, kname):
-            out[kname] = getattr(ns, kname)
+            val = getattr(ns, kname)
+            if isinstance(val, list) and val and isinstance(val[0], list):
+                out[kname] = _MatrixView(val)
+            else:
+                out[kname] = val
 
     # Operators
     if hasattr(ns, 'Dt'):
@@ -326,7 +362,14 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
         if transfer_function_mode == 'action':
             nsdict[fname] = _IndexedFormalFunction(fname)
         elif transfer_function_mode == 'mf_formal_rename':
-            nsdict[fname] = _IndexedSaddleRename(fname)
+            # Thread the function's declared arity through so the
+            # rename emits the right suffix length (``f0_<i+1>`` for
+            # single-arg, ``f00_<i+1>`` for 2-arg, etc.).  The runtime
+            # call's actual arg count overrides this if it differs,
+            # which makes the rename robust to either bare or indexed
+            # call syntax in the user's mf_eq.
+            nsdict[fname] = _IndexedSaddleRename(
+                fname, n_args=len(fn.get('args') or []) or 1)
         else:    # 'concrete' (default for MF eq evaluation)
             nsdict[fname] = _make_function_callable(fn, nsdict)
 
@@ -509,51 +552,85 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
     return _action
 
 
+def _iter_multi_indices(n_args, max_total):
+    """Yield every multi-index (k_1, ..., k_{n_args}) of non-negative
+    integers with  sum k_j  ≤ ``max_total``.
+
+    Iterative implementation (via ``itertools.product``) so it is
+    safe under ``%autoreload`` — a self-recursive generator would
+    fail to find itself in module globals after a hot-swap.
+    """
+    if n_args == 0:
+        yield ()
+        return
+    from itertools import product
+    for combo in product(range(max_total + 1), repeat=n_args):
+        if sum(combo) <= max_total:
+            yield combo
+
+
 def _augment_saddle_renames(ns, functions, *,
                             naming_convention=None,
                             taylor_order=4):
     """Add saddle-point Taylor-rename entries to ``ns._deriv_rename_subs``
-    for **every** declared function.
+    for **every** declared function, including multi-argument ones.
 
-    For each function ``f`` (any user-chosen name) and each population
-    ``i``, registers::
+    For an n-argument formal function ``f(arg_1, ..., arg_n)`` with
+    saddle expansion point ``(saddle_1[i], ..., saddle_n[i])``, every
+    multi-derivative
 
-        function('f_<i+1>')(<saddle>[i])      → f0_<i+1>
-        D[0](function('f_<i+1>'))(<saddle>[i]) → f1_<i+1>
-        D[0,0](...)(<saddle>[i])               → f2_<i+1>
-        ...
+        ∂^|α| f  /  ∂arg_1^{α_1} ... ∂arg_n^{α_n}    at the saddle
 
-    where ``<saddle>`` is the saddle of the function's first argument
-    (looked up via the model's naming_convention).  This means writing
-    ``f[i](v[i])`` in the action — where ``v[i]`` expands to
-    ``vstar[i] + dv[i]`` — Taylor-expands cleanly via the framework's
-    rename machinery, regardless of the user's chosen function name.
+    with ``sum α_j ≤ taylor_order`` is registered as a rename to
+    ``SR.var(f'<tname><α_1><α_2>...<α_n>_<i+1>')``.  For single-arg
+    functions (n=1) this collapses to the legacy ``<tname><k>_<i+1>``
+    naming, so existing models are unaffected.
+
+    Saddles for each argument are looked up via
+    ``naming_convention['mean_field_saddles']``, with fallback to
+    ``<arg>star``.  An argument with no saddle aborts that function's
+    rename registration (its saddle expansion point is undefined).
     """
     if not functions:
         return
     saddle_map = (naming_convention or {}).get('mean_field_saddles') or {}
-    x_dum = SR.var('_xdum_saddle_')
 
     for fn_spec in functions:
-        tname = fn_spec['name']
+        tname     = fn_spec['name']
         arg_names = fn_spec.get('args') or []
         if not arg_names:
             continue
-        # Saddle for this function's first arg.
-        arg_natural = arg_names[0]
-        saddle_internal = saddle_map.get(arg_natural, f'{arg_natural}star')
-        if not hasattr(ns, saddle_internal):
+        n_args = len(arg_names)
+
+        # Resolve every argument's saddle array.
+        saddle_arrays = []
+        skip = False
+        for arg_natural in arg_names:
+            saddle_internal = saddle_map.get(arg_natural,
+                                             f'{arg_natural}star')
+            if not hasattr(ns, saddle_internal):
+                skip = True
+                break
+            saddle_arrays.append(getattr(ns, saddle_internal))
+        if skip:
             continue
-        saddle_array = getattr(ns, saddle_internal)
+
+        # One dummy SR var per formal argument.
+        arg_dums = [SR.var(f'_xdum_saddle_{tname}_{j}')
+                    for j in range(n_args)]
 
         for i in range(len(ns.pop)):
-            fe = sr_function(f'{tname}_{i + 1}')(x_dum)
-            for k in range(taylor_order + 1):
-                if k == 0:
-                    val = fe.subs({x_dum: saddle_array[i]})
-                else:
-                    val = diff(fe, x_dum, k).subs({x_dum: saddle_array[i]})
-                target = SR.var(f'{tname}{k}_{i + 1}')
+            fe = sr_function(f'{tname}_{i + 1}')(*arg_dums)
+            saddle_subs = {arg_dums[j]: saddle_arrays[j][i]
+                           for j in range(n_args)}
+            for multi_idx in _iter_multi_indices(n_args, taylor_order):
+                deriv = fe
+                for j, kj in enumerate(multi_idx):
+                    if kj > 0:
+                        deriv = diff(deriv, arg_dums[j], kj)
+                val = deriv.subs(saddle_subs)
+                suffix = ''.join(str(k) for k in multi_idx)
+                target = SR.var(f'{tname}{suffix}_{i + 1}')
                 ns._deriv_rename_subs[val] = target
 
 
@@ -600,27 +677,18 @@ def make_specializations_lambda(phi_fn_spec: dict | None, *,
     # Note: ``mf_eqs`` parameter retained for API compatibility but
     # no longer used — closure substitution is handled by mf_bg.
     """Auto-derive ``model['specializations']`` for every declared
-    function.
+    function, including multi-argument ones.
 
-    For each function ``f`` (any name) and each population ``i``,
-    produces:
+    For an n-arg formal function ``f(arg_1, ..., arg_n)`` and each
+    population ``i``, produces
 
-      * ``f<k>_<i+1>  →  f^(k)(<saddle>[i])`` for k = 1, 2, ..., order
-        — the kth derivative of f's concrete expression evaluated at
-        the saddle of f's first arg.
+        f<α_1><α_2>...<α_n>_<i+1>
+            →  ∂^|α| f / (∂arg_1^{α_1} ... ∂arg_n^{α_n})
+                       evaluated at  (saddle_1[i], ..., saddle_n[i])
 
-      * ``f0_<i+1>``  →  one of two forms:
-
-        - **closure form** (``f0_<i+1> → ns.<closure_saddle>[i]``):
-          if the user declared ``set_mf_equation('<saddle>',
-          'f(<arg>)')``, then f is the saddle-EOM closure for
-          ``<saddle>``.  The framework substitutes ``f0`` with the
-          ``<saddle>`` iteration variable, ensuring the (1, 0) tadpole
-          on the response field cancels symbolically.
-
-        - **concrete form** (``f0_<i+1> → f(<saddle>[i])``):
-          if no mf_equation closes f, substitute the literal value
-          of f at the saddle.
+    for every multi-index α with sum ≤ ``taylor_order``.  Single-arg
+    functions (n=1) collapse to the legacy ``f<k>_<i+1>`` naming, so
+    existing models are unaffected.
 
     The function name is just a label — ``phi``, ``f``, ``response_fn``
     all behave identically.
@@ -640,42 +708,56 @@ def make_specializations_lambda(phi_fn_spec: dict | None, *,
         order = ns._taylor_order
 
         for fn_spec in (functions or []):
-            tname = fn_spec['name']
+            tname     = fn_spec['name']
             arg_names = fn_spec.get('args') or []
             if not arg_names:
                 continue
-            arg_name = arg_names[0]
-            saddle_internal = saddle_map.get(arg_name,
-                                             f'{arg_name}star')
-            if not hasattr(ns, saddle_internal):
+            n_args = len(arg_names)
+
+            # Resolve every argument's saddle array.  An argument with
+            # no declared saddle aborts that function's spec emission.
+            saddle_arrays = []
+            skip = False
+            for arg_name in arg_names:
+                saddle_internal = saddle_map.get(arg_name,
+                                                 f'{arg_name}star')
+                if not hasattr(ns, saddle_internal):
+                    skip = True
+                    break
+                saddle_arrays.append(getattr(ns, saddle_internal))
+            if skip:
                 continue
-            saddle_array = getattr(ns, saddle_internal)
 
-            # Pre-compute Taylor-coefficient values at the saddle.
-            v_sym = SR.var(f'_{tname}_taylor_arg')
-            f_at_v = _safe_eval(
-                fn_spec['expression'],
-                {**base_ns, arg_name: v_sym},
-                f'{tname}({arg_name}) Taylor expansion')
+            # Per-population eval of the function body — so the
+            # expression can reference indexed parameters via ``a[i]``,
+            # giving each population its own concrete derivatives at
+            # the saddle.  ``i`` is bound in the eval namespace below.
+            arg_syms = [SR.var(f'_{tname}_taylor_arg_{j}')
+                        for j in range(n_args)]
 
-            # Always-concrete substitution: f<k>_<i+1> → kth derivative
-            # of f's concrete expression evaluated at the saddle.
-            # k=0 gives ``f(<saddle>[i])``, k=1 gives
-            # ``f'(<saddle>[i])``, etc.  No saddle-name shortcut —
-            # the action-side mf_bg has already substituted the
-            # iteration saddle with its formal-rename target, so the
-            # tadpole cancellation works without specs needing to
-            # know about closures.
             for i in range(n_pop):
-                for k in range(0, order + 1):
-                    sym = SR.var(f'{tname}{k}_{i+1}')
-                    if k == 0:
-                        out[sym] = f_at_v.subs(
-                            {v_sym: saddle_array[i]})
-                    else:
-                        deriv_at_v = f_at_v.derivative(v_sym, k)
-                        out[sym] = deriv_at_v.subs(
-                            {v_sym: saddle_array[i]})
+                local_ns = dict(base_ns)
+                for arg_name, arg_sym in zip(arg_names, arg_syms):
+                    local_ns[arg_name] = arg_sym
+                # Make the population index available inside the
+                # expression: users can write ``a[i] * v^2`` to pick the
+                # i-th component of an indexed parameter, or any other
+                # i-dependent algebra (e.g. ``E[i] + sum(w[i,j]*... )``).
+                local_ns['i'] = i
+                f_at_args = _safe_eval(
+                    fn_spec['expression'], local_ns,
+                    f'{tname}({", ".join(arg_names)}) '
+                    f'expansion at pop {i+1}')
+                saddle_subs = {arg_syms[j]: saddle_arrays[j][i]
+                               for j in range(n_args)}
+                for multi_idx in _iter_multi_indices(n_args, order):
+                    deriv = f_at_args
+                    for j, kj in enumerate(multi_idx):
+                        if kj > 0:
+                            deriv = deriv.derivative(arg_syms[j], kj)
+                    suffix = ''.join(str(k) for k in multi_idx)
+                    sym = SR.var(f'{tname}{suffix}_{i+1}')
+                    out[sym] = deriv.subs(saddle_subs)
         return out
 
     return _specs
@@ -972,20 +1054,51 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
         out: dict = {}
         param_ns = _ns_var_namespace(ns, [], param_names, [])
         builtins = _builtin_namespace()
-        eval_ns = {**builtins, **param_ns, 'omega': omega}
+        base_ns  = {**builtins, **param_ns, 'omega': omega}
 
         for spec in kernel_specs:
             kname = spec['name']
             if not hasattr(ns, kname):
                 continue
-            ksym = getattr(ns, kname)
-            if spec.get('freq_image'):
-                out[ksym] = _safe_eval(
-                    spec['freq_image'], eval_ns,
+            ksym_obj = getattr(ns, kname)
+            freq_text = spec.get('freq_image')
+            if not freq_text:
+                # time_expr → freq image deferred (would need Sage's
+                # fourier_transform on each).  Only freq_image is
+                # supported in v1 — TheoryBuilder warns when only
+                # time_expr is given.
+                continue
+            indexed = spec.get('indexed', False)
+            is_matrix = (indexed == 'matrix')
+            is_vector = (indexed is True or indexed == 'vector') \
+                and not is_matrix
+
+            if is_matrix:
+                # ``ksym_obj`` is a list-of-lists of SR symbols
+                # ``g_<i+1>_<j+1>``.  Evaluate ``freq_image`` once per
+                # (i, j) pair with both indices in scope so the
+                # expression can reference per-pair parameters like
+                # ``tau_g[i, j]``.
+                n_rows = len(ksym_obj)
+                for i in range(n_rows):
+                    row = ksym_obj[i]
+                    for j in range(len(row)):
+                        eval_ns = {**base_ns, 'i': i, 'j': j}
+                        out[row[j]] = _safe_eval(
+                            freq_text, eval_ns,
+                            f"kernel {kname}'s freq_image at "
+                            f"({i+1}, {j+1})")
+            elif is_vector:
+                for i in range(len(ksym_obj)):
+                    eval_ns = {**base_ns, 'i': i}
+                    out[ksym_obj[i]] = _safe_eval(
+                        freq_text, eval_ns,
+                        f"kernel {kname}'s freq_image at {i+1}")
+            else:
+                # Scalar kernel — one substitution.
+                out[ksym_obj] = _safe_eval(
+                    freq_text, base_ns,
                     f"kernel {kname}'s freq_image")
-            # time_expr → freq image: deferred (would need Sage's
-            # fourier_transform on each).  Only freq_image supported
-            # for v1 — TheoryBuilder warns when only time_expr given.
 
         return out
 
