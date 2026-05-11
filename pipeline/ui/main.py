@@ -280,24 +280,35 @@ class TheoryUI:
             self._tbl_parameters.show(),
         ])
 
-        # Tab 4: Functions
+        # Tab 5: Functions
+        # ``population`` (single-select dropdown of declared
+        # populations) tells the framework which population this
+        # function is bound to.  In the action, ``phi[i](v[i])`` then
+        # iterates ``i`` over that population's pop_<name> range.
+        # Multi-arg functions (e.g. ``f(v, n)``) still take their
+        # arg names from the comma-separated ``args`` field; if both
+        # args live in the same population, just one dropdown is needed.
         self._tbl_functions = DynamicTable(
             columns=[
                 {'name': 'name',        'kind': 'text',
-                 'placeholder': 'phi',  'width': '80px'},
+                 'placeholder': 'phi',  'width': '100px'},
+                {'name': 'population',  'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE,     'width': '100px'},
                 {'name': 'args',        'kind': 'text',
-                 'placeholder': 'v  (or "v, t" for multi-arg)',
-                 'width': '160px'},
+                 'placeholder': 'v  (or "v, n" for multi-arg)',
+                 'width': '140px'},
                 {'name': 'expression',  'kind': 'text',
-                 'placeholder': 'a*v^2 / 1/(1+exp(-v)) / ...',
-                 'width': '280px'},
+                 'placeholder': 'a[i] * v^2  /  a * v  /  ...',
+                 'width': '260px'},
                 {'name': 'latex',       'kind': 'text',
                  'placeholder': r'\varphi', 'width': '80px'},
                 {'name': 'description', 'kind': 'text',
                  'placeholder': 'transfer function', 'width': '180px'},
             ],
             initial=[
-                {'name': 'phi', 'args': 'v', 'expression': 'a * v',
+                {'name': 'phi', 'population': _NONE,
+                 'args': 'v', 'expression': 'a * v',
                  'latex': r'\varphi', 'description': 'transfer function'},
             ],
         )
@@ -311,12 +322,16 @@ class TheoryUI:
                 "There is no reserved name."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
-                "Every declared function is auto-Taylor-expanded around "
-                "the saddle of its argument when used in the action.  "
-                "Write <code>myfunc[i](v[i])</code> in the action — the "
-                "framework expands ``v[i] = vstar[i] + dv[i]`` and "
-                "Taylor-expands the function around the saddle, "
-                "producing the diagrammatic vertices automatically."
+                "<b>population</b>: pick the population this function is "
+                "bound to (or leave blank for a global function shared "
+                "across all populations).  In the action, write "
+                "<code>phi[i](v_E[i])</code> — the index <code>i</code> "
+                "ranges over <code>pop_&lt;population&gt;</code>, the "
+                "function's expression is evaluated with the population "
+                "index <code>i</code> in scope (so it may reference "
+                "<code>a[i]</code> for an indexed parameter), and the "
+                "framework auto-Taylor-expands around the saddle of the "
+                "function's argument."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
                 "<code>args</code> = comma-separated field-variable "
@@ -707,13 +722,16 @@ class TheoryUI:
                 entry['description'] = desc
             params.append(entry)
 
-        # Functions: split args by comma — unchanged.
+        # Functions: split args by comma; pick up population annotation.
         functions = []
         for row in self._tbl_functions.get_rows():
             args = [a.strip() for a in (row.get('args') or '').split(',')
                     if a.strip()]
             entry = {'name': row['name'], 'args': args,
                      'expression': row.get('expression', '')}
+            pop = (row.get('population') or '').strip()
+            if pop and pop != _NONE:
+                entry['population'] = pop
             for k in ('latex', 'description'):
                 v = row.get(k)
                 if v:

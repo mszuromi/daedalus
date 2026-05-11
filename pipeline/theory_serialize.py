@@ -184,6 +184,7 @@ def _emit_function(fn: dict) -> str:
     kwargs = _kw_chain(
         ('args',        list(fn['args'])),
         ('expression',  fn['expression']),
+        ('population',  fn.get('population')),
         ('latex',       fn.get('latex')),
         ('description', fn.get('description')),
     )

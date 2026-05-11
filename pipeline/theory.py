@@ -367,7 +367,8 @@ class TheoryBuilder:
 
     def define_function(self, name: str, args: list[str],
                         expression: str, latex: str = None,
-                        description: str = ''):
+                        description: str = '',
+                        population: Optional[str] = None):
         """Declare a function of field variables (and parameters).
 
         Parameters
@@ -382,16 +383,24 @@ class TheoryBuilder:
         expression : str
             Sage-syntax body, e.g. ``'a*v^2'`` or
             ``'1 / (1 + exp(-v/v_thresh))'``.
+        population : str, optional
+            Heterogeneous-population annotation: the population whose
+            index range this function iterates over when called as
+            ``f[i](v[i])`` in the action.  Recorded on the function
+            spec but not yet propagated to the symbolic pipeline.
         latex : str, optional
             Display form (defaults to ``name``).
         """
-        self._function_specs.append({
+        entry = {
             'name':        name,
             'args':        list(args),
             'expression':  expression,
             'latex':       latex or name,
             'description': description,
-        })
+        }
+        if population:
+            entry['population'] = population
+        self._function_specs.append(entry)
         return self
 
     def define_kernel(self, name: str, *, time_expr: str = None,
@@ -807,7 +816,7 @@ class TheoryBuilder:
         for fn_spec in self._function_specs:
             fname  = fn_spec['name']
             n_args = len(fn_spec.get('args') or [])
-            self._functions.append({
+            entry = {
                 'name':         fname,
                 'indexed':      True,
                 'deriv_prefix': fname,
@@ -817,7 +826,13 @@ class TheoryBuilder:
                                             f'declared function {fname}'),
                 'expression':   (lambda i, *xs, _t=fname:
                                  sr_function(f'{_t}_{i+1}')(*xs)),
-            })
+            }
+            # Heterogeneous-pop annotation passes through unchanged
+            # so downstream pipeline can route ``phi[i](...)`` to the
+            # right population's index range.
+            if fn_spec.get('population'):
+                entry['population'] = fn_spec['population']
+            self._functions.append(entry)
 
         # phi_concrete + specializations: needed for the saddle solver
         # and for the Taylor-rename derivative substitutions
