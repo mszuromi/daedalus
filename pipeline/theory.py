@@ -878,6 +878,17 @@ class TheoryBuilder:
         #   iterate on it).  The iteration saddle (nstar) is NOT
         #   substituted in this dict.
         if self._mf_eqs_text:
+            # Iteration-saddle selection.  For legacy single-pop
+            # theories there is one ``nstar`` mf_eq with a single
+            # function call (``phi(vstar)``); the compiler closes the
+            # saddle EOM by substituting ``nstar → phi0_i`` formally.
+            # Heterogeneous-pop theories have ONE ``<n>star`` per
+            # population (e.g. ``nEstar = phiE(vEstar)``,
+            # ``nIstar = phiI(vIstar)``); each is its own iteration
+            # saddle.  The ``'AUTO'`` sentinel tells _classify_mf_eqs
+            # to treat every mf_eq whose RHS is a single function
+            # call as a closure saddle.
+            iter_sentinel = ('AUTO' if self.populations else 'nstar')
             self._mf_bg = make_mf_bg_conditions_lambda(
                 self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
@@ -885,6 +896,7 @@ class TheoryBuilder:
                 kernel_names = kernel_names,
                 functions    = self._function_specs,
                 n_pop        = n_pop,
+                iteration_saddle = iter_sentinel,
             )
             self._mf_bg_solver = make_mf_bg_solver_lambda(
                 self._mf_eqs_text, primary_fn_spec,
@@ -893,6 +905,7 @@ class TheoryBuilder:
                 kernel_names = kernel_names,
                 functions    = self._function_specs,
                 n_pop        = n_pop,
+                iteration_saddle = iter_sentinel,
             )
             self._mf_equations = make_mf_equations_lambda(
                 self._mf_eqs_text, primary_fn_spec,

@@ -862,7 +862,7 @@ def _is_single_function_call(rhs_text: str) -> bool:
     return depth == 0
 
 
-def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle: str) -> dict:
+def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle) -> dict:
     """Split mf_eqs into (closure_saddles, compound_saddles).
 
     * **closure saddles**: their RHS expresses the saddle in terms of
@@ -875,15 +875,26 @@ def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle: str) -> dict:
       expression (e.g. ``vstar = E + sum(w·g·nstar)``).  These get
       substituted concretely.
 
-    The default convention treats the iteration_saddle (typically
-    ``'nstar'``) as a closure saddle if its mf_eq is present, since
-    that's the saddle the solver iterates on while everything else
-    follows from it.  Any other saddle is compound.
+    ``iteration_saddle`` may be:
+      * a single name (legacy, single-pop):  ``'nstar'``.
+      * a set / list of names (heterogeneous-pop):
+        ``{'nEstar', 'nIstar'}`` — each is a closure saddle.
+      * the sentinel ``'AUTO'`` — every mf_eq whose RHS is a single
+        function call is treated as a closure saddle (the rest are
+        compound).  Recommended for theories with more than one
+        iteration saddle.
     """
+    if iteration_saddle == 'AUTO':
+        iter_set = {name for name, rhs in mf_eqs.items()
+                    if _is_single_function_call(rhs or '')}
+    elif isinstance(iteration_saddle, (set, list, tuple)):
+        iter_set = set(iteration_saddle)
+    else:
+        iter_set = {iteration_saddle}
     closure = {}
     compound = {}
     for saddle_name, rhs_text in mf_eqs.items():
-        if saddle_name == iteration_saddle:
+        if saddle_name in iter_set:
             closure[saddle_name] = rhs_text
         else:
             compound[saddle_name] = rhs_text
