@@ -235,10 +235,15 @@ def _emit_cgf_term(c: dict) -> str:
 
 
 def _emit_action(action_text: str) -> str:
-    """Emit ``.set_action_text('''...''')`` with sensible indentation."""
-    body = (action_text or '').strip()
+    """Emit ``.set_action_text('''...''')`` with sensible indentation.
+
+    Uses :func:`textwrap.dedent` before re-indenting so a load → save
+    cycle is whitespace-stable (without dedent, every save would
+    accumulate an extra four spaces on each subsequent line).
+    """
+    import textwrap
+    body = textwrap.dedent(action_text or '').strip()
     if '\n' in body:
-        # Multi-line — preserve as triple-quoted block, indented one level
         indented = '\n'.join('    ' + line for line in body.splitlines())
         return f".set_action_text('''\n{indented}\n''')"
     return f'.set_action_text({_py_repr(body)})'
@@ -390,86 +395,219 @@ def save_theory_to_file(spec: dict, path: str) -> str:
 # ── Reverse direction (file → spec dict) ──────────────────────────────
 
 def load_spec_from_file(path: str) -> dict:
-    """Reconstruct a spec dict by importing ``path`` and walking the
-    TheoryBuilder it constructs.
+    """Parse a ``.theory.py`` file's source AST and reconstruct the
+    spec dict it was generated from.
 
-    Useful for the UI's "Load existing theory" button — re-populates
-    the form from a saved file.
+    Reads the source directly rather than executing it, so:
+      * the action text, mf-equation RHS strings, function
+        expressions, kernel time/freq exprs all round-trip
+        verbatim — they're stored as string literals in the source;
+      * Python literals in default-values, indexed_by lists, etc.
+        round-trip exactly via ``ast.literal_eval``;
+      * comments and formatting are lost (this is an AST round-trip,
+        not a textual one);
+      * a malformed file raises ``SyntaxError`` from ``ast.parse``.
 
-    Caveat: this round-trips the SHAPE (fields, parameters, action
-    text, etc.) but NOT cosmetic details that don't reach the
-    builder's internal state (e.g. comments in the source file).
+    Used by ``TheoryUI.load(path)`` to re-populate the form so the
+    user can edit a previously-saved theory without rewriting it.
     """
-    import importlib.util, os
+    import ast
+    import os
 
-    name = os.path.basename(path)
-    if name.endswith('.theory.py'):
-        name = name[:-len('.theory.py')]
-    elif name.endswith('.py'):
-        name = name[:-3]
+    with open(path) as f:
+        src = f.read()
+    tree = ast.parse(src)
 
-    spec_loader = importlib.util.spec_from_file_location(
-        f'_loaded_theory.{name}', path)
-    mod = importlib.util.module_from_spec(spec_loader)
-    spec_loader.loader.exec_module(mod)
+    # ── Module docstring → description ────────────────────────────
+    description = ast.get_docstring(tree) or ''
+    # Strip the boilerplate header that render_theory_file inserts so
+    # only the user-supplied description remains.
+    description = _strip_doc_boilerplate(description)
 
-    # Build the model just to populate the builder's internal state.
-    # We can't get the builder back from .build() (it returns a dict),
-    # so we monkey-patch — call build and capture the model dict, then
-    # walk the model dict to recover the spec.  Lossy on a few extras.
-    model = mod.build()
+    # ── Module-level DEFAULT_FUNDAMENTAL / METADATA ───────────────
+    default_fund: dict = {}
+    metadata: dict = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for tgt in node.targets:
+            if not isinstance(tgt, ast.Name):
+                continue
+            try:
+                val = ast.literal_eval(node.value)
+            except (ValueError, SyntaxError):
+                val = {}
+            if tgt.id == 'DEFAULT_FUNDAMENTAL':
+                default_fund = val if isinstance(val, dict) else {}
+            elif tgt.id == 'METADATA':
+                metadata = val if isinstance(val, dict) else {}
 
-    # Recover physical_fields with natural names
-    pf = []
-    for f in model.get('physical_fields', []):
-        entry = {'name': f['name']}
-        for k in ('indexed', 'natural_name', 'latex', 'description'):
-            if k in f:
-                entry[k] = f[k]
-        pf.append(entry)
+    # ── Find the build() function and its return-expression chain ─
+    build_func = next((n for n in tree.body
+                       if isinstance(n, ast.FunctionDef) and n.name == 'build'),
+                      None)
+    if build_func is None:
+        raise ValueError(f'{path}: no build() function found.')
+    ret = next((s for s in build_func.body if isinstance(s, ast.Return)),
+               None)
+    if ret is None or not isinstance(ret.value, ast.Call):
+        raise ValueError(f'{path}: build() does not return a call expression.')
 
-    rf = [{'name': f['name'],
-           **{k: f[k] for k in ('indexed', 'latex', 'description') if k in f}}
-          for f in model.get('response_fields', [])]
+    # Walk the chain of attribute-calls back to the constructor.
+    chain = []
+    cur = ret.value
+    while isinstance(cur, ast.Call):
+        chain.append(cur)
+        if isinstance(cur.func, ast.Attribute):
+            cur = cur.func.value
+        elif isinstance(cur.func, ast.Name):
+            break
+        else:
+            break
+    chain.reverse()    # constructor first, then method calls in order
 
-    # Parameters
-    params = []
-    for p in model.get('parameters', []):
-        ptype = ('matrix' if p.get('indexed') == 'matrix'
-                 else 'vector' if p.get('indexed') is True
-                 else 'scalar')
-        entry = {'name': p['name'], 'type': ptype}
-        for k in ('domain', 'mean_field', 'natural_name', 'description'):
-            if k in p:
-                entry[k] = p[k]
-        params.append(entry)
-
-    # Kernels
-    kernels = [
-        {'name': k['name'],
-         **{kk: k[kk] for kk in ('latex_name', 'sage_name', 'description')
-            if kk in k}}
-        for k in model.get('kernels', [])
-    ]
-
-    # The text strings (action / mf eqs / fn exprs / cgf coeffs) live in
-    # the closures attached to the model lambdas; we have to read them
-    # from the (still-importable) module's source if possible.  For now,
-    # don't try — the UI's "Load" feature can use a sidecar JSON file
-    # if perfect round-tripping is needed.
-
-    return {
-        'name':            model.get('name', ''),
-        'n_populations':   len(model.get('index_sets', {}).get('pop', [])),
-        'description':     getattr(mod, '__doc__', '') or '',
-        'response_fields': rf,
-        'physical_fields': pf,
-        'parameters':      params,
-        'functions':       [],   # see caveat above
-        'kernels':         kernels,
+    # ── Initialise the spec dict ──────────────────────────────────
+    spec: dict = {
+        'name':            '',
+        'description':     description,
+        'populations':     [],
+        'n_populations':   0,
+        'response_fields': [],
+        'physical_fields': [],
+        'parameters':      [],
+        'functions':       [],
+        'kernels':         [],
         'cgf_terms':       [],
         'action_text':     '',
         'mf_equations':    [],
-        'default_fundamental': getattr(mod, 'DEFAULT_FUNDAMENTAL', {}),
-        'metadata':        getattr(mod, 'METADATA', {}),
+        'default_fundamental': default_fund,
+        'metadata':        metadata,
     }
+
+    def _lit(node, default=None):
+        """``ast.literal_eval`` with a fallback."""
+        try:
+            return ast.literal_eval(node)
+        except (ValueError, SyntaxError, TypeError):
+            return default
+
+    def _kwargs(call):
+        return {kw.arg: _lit(kw.value) for kw in call.keywords if kw.arg}
+
+    for call in chain:
+        # Constructor: TheoryBuilder('name', n_populations=N)
+        if isinstance(call.func, ast.Name) and call.func.id == 'TheoryBuilder':
+            if call.args:
+                spec['name'] = _lit(call.args[0], '')
+            kw = _kwargs(call)
+            if 'n_populations' in kw:
+                spec['n_populations'] = int(kw['n_populations'])
+            continue
+        if not isinstance(call.func, ast.Attribute):
+            continue
+        method = call.func.attr
+        kw = _kwargs(call)
+        args = [_lit(a) for a in call.args]
+
+        if method == 'population':
+            entry = {'name': args[0] if args else ''}
+            for k in ('size', 'description'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['populations'].append(entry)
+
+        elif method == 'physical_field':
+            entry = {'name': args[0] if args else ''}
+            for k in ('indexed', 'population', 'natural_name',
+                      'latex', 'description'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['physical_fields'].append(entry)
+
+        elif method == 'response_field':
+            entry = {'name': args[0] if args else ''}
+            for k in ('indexed', 'latex', 'description'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['response_fields'].append(entry)
+
+        elif method == 'parameter':
+            entry = {'name': args[0] if args else ''}
+            for k in ('default', 'indexed_by', 'indexed', 'domain',
+                      'mean_field', 'natural_name', 'description'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['parameters'].append(entry)
+
+        elif method == 'define_function':
+            entry = {'name': args[0] if args else ''}
+            for k in ('args', 'expression', 'population',
+                      'latex', 'description'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['functions'].append(entry)
+
+        elif method == 'define_kernel':
+            entry = {'name': args[0] if args else ''}
+            for k in ('time_expr', 'freq_image', 'latex_name',
+                      'sage_name', 'description', 'indexed_by', 'indexed'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['kernels'].append(entry)
+
+        elif method == 'declare_cgf_term':
+            entry = {}
+            if len(args) >= 2:
+                entry['name']           = args[0]
+                entry['response_field'] = args[1]
+            for k in ('order', 'coefficient', 'kernel'):
+                if k in kw:
+                    entry[k] = kw[k]
+            spec['cgf_terms'].append(entry)
+
+        elif method == 'set_action_text':
+            if args:
+                spec['action_text'] = args[0] or ''
+
+        elif method == 'set_mf_equation':
+            if len(args) >= 2:
+                spec['mf_equations'].append({
+                    'saddle': args[0], 'rhs': args[1],
+                })
+
+        elif method == 'build':
+            continue
+
+    # Sync n_populations with the populations list when available.
+    if spec['populations']:
+        spec['n_populations'] = len(spec['populations'])
+    return spec
+
+
+def _strip_doc_boilerplate(doc: str) -> str:
+    """Remove the auto-generated header lines that
+    :func:`render_theory_file` inserts so the user only sees their
+    own description on a re-load."""
+    if not doc:
+        return ''
+    # The header pattern is:  "<name> — text-driven theory file.\n\n<user>\n\n
+    # Generated by the theory-input UI ...\nLoaded by ..."
+    lines = doc.splitlines()
+    # Drop the first line ("<name> — text-driven theory file.")
+    if lines and '—' in lines[0]:
+        lines = lines[1:]
+    # Drop trailing "Generated by..." and "Loaded by..." lines + the
+    # blank line before them.
+    keep = []
+    for ln in lines:
+        if ln.startswith('Generated by the theory-input UI'):
+            break
+        if ln.startswith('Loaded by '):
+            break
+        keep.append(ln)
+    # Trim leading / trailing blank lines.
+    while keep and not keep[0].strip():
+        keep.pop(0)
+    while keep and not keep[-1].strip():
+        keep.pop()
+    return '\n'.join(keep)

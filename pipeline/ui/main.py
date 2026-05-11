@@ -37,6 +37,7 @@ from pipeline.ui.widgets import (
 from pipeline.theory_serialize import (
     save_theory_to_file,
     render_theory_file,
+    load_spec_from_file,
 )
 
 
@@ -610,6 +611,22 @@ class TheoryUI:
         self._btn_save.on_click(self._on_save)
         self._btn_reset.on_click(self._on_reset)
 
+        # Load existing theory: dropdown of files in theories_dir,
+        # plus a Load button.  The dropdown auto-refreshes on each
+        # _on_load click so a freshly-saved theory shows up without
+        # restarting the UI.
+        self._w_load_pick = W.Dropdown(
+            options=self._list_theory_files(),
+            value=None,
+            description='Load:',
+            style={'description_width': '60px'},
+            layout=W.Layout(width='420px'),
+        )
+        self._btn_load = W.Button(description='Load theory file',
+                                  button_style='info', icon='upload',
+                                  layout=W.Layout(width='180px'))
+        self._btn_load.on_click(self._on_load)
+
         self._status = W.Output(
             layout=W.Layout(border='1px solid #ddd', padding='6px',
                             min_height='80px', max_height='420px',
@@ -621,7 +638,9 @@ class TheoryUI:
             '<p style="margin-top:0;color:#555;">'
             'Fill in the tabs below.  Hit <b>Save theory file</b> to write a '
             '<code>.theory.py</code> in <code>theories/</code> — '
-            '<code>notebooks/theory_runner.ipynb</code> picks it up automatically.'
+            '<code>notebooks/theory_runner.ipynb</code> picks it up '
+            'automatically.  Use <b>Load theory file</b> to re-open a '
+            'saved theory for editing.'
             '</p>')
 
         self._root = W.VBox([
@@ -629,6 +648,7 @@ class TheoryUI:
             self._tabs,
             W.HBox([self._w_save_path, self._btn_save,
                     self._btn_preview, self._btn_reset]),
+            W.HBox([self._w_load_pick, self._btn_load]),
             self._status,
         ])
 
@@ -819,3 +839,183 @@ class TheoryUI:
         # Re-build the whole UI to wipe state cleanly.
         self._build_widgets()
         self.show()
+
+    # ── Loading existing theories ─────────────────────────────────
+    def _list_theory_files(self) -> list[str]:
+        """Return the list of ``*.theory.py`` filenames in
+        ``self.theories_dir``, alphabetically sorted.  Used to
+        populate the Load dropdown."""
+        try:
+            files = [f for f in os.listdir(self.theories_dir)
+                     if f.endswith('.theory.py')]
+        except OSError:
+            files = []
+        return sorted(files)
+
+    def _on_load(self, _btn) -> None:
+        """Read the file selected in the Load dropdown and repopulate
+        the form widgets from its spec."""
+        # Refresh the file list so newly-saved theories appear without
+        # restarting the UI.
+        current = self._w_load_pick.value
+        opts = self._list_theory_files()
+        self._w_load_pick.options = opts
+        if current in opts:
+            self._w_load_pick.value = current
+
+        target = self._w_load_pick.value
+        self._status.clear_output()
+        with self._status:
+            if not target:
+                print('[ERROR] No file selected.')
+                return
+            path = os.path.join(self.theories_dir, target)
+            try:
+                spec = load_spec_from_file(path)
+                self.load(spec)
+                print(f'[OK] Loaded {target}.  Edit the tabs and Save to '
+                      f'write back.')
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                print(f'[ERROR] Could not load {target}: {exc}')
+
+    def load(self, spec_or_path) -> None:
+        """Populate the form from a spec dict OR a ``.theory.py`` path.
+
+        Existing widget contents are cleared and replaced.  Convenient
+        for programmatic round-trips (load + tweak + save) without
+        going through the dropdown UI.
+        """
+        if isinstance(spec_or_path, str):
+            spec = load_spec_from_file(spec_or_path)
+        else:
+            spec = dict(spec_or_path)
+
+        # Top-of-form fields.
+        self._w_name.value = spec.get('name', '') or ''
+        self._w_description.value = spec.get('description', '') or ''
+
+        # Populations.
+        self._tbl_populations.clear()
+        for p in spec.get('populations', []) or []:
+            self._tbl_populations.add_row(values={
+                'name':        p.get('name', ''),
+                'size':        int(p.get('size', 1)),
+                'description': p.get('description', '') or '',
+            })
+        # If no populations declared, leave the table empty so user
+        # can add them; the dropdown providers will refresh themselves.
+
+        # Refresh all population-aware dropdowns on dependent tabs
+        # now that the Populations table reflects the new state.
+        self._tbl_physical.refresh_dropdown_options('population')
+        self._tbl_parameters.refresh_dropdown_options('index_1')
+        self._tbl_parameters.refresh_dropdown_options('index_2')
+        self._tbl_kernels.refresh_dropdown_options('index_1')
+        self._tbl_kernels.refresh_dropdown_options('index_2')
+        self._tbl_functions.refresh_dropdown_options('population')
+
+        # Physical fields.
+        self._tbl_physical.clear()
+        for f in spec.get('physical_fields', []) or []:
+            # Strip the auto-prefix 'd' if the loaded model went
+            # through TheoryBuilder.physical_field with natural_name
+            # — the user typed 'n' and the framework stored 'dn'.
+            display_name = f.get('natural_name') or f.get('name', '')
+            self._tbl_physical.add_row(values={
+                'name':        display_name,
+                'population':  f.get('population') or '',
+                'latex':       f.get('latex', '') or '',
+                'description': f.get('description', '') or '',
+            })
+
+        # Parameters.  Map ``indexed_by`` back to (index_1, index_2)
+        # dropdown selections, and ``default`` back to its text form.
+        _NONE = '—'
+        self._tbl_parameters.clear()
+        # Auto-skip saddle parameters that the framework re-creates
+        # from physical_field declarations (their names are
+        # ``<natural>star`` and they carry mean_field=True).
+        nat_names = {(f.get('natural_name') or f.get('name', ''))
+                     for f in spec.get('physical_fields', []) or []}
+        auto_saddle_names = {f'{n}star' for n in nat_names if n}
+        for p in spec.get('parameters', []) or []:
+            if p.get('mean_field') or p.get('name') in auto_saddle_names:
+                continue
+            ib = p.get('indexed_by') or []
+            row = {
+                'name':    p.get('name', ''),
+                'index_1': (ib[0] if len(ib) >= 1 else _NONE),
+                'index_2': (ib[1] if len(ib) >= 2 else _NONE),
+                'domain':  p.get('domain', '') or '',
+            }
+            d = p.get('default')
+            if d is not None:
+                row['default'] = repr(d) if not isinstance(d, str) else d
+            else:
+                row['default'] = ''
+            row['description'] = p.get('description', '') or ''
+            self._tbl_parameters.add_row(values=row)
+
+        # Functions.  ``args`` round-trips through a comma-joined
+        # string back into the UI's text field.
+        self._tbl_functions.clear()
+        for fn in spec.get('functions', []) or []:
+            args = fn.get('args') or []
+            if isinstance(args, str):
+                args_text = args
+            else:
+                args_text = ', '.join(args)
+            self._tbl_functions.add_row(values={
+                'name':        fn.get('name', ''),
+                'population':  fn.get('population') or _NONE,
+                'args':        args_text,
+                'expression':  fn.get('expression', '') or '',
+                'latex':       fn.get('latex', '') or '',
+                'description': fn.get('description', '') or '',
+            })
+
+        # Kernels.
+        self._tbl_kernels.clear()
+        for k in spec.get('kernels', []) or []:
+            ib = k.get('indexed_by') or []
+            self._tbl_kernels.add_row(values={
+                'name':       k.get('name', ''),
+                'index_1':    (ib[0] if len(ib) >= 1 else _NONE),
+                'index_2':    (ib[1] if len(ib) >= 2 else _NONE),
+                'time_expr':  k.get('time_expr', '') or '',
+                'freq_image': k.get('freq_image', '') or '',
+                'latex_name': k.get('latex_name', '') or '',
+            })
+
+        # CGFs.
+        self._tbl_cgfs.clear()
+        for c in spec.get('cgf_terms', []) or []:
+            self._tbl_cgfs.add_row(values={
+                'name':           c.get('name', ''),
+                'response_field': c.get('response_field', ''),
+                'order':          int(c.get('order', 2)),
+                'coefficient':    c.get('coefficient', '') or '',
+                'kernel':         c.get('kernel', '') or '',
+            })
+
+        # Action.
+        self._w_action._text_w.value = spec.get('action_text', '') or ''
+
+        # MF equations.
+        self._tbl_mfeqs.clear()
+        for eq in spec.get('mf_equations', []) or []:
+            self._tbl_mfeqs.add_row(values={
+                'saddle': eq.get('saddle', ''),
+                'rhs':    eq.get('rhs', ''),
+            })
+
+        # Defaults / metadata text areas.  Render the dicts back as
+        # Python source so the user can edit them.
+        df = spec.get('default_fundamental') or {}
+        if isinstance(df, dict):
+            self._w_def_fund.value = repr(df) if df else '{}'
+        md = spec.get('metadata') or {}
+        if isinstance(md, dict):
+            self._w_metadata.value = repr(md) if md else '{}'
