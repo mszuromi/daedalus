@@ -30,7 +30,16 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
 
     The returned ``num_params`` is suitable for direct use in
     ``compute_poles_and_residues`` and ``compute_correction_td``.
+
+    Heterogeneous-population theories take the
+    :func:`_solve_mean_field_hetero` branch — multiple iteration
+    saddles (one per pop), separate phi-functions per pop, per-pop
+    field arrays.  Legacy single-pop theories keep the original
+    flat-pop code path below.
     """
+    if model.get('populations'):
+        return _solve_mean_field_hetero(ft, model, fundamental, verbose)
+
     ns = ft._ns
     taylor_order = ft.taylor_order
 
@@ -252,4 +261,269 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
         'phi_deriv_vals': phi_deriv_vals,
         'num_params':     num_params,
         'param_subs':     param_subs,
+    }
+
+
+# ── Heterogeneous-population MF solver ────────────────────────────
+def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
+    """MF solver for theories that declare ``model['populations']``.
+
+    Generalises the legacy single-pop solver:
+
+      * Iteration saddles are detected from mf_bg_conditions (each
+        saddle whose mf_eq RHS is a single function call ⇒ closure
+        saddle).  Typical pattern: ``nEstar = phiE(vEstar)``,
+        ``nIstar = phiI(vIstar)``.
+      * Compound saddles (``vEstar``, ``vIstar``) are evaluated
+        concretely from their mf_eq RHS, with iteration-saddle SR
+        vars left raw so they can be substituted at each iteration.
+      * fsolve iterates over a flat vector concatenating all
+        iteration-saddle elements (per-pop sized).  Each element's
+        target is its closure RHS evaluated at the current point.
+    """
+    ns = ft._ns
+    taylor_order = ft.taylor_order
+    populations = model['populations']
+    pop_size = {p['name']: int(p['size']) for p in populations}
+
+    # ── param_subs (vector + matrix per indexed_by) ──────────────
+    param_subs = {}
+    for pspec in model.get('parameters', []):
+        pname = pspec['name']
+        if pname not in fundamental:
+            continue
+        val = fundamental[pname]
+        ib = pspec.get('indexed_by')
+        if ib:
+            if len(ib) == 2:
+                n_rows = pop_size.get(ib[0], 0)
+                n_cols = pop_size.get(ib[1], 0)
+                for i in range(n_rows):
+                    for j in range(n_cols):
+                        param_subs[SR.var(f'{pname}{i+1}{j+1}')] = val[i][j]
+            elif len(ib) == 1:
+                n = pop_size.get(ib[0], 0)
+                for i in range(n):
+                    param_subs[SR.var(f'{pname}{i+1}')] = val[i]
+        else:
+            param_subs[SR.var(pname)] = val
+
+    # ── Identify saddles and the population each one belongs to ──
+    # Saddle params have mean_field=True; their indexed_by tells us
+    # which population's local indices they range over.
+    saddle_info = {}    # name → {'pop': X, 'size': N, 'sr_array': [...]}
+    for pspec in model.get('parameters', []):
+        if not pspec.get('mean_field'):
+            continue
+        sname = pspec['name']
+        ib    = pspec.get('indexed_by') or []
+        pop   = ib[0] if ib else None
+        size  = pop_size.get(pop, 0)
+        if size == 0 or not hasattr(ns, sname):
+            continue
+        saddle_info[sname] = {
+            'pop':       pop,
+            'size':      size,
+            'sr_array':  getattr(ns, sname),
+        }
+
+    # ── mf_bg dict (raw concrete with iteration saddles unbaked) ─
+    mf_bg = model.get('mf_bg_conditions', lambda ns: {})(ns)
+    # The mf_bg dict maps each saddle's SR var → its mf_eq RHS expr
+    # (post param_subs / closure baking).  Compound saddles depend
+    # on iteration-saddle SR vars; iteration saddles depend on
+    # compound-saddle SR vars.  We classify by the rhs structure:
+    # if the saddle's rhs is a single function call (e.g. phi(vstar)),
+    # it's an iteration saddle.
+
+    # Iteration vs compound classification.  Prefer the model's
+    # ``iteration_saddles`` list (computed at TheoryBuilder build()
+    # time by the same _classify_mf_eqs the compiler uses) — that's
+    # the authoritative source.  Fall back to a structural heuristic
+    # only if it's missing.
+    declared_iter = list(model.get('iteration_saddles') or [])
+    if declared_iter:
+        iteration_saddles = [s for s in declared_iter if s in saddle_info]
+        compound_saddles  = [s for s in saddle_info if s not in iteration_saddles]
+    else:
+        # Legacy / fallback: every saddle is iteration (caller will
+        # pick whatever fsolve converges to).
+        iteration_saddles = list(saddle_info.keys())
+        compound_saddles  = []
+    if verbose:
+        print(f'  iteration saddles: {iteration_saddles}')
+        print(f'  compound saddles:  {compound_saddles}')
+
+    # ── Kernel-symbol → 1 substitution dict ──────────────────────
+    # At the saddle, every kernel integrates to 1 (kernels are
+    # normalized).  Build a substitution dict mapping every kernel
+    # SR var on ns to 1, so the mf_bg RHS reduces to plain
+    # parameter / saddle algebra.  Handles scalar (``ns.g``), vector
+    # (``ns.g = [g1, g2]``), and matrix (``ns.g = [[g11, ...]]``)
+    # kernels uniformly.
+    kernel_to_one = {}
+    for kspec in model.get('kernels', []):
+        kname = kspec['name']
+        if not hasattr(ns, kname):
+            continue
+        kval = getattr(ns, kname)
+        if isinstance(kval, list):
+            for row in kval:
+                if isinstance(row, list):
+                    for sym in row:
+                        kernel_to_one[sym] = SR(1)
+                else:
+                    kernel_to_one[row] = SR(1)
+        else:
+            kernel_to_one[kval] = SR(1)
+
+    # ── Pre-bake compound-saddle RHS with params + kernels → 1 ───
+    compound_rhs = {}
+    for sname in compound_saddles:
+        arr = saddle_info[sname]['sr_array']
+        compound_rhs[sname] = [
+            SR(mf_bg.get(sym, sym))
+              .subs(kernel_to_one)
+              .subs(param_subs)
+            for sym in arr
+        ]
+
+    # ── Iteration target: closure RHS evaluated at current point ─
+    iter_rhs = {}
+    for sname in iteration_saddles:
+        arr = saddle_info[sname]['sr_array']
+        iter_rhs[sname] = [
+            SR(mf_bg.get(sym, sym))
+              .subs(kernel_to_one)
+              .subs(param_subs)
+            for sym in arr
+        ]
+
+    # Total iteration-vector size:  sum of all iteration saddle sizes.
+    sizes = [saddle_info[s]['size'] for s in iteration_saddles]
+    total_n = sum(sizes)
+    # Index in flat fsolve vector ↔ (saddle name, local index).
+    flat_index = []
+    for sname in iteration_saddles:
+        for i in range(saddle_info[sname]['size']):
+            flat_index.append((sname, i))
+
+    def _unflatten(flat_vec):
+        """Convert a flat fsolve vector to a dict of per-saddle arrays."""
+        out: dict = {}
+        offset = 0
+        for sname in iteration_saddles:
+            n = saddle_info[sname]['size']
+            out[sname] = [float(flat_vec[offset + k]) for k in range(n)]
+            offset += n
+        return out
+
+    def _eval_compound(iter_vals):
+        """Given current iteration values, compute compound saddle
+        values by substituting iteration-saddle SR vars."""
+        # Build the substitution dict from iteration values.
+        sub = {}
+        for sname, vals in iter_vals.items():
+            for i, v in enumerate(vals):
+                sub[saddle_info[sname]['sr_array'][i]] = v
+        # Compound saddles also reference each other?  For Hawkes
+        # theories, compounds depend only on iteration saddles.
+        # Evaluate each compound RHS once with the iteration subs.
+        out = {}
+        for sname in compound_saddles:
+            arr = compound_rhs[sname]
+            out[sname] = [float(SR(expr).subs(sub)) for expr in arr]
+        return out
+
+    def _residual(flat_vec):
+        try:
+            iter_vals = _unflatten(flat_vec)
+            comp_vals = _eval_compound(iter_vals)
+            # Build the full substitution dict for closure RHS eval.
+            sub = {}
+            for sname, vals in iter_vals.items():
+                for i, v in enumerate(vals):
+                    sub[saddle_info[sname]['sr_array'][i]] = v
+            for sname, vals in comp_vals.items():
+                for i, v in enumerate(vals):
+                    sub[saddle_info[sname]['sr_array'][i]] = v
+            # Closure target for each iteration-saddle element.
+            res = []
+            for sname in iteration_saddles:
+                arr = iter_rhs[sname]
+                for i, target_expr in enumerate(arr):
+                    target = float(SR(target_expr).subs(sub))
+                    res.append(float(iter_vals[sname][i]) - target)
+            return res
+        except (ValueError, ZeroDivisionError, TypeError):
+            return [1e10] * total_n
+
+    # ── fsolve ──────────────────────────────────────────────────
+    initial_guesses = [
+        [0.1] * total_n, [0.5] * total_n,
+        [1.0] * total_n, [0.01] * total_n,
+    ]
+    sol = None
+    for x0 in initial_guesses:
+        try:
+            attempt = fsolve(_residual, x0, full_output=True)
+        except (ValueError, ZeroDivisionError):
+            continue
+        sol = attempt
+        if attempt[2] == 1:
+            break
+    if sol is None:
+        raise RuntimeError(
+            'solve_mean_field (heterogeneous): fsolve failed on every '
+            'initial guess.  Check the mf_eqs for symbolic singularities.')
+
+    # ── Unpack and verify ────────────────────────────────────────
+    flat_vals = list(sol[0])
+    import math
+    if not all(math.isfinite(x) for x in flat_vals):
+        raise RuntimeError(
+            f'solve_mean_field (heterogeneous): fsolve returned non-finite '
+            f'iteration-saddle values {flat_vals!r}.')
+
+    iter_vals = _unflatten(flat_vals)
+    comp_vals = _eval_compound(iter_vals)
+
+    # ── Assemble num_params: every saddle SR var → its solved value ─
+    num_params = dict(param_subs)
+    for sname, vals in iter_vals.items():
+        arr = saddle_info[sname]['sr_array']
+        for i, v in enumerate(vals):
+            num_params[arr[i]] = float(v)
+    for sname, vals in comp_vals.items():
+        arr = saddle_info[sname]['sr_array']
+        for i, v in enumerate(vals):
+            num_params[arr[i]] = float(v)
+
+    if verbose:
+        print('\nMean-field solution:')
+        for sname in iteration_saddles + compound_saddles:
+            label = ('iter ' if sname in iteration_saddles else 'comp ')
+            pop   = saddle_info[sname]['pop']
+            vals  = (iter_vals.get(sname) or comp_vals.get(sname))
+            print(f'  {label}{sname}[pop {pop}]: {vals}')
+
+    # Legacy keys for downstream compatibility — pick the first
+    # n-rate-like iteration saddle (size = pop_E for spike-train rate).
+    # Callers reading 'nstar_vals' / 'vstar_vals' get a concatenated
+    # vector across all populations (in declaration order).
+    nstar_concat = []
+    vstar_concat = []
+    for sname in iteration_saddles:
+        nstar_concat.extend(iter_vals[sname])
+    for sname in compound_saddles:
+        vstar_concat.extend(comp_vals[sname])
+
+    return {
+        'nstar_vals':     nstar_concat,
+        'vstar_vals':     vstar_concat,
+        'phi_deriv_vals': {},     # populated below if needed by callers
+        'num_params':     num_params,
+        'param_subs':     param_subs,
+        'saddle_values':  {**iter_vals, **comp_vals},
+        'saddle_info':    saddle_info,
     }

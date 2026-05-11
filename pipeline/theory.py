@@ -1052,9 +1052,24 @@ class TheoryBuilder:
             flat_pop = list(range(self.n_populations))
             extra_index_sets = {}
 
+        # Identify iteration saddles by classifying mf_eqs the same
+        # way the compiler does: saddles whose RHS is a single function
+        # call are closure / iteration saddles; the rest are compound.
+        # Solve_mean_field reads this to know which saddles to iterate
+        # on (per-pop sized vector) and which to evaluate compoundly.
+        iter_saddle_names: list[str] = []
+        if self._mf_eqs_text:
+            from pipeline.theory_compiler import (
+                _classify_mf_eqs as _classify,
+            )
+            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            classification = _classify(self._mf_eqs_text, iter_sentinel)
+            iter_saddle_names = list(classification['closure'].keys())
+
         model = {
             'name':            self.name,
             'populations':     list(self.populations),    # heterogeneous metadata
+            'iteration_saddles': iter_saddle_names,
             'index_sets':      {'pop': flat_pop, **extra_index_sets},
             'response_fields': [self._field_dict(f) for f in self.response_fields],
             'physical_fields': [self._field_dict(f) for f in self.physical_fields],

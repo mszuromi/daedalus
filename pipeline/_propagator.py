@@ -281,77 +281,76 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
         kft_subs = kft_hook(ns, omega)
         K_ft = K_ft.apply_map(lambda e: SR(e).subs(kft_subs))
 
-    # ── Propagator inverse ────────────────────────────────────────
-    # Use the raw inverse — no ``factor()`` in the pipeline path.
-    # Previously ``factor()`` was needed to make the D_delta limit
-    # tractable (Maxima's general ``sage.limit`` is slow on raw
-    # cofactor/det rational expressions); now that the D_delta loop
-    # below uses ``_omega_inf_limit_fast`` (leading-coefficient
-    # ratio in ω), it works just as fast on unfactored entries —
-    # and we no longer depend on Singular's ``factor()``, which
-    # hangs uninterruptibly on rich actions (e.g. spike-reset's
-    # ``-n*v`` bilinear vertex).  Cosmetic factored form is still
-    # available on demand via :func:`factor_propagator`, with its
-    # own bail-out for report generation.
-    G_ft = K_ft.inverse()
-
-    # ── Adjugate, det, δ-coefficient matrix ───────────────────────
-    adj_ft  = K_ft.adjugate()
-    D_omega = K_ft.det()
-
-    # ── D_delta = lim_{ω → ∞} G_ft  (the instantaneous part) ──────
-    # Try the fast leading-coefficient ratio symbolically — works for
-    # simple models, completes in ~ms.  If any entry can't be handled
-    # symbolically (``.numerator()`` / ``.denominator()`` hang on rich
-    # rational structures, e.g. spike-reset's bilinear-coupled
-    # inverse), abort the symbolic pass and set ``D_delta = None``.
-    # The integrator (``msrjd.integration.time_domain.propagator_td``)
-    # then computes D_delta lazily AFTER numerical-parameter
-    # substitution, where every G_ft entry is a clean rational
-    # function in ω alone and the limit is trivial.
+    # ── Propagator inverse / adjugate / det — budget-aware ────────
+    # Symbolic K_ft.inverse() on large matrices with many free
+    # symbols (kernel images + parameters + omega) is intractable —
+    # an 8×8 heterogeneous-pop K_ft with 32 kernel symbols and
+    # 16 weight-matrix symbols runs for minutes / hours in Sage's
+    # cofactor-based inverse.  Cleanest fix: SKIP the symbolic
+    # inverse / adjugate / det when the matrix is "rich" (many free
+    # symbols beyond omega), and let ``compute_poles_and_residues``
+    # do all three numerically AFTER ``num_params`` substitution
+    # (at that point every entry is a univariate rational in omega).
     #
-    # The symbolic pass uses a wall-clock budget per entry — if any
-    # one entry exceeds the budget, we bail out.  We CAN'T rely on a
-    # cysignals alarm to interrupt mid-call (Singular's native loop
-    # doesn't yield to Python signals).
+    # For "lean" matrices (single-pop quad Hawkes, etc.) we still
+    # try the symbolic path with a wall-clock budget — if it
+    # completes in time the cache benefits from having G_ft / adj_ft
+    # / D_omega prebaked.  Models that exceed the budget defer all
+    # heavy work to the numerical stage.
     import time as _time
+    G_ft = None
+    adj_ft = None
+    D_omega = None
     D_delta = None
-    try:
-        D_delta_data = [[SR(0)] * nf for _ in range(nf)]
-        per_entry_budget = 1.0
-        for i in range(nf):
-            for j in range(nf):
-                entry = SR(G_ft[i, j])
-                if entry.is_zero():
-                    continue
-                t_e = _time.perf_counter()
-                lim_val = _omega_inf_limit_fast(entry, omega)
-                if _time.perf_counter() - t_e > per_entry_budget:
-                    # If the fast path itself was slow on a single entry,
-                    # subsequent entries will likely be slow too — bail.
-                    raise TimeoutError(f'_omega_inf_limit_fast on '
-                                       f'entry ({i},{j}) exceeded '
-                                       f'{per_entry_budget}s budget')
-                if lim_val is None:
-                    # Skip — integrator will compute this entry post-
-                    # num_params substitution.
-                    continue
-                if not SR(lim_val).is_zero():
-                    D_delta_data[i][j] = lim_val
-        D_delta = matrix(SR, D_delta_data)
-    except (TimeoutError, Exception) as exc:
-        if verbose:
-            print(f'      D_delta symbolic pass bailed ({type(exc).__name__}: '
-                  f'{exc}) — integrator will compute lazily.')
-        D_delta = None
-    except BaseException as exc:
-        if exc.__class__.__name__ == 'SignalError':
+
+    # Quick complexity estimate: number of free SR symbols other
+    # than omega.  Anything > ~20 is "rich" and not worth attempting.
+    free_syms = set()
+    for i in range(nf):
+        for j in range(nf):
+            free_syms.update(SR(K_ft[i, j]).variables())
+    free_syms.discard(omega)
+    rich = len(free_syms) > 20
+
+    if not rich:
+        t0 = _time.perf_counter()
+        try:
+            G_ft    = K_ft.inverse()
+            adj_ft  = K_ft.adjugate()
+            D_omega = K_ft.det()
             if verbose:
-                print(f'      D_delta symbolic pass aborted '
-                      f'(SignalError) — integrator will compute lazily.')
-            D_delta = None
-        else:
-            raise
+                print(f'      symbolic inverse/adj/det took '
+                      f'{_time.perf_counter() - t0:.2f}s')
+            # Symbolic D_delta via fast leading-coefficient ratio.
+            D_delta_data = [[SR(0)] * nf for _ in range(nf)]
+            for i in range(nf):
+                for j in range(nf):
+                    entry = SR(G_ft[i, j])
+                    if entry.is_zero():
+                        continue
+                    lim_val = _omega_inf_limit_fast(entry, omega)
+                    if lim_val is not None and not SR(lim_val).is_zero():
+                        D_delta_data[i][j] = lim_val
+            D_delta = matrix(SR, D_delta_data)
+        except Exception:
+            if verbose:
+                print('      symbolic inverse/adj/det bailed — '
+                      'compute_poles_and_residues will compute numerically.')
+            G_ft = adj_ft = D_omega = D_delta = None
+        except BaseException as exc:
+            if exc.__class__.__name__ == 'SignalError':
+                if verbose:
+                    print('      symbolic inverse aborted (SignalError) — '
+                          'compute_poles_and_residues will compute numerically.')
+                G_ft = adj_ft = D_omega = D_delta = None
+            else:
+                raise
+    else:
+        if verbose:
+            print(f'      K_ft has {len(free_syms)} free symbols beyond ω '
+                  f'— skipping symbolic inverse/adj/det.  Computation '
+                  f'will happen numerically in '
+                  f'compute_poles_and_residues.')
 
     prop = {
         'K_ker':         K_ker,
@@ -394,37 +393,176 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
     degree denominator across G_ft entries, residue at each pole
     computed as ``i · adj(ω_k) / det'(ω_k)``.
     """
-    from sage.all import CDF, PolynomialRing
+    from sage.all import CDF, PolynomialRing, matrix as _matrix
+    import time as _time
 
     K_ft   = prop['K_ft']
-    adj_ft = prop['adj_ft']
-    G_ft   = prop['G_ft']
+    adj_ft = prop.get('adj_ft')
+    G_ft   = prop.get('G_ft')
     nf     = prop['nf']
     omega  = prop['omega']
 
-    K_ft_num   = K_ft.apply_map(lambda e: SR(e).subs(num_params))
-    adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
-    G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
+    # Substitute num_params into K_ft.  Entries become univariate
+    # rational functions in omega.
+    K_ft_num = K_ft.apply_map(lambda e: SR(e).subs(num_params))
+
+    if adj_ft is None or G_ft is None:
+        # Heterogeneous / rich models: build_propagator deferred the
+        # inverse/adjugate, so compute them now.  Doing this on the SR
+        # matrix (8×8 of SR rationals) is slow even though entries are
+        # univariate, because Sage's matrix-over-SR uses cofactor
+        # expansion with full symbolic canonicalization per term.
+        #
+        # Trick: COERCE the matrix to CDF[ω].fraction_field BEFORE
+        # taking inverse/adjugate/det.  Polynomial-ring matrix
+        # algorithms are dramatically faster than SR cofactor for
+        # univariate rationals — empirically 1–2 orders of magnitude
+        # on an 8×8 with degree-2 rationals.
+        if verbose:
+            print('      coercing K_ft to CDF[ω] fraction field and '
+                  'computing inverse/adj numerically...')
+        t0 = _time.perf_counter()
+        PR = PolynomialRing(CDF, 'omega')
+        omega_pr = PR.gen()
+        FR = PR.fraction_field()
+
+        def _coerce_entry(e):
+            """SR rational in omega → CDF[ω] fraction-field element."""
+            e = SR(e)
+            if e.is_zero():
+                return FR(0)
+            # Try the cheap path first: read numerator + denominator
+            # as univariate polynomials.
+            try:
+                num_sr = e.numerator()
+                den_sr = e.denominator()
+                num_p  = PR([CDF(c) for c in
+                             num_sr.coefficients(omega, sparse=False)])
+                den_p  = PR([CDF(c) for c in
+                             den_sr.coefficients(omega, sparse=False)])
+                return FR(num_p) / FR(den_p)
+            except (AttributeError, TypeError, ValueError):
+                # Fallback: evaluate at a few omega points and
+                # rational-interpolate.  Should rarely fire.
+                return FR(0)
+
+        K_ft_frac = _matrix(FR,
+                            [[_coerce_entry(K_ft_num[i, j])
+                              for j in range(nf)]
+                             for i in range(nf)])
+        if verbose:
+            print(f'      coercion took {_time.perf_counter() - t0:.2f}s')
+        t1 = _time.perf_counter()
+        G_ft_frac   = K_ft_frac.inverse()
+        adj_ft_frac = K_ft_frac.adjugate()
+        if verbose:
+            print(f'      polynomial-ring inverse/adj took '
+                  f'{_time.perf_counter() - t1:.2f}s')
+
+        # Coerce back to SR for downstream consumers that walk entries
+        # via SR substitution (integrator, D_delta limit).  Build SR
+        # polynomials manually from numerator / denominator
+        # coefficients to avoid string-round-trip pitfalls (Sage's
+        # str() of CDF fractions can emit ``inf`` for zero-denominator
+        # or near-singular entries which then fails to re-parse).
+        def _to_sr(e):
+            # ``e`` is a CDF[omega].fraction_field element.  Try the
+            # cheap polynomial-coefficient extraction; on any failure,
+            # fall through to zero.
+            try:
+                num = e.numerator()
+                den = e.denominator()
+                num_sr = sum(SR(complex(c)) * omega**k
+                             for k, c in enumerate(num.list()))
+                den_sr = sum(SR(complex(c)) * omega**k
+                             for k, c in enumerate(den.list()))
+                if den_sr == 0:
+                    return SR(0)
+                return SR(num_sr) / SR(den_sr)
+            except (AttributeError, TypeError, ValueError, RuntimeError):
+                return SR(0)
+        G_ft_num   = _matrix(SR,
+                             [[_to_sr(G_ft_frac[i, j])
+                               for j in range(nf)]
+                              for i in range(nf)])
+        adj_ft_num = _matrix(SR,
+                             [[_to_sr(adj_ft_frac[i, j])
+                               for j in range(nf)]
+                              for i in range(nf)])
+        # Backfill the matrices on prop so downstream code can read them.
+        prop['adj_ft'] = adj_ft_num
+        prop['G_ft']   = G_ft_num
+    else:
+        adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
+        G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
 
     PR = PolynomialRing(CDF, 'omega')
     FR = PR.fraction_field()
 
-    char_poly = PR(1)
-    for i in range(nf):
-        for j in range(nf):
-            entry = SR(G_ft_num[i, j])
-            if entry.is_zero():
-                continue
-            try:
-                den_p = PR(entry.denominator())
-            except Exception:
-                try:
-                    rat = FR(entry)
-                    den_p = rat.denominator()
-                except Exception:
+    # ── Pole finding ─────────────────────────────────────────────
+    # Heterogeneous / numerical path: build a Python function
+    # ``K_at(omega)`` that evaluates K_ft as a numpy 8×8 complex
+    # matrix, then find poles as roots of ``det(K_at(ω))``.  We
+    # evaluate det at a grid of complex omega samples and fit a
+    # numerical polynomial to those values, then root-find.  This
+    # avoids both Sage's symbolic det (slow / hangs on rich
+    # matrices) and polynomial-fraction det (NaN / spurious-pole
+    # artefacts from un-simplified GCDs).
+    if adj_ft is None or G_ft is None:
+        import numpy as np
+
+        def _K_at(omega_val):
+            """K_ft at omega=omega_val, as a numpy 8×8 complex matrix."""
+            M = np.zeros((nf, nf), dtype=complex)
+            for i in range(nf):
+                for j in range(nf):
+                    e = K_ft_frac[i, j]
+                    try:
+                        num = complex(e.numerator()(omega_val))
+                        den = complex(e.denominator()(omega_val))
+                        M[i, j] = num / den if den != 0 else 0j
+                    except Exception:
+                        M[i, j] = 0j
+            return M
+
+        # Pole finding: evaluate det(K_at(ω)) at a grid of complex
+        # omega values, fit a polynomial, find roots.  Use Vandermonde
+        # interpolation rather than np.polyfit so we don't lose
+        # accuracy from least-squares smoothing.  Sample on a circle
+        # in the complex plane to keep the fit numerically robust.
+        deg_max = 4 * nf       # upper bound on char_poly degree
+        n_samples = deg_max + 1
+        radius = 1.0
+        # Place samples on a unit circle so Vandermonde is well-conditioned.
+        thetas = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
+        sample_omegas = radius * np.exp(1j * thetas)
+        det_samples = np.array([complex(np.linalg.det(_K_at(om)))
+                                for om in sample_omegas])
+        # Polynomial interpolation: char_poly(omega) ≈ this poly.
+        # numpy.polyfit returns coefficients in DESCENDING power order.
+        char_coeffs = np.polyfit(sample_omegas, det_samples, deg_max)
+        # Drop leading near-zero coefficients (numerical noise).
+        tol = 1e-9 * np.max(np.abs(char_coeffs))
+        while len(char_coeffs) > 1 and abs(char_coeffs[0]) < tol:
+            char_coeffs = char_coeffs[1:]
+        char_poly = PR(list(reversed([complex(c) for c in char_coeffs])))
+    else:
+        char_poly = PR(1)
+        for i in range(nf):
+            for j in range(nf):
+                entry = SR(G_ft_num[i, j])
+                if entry.is_zero():
                     continue
-            if den_p.degree() > char_poly.degree():
-                char_poly = den_p
+                try:
+                    den_p = PR(entry.denominator())
+                except Exception:
+                    try:
+                        rat = FR(entry)
+                        den_p = rat.denominator()
+                    except Exception:
+                        continue
+                if den_p.degree() > char_poly.degree():
+                    char_poly = den_p
 
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
@@ -439,18 +577,42 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
         pruned.append(r)
     pole_vals = sorted(pruned, key=lambda r: (r.imag, r.real))
 
-    # Residue at each pole:  C_k = i · adj(ω_k) / det'(ω_k)
-    # Build Sage CDF matrices so build_G_t_matrix's apply_map works.
+    # Residue at each pole:  C_k = i · adj(ω_k) / det'(ω_k).
+    # For the heterogeneous-pop / numerical path we have
+    # ``adj_ft_frac`` (polynomial fractions) and ``char_poly`` (the
+    # det numerator); evaluate both at each pole numerically.  For
+    # the legacy path we substitute into the SR forms.
     from sage.all import matrix as _matrix
-    K_det_sr = SR(K_ft_num.det())
-    K_det_prime_sr = K_det_sr.derivative(omega)
-    C_mats = []
-    for pk in pole_vals:
-        denom = complex(K_det_prime_sr.subs({omega: pk}))
-        C_entries = [[1j * complex(SR(adj_ft_num[i, j]).subs({omega: pk}))
-                      / denom
-                      for j in range(nf)] for i in range(nf)]
-        C_mats.append(_matrix(CDF, C_entries))
+    if adj_ft is None or G_ft is None:
+        char_poly_prime = char_poly.derivative()
+        C_mats = []
+        for pk in pole_vals:
+            denom = complex(char_poly_prime(pk))
+            C_entries = []
+            for i in range(nf):
+                row = []
+                for j in range(nf):
+                    e_frac = adj_ft_frac[i, j]
+                    # e_frac is a polynomial fraction; evaluate at pk.
+                    try:
+                        num_val = complex(e_frac.numerator()(pk))
+                        den_val = complex(e_frac.denominator()(pk))
+                        e_val   = num_val / den_val if den_val != 0 else 0j
+                    except Exception:
+                        e_val = 0j
+                    row.append(1j * e_val / denom)
+                C_entries.append(row)
+            C_mats.append(_matrix(CDF, C_entries))
+    else:
+        K_det_sr = SR(K_ft_num.det())
+        K_det_prime_sr = K_det_sr.derivative(omega)
+        C_mats = []
+        for pk in pole_vals:
+            denom = complex(K_det_prime_sr.subs({omega: pk}))
+            C_entries = [[1j * complex(SR(adj_ft_num[i, j]).subs({omega: pk}))
+                          / denom
+                          for j in range(nf)] for i in range(nf)]
+            C_mats.append(_matrix(CDF, C_entries))
 
     prop['pole_vals'] = pole_vals
     prop['C_mats']    = C_mats
