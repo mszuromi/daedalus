@@ -61,18 +61,75 @@ class TheoryUI:
         self.last_saved: Optional[str] = None
         self._build_widgets()
 
+    # ── Population helpers ────────────────────────────────────────
+    def _pop_names(self) -> list[str]:
+        """Current list of population names from the Populations tab.
+        Used as a dynamic ``options_provider`` for population-aware
+        dropdowns on other tabs."""
+        if not hasattr(self, '_tbl_populations'):
+            return []
+        return [r['name'] for r in self._tbl_populations.get_rows()
+                if (r.get('name') or '').strip()]
+
+    def _pop_size_map(self) -> dict[str, int]:
+        """{population_name: size} dict from the current Populations tab."""
+        out = {}
+        if not hasattr(self, '_tbl_populations'):
+            return out
+        for r in self._tbl_populations.get_rows():
+            name = (r.get('name') or '').strip()
+            try:
+                size = int(r.get('size') or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if name and size > 0:
+                out[name] = size
+        return out
+
+    def _autofill_default_templates(self) -> None:
+        """Walk every Parameters row; if its ``default`` cell is empty
+        and ``index_1`` / ``index_2`` describe a shape, fill in a
+        template like ``[, , ]`` (vector) or ``[[, , ], [, , ]]``
+        (matrix).  Preserves any non-empty user-typed values."""
+        if not hasattr(self, '_tbl_parameters'):
+            return
+        sizes = self._pop_size_map()
+        _NONE = '—'
+
+        def _vector_template(n: int) -> str:
+            return '[' + ', '.join([''] * n) + ']'
+
+        def _matrix_template(n_rows: int, n_cols: int) -> str:
+            row = _vector_template(n_cols)
+            return '[' + ', '.join([row] * n_rows) + ']'
+
+        for w_dict in self._tbl_parameters._row_widgets:
+            i1 = w_dict.get('index_1')
+            i2 = w_dict.get('index_2')
+            d  = w_dict.get('default')
+            if i1 is None or d is None:
+                continue
+            cur = (d.value or '').strip()
+            if cur:                       # user has typed something — don't overwrite
+                continue
+            n1 = sizes.get(i1.value if i1.value != _NONE else None)
+            n2 = sizes.get(i2.value if (i2 is not None
+                                        and i2.value != _NONE) else None)
+            if n1 and n2:
+                d.value = _matrix_template(n1, n2)
+            elif n1:
+                d.value = _vector_template(n1)
+            # both blank → scalar; leave empty for user to type
+
     # ── Tab construction ──────────────────────────────────────────
     def _build_widgets(self) -> None:
-        # Tab 1: Model — name + populations
+        # Tab 1: Model — name + description
+        # ``n_populations`` is derived from the Populations tab; no
+        # standalone spinner on this tab.
         self._w_name = W.Text(
             value='My Stochastic Theory', placeholder='Theory name',
             layout=W.Layout(width='400px'),
             description='Name:', style={'description_width': '80px'},
-        )
-        self._w_npop = W.IntText(
-            value=2, layout=W.Layout(width='80px'),
-            description='Populations:',
-            style={'description_width': '120px'},
         )
         self._w_description = W.Textarea(
             value='', placeholder='Optional theory description / notes',
@@ -80,31 +137,69 @@ class TheoryUI:
             description='Description:',
             style={'description_width': '120px'},
         )
-        tab_model = W.VBox([self._w_name, self._w_npop,
-                            self._w_description])
+        tab_model = W.VBox([
+            W.HTML('<h4>Theory metadata</h4>'),
+            self._w_name, self._w_description,
+            W.HTML('<p style="color:#555;font-size:90%;">'
+                   'Number of populations and their sizes are declared on '
+                   'the next tab (<b>Populations</b>).</p>'),
+        ])
 
-        # Tab 2: Field variables
-        # Just declare the natural physical-observable names (n, v, m,
-        # whatever).  The framework auto-creates:
-        #   - the d-prefixed fluctuation field used in the action (dn, dv, …)
-        #   - the conjugate response field (-t suffixed: nt, vt, …)
-        #   - the saddle parameter (-star suffixed: nstar, vstar, …)
-        # so the user never types those internal names.
-        self._tbl_physical = DynamicTable(
+        # Tab 2: Populations — declare named populations + their sizes.
+        # Other tabs read the current population list to populate
+        # dropdowns: a field belongs to one population; a parameter /
+        # kernel is indexed by zero / one / two populations.
+        self._tbl_populations = DynamicTable(
             columns=[
-                {'name': 'name',         'kind': 'text',
-                 'placeholder': 'n',     'width': '100px'},
-                {'name': 'indexed',      'kind': 'bool',
-                 'default': True,        'width': '70px'},
-                {'name': 'latex',        'kind': 'text',
-                 'placeholder': '(auto: \\delta n)', 'width': '120px'},
-                {'name': 'description',  'kind': 'text',
-                 'placeholder': '',      'width': '300px'},
+                {'name': 'name',        'kind': 'text',
+                 'placeholder': 'E',    'width': '120px'},
+                {'name': 'size',        'kind': 'int',
+                 'default': 1,          'width': '80px'},
+                {'name': 'description', 'kind': 'text',
+                 'placeholder': 'excitatory population',
+                 'width': '320px'},
             ],
             initial=[
-                {'name': 'n', 'indexed': True,
+                {'name': 'pop1', 'size': 1, 'description': ''},
+                {'name': 'pop2', 'size': 1, 'description': ''},
+            ],
+        )
+        tab_populations = W.VBox([
+            W.HTML('<h4>Populations</h4>'
+                   '<p style="color:#555;font-size:90%;">'
+                   "Declare each population by name and size.  Population "
+                   "names are user-chosen identifiers (e.g. <code>E</code>, "
+                   "<code>I</code>, or just <code>pop1</code>, <code>pop2</code>).  "
+                   "Sizes must be positive integers — they determine the "
+                   "shape of any field, parameter, or kernel indexed by "
+                   "that population.  Subsequent tabs auto-update their "
+                   "population dropdowns whenever you add / remove rows here."
+                   '</p>'),
+            self._tbl_populations.show(),
+        ])
+
+        # Tab 3: Physical fields.
+        # Each field belongs to exactly ONE population (declared in
+        # the Populations tab).  The framework auto-creates:
+        #   - fluctuation:  d<name>     (used in the action)
+        #   - response:     <name>t     (MSR-pairing factor)
+        #   - saddle:       <name>star  (solved by the saddle solver)
+        self._tbl_physical = DynamicTable(
+            columns=[
+                {'name': 'name',        'kind': 'text',
+                 'placeholder': 'n_E',  'width': '120px'},
+                {'name': 'population',  'kind': 'select',
+                 'options_provider': self._pop_names,
+                 'width': '120px'},
+                {'name': 'latex',       'kind': 'text',
+                 'placeholder': '(auto: \\delta n_E)', 'width': '140px'},
+                {'name': 'description', 'kind': 'text',
+                 'placeholder': '',     'width': '280px'},
+            ],
+            initial=[
+                {'name': 'n', 'population': 'pop1',
                  'description': 'firing rate'},
-                {'name': 'v', 'indexed': True,
+                {'name': 'v', 'population': 'pop1',
                  'description': 'voltage'},
             ],
         )
@@ -112,63 +207,75 @@ class TheoryUI:
             W.HTML(
                 '<h4>Physical fields</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                'Declare the natural physical-observable letters '
-                '(<code>n</code>, <code>v</code>, <code>m</code>, …). '
+                'Each field is a vector of length <code>size(population)</code>. '
+                'Pick a name (any identifier) and the population it belongs to.  '
                 'The framework automatically creates:'
                 '<ul style="margin-top:2px;">'
                 '<li>the fluctuation field <code>d&lt;name&gt;</code> '
-                '(used in the action — write <code>n[i]</code> or '
-                '<code>dn[i]</code>; both refer to the fluctuation)</li>'
+                '(used in the action — write <code>n_E[i]</code> or '
+                '<code>dn_E[i]</code>; both refer to the fluctuation)</li>'
                 '<li>the conjugate response field '
-                '<code>&lt;name&gt;t</code> (e.g. <code>nt</code>, '
-                '<code>vt</code>) — used as MSR-pairing factors '
-                'in the action</li>'
-                '<li>the saddle parameter '
-                '<code>&lt;name&gt;star</code> (e.g. <code>nstar</code>, '
-                '<code>vstar</code>) — solved numerically by the saddle '
-                'solver during pipeline execution</li>'
-                '</ul></p>'),
+                '<code>&lt;name&gt;t</code> — MSR-pairing factor</li>'
+                '<li>the saddle parameter <code>&lt;name&gt;star</code> '
+                '— solved numerically by the saddle solver</li>'
+                '</ul>'
+                'Index range in the action follows the chosen population: '
+                '<code>for i in pop_&lt;pop_name&gt;</code>.'
+                '</p>'),
             self._tbl_physical.show(),
         ])
 
-        # Tab 3: Parameters — just name + type + default value.
-        # Saddle quantities (n*, v*, …) are auto-created by the
-        # framework when their physical field is declared in tab 2;
-        # they're not entered here.  domain/mean_field/natural_name
-        # are inferred or default-resolved by the framework.
+        # Tab 4: Parameters.
+        # ``index_1`` / ``index_2`` are dropdowns over the declared
+        # populations (or '—' for none).  Both empty → scalar.
+        # One filled → vector of length size(pop).  Both filled →
+        # matrix of shape (size(pop_1), size(pop_2)) — row-first.
+        # When the user changes either index dropdown, the ``default``
+        # placeholder auto-templates to the right shape (e.g.
+        # ``[[, , ], [, , ]]`` for a 2×3 matrix).
+        _NONE = '—'
+        def _pop_opts_with_none():
+            return [_NONE] + self._pop_names()
         self._tbl_parameters = DynamicTable(
             columns=[
-                {'name': 'name',         'kind': 'text',
-                 'placeholder': 'tau',   'width': '120px'},
-                {'name': 'type',         'kind': 'select',
-                 'options': ['scalar', 'vector', 'matrix'],
-                 'default': 'scalar',    'width': '110px'},
-                {'name': 'default',      'kind': 'text',
-                 'placeholder': '10.0 / [0.5, 0.5] / [[0.1, 0.2], [..]]',
-                 'width': '320px'},
+                {'name': 'name',     'kind': 'text',
+                 'placeholder': 'tau', 'width': '110px'},
+                {'name': 'index_1',  'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE, 'width': '100px'},
+                {'name': 'index_2',  'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE, 'width': '100px'},
+                {'name': 'default',  'kind': 'text',
+                 'placeholder': '10.0  /  [.., ..]  /  [[..]]',
+                 'width': '340px'},
+                {'name': 'description', 'kind': 'text',
+                 'placeholder': '', 'width': '220px'},
             ],
             initial=[
-                {'name': 'E',     'type': 'vector', 'default': '[0.78, 0.81]'},
-                {'name': 'tau',   'type': 'scalar', 'default': '10.0'},
-                {'name': 'a',     'type': 'scalar', 'default': '1.0'},
-                {'name': 'tau_g', 'type': 'scalar', 'default': '2.5'},
-                {'name': 'w',     'type': 'matrix',
-                 'default': '[[0.30, 0.25], [0.30, 0.35]]'},
+                {'name': 'tau', 'index_1': _NONE, 'index_2': _NONE,
+                 'default': '10.0'},
             ],
         )
         tab_params = W.VBox([
             W.HTML(
                 '<h4>Parameters</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "Numerical-parameter declarations.  Default values are "
-                'parsed as Python literals: <code>10.0</code> for scalars, '
-                '<code>[0.5, 0.5]</code> for vectors, '
-                '<code>[[0.3, 0.25], [0.3, 0.35]]</code> for matrices. '
-                "Mean-field saddles (<code>nstar</code>, <code>vstar</code>) "
-                'are <strong>not</strong> declared here — the framework '
-                'auto-creates them from the physical-field declarations '
-                'in tab 2 and solves for them numerically during pipeline '
-                'execution.'
+                "Numerical parameters.  Pick zero / one / two populations "
+                "via the <code>index_1</code> and <code>index_2</code> dropdowns:"
+                '<ul style="margin-top:2px;">'
+                '<li><b>scalar</b>: both blank — e.g. <code>tau = 10.0</code></li>'
+                '<li><b>vector</b>: <code>index_1</code> set — shape '
+                '<code>(size(index_1),)</code></li>'
+                '<li><b>matrix</b>: both set — shape '
+                '<code>(size(index_1), size(index_2))</code> '
+                '(row-first: outer index runs over <code>index_1</code>)</li>'
+                '</ul>'
+                'The <code>default</code> cell expects a Python literal of '
+                "matching shape.  Changing an index dropdown updates the "
+                "cell's placeholder to show the expected shape; if the "
+                "<code>default</code> is empty, a template (e.g. "
+                "<code>[[, , ], [, , ]]</code>) is auto-inserted."
                 '</p>'),
             self._tbl_parameters.show(),
         ])
@@ -220,25 +327,29 @@ class TheoryUI:
             self._tbl_functions.show(),
         ])
 
-        # Tab 5: Kernels
+        # Tab 6: Kernels
+        # Same index_1 / index_2 pattern as Parameters.
         self._tbl_kernels = DynamicTable(
             columns=[
-                {'name': 'name',        'kind': 'text',
-                 'placeholder': 'g',    'width': '80px'},
-                {'name': 'indexed',     'kind': 'select',
-                 'options': ['scalar', 'vector', 'matrix'],
-                 'default': 'scalar',   'width': '90px'},
-                {'name': 'time_expr',   'kind': 'text',
+                {'name': 'name',       'kind': 'text',
+                 'placeholder': 'g',   'width': '100px'},
+                {'name': 'index_1',    'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE,     'width': '100px'},
+                {'name': 'index_2',    'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE,     'width': '100px'},
+                {'name': 'time_expr',  'kind': 'text',
                  'placeholder': '(1/tau_g)*exp(-t/tau_g)*heaviside(t)',
-                 'width': '300px'},
-                {'name': 'freq_image',  'kind': 'text',
+                 'width': '280px'},
+                {'name': 'freq_image', 'kind': 'text',
                  'placeholder': '1/(1+I*omega*tau_g)',
                  'width': '220px'},
-                {'name': 'latex_name',  'kind': 'text',
-                 'placeholder': 'g',    'width': '80px'},
+                {'name': 'latex_name', 'kind': 'text',
+                 'placeholder': 'g',   'width': '80px'},
             ],
             initial=[
-                {'name': 'g', 'indexed': 'scalar',
+                {'name': 'g', 'index_1': _NONE, 'index_2': _NONE,
                  'freq_image': '1/(1+I*omega*tau_g)',
                  'latex_name': 'g'},
             ],
@@ -249,22 +360,22 @@ class TheoryUI:
                    "Each kernel must integrate to 1.  Provide either "
                    "<code>time_expr</code> (in <code>t</code> + parameters) or "
                    "<code>freq_image</code> (in <code>omega</code> + parameters). "
-                   "<code>freq_image</code> is preferred — it's used directly by "
-                   "propagator construction."
+                   "<code>freq_image</code> is preferred — used directly by "
+                   "the propagator builder."
                    '</p>'
                    '<p style="color:#555;font-size:90%;">'
-                   "<code>indexed</code> controls per-population shape:"
+                   "Index dropdowns work like in the Parameters tab:"
                    "<ul style='margin-top:4px;'>"
-                   "<li><b>scalar</b> (default): one shared kernel — "
+                   "<li><b>both blank</b>: shared scalar kernel — "
                    "use <code>g</code> in the action.</li>"
-                   "<li><b>vector</b>: per-population kernel — use "
-                   "<code>g[i]</code> in the action; expression may "
-                   "reference <code>i</code> and indexed params like "
-                   "<code>tau_g[i]</code>.</li>"
-                   "<li><b>matrix</b>: per-pair kernel — use "
-                   "<code>g[i, j]</code> in the action; expression may "
-                   "reference <code>i, j</code> and matrix params like "
-                   "<code>tau_g[i, j]</code>.</li>"
+                   "<li><b>one set</b>: per-population kernel — use "
+                   "<code>g[i]</code> in the action; the expression may "
+                   "reference <code>i</code> and any indexed parameter "
+                   "(<code>tau_g[i]</code>, etc.).</li>"
+                   "<li><b>both set</b>: per-pair kernel — use "
+                   "<code>g[i, j]</code> in the action; the expression "
+                   "may reference <code>i, j</code> and matrix-indexed "
+                   "parameters like <code>tau_g[i, j]</code>.</li>"
                    "</ul>"
                    '</p>'),
             self._tbl_kernels.show(),
@@ -434,14 +545,32 @@ class TheoryUI:
 
         # Compose into Tab widget
         self._tabs = W.Tab(children=[
-            tab_model, tab_fields, tab_params, tab_functions,
-            tab_kernels, tab_cgfs, tab_action, tab_mfeqs, tab_defaults,
+            tab_model, tab_populations, tab_fields, tab_params,
+            tab_functions, tab_kernels, tab_cgfs, tab_action,
+            tab_mfeqs, tab_defaults,
         ])
         for i, title in enumerate([
-            '1. Model', '2. Fields', '3. Parameters', '4. Functions',
-            '5. Kernels', '6. CGFs', '7. Action', '8. MF', '9. Defaults',
+            '1. Model', '2. Populations', '3. Fields', '4. Parameters',
+            '5. Functions', '6. Kernels', '7. CGFs', '8. Action',
+            '9. MF', '10. Defaults',
         ]):
             self._tabs.set_title(i, title)
+
+        # ── Live wiring: when the Populations tab changes, refresh
+        # every other tab's population-aware dropdowns and re-template
+        # the parameter / kernel default cells.
+        def _on_populations_changed():
+            self._tbl_physical.refresh_dropdown_options('population')
+            self._tbl_parameters.refresh_dropdown_options('index_1')
+            self._tbl_parameters.refresh_dropdown_options('index_2')
+            self._tbl_kernels.refresh_dropdown_options('index_1')
+            self._tbl_kernels.refresh_dropdown_options('index_2')
+            self._autofill_default_templates()
+        self._tbl_populations.on_change(_on_populations_changed)
+
+        # Whenever a parameter's index_1 / index_2 changes, retemplate
+        # its default cell.
+        self._tbl_parameters.on_change(self._autofill_default_templates)
 
         # ── Bottom buttons + status ───────────────────────────────
         self._w_save_path = W.Text(
@@ -510,22 +639,75 @@ class TheoryUI:
                                  f'{type(obj).__name__}')
             return obj
 
-        # Parse parameter defaults — each is a string the user typed.
-        # The form only collects {name, type, default}; mean_field /
-        # natural_name / domain / description are inferred or filled
-        # in by the framework / serializer when needed.
+        _NONE = '—'
+
+        def _index_list(row: dict) -> list[str]:
+            """Translate (index_1, index_2) dropdowns into the
+            ``indexed_by`` list the serializer wants: empty list for
+            scalar, [pop] for vector, [pop1, pop2] for matrix."""
+            i1 = (row.get('index_1') or '').strip()
+            i2 = (row.get('index_2') or '').strip()
+            out = []
+            if i1 and i1 != _NONE:
+                out.append(i1)
+            if i2 and i2 != _NONE:
+                out.append(i2)
+            return out
+
+        # Populations — name + size, plus optional description.
+        populations = []
+        for r in self._tbl_populations.get_rows():
+            name = (r.get('name') or '').strip()
+            if not name:
+                continue
+            try:
+                size = int(r.get('size') or 0)
+            except (TypeError, ValueError):
+                size = 0
+            entry = {'name': name, 'size': max(size, 1)}
+            desc = (r.get('description') or '').strip()
+            if desc:
+                entry['description'] = desc
+            populations.append(entry)
+
+        # Physical fields — name + population.
+        physical_fields = []
+        for r in self._tbl_physical.get_rows():
+            name = (r.get('name') or '').strip()
+            if not name:
+                continue
+            entry = {'name': name}
+            pop = (r.get('population') or '').strip()
+            if pop:
+                entry['population'] = pop
+            for k in ('latex', 'description'):
+                v = (r.get(k) or '').strip()
+                if v:
+                    entry[k] = v
+            physical_fields.append(entry)
+
+        # Parameters — name + indexed_by list (from dropdowns) + default.
         params = []
         for row in self._tbl_parameters.get_rows():
-            entry = {'name': row['name'], 'type': row.get('type', 'scalar')}
+            name = (row.get('name') or '').strip()
+            if not name:
+                continue
+            entry = {'name': name}
+            idx = _index_list(row)
+            if idx:
+                entry['indexed_by'] = idx
             d = (row.get('default') or '').strip()
             if d:
                 try:
                     entry['default'] = eval(d, {'__builtins__': {}}, {})
                 except Exception:
-                    entry['default'] = d   # leave as string if unparseable
+                    entry['default'] = d
+            desc = (row.get('description') or '').strip()
+            if desc:
+                entry['description'] = desc
             params.append(entry)
 
-        # Functions: split args by comma
+        # Functions: split args by comma — unchanged.
         functions = []
         for row in self._tbl_functions.get_rows():
             args = [a.strip() for a in (row.get('args') or '').split(',')
@@ -538,28 +720,31 @@ class TheoryUI:
                     entry[k] = v
             functions.append(entry)
 
+        # Kernels — name + indexed_by + time_expr/freq_image + latex.
         kernels = []
         for row in self._tbl_kernels.get_rows():
-            entry = {'name': row['name']}
+            name = (row.get('name') or '').strip()
+            if not name:
+                continue
+            entry = {'name': name}
+            idx = _index_list(row)
+            if idx:
+                entry['indexed_by'] = idx
             for k in ('time_expr', 'freq_image', 'latex_name'):
-                v = row.get(k)
+                v = (row.get(k) or '').strip()
                 if v:
                     entry[k] = v
-            # 'scalar' is the legacy default — encoded as indexed=False.
-            # 'vector' / 'matrix' map to indexed='vector' / 'matrix'.
-            idx = row.get('indexed') or 'scalar'
-            if idx != 'scalar':
-                entry['indexed'] = idx
             kernels.append(entry)
 
         return {
             'name':            self._w_name.value,
-            'n_populations':   int(self._w_npop.value),
+            'populations':     populations,
+            'n_populations':   len(populations),    # legacy, derived
             'description':     self._w_description.value,
             # Response fields are auto-generated by the framework from
             # the physical fields — no UI tab for them.
             'response_fields': [],
-            'physical_fields': self._tbl_physical.get_rows(),
+            'physical_fields': physical_fields,
             'parameters':      params,
             'functions':       functions,
             'kernels':         kernels,

@@ -139,11 +139,15 @@ class DynamicTable:
     ----------
     columns : list of dict
         Each dict has keys::
-            {'name':    'name',
-             'kind':    'text' | 'bool' | 'select' | 'int' | 'float',
-             'options': [...],          # for 'select'
-             'default': <value>,
-             'width':   '120px'}
+            {'name':              'name',
+             'kind':              'text' | 'bool' | 'select' | 'int' | 'float',
+             'options':           [...],          # static options for 'select'
+             'options_provider':  callable () -> list,
+                                  # dynamic options — re-queried on demand
+                                  # (use .refresh_dropdown_options to push
+                                  # an update after the underlying data changes)
+             'default':           <value>,
+             'width':             '120px'}
     initial : list of dict, optional
         Pre-populate rows with these values.
 
@@ -152,7 +156,12 @@ class DynamicTable:
     .show()       → returns the ipywidgets layout
     .get_rows()   → returns list of dicts (one per row)
     .clear()      → remove all rows
-    .add_row(values=None) → append a row with given/default values
+    .add_row(values=None)
+    .on_change(callback)  → fire callback on any add/remove/cell-edit
+    .refresh_dropdown_options(col_name)
+                  → re-query the column's ``options_provider`` and
+                    push the new options onto every existing row's
+                    dropdown.  Preserves prior selections when still valid.
     """
 
     def __init__(self, columns: list[dict],
@@ -161,6 +170,7 @@ class DynamicTable:
         self._columns = columns
         self._row_widgets: list[dict] = []   # list of {col_name: widget}
         self._row_boxes:   list[W.HBox] = []  # one HBox per row, for layout
+        self._change_callbacks: list[Callable[[], None]] = []
 
         self._header = W.HBox([
             W.HTML(f"<b style='width:{c.get('width', '120px')};'>{c['name']}</b>",
@@ -172,13 +182,13 @@ class DynamicTable:
         self._add_btn = W.Button(description=add_label,
                                  button_style='info',
                                  layout=W.Layout(width='160px'))
-        self._add_btn.on_click(lambda _: self.add_row())
+        self._add_btn.on_click(lambda _: (self.add_row(), self._notify_change()))
 
         if initial:
             for row in initial:
-                self.add_row(values=row)
+                self.add_row(values=row, _notify=False)
         else:
-            self.add_row()
+            self.add_row(_notify=False)
 
     def _make_widget(self, col: dict, value: Any = None) -> W.Widget:
         kind = col.get('kind', 'text')
@@ -188,26 +198,37 @@ class DynamicTable:
         v = value if value is not None else default
 
         if kind == 'text':
-            return W.Text(value='' if v is None else str(v),
-                          placeholder=col.get('placeholder', ''),
-                          layout=layout)
+            w = W.Text(value='' if v is None else str(v),
+                       placeholder=col.get('placeholder', ''),
+                       layout=layout)
+            w.observe(lambda _change: self._notify_change(), names='value')
+            return w
         if kind == 'bool':
-            return W.Checkbox(value=bool(v) if v is not None else False,
-                              indent=False, layout=layout)
+            w = W.Checkbox(value=bool(v) if v is not None else False,
+                           indent=False, layout=layout)
+            w.observe(lambda _change: self._notify_change(), names='value')
+            return w
         if kind == 'select':
-            opts = col.get('options', [])
+            # Static options vs. dynamic via options_provider.
+            provider = col.get('options_provider')
+            opts = provider() if provider is not None else col.get('options', [])
             initial = v if v in opts else (opts[0] if opts else None)
-            return W.Dropdown(options=opts, value=initial,
-                              layout=layout)
+            w = W.Dropdown(options=opts, value=initial, layout=layout)
+            w.observe(lambda _change: self._notify_change(), names='value')
+            return w
         if kind == 'int':
-            return W.IntText(value=int(v) if v is not None else 0,
-                             layout=layout)
+            w = W.IntText(value=int(v) if v is not None else 0, layout=layout)
+            w.observe(lambda _change: self._notify_change(), names='value')
+            return w
         if kind == 'float':
-            return W.FloatText(value=float(v) if v is not None else 0.0,
-                               layout=layout)
+            w = W.FloatText(value=float(v) if v is not None else 0.0,
+                            layout=layout)
+            w.observe(lambda _change: self._notify_change(), names='value')
+            return w
         raise ValueError(f'unknown column kind: {kind!r}')
 
-    def add_row(self, values: Optional[dict] = None) -> None:
+    def add_row(self, values: Optional[dict] = None,
+                _notify: bool = True) -> None:
         widgets = {}
         children = []
         for col in self._columns:
@@ -222,13 +243,13 @@ class DynamicTable:
         def _make_remove(_idx):
             def _on_click(_btn):
                 if 0 <= _idx < len(self._row_widgets):
-                    # Find the actual current index (rows may shift)
                     for i, rb in enumerate(self._row_boxes):
                         if rb.children[-1] is _btn:
                             self._row_widgets.pop(i)
                             self._row_boxes.pop(i)
                             self._rows_container.children = tuple(
                                 self._row_boxes)
+                            self._notify_change()
                             return
             return _on_click
         rm_btn.on_click(_make_remove(len(self._row_widgets)))
@@ -238,11 +259,14 @@ class DynamicTable:
         self._row_widgets.append(widgets)
         self._row_boxes.append(row_box)
         self._rows_container.children = tuple(self._row_boxes)
+        if _notify:
+            self._notify_change()
 
     def clear(self) -> None:
         self._row_widgets = []
         self._row_boxes = []
         self._rows_container.children = ()
+        self._notify_change()
 
     def get_rows(self) -> list[dict]:
         out = []
@@ -256,3 +280,45 @@ class DynamicTable:
 
     def show(self) -> W.VBox:
         return W.VBox([self._header, self._rows_container, self._add_btn])
+
+    # ── Change-event plumbing ──────────────────────────────────────
+    def on_change(self, callback: Callable[[], None]) -> None:
+        """Register a callback fired whenever a row is added, removed,
+        or a cell value changes.  Multiple callbacks may be registered."""
+        self._change_callbacks.append(callback)
+
+    def _notify_change(self) -> None:
+        for cb in self._change_callbacks:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def refresh_dropdown_options(self, col_name: str) -> None:
+        """Re-query the ``options_provider`` for the named ``select``
+        column and update every existing row's dropdown.  Preserves
+        prior selections when still valid; otherwise falls back to
+        the first option."""
+        col = next((c for c in self._columns if c['name'] == col_name), None)
+        if col is None:
+            return
+        provider = col.get('options_provider')
+        if provider is None:
+            return
+        new_opts = list(provider())
+        for w_dict in self._row_widgets:
+            w = w_dict.get(col_name)
+            if not isinstance(w, W.Dropdown):
+                continue
+            prev = w.value
+            # Setting .options while value is invalid raises; clear first.
+            try:
+                w.options = new_opts
+                if prev in new_opts:
+                    w.value = prev
+                elif new_opts:
+                    w.value = new_opts[0]
+            except Exception:
+                # Some ipywidgets versions need a different ordering.
+                w.value = (new_opts[0] if new_opts else None)
+                w.options = new_opts

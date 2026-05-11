@@ -116,12 +116,20 @@ def _emit_field(method: str, f: dict, *, with_natural: bool) -> str:
     arg is treated as the user-facing natural letter — TheoryBuilder
     auto-prefixes ``d`` to get the internal fluctuation name and
     auto-creates the response field + saddle parameter.
+
+    For heterogeneous-population theories, ``f['population']`` names
+    the population this field belongs to; the emitter passes it
+    through as ``population='<name>'``.
     """
-    pairs = [('indexed', f.get('indexed', True))]
+    pairs = []
+    # Population annotation (new style).  Mutually exclusive with
+    # ``indexed`` — if a population is given, the field's shape is
+    # determined by size(population) and ``indexed=True`` is implied.
+    if f.get('population'):
+        pairs.append(('population', f['population']))
+    else:
+        pairs.append(('indexed', f.get('indexed', True)))
     if with_natural:
-        # Only include natural_name if it differs from name (legacy
-        # support for files that explicitly declare the d-prefixed
-        # internal name); the new style omits natural_name entirely.
         nn = f.get('natural_name')
         if nn and nn != f['name']:
             pairs.append(('natural_name', nn))
@@ -139,21 +147,29 @@ def _emit_parameter(p: dict) -> str:
 
     Saddle parameters (``mean_field=True``) are NOT emitted — the
     framework auto-creates them when their physical field is
-    declared.  We filter those out at the spec collection layer.
-    """
-    # Map UI 'type' to TheoryBuilder's indexed= argument
-    ptype = p.get('type', 'scalar')
-    if ptype == 'scalar':
-        indexed_kw = None     # default False
-    elif ptype in ('vector',):
-        indexed_kw = True
-    elif ptype == 'matrix':
-        indexed_kw = 'matrix'
-    else:
-        indexed_kw = p.get('indexed')   # passthrough
+    declared.
 
+    For heterogeneous-population theories, the spec carries an
+    ``indexed_by`` list (zero / one / two population names).
+    Legacy ``type`` ('scalar' / 'vector' / 'matrix') still works via
+    a fallback translation.
+    """
+    indexed_by = p.get('indexed_by')
+    if indexed_by:                       # new-style annotation wins
+        indexed_kw = None                # don't emit ``indexed=``
+    else:                                # legacy translation
+        ptype = p.get('type', 'scalar')
+        if ptype in ('scalar',):
+            indexed_kw = None
+        elif ptype in ('vector',):
+            indexed_kw = True
+        elif ptype == 'matrix':
+            indexed_kw = 'matrix'
+        else:
+            indexed_kw = p.get('indexed')
     kwargs = _kw_chain(
         ('default',      p.get('default')),
+        ('indexed_by',   list(indexed_by) if indexed_by else None),
         ('indexed',      indexed_kw),
         ('domain',       p.get('domain')),
         ('mean_field',   p.get('mean_field') or None),
@@ -175,25 +191,32 @@ def _emit_function(fn: dict) -> str:
 
 
 def _emit_kernel(k: dict) -> str:
-    # Translate ``indexed`` from the UI's user-facing words to the
-    # ``define_kernel(indexed=...)`` kwarg the builder expects.  Pass a
-    # plain Python string ('vector' / 'matrix'); _py_repr will quote
-    # it.  Default ('scalar' / False / None) is omitted entirely.
-    indexed = k.get('indexed')
-    if indexed in (None, False, 'scalar'):
-        indexed_value = None              # → _kw_chain omits the kwarg
-    elif indexed is True or indexed == 'vector':
-        indexed_value = 'vector'
-    elif indexed == 'matrix':
-        indexed_value = 'matrix'
+    """Emit a ``.define_kernel(...)`` call.
+
+    Heterogeneous-population spec uses ``indexed_by=['pop1', 'pop2']``;
+    legacy spec uses ``indexed='vector'`` / ``'matrix'``.  Either is
+    accepted — ``indexed_by`` wins if both are present.
+    """
+    indexed_by = k.get('indexed_by')
+    if indexed_by:
+        indexed_value = None
     else:
-        indexed_value = indexed
+        indexed = k.get('indexed')
+        if indexed in (None, False, 'scalar'):
+            indexed_value = None
+        elif indexed is True or indexed == 'vector':
+            indexed_value = 'vector'
+        elif indexed == 'matrix':
+            indexed_value = 'matrix'
+        else:
+            indexed_value = indexed
     kwargs = _kw_chain(
         ('time_expr',   k.get('time_expr')),
         ('freq_image',  k.get('freq_image')),
         ('latex_name',  k.get('latex_name') or k.get('latex')),
         ('sage_name',   k.get('sage_name')),
         ('description', k.get('description')),
+        ('indexed_by',  list(indexed_by) if indexed_by else None),
         ('indexed',     indexed_value),
     )
     head = f'.define_kernel({_py_repr(k["name"])}'
@@ -228,9 +251,21 @@ def _emit_mf_equation(saddle: str, rhs: str) -> str:
 # ── Main entry points ─────────────────────────────────────────────────
 
 def render_theory_file(spec: dict) -> str:
-    """Render the full ``.theory.py`` source from a spec dict."""
+    """Render the full ``.theory.py`` source from a spec dict.
+
+    Heterogeneous-population specs carry a ``populations`` list
+    (``[{'name': 'E', 'size': N_E}, ...]``).  In that case the
+    emitted file makes ``TheoryBuilder()`` without ``n_populations=``
+    and then chains one ``.population('name', size=N)`` call per
+    declared population.  Legacy specs (only ``n_populations`` set)
+    keep the old ``TheoryBuilder('name', n_populations=N)`` form.
+    """
     name = spec['name']
-    n_pop = int(spec.get('n_populations', 1))
+    populations = spec.get('populations') or []
+    # If populations is empty, fall back to the legacy n_populations
+    # path so old saved specs keep loading.
+    n_pop = (len(populations) if populations
+             else int(spec.get('n_populations', 1)))
     description = spec.get('description', '')
     response_fields = spec.get('response_fields', []) or []
     physical_fields = spec.get('physical_fields', []) or []
@@ -272,7 +307,22 @@ def render_theory_file(spec: dict) -> str:
     out.append('')
     out.append('def build():')
     out.append(f'    return (')
-    out.append(f'        TheoryBuilder({_py_repr(name)}, n_populations={n_pop})')
+    if populations:
+        # Heterogeneous populations: just name in the constructor,
+        # populations come via chained .population(...) calls so each
+        # one's size is explicit and the declaration order is visible.
+        out.append(f'        TheoryBuilder({_py_repr(name)})')
+        for pop in populations:
+            pop_kwargs = _kw_chain(
+                ('size',        int(pop.get('size', 1))),
+                ('description', pop.get('description')),
+            )
+            head = f'.population({_py_repr(pop["name"])}'
+            line = head + (', ' + pop_kwargs if pop_kwargs else '') + ')'
+            out.append(f'        {line}')
+    else:
+        out.append(
+            f'        TheoryBuilder({_py_repr(name)}, n_populations={n_pop})')
 
     # Response fields: only emit if user explicitly declared them.
     # The new natural-name style relies on TheoryBuilder.physical_field

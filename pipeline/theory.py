@@ -75,6 +75,7 @@ class FieldSpec:
     latex: str
     description: str = ''
     natural_name: Optional[str] = None   # e.g. 'dn' has natural_name='n'
+    population: Optional[str] = None     # heterogeneous-pop annotation
 
 
 @dataclass
@@ -87,6 +88,9 @@ class ParameterSpec:
     description: str = ''
     mean_field: bool = False      # True for saddle-point quantities (n*, v*, ...)
     natural_name: Optional[str] = None   # e.g. 'nstar' has natural_name='n'
+    indexed_by: Optional[list[str]] = None  # heterogeneous-pop annotation:
+                                            # [] = scalar, ['E'] = vector,
+                                            # ['E', 'I'] = matrix
 
 
 @dataclass
@@ -98,6 +102,9 @@ class KernelSpec:
     description: str = ''
     indexed: bool = False         # True / 'vector' for g[i]; 'matrix' for g[i, j]
     matrix:  bool = False         # True ⇒ N×N per-pair kernel (g[i, j])
+    indexed_by: Optional[list] = None  # heterogeneous-pop annotation:
+                                       # [] = scalar, ['E'] = vector,
+                                       # ['E', 'I'] = matrix
 
 
 class TheoryBuilder:
@@ -113,6 +120,13 @@ class TheoryBuilder:
     def __init__(self, name: str, n_populations: int = 1):
         self.name = name
         self.n_populations = n_populations
+        # ``populations`` is the new explicit heterogeneous-population
+        # declaration: list of {'name': str, 'size': int}.  When
+        # ``.population()`` is called, ``n_populations`` is replaced by
+        # the count of declared populations.  When this list stays
+        # empty, the builder behaves like the legacy single-anonymous-
+        # population path (one "pop" index of size n_populations).
+        self.populations:     list[dict] = []
         self.response_fields: list[FieldSpec] = []
         self.physical_fields: list[FieldSpec] = []
         self.parameters:      list[ParameterSpec] = []
@@ -142,6 +156,33 @@ class TheoryBuilder:
         self._cgf_terms:        list[dict] = []
         self._phi_function_name: Optional[str] = None
 
+    # ── Population declarations ───────────────────────────────────
+    def population(self, name: str, *, size: int = 1,
+                   description: str = ''):
+        """Declare a population (a named index set with its own size).
+
+        Heterogeneous-population theories chain one ``.population()``
+        per group, then annotate each field / parameter / kernel with
+        the population(s) it's indexed by.  Recorded on the builder
+        but NOT yet propagated into the symbolic / diagrammatic
+        pipeline — the pipeline currently treats all populations as
+        a single combined index set of size ``sum(sizes)``.  Full
+        per-population machinery is a separate refactor.
+
+        Calling ``.population()`` overrides any previous
+        ``n_populations=`` constructor argument.
+        """
+        size = max(int(size), 1)
+        self.populations.append({
+            'name':        name,
+            'size':        size,
+            'description': description,
+        })
+        # Keep n_populations in sync so legacy lookups still see a
+        # sensible value (for now: just the count of declared pops).
+        self.n_populations = len(self.populations)
+        return self
+
     # ── Field declarations ─────────────────────────────────────────
     def response_field(self, name: str, indexed: bool = True,
                        latex: str = '', description: str = ''):
@@ -155,7 +196,8 @@ class TheoryBuilder:
                        latex: str = '', description: str = '',
                        natural_name: str = None,
                        auto_response: bool = True,
-                       auto_saddle: bool = True):
+                       auto_saddle: bool = True,
+                       population: str = None):
         """Declare a physical field.
 
         Two calling styles, distinguished by whether ``natural_name``
@@ -194,6 +236,7 @@ class TheoryBuilder:
             latex=latex or rf'\delta {natural_name}',
             description=description,
             natural_name=natural_name,
+            population=population,
         ))
 
         # Auto-generate the conjugate response field as ``<natural>t``
@@ -230,63 +273,89 @@ class TheoryBuilder:
     # ── Parameter declarations ─────────────────────────────────────
     def parameter(self, name: str, default: Any = None,
                   indexed=False, domain: str = None, description: str = '',
-                  mean_field: bool = False, natural_name: str = None):
+                  mean_field: bool = False, natural_name: str = None,
+                  indexed_by: Optional[list] = None):
         """Declare a model parameter.
 
         Parameters
         ----------
         name : str
-            Internal parameter name (e.g. ``'nstar'`` for the saddle
-            firing rate, ``'tau'`` for a time constant).
+            Internal parameter name.
         default : Any, optional
             Default numerical value (scalar / list / matrix).
-        indexed : bool or 'vector' or 'matrix', default False
-            Whether the parameter is per-population (vector) or
-            per-pair-of-populations (matrix).
+        indexed_by : list of population names, optional
+            Heterogeneous-population annotation.  ``[]`` or ``None``
+            → scalar; ``['E']`` → vector of size ``size(E)``;
+            ``['E', 'I']`` → matrix of shape
+            ``(size(E), size(I))`` (row-first).  Overrides the
+            legacy ``indexed=`` keyword when both are present.
+        indexed : bool / 'vector' / 'matrix' (legacy)
+            Pre-heterogeneous-population indexing flag.  ``True`` /
+            ``'vector'`` → vector of length ``n_populations``;
+            ``'matrix'`` → N×N matrix.  Ignored when ``indexed_by``
+            is given.
         domain : str, optional
             ``'positive'`` etc.  Used by the FieldTheory builder.
         mean_field : bool, default False
-            ``True`` flags this parameter as a saddle-point quantity
-            (``n*``, ``v*``, ``m*``, ...) so the pipeline's MF
-            accessor and saver can discover it without hardcoded
-            name lookups.
+            Flags the parameter as a saddle-point quantity.
         natural_name : str, optional
-            User-facing letter for MF accessor lookup.  If
-            ``parameter('nstar', mean_field=True, natural_name='n')``
-            is declared, ``mf['n', 1]`` returns ``n*_1``.
+            User-facing letter for MF accessor lookup.
         """
-        is_vec = (indexed in (True, 'vector'))
-        is_mat = (indexed == 'matrix')
+        # Heterogeneous-population path wins when indexed_by is given.
+        if indexed_by is not None:
+            ib = list(indexed_by)
+            is_vec = (len(ib) == 1)
+            is_mat = (len(ib) == 2)
+        else:
+            ib = None
+            is_vec = (indexed in (True, 'vector'))
+            is_mat = (indexed == 'matrix')
         self.parameters.append(ParameterSpec(
             name=name, indexed=(is_vec or is_mat), matrix=is_mat,
             domain=domain, default=default, description=description,
             mean_field=mean_field, natural_name=natural_name,
+            indexed_by=ib,
         ))
         return self
 
     # ── Kernel declaration ─────────────────────────────────────────
     def kernel(self, name: str, frequency_image: Callable = None,
                sage_name: str = '', latex_name: str = '',
-               description: str = '', indexed=False):
+               description: str = '', indexed=False,
+               indexed_by: Optional[list] = None):
         """Declare a convolution kernel symbol.
 
-        ``indexed`` controls per-population structure:
-          * ``False`` (default)  — single shared symbol, used as ``g``.
-          * ``True`` / ``'vector'`` — one symbol per population, ``g[i]``.
-          * ``'matrix'``         — N×N per-pair grid, ``g[i, j]``.
+        Parameters
+        ----------
+        indexed_by : list of population names, optional
+            Heterogeneous-population annotation.  ``[]`` or ``None``
+            → scalar (one shared symbol, used as ``g``); ``['E']``
+            → per-population kernel ``g[i]``; ``['E', 'I']`` →
+            per-pair kernel ``g[i, j]``.  Overrides legacy
+            ``indexed=`` when both are given.
+        indexed : legacy
+            ``False`` / ``True`` / ``'vector'`` / ``'matrix'``.
+            Pre-heterogeneous-population flag.
 
         Indexed kernels let each population (or pair) have its own
-        frequency image, declared via ``define_kernel(... freq_image=...)``
-        whose expression may reference ``i`` (and ``j`` for matrix) and
-        indexed parameters like ``tau_g[i, j]``.
+        frequency image — declared via ``define_kernel(freq_image=...)``
+        with an expression that may reference ``i`` (and ``j`` for
+        matrix) and indexed parameters like ``tau_g[i, j]``.
         """
-        is_vec = (indexed in (True, 'vector'))
-        is_mat = (indexed == 'matrix')
+        if indexed_by is not None:
+            ib = list(indexed_by)
+            is_vec = (len(ib) == 1)
+            is_mat = (len(ib) == 2)
+        else:
+            ib = None
+            is_vec = (indexed in (True, 'vector'))
+            is_mat = (indexed == 'matrix')
         self.kernels.append(KernelSpec(
             name=name, sage_name=sage_name or f'z_{name}',
             latex_name=latex_name or name,
             frequency_image=frequency_image, description=description,
             indexed=(is_vec or is_mat), matrix=is_mat,
+            indexed_by=ib,
         ))
         return self
 
@@ -328,7 +397,8 @@ class TheoryBuilder:
     def define_kernel(self, name: str, *, time_expr: str = None,
                       freq_image: str = None, latex_name: str = '',
                       sage_name: str = '', description: str = '',
-                      indexed=False):
+                      indexed=False,
+                      indexed_by: Optional[list] = None):
         """Declare a convolution kernel via either its time-domain
         expression OR its frequency image (or both).
 
@@ -365,17 +435,22 @@ class TheoryBuilder:
             raise ValueError(
                 f"define_kernel({name!r}): supply at least one of "
                 f"time_expr= or freq_image=")
-        # Register the kernel symbol with the regular .kernel() call
+        # Register the kernel symbol with the regular .kernel() call.
+        # ``indexed_by`` (when given) takes precedence over ``indexed=``.
         if not any(k.name == name for k in self.kernels):
             self.kernel(name, sage_name=sage_name or f'z_{name}',
                         latex_name=latex_name or name,
-                        description=description, indexed=indexed)
-        self._kernel_specs.append({
+                        description=description, indexed=indexed,
+                        indexed_by=indexed_by)
+        spec = {
             'name':       name,
             'time_expr':  time_expr,
             'freq_image': freq_image,
             'indexed':    indexed,
-        })
+        }
+        if indexed_by is not None:
+            spec['indexed_by'] = list(indexed_by)
+        self._kernel_specs.append(spec)
         return self
 
     def set_action_text(self, text: str):
@@ -898,9 +973,32 @@ class TheoryBuilder:
             'mf_parameters':      mf_param_names,   # internal names
         }
 
+        # Heterogeneous-population index sets.  When .population() has
+        # been called, ``populations`` lists ``{'name', 'size'}`` per
+        # group; we expose them as ``model['populations']`` for the
+        # eventual per-pop pipeline.  ``index_sets`` keeps the legacy
+        # 'pop' key (used everywhere downstream today) flattened across
+        # all populations until the pipeline knows about heterogeneity.
+        if self.populations:
+            total_size = sum(int(p.get('size', 1)) for p in self.populations)
+            flat_pop = list(range(total_size))
+            per_pop_idx: dict = {}
+            offset = 0
+            for p in self.populations:
+                sz = int(p.get('size', 1))
+                per_pop_idx[p['name']] = list(range(offset, offset + sz))
+                offset += sz
+            extra_index_sets: dict = {
+                f'pop_{name}': idx for name, idx in per_pop_idx.items()
+            }
+        else:
+            flat_pop = list(range(self.n_populations))
+            extra_index_sets = {}
+
         model = {
             'name':            self.name,
-            'index_sets':      {'pop': list(range(self.n_populations))},
+            'populations':     list(self.populations),    # heterogeneous metadata
+            'index_sets':      {'pop': flat_pop, **extra_index_sets},
             'response_fields': [self._field_dict(f) for f in self.response_fields],
             'physical_fields': [self._field_dict(f) for f in self.physical_fields],
             'parameters':      [self._param_dict(p) for p in self.parameters],
@@ -946,6 +1044,8 @@ class TheoryBuilder:
             d['description'] = f.description
         if f.natural_name:
             d['natural_name'] = f.natural_name
+        if f.population:
+            d['population'] = f.population
         return d
 
     @staticmethod
@@ -959,6 +1059,8 @@ class TheoryBuilder:
             d['mean_field'] = True
         if p.natural_name:
             d['natural_name'] = p.natural_name
+        if p.indexed_by is not None:
+            d['indexed_by'] = list(p.indexed_by)
         return d
 
     @staticmethod
@@ -979,4 +1081,6 @@ class TheoryBuilder:
             d['indexed'] = 'matrix'
         elif k.indexed:
             d['indexed'] = 'vector'
+        if k.indexed_by is not None:
+            d['indexed_by'] = list(k.indexed_by)
         return d
