@@ -912,20 +912,28 @@ class TheoryBuilder:
                 make_correlated_noises_block(
                     self._cgf_terms, param_names=param_names))
 
-        # ``mf_substitutions`` for the recurrent weight matrix expansion.
-        # The MSR-JD framework expects each indexed='matrix' parameter
+        # ``mf_substitutions`` for matrix-shaped parameters.  The
+        # MSR-JD framework expects each indexed='matrix' parameter
         # to have a substitution that produces ``[[w_{i+1}{j+1}] for j]
-        # for i]`` (the elementwise SR var grid).  Auto-generate these
-        # for every matrix parameter declared in the builder.
+        # for i]`` — the elementwise SR-var grid.  We carry the
+        # declared ``domain`` (e.g. ``'positive'``) down to each
+        # element so the symbolic FT integrator can dispatch the
+        # right Maxima assumption when these vars appear in kernel
+        # time-domain expressions (a τ-like parameter needs to be
+        # positive for the FT integral to converge).
         for p in self.parameters:
             if p.matrix:
-                wname = p.name
+                wname  = p.name
+                wdom   = p.domain
+                def _matrix_subst(ns, _w=wname, _d=wdom):
+                    if _d:
+                        return [[SR.var(f'{_w}{i+1}{j+1}', domain=_d)
+                                 for j in ns.pop] for i in ns.pop]
+                    return [[SR.var(f'{_w}{i+1}{j+1}')
+                             for j in ns.pop] for i in ns.pop]
                 self._mf_substitutions.append({
                     'name':  wname,
-                    'value': (lambda ns, _w=wname: [
-                        [SR.var(f'{_w}{i+1}{j+1}') for j in ns.pop]
-                        for i in ns.pop
-                    ]),
+                    'value': _matrix_subst,
                 })
 
     # ── Build the HAWKES_MODEL dict ───────────────────────────────

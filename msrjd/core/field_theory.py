@@ -25,7 +25,7 @@ import warnings
 
 from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
-    diff, function, exp, dirac_delta, integrate, oo, I, pi, taylor
+    diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
 from IPython.display import display, Math as _Math
 
@@ -37,11 +37,39 @@ def fourier_transform(f, t, s):
         F(s) = \int_{-\infty}^{\infty} f(t) e^{-i s t} dt
 
     No 2π in the exponent.  Gives  δ(t) → 1,  δ'(t) → iω.
-    Uses SageMath's symbolic integrate, which delegates to Maxima/SymPy and
-    handles distributions (dirac_delta, diff(dirac_delta, t), ...) via the
-    sifting property and integration by parts.
+
+    For causal integrands of the form ``g(t) * heaviside(t)`` — which
+    is virtually every neural-style kernel — we replace ``heaviside(t)``
+    with ``1`` and restrict the integration to ``[0, ∞)``.  This avoids
+    Maxima's request for an explicit sign on ``omega`` (it can't decide
+    where the heaviside argument cuts unless told).  For non-causal
+    integrands the full real line is used.
+
+    Tries the SymPy backend first (it handles ``positive=True``
+    assumptions on time constants automatically) and falls back to
+    Maxima's default integrator.
     """
-    return integrate(f * exp(-I * s * t), t, -oo, oo)
+    f = SR(f)
+
+    # Detect the causal case: replace heaviside(t) with 1 and split
+    # the integration domain at zero.  Bounds are wrapped in SR() so
+    # the SymPy integrator (which calls ``a._sympy_()``) accepts them.
+    has_heaviside_t = bool(f.has(heaviside(t)))
+    if has_heaviside_t:
+        integrand = f.subs({heaviside(t): 1}) * exp(-I * s * t)
+        a, b = SR(0), oo
+    else:
+        integrand = f * exp(-I * s * t)
+        a, b = -oo, oo
+
+    # SymPy first (better at handling symbolic-positive parameters);
+    # then Maxima.  If both fail, return the unevaluated integral.
+    for algo in ('sympy', 'maxima'):
+        try:
+            return integrate(integrand, t, a, b, algorithm=algo)
+        except (ValueError, RuntimeError, TypeError):
+            continue
+    return integrate(integrand, t, a, b)
 
 
 def inverse_fourier_transform(F, s, t):

@@ -246,15 +246,18 @@ class TheoryUI:
                 {'name': 'index_2',  'kind': 'select',
                  'options_provider': _pop_opts_with_none,
                  'default': _NONE, 'width': '100px'},
+                {'name': 'domain',   'kind': 'select',
+                 'options': ['', 'positive', 'real'],
+                 'default': '', 'width': '90px'},
                 {'name': 'default',  'kind': 'text',
                  'placeholder': '10.0  /  [.., ..]  /  [[..]]',
-                 'width': '340px'},
+                 'width': '300px'},
                 {'name': 'description', 'kind': 'text',
-                 'placeholder': '', 'width': '220px'},
+                 'placeholder': '', 'width': '180px'},
             ],
             initial=[
                 {'name': 'tau', 'index_1': _NONE, 'index_2': _NONE,
-                 'default': '10.0'},
+                 'domain': 'positive', 'default': '10.0'},
             ],
         )
         tab_params = W.VBox([
@@ -701,7 +704,8 @@ class TheoryUI:
                     entry[k] = v
             physical_fields.append(entry)
 
-        # Parameters — name + indexed_by list (from dropdowns) + default.
+        # Parameters — name + indexed_by list (from dropdowns) +
+        # optional domain + default.
         params = []
         for row in self._tbl_parameters.get_rows():
             name = (row.get('name') or '').strip()
@@ -711,6 +715,9 @@ class TheoryUI:
             idx = _index_list(row)
             if idx:
                 entry['indexed_by'] = idx
+            dom = (row.get('domain') or '').strip()
+            if dom:
+                entry['domain'] = dom
             d = (row.get('default') or '').strip()
             if d:
                 try:

@@ -1041,64 +1041,105 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
 
     Each kernel spec may carry either:
       - ``'freq_image'`` : text expression in ``omega`` and parameters
-                           — used directly.
+                           — used directly (fast path).
       - ``'time_expr'``  : text expression in ``t`` and parameters
-                           — Fourier-transformed symbolically at
-                           build time (best-effort).
+                           — Fourier-transformed symbolically via
+                           ``msrjd.core.field_theory.fourier_transform``
+                           at build time.  This is the path the UI
+                           uses when the user only specifies a
+                           time-domain kernel.
       - neither          : skipped (kernel stays as opaque symbol;
                            e.g. δ-kernels handled by DeltaKernel).
 
     Returns a lambda ``(ns, omega) -> {ns.<kname>: SR_expr_in_omega}``.
     """
+    from msrjd.core.field_theory import fourier_transform as _ft
+
+    def _compute_image(spec, eval_ns, omega, t_var, where):
+        """Either evaluate the user-supplied freq_image text or
+        Fourier-transform the time_expr.  Returns an SR expression
+        in omega."""
+        freq_text = spec.get('freq_image')
+        if freq_text:
+            return _safe_eval(freq_text, eval_ns, where)
+        time_text = spec.get('time_expr')
+        if not time_text:
+            return None
+        # Add ``t`` to the eval namespace so the time-domain
+        # expression can reference it.
+        time_eval_ns = {**eval_ns, 't': t_var}
+        time_val = _safe_eval(time_text, time_eval_ns,
+                              f'{where} (time_expr)')
+        # Best-effort FT — Sage's ``integrate`` handles
+        # heaviside(t)*exp(-t/tau) etc. without explicit positivity
+        # assumptions for typical neural-kernel forms.
+        try:
+            img = _ft(time_val, t_var, omega)
+        except Exception as exc:
+            raise ValueError(
+                f'{where}: Fourier transform of time_expr failed.  '
+                f'Either supply freq_image explicitly or simplify '
+                f'time_expr to an analytically-tractable form.  '
+                f'Original error: {exc}')
+        return SR(img)
+
     def _ft_image(ns, omega):
         out: dict = {}
         param_ns = _ns_var_namespace(ns, [], param_names, [])
         builtins = _builtin_namespace()
         base_ns  = {**builtins, **param_ns, 'omega': omega}
+        t_var = SR.var('t')
 
         for spec in kernel_specs:
             kname = spec['name']
             if not hasattr(ns, kname):
                 continue
             ksym_obj = getattr(ns, kname)
-            freq_text = spec.get('freq_image')
-            if not freq_text:
-                # time_expr → freq image deferred (would need Sage's
-                # fourier_transform on each).  Only freq_image is
-                # supported in v1 — TheoryBuilder warns when only
-                # time_expr is given.
+            if not spec.get('freq_image') and not spec.get('time_expr'):
                 continue
-            indexed = spec.get('indexed', False)
-            is_matrix = (indexed == 'matrix')
-            is_vector = (indexed is True or indexed == 'vector') \
-                and not is_matrix
+            # New-style ``indexed_by`` (list of populations) wins
+            # over legacy ``indexed`` (bool / 'vector' / 'matrix').
+            indexed_by = spec.get('indexed_by')
+            if indexed_by:
+                n_idx = len(indexed_by)
+                is_matrix = (n_idx == 2)
+                is_vector = (n_idx == 1)
+            else:
+                indexed = spec.get('indexed', False)
+                is_matrix = (indexed == 'matrix')
+                is_vector = (indexed is True or indexed == 'vector') \
+                    and not is_matrix
 
             if is_matrix:
                 # ``ksym_obj`` is a list-of-lists of SR symbols
-                # ``g_<i+1>_<j+1>``.  Evaluate ``freq_image`` once per
-                # (i, j) pair with both indices in scope so the
-                # expression can reference per-pair parameters like
+                # ``g_<i+1>_<j+1>``.  Evaluate per (i, j) pair with
+                # both indices in scope so the expression (freq or
+                # time) can reference per-pair parameters like
                 # ``tau_g[i, j]``.
                 n_rows = len(ksym_obj)
                 for i in range(n_rows):
                     row = ksym_obj[i]
                     for j in range(len(row)):
                         eval_ns = {**base_ns, 'i': i, 'j': j}
-                        out[row[j]] = _safe_eval(
-                            freq_text, eval_ns,
-                            f"kernel {kname}'s freq_image at "
-                            f"({i+1}, {j+1})")
+                        where = (f"kernel {kname} at ({i+1}, {j+1})")
+                        img = _compute_image(spec, eval_ns, omega,
+                                             t_var, where)
+                        if img is not None:
+                            out[row[j]] = img
             elif is_vector:
                 for i in range(len(ksym_obj)):
                     eval_ns = {**base_ns, 'i': i}
-                    out[ksym_obj[i]] = _safe_eval(
-                        freq_text, eval_ns,
-                        f"kernel {kname}'s freq_image at {i+1}")
+                    where = f'kernel {kname} at {i+1}'
+                    img = _compute_image(spec, eval_ns, omega,
+                                         t_var, where)
+                    if img is not None:
+                        out[ksym_obj[i]] = img
             else:
                 # Scalar kernel — one substitution.
-                out[ksym_obj] = _safe_eval(
-                    freq_text, base_ns,
-                    f"kernel {kname}'s freq_image")
+                where = f"kernel {kname}"
+                img = _compute_image(spec, base_ns, omega, t_var, where)
+                if img is not None:
+                    out[ksym_obj] = img
 
         return out
 
