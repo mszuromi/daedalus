@@ -406,147 +406,253 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
     # rational functions in omega.
     K_ft_num = K_ft.apply_map(lambda e: SR(e).subs(num_params))
 
-    if adj_ft is None or G_ft is None:
-        # Heterogeneous / rich models: build_propagator deferred the
-        # inverse/adjugate, so compute them now.  Doing this on the SR
-        # matrix (8×8 of SR rationals) is slow even though entries are
-        # univariate, because Sage's matrix-over-SR uses cofactor
-        # expansion with full symbolic canonicalization per term.
-        #
-        # Trick: COERCE the matrix to CDF[ω].fraction_field BEFORE
-        # taking inverse/adjugate/det.  Polynomial-ring matrix
-        # algorithms are dramatically faster than SR cofactor for
-        # univariate rationals — empirically 1–2 orders of magnitude
-        # on an 8×8 with degree-2 rationals.
-        if verbose:
-            print('      coercing K_ft to CDF[ω] fraction field and '
-                  'computing inverse/adj numerically...')
-        t0 = _time.perf_counter()
-        PR = PolynomialRing(CDF, 'omega')
-        omega_pr = PR.gen()
-        FR = PR.fraction_field()
-
-        def _coerce_entry(e):
-            """SR rational in omega → CDF[ω] fraction-field element."""
-            e = SR(e)
-            if e.is_zero():
-                return FR(0)
-            # Try the cheap path first: read numerator + denominator
-            # as univariate polynomials.
-            try:
-                num_sr = e.numerator()
-                den_sr = e.denominator()
-                num_p  = PR([CDF(c) for c in
-                             num_sr.coefficients(omega, sparse=False)])
-                den_p  = PR([CDF(c) for c in
-                             den_sr.coefficients(omega, sparse=False)])
-                return FR(num_p) / FR(den_p)
-            except (AttributeError, TypeError, ValueError):
-                # Fallback: evaluate at a few omega points and
-                # rational-interpolate.  Should rarely fire.
-                return FR(0)
-
-        K_ft_frac = _matrix(FR,
-                            [[_coerce_entry(K_ft_num[i, j])
-                              for j in range(nf)]
-                             for i in range(nf)])
-        if verbose:
-            print(f'      coercion took {_time.perf_counter() - t0:.2f}s')
-        t1 = _time.perf_counter()
-        G_ft_frac   = K_ft_frac.inverse()
-        adj_ft_frac = K_ft_frac.adjugate()
-        if verbose:
-            print(f'      polynomial-ring inverse/adj took '
-                  f'{_time.perf_counter() - t1:.2f}s')
-
-        # Coerce back to SR for downstream consumers that walk entries
-        # via SR substitution (integrator, D_delta limit).  Build SR
-        # polynomials manually from numerator / denominator
-        # coefficients to avoid string-round-trip pitfalls (Sage's
-        # str() of CDF fractions can emit ``inf`` for zero-denominator
-        # or near-singular entries which then fails to re-parse).
-        def _to_sr(e):
-            # ``e`` is a CDF[omega].fraction_field element.  Try the
-            # cheap polynomial-coefficient extraction; on any failure,
-            # fall through to zero.
-            try:
-                num = e.numerator()
-                den = e.denominator()
-                num_sr = sum(SR(complex(c)) * omega**k
-                             for k, c in enumerate(num.list()))
-                den_sr = sum(SR(complex(c)) * omega**k
-                             for k, c in enumerate(den.list()))
-                if den_sr == 0:
-                    return SR(0)
-                return SR(num_sr) / SR(den_sr)
-            except (AttributeError, TypeError, ValueError, RuntimeError):
-                return SR(0)
-        G_ft_num   = _matrix(SR,
-                             [[_to_sr(G_ft_frac[i, j])
-                               for j in range(nf)]
-                              for i in range(nf)])
-        adj_ft_num = _matrix(SR,
-                             [[_to_sr(adj_ft_frac[i, j])
-                               for j in range(nf)]
-                              for i in range(nf)])
-        # Backfill the matrices on prop so downstream code can read them.
-        prop['adj_ft'] = adj_ft_num
-        prop['G_ft']   = G_ft_num
-    else:
-        adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
-        G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
-
     PR = PolynomialRing(CDF, 'omega')
     FR = PR.fraction_field()
+    from sage.all import matrix as _matrix
+    import numpy as np
 
-    # ── Pole finding ─────────────────────────────────────────────
-    # Heterogeneous / numerical path: build a Python function
-    # ``K_at(omega)`` that evaluates K_ft as a numpy 8×8 complex
-    # matrix, then find poles as roots of ``det(K_at(ω))``.  We
-    # evaluate det at a grid of complex omega samples and fit a
-    # numerical polynomial to those values, then root-find.  This
-    # avoids both Sage's symbolic det (slow / hangs on rich
-    # matrices) and polynomial-fraction det (NaN / spurious-pole
-    # artefacts from un-simplified GCDs).
     if adj_ft is None or G_ft is None:
-        import numpy as np
+        # ── Heterogeneous / rich path ────────────────────────────
+        # Architecture (determinant-first, global poles, entrywise
+        # numerators evaluated numerically):
+        #
+        #   1. Symbolic det(K_ft_num) → SR rational N(ω)/D(ω); the
+        #      retarded poles are the zeros of N in the upper-half
+        #      plane.  Cheap (~0.4s for nf=8 multipop).
+        #   2. Cache K's entrywise polynomial coefficients (numerator
+        #      + denominator) ONCE so that K(ω) can be evaluated as
+        #      a numpy complex matrix at any ω in microseconds.
+        #   3. Residues via numerical Laurent extraction:
+        #        C_k = i · eps · G(ω_k + eps)
+        #      where ε is small relative to the pole separation.
+        #      Now that pole_vals are TRUE zeros of det N (not
+        #      polyfit artefacts), this captures the ε·(Res/ε) → Res
+        #      blowup correctly.  Skips the costly SR adjugate
+        #      (~10s) and per-pole SR .subs() calls (each ~50–500ms
+        #      on 25k-char adj entries → 16 poles × 64 entries ≈
+        #      50–500s before).
+        #   4. D_delta = lim_{ω→∞} G(ω) extracted from two large-|ω|
+        #      probes, distinguishing constant vs. 1/ω-vanishing
+        #      entries by their scaling.
+        if verbose:
+            print('      symbolic det(K_ft_num) for pole finding...')
+        t0 = _time.perf_counter()
+        K_det_sr = SR(K_ft_num.det())
+        # Sanity check: if K_ft_num still has free symbols beyond ω
+        # (e.g. unsubstituted saddle values or kernel symbols), the
+        # det coefficients won't be numerical and the polynomial
+        # root finder will silently return 0 roots.  Surface this
+        # mode explicitly.
+        free_syms = set()
+        for i in range(nf):
+            for j in range(nf):
+                free_syms.update(SR(K_ft_num[i, j]).variables())
+        free_syms.discard(omega)
+        if free_syms and verbose:
+            print(f'      WARNING: K_ft_num has free symbols beyond ω: '
+                  f'{sorted(str(s) for s in free_syms)}.  Pole-finding '
+                  f'will likely return 0 roots.  Make sure all kernel '
+                  f'symbols are substituted via the model\'s '
+                  f'``kernel_ft_image`` hook and all saddle values are '
+                  f'in num_params.')
+        det_num_sr = K_det_sr.numerator()
+        try:
+            coeffs_asc = [complex(c)
+                          for c in det_num_sr.coefficients(omega,
+                                                           sparse=False)]
+        except Exception as exc:
+            if verbose:
+                print(f'      coefficient extraction failed: {exc!r}')
+                # Show what variables remain so the user can see why.
+                try:
+                    raw_coeffs = det_num_sr.coefficients(omega,
+                                                         sparse=False)
+                    for k, c in enumerate(raw_coeffs):
+                        cv = SR(c).variables()
+                        if cv:
+                            print(f'        ω^{k} coeff free vars: '
+                                  f'{[str(s) for s in cv]}')
+                except Exception:
+                    pass
+            coeffs_asc = []
+        # Strip trailing near-zero leading-degree coefficients (sometimes
+        # the polynomial degree is over-reported with noise).
+        coeffs_asc_trim = list(coeffs_asc)
+        if coeffs_asc_trim:
+            tol_lead = 1e-12 * max(abs(c) for c in coeffs_asc_trim)
+            while len(coeffs_asc_trim) > 1 and \
+                  abs(coeffs_asc_trim[-1]) < tol_lead:
+                coeffs_asc_trim.pop()
+        char_poly = PR(coeffs_asc_trim)
+        # Use Sage's polynomial root finder (MPS / PARI under the
+        # hood) rather than numpy.roots — empirically more accurate
+        # for moderate-degree polynomials with mixed-magnitude
+        # coefficients.  numpy.roots on the multipop test produced
+        # 8 spurious roots in the upper half plane that were NOT
+        # zeros of det(K) (|det| up to 1e+5 at the spurious "poles").
+        try:
+            roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
+        except Exception:
+            # Fallback to numpy if Sage's root finder fails.
+            coeffs_desc = list(reversed(coeffs_asc_trim))
+            roots_all = ([complex(r) for r in np.roots(coeffs_desc)]
+                         if len(coeffs_desc) > 1 else [])
+        if verbose:
+            print(f'      det + roots took '
+                  f'{_time.perf_counter() - t0:.2f}s; '
+                  f'{len(roots_all)} candidate roots')
+
+        # Cache K's entrywise polynomial-coefficient form for fast
+        # numerical evaluation at any ω.  Each K[i,j] = n(ω)/d(ω)
+        # where n,d are SR polynomials in ω (degree ≤ ~ N_kernel).
+        # Extracting coefficients once per entry: ~64 small ops.
+        t1 = _time.perf_counter()
+        K_num_coeffs = [[None] * nf for _ in range(nf)]
+        K_den_coeffs = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                e = SR(K_ft_num[i, j])
+                if e.is_zero():
+                    K_num_coeffs[i][j] = [0j]
+                    K_den_coeffs[i][j] = [1+0j]
+                    continue
+                try:
+                    n = e.numerator()
+                    d = e.denominator()
+                    K_num_coeffs[i][j] = [complex(c)
+                        for c in n.coefficients(omega, sparse=False)]
+                    K_den_coeffs[i][j] = [complex(c)
+                        for c in d.coefficients(omega, sparse=False)]
+                except Exception:
+                    K_num_coeffs[i][j] = [complex(e)]
+                    K_den_coeffs[i][j] = [1+0j]
+        if verbose:
+            print(f'      K polynomial-coeff cache took '
+                  f'{_time.perf_counter() - t1:.2f}s')
+
+        def _horner(coeffs, x):
+            """Horner-rule polynomial evaluation."""
+            if not coeffs:
+                return 0j
+            v = coeffs[-1]
+            for c in reversed(coeffs[:-1]):
+                v = v * x + c
+            return v
 
         def _K_at(omega_val):
-            """K_ft at omega=omega_val, as a numpy 8×8 complex matrix."""
-            M = np.zeros((nf, nf), dtype=complex)
+            K_at = np.zeros((nf, nf), dtype=complex)
             for i in range(nf):
                 for j in range(nf):
-                    e = K_ft_frac[i, j]
-                    try:
-                        num = complex(e.numerator()(omega_val))
-                        den = complex(e.denominator()(omega_val))
-                        M[i, j] = num / den if den != 0 else 0j
-                    except Exception:
-                        M[i, j] = 0j
-            return M
+                    n = _horner(K_num_coeffs[i][j], omega_val)
+                    d = _horner(K_den_coeffs[i][j], omega_val)
+                    K_at[i, j] = n / d if d != 0 else 0j
+            return K_at
 
-        # Pole finding: evaluate det(K_at(ω)) at a grid of complex
-        # omega values, fit a polynomial, find roots.  Use Vandermonde
-        # interpolation rather than np.polyfit so we don't lose
-        # accuracy from least-squares smoothing.  Sample on a circle
-        # in the complex plane to keep the fit numerically robust.
-        deg_max = 4 * nf       # upper bound on char_poly degree
-        n_samples = deg_max + 1
-        radius = 1.0
-        # Place samples on a unit circle so Vandermonde is well-conditioned.
-        thetas = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
-        sample_omegas = radius * np.exp(1j * thetas)
-        det_samples = np.array([complex(np.linalg.det(_K_at(om)))
-                                for om in sample_omegas])
-        # Polynomial interpolation: char_poly(omega) ≈ this poly.
-        # numpy.polyfit returns coefficients in DESCENDING power order.
-        char_coeffs = np.polyfit(sample_omegas, det_samples, deg_max)
-        # Drop leading near-zero coefficients (numerical noise).
-        tol = 1e-9 * np.max(np.abs(char_coeffs))
-        while len(char_coeffs) > 1 and abs(char_coeffs[0]) < tol:
-            char_coeffs = char_coeffs[1:]
-        char_poly = PR(list(reversed([complex(c) for c in char_coeffs])))
+        def _G_at(omega_val):
+            try:
+                return np.linalg.inv(_K_at(omega_val))
+            except np.linalg.LinAlgError:
+                return np.zeros((nf, nf), dtype=complex)
+
+        # ── Fallback pole-finder ────────────────────────────────────
+        # If the symbolic det route returned 0 roots (because some
+        # entry in ``K_ft_num`` still has free symbols beyond ω, or
+        # because the polynomial-coefficient extraction silently
+        # threw), fall back to Vandermonde-polyfit-and-Newton-refine
+        # on the NUMERICAL ``det(K_at(ω))``.  ``_K_at`` is already
+        # cached entrywise so this is fast and doesn't depend on the
+        # symbolic det succeeding.
+        if not roots_all:
+            if verbose:
+                print('      symbolic root-finding produced 0 roots — '
+                      'falling back to numerical polyfit + Newton refine')
+
+            def _det_at(om):
+                return complex(np.linalg.det(_K_at(om)))
+
+            deg_max = 4 * nf
+            n_samples = deg_max + 1
+            radius = 2.0
+            thetas = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
+            sample_omegas = radius * np.exp(1j * thetas)
+            det_samples = np.array([_det_at(om) for om in sample_omegas])
+            char_coeffs = np.polyfit(sample_omegas, det_samples, deg_max)
+            tol = 1e-9 * np.max(np.abs(char_coeffs))
+            while len(char_coeffs) > 1 and abs(char_coeffs[0]) < tol:
+                char_coeffs = char_coeffs[1:]
+            char_poly = PR(list(reversed([complex(c)
+                                          for c in char_coeffs])))
+            try:
+                candidate_roots = [complex(r) for r, _ in
+                                   char_poly.roots(CDF)]
+            except Exception:
+                candidate_roots = []
+
+            def _newton_refine(omega_0, max_iter=20, tol_pos=1e-13):
+                om = complex(omega_0)
+                for _ in range(max_iter):
+                    d = _det_at(om)
+                    if not (np.isfinite(d.real)
+                            and np.isfinite(d.imag)):
+                        return None
+                    if abs(d) < tol_pos:
+                        return om
+                    h = 1e-7 * (1 + abs(om))
+                    d_plus  = _det_at(om + h)
+                    d_minus = _det_at(om - h)
+                    d_prime = (d_plus - d_minus) / (2 * h)
+                    if abs(d_prime) < 1e-30:
+                        return None
+                    step = d / d_prime
+                    om -= step
+                    if abs(step) < tol_pos:
+                        return om
+                return om
+
+            refined = []
+            for r0 in candidate_roots:
+                r = _newton_refine(r0)
+                if r is None:
+                    continue
+                try:
+                    if abs(_det_at(r)) < 1e-6 and r.imag > 1e-9:
+                        if not any(abs(r - q) < 1e-7 for q in refined):
+                            refined.append(r)
+                except Exception:
+                    pass
+            roots_all = refined
+            if verbose:
+                print(f'      numerical fallback: '
+                      f'{len(roots_all)} refined candidate poles')
+
+        # We don't have a symbolic adj/G_ft, so set to None.  Downstream:
+        #   * type_assignment skips zero-check when G_ft is None
+        #   * D_delta is provided directly below
+        prop['adj_ft'] = None
+        prop['G_ft']   = None
+
+        # D_delta from two-probe scaling test.
+        G_big  = _G_at(1e8 * (1 + 0j))
+        G_huge = _G_at(1e10 * (1 + 0j))
+        D_delta_data = []
+        for i in range(nf):
+            row = []
+            for j in range(nf):
+                a, b = G_big[i, j], G_huge[i, j]
+                ma = abs(a)
+                if ma < 1e-12:
+                    row.append(SR(0))
+                elif abs(a - b) / ma < 1e-3:
+                    row.append(SR(complex(b)))
+                else:
+                    row.append(SR(0))
+            D_delta_data.append(row)
+        prop['D_delta'] = _matrix(SR, D_delta_data)
     else:
+        # ── Legacy symbolic path ────────────────────────────────
+        adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
+        G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
+        K_det_sr   = SR(K_ft_num.det())
         char_poly = PR(1)
         for i in range(nf):
             for j in range(nf):
@@ -563,11 +669,11 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
                         continue
                 if den_p.degree() > char_poly.degree():
                     char_poly = den_p
+        roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
 
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
     # → causal closure of the inverse-FT contour).  Deduplicate.
-    roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
     pruned = []
     for r in roots_all:
         if r.imag <= 1e-9:
@@ -577,34 +683,133 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
         pruned.append(r)
     pole_vals = sorted(pruned, key=lambda r: (r.imag, r.real))
 
-    # Residue at each pole:  C_k = i · adj(ω_k) / det'(ω_k).
-    # For the heterogeneous-pop / numerical path we have
-    # ``adj_ft_frac`` (polynomial fractions) and ``char_poly`` (the
-    # det numerator); evaluate both at each pole numerically.  For
-    # the legacy path we substitute into the SR forms.
-    from sage.all import matrix as _matrix
+    # For the heterogeneous-pop / numerical path: Newton-refine each
+    # candidate root to machine-precision pole accuracy.  Sage's
+    # polynomial root-finder (.roots(CDF)) is accurate for clean
+    # polynomials, but our det.numerator() has mixed-magnitude
+    # coefficients (leading ≈ 1.5e+7, trailing ≈ 1) — Sage gives
+    # roots accurate to ~1e-6 absolute, which translates to
+    # |det(K(root))| up to several at "near-zero" candidates.  This
+    # is too coarse for the residue formula
+    #   Res G = adj(K(ω_k)) / det'(ω_k)
+    # because adj(K(ω_k)) is sensitive to whether K is *exactly*
+    # singular at ω_k.  Newton on the numerical determinant
+    # converges to machine precision in 2–5 iterations.
     if adj_ft is None or G_ft is None:
-        char_poly_prime = char_poly.derivative()
+
+        def _newton_refine(omega_0, max_iter=20, tol_pos=1e-13):
+            om = complex(omega_0)
+            for _ in range(max_iter):
+                d = complex(np.linalg.det(_K_at(om)))
+                if not (np.isfinite(d.real) and np.isfinite(d.imag)):
+                    return None
+                if abs(d) < tol_pos:
+                    return om
+                h = 1e-7 * (1 + abs(om))
+                d_plus = complex(np.linalg.det(_K_at(om + h)))
+                d_minus = complex(np.linalg.det(_K_at(om - h)))
+                d_prime = (d_plus - d_minus) / (2 * h)
+                if abs(d_prime) < 1e-30:
+                    return None
+                step = d / d_prime
+                om -= step
+                if abs(step) < tol_pos:
+                    return om
+            # Return whatever we converged to (caller checks |det|).
+            return om
+
+        refined = []
+        rejected = []
+        for r in pole_vals:
+            r_ref = _newton_refine(r)
+            if r_ref is None:
+                rejected.append((r, None))
+                continue
+            try:
+                det_at = complex(np.linalg.det(_K_at(r_ref)))
+            except Exception:
+                rejected.append((r, None))
+                continue
+            if not (np.isfinite(det_at.real) and
+                    np.isfinite(det_at.imag)):
+                rejected.append((r, det_at))
+                continue
+            # Final acceptance: must have |det| ≈ 0 (well below the
+            # typical det magnitude) AND must remain in the upper
+            # half plane after refinement (Newton sometimes drifts
+            # to the conjugate root, which is not retarded).
+            if abs(det_at) > 1e-6:
+                rejected.append((r, det_at))
+                continue
+            if r_ref.imag <= 1e-9:
+                rejected.append((r, det_at))
+                continue
+            # Dedup against already-accepted refined roots.
+            if any(abs(r_ref - q) < 1e-7 for q in refined):
+                continue
+            refined.append(r_ref)
+        if verbose:
+            print(f'      Newton-refined to {len(refined)} accurate poles '
+                  f'({len(rejected)} rejected)')
+        pole_vals = sorted(refined, key=lambda r: (r.imag, r.real))
+
+    # ── Residues ────────────────────────────────────────────────
+    if adj_ft is None or G_ft is None:
+        # Numerical residue extraction using cofactor adjugate.
+        #
+        # At a pole ω_k:  Res G(ω_k) = adj(K(ω_k)) / det'(K(ω_k)).
+        # C_k convention:  C_k = i · Res G(ω_k).
+        #
+        # K(ω_k) is singular (det = 0), so K^-1 doesn't exist — but
+        # adj(K(ω_k)) does, via direct cofactor expansion.  For an
+        # 8×8 numerical matrix this is 64 calls to np.linalg.det on
+        # 7×7 minors (cheap).  det'(ω_k) is computed by central
+        # difference on the determinant.
+        #
+        # Previous attempt used Laurent extraction ``C_k = i·ε·G(ω_k+ε)``,
+        # which has O(ε) error from nearby-pole leakage:
+        #   ε·G(ω_k+ε) = Res_k + ε · Σ_{j≠k} Res_j/(ω_k - ω_j) + O(ε)
+        # For closely-spaced conjugate-pair poles (min_sep ~ 1e-3 in
+        # multipop), this gives ~0.5–1% error per residue.  The
+        # cofactor approach has no such leak.
+
+        def _det_at(omega_val):
+            return complex(np.linalg.det(_K_at(omega_val)))
+
+        def _cofactor_adj(M):
+            """adj(M) = transpose of cofactor matrix.
+            adj[i,j] = (-1)^(i+j) · det(M with row j and col i removed)."""
+            n = M.shape[0]
+            A = np.zeros_like(M)
+            for i in range(n):
+                for j in range(n):
+                    minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
+                    A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
+            return A
+
         C_mats = []
         for pk in pole_vals:
-            denom = complex(char_poly_prime(pk))
-            C_entries = []
-            for i in range(nf):
-                row = []
-                for j in range(nf):
-                    e_frac = adj_ft_frac[i, j]
-                    # e_frac is a polynomial fraction; evaluate at pk.
-                    try:
-                        num_val = complex(e_frac.numerator()(pk))
-                        den_val = complex(e_frac.denominator()(pk))
-                        e_val   = num_val / den_val if den_val != 0 else 0j
-                    except Exception:
-                        e_val = 0j
-                    row.append(1j * e_val / denom)
-                C_entries.append(row)
+            K_at_pk = _K_at(pk)
+            adj_at_pk = _cofactor_adj(K_at_pk)
+            # det'(pk) via central difference.  Scale h to the pole
+            # magnitude so we stay well within the local analytic
+            # region for det(K).
+            h = 1e-6 * (1 + abs(pk))
+            d_prime = (_det_at(pk + h) - _det_at(pk - h)) / (2 * h)
+            if abs(d_prime) < 1e-30:
+                # Shouldn't happen for non-degenerate poles, but
+                # bail safely by emitting a zero residue matrix.
+                C_mats.append(_matrix(CDF,
+                    [[0j] * nf for _ in range(nf)]))
+                continue
+            C_np = 1j * adj_at_pk / d_prime
+            # Threshold numerical noise.
+            atol = 1e-12 * np.max(np.abs(C_np))
+            C_np = np.where(np.abs(C_np) > atol, C_np, 0)
+            C_entries = [[complex(C_np[i, j])
+                          for j in range(nf)] for i in range(nf)]
             C_mats.append(_matrix(CDF, C_entries))
     else:
-        K_det_sr = SR(K_ft_num.det())
         K_det_prime_sr = K_det_sr.derivative(omega)
         C_mats = []
         for pk in pole_vals:

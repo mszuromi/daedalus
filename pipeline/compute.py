@@ -377,13 +377,41 @@ def compute_cumulants(
                 if hasattr(ft._ns, legacy):
                     mf_param_names.append(legacy)
 
+    # Map each MF param name to the range of local indices it owns.
+    # Heterogeneous theories declare ``indexed_by=['<pop>']`` on each
+    # saddle; the param's SR array is sized to ``len(pop_<pop>)``.
+    # Legacy single-pop theories use the flat ``ns.pop`` length.
+    param_specs_by_name = {
+        pspec['name']: pspec
+        for pspec in (model.get('parameters', []) or [])
+    }
+    pop_size_map = getattr(ft._ns, '_pop_size', {}) or {}
+
+    def _saddle_indices(pname):
+        pspec = param_specs_by_name.get(pname, {})
+        ib = pspec.get('indexed_by') or []
+        if ib:
+            # Heterogeneous: iterate over the saddle's own population
+            # (single-population saddles only — physical_fields are
+            # currently restricted to one population per field).
+            n = pop_size_map.get(ib[0], 0)
+            return list(range(n))
+        # Legacy: flat pop index
+        return list(ft._ns.pop)
+
     mf_values: dict[str, list] = {}
     for pname in mf_param_names:
         if not hasattr(ft._ns, pname):
             continue
         ns_syms = getattr(ft._ns, pname)
+        # ns_syms may be a single SR var (un-indexed param) or a list
+        if not isinstance(ns_syms, (list, tuple)):
+            ns_syms = [ns_syms]
         vals: list[float] = []
-        for i in ft._ns.pop:
+        for i in _saddle_indices(pname):
+            if i >= len(ns_syms):
+                vals.append(float('nan'))
+                continue
             sym = ns_syms[i]
             if sym in num_params:
                 vals.append(float(num_params[sym]))

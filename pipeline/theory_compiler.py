@@ -796,7 +796,19 @@ def make_specializations_lambda(phi_fn_spec: dict | None, *,
             arg_syms = [SR.var(f'_{tname}_taylor_arg_{j}')
                         for j in range(n_args)]
 
-            for i in range(n_pop):
+            # Iterate over the saddle's actual size, not ``n_pop``.
+            # ``n_pop`` counts how many POPULATIONS the model has;
+            # ``len(saddle_arrays[0])`` is the SIZE of the function's
+            # own population (the neuron count it indexes over).  For
+            # single-pop theories with size > 1 the two differ —
+            # ``n_pop=1`` would emit specializations only for
+            # ``phi<k>_1`` (neuron 1) and silently skip ``phi<k>_2``
+            # etc., leaving those formal symbols unsubstituted in K_ft
+            # and producing 0 candidate roots downstream.  Same root
+            # cause as the equivalent fix in
+            # ``make_mf_bg_conditions_lambda`` / friends.
+            n_indices = len(saddle_arrays[0]) if saddle_arrays else n_pop
+            for i in range(n_indices):
                 local_ns = dict(base_ns)
                 for arg_name, arg_sym in zip(arg_names, arg_syms):
                     local_ns[arg_name] = arg_sym
@@ -949,7 +961,12 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
             if not hasattr(ns, saddle_name):
                 continue
             saddle_array = getattr(ns, saddle_name)
-            for i in range(n_pop):
+            # Iterate over the saddle's own size (== population size for
+            # heterogeneous-pop theories), not ``n_pop`` (which counts
+            # how many populations there are).  For single-pop theories
+            # with size > 1 the two differ — ``n_pop=1`` would skip
+            # every saddle index past the first.
+            for i in range(len(saddle_array)):
                 ns_i = _build_namespace_for_eval(
                     ns,
                     field_names  = field_names,
@@ -977,7 +994,7 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
             if not hasattr(ns, saddle_name):
                 continue
             saddle_array = getattr(ns, saddle_name)
-            for i in range(n_pop):
+            for i in range(len(saddle_array)):
                 ns_i = _build_namespace_for_eval(
                     ns,
                     field_names  = field_names,
@@ -1010,7 +1027,7 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                 if not hasattr(ns, saddle_name):
                     continue
                 arr = getattr(ns, saddle_name)
-                for i in range(n_pop):
+                for i in range(len(arr)):
                     out[ns.Dt * arr[i]]     = SR(0)
                     out[ns.Dt * arr[i] * W] = SR(0)
         return out
@@ -1049,7 +1066,7 @@ def make_mf_bg_solver_lambda(mf_eqs: dict[str, str],
             if not hasattr(ns, saddle_name):
                 continue
             saddle_array = getattr(ns, saddle_name)
-            for i in range(n_pop):
+            for i in range(len(saddle_array)):
                 ns_i = _build_namespace_for_eval(
                     ns,
                     field_names  = field_names,
@@ -1087,7 +1104,7 @@ def make_mf_equations_lambda(mf_eqs: dict[str, str],
             if not hasattr(ns, saddle_name):
                 continue
             saddle_array = getattr(ns, saddle_name)
-            for i in range(n_pop):
+            for i in range(len(saddle_array)):
                 ns_i = _build_namespace_for_eval(
                     ns,
                     field_names = field_names,

@@ -163,6 +163,44 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                 "e.g. ``ext_binned_run``)."
             )
 
+    def _normalize_ft(ft):
+        """Map an externally-supplied field-type label to the canonical
+        internal label ``'dn'`` / ``'dv'`` / ``'dm'``.
+
+        Natural-name labels — bare ``'n'`` / ``'v'`` / ``'m'`` for the
+        legacy Hawkes models, or ``'nE'`` / ``'vI'`` etc. for the
+        heterogeneous-population theories — drop the population suffix
+        and map through the same first-letter table.  Anything that
+        doesn't match falls through to ``'dn'`` (the long-standing
+        default, since the vast majority of comparison legs are spike
+        rates).
+
+        Bug context: before this normaliser, ``_is_spike_ft('n')``
+        returned False, so the natural-name legs silently used
+        ``denom = 1.0`` instead of ``denom = dt_bin`` and the estimator
+        returned ``count²`` instead of ``rate²``.  Off by a factor
+        ``1/dt_bin²`` per leg (=16 for ``dt_bin=0.25``).  Every notebook
+        that built ``field_types = [ef[0] for ef in external_fields]``
+        hit this — multipop, quad_expg, etc.
+        """
+        if ft is None or ft == '':
+            return 'dn'
+        if ft in ('dn', 'dv', 'dm'):
+            return ft
+        # Strip any single-letter prefix that already matches ('dn' etc.)
+        # handled above; otherwise peel off any trailing population
+        # suffix and map by the first letter ('nE' → 'n', 'vI' → 'v').
+        first = ft[0]
+        if first == 'n':
+            return 'dn'
+        if first == 'v':
+            return 'dv'
+        if first == 'm':
+            return 'dm'
+        return 'dn'
+
+    field_types = [_normalize_ft(ft) for ft in field_types]
+
     def _data_for(leg_idx):
         """Return the binned data array for leg leg_idx based on its field type."""
         ft = field_types[leg_idx]
