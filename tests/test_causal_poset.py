@@ -25,6 +25,7 @@ from msrjd.integration.time_domain.final_integral import (
     _enumerate_linear_extensions,
     _causal_poset_consistent_scalar_lower,
     _causal_poset_consistent_scalar_upper,
+    _exp_over_chain_simplex,
 )
 
 
@@ -229,3 +230,145 @@ def test_consistent_scalar_upper_per_var_min():
     )
     uppers = _causal_poset_consistent_scalar_upper(poset)
     assert uppers == {0: 3.0, 1: 10.0}
+
+
+# ───────────────────────────────────────────────────────────────────
+# _exp_over_chain_simplex
+# ───────────────────────────────────────────────────────────────────
+
+def test_chain_simplex_N1_matches_1d_quad():
+    """N=1: ∫_L^U exp(α · s) ds = (exp(α·U) − exp(α·L)) / α."""
+    import cmath
+    alpha = 0.7
+    L, U = 0.5, 2.5
+    expected = (cmath.exp(alpha * U) - cmath.exp(alpha * L)) / alpha
+    val = _exp_over_chain_simplex([alpha], L, U)
+    assert abs(val - expected) < 1e-12
+
+
+def test_chain_simplex_N2_real_values_closed_form():
+    """N=2: ∫_0^1 ds_2 exp(q·s_2) ∫_0^{s_2} ds_1 exp(p·s_1)
+
+    Closed form: (1/p) · [(e^{p+q} − 1)/(p+q) − (e^q − 1)/q]
+    """
+    import cmath
+    p, q = 0.3, 0.8
+    expected = (1 / p) * (
+        (cmath.exp(p + q) - 1) / (p + q)
+        - (cmath.exp(q) - 1) / q
+    )
+    val = _exp_over_chain_simplex([p, q], 0.0, 1.0)
+    assert abs(val - expected) < 1e-12
+
+
+def test_chain_simplex_N3_matches_scipy_nquad():
+    """N=3 chain simplex 0 < s_1 < s_2 < s_3 < 1 with random α's.
+    Compare closed form to scipy.integrate.nquad."""
+    from scipy.integrate import nquad
+    import math
+    alphas = [0.5, -0.3, 0.9]
+    L, U = 0.0, 1.0
+    val = _exp_over_chain_simplex(alphas, L, U)
+    assert val is not None
+
+    def integrand(s_1, s_2, s_3):
+        return math.exp(
+            alphas[0] * s_1 + alphas[1] * s_2 + alphas[2] * s_3
+        )
+
+    def bounds_s1(s_2, s_3):
+        return (L, s_2)
+
+    def bounds_s2(s_3):
+        return (L, s_3)
+
+    ref, _ = nquad(integrand,
+                    [bounds_s1, bounds_s2, (L, U)],
+                    opts={'limit': 200})
+    assert abs(val - ref) < 1e-6, f'closed={val}, scipy={ref}'
+
+
+def test_chain_simplex_complex_alphas():
+    """Complex α values (typical for our pole-expanded use case):
+    chain integral with α_k = i · p_k."""
+    from scipy.integrate import nquad
+    import math
+    # Real and imaginary parts of α
+    alphas_complex = [0.2 + 0.5j, -0.1 + 0.8j, 0.3 + 0.2j]
+    val = _exp_over_chain_simplex(alphas_complex, 0.0, 1.0)
+    assert val is not None
+
+    def integrand_re(s_1, s_2, s_3):
+        import cmath
+        z = sum(a * s for a, s in zip(alphas_complex, [s_1, s_2, s_3]))
+        return cmath.exp(z).real
+
+    def integrand_im(s_1, s_2, s_3):
+        import cmath
+        z = sum(a * s for a, s in zip(alphas_complex, [s_1, s_2, s_3]))
+        return cmath.exp(z).imag
+
+    def bounds_s1(s_2, s_3):
+        return (0.0, s_2)
+    def bounds_s2(s_3):
+        return (0.0, s_3)
+
+    re_ref, _ = nquad(integrand_re,
+                       [bounds_s1, bounds_s2, (0.0, 1.0)],
+                       opts={'limit': 200})
+    im_ref, _ = nquad(integrand_im,
+                       [bounds_s1, bounds_s2, (0.0, 1.0)],
+                       opts={'limit': 200})
+    ref = complex(re_ref, im_ref)
+    assert abs(val - ref) < 1e-6, f'closed={val}, scipy={ref}'
+
+
+def test_chain_simplex_returns_none_on_degenerate_beta():
+    """If two consecutive α's are exact negatives of each other,
+    the intermediate β = α_1 + α_2 hits zero and the closed-form
+    1/β factor blows up.  Function should return None."""
+    val = _exp_over_chain_simplex([1.0, -1.0, 0.5], 0.0, 1.0)
+    # β at level 1 = 1.0 (α_1) → non-degenerate, integrate s_1 fine.
+    # β at level 2 = 1.0 + (-1.0) = 0.0 → degenerate.
+    assert val is None
+
+
+def test_chain_simplex_translation_invariance():
+    """Shifting (L, U) by a common offset h multiplies the result
+    by exp((Σ α) · h)."""
+    import cmath
+    alphas = [0.4 + 0.1j, -0.2j, 0.5]
+    base = _exp_over_chain_simplex(alphas, 0.0, 1.0)
+    shifted = _exp_over_chain_simplex(alphas, 2.0, 3.0)
+    expected = base * cmath.exp(sum(alphas) * 2.0)
+    assert abs(shifted - expected) < 1e-10
+
+
+def test_chain_simplex_N4_matches_scipy():
+    """N=4 sanity check vs scipy.nquad.  4-fold nested adaptive
+    quadrature is slow but a good cross-check."""
+    from scipy.integrate import nquad
+    import math
+    alphas = [0.5, -0.3, 0.9, 0.2]
+    val = _exp_over_chain_simplex(alphas, 0.0, 1.0)
+    assert val is not None
+
+    def integrand(s_1, s_2, s_3, s_4):
+        return math.exp(
+            alphas[0] * s_1 + alphas[1] * s_2
+            + alphas[2] * s_3 + alphas[3] * s_4
+        )
+
+    def bounds_s1(s_2, s_3, s_4):
+        return (0.0, s_2)
+    def bounds_s2(s_3, s_4):
+        return (0.0, s_3)
+    def bounds_s3(s_4):
+        return (0.0, s_4)
+
+    ref, _ = nquad(integrand,
+                    [bounds_s1, bounds_s2, bounds_s3, (0.0, 1.0)],
+                    opts={'limit': 100})
+    # 4D adaptive scipy is loose; closed-form should still agree
+    # within scipy's accuracy floor.
+    assert abs(val - ref) < 1e-5, f'closed={val}, scipy={ref}'

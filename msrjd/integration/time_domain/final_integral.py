@@ -676,6 +676,96 @@ def _causal_poset_consistent_scalar_upper(poset, tol=1e-9):
     return per_var_min
 
 
+def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
+    r"""Closed-form value of the nested integral on the chain
+    simplex  ``{lower ≤ s_1 ≤ s_2 ≤ … ≤ s_N ≤ upper}``::
+
+       ∫_{lower}^{upper}        ds_N  exp(α_N · s_N)
+         · ∫_{lower}^{s_N}      ds_{N-1}  exp(α_{N-1} · s_{N-1})
+         · …
+         · ∫_{lower}^{s_2}      ds_1  exp(α_1 · s_1)
+
+    where ``alphas = [α_1, α_2, …, α_N]`` with ``α_k`` the exponent
+    coefficient for the k-th variable in the chain (1-indexed
+    mathematically, 0-indexed in the list).
+
+    Derivation: integrate inside-out.  After each step, the running
+    integrand is a sum of terms of the form
+    ``C · exp(β · s_outer + (constant depending on already-integrated
+    bounds))``.  Each inner integration produces two new terms — one
+    "upper-bound" piece (whose ``β`` merges with the next-outer
+    variable's coefficient) and one "lower-bound" piece (a numerical
+    prefactor ``exp(β · lower)`` falls out, leaving the outer
+    coefficient unchanged).  After N steps the sum has 2^N constant
+    terms; their sum is the integral.
+
+    Parameters
+    ----------
+    alphas : sequence of complex
+        Effective exponent coefficients, innermost first.
+    lower, upper : float
+        Common scalar lower bound and the cap on the outermost var.
+    eps : float
+        Threshold below which a ``β`` is treated as degenerate (the
+        formula's ``1/β`` factor would amplify roundoff).  Returns
+        ``None`` in that case so the caller falls back to scipy.
+
+    Returns
+    -------
+    complex or None
+        The integral value, or ``None`` if any intermediate
+        coefficient ``β`` is too close to zero.
+    """
+    import cmath
+    N = len(alphas)
+    if N == 0:
+        # Empty product of integrals — by convention 1.
+        return 1.0 + 0.0j
+
+    # Each term: (complex coefficient, list of remaining β values).
+    # At level k (about to integrate the (k+1)-th variable in the
+    # chain, which is the innermost remaining), ``beta[0]`` is the
+    # effective coefficient on that variable, ``beta[1:]`` are the
+    # coefficients on the outer variables we haven't touched yet.
+    terms = [(1.0 + 0.0j, list(alphas))]
+
+    # Integrate variables 1, 2, …, N-1 (each bounded above by next
+    # variable in the chain).
+    for _ in range(N - 1):
+        new_terms = []
+        for (C, beta) in terms:
+            b_inner = beta[0]
+            if abs(b_inner) < eps:
+                return None
+            # Term A — upper-bound piece.  exp(b_inner · s_outer)
+            # merges with the existing exp(beta[1] · s_outer) factor,
+            # so the new β on the next-outer variable is
+            # ``b_inner + beta[1]``.
+            beta_A = list(beta[1:])
+            beta_A[0] = b_inner + beta_A[0]
+            new_terms.append((C / b_inner, beta_A))
+            # Term B — lower-bound piece.  Just pulls out a constant
+            # ``exp(b_inner · lower)`` factor; outer β unchanged.
+            beta_B = list(beta[1:])
+            new_terms.append((
+                -C * cmath.exp(b_inner * lower) / b_inner,
+                beta_B,
+            ))
+        terms = new_terms
+
+    # Outermost integration: s_N from lower to upper (both constants).
+    total = 0.0 + 0.0j
+    for (C, beta) in terms:
+        b = beta[0]
+        if abs(b) < eps:
+            # ∫_L^U exp(0 · s) ds = U − L
+            total += C * (upper - lower)
+        else:
+            total += C * (cmath.exp(b * upper)
+                          - cmath.exp(b * lower)) / b
+    return total
+
+
 def _integrate_2d_polygon_modesum(
     smooth_edge_modes,
     prefactor_complex,
