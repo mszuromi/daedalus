@@ -253,6 +253,15 @@ def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
 
 USE_POLYGON_M2_INTEGRATOR = True
 POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
+
+# ───────────────────────────────────────────────────────────────────────
+# Analytic ∫_L^U exp(α·s + γ) ds  (Stage 4a-perdiag, m=1)
+# ───────────────────────────────────────────────────────────────────────
+# Per-pole-tuple closed-form 1D exponential integral.  Replaces
+# scipy.quad on the pole-residue closure callable for m=1 subsets.
+# Same correctness guarantees as the polygon/poset paths (exact for
+# rational propagators).
+USE_1D_INTEGRATOR = True
 # Threshold below which we switch to a 4th-order Taylor expansion of
 # J(p, q) to avoid catastrophic cancellation in the formula's denominator.
 _J_TAYLOR_EPS = 1e-6
@@ -954,6 +963,138 @@ def _integrate_nd_polytope_poset_modesum(
                 # consistent.
                 return None
             total += term_const * chain_val
+    return total
+
+
+def _integrate_1d_polytope_modesum(
+    smooth_edge_modes,
+    prefactor_complex,
+    subset_constraint_data,
+    free_ext_vals,
+    bbox_cap=POLYGON_BBOX_CAP,
+    pole_tuples=None,
+):
+    r"""Analytic ``∫_L^U Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor ds``
+    for ``m = 1``.
+
+    After pole-expansion the integrand is a sum of single-exponential
+    terms ``A · exp(α_s · s + γ)`` where
+        α_s = Σ_e λ_α_e · a_int_e[0]
+        γ   = Σ_e λ_α_e · c_ext_e,  c_ext_e = c0_e + Σ_j a_ext_e[j]·t_free[j]
+    Each term is integrated in closed form over the polytope interval
+    ``[L, U]``.
+
+    The interval bounds come from the smooth-edge retardation
+    constraints ``a_int_e[0]·s + c_ext_e > 0``.  Unbounded sides are
+    tracked as ±∞: the corresponding closed-form boundary term
+    evaluates to 0 if the integrand decays in that direction
+    (``sign(Re α_s)`` matches), else ``None`` (caller falls back to
+    scipy.quad which handles the unbounded endpoint via the standard
+    adaptive-quadrature substitution).
+
+    ``pole_tuples`` (optional): pre-built iterable of ``(C_prod,
+    lambdas)`` pairs that replaces ``_enumerate_pole_tuples
+    (smooth_edge_modes)``.  Used by the grouped Phase J path to
+    inject merged residues ``B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}``.
+
+    Returns ``complex`` or ``None`` on overflow / divergent unbounded
+    integrand.
+    """
+    import cmath
+    import math
+    n_smooth = len(smooth_edge_modes)
+    if len(subset_constraint_data) != n_smooth:
+        return None
+
+    # Resolve the feasible interval — track unboundedness exactly.
+    L = -math.inf
+    U = +math.inf
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        a = float(a_int[0]) if a_int else 0.0
+        c_eff = float(c0) + sum(
+            float(a_ext[i]) * float(free_ext_vals[i])
+            for i in range(len(a_ext))
+        )
+        if abs(a) < 1e-15:
+            if c_eff <= 0:
+                return 0.0 + 0.0j
+            continue
+        bound = -c_eff / a
+        if a > 0:
+            if bound > L:
+                L = bound
+        else:
+            if bound < U:
+                U = bound
+    if L >= U:
+        return 0.0 + 0.0j
+    L_inf = math.isinf(L)
+    U_inf = math.isinf(U)
+
+    # Pre-extract per-edge linear data (constant in pole tuple).
+    c_ext_per_edge = [
+        float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        for (a_int, a_ext, c0) in subset_constraint_data
+    ]
+    a_int_per_edge = [
+        float(a_int[0]) if a_int else 0.0
+        for (a_int, _a_ext, _c0) in subset_constraint_data
+    ]
+
+    pref = complex(prefactor_complex)
+    total = 0.0 + 0.0j
+    pole_iter = (
+        pole_tuples if pole_tuples is not None
+        else _enumerate_pole_tuples(smooth_edge_modes)
+    )
+    for C_prod, lambdas in pole_iter:
+        alpha_s = 0.0 + 0.0j
+        gamma = 0.0 + 0.0j
+        for e in range(n_smooth):
+            lam = lambdas[e]
+            alpha_s += lam * a_int_per_edge[e]
+            gamma += lam * c_ext_per_edge[e]
+        # Overflow guard on the γ-prefactor (matches polygon path).
+        if abs(gamma.real) > 600.0:
+            return None
+        try:
+            term_const = pref * C_prod
+        except (OverflowError, ValueError):
+            return None
+        if term_const == 0:
+            continue
+        try:
+            if abs(alpha_s) < 1e-15:
+                # α_s ≈ 0: integrand is constant exp(γ) in s.
+                if L_inf or U_inf:
+                    return None  # diverges
+                contrib = (U - L) * cmath.exp(gamma)
+            else:
+                if U_inf:
+                    if alpha_s.real >= 0:
+                        return None  # would diverge at +∞
+                    term_U = 0.0 + 0.0j
+                else:
+                    arg = alpha_s * U + gamma
+                    if abs(arg.real) > 600.0:
+                        return None
+                    term_U = cmath.exp(arg)
+                if L_inf:
+                    if alpha_s.real <= 0:
+                        return None  # would diverge at -∞
+                    term_L = 0.0 + 0.0j
+                else:
+                    arg = alpha_s * L + gamma
+                    if abs(arg.real) > 600.0:
+                        return None
+                    term_L = cmath.exp(arg)
+                contrib = (term_U - term_L) / alpha_s
+        except (OverflowError, ValueError):
+            return None
+        total += term_const * contrib
     return total
 
 
@@ -1974,6 +2115,7 @@ def integrate_diagram(
 
         # Capture the smooth-edge EdgeModeSum subset + complex
         # prefactor for the analytic mode-sum paths:
+        #   m = 1  → ``_integrate_1d_polytope_modesum``     (Stage 4a-perdiag)
         #   m = 2  → ``_integrate_2d_polygon_modesum``      (Stage 3a-full)
         #   m ≥ 3  → ``_integrate_nd_polytope_poset_modesum`` (Stage 3b)
         # ``None`` means the closure-only fallback path applies for
@@ -1982,7 +2124,8 @@ def integrate_diagram(
         _smooth_edge_modes = None
         _modesum_prefactor_c = None
         _modesum_enabled = (
-            (USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
+            (USE_1D_INTEGRATOR and m_sub == 1)
+            or (USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
             or (USE_POSET_INTEGRATOR and m_sub >= 3)
         )
         if (_modesum_enabled
@@ -2001,6 +2144,17 @@ def integrate_diagram(
         def _make_subset_contrib(fc, cdata, m_val,
                                   modes=None, pref_c=None):
             def _contrib(free_vals):
+                # m=1 analytic 1D interval (Stage 4a-perdiag).
+                if (modes is not None and pref_c is not None
+                        and m_val == 1):
+                    interval_val = _integrate_1d_polytope_modesum(
+                        smooth_edge_modes=modes,
+                        prefactor_complex=pref_c,
+                        subset_constraint_data=cdata,
+                        free_ext_vals=free_vals,
+                    )
+                    if interval_val is not None:
+                        return interval_val
                 # m=2 analytic polygon (Stage 3a-full).
                 if (modes is not None and pref_c is not None
                         and m_val == 2):
@@ -2046,7 +2200,9 @@ def integrate_diagram(
         # constraint, non-uniform bounds, degenerate β).  The label
         # records the design intent; runtime falls through to
         # 'fast_numpy' silently.
-        if _smooth_edge_modes is not None and m_sub == 2:
+        if _smooth_edge_modes is not None and m_sub == 1:
+            _evaluator_label = 'interval_modesum'
+        elif _smooth_edge_modes is not None and m_sub == 2:
             _evaluator_label = 'polygon_modesum'
         elif _smooth_edge_modes is not None and m_sub >= 3:
             _evaluator_label = 'poset_modesum'
