@@ -442,6 +442,240 @@ def _enumerate_pole_tuples(edge_mode_sums):
             return  # all overflowed
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Causal poset extraction + linear-extension enumeration (Stage 3b prep)
+# ───────────────────────────────────────────────────────────────────────
+# For m ≥ 3 (deeply-nested integrals), the retardation constraint set
+# typically forms a directed acyclic graph (DAG) on the integration
+# variables — each constraint  s_v − s_u > 0  is an edge ``u → v``.
+# The full polytope decomposes into a disjoint union of simplex
+# regions, one per linear extension (topological sort) of the DAG.
+# Each simplex region has the form
+#
+#     L ≤ s_{σ(1)} ≤ s_{σ(2)} ≤ … ≤ s_{σ(N)} ≤ U
+#
+# (when all variables share the same scalar lower bound L and the
+# top variable has a scalar upper bound U).  The integral over each
+# region factors into nested 1D exponential integrals — a closed
+# form lives in ``_exp_over_chain`` (Stage 3b-nested).
+#
+# This file implements the structural part: extract the DAG + scalar
+# bounds from the constraint list, enumerate linear extensions.
+
+@dataclass(frozen=True)
+class _CausalPoset:
+    """DAG on ``m`` integration variables plus per-variable scalar
+    bounds, extracted from a list of retardation constraints.
+
+    Fields
+    ------
+    m : int
+        Number of integration variables.
+    edges : tuple of (int, int)
+        Pairs ``(u, v)`` with ``s_v > s_u``.  Duplicate edges removed.
+    scalar_lowers : tuple of (int, float)
+        ``(var_idx, c)`` meaning ``s_var > c``.  Multiple lower bounds
+        on the same variable are kept; the effective lower is the
+        max.
+    scalar_uppers : tuple of (int, float)
+        ``(var_idx, c)`` meaning ``s_var < c``.  Effective upper is
+        the min.
+
+    Notes
+    -----
+    Edge (u, v) means u precedes v in the integration time ordering.
+    """
+    m: int
+    edges: tuple
+    scalar_lowers: tuple
+    scalar_uppers: tuple
+
+
+def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
+                          tol=1e-12):
+    r"""Build a ``_CausalPoset`` from a list of retardation
+    constraints.
+
+    Each constraint is ``(a_int, a_ext, c0)`` representing
+    ``a_int · s + c_eff > 0`` where
+    ``c_eff = c0 + a_ext · free_ext_vals``.
+
+    Constraint shape recognised:
+    * **Inter-axis**: ``a_int`` has exactly two nonzero entries
+      summing to 0 (one +1, one −1), and ``c_eff ≈ 0`` (within tol).
+      Adds edge ``(u, v)`` where ``a_int[u] = −1`` (lower) and
+      ``a_int[v] = +1`` (upper).
+    * **Scalar lower**: ``a_int`` has exactly one +1 entry, all else 0.
+      Adds (var, −c_eff) to ``scalar_lowers``.
+    * **Scalar upper**: ``a_int`` has exactly one −1 entry, all else 0.
+      Adds (var, c_eff) to ``scalar_uppers``.
+    * **Anything else** (multiple inter-axis couplings, mixed
+      coefficients, inter-axis with nonzero c_eff, etc.) → return
+      ``None``.  Caller falls back to scipy.nquad.
+
+    Returns ``_CausalPoset`` or ``None``.
+    """
+    edges = []
+    scalar_lowers = []
+    scalar_uppers = []
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        c_eff = float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        # Find positions and signs of nonzero entries in a_int.
+        nz = [(i, float(a_int[i])) for i in range(len(a_int))
+              if abs(float(a_int[i])) > tol]
+        if not nz:
+            # Pure constant constraint.  Should be satisfied
+            # (c_eff > 0); if violated, polytope is empty (signal
+            # via None — caller falls back, which will also detect
+            # the empty polytope correctly).
+            if c_eff <= 0:
+                return None
+            continue
+        if len(nz) == 1:
+            (var_idx, coef) = nz[0]
+            # Pure scalar bound.  Only accept ±1 coefficients.
+            if abs(coef - 1.0) < tol:
+                # +1 · s_var + c_eff > 0  ⇔  s_var > −c_eff
+                scalar_lowers.append((var_idx, -c_eff))
+            elif abs(coef + 1.0) < tol:
+                # −1 · s_var + c_eff > 0  ⇔  s_var < c_eff
+                scalar_uppers.append((var_idx, c_eff))
+            else:
+                # Non-unit coefficient — not a clean ±1 constraint.
+                return None
+            continue
+        if len(nz) == 2:
+            # Need exactly one +1 and one −1, plus c_eff ≈ 0.
+            (i, a_i), (j, a_j) = nz
+            if abs(c_eff) > 1000 * tol:
+                # Inter-axis constraint with extra constant — would
+                # be a "shifted" ordering like s_v > s_u + c.  Not
+                # supported in the simple poset model; bail.
+                return None
+            if abs(a_i - 1.0) < tol and abs(a_j + 1.0) < tol:
+                # +1 at i, −1 at j  ⇔  s_i > s_j  ⇔  edge (j → i)
+                edges.append((j, i))
+            elif abs(a_i + 1.0) < tol and abs(a_j - 1.0) < tol:
+                # −1 at i, +1 at j  ⇔  s_j > s_i  ⇔  edge (i → j)
+                edges.append((i, j))
+            else:
+                return None
+            continue
+        # 3+ nonzero entries — mixed constraint not supported.
+        return None
+
+    # Deduplicate edges.
+    edges_set = tuple(sorted(set(edges)))
+    return _CausalPoset(
+        m=m,
+        edges=edges_set,
+        scalar_lowers=tuple(scalar_lowers),
+        scalar_uppers=tuple(scalar_uppers),
+    )
+
+
+def _enumerate_linear_extensions(poset):
+    r"""Yield each linear extension (topological ordering) of a
+    ``_CausalPoset``.
+
+    A linear extension is a permutation σ of [0, m) such that for
+    every edge (u, v) of the poset, σ⁻¹(u) < σ⁻¹(v) — i.e., u appears
+    before v in the ordering.
+
+    Standard recursive Kahn-style enumeration: at each step, pick
+    one of the currently-source nodes (no remaining predecessors)
+    and recurse.
+
+    Yields tuples of length ``poset.m``.
+    """
+    m = poset.m
+    # Predecessor counts (per variable).
+    in_count = [0] * m
+    successors = [[] for _ in range(m)]
+    for (u, v) in poset.edges:
+        in_count[v] += 1
+        successors[u].append(v)
+
+    available = sorted(i for i in range(m) if in_count[i] == 0)
+
+    def _recurse(order, in_count_local, available_local):
+        if len(order) == m:
+            yield tuple(order)
+            return
+        for var in list(available_local):
+            new_available = [a for a in available_local if a != var]
+            new_in_count = list(in_count_local)
+            for succ in successors[var]:
+                new_in_count[succ] -= 1
+                if new_in_count[succ] == 0:
+                    # Insert preserving sorted order for deterministic
+                    # output (canonical lex enumeration).
+                    inserted = False
+                    for k, x in enumerate(new_available):
+                        if x > succ:
+                            new_available.insert(k, succ)
+                            inserted = True
+                            break
+                    if not inserted:
+                        new_available.append(succ)
+            order.append(var)
+            yield from _recurse(order, new_in_count, new_available)
+            order.pop()
+
+    yield from _recurse([], in_count, available)
+
+
+def _causal_poset_consistent_scalar_lower(poset, tol=1e-9):
+    r"""Compute the single effective scalar lower bound shared by
+    ALL variables, if they have a consistent common lower.
+
+    Returns ``(L, True)`` if every variable has a scalar-lower
+    constraint that resolves to the same value ``L`` (within
+    ``tol``), OR no scalar lower at all (return ``(None, True)``).
+    Returns ``(None, False)`` if scalar lowers exist but differ
+    across variables — in that case the simple chain-simplex closed
+    form doesn't apply and the caller should fall back.
+    """
+    per_var_max = {}
+    for (var, c) in poset.scalar_lowers:
+        cur = per_var_max.get(var)
+        per_var_max[var] = c if cur is None else max(cur, c)
+    if not per_var_max:
+        return (None, True)
+    vals = list(per_var_max.values())
+    Lmin, Lmax = min(vals), max(vals)
+    if Lmax - Lmin > tol:
+        return (None, False)
+    # Per-variable lowers all match.  But we need EVERY variable to
+    # have a lower; missing entries effectively have −∞ which would
+    # break the chain form.
+    if len(per_var_max) != poset.m:
+        return (None, False)
+    return (Lmax, True)
+
+
+def _causal_poset_consistent_scalar_upper(poset, tol=1e-9):
+    r"""Companion to ``_causal_poset_consistent_scalar_lower`` for
+    the upper-bound side, but only the TOP variable in each linear
+    extension needs an upper bound (others are bounded by the next
+    variable in the chain).
+
+    Returns the smallest scalar upper found (across any variable),
+    intended to be used as the cap for whichever variable ends up
+    at the top of the linear extension — IF that variable has its
+    own scalar upper.  When no variable has a scalar upper, the
+    caller must supply a fallback cap.
+    """
+    per_var_min = {}
+    for (var, c) in poset.scalar_uppers:
+        cur = per_var_min.get(var)
+        per_var_min[var] = c if cur is None else min(cur, c)
+    return per_var_min
+
+
 def _integrate_2d_polygon_modesum(
     smooth_edge_modes,
     prefactor_complex,
