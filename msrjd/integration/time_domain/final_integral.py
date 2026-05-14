@@ -224,6 +224,312 @@ def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Analytic ∫∫_polygon exp(α·x + β·y) dA  (Stage 3a-full)
+# ───────────────────────────────────────────────────────────────────────
+# Replaces scipy.nquad on the m=2 polytope.  The integrand factors
+# after pole-expansion as a sum of single-exponential terms
+# A·exp(α·s_0 + β·s_1 + γ).  Each term is integrated analytically:
+#
+#   1. The polytope is a convex polygon (intersection of half-planes
+#      from the retardation constraints).  Computed once per
+#      (subset, τ-point) via Sutherland-Hodgman clipping.
+#   2. Fan-triangulate the polygon from vertex 0.
+#   3. Per triangle: affine-map to the unit triangle 0 ≤ u, w ≤ 1,
+#      u + w ≤ 1.  The integrand reduces to ``exp(α₀ + p·u + q·w)``
+#      with α₀, p, q expressible from (α, β, vertices).
+#   4. Unit-triangle integral ``J(p, q) = ∫₀¹ ∫₀^{1-u} exp(p·u + q·w)
+#      dw du`` has the closed form
+#
+#         J(p, q) = [(eᵖ − e^q)/(p − q) − (eᵖ − 1)/p] / q
+#
+#      with stable Taylor fallbacks when |p|, |q|, or |p−q| → 0.
+#   5. Sum over pole tuples ``(α_e)_e``: each contributes
+#      A · exp(γ) · |det| · exp(α₀) · J(p, q).
+#
+# Compared to scipy.nquad on the un-expanded integrand: O(n_poles^|E_smooth|
+# × n_triangles) complex-exp evaluations per (subset, τ-point) instead
+# of ~10⁴ adaptive samples per (subset, τ-point), each itself doing
+# n_poles · |E_smooth| complex-exps.  Net speedup typically 10-100×.
+
+USE_POLYGON_M2_INTEGRATOR = True
+POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
+# Threshold below which we switch to a 4th-order Taylor expansion of
+# J(p, q) to avoid catastrophic cancellation in the formula's denominator.
+_J_TAYLOR_EPS = 1e-6
+
+
+def _exp_over_unit_triangle(p, q):
+    r"""Closed-form value of
+
+        J(p, q) = ∫₀¹ du ∫₀^{1-u} dw  exp(p·u + q·w)
+
+    for complex ``p``, ``q``.
+
+    Derivation: do the w-integral first to get
+    ``∫₀¹ du exp(p·u) · (exp(q(1-u)) − 1) / q``, then split and
+    integrate in u.  Falls back to a 4th-order Taylor expansion when
+    any of |p|, |q|, |p − q| drops below ``_J_TAYLOR_EPS`` to avoid
+    catastrophic cancellation.
+    """
+    import cmath
+    eps = _J_TAYLOR_EPS
+    abs_p = abs(p)
+    abs_q = abs(q)
+    abs_pq = abs(p - q)
+
+    if abs_p < eps and abs_q < eps:
+        # 4th-order Taylor of the double integral.  Coefficients are
+        # the moments of the unit triangle:
+        #   ∫∫ 1 = 1/2
+        #   ∫∫ u  = ∫∫ w = 1/6
+        #   ∫∫ u² = ∫∫ w² = 1/12,   ∫∫ uw = 1/24
+        #   ∫∫ u³ = ∫∫ w³ = 1/20,   ∫∫ u²w = ∫∫ uw² = 1/60
+        return (0.5
+                + (p + q) / 6.0
+                + (p * p) / 24.0 + (q * q) / 24.0 + (p * q) / 24.0
+                + (p**3 + q**3) / 120.0
+                + (p * p * q + p * q * q) / 120.0)
+
+    if abs_p < eps:
+        # J(0, q) = (e^q − 1 − q) / q²
+        return (cmath.exp(q) - 1 - q) / (q * q)
+
+    if abs_q < eps:
+        # J(p, 0) = (e^p − 1 − p) / p²
+        return (cmath.exp(p) - 1 - p) / (p * p)
+
+    if abs_pq < eps:
+        # J(p, p) = ((p − 1) e^p + 1) / p²
+        return ((p - 1) * cmath.exp(p) + 1) / (p * p)
+
+    # General case.
+    ep = cmath.exp(p)
+    eq = cmath.exp(q)
+    return ((ep - eq) / (p - q) - (ep - 1) / p) / q
+
+
+def _exp_over_triangle(v0, v1, v2, alpha, beta):
+    r"""``∫∫_T exp(α·x + β·y) dA`` for triangle ``T = (v0, v1, v2)``.
+
+    The vertices ``v0``, ``v1``, ``v2`` are 2-tuples of floats; ``α``,
+    ``β`` are complex.  Affine-maps to the unit triangle and uses
+    ``_exp_over_unit_triangle`` for the closed-form integral.
+    """
+    import cmath
+    e1x = v1[0] - v0[0]
+    e1y = v1[1] - v0[1]
+    e2x = v2[0] - v0[0]
+    e2y = v2[1] - v0[1]
+    det = e1x * e2y - e1y * e2x  # signed parallelogram area
+    if abs(det) < 1e-15:
+        return 0.0 + 0.0j  # degenerate
+    p = alpha * e1x + beta * e1y
+    q = alpha * e2x + beta * e2y
+    J = _exp_over_unit_triangle(p, q)
+    return abs(det) * cmath.exp(alpha * v0[0] + beta * v0[1]) * J
+
+
+def _clip_polygon_to_halfplane(polygon, a, b, c):
+    r"""Sutherland-Hodgman clip a CCW polygon against the half-plane
+    ``a·x + b·y + c > 0``.
+
+    ``polygon`` is a list of ``(x, y)`` tuples.  Returns the clipped
+    polygon as a new list; may be empty if the polygon lies entirely
+    in the rejected half-space.
+
+    Vertices exactly on the boundary (``a·x + b·y + c = 0``) are
+    treated as "on the inside" — for analytic integration over the
+    polygon interior, the measure-zero boundary contribution is 0
+    regardless of which side we assign.
+    """
+    if not polygon:
+        return []
+    n = len(polygon)
+    output = []
+    prev = polygon[-1]
+    prev_f = a * prev[0] + b * prev[1] + c
+    for i in range(n):
+        curr = polygon[i]
+        curr_f = a * curr[0] + b * curr[1] + c
+        prev_in = prev_f >= 0.0
+        curr_in = curr_f >= 0.0
+        if curr_in:
+            if not prev_in:
+                # Edge enters: add intersection.
+                t = prev_f / (prev_f - curr_f)
+                ix = prev[0] + t * (curr[0] - prev[0])
+                iy = prev[1] + t * (curr[1] - prev[1])
+                output.append((ix, iy))
+            output.append(curr)
+        else:
+            if prev_in:
+                # Edge exits: add intersection.
+                t = prev_f / (prev_f - curr_f)
+                ix = prev[0] + t * (curr[0] - prev[0])
+                iy = prev[1] + t * (curr[1] - prev[1])
+                output.append((ix, iy))
+            # curr discarded
+        prev = curr
+        prev_f = curr_f
+    return output
+
+
+def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap):
+    r"""Build the 2D convex polygon defined by the retardation
+    constraints, starting from a CCW bounding box ``±bbox_cap`` and
+    clipping with each constraint.
+
+    Each constraint is ``(a_int, a_ext, c0)`` with
+    ``a_int·(s_0, s_1) + (c0 + a_ext·free_ext_vals) > 0``.
+
+    Returns a CCW polygon vertex list (possibly empty if the
+    intersection is empty).
+    """
+    polygon = [
+        (-bbox_cap, -bbox_cap),
+        (bbox_cap, -bbox_cap),
+        (bbox_cap, bbox_cap),
+        (-bbox_cap, bbox_cap),
+    ]
+    for (a_int, a_ext, c0) in constraint_data:
+        c_eff = float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        a0 = float(a_int[0])
+        a1 = float(a_int[1])
+        polygon = _clip_polygon_to_halfplane(polygon, a0, a1, c_eff)
+        if not polygon:
+            return []
+    return polygon
+
+
+def _enumerate_pole_tuples(edge_mode_sums):
+    r"""Cartesian product over per-edge modes.
+
+    Yields ``(C_product, lambdas)`` per pole tuple:
+      * ``C_product``: complex, the product of residues ``∏_e C_α_e``
+      * ``lambdas``:  tuple of complex ``(λ_α₁, λ_α₂, …)`` — one per
+        smooth edge, in the same order as ``edge_mode_sums``.
+
+    For ``len(edge_mode_sums) == 0`` yields exactly one tuple
+    ``(1.0+0j, ())`` representing the empty product / no exponential.
+    """
+    if not edge_mode_sums:
+        yield (1.0 + 0.0j, ())
+        return
+    n_edges = len(edge_mode_sums)
+    mode_counts = [len(ems.modes) for ems in edge_mode_sums]
+    # Stack-based product (avoids itertools.product overhead).
+    idx = [0] * n_edges
+    while True:
+        C_prod = 1.0 + 0.0j
+        lambdas = []
+        for e in range(n_edges):
+            C, lam = edge_mode_sums[e].modes[idx[e]]
+            C_prod *= C
+            lambdas.append(lam)
+        yield C_prod, tuple(lambdas)
+        # Advance index.
+        e = 0
+        while e < n_edges:
+            idx[e] += 1
+            if idx[e] < mode_counts[e]:
+                break
+            idx[e] = 0
+            e += 1
+        else:
+            return  # all overflowed
+
+
+def _integrate_2d_polygon_modesum(
+    smooth_edge_modes,
+    prefactor_complex,
+    subset_constraint_data,
+    free_ext_vals,
+    bbox_cap=POLYGON_BBOX_CAP,
+):
+    r"""Analytic ∫∫_polygon Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
+                  ds_0 ds_1.
+
+    Each per-edge mode sum is pole-expanded; the resulting sum of
+    single-exponential terms ``A · exp(α·s_0 + β·s_1 + γ)`` is
+    integrated analytically over the polygon defined by
+    ``subset_constraint_data``.
+
+    Returns ``complex`` or ``None`` if construction fails (e.g.
+    polygon empty / degenerate, or the per-edge data is missing).
+
+    Δt_e for each smooth edge is expressed as
+        Δt_e = c0_e + a_int_e[0]·s_0 + a_int_e[1]·s_1 + Σ_j a_ext_e[j]·t_free[j]
+    Substituting into ``Σ_α λ_α · Δt_e`` and rearranging gives the
+    exponent ``γ + α_s·s_0 + β_s·s_1`` where
+        α_s = Σ_e a_int_e[0] · λ_α_e
+        β_s = Σ_e a_int_e[1] · λ_α_e
+        γ   = Σ_e λ_α_e · (c0_e + Σ_j a_ext_e[j]·t_free[j])
+    """
+    import cmath
+    n_smooth = len(smooth_edge_modes)
+    if len(subset_constraint_data) != n_smooth:
+        # Smooth-edges-to-constraints mismatch shouldn't happen — the
+        # caller built both from ``smooth_edges`` in lock-step.  Bail
+        # to scipy.nquad fallback.
+        return None
+
+    # Polygon is shared across all pole tuples.
+    polygon = _polygon_from_2d_constraints(
+        subset_constraint_data, free_ext_vals, bbox_cap,
+    )
+    if len(polygon) < 3:
+        # Empty or degenerate polygon → integral is zero.
+        return 0.0 + 0.0j
+
+    # Fan triangulation.
+    triangles = [
+        (polygon[0], polygon[i], polygon[i + 1])
+        for i in range(1, len(polygon) - 1)
+    ]
+
+    # Precompute per-edge "ext-time c-contribution":
+    #   c_ext_e = c0_e + Σ_j a_ext_e[j] · t_free[j]
+    # so that γ for a given pole tuple is Σ_e λ_α_e · c_ext_e.
+    c_ext_per_edge = [
+        float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        for (a_int, a_ext, c0) in subset_constraint_data
+    ]
+    a_int_per_edge = [
+        (float(a_int[0]), float(a_int[1]))
+        for (a_int, _a_ext, _c0) in subset_constraint_data
+    ]
+
+    total = 0.0 + 0.0j
+    pref = complex(prefactor_complex)
+    for C_prod, lambdas in _enumerate_pole_tuples(smooth_edge_modes):
+        # α_s, β_s, γ for this pole tuple.
+        alpha_s = 0.0 + 0.0j
+        beta_s = 0.0 + 0.0j
+        gamma = 0.0 + 0.0j
+        for e in range(n_smooth):
+            lam = lambdas[e]
+            a0, a1 = a_int_per_edge[e]
+            alpha_s += lam * a0
+            beta_s += lam * a1
+            gamma += lam * c_ext_per_edge[e]
+        term_const = pref * C_prod * cmath.exp(gamma)
+        if term_const == 0:
+            continue
+        # Triangle sum.
+        tri_sum = 0.0 + 0.0j
+        for (v0, v1, v2) in triangles:
+            tri_sum += _exp_over_triangle(v0, v1, v2, alpha_s, beta_s)
+        total += term_const * tri_sum
+    return total
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Quadrature accuracy knob
 # ───────────────────────────────────────────────────────────────────────
 # Controls scipy.integrate.quad / nquad parameters for the vertex-time
@@ -1126,9 +1432,44 @@ def integrate_diagram(
             _fast_eval if _fast_eval is not None else integrand_fc_sub
         )
 
+        # Capture the smooth-edge EdgeModeSum subset + complex
+        # prefactor for the m=2 polygon analytic path (Stage 3a-full).
+        # ``None`` means the closure-only fallback path applies.
+        _smooth_edge_modes_for_polygon = None
+        _polygon_prefactor_c = None
+        if (USE_POLYGON_M2_INTEGRATOR
+                and m_sub == 2
+                and not vertex_leg_time
+                and edge_mode_sums is not None):
+            # Build smooth-edge mode list + numerical prefactor (cp *
+            # δ-coeff products).  Bail to the closure path if the
+            # prefactor still has free symbols (rare, but possible
+            # with kernel substitutions yet to apply).
+            try:
+                _polygon_prefactor_c = complex(CDF(SR(prefactor_num)))
+                _smooth_edge_modes_for_polygon = [
+                    edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
+                ]
+            except Exception:
+                _smooth_edge_modes_for_polygon = None
+                _polygon_prefactor_c = None
+
         # Build this subset's contribution callable
-        def _make_subset_contrib(fc, cdata, m_val):
+        def _make_subset_contrib(fc, cdata, m_val,
+                                  poly_modes=None, poly_pref=None):
             def _contrib(free_vals):
+                # Try the polygon analytic path first when available
+                # and applicable (m=2 only).
+                if (poly_modes is not None and poly_pref is not None
+                        and m_val == 2):
+                    poly_val = _integrate_2d_polygon_modesum(
+                        smooth_edge_modes=poly_modes,
+                        prefactor_complex=poly_pref,
+                        subset_constraint_data=cdata,
+                        free_ext_vals=free_vals,
+                    )
+                    if poly_val is not None:
+                        return poly_val
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
@@ -1140,14 +1481,22 @@ def integrate_diagram(
         subset_contributions.append(
             _make_subset_contrib(
                 integrand_for_quad, subset_constraint_data, m_sub,
+                poly_modes=_smooth_edge_modes_for_polygon,
+                poly_pref=_polygon_prefactor_c,
             )
         )
+        if _smooth_edge_modes_for_polygon is not None and m_sub == 2:
+            _evaluator_label = 'polygon_modesum'
+        elif _fast_eval is not None:
+            _evaluator_label = 'fast_numpy'
+        else:
+            _evaluator_label = 'fast_callable'
         subset_diagnostics.append({
             'delta_edges': delta_edges,
             'smooth_edges': smooth_edges,
             'status': 'evaluated',
             'm_after_delta': m_sub,
-            'evaluator': 'fast_numpy' if _fast_eval is not None else 'fast_callable',
+            'evaluator': _evaluator_label,
         })
 
     # ── Build the final contribution callable ─────────────────────
