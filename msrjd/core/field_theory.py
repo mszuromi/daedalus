@@ -25,7 +25,7 @@ import warnings
 
 from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
-    diff, function, exp, dirac_delta, integrate, oo, I, pi
+    diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
 from IPython.display import display, Math as _Math
 
@@ -37,11 +37,39 @@ def fourier_transform(f, t, s):
         F(s) = \int_{-\infty}^{\infty} f(t) e^{-i s t} dt
 
     No 2π in the exponent.  Gives  δ(t) → 1,  δ'(t) → iω.
-    Uses SageMath's symbolic integrate, which delegates to Maxima/SymPy and
-    handles distributions (dirac_delta, diff(dirac_delta, t), ...) via the
-    sifting property and integration by parts.
+
+    For causal integrands of the form ``g(t) * heaviside(t)`` — which
+    is virtually every neural-style kernel — we replace ``heaviside(t)``
+    with ``1`` and restrict the integration to ``[0, ∞)``.  This avoids
+    Maxima's request for an explicit sign on ``omega`` (it can't decide
+    where the heaviside argument cuts unless told).  For non-causal
+    integrands the full real line is used.
+
+    Tries the SymPy backend first (it handles ``positive=True``
+    assumptions on time constants automatically) and falls back to
+    Maxima's default integrator.
     """
-    return integrate(f * exp(-I * s * t), t, -oo, oo)
+    f = SR(f)
+
+    # Detect the causal case: replace heaviside(t) with 1 and split
+    # the integration domain at zero.  Bounds are wrapped in SR() so
+    # the SymPy integrator (which calls ``a._sympy_()``) accepts them.
+    has_heaviside_t = bool(f.has(heaviside(t)))
+    if has_heaviside_t:
+        integrand = f.subs({heaviside(t): 1}) * exp(-I * s * t)
+        a, b = SR(0), oo
+    else:
+        integrand = f * exp(-I * s * t)
+        a, b = -oo, oo
+
+    # SymPy first (better at handling symbolic-positive parameters);
+    # then Maxima.  If both fail, return the unevaluated integral.
+    for algo in ('sympy', 'maxima'):
+        try:
+            return integrate(integrand, t, a, b, algorithm=algo)
+        except (ValueError, RuntimeError, TypeError):
+            continue
+    return integrate(integrand, t, a, b)
 
 
 def inverse_fourier_transform(F, s, t):
@@ -169,6 +197,41 @@ def _poly_taylor(coeffs, x):
     """
     return sum(SR(c) * QQ(1)/factorial(n) * x**n
                for n, c in enumerate(coeffs))
+
+
+def _iter_multi_indices(n_args, max_total):
+    """Yield every multi-index (k_1, ..., k_{n_args}) of non-negative
+    integers with  sum k_j  ≤ ``max_total``.
+
+    Used by the formal-function rename machinery to enumerate every
+    partial derivative up to a given total order.  For ``n_args=1``
+    this collapses to ``(0,), (1,), ..., (max_total,)`` — i.e. the
+    single-argument behavior the framework previously hardcoded.
+
+    Implemented iteratively (via ``itertools.product``) rather than
+    recursively so it survives ``%autoreload`` in Jupyter — a
+    self-recursive generator would lose its reference to itself
+    when the module's globals get hot-swapped.
+    """
+    if n_args == 0:
+        yield ()
+        return
+    from itertools import product
+    for combo in product(range(max_total + 1), repeat=n_args):
+        if sum(combo) <= max_total:
+            yield combo
+
+
+def _multi_index_suffix(multi_idx):
+    """Encode a multi-index as the rename-target suffix used in
+    ``f<suffix>_<i+1>`` symbol names.
+
+    For single-arg (``n_args=1``) the suffix is just the derivative
+    order ``<k>`` — keeping the legacy ``f0_1``, ``f1_1``, ...
+    naming intact.  For multi-arg we concatenate the per-argument
+    derivative orders, giving ``f<k1><k2>...<kn>_<i+1>``.
+    """
+    return ''.join(str(k) for k in multi_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -462,9 +525,23 @@ class FieldTheory:
         # correlated_noises block, so existing models are untouched.
         S_sr = S_sr + _build_cumulant_action(ns, self.model)
 
-        # Auto Taylor-expand in each field variable around 0 (sequential)
-        for var in ns._all_field_sr_vars:
-            S_sr = S_sr.taylor(var, 0, self.taylor_order)
+        # Multivariate Taylor in all field variables around 0 (one-shot).
+        # Truncates at TOTAL degree taylor_order, which matches the
+        # diagrammatic vertex-leg-count interpretation.  Replaces the
+        # previous sequential single-variable loop, which broke for
+        # multi-arg formal functions (chained .taylor() doesn't compose
+        # at non-zero expansion points — the inner-arg substructures
+        # get frozen by the outer call).  For single-arg formal
+        # functions, the result is identical to the old sequential
+        # loop (since each formal call only depends on one fluctuation
+        # variable, multivariate Taylor at total order N produces the
+        # same monomials as per-variable order N).
+        if ns._all_field_sr_vars:
+            S_sr = taylor(
+                S_sr,
+                *[(v, 0) for v in ns._all_field_sr_vars],
+                self.taylor_order,
+            )
 
         # Rename formal function derivative symbols to clean SR names
         # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
@@ -472,8 +549,15 @@ class FieldTheory:
             S_sr = S_sr.subs(ns._deriv_rename_subs)
 
         # Apply MF background conditions (SR substitutions)
-        if 'mf_bg_conditions' in self.model:
-            S_sr = S_sr.subs(self.model['mf_bg_conditions'](ns))
+        # Prefer the action-specific mf_bg dict (closure-baked, so
+        # the symbolic (1, 0) tadpole vanishes for any saddle EOM
+        # form).  Falls back to the legacy ``mf_bg_conditions`` key
+        # for old hand-written model files.
+        mf_bg_key = ('mf_bg_conditions_action'
+                     if 'mf_bg_conditions_action' in self.model
+                     else 'mf_bg_conditions')
+        if mf_bg_key in self.model:
+            S_sr = S_sr.subs(self.model[mf_bg_key](ns))
 
         # Apply optional specializations (e.g. quadratic phi, delta g)
         if 'specializations' in self.model:
@@ -570,6 +654,62 @@ class FieldTheory:
             setattr(ns, name, list(lst))
         primary_idx = list(list(idx.values())[0])
 
+        # ── Population-aware sizing ────────────────────────────
+        # For heterogeneous theories, every population in
+        # ``model['populations']`` has its own index range
+        # ``[0, ..., size-1]`` exposed on the namespace under both
+        # ``pop_<name>`` and (for ergonomic action text) ``<name>``.
+        # Legacy theories have an empty ``populations`` list and
+        # fall back to the single flat ``pop`` index.
+        populations = m.get('populations') or []
+        pop_size = {p['name']: int(p.get('size', 1)) for p in populations}
+        pop_local_idx = {name: list(range(sz))
+                         for name, sz in pop_size.items()}
+        # Bind plain-name iterables for use in action text:
+        # ``for i in E`` and ``for j in I`` work as written.
+        for pname, plist in pop_local_idx.items():
+            if not hasattr(ns, pname):
+                setattr(ns, pname, list(plist))
+            # Also bind under the ``pop_<name>`` alias for callers
+            # that prefer the explicit form.
+            alias = f'pop_{pname}'
+            if not hasattr(ns, alias):
+                setattr(ns, alias, list(plist))
+
+        def _field_indices(fspec):
+            """Indices over which a field's SR vars range.  Uses
+            ``fspec['population']`` when given (per-pop sizing); falls
+            back to ``primary_idx`` for legacy fields."""
+            pop = fspec.get('population')
+            if pop and pop in pop_local_idx:
+                return pop_local_idx[pop]
+            return primary_idx
+
+        def _entity_axis_sizes(spec):
+            """Resolve the per-axis size list for a parameter / kernel.
+
+            Returns ``[]`` for scalar, ``[N_a]`` for vector, ``[N_a, N_b]``
+            for matrix.  ``indexed_by`` (heterogeneous-pop) wins over
+            legacy ``indexed=`` when both are present.
+            """
+            ib = spec.get('indexed_by')
+            if ib:
+                return [pop_size.get(p, len(primary_idx)) for p in ib]
+            indexed = spec.get('indexed', False)
+            if indexed == 'matrix':
+                return [len(primary_idx), len(primary_idx)]
+            if indexed is True or indexed == 'vector':
+                return [len(primary_idx)]
+            return []
+
+        # Stash for downstream code (mf_substitutions, _mean_field, etc.).
+        ns._populations    = populations
+        ns._pop_size       = pop_size
+        ns._pop_local_idx  = pop_local_idx
+        # Expose the axis-size helper so per-pop param / kernel iterators
+        # in pipeline code can reuse the same resolution rules.
+        ns._entity_axis_sizes = _entity_axis_sizes
+
         # ---- Field variables as SR symbols ----
         tilde_sr_vars: list = []
         phys_sr_vars:  list = []
@@ -581,11 +721,12 @@ class FieldTheory:
             indexed = fspec.get('indexed', True)
             lx      = fspec.get('latex', fname)
             if indexed:
+                idx_list = _field_indices(fspec)
                 arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
-                       for i in primary_idx]
+                       for i in idx_list]
                 setattr(ns, fname, arr)
                 tilde_sr_vars.extend(arr)
-                tilde_names.extend(f"{fname}{i+1}" for i in primary_idx)
+                tilde_names.extend(f"{fname}{i+1}" for i in idx_list)
             else:
                 v = SR.var(fname, latex_name=lx)
                 setattr(ns, fname, v)
@@ -597,11 +738,12 @@ class FieldTheory:
             indexed = fspec.get('indexed', True)
             lx      = fspec.get('latex', fname)
             if indexed:
+                idx_list = _field_indices(fspec)
                 arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
-                       for i in primary_idx]
+                       for i in idx_list]
                 setattr(ns, fname, arr)
                 phys_sr_vars.extend(arr)
-                phys_names.extend(f"{fname}{i+1}" for i in primary_idx)
+                phys_names.extend(f"{fname}{i+1}" for i in idx_list)
             else:
                 v = SR.var(fname, latex_name=lx)
                 setattr(ns, fname, v)
@@ -619,25 +761,69 @@ class FieldTheory:
         R                    = PolynomialRing(SR, ring_var_names)
 
         # ---- SR parameters ----
+        # Vector params get a flat list of SR vars sized by their
+        # ``indexed_by`` population (or the legacy primary_idx).
+        # Matrix params get a 1D placeholder list; the actual 2D
+        # element-naming grid is set later by ``mf_substitutions``,
+        # which also knows about ``indexed_by`` for per-pop sizing.
         for pspec in m.get('parameters', []):
             pname   = pspec['name']
             domain  = pspec.get('domain', None)
-            indexed = pspec.get('indexed', False)
-            if indexed:
-                arr = ([SR.var(f"{pname}{i+1}", domain=domain) for i in primary_idx]
-                       if domain else
-                       [SR.var(f"{pname}{i+1}") for i in primary_idx])
-                setattr(ns, pname, arr)
-            else:
+            axis_sizes = _entity_axis_sizes(pspec)
+            if not axis_sizes:
                 sym = SR.var(pname, domain=domain) if domain else SR.var(pname)
                 setattr(ns, pname, sym)
+            else:
+                # For vector: axis_sizes = [N_a].
+                # For matrix: take the first axis; the 2D structure
+                # gets installed by mf_substitutions.
+                n = axis_sizes[0]
+                arr = ([SR.var(f"{pname}{i+1}", domain=domain)
+                        for i in range(n)]
+                       if domain else
+                       [SR.var(f"{pname}{i+1}") for i in range(n)])
+                setattr(ns, pname, arr)
 
         # ---- Kernels and operators ----
+        # Kernels can be:
+        #   * scalar (default):  one SR symbol  ns.g  used as ``g`` in action.
+        #   * vector (indexed=True/'vector' or indexed_by=['X']):
+        #     N_X SR symbols ``g_<i+1>``, namespace exposes
+        #     ``ns.g = [g_1, ...]`` for ``g[i]`` syntax.
+        #   * matrix (indexed='matrix' or indexed_by=['X', 'Y']):
+        #     N_X × N_Y SR symbols ``g_<i+1>_<j+1>``, namespace
+        #     exposes ``ns.g`` as a list-of-lists for ``g[i, j]`` syntax.
+        #     The companion ``kernel_ft_image`` lambda evaluates the
+        #     frequency image per (i, j) pair so per-pair parameters
+        #     like ``tau_g[i, j]`` resolve correctly.
         for kspec in m.get('kernels', []):
-            kname = kspec.get('sage_name', kspec['name'])
-            klx   = kspec.get('latex_name', None)
-            setattr(ns, kspec['name'],
-                    SR.var(kname, latex_name=klx) if klx else SR.var(kname))
+            kname    = kspec['name']
+            klx_base = kspec.get('latex_name', None) or kname
+            axis_sizes = _entity_axis_sizes(kspec)
+            if len(axis_sizes) == 2:
+                n_rows, n_cols = axis_sizes
+                rows = []
+                for i in range(n_rows):
+                    row = []
+                    for j in range(n_cols):
+                        sn = (f'{kspec.get("sage_name", "z_" + kname)}'
+                              f'_{i+1}_{j+1}')
+                        lx = f'{klx_base}_{{{i+1}{j+1}}}'
+                        row.append(SR.var(sn, latex_name=lx))
+                    rows.append(row)
+                setattr(ns, kname, rows)
+            elif len(axis_sizes) == 1:
+                arr = []
+                for i in range(axis_sizes[0]):
+                    sn = f'{kspec.get("sage_name", "z_" + kname)}_{i+1}'
+                    lx = f'{klx_base}_{{{i+1}}}'
+                    arr.append(SR.var(sn, latex_name=lx))
+                setattr(ns, kname, arr)
+            else:
+                kn_sage = kspec.get('sage_name', kname)
+                setattr(ns, kname,
+                        SR.var(kn_sage, latex_name=klx_base)
+                        if klx_base else SR.var(kn_sage))
         for ospec in m.get('operators', []):
             oname = ospec.get('sage_name', ospec['name'])
             olx   = ospec.get('latex_name', None)
@@ -651,67 +837,101 @@ class FieldTheory:
 
         # ---- Nonlinear functions ----
         # Accumulate derivative-rename substitutions for formal function symbols.
+        # The rename machinery is multi-arg-aware: for an n-argument
+        # function, every partial derivative (k_1, ..., k_n) with
+        # sum ≤ taylor_order gets registered as a rename to
+        # ``<prefix><k_1><k_2>...<k_n>_<i+1>``.  Single-arg
+        # (``n_args=1``, the default) collapses to the legacy
+        # ``<prefix><k>_<i+1>`` naming, so existing models are
+        # unaffected.
         ns._deriv_rename_subs = {}
-        x_dum = SR.var('_xdum_')
         order = self.taylor_order
 
         for fspec in m.get('functions', []):
             fname        = fspec['name']
             indexed      = fspec.get('indexed', True)
             deriv_prefix = fspec.get('deriv_prefix', fname)
+            n_args       = int(fspec.get('n_args', 1))
 
             if 'expression' in fspec:
                 # ---- Auto-expand path ----
-                # fspec['expression'](i, v) returns an SR expression in v.
-                # Derivatives at v=0 are renamed to  {prefix}{k}_{i+1}.
+                # ``fspec['expression'](i, x_1, ..., x_n)`` returns an SR
+                # expression in the n formal arguments.  Partial
+                # derivatives at the all-zero point get renamed to
+                # ``<prefix><multi-idx-suffix>_<i+1>``.
                 fn_latex = fspec.get('latex', deriv_prefix)
+                arg_dums = [SR.var(f'_xdum_{deriv_prefix}_{j}')
+                            for j in range(n_args)]
 
-                def _deriv_latex(base, k, sub):
-                    """LaTeX name for the k-th derivative symbol with subscript sub."""
-                    if k == 0:   return f'{base}_{{{sub}}}'
-                    if k == 1:   return f"{base}'_{{{sub}}}"
-                    if k == 2:   return f"{base}''_{{{sub}}}"
-                    return f'{base}^{{({k})}}_{{{sub}}}'
+                def _deriv_latex(base, multi_idx, sub):
+                    """LaTeX name for the partial-derivative symbol."""
+                    total = sum(multi_idx)
+                    if total == 0:
+                        return (f'{base}_{{{sub}}}' if sub != '' else base)
+                    if len(multi_idx) == 1:
+                        # Legacy single-arg notation:  f', f'', f^{(k)}.
+                        k = multi_idx[0]
+                        primes = "'" if k == 1 else ("''" if k == 2 else None)
+                        if primes:
+                            return (f"{base}{primes}_{{{sub}}}"
+                                    if sub != '' else f"{base}{primes}")
+                        return (f'{base}^{{({k})}}_{{{sub}}}'
+                                if sub != '' else f'{base}^{{({k})}}')
+                    # Multi-arg: superscript shows the multi-index tuple.
+                    idx_str = ','.join(str(k) for k in multi_idx)
+                    return (f'{base}^{{({idx_str})}}_{{{sub}}}'
+                            if sub != '' else f'{base}^{{({idx_str})}}')
+
+                def _build_target(multi_idx, sub_label):
+                    suffix = _multi_index_suffix(multi_idx)
+                    base   = f'{deriv_prefix}{suffix}'
+                    return (f'{base}_{sub_label}' if sub_label != ''
+                            else base)
+
+                def _register_renames(fe, sub_label):
+                    """Register a rename for every multi-derivative of
+                    ``fe`` (an SR expression in the ``arg_dums``)
+                    evaluated at the all-zero expansion point."""
+                    zero_subs = {arg_dums[j]: 0 for j in range(n_args)}
+                    for multi_idx in _iter_multi_indices(n_args, order):
+                        deriv = fe
+                        for j, kj in enumerate(multi_idx):
+                            if kj > 0:
+                                deriv = diff(deriv, arg_dums[j], kj)
+                        try:
+                            deriv_at_0 = SR(deriv).subs(zero_subs)
+                            if SR(deriv_at_0).is_numeric():
+                                continue
+                            lname = _deriv_latex(fn_latex, multi_idx, sub_label)
+                            nice  = SR.var(_build_target(multi_idx, sub_label),
+                                           latex_name=lname)
+                            ns._deriv_rename_subs[deriv_at_0] = nice
+                        except Exception:
+                            pass
 
                 if indexed:
                     fn_exprs = []
                     for i in primary_idx:
-                        fe = fspec['expression'](i, x_dum)
+                        fe = fspec['expression'](i, *arg_dums)
                         fn_exprs.append(fe)
-                        # Compute and register derivative symbols
-                        for k in range(order + 1):
-                            deriv_at_0 = (fe.subs({x_dum: 0}) if k == 0
-                                          else diff(fe, x_dum, k).subs({x_dum: 0}))
-                            try:
-                                if not SR(deriv_at_0).is_numeric():
-                                    lname = _deriv_latex(fn_latex, k, i + 1)
-                                    nice  = SR.var(f'{deriv_prefix}{k}_{i+1}',
-                                                   latex_name=lname)
-                                    ns._deriv_rename_subs[deriv_at_0] = nice
-                            except Exception:
-                                pass
+                        _register_renames(fe, str(i + 1))
 
-                    def _make_fn(exprs, xd):
-                        def fn(i, x):
-                            return exprs[i].subs({xd: x})
+                    def _make_fn(exprs, dums):
+                        def fn(i, *xs):
+                            sub = {dums[j]: xs[j] for j in range(len(dums))}
+                            return exprs[i].subs(sub)
                         return fn
-                    setattr(ns, fname, _make_fn(fn_exprs, x_dum))
+                    setattr(ns, fname, _make_fn(fn_exprs, arg_dums))
 
                 else:
-                    fe = fspec['expression'](x_dum)
-                    for k in range(order + 1):
-                        deriv_at_0 = (fe.subs({x_dum: 0}) if k == 0
-                                      else diff(fe, x_dum, k).subs({x_dum: 0}))
-                        try:
-                            if not SR(deriv_at_0).is_numeric():
-                                lname = _deriv_latex(fn_latex, k, '')
-                                nice  = SR.var(f'{deriv_prefix}{k}',
-                                               latex_name=lname)
-                                ns._deriv_rename_subs[deriv_at_0] = nice
-                        except Exception:
-                            pass
-                    setattr(ns, fname,
-                            lambda x, _fe=fe, _xd=x_dum: _fe.subs({_xd: x}))
+                    fe = fspec['expression'](*arg_dums)
+                    _register_renames(fe, '')
+                    def _make_scalar_fn(fe_, dums):
+                        def fn(*xs):
+                            sub = {dums[j]: xs[j] for j in range(len(dums))}
+                            return fe_.subs(sub)
+                        return fn
+                    setattr(ns, fname, _make_scalar_fn(fe, arg_dums))
 
             elif 'taylor_coeffs' in fspec:
                 # ---- Legacy path: manually supplied derivative coefficients ----

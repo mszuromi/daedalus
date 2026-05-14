@@ -46,13 +46,14 @@ def compute_cumulants(
     *,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
-    taylor_order: int = 4,
+    taylor_order: int = None,
     origin_leaf_idx: int = 0,
     output_npz: str = None,
     output_csv: str = None,
     use_cache: bool = True,
     parallel: bool = True,
     n_workers: int = None,
+    use_grouped_phase_j: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """
@@ -85,8 +86,17 @@ def compute_cumulants(
         Length-k list of leaf field tuples, e.g. ``[('dn', 1), ('dn', 2)]``.
     tau_max, tau_step : float
         τ-grid extent and spacing for the Phase J slice evaluation.
-    taylor_order : int
+    taylor_order : int or None
         Truncation order for FieldTheory's nonlinear-function Taylor.
+        ``None`` (default) auto-picks ``max(k + 2 * max_ell, 4)``,
+        which is the smallest order that captures every vertex needed
+        for a connected diagram with ``k`` external legs at ``ell``
+        loops (max vertex order ≤ ``k + 2·ell``), with a 4-floor so
+        common 1-loop 2-cumulant calculations share the same
+        ``saved_theories/<...>_taylor4`` cache directory.  Pass an
+        explicit integer to override (e.g. for non-standard
+        diagrammatic content or when probing higher-order vertices
+        for cache invalidation testing).
     origin_leaf_idx : int
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
@@ -152,6 +162,15 @@ def compute_cumulants(
         raise ValueError(
             f'external_fields has {len(external_fields)} entries but k={k}'
         )
+
+    # Auto-pick a Taylor budget that covers every vertex the
+    # prediagram enumerator could ask for at the chosen (k, max_ell).
+    # Connected diagrams with k external legs at ell loops have at
+    # most ``k + 2·ell``-leg vertices, so that's the tight upper
+    # bound — clamp at 4 below so the saved-theories cache directory
+    # stays at ``_taylor4`` for the common 1-loop 2-cumulant case.
+    if taylor_order is None:
+        taylor_order = max(k + 2 * max_ell, 4)
 
     # Accept user-facing natural names and translate to the internal
     # fluctuation names the action / propagator-typing code expect.
@@ -304,15 +323,36 @@ def compute_cumulants(
                 C_tau_by_ell[ell] = None
             continue
 
-        td_result_ell = compute_correction_td(
-            typed_diagrams   = [r['typed_diagram']      for r in records_ell],
-            prefactors       = [r['combined_prefactor'] for r in records_ell],
-            k                = k,
-            propagator_data  = propagator_data,
-            external_fields  = external_fields,
-            num_params       = num_params,
-            origin_leaf_idx  = origin_leaf_idx,
-        )
+        if use_grouped_phase_j:
+            # Prototype: group typed diagrams by parent prediagram and
+            # sum integrands before fast_callable + quadrature.  See
+            # ``pipeline/_grouped_phase_j.py`` for the math + caveats.
+            from pipeline._grouped_phase_j import (
+                compute_correction_td_grouped,
+            )
+            td_result_ell = compute_correction_td_grouped(
+                typed_diagrams   = [r['typed_diagram']
+                                    for r in records_ell],
+                prefactors       = [r['combined_prefactor']
+                                    for r in records_ell],
+                k                = k,
+                propagator_data  = propagator_data,
+                external_fields  = external_fields,
+                num_params       = num_params,
+                origin_leaf_idx  = origin_leaf_idx,
+            )
+        else:
+            td_result_ell = compute_correction_td(
+                typed_diagrams   = [r['typed_diagram']
+                                    for r in records_ell],
+                prefactors       = [r['combined_prefactor']
+                                    for r in records_ell],
+                k                = k,
+                propagator_data  = propagator_data,
+                external_fields  = external_fields,
+                num_params       = num_params,
+                origin_leaf_idx  = origin_leaf_idx,
+            )
         total_C_by_ell[ell] = td_result_ell['total_C']
         phase_j_by_ell[ell] = td_result_ell
 
@@ -359,13 +399,41 @@ def compute_cumulants(
                 if hasattr(ft._ns, legacy):
                     mf_param_names.append(legacy)
 
+    # Map each MF param name to the range of local indices it owns.
+    # Heterogeneous theories declare ``indexed_by=['<pop>']`` on each
+    # saddle; the param's SR array is sized to ``len(pop_<pop>)``.
+    # Legacy single-pop theories use the flat ``ns.pop`` length.
+    param_specs_by_name = {
+        pspec['name']: pspec
+        for pspec in (model.get('parameters', []) or [])
+    }
+    pop_size_map = getattr(ft._ns, '_pop_size', {}) or {}
+
+    def _saddle_indices(pname):
+        pspec = param_specs_by_name.get(pname, {})
+        ib = pspec.get('indexed_by') or []
+        if ib:
+            # Heterogeneous: iterate over the saddle's own population
+            # (single-population saddles only — physical_fields are
+            # currently restricted to one population per field).
+            n = pop_size_map.get(ib[0], 0)
+            return list(range(n))
+        # Legacy: flat pop index
+        return list(ft._ns.pop)
+
     mf_values: dict[str, list] = {}
     for pname in mf_param_names:
         if not hasattr(ft._ns, pname):
             continue
         ns_syms = getattr(ft._ns, pname)
+        # ns_syms may be a single SR var (un-indexed param) or a list
+        if not isinstance(ns_syms, (list, tuple)):
+            ns_syms = [ns_syms]
         vals: list[float] = []
-        for i in ft._ns.pop:
+        for i in _saddle_indices(pname):
+            if i >= len(ns_syms):
+                vals.append(float('nan'))
+                continue
             sym = ns_syms[i]
             if sym in num_params:
                 vals.append(float(num_params[sym]))

@@ -360,7 +360,7 @@ def generate_report(
     max_ell: int = 0,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
-    taylor_order: int = 4,
+    taylor_order: int = None,    # auto: max(k + 2·max_ell, 4)
     use_cache: bool = True,
     verbose: bool = True,
     result: dict = None,

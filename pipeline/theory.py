@@ -65,6 +65,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from sage.all import SR
+
 
 @dataclass
 class FieldSpec:
@@ -73,6 +75,7 @@ class FieldSpec:
     latex: str
     description: str = ''
     natural_name: Optional[str] = None   # e.g. 'dn' has natural_name='n'
+    population: Optional[str] = None     # heterogeneous-pop annotation
 
 
 @dataclass
@@ -85,6 +88,9 @@ class ParameterSpec:
     description: str = ''
     mean_field: bool = False      # True for saddle-point quantities (n*, v*, ...)
     natural_name: Optional[str] = None   # e.g. 'nstar' has natural_name='n'
+    indexed_by: Optional[list[str]] = None  # heterogeneous-pop annotation:
+                                            # [] = scalar, ['E'] = vector,
+                                            # ['E', 'I'] = matrix
 
 
 @dataclass
@@ -94,6 +100,11 @@ class KernelSpec:
     latex_name: str = ''
     frequency_image: Optional[Callable] = None  # lambda omega, params: SR
     description: str = ''
+    indexed: bool = False         # True / 'vector' for g[i]; 'matrix' for g[i, j]
+    matrix:  bool = False         # True ⇒ N×N per-pair kernel (g[i, j])
+    indexed_by: Optional[list] = None  # heterogeneous-pop annotation:
+                                       # [] = scalar, ['E'] = vector,
+                                       # ['E', 'I'] = matrix
 
 
 class TheoryBuilder:
@@ -109,12 +120,20 @@ class TheoryBuilder:
     def __init__(self, name: str, n_populations: int = 1):
         self.name = name
         self.n_populations = n_populations
+        # ``populations`` is the new explicit heterogeneous-population
+        # declaration: list of {'name': str, 'size': int}.  When
+        # ``.population()`` is called, ``n_populations`` is replaced by
+        # the count of declared populations.  When this list stays
+        # empty, the builder behaves like the legacy single-anonymous-
+        # population path (one "pop" index of size n_populations).
+        self.populations:     list[dict] = []
         self.response_fields: list[FieldSpec] = []
         self.physical_fields: list[FieldSpec] = []
         self.parameters:      list[ParameterSpec] = []
         self.kernels:         list[KernelSpec] = []
         self._action: Optional[Callable] = None
         self._mf_bg: Optional[Callable] = None
+        self._mf_bg_solver: Optional[Callable] = None
         self._mf_equations: Optional[Callable] = None
         self._kernel_ft_image: Optional[Callable] = None
         self._phi_concrete: Optional[Callable] = None
@@ -124,83 +143,404 @@ class TheoryBuilder:
         self._operators: list[dict] = []
         self._correlated_noises: dict = {}
 
+        # Text-driven declarations (used by the UI and by
+        # ``define_function`` / ``set_action_text`` / etc.).  When any
+        # of these are populated, ``build()`` compiles them to lambdas
+        # via ``pipeline.theory_compiler``, overriding the lambda hooks
+        # above.  Empty by default → existing template-based flow runs
+        # unchanged.
+        self._function_specs:   list[dict] = []
+        self._kernel_specs:     list[dict] = []   # text time/freq exprs
+        self._action_text:      Optional[str] = None
+        self._mf_eqs_text:      dict[str, str] = {}
+        self._cgf_terms:        list[dict] = []
+        self._phi_function_name: Optional[str] = None
+
+    # ── Population declarations ───────────────────────────────────
+    def population(self, name: str, *, size: int = 1,
+                   description: str = ''):
+        """Declare a population (a named index set with its own size).
+
+        Heterogeneous-population theories chain one ``.population()``
+        per group, then annotate each field / parameter / kernel with
+        the population(s) it's indexed by.  Recorded on the builder
+        but NOT yet propagated into the symbolic / diagrammatic
+        pipeline — the pipeline currently treats all populations as
+        a single combined index set of size ``sum(sizes)``.  Full
+        per-population machinery is a separate refactor.
+
+        Calling ``.population()`` overrides any previous
+        ``n_populations=`` constructor argument.
+        """
+        size = max(int(size), 1)
+        self.populations.append({
+            'name':        name,
+            'size':        size,
+            'description': description,
+        })
+        # Keep n_populations in sync so legacy lookups still see a
+        # sensible value (for now: just the count of declared pops).
+        self.n_populations = len(self.populations)
+        return self
+
     # ── Field declarations ─────────────────────────────────────────
     def response_field(self, name: str, indexed: bool = True,
-                       latex: str = '', description: str = ''):
+                       latex: str = '', description: str = '',
+                       population: str = None):
         self.response_fields.append(FieldSpec(
             name=name, indexed=indexed,
             latex=latex or name, description=description,
+            population=population,
         ))
         return self
 
     def physical_field(self, name: str, indexed: bool = True,
                        latex: str = '', description: str = '',
-                       natural_name: str = None):
+                       natural_name: str = None,
+                       auto_response: bool = True,
+                       auto_saddle: bool = True,
+                       population: str = None):
         """Declare a physical field.
 
-        Parameters
-        ----------
-        name : str
-            Internal field name as it appears in the action (typically
-            with a ``d`` prefix denoting fluctuation, e.g. ``'dn'``).
-        natural_name : str, optional
-            User-facing letter that callers use in ``external_fields``,
-            e.g. ``'n'`` so they can pass ``[('n', 1)]`` instead of
-            ``[('dn', 1)]``.  If omitted, ``name`` is used directly.
+        Two calling styles, distinguished by whether ``natural_name``
+        is supplied:
+
+        **New style** (recommended; what the UI emits)::
+
+            .physical_field('n')                # name IS the natural letter
+            .physical_field('v', latex='v')
+
+        Framework derives the **internal** fluctuation name as ``d<name>``
+        (so user types ``n`` here, action uses ``n[i]`` or ``dn[i]``,
+        both refer to the fluctuation field).  Auto-generates the
+        conjugate response field ``<name>t`` and the saddle parameter
+        ``<name>star`` (with ``mean_field=True``).
+
+        **Legacy style** (existing hand-written theory files)::
+
+            .physical_field('dn', natural_name='n', latex=r'\\delta\\dot n')
+
+        ``name`` is the literal internal name; ``natural_name`` is the
+        separate user-facing letter.  Auto-response and auto-saddle
+        also fire (with ``natural_name`` as the base) unless
+        ``auto_response=False`` / ``auto_saddle=False`` is passed.
         """
+        if natural_name is None:
+            # New style — name is the natural letter.
+            natural_name  = name
+            internal_name = f'd{name}'
+        else:
+            # Legacy — name is the internal fluctuation name.
+            internal_name = name
+
         self.physical_fields.append(FieldSpec(
-            name=name, indexed=indexed,
-            latex=latex or name, description=description,
+            name=internal_name, indexed=indexed,
+            latex=latex or rf'\delta {natural_name}',
+            description=description,
             natural_name=natural_name,
+            population=population,
         ))
+
+        # Auto-generate the conjugate response field as ``<natural>t``
+        # (matching the existing nt/vt/mt convention).  Skipped if the
+        # user already declared a response field with that name.
+        # Heterogeneous-pop: the response field inherits the physical
+        # field's population so its SR-var array has the right size.
+        if auto_response:
+            response_name = f'{natural_name}t'
+            if not any(f.name == response_name for f in self.response_fields):
+                self.response_field(
+                    response_name, indexed=indexed,
+                    latex=rf'\tilde {natural_name}',
+                    description=f'response field conjugate to {natural_name}',
+                    population=population,
+                )
+
+        # Auto-generate the saddle parameter ``<natural>star``.  Default
+        # domain is ``positive`` for ``n`` (rates) and free for others.
+        # Heterogeneous-pop: the saddle is indexed by the field's
+        # population so the SR-var array has the right size.
+        if auto_saddle:
+            saddle_name = f'{natural_name}star'
+            if not any(p.name == saddle_name for p in self.parameters):
+                domain = 'positive' if natural_name == 'n' else None
+                kwargs = dict(
+                    indexed=True, domain=domain,
+                    mean_field=True, natural_name=natural_name,
+                    description=f'mean-field saddle value of {natural_name}',
+                )
+                if population:
+                    kwargs['indexed_by'] = [population]
+                self.parameter(saddle_name, **kwargs)
         return self
 
     # ── Parameter declarations ─────────────────────────────────────
     def parameter(self, name: str, default: Any = None,
                   indexed=False, domain: str = None, description: str = '',
-                  mean_field: bool = False, natural_name: str = None):
+                  mean_field: bool = False, natural_name: str = None,
+                  indexed_by: Optional[list] = None):
         """Declare a model parameter.
 
         Parameters
         ----------
         name : str
-            Internal parameter name (e.g. ``'nstar'`` for the saddle
-            firing rate, ``'tau'`` for a time constant).
+            Internal parameter name.
         default : Any, optional
             Default numerical value (scalar / list / matrix).
-        indexed : bool or 'vector' or 'matrix', default False
-            Whether the parameter is per-population (vector) or
-            per-pair-of-populations (matrix).
+        indexed_by : list of population names, optional
+            Heterogeneous-population annotation.  ``[]`` or ``None``
+            → scalar; ``['E']`` → vector of size ``size(E)``;
+            ``['E', 'I']`` → matrix of shape
+            ``(size(E), size(I))`` (row-first).  Overrides the
+            legacy ``indexed=`` keyword when both are present.
+        indexed : bool / 'vector' / 'matrix' (legacy)
+            Pre-heterogeneous-population indexing flag.  ``True`` /
+            ``'vector'`` → vector of length ``n_populations``;
+            ``'matrix'`` → N×N matrix.  Ignored when ``indexed_by``
+            is given.
         domain : str, optional
             ``'positive'`` etc.  Used by the FieldTheory builder.
         mean_field : bool, default False
-            ``True`` flags this parameter as a saddle-point quantity
-            (``n*``, ``v*``, ``m*``, ...) so the pipeline's MF
-            accessor and saver can discover it without hardcoded
-            name lookups.
+            Flags the parameter as a saddle-point quantity.
         natural_name : str, optional
-            User-facing letter for MF accessor lookup.  If
-            ``parameter('nstar', mean_field=True, natural_name='n')``
-            is declared, ``mf['n', 1]`` returns ``n*_1``.
+            User-facing letter for MF accessor lookup.
         """
-        is_vec = (indexed in (True, 'vector'))
-        is_mat = (indexed == 'matrix')
+        # Heterogeneous-population path wins when indexed_by is given.
+        if indexed_by is not None:
+            ib = list(indexed_by)
+            is_vec = (len(ib) == 1)
+            is_mat = (len(ib) == 2)
+        else:
+            ib = None
+            is_vec = (indexed in (True, 'vector'))
+            is_mat = (indexed == 'matrix')
         self.parameters.append(ParameterSpec(
             name=name, indexed=(is_vec or is_mat), matrix=is_mat,
             domain=domain, default=default, description=description,
             mean_field=mean_field, natural_name=natural_name,
+            indexed_by=ib,
         ))
         return self
 
     # ── Kernel declaration ─────────────────────────────────────────
     def kernel(self, name: str, frequency_image: Callable = None,
                sage_name: str = '', latex_name: str = '',
-               description: str = ''):
+               description: str = '', indexed=False,
+               indexed_by: Optional[list] = None):
+        """Declare a convolution kernel symbol.
+
+        Parameters
+        ----------
+        indexed_by : list of population names, optional
+            Heterogeneous-population annotation.  ``[]`` or ``None``
+            → scalar (one shared symbol, used as ``g``); ``['E']``
+            → per-population kernel ``g[i]``; ``['E', 'I']`` →
+            per-pair kernel ``g[i, j]``.  Overrides legacy
+            ``indexed=`` when both are given.
+        indexed : legacy
+            ``False`` / ``True`` / ``'vector'`` / ``'matrix'``.
+            Pre-heterogeneous-population flag.
+
+        Indexed kernels let each population (or pair) have its own
+        frequency image — declared via ``define_kernel(freq_image=...)``
+        with an expression that may reference ``i`` (and ``j`` for
+        matrix) and indexed parameters like ``tau_g[i, j]``.
+        """
+        if indexed_by is not None:
+            ib = list(indexed_by)
+            is_vec = (len(ib) == 1)
+            is_mat = (len(ib) == 2)
+        else:
+            ib = None
+            is_vec = (indexed in (True, 'vector'))
+            is_mat = (indexed == 'matrix')
         self.kernels.append(KernelSpec(
             name=name, sage_name=sage_name or f'z_{name}',
             latex_name=latex_name or name,
             frequency_image=frequency_image, description=description,
+            indexed=(is_vec or is_mat), matrix=is_mat,
+            indexed_by=ib,
         ))
+        return self
+
+    # ── Text-driven theory declaration (UI-friendly) ──────────────
+    # Each method below stores a Sage-syntax text string.  At
+    # ``.build()`` time the strings are compiled to Python lambdas via
+    # ``pipeline.theory_compiler`` and dropped into the model dict.
+    # Calling any of these overrides the corresponding lambda hook.
+
+    def define_function(self, name: str, args: list[str],
+                        expression: str, latex: str = None,
+                        description: str = '',
+                        population: Optional[str] = None):
+        """Declare a function of field variables (and parameters).
+
+        Parameters
+        ----------
+        name : str
+            Function name as referenced inside the action / MF
+            equations (e.g. ``'phi'``).
+        args : list of str
+            Field-variable names that are formal arguments
+            (e.g. ``['v']``).  The function body may also reference
+            any declared parameter by name.
+        expression : str
+            Sage-syntax body, e.g. ``'a*v^2'`` or
+            ``'1 / (1 + exp(-v/v_thresh))'``.
+        population : str, optional
+            Heterogeneous-population annotation: the population whose
+            index range this function iterates over when called as
+            ``f[i](v[i])`` in the action.  Recorded on the function
+            spec but not yet propagated to the symbolic pipeline.
+        latex : str, optional
+            Display form (defaults to ``name``).
+        """
+        entry = {
+            'name':        name,
+            'args':        list(args),
+            'expression':  expression,
+            'latex':       latex or name,
+            'description': description,
+        }
+        if population:
+            entry['population'] = population
+        self._function_specs.append(entry)
+        return self
+
+    def define_kernel(self, name: str, *, time_expr: str = None,
+                      freq_image: str = None, latex_name: str = '',
+                      sage_name: str = '', description: str = '',
+                      indexed=False,
+                      indexed_by: Optional[list] = None):
+        """Declare a convolution kernel via either its time-domain
+        expression OR its frequency image (or both).
+
+        At least one of ``time_expr`` / ``freq_image`` must be given.
+        ``freq_image`` is preferred because it's used directly by
+        the propagator construction; if only ``time_expr`` is given,
+        the build will warn that the FT must be supplied.
+
+        Parameters
+        ----------
+        name : str
+            Kernel symbol name (referenced in the action as ``<name>``
+            for scalar kernels, ``<name>[i]`` for vector, or
+            ``<name>[i, j]`` for matrix).
+        time_expr, freq_image : str
+            Sage-syntax expressions.  May reference ``i`` (and ``j``
+            for matrix-indexed kernels) and any declared parameter.
+            E.g. ``'1/(1 + I*omega*tau_g[i, j])'`` for a per-pair
+            exponential synapse with matrix time constants.
+        indexed : bool / 'vector' / 'matrix', default False
+            * ``False`` — single shared kernel (default).
+            * ``True`` / ``'vector'`` — per-population kernel ``g[i]``.
+            * ``'matrix'`` — per-pair kernel ``g[i, j]``.
+
+            Indexed kernels produce ``N`` (or ``N*N``) SR symbols
+            internally (``g_<i+1>``, ``g_<i+1>_<j+1>``); the
+            propagator builder substitutes each with its own
+            frequency image evaluated at the corresponding ``i`` / ``j``.
+
+        The kernel is also registered as a regular ``kernel(...)``
+        symbol for the MSR-JD framework's name resolution.
+        """
+        if time_expr is None and freq_image is None:
+            raise ValueError(
+                f"define_kernel({name!r}): supply at least one of "
+                f"time_expr= or freq_image=")
+        # Register the kernel symbol with the regular .kernel() call.
+        # ``indexed_by`` (when given) takes precedence over ``indexed=``.
+        if not any(k.name == name for k in self.kernels):
+            self.kernel(name, sage_name=sage_name or f'z_{name}',
+                        latex_name=latex_name or name,
+                        description=description, indexed=indexed,
+                        indexed_by=indexed_by)
+        spec = {
+            'name':       name,
+            'time_expr':  time_expr,
+            'freq_image': freq_image,
+            'indexed':    indexed,
+        }
+        if indexed_by is not None:
+            spec['indexed_by'] = list(indexed_by)
+        self._kernel_specs.append(spec)
+        return self
+
+    def set_action_text(self, text: str):
+        """Set the per-population action integrand ``S_i`` as a
+        Sage-syntax string.
+
+        ``i`` is the implicit free index — at build time the integrand
+        is summed over ``i in range(n_populations)``.  Inner sums use
+        Python comprehension syntax::
+
+            nt[i] * (Dt + 1/tau) * dn[i]
+            - nt[i] * phi(vstar[i] + dv[i])
+            + vt[i] * (Dt + 1/tau) * dv[i]
+            - vt[i] * sum(w[i, j] * g * dn[j] for j in pop)
+
+        ``pop = range(n_populations)`` is pre-bound for inner sums.
+        """
+        self._action_text = text
+        return self
+
+    def set_mf_equation(self, saddle_name: str, rhs_text: str):
+        """Declare a per-population mean-field equation.
+
+        ``saddle_name`` is the parameter name (e.g. ``'vstar'``,
+        ``'nstar'``, ``'mstar'``) that the equation defines.  The RHS
+        is a Sage-syntax string in terms of ``i``, parameters, and
+        other saddles::
+
+            set_mf_equation('vstar',
+                'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)')
+            set_mf_equation('nstar', 'phi(vstar[i])')
+
+        The framework also auto-emits ``phi0_<i> = nstar[i]`` for the
+        EOM closure, so users don't need to declare that.
+        """
+        self._mf_eqs_text[saddle_name] = rhs_text
+        return self
+
+    def declare_cgf_term(self, name: str, response_field: str, order: int,
+                         coefficient: str, kernel: str = None):
+        """Add one term to a non-closed-form cumulant generating
+        functional (e.g. GTaS noise).
+
+        Parameters
+        ----------
+        name : str
+            CGF identifier — multiple rows with the same name + order
+            sum into a single cumulant.
+        response_field : str
+            The response-field this CGF couples to (e.g. ``'mt'``).
+        order : int
+            Cumulant order: 2 for κ⁽²⁾, 3 for κ⁽³⁾, 4 for κ⁽⁴⁾, ...
+        coefficient : str
+            Sage-syntax expression for the cumulant coefficient
+            (e.g. ``'lambda_X * p_part'``).
+        kernel : str, optional
+            Optional time-domain kernel multiplier
+            (e.g. ``'_gauss(tau, mu_shift, sigma_sq)'`` for a
+            cross-cumulant Gaussian factor).
+        """
+        self._cgf_terms.append({
+            'name':           name,
+            'response_field': response_field,
+            'order':          int(order),
+            'coefficient':    coefficient,
+            'kernel':         kernel,
+        })
+        return self
+
+    def set_transfer_function(self, name: str = 'phi'):
+        """Mark which declared function plays the role of the MSR-JD
+        ``phi_concrete`` (the saddle-point Taylor-expansion target).
+
+        Defaults to ``'phi'``; only needed if you've named the transfer
+        function differently.
+        """
+        self._phi_function_name = name
         return self
 
     # ── Lambda hooks for the harder stuff (until templates land) ───
@@ -372,16 +712,291 @@ class TheoryBuilder:
         self._functions       = list(template.functions_list())
         return self
 
+    # ── Text → lambda compilation ─────────────────────────────────
+    def _compile_text_declarations(self) -> None:
+        """Walk the text-based declarations and compile each into the
+        corresponding lambda hook.  No-op if no text declarations
+        were made (template-only builders go through unchanged)."""
+        if not (self._action_text or self._function_specs
+                or self._kernel_specs or self._mf_eqs_text
+                or self._cgf_terms):
+            return
+
+        from pipeline.theory_compiler import (
+            make_action_lambda,
+            make_phi_concrete_lambda,
+            make_specializations_lambda,
+            make_mf_bg_conditions_lambda,
+            make_mf_bg_solver_lambda,
+            make_mf_equations_lambda,
+            make_kernel_ft_image_lambda,
+            make_correlated_noises_block,
+        )
+
+        n_pop = self.n_populations
+        field_names  = ([f.name for f in self.response_fields]
+                        + [f.name for f in self.physical_fields])
+        param_names  = [p.name for p in self.parameters]
+        kernel_names = [k.name for k in self.kernels]
+
+        # Pre-compute the naming convention so the compiler can expose
+        # natural-name aliases (n, v, m) in the action's eval namespace
+        # AND find each saddle quantity for full-field expansion
+        # (n[i] → nstar[i] + dn[i]).
+        _fluct_map: dict[str, str] = {}
+        for f in self.physical_fields:
+            if f.natural_name:
+                _fluct_map[f.natural_name] = f.name
+        _saddle_map: dict[str, str] = {}
+        _mf_param_names: list[str] = []
+        for p in self.parameters:
+            if p.mean_field:
+                _mf_param_names.append(p.name)
+                if p.natural_name:
+                    _saddle_map[p.natural_name] = p.name
+        _action_naming_convention = {
+            'fluctuation_fields': _fluct_map,
+            'mean_field_saddles': _saddle_map,
+            'mf_parameters':      _mf_param_names,
+        }
+
+        # Pick a "primary" function for legacy phi_concrete plumbing
+        # (one of the user's functions becomes phi_concrete for the
+        # saddle solver).  Default: the first declared function, or
+        # one explicitly named via ``set_transfer_function``.  This
+        # is the ONLY place where one function is selected — the
+        # action-side Taylor expansion treats all functions
+        # uniformly.
+        #
+        # ``phi_concrete`` requires a SINGLE-argument function (the
+        # saddle solver inverts ``nstar = phi(vstar)`` along one
+        # variable), so the auto-pick prefers the first single-arg
+        # function rather than blindly grabbing the first declared.
+        # Multi-arg functions still participate in the action-side
+        # Taylor expansion via FieldTheory's rename machinery.
+        if self._phi_function_name:
+            primary_fn_name = self._phi_function_name
+        else:
+            primary_fn_name = next(
+                (f['name'] for f in self._function_specs
+                 if len(f.get('args') or []) == 1),
+                (self._function_specs[0]['name']
+                 if self._function_specs else None))
+        primary_fn_spec = next(
+            (f for f in self._function_specs
+             if f['name'] == primary_fn_name), None)
+        # If the chosen primary is multi-arg (because no single-arg
+        # function exists), skip phi_concrete plumbing — saddle solving
+        # then falls back to using the user's mf_eq RHS directly.
+        if primary_fn_spec is not None and \
+                len(primary_fn_spec.get('args') or []) != 1:
+            primary_fn_spec = None
+
+        # Action — every declared function becomes an indexed formal
+        # Sage symbol that FieldTheory's auto-Taylor pass expands.
+        if self._action_text is not None:
+            self._action = make_action_lambda(
+                self._action_text,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                transfer_function = primary_fn_spec,
+                naming_convention = _action_naming_convention,
+            )
+
+        # Register EVERY declared function as a formal indexed entry in
+        # model['functions'].  FieldTheory's auto-Taylor pass walks this
+        # list and, for every multi-index (k_1, ..., k_n) of partial
+        # derivative orders with sum ≤ taylor_order, produces a clean
+        # rename target ``<name><k_1><k_2>...<k_n>_<i+1>``.  Single-arg
+        # functions (n=1) collapse to the legacy ``<name><k>_<i+1>``
+        # naming, so existing models are unaffected.  Multi-arg
+        # functions (n≥2) are supported natively via Sage's true
+        # multivariate ``taylor()`` — no chained single-variable Taylor.
+        from sage.all import function as sr_function
+        self._functions = []
+        for fn_spec in self._function_specs:
+            fname  = fn_spec['name']
+            n_args = len(fn_spec.get('args') or [])
+            entry = {
+                'name':         fname,
+                'indexed':      True,
+                'deriv_prefix': fname,
+                'n_args':       n_args,
+                'latex':        fn_spec.get('latex', fname),
+                'description':  fn_spec.get('description',
+                                            f'declared function {fname}'),
+                'expression':   (lambda i, *xs, _t=fname:
+                                 sr_function(f'{_t}_{i+1}')(*xs)),
+            }
+            # Heterogeneous-pop annotation passes through unchanged
+            # so downstream pipeline can route ``phi[i](...)`` to the
+            # right population's index range.
+            if fn_spec.get('population'):
+                entry['population'] = fn_spec['population']
+            self._functions.append(entry)
+
+        # phi_concrete + specializations: needed for the saddle solver
+        # and for the Taylor-rename derivative substitutions
+        # (specializations registers <fn><k>_<i+1> → kth derivative at
+        # saddle for every function).
+        if primary_fn_spec is not None:
+            self._phi_concrete = make_phi_concrete_lambda(
+                primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+            self._specializations = make_specializations_lambda(
+                primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                naming_convention = _action_naming_convention,
+                mf_eqs       = self._mf_eqs_text,
+            )
+
+        # Mean-field equations.  We produce TWO substitution lambdas:
+        #
+        # - ``self._mf_bg`` (action-side): closures baked in.  The
+        #   iteration saddle's mf_eq RHS is evaluated in formal-rename
+        #   mode (so e.g. ``nstar = phi(v) + b`` becomes
+        #   ``nstar → phi0_<i+1> + b``).  Compound saddles like vstar
+        #   are evaluated concretely with the closure substitution
+        #   applied to the result, eliminating raw nstar from vstar's
+        #   substitution.  This makes the (1, 0) tadpole vanish
+        #   symbolically for any saddle EOM form.
+        #
+        # - ``self._mf_bg_solver`` (numerical solver): vstar in raw
+        #   concrete form (with raw nstar so ``solve_mean_field`` can
+        #   iterate on it).  The iteration saddle (nstar) is NOT
+        #   substituted in this dict.
+        if self._mf_eqs_text:
+            # Iteration-saddle selection.  For legacy single-pop
+            # theories there is one ``nstar`` mf_eq with a single
+            # function call (``phi(vstar)``); the compiler closes the
+            # saddle EOM by substituting ``nstar → phi0_i`` formally.
+            # Heterogeneous-pop theories have ONE ``<n>star`` per
+            # population (e.g. ``nEstar = phiE(vEstar)``,
+            # ``nIstar = phiI(vIstar)``); each is its own iteration
+            # saddle.  The ``'AUTO'`` sentinel tells _classify_mf_eqs
+            # to treat every mf_eq whose RHS is a single function
+            # call as a closure saddle.
+            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            self._mf_bg = make_mf_bg_conditions_lambda(
+                self._mf_eqs_text, primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                iteration_saddle = iter_sentinel,
+            )
+            self._mf_bg_solver = make_mf_bg_solver_lambda(
+                self._mf_eqs_text, primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+                iteration_saddle = iter_sentinel,
+            )
+            self._mf_equations = make_mf_equations_lambda(
+                self._mf_eqs_text, primary_fn_spec,
+                field_names  = field_names,
+                param_names  = param_names,
+                kernel_names = kernel_names,
+                functions    = self._function_specs,
+                n_pop        = n_pop,
+            )
+
+        # Kernel frequency images
+        if self._kernel_specs:
+            self._kernel_ft_image = make_kernel_ft_image_lambda(
+                self._kernel_specs,
+                param_names = param_names,
+            )
+
+        # Correlated noises (CGF cumulant terms)
+        if self._cgf_terms:
+            self._correlated_noises.update(
+                make_correlated_noises_block(
+                    self._cgf_terms, param_names=param_names))
+
+        # ``mf_substitutions`` for matrix-shaped parameters.  The
+        # MSR-JD framework expects each matrix-indexed parameter
+        # to have a substitution that produces ``[[w_{i+1}{j+1}]
+        # for j] for i]`` — the elementwise SR-var grid.
+        #
+        # Sizing rules (in priority order):
+        #   * ``indexed_by=[A, B]``  → axes use pop sizes of A, B
+        #     (heterogeneous-population path).  Reads
+        #     ``ns._pop_size`` if available, else falls back to
+        #     ``ns.pop``.
+        #   * legacy ``matrix=True`` only  → both axes use ``ns.pop``.
+        #
+        # The ``domain`` (e.g. 'positive') is propagated to every
+        # element SR var so symbolic FT / Maxima can dispatch the
+        # right assumption.
+        for p in self.parameters:
+            if not p.matrix:
+                continue
+            wname = p.name
+            wdom  = p.domain
+            wib   = p.indexed_by    # ['A', 'B'] or None
+            def _matrix_subst(ns, _w=wname, _d=wdom, _ib=wib):
+                # Resolve the row / column index sets.
+                if _ib:
+                    pop_size = getattr(ns, '_pop_size', {}) or {}
+                    n_rows = pop_size.get(_ib[0], len(ns.pop))
+                    n_cols = pop_size.get(_ib[1], len(ns.pop))
+                else:
+                    n_rows = n_cols = len(ns.pop)
+                if _d:
+                    return [[SR.var(f'{_w}{i+1}{j+1}', domain=_d)
+                             for j in range(n_cols)]
+                            for i in range(n_rows)]
+                return [[SR.var(f'{_w}{i+1}{j+1}')
+                         for j in range(n_cols)]
+                        for i in range(n_rows)]
+            self._mf_substitutions.append({
+                'name':  wname,
+                'value': _matrix_subst,
+            })
+
     # ── Build the HAWKES_MODEL dict ───────────────────────────────
     def build(self) -> dict:
         """Emit a HAWKES_MODEL dict.
 
-        Validates that all required hooks have been provided.  Raises
-        ValueError with a clear message if anything is missing.
+        Compiles text-based declarations (set_action_text,
+        define_function, set_mf_equation, declare_cgf_term, …) to
+        lambdas and uses them in place of the corresponding lambda
+        hooks.  Validates that all required hooks ended up populated.
+        Raises ValueError with a clear message if anything is missing.
         """
+        # Compile any text declarations into lambdas.  Done here, not
+        # in the setters, so that all decls are available when each
+        # lambda's namespace is assembled.
+        self._compile_text_declarations()
+
         missing = []
         if self._action is None:           missing.append('action')
-        if self._phi_concrete is None:     missing.append('phi_concrete')
+        # ``phi_concrete`` is required only when there is at least one
+        # single-arg function in the model — the saddle solver uses it
+        # to evaluate ``phi(v*)`` numerically.  If every declared
+        # function is multi-arg, ``phi_concrete`` is not applicable
+        # (saddle solving falls back to the user's mf_eq RHS via the
+        # ``nstar_target`` path in ``solve_mean_field``).
+        any_single_arg = any(len(f.get('args') or []) == 1
+                             for f in self._function_specs)
+        if self._phi_concrete is None and any_single_arg:
+            missing.append('phi_concrete')
         # kernel_ft_image is OPTIONAL: the DeltaKernel template
         # intentionally returns no image (the symbol is treated as
         # δ(t) directly by the cell-8 propagator construction).
@@ -415,9 +1030,47 @@ class TheoryBuilder:
             'mf_parameters':      mf_param_names,   # internal names
         }
 
+        # Heterogeneous-population index sets.  When .population() has
+        # been called, ``populations`` lists ``{'name', 'size'}`` per
+        # group.  Index conventions:
+        #
+        #   * ``pop_<name>`` — LOCAL indices into population <name>,
+        #     i.e. ``[0, 1, ..., size-1]``.  Fields, parameters, and
+        #     kernels indexed by population <name> use these — e.g.
+        #     ``nE[i]`` for ``i in pop_E`` picks the i-th E element.
+        #   * ``pop`` — flat catch-all, sized ``sum(sizes)``.  Kept for
+        #     legacy callers that don't yet know about per-population
+        #     structure (the diagram engine, etc.).
+        if self.populations:
+            total_size = sum(int(p.get('size', 1)) for p in self.populations)
+            flat_pop = list(range(total_size))
+            extra_index_sets: dict = {
+                f'pop_{p["name"]}': list(range(int(p.get('size', 1))))
+                for p in self.populations
+            }
+        else:
+            flat_pop = list(range(self.n_populations))
+            extra_index_sets = {}
+
+        # Identify iteration saddles by classifying mf_eqs the same
+        # way the compiler does: saddles whose RHS is a single function
+        # call are closure / iteration saddles; the rest are compound.
+        # Solve_mean_field reads this to know which saddles to iterate
+        # on (per-pop sized vector) and which to evaluate compoundly.
+        iter_saddle_names: list[str] = []
+        if self._mf_eqs_text:
+            from pipeline.theory_compiler import (
+                _classify_mf_eqs as _classify,
+            )
+            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            classification = _classify(self._mf_eqs_text, iter_sentinel)
+            iter_saddle_names = list(classification['closure'].keys())
+
         model = {
             'name':            self.name,
-            'index_sets':      {'pop': list(range(self.n_populations))},
+            'populations':     list(self.populations),    # heterogeneous metadata
+            'iteration_saddles': iter_saddle_names,
+            'index_sets':      {'pop': flat_pop, **extra_index_sets},
             'response_fields': [self._field_dict(f) for f in self.response_fields],
             'physical_fields': [self._field_dict(f) for f in self.physical_fields],
             'parameters':      [self._param_dict(p) for p in self.parameters],
@@ -433,6 +1086,17 @@ class TheoryBuilder:
             'naming_convention': naming_convention,
         }
         if self._mf_bg is not None:
+            # Action-side dict (closure-baked): used by
+            # FieldTheory.expand for the symbolic action substitution.
+            model['mf_bg_conditions_action'] = self._mf_bg
+        if self._mf_bg_solver is not None:
+            # Solver-friendly dict (raw concrete vstar, no nstar):
+            # used by solve_mean_field.  Stored under the legacy key
+            # name ``mf_bg_conditions`` so existing loaders keep
+            # working.
+            model['mf_bg_conditions'] = self._mf_bg_solver
+        elif self._mf_bg is not None:
+            # Fallback: only one mf_bg exists (legacy template path).
             model['mf_bg_conditions'] = self._mf_bg
         if self._mf_equations is not None:
             model['mf_equations'] = self._mf_equations
@@ -452,6 +1116,8 @@ class TheoryBuilder:
             d['description'] = f.description
         if f.natural_name:
             d['natural_name'] = f.natural_name
+        if f.population:
+            d['population'] = f.population
         return d
 
     @staticmethod
@@ -465,6 +1131,8 @@ class TheoryBuilder:
             d['mean_field'] = True
         if p.natural_name:
             d['natural_name'] = p.natural_name
+        if p.indexed_by is not None:
+            d['indexed_by'] = list(p.indexed_by)
         return d
 
     @staticmethod
@@ -476,4 +1144,15 @@ class TheoryBuilder:
         }
         if k.description:
             d['description'] = k.description
+        # Encode indexing so FieldTheory._build_namespace and
+        # make_kernel_ft_image_lambda can create the right symbol
+        # shape.  ``matrix`` takes precedence over ``vector`` because
+        # KernelSpec stores them as two independent bools (``matrix``
+        # implies ``indexed``).  Scalar (default) is omitted.
+        if k.matrix:
+            d['indexed'] = 'matrix'
+        elif k.indexed:
+            d['indexed'] = 'vector'
+        if k.indexed_by is not None:
+            d['indexed_by'] = list(k.indexed_by)
         return d
