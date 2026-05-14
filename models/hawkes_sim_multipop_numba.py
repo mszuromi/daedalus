@@ -276,6 +276,82 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
 
 
 @numba.njit
+def sim_hawkes_multipop_quad_numba(n_steps, dt_sim,
+                                   tau_v, a_gain, E_drive,
+                                   W, tau_g,
+                                   v_init,
+                                   bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for **quadratic-rate, no-reset** Hawkes.
+
+      dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
+      lambda_i(t)  = max(a_i · v_i^2, 0)
+      n_i(t)       ~ Poisson(lambda_i(t) dt)
+
+    Matches ``theories/single_population_quad_exp_test.theory.py`` and
+    any other quad-φ Hawkes theory without spike reset.  Identical to
+    ``sim_hawkes_multipop_quad_reset_numba`` except the ``v → 0``
+    hard-reset step is removed — voltage drifts continuously through
+    spike events.
+
+    Same call signature and return shape as the other multipop sim
+    variants, so ``build_sim_arrays`` / ``flat_index_of`` work unchanged.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+    F = np.zeros((N, N))
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        for i in range(N):
+            v_i = v[i]
+            lam = a_gain[i] * v_i * v_i
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        for i in range(N):
+            for j in range(N):
+                tg = tau_g[i, j]
+                decay = 1.0 - dt_sim / tg
+                F[i, j] = decay * F[i, j] + (1.0 / tg) * spikes[j]
+
+        for i in range(N):
+            drive = E_drive[i]
+            for j in range(N):
+                drive += W[i, j] * F[i, j]
+            v[i] += dt_sim / tau_v[i] * (-v[i] + drive)
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
 def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
                                            tau_v, a_gain, E_drive,
                                            W, tau_g,

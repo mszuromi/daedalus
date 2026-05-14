@@ -53,6 +53,7 @@ def compute_cumulants(
     use_cache: bool = True,
     parallel: bool = True,
     n_workers: int = None,
+    use_grouped_phase_j: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """
@@ -322,15 +323,36 @@ def compute_cumulants(
                 C_tau_by_ell[ell] = None
             continue
 
-        td_result_ell = compute_correction_td(
-            typed_diagrams   = [r['typed_diagram']      for r in records_ell],
-            prefactors       = [r['combined_prefactor'] for r in records_ell],
-            k                = k,
-            propagator_data  = propagator_data,
-            external_fields  = external_fields,
-            num_params       = num_params,
-            origin_leaf_idx  = origin_leaf_idx,
-        )
+        if use_grouped_phase_j:
+            # Prototype: group typed diagrams by parent prediagram and
+            # sum integrands before fast_callable + quadrature.  See
+            # ``pipeline/_grouped_phase_j.py`` for the math + caveats.
+            from pipeline._grouped_phase_j import (
+                compute_correction_td_grouped,
+            )
+            td_result_ell = compute_correction_td_grouped(
+                typed_diagrams   = [r['typed_diagram']
+                                    for r in records_ell],
+                prefactors       = [r['combined_prefactor']
+                                    for r in records_ell],
+                k                = k,
+                propagator_data  = propagator_data,
+                external_fields  = external_fields,
+                num_params       = num_params,
+                origin_leaf_idx  = origin_leaf_idx,
+            )
+        else:
+            td_result_ell = compute_correction_td(
+                typed_diagrams   = [r['typed_diagram']
+                                    for r in records_ell],
+                prefactors       = [r['combined_prefactor']
+                                    for r in records_ell],
+                k                = k,
+                propagator_data  = propagator_data,
+                external_fields  = external_fields,
+                num_params       = num_params,
+                origin_leaf_idx  = origin_leaf_idx,
+            )
         total_C_by_ell[ell] = td_result_ell['total_C']
         phase_j_by_ell[ell] = td_result_ell
 
