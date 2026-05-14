@@ -490,7 +490,23 @@ def integrate_diagram(
     free_ext_syms = [ext_time_vars[j] for j in free_ext_idx]
 
     n_edges = len(edge_info)
-    n_subsets_total = 2 ** n_edges
+
+    # Pre-classify edges by whether they CAN be chosen as δ.  An edge
+    # with ``|delta_coeff| < 1e-15`` contributes nothing if placed in
+    # the δ subset, so the inner subset loop only branches on edges
+    # that have a nonzero δ part.  Edges with zero δ are always in
+    # ``smooth_edges``.  Pre-classification turns a 2^|E| enumeration
+    # into 2^|branch| with no behaviour change relative to the old
+    # ``continue`` guard inside the loop.
+    branch_edge_indices: list[int] = []
+    forced_smooth_indices: list[int] = []
+    for i in range(n_edges):
+        if abs(complex(edge_info[i]['delta_coeff'])) < 1e-15:
+            forced_smooth_indices.append(i)
+        else:
+            branch_edge_indices.append(i)
+    n_branch = len(branch_edge_indices)
+    n_subsets_total = 2 ** n_branch
 
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints
     # for debugging / display, matching the pre-fix return shape.
@@ -509,15 +525,21 @@ def integrate_diagram(
     n_shotnoise_skipped = 0
     subset_diagnostics = []
 
-    for subset_bits in range(n_subsets_total):
-        delta_edges = [i for i in range(n_edges) if (subset_bits >> i) & 1]
-        smooth_edges = [i for i in range(n_edges)
-                        if not ((subset_bits >> i) & 1)]
-
-        # Zero-delta-coeff edges contribute nothing when chosen as δ
-        if any(abs(complex(edge_info[i]['delta_coeff'])) < 1e-15
-               for i in delta_edges):
-            continue
+    for branch_bits in range(n_subsets_total):
+        # Δ subset: branch-edges with bit set, in original edge-index order.
+        delta_edges = [
+            branch_edge_indices[k] for k in range(n_branch)
+            if (branch_bits >> k) & 1
+        ]
+        # Smooth subset: forced-smooth edges + branch-edges with bit unset.
+        # Preserve original edge-index order so downstream constraint
+        # extraction and zip(edge_info, ...) sees the same ordering as
+        # the pre-Stage-1a code path.
+        branch_smooth = [
+            branch_edge_indices[k] for k in range(n_branch)
+            if not ((branch_bits >> k) & 1)
+        ]
+        smooth_edges = sorted(forced_smooth_indices + branch_smooth)
 
         # ── Solve the δ-edge equalities: eliminate integration vars
         # by substitution. For each δ edge, set dt_e = 0 and solve for
