@@ -55,13 +55,42 @@ Limitations of this MVP
   user; if a future enumerator emits different external-leg
   assignments for the same prediagram, regroup at a finer key
   (prediagram × external_legs).
-- The "fast pole-residue evaluator" path (``_build_fast_subset_evaluator``)
-  in the per-diagram code is bypassed here; the grouped path uses
-  ``fast_callable`` on the summed SR integrand.  The deeper
-  optimisation — vectorising the pole/residue sum across the group's
-  edge assignments — is left for a follow-up because it requires
-  rewriting ``_build_fast_subset_evaluator`` to accept N edge-tuples
-  rather than 1.
+- Subsets with m ∈ {0, 1} still use scipy.nquad on the summed
+  ``fast_callable``.  The analytic merged-residue path (below) is
+  wired for m=2 (polygon, Stage 3a) and m≥3 (causal-poset chain
+  simplex, Stage 3b); m=0/1 would need a separate pole-residue
+  closure plus an interval-of-integration analytic form for m=1.
+- Shot-noise δ-spikes (residual external-time equalities after δ-
+  elimination) are skipped — they contribute zero to ``total_C`` and
+  the per-diagram path's ``delta_contributions`` accounting isn't
+  re-built across the group.
+
+Analytic merged-residue path (Stage 4a, opt-in via
+``USE_GROUPED_ANALYTIC_MODESUM``)
+---------------------------------------------------------------------
+For each per-subset polytope with m ∈ {2, ≥3}, the grouped path
+builds a merged-residue tensor
+
+    B_α = Σ_td (cp_td · Π_δedge δ_coeff_td) · Π_smooth_edge C^{(td)}_{α_e, e}
+
+over multi-indices α = (α_1, …, α_E) of per-edge poles, then routes
+through the existing per-diagram analytic evaluators
+(``_integrate_2d_polygon_modesum`` for m=2,
+``_integrate_nd_polytope_poset_modesum`` for m≥3) via a
+``pole_tuples`` iterator override.  Each evaluator only ever needed
+``(coefficient, lambdas)`` per multi-index; for the per-diagram path
+the coefficient factorises as ``Π_e C_α_e`` (Cartesian product),
+whereas the grouped path replaces it with the summed tensor B_α —
+the underlying analytic integration is identical.  The precision
+floor drops from scipy.nquad's ~1e-8 (default ``epsrel``) to machine
+ε (~1e-15).
+
+The pole spectrum (``propagator_data['pole_vals']``) is identical
+across all td's in the group; only the residues differ via the per-td
+``(ri, pi)`` edge indices.  When non-local cumulant kernels are
+present (any ``vertex_leg_time`` is non-empty) the integrand contains
+non-rational factors and the analytic path cannot fire — the
+fast_callable + scipy fallback runs unchanged.
 
 If anything other than the simple Hawkes / multipop tree+1-loop case
 is exercised, this prototype should be carefully cross-checked against
@@ -79,10 +108,26 @@ from msrjd.integration.time_domain.propagator_td import (
 from msrjd.integration.time_domain.final_integral import (
     _lookup_prop_indices,
     _integrate_polytope,
+    _integrate_2d_polygon_modesum,
+    _integrate_nd_polytope_poset_modesum,
     _loop_number_from_graph,
+    EdgeModeSum,
     TAU_KERNEL_CAP,
 )
+# Module reference so per-call reads pick up notebook overrides of
+# ``USE_POLYGON_M2_INTEGRATOR`` / ``USE_POSET_INTEGRATOR``.
+from msrjd.integration.time_domain import final_integral as _fi_mod
 from msrjd.core.vertices import NoiseSourceType
+
+
+# Master switch for the analytic merged-residue path inside
+# ``integrate_grouped_diagram``.  When True (and the underlying
+# polygon/poset stage flags are also on), each per-subset analytic
+# call gets a ``pole_tuples`` iterator with merged residues
+# (B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}), giving machine
+# precision; when False, every subset falls through to scipy.nquad
+# (~1e-8 rel).
+USE_GROUPED_ANALYTIC_MODESUM = True
 
 
 def integrate_grouped_diagram(
@@ -381,6 +426,52 @@ def integrate_grouped_diagram(
                     pass
         per_td_cp.append(cp)
 
+    # ── Analytic mode-sum precomputation (Stage 4a: grouped polygon /
+    # grouped poset).  All td's in this group share the same pole
+    # spectrum (same propagator_data); residues differ only via the
+    # per-td (ri, pi) edge indices.  When non-local cumulant kernels
+    # are present (any vertex_leg_time is non-empty) the integrand
+    # contains non-rational factors and the analytic path cannot fire
+    # — fall back to scipy.nquad in that case.
+    pole_vals = propagator_data.get('pole_vals')
+    C_mats   = propagator_data.get('C_mats')
+    grouped_analytic_enabled = (
+        USE_GROUPED_ANALYTIC_MODESUM
+        and pole_vals is not None
+        and C_mats is not None
+        and not any(vlt for vlt in per_td_vertex_leg_time)
+    )
+    pred_edges = list(D.edges())
+    if grouped_analytic_enabled:
+        try:
+            from sage.all import CDF as _CDF
+            lambdas_per_pole = tuple(
+                complex(_CDF(SR(p))) * 1j for p in pole_vals
+            )
+            n_poles = len(lambdas_per_pole)
+            # per-td per-edge per-pole residue tensor.  Indexed by
+            # [td_idx][edge_in_pred_edges][pole_idx].  Built once here
+            # and reused across subsets.
+            residues_per_td_edge = []
+            for td in typed_diagrams:
+                this_td = []
+                for ek in pred_edges:
+                    ri, pi = _lookup_prop_indices(td, ek)
+                    this_td.append(tuple(
+                        complex(_CDF(SR(C_mats[k][pi, ri])))
+                        for k in range(n_poles)
+                    ))
+                residues_per_td_edge.append(this_td)
+        except (TypeError, ValueError, KeyError, IndexError):
+            grouped_analytic_enabled = False
+            lambdas_per_pole = ()
+            residues_per_td_edge = []
+            n_poles = 0
+    else:
+        lambdas_per_pole = ()
+        residues_per_td_edge = []
+        n_poles = 0
+
     # ── External-time bookkeeping (shared) ───────────────────────
     free_ext_idx = [
         j for j in range(len(ext_time_vars))
@@ -621,9 +712,113 @@ def integrate_grouped_diagram(
                     (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
                 )
 
+        # ── Analytic mode-sum path (Stage 4a grouped polygon / poset).
+        # Builds the merged-residue pole-tuple list
+        #   B_α = Σ_td (cp_td · Π_δedge δ_coeff_td) · Π_smooth_edge C^{(td)}_{α_e, e}
+        # and routes through the existing analytic evaluators
+        # (``_integrate_2d_polygon_modesum`` for m=2,
+        # ``_integrate_nd_polytope_poset_modesum`` for m≥3).  On any
+        # construction failure or analytic ``None`` return, falls
+        # through to the scipy.nquad path on the summed integrand.
+        grouped_pole_tuples = None
+        grouped_dummy_modes = None
+        if (grouped_analytic_enabled
+                and ((_fi_mod.USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
+                     or (_fi_mod.USE_POSET_INTEGRATOR and m_sub >= 3))
+                and contributing_td and not grouped_extra_tau):
+            try:
+                from sage.all import CDF as _CDF
+                # Per-contributing-td merged prefactor (cp_td · Π δ_coeffs).
+                merged_pf_per_j = []
+                for td_idx in contributing_td:
+                    ei = per_td_edge_info[td_idx]
+                    cp = per_td_cp[td_idx]
+                    merged = complex(_CDF(SR(cp)))
+                    for di in delta_edges:
+                        merged *= complex(
+                            _CDF(SR(ei[di]['delta_coeff']))
+                        )
+                    merged_pf_per_j.append(merged)
+                # Per-contributing-td smooth-edge residue arrays.
+                smooth_residues_per_j = [
+                    tuple(
+                        residues_per_td_edge[td_idx][ee]
+                        for ee in smooth_edges
+                    )
+                    for td_idx in contributing_td
+                ]
+                n_smooth = len(smooth_edges)
+                # Enumerate multi-indices over per-edge poles and sum
+                # residues across td's.
+                grouped_pole_tuples = []
+                idx_alpha = [0] * n_smooth
+                while True:
+                    B_alpha = 0.0 + 0.0j
+                    for j in range(len(merged_pf_per_j)):
+                        prod = merged_pf_per_j[j]
+                        for ee in range(n_smooth):
+                            prod *= smooth_residues_per_j[j][ee][idx_alpha[ee]]
+                        B_alpha += prod
+                    lambdas = tuple(
+                        lambdas_per_pole[idx_alpha[ee]]
+                        for ee in range(n_smooth)
+                    )
+                    grouped_pole_tuples.append((B_alpha, lambdas))
+                    # Advance multi-index.
+                    ee = 0
+                    while ee < n_smooth:
+                        idx_alpha[ee] += 1
+                        if idx_alpha[ee] < n_poles:
+                            break
+                        idx_alpha[ee] = 0
+                        ee += 1
+                    else:
+                        break
+                # smooth_edge_modes used only for n_smooth check inside
+                # the analytic evaluators; dummy with td[0]'s residues.
+                first_j = 0
+                grouped_dummy_modes = tuple(
+                    EdgeModeSum(
+                        ri=0, pi=0, delta_coeff=0.0 + 0.0j,
+                        modes=tuple(zip(
+                            smooth_residues_per_j[first_j][ee],
+                            lambdas_per_pole,
+                        )),
+                    )
+                    for ee in range(n_smooth)
+                )
+            except (TypeError, ValueError):
+                grouped_pole_tuples = None
+                grouped_dummy_modes = None
+
         # Build this subset's contribution closure.
-        def _make_subset_contrib(fc, cdata, m_val):
+        def _make_subset_contrib(fc, cdata, m_val,
+                                  pole_tuples=None, dummy_modes=None):
             def _contrib(free_vals):
+                # Analytic merged-residue path first.
+                if pole_tuples is not None and dummy_modes is not None:
+                    if m_val == 2:
+                        val = _integrate_2d_polygon_modesum(
+                            smooth_edge_modes=list(dummy_modes),
+                            prefactor_complex=1.0 + 0.0j,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                            pole_tuples=pole_tuples,
+                        )
+                        if val is not None:
+                            return val
+                    elif m_val >= 3:
+                        val = _integrate_nd_polytope_poset_modesum(
+                            smooth_edge_modes=list(dummy_modes),
+                            prefactor_complex=1.0 + 0.0j,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                            m=m_val,
+                            pole_tuples=pole_tuples,
+                        )
+                        if val is not None:
+                            return val
+                # scipy.nquad fallback on the SR-summed integrand.
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
@@ -635,6 +830,8 @@ def integrate_grouped_diagram(
         subset_contributions.append(
             _make_subset_contrib(
                 integrand_fc, subset_constraint_data, m_sub,
+                pole_tuples=grouped_pole_tuples,
+                dummy_modes=grouped_dummy_modes,
             )
         )
         subset_diagnostics.append({
@@ -643,6 +840,7 @@ def integrate_grouped_diagram(
             'status': 'evaluated',
             'm_after_delta': m_sub,
             'n_contributing_td': len(contributing_td),
+            'analytic_modesum': grouped_pole_tuples is not None,
         })
 
     # ── Final contribution callable (Wick contraction sum) ────────

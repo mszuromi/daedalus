@@ -825,6 +825,7 @@ def _integrate_nd_polytope_poset_modesum(
     free_ext_vals,
     m,
     bbox_cap=POLYGON_BBOX_CAP,
+    pole_tuples=None,
 ):
     r"""Analytic ``∫_{polytope} Π_e [Σ_α C_α exp(λ_α · Δt_e)] · pref
                                 ds_1 … ds_m`` for m ≥ 3 via causal-
@@ -919,7 +920,11 @@ def _integrate_nd_polytope_poset_modesum(
         for sigma in extensions
     ]
 
-    for C_prod, lambdas in _enumerate_pole_tuples(smooth_edge_modes):
+    pole_iter = (
+        pole_tuples if pole_tuples is not None
+        else _enumerate_pole_tuples(smooth_edge_modes)
+    )
+    for C_prod, lambdas in pole_iter:
         # α_v for each ORIGINAL integration variable.
         alphas_orig = [0.0 + 0.0j] * m
         gamma = 0.0 + 0.0j
@@ -958,6 +963,7 @@ def _integrate_2d_polygon_modesum(
     subset_constraint_data,
     free_ext_vals,
     bbox_cap=POLYGON_BBOX_CAP,
+    pole_tuples=None,
 ):
     r"""Analytic ∫∫_polygon Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
                   ds_0 ds_1.
@@ -977,6 +983,14 @@ def _integrate_2d_polygon_modesum(
         α_s = Σ_e a_int_e[0] · λ_α_e
         β_s = Σ_e a_int_e[1] · λ_α_e
         γ   = Σ_e λ_α_e · (c0_e + Σ_j a_ext_e[j]·t_free[j])
+
+    ``pole_tuples`` (optional): pre-built iterable of ``(C_prod, lambdas)``
+    pairs that replaces ``_enumerate_pole_tuples(smooth_edge_modes)``.
+    Used by the grouped Phase J path
+    (``msrjd.integration.time_domain.grouped_integral``) to inject a
+    merged-residue tensor ``B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}``
+    in place of the per-edge Cartesian product.  When ``None``, the
+    per-diagram default iterator runs.
     """
     import cmath
     n_smooth = len(smooth_edge_modes)
@@ -1017,7 +1031,11 @@ def _integrate_2d_polygon_modesum(
 
     total = 0.0 + 0.0j
     pref = complex(prefactor_complex)
-    for C_prod, lambdas in _enumerate_pole_tuples(smooth_edge_modes):
+    pole_iter = (
+        pole_tuples if pole_tuples is not None
+        else _enumerate_pole_tuples(smooth_edge_modes)
+    )
+    for C_prod, lambdas in pole_iter:
         # α_s, β_s, γ for this pole tuple.
         alpha_s = 0.0 + 0.0j
         beta_s = 0.0 + 0.0j
