@@ -742,6 +742,12 @@ def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
     if N == 0:
         # Empty product of integrals — by convention 1.
         return 1.0 + 0.0j
+    # Empty chain simplex (``upper ≤ lower``): integration domain has
+    # zero measure, integral is 0.  Crucial for τ < 0 configurations
+    # where the chain-bottom scalar lower (e.g. from leaf t = 0) and
+    # the chain-top scalar upper (e.g. from leaf t = τ < 0) cross.
+    if upper <= lower:
+        return 0.0 + 0.0j
 
     # Each term: (complex coefficient, list of remaining β values).
     # At level k (about to integrate the (k+1)-th variable in the
@@ -868,6 +874,25 @@ def _integrate_nd_polytope_poset_modesum(
         return None
     L = float(L_value) if L_value is not None else -float(bbox_cap)
     upper_per_var = _causal_poset_consistent_scalar_upper(poset)
+
+    # ── Maximality check (Fix 3, correctness) ────────────────────────
+    # The chain-simplex closed form only respects scalar upper bounds
+    # that sit on the CHAIN-TOP variable (a maximal element of the
+    # poset).  A scalar upper on a non-maximal variable would have to
+    # cap the chain mid-way, which the closed form doesn't encode —
+    # it'd over-integrate beyond that variable's cap.  Detect this
+    # case and fall back to scipy.nquad.
+    #
+    # Concretely: maximals = vertices with no outgoing poset edges.
+    # The chain-top of every linear extension is a maximal element.
+    # So scalar uppers must live exclusively on maximals.
+    has_outgoing = set()
+    for (u, _v) in poset.edges:
+        has_outgoing.add(u)
+    maximals = set(range(m)) - has_outgoing
+    for var in upper_per_var.keys():
+        if var not in maximals:
+            return None  # caller falls back to scipy
 
     # Pre-extract per-edge linear data (constant in pole tuple).
     c_ext_per_edge = [

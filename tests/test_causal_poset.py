@@ -351,6 +351,22 @@ def test_chain_simplex_returns_none_on_overflow():
     assert val is None
 
 
+def test_chain_simplex_empty_region_returns_zero():
+    """When ``upper <= lower`` the simplex region is empty — the
+    integral is exactly 0.  Earlier versions of the closed form
+    blithely computed ``(exp(β·upper) − exp(β·lower))/β`` and got a
+    spurious nonzero value, which contaminated cross-cumulant
+    computations at τ < 0 where chain-bottom L (from t = 0 leaf) and
+    chain-top U (from t = τ < 0 leaf) cross.
+    """
+    val = _exp_over_chain_simplex([0.5, 0.5, 0.5], lower=0.0,
+                                   upper=-10.0)
+    assert val == 0.0 + 0.0j
+    # Zero-width simplex (upper == lower): also 0.
+    val_zero = _exp_over_chain_simplex([0.5], lower=2.0, upper=2.0)
+    assert val_zero == 0.0 + 0.0j
+
+
 def test_chain_simplex_translation_invariance():
     """Shifting (L, U) by a common offset h multiplies the result
     by exp((Σ α) · h)."""
@@ -520,3 +536,88 @@ def test_poset_integrator_skips_m_less_than_3():
         m=2,
     )
     assert val is None
+
+
+def test_poset_integrator_falls_back_when_scalar_upper_not_on_maximal():
+    """The chain-simplex closed form only respects a scalar upper if
+    it sits on a maximal element of the poset (= the chain-top in
+    every linear extension).  A scalar upper on a middle vertex
+    would over-integrate beyond that vertex's cap; the integrator
+    should return None to trigger scipy fallback.
+
+    Topology: chain 0 → 1 → 2, with a scalar upper on vertex 1 (the
+    middle of the chain, not the maximal element 2).
+    """
+    smooth_edge_modes = [
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+    ]
+    subset_constraint_data = [
+        ([1.0, 0.0, 0.0], [], 0.0),      # s_0 > 0
+        ([-1.0, 1.0, 0.0], [], 0.0),     # s_1 > s_0
+        ([0.0, -1.0, 1.0], [], 0.0),     # s_2 > s_1
+        # Scalar upper on s_1 (the MIDDLE vertex, not the
+        # maximal element 2).  This is what the chain-simplex
+        # closed form cannot handle.
+        ([0.0, -1.0, 0.0], [], 5.0),     # s_1 < 5
+    ]
+    val = _integrate_nd_polytope_poset_modesum(
+        smooth_edge_modes,
+        prefactor_complex=1.0 + 0j,
+        subset_constraint_data=subset_constraint_data,
+        free_ext_vals=[],
+        m=3,
+    )
+    assert val is None, ('poset integrator should fall back when a '
+                          'scalar upper is on a non-maximal vertex')
+
+
+def test_poset_integrator_empty_simplex_returns_zero():
+    """End-to-end test: when the leaf-derived scalar lower and
+    scalar upper cross (e.g. τ < 0 cross-cumulant), the chain
+    simplex is empty and the integral is exactly 0.
+
+    Topology: ``leaf_in → v_0 → v_1 → v_2 → leaf_out`` with
+    leaf_in at t = 0 and leaf_out at t = -5.  Edge constraints are
+    Δt_e > 0 per edge, expressed as a_int·s + c_eff > 0:
+
+      * Δt_0 = s_0           → ``s_0 > 0``    (scalar lower)
+      * Δt_1 = s_1 − s_0     → inter-axis 0→1
+      * Δt_2 = s_2 − s_1     → inter-axis 1→2
+      * Δt_3 = -s_2 − 5       → ``s_2 < -5``  (scalar upper on maximal s_2)
+
+    So the chain simplex ``0 ≤ s_0 ≤ s_1 ≤ s_2 ≤ -5`` is empty.
+    The integrator should evaluate to 0+0j, NOT bail to None.
+    """
+    smooth_edge_modes = [
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -0.5 + 0j),)),
+    ]
+    subset_constraint_data = [
+        ([1.0, 0.0, 0.0], [], 0.0),      # Δt_0 = s_0 > 0
+        ([-1.0, 1.0, 0.0], [], 0.0),     # Δt_1 = s_1 - s_0 > 0
+        ([0.0, -1.0, 1.0], [], 0.0),     # Δt_2 = s_2 - s_1 > 0
+        ([0.0, 0.0, -1.0], [], -5.0),    # Δt_3 = -s_2 - 5 > 0  ⇔ s_2 < -5
+    ]
+    val = _integrate_nd_polytope_poset_modesum(
+        smooth_edge_modes,
+        prefactor_complex=1.0 + 0j,
+        subset_constraint_data=subset_constraint_data,
+        free_ext_vals=[],
+        m=3,
+    )
+    # Simplex is empty → result is 0, NOT None.
+    assert val is not None
+    assert abs(val) < 1e-12, (
+        f'expected ~0 for empty simplex, got {val}'
+    )
