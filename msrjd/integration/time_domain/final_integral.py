@@ -125,6 +125,34 @@ TAU_KERNEL_CAP = 50.0
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Heaviside guard mode
+# ───────────────────────────────────────────────────────────────────────
+# The polytope integrators wrap their integrand in
+# ``_make_heaviside_filtered_integrand`` which returns 0 whenever any
+# retarded ``Δt_e`` constraint is violated.  This is a defensive belt-
+# and-braces measure: the polytope BOUNDS we pass to scipy.quad / nquad
+# should already constrain the integration to the feasible region, so
+# the wrapper SHOULD be redundant — except in cases where the bounds
+# fall back to ``±OUTER_CAP`` (m=2 without a pure-s_1 constraint, or
+# m≥3 with deferred-inner constraints).  In those cases the cap is a
+# superset of the true polytope and the filter is what enforces
+# correctness.
+#
+# For paths where the bounds are EXACT (m=1, m=2 with pure_s_1), the
+# wrapper is pure overhead — ~few µs per integrand call.  At millions
+# of calls per τ sweep the cumulative cost is meaningful.
+#
+# Default: ``DEBUG_HEAVISIDE_GUARD = False`` skips the filter on the
+# exact-bound paths; the cap-fallback paths always apply it regardless
+# (correctness is non-negotiable).
+#
+# Set to ``True`` to force the filter on every path — useful when
+# validating a refactor that touches the polytope bound logic and you
+# want a belt-and-braces sanity check.
+DEBUG_HEAVISIDE_GUARD = False
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Tree-level vertex-time integration
 # ───────────────────────────────────────────────────────────────────────
 
@@ -1716,26 +1744,38 @@ def _integrate_1d_polytope(integrand_callable, s_constraints, free_ext_vals):
 
     A single axis is always cleanly bounded by the polytope (no deferred
     constraints possible since there's no inner axis to defer to), so
-    the bounds are exact.  We still apply the Heaviside filter for
-    uniformity with the 2D and nD paths and to guard against numerical
-    edge cases.
+    the bounds (L, U) returned by ``_resolve_1d_bounds`` are exact.
+    When ``DEBUG_HEAVISIDE_GUARD`` is False (production default) we
+    skip the Heaviside-filter wrapper entirely — it's redundant given
+    exact bounds and adds ~few µs per integrand call.  Flip the flag
+    to True if you want belt-and-braces validation.
     """
     L, U = _resolve_1d_bounds(s_constraints, s_index=0)
     if L >= U:
         return 0.0 + 0.0j
-    # Heaviside-filtered integrand (see _make_heaviside_filtered_integrand
-    # docstring).  For 1D this is a no-op since bounds are exact, but
-    # enforcing the filter is cheap and future-proofs against any stale
-    # residual after δ-sifting.
-    filt = _make_heaviside_filtered_integrand(
-        integrand_callable, s_constraints, free_ext_vals, m=1,
-    )
 
-    def f_re(s_0):
-        return filt(s_0).real
+    if DEBUG_HEAVISIDE_GUARD:
+        # Wrapped path: filter every integrand call against the
+        # retarded constraints.  No-op on the (L, U) interior but
+        # catches any drift if the bound resolver is wrong.
+        filt = _make_heaviside_filtered_integrand(
+            integrand_callable, s_constraints, free_ext_vals, m=1,
+        )
 
-    def f_im(s_0):
-        return filt(s_0).imag
+        def f_re(s_0):
+            return filt(s_0).real
+
+        def f_im(s_0):
+            return filt(s_0).imag
+    else:
+        # Fast path: bounds are exact so the filter is redundant.
+        free_ext_list = list(free_ext_vals)
+
+        def f_re(s_0):
+            return complex(integrand_callable(s_0, *free_ext_list)).real
+
+        def f_im(s_0):
+            return complex(integrand_callable(s_0, *free_ext_list)).imag
 
     from scipy.integrate import quad
     re_val, _ = quad(f_re, L, U, **QUAD_OPTS)
@@ -1869,15 +1909,33 @@ def _integrate_2d_polytope(integrand_callable, s_constraints, free_ext_vals):
 
     # Heaviside-filtered integrand: correctness no longer depends on
     # the (L1, U1) cap being exactly the true polytope projection.
-    filt = _make_heaviside_filtered_integrand(
-        integrand_callable, s_constraints, free_ext_vals, m=2,
-    )
+    # Skip the filter when bounds are EXACT (pure_s1_found) — the
+    # inner ``bounds_s0`` callable is exact too, so the integration
+    # domain matches the polytope precisely.  Cap-fallback path
+    # always needs the filter regardless of DEBUG_HEAVISIDE_GUARD.
+    needs_filter = (not pure_s1_found) or DEBUG_HEAVISIDE_GUARD
+    if needs_filter:
+        filt = _make_heaviside_filtered_integrand(
+            integrand_callable, s_constraints, free_ext_vals, m=2,
+        )
 
-    def f_re(s_0, s_1):
-        return filt(s_0, s_1).real
+        def f_re(s_0, s_1):
+            return filt(s_0, s_1).real
 
-    def f_im(s_0, s_1):
-        return filt(s_0, s_1).imag
+        def f_im(s_0, s_1):
+            return filt(s_0, s_1).imag
+    else:
+        free_ext_list = list(free_ext_vals)
+
+        def f_re(s_0, s_1):
+            return complex(
+                integrand_callable(s_0, s_1, *free_ext_list)
+            ).real
+
+        def f_im(s_0, s_1):
+            return complex(
+                integrand_callable(s_0, s_1, *free_ext_list)
+            ).imag
 
     re_val, _ = nquad(f_re, [bounds_s0, (L1, U1)], opts=QUAD_OPTS)
     try:
