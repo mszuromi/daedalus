@@ -314,6 +314,10 @@ def _exp_over_triangle(v0, v1, v2, alpha, beta):
     The vertices ``v0``, ``v1``, ``v2`` are 2-tuples of floats; ``α``,
     ``β`` are complex.  Affine-maps to the unit triangle and uses
     ``_exp_over_unit_triangle`` for the closed-form integral.
+
+    Returns ``None`` if the per-term exponential would overflow IEEE
+    double range — the polygon-modesum caller treats ``None`` as a
+    signal to abort the analytic path and fall back to scipy.nquad.
     """
     import cmath
     e1x = v1[0] - v0[0]
@@ -325,8 +329,20 @@ def _exp_over_triangle(v0, v1, v2, alpha, beta):
         return 0.0 + 0.0j  # degenerate
     p = alpha * e1x + beta * e1y
     q = alpha * e2x + beta * e2y
-    J = _exp_over_unit_triangle(p, q)
-    return abs(det) * cmath.exp(alpha * v0[0] + beta * v0[1]) * J
+    # Overflow guard (matches _exp_over_chain_simplex):  exp(z) blows
+    # past double range for Re(z) > ~709, and individual terms in J
+    # can hit ``exp(p)`` / ``exp(q)`` at any sign of Re.
+    EXP_REAL_LIMIT = 600.0
+    if (abs(p.real) > EXP_REAL_LIMIT
+            or abs(q.real) > EXP_REAL_LIMIT
+            or abs((alpha * v0[0] + beta * v0[1]).real)
+                > EXP_REAL_LIMIT):
+        return None
+    try:
+        J = _exp_over_unit_triangle(p, q)
+        return abs(det) * cmath.exp(alpha * v0[0] + beta * v0[1]) * J
+    except (OverflowError, ValueError):
+        return None
 
 
 def _clip_polygon_to_halfplane(polygon, a, b, c):
@@ -734,40 +750,62 @@ def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
     # coefficients on the outer variables we haven't touched yet.
     terms = [(1.0 + 0.0j, list(alphas))]
 
-    # Integrate variables 1, 2, …, N-1 (each bounded above by next
-    # variable in the chain).
-    for _ in range(N - 1):
-        new_terms = []
-        for (C, beta) in terms:
-            b_inner = beta[0]
-            if abs(b_inner) < eps:
-                return None
-            # Term A — upper-bound piece.  exp(b_inner · s_outer)
-            # merges with the existing exp(beta[1] · s_outer) factor,
-            # so the new β on the next-outer variable is
-            # ``b_inner + beta[1]``.
-            beta_A = list(beta[1:])
-            beta_A[0] = b_inner + beta_A[0]
-            new_terms.append((C / b_inner, beta_A))
-            # Term B — lower-bound piece.  Just pulls out a constant
-            # ``exp(b_inner · lower)`` factor; outer β unchanged.
-            beta_B = list(beta[1:])
-            new_terms.append((
-                -C * cmath.exp(b_inner * lower) / b_inner,
-                beta_B,
-            ))
-        terms = new_terms
+    # Overflow guard.  The 2^N term expansion can produce intermediate
+    # ``exp(b · L_or_U)`` factors whose Re(b · arg) exceeds the IEEE
+    # double's exp range (~709).  The TRUE integral is finite — the
+    # individual large terms cancel — but the cancellation is fragile
+    # and depends on bit-exact arithmetic the closed-form can't
+    # guarantee.  Safe path: detect the overflow risk, return None,
+    # let the caller fall back to scipy.nquad which handles the
+    # well-conditioned integral natively.
+    # ``EXP_REAL_LIMIT = 600`` leaves a margin below the 709 hard
+    # limit so accumulated roundoff doesn't push us over.
+    EXP_REAL_LIMIT = 600.0
 
-    # Outermost integration: s_N from lower to upper (both constants).
-    total = 0.0 + 0.0j
-    for (C, beta) in terms:
-        b = beta[0]
-        if abs(b) < eps:
-            # ∫_L^U exp(0 · s) ds = U − L
-            total += C * (upper - lower)
-        else:
-            total += C * (cmath.exp(b * upper)
-                          - cmath.exp(b * lower)) / b
+    try:
+        # Integrate variables 1, 2, …, N-1 (each bounded above by next
+        # variable in the chain).
+        for _ in range(N - 1):
+            new_terms = []
+            for (C, beta) in terms:
+                b_inner = beta[0]
+                if abs(b_inner) < eps:
+                    return None
+                if abs((b_inner * lower).real) > EXP_REAL_LIMIT:
+                    return None
+                # Term A — upper-bound piece.  exp(b_inner · s_outer)
+                # merges with the existing exp(beta[1] · s_outer)
+                # factor, so the new β on the next-outer variable is
+                # ``b_inner + beta[1]``.
+                beta_A = list(beta[1:])
+                beta_A[0] = b_inner + beta_A[0]
+                new_terms.append((C / b_inner, beta_A))
+                # Term B — lower-bound piece.  Just pulls out a
+                # constant ``exp(b_inner · lower)`` factor; outer β
+                # unchanged.
+                beta_B = list(beta[1:])
+                new_terms.append((
+                    -C * cmath.exp(b_inner * lower) / b_inner,
+                    beta_B,
+                ))
+            terms = new_terms
+
+        # Outermost integration: s_N from lower to upper (both
+        # constants).
+        total = 0.0 + 0.0j
+        for (C, beta) in terms:
+            b = beta[0]
+            if abs(b) < eps:
+                # ∫_L^U exp(0 · s) ds = U − L
+                total += C * (upper - lower)
+            else:
+                if (abs((b * upper).real) > EXP_REAL_LIMIT
+                        or abs((b * lower).real) > EXP_REAL_LIMIT):
+                    return None
+                total += C * (cmath.exp(b * upper)
+                              - cmath.exp(b * lower)) / b
+    except (OverflowError, ValueError):
+        return None
     return total
 
 
@@ -865,7 +903,13 @@ def _integrate_nd_polytope_poset_modesum(
             for v in range(m):
                 alphas_orig[v] += lam * a_int_per_edge[e][v]
             gamma += lam * c_ext_per_edge[e]
-        term_const = pref * C_prod * cmath.exp(gamma)
+        # Overflow guard on the γ-prefactor.
+        if abs(gamma.real) > 600.0:
+            return None
+        try:
+            term_const = pref * C_prod * cmath.exp(gamma)
+        except (OverflowError, ValueError):
+            return None
         if term_const == 0:
             continue
         # Sum across linear extensions of the poset.
@@ -875,8 +919,9 @@ def _integrate_nd_polytope_poset_modesum(
                 alphas_chain, L, float(U_ext),
             )
             if chain_val is None:
-                # Degenerate β in this chain — fall back to scipy
-                # for the WHOLE subset to keep the answer consistent.
+                # Degenerate β or overflow in this chain — fall back
+                # to scipy for the WHOLE subset to keep the answer
+                # consistent.
                 return None
             total += term_const * chain_val
     return total
@@ -958,13 +1003,25 @@ def _integrate_2d_polygon_modesum(
             alpha_s += lam * a0
             beta_s += lam * a1
             gamma += lam * c_ext_per_edge[e]
-        term_const = pref * C_prod * cmath.exp(gamma)
+        # Overflow guard on the γ-prefactor.  Same threshold as the
+        # per-triangle check inside ``_exp_over_triangle``.
+        if abs(gamma.real) > 600.0:
+            return None
+        try:
+            term_const = pref * C_prod * cmath.exp(gamma)
+        except (OverflowError, ValueError):
+            return None
         if term_const == 0:
             continue
-        # Triangle sum.
+        # Triangle sum.  ``_exp_over_triangle`` returns ``None`` when
+        # any per-term exp would overflow — propagate that as a
+        # whole-subset fallback signal.
         tri_sum = 0.0 + 0.0j
         for (v0, v1, v2) in triangles:
-            tri_sum += _exp_over_triangle(v0, v1, v2, alpha_s, beta_s)
+            tri_contrib = _exp_over_triangle(v0, v1, v2, alpha_s, beta_s)
+            if tri_contrib is None:
+                return None
+            tri_sum += tri_contrib
         total += term_const * tri_sum
     return total
 

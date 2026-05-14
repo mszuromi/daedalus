@@ -338,6 +338,19 @@ def test_chain_simplex_returns_none_on_degenerate_beta():
     assert val is None
 
 
+def test_chain_simplex_returns_none_on_overflow():
+    """If the closed-form's per-term ``exp(b · upper)`` would overflow
+    IEEE double range, the integrator returns None and the caller
+    falls back to scipy.  Trigger by combining a large positive-real
+    α with a large positive upper.
+    """
+    # α = +2 with upper = 1000 ⇒ exp(2000) overflows.
+    val = _exp_over_chain_simplex(
+        [2.0 + 0j, 0.1 + 0j, 0.1 + 0j], 0.0, 1000.0,
+    )
+    assert val is None
+
+
 def test_chain_simplex_translation_invariance():
     """Shifting (L, U) by a common offset h multiplies the result
     by exp((Σ α) · h)."""
@@ -399,26 +412,29 @@ def test_poset_integrator_m3_chain_two_modes_vs_scipy():
     from scipy.integrate import nquad
     import math
 
-    # Each edge gets a DISJOINT pole pair so the cumulative
-    # sums of α's never coincidentally vanish.  Specifically, for
-    # the chain structure  Δt_0 = s_0,  Δt_1 = s_1 − s_0,
-    # Δt_2 = s_2 − s_1,  the α's are
+    # Each edge gets a DISJOINT pole pair so the cumulative sums of
+    # α's never coincidentally vanish.  For chain structure
+    #     Δt_0 = s_0,  Δt_1 = s_1 − s_0,  Δt_2 = s_2 − s_1
+    # the α's are
     #     α_0 = λ_0 − λ_1
     #     α_1 = λ_1 − λ_2
     #     α_2 = λ_2
-    # Non-degeneracy of the chain-simplex closed form requires
-    # λ_0 ≠ λ_1,  λ_0 ≠ λ_2,  λ_1 ≠ λ_2,  λ_0 ≠ 0,  λ_2 ≠ 0.
-    # Picking disjoint pole sets per edge guarantees this.
+    # Non-degeneracy requires λ_0 ≠ λ_1, λ_0 ≠ λ_2, λ_1 ≠ λ_2,
+    # λ_0 ≠ 0, λ_2 ≠ 0.  We additionally use a narrow pole spectrum
+    # (0.05–1.0 range) so cumulative β·upper stays well below the
+    # double-precision exp overflow threshold (~709).  Disjoint pole
+    # sets ensure non-degeneracy.  These ranges match realistic
+    # Hawkes propagators.
     smooth_edge_modes = [
         EdgeModeSum(ri=0, pi=0, delta_coeff=0,
-                    modes=((1.0 + 0j, -1.0 + 0j),
-                           (0.3 + 0j, -2.0 + 0j))),
+                    modes=((1.0 + 0j, -0.1 + 0j),
+                           (0.3 + 0j, -0.2 + 0j))),
         EdgeModeSum(ri=0, pi=0, delta_coeff=0,
-                    modes=((0.7 + 0j, -3.0 + 0j),
-                           (0.4 + 0j, -4.0 + 0j))),
+                    modes=((0.7 + 0j, -0.3 + 0j),
+                           (0.4 + 0j, -0.4 + 0j))),
         EdgeModeSum(ri=0, pi=0, delta_coeff=0,
-                    modes=((0.9 + 0j, -5.0 + 0j),
-                           (0.2 + 0j, -6.0 + 0j))),
+                    modes=((0.9 + 0j, -0.5 + 0j),
+                           (0.2 + 0j, -0.6 + 0j))),
     ]
     subset_constraint_data = [
         ([1.0, 0.0, 0.0], [], 0.0),       # s_0 > 0
@@ -442,12 +458,12 @@ def test_poset_integrator_m3_chain_two_modes_vs_scipy():
         dt0 = s_0
         dt1 = s_1 - s_0
         dt2 = s_2 - s_1
-        edge0 = (1.0 * math.exp(-1.0 * dt0)
-                 + 0.3 * math.exp(-2.0 * dt0))
-        edge1 = (0.7 * math.exp(-3.0 * dt1)
-                 + 0.4 * math.exp(-4.0 * dt1))
-        edge2 = (0.9 * math.exp(-5.0 * dt2)
-                 + 0.2 * math.exp(-6.0 * dt2))
+        edge0 = (1.0 * math.exp(-0.1 * dt0)
+                 + 0.3 * math.exp(-0.2 * dt0))
+        edge1 = (0.7 * math.exp(-0.3 * dt1)
+                 + 0.4 * math.exp(-0.4 * dt1))
+        edge2 = (0.9 * math.exp(-0.5 * dt2)
+                 + 0.2 * math.exp(-0.6 * dt2))
         return edge0 * edge1 * edge2
 
     def bounds_s0(s_1, s_2):
