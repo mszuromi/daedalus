@@ -141,6 +141,29 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
     leaf_set = set(leaves)
     edges = list(D.edges())  # 3-tuples (u, v, label) — preserves multi-edges
 
+    # Precompute the zero/nonzero pattern of G_ft once.  Each leg
+    # assignment in the type-assignment backtracker would otherwise
+    # call ``SR(G_ft[pi, ri]).is_zero()`` — for a symbolic G_ft (legacy
+    # path) that triggers full Sage simplification on a long rational
+    # expression, easily costing several seconds per entry on rich
+    # theories.  Both ``e.is_zero()`` and ``e == SR(0)`` exhibit this
+    # pathology (they both invoke the SR canonicalisation engine).
+    # We only need this check to prune diagrams that would carry an
+    # identically-zero propagator; ``str(e) == '0'`` is a purely
+    # structural check that bypasses simplification entirely — it
+    # catches ONLY entries that are LITERALLY ``SR(0)`` (which is
+    # what build_propagator initialises empty cells with).  A
+    # mathematically-zero-after-cancellation entry would just
+    # enumerate a few extra diagrams that Phase J integrates to 0.
+    g_zero_mask = None
+    if G_ft is not None:
+        g_zero_mask = {}
+        for _i in range(G_ft.nrows()):
+            for _j in range(G_ft.ncols()):
+                # Pure-structural: '0' iff the entry is the literal
+                # SR(0); any non-trivial expression has a longer repr.
+                g_zero_mask[(_i, _j)] = (str(G_ft[_i, _j]) == '0')
+
     # Classify non-leaf vertices
     source_verts = []
     interaction_verts = []
@@ -223,6 +246,7 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
             yield from _try_build_diagram_no_internal(
                 prediagram, edges, ext_assignment, leaf_set, leaf_directions,
                 G_ft, resp_index, phys_index,
+                g_zero_mask=g_zero_mask,
             )
             continue
 
@@ -238,12 +262,14 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
                 ordered_internal, leaf_set, leaf_directions,
                 out_edges_of, in_edges_of,
                 G_ft, resp_index, phys_index,
+                g_zero_mask=g_zero_mask,
             )
 
 
 def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
                                     leaf_set, leaf_directions,
-                                    G_ft, resp_index, phys_index):
+                                    G_ft, resp_index, phys_index,
+                                    g_zero_mask=None):
     """Handle the case where all vertices are external legs (no internal vertices)."""
     edge_types = {}
     prop_indices = {}
@@ -269,9 +295,8 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
         # edge resp-tail → phys-head is ⟨φ_phys ñ_resp⟩ = G_ft[pi, ri].
         ri = resp_index[resp_field]
         pi = phys_index[phys_field]
-        if G_ft is not None:
-            if bool(SR(G_ft[pi, ri]).is_zero()):
-                return
+        if g_zero_mask is not None and g_zero_mask.get((pi, ri), False):
+            return
 
         edge_types[edge] = (resp_field, phys_field)
         prop_indices[edge] = (ri, pi)
@@ -283,7 +308,8 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
 def _try_build_diagram(prediagram, edges, ext_assignment, vert_assignment,
                         ordered_internal, leaf_set, leaf_directions,
                         out_edges_of, in_edges_of,
-                        G_ft, resp_index, phys_index):
+                        G_ft, resp_index, phys_index,
+                        g_zero_mask=None):
     """
     Given fixed external and vertex-type assignments, enumerate all valid
     leg matchings and check propagator consistency.
@@ -307,6 +333,7 @@ def _try_build_diagram(prediagram, edges, ext_assignment, vert_assignment,
         ordered_internal, leaf_set, leaf_directions,
         per_vertex_options, G_ft, resp_index, phys_index,
         vertex_idx=0, assigned_resp={}, assigned_phys={},
+        g_zero_mask=g_zero_mask,
     )
 
 
@@ -392,7 +419,8 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
 def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                ordered_internal, leaf_set, leaf_directions,
                per_vertex_options, G_ft, resp_index, phys_index,
-               vertex_idx, assigned_resp, assigned_phys):
+               vertex_idx, assigned_resp, assigned_phys,
+               g_zero_mask=None):
     """
     Recursive backtracking: assign leg matchings at each vertex, checking
     propagator consistency for fully-determined edges as we go.
@@ -433,7 +461,7 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
             pi = phys_index.get(phys_leg)
             if ri is None or pi is None:
                 return
-            if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
+            if g_zero_mask is not None and g_zero_mask.get((pi, ri), False):
                 return
 
             edge_types[edge] = (resp_leg, phys_leg)
@@ -472,7 +500,8 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                 # phys idx 0, resp idx 4) trip the bug and silently
                 # filter out diagrams with G_ft[ri, pi] == 0 even when
                 # G_ft[pi, ri] is nonzero.
-                if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
+                if g_zero_mask is not None and \
+                   g_zero_mask.get((pi, ri), False):
                     consistent = False; break
             # Also check edges where one side is from a leaf
             u, v = edge[0], edge[1]
@@ -484,7 +513,8 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                     pi = phys_index.get(phys_leg)
                     if ri is None or pi is None:
                         consistent = False; break
-                    if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
+                    if g_zero_mask is not None and \
+                       g_zero_mask.get((pi, ri), False):
                         consistent = False; break
             if edge in new_phys and u in leaf_set:
                 resp_leg = ext_assignment.get(u)
@@ -494,7 +524,8 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                     pi = phys_index.get(phys_leg)
                     if ri is None or pi is None:
                         consistent = False; break
-                    if G_ft is not None and bool(SR(G_ft[pi, ri]).is_zero()):
+                    if g_zero_mask is not None and \
+                       g_zero_mask.get((pi, ri), False):
                         consistent = False; break
 
         if consistent:
@@ -503,6 +534,7 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
                 ordered_internal, leaf_set, leaf_directions,
                 per_vertex_options, G_ft, resp_index, phys_index,
                 vertex_idx + 1, new_resp, new_phys,
+                g_zero_mask=g_zero_mask,
             )
 
 

@@ -650,38 +650,221 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
         prop['D_delta'] = _matrix(SR, D_delta_data)
     else:
         # ── Legacy symbolic path ────────────────────────────────
+        # Determinant-first: poles are zeros of num(det(K(ω))).  We do
+        # NOT use the largest entry-wise denominator of G_ft here —
+        # that polynomial can be a strict divisor of num(det(K)) when
+        # mode-i,j decouples from adj(K)[i,j] for all (i,j) (the
+        # entry-wise simplifier cancels those factors out), or it can
+        # be polluted by lingering filter-denominator artefacts.
+        # Either way the resulting roots disagree with the residue
+        # formula (which uses K_det_sr.derivative), giving missing or
+        # bogus poles and a magnitude error in C(τ).
         adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
         G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
         K_det_sr   = SR(K_ft_num.det())
-        char_poly = PR(1)
+        det_num_sr = SR(K_det_sr.numerator())
+        det_den_sr = SR(K_det_sr.denominator())
+        try:
+            coeffs_asc = [complex(c) for c in
+                          det_num_sr.coefficients(omega, sparse=False)]
+        except Exception as exc:
+            if verbose:
+                print(f'      det-num coeff extraction failed: {exc!r}; '
+                      f'falling back to entrywise-denominator method')
+            coeffs_asc = []
+        # Trim trailing near-zero leading coefficients (polynomial-degree
+        # noise from symbolic simplification).
+        if coeffs_asc:
+            tol_lead = 1e-12 * max(abs(c) for c in coeffs_asc)
+            while len(coeffs_asc) > 1 and \
+                  abs(coeffs_asc[-1]) < tol_lead:
+                coeffs_asc.pop()
+        if coeffs_asc and len(coeffs_asc) > 1:
+            char_poly = PR(coeffs_asc)
+        else:
+            # Fallback to old entrywise-denominator approach if the
+            # determinant coefficient extraction failed (e.g.
+            # K_det_sr still has free symbols beyond ω).
+            char_poly = PR(1)
+            for i in range(nf):
+                for j in range(nf):
+                    entry = SR(G_ft_num[i, j])
+                    if entry.is_zero():
+                        continue
+                    try:
+                        den_p = PR(entry.denominator())
+                    except Exception:
+                        try:
+                            rat = FR(entry)
+                            den_p = rat.denominator()
+                        except Exception:
+                            continue
+                    if den_p.degree() > char_poly.degree():
+                        char_poly = den_p
+        if verbose:
+            try:
+                deg_dnum = PR(det_num_sr).degree()
+            except Exception:
+                deg_dnum = -1
+            print(f'      char_poly degree = {char_poly.degree()}, '
+                  f'num(det K) degree = {deg_dnum}')
+        roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
+
+        # Cache K's entrywise polynomial-coefficient form for fast
+        # numerical evaluation at any ω — needed for the spurious-root
+        # filter below.  Same construction as the rich path.
+        K_num_coeffs = [[None] * nf for _ in range(nf)]
+        K_den_coeffs = [[None] * nf for _ in range(nf)]
         for i in range(nf):
             for j in range(nf):
-                entry = SR(G_ft_num[i, j])
-                if entry.is_zero():
+                e = SR(K_ft_num[i, j])
+                if e.is_zero():
+                    K_num_coeffs[i][j] = [0j]
+                    K_den_coeffs[i][j] = [1+0j]
                     continue
                 try:
-                    den_p = PR(entry.denominator())
+                    n = e.numerator()
+                    d = e.denominator()
+                    K_num_coeffs[i][j] = [complex(c)
+                        for c in n.coefficients(omega, sparse=False)]
+                    K_den_coeffs[i][j] = [complex(c)
+                        for c in d.coefficients(omega, sparse=False)]
                 except Exception:
-                    try:
-                        rat = FR(entry)
-                        den_p = rat.denominator()
-                    except Exception:
-                        continue
-                if den_p.degree() > char_poly.degree():
-                    char_poly = den_p
-        roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
+                    K_num_coeffs[i][j] = [complex(e)]
+                    K_den_coeffs[i][j] = [1+0j]
+
+        def _horner(coeffs, x):
+            if not coeffs:
+                return 0j
+            v = coeffs[-1]
+            for c in reversed(coeffs[:-1]):
+                v = v * x + c
+            return v
+
+        def _K_at(omega_val):
+            K_at = np.zeros((nf, nf), dtype=complex)
+            for i in range(nf):
+                for j in range(nf):
+                    n = _horner(K_num_coeffs[i][j], omega_val)
+                    d = _horner(K_den_coeffs[i][j], omega_val)
+                    K_at[i, j] = n / d if d != 0 else 0j
+            return K_at
 
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
-    # → causal closure of the inverse-FT contour).  Deduplicate.
+    # → causal closure of the inverse-FT contour).  Pre-dedup at the
+    # polynomial-root-finder accuracy scale (~1e-5).  Newton refinement
+    # below tightens each kept candidate to machine precision and
+    # provides the authoritative dedup pass.
     pruned = []
     for r in roots_all:
         if r.imag <= 1e-9:
             continue
-        if any(abs(r - q) < 1e-7 for q in pruned):
+        if any(abs(r - q) < 1e-5 for q in pruned):
             continue
         pruned.append(r)
     pole_vals = sorted(pruned, key=lambda r: (r.imag, r.real))
+
+    # Newton-refine each candidate on the numerical determinant.
+    # Sage's char-poly root finder is accurate to ~1e-5 absolute for
+    # this problem class.  A true zero of det(K) has |det| at machine
+    # precision after Newton; a "spurious" root either diverges or
+    # converges to a non-zero residual.  This separates the two
+    # cleanly without needing a parameter-dependent threshold.
+    try:
+        # Reference scale for the |det| acceptance check.
+        max_pole_imag = max((p.imag for p in pole_vals), default=1.0)
+        probe_omegas = [10.0 * max(1.0, max_pole_imag) * (1 + 0.1j),
+                        20.0 * max(1.0, max_pole_imag) * (1 + 0.1j),
+                        -15.0 * max(1.0, max_pole_imag) * (1 + 0.1j)]
+        probe_dets = []
+        for om in probe_omegas:
+            try:
+                probe_dets.append(abs(complex(
+                    np.linalg.det(_K_at(om)))))
+            except Exception:
+                pass
+        det_scale = max(probe_dets) if probe_dets else 1.0
+
+        def _newton_refine(omega_0, max_iter=25, tol_pos=1e-13):
+            om = complex(omega_0)
+            for _ in range(max_iter):
+                try:
+                    d = complex(np.linalg.det(_K_at(om)))
+                except Exception:
+                    return None
+                if not (np.isfinite(d.real) and np.isfinite(d.imag)):
+                    return None
+                if abs(d) < tol_pos:
+                    return om
+                h = 1e-7 * (1 + abs(om))
+                try:
+                    d_plus  = complex(np.linalg.det(_K_at(om + h)))
+                    d_minus = complex(np.linalg.det(_K_at(om - h)))
+                except Exception:
+                    return None
+                d_prime = (d_plus - d_minus) / (2 * h)
+                if abs(d_prime) < 1e-30:
+                    return None
+                step = d / d_prime
+                om -= step
+                if abs(step) < tol_pos:
+                    return om
+            return om
+
+        # Acceptance: |det(K(ω_refined))| / det_scale < 1e-9.  Newton
+        # on a true pole converges to |det| at machine precision
+        # (relative ratio 1e-15 to 1e-19); roots that converge to
+        # |det|/scale ~ 1e-7 or worse are spurious.  Clean 6+ order
+        # of magnitude gap between true and spurious.
+        tol_rel = 1e-9
+        refined = []
+        rejected = []
+        for pk in pole_vals:
+            r_ref = _newton_refine(pk)
+            if r_ref is None:
+                rejected.append((pk, None, 'no-converge'))
+                continue
+            try:
+                det_at = abs(complex(np.linalg.det(_K_at(r_ref))))
+            except Exception:
+                rejected.append((pk, None, 'det-eval-fail'))
+                continue
+            if not np.isfinite(det_at):
+                rejected.append((pk, det_at, 'det-not-finite'))
+                continue
+            # Newton can drift to the conjugate root in the lower half
+            # plane — reject those (not retarded).
+            if r_ref.imag <= 1e-9:
+                rejected.append((pk, det_at, 'drifted-to-LHP'))
+                continue
+            if det_at > tol_rel * det_scale:
+                rejected.append((pk, det_at, '|det| too large'))
+                continue
+            # Dedup after refinement: two candidates that Newton
+            # converges to the same root within ~1e-7 are duplicates
+            # of one physical pole.
+            if any(abs(r_ref - q) < 1e-7 for q in refined):
+                continue
+            refined.append(r_ref)
+        if verbose:
+            if rejected:
+                print(f'      Newton-refined: {len(refined)} kept, '
+                      f'{len(rejected)} rejected '
+                      f'(scale = {det_scale:.2e}):')
+                for pk, dv, reason in rejected:
+                    pk_str = f'{pk.real:+.6f}{pk.imag:+.6f}i'
+                    dv_str = (f'{dv:.2e}' if dv is not None
+                              else 'n/a')
+                    print(f'        ω = {pk_str}: |det| = {dv_str}'
+                          f'  [{reason}]')
+            else:
+                print(f'      Newton-refined: {len(refined)} kept '
+                      f'(scale = {det_scale:.2e})')
+        pole_vals = sorted(refined, key=lambda r: (r.imag, r.real))
+    except Exception as exc:
+        if verbose:
+            print(f'      Newton refinement skipped ({exc!r})')
 
     # For the heterogeneous-pop / numerical path: Newton-refine each
     # candidate root to machine-precision pole accuracy.  Sage's
