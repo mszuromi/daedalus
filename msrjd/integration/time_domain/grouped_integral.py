@@ -129,6 +129,156 @@ from msrjd.core.vertices import NoiseSourceType
 # (~1e-8 rel).
 USE_GROUPED_ANALYTIC_MODESUM = True
 
+# Overflow guard threshold (matches ``EXP_REAL_LIMIT`` in
+# final_integral.py).  ``cmath.exp(z.real > 709)`` raises
+# OverflowError on IEEE doubles; clip at 600 for headroom.
+_GROUPED_EXP_REAL_LIMIT = 600.0
+
+
+def _evaluate_grouped_m0_modesum(
+    pole_tuples,
+    subset_constraint_data,
+    free_ext_vals,
+):
+    """Analytic merged-residue evaluation for m=0 (no integration vars).
+
+    Returns ``Σ_α B_α · exp(Σ_e λ_α_e · Δt_e)`` after checking each
+    smooth-edge constraint ``Δt_e > 0`` (Θ(0) = 0 convention).  Returns
+    ``0`` if any constraint is violated, ``None`` on overflow.
+    """
+    import cmath
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        c_eff = float(c0) + sum(
+            float(a_ext[i]) * float(free_ext_vals[i])
+            for i in range(len(a_ext))
+        )
+        if c_eff <= 0:
+            return 0.0 + 0.0j
+    # ``a_int`` is empty for m=0; Δt_e = c_eff.
+    dt_per_edge = [
+        float(c0) + sum(
+            float(a_ext[i]) * float(free_ext_vals[i])
+            for i in range(len(a_ext))
+        )
+        for (_a_int, a_ext, c0) in subset_constraint_data
+    ]
+    total = 0.0 + 0.0j
+    for (B_alpha, lambdas) in pole_tuples:
+        gamma = 0.0 + 0.0j
+        for e in range(len(lambdas)):
+            gamma += lambdas[e] * dt_per_edge[e]
+        if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
+            return None
+        try:
+            total += B_alpha * cmath.exp(gamma)
+        except (OverflowError, ValueError):
+            return None
+    return total
+
+
+def _integrate_grouped_m1_modesum(
+    pole_tuples,
+    subset_constraint_data,
+    free_ext_vals,
+    bbox_cap,
+):
+    r"""Analytic merged-residue 1D integral.
+
+    Computes ``∫_L^U Σ_α B_α · exp(α_s · s + γ_α) ds`` where
+        α_s = Σ_e λ_α_e · a_int_e[0]
+        γ_α = Σ_e λ_α_e · c_ext_e,  c_ext_e = c0_e + Σ_j a_ext_e[j]·t_free[j]
+    and ``[L, U]`` is the polytope interval determined by the smooth-
+    edge constraints ``a_int_e[0]·s + c_ext_e > 0``.  When no
+    constraint bounds the integration variable on one side, the
+    corresponding L or U is treated as ±∞ — the boundary term in the
+    closed form is set to zero whenever the integrand decays in that
+    direction (``sign(Re α_s)`` matches), else the caller falls back
+    to scipy.nquad (which handles the unbounded endpoint with the
+    standard adaptive-quadrature substitution).  Clipping at
+    ±bbox_cap would otherwise leave a residual ``exp(α_s · bbox_cap)``
+    contribution at the ~1e-9 level for typical Hawkes timescales —
+    measured on ``quad_exp_k2_ell0`` before this fix.
+
+    Returns ``0`` if the interval is empty / infeasible, ``None`` on
+    overflow or unbounded interval with non-decaying integrand.
+    """
+    import cmath
+    import math
+    # Resolve the feasible interval — track unbounded sides exactly.
+    L = -math.inf
+    U = +math.inf
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        a = float(a_int[0]) if a_int else 0.0
+        c_eff = float(c0) + sum(
+            float(a_ext[i]) * float(free_ext_vals[i])
+            for i in range(len(a_ext))
+        )
+        if abs(a) < 1e-15:
+            if c_eff <= 0:
+                return 0.0 + 0.0j
+            continue
+        bound = -c_eff / a
+        if a > 0:
+            if bound > L:
+                L = bound
+        else:
+            if bound < U:
+                U = bound
+    if L >= U:
+        return 0.0 + 0.0j
+    L_inf = math.isinf(L)
+    U_inf = math.isinf(U)
+
+    # Sum the analytic 1D exponential integral term-by-term.
+    total = 0.0 + 0.0j
+    for (B_alpha, lambdas) in pole_tuples:
+        alpha_s = 0.0 + 0.0j
+        gamma = 0.0 + 0.0j
+        for e, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+            lam = lambdas[e]
+            a_int_v = float(a_int[0]) if a_int else 0.0
+            c_ext = float(c0) + sum(
+                float(a_ext[i]) * float(free_ext_vals[i])
+                for i in range(len(a_ext))
+            )
+            alpha_s += lam * a_int_v
+            gamma += lam * c_ext
+        if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
+            return None
+        try:
+            if abs(alpha_s) < 1e-15:
+                # α_s ≈ 0: integrand is constant in s.
+                if L_inf or U_inf:
+                    # Integral diverges; bail to scipy.nquad fallback.
+                    return None
+                contrib = (U - L) * cmath.exp(gamma)
+            else:
+                # ∫ exp(α_s · s + γ) ds = (exp(α_s·U+γ) - exp(α_s·L+γ)) / α_s
+                # At ±∞ the term vanishes iff sign(Re α_s) matches.
+                if U_inf:
+                    if alpha_s.real >= 0:
+                        return None  # would diverge at +∞
+                    term_U = 0.0 + 0.0j
+                else:
+                    arg = alpha_s * U + gamma
+                    if abs(arg.real) > _GROUPED_EXP_REAL_LIMIT:
+                        return None
+                    term_U = cmath.exp(arg)
+                if L_inf:
+                    if alpha_s.real <= 0:
+                        return None  # would diverge at -∞
+                    term_L = 0.0 + 0.0j
+                else:
+                    arg = alpha_s * L + gamma
+                    if abs(arg.real) > _GROUPED_EXP_REAL_LIMIT:
+                        return None
+                    term_L = cmath.exp(arg)
+                contrib = (term_U - term_L) / alpha_s
+        except (OverflowError, ValueError):
+            return None
+        total += B_alpha * contrib
+    return total
+
 
 def integrate_grouped_diagram(
     typed_diagrams,
@@ -722,10 +872,18 @@ def integrate_grouped_diagram(
         # through to the scipy.nquad path on the summed integrand.
         grouped_pole_tuples = None
         grouped_dummy_modes = None
+        # The analytic merged-residue path applies for m ∈ {0, 1, 2, ≥3}.
+        # m=2 routes through the polygon evaluator, m≥3 through the
+        # causal-poset evaluator, m=0/1 through dedicated grouped
+        # closed-form helpers above.  All four share the same
+        # ``(B_α, lambdas)`` pole-tuple construction.
         if (grouped_analytic_enabled
-                and ((_fi_mod.USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
-                     or (_fi_mod.USE_POSET_INTEGRATOR and m_sub >= 3))
-                and contributing_td and not grouped_extra_tau):
+                and contributing_td and not grouped_extra_tau
+                and (
+                    m_sub in (0, 1)
+                    or (_fi_mod.USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
+                    or (_fi_mod.USE_POSET_INTEGRATOR and m_sub >= 3)
+                )):
             try:
                 from sage.all import CDF as _CDF
                 # Per-contributing-td merged prefactor (cp_td · Π δ_coeffs).
@@ -796,8 +954,25 @@ def integrate_grouped_diagram(
                                   pole_tuples=None, dummy_modes=None):
             def _contrib(free_vals):
                 # Analytic merged-residue path first.
-                if pole_tuples is not None and dummy_modes is not None:
-                    if m_val == 2:
+                if pole_tuples is not None:
+                    if m_val == 0:
+                        val = _evaluate_grouped_m0_modesum(
+                            pole_tuples=pole_tuples,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                        )
+                        if val is not None:
+                            return val
+                    elif m_val == 1:
+                        val = _integrate_grouped_m1_modesum(
+                            pole_tuples=pole_tuples,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                            bbox_cap=_fi_mod.POLYGON_BBOX_CAP,
+                        )
+                        if val is not None:
+                            return val
+                    elif m_val == 2 and dummy_modes is not None:
                         val = _integrate_2d_polygon_modesum(
                             smooth_edge_modes=list(dummy_modes),
                             prefactor_complex=1.0 + 0.0j,
@@ -807,7 +982,7 @@ def integrate_grouped_diagram(
                         )
                         if val is not None:
                             return val
-                    elif m_val >= 3:
+                    elif m_val >= 3 and dummy_modes is not None:
                         val = _integrate_nd_polytope_poset_modesum(
                             smooth_edge_modes=list(dummy_modes),
                             prefactor_complex=1.0 + 0.0j,
