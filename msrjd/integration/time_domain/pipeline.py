@@ -254,6 +254,15 @@ def compute_correction_td(
             all_delta_contributions.extend(
                 result.get('delta_contributions', [])
             )
+            # Per-subset evaluator labels (e.g.
+            # 'polygon_modesum', 'fast_numpy', 'fast_callable') —
+            # bubble these up so the caller can see at a glance
+            # whether the analytic m=2 polygon integrator is firing.
+            subset_diags = result.get('subset_diagnostics', []) or []
+            subset_evaluators = [
+                d.get('evaluator') for d in subset_diags
+                if isinstance(d, dict) and d.get('status') == 'evaluated'
+            ]
             groups_out.append({
                 'kernel_id': idx,
                 'loop_number': loop_number,
@@ -268,6 +277,12 @@ def compute_correction_td(
                 'n_delta_contributions': len(
                     result.get('delta_contributions', [])
                 ),
+                'subset_evaluators': subset_evaluators,
+                'subset_m_values': [
+                    d.get('m_after_delta')
+                    for d in subset_diags
+                    if isinstance(d, dict) and d.get('status') == 'evaluated'
+                ],
             })
         else:
             groups_out.append({
