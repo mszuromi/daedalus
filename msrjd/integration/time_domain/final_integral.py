@@ -77,6 +77,7 @@ large negative `s`. (See the 2026-04-08 overflow fix in the CHANGELOG.)
 """
 
 import math
+from dataclasses import dataclass
 
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
 
@@ -86,6 +87,140 @@ from msrjd.integration.time_domain.propagator_td import (
     G_t_delta_coeff,
 )
 from msrjd.core.vertices import NoiseSourceType
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Canonical mode-sum representation of a propagator edge
+# ───────────────────────────────────────────────────────────────────────
+# Every retarded-propagator edge in a Feynman diagram decomposes as:
+#
+#     G_R[pi, ri](Δt)  =  delta_coeff · δ(Δt)
+#                       + Θ(Δt) · Σ_α  C_α · exp(λ_α · Δt)
+#
+# where ``λ_α = i·p_α`` for our Fourier convention and ``C_α`` is the
+# residue of the propagator matrix at pole ``p_α`` at position (pi, ri).
+#
+# The smooth-part data is currently re-extracted inside
+# ``_build_fast_subset_evaluator`` on every (diagram, subset) call,
+# even though it depends only on the (pi, ri) of the edge.  Lifting
+# the extraction to a per-edge step at the top of
+# ``integrate_diagram`` eliminates the redundant work and gives the
+# downstream integrators a clean, JSON-able data structure to consume.
+#
+# Spatial-extension hook: in a future spatial theory ``λ_α`` and
+# ``C_α`` become callables of momentum ``k`` rather than complex
+# scalars.  The integrator backends will then gain an outer loop over
+# momentum, but the EdgeModeSum interface stays the same.
+
+@dataclass(frozen=True)
+class EdgeModeSum:
+    """Numerical mode-sum representation of one propagator edge.
+
+    Fields
+    ------
+    ri, pi : int
+        Response-column and physical-row indices into the propagator
+        matrix.  Convention: ``G[pi, ri] = ⟨φ_pi  ñ_ri⟩``.
+    delta_coeff : complex
+        Coefficient of the δ(Δt) component (= the ω → ∞ limit of
+        ``G_FT[pi, ri]``, captured in ``propagator_data['D_delta']``).
+    modes : tuple of (complex C_α, complex λ_α)
+        Pole-residue pairs.  For our codebase's Fourier convention
+        (e^{-iωt}, retarded poles in Im(ω) > 0), ``λ_α = i · p_α``
+        where ``p_α ∈ propagator_data['pole_vals']`` and
+        ``C_α = C_mats[α][pi, ri]``.  The smooth-time-domain
+        propagator is ``Σ_α C_α · exp(λ_α · Δt)``.
+    dt_c0, dt_int_pairs, dt_ext_pairs :
+        Sparse linear form for ``Δt`` in terms of (integration vars,
+        free external times).  Filled in at the per-subset stage —
+        leave empty in the per-edge build, populate when the subset
+        is known.  Kept here so the same EdgeModeSum carries through
+        the whole evaluation chain.
+    """
+    ri: int
+    pi: int
+    delta_coeff: complex
+    modes: tuple                 # tuple[tuple[complex, complex], ...]
+    dt_c0: float = 0.0
+    dt_int_pairs: tuple = ()     # tuple[tuple[int, float], ...]
+    dt_ext_pairs: tuple = ()     # tuple[tuple[int, float], ...]
+
+
+def _build_edge_mode_sums(edge_info, propagator_data):
+    """Build one EdgeModeSum per entry of ``edge_info`` by extracting
+    the per-pole residue from ``propagator_data['C_mats']`` ONCE per
+    edge.
+
+    The ``dt_*`` fields are NOT populated here — those depend on
+    which integration variables survive δ-elimination in each subset
+    and are filled in at the subset level (see
+    ``_attach_subset_dt`` below).
+
+    Returns a list parallel to ``edge_info`` (same length, same
+    order).  If the propagator data is incomplete (missing ``pole_vals``
+    or ``C_mats``), returns ``None`` to signal that the caller should
+    fall back to the SR-symbolic path.
+    """
+    pole_vals = propagator_data.get('pole_vals')
+    C_mats = propagator_data.get('C_mats')
+    if pole_vals is None or C_mats is None:
+        return None
+
+    # Convert poles to complex once.
+    try:
+        modes_lambdas = tuple(complex(CDF(SR(p))) * 1j for p in pole_vals)
+    except Exception:
+        return None
+    n_poles = len(modes_lambdas)
+
+    edge_mode_sums = []
+    for ei in edge_info:
+        ri, pi = ei['ri'], ei['pi']
+        try:
+            residues = tuple(
+                complex(CDF(SR(C_mats[k][pi, ri])))
+                for k in range(n_poles)
+            )
+        except Exception:
+            return None
+        modes = tuple(zip(residues, modes_lambdas))
+        try:
+            d_c = complex(ei['delta_coeff'])
+        except Exception:
+            try:
+                d_c = complex(CDF(SR(ei['delta_coeff'])))
+            except Exception:
+                return None
+        edge_mode_sums.append(EdgeModeSum(
+            ri=ri, pi=pi,
+            delta_coeff=d_c,
+            modes=modes,
+        ))
+    return edge_mode_sums
+
+
+def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
+    """Return a copy of ``edge_mode_sum`` with the per-subset Δt
+    linear form (sparse coefficients on integration vars + free
+    external times, plus constant) populated.
+    """
+    int_pairs = tuple(
+        (i, float(a)) for i, a in enumerate(a_int)
+        if abs(float(a)) > 1e-15
+    )
+    ext_pairs = tuple(
+        (i, float(a)) for i, a in enumerate(a_ext)
+        if abs(float(a)) > 1e-15
+    )
+    return EdgeModeSum(
+        ri=edge_mode_sum.ri,
+        pi=edge_mode_sum.pi,
+        delta_coeff=edge_mode_sum.delta_coeff,
+        modes=edge_mode_sum.modes,
+        dt_c0=float(c0),
+        dt_int_pairs=int_pairs,
+        dt_ext_pairs=ext_pairs,
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -464,6 +599,16 @@ def integrate_diagram(
             'delta_coeff': delta_c,
             'smooth_factor': smooth_factor,
         })
+
+    # ── 3a. Mode-sum cache (Stage 2 of Phase J refactor) ─────────
+    # Build one ``EdgeModeSum`` per edge, extracting the per-pole
+    # residue from ``propagator_data['C_mats']`` ONCE.  The fast
+    # subset evaluator (the hot path for plain diagrams) reuses
+    # this across all 2^|branch| subsets instead of re-extracting
+    # residues from SR on every call.  ``None`` if the propagator
+    # data is incomplete, in which case the fast path stays on
+    # the legacy tuple-based extractor.
+    edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data)
 
     # Combined prefactor (numerical)
     cp = SR(combined_prefactor) if combined_prefactor is not None else SR(1)
@@ -954,13 +1099,29 @@ def integrate_diagram(
             # auto) diagrams keep the fast evaluator.
             _fast_eval = None
         else:
-            _fast_eval = _build_fast_subset_evaluator(
-                propagator_data,
-                prefactor_num,
-                smooth_edges_ri_pi,
-                subset_constraint_data,
-                m_sub,
-            )
+            # Stage 2: prefer the pre-built ``edge_mode_sums`` cache
+            # (residues + λ_α extracted once per edge at the top of
+            # integrate_diagram).  Falls back to the legacy in-call
+            # extraction path if the cache wasn't built (incomplete
+            # propagator_data).
+            if edge_mode_sums is not None:
+                smooth_edge_modes = [
+                    edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
+                ]
+                _fast_eval = _build_fast_subset_evaluator_from_modes(
+                    prefactor_num,
+                    smooth_edge_modes,
+                    subset_constraint_data,
+                    m_sub,
+                )
+            else:
+                _fast_eval = _build_fast_subset_evaluator(
+                    propagator_data,
+                    prefactor_num,
+                    smooth_edges_ri_pi,
+                    subset_constraint_data,
+                    m_sub,
+                )
         integrand_for_quad = (
             _fast_eval if _fast_eval is not None else integrand_fc_sub
         )
@@ -1505,6 +1666,83 @@ def _build_fast_subset_evaluator(
             for (i, a) in ext_pairs:
                 dt += a * args[m_offset + i]
             # Σ_k r_k · exp(i·p_k·dt)
+            edge_val = 0.0 + 0.0j
+            for (p, r) in zip(poles, residues):
+                edge_val += r * _cexp(1j * p * dt)
+            result *= edge_val
+        return result
+
+    return evaluator
+
+
+def _build_fast_subset_evaluator_from_modes(
+    prefactor_num,
+    smooth_edge_modes,
+    subset_constraint_data,
+    m_sub,
+):
+    """Stage 2 variant of ``_build_fast_subset_evaluator``.
+
+    Same per-call evaluator semantics as the legacy function, but
+    consumes pre-built ``EdgeModeSum`` objects (residues + λ_α
+    extracted once per edge at the top of ``integrate_diagram``)
+    instead of re-extracting them from ``propagator_data`` on every
+    call.  ``smooth_edge_modes`` is the subset of the diagram's
+    per-edge mode sums corresponding to the current smooth-set;
+    ``subset_constraint_data`` carries the Δt linear forms after
+    δ-elimination.
+
+    The two builders return numerically identical closures (same
+    edge-product loop, same complex-exp arithmetic); this one just
+    skips the per-call SR → complex coercion in the legacy hot path.
+    """
+    import cmath as _cmath
+
+    # ── Prefactor → complex scalar ──
+    try:
+        pref_c = complex(CDF(SR(prefactor_num)))
+    except Exception:
+        return None
+
+    # Edge-data tuples are constructed once here from the pre-built
+    # mode-sum cache + per-subset Δt constraint data.  No SR → CDF
+    # coercion happens — that already ran when the EdgeModeSum list
+    # was built.
+    edge_data = []
+    for ems, (a_int, a_ext, c0) in zip(
+        smooth_edge_modes, subset_constraint_data
+    ):
+        # Modes are already (C_α, λ_α) with λ_α = i·p_α; the legacy
+        # evaluator multiplies ``1j * p`` per-call which would double
+        # the imaginary factor.  Split modes back into separate
+        # poles/residues tuples for the SAME inner loop shape as the
+        # legacy evaluator.
+        residues = tuple(C for (C, _lam) in ems.modes)
+        # λ_α = i·p_α  ⇒  p_α = -i·λ_α = λ_α / 1j
+        poles = tuple((_lam / 1j) for (_C, _lam) in ems.modes)
+        int_pairs = tuple(
+            (i, float(a)) for i, a in enumerate(a_int)
+            if abs(float(a)) > 1e-15
+        )
+        ext_pairs = tuple(
+            (i, float(a)) for i, a in enumerate(a_ext)
+            if abs(float(a)) > 1e-15
+        )
+        edge_data.append(
+            (poles, residues, float(c0), int_pairs, ext_pairs)
+        )
+    edge_data_t = tuple(edge_data)
+    m_offset = m_sub
+    _cexp = _cmath.exp
+
+    def evaluator(*args):
+        result = pref_c
+        for (poles, residues, c0, int_pairs, ext_pairs) in edge_data_t:
+            dt = c0
+            for (i, a) in int_pairs:
+                dt += a * args[i]
+            for (i, a) in ext_pairs:
+                dt += a * args[m_offset + i]
             edge_val = 0.0 + 0.0j
             for (p, r) in zip(poles, residues):
                 edge_val += r * _cexp(1j * p * dt)
