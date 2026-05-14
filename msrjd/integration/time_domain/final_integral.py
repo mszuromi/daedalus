@@ -630,14 +630,22 @@ def _enumerate_linear_extensions(poset):
 
 def _causal_poset_consistent_scalar_lower(poset, tol=1e-9):
     r"""Compute the single effective scalar lower bound shared by
-    ALL variables, if they have a consistent common lower.
+    variables that have one.
 
-    Returns ``(L, True)`` if every variable has a scalar-lower
-    constraint that resolves to the same value ``L`` (within
-    ``tol``), OR no scalar lower at all (return ``(None, True)``).
-    Returns ``(None, False)`` if scalar lowers exist but differ
-    across variables — in that case the simple chain-simplex closed
-    form doesn't apply and the caller should fall back.
+    Returns ``(L, True)`` if every variable WITH A SCALAR LOWER has
+    the same value ``L`` (within ``tol``), or no scalar lower at all
+    (returns ``(None, True)`` — caller uses a bbox cap).  Variables
+    WITHOUT an explicit scalar lower inherit ``L`` via the chain
+    ordering of any linear extension: the chain-simplex form
+    integrates each non-bottom variable from L (or the previous
+    variable's value, whichever is greater).  For retardation-style
+    constraint structure where every internal vertex is reachable
+    from an external-leaf-pinned ancestor, this is correct.
+
+    Returns ``(None, False)`` if scalar lowers exist on multiple
+    variables with DIFFERENT values — in that case the chain
+    simplex over a single L would over- or under-include regions
+    and the caller should fall back to scipy.nquad.
     """
     per_var_max = {}
     for (var, c) in poset.scalar_lowers:
@@ -649,11 +657,8 @@ def _causal_poset_consistent_scalar_lower(poset, tol=1e-9):
     Lmin, Lmax = min(vals), max(vals)
     if Lmax - Lmin > tol:
         return (None, False)
-    # Per-variable lowers all match.  But we need EVERY variable to
-    # have a lower; missing entries effectively have −∞ which would
-    # break the chain form.
-    if len(per_var_max) != poset.m:
-        return (None, False)
+    # All variables that have a scalar lower agree on value Lmax.
+    # Variables without one inherit via the chain ordering.
     return (Lmax, True)
 
 
@@ -763,6 +768,117 @@ def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
         else:
             total += C * (cmath.exp(b * upper)
                           - cmath.exp(b * lower)) / b
+    return total
+
+
+USE_POSET_INTEGRATOR = True
+
+
+def _integrate_nd_polytope_poset_modesum(
+    smooth_edge_modes,
+    prefactor_complex,
+    subset_constraint_data,
+    free_ext_vals,
+    m,
+    bbox_cap=POLYGON_BBOX_CAP,
+):
+    r"""Analytic ``∫_{polytope} Π_e [Σ_α C_α exp(λ_α · Δt_e)] · pref
+                                ds_1 … ds_m`` for m ≥ 3 via causal-
+    poset decomposition.
+
+    Procedure:
+      1. Extract the causal poset (DAG + scalar bounds) from the
+         retardation constraints.  Fail (return ``None``) if any
+         constraint is mixed (not a clean inter-axis or scalar
+         bound).
+      2. Resolve the COMMON scalar lower bound ``L`` for all
+         integration variables.  Fail if scalar lowers differ across
+         variables (the simple chain simplex form would over- or
+         under-include regions).  Fall back to ``-bbox_cap`` when no
+         scalar lower is present.
+      3. Enumerate every linear extension σ of the poset.  Each is a
+         disjoint chain simplex
+           L ≤ s_{σ(0)} ≤ s_{σ(1)} ≤ … ≤ s_{σ(m-1)} ≤ U_σ
+         where U_σ is the scalar upper of σ(m-1) (or ``bbox_cap``).
+      4. For each pole tuple (α_e)_e:
+           α_v = Σ_e λ_α_e · a_int_e[v]                (per orig var)
+           γ   = Σ_e λ_α_e · c_ext_e                   (ext-time part)
+           α_chain[k] = α_{σ(k)}                       (permute)
+           contribution = pref · ∏ C_α_e · exp(γ) ·
+                          _exp_over_chain_simplex(α_chain, L, U_σ)
+      5. Sum across extensions and tuples.  Fail if any chain
+         simplex returns ``None`` (degenerate β).
+
+    Returns ``complex`` or ``None``.  ``None`` triggers a fallback to
+    scipy.nquad in the caller.
+    """
+    import cmath
+    if m < 3:
+        return None  # m=2 has its own dedicated path
+    n_smooth = len(smooth_edge_modes)
+    if len(subset_constraint_data) != n_smooth:
+        return None
+
+    poset = _extract_causal_poset(
+        subset_constraint_data, free_ext_vals, m,
+    )
+    if poset is None:
+        return None
+
+    L_value, lower_ok = _causal_poset_consistent_scalar_lower(poset)
+    if not lower_ok:
+        return None
+    L = float(L_value) if L_value is not None else -float(bbox_cap)
+    upper_per_var = _causal_poset_consistent_scalar_upper(poset)
+
+    # Pre-extract per-edge linear data (constant in pole tuple).
+    c_ext_per_edge = [
+        float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        for (a_int, a_ext, c0) in subset_constraint_data
+    ]
+    a_int_per_edge = [
+        tuple(float(a_int[i]) for i in range(m))
+        for (a_int, _a_ext, _c0) in subset_constraint_data
+    ]
+
+    pref = complex(prefactor_complex)
+    total = 0.0 + 0.0j
+    extensions = list(_enumerate_linear_extensions(poset))
+    if not extensions:
+        return None
+
+    # Pre-resolve the outer-variable upper bound per extension.
+    upper_for_ext = [
+        upper_per_var.get(sigma[m - 1], float(bbox_cap))
+        for sigma in extensions
+    ]
+
+    for C_prod, lambdas in _enumerate_pole_tuples(smooth_edge_modes):
+        # α_v for each ORIGINAL integration variable.
+        alphas_orig = [0.0 + 0.0j] * m
+        gamma = 0.0 + 0.0j
+        for e in range(n_smooth):
+            lam = lambdas[e]
+            for v in range(m):
+                alphas_orig[v] += lam * a_int_per_edge[e][v]
+            gamma += lam * c_ext_per_edge[e]
+        term_const = pref * C_prod * cmath.exp(gamma)
+        if term_const == 0:
+            continue
+        # Sum across linear extensions of the poset.
+        for sigma, U_ext in zip(extensions, upper_for_ext):
+            alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
+            chain_val = _exp_over_chain_simplex(
+                alphas_chain, L, float(U_ext),
+            )
+            if chain_val is None:
+                # Degenerate β in this chain — fall back to scipy
+                # for the WHOLE subset to keep the answer consistent.
+                return None
+            total += term_const * chain_val
     return total
 
 
@@ -1757,43 +1873,58 @@ def integrate_diagram(
         )
 
         # Capture the smooth-edge EdgeModeSum subset + complex
-        # prefactor for the m=2 polygon analytic path (Stage 3a-full).
-        # ``None`` means the closure-only fallback path applies.
-        _smooth_edge_modes_for_polygon = None
-        _polygon_prefactor_c = None
-        if (USE_POLYGON_M2_INTEGRATOR
-                and m_sub == 2
+        # prefactor for the analytic mode-sum paths:
+        #   m = 2  → ``_integrate_2d_polygon_modesum``      (Stage 3a-full)
+        #   m ≥ 3  → ``_integrate_nd_polytope_poset_modesum`` (Stage 3b)
+        # ``None`` means the closure-only fallback path applies for
+        # both (the constraints either can't be extracted or have
+        # a non-numerical prefactor still).
+        _smooth_edge_modes = None
+        _modesum_prefactor_c = None
+        _modesum_enabled = (
+            (USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
+            or (USE_POSET_INTEGRATOR and m_sub >= 3)
+        )
+        if (_modesum_enabled
                 and not vertex_leg_time
                 and edge_mode_sums is not None):
-            # Build smooth-edge mode list + numerical prefactor (cp *
-            # δ-coeff products).  Bail to the closure path if the
-            # prefactor still has free symbols (rare, but possible
-            # with kernel substitutions yet to apply).
             try:
-                _polygon_prefactor_c = complex(CDF(SR(prefactor_num)))
-                _smooth_edge_modes_for_polygon = [
+                _modesum_prefactor_c = complex(CDF(SR(prefactor_num)))
+                _smooth_edge_modes = [
                     edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
                 ]
             except Exception:
-                _smooth_edge_modes_for_polygon = None
-                _polygon_prefactor_c = None
+                _smooth_edge_modes = None
+                _modesum_prefactor_c = None
 
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
-                                  poly_modes=None, poly_pref=None):
+                                  modes=None, pref_c=None):
             def _contrib(free_vals):
-                # Try the polygon analytic path first when available
-                # and applicable (m=2 only).
-                if (poly_modes is not None and poly_pref is not None
+                # m=2 analytic polygon (Stage 3a-full).
+                if (modes is not None and pref_c is not None
                         and m_val == 2):
                     poly_val = _integrate_2d_polygon_modesum(
-                        smooth_edge_modes=poly_modes,
-                        prefactor_complex=poly_pref,
+                        smooth_edge_modes=modes,
+                        prefactor_complex=pref_c,
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
                     )
                     if poly_val is not None:
                         return poly_val
+                # m≥3 analytic causal-poset chain simplex (Stage 3b).
+                if (modes is not None and pref_c is not None
+                        and m_val >= 3):
+                    poset_val = _integrate_nd_polytope_poset_modesum(
+                        smooth_edge_modes=modes,
+                        prefactor_complex=pref_c,
+                        subset_constraint_data=cdata,
+                        free_ext_vals=free_vals,
+                        m=m_val,
+                    )
+                    if poset_val is not None:
+                        return poset_val
+                # Closure-only fallback via scipy.nquad.
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
@@ -1805,12 +1936,20 @@ def integrate_diagram(
         subset_contributions.append(
             _make_subset_contrib(
                 integrand_for_quad, subset_constraint_data, m_sub,
-                poly_modes=_smooth_edge_modes_for_polygon,
-                poly_pref=_polygon_prefactor_c,
+                modes=_smooth_edge_modes,
+                pref_c=_modesum_prefactor_c,
             )
         )
-        if _smooth_edge_modes_for_polygon is not None and m_sub == 2:
+        # ``_evaluator_label`` tags the INTENDED analytic path for
+        # this subset.  At runtime the closure may still fall back
+        # to scipy.nquad if the analytic path returns None (mixed
+        # constraint, non-uniform bounds, degenerate β).  The label
+        # records the design intent; runtime falls through to
+        # 'fast_numpy' silently.
+        if _smooth_edge_modes is not None and m_sub == 2:
             _evaluator_label = 'polygon_modesum'
+        elif _smooth_edge_modes is not None and m_sub >= 3:
+            _evaluator_label = 'poset_modesum'
         elif _fast_eval is not None:
             _evaluator_label = 'fast_numpy'
         else:

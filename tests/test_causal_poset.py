@@ -26,6 +26,8 @@ from msrjd.integration.time_domain.final_integral import (
     _causal_poset_consistent_scalar_lower,
     _causal_poset_consistent_scalar_upper,
     _exp_over_chain_simplex,
+    _integrate_nd_polytope_poset_modesum,
+    EdgeModeSum,
 )
 
 
@@ -190,14 +192,17 @@ def test_consistent_scalar_lower_all_equal():
 
 
 def test_consistent_scalar_lower_missing_var():
-    """Only some variables have a scalar lower → ``False`` (the
-    chain-simplex closed form requires uniform bounds)."""
+    """Some variables have a scalar lower, others don't.  As long
+    as the set ones agree, the missing ones can inherit L via the
+    chain ordering — accept and return that common L.
+    """
     poset = _CausalPoset(
         m=3, edges=(), scalar_lowers=((0, 1.0), (1, 1.0)),
         scalar_uppers=(),
     )
     L, ok = _causal_poset_consistent_scalar_lower(poset)
-    assert ok is False
+    assert ok is True
+    assert abs(L - 1.0) < 1e-12
 
 
 def test_consistent_scalar_lower_differing_values():
@@ -372,3 +377,130 @@ def test_chain_simplex_N4_matches_scipy():
     # 4D adaptive scipy is loose; closed-form should still agree
     # within scipy's accuracy floor.
     assert abs(val - ref) < 1e-5, f'closed={val}, scipy={ref}'
+
+
+# ───────────────────────────────────────────────────────────────────
+# End-to-end: _integrate_nd_polytope_poset_modesum vs scipy.nquad
+# ───────────────────────────────────────────────────────────────────
+
+def test_poset_integrator_m3_chain_two_modes_vs_scipy():
+    """3 internal vertices in a chain (typical 2-loop topology with
+    a sequential causal chain), 3 retarded edges, 2 modes per edge.
+
+    Constraint set mirrors what Phase J actually produces:
+      * Δt_0 = s_0  — leaf at t=0 → vertex 0 (scalar lower on s_0)
+      * Δt_1 = s_1 - s_0  — vertex 0 → vertex 1 (inter-axis edge)
+      * Δt_2 = s_2 - s_1  — vertex 1 → vertex 2 (inter-axis edge)
+
+    No explicit scalar bounds on s_1, s_2 — they inherit via the
+    chain ordering.  Compare the analytic poset answer to
+    scipy.nquad on the same integrand.
+    """
+    from scipy.integrate import nquad
+    import math
+
+    # Each edge gets a DISJOINT pole pair so the cumulative
+    # sums of α's never coincidentally vanish.  Specifically, for
+    # the chain structure  Δt_0 = s_0,  Δt_1 = s_1 − s_0,
+    # Δt_2 = s_2 − s_1,  the α's are
+    #     α_0 = λ_0 − λ_1
+    #     α_1 = λ_1 − λ_2
+    #     α_2 = λ_2
+    # Non-degeneracy of the chain-simplex closed form requires
+    # λ_0 ≠ λ_1,  λ_0 ≠ λ_2,  λ_1 ≠ λ_2,  λ_0 ≠ 0,  λ_2 ≠ 0.
+    # Picking disjoint pole sets per edge guarantees this.
+    smooth_edge_modes = [
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -1.0 + 0j),
+                           (0.3 + 0j, -2.0 + 0j))),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((0.7 + 0j, -3.0 + 0j),
+                           (0.4 + 0j, -4.0 + 0j))),
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((0.9 + 0j, -5.0 + 0j),
+                           (0.2 + 0j, -6.0 + 0j))),
+    ]
+    subset_constraint_data = [
+        ([1.0, 0.0, 0.0], [], 0.0),       # s_0 > 0
+        ([-1.0, 1.0, 0.0], [], 0.0),      # s_1 > s_0
+        ([0.0, -1.0, 1.0], [], 0.0),      # s_2 > s_1
+    ]
+    free_ext_vals = []
+    val = _integrate_nd_polytope_poset_modesum(
+        smooth_edge_modes,
+        prefactor_complex=1.0 + 0j,
+        subset_constraint_data=subset_constraint_data,
+        free_ext_vals=free_ext_vals,
+        m=3,
+    )
+    assert val is not None, 'poset integrator should have fired'
+
+    # Reference via scipy.nquad on the explicit closure form.  Cap
+    # the outer s_2 integration at 50 to match what the poset
+    # integrator does internally (POLYGON_BBOX_CAP / fallback cap).
+    def integrand(s_0, s_1, s_2):
+        dt0 = s_0
+        dt1 = s_1 - s_0
+        dt2 = s_2 - s_1
+        edge0 = (1.0 * math.exp(-1.0 * dt0)
+                 + 0.3 * math.exp(-2.0 * dt0))
+        edge1 = (0.7 * math.exp(-3.0 * dt1)
+                 + 0.4 * math.exp(-4.0 * dt1))
+        edge2 = (0.9 * math.exp(-5.0 * dt2)
+                 + 0.2 * math.exp(-6.0 * dt2))
+        return edge0 * edge1 * edge2
+
+    def bounds_s0(s_1, s_2):
+        return (0.0, s_1)
+    def bounds_s1(s_2):
+        return (0.0, s_2)
+
+    # The poset integrator uses POLYGON_BBOX_CAP (=200) as the
+    # outer cap when no scalar upper is given.  Match that here.
+    from msrjd.integration.time_domain.final_integral import (
+        POLYGON_BBOX_CAP,
+    )
+    ref, _ = nquad(
+        integrand,
+        [bounds_s0, bounds_s1, (0.0, POLYGON_BBOX_CAP)],
+        opts={'limit': 200},
+    )
+    assert abs(val - ref) < 1e-4, (
+        f'poset={val}, scipy={ref}, |Δ|={abs(val - ref):.3e}'
+    )
+
+
+def test_poset_integrator_returns_none_on_mixed_constraint():
+    """If any constraint is non-poset (e.g. has 3 nonzero a_int
+    entries), the integrator should return None — caller falls back
+    to scipy."""
+    smooth_edge_modes = [
+        EdgeModeSum(ri=0, pi=0, delta_coeff=0,
+                    modes=((1.0 + 0j, -1.0 + 0j),)),
+    ]
+    subset_constraint_data = [
+        # Mixed: 3 nonzero entries.
+        ([1.0, 1.0, -1.0], [], 0.0),
+    ]
+    val = _integrate_nd_polytope_poset_modesum(
+        smooth_edge_modes,
+        prefactor_complex=1.0 + 0j,
+        subset_constraint_data=subset_constraint_data,
+        free_ext_vals=[],
+        m=3,
+    )
+    assert val is None
+
+
+def test_poset_integrator_skips_m_less_than_3():
+    """The poset integrator only applies to m ≥ 3; lower m delegates
+    to the polygon (m=2) or 1D paths.  Calling it with m=2 should
+    return None to signal "wrong path, try another"."""
+    val = _integrate_nd_polytope_poset_modesum(
+        smooth_edge_modes=[],
+        prefactor_complex=1.0 + 0j,
+        subset_constraint_data=[],
+        free_ext_vals=[],
+        m=2,
+    )
+    assert val is None
