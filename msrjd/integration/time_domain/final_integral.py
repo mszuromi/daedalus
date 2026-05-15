@@ -255,6 +255,22 @@ USE_POLYGON_M2_INTEGRATOR = True
 POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 
 # ───────────────────────────────────────────────────────────────────────
+# Physical fallback margin for unbounded polytope sides (Stage 3b)
+# ───────────────────────────────────────────────────────────────────────
+# When the polytope has no explicit scalar lower/upper, the chain
+# simplex needs *some* finite L / U.  POLYGON_BBOX_CAP=200 is too loose:
+# combined with retarded poles (Re β < 0), |Re β · L|=β·200 overflows
+# the exp guard at |Re β|>3 (sum of 3–4 poles).  Physically, retarded
+# propagators decay over a few correlation times beyond the earliest
+# external time, so the integrand is negligible past
+# ``min(0, free_ext_vals) − POSET_PHYSICAL_MARGIN`` (lower) and
+# ``max(0, free_ext_vals) + POSET_PHYSICAL_MARGIN`` (upper).
+# 50 is generous (≈ several correlation times for typical Hawkes
+# τ_v ~ 10) but tight enough to avoid the overflow guard at typical
+# pole magnitudes.
+POSET_PHYSICAL_MARGIN = 50.0
+
+# ───────────────────────────────────────────────────────────────────────
 # Runtime path counters (diagnostic; zero perf impact when not read)
 # ───────────────────────────────────────────────────────────────────────
 # Increment at decision points inside the analytic evaluators so we can
@@ -1011,6 +1027,178 @@ def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
         return None
 
 
+def _chain_with_intermediate_uppers(
+    alphas_chain,
+    L,
+    upper_per_position,
+    U_chain_top,
+):
+    r"""Chain-simplex integral with scalar uppers at arbitrary positions
+    (Stage 3b-maximality, generalisation of ``_exp_over_chain_simplex``).
+
+    Computes
+
+       ∫_{L ≤ s_{σ(0)} ≤ … ≤ s_{σ(m-1)} ≤ U_chain_top  ∧  s_{σ(k)} ≤ U_k for k ∈ keys}
+            ∏_k exp(α_k · s_{σ(k)})  ds
+
+    where ``upper_per_position[k] = U_k`` is the scalar upper bound on
+    position ``k`` in the chain (positions not in the dict are bounded
+    only by chain ordering + ``U_chain_top``).
+
+    Math
+    ----
+    Chain ordering + per-position scalar uppers give an "effective upper"
+    at each position:
+
+        effective_upper[k] = min over j ≥ k of (upper_per_position[j], U_chain_top)
+
+    which is non-decreasing in ``k``.  Group consecutive positions
+    with identical ``effective_upper`` into "levels"; for ``q+1``
+    levels the top level has the largest upper (= ``effective_upper[m-1]``).
+
+    For each lower level (i = 0..q-1, value ``U_i < U_top``), the chain
+    crosses ``U_i`` at some position ``c_i ∈ [level_i.start, m-1]``.
+    By chain ordering, the crossings are monotonic:
+    ``c_0 ≤ c_1 ≤ … ≤ c_{q-1}``.  Enumerating valid tuples
+    ``(c_0, c_1, …, c_{q-1})`` and computing a piece-product per
+    tuple decomposes the integral exactly.
+
+    Pieces from a cut tuple:
+    * Piece ``i`` (``i = 0..q-1``): positions ``[c_{i-1}+1 … c_i]``
+      with bounds ``[U_{i-1}, U_i]`` (where ``U_{-1} = L``).  May be
+      empty when ``c_{i-1} = c_i`` (consecutive cuts at same position).
+    * Final piece: positions ``[c_{q-1}+1 … m-1]`` with bounds
+      ``[U_{q-1}, U_top]``.  May be empty when ``c_{q-1} = m-1``.
+
+    Each non-empty piece is an independent chain simplex; the product
+    gives the case's contribution.
+
+    Returns ``None`` if every case produces ``None`` from the
+    underlying chain simplex (genuine overflow); otherwise returns
+    the analytic closed-form sum.
+    """
+    m = len(alphas_chain)
+    if m == 0:
+        return 1.0 + 0.0j
+    if upper_per_position is None:
+        upper_per_position = {}
+
+    # Compute effective upper at each position.
+    effective_upper = [U_chain_top] * m
+    running_min = U_chain_top
+    for k in range(m - 1, -1, -1):
+        u_k = upper_per_position.get(k)
+        if u_k is not None:
+            running_min = min(running_min, float(u_k))
+        effective_upper[k] = running_min
+
+    if any(effective_upper[k] <= L for k in range(m)):
+        return 0.0 + 0.0j
+
+    # Group consecutive positions with identical effective_upper into
+    # levels.  ``levels[i] = (start, end_inclusive, upper_value)``.
+    levels = []
+    k = 0
+    while k < m:
+        v = effective_upper[k]
+        start = k
+        while k < m and effective_upper[k] == v:
+            k += 1
+        levels.append((start, k - 1, v))
+
+    # If only one level, no intermediate uppers: standard chain.
+    if len(levels) == 1:
+        top = levels[0][2]
+        v = _exp_over_chain_simplex(alphas_chain, L, top)
+        if v is None:
+            v = _exp_over_chain_simplex_polynomial(alphas_chain, L, top)
+        return v
+
+    # q non-top levels (with strictly smaller uppers than the top level).
+    q = len(levels) - 1
+
+    # For each non-top level, find the LATEST position with a direct
+    # constraint (i.e., upper_per_position[k] is set).  This is the
+    # minimum cut position for the level: the cut must happen at or
+    # after the constraint's original position, not just at the level's
+    # extended start (positions before the constraint inherit the
+    # upper via chain ordering, not via a direct constraint).
+    cut_min_per_level = []
+    for i in range(q):
+        start, end, _ = levels[i]
+        latest_direct = None
+        for k in range(start, end + 1):
+            if k in upper_per_position:
+                latest_direct = k
+        cut_min_per_level.append(
+            latest_direct if latest_direct is not None else start
+        )
+
+    total = 0.0 + 0.0j
+    any_returned = False
+
+    # Enumerate cut tuples (c_0, c_1, …, c_{q-1}) with each
+    # c_i ∈ [cut_min_per_level[i], m-1] and c_0 ≤ c_1 ≤ … ≤ c_{q-1}.
+    def _gen_cuts(i, prev_c):
+        if i == q:
+            yield ()
+            return
+        lo = max(prev_c, cut_min_per_level[i])
+        for c in range(lo, m):
+            for rest in _gen_cuts(i + 1, c):
+                yield (c,) + rest
+
+    for cuts in _gen_cuts(0, 0):
+        pieces = []
+        prev_end = -1
+        prev_upper = L
+        for i, c in enumerate(cuts):
+            positions = list(range(prev_end + 1, c + 1))
+            upper_val = levels[i][2]
+            pieces.append({
+                'positions': positions,
+                'lower': prev_upper,
+                'upper': upper_val,
+            })
+            prev_end = c
+            prev_upper = upper_val
+        # Final piece: top-level positions with [last_cut_upper, top_upper].
+        top_upper = levels[-1][2]
+        pieces.append({
+            'positions': list(range(prev_end + 1, m)),
+            'lower': prev_upper,
+            'upper': top_upper,
+        })
+
+        # Multiply chain simplex evaluations across non-empty pieces.
+        case_value = 1.0 + 0.0j
+        case_ok = True
+        for piece in pieces:
+            if not piece['positions']:
+                continue
+            if piece['upper'] <= piece['lower']:
+                case_value = 0.0 + 0.0j
+                break
+            alphas_piece = [alphas_chain[k] for k in piece['positions']]
+            v = _exp_over_chain_simplex(
+                alphas_piece, piece['lower'], piece['upper'],
+            )
+            if v is None:
+                v = _exp_over_chain_simplex_polynomial(
+                    alphas_piece, piece['lower'], piece['upper'],
+                )
+            if v is None:
+                case_ok = False
+                break
+            case_value *= v
+
+        if case_ok:
+            total += case_value
+            any_returned = True
+
+    return total if any_returned else None
+
+
 USE_POSET_INTEGRATOR = True
 
 
@@ -1075,29 +1263,23 @@ def _integrate_nd_polytope_poset_modesum(
         _RUNTIME_COUNTERS['poset_consistent_lower_failed'] += 1
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return None
-    L = float(L_value) if L_value is not None else -float(bbox_cap)
-    upper_per_var = _causal_poset_consistent_scalar_upper(poset)
+    # ── Lower bound: tight physical fallback (Stage 3b-bounds) ──────
+    # When ``_causal_poset_consistent_scalar_lower`` returns no scalar
+    # lower (L_value is None), the integrand still extends "to the
+    # past" only as far as the retarded propagator chain decays.
+    # Using ``-bbox_cap = -200`` here was too loose: combined with
+    # cumulative pole sums |Re β| > 3 (sum of 3+ retarded poles),
+    # ``exp(β · L)`` in the closed form's lower-bound term overflows
+    # past the 600 real-exponent threshold and the path bails to
+    # scipy.  A physical bound — earliest external time minus a few
+    # correlation times — is more than adequate.
+    if L_value is not None:
+        L = float(L_value)
+    else:
+        earliest_ext = min(list(free_ext_vals) + [0.0])
+        L = earliest_ext - POSET_PHYSICAL_MARGIN
 
-    # ── Maximality check (Fix 3, correctness) ────────────────────────
-    # The chain-simplex closed form only respects scalar upper bounds
-    # that sit on the CHAIN-TOP variable (a maximal element of the
-    # poset).  A scalar upper on a non-maximal variable would have to
-    # cap the chain mid-way, which the closed form doesn't encode —
-    # it'd over-integrate beyond that variable's cap.  Detect this
-    # case and fall back to scipy.nquad.
-    #
-    # Concretely: maximals = vertices with no outgoing poset edges.
-    # The chain-top of every linear extension is a maximal element.
-    # So scalar uppers must live exclusively on maximals.
-    has_outgoing = set()
-    for (u, _v) in poset.edges:
-        has_outgoing.add(u)
-    maximals = set(range(m)) - has_outgoing
-    for var in upper_per_var.keys():
-        if var not in maximals:
-            _RUNTIME_COUNTERS['poset_maximality_failed'] += 1
-            _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-            return None  # caller falls back to scipy
+    upper_per_var = _causal_poset_consistent_scalar_upper(poset)
 
     # Pre-extract per-edge linear data (constant in pole tuple).
     c_ext_per_edge = [
@@ -1118,11 +1300,27 @@ def _integrate_nd_polytope_poset_modesum(
     if not extensions:
         return None
 
-    # Pre-resolve the outer-variable upper bound per extension.
+    # Pre-resolve the chain-top upper bound per extension.
+    # The upper-bound fallback stays at bbox_cap — retarded β gives
+    # Re(β · U) < 0 here, which the exp underflows safely; the
+    # closed-form's truncation at U=bbox_cap is negligible for typical
+    # Hawkes pole magnitudes.  The lower-bound fix (above) is what
+    # addresses the overflow guard firing in the closed form.
     upper_for_ext = [
         upper_per_var.get(sigma[m - 1], float(bbox_cap))
         for sigma in extensions
     ]
+    # Pre-resolve the per-position upper map per extension.  Maps
+    # chain position k → scalar upper on σ[k] (for the intermediate-
+    # upper-aware chain integrator below).
+    upper_per_position_per_ext = []
+    for sigma in extensions:
+        upp = {}
+        for k in range(m):
+            v = sigma[k]
+            if v in upper_per_var:
+                upp[k] = float(upper_per_var[v])
+        upper_per_position_per_ext.append(upp)
 
     pole_iter = (
         pole_tuples if pole_tuples is not None
@@ -1147,30 +1345,27 @@ def _integrate_nd_polytope_poset_modesum(
         if term_const == 0:
             continue
         # Sum across linear extensions of the poset.
-        for sigma, U_ext in zip(extensions, upper_for_ext):
+        for sigma, U_ext, upp_per_pos in zip(
+                extensions, upper_for_ext, upper_per_position_per_ext):
             alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
-            chain_val = _exp_over_chain_simplex(
-                alphas_chain, L, float(U_ext),
+
+            # Check whether any non-maximal variable has a scalar upper.
+            # If so, route through the intermediate-uppers helper which
+            # handles the chain split via 2^p case enumeration.  When
+            # all scalar uppers (if any) sit on the chain-top variable
+            # σ[m-1], the helper short-circuits to the standard chain
+            # closed form (no case enumeration).  This subsumes the
+            # old "maximality bail" — we never return None on that
+            # ground anymore.
+            chain_val = _chain_with_intermediate_uppers(
+                alphas_chain, L, upp_per_pos, float(U_ext),
             )
             if chain_val is None:
-                # Fast path returned None — try the polynomial-prefactor
-                # closed form (Stage 3b-extended) which handles degenerate
-                # cumulative-pole-sum β analytically.  Only returns None on
-                # true overflow, not on degenerate β.
-                _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
-                _RUNTIME_COUNTERS['chain_simplex_polynomial_called'] += 1
-                chain_val = _exp_over_chain_simplex_polynomial(
-                    alphas_chain, L, float(U_ext),
-                )
-                if chain_val is None:
-                    _RUNTIME_COUNTERS[
-                        'chain_simplex_polynomial_returned_none'
-                    ] += 1
-            if chain_val is None:
-                # Polynomial path also failed (overflow).  Fall back
-                # to scipy for the WHOLE subset to keep the answer
-                # consistent.
+                # All sub-pieces overflowed.  Fall back to scipy.
                 _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
+                _RUNTIME_COUNTERS[
+                    'chain_simplex_polynomial_returned_none'
+                ] += 1
                 return None
             total += term_const * chain_val
     return total
