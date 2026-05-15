@@ -53,6 +53,20 @@ Conventions (fixed pipeline-wide)
 from sage.all import SR, I, exp, heaviside, matrix, CDF
 
 
+# Stage 4a optim (2026-05-15): the smooth-matrix simplify_full() pass
+# below is a Maxima round-trip per entry — measured at ~16% of
+# integrate_diagram wall on the k=2 ell=1 quad config.  After Stage 4a
+# opt #1, the smooth matrix is unused for analytic-eligible subsets
+# (which is the common case for plain rational-propagator diagrams),
+# so the simplification is dead weight in that path.  It's still
+# beneficial for NoiseSourceType-kernel diagrams whose SR-path
+# ``subset_factor.expand()`` walks the smooth entries.  Flip to
+# ``False`` to disable; the simplify can also be turned back on
+# locally if a diagnostic shows a non-trivial expand() slowdown on
+# the residual SR path.
+USE_SIMPLIFY_FULL_IN_GT = False
+
+
 def build_G_t_matrix(propagator_data, t_var, num_params=None):
     r"""
     Build the full time-domain retarded propagator `G_R(t)` as a
@@ -202,12 +216,13 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
     smooth = matrix(SR, n_propagator, n_propagator, 0)
     for k in range(len(pole_vals)):
         smooth = smooth + C_mats[k] * exp(I * pole_vals[k] * t_var)
-    try:
-        smooth = smooth.apply_map(lambda e: e.simplify_full())
-    except Exception:
-        # simplify_full may fail on expressions with numerical complex
-        # coefficients; fall back to unsimplified form.
-        pass
+    if USE_SIMPLIFY_FULL_IN_GT:
+        try:
+            smooth = smooth.apply_map(lambda e: e.simplify_full())
+        except Exception:
+            # simplify_full may fail on expressions with numerical
+            # complex coefficients; fall back to unsimplified form.
+            pass
 
     # Delta coefficients: the polynomial (non-proper) part of Ĝ(ω).
     #
