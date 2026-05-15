@@ -877,6 +877,138 @@ def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
     return total
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Numba-compiled chain simplex (fast-path companion to the function above)
+# ───────────────────────────────────────────────────────────────────────
+# Same algorithm as ``_exp_over_chain_simplex`` translated to a numba
+# ``@njit`` function operating on pre-allocated complex128 numpy
+# buffers.  Targets the chain simplex inner loop which post-Stage-3b is
+# the dominant per-(diagram, subset, pole-tuple, linear-extension)
+# cost.  Expected 30-100× per call vs the pure-Python version.
+#
+# Semantics MUST match the Python version bit-for-bit on every
+# converged result.  The Python version stays in place as the
+# reference / fallback (selected by ``USE_NUMBA_CHAIN_SIMPLEX = False``
+# or by the wrapper on a numba-import failure).
+import numpy as np
+
+try:
+    import numba as _numba
+    _HAVE_NUMBA = True
+except ImportError:
+    _HAVE_NUMBA = False
+    _numba = None
+
+USE_NUMBA_CHAIN_SIMPLEX = True
+
+
+if _HAVE_NUMBA:
+    @_numba.njit(cache=True)
+    def _exp_over_chain_simplex_numba_core(alphas, lower, upper, eps):
+        """Returns ``(status, value)``:
+            status = 0  → ``value`` is the integral
+            status = 1  → degenerate β (caller should fall back to
+                          polynomial-prefactor path)
+            status = 2  → overflow (caller returns None)
+        """
+        N = alphas.shape[0]
+        if N == 0:
+            return 0, 1.0 + 0.0j
+        if upper <= lower:
+            return 0, 0.0 + 0.0j
+
+        EXP_REAL_LIMIT = 600.0
+
+        # Buffer size = max possible term count = 2^(N-1).
+        max_terms = 1 << max(N - 1, 0)
+
+        # Ping-pong buffers for the doubling term list.
+        coefs_a = np.zeros(max_terms, dtype=np.complex128)
+        betas_a = np.zeros((max_terms, N), dtype=np.complex128)
+        coefs_b = np.zeros(max_terms, dtype=np.complex128)
+        betas_b = np.zeros((max_terms, N), dtype=np.complex128)
+
+        coefs_a[0] = 1.0 + 0.0j
+        for j in range(N):
+            betas_a[0, j] = alphas[j]
+        n_terms = 1
+
+        for level in range(N - 1):
+            n_remaining = N - level
+            new_n = 0
+            for i in range(n_terms):
+                b_inner = betas_a[i, 0]
+                if abs(b_inner) < eps:
+                    return 1, 0.0 + 0.0j
+                if abs((b_inner * lower).real) > EXP_REAL_LIMIT:
+                    return 2, 0.0 + 0.0j
+                exp_lower_val = np.exp(b_inner * lower)
+                C_i = coefs_a[i]
+
+                # Term A (upper-bound piece):
+                #   coef  = C / b_inner
+                #   β_new = (b_inner + β_old[1], β_old[2], …)
+                coefs_b[new_n] = C_i / b_inner
+                betas_b[new_n, 0] = b_inner + betas_a[i, 1]
+                for j in range(2, n_remaining):
+                    betas_b[new_n, j - 1] = betas_a[i, j]
+                new_n += 1
+
+                # Term B (lower-bound piece):
+                #   coef  = -C · exp(b_inner · lower) / b_inner
+                #   β_new = (β_old[1], β_old[2], …)
+                coefs_b[new_n] = -C_i * exp_lower_val / b_inner
+                for j in range(1, n_remaining):
+                    betas_b[new_n, j - 1] = betas_a[i, j]
+                new_n += 1
+
+            # Swap a ↔ b for next level.
+            tmp_c = coefs_a
+            coefs_a = coefs_b
+            coefs_b = tmp_c
+            tmp_b = betas_a
+            betas_a = betas_b
+            betas_b = tmp_b
+            n_terms = new_n
+
+        # Outermost integration: s_N from lower to upper.
+        total = 0.0 + 0.0j
+        for i in range(n_terms):
+            b = betas_a[i, 0]
+            C_i = coefs_a[i]
+            if abs(b) < eps:
+                total += C_i * (upper - lower)
+            else:
+                if (abs((b * upper).real) > EXP_REAL_LIMIT
+                        or abs((b * lower).real) > EXP_REAL_LIMIT):
+                    return 2, 0.0 + 0.0j
+                total += C_i * (np.exp(b * upper) - np.exp(b * lower)) / b
+
+        return 0, total
+
+
+def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
+    """Dispatcher: numba version when available + enabled, else Python.
+
+    Returns the integral value or ``None`` (degenerate β / overflow),
+    matching ``_exp_over_chain_simplex`` semantics exactly.
+    """
+    if not (_HAVE_NUMBA and USE_NUMBA_CHAIN_SIMPLEX):
+        return _exp_over_chain_simplex(alphas, lower, upper, eps)
+    try:
+        arr = np.asarray(alphas, dtype=np.complex128)
+        if arr.ndim != 1:
+            return _exp_over_chain_simplex(alphas, lower, upper, eps)
+        status, val = _exp_over_chain_simplex_numba_core(
+            arr, float(lower), float(upper), float(eps),
+        )
+    except Exception:
+        return _exp_over_chain_simplex(alphas, lower, upper, eps)
+    if status != 0:
+        return None
+    return complex(val)
+
+
 def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
     r"""Polynomial-prefactor extension of ``_exp_over_chain_simplex``.
 
@@ -1109,7 +1241,7 @@ def _chain_with_intermediate_uppers(
     # If only one level, no intermediate uppers: standard chain.
     if len(levels) == 1:
         top = levels[0][2]
-        v = _exp_over_chain_simplex(alphas_chain, L, top)
+        v = _exp_over_chain_simplex_fast(alphas_chain, L, top)
         if v is None:
             v = _exp_over_chain_simplex_polynomial(alphas_chain, L, top)
         return v
@@ -1180,7 +1312,7 @@ def _chain_with_intermediate_uppers(
                 case_value = 0.0 + 0.0j
                 break
             alphas_piece = [alphas_chain[k] for k in piece['positions']]
-            v = _exp_over_chain_simplex(
+            v = _exp_over_chain_simplex_fast(
                 alphas_piece, piece['lower'], piece['upper'],
             )
             if v is None:
