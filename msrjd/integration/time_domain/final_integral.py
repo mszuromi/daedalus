@@ -824,6 +824,156 @@ def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
     return total
 
 
+def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
+    r"""Polynomial-prefactor extension of ``_exp_over_chain_simplex``.
+
+    Same closed-form integral as ``_exp_over_chain_simplex`` but DOES
+    NOT return ``None`` when an intermediate cumulative-pole-sum β
+    vanishes.  In that case the level's antiderivative is a polynomial
+    in s (rather than ``exp(β·s)/β``); the polynomial is carried
+    through subsequent levels, with closed-form treatment of
+    ``∫ u^k · exp(β·u) du`` at non-degenerate levels.
+
+    Math sketch
+    -----------
+    Each level produces one of two outcomes:
+
+    * **Non-degenerate (β ≠ 0).**  For each ``u^k · exp(β·s)`` term in
+      the running integrand:
+
+          ∫_lower^{s_outer} (s - lower)^k · exp(β·s) ds
+          = exp(β·lower) · Σ_{j=0}^{k} (-1)^j · k!/(k-j)! · u_outer^{k-j}
+                                       · exp(β·u_outer) / β^{j+1}
+            + (-1)^{k+1} · k! · exp(β·lower) / β^{k+1}
+
+      yields (k+1) "upper" terms carrying β into the next-outer
+      variable's exponent, plus 1 "lower" constant term with no β.
+
+    * **Degenerate (β ≈ 0).**  The integrand is just a polynomial:
+
+          ∫_lower^{s_outer} (s - lower)^k ds  =  u_outer^{k+1} / (k+1)
+
+      yields a single term whose polynomial degree has grown by 1 and
+      whose β-list is unchanged (no exp factor carries forward).
+
+    The final outermost integration replaces ``s_outer`` with a numeric
+    upper bound and accumulates the per-term contributions.
+
+    Term representation
+    -------------------
+    Each running term is a tuple ``(C, poly, β_list)``:
+    * ``C`` — complex scalar coefficient.
+    * ``poly`` — tuple of complex polynomial coefficients in basis
+      ``(s - lower)^k``, index = degree.
+    * ``β_list`` — tuple of complex β values for the variables
+      remaining to integrate, innermost first.
+
+    Initial state: ``[(1+0j, (1+0j,), tuple(alphas))]``.
+
+    Parameters and return value mirror ``_exp_over_chain_simplex``;
+    returns ``None`` only on overflow (real-exponent magnitude beyond
+    ``EXP_REAL_LIMIT`` = 600), never on degenerate β.
+    """
+    import cmath
+    import math
+
+    N = len(alphas)
+    if N == 0:
+        return 1.0 + 0.0j
+    if upper <= lower:
+        return 0.0 + 0.0j
+
+    EXP_REAL_LIMIT = 600.0
+
+    terms = [(1.0 + 0.0j, (1.0 + 0.0j,), tuple(alphas))]
+
+    try:
+        # Inner-loop integrations: s_1, s_2, …, s_{N-1}.
+        for _level in range(N - 1):
+            new_terms = []
+            for (C, poly, β_list) in terms:
+                β_inner = β_list[0]
+                β_rest = β_list[1:]
+                # β_rest always has ≥ 1 element while in this inner loop.
+
+                if abs(β_inner) < eps:
+                    # Degenerate level: polynomial integration.
+                    new_poly = [0.0 + 0.0j] * (len(poly) + 1)
+                    for k, a in enumerate(poly):
+                        new_poly[k + 1] = a / (k + 1)
+                    new_terms.append((C, tuple(new_poly), β_rest))
+                else:
+                    # Non-degenerate: closed-form polynomial × exp.
+                    if abs((β_inner * lower).real) > EXP_REAL_LIMIT:
+                        return None
+                    exp_lower = cmath.exp(β_inner * lower)
+                    # Upper β list: β_inner merges into next-outer β.
+                    β_upper_rest = (β_inner + β_rest[0],) + β_rest[1:]
+                    β_lower_rest = β_rest
+
+                    for k, a in enumerate(poly):
+                        if a == 0:
+                            continue
+                        k_fact = math.factorial(k)
+                        # (k+1) upper terms carrying β forward.
+                        for j in range(k + 1):
+                            sign = -1 if (j & 1) else 1
+                            falling = k_fact // math.factorial(k - j)
+                            coef = C * a * sign * falling / (β_inner ** (j + 1))
+                            deg = k - j
+                            up_poly = tuple(
+                                (1.0 + 0.0j) if i == deg else (0.0 + 0.0j)
+                                for i in range(deg + 1)
+                            )
+                            new_terms.append((coef, up_poly, β_upper_rest))
+                        # 1 lower term (constant, β-list reduced by one).
+                        sign_last = -1 if ((k + 1) & 1) else 1
+                        coef_lower = (C * a * sign_last * k_fact
+                                       / (β_inner ** (k + 1)) * exp_lower)
+                        new_terms.append(
+                            (coef_lower, (1.0 + 0.0j,), β_lower_rest)
+                        )
+            terms = new_terms
+
+        # Outermost integration: s_N from `lower` to `upper`.
+        total = 0.0 + 0.0j
+        u_top = upper - lower
+        for (C, poly, β_list) in terms:
+            β = β_list[0] if β_list else (0.0 + 0.0j)
+            if abs(β) < eps:
+                # Pure polynomial: ∫_lower^{upper} Σ a_k (s-lower)^k ds
+                for k, a in enumerate(poly):
+                    if a == 0:
+                        continue
+                    total += C * a * (u_top ** (k + 1)) / (k + 1)
+            else:
+                # ∫_lower^{upper} Σ a_k (s-lower)^k · exp(β·s) ds
+                # = Σ_k a_k · [Σ_{j=0..k} (-1)^j k!/(k-j)! u_top^{k-j} exp(β·upper)/β^{j+1}
+                #              + (-1)^{k+1} k! · exp(β·lower)/β^{k+1}]
+                if abs((β * lower).real) > EXP_REAL_LIMIT:
+                    return None
+                if abs((β * upper).real) > EXP_REAL_LIMIT:
+                    return None
+                exp_top = cmath.exp(β * upper)
+                exp_low = cmath.exp(β * lower)
+                for k, a in enumerate(poly):
+                    if a == 0:
+                        continue
+                    k_fact = math.factorial(k)
+                    contrib = 0.0 + 0.0j
+                    for j in range(k + 1):
+                        sign = -1 if (j & 1) else 1
+                        falling = k_fact // math.factorial(k - j)
+                        contrib += (sign * falling * (u_top ** (k - j))
+                                    * exp_top / (β ** (j + 1)))
+                    sign_last = -1 if ((k + 1) & 1) else 1
+                    contrib += sign_last * k_fact * exp_low / (β ** (k + 1))
+                    total += C * a * contrib
+        return total
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+
+
 USE_POSET_INTEGRATOR = True
 
 
@@ -958,7 +1108,15 @@ def _integrate_nd_polytope_poset_modesum(
                 alphas_chain, L, float(U_ext),
             )
             if chain_val is None:
-                # Degenerate β or overflow in this chain — fall back
+                # Fast path returned None — try the polynomial-prefactor
+                # closed form (Stage 3b-extended) which handles degenerate
+                # cumulative-pole-sum β analytically.  Only returns None on
+                # true overflow, not on degenerate β.
+                chain_val = _exp_over_chain_simplex_polynomial(
+                    alphas_chain, L, float(U_ext),
+                )
+            if chain_val is None:
+                # Polynomial path also failed (overflow).  Fall back
                 # to scipy for the WHOLE subset to keep the answer
                 # consistent.
                 return None
