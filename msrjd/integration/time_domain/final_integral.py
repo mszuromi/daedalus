@@ -255,6 +255,43 @@ USE_POLYGON_M2_INTEGRATOR = True
 POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 
 # ───────────────────────────────────────────────────────────────────────
+# Runtime path counters (diagnostic; zero perf impact when not read)
+# ───────────────────────────────────────────────────────────────────────
+# Increment at decision points inside the analytic evaluators so we can
+# tell whether the intended analytic path actually completed or fell
+# back to scipy.nquad at runtime.  The ``_evaluator_label`` recorded in
+# ``subset_diagnostics`` is INTENT (set at subset setup time); these
+# counters are RUNTIME.  Call ``_reset_runtime_counters()`` before a
+# timed run, then read ``_RUNTIME_COUNTERS`` after.
+_RUNTIME_COUNTERS = {
+    # m=2 polygon path
+    'polygon_attempted': 0,
+    'polygon_returned_none': 0,
+    # m≥3 poset path
+    'poset_attempted': 0,
+    'poset_extract_returned_none': 0,
+    'poset_consistent_lower_failed': 0,
+    'poset_maximality_failed': 0,
+    'chain_simplex_fast_returned_none': 0,
+    'chain_simplex_polynomial_called': 0,
+    'chain_simplex_polynomial_returned_none': 0,
+    'poset_returned_none_total': 0,
+    # m=1 interval path
+    'interval_attempted': 0,
+    'interval_returned_none': 0,
+    # scipy.nquad fallback (counted at _integrate_polytope entry for m≥1)
+    'scipy_nquad_called_m1': 0,
+    'scipy_nquad_called_m2': 0,
+    'scipy_nquad_called_mge3': 0,
+}
+
+
+def _reset_runtime_counters():
+    """Zero out ``_RUNTIME_COUNTERS`` before a timed run."""
+    for k in _RUNTIME_COUNTERS:
+        _RUNTIME_COUNTERS[k] = 0
+
+# ───────────────────────────────────────────────────────────────────────
 # Analytic ∫_L^U exp(α·s + γ) ds  (Stage 4a-perdiag, m=1)
 # ───────────────────────────────────────────────────────────────────────
 # Per-pole-tuple closed-form 1D exponential integral.  Replaces
@@ -1019,18 +1056,24 @@ def _integrate_nd_polytope_poset_modesum(
     import cmath
     if m < 3:
         return None  # m=2 has its own dedicated path
+    _RUNTIME_COUNTERS['poset_attempted'] += 1
     n_smooth = len(smooth_edge_modes)
     if len(subset_constraint_data) != n_smooth:
+        _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return None
 
     poset = _extract_causal_poset(
         subset_constraint_data, free_ext_vals, m,
     )
     if poset is None:
+        _RUNTIME_COUNTERS['poset_extract_returned_none'] += 1
+        _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return None
 
     L_value, lower_ok = _causal_poset_consistent_scalar_lower(poset)
     if not lower_ok:
+        _RUNTIME_COUNTERS['poset_consistent_lower_failed'] += 1
+        _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return None
     L = float(L_value) if L_value is not None else -float(bbox_cap)
     upper_per_var = _causal_poset_consistent_scalar_upper(poset)
@@ -1052,6 +1095,8 @@ def _integrate_nd_polytope_poset_modesum(
     maximals = set(range(m)) - has_outgoing
     for var in upper_per_var.keys():
         if var not in maximals:
+            _RUNTIME_COUNTERS['poset_maximality_failed'] += 1
+            _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
             return None  # caller falls back to scipy
 
     # Pre-extract per-edge linear data (constant in pole tuple).
@@ -1112,13 +1157,20 @@ def _integrate_nd_polytope_poset_modesum(
                 # closed form (Stage 3b-extended) which handles degenerate
                 # cumulative-pole-sum β analytically.  Only returns None on
                 # true overflow, not on degenerate β.
+                _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
+                _RUNTIME_COUNTERS['chain_simplex_polynomial_called'] += 1
                 chain_val = _exp_over_chain_simplex_polynomial(
                     alphas_chain, L, float(U_ext),
                 )
+                if chain_val is None:
+                    _RUNTIME_COUNTERS[
+                        'chain_simplex_polynomial_returned_none'
+                    ] += 1
             if chain_val is None:
                 # Polynomial path also failed (overflow).  Fall back
                 # to scipy for the WHOLE subset to keep the answer
                 # consistent.
+                _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
                 return None
             total += term_const * chain_val
     return total
@@ -1161,7 +1213,9 @@ def _integrate_1d_polytope_modesum(
     import cmath
     import math
     n_smooth = len(smooth_edge_modes)
+    _RUNTIME_COUNTERS['interval_attempted'] += 1
     if len(subset_constraint_data) != n_smooth:
+        _RUNTIME_COUNTERS['interval_returned_none'] += 1
         return None
 
     # Resolve the feasible interval — track unboundedness exactly.
@@ -1293,10 +1347,12 @@ def _integrate_2d_polygon_modesum(
     """
     import cmath
     n_smooth = len(smooth_edge_modes)
+    _RUNTIME_COUNTERS['polygon_attempted'] += 1
     if len(subset_constraint_data) != n_smooth:
         # Smooth-edges-to-constraints mismatch shouldn't happen — the
         # caller built both from ``smooth_edges`` in lock-step.  Bail
         # to scipy.nquad fallback.
+        _RUNTIME_COUNTERS['polygon_returned_none'] += 1
         return None
 
     # Polygon is shared across all pole tuples.
@@ -2989,6 +3045,12 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m):
 
     s_constraints is a list of tuples `(a_int_list_of_len_m, c_eff)`.
     """
+    if m == 1:
+        _RUNTIME_COUNTERS['scipy_nquad_called_m1'] += 1
+    elif m == 2:
+        _RUNTIME_COUNTERS['scipy_nquad_called_m2'] += 1
+    elif m >= 3:
+        _RUNTIME_COUNTERS['scipy_nquad_called_mge3'] += 1
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or
