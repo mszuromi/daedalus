@@ -43,3 +43,6 @@ docs/figures/test_runs/
 *.tmp
 *.bak
 ~$*
+
+# Profile dumps from notebook diagnostic cells (Cell B in 3.6 / regenerable)
+*.prof
