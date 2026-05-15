@@ -2438,41 +2438,33 @@ def integrate_diagram(
             })
             continue
 
-        # ── Build the stripped integrand for this subset
-        subset_factor = cp
-        for ei_idx in delta_edges:
-            subset_factor = subset_factor * SR(edge_info[ei_idx]['delta_coeff'])
-        for ei_idx in smooth_edges:
-            subset_factor = subset_factor * edge_info[ei_idx]['smooth_factor']
-        subset_factor = subset_factor.subs(substitutions)
-        # NOTE: ``.subs(num_params)`` removed 2026-04-21 (audit Fix #A) --
-        # redundant because every ingredient entering ``subset_factor``
-        # is already num_params-substituted:
-        #   * ``cp``                          -- subbed at line 351-352
-        #   * ``edge_info[i]['smooth_factor']`` -- via build_G_t_matrix
-        #                                       (called with num_params)
-        #   * ``edge_info[i]['delta_coeff']`` -- via build_G_t_matrix
-        # and ``.subs(substitutions)`` above only touches integration-
-        # variable symbols.  Measured ~6% speedup on k=2 ell=1 quadratic
-        # Hawkes (5.10s -> 4.80s across 7 1-loop diagrams).
+        # ── Stage 4a optim (2026-05-15): early prefactor build +
+        # analytic-eligibility check.  When the subset can be served
+        # by `_fast_eval` (pole/residue closure) + analytic modesum
+        # integrators, the SR-based `subset_factor` build + `.expand()`
+        # + `fast_callable()` compile is dead weight (Stage-3b
+        # profiling: ~52% of integrate_diagram wall time on the k=2
+        # ell=1 quad config, JIT tree never queried).  Skip it when
+        # eligible; fall back to the full SR build only when needed.
+        prefactor_num = cp
+        for _ei_idx in delta_edges:
+            prefactor_num = prefactor_num * SR(
+                edge_info[_ei_idx]['delta_coeff']
+            )
+
         try:
-            subset_factor = subset_factor.expand()
+            _prefactor_c = complex(CDF(SR(prefactor_num)))
+            _prefactor_is_numerical = True
         except Exception:
-            pass
+            _prefactor_c = None
+            _prefactor_is_numerical = False
 
-        # Safe zero-check: `subset_factor == 0` triggers simplify_full()
-        # which can hang or blow up Maxima for complex Hawkes integrands.
-        # Instead, check structurally: a trivially-zero SR expression is
-        # the SR integer 0 (caught via is_trivial_zero when available, or
-        # by string comparison as a fallback).
-        try:
-            if subset_factor.is_trivial_zero():
-                continue
-        except AttributeError:
-            if str(subset_factor) == '0':
-                continue
+        # Numerical zero-skip (structural; no simplify_full).
+        if _prefactor_is_numerical and _prefactor_c == 0:
+            continue
 
-        # Build retardation constraints for smooth edges (with δ subs applied)
+        # Build retardation constraints for smooth edges (with δ subs applied).
+        # Always needed for the polytope path.
         subset_retard = []
         for ei_idx in smooth_edges:
             c = SR(edge_info[ei_idx]['dt_sym']).subs(substitutions)
@@ -2481,43 +2473,87 @@ def integrate_diagram(
         m_sub = len(remaining_int_vars)
         fc_vars_sub = list(remaining_int_vars) + list(free_ext_syms)
 
-        # Check that the stripped integrand only contains expected vars
-        try:
-            subset_free_vars = set(subset_factor.variables())
-        except AttributeError:
-            subset_free_vars = set()
-        unexpected = subset_free_vars - set(fc_vars_sub)
-        if unexpected:
-            return {
-                'status': 'failed',
-                'contribution': None,
-                'integration_vars': integration_vars,
-                'stripped_integrand': display_stripped,
-                'constraints': display_constraints,
-                'reason': (
-                    f"[subset {bin(branch_bits)}] stripped integrand "
-                    f"contains unexpected free symbols {unexpected}; "
-                    f"pass them via num_params."
-                ),
-            }
+        # `_analytic_eligible` ⇒ the per-call evaluator goes through
+        # `_fast_eval` (built below from pole/residue cache) for any
+        # residual scipy.nquad path, and the analytic modesum
+        # integrators (m=1/2/≥3) handle the closed-form path.
+        # Neither needs `integrand_fc_sub`, so we skip the entire
+        # SR + `.expand()` + `fast_callable()` build chain.
+        _analytic_eligible = (
+            not vertex_leg_time
+            and edge_mode_sums is not None
+            and _prefactor_is_numerical
+        )
 
-        # JIT-compile
-        try:
-            integrand_fc_sub = fast_callable(
-                subset_factor, vars=fc_vars_sub, domain=CDF,
-            )
-        except Exception as exc:
-            return {
-                'status': 'failed',
-                'contribution': None,
-                'integration_vars': integration_vars,
-                'stripped_integrand': display_stripped,
-                'constraints': display_constraints,
-                'reason': (
-                    f"[subset {bin(branch_bits)}] fast_callable "
-                    f"failed: {exc}"
-                ),
-            }
+        if _analytic_eligible:
+            subset_factor = None
+            integrand_fc_sub = None
+        else:
+            # NoiseSourceType kernel diagrams, or non-numerical
+            # prefactor, or missing edge_mode_sums cache — build the
+            # full SR + fast_callable path for the residual scipy
+            # integrand.  NOTE: ``.subs(num_params)`` removed
+            # 2026-04-21 (audit Fix #A); see commit notes.
+            subset_factor = cp
+            for ei_idx in delta_edges:
+                subset_factor = subset_factor * SR(
+                    edge_info[ei_idx]['delta_coeff']
+                )
+            for ei_idx in smooth_edges:
+                subset_factor = (
+                    subset_factor * edge_info[ei_idx]['smooth_factor']
+                )
+            subset_factor = subset_factor.subs(substitutions)
+            try:
+                subset_factor = subset_factor.expand()
+            except Exception:
+                pass
+
+            # Structural zero-check (avoids Maxima simplify_full,
+            # which can hang or blow up for complex Hawkes integrands).
+            try:
+                if subset_factor.is_trivial_zero():
+                    continue
+            except AttributeError:
+                if str(subset_factor) == '0':
+                    continue
+
+            # Free-symbol audit — catches num_params pass-through bugs.
+            try:
+                subset_free_vars = set(subset_factor.variables())
+            except AttributeError:
+                subset_free_vars = set()
+            unexpected = subset_free_vars - set(fc_vars_sub)
+            if unexpected:
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'stripped_integrand': display_stripped,
+                    'constraints': display_constraints,
+                    'reason': (
+                        f"[subset {bin(branch_bits)}] stripped integrand "
+                        f"contains unexpected free symbols {unexpected}; "
+                        f"pass them via num_params."
+                    ),
+                }
+
+            try:
+                integrand_fc_sub = fast_callable(
+                    subset_factor, vars=fc_vars_sub, domain=CDF,
+                )
+            except Exception as exc:
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'stripped_integrand': display_stripped,
+                    'constraints': display_constraints,
+                    'reason': (
+                        f"[subset {bin(branch_bits)}] fast_callable "
+                        f"failed: {exc}"
+                    ),
+                }
 
         # Extract linear coefficients for the polytope
         subset_constraint_data = []
@@ -2585,33 +2621,17 @@ def integrate_diagram(
                 ),
             }
 
-        # Fix E (2026-04-21): try the direct numerical per-edge
-        # evaluator before settling for ``fast_callable(subset_factor
-        # .expand())``.  The evaluator reconstructs
+        # Fix E (2026-04-21): direct numerical per-edge evaluator
+        # reconstructs P · Π_e Σ_k C_e^{(k)} · exp(I · p_k · Δt_e)
+        # from the propagator's pole / residue data plus the
+        # already-extracted ``subset_constraint_data``, without
+        # materialising the distributed |edges|^|poles|-term sum
+        # that fast_callable would have to compile.  Overflow-safe
+        # by edge-product bound Σ_k |C_e^{(k)}| for Δt_e ≥ 0.
         #
-        #   P · Π_e  Σ_k  C_e^{(k)} · exp(I · p_k · Δt_e)
-        #
-        # from the propagator's pole / residue data plus the already-
-        # extracted ``subset_constraint_data`` (which carries each
-        # smooth edge's Δt linear coefficients), without ever
-        # materialising the distributed |edges|^|poles|-term sum that
-        # fast_callable has to compile and re-walk on every scipy
-        # sample.  Overflow-safe because each edge factor is bounded
-        # by Σ_k |C_e^{(k)}| for Δt_e ≥ 0 (the Heaviside filter
-        # guarantees that precondition -- see
-        # ``_make_heaviside_filtered_integrand``).
-        #
-        # Falls back to ``integrand_fc_sub`` if the numerical
-        # extraction fails for any reason (non-numerical prefactor
-        # left in ``cp``, missing pole data, residue conversion
-        # failure, etc.).  The fast_callable path is still built
-        # above so the zero-check and free-variable-check have run;
-        # this branch only replaces the *hot-path* evaluator.
-        prefactor_num = cp
-        for _ei_idx in delta_edges:
-            prefactor_num = prefactor_num * SR(
-                edge_info[_ei_idx]['delta_coeff']
-            )
+        # Stage 4a optim (2026-05-15): ``prefactor_num`` is now
+        # computed early above (used for the analytic-eligibility
+        # check).  Only the ri/pi lookup remains here.
         smooth_edges_ri_pi = [
             (edge_info[_ei_idx]['ri'], edge_info[_ei_idx]['pi'])
             for _ei_idx in smooth_edges
@@ -2669,17 +2689,16 @@ def integrate_diagram(
             or (USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
             or (USE_POSET_INTEGRATOR and m_sub >= 3)
         )
+        # ``_prefactor_c`` was already computed early (Stage 4a optim
+        # 2026-05-15); reuse it instead of re-converting through SR.
         if (_modesum_enabled
                 and not vertex_leg_time
-                and edge_mode_sums is not None):
-            try:
-                _modesum_prefactor_c = complex(CDF(SR(prefactor_num)))
-                _smooth_edge_modes = [
-                    edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
-                ]
-            except Exception:
-                _smooth_edge_modes = None
-                _modesum_prefactor_c = None
+                and edge_mode_sums is not None
+                and _prefactor_is_numerical):
+            _modesum_prefactor_c = _prefactor_c
+            _smooth_edge_modes = [
+                edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
+            ]
 
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
