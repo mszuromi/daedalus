@@ -4,6 +4,142 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-15 — `phase-j-refactor` Stage 4a optimization series  (commits `fe14b93` … `81d9ed4`)
+
+Five follow-up commits on top of the `phase-j-stage-3b-analytic`
+checkpoint, all addressing dead-weight work that survived the
+Stage 3 analytic-integrator landing.  Each is independently
+revertable; all 112 Phase J tests still pass.
+
+### `fe14b93` — numba-compile the chain simplex fast path
+
+`_exp_over_chain_simplex_fast` dispatches to a
+`@njit(cache=True)` numba core that operates on pre-allocated
+complex128 buffers.  6× speedup on the standard parity test
+(N=4, 5000 iters); ~12× on N=6.  The pure-Python
+`_exp_over_chain_simplex` stays as the reference and is selected
+by `USE_NUMBA_CHAIN_SIMPLEX = False`.  Parity tests live in
+`tests/test_chain_simplex_numba.py` (12 tests).
+
+### `6d75869` — skip SR + `fast_callable()` when analytic-eligible
+
+Profiling on `k=2 max_ell=1` quad showed `fast_callable(
+subset_factor.expand())` ate ~52% of `integrate_diagram` wall —
+work whose output was never queried, because the per-call hot
+path runs through `_fast_eval` (pole/residue closure) for the
+residual scipy.nquad path, and through the analytic modesum
+integrators (m=1/2/≥3) for the closed-form path.
+
+Restructure the subset loop: build `prefactor_num` early
+(cheap SR), try the complex convertibility check once, and skip
+the entire `subset_factor` build + `.expand()` + `is_trivial_zero()`
++ free-symbol audit + `fast_callable()` compile when the subset
+is "analytic-eligible" (`not vertex_leg_time` ∧
+`edge_mode_sums` cached ∧ prefactor numerical).
+NoiseSourceType-kernel diagrams still build the full SR path.
+
+Confirmed effect: `fast_callable` call count drops to **0** on
+all three regression fixtures.  Wall delta is in the noise on
+tree-level fixtures (per-call compile is ~18-30 µs × a handful
+of calls); the win compounds on heavier configs where hundreds
+of m≥3 subsets each pay the compile cost in the baseline.
+
+### `be70db2` — gate `simplify_full()` in `build_G_t_matrix`
+
+`smooth = smooth.apply_map(e.simplify_full())` in
+`build_G_t_matrix` is a Maxima round-trip per entry of the
+`n_propagator × n_propagator` smooth matrix.  Profiling
+identified it as ~16% of `integrate_diagram` wall.  After
+opt #1, the smooth matrix is unused for analytic-eligible
+subsets, so its content is dead weight.
+
+Gated behind `USE_SIMPLIFY_FULL_IN_GT` flag, default **OFF**.
+
+Benchmark (regression fixtures, n_runs=2, mean wall):
+
+| Fixture | Before | After | Δ |
+|---|---|---|---|
+| `spike_reset_k1_ell1` | 8.66 s | 5.13 s | −41% |
+| `quad_exp_k2_ell0` | 3.47 s | 2.48 s | −28% |
+| `spike_reset_k2_ell0` | 5.42 s | 4.38 s | −19% |
+
+### `7f0bf05` — fix wrong-direction overflow guards
+
+The m=1 interval, m=2 polygon, and m≥3 poset analytic
+integrators guarded `cmath.exp(z)` overflow with
+`abs(z.real) > 600`.  But `cmath.exp` only overflows in the
+POSITIVE direction (Re(z) > ~709); large negative Re(z)
+merely underflows to 0, which is the correct numerical result
+when the integrand has decayed across the integration region.
+The `abs(...)` made these guards trigger on safe underflow too,
+falling back to scipy.nquad for no reason.
+
+Found on `spike_reset_k1_ell1`: all 16 polygon-modesum attempts
+were bailing on bbox-corner triangles with `p.real ≈ -630`
+(safe underflow regime).  Relaxing the guards to
+`z.real > 600` recovers full analytic coverage:
+`scipy_nquad_called_m2` 16 → 0.
+
+Wall savings (regression fixtures, n_runs=4 warm-mean):
+
+| Fixture | Before | After | Δ |
+|---|---|---|---|
+| `spike_reset_k1_ell1` | 5.13 s | 4.27 s | −17% |
+| `quad_exp_k2_ell0` | 2.48 s | 2.46 s | ≈ |
+| `spike_reset_k2_ell0` | 4.38 s | 4.20 s | −4% |
+
+Scope: `_exp_over_triangle`, the gamma guard in
+`_integrate_2d_polygon_modesum`, the gamma guard in
+`_integrate_1d_polytope_modesum` plus its per-bound `arg.real`
+checks, and the gamma guard in
+`_integrate_nd_polytope_poset_modesum`.  Chain-simplex guards
+(`_exp_over_chain_simplex` and polynomial variant) are left
+alone — those involve 2^N cancellation between large terms,
+where even the underflow direction can mask the cancellation
+pattern.
+
+### `81d9ed4` — drop dead `SR(e)` coerce in num_params subs
+
+After `_to_sr_ab` runs on each entry of `pole_vals` and
+`C_mats` in `build_G_t_matrix`, every entry is already an
+SR Expression.  The original
+`lambda e: SR(e).subs(num_params)` did a redundant `SR(e)`
+round-trip per matrix entry (~50µs each).  Call `.subs`
+directly.  Saves another 3-4% wall on each regression fixture.
+
+### Cumulative impact
+
+Stacked Stage 4a optimizations (warm-mean wall, n_runs=4):
+
+| Fixture | Pre-Stage-4a | Post Stage-4a series | Δ |
+|---|---|---|---|
+| `spike_reset_k1_ell1` | ~8.5 s | 4.10 s | **−52%** |
+| `quad_exp_k2_ell0` | ~3.5 s | 2.39 s | **−32%** |
+| `spike_reset_k2_ell0` | ~5.4 s | 4.06 s | **−25%** |
+
+Phase J is no longer the bottleneck on tree-level configs —
+`FieldTheory.expand(taylor_order=4)` upstream is now dominant
+(54% of wall on `spike_reset_k1_ell1`).  All `scipy_nquad_*`
+counters are zero on regression fixtures; the analytic path
+handles 100% of subsets.
+
+### New knobs
+
+* `USE_SIMPLIFY_FULL_IN_GT` — `propagator_td` flag (default
+  False); set True to restore the old Maxima simplification
+  pass on the smooth matrix.
+* `USE_NUMBA_CHAIN_SIMPLEX` — `final_integral` flag (default
+  True when numba imports cleanly); set False to use the
+  pure-Python reference chain simplex.
+
+### Notebook follow-ups (not in this commit series)
+
+* Section 3.6 diagnostic cells (A/B/C) for cProfile snapshots,
+  parallelism sanity check, and runtime-path counters are
+  wrapped in `if False:` by default; flip to `True` to enable.
+
+---
+
 ## 2026-05-15 — `phase-j-refactor` Stage 3 / Stage 4a: analytic Phase J at every m  (tag `phase-j-stage-3b-analytic`)
 
 ### Summary
