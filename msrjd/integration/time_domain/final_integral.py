@@ -391,18 +391,25 @@ def _exp_over_triangle(v0, v1, v2, alpha, beta):
         return 0.0 + 0.0j  # degenerate
     p = alpha * e1x + beta * e1y
     q = alpha * e2x + beta * e2y
-    # Overflow guard (matches _exp_over_chain_simplex):  exp(z) blows
-    # past double range for Re(z) > ~709, and individual terms in J
-    # can hit ``exp(p)`` / ``exp(q)`` at any sign of Re.
+    v0_term = alpha * v0[0] + beta * v0[1]
+    # Overflow guard.  ``cmath.exp(z)`` blows past double range for
+    # Re(z) > ~709, but it UNDERFLOWS to 0 for Re(z) < ~-745.
+    # Underflow is the desired behaviour here — when the integrand
+    # has decayed to ~0 across the triangle, the contribution should
+    # be ~0, not a bailout.  Stage 4a optim (2026-05-15): check only
+    # the positive-overflow direction, matching ``cmath.exp``'s
+    # actual failure mode.  This recovers e.g. all 16 polygon-modesum
+    # attempts on ``spike_reset_k1_ell1`` that were previously
+    # falling through to scipy.nquad on bbox-corner triangles with
+    # ``p.real ≈ -630``.
     EXP_REAL_LIMIT = 600.0
-    if (abs(p.real) > EXP_REAL_LIMIT
-            or abs(q.real) > EXP_REAL_LIMIT
-            or abs((alpha * v0[0] + beta * v0[1]).real)
-                > EXP_REAL_LIMIT):
+    if (p.real > EXP_REAL_LIMIT
+            or q.real > EXP_REAL_LIMIT
+            or v0_term.real > EXP_REAL_LIMIT):
         return None
     try:
         J = _exp_over_unit_triangle(p, q)
-        return abs(det) * cmath.exp(alpha * v0[0] + beta * v0[1]) * J
+        return abs(det) * cmath.exp(v0_term) * J
     except (OverflowError, ValueError):
         return None
 
@@ -1467,8 +1474,11 @@ def _integrate_nd_polytope_poset_modesum(
             for v in range(m):
                 alphas_orig[v] += lam * a_int_per_edge[e][v]
             gamma += lam * c_ext_per_edge[e]
-        # Overflow guard on the γ-prefactor.
-        if abs(gamma.real) > 600.0:
+        # Overflow guard on the γ-prefactor.  Stage 4a optim
+        # (2026-05-15): only positive Re(γ) overflows ``cmath.exp``;
+        # negative direction underflows to 0 (correct for decayed
+        # integrand).  Matches the polygon/interval guards.
+        if gamma.real > 600.0:
             return None
         try:
             term_const = pref * C_prod * cmath.exp(gamma)
@@ -1597,7 +1607,10 @@ def _integrate_1d_polytope_modesum(
             alpha_s += lam * a_int_per_edge[e]
             gamma += lam * c_ext_per_edge[e]
         # Overflow guard on the γ-prefactor (matches polygon path).
-        if abs(gamma.real) > 600.0:
+        # Stage 4a optim (2026-05-15): only positive Re(γ) overflows
+        # ``cmath.exp``; negative direction underflows to 0 (which
+        # gives the correct result for a fully-decayed integrand).
+        if gamma.real > 600.0:
             return None
         try:
             term_const = pref * C_prod
@@ -1618,7 +1631,7 @@ def _integrate_1d_polytope_modesum(
                     term_U = 0.0 + 0.0j
                 else:
                     arg = alpha_s * U + gamma
-                    if abs(arg.real) > 600.0:
+                    if arg.real > 600.0:
                         return None
                     term_U = cmath.exp(arg)
                 if L_inf:
@@ -1627,7 +1640,7 @@ def _integrate_1d_polytope_modesum(
                     term_L = 0.0 + 0.0j
                 else:
                     arg = alpha_s * L + gamma
-                    if abs(arg.real) > 600.0:
+                    if arg.real > 600.0:
                         return None
                     term_L = cmath.exp(arg)
                 contrib = (term_U - term_L) / alpha_s
@@ -1728,9 +1741,13 @@ def _integrate_2d_polygon_modesum(
             alpha_s += lam * a0
             beta_s += lam * a1
             gamma += lam * c_ext_per_edge[e]
-        # Overflow guard on the γ-prefactor.  Same threshold as the
-        # per-triangle check inside ``_exp_over_triangle``.
-        if abs(gamma.real) > 600.0:
+        # Overflow guard on the γ-prefactor.  cmath.exp overflows for
+        # Re(γ) > ~709 and underflows to 0 for Re(γ) < ~-745;
+        # underflow is the right behaviour (term decays to 0).
+        # Stage 4a optim (2026-05-15): check only the positive-
+        # overflow side, matching the fixed-direction guard inside
+        # ``_exp_over_triangle``.
+        if gamma.real > 600.0:
             return None
         try:
             term_const = pref * C_prod * cmath.exp(gamma)
