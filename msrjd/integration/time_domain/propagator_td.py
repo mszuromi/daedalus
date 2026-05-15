@@ -174,9 +174,13 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
     ]
 
     if num_params:
-        pole_vals = [SR(p).subs(num_params) for p in pole_vals]
+        # After ``_to_sr_ab`` every entry is already an SR expression,
+        # so the ``SR(e)`` round-trip in the original lambda was dead
+        # weight (Stage 4a follow-up, 2026-05-15).  Call ``.subs``
+        # directly on each entry.
+        pole_vals = [p.subs(num_params) for p in pole_vals]
         C_mats = [
-            C.apply_map(lambda e: SR(e).subs(num_params))
+            C.apply_map(lambda e: e.subs(num_params))
             for C in C_mats
         ]
 
