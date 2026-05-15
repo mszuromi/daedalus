@@ -2363,7 +2363,7 @@ def integrate_diagram(
                 'stripped_integrand': display_stripped,
                 'constraints': display_constraints,
                 'reason': (
-                    f"[subset {bin(subset_bits)}] stripped integrand "
+                    f"[subset {bin(branch_bits)}] stripped integrand "
                     f"contains unexpected free symbols {unexpected}; "
                     f"pass them via num_params."
                 ),
@@ -2382,7 +2382,7 @@ def integrate_diagram(
                 'stripped_integrand': display_stripped,
                 'constraints': display_constraints,
                 'reason': (
-                    f"[subset {bin(subset_bits)}] fast_callable "
+                    f"[subset {bin(branch_bits)}] fast_callable "
                     f"failed: {exc}"
                 ),
             }
@@ -2448,7 +2448,7 @@ def integrate_diagram(
                 'stripped_integrand': display_stripped,
                 'constraints': display_constraints,
                 'reason': (
-                    f"[subset {bin(subset_bits)}] constraint not "
+                    f"[subset {bin(branch_bits)}] constraint not "
                     f"linear: {constraint_err}"
                 ),
             }
