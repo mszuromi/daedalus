@@ -4,6 +4,135 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-15 — `phase-j-refactor` Stage 3 / Stage 4a: analytic Phase J at every m  (tag `phase-j-stage-3b-analytic`)
+
+### Summary
+
+Replaces `scipy.nquad` on the per-subset Phase J integrand with
+**closed-form analytic integrators** at every value of `m` (= number
+of integration variables surviving δ-elimination).  Three independent
+recoveries on the user's test configurations:
+
+* `k=2, max_ell=1` singlepop quad: **13.5 min → 4.8 min parallel** (2.8×).
+* `k=1, max_ell=2` singlepop quad: **DNF (> 5.7 h serial single-τ) → 18 min parallel** (> 20×).
+* `k=2, max_ell=1` singlepop spike-reset: previously DNF → **37 min parallel**.
+
+All 100 Phase J tests pass at this checkpoint.  Detailed per-stage
+breakdown in `docs/phase_j_refactor_notes.md`.
+
+### Library — new analytic paths
+
+| m | Function | Notes |
+|---|---|---|
+| 1 | `_integrate_1d_polytope_modesum` | closed-form 1D interval; exact ±∞ bound handling |
+| 2 | `_integrate_2d_polygon_modesum` | fan-triangulation + analytic ∫∫ exp on each triangle |
+| ≥3 | `_integrate_nd_polytope_poset_modesum` | causal-poset extraction → linear-extension enumeration → 2^N chain-simplex closed form |
+| ≥3 (degenerate β) | `_exp_over_chain_simplex_polynomial` | carries polynomial prefactor `(s − L)^k` through the recursion when cumulative pole sums vanish |
+| ≥3 (intermediate uppers) | `_chain_with_intermediate_uppers` | decomposes chain into 2^q case-tuples of independent chain simplexes when scalar uppers sit on non-maximal poset elements |
+
+All paths share a `pole_tuples=` override so the grouped Phase J
+prototype (`pipeline/_grouped_phase_j.py`) can inject merged
+residues `B_α = Σ_td cp_td · Π_e C^{td}_{α_e, e}` in place of the
+per-edge Cartesian product (Stage 4a-grouped).
+
+### Library — bounds and overflow handling
+
+* `POSET_PHYSICAL_MARGIN = 50.0` — lower-bound fallback when no
+  scalar lower is extracted from constraints.  Replaces
+  `−POLYGON_BBOX_CAP = −200`, which combined with cumulative pole
+  sums `|Re β| > 3` exceeded the closed form's `exp(β · L)` overflow
+  guard at 600.
+* Overflow guard threshold remains 600 (margin below IEEE
+  double's 709 hard limit).
+* The polygon `POLYGON_BBOX_CAP = 200.0` upper-bound fallback is
+  unchanged — retarded poles give `Re(β · U) < 0` here, which
+  underflows safely.
+
+### Library — diagnostic counters
+
+`_RUNTIME_COUNTERS` module-level dict + `_reset_runtime_counters()`
+helper in `final_integral.py`.  Increments at every analytic-path
+decision point so notebooks can distinguish *intent* (the
+`_evaluator_label` set at subset setup) from *runtime* (whether the
+analytic path actually completed or silently fell back to scipy):
+
+* `polygon_attempted` / `polygon_returned_none`
+* `poset_attempted` / `poset_returned_none_total` plus per-cause
+  breakdown (`poset_extract_returned_none`,
+  `poset_consistent_lower_failed`, `poset_maximality_failed`,
+  `chain_simplex_fast_returned_none`,
+  `chain_simplex_polynomial_returned_none`)
+* `interval_attempted` / `interval_returned_none`
+* `scipy_nquad_called_m1` / `_m2` / `_mge3`
+
+### Tests
+
+100 Phase J tests total at this checkpoint, in seven files:
+
+```
+tests/test_polygon_m2_integrator.py         20  m=2 polygon path
+tests/test_causal_poset.py                  31  poset extraction + chain simplex
+tests/test_chain_simplex_polynomial.py      21  polynomial-prefactor chain
+tests/test_chain_intermediate_uppers.py      9  intermediate-upper decomposition
+tests/test_1d_polytope_modesum.py           10  m=1 interval path
+tests/test_grouped_vs_perdiag.py             6  grouped vs per-diagram equivalence
+tests/test_phase_j_refactor_regression.py    3  end-to-end frozen-fixture regression
+```
+
+Run with:
+
+```
+sage -python -m pytest <files above> -q
+```
+
+### Notebooks
+
+* **Section 3.6** added to both singlepop notebooks (quad +
+  spike-reset) with three diagnostic cells — parallelism sanity
+  check, cProfile snapshot, runtime path counters.  Cells wrapped in
+  `if False:` by default; flip to `True` to enable individually.
+* **Per-order cumulative plotting** — theory side shows separate
+  curves / bars for tree, tree + 1-loop, tree + 1-loop + 2-loop, …
+  with accurate labels.  Per-order residual breakdown in the
+  residual cell.
+* `subset_bits → branch_bits` typo fix in `integrate_diagram` error
+  messages so a real failure surfaces a useful diagnostic
+  ("unexpected free symbols {…}") instead of a NameError.
+
+### Knobs
+
+Module-level flags in `msrjd.integration.time_domain.final_integral`:
+
+```
+USE_POLYGON_M2_INTEGRATOR = True     # m=2 analytic polygon
+USE_POSET_INTEGRATOR      = True     # m≥3 analytic poset/chain
+USE_1D_INTEGRATOR         = True     # m=1 analytic interval
+POSET_PHYSICAL_MARGIN     = 50.0     # lower-bound fallback
+POLYGON_BBOX_CAP          = 200.0    # upper-bound fallback
+QUAD_OPTS = {'limit': 200}           # scipy fallback opts
+```
+
+And in `msrjd.integration.time_domain.grouped_integral`:
+
+```
+USE_GROUPED_ANALYTIC_MODESUM = True  # grouped path's merged-residue route
+```
+
+### Checkpoint and revert
+
+Tagged at the final commit `56f4871`:
+
+```bash
+git checkout phase-j-stage-3b-analytic       # return to this state
+git checkout -b experiment phase-j-stage-3b-analytic
+```
+
+The next planned work (numba-compile the chain simplex hot loop)
+will live in commits *after* this tag — flipping back is just
+`git checkout phase-j-stage-3b-analytic`.
+
+---
+
 ## 2026-04-22 — `parallel-eval` branch merged: fork-ProcessPool evaluation + ell-aware displays
 
 ### Summary
