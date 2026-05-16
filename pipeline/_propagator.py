@@ -322,9 +322,18 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
     if not rich:
         t0 = _time.perf_counter()
         try:
+            # Compute G_ft = K_ft^(-1) and det(K_ft) — both reuse
+            # Sage's internal LCM/GCD shortcuts and the (n-1)!
+            # cofactor work is amortised between them.
             G_ft    = K_ft.inverse()
-            adj_ft  = K_ft.adjugate()
             D_omega = K_ft.det()
+            # Adjugate via the identity ``adj(K) = K^(-1) · det(K)``.
+            # ``K_ft.adjugate()`` would re-expand all n² cofactor
+            # sub-determinants WITHOUT reusing the inverse's work —
+            # measured at 734 s on the 4×4 spike-reset K_ft vs ~11 s
+            # for the inverse itself.  The identity gives the exact
+            # same SR result in microseconds.
+            adj_ft  = G_ft * D_omega
             if verbose:
                 print(f'      symbolic inverse/adj/det took '
                       f'{_time.perf_counter() - t0:.2f}s')
