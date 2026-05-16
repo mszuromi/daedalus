@@ -528,6 +528,110 @@ def _enumerate_pole_tuples(edge_mode_sums):
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Per-subset plan cache (Stage 4a-plan, 2026-05-15)
+# ───────────────────────────────────────────────────────────────────────
+# All three analytic modesum integrators (m=1 interval, m=2 polygon,
+# m≥3 poset) iterate over pole tuples and per tuple compute
+#
+#   α_s[v]     = Σ_e λ_e · a_int_e[v]      for v in 0..m-1
+#   γ_const[t] = Σ_e λ_e · c0_e
+#   γ_slope[t][j] = Σ_e λ_e · a_ext_e[j]   for j in 0..n_ext-1
+#
+# and finally
+#
+#   γ(free_vals) = γ_const + Σ_j γ_slope[j] · free_vals[j].
+#
+# ``λ_e``, ``a_int_e[v]``, ``c0_e``, ``a_ext_e[j]`` are all functions of
+# ``(smooth_edge_modes, subset_constraint_data)`` — strictly per-subset.
+# ``free_vals`` is the only τ-grid-varying input.  Previously each
+# integrator rebuilt the per-tuple α_s / γ_const / γ_slope on every
+# ``_contrib(free_vals)`` call, which compounds linearly across the τ
+# grid.  The plan caches them once at subset setup and threads the
+# cached arrays into the per-call inner loop, so the per-τ work
+# reduces to the much cheaper
+#
+#   γ_per_tuple[t] = γ_const[t] + Σ_j γ_slope[t][j] · free_vals[j]
+#
+# while reusing α_s, polygon-vertex constraints, and the EdgeModeSum
+# cache.  Scales with (N_τ − 1) — biggest win on τ-dense sweeps
+# (k=1 max_ell=2 with 10+ probes, etc.).
+def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
+                        m, n_ext):
+    """Pre-compute the τ-invariant per-pole-tuple data used by the
+    analytic modesum integrators.
+
+    Returns a dict with the following keys; all values are tuples
+    (immutable, cheap to share across closures):
+
+    ``pole_tuples``: tuple of (C_prod, lambdas)
+        Pre-enumerated cartesian product over per-edge modes; identical
+        contents to ``_enumerate_pole_tuples(smooth_edge_modes)`` but
+        materialised so iteration over the τ grid pays the construction
+        cost once.
+
+    ``alphas_per_tuple``: tuple, len = n_tuples
+        Each entry is a tuple of ``m`` complex values
+        ``(α_s[0], …, α_s[m-1])`` for the corresponding pole tuple.
+        Replaces the per-call inner edge-loop
+        ``α_s[v] += λ_e · a_int_e[v]``.
+
+    ``gamma_const_per_tuple``: tuple, len = n_tuples
+        Each entry is the complex constant ``Σ_e λ_e · c0_e`` for that
+        pole tuple — i.e. γ at ``free_vals = 0``.
+
+    ``gamma_slope_per_tuple_per_ext``: tuple of tuples
+        ``slope[t][j] = Σ_e λ_e · a_ext_e[j]`` for tuple t, external-
+        time index j.  γ at general free_vals is then
+        ``γ_const[t] + Σ_j slope[t][j] · free_vals[j]``.
+    """
+    pole_tuples = tuple(_enumerate_pole_tuples(smooth_edge_modes))
+    # Pre-extract per-edge linear coefficients in floats.  The arity
+    # of ``a_int_e`` is ``m`` and ``a_ext_e`` is ``n_ext``.  We tolerate
+    # short ``a_int`` lists (degenerate constraints with no internal
+    # coefficients) by padding with 0.0.
+    a_int_per_edge = []
+    a_ext_per_edge = []
+    c0_per_edge = []
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        a_int_pad = tuple(
+            float(a_int[v]) if v < len(a_int) else 0.0 for v in range(m)
+        )
+        a_ext_pad = tuple(
+            float(a_ext[j]) if j < len(a_ext) else 0.0
+            for j in range(n_ext)
+        )
+        a_int_per_edge.append(a_int_pad)
+        a_ext_per_edge.append(a_ext_pad)
+        c0_per_edge.append(float(c0))
+
+    alphas_per_tuple = []
+    gamma_const_per_tuple = []
+    gamma_slope_per_tuple_per_ext = []
+    n_smooth = len(smooth_edge_modes)
+    for (C_prod, lambdas) in pole_tuples:
+        alphas = [0.0 + 0.0j] * m
+        gamma_const = 0.0 + 0.0j
+        gamma_slope = [0.0 + 0.0j] * n_ext
+        for e in range(n_smooth):
+            lam = lambdas[e]
+            for v in range(m):
+                alphas[v] += lam * a_int_per_edge[e][v]
+            gamma_const += lam * c0_per_edge[e]
+            for j in range(n_ext):
+                gamma_slope[j] += lam * a_ext_per_edge[e][j]
+        alphas_per_tuple.append(tuple(alphas))
+        gamma_const_per_tuple.append(gamma_const)
+        gamma_slope_per_tuple_per_ext.append(tuple(gamma_slope))
+
+    return {
+        'pole_tuples':                  pole_tuples,
+        'alphas_per_tuple':             tuple(alphas_per_tuple),
+        'gamma_const_per_tuple':        tuple(gamma_const_per_tuple),
+        'gamma_slope_per_tuple_per_ext': tuple(gamma_slope_per_tuple_per_ext),
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Causal poset extraction + linear-extension enumeration (Stage 3b prep)
 # ───────────────────────────────────────────────────────────────────────
 # For m ≥ 3 (deeply-nested integrals), the retardation constraint set
@@ -1349,6 +1453,7 @@ def _integrate_nd_polytope_poset_modesum(
     m,
     bbox_cap=POLYGON_BBOX_CAP,
     pole_tuples=None,
+    plan=None,
 ):
     r"""Analytic ``∫_{polytope} Π_e [Σ_α C_α exp(λ_α · Δt_e)] · pref
                                 ds_1 … ds_m`` for m ≥ 3 via causal-
@@ -1461,6 +1566,53 @@ def _integrate_nd_polytope_poset_modesum(
                 upp[k] = float(upper_per_var[v])
         upper_per_position_per_ext.append(upp)
 
+    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
+    # When the caller threads a pre-built plan through, the per-tuple
+    # ``alphas_orig`` and the γ decomposition have been computed once
+    # at subset setup.  Per call we only contract γ_slope with
+    # free_ext_vals and reorder alphas per linear extension.  The
+    # poset structure, scalar bounds, linear extensions and cut tuples
+    # are all τ-dependent (they read free_ext_vals via c_eff) and
+    # stay above this branch — they're rebuilt per call regardless.
+    if plan is not None:
+        pole_iter = plan['pole_tuples']
+        alphas_per_tuple = plan['alphas_per_tuple']
+        gamma_const_per_tuple = plan['gamma_const_per_tuple']
+        gamma_slope_per_tuple_per_ext = plan[
+            'gamma_slope_per_tuple_per_ext'
+        ]
+        n_ext = len(free_ext_vals)
+        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
+            alphas_orig = alphas_per_tuple[t_idx]
+            gamma = gamma_const_per_tuple[t_idx]
+            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
+            for j in range(n_ext):
+                gamma = gamma + slope_row[j] * free_ext_vals[j]
+            if gamma.real > 600.0:
+                return None
+            try:
+                term_const = pref * C_prod * cmath.exp(gamma)
+            except (OverflowError, ValueError):
+                return None
+            if term_const == 0:
+                continue
+            for sigma, U_ext, upp_per_pos in zip(
+                    extensions, upper_for_ext,
+                    upper_per_position_per_ext):
+                alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
+                chain_val = _chain_with_intermediate_uppers(
+                    alphas_chain, L, upp_per_pos, float(U_ext),
+                )
+                if chain_val is None:
+                    _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
+                    _RUNTIME_COUNTERS[
+                        'chain_simplex_polynomial_returned_none'
+                    ] += 1
+                    return None
+                total += term_const * chain_val
+        return total
+
+    # ── Legacy path (no plan) ─────────────────────────────────────
     pole_iter = (
         pole_tuples if pole_tuples is not None
         else _enumerate_pole_tuples(smooth_edge_modes)
@@ -1520,6 +1672,7 @@ def _integrate_1d_polytope_modesum(
     free_ext_vals,
     bbox_cap=POLYGON_BBOX_CAP,
     pole_tuples=None,
+    plan=None,
 ):
     r"""Analytic ``∫_L^U Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor ds``
     for ``m = 1``.
@@ -1580,7 +1733,70 @@ def _integrate_1d_polytope_modesum(
     L_inf = math.isinf(L)
     U_inf = math.isinf(U)
 
-    # Pre-extract per-edge linear data (constant in pole tuple).
+    pref = complex(prefactor_complex)
+    total = 0.0 + 0.0j
+
+    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
+    # When the caller threads a pre-built plan through, the per-tuple
+    # ``α_s`` and ``γ`` decomposition has been computed once at
+    # subset setup — only the γ slope contraction with free_ext_vals
+    # remains.  See ``_build_modesum_plan``.
+    if plan is not None:
+        pole_iter = plan['pole_tuples']
+        alphas_per_tuple = plan['alphas_per_tuple']
+        gamma_const_per_tuple = plan['gamma_const_per_tuple']
+        gamma_slope_per_tuple_per_ext = plan[
+            'gamma_slope_per_tuple_per_ext'
+        ]
+        n_ext = len(free_ext_vals)
+        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
+            alpha_s = alphas_per_tuple[t_idx][0]
+            gamma = gamma_const_per_tuple[t_idx]
+            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
+            for j in range(n_ext):
+                gamma = gamma + slope_row[j] * free_ext_vals[j]
+            # Same overflow guard / closed-form as the non-plan path
+            # below.  Duplicated rather than fall-through so the hot
+            # path stays branch-free on (plan is not None).
+            if gamma.real > 600.0:
+                return None
+            try:
+                term_const = pref * C_prod
+            except (OverflowError, ValueError):
+                return None
+            if term_const == 0:
+                continue
+            try:
+                if abs(alpha_s) < 1e-15:
+                    if L_inf or U_inf:
+                        return None
+                    contrib = (U - L) * cmath.exp(gamma)
+                else:
+                    if U_inf:
+                        if alpha_s.real >= 0:
+                            return None
+                        term_U = 0.0 + 0.0j
+                    else:
+                        arg = alpha_s * U + gamma
+                        if arg.real > 600.0:
+                            return None
+                        term_U = cmath.exp(arg)
+                    if L_inf:
+                        if alpha_s.real <= 0:
+                            return None
+                        term_L = 0.0 + 0.0j
+                    else:
+                        arg = alpha_s * L + gamma
+                        if arg.real > 600.0:
+                            return None
+                        term_L = cmath.exp(arg)
+                    contrib = (term_U - term_L) / alpha_s
+            except (OverflowError, ValueError):
+                return None
+            total += term_const * contrib
+        return total
+
+    # ── Legacy path (no plan): rebuild per-edge data per call ──────
     c_ext_per_edge = [
         float(c0) + sum(
             float(a_ext[j]) * float(free_ext_vals[j])
@@ -1593,8 +1809,6 @@ def _integrate_1d_polytope_modesum(
         for (a_int, _a_ext, _c0) in subset_constraint_data
     ]
 
-    pref = complex(prefactor_complex)
-    total = 0.0 + 0.0j
     pole_iter = (
         pole_tuples if pole_tuples is not None
         else _enumerate_pole_tuples(smooth_edge_modes)
@@ -1657,6 +1871,7 @@ def _integrate_2d_polygon_modesum(
     free_ext_vals,
     bbox_cap=POLYGON_BBOX_CAP,
     pole_tuples=None,
+    plan=None,
 ):
     r"""Analytic ∫∫_polygon Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
                   ds_0 ds_1.
@@ -1709,6 +1924,47 @@ def _integrate_2d_polygon_modesum(
         for i in range(1, len(polygon) - 1)
     ]
 
+    total = 0.0 + 0.0j
+    pref = complex(prefactor_complex)
+
+    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
+    # Per-tuple α_s, β_s and γ decomposition pre-computed at subset
+    # setup; only γ_slope contraction and the per-triangle integral
+    # remain per τ.  See ``_build_modesum_plan``.
+    if plan is not None:
+        pole_iter = plan['pole_tuples']
+        alphas_per_tuple = plan['alphas_per_tuple']
+        gamma_const_per_tuple = plan['gamma_const_per_tuple']
+        gamma_slope_per_tuple_per_ext = plan[
+            'gamma_slope_per_tuple_per_ext'
+        ]
+        n_ext = len(free_ext_vals)
+        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
+            alpha_s, beta_s = alphas_per_tuple[t_idx]
+            gamma = gamma_const_per_tuple[t_idx]
+            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
+            for j in range(n_ext):
+                gamma = gamma + slope_row[j] * free_ext_vals[j]
+            if gamma.real > 600.0:
+                return None
+            try:
+                term_const = pref * C_prod * cmath.exp(gamma)
+            except (OverflowError, ValueError):
+                return None
+            if term_const == 0:
+                continue
+            tri_sum = 0.0 + 0.0j
+            for (v0, v1, v2) in triangles:
+                tri_contrib = _exp_over_triangle(
+                    v0, v1, v2, alpha_s, beta_s
+                )
+                if tri_contrib is None:
+                    return None
+                tri_sum += tri_contrib
+            total += term_const * tri_sum
+        return total
+
+    # ── Legacy path (no plan): rebuild per-edge data per call ──────
     # Precompute per-edge "ext-time c-contribution":
     #   c_ext_e = c0_e + Σ_j a_ext_e[j] · t_free[j]
     # so that γ for a given pole tuple is Σ_e λ_α_e · c_ext_e.
@@ -1724,8 +1980,6 @@ def _integrate_2d_polygon_modesum(
         for (a_int, _a_ext, _c0) in subset_constraint_data
     ]
 
-    total = 0.0 + 0.0j
-    pref = complex(prefactor_complex)
     pole_iter = (
         pole_tuples if pole_tuples is not None
         else _enumerate_pole_tuples(smooth_edge_modes)
@@ -2709,6 +2963,7 @@ def integrate_diagram(
         # ``_prefactor_c`` was already computed early (Stage 4a optim
         # 2026-05-15); reuse it instead of re-converting through SR.
         _pole_tuples_cache = None
+        _modesum_plan = None
         if (_modesum_enabled
                 and not vertex_leg_time
                 and edge_mode_sums is not None
@@ -2717,20 +2972,27 @@ def integrate_diagram(
             _smooth_edge_modes = [
                 edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
             ]
-            # Pre-collect the pole-tuple cartesian product once per
-            # subset (Stage 4a follow-up 2026-05-15).  The analytic
-            # modesum integrators otherwise rebuild the generator at
-            # every τ call; tuple-ing it up trades a few KB of memory
-            # for the saved generator state-machine cost across the
-            # entire τ grid.
-            _pole_tuples_cache = tuple(
-                _enumerate_pole_tuples(_smooth_edge_modes)
+            # Stage 4a-plan (2026-05-15): pre-compute the τ-invariant
+            # per-pole-tuple data (alphas, γ_const, γ_slope) for the
+            # entire τ grid.  Each analytic integrator threads this
+            # plan through its inner loop and skips the per-call
+            # edge-loop that would otherwise rebuild α_s / γ on every
+            # ``_contrib(free_vals)`` invocation.  Trades a single
+            # subset-setup cost for (N_τ − 1) call-time recomputations.
+            _modesum_plan = _build_modesum_plan(
+                _smooth_edge_modes,
+                subset_constraint_data,
+                m_sub,
+                len(free_ext_syms),
             )
+            # Keep the legacy cache populated so any caller still
+            # passing ``pole_tuples=`` keeps working unchanged.
+            _pole_tuples_cache = _modesum_plan['pole_tuples']
 
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
                                   modes=None, pref_c=None,
-                                  pole_tuples=None):
+                                  pole_tuples=None, plan=None):
             def _contrib(free_vals):
                 # m=1 analytic 1D interval (Stage 4a-perdiag).
                 if (modes is not None and pref_c is not None
@@ -2741,6 +3003,7 @@ def integrate_diagram(
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
                         pole_tuples=pole_tuples,
+                        plan=plan,
                     )
                     if interval_val is not None:
                         return interval_val
@@ -2753,6 +3016,7 @@ def integrate_diagram(
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
                         pole_tuples=pole_tuples,
+                        plan=plan,
                     )
                     if poly_val is not None:
                         return poly_val
@@ -2766,6 +3030,7 @@ def integrate_diagram(
                         free_ext_vals=free_vals,
                         m=m_val,
                         pole_tuples=pole_tuples,
+                        plan=plan,
                     )
                     if poset_val is not None:
                         return poset_val
@@ -2784,6 +3049,7 @@ def integrate_diagram(
                 modes=_smooth_edge_modes,
                 pref_c=_modesum_prefactor_c,
                 pole_tuples=_pole_tuples_cache,
+                plan=_modesum_plan,
             )
         )
         # ``_evaluator_label`` tags the INTENDED analytic path for
