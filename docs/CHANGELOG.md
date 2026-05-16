@@ -72,6 +72,33 @@ Benchmark (regression fixtures, n_runs=2, mean wall):
 | `quad_exp_k2_ell0` | 3.47 s | 2.48 s | −28% |
 | `spike_reset_k2_ell0` | 5.42 s | 4.38 s | −19% |
 
+**When `True` may pay back.**  The savings above assume the smooth
+matrix entries are *unused* — true for plain rational-propagator
+theories (linear / quadratic φ, spike-reset, GTaS auto-cumulants,
+cortical Poisson noise), where every subset is analytic-eligible
+and the SR + `fast_callable` path is skipped wholesale.  But
+`NoiseSourceType` vertices with a smooth (non-Dirac) `kernel_fn`
+populate `vertex_leg_time`, which forces `_analytic_eligible =
+False` for every subset of those diagrams: the integrand picks up
+a non-rational factor `K(τ_v)` (Gaussian, etc.) that the polygon/
+poset/interval closed forms cannot absorb.  Those diagrams *do*
+exercise the SR path, where the smooth matrix entries get
+multiplied into `subset_factor`, expanded, and JIT-compiled —
+and a `simplify_full` upstream can collapse duplicate poles
+(common after Newton refinement) so the distributed sum walks a
+smaller JIT tree.  A 4-pole 5-edge subset's `subset_factor.expand
+()` has `4⁵ = 1024` terms naively; dropping to 3 effective poles
+gives `3⁵ = 243` (4× smaller).
+
+For `correlated_noises` configs, run each fixture twice (`True`
+vs `False`) and compare `Theory side took …s`.  Cell C's
+`fast_callable` call count climbs into the hundreds when
+`NoiseSourceType` fires — that's the population on which `True`
+is acting.  Keep a `False` "control" row to separate the
+"cost-of-Maxima" axis from the "benefit-of-cleaner-SR-input"
+axis.  The default stays `False` because none of the current
+test theories populate `vertex_leg_time`.
+
 ### `7f0bf05` — fix wrong-direction overflow guards
 
 The m=1 interval, m=2 polygon, and m≥3 poset analytic

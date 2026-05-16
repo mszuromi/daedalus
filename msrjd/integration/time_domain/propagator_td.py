@@ -53,17 +53,82 @@ Conventions (fixed pipeline-wide)
 from sage.all import SR, I, exp, heaviside, matrix, CDF
 
 
-# Stage 4a optim (2026-05-15): the smooth-matrix simplify_full() pass
-# below is a Maxima round-trip per entry — measured at ~16% of
-# integrate_diagram wall on the k=2 ell=1 quad config.  After Stage 4a
-# opt #1, the smooth matrix is unused for analytic-eligible subsets
-# (which is the common case for plain rational-propagator diagrams),
-# so the simplification is dead weight in that path.  It's still
-# beneficial for NoiseSourceType-kernel diagrams whose SR-path
-# ``subset_factor.expand()`` walks the smooth entries.  Flip to
-# ``False`` to disable; the simplify can also be turned back on
-# locally if a diagnostic shows a non-trivial expand() slowdown on
-# the residual SR path.
+# ──────────────────────────────────────────────────────────────────────
+# USE_SIMPLIFY_FULL_IN_GT
+# ──────────────────────────────────────────────────────────────────────
+# Gates the per-entry ``simplify_full()`` pass on the smooth propagator
+# matrix inside ``build_G_t_matrix``.  Default ``False`` (Stage 4a opt
+# #2, commit be70db2).  The flag name describes the *behaviour* (run
+# simplify), not the optimization (which is to skip it).
+#
+# What the pass does
+# ------------------
+# After assembling ``smooth[i,j](t) = Σ_k C_k[i,j] · exp(I · p_k · t)``,
+# the pass invokes Maxima on every matrix entry to canonicalize the SR
+# expression — combining like-pole terms, simplifying exp arithmetic,
+# applying ratsimp/radcan rules.  Cost: one Maxima round-trip per
+# matrix entry (~50–80 µs each).
+#
+# When the pass is dead weight (default ``False`` is right)
+# ----------------------------------------------------------
+# After Stage 4a opt #1 (commit 6d75869), the smooth matrix is read
+# ONLY by the residual SR path — i.e. when ``subset_factor`` is built,
+# expanded, and JIT-compiled via ``fast_callable``.  Analytic-eligible
+# subsets bypass that path entirely.  A subset is analytic-eligible iff
+#   * ``vertex_leg_time`` is empty (no ``NoiseSourceType`` vertex), AND
+#   * the per-edge mode-sum cache (``edge_mode_sums``) is available,
+#     AND
+#   * the combined prefactor coerces to a complex number.
+# For plain rational-propagator theories — cortical Poisson, linear/
+# quadratic φ, spike-reset, GTaS auto-cumulants — every subset is
+# analytic-eligible.  The simplified smooth matrix gets built and
+# never queried; the Maxima cost is pure overhead.  Measured wall-time
+# savings with ``False`` (regression fixtures, n_runs=4 warm-mean):
+#
+#   spike_reset_k1_ell1   8.66 s → 5.13 s   (−41%)
+#   quad_exp_k2_ell0      3.47 s → 2.48 s   (−28%)
+#   spike_reset_k2_ell0   5.42 s → 4.38 s   (−19%)
+#
+# When the pass may pay back (consider ``True``)
+# -----------------------------------------------
+# ``NoiseSourceType`` vertices with a smooth kernel — Gaussian noise,
+# any non-Dirac ``kernel_fn`` in a ``correlated_noises`` declaration —
+# populate ``vertex_leg_time``.  Those diagrams force ``_analytic_
+# eligible = False`` for every subset: the integrand picks up a
+# non-rational factor ``K(τ_v)`` (e.g. ``exp(-τ²/2σ²)``) which the
+# polygon/poset/interval closed forms cannot absorb.  The pipeline
+# falls back to ``scipy.nquad`` on the JIT-compiled SR closure.
+#
+# On this fallback path the smooth-matrix entries DO get multiplied
+# into ``subset_factor``, expanded, and compiled.  If
+# ``simplify_full`` upstream collapses duplicate poles (e.g. when
+# Newton-refinement produced two numerically-identical roots) or
+# cancels obvious redundancies, the ``subset_factor.expand()`` output
+# walks a smaller tree and ``fast_callable`` compiles a smaller JIT
+# graph.  The trade-off is integrand-specific: a 4-pole 5-edge
+# subset's distributed sum has 4⁵ = 1024 terms naively; dropping to 3
+# effective poles drops it to 243 (4× smaller).
+#
+# Whether the saved expand/compile cost recoups the upfront Maxima
+# cost depends on how often the SR path fires per pipeline call:
+#
+#   ``False``  →  cheap up front, costly per ``NoiseSourceType``
+#                 subset (more terms to expand + compile).
+#   ``True``   →  Maxima cost amortised across all SR-path subsets;
+#                 wins when (a) ``vertex_leg_time`` fires for a
+#                 non-trivial number of diagrams, and (b) there's
+#                 meaningful pole-list redundancy to collapse.
+#
+# How to benchmark the trade-off
+# ------------------------------
+# Run the same config twice — once ``True``, once ``False`` — and
+# compare ``Theory side took ...s``.  Also check Cell C output (the
+# diagnostic counters) for the ``fast_callable`` call count: that
+# climbs into the hundreds for ``NoiseSourceType`` configs (the
+# Stage 4a opt #1 ``_analytic_eligible`` short-circuit doesn't fire),
+# and that's the population on which ``True`` is acting.  Keep
+# ``False`` for a "control" row regardless, to separate the
+# "cost of Maxima" axis from the "benefit of cleaner SR input" axis.
 USE_SIMPLIFY_FULL_IN_GT = False
 
 
