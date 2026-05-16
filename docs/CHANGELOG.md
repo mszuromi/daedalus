@@ -21,6 +21,15 @@ complex128 buffers.  6× speedup on the standard parity test
 by `USE_NUMBA_CHAIN_SIMPLEX = False`.  Parity tests live in
 `tests/test_chain_simplex_numba.py` (12 tests).
 
+**Caveat — regression-fixture impact is zero.** Toggling
+`USE_NUMBA_CHAIN_SIMPLEX` on/off on `spike_reset_k1_ell1`,
+`quad_exp_k2_ell0`, and `spike_reset_k2_ell0` produces no
+measurable wall delta (all sub-1% noise).  Those fixtures are
+m=1 / m=2 only and never enter the chain simplex.  The numba
+benefit materialises only on m≥3 paths (k=2 max_ell=1 spike-
+reset has 100+ m≥3 subsets per the Stage 3b runtime counters;
+k=1 max_ell=2 quad similarly).
+
 ### `6d75869` — skip SR + `fast_callable()` when analytic-eligible
 
 Profiling on `k=2 max_ell=1` quad showed `fast_callable(
