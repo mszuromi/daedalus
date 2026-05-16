@@ -392,20 +392,24 @@ def _exp_over_triangle(v0, v1, v2, alpha, beta):
     p = alpha * e1x + beta * e1y
     q = alpha * e2x + beta * e2y
     v0_term = alpha * v0[0] + beta * v0[1]
-    # Overflow guard.  ``cmath.exp(z)`` blows past double range for
-    # Re(z) > ~709, but it UNDERFLOWS to 0 for Re(z) < ~-745.
-    # Underflow is the desired behaviour here — when the integrand
-    # has decayed to ~0 across the triangle, the contribution should
-    # be ~0, not a bailout.  Stage 4a optim (2026-05-15): check only
-    # the positive-overflow direction, matching ``cmath.exp``'s
-    # actual failure mode.  This recovers e.g. all 16 polygon-modesum
-    # attempts on ``spike_reset_k1_ell1`` that were previously
-    # falling through to scipy.nquad on bbox-corner triangles with
-    # ``p.real ≈ -630``.
+    # Overflow guard — bilateral.  ``cmath.exp(z)`` blows past double
+    # range for Re(z) > ~709 (overflow) AND underflows to 0 for Re(z)
+    # < ~-745.  For most analytic integrators the underflow direction
+    # is harmless (term decays correctly), but ``_exp_over_unit_
+    # triangle`` (called below) has structural cancellation —
+    # ``(exp(p) - exp(q)) / (p - q) - (exp(p) - 1) / p`` — which can
+    # produce floating-point-noise-dominated values when one of
+    # ``exp(p)`` or ``exp(q)`` underflows and the other doesn't.
+    # Stage 4a opt #3 (2026-05-15 commit 7f0bf05) relaxed this to one-
+    # sided which appears to have introduced wrong-direction loop
+    # corrections in spike-reset k=2 ell=1 (m=2 polygon path is
+    # exercised heavily there).  Reverting per Agent 4's audit
+    # recommendation: keep the guard bilateral so previously-bailed
+    # cases route to scipy.nquad as they did in Stage 3b.
     EXP_REAL_LIMIT = 600.0
-    if (p.real > EXP_REAL_LIMIT
-            or q.real > EXP_REAL_LIMIT
-            or v0_term.real > EXP_REAL_LIMIT):
+    if (abs(p.real) > EXP_REAL_LIMIT
+            or abs(q.real) > EXP_REAL_LIMIT
+            or abs(v0_term.real) > EXP_REAL_LIMIT):
         return None
     try:
         J = _exp_over_unit_triangle(p, q)
