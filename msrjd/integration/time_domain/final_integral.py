@@ -2708,6 +2708,7 @@ def integrate_diagram(
         )
         # ``_prefactor_c`` was already computed early (Stage 4a optim
         # 2026-05-15); reuse it instead of re-converting through SR.
+        _pole_tuples_cache = None
         if (_modesum_enabled
                 and not vertex_leg_time
                 and edge_mode_sums is not None
@@ -2716,10 +2717,20 @@ def integrate_diagram(
             _smooth_edge_modes = [
                 edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
             ]
+            # Pre-collect the pole-tuple cartesian product once per
+            # subset (Stage 4a follow-up 2026-05-15).  The analytic
+            # modesum integrators otherwise rebuild the generator at
+            # every τ call; tuple-ing it up trades a few KB of memory
+            # for the saved generator state-machine cost across the
+            # entire τ grid.
+            _pole_tuples_cache = tuple(
+                _enumerate_pole_tuples(_smooth_edge_modes)
+            )
 
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
-                                  modes=None, pref_c=None):
+                                  modes=None, pref_c=None,
+                                  pole_tuples=None):
             def _contrib(free_vals):
                 # m=1 analytic 1D interval (Stage 4a-perdiag).
                 if (modes is not None and pref_c is not None
@@ -2729,6 +2740,7 @@ def integrate_diagram(
                         prefactor_complex=pref_c,
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
+                        pole_tuples=pole_tuples,
                     )
                     if interval_val is not None:
                         return interval_val
@@ -2740,6 +2752,7 @@ def integrate_diagram(
                         prefactor_complex=pref_c,
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
+                        pole_tuples=pole_tuples,
                     )
                     if poly_val is not None:
                         return poly_val
@@ -2752,6 +2765,7 @@ def integrate_diagram(
                         subset_constraint_data=cdata,
                         free_ext_vals=free_vals,
                         m=m_val,
+                        pole_tuples=pole_tuples,
                     )
                     if poset_val is not None:
                         return poset_val
@@ -2769,6 +2783,7 @@ def integrate_diagram(
                 integrand_for_quad, subset_constraint_data, m_sub,
                 modes=_smooth_edge_modes,
                 pref_c=_modesum_prefactor_c,
+                pole_tuples=_pole_tuples_cache,
             )
         )
         # ``_evaluator_label`` tags the INTENDED analytic path for
