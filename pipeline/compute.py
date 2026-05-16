@@ -12,6 +12,7 @@ Higher-k slice machinery deferred to future iteration.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import numpy as np
@@ -182,9 +183,24 @@ def compute_cumulants(
     external_fields      = normalize_external_fields(
         external_fields, naming_convention=naming_convention)
 
+    # ── Per-phase wall-time tracker (verbose only) ─────────────────
+    # Recorded into a dict so callers / notebooks can inspect the
+    # breakdown via ``th['phase_walls']`` after the run, and so the
+    # final `Done.` line can echo a summary.  Stays None when
+    # verbose=False so the bookkeeping is opt-in.
+    phase_walls: dict[str, float] | None = {} if verbose else None
+
+    def _phase_time(label: str, t0: float) -> None:
+        if phase_walls is None:
+            return
+        dt = time.perf_counter() - t0
+        phase_walls[label] = dt
+        print(f'      [{label}] done in {dt:.2f}s')
+
     # ── 1. FieldTheory expansion ──────────────────────────────────
     if verbose:
         print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})...')
+    _t_phase = time.perf_counter()
     ft = FieldTheory(model, taylor_order=taylor_order)
     ft.expand()
     sanity_ok = ft.sanity_check()
@@ -199,26 +215,34 @@ def compute_cumulants(
     if verbose:
         print(f'      vtypes: {len(vtypes)}, sources: {len(stypes)} '
               f'(NoiseSourceType: {n_noise})')
+    _phase_time('expand', _t_phase)
 
     # ── 2. Propagator (symbolic, cached) ──────────────────────────
     if verbose:
         print('[2/7] Build propagator (K_ker → K_ft → G_ft → D_delta)...')
+    _t_phase = time.perf_counter()
     prop = build_propagator(ft, model, use_cache=use_cache, verbose=verbose)
+    _phase_time('propagator', _t_phase)
 
     # ── 3. Mean-field solve + num_params assembly ─────────────────
     if verbose:
         print('[3/7] Solve MF self-consistency...')
+    _t_phase = time.perf_counter()
     mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
     num_params = mf['num_params']
+    _phase_time('mean_field', _t_phase)
 
     # ── 4. Numerical poles + residues (fills prop in place) ───────
     if verbose:
         print('[4/7] Compute numerical poles + residue matrices...')
+    _t_phase = time.perf_counter()
     compute_poles_and_residues(prop, num_params, verbose=verbose)
+    _phase_time('poles', _t_phase)
 
     # ── 5. Field-index maps + prediagram + typed diagram pipeline ─
     if verbose:
         print(f'[5/7] Enumerate prediagrams (k={k}, max_ell={max_ell})...')
+    _t_phase = time.perf_counter()
     ring_var_names = list(ft._ns._ring_var_names)
     n_tilde = ft._n_tilde
     resp_idx, phys_idx = build_field_index_map(ring_var_names, n_tilde)
@@ -244,10 +268,12 @@ def compute_cumulants(
         n_workers       = n_workers,
         verbose         = verbose,
     )
+    _phase_time('diagrams', _t_phase)
 
     # ── 6. Diagram-level prefactor classification + kernel groups ─
     if verbose:
         print('[6/7] Classify coefficient factors per diagram...')
+    _t_phase = time.perf_counter()
     time_dep_params = model.get('time_dependent_parameters', []) or []
     noise_structure = model.get(
         'noise_structure', {'temporal_type': 'white', 'amplitude_params': []}
@@ -273,11 +299,13 @@ def compute_cumulants(
                 'combined_prefactor': combined_prefactor,
                 'ell':                ell,
             })
+    _phase_time('classify', _t_phase)
 
     # ── 7. Phase J time-domain integration (per ell) ──────────────
     if verbose:
         print(f'[7/7] Phase J: compute_correction_td per ell '
               f'(0..{max_ell})...')
+    _t_phase = time.perf_counter()
     tau_grid = np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
 
     propagator_data = {
@@ -364,6 +392,8 @@ def compute_cumulants(
             )
         else:
             C_tau_by_ell[ell] = None
+
+    _phase_time('phase_j', _t_phase)
 
     # Master total_C: sum across ell (for caller convenience)
     def total_C(*ext_time_values):
@@ -460,6 +490,7 @@ def compute_cumulants(
         'diagrams':        diagram_records,
         'kernel_groups':   kernel_groups,
         'phase_j_by_ell':  phase_j_by_ell,
+        'phase_walls':     phase_walls,  # dict[label → seconds], None if not verbose
         'config': {
             'k':                  k,
             'max_ell':            max_ell,
@@ -489,5 +520,11 @@ def compute_cumulants(
         print(f'\nDone.  k={k}, max_ell={max_ell}, '
               f'{len(all_unique)} unique diagrams, '
               f'{len(tau_grid)} τ points.')
+        if phase_walls:
+            total = sum(phase_walls.values())
+            print(f'\n  Phase wall summary (Σ = {total:.1f}s):')
+            for label, dt in phase_walls.items():
+                pct = 100.0 * dt / total if total > 0 else 0.0
+                print(f'    {label:12s}  {dt:6.2f}s  ({pct:4.1f}%)')
 
     return result
