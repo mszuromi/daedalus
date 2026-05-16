@@ -303,14 +303,21 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
     D_omega = None
     D_delta = None
 
-    # Quick complexity estimate: number of free SR symbols other
-    # than omega.  Anything > ~20 is "rich" and not worth attempting.
+    # Complexity gate.  Sage's ``K_ft.inverse()`` is cofactor-based —
+    # O(n!) in the matrix dimension ``nf``.  For nf=8 that's 40 320
+    # minor determinants × the cost-per-minor of simplifying the
+    # rational SR entries; in practice it runs for HOURS regardless
+    # of how lean the symbol set is.  Spike-reset (single-pop with
+    # ``population_size=2`` so nf=8 and only ~18 free symbols) was the
+    # case that exposed the symbol-count gate as the wrong metric.
+    # Switch to a matrix-size gate; keep the symbol-count threshold
+    # as a secondary trigger for the rare lean-but-symbol-rich case.
     free_syms = set()
     for i in range(nf):
         for j in range(nf):
             free_syms.update(SR(K_ft[i, j]).variables())
     free_syms.discard(omega)
-    rich = len(free_syms) > 20
+    rich = nf >= 6 or len(free_syms) > 20
 
     if not rich:
         t0 = _time.perf_counter()
@@ -347,10 +354,14 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
                 raise
     else:
         if verbose:
-            print(f'      K_ft has {len(free_syms)} free symbols beyond ω '
-                  f'— skipping symbolic inverse/adj/det.  Computation '
-                  f'will happen numerically in '
-                  f'compute_poles_and_residues.')
+            reason = (
+                f'nf={nf} ≥ 6 (cofactor inverse is O(nf!))'
+                if nf >= 6
+                else f'{len(free_syms)} free symbols > 20 threshold'
+            )
+            print(f'      K_ft skipped symbolic inverse/adj/det '
+                  f'({reason}).  Computation deferred to '
+                  f'compute_poles_and_residues (numerical, LU-based).')
 
     prop = {
         'K_ker':         K_ker,
