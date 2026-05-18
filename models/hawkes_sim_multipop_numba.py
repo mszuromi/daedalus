@@ -624,6 +624,113 @@ def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
     return binned_counts, voltage_bins, total_spikes
 
 
+@numba.njit
+def sim_hawkes_multipop_quad_softreset_delta_numba(
+        n_steps, dt_sim,
+        tau_v, a_gain, E_drive,
+        W, tau_g,
+        v_init,
+        bin_size_steps, n_bins, seed,
+        reset_coeff,
+):
+    """
+    Euler-step simulator for **quadratic-rate + SOFT spike-reset +
+    delta-synapse** Hawkes.  Matches
+    ``theories/single_population_quad_spike_reset_test.theory.py``
+    after its 2026-05-18 update (reset term changed from full
+    ``tau[i]*v[i]*n[i]`` to the parameter-free ``reset_coeff*v[i]*n[i]``
+    with ``reset_coeff = 0.5``).
+
+    Langevin form::
+
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
+                          - reset_coeff · v_i · n_i(t)   # SOFT reset
+
+    Per-spike voltage update by integrating across the impulse
+    ``n_i(t) = δ(t - t_spike)``::
+
+      Δv_i = -(reset_coeff/tau_v_i) · v_i(t-)
+      ⇒ v_i(t+) = v_i(t-) · (1 - reset_coeff/tau_v_i)
+
+    For multiple spikes in a single Euler step the multiplicative
+    factor compounds: ``v_i *= (1 - reset_coeff/tau_v_i)^spikes_i``.
+
+    Differences from ``sim_hawkes_multipop_quad_reset_delta_numba``:
+      * SOFT (multiplicative, fractional) reset instead of hard reset
+        to 0.  At ``tau_v_i = 10`` and ``reset_coeff = 0.5`` each spike
+        cuts ``v_i`` by 5% (factor 0.95).
+      * Adds the ``reset_coeff`` argument (positional, after seed).
+
+    Other plumbing (instantaneous synapses, ``tau_g`` ignored,
+    binning) is identical to the hard-reset variant.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    # Per-pop multiplicative reset factor (clamped non-negative to
+    # avoid the unphysical regime where reset_coeff > tau_v drives v
+    # past zero in one spike — that would require a sub-step Euler).
+    reset_factor = np.empty(N)
+    for i in range(N):
+        f = 1.0 - reset_coeff / tau_v[i]
+        if f < 0.0:
+            f = 0.0
+        reset_factor[i] = f
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Quadratic rate sample.
+        for i in range(N):
+            v_i = v[i]
+            lam = a_gain[i] * v_i * v_i
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Drift, delta-synapse kicks, soft reset.  Order matches the
+        # hard-reset variant: drift first (uses pre-step v), then this
+        # step's spike-driven updates.
+        for i in range(N):
+            v[i] += dt_sim / tau_v[i] * (-v[i] + E_drive[i])
+        for i in range(N):
+            kick = 0.0
+            for j in range(N):
+                kick += W[i, j] * spikes[j]
+            v[i] += kick / tau_v[i]
+            if spikes[i] > 0:
+                # Multiplicative soft reset compounding per spike.
+                rf = reset_factor[i]
+                for _ in range(spikes[i]):
+                    v[i] *= rf
+
+    return binned_counts, voltage_bins, total_spikes
+
+
 def build_sim_arrays(model, fundamental, mf_values):
     """
     Helper: assemble the flat per-neuron / per-pair simulation arrays
