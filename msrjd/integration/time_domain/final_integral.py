@@ -200,6 +200,38 @@ def _build_edge_mode_sums(edge_info, propagator_data):
     return edge_mode_sums
 
 
+def _extract_exp_mode(sr_expr, tau_sym):
+    """Extract ``(C, λ)`` from an SR expression of the form
+    ``C · exp(λ · tau_sym)`` (single-exponential kernel).
+
+    Uses the log-derivative trick: λ = d/dτ log(g(τ)) evaluated at
+    τ=0, then C = g(0).  Works for any single-exponential expression
+    after Heaviside-stripping and num-params substitution.
+
+    Returns ``(C_complex, λ_complex)`` or ``None`` if the expression
+    can't be reduced to this form (e.g. polynomial-prefactor kernels
+    like the alpha kernel ``τ/τ_g² · exp(-τ/τ_g)``, which would need
+    a multi-mode decomposition).
+    """
+    try:
+        c_at_zero = sr_expr.subs({tau_sym: 0})
+        C = complex(CDF(SR(c_at_zero)))
+    except Exception:
+        return None
+    if C == 0:
+        # Polynomial-prefactor kernel (e.g. alpha) — single-exponential
+        # extraction doesn't apply.  Caller should fall back to the
+        # SR + scipy path until multi-mode kernels are supported.
+        return None
+    try:
+        deriv = sr_expr.diff(tau_sym)
+        lam_sr = (deriv / sr_expr).subs({tau_sym: 0})
+        lam = complex(CDF(SR(lam_sr)))
+    except Exception:
+        return None
+    return (C, lam)
+
+
 def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
     """Return a copy of ``edge_mode_sum`` with the per-subset Δt
     linear form (sparse coefficients on integration vars + free
@@ -2809,36 +2841,65 @@ def integrate_diagram(
     # as the noise-source path above — once substituted, ``cp`` is
     # an explicit function of the τ symbols and flows through
     # fast_callable / nquad without further special handling.
+    # ``conv_kernel_extracted`` flags whether all ConvVertex kernels were
+    # successfully decomposed into single-exponential pseudo-edges.  When
+    # True, ``cp`` has the kernel symbols replaced by ``1`` and the kernel
+    # weights live in the per-subset mode-sum (analytic path).  When False
+    # (e.g. polynomial-prefactor alpha kernel that single-exp extraction
+    # rejects), we fall back to the legacy ``cp.subs(g(τ))`` substitution
+    # and the slower SR + scipy.nquad path.
+    conv_kernel_extracted = False
+    # ``conv_extracted_modes`` collects ``(tau_sym, C, lam)`` triples for
+    # the per-subset pseudo-edge build.  Populated only when extraction
+    # succeeds; empty otherwise.
+    conv_extracted_modes = []
     if conv_vertex_specs:
-        # Strip ``heaviside(τ)`` from each kernel time_expr — the
-        # integrator's design treats Heaviside factors externally via
-        # explicit polytope constraints (see
-        # ``_make_heaviside_filtered_integrand``), and ``cp`` is
-        # expected to be heaviside-free.  The causality the kernel's
-        # ``heaviside(τ)`` was enforcing is added back as a one-sided
-        # ``τ > 0`` polytope constraint in the bounds setup below.
-        from sage.all import function as _sr_function
+        from sage.all import heaviside as _sage_heaviside
+        _all_extractable = True
+        _modes_buffer = []
+        for v, att_tau_pairs in conv_vertex_specs.items():
+            for tau_sym, att in att_tau_pairs:
+                td_fn = att.get('kernel_td_fn')
+                if td_fn is None:
+                    _all_extractable = False
+                    break
+                kernel_sr = SR(td_fn(tau_sym))
+                kernel_sr = kernel_sr.substitute_function(
+                    _sage_heaviside, lambda _x: SR(1)
+                )
+                if num_params:
+                    kernel_sr = kernel_sr.subs(num_params)
+                mode = _extract_exp_mode(kernel_sr, tau_sym)
+                if mode is None:
+                    _all_extractable = False
+                    break
+                C, lam = mode
+                _modes_buffer.append((tau_sym, C, lam))
+            if not _all_extractable:
+                break
+        conv_kernel_extracted = _all_extractable
+        if _all_extractable:
+            conv_extracted_modes = _modes_buffer
+
+        # Build the kernel-symbol → SR substitution dict.  When the
+        # kernel will live in a pseudo-edge, substitute with ``1`` so
+        # the analytic mode-sum doesn't double-count it.  Otherwise
+        # substitute with the full ``g(τ)`` SR expression so the SR +
+        # scipy.nquad path sees a complete integrand.
         g_subs = {}
         for v, att_tau_pairs in conv_vertex_specs.items():
             for tau_sym, att in att_tau_pairs:
                 td_fn = att.get('kernel_td_fn')
                 if td_fn is None:
-                    # No time-domain image registered for this
-                    # kernel (e.g. user supplied freq_image only).
-                    # Leave the symbol in cp — fast_callable will
-                    # raise on it, alerting the user that they need
-                    # to register a time_expr.
                     continue
-                td_expr = SR(td_fn(tau_sym))
-                # Replace any ``heaviside(...)`` occurrence with 1.
-                # The integrator's polytope constraints enforce
-                # causality cleanly, so we don't need the symbolic
-                # ``heaviside`` factor (which breaks fast_callable).
-                _heaviside = _sr_function('heaviside', nargs=1)
-                td_expr = td_expr.substitute_function(
-                    _heaviside, lambda _x: SR(1)
-                )
-                g_subs[att['symbol']] = td_expr
+                if conv_kernel_extracted:
+                    g_subs[att['symbol']] = SR(1)
+                else:
+                    td_expr = SR(td_fn(tau_sym))
+                    td_expr = td_expr.substitute_function(
+                        _sage_heaviside, lambda _x: SR(1)
+                    )
+                    g_subs[att['symbol']] = td_expr
         if g_subs:
             cp = cp.subs(g_subs)
             if num_params:
@@ -3159,8 +3220,21 @@ def integrate_diagram(
         # integrators (m=1/2/≥3) handle the closed-form path.
         # Neither needs `integrand_fc_sub`, so we skip the entire
         # SR + `.expand()` + `fast_callable()` build chain.
+        #
+        # Conductance vertices (ConvVertexType) are eligible whenever
+        # their kernels decompose into single-exponential pseudo-edges
+        # (``conv_kernel_extracted``); the per-attachment ``(C, λ)``
+        # mode is appended to ``smooth_edge_modes`` below, alongside
+        # a polytope constraint ``τ > 0`` from the pseudo-edge's
+        # ``dt = +τ`` linear form.  NoiseSourceType kernels remain on
+        # the slow path until they get an analogous extraction.
+        _conv_only_leg_times = (
+            bool(conv_vertex_specs)
+            and not noise_source_specs
+            and conv_kernel_extracted
+        )
         _analytic_eligible = (
-            not vertex_leg_time
+            (not vertex_leg_time or _conv_only_leg_times)
             and edge_mode_sums is not None
             and _prefactor_is_numerical
         )
@@ -3315,6 +3389,66 @@ def integrate_diagram(
                 ),
             }
 
+        # ── Conv-vertex kernel pseudo-edges ──────────────────────────
+        # Each surviving ``(τ, C, λ)`` mode contributes one synthetic
+        # smooth edge with ``Δt = +τ`` and a single mode-sum pole at
+        # ``λ = −1/τ_g``.  Appended to ``smooth_edge_modes`` and
+        # ``subset_constraint_data`` at the analytic-mode-sum call
+        # sites below.  The pseudo-edge's polytope constraint
+        # ``Δt > 0`` SUBSUMES the one-sided ``τ > 0`` cap added above,
+        # so we drop the redundant cap entry to avoid double-counting
+        # the constraint in the poset extraction.
+        conv_pseudo_edges = []
+        conv_pseudo_constraints = []
+        if conv_kernel_extracted and conv_extracted_modes:
+            n_iv_sub = len(remaining_int_vars)
+            n_ext_sub = len(free_ext_syms)
+            for (tau_sym, C, lam) in conv_extracted_modes:
+                try:
+                    tau_idx_sub = remaining_int_vars.index(tau_sym)
+                except ValueError:
+                    # τ was eliminated by δ-edge substitution — can't
+                    # happen for a ConvVertex kernel τ (no edge ever
+                    # has dt = τ_kernel alone in this code path), but
+                    # guard defensively.
+                    conv_pseudo_edges = None
+                    conv_pseudo_constraints = None
+                    break
+                a_int_pe = [0.0] * n_iv_sub
+                a_int_pe[tau_idx_sub] = 1.0
+                conv_pseudo_edges.append(EdgeModeSum(
+                    ri=-1, pi=-1,            # synthetic — never indexed
+                    delta_coeff=complex(0.0),
+                    modes=((C, lam),),
+                ))
+                conv_pseudo_constraints.append(
+                    (a_int_pe, [0.0] * n_ext_sub, 0.0)
+                )
+            # Drop the redundant one-sided ``τ > 0`` cap (added in the
+            # bounds loop above) so the polytope doesn't carry the same
+            # constraint twice — the poset integrator treats them as
+            # independent dim-1 retardation walls and rejects identical
+            # ones.
+            if conv_pseudo_edges is not None:
+                _conv_tau_set = {tau for (tau, _, _) in conv_extracted_modes}
+                _to_keep = []
+                for c_tuple in subset_constraint_data:
+                    a_int_c, a_ext_c, c0_c = c_tuple
+                    # Identify "+τ + 0 > 0" rows for our τs (a_ext all
+                    # zero, c0 == 0, a_int has a single +1 at the τ
+                    # column).
+                    nonzero = [(j, v) for j, v in enumerate(a_int_c) if v != 0]
+                    is_pure_tau_pos = (
+                        c0_c == 0.0
+                        and not any(v != 0 for v in a_ext_c)
+                        and len(nonzero) == 1
+                        and nonzero[0][1] == 1.0
+                        and remaining_int_vars[nonzero[0][0]] in _conv_tau_set
+                    )
+                    if not is_pure_tau_pos:
+                        _to_keep.append(c_tuple)
+                subset_constraint_data = _to_keep
+
         # Fix E (2026-04-21): direct numerical per-edge evaluator
         # reconstructs P · Π_e Σ_k C_e^{(k)} · exp(I · p_k · Δt_e)
         # from the propagator's pole / residue data plus the
@@ -3330,26 +3464,32 @@ def integrate_diagram(
             (edge_info[_ei_idx]['ri'], edge_info[_ei_idx]['pi'])
             for _ei_idx in smooth_edges
         ]
-        if vertex_leg_time:
-            # Non-local cumulant kernel(s) are present in this
-            # diagram (NoiseSourceType vertex with smooth κ kernel).
-            # The fast pole/residue evaluator assumes the integrand
-            # factorises as P · Π_e Σ_k C_e^{(k)} exp(i p_k Δt_e),
-            # which doesn't hold once a Gaussian (or other
-            # non-rational) kernel is in play.  Fall through to the
-            # generic fast_callable path.  Plain (cortical / GTaS
-            # auto) diagrams keep the fast evaluator.
+        if vertex_leg_time and not _conv_only_leg_times:
+            # NoiseSourceType vertex with non-rational (Gaussian, etc.)
+            # kernel — the fast pole/residue evaluator assumes
+            # P · Π_e Σ_k C_e^{(k)} exp(i p_k Δt_e), which the
+            # cumulant κ-factor breaks.  Fall through to the generic
+            # fast_callable path.  ConvVertex kernels with successful
+            # single-exp extraction take the pseudo-edge analytic
+            # path instead (handled below).
             _fast_eval = None
         else:
             # Stage 2: prefer the pre-built ``edge_mode_sums`` cache
             # (residues + λ_α extracted once per edge at the top of
             # integrate_diagram).  Falls back to the legacy in-call
             # extraction path if the cache wasn't built (incomplete
-            # propagator_data).
+            # propagator_data).  For ConvVertex-only diagrams we
+            # extend the smooth-edge list with the per-attachment
+            # kernel pseudo-edges + their dt constraints.
             if edge_mode_sums is not None:
                 smooth_edge_modes = [
                     edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
                 ]
+                if conv_pseudo_edges:
+                    smooth_edge_modes = smooth_edge_modes + conv_pseudo_edges
+                    subset_constraint_data = (
+                        subset_constraint_data + conv_pseudo_constraints
+                    )
                 _fast_eval = _build_fast_subset_evaluator_from_modes(
                     prefactor_num,
                     smooth_edge_modes,
@@ -3388,13 +3528,19 @@ def integrate_diagram(
         _pole_tuples_cache = None
         _modesum_plan = None
         if (_modesum_enabled
-                and not vertex_leg_time
+                and (not vertex_leg_time or _conv_only_leg_times)
                 and edge_mode_sums is not None
                 and _prefactor_is_numerical):
             _modesum_prefactor_c = _prefactor_c
             _smooth_edge_modes = [
                 edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
             ]
+            if conv_pseudo_edges:
+                # Conv-vertex kernels enter as single-mode pseudo-edges
+                # appended to the smooth-edge list, with their own
+                # ``Δt = +τ`` polytope constraint already merged into
+                # subset_constraint_data above.
+                _smooth_edge_modes = _smooth_edge_modes + conv_pseudo_edges
             # Stage 4a-plan (2026-05-15): pre-compute the τ-invariant
             # per-pole-tuple data (alphas, γ_const, γ_slope) for the
             # entire τ grid.  Each analytic integrator threads this
