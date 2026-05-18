@@ -839,6 +839,108 @@ def sim_hawkes_multipop_quad_softreset_delta_numba(
     return binned_counts, voltage_bins, total_spikes
 
 
+@numba.njit
+def sim_hawkes_multipop_linear_softreset_delta_numba(
+        n_steps, dt_sim,
+        tau_v, a_gain, E_drive,
+        W, tau_g,
+        v_init,
+        bin_size_steps, n_bins, seed,
+        reset_coeff,
+):
+    """
+    Euler-step simulator for **linear-rate + SOFT spike-reset +
+    delta-synapse** Hawkes.  Matches
+    ``theories/single_population_spike_reset_test.theory.py`` after its
+    2026-05-18 update (kernel changed from per-pair exponential
+    ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to scalar ``dirac_delta(t)``, and
+    reset term changed from full ``tau[i]*v[i]*n[i]`` to the
+    parameter-free ``reset_coeff*v[i]*n[i]``).
+
+    Langevin form::
+
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
+                          - reset_coeff · v_i · n_i(t)        # SOFT reset
+      lambda_i(t)        = max(a_i · v_i, 0)                  # LINEAR rate
+      n_i(t)             ~ Poisson(lambda_i(t) dt)
+
+    Synapses are instantaneous (delta kernel ``g(t) = δ(t)``); each
+    spike in pop j kicks ``v_i`` by ``W[i,j] / τ_v_i``.  Per-spike
+    soft reset multiplies ``v_i`` by ``(1 - reset_coeff/τ_v_i)``
+    (compounding for multi-spike Euler steps).
+
+    Differences from ``sim_hawkes_multipop_linear_softreset_numba``
+    (the exp-synapse soft-reset variant):
+      * Synapses are **instantaneous** (delta) — no ``F[i,j]`` filter
+        state, no per-pair ``tau_g`` time constant.
+      * ``tau_g`` is accepted in the signature only to keep
+        ``build_sim_arrays`` happy; this simulator ignores it.
+
+    Other plumbing (linear rate sampling, delta kicks, soft reset,
+    binning) is identical to the quad-rate delta-synapse soft-reset
+    variant.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    # Per-pop multiplicative reset factor (clamped non-negative).
+    reset_factor = np.empty(N)
+    for i in range(N):
+        f = 1.0 - reset_coeff / tau_v[i]
+        if f < 0.0:
+            f = 0.0
+        reset_factor[i] = f
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Linear rate sample.
+        for i in range(N):
+            lam = a_gain[i] * v[i]
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Drift, delta-synapse kicks, soft reset.
+        for i in range(N):
+            v[i] += dt_sim / tau_v[i] * (-v[i] + E_drive[i])
+        for i in range(N):
+            kick = 0.0
+            for j in range(N):
+                kick += W[i, j] * spikes[j]
+            v[i] += kick / tau_v[i]
+            if spikes[i] > 0:
+                rf = reset_factor[i]
+                for _ in range(spikes[i]):
+                    v[i] *= rf
+
+    return binned_counts, voltage_bins, total_spikes
+
+
 def build_sim_arrays(model, fundamental, mf_values):
     """
     Helper: assemble the flat per-neuron / per-pair simulation arrays

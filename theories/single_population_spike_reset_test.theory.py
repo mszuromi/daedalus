@@ -25,15 +25,15 @@ def build():
     [0.2, 0.3],
 ], indexed_by=['E', 'E'], domain='positive')
         .define_function('phi', args=['v'], expression='a[i] * v', population='E', description='transfer (exc)')
-        .define_kernel('g', time_expr='(1/taug[i,j])*exp(-t/taug[i,j])*heaviside(t)', latex_name='g', indexed_by=['E', 'E'])
+        .define_kernel('g', time_expr='dirac_delta(t)', latex_name='g')
         .set_action_text('''
             sum( nt[i]*n[i] 
             - (exp(nt[i])-1)*phi[i](v[i]) 
             + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] + v[i]*n[i]
-            - sum(w[i,j]*g[i,j]*n[j] for j in E))
+            - sum(w[i,j]*Conv(g,n[j]) for j in E))
             for i in E)
         ''')
-        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*g[i,j]*nstar[j] for j in E)) / (1 + nstar[i])')
+        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E)) / (1 + nstar[i])')
         .set_mf_equation('nstar', 'phi[i](vstar[i])')
         .build()
     )
