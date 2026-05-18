@@ -534,6 +534,114 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
 
 
 @numba.njit
+def sim_hawkes_multipop_linear_softreset_numba(
+        n_steps, dt_sim,
+        tau_v, a_gain, E_drive,
+        W, tau_g,
+        v_init,
+        bin_size_steps, n_bins, seed,
+        reset_coeff,
+):
+    """
+    Euler-step simulator for **linear-rate + SOFT spike-reset +
+    exponential-synapse** Hawkes.  Matches
+    ``theories/single_population_spike_reset_test.theory.py`` after its
+    2026-05-18 update (reset term changed from full ``tau[i]*v[i]*n[i]``
+    to the parameter-free ``reset_coeff*v[i]*n[i]``).
+
+    Langevin form::
+
+      dF_{ij}/dt        = (1/tau_g[i,j]) · (n_j(t) - F_{ij})
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · F_{ij}
+                          - reset_coeff · v_i · n_i(t)        # SOFT reset
+      lambda_i(t)        = max(a_i · v_i, 0)                  # LINEAR rate
+      n_i(t)             ~ Poisson(lambda_i(t) dt)
+
+    Per-spike voltage update (integrating across the δ-impulse)::
+
+      Δv_i = -(reset_coeff/tau_v_i) · v_i(t-)
+      ⇒ v_i(t+) = v_i(t-) · (1 - reset_coeff/tau_v_i)
+
+    Multiple spikes in one Euler step compound: ``v_i *= rf^spikes_i``.
+
+    Differences from ``sim_hawkes_multipop_linear_reset_numba`` (hard
+    reset):
+      * SOFT (multiplicative, fractional) reset instead of ``v ← 0``.
+        At ``tau_v_i = 10`` and ``reset_coeff = 1.0`` each spike cuts
+        ``v_i`` by 10% (factor 0.9).
+      * Adds the ``reset_coeff`` argument (positional, after seed).
+
+    All other plumbing (per-pair ``F[i,j]`` exponential filter, signed
+    coupling, binning) is identical.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+    F = np.zeros((N, N))
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    # Per-pop multiplicative reset factor (clamped non-negative).
+    reset_factor = np.empty(N)
+    for i in range(N):
+        f = 1.0 - reset_coeff / tau_v[i]
+        if f < 0.0:
+            f = 0.0
+        reset_factor[i] = f
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Linear rate sample.
+        for i in range(N):
+            lam = a_gain[i] * v[i]
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Per-pair F[i,j] exponential-filter update.
+        for i in range(N):
+            for j in range(N):
+                tg = tau_g[i, j]
+                decay = 1.0 - dt_sim / tg
+                F[i, j] = decay * F[i, j] + (1.0 / tg) * spikes[j]
+
+        # Drift + soft reset.
+        for i in range(N):
+            drive = E_drive[i]
+            for j in range(N):
+                drive += W[i, j] * F[i, j]
+            v[i] += dt_sim / tau_v[i] * (-v[i] + drive)
+            if spikes[i] > 0:
+                rf = reset_factor[i]
+                for _ in range(spikes[i]):
+                    v[i] *= rf
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
 def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
                                                 tau_v, a_gain, E_drive,
                                                 W, tau_g,
