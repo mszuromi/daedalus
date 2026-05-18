@@ -1247,6 +1247,87 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
     return _ft_image
 
 
+def make_kernel_td_image_lambda(kernel_specs: list[dict], *, param_names):
+    """Build ``model['kernel_td_image']`` from the kernel declarations.
+
+    Parallel to :func:`make_kernel_ft_image_lambda` but emits the
+    **time-domain** kernel image instead of the frequency one — the
+    SR expression the user wrote in ``time_expr``, evaluated with
+    ``t`` bound to the caller-supplied ``t_var`` and indices in scope.
+
+    Used by the time-domain Phase J integrator to substitute a
+    surviving kernel SR symbol in a ConvVertexType (conductance-style
+    interaction vertex) coefficient with its actual ``g(τ)`` form
+    when the kernel-attached leg sits at vertex_time − τ.  Same role
+    as the cumulant ``kernel_fn(i, j, tau)`` plays for NoiseSourceType.
+
+    Kernel specs without a ``'time_expr'`` (e.g. those declared only
+    via ``'freq_image'``) are skipped — the caller must fall back to
+    inverse-FT of the freq image if it needs a time-domain form.
+
+    Returns a lambda ``(ns, t_var) -> {ns.<kname>: SR_expr_in_t}``.
+    """
+    def _compute_td(spec, eval_ns, t_var, where):
+        """Evaluate the time-domain text in the given namespace."""
+        time_text = spec.get('time_expr')
+        if not time_text:
+            return None
+        time_eval_ns = {**eval_ns, 't': t_var}
+        return _safe_eval(time_text, time_eval_ns,
+                          f'{where} (time_expr)')
+
+    def _td_image(ns, t_var):
+        out: dict = {}
+        param_ns = _ns_var_namespace(ns, [], param_names, [])
+        builtins = _builtin_namespace()
+        base_ns = {**builtins, **param_ns}
+
+        for spec in kernel_specs:
+            kname = spec['name']
+            if not hasattr(ns, kname):
+                continue
+            if not spec.get('time_expr'):
+                continue
+            ksym_obj = getattr(ns, kname)
+            indexed_by = spec.get('indexed_by')
+            if indexed_by:
+                n_idx = len(indexed_by)
+                is_matrix = (n_idx == 2)
+                is_vector = (n_idx == 1)
+            else:
+                indexed = spec.get('indexed', False)
+                is_matrix = (indexed == 'matrix')
+                is_vector = (indexed is True or indexed == 'vector') \
+                    and not is_matrix
+
+            if is_matrix:
+                n_rows = len(ksym_obj)
+                for i in range(n_rows):
+                    row = ksym_obj[i]
+                    for j in range(len(row)):
+                        eval_ns = {**base_ns, 'i': i, 'j': j}
+                        where = f'kernel {kname} at ({i+1}, {j+1})'
+                        td = _compute_td(spec, eval_ns, t_var, where)
+                        if td is not None:
+                            out[row[j]] = SR(td)
+            elif is_vector:
+                for i in range(len(ksym_obj)):
+                    eval_ns = {**base_ns, 'i': i}
+                    where = f'kernel {kname} at {i+1}'
+                    td = _compute_td(spec, eval_ns, t_var, where)
+                    if td is not None:
+                        out[ksym_obj[i]] = SR(td)
+            else:
+                where = f'kernel {kname}'
+                td = _compute_td(spec, base_ns, t_var, where)
+                if td is not None:
+                    out[ksym_obj] = SR(td)
+
+        return out
+
+    return _td_image
+
+
 def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
     """Convert declared CGF cumulant terms into the
     ``model['correlated_noises']`` dict consumed by FieldTheory.

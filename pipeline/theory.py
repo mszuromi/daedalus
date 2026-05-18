@@ -136,6 +136,10 @@ class TheoryBuilder:
         self._mf_bg_solver: Optional[Callable] = None
         self._mf_equations: Optional[Callable] = None
         self._kernel_ft_image: Optional[Callable] = None
+        # Time-domain kernel image — companion of ``_kernel_ft_image``,
+        # used by the time-domain Phase J integrator to substitute
+        # surviving kernel SR symbols at conductance-style vertices.
+        self._kernel_td_image: Optional[Callable] = None
         self._phi_concrete: Optional[Callable] = None
         self._specializations: Optional[Callable] = None
         self._mf_substitutions: list[dict] = []
@@ -730,6 +734,7 @@ class TheoryBuilder:
             make_mf_bg_solver_lambda,
             make_mf_equations_lambda,
             make_kernel_ft_image_lambda,
+            make_kernel_td_image_lambda,
             make_correlated_noises_block,
         )
 
@@ -922,6 +927,14 @@ class TheoryBuilder:
                 self._kernel_specs,
                 param_names = param_names,
             )
+            # Time-domain images — same kernel specs, but evaluated
+            # in ``t`` rather than ``omega``.  Used by the Phase J
+            # integrator to substitute conductance-vertex kernels at
+            # the per-leg τ symbol.
+            self._kernel_td_image = make_kernel_td_image_lambda(
+                self._kernel_specs,
+                param_names = param_names,
+            )
 
         # Correlated noises (CGF cumulant terms)
         if self._cgf_terms:
@@ -1102,6 +1115,8 @@ class TheoryBuilder:
             model['mf_equations'] = self._mf_equations
         if self._kernel_ft_image is not None:
             model['kernel_ft_image'] = self._kernel_ft_image
+        if self._kernel_td_image is not None:
+            model['kernel_td_image'] = self._kernel_td_image
         if self._specializations is not None:
             model['specializations'] = self._specializations
         if self._correlated_noises:
