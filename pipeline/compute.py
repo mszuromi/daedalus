@@ -38,6 +38,69 @@ from pipeline.access     import (
 )
 
 
+def _trunc(s, maxlen=200):
+    s = str(s)
+    return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
+
+
+def _print_action_sectors(ft):
+    """Print MF / Free / Interaction action sectors after expand()."""
+    ring_gen_names = [str(g) for g in ft.ring().gens()]
+
+    def _fmt_poly(poly):
+        lines = []
+        for exp_vec, coeff in poly.dict().items():
+            mono = '·'.join(
+                f'{ring_gen_names[i]}^{exp_vec[i]}' if exp_vec[i] > 1
+                else ring_gen_names[i]
+                for i in range(len(exp_vec)) if exp_vec[i] > 0
+            )
+            mono = mono if mono else '1'
+            lines.append(f'        {mono}  *  ({_trunc(coeff, 220)})')
+        return lines
+
+    print()
+    print('      ── MF action (bigrade ≤1 in each index; vanishes at saddle) ──')
+    mf_raw = getattr(ft, '_mf_sector_raw', None) or {}
+    any_mf = False
+    for key in [(0, 0), (1, 0), (0, 1)]:
+        poly = mf_raw.get(key)
+        if poly is None or str(poly) == '0':
+            continue
+        any_mf = True
+        print(f'      bigrade {key}:')
+        for line in _fmt_poly(poly):
+            print(line)
+    if not any_mf:
+        print('        (empty)')
+
+    print()
+    print('      ── Free action (1,1) bilinear sector ──')
+    S_free = ft.free_action()
+    if str(S_free) == '0':
+        print('        (empty)')
+    else:
+        for line in _fmt_poly(S_free):
+            print(line)
+
+    print()
+    print('      ── Interaction action (total degree ≥ 2, excluding (1,1)) ──')
+    sectors = ft.sectors()
+    any_int = False
+    for (n_t, n_p), poly in sorted(sectors.items()):
+        if (n_t, n_p) == (1, 1) or n_t + n_p < 2:
+            continue
+        if str(poly) == '0':
+            continue
+        any_int = True
+        print(f'      bigrade ({n_t},{n_p}):')
+        for line in _fmt_poly(poly):
+            print(line)
+    if not any_int:
+        print('        (empty)')
+    print()
+
+
 def compute_cumulants(
     model: dict,
     k: int,
@@ -215,6 +278,7 @@ def compute_cumulants(
     if verbose:
         print(f'      vtypes: {len(vtypes)}, sources: {len(stypes)} '
               f'(NoiseSourceType: {n_noise})')
+        _print_action_sectors(ft)
     _phase_time('expand', _t_phase)
 
     # ── 2. Propagator (symbolic, cached) ──────────────────────────
