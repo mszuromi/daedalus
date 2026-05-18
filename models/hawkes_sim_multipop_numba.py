@@ -533,6 +533,97 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
     return binned_counts, voltage_bins, total_spikes
 
 
+@numba.njit
+def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
+                                                tau_v, a_gain, E_drive,
+                                                W, tau_g,
+                                                v_init,
+                                                bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for the **quadratic-rate + hard-spike-reset +
+    delta synapse** Hawkes process.  Matches
+    ``theories/single_population_quad_spike_reset_test.theory.py``:
+
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
+                         - tau_v_i · v_i · n_i(t)                # hard reset
+      lambda_i(t)        = max(a_i · v_i^2, 0)                   # quadratic
+      n_i(t)             ~ Poisson(lambda_i(t) dt)
+
+    Differences from ``sim_hawkes_multipop_quad_reset_numba``:
+
+      * Synaptic input is **instantaneous** (delta kernel ``g(t) = δ(t)``)
+        instead of running through an exponential filter ``F[i,j]``.
+        In each Euler step ``v_i`` gets a delta kick
+        ``+ W[i,j] · spikes[j] / tau_v_i`` for every spike in population j
+        (the ``1/tau_v_i`` is the coefficient that survives when the
+        action's ``vt · (sum_j w · n_j)`` is read off into
+        ``dv/dt = sum_j (w/tau_v) · n_j``).
+
+      * ``tau_g`` is accepted in the signature only to keep the call
+        shape identical to the exponential-synapse simulators
+        (``build_sim_arrays`` always emits a ``tau_g`` array even when
+        unused).  This simulator ignores it.
+
+    Other behaviour matches the exponential-synapse quad-reset
+    simulator: quadratic rate, hard v→0 reset on each own-population
+    spike, same binning convention.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Quadratic rate sample.
+        for i in range(N):
+            v_i = v[i]
+            lam = a_gain[i] * v_i * v_i
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Voltage update: drift over dt, then instantaneous delta-synapse
+        # kicks (one per pre-population spike), then hard reset for
+        # own-population spikes.  Order matters at finite dt — drift
+        # first (uses ``v_i`` at step start), then accumulate
+        # synaptic kicks from this step's spikes, then reset.
+        for i in range(N):
+            v[i] += dt_sim / tau_v[i] * (-v[i] + E_drive[i])
+        for i in range(N):
+            kick = 0.0
+            for j in range(N):
+                kick += W[i, j] * spikes[j]
+            v[i] += kick / tau_v[i]
+            if spikes[i] > 0:
+                v[i] = 0.0
+
+    return binned_counts, voltage_bins, total_spikes
+
+
 def build_sim_arrays(model, fundamental, mf_values):
     """
     Helper: assemble the flat per-neuron / per-pair simulation arrays
@@ -664,22 +755,29 @@ def build_sim_arrays(model, fundamental, mf_values):
         for pre in pops:
             wname_pop   = f'w{post["name"]}{pre["name"]}'
             tgname_pop  = f'taug{post["name"]}{pre["name"]}'
-            # Try suffixed first, fall back to bare names.
+            # Coupling matrix W — required.  ``taug`` may be absent for
+            # theories with a delta kernel (the simulator that consumes
+            # them ignores tau_g).
             if wname_pop in fundamental:
-                ws  = fundamental[wname_pop]
-                tgs = fundamental[tgname_pop]
-            elif 'w' in fundamental and 'taug' in fundamental:
-                ws  = fundamental['w']
-                tgs = fundamental['taug']
+                ws = fundamental[wname_pop]
+            elif 'w' in fundamental:
+                ws = fundamental['w']
             else:
                 continue
+            if tgname_pop in fundamental:
+                tgs = fundamental[tgname_pop]
+            elif 'taug' in fundamental:
+                tgs = fundamental['taug']
+            else:
+                tgs = None
             sign = sign_map.get((post['name'], pre['name']), +1.0)
             post_start, post_size = pop_offsets[post['name']]
             pre_start, pre_size   = pop_offsets[pre['name']]
             for i in range(post_size):
                 for j in range(pre_size):
                     W[post_start + i, pre_start + j] = sign * float(ws[i][j])
-                    tau_g[post_start + i, pre_start + j] = float(tgs[i][j])
+                    if tgs is not None:
+                        tau_g[post_start + i, pre_start + j] = float(tgs[i][j])
 
     return {
         'N':           N,
