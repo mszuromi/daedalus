@@ -391,6 +391,18 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # already covered by the loop above when the function is in
     # ``functions``).
 
+    # ── Convolution operator (formal Sage function) ───────────────
+    # Users can write ``Conv(g[i,j], n[j])`` in actions or future
+    # equation specs to explicitly denote convolution rather than
+    # relying on ``*``-as-multiplication (which is ambiguous for
+    # kernel × field products).  The symbol stays inert through
+    # symbolic manipulation; each downstream consumer (MF saddle
+    # reducer, propagator FT, simulator) registers its own reduction.
+    # Available in every eval mode so equations, MF eqs, and the
+    # action text can all reference it uniformly.
+    from msrjd.core.convolution import Conv
+    nsdict['Conv'] = Conv
+
     if extra:
         nsdict.update(extra)
     return nsdict

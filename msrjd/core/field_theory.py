@@ -697,6 +697,32 @@ class FieldTheory:
         # Evaluate action — result is an SR expression
         S_sr = SR(self.model['action'](ns))
 
+        # ── Conv(kernel, field) reduction ─────────────────────────────
+        # Resolve every ``Conv(g, X)`` atom according to the time-domain
+        # convolution rules:
+        #   * linearity in arg 2  ⇒  Conv(g, a+b) = Conv(g, a) + Conv(g, b)
+        #   * pull constant prefactors out of arg 2
+        #   * Conv(g, constant) = ĝ(0) · constant = constant   (normalised)
+        #   * Conv(g, fluctuation) → g · fluctuation   (kernel symbol stays
+        #     for the FT pipeline to substitute ĝ(ω) later).
+        #
+        # The asymmetry between Conv's two arguments matters for any
+        # action term where a kernel is convolved with a field that
+        # ALSO multiplies another field outside the convolution — e.g.
+        # conductance-style ``v · Conv(g, n)``, which must expand under
+        # v=vstar+dv, n=nstar+dn as
+        #    vstar·nstar + vstar·g·dn + dv·nstar + dv·g·dn
+        # The naïve ``Conv(g, n) → g·n`` flatten gives the wrong
+        # ``g·nstar`` bilinear coefficient on the dv side.
+        from msrjd.core.convolution import reduce_conv_in_action
+        try:
+            fluct_vars = set(ns._all_field_sr_vars)
+            S_sr = reduce_conv_in_action(S_sr, fluct_vars)
+        except (AttributeError, TypeError):
+            # No Conv atoms / non-SR action / missing ns attribute —
+            # treat as identity transformation.
+            pass
+
         # Inject -W_m[mt] cumulant series from correlated_noises declarations
         # (Option A: user writes ns.dm[i] / ns.mt[i] in the action, the
         # framework appends the non-local cumulant terms here from the

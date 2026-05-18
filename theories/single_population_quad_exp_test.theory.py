@@ -30,10 +30,10 @@ def build():
             sum( nt[i]*n[i] 
             - (exp(nt[i])-1)*phi[i](v[i]) 
             + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i]
-            - sum(w[i,j]*g[i,j]*n[j] for j in E))
+            - sum(w[i,j]*Conv(g[i,j],n[j]) for j in E))
             for i in E)
         ''')
-        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*g[i,j]*nstar[j] for j in E))')
+        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E))')
         .set_mf_equation('nstar', 'phi[i](vstar[i])')
         .build()
     )
