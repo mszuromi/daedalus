@@ -352,6 +352,101 @@ def sim_hawkes_multipop_quad_numba(n_steps, dt_sim,
 
 
 @numba.njit
+def sim_hawkes_multipop_cubic_alpha_numba(n_steps, dt_sim,
+                                          tau_v, a_gain, E_drive,
+                                          W, tau_g,
+                                          v_init,
+                                          bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for **cubic-rate, no-reset, alpha-kernel** Hawkes.
+
+      dF_aux_{ij}/dt = (1/tau_g[i,j]) * (n_j(t) - F_aux_{ij})    # 1st exp stage
+      dF_{ij}/dt     = (1/tau_g[i,j]) * (F_aux_{ij} - F_{ij})    # 2nd exp stage
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
+      lambda_i(t)    = max(a_i · v_i^3, 0)                       # CUBIC rate
+      n_i(t)         ~ Poisson(lambda_i(t) dt)
+
+    Matches ``theories/single_population_cubic_alpha_test.theory.py``:
+    no spike reset, cubic φ, alpha synaptic kernel
+    α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
+
+    Math: the alpha kernel is the convolution of two identical exponential
+    kernels with the same time constant.  The cascade of two first-order
+    low-pass filters above realises this exactly — F_{ij}(t) = (α * n_j)(t)
+    where α is the desired alpha shape.  ∫ α(t) dt = 1 so the MF gain
+    is preserved (each filter has unit DC gain).
+
+    Same call signature and return shape as the other multipop sim
+    variants, so ``build_sim_arrays`` / ``flat_index_of`` work unchanged.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+    F_aux = np.zeros((N, N))     # first-stage filter state
+    F     = np.zeros((N, N))     # second-stage filter state (== α * n_j)
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        for i in range(N):
+            v_i = v[i]
+            lam = a_gain[i] * v_i * v_i * v_i      # cubic rate
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Two-stage cascade → alpha kernel.  Order:
+        #   F (the alpha-filtered rate) is updated from OLD F_aux as a
+        #     continuous-rate exponential filter:
+        #       F ← F·(1 - dt/τ_g) + (dt/τ_g)·F_aux
+        #   F_aux (the single-exp-filtered spike rate) is updated from
+        #     this step's spike COUNTS (delta-distributed input — no dt
+        #     factor, the (1/τ_g) coefficient absorbs the delta weight):
+        #       F_aux ← F_aux·(1 - dt/τ_g) + (1/τ_g)·spikes
+        # Matches the standard Hawkes-cascade discretization used in the
+        # exponential-kernel variants (``sim_hawkes_multipop_quad_numba``
+        # etc.).  Equilibrium: E[F_aux] → ν (mean rate), E[F] → ν, DC
+        # gain 1 as required for ∫α(t)dt = 1.
+        for i in range(N):
+            for j in range(N):
+                tg = tau_g[i, j]
+                decay = 1.0 - dt_sim / tg
+                F[i, j]     = decay * F[i, j]     + (dt_sim / tg) * F_aux[i, j]
+                F_aux[i, j] = decay * F_aux[i, j] + (1.0    / tg) * spikes[j]
+
+        for i in range(N):
+            drive = E_drive[i]
+            for j in range(N):
+                drive += W[i, j] * F[i, j]
+            v[i] += dt_sim / tau_v[i] * (-v[i] + drive)
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
 def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
                                            tau_v, a_gain, E_drive,
                                            W, tau_g,
