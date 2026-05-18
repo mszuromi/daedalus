@@ -107,9 +107,21 @@ def field_of(expr):
     return expr.operands()[1]
 
 
-def reduce_conv_in_action(expr, fluct_vars, normalized=True):
+def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None):
     """Resolve every ``Conv(g, n_arg)`` atom in an action expression,
-    applying the physical rules of time-domain convolution:
+    applying the physical rules of time-domain convolution.
+
+    Processing order for each ``Conv(g, n_arg)`` atom:
+
+      0. **Pre-Taylor inside the argument** (when ``taylor_order`` given):
+         Multivariate Taylor-expand ``n_arg`` around 0 in every
+         fluctuation variable, truncating at total degree
+         ``taylor_order``.  This is what turns a nonlinear argument
+         like ``phi(v)`` into a polynomial in ``v`` that the subsequent
+         linearity rule can distribute over.  No-op when ``n_arg`` is
+         already a polynomial of degree ≤ taylor_order in the fluct
+         vars (e.g. a bare ``n[j]``), so existing callers that never
+         use nonlinear Conv args see identical output.
 
       1. **Linearity in argument 2**:
          ``Conv(g, a + b) → Conv(g, a) + Conv(g, b)``
@@ -142,6 +154,20 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True):
     ``v·g·n = vstar·g·nstar + …`` which spuriously couples the dv-side
     of the bilinear to the kernel.
 
+    The pre-Taylor step (rule 0) generalises this to nonlinear inner
+    fields ``Conv(g, h(v, n))``.  For example with cubic ``h(v) = a v^3``,
+    a saddle expansion ``v = vstar + dv`` gives::
+
+        h(vstar+dv) = a vstar^3 + 3 a vstar^2 dv + 3 a vstar dv^2 + a dv^3
+
+    and applying rules 1–4 produces::
+
+        Conv(g, h(vstar+dv))
+        = a vstar^3 + 3 a vstar^2 g dv + 3 a vstar g dv^2 + a g dv^3
+
+    Each Taylor term is then handled by the existing linearity/pull-
+    constants/DC-reduce/defer cascade.
+
     Parameters
     ----------
     expr : SR expression
@@ -155,6 +181,13 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True):
         Assume every kernel has ``ĝ(0) = 1``.  Set ``False`` and
         supply per-kernel DC gains in a future revision when
         non-normalised kernels become relevant.
+    taylor_order : int, optional
+        Total-degree truncation for the pre-Taylor step (rule 0).
+        Set to ``FieldTheory.taylor_order`` by the caller to keep the
+        Conv-internal expansion consistent with the action-level
+        expansion that follows downstream.  When ``None``, the
+        pre-Taylor step is skipped — preserves the legacy semantics
+        for any caller that doesn't supply it.
 
     Returns
     -------
@@ -164,10 +197,15 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True):
     ``ĝ(ω)`` for them.
     """
     from functools import reduce as _reduce
-    from sage.all import prod as _prod, SR as _SR
+    from sage.all import prod as _prod, SR as _SR, taylor as _taylor
 
     fluct_set = set(fluct_vars) if not isinstance(fluct_vars, (set, frozenset)) \
                                 else fluct_vars
+    # Pre-build the Taylor expansion-point pairs once, reused for every
+    # Conv atom.  Each entry is (var, 0) — i.e. expand around the
+    # saddle, which lives at fluctuation = 0 by convention.
+    _taylor_pairs = (tuple((v, 0) for v in fluct_set)
+                     if taylor_order is not None and fluct_set else None)
 
     def _has_fluct(e):
         try:
@@ -176,8 +214,24 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True):
             return False
 
     def _reduce_arg(g, n_arg):
-        """Reduce Conv(g, n_arg).  Recurses on sums and products; falls
-        through to the per-atom resolution at the leaves."""
+        """Reduce Conv(g, n_arg).  Pre-Taylor (rule 0) first, then
+        recurses on sums and products; falls through to the per-atom
+        resolution at the leaves."""
+        # Rule 0: pre-Taylor the Conv argument in fluctuation variables.
+        # Converts nonlinear ``h(v, n)`` into a polynomial so the
+        # linearity rule (rule 1) can distribute over the resulting
+        # sum.  Multivariate one-shot Taylor at total degree
+        # ``taylor_order`` — same call pattern that
+        # ``FieldTheory.expand`` uses on the whole action a few lines
+        # downstream, so the orders stay in sync.
+        if _taylor_pairs is not None:
+            try:
+                n_arg = _taylor(_SR(n_arg), *_taylor_pairs, taylor_order)
+            except (TypeError, ValueError, AttributeError):
+                # Non-Taylor-expandable argument (e.g. piecewise);
+                # fall through to the existing rules unchanged.
+                pass
+
         n_arg = _SR(n_arg).expand()
         op = n_arg.operator() if hasattr(n_arg, 'operator') else None
         op_name = (str(op).lower() if op is not None else '')

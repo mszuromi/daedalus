@@ -717,7 +717,16 @@ class FieldTheory:
         from msrjd.core.convolution import reduce_conv_in_action
         try:
             fluct_vars = set(ns._all_field_sr_vars)
-            S_sr = reduce_conv_in_action(S_sr, fluct_vars)
+            # Pass taylor_order so nonlinear Conv arguments
+            # (``Conv(g, h(v, n))`` with non-polynomial h) get Taylor-
+            # expanded at the same order the action itself is about to
+            # be expanded at downstream.  For polynomial-of-degree-≤N
+            # arguments the Taylor is a no-op, so existing theories
+            # using simple ``Conv(g, n[j])`` form keep bit-identical
+            # output.
+            S_sr = reduce_conv_in_action(
+                S_sr, fluct_vars, taylor_order=self.taylor_order
+            )
         except (AttributeError, TypeError):
             # No Conv atoms / non-SR action / missing ns attribute —
             # treat as identity transformation.
