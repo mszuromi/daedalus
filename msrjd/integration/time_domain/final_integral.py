@@ -87,7 +87,7 @@ from msrjd.integration.time_domain.propagator_td import (
     G_t_entry,
     G_t_delta_coeff,
 )
-from msrjd.core.vertices import NoiseSourceType
+from msrjd.core.vertices import NoiseSourceType, ConvVertexType
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -2600,8 +2600,18 @@ def integrate_diagram(
     # vertices (cortical Poisson, GTaS auto-cumulant) keep the
     # single-time semantics — vertex_leg_time stays empty for them
     # and the existing edge-build code path is unaffected.
+    #
+    # ConvVertexType vertices (conductance-style interaction
+    # vertices, e.g. ``vt·v·Conv(g,n)``) extend the same scaffold
+    # to one PHYSICAL leg per kernel attachment.  The shape of
+    # ``vertex_leg_time[v]`` is identical (``{pop_idx_0based: SR time}``)
+    # but ``vertex_leg_kind[v]`` tells the edge-routing code below
+    # whether to match against ``edge_resp_leg`` (NoiseSourceType)
+    # or ``edge_phys_leg`` (ConvVertexType).
     vertex_leg_time = {}        # {v: {leg_pop_idx_0based: SR time}}
+    vertex_leg_kind = {}        # {v: 'response' | 'physical'}
     noise_source_specs = {}     # {v: list of cumulant_specs dicts}
+    conv_vertex_specs  = {}     # {v: list of (tau_sym, att_dict) pairs}
     extra_tau_syms = []         # list of (tau_sym, vertex) pairs
     vertex_assignments = (
         getattr(typed_diagram, 'vertex_assignments', None) or {}
@@ -2636,34 +2646,96 @@ def integrate_diagram(
             anchor_leg: anchor_time,
             other_leg:  anchor_time - tau_sym,
         }
+        vertex_leg_kind[v] = 'response'
         noise_source_specs[v] = list(vtype.cumulant_specs)
 
+    # ── 2c. Conductance-style interaction vertices ────────────────
+    # ConvVertexType is the interaction-vertex analogue of
+    # NoiseSourceType: one PHYSICAL leg per kernel attachment sits
+    # at ``anchor_time − τ`` linked to the rest of the vertex via
+    # the synaptic kernel ``g(τ)``.  See
+    # ``docs/conductance_vertex_kernels_design.md`` for the math.
+    #
+    # A single ConvVertexType can carry several attachments (e.g.
+    # ``vt · v · Conv(g1, n1) · Conv(g2, n2)``) — one τ per
+    # attachment.  Each kernel-attached leg's pop-idx is recorded
+    # under leg_index in the attachment dict so vertex_leg_time
+    # can route edges through the right time symbol.
+    for v, vtype in vertex_assignments.items():
+        if not isinstance(vtype, ConvVertexType):
+            continue
+        if not vtype.kernel_attachments:
+            continue
+        if v in vertex_leg_time:
+            # Vertex was already promoted by the NoiseSourceType
+            # block — bigrade overlap is structurally impossible
+            # (NoiseSourceType is n_phys=0, ConvVertexType is
+            # n_phys≥1) but guard against the misclassification
+            # rather than silently merging two leg maps.
+            raise RuntimeError(
+                f"vertex {v} appears both as NoiseSourceType and "
+                f"ConvVertexType — these are mutually exclusive."
+            )
+        anchor_time = vertex_time[v]
+        leg_time_map = {}
+        # Track this vertex's τ↔attachment pairs locally — DON'T mutate
+        # the attachment dict.  The same ConvVertexType instance can be
+        # bound to multiple graph vertices in the typing engine, so any
+        # mutation here would leak τ symbols across vertices in the
+        # same diagram (vertex 2's τ overwriting vertex 4's, etc.).
+        att_tau_pairs = []
+        for att_idx, att in enumerate(vtype.kernel_attachments):
+            # ``leg_index`` is the position within physical_legs
+            # the kernel attaches to.  We key vertex_leg_time on
+            # the leg's pop_idx (matching the edge-routing
+            # convention used for NoiseSourceType).
+            leg_tuple = att['leg']
+            phys_pop_idx = leg_tuple[1] - 1  # 0-based
+            tau_sym = SR.var(
+                f's_v{v}_gtau{att_idx}_td_',
+                latex_name=rf'\tau^{{g}}_{{v_{{{v}}},{att_idx}}}'
+            )
+            extra_tau_syms.append((tau_sym, v))
+            integration_vars.append(tau_sym)
+            # Kernel-attached leg sits at anchor − τ.
+            leg_time_map[phys_pop_idx] = anchor_time - tau_sym
+            att_tau_pairs.append((tau_sym, att))
+        vertex_leg_time[v] = leg_time_map
+        vertex_leg_kind[v] = 'physical'
+        conv_vertex_specs[v] = att_tau_pairs
+
     # ── 3. Gather per-edge info: ri, pi, dt, delta_coeff, smooth factor
+    def _resolve_leg_time(vert, edge_key, default_time):
+        """Pick the right time symbol for ``vert``'s end of an edge.
+
+        For NoiseSourceType (``vertex_leg_kind == 'response'``) the
+        per-leg map is keyed on the edge's RESPONSE leg pop-idx; for
+        ConvVertexType (``vertex_leg_kind == 'physical'``) it's keyed
+        on the PHYSICAL leg pop-idx.  Plain vertices keep their
+        single ``vertex_time`` entry — the routing falls through to
+        ``default_time``.
+        """
+        if vert not in vertex_leg_time:
+            return default_time
+        edge_resp_leg, edge_phys_leg = typed_diagram.edge_types[edge_key]
+        if vertex_leg_kind.get(vert) == 'physical':
+            leg = edge_phys_leg
+        else:
+            leg = edge_resp_leg
+        pop_idx = leg[1] - 1  # 0-based
+        return vertex_leg_time[vert].get(pop_idx, default_time)
+
     edges = list(D.edges())
     edge_info = []
     for (u, v, lbl) in edges:
         ri, pi = _lookup_prop_indices(typed_diagram, (u, v, lbl))
-        # Route edge tail through per-leg time when u is a non-local
-        # noise source; otherwise use the standard single-time map.
-        if u in vertex_leg_time:
-            edge_resp_leg, _ = typed_diagram.edge_types[(u, v, lbl)]
-            edge_pop_idx = edge_resp_leg[1] - 1  # 0-based
-            t_u = vertex_leg_time[u].get(
-                edge_pop_idx, vertex_time[u]
-            )
-        else:
-            t_u = vertex_time[u]
-        # Edge head: same logic (head can be a noise source if the
-        # diagram has source-to-source edges, which doesn't arise
-        # for current models; harmless in any case).
-        if v in vertex_leg_time:
-            edge_resp_leg_v, _ = typed_diagram.edge_types[(u, v, lbl)]
-            edge_pop_idx_v = edge_resp_leg_v[1] - 1
-            t_v = vertex_leg_time[v].get(
-                edge_pop_idx_v, vertex_time[v]
-            )
-        else:
-            t_v = vertex_time[v]
+        edge_key = (u, v, lbl)
+        # Route edge tail / head through per-leg time when the
+        # vertex carries a non-local kernel (noise source or
+        # conductance interaction); otherwise use the standard
+        # single-time map.
+        t_u = _resolve_leg_time(u, edge_key, vertex_time[u])
+        t_v = _resolve_leg_time(v, edge_key, vertex_time[v])
         dt = SR(t_v - t_u)
         delta_c = G_t_delta_coeff(G_t_obj, pi, ri)
         smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
@@ -2725,6 +2797,52 @@ def integrate_diagram(
             # (j,i) with symmetric kernels collapse to a single term).
             # simplify_full can be expensive but the cumulant prefactor
             # is a small SR expression so it's cheap here.
+            try:
+                cp = cp.simplify_full()
+            except (ValueError, RuntimeError, AttributeError):
+                pass
+
+    # ── 3c. Conductance-vertex kernel substitution ────────────────
+    # For each ConvVertexType, replace the kernel SR symbol in ``cp``
+    # with the time-domain kernel ``g(τ)`` evaluated at the
+    # per-attachment τ symbol introduced in section 2c.  Same shape
+    # as the noise-source path above — once substituted, ``cp`` is
+    # an explicit function of the τ symbols and flows through
+    # fast_callable / nquad without further special handling.
+    if conv_vertex_specs:
+        # Strip ``heaviside(τ)`` from each kernel time_expr — the
+        # integrator's design treats Heaviside factors externally via
+        # explicit polytope constraints (see
+        # ``_make_heaviside_filtered_integrand``), and ``cp`` is
+        # expected to be heaviside-free.  The causality the kernel's
+        # ``heaviside(τ)`` was enforcing is added back as a one-sided
+        # ``τ > 0`` polytope constraint in the bounds setup below.
+        from sage.all import function as _sr_function
+        g_subs = {}
+        for v, att_tau_pairs in conv_vertex_specs.items():
+            for tau_sym, att in att_tau_pairs:
+                td_fn = att.get('kernel_td_fn')
+                if td_fn is None:
+                    # No time-domain image registered for this
+                    # kernel (e.g. user supplied freq_image only).
+                    # Leave the symbol in cp — fast_callable will
+                    # raise on it, alerting the user that they need
+                    # to register a time_expr.
+                    continue
+                td_expr = SR(td_fn(tau_sym))
+                # Replace any ``heaviside(...)`` occurrence with 1.
+                # The integrator's polytope constraints enforce
+                # causality cleanly, so we don't need the symbolic
+                # ``heaviside`` factor (which breaks fast_callable).
+                _heaviside = _sr_function('heaviside', nargs=1)
+                td_expr = td_expr.substitute_function(
+                    _heaviside, lambda _x: SR(1)
+                )
+                g_subs[att['symbol']] = td_expr
+        if g_subs:
+            cp = cp.subs(g_subs)
+            if num_params:
+                cp = cp.subs(num_params)
             try:
                 cp = cp.simplify_full()
             except (ValueError, RuntimeError, AttributeError):
@@ -2823,9 +2941,24 @@ def integrate_diagram(
                 if not sol:
                     subset_infeasible = True
                     break
-                substitutions[int_var_to_eliminate] = \
-                    sol[0][int_var_to_eliminate]
+                new_rhs = sol[0][int_var_to_eliminate]
+                substitutions[int_var_to_eliminate] = new_rhs
                 remaining_int_vars.remove(int_var_to_eliminate)
+                # Resolve transitively: apply the new substitution to
+                # the RHS of every existing entry so a chain like
+                # ``{a: f(b), b: g(c)}`` collapses to ``{a: f(g(c)), b: g(c)}``.
+                # Sage's ``.subs(dict)`` is a parallel one-pass operation
+                # and does NOT chain substitutions — without this fixup
+                # ``cp.subs(substitutions)`` would leave ``b`` exposed in
+                # the result, breaking the integrator's free-symbol
+                # audit downstream.  Pre-existing concern that becomes
+                # load-bearing with multi-τ ConvVertexType diagrams.
+                for k in list(substitutions.keys()):
+                    if k == int_var_to_eliminate:
+                        continue
+                    substitutions[k] = SR(
+                        substitutions[k]
+                    ).subs({int_var_to_eliminate: new_rhs})
             else:
                 # No integration variable to eliminate → this is a
                 # constraint on external times alone. If it's
@@ -3139,21 +3272,35 @@ def integrate_diagram(
         if extra_tau_syms and remaining_int_vars:
             n_iv = len(remaining_int_vars)
             n_ext = len(free_ext_syms)
+            # Which τ symbols come from a ConvVertexType.  These are
+            # causal-synaptic-kernel τ = vertex_time − leg_time, which
+            # by construction have support τ ≥ 0; the heaviside(τ) was
+            # stripped from cp above and the lower bound 0 (not −CAP)
+            # is what carries the causality constraint into the
+            # polytope.
+            conv_tau_syms = set()
+            for _v, _att_pairs in conv_vertex_specs.items():
+                for _tau, _att in _att_pairs:
+                    conv_tau_syms.add(_tau)
             for (tau_s, _v) in extra_tau_syms:
                 if tau_s not in remaining_int_vars:
                     continue
                 idx = remaining_int_vars.index(tau_s)
+                is_conv_tau = tau_s in conv_tau_syms
                 # Upper cap:  -τ_v + CAP > 0  ⇒  τ_v < CAP
                 a_up  = [0.0] * n_iv
                 a_up[idx] = -1.0
                 subset_constraint_data.append(
                     (a_up, [0.0] * n_ext, TAU_KERNEL_CAP)
                 )
-                # Lower cap:  +τ_v + CAP > 0  ⇒  τ_v > -CAP
+                # Lower cap.  For NoiseSourceType: +τ_v + CAP > 0
+                # (symmetric around 0).  For ConvVertexType: +τ_v > 0
+                # (causal — kernel support starts at τ = 0).
                 a_lo  = [0.0] * n_iv
                 a_lo[idx] = +1.0
+                lo_c0 = 0.0 if is_conv_tau else TAU_KERNEL_CAP
                 subset_constraint_data.append(
-                    (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
+                    (a_lo, [0.0] * n_ext, lo_c0)
                 )
         if constraint_err is not None:
             return {
