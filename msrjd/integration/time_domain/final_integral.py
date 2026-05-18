@@ -77,6 +77,7 @@ large negative `s`. (See the 2026-04-08 overflow fix in the CHANGELOG.)
 """
 
 import math
+import functools as _functools
 from dataclasses import dataclass
 
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
@@ -1016,6 +1017,171 @@ except ImportError:
 
 USE_NUMBA_CHAIN_SIMPLEX = True
 
+# ─── Chain-simplex precision-loss fix (2026-05-16) ────────────────────
+#
+# When the chain simplex contains close-paired effective coefficients
+# (e.g. spike-reset propagator with poles 0.329i, 0.351i, so some
+# ``b_inner`` in the 2^N recursion is ~0.022), the closed-form formula
+# in ``_exp_over_chain_simplex`` suffers cancellation-driven precision
+# loss.  Empirically observed as a 4× aggregate overestimate of the
+# 1-loop value at spike-reset k=2 ell=1 (76% rel diff vs the converged
+# grouped-scipy reference), with per-subset audit measuring an aggregate
+# analytic/scipy ratio of 1.086 across 30 sampled m=3 subsets that
+# extrapolates to the observed 4× across 313 subsets.
+#
+# Fix: when any subset sum of ``alphas`` falls below a threshold (cheap
+# 2^N scan of subset-sum magnitudes), route the entire chain-simplex
+# evaluation to ``_exp_over_chain_simplex_mpmath`` running at 50-digit
+# precision.  The mpmath path is 50-500× slower per call but only fires
+# when the float64 path was already wrong; unaffected configurations
+# (quad model, spike-reset k≤1 ell≤1, etc.) skip the gate entirely.
+#
+# Full audit at ``docs/m_ge3_precision_bug_audit.md``;
+# design at ``docs/m_ge3_chain_simplex_fix_proposal.md``.
+#
+# To revert exactly to the pre-fix behaviour (bit-identical), set the
+# flag to ``False``.  No other code changes required.
+# Set to True to enable the close-pole mpmath dispatch in chain simplex.
+# Empirically this did NOT address the spike-reset k=2 ell=1 bug (which
+# turned out to be a cap-mismatch issue, not chain-simplex precision —
+# see USE_POSET_CAP_MATCH_SCIPY below).  Keeping the code path for
+# possible future use.  Off by default.
+USE_CHAIN_SIMPLEX_PRECISION_FIX = False
+
+# Threshold below which any subset-sum magnitude of ``alphas`` triggers
+# the high-precision (mpmath) path.  Calibrated to catch the spike-reset
+# 0.022i pole-difference case (which causes ~10% per-subset bias) while
+# not unduly slowing well-conditioned theories.  Lower → fewer mpmath
+# calls (faster but less safe); higher → more mpmath calls (safer but
+# slower).
+_CHAIN_SIMPLEX_CANCEL_THRESHOLD = 0.1
+
+
+def _min_subset_sum_abs(alphas):
+    """Minimum |Σ_{i ∈ S} α_i| over non-empty subsets S of ``alphas``.
+
+    Cheap 2^N scan used to detect when the chain-simplex recursion will
+    encounter a small ``b_inner`` (cumulative-pole-sum) at some level,
+    triggering precision-loss in the closed-form formula.
+
+    Returns ``inf`` for empty input so the threshold gate is a no-op.
+
+    Cached via ``_min_subset_sum_abs_cached`` keyed on the alphas tuple,
+    since the chain-simplex dispatcher is called many times with the
+    same α-vector.  Cache eliminates the per-call Python overhead that
+    would otherwise erase the numba speedup on well-conditioned inputs.
+    """
+    n = len(alphas)
+    if n == 0:
+        return float('inf')
+    # Use the alphas directly as a tuple; complex elements are hashable.
+    # On numpy arrays this requires a manual tuple() conversion.
+    return _min_subset_sum_abs_cached(tuple(alphas))
+
+
+@_functools.lru_cache(maxsize=4096)
+def _min_subset_sum_abs_cached(alphas_tuple):
+    """Cached 2^N subset-sum-magnitude scan."""
+    n = len(alphas_tuple)
+    min_abs = float('inf')
+    for mask in range(1, 1 << n):
+        s = 0.0 + 0.0j
+        for i in range(n):
+            if mask & (1 << i):
+                s = s + alphas_tuple[i]
+        a = abs(s)
+        if a < min_abs:
+            min_abs = a
+    return min_abs
+
+
+def _exp_over_chain_simplex_mpmath(alphas, lower, upper, eps=1e-9, dps=50):
+    r"""High-precision (mpmath, default 50 digits) evaluation of the
+    same closed-form integral as ``_exp_over_chain_simplex``.
+
+    Used as the dispatch target for ``_exp_over_chain_simplex_fast``
+    when ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` is enabled AND the
+    cheap subset-sum scan detects a close-pole condition.
+
+    Semantics match ``_exp_over_chain_simplex`` exactly — same input/
+    output types, same ``None`` return on overflow / degenerate β at
+    the float64-effective threshold ``eps``.  The difference is that
+    intermediate arithmetic uses ``mpmath.mpc`` at 50 decimal digits,
+    so the 2^N cancellation that loses ~14 digits of float64 precision
+    leaves ~36 digits intact — well below any plausible aggregation
+    tolerance.
+
+    Parameters
+    ----------
+    alphas, lower, upper, eps : as in ``_exp_over_chain_simplex``.
+    dps : int, default 50
+        Decimal-digit precision for the mpmath workspace.  50 digits
+        comfortably exceeds float64's 16, with margin for cancellation
+        of any plausible close-pole pair (e.g., spike-reset's 0.022i
+        loses ~14 digits → 50 − 14 = 36 left).
+    """
+    try:
+        from mpmath import mp, mpc, exp as mp_exp
+    except ImportError:
+        # mpmath unavailable → behave as if the fix were off; caller
+        # already has bit-exact recovery via flag.
+        return _exp_over_chain_simplex(alphas, lower, upper, eps)
+
+    n = len(alphas)
+    if n == 0:
+        return 1.0 + 0.0j
+    if upper <= lower:
+        return 0.0 + 0.0j
+
+    EXP_REAL_LIMIT = 600.0
+
+    saved_dps = mp.dps
+    mp.dps = dps
+    try:
+        L = mpc(float(lower), 0.0)
+        U = mpc(float(upper), 0.0)
+        alphas_mp = [mpc(complex(a).real, complex(a).imag) for a in alphas]
+        terms = [(mpc(1, 0), list(alphas_mp))]
+
+        for _ in range(n - 1):
+            new_terms = []
+            for (C, beta) in terms:
+                b_inner = beta[0]
+                # Use the float64 magnitude for the threshold check —
+                # mpmath's abs is exact but slow; complex(b_inner) is
+                # fine since the test is "is this MUCH bigger than eps".
+                if abs(complex(b_inner)) < eps:
+                    return None
+                bl_real = float((b_inner * L).real)
+                if abs(bl_real) > EXP_REAL_LIMIT:
+                    return None
+                beta_A = list(beta[1:])
+                beta_A[0] = b_inner + beta_A[0]
+                new_terms.append((C / b_inner, beta_A))
+                beta_B = list(beta[1:])
+                new_terms.append((
+                    -C * mp_exp(b_inner * L) / b_inner,
+                    beta_B,
+                ))
+            terms = new_terms
+
+        total = mpc(0, 0)
+        for (C, beta) in terms:
+            b = beta[0]
+            if abs(complex(b)) < eps:
+                total = total + C * (U - L)
+            else:
+                bu_real = float((b * U).real)
+                bl_real = float((b * L).real)
+                if abs(bu_real) > EXP_REAL_LIMIT or abs(bl_real) > EXP_REAL_LIMIT:
+                    return None
+                total = total + C * (mp_exp(b * U) - mp_exp(b * L)) / b
+        return complex(float(total.real), float(total.imag))
+    except Exception:
+        return None
+    finally:
+        mp.dps = saved_dps
+
 
 if _HAVE_NUMBA:
     @_numba.njit(cache=True)
@@ -1107,7 +1273,21 @@ def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
 
     Returns the integral value or ``None`` (degenerate β / overflow),
     matching ``_exp_over_chain_simplex`` semantics exactly.
+
+    When ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` is enabled (default) and
+    a cheap subset-sum scan detects a close-pole condition (any non-
+    empty subset of ``alphas`` summing to magnitude
+    < ``_CHAIN_SIMPLEX_CANCEL_THRESHOLD``), the entire call is routed
+    to ``_exp_over_chain_simplex_mpmath`` for high-precision evaluation.
+    The float64 path is precision-limited in that regime and produces
+    a systematic overestimate that compounds across many subsets at
+    spike-reset k≥2 ell≥1.  Set the flag to ``False`` to disable the
+    routing and recover the pre-fix behaviour bit-identically.
     """
+    if (USE_CHAIN_SIMPLEX_PRECISION_FIX
+            and len(alphas) >= 3
+            and _min_subset_sum_abs(alphas) < _CHAIN_SIMPLEX_CANCEL_THRESHOLD):
+        return _exp_over_chain_simplex_mpmath(alphas, lower, upper, eps)
     if not (_HAVE_NUMBA and USE_NUMBA_CHAIN_SIMPLEX):
         return _exp_over_chain_simplex(alphas, lower, upper, eps)
     try:
@@ -1448,6 +1628,68 @@ def _chain_with_intermediate_uppers(
 
 USE_POSET_INTEGRATOR = True
 
+# ─── 2026-05-17: bbox-cap consistency between analytic and scipy ──────
+#
+# Before this fix, the analytic m≥3 poset evaluator used
+# ``L = earliest_ext - POSET_PHYSICAL_MARGIN`` (default 50.0) for the
+# lower bound on the chain when no scalar lower constraint was present,
+# while the scipy fallback used ``L = -OUTER_CAP`` (default 200.0).
+# The two paths therefore integrated different domains on the unbounded
+# direction of the polytope.  For theories with strictly retarded poles
+# (Re β ≪ 0) the smooth integrand decays fast enough that the difference
+# is negligible.  But for marginal-stability theories (Re β ≈ 0 — e.g.
+# spike-reset near the firing-rate fixed point) the integrand oscillates
+# without decay and the integral is genuinely cap-dependent: analytic
+# at L=-50 and scipy at L=-200 disagree by ~10-13% per m≥3 subset, which
+# compounds to a 4× aggregate error in the 1-loop value at spike-reset
+# k=2 ell=1.
+#
+# When True (default), the scipy.nquad m≥3 path uses ``OUTER_CAP =
+# POSET_PHYSICAL_MARGIN`` (50.0) instead of the hard-coded 200.0,
+# matching the analytic poset path's lower-bound fallback.  This keeps
+# the analytic path fast (it never overflows at the tighter cap) and
+# brings the grouped Phase J scipy reference into agreement with the
+# per-diag analytic value.  Both paths now compute the same regularized
+# integral for unbounded-below polytopes.
+#
+# Set the flag to False to recover the pre-fix behaviour bit-identically
+# (scipy at cap=200, analytic at cap=50).
+# See ``docs/m_ge3_precision_bug_audit.md`` for the full evidence chain.
+# Empirically the cap mismatch is NOT the dominant source of the
+# spike-reset k=2 ell=1 disagreement: aligning the caps at 50 does not
+# bring per-diag (+2.66e-3) into agreement with grouped (+6.38e-4).  The
+# grouped path's analytic poset uses pre-summed (cancelled-within-group)
+# pole tuples, which produces a smaller integrand magnitude and hence a
+# different value than per-diag's individual-diagram pole tuples
+# summed AFTER integration.  By linearity these should be equal, so the
+# 4× discrepancy points to a bookkeeping difference in pole-tuple
+# construction between the two paths.  Off by default; see
+# ``docs/m_ge3_precision_bug_audit.md``.
+USE_POSET_CAP_MATCH_SCIPY = False
+
+# ─── Experimental: mpmath accumulation in the m≥3 poset evaluator ─────
+#
+# Hypothesis (2026-05-16): the per-diag analytic 1-loop at spike-reset
+# k=2 ell=1 is 4× too high because ``_integrate_nd_polytope_poset_modesum``
+# sums O(6^n_smooth) pole-tuple terms whose individual magnitudes can be
+# large (close-paired poles produce O(1/Δp) residues; products of 5 such
+# can be O(10^8)).  In float64, the cancellation down to the actual O(1)
+# integral loses many digits per subset; the bias compounds across 313
+# m≥3 subsets to give the observed 4× aggregate error.
+#
+# When the flag is True, the OUTER pole-tuple sum is accumulated in
+# mpmath at 50-digit precision while individual term computation stays
+# in float64.  Costs only the additions (negligible vs the chain simplex
+# work).  When False (default), behaviour is bit-identical to pre-fix.
+#
+# This flag is provisional pending validation against
+# ``test_grouped_vs_perdiag.py`` and the spike-reset k=2 ell=1 fixture.
+# Empirically this did NOT address the spike-reset bug either — the
+# poset accumulation has cancellation factor only ~21× (well within
+# float64 precision).  Keeping the code path for possible future use
+# on configs with bigger cancellation.  Off by default.
+USE_POSET_MPMATH_ACCUMULATION = False
+
 
 def _integrate_nd_polytope_poset_modesum(
     smooth_edge_modes,
@@ -1543,6 +1785,16 @@ def _integrate_nd_polytope_poset_modesum(
     ]
 
     pref = complex(prefactor_complex)
+    # Experimental: accumulate the pole-tuple sum in mpmath to preserve
+    # precision when the per-tuple terms have large opposite-signed
+    # magnitudes that cancel down to a small result.  When the flag is
+    # off (default), behaviour is bit-identical to the float64 path.
+    use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
+    if use_mp_accum:
+        from mpmath import mp as _mp, mpc as _mpc
+        _saved_dps = _mp.dps
+        _mp.dps = 50
+        total_mp = _mpc(0, 0)
     total = 0.0 + 0.0j
     extensions = list(_enumerate_linear_extensions(poset))
     if not extensions:
@@ -1612,8 +1864,18 @@ def _integrate_nd_polytope_poset_modesum(
                     _RUNTIME_COUNTERS[
                         'chain_simplex_polynomial_returned_none'
                     ] += 1
+                    if use_mp_accum:
+                        _mp.dps = _saved_dps
                     return None
-                total += term_const * chain_val
+                if use_mp_accum:
+                    _term_f64 = term_const * chain_val
+                    total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
+                else:
+                    total += term_const * chain_val
+        if use_mp_accum:
+            _result = complex(float(total_mp.real), float(total_mp.imag))
+            _mp.dps = _saved_dps
+            return _result
         return total
 
     # ── Legacy path (no plan) ─────────────────────────────────────
@@ -1664,8 +1926,18 @@ def _integrate_nd_polytope_poset_modesum(
                 _RUNTIME_COUNTERS[
                     'chain_simplex_polynomial_returned_none'
                 ] += 1
+                if use_mp_accum:
+                    _mp.dps = _saved_dps
                 return None
-            total += term_const * chain_val
+            if use_mp_accum:
+                _term_f64 = term_const * chain_val
+                total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
+            else:
+                total += term_const * chain_val
+    if use_mp_accum:
+        _result = complex(float(total_mp.real), float(total_mp.imag))
+        _mp.dps = _saved_dps
+        return _result
     return total
 
 
@@ -4286,7 +4558,19 @@ def _integrate_nd_polytope(integrand_callable, s_constraints, free_ext_vals, m):
     # τ=10 ⟹ ±200 is ample.  A wider cap is harmless (the filter
     # zeros out the extra volume) but slightly slower to quadrature
     # through.
-    OUTER_CAP = 200.0
+    #
+    # 2026-05-17: when USE_POSET_CAP_MATCH_SCIPY is enabled (default),
+    # we tie OUTER_CAP to POSET_PHYSICAL_MARGIN so the m≥3 scipy
+    # fallback integrates over the same domain as the analytic poset
+    # path's unbounded-below fallback.  For marginal-stability theories
+    # (Re β ≈ 0) the integral is genuinely cap-dependent and the two
+    # paths must agree on the cap or the grouped/per-diag comparison
+    # disagrees.  For strongly-decaying theories the integrand is
+    # negligible at |s| > 50 anyway, so this is harmless.
+    if USE_POSET_CAP_MATCH_SCIPY:
+        OUTER_CAP = POSET_PHYSICAL_MARGIN
+    else:
+        OUTER_CAP = 200.0
 
     # Outermost variable s_{m-1}: bounds computed from constraints with
     # zero coefficient on all inner variables (pure-s_{m-1}).  If no

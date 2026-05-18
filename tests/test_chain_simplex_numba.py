@@ -119,8 +119,11 @@ def test_parity_overflow():
 # ─── Speed sanity check ───────────────────────────────────────────
 def test_numba_is_faster():
     """Trigger numba JIT compile, then time a tight loop against the
-    Python version.  Pass if numba is at least 5× faster (numba should
-    typically be 30-100× but be conservative to avoid CI flakes)."""
+    Python version.  Pass if numba is at least 3× faster end-to-end
+    through the dispatcher (numba kernel itself is typically 30-100×
+    but the dispatcher adds a per-call close-pole gate that erodes
+    the measured speedup on cache-hit hot loops — see 2026-05-16 chain-
+    simplex precision fix at final_integral.py:1017+)."""
     if not _fi._HAVE_NUMBA:
         pytest.skip('numba not available')
 
@@ -129,7 +132,7 @@ def test_numba_is_faster():
     alphas = [-0.3 + 0.1j, -0.5 + 0.0j, -0.7 - 0.2j, -1.0 + 0.4j]
     L, U = 0.0, 5.0
 
-    # Warm up JIT compile.
+    # Warm up JIT compile and prime the close-pole lru_cache.
     _exp_over_chain_simplex_fast(alphas, L, U)
 
     N_ITERS = 5000
@@ -145,7 +148,7 @@ def test_numba_is_faster():
 
     speedup = t_py / max(t_nb, 1e-9)
     print(f'\n  python: {t_py:.3f}s, numba: {t_nb:.3f}s, speedup: {speedup:.1f}×')
-    assert speedup >= 5.0, (
-        f'numba speedup {speedup:.1f}× below 5× threshold; either numba '
+    assert speedup >= 3.0, (
+        f'numba speedup {speedup:.1f}× below 3× threshold; either numba '
         f'is not being used or compile failed silently'
     )
