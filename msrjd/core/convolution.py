@@ -107,7 +107,8 @@ def field_of(expr):
     return expr.operands()[1]
 
 
-def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None):
+def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
+                          attachments_out=None):
     """Resolve every ``Conv(g, n_arg)`` atom in an action expression,
     applying the physical rules of time-domain convolution.
 
@@ -188,6 +189,19 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None):
         expansion that follows downstream.  When ``None``, the
         pre-Taylor step is skipped — preserves the legacy semantics
         for any caller that doesn't supply it.
+    attachments_out : dict, optional
+        Out-parameter: when supplied, the reducer records every rule-4
+        emission as a key→value pair ``kernel_symbol → set of leg
+        variables`` the kernel got paired with.  Used downstream by
+        vertex extraction to identify which leg each surviving kernel
+        symbol in an interaction-vertex coefficient is attached to
+        (the leg whose frequency ``ĝ(ω_leg)`` should be evaluated at
+        in Fourier space).  Same kernel reused with different fields
+        accumulates: ``Conv(g, n1) + Conv(g, n2)`` yields
+        ``attachments_out[g] = {n1, n2}``.  The caller is responsible
+        for disambiguating per-vertex by index when a kernel attaches
+        to multiple fields.  The dict is mutated in place; pre-existing
+        entries are augmented (set-union), not overwritten.
 
     Returns
     -------
@@ -259,10 +273,82 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None):
         # Leaf — atom or unhandled operator.
         if not _has_fluct(n_arg):
             return _SR(n_arg)              # rule 3
+        # Rule 4: defer the kernel to the FT pipeline.  Record the
+        # (kernel, attached-fluct) association so downstream vertex
+        # extraction can recover which leg the kernel goes with.
+        if attachments_out is not None:
+            try:
+                attached_flucts = set(_SR(n_arg).variables()) & fluct_set
+            except (AttributeError, TypeError):
+                attached_flucts = set()
+            if attached_flucts:
+                # Same kernel can pair with several fields across the
+                # action — set-union accumulates them.
+                bucket = attachments_out.setdefault(g, set())
+                bucket.update(attached_flucts)
         return g * n_arg                   # rule 4
 
     return expr.substitute_function(Conv, _reduce_arg)
 
 
+def kernel_attachments_in_coefficient(coeff, attachments, kernel_symbols=None):
+    """Identify which kernel symbols appear in ``coeff`` and the
+    fluctuation field each is attached to.
+
+    Designed for downstream vertex extraction: after bigrade
+    classification, each interaction-vertex coefficient is an SR
+    expression that may contain kernel SR symbols (from earlier
+    ``Conv(g, fluct) → g · fluct`` rule-4 emissions).  This helper
+    looks up the kernel-attachment record collected by
+    ``reduce_conv_in_action(..., attachments_out=attachments)`` and
+    returns, for each kernel symbol present in ``coeff``, the leg
+    variable it was attached to.
+
+    Parameters
+    ----------
+    coeff : SR expression
+        A vertex coefficient (the symbolic prefactor of a monomial in
+        the bigrade-classified action).
+    attachments : dict
+        Populated by ``reduce_conv_in_action``'s ``attachments_out``
+        parameter.  Maps kernel SR symbol → set of attached fluct vars.
+    kernel_symbols : iterable of SR symbols, optional
+        Restrict the scan to these symbols.  Defaults to all keys of
+        ``attachments``.  Useful when the same kernel SR variable
+        could appear in the action for reasons other than a Conv
+        rule-4 (e.g. a direct ``g * x`` product the user wrote
+        explicitly), in which case the caller can supply the model's
+        ``kernel`` symbol list to avoid false positives.
+
+    Returns
+    -------
+    dict {kernel_symbol: leg_var}.  When a kernel symbol attaches to
+    a single fluct var, the value is that var.  When the same kernel
+    attaches to multiple legs (a kernel reused across the action),
+    the value is a ``frozenset`` of the candidate leg vars — the
+    caller must disambiguate via index matching against the vertex's
+    actual legs.  Kernel symbols not present in ``coeff`` are omitted.
+    """
+    from sage.all import SR as _SR
+    try:
+        coeff_vars = set(_SR(coeff).variables())
+    except (AttributeError, TypeError):
+        return {}
+    if kernel_symbols is None:
+        kernel_symbols = list(attachments.keys())
+    out = {}
+    for ksym in kernel_symbols:
+        if ksym not in coeff_vars:
+            continue
+        leg_set = attachments.get(ksym)
+        if not leg_set:
+            continue
+        if len(leg_set) == 1:
+            out[ksym] = next(iter(leg_set))
+        else:
+            out[ksym] = frozenset(leg_set)
+    return out
+
+
 __all__ = ['Conv', 'is_convolution', 'kernel_of', 'field_of',
-           'reduce_conv_in_action']
+           'reduce_conv_in_action', 'kernel_attachments_in_coefficient']
