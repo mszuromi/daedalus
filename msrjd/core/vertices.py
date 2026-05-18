@@ -70,6 +70,88 @@ class VertexType:
                 f'coeff={self.coefficient})')
 
 
+class ConvVertexType(VertexType):
+    """
+    Interaction vertex (n_phys ≥ 1) where one or more PHYSICAL legs
+    sit at independent times linked to the vertex's main time by a
+    synaptic kernel ``g(τ)`` — i.e. a conductance-style term in the
+    original action.
+
+    Parallels :class:`NoiseSourceType` (which does the same for the
+    response legs of a noise source via the cumulant kernel
+    ``κ(τ)``).  The Phase J integrator treats both by allocating one
+    extra τ integration variable per kernel attachment and inserting
+    the kernel factor into the integrand.
+
+    Origin
+    ------
+    Produced by :func:`extract_vertex_types` when a vertex
+    coefficient contains kernel SR symbols recorded by
+    :func:`msrjd.core.convolution.reduce_conv_in_action`'s
+    ``attachments_out`` mechanism.  The kernel symbol's attached
+    field is resolved against the vertex's actual physical-leg list
+    to identify which leg sits at ``anchor_time − τ``.
+
+    Attributes
+    ----------
+    kernel_attachments : list of dict
+        One entry per kernel SR symbol present in ``coefficient``.
+        Each dict has:
+
+          * ``'symbol'``         — the kernel SR symbol (e.g.
+                                   ``z_g_1_2``); same symbol the
+                                   coefficient still references.
+          * ``'leg'``            — the physical leg the kernel
+                                   attaches to, as a leg-tuple
+                                   ``(base_name, pop_idx_1based)``
+                                   matching entries in
+                                   ``physical_legs``.
+          * ``'leg_index'``      — int, position of that leg within
+                                   ``physical_legs`` (0-based).  When
+                                   the same leg-tuple appears more
+                                   than once in ``physical_legs``
+                                   (kernel coupling to a duplicated
+                                   leg) this is the first matching
+                                   index; treat as canonical.
+          * ``'kernel_td_fn'``   — callable ``(tau) -> SR``; the
+                                   time-domain kernel ``g(τ)``
+                                   evaluated at the per-vertex τ
+                                   integration symbol.  Pre-bound
+                                   to the kernel's specific indices
+                                   from ``model['kernel_td_image']``.
+    """
+
+    __slots__ = ('kernel_attachments',)
+
+    def __init__(self, coefficient, response_legs, physical_legs, bigrade,
+                 kernel_attachments):
+        super().__init__(coefficient, response_legs, physical_legs, bigrade)
+        self.kernel_attachments = list(kernel_attachments)
+
+    # Pickle support — extend VertexType's via __slots__ chain
+    def __getstate__(self):
+        state = super().__getstate__()
+        state['kernel_attachments'] = self.kernel_attachments
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(
+            {s: state[s] for s in VertexType.__slots__ if s in state}
+        )
+        object.__setattr__(self, 'kernel_attachments',
+                           state.get('kernel_attachments', []))
+
+    def __repr__(self):
+        att_summary = [
+            f'{att["symbol"]}→{att["leg"]}'
+            for att in self.kernel_attachments
+        ]
+        return (f'ConvVertexType(bigrade={self.bigrade}, '
+                f'resp={self.response_legs}, phys={self.physical_legs}, '
+                f'attach=[{", ".join(att_summary)}], '
+                f'coeff={self.coefficient})')
+
+
 class SourceType:
     """
     One monomial from a noise-kernel sector (n_tilde >= 2, n_phys = 0).
@@ -249,29 +331,233 @@ def decompose_sector(sector_poly, n_tilde, ring_var_names):
     return results
 
 
+def _kernel_symbol_to_pop_indices(ksym):
+    """Parse a kernel SR symbol like ``z_g_1_2`` into the (i, j)
+    population indices (1-based, matching the matrix convention).
+
+    Returns ``(i, j)`` for a matrix kernel ``z_g_i_j``, ``(i,)`` for a
+    vector kernel ``z_g_i``, or ``()`` for a scalar kernel.  Returns
+    ``None`` when the name doesn't match the kernel naming
+    convention.
+
+    Used by :func:`extract_vertex_types` to resolve which physical
+    leg of a vertex a kernel symbol attaches to: the second index of
+    a matrix kernel ``g_i_j`` matches the pop-idx of the field that
+    appeared inside the original ``Conv(g[i,j], n[j])``.
+    """
+    name = str(ksym)
+    # Trailing digits parsed greedily as a sequence of ``_<int>``.
+    parts = name.split('_')
+    indices = []
+    for tok in reversed(parts):
+        if tok.isdigit():
+            indices.append(int(tok))
+        else:
+            break
+    indices.reverse()
+    if not indices:
+        return ()
+    return tuple(indices)
+
+
+def _resolve_kernel_attachment_to_leg(ksym, attached_fluct_set,
+                                       physical_legs, ring_var_names,
+                                       n_tilde):
+    """Pick the physical leg a kernel symbol attaches to.
+
+    Strategy:
+      1. The attachments dict maps ``ksym → {fluct_vars}`` (the SR
+         symbols that appeared as ``Conv(g, fluct)``'s second arg in
+         the original action).  We translate each fluct SR var into a
+         leg-tuple ``(base_name, pop_idx)`` and intersect with the
+         vertex's actual ``physical_legs``.
+      2. Failing intersection (e.g. the attached fluct vars are at
+         different pop-idx than any of this vertex's legs), fall back
+         to **index matching**: match the kernel's trailing pop-index
+         against the leg's pop-idx.  E.g. ``z_g_1_2`` matches a leg
+         with pop-idx 2.  This handles the common case where the
+         attachments dict has the kernel paired with a generic field
+         name but the bigrade-classified monomial's leg list is
+         specialised by pop-idx.
+
+    Returns ``(leg_tuple, leg_index_in_physical_legs)`` or ``None``
+    when no resolution is possible.
+    """
+    if not physical_legs:
+        return None
+
+    # Build a map from SR var name → leg-tuple by parsing the var name.
+    fluct_leg_candidates = set()
+    for fv in attached_fluct_set:
+        base, idx = _parse_field_name(str(fv))
+        fluct_leg_candidates.add((base, idx))
+
+    # Direct intersection with physical_legs.
+    for i, leg in enumerate(physical_legs):
+        if leg in fluct_leg_candidates:
+            return leg, i
+
+    # Fall back to kernel-index matching.  For a matrix kernel
+    # ``z_g_i_j``, the SECOND index (j) is the "incoming" leg's
+    # pop-idx — the field that was inside the Conv.  Vector kernels
+    # use their single index.
+    kernel_idx = _kernel_symbol_to_pop_indices(ksym)
+    if kernel_idx:
+        target_pop = kernel_idx[-1]  # last index = "incoming" leg
+        for i, leg in enumerate(physical_legs):
+            if leg[1] == target_pop:
+                return leg, i
+
+    return None
+
+
+def _flatten_kernel_symbols(ns, model):
+    """Walk ``model['kernels']`` and return the flat list of every
+    kernel SR symbol registered in the namespace.  Used by vertex
+    extraction to scope the kernel-detection scan."""
+    out = []
+    for spec in model.get('kernels', []):
+        kname = spec['name']
+        ksym_obj = getattr(ns, kname, None)
+        if ksym_obj is None:
+            continue
+        # Scalar (single SR var), vector (list), or matrix (list-of-lists)
+        if hasattr(ksym_obj, '__iter__') and not isinstance(ksym_obj, str):
+            for row in ksym_obj:
+                if hasattr(row, '__iter__') and not isinstance(row, str):
+                    out.extend(row)
+                else:
+                    out.append(row)
+        else:
+            out.append(ksym_obj)
+    return out
+
+
 def extract_vertex_types(ft):
     """
     Extract all VertexType objects from a FieldTheory's interacting action.
 
+    Returns plain :class:`VertexType` for local interaction vertices.
+    For conductance-style vertices — those whose coefficient still
+    contains a kernel SR symbol because the original action had a
+    ``Conv(g, X)`` factor that survived bigrade classification — the
+    returned record is a :class:`ConvVertexType` that carries the
+    kernel-attachment metadata the time-domain Phase J integrator
+    consumes (per-leg τ allocation and ``g(τ)`` factor insertion).
+
     Parameters
     ----------
     ft : FieldTheory
-        Must have been expanded (ft.expand() called).
+        Must have been expanded (ft.expand() called).  When the
+        action used the ``Conv(...)`` operator, ``ft._ns`` carries the
+        ``_kernel_attachments`` dict populated by
+        ``reduce_conv_in_action``; this drives the upgrade decision.
 
     Returns
     -------
-    list of VertexType
+    list of VertexType (with ConvVertexType instances mixed in for
+    conductance vertices)
     """
+    from msrjd.core.convolution import kernel_attachments_in_coefficient
+
     ft._require_expanded()
+    ns = ft._ns
+    model = ft.model
+
+    attachments = getattr(ns, '_kernel_attachments', None) or {}
+    kernel_symbols = (_flatten_kernel_symbols(ns, model)
+                      if attachments else [])
+    kernel_td_image_lambda = model.get('kernel_td_image')
+
+    # Pre-build the {ksym: SR_in_tau} dict once per call so each
+    # ConvVertexType can reference its bound time-domain expression
+    # rather than re-evaluating the lambda per attachment.  The τ
+    # symbol used here is a placeholder; the integrator substitutes
+    # its actual per-vertex τ at integration time.
+    if kernel_td_image_lambda is not None and attachments:
+        from sage.all import SR as _SR
+        _tau_placeholder = _SR.var('_conv_tau_placeholder')
+        kernel_td_map = kernel_td_image_lambda(ns, _tau_placeholder)
+    else:
+        _tau_placeholder = None
+        kernel_td_map = {}
+
     vtypes = []
     for (n_t, n_p), poly in ft.vertices().items():
         # vertices() returns sectors with total degree >= 3
         # Some may be pure noise-kernel (n_p == 0) — skip those
         if n_p == 0:
             continue
-        monomials = decompose_sector(poly, ft._n_tilde, list(ft._ns._ring_var_names))
+        monomials = decompose_sector(
+            poly, ft._n_tilde, list(ns._ring_var_names)
+        )
         for m in monomials:
-            if isinstance(m, VertexType):
+            if not isinstance(m, VertexType):
+                continue
+            if not attachments:
+                vtypes.append(m)
+                continue
+
+            # Scan the coefficient for kernel symbols recorded by
+            # the Conv reducer.
+            detected = kernel_attachments_in_coefficient(
+                m.coefficient, attachments, kernel_symbols
+            )
+            if not detected:
+                vtypes.append(m)
+                continue
+
+            # Resolve each detected kernel symbol to a specific
+            # physical leg of THIS vertex.  The attachments dict can
+            # only narrow it to a set of candidate fields; the
+            # vertex's leg-tuples disambiguate by pop-idx.
+            ring_var_names = list(ns._ring_var_names)
+            kernel_attachments_for_vertex = []
+            for ksym, leg_info in detected.items():
+                if isinstance(leg_info, frozenset):
+                    attached_set = set(leg_info)
+                else:
+                    attached_set = {leg_info}
+                resolved = _resolve_kernel_attachment_to_leg(
+                    ksym, attached_set, m.physical_legs,
+                    ring_var_names, ft._n_tilde,
+                )
+                if resolved is None:
+                    # Unresolvable — leave the kernel symbol in the
+                    # coefficient unhandled.  Fall back to plain
+                    # VertexType so existing-pipeline diagnostics flag
+                    # the surviving symbol rather than silently
+                    # treating it as zero.
+                    continue
+                leg, leg_idx = resolved
+                if _tau_placeholder is not None and ksym in kernel_td_map:
+                    # Bind the placeholder τ to a per-call closure so
+                    # callers can re-substitute their own τ symbol.
+                    td_expr = kernel_td_map[ksym]
+                    def _td_fn(tau, _td_expr=td_expr,
+                               _placeholder=_tau_placeholder):
+                        return SR(_td_expr).subs({_placeholder: tau})
+                else:
+                    # No time-domain image available (kernel declared
+                    # via freq_image only).  Caller will see this as
+                    # None and either invert-FT or error out.
+                    _td_fn = None
+                kernel_attachments_for_vertex.append({
+                    'symbol':       ksym,
+                    'leg':          leg,
+                    'leg_index':    leg_idx,
+                    'kernel_td_fn': _td_fn,
+                })
+
+            if kernel_attachments_for_vertex:
+                vtypes.append(ConvVertexType(
+                    coefficient        = m.coefficient,
+                    response_legs      = m.response_legs,
+                    physical_legs      = m.physical_legs,
+                    bigrade            = m.bigrade,
+                    kernel_attachments = kernel_attachments_for_vertex,
+                ))
+            else:
                 vtypes.append(m)
     return vtypes
 

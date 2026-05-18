@@ -724,9 +724,20 @@ class FieldTheory:
             # arguments the Taylor is a no-op, so existing theories
             # using simple ``Conv(g, n[j])`` form keep bit-identical
             # output.
+            #
+            # ``attachments`` collects ``kernel_symbol → set of attached
+            # fluct vars`` for every rule-4 ``Conv(g, fluct) → g·fluct``
+            # emission.  Stashed on ``ns`` for downstream vertex
+            # extraction (``extract_vertex_types``) to identify which
+            # leg each surviving kernel symbol in an interaction-vertex
+            # coefficient is attached to — needed for the time-domain
+            # Phase J integrator's per-leg τ scaffolding.
+            attachments = {}
             S_sr = reduce_conv_in_action(
-                S_sr, fluct_vars, taylor_order=self.taylor_order
+                S_sr, fluct_vars, taylor_order=self.taylor_order,
+                attachments_out=attachments,
             )
+            ns._kernel_attachments = attachments
         except (AttributeError, TypeError):
             # No Conv atoms / non-SR action / missing ns attribute —
             # treat as identity transformation.
