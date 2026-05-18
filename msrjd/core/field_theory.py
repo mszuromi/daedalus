@@ -470,6 +470,184 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     return sectors
 
 
+def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
+                               mf_sector_keys=((0, 0), (1, 0), (0, 1)),
+                               num_tol=1e-9):
+    """Apply ``mf_subs`` to the saddle-eq (MF) sector and verify it
+    vanishes.  After verification each MF sector entry is replaced by
+    ``R.zero()`` in-place — at the saddle the sector is zero by
+    construction, and downstream consumers (sanity_check, propagator
+    extractor) rely on it.
+
+    Two-tier check, per the user's spec:
+
+      1. **Symbolic**: ``coeff.subs(mf_subs).simplify_full() == 0``.
+         Cheap and complete for closed-form saddles.
+      2. **Numerical fallback** (only when symbolic fails): bind every
+         remaining free symbol to a numerical saddle from the model's
+         own MF solver and check ``|residual| < num_tol``.  Catches the
+         case where the MF equation is solved iteratively rather than
+         in closed form, so ``simplify_full`` can't see the
+         cancellation but the numerics confirm it.
+
+    Failures raise :class:`AssertionError` with the offending bigrade,
+    the post-subs symbolic form, and the numerical residual when
+    available.  This is the structural test that catches both a
+    miswired MF solver and an action whose bigrade-≤1 sector is not
+    actually the saddle-eq sector.
+    """
+    failures: list = []
+    soft_passes: list = []
+
+    for key in mf_sector_keys:
+        sector_poly = by_tp.get(key)
+        if sector_poly is None or sector_poly == R.zero():
+            continue
+        for exp_vec, coeff in sector_poly.dict().items():
+            c_subbed = SR(coeff).subs(mf_subs)
+            if spec_subs:
+                c_subbed = c_subbed.subs(spec_subs)
+            try:
+                c_simpl = c_subbed.simplify_full()
+                if c_simpl == 0:
+                    continue
+            except Exception:
+                c_simpl = c_subbed
+            num_resid = _mf_numerical_residual(c_subbed, ns, model)
+            if num_resid is not None and abs(num_resid) < num_tol:
+                soft_passes.append((key, exp_vec, c_simpl, num_resid))
+            else:
+                failures.append((key, exp_vec, c_simpl, num_resid))
+
+    if failures:
+        lines = ["MF sector does not vanish at saddle:"]
+        for key, exp_vec, c_simpl, num_resid in failures:
+            num_str = (f"{num_resid:.3e}"
+                       if num_resid is not None else "N/A")
+            lines.append(
+                f"  bigrade={key}  monomial_exponents={exp_vec}\n"
+                f"    symbolic residual: {c_simpl}\n"
+                f"    numerical residual: {num_str}")
+        lines.append(
+            "Either the MF solver is wrong or the action's bigrade-≤1 "
+            "sector is not the saddle-eq sector.")
+        raise AssertionError('\n'.join(lines))
+
+    if soft_passes:
+        warnings.warn(
+            f"MF sector vanishes only numerically (not symbolically) for "
+            f"{len(soft_passes)} monomial(s).  This is normal when the "
+            f"MF equation is solved iteratively rather than in closed "
+            f"form; flagging for visibility.",
+            stacklevel=3,
+        )
+
+    for key in mf_sector_keys:
+        if key in by_tp:
+            by_tp[key] = R.zero()
+
+
+def _mf_numerical_residual(expr, ns, model):
+    """Numerical residual of an SR expression at the MF saddle.
+
+    Returns the magnitude of ``expr`` after binding every free symbol
+    to its numerical value at the saddle for a representative
+    parameter point (``model['fundamental_defaults']`` if provided,
+    else all-ones).  Returns ``None`` if the residual can't be built
+    (no MF solver, fundamental incomplete, etc.) — the caller falls
+    back to ``failures`` rather than ``soft_passes`` in that case.
+    """
+    try:
+        from pipeline._mean_field import solve_mean_field
+    except ImportError:
+        return None
+
+    fundamental = (model.get('fundamental_defaults') or
+                   _default_fundamental_point(ns, model))
+    if fundamental is None:
+        return None
+
+    try:
+        ft_proxy = _MFProxyForSolver(
+            ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
+        mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
+    except Exception:
+        return None
+
+    num_subs = dict(mf.get('num_params', {}))
+    try:
+        bound = SR(expr).subs(num_subs)
+        free_syms = list(bound.free_variables())
+    except Exception:
+        return None
+
+    if free_syms:
+        for sym in free_syms:
+            num_subs[sym] = 1.0
+        try:
+            bound = SR(expr).subs(num_subs)
+        except Exception:
+            return None
+
+    try:
+        return abs(complex(bound))
+    except Exception:
+        try:
+            return abs(float(bound))
+        except Exception:
+            return None
+
+
+def _default_fundamental_point(ns, model):
+    """Build a ``fundamental`` dict for the verification's numerical
+    fallback.  Prefers the theory author's per-parameter ``default``
+    values (which the theory ships specifically because they admit a
+    well-behaved MF solution); falls back to all-ones only when a
+    parameter has no default declared.
+
+    All-ones is a poor universal fallback for non-linear closures —
+    e.g. quad ``phi(v) = a·v²`` with ``Em=a=w=1`` yields the saddle
+    equation ``2v² - v + 1 = 0`` (no real root).  The theory's own
+    defaults sidestep this.
+    """
+    fundamental: dict = {}
+    pop_size_map = getattr(ns, '_pop_size', {}) or {}
+    for pspec in model.get('parameters', []):
+        if pspec.get('mean_field'):
+            continue
+        pname = pspec['name']
+        default = pspec.get('default')
+        if default is not None:
+            fundamental[pname] = default
+            continue
+        ib = pspec.get('indexed_by') or []
+        if not ib:
+            fundamental[pname] = 1.0
+        elif len(ib) == 1:
+            n = pop_size_map.get(ib[0], 2)
+            fundamental[pname] = [1.0] * n
+        else:
+            n_rows = pop_size_map.get(ib[0], 2)
+            n_cols = pop_size_map.get(ib[1], 2)
+            fundamental[pname] = [[1.0] * n_cols for _ in range(n_rows)]
+    return fundamental or None
+
+
+class _MFProxyForSolver:
+    """Minimal FieldTheory-shaped proxy that ``solve_mean_field`` can
+    consume during MF-sector verification.  We can't call
+    ``solve_mean_field(self, ...)`` from inside ``expand()`` because
+    ``self`` isn't fully populated yet — this proxy exposes just the
+    ``_ns``, ``taylor_order``, and ``model`` attributes the solver needs.
+    """
+    __slots__ = ('_ns', 'taylor_order', 'model')
+
+    def __init__(self, ns, model, taylor_order=4):
+        self._ns = ns
+        self.model = model
+        self.taylor_order = taylor_order
+
+
 # ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
@@ -498,6 +676,7 @@ class FieldTheory:
         self._n_tilde = 0
         self._S_raw   = None
         self._by_tp   = None
+        self._mf_sector_raw = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -548,26 +727,66 @@ class FieldTheory:
         if ns._deriv_rename_subs:
             S_sr = S_sr.subs(ns._deriv_rename_subs)
 
-        # Apply MF background conditions (SR substitutions)
-        # Prefer the action-specific mf_bg dict (closure-baked, so
-        # the symbolic (1, 0) tadpole vanishes for any saddle EOM
-        # form).  Falls back to the legacy ``mf_bg_conditions`` key
-        # for old hand-written model files.
-        mf_bg_key = ('mf_bg_conditions_action'
-                     if 'mf_bg_conditions_action' in self.model
-                     else 'mf_bg_conditions')
-        if mf_bg_key in self.model:
-            S_sr = S_sr.subs(self.model[mf_bg_key](ns))
-
-        # Apply optional specializations (e.g. quadratic phi, delta g)
+        # Apply specializations (e.g. phi0_<i+1> → a*vstar_<i+1>,
+        # phi1_<i+1> → a, quadratic phi, delta g).  These are pure
+        # closure renames and are safe to apply to every sector — they
+        # do not introduce parameter dependence that should be confined
+        # to the saddle-eq sector.
         if 'specializations' in self.model:
             S_sr = S_sr.subs(self.model['specializations'](ns))
 
-        # Expand products and coerce to polynomial ring for bigrade analysis
+        # Coerce to polynomial ring and bigrade-classify FIRST, BEFORE
+        # applying MF saddle substitutions.  This is critical: MF subs
+        # of the form ``vstar → (Em + Σwg·nstar)/(1+τ·nstar)`` rewrites
+        # ``vstar`` everywhere it appears, which would otherwise inject
+        # Em-dependence (and other saddle-eq algebra) into the (1,1)
+        # bilinear propagator kernel and the ≥2 interaction vertices,
+        # where ``vstar``/``nstar`` should remain as free symbolic
+        # parameters bound numerically downstream via num_params.
         S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
+        by_tp = _collect_bigrade(S_poly, n_tilde)
 
-        self._S_raw = S_poly
-        self._by_tp = _collect_bigrade(S_poly, n_tilde)
+        # Apply MF background conditions ONLY to the MF sector — the
+        # bigrade-≤1-in-each-index slots (0,0), (1,0), (0,1) that hold
+        # the saddle-eq residual.  At the saddle this sector must
+        # vanish; the substitution is the *test* of that condition,
+        # not a structural rewrite of the propagator.
+        mf_bg_key = ('mf_bg_conditions_action'
+                     if 'mf_bg_conditions_action' in self.model
+                     else 'mf_bg_conditions')
+        # Preserve the pre-zero MF sector polynomials for diagnostics.
+        # Downstream code reads ``_by_tp`` (which has the MF sector
+        # zeroed by construction); ``_mf_sector_raw`` lets a debug
+        # print show what was there before verification.
+        self._mf_sector_raw = {
+            key: by_tp.get(key, R.zero())
+            for key in [(0, 0), (1, 0), (0, 1)]
+        }
+
+        if mf_bg_key in self.model:
+            mf_subs = self.model[mf_bg_key](ns)
+            # Re-apply specializations after mf_subs to resolve any
+            # phi-Taylor symbols (``phi0_<i+1>``, ``phi1_<i+1>``, …)
+            # reintroduced by the vstar substitution's RHS — the
+            # mf_bg lambda builds RHSes BEFORE specializations runs,
+            # so ``vstar → (Em + Σwg·phi0_<j+1>)/(1+τ·phi0_<i+1>)``
+            # carries raw phi-Taylor tokens that need a second pass.
+            spec_subs = (self.model['specializations'](ns)
+                         if 'specializations' in self.model else None)
+            _verify_and_zero_mf_sector(
+                by_tp, mf_subs, spec_subs, ns, R, self.model,
+                mf_sector_keys=[(0, 0), (1, 0), (0, 1)],
+            )
+
+        # Rebuild S_poly from by_tp (MF sector now zeroed) so
+        # downstream consumers that read self._S_raw see a consistent
+        # action whose (≤1, ≤1) sectors are exactly zero.
+        S_raw = R.zero()
+        for poly in by_tp.values():
+            S_raw = S_raw + poly
+
+        self._S_raw = S_raw
+        self._by_tp = by_tp
 
     def sanity_check(self) -> bool:
         """
