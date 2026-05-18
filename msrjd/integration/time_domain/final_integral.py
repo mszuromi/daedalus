@@ -3014,12 +3014,30 @@ def integrate_diagram(
                 # the result, breaking the integrator's free-symbol
                 # audit downstream.  Pre-existing concern that becomes
                 # load-bearing with multi-τ ConvVertexType diagrams.
-                for k in list(substitutions.keys()):
-                    if k == int_var_to_eliminate:
+                # Cheap early-skip: only chain-resolve if some EXISTING
+                # RHS actually mentions the variable we just eliminated.
+                # For typical non-ConvVertex diagrams the chain almost
+                # never forms (the per-edge ``eq_expr.subs(substitutions)``
+                # above already applies prior subs before solving), so
+                # the inner SR.subs() loop is pure overhead.  Walk
+                # variables once per existing entry — much cheaper than
+                # blindly calling SR.subs.
+                affected_keys = []
+                for _k, _rhs in substitutions.items():
+                    if _k == int_var_to_eliminate:
                         continue
-                    substitutions[k] = SR(
-                        substitutions[k]
-                    ).subs({int_var_to_eliminate: new_rhs})
+                    try:
+                        _rhs_vars = SR(_rhs).variables()
+                    except (AttributeError, TypeError):
+                        continue
+                    if int_var_to_eliminate in _rhs_vars:
+                        affected_keys.append(_k)
+                if affected_keys:
+                    _chain_subs = {int_var_to_eliminate: new_rhs}
+                    for _k in affected_keys:
+                        substitutions[_k] = SR(
+                            substitutions[_k]
+                        ).subs(_chain_subs)
             else:
                 # No integration variable to eliminate → this is a
                 # constraint on external times alone. If it's
