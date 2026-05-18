@@ -3692,13 +3692,29 @@ def integrate_diagram(
                 f"arguments (one per ext_time_var); got "
                 f"{len(ext_time_values)}."
             )
-        total = 0.0 + 0.0j
-        for perm in _perms:
-            permuted = [ext_time_values[perm[j]] for j in range(_k)]
-            free_vals = [float(permuted[j]) for j in free_ext_idx]
-            for cfn in subset_contributions:
-                total = total + complex(cfn(free_vals))
-        return total / _comp
+        # For identical-field externals the framework enumerates
+        # Wick-contraction permutations.  When the legs carry the same
+        # field type, every permutation gives the SAME integrand value
+        # (by symmetry of the source vertex's identical legs).  The
+        # previous code re-fed ``ext_time_values`` through each perm:
+        # with ``origin_leaf_idx`` set, the swap permutation would route
+        # the origin's pinned t=0 into the free-integration slot and
+        # the free time into the pinned slot — producing
+        # ``(C(τ) + C(0)) / 2`` instead of ``C(τ)`` for k=2 with
+        # identical externals.  For distinct-field externals
+        # ``len(_perms) == 1`` so this code path is a no-op for the
+        # Hawkes theories that have been the regression workhorse.
+        #
+        # The correct semantics: evaluate the integrand ONCE in the
+        # canonical (first) leaf↔canonical-position mapping and
+        # multiply by the number of equivalent permutations; the
+        # ``_comp`` divisor was already sized to cancel that count.
+        perm = _perms[0]
+        permuted = [ext_time_values[perm[j]] for j in range(_k)]
+        free_vals = [float(permuted[j]) for j in free_ext_idx]
+        per_perm = sum(complex(cfn(free_vals))
+                       for cfn in subset_contributions)
+        return per_perm * len(_perms) / _comp
 
     # If non-local cumulant kernels were substituted in cp, expose
     # the τ-dependent prefactor (= the substituted, simplified cp,
