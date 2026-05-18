@@ -1133,6 +1133,8 @@ class TheoryBuilder:
             d['natural_name'] = p.natural_name
         if p.indexed_by is not None:
             d['indexed_by'] = list(p.indexed_by)
+        if p.default is not None:
+            d['default'] = p.default
         return d
 
     @staticmethod
