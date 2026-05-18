@@ -36,6 +36,20 @@ from sage.all import SR
 from msrjd.integration.time_domain.grouped_integral import (
     integrate_grouped_diagram,
 )
+from msrjd.integration.time_domain.pipeline import compute_correction_td
+
+
+# Subset-level statuses inside ``integrate_grouped_diagram``'s
+# ``subset_diagnostics`` that mean "the grouped path didn't actually
+# integrate this subset, it dropped it."  Any group hitting one of these
+# at the SUBSET level still returns ``status: 'ok'`` overall but with a
+# silently-incomplete integrand — that's the production bug we're fixing.
+# We list the known skip reasons explicitly so a new skip status added
+# later doesn't silently regress us.
+_SUBSET_SKIP_STATUSES = frozenset({
+    'shotnoise_skipped_in_prototype',
+    'dt_sym_mismatch_skipped',
+})
 
 
 def compute_correction_td_grouped(
@@ -88,10 +102,35 @@ def compute_correction_td_grouped(
     group_callables = []
     groups_out = []
     skipped = []
+    fallback_to_perdiag = []   # groups where we fell back to per-diag
+
+    def _perdiag_fallback(tds, cps):
+        """Compute this group via the per-diag path (compute_correction_td).
+        Returns ``(contribution_callable, n_diagrams)``.  Wrapping it here
+        keeps the fallback isolated from the grouped path's bookkeeping —
+        the returned callable has the same ``(*ext_time_values) -> complex``
+        signature as ``integrate_grouped_diagram``'s ``contribution``.
+        """
+        pd_result = compute_correction_td(
+            typed_diagrams=tds,
+            prefactors=cps,
+            k=k,
+            propagator_data=propagator_data,
+            external_fields=external_fields,
+            num_params=num_params,
+            origin_leaf_idx=origin_leaf_idx,
+        )
+        return pd_result['total_C'], len(tds)
 
     for group_idx, (key, payload) in enumerate(groups.items()):
         tds = payload['tds']
         cps = payload['cps']
+
+        # Tier 1: try the grouped evaluator.  Even on ``status='ok'``,
+        # inspect subset_diagnostics for the prototype-skip statuses —
+        # those silently drop subsets from the integrand and produce a
+        # numerically wrong group total (as proven by the isolation test
+        # at spike-reset k=1 ell=2: 5/7 multi-diagram groups dropped to 0).
         result = integrate_grouped_diagram(
             typed_diagrams=tds,
             combined_prefactors=cps,
@@ -101,7 +140,19 @@ def compute_correction_td_grouped(
             origin_leaf_idx=origin_leaf_idx,
             external_fields=external_fields,
         )
-        if result['status'] == 'ok':
+
+        # Detect the silent-skip case: any subset whose status is one
+        # of the prototype-skip codes means the grouped integrand is
+        # incomplete and we MUST fall back.
+        has_skipped_subset = False
+        if result.get('status') == 'ok':
+            for diag in (result.get('subset_diagnostics') or []):
+                if diag.get('status') in _SUBSET_SKIP_STATUSES:
+                    has_skipped_subset = True
+                    break
+
+        if result.get('status') == 'ok' and not has_skipped_subset:
+            # All subsets evaluated by the grouped path — accept it.
             group_callables.append(result['contribution'])
             groups_out.append({
                 'kernel_id':   group_idx,
@@ -111,19 +162,70 @@ def compute_correction_td_grouped(
                 'reason':      None,
                 'representation': None,
             })
-        else:
-            skipped.append({
-                'group_idx':  group_idx,
-                'n_diagrams': result['n_diagrams'],
-                'reason':     result.get('reason', '<unknown>'),
+        elif result.get('status') == 'ok' and has_skipped_subset:
+            # Tier 2 fallback: grouped left at least one subset silently
+            # un-integrated.  Re-compute the entire group via per-diag so
+            # the total is numerically correct.  This trades the grouped
+            # speedup on this group for correctness; it's the same
+            # behaviour the caller would get with use_grouped_phase_j=False
+            # on this group only.
+            fb_fn, n_tds = _perdiag_fallback(tds, cps)
+            group_callables.append(fb_fn)
+            skip_reasons = sorted({
+                diag.get('status')
+                for diag in (result.get('subset_diagnostics') or [])
+                if diag.get('status') in _SUBSET_SKIP_STATUSES
+            })
+            fallback_to_perdiag.append({
+                'group_idx':       group_idx,
+                'n_diagrams':      n_tds,
+                'subset_skip_reasons': skip_reasons,
             })
             groups_out.append({
                 'kernel_id':   group_idx,
-                'loop_number': 0,
-                'n_diagrams':  result['n_diagrams'],
-                'handled_by':  'skipped',
-                'reason':      result.get('reason', '<unknown>'),
+                'loop_number': result.get('loop_number', 0),
+                'n_diagrams':  n_tds,
+                'handled_by':  'perdiag_fallback',
+                'reason':      'subset_skip:' + '+'.join(skip_reasons),
+                'representation': None,
             })
+        else:
+            # Grouped evaluator failed at the group level (not a subset
+            # skip — e.g. early validation).  Fall back to per-diag too
+            # rather than silently dropping the whole group.
+            try:
+                fb_fn, n_tds = _perdiag_fallback(tds, cps)
+                group_callables.append(fb_fn)
+                groups_out.append({
+                    'kernel_id':   group_idx,
+                    'loop_number': 0,
+                    'n_diagrams':  n_tds,
+                    'handled_by':  'perdiag_fallback',
+                    'reason':      'grouped_status:' +
+                                   str(result.get('reason', '<unknown>')),
+                    'representation': None,
+                })
+                fallback_to_perdiag.append({
+                    'group_idx':  group_idx,
+                    'n_diagrams': n_tds,
+                    'subset_skip_reasons': ['group_level_failure'],
+                })
+            except Exception as exc:
+                # Even per-diag failed.  Now we genuinely have to skip,
+                # but record it loudly.
+                skipped.append({
+                    'group_idx':  group_idx,
+                    'n_diagrams': result.get('n_diagrams', len(tds)),
+                    'reason':     (f"grouped failed ({result.get('reason')}) "
+                                   f"AND per-diag fallback failed ({exc!r})"),
+                })
+                groups_out.append({
+                    'kernel_id':   group_idx,
+                    'loop_number': 0,
+                    'n_diagrams':  result.get('n_diagrams', len(tds)),
+                    'handled_by':  'skipped',
+                    'reason':      f'grouped+perdiag both failed: {exc!r}',
+                })
 
     # ── Build total_C and total_C_batch ──────────────────────────
     def total_C(*ext_time_values):
@@ -145,5 +247,6 @@ def compute_correction_td_grouped(
         'delta_contributions': [],          # not supported in prototype
         'groups':             groups_out,
         'skipped_kernel_ids': skipped,
+        'fallback_to_perdiag': fallback_to_perdiag,
         'ext_time_vars':      ext_time_vars,
     }
