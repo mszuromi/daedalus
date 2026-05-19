@@ -27,7 +27,7 @@ import re
 
 from msrjd.core.cache import PipelineCache
 from msrjd.diagrams.causality import filter_causal
-from msrjd.diagrams.symmetry import deduplicate_typed_diagrams
+from msrjd.diagrams.symmetry import deduplicate_with_multiplicities
 from msrjd.diagrams.type_assignment import enumerate_all as enumerate_all_typed
 from msrjd.enumeration.loop_diagram_enumeration import (
     enumerate_all as enumerate_prediagrams_all,
@@ -100,6 +100,12 @@ def enumerate_unique_diagrams(
     Returns
     -------
     unique_by_ell : dict[int, list[TypedDiagram]]
+    multiplicity_by_ell : dict[int, list[int]]
+        Parallel to ``unique_by_ell``: ``multiplicity_by_ell[ell][i]``
+        is the dedup-equivalence-class size for ``unique_by_ell[ell][i]``,
+        needed to recover the correct M(Γ) when the per-vertex
+        combinatorial formula misses physical-leg permutations at
+        sink vertices (see ``deduplicate_with_multiplicities``).
     all_unique    : list[TypedDiagram]
         Concatenation of ``unique_by_ell.values()`` in ell order.
     """
@@ -107,20 +113,27 @@ def enumerate_unique_diagrams(
     cache = PipelineCache(cache_dir)
 
     ext_tag = _ext_fields_tag(external_fields)
-    stage_name = f'unique_typed_{ext_tag}'
+    # Bumped from ``unique_typed_*`` to invalidate caches written before
+    # the multiplicity-aware dedup landed; old caches lack the
+    # multiplicity field and would silently zero the bug-fix.
+    stage_name = f'unique_typed_mult_v1_{ext_tag}'
 
     unique_by_ell: dict[int, list] = {}
+    multiplicity_by_ell: dict[int, list] = {}
     all_unique: list = []
 
     for ell in range(max_ell + 1):
         # ── Cache lookup ──────────────────────────────────────────
         if use_cache and cache.exists(stage_name, k=k, loop_order=ell):
             try:
-                unique = cache.load(stage_name, k=k, loop_order=ell)
+                cached = cache.load(stage_name, k=k, loop_order=ell)
+                unique = cached['unique']
+                multiplicities = cached['multiplicities']
                 if verbose:
                     print(f'      ell={ell}: loaded {len(unique)} unique '
                           f'diagrams from cache')
                 unique_by_ell[ell] = unique
+                multiplicity_by_ell[ell] = multiplicities
                 all_unique.extend(unique)
                 continue
             except Exception as e:
@@ -139,7 +152,7 @@ def enumerate_unique_diagrams(
             parallel=parallel, n_workers=n_workers,
         )
         causal, n_disc, _ = filter_causal(typed)
-        unique = deduplicate_typed_diagrams(causal)
+        unique, multiplicities = deduplicate_with_multiplicities(causal)
 
         if verbose:
             print(f'      ell={ell}: {len(prediagrams)} prediag → '
@@ -149,7 +162,10 @@ def enumerate_unique_diagrams(
         # ── Cache write ──────────────────────────────────────────
         if use_cache:
             try:
-                cache.save(stage_name, unique, k=k, loop_order=ell)
+                cache.save(stage_name,
+                           {'unique': unique,
+                            'multiplicities': multiplicities},
+                           k=k, loop_order=ell)
                 if verbose:
                     print(f'             cached to '
                           f'{cache_dir}/{stage_name}_k{k}_l{ell}.sobj')
@@ -158,6 +174,7 @@ def enumerate_unique_diagrams(
                     print(f'             cache save failed ({e!r}).')
 
         unique_by_ell[ell] = unique
+        multiplicity_by_ell[ell] = multiplicities
         all_unique.extend(unique)
 
-    return unique_by_ell, all_unique
+    return unique_by_ell, multiplicity_by_ell, all_unique

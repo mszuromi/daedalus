@@ -396,13 +396,19 @@ def test_mixed_response_legs_distinct_pairings():
     """
     Vertex x̃²ỹ with pairings (x̃,x),(x̃,y),(ỹ,x).
 
-    Under the position-aware convention (external leaves are
-    distinguishable by position), each leaf target is unique.
-    The two x̃ legs go to two distinct leaf positions, giving
-    M = [2!/(1!×1!) × 1!/1!] × [1!×1!×1!] = 2 × 1 = 2.
+    Under Path A's position-aware convention (each external leaf is a
+    distinct color class in ``Aut_fixed_ext``), the two x̃ legs go to
+    two distinct leaf positions; no graph automorphism swaps them.
+    So M(Γ) = ∏ n_leg! / |Aut_fixed_ext| = (2!·1!·1!) / 1 = 2.
 
-    Single-vertex diagram: M uses field-type pairings (not positions).
-    M = [2!/(1!×1!) × 1!/1!] × [2!×1!] = 2 × 2 = 4.
+    Pre-Path-A this test asserted M=4 using a "field-type-pairing"
+    convention (treating same-field-type leaves as interchangeable in
+    the M numerator).  That convention double-counts: ``_all_mappings``
+    in Phase J already enumerates the same-type-leaf permutations and
+    the new ``_compensation`` divides them out when they're graph
+    automorphisms — so leaving the 2! inside M would double-count.
+    The change makes ⟨x²⟩ for OU+εx³ match Boltzmann perturbation
+    exactly at 1-loop AND 2-loop; see ``test_identical_externals_wick``.
     """
     vt = VertexType(SR(1), [('nt', 1), ('nt', 1), ('nt', 2)],
                     [('dn', 1)], (3, 1))
@@ -419,7 +425,7 @@ def test_mixed_response_legs_distinct_pairings():
         ext_legs={0: ('dn', 1), 1: ('dn', 1), 2: ('dn', 2), 4: ('dn', 1)},
         prop_indices={(0, 3): (0, 0), (3, 1): (0, 0), (3, 2): (0, 1), (3, 4): (1, 0)},
     )
-    assert combinatorial_factor(td) == 4
+    assert combinatorial_factor(td) == 2
 
 
 def test_mixed_response_legs_repeated_pairing():

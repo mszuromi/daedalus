@@ -412,8 +412,15 @@ def integrate_grouped_diagram(
                     new_mappings.append(nm)
             _all_mappings = new_mappings
 
-        # Within-vertex compensation factor (per td0; assumed shared
-        # across the group since external_legs is shared).
+        # Compensation factor — mirrors the per-diagram path in
+        # ``final_integral.py``.  Groups leaves by the Aut-invariant
+        # ``vertex_role_signature`` of the vertex they attach to, then
+        # divides ``_all_mappings`` by ``∏(N_{sig,field}!)``.  This
+        # removes ext-leaf permutations that ARE graph automorphisms
+        # (e.g. swapping the two cubic vertices in the OU+εx³
+        # watermelon), preventing double-counting in the
+        # ``_all_mappings`` sum.
+        from msrjd.diagrams.symmetry import vertex_role_signature
         _vertex_of_leaf = {}
         for ek in td0.edge_types:
             u, v = ek[0], ek[1]
@@ -421,16 +428,17 @@ def integrate_grouped_diagram(
                 _vertex_of_leaf[u] = v
             elif v in leaf_set and u not in leaf_set:
                 _vertex_of_leaf[v] = u
-        _vertex_field_counts = {}
+        _sig_field_counts: dict = {}
         for lf in leaves:
             v = _vertex_of_leaf.get(lf)
             if v is None:
                 continue
+            sig = vertex_role_signature(v, td0)
             field = td0.external_legs.get(lf)
-            _vertex_field_counts.setdefault(v, {}).setdefault(field, 0)
-            _vertex_field_counts[v][field] += 1
+            _sig_field_counts.setdefault(sig, {}).setdefault(field, 0)
+            _sig_field_counts[sig][field] += 1
         _compensation = 1
-        for v, fcounts in _vertex_field_counts.items():
+        for sig, fcounts in _sig_field_counts.items():
             for field, count in fcounts.items():
                 _compensation *= _factorial(count)
     else:
@@ -1038,9 +1046,22 @@ def integrate_grouped_diagram(
                 f"contribution() expects {len(ext_time_vars)} "
                 f"positional arguments; got {len(ext_time_values)}."
             )
+        # Same Wick-permutation fix as final_integral.py: with
+        # ``origin_leaf_idx`` pinning one leaf at t=0, the integrand
+        # really computes the diagram as a function of time
+        # DIFFERENCES (t_j − t_origin).  For each non-identity
+        # permutation, time-shift so the (permuted) origin leaf
+        # returns to 0 before extracting free-time values.  This
+        # symmetrises asymmetric integrands (every 1-loop+ diagram
+        # with a topologically distinguished leaf), and is a no-op
+        # for symmetric ones (tree-level identical-leaf cumulants).
+        # See final_integral.py for the full derivation.
         total = 0.0 + 0.0j
         for perm in _perms:
             permuted = [ext_time_values[perm[j]] for j in range(_k)]
+            if origin_leaf_idx is not None:
+                t_origin = permuted[origin_leaf_idx]
+                permuted = [pt - t_origin for pt in permuted]
             free_vals = [float(permuted[j]) for j in free_ext_idx]
             for cfn in subset_contributions:
                 total = total + complex(cfn(free_vals))

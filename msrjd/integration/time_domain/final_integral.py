@@ -2557,10 +2557,25 @@ def integrate_diagram(
                     new_mappings.append(nm)
             _all_mappings = new_mappings
 
-        # Compensation: for each internal vertex V, for each same-type
-        # field group at V with n_V leaves, divide by n_V!.  This
-        # removes overcounting from within-vertex permutations (which
-        # give the same integrand by commutativity).
+        # Compensation factor: divides the ``_all_mappings`` sum to
+        # remove ext-leaf permutations that are ALREADY graph
+        # automorphisms of the typed diagram (under ``Aut_fixed_ext``).
+        #
+        # Two leaves can be "swapped" by a graph automorphism iff they
+        # attach to vertices in the same Aut-orbit.  Without
+        # quotienting these swaps out, the loop over ``_all_mappings``
+        # over-counts every diagram by the number of leaf permutations
+        # that are also automorphisms.
+        #
+        # Concretely, leaves are grouped by the ``vertex_role_signature``
+        # of the vertex they attach to (which is invariant under the
+        # ``Aut_fixed_ext`` graph automorphism — see symmetry.py).  For
+        # each (signature, field) class with N leaves, divide by N!.
+        # This generalises the historical "leaves attached to the same
+        # vertex" check (which only caught literal-same-vertex cases
+        # and missed structurally-equivalent vertices like the two
+        # cubic vertices of the OU+εx³ watermelon).
+        from msrjd.diagrams.symmetry import vertex_role_signature
         _vertex_of_leaf = {}
         for ek in typed_diagram.edge_types:
             u, v = ek[0], ek[1]
@@ -2568,16 +2583,17 @@ def integrate_diagram(
                 _vertex_of_leaf[u] = v
             elif v in leaf_set and u not in leaf_set:
                 _vertex_of_leaf[v] = u
-        _vertex_field_counts = {}
+        _sig_field_counts: dict = {}
         for lf in leaves:
             v = _vertex_of_leaf.get(lf)
             if v is None:
                 continue
+            sig = vertex_role_signature(v, typed_diagram)
             field = typed_diagram.external_legs.get(lf)
-            _vertex_field_counts.setdefault(v, {}).setdefault(field, 0)
-            _vertex_field_counts[v][field] += 1
+            _sig_field_counts.setdefault(sig, {}).setdefault(field, 0)
+            _sig_field_counts[sig][field] += 1
         _compensation = 1
-        for v, fcounts in _vertex_field_counts.items():
+        for sig, fcounts in _sig_field_counts.items():
             for field, count in fcounts.items():
                 _compensation *= _factorial(count)
     else:
@@ -3692,29 +3708,42 @@ def integrate_diagram(
                 f"arguments (one per ext_time_var); got "
                 f"{len(ext_time_values)}."
             )
-        # For identical-field externals the framework enumerates
-        # Wick-contraction permutations.  When the legs carry the same
-        # field type, every permutation gives the SAME integrand value
-        # (by symmetry of the source vertex's identical legs).  The
-        # previous code re-fed ``ext_time_values`` through each perm:
-        # with ``origin_leaf_idx`` set, the swap permutation would route
-        # the origin's pinned t=0 into the free-integration slot and
-        # the free time into the pinned slot — producing
-        # ``(C(τ) + C(0)) / 2`` instead of ``C(τ)`` for k=2 with
-        # identical externals.  For distinct-field externals
-        # ``len(_perms) == 1`` so this code path is a no-op for the
-        # Hawkes theories that have been the regression workhorse.
+        # Wick-contraction permutations for identical-field externals.
+        # The integrand was BUILT with ``origin_leaf_idx`` pinning the
+        # origin leaf at t=0, so the integrand really computes a
+        # function of the time DIFFERENCES (t_j − t_origin) for the
+        # non-origin leaves.  When we apply a non-identity permutation
+        # ``perm`` (which relabels which leaf occupies which canonical
+        # position), the origin leaf may end up at a non-zero time in
+        # the user's input.  We then need to time-translate so the
+        # origin leaf returns to 0; this shifts the other leaves by
+        # the negative of the origin's permuted time.  Equivalently,
+        # the free-time argument fed to the cfn is the time of the
+        # free leaf MINUS the time of the origin leaf in that
+        # permutation's frame.
         #
-        # The correct semantics: evaluate the integrand ONCE in the
-        # canonical (first) leaf↔canonical-position mapping and
-        # multiply by the number of equivalent permutations; the
-        # ``_comp`` divisor was already sized to cancel that count.
-        perm = _perms[0]
-        permuted = [ext_time_values[perm[j]] for j in range(_k)]
-        free_vals = [float(permuted[j]) for j in free_ext_idx]
-        per_perm = sum(complex(cfn(free_vals))
-                       for cfn in subset_contributions)
-        return per_perm * len(_perms) / _comp
+        # For symmetric integrands (e.g. tree-level identical-leaf
+        # cumulants) every permutation gives the same value, so the
+        # sum reduces to ``len(_perms) × identity-value``; ``_comp``
+        # cancels it exactly.  For asymmetric integrands (every
+        # 1-loop and higher diagram where the prediagram has a
+        # distinguished leaf, like cubic-vertex tadpoles), the
+        # different permutations are physically distinct evaluations
+        # (e.g. ``V(τ) + V(−τ)`` for k=2 swap) and MUST be summed,
+        # not just counted.  Before this fix the swap permutation was
+        # fed free_val=0 (the pinned origin's actual time), producing
+        # spurious asymmetry in C(τ) for any non-tree-level k=2
+        # identical-externals case.
+        total = 0.0 + 0.0j
+        for perm in _perms:
+            permuted = [ext_time_values[perm[j]] for j in range(_k)]
+            if origin_leaf_idx is not None:
+                t_origin = permuted[origin_leaf_idx]
+                permuted = [pt - t_origin for pt in permuted]
+            free_vals = [float(permuted[j]) for j in free_ext_idx]
+            for cfn in subset_contributions:
+                total = total + complex(cfn(free_vals))
+        return total / _comp
 
     # If non-local cumulant kernels were substituted in cp, expose
     # the τ-dependent prefactor (= the substituted, simplified cp,

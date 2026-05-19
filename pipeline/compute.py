@@ -209,7 +209,7 @@ def compute_cumulants(
         'num_params'      : {SR symbol: float}
         'propagator'      : the propagator data dict
         'diagrams'        : list of dicts {'typed_diagram', 'classify',
-                             'combined_prefactor', 'ell'}
+                             'combined_prefactor', 'multiplicity', 'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
         'config'          : input args echoed back; in addition to the
@@ -317,7 +317,7 @@ def compute_cumulants(
                 f'{sorted(phys_idx.keys())}'
             )
 
-    unique_by_ell, all_unique = enumerate_unique_diagrams(
+    unique_by_ell, multiplicity_by_ell, all_unique = enumerate_unique_diagrams(
         ft, model,
         k               = k,
         max_ell         = max_ell,
@@ -348,10 +348,19 @@ def compute_cumulants(
     # Walk by ell so each record carries the ell tag — needed for the
     # per-loop-order Phase J decomposition in step [7].
     for ell in sorted(unique_by_ell.keys()):
-        for td in unique_by_ell[ell]:
+        mults = multiplicity_by_ell.get(ell, [1] * len(unique_by_ell[ell]))
+        for td, mult in zip(unique_by_ell[ell], mults):
             info = classify_coefficient_factors(
                 td, time_dep_params, noise_structure
             )
+            # Path A: ``combinatorial_factor`` in symmetry.py now
+            # computes M(Γ) = ∏ n_leg! / |Aut_fixed_ext(Γ)| using the
+            # full coloured incidence-graph automorphism order.  That
+            # already accounts for every Feynman-rule symmetry —
+            # same-type vertex swaps, parallel-edge swaps, self-loop
+            # leg swaps — so multiplying by ``mult`` (the dedup
+            # equivalence-class size) here would double-count and is
+            # disabled.
             combined_prefactor = SR(info['scalar_prefactor'])
             kernel_groups.append({
                 'diagrams':           [td],
@@ -361,6 +370,7 @@ def compute_cumulants(
                 'typed_diagram':      td,
                 'classify':           info,
                 'combined_prefactor': combined_prefactor,
+                'multiplicity':       mult,
                 'ell':                ell,
             })
     _phase_time('classify', _t_phase)
