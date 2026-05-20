@@ -15,10 +15,6 @@ def build():
         .physical_field('v', population='E', description='voltage')
         .parameter('Em', default=[1.0, 1.0], indexed_by=['E'], domain='positive')
         .parameter('tau', default=[10, 9], indexed_by=['E'], domain='positive')
-        .parameter('taug', default=[
-    [2, 3],
-    [1, 3],
-], indexed_by=['E', 'E'], domain='positive')
         .parameter('a', default=[0.5, 0.5], indexed_by=['E'], domain='positive')
         .parameter('w', default=[
     [0.25, 0.25],

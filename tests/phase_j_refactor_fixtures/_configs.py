@@ -45,7 +45,12 @@ _FUNDAMENTAL_SPIKE_RESET = {
     'Em':   [3.5, 3.5],
     'tau':  [10.0, 9.0],
     'a':    [2.5, 2.5],
-    'taug': [[2.0, 3.0], [1.0, 3.0]],
+    # taug dropped 2026-05-19: the spike-reset theory switched its
+    # synapse kernel from per-pair exp to scalar dirac_delta, so the
+    # taug parameter is no longer declared by the theory.  Leaving
+    # the stale key in caused propagator-symbol failures in the
+    # grouped-vs-perdiag suite — see memory note
+    # ``project_spike_reset_fixture_drift.md``.
     'w':    [[0.55, 0.65], [0.7, 0.8]],
 }
 
