@@ -159,6 +159,15 @@ class TheoryBuilder:
         self._mf_eqs_text:      dict[str, str] = {}
         self._cgf_terms:        list[dict] = []
         self._phi_function_name: Optional[str] = None
+        # Explicit DAE specification (new MF-solver path).  Each entry:
+        #   {'lhs_text': str, 'rhs_text': str,
+        #    'population': str | None, 'kind': 'differential' | 'algebraic'}
+        # ``kind`` is inferred from whether ``Dt`` appears as a word in
+        # ``lhs_text``.  Populated via ``.equation(...)``.  Consumed by
+        # the DAE-based ``solve_mean_field`` (multi-start Newton + sort
+        # + linear-stability).  If empty, the legacy iteration solver
+        # runs from ``_mf_eqs_text`` instead.
+        self._equations:        list[dict] = []
 
     # ── Population declarations ───────────────────────────────────
     def population(self, name: str, *, size: int = 1,
@@ -504,6 +513,105 @@ class TheoryBuilder:
         EOM closure, so users don't need to declare that.
         """
         self._mf_eqs_text[saddle_name] = rhs_text
+        return self
+
+    def equation(self, *, lhs: str, rhs: str,
+                 population: Optional[str] = None):
+        """Declare one residual of the DAE system used by the multi-root
+        MF solver and linear-stability check.
+
+        Each call adds ONE equation of the form ``LHS = RHS``, i.e.
+        residual ``LHS - RHS = 0``.  At MF evaluation the framework
+        substitutes ``Dt → 0`` on the LHS and solves the resulting
+        algebraic system via multi-start Newton (``solve_mean_field``).
+        At linearization (for stability) the framework keeps ``Dt`` as
+        ``-iω`` and assembles the generalized-eigenvalue problem
+        ``(B - iω A) δx = 0`` from per-equation partials.
+
+        Parameters
+        ----------
+        lhs : str
+            Sage-syntax expression.  Allowed to contain ``Dt`` (the
+            time-derivative operator).  If ``Dt`` appears as a word
+            here, the equation is classified ``'differential'``;
+            otherwise ``'algebraic'``.  Example:
+            ``'(tau[i]*Dt + 1) * v[i]'``.
+        rhs : str
+            Sage-syntax expression in terms of ``i`` (and ``j`` for
+            inner sums), declared parameters, declared functions
+            (``phi[i](...)``), and state-variable fields.  Must NOT
+            contain ``Dt`` (time derivatives belong on the LHS) or
+            ``Conv(...)`` operators (we assume stationary MF, so
+            kernel convolutions of constants have been pre-collapsed
+            by the user; for a normalized kernel that's just the
+            constant itself).  Example:
+            ``'Em[i] + sum(w[i,j]*n[j] for j in E)'``.
+        population : str, optional
+            Population name (matching a ``.population(name=...)``
+            declaration).  The equation is expanded over the
+            population's index set at solve time — ``[i]`` ranges
+            over ``range(pop_size)``.  Pass ``None`` for a scalar
+            equation (no ``[i]`` indexing on either side).
+
+        Returns
+        -------
+        self
+            For chaining.
+
+        Notes
+        -----
+        Equations don't need names — they're stored in declaration
+        order and the solver treats them as an unordered system.
+        For diagnostics the framework auto-labels each equation by
+        its (truncated) LHS text.
+
+        Sort order for multi-root solutions: the framework sorts
+        fixed points by the FIRST declared physical field's first
+        population index, ascending.  Use ``fixed_point_index=N`` in
+        ``compute_cumulants`` to pick the N-th root (default 0 =
+        lowest).
+        """
+        import re
+
+        if not isinstance(lhs, str) or not lhs.strip():
+            raise ValueError(
+                'TheoryBuilder.equation(): lhs must be a non-empty string.'
+            )
+        if not isinstance(rhs, str) or not rhs.strip():
+            raise ValueError(
+                'TheoryBuilder.equation(): rhs must be a non-empty string.'
+            )
+
+        # Reject Conv(...) — stationary assumption requires the user
+        # to have pre-collapsed kernel convolutions.  Catches both
+        # ``Conv(g, n)`` and case variants like ``conv(...)``.
+        for side_name, side_text in (('lhs', lhs), ('rhs', rhs)):
+            if re.search(r'\bConv\s*\(', side_text, re.IGNORECASE):
+                raise ValueError(
+                    f"TheoryBuilder.equation(): Conv(...) found in "
+                    f"{side_name}; the DAE assumes stationary MF, so "
+                    f"all kernel convolutions of constants must be "
+                    f"pre-collapsed (for normalized kernels: replace "
+                    f"``Conv(g, x)`` with ``x``)."
+                )
+
+        # Reject Dt in rhs — derivatives belong on the LHS.
+        if re.search(r'\bDt\b', rhs):
+            raise ValueError(
+                "TheoryBuilder.equation(): Dt found in rhs; time "
+                "derivatives must appear on the LHS only."
+            )
+
+        # Classify by Dt presence in lhs.
+        kind = ('differential' if re.search(r'\bDt\b', lhs)
+                else 'algebraic')
+
+        self._equations.append({
+            'lhs_text':   lhs,
+            'rhs_text':   rhs,
+            'population': population,
+            'kind':       kind,
+        })
         return self
 
     def declare_cgf_term(self, name: str, response_field: str, order: int,
@@ -1088,6 +1196,13 @@ class TheoryBuilder:
             'physical_fields': [self._field_dict(f) for f in self.physical_fields],
             'parameters':      [self._param_dict(p) for p in self.parameters],
             'kernels':         [self._kernel_dict(k) for k in self.kernels],
+            # Explicit DAE residuals (new MF-solver path).  When the
+            # list is non-empty, compute_cumulants routes through
+            # ``solve_mean_field`` (multi-start Newton + sort +
+            # ``fixed_point_index`` selection + linear stability)
+            # instead of the legacy iteration solver in
+            # ``pipeline._solve_mf``.
+            'equations':       [dict(eq) for eq in self._equations],
             'operators':       list(self._operators) or [
                 {'name': 'Dt', 'sage_name': 'Dt',
                  'latex_name': r'\partial_t', 'description': 'd/dt'},
