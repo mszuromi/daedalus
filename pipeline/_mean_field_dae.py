@@ -470,3 +470,204 @@ def solve_mean_field_dae(
         'state_var_order':   [v[0] for v in state_vars],
         'n_seeds_converged': n_converged,
     }
+
+
+# ── Linear stability via generalized eigenvalue problem ──────────────
+
+
+def linear_stability(
+        model: dict,
+        fundamental: dict,
+        root: dict,
+        *,
+        verbose: bool = False,
+) -> dict:
+    """Classify the linear stability of a DAE fixed point.
+
+    Linearizes the DAE ``LHS_k - RHS_k = 0`` around ``root`` and solves
+    the generalized eigenvalue problem ``(σ·A + B)·δx = 0`` where
+
+        A[k, j] = ∂²F_k / ∂Dt ∂x_j  |_{x*}
+        B[k, j] = ∂F_k / ∂x_j       |_{x*, Dt=0}
+
+    Algebraic equations (no ``Dt`` in LHS) have zero rows in ``A`` —
+    those contribute "infinite eigenvalues" from the generalized
+    eigenproblem and represent the implicit algebraic constraints; they
+    get filtered out.  The finite eigenvalues are the linearized DAE's
+    dynamical modes.
+
+    Stability convention: the fixed point is stable iff every finite
+    eigenvalue ``σ`` has ``Re(σ) < 0`` (perturbations decay).
+
+    Parameters
+    ----------
+    model : dict
+        Theory dict with ``model['equations']`` populated.
+    fundamental : dict
+        Concrete parameter values.
+    root : dict
+        One element of ``solve_mean_field_dae(...)['mf_all_roots']``,
+        i.e. ``{'<var>star': [vals]}``.
+    verbose : bool
+        Print A, B, and the eigenvalues.
+
+    Returns
+    -------
+    dict with keys:
+        ``'stable'`` (bool)
+        ``'eigenvalues_finite'`` (np.ndarray, complex)
+        ``'eigenvalues_all'`` (np.ndarray, complex; includes inf)
+        ``'A'``, ``'B'`` (np.ndarray, real, M×M)
+        ``'unstable_eigenvalues'`` (list of complex σ with Re ≥ 0)
+    """
+    from sage.all import SR, diff
+    from sage.all import (tanh as _sage_tanh, sin as _sage_sin,
+                          cos as _sage_cos, tan as _sage_tan,
+                          exp as _sage_exp, log as _sage_log,
+                          sqrt as _sage_sqrt, sinh as _sage_sinh,
+                          cosh as _sage_cosh, pi as _sage_pi)
+    import scipy.linalg
+
+    if not model.get('equations'):
+        raise ValueError(
+            "linear_stability: model has no equations declared via "
+            "TheoryBuilder.equation(...)."
+        )
+
+    state_vars = _state_variables(model)
+    slices = _state_slices(state_vars)
+
+    # ── Build Sage symbols for every scalar state variable ───────
+    flat_syms = []          # ordered list of Sage symbols
+    sym_per_var = {}        # var_name → list of Sage symbols by pop idx
+    flat_vals_at_root = []  # parallel list of root values
+    for var, _, size in state_vars:
+        sym_per_var[var] = []
+        for i in range(size):
+            s = SR.var(f'_mfdae_{var}_{i}')
+            sym_per_var[var].append(s)
+            flat_syms.append(s)
+        flat_vals_at_root.extend(root[f'{var}star'])
+    M = len(flat_syms)
+    Dt_sym = SR.var('_mfdae_Dt')
+
+    # Sage math namespace — these accept and return Sage SR
+    # expressions so that user functions like ``tanh(g_gain[i]*v)``
+    # are differentiable symbolically.
+    sage_math_ns = {
+        'tanh': _sage_tanh, 'sin':  _sage_sin,  'cos':  _sage_cos,
+        'tan':  _sage_tan,  'exp':  _sage_exp,  'log':  _sage_log,
+        'sqrt': _sage_sqrt, 'sinh': _sage_sinh, 'cosh': _sage_cosh,
+        'abs':  abs,        'pi':   _sage_pi,
+    }
+
+    params_np = _numpy_params(model, fundamental)
+
+    # ── Build phi callables that return Sage expressions ─────────
+    phi_sym = {}
+    for fn_spec in model.get('functions', []):
+        args_text = fn_spec.get('args_text') or []
+        expr_text = fn_spec.get('expression_text')
+        if not args_text or expr_text is None or len(args_text) != 1:
+            continue
+        arg_name = args_text[0]
+        pop = fn_spec.get('population')
+        pop_size_val = _pop_size(model, pop)
+        callables = []
+        for i in range(pop_size_val):
+            def phi_i(x_sym, _expr=expr_text, _arg=arg_name,
+                      _i=i, _params=params_np):
+                ns = {**_params, **sage_math_ns,
+                      _arg: x_sym, 'i': _i,
+                      'sum': sum, '__builtins__': {}}
+                return eval(_expr, ns)
+            callables.append(phi_i)
+        phi_sym[fn_spec['name']] = callables
+
+    # ── Build symbolic residuals ─────────────────────────────────
+    idx_sets = _index_sets(model)
+    residuals_sym = []
+    for eq in model['equations']:
+        pop = eq['population']
+        pop_size_val = _pop_size(model, pop) if pop is not None else 1
+        for i in range(pop_size_val):
+            ns = {
+                **params_np,
+                **{var: sym_per_var[var] for var in sym_per_var},
+                **phi_sym,
+                **idx_sets,
+                **sage_math_ns,
+                'Dt':           Dt_sym,
+                'i':            i,
+                'sum':          sum,
+                '__builtins__': {},
+            }
+            lhs = eval(eq['lhs_text'], ns)
+            rhs = eval(eq['rhs_text'], ns)
+            residuals_sym.append(SR(lhs - rhs))
+
+    if len(residuals_sym) != M:
+        raise ValueError(
+            f"linear_stability: {len(residuals_sym)} equations after "
+            f"population expansion vs {M} state-variable unknowns — "
+            f"system is "
+            f"{'under' if len(residuals_sym) < M else 'over'}-determined."
+        )
+
+    # ── Substitution dict for state vars at the root + Dt → 0 ────
+    root_subs = {sym: float(val)
+                 for sym, val in zip(flat_syms, flat_vals_at_root)}
+
+    A_mat = np.zeros((M, M), dtype=float)
+    B_mat = np.zeros((M, M), dtype=float)
+
+    for k, F_k in enumerate(residuals_sym):
+        # B[k, j] = ∂F_k/∂x_j at Dt=0, x=x*.
+        F_k_alg = F_k.subs({Dt_sym: 0})
+        for j, x_j in enumerate(flat_syms):
+            d = diff(F_k_alg, x_j)
+            B_mat[k, j] = float(d.subs(root_subs))
+
+        # A[k, j] = ∂²F_k/∂Dt ∂x_j at x*.  Doing ∂Dt first reduces
+        # the polynomial degree and avoids carrying a useless Dt
+        # variable through the partial wrt x_j.
+        F_k_dDt = diff(F_k, Dt_sym)
+        for j, x_j in enumerate(flat_syms):
+            d = diff(F_k_dDt, x_j)
+            A_mat[k, j] = float(d.subs(root_subs).subs({Dt_sym: 0}))
+
+    # ── Solve the generalized eigenvalue problem (σA + B) v = 0 ──
+    # i.e. ``(-B) v = σ A v``.  scipy.linalg.eig(C, D) returns λ s.t.
+    # C v = λ D v, so we call eig(-B, A) and the returned eigenvalues
+    # ARE the σ values.
+    sigmas, eigvecs = scipy.linalg.eig(-B_mat, A_mat)
+
+    # Filter infinite / NaN eigenvalues (algebraic-constraint modes).
+    finite_mask = np.isfinite(sigmas)
+    sigmas_finite = sigmas[finite_mask]
+
+    # Stability: every finite eigenvalue has strictly negative real part.
+    # Use a small tolerance for the real-part comparison so eigenvalues
+    # that are zero to roundoff don't get mis-classified.
+    EIG_TOL = 1e-9
+    stable = bool(
+        sigmas_finite.size > 0
+        and np.all(np.real(sigmas_finite) < -EIG_TOL)
+    )
+    unstable = [complex(s) for s in sigmas_finite
+                if np.real(s) >= -EIG_TOL]
+
+    if verbose:
+        print(f'  A =\n{A_mat}')
+        print(f'  B =\n{B_mat}')
+        print(f'  finite eigenvalues σ: {sigmas_finite}')
+        print(f'  stable: {stable}')
+
+    return {
+        'stable':                stable,
+        'eigenvalues_finite':    sigmas_finite,
+        'eigenvalues_all':       sigmas,
+        'A':                     A_mat,
+        'B':                     B_mat,
+        'unstable_eigenvalues':  unstable,
+    }
