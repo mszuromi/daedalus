@@ -943,6 +943,11 @@ class TheoryBuilder:
                                             f'declared function {fname}'),
                 'expression':   (lambda i, *xs, _t=fname:
                                  sr_function(f'{_t}_{i+1}')(*xs)),
+                # Preserve the user's original text spec so downstream
+                # consumers (e.g. the DAE-MF solver) can evaluate the
+                # function numerically without going through Sage SR.
+                'expression_text': fn_spec.get('expression'),
+                'args_text':       list(fn_spec.get('args') or []),
             }
             # Heterogeneous-pop annotation passes through unchanged
             # so downstream pipeline can route ``phi[i](...)`` to the
