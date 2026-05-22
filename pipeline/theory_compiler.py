@@ -168,6 +168,12 @@ class _FullPhysicalField:
     fluctuations) and ``nstar``, ``vstar``, ``mstar`` (pure saddles)
     remain accessible under their internal names for users who
     prefer the explicit form.
+
+    Scalar fallback (size = 1): when there is only one position
+    (no ``.population()`` declared, or an explicit ``size=1`` pop),
+    bare arithmetic on the wrapper itself forwards to the single
+    SR element.  That lets users write ``xt * x`` instead of
+    ``xt[i] * x[i]`` in scalar theories.
     """
     __slots__ = ('_saddle', '_fluct')
 
@@ -184,6 +190,78 @@ class _FullPhysicalField:
 
     def __len__(self):
         return len(self._fluct)
+
+    # ── Scalar-fallback arithmetic (only valid when size == 1) ──
+    def _scalar(self):
+        if len(self._fluct) != 1:
+            raise TypeError(
+                f'scalar arithmetic on _FullPhysicalField requires '
+                f'population size 1, got size {len(self._fluct)}; '
+                f'use indexed access ``[i]`` instead.'
+            )
+        return self._saddle[0] + self._fluct[0]
+
+    def __mul__(self, other):      return self._scalar() * other
+    def __rmul__(self, other):     return other * self._scalar()
+    def __add__(self, other):      return self._scalar() + other
+    def __radd__(self, other):     return other + self._scalar()
+    def __sub__(self, other):      return self._scalar() - other
+    def __rsub__(self, other):     return other - self._scalar()
+    def __neg__(self):             return -self._scalar()
+    def __pos__(self):             return +self._scalar()
+    def __pow__(self, other):      return self._scalar() ** other
+    def __rpow__(self, other):     return other ** self._scalar()
+    def __truediv__(self, other):  return self._scalar() / other
+    def __rtruediv__(self, other): return other / self._scalar()
+    def _sage_(self):              return self._scalar()
+
+
+class _FieldScalar:
+    """Thin wrapper around a list of SR variables that supports BOTH
+    bare scalar arithmetic (when ``len == 1``) AND ``[i]`` indexed
+    access.  Used to bind response fields like ``xt`` and internal
+    fluctuation fields like ``dx`` in scalar (no-population) theories
+    so the user can write ``xt * x`` AND ``xt[0] * x[0]``
+    interchangeably.
+
+    For size > 1 lists, scalar arithmetic is ambiguous and raises a
+    clear ``TypeError`` — the user must use ``[i]`` indexing.
+    """
+    __slots__ = ('_arr',)
+
+    def __init__(self, arr):
+        self._arr = arr
+
+    def __getitem__(self, i):
+        return self._arr[i]
+
+    def __len__(self):
+        return len(self._arr)
+
+    def _scalar(self):
+        if len(self._arr) != 1:
+            raise TypeError(
+                f'scalar arithmetic on _FieldScalar requires size 1, '
+                f'got size {len(self._arr)}; use indexed access '
+                f'``[i]`` instead.'
+            )
+        return self._arr[0]
+
+    def __mul__(self, other):      return self._scalar() * other
+    def __rmul__(self, other):     return other * self._scalar()
+    def __add__(self, other):      return self._scalar() + other
+    def __radd__(self, other):     return other + self._scalar()
+    def __sub__(self, other):      return self._scalar() - other
+    def __rsub__(self, other):     return other - self._scalar()
+    def __neg__(self):             return -self._scalar()
+    def __pos__(self):             return +self._scalar()
+    def __pow__(self, other):      return self._scalar() ** other
+    def __rpow__(self, other):     return other ** self._scalar()
+    def __truediv__(self, other):  return self._scalar() / other
+    def __rtruediv__(self, other): return other / self._scalar()
+    def _sage_(self):              return self._scalar()
+    def __iter__(self):            return iter(self._arr)
+    def __repr__(self):            return f'_FieldScalar({self._arr!r})'
 
 
 class _MatrixView:
@@ -268,7 +346,15 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
         if not hasattr(ns, fname):
             continue
         val = getattr(ns, fname)
-        out[fname] = val
+        # When the field has only one position (scalar theory: no
+        # ``.population()`` declared, or an explicit ``size=1`` pop),
+        # wrap in ``_FieldScalar`` so the user can write bare ``xt``
+        # in addition to ``xt[0]``.  Multi-position lists stay raw —
+        # ``[i]`` indexing is unambiguously required.
+        if isinstance(val, list) and len(val) == 1:
+            out[fname] = _FieldScalar(val)
+        else:
+            out[fname] = val
         # Also expose under natural name if there's a mapping.
         # In action context, natural name is the FULL field
         # (saddle + fluctuation); elsewhere it aliases the fluctuation.
@@ -277,12 +363,18 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
             if expand_to_full:
                 saddle_internal = saddle_natural_to_internal.get(natural)
                 if saddle_internal and hasattr(ns, saddle_internal):
+                    # _FullPhysicalField already handles the size==1
+                    # scalar-arithmetic fallback internally.
                     out[natural] = _FullPhysicalField(
                         getattr(ns, saddle_internal), val)
                 else:
-                    out[natural] = val
+                    out[natural] = (_FieldScalar(val)
+                                    if isinstance(val, list) and len(val) == 1
+                                    else val)
             else:
-                out[natural] = val
+                out[natural] = (_FieldScalar(val)
+                                if isinstance(val, list) and len(val) == 1
+                                else val)
 
     # Parameters — promote 2D lists to MatrixView for w[i,j] access.
     # Saddle parameters are also exposed under their natural names

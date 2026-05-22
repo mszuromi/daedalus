@@ -226,6 +226,11 @@ def _build_residual(model: dict, params_np: dict,
         for i in range(pop_size_val):
             expanded.append((lhs_py, rhs_py, i, pop))
 
+    # Identify single-position state vars so the namespace binds them
+    # as bare numpy scalars (size-1 arrays support bare arithmetic
+    # via numpy broadcasting; this matches the symbolic stability
+    # path that wraps these in ``_FieldScalar``).  Multi-position
+    # state vars stay as arrays — ``[i]`` indexing required.
     def R(x: np.ndarray) -> np.ndarray:
         # Pack state variables as numpy arrays keyed by their declared
         # name (so n[i], v[i] etc. work under Python's eval).
@@ -663,6 +668,15 @@ def linear_stability(
 
     # ── Build symbolic residuals ─────────────────────────────────
     idx_sets = _index_sets(model)
+    # Wrap single-position state-var symbol lists so bare-name
+    # arithmetic works in the symbolic eval too (mirroring the
+    # ``_FieldScalar`` wrapping in ``theory_compiler``).  Multi-
+    # position lists stay raw — the user must use ``[i]`` access.
+    from pipeline.theory_compiler import _FieldScalar
+    sym_per_var_eval = {
+        var: (_FieldScalar(arr) if len(arr) == 1 else arr)
+        for var, arr in sym_per_var.items()
+    }
     residuals_sym = []
     for eq in model['equations']:
         pop = eq['population']
@@ -672,7 +686,7 @@ def linear_stability(
         for i in range(pop_size_val):
             ns = {
                 **params_np,
-                **{var: sym_per_var[var] for var in sym_per_var},
+                **sym_per_var_eval,
                 **phi_sym,
                 **idx_sets,
                 **sage_math_ns,

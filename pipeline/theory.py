@@ -863,17 +863,30 @@ class TheoryBuilder:
             # textually contain exactly one state-variable reference.
             lhs_at_dt0 = re.sub(r'\bDt\b', '0', lhs_text)
 
+            # Try indexed form first (``x[i]``), then fall back to
+            # scalar form (bare ``x``) for theories without a
+            # declared population.  Both forms are accepted.
             primary = None
+            scalar_form = False
             for v in state_var_names:
                 if re.search(rf'\b{re.escape(v)}\[\s*i\s*\]', lhs_at_dt0):
                     primary = v
+                    scalar_form = False
                     break
+            if primary is None:
+                # No ``[i]`` in LHS — look for bare field name.
+                for v in state_var_names:
+                    if re.search(rf'\b{re.escape(v)}\b', lhs_at_dt0):
+                        primary = v
+                        scalar_form = True
+                        break
             if primary is None:
                 raise ValueError(
                     f'TheoryBuilder.build(): cannot auto-derive an MF '
                     f'saddle name for equation with lhs={lhs_text!r}. '
-                    f'At Dt=0 the LHS must reduce to a bare state-'
-                    f'variable reference like ``v[i]``.  Either '
+                    f'At Dt=0 the LHS must reduce to either a bare '
+                    f'state-variable reference (``x`` for scalar '
+                    f'theories) or an indexed one (``v[i]``).  Either '
                     f'simplify the LHS, or skip ``.equation(...)`` and '
                     f'use ``set_mf_equation(...)`` directly.'
                 )
@@ -887,6 +900,16 @@ class TheoryBuilder:
                 rewritten_rhs = re.sub(
                     rf'\b{re.escape(v)}\b',
                     f'{v}star',
+                    rewritten_rhs,
+                )
+            # For scalar (no-``[i]``) LHS, the saddle RHS should also
+            # be in scalar form — rewrite ``xstar`` → ``xstar[0]``
+            # because the legacy MF compiler expects per-population
+            # indexed access.  (The DAE solver auto-handles both.)
+            if scalar_form:
+                rewritten_rhs = re.sub(
+                    r'\b(\w+)star\b(?!\s*\[)',
+                    r'\1star[i]',
                     rewritten_rhs,
                 )
 
@@ -1181,6 +1204,27 @@ class TheoryBuilder:
         hooks.  Validates that all required hooks ended up populated.
         Raises ValueError with a clear message if anything is missing.
         """
+        # ── Scalar-mode autopop ────────────────────────────────────
+        # When no ``.population(...)`` has been declared but physical
+        # fields exist, auto-inject a single-position population
+        # ``pop`` of size 1 so the rest of the build machinery (which
+        # was originally designed for heterogeneous populations) runs
+        # uniformly.  Each physical field without a ``population``
+        # attribute gets bound to this auto-pop.  Combined with the
+        # ``_FieldScalar`` / ``_FullPhysicalField`` scalar-arithmetic
+        # wrappers in ``theory_compiler``, this lets users write
+        # truly scalar theories — bare ``xt * x`` instead of
+        # ``sum(xt[i]*x[i] for i in pop)``.
+        if not self.populations and self.physical_fields:
+            self.population('pop', size=1,
+                            description='auto-injected scalar population')
+            for f in self.physical_fields:
+                if f.population is None:
+                    f.population = 'pop'
+            for f in self.response_fields:
+                if getattr(f, 'population', None) is None:
+                    f.population = 'pop'
+
         # Compile any text declarations into lambdas.  Done here, not
         # in the setters, so that all decls are available when each
         # lambda's namespace is assembled.
