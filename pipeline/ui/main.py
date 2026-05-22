@@ -598,20 +598,11 @@ class TheoryUI:
             self._w_seed_box,
         ])
 
-        # Tab 9: Defaults
-        self._w_def_fund = W.Textarea(
-            value=(
-                "{\n"
-                "    'E':     [0.78, 0.81],\n"
-                "    'w':     [[0.30, 0.25], [0.30, 0.35]],\n"
-                "    'tau':   10.0,\n"
-                "    'a':     1.0,\n"
-                "    'tau_g': 2.5,\n"
-                "}"
-            ),
-            placeholder='Python dict literal',
-            layout=W.Layout(width='540px', height='150px'),
-        )
+        # Tab 9: Defaults (run metadata only — default-fundamental
+        # values are now sourced from each parameter's ``default=...``
+        # declaration on the Parameters tab, so a separate "default
+        # fundamental" textarea would be redundant and a foot-gun for
+        # drift).
         self._w_metadata = W.Textarea(
             value=(
                 "{\n"
@@ -626,14 +617,7 @@ class TheoryUI:
             layout=W.Layout(width='540px', height='150px'),
         )
         tab_defaults = W.VBox([
-            W.HTML('<h4>Default fundamental parameter values</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   "Suggested numerical values for the parameters declared "
-                   "above.  The runner uses these by default but they can be "
-                   "overridden per-run via <code>FUNDAMENTAL_OVERRIDE</code>."
-                   '</p>'),
-            self._w_def_fund,
-            W.HTML('<br><h4>Run metadata</h4>'
+            W.HTML('<h4>Run metadata</h4>'
                    '<p style="color:#555;font-size:90%;">'
                    "Suggestions for k, max_ell, external_fields, τ-grid extent. "
                    "The runner uses these as defaults."
@@ -889,8 +873,12 @@ class TheoryUI:
                 for r in self._tbl_mfeqs.get_rows()
                 if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
             ],
-            'default_fundamental': _eval_dict(self._w_def_fund.value,
-                                              'default_fundamental'),
+            # default_fundamental is no longer a separate UI input —
+            # the per-parameter ``default=...`` declarations on the
+            # Parameters tab carry the suggested numerical values, and
+            # the runner reads them from there.  Emit an empty dict
+            # so the spec shape is preserved for legacy loaders.
+            'default_fundamental': {},
             'metadata':            self._collect_metadata(),
         }
 
@@ -1174,11 +1162,11 @@ class TheoryUI:
                 'population': (_NONE if pop in (None, '', _NONE) else pop),
             })
 
-        # Defaults / metadata text areas.  Render the dicts back as
-        # Python source so the user can edit them.
-        df = spec.get('default_fundamental') or {}
-        if isinstance(df, dict):
-            self._w_def_fund.value = repr(df) if df else '{}'
+        # Metadata text area.  Render the dict back as Python source
+        # so the user can edit it.  The legacy ``default_fundamental``
+        # spec key, if present in a loaded file, is now ignored — the
+        # per-parameter ``default=...`` on the Parameters tab carries
+        # the suggested values.
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
             # Pull the MF-tab widget values out of metadata so the
