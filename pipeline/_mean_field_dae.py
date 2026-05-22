@@ -38,6 +38,23 @@ _MATH_NS = {
 }
 
 
+def _sage_to_python(text: str) -> str:
+    """Translate Sage-syntax expression text to plain-Python syntax
+    so it parses cleanly under ``eval``.
+
+    The only difference that matters in practice is the power
+    operator: Sage and TheoryBuilder docstrings use ``^`` (which Sage
+    preparses to ``**``), but plain Python's ``^`` is bitwise XOR.
+    Without this translation, an expression like ``eps*x[i]^3`` raises
+    ``TypeError: ufunc 'bitwise_xor' not supported`` when ``x[i]`` is
+    a numpy float.
+
+    Bitwise XOR is never meaningful in MF equations or transfer
+    functions over reals, so unconditional replacement is safe.
+    """
+    return text.replace('^', '**')
+
+
 # ── Population / field helpers ────────────────────────────────────────
 
 
@@ -126,9 +143,11 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, list]:
         pop = fn_spec.get('population')
         pop_size_val = _pop_size(model, pop)
 
+        # Translate Sage power ``^`` to Python ``**`` once.
+        expr_py = _sage_to_python(expr_text)
         callables = []
         for i in range(pop_size_val):
-            def phi_i(x_val, _expr=expr_text, _arg=arg_name,
+            def phi_i(x_val, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params):
                 ns = {**_params, **_MATH_NS,
                       _arg: x_val, 'i': _i,
@@ -196,13 +215,16 @@ def _build_residual(model: dict, params_np: dict,
     # Precompute, per-equation, the expanded (i-bound) (lhs, rhs)
     # source strings to avoid string ops in the hot loop.  Each
     # element of the returned list is (lhs_text, rhs_text, i, pop)
-    # describing a SINGLE scalar residual.
+    # describing a SINGLE scalar residual.  Power operator ``^`` is
+    # translated to ``**`` here so the strings are valid Python.
     expanded = []
     for eq in equations:
         pop = eq['population']
         pop_size_val = _pop_size(model, pop) if pop is not None else 1
+        lhs_py = _sage_to_python(eq['lhs_text'])
+        rhs_py = _sage_to_python(eq['rhs_text'])
         for i in range(pop_size_val):
-            expanded.append((eq['lhs_text'], eq['rhs_text'], i, pop))
+            expanded.append((lhs_py, rhs_py, i, pop))
 
     def R(x: np.ndarray) -> np.ndarray:
         # Pack state variables as numpy arrays keyed by their declared
@@ -627,9 +649,10 @@ def linear_stability(
         arg_name = args_text[0]
         pop = fn_spec.get('population')
         pop_size_val = _pop_size(model, pop)
+        expr_py = _sage_to_python(expr_text)
         callables = []
         for i in range(pop_size_val):
-            def phi_i(x_sym, _expr=expr_text, _arg=arg_name,
+            def phi_i(x_sym, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params_np):
                 ns = {**_params, **sage_math_ns,
                       _arg: x_sym, 'i': _i,
@@ -644,6 +667,8 @@ def linear_stability(
     for eq in model['equations']:
         pop = eq['population']
         pop_size_val = _pop_size(model, pop) if pop is not None else 1
+        lhs_py = _sage_to_python(eq['lhs_text'])
+        rhs_py = _sage_to_python(eq['rhs_text'])
         for i in range(pop_size_val):
             ns = {
                 **params_np,
@@ -656,8 +681,8 @@ def linear_stability(
                 'sum':          sum,
                 '__builtins__': {},
             }
-            lhs = eval(eq['lhs_text'], ns)
-            rhs = eval(eq['rhs_text'], ns)
+            lhs = eval(lhs_py, ns)
+            rhs = eval(rhs_py, ns)
             residuals_sym.append(SR(lhs - rhs))
 
     if len(residuals_sym) != M:
