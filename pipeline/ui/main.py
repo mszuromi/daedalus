@@ -489,32 +489,53 @@ class TheoryUI:
             self._w_action,
         ])
 
-        # Tab 8: Mean-field equations
+        # Tab 8: Mean-field equations — DAE form.
+        # One row per equation (residual ``LHS - RHS = 0``).  Dt allowed
+        # on the LHS; absent ⇒ algebraic.  At MF the DAE solver sets
+        # Dt → 0; for stability it keeps Dt symbolic.  Population
+        # determines the index range for ``i`` on both sides.
         self._tbl_mfeqs = DynamicTable(
             columns=[
-                {'name': 'saddle', 'kind': 'text',
-                 'placeholder': 'vstar / nstar / mstar', 'width': '140px'},
-                {'name': 'rhs',    'kind': 'text',
-                 'placeholder': 'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)',
-                 'width': '480px'},
+                {'name': 'lhs',        'kind': 'text',
+                 'placeholder': '(tau[i]*Dt + 1) * v[i]',
+                 'width': '240px'},
+                {'name': 'rhs',        'kind': 'text',
+                 'placeholder': 'E[i] + sum(w[i, j]*n[j] for j in E)',
+                 'width': '360px'},
+                {'name': 'population', 'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE, 'width': '110px'},
             ],
             initial=[
-                {'saddle': 'vstar',
-                 'rhs': 'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)'},
-                {'saddle': 'nstar', 'rhs': 'phi(vstar[i])'},
+                {'lhs':        '(tau[i]*Dt + 1) * v[i]',
+                 'rhs':        'E[i] + sum(w[i, j]*n[j] for j in E)',
+                 'population': _NONE},
+                {'lhs':        'n[i]',
+                 'rhs':        'phi[i](v[i])',
+                 'population': _NONE},
             ],
         )
         tab_mfeqs = W.VBox([
             W.HTML(
-                '<h4>Mean-field equations</h4>'
+                '<h4>Mean-field equations (DAE form)</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "One row per saddle quantity.  Per-<code>i</code> form. "
-                "The framework iterates on <code>nstar</code> numerically — "
-                "its equation (<code>nstar[i] = phi(vstar[i])</code>) is the "
-                "self-consistency closure but is <strong>not</strong> substituted "
-                "into the action.  Other saddles (<code>vstar</code>, "
-                "<code>mstar</code>) are substituted into the action via the "
-                "<code>mf_bg_conditions</code> hook."
+                "One row per equation — a residual <code>LHS &minus; RHS = 0</code>.  "
+                "Both sides are Sage-syntax strings in <code>i</code> "
+                "(population index), declared parameters / kernels, "
+                "the <code>Dt</code> time-derivative operator, and "
+                "state-variable fields.  At mean field the solver sets "
+                "<code>Dt &rarr; 0</code> to get an algebraic system and "
+                "runs multi-start Newton over every distinct root; the "
+                "linear-stability check uses the same equations with "
+                "<code>Dt</code> kept symbolic.  "
+                "Pass <code>population</code> to expand <code>[i]</code> "
+                "over that population's index range; leave as "
+                f"<code>{_NONE}</code> for a scalar equation.  "
+                "Equations are declaration-ordered and treated as one "
+                "system; ordering doesn't affect the solver.  "
+                "<strong>No <code>Conv(...)</code> on the RHS</strong> &mdash; "
+                "stationary MF assumption requires the user to "
+                "pre-collapse normalized-kernel convolutions of constants."
                 '</p>'),
             self._tbl_mfeqs.show(),
         ])
@@ -584,6 +605,7 @@ class TheoryUI:
             self._tbl_parameters.refresh_dropdown_options('index_2')
             self._tbl_kernels.refresh_dropdown_options('index_1')
             self._tbl_kernels.refresh_dropdown_options('index_2')
+            self._tbl_mfeqs.refresh_dropdown_options('population')
             self._autofill_default_templates()
         self._tbl_populations.on_change(_on_populations_changed)
 
@@ -795,9 +817,19 @@ class TheoryUI:
             'kernels':         kernels,
             'cgf_terms':       self._tbl_cgfs.get_rows(),
             'action_text':     self._w_action.get_value(),
-            'mf_equations':    [
-                {'saddle': r['saddle'], 'rhs': r['rhs']}
+            # New DAE form: list of {lhs, rhs, population} records,
+            # consumed by ``render_theory_file`` to emit
+            # ``.equation(...)`` calls.  Legacy specs that came in via
+            # ``set_mf_equation`` get re-rendered as ``.equation(...)``
+            # calls too, with population back-inferred from the saddle
+            # name (see ``load_spec_from_file``).
+            'equations':       [
+                {'lhs':        r['lhs'],
+                 'rhs':        r['rhs'],
+                 'population': (None if r['population'] in (_NONE, '', None)
+                                else r['population'])}
                 for r in self._tbl_mfeqs.get_rows()
+                if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
             ],
             'default_fundamental': _eval_dict(self._w_def_fund.value,
                                               'default_fundamental'),
@@ -1004,11 +1036,38 @@ class TheoryUI:
         self._w_action._text_w.value = spec.get('action_text', '') or ''
 
         # MF equations.
+        # The new DAE form is ``spec['equations']`` — list of
+        # ``{lhs, rhs, population}`` records.  Legacy ``mf_equations``
+        # (list of ``{saddle, rhs}``) is auto-converted to the new
+        # form: ``lhs = '<natural>[i]'`` (saddle name minus trailing
+        # ``star``), population back-looked-up from the physical field
+        # of that natural name.  Theories with both keys prefer the
+        # explicit ``equations`` list.
         self._tbl_mfeqs.clear()
-        for eq in spec.get('mf_equations', []) or []:
+        equations = spec.get('equations') or []
+        if not equations:
+            # Back-compat: convert legacy ``set_mf_equation(saddle, rhs)``
+            # entries.
+            phys_pop_by_natural = {
+                (f.get('natural_name') or f['name']): f.get('population')
+                for f in (spec.get('physical_fields') or [])
+            }
+            for eq in spec.get('mf_equations', []) or []:
+                saddle = (eq.get('saddle') or '').strip()
+                natural = (saddle[:-4] if saddle.endswith('star')
+                           else saddle)
+                pop = phys_pop_by_natural.get(natural)
+                equations.append({
+                    'lhs':        f'{natural}[i]' if natural else '',
+                    'rhs':        eq.get('rhs', ''),
+                    'population': pop,
+                })
+        for eq in equations:
+            pop = eq.get('population')
             self._tbl_mfeqs.add_row(values={
-                'saddle': eq.get('saddle', ''),
-                'rhs':    eq.get('rhs', ''),
+                'lhs':        eq.get('lhs', ''),
+                'rhs':        eq.get('rhs', ''),
+                'population': (_NONE if pop in (None, '', _NONE) else pop),
             })
 
         # Defaults / metadata text areas.  Render the dicts back as
