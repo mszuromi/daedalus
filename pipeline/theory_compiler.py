@@ -45,6 +45,31 @@ from sage.all import (
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+
+def _unwrap_field_arg(a):
+    """Unwrap size-1 field wrappers (``_FullPhysicalField``,
+    ``_FieldScalar``) to their bare SR expression before passing into
+    Sage's ``BuiltinFunction.__call__`` (``exp``, ``log``, ``phi``,
+    user-declared formal functions).  Sage's strict argument coercion
+    does not honor ``_sage_()``; without unwrapping, scalar-mode calls
+    like ``f(v)`` raise ``no canonical coercion`` errors.
+
+    Forwarded as a no-op when the argument is already an SR expression
+    or any non-wrapper type.
+    """
+    # Use class-name string check to avoid forward-reference issues
+    # (this helper is defined BEFORE _FullPhysicalField / _FieldScalar
+    # in this module, but is only called at evaluation time, when both
+    # classes already exist).
+    cls = type(a).__name__
+    if cls in ('_FullPhysicalField', '_FieldScalar'):
+        try:
+            return a._sage_() if hasattr(a, '_sage_') else a._scalar()
+        except Exception:
+            return a
+    return a
+
+
 class _IndexedFormalFunction:
     """Generates Sage formal function calls indexed by population.
 
@@ -54,6 +79,16 @@ class _IndexedFormalFunction:
         phi[i](dv[i])           # → function(f'phi_{i+1}')(dv[i])
         phi[i, j](dv[i])        # → function(f'phi_{i+1}_{j+1}')(dv[i])
         f[i](v[i], n[i])        # → function(f'f_{i+1}')(v[i], n[i])
+
+    Bare call (scalar / auto-pop convenience)::
+
+        f(v)                    # → function('f_1')(v)
+        f(v, n)                 # → function('f_1')(v, n)
+
+    Equivalent to ``f[0](...)`` — for theories with a single (auto-)
+    population, the user can omit the index entirely.  In multi-pop
+    theories the action text will always carry explicit ``[i]``
+    indexing, so the bare-call form is unambiguous as "pop 0".
 
     Each indexed call returns a variadic callable so the user can then
     apply the formal function to one OR multiple field arguments.
@@ -77,6 +112,20 @@ class _IndexedFormalFunction:
         def _call(*args, _n=full_name):
             return sr_function(_n)(*args)
         return _call
+
+    def __call__(self, *args):
+        # Scalar / auto-pop convenience: treat ``f(v)`` exactly like
+        # ``f[0](v)`` — produces ``function('f_1')(v)``, which the
+        # field_theory rename pass maps to ``f0_1``, ``f1_1``, etc.
+        # In a multi-population action the user always writes ``[i]``,
+        # so this branch only fires in single-pop theories.
+        #
+        # Unwrap _FullPhysicalField / _FieldScalar (size-1 wrappers
+        # used by the action namespace to expose saddle+fluct splits)
+        # before passing to Sage's ``BuiltinFunction.__call__`` — it
+        # does not honor ``_sage_()`` and would reject the wrapper.
+        return sr_function(f'{self._name}_1')(
+            *(_unwrap_field_arg(a) for a in args))
 
 
 class _IndexedSaddleRename:
@@ -290,18 +339,41 @@ class _MatrixView:
         return f'_MatrixView({self._rows!r})'
 
 
+def _unwrap_builtin(sage_fn):
+    """Wrap a Sage builtin (``exp``, ``log``, ``sin``, …) so its
+    arguments pass through ``_unwrap_field_arg`` first.  Without this,
+    scalar-mode ``exp(nt)`` raises ``no canonical coercion from
+    _FieldScalar to SR`` — Sage's strict ``BuiltinFunction.__call__``
+    coercion ignores ``_sage_()`` on Python wrapper classes.
+
+    The wrapped form preserves all the original behavior for SR
+    arguments (no-op unwrap) while letting ``_FieldScalar`` /
+    ``_FullPhysicalField`` work transparently in user actions.
+    """
+    def _wrapped(*args, **kw):
+        unwrapped = [_unwrap_field_arg(a) for a in args]
+        return sage_fn(*unwrapped, **kw)
+    return _wrapped
+
+
 def _builtin_namespace() -> dict[str, Any]:
-    """Symbols that every user expression may freely reference."""
+    """Symbols that every user expression may freely reference.
+
+    The unary numeric builtins are wrapped to auto-unwrap size-1 field
+    wrappers (``_FieldScalar`` / ``_FullPhysicalField``) so that
+    ``exp(xt)``, ``log(1 + g(w))``, etc. work in scalar-mode action
+    text.  Pass-through for ordinary SR arguments.
+    """
     return {
-        'exp':             exp,
-        'log':             log,
-        'sin':             sin,
-        'cos':             cos,
-        'tan':             tan,
-        'sqrt':            sqrt,
-        'heaviside':       heaviside,
-        'delta_function':  dirac_delta,
-        'dirac_delta':     dirac_delta,
+        'exp':             _unwrap_builtin(exp),
+        'log':             _unwrap_builtin(log),
+        'sin':             _unwrap_builtin(sin),
+        'cos':             _unwrap_builtin(cos),
+        'tan':             _unwrap_builtin(tan),
+        'sqrt':            _unwrap_builtin(sqrt),
+        'heaviside':       _unwrap_builtin(heaviside),
+        'delta_function':  _unwrap_builtin(dirac_delta),
+        'dirac_delta':     _unwrap_builtin(dirac_delta),
         'sum':             sum,
         'I':               I,
         'pi':              pi,
@@ -349,8 +421,12 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
         # When the field has only one position (scalar theory: no
         # ``.population()`` declared, or an explicit ``size=1`` pop),
         # wrap in ``_FieldScalar`` so the user can write bare ``xt``
-        # in addition to ``xt[0]``.  Multi-position lists stay raw —
-        # ``[i]`` indexing is unambiguously required.
+        # AND ``xt[0]`` interchangeably (legacy indexed actions like
+        # ``sum(xt[i]*x[i] for i in pop)`` still parse).  Sage builtins
+        # (``exp``, ``log``, formal-function calls) need explicit
+        # unwrapping — see ``_wrap_for_action_eval`` below, which
+        # routes those calls through ``_unwrap_field_arg`` before
+        # passing into ``BuiltinFunction.__call__``.
         if isinstance(val, list) and len(val) == 1:
             out[fname] = _FieldScalar(val)
         else:
@@ -363,8 +439,10 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
             if expand_to_full:
                 saddle_internal = saddle_natural_to_internal.get(natural)
                 if saddle_internal and hasattr(ns, saddle_internal):
-                    # _FullPhysicalField already handles the size==1
-                    # scalar-arithmetic fallback internally.
+                    # _FullPhysicalField already handles size==1
+                    # scalar-arithmetic via ``_sage_()`` and is
+                    # unwrapped by ``_unwrap_field_arg`` when passed
+                    # to ``exp/log/phi()``.
                     out[natural] = _FullPhysicalField(
                         getattr(ns, saddle_internal), val)
                 else:

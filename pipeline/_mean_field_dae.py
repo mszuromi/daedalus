@@ -111,16 +111,50 @@ def _state_slices(state_vars: list[tuple[str, Optional[str], int]]
 # ── Phi/function callable construction ───────────────────────────────
 
 
-def _make_phi_callables(model: dict, params: dict) -> dict[str, list]:
+class _PhiCallableList:
+    """List of per-population phi callables that ALSO supports bare
+    scalar-call (``f(v)``) when there's exactly one population
+    position.  Indexed access (``f[i](v)``) always works, mirroring
+    the action-side ``_IndexedFormalFunction`` convention.
+    """
+    __slots__ = ('_callables',)
+
+    def __init__(self, callables):
+        self._callables = list(callables)
+
+    def __getitem__(self, i):
+        return self._callables[i]
+
+    def __len__(self):
+        return len(self._callables)
+
+    def __iter__(self):
+        return iter(self._callables)
+
+    def __call__(self, *args, **kwargs):
+        # Scalar mode: ``f(v)`` resolves to the single callable.  In
+        # multi-pop theories the user always writes ``f[i](v)`` so this
+        # path is harmless (the test would just go through __getitem__).
+        if len(self._callables) != 1:
+            raise TypeError(
+                f'bare call ``f(...)`` requires exactly one population '
+                f'position; got {len(self._callables)}.  Use ``f[i](...)`` '
+                f'with an explicit index instead.'
+            )
+        return self._callables[0](*args, **kwargs)
+
+
+def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableList']:
     """For each declared function (``define_function('phi', ...)``),
-    return a list of callables — one per population position — that
-    take a single state-variable value and return the function's value.
+    return a ``_PhiCallableList`` — supports both ``f(v)`` (scalar)
+    and ``f[i](v)`` (indexed) — that takes a single state-variable
+    value and returns the function's value.
 
     The callable is built by Python ``eval`` on the function's
     expression text with the argument-name bound to the input value
     and ``i`` bound to the population index.
 
-    Returns a dict ``{function_name: [callable_for_pos_0, ...]}``.
+    Returns a dict ``{function_name: _PhiCallableList}``.
     Currently only single-arg functions are supported (the framework's
     main use case for ``phi``).  Multi-arg functions are skipped — the
     DAE solver only needs the saddle value, and indexed multi-arg
@@ -154,7 +188,7 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, list]:
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
             callables.append(phi_i)
-        out[fn_spec['name']] = callables
+        out[fn_spec['name']] = _PhiCallableList(callables)
     return out
 
 
