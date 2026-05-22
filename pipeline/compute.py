@@ -600,19 +600,21 @@ def compute_cumulants(
     }
 
     # ── DAE-MF extras (when the new equation-based solver ran) ────
-    # Surface the full sorted list of fixed points + the index used so
-    # callers can iterate over alternative branches without re-running
-    # the multi-start Newton.  ``mf_stability`` is computed lazily —
-    # ``compute_cumulants`` doesn't need it for the diagrammatic
-    # output, but users typically want the stability classification at
-    # the selected root.
+    # ``mf_all_roots`` carries every distinct root with a per-root
+    # stability annotation (``stable: bool``, ``eigenvalues_finite``).
+    # ``fixed_point_index`` indexes over the STABLE subset only —
+    # ``mf_stable_roots`` is that subset in the same sort order.
+    # Unstable roots are surfaced via ``mf_unstable_roots`` for
+    # inspection but are not selectable as expansion points.
     if 'mf_all_roots' in mf:
-        result['mf_all_roots']  = mf['mf_all_roots']
-        result['mf_index_used'] = mf['mf_index_used']
-        result['mf_state_var_order'] = mf['state_var_order']
-        # Cheap to compute (a few Sage diffs); attach for the selected
-        # root.  Users who want all stabilities can call
-        # ``linear_stability(model, fundamental, root)`` per root.
+        result['mf_all_roots']        = mf['mf_all_roots']
+        result['mf_stable_roots']     = mf.get('mf_stable_roots', [])
+        result['mf_unstable_roots']   = mf.get('mf_unstable_roots', [])
+        result['mf_index_used']       = mf['mf_index_used']
+        result['mf_state_var_order']  = mf['state_var_order']
+        # The selected root is guaranteed stable; its stability dict
+        # (with full eigenvalue spectrum + A/B matrices) is the
+        # canonical record for downstream consumers.
         try:
             result['mf_stability'] = linear_stability(
                 model, fundamental, mf['mf_values'], verbose=False)

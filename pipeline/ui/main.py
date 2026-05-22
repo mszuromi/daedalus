@@ -565,15 +565,21 @@ class TheoryUI:
                 '</p>'),
             self._tbl_mfeqs.show(),
             W.HTML(
-                '<br><h4>Multi-root selection</h4>'
+                '<br><h4>Multi-root selection (stable solutions only)</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "When the DAE system has multiple fixed points (e.g. a "
-                "bistable theory), the solver returns all of them "
-                "sorted ascending by the first declared physical "
-                "field's first population index.  Pick which to expand "
-                "the diagrammatic series around: "
-                "<code>0</code> = lowest, <code>1</code> = next, ...  "
-                "This is the THEORY's default; runs can override via "
+                "When the DAE has multiple fixed points (e.g. a bistable "
+                "theory), the solver finds all of them, classifies each "
+                "via the generalized-eigenvalue Jacobian, and exposes "
+                "only the LINEARLY STABLE roots as valid expansion "
+                "points (the diagrammatic series isn't defined around "
+                "an unstable saddle).  The selectable index runs over "
+                "the stable subset, sorted ascending by the first "
+                "declared physical field's first population index: "
+                "<code>0</code> = lowest stable, <code>1</code> = next "
+                "stable, ...  Unstable roots are still inspectable via "
+                "<code>th['mf_unstable_roots']</code> in the return "
+                "dict.  This widget sets the THEORY's default; runs "
+                "can override via "
                 "<code>compute_cumulants(..., fixed_point_index=N)</code>."
                 '</p>'),
             self._w_fpi_default,

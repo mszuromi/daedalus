@@ -447,28 +447,82 @@ def solve_mean_field_dae(
             f"explicit seed_box, or checking the equations for typos."
         )
 
-    if fixed_point_index < 0 or fixed_point_index >= len(deduped):
-        clamped = max(0, min(fixed_point_index, len(deduped) - 1))
-        warnings.warn(
-            f"solve_mean_field_dae: requested fixed_point_index="
-            f"{fixed_point_index} but only {len(deduped)} distinct "
-            f"root(s) found; using index {clamped}.",
-            stacklevel=2,
-        )
-        fixed_point_index = clamped
-
-    selected = deduped[fixed_point_index]
-
     def _build_root_dict(x):
         return {f'{var}star': x[slices[var][0]:slices[var][1]].tolist()
                 for var, _, _ in state_vars}
 
+    # Classify every root for stability inline so ``fixed_point_index``
+    # can index over the STABLE subset only (the unstable saddles are
+    # not physically expandable — surfacing them in
+    # ``mf_all_roots`` for inspection but not as a selectable
+    # expansion point).
+    all_root_records = []
+    for x in deduped:
+        rd = _build_root_dict(x)
+        try:
+            stab = linear_stability(model, fundamental, rd, verbose=False)
+        except Exception as e:
+            # Defensive: if stability fails for some reason, mark as
+            # unknown and skip rather than blowing up the solve.
+            stab = {
+                'stable': False,
+                'eigenvalues_finite': np.array([], dtype=complex),
+                'eigenvalues_all': np.array([], dtype=complex),
+                'A': None, 'B': None,
+                'unstable_eigenvalues': [],
+                'error': f'{type(e).__name__}: {e}',
+            }
+        all_root_records.append({
+            'values':              rd,
+            'stable':              bool(stab.get('stable', False)),
+            'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
+        })
+
+    stable_records = [r for r in all_root_records if r['stable']]
+
+    if not stable_records:
+        raise ValueError(
+            f"solve_mean_field_dae: found {len(all_root_records)} fixed "
+            f"point(s) but NONE were classified linearly stable.  Every "
+            f"root has at least one finite eigenvalue with non-negative "
+            f"real part — the diagrammatic expansion is undefined at all "
+            f"of them.  Inspect the eigenvalues via "
+            f"``linear_stability(model, fundamental, root)`` and revisit "
+            f"the equations or parameters."
+        )
+
+    # fixed_point_index now indexes over STABLE roots, sorted ascending
+    # by the same key (first physical field's first index).  Clamp +
+    # warn on out-of-range exactly as before, but using the stable
+    # subset's length.
+    n_stable = len(stable_records)
+    if fixed_point_index < 0 or fixed_point_index >= n_stable:
+        clamped = max(0, min(fixed_point_index, n_stable - 1))
+        warnings.warn(
+            f"solve_mean_field_dae: requested fixed_point_index="
+            f"{fixed_point_index} but only {n_stable} stable root(s) "
+            f"found (out of {len(all_root_records)} total); using "
+            f"index {clamped}.",
+            stacklevel=2,
+        )
+        fixed_point_index = clamped
+
+    selected = stable_records[fixed_point_index]['values']
+
     return {
-        'mf_values':         _build_root_dict(selected),
-        'mf_all_roots':      [_build_root_dict(r) for r in deduped],
-        'mf_index_used':     fixed_point_index,
-        'state_var_order':   [v[0] for v in state_vars],
-        'n_seeds_converged': n_converged,
+        'mf_values':           selected,
+        # Full list (sorted, with stability annotation per entry) so
+        # callers can introspect unstable roots if desired.
+        'mf_all_roots':        all_root_records,
+        # Stable subset only, in the same sort order.
+        'mf_stable_roots':     [r['values'] for r in stable_records],
+        'mf_unstable_roots':   [r['values'] for r in all_root_records
+                                if not r['stable']],
+        # ``mf_index_used`` is the index into ``mf_stable_roots`` — the
+        # selectable enumeration.
+        'mf_index_used':       fixed_point_index,
+        'state_var_order':     [v[0] for v in state_vars],
+        'n_seeds_converged':   n_converged,
     }
 
 
@@ -787,9 +841,15 @@ def solve_mean_field_dae_compat(
         'param_subs':         param_subs,
         'saddle_values':      dict(mf_values),
         # DAE-specific extras (consumed by compute_cumulants to surface
-        # them on the returned dict via ``th['mf_all_roots']`` etc.)
+        # them on the returned dict via ``th['mf_all_roots']`` etc.).
+        # ``mf_all_roots`` carries STABILITY ANNOTATION per root —
+        # ``[{'values': {...}, 'stable': bool, 'eigenvalues_finite':
+        # np.array}, ...]``.  ``mf_stable_roots`` is the same subset
+        # without unstable entries and stripped to bare value dicts.
         'mf_values':          dict(mf_values),
         'mf_all_roots':       list(dae_result['mf_all_roots']),
+        'mf_stable_roots':    list(dae_result['mf_stable_roots']),
+        'mf_unstable_roots':  list(dae_result['mf_unstable_roots']),
         'mf_index_used':      dae_result['mf_index_used'],
         'state_var_order':    list(dae_result['state_var_order']),
         'n_seeds_converged':  dae_result['n_seeds_converged'],
