@@ -32,6 +32,10 @@ from msrjd.integration.time_domain.pipeline import (
 # Pipeline-package helpers
 from pipeline._propagator import build_propagator, compute_poles_and_residues
 from pipeline._mean_field import solve_mean_field
+from pipeline._mean_field_dae import (
+    solve_mean_field_dae_compat,
+    linear_stability,
+)
 from pipeline._diagrams  import enumerate_unique_diagrams
 from pipeline.access     import (
     MeanField, Parameters, normalize_external_fields,
@@ -118,6 +122,9 @@ def compute_cumulants(
     parallel: bool = True,
     n_workers: int = None,
     use_grouped_phase_j: bool = False,
+    fixed_point_index: int = 0,
+    mf_dae_n_starts: int = 64,
+    mf_dae_seed_box: dict | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """
@@ -292,7 +299,21 @@ def compute_cumulants(
     if verbose:
         print('[3/7] Solve MF self-consistency...')
     _t_phase = time.perf_counter()
-    mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
+    if model.get('equations'):
+        # Route to the DAE-based multi-root solver when the theory
+        # declares ``.equation(lhs=..., rhs=..., population=...)``.
+        # Returns the same legacy-shape keys plus DAE-specific extras
+        # (mf_all_roots, mf_index_used, ...) that we surface on the
+        # final th dict below.
+        mf = solve_mean_field_dae_compat(
+            ft, model, fundamental,
+            fixed_point_index=fixed_point_index,
+            n_starts=mf_dae_n_starts,
+            seed_box=mf_dae_seed_box,
+            verbose=verbose,
+        )
+    else:
+        mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
     num_params = mf['num_params']
     _phase_time('mean_field', _t_phase)
 
@@ -577,6 +598,28 @@ def compute_cumulants(
             'model_name':         model.get('name', '<unnamed>'),
         },
     }
+
+    # ── DAE-MF extras (when the new equation-based solver ran) ────
+    # Surface the full sorted list of fixed points + the index used so
+    # callers can iterate over alternative branches without re-running
+    # the multi-start Newton.  ``mf_stability`` is computed lazily —
+    # ``compute_cumulants`` doesn't need it for the diagrammatic
+    # output, but users typically want the stability classification at
+    # the selected root.
+    if 'mf_all_roots' in mf:
+        result['mf_all_roots']  = mf['mf_all_roots']
+        result['mf_index_used'] = mf['mf_index_used']
+        result['mf_state_var_order'] = mf['state_var_order']
+        # Cheap to compute (a few Sage diffs); attach for the selected
+        # root.  Users who want all stabilities can call
+        # ``linear_stability(model, fundamental, root)`` per root.
+        try:
+            result['mf_stability'] = linear_stability(
+                model, fundamental, mf['mf_values'], verbose=False)
+        except Exception as e:
+            if verbose:
+                print(f'  [stability] skipped: {type(e).__name__}: {e}')
+            result['mf_stability'] = None
 
     # ── Optional NPZ / CSV save (pipeline.save handles the schema) ─
     if output_npz or output_csv:

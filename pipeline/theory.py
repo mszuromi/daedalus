@@ -825,10 +825,85 @@ class TheoryBuilder:
         return self
 
     # ── Text → lambda compilation ─────────────────────────────────
+    def _auto_populate_mf_eqs_from_equations(self) -> None:
+        """When ``.equation(lhs=..., rhs=...)`` calls have been made but
+        no legacy ``set_mf_equation(...)`` has been registered, synthesize
+        the latter from the former so the FieldTheory sanity check and
+        action-substitution chain keep working unchanged.
+
+        Assumption: each equation's LHS at ``Dt = 0`` reduces to a single
+        state-variable reference like ``v[i]`` (possibly with a unit
+        coefficient).  The saddle name is inferred as
+        ``<state_var>star``; state-variable references in the RHS are
+        textually rewritten to saddle names (``n[j] → nstar[j]``, etc.).
+
+        Theories with more elaborate LHSs (e.g. ``v[i] - n[i] = …``)
+        should either simplify the LHS or fall back to direct
+        ``set_mf_equation(...)`` declarations.
+        """
+        import re
+
+        if not self._equations or self._mf_eqs_text:
+            return
+
+        # Field names the user might have written in equations.  Use
+        # ``natural_name`` (the user-facing letter) when set, otherwise
+        # fall back to the internal name.
+        state_var_names = [
+            (f.natural_name or f.name) for f in self.physical_fields
+        ]
+        if not state_var_names:
+            return
+
+        for eq in self._equations:
+            lhs_text   = eq['lhs_text']
+            rhs_text   = eq['rhs_text']
+
+            # Substitute ``Dt → 0`` in the LHS text.  The result should
+            # textually contain exactly one state-variable reference.
+            lhs_at_dt0 = re.sub(r'\bDt\b', '0', lhs_text)
+
+            primary = None
+            for v in state_var_names:
+                if re.search(rf'\b{re.escape(v)}\[\s*i\s*\]', lhs_at_dt0):
+                    primary = v
+                    break
+            if primary is None:
+                raise ValueError(
+                    f'TheoryBuilder.build(): cannot auto-derive an MF '
+                    f'saddle name for equation with lhs={lhs_text!r}. '
+                    f'At Dt=0 the LHS must reduce to a bare state-'
+                    f'variable reference like ``v[i]``.  Either '
+                    f'simplify the LHS, or skip ``.equation(...)`` and '
+                    f'use ``set_mf_equation(...)`` directly.'
+                )
+
+            # Rewrite the RHS, replacing each state-variable name with
+            # its saddle counterpart.  Word-boundary regex avoids hits
+            # on parameter/kernel names that contain the field name as
+            # a substring (e.g. ``Em`` vs ``E``).
+            rewritten_rhs = rhs_text
+            for v in state_var_names:
+                rewritten_rhs = re.sub(
+                    rf'\b{re.escape(v)}\b',
+                    f'{v}star',
+                    rewritten_rhs,
+                )
+
+            saddle_name = f'{primary}star'
+            self._mf_eqs_text[saddle_name] = rewritten_rhs
+
     def _compile_text_declarations(self) -> None:
         """Walk the text-based declarations and compile each into the
         corresponding lambda hook.  No-op if no text declarations
         were made (template-only builders go through unchanged)."""
+        # Step 0: if the user used the new ``.equation(...)`` API but
+        # didn't separately call ``set_mf_equation(...)``, derive the
+        # legacy mf-eq text dict from the equations so the rest of the
+        # compilation chain (sanity check, action substitution) works
+        # without change.
+        self._auto_populate_mf_eqs_from_equations()
+
         if not (self._action_text or self._function_specs
                 or self._kernel_specs or self._mf_eqs_text
                 or self._cgf_terms):

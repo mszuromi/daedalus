@@ -671,3 +671,126 @@ def linear_stability(
         'B':                     B_mat,
         'unstable_eigenvalues':  unstable,
     }
+
+
+# ── Compatibility wrapper for compute_cumulants ───────────────────────
+
+
+def solve_mean_field_dae_compat(
+        ft,
+        model: dict,
+        fundamental: dict,
+        *,
+        fixed_point_index: int = 0,
+        n_starts: int = 64,
+        seed_box: Optional[dict[str, tuple[float, float]]] = None,
+        verbose: bool = True,
+        rtol: float = 1e-6,
+        atol: float = 1e-10,
+) -> dict:
+    """Drop-in replacement for ``pipeline._mean_field.solve_mean_field``
+    when ``model['equations']`` is populated.
+
+    Returns the same keys the legacy solver does (``nstar_vals``,
+    ``vstar_vals``, ``num_params``, ``param_subs``, ``phi_deriv_vals``,
+    ``saddle_values``) PLUS the DAE-specific extras (``mf_all_roots``,
+    ``mf_index_used``, ``state_var_order``, ``n_seeds_converged``).
+
+    ``num_params`` is built by mapping the Sage SR vars on ``ft._ns``
+    (parameter symbols + saddle arrays) to their concrete values, so
+    downstream code (``compute_poles_and_residues`` etc.) consumes it
+    identically to the legacy solver's output.
+
+    ``phi_deriv_vals`` is left as ``{}`` for the moment — heterogeneous
+    legacy paths also return it empty, and the propagator builds its
+    derivatives symbolically.  If a downstream consumer ends up needing
+    explicit derivatives at the saddle, we'll populate it here.
+    """
+    from sage.all import SR
+
+    # 1. Run the multi-start Newton; pick the requested root.
+    dae_result = solve_mean_field_dae(
+        model, fundamental,
+        n_starts=n_starts,
+        fixed_point_index=fixed_point_index,
+        seed_box=seed_box,
+        rtol=rtol, atol=atol,
+        verbose=False,
+    )
+
+    mf_values = dae_result['mf_values']
+
+    if verbose:
+        n_roots = len(dae_result['mf_all_roots'])
+        used = dae_result['mf_index_used']
+        print(f'  DAE solver found {n_roots} fixed point(s); '
+              f'using fixed_point_index={used}')
+        for i, r in enumerate(dae_result['mf_all_roots']):
+            tag = ' ← selected' if i == used else ''
+            print(f'    root[{i}]: {r}{tag}')
+
+    # 2. Build param_subs in the legacy Sage-symbol convention.
+    pop_size_map = getattr(ft._ns, '_pop_size', None) or {}
+    # Fall back: walk model['populations'] directly when ns doesn't
+    # carry _pop_size (single-pop legacy path).
+    if not pop_size_map and model.get('populations'):
+        pop_size_map = {p['name']: int(p.get('size', 1))
+                        for p in model['populations']}
+
+    param_subs: dict = {}
+    for pspec in model.get('parameters', []):
+        pname = pspec['name']
+        if pname not in fundamental:
+            continue
+        val = fundamental[pname]
+        ib = pspec.get('indexed_by')
+        if ib:
+            if len(ib) == 2:
+                n_rows = pop_size_map.get(ib[0], 1)
+                n_cols = pop_size_map.get(ib[1], 1)
+                for i in range(n_rows):
+                    for j in range(n_cols):
+                        sym = SR.var(f'{pname}{i+1}{j+1}')
+                        param_subs[sym] = float(val[i][j])
+            elif len(ib) == 1:
+                n = pop_size_map.get(ib[0], 1)
+                for i in range(n):
+                    sym = SR.var(f'{pname}{i+1}')
+                    param_subs[sym] = float(val[i])
+            else:
+                param_subs[SR.var(pname)] = float(val)
+        elif isinstance(val, (list, tuple)):
+            # Un-indexed but vector value (legacy single-pop).
+            for i, v in enumerate(val):
+                param_subs[SR.var(f'{pname}{i+1}')] = float(v)
+        else:
+            param_subs[SR.var(pname)] = float(val)
+
+    # 3. Bake saddle values into num_params using ft._ns.<saddle_name>.
+    num_params = dict(param_subs)
+    for saddle_name, vals in mf_values.items():
+        sr_array = getattr(ft._ns, saddle_name, None)
+        if sr_array is None:
+            continue
+        for i, v in enumerate(vals):
+            num_params[sr_array[i]] = float(v)
+
+    # 4. Legacy-compatible concatenated saddle vectors.
+    nstar_concat = list(mf_values.get('nstar', []))
+    vstar_concat = list(mf_values.get('vstar', []))
+
+    return {
+        'nstar_vals':         nstar_concat,
+        'vstar_vals':         vstar_concat,
+        'phi_deriv_vals':     {},
+        'num_params':         num_params,
+        'param_subs':         param_subs,
+        'saddle_values':      dict(mf_values),
+        # DAE-specific extras (consumed by compute_cumulants to surface
+        # them on the returned dict via ``th['mf_all_roots']`` etc.)
+        'mf_values':          dict(mf_values),
+        'mf_all_roots':       list(dae_result['mf_all_roots']),
+        'mf_index_used':      dae_result['mf_index_used'],
+        'state_var_order':    list(dae_result['state_var_order']),
+        'n_seeds_converged':  dae_result['n_seeds_converged'],
+    }
