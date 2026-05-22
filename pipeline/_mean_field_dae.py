@@ -698,7 +698,10 @@ def linear_stability(
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
             callables.append(phi_i)
-        phi_sym[fn_spec['name']] = callables
+        # Wrap in _PhiCallableList so scalar-mode ``f(v)`` works
+        # alongside indexed ``f[i](v)``.  Mirrors the residual-eval
+        # side of the same fix.
+        phi_sym[fn_spec['name']] = _PhiCallableList(callables)
 
     # ── Build symbolic residuals ─────────────────────────────────
     idx_sets = _index_sets(model)
