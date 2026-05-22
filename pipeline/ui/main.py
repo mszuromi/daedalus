@@ -515,6 +515,32 @@ class TheoryUI:
                  'population': _NONE},
             ],
         )
+        # Default fixed-point index for the multi-root MF solver.
+        # When the DAE system has multiple roots (a bistable theory,
+        # say), this picks WHICH sorted root the diagrammatic expansion
+        # uses.  Sorted ascending by the first declared physical
+        # field's first population index.  ``0`` = lowest, ``1`` =
+        # second-lowest, ...  Out-of-range values get clamped at run
+        # time with a warning.  This default is written into METADATA;
+        # the theory runner picks it up unless overridden per-run.
+        self._w_fpi_default = W.BoundedIntText(
+            value=0, min=0, max=99, step=1,
+            description='Default fixed_point_index:',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='280px'),
+        )
+        # Optional explicit seed box for multi-start Newton, as a
+        # Python dict literal mapping variable name → (low, high).
+        # Empty → use domain-aware defaults (positive → [0, 5·scale],
+        # real → [-3·scale, 3·scale]).  Used by solve_mean_field_dae's
+        # ``seed_box`` kwarg.
+        self._w_seed_box = W.Textarea(
+            value='',
+            placeholder=("Optional Python dict literal, e.g.\n"
+                         "{'n': (-1.5, 1.5), 'v': (-3.0, 3.0)}"),
+            layout=W.Layout(width='460px', height='60px'),
+        )
+
         tab_mfeqs = W.VBox([
             W.HTML(
                 '<h4>Mean-field equations (DAE form)</h4>'
@@ -538,6 +564,32 @@ class TheoryUI:
                 "pre-collapse normalized-kernel convolutions of constants."
                 '</p>'),
             self._tbl_mfeqs.show(),
+            W.HTML(
+                '<br><h4>Multi-root selection</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "When the DAE system has multiple fixed points (e.g. a "
+                "bistable theory), the solver returns all of them "
+                "sorted ascending by the first declared physical "
+                "field's first population index.  Pick which to expand "
+                "the diagrammatic series around: "
+                "<code>0</code> = lowest, <code>1</code> = next, ...  "
+                "This is the THEORY's default; runs can override via "
+                "<code>compute_cumulants(..., fixed_point_index=N)</code>."
+                '</p>'),
+            self._w_fpi_default,
+            W.HTML(
+                '<br><h4>Initial-guess seed box (optional)</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Per-state-variable sampling box for multi-start Newton, "
+                "as a Python dict literal mapping variable name to "
+                "<code>(low, high)</code>.  Leave blank for the default "
+                "domain-aware box (positive&nbsp;&rarr;&nbsp;<code>[0, 5&middot;scale]</code>, "
+                "real&nbsp;&rarr;&nbsp;<code>[&minus;3&middot;scale, 3&middot;scale]</code> "
+                "where scale = max&nbsp;parameter&nbsp;magnitude).  Override only "
+                "if the default box misses your roots (e.g. tanh-bounded "
+                "states that need <code>(&minus;1.5, 1.5)</code>)."
+                '</p>'),
+            self._w_seed_box,
         ])
 
         # Tab 9: Defaults
@@ -833,9 +885,55 @@ class TheoryUI:
             ],
             'default_fundamental': _eval_dict(self._w_def_fund.value,
                                               'default_fundamental'),
-            'metadata':            _eval_dict(self._w_metadata.value,
-                                              'metadata'),
+            'metadata':            self._collect_metadata(),
         }
+
+    def _collect_metadata(self) -> dict:
+        """Build the METADATA dict, merging the user's Defaults-tab
+        Python literal with the MF-tab widget values (default
+        ``fixed_point_index`` + optional ``seed_box``).  The MF widgets
+        WIN on conflict so the explicit per-tab controls take
+        precedence over a stale literal."""
+        import ast
+
+        def _safe_dict(text, label):
+            text = (text or '').strip()
+            if not text:
+                return {}
+            try:
+                val = ast.literal_eval(text)
+            except (ValueError, SyntaxError) as e:
+                raise ValueError(
+                    f'{label} field is not a valid Python literal: {e}'
+                ) from e
+            if not isinstance(val, dict):
+                raise ValueError(
+                    f'{label} field must be a dict literal, got '
+                    f'{type(val).__name__}'
+                )
+            return val
+
+        md = _safe_dict(self._w_metadata.value, 'metadata') or {}
+        # Always write the default fixed-point index — even when it's 0
+        # — so reload picks it up unambiguously.
+        md['fixed_point_index_default'] = int(self._w_fpi_default.value)
+        seed_text = (self._w_seed_box.value or '').strip()
+        if seed_text:
+            try:
+                seed_box = _safe_dict(seed_text, 'seed_box_default')
+            except Exception:
+                # Bad input — fall through to writing the raw string;
+                # preview will surface the problem.
+                md['seed_box_default'] = seed_text
+            else:
+                if seed_box:
+                    md['seed_box_default'] = {
+                        k: tuple(v) if isinstance(v, (list, tuple)) else v
+                        for k, v in seed_box.items()
+                    }
+        else:
+            md.pop('seed_box_default', None)
+        return md
 
     # ── Button handlers ───────────────────────────────────────────
     def _on_preview(self, _btn) -> None:
@@ -1077,4 +1175,18 @@ class TheoryUI:
             self._w_def_fund.value = repr(df) if df else '{}'
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
-            self._w_metadata.value = repr(md) if md else '{}'
+            # Pull the MF-tab widget values out of metadata so the
+            # textarea shows the "rest" while the dedicated widgets
+            # carry their own values.
+            md_for_textarea = dict(md)
+            self._w_fpi_default.value = int(
+                md_for_textarea.pop('fixed_point_index_default', 0) or 0)
+            sb = md_for_textarea.pop('seed_box_default', None)
+            if sb is None:
+                self._w_seed_box.value = ''
+            elif isinstance(sb, dict):
+                self._w_seed_box.value = repr(sb)
+            else:
+                self._w_seed_box.value = str(sb)
+            self._w_metadata.value = (repr(md_for_textarea)
+                                      if md_for_textarea else '{}')
