@@ -168,6 +168,15 @@ class TheoryBuilder:
         # + linear-stability).  If empty, the legacy iteration solver
         # runs from ``_mf_eqs_text`` instead.
         self._equations:        list[dict] = []
+        # Whether the DAE solver should classify every converged root
+        # for linear stability and restrict ``fixed_point_index`` to
+        # the stable subset.  Default OFF — theories that integrate
+        # out their voltages (all-algebraic equations, no ``Dt``)
+        # have no differential structure to score, so eigenvalue
+        # analysis is vacuous.  Bistable / differential theories that
+        # want stability-based root selection must opt in explicitly
+        # via ``.stability_analysis(True)``.
+        self._stability_analysis: bool = False
 
     # ── Population declarations ───────────────────────────────────
     def population(self, name: str, *, size: int = 1,
@@ -612,6 +621,34 @@ class TheoryBuilder:
             'population': population,
             'kind':       kind,
         })
+        return self
+
+    def stability_analysis(self, enabled: bool):
+        """Toggle linear-stability classification for the DAE solver.
+
+        Parameters
+        ----------
+        enabled : bool
+            ``True``: ``solve_mean_field_dae`` runs ``linear_stability``
+            on every converged root, filters to the stable subset, and
+            ``fixed_point_index`` ranges over those.  Required for
+            bistable / multi-saddle theories where the diagrammatic
+            expansion is only well-defined at the linearly-stable
+            roots.
+
+            ``False`` (default): no stability analysis runs.
+            ``fixed_point_index`` ranges over every converged root,
+            sorted ascending by the first declared physical field's
+            first index.  Use this for theories whose equations are
+            ALL algebraic — e.g. voltages have been integrated out —
+            where the generalized-eigenvalue ``(σA + B)`` has
+            ``A ≡ 0`` and "linear stability" has no meaning.
+
+        The setting is stored on the built model as
+        ``model['stability_analysis']`` and consumed by
+        ``pipeline._mean_field_dae.solve_mean_field_dae``.
+        """
+        self._stability_analysis = bool(enabled)
         return self
 
     def declare_cgf_term(self, name: str, response_field: str, order: int,
@@ -1336,6 +1373,11 @@ class TheoryBuilder:
             'phi_concrete':    self._phi_concrete,
             'action':          self._action,
             'naming_convention': naming_convention,
+            # Whether the DAE solver classifies linear stability and
+            # restricts ``fixed_point_index`` to the stable subset.
+            # Defaults to False — set via ``.stability_analysis(True)``
+            # for bistable / multi-saddle differential theories.
+            'stability_analysis': bool(self._stability_analysis),
         }
         if self._mf_bg is not None:
             # Action-side dict (closure-baked): used by

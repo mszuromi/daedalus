@@ -512,78 +512,110 @@ def solve_mean_field_dae(
         return {f'{var}star': x[slices[var][0]:slices[var][1]].tolist()
                 for var, _, _ in state_vars}
 
-    # Classify every root for stability inline so ``fixed_point_index``
-    # can index over the STABLE subset only (the unstable saddles are
-    # not physically expandable — surfacing them in
-    # ``mf_all_roots`` for inspection but not as a selectable
-    # expansion point).
+    # Stability classification is gated by ``model['stability_analysis']``
+    # (default: False).  Theories whose equations are ALL algebraic
+    # (typical when voltages have been integrated out) have no
+    # differential structure — the generalized-eigenvalue ``(σA + B)``
+    # has A ≡ 0, every eigenvalue lands at infinity, and "linear
+    # stability" has no physical meaning.  Such theories should leave
+    # the toggle OFF; ``fixed_point_index`` then ranges over ALL
+    # converged roots, sorted ascending by the first state variable.
+    #
+    # When the toggle is ON: classify every root, filter to the stable
+    # subset, sort that subset, expose ``fixed_point_index`` over it
+    # (and raise if NO stable root exists — the diagrammatic expansion
+    # is undefined at any saddle the DAE solver picks otherwise).
+    stab_on = bool(model.get('stability_analysis', False))
+
     all_root_records = []
-    for x in deduped:
-        rd = _build_root_dict(x)
-        try:
-            stab = linear_stability(model, fundamental, rd, verbose=False)
-        except Exception as e:
-            # Defensive: if stability fails for some reason, mark as
-            # unknown and skip rather than blowing up the solve.
-            stab = {
-                'stable': False,
-                'eigenvalues_finite': np.array([], dtype=complex),
-                'eigenvalues_all': np.array([], dtype=complex),
-                'A': None, 'B': None,
-                'unstable_eigenvalues': [],
-                'error': f'{type(e).__name__}: {e}',
-            }
-        all_root_records.append({
-            'values':              rd,
-            'stable':              bool(stab.get('stable', False)),
-            'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
-        })
+    if stab_on:
+        for x in deduped:
+            rd = _build_root_dict(x)
+            try:
+                stab = linear_stability(model, fundamental, rd, verbose=False)
+            except Exception as e:
+                # Defensive: if stability fails for some reason, mark as
+                # unknown and skip rather than blowing up the solve.
+                stab = {
+                    'stable': False,
+                    'eigenvalues_finite': np.array([], dtype=complex),
+                    'eigenvalues_all': np.array([], dtype=complex),
+                    'A': None, 'B': None,
+                    'unstable_eigenvalues': [],
+                    'error': f'{type(e).__name__}: {e}',
+                }
+            all_root_records.append({
+                'values':              rd,
+                'stable':              bool(stab.get('stable', False)),
+                'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
+            })
+    else:
+        # Skip stability entirely.  Tag each record with ``stable=None``
+        # so callers can distinguish "not classified" from "classified
+        # unstable".
+        for x in deduped:
+            all_root_records.append({
+                'values':              _build_root_dict(x),
+                'stable':              None,
+                'eigenvalues_finite':  np.array([], dtype=complex),
+            })
 
-    stable_records = [r for r in all_root_records if r['stable']]
+    if stab_on:
+        # Pre-filter to stable subset.
+        selectable_records = [r for r in all_root_records if r['stable']]
+        if not selectable_records:
+            raise ValueError(
+                f"solve_mean_field_dae: found {len(all_root_records)} "
+                f"fixed point(s) but NONE were classified linearly "
+                f"stable.  Every root has at least one finite eigenvalue "
+                f"with non-negative real part — the diagrammatic "
+                f"expansion is undefined at all of them.  Inspect the "
+                f"eigenvalues via ``linear_stability(model, fundamental, "
+                f"root)`` and revisit the equations or parameters.\n"
+                f"(If your equations are all algebraic — voltages "
+                f"integrated out, no Dt anywhere — set "
+                f"``.stability_analysis(False)`` on the TheoryBuilder; "
+                f"``fixed_point_index`` will then range over every "
+                f"converged root.)"
+            )
+        index_label = 'stable root(s)'
+    else:
+        # All converged roots are selectable.
+        selectable_records = all_root_records
+        index_label = 'converged root(s)'
 
-    if not stable_records:
-        raise ValueError(
-            f"solve_mean_field_dae: found {len(all_root_records)} fixed "
-            f"point(s) but NONE were classified linearly stable.  Every "
-            f"root has at least one finite eigenvalue with non-negative "
-            f"real part — the diagrammatic expansion is undefined at all "
-            f"of them.  Inspect the eigenvalues via "
-            f"``linear_stability(model, fundamental, root)`` and revisit "
-            f"the equations or parameters."
-        )
-
-    # fixed_point_index now indexes over STABLE roots, sorted ascending
-    # by the same key (first physical field's first index).  Clamp +
-    # warn on out-of-range exactly as before, but using the stable
-    # subset's length.
-    n_stable = len(stable_records)
-    if fixed_point_index < 0 or fixed_point_index >= n_stable:
-        clamped = max(0, min(fixed_point_index, n_stable - 1))
+    n_selectable = len(selectable_records)
+    if fixed_point_index < 0 or fixed_point_index >= n_selectable:
+        clamped = max(0, min(fixed_point_index, n_selectable - 1))
         warnings.warn(
             f"solve_mean_field_dae: requested fixed_point_index="
-            f"{fixed_point_index} but only {n_stable} stable root(s) "
-            f"found (out of {len(all_root_records)} total); using "
-            f"index {clamped}.",
+            f"{fixed_point_index} but only {n_selectable} "
+            f"{index_label} found (out of {len(all_root_records)} "
+            f"total); using index {clamped}.",
             stacklevel=2,
         )
         fixed_point_index = clamped
 
-    selected = stable_records[fixed_point_index]['values']
+    selected = selectable_records[fixed_point_index]['values']
 
     return {
         'mf_values':           selected,
-        # Full list (sorted, with stability annotation per entry) so
-        # callers can introspect unstable roots if desired.
+        # Full list (sorted, with per-root stability annotation when
+        # classified) so callers can introspect every root.
         'mf_all_roots':        all_root_records,
-        # Stable subset only, in the same sort order.
-        'mf_stable_roots':     [r['values'] for r in stable_records],
-        'mf_unstable_roots':   [r['values'] for r in all_root_records
-                                if not r['stable']],
-        # ``mf_index_used`` is the index into ``mf_stable_roots`` — the
-        # selectable enumeration.
+        # Selectable subset — equal to all roots when stability is OFF,
+        # else the stable-only subset.  Same sort order in both cases.
+        'mf_stable_roots':     [r['values'] for r in selectable_records],
+        # Unstable subset (only meaningful when stability was run).
+        'mf_unstable_roots':   ([r['values'] for r in all_root_records
+                                 if r['stable'] is False]
+                                if stab_on else []),
+        # Selected index into the selectable subset.
         'mf_index_used':       fixed_point_index,
         'state_var_order':     [v[0] for v in state_vars],
         'n_seeds_converged':   n_converged,
+        # Diagnostic: was stability classification actually run?
+        'stability_analysis':  stab_on,
     }
 
 

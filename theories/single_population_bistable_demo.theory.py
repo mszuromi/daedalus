@@ -50,6 +50,11 @@ def build():
             rhs='phi[i](v[i])',
             population='E',
         )
+        # Bistable demo IS the canonical stability-filter test case —
+        # explicitly opt in (the new default is OFF so theories that
+        # integrate out voltages and want all-roots-on-equal-footing
+        # don't pay for vacuous eigenvalue analysis).
+        .stability_analysis(True)
         .build()
     )
 

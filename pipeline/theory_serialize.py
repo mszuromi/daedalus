@@ -383,6 +383,13 @@ def render_theory_file(spec: dict) -> str:
                 f'        {_emit_mf_equation(eq["saddle"], eq["rhs"])}'
             )
 
+    # Stability-analysis toggle (default OFF on the TheoryBuilder).
+    # Only emit when explicitly ON so OFF-by-default theories stay
+    # textually quiet.  Allows a theory file to be diffed cleanly
+    # against the UI's intent.
+    if spec.get('stability_analysis'):
+        out.append('        .stability_analysis(True)')
+
     out.append('        .build()')
     out.append('    )')
     out.append('')
@@ -511,6 +518,10 @@ def load_spec_from_file(path: str) -> dict:
         # calls.  Old files using ``.set_mf_equation(...)`` populate
         # ``mf_equations`` instead and the UI auto-converts on load.
         'equations':       [],
+        # Stability-analysis toggle from ``.stability_analysis(bool)``;
+        # default OFF.  Stays False until the parser hits an explicit
+        # ``.stability_analysis(True)`` call.
+        'stability_analysis': False,
         'default_fundamental': default_fund,
         'metadata':        metadata,
     }
@@ -619,6 +630,14 @@ def load_spec_from_file(path: str) -> dict:
                 'rhs':        rhs or '',
                 'population': pop,
             })
+
+        elif method == 'stability_analysis':
+            # ``.stability_analysis(True)`` toggle.  Absence ⇒ default
+            # OFF (matches ``TheoryBuilder``'s own default).
+            if args:
+                spec['stability_analysis'] = bool(args[0])
+            elif 'enabled' in kw:
+                spec['stability_analysis'] = bool(kw['enabled'])
 
         elif method == 'build':
             continue

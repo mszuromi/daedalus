@@ -529,6 +529,21 @@ class TheoryUI:
             style={'description_width': 'initial'},
             layout=W.Layout(width='280px'),
         )
+        # Linear-stability toggle.  Off by default — theories that
+        # integrate out their voltages have all-algebraic equations
+        # (no Dt anywhere); the generalized-eigenvalue ``(σA + B)``
+        # has A ≡ 0, every eigenvalue lands at infinity, and "linear
+        # stability" has no physical meaning.  Bistable / differential
+        # theories that want stability-based root filtering must check
+        # this box explicitly.  Writes ``.stability_analysis(True)``
+        # into the generated theory file when on.
+        self._w_stability_on = W.Checkbox(
+            value=False,
+            description='Run linear stability analysis',
+            indent=False,
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='320px'),
+        )
         # Optional explicit seed box for multi-start Newton, as a
         # Python dict literal mapping variable name → (low, high).
         # Empty → use domain-aware defaults (positive → [0, 5·scale],
@@ -565,24 +580,34 @@ class TheoryUI:
                 '</p>'),
             self._tbl_mfeqs.show(),
             W.HTML(
-                '<br><h4>Multi-root selection (stable solutions only)</h4>'
+                '<br><h4>Multi-root selection</h4>'
                 '<p style="color:#555;font-size:90%;">'
                 "When the DAE has multiple fixed points (e.g. a bistable "
-                "theory), the solver finds all of them, classifies each "
-                "via the generalized-eigenvalue Jacobian, and exposes "
-                "only the LINEARLY STABLE roots as valid expansion "
-                "points (the diagrammatic series isn't defined around "
-                "an unstable saddle).  The selectable index runs over "
-                "the stable subset, sorted ascending by the first "
-                "declared physical field's first population index: "
-                "<code>0</code> = lowest stable, <code>1</code> = next "
-                "stable, ...  Unstable roots are still inspectable via "
-                "<code>th['mf_unstable_roots']</code> in the return "
-                "dict.  This widget sets the THEORY's default; runs "
+                "theory), the solver finds all of them and sorts the "
+                "list ascending by the first declared physical field's "
+                "first population index.  <code>fixed_point_index = 0</code> "
+                "picks the lowest, <code>1</code> the next, and so on. "
+                "This widget sets the THEORY's default; runs "
                 "can override via "
                 "<code>compute_cumulants(..., fixed_point_index=N)</code>."
+                '<br><br>'
+                "<strong>Linear-stability filtering</strong> (the box below) "
+                "is OFF by default. When ON, the solver classifies every "
+                "converged root via the generalized-eigenvalue Jacobian, "
+                "filters down to the LINEARLY STABLE subset, and routes "
+                "<code>fixed_point_index</code> over those (the "
+                "diagrammatic series isn't defined around an unstable "
+                "saddle).  Unstable roots stay inspectable via "
+                "<code>th['mf_unstable_roots']</code>.  "
+                "Leave OFF when your equations are all algebraic "
+                "(voltages integrated out, no <code>Dt</code> anywhere) "
+                "&mdash; with <code>A &equiv; 0</code> in the "
+                "<code>(&sigma;A + B)</code> eigenproblem there's nothing "
+                "to score, and the filter would either be vacuous or, "
+                "in degenerate cases, mis-classify the saddle."
                 '</p>'),
             self._w_fpi_default,
+            self._w_stability_on,
             W.HTML(
                 '<br><h4>Initial-guess seed box (optional)</h4>'
                 '<p style="color:#555;font-size:90%;">'
@@ -873,6 +898,12 @@ class TheoryUI:
                 for r in self._tbl_mfeqs.get_rows()
                 if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
             ],
+            # Stability-analysis toggle on the MF tab.  Default OFF —
+            # set when the user checks the box; theories that integrate
+            # out voltages (all-algebraic equations) should leave it
+            # off, bistable / differential theories that want
+            # stability-based root selection should turn it on.
+            'stability_analysis':  bool(self._w_stability_on.value),
             # default_fundamental is no longer a separate UI input —
             # the per-parameter ``default=...`` declarations on the
             # Parameters tab carry the suggested numerical values, and
@@ -1167,6 +1198,12 @@ class TheoryUI:
         # spec key, if present in a loaded file, is now ignored — the
         # per-parameter ``default=...`` on the Parameters tab carries
         # the suggested values.
+        # Stability-analysis toggle: restored from the spec's
+        # ``stability_analysis`` key (set by load_spec_from_file when
+        # parsing ``.stability_analysis(True)``).  Default False so
+        # specs without the call show an unchecked box.
+        self._w_stability_on.value = bool(spec.get('stability_analysis', False))
+
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
             # Pull the MF-tab widget values out of metadata so the
