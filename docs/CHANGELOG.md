@@ -4,6 +4,139 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-26 — `theory-precompute-cache` branch  (commits `390eaba` … current)
+
+Cross-order expand caching + a one-time pre-compute step.  Eliminates
+the per-`taylor_order` redundancy in the cache directory layout and
+removes the dominant ``compute_cumulants`` cost — the multivariate
+``taylor()`` call — on every run after the first for a given
+``(model, taylor_order)`` pair.
+
+### Cache layout refactor
+
+Old:
+::
+
+    saved_theories/<theory>_taylor4/propagator.sobj
+    saved_theories/<theory>_taylor4/unique_typed_..._k2_l0.sobj
+    saved_theories/<theory>_taylor6/propagator.sobj         # duplicated
+    saved_theories/<theory>_taylor6/unique_typed_..._k2_l0.sobj
+
+New:
+::
+
+    saved_theories/<theory>/propagator.sobj                 # one copy
+    saved_theories/<theory>/expand_taylor2.sobj             # NEW
+    saved_theories/<theory>/expand_taylor4.sobj             # NEW
+    saved_theories/<theory>/expand_taylor6.sobj             # NEW
+    saved_theories/<theory>/unique_typed_..._taylor4_k2_l0.sobj
+    saved_theories/<theory>/unique_typed_..._taylor6_k2_l0.sobj
+
+The propagator is taylor-order-INDEPENDENT — it only depends on the
+bilinear (1, 1) sector, which is fully captured at any ``taylor_order
+>= 2``.  It now sits at the theory level.  The diagram cache does
+depend on ``taylor_order`` (higher order ⇒ more interaction vertices
+⇒ potentially more valid diagrams at the same ``(k, ell)``), so the
+order moves into the filename.
+
+Old caches at ``saved_theories/<theory>_taylor<N>/`` become orphaned
+on first run — safe to delete manually.  No migration logic.
+
+### `pipeline._expand_cache` module (NEW)
+
+Disk cache for ``FieldTheory.expand()``'s output ``ft._by_tp``.  Key
+behaviour:
+
+  * **Downgrade is free.**  If the cache has a higher order than the
+    request, load the higher one and drop entries with total degree
+    above the target.  Sage's multivariate ``taylor()`` at order ``N``
+    produces ``_by_tp`` entries identical (byte-for-byte) to a fresh
+    ``taylor()`` at order ``M`` for every bigrade with total degree
+    ``<= min(M, N)`` — so the filter is exact, not approximate.
+  * **Upgrades re-run ``taylor()`` from scratch** (MVP).  The old
+    file stays on disk so future downgrades back to the lower order
+    are still free.  Smart upgrade (computing only the new bigrades)
+    is a follow-up.
+
+Storage format is the polynomial ``.dict()`` representation
+({exp_tuple: SR_coeff}) — round-trips cleanly across Sage ring-
+identity boundaries.
+
+### Wired into `compute_cumulants`
+
+Step ``[1/7]`` now:
+
+  1. Try ``find_best_cached_order(model, taylor_order)``.
+  2. Hit ``>= target``: load + downgrade-filter, skip ``ft.expand()``.
+  3. Miss: ``ft.expand()`` as before, then ``save_expand(...)`` to
+     disk.
+
+End-to-end on ``single_population_linear_delta_spikes_test`` at
+``taylor_order=4, k=2, max_ell=0``:
+
+  * Cold:  ``9.44 s``
+  * Warm:  ``0.23 s``   →   **41× speedup**
+  * ``C_tau`` numerically identical between runs.
+
+### `pipeline.precompute(model)` (NEW)
+
+One-time structural pass for a theory.  Expands at ``taylor_order=2``,
+verifies the MF saddle cancels, solves the saddle, builds + caches
+the propagator.  Returns a status dict (``mf_check``, ``sanity_ok``,
+``mf_values``, ``propagator_built``, ``cache_dir``, ``wall_seconds``,
+``log``).
+
+On ``single_pop_dendritic_linear`` (the 4-field × 2-pop Bernoulli
+theory whose order-4 expand previously ran for ~92 min):
+
+  * ``precompute(model)``  at order 2  →  ``36.6 s`` wall.
+  * Saddle matches the order-4 result exactly.
+  * Cache populated: ``expand_taylor2.sobj`` + ``propagator.sobj``.
+
+The intent is that the user runs ``precompute()`` once after writing a
+theory file, then iterates on ``compute_cumulants`` at whatever
+``taylor_order`` they need.  Propagator + MF verification are
+pre-validated; only the expand step at the target order pays full
+cost (once per order).
+
+### Theory-builder UI — "Pre-compute essentials" button
+
+Lives on the MF tab, under the seed-box.  Invokes
+``pipeline.precompute`` on the current widget state (in-memory render
++ ``exec``, no temp file).  Status — PASS/FAIL, saddle values, cache
+path, wall time — appears in a dedicated Output panel right under the
+button.
+
+### Tests
+
+``tests/test_expand_cache.py`` (5 tests, ~28 s):
+
+  * Round-trip at same order: bigrade-by-bigrade equality.
+  * Downgrade-filter: order 4 → target 2 keeps only ``a + b <= 2``.
+  * ``find_best_cached_order``: smallest cached order ``>= target``.
+  * ``compute_cumulants`` warm-vs-cold: warm run ``< cold / 10``,
+    output identical.
+  * ``precompute`` populates ``expand_taylor2.sobj`` +
+    ``propagator.sobj`` and reports PASS.
+
+Plus ``tests/test_grouped_vs_perdiag.py`` (6 tests) still passes.
+
+### Known limitations / follow-ups
+
+  * **Upgrade isn't incremental.**  Going from a cached order 4 to
+    order 6 re-runs the full multivariate taylor at order 6, instead
+    of computing only the new bigrades (total degree 5 and 6) and
+    merging them.  The smart-upgrade path would shave ~80% off the
+    upgrade cost; deferred until use cases demand it.
+  * **No cache-invalidation on action-text edits.**  Cache key is
+    just the theory's name slug; if the user changes the action text
+    without renaming the theory, the cache silently serves the old
+    result.  The ``ring_var_names`` + ``n_tilde`` checks catch
+    field-list changes but not action-text edits.  Long-term: hash
+    the action + equations into the cache key.
+
+---
+
 ## 2026-05-19 → 2026-05-22 — `dae-mf-solver` branch  (commits `f771bd9` … `22ff99c`)
 
 Substantial rework of the mean-field solver and downstream UI, plus a
