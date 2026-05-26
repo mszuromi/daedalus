@@ -29,6 +29,13 @@ def build():
         .set_action_text('xt*((Dt+mu1)*x + eps1*x^3 - J1*y) - D1*xt^2 + yt*((Dt+mu2)*y + eps2*y^3 - J2*x) - D2*yt^2')
         .equation(lhs='(Dt+mu1)*x', rhs='-eps1*x^3 + J1*y')
         .equation(lhs='(Dt+mu2)*y', rhs='-eps2*y^3 + J2*x')
+        # When mu_i goes negative the coupled quartic potential has
+        # multiple saddles — up to 9 in the (x, y) plane.  Enable
+        # stability filtering so ``fixed_point_index`` ranges over
+        # the linearly stable wells only.  Harmless in the single-
+        # root regime (default μ>0): the one root is stable and
+        # gets returned as ``mf_stable_roots[0]``.
+        .stability_analysis(True)
         .build()
     )
 
