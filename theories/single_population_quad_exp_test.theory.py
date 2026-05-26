@@ -17,12 +17,12 @@ def build():
         .parameter('tau', default=[10, 9], indexed_by=['E'], domain='positive')
         .parameter('taug', default=[
     [2, 3],
-    [1, 3],
+    [2, 1],
 ], indexed_by=['E', 'E'], domain='positive')
         .parameter('a', default=[0.44, 0.44], indexed_by=['E'], domain='positive')
         .parameter('w', default=[
-    [0.25, 0.25],
-    [0.2, 0.3],
+    [0.0, 0.25],
+    [0.2, 0.0],
 ], indexed_by=['E', 'E'], domain='positive')
         .define_function('phi', args=['v'], expression='a[i]*v^2', population='E')
         .define_kernel('g', time_expr='(1/taug[i,j])*exp(-t/taug[i,j])*heaviside(t)', latex_name='g', indexed_by=['E', 'E'])

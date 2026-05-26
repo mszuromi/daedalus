@@ -25,11 +25,11 @@ def build():
         .set_action_text('''
             sum( nt[i]*n[i] 
             - (exp(nt[i])-1)*phi[i](v[i]) 
-            + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] + 0.5*v[i]*n[i]
+            + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] + (1/2)*v[i]*n[i]
             - sum(w[i,j]*Conv(g,n[j]) for j in E))
             for i in E)
         ''')
-        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E)) / (1 + 0.5*nstar[i])')
+        .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E)) / (1 + (1/2)*nstar[i])')
         .set_mf_equation('nstar', 'phi[i](vstar[i])')
         .build()
     )
