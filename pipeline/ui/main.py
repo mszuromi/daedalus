@@ -48,6 +48,46 @@ _DEFAULT_THEORIES_DIR = os.path.abspath(
 )
 
 
+def _normalize_cgf_rows(rows: list[dict]) -> list[dict]:
+    """Convert raw UI CGF rows into spec-form CGF rows.
+
+    UI rows carry ``response_legs`` as a comma-separated text string.
+    The spec dict shape uses either:
+      * ``response_legs`` (list of strings) for multi-leg cumulants;
+      * ``response_field`` (single string) for the legacy single-leg
+        case (also kept on multi-leg rows as a back-compat hint = the
+        first leg's name, so older loaders that only know about
+        ``response_field`` still get something sensible).
+    """
+    out: list[dict] = []
+    for r in rows:
+        legs_text = (r.get('response_legs') or '').strip()
+        if not legs_text:
+            # Empty row — leave it untouched; the row-filter downstream
+            # (which checks lhs/coefficient/etc.) will drop it if blank.
+            out.append(dict(r))
+            continue
+        parts = [s.strip() for s in legs_text.split(',') if s.strip()]
+        if len(parts) <= 1:
+            # Single-leg row — emit the legacy single-field key for
+            # back-compat with the old loader / older theory files.
+            out.append({
+                **{k: v for k, v in r.items() if k != 'response_legs'},
+                'response_field': parts[0] if parts else '',
+                'response_legs':  None,
+            })
+        else:
+            # Multi-leg cross-field row.  Keep response_legs as a list;
+            # also stamp response_field with the first leg's name as a
+            # cosmetic fallback for older readers.
+            out.append({
+                **{k: v for k, v in r.items() if k != 'response_legs'},
+                'response_field': parts[0],
+                'response_legs':  parts,
+            })
+    return out
+
+
 class TheoryUI:
     """Notebook-based form for declaring stochastic theories.
 
@@ -400,13 +440,14 @@ class TheoryUI:
             self._tbl_kernels.show(),
         ])
 
-        # Tab 6: Non-closed-form CGFs
+        # Tab 6: Non-closed-form CGFs (correlated noise cumulants)
         self._tbl_cgfs = DynamicTable(
             columns=[
                 {'name': 'name',           'kind': 'text',
                  'placeholder': 'X',       'width': '60px'},
-                {'name': 'response_field', 'kind': 'text',
-                 'placeholder': 'mt',      'width': '90px'},
+                {'name': 'response_legs',  'kind': 'text',
+                 'placeholder': 'mt   or   xt, yt',
+                 'width': '160px'},
                 {'name': 'order',          'kind': 'int',
                  'default': 2,             'width': '60px'},
                 {'name': 'coefficient',    'kind': 'text',
@@ -419,12 +460,34 @@ class TheoryUI:
             initial=[],
         )
         tab_cgfs = W.VBox([
-            W.HTML('<h4>Non-closed-form CGF terms</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   "For external noises declared via cumulants (GTaS, etc.). "
-                   "Multiple rows with the same <code>name</code>+<code>order</code> "
-                   "sum into one cumulant.  Leave empty for closed-form-only theories."
-                   '</p>'),
+            W.HTML(
+                '<h4>Non-closed-form CGF terms (correlated noise cumulants)</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "One row per (name, order, leg-tuple) cumulant contribution.  "
+                "Multiple rows with the same "
+                "<code>(name, order, response_legs)</code> sum into one entry; "
+                "rows with the same <code>name</code> but different "
+                "<code>response_legs</code> stay distinct.  Leave empty for "
+                "closed-form-only theories.<br><br>"
+                "<b>response_legs</b>: one response-field name per cumulant "
+                "leg (length = <code>order</code>).  Comma-separated: "
+                "<code>mt</code> (single, broadcast to all legs &mdash; "
+                "legacy GTaS path) or <code>xt, yt</code> for cross-field "
+                "cumulants (e.g. cross-correlated noise on 2D OU).  "
+                "Single-entry rows are equivalent to the legacy "
+                "<code>response_field</code> column.<br><br>"
+                "<b>coefficient</b>: the cumulant kernel's amplitude at "
+                "&tau;=0.  For Gaussian white noise with diffusion <code>D</code>, "
+                "use <code>2*D</code> (standard MSR convention "
+                "&kappa;<sup>(2)</sup> = 2D&middot;&delta;).<br><br>"
+                "<b>kernel</b>: optional &tau;-dependent factor.  "
+                "<code>dirac_delta(tau)</code> for white, "
+                "<code>exp(-abs(tau)/tauc)/(2*tauc)</code> for OU-colored, "
+                "<code>dirac_delta(t1)*dirac_delta(t2)</code> for "
+                "shot-noise &kappa;<sup>(3)</sup>, etc.  At order n use "
+                "<code>tau</code> (n=2) or <code>t1, t2, ...</code> "
+                "(n&ge;3) as the relative-time variables."
+                '</p>'),
             self._tbl_cgfs.show(),
         ])
 
@@ -898,7 +961,14 @@ class TheoryUI:
             'parameters':      params,
             'functions':       functions,
             'kernels':         kernels,
-            'cgf_terms':       self._tbl_cgfs.get_rows(),
+            # CGF rows.  The ``response_legs`` cell holds either a
+            # single response-field name (legacy single-leg cumulant)
+            # or a comma-separated list (cross-field cumulant — leg k
+            # sits on field name k of the list).  We normalise to the
+            # spec keys downstream code expects: ``response_legs``
+            # (list, when comma-separated) AND ``response_field``
+            # (single string, for back-compat with old loaders).
+            'cgf_terms':       _normalize_cgf_rows(self._tbl_cgfs.get_rows()),
             'action_text':     self._w_action.get_value(),
             # New DAE form: list of {lhs, rhs, population} records,
             # consumed by ``render_theory_file`` to emit
@@ -1215,12 +1285,22 @@ class TheoryUI:
                 'latex_name': k.get('latex_name', '') or '',
             })
 
-        # CGFs.
+        # CGFs.  Each row's response_legs cell accepts either a single
+        # field name (legacy single-field cumulant) or a comma-separated
+        # list (cross-field cumulant).  Loading round-trip: prefer the
+        # explicit response_legs, fall back to legacy response_field.
         self._tbl_cgfs.clear()
         for c in spec.get('cgf_terms', []) or []:
+            legs = c.get('response_legs')
+            if isinstance(legs, (list, tuple)):
+                legs_text = ', '.join(str(x) for x in legs)
+            elif isinstance(legs, str) and legs.strip():
+                legs_text = legs.strip()
+            else:
+                legs_text = c.get('response_field', '') or ''
             self._tbl_cgfs.add_row(values={
                 'name':           c.get('name', ''),
-                'response_field': c.get('response_field', ''),
+                'response_legs':  legs_text,
                 'order':          int(c.get('order', 2)),
                 'coefficient':    c.get('coefficient', '') or '',
                 'kernel':         c.get('kernel', '') or '',

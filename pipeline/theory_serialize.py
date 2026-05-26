@@ -225,13 +225,36 @@ def _emit_kernel(k: dict) -> str:
 
 
 def _emit_cgf_term(c: dict) -> str:
-    kwargs = _kw_chain(
+    """Render one CGF row as a ``.declare_cgf_term(...)`` call.
+
+    Two shapes:
+      * Legacy single-leg: ``response_field='mt'`` positional+kw.
+      * New multi-leg: ``response_legs=['xt', 'yt']`` as a keyword.
+        Single-leg specs that round-trip through the new
+        ``response_legs`` key (e.g. ``['mt']``) also render via the
+        keyword form for consistency.
+
+    Selection: if ``response_legs`` is set AND has > 1 entry, render
+    via the keyword form.  Otherwise emit the legacy positional
+    ``response_field`` for back-compat with older callers.
+    """
+    legs = c.get('response_legs')
+    base_kwargs = _kw_chain(
         ('order',          int(c['order'])),
         ('coefficient',    c['coefficient']),
         ('kernel',         c.get('kernel')),
     )
+    if legs and isinstance(legs, (list, tuple)) and len(legs) > 1:
+        return (f'.declare_cgf_term({_py_repr(c["name"])}, '
+                f'response_legs={_py_repr(list(legs))}, {base_kwargs})')
+    # Legacy single-leg shape.  ``response_field`` is the first leg if
+    # legs is a 1-element list, else use the explicit field.
+    if legs and isinstance(legs, (list, tuple)) and len(legs) == 1:
+        single = legs[0]
+    else:
+        single = c.get('response_field', '')
     return (f'.declare_cgf_term({_py_repr(c["name"])}, '
-            f'{_py_repr(c["response_field"])}, {kwargs})')
+            f'{_py_repr(single)}, {base_kwargs})')
 
 
 def _emit_action(action_text: str) -> str:
@@ -598,10 +621,29 @@ def load_spec_from_file(path: str) -> dict:
             spec['kernels'].append(entry)
 
         elif method == 'declare_cgf_term':
-            entry = {}
+            entry: dict = {}
+            # Two emission shapes round-trip cleanly:
+            #   Legacy:   .declare_cgf_term('X', 'mt', order=..., ...)
+            #   Multi-leg: .declare_cgf_term('X', response_legs=['xt','yt'],
+            #                                order=..., ...)
+            # Either name is positional (args[0]); response_field is
+            # positional in the legacy form OR keyword in the
+            # multi-leg form (or absent entirely when response_legs is
+            # present).
+            if len(args) >= 1:
+                entry['name'] = args[0]
+            if 'name' in kw:
+                entry['name'] = kw['name']
             if len(args) >= 2:
-                entry['name']           = args[0]
                 entry['response_field'] = args[1]
+            if 'response_field' in kw:
+                entry['response_field'] = kw['response_field']
+            if 'response_legs' in kw:
+                legs = kw['response_legs']
+                # Accept either a list literal or a string with commas.
+                if isinstance(legs, str):
+                    legs = [s.strip() for s in legs.split(',') if s.strip()]
+                entry['response_legs'] = list(legs) if legs else None
             for k in ('order', 'coefficient', 'kernel'):
                 if k in kw:
                     entry[k] = kw[k]

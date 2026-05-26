@@ -334,22 +334,30 @@ def _build_cumulant_action(ns, model):
     S_cum = SR(0)
 
     for noise_name, spec in cn.items():
-        phys_name = spec['physical_field']
-        resp_name = spec['response_field']
-        if not hasattr(ns, resp_name):
-            raise ValueError(
-                f"correlated_noises[{noise_name!r}]: response_field "
-                f"{resp_name!r} is not declared in response_fields"
-            )
-        if not hasattr(ns, phys_name):
+        # ``physical_field`` is OPTIONAL — present for GTaS-style external
+        # noise that introduces its own physical field (MSR bilinear
+        # ``mt · m`` is registered elsewhere), absent for inline
+        # cumulants on existing response fields (no new field involved).
+        phys_name = spec.get('physical_field')
+        if phys_name and not hasattr(ns, phys_name):
             raise ValueError(
                 f"correlated_noises[{noise_name!r}]: physical_field "
                 f"{phys_name!r} is not declared in physical_fields"
             )
-        resp_field = getattr(ns, resp_name)
-        if not isinstance(resp_field, list):
-            resp_field = [resp_field]
-        legs = list(range(len(resp_field)))
+
+        # Per-leg response field resolution:
+        #   * ``response_legs`` (NEW; dict keyed by order, value = list of
+        #     response-field names of length ``order``) — supports
+        #     cross-field cumulants (legs on multiple response fields).
+        #   * ``response_field`` (legacy; single string broadcast to all
+        #     legs at every order) — kept for back-compat.
+        response_legs_by_order = spec.get('response_legs') or {}
+        legacy_resp_name = spec.get('response_field')
+        if legacy_resp_name and not hasattr(ns, legacy_resp_name):
+            raise ValueError(
+                f"correlated_noises[{noise_name!r}]: response_field "
+                f"{legacy_resp_name!r} is not declared in response_fields"
+            )
 
         # κ^(1) (mean) is informational — already absorbed into the saddle
         # by the model's mf_bg_conditions.  Skip explicit injection.
@@ -358,14 +366,81 @@ def _build_cumulant_action(ns, model):
             if order < 2:
                 continue
 
+            # Resolve per-leg response field names for THIS order.  If
+            # the new ``response_legs`` block has an entry, use it;
+            # otherwise fall back to the legacy single-field broadcast.
+            leg_field_names = response_legs_by_order.get(order)
+            if leg_field_names is None:
+                if not legacy_resp_name:
+                    raise ValueError(
+                        f"correlated_noises[{noise_name!r}] order={order}: "
+                        f"no response_legs and no legacy response_field — "
+                        f"can't resolve which response field each leg "
+                        f"sits on."
+                    )
+                leg_field_names = [legacy_resp_name] * int(order)
+
+            if len(leg_field_names) != int(order):
+                raise ValueError(
+                    f"correlated_noises[{noise_name!r}] order={order}: "
+                    f"response_legs has {len(leg_field_names)} entries "
+                    f"but order is {order}.")
+
+            # Per-leg SR-var arrays and index ranges.  All entries are
+            # wrapped to lists so a non-indexed (scalar) response field
+            # still iterates uniformly.
+            leg_arrays: list = []
+            leg_ranges: list = []
+            for fname in leg_field_names:
+                if not hasattr(ns, fname):
+                    raise ValueError(
+                        f"correlated_noises[{noise_name!r}] order={order}: "
+                        f"response-leg field {fname!r} not declared.")
+                arr = getattr(ns, fname)
+                if not isinstance(arr, list):
+                    arr = [arr]
+                leg_arrays.append(arr)
+                leg_ranges.append(range(len(arr)))
+
             # Cumulant order n needs n-1 relative time variables.
             tau_syms = [SR.var(f'_tau_{noise_name}_{k}',
                                latex_name=rf'\tau_{{{k}}}')
                         for k in range(order - 1)]
             n_fact = factorial(order)
             from itertools import product as _iter_product
+            from itertools import permutations as _iter_perms
 
-            for idx_tuple in _iter_product(legs, repeat=order):
+            # Enumerate distinct permutations of the leg-field tuple.
+            # For homogeneous leg-fields (e.g. ['xt', 'xt']) there's
+            # only one — the existing leg-INDEX product over the field's
+            # range already covers all index orderings (the 1/n! factor
+            # symmetrizes them).  For heterogeneous leg-fields
+            # (e.g. ['xt', 'yt']) the cumulant series sums over BOTH
+            # (xt, yt) and (yt, xt) ordered tuples but the user only
+            # writes one canonical row; the framework reconstructs the
+            # other orderings here.
+            seen_perms = set()
+            distinct_field_perms = []
+            for perm_indices in _iter_perms(range(order)):
+                perm_fields = tuple(leg_field_names[p] for p in perm_indices)
+                if perm_fields in seen_perms:
+                    continue
+                seen_perms.add(perm_fields)
+                # Record the per-leg array, range, and original-position
+                # mapping for this permutation.
+                perm_arrays = [leg_arrays[p] for p in perm_indices]
+                perm_ranges = [leg_ranges[p] for p in perm_indices]
+                distinct_field_perms.append({
+                    'fields': perm_fields,
+                    'arrays': perm_arrays,
+                    'ranges': perm_ranges,
+                })
+
+            for perm_spec in distinct_field_perms:
+              perm_leg_arrays = perm_spec['arrays']
+              perm_leg_ranges = perm_spec['ranges']
+              perm_leg_fields = list(perm_spec['fields'])
+              for idx_tuple in _iter_product(*perm_leg_ranges):
                 # Evaluate the kernel at placeholder τ symbols.
                 try:
                     K = SR(kernel_fn(ns, *idx_tuple, *tau_syms))
@@ -402,10 +477,20 @@ def _build_cumulant_action(ns, model):
                 # ── Local (fully delta-correlated) contribution ──────
                 # All time integrals collapse;  -(1/n!) c_local m̃_{i₁}…m̃_{iₙ}
                 # at a single time gets injected directly into S_cum.
-                if c_local != 0:
+                # Each leg's SR variable comes from THAT leg's response
+                # field — leg_arrays[k] is the SR-var list for the k-th
+                # leg's named response field.
+                #
+                # Zero check: ``c_local != 0`` returns False under
+                # Sage when the expression contains unbound parameters
+                # without positivity assumptions (e.g. ``rho`` with
+                # ``domain='real'``).  ``is_trivial_zero()`` is the
+                # right test: True iff the expression is syntactically
+                # zero, regardless of param assumptions.
+                if not SR(c_local).is_trivial_zero():
                     factor = -SR(1) / n_fact * SR(c_local)
-                    for k_idx in idx_tuple:
-                        factor = factor * resp_field[k_idx]
+                    for k, k_idx in enumerate(idx_tuple):
+                        factor = factor * perm_leg_arrays[k][k_idx]
                     S_cum = S_cum + factor
 
                 # ── Smooth (non-local) residual ──────────────────────
@@ -417,28 +502,49 @@ def _build_cumulant_action(ns, model):
                 # cumulants are FULLY LOCAL so this branch never fires
                 # in practice; future non-local higher-order kernels
                 # need integrator extension before they can be used.
-                if K_residual != 0:
+                #
+                # Symbol naming for cross-field at order 2: encode each
+                # leg's field name in the suffix so the same noise can
+                # produce both ``z_kappa_X_2_mt_1_mt_2`` (auto, cells 1/2
+                # of mt) and ``z_kappa_X_2_xt_1_yt_1`` (cross between
+                # different response fields).
+                if not SR(K_residual).is_trivial_zero():
                     if order == 2:
+                        leg_a_name = perm_leg_fields[0]
+                        leg_b_name = perm_leg_fields[1]
                         sym_name = (
                             f'z_kappa_{noise_name}_{order}'
-                            f'_{idx_tuple[0]+1}_{idx_tuple[1]+1}'
+                            f'_{leg_a_name}_{idx_tuple[0]+1}'
+                            f'_{leg_b_name}_{idx_tuple[1]+1}'
                         )
                         latex_name = (
                             rf'\kappa^{{({order})}}_'
-                            rf'{{{idx_tuple[0]+1}{idx_tuple[1]+1}}}'
+                            rf'{{{leg_a_name}_{idx_tuple[0]+1},'
+                            rf'{leg_b_name}_{idx_tuple[1]+1}}}'
                         )
                         sym = SR.var(sym_name, latex_name=latex_name)
+                        # The leg-FIELD permutation outer loop has
+                        # already enumerated (xt, yt) and (yt, xt) as
+                        # distinct iterations, so the (1/n!) factor and
+                        # the iteration's symmetry combine to give the
+                        # correct overall coefficient.  At the canonical
+                        # ordered single-field case (legs = ['mt', 'mt']),
+                        # only ONE permutation exists; the index-product
+                        # iteration over (i, j) + (j, i) provides the
+                        # within-field symmetry as before.
                         S_cum = S_cum + (
                             -SR(1) / n_fact * sym
-                            * resp_field[idx_tuple[0]]
-                            * resp_field[idx_tuple[1]]
+                            * perm_leg_arrays[0][idx_tuple[0]]
+                            * perm_leg_arrays[1][idx_tuple[1]]
                         )
                         ns._cumulant_kernels[
-                            (noise_name, order, tuple(idx_tuple))
+                            (noise_name, order,
+                             tuple(zip(perm_leg_fields, idx_tuple)))
                         ] = {
                             'symbol':    sym,
                             'kernel_fn': kernel_fn,
                             'legs':      tuple(idx_tuple),
+                            'leg_fields': tuple(perm_leg_fields),
                             'tau_var':   tau_syms[0],
                         }
                     else:

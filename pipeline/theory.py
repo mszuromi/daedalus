@@ -651,31 +651,63 @@ class TheoryBuilder:
         self._stability_analysis = bool(enabled)
         return self
 
-    def declare_cgf_term(self, name: str, response_field: str, order: int,
-                         coefficient: str, kernel: str = None):
+    def declare_cgf_term(self, name: str,
+                         response_field: str | None = None,
+                         order: int = 2,
+                         coefficient: str = '',
+                         kernel: str | None = None,
+                         *,
+                         response_legs: list[str] | str | None = None):
         """Add one term to a non-closed-form cumulant generating
-        functional (e.g. GTaS noise).
+        functional (e.g. GTaS noise, cross-field colored noise).
 
         Parameters
         ----------
         name : str
             CGF identifier — multiple rows with the same name + order
             sum into a single cumulant.
-        response_field : str
-            The response-field this CGF couples to (e.g. ``'mt'``).
+        response_field : str, optional
+            **Legacy / single-field path.**  The response field this
+            cumulant's legs all sit on (e.g. ``'mt'``).  At order ``n``,
+            this gets broadcast to all ``n`` legs.  Use ``response_legs``
+            instead when different legs need different response fields.
         order : int
             Cumulant order: 2 for κ⁽²⁾, 3 for κ⁽³⁾, 4 for κ⁽⁴⁾, ...
         coefficient : str
             Sage-syntax expression for the cumulant coefficient
             (e.g. ``'lambda_X * p_part'``).
         kernel : str, optional
-            Optional time-domain kernel multiplier
-            (e.g. ``'_gauss(tau, mu_shift, sigma_sq)'`` for a
-            cross-cumulant Gaussian factor).
+            Optional time-domain kernel multiplier.  At order 2 the
+            kernel is a function of ``tau``; at order 3 of ``t1, t2``;
+            etc.  Examples: ``'dirac_delta(tau)'`` (white),
+            ``'exp(-abs(tau)/tauc)'`` (OU-colored),
+            ``'dirac_delta(t1)*dirac_delta(t2)'`` (Poisson shot noise
+            at κ³).  Defaults to ``None`` which the compiler treats as
+            ``∏_k δ(τ_k)`` — fully-local cumulant.
+        response_legs : list of str OR comma-separated str, keyword-only
+            **New / multi-field path.**  Per-leg list of response field
+            names, length = ``order``.  Use for cross-field cumulants:
+            e.g. ``response_legs=['xt', 'yt']`` at order 2 gives
+            ``κ²(xt, yt)``.  A single-element list (or string with no
+            commas) is broadcast across all legs — equivalent to
+            ``response_field=<name>``.  When both are supplied,
+            ``response_legs`` wins.
         """
+        if response_legs is None and response_field is None:
+            raise ValueError(
+                "declare_cgf_term: supply either `response_field` "
+                "(legacy single) or `response_legs` (per-leg list)."
+            )
+        # Normalize response_legs to a list of names; None → derive
+        # from response_field at compile time (handled in
+        # make_correlated_noises_block).
+        if isinstance(response_legs, str):
+            response_legs = [s.strip() for s in response_legs.split(',')
+                             if s.strip()]
         self._cgf_terms.append({
             'name':           name,
             'response_field': response_field,
+            'response_legs':  response_legs,    # None when legacy single
             'order':          int(order),
             'coefficient':    coefficient,
             'kernel':         kernel,
