@@ -48,13 +48,15 @@ Status (prototype):
   ✗ theory builder API (declarative theory input)  — design sketched in
     pipeline/theory.py; full implementation pending.
 """
-from pipeline.compute import compute_cumulants
-from pipeline.report  import generate_report
-from pipeline.save    import save_npz, save_csv
-from pipeline.access  import MeanField, Parameters, normalize_external_fields
+from pipeline.compute     import compute_cumulants
+from pipeline.report      import generate_report
+from pipeline.save        import save_npz, save_csv
+from pipeline.access      import MeanField, Parameters, normalize_external_fields
+from pipeline._precompute import precompute
 
 __all__ = [
     'compute_cumulants', 'generate_report',
     'save_npz', 'save_csv',
     'MeanField', 'Parameters', 'normalize_external_fields',
+    'precompute',
 ]

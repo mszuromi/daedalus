@@ -267,12 +267,39 @@ def compute_cumulants(
         phase_walls[label] = dt
         print(f'      [{label}] done in {dt:.2f}s')
 
-    # ── 1. FieldTheory expansion ──────────────────────────────────
+    # ── 1. FieldTheory expansion (cache-aware) ────────────────────
+    # Try the on-disk expand cache before paying the full
+    # multivariate-taylor cost.  The cache stores ft._by_tp (the
+    # bigrade-classified action dict) at each previously-computed
+    # taylor_order; we accept any cached order >= the requested one
+    # and downgrade-filter to total degree <= target.
     if verbose:
         print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})...')
     _t_phase = time.perf_counter()
     ft = FieldTheory(model, taylor_order=taylor_order)
-    ft.expand()
+
+    from pipeline import _expand_cache as _ec
+    cache_hit = False
+    if use_cache:
+        cached_order = _ec.find_best_cached_order(model, taylor_order)
+        if cached_order is not None:
+            _ec.prepare_for_load(ft)
+            cache_hit = _ec.load_expand(
+                model, ft,
+                target_order=taylor_order,
+                cached_order=cached_order,
+                verbose=verbose,
+            )
+    if not cache_hit:
+        ft.expand()
+        if use_cache:
+            try:
+                _ec.save_expand(model, ft, verbose=verbose)
+            except Exception as e:
+                if verbose:
+                    print(f'      [expand-cache] save failed ({e!r}); '
+                          f'continuing without persistence.')
+
     sanity_ok = ft.sanity_check()
     if not sanity_ok:
         raise RuntimeError(
