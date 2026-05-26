@@ -534,6 +534,93 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
 
 
 @numba.njit
+def sim_hawkes_multipop_linear_conductance_numba(
+        n_steps, dt_sim,
+        tau_v, a_gain, E_drive,
+        W, tau_g, E_rev,
+        v_init,
+        bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for the **linear-rate CONDUCTANCE-synapse**
+    variant of the heterogeneous-population Hawkes process.  Matches
+    ``theories/single_population_conductance_synapse_test.theory.py``:
+
+      dF_{ij}/dt   = (1/tau_g) * (n_j(t) - F_{ij})         # exp synapse filter
+      tau_v_i · dv_i/dt = -v_i + E_drive_i
+                         + sum_j W[i,j] * (E_rev − v_i) * F_{ij}   # conductance
+      lambda_i(t)  = max(a_i · v_i, 0)                     # linear rate
+      n_i(t)       ~ Poisson(lambda_i(t) · dt)             # spikes
+
+    Conductance vs current synapse
+    ------------------------------
+    The factor ``(E_rev − v_i)`` is the synaptic driving force.  Synaptic
+    input vanishes as ``v_i → E_rev`` (e.g., as the membrane approaches
+    the synaptic reversal potential), bounding the response — a
+    multiplicative ``v·F`` coupling absent from current-based variants.
+    This adds a (1, 2)-bigrade interaction vertex (one xt + one dv +
+    one Conv(g, n)) to the action; the per-pair exp filter contributes
+    additional rational poles.
+
+    No spike reset.  ``E_rev`` is scalar (single reversal potential
+    shared across all post-synaptic targets).  Output buffers match
+    the rest of the ``hawkes_sim_multipop`` family.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+    F = np.zeros((N, N))
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Linear rate: λ_i = max(a_i · v_i, 0)
+        for i in range(N):
+            lam = a_gain[i] * v[i]
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Per-pair F[i,j] exp-filter update.
+        for i in range(N):
+            for j in range(N):
+                tg = tau_g[i, j]
+                decay = 1.0 - dt_sim / tg
+                F[i, j] = decay * F[i, j] + (1.0 / tg) * spikes[j]
+
+        # Euler voltage drift with CONDUCTANCE synaptic input.
+        for i in range(N):
+            syn_drive = 0.0
+            for j in range(N):
+                syn_drive += W[i, j] * (E_rev - v[i]) * F[i, j]
+            v[i] += dt_sim / tau_v[i] * (-v[i] + E_drive[i] + syn_drive)
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
 def sim_hawkes_multipop_linear_softreset_numba(
         n_steps, dt_sim,
         tau_v, a_gain, E_drive,
@@ -937,6 +1024,93 @@ def sim_hawkes_multipop_linear_softreset_delta_numba(
                 rf = reset_factor[i]
                 for _ in range(spikes[i]):
                     v[i] *= rf
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
+def sim_hawkes_multipop_linear_conductance_delta_numba(
+        n_steps, dt_sim,
+        tau_v, a_gain, E_drive,
+        W, tau_g, E_rev,
+        v_init,
+        bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for **linear-rate + CONDUCTANCE-synapse +
+    delta-kernel** Hawkes.  Matches
+    ``theories/single_population_conductance_synapse_test.theory.py``
+    after switching its synapse kernel from
+    ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to ``dirac_delta(t)``.
+
+    Langevin form::
+
+      tau_v_i · dv_i/dt = -v_i + E_drive_i
+                          + sum_j W[i,j] · (E_rev − v_i) · n_j(t)
+      lambda_i(t)        = max(a_i · v_i, 0)               # LINEAR rate
+      n_i(t)             ~ Poisson(lambda_i(t) dt)
+
+    Differences from ``sim_hawkes_multipop_linear_conductance_numba``
+    (the exp-synapse variant):
+      * Synapses are **instantaneous** (delta) — no ``F[i,j]`` filter
+        state, no per-pair ``tau_g`` time constant.
+      * Each spike at neuron j kicks neuron i by
+        ``(W[i,j] / τ_v_i) · (E_rev − v_i^-)`` using the pre-step v
+        (Itô interpretation; matches the action the framework reads).
+      * ``tau_g`` is accepted in the signature only to keep
+        ``build_sim_arrays`` and the existing notebook call sites
+        happy; this simulator ignores it.
+
+    Voltage drift uses the same pre-step ``v[i]`` in the
+    ``(E_rev − v[i])`` driving-force factor as the exp-synapse variant,
+    so the Itô discretization is consistent across kernels.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        # Linear rate: λ_i = max(a_i · v_i, 0).
+        for i in range(N):
+            lam = a_gain[i] * v[i]
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Drift + delta-synapse conductance kicks.  Pre-step v[i] in
+        # the (E_rev - v[i]) factor matches the framework's Itô
+        # convention; consistent with the exp-synapse variant.
+        for i in range(N):
+            v_pre = v[i]
+            syn_kick = 0.0
+            for j in range(N):
+                syn_kick += W[i, j] * (E_rev - v_pre) * spikes[j]
+            v[i] += dt_sim / tau_v[i] * (-v_pre + E_drive[i]) \
+                    + syn_kick / tau_v[i]
 
     return binned_counts, voltage_bins, total_spikes
 
