@@ -621,7 +621,47 @@ class TheoryUI:
                 "states that need <code>(&minus;1.5, 1.5)</code>)."
                 '</p>'),
             self._w_seed_box,
+            W.HTML(
+                '<br><h4>Pre-compute essentials</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Run the one-time structural pass: expand the action at "
+                "<code>taylor_order=2</code>, verify the mean-field saddle "
+                "cancels, solve for the saddle, build the propagator, and "
+                "cache everything under "
+                "<code>saved_theories/&lt;theory&gt;/</code>.  Independent "
+                "of <code>taylor_order</code>: the propagator + MF check "
+                "only need the bilinear sector, so a single run here "
+                "amortises across every subsequent "
+                "<code>compute_cumulants</code> call at any "
+                "<code>taylor_order &ge; 2</code>.  "
+                "Subsequent runs of pre-compute are free (cache hit) "
+                "unless the theory's structure changed.  "
+                "Typical wall: a few seconds for simple theories, "
+                "&lt;1&nbsp;min for heavy compartmental Bernoulli theories."
+                '</p>'),
+            W.HBox([
+                W.Button(
+                    description='Pre-compute essentials',
+                    button_style='info',
+                    icon='check-circle',
+                    layout=W.Layout(width='220px'),
+                ),
+            ], layout=W.Layout(margin='4px 0')),
+            # Output panel — populated by the button's on_click handler.
         ])
+
+        # Snag a handle to the precompute button so we can wire the
+        # click handler after _build_widgets finishes (the handler
+        # lives on the class, not in this scope).
+        self._btn_precompute = (
+            tab_mfeqs.children[-1].children[0])  # the Button inside HBox
+        self._w_precompute_out = W.Output(
+            layout=W.Layout(border='1px solid #ddd', padding='6px',
+                            min_height='40px', max_height='320px',
+                            overflow='auto', margin='4px 0'))
+        # Append the Output widget to the MF tab below the button row.
+        tab_mfeqs.children = tab_mfeqs.children + (self._w_precompute_out,)
+        self._btn_precompute.on_click(self._on_precompute)
 
         # Tab 9: Defaults (run metadata only — default-fundamental
         # values are now sourced from each parameter's ``default=...``
@@ -994,6 +1034,62 @@ class TheoryUI:
         # Re-build the whole UI to wipe state cleanly.
         self._build_widgets()
         self.show()
+
+    def _on_precompute(self, _btn) -> None:
+        """Run ``pipeline.precompute(model)`` on the current UI state.
+
+        Builds an in-memory ``model`` from the current spec (without
+        writing a ``.theory.py`` file), then invokes the pre-compute
+        primitive.  Output goes to the MF-tab Output widget right
+        below the button — distinct from the global status pane so
+        you can keep verifying mid-edit without losing the save log.
+        """
+        from pipeline import precompute
+        from pipeline.theory_serialize import render_theory_file
+
+        self._w_precompute_out.clear_output()
+        with self._w_precompute_out:
+            try:
+                spec = self._collect()
+            except Exception as e:
+                print(f'[precompute] cannot collect spec: {e!r}')
+                return
+
+            # In-memory build: render to source, exec, call build().
+            # This sidesteps writing a temp .theory.py just for a
+            # validation pass.  ``render_theory_file`` already produces
+            # a syntactically-valid module-level source.
+            src = render_theory_file(spec)
+            ns: dict = {}
+            try:
+                exec(compile(src, '<precompute-spec>', 'exec'), ns)
+                model = ns['build']()
+            except Exception as e:
+                import traceback
+                print(f'[precompute] model build failed:')
+                traceback.print_exc()
+                return
+
+            print(f'[precompute] model: {model.get("name", "<unnamed>")!r}')
+            try:
+                result = precompute(model, verbose=True)
+            except Exception as e:
+                import traceback
+                print(f'[precompute] runtime error:')
+                traceback.print_exc()
+                return
+
+            # Concise summary at the bottom.
+            print()
+            print('─' * 60)
+            ok = result.get('mf_check') == 'PASS'
+            tag = '✓ PASS' if ok else f'✗ {result.get("mf_check")}'
+            print(f'  MF check:       {tag}')
+            print(f'  Saddle:         {dict(result.get("mf_values") or {})}')
+            print(f'  Propagator:     '
+                  f'{"cached" if result.get("propagator_built") else "FAILED"}')
+            print(f'  Cache dir:      {result.get("cache_dir")}')
+            print(f'  Wall time:      {result.get("wall_seconds", 0):.2f}s')
 
     # ── Loading existing theories ─────────────────────────────────
     def _list_theory_files(self) -> list[str]:

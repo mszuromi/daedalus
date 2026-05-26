@@ -159,15 +159,24 @@ def compute_cumulants(
         τ-grid extent and spacing for the Phase J slice evaluation.
     taylor_order : int or None
         Truncation order for FieldTheory's nonlinear-function Taylor.
-        ``None`` (default) auto-picks ``max(k + 2 * max_ell, 4)``,
+        ``None`` (default) auto-picks ``max(k + 2 * max_ell, 2)``,
         which is the smallest order that captures every vertex needed
         for a connected diagram with ``k`` external legs at ``ell``
-        loops (max vertex order ≤ ``k + 2·ell``), with a 4-floor so
-        common 1-loop 2-cumulant calculations share the same
-        ``saved_theories/<...>_taylor4`` cache directory.  Pass an
-        explicit integer to override (e.g. for non-standard
-        diagrammatic content or when probing higher-order vertices
-        for cache invalidation testing).
+        loops (max vertex order ≤ ``k + 2·ell``).  The floor of 2 is
+        the structural minimum — order 2 still has the (1,1) bilinear
+        propagator kernel plus the (0,0)/(1,0)/(0,1) MF saddle sectors,
+        which is everything the cache machinery needs even for the
+        degenerate ``k=2, max_ell=0`` case (tree-level pair correlator
+        = bare propagator, no interaction vertices).  Pass an explicit
+        integer to override (e.g. for non-standard diagrammatic
+        content or when probing higher-order vertices for cache
+        invalidation testing).
+
+        **Previously this floor was 4**, which forced theories at
+        ``k=2, max_ell=0`` to pay an order-4 expansion they didn't
+        mathematically need — see ``docs/CHANGELOG.md``
+        (theory-precompute-cache branch) for the cost it imposed on
+        the dendritic-linear theory.
     origin_leaf_idx : int
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
@@ -238,10 +247,20 @@ def compute_cumulants(
     # prediagram enumerator could ask for at the chosen (k, max_ell).
     # Connected diagrams with k external legs at ell loops have at
     # most ``k + 2·ell``-leg vertices, so that's the tight upper
-    # bound — clamp at 4 below so the saved-theories cache directory
-    # stays at ``_taylor4`` for the common 1-loop 2-cumulant case.
+    # bound.  The floor of 2 is structural (anything less wouldn't
+    # capture the (1,1) bilinear propagator + (0,0)/(1,0)/(0,1) MF
+    # sectors that downstream code unconditionally reads).
+    #
+    # Historically this floor was 4 — chosen to keep all 1-loop
+    # 2-cumulant runs in one cache directory back when the layout
+    # was ``saved_theories/<theory>_taylor<N>/``.  The new layout
+    # (``saved_theories/<theory>/expand_taylor<N>.sobj``) sibling-
+    # files different orders cleanly, so the floor is no longer
+    # needed for cache-directory cohesion.  Dropping it from 4 → 2
+    # saves ~90 min on heavy Bernoulli theories at ``k=2, max_ell=0``
+    # (the only case where the old floor exceeded the math minimum).
     if taylor_order is None:
-        taylor_order = max(k + 2 * max_ell, 4)
+        taylor_order = max(k + 2 * max_ell, 2)
 
     # Accept user-facing natural names and translate to the internal
     # fluctuation names the action / propagator-typing code expect.
@@ -267,12 +286,39 @@ def compute_cumulants(
         phase_walls[label] = dt
         print(f'      [{label}] done in {dt:.2f}s')
 
-    # ── 1. FieldTheory expansion ──────────────────────────────────
+    # ── 1. FieldTheory expansion (cache-aware) ────────────────────
+    # Try the on-disk expand cache before paying the full
+    # multivariate-taylor cost.  The cache stores ft._by_tp (the
+    # bigrade-classified action dict) at each previously-computed
+    # taylor_order; we accept any cached order >= the requested one
+    # and downgrade-filter to total degree <= target.
     if verbose:
         print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})...')
     _t_phase = time.perf_counter()
     ft = FieldTheory(model, taylor_order=taylor_order)
-    ft.expand()
+
+    from pipeline import _expand_cache as _ec
+    cache_hit = False
+    if use_cache:
+        cached_order = _ec.find_best_cached_order(model, taylor_order)
+        if cached_order is not None:
+            _ec.prepare_for_load(ft)
+            cache_hit = _ec.load_expand(
+                model, ft,
+                target_order=taylor_order,
+                cached_order=cached_order,
+                verbose=verbose,
+            )
+    if not cache_hit:
+        ft.expand()
+        if use_cache:
+            try:
+                _ec.save_expand(model, ft, verbose=verbose)
+            except Exception as e:
+                if verbose:
+                    print(f'      [expand-cache] save failed ({e!r}); '
+                          f'continuing without persistence.')
+
     sanity_ok = ft.sanity_check()
     if not sanity_ok:
         raise RuntimeError(
