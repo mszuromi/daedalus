@@ -1498,40 +1498,235 @@ def make_kernel_td_image_lambda(kernel_specs: list[dict], *, param_names):
     return _td_image
 
 
+def _parse_response_legs(term: dict, order: int) -> list[str]:
+    """Resolve a CGF-row's ``response_legs`` (preferred) / ``response_field``
+    (legacy) into an ordered list of response-field names — one per leg.
+
+    Rules:
+      * If ``response_legs`` is a list, it must have length ``order``.
+        Each entry names a declared response field; the cumulant leg at
+        that position sits on that field's SR variable(s).
+      * If ``response_legs`` is a single string (or absent and
+        ``response_field`` is set), broadcast that name to all ``order``
+        leg positions.  Equivalent to the legacy single-response-field
+        cumulant.
+
+    Returns the per-leg list of names.  The caller is responsible for
+    verifying each name resolves to a declared response field on the
+    namespace.
+    """
+    legs = term.get('response_legs')
+    if legs is None or legs == '':
+        legs = term.get('response_field')
+    if isinstance(legs, str):
+        # Allow comma-separated text from the UI: "xt, yt" → ["xt", "yt"].
+        parts = [s.strip() for s in legs.split(',') if s.strip()]
+        legs = parts if len(parts) > 1 else parts
+    if not legs:
+        raise ValueError(
+            f"correlated_noises row {term.get('name')!r}: no "
+            f"`response_legs` (preferred) or `response_field` (legacy) "
+            f"declared."
+        )
+    if len(legs) == 1:
+        # Broadcast single name across all ``order`` legs.
+        legs = [legs[0]] * int(order)
+    elif len(legs) != int(order):
+        raise ValueError(
+            f"correlated_noises row {term.get('name')!r}: "
+            f"`response_legs` has {len(legs)} entries but order={order}.  "
+            f"Either supply exactly `order` names, or a single name to "
+            f"broadcast across all legs."
+        )
+    return list(legs)
+
+
+def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
+                               order: int) -> 'Callable':
+    """Compile a CGF row's (coefficient, kernel) text strings into a
+    callable matching the framework's expected signature::
+
+        kernel_fn(ns, *leg_indices, *tau_syms) -> SR
+
+    ``ns`` is the FieldTheory namespace (carries parameters as
+    attributes).  ``leg_indices`` is an n-tuple of integer leg positions
+    within each leg's response field (ignored by most kernels — they
+    typically only depend on ``ns`` and the τ symbols).  ``tau_syms``
+    is the (order-1)-tuple of relative-time SR variables: one ``tau``
+    for order 2, two (``t1, t2``) for order 3, etc.
+
+    The compiled callable evaluates ``coeff_text * kernel_text`` in a
+    namespace built from ``ns``'s attributes plus the τ-bindings.  If
+    ``kernel_text`` is None or empty, the callable returns just the
+    coefficient (interpreted as a δ-correlated kernel — the framework's
+    decomposition handles it as ``coeff * ∏δ(τ)`` automatically).
+    """
+    coeff_text = (coeff_text or '').strip() or '0'
+    kernel_text = (kernel_text or '').strip()
+
+    def _kernel_fn(ns, *args):
+        # First ``order`` args are leg indices, remaining are τ syms.
+        leg_indices = args[:order]    # noqa: F841 — accepted for API uniformity
+        tau_syms    = args[order:]
+        if len(tau_syms) != order - 1:
+            raise ValueError(
+                f"CGF kernel expects {order - 1} τ symbol(s) at order "
+                f"{order}; got {len(tau_syms)}."
+            )
+
+        # Build the eval namespace: all of ns's public attributes, plus
+        # τ bindings.  We use both ``tau`` (for order 2) and ``t1``,
+        # ``t2``, … (for order ≥ 3) so the user's kernel text can use
+        # either convention.
+        eval_ns: dict = {}
+        # Pull every non-underscore attribute off the namespace.  Param
+        # SR vars come through as ``ns.D``, ``ns.tauc``, etc.
+        for attr in dir(ns):
+            if attr.startswith('_'):
+                continue
+            try:
+                eval_ns[attr] = getattr(ns, attr)
+            except AttributeError:
+                pass
+
+        # τ symbol bindings.
+        if order == 2 and tau_syms:
+            eval_ns['tau'] = tau_syms[0]
+        for k, t in enumerate(tau_syms, start=1):
+            eval_ns[f't{k}'] = t
+
+        # Sage math + Dirac delta.
+        eval_ns.setdefault('dirac_delta', dirac_delta)
+        eval_ns.setdefault('delta_function', dirac_delta)
+        eval_ns.setdefault('heaviside', heaviside)
+        eval_ns.setdefault('exp', exp)
+        eval_ns.setdefault('log', log)
+        eval_ns.setdefault('sin', sin)
+        eval_ns.setdefault('cos', cos)
+        eval_ns.setdefault('sqrt', sqrt)
+        eval_ns.setdefault('abs', abs)
+        eval_ns.setdefault('pi', pi)
+        eval_ns.setdefault('I', I)
+
+        coeff_val = _safe_eval(coeff_text, eval_ns, 'CGF coefficient')
+        if not kernel_text:
+            return SR(coeff_val)
+        kernel_val = _safe_eval(kernel_text, eval_ns, 'CGF kernel')
+        return SR(coeff_val) * SR(kernel_val)
+
+    return _kernel_fn
+
+
 def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
     """Convert declared CGF cumulant terms into the
     ``model['correlated_noises']`` dict consumed by FieldTheory.
 
-    ``cgf_terms`` is a list of dicts::
+    Row schema (per ``self._cgf_terms`` entry, also matches the spec
+    saved by the UI)::
 
-        {'name': 'X', 'response_field': 'mt', 'order': 2,
-         'coefficient': 'lambda_X * p_part * (1 + sigma_shift_diff_sq)',
-         'kernel': None}        # optional time-domain kernel string
+        {
+            'name':            'X',
+            'response_legs':   ['mt']         # legacy single, or
+                               or ['xt', 'yt'],   # cross-field
+            'response_field':  'mt',           # legacy alias (single only)
+            'order':           2,
+            'coefficient':     'lambda_X * p_part * (1 + sigma2)',
+            'kernel':          None,           # optional τ-dependent factor
+        }
 
-    Multiple rows can share name+response — they sum into the same
-    cumulant, possibly with different kernels.
+    Multiple rows can share ``(name, order)`` AND ``(name, order,
+    response_legs)`` — they sum into one cumulant entry, with each
+    constituent (coefficient × kernel) accumulated as a single
+    callable.  For mixed-leg cases the rows must specify the same
+    ``response_legs`` tuple to combine; otherwise they map to distinct
+    leg-tuples within the same noise process.
 
     Returns a dict ready to drop into ``model['correlated_noises']``.
-    The values are themselves dicts with per-order entries that the
-    FieldTheory framework's NoiseSourceType machinery consumes at
-    expansion time.
+    Each per-name entry has shape::
+
+        {
+            'response_field':  '<first row's leg-0 name>',  # legacy hint
+            'response_legs':   {order: per-row-legs-list},  # new
+            'cumulants':       {order: kernel_fn_callable},
+            'cumulant_text':   {order: text_breakdown_for_debug},
+        }
+
+    where ``response_legs[order]`` is the per-leg list resolved by
+    ``_parse_response_legs`` (length = order) and ``cumulants[order]``
+    is a compiled callable with signature
+    ``(ns, *leg_indices, *tau_syms) -> SR``.  The compiler hands these
+    to ``_build_cumulant_action`` which expects callables.
+
+    The old text-only path (text strings under ``cumulants[order]``)
+    was a structural bug — the framework dereferences it as a callable.
     """
     out: dict[str, dict] = {}
+    # Internal accumulator: (name, order) → list of (legs, coeff_text,
+    # kernel_text).  We build per-(name, order) callables at the end so
+    # each multi-row group is a single closure that walks its rows at
+    # call time.
+    acc: dict[tuple[str, int], list[dict]] = {}
+
     for term in cgf_terms:
-        name = term['name']
+        name  = term['name']
+        order = int(term['order'])
+        legs  = _parse_response_legs(term, order)
+
         if name not in out:
             out[name] = {
-                'response_field': term['response_field'],
-                'cumulants':      {},   # order → coefficient_text
+                # Legacy hint — single response field if all the leg
+                # tuples for this noise are uniform and identical to
+                # ``legs[0]``.  Set provisionally to legs[0]; cleared
+                # below if any later row disagrees.
+                'response_field': legs[0],
+                'response_legs':  {},      # order → per-leg list
+                'cumulants':      {},      # order → callable
+                'cumulant_text':  {},      # order → list of text rows (debug)
             }
-        order = int(term['order'])
-        if order in out[name]['cumulants']:
-            # Combine: sum the coefficient text expressions
-            existing = out[name]['cumulants'][order]
-            out[name]['cumulants'][order] = (
-                f'({existing}) + ({term["coefficient"]})')
+        elif out[name]['response_field'] is not None:
+            # If a later row's legs disagree with the legacy single-field
+            # hint, clear the hint so downstream code defers to the
+            # explicit per-order ``response_legs`` instead.
+            if any(L != out[name]['response_field'] for L in legs):
+                out[name]['response_field'] = None
+
+        out[name]['response_legs'].setdefault(order, legs)
+        # If a later row at the same order has a DIFFERENT leg list,
+        # that's a conflict — fail loudly.
+        if out[name]['response_legs'][order] != legs:
+            raise ValueError(
+                f"correlated_noises row {name!r} order={order}: "
+                f"conflicting response_legs across rows — "
+                f"{out[name]['response_legs'][order]!r} vs {legs!r}.  "
+                f"Multi-row aggregation requires identical leg tuples."
+            )
+
+        acc.setdefault((name, order), []).append({
+            'coefficient': term.get('coefficient', '0'),
+            'kernel':      term.get('kernel'),
+        })
+
+    # Compile callables: for each (name, order), build a single closure
+    # that sums every row's (coeff × kernel) contribution.  This lets
+    # multi-row inputs (e.g. GTaS κ² with auto + cross terms) merge
+    # cleanly into one κ² kernel_fn the framework can call.
+    for (name, order), rows in acc.items():
+        if len(rows) == 1:
+            r = rows[0]
+            out[name]['cumulants'][order] = _build_cgf_kernel_callable(
+                r['coefficient'], r['kernel'], order)
         else:
-            out[name]['cumulants'][order] = term['coefficient']
-        if term.get('kernel'):
-            out[name].setdefault('kernels', {})[order] = term['kernel']
+            kernels = [
+                _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order)
+                for r in rows
+            ]
+            def _summed(ns, *args, _ks=kernels):
+                total = SR(0)
+                for kfn in _ks:
+                    total = total + SR(kfn(ns, *args))
+                return total
+            out[name]['cumulants'][order] = _summed
+
+        out[name]['cumulant_text'][order] = list(rows)   # for debug
+
     return out

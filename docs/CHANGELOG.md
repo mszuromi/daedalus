@@ -4,6 +4,138 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-26 — `cgf-response-legs` branch  (commits TBD)
+
+Fixed a long-standing bug in the CGF tab's path through the framework
+AND extended it to support cross-field correlated cumulants.  Two
+coupled fixes; either alone would have been incomplete.
+
+### Bug fix: text → callable
+
+``pipeline/theory_compiler.py:make_correlated_noises_block``
+previously emitted ``model['correlated_noises'][name]['cumulants']
+[order] = '<coefficient_text>'`` (a Python str), but
+``msrjd/core/field_theory.py:_build_cumulant_action`` calls it as
+``kernel_fn(ns, *idx_tuple, *tau_syms)`` — expecting a callable.
+This made every CGF-tab-driven theory fail at expand time with
+``KeyError: 'physical_field'`` (the framework's *next* dereference)
+or, had that succeeded, ``TypeError: 'str' object is not callable``.
+The template-based GTaS path was unaffected (it builds callables
+directly), so the bug had been masked by everyone using
+``GTaSNoise`` instead of CGF rows.
+
+Fix: ``make_correlated_noises_block`` now compiles each
+(coefficient, kernel) text pair into a closure with the framework's
+expected signature, using a ``ns``-attribute-derived eval namespace
+that auto-binds parameter SR vars and the standard Sage math
+symbols (``dirac_delta``, ``exp``, ``heaviside``, …).  Multiple rows
+sharing ``(name, order)`` get accumulated into one summed closure.
+
+### Bug fix: `physical_field` made optional
+
+``_build_cumulant_action`` raised on missing ``spec['physical_field']``.
+For cumulants on existing response fields (the new cross-field case,
+also the typical "inline noise on the system's own response" case),
+there is no separate noise-process physical field — the noise IS
+the existing field's stochastic component.  Now skipped when absent.
+
+### Bug fix: `bool(SR-expr != 0)` is non-trivial
+
+``c_local != 0`` was used to gate the local-cumulant injection,
+but Sage's symbolic Boolean returns ``False`` whenever it can't
+PROVE the inequality.  Parameters with ``domain='real'`` (e.g.
+``rho`` for a correlation coefficient) trip this — the
+``c_local = rho * sqrt(D1*D2)`` expression is "possibly zero" by
+Sage's assumption system, so the cross term was silently dropped.
+
+Fix: gate on ``not SR(c_local).is_trivial_zero()`` — syntactic
+zero check, independent of param assumptions.  Same fix applied
+to the ``K_residual != 0`` check downstream.
+
+### New: `response_legs` cross-field cumulants
+
+The CGF data model now supports cumulants whose legs sit on
+DIFFERENT response fields:
+
+  * **UI:** the CGF tab's ``response_field`` column is renamed to
+    ``response_legs`` and accepts comma-separated input:
+    ``mt`` (single, broadcast to all legs — legacy GTaS case) or
+    ``xt, yt`` for cross-field cumulants.
+  * **Builder:** ``TheoryBuilder.declare_cgf_term`` gains a
+    keyword-only ``response_legs=['xt', 'yt']`` argument.  The
+    legacy positional ``response_field`` keeps working unchanged.
+  * **Spec dict:** an additional key ``response_legs`` (list of
+    strings) sits alongside the legacy ``response_field`` (kept
+    as a back-compat hint = leg-0 name).
+  * **Model dict:** ``correlated_noises[name]`` gains
+    ``response_legs: {order: [leg-0 field, leg-1 field, …]}``.
+    The legacy ``response_field`` field stays populated when all
+    legs at every order match.
+  * **Framework:** ``_build_cumulant_action`` looks up each leg's
+    SR-var list from its declared response field; iterates the
+    leg-INDEX product per leg-field-permutation; injects the
+    symmetrized contribution for distinct leg-tuples.
+
+For order-2 cross-field rows, the framework iterates BOTH the
+canonical permutation (e.g. ``[xt, yt]``) AND its reverse
+(``[yt, xt]``), accumulating both into the action.  The
+``(1/n!)`` cumulant-series factor combines with the iteration
+multiplicity to give the right overall coefficient.
+
+For homogeneous (legacy single-field) leg-tuples, the iteration
+collapses to one permutation; behaviour is unchanged from before
+the fix.
+
+### What this unlocks for users
+
+Cross-correlated white or colored Gaussian noise on multi-field
+theories — the canonical example being 2D OU with cross-correlated
+``ξ_x`` and ``ξ_y``:
+
+```python
+.declare_cgf_term('Cx',  response_legs=['xt'],         order=2,
+                  coefficient='2*D1',
+                  kernel='dirac_delta(tau)')
+.declare_cgf_term('Cy',  response_legs=['yt'],         order=2,
+                  coefficient='2*D2',
+                  kernel='dirac_delta(tau)')
+.declare_cgf_term('Cxy', response_legs=['xt', 'yt'],   order=2,
+                  coefficient='2*rho*sqrt(D1*D2)',
+                  kernel='dirac_delta(tau)')
+```
+
+Produces bigrade (2,0): ``-D1·xt² − 2ρ√(D1 D2)·xt·yt − D2·yt²``
+— exactly the standard `−½ x̃ᵀ C x̃` expansion.
+
+For higher-order cumulants (n ≥ 3) the same response_legs syntax
+applies; the framework injects fully-local (∏δ) contributions at
+any order, and emits the existing "smooth residual at n ≥ 3
+requires integrator extension" warning for non-local kernels
+(unchanged from before).
+
+### Tests
+
+``tests/test_grouped_vs_perdiag.py`` (6 tests, warm-cache 7.7 s)
+continues to pass.
+
+End-to-end roundtrip verified: CGF spec (mix of single-leg + multi-
+leg) → ``render_theory_file`` → ``.theory.py`` source →
+``load_spec_from_file`` → spec → ``build()`` → ``model`` →
+``FieldTheory.expand()`` → correct bigrade (2,0) entries.
+
+### Backward compatibility
+
+  * Existing GTaS template theories (``linear_hawkes_2pop_expg_gtas``,
+    etc.) — unaffected; they emit ``GTaSNoise(...)`` which goes
+    directly through ``correlated_noises_block()`` with callables.
+  * Older saved theory files that used the legacy positional
+    ``.declare_cgf_term('X', 'mt', order=2, …)`` syntax — load
+    cleanly, render in the same legacy positional form on resave.
+  * Specs that came in via the (previously-broken) CGF-tab path —
+    now actually work, both at load and at expand time.
+
+---
+
 ## 2026-05-26 — `theory-precompute-cache` branch  (commits `390eaba` … current)
 
 Cross-order expand caching + a one-time pre-compute step.  Eliminates
