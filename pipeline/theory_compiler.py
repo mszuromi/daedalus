@@ -45,6 +45,31 @@ from sage.all import (
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+
+def _unwrap_field_arg(a):
+    """Unwrap size-1 field wrappers (``_FullPhysicalField``,
+    ``_FieldScalar``) to their bare SR expression before passing into
+    Sage's ``BuiltinFunction.__call__`` (``exp``, ``log``, ``phi``,
+    user-declared formal functions).  Sage's strict argument coercion
+    does not honor ``_sage_()``; without unwrapping, scalar-mode calls
+    like ``f(v)`` raise ``no canonical coercion`` errors.
+
+    Forwarded as a no-op when the argument is already an SR expression
+    or any non-wrapper type.
+    """
+    # Use class-name string check to avoid forward-reference issues
+    # (this helper is defined BEFORE _FullPhysicalField / _FieldScalar
+    # in this module, but is only called at evaluation time, when both
+    # classes already exist).
+    cls = type(a).__name__
+    if cls in ('_FullPhysicalField', '_FieldScalar'):
+        try:
+            return a._sage_() if hasattr(a, '_sage_') else a._scalar()
+        except Exception:
+            return a
+    return a
+
+
 class _IndexedFormalFunction:
     """Generates Sage formal function calls indexed by population.
 
@@ -54,6 +79,16 @@ class _IndexedFormalFunction:
         phi[i](dv[i])           # → function(f'phi_{i+1}')(dv[i])
         phi[i, j](dv[i])        # → function(f'phi_{i+1}_{j+1}')(dv[i])
         f[i](v[i], n[i])        # → function(f'f_{i+1}')(v[i], n[i])
+
+    Bare call (scalar / auto-pop convenience)::
+
+        f(v)                    # → function('f_1')(v)
+        f(v, n)                 # → function('f_1')(v, n)
+
+    Equivalent to ``f[0](...)`` — for theories with a single (auto-)
+    population, the user can omit the index entirely.  In multi-pop
+    theories the action text will always carry explicit ``[i]``
+    indexing, so the bare-call form is unambiguous as "pop 0".
 
     Each indexed call returns a variadic callable so the user can then
     apply the formal function to one OR multiple field arguments.
@@ -77,6 +112,20 @@ class _IndexedFormalFunction:
         def _call(*args, _n=full_name):
             return sr_function(_n)(*args)
         return _call
+
+    def __call__(self, *args):
+        # Scalar / auto-pop convenience: treat ``f(v)`` exactly like
+        # ``f[0](v)`` — produces ``function('f_1')(v)``, which the
+        # field_theory rename pass maps to ``f0_1``, ``f1_1``, etc.
+        # In a multi-population action the user always writes ``[i]``,
+        # so this branch only fires in single-pop theories.
+        #
+        # Unwrap _FullPhysicalField / _FieldScalar (size-1 wrappers
+        # used by the action namespace to expose saddle+fluct splits)
+        # before passing to Sage's ``BuiltinFunction.__call__`` — it
+        # does not honor ``_sage_()`` and would reject the wrapper.
+        return sr_function(f'{self._name}_1')(
+            *(_unwrap_field_arg(a) for a in args))
 
 
 class _IndexedSaddleRename:
@@ -168,6 +217,12 @@ class _FullPhysicalField:
     fluctuations) and ``nstar``, ``vstar``, ``mstar`` (pure saddles)
     remain accessible under their internal names for users who
     prefer the explicit form.
+
+    Scalar fallback (size = 1): when there is only one position
+    (no ``.population()`` declared, or an explicit ``size=1`` pop),
+    bare arithmetic on the wrapper itself forwards to the single
+    SR element.  That lets users write ``xt * x`` instead of
+    ``xt[i] * x[i]`` in scalar theories.
     """
     __slots__ = ('_saddle', '_fluct')
 
@@ -184,6 +239,78 @@ class _FullPhysicalField:
 
     def __len__(self):
         return len(self._fluct)
+
+    # ── Scalar-fallback arithmetic (only valid when size == 1) ──
+    def _scalar(self):
+        if len(self._fluct) != 1:
+            raise TypeError(
+                f'scalar arithmetic on _FullPhysicalField requires '
+                f'population size 1, got size {len(self._fluct)}; '
+                f'use indexed access ``[i]`` instead.'
+            )
+        return self._saddle[0] + self._fluct[0]
+
+    def __mul__(self, other):      return self._scalar() * other
+    def __rmul__(self, other):     return other * self._scalar()
+    def __add__(self, other):      return self._scalar() + other
+    def __radd__(self, other):     return other + self._scalar()
+    def __sub__(self, other):      return self._scalar() - other
+    def __rsub__(self, other):     return other - self._scalar()
+    def __neg__(self):             return -self._scalar()
+    def __pos__(self):             return +self._scalar()
+    def __pow__(self, other):      return self._scalar() ** other
+    def __rpow__(self, other):     return other ** self._scalar()
+    def __truediv__(self, other):  return self._scalar() / other
+    def __rtruediv__(self, other): return other / self._scalar()
+    def _sage_(self):              return self._scalar()
+
+
+class _FieldScalar:
+    """Thin wrapper around a list of SR variables that supports BOTH
+    bare scalar arithmetic (when ``len == 1``) AND ``[i]`` indexed
+    access.  Used to bind response fields like ``xt`` and internal
+    fluctuation fields like ``dx`` in scalar (no-population) theories
+    so the user can write ``xt * x`` AND ``xt[0] * x[0]``
+    interchangeably.
+
+    For size > 1 lists, scalar arithmetic is ambiguous and raises a
+    clear ``TypeError`` — the user must use ``[i]`` indexing.
+    """
+    __slots__ = ('_arr',)
+
+    def __init__(self, arr):
+        self._arr = arr
+
+    def __getitem__(self, i):
+        return self._arr[i]
+
+    def __len__(self):
+        return len(self._arr)
+
+    def _scalar(self):
+        if len(self._arr) != 1:
+            raise TypeError(
+                f'scalar arithmetic on _FieldScalar requires size 1, '
+                f'got size {len(self._arr)}; use indexed access '
+                f'``[i]`` instead.'
+            )
+        return self._arr[0]
+
+    def __mul__(self, other):      return self._scalar() * other
+    def __rmul__(self, other):     return other * self._scalar()
+    def __add__(self, other):      return self._scalar() + other
+    def __radd__(self, other):     return other + self._scalar()
+    def __sub__(self, other):      return self._scalar() - other
+    def __rsub__(self, other):     return other - self._scalar()
+    def __neg__(self):             return -self._scalar()
+    def __pos__(self):             return +self._scalar()
+    def __pow__(self, other):      return self._scalar() ** other
+    def __rpow__(self, other):     return other ** self._scalar()
+    def __truediv__(self, other):  return self._scalar() / other
+    def __rtruediv__(self, other): return other / self._scalar()
+    def _sage_(self):              return self._scalar()
+    def __iter__(self):            return iter(self._arr)
+    def __repr__(self):            return f'_FieldScalar({self._arr!r})'
 
 
 class _MatrixView:
@@ -212,18 +339,41 @@ class _MatrixView:
         return f'_MatrixView({self._rows!r})'
 
 
+def _unwrap_builtin(sage_fn):
+    """Wrap a Sage builtin (``exp``, ``log``, ``sin``, …) so its
+    arguments pass through ``_unwrap_field_arg`` first.  Without this,
+    scalar-mode ``exp(nt)`` raises ``no canonical coercion from
+    _FieldScalar to SR`` — Sage's strict ``BuiltinFunction.__call__``
+    coercion ignores ``_sage_()`` on Python wrapper classes.
+
+    The wrapped form preserves all the original behavior for SR
+    arguments (no-op unwrap) while letting ``_FieldScalar`` /
+    ``_FullPhysicalField`` work transparently in user actions.
+    """
+    def _wrapped(*args, **kw):
+        unwrapped = [_unwrap_field_arg(a) for a in args]
+        return sage_fn(*unwrapped, **kw)
+    return _wrapped
+
+
 def _builtin_namespace() -> dict[str, Any]:
-    """Symbols that every user expression may freely reference."""
+    """Symbols that every user expression may freely reference.
+
+    The unary numeric builtins are wrapped to auto-unwrap size-1 field
+    wrappers (``_FieldScalar`` / ``_FullPhysicalField``) so that
+    ``exp(xt)``, ``log(1 + g(w))``, etc. work in scalar-mode action
+    text.  Pass-through for ordinary SR arguments.
+    """
     return {
-        'exp':             exp,
-        'log':             log,
-        'sin':             sin,
-        'cos':             cos,
-        'tan':             tan,
-        'sqrt':            sqrt,
-        'heaviside':       heaviside,
-        'delta_function':  dirac_delta,
-        'dirac_delta':     dirac_delta,
+        'exp':             _unwrap_builtin(exp),
+        'log':             _unwrap_builtin(log),
+        'sin':             _unwrap_builtin(sin),
+        'cos':             _unwrap_builtin(cos),
+        'tan':             _unwrap_builtin(tan),
+        'sqrt':            _unwrap_builtin(sqrt),
+        'heaviside':       _unwrap_builtin(heaviside),
+        'delta_function':  _unwrap_builtin(dirac_delta),
+        'dirac_delta':     _unwrap_builtin(dirac_delta),
         'sum':             sum,
         'I':               I,
         'pi':              pi,
@@ -268,7 +418,19 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
         if not hasattr(ns, fname):
             continue
         val = getattr(ns, fname)
-        out[fname] = val
+        # When the field has only one position (scalar theory: no
+        # ``.population()`` declared, or an explicit ``size=1`` pop),
+        # wrap in ``_FieldScalar`` so the user can write bare ``xt``
+        # AND ``xt[0]`` interchangeably (legacy indexed actions like
+        # ``sum(xt[i]*x[i] for i in pop)`` still parse).  Sage builtins
+        # (``exp``, ``log``, formal-function calls) need explicit
+        # unwrapping — see ``_wrap_for_action_eval`` below, which
+        # routes those calls through ``_unwrap_field_arg`` before
+        # passing into ``BuiltinFunction.__call__``.
+        if isinstance(val, list) and len(val) == 1:
+            out[fname] = _FieldScalar(val)
+        else:
+            out[fname] = val
         # Also expose under natural name if there's a mapping.
         # In action context, natural name is the FULL field
         # (saddle + fluctuation); elsewhere it aliases the fluctuation.
@@ -277,12 +439,20 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
             if expand_to_full:
                 saddle_internal = saddle_natural_to_internal.get(natural)
                 if saddle_internal and hasattr(ns, saddle_internal):
+                    # _FullPhysicalField already handles size==1
+                    # scalar-arithmetic via ``_sage_()`` and is
+                    # unwrapped by ``_unwrap_field_arg`` when passed
+                    # to ``exp/log/phi()``.
                     out[natural] = _FullPhysicalField(
                         getattr(ns, saddle_internal), val)
                 else:
-                    out[natural] = val
+                    out[natural] = (_FieldScalar(val)
+                                    if isinstance(val, list) and len(val) == 1
+                                    else val)
             else:
-                out[natural] = val
+                out[natural] = (_FieldScalar(val)
+                                if isinstance(val, list) and len(val) == 1
+                                else val)
 
     # Parameters — promote 2D lists to MatrixView for w[i,j] access.
     # Saddle parameters are also exposed under their natural names

@@ -489,50 +489,145 @@ class TheoryUI:
             self._w_action,
         ])
 
-        # Tab 8: Mean-field equations
+        # Tab 8: Mean-field equations — DAE form.
+        # One row per equation (residual ``LHS - RHS = 0``).  Dt allowed
+        # on the LHS; absent ⇒ algebraic.  At MF the DAE solver sets
+        # Dt → 0; for stability it keeps Dt symbolic.  Population
+        # determines the index range for ``i`` on both sides.
         self._tbl_mfeqs = DynamicTable(
             columns=[
-                {'name': 'saddle', 'kind': 'text',
-                 'placeholder': 'vstar / nstar / mstar', 'width': '140px'},
-                {'name': 'rhs',    'kind': 'text',
-                 'placeholder': 'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)',
-                 'width': '480px'},
+                {'name': 'lhs',        'kind': 'text',
+                 'placeholder': '(tau[i]*Dt + 1) * v[i]',
+                 'width': '240px'},
+                {'name': 'rhs',        'kind': 'text',
+                 'placeholder': 'E[i] + sum(w[i, j]*n[j] for j in E)',
+                 'width': '360px'},
+                {'name': 'population', 'kind': 'select',
+                 'options_provider': _pop_opts_with_none,
+                 'default': _NONE, 'width': '110px'},
             ],
             initial=[
-                {'saddle': 'vstar',
-                 'rhs': 'E[i] + sum(w[i, j] * g * nstar[j] for j in pop)'},
-                {'saddle': 'nstar', 'rhs': 'phi(vstar[i])'},
+                {'lhs':        '(tau[i]*Dt + 1) * v[i]',
+                 'rhs':        'E[i] + sum(w[i, j]*n[j] for j in E)',
+                 'population': _NONE},
+                {'lhs':        'n[i]',
+                 'rhs':        'phi[i](v[i])',
+                 'population': _NONE},
             ],
         )
+        # Default fixed-point index for the multi-root MF solver.
+        # When the DAE system has multiple roots (a bistable theory,
+        # say), this picks WHICH sorted root the diagrammatic expansion
+        # uses.  Sorted ascending by the first declared physical
+        # field's first population index.  ``0`` = lowest, ``1`` =
+        # second-lowest, ...  Out-of-range values get clamped at run
+        # time with a warning.  This default is written into METADATA;
+        # the theory runner picks it up unless overridden per-run.
+        self._w_fpi_default = W.BoundedIntText(
+            value=0, min=0, max=99, step=1,
+            description='Default fixed_point_index:',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='280px'),
+        )
+        # Linear-stability toggle.  Off by default — theories that
+        # integrate out their voltages have all-algebraic equations
+        # (no Dt anywhere); the generalized-eigenvalue ``(σA + B)``
+        # has A ≡ 0, every eigenvalue lands at infinity, and "linear
+        # stability" has no physical meaning.  Bistable / differential
+        # theories that want stability-based root filtering must check
+        # this box explicitly.  Writes ``.stability_analysis(True)``
+        # into the generated theory file when on.
+        self._w_stability_on = W.Checkbox(
+            value=False,
+            description='Run linear stability analysis',
+            indent=False,
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='320px'),
+        )
+        # Optional explicit seed box for multi-start Newton, as a
+        # Python dict literal mapping variable name → (low, high).
+        # Empty → use domain-aware defaults (positive → [0, 5·scale],
+        # real → [-3·scale, 3·scale]).  Used by solve_mean_field_dae's
+        # ``seed_box`` kwarg.
+        self._w_seed_box = W.Textarea(
+            value='',
+            placeholder=("Optional Python dict literal, e.g.\n"
+                         "{'n': (-1.5, 1.5), 'v': (-3.0, 3.0)}"),
+            layout=W.Layout(width='460px', height='60px'),
+        )
+
         tab_mfeqs = W.VBox([
             W.HTML(
-                '<h4>Mean-field equations</h4>'
+                '<h4>Mean-field equations (DAE form)</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "One row per saddle quantity.  Per-<code>i</code> form. "
-                "The framework iterates on <code>nstar</code> numerically — "
-                "its equation (<code>nstar[i] = phi(vstar[i])</code>) is the "
-                "self-consistency closure but is <strong>not</strong> substituted "
-                "into the action.  Other saddles (<code>vstar</code>, "
-                "<code>mstar</code>) are substituted into the action via the "
-                "<code>mf_bg_conditions</code> hook."
+                "One row per equation — a residual <code>LHS &minus; RHS = 0</code>.  "
+                "Both sides are Sage-syntax strings in <code>i</code> "
+                "(population index), declared parameters / kernels, "
+                "the <code>Dt</code> time-derivative operator, and "
+                "state-variable fields.  At mean field the solver sets "
+                "<code>Dt &rarr; 0</code> to get an algebraic system and "
+                "runs multi-start Newton over every distinct root; the "
+                "linear-stability check uses the same equations with "
+                "<code>Dt</code> kept symbolic.  "
+                "Pass <code>population</code> to expand <code>[i]</code> "
+                "over that population's index range; leave as "
+                f"<code>{_NONE}</code> for a scalar equation.  "
+                "Equations are declaration-ordered and treated as one "
+                "system; ordering doesn't affect the solver.  "
+                "<strong>No <code>Conv(...)</code> on the RHS</strong> &mdash; "
+                "stationary MF assumption requires the user to "
+                "pre-collapse normalized-kernel convolutions of constants."
                 '</p>'),
             self._tbl_mfeqs.show(),
+            W.HTML(
+                '<br><h4>Multi-root selection</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "When the DAE has multiple fixed points (e.g. a bistable "
+                "theory), the solver finds all of them and sorts the "
+                "list ascending by the first declared physical field's "
+                "first population index.  <code>fixed_point_index = 0</code> "
+                "picks the lowest, <code>1</code> the next, and so on. "
+                "This widget sets the THEORY's default; runs "
+                "can override via "
+                "<code>compute_cumulants(..., fixed_point_index=N)</code>."
+                '<br><br>'
+                "<strong>Linear-stability filtering</strong> (the box below) "
+                "is OFF by default. When ON, the solver classifies every "
+                "converged root via the generalized-eigenvalue Jacobian, "
+                "filters down to the LINEARLY STABLE subset, and routes "
+                "<code>fixed_point_index</code> over those (the "
+                "diagrammatic series isn't defined around an unstable "
+                "saddle).  Unstable roots stay inspectable via "
+                "<code>th['mf_unstable_roots']</code>.  "
+                "Leave OFF when your equations are all algebraic "
+                "(voltages integrated out, no <code>Dt</code> anywhere) "
+                "&mdash; with <code>A &equiv; 0</code> in the "
+                "<code>(&sigma;A + B)</code> eigenproblem there's nothing "
+                "to score, and the filter would either be vacuous or, "
+                "in degenerate cases, mis-classify the saddle."
+                '</p>'),
+            self._w_fpi_default,
+            self._w_stability_on,
+            W.HTML(
+                '<br><h4>Initial-guess seed box (optional)</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Per-state-variable sampling box for multi-start Newton, "
+                "as a Python dict literal mapping variable name to "
+                "<code>(low, high)</code>.  Leave blank for the default "
+                "domain-aware box (positive&nbsp;&rarr;&nbsp;<code>[0, 5&middot;scale]</code>, "
+                "real&nbsp;&rarr;&nbsp;<code>[&minus;3&middot;scale, 3&middot;scale]</code> "
+                "where scale = max&nbsp;parameter&nbsp;magnitude).  Override only "
+                "if the default box misses your roots (e.g. tanh-bounded "
+                "states that need <code>(&minus;1.5, 1.5)</code>)."
+                '</p>'),
+            self._w_seed_box,
         ])
 
-        # Tab 9: Defaults
-        self._w_def_fund = W.Textarea(
-            value=(
-                "{\n"
-                "    'E':     [0.78, 0.81],\n"
-                "    'w':     [[0.30, 0.25], [0.30, 0.35]],\n"
-                "    'tau':   10.0,\n"
-                "    'a':     1.0,\n"
-                "    'tau_g': 2.5,\n"
-                "}"
-            ),
-            placeholder='Python dict literal',
-            layout=W.Layout(width='540px', height='150px'),
-        )
+        # Tab 9: Defaults (run metadata only — default-fundamental
+        # values are now sourced from each parameter's ``default=...``
+        # declaration on the Parameters tab, so a separate "default
+        # fundamental" textarea would be redundant and a foot-gun for
+        # drift).
         self._w_metadata = W.Textarea(
             value=(
                 "{\n"
@@ -547,14 +642,7 @@ class TheoryUI:
             layout=W.Layout(width='540px', height='150px'),
         )
         tab_defaults = W.VBox([
-            W.HTML('<h4>Default fundamental parameter values</h4>'
-                   '<p style="color:#555;font-size:90%;">'
-                   "Suggested numerical values for the parameters declared "
-                   "above.  The runner uses these by default but they can be "
-                   "overridden per-run via <code>FUNDAMENTAL_OVERRIDE</code>."
-                   '</p>'),
-            self._w_def_fund,
-            W.HTML('<br><h4>Run metadata</h4>'
+            W.HTML('<h4>Run metadata</h4>'
                    '<p style="color:#555;font-size:90%;">'
                    "Suggestions for k, max_ell, external_fields, τ-grid extent. "
                    "The runner uses these as defaults."
@@ -584,6 +672,7 @@ class TheoryUI:
             self._tbl_parameters.refresh_dropdown_options('index_2')
             self._tbl_kernels.refresh_dropdown_options('index_1')
             self._tbl_kernels.refresh_dropdown_options('index_2')
+            self._tbl_mfeqs.refresh_dropdown_options('population')
             self._autofill_default_templates()
         self._tbl_populations.on_change(_on_populations_changed)
 
@@ -795,15 +884,81 @@ class TheoryUI:
             'kernels':         kernels,
             'cgf_terms':       self._tbl_cgfs.get_rows(),
             'action_text':     self._w_action.get_value(),
-            'mf_equations':    [
-                {'saddle': r['saddle'], 'rhs': r['rhs']}
+            # New DAE form: list of {lhs, rhs, population} records,
+            # consumed by ``render_theory_file`` to emit
+            # ``.equation(...)`` calls.  Legacy specs that came in via
+            # ``set_mf_equation`` get re-rendered as ``.equation(...)``
+            # calls too, with population back-inferred from the saddle
+            # name (see ``load_spec_from_file``).
+            'equations':       [
+                {'lhs':        r['lhs'],
+                 'rhs':        r['rhs'],
+                 'population': (None if r['population'] in (_NONE, '', None)
+                                else r['population'])}
                 for r in self._tbl_mfeqs.get_rows()
+                if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
             ],
-            'default_fundamental': _eval_dict(self._w_def_fund.value,
-                                              'default_fundamental'),
-            'metadata':            _eval_dict(self._w_metadata.value,
-                                              'metadata'),
+            # Stability-analysis toggle on the MF tab.  Default OFF —
+            # set when the user checks the box; theories that integrate
+            # out voltages (all-algebraic equations) should leave it
+            # off, bistable / differential theories that want
+            # stability-based root selection should turn it on.
+            'stability_analysis':  bool(self._w_stability_on.value),
+            # default_fundamental is no longer a separate UI input —
+            # the per-parameter ``default=...`` declarations on the
+            # Parameters tab carry the suggested numerical values, and
+            # the runner reads them from there.  Emit an empty dict
+            # so the spec shape is preserved for legacy loaders.
+            'default_fundamental': {},
+            'metadata':            self._collect_metadata(),
         }
+
+    def _collect_metadata(self) -> dict:
+        """Build the METADATA dict, merging the user's Defaults-tab
+        Python literal with the MF-tab widget values (default
+        ``fixed_point_index`` + optional ``seed_box``).  The MF widgets
+        WIN on conflict so the explicit per-tab controls take
+        precedence over a stale literal."""
+        import ast
+
+        def _safe_dict(text, label):
+            text = (text or '').strip()
+            if not text:
+                return {}
+            try:
+                val = ast.literal_eval(text)
+            except (ValueError, SyntaxError) as e:
+                raise ValueError(
+                    f'{label} field is not a valid Python literal: {e}'
+                ) from e
+            if not isinstance(val, dict):
+                raise ValueError(
+                    f'{label} field must be a dict literal, got '
+                    f'{type(val).__name__}'
+                )
+            return val
+
+        md = _safe_dict(self._w_metadata.value, 'metadata') or {}
+        # Always write the default fixed-point index — even when it's 0
+        # — so reload picks it up unambiguously.
+        md['fixed_point_index_default'] = int(self._w_fpi_default.value)
+        seed_text = (self._w_seed_box.value or '').strip()
+        if seed_text:
+            try:
+                seed_box = _safe_dict(seed_text, 'seed_box_default')
+            except Exception:
+                # Bad input — fall through to writing the raw string;
+                # preview will surface the problem.
+                md['seed_box_default'] = seed_text
+            else:
+                if seed_box:
+                    md['seed_box_default'] = {
+                        k: tuple(v) if isinstance(v, (list, tuple)) else v
+                        for k, v in seed_box.items()
+                    }
+        else:
+            md.pop('seed_box_default', None)
+        return md
 
     # ── Button handlers ───────────────────────────────────────────
     def _on_preview(self, _btn) -> None:
@@ -1004,18 +1159,65 @@ class TheoryUI:
         self._w_action._text_w.value = spec.get('action_text', '') or ''
 
         # MF equations.
+        # The new DAE form is ``spec['equations']`` — list of
+        # ``{lhs, rhs, population}`` records.  Legacy ``mf_equations``
+        # (list of ``{saddle, rhs}``) is auto-converted to the new
+        # form: ``lhs = '<natural>[i]'`` (saddle name minus trailing
+        # ``star``), population back-looked-up from the physical field
+        # of that natural name.  Theories with both keys prefer the
+        # explicit ``equations`` list.
         self._tbl_mfeqs.clear()
-        for eq in spec.get('mf_equations', []) or []:
+        equations = spec.get('equations') or []
+        if not equations:
+            # Back-compat: convert legacy ``set_mf_equation(saddle, rhs)``
+            # entries.
+            phys_pop_by_natural = {
+                (f.get('natural_name') or f['name']): f.get('population')
+                for f in (spec.get('physical_fields') or [])
+            }
+            for eq in spec.get('mf_equations', []) or []:
+                saddle = (eq.get('saddle') or '').strip()
+                natural = (saddle[:-4] if saddle.endswith('star')
+                           else saddle)
+                pop = phys_pop_by_natural.get(natural)
+                equations.append({
+                    'lhs':        f'{natural}[i]' if natural else '',
+                    'rhs':        eq.get('rhs', ''),
+                    'population': pop,
+                })
+        for eq in equations:
+            pop = eq.get('population')
             self._tbl_mfeqs.add_row(values={
-                'saddle': eq.get('saddle', ''),
-                'rhs':    eq.get('rhs', ''),
+                'lhs':        eq.get('lhs', ''),
+                'rhs':        eq.get('rhs', ''),
+                'population': (_NONE if pop in (None, '', _NONE) else pop),
             })
 
-        # Defaults / metadata text areas.  Render the dicts back as
-        # Python source so the user can edit them.
-        df = spec.get('default_fundamental') or {}
-        if isinstance(df, dict):
-            self._w_def_fund.value = repr(df) if df else '{}'
+        # Metadata text area.  Render the dict back as Python source
+        # so the user can edit it.  The legacy ``default_fundamental``
+        # spec key, if present in a loaded file, is now ignored — the
+        # per-parameter ``default=...`` on the Parameters tab carries
+        # the suggested values.
+        # Stability-analysis toggle: restored from the spec's
+        # ``stability_analysis`` key (set by load_spec_from_file when
+        # parsing ``.stability_analysis(True)``).  Default False so
+        # specs without the call show an unchecked box.
+        self._w_stability_on.value = bool(spec.get('stability_analysis', False))
+
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
-            self._w_metadata.value = repr(md) if md else '{}'
+            # Pull the MF-tab widget values out of metadata so the
+            # textarea shows the "rest" while the dedicated widgets
+            # carry their own values.
+            md_for_textarea = dict(md)
+            self._w_fpi_default.value = int(
+                md_for_textarea.pop('fixed_point_index_default', 0) or 0)
+            sb = md_for_textarea.pop('seed_box_default', None)
+            if sb is None:
+                self._w_seed_box.value = ''
+            elif isinstance(sb, dict):
+                self._w_seed_box.value = repr(sb)
+            else:
+                self._w_seed_box.value = str(sb)
+            self._w_metadata.value = (repr(md_for_textarea)
+                                      if md_for_textarea else '{}')

@@ -23,7 +23,7 @@ Output file shape::
             .define_kernel(...)
             .declare_cgf_term(...)
             .set_action_text(\"\"\"...\"\"\")
-            .set_mf_equation(..., \"...\")
+            .equation(lhs=\"...\", rhs=\"...\", population=\"E\")
             .build()
         )
 
@@ -254,6 +254,17 @@ def _emit_mf_equation(saddle: str, rhs: str) -> str:
             f'{_py_repr(rhs)})')
 
 
+def _emit_equation(lhs: str, rhs: str, population) -> str:
+    """Emit a ``.equation(lhs=..., rhs=..., population=...)`` call for
+    the DAE-style MF spec.  Used by the new (Tab 9) UI MF form."""
+    lhs_repr = _py_repr(lhs)
+    rhs_repr = _py_repr(rhs)
+    parts = [f'lhs={lhs_repr}', f'rhs={rhs_repr}']
+    if population:
+        parts.append(f'population={_py_repr(population)}')
+    return f'.equation({", ".join(parts)})'
+
+
 # ── Main entry points ─────────────────────────────────────────────────
 
 def render_theory_file(spec: dict) -> str:
@@ -291,6 +302,11 @@ def render_theory_file(spec: dict) -> str:
     cgf_terms       = spec.get('cgf_terms', [])       or []
     action_text     = spec.get('action_text', '')
     mf_equations    = spec.get('mf_equations', [])    or []
+    # New DAE-form list: {lhs, rhs, population} records.  When
+    # populated, the file emits .equation(...) calls; when empty,
+    # falls back to the legacy .set_mf_equation(...) emission from
+    # ``mf_equations`` for backward compat.
+    equations       = spec.get('equations', [])       or []
     default_fund    = spec.get('default_fundamental', {}) or {}
     metadata        = spec.get('metadata', {})        or {}
 
@@ -354,8 +370,25 @@ def render_theory_file(spec: dict) -> str:
             prefix = '        ' if i == 0 else '        '
             out.append(prefix + line)
 
-    for eq in mf_equations:
-        out.append(f'        {_emit_mf_equation(eq["saddle"], eq["rhs"])}')
+    # Prefer the new DAE-form .equation(...) emission when available.
+    # Otherwise fall back to legacy .set_mf_equation(...) for old specs.
+    if equations:
+        for eq in equations:
+            out.append(
+                f'        {_emit_equation(eq["lhs"], eq["rhs"], eq.get("population"))}'
+            )
+    else:
+        for eq in mf_equations:
+            out.append(
+                f'        {_emit_mf_equation(eq["saddle"], eq["rhs"])}'
+            )
+
+    # Stability-analysis toggle (default OFF on the TheoryBuilder).
+    # Only emit when explicitly ON so OFF-by-default theories stay
+    # textually quiet.  Allows a theory file to be diffed cleanly
+    # against the UI's intent.
+    if spec.get('stability_analysis'):
+        out.append('        .stability_analysis(True)')
 
     out.append('        .build()')
     out.append('    )')
@@ -480,6 +513,15 @@ def load_spec_from_file(path: str) -> dict:
         'cgf_terms':       [],
         'action_text':     '',
         'mf_equations':    [],
+        # New DAE form: list of {lhs, rhs, population} records.
+        # Populated below when the source uses ``.equation(...)``
+        # calls.  Old files using ``.set_mf_equation(...)`` populate
+        # ``mf_equations`` instead and the UI auto-converts on load.
+        'equations':       [],
+        # Stability-analysis toggle from ``.stability_analysis(bool)``;
+        # default OFF.  Stays False until the parser hits an explicit
+        # ``.stability_analysis(True)`` call.
+        'stability_analysis': False,
         'default_fundamental': default_fund,
         'metadata':        metadata,
     }
@@ -574,6 +616,28 @@ def load_spec_from_file(path: str) -> dict:
                 spec['mf_equations'].append({
                     'saddle': args[0], 'rhs': args[1],
                 })
+
+        elif method == 'equation':
+            # New DAE form: ``.equation(lhs=..., rhs=...,
+            # population=...)``.  All three are kwargs in the canonical
+            # emission, but allow positional-only too.
+            lhs = kw.get('lhs') if 'lhs' in kw else (args[0] if len(args) >= 1 else '')
+            rhs = kw.get('rhs') if 'rhs' in kw else (args[1] if len(args) >= 2 else '')
+            pop = (kw.get('population') if 'population' in kw
+                   else (args[2] if len(args) >= 3 else None))
+            spec['equations'].append({
+                'lhs':        lhs or '',
+                'rhs':        rhs or '',
+                'population': pop,
+            })
+
+        elif method == 'stability_analysis':
+            # ``.stability_analysis(True)`` toggle.  Absence ⇒ default
+            # OFF (matches ``TheoryBuilder``'s own default).
+            if args:
+                spec['stability_analysis'] = bool(args[0])
+            elif 'enabled' in kw:
+                spec['stability_analysis'] = bool(kw['enabled'])
 
         elif method == 'build':
             continue

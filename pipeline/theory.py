@@ -159,6 +159,24 @@ class TheoryBuilder:
         self._mf_eqs_text:      dict[str, str] = {}
         self._cgf_terms:        list[dict] = []
         self._phi_function_name: Optional[str] = None
+        # Explicit DAE specification (new MF-solver path).  Each entry:
+        #   {'lhs_text': str, 'rhs_text': str,
+        #    'population': str | None, 'kind': 'differential' | 'algebraic'}
+        # ``kind`` is inferred from whether ``Dt`` appears as a word in
+        # ``lhs_text``.  Populated via ``.equation(...)``.  Consumed by
+        # the DAE-based ``solve_mean_field`` (multi-start Newton + sort
+        # + linear-stability).  If empty, the legacy iteration solver
+        # runs from ``_mf_eqs_text`` instead.
+        self._equations:        list[dict] = []
+        # Whether the DAE solver should classify every converged root
+        # for linear stability and restrict ``fixed_point_index`` to
+        # the stable subset.  Default OFF — theories that integrate
+        # out their voltages (all-algebraic equations, no ``Dt``)
+        # have no differential structure to score, so eigenvalue
+        # analysis is vacuous.  Bistable / differential theories that
+        # want stability-based root selection must opt in explicitly
+        # via ``.stability_analysis(True)``.
+        self._stability_analysis: bool = False
 
     # ── Population declarations ───────────────────────────────────
     def population(self, name: str, *, size: int = 1,
@@ -506,6 +524,133 @@ class TheoryBuilder:
         self._mf_eqs_text[saddle_name] = rhs_text
         return self
 
+    def equation(self, *, lhs: str, rhs: str,
+                 population: Optional[str] = None):
+        """Declare one residual of the DAE system used by the multi-root
+        MF solver and linear-stability check.
+
+        Each call adds ONE equation of the form ``LHS = RHS``, i.e.
+        residual ``LHS - RHS = 0``.  At MF evaluation the framework
+        substitutes ``Dt → 0`` on the LHS and solves the resulting
+        algebraic system via multi-start Newton (``solve_mean_field``).
+        At linearization (for stability) the framework keeps ``Dt`` as
+        ``-iω`` and assembles the generalized-eigenvalue problem
+        ``(B - iω A) δx = 0`` from per-equation partials.
+
+        Parameters
+        ----------
+        lhs : str
+            Sage-syntax expression.  Allowed to contain ``Dt`` (the
+            time-derivative operator).  If ``Dt`` appears as a word
+            here, the equation is classified ``'differential'``;
+            otherwise ``'algebraic'``.  Example:
+            ``'(tau[i]*Dt + 1) * v[i]'``.
+        rhs : str
+            Sage-syntax expression in terms of ``i`` (and ``j`` for
+            inner sums), declared parameters, declared functions
+            (``phi[i](...)``), and state-variable fields.  Must NOT
+            contain ``Dt`` (time derivatives belong on the LHS) or
+            ``Conv(...)`` operators (we assume stationary MF, so
+            kernel convolutions of constants have been pre-collapsed
+            by the user; for a normalized kernel that's just the
+            constant itself).  Example:
+            ``'Em[i] + sum(w[i,j]*n[j] for j in E)'``.
+        population : str, optional
+            Population name (matching a ``.population(name=...)``
+            declaration).  The equation is expanded over the
+            population's index set at solve time — ``[i]`` ranges
+            over ``range(pop_size)``.  Pass ``None`` for a scalar
+            equation (no ``[i]`` indexing on either side).
+
+        Returns
+        -------
+        self
+            For chaining.
+
+        Notes
+        -----
+        Equations don't need names — they're stored in declaration
+        order and the solver treats them as an unordered system.
+        For diagnostics the framework auto-labels each equation by
+        its (truncated) LHS text.
+
+        Sort order for multi-root solutions: the framework sorts
+        fixed points by the FIRST declared physical field's first
+        population index, ascending.  Use ``fixed_point_index=N`` in
+        ``compute_cumulants`` to pick the N-th root (default 0 =
+        lowest).
+        """
+        import re
+
+        if not isinstance(lhs, str) or not lhs.strip():
+            raise ValueError(
+                'TheoryBuilder.equation(): lhs must be a non-empty string.'
+            )
+        if not isinstance(rhs, str) or not rhs.strip():
+            raise ValueError(
+                'TheoryBuilder.equation(): rhs must be a non-empty string.'
+            )
+
+        # Reject Conv(...) — stationary assumption requires the user
+        # to have pre-collapsed kernel convolutions.  Catches both
+        # ``Conv(g, n)`` and case variants like ``conv(...)``.
+        for side_name, side_text in (('lhs', lhs), ('rhs', rhs)):
+            if re.search(r'\bConv\s*\(', side_text, re.IGNORECASE):
+                raise ValueError(
+                    f"TheoryBuilder.equation(): Conv(...) found in "
+                    f"{side_name}; the DAE assumes stationary MF, so "
+                    f"all kernel convolutions of constants must be "
+                    f"pre-collapsed (for normalized kernels: replace "
+                    f"``Conv(g, x)`` with ``x``)."
+                )
+
+        # Reject Dt in rhs — derivatives belong on the LHS.
+        if re.search(r'\bDt\b', rhs):
+            raise ValueError(
+                "TheoryBuilder.equation(): Dt found in rhs; time "
+                "derivatives must appear on the LHS only."
+            )
+
+        # Classify by Dt presence in lhs.
+        kind = ('differential' if re.search(r'\bDt\b', lhs)
+                else 'algebraic')
+
+        self._equations.append({
+            'lhs_text':   lhs,
+            'rhs_text':   rhs,
+            'population': population,
+            'kind':       kind,
+        })
+        return self
+
+    def stability_analysis(self, enabled: bool):
+        """Toggle linear-stability classification for the DAE solver.
+
+        Parameters
+        ----------
+        enabled : bool
+            ``True``: ``solve_mean_field_dae`` runs ``linear_stability``
+            on every converged root, filters to the stable subset, and
+            ``fixed_point_index`` ranges over those.  Required for
+            bistable / multi-saddle theories where the diagrammatic
+            expansion is only well-defined at the linearly-stable
+            roots.
+
+            ``False`` (default): no stability analysis runs.
+            ``fixed_point_index`` ranges over every converged root,
+            sorted ascending by the first declared physical field's
+            first index.  Use this for theories whose equations are
+            ALL algebraic — e.g. voltages have been integrated out —
+            where the generalized-eigenvalue ``(σA + B)`` has
+            ``A ≡ 0`` and "linear stability" has no meaning.
+
+        The setting is stored on the built model as
+        ``model['stability_analysis']`` and consumed by
+        ``pipeline._mean_field_dae.solve_mean_field_dae``.
+        """
+        self._stability_analysis = bool(enabled)
+        return self
+
     def declare_cgf_term(self, name: str, response_field: str, order: int,
                          coefficient: str, kernel: str = None):
         """Add one term to a non-closed-form cumulant generating
@@ -717,10 +862,108 @@ class TheoryBuilder:
         return self
 
     # ── Text → lambda compilation ─────────────────────────────────
+    def _auto_populate_mf_eqs_from_equations(self) -> None:
+        """When ``.equation(lhs=..., rhs=...)`` calls have been made but
+        no legacy ``set_mf_equation(...)`` has been registered, synthesize
+        the latter from the former so the FieldTheory sanity check and
+        action-substitution chain keep working unchanged.
+
+        Assumption: each equation's LHS at ``Dt = 0`` reduces to a single
+        state-variable reference like ``v[i]`` (possibly with a unit
+        coefficient).  The saddle name is inferred as
+        ``<state_var>star``; state-variable references in the RHS are
+        textually rewritten to saddle names (``n[j] → nstar[j]``, etc.).
+
+        Theories with more elaborate LHSs (e.g. ``v[i] - n[i] = …``)
+        should either simplify the LHS or fall back to direct
+        ``set_mf_equation(...)`` declarations.
+        """
+        import re
+
+        if not self._equations or self._mf_eqs_text:
+            return
+
+        # Field names the user might have written in equations.  Use
+        # ``natural_name`` (the user-facing letter) when set, otherwise
+        # fall back to the internal name.
+        state_var_names = [
+            (f.natural_name or f.name) for f in self.physical_fields
+        ]
+        if not state_var_names:
+            return
+
+        for eq in self._equations:
+            lhs_text   = eq['lhs_text']
+            rhs_text   = eq['rhs_text']
+
+            # Substitute ``Dt → 0`` in the LHS text.  The result should
+            # textually contain exactly one state-variable reference.
+            lhs_at_dt0 = re.sub(r'\bDt\b', '0', lhs_text)
+
+            # Try indexed form first (``x[i]``), then fall back to
+            # scalar form (bare ``x``) for theories without a
+            # declared population.  Both forms are accepted.
+            primary = None
+            scalar_form = False
+            for v in state_var_names:
+                if re.search(rf'\b{re.escape(v)}\[\s*i\s*\]', lhs_at_dt0):
+                    primary = v
+                    scalar_form = False
+                    break
+            if primary is None:
+                # No ``[i]`` in LHS — look for bare field name.
+                for v in state_var_names:
+                    if re.search(rf'\b{re.escape(v)}\b', lhs_at_dt0):
+                        primary = v
+                        scalar_form = True
+                        break
+            if primary is None:
+                raise ValueError(
+                    f'TheoryBuilder.build(): cannot auto-derive an MF '
+                    f'saddle name for equation with lhs={lhs_text!r}. '
+                    f'At Dt=0 the LHS must reduce to either a bare '
+                    f'state-variable reference (``x`` for scalar '
+                    f'theories) or an indexed one (``v[i]``).  Either '
+                    f'simplify the LHS, or skip ``.equation(...)`` and '
+                    f'use ``set_mf_equation(...)`` directly.'
+                )
+
+            # Rewrite the RHS, replacing each state-variable name with
+            # its saddle counterpart.  Word-boundary regex avoids hits
+            # on parameter/kernel names that contain the field name as
+            # a substring (e.g. ``Em`` vs ``E``).
+            rewritten_rhs = rhs_text
+            for v in state_var_names:
+                rewritten_rhs = re.sub(
+                    rf'\b{re.escape(v)}\b',
+                    f'{v}star',
+                    rewritten_rhs,
+                )
+            # For scalar (no-``[i]``) LHS, the saddle RHS should also
+            # be in scalar form — rewrite ``xstar`` → ``xstar[0]``
+            # because the legacy MF compiler expects per-population
+            # indexed access.  (The DAE solver auto-handles both.)
+            if scalar_form:
+                rewritten_rhs = re.sub(
+                    r'\b(\w+)star\b(?!\s*\[)',
+                    r'\1star[i]',
+                    rewritten_rhs,
+                )
+
+            saddle_name = f'{primary}star'
+            self._mf_eqs_text[saddle_name] = rewritten_rhs
+
     def _compile_text_declarations(self) -> None:
         """Walk the text-based declarations and compile each into the
         corresponding lambda hook.  No-op if no text declarations
         were made (template-only builders go through unchanged)."""
+        # Step 0: if the user used the new ``.equation(...)`` API but
+        # didn't separately call ``set_mf_equation(...)``, derive the
+        # legacy mf-eq text dict from the equations so the rest of the
+        # compilation chain (sanity check, action substitution) works
+        # without change.
+        self._auto_populate_mf_eqs_from_equations()
+
         if not (self._action_text or self._function_specs
                 or self._kernel_specs or self._mf_eqs_text
                 or self._cgf_terms):
@@ -835,6 +1078,11 @@ class TheoryBuilder:
                                             f'declared function {fname}'),
                 'expression':   (lambda i, *xs, _t=fname:
                                  sr_function(f'{_t}_{i+1}')(*xs)),
+                # Preserve the user's original text spec so downstream
+                # consumers (e.g. the DAE-MF solver) can evaluate the
+                # function numerically without going through Sage SR.
+                'expression_text': fn_spec.get('expression'),
+                'args_text':       list(fn_spec.get('args') or []),
             }
             # Heterogeneous-pop annotation passes through unchanged
             # so downstream pipeline can route ``phi[i](...)`` to the
@@ -993,6 +1241,27 @@ class TheoryBuilder:
         hooks.  Validates that all required hooks ended up populated.
         Raises ValueError with a clear message if anything is missing.
         """
+        # ── Scalar-mode autopop ────────────────────────────────────
+        # When no ``.population(...)`` has been declared but physical
+        # fields exist, auto-inject a single-position population
+        # ``pop`` of size 1 so the rest of the build machinery (which
+        # was originally designed for heterogeneous populations) runs
+        # uniformly.  Each physical field without a ``population``
+        # attribute gets bound to this auto-pop.  Combined with the
+        # ``_FieldScalar`` / ``_FullPhysicalField`` scalar-arithmetic
+        # wrappers in ``theory_compiler``, this lets users write
+        # truly scalar theories — bare ``xt * x`` instead of
+        # ``sum(xt[i]*x[i] for i in pop)``.
+        if not self.populations and self.physical_fields:
+            self.population('pop', size=1,
+                            description='auto-injected scalar population')
+            for f in self.physical_fields:
+                if f.population is None:
+                    f.population = 'pop'
+            for f in self.response_fields:
+                if getattr(f, 'population', None) is None:
+                    f.population = 'pop'
+
         # Compile any text declarations into lambdas.  Done here, not
         # in the setters, so that all decls are available when each
         # lambda's namespace is assembled.
@@ -1088,6 +1357,13 @@ class TheoryBuilder:
             'physical_fields': [self._field_dict(f) for f in self.physical_fields],
             'parameters':      [self._param_dict(p) for p in self.parameters],
             'kernels':         [self._kernel_dict(k) for k in self.kernels],
+            # Explicit DAE residuals (new MF-solver path).  When the
+            # list is non-empty, compute_cumulants routes through
+            # ``solve_mean_field`` (multi-start Newton + sort +
+            # ``fixed_point_index`` selection + linear stability)
+            # instead of the legacy iteration solver in
+            # ``pipeline._solve_mf``.
+            'equations':       [dict(eq) for eq in self._equations],
             'operators':       list(self._operators) or [
                 {'name': 'Dt', 'sage_name': 'Dt',
                  'latex_name': r'\partial_t', 'description': 'd/dt'},
@@ -1097,6 +1373,11 @@ class TheoryBuilder:
             'phi_concrete':    self._phi_concrete,
             'action':          self._action,
             'naming_convention': naming_convention,
+            # Whether the DAE solver classifies linear stability and
+            # restricts ``fixed_point_index`` to the stable subset.
+            # Defaults to False — set via ``.stability_analysis(True)``
+            # for bistable / multi-saddle differential theories.
+            'stability_analysis': bool(self._stability_analysis),
         }
         if self._mf_bg is not None:
             # Action-side dict (closure-baked): used by

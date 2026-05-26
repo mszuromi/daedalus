@@ -557,22 +557,39 @@ def _mf_numerical_residual(expr, ns, model):
     (no MF solver, fundamental incomplete, etc.) — the caller falls
     back to ``failures`` rather than ``soft_passes`` in that case.
     """
-    try:
-        from pipeline._mean_field import solve_mean_field
-    except ImportError:
-        return None
-
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
     if fundamental is None:
         return None
 
-    try:
-        ft_proxy = _MFProxyForSolver(
-            ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
-        mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
-    except Exception:
-        return None
+    # Prefer the DAE-based solver when the model has declared
+    # ``.equation(...)``-style residuals — the legacy iterative
+    # solver doesn't know how to iterate self-referential
+    # implicit equations (e.g. ``xstar = -eps*xstar^3``), so it
+    # returns no saddle values and the residual check would default
+    # to xstar=1.0 from the all-ones fallback (wildly wrong).
+    mf = None
+    if model.get('equations'):
+        try:
+            from pipeline._mean_field_dae import solve_mean_field_dae_compat
+            ft_proxy = _MFProxyForSolver(
+                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
+            mf = solve_mean_field_dae_compat(
+                ft_proxy, model, fundamental, verbose=False)
+        except Exception:
+            mf = None
+
+    if mf is None:
+        try:
+            from pipeline._mean_field import solve_mean_field
+        except ImportError:
+            return None
+        try:
+            ft_proxy = _MFProxyForSolver(
+                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
+            mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
+        except Exception:
+            return None
 
     num_subs = dict(mf.get('num_params', {}))
     try:
