@@ -99,6 +99,29 @@ theory file, then iterates on ``compute_cumulants`` at whatever
 pre-validated; only the expand step at the target order pays full
 cost (once per order).
 
+### Auto-default ``taylor_order`` floor: 4 → 2
+
+``compute_cumulants(taylor_order=None)`` previously auto-picked
+``max(k + 2·max_ell, 4)``.  The floor of 4 was a relic of the old
+``saved_theories/<theory>_taylor4/`` cache layout — it kept all
+1-loop 2-cumulant runs in one cache directory.  With the new
+per-theory cache layout, sibling files at different orders coexist
+cleanly, so the floor isn't needed for that purpose.
+
+Lowered to 2, the structural minimum (anything less wouldn't capture
+the (1,1) propagator + (0,0)/(1,0)/(0,1) MF sectors that downstream
+code unconditionally reads).  Effect:
+
+  * ``k=2, max_ell=0``: order picked drops from 4 → 2 — saves the
+    full Taylor expansion cost on heavy theories (the dendritic
+    Bernoulli theory drops from 92 min to ~30 s end-to-end on a
+    cold notebook).
+  * ``k=3, max_ell=0``: 4 → 3 (one degree saving).
+  * ``max_ell >= 1``: zero change; the formula already exceeded 4.
+
+For ``k=2, max_ell=0`` callers who actually want the higher-order
+vertex content for some reason, pass ``taylor_order=4`` explicitly.
+
 ### Theory-builder UI — "Pre-compute essentials" button
 
 Lives on the MF tab, under the seed-box.  Invokes

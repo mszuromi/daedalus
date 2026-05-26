@@ -210,3 +210,46 @@ def test_precompute_populates_cache(model_and_fund, isolated_cache):
     files = set(os.listdir(cd))
     assert 'expand_taylor2.sobj' in files
     assert 'propagator.sobj' in files
+
+
+def test_default_taylor_order_matches_diagrammatic_minimum(
+        model_and_fund, isolated_cache):
+    """When ``taylor_order=None``, ``compute_cumulants`` must auto-pick
+    ``max(k + 2*max_ell, 2)`` — the mathematical minimum, not the
+    historical 4-floor that forced over-expansion for ``k=2, max_ell=0``.
+
+    Verifies via the cache: after precompute() writes expand_taylor2.sobj,
+    a default-taylor compute_cumulants(k=2, max_ell=0) call must HIT
+    that cache (and not produce expand_taylor4.sobj as a side effect).
+    """
+    from pipeline import compute_cumulants, precompute
+    from pipeline._expand_cache import cache_dir
+
+    model, fundamental = model_and_fund
+
+    # 1) Precompute populates expand_taylor2.sobj.
+    precompute(model, verbose=False)
+    cd = cache_dir(model)
+    before = set(os.listdir(cd))
+    assert 'expand_taylor2.sobj' in before
+    assert 'expand_taylor4.sobj' not in before
+
+    # 2) Default-taylor compute_cumulants must hit the order-2 cache,
+    # NOT trigger an order-4 expand.
+    compute_cumulants(
+        model=model, k=2, max_ell=0,           # no taylor_order kwarg
+        fundamental=fundamental,
+        external_fields=[('n', 1), ('n', 2)],
+        tau_max=5.0, tau_step=1.0,
+        parallel=False, verbose=False,
+    )
+
+    after = set(os.listdir(cd))
+    new_files = after - before
+    # No new expand_taylor*.sobj should have appeared — the default
+    # picked order 2, which was already cached.
+    new_expand_files = {f for f in new_files
+                        if f.startswith('expand_taylor')}
+    assert new_expand_files == set(), (
+        f'default-taylor compute_cumulants produced new expand caches: '
+        f'{sorted(new_expand_files)} — the auto-picker floor is too high')
