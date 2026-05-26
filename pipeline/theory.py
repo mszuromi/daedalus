@@ -692,6 +692,11 @@ class TheoryBuilder:
             commas) is broadcast across all legs — equivalent to
             ``response_field=<name>``.  When both are supplied,
             ``response_legs`` wins.
+
+        See ``docs/correlated_noise_capabilities.md`` for the
+        complete reference on supported / unsupported noise models —
+        in particular the n ≥ 3 smooth-kernel limit, multiplicative-
+        noise workaround, and non-stationary / Lévy gaps.
         """
         if response_legs is None and response_field is None:
             raise ValueError(

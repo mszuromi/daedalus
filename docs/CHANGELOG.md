@@ -111,7 +111,11 @@ For higher-order cumulants (n ≥ 3) the same response_legs syntax
 applies; the framework injects fully-local (∏δ) contributions at
 any order, and emits the existing "smooth residual at n ≥ 3
 requires integrator extension" warning for non-local kernels
-(unchanged from before).
+(unchanged from before).  See
+[`docs/correlated_noise_capabilities.md`](correlated_noise_capabilities.md)
+for the comprehensive reference on supported / unsupported
+correlated-noise patterns, workarounds, and integrator-extension
+cost estimates.
 
 ### Tests
 
