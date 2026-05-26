@@ -621,47 +621,7 @@ class TheoryUI:
                 "states that need <code>(&minus;1.5, 1.5)</code>)."
                 '</p>'),
             self._w_seed_box,
-            W.HTML(
-                '<br><h4>Pre-compute essentials</h4>'
-                '<p style="color:#555;font-size:90%;">'
-                "Run the one-time structural pass: expand the action at "
-                "<code>taylor_order=2</code>, verify the mean-field saddle "
-                "cancels, solve for the saddle, build the propagator, and "
-                "cache everything under "
-                "<code>saved_theories/&lt;theory&gt;/</code>.  Independent "
-                "of <code>taylor_order</code>: the propagator + MF check "
-                "only need the bilinear sector, so a single run here "
-                "amortises across every subsequent "
-                "<code>compute_cumulants</code> call at any "
-                "<code>taylor_order &ge; 2</code>.  "
-                "Subsequent runs of pre-compute are free (cache hit) "
-                "unless the theory's structure changed.  "
-                "Typical wall: a few seconds for simple theories, "
-                "&lt;1&nbsp;min for heavy compartmental Bernoulli theories."
-                '</p>'),
-            W.HBox([
-                W.Button(
-                    description='Pre-compute essentials',
-                    button_style='info',
-                    icon='check-circle',
-                    layout=W.Layout(width='220px'),
-                ),
-            ], layout=W.Layout(margin='4px 0')),
-            # Output panel — populated by the button's on_click handler.
         ])
-
-        # Snag a handle to the precompute button so we can wire the
-        # click handler after _build_widgets finishes (the handler
-        # lives on the class, not in this scope).
-        self._btn_precompute = (
-            tab_mfeqs.children[-1].children[0])  # the Button inside HBox
-        self._w_precompute_out = W.Output(
-            layout=W.Layout(border='1px solid #ddd', padding='6px',
-                            min_height='40px', max_height='320px',
-                            overflow='auto', margin='4px 0'))
-        # Append the Output widget to the MF tab below the button row.
-        tab_mfeqs.children = tab_mfeqs.children + (self._w_precompute_out,)
-        self._btn_precompute.on_click(self._on_precompute)
 
         # Tab 9: Defaults (run metadata only — default-fundamental
         # values are now sourced from each parameter's ``default=...``
@@ -733,11 +693,26 @@ class TheoryUI:
         self._btn_save    = W.Button(description='Save theory file',
                                      button_style='success', icon='save',
                                      layout=W.Layout(width='180px'))
+        # Pre-compute essentials: one-shot structural validation +
+        # propagator + saddle cache.  Lives next to Save because it's
+        # the "is this theory healthy" check you run right after
+        # saving (the file isn't strictly required — precompute reads
+        # the in-memory spec).  Status output goes to the same global
+        # ``self._status`` panel the save / load buttons use.
+        self._btn_precompute = W.Button(description='Pre-compute',
+                                        button_style='info',
+                                        icon='check-circle',
+                                        tooltip=(
+                                            'Expand at taylor_order=2, '
+                                            'verify mean-field saddle, '
+                                            'build + cache propagator.'),
+                                        layout=W.Layout(width='160px'))
         self._btn_reset   = W.Button(description='Reset',
                                      button_style='warning',
                                      layout=W.Layout(width='100px'))
         self._btn_preview.on_click(self._on_preview)
         self._btn_save.on_click(self._on_save)
+        self._btn_precompute.on_click(self._on_precompute)
         self._btn_reset.on_click(self._on_reset)
 
         # Load existing theory: dropdown of files in theories_dir,
@@ -776,7 +751,8 @@ class TheoryUI:
             self._header,
             self._tabs,
             W.HBox([self._w_save_path, self._btn_save,
-                    self._btn_preview, self._btn_reset]),
+                    self._btn_preview, self._btn_precompute,
+                    self._btn_reset]),
             W.HBox([self._w_load_pick, self._btn_load]),
             self._status,
         ])
@@ -1040,15 +1016,14 @@ class TheoryUI:
 
         Builds an in-memory ``model`` from the current spec (without
         writing a ``.theory.py`` file), then invokes the pre-compute
-        primitive.  Output goes to the MF-tab Output widget right
-        below the button — distinct from the global status pane so
-        you can keep verifying mid-edit without losing the save log.
+        primitive.  Output goes to the global ``self._status`` panel,
+        same as Save / Load.
         """
         from pipeline import precompute
         from pipeline.theory_serialize import render_theory_file
 
-        self._w_precompute_out.clear_output()
-        with self._w_precompute_out:
+        self._status.clear_output()
+        with self._status:
             try:
                 spec = self._collect()
             except Exception as e:
