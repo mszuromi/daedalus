@@ -4,6 +4,167 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-19 → 2026-05-22 — `dae-mf-solver` branch  (commits `f771bd9` … `22ff99c`)
+
+Substantial rework of the mean-field solver and downstream UI, plus a
+coercion fix that unlocks compartmental-neuron (Bernoulli CGF) theories
+in scalar mode.  28 commits.  All `tests/test_grouped_vs_perdiag.py`
+(6 tests) continue to pass.
+
+### DAE-based MF solver  (`pipeline/_mean_field_dae.py`)
+
+Replaces the legacy iteration solver for theories that declare their
+state-variable dynamics via the new ``.equation(lhs, rhs, population)``
+API on ``TheoryBuilder``:
+
+  * **`solve_mean_field_dae`** — multi-start Newton over a domain-aware
+    seed box (positive → `[0, 5·scale]`, real → `[-3, 3]·scale`),
+    `n_starts=64` by default.  Roots are de-duplicated and sorted
+    ascending by the first declared physical field's first population
+    index; the caller picks via ``fixed_point_index``.
+  * **`linear_stability(model, fundamental, root)`** — generalized
+    eigenvalue problem ``(σA + B)·δx = 0`` on the linearised residual.
+    Algebraic equations (no `Dt`) contribute zero rows in `A` and
+    surface as "infinite" eigenvalues; those are filtered out.
+    Finite eigenvalues with `Re(σ) < 0` ⇒ stable.
+
+Routes through ``pipeline/compute.py:compute_cumulants`` whenever
+`model['equations']` is non-empty; the legacy iteration path stays
+for theories that still use the legacy `set_mf_equation(...)`.
+
+### Stability-analysis toggle  (May 2026)
+
+A theory whose equations are all algebraic (e.g. voltages integrated
+out) has no differential structure to score — every eigenvalue lands
+at infinity and "linear stability" is a vacuous label.  New
+**`.stability_analysis(bool)`** builder method (default **OFF**):
+
+  * **OFF** — `fixed_point_index` ranges over every converged root;
+    per-root `stable` flag is `None`.  Cheap; no eigenvalue work.
+  * **ON** — pre-existing path: classify each root, filter to stable
+    subset, raise if none stable.
+
+UI surface: new **"Run linear stability analysis"** checkbox on the
+MF tab.  `render_theory_file` emits `.stability_analysis(True)` only
+when ON; the load path round-trips the toggle cleanly.
+
+Bistable theories that rely on stability filtering (e.g.
+`single_population_bistable_demo`) now explicitly opt in.
+
+### Scalar-mode field coercion  (`pipeline/theory_compiler.py`)
+
+`_FieldScalar` / `_FullPhysicalField` proxies (used in scalar-mode
+auto-pop theories so `xt*x` works alongside `xt[i]*x[i]`) broke as
+soon as the action passed a field through a Sage `BuiltinFunction` —
+`exp(nt)`, `log(1 + …)`, `sqrt(…)`, or a user-declared formal
+function `f(v)`.  Sage's strict `BuiltinFunction.__call__` coercion
+does NOT honor `_sage_()` on Python wrapper classes.
+
+Three coordinated edits:
+  1. **`_unwrap_field_arg`** — detects size-1 wrappers, returns the
+     bare SR expression.
+  2. **`_builtin_namespace()`** — wraps every numeric Sage builtin in
+     `_unwrap_builtin(...)` so `exp/log/sin/cos/tan/sqrt/heaviside/dirac_delta`
+     auto-unwrap their arguments.
+  3. **`_IndexedFormalFunction.__call__`** — new method; scalar-mode
+     `f(v)` resolves to `sr_function('f_1')(v)` (same as `f[0](v)`),
+     with arg unwrapping.
+
+Plus a mirror fix in `pipeline/_mean_field_dae.py`: `_PhiCallableList`
+wraps the per-population phi callables so scalar-mode `f(v)` works
+in both the residual evaluator and `linear_stability`.
+
+The framework's *existing* multivariate `taylor()` pass (lines
+781–786 of `msrjd/core/field_theory.py`) was already general; the bug
+was downstream in scalar-mode coercion, not in the Taylor step.
+
+This unlocks compartmental neuronal-network actions like
+
+```
+nt*n - (exp(nt) - 1)*f(v)
++ mt*m - n*log(1 + (exp(mt) - 1)*g(w))
++ vt*((Dt+1)*v - ES) + wt*((Dt+1)*w - ED)
+```
+
+The Bernoulli CGF expands into all the expected conditional vertices
+(including the `mt·dn·dw` cross-coupling).  See
+`docs/scalar_mode_field_coercion_fix.md`.
+
+### `.equation()` DAE API for TheoryBuilder
+
+New method `TheoryBuilder.equation(lhs=..., rhs=..., population=...)`.
+Each call registers one residual `LHS − RHS = 0`; `kind` (`'differential'`
+vs `'algebraic'`) is auto-detected from whether `Dt` appears in the
+LHS.  An auto-derive pass converts `.equation()` calls into legacy
+`_mf_eqs_text` for the rest of the compilation chain.
+
+Replaces the older `set_mf_equation(saddle, rhs)` declarations for
+theories that go through the DAE solver.
+
+### Theory ports + new theories
+
+  * **`ou_quartic_double_well`**, **`ou_sextic`** — ported to `.equation()`.
+    Multi-well notebooks pick stable wells via `fixed_point_index`.
+  * **`ou_quartic_two_dim`** — new 2D scalar-mode theory + sim + notebook.
+  * **`single_population_bistable_demo`** — multi-root + stability
+    classification showcase (`tanh(g·v)` transfer, 3 roots).
+  * **`single_population_linear_delta_voltage_test`** — ported to
+    `.equation()`; identical k=3 cumulants to the slaved-field
+    `linear_delta_spikes` variant.
+  * **`single_pop_dendritic_linear`** — new compartmental neuronal
+    theory (soma Poisson + dendrite Bernoulli CGF).  All-algebraic;
+    `stability_analysis` defaults off.
+  * **`single_population_conductance_synapse_test`** — new
+    conductance synapse variant (driving-force factor `(Eg - v)`
+    in the action).
+
+### Simulators
+
+  * **`models/dendritic_linear_sim_numba.py`** — Euler-step
+    soma-Poisson + dendrite-Bernoulli (cap `p_D` at 1 per paper
+    convention), 4 N×N filter banks per (post-side × pre-spike)
+    combination.
+  * **`models/hawkes_sim_multipop_numba.py`** — new
+    `sim_hawkes_multipop_linear_conductance_numba` for the conductance
+    synapse comparison.
+  * **`models/ou_langevin_sim_numba.py`** — `sim_ou_quartic_two_dim_numba`
+    for the 2D OU quartic comparison.
+
+### UI changes (`pipeline/ui/main.py`)
+
+  * MF tab redesigned for the DAE form (`lhs` / `rhs` / `population`
+    rows instead of legacy `saddle` / `rhs`).
+  * New `fixed_point_index` BoundedIntText.
+  * New `Run linear stability analysis` checkbox.
+  * Optional `seed_box` textarea (per-variable `(low, high)`).
+  * Removed the standalone "Default fundamental parameter values"
+    textarea — per-parameter `default=...` declarations on the
+    Parameters tab are the single source of truth.
+
+### Known limitations
+
+  * **Expand-step runtime on heavy Bernoulli theories**: for a
+    4-field × 2-population theory with both Poisson AND Bernoulli
+    CGFs (e.g. `single_pop_dendritic_linear`), Sage's multivariate
+    `taylor()` at `taylor_order=4` runs ~90 minutes single-threaded.
+    The result is cached for the propagator + diagrams, but
+    `FieldTheory.expand()` itself is NOT cached — restarting the
+    kernel forces a re-expand.  Workaround: pass `taylor_order=2`
+    explicitly when `k + 2·max_ell ≤ 2` (mathematically equivalent
+    at tree level).  Long-term fix: add an expand-result cache
+    keyed on `(action_text, taylor_order)`.
+
+  * **Symbolic MF substitution doesn't iterate to fixpoint** —
+    when `mf_bg_conditions` has a self-referential RHS (e.g.
+    `nstar → a·vstar`, `vstar → ES`), Sage's single-pass `subs`
+    leaves the inner `vstar` un-resolved.  The MF-sector
+    verification falls back to a numerical residual check
+    (with the DAE solver providing the saddle); this works
+    correctly but emits a "MF sector vanishes only numerically"
+    warning.
+
+---
+
 ## 2026-05-15 — `phase-j-refactor` Stage 4a optimization series  (commits `fe14b93` … `81d9ed4`)
 
 Five follow-up commits on top of the `phase-j-stage-3b-analytic`
