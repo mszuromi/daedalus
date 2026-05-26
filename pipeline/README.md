@@ -145,6 +145,14 @@ model = t.build()
 The `HawkesAction` template would generate the action lambda from the
 declared building blocks.  Adding GTaS noise: `t.correlated_noise('X', ...)`.
 
+See [`docs/correlated_noise_capabilities.md`](../docs/correlated_noise_capabilities.md)
+for the comprehensive reference on what kinds of correlated noise the
+pipeline supports — Gaussian (any kernel), shot-noise / Campbell-form
+higher cumulants, cross-field κ² via `response_legs=['xt', 'yt']`, etc.
+— and what it doesn't (smooth κⁿ for n ≥ 3, non-stationary, Lévy,
+multiplicative).  The doc includes a decision tree for picking the
+right path for a given noise model.
+
 For the plain-vanilla case this is mostly mechanical translation of
 the existing model files; the trickier piece is allowing user-defined
 custom action terms while keeping the high-level interface.

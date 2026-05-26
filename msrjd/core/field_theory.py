@@ -552,9 +552,15 @@ def _build_cumulant_action(ns, model):
                             f"correlated_noises[{noise_name!r}] "
                             f"cumulant order {order} legs "
                             f"{idx_tuple}: kernel has a non-local "
-                            f"smooth residual that requires an n-leg "
-                            f"time map in the integrator (currently "
-                            f"only n=2 implemented).  Skipping.",
+                            f"smooth residual.  The Phase J integrator "
+                            f"only supports smooth (non-δ) kernels at "
+                            f"order n=2 — at n≥3 the smooth part is "
+                            f"silently dropped (the δ-local part of "
+                            f"the same kernel, if any, IS still "
+                            f"injected correctly).  See "
+                            f"docs/correlated_noise_capabilities.md "
+                            f"§1 for the integrator-extension cost "
+                            f"and workarounds.",
                             stacklevel=3,
                         )
 
