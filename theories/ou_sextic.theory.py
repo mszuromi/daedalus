@@ -18,6 +18,12 @@ def build():
         .parameter('gamma', default=0.05, domain='positive')
         .set_action_text('sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3 + gamma*x[i]^5) - D*xt[i]^2 for i in pop)')
         .equation(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3 - gamma*x[i]^5', population='pop')
+        # Sextic potential admits up to 5 real saddles in a tristable
+        # regime (μ<0 with appropriate eps/gamma).  Enable stability
+        # filtering so ``fixed_point_index`` ranges over the stable
+        # wells only — saddles between wells are unstable and would
+        # produce a divergent diagrammatic expansion if selected.
+        .stability_analysis(True)
         .build()
     )
 
