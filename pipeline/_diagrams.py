@@ -40,8 +40,15 @@ def _ext_fields_tag(external_fields):
 
 
 def _model_cache_dir(model, taylor_order, cache_dir_root):
+    """Cache directory for a model's cross-call artefacts.
+
+    Per-theory (NOT per-taylor-order): the propagator and any other
+    taylor-order-independent assets live here.  Artefacts that DO
+    depend on taylor_order (the diagram set, the expand result) carry
+    that dependence in their filenames instead (``_taylor<N>`` suffix).
+    """
     prop_tag = re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
-    return f'{cache_dir_root}/{prop_tag}_taylor{taylor_order}'
+    return f'{cache_dir_root}/{prop_tag}'
 
 
 def enumerate_unique_diagrams(
@@ -116,7 +123,14 @@ def enumerate_unique_diagrams(
     # Bumped from ``unique_typed_*`` to invalidate caches written before
     # the multiplicity-aware dedup landed; old caches lack the
     # multiplicity field and would silently zero the bug-fix.
-    stage_name = f'unique_typed_mult_v1_{ext_tag}'
+    #
+    # The taylor_order suffix is now in the stage name (rather than the
+    # directory) because the diagram set DOES depend on which vertices
+    # got included — higher taylor_order brings in higher-degree
+    # interaction vertices, which can produce additional valid
+    # diagrams at the same (k, ell).  Sibling files for different
+    # taylor orders coexist in the same theory's cache dir.
+    stage_name = f'unique_typed_mult_v1_{ext_tag}_taylor{ft.taylor_order}'
 
     unique_by_ell: dict[int, list] = {}
     multiplicity_by_ell: dict[int, list] = {}

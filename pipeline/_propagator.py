@@ -473,16 +473,21 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
       'K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta',
       't_var', 'omega', 'nf', 'ring_gen_names'
 
-    Cached by ``model['name'] + taylor_order``.  Cache auto-invalidates
-    if ``ft._n_tilde`` differs from the cached ``nf`` (catches model
-    field-list edits without renaming).
+    Cached under ``saved_theories/<theory_slug>/propagator.sobj``.
+    The propagator is taylor-order-independent: it depends only on
+    the bilinear (1,1) sector of the action, which is fully captured
+    at ``taylor_order >= 2``.  A precompute call at order 2 fills this
+    cache once; subsequent runs at any higher order skip the build.
+
+    Cache auto-invalidates if ``ft._n_tilde`` differs from the cached
+    ``nf`` (catches model field-list edits without renaming).
     """
     R  = ft.ring()
     ns = ft._ns
 
     # ── Cache lookup ──────────────────────────────────────────────
     prop_tag = re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
-    cache_dir = f"{cache_dir_root}/{prop_tag}_taylor{ft.taylor_order}"
+    cache_dir = f"{cache_dir_root}/{prop_tag}"
     cache = PipelineCache(cache_dir)
 
     if use_cache and cache.exists('propagator'):
