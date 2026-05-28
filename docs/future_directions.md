@@ -279,6 +279,40 @@ integration, often closed-form for off-critical (gapped) theories.
    from a discrete master equation for jumping / branching /
    annihilating particles on a lattice.  Phase C' covers this.
 
+**Unifying perspective** (added 2026-05-28 after reading del Razo,
+Lamma, Merbis, Rev. Mod. Phys. **98**, 015001 (2026), the
+state-of-the-art review of the field).  The RMP review introduces a
+**basis-independent representation** that recovers all existing
+frameworks as special cases of one mathematical object:
+
+* Choose a δ-function basis → Doi formulation, then path-integral →
+  Doi-Peliti
+* Choose an indicator-function basis on voxels → convergent RDME
+  (Isaacson 2013, Isaacson-Zhang 2018)
+* Choose a single whole-domain indicator → well-mixed CME
+* Take large-N limits of any of these → corresponding deterministic
+  PDE (RD-PDE / rate equations)
+* Cole-Hopf field redefinition on any of these → the MSR-JD
+  formulation Daedalus already speaks (Andreanov 2006,
+  Lefèvre-Biroli 2007, explicitly cited by RMP §III.E p. 22)
+
+**For Daedalus this is a cleaner organizing principle than what's
+in the current Phase A'-C' plan**.  The "spatial extension" task
+is really "let the user choose a basis for the single-particle
+space."  Daedalus's existing multi-population machinery is the
+indicator-function-on-population-members case; adding spatial
+dimension is choosing a richer basis (finite-element on a mesh,
+plane-wave Fourier, etc.).  The integration backend doesn't need
+to know about "space" per se — it needs to know about the
+basis-projected generators.
+
+**Convergence caveat** (RMP §IV.F p. 28): phenomenological RDMEs
+the natural thing a user writes down — do NOT converge as voxel
+size → 0.  Convergent RDMEs require the systematic Galerkin
+construction (Isaacson 2013, Isaacson-Zhang 2018).  Phase A'
+should ship the convergent path from day one, not the
+phenomenological one.
+
 Important framing point (added 2026-05-28 after reading the
 Andreanov-Biroli-Bouchaud-Lefèvre 2006 and Lefèvre-Biroli 2007
 papers — see ``Literature/`` for PDFs): the field theory derived
@@ -673,6 +707,22 @@ Citations for the design decisions above.  PDFs in
 `Literature/` where available.
 
 ### Spatial-RD / microscopic-master-equation foundations
+
+- **del Razo, Lamma, Merbis** (2026), *Field theories and quantum
+  methods for stochastic reaction-diffusion systems*,
+  Rev. Mod. Phys. **98**, 015001.
+  Definitive 44-page modern review of the field.  Introduces a
+  unifying "basis-independent representation" that recovers Doi,
+  Doi-Peliti, RDME, CME, and rate equations as special cases of
+  one mathematical object (choice of basis + large-N limit).
+  This is the literature handle Daedalus's methods-paper section
+  on RD theories should grab onto.  Explicitly cites the
+  Andreanov 2006 + Lefèvre-Biroli 2007 papers (p. 22) for the
+  Cole-Hopf-to-MSR-JD dual formulation Daedalus speaks natively.
+  Critical caveat (§IV.F): phenomenological RDMEs don't converge
+  in the microscopic limit; convergent RDMEs require systematic
+  Galerkin construction (Isaacson 2013, Isaacson-Zhang 2018).
+  `Literature/9qlw-gyd7.pdf`
 
 - **Andreanov, Biroli, Bouchaud, Lefèvre** (2006), *Field theories
   and exact stochastic equations for interacting particle systems*,
