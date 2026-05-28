@@ -275,13 +275,27 @@ integration, often closed-form for off-critical (gapped) theories.
 1. **Phenomenological stochastic RD** — write the Langevin SDE
    directly with ``∇²`` and noise.  What most modeling papers do.
    Phase A' / B' below cover this.
-2. **Doi-Peliti microscopic** — derive the field theory from a
-   master equation for discrete particles.  Required for absorbing-
-   state phase transitions, microscopic Poisson statistics,
-   particle-number conservation.  Substantially different formalism
-   (non-Hermitian action, creation / annihilation operators).  Not
-   covered by simply extending the current framework; would be a
-   parallel formalism.
+2. **Microscopic master-equation RD** — derive the field theory
+   from a discrete master equation for jumping / branching /
+   annihilating particles on a lattice.  Phase C' covers this.
+
+Important framing point (added 2026-05-28 after reading the
+Andreanov-Biroli-Bouchaud-Lefèvre 2006 and Lefèvre-Biroli 2007
+papers — see ``Literature/`` for PDFs): the field theory derived
+*directly* from a microscopic master equation via the MSR-JD
+generating-functional approach is **the natural language** for
+interacting-particle systems.  It uses two fields ``(ρ, ρ̂)`` where
+ρ is the physical density and ρ̂ its MSR-JD conjugate.  The Doi-
+Peliti formalism in ``(φ, φ̂)`` variables is the **Cole-Hopf
+dual** of this MSR-JD field theory, related by
+``ρ = φ̂ φ``, ``ρ̂ = ln φ̂``.  The two are equivalent up to
+operator-ordering subtleties (Lefèvre-Biroli 2007 §3.2).  This is
+good news for Daedalus: the framework already speaks MSR-JD; we
+don't need a parallel Doi-Peliti submodule.  What we *do* need to
+add for full microscopic-RD coverage is recognition of the
+``e^{±ρ̂}`` Poisson-vertex action terms that encode the full
+non-Gaussian cumulant structure of birth/death/diffusion in a
+single closed form — see Phase C' below.
 
 ### Phase A' — d=1 RD with Laplacian, off-critical  (~4–6 weeks)
 
@@ -348,29 +362,73 @@ Lotka-Volterra (predator-prey on a plane) at the Langevin level.
 (spatial cortex models, 2D pattern formation, 3D reaction-diffusion
 in a tissue volume).
 
-### Phase C' — Critical RD / pattern formation / Doi-Peliti  (~3–6 months)
+### Phase C' — Microscopic master-equation RD + critical phenomena  (~3–6 months)
 
-Three subsequent tracks once Phase A'/B' are in place:
+Three subsequent tracks once Phase A'/B' are in place.  The framing
+here has been refined based on the Andreanov-Biroli-Bouchaud-Lefèvre
+(2006) and Lefèvre-Biroli (2007) papers, which together show that the
+"natural" field theory for microscopic interacting-particle systems
+is in MSR-JD form (not Doi-Peliti) and that the Doi-Peliti formalism
+is its **Cole-Hopf dual**.  This is good news for Daedalus: the
+framework's native MSR-JD machinery is already the correct language;
+the Doi-Peliti / `daedalus.doi_peliti` submodule idea I had earlier
+isn't needed as a separate framework — it's the same physics in
+different field variables, accessible via a canonical transformation.
 
-1. **Critical RD** — Turing instability, ε-expansion, anomalous
-   dimensions.  RG flow machinery (overlap with ``FeynCalc``,
-   ``FORM``, ``QGRAF`` in HEP).
-2. **Doi-Peliti microscopic formalism** — non-Hermitian action,
-   creation / annihilation operator algebra.  Required for
-   absorbing-state phase transitions (directed percolation,
-   contact process, branching annihilating random walks).  This
-   is a parallel formalism that would either coexist with the
-   MSR-JD machinery or be a separate ``daedalus.doi_peliti``
-   submodule.
-3. **Non-equilibrium critical exponents** — extracted from RG
-   flows of stochastic RD theories.  KPZ class, directed
-   percolation, model A/B/C/D/E from Hohenberg-Halperin.
+The three substantive extensions in Phase C':
+
+1. **Microscopic-master-equation RD via Poisson-vertex action**.
+   Andreanov-Lefèvre-Biroli show that the field theory derived
+   *directly* from a discrete master equation (birth/death/diffusion
+   on a lattice → continuum limit) is naturally in MSR-JD form, with
+   the new feature that interaction vertices carry **`e^{±ρ̂}`
+   Poisson factors** instead of polynomial vertices.  These encode
+   the full non-Gaussian cumulant structure of the microscopic
+   stochastic process (κ², κ³, κ⁴, …) in a single closed-form
+   expression.
+
+   **What Daedalus needs**: extend the CGF / action-text parser to
+   recognize `exp(rho_hat) - 1`, `exp(-rho_hat) - 1`, and similar
+   patterns as legitimate vertex terms.  The framework's existing
+   Taylor-expansion of nonlinear vertices already produces the
+   κ^(n) cumulant ladder — we'd be telling it to accept the
+   *un-expanded* form for theories where it's natural (true
+   microscopic master equation), and expand internally when needed.
+   ~300 LOC extension to `pipeline/theory_compiler.py` and
+   `msrjd/core/field_theory.py`.
+
+   **Plus**: exclusion / hard-core constraints — handled by adding
+   `(1 − n_j)` factors to the hopping rate, generating
+   `n(1 − n)·exp(ρ̂_j − ρ̂_i)` vertices.  Same machinery.
+
+   **Plus**: boundary terms for driven systems — e.g. SEP/ASEP with
+   reservoir-coupled boundaries.  Adds a separate `boundary_action`
+   block to the spec.
+
+2. **Critical RD with RG machinery** — Turing instability,
+   ε-expansion, anomalous dimensions.  Renormalization-group flow,
+   β-functions, fixed-point analysis.  Overlap with ``FeynCalc``,
+   ``FORM``, ``QGRAF`` in HEP.
+
+   This is conceptually orthogonal to (1): both extensions can be
+   built side-by-side, and (2) doesn't require (1) (most RG papers
+   use phenomenological actions, not microscopically-derived ones).
+   But for absorbing-state transitions (directed percolation,
+   contact process, branching annihilating random walks), both
+   (1) and (2) together are needed — the master-equation derivation
+   gives the action structure, and RG gives the critical exponents.
+
+3. **Non-equilibrium critical exponents** — extracted from the
+   linearized RG flow around fixed points.  KPZ class, directed
+   percolation class, Model A/B/C/D/E from Hohenberg-Halperin.
 
 This is true research-tool territory.
 
-**Trigger**: a methods paper that claims competitive coverage with
-hand-derived RG results in critical RD or non-equilibrium statistical
-mechanics.
+**Trigger**: a methods paper claiming Daedalus reproduces textbook
+directed-percolation / KPZ / model-A exponents from first principles;
+OR a specific user theory that comes from an underlying master
+equation (rather than a phenomenological Langevin SDE) and needs
+the Poisson-vertex action.
 
 ### RD applications that motivate this work
 
@@ -604,5 +662,92 @@ already covers everything you've worked on so far.
 
 ---
 
-*Last updated: 2026-05-27.  See `docs/CHANGELOG.md` for the
+*Last updated: 2026-05-28.  See `docs/CHANGELOG.md` for the
 implementation history.*
+
+---
+
+## Selected literature grounding
+
+Citations for the design decisions above.  PDFs in
+`Literature/` where available.
+
+### Spatial-RD / microscopic-master-equation foundations
+
+- **Andreanov, Biroli, Bouchaud, Lefèvre** (2006), *Field theories
+  and exact stochastic equations for interacting particle systems*,
+  Phys. Rev. E **74**, 030101(R).
+  Short letter (4 pages) introducing the direct MSR-JD derivation
+  from microscopic stochastic processes.  Shows the resulting field
+  theory is the Cole-Hopf dual of Doi-Peliti, resolves the
+  "imaginary noise" paradox, and recovers Dean's equation for
+  interacting Brownian particles.  Key reading for understanding
+  why the Phase C' Poisson-vertex extension is the natural way to
+  do microscopic-RD in Daedalus.
+  `Literature/PhysRevE.74.030101.pdf`
+
+- **Lefèvre, Biroli** (2007), *Dynamics of interacting particle
+  systems: stochastic process and field theory*,
+  J. Stat. Mech. P07024.
+  Full-length follow-up to the 2006 paper (24 pages).  Worked
+  examples for diffusion, reaction-diffusion, exclusion processes,
+  Newtonian dynamics, the zero-range process; full derivation of
+  hydrodynamic limit and large-deviation functional; careful
+  treatment of the Cole-Hopf mapping at the operator level
+  (including normal-ordering and time-discretization
+  subtleties); boundary and initial conditions.  This is the
+  reference document for the Phase C' implementation plan.
+  `Literature/Lefèvre_2007_J._Stat._Mech._2007_P07024.pdf`
+
+- **Dean** (1996), *Langevin equation for the density of a system
+  of interacting Langevin processes*, J. Phys. A **29**, L613.
+  The stochastic PDE for the exact microscopic density,
+  ``∂_t ρ = ∇·(γρ∇(δF/δρ) + √ρ · η)``.  The Andreanov-Biroli-
+  Bouchaud-Lefèvre and Lefèvre-Biroli papers reproduce this from
+  the lattice MSR-JD construction, confirming Dean's derivation.
+
+### Doi-Peliti formalism (historical / reference)
+
+- **Doi** (1976), *Second quantization representation for
+  classical many-particle systems*, J. Phys. A **9**, 1465.
+  The original master-equation → coherent-state field theory.
+- **Peliti** (1985), *Path integral approach to birth-death
+  processes on a lattice*, J. Physique **46**, 1469.
+  The Cole-Hopf shift `φ̂ → φ̂ + 1` step.
+- **Täuber** (2014), *Critical dynamics: a field theory approach
+  to equilibrium and non-equilibrium scaling behavior*,
+  Cambridge UP.  The textbook treatment; includes the
+  ε-expansion machinery and absorbing-state-transition critical
+  exponents that Phase C'-RG would eventually need to reproduce.
+
+### Hydrodynamic-limit / large-deviation rigorous side
+
+- **Bertini, De Sole, Gabrielli, Jona-Lasinio, Landim** (2001-2005)
+  series, *Macroscopic fluctuation theory*, various papers in
+  Phys. Rev. Lett. and J. Stat. Phys.  The mathematical-physics
+  framework for large deviations in non-equilibrium
+  hydrodynamics.  Lefèvre-Biroli (§4.4) reproduces this rate
+  functional from the MSR-JD action; suggests that Daedalus's
+  hydrodynamic-limit outputs could be directly interpreted as
+  rate-functional ingredients.
+
+### Markovian-embedding lineage (Phase 1 colored noise)
+
+- **Hänggi, Jung** (1995), *Colored noise in dynamical systems*,
+  Adv. Chem. Phys. **89**, 239.  Classical reference for the
+  Markovian-embedding trick used in Phase 1.
+- **Kupferman, Pavliotis, Stuart** (2004), *Itô versus Stratonovich
+  white-noise limits for systems with inertia and colored
+  multiplicative noise*, Phys. Rev. E **70**, 036120.  Convergence
+  guarantees that justify the Phase 1 white-noise-limit reduction.
+
+### Critical phenomena / RG  (Phase C')
+
+- **Hohenberg, Halperin** (1977), *Theory of dynamic critical
+  phenomena*, Rev. Mod. Phys. **49**, 435.  The model A/B/C/D/E
+  classification of relaxational dynamics near critical points.
+  Defines the universality classes Phase C' would target.
+- **Kardar, Parisi, Zhang** (1986), *Dynamic scaling of growing
+  interfaces*, Phys. Rev. Lett. **56**, 889.  The canonical
+  non-equilibrium critical theory.  Phase C' aspirational
+  benchmark.
