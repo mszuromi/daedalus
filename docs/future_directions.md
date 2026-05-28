@@ -237,123 +237,206 @@ for new users.
 
 ---
 
-## Spatial extension  •  4 weeks → multi-year, depending on depth
+## Spatial extension — stochastic reaction-diffusion focus  •  4 weeks → multi-year, depending on depth
 
 The framework currently handles fields ``φ(t)`` (functions of time
 only); spatial structure is faked through populations (indexed
 neurons / sites).  True spatial extension means fields ``φ(x, t)``
-with continuous or lattice coordinates — i.e. stochastic PDEs
-instead of coupled stochastic ODEs.  This is the largest single
-direction the framework could grow in, and the natural one for
-neural-field-theory applications (Wilson-Cowan, neural field
-equations, traveling waves, cortical pattern formation, etc.).
+with continuous spatial coordinates — i.e. stochastic PDEs instead
+of coupled stochastic ODEs.
 
-### Phase A — Lattice with k-space diagonalization  (~4–6 weeks)
+**The primary goal here is reaction-diffusion (RD) equations**, of
+the form
 
-For translation-invariant lattice theories, decompose the propagator
-into Fourier modes::
+  ∂_t φ_i(x, t) = D_i ∇² φ_i + R_i({φ_j}) + η_i(x, t)
 
-  G(ω, x − y) = (1/N) Σ_k e^(i k·(x−y)) G(ω, k)
+where ``D_i`` is the diffusion coefficient, ``R_i`` is a polynomial
+reaction term, and ``η_i`` is Gaussian (white or colored) noise.
+RD equations are the natural language for a huge class of
+problems: stochastic Allen-Cahn / Cahn-Hilliard (pattern formation,
+phase separation), Lotka-Volterra with spatial diffusion (ecology,
+predator-prey), stochastic Turing patterns, neural field equations
+(Wilson-Cowan with diffusion, neural-field cable equations),
+calcium-wave dynamics in astrocytes, Belousov-Zhabotinsky chemistry,
+cancer spreading models.
 
-For a discrete Laplacian (``-(2 δ_{ij} − δ_{i,j+1} − δ_{i,j-1})`` on a
-1D chain), this gives ``G(ω, k) = 1 / (i ω + μ + 2(1 − cos k))`` —
-fully rational in both ω and k.  Diagram contributions become
-product-of-propagators integrated over loop momenta + frequencies,
-with momentum conservation at each vertex.
+The MSR-JD action for stochastic RD has propagator
 
-**Architecture**: a ``lattice_dimension``, ``lattice_size``, and
-``boundary_conditions`` block on the theory spec.  The propagator
-builder converts the coupling matrix to a ``G(ω, k)`` function.
-Phase J adds k-summation alongside the existing ω-residue path.
+  G_i(ω, k) = 1 / (i ω + μ_i + D_i k²)
 
-**Test theory**: 1D OU chain with Laplacian coupling, free theory,
-analytic structure-factor closed-form to compare against.
+— **fully rational in both ω and k²**, parallel to the time-only OU
+case.  Loop integrals become combined ``(ω, k)`` integrals: ω-part
+handled by residue calculus (the existing time-only machinery
+generalizes); k-part is a 1D radial integral after angular
+integration, often closed-form for off-critical (gapped) theories.
+
+**Two distinct RD frameworks worth flagging**:
+
+1. **Phenomenological stochastic RD** — write the Langevin SDE
+   directly with ``∇²`` and noise.  What most modeling papers do.
+   Phase A' / B' below cover this.
+2. **Doi-Peliti microscopic** — derive the field theory from a
+   master equation for discrete particles.  Required for absorbing-
+   state phase transitions, microscopic Poisson statistics,
+   particle-number conservation.  Substantially different formalism
+   (non-Hermitian action, creation / annihilation operators).  Not
+   covered by simply extending the current framework; would be a
+   parallel formalism.
+
+### Phase A' — d=1 RD with Laplacian, off-critical  (~4–6 weeks)
+
+First spatial milestone — restricted scope to keep the lift bounded
+and shippable.  d=1 only (line); Gaussian noise (white or
+Phase-1-covered colored); polynomial reaction terms (already
+supported by the action parser); positive mass ``μ > 0`` so all
+k-integrals converge naturally (no UV regularization needed yet).
+
+**Architecture additions**:
+
+* ``physical_field('phi', spatial_dim=1, kinetic_operator='laplacian')``
+  declares a continuous spatial field with diffusion as kinetic term.
+* A new ``diffusion`` parameter type alongside the scalar /
+  vector / matrix ones.
+* Propagator builder threads ``k`` alongside ``ω`` symbolically.
+  ``K_ft(ω, k) = K_ft_temporal(ω) + D·k²`` entry-wise.
+* Phase J's residue closure over ``ω`` is unchanged; an additional
+  1D radial k-integral runs over each loop momentum.  Many cases
+  closed-form; Sage's ``integrate`` handles the standard ones
+  directly.
+
+**Test theory** — stochastic Allen-Cahn::
+
+  ∂_t φ = D ∂²_x φ + μ φ − λ φ³ + η,    ⟨η η⟩ = 2T δ(x−x') δ(t−t')
+
+with closed-form benchmarks for ⟨φ(x, t) φ(0, 0)⟩ at tree and
+1-loop via residues + radial k-integral.
 
 **Code touch points**:
 
-* ``pipeline/_propagator.py`` — k-space diagonalization (~150 LOC)
-* ``msrjd/integration/time_domain/final_integral.py`` — extend the
-  diagram contribution computation to include loop-momentum sums
-  (~200 LOC)
-* New module ``pipeline/spatial.py`` for lattice-theory utilities
-* New theory format keys for declaring lattice geometry +
-  symmetries
+* ``pipeline/_propagator.py`` — k-space symbolic threading (~200 LOC)
+* ``pipeline/theory.py`` — new keyword args on ``physical_field``
+  and ``parameter``; new ``kinetic_operator`` field on the spec
+* ``msrjd/integration/time_domain/final_integral.py`` (or a new
+  ``frequency_momentum_integral.py``) — k-integral evaluator
+  alongside the existing ω-residue path (~300 LOC)
+* ``msrjd/core/field_theory.py`` — recognize spatial fields in the
+  action expansion so ``∂²_x`` becomes ``-k²`` in Fourier
+* New tests for free-theory analytic checks + 1-loop Allen-Cahn
 
-**Trigger**: advisor's expressed interest; a specific lattice theory
-(cortical column model, spin chain, lattice OU, etc.) the user wants
-to compute on.
+**Trigger**: advisor wants spatial RD demos; a specific 1D RD
+problem (calcium dynamics on a dendrite, 1D neural field, 1D
+Lotka-Volterra) the user wants to compute on.
 
-### Phase B — Continuum with UV regularization  (~8–12 weeks)
+### Phase B' — d=2,3 RD off-critical  (~6–8 weeks)
 
-Take the continuum limit: replace ``Σ_k → ∫ dᵈk`` with a momentum
-cutoff Λ or dimensional regularization.  At one loop the integrals
-are typically ``∫ dᵈk / [(ω² + ε(k)²)(...)]`` where ``ε(k) = c·k²``
-is the dispersion.  For Gaussian-fixed-point theories these are
-textbook (``d = 4 − ε`` regularization, Feynman parameters, etc.).
+Generalize the k-integrals to d-dimensional radial: ``∫ dᵈk →
+S_{d-1} ∫₀^∞ dk · k^{d-1}`` after angular integration.  Most loops
+still have closed forms or reduce to dilogarithms/Γ-functions for
+mass-regulated theories.
 
-**What this enables**: stochastic PDEs in their natural continuum
-form — KPZ, Cahn-Hilliard, model A / B / C / D / E (Hohenberg-
-Halperin classification), neural field equations, reaction-diffusion.
-The full catalog of stochastic field theory in ``d > 0``.
+**Test theory** — Cahn-Hilliard above critical, or 2D stochastic
+Lotka-Volterra (predator-prey on a plane) at the Langevin level.
 
-**New machinery needed**:
+**New machinery**:
 
-* Momentum-cutoff or dimensional-regularization scheme selector
-* Feynman-parameter integration for loop momenta
-* UV-divergence detection + counterterm support (for renormalized
-  theories)
-* Spectral decomposition of inverse propagator for general kinetic
-  operators (Laplacian + mass + higher-derivative)
+* d-dimensional radial integration utilities (1-loop = standard
+  textbook; 2-loop = Feynman-parameter machinery)
+* Convergence diagnostics — for marginally finite integrals,
+  detect when a UV cutoff becomes necessary
 
-This is where the framework leaves "automation of textbook
-calculations" and starts to be useful for *new* physics
-calculations, because hand-computing the resulting loop integrals at
-``d ≥ 2`` is famously tedious.
+**Trigger**: a specific 2D / 3D RD problem the user / advisor wants
+(spatial cortex models, 2D pattern formation, 3D reaction-diffusion
+in a tissue volume).
 
-**Trigger**: a specific continuum problem (traveling wave dispersion,
-neural field correlator at finite system size, KPZ-class roughness
-exponent, etc.) the user wants to compute.
+### Phase C' — Critical RD / pattern formation / Doi-Peliti  (~3–6 months)
 
-### Phase C — Critical phenomena / RG flow  (~3–6 months)
+Three subsequent tracks once Phase A'/B' are in place:
 
-Renormalization-group flow, beta functions, anomalous dimensions,
-ε-expansion.  At this point the framework is no longer just "MSR-JD
-automation" but "field-theoretic RG automation" — overlap with
-packages like ``FeynCalc`` (HEP), ``FORM``, ``QGRAF``, etc.
+1. **Critical RD** — Turing instability, ε-expansion, anomalous
+   dimensions.  RG flow machinery (overlap with ``FeynCalc``,
+   ``FORM``, ``QGRAF`` in HEP).
+2. **Doi-Peliti microscopic formalism** — non-Hermitian action,
+   creation / annihilation operator algebra.  Required for
+   absorbing-state phase transitions (directed percolation,
+   contact process, branching annihilating random walks).  This
+   is a parallel formalism that would either coexist with the
+   MSR-JD machinery or be a separate ``daedalus.doi_peliti``
+   submodule.
+3. **Non-equilibrium critical exponents** — extracted from RG
+   flows of stochastic RD theories.  KPZ class, directed
+   percolation, model A/B/C/D/E from Hohenberg-Halperin.
 
-**What this enables**: critical neural dynamics (avalanche exponents,
-scaling), KPZ-class universality classes, RG flow of stochastic field
-theories.  This is true research-tool territory.
+This is true research-tool territory.
 
 **Trigger**: a methods paper that claims competitive coverage with
-hand-derived RG results in critical neural-field theory or
-non-equilibrium statistical mechanics.
+hand-derived RG results in critical RD or non-equilibrium statistical
+mechanics.
 
-### Neuroscience applications that motivate the spatial extension
+### RD applications that motivate this work
 
-* **Cortical column heterogeneity** — finite lattice; Phase A.
-* **Traveling waves / propagation** — continuum, off-critical;
-  Phase B.
-* **Pattern formation (Turing-like)** — Phase A (subcritical) or
-  Phase B (Turing instability + nonlinear saturation).
-* **Critical brain dynamics (avalanches, scaling exponents)** —
-  Phase C.
-* **Lattice Hawkes / spike-network on a grid** — Phase A.  Your
-  existing Hawkes-on-network theories are already lattice theories
-  in disguise; recognizing them as such explicitly would let you
-  do ``G(ω, k)`` analytic continuation, dispersion-relation
-  extraction, and finite-size scaling studies you currently can't.
+**Neuroscience**:
+
+* **Neural field equations** (Wilson-Cowan with diffusion,
+  cable-equation models of dendritic propagation) — Phase A' (1D
+  dendrite) or Phase B' (cortical sheet in 2D).
+* **Calcium dynamics on dendrites and in astrocytic networks** —
+  1D / 2D RD with cubic Ca²⁺ release.  Phase A'/B'.
+* **Traveling wave dispersion in cortex** — continuum dispersion
+  relation ω(k); Phase B'.
+* **Spreading depression** — RD with bistable kinetics;
+  Phase A' (1D) or B' (2D).
+* **Critical brain dynamics (avalanches, scaling)** — Phase C'.
+
+**Outside neuroscience**:
+
+* **Stochastic Allen-Cahn / Cahn-Hilliard** (pattern formation,
+  phase separation) — Phase A'/B'; canonical RD test problems.
+* **Stochastic Lotka-Volterra** (predator-prey, ecology) — Phase
+  A'/B'.
+* **Stochastic Turing patterns** — Phase B' (above threshold)
+  or C' (at threshold).
+* **Belousov-Zhabotinsky / chemical reaction-diffusion** — Phase B'.
+* **Population dynamics with diffusion** — Phase A'/B' (continuous
+  limit of birth-death processes).
+* **Tumor / pathogen spreading models** — Phase A'/B'.
 
 ### Recommended starting point
 
-For an advisor-facing demo of "we do spatial", commit to **Phase A
-end-to-end** on a specific 1D lattice OU theory.  4-6 weeks of
-focused work.  Deliverable: the framework computes the lattice
-2-point correlator ``C(x_i − x_j, τ)`` at 1-loop, matches analytical
-lattice OU, and demonstrates finite-size scaling against the
-continuum prediction.  That demonstration is the "we do spatial"
-credential.  Phase B and C can wait for specific motivating physics
-problems.
+For an advisor-facing demo of "Daedalus does reaction-diffusion",
+commit to **Phase A' end-to-end** on a stochastic Allen-Cahn 1D
+theory.  ~4-6 weeks of focused work.  Deliverables:
+
+1. The framework accepts a theory file with
+   ``physical_field('phi', spatial_dim=1, kinetic_operator='laplacian')``
+2. Compute the equal-time 2-point correlator
+   ``⟨φ(x, t) φ(0, t)⟩`` and the spatio-temporal correlator
+   ``⟨φ(x, t) φ(0, 0)⟩`` at tree and 1-loop.
+3. Match against the closed-form free-theory result + known 1-loop
+   λφ⁴ corrections.
+4. Sweep ``μ`` toward 0 and demonstrate the framework continues to
+   produce sensible results above (but not at) the critical point.
+
+That demo establishes "we do reaction-diffusion".  Phase B'
+(2D, 3D) and Phase C' (critical / Doi-Peliti) wait for specific
+motivating physics problems.
+
+### What the current framework gets you for free, RD-wise
+
+Two zero-work demos you can show your advisor today:
+
+1. **Pseudo-1D RD on a small lattice via multi-population**.
+   Declare a population ``L`` of size N = 10, declare a coupling
+   matrix ``w[i,j]`` that's a discretized Laplacian
+   (``-(2 δ_{i,j} − δ_{i,j+1} − δ_{i,j-1})``), declare a cubic
+   reaction term ``-eps · x[i]^3`` in the action.  This is a
+   working stochastic Allen-Cahn on a 10-site lattice — runs in
+   seconds at 1-loop with the current framework.  Not the
+   continuum limit but real RD-flavor physics.
+2. **Lattice + colored noise** is already supported via Phase 1
+   Markovianization.  Drives the demo above with OU-colored noise
+   on each site without any new code.
+
+These are the natural warmups to motivate Phase A'.
 
 ---
 
