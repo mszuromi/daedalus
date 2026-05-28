@@ -237,12 +237,23 @@ def _emit_cgf_term(c: dict) -> str:
     Selection: if ``response_legs`` is set AND has > 1 entry, render
     via the keyword form.  Otherwise emit the legacy positional
     ``response_field`` for back-compat with older callers.
+
+    Markovianize override: when the row stores
+    ``markovianize=True`` or ``markovianize=False`` (i.e. an explicit
+    opt-in / opt-out for the colored-noise preprocessor), emit the
+    keyword.  Rows with the default ``None`` / ``'auto'`` are
+    serialized without the keyword so existing files stay clean.
     """
     legs = c.get('response_legs')
+    markov_extra: list[tuple] = []
+    mk = c.get('markovianize')
+    if isinstance(mk, bool):
+        markov_extra.append(('markovianize', mk))
     base_kwargs = _kw_chain(
         ('order',          int(c['order'])),
         ('coefficient',    c['coefficient']),
         ('kernel',         c.get('kernel')),
+        *markov_extra,
     )
     if legs and isinstance(legs, (list, tuple)) and len(legs) > 1:
         return (f'.declare_cgf_term({_py_repr(c["name"])}, '
@@ -413,6 +424,15 @@ def render_theory_file(spec: dict) -> str:
     if spec.get('stability_analysis'):
         out.append('        .stability_analysis(True)')
 
+    # Markovianize default (default ON on the TheoryBuilder).  Only
+    # emit when explicitly OFF so theories that accept the default
+    # behaviour stay textually quiet.  Round-trips
+    # ``.markovianize(False)`` for users who opted out at the builder
+    # level (e.g. their colored kernel doesn't match the v1
+    # single-Lorentzian template).
+    if spec.get('markovianize_default') is False:
+        out.append('        .markovianize(False)')
+
     out.append('        .build()')
     out.append('    )')
     out.append('')
@@ -545,6 +565,12 @@ def load_spec_from_file(path: str) -> dict:
         # default OFF.  Stays False until the parser hits an explicit
         # ``.stability_analysis(True)`` call.
         'stability_analysis': False,
+        # Markovianize-preprocessor builder-level toggle from
+        # ``.markovianize(bool)``; default ON.  Stays True until the
+        # parser hits an explicit ``.markovianize(False)`` call.  See
+        # ``pipeline/colored_to_markovian.py`` and
+        # ``docs/correlated_noise_capabilities.md`` §1.5.
+        'markovianize_default': True,
         'default_fundamental': default_fund,
         'metadata':        metadata,
     }
@@ -647,6 +673,10 @@ def load_spec_from_file(path: str) -> dict:
             for k in ('order', 'coefficient', 'kernel'):
                 if k in kw:
                     entry[k] = kw[k]
+            # Markovianize override (per-row): True / False explicit
+            # values round-trip; absence stays 'auto' (= None).
+            if 'markovianize' in kw:
+                entry['markovianize'] = kw['markovianize']
             spec['cgf_terms'].append(entry)
 
         elif method == 'set_action_text':
@@ -680,6 +710,16 @@ def load_spec_from_file(path: str) -> dict:
                 spec['stability_analysis'] = bool(args[0])
             elif 'enabled' in kw:
                 spec['stability_analysis'] = bool(kw['enabled'])
+
+        elif method == 'markovianize':
+            # ``.markovianize(False)`` toggle.  Absence ⇒ default ON
+            # (matches ``TheoryBuilder``'s own default).
+            if args:
+                spec['markovianize_default'] = bool(args[0])
+            elif 'enabled' in kw:
+                spec['markovianize_default'] = bool(kw['enabled'])
+            else:
+                spec['markovianize_default'] = True
 
         elif method == 'build':
             continue

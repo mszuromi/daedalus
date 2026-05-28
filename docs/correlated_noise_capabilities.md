@@ -50,6 +50,88 @@ shapes:
 | Lagged δ | `dirac_delta(tau - Delta)` | implicitly symmetrized to `½[δ(τ−Δ) + δ(τ+Δ)]` |
 | Any analytic Sage expression | as above | as long as Sage can extract the δ part vs. smooth part |
 
+### 1.5 Markovian embedding (auto, v1)
+
+For the most common smooth-kernel case — a single Lorentzian
+`c · exp(-|τ|/τc)` driving a Gaussian noise on one or two response
+fields — the framework now applies an **automatic Markovian
+embedding** at `TheoryBuilder.build()` time.  Instead of leaving the
+smooth kernel in place (which forces the time-domain integrator
+through the slow `scipy.nquad` fallback at `max_ell ≥ 1`), the
+preprocessor rewrites your colored noise as a white-noise-driven
+auxiliary OU field:
+
+```
+dx/dt  = f(x) + ξ
+dξ/dt  = -ξ/τc + sqrt(2c/τc) · η,   ⟨η η⟩(τ) = δ(τ)
+```
+
+The auxiliary's stationary autocovariance is
+`⟨ξ ξ⟩(τ) = c · exp(-|τ|/τc)`, exactly recovering your colored kernel.
+The new theory has the same observables for `x` and an extra hidden
+`ξ`.  Your `external_fields=[('x', 1), …]` request still picks `x`
+unchanged — no notebook edit needed.
+
+**What's auto-Markovianized in v1.**  A CGF row matches the
+preprocessor when ALL of:
+
+1. `order == 2`
+2. `response_legs` is either `[r, r]` (auto-cumulant) OR `[r1, r2]`
+   (cross-cumulant — the 2D case)
+3. `kernel` parses as `c · exp(-|tau|/p)` where `p` is a declared
+   positive parameter (or a positive symbolic combination thereof)
+4. `coefficient` is a Sage expression that the preprocessor can use
+   to derive the embedding's amplitude
+
+For each matched row the preprocessor:
+
+* injects one new `physical_field` per affected source (`x → xi`,
+  `y → yi`, etc., with auto-response `xit`, `yit`);
+* adds `(Dt + 1/τc) · xi = 0` to the DAE equations;
+* replaces the colored CGF row with a white-noise row on the
+  auxiliaries: `coefficient = 2c/τc`, `kernel = dirac_delta(tau)`;
+* appends `- xi` to the original `xt*(...)` block in your action text
+  (encoding `dx/dt = ... + ξ`) and adds the new kinetic term
+  `xit*(Dt + 1/τc)*xi`.
+
+The cross-correlated 2D case (3 CGF rows: Cxx, Cyy, Cxy) becomes
+3 white-noise rows on the auxiliaries (auxXX, auxYY, auxXY), all with
+`dirac_delta(τ)` kernels.
+
+**Opting out.**  Per-builder: `.markovianize(False)` keeps your
+colored rows intact and runs the legacy scipy fallback (with the
+existing warning).  Per-row: `.declare_cgf_term(..., markovianize=False)`
+preserves the original kernel on JUST that row.  Use this when your
+colored kernel has a shape the v1 preprocessor doesn't recognize and
+you've already hand-coded the embedding yourself.
+
+**Opting in with a strict check.**  `.declare_cgf_term(...,
+markovianize=True)` is a strict opt-in: if the kernel doesn't match
+the v1 template, the build raises a `ValueError` instead of silently
+falling through to scipy.  Use this when you've hand-tuned a
+Lorentzian-shaped coefficient and want to ensure it round-trips
+through the preprocessor.
+
+**v1 limitations.**
+
+| Kernel shape | v1 status | v2 plan |
+|---|---|---|
+| `c · exp(-|τ|/τc)` (Lorentzian) | **handled** | n/a |
+| `c · exp(-|τ|/τc) · cos(Ω τ)` (underdamped oscillatory) | not handled | embed as a 2-state OU with imaginary eigenvalue |
+| `c1·exp(-|τ|/t1) + c2·exp(-|τ|/t2)` (double-exp) | not handled | embed as a sum of two independent OU processes |
+| polynomially-modulated `τ^k · exp(-|τ|/τc)` | not handled | embed as a chain of k+1 OU processes |
+| arbitrary smooth kernel (no rational FT) | not handled | n/a — falls back to scipy.nquad |
+
+**Edge case: degenerate poles.**  The Markovian embedding adds the
+auxiliary's eigenvalue `1/τc` to the system's pole spectrum.  If your
+deterministic system already has an eigenvalue at `1/τc` (e.g. a
+linear field with rate `μ = 1/τc`), the joint propagator has a
+multiplicity-2 pole.  The current single-pole residue + mode-sum
+infrastructure can't represent the `τ · exp(-pt)` modes a
+multiplicity-2 pole requires, so the numerical computation becomes
+unstable in this exactly-degenerate case.  Workaround: perturb `τc`
+or `μ` slightly so the poles are distinct.
+
 ### 2. Cross-field cumulants (κ², any kernel)
 
 Via `response_legs=['xt', 'yt']` on the CGF tab — the new
@@ -276,6 +358,8 @@ Is your noise stationary (time-translation invariant)?
 | `declare_cgf_term` (TheoryBuilder API) | `pipeline/theory.py` | ~654 |
 | CGF tab (UI) | `pipeline/ui/main.py` | ~404 |
 | Spec serialize / parse | `pipeline/theory_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
+| **Markovian embedding preprocessor (v1)** | `pipeline/colored_to_markovian.py` | whole file |
+| Markovianize wiring into `build()` | `pipeline/theory.py` | search for `markovianize_spec` |
 
 The warning that fires when you hit §1 (smooth n ≥ 3) is in
 `_build_cumulant_action`'s smooth-residual `if order == 2` branch's

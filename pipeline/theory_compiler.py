@@ -1541,31 +1541,34 @@ def _parse_response_legs(term: dict, order: int) -> list[str]:
     return list(legs)
 
 
-def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
-                               order: int) -> 'Callable':
-    """Compile a CGF row's (coefficient, kernel) text strings into a
-    callable matching the framework's expected signature::
+class _CGFKernelCallable:
+    """Picklable callable that evaluates a CGF row's
+    ``coeff_text * kernel_text`` against a FieldTheory namespace.
 
-        kernel_fn(ns, *leg_indices, *tau_syms) -> SR
+    Replaces a local-closure builder so that multiprocessing.Pool
+    workers can pickle TypedDiagram objects that carry these callables
+    via NoiseSourceType.  The class is defined at module level (NOT
+    inside a closure) so pickle can locate it by fully-qualified name.
 
-    ``ns`` is the FieldTheory namespace (carries parameters as
+    Signature matches the framework's noise-kernel convention::
+
+        instance(ns, *leg_indices, *tau_syms) -> SR
+
+    ``ns`` is the FieldTheory namespace (carries parameter SR vars as
     attributes).  ``leg_indices`` is an n-tuple of integer leg positions
-    within each leg's response field (ignored by most kernels — they
-    typically only depend on ``ns`` and the τ symbols).  ``tau_syms``
-    is the (order-1)-tuple of relative-time SR variables: one ``tau``
-    for order 2, two (``t1, t2``) for order 3, etc.
-
-    The compiled callable evaluates ``coeff_text * kernel_text`` in a
-    namespace built from ``ns``'s attributes plus the τ-bindings.  If
-    ``kernel_text`` is None or empty, the callable returns just the
-    coefficient (interpreted as a δ-correlated kernel — the framework's
-    decomposition handles it as ``coeff * ∏δ(τ)`` automatically).
+    (ignored by most kernels — they only depend on ``ns`` and τ).
+    ``tau_syms`` is the (order-1)-tuple of relative-time SR variables.
     """
-    coeff_text = (coeff_text or '').strip() or '0'
-    kernel_text = (kernel_text or '').strip()
+    __slots__ = ('_coeff_text', '_kernel_text', '_order')
 
-    def _kernel_fn(ns, *args):
-        # First ``order`` args are leg indices, remaining are τ syms.
+    def __init__(self, coeff_text: str, kernel_text: str | None,
+                 order: int):
+        self._coeff_text  = (coeff_text or '').strip() or '0'
+        self._kernel_text = (kernel_text or '').strip()
+        self._order       = int(order)
+
+    def __call__(self, ns, *args):
+        order = self._order
         leg_indices = args[:order]    # noqa: F841 — accepted for API uniformity
         tau_syms    = args[order:]
         if len(tau_syms) != order - 1:
@@ -1574,13 +1577,7 @@ def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
                 f"{order}; got {len(tau_syms)}."
             )
 
-        # Build the eval namespace: all of ns's public attributes, plus
-        # τ bindings.  We use both ``tau`` (for order 2) and ``t1``,
-        # ``t2``, … (for order ≥ 3) so the user's kernel text can use
-        # either convention.
         eval_ns: dict = {}
-        # Pull every non-underscore attribute off the namespace.  Param
-        # SR vars come through as ``ns.D``, ``ns.tauc``, etc.
         for attr in dir(ns):
             if attr.startswith('_'):
                 continue
@@ -1589,13 +1586,11 @@ def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
             except AttributeError:
                 pass
 
-        # τ symbol bindings.
         if order == 2 and tau_syms:
             eval_ns['tau'] = tau_syms[0]
         for k, t in enumerate(tau_syms, start=1):
             eval_ns[f't{k}'] = t
 
-        # Sage math + Dirac delta.
         eval_ns.setdefault('dirac_delta', dirac_delta)
         eval_ns.setdefault('delta_function', dirac_delta)
         eval_ns.setdefault('heaviside', heaviside)
@@ -1608,13 +1603,48 @@ def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
         eval_ns.setdefault('pi', pi)
         eval_ns.setdefault('I', I)
 
-        coeff_val = _safe_eval(coeff_text, eval_ns, 'CGF coefficient')
-        if not kernel_text:
+        coeff_val = _safe_eval(self._coeff_text, eval_ns, 'CGF coefficient')
+        if not self._kernel_text:
             return SR(coeff_val)
-        kernel_val = _safe_eval(kernel_text, eval_ns, 'CGF kernel')
+        kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
         return SR(coeff_val) * SR(kernel_val)
 
-    return _kernel_fn
+    def __repr__(self):
+        return (f'<_CGFKernelCallable order={self._order} '
+                f'coeff={self._coeff_text!r} kernel={self._kernel_text!r}>')
+
+
+class _CGFKernelSum:
+    """Picklable callable that sums the output of several
+    ``_CGFKernelCallable`` instances.  Used when multiple CGF rows
+    share the same ``(name, order, response_legs)`` and aggregate
+    into one cumulant entry.
+    """
+    __slots__ = ('_kernels',)
+
+    def __init__(self, kernels):
+        self._kernels = list(kernels)
+
+    def __call__(self, ns, *args):
+        total = SR(0)
+        for kfn in self._kernels:
+            total = total + SR(kfn(ns, *args))
+        return total
+
+    def __repr__(self):
+        return f'<_CGFKernelSum n={len(self._kernels)}>'
+
+
+def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
+                               order: int):
+    """Build a picklable callable evaluating ``coeff_text * kernel_text``.
+
+    Thin factory wrapping ``_CGFKernelCallable``.  Kept as a function
+    for backward compatibility with any callers that used the
+    previous closure-based form.  See the class docstring for the
+    runtime signature.
+    """
+    return _CGFKernelCallable(coeff_text, kernel_text, order)
 
 
 def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
@@ -1720,12 +1750,11 @@ def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
                 _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order)
                 for r in rows
             ]
-            def _summed(ns, *args, _ks=kernels):
-                total = SR(0)
-                for kfn in _ks:
-                    total = total + SR(kfn(ns, *args))
-                return total
-            out[name]['cumulants'][order] = _summed
+            # Use the picklable _CGFKernelSum class instead of a local
+            # closure so multiprocessing.Pool can ship the resulting
+            # TypedDiagram objects (which carry this callable through
+            # NoiseSourceType) between processes.
+            out[name]['cumulants'][order] = _CGFKernelSum(kernels)
 
         out[name]['cumulant_text'][order] = list(rows)   # for debug
 

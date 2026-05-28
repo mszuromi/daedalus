@@ -4,6 +4,250 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-27 — Markovian-embedding preprocessor for colored noise (Phase 1)
+
+Adds an automatic colored-noise → Markovian-embedding preprocessor.
+Single-Lorentzian (`c · exp(-|τ|/τc)`) CGF rows are rewritten to a
+white-noise CGF row driving an auxiliary OU field, with the original
+field coupled to the auxiliary via `-xt · xi` in the action.  The
+result is a 2-field theory the existing white-noise fast path handles
+in seconds, instead of the colored kernel that forced `scipy.nquad`
+into multi-minute hangs at `max_ell ≥ 1`.
+
+### New files
+
+* ``pipeline/colored_to_markovian.py`` — the preprocessor.
+  ``detect_lorentzian()`` is an SR-based pattern matcher;
+  ``markovianize_spec(builder)`` mutates the builder in place.
+* ``tests/test_markovianize.py`` — 5 unit tests covering the
+  pattern matcher, builder round-trip, opt-out, tree-level
+  analytic agreement, and serialize round-trip.
+
+### Surface changes
+
+* ``TheoryBuilder.markovianize(enabled=True)`` — builder-level
+  toggle (default ON).  Setting ``False`` keeps colored rows
+  intact and uses the legacy scipy fallback.
+* ``TheoryBuilder.declare_cgf_term(..., markovianize=True | False
+  | 'auto')`` — per-row override.  ``'auto'`` (default) matches
+  when the kernel fits the v1 template; ``True`` is a strict
+  opt-in that raises if the kernel doesn't match; ``False``
+  preserves the original row unconditionally.
+* ``pipeline/_propagator.py`` — fixed a propagator-pole-finding
+  bug exposed by the Markovian embedding's upper-triangular K_ft.
+  ``_compute_residues_via_polynomial_fracfield`` now takes the
+  LCM of all per-entry canonical denominators as Q(ω), so every
+  system pole is captured.  Returns ``None`` when Q is
+  non-squarefree (multiplicity-2 poles → falls through to
+  tier-2 numpy path).
+* ``pipeline/theory_serialize.py`` — round-trips both per-row
+  ``markovianize=`` and builder-level ``.markovianize(False)``.
+
+### Validation
+
+| Case | Wall time | Result |
+|---|---|---|
+| 1D OU colored tree-level, μ=0.1, τc=1, D=1 | 1.16 s | C(0) = 18.1818 (matches analytic 2D/(μ(μτc+1))) |
+| 1D OU colored max_ell=1, ε=0.1 (was hanging) | 0.97 s | Completes (60 s target) |
+| 2D cross-correlated tree-level, ρ=0.5 | 4.44 s | C_xx(0) = 1.3333 (matches analytic at 1e-15) |
+| ``tests/test_grouped_vs_perdiag.py`` | 8 s | 6/6 pass — no regression |
+| ``tests/test_markovianize.py`` | 5 s | 5/5 pass |
+| ``tests/test_serialize.py`` + ``test_expand_cache.py`` | 35 s | 18/18 pass |
+
+### Known v1 limitations
+
+* **Single-Lorentzian only.** Underdamped oscillatory
+  ``exp(-|τ|/τd) · cos(Ωτ)``, double-exponential
+  ``c1·exp(-|τ|/t1) + c2·exp(-|τ|/t2)``, and polynomially-modulated
+  ``τ^k · exp(-|τ|/τc)`` kernels are not matched.  Each requires a
+  larger auxiliary state space (2-state OU with imaginary
+  eigenvalue / sum of independent OUs / chain of OUs).  See
+  ``docs/correlated_noise_capabilities.md`` §1.5 for the v2 plan.
+* **Degenerate-pole edge case.**  If the deterministic system has
+  an eigenvalue exactly at ``1/τc`` (so the Markovianized
+  propagator has a multiplicity-2 pole), the current single-pole
+  residue + mode-sum infrastructure can't represent the
+  ``τ · exp(-pt)`` modes the double pole requires.  The polynomial
+  path now fails gracefully (returns ``None``), but the tier-2
+  numpy fallback has the same limitation.  Workaround: perturb
+  ``τc`` (or the system eigenvalue) slightly so the poles are
+  distinct.
+
+### Files modified
+
+* ``pipeline/colored_to_markovian.py`` (new)
+* ``pipeline/theory.py`` (added ``markovianize`` flag + method,
+  invoke preprocessor in ``build()``)
+* ``pipeline/theory_serialize.py`` (round-trip support)
+* ``pipeline/_propagator.py`` (LCM-based Q_poly + squarefree
+  fallout)
+* ``tests/test_markovianize.py`` (new)
+* ``docs/correlated_noise_capabilities.md`` (new §1.5)
+* ``docs/CHANGELOG.md`` (this entry)
+
+---
+
+## 2026-05-27 — Colored-noise per-leg time routing + expand-cache rebuild + theory-builder UI rewrite
+
+Three coupled fixes that surfaced while investigating why cross-correlated
+colored 2D OU theories silently produced ⟨xy⟩ = 0 (the original bug
+report that kicked off this branch).  All three are required for
+colored-noise theories to produce correct values; missing any one
+gives silent-zero or numerically wrong output.
+
+### Bug fix: noise-source per-leg time routing (``msrjd/integration/time_domain/final_integral.py``)
+
+For colored cross-correlated noise (``Cxy`` cumulant declared with
+``response_legs=['xt', 'yt']``), the integrator's ``vertex_leg_time``
+map was keyed by ``pop_idx`` (1-based).  For homogeneous-leg sources
+(``Cxx`` with ``['xt', 'xt']``) and even more so for cross sources
+when both fields have the same pop_idx, the two legs of the same
+noise vertex collided in this dict — both endpoints were assigned to
+``anchor_time - τ_v``, dropping the per-leg time coupling between the
+two propagators emerging from the noise vertex.  The diagram value
+then equalled the white-noise (τc → 0) limit independent of the
+actual ``τc`` parameter.
+
+**Fix**: switched ``vertex_leg_time[v]`` to be keyed by ``edge_key``
+(the multi-edge label) rather than ``pop_idx``.  For heterogeneous-
+field cumulants the legs are matched by ``(field, pop_idx)``; for
+homogeneous legs we use label ordering and the M(Γ) combinatorial
+factor absorbs the choice.  Added ``leg_fields`` to
+``cumulant_specs`` entries in ``msrjd/core/vertices.py`` so the
+integrator can distinguish heterogeneous vs homogeneous routing.
+
+**Verification**: 1D colored OU at ``τc`` sweep now matches the
+analytic ``D / (μ (1 + μ τc))`` formula at every τc tested (0.1,
+0.5, 1.0, 2.0, 5.0) to floating-point precision.  2D heterogeneous
+``Cxy`` at the free saddle gives ⟨x²⟩=1/3 and ⟨xy⟩=ρ/3 for ρ=±0.3
+— exact match.
+
+### Bug fix: expand-cache restoration of ``_cumulant_kernels``  (``pipeline/_expand_cache.py``)
+
+When ``load_expand()`` succeeded (taylor_order cache hit), it
+restored ``ft._by_tp`` / ``_S_raw`` / ``_mf_sector_raw`` from the
+bundle but skipped ``_build_cumulant_action`` — which is the only
+place ``ns._cumulant_kernels`` gets populated.  Downstream,
+``extract_source_types`` reads that dict to promote plain
+``SourceType`` monomials to ``NoiseSourceType`` (the integrator-
+visible upgrade that triggers the per-vertex kernel substitution).
+With an empty ``_cumulant_kernels``, every (2,0)-sector monomial
+stayed a plain ``SourceType`` and the ``z_kappa_*`` placeholders
+were never substituted — the framework returned 0 silently.
+
+**Fix**: after a successful ``load_expand`` (which restores the
+cached ``_by_tp``), call ``_build_cumulant_action(ft._ns,
+model)`` purely for its side-effect of populating
+``ns._cumulant_kernels``.  The SR action term it returns is
+discarded — it's already baked into the cached ``_by_tp``.  Falls
+through to a fresh expand() on any exception with a verbose warning.
+
+### Bug fix: ``unique_typed_mult`` cache versioning  (``pipeline/_diagrams.py``)
+
+The typed-diagrams cache file was named
+``unique_typed_mult_v1_<ext_tag>_taylor<N>_k<k>_l<ell>.sobj``.  Old
+v1 caches written before the ``extract_source_types`` upgrade
+contain plain ``SourceType`` instances where the upgraded
+extractor would produce ``NoiseSourceType``.  When the cache is
+loaded, the SourceType pickles deserialize as-is and downstream
+the noise substitution silently never fires — same silent-zero
+failure mode as above.  Bumped the cache key to ``v2`` to force
+all callers to rebuild from scratch.
+
+### Theory-builder UI rewrite  (``pipeline/ui/main.py``)
+
+Comprehensive rewrite informed by three parallel reviewer agents
+(instruction clarity / interaction flow / visual design):
+
+* **CSS overhaul** (~150 LOC).  Card panels on every tab, accent
+  underline on the active tab, row striping in dynamic tables,
+  code-font textareas with focused-state borders, 4-button palette
+  (``tb-btn-primary`` / ``-secondary`` / ``-link`` / ``-danger``)
+  replacing the ad-hoc ``button_style=`` mixes.  Injected once
+  per kernel session via a module-level CSS constant + ``HTML``
+  display.
+* **Validation sidebar** (``_validate()`` + ``_refresh_validation``).
+  Walks the live ``_collect()`` spec on every cross-tab change;
+  surfaces per-tab readiness with severity badges (●) and a
+  bulleted list of warnings/errors.  Catches silent failure modes
+  like ``n_populations=0`` paired with population-indexed fields,
+  ``Dt`` in equations without stability filtering enabled, etc.
+* **Dynamic "Declared so far" panel.**  Static cheat-sheet of
+  every declared field/parameter/kernel/function so users can
+  write the Action tab without bouncing back to verify spelling.
+  Scalar vs indexed forms reflect whether a population is set.
+* **Genericized placeholders + initial values.**  Dropped
+  Hawkes/neuroscience flavor (``E``, ``n_E``, ``v``, ``phi(v)``,
+  ``tau_g``) in favour of generic Langevin examples (``A``, ``x``,
+  ``f``, ``mu``, ``tauc``).  Starter rows reduced to the minimum
+  the user actually needs — Populations / Functions / Kernels tabs
+  now ship empty so the form doesn't tutorial users into adding
+  unneeded entries.
+* **Plain-language tab descriptions.**  Rewrote the Mean-field
+  tab text to drop ``(σA + B)`` jargon, "voltages integrated out",
+  ``th['mf_unstable_roots']``-style internal references.  Each
+  tab now uses concrete examples (``(Dt+mu)*x = 0``, etc.) rather
+  than abstract MSR-JD language.  CGF tab renamed to **Noise**
+  with a complete rewrite featuring 3 concrete worked examples
+  (white Gaussian / OU-colored / 2D cross-correlated).
+* **Structured Defaults tab.**  Replaced the free-form Python-
+  dict textarea (which failed opaquely on a missing comma) with
+  ``BoundedIntText`` / ``FloatText`` / ``DynamicTable`` widgets
+  per metadata key.  ``recommended_external_fields`` is now a
+  table with field-name + leaf-index columns.
+* **Unsaved-changes guard.**  ``Reset`` and ``Load theory file``
+  used to wipe state without confirmation.  Now gated behind a
+  "discard unsaved changes" checkbox that activates only when the
+  ``_dirty`` flag is set (piggybacked on the existing
+  ``DynamicTable._notify_change`` plumbing).
+* **Open in runner notebook button.**  Writes
+  ``.theories/.last_built`` after Save and emits a click-to-open
+  link to ``theory_runner.ipynb``.
+* **``latex`` columns dropped** from Fields / Functions / Kernels
+  tabs.  Old theory files with custom LaTeX strings round-trip
+  losslessly via a per-instance ``_loaded_extras`` carry-through
+  dict; nothing visible in the UI, no information loss in
+  saved/loaded files.
+* **Notebook documentation.**  ``notebooks/theory_builder.ipynb``
+  gained an in-notebook walkthrough covering the tab-by-tab
+  workflow, recommended sequence, and known restrictions.
+
+### Auxiliary additions
+
+* **New simulators** (``models/ou_langevin_sim_numba.py``):
+  ``sim_ou_quartic_two_dim_color_corr_numba`` (2D coupled
+  quartic Langevin with colored cross-correlated noise via
+  Cholesky factorization), ``sim_ou_quartic_two_dim_corr_numba``
+  (2D coupled with WHITE cross-correlated noise), and
+  ``sim_ou_quartic_colored_numba`` (1D coupled with colored OU
+  noise).  Each uses the closed-form OU autocorrelation discretization
+  (decay × ξ + σ × η) so the simulator is exact at any dt/τc ratio.
+* **New comparison notebooks**:
+  ``notebooks/pipeline_ou_quartic_colored_sim_compare.ipynb``,
+  ``pipeline_ou_quartic_two_dim_corr_sim_compare.ipynb``,
+  ``pipeline_ou_quartic_two_dim_color_corr_sim_compare.ipynb``.
+  Each pairs the simulator with the framework's theory side.
+* **New theory files**: ``theories/ou_quartic_colored.theory.py``,
+  ``ou_quartic_two_dim_corr.theory.py``,
+  ``ou_quartic_two_dim_color_corr.theory.py``.
+
+### Validation summary
+
+| Test | Result |
+|---|---|
+| ``tests/test_grouped_vs_perdiag.py`` | **6/6 pass** (no regression) |
+| ``tests/test_markovianize.py`` | **5/5 pass** |
+| ``tests/test_serialize.py`` + ``test_expand_cache.py`` | **18/18 pass** |
+| 1D OU colored tree-level | matches analytic 2D/(μ(1+μτc)) |
+| 2D cross-correlated ⟨xy⟩ at free saddle | matches ρ/3 |
+
+The 2 pre-existing ``spike_reset_*`` failures in
+``test_phase_j_refactor_regression.py`` are documented stale
+fixture drift; they fail with identical values before and after
+these changes (verified by stash-and-rerun).
+
+---
+
 ## 2026-05-26 — `cgf-response-legs` branch  (commits TBD)
 
 Fixed a long-standing bug in the CGF tab's path through the framework

@@ -304,6 +304,43 @@ def load_expand(model: dict, ft, target_order: int,
     ft._mf_sector_raw = _by_tp_from_dict_form(
         ft._R, bundle.get('mf_sector_raw', {}))
 
+    # ── Restore _cumulant_kernels side effect ────────────────────────
+    # A fresh ``FieldTheory.expand()`` calls ``_build_cumulant_action``
+    # which has two effects: (a) it appends the symbolic noise-cumulant
+    # action term to ``S_sr``, and (b) it populates
+    # ``ns._cumulant_kernels[(noise, order, leg_key)]`` with kernel-fn
+    # metadata that the downstream ``extract_source_types`` reads to
+    # promote a plain ``SourceType`` monomial into a ``NoiseSourceType``
+    # (so the Phase J integrator can substitute the user's
+    # ``z_kappa_<...>`` placeholder with the actual K(τ_v) kernel).
+    #
+    # The cached ``_by_tp`` already captures effect (a) — the cumulant
+    # action term is baked into the on-disk polynomial.  But effect (b)
+    # is a *runtime side effect on the namespace*: ``ns._cumulant_kernels``
+    # is NOT in the bundle (the kernel callables can be captured-closure
+    # objects that don't round-trip cleanly through pickle), so a
+    # cache-load leaves the dict empty.  Then ``extract_source_types``
+    # finds no matching cumulant specs, never promotes the (2,0)
+    # noise-source monomials to ``NoiseSourceType``, and the integrator
+    # has nothing to substitute the ``z_kappa`` symbols with — every
+    # colored-noise diagram silently collapses to 0.
+    #
+    # Cure: re-execute ``_build_cumulant_action`` for its side effect.
+    # We discard the SR return value because the action term it
+    # produces is already in ``_by_tp`` from the cache; we only need
+    # ``ns._cumulant_kernels`` populated.  This is a no-op for theories
+    # without a ``correlated_noises`` block (the function returns SR(0)
+    # immediately).  See bug write-up in commit-message body.
+    try:
+        from msrjd.core.field_theory import _build_cumulant_action
+        _build_cumulant_action(ft._ns, model)
+    except Exception as e:
+        if verbose:
+            print(f'[expand-cache] _cumulant_kernels rebuild failed '
+                  f'({e!r}); noise-source theories may silently produce 0. '
+                  f'Falling back to a fresh expand() is the safe path.')
+        return False
+
     if verbose:
         if cached_order == target_order:
             print(f'[expand-cache] hit at order={target_order} '

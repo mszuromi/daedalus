@@ -177,6 +177,18 @@ class TheoryBuilder:
         # want stability-based root selection must opt in explicitly
         # via ``.stability_analysis(True)``.
         self._stability_analysis: bool = False
+        # Whether ``build()`` invokes the colored-noise → Markovian-
+        # embedding preprocessor (``pipeline.colored_to_markovian``)
+        # on this builder before compiling text declarations.  Default
+        # ON: every CGF row that matches the v1 single-Lorentzian
+        # template ``c·exp(-|tau|/tauc)`` is rewritten as a white-
+        # noise-driven OU auxiliary field.  Set ``False`` via
+        # ``.markovianize(False)`` for theories whose colored kernels
+        # don't match the template (the existing scipy.nquad fallback
+        # then runs unchanged with its warning).  Per-row override is
+        # available via the ``markovianize=`` keyword on
+        # ``declare_cgf_term``.
+        self._markovianize_default: bool = True
 
     # ── Population declarations ───────────────────────────────────
     def population(self, name: str, *, size: int = 1,
@@ -623,6 +635,38 @@ class TheoryBuilder:
         })
         return self
 
+    def markovianize(self, enabled: bool = True):
+        """Toggle the colored-noise → Markovian-embedding preprocessor.
+
+        Parameters
+        ----------
+        enabled : bool, default True
+            When ``True`` (default), ``.build()`` walks ``_cgf_terms``
+            and rewrites every row whose kernel matches
+            ``c·exp(-|tau|/tauc)`` into a white-noise CGF row on an
+            auxiliary OU field plus the corresponding linear filter
+            in the action.  This unblocks ``max_ell >= 1`` colored-
+            noise computations, which would otherwise hang in
+            ``scipy.nquad``.
+
+            When ``False``, no rewriting is performed and the legacy
+            smooth-residual path runs.  Use this if you've hand-coded
+            your colored kernel into the action and don't want the
+            preprocessor to touch it, or if your kernel doesn't match
+            the v1 single-Lorentzian template.
+
+        Per-row overrides
+        -----------------
+        ``declare_cgf_term(..., markovianize=True | False)`` on an
+        individual row takes precedence over this builder-level flag.
+
+        See ``docs/correlated_noise_capabilities.md`` §1.5 for the
+        complete reference (supported kernels, naming convention for
+        auxiliary fields, v2 follow-ups).
+        """
+        self._markovianize_default = bool(enabled)
+        return self
+
     def stability_analysis(self, enabled: bool):
         """Toggle linear-stability classification for the DAE solver.
 
@@ -657,7 +701,8 @@ class TheoryBuilder:
                          coefficient: str = '',
                          kernel: str | None = None,
                          *,
-                         response_legs: list[str] | str | None = None):
+                         response_legs: list[str] | str | None = None,
+                         markovianize: bool | str | None = None):
         """Add one term to a non-closed-form cumulant generating
         functional (e.g. GTaS noise, cross-field colored noise).
 
@@ -692,11 +737,25 @@ class TheoryBuilder:
             commas) is broadcast across all legs — equivalent to
             ``response_field=<name>``.  When both are supplied,
             ``response_legs`` wins.
+        markovianize : bool or 'auto' or None, keyword-only
+            Per-row override for the colored-noise → Markovian-
+            embedding preprocessor.  Defaults to ``None`` (=
+            ``'auto'``): the row is markovianized if its kernel
+            matches the v1 single-Lorentzian template AND the
+            builder-level ``.markovianize(...)`` toggle is on
+            (default).  Set ``True`` to FAIL LOUDLY if the kernel
+            doesn't match (use this when you've hand-tuned a
+            Lorentzian and want to be sure the auto-detect doesn't
+            silently reject it).  Set ``False`` to keep this row's
+            colored kernel even when the builder-level toggle is on
+            (e.g. you've prototyped a hand-rolled embedding in the
+            action text).
 
         See ``docs/correlated_noise_capabilities.md`` for the
         complete reference on supported / unsupported noise models —
-        in particular the n ≥ 3 smooth-kernel limit, multiplicative-
-        noise workaround, and non-stationary / Lévy gaps.
+        in particular §1.5 (Markovian embedding), the n ≥ 3
+        smooth-kernel limit, multiplicative-noise workaround, and
+        non-stationary / Lévy gaps.
         """
         if response_legs is None and response_field is None:
             raise ValueError(
@@ -709,6 +768,18 @@ class TheoryBuilder:
         if isinstance(response_legs, str):
             response_legs = [s.strip() for s in response_legs.split(',')
                              if s.strip()]
+        # Normalize ``markovianize=`` to a bool / None for downstream
+        # consumers.  Accept the string 'auto' as a synonym for None.
+        if isinstance(markovianize, str):
+            if markovianize.lower() == 'auto':
+                markovianize_norm = None
+            else:
+                raise ValueError(
+                    f"declare_cgf_term: markovianize={markovianize!r} "
+                    f"unrecognised; allowed: True / False / 'auto' / None."
+                )
+        else:
+            markovianize_norm = markovianize
         self._cgf_terms.append({
             'name':           name,
             'response_field': response_field,
@@ -716,6 +787,7 @@ class TheoryBuilder:
             'order':          int(order),
             'coefficient':    coefficient,
             'kernel':         kernel,
+            'markovianize':   markovianize_norm,
         })
         return self
 
@@ -1298,6 +1370,21 @@ class TheoryBuilder:
             for f in self.response_fields:
                 if getattr(f, 'population', None) is None:
                     f.population = 'pop'
+
+        # Apply the colored-noise → Markovian-embedding preprocessor
+        # BEFORE compiling text declarations: this rewrite mutates
+        # ``_cgf_terms`` (white-noise auxiliaries replace colored
+        # rows) and augments ``_action_text`` (couples each source
+        # field to its auxiliary, adds the OU kinetic term).  Done
+        # here, before ``_compile_text_declarations``, so the
+        # downstream compiler sees the augmented spec.
+        #
+        # No-op when the builder-level toggle is OFF and no row
+        # opts in explicitly.  See ``pipeline/colored_to_markovian.py``
+        # and ``docs/correlated_noise_capabilities.md`` §1.5.
+        if self._cgf_terms:
+            from pipeline.colored_to_markovian import markovianize_spec
+            markovianize_spec(self)
 
         # Compile any text declarations into lambdas.  Done here, not
         # in the setters, so that all decls are available when each

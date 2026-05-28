@@ -154,17 +154,59 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
             return PR_cdf([complex(c)
                            for c in p_cf.coefficients(sparse=False)])
 
-        # Shared denominator Q(ω) — same for every entry under GCD reduction.
+        # Shared denominator Q(ω) — for diagonally-dominant K_ft most
+        # entries share the same Frac(CF[ω])-canonical denominator
+        # (= the polynomial numerator of det(K_ft)).  Upper-triangular
+        # K_ft from the Markovian-embedding preprocessor produces
+        # entries with DIFFERENT canonical denominators (e.g. G[0,0]
+        # carries only one pole factor, G[0,1] carries the product of
+        # two), so picking the first nonzero entry's denominator
+        # under-counts the system poles.
+        #
+        # Robust path: take ``Q_poly = LCM(per-entry denominators)``.
+        # This is the universal denominator whose roots include every
+        # system pole.  Per-entry residue at a pole that does NOT
+        # divide the entry's own denominator evaluates to 0 (handled
+        # below via the ``Q_per_entry[i][j] == Q_poly`` branch / its
+        # else arm).
         Q_poly = None
         for i in range(nf):
             for j in range(nf):
-                if G_ft_F[i, j] != 0:
-                    Q_poly = G_ft_F[i, j].denominator()
-                    break
-            if Q_poly is not None:
-                break
+                if G_ft_F[i, j] == 0:
+                    continue
+                d_ij = G_ft_F[i, j].denominator()
+                if Q_poly is None:
+                    Q_poly = d_ij
+                else:
+                    Q_poly = Q_poly.lcm(d_ij)
         if Q_poly is None:
             return None, None, None
+
+        # Higher-multiplicity (Jordan-block) poles need the
+        # ``(τ·exp(-pt))`` derivative term, which the single-pole
+        # residue formula below can't represent.  When ``Q_poly`` is
+        # not squarefree (e.g. mu = 1/tauc in the Markovianized OU
+        # produces ``Q = (iω + mu)^2``), fail out of the polynomial
+        # path so the caller can fall back to the numpy-cofactor
+        # tier (which has the same limitation but is more robust to
+        # the numerical near-degeneracy CDF root-finders introduce).
+        # A v2 of the polynomial path should compute the m-th
+        # derivative residue and the downstream mode-sum integrator
+        # should learn how to absorb ``τ^k · exp(-pt)`` modes.
+        try:
+            if not Q_poly.is_squarefree():
+                if verbose:
+                    print(
+                        '[propagator] polynomial-fracfield: Q(ω) is '
+                        'non-squarefree (multi-pole) — single-pole '
+                        'residue formula does not apply.  Falling '
+                        'back to next tier.'
+                    )
+                return None, None, None
+        except (AttributeError, TypeError):
+            # ``is_squarefree`` may not be implemented on the field;
+            # silently continue and let downstream catch issues.
+            pass
 
         Q_cdf = _cf_poly_to_cdf(Q_poly)
         Q_prime_cdf = Q_cdf.derivative()
@@ -185,29 +227,45 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 P_cdf[i][j] = _cf_poly_to_cdf(e.numerator())
                 Q_per_entry[i][j] = e.denominator()
 
+        # Cache per-entry denominator CDF polynomial and its derivative
+        # so the residue loop doesn't re-convert per pole.
+        Q_entry_cdf = [[None] * nf for _ in range(nf)]
+        Q_entry_prime_cdf = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                if Q_per_entry[i][j] is None:
+                    continue
+                if Q_per_entry[i][j] == Q_poly:
+                    Q_entry_cdf[i][j] = Q_cdf
+                    Q_entry_prime_cdf[i][j] = Q_prime_cdf
+                else:
+                    q_cdf = _cf_poly_to_cdf(Q_per_entry[i][j])
+                    Q_entry_cdf[i][j] = q_cdf
+                    Q_entry_prime_cdf[i][j] = q_cdf.derivative()
+
         C_mats = []
         for pk in pole_vals:
-            Qp_at = complex(Q_prime_cdf(pk))
-            if abs(Qp_at) < 1e-30:
-                C_mats.append(matrix(CDF,
-                    [[0j] * nf for _ in range(nf)]))
-                continue
             C_entries = [[0j] * nf for _ in range(nf)]
             for i in range(nf):
                 for j in range(nf):
                     if Q_per_entry[i][j] is None:
                         continue
+                    # Skip entries where pk isn't a pole of THIS
+                    # entry's canonical denominator — the residue
+                    # vanishes there.  We detect this via the
+                    # magnitude of the entry's Q evaluated at pk.
+                    qij_at = complex(Q_entry_cdf[i][j](pk))
+                    if abs(qij_at) > 1e-9:
+                        continue
+                    qijp = complex(Q_entry_prime_cdf[i][j](pk))
+                    if abs(qijp) < 1e-30:
+                        # Higher-multiplicity pole (Q_per_entry has pk
+                        # with order ≥ 2).  The single-pole residue
+                        # formula doesn't apply; leave 0 and rely on
+                        # the polynomial fall-back to flag the issue.
+                        continue
                     P_at = complex(P_cdf[i][j](pk))
-                    if Q_per_entry[i][j] == Q_poly:
-                        C_entries[i][j] = 1j * P_at / Qp_at
-                    else:
-                        # Per-entry denominator differs (shouldn't happen
-                        # in canonical form, but stay safe).
-                        Qij_cdf = _cf_poly_to_cdf(Q_per_entry[i][j])
-                        Qijp   = complex(Qij_cdf.derivative()(pk))
-                        if abs(Qijp) < 1e-30:
-                            continue
-                        C_entries[i][j] = 1j * P_at / Qijp
+                    C_entries[i][j] = 1j * P_at / qijp
             C_np = np.array(C_entries)
             mx = float(np.max(np.abs(C_np))) if C_np.size else 0.0
             if mx > 0:

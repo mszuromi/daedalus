@@ -130,7 +130,17 @@ def enumerate_unique_diagrams(
     # interaction vertices, which can produce additional valid
     # diagrams at the same (k, ell).  Sibling files for different
     # taylor orders coexist in the same theory's cache dir.
-    stage_name = f'unique_typed_mult_v1_{ext_tag}_taylor{ft.taylor_order}'
+    # Cache version bumped 2026-05-26 (v1 → v2): the
+    # ``extract_source_types`` upgrade that promotes cross-cumulant /
+    # auto-cumulant source monomials to :class:`NoiseSourceType` (so
+    # the Phase J non-local kernel substitution actually fires) was
+    # not in scope when v1 caches were written.  Old v1 caches encode
+    # plain :class:`SourceType` for what should be ``NoiseSourceType``,
+    # which silently drops the noise-kernel substitution and
+    # collapses every colored-noise diagram to the white-limit
+    # answer.  Bumping the version sidesteps the per-leg integrity
+    # check we'd otherwise need.
+    stage_name = f'unique_typed_mult_v2_{ext_tag}_taylor{ft.taylor_order}'
 
     unique_by_ell: dict[int, list] = {}
     multiplicity_by_ell: dict[int, list] = {}
