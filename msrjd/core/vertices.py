@@ -14,6 +14,67 @@ Build Phase B.
 from sage.all import SR
 
 
+# ── Module-level picklable kernel-fn wrapper ─────────────────────────
+# Used by extract_source_types to bind a FieldTheory namespace into
+# the user's noise kernel function.  Defined at module scope (NOT as
+# a closure inside extract_source_types) so that NoiseSourceType
+# objects carrying this callable survive ``multiprocessing.Pool``
+# round-trips — pickle can locate the class by its fully-qualified
+# name (``msrjd.core.vertices._NamespaceBoundKernel``) and reconstruct
+# the instance on the other side.
+class _NamespaceBoundKernel:
+    """Picklable wrapper that pre-evaluates a kernel function against
+    a FieldTheory namespace and caches the resulting SR expression.
+
+    Why pre-evaluate instead of holding the namespace?  The Phase J
+    integrator calls ``kernel_fn(*legs, tau)`` across worker processes
+    via ``multiprocessing.Pool``.  Carrying the full FieldTheory
+    namespace would require pickling it — but ``_Namespace`` contains
+    inner closures (e.g. ``_entity_axis_sizes`` defined inside
+    ``FieldTheory._build_namespace``) that pickle can't locate.
+
+    Instead, at construction time we call the user's kernel function
+    ONCE with the namespace + the canonical leg-tuple + the canonical
+    τ symbol, and we cache the returned SR expression.  Subsequent
+    calls substitute the call-site τ value into the cached expression
+    if it differs from the canonical one.
+
+    This works because:
+      * The kernel function's output for fixed legs is a pure SR
+        expression in (parameter SR vars) and (τ symbol).
+      * SR expressions pickle cleanly.
+      * The cached expression is what the Phase J integrator needs
+        anyway (it just substitutes numerical / symbolic τ values).
+    """
+    __slots__ = ('_expr', '_legs', '_tau_var')
+
+    def __init__(self, kernel_fn, ns, legs, tau_var):
+        # Evaluate the kernel once against the full namespace, caching
+        # the SR result.  Future calls substitute τ into this cache.
+        # legs is a list/tuple of integer leg indices (or empty for
+        # parameter-only kernels).
+        self._expr    = SR(kernel_fn(ns, *legs, tau_var))
+        self._legs    = tuple(legs)
+        self._tau_var = tau_var
+
+    def __call__(self, *args, **kwargs):
+        # Framework call convention is ``(i_leg, j_leg, ..., tau)`` —
+        # ``len(self._legs)`` ints followed by one τ value.
+        n_legs = len(self._legs)
+        if len(args) < n_legs + 1:
+            raise TypeError(
+                f"_NamespaceBoundKernel: expected at least "
+                f"{n_legs + 1} args (legs + τ), got {len(args)}.")
+        tau_value = args[n_legs]
+        if tau_value is self._tau_var:
+            return self._expr
+        return self._expr.subs({self._tau_var: tau_value})
+
+    def __repr__(self):
+        return (f'<_NamespaceBoundKernel legs={self._legs} '
+                f'tau_var={self._tau_var}>')
+
+
 # ── Data structures ──────────────────────────────────────────────────────────
 
 class VertexType:
@@ -171,9 +232,12 @@ class SourceType:
         self.response_legs = list(response_legs)
         self.bigrade       = tuple(bigrade)
 
-    # Pickle support for __slots__
+    # Pickle support for __slots__.  Reference SourceType.__slots__
+    # explicitly (NOT self.__slots__) — on a subclass instance the
+    # latter resolves to the subclass's own __slots__ only, which would
+    # drop coefficient/response_legs/bigrade from the pickle.
     def __getstate__(self):
-        return {s: getattr(self, s) for s in self.__slots__}
+        return {s: getattr(self, s) for s in SourceType.__slots__}
 
     def __setstate__(self, state):
         for s, v in state.items():
@@ -594,9 +658,12 @@ def extract_source_types(ft):
     cumulant_kernels = getattr(ns, '_cumulant_kernels', {}) or {}
     correlated_noises = ft.model.get('correlated_noises', {}) or {}
     # Look up the response-field name for each registered (noise, order)
-    # so we can match leg-tuples in the source's response_legs.
+    # so we can match leg-tuples in the source's response_legs.  Legacy
+    # single-response-field noise carries ``response_field``; new cross-
+    # field noise (``response_legs`` block) doesn't have a single
+    # response-field name, so we fall back to per-key leg-field lookup.
     noise_resp_field = {
-        noise_name: spec['response_field']
+        noise_name: spec.get('response_field')
         for noise_name, spec in correlated_noises.items()
     }
 
@@ -613,14 +680,44 @@ def extract_source_types(ft):
             # contribute to this source.
             matched_specs = []
             m_leg_multiset = sorted(m.response_legs)
-            for (noise_name, order, leg_tuple), spec in cumulant_kernels.items():
-                resp_field_name = noise_resp_field.get(noise_name)
-                if resp_field_name is None:
-                    continue
-                # 0-based legs → 1-based pop_idx leg-tuple to compare
-                spec_legs = sorted(
-                    [(resp_field_name, k + 1) for k in leg_tuple]
-                )
+            for (noise_name, order, leg_key), spec in cumulant_kernels.items():
+                # ``leg_key`` can be one of two shapes:
+                #   * legacy single-response-field: tuple of ints
+                #     ((idx, idx, ...)) — match against this noise's
+                #     ``response_field`` for every leg position.
+                #   * cross-field (new): tuple of (field_name, idx) pairs
+                #     — each leg position has its own response-field name.
+                # The leg-FIELDS source-of-truth lives on the spec under
+                # ``leg_fields`` when set; otherwise fall back to the
+                # legacy single-name.
+                if (leg_key and isinstance(leg_key, tuple)
+                        and leg_key[0] is not None
+                        and isinstance(leg_key[0], tuple)
+                        and len(leg_key[0]) == 2
+                        and isinstance(leg_key[0][1], int)):
+                    # Cross-field key shape: ((field, idx), ...)
+                    spec_legs = sorted(
+                        [(field, idx + 1) for (field, idx) in leg_key]
+                    )
+                else:
+                    # Legacy key shape: tuple of ints.  All legs sit on
+                    # the noise's single ``response_field``.
+                    resp_field_name = noise_resp_field.get(noise_name)
+                    if resp_field_name is None:
+                        # Fall back to ``leg_fields`` on the spec dict
+                        # if the noise lacks a singular response_field.
+                        leg_fields = spec.get('leg_fields')
+                        if leg_fields and len(leg_fields) == len(leg_key):
+                            spec_legs = sorted(
+                                [(f, idx + 1)
+                                 for (f, idx) in zip(leg_fields, leg_key)]
+                            )
+                        else:
+                            continue
+                    else:
+                        spec_legs = sorted(
+                            [(resp_field_name, k + 1) for k in leg_key]
+                        )
                 if spec_legs != m_leg_multiset:
                     continue
                 # Verify the placeholder symbol is actually in coeff
@@ -631,19 +728,34 @@ def extract_source_types(ft):
                     sign = SR(0)
                 if sign == 0:
                     continue
-                # Bind `ns` into the kernel-fn closure so the
-                # downstream Phase J integrator can call
-                # ``kernel_fn(i, j, tau)`` without needing the
-                # FieldTheory namespace.  The user's lambda has
-                # signature ``(ns, i, j, tau) -> SR``.
-                _user_kf = spec['kernel_fn']
-                bound_kernel = (
-                    lambda *args, _kf=_user_kf, _ns=ns: _kf(_ns, *args)
+                # Pre-evaluate the kernel against ``ns`` and cache the
+                # SR result so the wrapper doesn't have to hold a
+                # reference to ``ns`` (which is unpicklable due to
+                # closures inside _build_namespace).  See
+                # _NamespaceBoundKernel docstring for the design.
+                #
+                # ``spec['legs']`` is the leg-index tuple (ints) that
+                # was registered with this cumulant entry; ``tau_var``
+                # is the canonical τ SR variable the user's kernel was
+                # written against.
+                bound_kernel = _NamespaceBoundKernel(
+                    spec['kernel_fn'], ns,
+                    spec['legs'], spec['tau_var'],
                 )
                 matched_specs.append({
                     'symbol':    sym,
                     'kernel_fn': bound_kernel,
                     'legs':      spec['legs'],
+                    # ``leg_fields`` preserves the per-leg response-
+                    # field name tuple (e.g. ('xt','yt') for a cross-
+                    # field cumulant ``Cxy``).  The Phase J per-edge
+                    # time-routing in ``final_integral.py`` needs it
+                    # to distinguish heterogeneous-field legs from
+                    # homogeneous ones — without it, every cross-
+                    # cumulant falls back to label-based routing,
+                    # which mis-routes the field-distinguishable
+                    # edges of ``Cxy``-style sources.
+                    'leg_fields': spec.get('leg_fields'),
                     'tau_var':   spec['tau_var'],
                     'sign':      sign,
                     'noise':     noise_name,

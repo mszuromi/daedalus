@@ -2671,16 +2671,10 @@ def integrate_diagram(
             continue
         # All specs on this vertex share the same leg multiset
         # (they were grouped by extract_source_types).  Read the
-        # 0-based leg ordering from the first spec.
-        legs0 = vtype.cumulant_specs[0]['legs']    # e.g. (0, 1)
-        anchor_leg = legs0[0]
-        other_leg  = legs0[1] if len(legs0) > 1 else legs0[0]
-        if anchor_leg == other_leg:
-            # Auto-cumulant survived as non-local (kernel had no
-            # delta, but legs are equal) — treat both legs at the
-            # anchor time and leave τ-integration in.  Rare in
-            # practice; keeps the code uniform.
-            other_leg = anchor_leg
+        # 0-based leg ordering and field-name tuple from the first
+        # spec (extract_source_types caches leg_fields on each entry).
+        legs0 = vtype.cumulant_specs[0]['legs']            # e.g. (0, 0)
+        leg_fields_0 = vtype.cumulant_specs[0].get('leg_fields')
         # Anchor time = the existing internal-vertex symbol
         anchor_time = vertex_time[v]
         # τ symbol — distinct per noise vertex
@@ -2689,11 +2683,67 @@ def integrate_diagram(
         )
         extra_tau_syms.append((tau_sym, v))
         integration_vars.append(tau_sym)
-        # Per-leg time map: leg-0 = anchor; leg-1 = anchor − τ
-        vertex_leg_time[v] = {
-            anchor_leg: anchor_time,
-            other_leg:  anchor_time - tau_sym,
-        }
+
+        # Edge-keyed per-leg time map.  The typed diagram identifies
+        # legs by (field_base, pop_idx) — that's a coarser granularity
+        # than the cumulant action needs.  For a homogeneous auto-
+        # cumulant ``Cxx`` (legs ``['xt','xt']``) BOTH source-side
+        # endpoints have the same ``(field, pop_idx)``, so a pop_idx
+        # keyed map (the old design) collapsed both legs to the same
+        # time symbol and dropped the τ-coupling between propagators —
+        # the kernel ``K(τ_v)`` then became a multiplicative weight
+        # decoupled from the propagator structure, yielding the
+        # *white-limit* answer ``D/μ`` for every τc.
+        #
+        # Fix: route by EDGE-KEY directly.  The typed diagram's
+        # parallel multi-edges have distinct labels, so two edges to
+        # the same source can always be disambiguated by their label.
+        # Strategy:
+        #   * heterogeneous-field legs (e.g. ``['xt','yt']``): match
+        #     each incident edge's response-leg field+pop_idx to the
+        #     source's leg-field tuple.  Edge whose resp_leg matches
+        #     ``leg_fields_0[0]`` lands at ``anchor_time``; the other
+        #     lands at ``anchor_time - τ``.
+        #   * homogeneous-field legs (e.g. ``['xt','xt']``): no field
+        #     info distinguishes them — use label ordering instead.
+        #     M(Γ) already counts both orderings of indistinguishable
+        #     legs, so the specific choice of "first label → anchor"
+        #     just picks ONE representative of the orbit.
+        incident_edges = [
+            ek for ek in D.edges() if ek[0] == v or ek[1] == v
+        ]
+        edge_to_time = {}
+        homogeneous = (
+            leg_fields_0 is None
+            or len(legs0) < 2
+            or (len(legs0) == 2
+                and leg_fields_0[0] == leg_fields_0[1]
+                and legs0[0] == legs0[1])
+        )
+        if not homogeneous and len(legs0) == 2:
+            # Heterogeneous: match each edge by its response leg
+            # field+pop_idx against ``leg_fields_0``.
+            target_anchor = (leg_fields_0[0], legs0[0] + 1)
+            target_other  = (leg_fields_0[1], legs0[1] + 1)
+            for ek in incident_edges:
+                edge_resp_leg, _ = typed_diagram.edge_types[ek]
+                if edge_resp_leg == target_anchor:
+                    edge_to_time[ek] = anchor_time
+                elif edge_resp_leg == target_other:
+                    edge_to_time[ek] = anchor_time - tau_sym
+                else:
+                    # Shouldn't happen if extract_source_types matched
+                    # legs correctly, but fall back to anchor.
+                    edge_to_time[ek] = anchor_time
+        else:
+            # Homogeneous (or order≠2): use label ordering to
+            # disambiguate parallel edges.  M(Γ) absorbs the choice.
+            sorted_edges = sorted(incident_edges)
+            for i, ek in enumerate(sorted_edges):
+                edge_to_time[ek] = (
+                    anchor_time if (i == 0) else (anchor_time - tau_sym)
+                )
+        vertex_leg_time[v] = edge_to_time
         vertex_leg_kind[v] = 'response'
         noise_source_specs[v] = list(vtype.cumulant_specs)
 
@@ -2757,19 +2807,29 @@ def integrate_diagram(
         """Pick the right time symbol for ``vert``'s end of an edge.
 
         For NoiseSourceType (``vertex_leg_kind == 'response'``) the
-        per-leg map is keyed on the edge's RESPONSE leg pop-idx; for
-        ConvVertexType (``vertex_leg_kind == 'physical'``) it's keyed
-        on the PHYSICAL leg pop-idx.  Plain vertices keep their
-        single ``vertex_time`` entry — the routing falls through to
-        ``default_time``.
+        per-leg map is keyed on the ``edge_key`` directly — the
+        typed-diagram representation collapses indistinguishable legs
+        (e.g. the two ``xt`` legs of an auto-cumulant ``Cxx``) under a
+        single (field, pop_idx) identifier, so we must use the edge's
+        own label to disambiguate two parallel edges into the source.
+        See the noise-vertex setup block above for the heterogeneous /
+        homogeneous routing strategy.
+
+        For ConvVertexType (``vertex_leg_kind == 'physical'``) the map
+        is keyed on the PHYSICAL leg pop-idx — the kernel attachment
+        already binds a specific physical-leg slot, no ambiguity.
+
+        Plain vertices keep their single ``vertex_time`` entry — the
+        routing falls through to ``default_time``.
         """
         if vert not in vertex_leg_time:
             return default_time
+        kind = vertex_leg_kind.get(vert)
+        if kind == 'response':
+            return vertex_leg_time[vert].get(edge_key, default_time)
+        # ConvVertexType ('physical') path — keyed by phys-leg pop_idx
         edge_resp_leg, edge_phys_leg = typed_diagram.edge_types[edge_key]
-        if vertex_leg_kind.get(vert) == 'physical':
-            leg = edge_phys_leg
-        else:
-            leg = edge_resp_leg
+        leg = edge_phys_leg
         pop_idx = leg[1] - 1  # 0-based
         return vertex_leg_time[vert].get(pop_idx, default_time)
 
