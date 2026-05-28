@@ -237,6 +237,126 @@ for new users.
 
 ---
 
+## Spatial extension  •  4 weeks → multi-year, depending on depth
+
+The framework currently handles fields ``φ(t)`` (functions of time
+only); spatial structure is faked through populations (indexed
+neurons / sites).  True spatial extension means fields ``φ(x, t)``
+with continuous or lattice coordinates — i.e. stochastic PDEs
+instead of coupled stochastic ODEs.  This is the largest single
+direction the framework could grow in, and the natural one for
+neural-field-theory applications (Wilson-Cowan, neural field
+equations, traveling waves, cortical pattern formation, etc.).
+
+### Phase A — Lattice with k-space diagonalization  (~4–6 weeks)
+
+For translation-invariant lattice theories, decompose the propagator
+into Fourier modes::
+
+  G(ω, x − y) = (1/N) Σ_k e^(i k·(x−y)) G(ω, k)
+
+For a discrete Laplacian (``-(2 δ_{ij} − δ_{i,j+1} − δ_{i,j-1})`` on a
+1D chain), this gives ``G(ω, k) = 1 / (i ω + μ + 2(1 − cos k))`` —
+fully rational in both ω and k.  Diagram contributions become
+product-of-propagators integrated over loop momenta + frequencies,
+with momentum conservation at each vertex.
+
+**Architecture**: a ``lattice_dimension``, ``lattice_size``, and
+``boundary_conditions`` block on the theory spec.  The propagator
+builder converts the coupling matrix to a ``G(ω, k)`` function.
+Phase J adds k-summation alongside the existing ω-residue path.
+
+**Test theory**: 1D OU chain with Laplacian coupling, free theory,
+analytic structure-factor closed-form to compare against.
+
+**Code touch points**:
+
+* ``pipeline/_propagator.py`` — k-space diagonalization (~150 LOC)
+* ``msrjd/integration/time_domain/final_integral.py`` — extend the
+  diagram contribution computation to include loop-momentum sums
+  (~200 LOC)
+* New module ``pipeline/spatial.py`` for lattice-theory utilities
+* New theory format keys for declaring lattice geometry +
+  symmetries
+
+**Trigger**: advisor's expressed interest; a specific lattice theory
+(cortical column model, spin chain, lattice OU, etc.) the user wants
+to compute on.
+
+### Phase B — Continuum with UV regularization  (~8–12 weeks)
+
+Take the continuum limit: replace ``Σ_k → ∫ dᵈk`` with a momentum
+cutoff Λ or dimensional regularization.  At one loop the integrals
+are typically ``∫ dᵈk / [(ω² + ε(k)²)(...)]`` where ``ε(k) = c·k²``
+is the dispersion.  For Gaussian-fixed-point theories these are
+textbook (``d = 4 − ε`` regularization, Feynman parameters, etc.).
+
+**What this enables**: stochastic PDEs in their natural continuum
+form — KPZ, Cahn-Hilliard, model A / B / C / D / E (Hohenberg-
+Halperin classification), neural field equations, reaction-diffusion.
+The full catalog of stochastic field theory in ``d > 0``.
+
+**New machinery needed**:
+
+* Momentum-cutoff or dimensional-regularization scheme selector
+* Feynman-parameter integration for loop momenta
+* UV-divergence detection + counterterm support (for renormalized
+  theories)
+* Spectral decomposition of inverse propagator for general kinetic
+  operators (Laplacian + mass + higher-derivative)
+
+This is where the framework leaves "automation of textbook
+calculations" and starts to be useful for *new* physics
+calculations, because hand-computing the resulting loop integrals at
+``d ≥ 2`` is famously tedious.
+
+**Trigger**: a specific continuum problem (traveling wave dispersion,
+neural field correlator at finite system size, KPZ-class roughness
+exponent, etc.) the user wants to compute.
+
+### Phase C — Critical phenomena / RG flow  (~3–6 months)
+
+Renormalization-group flow, beta functions, anomalous dimensions,
+ε-expansion.  At this point the framework is no longer just "MSR-JD
+automation" but "field-theoretic RG automation" — overlap with
+packages like ``FeynCalc`` (HEP), ``FORM``, ``QGRAF``, etc.
+
+**What this enables**: critical neural dynamics (avalanche exponents,
+scaling), KPZ-class universality classes, RG flow of stochastic field
+theories.  This is true research-tool territory.
+
+**Trigger**: a methods paper that claims competitive coverage with
+hand-derived RG results in critical neural-field theory or
+non-equilibrium statistical mechanics.
+
+### Neuroscience applications that motivate the spatial extension
+
+* **Cortical column heterogeneity** — finite lattice; Phase A.
+* **Traveling waves / propagation** — continuum, off-critical;
+  Phase B.
+* **Pattern formation (Turing-like)** — Phase A (subcritical) or
+  Phase B (Turing instability + nonlinear saturation).
+* **Critical brain dynamics (avalanches, scaling exponents)** —
+  Phase C.
+* **Lattice Hawkes / spike-network on a grid** — Phase A.  Your
+  existing Hawkes-on-network theories are already lattice theories
+  in disguise; recognizing them as such explicitly would let you
+  do ``G(ω, k)`` analytic continuation, dispersion-relation
+  extraction, and finite-size scaling studies you currently can't.
+
+### Recommended starting point
+
+For an advisor-facing demo of "we do spatial", commit to **Phase A
+end-to-end** on a specific 1D lattice OU theory.  4-6 weeks of
+focused work.  Deliverable: the framework computes the lattice
+2-point correlator ``C(x_i − x_j, τ)`` at 1-loop, matches analytical
+lattice OU, and demonstrates finite-size scaling against the
+continuum prediction.  That demonstration is the "we do spatial"
+credential.  Phase B and C can wait for specific motivating physics
+problems.
+
+---
+
 ## Long-term (research-scale)  •  multi-month or multi-year
 
 These are real-research-program items.  Each opens a class of theories
