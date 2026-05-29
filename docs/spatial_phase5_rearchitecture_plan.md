@@ -293,12 +293,14 @@ external inverse-FT to produce `C_tau_x`.
 
 ## 5. Sequencing (each stage gated on a checkpoint)
 
-**Stage A — tree-level through the shared pipeline.**  🟡 IN PROGRESS
+**Stage A — tree-level through the shared pipeline.**  🟢 BRIDGE BUILT
+(additive module, certified vs oracle; wiring it into `compute.py` and
+retiring the bespoke short-circuit is Stage B).
 Route the free linear theory (Edwards-Wilkinson / linear-diffusion)
 through `compute_correction_td` with the momentum layer (external `q`
 only, no loops).
 *Checkpoint:* reproduce the bespoke path's `C(x,τ)` to ≤1e-10
-(equal-time and two-time) — the bespoke evaluator is the oracle.
+(equal-time and two-time) — the bespoke evaluator is the oracle. **MET.**
 
 > **Progress (2026-05-29):**
 > * **Spike PASS** (`docs/spatial_spikes/stageA_tk_pipeline_spike.py`):
@@ -331,6 +333,26 @@ only, no loops).
 > of `q` — is the next concrete build, and is a design step (not a
 > mechanical wire-up), so it should land carefully against the oracle +
 > the 21 spatial tests before the bespoke short-circuit is retired.
+>
+> **Bridge BUILT (2026-05-29)** — `msrjd/integration/spatial/pipeline_bridge.py`
+> (`compute_spatial_correlator_via_pipeline`).  It (1) reads the per-mode
+> `(A,B,N)` from the propagator (`ac_mass`/`ac_diffusion` + noise sector);
+> (2) runs the SHARED pipeline at `Laplacian→-q²` over sample momenta and
+> **CERTIFIES** the diagram-based `C(q,τ)` equals
+> `Σ_α N_α/(A_α+B_α q²)e^{-(A_α+B_α q²)|τ|}` (the link between "diagrams
+> right" and "modes right"); (3) does the external `q→x` FT analytically
+> via `free_two_point`.  Validated on all four spatial theory files
+> (linear-diffusion, Edwards-Wilkinson, Allen-Cahn infinite, Allen-Cahn
+> PBC): certification residual ~2e-16, bridge-vs-bespoke `Δ = 0` exactly.
+> Tests: `tests/test_spatial_pipeline_bridge.py` (8 passed); full spatial
+> suite 52 passed.  The module is **additive** — it does NOT touch
+> `compute.py`/`integrate_diagram`, so the time-only regression path is
+> untouched.  For v1 scope (tree + constant-mass-shift tadpole) the
+> dressed propagator stays single-mode; the mode-list shape is where
+> momentum-dependent self-energies (2-loop+) will plug in.  **Stage B**
+> (route `compute.py:375` through this bridge and retire
+> `compute_spatial_correlator_tree`) is the remaining wire-up — gated on
+> a watched run since it edits the shared short-circuit.
 
 **Stage B — retire the bespoke path.**
 Delete the `compute.py:375` short-circuit and
