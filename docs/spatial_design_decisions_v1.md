@@ -201,6 +201,35 @@ produces the m=1 erfc building block for Rescue B.
 - v1 total effort: **9 weeks** (unchanged from the plan's None /
   Rescue A column).
 
+### Math spike — Rescue A premise verified (2026-05-28)
+
+Before committing to Rescue A, a Phase 0 de-risk spike
+(`docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py`)
+numerically verified the two load-bearing claims:
+
+1. **The erf-split closed form** for the residual integral
+   `∫_L^U s^{-1/2} exp(-β/s - α s) ds`:
+   - real α, 7 regimes (small/large μ, small/large X, finite +
+     near-origin-L intervals): rel ≤ 6e-15
+   - **complex α** (the multi-pole-chain generality case — damped-
+     oscillatory and near-pure-imaginary α=0.05+2j stress): rel
+     ~1e-25 to 1e-31.  **This is the result that confirms Rescue A
+     generalizes past free Allen-Cahn** — the erf-split has no
+     hidden instability in the oscillatory-pole regime.
+   - semi-infinite U→∞ (the τ-correlator integral): rel ≤ 2e-16
+2. **The spatial semigroup collapse** `∫dx_v G(t1,·)G(t2,·) =
+   G(t1+t2,·)`, chain-2 and chain-3: rel ≤ 3e-16.
+3. **End-to-end tree-level free correlator** C(x,τ): 3-way match
+   (erf-split closed form vs direct 2D quadrature vs analytic);
+   at τ=0 reproduces `T/(2√(μD))·exp(-|x|/ξ)` exactly.
+
+**Verdict: GO.**  The spike uses mpmath at 30 dps, so it confirms
+the math is correct; the float64 production path still needs the
+`USE_ERFC_CHAIN_SIMPLEX_PRECISION_FIX` mpmath gate for the
+close-erf-argument regime (already specced — same character as the
+chain-simplex close-pole concern in
+`docs/m_ge3_precision_bug_audit.md`).
+
 ---
 
 ## Summary of v1 commitments
