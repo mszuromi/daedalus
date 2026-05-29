@@ -5,12 +5,18 @@ Unit tests for the spatial momentum-routing pass
 (``msrjd.integration.spatial.momentum_routing.route_momenta``), the
 §4a pre-integration step of the spatial re-architecture.
 
-Uses SYNTHETIC diagram graphs (no enumeration pipeline) so the tests
+Most tests use SYNTHETIC diagram graphs (no enumeration pipeline) so they
 are fast and isolate the routing linear-algebra:
 
   * tree 2-point  → L=0, every edge carries ±q (k² = q² uniformly)
   * 1-loop bubble → L=1, two internal edges carry ℓ and -(q+ℓ)
   * 2-loop sunset → L=2
+
+plus one integration test that routes the REAL typed diagrams the
+enumeration pipeline produces for Allen-Cahn (the objects Stage C will
+feed to the per-edge momentum substitution), checking that tree edges
+carry ±q only, every 1-loop diagram has exactly one loop momentum, and
+the Hartree tadpole (a k=0 connecting line) is present.
 
 Run:  sage -python -m pytest tests/test_momentum_routing.py -q
 """
@@ -99,3 +105,78 @@ def test_external_momentum_conservation():
     mom = r.edge_momenta
     leg0, leg1 = mom[(2, 0, 0)], mom[(2, 1, 1)]
     assert sp.expand(leg0 + leg1) == 0
+
+
+def test_route_real_enumerated_allen_cahn_diagrams():
+    """Route the REAL typed diagrams from the enumeration pipeline (not
+    synthetic graphs) for the Allen-Cahn λφ³ theory.
+
+    Invariants Stage C relies on:
+      * every tree (ℓ=0) diagram has L=0 and all edges k² = q₀²;
+      * every 1-loop (ℓ=1) diagram has exactly one loop momentum, present
+        on ≥1 edge alone (k² = ℓ₀², the clean integration variable);
+      * the Hartree tadpole is present — a 1-loop diagram with an internal
+        edge forced to k = 0 by momentum conservation (the line joining the
+        closed self-loop to the external backbone).
+    """
+    import importlib.util
+
+    from msrjd.core.field_theory import FieldTheory
+    from msrjd.core.vertices import (
+        extract_vertex_types, extract_source_types,
+    )
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from pipeline._propagator import build_propagator
+    from pipeline._diagrams import enumerate_unique_diagrams
+
+    p = os.path.join(os.path.dirname(__file__), '..', 'theories',
+                     'allen_cahn_1d_subcritical_infinite.theory.py')
+    spec = importlib.util.spec_from_file_location('m', p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    model = mod.build()
+
+    ft = FieldTheory(model, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    vt = extract_vertex_types(ft)
+    st = extract_source_types(ft)
+    rv = list(ft._ns._ring_var_names)
+    nt = ft._n_tilde
+    ri, pi = build_field_index_map(rv, nt)
+    ext = [('dphi', 1), ('dphi', 1)]
+    ub, _, _ = enumerate_unique_diagrams(
+        ft, model, k=2, max_ell=1, external_fields=ext, G_ft=prop['G_ft'],
+        resp_idx=ri, phys_idx=pi, vtypes=vt, stypes=st,
+        use_cache=False, verbose=False)
+
+    # ℓ=0: tree, no loops, every edge k² = q₀²
+    trees = ub.get(0, [])
+    assert len(trees) >= 1
+    for td in trees:
+        r = route_momenta(td)
+        assert r.n_loops == 0
+        q0 = r.q_syms[0]
+        assert all(sp.expand(v - q0**2) == 0 for v in r.edge_k2().values())
+
+    # ℓ=1: exactly one loop momentum; a loop-only edge and a k=0 tadpole line
+    one_loops = ub.get(1, [])
+    assert len(one_loops) >= 1
+    saw_loop_only_edge = False
+    saw_tadpole_zero_line = False
+    for td in one_loops:
+        r = route_momenta(td)
+        assert r.n_loops == 1
+        assert len(r.loop_syms) == 1
+        l0 = r.loop_syms[0]
+        k2vals = list(r.edge_k2().values())
+        # the loop momentum must actually appear
+        assert any(l0 in sp.expand(v).free_symbols for v in k2vals)
+        if any(sp.expand(v - l0**2) == 0 for v in k2vals):
+            saw_loop_only_edge = True
+        if any(sp.expand(v) == 0 for v in k2vals):
+            saw_tadpole_zero_line = True
+    assert saw_loop_only_edge, \
+        'expected an edge carrying the loop momentum alone (k² = ℓ₀²)'
+    assert saw_tadpole_zero_line, \
+        'expected the Hartree tadpole (a k = 0 connecting line)'

@@ -387,6 +387,43 @@ edge momentum).
 (the convolution `∫dℓ/2π · C(ℓ)·G_R(q−ℓ)`, doable by residues), and the
 corrected `C(x,τ)` matches a direct simulation of that theory.
 
+> **Stage C/C.5 implementation gate (scoped 2026-05-29).**  The Stage-A
+> bridge handles loops *trivially-wrong* if reused as-is, because it sets
+> a SINGLE global `Laplacian → -q²` for the whole diagram — every edge
+> then gets `q²`.  That is exact at tree level (routing gives every edge
+> `±q`) but wrong for a loop, where the loop edge must carry `ℓ` and the
+> backbone `q` (or `q−ℓ`).  Two concrete pieces close the gate:
+>
+> 1. **Per-edge momentum substitution.**  `momentum_routing.route_momenta`
+>    (§4a) already yields the correct per-edge `k_e²` — now VALIDATED on
+>    the REAL enumerated Allen-Cahn diagrams (not just synthetic graphs):
+>    tree edges `±q₀`; every 1-loop diagram one loop momentum `ℓ₀`; the
+>    Hartree tadpole shows the distinctive `k = 0` connecting line forced
+>    by conservation (`tests/test_momentum_routing.py::`
+>    `test_route_real_enumerated_allen_cahn_diagrams`).  The heat-kernel
+>    pole is `λ_e = -(A + B·k_e²)`, so each edge's pole/residue must be
+>    evaluated at ITS `k_e²`, not a global `q²`.
+>
+> 2. **The integrator extension point** is `final_integral._build_edge_`
+>    `mode_sums`: today it reads ONE global `propagator_data['pole_vals']`
+>    / `['C_mats']` and gives every edge the same `λ_α` scalars.  The
+>    `EdgeModeSum` docstring already anticipates the fix — "`λ_α` and
+>    `C_α` become callables of momentum `k` … the integrator backends gain
+>    an outer loop over momentum."  So Stage C = (a) make the per-edge
+>    `(λ_α, C_α)` momentum-evaluated using the routed `k_e²`, and (b) add
+>    the `∫dℓ` loop integral (Gaussian/erf or residue, §4c′; for the
+>    tadpole the self-loop integral is just `⟨φ²⟩₀ = ∫dℓ/2π·C(ℓ) =
+>    T/(2√(μD))`).
+>
+> **Why supervised, not unattended.**  `_build_edge_mode_sums` and the
+> integrator backends are on the SHARED time-only path (12 regression
+> tests).  Making `(λ_α, C_α)` momentum-aware must keep the time-only
+> case a no-op (constant callables) — a change to verify against the
+> time-only suite under watch, not to land unattended.  The inputs
+> (routing, propagator modes, the bridge's analytic q-FT, the `M(Γ)`
+> factor) are all built and validated; the remaining work is this
+> integrator surgery.
+
 **Stage D — generalize.** k≠2 cumulants and multi-field coupled
 spatial follow from the same construction (no longer special-cased).
 
