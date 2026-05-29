@@ -122,6 +122,56 @@ def test_bridge_equal_time_matches_closed_form(name, params, closed):
                                rtol=1e-9, atol=1e-12)
 
 
+def _two_field_model():
+    return (
+        TheoryBuilder('two-field decoupled bridge', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .physical_field('psi', spatial_dim=1)
+        .parameter('mu1', default=1.0, domain='positive')
+        .parameter('D1', default=1.0, domain='positive')
+        .parameter('mu2', default=2.0, domain='positive')
+        .parameter('D2', default=0.5, domain='positive')
+        .parameter('T1', default=1.0, domain='positive')
+        .parameter('T2', default=1.5, domain='positive')
+        .set_action_text(
+            'phit*((Dt+mu1-D1*Laplacian)*phi) '
+            '+ psit*((Dt+mu2-D2*Laplacian)*psi) '
+            '- T1*phit^2 - T2*psit^2')
+        .equation(lhs='(Dt+mu1-D1*Laplacian)*phi', rhs='0')
+        .equation(lhs='(Dt+mu2-D2*Laplacian)*psi', rhs='0')
+        .boundary('infinite').initial('stationary').build())
+
+
+_FUND2 = {'mu1': 1.0, 'D1': 1.0, 'mu2': 2.0, 'D2': 0.5, 'T1': 1.0, 'T2': 1.5}
+
+
+@pytest.mark.parametrize('leg,fi,mu,D,T', [
+    ('dphi', 0, 1.0, 1.0, 1.0),
+    ('dpsi', 1, 2.0, 0.5, 1.5),
+])
+def test_bridge_multifield_resolves_each_field(leg, fi, mu, D, T):
+    """The bridge must resolve the correct field INDEX for a 2-field
+    decoupled theory and certify/transform each field's OWN heat-kernel
+    mode (its own μ, D, T) — exercising the multi-field phys-column path
+    the single-field bridge tests never touch."""
+    model = _two_field_model()
+    ft = FieldTheory(model, taylor_order=2)
+    ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    nps = {SR.var(k): v for k, v in _FUND2.items()}
+    ext = [(leg, 1), (leg, 1)]
+    Cb, _ = compute_spatial_correlator_tree(
+        ft, model, prop, nps, ext, _TAUS, _XS, verbose=False)
+    Cp, info = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, nps, ext, _TAUS, _XS, verbose=False)
+    assert info['field_index'] == fi
+    assert info['pipeline_certified'] and info['certify_max_rel'] < 1e-10
+    np.testing.assert_allclose(Cp, Cb, rtol=1e-9, atol=1e-12)
+    it0 = int(np.argmin(np.abs(_TAUS)))
+    closed = T / (2 * math.sqrt(mu * D)) * np.exp(-_XS * math.sqrt(mu / D))
+    np.testing.assert_allclose(Cp.real[it0], closed, rtol=1e-9, atol=1e-12)
+
+
 def test_bridge_tier2_coupled_raises_clean():
     """A coupled (off-diagonal) multi-field spatial theory has no Tier-1
     heat-kernel block, so the bridge must raise a clean NotImplementedError."""
