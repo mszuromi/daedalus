@@ -88,11 +88,22 @@ tadpole) the loop momentum integral is a single finite 1D integral
 closed-form.
 
 **What the pivot keeps:** the heat-kernel propagator (`G_tx`, Phase
-2/3) survives as the **tree-level closed-form oracle** — the exact
-`C(x,τ)` it produces (validated to machine precision + simulation) is
-the regression target the new pipeline path must reproduce before the
-bespoke path is retired. The erf primitives may still serve as
-closed-form evaluators for specific momentum integrals.
+2/3) and the erf primitives are **not discarded — they become the
+analytic momentum-integral evaluators** inside the pipeline's momentum
+layer (§4c). Doing the k-integral by residues (the clean, no-ringing
+path) *yields exactly the `G_tx` closed form*. They also serve as the
+tree-level regression oracle (the machine-precision `C(x,τ)` the new
+pipeline path must reproduce before the bespoke path is retired).
+
+> **Ringing concern (raised + resolved 2026-05-29).** The original
+> (t,x) choice was motivated by numerical ω-inverse-FT ringing. A
+> numerical *k*-FFT would ring the same way on the equal-time slice
+> (verified: ~1e-1 error, wrong-sign tails). But that is avoided
+> entirely by doing the k-integral **analytically by residues** — the
+> same technique that makes the framework's ω-treatment clean. The
+> two-time slice additionally carries Gaussian `exp(-Dk²τ)` damping
+> from the time integral, so even a numerical fallback is clean there.
+> So (t,k) does **not** reintroduce ringing. See §4c.
 
 **Recommendation:** pivot to `(t,k)`. It is the only representation
 that satisfies the shared-pipeline mandate, it generalizes to all loop
@@ -143,10 +154,27 @@ C(x, τ) = ∫ (dq/2π) e^{iqx} C(q, τ)          # external inverse FT
 ```
 
 - Tree level: no `k_ℓ`; just the external-`q` inverse FT.
-- Evaluation of the momentum integrals: **numerical (scipy) by
-  default**, with closed-form where the structure allows (Gaussian /
-  rational → the heat-kernel and erf closed forms become *evaluators*
-  for these integrals, not a separate architecture).
+- **Evaluation is ANALYTIC-first (residues / closed form), NOT
+  numerical FFT.** This is the same principle that makes the framework's
+  ω-integral clean — it does ω by residues (→ t-domain exponentials),
+  never by numerical FFT. The k-integral gets the identical treatment:
+  the k-plane poles of `1/(μ+Dk²)` (at `k=±i√(μ/D)`) integrate by
+  residues to the `e^{-|x|/ξ}` exponential — which *is* the
+  `G_tx` heat-kernel closed form (Phase 2/3). **So `G_tx` and the erf
+  primitives are not an oracle to be discarded — they are the
+  momentum-integral evaluators**, slotted into the pipeline's
+  momentum layer.
+- **Why this matters (empirically verified 2026-05-29):** a naive
+  *numerical* k-FFT of the equal-time (τ=0) slice rings badly — slow
+  `1/k²` decay, Gibbs oscillation, wrong-sign tails (max err ~1e-1 at
+  modest cutoff; still ~1e-2 at K=30). This is the same ringing that
+  motivated the original (ω→t) → (t) choice. The two-time (τ≠0) slice
+  does NOT ring — the time integral leaves a Gaussian `exp(-Dk²τ)`
+  damping that kills the high-k tail (numerical FFT hits ~1e-11 at a
+  tiny cutoff). So: use the closed form (residues) everywhere — exact,
+  no ringing; numerical k-integration is a **guarded fallback only**,
+  and never on the equal-time slice (where the closed form always
+  applies). See the spike result archived in this commit's message.
 
 ### 4d. Noise + vertices (mostly unchanged)
 - White noise enters via the propagator (`G_ft` carries the ⟨φφ⟩
