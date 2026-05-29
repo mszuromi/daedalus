@@ -354,27 +354,36 @@ only, no loops).
 > `compute_spatial_correlator_tree`) is the remaining wire-up — gated on
 > a watched run since it edits the shared short-circuit.
 
-**Stage B — retire the bespoke path.**
-Delete the `compute.py:375` short-circuit and
-`compute_spatial_correlator_tree`; spatial tree-level now comes from
-the pipeline. Keep `G_tx` closed forms as a test oracle in
-`tests/`. All spatial tests still pass.
+**Stage B — route compute.py through the pipeline.**  ✅ DONE (`5588688`).
+`compute.py`'s spatial short-circuit now calls
+`compute_spatial_correlator_via_pipeline` (the certified bridge); every
+spatial tree-level correlator flows through the SHARED pipeline
+(certified ~2e-16) then the analytic q→x FT.  `compute_spatial_correlator_tree`
+is KEPT in `spatial_correlator.py` as the test oracle (not deleted).
+Surfaced + fixed a leg-naming bug: `compute_cumulants` normalizes external
+fields to internal names but keeps the per-leg label
+(`[('dphi',1),('dphi',2)]`); `_legs_to_phys_idx` now maps both legs onto the
+single valid `('dphi',1)` key (the Stage A unblock).  Full spatial suite +
+time-only (`test_time_domain` 21, `test_markovianize` 5) green.
 
-**Stage C — 1-loop (tadpole).**
-With momentum routing + loop integration live, the Allen-Cahn λφ³
-tadpole falls out as just another diagram. The combinatorial factor
-(the `3` in `Σ=3λ⟨φ²⟩`) is the topological `M(Γ)` —
-**dimension-independent**, so it is the *same* factor the framework
-already validates for the time-only OU+εx³ tadpole; momentum adds no
-new combinatorial risk.
-*Checkpoint:* the 1-loop `C(0,0)` matches the strict-1-loop mass-shift
-prediction (`≈0.4625` at λ=0.1: `Σ=3λ⟨φ²⟩₀=0.15`, `δC=Σ·∂C₀/∂μ`) and
-agrees with the simulator (the −0.071 Hartree shift the sim showed at
-λ=0.3). Build the Allen-Cahn sim-comparison notebook.
-*Caveat:* the tadpole has **trivial** momentum routing — the self-loop
-carries an unconstrained `ℓ`, the line carries `q`, and no edge is a
-non-trivial combination of the two. So it validates the loop integral
-+ self-energy + `M(Γ)`, but NOT the §4a routing solve.
+**Stage C — 1-loop (tadpole).**  ✅ DONE (`510be71`).
+`compute_cumulants(max_ell=1)` on a spatial theory computes the Allen-Cahn
+λφ³ tadpole (`compute_spatial_correlator_one_loop`).  The tadpole is a
+constant mass-shift self-energy; the shared pipeline's `ell=1` correction
+obeys `ell1(q,τ)=Σ_pipe(q)·∂C₀/∂A` with `Σ_pipe=g·C₀(q,0)`, so the
+combinatorial `g=M(Γ)·λ` is read FROM the pipeline (not hardcoded — it is
+q-independent, the tadpole signature) and the un-integrated loop value is
+replaced by the momentum integral `⟨φ²⟩₀=∫dℓ/2π C₀(ℓ,0)=free_two_point(A,B,N,0,0)`
+(residue closed form).  `Σ=g·⟨φ²⟩₀`, strict-1-loop `δC(x,τ)=Σ·∂C₀/∂A`.
+*Checkpoint MET:* `g=3λ` q-independent (M(Γ)=3 from the pipeline); strict-1-loop
+`⟨φ²⟩(λ=0.1)=0.4625`; **vs a fresh simulation** (`stageC_sim_comparison.py`):
+Hartree `⟨φ²⟩` matches sim to <0.7% (λ=0.2: 0.4443 vs 0.4446; λ=0.4: 0.4094
+vs 0.4121).  A q-DEPENDENT `g` (bubble) raises a clean NotImplementedError →
+Stage C.5.
+*Caveat (as predicted):* the tadpole has trivial momentum routing, so it
+validates the loop integral + self-energy + `M(Γ)`, but NOT the §4a routing
+solve — that is exercised by **Stage C.5** (the `φ̃φ²` bubble, the per-edge
+`∫dℓ` integrator, still the remaining build).
 
 **Stage C.5 — bubble (the routing stress test).**
 Add a theory with a *quadratic* nonlinearity (a `φ̃φ²` vertex — e.g. a
