@@ -282,76 +282,115 @@ merged; outline's Stage 0 list is annotated with the chosen options.
 
 ## Phase 1 — Theory namespace + spatial declarations  [Sequential]
 
+> **✅ IMPLEMENTED 2026-05-28 (commit `537bcae`, branch
+> `spatial-extension`).**  17 tests in
+> `tests/test_theory_spatial_basics.py` pass; 12/12 grouped-vs-perdiag
+> + phase_j regression tests pass bit-identically (time-only theories
+> untouched).  The tables below are annotated with **as-built** notes
+> where the implementation diverged from the original plan
+> assumptions — read those, not just the original cells.
+>
+> **Three corrections the implementation surfaced:**
+> 1. `Laplacian` is used **multiplicatively** in the action
+>    (`(Dt + mu - D*Laplacian)*phi`), NOT as a function call
+>    `Laplacian(phi)`.  It is an inert SR operator symbol exactly
+>    parallel to `Dt`, so it rides the existing `operators`
+>    mechanism — no callable binding, no special-case in
+>    `_build_namespace`.  This simplified 1.2 substantially.
+> 2. The saddle-killer lives in **THREE** places, not two — the
+>    plan undercounted.  The third is the DAE mean-field solver
+>    (`pipeline/_mean_field_dae.py`), which binds `Dt → 0` but knew
+>    nothing about `Laplacian`.  See 1.3 below.
+> 3. `.spatial_dim(d)` convenience method (D1) added on top of the
+>    per-field kwarg.
+
 **Inputs**: Phase 0 decisions.
-**Output**: a theory file that uses `Laplacian(phi)` in its action
-text and declares `.boundary(...)` / `.initial(...)` can be `build()`-
-ed end-to-end; the resulting `model` dict carries the spatial block
-and `ft.expand()` runs to completion.
+**Output**: a theory file that uses `Laplacian` multiplicatively in
+its action text and declares `.boundary(...)` / `.initial(...)` can be
+`build()`-ed end-to-end; the resulting `model` dict carries the
+spatial block and `ft.expand()` runs to completion.
 
-### 1.1 — `FieldSpec` and `physical_field()`
+### 1.1 — `FieldSpec` and `physical_field()`  — ✅ as-built
 
-| File | Lines | Change |
-|---|---|---|
-| `pipeline/theory.py` | 72-78 (`FieldSpec`) | Add `spatial_dim: int = 0` field |
-| `pipeline/theory.py` | 231-309 (`physical_field()`) | Add `spatial_dim: int = 0` kwarg, validate `≥ 0`, store on `FieldSpec` |
-| `pipeline/theory.py` | 1475-1505 (`build()`) | When any `FieldSpec.spatial_dim > 0`, emit `model['spatial'] = {'dim': D, 'fields_with_spatial': [...]}` |
+| File | Change (as-built) |
+|---|---|
+| `pipeline/theory.py` `FieldSpec` | Added `spatial_dim: int = 0` field |
+| `pipeline/theory.py` `physical_field()` | Added `spatial_dim: Optional[int] = None` kwarg (None → inherit builder default); threads onto `FieldSpec` |
+| `pipeline/theory.py` `__init__` | Added `_default_spatial_dim`, `_boundary`, `_initial` state |
+| `pipeline/theory.py` `.spatial_dim(d)` | **NEW** convenience method (D1): bulk-sets all declared fields + the default for later ones |
+| `pipeline/theory.py` `build()` | Spatial-resolution block computes the theory dim, rejects v1 mixed-dim, emits `model['spatial'] = {'dim': D, 'fields_with_spatial': [...]}` |
+| `pipeline/theory.py` `_field_dict()` | Serializes `spatial_dim` when non-zero |
 
-### 1.2 — `Laplacian` SR symbol in the namespace
+### 1.2 — `Laplacian` operator symbol  — ✅ as-built (simplified)
 
-| File | Lines | Change |
-|---|---|---|
-| `msrjd/core/field_theory.py` | 1221-1230 (`_build_namespace`) | After the existing `z_delta`, `z_delta_p` registrations, add `ns.Laplacian = SR.var('Laplacian', latex_name=r'\nabla^2')` *only when* any field has `spatial_dim > 0` |
-| `msrjd/core/field_theory.py` | 893-898 (`expand()`) | No code change — `Laplacian` passes through Taylor expansion as an inert SR symbol exactly like `Dt` does |
-| `pipeline/theory_compiler.py` | 482-484 (`_ns_var_namespace()`) | Add `Laplacian` to the exposed names so the action-text evaluator sees it |
-| `pipeline/theory_compiler.py` | 488 (`_build_namespace_for_eval`) | Bind `Laplacian` as a callable that returns the SR symbol times its argument |
+**Correction:** `Laplacian` is multiplicative (inert SR operator
+symbol like `Dt`), NOT a function call.  It therefore rides the
+existing **`operators` mechanism** — `build()` appends a
+`{'name':'Laplacian', 'sage_name':'Laplacian', 'latex_name':r'\nabla^2'}`
+entry to the operators list when the theory is spatial, and
+`field_theory._build_namespace`'s existing operator loop registers
+`ns.Laplacian` with zero new code there.  No callable binding, no
+special-case in `_build_namespace`, no change in `expand()` (it
+passes through as an inert coefficient exactly like `Dt`).
 
-### 1.3 — Saddle-killer rule for spatially-uniform saddles
+| File | Change (as-built) |
+|---|---|
+| `pipeline/theory.py` `build()` | Append `Laplacian` to `operators_list` when spatial |
+| `pipeline/theory_compiler.py` `_ns_var_namespace()` | Expose `out['Laplacian'] = ns.Laplacian` alongside `out['Dt']` |
+| `msrjd/core/field_theory.py` | **No change** — the existing `for ospec in m.get('operators', [])` loop registers `ns.Laplacian`, and `expand()` passes it through inert |
 
-| File | Lines | Change |
-|---|---|---|
-| `pipeline/theory_compiler.py` | 746-767 (`make_action_lambda` saddle-killer for `Dt`) | Add parallel rule: `Laplacian(<spatially-uniform saddle>) → 0` |
-| `pipeline/theory_compiler.py` | 1198-1214 (`make_mf_bg_conditions_lambda`) | Same parallel rule — must be added in two places because both lambdas separately walk the expression tree |
+### 1.3 — Saddle-killer rule for spatially-uniform saddles  — ✅ as-built (THREE places)
 
-### 1.4 — `.boundary()` and `.initial()` builder methods
+**Correction:** the plan said two places; the implementation needed
+**three**.  `Laplacian * <saddle> → 0` (∇² of a spatially-uniform
+constant) must be enforced wherever `Dt * <saddle> → 0` is — and the
+DAE mean-field solver was a third such site the plan missed.
 
-| File | Lines | Change |
-|---|---|---|
-| `pipeline/theory.py` | 638-668 (`.markovianize()`) and 670-696 (`.stability_analysis()`) | Use these as templates — they're the closest existing examples of a builder method that stores a structured dict on `self._model_extras` and emits it under a top-level key in `build()` |
-| `pipeline/theory.py` | new methods, ~720 area | Add `.boundary(mode, **params)` (`mode ∈ {'infinite', 'periodic'}`) and `.initial(mode, **params)` (`mode ∈ {'stationary'}` in v1). Both validate and store on builder state. |
-| `pipeline/theory.py` | 1475-1505 (`build()`) | Emit `model['boundary']`, `model['initial']` from the stored values |
+| File | Change (as-built) |
+|---|---|
+| `pipeline/theory_compiler.py` `make_action_lambda` | Generalized the `Dt`-only kill loop to iterate over `kill_ops = [ns.Dt, ns.Laplacian]` |
+| `pipeline/theory_compiler.py` `make_mf_bg_conditions_lambda` | Same generalization (symbolic MF substitution path) |
+| `pipeline/_mean_field_dae.py` numerical-residual ns | **NEW (missed by plan):** bind `'Laplacian': 0` alongside `'Dt': 0`.  Without this the φ⁴ saddle solve hits an unbound `Laplacian` and fails to find φ*=0 — surfaced as the FieldTheory MF-sector verification firing |
+| `pipeline/_mean_field_dae.py` k=0 stability-Jacobian ns | **NEW:** bind `'Laplacian': 0` (homogeneous-mode stability; k≠0 pattern-formation stability is the propagator's job in Phase 2) |
 
-### 1.5 — Round-trip serializer support
+Diagnostic that pinned it: time-only φ⁴ expands fine, spatial φ⁴
+(identical minus the Laplacian) fails the MF-sector check ⇒ the
+Laplacian was the cause, in the DAE numerical path.
 
-| File | Lines | Change |
-|---|---|---|
-| `pipeline/theory_serialize.py` | 271-298 (template: `.stability_analysis(True)` emitter) | Add parallel emitter blocks for `.boundary(...)` and `.initial(...)` |
-| `pipeline/theory_serialize.py` | 546-576 (chain walker) | Recognize `boundary` / `initial` keys when reading a model dict back into a TheoryBuilder chain |
+### 1.4 — `.boundary()` and `.initial()` builder methods  — ✅ as-built
 
-### LOC + risk
+| File | Change (as-built) |
+|---|---|
+| `pipeline/theory.py` | `.boundary(mode, **params)` ({'infinite','periodic'}) + `.initial(mode)` ({'stationary'}), templated on `.stability_analysis()` |
+| `pipeline/theory.py` `build()` | Resolves inline-number `length` → hidden positive parameter (D2); validates `.boundary` requires a spatial field; emits `model['boundary']` (default `{'mode':'infinite'}`) and `model['initial']` (default `{'mode':'stationary'}`) |
 
-- **~190-230 LOC**, mostly small additions.
-- Risk: **Low/Medium**.  The two parallel saddle-killer rules
-  (1.3) are the only place where a missed edit produces silent
-  wrong answers — both `make_action_lambda` and
-  `make_mf_bg_conditions_lambda` must get the rule or the MF solver
-  will treat `Laplacian` as a non-zero symbol and refuse to converge
-  on the uniform saddle.
+### 1.5 — Round-trip serializer support  — ✅ as-built
 
-### Checkpoint test
+| File | Change (as-built) |
+|---|---|
+| `pipeline/theory_serialize.py` `_emit_field` | Emit `spatial_dim=` on physical fields when non-zero |
+| `pipeline/theory_serialize.py` emit driver | Emit `.boundary(mode, **params)` / `.initial(mode)` when present |
+| `pipeline/theory_serialize.py` parse dispatcher | Capture `spatial_dim` on `physical_field`; add `spatial_dim` / `boundary` / `initial` parse branches; `.spatial_dim(d)` preceding field declarations inherits correctly |
 
-```python
-ft = build_theory('theories/allen_cahn_1d_subcritical_infinite.theory.py')
-ft.expand()
-# Bilinear sector contains: phit · (Dt + mu - D·Laplacian) · phi
-# MF saddle reduces to:    mu · phi_star + lam · phi_star^3 == 0
-# (Laplacian killed at uniform saddle)
-assert 'spatial' in ft.model
-assert ft.model['spatial']['dim'] == 1
-assert ft.model['boundary']['mode'] == 'infinite'
-```
+### LOC + risk  — as-built
 
-A unit test in `tests/test_theory_spatial_basics.py` covering the
-five items above is the deliverable.
+- **~700 LOC** (vs ~190-230 estimated — the gap is the 296-line
+  test file, the 70-line test theory, and the third saddle-killer
+  site).
+- Risk realized as **Medium**: the silent-wrong-answer risk the plan
+  flagged for 1.3 *did* materialize — but in the DAE solver (the
+  third, unanticipated site), caught by the MF-sector verification
+  and the time-only-vs-spatial differential test.
+
+### Checkpoint test  — ✅ passing
+
+`tests/test_theory_spatial_basics.py` (17 tests) covers structure,
+validation (mixed-dim / bad-mode / time-only-boundary rejection),
+`expand()` + Laplacian-in-bilinear-sector, serializer round-trip,
+and non-regression (time-only theory carries none of the new keys).
+As-built bilinear sector:
+`(3*lam*phistar1^2 - D*Laplacian + Dt + mu)*phit1*dphi1` — i.e.
+`Dt + mu - D*Laplacian` at φ*=0, the heat-kernel inverse propagator.
 
 ---
 
@@ -371,7 +410,15 @@ change.
 | `pipeline/_propagator.py` | 507-521 (`_to_kernel`) | Recognize `Laplacian` as a pass-through symbol (mirrors how `Dt` is handled at this stage); do NOT yet substitute `Laplacian → -k²` — that happens at the FT step |
 | `pipeline/_propagator.py` | new helper near 520 | `_lap_symbol_in_kernel(expr) -> bool` for downstream decisions |
 
-### 2.2 — FT substitution `z_lap → -k²`
+### 2.2 — FT substitution `Laplacian → -k²`
+
+> **Phase 1 as-built note:** the operator symbol is literally named
+> `Laplacian` (sage_name `'Laplacian'`), NOT `z_lap` — Phase 1 chose
+> to ride the existing `operators` mechanism rather than mint a new
+> `z_lap` image variable.  So the FT substitution is
+> `Laplacian → -k²` directly (no `z_lap` indirection).  The propagator
+> sees it as `model['operators']` entry `{'name':'Laplacian', ...}` and
+> as the free symbol `SR.var('Laplacian')` in the bilinear sector.
 
 | File | Lines | Change |
 |---|---|---|

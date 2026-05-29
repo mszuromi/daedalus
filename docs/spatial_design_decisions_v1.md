@@ -276,5 +276,20 @@ scope" section; reaffirming here so the decisions don't drift:
 - Q1 explicitly refined from "per-field (recommended)" to "per-field
   data model with UI-side bulk-set affordance"; this document
   captures the refinement.
-- Phase 0 is **complete**; Phase 1 (theory namespace + spatial
-  declarations) is unblocked.
+- Phase 0 is **complete**.
+
+## Progress
+
+- **Phase 0** — design signoff + math de-risk spike (GO).  Complete
+  2026-05-28 (commits `7647bf0`, `61cce28`).
+- **Phase 1** — theory namespace + spatial declarations.  Complete
+  2026-05-28 (commit `537bcae`).  D1 (per-field + `.spatial_dim(d)`
+  bulk-set), D2 (named/inline PBC length), D3 (soft-warning — wired
+  in Phase 5), D4 (Rescue A — erf path in Phase 5) all reflected.
+  One plan correction surfaced: the `Laplacian` saddle-killer needed
+  a **third** site (the DAE mean-field solver, `_mean_field_dae.py`),
+  not the two the plan listed — recorded in
+  `docs/spatial_implementation_plan.md` §1.3.  The UI "all-fields-
+  same-dim" toggle from D1 remains a Phase 6 deliverable.
+- **Phase 2** (propagator builder + heat-kernel module) — next,
+  unblocked.
