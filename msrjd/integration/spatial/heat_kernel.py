@@ -43,6 +43,7 @@ import cmath
 import math
 from typing import Callable, Optional
 
+import mpmath as mp
 from sage.all import SR, I as SR_I
 
 
@@ -69,6 +70,45 @@ def gaussian_heat_kernel(t, x, A, B, spatial_dim: int = 1):
     xx = float(x) ** 2
     pref = (4.0 * math.pi * B * t) ** (-0.5 * spatial_dim)
     return complex(pref * cmath.exp(-xx / (4.0 * B * t) - A * t))
+
+
+def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
+    """∫_{L_lo}^{U_hi} s^(-1/2) · exp(-β/s - α·s) ds via the erf-split
+    closed form (Rescue A / Path-1 m=1).
+
+    The antiderivative of ``exp(-α w² - β/w²)`` (after s = w²) is
+
+        F(w) = (√π / 4√α) [ e^{+2√(αβ)} erf(√α w + √β/w)
+                          + e^{-2√(αβ)} erf(√α w - √β/w) ]
+
+    so the integral is ``2[F(√U) - F(√L)]``.  ``α`` (mass) and ``β``
+    (= X²/4B ≥ 0) may be complex/real; evaluated in mpmath at ``dps``
+    digits then returned as a Python complex.  ``U_hi=None`` ⇒ the
+    semi-infinite ``U → ∞`` limit (valid for Re √α > 0).
+
+    Verified to machine precision (incl. complex α) in
+    ``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+    """
+    with mp.workdps(dps):
+        a = mp.sqrt(mp.mpc(alpha))
+        b = mp.sqrt(mp.mpc(beta))
+        pref = mp.sqrt(mp.pi) / (4 * a)
+
+        def _F(w):
+            if w == 0:
+                # w→0⁺ limit: erf(±∞) = ±1 (β>0); erf(0)=0 (β=0).
+                if beta == 0:
+                    return mp.mpf(0)
+                return pref * (mp.e ** (2 * a * b) - mp.e ** (-2 * a * b))
+            return pref * (mp.e ** (2 * a * b) * mp.erf(a * w + b / w)
+                           + mp.e ** (-2 * a * b) * mp.erf(a * w - b / w))
+
+        wL = mp.sqrt(mp.mpf(L_lo)) if L_lo > 0 else mp.mpf(0)
+        if U_hi is None:
+            F_hi = pref * (mp.e ** (2 * a * b) + mp.e ** (-2 * a * b))
+        else:
+            F_hi = _F(mp.sqrt(mp.mpf(U_hi)))
+        return complex(2 * (F_hi - _F(wL)))
 
 
 def image_sum(t, x, A, B, L, spatial_dim: int = 1, eps: float = 1e-12,

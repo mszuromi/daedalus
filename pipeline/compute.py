@@ -114,6 +114,7 @@ def compute_cumulants(
     *,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
+    spatial_grid=None,
     taylor_order: int = None,
     origin_leaf_idx: int = 0,
     output_npz: str = None,
@@ -362,6 +363,99 @@ def compute_cumulants(
         mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
     num_params = mf['num_params']
     _phase_time('mean_field', _t_phase)
+
+    # ── 3.5 Spatial short-circuit (v1) ────────────────────────────
+    # A spatial model's propagator carries the inert ``Laplacian``
+    # symbol, which the (ω) pole-finder and time-domain Phase J can't
+    # consume.  Instead, for the tree-level (Gaussian) 2-point
+    # function we evaluate the real-space correlator C(x, τ) directly
+    # from the heat-kernel building blocks (closed form, Rescue A).
+    # Loops / higher cumulants in (t, x) are the remaining Phase-5
+    # work (docs/spatial_implementation_plan.md §5).
+    if model.get('spatial') and spatial_grid is not None:
+        import numpy as _np
+        from msrjd.integration.spatial.spatial_correlator import (
+            compute_spatial_correlator_tree,
+        )
+        if k != 2:
+            raise NotImplementedError(
+                f'spatial correlators are implemented for k=2 (two-point) '
+                f'in v1; got k={k}.')
+        if max_ell > 0:
+            import warnings
+            warnings.warn(
+                f'max_ell={max_ell} on a spatial theory: v1 computes the '
+                f'tree-level (Gaussian) spatial correlator only; the '
+                f'{max_ell}-loop (t,x) corrections are not yet implemented '
+                f'(see docs/spatial_implementation_plan.md §5).  Returning '
+                f'tree-level C(x, τ).', UserWarning, stacklevel=2)
+        # Initial-condition compatibility (Phase 4): v1 supports the
+        # stationary IC, for which two-time correlators are well-posed.
+        ic_mode = (model.get('initial') or {}).get('mode', 'stationary')
+        if ic_mode != 'stationary':
+            raise NotImplementedError(
+                f"spatial v1 supports the 'stationary' initial condition "
+                f"only; got {ic_mode!r}.")
+
+        tau_grid = _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
+        spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
+        if verbose:
+            print(f'[spatial] tree-level C(x, τ): {len(tau_grid)} τ × '
+                  f'{len(spatial_grid_arr)} x points...')
+        C_tau_x, sp_info = compute_spatial_correlator_tree(
+            ft, model, prop, num_params, external_fields,
+            tau_grid, spatial_grid_arr, verbose=verbose,
+        )
+        # x=0 slice as the conventional C_tau (matches the time-only
+        # API's C_tau shape).
+        x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
+        C_tau = C_tau_x[:, x0_idx].copy()
+
+        def total_C(*tau_then_x):
+            """C(τ) at x=0 (1 arg) or C(x, τ) (2 args: τ, x)."""
+            if len(tau_then_x) == 1:
+                tau = float(tau_then_x[0])
+                xq = 0.0
+            else:
+                tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
+            from msrjd.integration.spatial.spatial_correlator import (
+                free_two_point,
+            )
+            return free_two_point(
+                sp_info['A_mass'], sp_info['B_diffusion'],
+                sp_info['D_noise'], xq, tau,
+                bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+
+        # MF values (for the result dict) — reuse the saddle solve.
+        mf_values_sp = {}
+        for pname, vals in (mf.get('mf_values') or {}).items():
+            mf_values_sp[pname] = vals
+
+        return {
+            'total_C':        total_C,
+            'total_C_by_ell': {0: total_C},
+            'C_tau':          C_tau,
+            'C_tau_x':        C_tau_x,
+            'tau_grid':       tau_grid,
+            'spatial_grid':   spatial_grid_arr,
+            'spatial_info':   sp_info,
+            'mf_values':      mf_values_sp,
+            'mf':             MeanField(mf_values_sp,
+                                        naming_convention=naming_convention),
+            'params':         Parameters(fundamental),
+            'num_params':     num_params,
+            'propagator':     prop,
+            'config': {
+                'k':               k,
+                'max_ell':         max_ell,
+                'fundamental':     fundamental,
+                'external_fields': external_fields,
+                'tau_max':         tau_max,
+                'tau_step':        tau_step,
+                'spatial':         True,
+                'model_name':      model.get('name', '<unnamed>'),
+            },
+        }
 
     # ── 4. Numerical poles + residues (fills prop in place) ───────
     if verbose:
