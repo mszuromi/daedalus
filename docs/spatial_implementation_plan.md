@@ -9,6 +9,42 @@ sequencing those audits left open.
 
 *Last updated: 2026-05-28.*
 
+## Build status (as-built, 2026-05-28, branch `spatial-extension`)
+
+| Phase | Status | Commit |
+|---|---|---|
+| 0 — design signoff + math spike | ✅ done | `7647bf0`, `61cce28` |
+| 1 — theory namespace + BC/IC + UI | ✅ done | `537bcae`, `81f8695` |
+| 2 — heat-kernel propagator `G_tx` | ✅ done | `0949c53` |
+| 3 — periodic BC image sums | ✅ done | `0949c53` |
+| 4 — IC validation | ✅ done | `5f981a4` |
+| 5 — (t,x) integration, **tree-level** | ✅ done (Rescue A erf) | `5f981a4` |
+| 5b — (t,x) integration, **loops** | ⏳ deferred | — |
+| 6 — `spatial_grid` output + multi-model tests | ✅ done | `5f981a4` |
+
+**The UI precompute button is operational for spatial models** (the
+target).  The free / tree-level (Gaussian) two-point correlator
+`C(x, τ)` computes end-to-end via `compute_cumulants(spatial_grid=…)`
+and matches closed forms to machine precision on three theories
+(Allen-Cahn infinite + periodic, Edwards-Wilkinson).
+
+**What remains (Phase 5b — the one substantial deferred piece):** the
+1-loop / higher-cumulant **(t,x) loop integration**.  The λφ³ vertex
+enters at 1-loop, which needs per-propagator momentum routing through
+the loop (the full Phase J extension or the (ω,k) loop-momentum
+integral).  v1 returns the tree-level correlator and warns on
+`max_ell > 1`.  The Rescue A erf primitive
+(`heat_kernel.erf_time_integral`) and the semigroup collapse are
+already in place and verified — they are the building blocks the loop
+integrator will consume.  Other deferred items: k≠2 cumulants,
+d≥2, multi-field (off-diagonal) spatial coupling, transient ICs,
+higher-derivative operators.
+
+The per-phase tables below are the original plan; ✅ phases were
+implemented substantially as written (with the corrections noted in
+§1.2/§1.3 and the discovery that precompute's literal gate —
+`build_propagator` succeeding — was reached at Phase 2).
+
 ## How to read this document
 
 Each phase below has the same five sub-sections:

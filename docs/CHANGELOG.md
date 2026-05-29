@@ -4,6 +4,65 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-28 — Spatial field theories v1 (Phases 0-5 tree-level) [branch `spatial-extension`]
+
+First-class support for continuous spatial fields `φ(x, t)` with a
+`Laplacian` kinetic operator, off-critical (`μ > 0`), in d=1.  The UI
+**precompute button is now operational for spatial models**, and the
+free / tree-level (Gaussian) two-point correlator `C(x, τ)` computes
+end-to-end and matches closed forms to machine precision.
+
+### What works
+
+* **Theory side** (Phase 1): `physical_field(spatial_dim=1)`,
+  `.spatial_dim(d)` bulk-set, `.boundary('infinite'|'periodic',
+  length=…)`, `.initial('stationary')`.  `Laplacian` is an inert SR
+  operator symbol used multiplicatively like `Dt`
+  (`(Dt + mu - D*Laplacian)*phi`).  Saddle-killer (`Laplacian·saddle
+  = 0`) in all three sites incl. the DAE solver.  Full serializer +
+  Theory Builder UI round-trip (spatial_dim column, BC/IC controls).
+* **Propagator** (Phase 2): heat-kernel × exp-decay `G(t,x)` built by
+  substituting `Laplacian → -k²` and reading the mass `A` + diffusion
+  `B` from the diagonal inverse-propagator entry.  Matches the
+  analytic kernel to ~1e-16.
+* **Periodic BC** (Phase 3): image-source sum `Σ_n G_inf(t, x+nL)`,
+  auto-truncated; equals the exact periodic propagator.
+* **Tree-level correlator** (Phase 5, Rescue A): `C(x,τ) =
+  (D_noise/√(4πB)) ∫_{|τ|}^∞ s^(-1/2) exp(-x²/4Bs - As) ds` via the
+  erf-split closed form; PBC via image sum over x.  Validated on
+  Allen-Cahn (infinite + periodic) and Edwards-Wilkinson:
+  `C(x,0)` vs `(T/2√(μD))e^{-|x|/ξ}` (<1e-10); `C(x,τ)` vs 2-D
+  quadrature (<1e-8); PBC `C(0,0)` vs `(T/2√(μD))coth((L/2)√(μ/D))`
+  (<1e-8).
+* **Output API** (Phase 6): `compute_cumulants(spatial_grid=…)` →
+  `C_tau_x` array; `total_C(τ)` (x=0) / `total_C(x, τ)`.
+
+### New files
+
+* `msrjd/integration/spatial/heat_kernel.py` — `gaussian_heat_kernel`,
+  `image_sum`, `erf_time_integral`, `extract_mass_diffusion`,
+  `build_spatial_propagator`, `make_g_tx_callables`.
+* `msrjd/integration/spatial/spatial_correlator.py` — tree-level
+  `C(x,τ)` + noise extraction.
+* `theories/allen_cahn_1d_subcritical_{infinite,pbc}.theory.py`,
+  `theories/edwards_wilkinson_1d.theory.py`.
+* `tests/test_theory_spatial_basics.py` (17), `test_propagator_spatial.py`
+  (10), `test_spatial_correlator.py` (7).
+* `docs/spatial_implementation_outline.md`, `spatial_implementation_plan.md`,
+  `spatial_design_decisions_v1.md`, `spatial_spikes/`.
+
+### Known limitations (deferred)
+
+* **Loops in (t,x) not implemented** — the λφ³ vertex enters at
+  1-loop; v1 returns the tree-level (Gaussian) correlator and emits a
+  `UserWarning` when `max_ell > 1`.  See
+  `docs/spatial_implementation_plan.md` §5 (Phase 5b / Rescue B).
+* **k=2 (two-point) only**; **single spatial dimension** (d=1);
+  **diagonal propagators only** (multi-field spatial coupling is v2);
+  **stationary IC only**; **`Laplacian` only** (no `∇⁴` etc.).
+
+---
+
 ## 2026-05-27 — Markovian-embedding preprocessor for colored noise (Phase 1)
 
 Adds an automatic colored-noise → Markovian-embedding preprocessor.
