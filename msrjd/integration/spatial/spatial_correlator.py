@@ -186,11 +186,37 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
                  for f in external_fields]
     fi = _field_index(leg_names[0])
 
+    # Tier-1 guard: the closed-form heat-kernel block is only built for a
+    # diagonal (decoupled) inverse propagator.  Off-diagonal multi-field
+    # coupling leaves ``G_tx_sym`` None (build_propagator records the
+    # reason in ``spatial_tier1_error``).  Raise a CLEAR error here rather
+    # than a cryptic KeyError on 'G_tx_sym'.
+    if prop.get('G_tx_sym') is None:
+        why = prop.get('spatial_tier1_error', 'no closed-form spatial block')
+        raise NotImplementedError(
+            'spatial v1 supports only the diagonal (decoupled) heat-kernel '
+            'propagator (Tier 1).  This theory needs the Tier-2 path '
+            '(off-diagonal / coupled multi-field spatial propagator), which '
+            f'is a v2 feature — see docs/spatial_phase5_rearchitecture_plan.md. '
+            f'(reason: {why})')
+
     A_expr, B_expr = prop['G_tx_sym'][(fi, fi)]
     sub = {SR.var(kk): vv for kk, vv in nps.items()}
     A = complex(SR(A_expr).subs(sub))
     Bsub = SR(B_expr).subs(sub)
     B = float(Bsub.real() if hasattr(Bsub, 'real') else Bsub)
+    # A spatial field must carry a Laplacian kinetic term, giving a strictly
+    # positive diffusion B.  B == 0 means this leg sits on a time-only
+    # (spatial_dim=0) field — its diagonal block has no heat kernel, and the
+    # erf closed form divides by √(4πB).  Catch it with a CLEAR message rather
+    # than letting ``free_two_point`` raise a bare ZeroDivisionError.
+    if B <= 0.0:
+        raise SpatialPropagatorError(
+            f'field {leg_names[0]!r} (index {fi}) has non-positive diffusion '
+            f'B={B}: it carries no spatial (Laplacian) kinetic term, i.e. it '
+            f'is a time-only (spatial_dim=0) field.  A spatial correlator '
+            f'C(x, τ) is only defined for spatial (dim >= 1) fields — request '
+            f"this field's correlator without a spatial_grid (time-only path).")
     noise = extract_noise_coefficients(ft, nps)
     Dn = noise.get(fi)
     if Dn is None:

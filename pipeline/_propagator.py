@@ -803,6 +803,13 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
                       f'{type(e).__name__}: {e}')
             prop['spatial_dim'] = int((model.get('spatial') or {}).get('dim', 0))
             prop['G_tx'] = None
+            # Record that the Tier-1 spatial block is unavailable so the
+            # downstream spatial correlator can raise a CLEAR error
+            # (rather than a cryptic KeyError on 'G_tx_sym').  This fires
+            # for e.g. off-diagonal multi-field coupling (a Tier-2 / v2
+            # case — see SpatialPropagatorError).
+            prop['G_tx_sym'] = None
+            prop['spatial_tier1_error'] = f'{type(e).__name__}: {e}'
 
     if verbose:
         _print_propagator_symbolic_stages(prop, resp_names, phys_names)

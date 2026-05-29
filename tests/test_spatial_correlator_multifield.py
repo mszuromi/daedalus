@@ -124,6 +124,90 @@ def _allen_cahn_model():
         .boundary('infinite').initial('stationary').build())
 
 
+def test_coupled_multifield_raises_clean_tier2_error():
+    """A coupled (off-diagonal) multi-field spatial theory is a Tier-2 /
+    v2 case; it must raise a CLEAR NotImplementedError, not a cryptic
+    KeyError on 'G_tx_sym'."""
+    model = (
+        TheoryBuilder('coupled spatial', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .physical_field('psi', spatial_dim=1)
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .parameter('g', default=0.3, domain='real')
+        .parameter('T', default=1.0, domain='positive')
+        .set_action_text(
+            'phit*((Dt+mu-D*Laplacian)*phi + g*psi) '
+            '+ psit*((Dt+mu-D*Laplacian)*psi + g*phi) '
+            '- T*phit^2 - T*psit^2')
+        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
+        .equation(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
+        .boundary('infinite').initial('stationary').build())
+    with pytest.raises(NotImplementedError, match='Tier'):
+        compute_cumulants(
+            model=model, k=2, max_ell=0,
+            fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0},
+            external_fields=[('phi', 1), ('phi', 2)],
+            tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
+            parallel=False, verbose=False, use_cache=False)
+
+
+def _mixed_dim_model():
+    """A spatial field ``phi`` (dim=1) coexisting with a time-only,
+    spatially-averaged auxiliary ``m`` (dim=0), DECOUPLED.  Decision D1
+    of the spatial design doc explicitly allows mixing dim=0 with
+    dim>=1 fields in v1."""
+    return (
+        TheoryBuilder('mixed dim0/dim1', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .physical_field('m', spatial_dim=0)
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .parameter('a', default=2.0, domain='positive')
+        .parameter('T', default=1.0, domain='positive')
+        .parameter('Tm', default=1.0, domain='positive')
+        .set_action_text(
+            'phit*((Dt+mu-D*Laplacian)*phi) + mt*((Dt+a)*m) '
+            '- T*phit^2 - Tm*mt^2')
+        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
+        .equation(lhs='(Dt+a)*m', rhs='0')
+        .boundary('infinite').initial('stationary').build())
+
+
+_FUND_MIXED = {'mu': 1.0, 'D': 1.0, 'a': 2.0, 'T': 1.0, 'Tm': 1.0}
+
+
+def test_mixed_dim0_dim1_spatial_field_matches_closed_form():
+    """In a theory mixing a spatial field (dim=1) with a time-only
+    auxiliary (dim=0), the SPATIAL field's correlator still reproduces
+    its free closed form — the dim=0 block must not perturb it."""
+    model = _mixed_dim_model()
+    xs = np.array([0.0, 1.0, 2.0, 3.0])
+    th = compute_cumulants(
+        model=model, k=2, max_ell=0, fundamental=_FUND_MIXED,
+        external_fields=[('phi', 1), ('phi', 2)],
+        tau_max=1.0, tau_step=1.0, spatial_grid=xs,
+        parallel=False, verbose=False, use_cache=True)
+    it0 = int(np.argmin(np.abs(th['tau_grid'])))
+    C = np.asarray(th['C_tau_x']).real[it0]
+    np.testing.assert_allclose(C, _closed_equal_time(xs, 1.0, 1.0, 1.0),
+                               rtol=1e-9, atol=1e-12)
+
+
+def test_mixed_dim0_field_spatial_request_raises_clean():
+    """Requesting the SPATIAL correlator of a time-only (dim=0) field
+    must raise a CLEAR SpatialPropagatorError (its heat-kernel block has
+    B=0 diffusion), not a bare ZeroDivisionError from 1/sqrt(4*pi*B)."""
+    from msrjd.integration.spatial.heat_kernel import SpatialPropagatorError
+    model = _mixed_dim_model()
+    with pytest.raises(SpatialPropagatorError, match='time-only'):
+        compute_cumulants(
+            model=model, k=2, max_ell=0, fundamental=_FUND_MIXED,
+            external_fields=[('m', 1), ('m', 2)],
+            tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
+            parallel=False, verbose=False, use_cache=False)
+
+
 @pytest.mark.parametrize('lam', [0.0, 0.3, 1.0])
 def test_allen_cahn_tree_is_lambda_independent_free_form(lam):
     """At tree level (max_ell=0) the λφ³ vertex contributes nothing, so
