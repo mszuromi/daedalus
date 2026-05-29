@@ -176,6 +176,70 @@ C(x, τ) = ∫ (dq/2π) e^{iqx} C(q, τ)          # external inverse FT
   and never on the equal-time slice (where the closed form always
   applies). See the spike result archived in this commit's message.
 
+### 4c′. Evaluation hierarchy + feasibility ladder
+
+"Analytic momentum integration" is **two** tools, not one — and for
+the RD / heat-kernel theory class the second is the workhorse:
+
+1. **Residues** — for *rational* integrands: equal-time loops
+   (`∫dℓ/(μ+Dℓ²)`) and the external `q→x` FT of a rational `C(q)`.
+2. **Gaussian / erf closed forms** — for *Gaussian-damped* integrands.
+   At fixed internal times each heat-kernel propagator is a **Gaussian
+   in k** (`e^{-Dk²t}`), so a product integrated over loop momenta is a
+   Gaussian integral — **closed-form at any loop order** (determinant
+   formula). This is the `G_tx` / erf machinery, reused as an
+   evaluator. (Unlike generic QFT's Lorentzian propagators, the
+   *spatial* integral is the easy part here.)
+
+**Committed evaluation order (per momentum integral):**
+
+1. rational integrand → **residues** (exact);
+2. Gaussian-damped integrand → **erf / Gaussian closed form** (exact);
+3. else, numerical fallback → **Gauss-Hermite** (exact on
+   polynomial×Gaussian; exponentially convergent — verified, see below);
+4. the **external equal-time `q→x` FT is ALWAYS by residue** (it is the
+   only oscillatory integral, and at τ=0 it is rational) — never a
+   numerical FFT, so the ω-style ringing can never recur.
+
+Naive numerical FFT of an oscillatory, slowly-decaying integrand is
+**not** in the hierarchy — that is the ringing case, and it is
+structurally avoided (step 4).
+
+**Feasibility ladder (when analytic stops, numerical starts):**
+
+| Loop order | Analytic status | Notes |
+|---|---|---|
+| tree, **1-loop** | **always closed-form** | single residue or single erf-family integral — **v1's entire scope** |
+| **2-loop** | **usually** closed-form | nested erf/Dawson/incomplete-gamma; occasionally a non-elementary 2D special function → that sub-integral goes numerical |
+| **3-loop+** | **generally numerical** | closed forms rarely elementary; and the pole-tuple enumeration cost (≈ poles^loops, the same `2^N` blow-up as the time-domain chain simplex) makes numerical cheaper even when a closed form exists |
+
+Two independent axes of "feasible": (a) a closed form **exists**
+(math) — yes / mostly / no by row; (b) the closed form is **cheaper
+than numerics** (cost) — the residue/pole-tuple combinatorics scale
+like `poles^loops`, so past some order numerical wins regardless. The
+decision is **per-integral and structural**: stay analytic until the
+chain produces a function the next integration can't close (or the
+combinatorics blow up), then drop *that* integral to numerical —
+exactly the hierarchy the time-domain side already runs (analytic
+chain-simplex + `scipy.quad` fallback for the residual m=1).
+
+**Why the numerical fallback is benign here** (verified 2026-05-29):
+loop integrals are **non-oscillatory** (loop momenta integrate against
+decaying propagators, no `e^{ikx}` phase) and **Gaussian-damped**, so
+Gauss-Hermite converges exponentially and monotonically — 1-loop-type
+`∫dℓ e^{-Dℓ²t}/(μ+Dℓ²)` reaches ~1e-6 by n=16 (t=2); a coupled 2-loop-
+type 2D integral reaches ~4e-6 by n=32². No ringing, because nothing
+oscillates.
+
+**Optimization lever (order of integration).** Momentum and time
+integrals commute, so the order is a free choice per diagram:
+*momentum-first* is a pure Gaussian (closed-form, any loop count) but
+leaves an erf-type time integral; *time-first* (the pipeline default)
+keeps the time-polytope evaluators on the pure-exponential path but
+leaves a rational×Gaussian momentum integral. For a purely-Gaussian
+loop, doing it first maximizes analytic reach — a useful knob at
+2-loop+.
+
 ### 4d. Noise + vertices (mostly unchanged)
 - White noise enters via the propagator (`G_ft` carries the ⟨φφ⟩
   block); momentum-dependent the same way the poles are. No integrand
@@ -237,10 +301,18 @@ spatial follow from the same construction (no longer special-cased).
    is UV-finite; d≥2 is divergent and needs regularization — out of
    scope, but the architecture should not assume finiteness silently
    (log a warning if a momentum integral doesn't converge).
-3. **Cost.** A numerical `∫dk_ℓ` per loop × `∫dq` external × the
-   time-polytope evaluator per momentum point. Tree level is cheap
-   (one `q` integral, or the closed-form heat kernel). 1-loop adds one
-   `k` integral. Higher loops scale; acceptable for v1 (1-loop).
+3. **Cost / analytic-feasibility ceiling.** See §4c′ for the full
+   evaluation hierarchy and feasibility ladder. Summary: 1-loop is
+   always closed-form (v1); 2-loop usually closed-form (occasional
+   numerical sub-integral); 3-loop+ is numerical-dominated, both
+   because elementary closed forms run out *and* because the
+   pole-tuple residue cost scales like `poles^loops` (the same `2^N`
+   blow-up the time-domain chain simplex already has). The numerical
+   fallback is well-conditioned, NOT ring-prone — loop integrands are
+   non-oscillatory + Gaussian-damped (Gauss-Hermite, exponentially
+   convergent), and the only oscillatory integral (external equal-time
+   FT) is always done by residue. So the cost/feasibility question is a
+   v2+ (2-loop+) concern and does **not** gate v1.
 4. **PBC.** Periodic domain ⇒ the momentum integral becomes a discrete
    sum over `k_n = 2πn/L` (the image-sum's Fourier dual). Clean in
    momentum space — arguably cleaner than the real-space image sum.
