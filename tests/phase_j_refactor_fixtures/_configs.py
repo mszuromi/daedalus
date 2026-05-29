@@ -93,12 +93,41 @@ FIXTURES: list[FixtureConfig] = [
         ],
         notes='Tree-level cross-cumulant, linear phi + reset.',
     ),
-    # NOTE: spike_reset_k2_ell1 (1-loop fixture exercising the m>=1
-    # polytope integrator) is intentionally OMITTED here.  Even a
-    # single-probe run takes ~30+ minutes on the current code path —
-    # too slow for a tight refactor iteration loop.  When Stage 3b
-    # (causal-poset integrator) lands and the m>=1 integration is fast
-    # enough, add a fixture for it here (and re-freeze).
+    # ─── single_population_spike_reset_test, k=2 ell=1 ─────────────
+    # Previously omitted (30+ min/probe in the audit era); now ~6 s
+    # per path thanks to the Stage 3b causal-poset integrator + the
+    # May 2026 Wick-permutation fix (commit a3fbbf3) + the principled
+    # M(Γ) automorphism fix (commit 0e13a6d).  This is the
+    # ``spike_reset k=2 ell=1`` configuration that
+    # ``docs/m_ge3_precision_bug_audit.md`` originally flagged as a
+    # 4× perdiag-vs-grouped discrepancy; the discrepancy has since
+    # collapsed to machine precision (≤5.6e-11 rel at tight quad).
+    #
+    # Probe-set choice: the per-diag m=1 path still uses
+    # ``scipy.quad`` (see memory note
+    # ``project_grouped_phase_j_precision.md``), so at default
+    # ``QUAD_OPTS`` the agreement floor is ~scipy's ``epsabs=1.49e-8``.
+    # Where |C(τ)| is large (τ near 0) this gives ~1e-10 rel; where
+    # |C(τ)| is small (τ where C nearly zero-crosses) the rel diff
+    # can hit ~1e-4.  The probes here are picked to sit AWAY from
+    # zero crossings so both the default-tolerance and tight-
+    # quadrature tests pass with margin.  Specifically, |τ_2| ∈
+    # {0, 3, 10} avoids the τ_2 ≈ ±5, ±8 zero-crossing valleys.
+    FixtureConfig(
+        name='spike_reset_k2_ell1',
+        theory_file='single_population_spike_reset_test.theory.py',
+        k=2,
+        max_ell=1,
+        fundamental=_FUNDAMENTAL_SPIKE_RESET,
+        external_fields=[('n', 1), ('n', 2)],
+        tau_probes=[
+            (0.0, -10.0), (0.0, -3.0), (0.0, 0.0),
+            (0.0, 3.0), (0.0, 10.0),
+        ],
+        notes='1-loop cross-cumulant exercising the m=3 chain-'
+              'simplex integrator on close-paired poles.  Closes '
+              'the audit at docs/m_ge3_precision_bug_audit.md.',
+    ),
 
     # ─── single_population_quad_exp_test ────────────────────────────
     FixtureConfig(

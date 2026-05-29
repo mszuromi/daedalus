@@ -2,7 +2,30 @@
 
 **Investigation date:** 2026-05-16
 **Branch:** `phase-j-refactor` at HEAD `ae0e298`
-**Status:** Diagnosed, not yet fixed. Workaround available (`USE_GROUPED_PHASE_J = True`).
+**Status:** **RESOLVED 2026-05-28** — see §"Resolution (2026-05-28)" at the
+bottom of this document.  The original ~4× discrepancy collapsed to
+machine precision once the following May 2026 fixes landed:
+
+  * `a3fbbf3` (May 18) — identical-external Wick-permutation bug fix
+    in ``integrate_diagram``
+  * `0e13a6d` (May 19) — principled M(Γ) automorphism (Path A)
+    replacing the per-vertex M_v formula
+  * `be7c316` (May 17) — grouped Phase J falls back to per-diag on
+    silently-skipped subsets
+
+A regression fixture (``spike_reset_k2_ell1``) was added on
+2026-05-28 and is exercised by
+``tests/test_grouped_vs_perdiag.py``; both default- and
+tight-quadrature variants pass.  The historical evidence chain
+below is preserved verbatim for future reference (and because it
+documents three flag-gated dead-code paths in
+``msrjd/integration/time_domain/final_integral.py`` —
+``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
+``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY`` —
+that remain in the codebase, all defaulting to False).
+
+**Original status (as of 2026-05-16):** Diagnosed, not yet fixed.
+Workaround available (`USE_GROUPED_PHASE_J = True`).
 
 ## Summary
 
@@ -605,3 +628,103 @@ All the prior "ruled out" hypotheses (chain simplex, pole-tuple
 precision, cap mismatch) should now be re-examined with the corrected
 metric.  The bug location remains genuinely unclear — needs a fresh
 investigation with correct measurements.
+
+---
+
+## Resolution (2026-05-28)
+
+The 4× discrepancy was caused by the
+**identical-external Wick-permutation bug** in
+``integrate_diagram``'s ``contribution`` closure (located and fixed
+in commit **a3fbbf3**, May 18, 2026), compounded by the
+**M(Γ) per-vertex undercount** (fixed in commit **0e13a6d**,
+May 19, 2026, Path A).
+
+### The two fixes in plain English
+
+1. **a3fbbf3 — Wick-permutation bug.**  When the external fields
+   contained duplicates (e.g. ``[('n', 1), ('n', 2)]`` both at
+   population ``n``, which is the spike-reset k=2 case), the closure
+   was re-feeding ``ext_time_values`` through the Wick permutation
+   AND then slicing out ``free_ext_idx`` for the integrand call.
+   With ``origin_leaf_idx`` pinning one leaf at t=0, the swap
+   permutation routed the pinned 0 into the free-integration slot
+   and the user's free time into the (already-pinned) origin slot,
+   so the integrand evaluated at (origin=0, free=0) instead of
+   (origin=0, free=τ).  Across all permutations the answer became
+   ``(C(τ) + C(0)) / 2`` instead of ``C(τ)``.  For k=2 at τ=0 this
+   matches Wick's symmetric ``2!`` factor — a clean 2× over the
+   per-permutation level.  Combined with the M(Γ) factor below this
+   yields the observed 4× aggregate.
+
+2. **0e13a6d — M(Γ) principled formula.**  The old per-vertex
+   ``M_v`` formula counted only response-leg permutations at each
+   vertex; it missed graph-level symmetries (same-type vertex
+   swaps, parallel-edge swaps, self-loop leg-pair swaps).  The
+   replacement hands a colour-preserving directed bipartite
+   incidence digraph to Sage's
+   ``automorphism_group(partition=…)`` and uses ``M(Γ) = ∏_v ∏_ℓ
+   n_{v,ℓ}! / |Aut_fixed_ext(Γ)|``.  This eliminates a 25%
+   over-count at OU+εx³ 2-loop and a 3× under-count at 1-loop on
+   the same theory, and corresponds to the residual factor here
+   after the Wick fix.
+
+### The three flag-gated "candidate fixes" from the original
+investigation are kept as dead code (all default False)
+
+Although none of them was the actual fix, each addresses a real
+concern that may become relevant for future theories.  They are
+preserved in ``msrjd/integration/time_domain/final_integral.py``:
+
+- ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` (line ~1081) — mpmath
+  dispatch for close-paired-pole chain simplex calls.  Documented
+  precision concern is real in principle; doesn't bite at the
+  current spike-reset theory after the dirac_delta synapse
+  refactor (which removed the close-pair condition the original
+  audit identified).
+- ``USE_POSET_CAP_MATCH_SCIPY`` (line ~1700) — aligns scipy m≥3
+  cap to the analytic ``POSET_PHYSICAL_MARGIN``.  Useful
+  diagnostic when scipy-vs-analytic comparison is being run.
+- ``USE_POSET_MPMATH_ACCUMULATION`` (line ~1723) — mpmath outer-
+  sum accumulation in the pole-tuple loop.  Belt-and-suspenders
+  for theories where pole-tuple cancellation factor exceeds ~1e10.
+
+### Verification: regression fixture added
+
+Wall time for ``spike_reset k=2 max_ell=1`` dropped from ">30 min
+per τ probe" in the audit era to ~6 s per path on 12 cores after
+the Phase J Stage 3b causal-poset analytic refactor.  A fixture
+``spike_reset_k2_ell1`` was added to
+``tests/phase_j_refactor_fixtures/_configs.py`` (2026-05-28) with
+five probe points ``(0, ±10), (0, ±3), (0, 0)`` (picked to avoid
+the small-|C(τ)| zero-crossing valleys near ``τ_2 ≈ ±5, ±8``
+where scipy.quad's default precision floor on the per-diag m=1
+evaluator would otherwise produce ~1e-5 rel diffs that exceed the
+``test_grouped_matches_perdiag_at_scipy_default`` ``rtol=1e-6``
+tolerance).
+
+Both `test_grouped_vs_perdiag.py` tests
+(``test_grouped_matches_perdiag_at_scipy_default`` and
+``test_grouped_matches_perdiag_with_tight_quadrature``) pass at
+all four fixtures.  At tight ``QUAD_OPTS = {'epsrel': 1e-12,
+'epsabs': 1e-14}`` the max rel diff at
+``spike_reset_k2_ell1`` is **5.6e-11** (vs the test's rtol=1e-10
+threshold) — the residual is the per-diag m=1 ``scipy.quad`` path
+that remains scipy-backed even after Stage 4a's analytic merger;
+upgrading per-diag m=1 to a closed-form analytic path would
+reduce this to true machine precision (~1e-16).  See memory note
+``project_grouped_phase_j_precision.md``.
+
+### Companion: `docs/m_ge3_chain_simplex_fix_proposal.md`
+
+The proposal at
+``docs/m_ge3_chain_simplex_fix_proposal.md`` (hybrid Taylor +
+mpmath fallback) was NOT implemented in this resolution path
+because the bug turned out not to be in the chain simplex itself.
+The proposal remains valid future work for the case where a
+genuine close-paired-pole regime DOES bite (which has not yet
+been observed at the current spike-reset theory after the
+dirac_delta synapse refactor, but could appear in other theories
+the framework has not yet been stress-tested against).  Memory
+note ``project_chain_simplex_precision_bug.md`` will be updated
+in parallel with this resolution.
