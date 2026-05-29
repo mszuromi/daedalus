@@ -289,7 +289,12 @@ scope" section; reaffirming here so the decisions don't drift:
   One plan correction surfaced: the `Laplacian` saddle-killer needed
   a **third** site (the DAE mean-field solver, `_mean_field_dae.py`),
   not the two the plan listed — recorded in
-  `docs/spatial_implementation_plan.md` §1.3.  The UI "all-fields-
-  same-dim" toggle from D1 remains a Phase 6 deliverable.
+  `docs/spatial_implementation_plan.md` §1.3.
+- **Phase 1 UI** (D1 surface) — pulled forward from Phase 6 (commit
+  `81f8695`).  The Theory Builder Fields tab now has a per-field
+  `spatial_dim` column, a "Spatial structure" panel with a
+  "set all fields to this dimension" button (the D1 one-click
+  bulk-set), and boundary (infinite/periodic + period L) / initial
+  (stationary) dropdowns.  Collect + load round-trip verified.
 - **Phase 2** (propagator builder + heat-kernel module) — next,
   unblocked.
