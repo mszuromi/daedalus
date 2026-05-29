@@ -165,7 +165,8 @@ def precompute(model: dict, *, force: bool = False,
 
     # ── Stage 4: build the propagator (and cache it) ───────────────
     try:
-        build_propagator(ft, model, use_cache=True, verbose=verbose)
+        build_propagator(ft, model, use_cache=True, verbose=verbose,
+                         force=force)
         out['propagator_built'] = True
         _log(f'[precompute] propagator cached at '
              f'{out["cache_dir"]}/propagator.sobj')

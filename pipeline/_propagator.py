@@ -522,7 +522,7 @@ def _to_kernel(c, Dt, delta_D, delta_Dp):
 
 
 def build_propagator(ft, model, cache_dir_root='saved_theories',
-                     use_cache=True, verbose=True):
+                     use_cache=True, verbose=True, force=False):
     """
     Build the symbolic propagator data dict for the given expanded
     ``FieldTheory``.
@@ -548,19 +548,35 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
     cache_dir = f"{cache_dir_root}/{prop_tag}"
     cache = PipelineCache(cache_dir)
 
-    if use_cache and cache.exists('propagator'):
+    if use_cache and not force and cache.exists('propagator'):
         try:
             prop = cache.load('propagator')
             cached_nf = prop.get('nf', None)
+            # Stale-cache guard: a spatial model whose cached propagator
+            # predates the spatial block (no ``G_tx_sym``) must rebuild
+            # — otherwise the heat-kernel propagator is silently absent.
+            stale_spatial = (bool(model.get('spatial'))
+                             and prop.get('G_tx_sym') is None)
             if cached_nf is not None and cached_nf != ft._n_tilde:
                 if verbose:
                     print(f'[propagator] Cached nf={cached_nf} but model '
                           f'has n_tilde={ft._n_tilde}; rebuilding.')
+            elif stale_spatial:
+                if verbose:
+                    print('[propagator] Cached propagator predates the '
+                          'spatial block (no G_tx_sym); rebuilding.')
             else:
                 if verbose:
                     print(f'[propagator] Loaded from cache: '
                           f'{cache_dir}/propagator.sobj')
                     _print_propagator_stages(prop)
+                # Rebuild the (unpicklable) spatial G_tx callables from
+                # the cached symbolic block.
+                if prop.get('G_tx_sym') is not None:
+                    from msrjd.integration.spatial.heat_kernel import (
+                        make_g_tx_callables,
+                    )
+                    prop['G_tx'] = make_g_tx_callables(prop)
                 return prop
         except Exception as e:
             if verbose:
@@ -762,11 +778,40 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
         'C_mats':        None,
     }
 
+    # ── Spatial stage (v1): build the (t, x) heat-kernel propagator ─
+    # When the model declares a spatial field, substitute the inert
+    # ``Laplacian`` operator with ``-k²`` and invert both transforms
+    # to real space.  Tier 1 (diagonal Allen-Cahn-like) is closed
+    # form; the Tier-2 numerical-inverse-FT fallback is deferred to
+    # v2, so a non-Tier-1 spatial model logs the reason and leaves the
+    # propagator time-domain-only (precompute still succeeds — the
+    # symbolic G_ft carries Laplacian for downstream use).
+    if model.get('spatial'):
+        try:
+            from msrjd.integration.spatial.heat_kernel import (
+                build_spatial_propagator,
+            )
+            spatial_block = build_spatial_propagator(
+                K_ft, omega, ns, model, resp_names, phys_names,
+                verbose=verbose,
+            )
+            prop.update(spatial_block)
+        except Exception as e:
+            if verbose:
+                print(f'      spatial propagator (heat kernel) not built '
+                      f'(Tier-1 closed form inapplicable): '
+                      f'{type(e).__name__}: {e}')
+            prop['spatial_dim'] = int((model.get('spatial') or {}).get('dim', 0))
+            prop['G_tx'] = None
+
     if verbose:
         _print_propagator_symbolic_stages(prop, resp_names, phys_names)
 
     if use_cache:
         try:
+            # ``prop`` is picklable here — the spatial block stores only
+            # SR exprs + plain data; the G_tx callables are attached
+            # AFTER the save (closures don't pickle).
             cache.save('propagator', prop)
             if verbose:
                 print(f'[propagator] Cached to: '
@@ -774,6 +819,14 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
         except Exception as e:
             if verbose:
                 print(f'[propagator] Cache save failed ({e!r}).')
+
+    # Attach the runtime spatial G_tx callables (post-cache-save so the
+    # cached artefact stays picklable).
+    if prop.get('G_tx_sym') is not None:
+        from msrjd.integration.spatial.heat_kernel import (
+            make_g_tx_callables,
+        )
+        prop['G_tx'] = make_g_tx_callables(prop)
 
     return prop
 
