@@ -114,7 +114,18 @@ original design intent.
 
 Grounded in the integrator map (file:line):
 
-### 4a. Per-edge momentum (NEW — the core structural addition)
+### 4a. Per-edge momentum (NEW — the core structural addition)  ✅ IMPLEMENTED
+
+> **Done (2026-05-29, commit `bba7b59`):**
+> `msrjd/integration/spatial/momentum_routing.py` — `route_momenta(td)`
+> solves conservation `Σk_e=0` at every internal vertex and returns each
+> edge's momentum as a linear form in external `q_j` (Σq=0 imposed) +
+> loop `ℓ_i`; `.edge_k2()` gives the per-edge `k_e²` for `λ_e=-(A+Bk_e²)`.
+> Verified (`tests/test_momentum_routing.py`, synthetic graphs): tree →
+> L=0, all edges `k²=q²`; bubble → L=1, `ℓ` cancels in the leg sum;
+> sunset → L=2. Also confirmed on the real enumerated tree diagram
+> (`q0, -q0`).
+
 The time-domain integrator assigns a **time** to each vertex and
 integrates internal times. The momentum-space analog assigns a
 **momentum to each edge** with **conservation at each vertex**
@@ -282,12 +293,44 @@ external inverse-FT to produce `C_tau_x`.
 
 ## 5. Sequencing (each stage gated on a checkpoint)
 
-**Stage A — tree-level through the shared pipeline.**
+**Stage A — tree-level through the shared pipeline.**  🟡 IN PROGRESS
 Route the free linear theory (Edwards-Wilkinson / linear-diffusion)
 through `compute_correction_td` with the momentum layer (external `q`
-only, no loops). 
+only, no loops).
 *Checkpoint:* reproduce the bespoke path's `C(x,τ)` to ≤1e-10
 (equal-time and two-time) — the bespoke evaluator is the oracle.
+
+> **Progress (2026-05-29):**
+> * **Spike PASS** (`docs/spatial_spikes/stageA_tk_pipeline_spike.py`):
+>   the spatial theory flows through the REAL pipeline
+>   (`compute_poles_and_residues` + `compute_correction_td`) with
+>   `Laplacian→-q²` in `num_params`, giving `C(q,τ)=(T/m)e^{-m|τ|}`,
+>   `m=μ+Dq²`, to machine precision; q-FT (numerical, τ>0) reproduces
+>   the oracle to ~1e-13.  ONE typed diagram (the (2,0) noise source +
+>   two `G_R`).
+> * **Unblock:** the free 2-point IS a diagram — the earlier "0 typed"
+>   was a wrong external-field spec.  A single-component field has only
+>   `phys_idx` key `('dphi',1)`, so both auto-correlation legs sit at
+>   component 1: `external_fields=[('dphi',1),('dphi',1)]`.
+> * **Routing (§4a) done** — `momentum_routing.py`, commit `bba7b59`.
+>
+> **Remaining for production Stage A — the "symbolic-in-q" bridge.**
+> The pipeline's time evaluators are *numerical* (they return `C(q,τ)`
+> as a number at given `num_params`), but the ANALYTIC q-FT
+> (residue/erf, §4c′ — exact at τ=0, no ringing) needs `C(q,τ)`'s
+> *structure in q*: the mode list `Σ_α N_α/(A_α+B_α q²)·e^{-(A_α+B_α q²)|τ|}`.
+> For tree-level this structure is known directly from the propagator
+> (`A,B` = `ac_mass`,`ac_diffusion`; `N` from the noise) — i.e. the
+> analytic q-FT of one mode IS the validated `heat_kernel.free_two_point`.
+> So the production wiring is: route spatial through the pipeline to get
+> the *diagram + per-mode (A,B,N) structure*, then feed those modes to
+> the heat-kernel/erf q-FT evaluator (one mode for the free 2-point;
+> multiple for the dressed/loop propagator).  The numerical-q-FT the
+> spike used is a fallback only (τ>0).  This bridge — extracting the
+> per-mode (A,B,N) from the pipeline's pole/residue output as functions
+> of `q` — is the next concrete build, and is a design step (not a
+> mechanical wire-up), so it should land carefully against the oracle +
+> the 21 spatial tests before the bespoke short-circuit is retired.
 
 **Stage B — retire the bespoke path.**
 Delete the `compute.py:375` short-circuit and
