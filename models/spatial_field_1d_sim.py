@@ -111,6 +111,14 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
     ``dt`` defaults to a stable explicit value:
     ``0.2 · dx² / D`` capped by ``0.1/μ`` (diffusive CFL + relaxation).
     """
+    # Cast counts/seed to Python ints: under the SageMath *kernel* the
+    # notebook preparser turns integer literals into Sage ``Integer``,
+    # which ``np.random.default_rng`` (and some numpy paths) reject.
+    N = int(N)
+    n_steps = int(n_steps)
+    burn_in = int(burn_in)
+    record_every = int(record_every)
+    seed = int(seed)
     dx = L / N
     if dt is None:
         # The linear part is exact (exponential integrator), so dt is
@@ -148,6 +156,7 @@ def equal_time_correlator(snaps):
 def lattice_sum_variance(L, N, mu, D, T):
     """Discretized-theory exact equal-time variance ⟨φ²⟩ with the
     finite-difference dispersion — the simulator's λ=0 reference."""
+    N = int(N)                 # guard against Sage-kernel Integer
     dx = L / N
     ks = 2.0 * np.pi * np.fft.fftfreq(N, d=dx)
     disp = mu + (2.0 * D / dx**2) * (1.0 - np.cos(ks * dx))
