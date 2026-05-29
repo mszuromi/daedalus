@@ -457,7 +457,7 @@ class TheoryUI:
         self._tbl_physical = DynamicTable(
             columns=[
                 {'name': 'name',        'kind': 'text',
-                 'placeholder': 'x',    'width': '120px'},
+                 'placeholder': 'phi',  'width': '120px'},
                 {'name': 'population',  'kind': 'select',
                  'options_provider': self._pop_names,
                  'width': '120px'},
@@ -476,10 +476,12 @@ class TheoryUI:
                  'placeholder': '(optional)', 'width': '280px'},
             ],
             initial=[
-                # One starter row only — a scalar field ``x`` with no
-                # population.  Generic enough to keep without nudging
-                # users toward a Hawkes-style two-field setup.
-                {'name': 'x', 'population': '', 'spatial_dim': 0,
+                # One starter row only — a scalar field ``phi`` with no
+                # population.  ``phi`` (not ``x``) so the default name
+                # never collides with the spatial coordinate when a user
+                # later sets spatial_dim≥1 (x/y/z/k are reserved in
+                # spatial theories — see TheoryBuilder.build()).
+                {'name': 'phi', 'population': '', 'spatial_dim': 0,
                  'description': ''},
             ],
         )
@@ -533,24 +535,24 @@ class TheoryUI:
                 '<p style="color:#555;font-size:90%;">'
                 "These are the actual physical quantities your theory "
                 "describes &mdash; the variables you'd write in an SDE.  "
-                "Give each one a short name (<code>x</code>, <code>y</code>, "
+                "Give each one a short name (<code>phi</code>, <code>rho</code>, "
                 "<code>v</code>, &hellip;) and the population it belongs to "
                 "(leave <b>blank</b> for a scalar field with no population)."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
-                "For every field <code>x</code> you declare, the "
+                "For every field <code>phi</code> you declare, the "
                 "framework automatically creates two companion symbols "
                 "you'll need when writing the action and the MF equations:"
                 '<ul style="margin-top:2px;">'
-                '<li><code>xt</code> &mdash; the <i>response</i> field '
+                '<li><code>phit</code> &mdash; the <i>response</i> field '
                 '(MSR auxiliary).  Appears in the action paired with '
-                'the dynamics: <code>xt * ((Dt + mu) * x + &hellip;)</code>.</li>'
-                '<li><code>xstar</code> &mdash; the <i>saddle</i> '
+                'the dynamics: <code>phit * ((Dt + mu) * phi + &hellip;)</code>.</li>'
+                '<li><code>phistar</code> &mdash; the <i>saddle</i> '
                 '(steady-state value).  Solved numerically from the '
                 'mean-field equations.</li>'
                 '</ul>'
                 "If you attach a population <code>A</code>, all three "
-                "(<code>x</code>, <code>xt</code>, <code>xstar</code>) become "
+                "(<code>phi</code>, <code>phit</code>, <code>phistar</code>) become "
                 "vectors of length <i>size(A)</i>, and the action / MF "
                 "equations need a <code>for i in A</code> comprehension "
                 "to iterate over them."
@@ -651,7 +653,7 @@ class TheoryUI:
                 "parameter is indexed using the two dropdowns:"
                 '<ul style="margin-top:2px;">'
                 '<li><b>Both blank</b> &rarr; <i>scalar</i>.  '
-                'E.g. <code>mu = 1.0</code> in <code>dx/dt = -mu*x</code>.</li>'
+                'E.g. <code>mu = 1.0</code> in <code>dphi/dt = -mu*phi</code>.</li>'
                 '<li><b>Only index_1</b> &rarr; <i>vector</i> of length '
                 '<i>size(index_1)</i>.  Refer to it as '
                 '<code>mu[i]</code> in the action.</li>'
@@ -699,7 +701,7 @@ class TheoryUI:
                  'placeholder': 'x  (or "x, y" for multi-arg)',
                  'width': '140px'},
                 {'name': 'expression',  'kind': 'text',
-                 'placeholder': 'x^2  /  a*x + b  /  ...',
+                 'placeholder': 'u^2  /  a*u + b  /  ...',
                  'width': '260px'},
                 # latex column dropped (2026-05-27).
                 {'name': 'description', 'kind': 'text',
@@ -717,9 +719,9 @@ class TheoryUI:
                 '<p style="color:#555;font-size:90%;">'
                 "<b>Skip this tab</b> unless your dynamics include a "
                 "non-polynomial transformation of a field &mdash; e.g. "
-                "<code>tanh(x)</code>, <code>exp(v)</code>, or any "
+                "<code>tanh(phi)</code>, <code>exp(v)</code>, or any "
                 "user-defined transfer function.  Polynomial nonlinearities "
-                "(like <code>x^3</code>) go straight in the action."
+                "(like <code>phi^3</code>) go straight in the action."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
                 "When you do need it: declare each function as a named "
@@ -727,9 +729,9 @@ class TheoryUI:
                 "indexing if it's population-scoped, parentheses for the "
                 "argument:"
                 '<ul style="margin-top:2px;">'
-                '<li>Population-scoped: <code>f[i](x[i])</code>, where '
+                '<li>Population-scoped: <code>f[i](phi[i])</code>, where '
                 '<code>i</code> ranges over the function\'s population.</li>'
-                '<li>Global (no population): <code>f(x)</code>.</li>'
+                '<li>Global (no population): <code>f(phi)</code>.</li>'
                 '</ul></p>'
                 '<p style="color:#555;font-size:90%;"><b>Per row:</b><ul>'
                 '<li><b>name</b> &mdash; any identifier '
@@ -737,20 +739,20 @@ class TheoryUI:
                 '<li><b>population</b> &mdash; the population this function '
                 'is indexed by, or blank for a global function.</li>'
                 '<li><b>args</b> &mdash; comma-separated argument names '
-                '(<code>x</code> for a 1-arg function; <code>x, y</code> '
+                '(<code>u</code> for a 1-arg function; <code>u, v</code> '
                 'for a 2-arg one).  These are just placeholder names '
                 'used inside the expression.</li>'
                 '<li><b>expression</b> &mdash; the function body in terms '
                 'of its <code>args</code> and any declared parameters.  '
-                'E.g. <code>tanh(a*x)</code>, <code>x^2 + b</code>.</li>'
+                'E.g. <code>tanh(a*u)</code>, <code>u^2 + b</code>.</li>'
                 '</ul></p>'
                 '<p style="color:#555;font-size:90%;">'
                 "<i>Behind the scenes</i>: the framework expands the "
                 "function around the saddle value of its first argument "
-                "(so <code>f(x)</code> gets a Taylor expansion in "
-                "<code>x &minus; xstar</code>).  You don't need to do "
+                "(so <code>f(phi)</code> gets a Taylor expansion in "
+                "<code>phi &minus; phistar</code>).  You don't need to do "
                 "this expansion yourself &mdash; just write "
-                "<code>f[i](x[i])</code> in the action and the framework "
+                "<code>f[i](phi[i])</code> in the action and the framework "
                 "handles the rest."
                 '</p>'),
             self._tbl_functions.show(),
@@ -816,8 +818,8 @@ class TheoryUI:
                 "         freq_image=1/(1 + I*omega*tauk)"
                 '</pre></p>'
                 '<p style="color:#555;font-size:90%;">'
-                "Then in the action: <code>xt * Conv(K, y)</code> couples "
-                "<i>x</i> to the kernel-filtered version of <i>y</i>."
+                "Then in the action: <code>phit * Conv(K, psi)</code> couples "
+                "<i>phi</i> to the kernel-filtered version of <i>psi</i>."
                 '</p>'),
             self._tbl_kernels.show(),
         ])
@@ -833,7 +835,7 @@ class TheoryUI:
                 {'name': 'name',           'kind': 'text',
                  'placeholder': 'Cxx',     'width': '60px'},
                 {'name': 'response_legs',  'kind': 'text',
-                 'placeholder': 'xt   or   xt, yt',
+                 'placeholder': 'phit   or   phit, psit',
                  'width': '160px'},
                 {'name': 'order',          'kind': 'int',
                  'default': 2,             'width': '60px'},
@@ -855,20 +857,20 @@ class TheoryUI:
                 "<code>&lt;&eta;(t) &eta;(t')&gt; = coefficient &times; "
                 "kernel(t&minus;t')</code>.  Leave the table empty if "
                 "your action already includes the noise term as an "
-                "explicit <code>D*xt^2</code>-style line."
+                "explicit <code>D*phit^2</code>-style line."
                 '</p>'
                 '<p style="color:#555;font-size:90%;"><b>Per row:</b><ul>'
                 '<li><b>name</b> &mdash; any label you choose '
-                '(e.g. <code>Cxx</code>, <code>Cxy</code>).  Just a tag.</li>'
+                '(e.g. <code>Cpp</code>, <code>Cpq</code>).  Just a tag.</li>'
                 '<li><b>response_legs</b> &mdash; which response fields '
                 'this noise term couples (with the <code>t</code> suffix). '
                 'Comma-separate for multi-leg correlators.<br>'
-                '&nbsp;&nbsp;<code>xt</code> &nbsp;&rarr;&nbsp; '
-                '<code>&lt;&eta;<sub>x</sub> &eta;<sub>x</sub>&gt;</code> '
-                '(auto-correlation of <i>x</i>)<br>'
-                '&nbsp;&nbsp;<code>xt, yt</code> &nbsp;&rarr;&nbsp; '
-                '<code>&lt;&eta;<sub>x</sub> &eta;<sub>y</sub>&gt;</code> '
-                '(cross-correlation between <i>x</i> and <i>y</i>)</li>'
+                '&nbsp;&nbsp;<code>phit</code> &nbsp;&rarr;&nbsp; '
+                '<code>&lt;&eta;<sub>phi</sub> &eta;<sub>phi</sub>&gt;</code> '
+                '(auto-correlation of <i>phi</i>)<br>'
+                '&nbsp;&nbsp;<code>phit, psit</code> &nbsp;&rarr;&nbsp; '
+                '<code>&lt;&eta;<sub>phi</sub> &eta;<sub>psi</sub>&gt;</code> '
+                '(cross-correlation between <i>phi</i> and <i>psi</i>)</li>'
                 '<li><b>order</b> &mdash; the number of legs.  '
                 '<code>2</code> for ordinary Gaussian noise; '
                 '<code>3</code>+ for shot-noise &kappa;<sup>(n)</sup> '
@@ -884,17 +886,17 @@ class TheoryUI:
                 'anything you write that integrates to 1.</li>'
                 '</ul></p>'
                 '<p style="color:#555;font-size:90%;">'
-                '<b>Concrete examples</b> for <code>dx/dt = -mu*x + &eta;</code>:'
+                '<b>Concrete examples</b> for <code>dphi/dt = -mu*phi + &eta;</code>:'
                 '<pre style="background:#f3f4f6;padding:8px;'
                 'border-radius:4px;font-size:0.9em;">'
                 "# White Gaussian, <&eta; &eta;> = 2D &middot; &delta;(&tau;)\n"
-                "name=Cxx   legs=xt   order=2   coeff=2*D       kernel=dirac_delta(tau)\n"
+                "name=Cpp   legs=phit   order=2   coeff=2*D       kernel=dirac_delta(tau)\n"
                 "\n"
                 "# OU-colored, <&eta; &eta;> = (D/&tau;<sub>c</sub>) exp(-|&tau;|/&tau;<sub>c</sub>)\n"
-                "name=Cxx   legs=xt   order=2   coeff=D/tauc    kernel=exp(-abs(tau)/tauc)\n"
+                "name=Cpp   legs=phit   order=2   coeff=D/tauc    kernel=exp(-abs(tau)/tauc)\n"
                 "\n"
-                "# 2D cross-correlated, <&eta;<sub>x</sub> &eta;<sub>y</sub>> = &rho;&radic;(D&#8321;D&#8322;) &middot; &delta;(&tau;)\n"
-                "name=Cxy   legs=xt, yt   order=2   coeff=rho*sqrt(D1*D2)   kernel=dirac_delta(tau)"
+                "# 2-field cross-correlated, <&eta;<sub>phi</sub> &eta;<sub>psi</sub>> = &rho;&radic;(D&#8321;D&#8322;) &middot; &delta;(&tau;)\n"
+                "name=Cpq   legs=phit, psit   order=2   coeff=rho*sqrt(D1*D2)   kernel=dirac_delta(tau)"
                 '</pre></p>'),
             self._tbl_cgfs.show(),
         ])
@@ -910,11 +912,11 @@ class TheoryUI:
             'Action S',
             placeholder=(
                 "# Example: 1D overdamped Langevin with a cubic well\n"
-                "#   dx/dt = -mu*x - eps*x^3 + noise,  <eta eta> = 2D\n"
-                "xt * ((Dt + mu) * x + eps * x^3) - D * xt^2\n"
+                "#   dphi/dt = -mu*phi - eps*phi^3 + noise,  <eta eta> = 2D\n"
+                "phit * ((Dt + mu) * phi + eps * phi^3) - D * phit^2\n"
                 "\n"
                 "# (For population-indexed theories use comprehensions:\n"
-                "#   sum(xt[i]*(Dt + mu[i])*x[i] - D[i]*xt[i]^2 for i in A))"
+                "#   sum(phit[i]*(Dt + mu[i])*phi[i] - D[i]*phit[i]^2 for i in A))"
             ),
             rows=10,
             width='820px',
@@ -929,18 +931,18 @@ class TheoryUI:
                 "of motion)</b>:"
                 '<pre style="background:#f3f4f6;padding:8px;'
                 'border-radius:4px;font-size:0.9em;">'
-                "xt * ((Dt + mu) * x + eps * x^3) - D * xt^2\n"
+                "phit * ((Dt + mu) * phi + eps * phi^3) - D * phit^2\n"
                 "&nbsp; &uarr;_________________________&uarr; &nbsp; &uarr;______&uarr;\n"
                 "  bilinear &times; EOM                 noise term"
                 '</pre></p>'
                 '<p style="color:#555;font-size:90%;"><b>Conventions:</b><ul>'
                 '<li><b>Physical fields go in unmodified.</b>  Write '
-                '<code>x</code>, <code>v</code>, &hellip; (not '
-                '<code>xstar + dx</code>).  The framework expands them '
+                '<code>phi</code>, <code>v</code>, &hellip; (not '
+                '<code>phistar + dphi</code>).  The framework expands them '
                 'into saddle + fluctuation under the hood.</li>'
                 '<li><b><code>Dt</code> is the time derivative.</b>  Compose '
-                'it like any operator: <code>(Dt + mu) * x</code>, '
-                '<code>(tau * Dt + 1) * x</code>.</li>'
+                'it like any operator: <code>(Dt + mu) * phi</code>, '
+                '<code>(tau * Dt + 1) * phi</code>.</li>'
                 '<li><b>Custom functions</b> declared on the Functions tab '
                 'work like normal Python calls: <code>f[i](x[i])</code> for '
                 "an indexed function, <code>f(x)</code> for a global one."
@@ -954,7 +956,7 @@ class TheoryUI:
                 'the population.  E.g. for a population named <code>A</code>:'
                 '<pre style="background:#f3f4f6;padding:8px;'
                 'border-radius:4px;font-size:0.9em;">'
-                "sum(xt[i] * ((Dt + mu[i]) * x[i] + eps * x[i]^3) - D[i] * xt[i]^2\n"
+                "sum(phit[i] * ((Dt + mu[i]) * phi[i] + eps * phi[i]^3) - D[i] * phit[i]^2\n"
                 "    for i in A)"
                 '</pre>'
                 "Nested comprehensions for matrix couplings: "
@@ -962,7 +964,7 @@ class TheoryUI:
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
                 "<b>Noise terms</b> can go in the action directly "
-                "(<code>&minus;D*xt^2</code> for white Gaussian) OR be "
+                "(<code>&minus;D*phit^2</code> for white Gaussian) OR be "
                 "declared on the <b>Noise</b> tab.  Use whichever is more "
                 "natural &mdash; the noise tab is mandatory only for "
                 "colored / cross-correlated noise."
@@ -978,10 +980,10 @@ class TheoryUI:
         self._tbl_mfeqs = DynamicTable(
             columns=[
                 {'name': 'lhs',        'kind': 'text',
-                 'placeholder': '(Dt + mu) * x',
+                 'placeholder': '(Dt + mu) * phi',
                  'width': '240px'},
                 {'name': 'rhs',        'kind': 'text',
-                 'placeholder': '-eps * x^3   (or 0 for a linear EOM)',
+                 'placeholder': '-eps * phi^3   (or 0 for a linear EOM)',
                  'width': '360px'},
                 {'name': 'population', 'kind': 'select',
                  'options_provider': _pop_opts_with_none,
@@ -1030,7 +1032,7 @@ class TheoryUI:
         self._w_seed_box = W.Textarea(
             value='',
             placeholder=("Optional Python dict literal, e.g.\n"
-                         "{'x': (-3.0, 3.0), 'y': (-3.0, 3.0)}"),
+                         "{'phi': (-3.0, 3.0), 'psi': (-3.0, 3.0)}"),
             layout=W.Layout(width='460px', height='60px'),
         )
 
@@ -1047,14 +1049,14 @@ class TheoryUI:
                 "<br><br>"
                 "Examples:"
                 "<ul style='margin-top:2px;'>"
-                "<li><code>(Dt + mu) * x</code> = <code>0</code> "
-                "&nbsp;&rarr;&nbsp; the saddle of <code>dx/dt = -mu*x</code>"
+                "<li><code>(Dt + mu) * phi</code> = <code>0</code> "
+                "&nbsp;&rarr;&nbsp; the saddle of <code>dphi/dt = -mu*phi</code>"
                 "</li>"
-                "<li><code>(Dt + mu) * x</code> = <code>-eps * x^3</code> "
+                "<li><code>(Dt + mu) * phi</code> = <code>-eps * phi^3</code> "
                 "&nbsp;&rarr;&nbsp; cubic well; the solver finds all roots</li>"
                 "</ul>"
                 "If a field is indexed by a population, use "
-                "<code>x[i]</code> on both sides and select that "
+                "<code>phi[i]</code> on both sides and select that "
                 f"population in the dropdown.  For a scalar field, "
                 f"leave the population as <code>{_NONE}</code>."
                 '</p>'),
@@ -1140,16 +1142,16 @@ class TheoryUI:
         self._tbl_ext_fields = DynamicTable(
             columns=[
                 {'name': 'field',       'kind': 'text',
-                 'placeholder': 'x',    'width': '120px'},
+                 'placeholder': 'phi',  'width': '120px'},
                 {'name': 'leaf_index',  'kind': 'int',
                  'default': 1,          'width': '100px'},
             ],
             initial=[
-                # Two leaves on the same scalar field ``x`` matches the
+                # Two leaves on the same scalar field ``phi`` matches the
                 # default ``k_default = 2`` (auto-correlator) and is the
                 # most common k-point setup the runner cares about.
-                {'field': 'x', 'leaf_index': 1},
-                {'field': 'x', 'leaf_index': 2},
+                {'field': 'phi', 'leaf_index': 1},
+                {'field': 'phi', 'leaf_index': 2},
             ],
         )
         tab_defaults = W.VBox([
@@ -1190,9 +1192,9 @@ class TheoryUI:
                 "above.  Use the field's name (matching the Fields tab) "
                 "and a 1-based <code>leaf_index</code> to label which "
                 "leg you mean.  Two legs on the same field "
-                "(<code>x[1], x[2]</code>) compute the <i>auto</i>-"
+                "(<code>phi[1], phi[2]</code>) compute the <i>auto</i>-"
                 "correlation; legs on different fields "
-                "(<code>x[1], y[1]</code>) compute a <i>cross</i>-"
+                "(<code>phi[1], psi[1]</code>) compute a <i>cross</i>-"
                 "correlation."
                 '</p>'),
             self._tbl_ext_fields.show(),
