@@ -294,3 +294,50 @@ METADATA = {}
         os.unlink(path)
     phi = next(f for f in spec['physical_fields'] if f['name'] == 'phi')
     assert phi.get('spatial_dim') == 1
+
+
+# ── Reserved-name validation (scoped hard error, incl. x) ──────────
+def _spatial_phi_builder(field_name='phi', extra_param=None):
+    """Minimal spatial builder; field/param names overridable to probe
+    the reserved-name guard."""
+    b = (TheoryBuilder('rn', n_populations=0)
+         .physical_field(field_name, spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive'))
+    if extra_param:
+        b = b.parameter(extra_param, default=1.0, domain='positive')
+    ft = field_name
+    return (b.set_action_text(f'{ft}t*((Dt + mu - D*Laplacian)*{ft}) - {ft}t^2')
+            .boundary('infinite'))
+
+
+def test_reserved_spatial_field_x_rejected():
+    with pytest.raises(ValueError, match=r"'x' is reserved \(spatial"):
+        _spatial_phi_builder(field_name='x').build()
+
+
+def test_reserved_spatial_param_k_rejected():
+    with pytest.raises(ValueError, match=r"'k' is reserved \(spatial"):
+        _spatial_phi_builder(extra_param='k').build()
+
+
+def test_reserved_global_param_t_rejected():
+    # 't' is reserved in EVERY theory (the Fourier time variable).
+    with pytest.raises(ValueError, match=r"'t' is reserved \(all"):
+        (TheoryBuilder('rn2', n_populations=0)
+         .physical_field('phi')
+         .parameter('t', default=1.0, domain='positive')
+         .set_action_text('phit*((Dt + t)*phi) - phit^2')
+         .build())
+
+
+def test_x_allowed_in_time_only_theory():
+    # The conventional time-only field name 'x' must still build.
+    model = (TheoryBuilder('rn3', n_populations=0)
+             .physical_field('x')
+             .parameter('mu', default=1.0, domain='positive')
+             .set_action_text('xt*((Dt + mu)*x) - xt^2')
+             .build())
+    assert any((f.get('natural_name') or f['name']) == 'x'
+               for f in model['physical_fields'])
+    assert 'spatial' not in model

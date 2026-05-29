@@ -574,6 +574,17 @@ class TheoryUI:
                 "directly (a dimension-0 auxiliary may coexist with "
                 "dimension-1 fields).  v1 supports dimension 0 or 1, and "
                 "all spatial fields must share one dimension."
+                '</p>'
+                '<p style="color:#a00;font-size:88%;">'
+                "<b>Naming:</b> in a spatial theory, "
+                "<code>x</code>,&nbsp;<code>y</code>,&nbsp;<code>z</code> "
+                "are the spatial coordinates, <code>k</code> is the "
+                "wavevector, and <code>Laplacian</code> is the diffusion "
+                "operator &mdash; so don't use those as field or "
+                "parameter names.  Call your field <code>phi</code>, "
+                "<code>rho</code>, <code>h</code>, &hellip; "
+                "(<code>t</code>&nbsp;and <code>omega</code> are reserved "
+                "in every theory)."
                 '</p>'),
             W.HBox([self._w_spatial_dim, self._w_spatial_apply]),
             W.HTML(
@@ -1703,6 +1714,40 @@ class TheoryUI:
                 _add(3, 'error',
                      f"field '{f.get('name')}' references unknown "
                      f"population '{pop}'")
+
+        # ── Reserved-name check (mirrors TheoryBuilder.build()) ──────
+        # t/omega/Dt are reserved everywhere; x/y/z/k/Laplacian only in
+        # spatial theories (they're the coordinate / wavevector /
+        # diffusion-operator symbols).  Surfacing it here means the
+        # readiness sidebar flags it before precompute hard-errors.
+        _is_spatial = any(int(f.get('spatial_dim') or 0) > 0 for f in fields)
+        _reserved = {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'}
+        if _is_spatial:
+            _reserved |= {'k', 'Laplacian', 'x', 'y', 'z'}
+        _hint = {'x': 'phi', 'y': 'psi', 'z': 'chi', 'k': 'kappa'}
+        for f in fields:
+            nm = (f.get('name') or '').strip()
+            if nm in _reserved:
+                _add(3, 'error',
+                     f"field name '{nm}' is reserved"
+                     + (' in spatial theories' if nm not in
+                        {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'} else '')
+                     + f" (it's the framework's "
+                     + ('spatial coordinate / wavevector / diffusion '
+                        'operator' if nm not in
+                        {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'}
+                        else 'time / frequency / operator')
+                     + f" symbol) — rename it"
+                     + (f" (e.g. '{_hint[nm]}')" if nm in _hint else ''))
+        for p in (spec.get('parameters') or []):
+            nm = (p.get('name') or '').strip()
+            if nm in _reserved:
+                _add(4, 'error',
+                     f"parameter name '{nm}' is reserved"
+                     + (' in spatial theories' if nm in
+                        {'k', 'Laplacian', 'x', 'y', 'z'} else '')
+                     + " — rename it"
+                     + (f" (e.g. '{_hint[nm]}')" if nm in _hint else ''))
 
         # ── Tab 4 — Parameters: stale population references ──────────
         for p in spec.get('parameters') or []:

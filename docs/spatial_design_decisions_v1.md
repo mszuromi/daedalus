@@ -232,6 +232,39 @@ chain-simplex close-pole concern in
 
 ---
 
+## Decision 5 — reserved field/parameter names (added 2026-05-29)
+
+**Chosen**: **scoped hard error, including `x`**.
+
+`TheoryBuilder.build()` rejects names that collide with the
+framework's symbol machinery, with a clear rename suggestion:
+
+| Reserved name(s) | Scope | Why |
+|---|---|---|
+| `t`, `omega` | **all theories** | Fourier variables (`SR.var('t')`, `SR.var('omega')` in `_propagator.py`) |
+| `Dt`, `delta_D`, `delta_Dp` | all theories | operator-namespace symbols |
+| `k` | **spatial only** | wavevector (`SR.var('k')` in `heat_kernel.py`); a parameter named `k` silently corrupts the `Laplacian→−k²` mass/diffusion extraction |
+| `Laplacian` | spatial only | diffusion operator |
+| `x`, `y`, `z` | spatial only | spatial coordinates + the `C(x,τ)` output axis |
+
+Time-only theories keep `x` (and `y`, `z`, `k`) free — `x` is the
+conventional default field name there (and the UI's starter row).
+
+The check covers physical fields, parameters, functions, and kernels.
+It is enforced in three places: `TheoryBuilder.build()` (the hard
+error — catches both hand-written `.theory.py` files and UI-generated
+specs at precompute time), the UI readiness sidebar (`_validate()`,
+surfaces it *before* precompute), and the Fields-tab spatial-panel
+help text (steers naming up front).  `x` was **not** currently a
+hard SR collision (the real-space coordinate is a Python arg, not an
+SR symbol) — it's reserved for readability and forward-safety against
+the Phase-5b internal-position symbols `x_v`.  `k` *is* a current
+silent-bug collision, which is the sharper reason this decision
+matters.
+
+Tests: `tests/test_theory_spatial_basics.py` (`x`/`k` rejected in
+spatial, `t` rejected globally, `x` still allowed time-only).
+
 ## Summary of v1 commitments
 
 | Decision | Choice | Net plan impact |

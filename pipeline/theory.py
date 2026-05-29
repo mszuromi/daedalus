@@ -1620,6 +1620,59 @@ class TheoryBuilder:
         theory_spatial_dim = next(iter(nonzero_dims), 0)
         is_spatial = theory_spatial_dim > 0
 
+        # ── Reserved-name validation (scoped hard error) ─────────────
+        # Names owned by the framework's symbol machinery: reusing one
+        # as a field / parameter / function / kernel name collides —
+        # SILENTLY — with the Fourier-transform, operator, or spatial-
+        # coordinate symbols.  ``t`` / ``omega`` are the FT variables
+        # (``SR.var('t')`` / ``SR.var('omega')`` in _propagator.py) and
+        # ``Dt`` / ``delta_D`` / ``delta_Dp`` are operator symbols, so
+        # they're reserved in EVERY theory.  ``k`` (wavevector,
+        # ``SR.var('k')`` in heat_kernel.py — a real silent-wrong-mass
+        # bug if a parameter shares it), ``Laplacian`` (diffusion
+        # operator) and the spatial coordinates ``x`` / ``y`` / ``z``
+        # (also the C(x,τ) output axis) are reserved only when the
+        # theory is spatial.  Time-only theories keep ``x`` free — it's
+        # the conventional default field name.  See
+        # ``docs/spatial_design_decisions_v1.md`` (Decision: reserved
+        # names).
+        _reserved_always = {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'}
+        _reserved_spatial = {'k', 'Laplacian', 'x', 'y', 'z'}
+        reserved = set(_reserved_always)
+        if is_spatial:
+            reserved |= _reserved_spatial
+        _named = []
+        for f in self.physical_fields:
+            _named.append(('physical field',
+                           getattr(f, 'natural_name', None) or f.name))
+        for p in self.parameters:
+            _named.append(('parameter', p.name))
+        for fn in getattr(self, '_functions', []) or []:
+            _named.append(('function', getattr(fn, 'name', None)))
+        for kr in self.kernels:
+            _named.append(('kernel', getattr(kr, 'name', None)))
+        _rename_hint = {'x': 'phi', 'y': 'psi', 'z': 'chi', 'k': 'kappa',
+                        't': 'tau_var', 'omega': 'w0',
+                        'Dt': 'Dt_', 'Laplacian': 'lap_'}
+        for kind, nm in _named:
+            if nm and nm in reserved:
+                spatial_word = nm in _reserved_spatial
+                scope = ('spatial theories'
+                         if spatial_word else 'all theories')
+                role = ('spatial coordinate / wavevector / diffusion '
+                        'operator' if spatial_word
+                        else 'time / frequency / time-derivative '
+                        'operator')
+                raise ValueError(
+                    f'TheoryBuilder("{self.name}").build(): {kind} name '
+                    f'{nm!r} is reserved ({scope}); it collides with the '
+                    f'framework\'s {role} symbol of the same name.  '
+                    f'Rename it (e.g. {_rename_hint.get(nm, nm + "_")!r}).  '
+                    f'In a spatial theory, x/y/z are the spatial '
+                    f'coordinates, k is the wavevector, and Laplacian is '
+                    f'the diffusion operator — see '
+                    f'docs/spatial_design_decisions_v1.md.')
+
         # Operators list: default [Dt]; append a Laplacian symbol when
         # the theory is spatial so ``field_theory._build_namespace``
         # registers ``ns.Laplacian`` (used multiplicatively in the
