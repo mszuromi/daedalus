@@ -461,6 +461,12 @@ class TheoryUI:
                 {'name': 'population',  'kind': 'select',
                  'options_provider': self._pop_names,
                  'width': '120px'},
+                # Spatial dimension (v1 spatial extension).  0 = time-
+                # only (default); 1 = continuous field φ(x, t) in 1D.
+                # Set per-field here, or use the "Spatial structure"
+                # panel below the table to set them all at once.
+                {'name': 'spatial_dim', 'kind': 'int',
+                 'width': '90px', 'default': 0},
                 # latex column dropped (2026-05-27): the framework
                 # auto-derives a sensible latex name from ``name``; the
                 # column was clutter for the 95% case.  Theory files
@@ -473,9 +479,54 @@ class TheoryUI:
                 # One starter row only — a scalar field ``x`` with no
                 # population.  Generic enough to keep without nudging
                 # users toward a Hawkes-style two-field setup.
-                {'name': 'x', 'population': '', 'description': ''},
+                {'name': 'x', 'population': '', 'spatial_dim': 0,
+                 'description': ''},
             ],
         )
+        # ── Spatial-structure panel (v1 spatial extension) ──────────
+        # Convenience control realizing D1: one click sets every
+        # field's spatial dimension at once.  The per-field
+        # ``spatial_dim`` column above is the underlying data model;
+        # this just bulk-fills it.
+        self._w_spatial_dim = W.BoundedIntText(
+            value=1, min=0, max=3, description='dimension',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='160px'),
+        )
+        self._w_spatial_apply = W.Button(
+            description='Set all fields to this dimension',
+            button_style='', layout=W.Layout(width='260px'),
+        )
+
+        def _apply_spatial_dim_to_all(_btn=None):
+            d = int(self._w_spatial_dim.value)
+            for w_dict in self._tbl_physical._row_widgets:
+                if 'spatial_dim' in w_dict:
+                    w_dict['spatial_dim'].value = d
+            self._tbl_physical._notify_change()
+        self._w_spatial_apply.on_click(_apply_spatial_dim_to_all)
+
+        # Boundary + initial conditions (only meaningful for spatial
+        # theories; ignored at build() when no field is spatial).
+        self._w_boundary_mode = W.Dropdown(
+            options=['infinite', 'periodic'], value='infinite',
+            description='boundary',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='220px'),
+        )
+        self._w_boundary_length = W.Text(
+            value='', placeholder="parameter name or number, e.g. L",
+            description='period L',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='320px'),
+        )
+        self._w_initial_mode = W.Dropdown(
+            options=['stationary'], value='stationary',
+            description='initial',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='220px'),
+        )
+
         tab_fields = W.VBox([
             W.HTML(
                 '<h4>Fields</h4>'
@@ -505,6 +556,39 @@ class TheoryUI:
                 "to iterate over them."
                 '</p>'),
             self._tbl_physical.show(),
+            # ── Spatial structure ───────────────────────────────────
+            W.HTML(
+                '<br><h4>Spatial structure '
+                '<span style="font-weight:normal;color:#888;">'
+                '(optional &mdash; leave dimension 0 for a time-only '
+                'theory)</span></h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "Set a field's <code>spatial_dim</code> to 1 to make it a "
+                "continuous field <code>&phi;(x, t)</code>.  The framework "
+                "then recognizes a <code>Laplacian</code> operator you can "
+                "use multiplicatively in the action, exactly like "
+                "<code>Dt</code> &mdash; e.g. "
+                "<code>phit*((Dt + mu - D*Laplacian)*phi + &hellip;)</code>.  "
+                "Use the button to give every field the same dimension, "
+                "or set the per-field <code>spatial_dim</code> column "
+                "directly (a dimension-0 auxiliary may coexist with "
+                "dimension-1 fields).  v1 supports dimension 0 or 1, and "
+                "all spatial fields must share one dimension."
+                '</p>'),
+            W.HBox([self._w_spatial_dim, self._w_spatial_apply]),
+            W.HTML(
+                '<p style="color:#555;font-size:90%;margin-top:10px;">'
+                "<b>Boundary</b>: <code>infinite</code> (unbounded) or "
+                "<code>periodic</code> (a cell of period <i>L</i>).  For "
+                "periodic, put either a declared parameter name "
+                "(<code>L</code>, sweepable) or a plain number in the "
+                "period box.  <b>Initial</b>: v1 supports "
+                "<code>stationary</code> only (system at its mean-field "
+                "steady state).  These are ignored unless a field is "
+                "spatial."
+                '</p>'),
+            W.HBox([self._w_boundary_mode, self._w_boundary_length]),
+            self._w_initial_mode,
         ])
 
         # Tab 4: Parameters.
@@ -1279,6 +1363,8 @@ class TheoryUI:
         for w in (self._w_name, self._w_description,
                   self._w_fpi_default, self._w_stability_on,
                   self._w_seed_box,
+                  self._w_spatial_dim, self._w_boundary_mode,
+                  self._w_boundary_length, self._w_initial_mode,
                   self._w_k_default, self._w_ell_default,
                   self._w_tau_max, self._w_tau_step):
             try:
@@ -2023,6 +2109,14 @@ class TheoryUI:
             saved_latex = self._loaded_extras.get('field_latex', {}).get(name)
             if saved_latex:
                 entry['latex'] = saved_latex
+            # Spatial dimension (v1).  Emit only when non-zero so
+            # time-only fields round-trip unchanged.
+            try:
+                sd = int(r.get('spatial_dim') or 0)
+            except (TypeError, ValueError):
+                sd = 0
+            if sd > 0:
+                entry['spatial_dim'] = sd
             desc = (r.get('description') or '').strip()
             if desc:
                 entry['description'] = desc
@@ -2096,7 +2190,27 @@ class TheoryUI:
                 entry['latex_name'] = saved_latex
             kernels.append(entry)
 
-        return {
+        # Spatial boundary / initial blocks — emitted only when at
+        # least one field is spatial, so time-only theories carry
+        # neither key (matching TheoryBuilder.build()'s own behaviour).
+        is_spatial = any(f.get('spatial_dim', 0) for f in physical_fields)
+        boundary_block = None
+        initial_block = None
+        if is_spatial:
+            mode = self._w_boundary_mode.value
+            boundary_block = {'mode': mode}
+            if mode == 'periodic':
+                length_txt = (self._w_boundary_length.value or '').strip()
+                if length_txt:
+                    # Number → inline-length shortcut; otherwise a
+                    # parameter name (the recommended, sweepable form).
+                    try:
+                        boundary_block['length'] = float(length_txt)
+                    except ValueError:
+                        boundary_block['length'] = length_txt
+            initial_block = {'mode': self._w_initial_mode.value}
+
+        spec = {
             'name':            self._w_name.value,
             'populations':     populations,
             'n_populations':   len(populations),    # legacy, derived
@@ -2145,6 +2259,13 @@ class TheoryUI:
             'default_fundamental': {},
             'metadata':            self._collect_metadata(),
         }
+        # Spatial blocks only when spatial (keeps time-only specs clean
+        # and matches the serializer's "emit only when present" rule).
+        if boundary_block is not None:
+            spec['boundary'] = boundary_block
+        if initial_block is not None:
+            spec['initial'] = initial_block
+        return spec
 
     def _collect_metadata(self) -> dict:
         """Build the METADATA dict from the per-key structured widgets
@@ -2440,6 +2561,7 @@ class TheoryUI:
             self._tbl_physical.add_row(values={
                 'name':        display_name,
                 'population':  f.get('population') or '',
+                'spatial_dim': int(f.get('spatial_dim') or 0),
                 # latex column removed from the UI (2026-05-27); the
                 # string is kept on ``_loaded_extras`` and re-injected
                 # by ``_collect()``.
@@ -2586,6 +2708,17 @@ class TheoryUI:
         # parsing ``.stability_analysis(True)``).  Default False so
         # specs without the call show an unchecked box.
         self._w_stability_on.value = bool(spec.get('stability_analysis', False))
+
+        # Spatial boundary / initial conditions (v1).  Absent keys →
+        # reset to the time-only defaults so a freshly-loaded non-
+        # spatial theory shows the unchanged controls.
+        bc = spec.get('boundary') or {}
+        self._w_boundary_mode.value = bc.get('mode', 'infinite')
+        length = bc.get('length')
+        self._w_boundary_length.value = ('' if length is None
+                                         else str(length))
+        ic = spec.get('initial') or {}
+        self._w_initial_mode.value = ic.get('mode', 'stationary')
 
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
