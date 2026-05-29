@@ -384,14 +384,12 @@ def compute_cumulants(
             raise NotImplementedError(
                 f'spatial correlators are implemented for k=2 (two-point) '
                 f'in v1; got k={k}.')
-        if max_ell > 0:
-            import warnings
-            warnings.warn(
-                f'max_ell={max_ell} on a spatial theory: v1 computes the '
-                f'tree-level (Gaussian) spatial correlator only; the '
-                f'{max_ell}-loop (t,x) corrections are not yet implemented '
-                f'(see docs/spatial_implementation_plan.md §5).  Returning '
-                f'tree-level C(x, τ).', UserWarning, stacklevel=2)
+        if max_ell > 1:
+            raise NotImplementedError(
+                f'spatial v1 implements tree (max_ell=0) and the 1-loop '
+                f'tadpole (max_ell=1); got max_ell={max_ell}.  Higher loops '
+                f'need the per-edge ∫dℓ integrator (see '
+                f'docs/spatial_phase5_rearchitecture_plan.md, Stage C.5+).')
         # Initial-condition compatibility (Phase 4): v1 supports the
         # stationary IC, for which two-time correlators are well-posed.
         ic_mode = (model.get('initial') or {}).get('mode', 'stationary')
@@ -403,16 +401,27 @@ def compute_cumulants(
         tau_grid = _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
         spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
         if verbose:
-            print(f'[spatial] tree-level C(x, τ): {len(tau_grid)} τ × '
+            print(f'[spatial] {"1-loop" if max_ell >= 1 else "tree-level"} '
+                  f'C(x, τ): {len(tau_grid)} τ × '
                   f'{len(spatial_grid_arr)} x points...')
-        # Route through the SHARED pipeline (Stage B): the bridge runs the
+        # Route through the SHARED pipeline (Stage B/C): the bridge runs the
         # real diagram pipeline at sample momenta to CERTIFY the per-mode
         # (A,B,N) structure, then does the analytic q→x FT (free_two_point,
-        # exact at τ=0, no ringing).
-        C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
-            ft, model, prop, num_params, external_fields,
-            tau_grid, spatial_grid_arr, verbose=verbose,
-        )
+        # exact at τ=0, no ringing).  max_ell=1 adds the 1-loop tadpole
+        # mass-shift self-energy (Stage C), with M(Γ) read from the pipeline.
+        if max_ell >= 1:
+            from msrjd.integration.spatial.pipeline_bridge import (
+                compute_spatial_correlator_one_loop,
+            )
+            C_tau_x, sp_info = compute_spatial_correlator_one_loop(
+                ft, model, prop, num_params, external_fields,
+                tau_grid, spatial_grid_arr, verbose=verbose,
+            )
+        else:
+            C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
+                ft, model, prop, num_params, external_fields,
+                tau_grid, spatial_grid_arr, verbose=verbose,
+            )
         if verbose:
             print(f'[spatial] pipeline-certified='
                   f'{sp_info.get("pipeline_certified")} '
@@ -434,6 +443,16 @@ def compute_cumulants(
                 val += free_two_point(A, B, N, xq, tau,
                                       bc_mode=sp_info['bc_mode'],
                                       L=sp_info['L'])
+            # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
+            if sp_info.get('Sigma'):
+                A0, B0, N0 = sp_info['modes'][0]
+                A0 = float(_np.real(A0))
+                h = 1e-4 * max(1.0, abs(A0))
+                fp = free_two_point(A0 + h, B0, N0, xq, tau,
+                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                fm = free_two_point(A0 - h, B0, N0, xq, tau,
+                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
             return val
 
         # MF values (for the result dict) — reuse the saddle solve.

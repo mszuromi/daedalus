@@ -143,14 +143,39 @@ def test_pbc_approaches_infinite():
 
 
 # ── API behaviour: warnings + errors ──────────────────────────────
-def test_max_ell_warns_and_returns_tree():
+def test_max_ell_1_computes_tadpole_loop():
+    """max_ell=1 on Allen-Cahn now computes the 1-loop tadpole (Stage C):
+    ⟨φ²⟩ is suppressed below the tree value 0.5 and matches the strict-1-loop
+    0.4625 at λ=0.1.  (Previously this warned and returned tree-level.)"""
     model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        th = _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
-                      np.array([0.0, 1.0]), max_ell=1)
-    assert any('tree-level' in str(x.message) for x in w)
-    assert th['C_tau_x'].shape[1] == 2
+    th0 = _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
+                   np.array([0.0, 1.0]), max_ell=0)
+    th1 = _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
+                   np.array([0.0, 1.0]), max_ell=1)
+    i0 = int(np.argmin(np.abs(th1['tau_grid'])))
+    tree = float(np.asarray(th0['C_tau_x']).real[i0, 0])
+    loop = float(np.asarray(th1['C_tau_x']).real[i0, 0])
+    assert th1['C_tau_x'].shape[1] == 2
+    assert abs(tree - 0.5) < 1e-9
+    assert abs(loop - 0.4625) < 1e-4          # strict 1-loop ⟨φ²⟩
+    assert loop < tree                         # the loop suppresses ⟨φ²⟩
+    si = th1['spatial_info']
+    assert si.get('Sigma') is not None
+    # M(Γ) comes FROM the pipeline (not hardcoded): g = 3λ = 0.3, and it is
+    # q-independent (the signature of a tadpole / pure mass shift).  The ~1e-6
+    # residual is the pipeline's pole-numerics precision.
+    assert abs(si['self_energy_coeff_g'] - 0.3) < 1e-4
+    assert si['g_q_spread'] < 1e-4
+    assert abs(si['phi2_0'] - 0.5) < 1e-9      # loop integral ⟨φ²⟩₀ (closed form)
+
+
+def test_max_ell_above_1_raises():
+    """max_ell > 1 spatial needs the per-edge ∫dℓ integrator (Stage C.5+);
+    it must raise a clear NotImplementedError, not silently truncate."""
+    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    with pytest.raises(NotImplementedError, match='max_ell'):
+        _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
+                 np.array([0.0, 1.0]), max_ell=2)
 
 
 def test_k_not_2_raises():

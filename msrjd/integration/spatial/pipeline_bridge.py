@@ -174,12 +174,13 @@ def _modes_C_q_tau(modes, qval, taus):
 
 
 # ── 2. run the SHARED pipeline at Laplacian = -q² ─────────────────
-def build_pipeline_records(ft, model, prop, external_fields, k=2):
+def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2):
     """Enumerate + classify the (q-independent) diagram topology ONCE.
 
-    Returns ``[(typed_diagram, scalar_prefactor)]`` for ``compute_correction_td``.
-    Uses the exact entry points ``pipeline/compute.py`` uses, so this is the
-    real shared path (lazy-imported to avoid any import cycle).
+    Returns ``{ell: [(typed_diagram, scalar_prefactor), ...]}`` for
+    ``compute_correction_td``.  Uses the exact entry points
+    ``pipeline/compute.py`` uses, so this is the real shared path
+    (lazy-imported to avoid any import cycle).
     """
     from msrjd.core.vertices import extract_vertex_types, extract_source_types
     from msrjd.diagrams.type_assignment import build_field_index_map
@@ -193,16 +194,18 @@ def build_pipeline_records(ft, model, prop, external_fields, k=2):
     resp_idx, phys_idx = build_field_index_map(ring_var_names, n_tilde)
 
     unique_by_ell, _, _ = enumerate_unique_diagrams(
-        ft, model, k=k, max_ell=0, external_fields=external_fields,
+        ft, model, k=k, max_ell=max_ell, external_fields=external_fields,
         G_ft=prop['G_ft'], resp_idx=resp_idx, phys_idx=phys_idx,
         vtypes=vtypes, stypes=stypes, use_cache=False, verbose=False)
-    records = []
+    by_ell = {}
     for ell in unique_by_ell:
+        recs = []
         for td in unique_by_ell[ell]:
             info = classify_coefficient_factors(
                 td, [], {'temporal_type': 'white', 'amplitude_params': []})
-            records.append((td, SR(info['scalar_prefactor'])))
-    return records
+            recs.append((td, SR(info['scalar_prefactor'])))
+        by_ell[ell] = recs
+    return by_ell
 
 
 def pipeline_C_q_tau(prop, records, external_fields, base_np_sr, qval, taus,
@@ -298,7 +301,7 @@ def compute_spatial_correlator_via_pipeline(
     certify_max_rel = None
     certified = False
     if certify:
-        records = build_pipeline_records(ft, model, prop, ext_int)
+        records = build_pipeline_records(ft, model, prop, ext_int).get(0, [])
         certify_max_rel = certify_modes(
             modes, prop, records, ext_int, base_np_sr,
             q_samples, tau_samples)
@@ -326,3 +329,118 @@ def compute_spatial_correlator_via_pipeline(
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
             'pipeline_certified': certified, 'certify_max_rel': certify_max_rel}
     return C, info
+
+
+# ── 4. 1-loop tadpole (constant mass-shift self-energy) ───────────
+def compute_spatial_correlator_one_loop(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        verbose=False, q_samples=(0.0, 0.8, 1.5), g_qindep_rtol=1e-4):
+    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` for a TADPOLE
+    (momentum-independent mass-shift) self-energy, routed through the SHARED
+    pipeline.
+
+    Mechanism (validated, ``docs/spatial_spikes/stageC_tadpole_spike.py``):
+    the pipeline's ``ell=1`` correction at external momentum ``q`` is
+    ``ell1(q,τ) = Σ_pipe(q)·∂C₀(q,τ)/∂A`` with ``Σ_pipe(q) = g·C₀(q,0)`` — the
+    pipeline uses the loop edge at momentum ``q`` (un-integrated) and supplies
+    the combinatorial coefficient ``g = M(Γ)·coupling`` (NOT hardcoded; for
+    Allen-Cahn ``g = 3λ``).  ``g`` is q-INDEPENDENT iff the self-energy is a
+    pure mass shift (a tadpole).  The CORRECT self-energy replaces the loop
+    value by the momentum integral ``⟨φ²⟩₀ = ∫dℓ/2π C₀(ℓ,0) =
+    free_two_point(A,B,N,0,0)`` (the §4c′ residue closed form), giving
+    ``Σ = g·⟨φ²⟩₀`` and the strict-1-loop ``δC(x,τ) = Σ·∂C₀(x,τ)/∂A`` (the
+    external q-FT is automatic because ``C₀(x,τ)`` is already the q-FT'd tree).
+
+    A momentum-DEPENDENT self-energy (bubble) makes ``g`` q-dependent → raises
+    NotImplementedError pointing at Stage C.5 (the per-edge ``∫dℓ`` integrator).
+    Returns ``(C1_tau_x, info)``; ``info`` adds ``Sigma``, ``self_energy_coeff_g``,
+    ``phi2_0``, ``A_eff_hartree``.
+    """
+    C0, tree_info = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        verbose=verbose, certify=True)
+    modes = tree_info['modes']
+    if len(modes) != 1:
+        raise NotImplementedError(
+            'spatial 1-loop v1 supports a single-mode (single-field) tree only.')
+    A0, B0, N0 = modes[0]
+    A0 = float(np.real(A0))
+    bc_mode, L = tree_info['bc_mode'], tree_info['L']
+
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    ring_var_names = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
+    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
+
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items()
+                  if str(kk) != 'Laplacian'}
+
+    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1)
+    ell1 = by_ell.get(1, [])
+    if not ell1:
+        raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
+
+    # Extract the self-energy coefficient g from the pipeline (q-independent
+    # for a tadpole): ell1(q,0) = Σ_pipe·∂C₀/∂A, Σ_pipe = g·C₀_mom(q).
+    def _C0_mom(q):
+        return N0 / (A0 + B0 * q * q)
+
+    def _dC0dA_mom(q):
+        return -N0 / (A0 + B0 * q * q) ** 2
+
+    gs = []
+    for q in q_samples:
+        e1 = pipeline_C_q_tau(prop, ell1, ext_int, base_np_sr, q,
+                              [0.0])[0].real
+        gs.append((e1 / _dC0dA_mom(q)) / _C0_mom(q))
+    gs = np.array(gs)
+    gmean = float(np.mean(gs))
+    spread = float(np.max(np.abs(gs - gmean)) / (abs(gmean) + 1e-30))
+    if spread > g_qindep_rtol:
+        raise NotImplementedError(
+            'spatial 1-loop v1 supports only the TADPOLE (momentum-independent '
+            'mass-shift) self-energy, but the pipeline-extracted coefficient is '
+            f'q-DEPENDENT (g={gs}, rel spread {spread:.2e} > {g_qindep_rtol:.0e}). '
+            'A momentum-dependent self-energy (bubble) needs the per-edge ∫dℓ '
+            'loop integrator (Stage C.5) — see '
+            'docs/spatial_phase5_rearchitecture_plan.md.')
+
+    # Loop integral ⟨φ²⟩₀ = ∫dℓ/2π C₀(ℓ,0) (residue closed form) and Σ.
+    phi2_0 = free_two_point(A0, B0, N0, 0.0, 0.0,
+                            bc_mode=bc_mode, L=L).real
+    Sigma = gmean * phi2_0
+
+    # Strict-1-loop δC(x,τ) = Σ·∂C₀(x,τ)/∂A (finite difference in the mass A).
+    h = 1e-4 * max(1.0, abs(A0))
+    C1 = np.array(C0, dtype=np.complex128)
+    for it, tau in enumerate(tau_grid):
+        for ix, x in enumerate(spatial_grid):
+            fp = free_two_point(A0 + h, B0, N0, float(x), float(tau),
+                                bc_mode=bc_mode, L=L)
+            fm = free_two_point(A0 - h, B0, N0, float(x), float(tau),
+                                bc_mode=bc_mode, L=L)
+            C1[it, ix] += Sigma * (fp - fm) / (2.0 * h)
+
+    # Self-consistent Hartree mass (resummed) for reference.
+    A_eff = None
+    try:
+        import scipy.optimize as opt
+
+        def _f(Ae):
+            return Ae - (A0 + gmean * free_two_point(
+                Ae, B0, N0, 0.0, 0.0, bc_mode=bc_mode, L=L).real)
+        A_eff = float(opt.brentq(_f, 0.05 * abs(A0) + 1e-6,
+                                 20.0 * abs(A0) + 10.0))
+    except Exception:
+        A_eff = None
+
+    info = dict(tree_info)
+    info.update({'one_loop': True, 'self_energy_coeff_g': gmean,
+                 'g_q_spread': spread, 'phi2_0': phi2_0, 'Sigma': Sigma,
+                 'A_tree': A0, 'A_eff_hartree': A_eff})
+    if verbose:
+        print(f'      1-loop tadpole: g={gmean:.6f} (q-spread {spread:.1e}) '
+              f'⟨φ²⟩₀={phi2_0:.6f} Σ={Sigma:.6f} '
+              f'A_eff(Hartree)={A_eff}')
+    return C1, info
