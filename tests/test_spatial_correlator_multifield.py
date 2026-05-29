@@ -208,6 +208,32 @@ def test_mixed_dim0_field_spatial_request_raises_clean():
             parallel=False, verbose=False, use_cache=False)
 
 
+def test_higher_derivative_k4_raises_clean():
+    """A higher-derivative (Laplacian² → k⁴) spatial theory is not Tier-1
+    (the heat kernel needs dispersion λ = -(A + B·k²)).  It must raise a
+    clear NotImplementedError whose recorded reason names the offending
+    k-power — NOT a misleading 'coupled multi-field' message, since a
+    single-field k⁴ theory has no field coupling at all."""
+    model = (
+        TheoryBuilder('k4 dispersion', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .parameter('E', default=0.5, domain='positive')
+        .parameter('T', default=1.0, domain='positive')
+        .set_action_text(
+            'phit*((Dt + mu - D*Laplacian + E*Laplacian^2)*phi) - T*phit^2')
+        .equation(lhs='(Dt + mu - D*Laplacian + E*Laplacian^2)*phi', rhs='0')
+        .boundary('infinite').initial('stationary').build())
+    with pytest.raises(NotImplementedError, match='higher-derivative'):
+        compute_cumulants(
+            model=model, k=2, max_ell=0,
+            fundamental={'mu': 1.0, 'D': 1.0, 'E': 0.5, 'T': 1.0},
+            external_fields=[('phi', 1), ('phi', 2)],
+            tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
+            parallel=False, verbose=False, use_cache=False)
+
+
 @pytest.mark.parametrize('lam', [0.0, 0.3, 1.0])
 def test_allen_cahn_tree_is_lambda_independent_free_form(lam):
     """At tree level (max_ell=0) the λφ³ vertex contributes nothing, so

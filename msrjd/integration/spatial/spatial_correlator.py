@@ -194,10 +194,12 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     if prop.get('G_tx_sym') is None:
         why = prop.get('spatial_tier1_error', 'no closed-form spatial block')
         raise NotImplementedError(
-            'spatial v1 supports only the diagonal (decoupled) heat-kernel '
-            'propagator (Tier 1).  This theory needs the Tier-2 path '
-            '(off-diagonal / coupled multi-field spatial propagator), which '
-            f'is a v2 feature — see docs/spatial_phase5_rearchitecture_plan.md. '
+            'spatial v1 supports only the Tier-1 diagonal heat-kernel '
+            'propagator (dispersion λ = -(A + B·k²), one decoupled field per '
+            'block).  This theory is not Tier-1 — the usual causes are '
+            'off-diagonal / coupled multi-field structure OR a higher-'
+            'derivative operator (k⁴+, e.g. Laplacian²).  Both are v2 '
+            'features — see docs/spatial_phase5_rearchitecture_plan.md. '
             f'(reason: {why})')
 
     A_expr, B_expr = prop['G_tx_sym'][(fi, fi)]
