@@ -12,9 +12,83 @@ These are the building blocks the tab editors compose:
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
 from typing import Any, Callable, Optional
 
 import ipywidgets as W
+
+
+# ── Clipboard paste (works around VS Code's notebook renderer, which
+#    swallows Ctrl/Cmd-V before it reaches an ipywidgets text input).
+#    Button *clicks* still work in VS Code, and when the kernel runs on
+#    the same machine as the editor (the normal case) Python can read
+#    the real system clipboard — so a 📋 button reads it and fills the
+#    box directly, bypassing the broken keyboard path. ────────────────
+def read_system_clipboard() -> Optional[str]:
+    """Return the LOCAL system clipboard text, or ``None`` if no backend
+    is available.  Tries ``pyperclip`` first, then OS-native CLIs
+    (``pbpaste`` on macOS; ``wl-paste`` / ``xclip`` / ``xsel`` on Linux;
+    PowerShell ``Get-Clipboard`` on Windows).
+
+    Caveat: reads the clipboard of the machine the *kernel* runs on.
+    For a local VS Code / Jupyter session that's your machine (correct);
+    for a remote kernel it would be the server's clipboard.
+    """
+    try:                       # pyperclip is cross-platform if installed
+        import pyperclip
+        return pyperclip.paste()
+    except Exception:
+        pass
+
+    if sys.platform == 'darwin':
+        cmds = [['pbpaste']]
+    elif sys.platform.startswith('linux'):
+        cmds = [['wl-paste', '-n'],
+                ['xclip', '-selection', 'clipboard', '-o'],
+                ['xsel', '-b']]
+    elif sys.platform.startswith('win'):
+        cmds = [['powershell', '-noprofile', '-command', 'Get-Clipboard']]
+    else:
+        cmds = []
+
+    for cmd in cmds:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=5)
+            if out.returncode == 0:
+                return out.stdout.rstrip('\r\n')
+        except Exception:
+            continue
+    return None
+
+
+def paste_button(text_w: W.Widget, *, append: bool = False,
+                 tooltip: str = 'Paste from system clipboard',
+                 width: str = '34px') -> W.Button:
+    """A small 📋 button that fills ``text_w.value`` from the system
+    clipboard on click.  ``append=True`` adds to the existing value
+    instead of replacing it.  No-op (with a brief ✗) if the clipboard
+    can't be read (e.g. remote kernel with no backend)."""
+    btn = W.Button(description='📋', tooltip=tooltip,
+                   layout=W.Layout(width=width, padding='0px'))
+
+    def _on_click(_b):
+        text = read_system_clipboard()
+        if text is None:
+            btn.description = '✗'
+            btn.tooltip = ('Could not read the clipboard.  Install '
+                           '`pyperclip` (pip install pyperclip) or run a '
+                           'local kernel.')
+            return
+        text_w.value = (text_w.value + text) if append else text
+        btn.description = '📋'   # clear any prior ✗
+
+    btn.on_click(_on_click)
+    return btn
 
 
 # ── Scalar / vector / matrix value editors ────────────────────────────
@@ -109,7 +183,7 @@ def expression_input(label: str, value: str = '',
     text_w.observe(_update, names='value')
     _update()
 
-    box = W.HBox([label_w, text_w, indicator])
+    box = W.HBox([label_w, text_w, paste_button(text_w), indicator])
     box.get_value = lambda: text_w.value
     box._text_w = text_w
     return box
@@ -119,11 +193,15 @@ def textarea_input(label: str, value: str = '',
                    placeholder: str = '',
                    rows: int = 8,
                    width: str = '600px') -> W.VBox:
-    """A multi-line text area (used by the action editor)."""
+    """A multi-line text area (used by the action editor).  The label
+    row carries a 📋 paste button (VS Code's notebook renderer blocks
+    Ctrl/Cmd-V into text inputs; the button reads the clipboard
+    Python-side instead)."""
     label_w = W.HTML(f'<b>{label}</b>')
     text_w  = W.Textarea(value=value, placeholder=placeholder,
                          layout=W.Layout(width=width, height=f'{rows*18}px'))
-    box = W.VBox([label_w, text_w])
+    header = W.HBox([label_w, paste_button(text_w)])
+    box = W.VBox([header, text_w])
     box.get_value = lambda: text_w.value
     box._text_w = text_w
     return box
@@ -234,8 +312,15 @@ class DynamicTable:
         for col in self._columns:
             v = (values or {}).get(col['name'])
             w = self._make_widget(col, v)
+            # The VALUE widget is always ``w`` (so get_rows reads it
+            # unchanged).  Columns flagged ``'paste': True`` get a 📋
+            # button beside the input — a click-driven clipboard fill
+            # that works around VS Code swallowing Ctrl/Cmd-V.
             widgets[col['name']] = w
-            children.append(w)
+            if col.get('paste') and col.get('kind', 'text') == 'text':
+                children.append(W.HBox([w, paste_button(w, width='30px')]))
+            else:
+                children.append(w)
         # Remove button
         rm_btn = W.Button(description='✕', button_style='warning',
                           layout=W.Layout(width='40px'))

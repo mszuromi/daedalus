@@ -31,6 +31,7 @@ from pipeline.ui.widgets import (
     DynamicTable,
     expression_input,
     matrix_input,
+    paste_button,
     textarea_input,
     vector_input,
 )
@@ -630,7 +631,7 @@ class TheoryUI:
                  'default': '', 'width': '90px'},
                 {'name': 'default',  'kind': 'text',
                  'placeholder': '1.0  /  [.., ..]  /  [[..]]',
-                 'width': '300px'},
+                 'width': '300px', 'paste': True},
                 {'name': 'description', 'kind': 'text',
                  'placeholder': '(optional)', 'width': '180px'},
             ],
@@ -702,7 +703,7 @@ class TheoryUI:
                  'width': '140px'},
                 {'name': 'expression',  'kind': 'text',
                  'placeholder': 'u^2  /  a*u + b  /  ...',
-                 'width': '260px'},
+                 'width': '260px', 'paste': True},
                 # latex column dropped (2026-05-27).
                 {'name': 'description', 'kind': 'text',
                  'placeholder': '(optional)', 'width': '180px'},
@@ -772,10 +773,10 @@ class TheoryUI:
                  'default': _NONE,     'width': '100px'},
                 {'name': 'time_expr',  'kind': 'text',
                  'placeholder': '(1/tauk)*exp(-t/tauk)*heaviside(t)',
-                 'width': '280px'},
+                 'width': '280px', 'paste': True},
                 {'name': 'freq_image', 'kind': 'text',
                  'placeholder': '1/(1+I*omega*tauk)',
-                 'width': '220px'},
+                 'width': '220px', 'paste': True},
                 # latex_name column dropped (2026-05-27).
             ],
             # No starter row — kernels are an optional feature (only
@@ -841,10 +842,10 @@ class TheoryUI:
                  'default': 2,             'width': '60px'},
                 {'name': 'coefficient',    'kind': 'text',
                  'placeholder': '2*D   or   D/tauc',
-                 'width': '300px'},
+                 'width': '300px', 'paste': True},
                 {'name': 'kernel',         'kind': 'text',
                  'placeholder': 'dirac_delta(tau)   or   exp(-abs(tau)/tauc)',
-                 'width': '220px'},
+                 'width': '220px', 'paste': True},
             ],
             initial=[],
         )
@@ -981,10 +982,10 @@ class TheoryUI:
             columns=[
                 {'name': 'lhs',        'kind': 'text',
                  'placeholder': '(Dt + mu) * phi',
-                 'width': '240px'},
+                 'width': '240px', 'paste': True},
                 {'name': 'rhs',        'kind': 'text',
                  'placeholder': '-eps * phi^3   (or 0 for a linear EOM)',
-                 'width': '360px'},
+                 'width': '360px', 'paste': True},
                 {'name': 'population', 'kind': 'select',
                  'options_provider': _pop_opts_with_none,
                  'default': _NONE, 'width': '110px'},
@@ -1097,7 +1098,7 @@ class TheoryUI:
                 "<code>(&minus;1, 1)</code> when the auto-range is too "
                 "wide)."
                 '</p>'),
-            self._w_seed_box,
+            W.HBox([self._w_seed_box, paste_button(self._w_seed_box)]),
         ])
 
         # Tab 9: Defaults (run metadata only — default-fundamental
