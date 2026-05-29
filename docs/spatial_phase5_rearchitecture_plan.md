@@ -128,21 +128,39 @@ momenta (one per loop) + the external momentum `q`.
   `Δt_e` linear-form construction (`dt_sym` at `:2847`,
   `subset_constraint_data` at `:3407-3422`) — same idea, on momenta.
 - Tree diagrams: `L=0`, every `k_e` fixed by `q` alone.
+- **Implementation note:** the routing must respect the MSR *directed*
+  edge structure — response (`G_R`) and correlation (`C`) edges carry
+  momentum the same way, but edge orientation sets the sign in each
+  conservation equation. Read orientation off `D.edges()` /
+  `propagator_indices` (the same source the time form `Δt_e = t_v − t_u`
+  uses at `:2847`).
+- **Dimension:** v1 is d=1, so each momentum is a scalar and the layer
+  integrals are 1D. For d≥2 they become d-dimensional (with an angular
+  reduction for isotropic kernels); the routing algebra is identical —
+  only the integral dimension grows.
 
 ### 4b. k-dependent edge modes
 `_build_edge_mode_sums` (`:150-200`) currently builds `modes` from
 scalar `pole_vals`/`C_mats` (`λ_α = i·p_α`, `:172`). Make the modes a
 function of the edge momentum: `λ_α(k_e)`, `C_α(k_e)`.
 
-- `compute_poles_and_residues` (`_propagator.py:834`) already accepts
-  `num_params` and substitutes into `K_ft` before root-finding
-  (`_propagator.py:120`). After `Laplacian → -k²`, feeding a numerical
-  `k` value through `num_params` yields the per-k poles/residues — the
-  Agent-B "Option A" (no fracfield surgery). So "evaluate the edge
-  modes at momentum k" = "call the existing residue machinery with k
-  in num_params."
-- The `EdgeModeSum` interface (`:116-147`) is unchanged per momentum
-  point; only the values differ.
+- **Diagonal heat-kernel case (all of v1): closed-form modes, `k` stays
+  symbolic.** After `Laplacian → -k²` the inverse-propagator entry is
+  `A + B·k² + iω`, with `(A, B)` the mass / diffusion *already* extracted
+  in Phase 2 (`ac_mass`, `ac_diffusion`). The single retarded mode is
+  written directly — `C=1, λ(k) = -(A + B·k²)` — with **no root-finding**,
+  and `k` is carried *symbolically* into the analytic momentum integral
+  (§4c′, residue / Gaussian path). This is the path that avoids ringing.
+- **General case only (multi-field / off-diagonal, OR the numerical
+  fallback): evaluate per momentum point.** `compute_poles_and_residues`
+  (`_propagator.py:834`) accepts `num_params` and substitutes into
+  `K_ft` before root-finding (`_propagator.py:120`); a numerical `k`
+  through `num_params` gives the poles/residues at that `k` (Agent-B
+  "Option A", no fracfield surgery). Used only when no closed-form
+  `λ(k)` exists or the momentum integral is being done numerically —
+  NOT the default.
+- The `EdgeModeSum` interface (`:116-147`) is unchanged either way; only
+  whether `λ` is a symbolic function of `k` or a per-point numeric value.
 
 ### 4c. Momentum-integration layer (NEW — wraps the evaluators)
 For each diagram, the existing time-polytope evaluator returns the
@@ -247,6 +265,12 @@ loop, doing it first maximizes analytic reach — a useful knob at
 - Interaction vertices: local in space ⇒ momentum conservation at the
   vertex (already in 4a). The prefactor machinery
   (`compute.py:525`, applied `final_integral.py:2869`) is unchanged.
+- A loop that closes two *physical* legs (the Allen-Cahn tadpole) is a
+  **correlation-block** edge `⟨φφ⟩`, NOT a response `G_R`. Its
+  equal-point value is the finite `⟨φ²⟩₀ = ∫dk/2π·C(k) = T/(2√(μD))` —
+  not the singular `G_R(0,0)`. The typing already assigns the correct
+  block via `propagator_indices`, so this is automatic; recorded
+  because it is *why* the d=1 loop is UV-finite.
 
 ### 4e. The gate
 `pipeline/compute.py:375` short-circuits spatial to the bespoke path.
@@ -271,13 +295,32 @@ Delete the `compute.py:375` short-circuit and
 the pipeline. Keep `G_tx` closed forms as a test oracle in
 `tests/`. All spatial tests still pass.
 
-**Stage C — 1-loop.**
+**Stage C — 1-loop (tadpole).**
 With momentum routing + loop integration live, the Allen-Cahn λφ³
-tadpole falls out as just another diagram.
+tadpole falls out as just another diagram. The combinatorial factor
+(the `3` in `Σ=3λ⟨φ²⟩`) is the topological `M(Γ)` —
+**dimension-independent**, so it is the *same* factor the framework
+already validates for the time-only OU+εx³ tadpole; momentum adds no
+new combinatorial risk.
 *Checkpoint:* the 1-loop `C(0,0)` matches the strict-1-loop mass-shift
 prediction (`≈0.4625` at λ=0.1: `Σ=3λ⟨φ²⟩₀=0.15`, `δC=Σ·∂C₀/∂μ`) and
 agrees with the simulator (the −0.071 Hartree shift the sim showed at
 λ=0.3). Build the Allen-Cahn sim-comparison notebook.
+*Caveat:* the tadpole has **trivial** momentum routing — the self-loop
+carries an unconstrained `ℓ`, the line carries `q`, and no edge is a
+non-trivial combination of the two. So it validates the loop integral
++ self-energy + `M(Γ)`, but NOT the §4a routing solve.
+
+**Stage C.5 — bubble (the routing stress test).**
+Add a theory with a *quadratic* nonlinearity (a `φ̃φ²` vertex — e.g. a
+simple quadratic-Langevin / reaction RD model). Its 1-loop 2-point
+self-energy is a **bubble**: one propagator carries `ℓ`, the other
+`q−ℓ` — the first diagram whose routing is non-trivial. This is the
+actual exercise of §4a (the conservation solve must produce the `q−ℓ`
+edge momentum).
+*Checkpoint:* the bubble self-energy `Σ(q)` matches its closed form
+(the convolution `∫dℓ/2π · C(ℓ)·G_R(q−ℓ)`, doable by residues), and the
+corrected `C(x,τ)` matches a direct simulation of that theory.
 
 **Stage D — generalize.** k≠2 cumulants and multi-field coupled
 spatial follow from the same construction (no longer special-cased).
@@ -296,7 +339,13 @@ spatial follow from the same construction (no longer special-cased).
 
 1. **Momentum routing implementation.** The integrator has no momentum
    bookkeeping today; 4a is genuinely new code (a conservation solve
-   over the diagram graph). Medium effort, well-defined.
+   over the diagram graph). Medium effort, well-defined. **NB:** the v1
+   canonical diagram (Allen-Cahn tadpole) has *trivial* routing and so
+   does NOT exercise this code — Stage C.5 (a bubble from a `φ̃φ²`
+   theory) is the actual routing test, and must land alongside any
+   "routing works" claim. The combinatorial factor `M(Γ)` is
+   topological (dimension-independent), so it carries over unchanged
+   from the validated time-only loops — not a new risk.
 2. **Loop-momentum integral convergence/UV.** d=1 Allen-Cahn tadpole
    is UV-finite; d≥2 is divergent and needs regularization — out of
    scope, but the architecture should not assume finiteness silently
