@@ -284,6 +284,12 @@ def _build_residual(model: dict, params_np: dict,
             **index_sets,
             **_MATH_NS,
             'Dt':           0,
+            # Spatially-uniform mean field ⇒ ∇²(const) = 0.  Spatial
+            # theories write a ``Laplacian`` operator in the drift; it
+            # must vanish on the homogeneous saddle exactly as ``Dt``
+            # does.  Without this the numerical residual eval hits an
+            # unbound ``Laplacian`` and the saddle solve goes wrong.
+            'Laplacian':    0,
             'sum':          sum,
             '__builtins__': {},
         }
@@ -760,6 +766,12 @@ def linear_stability(
                 **idx_sets,
                 **sage_math_ns,
                 'Dt':           Dt_sym,
+                # Homogeneous-mode (k=0) linear stability of the
+                # spatially-uniform saddle ⇒ Laplacian → 0.  (Stability
+                # to k≠0 spatial perturbations is the pattern-formation
+                # question, handled by the propagator's k-dependence in
+                # Phase 2, not by MF saddle selection.)
+                'Laplacian':    0,
                 'i':            i,
                 'sum':          sum,
                 '__builtins__': {},

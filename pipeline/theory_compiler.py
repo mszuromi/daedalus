@@ -478,9 +478,14 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
             else:
                 out[kname] = val
 
-    # Operators
+    # Operators.  Dt (time derivative) and Laplacian (spatial ∇²) are
+    # inert SR symbols used multiplicatively in the action text, e.g.
+    # ``(Dt + mu - D*Laplacian)*phi``.  Expose whichever the namespace
+    # registered (Laplacian only appears for spatial theories).
     if hasattr(ns, 'Dt'):
         out['Dt'] = ns.Dt
+    if hasattr(ns, 'Laplacian'):
+        out['Laplacian'] = ns.Laplacian
 
     return out
 
@@ -733,17 +738,26 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
         )
         s = _safe_eval(action_text, nsdict, 'action')
 
-        # Kill Dt * <saddle>[i] * (anything) terms — saddle quantities
-        # are time-constant by definition.  Necessary because the user
+        # Kill <op> * <saddle>[i] * (anything) terms — saddle quantities
+        # are constant in BOTH time and space, so any kinetic operator
+        # applied to a saddle vanishes.  Necessary because the user
         # writes the action in physical fields (n[i] = nstar[i] + dn[i],
         # v[i] = vstar[i] + dv[i]); operators like (tau*Dt + 1) * v[i]
         # expand to tau*Dt*vstar[i] + tau*Dt*dv[i] + vstar[i] + dv[i],
-        # and the framework needs ``tau*Dt*vstar[i] = 0`` enforced.
+        # and the framework needs ``tau*Dt*vstar[i] = 0`` enforced.  The
+        # SAME holds for the spatial Laplacian on a (spatially-uniform)
+        # saddle: ``D*Laplacian*phistar = 0``.  Both operators are
+        # inert SR symbols, so the kill rule is identical per operator.
         # Done here (in the action lambda, BEFORE field_theory.py's
         # mf_bg substitution of vstar) so the kill rules match the raw
         # vstar1, vstar2, ... symbols rather than their saddle-equation
         # expansions.
+        kill_ops = []
         if hasattr(ns, 'Dt'):
+            kill_ops.append(ns.Dt)
+        if hasattr(ns, 'Laplacian'):
+            kill_ops.append(ns.Laplacian)
+        if kill_ops:
             saddle_internals = (
                 (naming_convention or {}).get('mf_parameters') or [])
             if saddle_internals:
@@ -756,8 +770,9 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
                     if not isinstance(arr, (list, tuple)):
                         continue
                     for elem in arr:
-                        kill[ns.Dt * elem]     = SR(0)
-                        kill[ns.Dt * elem * W] = SR(0)
+                        for op in kill_ops:
+                            kill[op * elem]     = SR(0)
+                            kill[op * elem * W] = SR(0)
                 if kill:
                     # Sage's subs with Mul-pattern matching is more
                     # reliable on the EXPANDED form (each term laid out
@@ -1195,23 +1210,35 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                     rhs = SR(rhs).subs(closure_subs)
                 out[saddle_array[i]] = rhs
 
-        # Dt * <saddle>[i] → 0  (saddle quantities are time-constant
-        # by definition).  Necessary because the user writes the action
-        # in physical fields ``v[i] = vstar[i] + dv[i]``; multiplying
-        # by a kinetic operator ``(tau*Dt + 1) * v[i]`` produces a
-        # spurious ``tau*Dt*vstar[i]`` term that the framework must
-        # zero out.  We use a wild-card subs so factors like
+        # <op> * <saddle>[i] → 0  (saddle quantities are constant in
+        # both time and space).  Necessary because the user writes the
+        # action in physical fields ``v[i] = vstar[i] + dv[i]``;
+        # multiplying by a kinetic operator ``(tau*Dt + 1) * v[i]``
+        # produces a spurious ``tau*Dt*vstar[i]`` term that the
+        # framework must zero out.  The spatial Laplacian is treated
+        # identically: ``D*Laplacian*phistar = 0`` for the (spatially-
+        # uniform) saddle.  We use a wild-card subs so factors like
         # ``tau * Dt * vstar1`` (Mul of multiple terms) are captured
-        # alongside the bare two-factor case.
+        # alongside the bare two-factor case.  MUST mirror the same
+        # rule in ``make_action_lambda`` — both lambdas walk the
+        # expression tree independently, so a missed operator here
+        # silently leaves a non-zero saddle term and the MF solver
+        # fails to converge.
+        kill_ops = []
         if hasattr(ns, 'Dt'):
+            kill_ops.append(ns.Dt)
+        if hasattr(ns, 'Laplacian'):
+            kill_ops.append(ns.Laplacian)
+        if kill_ops:
             W = SR.wild()
             for saddle_name in mf_eqs.keys():
                 if not hasattr(ns, saddle_name):
                     continue
                 arr = getattr(ns, saddle_name)
                 for i in range(len(arr)):
-                    out[ns.Dt * arr[i]]     = SR(0)
-                    out[ns.Dt * arr[i] * W] = SR(0)
+                    for op in kill_ops:
+                        out[op * arr[i]]     = SR(0)
+                        out[op * arr[i] * W] = SR(0)
         return out
 
     return _bg

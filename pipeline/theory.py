@@ -76,6 +76,14 @@ class FieldSpec:
     description: str = ''
     natural_name: Optional[str] = None   # e.g. 'dn' has natural_name='n'
     population: Optional[str] = None     # heterogeneous-pop annotation
+    spatial_dim: int = 0                 # 0 = time-only (default); d≥1 =
+                                         # continuous spatial field φ(x, t)
+                                         # in d dimensions.  Per-field by
+                                         # design (see docs/spatial_design_
+                                         # decisions_v1.md D1); a builder-
+                                         # level ``.spatial_dim(d)`` bulk-
+                                         # sets all fields.  v1 requires all
+                                         # spatial fields to agree on d.
 
 
 @dataclass
@@ -190,6 +198,21 @@ class TheoryBuilder:
         # ``declare_cgf_term``.
         self._markovianize_default: bool = True
 
+        # ── Spatial-extension state (v1) ──────────────────────────
+        # Default spatial dimension applied to physical fields
+        # declared AFTER a ``.spatial_dim(d)`` call.  0 keeps the
+        # framework in its time-only behaviour.  Per-field explicit
+        # ``physical_field(spatial_dim=...)`` overrides this default.
+        self._default_spatial_dim: int = 0
+        # Boundary-condition declaration (``.boundary(mode, **params)``).
+        # None until declared; emitted as ``model['boundary']``.  v1
+        # supports {'infinite', 'periodic'}.
+        self._boundary: Optional[dict] = None
+        # Initial-condition declaration (``.initial(mode, **params)``).
+        # None until declared; emitted as ``model['initial']``.  v1
+        # supports {'stationary'}.
+        self._initial: Optional[dict] = None
+
     # ── Population declarations ───────────────────────────────────
     def population(self, name: str, *, size: int = 1,
                    description: str = ''):
@@ -233,8 +256,26 @@ class TheoryBuilder:
                        natural_name: str = None,
                        auto_response: bool = True,
                        auto_saddle: bool = True,
-                       population: str = None):
+                       population: str = None,
+                       spatial_dim: Optional[int] = None):
         """Declare a physical field.
+
+        Spatial fields
+        --------------
+        ``spatial_dim`` (int) declares a continuous spatial field
+        ``φ(x, t)`` in ``spatial_dim`` dimensions.  ``0`` (or the
+        builder default, set via ``.spatial_dim(d)``) keeps the field
+        time-only.  v1 supports ``spatial_dim ∈ {0, 1}`` and requires
+        every spatial field in a theory to share the same non-zero
+        dimension (mixed-dim is a v2 feature).  When any field is
+        spatial, ``build()`` registers a ``Laplacian`` operator symbol
+        (usable multiplicatively in the action text, exactly like
+        ``Dt``) and emits a ``model['spatial']`` block.  See
+        ``docs/spatial_design_decisions_v1.md``.
+
+        If ``spatial_dim`` is left as ``None``, the field inherits the
+        builder-level default (``self._default_spatial_dim``, normally
+        0; set non-zero by a prior ``.spatial_dim(d)`` call).
 
         Two calling styles, distinguished by whether ``natural_name``
         is supplied:
@@ -267,12 +308,18 @@ class TheoryBuilder:
             # Legacy — name is the internal fluctuation name.
             internal_name = name
 
+        # Per-field spatial dimension: explicit kwarg wins; otherwise
+        # inherit the builder-level default set by ``.spatial_dim(d)``.
+        sdim = (self._default_spatial_dim if spatial_dim is None
+                else int(spatial_dim))
+
         self.physical_fields.append(FieldSpec(
             name=internal_name, indexed=indexed,
             latex=latex or rf'\delta {natural_name}',
             description=description,
             natural_name=natural_name,
             population=population,
+            spatial_dim=sdim,
         ))
 
         # Auto-generate the conjugate response field as ``<natural>t``
@@ -693,6 +740,87 @@ class TheoryBuilder:
         ``pipeline._mean_field_dae.solve_mean_field_dae``.
         """
         self._stability_analysis = bool(enabled)
+        return self
+
+    # ── Spatial-extension declarations (v1) ────────────────────────
+    def spatial_dim(self, d: int):
+        """Bulk-set the spatial dimension of every physical field.
+
+        Convenience for the common single-dimension case (D1 in
+        ``docs/spatial_design_decisions_v1.md``).  Sets ``spatial_dim
+        = d`` on every physical field already declared AND establishes
+        ``d`` as the default for fields declared afterwards.  Per-field
+        ``physical_field(spatial_dim=...)`` still overrides this.
+
+        Underneath, spatial dimension is per-field (on ``FieldSpec``);
+        this method is purely an ergonomic surface.  Call it before or
+        after ``physical_field`` declarations — fields declared before
+        get retro-set, fields declared after inherit the default.
+
+        ``d = 0`` reverts to time-only.  v1 supports ``d ∈ {0, 1}``.
+        """
+        d = int(d)
+        self._default_spatial_dim = d
+        for f in self.physical_fields:
+            f.spatial_dim = d
+        return self
+
+    def boundary(self, mode: str, **params):
+        """Declare the spatial boundary condition.
+
+        Parameters
+        ----------
+        mode : {'infinite', 'periodic'}
+            ``'infinite'`` — unbounded domain (the default if
+            ``.boundary`` is never called on a spatial theory).
+            ``'periodic'`` — periodic cell; requires a ``length``.
+        length : str or float, optional (periodic only)
+            Spatial period ``L``.  A **string** names a declared
+            ``.parameter`` (sweepable; the recommended form, e.g.
+            ``length='L'`` with ``.parameter('L', default=20.0)``).
+            A **number** is an inline shortcut: ``build()`` auto-
+            creates a hidden positive parameter to back it.  See D2 in
+            ``docs/spatial_design_decisions_v1.md``.
+
+        Stored as ``model['boundary']`` and consumed by the propagator
+        builder (Phase 2/3).  Only meaningful once at least one field
+        is spatial; ``build()`` validates this.
+        """
+        mode = str(mode)
+        if mode not in ('infinite', 'periodic'):
+            raise ValueError(
+                f"boundary(mode={mode!r}): v1 supports only 'infinite' "
+                f"and 'periodic'.  Dirichlet/Neumann/Robin are v2 "
+                f"(see docs/spatial_implementation_plan.md §scope).")
+        if mode == 'periodic' and 'length' not in params:
+            raise ValueError(
+                "boundary('periodic', ...): a 'length' is required "
+                "(name a parameter, e.g. length='L', or pass a number).")
+        self._boundary = {'mode': mode, **params}
+        return self
+
+    def initial(self, mode: str = 'stationary', **params):
+        """Declare the initial condition.
+
+        Parameters
+        ----------
+        mode : {'stationary'}
+            ``'stationary'`` — the system sits at its mean-field
+            stationary state; no extra action term needed.  The only
+            mode supported in v1 (transient ICs are v1.5 — see
+            Lefèvre-Biroli §2.5's ``S_I`` term).
+
+        Stored as ``model['initial']``.  ``compute_cumulants`` (Phase 4)
+        validates that requested observables are compatible with the
+        declared IC.
+        """
+        mode = str(mode)
+        if mode != 'stationary':
+            raise ValueError(
+                f"initial(mode={mode!r}): v1 supports only 'stationary'.  "
+                f"Transient ICs are v1.5 (see "
+                f"docs/spatial_implementation_plan.md §scope).")
+        self._initial = {'mode': mode, **params}
         return self
 
     def declare_cgf_term(self, name: str,
@@ -1472,6 +1600,67 @@ class TheoryBuilder:
             classification = _classify(self._mf_eqs_text, iter_sentinel)
             iter_saddle_names = list(classification['closure'].keys())
 
+        # ── Spatial-extension resolution (v1) ──────────────────────
+        # Compute the theory's spatial dimension, validate the v1
+        # single-dim constraint, resolve the inline-number boundary
+        # ``length`` shortcut, and build the operators list (adding a
+        # ``Laplacian`` symbol when spatial).  See
+        # ``docs/spatial_design_decisions_v1.md``.
+        spatial_dims = {int(getattr(f, 'spatial_dim', 0) or 0)
+                        for f in self.physical_fields}
+        nonzero_dims = {d for d in spatial_dims if d > 0}
+        if len(nonzero_dims) > 1:
+            raise ValueError(
+                f'TheoryBuilder("{self.name}").build(): v1 does not '
+                f'support mixed spatial dimensions; physical fields '
+                f'declare dims {sorted(nonzero_dims)}.  All spatial '
+                f'fields must share one dimension (mixed-dim is a v2 '
+                f'feature — see docs/spatial_implementation_plan.md '
+                f'§"Out of v1 scope").')
+        theory_spatial_dim = next(iter(nonzero_dims), 0)
+        is_spatial = theory_spatial_dim > 0
+
+        # Operators list: default [Dt]; append a Laplacian symbol when
+        # the theory is spatial so ``field_theory._build_namespace``
+        # registers ``ns.Laplacian`` (used multiplicatively in the
+        # action exactly like ``Dt``).
+        operators_list = list(self._operators) or [
+            {'name': 'Dt', 'sage_name': 'Dt',
+             'latex_name': r'\partial_t', 'description': 'd/dt'},
+        ]
+        if is_spatial and not any(o.get('name') == 'Laplacian'
+                                  for o in operators_list):
+            operators_list = operators_list + [
+                {'name': 'Laplacian', 'sage_name': 'Laplacian',
+                 'latex_name': r'\nabla^2',
+                 'description': 'spatial Laplacian ∇²'},
+            ]
+
+        # Boundary / initial validation + inline-length resolution.
+        boundary_block = None
+        if self._boundary is not None:
+            if not is_spatial:
+                raise ValueError(
+                    f'TheoryBuilder("{self.name}").build(): .boundary() '
+                    f'was declared but no physical field is spatial '
+                    f'(set spatial_dim≥1 on a field or call '
+                    f'.spatial_dim(d)).')
+            boundary_block = dict(self._boundary)
+            length = boundary_block.get('length')
+            if length is not None and not isinstance(length, str):
+                # Inline-number shortcut (D2): back it with a hidden
+                # positive parameter so downstream code always sees a
+                # named, sweepable parameter.
+                hidden = '_pbc_length_L0'
+                if not any(p.name == hidden for p in self.parameters):
+                    self.parameter(hidden, default=float(length),
+                                   domain='positive',
+                                   description='auto-created PBC length '
+                                               '(inline-number shortcut)')
+                boundary_block['length'] = hidden
+
+        initial_block = dict(self._initial) if self._initial is not None else None
+
         model = {
             'name':            self.name,
             'populations':     list(self.populations),    # heterogeneous metadata
@@ -1488,10 +1677,7 @@ class TheoryBuilder:
             # instead of the legacy iteration solver in
             # ``pipeline._solve_mf``.
             'equations':       [dict(eq) for eq in self._equations],
-            'operators':       list(self._operators) or [
-                {'name': 'Dt', 'sage_name': 'Dt',
-                 'latex_name': r'\partial_t', 'description': 'd/dt'},
-            ],
+            'operators':       operators_list,
             'functions':       list(self._functions),
             'mf_substitutions': self._mf_substitutions,
             'phi_concrete':    self._phi_concrete,
@@ -1526,6 +1712,29 @@ class TheoryBuilder:
             model['specializations'] = self._specializations
         if self._correlated_noises:
             model['correlated_noises'] = self._correlated_noises
+
+        # ── Spatial-extension blocks (v1) ──────────────────────────
+        # Emitted only when the theory is spatial, so time-only models
+        # see no change to their model dict.  Consumed by the
+        # propagator builder (Phase 2/3) and compute_cumulants (Phase 4).
+        if is_spatial:
+            model['spatial'] = {
+                'dim': theory_spatial_dim,
+                'fields_with_spatial': [
+                    f.name for f in self.physical_fields
+                    if int(getattr(f, 'spatial_dim', 0) or 0) > 0
+                ],
+            }
+            # Boundary defaults to 'infinite' when the theory is spatial
+            # but no .boundary() was declared.
+            model['boundary'] = boundary_block or {'mode': 'infinite'}
+            # Initial defaults to 'stationary'.
+            model['initial'] = initial_block or {'mode': 'stationary'}
+        else:
+            # Defensive: a .boundary()/.initial() on a non-spatial
+            # theory already raised in the resolution block above, so
+            # there is nothing to emit here.
+            pass
         return model
 
     # ── Helpers ────────────────────────────────────────────────────
@@ -1538,6 +1747,8 @@ class TheoryBuilder:
             d['natural_name'] = f.natural_name
         if f.population:
             d['population'] = f.population
+        if getattr(f, 'spatial_dim', 0):
+            d['spatial_dim'] = int(f.spatial_dim)
         return d
 
     @staticmethod

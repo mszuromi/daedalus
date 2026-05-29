@@ -137,6 +137,12 @@ def _emit_field(method: str, f: dict, *, with_natural: bool) -> str:
         ('latex',       f.get('latex')),
         ('description', f.get('description')),
     ]
+    # Spatial dimension (per-field, v1).  Emitted only when non-zero
+    # so time-only fields round-trip unchanged.  Round-tripping
+    # per-field preserves mixed dim=0/dim=d theories without needing
+    # to also emit the ``.spatial_dim(d)`` convenience call.
+    if f.get('spatial_dim'):
+        pairs.append(('spatial_dim', int(f['spatial_dim'])))
     kwargs = _kw_chain(*pairs)
     head = f'.{method}({_py_repr(f["name"])}'
     return head + (', ' + kwargs if kwargs else '') + ')'
@@ -433,6 +439,24 @@ def render_theory_file(spec: dict) -> str:
     if spec.get('markovianize_default') is False:
         out.append('        .markovianize(False)')
 
+    # Spatial boundary / initial conditions (v1).  ``spatial_dim`` is
+    # carried per-field (round-trips via _emit_field above), so only
+    # the BC/IC declarations need their own emit lines.  Emitted only
+    # when present — time-only theories carry neither key and stay
+    # textually quiet.
+    bc = spec.get('boundary')
+    if bc and bc.get('mode'):
+        bc_pairs = [(k, v) for k, v in bc.items() if k != 'mode']
+        bc_kwargs = _kw_chain(*bc_pairs)
+        line = f'        .boundary({_py_repr(bc["mode"])}'
+        out.append(line + (', ' + bc_kwargs if bc_kwargs else '') + ')')
+    ic = spec.get('initial')
+    if ic and ic.get('mode'):
+        ic_pairs = [(k, v) for k, v in ic.items() if k != 'mode']
+        ic_kwargs = _kw_chain(*ic_pairs)
+        line = f'        .initial({_py_repr(ic["mode"])}'
+        out.append(line + (', ' + ic_kwargs if ic_kwargs else '') + ')')
+
     out.append('        .build()')
     out.append('    )')
     out.append('')
@@ -610,9 +634,15 @@ def load_spec_from_file(path: str) -> dict:
         elif method == 'physical_field':
             entry = {'name': args[0] if args else ''}
             for k in ('indexed', 'population', 'natural_name',
-                      'latex', 'description'):
+                      'latex', 'description', 'spatial_dim'):
                 if k in kw:
                     entry[k] = kw[k]
+            # Inherit a builder-level default set by an EARLIER
+            # ``.spatial_dim(d)`` call (the convenience method may
+            # precede field declarations in hand-written files).
+            # Explicit ``spatial_dim=`` kwargs above still win.
+            if 'spatial_dim' not in entry and spec.get('_default_spatial_dim'):
+                entry['spatial_dim'] = spec['_default_spatial_dim']
             spec['physical_fields'].append(entry)
 
         elif method == 'response_field':
@@ -720,6 +750,35 @@ def load_spec_from_file(path: str) -> dict:
                 spec['markovianize_default'] = bool(kw['enabled'])
             else:
                 spec['markovianize_default'] = True
+
+        elif method == 'spatial_dim':
+            # ``.spatial_dim(d)`` bulk-set convenience.  Apply to every
+            # physical field already parsed AND remember as the default
+            # for fields parsed afterwards.  (Per-field ``spatial_dim=``
+            # kwargs, captured in the physical_field branch above, still
+            # override.)  Mirrors TheoryBuilder.spatial_dim semantics.
+            if args:
+                d = int(args[0])
+                spec['_default_spatial_dim'] = d
+                for entry in spec['physical_fields']:
+                    entry.setdefault('spatial_dim', d)
+
+        elif method == 'boundary':
+            # ``.boundary(mode, **params)`` — mode positional, params
+            # (e.g. length) as kwargs.
+            entry = {'mode': args[0] if args else kw.get('mode', '')}
+            for k, v in kw.items():
+                if k != 'mode':
+                    entry[k] = v
+            spec['boundary'] = entry
+
+        elif method == 'initial':
+            # ``.initial(mode, **params)`` — mode positional or kwarg.
+            entry = {'mode': args[0] if args else kw.get('mode', 'stationary')}
+            for k, v in kw.items():
+                if k != 'mode':
+                    entry[k] = v
+            spec['initial'] = entry
 
         elif method == 'build':
             continue
