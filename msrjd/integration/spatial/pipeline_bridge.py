@@ -113,10 +113,15 @@ def diagonal_modes_from_propagator(prop, ft, num_params, field_index):
     Bsub = SR(B_expr).subs(nps_sr)
     B = float(Bsub.real() if hasattr(Bsub, 'real') else Bsub)
     if B <= 0.0:
+        if B < 0.0:
+            raise SpatialPropagatorError(
+                f'field index {field_index} has NEGATIVE diffusion B={B}: the '
+                f'spatial operator is anti-diffusive / ill-posed.  Check the '
+                f'sign of the Laplacian term (should be "- D*Laplacian", D>0).')
         raise SpatialPropagatorError(
-            f'field index {field_index} has non-positive diffusion B={B}: '
-            f'it is a time-only (spatial_dim=0) field with no heat-kernel '
-            f'mode.  A spatial correlator is only defined for dim >= 1.')
+            f'field index {field_index} has zero diffusion (B=0): it is a '
+            f'time-only (spatial_dim=0) field with no heat-kernel mode.  A '
+            f'spatial correlator is only defined for dim >= 1.')
     noise = extract_noise_coefficients(ft, nps_str)
     N = noise.get(field_index)
     if N is None:

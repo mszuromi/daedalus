@@ -207,18 +207,27 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     A = complex(SR(A_expr).subs(sub))
     Bsub = SR(B_expr).subs(sub)
     B = float(Bsub.real() if hasattr(Bsub, 'real') else Bsub)
-    # A spatial field must carry a Laplacian kinetic term, giving a strictly
-    # positive diffusion B.  B == 0 means this leg sits on a time-only
-    # (spatial_dim=0) field — its diagonal block has no heat kernel, and the
-    # erf closed form divides by √(4πB).  Catch it with a CLEAR message rather
-    # than letting ``free_two_point`` raise a bare ZeroDivisionError.
+    # A spatial field must carry a Laplacian kinetic term with a strictly
+    # POSITIVE diffusion B.  Two distinct failure modes (the erf closed form
+    # would otherwise divide by √(4πB) or take √ of a negative):
+    #   B == 0 → no Laplacian at all: a time-only (spatial_dim=0) field;
+    #   B <  0 → wrong-sign Laplacian: anti-diffusive / short-wavelength
+    #            unstable (ill-posed heat kernel).
     if B <= 0.0:
+        if B < 0.0:
+            raise SpatialPropagatorError(
+                f'field {leg_names[0]!r} (index {fi}) has NEGATIVE diffusion '
+                f'B={B}: the spatial operator is anti-diffusive, so the heat '
+                f'kernel diverges (the theory is short-wavelength unstable / '
+                f'ill-posed).  Check the sign of the Laplacian term — it '
+                f'should enter as "- D*Laplacian" with D>0 (dispersion +D·k²) '
+                f'— and that D itself is positive.')
         raise SpatialPropagatorError(
-            f'field {leg_names[0]!r} (index {fi}) has non-positive diffusion '
-            f'B={B}: it carries no spatial (Laplacian) kinetic term, i.e. it '
-            f'is a time-only (spatial_dim=0) field.  A spatial correlator '
-            f'C(x, τ) is only defined for spatial (dim >= 1) fields — request '
-            f"this field's correlator without a spatial_grid (time-only path).")
+            f'field {leg_names[0]!r} (index {fi}) has zero diffusion (B=0): '
+            f'it carries no spatial (Laplacian) kinetic term, i.e. it is a '
+            f'time-only (spatial_dim=0) field.  A spatial correlator C(x, τ) '
+            f'is only defined for spatial (dim >= 1) fields — request this '
+            f"field's correlator without a spatial_grid (time-only path).")
     noise = extract_noise_coefficients(ft, nps)
     Dn = noise.get(fi)
     if Dn is None:
