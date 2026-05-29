@@ -76,6 +76,38 @@ def _field_index(prop, leg_name):
     return 0
 
 
+def _legs_to_phys_idx(external_fields, phys_idx):
+    """Map external-leg specs to VALID phys_idx keys for diagram enumeration.
+
+    ``compute_cumulants`` normalizes external fields to internal fluctuation
+    names but KEEPS the per-leg label, e.g. a 2-point auto-correlation arrives
+    as ``[('dphi',1),('dphi',2)]``.  A single-population field has only the
+    phys_idx key ``('dphi',1)``, so the ``('dphi',2)`` leg is invalid and
+    ``enumerate_unique_diagrams`` would type 0 diagrams (the Stage A unblock:
+    both auto-correlation legs must sit on the same valid key).  Map each leg's
+    field NAME to its actual phys_idx ``(name, population)`` key.
+    """
+    keys = list(phys_idx.keys())
+    out = []
+    for leg in external_fields:
+        if isinstance(leg, (tuple, list)):
+            if tuple(leg) in phys_idx:
+                out.append(tuple(leg))
+                continue
+            name = str(leg[0])
+        else:
+            name = str(leg)
+        base = name.rstrip('0123456789')
+        match = None
+        for key in keys:
+            kn = str(key[0])
+            if kn == name or kn.rstrip('0123456789') == base:
+                match = key
+                break
+        out.append(match if match is not None else (keys[0] if keys else None))
+    return out
+
+
 def _bc_from_prop(prop, num_params_sr):
     """Resolve (bc_mode, L) the way the bespoke correlator does."""
     bc_mode = prop.get('bc_mode', 'infinite')
@@ -245,8 +277,15 @@ def compute_spatial_correlator_via_pipeline(
     base_np_sr = {kk: vv for kk, vv in nps_sr.items()
                   if str(kk) != 'Laplacian'}
 
+    # Translate external legs to VALID phys_idx keys for the pipeline
+    # enumeration (both auto-correlation legs land on the single field key).
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    ring_var_names = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
+    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
+
     leg_names = [f[0] if isinstance(f, (tuple, list)) else f
-                 for f in external_fields]
+                 for f in ext_int]
     fi = _field_index(prop, leg_names[0])
     modes = diagonal_modes_from_propagator(prop, ft, num_params, fi)
     bc_mode, L = _bc_from_prop(prop, nps_sr)
@@ -259,9 +298,9 @@ def compute_spatial_correlator_via_pipeline(
     certify_max_rel = None
     certified = False
     if certify:
-        records = build_pipeline_records(ft, model, prop, external_fields)
+        records = build_pipeline_records(ft, model, prop, ext_int)
         certify_max_rel = certify_modes(
-            modes, prop, records, external_fields, base_np_sr,
+            modes, prop, records, ext_int, base_np_sr,
             q_samples, tau_samples)
         certified = certify_max_rel <= certify_tol
         if verbose:

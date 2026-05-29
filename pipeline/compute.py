@@ -374,8 +374,11 @@ def compute_cumulants(
     # work (docs/spatial_implementation_plan.md §5).
     if model.get('spatial') and spatial_grid is not None:
         import numpy as _np
+        from msrjd.integration.spatial.pipeline_bridge import (
+            compute_spatial_correlator_via_pipeline,
+        )
         from msrjd.integration.spatial.spatial_correlator import (
-            compute_spatial_correlator_tree,
+            free_two_point,
         )
         if k != 2:
             raise NotImplementedError(
@@ -402,10 +405,18 @@ def compute_cumulants(
         if verbose:
             print(f'[spatial] tree-level C(x, τ): {len(tau_grid)} τ × '
                   f'{len(spatial_grid_arr)} x points...')
-        C_tau_x, sp_info = compute_spatial_correlator_tree(
+        # Route through the SHARED pipeline (Stage B): the bridge runs the
+        # real diagram pipeline at sample momenta to CERTIFY the per-mode
+        # (A,B,N) structure, then does the analytic q→x FT (free_two_point,
+        # exact at τ=0, no ringing).
+        C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
             ft, model, prop, num_params, external_fields,
             tau_grid, spatial_grid_arr, verbose=verbose,
         )
+        if verbose:
+            print(f'[spatial] pipeline-certified='
+                  f'{sp_info.get("pipeline_certified")} '
+                  f'(max rel {sp_info.get("certify_max_rel"):.1e})')
         # x=0 slice as the conventional C_tau (matches the time-only
         # API's C_tau shape).
         x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
@@ -418,13 +429,12 @@ def compute_cumulants(
                 xq = 0.0
             else:
                 tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
-            from msrjd.integration.spatial.spatial_correlator import (
-                free_two_point,
-            )
-            return free_two_point(
-                sp_info['A_mass'], sp_info['B_diffusion'],
-                sp_info['D_noise'], xq, tau,
-                bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+            val = 0j
+            for (A, B, N) in sp_info['modes']:
+                val += free_two_point(A, B, N, xq, tau,
+                                      bc_mode=sp_info['bc_mode'],
+                                      L=sp_info['L'])
+            return val
 
         # MF values (for the result dict) — reuse the saddle solve.
         mf_values_sp = {}
