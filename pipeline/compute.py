@@ -412,11 +412,26 @@ def compute_cumulants(
         if max_ell >= 1:
             from msrjd.integration.spatial.pipeline_bridge import (
                 compute_spatial_correlator_one_loop,
+                compute_spatial_correlator_bubble,
             )
-            C_tau_x, sp_info = compute_spatial_correlator_one_loop(
-                ft, model, prop, num_params, external_fields,
-                tau_grid, spatial_grid_arr, verbose=verbose,
-            )
+            try:
+                # Stage C: the constant-mass-shift TADPOLE self-energy
+                # (q-independent g).  Raises NotImplementedError when the
+                # pipeline-extracted coefficient is q-DEPENDENT (a bubble).
+                C_tau_x, sp_info = compute_spatial_correlator_one_loop(
+                    ft, model, prop, num_params, external_fields,
+                    tau_grid, spatial_grid_arr, verbose=verbose,
+                )
+            except NotImplementedError:
+                # Stage C.5: a momentum-DEPENDENT bubble self-energy → route
+                # through the close-pair-free momentum-first ∫dℓ integrator.
+                if verbose:
+                    print('[spatial] self-energy is momentum-dependent (bubble)'
+                          ' → Stage C.5 momentum-first loop integrator')
+                C_tau_x, sp_info = compute_spatial_correlator_bubble(
+                    ft, model, prop, num_params, external_fields,
+                    tau_grid, spatial_grid_arr, verbose=verbose,
+                )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
                 ft, model, prop, num_params, external_fields,
