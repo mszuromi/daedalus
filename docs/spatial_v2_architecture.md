@@ -237,13 +237,24 @@ backend.
      optional `formfactor=F(ℓ)` (the product of the vertices' per-leg momentum
      form factors); `F=1` reproduces the bubble, `F=−ℓ²`/`−ℓ(q−ℓ)` are applied
      and validated vs direct ∫dℓ.
-   - **4c (remaining — the plumbing):** connect the two. For a derivative-vertex
-     diagram, map each vertex generator's `(base, chain)` → `form_factor(chain,
-     leg-momentum)` via `route_momenta`, assemble `F(ℓ)` for the loop, and feed
-     `loop_dyson`/`spatial_reduce`.  Requires the vertex generators to survive to
-     the diagram stage (not raise) — i.e. a v2 expand path that registers them so
-     `enumerate_unique_diagrams` sees the topology, then the integrator consumes
-     the form factors.  This is the substantial connect-the-ends step.
-   - **4d:** validate end-to-end vs simulation (Model B `∇²φ³` / KPZ `(∂ₓφ)²`),
-     as the bubble was (R²≈0.999).
+   - ✅ **4c-1** integrator side COMPLETE: the form factor is threaded through
+     the whole bubble path — `sigma_R_time/sigma_K_time` (primitive), `_dyson_terms`
+     / `bubble_delta_S` (equal-time), the vectorized `_sigma_grids` /
+     `bubble_delta_C_q_tau` (time-displaced), and `compute_spatial_correlator_bubble`
+     (which takes `formfactor(q) → (ℓ↦F_q(ℓ))`).  `F=None` is bit-identical to the
+     validated plain bubble; a non-trivial `F` is applied and stays finite.  So
+     **given `F(ℓ)`, the integrator computes the derivative-vertex bubble.**
+   - **4c-2 (remaining — extraction):** produce `F(ℓ)` for a real theory.  The
+     bubble topology equals the plain φ̃φ² bubble, so: unfold vertex generators →
+     bare action (for `enumerate_unique_diagrams`), then map each vertex
+     generator's `(base, chain)` → `form_factor(chain, routed leg-momentum)` via
+     `route_momenta` (Laplacian vertices need only `edge_k2`; gradient/`Dx` need
+     signed momenta).  *Worked example:* Cahn-Hilliard `φ̃∇²(φ²)` → each vertex's
+     ∇² acts on the φ² composite (momentum = the φ̃ leg = the self-energy
+     momentum q), so `F = (−q²)² = q⁴` (ℓ-independent; Σ(q→0)→0, the conservation
+     law) — **plausible but to be confirmed by 4d, not asserted.**
+   - **4d:** validate end-to-end vs a CONSERVED-dynamics simulation (Model B
+     `∂_tφ=∇²(…)`; the current sim is non-conserved) — the F(ℓ) and the
+     `c_R,c_K` × form-factor interplay are research-grade and must be sim-checked
+     (as the plain bubble was, R²≈0.999) before being trusted.
 5. Output `q→x` FT; Model B / KPZ as the new capability v1 could not do.
