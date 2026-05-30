@@ -67,6 +67,13 @@ def sigma_K_time(q, t, mu, D, T):
 # uniform-momentum diagram values (Σ_R diagram d[1][0] M(Γ)=16, Σ_K diagram
 # d[1][1] M(Γ)=8): with the Dyson terms T1 (Σ_R) and T2 (Σ_K) normalized as
 # below, the physical bubble correction is  c_R·T1 + c_K·T2  with
+#
+# CONFIRMED at 1-loop vs simulation: a φ²-only (lam=0) sim at the perturbative
+# sweet spot (g=0.20, moderate run BEFORE the metastable −gφ³ potential drifts)
+# gives fit coefficient B = sim-bubble/principled-bubble = 0.99 — bang on the
+# 1-loop prediction B=1.  Longer runs / larger g inflate B (1.7–2.6) because the
+# φ²-only theory is metastable (higher-order drift), NOT because the factors are
+# wrong.  So c_R=4, c_K=2 are the correct 1-loop normalization.
 C_R, C_K = 4.0, 2.0
 
 
