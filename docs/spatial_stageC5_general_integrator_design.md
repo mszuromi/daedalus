@@ -134,6 +134,51 @@ Practical path for C.5b cont.:
    node or add an analytic degenerate-limit branch — and/or pick up the open
    `m≥3` precision fix, which this work now has a second motivation for.
 
+## C.5c — the decisive finding: time-first is blocked, go momentum-first
+
+Built the cached bubble loop integrator (`stageC5c_bubble_loop_integrator_spike.py`).
+Two results:
+
+1. **PLUMBING validated (oracle-free).** Forcing the override to put EVERY edge
+   at the same momentum `q²` reproduces the standard global-propagator path
+   **exactly** (`|Δ| = 0` at all τ). The per-edge override mechanism + the
+   `k²`-cache are correct bit-for-bit. The seam works.
+
+2. **Time-first hits the close-pair slow path GENERICALLY.** Profiling the
+   bubble `∫dℓ` at `q=0.8`: `ℓ=0` (edge masses `{1, 1.64, 1}` — exactly
+   degenerate, small) is fast (0.04 s); `ℓ=1` (masses `{2, 1.04, 1.64, 1}` —
+   the pair `1.04, 1` **close but not equal**) hangs. This is exactly the open
+   `m≥3` chain-simplex close-pair precision bug
+   (`docs/m_ge3_precision_bug_audit.md`). The catch: spatial loops hit it
+   **generically**, because the loop momentum makes edge masses sweep past one
+   another across the `∫dℓ` — close pairs are the rule, not a special point.
+
+**Conclusion.** The time-first path (reuse Phase J + numerical `∫dℓ`) is the
+RIGHT mechanism (plumbing proven) but is gated by an unsolved precision bug it
+trips on continuously. The robust general integrator is **momentum-first**:
+
+> Do the loop integral `∫∏dℓ_i` ANALYTICALLY first. With the heat-kernel
+> Schwinger rep each edge is `e^{-(A+B k_e²) w_e}`, so the momentum integral is
+> a pure Gaussian → closed form at any loop order (the Symanzik `U,F`
+> polynomials / a determinant). It never forms the time-polytope with close
+> momentum-dependent poles, so the `m≥3` bug never fires. What remains is an
+> erf-family integral over the Schwinger/vertex times — the SAME closed-form
+> family the tree-level `G_tx`/erf machinery already evaluates.
+
+So the path forward is the parametric (momentum-first) evaluator, NOT more work
+on the time-first quadrature. The time-first seam stays useful for the
+exactly-degenerate / decoupled cases (the tadpole) and as a cross-check.
+
+### Next concrete build (momentum-first 1-loop)
+1. For a 1-loop diagram, parametrize: response edge → Schwinger `w_e = Δt_e`;
+   correlation edge → extra `∫_{|Δt_e|}^∞ ds`. Each edge becomes
+   `e^{-(A+B k_e²) w_e}`.
+2. Gaussian `∫dℓ` (linear `k_e(q,ℓ)`): closed form `U(w)^{-1/2}
+   exp(−q²·F(w)/U(w))` (1-D; `U,F` from the routing's incidence).
+3. Remaining `∫` over vertex times + correlation-edge `s` → erf family (reuse
+   `heat_kernel.erf_time_integral`).
+4. Validate on the bubble vs the C.5a `Σ(q,τ)` and an `(ω,k)` reference.
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
