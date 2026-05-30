@@ -729,7 +729,8 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     vertex form-factor lowering (Phase 3).  Returns the rewritten action.
     """
     from pipeline.spatial_operator_ir import (
-        apply_linearity, kill_means, to_derived_generators)
+        apply_linearity, kill_means, to_derived_generators,
+        classify_generators)
     flucts = list(getattr(ns, '_all_field_sr_vars', []))
     s = apply_linearity(s, flucts)
     # Homogeneous/stationary saddle (v2.0): annihilate operators acting purely
@@ -742,16 +743,27 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     s, genmap = to_derived_generators(s, flucts)
     ns._operator_ir_genmap = genmap
 
-    # Phase 3b-i: lower derived generators back to the v1 bare-symbol form
-    # (Lap → ns.Laplacian, Dt → ns.Dt, composed for chains, so ∇⁴ → Laplacian²),
-    # which reduces the action to the validated v1 pipeline.  For a theory whose
-    # nonlinear vertices carry NO derivatives (e.g. reaction-diffusion's gφ²),
-    # this is EXACT — the v2-authored action becomes identical to the v1 action.
-    # Derivative-VERTEX form factors (Cahn–Hilliard ∇²φ³, KPZ (∂ₓφ)²) are the
-    # next step; those generators will instead be routed to the momentum-first
-    # integrator rather than lowered here.
+    # Classify: BILINEAR generators (field-degree ≤2 terms) fold into the
+    # propagator kernel; derivative-VERTEX generators (degree ≥3) carry per-leg
+    # momentum form factors into the integrator.
+    bilinear, vertex = classify_generators(s, genmap, flucts)
+    ns._operator_ir_bilinear = bilinear
+    ns._operator_ir_vertex = vertex
+
+    # Phase 3b-i: lower the BILINEAR generators back to the v1 bare-symbol form
+    # (Lap → ns.Laplacian, Dt → ns.Dt; composed for chains, so ∇⁴ → Laplacian²),
+    # reducing the action to the validated v1 pipeline.  For a theory whose
+    # nonlinear vertices carry NO derivatives (reaction-diffusion's gφ²), every
+    # generator is bilinear → the v2 action becomes IDENTICAL to v1.
+    if vertex:
+        ffs = {str(g): genmap[g][1] for g in vertex}
+        raise NotImplementedError(
+            f"operator IR: derivative VERTICES {ffs} need the momentum-first "
+            f"form-factor integrator (spatial v2 Phase 4); only bilinear "
+            f"derivative terms lower to the v1 pipeline so far.")
     v1_subs = {}
-    for g, (base, chain) in genmap.items():
+    for g in bilinear:
+        base, chain = genmap[g]
         factor = SR(1)
         for entry in chain:
             op = entry[0]
@@ -761,9 +773,8 @@ def _lower_operator_ir_action(s, ns, naming_convention):
                 factor *= ns.Dt
             else:
                 raise NotImplementedError(
-                    f"operator IR: the {op!r} operator (in a derived vertex) "
-                    f"has no v1 lowering; the momentum-first form-factor "
-                    f"integrator for derivative vertices is the next step.")
+                    f"operator IR: bilinear {op!r} has no v1 lowering yet "
+                    f"(only Lap/Dt); a k-explicit kernel builder is needed.")
         v1_subs[g] = factor * SR(base)
     return SR(s).subs(v1_subs)
 

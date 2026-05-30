@@ -377,6 +377,38 @@ def fourier_lower(expr, genmap, k, omega=None):
     return SR(expr).subs(subs)
 
 
+# ── 4c. classify derived generators: bilinear vs derivative-vertex ─
+def classify_generators(expr, genmap, fluct_syms):
+    """Split the derived generators of ``expr`` into **bilinear** (appear only
+    in field-degree ≤ 2 terms → fold into the propagator kernel ``K(ω,k)``) and
+    **derivative-vertex** (appear in some field-degree ≥ 3 term → carry per-leg
+    momentum form factors into the integrator).
+
+    A generator's contribution to a term's degree is the field-degree of its
+    *base* (the number of fluctuation fields it stands for): ``∇²δφ`` counts 1,
+    ``∇²(δφ²)`` counts 2, ``∂ₓδφ`` counts 1 (so KPZ's ``φ̃·(∂ₓδφ)²`` is degree
+    1+1+1=3 → vertex; reaction-diffusion's ``φ̃·∇²δφ`` is degree 2 → bilinear).
+
+    Returns ``(bilinear, vertex)`` — two lists of generator symbols.
+    """
+    fluct = [SR(s) for s in fluct_syms]
+    gen_deg = {}
+    for g, (base, _chain) in genmap.items():
+        gen_deg[g] = sum(int(SR(base).degree(s)) for s in fluct)
+    e = SR(expr).expand()
+    terms = e.operands() if _is_add(e) else [e]
+    vertex = set()
+    for t in terms:
+        deg = sum(int(t.degree(s)) for s in fluct)
+        deg += sum(gen_deg[g] * int(t.degree(g)) for g in genmap)
+        if deg >= 3:
+            for g in genmap:
+                if int(t.degree(g)) > 0:
+                    vertex.add(g)
+    bilinear = [g for g in genmap if g not in vertex]
+    return bilinear, [g for g in genmap if g in vertex]
+
+
 # ── 5. Fourier form factor of an operator chain ───────────────────
 def form_factor(chain, k, omega=None):
     """The Fourier image multiplier of an operator ``chain`` acting on a leg of

@@ -27,6 +27,7 @@ from sage.all import SR, I, var, function
 from pipeline.spatial_operator_ir import (
     Lap, Dt, Dx, apply_linearity, expand_about_saddle, kill_means,
     to_derived_generators, form_factor, prepare_action, fourier_lower,
+    classify_generators,
 )
 
 phi, psi, phibar, dphi, dpsi, mu, D, lam, k0, k1, om, x = var(
@@ -129,6 +130,38 @@ def test_form_factors():
 def test_form_factor_multi_d_laplacian():
     # ∇² in 2-D → −(k0²+k1²)
     assert _zero(form_factor((('Lap',),), [k0, k1]) + (k0 ** 2 + k1 ** 2))
+
+
+# ── generator classification (bilinear → kernel vs vertex → form factor) ──
+def test_classify_reaction_diffusion_all_bilinear():
+    phit, g, T = var('phit g T')
+    S = phit * (Dt(phi) + mu * phi - D * Lap(phi) + g * phi ** 2) - T * phit ** 2
+    Sg, gm = prepare_action(S, fields=[phi, phit])
+    bil, vtx = classify_generators(Sg, gm, [phi, phit])
+    assert len(vtx) == 0 and len(bil) == 2     # Dt(phi), Lap(phi): both bilinear
+
+
+def test_classify_cahn_hilliard_conserved_vertex():
+    phit, T, lam = var('phit T lam')
+    # φ̃(Dtφ − D∇²φ + λ∇²φ³) − Tφ̃²  — ∇²φ³ is a degree-≥3 derivative vertex,
+    # the linear ∇²φ is bilinear.
+    S = phit * (Dt(phi) - D * Lap(phi) + lam * Lap(phi ** 3)) - T * phit ** 2
+    Sg, gm = prepare_action(S, fields=[phi, phit])
+    bil, vtx = classify_generators(Sg, gm, [phi, phit])
+    bil_bases = sorted(str(gm[g][0]) for g in bil)
+    vtx_bases = sorted(str(gm[g][0]) for g in vtx)
+    assert bil_bases == ['phi', 'phi']         # Dt(phi), Lap(phi)
+    assert vtx_bases == ['phi^3']              # ∇²(φ³)
+
+
+def test_classify_kpz_gradient_vertex():
+    phit, lam, T = var('phit lam T')
+    # φ̃(Dtφ − D∇²φ + λ(∂ₓφ)²) − Tφ̃²  — (∂ₓφ)² is a degree-3 vertex.
+    S = phit * (Dt(phi) - D * Lap(phi) + lam * Dx(phi, 0) ** 2) - T * phit ** 2
+    Sg, gm = prepare_action(S, fields=[phi, phit])
+    bil, vtx = classify_generators(Sg, gm, [phi, phit])
+    assert sorted(gm[g][1] for g in vtx) == [(('Dx', 0),)]   # the ∂ₓ generator
+    assert len(bil) == 2                                      # Dt, Lap bilinear
 
 
 # ── end-to-end transform on the Phase-2 target theory ─────────────
