@@ -269,6 +269,36 @@ What IS solid: the loop integral (self-energy) vs direct ``∫dℓ`` to 1e-12 (t
 + frequency); the Dyson assembly freq==time; the bubble SHAPE vs sim R²=0.999.
 The open item is the overall constant only.
 
+## C.5 — normalization needs the proper per-diagram evaluator (update)
+
+Tried to settle the ~1.3× gap with a NON-degenerate test (extract the
+φ²-tadpole factor from the framework too, overlay the full
+``bubble + tadpole`` prediction on the sim with NO fit).  Two findings:
+
+* The φ²-tadpole factor extraction via the global-``Laplacian`` trick **fails**:
+  ``c_tad·g²`` comes out q-DEPENDENT (−1.47 at q=0.6, −0.82 at q=1.2) instead of
+  constant.  Cause: d[1][2] has a ``k=0`` connecting line, but the global
+  substitution ``Laplacian=−q²`` wrongly sets THAT edge to ``m_q`` too.  The
+  tadpole-trick / uniform-momentum shortcut only works when every edge's
+  momentum is genuinely ``q`` — it breaks for diagrams with a routed ``k=0``
+  (or any non-``±q``) edge.
+* Non-fit overlay (g=0.2, 6 seeds): sim/predicted ≈ **1.35, constant across q**
+  — a pure normalization offset, not a shape error (shape already R²=0.999).
+
+⇒ Both the ``c_R,c_K`` (uniform) and ``c_tad`` (tadpole-trick) shortcuts have
+holes (loop measure; ``k=0`` lines).  The clean fix is the **proper per-diagram
+momentum-first evaluator**: for each diagram, ∫dℓ analytically (Gaussian /
+Symanzik over the ℓ-edges, using the routed ``k_e`` INCLUDING ``k=0``), then the
+vertex-time integral with retarded Heavisides (all edges are ``G_R`` → no
+Schwinger needed), × the pipeline prefactor.  That evaluates every diagram with
+the correct momenta and measure, pins the absolute constant, and is the general
+N-loop path.  It is the substantial remaining build.
+
+**Validated and solid regardless:** the loop-momentum integral (self-energy) vs
+direct ∫dℓ to 1e-12 (time + frequency); the Dyson assembly freq==time; the
+bubble SHAPE vs simulation R²=0.999.  The close-pair blocker is gone.  Only the
+overall multiplicative constant (and full generality) remain.
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
