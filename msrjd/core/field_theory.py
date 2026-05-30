@@ -1233,6 +1233,13 @@ class FieldTheory:
             setattr(ns, ospec['name'],
                     SR.var(oname, latex_name=olx) if olx else SR.var(oname))
 
+        # Spatial v2: flag the operator-IR authoring mode (Lap()/Dt()/Dx()
+        # binding syntax) so the action-eval namespace and the action lambda
+        # route through ``pipeline.spatial_operator_ir``.  Default False —
+        # the bare multiplicative ``Dt``/``Laplacian`` symbols above are
+        # untouched for every existing theory.
+        ns._operator_ir = bool(m.get('operator_ir', False))
+
         # Internal names start with 'z' so they sort after tau ('t') and phi ('p')
         # in any SR product, giving the canonical order: φ … τ … δ/δ'.
         ns.delta_D  = SR.var('z_delta',   latex_name=r'\delta')

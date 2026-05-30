@@ -158,3 +158,49 @@ def test_reaction_diffusion_action_to_kernel_and_vertex():
     assert _zero(K - (-I * om + mu + D * k0 ** 2))          # = K(ω,k)
     assert _zero(low.coefficient(phit, 1).coefficient(phi, 2) - g)   # bubble vertex
     assert _zero(low.coefficient(phit, 2) + T)              # −Tφ̃² noise
+
+
+def test_operator_ir_authoring_through_theorybuilder():
+    """End-to-end of the AUTHORING path: a theory authored with
+    ``.operator_ir()`` + the ``Lap(phi)``/``Dt(phi)`` string syntax builds, and
+    its action lambda (which now runs the IR passes internally) yields the
+    generator form whose Fourier lowering reproduces ``K(ω,k)=−iω+μ+Dk²`` and
+    the ``g`` vertex.  Proves the gate threads through TheoryBuilder →
+    field_theory namespace → theory_compiler action lambda — with the IR ops
+    overriding the bare symbols ONLY in this opted-in theory's action namespace.
+    """
+    from pipeline.theory import TheoryBuilder
+    from msrjd.core.field_theory import FieldTheory
+
+    m = (TheoryBuilder('rd_v2_operator_ir', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('g', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .set_action_text(
+             'phit*(Dt(phi) + mu*phi - D*Lap(phi) + g*phi^2) - T*phit^2')
+         .operator_ir()
+         .boundary('infinite').initial('stationary')
+         .build())
+    assert m['operator_ir'] is True
+
+    ft = FieldTheory(m, taylor_order=3)
+    ns, _R, _nt = ft._build_namespace()
+    S = SR(m['action'](ns))                       # runs the IR passes inside
+    genmap = ns._operator_ir_genmap
+    chains = sorted(tuple(c) for _, (_, c) in genmap.items())
+    assert chains == [(('Dt',),), (('Lap',),)]    # Dt(phi), Lap(phi) lowered
+
+    phit_v = ns._tilde_sr_vars[0]
+    phi_v = ns._phys_sr_vars[0]
+    k0, om = var('k0 omega')
+    low = fourier_lower(S, genmap, [k0], omega=om).expand()
+    # The φ̃φ bilinear is the SADDLE-DEPENDENT kernel −iω+μ+Dk²+2gφ̄ (the v2
+    # path correctly produces the 2gφ̄ mass renormalization from g(φ̄+δφ)²);
+    # at the saddle φ*=0 it reduces to the v1 K(ω,k).
+    at_saddle = {s: 0 for s in low.variables() if 'star' in str(s)}
+    K = low.coefficient(phit_v, 1).coefficient(phi_v, 1).subs(at_saddle)
+    assert _zero(K - (-I * om + mu + D * k0 ** 2))
+    # the bubble vertex coefficient is the symbol g (params stay symbolic)
+    assert _zero(low.coefficient(phit_v, 1).coefficient(phi_v, 2) - SR.var('g'))

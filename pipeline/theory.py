@@ -164,6 +164,7 @@ class TheoryBuilder:
         self._function_specs:   list[dict] = []
         self._kernel_specs:     list[dict] = []   # text time/freq exprs
         self._action_text:      Optional[str] = None
+        self._operator_ir:      bool = False     # spatial v2: Lap()/Dt()/Dx() syntax
         self._mf_eqs_text:      dict[str, str] = {}
         self._cgf_terms:        list[dict] = []
         self._phi_function_name: Optional[str] = None
@@ -563,6 +564,22 @@ class TheoryBuilder:
         ``pop = range(n_populations)`` is pre-bound for inner sums.
         """
         self._action_text = text
+        return self
+
+    def operator_ir(self, on: bool = True):
+        """Opt in to the spatial-v2 **operator IR**: author spatial/temporal
+        differential operators as argument-binding calls — ``Lap(phi)``,
+        ``Dt(phi)``, ``Dx(phi, i)`` — instead of the v1 bare multiplicative
+        symbols (``Dt*phi``, ``D*Laplacian*phi``).
+
+        When on, the action is parsed into the operator IR
+        (``pipeline.spatial_operator_ir``) and lowered to derived ring
+        generators (the ``u=δφ, v=∇²δφ`` representation) before expansion, so
+        derivative-inside-nonlinearity vertices and per-leg momentum form
+        factors are represented exactly.  Default OFF — every existing theory is
+        unaffected.  See ``docs/spatial_v2_architecture.md``.
+        """
+        self._operator_ir = bool(on)
         return self
 
     def set_mf_equation(self, saddle_name: str, rhs_text: str):
@@ -1741,6 +1758,9 @@ class TheoryBuilder:
             # Defaults to False — set via ``.stability_analysis(True)``
             # for bistable / multi-saddle differential theories.
             'stability_analysis': bool(self._stability_analysis),
+            # Spatial v2: parse the action with the operator IR
+            # (Lap()/Dt()/Dx() binding syntax).  Default False.
+            'operator_ir':     bool(self._operator_ir),
         }
         if self._mf_bg is not None:
             # Action-side dict (closure-baked): used by

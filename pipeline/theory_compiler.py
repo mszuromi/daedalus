@@ -578,6 +578,22 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     from msrjd.core.convolution import Conv
     nsdict['Conv'] = Conv
 
+    # Spatial v2 operator IR: in the ACTION context, when the theory opted in
+    # via ``.operator_ir()``, expose the differential operators as
+    # argument-BINDING calls — ``Lap(phi)``, ``Dt(phi)``, ``Dx(phi, i)`` —
+    # overriding the v1 bare multiplicative ``Dt``/``Laplacian`` symbols.  This
+    # is local to the action-eval namespace; ``ns.Dt`` (and its downstream
+    # saddle-kill rules) are untouched.
+    if (transfer_function_mode == 'action'
+            and getattr(ns, '_operator_ir', False)):
+        from pipeline.spatial_operator_ir import Lap as _Lap, Dt as _Dt, Dx as _Dx
+        # The action's field name resolves to a _FullPhysicalField
+        # (saddle + fluctuation); unwrap it to its SR form before binding the
+        # operator node, so ``Lap(phi)`` → ``Lap(phistar + dphi)``.
+        nsdict['Lap'] = lambda a: _Lap(_unwrap_field_arg(a))
+        nsdict['Dt'] = lambda a: _Dt(_unwrap_field_arg(a))
+        nsdict['Dx'] = lambda a, i: _Dx(_unwrap_field_arg(a), i)
+
     if extra:
         nsdict.update(extra)
     return nsdict
@@ -701,6 +717,33 @@ def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
 
 # ── Lambda factories (one per model hook) ─────────────────────────────
 
+def _lower_operator_ir_action(s, ns, naming_convention):
+    """Spatial v2: lower an operator-IR action (holding binding nodes
+    ``Lap(·)``/``Dt(·)``/``Dx(·)``) to (fields + derived ring generators).
+
+    Applies the IR algebra (linearity), annihilates operators acting on a
+    homogeneous/stationary mean (``kill_means`` over the declared saddle
+    symbols), and replaces each atomic ``Op(fluctuation)`` with a fresh ring
+    generator (the ``u=δφ, v=∇²δφ`` trick).  Stashes
+    ``ns._operator_ir_genmap = {gen: (base, op_chain)}`` for the propagator /
+    vertex form-factor lowering (Phase 3).  Returns the rewritten action.
+    """
+    from pipeline.spatial_operator_ir import (
+        apply_linearity, kill_means, to_derived_generators)
+    flucts = list(getattr(ns, '_all_field_sr_vars', []))
+    s = apply_linearity(s, flucts)
+    # Homogeneous/stationary saddle (v2.0): annihilate operators acting purely
+    # on the mean.  The action's field unwrapped to ``phistar + fluctuation``,
+    # so the saddle symbols are the ``*star*`` variables now present.  (For a
+    # future inhomogeneous saddle this kill becomes opt-out.)
+    saddles = [v for v in SR(s).variables() if 'star' in str(v)]
+    if saddles:
+        s = kill_means(s, saddles)
+    s, genmap = to_derived_generators(s, flucts)
+    ns._operator_ir_genmap = genmap
+    return s
+
+
 def make_action_lambda(action_text: str, *, field_names, param_names,
                        kernel_names, functions, n_pop,
                        transfer_function=None,
@@ -738,6 +781,14 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
         )
         s = _safe_eval(action_text, nsdict, 'action')
 
+        # Spatial v2: when authored with the operator IR, the action now holds
+        # binding nodes Lap(·)/Dt(·)/Dx(·).  Lower them via the IR passes
+        # (linearity → kill-on-homogeneous-mean → derived ring generators); this
+        # REPLACES the bare op×saddle kill below.  The generator map is stashed
+        # on ns for the propagator/vertex lowering (Phase 3).
+        if getattr(ns, '_operator_ir', False):
+            s = _lower_operator_ir_action(s, ns, naming_convention)
+
         # Kill <op> * <saddle>[i] * (anything) terms — saddle quantities
         # are constant in BOTH time and space, so any kinetic operator
         # applied to a saddle vanishes.  Necessary because the user
@@ -753,10 +804,11 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
         # vstar1, vstar2, ... symbols rather than their saddle-equation
         # expansions.
         kill_ops = []
-        if hasattr(ns, 'Dt'):
-            kill_ops.append(ns.Dt)
-        if hasattr(ns, 'Laplacian'):
-            kill_ops.append(ns.Laplacian)
+        if not getattr(ns, '_operator_ir', False):
+            if hasattr(ns, 'Dt'):
+                kill_ops.append(ns.Dt)
+            if hasattr(ns, 'Laplacian'):
+                kill_ops.append(ns.Laplacian)
         if kill_ops:
             saddle_internals = (
                 (naming_convention or {}).get('mf_parameters') or [])
