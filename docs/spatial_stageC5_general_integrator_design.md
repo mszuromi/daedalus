@@ -243,6 +243,32 @@ one bare diagram (the per-diagram momentum-first evaluator: ∫dℓ Gaussian ove
 NO Schwinger needed) and read off ``c``, or finish the T/coupling bookkeeping.
 Then wire ``compute_cumulants(max_ell=1)`` to the loop_dyson + tadpole sum.
 
+## C.5 — normalization: principled factors pinned; an OPEN ~1.3× sim gap
+
+Pinned the per-diagram normalization from the framework's own UNIFORM-momentum
+diagram values (global ``Laplacian=−q²`` → all edges at ``m_q``, exact-degenerate
+so ``compute_correction_td`` is fast): ``Σ_R`` (d[1][0], M=16) / loop_dyson's T1
+at uniform = **4.0000**; ``Σ_K`` (d[1][1], M=8) / T2 = **2.0000** (clean
+integers, momentum-independent).  ⇒ physical ``δS = g²(4·T1 + 2·T2)``
+(``loop_dyson.C_R, C_K``).
+
+**Open question (under investigation):** a clean ``λ=0`` (φ²-only) sim, 2-
+component fit ``A·(−T/m²) + B·δS_principled``, gives ``R²≈0.999`` (shape) but
+``B = 1.70`` at g=0.15, 2.61 at g=0.25 — i.e. ~1.3–1.7× ABOVE the principled
+``B=1``.  The strong g-dependence (the φ²-bubble-of-bubble / vertex O(g⁴)
+corrections; slope ≈23 in g²) extrapolates to ``B≈1.2`` at g→0, so most of the
+gap is higher-order, but a residual ~20–30% remains.  Two candidate causes:
+(a) the 2-component fit is degenerate (T1, T2 shapes are collinear with the
+mass shift), biasing B — most likely; (b) a real factor (a missing
+``∫dℓ`` measure ``1/2π``, or a Dyson-coefficient slip).  **Resolution
+(next):** compare the INTEGRATED ``δ⟨φ²⟩(g)`` (bubble + the φ²-tadpole, both
+factors pinned from the framework) to the sim at small g — that is
+non-degenerate and settles the absolute normalization.
+
+What IS solid: the loop integral (self-energy) vs direct ``∫dℓ`` to 1e-12 (time
++ frequency); the Dyson assembly freq==time; the bubble SHAPE vs sim R²=0.999.
+The open item is the overall constant only.
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
