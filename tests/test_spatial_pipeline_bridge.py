@@ -198,3 +198,63 @@ def test_bridge_tier2_coupled_raises_clean():
     with pytest.raises(NotImplementedError, match='Tier-1'):
         compute_spatial_correlator_via_pipeline(
             ft, model, prop, nps, _EXT, _TAUS, _XS, verbose=False)
+
+
+# ── Stage C.5: the momentum-first bubble (close-pair-free loop integral) ──
+def test_bubble_routes_and_extracts_coupling_exactly():
+    """The φ̃φ² reaction-diffusion bubble: ``compute_spatial_correlator_bubble``
+    runs (no close-pair hang), classifies 2 live bubbles + 1 tadpole, and
+    extracts the coupling EXACTLY from the framework's uniform-momentum value
+    (V_bub = 2g²N0²/m⁴).  δC(x=0,τ=0) equals the independent ∫dq δ⟨φ²⟩."""
+    from msrjd.integration.spatial.pipeline_bridge import (
+        compute_spatial_correlator_bubble,
+    )
+    from msrjd.integration.spatial.loop_dyson import bubble_delta_phi2
+    g_true = 0.35
+    model = _load('reaction_diffusion_quadratic_1d')
+    ft = FieldTheory(model, taylor_order=3)
+    ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    nps = {'mu': 1.0, 'D': 1.0, 'g': g_true, 'T': 1.0, 'phistar1': 0.0}
+    taus = np.array([0.0, 1.0])
+    xs = np.linspace(0.0, 6.0, 13)
+    C1, info = compute_spatial_correlator_bubble(
+        ft, model, prop, nps, _EXT, taus, xs, verbose=False, n_q=140, n_t=1500)
+    assert info['bubble'] is True
+    assert (info['n_bubble_diagrams'], info['n_tadpole_diagrams']) == (2, 1)
+    # coupling extracted exactly from the framework (no hardcoded factor)
+    assert abs(info['self_energy_coupling_g'] - g_true) <= 1e-4
+    assert info['g2_q_spread'] <= 1e-6
+    # δC(x=0,τ=0) == ∫dq/2π δC(q,0) = bubble δ⟨φ²⟩
+    C0, _ = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, nps, _EXT, taus, xs, verbose=False, certify=False)
+    dC_x0 = float((C1[0, 0] - C0[0, 0]).real)
+    assert abs(dC_x0 - bubble_delta_phi2(1.0, 1.0, 1.0, g=g_true)) <= 3e-2 * dC_x0
+
+
+def test_diagram_classification_bubble_vs_tadpole():
+    """``_diagram_is_bubble`` (q·ℓ cross-term) + ``_prefactor_is_live`` (φ*²
+    dead at φ*=0) correctly separate the φ̃φ² LIVE bubbles from the φ²-tadpole,
+    and mark a φ⁴ theory's φ*²-bubbles DEAD at φ*=0 (→ the tadpole path)."""
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _live_bubbles,
+    )
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    # reaction-diffusion: 2 LIVE bubbles (16/8 T²g²) + 1 tadpole
+    model = _load('reaction_diffusion_quadratic_1d')
+    ft = FieldTheory(model, taylor_order=3); ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    _, pi = build_field_index_map(list(ft._ns._ring_var_names), ft._n_tilde)
+    ext = _legs_to_phys_idx(_EXT, pi)
+    ell1 = build_pipeline_records(ft, model, prop, ext, max_ell=1)[1]
+    nps = {'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0, 'phistar1': 0.0}
+    assert len(_live_bubbles(ell1, nps)) == 2
+    # Allen-Cahn φ⁴ at φ*=0: its φ*²-bubbles are DEAD → 0 live bubbles
+    modela = _load('allen_cahn_1d_subcritical_infinite')
+    fta = FieldTheory(modela, taylor_order=4); fta.expand()
+    propa = build_propagator(fta, modela, use_cache=False, verbose=False)
+    _, pia = build_field_index_map(list(fta._ns._ring_var_names), fta._n_tilde)
+    exta = _legs_to_phys_idx(_EXT, pia)
+    ell1a = build_pipeline_records(fta, modela, propa, exta, max_ell=1)[1]
+    npsa = {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0, 'phistar1': 0.0}
+    assert len(_live_bubbles(ell1a, npsa)) == 0
