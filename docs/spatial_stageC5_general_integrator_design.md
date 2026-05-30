@@ -179,6 +179,39 @@ exactly-degenerate / decoupled cases (the tadpole) and as a cross-check.
    `heat_kernel.erf_time_integral`).
 4. Validate on the bubble vs the C.5a `Σ(q,τ)` and an `(ω,k)` reference.
 
+## C.5 pivot — validated state (momentum-first)
+
+The momentum-first loop integral is now validated comprehensively, and the
+close-pair blocker is gone (it cannot arise — no momentum-dependent poles):
+
+- **Core** (`msrjd/integration/spatial/loop_parametric.py`, tests
+  `tests/test_loop_parametric.py`, 21 passed in 0.67 s):
+  `gaussian_momentum_integral(a,b,w,q,D)` = `exp(-Dq²(W-V²/U))/(4πDU)^{d/2}`,
+  `U=Σa²w, V=Σab w, W=Σb²w`.
+- **Self-energy kernels** (time): `Σ_R = ∫dℓ G_R(ℓ,t)C(q-ℓ,t)` (1-D Schwinger),
+  `Σ_K = ∫dℓ C(ℓ,t)C(q-ℓ,t)` (2-D Schwinger) — both match direct `∫dℓ` to ≤1e-9.
+- **Frequency** `Σ_R(q,ω)`: validated two independent ways — the `(ω,k)` route
+  (ν-integral by residue → `Σ_R(q,ω)=∫dℓ/2π · T/[m_{q-ℓ}(iω+m_ℓ+m_{q-ℓ})]`)
+  and the FT of the time kernel agree to 1e-12 on the real part (imag parts
+  agree up to the `e^{±iωt}` convention). The static `Σ_R(q,0)` and equal-time
+  `Σ(q,0⁺)=⟨φ²⟩₀` come out right.
+
+### Remaining build (on this validated foundation)
+1. **`Σ_K(q,ω)`** by the same `(ω,k)` residue route (convolution of two
+   Lorentzians) — the second oracle piece.
+2. **Dyson δC(q,ω)** = `G_R⁰Σ_R C⁰ + G_R⁰Σ_K G_A⁰ + C⁰Σ_A G_A⁰`; inverse-FT by
+   residue → `δC(q,τ)`; `δ⟨φ²⟩ = ∫dq/2π δC(q,0)`. Pole-free throughout.
+3. **Combinatorial factor** `M(Γ)` from the pipeline's
+   `classify_coefficient_factors` on the bubble diagrams (same mechanism the
+   tadpole used; the bubble prefactors are `∝ g²`).
+4. **Framework wiring**: a per-diagram parametric evaluator that reads the
+   diagram's edge structure (`td.prediagram`, `edge_types`, routing) and time
+   structure, evaluates momentum-first, multiplies by the pipeline prefactor —
+   bypassing the close-pair-prone polytope evaluator. Route `max_ell=1`
+   momentum-dependent self-energies through it (drop the q-independence guard).
+5. **Validate** the full bubble δ⟨φ²⟩ vs the `(ω,k)` oracle and a stable sim
+   (use `φ²+φ³` so the potential is bounded).
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
