@@ -41,7 +41,7 @@ def _dispersion(N, dx, mu, D):
     return mu + (2.0 * D / dx**2) * (1.0 - np.cos(2.0 * np.pi * m / N))
 
 
-def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng):
+def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0):
     """Spectral exponential-Euler (ETD1) integrator.
 
     Linear + noise part is propagated EXACTLY per Fourier mode (an
@@ -77,10 +77,12 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng):
     a = np.fft.rfft(phi)
     ri = 0
     for step in range(n_steps):
-        # Nonlinear forcing F = rfft(-λ φ³) (skip when λ=0).
-        if lam != 0.0:
+        # Nonlinear forcing F = rfft(-g φ² - λ φ³) (skip when both zero).
+        # The g φ² term is the φ̃φ² bubble vertex; the λ φ³ term (→ +λφ⁴/4
+        # potential) bounds the otherwise-unstable cubic potential.
+        if lam != 0.0 or g != 0.0:
             phi_r = np.fft.irfft(a, n=N)
-            F = np.fft.rfft(-lam * phi_r**3)
+            F = np.fft.rfft(-g * phi_r**2 - lam * phi_r**3)
         else:
             F = 0.0
         # OU noise increment with rfft Hermitian structure.
@@ -101,7 +103,7 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng):
 
 def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
              dt=None, n_steps=400000, burn_in=40000, record_every=20,
-             seed=12345):
+             seed=12345, g=0.0):
     """Run the simulator and return ``(snapshots, x_grid, meta)``.
 
     snapshots : (n_rec, N) recorded field configurations (post burn-in)
@@ -124,17 +126,17 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
         # The linear part is exact (exponential integrator), so dt is
         # limited only by the ETD1 nonlinear splitting accuracy, not by
         # the diffusive CFL — a moderate dt suffices.
-        dt = min(0.02 / mu, 0.05) if lam != 0.0 else 0.05
+        dt = min(0.02 / mu, 0.05) if (lam != 0.0 or g != 0.0) else 0.05
     rng = np.random.default_rng(seed)
     phi0 = np.zeros(N, dtype=np.float64)
     # Burn-in (discarded).
-    phi_burn = _evolve(phi0, burn_in, dt, mu, D, lam, T, dx, burn_in, rng)
+    phi_burn = _evolve(phi0, burn_in, dt, mu, D, lam, T, dx, burn_in, rng, g=g)
     phi_start = phi_burn[-1, :].copy()
     snaps = _evolve(phi_start, n_steps, dt, mu, D, lam, T, dx,
-                    record_every, rng)
+                    record_every, rng, g=g)
     x_grid = np.arange(N) * dx
     meta = {'dx': dx, 'dt': dt, 'L': L, 'N': N, 'mu': mu, 'D': D,
-            'lam': lam, 'T': T, 'record_every': record_every,
+            'lam': lam, 'g': g, 'T': T, 'record_every': record_every,
             'n_rec': snaps.shape[0]}
     return snaps, x_grid, meta
 
