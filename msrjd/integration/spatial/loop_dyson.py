@@ -126,25 +126,31 @@ def bubble_delta_phi2(mu, D, T, g=1.0, q_cut=40.0):
 
 
 # ── full τ-dependent bubble correction (time route) ───────────────
-def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600):
+def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None):
     """Tabulate ``σ_R(t), σ_K(t)`` on ``t∈(0,t_max]`` (n_t points) by a single
     VECTORIZED ``∫dℓ`` over the whole t-grid at once — one trapezoid on an
     ℓ-grid wide enough to cover the ``C(q−ℓ)`` peak at ``ℓ=q``.  ~100× faster
     than per-t ``scipy.quad`` and matches it to <1e-4 (validated).
+
+    ``formfactor`` (Phase 4): a numpy-vectorized ``F(ℓ)`` multiplying the loop
+    integrand (the derivative-vertex form factor); ``None`` ⇒ the plain bubble.
     """
     tg = np.linspace(t_max / n_t, t_max, n_t)
     L = max(60.0, abs(q) + 40.0)
     lg = np.linspace(-L, L, n_l)
     ml = mu + D * lg * lg
     mql = mu + D * (q - lg) ** 2
+    ff = formfactor(lg) if formfactor is not None else 1.0
+    ff = (ff * np.ones_like(lg))[:, None]            # (n_l, 1), broadcastable
     E_l = np.exp(-np.outer(ml, tg))                  # (n_l, n_t)
     Cq = (T / mql)[:, None] * np.exp(-np.outer(mql, tg))
-    sR = np.trapz(E_l * Cq, lg, axis=0) / (2 * math.pi)        # ∫dℓ G_R·C
-    sK = np.trapz((T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
+    sR = np.trapz(ff * E_l * Cq, lg, axis=0) / (2 * math.pi)        # ∫dℓ F G_R·C
+    sK = np.trapz(ff * (T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
     return tg, sR, sK
 
 
-def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000):
+def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
+                         formfactor=None):
     """PHYSICAL bubble correction ``δC(q, τ)`` for ALL ``τ`` in ``taus``, via the
     **time route** (the frequency route converges as 1/ω because Σ_R has a t=0
     step — Gibbs — so it is not used).  Each Dyson term collapses to a fast,
@@ -163,12 +169,15 @@ def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000):
     Returns an array parallel to ``taus`` (real, even in τ).
     """
     m = _mk(q, mu, D)
-    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t)        # a∈(0,t_max]
+    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t,
+                              formfactor=formfactor)         # a∈(0,t_max]
     # Prepend a=0 with the t→0⁺ limit (σ peaks there; omitting the [0,ag[0]]
     # sliver under-counts the integral by ~σ(0)·da → up to 10%).  σ_R(0⁺)=
-    # σ_K(0⁺)=∫dℓ/2π T/m_ℓ = T/(2√(μD)); use the kernel at a tiny t.
-    s0R = sigma_R_time(q, 1e-7, mu, D, T)
-    s0K = sigma_K_time(q, 1e-7, mu, D, T)
+    # σ_K(0⁺)=∫dℓ/2π F(ℓ) T/m_ℓ; use the kernel at a tiny t (scalar F).
+    _ffs = (lambda l: float(formfactor(np.array([l]))[0])) \
+        if formfactor is not None else None
+    s0R = sigma_R_time(q, 1e-7, mu, D, T, formfactor=_ffs)
+    s0K = sigma_K_time(q, 1e-7, mu, D, T, formfactor=_ffs)
     ag = np.concatenate(([0.0], ag))
     sR = np.concatenate(([s0R], sR))
     sK = np.concatenate(([s0K], sK))

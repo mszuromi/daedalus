@@ -528,7 +528,7 @@ def compute_spatial_correlator_one_loop(
 def compute_spatial_correlator_bubble(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q0_samples=(0.7, 1.3), q_cut=30.0, n_q=160, n_t=2000,
-        g2_qindep_rtol=1e-2):
+        g2_qindep_rtol=1e-2, formfactor=None):
     """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC_bubble`` from a
     momentum-DEPENDENT **bubble** self-energy (Stage C.5), routed through the
     close-pair-free momentum-first integrator (``loop_dyson``).
@@ -616,9 +616,14 @@ def compute_spatial_correlator_bubble(
     # bubble δC(q,τ) on the q×τ grid (even in q), then q-FT to x.
     qg = np.linspace(0.0, q_cut, n_q)
     taus = np.asarray(tau_grid, dtype=float)
-    dC_q_tau = np.array([bubble_delta_C_q_tau(float(q), taus, A0, B0, N0, g,
-                                              n_t=n_t)
-                         for q in qg])                  # (n_q, n_tau)
+    # ``formfactor`` (Phase 4c): a callable ``formfactor(q) → (ℓ ↦ F_q(ℓ))`` for
+    # a derivative-vertex theory; the per-q loop form factor is injected into the
+    # momentum-first ∫dℓ.  ``None`` ⇒ the plain φ̃φ² bubble (validated B=0.99).
+    dC_q_tau = np.array([
+        bubble_delta_C_q_tau(
+            float(q), taus, A0, B0, N0, g, n_t=n_t,
+            formfactor=(formfactor(float(q)) if formfactor is not None else None))
+        for q in qg])                                   # (n_q, n_tau)
     xg = np.asarray(spatial_grid, dtype=float)
     C1 = np.array(C0, dtype=np.complex128)
     for it in range(len(taus)):

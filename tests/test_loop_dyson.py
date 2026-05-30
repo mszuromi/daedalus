@@ -129,3 +129,17 @@ def test_bubble_delta_S_formfactor(q=0.7):
     assert abs(same - base) <= 1e-9 * abs(base) + 1e-15
     diff = bubble_delta_S(q, MU, D, T, g=1.0, formfactor=lambda l: -l ** 2)
     assert math.isfinite(diff) and abs(diff - base) > 1e-6
+
+
+def test_bubble_delta_C_q_tau_formfactor(q=0.7):
+    """The (vectorized) τ-dependent bubble path also threads the form factor:
+    F=1 reproduces the plain time-displaced correlator; F(ℓ)=−ℓ² changes it and
+    stays finite over τ."""
+    taus = np.array([0.0, 1.0, 2.0])
+    base = bubble_delta_C_q_tau(q, taus, MU, D, T, g=1.0)
+    same = bubble_delta_C_q_tau(q, taus, MU, D, T, g=1.0,
+                                formfactor=lambda l: np.ones_like(l))
+    assert np.max(np.abs(same - base)) <= 1e-9 * (np.max(np.abs(base)) + 1e-30)
+    diff = bubble_delta_C_q_tau(q, taus, MU, D, T, g=1.0,
+                                formfactor=lambda l: -l ** 2)
+    assert np.all(np.isfinite(diff)) and abs(diff[0] - base[0]) > 1e-6
