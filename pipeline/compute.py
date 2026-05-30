@@ -320,7 +320,7 @@ def compute_cumulants(
                     print(f'      [expand-cache] save failed ({e!r}); '
                           f'continuing without persistence.')
 
-    sanity_ok = ft.sanity_check()
+    sanity_ok = ft.sanity_check(verbose=verbose)
     if not sanity_ok:
         raise RuntimeError(
             'FieldTheory.sanity_check() failed — see printout above.'

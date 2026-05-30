@@ -174,13 +174,15 @@ def _modes_C_q_tau(modes, qval, taus):
 
 
 # ── 2. run the SHARED pipeline at Laplacian = -q² ─────────────────
-def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2):
+def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
+                           verbose=False):
     """Enumerate + classify the (q-independent) diagram topology ONCE.
 
     Returns ``{ell: [(typed_diagram, scalar_prefactor), ...]}`` for
     ``compute_correction_td``.  Uses the exact entry points
-    ``pipeline/compute.py`` uses, so this is the real shared path
-    (lazy-imported to avoid any import cycle).
+    ``pipeline/compute.py`` uses (the SAME ``enumerate_unique_diagrams`` /
+    ``classify_coefficient_factors`` the time-only path runs), so this is the
+    real shared diagram machinery — lazy-imported to avoid any import cycle.
     """
     from msrjd.core.vertices import extract_vertex_types, extract_source_types
     from msrjd.diagrams.type_assignment import build_field_index_map
@@ -193,6 +195,11 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2):
     n_tilde = ft._n_tilde
     resp_idx, phys_idx = build_field_index_map(ring_var_names, n_tilde)
 
+    if verbose:
+        print(f'[spatial pipeline] FieldTheory taylor_order='
+              f'{getattr(ft, "taylor_order", "?")}; vertices={len(vtypes)}, '
+              f'sources={len(stypes)} — enumerating diagrams '
+              f'(k={k}, max_ell={max_ell}) via enumerate_unique_diagrams...')
     unique_by_ell, _, _ = enumerate_unique_diagrams(
         ft, model, k=k, max_ell=max_ell, external_fields=external_fields,
         G_ft=prop['G_ft'], resp_idx=resp_idx, phys_idx=phys_idx,
@@ -205,6 +212,11 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2):
                 td, [], {'temporal_type': 'white', 'amplitude_params': []})
             recs.append((td, SR(info['scalar_prefactor'])))
         by_ell[ell] = recs
+    if verbose:
+        for ell in sorted(by_ell):
+            prefs = [str(p) for _, p in by_ell[ell]]
+            print(f'[spatial pipeline]   ell={ell}: {len(by_ell[ell])} typed '
+                  f'diagram(s); M(Γ)·prefactors = {prefs}')
     return by_ell
 
 
@@ -301,7 +313,12 @@ def compute_spatial_correlator_via_pipeline(
     certify_max_rel = None
     certified = False
     if certify:
-        records = build_pipeline_records(ft, model, prop, ext_int).get(0, [])
+        records = build_pipeline_records(
+            ft, model, prop, ext_int, verbose=verbose).get(0, [])
+        if verbose:
+            print(f'[spatial pipeline] Phase J (compute_correction_td) at '
+                  f'q={list(q_samples)} → certifying tree modes vs the '
+                  f'diagram C(q,τ)...')
         certify_max_rel = certify_modes(
             modes, prop, records, ext_int, base_np_sr,
             q_samples, tau_samples)
@@ -376,10 +393,15 @@ def compute_spatial_correlator_one_loop(
     base_np_sr = {kk: vv for kk, vv in nps_sr.items()
                   if str(kk) != 'Laplacian'}
 
-    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1)
+    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
+                                    verbose=verbose)
     ell1 = by_ell.get(1, [])
     if not ell1:
         raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
+    if verbose:
+        print(f'[spatial pipeline] Phase J (compute_correction_td) on the '
+              f'{len(ell1)} ell=1 diagram(s) at q={list(q_samples)} → '
+              f'extracting the tadpole self-energy coefficient g...')
 
     # Extract the self-energy coefficient g from the pipeline (q-independent
     # for a tadpole): ell1(q,0) = Σ_pipe·∂C₀/∂A, Σ_pipe = g·C₀_mom(q).

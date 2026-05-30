@@ -963,12 +963,16 @@ class FieldTheory:
         self._S_raw = S_raw
         self._by_tp = by_tp
 
-    def sanity_check(self) -> bool:
+    def sanity_check(self, verbose=True) -> bool:
         """
         Verify zero sectors:
           (0,0) — constant
           (1,0) — tadpole (must vanish at MF saddle)
           (0,1) — EOM residual (must vanish at background solution)
+
+        Prints the per-sector PASS/FAIL table only when ``verbose`` (default
+        True, preserving the historical behaviour for direct callers); a
+        FAILED sector is ALWAYS printed so a failure is never silent.
         """
         self._require_expanded()
         checks = [
@@ -976,15 +980,20 @@ class FieldTheory:
             ((1, 0), 'tadpole — must vanish at MF saddle'),
             ((0, 1), 'linear physical-only — must vanish at EOM'),
         ]
+        results = []
         all_pass = True
-        print('=== Sanity checks ===')
         for key, label in checks:
             val = self._by_tp.get(key, self._R.zero())
             ok  = (val == self._R.zero())
-            print(f'  [{"PASS" if ok else "FAIL"}]  (n_tilde={key[0]}, n_phys={key[1]})  {label}')
-            if not ok:
-                _show(val)
+            results.append((ok, key, label, val))
             all_pass = all_pass and ok
+        if verbose or not all_pass:
+            print('=== Sanity checks ===')
+            for ok, key, label, val in results:
+                print(f'  [{"PASS" if ok else "FAIL"}]  '
+                      f'(n_tilde={key[0]}, n_phys={key[1]})  {label}')
+                if not ok:
+                    _show(val)
         return all_pass
 
     def summary(self) -> None:

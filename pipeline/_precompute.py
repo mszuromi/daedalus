@@ -140,7 +140,7 @@ def precompute(model: dict, *, force: bool = False,
 
     # ── Stage 2: sanity check (MF cancellation) ────────────────────
     try:
-        out['sanity_ok'] = bool(ft.sanity_check())
+        out['sanity_ok'] = bool(ft.sanity_check(verbose=verbose))
         out['mf_check'] = 'PASS' if out['sanity_ok'] else 'FAIL'
         _log(f'[precompute] sanity_check: {out["mf_check"]}')
     except Exception as e:
