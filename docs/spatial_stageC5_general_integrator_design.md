@@ -5,6 +5,39 @@ dependent self-energies (the `φ̃φ²` bubble), higher cumulants, and N-loop �
 not just the momentum-independent tadpole mass-shift the Stage-C code special-
 cases. This retires the `g`-q-independence guard and the `max_ell>1` block.
 
+## STATUS — the 1-loop bubble is OPERATIONAL ✓ (2026-05-30)
+
+`compute_cumulants(k=2, max_ell=1, spatial_grid=...)` now computes the
+momentum-dependent **bubble** self-energy correction for a `φ̃φ²` spatial theory
+— it **runs** (≈8.5 s, no close-pair hang) instead of raising/hanging. The path
+(all committed on `spatial-extension`):
+
+* **`loop_parametric.py`** — the momentum-first core (Schwinger/Symanzik
+  Gaussian `∫dℓ`), validated vs direct `∫dℓ` to 1e-13.
+* **`loop_dyson.py`** — bubble self-energies `Σ_R=∫dℓ G_R·C`, `Σ_K=∫dℓ C·C`
+  (vectorized `∫dℓ`), the equal-time closed form `bubble_delta_S`, and the full
+  time-displaced `bubble_delta_C_q_tau` (time route, reduces to the closed form
+  at τ=0 to <1%). Normalization `C_R=4, C_K=2` pinned from the framework.
+* **`pipeline_bridge.compute_spatial_correlator_bubble`** — tree → `(μ,D,T)`;
+  classify diagrams (`_diagram_is_bubble` = q·ℓ cross-term, `_prefactor_is_live`
+  = a φ*²-bubble is dead at φ*=0); extract the coupling **exactly** from the
+  framework's uniform value `V_bub=2g²N0²/m⁴` (g=0.350000 vs true 0.35);
+  `bubble_delta_C_q_tau` over a q-grid → analytic q-FT to `(x,τ)`.
+* **`compute.py`** — try the tadpole path; on `NotImplementedError` (a live
+  bubble) route to the bubble path. Both validated: reaction-diffusion → bubble;
+  Allen-Cahn φ⁴ at φ*=0 → tadpole (the existing path is preserved).
+
+**Validated end-to-end at 1-loop:** structure (vs direct `∫dℓ`, 1e-13), assembly
+(Dyson freq==time), shape (vs simulation R²=0.999), absolute magnitude
+(B=0.99 at the perturbative point — see normalization section). Tests:
+`test_loop_parametric` (21), `test_loop_dyson` (12), `test_spatial_pipeline_bridge`
+bubble + classification (2).
+
+**Remaining (future):** the φ²-tadpole *for bubble theories* (a saddle/mass
+shift on a `k=0` line — the bubble path returns the momentum-dependent piece
+only); full N-loop / arbitrary-topology generality (the per-diagram evaluator
+sketched below); `max_ell>1`.
+
 ## The seam (from the integrator map, 2026-05-29)
 
 The time-domain integrator (`final_integral.integrate_diagram`) already does all
