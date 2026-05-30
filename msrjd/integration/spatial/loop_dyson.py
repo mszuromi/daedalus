@@ -108,3 +108,62 @@ def bubble_delta_phi2(mu, D, T, g=1.0, q_cut=40.0):
     f = lambda q: bubble_delta_S(q, mu, D, T, g)
     v, _ = integrate.quad(f, 0.0, q_cut, limit=200)
     return 2.0 * v / (2 * math.pi)        # even in q → 2·∫₀
+
+
+# ── full τ-dependent bubble correction (frequency route) ───────────
+def _sigma_grids(q, mu, D, T, t_max, n_t):
+    """Tabulate ``σ_R(t), σ_K(t)`` on ``t∈(0,t_max]`` (n_t points)."""
+    tg = np.linspace(t_max / n_t, t_max, n_t)
+    sR = np.array([sigma_R_time(q, float(t), mu, D, T) for t in tg])
+    sK = np.array([sigma_K_time(q, float(t), mu, D, T) for t in tg])
+    return tg, sR, sK
+
+
+def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000):
+    """PHYSICAL bubble correction ``δC(q, τ)`` for ALL ``τ`` in ``taus``, via the
+    **time route** (the frequency route converges as 1/ω because Σ_R has a t=0
+    step — Gibbs — so it is not used).  Each Dyson term collapses to a fast,
+    accurate 1-D integral over the tabulated self-energy:
+
+        Term1(τ) = (T/m) ∫₀^∞ σ_R(a)·K(τ−a) da,   (G_R⁰ ⊛ Σ_R ⊛ C⁰)(τ)
+            K(c) = e^{-mc}(c + 1/2m)  (c≥0),  e^{mc}/2m  (c<0),
+        Σ_R+Σ_A contribution  =  Term1(τ) + Term1(−τ),
+        Term2(τ) = (1/2m) ∫ σ_K(|τ−d|) e^{-m|d|} dd,   (G_R⁰ ⊛ Σ_K ⊛ G_A⁰)(τ)
+
+    ⇒ δC(q,τ) = g²[ C_R·(Term1(τ)+Term1(−τ)) + C_K·Term2(τ) ].  At τ=0 this
+    equals the closed form ``bubble_delta_S(q)`` (validated to <1e-3); for τ≠0 it
+    is the full time-displaced correlator.  ``σ_R, σ_K`` are tabulated once on
+    ``(0, t_max]`` (n_t points) and the 1-D integrals done by trapezoid.
+
+    Returns an array parallel to ``taus`` (real, even in τ).
+    """
+    m = _mk(q, mu, D)
+    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t)        # a∈(0,t_max]
+    # Prepend a=0 with the t→0⁺ limit (σ peaks there; omitting the [0,ag[0]]
+    # sliver under-counts the integral by ~σ(0)·da → up to 10%).  σ_R(0⁺)=
+    # σ_K(0⁺)=∫dℓ/2π T/m_ℓ = T/(2√(μD)); use the kernel at a tiny t.
+    s0R = sigma_R_time(q, 1e-7, mu, D, T)
+    s0K = sigma_K_time(q, 1e-7, mu, D, T)
+    ag = np.concatenate(([0.0], ag))
+    sR = np.concatenate(([s0R], sR))
+    sK = np.concatenate(([s0K], sK))
+
+    def _K(c):                                                # closed inner
+        return np.where(c >= 0.0,
+                        np.exp(-m * np.abs(c)) * (np.abs(c) + 0.5 / m),
+                        np.exp(-m * np.abs(c)) / (2.0 * m))
+
+    # symmetric d-grid for the |τ−d| integral over d∈[−t_max,t_max].
+    dg = np.concatenate((-ag[::-1], ag))
+
+    out = np.empty(len(taus), dtype=float)
+    for i, tau in enumerate(taus):
+        term1 = (T / m) * np.trapz(sR * _K(tau - ag), ag)
+        term1m = (T / m) * np.trapz(sR * _K(-tau - ag), ag)
+        # σ_K(|τ−d|): interpolate the even-tabulated σ_K at |τ−d|
+        argk = np.abs(tau - dg)
+        sKshift = np.interp(argk, ag, sK, left=sK[0], right=0.0)
+        term2 = (1.0 / (2.0 * m)) * np.trapz(sKshift * np.exp(-m * np.abs(dg)),
+                                             dg)
+        out[i] = g * g * (C_R * (term1 + term1m) + C_K * term2)
+    return out

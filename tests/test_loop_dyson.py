@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from msrjd.integration.spatial.loop_dyson import (
     bubble_delta_S, bubble_delta_phi2, sigma_R_time, sigma_K_time,
-    _dyson_terms, C_R, C_K,
+    _dyson_terms, C_R, C_K, bubble_delta_C_q_tau,
 )
 
 MU = D = T = 1.0
@@ -80,6 +80,20 @@ def test_physical_weights_pinned():
 def test_delta_phi2_finite_positive():
     d = bubble_delta_phi2(MU, D, T, g=0.3)
     assert math.isfinite(d) and d > 0
+
+
+@pytest.mark.parametrize('q', [0.0, 0.6, 1.2, 2.0])
+def test_tau_dependent_reduces_to_closed_form(q):
+    """The full time-displaced bubble δC(q,τ) (time route) reduces to the
+    closed-form structure factor ``bubble_delta_S(q)`` at τ=0 (<1%), and decays
+    monotonically in τ to ~0."""
+    g = 0.3
+    taus = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
+    dC = bubble_delta_C_q_tau(q, taus, MU, D, T, g)
+    closed = bubble_delta_S(q, MU, D, T, g)
+    assert abs(dC[0] - closed) <= 1e-2 * closed          # τ=0 matches exact
+    assert all(dC[i] >= dC[i + 1] - 1e-12 for i in range(len(dC) - 1))
+    assert dC[-1] >= -1e-9 and dC[-1] < 0.2 * dC[0]      # decays toward 0
 
 
 def test_sigma_kernels_match_direct():
