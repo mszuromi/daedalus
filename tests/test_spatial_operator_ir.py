@@ -26,7 +26,7 @@ from sage.all import SR, I, var, function
 
 from pipeline.spatial_operator_ir import (
     Lap, Dt, Dx, apply_linearity, expand_about_saddle, kill_means,
-    to_derived_generators, form_factor,
+    to_derived_generators, form_factor, prepare_action, fourier_lower,
 )
 
 phi, psi, phibar, dphi, dpsi, mu, D, lam, k0, k1, om, x = var(
@@ -129,3 +129,32 @@ def test_form_factors():
 def test_form_factor_multi_d_laplacian():
     # ∇² in 2-D → −(k0²+k1²)
     assert _zero(form_factor((('Lap',),), [k0, k1]) + (k0 ** 2 + k1 ** 2))
+
+
+# ── end-to-end transform on the Phase-2 target theory ─────────────
+def test_reaction_diffusion_action_to_kernel_and_vertex():
+    """The Phase-2 target: the φ̃φ² reaction-diffusion action authored with the
+    operator IR,
+
+        S = phit·(Dt φ + μφ − D∇²φ + gφ²) − Tφ̃² ,
+
+    runs through ``prepare_action`` (linearity → derived generators) and then
+    ``fourier_lower`` reproduces EXACTLY the v1 ingredients: the bilinear kernel
+    ``K(ω,k) = −iω + μ + Dk²`` (the φ̃φ propagator denominator) and the
+    momentum-independent ``g`` bubble vertex, with the white-noise ``−Tφ̃²``
+    untouched.  (String authoring in TheoryBuilder lands with Phase 3; this is
+    the semantic content.)
+    """
+    phit, g, T, om = var('phit g T omega')
+    S = phit * (Dt(phi) + mu * phi - D * Lap(phi) + g * phi ** 2) - T * phit ** 2
+    S_gen, genmap = prepare_action(S, fields=[phi, phit])
+
+    # Dt(phi) and Lap(phi) became derived generators; g φ² did NOT.
+    chains = sorted(tuple(c) for _, (_, c) in genmap.items())
+    assert chains == [(('Dt',),), (('Lap',),)]
+
+    low = fourier_lower(S_gen, genmap, [k0], omega=om).expand()
+    K = low.coefficient(phit, 1).coefficient(phi, 1)        # φ̃φ bilinear
+    assert _zero(K - (-I * om + mu + D * k0 ** 2))          # = K(ω,k)
+    assert _zero(low.coefficient(phit, 1).coefficient(phi, 2) - g)   # bubble vertex
+    assert _zero(low.coefficient(phit, 2) + T)              # −Tφ̃² noise

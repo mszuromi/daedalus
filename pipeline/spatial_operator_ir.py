@@ -335,6 +335,48 @@ def to_derived_generators(expr, fluct_syms, prefix='Dg'):
     return cur, genmap
 
 
+# ── 4b. compose the passes: action → (fields + derived generators) ─
+def prepare_action(S, fields, replacements=None, homogeneous=True,
+                   coords=('x', 'y', 'z')):
+    """Run the full IR preprocessing of an action ``S`` ahead of the
+    multivariate-Taylor expansion.
+
+    Two authoring conventions are supported:
+
+    * **fluctuation fields** (``replacements=None``): the action is already
+      written in the fluctuation fields (the framework's default — e.g.
+      ``reaction_diffusion`` at ``φ*=0``).  We only ``apply_linearity`` and
+      lower operators to derived generators.
+    * **full fields + explicit saddle** (``replacements={field:(mean,fluct)}``):
+      we ``expand_about_saddle`` (substitute + linearity, mean retained), then
+      — for a homogeneous/stationary saddle — ``kill_means``, then lower.
+
+    Returns ``(S_gen, genmap)``: the action rewritten with each atomic
+    ``Op(δφ)`` replaced by a fresh ring generator, plus
+    ``genmap[gen]=(base, op_chain)`` for the Fourier lowering (:func:`fourier_lower`).
+    """
+    if replacements:
+        S = expand_about_saddle(S, replacements, fields=fields, coords=coords)
+        if homogeneous:
+            S = kill_means(S, [SR(m) for (m, _) in replacements.values()])
+        flucts = [SR(f) for (_, f) in replacements.values()]
+    else:
+        S = apply_linearity(S, fields, coords=coords)
+        flucts = [SR(f) for f in fields]
+    return to_derived_generators(S, flucts)
+
+
+def fourier_lower(expr, genmap, k, omega=None):
+    """Substitute every derived generator by its Fourier image: ``g →
+    form_factor(chain, k, ω)·base``.  Used to read the bilinear kernel
+    ``K(ω,k)`` off the (1,1) sector and to attach per-leg form factors to
+    vertices — the bridge from the IR to the k-explicit propagator (Phase 3).
+    """
+    subs = {g: form_factor(chain, k, omega) * SR(base)
+            for g, (base, chain) in genmap.items()}
+    return SR(expr).subs(subs)
+
+
 # ── 5. Fourier form factor of an operator chain ───────────────────
 def form_factor(chain, k, omega=None):
     """The Fourier image multiplier of an operator ``chain`` acting on a leg of
