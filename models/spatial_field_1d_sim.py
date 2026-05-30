@@ -41,7 +41,8 @@ def _dispersion(N, dx, mu, D):
     return mu + (2.0 * D / dx**2) * (1.0 - np.cos(2.0 * np.pi * m / N))
 
 
-def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0):
+def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
+            g_lap=0.0):
     """Spectral exponential-Euler (ETD1) integrator.
 
     Linear + noise part is propagated EXACTLY per Fourier mode (an
@@ -62,6 +63,11 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0):
 
     omega = _dispersion(N, dx, mu, D)          # (M,)
     M = omega.shape[0]
+    # finite-difference Laplacian eigenvalue on the rfft grid (≤0): the linear
+    # dispersion is ω = μ − D·lap_eig, so lap_eig = −(ω−μ)/D.  Used for the
+    # CONSERVED nonlinearity g_lap·∂ₓ²(φ²) (a derivative vertex), spectral form
+    # g_lap·lap_eig·rfft(φ²) — the v2 Phase-4d derivative-vertex test forcing.
+    lap_eig = -(omega - mu) / D
     decay = np.exp(-omega * dt)
     etd1 = np.where(omega * dt > 1e-12, (1.0 - decay) / omega, dt)
     stat_var = T * N**2 / (L * omega)          # ⟨|φ̂_k|²⟩ stationary
@@ -80,9 +86,12 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0):
         # Nonlinear forcing F = rfft(-g φ² - λ φ³) (skip when both zero).
         # The g φ² term is the φ̃φ² bubble vertex; the λ φ³ term (→ +λφ⁴/4
         # potential) bounds the otherwise-unstable cubic potential.
-        if lam != 0.0 or g != 0.0:
+        if lam != 0.0 or g != 0.0 or g_lap != 0.0:
             phi_r = np.fft.irfft(a, n=N)
             F = np.fft.rfft(-g * phi_r**2 - lam * phi_r**3)
+            if g_lap != 0.0:
+                # conserved derivative vertex +g_lap·∂ₓ²(φ²) (∂_tφ EOM term)
+                F = F + g_lap * lap_eig * np.fft.rfft(phi_r**2)
         else:
             F = 0.0
         # OU noise increment with rfft Hermitian structure.
@@ -103,7 +112,7 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0):
 
 def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
              dt=None, n_steps=400000, burn_in=40000, record_every=20,
-             seed=12345, g=0.0):
+             seed=12345, g=0.0, g_lap=0.0):
     """Run the simulator and return ``(snapshots, x_grid, meta)``.
 
     snapshots : (n_rec, N) recorded field configurations (post burn-in)
@@ -126,18 +135,19 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
         # The linear part is exact (exponential integrator), so dt is
         # limited only by the ETD1 nonlinear splitting accuracy, not by
         # the diffusive CFL — a moderate dt suffices.
-        dt = min(0.02 / mu, 0.05) if (lam != 0.0 or g != 0.0) else 0.05
+        dt = min(0.02 / mu, 0.05) if (lam != 0.0 or g != 0.0 or g_lap != 0.0) else 0.05
     rng = np.random.default_rng(seed)
     phi0 = np.zeros(N, dtype=np.float64)
     # Burn-in (discarded).
-    phi_burn = _evolve(phi0, burn_in, dt, mu, D, lam, T, dx, burn_in, rng, g=g)
+    phi_burn = _evolve(phi0, burn_in, dt, mu, D, lam, T, dx, burn_in, rng,
+                       g=g, g_lap=g_lap)
     phi_start = phi_burn[-1, :].copy()
     snaps = _evolve(phi_start, n_steps, dt, mu, D, lam, T, dx,
-                    record_every, rng, g=g)
+                    record_every, rng, g=g, g_lap=g_lap)
     x_grid = np.arange(N) * dx
     meta = {'dx': dx, 'dt': dt, 'L': L, 'N': N, 'mu': mu, 'D': D,
-            'lam': lam, 'g': g, 'T': T, 'record_every': record_every,
-            'n_rec': snaps.shape[0]}
+            'lam': lam, 'g': g, 'g_lap': g_lap, 'T': T,
+            'record_every': record_every, 'n_rec': snaps.shape[0]}
     return snaps, x_grid, meta
 
 
