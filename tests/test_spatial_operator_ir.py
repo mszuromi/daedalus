@@ -188,19 +188,88 @@ def test_operator_ir_authoring_through_theorybuilder():
     ft = FieldTheory(m, taylor_order=3)
     ns, _R, _nt = ft._build_namespace()
     S = SR(m['action'](ns))                       # runs the IR passes inside
+    # genmap records what the IR lowered; the returned action is the v1-form
+    # (Phase 3b-i: derived generators lowered to bare Dt/Laplacian symbols).
     genmap = ns._operator_ir_genmap
     chains = sorted(tuple(c) for _, (_, c) in genmap.items())
-    assert chains == [(('Dt',),), (('Lap',),)]    # Dt(phi), Lap(phi) lowered
+    assert chains == [(('Dt',),), (('Lap',),)]    # Dt(phi), Lap(phi) captured
+    assert 'Dg' not in str(S)                      # generators lowered away
 
+    # Substitute the v1 operator symbols to their Fourier images to read the
+    # kernel: −iω + μ + Dk² + 2gφ̄  →  K(ω,k) at the φ*=0 saddle.
     phit_v = ns._tilde_sr_vars[0]
     phi_v = ns._phys_sr_vars[0]
     k0, om = var('k0 omega')
-    low = fourier_lower(S, genmap, [k0], omega=om).expand()
-    # The φ̃φ bilinear is the SADDLE-DEPENDENT kernel −iω+μ+Dk²+2gφ̄ (the v2
-    # path correctly produces the 2gφ̄ mass renormalization from g(φ̄+δφ)²);
-    # at the saddle φ*=0 it reduces to the v1 K(ω,k).
-    at_saddle = {s: 0 for s in low.variables() if 'star' in str(s)}
-    K = low.coefficient(phit_v, 1).coefficient(phi_v, 1).subs(at_saddle)
+    Sf = S.subs({ns.Dt: -I * om, ns.Laplacian: -k0 ** 2}).expand()
+    at_saddle = {s: 0 for s in Sf.variables() if 'star' in str(s)}
+    K = Sf.coefficient(phit_v, 1).coefficient(phi_v, 1).subs(at_saddle)
     assert _zero(K - (-I * om + mu + D * k0 ** 2))
-    # the bubble vertex coefficient is the symbol g (params stay symbolic)
-    assert _zero(low.coefficient(phit_v, 1).coefficient(phi_v, 2) - SR.var('g'))
+    assert _zero(Sf.coefficient(phit_v, 1).coefficient(phi_v, 2) - SR.var('g'))
+
+
+def test_operator_ir_reduces_to_v1_action_for_reaction_diffusion():
+    """Phase 3b-i: for a theory whose vertices carry NO derivatives, the
+    operator-IR (v2) action lowers to EXACTLY the v1 bare-symbol action — so a
+    ``.operator_ir()`` reaction-diffusion theory flows through the entire
+    validated v1 pipeline unchanged.  Compares the evaluated/processed action
+    SR expression of the two authorings term-for-term."""
+    from pipeline.theory import TheoryBuilder
+    from msrjd.core.field_theory import FieldTheory
+
+    def _build(use_ir):
+        tb = (TheoryBuilder('rd_cmp', n_populations=0)
+              .physical_field('phi', spatial_dim=1)
+              .parameter('mu', default=1.0, domain='positive')
+              .parameter('D', default=1.0, domain='positive')
+              .parameter('g', default=0.3, domain='real')
+              .parameter('T', default=1.0, domain='positive'))
+        if use_ir:
+            tb = tb.set_action_text(
+                'phit*(Dt(phi) + mu*phi - D*Lap(phi) + g*phi^2) - T*phit^2'
+            ).operator_ir()
+        else:
+            tb = tb.set_action_text(
+                'phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
+        return tb.boundary('infinite').initial('stationary').build()
+
+    def _eval(m):
+        ft = FieldTheory(m, taylor_order=3)
+        ns, _R, _nt = ft._build_namespace()
+        return SR(m['action'](ns)).expand()
+
+    assert _zero(_eval(_build(False)) - _eval(_build(True)))
+
+
+def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
+    """End-to-end: ``compute_cumulants`` (tree) on a ``.operator_ir()``
+    reaction-diffusion theory is bit-identical to the v1 bare-symbol theory,
+    confirming the v2 authoring flows through the whole pipeline (MF solve,
+    propagator, spatial bridge) unchanged."""
+    import numpy as np
+    from pipeline.compute import compute_cumulants
+    from pipeline.theory import TheoryBuilder
+
+    def _build(use_ir):
+        tb = (TheoryBuilder('rd_e2e', n_populations=0)
+              .physical_field('phi', spatial_dim=1)
+              .parameter('mu', default=1.0, domain='positive')
+              .parameter('D', default=1.0, domain='positive')
+              .parameter('g', default=0.35, domain='real')
+              .parameter('T', default=1.0, domain='positive')
+              .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2'))
+        if use_ir:
+            tb = tb.set_action_text(
+                'phit*(Dt(phi) + mu*phi - D*Lap(phi) + g*phi^2) - T*phit^2'
+            ).operator_ir()
+        else:
+            tb = tb.set_action_text(
+                'phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
+        return tb.boundary('infinite').initial('stationary').build()
+
+    kw = dict(k=2, max_ell=0, fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.35,
+              'T': 1.0}, external_fields=[('phi', 1), ('phi', 1)],
+              spatial_grid=np.linspace(0, 6, 9), tau_max=2.0, tau_step=1.0,
+              verbose=False, use_cache=False, mf_dae_n_starts=4)
+    c2 = np.real(compute_cumulants(_build(True), **kw)['C_tau'])
+    c1 = np.real(compute_cumulants(_build(False), **kw)['C_tau'])
+    assert np.max(np.abs(c2 - c1)) <= 1e-12 * (np.max(np.abs(c1)) + 1e-30)

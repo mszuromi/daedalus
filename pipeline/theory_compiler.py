@@ -741,7 +741,31 @@ def _lower_operator_ir_action(s, ns, naming_convention):
         s = kill_means(s, saddles)
     s, genmap = to_derived_generators(s, flucts)
     ns._operator_ir_genmap = genmap
-    return s
+
+    # Phase 3b-i: lower derived generators back to the v1 bare-symbol form
+    # (Lap → ns.Laplacian, Dt → ns.Dt, composed for chains, so ∇⁴ → Laplacian²),
+    # which reduces the action to the validated v1 pipeline.  For a theory whose
+    # nonlinear vertices carry NO derivatives (e.g. reaction-diffusion's gφ²),
+    # this is EXACT — the v2-authored action becomes identical to the v1 action.
+    # Derivative-VERTEX form factors (Cahn–Hilliard ∇²φ³, KPZ (∂ₓφ)²) are the
+    # next step; those generators will instead be routed to the momentum-first
+    # integrator rather than lowered here.
+    v1_subs = {}
+    for g, (base, chain) in genmap.items():
+        factor = SR(1)
+        for entry in chain:
+            op = entry[0]
+            if op == 'Lap' and hasattr(ns, 'Laplacian'):
+                factor *= ns.Laplacian
+            elif op == 'Dt' and hasattr(ns, 'Dt'):
+                factor *= ns.Dt
+            else:
+                raise NotImplementedError(
+                    f"operator IR: the {op!r} operator (in a derived vertex) "
+                    f"has no v1 lowering; the momentum-first form-factor "
+                    f"integrator for derivative vertices is the next step.")
+        v1_subs[g] = factor * SR(base)
+    return SR(s).subs(v1_subs)
 
 
 def make_action_lambda(action_text: str, *, field_names, param_names,
