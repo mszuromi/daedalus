@@ -227,11 +227,23 @@ backend.
    Default OFF; all existing theories untouched (33 regression tests green).
    *(Remaining within Phase 3: IR-enable the `.equation()` MF text too — for now
    the saddle equation is still authored in v1 syntax alongside an IR action.)*
-4. **The divergence from v1 — derivative VERTICES.** Detect derivative-vertex
-   generators (degree ≥ 3, e.g. ∇²(δφ²), (∂ₓδφ)²) and, instead of lowering them
-   to v1, route them as per-leg form factors into the momentum-first integrator:
-   `spatial_reduce` (`∫dᵈℓ`, generalize `loop_parametric`) + `temporal_integrate`
-   backend A; validate vs the `loop_dyson` oracle (backend B) on the bubble to
-   ~1e-6.
-5. Output `q→x` FT; then Model B `∇²φ³` / KPZ `(∂ₓφ)²` as the new capability v1
-   could not do.
+4. **The divergence from v1 — derivative VERTICES.**
+   - ✅ **4a** `classify_generators`: split derived generators into bilinear
+     (→ kernel) vs derivative-vertex (→ form factors), by per-term field-degree.
+     Wired into `_lower_operator_ir_action`: bilinear lower to v1, vertex raise a
+     precise Phase-4 `NotImplementedError` (validated end-to-end: a
+     `.operator_ir()` Cahn-Hilliard hits the clean boundary).
+   - ✅ **4b** integrator primitive: `loop_dyson` self-energy kernels take an
+     optional `formfactor=F(ℓ)` (the product of the vertices' per-leg momentum
+     form factors); `F=1` reproduces the bubble, `F=−ℓ²`/`−ℓ(q−ℓ)` are applied
+     and validated vs direct ∫dℓ.
+   - **4c (remaining — the plumbing):** connect the two. For a derivative-vertex
+     diagram, map each vertex generator's `(base, chain)` → `form_factor(chain,
+     leg-momentum)` via `route_momenta`, assemble `F(ℓ)` for the loop, and feed
+     `loop_dyson`/`spatial_reduce`.  Requires the vertex generators to survive to
+     the diagram stage (not raise) — i.e. a v2 expand path that registers them so
+     `enumerate_unique_diagrams` sees the topology, then the integrator consumes
+     the form factors.  This is the substantial connect-the-ends step.
+   - **4d:** validate end-to-end vs simulation (Model B `∇²φ³` / KPZ `(∂ₓφ)²`),
+     as the bubble was (R²≈0.999).
+5. Output `q→x` FT; Model B / KPZ as the new capability v1 could not do.
