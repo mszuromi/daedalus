@@ -188,6 +188,35 @@ def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
         ft.expand()
 
 
+def test_temporal_theory_untouched_by_spatial_v2():
+    """A spatial_dim=0 (temporal-only) theory must use the well-optimized
+    TEMPORAL pipeline, fully untouched by the spatial-v2 / operator-IR work.
+    The code GATES the spatial short-circuit on ``model['spatial']`` (compute.py)
+    and the operator-IR overrides on ``ns._operator_ir`` (theory_compiler), so
+    asserting those are absent/off PROVES neither path can fire — ``Dt`` stays
+    the bare v1 multiplicative symbol and the action expands exactly as before."""
+    from pipeline.theory import TheoryBuilder
+    from msrjd.core.field_theory import FieldTheory
+
+    m = (TheoryBuilder('ou_temporal', n_populations=0)
+         .physical_field('phi')                       # NO spatial_dim → temporal
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('T', default=1.0, domain='positive')
+         .set_action_text('phit*((Dt + mu)*phi) - T*phit^2')
+         .build())
+    assert not m.get('spatial')                        # no spatial block emitted
+    assert not m.get('operator_ir')                    # IR off by default
+
+    ft = FieldTheory(m, taylor_order=2)
+    ns, _R, _nt = ft._build_namespace()
+    assert getattr(ns, '_operator_ir', False) is False  # IR not engaged
+    assert SR(ns.Dt).is_symbol()                        # Dt is the bare v1 symbol
+    # the action evaluates with the bare multiplicative Dt — no Lap/Dg nodes,
+    # i.e. the operator-IR binding/lowering never ran for this temporal theory.
+    S = SR(m['action'](ns))
+    assert 'Dt' in str(S) and 'Lap(' not in str(S) and 'Dg' not in str(S)
+
+
 # ── end-to-end transform on the Phase-2 target theory ─────────────
 def test_reaction_diffusion_action_to_kernel_and_vertex():
     """The Phase-2 target: the φ̃φ² reaction-diffusion action authored with the
