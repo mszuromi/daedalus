@@ -218,14 +218,20 @@ backend.
    (composes the passes for both authoring conventions) + `fourier_lower` (the
    generator → `form_factor·base` bridge). Proven on `reaction_diffusion`:
    reproduces `K(ω,k)=−iω+μ+Dk²` + the `g` vertex.
-3. `K(ω,k)` builder (fold **bilinear** generators → kernel) + **vertex**
-   form-factor extraction — i.e. the context-dependent lowering. **Bundled with
-   the `TheoryBuilder` `Lap(phi)` string-authoring + the gated namespace
-   registration + the spatial-v2 `expand()` path**, so the first wired run is
-   correct (the bilinear-vs-vertex split is exactly what makes the propagator
-   right; and the binding-operator switch must be opt-in because `Dt` is a bare
-   multiplicative symbol every existing theory uses).
-4. `spatial_reduce` (`∫dᵈℓ`) + `temporal_integrate` backend A; validate vs the
-   `loop_dyson` oracle (backend B) on the bubble to ~1e-6.
-5. Output `q→x` FT; reproduce `reaction_diffusion_quadratic_1d` `B=0.99`
-   regression end-to-end through v2; then Model B / KPZ as new capability.
+3. ✅ Gated `Lap(phi)`/`Dt(phi)`/`Dx(phi,i)` authoring (`.operator_ir()`),
+   threaded TheoryBuilder → field_theory `ns._operator_ir` → theory_compiler.
+   The action lambda runs the IR passes; **Phase 3b-i** lowers the derived
+   generators back to the v1 bare-symbol form, so a derivative-free-vertex
+   theory (reaction-diffusion) becomes IDENTICAL to v1 and flows through the
+   whole pipeline — `compute_cumulants` tree+bubble **bit-identical** to v1.
+   Default OFF; all existing theories untouched (33 regression tests green).
+   *(Remaining within Phase 3: IR-enable the `.equation()` MF text too — for now
+   the saddle equation is still authored in v1 syntax alongside an IR action.)*
+4. **The divergence from v1 — derivative VERTICES.** Detect derivative-vertex
+   generators (degree ≥ 3, e.g. ∇²(δφ²), (∂ₓδφ)²) and, instead of lowering them
+   to v1, route them as per-leg form factors into the momentum-first integrator:
+   `spatial_reduce` (`∫dᵈℓ`, generalize `loop_parametric`) + `temporal_integrate`
+   backend A; validate vs the `loop_dyson` oracle (backend B) on the bubble to
+   ~1e-6.
+5. Output `q→x` FT; then Model B `∇²φ³` / KPZ `(∂ₓφ)²` as the new capability v1
+   could not do.
