@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from msrjd.integration.spatial.loop_dyson import (
     bubble_delta_S, bubble_delta_phi2, sigma_R_time, sigma_K_time,
+    _dyson_terms, C_R, C_K,
 )
 
 MU = D = T = 1.0
@@ -53,20 +54,31 @@ def _dS_frequency(q):
 
 @pytest.mark.parametrize('q', [0.0, 0.6, 1.2, 2.0])
 def test_equal_time_dyson_freq_vs_time(q):
-    """Closed-form time-route δC(q,0) == frequency-route (≈2% numerics)."""
-    a = bubble_delta_S(q, MU, D, T)
+    """Closed-form time-route Dyson sum T1+T2 == frequency-route (≈2% num.).
+    Validates the Dyson STRUCTURE (the physical weights C_R,C_K are separate)."""
+    t1, t2 = _dyson_terms(q, MU, D, T)
+    a = t1 + t2
     b = _dS_frequency(q)
     assert abs(a - b) <= 4e-2 * max(abs(a), 1e-12)
 
 
 def test_delta_S_positive_and_decaying():
-    vals = [bubble_delta_S(q, MU, D, T) for q in (0.0, 0.5, 1.0, 2.0)]
+    vals = [bubble_delta_S(q, MU, D, T, g=1.0) for q in (0.0, 0.5, 1.0, 2.0)]
     assert all(v > 0 for v in vals)
     assert vals[0] > vals[1] > vals[2] > vals[3]    # monotone decay in q
 
 
+def test_physical_weights_pinned():
+    """bubble_delta_S applies the framework-pinned weights g²(C_R·T1 + C_K·T2)
+    with C_R=4, C_K=2 (from the M(Γ)=16,8 uniform-momentum diagram values)."""
+    assert (C_R, C_K) == (4.0, 2.0)
+    q, g = 0.7, 1.3
+    t1, t2 = _dyson_terms(q, MU, D, T)
+    assert abs(bubble_delta_S(q, MU, D, T, g) - g * g * (4 * t1 + 2 * t2)) <= 1e-12
+
+
 def test_delta_phi2_finite_positive():
-    d = bubble_delta_phi2(MU, D, T)
+    d = bubble_delta_phi2(MU, D, T, g=0.3)
     assert math.isfinite(d) and d > 0
 
 

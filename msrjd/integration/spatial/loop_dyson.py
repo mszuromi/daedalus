@@ -63,13 +63,17 @@ def sigma_K_time(q, t, mu, D, T):
     return v / (2 * math.pi)
 
 
-# ── equal-time structure-factor correction (closed Dyson form) ────
-def bubble_delta_S(q, mu, D, T):
-    """``δC(q, τ=0)`` from the bubble self-energies, normalization 1.
+# Principled per-diagram normalizations, pinned from the framework's own
+# uniform-momentum diagram values (Σ_R diagram d[1][0] M(Γ)=16, Σ_K diagram
+# d[1][1] M(Γ)=8): with the Dyson terms T1 (Σ_R) and T2 (Σ_K) normalized as
+# below, the physical bubble correction is  c_R·T1 + c_K·T2  with
+C_R, C_K = 4.0, 2.0
 
-    The bubble's contribution to the equal-time structure factor ``S(q)``,
-    per unit ``M(Γ)·coupling²``.  Even in ``q``.
-    """
+
+def _dyson_terms(q, mu, D, T):
+    """Return the two Dyson terms ``(T1, T2)`` of ``δC(q,0)`` (normalization 1):
+    ``T1 = (T/m²)∫Σ_R e^{-mu}``  (retarded+advanced Σ_R),
+    ``T2 = (1/m) ∫Σ_K e^{-mu}``  (Keldysh)."""
     m = _mk(q, mu, D)
     t1f = lambda u: sigma_R_time(q, u, mu, D, T) * math.exp(-m * u)
     t1, _ = integrate.quad(t1f, 0, np.inf, limit=200)
@@ -77,15 +81,23 @@ def bubble_delta_S(q, mu, D, T):
     t2f = lambda u: sigma_K_time(q, u, mu, D, T) * math.exp(-m * u)
     t2, _ = integrate.quad(t2f, 0, np.inf, limit=200)
     t2 /= m
-    return t1 + t2
+    return t1, t2
 
 
-def bubble_delta_phi2(mu, D, T, q_cut=40.0):
-    """``δ⟨φ²⟩ = ∫dq/2π δC(q,0)`` from the bubble, normalization 1.
+def bubble_delta_S(q, mu, D, T, g=1.0):
+    """PHYSICAL bubble contribution to the equal-time structure factor
+    ``δC(q, τ=0)`` for the ``φ̃φ²`` theory: ``g²·(C_R·T1 + C_K·T2)`` with the
+    principled weights ``C_R=4, C_K=2`` (from the framework's M(Γ)).  Even in q.
+    Excludes the q-independent ``φ²``-tadpole (the mass shift, d[1][2])."""
+    t1, t2 = _dyson_terms(q, mu, D, T)
+    return g * g * (C_R * t1 + C_K * t2)
 
-    ``q_cut`` bounds the (fast-decaying) momentum integral; the integrand
-    ``δS(q)`` falls off ``~1/q⁴`` so a finite cut is accurate.
+
+def bubble_delta_phi2(mu, D, T, g=1.0, q_cut=40.0):
+    """``δ⟨φ²⟩ = ∫dq/2π δC(q,0)`` from the bubble (PHYSICAL, g²-scaled).
+
+    ``q_cut`` bounds the (fast-decaying ``~1/q⁴``) momentum integral.
     """
-    f = lambda q: bubble_delta_S(q, mu, D, T)
+    f = lambda q: bubble_delta_S(q, mu, D, T, g)
     v, _ = integrate.quad(f, 0.0, q_cut, limit=200)
     return 2.0 * v / (2 * math.pi)        # even in q → 2·∫₀
