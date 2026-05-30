@@ -369,6 +369,52 @@ def _diagram_is_bubble(td):
     return False
 
 
+def bubble_loop_form_factor(td, op_chain):
+    """Phase 4c-2: assemble the loop-momentum **form factor** ``F(q,ℓ)`` a
+    derivative-vertex theory puts on a 1-loop bubble diagram ``td``.
+
+    Each interaction vertex carries a derivative operator (``op_chain``, e.g.
+    ``(('Lap',),)`` for ``∇²(φ²)``) acting on its φ² composite; by momentum
+    conservation the composite momentum equals the vertex's **response (φ̃) leg**
+    momentum — which in the all-``G_R`` representation is the vertex's UNIQUE
+    OUTGOING edge.  ``route_momenta`` supplies that momentum per edge, so
+
+        F(q,ℓ) = ∏_{interaction vertices v}  f_chain( p_v ),
+
+    with ``p_v`` the outgoing-edge momentum and ``f_chain`` the per-leg Fourier
+    factor (``Lap → −p²``, ``Dx → i p`` in 1-D).  Returns a sympy expression in
+    the routing symbols ``q₀`` (external) and ``ℓ₀`` (loop); an empty chain
+    gives ``1`` (the plain bubble).  Validated: the φ̃φ² ``Σ_R`` bubble with a
+    ``Lap`` chain returns ``q₀²(q₀−ℓ₀)²`` (matches the hand derivation).
+    """
+    import sympy as _sp
+    from msrjd.integration.spatial.momentum_routing import route_momenta
+    rr = route_momenta(td)
+    leaves = set(td.prediagram[2])
+    out_mom = {}
+    for (u, _v, _l), mom in rr.edge_momenta.items():
+        out_mom.setdefault(u, []).append(mom)
+    iverts = [n for n in out_mom if n not in leaves and len(out_mom[n]) == 1]
+
+    def _f_chain(p):
+        f = _sp.Integer(1)
+        for entry in op_chain:
+            if entry[0] == 'Lap':
+                f *= -p ** 2
+            elif entry[0] == 'Dx':
+                f *= _sp.I * p
+            else:
+                raise NotImplementedError(
+                    f"bubble_loop_form_factor: operator {entry[0]!r} not "
+                    f"supported (only Lap, Dx).")
+        return f
+
+    F = _sp.Integer(1)
+    for n in iverts:
+        F *= _f_chain(out_mom[n][0])
+    return _sp.expand(F)
+
+
 def _prefactor_is_live(pre, num_params, tol=1e-12):
     """True if the diagram's scalar prefactor is nonzero at the saddle/params.
     A topological bubble whose prefactor ``∝ φ*²`` (e.g. the cubic-from-quartic

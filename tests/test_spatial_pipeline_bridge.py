@@ -232,6 +232,42 @@ def test_bubble_routes_and_extracts_coupling_exactly():
     assert abs(dC_x0 - bubble_delta_phi2(1.0, 1.0, 1.0, g=g_true)) <= 3e-2 * dC_x0
 
 
+def test_bubble_loop_form_factor_extraction():
+    """Phase 4c-2: ``bubble_loop_form_factor`` reads each interaction vertex's
+    φ̃-leg momentum from ``route_momenta`` and assembles the derivative-vertex
+    form factor.  For the φ̃φ² bubbles with a ``Lap`` chain (∇²φ²), the two
+    self-energies give F = q²(q−ℓ)² (Σ_R: one external + one internal vertex)
+    and F = q⁴ (Σ_K: both vertices external) — matching the hand derivation;
+    an empty chain gives 1 (the plain bubble)."""
+    import sympy as sp
+    from msrjd.core.vertices import extract_vertex_types, extract_source_types
+    from msrjd.diagrams.symmetry import classify_coefficient_factors
+    from pipeline._diagrams import enumerate_unique_diagrams
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from msrjd.integration.spatial.pipeline_bridge import (
+        bubble_loop_form_factor, _diagram_is_bubble)
+
+    model = _load('reaction_diffusion_quadratic_1d')
+    ft = FieldTheory(model, taylor_order=3); ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    vt = extract_vertex_types(ft); st = extract_source_types(ft)
+    rv = list(ft._ns._ring_var_names)
+    ri, pi = build_field_index_map(rv, ft._n_tilde)
+    ub, _, _ = enumerate_unique_diagrams(
+        ft, model, k=2, max_ell=1, external_fields=[('dphi', 1), ('dphi', 1)],
+        G_ft=prop['G_ft'], resp_idx=ri, phys_idx=pi, vtypes=vt, stypes=st,
+        use_cache=False, verbose=False)
+    bubbles = [td for td in ub.get(1, []) if _diagram_is_bubble(td)]
+    assert len(bubbles) == 2
+
+    q0, l0 = sp.Symbol('q0'), sp.Symbol('l0')
+    lap = (('Lap',),)
+    Fs = {sp.expand(bubble_loop_form_factor(td, lap)) for td in bubbles}
+    assert Fs == {sp.expand(q0 ** 2 * (q0 - l0) ** 2), sp.expand(q0 ** 4)}
+    # plain (no derivative) → form factor 1 on every bubble
+    assert all(bubble_loop_form_factor(td, ()) == 1 for td in bubbles)
+
+
 def test_diagram_classification_bubble_vs_tadpole():
     """``_diagram_is_bubble`` (q·ℓ cross-term) + ``_prefactor_is_live`` (φ*²
     dead at φ*=0) correctly separate the φ̃φ² LIVE bubbles from the φ²-tadpole,
