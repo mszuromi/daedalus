@@ -214,10 +214,17 @@ backend.
 ## 10. Build order (Phases)
 
 1. ✅ Operator IR + linearity/saddle/generators/form-factors (landed).
-2. Author `Lap(phi)` syntax in `TheoryBuilder`; parse action → IR; wire
-   `expand_about_saddle`/`kill_means`/`to_derived_generators` ahead of
-   `FieldTheory.expand`.
-3. `K(ω,k)` builder (fold bilinear-`v` → `−k²`); vertex form-factor extraction.
+2. ✅ Action → IR → (fields + derived generators) transform: `prepare_action`
+   (composes the passes for both authoring conventions) + `fourier_lower` (the
+   generator → `form_factor·base` bridge). Proven on `reaction_diffusion`:
+   reproduces `K(ω,k)=−iω+μ+Dk²` + the `g` vertex.
+3. `K(ω,k)` builder (fold **bilinear** generators → kernel) + **vertex**
+   form-factor extraction — i.e. the context-dependent lowering. **Bundled with
+   the `TheoryBuilder` `Lap(phi)` string-authoring + the gated namespace
+   registration + the spatial-v2 `expand()` path**, so the first wired run is
+   correct (the bilinear-vs-vertex split is exactly what makes the propagator
+   right; and the binding-operator switch must be opt-in because `Dt` is a bare
+   multiplicative symbol every existing theory uses).
 4. `spatial_reduce` (`∫dᵈℓ`) + `temporal_integrate` backend A; validate vs the
    `loop_dyson` oracle (backend B) on the bubble to ~1e-6.
 5. Output `q→x` FT; reproduce `reaction_diffusion_quadratic_1d` `B=0.99`
