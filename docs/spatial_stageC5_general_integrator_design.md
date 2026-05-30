@@ -71,10 +71,26 @@ The Stage-C tadpole code correctly rejects it (`g` is q-dependent).
   the `∫dℓ` (Gauss–Hermite vs adaptive quad) and the resulting `δC(q,τ)` against
   the analytic/closed reference. *Checkpoint:* `∫dℓ` converges; `Σ_R(q)` matches
   the convolution oracle. ← **next**
-- **C.5b — `edge_mode_sums_override` + spatial loop integrator.** Add the kwarg;
-  build per-edge modes from routing; GH `∫dℓ`. Validate the override path
-  reproduces C.5a on the bubble AND the Stage-C tadpole (as a 1-node trivial
-  loop). *Checkpoint:* time-only suite byte-identical; bubble matches C.5a.
+- **C.5b — `edge_mode_sums` hook + spatial loop integrator.**
+  - **Hooks landed (`d8b5489` + this commit):** `integrate_diagram(...,
+    edge_mode_sums_builder=…)` and `compute_correction_td(...,
+    edge_mode_sums_builder_fn=…)` — both additive, default off, time-only path
+    byte-unchanged (test_time_domain 21 + OU smoke green). Each `edge_info`
+    entry carries its `(u,v,lbl)` key so it maps cleanly onto
+    `route_momenta`'s per-edge `k_e²`.
+  - **Spike (`stageC5b_loop_integrator_spike.py`):** structurally correct
+    (C.5a already validated the `∫dℓ`), but a **performance WIP** — re-running
+    the full `integrate_diagram` per `ℓ`-node is too slow because the 1-loop
+    polytope (the `2^|E|` δ-subset sum + polygon/poset evaluation) is itself
+    seconds-scale and is **`ℓ`-independent**.
+  - **Remaining (the real C.5b work):** build the time-polytope ONCE and
+    re-evaluate only the per-edge `(C_α, λ_α)` per `ℓ`-node — cache the
+    per-subset evaluator (`_build_fast_subset_evaluator_from_modes`) and feed it
+    node-dependent edge modes — so the cost per `ℓ`-node is one cheap evaluator
+    call, not a full `integrate_diagram`. (Alternative: momentum-first Gaussian
+    `∫dℓ` at fixed internal times.) Then `∫dℓ` by fixed Gauss–Legendre /
+    Gauss–Hermite. *Checkpoint:* reproduce the Stage-C tadpole
+    `δC(0.8,0.5)=−0.0447` through the override; then the bubble vs C.5a.
 - **C.5c — wire into `compute.py` + retire guards.** `max_ell=1` routes any
   1-loop self-energy through the general integrator (drop the q-independence
   special case); `max_ell>1` lifts to nested `∫dℓ₁dℓ₂…`. Validate vs a direct

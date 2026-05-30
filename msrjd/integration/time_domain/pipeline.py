@@ -151,6 +151,8 @@ def compute_correction_td(
     ext_time_vars=None,
     origin_leaf_idx=0,
     external_fields=None,
+    # Spatial loop integrator (Stage C.5): td -> per-edge EdgeModeSum builder.
+    edge_mode_sums_builder_fn=None,
     # Legacy support: accept kernel_groups as first arg
     kernel_groups=None,
 ):
@@ -247,6 +249,9 @@ def compute_correction_td(
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
             external_fields=external_fields,
+            edge_mode_sums_builder=(
+                edge_mode_sums_builder_fn(td)
+                if edge_mode_sums_builder_fn is not None else None),
         )
         if result['status'] == 'ok':
             contribution = result['contribution']
