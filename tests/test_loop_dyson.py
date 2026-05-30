@@ -118,3 +118,14 @@ def test_sigma_formfactor(q=0.9, t=0.7):
         -np.inf, np.inf, limit=120)[0] / (2 * math.pi)
     got = sigma_R_time(q, t, MU, D, T, formfactor=ff)
     assert abs(got - ref) <= 1e-9 and abs(got - base) > 1e-6     # applied, and changes the result
+
+
+def test_bubble_delta_S_formfactor(q=0.7):
+    """The form factor threads through the full equal-time bubble assembly:
+    F=1 reproduces the plain bubble (regression); a derivative F(ℓ)=−ℓ² changes
+    it (and stays finite)."""
+    base = bubble_delta_S(q, MU, D, T, g=1.0)
+    same = bubble_delta_S(q, MU, D, T, g=1.0, formfactor=lambda l: 1.0)
+    assert abs(same - base) <= 1e-9 * abs(base) + 1e-15
+    diff = bubble_delta_S(q, MU, D, T, g=1.0, formfactor=lambda l: -l ** 2)
+    assert math.isfinite(diff) and abs(diff - base) > 1e-6

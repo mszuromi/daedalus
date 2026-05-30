@@ -85,26 +85,33 @@ def sigma_K_time(q, t, mu, D, T, formfactor=None):
 C_R, C_K = 4.0, 2.0
 
 
-def _dyson_terms(q, mu, D, T):
+def _dyson_terms(q, mu, D, T, formfactor=None):
     """Return the two Dyson terms ``(T1, T2)`` of ``δC(q,0)`` (normalization 1):
     ``T1 = (T/m²)∫Σ_R e^{-mu}``  (retarded+advanced Σ_R),
-    ``T2 = (1/m) ∫Σ_K e^{-mu}``  (Keldysh)."""
+    ``T2 = (1/m) ∫Σ_K e^{-mu}``  (Keldysh).
+
+    ``formfactor`` (Phase 4): an optional loop-momentum form factor ``F(ℓ)``
+    (the product of the two vertices' per-leg momentum factors) threaded into
+    both self-energies; ``None`` ⇒ the plain bubble."""
     m = _mk(q, mu, D)
-    t1f = lambda u: sigma_R_time(q, u, mu, D, T) * math.exp(-m * u)
+    t1f = lambda u: sigma_R_time(q, u, mu, D, T, formfactor) * math.exp(-m * u)
     t1, _ = integrate.quad(t1f, 0, np.inf, limit=200)
     t1 *= T / (m * m)
-    t2f = lambda u: sigma_K_time(q, u, mu, D, T) * math.exp(-m * u)
+    t2f = lambda u: sigma_K_time(q, u, mu, D, T, formfactor) * math.exp(-m * u)
     t2, _ = integrate.quad(t2f, 0, np.inf, limit=200)
     t2 /= m
     return t1, t2
 
 
-def bubble_delta_S(q, mu, D, T, g=1.0):
+def bubble_delta_S(q, mu, D, T, g=1.0, formfactor=None):
     """PHYSICAL bubble contribution to the equal-time structure factor
     ``δC(q, τ=0)`` for the ``φ̃φ²`` theory: ``g²·(C_R·T1 + C_K·T2)`` with the
     principled weights ``C_R=4, C_K=2`` (from the framework's M(Γ)).  Even in q.
-    Excludes the q-independent ``φ²``-tadpole (the mass shift, d[1][2])."""
-    t1, t2 = _dyson_terms(q, mu, D, T)
+    Excludes the q-independent ``φ²``-tadpole (the mass shift, d[1][2]).
+
+    ``formfactor=F(ℓ)`` (Phase 4) injects a derivative-vertex form factor into
+    the loop; ``None`` is the plain bubble (validated B=0.99 vs sim)."""
+    t1, t2 = _dyson_terms(q, mu, D, T, formfactor)
     return g * g * (C_R * t1 + C_K * t2)
 
 
