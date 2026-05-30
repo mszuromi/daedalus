@@ -44,20 +44,28 @@ def _mk(k, mu, D):
 
 
 # ── self-energy time kernels (direct ∫dℓ; pole-free, fast) ─────────
-def sigma_R_time(q, t, mu, D, T):
-    """Retarded bubble ``∫dℓ/2π G_R(ℓ,t) C(q-ℓ,t)``  (t>0)."""
+# ``formfactor`` (Phase 4): an optional callable ``F(ℓ)`` multiplying the loop
+# integrand — the product of the two vertices' per-leg momentum form factors for
+# a DERIVATIVE-vertex theory (e.g. ``F(ℓ)=−ℓ²`` for a ∇² on the loop leg, or
+# ``F(ℓ)=−ℓ·(q−ℓ)`` for a KPZ gradient pair).  ``None`` ⇒ the plain bubble
+# (``F=1``), exactly reproducing the validated Stage-C.5 result.  The momentum-
+# first ∫dℓ stays pole-free with the polynomial factor, so this is robust.
+def sigma_R_time(q, t, mu, D, T, formfactor=None):
+    """Retarded bubble ``∫dℓ/2π F(ℓ) G_R(ℓ,t) C(q-ℓ,t)``  (t>0)."""
     if t <= 0:
         return 0.0
-    f = lambda l: (math.exp(-_mk(l, mu, D) * t)
+    ff = formfactor if formfactor is not None else (lambda l: 1.0)
+    f = lambda l: (ff(l) * math.exp(-_mk(l, mu, D) * t)
                    * (T / _mk(q - l, mu, D)) * math.exp(-_mk(q - l, mu, D) * t))
     v, _ = integrate.quad(f, -np.inf, np.inf, limit=120)
     return v / (2 * math.pi)
 
 
-def sigma_K_time(q, t, mu, D, T):
-    """Keldysh bubble ``∫dℓ/2π C(ℓ,t) C(q-ℓ,t)``  (even in t)."""
+def sigma_K_time(q, t, mu, D, T, formfactor=None):
+    """Keldysh bubble ``∫dℓ/2π F(ℓ) C(ℓ,t) C(q-ℓ,t)``  (even in t)."""
     at = abs(t)
-    f = lambda l: ((T / _mk(l, mu, D)) * math.exp(-_mk(l, mu, D) * at)
+    ff = formfactor if formfactor is not None else (lambda l: 1.0)
+    f = lambda l: (ff(l) * (T / _mk(l, mu, D)) * math.exp(-_mk(l, mu, D) * at)
                    * (T / _mk(q - l, mu, D)) * math.exp(-_mk(q - l, mu, D) * at))
     v, _ = integrate.quad(f, -np.inf, np.inf, limit=120)
     return v / (2 * math.pi)

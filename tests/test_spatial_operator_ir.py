@@ -164,6 +164,30 @@ def test_classify_kpz_gradient_vertex():
     assert len(bil) == 2                                      # Dt, Lap bilinear
 
 
+def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
+    """A derivative-VERTEX theory (Cahn-Hilliard ∇²φ³) authored with
+    ``.operator_ir()`` reaches a CLEAN, precise Phase-4 NotImplementedError on
+    expand (not a crash, not silent wrong numbers) — the bilinear ∇²φ lowers,
+    the ∇²(δφ²)/∇²(δφ³) vertices are correctly flagged as needing the
+    momentum-first form-factor integrator."""
+    import pytest
+    from pipeline.theory import TheoryBuilder
+    from msrjd.core.field_theory import FieldTheory
+
+    m = (TheoryBuilder('ch_v2', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('lam', default=0.1, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .set_action_text(
+             'phit*(Dt(phi) + mu*phi - D*Lap(phi) + lam*Lap(phi^3)) - T*phit^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(m, taylor_order=4)
+    with pytest.raises(NotImplementedError, match='derivative VERTICES'):
+        ft.expand()
+
+
 # ── end-to-end transform on the Phase-2 target theory ─────────────
 def test_reaction_diffusion_action_to_kernel_and_vertex():
     """The Phase-2 target: the φ̃φ² reaction-diffusion action authored with the

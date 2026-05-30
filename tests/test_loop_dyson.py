@@ -103,3 +103,18 @@ def test_sigma_kernels_match_direct():
             fR = lambda l: math.exp(-_mq(l) * t) / 1.0 * (T / _mq(q - l)) * math.exp(-_mq(q - l) * t)
             rR, _ = integrate.quad(fR, -np.inf, np.inf, limit=120)
             assert abs(sigma_R_time(q, t, MU, D, T) - rR / (2 * math.pi)) <= 1e-9
+
+
+def test_sigma_formfactor(q=0.9, t=0.7):
+    """Phase 4: a vertex form factor F(ℓ) multiplies the loop integrand.
+    F=1 reproduces the plain bubble (regression); a derivative form factor
+    F(ℓ)=−ℓ² (a ∇² on the loop leg) is applied and matches an independent
+    direct ∫dℓ with that factor."""
+    base = sigma_R_time(q, t, MU, D, T)
+    assert abs(sigma_R_time(q, t, MU, D, T, formfactor=lambda l: 1.0) - base) <= 1e-12 * abs(base) + 1e-15
+    ff = lambda l: -l ** 2
+    ref = integrate.quad(
+        lambda l: ff(l) * math.exp(-_mq(l) * t) * (T / _mq(q - l)) * math.exp(-_mq(q - l) * t),
+        -np.inf, np.inf, limit=120)[0] / (2 * math.pi)
+    got = sigma_R_time(q, t, MU, D, T, formfactor=ff)
+    assert abs(got - ref) <= 1e-9 and abs(got - base) > 1e-6     # applied, and changes the result
