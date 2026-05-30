@@ -99,6 +99,41 @@ The Stage-C tadpole code correctly rejects it (`g` is q-dependent).
   `~poles^loops`; per §4c′ ladder, drop individual sub-integrals to numerics as
   needed.
 
+## C.5b performance findings (profiled 2026-05-29)
+
+Per-call timings (Allen-Cahn tadpole, 1 non-zero ell=1 diagram):
+- `integrate_diagram` itself: **1 ms** (the time-polytope is NOT the bottleneck —
+  my earlier "rebuild the polytope per node" worry was wrong).
+- `compute_poles_and_residues`: 46 ms → the override overhead (~5 per node) is
+  the only real per-node cost; **cache propagator data per `k²`** removes it.
+- BUT one `ℓ`-node (`ℓ=−9.95`, loop mass ≈100) took **269 s**.
+
+Root cause: the surviving tadpole diagram has a **double edge** (both loop lines
+carry `±ℓ` → identical mass → exactly degenerate poles). At MODERATE momentum
+this is fast (0.11 s/node); at LARGE `|ℓ|` (large pole magnitude) the
+integrator's degenerate / high-precision pole-handling path (the open
+`m≥3` chain-simplex precision issue, `docs/m_ge3_precision_bug_audit.md`)
+churns. So the blocker is not the polytope rebuild — it is the **existing
+degenerate-pole slow path, triggered at large loop momentum**.
+
+Tail behaviour also matters: the **tadpole** loop decouples → a `1/ℓ²`
+power-law tail (slow numerical `∫dℓ` convergence, and it forces the
+large-`|ℓ|` nodes that hit the slow path). It is genuinely better handled by
+the Stage-C **closed form**. The **bubble** (two distinct loop edges
+`ℓ`, `q−ℓ`) decays as `1/ℓ⁴` → a moderate `∫dℓ` range suffices, and only the
+single point `ℓ=q/2` is exactly degenerate. **⇒ validate the general
+integrator on the BUBBLE, not the tadpole.**
+
+Practical path for C.5b cont.:
+1. cache `compute_poles_and_residues` per `k²` (kills the 46 ms × 5 overhead);
+2. integrate `ℓ` over the PHYSICAL range only (drop negligible large-mass
+   nodes — the integrand is `≲e^{-Dℓ²τ}/ℓ²`), avoiding the large-pole slow path;
+3. target the **bubble** δC vs an independent (ω,k) oracle (the C.5a `∫dℓ`
+   already validates the loop-momentum integral itself);
+4. for exactly-degenerate points (double edges; `ℓ=q/2`) either perturb the
+   node or add an analytic degenerate-limit branch — and/or pick up the open
+   `m≥3` precision fix, which this work now has a second motivation for.
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
