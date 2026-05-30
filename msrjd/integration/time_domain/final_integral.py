@@ -2417,6 +2417,7 @@ def integrate_diagram(
     origin_leaf_idx=0,
     external_fields=None,
     representative_ir=None,  # deprecated, kept for backward compat
+    edge_mode_sums_builder=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -2863,7 +2864,14 @@ def integrate_diagram(
     # residues from SR on every call.  ``None`` if the propagator
     # data is incomplete, in which case the fast path stays on
     # the legacy tuple-based extractor.
-    edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data)
+    # Spatial loop integrator hook (Stage C.5): when a builder is supplied,
+    # it constructs the per-edge EdgeModeSums from the routed per-edge momenta
+    # (each edge ``ei`` carries its ``(u, v, lbl)`` key).  Defaults to the
+    # standard global-propagator extractor, so the time-only path is unchanged.
+    if edge_mode_sums_builder is not None:
+        edge_mode_sums = edge_mode_sums_builder(edge_info, propagator_data)
+    else:
+        edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data)
 
     # Combined prefactor (numerical)
     cp = SR(combined_prefactor) if combined_prefactor is not None else SR(1)
