@@ -212,6 +212,37 @@ close-pair blocker is gone (it cannot arise — no momentum-dependent poles):
 5. **Validate** the full bubble δ⟨φ²⟩ vs the `(ω,k)` oracle and a stable sim
    (use `φ²+φ³` so the potential is bounded).
 
+## C.5 — bubble diagram structure mapped (the all-G_R + noise representation)
+
+Dumped the φ̃φ² ``max_ell=1`` diagrams (``reaction_diffusion_quadratic_1d``).
+The theory has ONE interaction vertex ``(1,2) g·φ̃φ²`` and ONE source
+``(2,0) −T·φ̃²``.  Every propagator edge is ``G_R`` (resp ``phit`` → phys
+``dphi``); a "correlation line" ``C`` is a noise source joining two ``G_R``s.
+A vertex's role is read from its leg counts: 2 ``phit`` (out) ⇒ noise source;
+1 ``phit`` + 2 ``dphi`` ⇒ interaction.  The three diagrams are exactly the
+Dyson terms:
+
+| diag | M(Γ) | structure | loop | external legs |
+|---|---|---|---|---|
+| d[1][0] | **16** | ``G_R⁰ Σ_R C⁰`` | ``G_R(q−ℓ)·C(ℓ)`` (1 noise src) | G_R + C⁰ |
+| d[1][1] | **8** | ``G_R⁰ Σ_K G_A⁰`` | ``C(ℓ)·C(ℓ+q)`` (2 noise src) | G_R + G_A |
+| d[1][2] | **8** | φ²-tadpole | ``⟨φ²⟩`` self-loop + ``k=0`` line | mass shift (q-indep) |
+
+(``M(Γ)`` = scalar_prefactor / ∏coeffs, with ∏coeffs = ``g²T²``.)
+
+This is precisely what ``loop_dyson`` computes (``Σ_R``, ``Σ_K``, Dyson), and the
+``Σ_R:Σ_K`` multiplicity ``16:8 = 2:1`` matches ``loop_dyson``'s
+``2·δC₁ : δC₂`` weighting — independent confirmation the assembly is right.
+d[1][2] (the φ²-tadpole) is the q-independent ``A·(−T/m²)`` piece of the sim
+fit; ``loop_dyson.bubble_delta_S`` is the q-DEPENDENT d[1][0]+d[1][1].
+
+**Factor pinning** (remaining): the overall ``c·g²`` (sim ≈ 6.8) follows from
+the bare all-``G_R`` diagram integral × the pipeline prefactor.  Either evaluate
+one bare diagram (the per-diagram momentum-first evaluator: ∫dℓ Gaussian over the
+ℓ-edges, then the vertex-time integral with retarded Heavisides — all ``G_R`` so
+NO Schwinger needed) and read off ``c``, or finish the T/coupling bookkeeping.
+Then wire ``compute_cumulants(max_ell=1)`` to the loop_dyson + tadpole sum.
+
 ## Risks
 
 - **edge_info ↔ routing key match.** The override must map each `EdgeModeSum`
