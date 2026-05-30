@@ -1,0 +1,131 @@
+"""
+tests/test_spatial_operator_ir.py
+=================================
+The spatial operator IR (``pipeline.spatial_operator_ir``) — the momentum-space
+foundation for spatial field theories.
+
+Pins:
+  * the operators are LINEAR (distribute over sums, pull out field/coord-free
+    constants), and that linearity is the intrinsic algebra;
+  * saddle expansion ``Lap(φ̄+δφ) → Lap(φ̄)+Lap(δφ)`` RETAINS the mean, and the
+    homogeneous-mean annihilation is a SEPARATE, contingent pass — an
+    inhomogeneous saddle keeps ``Lap(φ̄)``;
+  * physics vertices come out right: Cahn–Hilliard ``∇²φ³`` and KPZ ``(∂ₓφ)²``;
+  * ``∇⁴`` is a single derived generator; form factors ``Lap→−k²`` etc.
+
+Run:  sage -python -m pytest tests/test_spatial_operator_ir.py -q
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from sage.all import SR, I, var, function
+
+from pipeline.spatial_operator_ir import (
+    Lap, Dt, Dx, apply_linearity, expand_about_saddle, kill_means,
+    to_derived_generators, form_factor,
+)
+
+phi, psi, phibar, dphi, dpsi, mu, D, lam, k0, k1, om, x = var(
+    'phi psi phibar dphi dpsi mu D lam k0 k1 omega x')
+
+
+def _zero(e):
+    return bool(SR(e).expand().is_trivial_zero())
+
+
+# ── linearity (the operator algebra) ──────────────────────────────
+def test_linearity_distributes_and_pulls_constants():
+    out = apply_linearity(Lap(mu * phi + D * psi), [phi, psi])
+    assert _zero(out - (mu * Lap(phi) + D * Lap(psi)))
+
+
+def test_linearity_keeps_derivative_of_a_product_atomic():
+    # ∇²(φψ) is a genuine vertex, NOT φ·∇²ψ + … — left atomic.
+    out = apply_linearity(Lap(phi * psi), [phi, psi])
+    assert str(out) == 'Lap(phi*psi)'
+
+
+def test_position_dependent_coefficient_stays_atomic():
+    # x is a coordinate → Lap(x·δφ) must NOT pull x out (Leibniz deferred).
+    out = apply_linearity(Lap(x * dphi), [dphi])
+    assert str(out) == 'Lap(dphi*x)' or str(out) == 'Lap(x*dphi)'
+
+
+# ── saddle expansion: linearity applied, mean RETAINED ────────────
+def test_saddle_expand_retains_mean():
+    se = expand_about_saddle(Lap(phi), {phi: (phibar, dphi)})
+    assert _zero(se - (Lap(phibar) + Lap(dphi)))
+
+
+def test_kill_means_is_a_separate_contingent_pass():
+    se = expand_about_saddle(Lap(phi), {phi: (phibar, dphi)})
+    # homogeneous saddle → drop Lap(φ̄)
+    assert _zero(kill_means(se, [phibar]) - Lap(dphi))
+    # INHOMOGENEOUS saddle → Lap(φ̄) is retained (cancels the rest of the MF PDE)
+    assert 'Lap(phibar)' in str(se)
+    assert 'Lap(phibar)' in str(kill_means(se, [phibar], ops=('Dt',)))
+
+
+def test_dt_gets_the_same_treatment():
+    se = expand_about_saddle(Dt(phi), {phi: (phibar, dphi)})
+    assert _zero(se - (Dt(phibar) + Dt(dphi)))
+    assert _zero(kill_means(se, [phibar]) - Dt(dphi))      # stationary mean
+
+
+# ── derived generators (the u=δφ, v=∇²δφ trick) ───────────────────
+def test_phi_times_lap_phi_becomes_a_two_leg_vertex():
+    t = kill_means(expand_about_saddle(phi * Lap(phi),
+                                       {phi: (phibar, dphi)}), [phibar])
+    g, gmap = to_derived_generators(t, [dphi])
+    # δφ·v + φ̄·v  with v = ∇²δφ
+    (gen, (base, chain)), = gmap.items()
+    assert str(base) == 'dphi' and chain == (('Lap',),)
+    assert _zero(g - gen * (dphi + phibar))
+
+
+def test_nabla4_is_a_single_generator():
+    t = kill_means(expand_about_saddle(Lap(Lap(phi)),
+                                       {phi: (phibar, dphi)}), [phibar])
+    g, gmap = to_derived_generators(t, [dphi])
+    base, chain = gmap[g]                       # g reduced to the ∇⁴ generator
+    assert str(base) == 'dphi' and chain == (('Lap',), ('Lap',))
+    assert _zero(form_factor(chain, [k0]) - k0 ** 4)
+
+
+# ── physics vertices ──────────────────────────────────────────────
+def test_cahn_hilliard_conserved_nonlinearity():
+    t = kill_means(expand_about_saddle(lam * Lap(phi ** 3),
+                                       {phi: (phibar, dphi)}), [phibar])
+    # 3λφ̄²·∇²δφ (bilinear) + 3λφ̄·∇²(δφ²) + λ·∇²(δφ³)
+    assert _zero(t - lam * (3 * phibar ** 2 * Lap(dphi)
+                            + 3 * phibar * Lap(dphi ** 2) + Lap(dphi ** 3)))
+    _, gmap = to_derived_generators(t, [dphi])
+    bases = sorted(str(b) for b, _ in gmap.values())
+    assert bases == ['dphi', 'dphi^2', 'dphi^3']
+
+
+def test_kpz_gradient_nonlinearity():
+    t = kill_means(expand_about_saddle(Dx(phi, 0) ** 2,
+                                       {phi: (phibar, dphi)}), [phibar])
+    g, gmap = to_derived_generators(t, [dphi])
+    (gen, (base, chain)), = gmap.items()
+    assert str(base) == 'dphi' and chain == (('Dx', 0),)
+    assert _zero(g - gen ** 2)
+
+
+# ── Fourier form factors ──────────────────────────────────────────
+def test_form_factors():
+    assert _zero(form_factor((('Lap',),), [k0]) + k0 ** 2)               # −k²
+    assert _zero(form_factor((('Lap',), ('Lap',)), [k0]) - k0 ** 4)      # k⁴
+    assert _zero(form_factor((('Dx', 0),), [k0, k1]) - I * k0)           # i k_0
+    assert _zero(form_factor((('Dx', 1),), [k0, k1]) - I * k1)
+    assert _zero(form_factor((('Dt',),), [k0], omega=om) + I * om)       # −iω
+
+
+def test_form_factor_multi_d_laplacian():
+    # ∇² in 2-D → −(k0²+k1²)
+    assert _zero(form_factor((('Lap',),), [k0, k1]) + (k0 ** 2 + k1 ** 2))
