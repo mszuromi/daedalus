@@ -147,8 +147,28 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
     x_grid = np.arange(N) * dx
     meta = {'dx': dx, 'dt': dt, 'L': L, 'N': N, 'mu': mu, 'D': D,
             'lam': lam, 'g': g, 'g_lap': g_lap, 'T': T,
-            'record_every': record_every, 'n_rec': snaps.shape[0]}
+            'record_every': record_every, 'n_rec': snaps.shape[0],
+            # the PHYSICAL UV cutoff this grid imposes (Nyquist): k_max = π/dx =
+            # πN/L.  A backend-C loop computed at THIS k_max is directly
+            # comparable to this simulation (the "match the cutoff" principle).
+            'k_max': np.pi / dx}
     return snaps, x_grid, meta
+
+
+def structure_factor(snaps, meta):
+    """Equal-time structure factor ``S(q) = ⟨|φ_q|²⟩`` on the rfft momentum grid,
+    normalized as ``(L/N²)·⟨|FFT φ|²⟩`` (so the continuum tree gives
+    ``S(q) → T/(μ+Dq²)``).  Returns ``(q_grid, S)`` with ``q_grid`` up to the
+    physical cutoff ``meta['k_max']``.
+
+    This is the matched-cutoff oracle for backend-C milestones III.0/III.2:
+    compare a theory ``S(q)`` computed at ``meta['k_max']`` against this.
+    """
+    L, N = meta['L'], int(meta['N'])
+    q_grid = 2.0 * np.pi * np.fft.rfftfreq(N, d=L / N)
+    F = np.fft.rfft(snaps, axis=1)               # (n_rec, N//2+1)
+    S = np.mean(np.abs(F) ** 2, axis=0) * (L / N ** 2)
+    return q_grid, S
 
 
 def equal_time_correlator(snaps):
