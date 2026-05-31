@@ -4,8 +4,11 @@
 representation of MSR-JD loop integrals, the Symanzik polynomials in our
 heat-kernel time representation, the residual *causal* time-simplex integral, its
 singularity structure, and how sector decomposition + dimensional regularization
-turn it into a finite, renormalized result at **arbitrary loop order L and
-spatial dimension d**.
+turn the genuine UV divergences into a finite, renormalized result. The
+**momentum reduction is exact at arbitrary loop order `L` and spatial dimension
+`d`**; making that practical and renormalized at high `(L,d)` is the job of the
+causal time-simplex + sector-decomposition backend — the research component, not
+a packaged result.
 
 **Companion docs.** Engineering plan & milestones: `docs/backend_C_design.md`.
 High-level decision (backend A now, C later) and reading list:
@@ -42,6 +45,15 @@ so a correlation edge carries a Schwinger parameter `w_e = s_e ≥ |Δt_e|` that
 the correlation edge weight runs `s ∈ [t, ∞)`.) In every case the
 `k`-dependence is `e^{−D k_e² w_e}` and the mass part factors out as
 `e^{−μ Σ_e w_e}`.
+
+**Scope of the base case.** The OU/equilibrium form `C=(T/m_k)e^{−m_k|Δt|}` above
+is the *single-pole* base case. Multi-pole or Markovian-embedded **colored**
+noise, and **multi-field** systems, give a correlation edge that is a **finite
+sum over modes** — each term with its own Schwinger parameter `w_e`, residue, and
+mass `m_{a,k}` (matrix-valued across fields). Backend C must treat a correlation
+edge as such a sum, not hard-code the single-pole form; the Gaussian momentum
+reduction below applies term-by-term, so this is a bookkeeping generalization,
+not a new integral.
 
 ---
 
@@ -107,31 +119,44 @@ This causal, chambered domain is what distinguishes our integrals from textbook
 *Euclidean* Feynman integrals (which are fully symmetric, no `θ`'s). It is the
 same object backend A integrates per chamber by quadrature and backend B
 (`loop_dyson`) does by explicit convolution for the bubble — **C's contribution
-is to do it after the Symanzik reduction (smooth in momentum) and to handle its
-boundary singularities systematically (§4–5).**
+is to do it after the Symanzik reduction (smooth in momentum), handle the genuine
+UV singularities systematically, and avoid the close-pair pathology by
+construction (§4–5).**
 
 ---
 
-## 4. Singularity structure
+## 4. Singularity structure — one genuine divergence, one representation hazard
 
-Two singularity types, both on the boundary of the `w`-domain:
+These are different *in kind* and must not be conflated. (a) is a true boundary
+divergence of the parametric integral, handled by sector decomposition; (b) is a
+numerical cancellation introduced by a *choice of representation*, avoided by not
+making that choice.
 
-**(a) UV / small-time.** `U(w)` is homogeneous of degree `L`, so as all `w_e→0`
-together `U→0` and `U^{−d/2}→∞`. The local integral behaves like
-`∫ w^{(#edges)−1−Ld/2} dw`, i.e. it diverges when `Ld/2 ≥ #edges − L` — the UV
-divergence, and it **worsens with d and L**. This is exactly the
-`σ_R(a)~a^{−1/2}` integrable singularity hand-fixed this session with the
-power-law sliver in `loop_dyson.bubble_delta_C_q_tau` (`F_R=q²ℓ²` ⇒ `U^{−1/2}` at
-small time). The sliver *is* a 1-loop, one-variable, by-hand instance of what
-sector decomposition does in general.
+**(a) UV — a genuine boundary divergence.** `U(w)` is homogeneous of degree `L`,
+so as all `w_e→0` together `U→0` and `U^{−d/2}→∞`. Under this *uniform* scaling
+the local integral behaves like `∫ w^{(#edges)−1−Ld/2} dw` — this is the
+**superficial** degree of divergence only (worsening with `d` and `L`), **not**
+the full criterion. Genuine UV structure also has **subdivergences**, where only
+a *subgraph*'s `w_e→0` while others stay finite; capturing those is exactly why
+**sector / forest decomposition** is needed rather than naive uniform
+power-counting. The `d=1`, 1-loop case is the integrable `σ_R(a)~a^{−1/2}`
+singularity hand-fixed this session by the power-law sliver in
+`loop_dyson.bubble_delta_C_q_tau` (`F_R=q²ℓ²` ⇒ `U^{−1/2}` at small time) — a
+one-variable, by-hand instance of exactly the endpoint extraction sector
+decomposition automates.
 
-**(b) Close-pair / near-degenerate.** When two edge masses `m_{k_e}, m_{k_{e'}}`
-nearly coincide, the analytic pole-residue form of the time integral carries
-`(e^{−mt}−e^{−m't})/(m−m')`, which loses precision as `m→m'` — the close-pair
-bug. In the parametric representation this is a near-coincidence of parameters: a
-structured, milder boundary behaviour that sector decomposition's "split and
-remap" also tames. **This is why C is the principled cure for close-pair, not a
-per-diagram patch.**
+**(b) Close-pair — NOT a divergence of this integral; a representation artifact.**
+The close-pair pathology `(e^{−mt}−e^{−m't})/(m−m')` is a *numerical cancellation*
+introduced by **partial-fractioning** a time integral into pole-difference
+denominators — it is not an endpoint/boundary singularity of the original
+parametric integral. The parametric representation **avoids it structurally: the
+loop integration never forms `1/(λᵢ−λⱼ)` denominators in the first place.**
+Sector decomposition is *not* the cure here — it addresses endpoint singularities,
+and helps with a near-degeneracy only if that degeneracy happens to map to a
+sector boundary. If a *later* analytic reduction reintroduces ratios such as
+`(e^{−mt}−e^{−m't})/(m−m')`, those must be evaluated with stable **divided-
+difference / repeated-pole (confluent)** routines — never by computing `m−m'` and
+dividing.
 
 ---
 
@@ -186,8 +211,11 @@ genuinely new evaluation ⇒ milestone **III.1**, validated against a brute-forc
 
 ## 7. What the math does and does not cover
 
-**Covers:** the loop evaluation at arbitrary `L`, `d`, with systematic UV
-renormalization and a principled close-pair cure. The momentum step (Symanzik) is
+**Covers:** the loop evaluation. The **momentum reduction (Symanzik) is exact at
+arbitrary `L`, `d`**; on top of it, systematic UV renormalization (sector
+decomposition + dim-reg) and **structural avoidance** of the close-pair pathology
+(the parametric loop integration forms no pole-difference denominators — §4b).
+The momentum step (Symanzik) is
 mature and `d`-general; the open research piece is the *causal* time-simplex
 integral + sector decomposition adapted to retarded/Keldysh propagators (§3–5).
 

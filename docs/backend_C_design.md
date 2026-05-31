@@ -1,9 +1,11 @@
 # Backend C — engineering design (the general loop evaluator)
 
 **What this is.** The implementation plan for backend **C** — the
-Schwinger/parametric loop integrator that lifts the spatial pipeline from
-"`ℓ≤1`, `d=1`" to **arbitrary loop order `L` and spatial dimension `d`, with
-systematic UV renormalization.** This is the design that
+Schwinger/parametric loop integrator that lifts the spatial pipeline toward
+**arbitrary loop order `L` and spatial dimension `d`**. The *momentum reduction*
+is exact at any `(L,d)`; the causal time-simplex + sector-decomposition backend
+is the **research component** that makes high `(L,d)` practical and
+UV-renormalized. This is the design that
 `docs/spatial_v2_architecture.md` §5 (option C) / D2 names as the long-term
 target. Math foundation: `docs/backend_C_math.md`.
 
@@ -30,17 +32,22 @@ The three temporal backends scale differently (architecture §5):
 
 The four-axis extension study found that **`ℓ>1` and `d>1` both converge on C**,
 and that C also (i) systematizes the UV audit that `d>1` otherwise leaves as a
-silent cutoff trap, and (ii) cures the close-pair bug at its root rather than
-per-diagram. So C is the spine; the other extensions hang off it.
+silent cutoff trap, and (ii) **avoids the close-pair bug at its root by never
+forming pole-difference `1/(λᵢ−λⱼ)` denominators during loop integration**
+(rather than patching it per-diagram — see `backend_C_math.md` §4b: close-pair is
+a representation artifact, not a boundary divergence). So C is the spine; the
+other extensions hang off it.
 
 ---
 
 ## 2. Scope — what C does and does not do
 
 **Does:** the *loop evaluation*. Given a typed diagram + its momentum routing,
-produce the renormalized self-energy / correlator contribution at arbitrary
-`(L, d)`. Subsumes: the `ℓ>1` axis, the `d>1` axis, the UV-renormalization audit,
-and a principled close-pair cure.
+produce the self-energy / correlator contribution — the **momentum reduction
+exact at arbitrary `(L, d)`**, the causal integral + UV renormalization supplied
+by C2–C4 (the research core). Subsumes: the `ℓ>1` axis, the `d>1` axis, the
+UV-renormalization audit, and **structural avoidance** of close-pair (no
+pole-difference denominators are formed).
 
 **Does NOT** (separate workstreams that *compose* with C):
 - `k>2` **output transform** — the external multi-momentum → multi-position
@@ -85,12 +92,18 @@ must match B on the bubble to ~1e-6).
 | **C0** Graph → Symanzik | `spatial_reduce.py` | From `route_momenta` edge forms, build `M,N,Q(w)` and `U=det M`, `F`. Generalizes the scalar `U=Σa²w` to the matrix case. | LOW |
 | **C1** Momentum integral | `spatial_reduce.py` | `(4πD)^{−Ld/2} U^{−d/2} e^{−DF/U} e^{−μΣw}`, `d`-general, any `L`. Promotes `gaussian_momentum_integral` to `det/inverse`. | LOW–MED |
 | **C2** Causal time-simplex | `temporal_integrate.py` | Assemble the residual `∫∏dw` with retarded `θ`-orderings (reuse Phase-J chamber enumeration) + correlation-edge Schwinger limits + external `τ`. **The MSR-JD-specific part.** | MED–HIGH |
-| **C3** Sector decomposition | `sector_decomp.py` (new) | Factorize `U→0` (UV) and near-degenerate (close-pair) singularities; remap to unit cube; extract `ε`-poles (`d=d_c−2ε`); finite integrands. The 1-loop sliver is the prototype. | **HIGH** (research core) |
+| **C3** Sector decomposition | `sector_decomp.py` (new) | Factorize the **UV** endpoint *and sub*-divergences (`U→0`; subgraph `w→0` — forest formula); remap to unit cube; extract `ε`-poles (`d=d_c−2ε`) → finite integrands. The 1-loop **UV** sliver is the prototype. *(Close-pair is NOT handled here — it is avoided upstream in C2; see below.)* | **HIGH** (research core) |
 | **C4** Numerical eval + renorm | `temporal_integrate.py` (+ `renorm.py`) | QMC/adaptive on finite sectors; assemble `ε`-Laurent series; absorb poles into `Z`-factors (minimal subtraction); return renormalized correlator. | MED |
 
-`d=1` at `L=1` needs **no** sector decomposition (the integrable singularity is
-handled by the existing sliver) — so C0→C1→C2→C4 alone reproduces the validated
-bubble; C3 first bites at `L≥2` or `d≥2`.
+**Risk profile in one line: C0/C1 are low-risk linear algebra — the momentum
+reduction, exact at any `(L,d)`; C2/C3 are the research core — the causal
+time-simplex and its UV renormalization.** Two consequences: (1) `d=1` at `L=1`
+needs **no** sector decomposition (the integrable UV singularity is handled by the
+existing sliver), so C0→C1→C2→C4 alone reproduces the validated bubble and C3
+first bites at `L≥2` or `d≥2`; (2) the **close-pair** pathology is avoided in
+**C2** — the parametric setup forms no `1/(λᵢ−λⱼ)` denominators; should a later
+analytic reduction reintroduce them, they get stable divided-difference /
+confluent evaluation, never a divide-by-`(m−m')`.
 
 ---
 
@@ -144,7 +157,11 @@ spatial_reduce.reduce(routing: RoutingResult,
                       edge_kinds: dict[edge, {'retarded'|'correlation'}],
                       d: int) -> SymanzikForm
     # SymanzikForm: U(w), F(w,q), prefactor(L,d), edge→duration-parameter semantics
-    #   (retarded → fixed Δt; correlation → integrated s ≥ |Δt|)
+    #   retarded    → fixed Δt
+    #   correlation → integrated s ≥ |Δt|; for MULTI-POLE / Markovian-embedded
+    #     colored noise (and multi-field), a correlation edge is a FINITE SUM over
+    #     modes, each with its own (s_e, residue, mass m_{a,k}) — the reduction
+    #     applies term-by-term (do NOT hard-code the single-pole OU form).
 
 temporal_integrate.integrate(symanzik: SymanzikForm,
                              orderings,            # Phase-J chambers (causal θ's)
