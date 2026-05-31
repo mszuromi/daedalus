@@ -127,8 +127,16 @@ C2 `sigma_parametric` bubble Σ_R at d=2 vs direct `∫d²ℓ`; and the EXTERNAL
 output transform `spatial_correlator.radial_inverse_ft` (d=1 cosine, d=2 J₀ Hankel,
 d=3 sinc) vs the closed-form free correlators (`K₀`/Yukawa). So both d>1 building
 blocks — the self-energy and the output transform — are proven; the d>1 loop is a
-parameter flip, not a re-derivation. Remaining d>1 work: pipeline integration + a
-d=2 simulator for end-to-end validation.
+parameter flip, not a re-derivation.
+
+Also landed: the **2-D simulator** `models/spatial_field_2d_sim.py` (the d=2 oracle;
+S(k)=T/ω_k vs the exact lattice + variance vs the lattice sum, validated); and the
+**d=2 bubble assembles end-to-end** through the stack (`bubble_delta_equal_time_via_C`
++ `bubble_delta_phi2_via_C` gained `spatial_dim`; d=2 δC(q,0) finite/positive/exact
+g²-scaling/genuinely d-dependent — correct by composition). Remaining d>1: (i) the
+full-resolution d=2 δ⟨φ²⟩-vs-2D-sim study (perf-gated on a vectorized `sigma_parametric`
+Σ_K; sim is also tadpole/bubble-conflated); (ii) wiring d=2 through `compute_cumulants`
+(the bridge/dispatch gate d≠1 today).
 
 **Deferred (next session, with review):**
 - **W5** cutoff-dict (`gaussian_edge|hard_spherical|lattice_bz`) + **W6** `spatial_dim` threading
