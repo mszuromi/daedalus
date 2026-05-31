@@ -22,11 +22,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import numpy as np
+from sage.all import SR
+
 from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-from msrjd.integration.spatial.generic_evaluator import loop_self_energy
+from msrjd.integration.spatial.generic_evaluator import (
+    loop_self_energy, bubble_delta_C,
+)
 from msrjd.integration.spatial.temporal_integrate import (
     sigma_parametric, bubble_edges,
 )
+from msrjd.integration.spatial import loop_dyson
 from msrjd.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
@@ -56,12 +62,15 @@ def rd_ell1():
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
     ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], phys_idx)
     by_ell = build_pipeline_records(ft, model, prop, ext, max_ell=1, verbose=False)
-    return [diagram_to_cstack(td) for td, _ in by_ell[1]]
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('g'): 0.3,
+            SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
+    return [(diagram_to_cstack(td), float(SR(pre).subs(base)))
+            for td, pre in by_ell[1]]
 
 
-def _classify(descr_list):
+def _classify(pairs):
     """Return (sigma_R_descr, sigma_K_descr) by loop-edge kind structure."""
-    bubbles = [d for d in descr_list if not d.is_tadpole_like()]
+    bubbles = [d for d, _ in pairs if not d.is_tadpole_like()]
     sR = sK = None
     for b in bubbles:
         kinds = sorted(e.kind for e in b.loop_edges())
@@ -89,3 +98,25 @@ def test_bubble_loop_kinematics_match_oracle(rd_ell1):
             ref_K = sigma_parametric(bubble_edges('C'), q, t, mu, D, T)
             assert abs(got_K - ref_K) <= 1e-9 * (abs(ref_K) + 1e-12), \
                 f"Σ_K mismatch at q={q},t={t}: {got_K} vs {ref_K}"
+
+
+def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
+    """Phase 2b: the GENERIC per-diagram δC (Symanzik σ + single-mode Dyson
+    convolution, weighted by 2^{-n_C}·M(Γ)) summed over the bubble diagrams
+    reproduces the bespoke loop_dyson δC(q,τ) — with NO pinned C_R/C_K (the
+    weights come from the enumeration M(Γ): 16/4=4=C_R, 8/4=2=C_K)."""
+    mu, D, T = 1.0, 1.0, 1.0
+    A, B, N = mu, D, T                              # single tree mode (μ,D,T)
+    bubbles = [(d, pre) for d, pre in rd_ell1 if not d.is_tadpole_like()]
+    assert len(bubbles) == 2
+    for q in (0.4, 0.9, 1.6):
+        taus = np.array([0.0, 0.5, 1.0, 2.0])
+        gen = np.zeros(len(taus))
+        for d, pre in bubbles:
+            gen = gen + bubble_delta_C(d, pre, q, taus, A, B, N, mu, D)
+        ref = loop_dyson.bubble_delta_C_q_tau(q, taus, mu, D, T, g=0.3)
+        # coarse-grid convolution + interpolation ⇒ ~1% agreement is the bar
+        for i, tau in enumerate(taus):
+            denom = abs(ref[i]) + 1e-12
+            assert abs(gen[i] - ref[i]) <= 1.5e-2 * denom, \
+                f"δC mismatch q={q},τ={tau}: generic={gen[i]:.6e} vs loop_dyson={ref[i]:.6e}"
