@@ -384,12 +384,12 @@ def compute_cumulants(
             raise NotImplementedError(
                 f'spatial correlators are implemented for k=2 (two-point) '
                 f'in v1; got k={k}.')
-        if max_ell > 1:
+        if max_ell > 2:
             raise NotImplementedError(
-                f'spatial v1 implements tree (max_ell=0) and the 1-loop '
-                f'tadpole (max_ell=1); got max_ell={max_ell}.  Higher loops '
-                f'need the per-edge ∫dℓ integrator (see '
-                f'docs/spatial_phase5_rearchitecture_plan.md, Stage C.5+).')
+                f'spatial v1 implements tree (max_ell=0), 1-loop (max_ell=1) and '
+                f'2-loop (max_ell=2) via the full-diagram integrator; got '
+                f'max_ell={max_ell}.  Higher loops work by construction but are '
+                f'increasingly expensive (more diagrams, higher-dim integrals).')
         # Initial-condition compatibility (Phase 4): v1 supports the
         # stationary IC, for which two-time correlators are well-posed.
         ic_mode = (model.get('initial') or {}).get('mode', 'stationary')
@@ -406,19 +406,18 @@ def compute_cumulants(
                   f'{len(spatial_grid_arr)} x points...')
         # Route through the SHARED pipeline (Stage B/C): the bridge runs the
         # real diagram pipeline at sample momenta to CERTIFY the per-mode
-        # (A,B,N) structure, then does the analytic q→x FT (free_two_point,
-        # exact at τ=0, no ringing).  At max_ell=1 the GENERIC per-diagram
-        # evaluator sums EVERY enumerated ell=1 diagram (bubble AND tadpole)
-        # through one momentum-first path (Symanzik ∫dᵈℓ → causal-chamber/Dyson
-        # time integral), weighted by the enumeration M(Γ) — no bubble/tadpole
-        # branch, no diagram dropped (docs/spatial_generic_pipeline_plan.md).
+        # (A,B,N) structure, then does the q→x FT.  At max_ell≥1 the FULL-DIAGRAM
+        # integrator sums EVERY enumerated diagram up to max_ell loops through one
+        # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
+        # ret+adv), weighted by the enumeration M(Γ) — no shortcut, no diagram
+        # dropped (docs/spatial_generic_pipeline_plan.md).
         if max_ell >= 1:
             from msrjd.integration.spatial.pipeline_bridge import (
                 compute_spatial_correlator_generic,
             )
             C_tau_x, sp_info = compute_spatial_correlator_generic(
                 ft, model, prop, num_params, external_fields,
-                tau_grid, spatial_grid_arr, verbose=verbose,
+                tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
             )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(

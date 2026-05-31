@@ -462,20 +462,23 @@ def _live_bubbles(records, num_params):
 #     constant-mass-shift tadpole and the Stage-C.5 bubble — have been removed.)
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q_cut=30.0, n_q=64):
-    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` via the **full-diagram
-    integrator** — the ONE genuine path.
+        verbose=False, q_cut=30.0, n_q=64, max_ell=1):
+    """Spatial correlator ``C(x,τ) = C₀ + δC`` to loop order ``max_ell`` via the
+    **full-diagram integrator** — the ONE genuine path.
 
-    Every enumerated ``ell=1`` diagram (bubble, tadpole, …) is mapped to the
-    C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and evaluated by the
-    SAME full integral (``full_integrator.diagram_correlator``: Symanzik ``∫dᵈℓ``
-    → causal-chamber time integral → retarded+advanced sum), weighted by the
-    enumeration ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).  No Dyson
-    convolution, no mass-shift, no diagram dropped — the complete 1-loop
-    correction is the honest ``Σ_Γ Γ(q,τ)``.
+    EVERY enumerated diagram up to ``max_ell`` loops (bubble, tadpole, sunset, …)
+    is mapped to the C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and
+    evaluated by the SAME full integral (``full_integrator.diagram_correlator``:
+    Symanzik ``∫dᵈℓ`` → causal-chamber time integral → retarded+advanced sum),
+    weighted by the enumeration ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).
+    No Dyson convolution, no mass-shift, no diagram dropped — the loop correction
+    is the honest ``Σ_Γ Γ(q,τ)`` summed over every live diagram at every
+    ``1 ≤ ell ≤ max_ell``.
 
     Scope: **simple (non-derivative) interaction vertices**, single field.  The
-    momentum integral is general in ``d`` and ``ell``; for ``d≥2`` a tadpole's
+    momentum integral is general in ``d`` and ``ell``; ``ell=2`` works but is
+    heavier (many diagrams, higher-dim time integral — a coarser quadrature grid
+    is used automatically for the bigger diagrams).  For ``d≥2`` a tadpole's
     ``⟨φ²⟩₀`` is UV-sensitive (the finite Schwinger cutoff sets the scale).
     Returns ``(C1_tau_x, info)``.
     """
@@ -506,34 +509,47 @@ def compute_spatial_correlator_generic(
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
-    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
+    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
                                     verbose=verbose)
-    ell1 = by_ell.get(1, [])
-    if not ell1:
-        raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
-
-    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value at saddle).
-    # No filter, no shortcut — every live diagram goes through the full integral.
+    # map every enumerated diagram (all loop orders 1..max_ell) → (descriptor,
+    # M(Γ)·prefactor value at saddle).  No filter, no shortcut.
     descrs = []
-    for td, pre in ell1:
-        try:
-            pv = float(SR(pre).subs(base_np_sr))
-        except (TypeError, ValueError):
-            continue                                 # q-dependent prefactor (skip)
-        descrs.append((diagram_to_cstack(td), pv))
+    for ell in range(1, max_ell + 1):
+        for td, pre in by_ell.get(ell, []):
+            try:
+                pv = float(SR(pre).subs(base_np_sr))
+            except (TypeError, ValueError):
+                continue                             # q-dependent prefactor (skip)
+            descrs.append((diagram_to_cstack(td), pv))
+    if not descrs:
+        raise SpatialPropagatorError('no loop diagrams were enumerated.')
     live = [(dd, pv) for dd, pv in descrs if abs(pv) > 1e-14]
+    if not live:
+        raise SpatialPropagatorError('no live loop diagrams at the saddle.')
+    # adaptive quadrature grid: coarser for the bigger (higher-n_C) diagrams so
+    # ell=2 stays tractable (validated: n_t=16,n_s=14 is <0.1% on the sunset).
+    def _grid(dd):
+        nC = sum(1 for e in dd.edges if e.kind == 'C')
+        return (22, 24) if nC <= 2 else (16, 14)
     if verbose:
-        print(f'[spatial pipeline] FULL-DIAGRAM 1-loop: {len(descrs)} ell=1 '
-              f'diagram(s), {len(live)} live; integrating Γ(q,τ) over the q-grid '
-              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
+        print(f'[spatial pipeline] FULL-DIAGRAM (max_ell={max_ell}): '
+              f'{len(descrs)} diagram(s), {len(live)} live; integrating Γ(q,τ) '
+              f'over the q-grid (A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
 
     d = int(prop.get('spatial_dim', 1))
     taus = np.asarray(tau_grid, dtype=float)
     qg = (np.linspace(0.0, q_cut, n_q) if d == 1
           else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
-    dC_q_tau = np.array([[sum(
-        diagram_correlator(dd, pv, float(q), float(tau), A0, B0, spatial_dim=d)
-        for dd, pv in live) for tau in taus] for q in qg])    # (n_q, n_tau)
+
+    def _dC(q, tau):
+        s = 0.0
+        for dd, pv in live:
+            nt, ns = _grid(dd)
+            s += diagram_correlator(dd, pv, q, tau, A0, B0, spatial_dim=d,
+                                    n_t=nt, n_s=ns)
+        return s
+    dC_q_tau = np.array([[_dC(float(q), float(tau)) for tau in taus]
+                         for q in qg])                         # (n_q, n_tau)
 
     xg = np.asarray(spatial_grid, dtype=float)
     C1 = np.array(C0, dtype=np.complex128)
@@ -548,7 +564,9 @@ def compute_spatial_correlator_generic(
             C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
 
     info = dict(tree_info)
-    info.update({'one_loop': True, 'generic': True, 'full_integrator': True,
+    info.update({'one_loop': max_ell >= 1, 'generic': True,
+                 'full_integrator': True, 'max_ell': max_ell,
                  'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
-                 'n_ell1_diagrams': len(descrs), 'n_live_diagrams': len(live)})
+                 'n_diagrams': len(descrs), 'n_live_diagrams': len(live),
+                 'n_ell1_diagrams': len(by_ell.get(1, []))})
     return C1, info

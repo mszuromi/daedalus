@@ -168,13 +168,14 @@ def test_max_ell_1_computes_tadpole_loop():
     assert si.get('n_live_diagrams') == 1
 
 
-def test_max_ell_above_1_raises():
-    """max_ell > 1 spatial needs the per-edge ∫dℓ integrator (Stage C.5+);
-    it must raise a clear NotImplementedError, not silently truncate."""
+def test_max_ell_above_2_raises():
+    """v1 supports tree/1-loop/2-loop through the full-diagram integrator;
+    max_ell > 2 must raise a clear NotImplementedError, not silently truncate.
+    (Higher loops work by construction but are deliberately gated on cost.)"""
     model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
     with pytest.raises(NotImplementedError, match='max_ell'):
         _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
-                 np.array([0.0, 1.0]), max_ell=2)
+                 np.array([0.0, 1.0]), max_ell=3)
 
 
 def test_k_not_2_raises():
