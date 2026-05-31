@@ -861,27 +861,87 @@ def compute_spatial_correlator_generic(
     if not ell1:
         raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
 
-    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value at saddle)
-    descrs = []
+    d = int(prop.get('spatial_dim', 1))
+
+    # Derivative-vertex form factors (operator IR): a theory authored with a
+    # ∇-vertex (e.g. −g∇²(φ²)) stashes its per-vertex operator chain on the
+    # namespace.  ``bubble_loop_form_factor`` reads the per-diagram form factor
+    # F(q₀,ℓ₀) off ``route_momenta``; the bubble loop integrand is multiplied by
+    # it.  d≥2 derivative vertices (vector form factors) are deferred — as in the
+    # retired bubble path.
+    _chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
+    if _chain and d >= 2:
+        raise NotImplementedError(
+            'd>1 DERIVATIVE-vertex bubbles (form factors) are not yet wired; '
+            'd>1 currently supports the plain φ̃φ² bubble.')
+
+    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value, F_sym)
+    descrs, ff_syms = [], []
     for td, pre in ell1:
         try:
             pv = float(SR(pre).subs(base_np_sr))
         except (TypeError, ValueError):
             continue                                 # q-dependent prefactor (skip)
-        descrs.append((diagram_to_cstack(td), pv))
+        dd = diagram_to_cstack(td)
+        if _chain:
+            F = bubble_loop_form_factor(td, _chain)   # F(q₀,ℓ₀)
+            if dd.is_tadpole_like():
+                # A derivative vertex acts on the φ² composite, whose momentum is
+                # the connector (k=0 for the rd tadpole) → ∇²→0: a CONSERVED
+                # vertex kills the tadpole.  F==0 ⇒ the tadpole vanishes (mark
+                # dead).  A nonzero derivative-tadpole form factor (ℓ/q dependent)
+                # is not yet threaded into ⟨φ²⟩₀ → raise.
+                import sympy as _sp
+                if _sp.simplify(F) == 0:
+                    pv = 0.0
+                    F = None
+                else:
+                    raise NotImplementedError(
+                        f'derivative-vertex tadpole with nonzero form factor '
+                        f'{F} is not yet supported (only conserved F=0).')
+            ff_syms.append(F)
+        else:
+            ff_syms.append(None)
+        descrs.append((dd, pv))
     n_live = sum(1 for _, pv in descrs if abs(pv) > 1e-14)
     if verbose:
         print(f'[spatial pipeline] GENERIC 1-loop: {len(descrs)} ell=1 diagram(s), '
               f'{n_live} live at the saddle; summing δC_Γ over the q-grid '
-              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
+              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})'
+              + (f'; derivative-vertex form factors {[str(f) for f in ff_syms if f is not None]}'
+                 if _chain else '') + '...')
 
-    d = int(prop.get('spatial_dim', 1))
+    # per-q form-factor callables F(ℓ) (lambdified from F(q₀,ℓ₀) at the current q)
+    _q0 = _l0 = None
+    if _chain:
+        import sympy as _sp
+        for fsym in ff_syms:
+            if fsym is not None:
+                syms = sorted(fsym.free_symbols, key=str)
+                _q0 = next((s for s in syms if s.name.startswith('q')), None)
+                _l0 = next((s for s in syms if s.name.startswith('l')), None)
+                break
+
+    def _formfactors_at(qval):
+        if not _chain:
+            return None
+        import sympy as _sp
+        out = []
+        for fsym in ff_syms:
+            if fsym is None or _l0 is None:
+                out.append(None)
+            else:
+                expr = fsym.subs({_q0: qval}) if _q0 is not None else fsym
+                fn = _sp.lambdify(_l0, expr, 'numpy')
+                out.append((lambda fn: (lambda l: fn(l) * np.ones_like(l)))(fn))
+        return out
+
     taus = np.asarray(tau_grid, dtype=float)
     qg = (np.linspace(0.0, q_cut, n_q) if d == 1
           else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
     dC_q_tau = np.array([
         delta_C_one_loop(descrs, float(q), taus, A0, B0, A0, B0, spatial_dim=d,
-                         L_cut=q_cut)
+                         L_cut=q_cut, formfactors=_formfactors_at(float(q)))
         for q in qg])                                # (n_q, n_tau)
 
     xg = np.asarray(spatial_grid, dtype=float)

@@ -59,15 +59,20 @@ def loop_self_energy(descr, q, t, mu, D, T=1.0, spatial_dim=1, **quad):
 
 
 def sigma_grid_direct(descr, q, u_grid, mu, D, spatial_dim=1, n_l=2600,
-                      L_cut=None):
+                      L_cut=None, formfactor=None):
     """**Vectorized** kinematic self-energy ``σ_Γ(q, u)`` of a 2-vertex bubble's
     loop edges, on the whole ``u_grid`` at once, by a direct ``∫dᵈℓ`` (the
     descriptor-driven, generic analog of the bespoke ``loop_dyson._sigma_grids``).
 
     All loop edges of a 2-vertex bubble span the SAME inter-vertex time ``u``, so
 
-        σ_Γ(q,u) = ∫dᵈℓ/(2π)ᵈ  [∏_{C edges} 1/m_{k_e}] · e^{−(Σ_e m_{k_e})·u},
+        σ_Γ(q,u) = ∫dᵈℓ/(2π)ᵈ  F(q,ℓ) [∏_{C edges} 1/m_{k_e}] · e^{−(Σ_e m_{k_e})·u},
         k_e = a_e·ℓ + b_e·q,   m_{k_e} = μ + D|k_e|²   (kinematic; T=1).
+
+    ``formfactor`` (Phase 6): an optional callable ``F(ℓ)`` (the product of the
+    derivative-vertices' per-leg momentum factors, e.g. ``q²ℓ²`` for ∇²φ²) that
+    multiplies the loop integrand; ``None`` ⇒ the plain bubble.  For d=1 ``ℓ`` is
+    the line grid; for d≥2 it is the first (q-aligned) axis component.
 
     Returns ``σ`` of shape ``u_grid``.  Matches :func:`loop_self_energy`
     (``sigma_parametric``) pointwise but ~100× faster — this is the production
@@ -104,6 +109,8 @@ def sigma_grid_direct(descr, q, u_grid, mu, D, spatial_dim=1, n_l=2600,
         msum = msum + m_e
         if e.kind == 'C':
             cpref = cpref / m_e
+    if formfactor is not None:                      # derivative-vertex F(ℓ)
+        cpref = cpref * np.asarray(formfactor(grids[0]), dtype=float)
     E = np.exp(-np.outer(msum, u_grid))             # (n_grid, n_u)
     sig = (cpref[:, None] * E).sum(axis=0) * pref
     return sig
@@ -187,7 +194,7 @@ def _kinematic_to_physical(descr):
 
 
 def bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                   spatial_dim=1):
+                   spatial_dim=1, formfactor=None):
     """The full 1-loop **bubble** contribution ``δC_Γ(q,τ)`` of one diagram,
     the generic momentum-first way: ``σ_Γ`` from the Symanzik route
     (:func:`loop_self_energy`), dressed by the generic single-mode Dyson
@@ -206,7 +213,8 @@ def bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     m = A + B * q * q
     loop_kinds = tuple(sorted(e.kind for e in descr.loop_edges()))
     ag = _sigma_grid_axis(m, taus)
-    sg = sigma_grid_direct(descr, q, ag, mu, D, spatial_dim=spatial_dim)
+    sg = sigma_grid_direct(descr, q, ag, mu, D, spatial_dim=spatial_dim,
+                           formfactor=formfactor)
     if loop_kinds == ('C', 'R'):
         kin = _dyson_retarded(ag, sg, m, 1.0, taus)      # unit-noise C₀ dressing
     elif loop_kinds == ('C', 'C'):
@@ -289,21 +297,23 @@ def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
 
 
 def diagram_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                    spatial_dim=1, L_cut=None):
+                    spatial_dim=1, L_cut=None, formfactor=None):
     """The full 1-loop contribution ``δC_Γ(q,τ)`` of ONE enumerated diagram — the
     single entry point, no bubble/tadpole branch in the *caller*.  Dispatches on
     the diagram's own structure (a property, not a physics choice): a self-loop
     edge ⇒ instantaneous self-energy (:func:`tadpole_delta_C`); otherwise a
-    2-vertex loop ⇒ smooth self-energy (:func:`bubble_delta_C`)."""
+    2-vertex loop ⇒ smooth self-energy (:func:`bubble_delta_C`).  ``formfactor``
+    (a derivative-vertex ``F(ℓ)``) applies to the bubble loop only."""
     if descr.is_tadpole_like():
         return tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
                                spatial_dim=spatial_dim, L_cut=L_cut)
     return bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                          spatial_dim=spatial_dim)
+                          spatial_dim=spatial_dim, formfactor=formfactor)
 
 
 def delta_C_one_loop(descrs_with_prefactors, q, taus, A, B, mu, D,
-                     spatial_dim=1, prefactor_tol=1e-14, L_cut=None):
+                     spatial_dim=1, prefactor_tol=1e-14, L_cut=None,
+                     formfactors=None):
     """The **complete** 1-loop correction ``δC(q,τ) = Σ_Γ δC_Γ`` — the sum over
     ALL enumerated, LIVE (nonzero prefactor at the saddle) ell=1 diagrams, each
     evaluated by :func:`diagram_delta_C`.  This is where the dropped-tadpole
@@ -313,12 +323,16 @@ def delta_C_one_loop(descrs_with_prefactors, q, taus, A, B, mu, D,
     ``descrs_with_prefactors`` : iterable of ``(CStackDiagram, prefactor_val)``
     where ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at
     the params/saddle.  Dead diagrams (``|prefactor| < tol``, e.g. φ*²-vertices
-    at φ*=0) are skipped.  Returns an array over ``taus``."""
+    at φ*=0) are skipped.  ``formfactors`` : optional list parallel to
+    ``descrs_with_prefactors`` of per-diagram derivative-vertex form factors
+    ``F(ℓ)`` (``None`` per entry ⇒ plain).  Returns an array over ``taus``."""
     taus = np.asarray(taus, dtype=float)
     total = np.zeros(len(taus))
-    for descr, pre in descrs_with_prefactors:
+    for i, (descr, pre) in enumerate(descrs_with_prefactors):
         if abs(float(pre)) < prefactor_tol:
             continue
+        ff = formfactors[i] if formfactors is not None else None
         total = total + diagram_delta_C(descr, pre, q, taus, A, B, mu, D,
-                                        spatial_dim=spatial_dim, L_cut=L_cut)
+                                        spatial_dim=spatial_dim, L_cut=L_cut,
+                                        formfactor=ff)
     return total

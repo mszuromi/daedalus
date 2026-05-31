@@ -404,9 +404,11 @@ def test_operator_ir_derivative_vertex_through_compute_cumulants():
         verbose=False, use_cache=False, mf_dae_n_starts=4)
 
     sp = out['spatial_info']
-    assert sp['bubble'] is True
-    assert abs(sp['self_energy_coupling_g'] - 0.3) < 1e-6      # g extracted exactly
-    assert sp['n_bubble_diagrams'] == 2 and sp['n_tadpole_diagrams'] == 1
+    # GENERIC pipeline: derivative-vertex form factors threaded per diagram.  The
+    # conserved ∇²(φ²) vertex makes the tadpole's form factor F=0 (∇² on the k=0
+    # composite) → the tadpole VANISHES (conservation), leaving the 2 bubbles live.
+    assert sp['generic'] is True
+    assert sp['n_ell1_diagrams'] == 3 and sp['n_live_diagrams'] == 2
     C = np.real(out['C_tau'])
     assert np.all(np.isfinite(C))
     c00 = C[len(C) // 2]                                       # x=0, τ=0
