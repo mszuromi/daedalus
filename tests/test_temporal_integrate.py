@@ -23,11 +23,12 @@ from scipy import integrate
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from msrjd.integration.spatial.temporal_integrate import (
-    sigma_parametric, bubble_edges, sunset_edges,
+    sigma_parametric, bubble_edges, sunset_edges, bubble_delta_equal_time_via_C,
 )
 from msrjd.integration.spatial.loop_parametric import (
     sigma_R_kernel, sigma_K_kernel,
 )
+from msrjd.integration.spatial.loop_dyson import bubble_delta_S
 
 MU = D = T = 1.0
 
@@ -74,3 +75,16 @@ def test_c2_sunset_matches_direct(q, t):
                                lambda _l1: -np.inf, lambda _l1: np.inf)
     ref /= (2 * np.pi) ** 2
     assert abs(got - ref) <= 5e-3 * max(abs(ref), 1e-12)
+
+
+# ── C3-lite capstone: the full bubble δC(q,0) end-to-end through the C stack ──
+@pytest.mark.parametrize('q', [0.0, 0.7, 1.5])
+def test_c3lite_bubble_delta_matches_golden(q):
+    """END-TO-END C0→C1→C2→C3-lite: the equal-time bubble δC(q,0) assembled from
+    the new stack (Σ via sigma_parametric → Dyson collapse) reproduces the golden
+    backend-B reference loop_dyson.bubble_delta_S.  Proves the stack composes into
+    the validated physical correlator."""
+    g = 0.2
+    got = bubble_delta_equal_time_via_C(q, MU, D, T, g=g)
+    ref = bubble_delta_S(q, MU, D, T, g=g)
+    assert abs(got - ref) <= 3e-2 * max(abs(ref), 1e-12)

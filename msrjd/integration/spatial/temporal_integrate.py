@@ -137,3 +137,33 @@ def sunset_edges():
     return [((1.0, 0.0), (0.0,), 'C'),
             ((0.0, 1.0), (0.0,), 'C'),
             ((-1.0, -1.0), (1.0,), 'C')]
+
+
+# ── C3-lite capstone: the full equal-time bubble δC(q,0) via the C stack ──
+def bubble_delta_equal_time_via_C(q, mu, D, T, g=1.0, C_R=4.0, C_K=2.0,
+                                  n_a=160, a_max=None):
+    """End-to-end **C0→C1→C2→C3-lite**: the φ̃φ² 1-loop equal-time bubble
+    ``δC(q,0)`` assembled entirely from the new stack — tabulate ``Σ_R(q,a)`` and
+    ``Σ_K(q,a)`` via :func:`sigma_parametric` (which uses the C1 ``momentum_integral``
+    over the C0 Symanzik form), then collapse with the MSR Dyson equation:
+
+        δC(q,0) = g²·[ C_R·(T/m²)∫₀^∞ Σ_R(a)e^{−ma}da  +  C_K·(1/m)∫₀^∞ Σ_K(a)e^{−ma}da ].
+
+    Reproduces ``loop_dyson.bubble_delta_S`` (the backend-B / golden reference) —
+    i.e. the new stack yields the validated physical correlator.  ``C_R=4, C_K=2``
+    are the pinned ``M(Γ)`` weights (W9 will derive them analytically).  This is a
+    finite-cutoff (Regime-1/2) evaluation: with the continuum (no-cutoff) σ the
+    small-``a`` UV tail is the integrable ``a^{−1/2}`` (handled by the quadrature).
+    """
+    m = mu + D * q * q
+    if a_max is None:
+        a_max = 40.0 / m
+    ag = np.linspace(a_max / (10 * n_a), a_max, n_a)   # start near 0 (small-a tail)
+    sR = np.array([sigma_parametric(bubble_edges('R'), q, a, mu, D, T)
+                   for a in ag])
+    sK = np.array([sigma_parametric(bubble_edges('C'), q, a, mu, D, T)
+                   for a in ag])
+    e = np.exp(-m * ag)
+    t1 = (T / (m * m)) * np.trapz(sR * e, ag)
+    t2 = (1.0 / m) * np.trapz(sK * e, ag)
+    return g * g * (C_R * t1 + C_K * t2)
