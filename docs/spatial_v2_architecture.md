@@ -136,8 +136,11 @@ is how to integrate over the times.
   contour `i`'s), so the standard *Euclidean* Symanzik machinery must be adapted
   to causal propagators. This is the long-term target; reading list in §9.
   **Detailed design: `docs/backend_C_design.md` (components C0–C4, milestone
-  ladder, interfaces); math foundation: `docs/backend_C_math.md` (real-time
-  Symanzik + causal time-simplex + sector decomposition).**
+  ladder, interfaces); math foundation: `docs/backend_C_math.md`. Scope note: the
+  CORE backend targets finite-scale SPDEs with a physical cutoff (Regimes 1–2 — no
+  renormalization needed; loops are simply finite); sector decomposition + dim-reg
+  is an OPTIONAL module for continuum-critical theories (Regime 3), off the
+  critical path.**
 
 ## 6. Basis + dimension (D5)
 

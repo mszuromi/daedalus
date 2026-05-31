@@ -2,12 +2,21 @@
 
 **What this is.** The implementation plan for backend **C** — the
 Schwinger/parametric loop integrator that lifts the spatial pipeline toward
-**arbitrary loop order `L` and spatial dimension `d`**. The *momentum reduction*
-is exact at any `(L,d)`; the causal time-simplex + sector-decomposition backend
-is the **research component** that makes high `(L,d)` practical and
-UV-renormalized. This is the design that
-`docs/spatial_v2_architecture.md` §5 (option C) / D2 names as the long-term
-target. Math foundation: `docs/backend_C_math.md`.
+**arbitrary loop order `L` and spatial dimension `d`**.
+
+**Core vision (the scope decision — `backend_C_math.md` §0).** The core engine is
+**automated perturbative MSR-JD for finite-scale SPDEs with physically meaningful
+cutoffs** (neural fields, lattice/RDME simulators, finite synaptic/axonal ranges,
+colored noise). In that setting the UV cutoff is *physical*, loop integrals are
+simply **finite**, and **no renormalization is needed** — the core is: Symanzik
+momentum reduction (exact at any `(L,d)`) → finite causal-time parameter integral
+→ adaptive numerics. **Renormalization (sector decomposition + dim-reg + RG) is an
+optional module for continuum-critical theories (Regime 3), off the critical
+path.** This is the major simplification: the hardest, research-grade piece is no
+longer required for the core.
+
+This is the design that `docs/spatial_v2_architecture.md` §5 (option C) / D2 names
+as the long-term target. Math foundation: `docs/backend_C_math.md`.
 
 **Status.** Design. No C code exists yet; the 1-loop momentum core
 (`loop_parametric.gaussian_momentum_integral`) and the topology/routing
@@ -26,13 +35,15 @@ The three temporal backends scale differently (architecture §5):
 - **B** (`loop_dyson` explicit Dyson convolutions): fastest where it applies, but
   **bespoke per topology** — every new self-energy is hand-coded.
 - **C** (this doc): the momentum integral is *always* Gaussian (Symanzik), so it
-  scales to high `L`; `d` is a parameter; UV divergences are handled by sector
-  decomposition + dim-reg → **renormalized** results. The only backend that makes
+  scales to high `L`; `d` is a parameter; **a physical cutoff makes the residual
+  integral finite** (Regimes 1–2 — no renormalization), with sector decomposition
+  reserved for the optional continuum-critical case. The only backend that makes
   the pipeline more than a 1-loop, `d=1` toy.
 
 The four-axis extension study found that **`ℓ>1` and `d>1` both converge on C**,
-and that C also (i) systematizes the UV audit that `d>1` otherwise leaves as a
-silent cutoff trap, and (ii) **avoids the close-pair bug at its root by never
+and that C also (i) turns the `d>1` UV "cutoff trap" into a *feature* — the
+physical cutoff is simply respected and the loop is finite (the simulator's own
+resolution sets it), and (ii) **avoids the close-pair bug at its root by never
 forming pole-difference `1/(λᵢ−λⱼ)` denominators during loop integration**
 (rather than patching it per-diagram — see `backend_C_math.md` §4b: close-pair is
 a representation artifact, not a boundary divergence). So C is the spine; the
@@ -44,10 +55,12 @@ other extensions hang off it.
 
 **Does:** the *loop evaluation*. Given a typed diagram + its momentum routing,
 produce the self-energy / correlator contribution — the **momentum reduction
-exact at arbitrary `(L, d)`**, the causal integral + UV renormalization supplied
-by C2–C4 (the research core). Subsumes: the `ℓ>1` axis, the `d>1` axis, the
-UV-renormalization audit, and **structural avoidance** of close-pair (no
-pole-difference denominators are formed).
+exact at arbitrary `(L, d)`**, then a **finite** causal-time parameter integral
+(physical cutoff, Regimes 1–2) by adaptive numerics. Subsumes: the `ℓ>1` axis,
+the `d>1` axis (the cutoff is respected, not removed), and **structural
+avoidance** of close-pair (no pole-difference denominators are formed).
+*Optional add-on:* the Regime-3 renormalization module (sector decomposition +
+dim-reg) for continuum-critical theories.
 
 **Does NOT** (separate workstreams that *compose* with C):
 - `k>2` **output transform** — the external multi-momentum → multi-position
@@ -91,19 +104,21 @@ must match B on the bubble to ~1e-6).
 |---|---|---|---|
 | **C0** Graph → Symanzik | `spatial_reduce.py` | From `route_momenta` edge forms, build `M,N,Q(w)` and `U=det M`, `F`. Generalizes the scalar `U=Σa²w` to the matrix case. | LOW |
 | **C1** Momentum integral | `spatial_reduce.py` | `(4πD)^{−Ld/2} U^{−d/2} e^{−DF/U} e^{−μΣw}`, `d`-general, any `L`. Promotes `gaussian_momentum_integral` to `det/inverse`. | LOW–MED |
-| **C2** Causal time-simplex | `temporal_integrate.py` | Assemble the residual `∫∏dw` with retarded `θ`-orderings (reuse Phase-J chamber enumeration) + correlation-edge Schwinger limits + external `τ`. **The MSR-JD-specific part.** | MED–HIGH |
-| **C3** Sector decomposition | `sector_decomp.py` (new) | Factorize the **UV** endpoint *and sub*-divergences (`U→0`; subgraph `w→0` — forest formula); remap to unit cube; extract `ε`-poles (`d=d_c−2ε`) → finite integrands. The 1-loop **UV** sliver is the prototype. *(Close-pair is NOT handled here — it is avoided upstream in C2; see below.)* | **HIGH** (research core) |
-| **C4** Numerical eval + renorm | `temporal_integrate.py` (+ `renorm.py`) | QMC/adaptive on finite sectors; assemble `ε`-Laurent series; absorb poles into `Z`-factors (minimal subtraction); return renormalized correlator. | MED |
+| **C2** Causal time-simplex | `temporal_integrate.py` | Assemble the residual `∫∏dw` with retarded `θ`-orderings (reuse Phase-J chamber enumeration) + correlation-edge Schwinger limits + external `τ`, **with the physical cutoff applied** (Gaussian regulator → weight shift; hard/lattice → finite domain). **The MSR-JD-specific part.** | MED |
+| **C3-lite** Finite-cutoff quadrature **(CORE)** | `temporal_integrate.py` | Robust adaptive quadrature on the *finite* causal parameter integral (the cutoff already removed the singularity). No `ε`-poles, no subtraction. This is the core Regime-1/2 evaluator. | MED |
+| **C3-full** Sector decomposition + dim-reg **(OPTIONAL — Regime 3)** | `sector_decomp.py` (new) | *Only for continuum-critical theories.* Factorize the UV endpoint/sub-divergences (`U→0`; forest formula), extract `ε`-poles (`d=d_c−2ε`), renormalize. The 1-loop UV sliver is the prototype. **Off the core critical path.** | HIGH (research) |
+| **C4** Numerical eval (+ optional renorm) | `temporal_integrate.py` (+ `renorm.py`) | QMC/adaptive evaluation; for C3-full, assemble the `ε`-Laurent series and absorb poles into `Z`-factors. | LOW–MED (core); MED (renorm) |
 
-**Risk profile in one line: C0/C1 are low-risk linear algebra — the momentum
-reduction, exact at any `(L,d)`; C2/C3 are the research core — the causal
-time-simplex and its UV renormalization.** Two consequences: (1) `d=1` at `L=1`
-needs **no** sector decomposition (the integrable UV singularity is handled by the
-existing sliver), so C0→C1→C2→C4 alone reproduces the validated bubble and C3
-first bites at `L≥2` or `d≥2`; (2) the **close-pair** pathology is avoided in
-**C2** — the parametric setup forms no `1/(λᵢ−λⱼ)` denominators; should a later
-analytic reduction reintroduce them, they get stable divided-difference /
-confluent evaluation, never a divide-by-`(m−m')`.
+**Risk profile in one line: the CORE (C0/C1/C2/C3-lite/C4) is engineering — linear
+algebra (the exact momentum reduction) + a finite causal-time quadrature; the only
+research-grade piece (C3-full: real-time sector decomposition) is OPTIONAL and
+serves continuum-critical theories alone.** Two consequences: (1) with a physical
+cutoff the loop is finite by construction (a Gaussian regulator even keeps the
+momentum integral closed-form and the weights bounded away from 0 — no singularity
+arises), so the core never touches `ε`-expansions; (2) the **close-pair** pathology
+is avoided in **C2** — the parametric setup forms no `1/(λᵢ−λⱼ)` denominators;
+should a later analytic reduction reintroduce them, they get stable
+divided-difference / confluent evaluation, never a divide-by-`(m−m')`.
 
 ---
 
@@ -115,13 +130,15 @@ confluent evaluation, never a divide-by-`(m−m')`.
 - **C2 (causal time-simplex):** in-house. No external tool models retarded
   `θ`-orderings; this is our physics, and the 1-loop `loop_dyson` time route is
   the template.
-- **C3 (sector decomposition):** the algorithm is intricate. Two options:
-  **(a)** drive **pySecDec**'s sector-decomposition module on our parametric
-  integrand; **(b)** focused in-house implementation tailored to the causal
-  heat-kernel structure. **Recommendation:** prototype with (a) to validate the
-  math at `d=2` (milestone III.2), then decide whether pySecDec's Euclidean
-  assumptions fight the causal structure enough to justify (b). **Decision point
-  at III.2.**
+- **C3-lite (finite-cutoff quadrature — CORE):** in-house, `scipy`/QMC adaptive
+  quadrature on the finite causal parameter integral. No external dependency; this
+  is the deliverable for Regimes 1–2.
+- **C3-full (sector decomposition — OPTIONAL, Regime 3):** only if/when continuum
+  critical exponents are wanted. The algorithm is intricate: **(a)** drive
+  **pySecDec** on the parametric integrand, or **(b)** focused in-house for the
+  causal structure. Deferred; not on the core path. If pursued, prototype with (a)
+  and decide (b) only if pySecDec's Euclidean assumptions fight the causal
+  structure.
 
 ---
 
@@ -138,13 +155,18 @@ research never runs blind:
   *Oracle:* a brute-force `∫dℓ₁dℓ₂` reference (slow but correct) at a few `q` +
   the simulator at a 2-loop-visible coupling. First genuinely new result; first
   real test of C2 at `L=2`.
-- **III.2 — turn on `d=2/3`** (the `U^{−d/2}` exponent + `ε`-expansion); first
-  test of C3 (sector decomposition). *Oracle:* the known critical-dynamics
-  `ε`-expansion of a standard model (Model A/B — Täuber) for the leading poles;
-  the static closed forms (`K₀` in `d=2`, Yukawa in `d=3`) for the tree part.
-  **Build-vs-borrow decision here.**
-- **III.3 — arbitrary `(L,d)`** topologies driven straight from
-  `enumerate_unique_diagrams` + `route_momenta`. The general evaluator.
+- **III.2 — turn on `d=2/3` with a finite cutoff** (the `U^{−d/2}` exponent at the
+  simulator's `k_max`, or a Gaussian connectivity kernel). *Oracle:* a `d=2/d=3`
+  simulator at the **matched cutoff** + the static closed forms (`K₀` in `d=2`,
+  Yukawa in `d=3`) for the tree part. **No `ε`-expansion needed** — finite numbers
+  vs finite numbers. This is the core `d>1` deliverable.
+- **III.3 — arbitrary `(L,d)`, finite cutoff**, driven straight from
+  `enumerate_unique_diagrams` + `route_momenta`. The general finite-scale
+  evaluator — the core engine done.
+- **III.R (optional, Regime 3) — continuum renormalization.** Only if critical
+  exponents matter: add C3-full (sector decomposition + dim-reg), validate the
+  leading `ε`-poles against the known critical-dynamics RG of Model A/B (Täuber).
+  Separate, later, off the core path; **build-vs-borrow (pySecDec) decided here.**
 
 ---
 
@@ -166,8 +188,12 @@ spatial_reduce.reduce(routing: RoutingResult,
 temporal_integrate.integrate(symanzik: SymanzikForm,
                              orderings,            # Phase-J chambers (causal θ's)
                              ext_times, num_params,
-                             backend='C') -> EpsLaurent
-    # EpsLaurent: {-p:…, …, 0: finite, …} — poles + renormalized finite part
+                             cutoff,               # k_max / σ / lattice a (Regime 1)
+                             renormalize=False) -> result
+    # CORE (renormalize=False, Regimes 1–2): a FINITE value/array — the cutoff in
+    #   `symanzik`/`cutoff` makes the parameter integral finite; just quadrature.
+    # OPTIONAL (renormalize=True, Regime 3): an EpsLaurent {−p:…, 0: finite}
+    #   (poles + renormalized finite part) via C3-full.
 ```
 
 Inputs already exist: `route_momenta` returns `edge_momenta` (linear in
@@ -178,23 +204,30 @@ edge-kind tagging comes from the diagram typing (response vs correlation lines).
 
 ## 8. Risks & open questions (honest)
 
-- **THE open piece:** real-time / causal Symanzik. The Euclidean polynomials are
-  textbook; combining them with retarded `θ`-orderings + Keldysh structure is
-  *not* a packaged result (architecture §9). C2+C3 are genuine research — budget
-  for them being the bulk of the effort.
+- **Scope first (this de-risks everything below).** The CORE engine (Regimes
+  1–2, finite cutoff) needs no renormalization — C2 + C3-lite are a finite causal
+  quadrature, engineering not research. The *only* research-grade open piece is
+  **C3-full: real-time / causal Symanzik + sector decomposition** for the
+  continuum-critical limit (Regime 3). The Euclidean polynomials are textbook;
+  combining them with retarded `θ`-orderings + Keldysh structure is *not* a
+  packaged result (architecture §9) — but it is **optional and off the core path**,
+  so it no longer gates the project.
 - **Time-domain vs frequency-domain.** Two ways to set up C2: keep time explicit
   (causal simplex, as above — *recommended*, matches the validated 1-loop), or
   Fourier to `ω` and do `∫dω` with retarded poles by contour. Time-domain avoids
   the contour bookkeeping and inherits the close-pair-free property.
-- **Renormalization scheme.** Pin conventions (minimal subtraction; the dynamic
-  `Z_φ,Z_D,Z_μ,Z_g,Z_T`) against a reference Model-A/B computation before trusting
-  finite parts.
-- **Performance.** QMC convergence and sector-count growth at high `L`; mitigated
-  by the Lee–Pomeransky single-polynomial form and pySecDec's QMC.
-- **Oracles thin out past III.1.** Beyond the simulator-reachable regime,
-  cross-checks lean on (i) backend-A agreement, (ii) known `ε`-expansion
-  coefficients, (iii) equilibrium Ward identities. Keep at least one live per
-  milestone.
+- **Renormalization scheme (Regime 3 / III.R only).** If C3-full is ever pursued,
+  pin conventions (minimal subtraction; the dynamic `Z_φ,Z_D,Z_μ,Z_g,Z_T`) against
+  a reference Model-A/B computation before trusting finite parts. Irrelevant to the
+  core.
+- **Performance.** Core cost is the causal-time quadrature dimension (`#vertices`
+  + `#correlation-edges`) at high `L`; mitigate with adaptive/QMC. (Sector-count
+  growth is a Regime-3/III.R concern only.)
+- **Cutoff is a first-class input, not a fudge.** Every core result is reported
+  *at* its cutoff and validated against a simulator at the **same** cutoff — so the
+  oracle (the simulator) stays live all the way through III.3, which is the chief
+  practical advantage of the finite-scale scope. (III.R alone leans on known
+  `ε`-coefficients / Ward identities instead.)
 
 ---
 

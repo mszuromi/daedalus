@@ -2,9 +2,11 @@
 
 **What this is.** The math that backend C rests on: the parametric (Schwinger)
 representation of MSR-JD loop integrals, the Symanzik polynomials in our
-heat-kernel time representation, the residual *causal* time-simplex integral, its
-singularity structure, and how sector decomposition + dimensional regularization
-turn the genuine UV divergences into a finite, renormalized result. The
+heat-kernel time representation, the residual *causal* time-simplex integral, and
+its singularity structure. **For finite-scale SPDEs (the core target — §0) a
+physical cutoff makes that integral simply finite — no renormalization.** Sector
+decomposition + dimensional regularization (turning continuum UV divergences into
+a renormalized result) is the *optional* path for critical theories only. The
 **momentum reduction is exact at arbitrary loop order `L` and spatial dimension
 `d`**; making that practical and renormalized at high `(L,d)` is the job of the
 causal time-simplex + sector-decomposition backend — the research component, not
@@ -18,7 +20,46 @@ calls "the research content of the eventual C backend."
 **One-line claim.** In the heat-kernel `(k,t)` representation the *edge times are
 already Schwinger parameters*, so the loop momentum integral is Gaussian at any L
 and any d — it collapses to the Symanzik polynomials `U(w), F(w)` — and the only
-genuinely new work is the *causal* time-parameter integral that remains.
+genuinely new work is the *causal* time-parameter integral that remains. With a
+**physical UV cutoff** (the common case — §0) that integral is plainly finite;
+renormalization is needed only in the continuum-critical limit.
+
+---
+
+## 0. Regimes — when renormalization is needed (and when it is not)
+
+**Renormalization is NOT a prerequisite for backend C.** Which machinery you need
+depends on the regime, and the regime most relevant here (finite-scale SPDEs:
+neural fields, lattice/RDME simulators, finite synaptic/axonal ranges, colored
+noise) needs *none* of it.
+
+- **Regime 1 — effective finite-scale SPDE (the core target).** The system has a
+  *real* UV cutoff: a spatial mesh `a`, a finite synaptic/axonal range, a finite
+  noise-correlation length, a smooth connectivity kernel `Ĵ(k)`. Loop integrals
+  are cut off at `|k|≲1/a` (or smoothly by `Ĵ`) and are simply **finite** — you
+  compute the finite correction, no infinities, no renormalization. This is the
+  honest description of cortex / of any grid simulation (neither is continuum QFT
+  to arbitrarily small scales) and is standard in statistical mechanics.
+- **Regime 2 — finite observable from a formally-divergent loop.** Even in the
+  continuum the quantity of interest is often finite by a single subtraction:
+  `⟨φ(x)φ(y)⟩` at `|x−y|>0` is finite though `⟨φ(x)²⟩` is not; `Σ(q)−Σ(0)` is
+  finite though `Σ(0)` is not. If the science is "how do correlations shift?"
+  (not "what are the universal exponents?"), one subtraction suffices — **no
+  renormalization machinery.** *Our session's conserved `∇²(φ²)` bubble is already
+  a Regime-2 result: the `q²` form factor IS `Σ(q)−Σ(0)` with `Σ(0)=0`, finite as
+  it stands.*
+- **Regime 3 — true critical continuum theory.** Renormalization is unavoidable
+  only for `Λ→∞`, near criticality (`μ→0`, diverging correlation length), with
+  universal scaling exponents — KPZ, Model A/B criticality, Wilson–Fisher. Here
+  the `ε`-poles and RG *are* the physics.
+
+**Scope decision (the strategic simplification).** The core backend-C engine
+targets **Regimes 1 & 2: automated perturbative MSR-JD for finite-scale SPDEs
+with physically meaningful cutoffs.** Renormalization (sector decomposition +
+dim-reg + RG, §5) is an **optional module for Regime 3, off the critical path.**
+This removes the hardest research piece from the core, keeps every core result
+directly comparable to a simulation at the *same* cutoff, and is the more relevant
+target for neuroscience/SPDE applications.
 
 ---
 
@@ -127,23 +168,40 @@ construction (§4–5).**
 
 ## 4. Singularity structure — one genuine divergence, one representation hazard
 
-These are different *in kind* and must not be conflated. (a) is a true boundary
-divergence of the parametric integral, handled by sector decomposition; (b) is a
+These are different *in kind* and must not be conflated. (a) is a *continuum*
+divergence that a **physical cutoff removes** (Regimes 1–2, §0) — only the
+continuum-critical limit (Regime 3) needs sector decomposition; (b) is a
 numerical cancellation introduced by a *choice of representation*, avoided by not
 making that choice.
 
-**(a) UV — a genuine boundary divergence.** `U(w)` is homogeneous of degree `L`,
-so as all `w_e→0` together `U→0` and `U^{−d/2}→∞`. Under this *uniform* scaling
-the local integral behaves like `∫ w^{(#edges)−1−Ld/2} dw` — this is the
-**superficial** degree of divergence only (worsening with `d` and `L`), **not**
-the full criterion. Genuine UV structure also has **subdivergences**, where only
-a *subgraph*'s `w_e→0` while others stay finite; capturing those is exactly why
-**sector / forest decomposition** is needed rather than naive uniform
-power-counting. The `d=1`, 1-loop case is the integrable `σ_R(a)~a^{−1/2}`
-singularity hand-fixed this session by the power-law sliver in
-`loop_dyson.bubble_delta_C_q_tau` (`F_R=q²ℓ²` ⇒ `U^{−1/2}` at small time) — a
-one-variable, by-hand instance of exactly the endpoint extraction sector
-decomposition automates.
+**(a) UV — a continuum-limit divergence the cutoff removes.** Only in the
+*continuum* limit `Λ→∞`: `U(w)` is homogeneous of degree `L`, so as all `w_e→0`
+together `U→0` and `U^{−d/2}→∞`. Under uniform scaling the local integral behaves
+like `∫ w^{(#edges)−1−Ld/2} dw` — the **superficial** degree of divergence
+(worsening with `d, L`); the full structure also has **subdivergences** (only a
+*subgraph*'s `w_e→0`), which in the continuum need **forest/sector decomposition**
+(§5, the optional Regime-3 module). **With a physical cutoff this whole region is
+truncated and the integral is finite — you just compute it.** How the cutoff
+enters the Symanzik form:
+
+- **smooth Gaussian** (a connectivity kernel `Ĵ(k)=e^{−σ²k²}` or a regulator
+  `e^{−σ²k_e²}` per edge) — *the friendliest case.* It adds `σ²/D` to each edge
+  weight, `w_e → w_e + σ²/D`, so the momentum integral **stays closed-form
+  Gaussian** AND the weights never reach 0: `U(w)` is bounded below, so
+  `U^{−d/2}` is finite and the singularity **never arises**. (The `σ_R(a)~a^{−1/2}`
+  sliver fixed this session is needed *only* in the strict `σ→0` continuum limit.)
+- **hard cutoff** `|k|<Λ` — the momentum Gaussian becomes an incomplete Gaussian
+  (`erf` / incomplete-Γ) or a numerical radial integral. Finite, slightly less
+  clean than the smooth case.
+- **lattice / mesh** (finite `a`) — the momentum integral runs over the Brillouin
+  zone `[−π/a, π/a]^d` with the lattice dispersion (`m_k = μ + (2D/a²)Σ_i(1−cos
+  k_i a)`). Finite, and **most faithful to a grid simulator** (the simulator *is*
+  this lattice theory).
+
+**Match the cutoff to the simulator.** A grid simulator with `N` points over
+length `L` has `k_max = πN/L`; using that *same* cutoff in the loop integral is
+what makes theory-vs-sim agreement a genuine test, not a fudge. (The bubble code's
+`q_cut` is exactly this — the spatial engine already runs in Regime 1.)
 
 **(b) Close-pair — NOT a divergence of this integral; a representation artifact.**
 The close-pair pathology `(e^{−mt}−e^{−m't})/(m−m')` is a *numerical cancellation*
@@ -160,10 +218,18 @@ dividing.
 
 ---
 
-## 5. Sector decomposition + dimensional regularization
+## 5. Sector decomposition + dimensional regularization — OPTIONAL (Regime 3 only)
+
+**This section is the optional Regime-3 module, NOT part of the core engine.** It
+is needed only for the continuum-critical limit (`Λ→∞`, `μ→0`, universal
+exponents). For finite-scale SPDEs (Regimes 1–2) the cutoff in §4(a) already makes
+the `w`-integral finite, and the core integrator (C3-lite) is just robust
+adaptive quadrature on that finite integral — no `ε`-poles, no subtraction. Read
+on only if you want critical exponents / continuum universality.
 
 Sector decomposition (Hepp; Binoth–Heinrich; implemented in pySecDec,
-arXiv:2202.13647) makes the `w`-integral finite and numerically tractable:
+arXiv:2202.13647) makes the *continuum* `w`-integral finite and numerically
+tractable:
 
 1. **Split** the domain into sectors that disentangle overlapping singularities;
    remap each sector to the unit hypercube `[0,1]^n`.
@@ -212,12 +278,15 @@ genuinely new evaluation ⇒ milestone **III.1**, validated against a brute-forc
 ## 7. What the math does and does not cover
 
 **Covers:** the loop evaluation. The **momentum reduction (Symanzik) is exact at
-arbitrary `L`, `d`**; on top of it, systematic UV renormalization (sector
-decomposition + dim-reg) and **structural avoidance** of the close-pair pathology
-(the parametric loop integration forms no pole-difference denominators — §4b).
-The momentum step (Symanzik) is
-mature and `d`-general; the open research piece is the *causal* time-simplex
-integral + sector decomposition adapted to retarded/Keldysh propagators (§3–5).
+arbitrary `L`, `d`** and mature; with a physical cutoff (Regimes 1–2) the residual
+parametric integral is finite, so the **core** engine is just the causal
+time-simplex (§3) + robust adaptive quadrature, plus **structural avoidance** of
+the close-pair pathology (no pole-difference denominators — §4b). The genuinely
+new work in the core is the *causal* time-simplex integral (§3) adapted to
+retarded/Keldysh propagators — engineering, not renormalization. Sector
+decomposition + dim-reg (§5) is the **optional Regime-3 module** for the
+continuum-critical limit; that real-time-Symanzik adaptation is the only
+research-grade piece, and it is off the core critical path.
 
 **Does not cover** (handled elsewhere): the `k>2` external multi-momentum →
 multi-position output Fourier transform (a different integral — the *external*
