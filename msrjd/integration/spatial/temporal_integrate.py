@@ -89,22 +89,19 @@ def sigma_parametric(edges, q, t, mu, D, T, spatial_dim=1, s_cap=None,
 
     if nC == 0:
         val = _integrand([])
-    elif nC <= 2:
-        # low-dim: adaptive quad (fast, pinned vs backend B for the bubble).
-        if nC == 1:
-            val, _ = integrate.quad(lambda s: _integrand([s]), lo, hi, **opts)
-        else:
-            val, _ = integrate.dblquad(
-                lambda s2, s1: _integrand([s1, s2]), lo, hi,
-                lambda _s1: lo, lambda _s1: hi)
+    elif nC == 1:
+        # 1-D correlation integral: adaptive quad (fast, pinned vs backend B).
+        val, _ = integrate.quad(lambda s: _integrand([s]), lo, hi, **opts)
     else:
-        # nC ≥ 3 (sunset …): adaptive nquad is intractable (and the t→0 corner is
-        # singular).  Use a Gauss–Laguerre TENSOR rule, which integrates the
-        # e^{−μ s_C} weight exactly: with s_C = lo + x/μ,
-        #   ∫_lo^∞ ds e^{−μs} g(s) = (e^{−μ lo}/μ) Σ_k w_k g(lo + x_k/μ).
-        # The retarded edges contribute the constant e^{−μ·#R·t}.
+        # nC ≥ 2: a Gauss–Laguerre TENSOR rule over the correlation Schwinger
+        # params — integrates the e^{−μ s_C} weight EXACTLY and is ~10–100× faster
+        # than the adaptive dblquad/nquad it replaces (the Σ_K dblquad was the
+        # C-stack's bottleneck).  With s_C = lo + x/μ,
+        #   ∫_lo^∞ ds e^{−μs} g(s) = (e^{−μ lo}/μ) Σ_k w_k g(lo + x_k/μ);
+        # the retarded edges contribute the constant e^{−μ·#R·t}.  (Smooth at t>0;
+        # the t→0 corner is the integrable UV regime a cutoff regularizes.)
         import itertools
-        deg = 40
+        deg = 48 if nC == 2 else 40           # nC=2 (Σ_K) a touch finer; nC≥3 cheaper
         xk, wk = np.polynomial.laguerre.laggauss(deg)
         sk = lo + xk / mu
         const = (math.exp(-mu * tt * len(r_idx))
