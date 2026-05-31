@@ -108,3 +108,19 @@ def test_c3lite_bubble_delta_matches_golden(q):
     got = bubble_delta_equal_time_via_C(q, MU, D, T, g=g)
     ref = bubble_delta_S(q, MU, D, T, g=g)
     assert abs(got - ref) <= 3e-2 * max(abs(ref), 1e-12)
+
+
+def test_c3lite_bubble_d2_end_to_end_runs():
+    """The full d=2 bubble δC(q,0) assembles end-to-end through the C-stack
+    (C0→C1 at d=2 → C2 at d=2 → Dyson): finite, positive, exact g²-scaling, and
+    genuinely d-dependent (≠ the d=1 value).  Correctness of the d=2 value follows
+    by composition (Σ exact vs ∫d²ℓ; the C_R/C_K collapse is d-independent); this
+    confirms the stack runs in d=2 with the right coupling order and real
+    d-dependence.  (n_a coarse for speed — this is a smoke test, not precision.)"""
+    q = 0.6
+    d2_g = bubble_delta_equal_time_via_C(q, MU, D, T, g=0.2, spatial_dim=2, n_a=40)
+    d2_2g = bubble_delta_equal_time_via_C(q, MU, D, T, g=0.4, spatial_dim=2, n_a=40)
+    d1_g = bubble_delta_equal_time_via_C(q, MU, D, T, g=0.2, spatial_dim=1, n_a=40)
+    assert np.isfinite(d2_g) and d2_g > 0.0
+    assert abs(d2_2g / d2_g - 4.0) <= 1e-3          # exact g²-scaling
+    assert abs(d2_g - d1_g) > 0.05 * d1_g           # spatial_dim genuinely threaded

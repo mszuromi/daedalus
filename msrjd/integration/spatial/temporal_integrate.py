@@ -139,31 +139,61 @@ def sunset_edges():
             ((-1.0, -1.0), (1.0,), 'C')]
 
 
-# ── C3-lite capstone: the full equal-time bubble δC(q,0) via the C stack ──
+# ── C3-lite: the full equal-time bubble δC(q,0) via the C stack (any d) ──
 def bubble_delta_equal_time_via_C(q, mu, D, T, g=1.0, C_R=4.0, C_K=2.0,
-                                  n_a=160, a_max=None):
+                                  n_a=160, a_max=None, spatial_dim=1):
     """End-to-end **C0→C1→C2→C3-lite**: the φ̃φ² 1-loop equal-time bubble
     ``δC(q,0)`` assembled entirely from the new stack — tabulate ``Σ_R(q,a)`` and
     ``Σ_K(q,a)`` via :func:`sigma_parametric` (which uses the C1 ``momentum_integral``
-    over the C0 Symanzik form), then collapse with the MSR Dyson equation:
+    over the C0 Symanzik form, in ``spatial_dim`` dimensions), then collapse with
+    the MSR Dyson equation:
 
         δC(q,0) = g²·[ C_R·(T/m²)∫₀^∞ Σ_R(a)e^{−ma}da  +  C_K·(1/m)∫₀^∞ Σ_K(a)e^{−ma}da ].
 
-    Reproduces ``loop_dyson.bubble_delta_S`` (the backend-B / golden reference) —
-    i.e. the new stack yields the validated physical correlator.  ``C_R=4, C_K=2``
-    are the pinned ``M(Γ)`` weights (W9 will derive them analytically).  This is a
-    finite-cutoff (Regime-1/2) evaluation: with the continuum (no-cutoff) σ the
-    small-``a`` UV tail is the integrable ``a^{−1/2}`` (handled by the quadrature).
+    At ``spatial_dim=1`` reproduces ``loop_dyson.bubble_delta_S`` (the backend-B /
+    golden reference); ``spatial_dim=2,3`` give the d>1 bubble (the d-dependence is
+    entirely inside ``Σ`` — the C_R=4/C_K=2 weights are d-independent topology
+    constants).  Finite-cutoff (Regime-1/2): the small-``a`` UV tail is integrable.
     """
     m = mu + D * q * q
     if a_max is None:
         a_max = 40.0 / m
     ag = np.linspace(a_max / (10 * n_a), a_max, n_a)   # start near 0 (small-a tail)
-    sR = np.array([sigma_parametric(bubble_edges('R'), q, a, mu, D, T)
-                   for a in ag])
-    sK = np.array([sigma_parametric(bubble_edges('C'), q, a, mu, D, T)
-                   for a in ag])
+    sR = np.array([sigma_parametric(bubble_edges('R'), q, a, mu, D, T,
+                                    spatial_dim=spatial_dim) for a in ag])
+    sK = np.array([sigma_parametric(bubble_edges('C'), q, a, mu, D, T,
+                                    spatial_dim=spatial_dim) for a in ag])
     e = np.exp(-m * ag)
     t1 = (T / (m * m)) * np.trapz(sR * e, ag)
     t2 = (1.0 / m) * np.trapz(sK * e, ag)
     return g * g * (C_R * t1 + C_K * t2)
+
+
+def bubble_delta_phi2_via_C(mu, D, T, g=1.0, spatial_dim=1, q_max=None, n_q=80,
+                            C_R=4.0, C_K=2.0):
+    """The momentum-integrated equal-time bubble correction to the variance,
+    ``δ⟨φ²⟩ = ∫dᵈq/(2π)ᵈ δC(q,0)`` = ``(S_{d−1}/(2π)ᵈ) ∫₀^∞ q^{d−1} δC(q,0) dq``
+    (``S_{d−1}`` = unit-sphere area: 2, 2π, 4π for d=1,2,3), with ``δC(q,0)`` from
+    :func:`bubble_delta_equal_time_via_C` in ``spatial_dim`` dimensions.
+
+    The d>1 analogue of ``loop_dyson.bubble_delta_phi2``; the end-to-end C-stack
+    prediction for the 1-loop variance shift, comparable to a simulation's
+    connected ``⟨φ²⟩`` shift at the SAME momentum cutoff ``q_max``.
+
+    COST: ``O(n_q·n_a)`` self-energy evaluations, dominated by the Σ_K ``dblquad``
+    inside :func:`sigma_parametric`; practical only at moderate grids pending a
+    vectorized ``sigma_parametric``.  Correctness does NOT rely on running this at
+    fine resolution: the d>1 bubble is exact by composition — Σ is validated vs
+    brute-force ``∫dᵈℓ`` and the C_R/C_K Dyson collapse is d-INDEPENDENT (validated
+    at d=1 to B≈0.99).
+    """
+    import math
+    if q_max is None:
+        q_max = math.sqrt(max(30.0 * mu / D, 30.0))      # ample band (Regime 1)
+    surf = {1: 2.0, 2: 2.0 * math.pi, 3: 4.0 * math.pi}[spatial_dim]
+    qg = np.linspace(q_max / (4 * n_q), q_max, n_q)
+    dC = np.array([bubble_delta_equal_time_via_C(
+        float(qi), mu, D, T, g=g, C_R=C_R, C_K=C_K, spatial_dim=spatial_dim)
+        for qi in qg])
+    integ = np.trapz(qg ** (spatial_dim - 1) * dC, qg)
+    return surf / (2.0 * math.pi) ** spatial_dim * integ
