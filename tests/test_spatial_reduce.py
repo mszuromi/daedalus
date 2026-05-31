@@ -96,3 +96,36 @@ def test_c1_l2_sunset_matches_brute_force(q, w):
                                lambda _l1: -np.inf, lambda _l1: np.inf)
     ref /= (2 * np.pi) ** 2
     assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-300)
+
+
+# ── C1 in higher dimension (the capability backend B's 1-D ∫dℓ lacks) ──
+@pytest.mark.parametrize('q', [0.0, 0.8, 1.6])
+@pytest.mark.parametrize('w1,w2', [(0.4, 0.9), (1.0, 1.0)])
+def test_c1_d2_matches_brute_force(q, w1, w2):
+    """C1 at d=2 vs an INDEPENDENT brute-force ∫d²ℓ/(2π)² (external momentum along
+    x: q⃗=(q,0)).  The d-dim loop integral is CLOSED-FORM (Symanzik U^{−d/2}), not
+    numerical angular quadrature — this is the d>1 reach backend B's 1-D line
+    integral does not have."""
+    got = momentum_integral(_BUBBLE_A, _BUBBLE_B, [w1, w2], q, D, spatial_dim=2)
+
+    def integrand(ly, lx):
+        return math.exp(-D * (w1 * (lx ** 2 + ly ** 2)
+                              + w2 * ((q - lx) ** 2 + ly ** 2)))
+    ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
+                               lambda _lx: -np.inf, lambda _lx: np.inf)
+    ref /= (2 * np.pi) ** 2
+    assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-300)
+
+
+@pytest.mark.parametrize('d', [1, 2, 3, 4])
+@pytest.mark.parametrize('q', [0.0, 1.1])
+def test_c1_dimension_factorization(d, q):
+    """For an isotropic theory the d-dim Gaussian factorizes over spatial
+    components: I_d(q) = I_1(q)·I_1(0)^{d−1} (the external momentum lives along one
+    axis; the other d−1 axes see q=0).  Confirms the U^{−d/2}/(4πD)^{−Ld/2}
+    exponent is right for ANY d, so d is a parameter, not a re-derivation."""
+    w = [0.7, 1.3]
+    got = momentum_integral(_BUBBLE_A, _BUBBLE_B, w, q, D, spatial_dim=d)
+    i1q = momentum_integral(_BUBBLE_A, _BUBBLE_B, w, q, D, spatial_dim=1)
+    i10 = momentum_integral(_BUBBLE_A, _BUBBLE_B, w, 0.0, D, spatial_dim=1)
+    assert abs(got - i1q * i10 ** (d - 1)) <= 1e-12 * max(abs(got), 1e-300)

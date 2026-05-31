@@ -77,6 +77,26 @@ def test_c2_sunset_matches_direct(q, t):
     assert abs(got - ref) <= 5e-3 * max(abs(ref), 1e-12)
 
 
+# ── C2 in higher dimension (d=2) — backend B (1-D ∫dℓ) cannot do this ──
+@pytest.mark.parametrize('q,t', [(0.0, 0.4), (0.9, 0.4), (1.5, 0.7)])
+def test_c2_bubble_d2_sigma_R_matches_brute_force(q, t):
+    """The d=2 retarded self-energy Σ_R(q,t)=∫d²ℓ/(2π)² G_R(ℓ,t)C(q−ℓ,t) via C2
+    (sigma_parametric with spatial_dim=2 — the analytic Symanzik momentum step in
+    d=2) vs a direct brute-force ∫d²ℓ (q⃗=(q,0)).  Demonstrates the C-stack reaches
+    d>1 for the self-energy with NO angular quadrature — the closed-form Symanzik
+    reduction makes the d-dim loop a parameter flip."""
+    got = sigma_parametric(bubble_edges('R'), q, t, MU, D, T, spatial_dim=2)
+
+    def integrand(ly, lx):
+        m_l = MU + D * (lx ** 2 + ly ** 2)
+        m_ql = MU + D * ((q - lx) ** 2 + ly ** 2)
+        return math.exp(-m_l * t) * (T / m_ql) * math.exp(-m_ql * t)
+    ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
+                               lambda _lx: -np.inf, lambda _lx: np.inf)
+    ref /= (2 * np.pi) ** 2
+    assert abs(got - ref) <= 1e-4 * max(abs(ref), 1e-12)
+
+
 # ── C3-lite capstone: the full bubble δC(q,0) end-to-end through the C stack ──
 @pytest.mark.parametrize('q', [0.0, 0.7, 1.5])
 def test_c3lite_bubble_delta_matches_golden(q):
