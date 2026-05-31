@@ -119,6 +119,17 @@ invariant under g,T,D (a pinned topology constant like `c_R=4/c_K=2`). No
 compute_correction_td on the spatial loop path now ⇒ no hang at any mass/D; faster.
 Tests green: bridge (analytic g=g_true, spread 0, δC unchanged), operator_ir 22.
 
+**d>1 building blocks — DONE + validated.** The audit's d>1 study assumed the
+d-dim loop needs numerical angular quadrature; it does NOT — C1's analytic Symanzik
+reduction does `∫dᵈℓ` closed-form (d only in the `U^{−d/2}` exponent). Validated:
+C1 momentum_integral at d=2 vs brute-force `∫d²ℓ` + dimension factorization (d=1–4);
+C2 `sigma_parametric` bubble Σ_R at d=2 vs direct `∫d²ℓ`; and the EXTERNAL q→x
+output transform `spatial_correlator.radial_inverse_ft` (d=1 cosine, d=2 J₀ Hankel,
+d=3 sinc) vs the closed-form free correlators (`K₀`/Yukawa). So both d>1 building
+blocks — the self-energy and the output transform — are proven; the d>1 loop is a
+parameter flip, not a re-derivation. Remaining d>1 work: pipeline integration + a
+d=2 simulator for end-to-end validation.
+
 **Deferred (next session, with review):**
 - **W5** cutoff-dict (`gaussian_edge|hard_spherical|lattice_bz`) + **W6** `spatial_dim` threading
   through the OLD bubble path. (The NEW C0/C1/C2 code is already d-general; the cutoff threads
