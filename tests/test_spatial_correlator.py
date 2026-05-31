@@ -190,3 +190,24 @@ def test_k_not_2_raises():
             external_fields=[('phi', 1), ('phi', 2), ('phi', 3)],
             tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0]),
             parallel=False, verbose=False, use_cache=True)
+
+
+# ── the d-general q→x output transform (the remaining d>1 piece) ──
+@pytest.mark.parametrize('d,tol', [(1, 2e-3), (2, 1e-2), (3, 3e-2)])
+def test_radial_inverse_ft_matches_closed_form(d, tol):
+    """radial_inverse_ft applied to the free C(q,0)=T/(μ+Dq²) reproduces the exact
+    static correlator in d=1,2,3: (T/2√μD)e^{−κr} (d=1), (T/2πD)K₀(κr) (d=2),
+    (T/4πD)e^{−κr}/r (d=3), κ=√(μ/D).  This is the EXTERNAL output transform that
+    turns a self-energy-dressed δC(|q|,τ) into the real-space correlator in any d.
+    (d=3 sinc converges more slowly under plain trapz — FFTLog would tighten it;
+    the result is cutoff-limited, Regime 1.)"""
+    from msrjd.integration.spatial.spatial_correlator import (
+        radial_inverse_ft, free_correlator_static_closed_form as oracle,
+    )
+    mu = D = T = 1.0
+    q = np.linspace(0.0, 120.0, 12000)
+    Cq = T / (mu + D * q * q)
+    for r in (0.5, 1.0, 2.0, 3.0):
+        got = radial_inverse_ft(q, Cq, r, d)
+        ref = oracle(r, mu, D, T, d)
+        assert abs(got - ref) <= tol * abs(ref)

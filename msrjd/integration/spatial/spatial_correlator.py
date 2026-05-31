@@ -248,3 +248,64 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     info = {'field_index': fi, 'A_mass': A, 'B_diffusion': B,
             'D_noise': Dn, 'bc_mode': bc_mode, 'L': L}
     return C, info
+
+
+# ── d-general radial q→x inverse FT (the d>1 output transform) ─────
+def radial_inverse_ft(q_grid, Cq, x, spatial_dim):
+    """Inverse spatial FT of an ISOTROPIC momentum-space function ``C(|q|)``
+    sampled on ``q_grid`` (0 … k_max) to real space ``C(|x|)``, for d ∈ {1,2,3}::
+
+        d=1:  C(x) = (1/π)    ∫₀^∞ cos(q x)  C(q) dq
+        d=2:  C(x) = (1/2π)   ∫₀^∞ q J₀(q x) C(q) dq      (Hankel order 0)
+        d=3:  C(x) = (1/2π²x) ∫₀^∞ q sin(q x) C(q) dq     (sinc; x→0 limit handled)
+
+    This is the EXTERNAL output transform (separate from the loop): it turns a
+    self-energy-dressed ``δC(|q|,τ)`` into the real-space correlator in any d.  It
+    truncates at ``k_max = q_grid[-1]`` — i.e. evaluated AT a cutoff (Regime 1);
+    the continuum value is recovered as ``k_max → ∞`` with a fine grid.  ``x`` may
+    be scalar or array; returns the matching shape.  (The d=1 branch matches the
+    cosine transform the bubble path already uses.)
+    """
+    import numpy as np
+    from scipy.special import j0
+    q = np.asarray(q_grid, dtype=float)
+    Cq = np.asarray(Cq, dtype=float)
+    xs = np.atleast_1d(np.asarray(x, dtype=float))
+    out = np.empty(xs.shape, dtype=float)
+    for i, xi in enumerate(xs):
+        axi = abs(float(xi))
+        if spatial_dim == 1:
+            out[i] = np.trapz(np.cos(q * axi) * Cq, q) / math.pi
+        elif spatial_dim == 2:
+            out[i] = np.trapz(q * j0(q * axi) * Cq, q) / (2.0 * math.pi)
+        elif spatial_dim == 3:
+            if axi < 1e-12:                       # sin(qx)/x → q as x→0
+                out[i] = np.trapz(q * q * Cq, q) / (2.0 * math.pi ** 2)
+            else:
+                out[i] = (np.trapz(q * np.sin(q * axi) * Cq, q)
+                          / (2.0 * math.pi ** 2 * axi))
+        else:
+            raise SpatialPropagatorError(
+                f'radial_inverse_ft supports d=1,2,3; got spatial_dim={spatial_dim}')
+    return out.reshape(np.asarray(x).shape) if np.ndim(x) else float(out[0])
+
+
+def free_correlator_static_closed_form(r, mu, D, T, spatial_dim):
+    """The exact static (τ=0) free correlator ``C(|r|)`` — the closed-form oracle
+    for :func:`radial_inverse_ft` (the inverse FT of ``C(q,0)=T/(μ+Dq²)``)::
+
+        d=1:  (T / 2√(μD))  e^{−|r|√(μ/D)}
+        d=2:  (T / 2πD)     K₀(|r|√(μ/D))
+        d=3:  (T / 4πD)     e^{−|r|√(μ/D)} / |r|
+    """
+    from scipy.special import k0
+    kappa = math.sqrt(mu / D)
+    r = abs(float(r))
+    if spatial_dim == 1:
+        return T / (2.0 * math.sqrt(mu * D)) * math.exp(-kappa * r)
+    if spatial_dim == 2:
+        return T / (2.0 * math.pi * D) * float(k0(kappa * r))
+    if spatial_dim == 3:
+        return T / (4.0 * math.pi * D) * math.exp(-kappa * r) / r
+    raise SpatialPropagatorError(
+        f'spatial_dim must be 1,2,3; got {spatial_dim}')
