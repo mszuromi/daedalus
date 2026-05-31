@@ -40,14 +40,20 @@ noise) needs *none* of it.
   compute the finite correction, no infinities, no renormalization. This is the
   honest description of cortex / of any grid simulation (neither is continuum QFT
   to arbitrarily small scales) and is standard in statistical mechanics.
+  *Caveat on closed form (not finiteness):* finiteness is universal, but only a
+  **smooth Gaussian** cutoff preserves the pure `U^{−d/2}e^{−DF/U}` Symanzik form
+  (by shifting edge weights, §4a). A **hard** cutoff or a **lattice** dispersion
+  leaves the loop finite but may need incomplete-Gaussian or numerical
+  Brillouin-zone evaluation rather than the closed `U,F` formula.
 - **Regime 2 — finite observable from a formally-divergent loop.** Even in the
-  continuum the quantity of interest is often finite by a single subtraction:
-  `⟨φ(x)φ(y)⟩` at `|x−y|>0` is finite though `⟨φ(x)²⟩` is not; `Σ(q)−Σ(0)` is
-  finite though `Σ(0)` is not. If the science is "how do correlations shift?"
-  (not "what are the universal exponents?"), one subtraction suffices — **no
-  renormalization machinery.** *Our session's conserved `∇²(φ²)` bubble is already
-  a Regime-2 result: the `q²` form factor IS `Σ(q)−Σ(0)` with `Σ(0)=0`, finite as
-  it stands.*
+  continuum the quantity of interest is often finite by a *physically meaningful
+  subtraction*: `⟨φ(x)φ(y)⟩` at `|x−y|>0` is finite though `⟨φ(x)²⟩` is not;
+  `Σ(q)−Σ(0)` is finite though `Σ(0)` is not. Many observables are rendered finite
+  this way — **much lighter than a full automatic renormalization engine** — but
+  it is **not automatic**: the subtraction (sometimes more than one, or a
+  theory-specific counterterm) must be specified **observable-by-observable**.
+  *Our session's conserved `∇²(φ²)` bubble is already a Regime-2 result: the `q²`
+  form factor IS `Σ(q)−Σ(0)` with `Σ(0)=0`, finite as it stands.*
 - **Regime 3 — true critical continuum theory.** Renormalization is unavoidable
   only for `Λ→∞`, near criticality (`μ→0`, diverging correlation length), with
   universal scaling exponents — KPZ, Model A/B criticality, Wilson–Fisher. Here
@@ -91,10 +97,18 @@ the correlation edge weight runs `s ∈ [t, ∞)`.) In every case the
 is the *single-pole* base case. Multi-pole or Markovian-embedded **colored**
 noise, and **multi-field** systems, give a correlation edge that is a **finite
 sum over modes** — each term with its own Schwinger parameter `w_e`, residue, and
-mass `m_{a,k}` (matrix-valued across fields). Backend C must treat a correlation
-edge as such a sum, not hard-code the single-pole form; the Gaussian momentum
-reduction below applies term-by-term, so this is a bookkeeping generalization,
-not a new integral.
+mass `m_{a,k}`. Backend C treats a correlation edge as such a sum, not the
+single-pole form; the Gaussian momentum reduction applies **term-by-term**.
+
+**The closed form needs *affine-in-`k²`* modal dispersions.** The clean
+`U^{−d/2}e^{−DF/U}` reduction assumes each mode is `m_{a,k}=μ_a+D_a k²` (a single
+scalar `D_a` per mode). For **multi-field** dynamics whose diffusion matrix does
+not commute with the reaction matrix, diagonalization can give modal dispersions
+`λ_a(k)` that are **not** affine in `k²` (or `k`-dependent residues). C still
+works **numerically** in that case — the momentum integral is no longer a pure
+Gaussian and is done by quadrature — but it loses the closed-`U,F` simplicity. So
+the closed-form path is for affine-`k²` modes; everything else is a numerical
+fallback, not a failure.
 
 ---
 
@@ -207,14 +221,18 @@ what makes theory-vs-sim agreement a genuine test, not a fudge. (The bubble code
 The close-pair pathology `(e^{−mt}−e^{−m't})/(m−m')` is a *numerical cancellation*
 introduced by **partial-fractioning** a time integral into pole-difference
 denominators — it is not an endpoint/boundary singularity of the original
-parametric integral. The parametric representation **avoids it structurally: the
-loop integration never forms `1/(λᵢ−λⱼ)` denominators in the first place.**
-Sector decomposition is *not* the cure here — it addresses endpoint singularities,
-and helps with a near-degeneracy only if that degeneracy happens to map to a
-sector boundary. If a *later* analytic reduction reintroduces ratios such as
-`(e^{−mt}−e^{−m't})/(m−m')`, those must be evaluated with stable **divided-
-difference / repeated-pole (confluent)** routines — never by computing `m−m'` and
-dividing.
+parametric integral. The parametric representation avoids it structurally **on one
+explicit condition: C keeps products of kernels in parametric form and does NOT
+partial-fraction them into modal pole differences.** Under that condition the loop
+integration never forms `1/(λᵢ−λⱼ)`. The condition has teeth: the multi-pole /
+Markovian colored-noise correlation edge (§1) is a *sum over modes*, and if that
+sum is implemented by **naive residue differences** the close-pair bug
+**re-enters** — so it must be carried in parametric form (or summed by stable
+routines). Sector decomposition is *not* the cure here — it addresses endpoint
+singularities, and helps with a near-degeneracy only if that degeneracy happens to
+map to a sector boundary. Any analytic step that *does* reintroduce
+`(e^{−mt}−e^{−m't})/(m−m')` must use stable **divided-difference / repeated-pole
+(confluent)** evaluation — never `m−m'` then divide.
 
 ---
 

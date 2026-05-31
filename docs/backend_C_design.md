@@ -9,11 +9,17 @@ Schwinger/parametric loop integrator that lifts the spatial pipeline toward
 cutoffs** (neural fields, lattice/RDME simulators, finite synaptic/axonal ranges,
 colored noise). In that setting the UV cutoff is *physical*, loop integrals are
 simply **finite**, and **no renormalization is needed** — the core is: Symanzik
-momentum reduction (exact at any `(L,d)`) → finite causal-time parameter integral
-→ adaptive numerics. **Renormalization (sector decomposition + dim-reg + RG) is an
+momentum reduction (closed-form for a smooth Gaussian cutoff; numerical for
+hard/lattice cutoffs, but finite either way — §4 C1) → finite causal-time
+parameter integral → adaptive numerics. **Renormalization (sector decomposition + dim-reg + RG) is an
 optional module for continuum-critical theories (Regime 3), off the critical
 path.** This is the major simplification: the hardest, research-grade piece is no
 longer required for the core.
+
+**The core deliverable, stated precisely:** *a topology-generic, finite-cutoff,
+time-domain Symanzik evaluator for diffusive MSR-JD diagrams at tree / 1-loop and
+selected higher-loop order, validated against simulations at the same cutoff.*
+(Not "arbitrary loop order" as a deliverable — see §6, III.3.)
 
 This is the design that `docs/spatial_v2_architecture.md` §5 (option C) / D2 names
 as the long-term target. Math foundation: `docs/backend_C_math.md`.
@@ -103,7 +109,7 @@ must match B on the bubble to ~1e-6).
 | Stage | Module | Role | Risk |
 |---|---|---|---|
 | **C0** Graph → Symanzik | `spatial_reduce.py` | From `route_momenta` edge forms, build `M,N,Q(w)` and `U=det M`, `F`. Generalizes the scalar `U=Σa²w` to the matrix case. | LOW |
-| **C1** Momentum integral | `spatial_reduce.py` | `(4πD)^{−Ld/2} U^{−d/2} e^{−DF/U} e^{−μΣw}`, `d`-general, any `L`. Promotes `gaussian_momentum_integral` to `det/inverse`. | LOW–MED |
+| **C1** Momentum integral | `spatial_reduce.py` | Closed `(4πD)^{−Ld/2} U^{−d/2} e^{−DF/U} e^{−μΣw}` for the **smooth-Gaussian / continuum** case (`d`-general, any `L`; promotes `gaussian_momentum_integral` to `det/inverse`). For a **hard** cutoff or **lattice** dispersion the loop stays finite but C1 falls back to incomplete-Gaussian / numerical Brillouin-zone evaluation (not the pure `U,F` form). | LOW–MED |
 | **C2** Causal time-simplex | `temporal_integrate.py` | Assemble the residual `∫∏dw` with retarded `θ`-orderings (reuse Phase-J chamber enumeration) + correlation-edge Schwinger limits + external `τ`, **with the physical cutoff applied** (Gaussian regulator → weight shift; hard/lattice → finite domain). **The MSR-JD-specific part.** | MED |
 | **C3-lite** Finite-cutoff quadrature **(CORE)** | `temporal_integrate.py` | Robust adaptive quadrature on the *finite* causal parameter integral (the cutoff already removed the singularity). No `ε`-poles, no subtraction. This is the core Regime-1/2 evaluator. | MED |
 | **C3-full** Sector decomposition + dim-reg **(OPTIONAL — Regime 3)** | `sector_decomp.py` (new) | *Only for continuum-critical theories.* Factorize the UV endpoint/sub-divergences (`U→0`; forest formula), extract `ε`-poles (`d=d_c−2ε`), renormalize. The 1-loop UV sliver is the prototype. **Off the core critical path.** | HIGH (research) |
@@ -116,8 +122,11 @@ serves continuum-critical theories alone.** Two consequences: (1) with a physica
 cutoff the loop is finite by construction (a Gaussian regulator even keeps the
 momentum integral closed-form and the weights bounded away from 0 — no singularity
 arises), so the core never touches `ε`-expansions; (2) the **close-pair** pathology
-is avoided in **C2** — the parametric setup forms no `1/(λᵢ−λⱼ)` denominators;
-should a later analytic reduction reintroduce them, they get stable
+is avoided in **C2 — *provided* products of kernels are kept in parametric form
+and NOT partial-fractioned into modal pole differences**; in particular the
+multi-pole colored-noise correlation edge (§7) must be carried parametrically (or
+summed by stable routines), since implementing it by naive residue differences
+re-introduces the bug. Any step that does form `1/(λᵢ−λⱼ)` gets stable
 divided-difference / confluent evaluation, never a divide-by-`(m−m')`.
 
 ---
@@ -160,9 +169,12 @@ research never runs blind:
   simulator at the **matched cutoff** + the static closed forms (`K₀` in `d=2`,
   Yukawa in `d=3`) for the tree part. **No `ε`-expansion needed** — finite numbers
   vs finite numbers. This is the core `d>1` deliverable.
-- **III.3 — arbitrary `(L,d)`, finite cutoff**, driven straight from
-  `enumerate_unique_diagrams` + `route_momenta`. The general finite-scale
-  evaluator — the core engine done.
+- **III.3 — topology-generic finite-cutoff evaluator for small-to-moderate `L`,
+  arbitrary `d` as a parameter**, driven straight from `enumerate_unique_diagrams`
+  + `route_momenta`. (Arbitrary loop order is *conceptually* true for C0/C1 but is
+  **not** a realistic deliverable — the causal-time quadrature dimension and
+  diagram count grow with `L`; target tree / 1-loop and *selected* higher-loop
+  topologies, not "all `L`.") This is the core engine done.
 - **III.R (optional, Regime 3) — continuum renormalization.** Only if critical
   exponents matter: add C3-full (sector decomposition + dim-reg), validate the
   leading `ε`-poles against the known critical-dynamics RG of Model A/B (Täuber).
@@ -188,12 +200,28 @@ spatial_reduce.reduce(routing: RoutingResult,
 temporal_integrate.integrate(symanzik: SymanzikForm,
                              orderings,            # Phase-J chambers (causal θ's)
                              ext_times, num_params,
-                             cutoff,               # k_max / σ / lattice a (Regime 1)
+                             cutoff: Cutoff,       # see the explicit contract below
                              renormalize=False) -> result
-    # CORE (renormalize=False, Regimes 1–2): a FINITE value/array — the cutoff in
-    #   `symanzik`/`cutoff` makes the parameter integral finite; just quadrature.
+    # CORE (renormalize=False, Regimes 1–2): a FINITE value/array — the cutoff
+    #   makes the parameter integral finite; just quadrature.
     # OPTIONAL (renormalize=True, Regime 3): an EpsLaurent {−p:…, 0: finite}
     #   (poles + renormalized finite part) via C3-full.
+```
+
+**The cutoff is a first-class input, because each mode changes the evaluator
+differently** (closed-form vs numerical, §4 C1):
+
+```python
+cutoff = {
+    "type":       "gaussian_edge" | "hard_spherical" | "lattice_bz",
+    "sigma":      float,   # gaussian_edge: per-edge e^{−σ²k²} → w_e += σ²/D (closed form kept)
+    "kmax":       float,   # hard_spherical: |k|<kmax  → incomplete-Gaussian / numerical radial
+    "a":          float,   # lattice_bz: mesh spacing → ∫ over Brillouin zone [−π/a, π/a]^d
+    "dispersion": callable # lattice_bz: m_k = μ + (2D/a²)Σ_i(1−cos k_i a) (or a custom Ĵ(k))
+}
+# 'gaussian_edge' is the friendliest (stays closed-form); the other two stay
+# finite but force the C1 numerical fallback. To validate against a grid
+# simulator, use type='lattice_bz' with the simulator's a (or kmax = πN/L).
 ```
 
 Inputs already exist: `route_momenta` returns `edge_momenta` (linear in
