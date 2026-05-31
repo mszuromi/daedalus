@@ -755,13 +755,33 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # reducing the action to the validated v1 pipeline.  For a theory whose
     # nonlinear vertices carry NO derivatives (reaction-diffusion's gφ²), every
     # generator is bilinear → the v2 action becomes IDENTICAL to v1.
+    # Derivative-VERTEX generators are UNFOLDED to their bare composite (drop the
+    # operator) so ``enumerate_unique_diagrams`` sees the plain φ̃φ² topology; the
+    # operator chain is stashed on ``ns`` for the momentum-first form-factor
+    # extraction (``bubble_loop_form_factor`` in compute_spatial_correlator_bubble).
+    # The bilinear (propagator) generators lower to the v1 bare-symbol form.
+    # Only the QUADRATIC derivative vertex (base field-degree 2, e.g. ∇²(δφ²))
+    # routes to the validated momentum-first BUBBLE path; higher-degree
+    # derivative VERTICES (Cahn-Hilliard ∇²(δφ³), KPZ (∂ₓδφ)², …) make
+    # non-bubble loop topologies whose form-factor integrator is not yet built.
     if vertex:
-        ffs = {str(g): genmap[g][1] for g in vertex}
+        _bad = sorted(
+            str(genmap[g][0]) for g in vertex
+            if sum(int(SR(genmap[g][0]).degree(SR(f))) for f in flucts) != 2)
+        if _bad:
+            raise NotImplementedError(
+                "operator IR: derivative VERTICES of field-degree ≠ 2 "
+                f"({_bad}) need the non-bubble momentum-first form-factor "
+                "integrator (not yet built); only the quadratic ∇²(δφ²)-type "
+                "bubble vertex is wired through compute_cumulants so far.")
+    vchains = {genmap[g][1] for g in vertex}
+    if len(vchains) > 1:
         raise NotImplementedError(
-            f"operator IR: derivative VERTICES {ffs} need the momentum-first "
-            f"form-factor integrator (spatial v2 Phase 4); only bilinear "
-            f"derivative terms lower to the v1 pipeline so far.")
-    v1_subs = {}
+            f"operator IR: multiple distinct derivative-vertex types "
+            f"{sorted(vchains)} are not yet supported (single type only).")
+    ns._operator_ir_vertex_chain = next(iter(vchains)) if vchains else None
+
+    subs = {}
     for g in bilinear:
         base, chain = genmap[g]
         factor = SR(1)
@@ -775,8 +795,10 @@ def _lower_operator_ir_action(s, ns, naming_convention):
                 raise NotImplementedError(
                     f"operator IR: bilinear {op!r} has no v1 lowering yet "
                     f"(only Lap/Dt); a k-explicit kernel builder is needed.")
-        v1_subs[g] = factor * SR(base)
-    return SR(s).subs(v1_subs)
+        subs[g] = factor * SR(base)
+    for g in vertex:                       # unfold: bare composite for topology
+        subs[g] = SR(genmap[g][0])
+    return SR(s).subs(subs)
 
 
 def make_action_lambda(action_text: str, *, field_names, param_names,

@@ -126,31 +126,36 @@ def bubble_delta_phi2(mu, D, T, g=1.0, q_cut=40.0):
 
 
 # ── full τ-dependent bubble correction (time route) ───────────────
-def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None):
+def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None,
+                 formfactor_K=None):
     """Tabulate ``σ_R(t), σ_K(t)`` on ``t∈(0,t_max]`` (n_t points) by a single
     VECTORIZED ``∫dℓ`` over the whole t-grid at once — one trapezoid on an
     ℓ-grid wide enough to cover the ``C(q−ℓ)`` peak at ``ℓ=q``.  ~100× faster
     than per-t ``scipy.quad`` and matches it to <1e-4 (validated).
 
-    ``formfactor`` (Phase 4): a numpy-vectorized ``F(ℓ)`` multiplying the loop
-    integrand (the derivative-vertex form factor); ``None`` ⇒ the plain bubble.
+    ``formfactor`` (Phase 4): a numpy-vectorized ``F_R(ℓ)`` on the retarded
+    bubble; ``formfactor_K`` the (possibly different) Keldysh form factor — a
+    derivative-vertex theory has F_R≠F_K (e.g. ∇²φ²: F_R=q²ℓ², F_K=q⁴).  If
+    ``formfactor_K`` is None it falls back to ``formfactor``; both None ⇒ the
+    plain bubble.
     """
     tg = np.linspace(t_max / n_t, t_max, n_t)
     L = max(60.0, abs(q) + 40.0)
     lg = np.linspace(-L, L, n_l)
     ml = mu + D * lg * lg
     mql = mu + D * (q - lg) ** 2
-    ff = formfactor(lg) if formfactor is not None else 1.0
-    ff = (ff * np.ones_like(lg))[:, None]            # (n_l, 1), broadcastable
+    ffR = (formfactor(lg) if formfactor is not None else 1.0) * np.ones_like(lg)
+    _fk = formfactor_K if formfactor_K is not None else formfactor
+    ffK = (_fk(lg) if _fk is not None else 1.0) * np.ones_like(lg)
     E_l = np.exp(-np.outer(ml, tg))                  # (n_l, n_t)
     Cq = (T / mql)[:, None] * np.exp(-np.outer(mql, tg))
-    sR = np.trapz(ff * E_l * Cq, lg, axis=0) / (2 * math.pi)        # ∫dℓ F G_R·C
-    sK = np.trapz(ff * (T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
+    sR = np.trapz(ffR[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)   # ∫dℓ F_R G_R·C
+    sK = np.trapz(ffK[:, None] * (T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
     return tg, sR, sK
 
 
 def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
-                         formfactor=None):
+                         formfactor=None, formfactor_K=None):
     """PHYSICAL bubble correction ``δC(q, τ)`` for ALL ``τ`` in ``taus``, via the
     **time route** (the frequency route converges as 1/ω because Σ_R has a t=0
     step — Gibbs — so it is not used).  Each Dyson term collapses to a fast,
@@ -169,34 +174,61 @@ def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
     Returns an array parallel to ``taus`` (real, even in τ).
     """
     m = _mk(q, mu, D)
-    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t,
-                              formfactor=formfactor)         # a∈(0,t_max]
-    # Prepend a=0 with the t→0⁺ limit (σ peaks there; omitting the [0,ag[0]]
-    # sliver under-counts the integral by ~σ(0)·da → up to 10%).  σ_R(0⁺)=
-    # σ_K(0⁺)=∫dℓ/2π F(ℓ) T/m_ℓ; use the kernel at a tiny t (scalar F).
-    _ffs = (lambda l: float(formfactor(np.array([l]))[0])) \
-        if formfactor is not None else None
-    s0R = sigma_R_time(q, 1e-7, mu, D, T, formfactor=_ffs)
-    s0K = sigma_K_time(q, 1e-7, mu, D, T, formfactor=_ffs)
-    ag = np.concatenate(([0.0], ag))
-    sR = np.concatenate(([s0R], sR))
-    sK = np.concatenate(([s0K], sK))
+    # Adaptive a-grid: the convolution kernels decay on the timescale 1/m, so the
+    # grid must resolve [0, ~12/m] (and the τ-shift) with enough points — a fixed
+    # t_max/n_t under-resolves large-m (large-q) modes (kernel decays within a few
+    # cells → the steep σ_R·kernel product is over-counted).  Use ≥50 points per
+    # 1/m and cap t_max at the kernel/τ reach; keep the caller's n_t as a floor.
+    # CAP the point count: very-large-q modes are heavily damped (amplitude
+    # T/m→0, δC→0) so they need not be resolved — without a cap n_t∝m would blow
+    # up over the bridge's q-sweep.  The a→0⁺ σ_R singularity (the only
+    # non-negligible large-q piece, at τ=0) is captured grid-independently by the
+    # power-law sliver below, so capping is safe.
+    tau_max = max((abs(float(t)) for t in taus), default=0.0)
+    t_max = min(t_max, max(2.0 * tau_max + 12.0 / m, 12.0 / m))
+    n_t = int(min(max(n_t, t_max * m * 50.0), 8000.0))
+    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t, formfactor=formfactor,
+                              formfactor_K=formfactor_K)      # a∈[a1,t_max]
+    a1 = ag[0]                                                # = t_max/n_t
+
+    # [0,a1] sliver of ∫σ(a)·kernel da, done by the local power law.  A
+    # derivative-vertex F_R (e.g. ∇²φ²: F_R=q²ℓ²) makes σ_R(a)~A·a^p with
+    # p∈(-1,0) (here p=-½) — an INTEGRABLE singularity at a→0⁺.  The old
+    # a=0 prepend (σ at 1e-7, then trapezoid) grossly OVER-counts that first
+    # interval (≈100× for p=-½).  Integrate the power law exactly instead:
+    #     ∫₀^{a1} A·a^p da = σ(a1)·a1/(1+p),   σ-weighted mean a_eff=a1(1+p)/(2+p).
+    # For the plain bubble (σ_R,σ_K finite ⇒ p≈0) this is the σ(a1)·a1 rectangle
+    # (a_eff=a1/2) — the validated B=0.99 behavior is preserved.  σ_K (F_K=q⁴,
+    # ℓ-flat) is finite at 0, so Term2 needs no sliver.
+    def _slope(s):
+        if len(s) > 1 and s[0] > 0.0 and s[1] > 0.0:
+            return math.log(s[1] / s[0]) / math.log(ag[1] / ag[0])
+        return 0.0
+    pR = max(_slope(sR), -0.95)        # clamp; p≤−1 would be a true UV divergence
+    slivR = sR[0] * a1 / (1.0 + pR)
+    aeffR = a1 * (1.0 + pR) / (2.0 + pR)
 
     def _K(c):                                                # closed inner
         return np.where(c >= 0.0,
                         np.exp(-m * np.abs(c)) * (np.abs(c) + 0.5 / m),
                         np.exp(-m * np.abs(c)) / (2.0 * m))
 
-    # symmetric d-grid for the |τ−d| integral over d∈[−t_max,t_max].
-    dg = np.concatenate((-ag[::-1], ag))
+    # σ_K interp grid incl. a=0 (σ_K(0⁺)≈σ_K(a1) since σ_K is finite); symmetric
+    # d-grid over d∈[−t_max,t_max] including 0 for the |τ−d| integral.
+    ag0 = np.concatenate(([0.0], ag))
+    sK0 = np.concatenate(([sK[0]], sK))
+    dg = np.concatenate((-ag[::-1], ag0))
 
     out = np.empty(len(taus), dtype=float)
     for i, tau in enumerate(taus):
-        term1 = (T / m) * np.trapz(sR * _K(tau - ag), ag)
-        term1m = (T / m) * np.trapz(sR * _K(-tau - ag), ag)
-        # σ_K(|τ−d|): interpolate the even-tabulated σ_K at |τ−d|
+        # Term1 = (T/m)∫₀^∞ σ_R(a) K(τ−a) da = sliver[0,a1] + trapz[a1,t_max]
+        term1 = (T / m) * (slivR * _K(tau - aeffR)
+                           + np.trapz(sR * _K(tau - ag), ag))
+        term1m = (T / m) * (slivR * _K(-tau - aeffR)
+                            + np.trapz(sR * _K(-tau - ag), ag))
+        # Term2 = (1/2m)∫ σ_K(|τ−d|) e^{−m|d|} dd  (σ_K finite ⇒ no sliver)
         argk = np.abs(tau - dg)
-        sKshift = np.interp(argk, ag, sK, left=sK[0], right=0.0)
+        sKshift = np.interp(argk, ag0, sK0, left=sK0[0], right=0.0)
         term2 = (1.0 / (2.0 * m)) * np.trapz(sKshift * np.exp(-m * np.abs(dg)),
                                              dg)
         out[i] = g * g * (C_R * (term1 + term1m) + C_K * term2)

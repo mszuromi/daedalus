@@ -573,7 +573,7 @@ def compute_spatial_correlator_one_loop(
 # ── 5. 1-loop BUBBLE (momentum-dependent self-energy) — Stage C.5 ──
 def compute_spatial_correlator_bubble(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q0_samples=(0.7, 1.3), q_cut=30.0, n_q=160, n_t=2000,
+        verbose=False, q0_samples=None, q_cut=30.0, n_q=160, n_t=2000,
         g2_qindep_rtol=1e-2, formfactor=None):
     """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC_bubble`` from a
     momentum-DEPENDENT **bubble** self-energy (Stage C.5), routed through the
@@ -613,11 +613,39 @@ def compute_spatial_correlator_bubble(
     A0, B0, N0 = modes[0]
     A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
 
+    # Adaptive uniform-momentum samples for the g-extraction: keep the uniform
+    # mass m = A0 + B0·q0² MODERATE (≈ A0+0.4, A0+0.9) regardless of D, since the
+    # framework's Phase-J g-extraction has a pre-existing slow path at large mass
+    # (e.g. m≳4 hangs).  g² is q-independent so any small q0 works.
+    if q0_samples is None:
+        q0_samples = (math.sqrt(0.4 / B0), math.sqrt(0.9 / B0))
+
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
     ext_int = _legs_to_phys_idx(external_fields, phys_idx)
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
+
+    # The operator-IR unfold of a derivative vertex (e.g. −g∇²(φ²)) leaves a
+    # spurious φ*·operator bilinear in the kernel (−2g·φ*·∇²); at the HOMOGENEOUS
+    # saddle (the only spatial-bubble case) φ*=0, but the symbol survives into the
+    # SR propagator entries and slows/hangs Phase J's compute_correction_td.
+    # Substitute the saddle (φ*→its value) into the symbolic propagator so the
+    # bubble path's Phase J runs on the clean propagator.
+    _sad = {kk: vv for kk, vv in nps_sr.items() if 'star' in str(kk)}
+    prop_b = dict(prop)
+    if _sad:
+        for _key in ('K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta'):
+            _M = prop.get(_key)
+            if _M is None:
+                continue
+            try:
+                prop_b[_key] = (_M.apply_map(lambda e: SR(e).subs(_sad))
+                                if hasattr(_M, 'apply_map')
+                                else SR(_M).subs(_sad))
+            except Exception:
+                pass
+    prop = prop_b
 
     by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
                                     verbose=verbose)
@@ -659,16 +687,57 @@ def compute_spatial_correlator_bubble(
               f'({A0:.4f},{B0:.4f},{N0:.4f}); momentum-first ∫dℓ → Dyson → q-FT '
               f'over {n_q} q × {len(tau_grid)} τ...')
 
+    # Phase 4c-2/4d: derivative-vertex form factors.  When the theory was
+    # authored with the operator IR and carries a derivative vertex, the unfolded
+    # bubbles enumerate the φ̃φ² topology and ``bubble_loop_form_factor`` reads the
+    # per-vertex form factor off ``route_momenta``: Σ_R (one external + one loop
+    # vertex) is ℓ-dependent, Σ_K (both external) is ℓ-independent.  Map to
+    # loop_dyson's loop variable (routing ℓ₀ → q−ℓ) and inject F_R into Σ_R, F_K
+    # into Σ_K.  ``None`` chain ⇒ the plain φ̃φ² bubble (validated B=0.99).
+    _ffR_q = _ffK_q = None
+    _chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
+    if _chain:
+        import sympy as _sp
+        from msrjd.integration.spatial.momentum_routing import route_momenta as _rm
+        rr0 = _rm(bubbles[0][0])
+        q0 = rr0.q_syms[0]
+        l0 = rr0.loop_syms[0]
+        ld = _sp.Symbol('_ld')
+        FR = FK = None
+        for td, _pre in bubbles:
+            F = bubble_loop_form_factor(td, _chain)
+            if l0 in F.free_symbols:
+                FR = _sp.expand(F.subs({l0: q0 - ld}))   # → loop_dyson ℓ
+            else:
+                FK = _sp.expand(F)
+
+        def _mk_ff(expr):
+            if expr is None:
+                return None
+            def per_q(qval):
+                fn = _sp.lambdify(ld, expr.subs({q0: qval}), 'numpy')
+                return lambda l: fn(l) * np.ones_like(l)
+            return per_q
+        _ffR_q, _ffK_q = _mk_ff(FR), _mk_ff(FK)
+        if verbose:
+            print(f'      derivative-vertex form factors: F_R(q,ℓ)={FR}, '
+                  f'F_K(q)={FK} (chain {_chain})')
+
+    if _chain:
+        _ffR_of = (lambda qq: _ffR_q(qq)) if _ffR_q else (lambda qq: None)
+        _ffK_of = (lambda qq: _ffK_q(qq)) if _ffK_q else (lambda qq: None)
+    else:
+        _ffR_of = ((lambda qq: formfactor(qq)) if formfactor is not None
+                   else (lambda qq: None))
+        _ffK_of = lambda qq: None
+
     # bubble δC(q,τ) on the q×τ grid (even in q), then q-FT to x.
     qg = np.linspace(0.0, q_cut, n_q)
     taus = np.asarray(tau_grid, dtype=float)
-    # ``formfactor`` (Phase 4c): a callable ``formfactor(q) → (ℓ ↦ F_q(ℓ))`` for
-    # a derivative-vertex theory; the per-q loop form factor is injected into the
-    # momentum-first ∫dℓ.  ``None`` ⇒ the plain φ̃φ² bubble (validated B=0.99).
     dC_q_tau = np.array([
         bubble_delta_C_q_tau(
             float(q), taus, A0, B0, N0, g, n_t=n_t,
-            formfactor=(formfactor(float(q)) if formfactor is not None else None))
+            formfactor=_ffR_of(float(q)), formfactor_K=_ffK_of(float(q)))
         for q in qg])                                   # (n_q, n_tau)
     xg = np.asarray(spatial_grid, dtype=float)
     C1 = np.array(C0, dtype=np.complex128)

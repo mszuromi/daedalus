@@ -359,3 +359,55 @@ def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
     c2 = np.real(compute_cumulants(_build(True), **kw)['C_tau'])
     c1 = np.real(compute_cumulants(_build(False), **kw)['C_tau'])
     assert np.max(np.abs(c2 - c1)) <= 1e-12 * (np.max(np.abs(c1)) + 1e-30)
+
+
+def test_operator_ir_derivative_vertex_through_compute_cumulants():
+    """The OPERATIONAL WIRING (Phase 4 connect-the-ends): a QUADRATIC
+    derivative-vertex theory — the conserved ``−g∇²(φ²)`` reaction-diffusion that
+    v1 fundamentally could not compute — authored with ``.operator_ir()`` flows
+    through ``compute_cumulants(max_ell=1)`` END-TO-END:
+
+      * the compiler UNFOLDS the ∇²(δφ²) vertex to its bare φ² composite (so
+        ``enumerate_unique_diagrams`` sees the φ̃φ² bubble topology) and stashes
+        the ``(('Lap',),)`` operator chain on the namespace;
+      * the one-loop self-energy is q-DEPENDENT → the bridge routes to the
+        momentum-first Stage-C.5 bubble (close-pair-free), extracts the coupling
+        g from the uniform bubble value, and reads the per-vertex form factors off
+        ``route_momenta`` (Σ_R: F_R=q²ℓ², Σ_K: F_K=q⁴);
+      * the form-factor-aware ``loop_dyson`` returns a FINITE C(x,τ) — no Phase-J
+        hang, no UV over-count.
+
+    Asserts the path completes with g extracted exactly, the right diagram counts,
+    finite output, and a physically sensible equal-time value: C(0,0) ≈ the tree
+    ``1/(2√2)=0.354`` plus only a SMALL correction (a conserved ∇² vertex barely
+    renormalizes — unlike a plain gφ² vertex)."""
+    import numpy as np
+    from pipeline.compute import compute_cumulants
+    from pipeline.theory import TheoryBuilder
+
+    m = (TheoryBuilder('rd_deriv_e2e', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=2.0, domain='positive')
+         .parameter('g', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='g*Laplacian*phi^2')
+         .set_action_text(
+             'phit*(Dt(phi) + mu*phi - D*Lap(phi) - g*Lap(phi^2)) - T*phit^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+
+    out = compute_cumulants(
+        m, k=2, max_ell=1,
+        fundamental={'mu': 1.0, 'D': 2.0, 'g': 0.3, 'T': 1.0},
+        external_fields=[('phi', 1), ('phi', 1)],
+        spatial_grid=np.linspace(0, 6, 7), tau_max=1.0, tau_step=0.5,
+        verbose=False, use_cache=False, mf_dae_n_starts=4)
+
+    sp = out['spatial_info']
+    assert sp['bubble'] is True
+    assert abs(sp['self_energy_coupling_g'] - 0.3) < 1e-6      # g extracted exactly
+    assert sp['n_bubble_diagrams'] == 2 and sp['n_tadpole_diagrams'] == 1
+    C = np.real(out['C_tau'])
+    assert np.all(np.isfinite(C))
+    c00 = C[len(C) // 2]                                       # x=0, τ=0
+    assert 0.35 < c00 < 0.40                                   # tree 0.354 + small δC

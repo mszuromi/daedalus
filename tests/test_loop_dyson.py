@@ -143,3 +143,31 @@ def test_bubble_delta_C_q_tau_formfactor(q=0.7):
     diff = bubble_delta_C_q_tau(q, taus, MU, D, T, g=1.0,
                                 formfactor=lambda l: -l ** 2)
     assert np.all(np.isfinite(diff)) and abs(diff[0] - base[0]) > 1e-6
+
+
+@pytest.mark.parametrize('q', [0.3, 0.7, 1.2, 2.0, 3.0])
+def test_derivative_vertex_formfactor_matches_direct_quad(q):
+    """The conserved ∇²(φ²) derivative-vertex bubble: the tabulated τ-dependent
+    assembly with the route-extracted SEPARATE form factors (Σ_R: F_R=q²ℓ²,
+    Σ_K: F_K=q⁴) reproduces an INDEPENDENT direct ``scipy.quad`` of σ_R/σ_K (the
+    sim-validated spike's ``dC_deriv``) at τ=0.
+
+    Guards the integrable-singularity handling: under F_R=q²ℓ² the retarded
+    self-energy is UV-sensitive, σ_R(a)~A·a^{-1/2} as a→0⁺.  A naive uniform-grid
+    trapezoid with a σ(1e-7) ``a=0`` prepend OVER-counts that first sliver ~100×;
+    the power-law sliver + 1/m-adaptive grid fix it to ≲2%.  (σ_K with F_K=q⁴ is
+    ℓ-flat ⇒ finite at 0, so only Σ_R needed the fix.)"""
+    m = _mq(q)
+    fR = lambda l: q * q * l * l
+    fK = lambda l: q ** 4
+    t1 = integrate.quad(lambda u: sigma_R_time(q, u, MU, D, T, formfactor=fR)
+                        * math.exp(-m * u), 0, np.inf, limit=200)[0] * T / (m * m)
+    t2 = integrate.quad(lambda u: sigma_K_time(q, u, MU, D, T, formfactor=fK)
+                        * math.exp(-m * u), 0, np.inf, limit=200)[0] / m
+    ref = C_R * t1 + C_K * t2                       # g=1 ⇒ the spike's dC_deriv
+    got = bubble_delta_C_q_tau(
+        q, [0.0], MU, D, T, g=1.0,
+        formfactor=lambda l: q * q * l * l * np.ones_like(l),
+        formfactor_K=lambda l: q ** 4 * np.ones_like(l))[0]
+    assert abs(got - ref) <= 3e-2 * abs(ref)        # ≲2% (mid-band ≲0.5%); the
+    #                                                 bug it guards was ~10–37×
