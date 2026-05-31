@@ -25,9 +25,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import numpy as np
 from sage.all import SR
 
+import importlib.util
+
 from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
 from msrjd.integration.spatial.generic_evaluator import (
-    loop_self_energy, bubble_delta_C,
+    loop_self_energy, bubble_delta_C, tadpole_delta_C,
 )
 from msrjd.integration.spatial.temporal_integrate import (
     sigma_parametric, bubble_edges,
@@ -106,17 +108,76 @@ def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
     reproduces the bespoke loop_dyson δC(q,τ) — with NO pinned C_R/C_K (the
     weights come from the enumeration M(Γ): 16/4=4=C_R, 8/4=2=C_K)."""
     mu, D, T = 1.0, 1.0, 1.0
-    A, B, N = mu, D, T                              # single tree mode (μ,D,T)
+    A, B = mu, D                                    # single tree mode mass (μ,D)
     bubbles = [(d, pre) for d, pre in rd_ell1 if not d.is_tadpole_like()]
     assert len(bubbles) == 2
     for q in (0.4, 0.9, 1.6):
         taus = np.array([0.0, 0.5, 1.0, 2.0])
         gen = np.zeros(len(taus))
         for d, pre in bubbles:
-            gen = gen + bubble_delta_C(d, pre, q, taus, A, B, N, mu, D)
+            gen = gen + bubble_delta_C(d, pre, q, taus, A, B, mu, D)
         ref = loop_dyson.bubble_delta_C_q_tau(q, taus, mu, D, T, g=0.3)
         # coarse-grid convolution + interpolation ⇒ ~1% agreement is the bar
         for i, tau in enumerate(taus):
             denom = abs(ref[i]) + 1e-12
             assert abs(gen[i] - ref[i]) <= 1.5e-2 * denom, \
                 f"δC mismatch q={q},τ={tau}: generic={gen[i]:.6e} vs loop_dyson={ref[i]:.6e}"
+
+
+@pytest.fixture(scope='module')
+def allencahn_ell1():
+    """Allen-Cahn (φ̃φ³) d=1, λ=0.1: ell=1 (descriptor, M(Γ)·prefactor) pairs."""
+    from pipeline._propagator import build_propagator
+    from pipeline.compute import FieldTheory
+    repo = os.path.join(os.path.dirname(__file__), '..')
+    spec = importlib.util.spec_from_file_location(
+        'ac', os.path.join(repo, 'theories',
+                           'allen_cahn_1d_subcritical_infinite.theory.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    model = mod.build()
+    ft = FieldTheory(model, taylor_order=4)
+    ft.expand()
+    ft.sanity_check(verbose=False)
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], phys_idx)
+    by_ell = build_pipeline_records(ft, model, prop, ext, max_ell=1, verbose=False)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('T'): 1.0,
+            SR.var('lam'): 0.1, SR.var('phistar1'): 0.0}
+    return [(diagram_to_cstack(td), float(SR(pre).subs(base)))
+            for td, pre in by_ell[1]]
+
+
+def test_tadpole_matches_allen_cahn_oracle(allencahn_ell1):
+    """Phase 3: the GENERIC tadpole δC (instantaneous self-energy → mass shift,
+    same Dyson machinery in the δ-limit) on Allen-Cahn reproduces the validated
+    oracle.  Decisive end-to-end check: ∫dq/2π δC(q,0) == δ⟨φ²⟩ = 0.4625−0.5 =
+    −0.0375 (the compute_spatial_correlator_one_loop number at λ=0.1) — with the
+    coupling/combinatorics read from the enumeration M(Γ), NOT g=3λ hardcoded."""
+    mu, D, T = 1.0, 1.0, 1.0
+    A, B = mu, D
+    tads = [(d, pre) for d, pre in allencahn_ell1
+            if d.is_tadpole_like() and abs(pre) > 1e-9]
+    assert len(tads) == 1, f"expected 1 live tadpole, got {len(tads)}"
+    tad, pre = tads[0]
+
+    # (a) shape: δC(q,τ) is a mass shift Σ·∂C₀/∂A (Σ from MY computation)
+    for q in (0.0, 0.6, 1.4):
+        taus = np.array([0.0, 0.5, 1.0])
+        gen = tadpole_delta_C(tad, pre, q, taus, A, B, mu, D)
+        m = A + B * q * q
+        h = 1e-5
+        dC0dA = ((T / (m + h)) * np.exp(-(m + h) * taus)
+                 - (T / (m - h)) * np.exp(-(m - h) * taus)) / (2 * h)
+        Sigma = gen[0] / dC0dA[0]                      # read Σ from τ=0
+        for i in range(len(taus)):                     # same Σ at all τ
+            assert abs(gen[i] - Sigma * dC0dA[i]) <= 1e-6 * (abs(gen[i]) + 1e-12)
+
+    # (b) end-to-end: ∫dq/2π δC(q,0) == −0.0375 (the oracle's δ⟨φ²⟩ at λ=0.1)
+    qg = np.linspace(0.0, 60.0, 6000)
+    dC0 = np.array([tadpole_delta_C(tad, pre, float(q), np.array([0.0]),
+                                    A, B, mu, D)[0] for q in qg])
+    dvar = 2.0 * np.trapz(dC0, qg) / (2.0 * np.pi)     # even in q → 2∫₀
+    assert abs(dvar - (-0.0375)) <= 5e-4, f"δ⟨φ²⟩={dvar:.6f}, expected −0.0375"

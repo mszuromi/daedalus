@@ -138,7 +138,7 @@ def _kinematic_to_physical(descr):
     return 2.0 ** (-n_C)
 
 
-def bubble_delta_C(descr, prefactor_val, q, taus, A, B, N, mu, D,
+def bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
                    spatial_dim=1):
     """The full 1-loop **bubble** contribution ``δC_Γ(q,τ)`` of one diagram,
     the generic momentum-first way: ``σ_Γ`` from the Symanzik route
@@ -148,8 +148,12 @@ def bubble_delta_C(descr, prefactor_val, q, taus, A, B, N, mu, D,
     ``descr`` must be a non-tadpole (no self-loop) 2-vertex bubble; classified
     Σ_R (loop kinds ``{R,C}``) → retarded dressing, Σ_K (``{C,C}``) → Keldysh.
     ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at the
-    params (carries the couplings + noise amplitudes).  Returns an array over
-    ``taus`` (kinematic σ uses T=1; the T's live in ``prefactor_val``)."""
+    params (carries the couplings AND all noise amplitudes — one ``T`` per C
+    edge).  The kinematics are therefore computed at **unit noise**: ``σ_Γ`` with
+    ``T=1`` and the external-leg dressing (``C₀``) with unit amplitude, so the
+    total noise power ``T^{n_C}`` comes solely from ``prefactor_val`` (using the
+    real ``T`` in the dressing too would double-count it → wrong ``T``-scaling).
+    Returns an array over ``taus``."""
     taus = np.asarray(taus, dtype=float)
     m = A + B * q * q
     loop_kinds = tuple(sorted(e.kind for e in descr.loop_edges()))
@@ -157,10 +161,68 @@ def bubble_delta_C(descr, prefactor_val, q, taus, A, B, N, mu, D,
                                      spatial_dim=spatial_dim)
     ag, sg = _sigma_grid(sig, m, taus)
     if loop_kinds == ('C', 'R'):
-        kin = _dyson_retarded(ag, sg, m, N, taus)
+        kin = _dyson_retarded(ag, sg, m, 1.0, taus)      # unit-noise C₀ dressing
     elif loop_kinds == ('C', 'C'):
-        kin = _dyson_keldysh(ag, sg, m, taus)
+        kin = _dyson_keldysh(ag, sg, m, taus)            # G_R⁰⊛Σ_K⊛G_A⁰: no C₀
     else:
         raise NotImplementedError(
             f"bubble_delta_C: unsupported loop-edge kinds {loop_kinds}.")
     return _kinematic_to_physical(descr) * float(prefactor_val) * kin
+
+
+def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
+                    spatial_dim=1):
+    """The full 1-loop **tadpole** contribution ``δC_Γ(q,τ)`` of one diagram —
+    an INSTANTANEOUS (equal-time self-loop) self-energy, i.e. a mass shift.
+
+    This is the ``σ(a)=Σ·δ(a)`` limit of the SAME Dyson convolution: feeding it
+    through :func:`_dyson_retarded` gives ``Σ·(−∂C₀/∂A)`` analytically, so
+
+        δC_Γ(q,τ) = Σ_Γ · (−∂C₀/∂A),   −∂C₀/∂A = (1/m)e^{−m|τ|}(|τ|+1/m),
+        Σ_Γ = 2^{−n_C}·(M(Γ)·prefactor)·⟨φ²⟩₀^kin,
+
+    with ``⟨φ²⟩₀^kin`` the self-loop's loop integral (``sigma_parametric`` on the
+    self-loop edge at equal time, T=1) and ``m = A + B q²``.  As in
+    :func:`bubble_delta_C`, the kinematics use **unit noise** (the ``T^{n_C}``
+    lives entirely in ``prefactor_val``).  Signs take care of themselves through
+    the signed enumeration ``prefactor`` and the convolution's intrinsic
+    ``−∂C₀/∂A`` (verified vs the Allen-Cahn oracle).
+
+    Scope (this milestone): a tadpole whose only INTERNAL edge is the self-loop
+    (a single-vertex tadpole, e.g. φ̃φ³ Allen-Cahn).  A multi-internal-vertex
+    tadpole (e.g. the φ̃φ² rd tadpole with a ``k=0`` connector) carries extra
+    structural time factors and is handled when its time structure is threaded
+    (Phase 4)."""
+    taus = np.asarray(taus, dtype=float)
+    m = A + B * q * q
+    internal = descr.loop_edges()
+    selfloops = [e for e in internal if e.u == e.v]
+    if not selfloops:
+        raise ValueError("tadpole_delta_C: no self-loop edge (not a tadpole).")
+    non_self = [e for e in internal if e.u != e.v]
+    if non_self:
+        raise NotImplementedError(
+            "tadpole_delta_C: tadpole has extra internal edges "
+            f"{[(e.u, e.v, e.kind) for e in non_self]} (e.g. a k=0 connector); "
+            "its structural time factors are not yet threaded (Phase 4).")
+    sl = selfloops[0]
+    phi2 = sigma_parametric([(tuple(float(x) for x in sl.a),
+                              tuple(float(x) for x in sl.b), 'C')],
+                            q, 0.0, mu, D, 1.0, spatial_dim=spatial_dim)
+    Sigma = _kinematic_to_physical(descr) * float(prefactor_val) * phi2
+    minus_dC0_dA = (1.0 / m) * np.exp(-m * np.abs(taus)) * (np.abs(taus) + 1.0 / m)
+    return Sigma * minus_dC0_dA
+
+
+def diagram_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
+                    spatial_dim=1):
+    """The full 1-loop contribution ``δC_Γ(q,τ)`` of ONE enumerated diagram — the
+    single entry point, no bubble/tadpole branch in the *caller*.  Dispatches on
+    the diagram's own structure (a property, not a physics choice): a self-loop
+    edge ⇒ instantaneous self-energy (:func:`tadpole_delta_C`); otherwise a
+    2-vertex loop ⇒ smooth self-energy (:func:`bubble_delta_C`)."""
+    if descr.is_tadpole_like():
+        return tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
+                               spatial_dim=spatial_dim)
+    return bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
+                          spatial_dim=spatial_dim)
