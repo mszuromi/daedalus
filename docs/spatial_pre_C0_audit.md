@@ -138,6 +138,15 @@ full-resolution d=2 δ⟨φ²⟩-vs-2D-sim study (perf-gated on a vectorized `si
 Σ_K; sim is also tadpole/bubble-conflated); (ii) wiring d=2 through `compute_cumulants`
 (the bridge/dispatch gate d≠1 today).
 
+**d=2 TREE through `compute_cumulants` — LANDED + reviewable.** Relaxed the
+`heat_kernel` d≠1 gate (d∈{1,2,3}); the bridge + `total_C` use `radial_inverse_ft`
+for the q→x at d≥2; sped up Σ_K (Gauss–Laguerre, ~2×). A d=2 linear theory runs
+through the PUBLIC `compute_cumulants(max_ell=0)` and `C(r,0)` matches the exact
+`K₀` to ~1% (r≤3); demo notebook `notebooks/pipeline_linear_field_2d_sim_compare.ipynb`
+(vs `K₀` + the 2-D sim). The 1-loop **bubble** at d=2 (`max_ell=1`) is the next
+increment — route `compute_spatial_correlator_bubble` through the C-stack
+(`sigma_parametric` d=2 + `radial_inverse_ft`) instead of the d=1 `loop_dyson`.
+
 **Deferred (next session, with review):**
 - **W5** cutoff-dict (`gaussian_edge|hard_spherical|lattice_bz`) + **W6** `spatial_dim` threading
   through the OLD bubble path. (The NEW C0/C1/C2 code is already d-general; the cutoff threads
