@@ -109,11 +109,17 @@ Branch `spatial-extension`. Overnight autonomous run (May 2026):
 **Result:** C0→C1→C2 form a working finite-scale loop evaluator at L=1 AND L=2, d-general,
 validated against backend B (the III.0 oracle) and direct momentum integrals.
 
+**W9 — DONE + validated.** Retired the close-pair g-extraction sidecar:
+`compute_spatial_correlator_bubble` no longer calls `pipeline_C_q_tau →
+compute_correction_td` (the m≳4 hang). Coupling read analytically from the diagram
+prefactor — the φ̃φ² bubble has `Σ M(Γ)·prefactor = 24·N0²·g²`, so `g² = pref/(24·N0²)`.
+The `24` verified to machine precision vs the old numerical `V_bub` for BOTH
+reaction-diffusion (g=0.35; g=0.2,T=2) AND the conserved ∇²(φ²) theory (g=0.3,D=2),
+invariant under g,T,D (a pinned topology constant like `c_R=4/c_K=2`). No
+compute_correction_td on the spatial loop path now ⇒ no hang at any mass/D; faster.
+Tests green: bridge (analytic g=g_true, spread 0, δC unchanged), operator_ir 22.
+
 **Deferred (next session, with review):**
-- **W9** retire the close-pair g-extraction sidecar via analytic M(Γ) — highest-value remaining;
-  M-effort, touches the production bubble path, normalization (c_R=4/c_K=2) needs care. Guarded
-  by the W1 golden pins + `test_spatial_pipeline_bridge`. Deferred to avoid an unreviewed
-  production refactor overnight.
 - **W5** cutoff-dict (`gaussian_edge|hard_spherical|lattice_bz`) + **W6** `spatial_dim` threading
   through the OLD bubble path. (The NEW C0/C1/C2 code is already d-general; the cutoff threads
   naturally into C2's `momentum_integral` — these wins are old-path setup.)
