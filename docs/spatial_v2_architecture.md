@@ -244,17 +244,22 @@ backend.
      (which takes `formfactor(q) → (ℓ↦F_q(ℓ))`).  `F=None` is bit-identical to the
      validated plain bubble; a non-trivial `F` is applied and stays finite.  So
      **given `F(ℓ)`, the integrator computes the derivative-vertex bubble.**
-   - **4c-2 (remaining — extraction):** produce `F(ℓ)` for a real theory.  The
-     bubble topology equals the plain φ̃φ² bubble, so: unfold vertex generators →
-     bare action (for `enumerate_unique_diagrams`), then map each vertex
-     generator's `(base, chain)` → `form_factor(chain, routed leg-momentum)` via
-     `route_momenta` (Laplacian vertices need only `edge_k2`; gradient/`Dx` need
-     signed momenta).  *Worked example:* Cahn-Hilliard `φ̃∇²(φ²)` → each vertex's
-     ∇² acts on the φ² composite (momentum = the φ̃ leg = the self-energy
-     momentum q), so `F = (−q²)² = q⁴` (ℓ-independent; Σ(q→0)→0, the conservation
-     law) — **plausible but to be confirmed by 4d, not asserted.**
-   - **4d:** validate end-to-end vs a CONSERVED-dynamics simulation (Model B
-     `∂_tφ=∇²(…)`; the current sim is non-conserved) — the F(ℓ) and the
-     `c_R,c_K` × form-factor interplay are research-grade and must be sim-checked
-     (as the plain bubble was, R²≈0.999) before being trusted.
+   - ✅ **4c-2** extraction: `bubble_loop_form_factor(td, op_chain)` reads each
+     interaction vertex's response-leg momentum from `route_momenta` (the vertex's
+     unique outgoing edge in the all-`G_R` representation) and assembles
+     `F = ∏ f_chain(p_v)` (`Lap→−p²`, `Dx→ip`).  **Validated vs hand derivation:**
+     the φ̃φ² bubbles with a `Lap` chain give `F_R=q²ℓ²` (Σ_R: external q + loop ℓ)
+     and `F_K=q⁴` (Σ_K: both external) — NOT the naive uniform `q⁴`.
+   - ✅ **4d** sim-validation: added a conserved derivative-vertex forcing
+     `g∂ₓ²(φ²)` to the 1D simulator and validated the target theory
+     `∂_tφ=−μφ+D∂ₓ²φ+g∂ₓ²(φ²)+η`.  The form-factor bubble reproduces the sim at
+     **B=0.944, R²=0.946** (where the plain bubble landed, 0.99), and the
+     ℓ-resolved route-extracted `F` **beats** the wrong guesses (uniform `q⁴`:
+     R²=0.927; `q²(q−ℓ)²`: R²=0.848). The integrator + extraction are validated
+     end-to-end on a theory v1 fundamentally could not compute.
+   - **Remaining within 4 (operational wiring):** connect the extraction to
+     `compute_cumulants` so a `.operator_ir()` derivative-vertex theory runs the
+     whole path automatically (unfold vertex generators → enumerate → extract
+     `F` → form-factor bubble), instead of the current clean `NotImplementedError`.
+     The pieces (extraction, integrator, sim-validated F) are all in place.
 5. Output `q→x` FT; Model B / KPZ as the new capability v1 could not do.
