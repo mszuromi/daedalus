@@ -84,4 +84,41 @@ what to **build on**, **edit**, or **drop** before implementing backend C
 
 ## Execution log
 
-(updated as wins land; commits on branch `spatial-extension`)
+Branch `spatial-extension`. Overnight autonomous run (May 2026):
+
+**DONE + validated (162 tests green across the full spatial+temporal suite):**
+- **W1** golden-number pins (`test_loop_dyson`): bubble_delta_S(q)×5, bubble_delta_phi2,
+  bubble_delta_C_q_tau — the III.0 oracle + refactor net.
+- **W2** `RoutingResult.edge_coeffs()` (`momentum_routing`) — the C0 input; tests reconstruct
+  tree/bubble/sunset momenta + rank checks.
+- **W3** dropped the dead `loop_parametric.m_k` dup (kept `sigma_*_kernel` as the C1 oracle).
+- **W4** extracted `loop_parametric.symanzik_UF(...)` (the C1 seed); `gaussian_momentum_integral`
+  is now its thin wrapper; bubble-reduction test.
+- **W8** simulator `meta['k_max']` + `structure_factor(snaps,meta)` (the matched-cutoff oracle);
+  `test_spatial_sim` (3) closes the 'no test imports the sim' gap.
+- **W10** `theories/reaction_diffusion_conserved_1d.theory.py` (the ∇²φ² derivative-vertex
+  theory as a first-class file; builds + sanity passes).
+- **W11** the 2-loop brute-force `∫dℓ₁dℓ₂` sunset oracle (embedded in `test_spatial_reduce`).
+- **C0** `spatial_reduce.symanzik_polynomials` → (U=det M, Q_eff) from edge_coeffs; matches the
+  hand bubble & sunset polynomials (math §6).
+- **C1** `spatial_reduce.momentum_integral` (L-loop); = `gaussian_momentum_integral` at L=1,
+  = brute-force ∫dℓ₁dℓ₂ at L=2 (1e-6).
+- **C2** `temporal_integrate.sigma_parametric` (2-vertex causal time-simplex; Gauss–Laguerre for
+  nC≥3); 1-loop bubble Σ_R/Σ_K = backend B (III.0 oracle), 2-loop sunset = direct ∫dℓ₁dℓ₂.
+
+**Result:** C0→C1→C2 form a working finite-scale loop evaluator at L=1 AND L=2, d-general,
+validated against backend B (the III.0 oracle) and direct momentum integrals.
+
+**Deferred (next session, with review):**
+- **W9** retire the close-pair g-extraction sidecar via analytic M(Γ) — highest-value remaining;
+  M-effort, touches the production bubble path, normalization (c_R=4/c_K=2) needs care. Guarded
+  by the W1 golden pins + `test_spatial_pipeline_bridge`. Deferred to avoid an unreviewed
+  production refactor overnight.
+- **W5** cutoff-dict (`gaussian_edge|hard_spherical|lattice_bz`) + **W6** `spatial_dim` threading
+  through the OLD bubble path. (The NEW C0/C1/C2 code is already d-general; the cutoff threads
+  naturally into C2's `momentum_integral` — these wins are old-path setup.)
+- **W7** wire C2 into `compute_spatial_correlator_bubble` as a selectable backend (the C2 module
+  IS the seam; routing the bridge to it = C3-lite/C4 = the Dyson assembly on top of C2's Σ —
+  the next milestone beyond C2).
+- Then: C3-lite (finite-cutoff δC end-to-end vs sim at matched cutoff), multi-vertex ordering
+  chambers, the d=2/3 path.
