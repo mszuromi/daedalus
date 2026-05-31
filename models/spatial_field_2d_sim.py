@@ -105,3 +105,28 @@ def radial_structure_factor_2d(snaps, meta, n_bins=40):
     Sr = np.array([Sf[idx == b].mean() if np.any(idx == b) else np.nan
                    for b in range(n_bins)])
     return kc, Sr
+
+
+def radial_correlator_2d(snaps, meta, n_bins=40, r_max=None):
+    """Real-space equal-time correlator ``C(r) = ⟨φ(0)φ(r)⟩`` radially averaged.
+
+    Uses the circular autocorrelation (FFT) per snapshot, averaged, then bins by
+    separation ``r=√(Δx²+Δy²)``.  ``C(0)=⟨φ²⟩``.  Returns ``(r_centers, C_radial)``
+    — directly comparable to ``compute_cumulants``' d=2 ``C(r,0)``."""
+    L, N = meta['L'], int(meta['N'])
+    dx = L / N
+    F = np.fft.fft2(snaps, axes=(1, 2))
+    C2d = np.mean(np.fft.ifft2(np.abs(F) ** 2, axes=(1, 2)).real, axis=0) / N ** 2
+    # separation grid wrapped to (−L/2, L/2]
+    s = (np.arange(N) - N * (np.arange(N) > N // 2)) * dx
+    SX, SY = np.meshgrid(s, s, indexing='ij')
+    rmag = np.sqrt(SX ** 2 + SY ** 2).ravel()
+    Cf = C2d.ravel()
+    if r_max is None:
+        r_max = 0.5 * L
+    edges = np.linspace(0.0, r_max, n_bins + 1)
+    idx = np.digitize(rmag, edges) - 1
+    rc = 0.5 * (edges[:-1] + edges[1:])
+    Cr = np.array([Cf[idx == b].mean() if np.any(idx == b) else np.nan
+                   for b in range(n_bins)])
+    return rc, Cr

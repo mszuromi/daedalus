@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from models.spatial_field_2d_sim import (
     simulate_2d, structure_factor_2d, radial_structure_factor_2d,
-    _dispersion_2d,
+    radial_correlator_2d, _dispersion_2d,
 )
 
 
@@ -68,3 +68,19 @@ def test_2d_variance_matches_lattice_sum(_lin2d):
     disp = _dispersion_2d(meta['N'], meta['dx'], meta['mu'], meta['D'])
     var_lat = (meta['T'] / meta['L'] ** 2) * float(np.sum(1.0 / disp))
     assert abs(var_sim - var_lat) <= 0.05 * var_lat
+
+
+def test_2d_radial_correlator_vs_K0(_lin2d):
+    """Real-space radial C(r) vs the exact continuum K₀ correlator
+    (T/2πD)K₀(r√(μ/D)) in a band — the direct real-space oracle that
+    compute_cumulants' d=2 C(r,0) is compared against."""
+    import math
+    from scipy.special import k0
+    snaps, meta = _lin2d
+    rc, Cr = radial_correlator_2d(snaps, meta, n_bins=40)
+    kappa = math.sqrt(meta['mu'] / meta['D'])
+    Cr_th = (meta['T'] / (2 * math.pi * meta['D'])) * np.array(
+        [float(k0(kappa * r)) if r > 0 else np.nan for r in rc])
+    band = (rc > 1.0) & (rc < 4.0)
+    rel = np.abs(Cr[band] - Cr_th[band]) / Cr_th[band]
+    assert np.nanmedian(rel) < 0.12
