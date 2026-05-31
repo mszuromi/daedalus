@@ -135,6 +135,9 @@ is how to integrate over the times.
   our propagators are *retarded* (causal `θ`'s, the `|t|` in `C`, real-time
   contour `i`'s), so the standard *Euclidean* Symanzik machinery must be adapted
   to causal propagators. This is the long-term target; reading list in §9.
+  **Detailed design: `docs/backend_C_design.md` (components C0–C4, milestone
+  ladder, interfaces); math foundation: `docs/backend_C_math.md` (real-time
+  Symanzik + causal time-simplex + sector decomposition).**
 
 ## 6. Basis + dimension (D5)
 
