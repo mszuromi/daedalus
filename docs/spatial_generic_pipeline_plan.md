@@ -1,5 +1,25 @@
 # The generic spatial loop pipeline (the plan)
 
+> **STATUS UPDATE (superseded by the full-diagram integrator).** The 6-phase plan
+> below built the generic per-diagram evaluator out of *shortcuts* (a Dyson
+> convolution for the bubble, a mass-shift for the tadpole), which left a genuine
+> multi-vertex-tadpole gap.  Per direction to "build the whole thing, no
+> shortcuts," that was replaced by **`full_integrator.py`** — ONE genuine integral
+> for *every* diagram (tree, bubble, tadpole, … any k, ell, d):
+> `enumerate → route → Symanzik ∫dᵈℓ → causal-chamber time integral → ret+adv sum`.
+> It is wired into `compute_cumulants` and **validated**: tree `== C₀` (1e-14),
+> rd φ̃φ² bubble `== loop_dyson` (~1e-4), Allen-Cahn φ̃φ³ tadpole `δ⟨φ²⟩ = −0.0375`
+> (the oracle), and a φ⁴ sim-vs-theory notebook (tree 0.5 → 1-loop 0.4625 → sim
+> 0.469).  Scope today: **simple (non-derivative) vertices, single field**; d=1
+> validated, d general by construction.  Deferred: derivative/∇ form-factor
+> vertices, the d≥2 tadpole UV cutoff, ell≥2 (sunset) validation, production speed.
+> `loop_dyson` / `generic_evaluator` survive only as **independent test oracles**.
+>
+> The architecture below (the data flow, the C-stack components, the normalization)
+> still describes the pipeline; only the per-diagram *evaluation* changed from
+> shortcuts to the genuine integral.
+
+
 *Branch `spatial-extension`, May 2026.  This is the authoritative plan for the
 spatial loop calculation.  It replaces the **bespoke** bubble/tadpole paths with
 a single generic per-diagram evaluator.  Companion: `spatial_loop_diagram_inventory.md`
