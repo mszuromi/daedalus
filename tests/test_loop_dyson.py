@@ -171,3 +171,44 @@ def test_derivative_vertex_formfactor_matches_direct_quad(q):
         formfactor_K=lambda l: q ** 4 * np.ones_like(l))[0]
     assert abs(got - ref) <= 3e-2 * abs(ref)        # ≲2% (mid-band ≲0.5%); the
     #                                                 bug it guards was ~10–37×
+
+
+# ── golden-number regression (the backend-C III.0 oracle + refactor safety net) ──
+# These FREEZE the validated 1-loop bubble (the plain φ̃φ² self-energy) at fixed
+# params so the pre-C0 refactors (symanzik_UF extraction, the close-pair
+# g-extraction retirement, the C0/C1/C2 build) cannot silently change it.  Backend
+# C must reproduce bubble_delta_S to ~1e-6 (design III.0); these are the targets.
+_GOLD_MU = _GOLD_D = _GOLD_T = 1.0
+_GOLD_G = 0.2
+_GOLD_dS = {                       # bubble_delta_S(q) at (μ,D,T,g)=(1,1,1,0.2)
+    0.0: 2.0000000000e-02,
+    0.6: 9.9203199897e-03,
+    1.2: 2.4700823623e-03,
+    2.0: 3.9999999995e-04,
+    3.0: 6.1538461513e-05,
+}
+_GOLD_phi2 = 4.4444443915e-03      # bubble_delta_phi2 = ∫dq/2π δC(q,0)
+_GOLD_Ctau = [8.02799804e-03, 7.44637981e-03, 5.74634790e-03]  # δC(0.7,[0,.5,1])
+
+
+@pytest.mark.parametrize('q,gold', list(_GOLD_dS.items()))
+def test_golden_bubble_delta_S(q, gold):
+    """FROZEN: the closed-form equal-time bubble δC(q,0).  Backend C reproduces
+    these (design III.0 oracle); any drift is a real regression."""
+    got = bubble_delta_S(q, _GOLD_MU, _GOLD_D, _GOLD_T, g=_GOLD_G)
+    assert abs(got - gold) <= 1e-6 * abs(gold) + 1e-12
+
+
+def test_golden_bubble_delta_phi2():
+    """FROZEN: the momentum-integrated bubble δ⟨φ²⟩ = ∫dq/2π δC(q,0)."""
+    got = bubble_delta_phi2(_GOLD_MU, _GOLD_D, _GOLD_T, g=_GOLD_G)
+    assert abs(got - _GOLD_phi2) <= 1e-6 * abs(_GOLD_phi2)
+
+
+def test_golden_bubble_delta_C_q_tau():
+    """FROZEN: the τ-dependent backend-B bubble (the loop_dyson tabulated route)
+    at q=0.7.  Guards the sliver/adaptive-grid handling against silent drift."""
+    got = bubble_delta_C_q_tau(0.7, [0.0, 0.5, 1.0], _GOLD_MU, _GOLD_D, _GOLD_T,
+                               g=_GOLD_G)
+    for g_got, g_exp in zip(got, _GOLD_Ctau):
+        assert abs(g_got - g_exp) <= 1e-5 * abs(g_exp) + 1e-12

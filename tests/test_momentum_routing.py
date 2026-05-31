@@ -99,6 +99,42 @@ def test_sunset_two_loops():
     assert r.n_loops == 2
 
 
+def test_edge_coeffs_reconstructs_momenta():
+    """edge_coeffs() must reconstruct each edge momentum EXACTLY:
+    k_e = Σ_i a_{ei} ℓ_i + Σ_j b_{ej} q_j.  This is the backend-C C0 input
+    (the signed routing coefficients edge_k2 discards by squaring)."""
+    for td in (_tree_2pt(), _bubble(), _sunset()):
+        r = route_momenta(td)
+        coeffs = r.edge_coeffs()
+        for e, m in r.edge_momenta.items():
+            a, b = coeffs[e]
+            recon = (sum(a[i] * r.loop_syms[i] for i in range(len(r.loop_syms)))
+                     + sum(b[j] * r.q_syms[j] for j in range(len(r.q_syms))))
+            assert sp.expand(m - recon) == 0
+            assert all(isinstance(c, int) for c in a + b)   # ±1/0 integers
+
+
+def test_edge_coeffs_bubble_structure():
+    """The bubble's two loop edges carry ±ℓ (a=(+1,) and (−1,)); the external
+    legs carry no loop momentum (a=(0,)).  Matches the [1,−1] the 1-loop
+    sigma_*_kernel hardcoded — which C0 now reads from routing instead."""
+    r = route_momenta(_bubble())
+    coeffs = r.edge_coeffs()
+    loop_edges = [coeffs[(2, 3, 2)], coeffs[(2, 3, 3)]]
+    assert sorted(a[0] for a, b in loop_edges) == [-1, 1]
+    assert coeffs[(2, 0, 0)][0] == (0,) and coeffs[(3, 1, 1)][0] == (0,)
+
+
+def test_edge_coeffs_sunset_two_loops():
+    """The sunset's three internal edges, two loop momenta: edge_coeffs gives a
+    2-vector ``a`` per edge; reconstruction is exact and the rows span L=2."""
+    r = route_momenta(_sunset())
+    coeffs = r.edge_coeffs()
+    assert all(len(a) == 2 for a, b in coeffs.values())     # two loop momenta
+    internal = [coeffs[(2, 3, lbl)][0] for lbl in (2, 3, 4)]
+    assert sp.Matrix(internal).rank() == 2
+
+
 def test_external_momentum_conservation():
     """The two external-leg momenta must be opposite (Σq = 0)."""
     r = route_momenta(_tree_2pt())

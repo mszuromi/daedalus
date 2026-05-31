@@ -59,6 +59,42 @@ class RoutingResult:
         propagator pole needs: ``λ_e = -(A + B·k_e²)``)."""
         return {e: sp.expand(m ** 2) for e, m in self.edge_momenta.items()}
 
+    def edge_coeffs(self):
+        """Return ``{edge: (a, b)}`` — the per-edge LINEAR routing coefficients.
+
+        Each edge momentum is the linear form
+        ``k_e = Σ_i a_{ei} ℓ_i + Σ_j b_{ej} q_j``; this returns ``a`` (a tuple
+        over :attr:`loop_syms`) and ``b`` (a tuple over :attr:`q_syms`) per edge.
+
+        This is the input backend C's Symanzik step (``spatial_reduce``) needs to
+        build the loop-momentum quadratic forms ``M_{ii'}=Σ_e w_e a_{ei}a_{ei'}``,
+        ``N_{ij}=Σ_e w_e a_{ei}b_{ej}``, ``Q_{jj'}=Σ_e w_e b_{ej}b_{ej'}`` →
+        ``U=det M``, ``F``.  ``edge_k2`` squares the momentum and loses these
+        signed cross-term coefficients, so it cannot be used for the reduction.
+
+        Coefficients are returned as Python ``int`` (translation-invariant
+        routing gives ``±1``/``0``); a non-integer/symbolic coefficient (should
+        not arise for a valid MSR diagram) is kept symbolic.
+        """
+        def _num(x):
+            x = sp.nsimplify(x) if not x.is_number else x
+            if getattr(x, 'is_Integer', False):
+                return int(x)
+            try:
+                return int(x)
+            except (TypeError, ValueError):
+                try:
+                    return float(x)
+                except (TypeError, ValueError):
+                    return x                      # leave symbolic (unexpected)
+        out = {}
+        for e, m in self.edge_momenta.items():
+            mm = sp.expand(m)
+            a = tuple(_num(mm.coeff(s)) for s in self.loop_syms)
+            b = tuple(_num(mm.coeff(s)) for s in self.q_syms)
+            out[e] = (a, b)
+        return out
+
 
 def route_momenta(typed_diagram, verbose=False) -> RoutingResult:
     """Solve momentum conservation over a typed diagram's graph.

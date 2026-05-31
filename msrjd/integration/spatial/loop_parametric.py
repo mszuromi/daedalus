@@ -58,12 +58,8 @@ def gaussian_momentum_integral(a, b, w, q, D, spatial_dim=1):
     return pref * math.exp(-D * q * q * F)
 
 
-# ── tree (heat-kernel) propagators at momentum k ──────────────────
-def m_k(k, mu, D):
-    return mu + D * k * k
-
-
 # ── bubble self-energies via the parametric core ──────────────────
+# (the tree mass m_k = μ + D k² lives in loop_dyson._mk — single source)
 # Σ_R kernel = ∫dℓ/2π G_R(ℓ,t) C(q-ℓ,t)   (one response + one correlation edge)
 #   response edge:    k=ℓ   (a=1, b=0),  weight w = t          (G_R = e^{-m_ℓ t})
 #   correlation edge: k=q-ℓ (a=-1, b=1), weight w = s ≥ t      (C   = T∫_t^∞ ds e^{-m s})
