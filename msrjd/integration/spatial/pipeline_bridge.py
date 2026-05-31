@@ -457,368 +457,30 @@ def _live_bubbles(records, num_params):
             if _diagram_is_bubble(r[0]) and _prefactor_is_live(r[1], num_params)]
 
 
-# ── 4. 1-loop tadpole (constant mass-shift self-energy) ───────────
-def compute_spatial_correlator_one_loop(
-        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q_samples=(0.0, 0.8, 1.5), g_qindep_rtol=1e-4):
-    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` for a TADPOLE
-    (momentum-independent mass-shift) self-energy, routed through the SHARED
-    pipeline.
-
-    Mechanism (validated, ``docs/spatial_spikes/stageC_tadpole_spike.py``):
-    the pipeline's ``ell=1`` correction at external momentum ``q`` is
-    ``ell1(q,τ) = Σ_pipe(q)·∂C₀(q,τ)/∂A`` with ``Σ_pipe(q) = g·C₀(q,0)`` — the
-    pipeline uses the loop edge at momentum ``q`` (un-integrated) and supplies
-    the combinatorial coefficient ``g = M(Γ)·coupling`` (NOT hardcoded; for
-    Allen-Cahn ``g = 3λ``).  ``g`` is q-INDEPENDENT iff the self-energy is a
-    pure mass shift (a tadpole).  The CORRECT self-energy replaces the loop
-    value by the momentum integral ``⟨φ²⟩₀ = ∫dℓ/2π C₀(ℓ,0) =
-    free_two_point(A,B,N,0,0)`` (the §4c′ residue closed form), giving
-    ``Σ = g·⟨φ²⟩₀`` and the strict-1-loop ``δC(x,τ) = Σ·∂C₀(x,τ)/∂A`` (the
-    external q-FT is automatic because ``C₀(x,τ)`` is already the q-FT'd tree).
-
-    A momentum-DEPENDENT self-energy (bubble) makes ``g`` q-dependent → raises
-    NotImplementedError pointing at Stage C.5 (the per-edge ``∫dℓ`` integrator).
-    Returns ``(C1_tau_x, info)``; ``info`` adds ``Sigma``, ``self_energy_coeff_g``,
-    ``phi2_0``, ``A_eff_hartree``.
-    """
-    C0, tree_info = compute_spatial_correlator_via_pipeline(
-        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=verbose, certify=True)
-    modes = tree_info['modes']
-    if len(modes) != 1:
-        raise NotImplementedError(
-            'spatial 1-loop v1 supports a single-mode (single-field) tree only.')
-    A0, B0, N0 = modes[0]
-    A0 = float(np.real(A0))
-    bc_mode, L = tree_info['bc_mode'], tree_info['L']
-
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    ring_var_names = list(ft._ns._ring_var_names)
-    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
-    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
-
-    nps_sr = _norm_sr(num_params)
-    base_np_sr = {kk: vv for kk, vv in nps_sr.items()
-                  if str(kk) != 'Laplacian'}
-
-    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
-                                    verbose=verbose)
-    ell1 = by_ell.get(1, [])
-    if not ell1:
-        raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
-
-    # Classify BEFORE the (slow) Phase J g-extraction: a momentum-DEPENDENT
-    # bubble breaks the tadpole mass-shift assumption AND would hang here —
-    # evaluating a bubble's time-polytope at q=0 (exact-degenerate edges) hits
-    # the close-pair slow-path.  Raise immediately so the caller routes to the
-    # Stage C.5 momentum-first bubble integrator.
-    if _live_bubbles(ell1, num_params):
-        raise NotImplementedError(
-            'spatial 1-loop has a LIVE momentum-DEPENDENT bubble self-energy (an '
-            'edge carries q±ℓ with a nonzero prefactor at the saddle); the '
-            'constant-mass-shift tadpole path does not apply.  Route to the '
-            'Stage C.5 momentum-first bubble integrator '
-            '(compute_spatial_correlator_bubble).')
-    if verbose:
-        print(f'[spatial pipeline] Phase J (compute_correction_td) on the '
-              f'{len(ell1)} ell=1 diagram(s) at q={list(q_samples)} → '
-              f'extracting the tadpole self-energy coefficient g...')
-
-    # Extract the self-energy coefficient g from the pipeline (q-independent
-    # for a tadpole): ell1(q,0) = Σ_pipe·∂C₀/∂A, Σ_pipe = g·C₀_mom(q).
-    def _C0_mom(q):
-        return N0 / (A0 + B0 * q * q)
-
-    def _dC0dA_mom(q):
-        return -N0 / (A0 + B0 * q * q) ** 2
-
-    gs = []
-    for q in q_samples:
-        e1 = pipeline_C_q_tau(prop, ell1, ext_int, base_np_sr, q,
-                              [0.0])[0].real
-        gs.append((e1 / _dC0dA_mom(q)) / _C0_mom(q))
-    gs = np.array(gs)
-    gmean = float(np.mean(gs))
-    spread = float(np.max(np.abs(gs - gmean)) / (abs(gmean) + 1e-30))
-    if spread > g_qindep_rtol:
-        raise NotImplementedError(
-            'spatial 1-loop v1 supports only the TADPOLE (momentum-independent '
-            'mass-shift) self-energy, but the pipeline-extracted coefficient is '
-            f'q-DEPENDENT (g={gs}, rel spread {spread:.2e} > {g_qindep_rtol:.0e}). '
-            'A momentum-dependent self-energy (bubble) needs the per-edge ∫dℓ '
-            'loop integrator (Stage C.5) — see '
-            'docs/spatial_phase5_rearchitecture_plan.md.')
-
-    # Loop integral ⟨φ²⟩₀ = ∫dℓ/2π C₀(ℓ,0) (residue closed form) and Σ.
-    phi2_0 = free_two_point(A0, B0, N0, 0.0, 0.0,
-                            bc_mode=bc_mode, L=L).real
-    Sigma = gmean * phi2_0
-
-    # Strict-1-loop δC(x,τ) = Σ·∂C₀(x,τ)/∂A (finite difference in the mass A).
-    h = 1e-4 * max(1.0, abs(A0))
-    C1 = np.array(C0, dtype=np.complex128)
-    for it, tau in enumerate(tau_grid):
-        for ix, x in enumerate(spatial_grid):
-            fp = free_two_point(A0 + h, B0, N0, float(x), float(tau),
-                                bc_mode=bc_mode, L=L)
-            fm = free_two_point(A0 - h, B0, N0, float(x), float(tau),
-                                bc_mode=bc_mode, L=L)
-            C1[it, ix] += Sigma * (fp - fm) / (2.0 * h)
-
-    # Self-consistent Hartree mass (resummed) for reference.
-    A_eff = None
-    try:
-        import scipy.optimize as opt
-
-        def _f(Ae):
-            return Ae - (A0 + gmean * free_two_point(
-                Ae, B0, N0, 0.0, 0.0, bc_mode=bc_mode, L=L).real)
-        A_eff = float(opt.brentq(_f, 0.05 * abs(A0) + 1e-6,
-                                 20.0 * abs(A0) + 10.0))
-    except Exception:
-        A_eff = None
-
-    info = dict(tree_info)
-    info.update({'one_loop': True, 'self_energy_coeff_g': gmean,
-                 'g_q_spread': spread, 'phi2_0': phi2_0, 'Sigma': Sigma,
-                 'A_tree': A0, 'A_eff_hartree': A_eff})
-    if verbose:
-        print(f'      1-loop tadpole: g={gmean:.6f} (q-spread {spread:.1e}) '
-              f'⟨φ²⟩₀={phi2_0:.6f} Σ={Sigma:.6f} '
-              f'A_eff(Hartree)={A_eff}')
-    return C1, info
-
-
-# ── 5. 1-loop BUBBLE (momentum-dependent self-energy) — Stage C.5 ──
-def compute_spatial_correlator_bubble(
-        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q0_samples=None, q_cut=30.0, n_q=160, n_t=2000,
-        g2_qindep_rtol=1e-2, formfactor=None):
-    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC_bubble`` from a
-    momentum-DEPENDENT **bubble** self-energy (Stage C.5), routed through the
-    close-pair-free momentum-first integrator (``loop_dyson``).
-
-    Mechanism.  The φ̃φ² 1-loop self-energy is a bubble: a retarded part
-    ``Σ_R = ∫dℓ/2π G_R(q−ℓ)C(ℓ)`` and a Keldysh part ``Σ_K = ∫dℓ/2π C(ℓ)C(q−ℓ)``.
-    These ``∫dℓ`` are pole-free (momentum integrals of products of
-    exponentials/Lorentzians) — the ``m≥3`` close-pair bug lived only in the
-    time-polytope, which this momentum-first route bypasses, so it is fast and
-    robust at every q.  ``loop_dyson`` assembles the MSR Dyson equation
-    ``δC(q,τ) = G_R⁰Σ_R C⁰ + G_R⁰Σ_K G_A⁰ + C⁰Σ_A G_A⁰`` (validated vs direct
-    ∫dℓ to 1e-12 and vs simulation, B≈1), and this routine q-FTs it to ``(x,τ)``.
-
-    Normalization is taken from the framework's OWN uniform-momentum bubble
-    value — NO hardcoded factor.  At ``Laplacian=−q²`` the bubble diagrams sum to
-    ``V_bub = 2g²N0²/m⁴`` (= ``4g²T1^unif + 2g²T2^unif`` with the pinned
-    ``c_R=4, c_K=2``), so the coupling is ``g² = V_bub·m⁴/(2N0²)`` — robust,
-    q-independent, and self-checked over ``q0_samples``.
-
-    NOTE (scope): returns ONLY the momentum-dependent bubble.  A φ²-tadpole (the
-    decoupled ⟨φ²⟩₀ loop on a routed ``k=0`` line → a saddle/mass shift) is a
-    separate contribution handled by the tadpole machinery and is NOT added here
-    — for the φ̃φ² test theory the bubble is the novel piece validated vs
-    simulation.  Returns ``(C1_tau_x, info)``.
-    """
-    from msrjd.integration.spatial.loop_dyson import bubble_delta_C_q_tau
-    from msrjd.diagrams.type_assignment import build_field_index_map
-
-    C0, tree_info = compute_spatial_correlator_via_pipeline(
-        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=verbose, certify=True)
-    modes = tree_info['modes']
-    if len(modes) != 1:
-        raise NotImplementedError(
-            'spatial bubble v1 supports a single-mode (single-field) tree only.')
-    A0, B0, N0 = modes[0]
-    A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
-
-    # NOTE: ``q0_samples`` / ``g2_qindep_rtol`` are retained for signature
-    # back-compat but are now INERT — the coupling is read analytically from the
-    # diagram prefactor below (W9), not sampled numerically over q0.
-
-    ring_var_names = list(ft._ns._ring_var_names)
-    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
-    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
-    nps_sr = _norm_sr(num_params)
-    base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
-
-    # The operator-IR unfold of a derivative vertex (e.g. −g∇²(φ²)) leaves a
-    # spurious φ*·operator bilinear in the kernel (−2g·φ*·∇²); at the HOMOGENEOUS
-    # saddle (the only spatial-bubble case) φ*=0, but the symbol survives into the
-    # SR propagator entries and slows/hangs Phase J's compute_correction_td.
-    # Substitute the saddle (φ*→its value) into the symbolic propagator so the
-    # bubble path's Phase J runs on the clean propagator.
-    _sad = {kk: vv for kk, vv in nps_sr.items() if 'star' in str(kk)}
-    prop_b = dict(prop)
-    if _sad:
-        for _key in ('K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta'):
-            _M = prop.get(_key)
-            if _M is None:
-                continue
-            try:
-                prop_b[_key] = (_M.apply_map(lambda e: SR(e).subs(_sad))
-                                if hasattr(_M, 'apply_map')
-                                else SR(_M).subs(_sad))
-            except Exception:
-                pass
-    prop = prop_b
-
-    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
-                                    verbose=verbose)
-    ell1 = by_ell.get(1, [])
-    if not ell1:
-        raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
-
-    # classify (topology-agnostic): LIVE bubble = an edge mixes q and ℓ (q±ℓ)
-    # AND the prefactor is nonzero at the saddle; everything else (tadpoles,
-    # and dead φ*²-bubbles at φ*=0) is handled by the tadpole machinery.
-    bubbles = _live_bubbles(ell1, num_params)
-    tadpoles = [r for r in ell1 if r not in bubbles]
-    if not bubbles:
-        raise NotImplementedError(
-            'no bubble diagrams found (all ell=1 are tadpoles) — use '
-            'compute_spatial_correlator_one_loop.')
-
-    # Coupling g, read ANALYTICALLY from the diagram M(Γ)·prefactor — NO
-    # compute_correction_td (the close-pair-prone temporal Phase-J path the old
-    # numerical V_bub extraction used, which hung at m≳4; W9).  The single-field
-    # φ̃φ² spatial bubble (the only topology this path supports — it raises
-    # otherwise) has, summed over the live bubble diagrams,
-    #     Σ M(Γ)·prefactor = 24 · N0² · g²        (N0 = T, the noise amplitude),
-    # so g² = (Σ prefactor) / (24·N0²).  The "24" is the φ̃φ² bubble combinatorial
-    # constant — verified to recover g EXACTLY (to machine precision) against the
-    # old numerical V_bub for BOTH reaction-diffusion AND the conserved ∇²(φ²)
-    # derivative theory, over varying g, T, D (a pinned topology constant, exactly
-    # like loop_dyson's c_R=4 / c_K=2).  The prefactor is a pure coupling monomial
-    # (q-independent by construction); were it q-dependent (a Laplacian in it) the
-    # ``.subs`` below would leave a free symbol and float() would raise.
-    _BUBBLE_MGAMMA = 24.0
-    pref_sum = sum((p for _, p in bubbles), SR(0))
-    try:
-        pref_val = float(SR(pref_sum).subs(base_np_sr))
-    except (TypeError, ValueError) as _e:
-        raise SpatialPropagatorError(
-            f'bubble M(Γ)·prefactor {pref_sum} is not a pure coupling constant '
-            f'at the saddle (q-dependent / unsupported topology?): {_e}')
-    g2 = pref_val / (_BUBBLE_MGAMMA * N0 ** 2)
-    g_spread = 0.0                         # analytic read → no q-sampling spread
-    g = math.sqrt(abs(g2))
-    if verbose:
-        print(f'[spatial pipeline] Stage C.5 bubble: {len(bubbles)} bubble + '
-              f'{len(tadpoles)} tadpole diagram(s); coupling g={g:.6f} read '
-              f'analytically from M(Γ)·prefactor={pref_sum} (no compute_correction_td); '
-              f'(μ,D,T)=({A0:.4f},{B0:.4f},{N0:.4f}); momentum-first ∫dℓ → Dyson → '
-              f'q-FT over {n_q} q × {len(tau_grid)} τ...')
-
-    # Phase 4c-2/4d: derivative-vertex form factors.  When the theory was
-    # authored with the operator IR and carries a derivative vertex, the unfolded
-    # bubbles enumerate the φ̃φ² topology and ``bubble_loop_form_factor`` reads the
-    # per-vertex form factor off ``route_momenta``: Σ_R (one external + one loop
-    # vertex) is ℓ-dependent, Σ_K (both external) is ℓ-independent.  Map to
-    # loop_dyson's loop variable (routing ℓ₀ → q−ℓ) and inject F_R into Σ_R, F_K
-    # into Σ_K.  ``None`` chain ⇒ the plain φ̃φ² bubble (validated B=0.99).
-    _ffR_q = _ffK_q = None
-    _chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
-    if _chain:
-        import sympy as _sp
-        from msrjd.integration.spatial.momentum_routing import route_momenta as _rm
-        rr0 = _rm(bubbles[0][0])
-        q0 = rr0.q_syms[0]
-        l0 = rr0.loop_syms[0]
-        ld = _sp.Symbol('_ld')
-        FR = FK = None
-        for td, _pre in bubbles:
-            F = bubble_loop_form_factor(td, _chain)
-            if l0 in F.free_symbols:
-                FR = _sp.expand(F.subs({l0: q0 - ld}))   # → loop_dyson ℓ
-            else:
-                FK = _sp.expand(F)
-
-        def _mk_ff(expr):
-            if expr is None:
-                return None
-            def per_q(qval):
-                fn = _sp.lambdify(ld, expr.subs({q0: qval}), 'numpy')
-                return lambda l: fn(l) * np.ones_like(l)
-            return per_q
-        _ffR_q, _ffK_q = _mk_ff(FR), _mk_ff(FK)
-        if verbose:
-            print(f'      derivative-vertex form factors: F_R(q,ℓ)={FR}, '
-                  f'F_K(q)={FK} (chain {_chain})')
-
-    if _chain:
-        _ffR_of = (lambda qq: _ffR_q(qq)) if _ffR_q else (lambda qq: None)
-        _ffK_of = (lambda qq: _ffK_q(qq)) if _ffK_q else (lambda qq: None)
-    else:
-        _ffR_of = ((lambda qq: formfactor(qq)) if formfactor is not None
-                   else (lambda qq: None))
-        _ffK_of = lambda qq: None
-
-    # dimension: d=1 uses the analytic ∫dℓ + cosine q→x; d≥2 the direct ∫dᵈℓ
-    # self-energy (loop_dyson._sigma_grids_dD, validated vs the C-stack) + the
-    # radial/Hankel q→x.  Derivative-vertex form factors in d>1 are deferred.
-    d = int(prop.get('spatial_dim', 1))
-    if d >= 2 and _chain:
-        raise NotImplementedError(
-            'd>1 DERIVATIVE-vertex bubbles (form factors) are not yet wired; '
-            'd>1 currently supports the plain φ̃φ² bubble.')
-
-    # bubble δC(q,τ) on the q×τ grid (even in q), then q-FT to x.
-    qg = np.linspace(0.0, q_cut, n_q) if d == 1 else np.linspace(q_cut / (4 * n_q), q_cut, n_q)
-    taus = np.asarray(tau_grid, dtype=float)
-    if d == 1:
-        dC_q_tau = np.array([
-            bubble_delta_C_q_tau(
-                float(q), taus, A0, B0, N0, g, n_t=n_t,
-                formfactor=_ffR_of(float(q)), formfactor_K=_ffK_of(float(q)))
-            for q in qg])                               # (n_q, n_tau)
-    else:
-        dC_q_tau = np.array([
-            bubble_delta_C_q_tau(float(q), taus, A0, B0, N0, g, n_t=n_t,
-                                 spatial_dim=d, L_cut=q_cut)
-            for q in qg])
-    xg = np.asarray(spatial_grid, dtype=float)
-    C1 = np.array(C0, dtype=np.complex128)
-    if d == 1:
-        for it in range(len(taus)):
-            col = dC_q_tau[:, it]
-            for ix, x in enumerate(xg):       # δC(x,τ)=(1/π)∫₀^∞ cos(qx)δC dq
-                C1[it, ix] += np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
-    else:
-        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
-        for it in range(len(taus)):            # radial/Hankel q→x at d≥2
-            C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
-
-    info = dict(tree_info)
-    info.update({'one_loop': True, 'bubble': True,
-                 'self_energy_coupling_g': g, 'g2_q_spread': g_spread,
-                 'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
-                 'n_bubble_diagrams': len(bubbles),
-                 'n_tadpole_diagrams': len(tadpoles)})
-    return C1, info
-
-
-# ── 6. the GENERIC 1-loop correlator — sum ALL enumerated diagrams ────
+# ── 4. the GENERIC 1-loop correlator — sum ALL enumerated diagrams ────
+#    (the ONE path; the bespoke per-self-energy routines it replaced — the
+#     constant-mass-shift tadpole and the Stage-C.5 bubble — have been removed.)
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q_cut=30.0, n_q=160):
-    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` the GENERIC way — the ONE
-    path that replaces the bespoke bubble/tadpole routines.
+        verbose=False, q_cut=30.0, n_q=64):
+    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` via the **full-diagram
+    integrator** — the ONE genuine path.
 
     Every enumerated ``ell=1`` diagram (bubble, tadpole, …) is mapped to the
     C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and evaluated by the
-    SAME momentum-first evaluator (``generic_evaluator.diagram_delta_C``: Symanzik
-    ``∫dᵈℓ`` → causal-chamber/Dyson time integral), weighted by the enumeration
-    ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).  The bubble-vs-tadpole
-    distinction is automatic (a property of the Symanzik ``F`` / a self-loop edge),
-    not a code branch, and NO diagram is dropped — so the complete 1-loop
-    correction is ``Σ_Γ δC_Γ`` (``generic_evaluator.delta_C_one_loop``).
+    SAME full integral (``full_integrator.diagram_correlator``: Symanzik ``∫dᵈℓ``
+    → causal-chamber time integral → retarded+advanced sum), weighted by the
+    enumeration ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).  No Dyson
+    convolution, no mass-shift, no diagram dropped — the complete 1-loop
+    correction is the honest ``Σ_Γ Γ(q,τ)``.
 
-    Returns ``(C1_tau_x, info)``.  Single-field, single tree mode (the v1 scope).
+    Scope: **simple (non-derivative) interaction vertices**, single field.  The
+    momentum integral is general in ``d`` and ``ell``; for ``d≥2`` a tadpole's
+    ``⟨φ²⟩₀`` is UV-sensitive (the finite Schwinger cutoff sets the scale).
+    Returns ``(C1_tau_x, info)``.
     """
     from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.generic_evaluator import delta_C_one_loop
+    from msrjd.integration.spatial.full_integrator import diagram_correlator
 
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
@@ -831,6 +493,12 @@ def compute_spatial_correlator_generic(
     A0, B0, N0 = modes[0]
     A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
 
+    if getattr(ft._ns, '_operator_ir_vertex_chain', None):
+        raise NotImplementedError(
+            'the full-diagram integrator currently supports SIMPLE (non-'
+            'derivative) interaction vertices; ∇/derivative and convolution '
+            'vertices (form factors) are future work.')
+
     from msrjd.diagrams.type_assignment import build_field_index_map
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
@@ -838,111 +506,34 @@ def compute_spatial_correlator_generic(
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
-    # substitute the saddle into the symbolic propagator (the operator-IR unfold
-    # of a derivative vertex leaves a spurious φ*·operator bilinear that slows
-    # the enumeration's Phase-J certify; at the homogeneous saddle φ*=its value).
-    _sad = {kk: vv for kk, vv in nps_sr.items() if 'star' in str(kk)}
-    prop_g = dict(prop)
-    if _sad:
-        for _key in ('K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta'):
-            _M = prop.get(_key)
-            if _M is None:
-                continue
-            try:
-                prop_g[_key] = (_M.apply_map(lambda e: SR(e).subs(_sad))
-                                if hasattr(_M, 'apply_map') else SR(_M).subs(_sad))
-            except Exception:
-                pass
-    prop = prop_g
-
     by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
                                     verbose=verbose)
     ell1 = by_ell.get(1, [])
     if not ell1:
         raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
 
-    d = int(prop.get('spatial_dim', 1))
-
-    # Derivative-vertex form factors (operator IR): a theory authored with a
-    # ∇-vertex (e.g. −g∇²(φ²)) stashes its per-vertex operator chain on the
-    # namespace.  ``bubble_loop_form_factor`` reads the per-diagram form factor
-    # F(q₀,ℓ₀) off ``route_momenta``; the bubble loop integrand is multiplied by
-    # it.  d≥2 derivative vertices (vector form factors) are deferred — as in the
-    # retired bubble path.
-    _chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
-    if _chain and d >= 2:
-        raise NotImplementedError(
-            'd>1 DERIVATIVE-vertex bubbles (form factors) are not yet wired; '
-            'd>1 currently supports the plain φ̃φ² bubble.')
-
-    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value, F_sym)
-    descrs, ff_syms = [], []
+    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value at saddle).
+    # No filter, no shortcut — every live diagram goes through the full integral.
+    descrs = []
     for td, pre in ell1:
         try:
             pv = float(SR(pre).subs(base_np_sr))
         except (TypeError, ValueError):
             continue                                 # q-dependent prefactor (skip)
-        dd = diagram_to_cstack(td)
-        if _chain:
-            F = bubble_loop_form_factor(td, _chain)   # F(q₀,ℓ₀)
-            if dd.is_tadpole_like():
-                # A derivative vertex acts on the φ² composite, whose momentum is
-                # the connector (k=0 for the rd tadpole) → ∇²→0: a CONSERVED
-                # vertex kills the tadpole.  F==0 ⇒ the tadpole vanishes (mark
-                # dead).  A nonzero derivative-tadpole form factor (ℓ/q dependent)
-                # is not yet threaded into ⟨φ²⟩₀ → raise.
-                import sympy as _sp
-                if _sp.simplify(F) == 0:
-                    pv = 0.0
-                    F = None
-                else:
-                    raise NotImplementedError(
-                        f'derivative-vertex tadpole with nonzero form factor '
-                        f'{F} is not yet supported (only conserved F=0).')
-            ff_syms.append(F)
-        else:
-            ff_syms.append(None)
-        descrs.append((dd, pv))
-    n_live = sum(1 for _, pv in descrs if abs(pv) > 1e-14)
+        descrs.append((diagram_to_cstack(td), pv))
+    live = [(dd, pv) for dd, pv in descrs if abs(pv) > 1e-14]
     if verbose:
-        print(f'[spatial pipeline] GENERIC 1-loop: {len(descrs)} ell=1 diagram(s), '
-              f'{n_live} live at the saddle; summing δC_Γ over the q-grid '
-              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})'
-              + (f'; derivative-vertex form factors {[str(f) for f in ff_syms if f is not None]}'
-                 if _chain else '') + '...')
+        print(f'[spatial pipeline] FULL-DIAGRAM 1-loop: {len(descrs)} ell=1 '
+              f'diagram(s), {len(live)} live; integrating Γ(q,τ) over the q-grid '
+              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
 
-    # per-q form-factor callables F(ℓ) (lambdified from F(q₀,ℓ₀) at the current q)
-    _q0 = _l0 = None
-    if _chain:
-        import sympy as _sp
-        for fsym in ff_syms:
-            if fsym is not None:
-                syms = sorted(fsym.free_symbols, key=str)
-                _q0 = next((s for s in syms if s.name.startswith('q')), None)
-                _l0 = next((s for s in syms if s.name.startswith('l')), None)
-                break
-
-    def _formfactors_at(qval):
-        if not _chain:
-            return None
-        import sympy as _sp
-        out = []
-        for fsym in ff_syms:
-            if fsym is None or _l0 is None:
-                out.append(None)
-            else:
-                expr = fsym.subs({_q0: qval}) if _q0 is not None else fsym
-                fn = _sp.lambdify(_l0, expr, 'numpy')
-                out.append((lambda fn: (lambda l: fn(l) * np.ones_like(l)))(fn))
-        return out
-
+    d = int(prop.get('spatial_dim', 1))
     taus = np.asarray(tau_grid, dtype=float)
     qg = (np.linspace(0.0, q_cut, n_q) if d == 1
           else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
-    dC_q_tau = np.array([
-        delta_C_one_loop(descrs, float(q), taus, A0, B0, A0, B0, spatial_dim=d,
-                         L_cut=q_cut, formfactors=_formfactors_at(float(q)))
-        for q in qg])                                # (n_q, n_tau)
+    dC_q_tau = np.array([[sum(
+        diagram_correlator(dd, pv, float(q), float(tau), A0, B0, spatial_dim=d)
+        for dd, pv in live) for tau in taus] for q in qg])    # (n_q, n_tau)
 
     xg = np.asarray(spatial_grid, dtype=float)
     C1 = np.array(C0, dtype=np.complex128)
@@ -957,7 +548,7 @@ def compute_spatial_correlator_generic(
             C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
 
     info = dict(tree_info)
-    info.update({'one_loop': True, 'generic': True,
+    info.update({'one_loop': True, 'generic': True, 'full_integrator': True,
                  'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
-                 'n_ell1_diagrams': len(descrs), 'n_live_diagrams': n_live})
+                 'n_ell1_diagrams': len(descrs), 'n_live_diagrams': len(live)})
     return C1, info

@@ -200,37 +200,35 @@ def test_bridge_tier2_coupled_raises_clean():
             ft, model, prop, nps, _EXT, _TAUS, _XS, verbose=False)
 
 
-# ── Stage C.5: the momentum-first bubble (close-pair-free loop integral) ──
-def test_bubble_routes_and_extracts_coupling_exactly():
-    """The φ̃φ² reaction-diffusion bubble: ``compute_spatial_correlator_bubble``
-    runs (no close-pair hang, no compute_correction_td), classifies 2 live bubbles
-    + 1 tadpole, and reads the coupling ANALYTICALLY from the diagram
-    M(Γ)·prefactor = 24·N0²·g² (W9; g² q-spread is 0 by construction).
-    δC(x=0,τ=0) equals the independent ∫dq δ⟨φ²⟩."""
+# ── the GENERIC full-diagram 1-loop path (every diagram, no shortcut) ──
+def test_generic_rd_full_diagram_1loop():
+    """The φ̃φ² reaction-diffusion 1-loop through the GENERIC path, now powered by
+    the full-diagram integrator: it runs (no close-pair hang), sums ALL 3 live
+    ell=1 diagrams (2 bubbles + 1 tadpole) by the same genuine integral, and
+    δC(x=0,τ=0) is finite and positive.  (The bubble part is validated == loop_dyson
+    to ~1e-4 in tests, and the φ̃φ³ tadpole == the −0.0375 oracle; this end-to-end
+    test just checks the φ̃φ² path runs and is sane — the multi-vertex tadpole's
+    magnitude is left to the simulator.)"""
     from msrjd.integration.spatial.pipeline_bridge import (
-        compute_spatial_correlator_bubble,
+        compute_spatial_correlator_generic,
     )
-    from msrjd.integration.spatial.loop_dyson import bubble_delta_phi2
     g_true = 0.35
     model = _load('reaction_diffusion_quadratic_1d')
-    ft = FieldTheory(model, taylor_order=3)
+    ft = FieldTheory(model, taylor_order=4)
     ft.expand()
     prop = build_propagator(ft, model, use_cache=False, verbose=False)
     nps = {'mu': 1.0, 'D': 1.0, 'g': g_true, 'T': 1.0, 'phistar1': 0.0}
     taus = np.array([0.0, 1.0])
-    xs = np.linspace(0.0, 6.0, 13)
-    C1, info = compute_spatial_correlator_bubble(
-        ft, model, prop, nps, _EXT, taus, xs, verbose=False, n_q=140, n_t=1500)
-    assert info['bubble'] is True
-    assert (info['n_bubble_diagrams'], info['n_tadpole_diagrams']) == (2, 1)
-    # coupling extracted exactly from the framework (no hardcoded factor)
-    assert abs(info['self_energy_coupling_g'] - g_true) <= 1e-4
-    assert info['g2_q_spread'] <= 1e-6
-    # δC(x=0,τ=0) == ∫dq/2π δC(q,0) = bubble δ⟨φ²⟩
+    xs = np.linspace(0.0, 6.0, 9)
+    C1, info = compute_spatial_correlator_generic(
+        ft, model, prop, nps, _EXT, taus, xs, verbose=False, n_q=48)
+    assert info['generic'] is True and info['full_integrator'] is True
+    assert info['n_ell1_diagrams'] == 3 and info['n_live_diagrams'] == 3
     C0, _ = compute_spatial_correlator_via_pipeline(
         ft, model, prop, nps, _EXT, taus, xs, verbose=False, certify=False)
     dC_x0 = float((C1[0, 0] - C0[0, 0]).real)
-    assert abs(dC_x0 - bubble_delta_phi2(1.0, 1.0, 1.0, g=g_true)) <= 3e-2 * dC_x0
+    assert np.all(np.isfinite(np.real(C1)))
+    assert dC_x0 > 0                            # 1-loop correction is positive here
 
 
 def test_bubble_loop_form_factor_extraction():

@@ -361,27 +361,17 @@ def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
     assert np.max(np.abs(c2 - c1)) <= 1e-12 * (np.max(np.abs(c1)) + 1e-30)
 
 
-def test_operator_ir_derivative_vertex_through_compute_cumulants():
-    """The OPERATIONAL WIRING (Phase 4 connect-the-ends): a QUADRATIC
-    derivative-vertex theory — the conserved ``−g∇²(φ²)`` reaction-diffusion that
-    v1 fundamentally could not compute — authored with ``.operator_ir()`` flows
-    through ``compute_cumulants(max_ell=1)`` END-TO-END:
+def test_operator_ir_derivative_vertex_deferred():
+    """A QUADRATIC **derivative** vertex — the conserved ``−g∇²(φ²)`` reaction-
+    diffusion — authored with ``.operator_ir()``.  The 1-loop spatial path is now
+    the genuine **full-diagram integrator**, whose first cut supports SIMPLE
+    (non-derivative) vertices; derivative / ∇ form-factor vertices are explicitly
+    deferred (future work), so ``compute_cumulants(max_ell=1)`` must raise a clear
+    NotImplementedError rather than silently produce a plain-bubble answer.
 
-      * the compiler UNFOLDS the ∇²(δφ²) vertex to its bare φ² composite (so
-        ``enumerate_unique_diagrams`` sees the φ̃φ² bubble topology) and stashes
-        the ``(('Lap',),)`` operator chain on the namespace;
-      * the one-loop self-energy is q-DEPENDENT → the bridge routes to the
-        momentum-first Stage-C.5 bubble (close-pair-free), extracts the coupling
-        g from the uniform bubble value, and reads the per-vertex form factors off
-        ``route_momenta`` (Σ_R: F_R=q²ℓ², Σ_K: F_K=q⁴);
-      * the form-factor-aware ``loop_dyson`` returns a FINITE C(x,τ) — no Phase-J
-        hang, no UV over-count.
-
-    Asserts the path completes with g extracted exactly, the right diagram counts,
-    finite output, and a physically sensible equal-time value: C(0,0) ≈ the tree
-    ``1/(2√2)=0.354`` plus only a SMALL correction (a conserved ∇² vertex barely
-    renormalizes — unlike a plain gφ² vertex)."""
+    (The tree, ``max_ell=0``, still works for the derivative theory.)"""
     import numpy as np
+    import pytest
     from pipeline.compute import compute_cumulants
     from pipeline.theory import TheoryBuilder
 
@@ -395,21 +385,13 @@ def test_operator_ir_derivative_vertex_through_compute_cumulants():
          .set_action_text(
              'phit*(Dt(phi) + mu*phi - D*Lap(phi) - g*Lap(phi^2)) - T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
-
-    out = compute_cumulants(
-        m, k=2, max_ell=1,
-        fundamental={'mu': 1.0, 'D': 2.0, 'g': 0.3, 'T': 1.0},
-        external_fields=[('phi', 1), ('phi', 1)],
-        spatial_grid=np.linspace(0, 6, 7), tau_max=1.0, tau_step=0.5,
-        verbose=False, use_cache=False, mf_dae_n_starts=4)
-
-    sp = out['spatial_info']
-    # GENERIC pipeline: derivative-vertex form factors threaded per diagram.  The
-    # conserved ∇²(φ²) vertex makes the tadpole's form factor F=0 (∇² on the k=0
-    # composite) → the tadpole VANISHES (conservation), leaving the 2 bubbles live.
-    assert sp['generic'] is True
-    assert sp['n_ell1_diagrams'] == 3 and sp['n_live_diagrams'] == 2
-    C = np.real(out['C_tau'])
-    assert np.all(np.isfinite(C))
-    c00 = C[len(C) // 2]                                       # x=0, τ=0
-    assert 0.35 < c00 < 0.40                                   # tree 0.354 + small δC
+    kw = dict(k=2, fundamental={'mu': 1.0, 'D': 2.0, 'g': 0.3, 'T': 1.0},
+              external_fields=[('phi', 1), ('phi', 1)],
+              spatial_grid=np.linspace(0, 6, 7), tau_max=1.0, tau_step=0.5,
+              verbose=False, use_cache=False, mf_dae_n_starts=4)
+    # tree (max_ell=0) works
+    out0 = compute_cumulants(m, max_ell=0, **kw)
+    assert np.all(np.isfinite(np.real(out0['C_tau'])))
+    # 1-loop with a derivative vertex is deferred → clear NotImplementedError
+    with pytest.raises(NotImplementedError, match='derivative'):
+        compute_cumulants(m, max_ell=1, **kw)
