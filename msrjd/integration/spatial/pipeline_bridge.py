@@ -613,12 +613,9 @@ def compute_spatial_correlator_bubble(
     A0, B0, N0 = modes[0]
     A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
 
-    # Adaptive uniform-momentum samples for the g-extraction: keep the uniform
-    # mass m = A0 + B0·q0² MODERATE (≈ A0+0.4, A0+0.9) regardless of D, since the
-    # framework's Phase-J g-extraction has a pre-existing slow path at large mass
-    # (e.g. m≳4 hangs).  g² is q-independent so any small q0 works.
-    if q0_samples is None:
-        q0_samples = (math.sqrt(0.4 / B0), math.sqrt(0.9 / B0))
+    # NOTE: ``q0_samples`` / ``g2_qindep_rtol`` are retained for signature
+    # back-compat but are now INERT — the coupling is read analytically from the
+    # diagram prefactor below (W9), not sampled numerically over q0.
 
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
@@ -663,29 +660,36 @@ def compute_spatial_correlator_bubble(
             'no bubble diagrams found (all ell=1 are tadpoles) — use '
             'compute_spatial_correlator_one_loop.')
 
-    # extract g² from the framework's uniform bubble value (q-independent):
-    # V_bub(q0) = 2 g² N0² / m_q0⁴  ⇒  g² = V_bub·m⁴/(2 N0²).
-    g2s = []
-    for q0 in q0_samples:
-        Vb = pipeline_C_q_tau(prop, bubbles, ext_int, base_np_sr, q0,
-                              [0.0])[0].real
-        m0 = A0 + B0 * q0 * q0
-        g2s.append(Vb * m0 ** 4 / (2.0 * N0 ** 2))
-    g2s = np.array(g2s)
-    g2 = float(np.mean(g2s))
-    g_spread = float(np.max(np.abs(g2s - g2)) / (abs(g2) + 1e-30))
-    if g_spread > g2_qindep_rtol:
+    # Coupling g, read ANALYTICALLY from the diagram M(Γ)·prefactor — NO
+    # compute_correction_td (the close-pair-prone temporal Phase-J path the old
+    # numerical V_bub extraction used, which hung at m≳4; W9).  The single-field
+    # φ̃φ² spatial bubble (the only topology this path supports — it raises
+    # otherwise) has, summed over the live bubble diagrams,
+    #     Σ M(Γ)·prefactor = 24 · N0² · g²        (N0 = T, the noise amplitude),
+    # so g² = (Σ prefactor) / (24·N0²).  The "24" is the φ̃φ² bubble combinatorial
+    # constant — verified to recover g EXACTLY (to machine precision) against the
+    # old numerical V_bub for BOTH reaction-diffusion AND the conserved ∇²(φ²)
+    # derivative theory, over varying g, T, D (a pinned topology constant, exactly
+    # like loop_dyson's c_R=4 / c_K=2).  The prefactor is a pure coupling monomial
+    # (q-independent by construction); were it q-dependent (a Laplacian in it) the
+    # ``.subs`` below would leave a free symbol and float() would raise.
+    _BUBBLE_MGAMMA = 24.0
+    pref_sum = sum((p for _, p in bubbles), SR(0))
+    try:
+        pref_val = float(SR(pref_sum).subs(base_np_sr))
+    except (TypeError, ValueError) as _e:
         raise SpatialPropagatorError(
-            f'bubble coupling extraction is q-DEPENDENT (g²={g2s}, rel spread '
-            f'{g_spread:.2e}); the uniform-value normalization assumption '
-            f'(V_bub=2g²N0²/m⁴) does not hold for this theory.')
+            f'bubble M(Γ)·prefactor {pref_sum} is not a pure coupling constant '
+            f'at the saddle (q-dependent / unsupported topology?): {_e}')
+    g2 = pref_val / (_BUBBLE_MGAMMA * N0 ** 2)
+    g_spread = 0.0                         # analytic read → no q-sampling spread
     g = math.sqrt(abs(g2))
     if verbose:
         print(f'[spatial pipeline] Stage C.5 bubble: {len(bubbles)} bubble + '
-              f'{len(tadpoles)} tadpole diagram(s); extracted coupling g='
-              f'{g:.6f} (g² q-spread {g_spread:.1e}); (μ,D,T)='
-              f'({A0:.4f},{B0:.4f},{N0:.4f}); momentum-first ∫dℓ → Dyson → q-FT '
-              f'over {n_q} q × {len(tau_grid)} τ...')
+              f'{len(tadpoles)} tadpole diagram(s); coupling g={g:.6f} read '
+              f'analytically from M(Γ)·prefactor={pref_sum} (no compute_correction_td); '
+              f'(μ,D,T)=({A0:.4f},{B0:.4f},{N0:.4f}); momentum-first ∫dℓ → Dyson → '
+              f'q-FT over {n_q} q × {len(tau_grid)} τ...')
 
     # Phase 4c-2/4d: derivative-vertex form factors.  When the theory was
     # authored with the operator IR and carries a derivative vertex, the unfolded

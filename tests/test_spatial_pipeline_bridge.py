@@ -203,9 +203,10 @@ def test_bridge_tier2_coupled_raises_clean():
 # ── Stage C.5: the momentum-first bubble (close-pair-free loop integral) ──
 def test_bubble_routes_and_extracts_coupling_exactly():
     """The φ̃φ² reaction-diffusion bubble: ``compute_spatial_correlator_bubble``
-    runs (no close-pair hang), classifies 2 live bubbles + 1 tadpole, and
-    extracts the coupling EXACTLY from the framework's uniform-momentum value
-    (V_bub = 2g²N0²/m⁴).  δC(x=0,τ=0) equals the independent ∫dq δ⟨φ²⟩."""
+    runs (no close-pair hang, no compute_correction_td), classifies 2 live bubbles
+    + 1 tadpole, and reads the coupling ANALYTICALLY from the diagram
+    M(Γ)·prefactor = 24·N0²·g² (W9; g² q-spread is 0 by construction).
+    δC(x=0,τ=0) equals the independent ∫dq δ⟨φ²⟩."""
     from msrjd.integration.spatial.pipeline_bridge import (
         compute_spatial_correlator_bubble,
     )
