@@ -159,14 +159,13 @@ def test_max_ell_1_computes_tadpole_loop():
     assert abs(tree - 0.5) < 1e-9
     assert abs(loop - 0.4625) < 1e-4          # strict 1-loop ⟨φ²⟩
     assert loop < tree                         # the loop suppresses ⟨φ²⟩
+    # The GENERIC pipeline sums every enumerated ell=1 diagram (no bubble/tadpole
+    # branch).  Allen-Cahn at φ*=0 has exactly ONE live diagram — the φ̃φ³ tadpole
+    # — and its δC reproduces the validated mass-shift 0.4625 (M(Γ) from the
+    # enumeration, NOT g=3λ hardcoded).
     si = th1['spatial_info']
-    assert si.get('Sigma') is not None
-    # M(Γ) comes FROM the pipeline (not hardcoded): g = 3λ = 0.3, and it is
-    # q-independent (the signature of a tadpole / pure mass shift).  The ~1e-6
-    # residual is the pipeline's pole-numerics precision.
-    assert abs(si['self_energy_coeff_g'] - 0.3) < 1e-4
-    assert si['g_q_spread'] < 1e-4
-    assert abs(si['phi2_0'] - 0.5) < 1e-9      # loop integral ⟨φ²⟩₀ (closed form)
+    assert si.get('one_loop') is True and si.get('generic') is True
+    assert si.get('n_live_diagrams') == 1
 
 
 def test_max_ell_above_1_raises():
@@ -275,12 +274,14 @@ def test_d2_bubble_loop_through_compute_cumulants():
                            fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0}, **kw)
     o2 = compute_cumulants(rd2(0.4), max_ell=1,
                            fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.4, 'T': 1.0}, **kw)
-    assert o1['spatial_info']['bubble'] is True
-    assert abs(o1['spatial_info']['self_energy_coupling_g'] - 0.2) <= 1e-6
+    # GENERIC pipeline: the d=2 1-loop now SUMS the bubbles AND the (Regime-1
+    # cutoff) tadpole — the previously-dropped diagram — through one path.
+    assert o1['spatial_info']['generic'] is True
+    assert o1['spatial_info']['n_live_diagrams'] >= 2   # 2 bubbles (+ tadpole)
     mid = o1['C_tau_x'].shape[0] // 2
     dC_g = np.real(o1['C_tau_x'])[mid] - np.real(o0['C_tau_x'])[mid]
     dC_2g = np.real(o2['C_tau_x'])[mid] - np.real(o0['C_tau_x'])[mid]  # tree(0.4)≈tree(0.2)
-    assert np.all(dC_g > 0)                         # positive bubble correction
-    # g²-scaling: δC(2g)/δC(g) ≈ 4 (tree is g-independent at φ*=0)
+    # g²-scaling: every ell=1 diagram (bubble AND tadpole) is ∝ g², so the full
+    # 1-loop correction scales as g² (tree is g-independent at φ*=0).
     ratio = dC_2g[0] / dC_g[0]
     assert abs(ratio - 4.0) <= 0.15

@@ -407,31 +407,19 @@ def compute_cumulants(
         # Route through the SHARED pipeline (Stage B/C): the bridge runs the
         # real diagram pipeline at sample momenta to CERTIFY the per-mode
         # (A,B,N) structure, then does the analytic q→x FT (free_two_point,
-        # exact at τ=0, no ringing).  max_ell=1 adds the 1-loop tadpole
-        # mass-shift self-energy (Stage C), with M(Γ) read from the pipeline.
+        # exact at τ=0, no ringing).  At max_ell=1 the GENERIC per-diagram
+        # evaluator sums EVERY enumerated ell=1 diagram (bubble AND tadpole)
+        # through one momentum-first path (Symanzik ∫dᵈℓ → causal-chamber/Dyson
+        # time integral), weighted by the enumeration M(Γ) — no bubble/tadpole
+        # branch, no diagram dropped (docs/spatial_generic_pipeline_plan.md).
         if max_ell >= 1:
             from msrjd.integration.spatial.pipeline_bridge import (
-                compute_spatial_correlator_one_loop,
-                compute_spatial_correlator_bubble,
+                compute_spatial_correlator_generic,
             )
-            try:
-                # Stage C: the constant-mass-shift TADPOLE self-energy
-                # (q-independent g).  Raises NotImplementedError when the
-                # pipeline-extracted coefficient is q-DEPENDENT (a bubble).
-                C_tau_x, sp_info = compute_spatial_correlator_one_loop(
-                    ft, model, prop, num_params, external_fields,
-                    tau_grid, spatial_grid_arr, verbose=verbose,
-                )
-            except NotImplementedError:
-                # Stage C.5: a momentum-DEPENDENT bubble self-energy → route
-                # through the close-pair-free momentum-first ∫dℓ integrator.
-                if verbose:
-                    print('[spatial] self-energy is momentum-dependent (bubble)'
-                          ' → Stage C.5 momentum-first loop integrator')
-                C_tau_x, sp_info = compute_spatial_correlator_bubble(
-                    ft, model, prop, num_params, external_fields,
-                    tau_grid, spatial_grid_arr, verbose=verbose,
-                )
+            C_tau_x, sp_info = compute_spatial_correlator_generic(
+                ft, model, prop, num_params, external_fields,
+                tau_grid, spatial_grid_arr, verbose=verbose,
+            )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
                 ft, model, prop, num_params, external_fields,

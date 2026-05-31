@@ -797,3 +797,107 @@ def compute_spatial_correlator_bubble(
                  'n_bubble_diagrams': len(bubbles),
                  'n_tadpole_diagrams': len(tadpoles)})
     return C1, info
+
+
+# ── 6. the GENERIC 1-loop correlator — sum ALL enumerated diagrams ────
+def compute_spatial_correlator_generic(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        verbose=False, q_cut=30.0, n_q=160):
+    """Spatial 1-loop correlator ``C(x,τ) = C₀ + δC`` the GENERIC way — the ONE
+    path that replaces the bespoke bubble/tadpole routines.
+
+    Every enumerated ``ell=1`` diagram (bubble, tadpole, …) is mapped to the
+    C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and evaluated by the
+    SAME momentum-first evaluator (``generic_evaluator.diagram_delta_C``: Symanzik
+    ``∫dᵈℓ`` → causal-chamber/Dyson time integral), weighted by the enumeration
+    ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).  The bubble-vs-tadpole
+    distinction is automatic (a property of the Symanzik ``F`` / a self-loop edge),
+    not a code branch, and NO diagram is dropped — so the complete 1-loop
+    correction is ``Σ_Γ δC_Γ`` (``generic_evaluator.delta_C_one_loop``).
+
+    Returns ``(C1_tau_x, info)``.  Single-field, single tree mode (the v1 scope).
+    """
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.generic_evaluator import delta_C_one_loop
+
+    C0, tree_info = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        verbose=verbose, certify=True)
+    modes = tree_info['modes']
+    if len(modes) != 1:
+        raise NotImplementedError(
+            'generic spatial 1-loop v1 supports a single-mode (single-field) '
+            'tree only.')
+    A0, B0, N0 = modes[0]
+    A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
+
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    ring_var_names = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
+    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
+
+    # substitute the saddle into the symbolic propagator (the operator-IR unfold
+    # of a derivative vertex leaves a spurious φ*·operator bilinear that slows
+    # the enumeration's Phase-J certify; at the homogeneous saddle φ*=its value).
+    _sad = {kk: vv for kk, vv in nps_sr.items() if 'star' in str(kk)}
+    prop_g = dict(prop)
+    if _sad:
+        for _key in ('K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta'):
+            _M = prop.get(_key)
+            if _M is None:
+                continue
+            try:
+                prop_g[_key] = (_M.apply_map(lambda e: SR(e).subs(_sad))
+                                if hasattr(_M, 'apply_map') else SR(_M).subs(_sad))
+            except Exception:
+                pass
+    prop = prop_g
+
+    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=1,
+                                    verbose=verbose)
+    ell1 = by_ell.get(1, [])
+    if not ell1:
+        raise SpatialPropagatorError('no 1-loop diagrams were enumerated.')
+
+    # map each enumerated diagram → (descriptor, M(Γ)·prefactor value at saddle)
+    descrs = []
+    for td, pre in ell1:
+        try:
+            pv = float(SR(pre).subs(base_np_sr))
+        except (TypeError, ValueError):
+            continue                                 # q-dependent prefactor (skip)
+        descrs.append((diagram_to_cstack(td), pv))
+    n_live = sum(1 for _, pv in descrs if abs(pv) > 1e-14)
+    if verbose:
+        print(f'[spatial pipeline] GENERIC 1-loop: {len(descrs)} ell=1 diagram(s), '
+              f'{n_live} live at the saddle; summing δC_Γ over the q-grid '
+              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
+
+    d = int(prop.get('spatial_dim', 1))
+    taus = np.asarray(tau_grid, dtype=float)
+    qg = (np.linspace(0.0, q_cut, n_q) if d == 1
+          else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
+    dC_q_tau = np.array([
+        delta_C_one_loop(descrs, float(q), taus, A0, B0, A0, B0, spatial_dim=d,
+                         L_cut=q_cut)
+        for q in qg])                                # (n_q, n_tau)
+
+    xg = np.asarray(spatial_grid, dtype=float)
+    C1 = np.array(C0, dtype=np.complex128)
+    if d == 1:
+        for it in range(len(taus)):
+            col = dC_q_tau[:, it]
+            for ix, x in enumerate(xg):              # δC(x,τ)=(1/π)∫₀^∞cos(qx)δC dq
+                C1[it, ix] += np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+    else:
+        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+        for it in range(len(taus)):
+            C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
+
+    info = dict(tree_info)
+    info.update({'one_loop': True, 'generic': True,
+                 'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
+                 'n_ell1_diagrams': len(descrs), 'n_live_diagrams': n_live})
+    return C1, info

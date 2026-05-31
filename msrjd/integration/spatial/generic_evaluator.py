@@ -217,8 +217,27 @@ def bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     return _kinematic_to_physical(descr) * float(prefactor_val) * kin
 
 
+def _phi2_zero(sl, q, mu, D, spatial_dim, L_cut, n_l=600):
+    """The self-loop's loop integral ``⟨φ²⟩₀ = ∫dᵈℓ/(2π)ᵈ 1/(μ+D|k_ℓ|²)``
+    (kinematic, T=1), ``k_ℓ = a·ℓ`` (a tadpole self-loop carries no ``q``).
+    d=1 is UV-finite → the exact ``sigma_parametric`` value; d≥2 is UV-divergent
+    → a **finite-cutoff** grid (Regime 1; ``|ℓ_i|<L_cut``)."""
+    if int(spatial_dim) == 1:
+        return sigma_parametric([(tuple(float(x) for x in sl.a),
+                                  tuple(float(x) for x in sl.b), 'C')],
+                                q, 0.0, mu, D, 1.0)
+    d = int(spatial_dim)
+    n_l = min(n_l, 220 if d == 2 else 70)
+    axes = np.linspace(-L_cut, L_cut, n_l)
+    grids = np.meshgrid(*([axes] * d), indexing='ij')
+    a0 = float(sl.a[0])
+    l2 = sum((a0 * g) ** 2 for g in grids)
+    dvol = (axes[1] - axes[0]) ** d
+    return float((1.0 / (mu + D * l2)).sum() * dvol / (2.0 * math.pi) ** d)
+
+
 def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                    spatial_dim=1):
+                    spatial_dim=1, L_cut=None):
     """The full 1-loop **tadpole** contribution ``δC_Γ(q,τ)`` of one diagram —
     an INSTANTANEOUS (equal-time self-loop) self-energy, i.e. a mass shift.
 
@@ -229,17 +248,17 @@ def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
         Σ_Γ = 2^{−n_C}·(M(Γ)·prefactor)·⟨φ²⟩₀^kin,
 
     with ``⟨φ²⟩₀^kin`` the self-loop's loop integral (``sigma_parametric`` on the
-    self-loop edge at equal time, T=1) and ``m = A + B q²``.  As in
+    self-loop edge at equal time, T=1), ``m = A + B q²``, and a factor
+    ``∏ 1/m_{k_c}`` from any loop-momentum-free **connector** edges (e.g. the
+    φ̃φ² rd ``k=0`` line — integrating its intermediate vertex time).  As in
     :func:`bubble_delta_C`, the kinematics use **unit noise** (the ``T^{n_C}``
     lives entirely in ``prefactor_val``).  Signs take care of themselves through
     the signed enumeration ``prefactor`` and the convolution's intrinsic
     ``−∂C₀/∂A`` (verified vs the Allen-Cahn oracle).
 
-    Scope (this milestone): a tadpole whose only INTERNAL edge is the self-loop
-    (a single-vertex tadpole, e.g. φ̃φ³ Allen-Cahn).  A multi-internal-vertex
-    tadpole (e.g. the φ̃φ² rd tadpole with a ``k=0`` connector) carries extra
-    structural time factors and is handled when its time structure is threaded
-    (Phase 4)."""
+    Handles single-vertex tadpoles (φ̃φ³ Allen-Cahn — no connector) and
+    multi-vertex tadpoles whose connectors carry no loop momentum (φ̃φ² rd —
+    one ``k=0`` connector).  A connector carrying ``q`` (q-dependent Σ) raises."""
     taus = np.asarray(taus, dtype=float)
     m = A + B * q * q
     internal = descr.loop_edges()
@@ -247,22 +266,30 @@ def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     if not selfloops:
         raise ValueError("tadpole_delta_C: no self-loop edge (not a tadpole).")
     non_self = [e for e in internal if e.u != e.v]
-    if non_self:
-        raise NotImplementedError(
-            "tadpole_delta_C: tadpole has extra internal edges "
-            f"{[(e.u, e.v, e.kind) for e in non_self]} (e.g. a k=0 connector); "
-            "its structural time factors are not yet threaded (Phase 4).")
     sl = selfloops[0]
-    phi2 = sigma_parametric([(tuple(float(x) for x in sl.a),
-                              tuple(float(x) for x in sl.b), 'C')],
-                            q, 0.0, mu, D, 1.0, spatial_dim=spatial_dim)
-    Sigma = _kinematic_to_physical(descr) * float(prefactor_val) * phi2
+    if L_cut is None:
+        L_cut = max(20.0, abs(q) + 15.0)
+    phi2 = _phi2_zero(sl, q, mu, D, spatial_dim, L_cut)
+    # Connector edges (non-self-loop internal lines, e.g. the φ̃φ² rd ``k=0``
+    # line) carry NO loop momentum (a=0 — the loop is confined to the self-loop)
+    # and integrating their intermediate vertex time contributes ``1/m_{k_c}``,
+    # ``k_c = b_c·q``.  A pure tadpole's connectors have ``b_c=0`` (q-independent
+    # mass shift); a q-dependent connector would make Σ q-dependent (deferred).
+    conn = 1.0
+    for e in non_self:
+        if any(ai != 0 for ai in e.a):
+            raise NotImplementedError(
+                f"tadpole connector {(e.u, e.v, e.kind)} carries loop momentum "
+                f"(a={e.a}); only loop-momentum-free connectors are supported.")
+        kc = sum(float(bi) for bi in e.b) * q if e.b else 0.0
+        conn *= 1.0 / (mu + D * kc * kc)
+    Sigma = _kinematic_to_physical(descr) * float(prefactor_val) * phi2 * conn
     minus_dC0_dA = (1.0 / m) * np.exp(-m * np.abs(taus)) * (np.abs(taus) + 1.0 / m)
     return Sigma * minus_dC0_dA
 
 
 def diagram_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                    spatial_dim=1):
+                    spatial_dim=1, L_cut=None):
     """The full 1-loop contribution ``δC_Γ(q,τ)`` of ONE enumerated diagram — the
     single entry point, no bubble/tadpole branch in the *caller*.  Dispatches on
     the diagram's own structure (a property, not a physics choice): a self-loop
@@ -270,6 +297,28 @@ def diagram_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     2-vertex loop ⇒ smooth self-energy (:func:`bubble_delta_C`)."""
     if descr.is_tadpole_like():
         return tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
-                               spatial_dim=spatial_dim)
+                               spatial_dim=spatial_dim, L_cut=L_cut)
     return bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
                           spatial_dim=spatial_dim)
+
+
+def delta_C_one_loop(descrs_with_prefactors, q, taus, A, B, mu, D,
+                     spatial_dim=1, prefactor_tol=1e-14, L_cut=None):
+    """The **complete** 1-loop correction ``δC(q,τ) = Σ_Γ δC_Γ`` — the sum over
+    ALL enumerated, LIVE (nonzero prefactor at the saddle) ell=1 diagrams, each
+    evaluated by :func:`diagram_delta_C`.  This is where the dropped-tadpole
+    problem disappears: bubbles AND tadpoles are summed uniformly, no diagram is
+    special-cased away.
+
+    ``descrs_with_prefactors`` : iterable of ``(CStackDiagram, prefactor_val)``
+    where ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at
+    the params/saddle.  Dead diagrams (``|prefactor| < tol``, e.g. φ*²-vertices
+    at φ*=0) are skipped.  Returns an array over ``taus``."""
+    taus = np.asarray(taus, dtype=float)
+    total = np.zeros(len(taus))
+    for descr, pre in descrs_with_prefactors:
+        if abs(float(pre)) < prefactor_tol:
+            continue
+        total = total + diagram_delta_C(descr, pre, q, taus, A, B, mu, D,
+                                        spatial_dim=spatial_dim, L_cut=L_cut)
+    return total
