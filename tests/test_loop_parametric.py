@@ -25,7 +25,7 @@ from scipy import integrate
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from msrjd.integration.spatial.loop_parametric import (
-    gaussian_momentum_integral, sigma_R_kernel, sigma_K_kernel,
+    gaussian_momentum_integral, sigma_R_kernel, sigma_K_kernel, symanzik_UF,
 )
 
 MU = D = T = 1.0
@@ -45,6 +45,23 @@ def test_gaussian_momentum_integral_matches_direct():
             ref, _ = integrate.quad(f, -np.inf, np.inf, limit=200)
             ref /= 2 * np.pi
             assert abs(closed - ref) <= 1e-9 * max(abs(ref), 1e-12)
+
+
+def test_symanzik_UF_bubble_reduction():
+    """The extracted Symanzik core reproduces the known 1-loop bubble polynomials
+    (backend_C_math §6): edges a=[1,−1], b=[0,1] ⇒ U=w1+w2,
+    F_reduced=w1w2/(w1+w2); and gaussian_momentum_integral is its thin wrapper.
+    This is the L=1 reference the C0 matrix `symanzik_polynomials` must reduce to."""
+    for (w1, w2) in ((0.3, 0.7), (1.0, 1.0), (2.0, 0.5)):
+        U, F_reduced, pref = symanzik_UF([1.0, -1.0], [0.0, 1.0], [w1, w2], D)
+        assert abs(U - (w1 + w2)) <= 1e-12
+        assert abs(F_reduced - w1 * w2 / (w1 + w2)) <= 1e-12
+        assert abs(pref - (4.0 * math.pi * D * U) ** -0.5) <= 1e-12
+        # wrapper consistency
+        for q in (0.0, 0.9):
+            assert abs(gaussian_momentum_integral([1.0, -1.0], [0.0, 1.0],
+                       [w1, w2], q, D) - pref * math.exp(-D * q * q * F_reduced)
+                       ) <= 1e-14
 
 
 def test_gaussian_momentum_integral_zero_U_raises():

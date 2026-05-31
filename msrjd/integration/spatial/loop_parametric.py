@@ -34,15 +34,23 @@ from scipy import integrate
 
 
 # ── the Symanzik / Gaussian momentum-integral core ────────────────
-def gaussian_momentum_integral(a, b, w, q, D, spatial_dim=1):
-    """``∫ d^dℓ/(2π)^d exp(-D Σ_e (a_e ℓ + b_e q)² w_e)``  for ONE loop
-    momentum ``ℓ`` (1-D ℓ; ``spatial_dim`` = d enters the power only because
-    each spatial component contributes one Gaussian).
+def symanzik_UF(a, b, w, D, spatial_dim=1):
+    """Symanzik data for the ONE-loop, single-external-momentum heat-kernel
+    Gaussian momentum integral (the reusable core that backend C's ``C0``
+    generalizes to L loops via the matrix forms ``M,N,Q``).
 
-    a, b, w : equal-length sequences — per-edge ℓ-coefficient, q-coefficient,
-              and Schwinger weight ``w_e ≥ 0``.
-    Returns ``exp(-D q² (W - V²/U)) / (4π D U)^{d/2}``.  ``U → 0`` (all weights
-    zero) is a degenerate request and raises.
+    Edges parametrized ``k_e = a_e ℓ + b_e q`` with Schwinger weight ``w_e ≥ 0``::
+
+        U = Σ_e a_e² w_e            (first Symanzik polynomial = det M at L=1)
+        V = Σ_e a_e b_e w_e         (the M⁻¹-coupling, = N at L=1)
+        W = Σ_e b_e² w_e            (= Q at L=1)
+        F_reduced = W − V²/U        (= Q − Nᵀ M⁻¹ N; the coeff of q² in the
+                                     exponent — "F/U" per external q² )
+
+    Returns ``(U, F_reduced, prefactor)`` with ``prefactor = (4πDU)^{−d/2}``, so
+    the full integral ``∫d^dℓ/(2π)^d exp(−D Σ_e w_e k_e²) = prefactor ·
+    exp(−D q² F_reduced)``.  Raises on ``U ≤ 0`` (all weights zero — no
+    loop-momentum damping).  See ``docs/backend_C_math.md`` §2.
     """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -53,9 +61,24 @@ def gaussian_momentum_integral(a, b, w, q, D, spatial_dim=1):
                          f'(all Schwinger weights zero?).')
     V = float(np.sum(a * b * w))
     W = float(np.sum(b * b * w))
-    F = W - V * V / U                       # the second Symanzik form
+    F_reduced = W - V * V / U               # the second Symanzik form (per q²)
     pref = (4.0 * math.pi * D * U) ** (-0.5 * spatial_dim)
-    return pref * math.exp(-D * q * q * F)
+    return U, F_reduced, pref
+
+
+def gaussian_momentum_integral(a, b, w, q, D, spatial_dim=1):
+    """``∫ d^dℓ/(2π)^d exp(-D Σ_e (a_e ℓ + b_e q)² w_e)``  for ONE loop
+    momentum ``ℓ`` (1-D ℓ; ``spatial_dim`` = d enters the power only because
+    each spatial component contributes one Gaussian).
+
+    a, b, w : equal-length sequences — per-edge ℓ-coefficient, q-coefficient,
+              and Schwinger weight ``w_e ≥ 0``.
+    Returns ``exp(-D q² (W - V²/U)) / (4π D U)^{d/2}``.  ``U → 0`` (all weights
+    zero) is a degenerate request and raises.  Thin wrapper over
+    :func:`symanzik_UF` (the reusable Symanzik core).
+    """
+    U, F_reduced, pref = symanzik_UF(a, b, w, D, spatial_dim=spatial_dim)
+    return pref * math.exp(-D * q * q * F_reduced)
 
 
 # ── bubble self-energies via the parametric core ──────────────────
