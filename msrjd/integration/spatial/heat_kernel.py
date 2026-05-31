@@ -239,9 +239,18 @@ def build_spatial_propagator(K_ft, omega, ns, model,
     """
     spatial = model.get('spatial') or {}
     d = int(spatial.get('dim', 1))
-    if d != 1:
+    if d not in (1, 2, 3):
         raise SpatialPropagatorError(
-            f'v1 supports spatial_dim=1 only (got {d}).')
+            f'spatial_dim must be 1, 2, or 3 (got {d}).')
+    # NOTE: the per-mode (A,B) extraction below is d-INDEPENDENT (it reads the
+    # symbolic kernel K_ft); only the OUTPUT q→x transform is d-specific (d=1
+    # uses free_two_point, d≥2 the radial/Hankel radial_inverse_ft — handled in
+    # the bridge).  Periodic BC image sums remain d=1-only (see image_sum).
+    bc_d = (model.get('boundary') or {}).get('mode', 'infinite')
+    if d != 1 and bc_d == 'periodic':
+        raise SpatialPropagatorError(
+            f'periodic BC is implemented for spatial_dim=1 only; use '
+            f"'infinite' for d={d}.")
 
     lap_sym = getattr(ns, 'Laplacian', None)
     if lap_sym is None:

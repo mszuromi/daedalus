@@ -211,3 +211,35 @@ def test_radial_inverse_ft_matches_closed_form(d, tol):
         got = radial_inverse_ft(q, Cq, r, d)
         ref = oracle(r, mu, D, T, d)
         assert abs(got - ref) <= tol * abs(ref)
+
+
+def test_d2_tree_through_compute_cumulants():
+    """END-TO-END: a d=2 linear theory runs through ``compute_cumulants`` (tree,
+    max_ell=0) and the returned ``C(r,0)`` matches the exact d=2 free correlator
+    (T/2πD)·K₀(r√(μ/D)).  Confirms the d=2 spatial dispatch (relaxed d≠1 gate +
+    radial q→x transform) works through the public API."""
+    from pipeline.compute import compute_cumulants
+    from pipeline.theory import TheoryBuilder
+    from msrjd.integration.spatial.spatial_correlator import (
+        free_correlator_static_closed_form as oracle,
+    )
+    m = (TheoryBuilder('lin2d', n_populations=0)
+         .physical_field('phi', spatial_dim=2)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2')
+         .boundary('infinite').initial('stationary').build())
+    rs = np.array([0.5, 1.0, 2.0, 3.0])
+    out = compute_cumulants(
+        m, k=2, max_ell=0, fundamental={'mu': 1.0, 'D': 1.0, 'T': 1.0},
+        external_fields=[('phi', 1), ('phi', 1)], spatial_grid=rs,
+        tau_max=1.0, tau_step=1.0, verbose=False, use_cache=False,
+        mf_dae_n_starts=4)
+    C = np.real(out['C_tau_x'])
+    mid = C.shape[0] // 2                         # τ=0 row (grid is −1,0,1)
+    for i, r in enumerate(rs):
+        assert abs(C[mid, i] - oracle(r, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(r, 1.0, 1.0, 1.0, 2)
+    # total_C closure also works at d=2 (single-point query)
+    assert abs(out['total_C'](0.0, 1.0).real - oracle(1.0, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(1.0, 1.0, 1.0, 1.0, 2)

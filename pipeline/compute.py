@@ -446,6 +446,8 @@ def compute_cumulants(
         x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
         C_tau = C_tau_x[:, x0_idx].copy()
 
+        sp_d = int(sp_info.get('spatial_dim', 1))
+
         def total_C(*tau_then_x):
             """C(τ) at x=0 (1 arg) or C(x, τ) (2 args: τ, x)."""
             if len(tau_then_x) == 1:
@@ -453,22 +455,45 @@ def compute_cumulants(
                 xq = 0.0
             else:
                 tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
-            val = 0j
+            if sp_d == 1:
+                val = 0j
+                for (A, B, N) in sp_info['modes']:
+                    val += free_two_point(A, B, N, xq, tau,
+                                          bc_mode=sp_info['bc_mode'],
+                                          L=sp_info['L'])
+                # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
+                if sp_info.get('Sigma'):
+                    A0, B0, N0 = sp_info['modes'][0]
+                    A0 = float(_np.real(A0))
+                    h = 1e-4 * max(1.0, abs(A0))
+                    fp = free_two_point(A0 + h, B0, N0, xq, tau,
+                                        bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                    fm = free_two_point(A0 - h, B0, N0, xq, tau,
+                                        bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                    val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
+                return val
+            # d≥2: radial q→x transform of the momentum-space correlator
+            # (+ optional tadpole mass-shift via a finite difference in A).
+            from msrjd.integration.spatial.spatial_correlator import (
+                radial_inverse_ft,
+            )
+            qg = _np.linspace(40.0 / 8000.0, 40.0, 2000)
+            at = abs(tau)
+            Cq = _np.zeros_like(qg)
             for (A, B, N) in sp_info['modes']:
-                val += free_two_point(A, B, N, xq, tau,
-                                      bc_mode=sp_info['bc_mode'],
-                                      L=sp_info['L'])
-            # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
+                A = float(_np.real(A)); B = float(_np.real(B)); N = float(_np.real(N))
+                m = A + B * qg * qg
+                Cq += (N / m) * _np.exp(-m * at)
             if sp_info.get('Sigma'):
                 A0, B0, N0 = sp_info['modes'][0]
-                A0 = float(_np.real(A0))
+                A0 = float(_np.real(A0)); B0 = float(_np.real(B0)); N0 = float(_np.real(N0))
                 h = 1e-4 * max(1.0, abs(A0))
-                fp = free_two_point(A0 + h, B0, N0, xq, tau,
-                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                fm = free_two_point(A0 - h, B0, N0, xq, tau,
-                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
-            return val
+                mp = (A0 + h) + B0 * qg * qg
+                mm = (A0 - h) + B0 * qg * qg
+                Cq += sp_info['Sigma'] * (
+                    (N0 / mp) * _np.exp(-mp * at) - (N0 / mm) * _np.exp(-mm * at)
+                ) / (2.0 * h)
+            return complex(radial_inverse_ft(qg, Cq, abs(xq), sp_d))
 
         # MF values (for the result dict) — reuse the saddle solve.
         mf_values_sp = {}

@@ -268,7 +268,7 @@ def certify_modes(modes, prop, records, external_fields, base_np_sr,
 def compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, certify=True, q_samples=(0.0, 0.7, 1.5),
-        tau_samples=(0.5, 1.0), certify_tol=1e-8):
+        tau_samples=(0.5, 1.0), certify_tol=1e-8, q_cut=40.0, n_q=2000):
     """Drop-in alternative to :func:`compute_spatial_correlator_tree` that
     ROUTES THROUGH THE SHARED PIPELINE.
 
@@ -334,16 +334,36 @@ def compute_spatial_correlator_via_pipeline(
                 f'(> tol {certify_tol:.0e}).  The (A,B,N) extraction or the '
                 f'diagram routing is wrong for this theory.')
 
+    d = int(prop.get('spatial_dim', 1))
     C = np.zeros((len(tau_grid), len(spatial_grid)), dtype=np.complex128)
-    for it, tau in enumerate(tau_grid):
-        for ix, x in enumerate(spatial_grid):
-            val = 0j
-            for (A, B, N) in modes:
-                val += free_two_point(A, B, N, float(x), float(tau),
-                                      bc_mode=bc_mode, L=L)
-            C[it, ix] = val
+    if d == 1:
+        # d=1: the analytic erf/heat-kernel q→x FT (exact at τ=0, no ringing).
+        for it, tau in enumerate(tau_grid):
+            for ix, x in enumerate(spatial_grid):
+                val = 0j
+                for (A, B, N) in modes:
+                    val += free_two_point(A, B, N, float(x), float(tau),
+                                          bc_mode=bc_mode, L=L)
+                C[it, ix] = val
+    else:
+        # d≥2: the radial/Hankel q→x transform of the momentum-space correlator
+        # Σ_modes N/(A+Bq²) e^{−(A+Bq²)|τ|}, truncated at q_cut (Regime 1 — a
+        # physical cutoff; the continuum limit is q_cut→∞ with fine n_q).
+        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+        qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
+        xs = np.array([float(x) for x in spatial_grid])
+        m_modes = [(float(np.real(A)), float(np.real(B)), float(np.real(N)))
+                   for (A, B, N) in modes]
+        for it, tau in enumerate(tau_grid):
+            at = abs(float(tau))
+            Cq = np.zeros_like(qg)
+            for (A, B, N) in m_modes:
+                m = A + B * qg * qg
+                Cq += (N / m) * np.exp(-m * at)
+            C[it, :] = radial_inverse_ft(qg, Cq, xs, d)
 
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
+            'spatial_dim': d,
             'pipeline_certified': certified, 'certify_max_rel': certify_max_rel}
     return C, info
 
