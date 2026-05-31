@@ -755,20 +755,40 @@ def compute_spatial_correlator_bubble(
                    else (lambda qq: None))
         _ffK_of = lambda qq: None
 
+    # dimension: d=1 uses the analytic ∫dℓ + cosine q→x; d≥2 the direct ∫dᵈℓ
+    # self-energy (loop_dyson._sigma_grids_dD, validated vs the C-stack) + the
+    # radial/Hankel q→x.  Derivative-vertex form factors in d>1 are deferred.
+    d = int(prop.get('spatial_dim', 1))
+    if d >= 2 and _chain:
+        raise NotImplementedError(
+            'd>1 DERIVATIVE-vertex bubbles (form factors) are not yet wired; '
+            'd>1 currently supports the plain φ̃φ² bubble.')
+
     # bubble δC(q,τ) on the q×τ grid (even in q), then q-FT to x.
-    qg = np.linspace(0.0, q_cut, n_q)
+    qg = np.linspace(0.0, q_cut, n_q) if d == 1 else np.linspace(q_cut / (4 * n_q), q_cut, n_q)
     taus = np.asarray(tau_grid, dtype=float)
-    dC_q_tau = np.array([
-        bubble_delta_C_q_tau(
-            float(q), taus, A0, B0, N0, g, n_t=n_t,
-            formfactor=_ffR_of(float(q)), formfactor_K=_ffK_of(float(q)))
-        for q in qg])                                   # (n_q, n_tau)
+    if d == 1:
+        dC_q_tau = np.array([
+            bubble_delta_C_q_tau(
+                float(q), taus, A0, B0, N0, g, n_t=n_t,
+                formfactor=_ffR_of(float(q)), formfactor_K=_ffK_of(float(q)))
+            for q in qg])                               # (n_q, n_tau)
+    else:
+        dC_q_tau = np.array([
+            bubble_delta_C_q_tau(float(q), taus, A0, B0, N0, g, n_t=n_t,
+                                 spatial_dim=d, L_cut=q_cut)
+            for q in qg])
     xg = np.asarray(spatial_grid, dtype=float)
     C1 = np.array(C0, dtype=np.complex128)
-    for it in range(len(taus)):
-        col = dC_q_tau[:, it]
-        for ix, x in enumerate(xg):           # δC(x,τ)=(1/π)∫₀^∞ cos(qx)δC dq
-            C1[it, ix] += np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+    if d == 1:
+        for it in range(len(taus)):
+            col = dC_q_tau[:, it]
+            for ix, x in enumerate(xg):       # δC(x,τ)=(1/π)∫₀^∞ cos(qx)δC dq
+                C1[it, ix] += np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+    else:
+        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+        for it in range(len(taus)):            # radial/Hankel q→x at d≥2
+            C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
 
     info = dict(tree_info)
     info.update({'one_loop': True, 'bubble': True,

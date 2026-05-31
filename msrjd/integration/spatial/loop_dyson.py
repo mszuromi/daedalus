@@ -154,8 +154,41 @@ def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None,
     return tg, sR, sK
 
 
+def _sigma_grids_dD(q, mu, D, T, t_max, n_t, spatial_dim, n_l=110, L_cut=None):
+    """``σ_R(t), σ_K(t)`` for the φ̃φ² bubble in ``spatial_dim`` ∈ {2,3} via a
+    DIRECT, vectorized ``∫dᵈℓ`` over a Cartesian ℓ-grid (external q along the
+    first axis), truncated at ``|ℓ_i|<L_cut`` (Regime 1 — a physical cutoff; the
+    d≥2 loop is UV-sensitive, so ``L_cut`` matters and should match the simulator
+    when comparing).  This is the fast production analog of the 1-D ``_sigma_grids``
+    (d=1) — same object the C-stack ``sigma_parametric`` computes analytically
+    (validated equal); used here vectorized over the whole t-grid for speed.
+
+    No form factor (plain φ̃φ² vertex); derivative vertices in d>1 are deferred.
+    """
+    tg = np.linspace(t_max / n_t, t_max, n_t)
+    if L_cut is None:
+        L_cut = max(20.0, abs(q) + 15.0)
+    axes = np.linspace(-L_cut, L_cut, n_l)
+    grids = np.meshgrid(*([axes] * spatial_dim), indexing='ij')
+    l2 = sum(gi ** 2 for gi in grids)                       # |ℓ|²
+    ql2 = (q - grids[0]) ** 2 + sum(gi ** 2 for gi in grids[1:])  # |q−ℓ|² (q∥axis0)
+    ml = (mu + D * l2).ravel()
+    mql = (mu + D * ql2).ravel()
+    dl = (axes[1] - axes[0]) ** spatial_dim
+    pref = dl / (2.0 * math.pi) ** spatial_dim
+    msum = ml + mql
+    # vectorized over t (chunk to bound memory if the grid is large)
+    Cq = T / mql
+    TmlCq = (T / ml) * Cq
+    E = np.exp(-msum[:, None] * tg[None, :])                # (n_grid, n_t)
+    sR = (Cq[:, None] * E).sum(axis=0) * pref
+    sK = (TmlCq[:, None] * E).sum(axis=0) * pref
+    return tg, sR, sK
+
+
 def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
-                         formfactor=None, formfactor_K=None):
+                         formfactor=None, formfactor_K=None,
+                         spatial_dim=1, L_cut=None):
     """PHYSICAL bubble correction ``δC(q, τ)`` for ALL ``τ`` in ``taus``, via the
     **time route** (the frequency route converges as 1/ω because Σ_R has a t=0
     step — Gibbs — so it is not used).  Each Dyson term collapses to a fast,
@@ -187,8 +220,16 @@ def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
     tau_max = max((abs(float(t)) for t in taus), default=0.0)
     t_max = min(t_max, max(2.0 * tau_max + 12.0 / m, 12.0 / m))
     n_t = int(min(max(n_t, t_max * m * 50.0), 8000.0))
-    ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t, formfactor=formfactor,
-                              formfactor_K=formfactor_K)      # a∈[a1,t_max]
+    if int(spatial_dim) == 1:
+        ag, sR, sK = _sigma_grids(q, mu, D, T, t_max, n_t, formfactor=formfactor,
+                                  formfactor_K=formfactor_K)  # a∈[a1,t_max]
+    else:
+        # d≥2: direct vectorized ∫dᵈℓ self-energy (no form factor; Regime-1 cutoff
+        # L_cut).  The d-dependence lives entirely here; the Dyson convolution
+        # below (Term1/Term2 + C_R/C_K) is d-independent.
+        n_t = min(n_t, 1800)                                  # d≥2 grid is heavier
+        ag, sR, sK = _sigma_grids_dD(q, mu, D, T, t_max, n_t,
+                                     int(spatial_dim), L_cut=L_cut)
     a1 = ag[0]                                                # = t_max/n_t
 
     # [0,a1] sliver of ∫σ(a)·kernel da, done by the local power law.  A

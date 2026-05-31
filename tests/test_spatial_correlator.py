@@ -243,3 +243,44 @@ def test_d2_tree_through_compute_cumulants():
         assert abs(C[mid, i] - oracle(r, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(r, 1.0, 1.0, 1.0, 2)
     # total_C closure also works at d=2 (single-point query)
     assert abs(out['total_C'](0.0, 1.0).real - oracle(1.0, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(1.0, 1.0, 1.0, 1.0, 2)
+
+
+def test_d2_bubble_loop_through_compute_cumulants():
+    """END-TO-END: a d=2 reaction-diffusion (φ̃φ²) theory runs through
+    ``compute_cumulants(max_ell=1)`` and returns tree + 1-loop bubble.  The loop
+    correction δC(r,0)=C₁−C₀ is positive and q-dependent, and scales as g²
+    (δC(2g)/δC(g)≈4) — confirming the d=2 bubble path (the d=2 ∫d²ℓ self-energy,
+    validated vs the C-stack, + the d-independent Dyson collapse + radial q→x)."""
+    from pipeline.compute import compute_cumulants
+    from pipeline.theory import TheoryBuilder
+
+    def rd2(g):
+        return (TheoryBuilder('rd2', n_populations=0)
+                .physical_field('phi', spatial_dim=2)
+                .parameter('mu', default=1.0, domain='positive')
+                .parameter('D', default=1.0, domain='positive')
+                .parameter('g', default=g, domain='real')
+                .parameter('T', default=1.0, domain='positive')
+                .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
+                .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
+                .boundary('infinite').initial('stationary').build())
+
+    rs = np.array([0.5, 1.0, 2.0])
+    kw = dict(k=2, external_fields=[('phi', 1), ('phi', 1)], spatial_grid=rs,
+              tau_max=1.0, tau_step=1.0, verbose=False, use_cache=False,
+              mf_dae_n_starts=4)
+    o1 = compute_cumulants(rd2(0.2), max_ell=1,
+                           fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0}, **kw)
+    o0 = compute_cumulants(rd2(0.2), max_ell=0,
+                           fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0}, **kw)
+    o2 = compute_cumulants(rd2(0.4), max_ell=1,
+                           fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.4, 'T': 1.0}, **kw)
+    assert o1['spatial_info']['bubble'] is True
+    assert abs(o1['spatial_info']['self_energy_coupling_g'] - 0.2) <= 1e-6
+    mid = o1['C_tau_x'].shape[0] // 2
+    dC_g = np.real(o1['C_tau_x'])[mid] - np.real(o0['C_tau_x'])[mid]
+    dC_2g = np.real(o2['C_tau_x'])[mid] - np.real(o0['C_tau_x'])[mid]  # tree(0.4)≈tree(0.2)
+    assert np.all(dC_g > 0)                         # positive bubble correction
+    # g²-scaling: δC(2g)/δC(g) ≈ 4 (tree is g-independent at φ*=0)
+    ratio = dC_2g[0] / dC_g[0]
+    assert abs(ratio - 4.0) <= 0.15
