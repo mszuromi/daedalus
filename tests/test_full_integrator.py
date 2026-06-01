@@ -277,8 +277,8 @@ def test_diagram_form_factor_ell2_momentum():
         w = 0.4 + 0.8 * rng.random(E)
         momfac, M, N, ok = _momentum_factor_batch(a, bb, w[None, :], [q], D, 1,
                                                    return_gaussian=True)
-        gh = float(momfac[0] * _formfactor_average(ff, M, N, [q], D, ok,
-                                                   gh_order=10)[0])
+        gh = float((momfac[0] * _formfactor_average(ff, M, N, [q], D, ok,
+                                                    gh_order=10)[0]).real)
         Lc, n = 26.0, 340
         ax = np.linspace(-Lc, Lc, n); dl = ax[1] - ax[0]
         L0, L1 = np.meshgrid(ax, ax, indexing='ij')
@@ -291,3 +291,73 @@ def test_diagram_form_factor_ell2_momentum():
                       / (2 * np.pi) ** 2)
         assert abs(gh - brute) <= 1e-6 * (abs(brute) + 1e-30), \
             f"L=2 form-factor momentum integral: {gh} vs {brute}"
+
+
+def test_perleg_and_complex_form_factor():
+    """KPZ-type PER-LEG derivative form factors + COMPLEX (odd-∂) integrands —
+    the new machinery for KPZ ``(∂φ)²`` / Burgers.  On a φ̃φ² bubble topology, the
+    per-leg extraction (``∂_x`` on each physical/incoming leg → ``∏ i·p_leg``) and
+    the complex Gauss–Hermite average match a brute ``∫dℓ`` to machine precision.
+    (The end-to-end wiring of a KPZ/Burgers THEORY is separately gated on the v2
+    k-explicit propagator kernel — see ``docs/spatial_kpz_burgers_plan.md``.)"""
+    import importlib.util
+    import numpy as np
+    from sage.all import SR
+    from pipeline._propagator import build_propagator
+    from pipeline.compute import FieldTheory
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import (
+        _momentum_factor_batch, _formfactor_average)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    path = os.path.join(_REPO, 'theories',
+                        'reaction_diffusion_conserved_1d.theory.py')
+    spec = importlib.util.spec_from_file_location('crd', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    b = mod.build()
+    ft = FieldTheory(b, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 2.0, SR.var('g'): 0.3,
+            SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
+    td = descr = None
+    for t, p in be.get(1, []):
+        if abs(float(SR(p).subs(base))) <= 1e-14:
+            continue
+        d = diagram_to_cstack(t)
+        if d.n_loops == 1:
+            td, descr = t, d
+            break
+    assert td is not None
+    a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    E = a.shape[0]
+    D, q = 2.0, 0.7
+
+    def brute(ff, w):
+        Lc, n = 60.0, 200001
+        ell = np.linspace(-Lc, Lc, n)
+        dl = ell[1] - ell[0]
+        expo = sum(w[e] * (a[e, 0] * ell + bb[e, 0] * q) ** 2 for e in range(E))
+        return complex(np.sum(ff(ell[..., None], q) * np.exp(-D * expo))
+                       * dl / (2 * np.pi))
+
+    ff_kpz = _formfactor_callable(td, (('Dx', 0),), mode='perleg')   # KPZ per-leg
+    ff_cplx = lambda ell, qq: 1j * ell[..., 0]                        # odd ∂ (imaginary)
+    rng = np.random.default_rng(1)
+    for ff in (ff_kpz, ff_cplx):
+        w = 0.5 + 0.6 * rng.random(E)
+        mf, M, N, ok = _momentum_factor_batch(a, bb, w[None, :], [q], D, 1,
+                                              return_gaussian=True)
+        gh = complex(mf[0] * _formfactor_average(ff, M, N, [q], D, ok,
+                                                 gh_order=12)[0])
+        br = brute(ff, w)
+        assert abs(gh - br) <= 1e-6 * (abs(br) + 1e-30), \
+            f"per-leg/complex form factor: {gh} vs {br}"

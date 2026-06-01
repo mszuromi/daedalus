@@ -402,7 +402,7 @@ def _diagram_is_bubble(td):
     return False
 
 
-def diagram_form_factor(td, op_chain):
+def diagram_form_factor(td, op_chain, mode='composite'):
     """Assemble the momentum-space **form factor** ``F(q,ℓ)`` a derivative-vertex
     theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell`` and any
     ``k``** (NOT bubble-specific: it is a product over the diagram's interaction
@@ -433,9 +433,11 @@ def diagram_form_factor(td, op_chain):
     from msrjd.integration.spatial.momentum_routing import route_momenta
     rr = route_momenta(td)
     leaves = set(td.prediagram[2])
-    out_mom = {}
-    for (u, _v, _l), mom in rr.edge_momenta.items():
+    out_mom = {}        # vertex -> [outgoing-edge momenta]  (response leg)
+    in_mom = {}         # vertex -> [incoming-edge momenta]  (physical legs)
+    for (u, v, _l), mom in rr.edge_momenta.items():
         out_mom.setdefault(u, []).append(mom)
+        in_mom.setdefault(v, []).append(mom)
     iverts = [n for n in out_mom if n not in leaves and len(out_mom[n]) == 1]
 
     def _f_chain(p):
@@ -444,16 +446,27 @@ def diagram_form_factor(td, op_chain):
             if entry[0] == 'Lap':
                 f *= -p ** 2
             elif entry[0] == 'Dx':
-                f *= _sp.I * p
+                f *= _sp.I * p           # ∂_x → i p  (IMAGINARY; product over legs)
             else:
                 raise NotImplementedError(
-                    f"bubble_loop_form_factor: operator {entry[0]!r} not "
+                    f"diagram_form_factor: operator {entry[0]!r} not "
                     f"supported (only Lap, Dx).")
         return f
 
     F = _sp.Integer(1)
-    for n in iverts:
-        F *= _f_chain(out_mom[n][0])
+    if mode == 'composite':
+        # ∇ acts on the field composite → one factor at the response-leg momentum
+        # (Model B ∇²(φⁿ), Burgers ½∂ₓ(φ²)).
+        for n in iverts:
+            F *= _f_chain(out_mom[n][0])
+    elif mode == 'perleg':
+        # ∂ acts on each PHYSICAL leg individually → a factor per incoming edge
+        # (KPZ (∂φ)²: every physical leg carries the chain; uniform per vertex).
+        for n in iverts:
+            for p in in_mom.get(n, []):
+                F *= _f_chain(p)
+    else:
+        raise ValueError(f"diagram_form_factor: unknown mode {mode!r}")
     return _sp.expand(F)
 
 
@@ -461,22 +474,23 @@ def diagram_form_factor(td, op_chain):
 bubble_loop_form_factor = diagram_form_factor
 
 
-def _formfactor_callable(td, op_chain):
+def _formfactor_callable(td, op_chain, mode='composite'):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
     diagram form factor (:func:`diagram_form_factor`).  ``ell`` is the loop
     momentum ``(..., L)``, ``q`` the ``(n_ext,)`` external-momentum vector;
-    returns ``(...,)``.  Generic in ``L`` (any ``ell``) and ``n_ext`` (any ``k``).
+    returns ``(...,)`` — possibly **complex** (``∂_x → ik``), so it is NOT forced
+    real here; the imaginary part is resolved (cancels / dropped) at the real-space
+    output.  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``), and ``mode``
+    ('composite' → response-leg momentum, Model B; 'perleg' → per physical-leg, KPZ).
 
     Lambdifies ``F(ℓ₀…ℓ_{L−1}, q₀…)`` (the route_momenta symbols, the SAME basis
     the C-stack descriptor's edge routing uses — verified to 1e-14 at L=2) onto
     the integrator's loop momenta, mapping loop symbol ``lᵢ → ell[...,i]`` and
-    external ``qⱼ → q[j]`` by index.  Takes the real part (Lap-based / Model-B
-    form factors are real polynomials).  ``F=0`` (e.g. a conserved-vertex tadpole,
-    killed by the conservation law) → zeros."""
+    external ``qⱼ → q[j]`` by index.  ``F=0`` → zeros."""
     import sympy as _sp
-    F = _sp.expand(diagram_form_factor(td, op_chain))
+    F = _sp.expand(diagram_form_factor(td, op_chain, mode=mode))
     if F == 0:
-        return lambda ell, q: np.zeros(ell.shape[:-1])
+        return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
     ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
     qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
     fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
@@ -486,7 +500,7 @@ def _formfactor_callable(td, op_chain):
         qvec = np.atleast_1d(np.asarray(q, dtype=float))
         args = ([ell[..., i] for i in range(nl)]
                 + [float(qvec[j]) for j in range(nq)])
-        return np.real(fn(*args)) * np.ones(ell.shape[:-1])
+        return fn(*args) * np.ones(ell.shape[:-1])     # complex if F has i (∂_x)
     return ff
 
 

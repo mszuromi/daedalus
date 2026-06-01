@@ -101,7 +101,7 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
     ``(n_ext,)`` external-momentum vector → ``(P', G)``.  Build it from the
     per-vertex leg routing + operator form factor (:func:`diagram_form_factor`)."""
     P, L = M.shape[0], M.shape[1]
-    out = np.ones(P)
+    out = np.ones(P, dtype=complex)                          # COMPLEX: ∂_x→ik
     if not np.any(ok):
         return out
     qv = np.atleast_1d(np.asarray(q_vec, dtype=float))       # (n_ext,)
@@ -117,7 +117,7 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
         Wg = Wg * wgrid.ravel()
     Wg = Wg / (2.0 * math.pi) ** (0.5 * L)                   # (G,)
     ell = lbar[:, None, :] + np.einsum('plm,gm->pgl', Ch, Z)  # (P',G,L)
-    Fv = np.asarray(formfactor(ell, qv), dtype=float)        # (P',G)
+    Fv = np.asarray(formfactor(ell, qv), dtype=complex)      # (P',G); ∂_x→ik ⇒ complex
     out[ok] = np.einsum('pg,g->p', Fv, Wg)
     return out
 
@@ -269,8 +269,12 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             if Mb is not None:                               # L>=1 (loop diagram)
                 momfac = momfac * _formfactor_average(
                     formfactor, Mb, Nb, q_vec, D, okb, gh_order)
-        total += float(np.sum(wfull * np.exp(-mu * mu_resid) * momfac))
-    return total
+        total += np.sum(wfull * np.exp(-mu * mu_resid) * momfac)
+    # `formfactor=None` → real (unchanged float return); a derivative/∇ form
+    # factor (∂_x→ik) can be complex per diagram (e.g. odd # of ∂'s), so return
+    # complex — the physical C(q,τ) is real and the imaginary parts cancel in the
+    # diagram sum / are dropped at the real-space output.
+    return complex(total) if formfactor is not None else float(np.real(total))
 
 
 def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
