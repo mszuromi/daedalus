@@ -143,3 +143,51 @@ def test_sunset_d2_vs_brute(ac_records):
                             n_t=22, n_s=26)
     brute = _sunset_brute(sun, q, mu, D, 2, L_cut=20.0, n=64)   # UV-finite; both converge
     assert abs(kin - brute) <= 5e-3 * abs(brute), f"d=2 sunset: {kin} vs {brute}"
+
+
+def test_formfactor_bubble_vs_oracle():
+    """DERIVATIVE-vertex (Model-B conserved ``∇²(φ²)``) 1-loop bubble through the
+    full integrator — the loop-momentum form factor ``F(ℓ,q)`` deposited by the ∇
+    and averaged over the loop Gaussian by Gauss–Hermite — vs the INDEPENDENT
+    ``loop_dyson`` oracle (itself sim-validated at B≈0.944).  Two completely
+    different discretizations ⇒ agreement to ~2% locks in the new capability."""
+    import importlib.util
+    import numpy as np
+    from sage.all import SR
+    from pipeline._propagator import build_propagator
+    from pipeline.compute import FieldTheory
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import diagram_correlator
+    from msrjd.integration.spatial import loop_dyson
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    path = os.path.join(_REPO, 'theories',
+                        'reaction_diffusion_conserved_1d.theory.py')
+    spec = importlib.util.spec_from_file_location('crd', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    b = mod.build()
+    ft = FieldTheory(b, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    op = ft._ns._operator_ir_vertex_chain
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    mu, D, g, T = 1.0, 2.0, 0.3, 1.0
+    base = {SR.var('mu'): mu, SR.var('D'): D, SR.var('g'): g, SR.var('T'): T,
+            SR.var('phistar1'): 0.0}
+    diags = [(diagram_to_cstack(td), float(SR(pre).subs(base)),
+              _formfactor_callable(td, op)) for td, pre in be.get(1, [])]
+    for q in (0.6, 1.2):
+        full = sum(diagram_correlator(d, pv, q, 0.0, mu, D, 1, formfactor=ff,
+                                      n_t=24, n_s=26) for d, pv, ff in diags)
+        orc = float(np.real(loop_dyson.bubble_delta_C_q_tau(
+            q, [0.0], mu, D, T, g=g,
+            formfactor=lambda l: (q * q) * (l * l),
+            formfactor_K=lambda l: q ** 4 * np.ones_like(l))[0]))
+        assert abs(full - orc) <= 2e-2 * abs(orc), \
+            f"formfactor bubble q={q}: full={full} oracle={orc}"

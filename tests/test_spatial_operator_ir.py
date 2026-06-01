@@ -361,15 +361,17 @@ def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
     assert np.max(np.abs(c2 - c1)) <= 1e-12 * (np.max(np.abs(c1)) + 1e-30)
 
 
-def test_operator_ir_derivative_vertex_deferred():
+def test_operator_ir_derivative_vertex_one_loop():
     """A QUADRATIC **derivative** vertex — the conserved ``−g∇²(φ²)`` reaction-
-    diffusion — authored with ``.operator_ir()``.  The 1-loop spatial path is now
-    the genuine **full-diagram integrator**, whose first cut supports SIMPLE
-    (non-derivative) vertices; derivative / ∇ form-factor vertices are explicitly
-    deferred (future work), so ``compute_cumulants(max_ell=1)`` must raise a clear
-    NotImplementedError rather than silently produce a plain-bubble answer.
+    diffusion (Model-B-type) — authored with ``.operator_ir()``.  The full-diagram
+    integrator now HANDLES derivative vertices: the ∇ deposits a momentum-space
+    form factor ``F(ℓ,q)`` on the loop, averaged over the loop-momentum Gaussian by
+    Gauss–Hermite (exact for the polynomial ``F``; validated vs the ``loop_dyson``
+    oracle to ~1%).  So ``compute_cumulants(max_ell=1)`` COMPUTES a finite
+    ``C(x,τ)`` and the conserved bubble shifts the variance — v1 could not do this.
 
-    (The tree, ``max_ell=0``, still works for the derivative theory.)"""
+    Higher-loop derivative vertices (``max_ell≥2``) remain deferred (the form-factor
+    extraction is bubble-specific) → a clear NotImplementedError."""
     import numpy as np
     import pytest
     from pipeline.compute import compute_cumulants
@@ -387,11 +389,21 @@ def test_operator_ir_derivative_vertex_deferred():
          .operator_ir().boundary('infinite').initial('stationary').build())
     kw = dict(k=2, fundamental={'mu': 1.0, 'D': 2.0, 'g': 0.3, 'T': 1.0},
               external_fields=[('phi', 1), ('phi', 1)],
-              spatial_grid=np.linspace(0, 6, 7), tau_max=1.0, tau_step=0.5,
+              spatial_grid=np.linspace(0, 4, 5), tau_max=0.0, tau_step=1.0,
               verbose=False, use_cache=False, mf_dae_n_starts=4)
     # tree (max_ell=0) works
     out0 = compute_cumulants(m, max_ell=0, **kw)
-    assert np.all(np.isfinite(np.real(out0['C_tau'])))
-    # 1-loop with a derivative vertex is deferred → clear NotImplementedError
+    mid0 = out0['C_tau_x'].shape[0] // 2
+    tree0 = float(np.real(out0['C_tau_x'])[mid0][0])
+    assert np.isfinite(tree0)
+    # 1-loop derivative vertex now COMPUTES (the new capability)
+    out1 = compute_cumulants(m, max_ell=1, **kw)
+    c1 = np.real(out1['C_tau_x'])
+    assert np.all(np.isfinite(c1))
+    mid1 = c1.shape[0] // 2
+    loop0 = float(c1[mid1][0])
+    assert abs(loop0 - tree0) > 1e-6        # the conserved bubble shifts ⟨φ²⟩
+    assert out1['spatial_info'].get('n_live_diagrams', 0) >= 1
+    # higher-loop derivative vertices remain deferred
     with pytest.raises(NotImplementedError, match='derivative'):
-        compute_cumulants(m, max_ell=1, **kw)
+        compute_cumulants(m, max_ell=2, **kw)

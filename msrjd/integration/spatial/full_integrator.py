@@ -43,34 +43,80 @@ import numpy as np
 from msrjd.integration.spatial.causal_chambers import causal_chambers
 
 
-def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300):
+def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
+                           return_gaussian=False):
     """``MomFactor(w,q)`` for a BATCH of Schwinger-weight vectors ``w_batch``
     (shape ``P×E``) — vectorized Symanzik reduction.
 
     ``a`` (``E×L``), ``b`` (``E×n_ext``): the per-edge routing coefficients.
     Returns ``(P,)``.  ``L=0`` (tree) → ``exp(−D qᵀQq)``, ``Q=Σ_e w_e b_e b_eᵀ``;
     ``L≥1`` → ``(4πD)^{−Ld/2} U^{−d/2} exp(−D qᵀ Q_eff q)`` with ``U=det M``,
-    ``Q_eff=Q−Nᵀ M⁻¹ N`` (batched ``det``/``solve``)."""
+    ``Q_eff=Q−Nᵀ M⁻¹ N`` (batched ``det``/``solve``).
+
+    ``return_gaussian`` also returns ``(M, N, ok)`` (the loop-momentum Gaussian's
+    precision ``M=Σw_e a_e a_eᵀ`` and cross-term ``N=Σw_e a_e b_eᵀ``, with a
+    non-degenerate mask) so a derivative-vertex **form factor** can be averaged
+    over ``ℓ~N(−M⁻¹Nq, (2D M)⁻¹)`` — see :func:`_formfactor_average`.  ``M,N`` are
+    ``None`` for ``L=0``."""
     E, L = a.shape
     qv = np.atleast_1d(np.asarray(q_vec, dtype=float))
     Q = np.einsum('pe,ej,ek->pjk', w_batch, b, b)            # (P, n_ext, n_ext)
     if L == 0:
         quad = np.einsum('j,pjk,k->p', qv, Q, qv)
-        return np.exp(-D * quad)
+        mf = np.exp(-D * quad)
+        return (mf, None, None, None) if return_gaussian else mf
     M = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
     U = np.linalg.det(M)                                     # (P,)
     ok = U > u_floor
     out = np.zeros(w_batch.shape[0])
+    if np.any(ok):
+        Mok, Nok, Qok, Uok = M[ok], N[ok], Q[ok], U[ok]
+        MiN = np.linalg.solve(Mok, Nok)                      # (P', L, n_ext)
+        Qeff = Qok - np.einsum('plj,plk->pjk', Nok, MiN)
+        quad = np.einsum('j,pjk,k->p', qv, Qeff, qv)
+        pref = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
+            * np.power(Uok, -0.5 * spatial_dim)
+        out[ok] = pref * np.exp(-D * quad)
+    return (out, M, N, ok) if return_gaussian else out
+
+
+def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
+    """``⟨F(ℓ,q)⟩`` of a derivative-vertex form factor over the loop-momentum
+    Gaussian ``ℓ ~ N(ℓ̄, Σ)``, ``ℓ̄ = −M⁻¹N q``, ``Σ = (2D M)⁻¹``, by
+    Gauss–Hermite — **EXACT** for a polynomial ``F`` (a momentum-space derivative
+    vertex deposits exactly a polynomial: ``Lap→−|k|²``, ``∂_x→ik``).  The base
+    ``MomFactor`` already carries the Gaussian normalization + the ``1/(2π)^{Ld}``
+    measure, so the full derivative-vertex loop integral is ``MomFactor·⟨F⟩``
+    (validated to 1e-12 vs brute ``∫dℓ``).
+
+    **d=1 only** (``ℓ``, ``q`` scalar-per-loop); ``d≥2`` form factors (transverse
+    momentum moments) are a documented extension.  Returns ``(P,)``; ``1.0`` where
+    the loop is degenerate (``MomFactor`` is ``0`` there anyway).
+
+    ``formfactor(ell, q)``: ``ell`` is ``(P', G, L)`` loop momenta, ``q`` scalar →
+    ``(P', G)``.  Build it from the per-vertex response-leg routing + operator
+    form factor (:func:`diagram_form_factor`)."""
+    P, L = M.shape[0], M.shape[1]
+    out = np.ones(P)
     if not np.any(ok):
         return out
-    Mok, Nok, Qok, Uok = M[ok], N[ok], Q[ok], U[ok]
-    MiN = np.linalg.solve(Mok, Nok)                          # (P', L, n_ext)
-    Qeff = Qok - np.einsum('plj,plk->pjk', Nok, MiN)
-    quad = np.einsum('j,pjk,k->p', qv, Qeff, qv)
-    pref = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
-        * np.power(Uok, -0.5 * spatial_dim)
-    out[ok] = pref * np.exp(-D * quad)
+    qv = float(np.atleast_1d(np.asarray(q_vec, dtype=float))[0])
+    Mok, Nok = M[ok], N[ok]                                  # (P',L,L), (P',L,1)
+    MiN = np.linalg.solve(Mok, Nok)[:, :, 0]                 # (P',L)
+    lbar = -MiN * qv                                         # (P',L)
+    Sig = np.linalg.inv(Mok) / (2.0 * D)                     # (P',L,L)
+    Ch = np.linalg.cholesky(Sig)                             # (P',L,L)
+    xg, wg = np.polynomial.hermite_e.hermegauss(gh_order)    # weight e^{−x²/2}
+    Z = np.stack([g.ravel() for g in
+                  np.meshgrid(*([xg] * L), indexing='ij')], axis=-1)   # (G,L)
+    Wg = np.ones(xg.size ** L)
+    for wgrid in np.meshgrid(*([wg] * L), indexing='ij'):
+        Wg = Wg * wgrid.ravel()
+    Wg = Wg / (2.0 * math.pi) ** (0.5 * L)                   # (G,)
+    ell = lbar[:, None, :] + np.einsum('plm,gm->pgl', Ch, Z)  # (P',G,L)
+    Fv = np.asarray(formfactor(ell, qv), dtype=float)        # (P',G)
+    out[ok] = np.einsum('pg,g->p', Fv, Wg)
     return out
 
 
@@ -96,7 +142,7 @@ def _gl_on(lower, upper, n):
 
 
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
-                      W=None, n_t=22, n_s=24):
+                      W=None, n_t=22, n_s=24, formfactor=None, gh_order=6):
     """The kinematic (unit-amplitude, no couplings) full-diagram integral
     ``∫ ∏dt_v ∏dσ_e 𝟙(θ) e^{−μΣw} MomFactor`` by **causal-chamber quadrature**.
 
@@ -206,7 +252,21 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 w_batch[:, ei] = dt + sig[ci]
                 mu_resid += dt
                 ci += 1
-        momfac = _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim)
+        if formfactor is None:
+            momfac = _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim)
+        else:
+            # derivative-vertex form factor F(ℓ,q): the loop integral becomes
+            # MomFactor·⟨F⟩, ⟨F⟩ a Gauss–Hermite average (exact for the polynomial
+            # form factor) over the loop-momentum Gaussian.  d=1 only (v1).
+            if spatial_dim != 1:
+                raise NotImplementedError(
+                    'derivative-vertex form factors are implemented for d=1 '
+                    '(scalar loop momentum); d>=2 transverse moments are deferred.')
+            momfac, Mb, Nb, okb = _momentum_factor_batch(
+                a, b, w_batch, q_vec, D, spatial_dim, return_gaussian=True)
+            if Mb is not None:                               # L>=1 (loop diagram)
+                momfac = momfac * _formfactor_average(
+                    formfactor, Mb, Nb, q_vec, D, okb, gh_order)
         total += float(np.sum(wfull * np.exp(-mu * mu_resid) * momfac))
     return total
 

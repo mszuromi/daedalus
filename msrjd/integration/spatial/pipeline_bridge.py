@@ -448,6 +448,30 @@ def bubble_loop_form_factor(td, op_chain):
     return _sp.expand(F)
 
 
+def _formfactor_callable(td, op_chain):
+    """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
+    bubble form factor (:func:`bubble_loop_form_factor`).  ``ell`` is the loop
+    momentum ``(..., L)``, ``q`` the external scalar; returns ``(...,)``.
+
+    Lambdifies ``F(ℓ₀, q₀)`` (the route_momenta symbols, the SAME loop basis the
+    C-stack descriptor uses) onto the integrator's loop momentum, taking the real
+    part (Lap-based / Model-B form factors are real polynomials).  ``F=0`` (e.g.
+    a conserved-vertex tadpole, killed by the conservation law) → zeros."""
+    import sympy as _sp
+    F = _sp.expand(bubble_loop_form_factor(td, op_chain))
+    if F == 0:
+        return lambda ell, q: np.zeros(ell.shape[:-1])
+    ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
+    qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
+    fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
+    nl = len(ls)
+
+    def ff(ell, q):
+        args = [ell[..., i] for i in range(nl)] + [float(q)] * len(qs)
+        return np.real(fn(*args)) * np.ones(ell.shape[:-1])
+    return ff
+
+
 def _prefactor_is_live(pre, num_params, tol=1e-12):
     """True if the diagram's scalar prefactor is nonzero at the saddle/params.
     A topological bubble whose prefactor ``∝ φ*²`` (e.g. the cubic-from-quartic
@@ -512,11 +536,17 @@ def compute_spatial_correlator_generic(
     A0, B0, N0 = modes[0]
     A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
 
-    if getattr(ft._ns, '_operator_ir_vertex_chain', None):
+    # Derivative/∇ interaction vertices (operator-IR theories, e.g. Model-B
+    # conserved ∇²(φ²)) deposit a momentum-space FORM FACTOR F(ℓ,q) on the loop.
+    # The full-diagram integrator averages it over the loop-momentum Gaussian by
+    # Gauss–Hermite (exact for the polynomial F).  Extracted per diagram below;
+    # bubble-specific ⇒ 1-loop only (higher-loop form factors are future work).
+    op_chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
+    if op_chain and max_ell > 1:
         raise NotImplementedError(
-            'the full-diagram integrator currently supports SIMPLE (non-'
-            'derivative) interaction vertices; ∇/derivative and convolution '
-            'vertices (form factors) are future work.')
+            'derivative-vertex (form-factor) theories are supported at 1 loop '
+            '(max_ell=1) in v1 — the form-factor extraction is bubble-specific; '
+            'higher-loop derivative vertices are future work.')
 
     from msrjd.diagrams.type_assignment import build_field_index_map
     ring_var_names = list(ft._ns._ring_var_names)
@@ -539,10 +569,11 @@ def compute_spatial_correlator_generic(
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
                 continue                             # q-dependent prefactor (skip)
-            descrs.append((diagram_to_cstack(td), pv))
+            ff = _formfactor_callable(td, op_chain) if op_chain else None
+            descrs.append((diagram_to_cstack(td), pv, ff))
     if not descrs:
         raise SpatialPropagatorError('no loop diagrams were enumerated.')
-    live = [(dd, pv) for dd, pv in descrs if abs(pv) > 1e-14]
+    live = [(dd, pv, ff) for dd, pv, ff in descrs if abs(pv) > 1e-14]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
     if verbose:
@@ -566,10 +597,10 @@ def compute_spatial_correlator_generic(
 
     def _dC(q, tau):
         s = 0.0
-        for dd, pv in live:
+        for dd, pv, ff in live:
             nt, ns = _grid(dd)
             s += diagram_correlator(dd, pv, q, tau, A0, B0, spatial_dim=d,
-                                    n_t=nt, n_s=ns)
+                                    n_t=nt, n_s=ns, formfactor=ff)
         return s
     dC_q_tau = np.array([[_dC(float(q), float(tau)) for tau in taus]
                          for q in qg])                         # (n_q, n_tau)
