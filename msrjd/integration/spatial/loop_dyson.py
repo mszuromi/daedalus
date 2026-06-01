@@ -1,4 +1,8 @@
 """
+⚠ ORACLE-ONLY — not on the production path. Superseded by ``full_integrator.py``
+(see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
+independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
+
 msrjd.integration.spatial.loop_dyson
 ====================================
 1-loop Dyson assembly for the spatial bubble (Stage C.5) — turns the

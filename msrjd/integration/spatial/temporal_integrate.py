@@ -1,4 +1,8 @@
 """
+⚠ ORACLE-ONLY — not on the production path. Superseded by ``full_integrator.py``
+(see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
+independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
+
 msrjd.integration.spatial.temporal_integrate
 =============================================
 Backend C — **C2 (the causal time-simplex)**.  After the C0/C1 momentum

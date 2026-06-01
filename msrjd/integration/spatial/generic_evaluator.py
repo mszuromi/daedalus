@@ -1,4 +1,8 @@
 """
+⚠ ORACLE-ONLY — not on the production path. Superseded by ``full_integrator.py``
+(see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
+independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
+
 msrjd.integration.spatial.generic_evaluator
 ============================================
 Backend C — **Phase 2 of the generic spatial loop pipeline**

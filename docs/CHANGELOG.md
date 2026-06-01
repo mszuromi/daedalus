@@ -4,6 +4,48 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-05-31 — Spatial full-diagram integrator + φ⁶ generalization + repo organization [branch `spatial-extension`]
+
+### Spatial loop pipeline — one genuine integral, no shortcuts
+
+* Replaced the bespoke bubble / tadpole / Dyson spatial paths with **one**
+  integrator, `msrjd/integration/spatial/full_integrator.py`.  Every enumerated
+  diagram (tree, tadpole, bubble, sunset; any `k`, `ℓ`, `d`) is the *same* integral:
+  enumerate → Symanzik `∫dᵈℓ` → causal-chamber time integral → retarded+advanced sum,
+  weighted by the enumeration `M(Γ)` (× the universal `2^−n_C`).  No Dyson
+  resummation, no mass-shift, no bubble-vs-tadpole branch.
+* Loop order is wired end-to-end: `compute_cumulants(max_ell=ℓ)` supports tree (0),
+  1-loop (1) and 2-loop (2) for the `k=2` correlator; the spatial branch sums every
+  live diagram at every `1 ≤ ell ≤ max_ell`.  `verbose=True` prints a staged
+  `[1/7]…[7/7]` trace parallel to the temporal pipeline.
+* Validated: tree `== C₀` (machine precision); `d=1`/`d=2` Keldysh sunset vs brute
+  `∫dℓ₁dℓ₂` (1e-6…2.5e-4); Allen-Cahn φ⁴ `d=1` ladder vs SPDE sim
+  (0.5 → 0.4625 → 0.4707 vs 0.469).
+
+### φ⁶ generalization test (model-independence on a new vertex)
+
+* New `theories/allen_cahn_quintic_1d_subcritical_infinite.theory.py` (Allen-Cahn +
+  `−γφ⁵`), `models/spatial_field_phi6_1d_sim.py`, and a notebook.  The degree-6
+  `φ̃φ⁵` vertex is handled with **zero special-casing**: γ is correctly absent at
+  tree/1-loop (the vertex needs `taylor_order = k + 2·max_ell = 6`, i.e. `ℓ=2`) and
+  enters at 2-loop as the double-tadpole.  At λ=0.05, γ=0.005 the isolated γ
+  contribution is −0.0047, moving the 2-loop variance 3× closer to the sim.
+
+### Documentation & repository organization
+
+* `docs/spatial_pipeline.md` is the new **authoritative current-state reference**.
+  The 9 superseded spatial planning/design/audit docs + the spike scripts moved to
+  `docs/archive/spatial/` (with a README).
+* `notebooks/` reorganized into `legacy/` (11 pre-pipeline), `temporal/` (19 OU/
+  Hawkes/neural) and `spatial/` (6); UI tooling + `saved_*/` stay at root.  Each
+  moved notebook gets a depth-robust repo-root cell so it runs from the new
+  subdirectory.  `notebooks/README.md` catalogs everything.
+* The four oracle-only spatial modules (`loop_dyson`, `generic_evaluator`,
+  `loop_parametric`, `temporal_integrate`) are banner-annotated as **not on the
+  production path**.  Removed accidental dict-repr junk dirs; gitignored `Literature/`.
+
+---
+
 ## 2026-05-28 — Spatial field theories v1 (Phases 0-5 tree-level) [branch `spatial-extension`]
 
 First-class support for continuous spatial fields `φ(x, t)` with a
