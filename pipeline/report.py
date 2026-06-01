@@ -360,7 +360,8 @@ def generate_report(
     max_ell: int = 0,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
-    taylor_order: int = None,    # auto: max(k + 2·max_ell, 4)
+    spatial_grid=None,
+    taylor_order: int = None,    # auto: max(k + 2·max_ell, 2)
     use_cache: bool = True,
     verbose: bool = True,
     result: dict = None,
@@ -382,10 +383,22 @@ def generate_report(
             external_fields = external_fields,
             tau_max         = tau_max,
             tau_step        = tau_step,
+            spatial_grid    = spatial_grid,
             taylor_order    = taylor_order,
             use_cache       = use_cache,
             verbose         = verbose,
         )
+
+    # Spatial models compute C(x,τ) fine, but the multi-page PDF layout below is
+    # temporal-specific (per-diagram Phase-J pages keyed on result['diagrams']).
+    # Return the computed correlator without a PDF rather than KeyError'ing.
+    if result.get('config', {}).get('spatial') or 'diagrams' not in result:
+        if verbose:
+            print('[report] spatial model: C(x,τ) computed and returned in the '
+                  'result dict; the multi-page PDF report is temporal-only, so no '
+                  'PDF was written.  Render spatial results in a notebook '
+                  '(see notebooks/spatial/).')
+        return result
 
     if verbose:
         print(f'[report] writing {output_pdf} '

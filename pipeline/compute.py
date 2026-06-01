@@ -364,14 +364,19 @@ def compute_cumulants(
     num_params = mf['num_params']
     _phase_time('mean_field', _t_phase)
 
-    # ── 3.5 Spatial short-circuit (v1) ────────────────────────────
+    # ── 3.5 Spatial short-circuit ─────────────────────────────────
     # A spatial model's propagator carries the inert ``Laplacian``
     # symbol, which the (ω) pole-finder and time-domain Phase J can't
-    # consume.  Instead, for the tree-level (Gaussian) 2-point
-    # function we evaluate the real-space correlator C(x, τ) directly
-    # from the heat-kernel building blocks (closed form, Rescue A).
-    # Loops / higher cumulants in (t, x) are the remaining Phase-5
-    # work (docs/spatial_implementation_plan.md §5).
+    # consume.  Spatial models route to the full-diagram momentum
+    # integrator instead (Symanzik ∫dᵈℓ → causal chambers → q→x FT),
+    # which returns the real-space correlator C(x, τ).  See
+    # docs/spatial_pipeline.md.  Requires spatial_grid (the x points).
+    if spatial_grid is not None and not model.get('spatial'):
+        import warnings as _warnings
+        _warnings.warn(
+            'spatial_grid was provided but the model is not spatial (no field '
+            'declares spatial_dim>=1); it is ignored and the temporal C(τ) is '
+            'returned.', stacklevel=2)
     if model.get('spatial') and spatial_grid is not None:
         import numpy as _np
         from msrjd.integration.spatial.pipeline_bridge import (
@@ -515,6 +520,20 @@ def compute_cumulants(
                 'model_name':      model.get('name', '<unnamed>'),
             },
         }
+
+    # A spatial model reaching this point means spatial_grid was NOT provided
+    # (the spatial branch above returns whenever model.spatial AND spatial_grid).
+    # The temporal ω-pole-finder / Phase-J path below cannot consume the inert
+    # Laplacian symbol carried in G_ft — it would die with a cryptic Sage
+    # TypeError deep in compute_poles_and_residues.  Fail clearly instead.
+    if model.get('spatial'):
+        raise ValueError(
+            f"model {model.get('name', '<unnamed>')!r} is spatial (a field "
+            f"declares spatial_dim>=1): compute_cumulants requires spatial_grid="
+            f"... to route to the spatial integrator.  The temporal pole-finder/"
+            f"Phase-J path cannot consume the Laplacian operator.  Pass "
+            f"spatial_grid (e.g. the theory's METADATA['spatial_grid'], or a "
+            f"numpy array like np.linspace(0.0, 6.0, 25)).")
 
     # ── 4. Numerical poles + residues (fills prop in place) ───────
     if verbose:
