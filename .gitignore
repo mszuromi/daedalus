@@ -50,3 +50,6 @@ docs/figures/test_runs/
 # Notebook artifact dirs accidentally named after Python dict reprs
 # (e.g. ``{Em1: 1.0, …}/``).  Regenerable.
 {*}/
+
+# Reference papers (local only — copyrighted, not redistributed in the repo)
+Literature/
