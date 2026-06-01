@@ -1523,6 +1523,13 @@ class TheoryUI:
                 names.add(nm)          # legal in ``for i in <pop>``
                 names.add(f'pop_{nm}')  # legal too
         names.add('pop')               # legacy alias for the only-pop case
+        # Spatial theories use the inert ``Laplacian`` operator multiplicatively
+        # in the action (like ``Dt``, e.g. ``D*Laplacian*phi``); accept it so the
+        # readiness sidebar does not flag a false "undeclared name: Laplacian" on
+        # every correct spatial theory.
+        if any(int(f.get('spatial_dim') or 0) > 0
+               for f in (spec.get('physical_fields') or [])):
+            names.add('Laplacian')
         return names, pop_set
 
     def _validate_action(self, action_text: str,
@@ -1751,6 +1758,19 @@ class TheoryUI:
                         {'k', 'Laplacian', 'x', 'y', 'z'} else '')
                      + " — rename it"
                      + (f" (e.g. '{_hint[nm]}')" if nm in _hint else ''))
+
+        # ── Spatial scope caps (mirror compute.py's spatial guards) ──
+        # Spatial v1 supports only the k=2 two-point correlator and max_ell≤2;
+        # surface it here so the user doesn't hit a run-time NotImplementedError.
+        if _is_spatial:
+            if int(self._w_k_default.value) != 2:
+                _add(10, 'error',
+                     "spatial theories support k = 2 (two-point) only in v1 — "
+                     "set k_default = 2 on the '10. Defaults' tab")
+            if int(self._w_ell_default.value) > 2:
+                _add(10, 'error',
+                     "spatial theories support max_ell ≤ 2 in v1 — "
+                     "lower ell_default on the '10. Defaults' tab")
 
         # ── Tab 4 — Parameters: stale population references ──────────
         for p in spec.get('parameters') or []:
