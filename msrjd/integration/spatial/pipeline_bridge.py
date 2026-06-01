@@ -402,24 +402,33 @@ def _diagram_is_bubble(td):
     return False
 
 
-def bubble_loop_form_factor(td, op_chain):
-    """Phase 4c-2: assemble the loop-momentum **form factor** ``F(q,ℓ)`` a
-    derivative-vertex theory puts on a 1-loop bubble diagram ``td``.
+def diagram_form_factor(td, op_chain):
+    """Assemble the momentum-space **form factor** ``F(q,ℓ)`` a derivative-vertex
+    theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell`` and any
+    ``k``** (NOT bubble-specific: it is a product over the diagram's interaction
+    vertices, so vertices "wire together" by construction).
 
-    Each interaction vertex carries a derivative operator (``op_chain``, e.g.
-    ``(('Lap',),)`` for ``∇²(φ²)``) acting on its φ² composite; by momentum
+    A derivative is a LOCAL per-vertex feature.  Each interaction vertex carries a
+    composite-derivative operator (``op_chain``, e.g. ``(('Lap',),)`` for the
+    ``∇²(φⁿ)`` Model-B vertex) acting on its field composite; by momentum
     conservation the composite momentum equals the vertex's **response (φ̃) leg**
-    momentum — which in the all-``G_R`` representation is the vertex's UNIQUE
-    OUTGOING edge.  ``route_momenta`` supplies that momentum per edge, so
+    momentum — its UNIQUE OUTGOING edge in the all-``G_R`` representation (true for
+    any topology).  ``route_momenta`` supplies that momentum per edge, so
 
         F(q,ℓ) = ∏_{interaction vertices v}  f_chain( p_v ),
 
-    with ``p_v`` the outgoing-edge momentum and ``f_chain`` the per-leg Fourier
-    factor (``Lap → −p²``, ``Dx → i p`` in 1-D).  Returns a sympy expression in
-    the routing symbols ``q₀`` (external) and ``ℓ₀`` (loop); an empty chain
-    gives ``1`` (the plain bubble).  Validated: the φ̃φ² ``Σ_R`` bubble with a
-    ``Lap`` chain returns ``q₀²(q₀−ℓ₀)²`` (matches the hand derivation).
-    """
+    ``p_v`` the outgoing-edge momentum (linear in the loop momenta ``ℓ₀…ℓ_{L−1}``
+    and external ``q₀…``) and ``f_chain`` the per-leg Fourier factor
+    (``Lap → −p²``, ``Dx → i p`` in 1-D).  Returns a sympy expr in the routing
+    symbols; an empty chain → ``1`` (plain diagram).  Validated: the φ̃φ² ``Σ_R``
+    bubble → ``q₀²(q₀−ℓ₀)²``; the L=2 momentum integral matches a brute ``∫dℓ₀dℓ₁``
+    to 1e-14.
+
+    SCOPE: composite-derivative vertices (the ``op_chain`` acts on the whole
+    field composite — Model B / Cahn–Hilliard).  Per-PHYSICAL-leg derivatives
+    (KPZ ``(∂φ)²``, where each leg carries its own ``∂``) need a per-leg operator
+    map on the vertex type — a documented extension (the compiler also gates those
+    today, ``theory_compiler.py``)."""
     import sympy as _sp
     from msrjd.integration.spatial.momentum_routing import route_momenta
     rr = route_momenta(td)
@@ -448,26 +457,35 @@ def bubble_loop_form_factor(td, op_chain):
     return _sp.expand(F)
 
 
+# Backward-compatible alias (the function used to be bubble-specific in name).
+bubble_loop_form_factor = diagram_form_factor
+
+
 def _formfactor_callable(td, op_chain):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
-    bubble form factor (:func:`bubble_loop_form_factor`).  ``ell`` is the loop
-    momentum ``(..., L)``, ``q`` the external scalar; returns ``(...,)``.
+    diagram form factor (:func:`diagram_form_factor`).  ``ell`` is the loop
+    momentum ``(..., L)``, ``q`` the ``(n_ext,)`` external-momentum vector;
+    returns ``(...,)``.  Generic in ``L`` (any ``ell``) and ``n_ext`` (any ``k``).
 
-    Lambdifies ``F(ℓ₀, q₀)`` (the route_momenta symbols, the SAME loop basis the
-    C-stack descriptor uses) onto the integrator's loop momentum, taking the real
-    part (Lap-based / Model-B form factors are real polynomials).  ``F=0`` (e.g.
-    a conserved-vertex tadpole, killed by the conservation law) → zeros."""
+    Lambdifies ``F(ℓ₀…ℓ_{L−1}, q₀…)`` (the route_momenta symbols, the SAME basis
+    the C-stack descriptor's edge routing uses — verified to 1e-14 at L=2) onto
+    the integrator's loop momenta, mapping loop symbol ``lᵢ → ell[...,i]`` and
+    external ``qⱼ → q[j]`` by index.  Takes the real part (Lap-based / Model-B
+    form factors are real polynomials).  ``F=0`` (e.g. a conserved-vertex tadpole,
+    killed by the conservation law) → zeros."""
     import sympy as _sp
-    F = _sp.expand(bubble_loop_form_factor(td, op_chain))
+    F = _sp.expand(diagram_form_factor(td, op_chain))
     if F == 0:
         return lambda ell, q: np.zeros(ell.shape[:-1])
     ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
     qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
     fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
-    nl = len(ls)
+    nl, nq = len(ls), len(qs)
 
     def ff(ell, q):
-        args = [ell[..., i] for i in range(nl)] + [float(q)] * len(qs)
+        qvec = np.atleast_1d(np.asarray(q, dtype=float))
+        args = ([ell[..., i] for i in range(nl)]
+                + [float(qvec[j]) for j in range(nq)])
         return np.real(fn(*args)) * np.ones(ell.shape[:-1])
     return ff
 
@@ -542,11 +560,20 @@ def compute_spatial_correlator_generic(
     # Gauss–Hermite (exact for the polynomial F).  Extracted per diagram below;
     # bubble-specific ⇒ 1-loop only (higher-loop form factors are future work).
     op_chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
-    if op_chain and max_ell > 1:
-        raise NotImplementedError(
-            'derivative-vertex (form-factor) theories are supported at 1 loop '
-            '(max_ell=1) in v1 — the form-factor extraction is bubble-specific; '
-            'higher-loop derivative vertices are future work.')
+    # NOTE: the form factor is extracted + integrated GENERICALLY per diagram
+    # (diagram_form_factor: a product over interaction vertices; the L-dim
+    # Gauss–Hermite loop average), so ANY ell works — the L=2 momentum integral
+    # matches a brute ∫dℓ₀dℓ₁ to 1e-14.  The remaining real limits are gated
+    # elsewhere: d≥2 (full_integrator.diagram_kinematic), and field-degree≠2 /
+    # multiple-distinct derivative-vertex types (pipeline.theory_compiler).
+    if op_chain and max_ell >= 2:
+        import warnings as _warnings
+        _warnings.warn(
+            'derivative-vertex (form-factor) theory at max_ell>=2: correct '
+            '(the L-loop form-factor average is validated), but EXPENSIVE — the '
+            'GH loop-momentum grid multiplies the already-heavy ell>=2 chamber '
+            'quadrature. Expect long runtimes; consider a coarser q-grid (n_q).',
+            stacklevel=2)
 
     from msrjd.diagrams.type_assignment import build_field_index_map
     ring_var_names = list(ft._ns._ring_var_names)

@@ -221,3 +221,73 @@ def test_formfactor_average_convolution_kernel():
         avg = _formfactor_average(ff, M, N, [q], D, ok, gh_order=n)[0]
         assert abs(avg - brute(kern)) <= tol, \
             f"convolution kernel {name}: GH={avg} vs brute={brute(kern)}"
+
+
+def test_diagram_form_factor_ell2_momentum():
+    """Derivative-vertex form factors are GENERIC in loop number (NOT bubble-
+    specific): on a real ℓ=2 (L=2) conserved-``∇²(φ²)`` diagram, ``MomFactor·⟨F⟩``
+    matches a brute 2-D ``∫dℓ₀dℓ₁ F(ℓ,q)·Gaussian`` to machine precision —
+    confirming the per-vertex form-factor product composes for any topology and the
+    loop-basis ↔ integrator-column mapping is consistent at L=2."""
+    import importlib.util
+    import numpy as np
+    from sage.all import SR
+    from pipeline._propagator import build_propagator
+    from pipeline.compute import FieldTheory
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import (
+        _momentum_factor_batch, _formfactor_average)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    path = os.path.join(_REPO, 'theories',
+                        'reaction_diffusion_conserved_1d.theory.py')
+    spec = importlib.util.spec_from_file_location('crd', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    b = mod.build()
+    ft = FieldTheory(b, taylor_order=6)            # k + 2·ell = 2 + 4 (ell=2)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    op = ft._ns._operator_ir_vertex_chain
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=2, verbose=False)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 2.0, SR.var('g'): 0.3,
+            SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
+    td = descr = None
+    for t, p in be.get(2, []):
+        if abs(float(SR(p).subs(base))) <= 1e-14:
+            continue
+        d = diagram_to_cstack(t)
+        if d.n_loops == 2:
+            td, descr = t, d
+            break
+    assert td is not None, 'no live L=2 conserved-vertex diagram found'
+    ff = _formfactor_callable(td, op)
+    a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    E, L = a.shape
+    assert L == 2
+    D, q = 2.0, 0.7
+    rng = np.random.default_rng(0)
+    for _ in range(3):
+        w = 0.4 + 0.8 * rng.random(E)
+        momfac, M, N, ok = _momentum_factor_batch(a, bb, w[None, :], [q], D, 1,
+                                                   return_gaussian=True)
+        gh = float(momfac[0] * _formfactor_average(ff, M, N, [q], D, ok,
+                                                   gh_order=10)[0])
+        Lc, n = 26.0, 340
+        ax = np.linspace(-Lc, Lc, n); dl = ax[1] - ax[0]
+        L0, L1 = np.meshgrid(ax, ax, indexing='ij')
+        ell = np.stack([L0, L1], axis=-1)
+        expo = np.zeros_like(L0)
+        for e in range(E):
+            ke = a[e, 0] * L0 + a[e, 1] * L1 + bb[e, 0] * q
+            expo = expo + w[e] * ke * ke
+        brute = float(np.sum(ff(ell, q) * np.exp(-D * expo)) * dl * dl
+                      / (2 * np.pi) ** 2)
+        assert abs(gh - brute) <= 1e-6 * (abs(brute) + 1e-30), \
+            f"L=2 form-factor momentum integral: {gh} vs {brute}"

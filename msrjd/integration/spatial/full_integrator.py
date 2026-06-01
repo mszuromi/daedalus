@@ -90,21 +90,23 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
     measure, so the full derivative-vertex loop integral is ``MomFactor·⟨F⟩``
     (validated to 1e-12 vs brute ``∫dℓ``).
 
-    **d=1 only** (``ℓ``, ``q`` scalar-per-loop); ``d≥2`` form factors (transverse
-    momentum moments) are a documented extension.  Returns ``(P,)``; ``1.0`` where
-    the loop is degenerate (``MomFactor`` is ``0`` there anyway).
+    Generic in the loop number ``L`` (the GH grid is ``L``-dimensional) and the
+    number of external momenta ``n_ext`` (``ℓ̄ = −M⁻¹N·q`` uses the full external
+    vector), so it composes for ANY topology / ``ell`` / ``k``.  **d=1** (each
+    ``ℓ``, ``q`` component is a scalar-per-loop / per-external); ``d≥2`` form
+    factors (transverse momentum moments) are a documented extension.  Returns
+    ``(P,)``; ``1.0`` where the loop is degenerate (``MomFactor`` is ``0`` there).
 
-    ``formfactor(ell, q)``: ``ell`` is ``(P', G, L)`` loop momenta, ``q`` scalar →
-    ``(P', G)``.  Build it from the per-vertex response-leg routing + operator
-    form factor (:func:`diagram_form_factor`)."""
+    ``formfactor(ell, q)``: ``ell`` is ``(P', G, L)`` loop momenta, ``q`` the
+    ``(n_ext,)`` external-momentum vector → ``(P', G)``.  Build it from the
+    per-vertex leg routing + operator form factor (:func:`diagram_form_factor`)."""
     P, L = M.shape[0], M.shape[1]
     out = np.ones(P)
     if not np.any(ok):
         return out
-    qv = float(np.atleast_1d(np.asarray(q_vec, dtype=float))[0])
-    Mok, Nok = M[ok], N[ok]                                  # (P',L,L), (P',L,1)
-    MiN = np.linalg.solve(Mok, Nok)[:, :, 0]                 # (P',L)
-    lbar = -MiN * qv                                         # (P',L)
+    qv = np.atleast_1d(np.asarray(q_vec, dtype=float))       # (n_ext,)
+    Mok, Nok = M[ok], N[ok]                                  # (P',L,L), (P',L,n_ext)
+    lbar = -np.einsum('plj,j->pl', np.linalg.solve(Mok, Nok), qv)   # (P',L)
     Sig = np.linalg.inv(Mok) / (2.0 * D)                     # (P',L,L)
     Ch = np.linalg.cholesky(Sig)                             # (P',L,L)
     xg, wg = np.polynomial.hermite_e.hermegauss(gh_order)    # weight e^{−x²/2}

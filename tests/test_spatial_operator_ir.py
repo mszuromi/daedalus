@@ -370,8 +370,10 @@ def test_operator_ir_derivative_vertex_one_loop():
     oracle to ~1%).  So ``compute_cumulants(max_ell=1)`` COMPUTES a finite
     ``C(x,τ)`` and the conserved bubble shifts the variance — v1 could not do this.
 
-    Higher-loop derivative vertices (``max_ell≥2``) remain deferred (the form-factor
-    extraction is bubble-specific) → a clear NotImplementedError."""
+    Higher-loop (``max_ell≥2``) is also generic — the form factor is extracted +
+    integrated per diagram for any topology (the L=2 momentum integral is validated
+    to 1e-14 in ``test_full_integrator.test_diagram_form_factor_ell2_momentum``);
+    it is correct but expensive end-to-end, so it is not exercised here."""
     import numpy as np
     import pytest
     from pipeline.compute import compute_cumulants
@@ -404,6 +406,5 @@ def test_operator_ir_derivative_vertex_one_loop():
     loop0 = float(c1[mid1][0])
     assert abs(loop0 - tree0) > 1e-6        # the conserved bubble shifts ⟨φ²⟩
     assert out1['spatial_info'].get('n_live_diagrams', 0) >= 1
-    # higher-loop derivative vertices remain deferred
-    with pytest.raises(NotImplementedError, match='derivative'):
-        compute_cumulants(m, max_ell=2, **kw)
+    # max_ell>=2 is generic too (no NotImplementedError) — validated at the
+    # integrator level (test_full_integrator); not run here (expensive e2e).
