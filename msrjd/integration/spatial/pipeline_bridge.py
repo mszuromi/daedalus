@@ -175,7 +175,7 @@ def _modes_C_q_tau(modes, qval, taus):
 
 # ── 2. run the SHARED pipeline at Laplacian = -q² ─────────────────
 def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
-                           verbose=False):
+                           verbose=False, header='[spatial pipeline]'):
     """Enumerate + classify the (q-independent) diagram topology ONCE.
 
     Returns ``{ell: [(typed_diagram, scalar_prefactor), ...]}`` for
@@ -183,6 +183,10 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     ``pipeline/compute.py`` uses (the SAME ``enumerate_unique_diagrams`` /
     ``classify_coefficient_factors`` the time-only path runs), so this is the
     real shared diagram machinery — lazy-imported to avoid any import cycle.
+
+    ``header`` is the top verbose line's prefix (``None`` suppresses it so a
+    caller can print its own staged ``[N/7]`` header); the per-``ell`` detail
+    lines always print when ``verbose``.
     """
     from msrjd.core.vertices import extract_vertex_types, extract_source_types
     from msrjd.diagrams.type_assignment import build_field_index_map
@@ -195,11 +199,12 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     n_tilde = ft._n_tilde
     resp_idx, phys_idx = build_field_index_map(ring_var_names, n_tilde)
 
-    if verbose:
-        print(f'[spatial pipeline] FieldTheory taylor_order='
-              f'{getattr(ft, "taylor_order", "?")}; vertices={len(vtypes)}, '
-              f'sources={len(stypes)} — enumerating diagrams '
-              f'(k={k}, max_ell={max_ell}) via enumerate_unique_diagrams...')
+    if verbose and header is not None:
+        print(f'{header} enumerate prediagrams + typed diagrams '
+              f'(k={k}, max_ell={max_ell}) — the SAME enumerate_unique_diagrams '
+              f'the temporal path runs [taylor_order='
+              f'{getattr(ft, "taylor_order", "?")}, vertices={len(vtypes)}, '
+              f'sources={len(stypes)}]...')
     unique_by_ell, _, _ = enumerate_unique_diagrams(
         ft, model, k=k, max_ell=max_ell, external_fields=external_fields,
         G_ft=prop['G_ft'], resp_idx=resp_idx, phys_idx=phys_idx,
@@ -215,8 +220,8 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     if verbose:
         for ell in sorted(by_ell):
             prefs = [str(p) for _, p in by_ell[ell]]
-            print(f'[spatial pipeline]   ell={ell}: {len(by_ell[ell])} typed '
-                  f'diagram(s); M(Γ)·prefactors = {prefs}')
+            print(f'        ell={ell}: {len(by_ell[ell])} typed diagram(s); '
+                  f'M(Γ)·prefactor(s) = {prefs}')
     return by_ell
 
 
@@ -268,7 +273,8 @@ def certify_modes(modes, prop, records, external_fields, base_np_sr,
 def compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, certify=True, q_samples=(0.0, 0.7, 1.5),
-        tau_samples=(0.5, 1.0), certify_tol=1e-8, q_cut=40.0, n_q=2000):
+        tau_samples=(0.5, 1.0), certify_tol=1e-8, q_cut=40.0, n_q=2000,
+        enum_verbose=None, stage_headers=False):
     """Drop-in alternative to :func:`compute_spatial_correlator_tree` that
     ROUTES THROUGH THE SHARED PIPELINE.
 
@@ -305,26 +311,29 @@ def compute_spatial_correlator_via_pipeline(
     modes = diagonal_modes_from_propagator(prop, ft, num_params, fi)
     bc_mode, L = _bc_from_prop(prop, nps_sr)
 
+    if verbose and stage_headers:
+        print('[5/7] (spatial) Read per-mode (A,B,N) from the propagator '
+              '+ certify vs the shared-pipeline C(q,τ)...')
     if verbose:
         A, B, N = modes[0]
-        print(f'      bridge: field#{fi} modes={[(complex(a), b, n) for a, b, n in modes]} '
+        print(f'      modes: field#{fi}={[(complex(a), b, n) for a, b, n in modes]} '
               f'bc={bc_mode}' + (f' L={L}' if L else ''))
 
     certify_max_rel = None
     certified = False
     if certify:
+        ev = verbose if enum_verbose is None else enum_verbose
         records = build_pipeline_records(
-            ft, model, prop, ext_int, verbose=verbose).get(0, [])
+            ft, model, prop, ext_int, verbose=ev).get(0, [])
         if verbose:
-            print(f'[spatial pipeline] Phase J (compute_correction_td) at '
-                  f'q={list(q_samples)} → certifying tree modes vs the '
-                  f'diagram C(q,τ)...')
+            print(f'      certify Phase J (compute_correction_td) at '
+                  f'q={list(q_samples)} → tree modes vs diagram C(q,τ)...')
         certify_max_rel = certify_modes(
             modes, prop, records, ext_int, base_np_sr,
             q_samples, tau_samples)
         certified = certify_max_rel <= certify_tol
         if verbose:
-            print(f'      bridge: pipeline certification max rel = '
+            print(f'      certify: max rel = '
                   f'{certify_max_rel:.2e} (tol {certify_tol:.0e}) '
                   f'-> {"PASS" if certified else "FAIL"}')
         if not certified:
@@ -334,6 +343,10 @@ def compute_spatial_correlator_via_pipeline(
                 f'(> tol {certify_tol:.0e}).  The (A,B,N) extraction or the '
                 f'diagram routing is wrong for this theory.')
 
+    if verbose and stage_headers:
+        print('[6/7] (spatial) Tree level — no loop diagrams to enumerate.')
+        print('[7/7] (spatial) Analytic q→x FT: Σ_modes free_two_point(A,B,N; x,τ) '
+              f'on {len(tau_grid)} τ × {len(spatial_grid)} x points...')
     d = int(prop.get('spatial_dim', 1))
     C = np.zeros((len(tau_grid), len(spatial_grid)), dtype=np.complex128)
     if d == 1:
@@ -485,9 +498,12 @@ def compute_spatial_correlator_generic(
     from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
     from msrjd.integration.spatial.full_integrator import diagram_correlator
 
+    if verbose:
+        print('[5/7] (spatial) Certify tree modes (A,B,N) vs the shared-pipeline '
+              'C(q,τ) at sample momenta (mode-structure check)...')
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=verbose, certify=True)
+        verbose=verbose, certify=True, enum_verbose=False, stage_headers=False)
     modes = tree_info['modes']
     if len(modes) != 1:
         raise NotImplementedError(
@@ -509,8 +525,11 @@ def compute_spatial_correlator_generic(
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
+    if verbose:
+        print(f'[6/7] (spatial) Enumerate prediagrams + typed diagrams → classify '
+              f'coefficient factors → map to C-stack descriptors (max_ell={max_ell})...')
     by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
-                                    verbose=verbose)
+                                    verbose=verbose, header=None)
     # map every enumerated diagram (all loop orders 1..max_ell) → (descriptor,
     # M(Γ)·prefactor value at saddle).  No filter, no shortcut.
     descrs = []
@@ -526,15 +545,19 @@ def compute_spatial_correlator_generic(
     live = [(dd, pv) for dd, pv in descrs if abs(pv) > 1e-14]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
+    if verbose:
+        print(f'        {len(descrs)} typed diagram(s) → {len(live)} live at the '
+              f'saddle ({len(descrs) - len(live)} zero-prefactor dropped)')
     # adaptive quadrature grid: coarser for the bigger (higher-n_C) diagrams so
     # ell=2 stays tractable (validated: n_t=16,n_s=14 is <0.1% on the sunset).
     def _grid(dd):
         nC = sum(1 for e in dd.edges if e.kind == 'C')
         return (22, 24) if nC <= 2 else (16, 14)
     if verbose:
-        print(f'[spatial pipeline] FULL-DIAGRAM (max_ell={max_ell}): '
-              f'{len(descrs)} diagram(s), {len(live)} live; integrating Γ(q,τ) '
-              f'over the q-grid (A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})...')
+        print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·M(Γ) '
+              f'∫dᵈℓ(Symanzik) ∫dt(causal chambers) → ret+adv → q→x FT '
+              f'[{len(live)} live diagram(s), q-grid n_q={n_q}, '
+              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})]...')
 
     d = int(prop.get('spatial_dim', 1))
     taus = np.asarray(tau_grid, dtype=float)

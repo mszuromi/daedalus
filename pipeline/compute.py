@@ -401,8 +401,11 @@ def compute_cumulants(
         tau_grid = _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
         spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
         if verbose:
-            print(f'[spatial] {"1-loop" if max_ell >= 1 else "tree-level"} '
-                  f'C(x, τ): {len(tau_grid)} τ × '
+            print('[4/7] (spatial) Momentum stays symbolic (Laplacian) — skip the '
+                  'ω pole-finder + time-domain Phase J; route to the full-diagram '
+                  'integrator.')
+            print(f'[spatial] {"loop" if max_ell >= 1 else "tree-level"} '
+                  f'C(x, τ): max_ell={max_ell}, {len(tau_grid)} τ × '
                   f'{len(spatial_grid_arr)} x points...')
         # Route through the SHARED pipeline (Stage B/C): the bridge runs the
         # real diagram pipeline at sample momenta to CERTIFY the per-mode
@@ -422,10 +425,10 @@ def compute_cumulants(
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
                 ft, model, prop, num_params, external_fields,
-                tau_grid, spatial_grid_arr, verbose=verbose,
+                tau_grid, spatial_grid_arr, verbose=verbose, stage_headers=True,
             )
         if verbose:
-            print(f'[spatial] pipeline-certified='
+            print(f'[spatial] done — C(x,τ) ready; tree-mode certified='
                   f'{sp_info.get("pipeline_certified")} '
                   f'(max rel {sp_info.get("certify_max_rel"):.1e})')
         # x=0 slice as the conventional C_tau (matches the time-only
