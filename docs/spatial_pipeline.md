@@ -97,7 +97,7 @@ headers.
 | correlator order `k` | `k = 2` (two-point) | `k > 2` (needs the multi-point external FT) |
 | loop order `ℓ` | `0, 1, 2` (gated; higher works by construction but is costly) | automatic `ℓ ≥ 3` cost control |
 | dimension `d` | general (`d = 1` validated end-to-end; `d = 2` via brute-force oracle) | `d ≥ 2` tadpole UV-cutoff polish |
-| vertices | simple polynomial `φⁿ` (any degree); **derivative/∇ vertices at 1-loop** (Model-B `∇²(φⁿ)`, via momentum form factors — see below) | KPZ-type `(∂φ)²` (derivative on *physical* legs), ≥2-loop form factors, convolution/non-local vertices |
+| vertices | simple polynomial `φⁿ` (any degree); **composite-derivative/∇ vertices `∇²(φⁿ)`** (Model B), generic in `ℓ` and `k` via momentum form factors — see below | KPZ-type `(∂φ)²` (derivative on *physical* legs), field-degree≠2 (`∇²φ³`) / multiple distinct deriv-vertex types (compiler-gated), convolution/non-local vertices |
 | initial condition | stationary | transient ICs |
 
 ### Derivative (∇) vertices — momentum-space form factors
@@ -108,12 +108,28 @@ the vertex's leg momentum (from `route_momenta`). The loop integral then factori
 as `MomFactor·⟨F⟩`, and because `F` is a *polynomial*, the Gaussian average `⟨F⟩`
 over `ℓ ~ N(−M⁻¹Nq, (2DM)⁻¹)` is computed **exactly by Gauss–Hermite** quadrature —
 general in the form factor, no per-theory hardcoding (`full_integrator._formfactor_average`).
-Authored with `.operator_ir()`; the per-diagram `F` is extracted by
-`pipeline_bridge._formfactor_callable` and applied automatically. The conservation
-law falls out: the `∇²(φ²)` tadpole gets `F=0` and the bubble `F∝q²` ⇒ `Σ(q→0)→0`.
-**Scope:** 1-loop, `d=1` (composite/response-leg derivatives, i.e. Model B /
-Cahn–Hilliard); KPZ `(∂φ)²` needs a per-physical-leg extraction, and `d≥2` needs the
-transverse-momentum moments — both deferred.
+This is a **local, per-vertex feature, not bubble-specific**: a diagram's form
+factor is the product over its interaction vertices,
+`F = ∏_v 𝔣_chain(p_v)` (`p_v` = vertex `v`'s response-leg momentum from
+`route_momenta`, `diagram_form_factor`), so vertices "wire together" for **any
+loop order `ℓ` and any `k`**. The `L`-loop Gaussian average is an `L`-dimensional
+Gauss–Hermite grid. Authored with `.operator_ir()`; the per-diagram `F` is
+extracted by `pipeline_bridge._formfactor_callable` (mapping loop symbol `ℓᵢ→`
+loop column `i`, external `qⱼ→q[j]`) and applied automatically. The conservation
+law falls out: the `∇²(φ²)` tadpole gets `F=0`, the bubble `F∝q²` ⇒ `Σ(q→0)→0`.
+
+**Validated generically:** the `L=2` form-factor momentum integral matches a brute
+`∫dℓ₀dℓ₁` to **1e-14** (`test_diagram_form_factor_ell2_momentum`), confirming the
+per-vertex product composes and the loop-basis↔column mapping is right at 2 loops.
+
+**Scope:** `d=1`; **composite-derivative** vertices (the ∇ acts on the field
+composite — Model B `∇²(φⁿ)`). `ℓ=1` runs fast end-to-end; `ℓ≥2` is *correct but
+expensive* (the GH grid multiplies the heavy `ℓ≥2` chamber quadrature — a runtime
+warning is emitted, not a hard gate). **Remaining (genuine, non-bespoke) limits:**
+per-PHYSICAL-leg derivatives (KPZ `(∂φ)²` — needs a per-leg operator map on the
+vertex type, the next architectural piece); `d≥2` (transverse-momentum moments,
+gated in `full_integrator`); field-degree≠2 and multiple distinct deriv-vertex
+types (gated in `theory_compiler`).
 
 ## Validation
 
