@@ -191,3 +191,33 @@ def test_formfactor_bubble_vs_oracle():
             formfactor_K=lambda l: q ** 4 * np.ones_like(l))[0]))
         assert abs(full - orc) <= 2e-2 * abs(orc), \
             f"formfactor bubble q={q}: full={full} oracle={orc}"
+
+
+def test_formfactor_average_convolution_kernel():
+    """The loop form-factor average integrates ARBITRARY smooth convolution
+    kernels ``ŵ(ℓ)`` — not just the polynomial derivative-vertex case — so a
+    spatiotemporal-convolution VERTEX (neural-field ``f(φ)⊛w``, nonlocal
+    Allen-Cahn) flows through the SAME path.  Gauss–Hermite ``⟨ŵ⟩`` matches the
+    brute Gaussian average ``∫ŵ·G/∫G``: a Gaussian kernel ~exact, a Lorentzian to
+    ~1e-3.  (See ``docs/spatiotemporal_convolutions.md``.)"""
+    import numpy as np
+    from msrjd.integration.spatial.full_integrator import _formfactor_average
+
+    D, q = 0.8, 0.7
+    a = np.array([1.0, 1.0]); b = np.array([0.0, -1.0]); w = np.array([0.6, 0.9])
+    M = np.array([[[float(np.sum(w * a * a))]]])      # (P=1, L=1, L=1)
+    N = np.array([[[float(np.sum(w * a * b))]]])      # (P=1, L=1, n_ext=1)
+    ok = np.array([True])
+
+    def brute(kern, L=120.0, n=600001):
+        ell = np.linspace(-L, L, n)
+        G = np.exp(-D * (w[0] * ell ** 2 + w[1] * (ell - q) ** 2))
+        return float(np.sum(kern(ell) * G) / np.sum(G))   # ⟨ŵ⟩ over the loop Gaussian
+
+    cases = [('gaussian', lambda l: np.exp(-(0.9 ** 2) * l ** 2 / 2), 1e-6, 12),
+             ('lorentzian', lambda l: 1.0 / (1.0 + (1.3 ** 2) * l ** 2), 1e-3, 24)]
+    for name, kern, tol, n in cases:
+        ff = lambda ell, qq, k=kern: k(ell[..., 0])
+        avg = _formfactor_average(ff, M, N, [q], D, ok, gh_order=n)[0]
+        assert abs(avg - brute(kern)) <= tol, \
+            f"convolution kernel {name}: GH={avg} vs brute={brute(kern)}"
