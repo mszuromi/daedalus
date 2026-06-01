@@ -47,8 +47,11 @@ docs/figures/test_runs/
 # Profile dumps from notebook diagnostic cells (Cell B in 3.6 / regenerable)
 *.prof
 
-# Notebook artifact dirs accidentally named after Python dict reprs
-# (e.g. ``{Em1: 1.0, …}/``).  Regenerable.
+# Backstop only: dirs accidentally named after a Python dict repr
+# (e.g. ``{Em1: 1.0, …}/``).  The root cause is fixed in pipeline/save.py
+# (params_slug + _sanitize_output_path slugify any params dict that
+# reaches an output path), so this should no longer trigger; kept as a
+# safety net.  Regenerable.
 {*}/
 
 # Reference papers (local only — copyrighted, not redistributed in the repo)

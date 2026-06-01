@@ -50,13 +50,13 @@ Status (prototype):
 """
 from pipeline.compute     import compute_cumulants
 from pipeline.report      import generate_report
-from pipeline.save        import save_npz, save_csv
+from pipeline.save        import save_npz, save_csv, params_slug
 from pipeline.access      import MeanField, Parameters, normalize_external_fields
 from pipeline._precompute import precompute
 
 __all__ = [
     'compute_cumulants', 'generate_report',
-    'save_npz', 'save_csv',
+    'save_npz', 'save_csv', 'params_slug',
     'MeanField', 'Parameters', 'normalize_external_fields',
     'precompute',
 ]

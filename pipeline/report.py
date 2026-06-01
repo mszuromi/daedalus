@@ -400,6 +400,11 @@ def generate_report(
                   '(see notebooks/spatial/).')
         return result
 
+    # Backstop: never let a path built from ``str(params_dict)`` create a
+    # junk ``{...}/`` directory (see pipeline.save._sanitize_output_path).
+    from pipeline.save import _sanitize_output_path
+    output_pdf = _sanitize_output_path(output_pdf)
+
     if verbose:
         print(f'[report] writing {output_pdf} '
               f'({len(result["diagrams"])} diagram pages + cover)...')

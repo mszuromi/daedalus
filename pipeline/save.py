@@ -29,10 +29,130 @@ pipeline would have used.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
+import warnings
 from typing import Any
 
 import numpy as np
+
+
+# ── filesystem-safe parameter slugs ───────────────────────────────────
+#
+# Output paths must never be built from ``str(params_dict)``.  A Sage /
+# sympy substitution dict stringifies to ``{Em1: 1.0, tau1: 10.0, ...}``
+# (symbol keys → no quotes) or ``{'mu': 0.1, ...}`` — full of braces,
+# colons and spaces.  Used as a directory name that produces junk dirs
+# like ``{Em1: 1.0, ..., vstar2: 1.0}/`` at the repo root (one per
+# working point), which is exactly what the ``{*}/`` ``.gitignore`` rule
+# was added to paper over.
+#
+# ``params_slug`` is the canonical, stable, readable encoding: keys
+# sorted by ``str(key)``, each pair rendered ``key=value`` with floats
+# truncated, pairs joined by ``__``.  ``_sanitize_output_path`` is the
+# defensive backstop wired into every saver below: if a path component
+# ever arrives as a stringified dict repr, it is slugified in place (with
+# a warning) so no ``{...}/`` directory is ever materialised.
+
+# Characters allowed verbatim in a path component: alphanumerics plus a
+# small set that every common filesystem accepts.
+_SAFE_RE = re.compile(r'[^A-Za-z0-9._=+-]+')
+
+
+def _sanitize_token(s: Any) -> str:
+    """Collapse any run of filesystem-unsafe characters to ``_``."""
+    return _SAFE_RE.sub('_', str(s)).strip('_')
+
+
+def _fmt_value(v: Any) -> str:
+    """Compact, readable rendering of a single parameter value.
+
+    Integers stay integers (``10.0 → '10'``); other floats use 6 sig
+    figs (``0.1 → '0.1'``, ``6.70732 → '6.70732'``); list / array values
+    flatten to ``a-b-c``; everything else is sanitized via ``str``.
+    """
+    if isinstance(v, (list, tuple, np.ndarray)):
+        flat = np.asarray(v, dtype=object).ravel()
+        return '-'.join(_fmt_value(x) for x in flat) or '0'
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return _sanitize_token(v)
+    if np.isfinite(f) and f == int(f) and abs(f) < 1e15:
+        return str(int(f))
+    return _sanitize_token(f'{f:.6g}')
+
+
+def params_slug(params: Any, *, max_len: int = 180) -> str:
+    """Return a filesystem-safe, deterministic slug for a parameter dict.
+
+    Keys are sorted by ``str(key)`` (so symbol- and string-keyed dicts
+    slugify identically and stably), each pair is rendered ``key=value``
+    with floats truncated, and pairs are joined by ``__``.  Overlong
+    slugs are truncated and disambiguated with a short content hash.
+
+    >>> params_slug({'mu': 0.1, 'eps': 0.1, 'D': 1.0})
+    'D=1__eps=0.1__mu=0.1'
+    """
+    if not isinstance(params, dict):
+        return _sanitize_token(params) or 'params'
+    parts = [f'{_sanitize_token(k)}={_fmt_value(params[k])}'
+             for k in sorted(params, key=str)]
+    slug = _SAFE_RE.sub('_', '__'.join(parts))
+    if len(slug) > max_len:
+        digest = hashlib.sha1(slug.encode('utf-8')).hexdigest()[:8]
+        slug = slug[:max_len - 9].rstrip('_') + '_' + digest
+    return slug or 'params'
+
+
+def _looks_like_dict_repr(component: str) -> bool:
+    """True if a path component is a stringified Python dict repr."""
+    return (len(component) >= 2 and component[0] == '{'
+            and component[-1] == '}' and ':' in component)
+
+
+def _slug_from_dict_repr(component: str) -> str:
+    """Recover a stable slug from an already-stringified dict repr such as
+    ``{Em1: 1.0, tau1: 10.0}`` (symbol keys) or ``{'mu': 0.1}``.
+
+    Falls back to a plain sanitize of the whole component if the repr
+    does not parse as flat ``key: value`` pairs (e.g. nested commas)."""
+    inner = component[1:-1].strip()
+    if not inner:
+        return 'params'
+    pairs: dict[str, str] = {}
+    for chunk in inner.split(', '):
+        if ': ' not in chunk:
+            return _sanitize_token(component)
+        key, val = chunk.split(': ', 1)
+        pairs[key.strip().strip('\'"')] = val.strip()
+    return params_slug(pairs)
+
+
+def _sanitize_output_path(path: str) -> str:
+    """Slugify any directory component that is a leaked dict repr.
+
+    This is the backstop that stops a junk ``{Em1: 1.0, ...}/`` directory
+    from ever being created: if a caller builds an output path from
+    ``str(params_dict)`` instead of :func:`params_slug`, the offending
+    component is rewritten in place (with a warning) before the path is
+    used to create directories or files.
+    """
+    comps = str(path).split(os.sep)
+    fixed = [(_slug_from_dict_repr(c) if _looks_like_dict_repr(c) else c)
+             for c in comps]
+    if fixed == comps:
+        return path
+    new_path = os.sep.join(fixed)
+    warnings.warn(
+        f'save path component looked like a stringified params dict; '
+        f'slugified to avoid a junk directory: {path!r} -> {new_path!r}. '
+        f'Build output paths with pipeline.save.params_slug(...) instead '
+        f'of str(params).',
+        stacklevel=3,
+    )
+    return new_path
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -93,6 +213,8 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     str
         The output path (echoed for convenience).
     """
+    path = _sanitize_output_path(path)
+
     cfg     = result['config']
     k       = int(cfg['k'])
     max_ell = int(cfg['max_ell'])
@@ -187,6 +309,8 @@ def save_csv(result: dict, path: str) -> str:
     str
         The output path.
     """
+    path = _sanitize_output_path(path)
+
     cfg     = result['config']
     k       = int(cfg['k'])
     max_ell = int(cfg['max_ell'])
