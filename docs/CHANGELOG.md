@@ -4,6 +4,44 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-01 — Differential (∇) vertices + audit fixes + tutorial notebooks [branch `spatial-extension`]
+
+### Differential / ∇ interaction vertices (the deferred "exotic legs")
+
+A genuine new capability — v1 raised `NotImplementedError` for any derivative vertex.
+A ∇ vertex deposits a momentum-space **form factor** `F(ℓ,q)` on the loop
+(`Lap→−|k|²`, `∂_x→ik`); the loop integral becomes `MomFactor·⟨F⟩`, and since `F` is a
+polynomial, `⟨F⟩` over the loop-momentum Gaussian is computed **exactly by Gauss–Hermite**
+— general, no per-theory hardcoding (`full_integrator._formfactor_average`, validated to
+1e-12 vs brute `∫dℓ`). `pipeline_bridge._formfactor_callable` extracts the per-diagram `F`
+and `compute_spatial_correlator_generic` applies it for `.operator_ir()` theories (1-loop).
+The conserved Model-B `g∇²(φ²)` now runs end-to-end through `compute_cumulants`; the
+conservation law falls out (F=0 tadpole, F∝q² bubble ⇒ Σ(q→0)→0) and the result matches
+the sim-validated `loop_dyson` oracle to ~1% (new test `test_formfactor_bubble_vs_oracle`).
+Scope: 1-loop, d=1, composite/response-leg derivatives; KPZ `(∂φ)²` and ≥2-loop deferred.
+
+### Independent-audit fixes (temporal/spatial separation, theory_builder)
+
+* **Gating:** a spatial model run without `spatial_grid` fell through to the temporal
+  ω/Phase-J path and died with a cryptic Sage TypeError → now a clear ValueError
+  (`compute.py`); warn when `spatial_grid` is ignored for a temporal model;
+  `generate_report` gains `spatial_grid` + a graceful spatial guard. (Audit verdict:
+  separation is otherwise clean — no import leakage either direction.)
+* **theory_builder UI:** accept the inert `Laplacian` in the action when spatial (removes
+  a false "undeclared name" on every spatial theory); cap spatial k=2 / max_ell≤2 in the
+  readiness sidebar; `theory_runner.ipynb` made spatial-aware (resolve a grid, clamp k/ℓ,
+  pass `spatial_grid`, guard the spatial result dict, C(x,τ) plot). Verified: a UI-built
+  spatial theory now runs.
+
+### Tutorial-consistency pass (notebooks → future user tutorials)
+
+Per a style audit: fixed a copy-pasted spike-reset "Notes" cell that was factually wrong
+in 7 OU/conductance notebooks; removed a duplicate H1; added `## Summary`+Knobs and
+governing-equation blocks where missing; removed dev-only `%autoreload` magics. Markdown/
+structure only — no compute logic touched; all 25 notebooks validate.
+
+---
+
 ## 2026-05-31 — Spatial full-diagram integrator + φ⁶ generalization + repo organization [branch `spatial-extension`]
 
 ### Spatial loop pipeline — one genuine integral, no shortcuts

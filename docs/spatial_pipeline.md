@@ -97,8 +97,23 @@ headers.
 | correlator order `k` | `k = 2` (two-point) | `k > 2` (needs the multi-point external FT) |
 | loop order `ℓ` | `0, 1, 2` (gated; higher works by construction but is costly) | automatic `ℓ ≥ 3` cost control |
 | dimension `d` | general (`d = 1` validated end-to-end; `d = 2` via brute-force oracle) | `d ≥ 2` tadpole UV-cutoff polish |
-| vertices | simple polynomial `φⁿ` (any degree) | derivative/∇ and convolution (form-factor) vertices |
+| vertices | simple polynomial `φⁿ` (any degree); **derivative/∇ vertices at 1-loop** (Model-B `∇²(φⁿ)`, via momentum form factors — see below) | KPZ-type `(∂φ)²` (derivative on *physical* legs), ≥2-loop form factors, convolution/non-local vertices |
 | initial condition | stationary | transient ICs |
+
+### Derivative (∇) vertices — momentum-space form factors
+
+A derivative interaction vertex (e.g. the conserved Model-B `g∇²(φ²)`) deposits a
+**momentum-space form factor** `F(ℓ,q)` on the loop: `Lap→−|k|²`, `∂_x→ik`, with `k`
+the vertex's leg momentum (from `route_momenta`). The loop integral then factorizes
+as `MomFactor·⟨F⟩`, and because `F` is a *polynomial*, the Gaussian average `⟨F⟩`
+over `ℓ ~ N(−M⁻¹Nq, (2DM)⁻¹)` is computed **exactly by Gauss–Hermite** quadrature —
+general in the form factor, no per-theory hardcoding (`full_integrator._formfactor_average`).
+Authored with `.operator_ir()`; the per-diagram `F` is extracted by
+`pipeline_bridge._formfactor_callable` and applied automatically. The conservation
+law falls out: the `∇²(φ²)` tadpole gets `F=0` and the bubble `F∝q²` ⇒ `Σ(q→0)→0`.
+**Scope:** 1-loop, `d=1` (composite/response-leg derivatives, i.e. Model B /
+Cahn–Hilliard); KPZ `(∂φ)²` needs a per-physical-leg extraction, and `d≥2` needs the
+transverse-momentum moments — both deferred.
 
 ## Validation
 
@@ -109,6 +124,8 @@ headers.
 | `d=2` Keldysh sunset vs brute `∫d²ℓ₁d²ℓ₂` | ~2.5e-4 |
 | Allen-Cahn φ⁴ `d=1` ladder vs SPDE sim | tree 0.5 → 1-loop 0.4625 → 2-loop 0.4707, sim 0.4690 (|Δ| 0.031→0.0065→0.0017) |
 | **φ⁶ generalization** (Allen-Cahn + `−γφ⁵`) | new `φ̃φ⁵` (deg-6) vertex handled with zero special-casing: γ correctly absent at tree/1-loop (degree-6 vertex needs `taylor_order = k+2·max_ell = 6` ⇒ only at `ℓ=2`), enters at 2-loop as the double-tadpole. At λ=0.05, γ=0.005 the isolated γ contribution is −0.0047, moving 2-loop from 0.4833 (φ⁴-only) to 0.4786 — 3× closer to sim 0.4797. |
+| **derivative-vertex form factor** (GH vs brute) | `⟨F⟩·MomFactor` reproduces brute `∫dℓ F(ℓ,q)·Gaussian` to **1e-12** for `F∈{ℓ², ℓ²q², ℓ²(ℓ-q)², ℓ(ℓ-q)}` (Gauss–Hermite is exact for the polynomial form factor). |
+| **Model-B conserved `g∇²(φ²)`** (full integrator vs oracle) | the 1-loop form-factor bubble matches the independent, sim-validated `loop_dyson` oracle to **~1%** per q (`tests/test_full_integrator.py::test_formfactor_bubble_vs_oracle`). Runs end-to-end through `compute_cumulants(max_ell=1)`. *(Note: the equal-time variance shift is conservation-suppressed — small and a weak end-to-end target; the per-q oracle agreement is the rigorous validation.)* |
 
 ## Notebooks
 
