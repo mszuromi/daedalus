@@ -500,6 +500,10 @@ def compute_cumulants(
             'total_C_by_ell': {0: total_C},
             'C_tau':          C_tau,
             'C_tau_x':        C_tau_x,
+            # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …, max_ell}
+            # — the WHOLE progression from ONE call (the highest-ℓ run already
+            # contains every lower order; no need to re-run per order).
+            'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
             'tau_grid':       tau_grid,
             'spatial_grid':   spatial_grid_arr,
             'spatial_info':   sp_info,

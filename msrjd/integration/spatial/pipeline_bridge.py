@@ -713,10 +713,10 @@ def compute_spatial_correlator_generic(
             except (TypeError, ValueError):
                 continue                             # q-dependent prefactor (skip)
             ff = _formfactor_callable(td, vterms, d=_d) if vterms else None
-            descrs.append((diagram_to_cstack(td), pv, ff))
+            descrs.append((diagram_to_cstack(td), pv, ff, ell))   # tag the loop order
     if not descrs:
         raise SpatialPropagatorError('no loop diagrams were enumerated.')
-    live = [(dd, pv, ff) for dd, pv, ff in descrs if abs(pv) > 1e-14]
+    live = [(dd, pv, ff, el) for dd, pv, ff, el in descrs if abs(pv) > 1e-14]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
     if verbose:
@@ -738,27 +738,40 @@ def compute_spatial_correlator_generic(
     qg = (np.linspace(0.0, q_cut, n_q) if d == 1
           else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
 
-    def _dC(q, tau):
-        s = 0.0
-        for dd, pv, ff in live:
-            nt, ns = _grid(dd)
-            s += diagram_correlator(dd, pv, q, tau, A0, B0, spatial_dim=d,
-                                    n_t=nt, n_s=ns, formfactor=ff)
-        return s
-    dC_q_tau = np.array([[_dC(float(q), float(tau)) for tau in taus]
-                         for q in qg])                         # (n_q, n_tau)
-
     xg = np.asarray(spatial_grid, dtype=float)
-    C1 = np.array(C0, dtype=np.complex128)
-    if d == 1:
-        for it in range(len(taus)):
-            col = dC_q_tau[:, it]
-            for ix, x in enumerate(xg):              # δC(x,τ)=(1/π)∫₀^∞cos(qx)δC dq
-                C1[it, ix] += np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
-    else:
-        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
-        for it in range(len(taus)):
-            C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
+    ells = sorted({el for _dd, _pv, _ff, el in live})
+    # δC(q,τ) accumulated PER loop order — ONE integration pass over all diagrams
+    # (the ℓ=L run already contains every ℓ<L diagram, so a single call yields the
+    # whole cumulative progression; no need to re-run for each order).
+    dC_by_ell = {el: np.zeros((len(qg), len(taus)), dtype=complex) for el in ells}
+    for iq, q in enumerate(qg):
+        for it, tau in enumerate(taus):
+            for dd, pv, ff, el in live:
+                nt, ns = _grid(dd)
+                dC_by_ell[el][iq, it] += diagram_correlator(
+                    dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
+                    n_t=nt, n_s=ns, formfactor=ff)
+
+    def _ft_to_x(dC_qt):                              # (n_q,n_τ) → (n_τ,n_x) real-space δC
+        add = np.zeros((len(taus), len(xg)), dtype=complex)
+        if d == 1:                                    # δC(x,τ)=(1/π)∫₀^∞cos(qx)δC dq
+            for it in range(len(taus)):
+                col = dC_qt[:, it]
+                for ix, x in enumerate(xg):
+                    add[it, ix] = np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+        else:
+            from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+            for it in range(len(taus)):
+                add[it, :] = radial_inverse_ft(qg, dC_qt[:, it], xg, d)
+        return add
+
+    # cumulative correlator at each order: {0: tree, 1: tree+1-loop, …, L: total}
+    C_by_order = {0: np.array(C0, dtype=np.complex128)}
+    running = np.array(C0, dtype=np.complex128)
+    for el in ells:
+        running = running + _ft_to_x(dC_by_ell[el])
+        C_by_order[el] = running.copy()
+    C1 = running                                      # total = highest order
 
     # The physical correlator C(x,τ) is REAL.  A complex form factor (∂_x→ik,
     # Burgers/KPZ) can leave a residual imaginary part: odd-in-q diagrams
@@ -768,6 +781,7 @@ def compute_spatial_correlator_generic(
     max_abs_imag = float(np.max(np.abs(np.imag(C1))))
     ref = float(np.max(np.abs(np.real(C1)))) or 1.0
     C1 = np.real(C1).astype(float)
+    C_by_order = {el: np.real(C).astype(float) for el, C in C_by_order.items()}
 
     info = dict(tree_info)
     info.update({'one_loop': max_ell >= 1, 'generic': True,
@@ -777,5 +791,8 @@ def compute_spatial_correlator_generic(
                                  if vterms_sym else None),
                  'max_abs_imag': max_abs_imag, 'imag_frac': max_abs_imag / ref,
                  'n_diagrams': len(descrs), 'n_live_diagrams': len(live),
-                 'n_ell1_diagrams': len(by_ell.get(1, []))})
+                 'n_ell1_diagrams': len(by_ell.get(1, [])),
+                 # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …}
+                 # — the whole progression from ONE call (no per-ℓ re-runs).
+                 'C_by_order': C_by_order})
     return C1, info
