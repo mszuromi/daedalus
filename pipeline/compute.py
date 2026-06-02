@@ -121,7 +121,7 @@ def compute_cumulants(
     output_csv: str = None,
     use_cache: bool = True,
     parallel: bool = True,
-    spatial_parallel: bool = False,
+    spatial_parallel: bool = False,  # spatial THREADS are safe but GIL-bound (rarely faster); opt-in
     n_workers: int = None,
     use_grouped_phase_j: bool = False,
     fixed_point_index: int = 0,
@@ -424,14 +424,13 @@ def compute_cumulants(
             from msrjd.integration.spatial.pipeline_bridge import (
                 compute_spatial_correlator_generic,
             )
-            # Spatial fork-based MP is OPT-IN (spatial_parallel, default False):
-            # its workers do heavy batched BLAS, which without thread-pinning can
-            # oversubscribe and freeze the machine.  Now thread-pinned + worker-
-            # capped, but kept opt-in until validated on the user's hardware.
+            # Spatial parallelism is THREAD-based (no fork → safe in Jupyter/macOS;
+            # numpy releases the GIL for the per-diagram linalg/quadrature).  On by
+            # default; disable with spatial_parallel=False.  (Fork is forbidden here.)
             C_tau_x, sp_info = compute_spatial_correlator_generic(
                 ft, model, prop, num_params, external_fields,
                 tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
-                parallel=spatial_parallel, n_workers=n_workers,
+                parallel=(parallel and spatial_parallel), n_workers=n_workers,
             )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(

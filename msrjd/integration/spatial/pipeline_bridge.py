@@ -593,7 +593,7 @@ def _live_bubbles(records, num_params):
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q_cut=30.0, n_q=64, max_ell=1,
-        parallel=False, n_workers=None):     # parallel/n_workers ACCEPTED BUT IGNORED (fork removed; serial-only)
+        parallel=True, n_workers=None):      # THREAD-based (no fork — safe in Jupyter/macOS)
     """Spatial correlator ``C(x,τ) = C₀ + δC`` to loop order ``max_ell`` via the
     **full-diagram integrator** — the ONE genuine path.
 
@@ -754,25 +754,46 @@ def compute_spatial_correlator_generic(
     dC_by_ell = {el: np.zeros((len(qg), len(taus)), dtype=complex) for el in ells}
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
     # ──────────────────────────────────────────────────────────────────────
-    # SERIAL ONLY.  Process-based (fork) parallelism is REMOVED: forking a
-    # Jupyter kernel on macOS — after matplotlib/Cocoa/BLAS are initialized —
-    # crashes the kernel AND the OS, even with a single worker and BLAS pinned
-    # to one thread (the OBJC fork-safety guard exists for exactly this; the
-    # only "fix" was to stop forking).  ``parallel``/``n_workers`` are accepted
-    # for API compatibility but IGNORED; if set, warn loudly.
-    if parallel or (n_workers is not None):
-        import warnings
-        warnings.warn(
-            'spatial parallelism is DISABLED and IGNORED: fork-based '
-            'multiprocessing crashes Jupyter kernels on macOS (fork after '
-            'matplotlib/Cocoa init takes down the OS even with 1 worker). '
-            'Running the loop integral serially.', RuntimeWarning)
-    for iq, q in enumerate(qg):
-        for it, tau in enumerate(taus):
-            for dd, pv, ff, el, nt, ns in live_g:
-                dC_by_ell[el][iq, it] += diagram_correlator(
-                    dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
-                    n_t=nt, n_s=ns, formfactor=ff)
+    # THREAD-based parallelism over (q, diagram) work units.  This is SAFE in a
+    # Jupyter kernel on macOS: threads do NOT fork (the fork-Pool crash — fork
+    # after matplotlib/Cocoa init — cannot occur).  The per-diagram cost is numpy
+    # (einsum / cholesky / solve + the chamber quadrature + the GH form-factor
+    # average), and numpy RELEASES THE GIL during those, so threads give real
+    # multi-core speedup.  Each task computes one diagram's (n_τ,) column at one q;
+    # results are accumulated IN THE MAIN THREAD in task order → deterministic and
+    # bit-identical to the serial sum.  (Process/fork parallelism is forbidden
+    # here — see the project note.)  Falls back to serial below the batch
+    # threshold or when parallel=False.
+    import os
+    _cores = os.cpu_count() or 4
+    _nw = (int(n_workers) if n_workers is not None else min(8, max(1, _cores)))
+    _ntasks = len(qg) * len(live)
+    if parallel and _nw > 1 and _ntasks >= max(8, 2 * _nw):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(task):                               # one diagram's column at one q
+            iq, q, dd, pv, ff, el, nt, ns = task
+            col = np.array(
+                [diagram_correlator(dd, pv, q, float(tau), A0, B0, spatial_dim=d,
+                                    n_t=nt, n_s=ns, formfactor=ff) for tau in taus],
+                dtype=complex)
+            return iq, el, col
+
+        tasks = [(iq, float(q)) + rec
+                 for iq, q in enumerate(qg) for rec in live_g]
+        if verbose:
+            print(f'        parallel: {_nw} THREAD(s) over {len(qg)} q-points × '
+                  f'{len(live)} diagram(s) — no fork (GIL released in numpy)')
+        with ThreadPoolExecutor(max_workers=_nw) as ex:
+            for iq, el, col in ex.map(_one, tasks):   # main-thread accumulate, in order
+                dC_by_ell[el][iq, :] += col
+    else:
+        for iq, q in enumerate(qg):
+            for it, tau in enumerate(taus):
+                for dd, pv, ff, el, nt, ns in live_g:
+                    dC_by_ell[el][iq, it] += diagram_correlator(
+                        dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
+                        n_t=nt, n_s=ns, formfactor=ff)
 
     def _ft_to_x(dC_qt):                              # (n_q,n_τ) → (n_τ,n_x) real-space δC
         add = np.zeros((len(taus), len(xg)), dtype=complex)
