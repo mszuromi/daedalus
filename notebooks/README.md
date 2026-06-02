@@ -17,8 +17,16 @@ these subdirectories and its relative data paths still resolve.
 | `pipeline_linear_diffusion_1d_sim_compare` | free 1D diffusion (Gaussian `C₀` check). |
 | `pipeline_linear_field_2d_sim_compare` | free 2D field. |
 | `pipeline_reaction_diffusion_2d_loop_sim_compare` | 2D reaction-diffusion, 1-loop. |
+| `pipeline_reaction_diffusion_conserved_1d_sim_compare` | **Model B** — conserved `∇²(φ²)`, the **composite-∇** derivative vertex (`mode='composite'`, `F∝q²`; conservation-suppressed variance). |
+| `pipeline_burgers_1d_sim_compare` | **Burgers** — `−(λ/2)∂ₓ(φ²)`, the **composite-∂ₓ** vertex (imaginary form factor `∂ₓ→ik`; saddle-drift heat kernel). |
+| `pipeline_kpz_1d_sim_compare` | **KPZ** — `(λ/2)(∂ₓh)²`, the **per-leg-∂ₓ** vertex (`mode='perleg'`, `F=ℓ²q(ℓ−q)`); includes the excess-velocity `v∞` cross-check (~1%). |
 
-See [`docs/spatial_pipeline.md`](../docs/spatial_pipeline.md).
+The notebooks cover one representative per model class: **free** (linear diffusion / 2D field),
+**polynomial reaction `φⁿ`** (Allen-Cahn φ⁴/φ⁶, 2D reaction-diffusion), **composite-derivative**
+`∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers), and **per-leg-derivative** `(∂ₓφ)²` (KPZ).
+
+See [`docs/spatial_pipeline.md`](../docs/spatial_pipeline.md) and, for the gradient vertices,
+[`docs/spatial_kpz_burgers_plan.md`](../docs/spatial_kpz_burgers_plan.md).
 
 ## `temporal/` — time-only theories (OU, Hawkes, neural), via the ω-domain Phase J
 
