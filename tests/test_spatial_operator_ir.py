@@ -411,3 +411,57 @@ def test_operator_ir_derivative_vertex_one_loop():
     assert out1['spatial_info'].get('n_live_diagrams', 0) >= 1
     # max_ell>=2 is generic too (no NotImplementedError) — validated at the
     # integrator level (test_full_integrator); not run here (expensive e2e).
+
+
+def test_operator_ir_multivertex_table_and_formfactor():
+    """A theory mixing Model B ∇²(φ²) (composite) and KPZ (∂ₓφ)² (perleg) — both
+    φ̃φ² — lowers (NO single-mode gate) to a TWO-entry per-vertex form-factor
+    table with coupling weights summing to 1; diagram_form_factor sums the two
+    types PER NODE, reducing to the single-mode form factor when one weight→0."""
+    import sympy as _sp
+    from sage.all import SR
+    from pipeline.theory import TheoryBuilder
+    from msrjd.core.field_theory import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, diagram_form_factor, _legs_to_phys_idx)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    m = (TheoryBuilder('mb+kpz', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('g', default=0.15, domain='real')
+         .parameter('kpz', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .set_action_text('phit*(Dt(phi) + mu*phi - D*Lap(phi) - g*Lap(phi^2) '
+                          '- (kpz/2)*Dx(phi,0)^2) - T*phit^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(m, taylor_order=4)
+    ft.expand()                                  # used to raise the single-mode gate
+
+    # (a) two distinct vertex types, both φ̃φ², weights c_t/Σc summing to 1
+    tbl = ft._ns._operator_ir_vertex_terms
+    assert len(tbl) == 2
+    assert {t['mode'] for t in tbl} == {'composite', 'perleg'}
+    assert all(t['n_phys'] == 2 for t in tbl)
+    assert (SR(sum(SR(t['weight']) for t in tbl)) - 1).simplify_full().is_zero()
+
+    # (b) per-node form factor reduces to single-mode when the other weight is 0
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    be = build_pipeline_records(ft, m, prop, ext, max_ell=1, verbose=False)
+    td = be[1][0][0]                             # an ell=1 diagram (bubble)
+    comp = [{'weight': 1.0, 'n_phys': 2, 'chain': (('Lap',),), 'mode': 'composite'}]
+    perl = [{'weight': 1.0, 'n_phys': 2, 'chain': (('Dx', 0),), 'mode': 'perleg'}]
+    comp0 = [comp[0], {'weight': 0.0, 'n_phys': 2, 'chain': (('Dx', 0),),
+                       'mode': 'perleg'}]
+    perl0 = [{'weight': 0.0, 'n_phys': 2, 'chain': (('Lap',),),
+              'mode': 'composite'}, perl[0]]
+    assert _sp.expand(diagram_form_factor(td, comp0)
+                      - diagram_form_factor(td, comp)) == 0
+    assert _sp.expand(diagram_form_factor(td, perl0)
+                      - diagram_form_factor(td, perl)) == 0

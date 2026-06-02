@@ -760,40 +760,62 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # operator chain is stashed on ``ns`` for the momentum-first form-factor
     # extraction (``bubble_loop_form_factor`` in compute_spatial_correlator_bubble).
     # The bilinear (propagator) generators lower to the v1 bare-symbol form.
-    # Per-vertex form-factor MODE, read from the base field-degree of each
-    # derivative-vertex generator:
-    #   base-degree 1  → 'perleg'    — KPZ (∂ₓδφ)²: ∂ₓ acts on EACH physical
-    #                    leg (the generator appears squared → φ̃φ² bubble,
-    #                    form factor ∏_legs i·p_leg).
-    #   base-degree 2  → 'composite' — Model B ∇²(δφ²) / Burgers ∂ₓ(δφ²): the
-    #                    operator acts on the φ² composite (response-leg
-    #                    momentum on the φ̃φ² bubble).
-    # Both route through the validated momentum-first form-factor integrator
-    # (pipeline_bridge.diagram_form_factor + full_integrator form factors).
-    # Base-degree ≥3 composites (Cahn-Hilliard ∇²(δφ³): a ≥3-physical-leg /
-    # sunset topology) are not yet validated through the form-factor path.
-    modes = set()
+    # Build the per-vertex-type form-factor TABLE.  Each derivative-vertex
+    # generator g becomes one entry carrying its **coupling** c_t (the SR
+    # coefficient of g^p in the action, p the power g appears in), its
+    # **physical-leg count** n_phys = base-degree × p, its operator **chain**,
+    # and its **mode** ('perleg' if the base is field-degree 1 — KPZ (∂δφ)²;
+    # 'composite' if degree 2 — Model B ∇²(δφ²) / Burgers ∂ₓ(δφ²)).  Multiple
+    # distinct derivative vertices — even of the SAME field signature, e.g.
+    # Model B + KPZ both φ̃φ² — are kept as SEPARATE entries, each weighted by
+    # c_t / (Σ couplings of the same signature).  The downstream form factor
+    # then sums them per node: a φ̃φ² node contributes Σ_t w_t·𝔣_t, so a mixed
+    # diagram reconstructs every cross term (g², gκ, κ²) when combined with the
+    # prefactor's merged coupling (pipeline_bridge.diagram_form_factor).  A
+    # single derivative vertex gives w=1 ⇒ exactly the old behaviour.
+    from collections import defaultdict as _dd
+    se = SR(s)
+    _fluct_set = {SR(f) for f in flucts}
+    _raw = []
     for g in vertex:
-        bdeg = sum(int(SR(genmap[g][0]).degree(SR(f))) for f in flucts)
+        base, chain = genmap[g]
+        bdeg = sum(int(SR(base).degree(SR(f))) for f in flucts)
         if bdeg not in (1, 2):
             raise NotImplementedError(
                 f"operator IR: derivative VERTEX of base field-degree {bdeg} "
-                f"({genmap[g][0]}) is not yet validated through the form-"
-                "factor integrator (only per-leg base-degree-1 (∂φ)² and "
-                "composite base-degree-2 ∂(φ²)/∇²(φ²) bubble vertices are "
-                "wired through compute_cumulants).")
-        modes.add('perleg' if bdeg == 1 else 'composite')
-    if len(modes) > 1:
-        raise NotImplementedError(
-            "operator IR: a theory mixing per-leg (∂φ)² and composite ∂(φ²) "
-            "derivative vertices is not yet supported (single mode only).")
-    ns._operator_ir_vertex_mode = next(iter(modes)) if modes else None
-    vchains = {genmap[g][1] for g in vertex}
-    if len(vchains) > 1:
-        raise NotImplementedError(
-            f"operator IR: multiple distinct derivative-vertex types "
-            f"{sorted(vchains)} are not yet supported (single type only).")
-    ns._operator_ir_vertex_chain = next(iter(vchains)) if vchains else None
+                f"({base}) is not yet validated through the form-factor "
+                "integrator (per-leg (∂φ)² and composite ∂(φ²)/∇²(φ²) bubble "
+                "vertices are wired through compute_cumulants).")
+        gv = SR(g)
+        p = int(se.degree(gv))                       # power g appears in (KPZ: 2)
+        c_t = se.coefficient(gv, p)                  # coupling × (shared) response leg
+        for rv in [v for v in c_t.variables() if v in _fluct_set]:
+            c_t = c_t / rv                           # divide out the response field
+        _raw.append({'coupling': SR(c_t), 'n_phys': bdeg * p, 'chain': chain,
+                     'mode': ('perleg' if bdeg == 1 else 'composite')})
+    _by_sig = _dd(list)
+    for t in _raw:
+        _by_sig[t['n_phys']].append(t)
+    vtable = []
+    for n_phys, ts in _by_sig.items():
+        c_merged = sum((t['coupling'] for t in ts), SR(0))   # = the prefactor's coupling
+        for t in ts:
+            w = SR(t['coupling'] / c_merged)         # response field + comb. cancel
+            try:
+                w = w.simplify_full()
+            except Exception:
+                pass
+            vtable.append({'weight': w, 'n_phys': n_phys,
+                           'chain': t['chain'], 'mode': t['mode']})
+    ns._operator_ir_vertex_terms = vtable
+    # Backward-compat single-stash (read by tests + the d≥2 gate): set only when
+    # the theory has exactly ONE derivative-vertex type (weight ≡ 1 then).
+    if len(vtable) == 1:
+        ns._operator_ir_vertex_chain = vtable[0]['chain']
+        ns._operator_ir_vertex_mode = vtable[0]['mode']
+    else:
+        ns._operator_ir_vertex_chain = None
+        ns._operator_ir_vertex_mode = None
 
     subs = {}
     for g in bilinear:

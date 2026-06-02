@@ -97,7 +97,7 @@ headers.
 | correlator order `k` | `k = 2` (two-point) | `k > 2` (needs the multi-point external FT) |
 | loop order `ℓ` | `0, 1, 2` (gated; higher works by construction but is costly) | automatic `ℓ ≥ 3` cost control |
 | dimension `d` | general (`d = 1` validated end-to-end; `d = 2` via brute-force oracle) | `d ≥ 2` tadpole UV-cutoff polish |
-| vertices | simple polynomial `φⁿ` (any degree); **composite-derivative ∇/∂ vertices** `∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers) AND **per-leg-derivative vertices** `(∂ₓφ)²` (KPZ), generic in `ℓ` and `k` via momentum form factors — see below | field-degree≥3 composite (`∇²φ³`) / multiple distinct deriv-vertex types (compiler-gated), genuine constant drift `v·∂ₓφ` in loops (integrator-gated), convolution/non-local vertices |
+| vertices | simple polynomial `φⁿ` (any degree); **composite-derivative ∇/∂ vertices** `∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers), **per-leg-derivative** `(∂ₓφ)²` (KPZ), AND **any MIX of them** in one theory (per-node coupling-weighted form-factor table — Allen-Cahn⊕Model B⊕KPZ computes), generic in `ℓ` and `k` | field-degree≥3 composite (`∇²φ³`), genuine constant drift `v·∂ₓφ` in loops (integrator-gated), convolution/non-local vertices. NB a *same-signature* cross of two derivative vertices (e.g. Model B `∇²(φ²)` × KPZ `(∂φ)²`) gives a higher-degree loop form factor that can be **UV-divergent** — computed honestly, but the bare value is cutoff-dependent (needs renormalisation). |
 | initial condition | stationary | transient ICs |
 
 ### Derivative (∇) vertices — momentum-space form factors
@@ -135,9 +135,15 @@ a genuine drift `v·∂ₓφ`) lowers to a propagator **drift** `V` via the drif
 generalized heat kernel (`extract_mass_diffusion → (A,B,V)`); for a homogeneous
 saddle `φ*=0` (KPZ/Burgers) `V→0` and the propagator is the pure heat kernel.
 `ℓ=1` runs fast end-to-end; `ℓ≥2` is *correct but expensive* (a runtime warning,
-not a hard gate). **Remaining (genuine, non-bespoke) limits:** field-degree≥3
-composite vertices (`∇²φ³` — a ≥3-leg/sunset topology) and multiple distinct
-deriv-vertex types (gated in `theory_compiler`); a genuine constant drift
+not a hard gate).  **MULTIPLE distinct derivative vertices in one theory** are
+supported: the operator-IR lowering stashes a per-vertex-type TABLE
+(`ns._operator_ir_vertex_terms` = each type's coupling weight `c_t/Σc`, leg
+count, chain, mode), and `diagram_form_factor` sums the matching types PER NODE
+(`𝔉(v)=Σ_t w_t 𝔣_t`), so a mixed diagram reconstructs every cross term while the
+prefactor's merged coupling cancels the weight normalisation — exactly the
+single-type behaviour when one vertex.  **Remaining (genuine, non-bespoke)
+limits:** field-degree≥3 composite vertices (`∇²φ³` — a ≥3-leg/sunset topology,
+gated in `theory_compiler`); a genuine constant drift
 `v·∂ₓφ` with `V≠0` at the saddle (validated at the heat-kernel oracle level but
 not yet wired into the Symanzik loop reduction — bridge raises cleanly); `d≥2`
 transverse-momentum moments (gated in `full_integrator`).

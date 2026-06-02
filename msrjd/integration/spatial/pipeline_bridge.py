@@ -402,35 +402,49 @@ def _diagram_is_bubble(td):
     return False
 
 
-def diagram_form_factor(td, op_chain, mode='composite'):
+def diagram_form_factor(td, vertex_terms, mode=None):
     """Assemble the momentum-space **form factor** ``F(q,ℓ)`` a derivative-vertex
-    theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell`` and any
-    ``k``** (NOT bubble-specific: it is a product over the diagram's interaction
-    vertices, so vertices "wire together" by construction).
+    theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell``, any
+    ``k``, and any MIX of derivative-vertex types** (NOT bubble-specific and NOT
+    single-type: it is a product over the diagram's interaction vertices, and
+    each vertex looks up its OWN factor, so vertices "wire together" by
+    construction).
 
-    A derivative is a LOCAL per-vertex feature.  Each interaction vertex carries a
-    composite-derivative operator (``op_chain``, e.g. ``(('Lap',),)`` for the
-    ``∇²(φⁿ)`` Model-B vertex) acting on its field composite; by momentum
-    conservation the composite momentum equals the vertex's **response (φ̃) leg**
-    momentum — its UNIQUE OUTGOING edge in the all-``G_R`` representation (true for
-    any topology).  ``route_momenta`` supplies that momentum per edge, so
+    A derivative is a LOCAL per-vertex feature, so
 
-        F(q,ℓ) = ∏_{interaction vertices v}  f_chain( p_v ),
+        F(q,ℓ) = ∏_{interaction vertices v}  𝔉(v),
 
-    ``p_v`` the outgoing-edge momentum (linear in the loop momenta ``ℓ₀…ℓ_{L−1}``
-    and external ``q₀…``) and ``f_chain`` the per-leg Fourier factor
-    (``Lap → −p²``, ``Dx → i p`` in 1-D).  Returns a sympy expr in the routing
-    symbols; an empty chain → ``1`` (plain diagram).  Validated: the φ̃φ² ``Σ_R``
-    bubble → ``q₀²(q₀−ℓ₀)²``; the L=2 momentum integral matches a brute ``∫dℓ₀dℓ₁``
-    to 1e-14.
+    and the per-vertex factor sums over the derivative-vertex *types* whose
+    physical-leg count matches this node (``v``):
 
-    SCOPE: composite-derivative vertices (the ``op_chain`` acts on the whole
-    field composite — Model B / Cahn–Hilliard).  Per-PHYSICAL-leg derivatives
-    (KPZ ``(∂φ)²``, where each leg carries its own ``∂``) need a per-leg operator
-    map on the vertex type — a documented extension (the compiler also gates those
-    today, ``theory_compiler.py``)."""
+        𝔉(v) = Σ_{type t : n_phys(t)=deg(v)}  w_t · 𝔣_t(v),
+
+    with ``w_t`` the coupling weight (``c_t / Σ c``, from the operator-IR table
+    ``ns._operator_ir_vertex_terms``; ``Σ w_t = 1`` so the prefactor's merged
+    coupling reconstructs every cross term) and ``𝔣_t`` the type's kernel:
+
+      * ``mode='composite'`` — ``f_chain`` at the **response-leg** momentum
+        (``out_mom[v][0]`` — the φ² composite momentum; Model B ∇²(φ²),
+        Burgers ∂ₓ(φ²)),
+      * ``mode='perleg'``   — ``∏`` ``f_chain`` over the **physical-leg**
+        momenta (``in_mom[v]``; KPZ (∂ₓφ)²),
+
+    where ``f_chain`` is the Fourier factor (``Lap → −p²``, ``Dx → i p`` in 1-D).
+    A node whose physical-leg count matches NO derivative type contributes ``1``
+    (a plain vertex, e.g. Allen-Cahn's φ³).  An empty table → ``1`` (plain
+    diagram).  Returns a sympy expr in the routing symbols ``ℓ₀…q₀…``.
+
+    ``vertex_terms`` is the (numeric-weight) table
+    ``[{'weight','n_phys','chain','mode'}, …]``.  **Backward-compatible**: a bare
+    ``op_chain`` tuple + ``mode=`` kwarg is accepted as a single term with
+    weight 1 applied to every interaction node (the old single-type call) —
+    validated φ̃φ² ``Σ_R`` bubble → ``q₀²(q₀−ℓ₀)²``, L=2 vs brute ``∫dℓ₀dℓ₁``
+    1e-14."""
     import sympy as _sp
     from msrjd.integration.spatial.momentum_routing import route_momenta
+    if isinstance(vertex_terms, tuple):           # backward-compat single chain
+        vertex_terms = [{'weight': 1, 'n_phys': None, 'chain': vertex_terms,
+                         'mode': mode or 'composite'}]
     rr = route_momenta(td)
     leaves = set(td.prediagram[2])
     out_mom = {}        # vertex -> [outgoing-edge momenta]  (response leg)
@@ -440,9 +454,9 @@ def diagram_form_factor(td, op_chain, mode='composite'):
         in_mom.setdefault(v, []).append(mom)
     iverts = [n for n in out_mom if n not in leaves and len(out_mom[n]) == 1]
 
-    def _f_chain(p):
+    def _f_chain(chain, p):
         f = _sp.Integer(1)
-        for entry in op_chain:
+        for entry in chain:
             if entry[0] == 'Lap':
                 f *= -p ** 2
             elif entry[0] == 'Dx':
@@ -453,20 +467,25 @@ def diagram_form_factor(td, op_chain, mode='composite'):
                     f"supported (only Lap, Dx).")
         return f
 
+    def _term_factor(term, n):
+        if term['mode'] == 'composite':
+            return _f_chain(term['chain'], out_mom[n][0])     # response-leg momentum
+        f = _sp.Integer(1)                                    # perleg
+        for p in in_mom.get(n, []):
+            f *= _f_chain(term['chain'], p)
+        return f
+
     F = _sp.Integer(1)
-    if mode == 'composite':
-        # ∇ acts on the field composite → one factor at the response-leg momentum
-        # (Model B ∇²(φⁿ), Burgers ½∂ₓ(φ²)).
-        for n in iverts:
-            F *= _f_chain(out_mom[n][0])
-    elif mode == 'perleg':
-        # ∂ acts on each PHYSICAL leg individually → a factor per incoming edge
-        # (KPZ (∂φ)²: every physical leg carries the chain; uniform per vertex).
-        for n in iverts:
-            for p in in_mom.get(n, []):
-                F *= _f_chain(p)
-    else:
-        raise ValueError(f"diagram_form_factor: unknown mode {mode!r}")
+    for n in iverts:
+        n_phys = len(in_mom.get(n, []))
+        matched = [t for t in vertex_terms
+                   if t.get('n_phys') is None or t['n_phys'] == n_phys]
+        if not matched:
+            continue                              # plain (non-derivative) vertex → 1
+        node = _sp.Integer(0)
+        for t in matched:
+            node += _sp.sympify(t['weight']) * _term_factor(t, n)
+        F *= node
     return _sp.expand(F)
 
 
@@ -474,21 +493,23 @@ def diagram_form_factor(td, op_chain, mode='composite'):
 bubble_loop_form_factor = diagram_form_factor
 
 
-def _formfactor_callable(td, op_chain, mode='composite'):
+def _formfactor_callable(td, vertex_terms, mode=None):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
     diagram form factor (:func:`diagram_form_factor`).  ``ell`` is the loop
     momentum ``(..., L)``, ``q`` the ``(n_ext,)`` external-momentum vector;
     returns ``(...,)`` — possibly **complex** (``∂_x → ik``), so it is NOT forced
     real here; the imaginary part is resolved (cancels / dropped) at the real-space
-    output.  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``), and ``mode``
-    ('composite' → response-leg momentum, Model B; 'perleg' → per physical-leg, KPZ).
+    output.  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``), and in the MIX
+    of derivative-vertex types (``vertex_terms`` = the numeric-weight table, or a
+    bare ``op_chain`` tuple + ``mode=`` for the single-type call).
 
-    Lambdifies ``F(ℓ₀…ℓ_{L−1}, q₀…)`` (the route_momenta symbols, the SAME basis
-    the C-stack descriptor's edge routing uses — verified to 1e-14 at L=2) onto
-    the integrator's loop momenta, mapping loop symbol ``lᵢ → ell[...,i]`` and
-    external ``qⱼ → q[j]`` by index.  ``F=0`` → zeros."""
+    The table's weights MUST already be numeric (couplings substituted) — the
+    lambdified ``F`` carries only the routing symbols ``ℓ₀…q₀…`` (the SAME basis
+    the C-stack descriptor's edge routing uses — verified to 1e-14 at L=2),
+    mapping loop symbol ``lᵢ → ell[...,i]`` and external ``qⱼ → q[j]`` by index.
+    ``F=0`` → zeros."""
     import sympy as _sp
-    F = _sp.expand(diagram_form_factor(td, op_chain, mode=mode))
+    F = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode))
     if F == 0:
         return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
     ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
@@ -573,19 +594,22 @@ def compute_spatial_correlator_generic(
     # The full-diagram integrator averages it over the loop-momentum Gaussian by
     # Gauss–Hermite (exact for the polynomial F).  Extracted per diagram below;
     # bubble-specific ⇒ 1-loop only (higher-loop form factors are future work).
-    op_chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
-    # Per-vertex form-factor MODE (set by the operator-IR lowering):
-    #   'composite' — operator on the φⁿ composite (response-leg momentum):
-    #                 Model B ∇²(φ²), Burgers ∂_x(φ²).
-    #   'perleg'    — operator on EACH physical leg: KPZ (∂_xφ)² (∏ i·p_leg).
-    op_mode = getattr(ft._ns, '_operator_ir_vertex_mode', None) or 'composite'
+    # The operator-IR lowering stashes a per-vertex-type TABLE: each
+    # derivative-vertex type carries its coupling weight, physical-leg count,
+    # operator chain, and mode ('composite' — operator on the φⁿ composite, the
+    # response-leg momentum: Model B ∇²(φ²), Burgers ∂_x(φ²); 'perleg' — operator
+    # on EACH physical leg: KPZ (∂_xφ)², ∏ i·p_leg).  diagram_form_factor sums the
+    # matching types PER NODE (coupling-weighted), so a theory mixing distinct
+    # derivative vertices (even of the same φ̃φ² signature, e.g. Model B + KPZ)
+    # reconstructs every cross term — the couplings (substituted below) are real.
+    vterms_sym = getattr(ft._ns, '_operator_ir_vertex_terms', None) or []
     # NOTE: the form factor is extracted + integrated GENERICALLY per diagram
-    # (diagram_form_factor: a product over interaction vertices; the L-dim
-    # Gauss–Hermite loop average), so ANY ell works — the L=2 momentum integral
-    # matches a brute ∫dℓ₀dℓ₁ to 1e-14.  The remaining real limits are gated
-    # elsewhere: d≥2 (full_integrator.diagram_kinematic), and field-degree≠2 /
-    # multiple-distinct derivative-vertex types (pipeline.theory_compiler).
-    if op_chain and max_ell >= 2:
+    # (a product over interaction vertices; the L-dim Gauss–Hermite loop average),
+    # so ANY ell works — the L=2 momentum integral matches a brute ∫dℓ₀dℓ₁ to
+    # 1e-14.  The remaining real limits are gated elsewhere: d≥2
+    # (full_integrator.diagram_kinematic), and field-degree≥3 composite vertices
+    # (pipeline.theory_compiler).
+    if vterms_sym and max_ell >= 2:
         import warnings as _warnings
         _warnings.warn(
             'derivative-vertex (form-factor) theory at max_ell>=2: correct '
@@ -600,6 +624,20 @@ def compute_spatial_correlator_generic(
     ext_int = _legs_to_phys_idx(external_fields, phys_idx)
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
+
+    # Substitute the numeric couplings into the symbolic weights c_t/Σc → a
+    # numeric form-factor table (the lambdified F then carries only momentum
+    # symbols).  For a single derivative vertex the weight is 1 (unchanged).  A
+    # 0/0 weight means ALL couplings of that signature are 0 — the diagram's
+    # prefactor is then 0 too (dropped by the live filter), so weight 0 is safe.
+    def _num_weight(w):
+        try:
+            return float(np.real(complex(SR(w).subs(base_np_sr))))
+        except (ValueError, ZeroDivisionError, TypeError):
+            return 0.0
+    vterms = [{'weight': _num_weight(t['weight']),
+               'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
+              for t in vterms_sym]
 
     # ── Drift guard ───────────────────────────────────────────────────
     # The bilinear-Dx cross-term of a gradient nonlinearity (Burgers
@@ -640,8 +678,7 @@ def compute_spatial_correlator_generic(
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
                 continue                             # q-dependent prefactor (skip)
-            ff = (_formfactor_callable(td, op_chain, mode=op_mode)
-                  if op_chain else None)
+            ff = _formfactor_callable(td, vterms) if vterms else None
             descrs.append((diagram_to_cstack(td), pv, ff))
     if not descrs:
         raise SpatialPropagatorError('no loop diagrams were enumerated.')
@@ -702,7 +739,8 @@ def compute_spatial_correlator_generic(
     info.update({'one_loop': max_ell >= 1, 'generic': True,
                  'full_integrator': True, 'max_ell': max_ell,
                  'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
-                 'vertex_mode': op_mode if op_chain else None,
+                 'vertex_mode': ('+'.join(sorted({t['mode'] for t in vterms_sym}))
+                                 if vterms_sym else None),
                  'max_abs_imag': max_abs_imag, 'imag_frac': max_abs_imag / ref,
                  'n_diagrams': len(descrs), 'n_live_diagrams': len(live),
                  'n_ell1_diagrams': len(by_ell.get(1, []))})
