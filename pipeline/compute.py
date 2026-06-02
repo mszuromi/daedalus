@@ -122,6 +122,7 @@ def compute_cumulants(
     use_cache: bool = True,
     parallel: bool = True,
     spatial_parallel: bool = True,   # spatial THREADS (no fork — safe); smart-gated to L≥2 where it helps (~2.5×)
+    spatial_n_q: int = 64,           # spatial loop q-grid count — cost is LINEAR in it (64→16 = 4× faster; coarsens C(x) at large x)
     n_workers: int = None,
     use_grouped_phase_j: bool = False,
     fixed_point_index: int = 0,
@@ -431,6 +432,7 @@ def compute_cumulants(
                 ft, model, prop, num_params, external_fields,
                 tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
                 parallel=(parallel and spatial_parallel), n_workers=n_workers,
+                n_q=int(spatial_n_q),
             )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
