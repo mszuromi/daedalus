@@ -121,7 +121,7 @@ def compute_cumulants(
     output_csv: str = None,
     use_cache: bool = True,
     parallel: bool = True,
-    spatial_parallel: bool = False,  # spatial THREADS are safe but GIL-bound (rarely faster); opt-in
+    spatial_parallel: bool = True,   # spatial THREADS (no fork — safe); smart-gated to L≥2 where it helps (~2.5×)
     n_workers: int = None,
     use_grouped_phase_j: bool = False,
     fixed_point_index: int = 0,

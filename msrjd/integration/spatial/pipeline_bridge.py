@@ -768,7 +768,13 @@ def compute_spatial_correlator_generic(
     _cores = os.cpu_count() or 4
     _nw = (int(n_workers) if n_workers is not None else min(8, max(1, _cores)))
     _ntasks = len(qg) * len(live)
-    if parallel and _nw > 1 and _ntasks >= max(8, 2 * _nw):
+    # SMART GATE: threading only pays when each task is big-array numpy with the
+    # GIL released — measured ~2.5× (4 workers) at L≥2 (large GH grid + chamber
+    # batch), but 0.7× (SLOWER) at L=1 (tiny 1×1 matrices, dispatch-overhead-
+    # bound, GIL-held).  So thread only when a heavy (loop-order ≥2) diagram is
+    # present; stay serial for the cheap ℓ=1 case.
+    _heavy = any(rec[3] >= 2 for rec in live_g)        # rec = (dd,pv,ff,el,nt,ns)
+    if parallel and _heavy and _nw > 1 and _ntasks >= max(8, 2 * _nw):
         from concurrent.futures import ThreadPoolExecutor
 
         def _one(task):                               # one diagram's column at one q
