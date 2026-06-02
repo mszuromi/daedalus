@@ -20,6 +20,7 @@ these subdirectories and its relative data paths still resolve.
 | `pipeline_reaction_diffusion_conserved_1d_sim_compare` | **Model B** — conserved `∇²(φ²)`, the **composite-∇** derivative vertex (`mode='composite'`, `F∝q²`; conservation-suppressed variance). |
 | `pipeline_burgers_1d_sim_compare` | **Burgers** — `−(λ/2)∂ₓ(φ²)`, the **composite-∂ₓ** vertex (imaginary form factor `∂ₓ→ik`; saddle-drift heat kernel). |
 | `pipeline_kpz_1d_sim_compare` | **KPZ** — `(λ/2)(∂ₓh)²`, the **per-leg-∂ₓ** vertex (`mode='perleg'`, `F=ℓ²q(ℓ−q)`); includes the excess-velocity `v∞` cross-check (~1%). |
+| `pipeline_combined_allencahn_modelb_kpz_1d_sim_compare` | **Combined model** — `−λφ³ + g∇²(φ²) + (κ/2)(∂ₓφ)²` (Allen-Cahn ⊕ Model B ⊕ KPZ). The **simulation runs the full SPDE**; the diagrammatic theory is the multi-derivative-vertex *frontier* (mixing composite + per-leg vertices hits the single-mode gate — the cell catches it so the notebook runs). |
 
 The notebooks cover one representative per model class: **free** (linear diffusion / 2D field),
 **polynomial reaction `φⁿ`** (Allen-Cahn φ⁴/φ⁶, 2D reaction-diffusion), **composite-derivative**
