@@ -42,7 +42,7 @@ def _dispersion(N, dx, mu, D):
 
 
 def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
-            g_lap=0.0):
+            g_lap=0.0, lam_burg=0.0, lam_kpz=0.0):
     """Spectral exponential-Euler (ETD1) integrator.
 
     Linear + noise part is propagated EXACTLY per Fourier mode (an
@@ -68,6 +68,11 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
     # CONSERVED nonlinearity g_lap·∂ₓ²(φ²) (a derivative vertex), spectral form
     # g_lap·lap_eig·rfft(φ²) — the v2 Phase-4d derivative-vertex test forcing.
     lap_eig = -(omega - mu) / D
+    # Central-difference FIRST-derivative eigenvalue on the rfft grid
+    # (∂_x → i·sin(2πm/N)/dx ≈ i·k), consistent with the FD Laplacian above.
+    # Used for the GRADIENT nonlinearities: Burgers −(λ/2)∂_x(φ²) and KPZ
+    # +(λ/2)(∂_xφ)².  The Nyquist mode (sin π = 0) is correctly un-forced.
+    ik_eig = 1j * np.sin(2.0 * np.pi * np.arange(M) / N) / dx
     decay = np.exp(-omega * dt)
     etd1 = np.where(omega * dt > 1e-12, (1.0 - decay) / omega, dt)
     stat_var = T * N**2 / (L * omega)          # ⟨|φ̂_k|²⟩ stationary
@@ -86,23 +91,31 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
         # Nonlinear forcing F = rfft(-g φ² - λ φ³) (skip when both zero).
         # The g φ² term is the φ̃φ² bubble vertex; the λ φ³ term (→ +λφ⁴/4
         # potential) bounds the otherwise-unstable cubic potential.
-        if lam != 0.0 or g != 0.0 or g_lap != 0.0:
+        if (lam != 0.0 or g != 0.0 or g_lap != 0.0
+                or lam_burg != 0.0 or lam_kpz != 0.0):
             phi_r = np.fft.irfft(a, n=N)
             F = np.fft.rfft(-g * phi_r**2 - lam * phi_r**3)
             if g_lap != 0.0:
                 # conserved derivative vertex +g_lap·∂ₓ²(φ²) (∂_tφ EOM term)
                 F = F + g_lap * lap_eig * np.fft.rfft(phi_r**2)
+            if lam_burg != 0.0:
+                # Burgers: −(λ/2)∂_x(φ²) → −(λ/2)·ik·rfft(φ²) (composite ∂_x)
+                F = F - 0.5 * lam_burg * ik_eig * np.fft.rfft(phi_r**2)
+            if lam_kpz != 0.0:
+                # KPZ: +(λ/2)(∂_xφ)² (per-leg ∂_x: differentiate THEN square)
+                dphi_r = np.fft.irfft(ik_eig * a, n=N)
+                F = F + 0.5 * lam_kpz * np.fft.rfft(dphi_r**2)
         else:
             F = 0.0
-        # OU noise increment with rfft Hermitian structure.
-        noise = np.zeros(M, dtype=np.complex128)
+        # OU noise increment with rfft Hermitian structure.  Vectorized
+        # (real modes → inc_std·gr; interior complex modes → inc_std/√2·
+        # (gr+i·gi)); draws gr,gi in the same order as the per-mode loop, so
+        # the random stream — and hence every result — is bit-identical.
         gr = rng.standard_normal(M)
         gi = rng.standard_normal(M)
-        for mm in range(M):
-            if is_real_mode[mm]:
-                noise[mm] = inc_std[mm] * gr[mm]
-            else:
-                noise[mm] = inc_std[mm] / np.sqrt(2.0) * (gr[mm] + 1j * gi[mm])
+        noise = np.where(is_real_mode,
+                         inc_std * gr,
+                         inc_std / np.sqrt(2.0) * (gr + 1j * gi))
         a = decay * a + etd1 * F + noise
         if (step + 1) % record_every == 0:
             out[ri, :] = np.fft.irfft(a, n=N)
@@ -112,7 +125,7 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
 
 def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
              dt=None, n_steps=400000, burn_in=40000, record_every=20,
-             seed=12345, g=0.0, g_lap=0.0):
+             seed=12345, g=0.0, g_lap=0.0, lam_burg=0.0, lam_kpz=0.0):
     """Run the simulator and return ``(snapshots, x_grid, meta)``.
 
     snapshots : (n_rec, N) recorded field configurations (post burn-in)
@@ -135,18 +148,22 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
         # The linear part is exact (exponential integrator), so dt is
         # limited only by the ETD1 nonlinear splitting accuracy, not by
         # the diffusive CFL — a moderate dt suffices.
-        dt = min(0.02 / mu, 0.05) if (lam != 0.0 or g != 0.0 or g_lap != 0.0) else 0.05
+        _nl = (lam != 0.0 or g != 0.0 or g_lap != 0.0
+               or lam_burg != 0.0 or lam_kpz != 0.0)
+        dt = min(0.02 / mu, 0.05) if _nl else 0.05
     rng = np.random.default_rng(seed)
     phi0 = np.zeros(N, dtype=np.float64)
     # Burn-in (discarded).
     phi_burn = _evolve(phi0, burn_in, dt, mu, D, lam, T, dx, burn_in, rng,
-                       g=g, g_lap=g_lap)
+                       g=g, g_lap=g_lap, lam_burg=lam_burg, lam_kpz=lam_kpz)
     phi_start = phi_burn[-1, :].copy()
     snaps = _evolve(phi_start, n_steps, dt, mu, D, lam, T, dx,
-                    record_every, rng, g=g, g_lap=g_lap)
+                    record_every, rng, g=g, g_lap=g_lap,
+                    lam_burg=lam_burg, lam_kpz=lam_kpz)
     x_grid = np.arange(N) * dx
     meta = {'dx': dx, 'dt': dt, 'L': L, 'N': N, 'mu': mu, 'D': D,
-            'lam': lam, 'g': g, 'g_lap': g_lap, 'T': T,
+            'lam': lam, 'g': g, 'g_lap': g_lap,
+            'lam_burg': lam_burg, 'lam_kpz': lam_kpz, 'T': T,
             'record_every': record_every, 'n_rec': snaps.shape[0],
             # the PHYSICAL UV cutoff this grid imposes (Nyquist): k_max = π/dx =
             # πN/L.  A backend-C loop computed at THIS k_max is directly
