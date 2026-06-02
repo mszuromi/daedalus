@@ -70,6 +70,13 @@ _DT = function('Dt')                # ∂_t(·)
 _DX = function('Dx')                # ∂_{x_i}(·, i)
 _OP_NAMES = {'Lap', 'Dt', 'Dx'}
 
+# Bare *multiplicative* symbol that a bilinear ``Dx`` lowers to — the
+# first-derivative analogue of the inert ``Laplacian`` symbol (``Lap→−k²``).
+# The heat-kernel propagator substitutes ``GRADX_SYM → i·k`` (odd, imaginary)
+# to read off the DRIFT coefficient ``V`` (``extract_mass_diffusion``).  Sage
+# caches symbols by name, so ``SR.var('GradX')`` anywhere is THIS same object.
+GRADX_SYM = SR.var('GradX', latex_name=r'\partial_x')
+
 
 def Lap(expr):
     """``∇²(expr)`` — the (negative-eigenvalue) Laplacian operator node."""

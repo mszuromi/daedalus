@@ -163,3 +163,80 @@ def test_time_only_propagator_has_no_spatial_block():
     prop = _build_prop(_load_model('single_population_quad_exp_test.theory.py'))
     assert prop.get('G_tx') is None
     assert prop.get('G_tx_sym') is None
+
+
+# ── Drift-generalized heat kernel (Burgers/KPZ + genuine advection) ──
+def test_drift_heat_kernel_vs_analytic():
+    """gaussian_heat_kernel with drift V=iv equals the analytic
+    advection-diffusion Green's function, and V=0 is bit-identical to
+    the pure heat kernel."""
+    from msrjd.integration.spatial.heat_kernel import gaussian_heat_kernel
+    A, B, v = 0.5, 1.0, 2.0
+    maxerr = 0.0
+    for t in (0.3, 1.0, 2.5):
+        for x in (-1.0, 0.0, 2.0, 4.0):
+            got = gaussian_heat_kernel(t, x, A, B, V=1j * v)          # V = i v
+            ana = (math.exp(-A * t) * (4 * math.pi * B * t) ** (-0.5)
+                   * math.exp(-(x - v * t) ** 2 / (4 * B * t)))
+            maxerr = max(maxerr, abs(got - ana))
+    assert maxerr < 1e-12, f'drift kernel vs analytic max err {maxerr:.2e}'
+    # V=0 must reproduce the plain heat kernel exactly.
+    assert abs(gaussian_heat_kernel(1.3, 0.7, A, B)
+               - gaussian_heat_kernel(1.3, 0.7, A, B, V=0.0)) == 0.0
+
+
+def test_extract_mass_diffusion_drift():
+    """extract_mass_diffusion reads the linear-in-k DRIFT V = i·v from a
+    genuine-advection inverse propagator, and V=0 for a Laplacian-only
+    (even) kernel."""
+    from sage.all import SR, var, I
+    from msrjd.integration.spatial.heat_kernel import extract_mass_diffusion
+    om = var('omega'); k = var('k'); lap = var('Laplacian'); gx = SR.var('GradX')
+    A, B, v = 0.5, 1.0, 2.0
+    Ae, Be, Ve = extract_mass_diffusion(I * om + A - B * lap + v * gx,
+                                        om, k, lap, gx)
+    assert (SR(Ae) - A).is_zero() and (SR(Be) - B).is_zero()
+    assert (SR(Ve) - I * v).is_zero()
+    # Laplacian-only (even) kernel ⇒ V = 0 (backward compatible).
+    _, _, V0 = extract_mass_diffusion(I * om + A - B * lap, om, k, lap, gx)
+    assert SR(V0).is_zero()
+
+
+# ── Burgers / KPZ gradient-vertex compilation (operator IR v2) ──────
+def test_burgers_compiles_with_saddle_drift():
+    """Burgers ∂_x(φ²) lowers: the bilinear-Dx cross-term becomes a
+    propagator DRIFT V ∝ φ* (→0 at the saddle), the propagator is the
+    pure heat kernel (mass μ, diffusion D), and the vertex is composite."""
+    from sage.all import SR
+    prop = _build_prop(_load_model('burgers_1d.theory.py'))
+    A, B = prop['G_tx_sym'][(0, 0)]
+    assert str(B) == 'D'
+    assert (SR(A) - SR.var('mu')).is_zero()        # mass = mu
+    # Drift is ∝ phistar1 (vanishes at the homogeneous saddle φ*=0).
+    V = prop['ac_drift'][0]
+    assert not SR(V).is_zero()
+    assert SR(V).subs({SR.var('phistar1'): 0}).is_zero()
+
+
+def test_burgers_kpz_vertex_modes():
+    """The operator-IR lowering stashes the per-vertex form-factor mode:
+    Burgers ∂_x(φ²) → 'composite', KPZ (∂_x h)² → 'perleg'."""
+    from msrjd.core.field_theory import FieldTheory
+    from pipeline._propagator import build_propagator
+    for theory_file, want_mode in (('burgers_1d.theory.py', 'composite'),
+                                    ('kpz_1d.theory.py', 'perleg')):
+        model = _load_model(theory_file)
+        ft = FieldTheory(model, taylor_order=4)
+        ft.expand()
+        build_propagator(ft, model, use_cache=False, verbose=False)
+        assert getattr(ft._ns, '_operator_ir_vertex_mode', None) == want_mode
+
+
+def test_kpz_has_no_propagator_drift():
+    """KPZ (∂_x h)² has NO bilinear Dx (∂_x of the homogeneous mean is 0),
+    so the propagator drift is identically zero — pure heat kernel."""
+    from sage.all import SR
+    prop = _build_prop(_load_model('kpz_1d.theory.py'))
+    A, B = prop['G_tx_sym'][(0, 0)]
+    assert str(B) == 'D' and (SR(A) - SR.var('mu')).is_zero()
+    assert SR(prop['ac_drift'][0]).is_zero()

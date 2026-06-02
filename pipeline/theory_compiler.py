@@ -730,7 +730,7 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     """
     from pipeline.spatial_operator_ir import (
         apply_linearity, kill_means, to_derived_generators,
-        classify_generators)
+        classify_generators, GRADX_SYM)
     flucts = list(getattr(ns, '_all_field_sr_vars', []))
     s = apply_linearity(s, flucts)
     # Homogeneous/stationary saddle (v2.0): annihilate operators acting purely
@@ -760,20 +760,34 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # operator chain is stashed on ``ns`` for the momentum-first form-factor
     # extraction (``bubble_loop_form_factor`` in compute_spatial_correlator_bubble).
     # The bilinear (propagator) generators lower to the v1 bare-symbol form.
-    # Only the QUADRATIC derivative vertex (base field-degree 2, e.g. ∇²(δφ²))
-    # routes to the validated momentum-first BUBBLE path; higher-degree
-    # derivative VERTICES (Cahn-Hilliard ∇²(δφ³), KPZ (∂ₓδφ)², …) make
-    # non-bubble loop topologies whose form-factor integrator is not yet built.
-    if vertex:
-        _bad = sorted(
-            str(genmap[g][0]) for g in vertex
-            if sum(int(SR(genmap[g][0]).degree(SR(f))) for f in flucts) != 2)
-        if _bad:
+    # Per-vertex form-factor MODE, read from the base field-degree of each
+    # derivative-vertex generator:
+    #   base-degree 1  → 'perleg'    — KPZ (∂ₓδφ)²: ∂ₓ acts on EACH physical
+    #                    leg (the generator appears squared → φ̃φ² bubble,
+    #                    form factor ∏_legs i·p_leg).
+    #   base-degree 2  → 'composite' — Model B ∇²(δφ²) / Burgers ∂ₓ(δφ²): the
+    #                    operator acts on the φ² composite (response-leg
+    #                    momentum on the φ̃φ² bubble).
+    # Both route through the validated momentum-first form-factor integrator
+    # (pipeline_bridge.diagram_form_factor + full_integrator form factors).
+    # Base-degree ≥3 composites (Cahn-Hilliard ∇²(δφ³): a ≥3-physical-leg /
+    # sunset topology) are not yet validated through the form-factor path.
+    modes = set()
+    for g in vertex:
+        bdeg = sum(int(SR(genmap[g][0]).degree(SR(f))) for f in flucts)
+        if bdeg not in (1, 2):
             raise NotImplementedError(
-                "operator IR: derivative VERTICES of field-degree ≠ 2 "
-                f"({_bad}) need the non-bubble momentum-first form-factor "
-                "integrator (not yet built); only the quadratic ∇²(δφ²)-type "
-                "bubble vertex is wired through compute_cumulants so far.")
+                f"operator IR: derivative VERTEX of base field-degree {bdeg} "
+                f"({genmap[g][0]}) is not yet validated through the form-"
+                "factor integrator (only per-leg base-degree-1 (∂φ)² and "
+                "composite base-degree-2 ∂(φ²)/∇²(φ²) bubble vertices are "
+                "wired through compute_cumulants).")
+        modes.add('perleg' if bdeg == 1 else 'composite')
+    if len(modes) > 1:
+        raise NotImplementedError(
+            "operator IR: a theory mixing per-leg (∂φ)² and composite ∂(φ²) "
+            "derivative vertices is not yet supported (single mode only).")
+    ns._operator_ir_vertex_mode = next(iter(modes)) if modes else None
     vchains = {genmap[g][1] for g in vertex}
     if len(vchains) > 1:
         raise NotImplementedError(
@@ -791,10 +805,21 @@ def _lower_operator_ir_action(s, ns, naming_convention):
                 factor *= ns.Laplacian
             elif op == 'Dt' and hasattr(ns, 'Dt'):
                 factor *= ns.Dt
+            elif op == 'Dx':
+                # First-derivative bilinear → the bare GradX symbol (the heat
+                # kernel substitutes GradX → i·k to read the DRIFT V).  d=1
+                # only: a non-zero axis would be a transverse drift (d≥2,
+                # out of v1 scope).
+                axis = entry[1] if len(entry) > 1 else 0
+                if int(axis) != 0:
+                    raise NotImplementedError(
+                        f"operator IR: bilinear Dx on axis {axis} (d≥2 "
+                        f"transverse drift) is not yet supported (d=1 only).")
+                factor *= GRADX_SYM
             else:
                 raise NotImplementedError(
                     f"operator IR: bilinear {op!r} has no v1 lowering yet "
-                    f"(only Lap/Dt); a k-explicit kernel builder is needed.")
+                    f"(only Lap/Dt/Dx); a k-explicit kernel builder is needed.")
         subs[g] = factor * SR(base)
     for g in vertex:                       # unfold: bare composite for topology
         subs[g] = SR(genmap[g][0])

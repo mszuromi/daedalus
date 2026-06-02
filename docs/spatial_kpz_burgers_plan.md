@@ -1,4 +1,23 @@
-# KPZ & Burgers vertices — status + the remaining e2e blocker
+# KPZ & Burgers vertices — END TO END (June 2026)
+
+> **STATUS: Burgers + KPZ now compile and run end-to-end through
+> `compute_cumulants`.** The e2e blocker below (the "v2 k-explicit kernel") was
+> resolved by *drift-generalizing the existing heat kernel* (cleaner than a
+> separate `propagator_k.py`): the bilinear `Dx` lowers to a bare `GradX`
+> symbol, and `extract_mass_diffusion` reads off a **drift** `V` (the `k¹`
+> coefficient) instead of rejecting it. For a gradient nonlinearity the only
+> `Dx` reaching the bilinear sector is the saddle cross-term `∝ φ*`, so `V → 0`
+> at the homogeneous saddle and the propagator is the pure heat kernel. Steps
+> 1–4 below are **done**; step 5 (a dedicated KPZ/Burgers simulator) is the
+> remaining gold-standard validation.
+>
+> **Validation (μ=D=T=1, λ=0.3):** tree `C(0,0)=0.50000` (exact, = validated
+> Allen-Cahn baseline); 1-loop **mode-dependent**: Burgers (composite)
+> `→0.49987`, KPZ (per-leg) `→0.50109` — opposite signs from the distinct
+> self-energy structure; `imag_frac=0` (real correlator). Drift heat kernel vs
+> analytic advection-diffusion `2.78e-17`; per-leg/composite form factor vs
+> brute `∫dℓ` `9.5e-12`. Theories: `theories/{burgers,kpz}_1d.theory.py`;
+> tests: `tests/test_propagator_spatial.py` (5 new), `test_full_integrator.py`.
 
 *Branch `spatial-extension`, June 2026.* Target theories with **gradient
 nonlinearities**:
@@ -48,28 +67,39 @@ kernel" (`docs/spatial_v2_architecture.md` §4, Phase 3 — not built).
 
 ## Plan to finish (ordered, each with a validation gate)
 
-1. **k-explicit kernel** (`…/spatial/propagator_k.py`, new): build `K(ω,k)` with a
-   gradient symbol `ik` (analogous to the `Laplacian` symbol) so `Dt→−iω`,
-   `Lap→−k²`, `Dx→ik` all lower. *Gate:* a free theory with a genuine drift
-   `v·∂_xφ` reproduces its analytic `G(ω,k)=1/(−iω+ν k²+iv k)`.
-2. **Saddle substitution before mode extraction**: substitute `φ*` into `K` first,
-   so for `φ*=0` the spurious `φ*·ik` bilinear drops and the propagator is the
-   real heat kernel again. *Gate:* Burgers/KPZ at `φ*=0` give the same free
-   propagator as `ν∇²`, no `ik` survives.
-3. **Per-leg vertex chain through the compiler**: drop the degree-2/single-type
-   gates (`theory_compiler.py:767-782`); stash, per vertex generator,
-   `(base-degree → mode, chain)` so `_formfactor_callable` is called with
-   `mode='perleg'` for base-degree-1 generators (KPZ) and `'composite'` for
-   base-degree-≥2 (Model B / Burgers). *Gate:* the enumerated KPZ vertex extracts
-   `F = ∏_legs i·p_leg`.
-4. **Wire + e2e**: `compute_spatial_correlator_generic` picks the mode per diagram
-   and applies the (now complex) form factor; take `Re` at the real-space output.
-   *Gate:* KPZ/Burgers `C(q,τ)` runs end-to-end, finite.
-5. **Sim validation**: add the KPZ `(∂_xφ)²` / Burgers `φ∂_xφ` forcing to the 1-D
-   spectral simulator (multiply the appropriate spectral derivative per mode) and
-   compare `C(x,0)` / `S(q)` (the KPZ coupling renormalizes `ν`; the 1-loop
-   self-energy `∝ q²` correction is the signature).
+1. ✅ **Drift-generalized kernel** (`heat_kernel.py`, *not* a separate
+   `propagator_k.py`): the bilinear `Dx` lowers to a bare `GradX` symbol
+   (`spatial_operator_ir.GRADX_SYM`, the `∂_x`-analogue of `Laplacian`);
+   `extract_mass_diffusion` substitutes `GradX → i·k` and reads the **drift**
+   `V` = the `k¹` coefficient (instead of rejecting it), returning `(A, B, V)`.
+   `gaussian_heat_kernel`/`image_sum` carry `V` as a Galilean shift
+   `x → x − v t` (`v = V/i`); `V=0` is bit-identical to the pure heat kernel.
+   *Gate ✅:* a genuine drift `v·∂_xφ` gives `extract → (μ, D, i·v)` and the
+   drift kernel matches the analytic advection-diffusion Green's function to
+   `2.78e-17`.
+2. ✅ **Saddle handling**: the drift is carried *symbolically* (`ac_drift[i]
+   ∝ φ*`); at the integrator the bridge substitutes the numeric saddle — for
+   `φ*=0` (Burgers/KPZ) `V→0` so `m_k=μ+Dk²` is exact, and a **drift guard**
+   raises cleanly if `V≠0` at the saddle (a genuine advection, not yet in the
+   integrator). *Gate ✅:* Burgers `ac_drift = I·λ·φ*₁` → 0 at `φ*=0`; KPZ has
+   no bilinear `Dx` at all (`∂_x` of the homogeneous mean is 0).
+3. ✅ **Per-leg vertex chain through the compiler**: the degree-2/single-type
+   gate (`theory_compiler.py`) now allows base-degree 1 (`perleg`) and 2
+   (`composite`) and stashes `ns._operator_ir_vertex_mode`. *Gate ✅:* Burgers
+   → `'composite'`, KPZ → `'perleg'`.
+4. ✅ **Wire + e2e**: `compute_spatial_correlator_generic` reads the mode, passes
+   it to `_formfactor_callable`, and takes `Re` at the real-space output (records
+   `imag_frac`). *Gate ✅:* Burgers/KPZ `C(x,τ)` run end-to-end, finite, real
+   (`imag_frac=0`); tree `0.50000`, 1-loop `0.49987` (Burgers) / `0.50109` (KPZ).
+5. ⏳ **Sim validation** (remaining): add the KPZ `(∂_xφ)²` / Burgers `φ∂_xφ`
+   forcing to the 1-D spectral simulator (multiply the appropriate spectral
+   derivative `ik` per mode) and compare `C(x,0)` / `S(q)`. The equal-time
+   variance is a *weak* KPZ observable at small `λ` (the corrections above are
+   <0.3%); the discriminating signature is the `q²`-dependence of the 1-loop
+   self-energy (it renormalizes `ν=D`). The form-factor machinery is already
+   validated vs brute `∫dℓ` to `9.5e-12`, and the Model-B sibling matches the
+   sim-validated `loop_dyson` oracle to ~1%.
 
-Steps 1–2 are the substantial piece (a real propagator-kernel change touching the
-validated Lap-based spatial propagator — done carefully, behind the v2 gate, not
-disturbing existing theories). 3–5 reuse the validated form-factor machinery above.
+Steps 1–4 are **done** (June 2026). The drift generalization is non-bespoke: it
+makes *any* advection-bearing theory's heat kernel correct (validated at the
+oracle level), while the φ*=0 gradient theories (KPZ/Burgers) run fully e2e.

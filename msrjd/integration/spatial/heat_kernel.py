@@ -55,21 +55,39 @@ class SpatialPropagatorError(Exception):
 
 
 # ── Closed-form kernels ───────────────────────────────────────────
-def gaussian_heat_kernel(t, x, A, B, spatial_dim: int = 1):
-    """θ(t) · (4π B t)^(-d/2) · exp(-x²/(4 B t) - A t).
+def gaussian_heat_kernel(t, x, A, B, spatial_dim: int = 1, V=0.0):
+    """θ(t) · (4π B t)^(-d/2) · exp(−(x − v t)²/(4 B t) − A t),  v = V/i.
 
     ``A`` (mass) and ``B`` (diffusion) may be complex.  ``x`` is the
     scalar separation in d=1; for d≥2 pass |x| (radial) — the
-    prefactor uses d = ``spatial_dim``.  Returns a Python complex.
+    prefactor uses d = ``spatial_dim``.
+
+    The optional **drift** ``V`` is the ``k¹`` coefficient of the inverse
+    propagator (the advection term).  The exact inverse FT of
+    ``e^{-(A+Bk²+Vk)t}`` carries an extra factor
+    ``exp(−i V x /(2B) + V² t /(4B))`` — for ``V = i v`` this shifts the
+    Gaussian centre to ``x = v t`` (transport at velocity ``v``).
+    ``V = 0`` (Laplacian-only / even kernels) is **bit-identical** to the
+    pure heat kernel.  Drift is supported for d=1 only (it is a vector in
+    d≥2 — out of v1 scope).  Returns a Python complex.
     """
     t = float(t.real) if hasattr(t, 'real') and not isinstance(t, complex) else t
     if (t.real if isinstance(t, complex) else t) <= 0.0:
         return 0j
     A = complex(A)
     B = complex(B)
-    xx = float(x) ** 2
+    V = complex(V)
+    x_signed = float(x)
+    xx = x_signed ** 2
     pref = (4.0 * math.pi * B * t) ** (-0.5 * spatial_dim)
-    return complex(pref * cmath.exp(-xx / (4.0 * B * t) - A * t))
+    drift_exp = 0.0
+    if V != 0:
+        if spatial_dim != 1:
+            raise SpatialPropagatorError(
+                'drift heat kernel (V≠0) is implemented for d=1 only '
+                '(drift is a vector in d≥2).')
+        drift_exp = -1j * V * x_signed / (2.0 * B) + V * V * t / (4.0 * B)
+    return complex(pref * cmath.exp(-xx / (4.0 * B * t) - A * t + drift_exp))
 
 
 def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
@@ -112,7 +130,7 @@ def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
 
 
 def image_sum(t, x, A, B, L, spatial_dim: int = 1, eps: float = 1e-12,
-              n_max_cap: int = 2000):
+              n_max_cap: int = 2000, V=0.0):
     """Periodic-boundary heat kernel via the image-source sum
     ``Σ_n G_inf(t, x + nL)`` (1D).
 
@@ -120,17 +138,18 @@ def image_sum(t, x, A, B, L, spatial_dim: int = 1, eps: float = 1e-12,
     the n=0 term (the Gaussian tail decays super-exponentially in n),
     capped at ``n_max_cap`` on each side.  Only the d=1 case is
     supported in v1 (PBC in higher d needs a lattice sum per axis).
+    The drift ``V`` (default 0) is forwarded to ``gaussian_heat_kernel``.
     """
     if spatial_dim != 1:
         raise SpatialPropagatorError(
             'image_sum: periodic BC implemented for d=1 only in v1.')
-    base = gaussian_heat_kernel(t, x, A, B, spatial_dim=1)
+    base = gaussian_heat_kernel(t, x, A, B, spatial_dim=1, V=V)
     total = base
     ref = abs(base) if abs(base) > 0 else 1.0
     n = 1
     while n <= n_max_cap:
-        term_p = gaussian_heat_kernel(t, x + n * L, A, B, spatial_dim=1)
-        term_m = gaussian_heat_kernel(t, x - n * L, A, B, spatial_dim=1)
+        term_p = gaussian_heat_kernel(t, x + n * L, A, B, spatial_dim=1, V=V)
+        term_m = gaussian_heat_kernel(t, x - n * L, A, B, spatial_dim=1, V=V)
         total += term_p + term_m
         if abs(term_p) < eps * ref and abs(term_m) < eps * ref and n >= 2:
             break
@@ -139,26 +158,42 @@ def image_sum(t, x, A, B, L, spatial_dim: int = 1, eps: float = 1e-12,
 
 
 # ── Symbolic extraction ───────────────────────────────────────────
-def extract_mass_diffusion(kft_entry, omega, k_var, lap_sym):
-    """Read (A, B) from one diagonal inverse-propagator entry.
+def extract_mass_diffusion(kft_entry, omega, k_var, lap_sym, grad_sym=None):
+    """Read (A, B, V) from one diagonal inverse-propagator entry.
 
-    ``kft_entry`` is expected to have the Allen-Cahn-like form
-    ``A + B·k² + (coeff)·iω`` after ``lap_sym → -k_var²``.  Returns
-    ``(A_expr, B_expr)`` as SR expressions in the model's parameters
-    and saddle symbols.
+    ``kft_entry`` is expected to have the (drift-generalized) Allen-Cahn
+    form ``A + B·k² + V·k + iω`` after ``lap_sym → −k_var²`` and (when a
+    first-derivative ``grad_sym`` appears) ``grad_sym → i·k_var``.  Returns
+    ``(A_expr, B_expr, V_expr)`` as SR expressions in the model's
+    parameters and saddle symbols:
+
+      * ``A`` — mass (the ``k⁰`` term, the relaxation rate),
+      * ``B`` — diffusion (the ``k²`` term),
+      * ``V`` — **drift** (the ``k¹`` term).  ``V`` is **zero** for an
+        even/Laplacian-only kernel; it is the advection coefficient
+        ``i·v`` for a first-derivative ``∂_x`` term.  For a *gradient
+        nonlinearity* (Burgers ``∂_x(φ²)``, KPZ ``(∂_xφ)²``) the only
+        ``∂_x`` reaching the bilinear sector is the saddle cross-term
+        ``∝ φ*``, so ``V → 0`` at the homogeneous saddle ``φ*=0`` and the
+        propagator is the pure heat kernel.
 
     Raises ``SpatialPropagatorError`` if:
       * the entry is not linear in ``iω`` with unit coefficient
         (i.e. not a standard first-order-in-time MSR kernel), or
       * a residual ``k_var`` dependence beyond ``k²`` survives
         (higher-derivative operator), or
-      * the entry still contains ``lap_sym`` after substitution.
+      * the entry still contains ``lap_sym`` / ``grad_sym`` after
+        substitution.
     """
-    e = SR(kft_entry).subs({lap_sym: -k_var**2}).expand()
-    if e.has(lap_sym):
+    subs = {lap_sym: -k_var**2}
+    if grad_sym is not None:
+        # ∂_x → i k  (odd, imaginary): the first-derivative drift symbol.
+        subs[grad_sym] = SR_I * k_var
+    e = SR(kft_entry).subs(subs).expand()
+    if e.has(lap_sym) or (grad_sym is not None and e.has(grad_sym)):
         raise SpatialPropagatorError(
-            f'inverse-propagator entry still contains {lap_sym} after '
-            f'k-substitution: {e}')
+            f'inverse-propagator entry still contains an operator symbol '
+            f'after k-substitution: {e}')
 
     # iω coefficient must be exactly 1 (standard MSR normalization).
     omega_coeff = e.coefficient(omega, 1)
@@ -180,12 +215,12 @@ def extract_mass_diffusion(kft_entry, omega, k_var, lap_sym):
             f'inverse-propagator has k-power {deg} > 2 (higher-'
             f'derivative operator not supported in v1): {e0}')
     B = e0.coefficient(k_var, 2)
-    # Reject odd power (k¹) — would break the Gaussian inverse FT.
-    if e0.coefficient(k_var, 1) != 0:
-        raise SpatialPropagatorError(
-            f'inverse-propagator has a linear-in-k term: {e0}')
+    # The linear-in-k term is the DRIFT V (was rejected in v1; now carried
+    # by the drift-generalized heat kernel).  V == 0 for Laplacian-only
+    # (even) kernels → bit-identical to the pure heat kernel.
+    V = e0.coefficient(k_var, 1)
     A = e0.coefficient(k_var, 0)
-    return A, B
+    return A, B, V
 
 
 def _make_numeric(expr, free_symbol_names):
@@ -256,6 +291,12 @@ def build_spatial_propagator(K_ft, omega, ns, model,
     if lap_sym is None:
         raise SpatialPropagatorError(
             'namespace has no Laplacian symbol (model not spatial?).')
+    # First-derivative drift symbol (∂_x → i·k); the bare symbol a bilinear
+    # Dx lowers to (``pipeline.spatial_operator_ir.GRADX_SYM``).  Sage caches
+    # symbols by name, so ``SR.var('GradX')`` IS that same object.  It is
+    # absent from Laplacian-only kernels (the substitution is then a no-op
+    # and the extracted drift V is 0 → pure heat kernel).
+    grad_sym = SR.var('GradX')
 
     k_var = SR.var('k', latex_name='k')
     nf = K_ft.nrows()
@@ -286,13 +327,17 @@ def build_spatial_propagator(K_ft, omega, ns, model,
 
     ac_mass = {}        # (i,i) -> A expr
     ac_diffusion = {}   # (i,i) -> B expr
+    ac_drift = {}       # (i,i) -> V expr (drift; 0 for even/Laplacian kernels)
     G_sym = {}          # (i,j) -> (A_expr, B_expr) or None
 
     for i in range(nf):
-        A_expr, B_expr = extract_mass_diffusion(
-            K_ft[i, i], omega, k_var, lap_sym)
+        A_expr, B_expr, V_expr = extract_mass_diffusion(
+            K_ft[i, i], omega, k_var, lap_sym, grad_sym)
         ac_mass[i] = A_expr
         ac_diffusion[i] = B_expr
+        ac_drift[i] = V_expr
+        # G_tx_sym stays a 2-tuple (A, B) for backward compatibility; the
+        # drift travels in ac_drift (read by make_g_tx_callables).
         G_sym[(i, i)] = (A_expr, B_expr)
     for i in range(nf):
         for j in range(nf):
@@ -302,8 +347,10 @@ def build_spatial_propagator(K_ft, omega, ns, model,
     if verbose:
         print(f'      ── spatial propagator (d={d}, bc={bc_mode}) ──')
         for i in range(nf):
+            _drift = '' if SR(ac_drift[i]).is_zero() else \
+                f', V(drift)={ac_drift[i]}'
             print(f'        G_tx[{resp_names[i]},{phys_names[i]}]: '
-                  f'A(mass)={ac_mass[i]}, B(diff)={ac_diffusion[i]}')
+                  f'A(mass)={ac_mass[i]}, B(diff)={ac_diffusion[i]}{_drift}')
 
     # NOTE: this block is PICKLABLE (all SR exprs + plain data) so it
     # caches cleanly via PipelineCache.  The runtime ``G_tx`` callables
@@ -319,6 +366,7 @@ def build_spatial_propagator(K_ft, omega, ns, model,
         'initial_mode': initial_mode,
         'ac_mass':      ac_mass,
         'ac_diffusion': ac_diffusion,
+        'ac_drift':     ac_drift,      # dict[i] -> V (drift; 0 = pure heat)
     }
 
 
@@ -338,6 +386,7 @@ def make_g_tx_callables(prop):
     bc_mode = prop.get('bc_mode', 'infinite')
     bc_params = prop.get('bc_params', {}) or {}
     L_name = bc_params.get('length') if bc_mode == 'periodic' else None
+    ac_drift = prop.get('ac_drift', {}) or {}   # dict[i] -> V (default 0)
 
     def _zero_entry(t, x, **num_params):
         return 0j
@@ -350,19 +399,24 @@ def make_g_tx_callables(prop):
         A_expr, B_expr = ab
         A_num = _make_numeric(A_expr, None)
         B_num = _make_numeric(B_expr, None)
+        # Drift V for this diagonal entry (0 for Laplacian-only kernels).
+        V_expr = ac_drift.get(key[0], 0) if key[0] == key[1] else 0
+        V_num = (_make_numeric(V_expr, None)
+                 if not SR(V_expr).is_zero() else None)
 
-        def _make_entry(A_num=A_num, B_num=B_num):
+        def _make_entry(A_num=A_num, B_num=B_num, V_num=V_num):
             def _g(t, x, **num_params):
                 A = A_num(**num_params)
                 B = B_num(**num_params)
+                V = V_num(**num_params) if V_num is not None else 0.0
                 if bc_mode == 'periodic':
                     if L_name is None:
                         raise SpatialPropagatorError(
                             'periodic BC missing length parameter.')
                     L = (num_params[L_name] if isinstance(L_name, str)
                          else float(L_name))
-                    return image_sum(t, x, A, B, float(L), spatial_dim=d)
-                return gaussian_heat_kernel(t, x, A, B, spatial_dim=d)
+                    return image_sum(t, x, A, B, float(L), spatial_dim=d, V=V)
+                return gaussian_heat_kernel(t, x, A, B, spatial_dim=d, V=V)
             return _g
         G_entries[key] = _make_entry()
     return G_entries

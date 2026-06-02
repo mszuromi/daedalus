@@ -184,7 +184,10 @@ def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
              'phit*(Dt(phi) + mu*phi - D*Lap(phi) + lam*Lap(phi^3)) - T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
     ft = FieldTheory(m, taylor_order=4)
-    with pytest.raises(NotImplementedError, match='derivative VERTICES'):
+    # ∇²(φ³) is a base field-degree-3 vertex (a ≥3-physical-leg / sunset
+    # topology) — still correctly rejected (base-degree 1 (∂φ)² and 2 ∂(φ²)
+    # bubble vertices are the validated cases; KPZ/Burgers now run e2e).
+    with pytest.raises(NotImplementedError, match='base field-degree 3'):
         ft.expand()
 
 

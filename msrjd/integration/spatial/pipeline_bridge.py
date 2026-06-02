@@ -574,6 +574,11 @@ def compute_spatial_correlator_generic(
     # Gauss–Hermite (exact for the polynomial F).  Extracted per diagram below;
     # bubble-specific ⇒ 1-loop only (higher-loop form factors are future work).
     op_chain = getattr(ft._ns, '_operator_ir_vertex_chain', None)
+    # Per-vertex form-factor MODE (set by the operator-IR lowering):
+    #   'composite' — operator on the φⁿ composite (response-leg momentum):
+    #                 Model B ∇²(φ²), Burgers ∂_x(φ²).
+    #   'perleg'    — operator on EACH physical leg: KPZ (∂_xφ)² (∏ i·p_leg).
+    op_mode = getattr(ft._ns, '_operator_ir_vertex_mode', None) or 'composite'
     # NOTE: the form factor is extracted + integrated GENERICALLY per diagram
     # (diagram_form_factor: a product over interaction vertices; the L-dim
     # Gauss–Hermite loop average), so ANY ell works — the L=2 momentum integral
@@ -596,6 +601,31 @@ def compute_spatial_correlator_generic(
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
+    # ── Drift guard ───────────────────────────────────────────────────
+    # The bilinear-Dx cross-term of a gradient nonlinearity (Burgers
+    # ∂_x(φ²) → 2φ*∂_x(δφ)) has a coefficient ∝ φ*, so the propagator DRIFT
+    # V vanishes at the homogeneous saddle φ*=0 and the integrator's
+    # m_k = μ + D·k² is exact.  A *genuine* drift (a constant advection
+    # v·∂_xφ, with V≠0 at the saddle) would need the drifting propagator
+    # wired into the Symanzik momentum reduction — validated at the
+    # heat-kernel (oracle) level but NOT yet in the integrator.  Refuse it
+    # cleanly rather than silently dropping the drift.
+    _ac_drift = prop.get('ac_drift', {}) or {}
+    for _fi, _Vexpr in _ac_drift.items():
+        if SR(_Vexpr).is_zero():
+            continue
+        try:
+            _V0 = complex(SR(_Vexpr).subs(base_np_sr))
+        except (TypeError, ValueError):
+            continue                       # still symbolic ⇒ A,B (mass,diff) used
+        if abs(_V0) > 1e-9:
+            raise SpatialPropagatorError(
+                f'field {_fi}: propagator DRIFT V={_V0:.4g} ≠ 0 at the saddle '
+                f'(a genuine advection v·∂_xφ).  The drifting propagator is '
+                f'validated at the heat-kernel (oracle) level but is not yet '
+                f'wired into the momentum integrator (m_k=μ+D·k²); only φ*=0 '
+                f'gradient theories (Burgers/KPZ, where V→0) run end-to-end.')
+
     if verbose:
         print(f'[6/7] (spatial) Enumerate prediagrams + typed diagrams → classify '
               f'coefficient factors → map to C-stack descriptors (max_ell={max_ell})...')
@@ -610,7 +640,8 @@ def compute_spatial_correlator_generic(
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
                 continue                             # q-dependent prefactor (skip)
-            ff = _formfactor_callable(td, op_chain) if op_chain else None
+            ff = (_formfactor_callable(td, op_chain, mode=op_mode)
+                  if op_chain else None)
             descrs.append((diagram_to_cstack(td), pv, ff))
     if not descrs:
         raise SpatialPropagatorError('no loop diagrams were enumerated.')
@@ -658,10 +689,21 @@ def compute_spatial_correlator_generic(
         for it in range(len(taus)):
             C1[it, :] += radial_inverse_ft(qg, dC_q_tau[:, it], xg, d)
 
+    # The physical correlator C(x,τ) is REAL.  A complex form factor (∂_x→ik,
+    # Burgers/KPZ) can leave a residual imaginary part: odd-in-q diagrams
+    # contribute only to the ANTISYMMETRIC correlator and are projected out by
+    # the cos/radial (even) transform.  Record |Im| as a diagnostic, then take
+    # the real part (no-op for the non-derivative / real-form-factor cases).
+    max_abs_imag = float(np.max(np.abs(np.imag(C1))))
+    ref = float(np.max(np.abs(np.real(C1)))) or 1.0
+    C1 = np.real(C1).astype(float)
+
     info = dict(tree_info)
     info.update({'one_loop': max_ell >= 1, 'generic': True,
                  'full_integrator': True, 'max_ell': max_ell,
                  'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
+                 'vertex_mode': op_mode if op_chain else None,
+                 'max_abs_imag': max_abs_imag, 'imag_frac': max_abs_imag / ref,
                  'n_diagrams': len(descrs), 'n_live_diagrams': len(live),
                  'n_ell1_diagrams': len(by_ell.get(1, []))})
     return C1, info
