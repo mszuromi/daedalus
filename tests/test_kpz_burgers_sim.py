@@ -82,3 +82,45 @@ def test_vectorized_noise_is_finite_and_stationary():
         h = snaps.shape[0] // 2
         v1 = float(np.var(snaps[:h])); v2 = float(np.var(snaps[h:]))
         assert abs(v1 - v2) / max(v1, v2) < 0.25
+
+
+def _load_sim2d():
+    p = os.path.join(_REPO, 'models', 'spatial_field_2d_sim.py')
+    spec = importlib.util.spec_from_file_location('s2', p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_kpz_d2_excess_velocity():
+    """d=2 KPZ (∇h)²=(∂ₓh)²+(∂_yh)²: the excess velocity ⟨φ⟩=(κ/2μ)⟨(∇φ)²⟩ (both
+    axes) matches the lattice tree prediction — the clean check of the per-axis
+    d=2 form-factor machinery."""
+    sim = _load_sim2d()
+    L, N, mu, D, T, kpz = 12.0, 32, 1.0, 1.0, 1.0, 0.5
+    sn, meta = sim.simulate_2d(L=L, N=N, mu=mu, D=D, T=T, lam_kpz=kpz, dt=0.02,
+                               n_steps=40000, burn_in=8000, record_every=20, seed=3)
+    exc_sim = float(np.mean(sn))
+    dx = L / N
+    kd = 2.0 * np.pi * np.fft.fftfreq(N)
+    cx, cy = np.cos(kd)[:, None], np.cos(kd)[None, :]
+    disp = mu + (2.0 * D / dx**2) * (2.0 - cx - cy)
+    sx, sy = (np.sin(kd)[:, None] / dx) ** 2, (np.sin(kd)[None, :] / dx) ** 2
+    exc_th = (kpz / (2.0 * mu)) * (T / L**2) * np.sum((sx + sy) / disp)
+    assert exc_sim > 0.0, 'KPZ d=2 excess velocity must be positive'
+    assert abs(exc_sim - exc_th) / exc_th < 0.15, \
+        f'KPZ d=2 excess velocity sim {exc_sim:.3f} vs lattice {exc_th:.3f}'
+
+
+def test_modelb_kpz_2d_forcings_finite():
+    """The d=2 Model B ∇²(φ²) (g_lap) and KPZ (lam_kpz) forcings stay finite and
+    stationary (Model B's conserved ∇² is stiff → smaller dt)."""
+    sim = _load_sim2d()
+    P = dict(L=12.0, N=32, mu=1.0, D=1.0, T=1.0, n_steps=20000, burn_in=5000,
+             record_every=20, seed=7)
+    for kw in ({'g_lap': 0.1, 'dt': 0.01}, {'lam_kpz': 0.4, 'dt': 0.02}):
+        sn, _ = sim.simulate_2d(**P, **kw)
+        assert np.all(np.isfinite(sn))
+        h = sn.shape[0] // 2
+        v1, v2 = float(np.var(sn[:h])), float(np.var(sn[h:]))
+        assert abs(v1 - v2) / max(v1, v2) < 0.3

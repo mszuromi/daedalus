@@ -33,9 +33,14 @@ def _dispersion_2d(N, dx, mu, D):
 
 
 def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
+                g_lap=0.0, lam_kpz=0.0,
                 dt=None, n_steps=60000, burn_in=10000, record_every=20,
                 seed=1234):
     """Run the 2D simulator → ``(snaps, meta)``.
+
+    Forcings (added to ∂_tφ): ``−gφ²`` / ``−λφ³`` (plain), conserved Model-B
+    ``+g_lap·∇²(φ²)`` (the composite ∇), and KPZ ``+(λ_kpz/2)(∇φ)²`` (the full
+    gradient ``(∂_xφ)²+(∂_yφ)²`` — per-axis).
 
     snaps : (n_rec, N, N) recorded fields (post burn-in).
     meta  : dict with dx, dt, params, and ``k_max = π/dx`` (the physical UV cutoff).
@@ -43,25 +48,34 @@ def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
     N = int(N); n_steps = int(n_steps); burn_in = int(burn_in)
     record_every = int(record_every); seed = int(seed)
     dx = L / N
+    _nl = (g != 0.0 or lam != 0.0 or g_lap != 0.0 or lam_kpz != 0.0)
     if dt is None:
-        dt = min(0.02 / mu, 0.05) if (g != 0.0 or lam != 0.0) else 0.05
+        dt = min(0.02 / mu, 0.05) if _nl else 0.05
     rng = np.random.default_rng(seed)
 
     omega = _dispersion_2d(N, dx, mu, D)          # (N,N), >0
     decay = np.exp(-omega * dt)
     etd1 = np.where(omega * dt > 1e-12, (1.0 - decay) / omega, dt)
     stat_var = T * N ** 4 / (L ** 2 * omega)      # ⟨|φ̂_k|²⟩ stationary (d=2)
-    # per-step OU increment: fft2 of REAL unit white has ⟨|ξ̂_k|²⟩ = N² (sites),
-    # so scaling by √(inc_var/N²) gives the per-mode increment variance and keeps
-    # φ real automatically (ξ̂ Hermitian).
     inc_std = np.sqrt((1.0 - decay ** 2) * stat_var / N ** 2)
+    # spectral operators on the fft2 grid (FD-consistent with _dispersion_2d):
+    lap_eig = -(omega - mu) / D                   # ∇² eigenvalue ≤0 (Model B)
+    _kd = 2.0 * np.pi * np.fft.fftfreq(N)
+    ikx = 1j * np.sin(_kd)[:, None] / dx          # central-diff ∂_x (axis 0; KPZ)
+    iky = 1j * np.sin(_kd)[None, :] / dx          # central-diff ∂_y (axis 1)
 
     def _run(a, nsteps, rec):
         out = []
         for s in range(nsteps):
-            if g != 0.0 or lam != 0.0:
+            if _nl:
                 phi = np.fft.ifft2(a).real
                 F = np.fft.fft2(-g * phi ** 2 - lam * phi ** 3)
+                if g_lap != 0.0:                  # Model B: +g·∇²(φ²)
+                    F = F + g_lap * lap_eig * np.fft.fft2(phi ** 2)
+                if lam_kpz != 0.0:                # KPZ: +(λ/2)[(∂ₓφ)²+(∂_yφ)²]
+                    dxphi = np.fft.ifft2(ikx * a).real
+                    dyphi = np.fft.ifft2(iky * a).real
+                    F = F + 0.5 * lam_kpz * np.fft.fft2(dxphi ** 2 + dyphi ** 2)
             else:
                 F = 0.0
             xi = np.fft.fft2(rng.standard_normal((N, N)))
@@ -75,9 +89,9 @@ def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
         a, _ = _run(a, burn_in, 0)
     a, snaps = _run(a, n_steps, record_every)
     meta = {'dx': dx, 'dt': dt, 'L': L, 'N': N, 'mu': mu, 'D': D,
-            'g': g, 'lam': lam, 'T': T, 'spatial_dim': 2,
-            'record_every': record_every, 'n_rec': snaps.shape[0],
-            'k_max': np.pi / dx}
+            'g': g, 'lam': lam, 'g_lap': g_lap, 'lam_kpz': lam_kpz, 'T': T,
+            'spatial_dim': 2, 'record_every': record_every,
+            'n_rec': snaps.shape[0], 'k_max': np.pi / dx}
     return snaps, meta
 
 

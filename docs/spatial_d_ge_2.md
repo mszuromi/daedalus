@@ -7,8 +7,13 @@
 > `Dx_i→i p_i`) match a brute `∫dᵈℓ` to **1.0e-14 (d=2)** / brute-grid (d=3) for
 > Model B `∇²(φ²)` and KPZ `(∇h)²=Σ_i(∂_i h)²`; both run e2e through
 > `compute_cumulants` at d=2 (`test_full_integrator.test_formfactor_d_ge_2_vs_brute`,
-> 4 cases). The only `d≥2` caveat is physical: higher superficial degree of
-> divergence ⇒ the *bare* loop is cutoff-sensitive (needs renormalisation).
+> 4 cases).  **2-D simulator** (`spatial_field_2d_sim.simulate_2d` gained `g_lap`
+> Model B + `lam_kpz` KPZ forcings): the d=2 KPZ excess velocity
+> `⟨φ⟩=(κ/2μ)⟨(∇φ)²⟩` (both axes) matches the lattice tree to **0.1 %**
+> (`test_kpz_burgers_sim.test_kpz_d2_excess_velocity`).  The only `d≥2` caveat is
+> physical: higher superficial degree of divergence ⇒ the *bare* loop is
+> cutoff-sensitive (needs renormalisation; Model B's conserved ∇² is also stiff
+> in the sim → smaller dt).
 
 *Branch `spatial-extension`, June 2026.* Goal: **every** vertex type (polynomial
 AND derivative/form-factor) at `d ∈ {1,2,3}`. This doc is the math analysis
