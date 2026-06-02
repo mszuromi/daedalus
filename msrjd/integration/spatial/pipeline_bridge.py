@@ -502,6 +502,23 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
 bubble_loop_form_factor = diagram_form_factor
 
 
+def _min_gh_order(F, loop_syms):
+    """Minimal Gauss–Hermite order that integrates the POLYNOMIAL form factor ``F``
+    EXACTLY over the loop Gaussian.  GH(n) is exact for degree ≤ 2n−1; after the
+    Cholesky map ``ℓ = ℓ̄ + Ch·Z`` a monomial of TOTAL loop-degree ``D`` can place
+    degree ``D`` on a single ``Z`` (e.g. ``ℓ₀ℓ₁ → Z₀²``), so ``n = ⌈(D+1)/2⌉`` with
+    ``D`` the total degree of ``F`` in the loop momenta.  Returns a safe high
+    fallback (6) if ``F`` is not a polynomial in the loop symbols."""
+    import sympy as _sp
+    if not loop_syms:
+        return 1                                   # constant in ℓ → 1 node is exact
+    try:
+        D = int(_sp.Poly(_sp.expand(F), *loop_syms).total_degree())
+    except Exception:
+        return 6                                   # non-polynomial → caller's default
+    return max(1, (D + 2) // 2)                     # ⌈(D+1)/2⌉
+
+
 def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
     diagram form factor (:func:`diagram_form_factor`).  Possibly **complex**
@@ -528,6 +545,12 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
             args = ([ell[..., i] for i in range(nl)]
                     + [float(qvec[j]) for j in range(nq)])
             return fn(*args) * np.ones(ell.shape[:-1])   # complex if F has i (∂_x)
+        # Minimal EXACT Gauss–Hermite order: GH(n) integrates degree ≤ 2n−1
+        # exactly.  Use the TOTAL degree of F in the loop momenta (NOT max per-
+        # variable): the Cholesky map ℓ=ℓ̄+Ch·Z mixes loops, so ℓ₀ℓ₁ → a Z₀² term
+        # whose per-Z degree reaches the total degree.  This is the cheap, exact
+        # speedup (e.g. 6 → 2-3 ⇒ the GH grid shrinks (n/6)^L).
+        ff.gh_order_needed = _min_gh_order(F, ls)
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
@@ -546,15 +569,10 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
                 for (_s, kind, idx, ax) in parsed]
         return fn(*args) * np.ones(ell.shape[:-2])
 
-    # Gauss–Hermite is EXACT for a polynomial at order ≥ ⌈(deg+1)/2⌉ in each
-    # variable; the d≥2 grid is gh_order^{L·d}, so the minimal exact order is a
-    # big speedup (e.g. a 1-loop form factor is degree ≤4 ⇒ order 3, not 6).
-    try:
-        loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
-        deg = max((int(_sp.degree(F, s)) for s in loopsyms), default=0)
-        ff.gh_order_needed = max(1, deg // 2 + 1)
-    except Exception:
-        pass                                             # non-polynomial → caller's default
+    # Minimal EXACT Gauss–Hermite order from the TOTAL loop-degree (see d=1
+    # note): the d≥2 grid is gh_order^{L·d}, so this is a large saving.
+    loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
+    ff.gh_order_needed = _min_gh_order(F, loopsyms)
     return ff
 
 
