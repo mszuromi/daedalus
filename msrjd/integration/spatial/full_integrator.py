@@ -81,7 +81,7 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
     return (out, M, N, ok) if return_gaussian else out
 
 
-def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
+def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=1):
     """``⟨F(ℓ,q)⟩`` of a derivative-vertex form factor over the loop-momentum
     Gaussian ``ℓ ~ N(ℓ̄, Σ)``, ``ℓ̄ = −M⁻¹N q``, ``Σ = (2D M)⁻¹``, by
     Gauss–Hermite — **EXACT** for a polynomial ``F`` (a momentum-space derivative
@@ -90,34 +90,59 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6):
     measure, so the full derivative-vertex loop integral is ``MomFactor·⟨F⟩``
     (validated to 1e-12 vs brute ``∫dℓ``).
 
-    Generic in the loop number ``L`` (the GH grid is ``L``-dimensional) and the
-    number of external momenta ``n_ext`` (``ℓ̄ = −M⁻¹N·q`` uses the full external
-    vector), so it composes for ANY topology / ``ell`` / ``k``.  **d=1** (each
-    ``ℓ``, ``q`` component is a scalar-per-loop / per-external); ``d≥2`` form
-    factors (transverse momentum moments) are a documented extension.  Returns
-    ``(P,)``; ``1.0`` where the loop is degenerate (``MomFactor`` is ``0`` there).
+    Generic in the loop number ``L``, the number of externals ``n_ext``, AND the
+    spatial dimension ``d=spatial_dim``.  The loop covariance factorizes as
+    ``Σ ⊗ I_d`` (isotropic propagators ⇒ the ``d`` spatial components are
+    independent, same ``L×L`` precision ``M``, means from the matching component
+    of ``q``).  Placing ``q`` on **axis 0** (legit for rotation-invariant Lap /
+    full-gradient vertices), the parallel component (α=0) gets ``ℓ̄=−M⁻¹N|q|`` and
+    the transverse components (α≥1) are zero-mean — an ``L·d``-dimensional GH grid.
 
-    ``formfactor(ell, q)``: ``ell`` is ``(P', G, L)`` loop momenta, ``q`` the
-    ``(n_ext,)`` external-momentum vector → ``(P', G)``.  Build it from the
-    per-vertex leg routing + operator form factor (:func:`diagram_form_factor`)."""
+    ``d=1``: ``formfactor(ell, q)`` with ``ell`` ``(P',G,L)`` and ``q`` ``(n_ext,)``.
+    ``d≥2``: ``ell`` is ``(P',G,L,d)`` and ``q`` is ``(n_ext,d)`` (``q[:,0]=|q|``,
+    rest 0).  Returns ``(P,)``; ``1.0`` where the loop is degenerate."""
     P, L = M.shape[0], M.shape[1]
     out = np.ones(P, dtype=complex)                          # COMPLEX: ∂_x→ik
     if not np.any(ok):
         return out
-    qv = np.atleast_1d(np.asarray(q_vec, dtype=float))       # (n_ext,)
+    qv = np.atleast_1d(np.asarray(q_vec, dtype=float))       # (n_ext,) magnitudes
     Mok, Nok = M[ok], N[ok]                                  # (P',L,L), (P',L,n_ext)
-    lbar = -np.einsum('plj,j->pl', np.linalg.solve(Mok, Nok), qv)   # (P',L)
+    lbar0 = -np.einsum('plj,j->pl', np.linalg.solve(Mok, Nok), qv)  # parallel mean (P',L)
     Sig = np.linalg.inv(Mok) / (2.0 * D)                     # (P',L,L)
     Ch = np.linalg.cholesky(Sig)                             # (P',L,L)
     xg, wg = np.polynomial.hermite_e.hermegauss(gh_order)    # weight e^{−x²/2}
+    d = int(spatial_dim)
+
+    if d == 1:                                               # ── validated scalar path
+        Z = np.stack([g.ravel() for g in
+                      np.meshgrid(*([xg] * L), indexing='ij')], axis=-1)   # (G,L)
+        Wg = np.ones(xg.size ** L)
+        for wgrid in np.meshgrid(*([wg] * L), indexing='ij'):
+            Wg = Wg * wgrid.ravel()
+        Wg = Wg / (2.0 * math.pi) ** (0.5 * L)
+        ell = lbar0[:, None, :] + np.einsum('plm,gm->pgl', Ch, Z)          # (P',G,L)
+        Fv = np.asarray(formfactor(ell, qv), dtype=complex)               # (P',G)
+        out[ok] = np.einsum('pg,g->p', Fv, Wg)
+        return out
+
+    # ── d ≥ 2: L·d-dim GH (q on axis 0; α=0 shifted, α≥1 zero-mean) ──────
+    Ld = L * d
     Z = np.stack([g.ravel() for g in
-                  np.meshgrid(*([xg] * L), indexing='ij')], axis=-1)   # (G,L)
-    Wg = np.ones(xg.size ** L)
-    for wgrid in np.meshgrid(*([wg] * L), indexing='ij'):
+                  np.meshgrid(*([xg] * Ld), indexing='ij')], axis=-1)      # (G, L·d)
+    Wg = np.ones(xg.size ** Ld)
+    for wgrid in np.meshgrid(*([wg] * Ld), indexing='ij'):
         Wg = Wg * wgrid.ravel()
-    Wg = Wg / (2.0 * math.pi) ** (0.5 * L)                   # (G,)
-    ell = lbar[:, None, :] + np.einsum('plm,gm->pgl', Ch, Z)  # (P',G,L)
-    Fv = np.asarray(formfactor(ell, qv), dtype=complex)      # (P',G); ∂_x→ik ⇒ complex
+    Wg = Wg / (2.0 * math.pi) ** (0.5 * Ld)                                # (G,)
+    Zr = Z.reshape(Z.shape[0], d, L)                          # (G, α, loop) — α-major
+    nP, G = Mok.shape[0], Z.shape[0]
+    ell = np.zeros((nP, G, L, d))
+    for al in range(d):
+        comp = np.einsum('plm,gm->pgl', Ch, Zr[:, al, :])    # (P',G,L)  zero-mean draw
+        if al == 0:
+            comp = comp + lbar0[:, None, :]                  # parallel: shift by ℓ̄
+        ell[:, :, :, al] = comp
+    q_comp = np.zeros((qv.size, d)); q_comp[:, 0] = qv        # q on axis 0
+    Fv = np.asarray(formfactor(ell, q_comp), dtype=complex)  # (P',G)
     out[ok] = np.einsum('pg,g->p', Fv, Wg)
     return out
 
@@ -259,16 +284,14 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
         else:
             # derivative-vertex form factor F(ℓ,q): the loop integral becomes
             # MomFactor·⟨F⟩, ⟨F⟩ a Gauss–Hermite average (exact for the polynomial
-            # form factor) over the loop-momentum Gaussian.  d=1 only (v1).
-            if spatial_dim != 1:
-                raise NotImplementedError(
-                    'derivative-vertex form factors are implemented for d=1 '
-                    '(scalar loop momentum); d>=2 transverse moments are deferred.')
+            # form factor) over the loop-momentum Gaussian — d-dim (the d spatial
+            # components are independent, q on axis 0; transverse moments).
             momfac, Mb, Nb, okb = _momentum_factor_batch(
                 a, b, w_batch, q_vec, D, spatial_dim, return_gaussian=True)
             if Mb is not None:                               # L>=1 (loop diagram)
                 momfac = momfac * _formfactor_average(
-                    formfactor, Mb, Nb, q_vec, D, okb, gh_order)
+                    formfactor, Mb, Nb, q_vec, D, okb, gh_order,
+                    spatial_dim=spatial_dim)
         total += np.sum(wfull * np.exp(-mu * mu_resid) * momfac)
     # `formfactor=None` → real (unchanged float return); a derivative/∇ form
     # factor (∂_x→ik) can be complex per diagram (e.g. odd # of ∂'s), so return

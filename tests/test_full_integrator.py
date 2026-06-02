@@ -361,3 +361,89 @@ def test_perleg_and_complex_form_factor():
         br = brute(ff, w)
         assert abs(gh - br) <= 1e-6 * (abs(br) + 1e-30), \
             f"per-leg/complex form factor: {gh} vs {br}"
+
+
+def _build_ff_theory(kind, d):
+    """Model B ∇²(φ²) (composite Lap) or KPZ (∇h)²=Σ_i(∂_i h)² (per-leg) at dim d."""
+    from pipeline.theory import TheoryBuilder
+    tb = (TheoryBuilder(kind, n_populations=0).physical_field('phi', spatial_dim=d)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('c', default=0.3, domain='real')
+          .parameter('T', default=1.0, domain='positive'))
+    if kind == 'modelb':
+        return (tb.equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='c*Laplacian*phi^2')
+                .set_action_text('phit*(Dt(phi)+mu*phi-D*Lap(phi)-c*Lap(phi^2))-T*phit^2')
+                .operator_ir().boundary('infinite').initial('stationary').build())
+    grad2 = ' + '.join(f'Dx(phi,{i})^2' for i in range(d))
+    return (tb.equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+            .set_action_text(f'phit*(Dt(phi)+mu*phi-D*Lap(phi)-(c/2)*({grad2}))-T*phit^2')
+            .operator_ir().boundary('infinite').initial('stationary').build())
+
+
+@pytest.mark.parametrize('kind,d,tol', [('modelb', 2, 1e-10), ('kpz', 2, 1e-10),
+                                        ('modelb', 3, 3e-3), ('kpz', 3, 3e-3)])
+def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
+    """The d≥2 derivative-vertex loop integral MomFactor·⟨F⟩ (the transverse-
+    moment L·d-dim Gauss–Hermite average) matches a brute ``∫dᵈℓ F·Gaussian`` —
+    Lap composite (Model B) AND full-gradient per-leg (KPZ ``(∇h)²``).  q on axis 0;
+    d=2 is exact, d=3 to the (coarse) brute grid."""
+    import numpy as np
+    from sage.all import SR
+    from pipeline._propagator import build_propagator
+    from pipeline.compute import FieldTheory
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import (
+        _momentum_factor_batch, _formfactor_average)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    b = _build_ff_theory(kind, d)
+    ft = FieldTheory(b, taylor_order=4); ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('c'): 0.3,
+            SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
+    vt = [{'weight': float(SR(t['weight']).subs(base)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    td = descr = None
+    for t, p in be.get(1, []):
+        if abs(float(SR(p).subs(base))) <= 1e-14:
+            continue
+        dd = diagram_to_cstack(t)
+        if dd.n_loops == 1:
+            td, descr = t, dd; break
+    assert td is not None, f'no live L=1 {kind} bubble at d={d}'
+    ff = _formfactor_callable(td, vt, d=d)
+    a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
+    E = a.shape[0]
+    D, q = 1.0, 0.7
+    rng = np.random.default_rng(1)
+    for _ in range(2):
+        w = 0.4 + 0.8 * rng.random(E)
+        momfac, M, N, ok = _momentum_factor_batch(a, bb, w[None, :], [q], D, d,
+                                                  return_gaussian=True)
+        if M is None:
+            continue
+        gh = complex(momfac[0] * _formfactor_average(ff, M, N, [q], D, ok,
+                                                     gh_order=8, spatial_dim=d)[0])
+        Lc, n = (22.0, 160) if d == 2 else (15.0, 44)
+        ax = np.linspace(-Lc, Lc, n); dl = ax[1] - ax[0]
+        grids = np.meshgrid(*([ax] * d), indexing='ij')
+        ell = np.stack(grids, axis=-1)[..., None, :]               # (…, L=1, d)
+        expo = np.zeros_like(grids[0])
+        for e in range(E):
+            for al in range(d):
+                ke = a[e, 0] * grids[al] + (bb[e, 0] * q if al == 0 else 0.0)
+                expo = expo + w[e] * ke * ke
+        qarr = np.zeros((1, d)); qarr[0, 0] = q
+        brute = complex(np.sum(ff(ell, qarr) * np.exp(-D * expo))
+                        * dl ** d / (2 * np.pi) ** d)
+        assert abs(gh - brute) <= tol * (abs(brute) + 1e-30), \
+            f"{kind} d={d}: GH {gh} vs brute {brute}"

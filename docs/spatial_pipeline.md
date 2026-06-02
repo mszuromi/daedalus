@@ -96,7 +96,7 @@ headers.
 |---|---|---|
 | correlator order `k` | `k = 2` (two-point) | `k > 2` (needs the multi-point external FT) |
 | loop order `ℓ` | `0, 1, 2` (gated; higher works by construction but is costly) | automatic `ℓ ≥ 3` cost control |
-| dimension `d` | general (`d = 1` validated end-to-end; `d = 2` via brute-force oracle) | `d ≥ 2` tadpole UV-cutoff polish |
+| dimension `d` | `d ∈ {1,2,3}` for **all** vertex types — polynomial AND derivative/form-factor (the `d≥2` transverse-momentum average is the `L·d`-dim GH, validated vs brute `∫dᵈℓ` to 1e-14 at d=2) | `d ≥ 2` loops are more UV-divergent (the bare value is cutoff-sensitive — needs renormalisation, like the `d≥2` tadpole) |
 | vertices | simple polynomial `φⁿ` (any degree); **composite-derivative ∇/∂ vertices** `∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers), **per-leg-derivative** `(∂ₓφ)²` (KPZ), AND **any MIX of them** in one theory (per-node coupling-weighted form-factor table — Allen-Cahn⊕Model B⊕KPZ computes), generic in `ℓ` and `k` | field-degree≥3 composite (`∇²φ³`), genuine constant drift `v·∂ₓφ` in loops (integrator-gated), convolution/non-local vertices. NB a *same-signature* cross of two derivative vertices (e.g. Model B `∇²(φ²)` × KPZ `(∂φ)²`) gives a higher-degree loop form factor that can be **UV-divergent** — computed honestly, but the bare value is cutoff-dependent (needs renormalisation). |
 | initial condition | stationary | transient ICs |
 
@@ -145,8 +145,13 @@ single-type behaviour when one vertex.  **Remaining (genuine, non-bespoke)
 limits:** field-degree≥3 composite vertices (`∇²φ³` — a ≥3-leg/sunset topology,
 gated in `theory_compiler`); a genuine constant drift
 `v·∂ₓφ` with `V≠0` at the saddle (validated at the heat-kernel oracle level but
-not yet wired into the Symanzik loop reduction — bridge raises cleanly); `d≥2`
-transverse-momentum moments (gated in `full_integrator`).
+not yet wired into the Symanzik loop reduction — bridge raises cleanly).
+**`d=2`/`d=3` derivative vertices are now done** (the `L·d`-dim transverse-moment
+GH average, `_formfactor_average(…, spatial_dim)` + the per-component
+`diagram_form_factor(…, d)`; `Lap→−|p|²`, `Dx_i→i p_i`, KPZ `(∇h)²=Σ_i(∂_i h)²`)
+— see `docs/spatial_d_ge_2.md`. The remaining `d≥2` caveat is physical: the loop
+form factor raises the superficial degree of divergence, so the *bare* loop is
+cutoff-sensitive (needs renormalisation).
 
 ## Validation
 

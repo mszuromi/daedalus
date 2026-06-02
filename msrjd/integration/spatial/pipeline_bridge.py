@@ -402,7 +402,7 @@ def _diagram_is_bubble(td):
     return False
 
 
-def diagram_form_factor(td, vertex_terms, mode=None):
+def diagram_form_factor(td, vertex_terms, mode=None, d=1):
     """Assemble the momentum-space **form factor** ``F(q,ℓ)`` a derivative-vertex
     theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell``, any
     ``k``, and any MIX of derivative-vertex types** (NOT bubble-specific and NOT
@@ -454,13 +454,22 @@ def diagram_form_factor(td, vertex_terms, mode=None):
         in_mom.setdefault(v, []).append(mom)
     iverts = [n for n in out_mom if n not in leaves and len(out_mom[n]) == 1]
 
+    def _comp(p, alpha):
+        # component α of a scalar routed momentum p (linear in lᵢ,qⱼ): the SAME
+        # combo per spatial axis, lᵢ→lᵢ_α, qⱼ→qⱼ_α (d-independent routing).
+        return p.subs({s: _sp.Symbol(f'{s}_{alpha}') for s in p.free_symbols})
+
     def _f_chain(chain, p):
+        # d=1: scalar momentum p (lₐₚ→−p², ∂ₓ→ip).  d≥2: vector — Lap→−|p|²=
+        # −Σ_α p_α², Dx_i→i·p_i (the i-th component), built from per-axis symbols.
         f = _sp.Integer(1)
         for entry in chain:
             if entry[0] == 'Lap':
-                f *= -p ** 2
+                f *= (-p ** 2 if d == 1
+                      else -sum(_comp(p, a) ** 2 for a in range(d)))
             elif entry[0] == 'Dx':
-                f *= _sp.I * p           # ∂_x → i p  (IMAGINARY; product over legs)
+                ax = int(entry[1]) if len(entry) > 1 else 0
+                f *= (_sp.I * p if d == 1 else _sp.I * _comp(p, ax))
             else:
                 raise NotImplementedError(
                     f"diagram_form_factor: operator {entry[0]!r} not "
@@ -493,35 +502,49 @@ def diagram_form_factor(td, vertex_terms, mode=None):
 bubble_loop_form_factor = diagram_form_factor
 
 
-def _formfactor_callable(td, vertex_terms, mode=None):
+def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
-    diagram form factor (:func:`diagram_form_factor`).  ``ell`` is the loop
-    momentum ``(..., L)``, ``q`` the ``(n_ext,)`` external-momentum vector;
-    returns ``(...,)`` — possibly **complex** (``∂_x → ik``), so it is NOT forced
-    real here; the imaginary part is resolved (cancels / dropped) at the real-space
-    output.  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``), and in the MIX
-    of derivative-vertex types (``vertex_terms`` = the numeric-weight table, or a
-    bare ``op_chain`` tuple + ``mode=`` for the single-type call).
+    diagram form factor (:func:`diagram_form_factor`).  Possibly **complex**
+    (``∂_x → ik``) — NOT forced real here (the imaginary part is resolved at the
+    real-space output).  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``),
+    the MIX of derivative-vertex types, AND the spatial dimension ``d``.
 
-    The table's weights MUST already be numeric (couplings substituted) — the
-    lambdified ``F`` carries only the routing symbols ``ℓ₀…q₀…`` (the SAME basis
-    the C-stack descriptor's edge routing uses — verified to 1e-14 at L=2),
-    mapping loop symbol ``lᵢ → ell[...,i]`` and external ``qⱼ → q[j]`` by index.
-    ``F=0`` → zeros."""
+    The table's weights MUST already be numeric (couplings substituted).
+    ``d=1``: ``ell`` is ``(...,L)``, ``q`` is ``(n_ext,)`` — symbols ``lᵢ→ell[...,i]``,
+    ``qⱼ→q[j]``.  ``d≥2``: ``ell`` is ``(...,L,d)``, ``q`` is ``(n_ext,d)`` — the
+    per-axis symbols ``lᵢ_α → ell[...,i,α]``, ``qⱼ_α → q[j,α]``.  ``F=0`` → zeros."""
     import sympy as _sp
-    F = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode))
+    F = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode, d=d))
+    if d == 1:
+        if F == 0:
+            return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
+        ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
+        qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
+        fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
+        nl, nq = len(ls), len(qs)
+
+        def ff(ell, q):
+            qvec = np.atleast_1d(np.asarray(q, dtype=float))
+            args = ([ell[..., i] for i in range(nl)]
+                    + [float(qvec[j]) for j in range(nq)])
+            return fn(*args) * np.ones(ell.shape[:-1])   # complex if F has i (∂_x)
+        return ff
+
+    # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
     if F == 0:
-        return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
-    ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
-    qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
-    fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
-    nl, nq = len(ls), len(qs)
+        return lambda ell, q: np.zeros(ell.shape[:-2], dtype=complex)
+    parsed = []                       # (symbol, kind 'l'/'q', index, axis)
+    for s in sorted(F.free_symbols, key=str):
+        nm = str(s)
+        idx, ax = nm[1:].split('_')
+        parsed.append((s, nm[0], int(idx), int(ax)))
+    fn = _sp.lambdify(tuple(s for s, *_ in parsed), F, 'numpy')
 
     def ff(ell, q):
-        qvec = np.atleast_1d(np.asarray(q, dtype=float))
-        args = ([ell[..., i] for i in range(nl)]
-                + [float(qvec[j]) for j in range(nq)])
-        return fn(*args) * np.ones(ell.shape[:-1])     # complex if F has i (∂_x)
+        qarr = np.asarray(q, dtype=float)                # (n_ext, d)
+        args = [(ell[..., idx, ax] if kind == 'l' else float(qarr[idx, ax]))
+                for (_s, kind, idx, ax) in parsed]
+        return fn(*args) * np.ones(ell.shape[:-2])
     return ff
 
 
@@ -671,6 +694,7 @@ def compute_spatial_correlator_generic(
                                     verbose=verbose, header=None)
     # map every enumerated diagram (all loop orders 1..max_ell) → (descriptor,
     # M(Γ)·prefactor value at saddle).  No filter, no shortcut.
+    _d = int(prop.get('spatial_dim', 1))         # form factors are d-aware (vector legs)
     descrs = []
     for ell in range(1, max_ell + 1):
         for td, pre in by_ell.get(ell, []):
@@ -678,7 +702,7 @@ def compute_spatial_correlator_generic(
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
                 continue                             # q-dependent prefactor (skip)
-            ff = _formfactor_callable(td, vterms) if vterms else None
+            ff = _formfactor_callable(td, vterms, d=_d) if vterms else None
             descrs.append((diagram_to_cstack(td), pv, ff))
     if not descrs:
         raise SpatialPropagatorError('no loop diagrams were enumerated.')
