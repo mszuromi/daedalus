@@ -590,10 +590,23 @@ def _live_bubbles(records, num_params):
 _SPATIAL_JOB = {}
 
 
+def _pin_blas_single_thread():
+    """Pin BLAS/OpenMP to ONE thread.  CRITICAL for fork-based parallelism: the
+    spatial workers do heavy batched linalg (``einsum``/``cholesky``/``solve``/
+    ``det``), and without this each of N fork workers spawns its OWN ~cores-thread
+    BLAS pool → N×cores threads → oversubscription that can thrash/FREEZE the
+    machine.  Set in the parent before fork (children inherit) AND in the worker."""
+    import os
+    for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+               'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ[_v] = '1'
+
+
 def _spatial_q_worker(iq_q):
     """Parallel unit: the per-loop-order δC(q,τ) correction at ONE external
     momentum q (all τ, all live diagrams).  Returns ``(iq, {ell: (n_τ,) complex})``.
     Diagrams are summed in live order → bit-identical to the serial accumulation."""
+    _pin_blas_single_thread()
     import numpy as _np
     from msrjd.integration.spatial.full_integrator import diagram_correlator
     iq, q = iq_q
@@ -611,7 +624,7 @@ def _spatial_q_worker(iq_q):
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q_cut=30.0, n_q=64, max_ell=1,
-        parallel=True, n_workers=None):
+        parallel=False, n_workers=None):     # OPT-IN: fork-based MP (see _pin_blas_single_thread)
     """Spatial correlator ``C(x,τ) = C₀ + δC`` to loop order ``max_ell`` via the
     **full-diagram integrator** — the ONE genuine path.
 
@@ -774,13 +787,19 @@ def compute_spatial_correlator_generic(
     # the _grid closure; this is the embarrassingly-parallel work unit (q-point).
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
     import os
-    _ncap = n_workers if n_workers is not None else (os.cpu_count() or 4)
+    # Cap workers: with BLAS pinned to 1 thread/worker (below), N workers = N
+    # threads, so stay ≤ cpu_count and leave ~2 cores of headroom; hard-cap at 8
+    # to bound transient fork memory on the heavy (d≥2, ell=2) cases.
+    _cores = os.cpu_count() or 4
+    _ncap = (n_workers if n_workers is not None
+             else min(8, max(1, _cores - 2)))
     _ntasks = len(qg) * len(live)
     # fork+join costs ~50-200 ms — only parallelize when there's real work
     # (mirrors the temporal path's small-batch serial guard).
     if parallel and len(qg) > 1 and _ntasks >= max(8, 2 * _ncap):
         import multiprocessing as mp
         os.environ.setdefault('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES')  # macOS fork-after-init
+        _pin_blas_single_thread()                     # parent → forked children inherit
         _SPATIAL_JOB.clear()
         _SPATIAL_JOB.update(dict(live_g=live_g, A0=A0, B0=B0, d=d, taus=taus))
         n_w = min(_ncap, len(qg))
