@@ -112,7 +112,24 @@ isotropic). 25/25 regression. Original plan below:
 4. **Validate:** Allen-Cahn φ⁴ `δC(x)` matches the current path to FT accuracy;
    tree `C₀(x)` exact (closed form).
 
-**Phase 2 — Cases B & C (derivative vertices): joint `(ℓ,q)` Gaussian.**
+**Phase 2 — Cases B & C (derivative vertices): joint `(ℓ,q)` Gaussian.** ✅ DONE
+(June 2026).  `_formfactor_average_x` (the **polynomial-fit route**): `P(q)=⟨F⟩_ℓ`
+is a polynomial in `q` of degree ≤ `total_degree(F)` (the ℓ-mean `ℓ̄=−M⁻¹Nq` is
+linear in `q`) — interpolate it from `q_poly_deg+1` ℓ-Gauss–Hermite evals on a
+scaled Vandermonde, then `FF(x)=Σ_n p_n·E[(u+ix/2B)^n]` with the closed-form
+heat-kernel `q`-moments `u~N(0,1/2B)`.  Wired into `diagram_kinematic(xs=…)`
+(formfactor branch) + `diagram_correlator_x`; `compute_spatial_correlator_generic`
+routes **d=1 derivative** vertices through it (gate `_use_analytic=_all_plain or
+d==1`).  `SPATIAL_FORCE_NUMERICAL_FT=1` (+ `SPATIAL_Q_CUT`/`SPATIAL_N_Q`) keeps the
+numerical-FT path as the validated cross-check reference.
+- **Validated (diagram level, `δC(x)` analytic vs numerical FT):** KPZ `(∇φ)²`
+  (Case C) ≤ 1e-4; Model B `∇²(φ²)` (Case B) the numerical FT **converges** to the
+  analytic value as `q_cut→∞` (`0.0318` at `q_cut=40` → `0.0333724` at `q_cut=80`
+  vs analytic `0.0333725` — the analytic IFT is exact; the discrepancy was the
+  truncated `+¼q⁴` tail, NOT a bug).  `test_analytic_ift_derivative_vs_numerical_ft`.
+- **Validated (e2e via `compute_cumulants`, `max_ell=1`):** KPZ `C(0,0)=0.501091`
+  (hits the established **0.5011**), Model B `C(0,0)=0.530910` — real, smooth,
+  ~3 s (no q-grid).  Original plan below:
 1. `_formfactor_average_x`: generalize `_formfactor_average` — average `F` over
    the joint `(ℓ,q)` Gaussian with `q ~ N(ix/2B, 1/2B)`, returning `(n_x,)` ×
    heat kernel. Analytic Gaussian-moment (Wick) route on the symbolic `F`

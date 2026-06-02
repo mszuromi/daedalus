@@ -522,3 +522,80 @@ def test_analytic_ift_vs_numerical_ft():
     for i, x in enumerate(xs):
         assert abs(an[i] - num[i]) <= 1e-4 * (abs(num[i]) + 1e-12), \
             f"analytic IFT {an[i]} vs numerical FT {num[i]} at x={x}"
+
+
+@pytest.mark.parametrize('kind,action,xs,qcut,nq,nt,ns,tol', [
+    # Case C — per-leg derivative (KPZ (∇φ)²): F = ℓ²q(ℓ−q); the partial
+    # cancellation in P(q)=−⅛q⁴+… keeps a light tail → modest q-grid converges.
+    ('kpz', 'ht*(Dt(h)+mu*h-D*Lap(h)-(c/2)*Dx(h,0)^2)-T*ht^2',
+     (0.0, 0.5, 1.0, 2.0), 50.0, 1500, 14, 12, 2e-3),
+    # Case B — composite derivative (Model B ∇²(φ²)): F = q²(ℓ−q)²; P(q)=+¼q⁴+…
+    # (reinforcing tail) → the numerical FT needs q_cut≳80 to converge to the
+    # analytic value (the analytic IFT has NO such truncation — it is exact).
+    ('modelb', 'ht*(Dt(h)+mu*h-D*Lap(h)-c*Lap(h^2))-T*ht^2',
+     (0.0, 1.0), 85.0, 2200, 14, 12, 6e-3),
+])
+def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt, ns, tol):
+    """Phase 2 — the analytic heat-kernel IFT of a DERIVATIVE-vertex form factor
+    (``diagram_correlator_x`` with ``formfactor``: joint ``(ℓ,q)`` Gaussian →
+    polynomial-fit + closed-form heat-kernel q-moments) reproduces the numerical
+    ``q→x`` FT of ``diagram_correlator`` (same form factor) in the q_cut→∞ limit,
+    with NO q-grid.  KPZ ``(∇φ)²`` (Case C) and Model B ``∇²(φ²)`` (Case B), 1-loop.
+
+    Both paths share the SAME causal-chamber time quadrature (only the q-handling
+    differs: closed-form moments vs trapz), so a modest ``n_t/n_s`` keeps the
+    comparison exact while staying fast — the time-quadrature error cancels."""
+    import numpy as np, math
+    from sage.all import SR
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_correlator, diagram_correlator_x)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    tb = (TheoryBuilder(kind, n_populations=0).physical_field('h', spatial_dim=1)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('c', default=0.3, domain='real')
+          .parameter('T', default=1.0, domain='positive'))
+    rhs = 'c*Laplacian*h^2' if kind == 'modelb' else '0'
+    b = (tb.equation(lhs='(Dt+mu-D*Laplacian)*h', rhs=rhs)
+         .set_action_text(action).operator_ir()
+         .boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=4); ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('h', 1), ('h', 1)], pidx)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('c'): 0.3,
+            SR.var('T'): 1.0, SR.var('hstar1'): 0.0}
+    vt = [{'weight': float(SR(t['weight']).subs(base)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    diags = [(diagram_to_cstack(td), float(SR(p).subs(base)),
+              _formfactor_callable(td, vt, d=1))
+             for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
+    assert diags, f'no live {kind} 1-loop diagram'
+    mu = D = 1.0
+    xs_a = np.array(xs)
+    an = np.zeros(len(xs_a), dtype=complex)
+    for dd, pv, ff in diags:                                  # analytic (no q-grid)
+        an += diagram_correlator_x(dd, pv, xs_a, 0.0, mu, D, spatial_dim=1,
+                                   n_t=nt, n_s=ns, formfactor=ff)
+    qg = np.linspace(0.0, qcut, nq)                           # numerical FT reference
+    num = np.zeros(len(xs_a))
+    for dd, pv, ff in diags:
+        dCq = np.array([diagram_correlator(dd, pv, float(q), 0.0, mu, D,
+                                           spatial_dim=1, n_t=nt, n_s=ns,
+                                           formfactor=ff) for q in qg])
+        num += np.array([np.trapz(np.cos(qg * x) * np.real(dCq), qg) / math.pi
+                         for x in xs_a])
+    for i, x in enumerate(xs_a):
+        assert abs(np.real(an[i]) - num[i]) <= tol * (abs(num[i]) + 1e-12), \
+            f"{kind} analytic IFT {np.real(an[i]):.7f} vs numerical FT " \
+            f"{num[i]:.7f} at x={x} (rel {abs(np.real(an[i])-num[i])/(abs(num[i])+1e-30):.2e})"

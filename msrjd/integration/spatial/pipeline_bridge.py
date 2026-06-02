@@ -551,6 +551,12 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         # whose per-Z degree reaches the total degree.  This is the cheap, exact
         # speedup (e.g. 6 → 2-3 ⇒ the GH grid shrinks (n/6)^L).
         ff.gh_order_needed = _min_gh_order(F, ls)
+        # q-degree of ⟨F⟩_ℓ ≤ total degree of F (the ℓ-average turns ℓ̄∝q into q):
+        # the number of q-nodes for the analytic-IFT polynomial fit (Phase 2).
+        try:
+            ff.q_poly_deg = int(_sp.Poly(F, *(ls + qs)).total_degree()) if (ls or qs) else 0
+        except Exception:
+            ff.q_poly_deg = 8
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
@@ -762,6 +768,12 @@ def compute_spatial_correlator_generic(
 
     d = int(prop.get('spatial_dim', 1))
     taus = np.asarray(tau_grid, dtype=float)
+    # SPATIAL_Q_CUT / SPATIAL_N_Q env overrides — for the numerical-FT cross-check
+    # only (derivative-vertex form factors with a q⁴ tail need a large q_cut for
+    # the truncated trapz to converge; the analytic path has no such limit).
+    import os as _os2
+    q_cut = float(_os2.environ.get('SPATIAL_Q_CUT', q_cut))
+    n_q = int(_os2.environ.get('SPATIAL_N_Q', n_q))
     qg = (np.linspace(0.0, q_cut, n_q) if d == 1
           else np.linspace(q_cut / (4 * n_q), q_cut, n_q))
 
@@ -772,20 +784,34 @@ def compute_spatial_correlator_generic(
     # whole cumulative progression; no need to re-run for each order).
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
     _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns)
+    # ANALYTIC heat-kernel IFT covers: plain vertices (Phase 1, Case A) AND — at
+    # d=1 — derivative-vertex form factors (Phase 2, Cases B/C: joint (ℓ,q)
+    # Gaussian → polynomial-fit + closed-form heat-kernel q-moments).  The d≥2
+    # transverse handling for derivative vertices is Phase 3 → numerical FT.
+    # SPATIAL_FORCE_NUMERICAL_FT=1 keeps the numerical-FT path reachable as the
+    # validated cross-check reference (it is exact only in the q_cut→∞ / n_q→∞
+    # limit; the analytic path has no such truncation).
+    import os as _os
+    _force_num = _os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
+    _use_analytic = (_all_plain or d == 1) and not _force_num
     dCx_by_ell = {el: np.zeros((len(taus), len(xg))) for el in ells}   # real-space δC(τ,x)
 
-    if _all_plain:
-        # ── ANALYTIC heat-kernel IFT (Phase 1, Case A — plain vertices) ──
+    if _use_analytic:
+        # ── ANALYTIC heat-kernel IFT ──
         # δC(x,τ) directly: each Schwinger/chamber sample's q-Gaussian becomes a
-        # heat kernel (4πB)^{−d/2}e^{−|x|²/4B}, summed over the (single) chamber
-        # quadrature.  NO q-grid, NO numerical FT — exact, no ringing, no n_q/q_cut.
+        # heat kernel (4πB)^{−d/2}e^{−|x|²/4B} (× the form-factor q-moments for a
+        # derivative vertex), summed over the (single) chamber quadrature.  NO
+        # q-grid, NO numerical FT — exact, no ringing, no n_q/q_cut.
         if verbose:
-            print('        analytic heat-kernel IFT (plain vertices) — '
+            _kind = ('plain vertices' if _all_plain
+                     else 'plain + d=1 derivative vertices')
+            print(f'        analytic heat-kernel IFT ({_kind}) — '
                   'no q-grid / no FT (exact)')
         for dd, pv, ff, el, nt, ns in live_g:
             for it, tau in enumerate(taus):
                 dCx_by_ell[el][it, :] += diagram_correlator_x(
-                    dd, pv, xg, float(tau), A0, B0, spatial_dim=d, n_t=nt, n_s=ns)
+                    dd, pv, xg, float(tau), A0, B0, spatial_dim=d,
+                    n_t=nt, n_s=ns, formfactor=ff)
     else:
         # ── NUMERICAL q→x FT (derivative-vertex form factors; Phase 2 will do
         #    these analytically via the joint (ℓ,q) Gaussian) ──
