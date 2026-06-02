@@ -468,7 +468,10 @@ def test_spatial_parallel_matches_serial():
               fundamental={'mu': 1, 'D': 1, 'lam': 0.1, 'T': 1},
               tau_max=0.0, tau_step=1.0, spatial_grid=np.linspace(0, 4, 7),
               use_cache=False, verbose=False, mf_dae_n_starts=2)
-    cs = np.asarray(compute_cumulants(ac, max_ell=1, parallel=False, **kw)['C_tau_x'])
-    cp = np.asarray(compute_cumulants(ac, max_ell=1, parallel=True, **kw)['C_tau_x'])
+    # spatial MP is opt-in via spatial_parallel (default off); cap at 2 workers
+    # (thread-pinned → 2 threads, safe in CI) to actually exercise the fork path.
+    cs = np.asarray(compute_cumulants(ac, max_ell=1, spatial_parallel=False, **kw)['C_tau_x'])
+    cp = np.asarray(compute_cumulants(ac, max_ell=1, spatial_parallel=True,
+                                      n_workers=2, **kw)['C_tau_x'])
     assert np.array_equal(cs, cp), \
-        f'parallel != serial: max|Δ|={np.max(np.abs(cp - cs)):.2e}'
+        f'spatial parallel != serial: max|Δ|={np.max(np.abs(cp - cs)):.2e}'
