@@ -545,6 +545,16 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         args = [(ell[..., idx, ax] if kind == 'l' else float(qarr[idx, ax]))
                 for (_s, kind, idx, ax) in parsed]
         return fn(*args) * np.ones(ell.shape[:-2])
+
+    # Gauss–Hermite is EXACT for a polynomial at order ≥ ⌈(deg+1)/2⌉ in each
+    # variable; the d≥2 grid is gh_order^{L·d}, so the minimal exact order is a
+    # big speedup (e.g. a 1-loop form factor is degree ≤4 ⇒ order 3, not 6).
+    try:
+        loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
+        deg = max((int(_sp.degree(F, s)) for s in loopsyms), default=0)
+        ff.gh_order_needed = max(1, deg // 2 + 1)
+    except Exception:
+        pass                                             # non-polynomial → caller's default
     return ff
 
 

@@ -21,7 +21,8 @@ these subdirectories and its relative data paths still resolve.
 | `pipeline_burgers_1d_sim_compare` | **Burgers** — `−(λ/2)∂ₓ(φ²)`, the **composite-∂ₓ** vertex (imaginary form factor `∂ₓ→ik`; saddle-drift heat kernel). |
 | `pipeline_kpz_1d_sim_compare` | **KPZ** — `(λ/2)(∂ₓh)²`, the **per-leg-∂ₓ** vertex (`mode='perleg'`, `F=ℓ²q(ℓ−q)`); includes the excess-velocity `v∞` cross-check (~1%). |
 | `pipeline_kpz_2d_sim_compare` | **KPZ in d=2** — `(λ/2)(∇h)²=Σ_i(∂_i h)²`: exercises the d≥2 form-factor machinery (the `L·d`-dim transverse-moment GH average, validated vs brute `∫d²ℓ` to 1e-14) + a 2-D simulator; excess-velocity check ~0.1%. |
-| `pipeline_combined_allencahn_modelb_kpz_1d_sim_compare` | **Combined model** — `−λφ³ + g∇²(φ²) + (κ/2)(∂ₓφ)²` (Allen-Cahn ⊕ Model B ⊕ KPZ). The **simulation runs the full SPDE**; the diagrammatic theory is the multi-derivative-vertex *frontier* (mixing composite + per-leg vertices hits the single-mode gate — the cell catches it so the notebook runs). |
+| `pipeline_combined_allencahn_modelb_kpz_1d_sim_compare` | **Combined model (d=1)** — `−λφ³ + g∇²(φ²) + (κ/2)(∂ₓφ)²` (Allen-Cahn ⊕ Model B ⊕ KPZ). Now **computes** through the per-vertex form-factor table (3 vertex types, mixed composite/per-leg modes in one theory) + the full 3-D SPDE sim. |
+| `pipeline_combined_allencahn_modelb_kpz_3d_sim_compare` | **Combined model in d=3** — the same 3 vertices at three spatial dimensions: stresses the per-vertex table + the `L·d`-dim transverse-moment loop average + the 3-D simulator all at once. Runs end-to-end (tree ~2s, 1-loop ~150s); the 1-loop is UV-divergent (the same-signature Model B × KPZ cross), reported honestly (off-scale, cutoff-set). |
 
 The notebooks cover one representative per model class: **free** (linear diffusion / 2D field),
 **polynomial reaction `φⁿ`** (Allen-Cahn φ⁴/φ⁶, 2D reaction-diffusion), **composite-derivative**

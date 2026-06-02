@@ -289,8 +289,11 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             momfac, Mb, Nb, okb = _momentum_factor_batch(
                 a, b, w_batch, q_vec, D, spatial_dim, return_gaussian=True)
             if Mb is not None:                               # L>=1 (loop diagram)
+                # The polynomial form factor needs only its minimal exact GH order
+                # per variable (the d≥2 grid is gh_order^{L·d} — a big saving).
+                eff_gh = getattr(formfactor, 'gh_order_needed', None) or gh_order
                 momfac = momfac * _formfactor_average(
-                    formfactor, Mb, Nb, q_vec, D, okb, gh_order,
+                    formfactor, Mb, Nb, q_vec, D, okb, eff_gh,
                     spatial_dim=spatial_dim)
         total += np.sum(wfull * np.exp(-mu * mu_resid) * momfac)
     # `formfactor=None` → real (unchanged float return); a derivative/∇ form
