@@ -583,9 +583,35 @@ def _live_bubbles(records, num_params):
 # ── 4. the GENERIC 1-loop correlator — sum ALL enumerated diagrams ────
 #    (the ONE path; the bespoke per-self-energy routines it replaced — the
 #     constant-mass-shift tadpole and the Stage-C.5 bubble — have been removed.)
+# Module-global handoff for the fork-based spatial integration workers: the
+# C-stack descriptors + lambdified form-factor callables are unpicklable closures,
+# so a fork()ed worker inherits them via process memory (the same trick the
+# temporal Phase-J path uses with _WORKER_STATE).  Set by the parent before fork.
+_SPATIAL_JOB = {}
+
+
+def _spatial_q_worker(iq_q):
+    """Parallel unit: the per-loop-order δC(q,τ) correction at ONE external
+    momentum q (all τ, all live diagrams).  Returns ``(iq, {ell: (n_τ,) complex})``.
+    Diagrams are summed in live order → bit-identical to the serial accumulation."""
+    import numpy as _np
+    from msrjd.integration.spatial.full_integrator import diagram_correlator
+    iq, q = iq_q
+    J = _SPATIAL_JOB
+    taus, A0, B0, d = J['taus'], J['A0'], J['B0'], J['d']
+    acc = {}
+    for dd, pv, ff, el, nt, ns in J['live_g']:
+        col = _np.array([diagram_correlator(dd, pv, float(q), float(t), A0, B0,
+                                            spatial_dim=d, n_t=nt, n_s=ns, formfactor=ff)
+                         for t in taus], dtype=complex)
+        acc[el] = acc[el] + col if el in acc else col
+    return iq, acc
+
+
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
-        verbose=False, q_cut=30.0, n_q=64, max_ell=1):
+        verbose=False, q_cut=30.0, n_q=64, max_ell=1,
+        parallel=True, n_workers=None):
     """Spatial correlator ``C(x,τ) = C₀ + δC`` to loop order ``max_ell`` via the
     **full-diagram integrator** — the ONE genuine path.
 
@@ -744,13 +770,39 @@ def compute_spatial_correlator_generic(
     # (the ℓ=L run already contains every ℓ<L diagram, so a single call yields the
     # whole cumulative progression; no need to re-run for each order).
     dC_by_ell = {el: np.zeros((len(qg), len(taus)), dtype=complex) for el in ells}
-    for iq, q in enumerate(qg):
-        for it, tau in enumerate(taus):
-            for dd, pv, ff, el in live:
-                nt, ns = _grid(dd)
-                dC_by_ell[el][iq, it] += diagram_correlator(
-                    dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
-                    n_t=nt, n_s=ns, formfactor=ff)
+    # precompute each diagram's adaptive (n_t,n_s) grid so the workers don't need
+    # the _grid closure; this is the embarrassingly-parallel work unit (q-point).
+    live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
+    import os
+    _ncap = n_workers if n_workers is not None else (os.cpu_count() or 4)
+    _ntasks = len(qg) * len(live)
+    # fork+join costs ~50-200 ms — only parallelize when there's real work
+    # (mirrors the temporal path's small-batch serial guard).
+    if parallel and len(qg) > 1 and _ntasks >= max(8, 2 * _ncap):
+        import multiprocessing as mp
+        os.environ.setdefault('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES')  # macOS fork-after-init
+        _SPATIAL_JOB.clear()
+        _SPATIAL_JOB.update(dict(live_g=live_g, A0=A0, B0=B0, d=d, taus=taus))
+        n_w = min(_ncap, len(qg))
+        if verbose:
+            print(f'        parallel: {n_w} fork worker(s) over {len(qg)} q-points '
+                  f'× {len(live)} live diagram(s)')
+        try:
+            ctx = mp.get_context('fork')
+            with ctx.Pool(processes=n_w) as pool:
+                results = pool.map(_spatial_q_worker, list(enumerate(qg)))
+        finally:
+            _SPATIAL_JOB.clear()
+        for iq, acc in results:                       # aggregate (q-points independent)
+            for el, colv in acc.items():
+                dC_by_ell[el][iq, :] = colv
+    else:                                             # serial (small batch / parallel off)
+        for iq, q in enumerate(qg):
+            for it, tau in enumerate(taus):
+                for dd, pv, ff, el, nt, ns in live_g:
+                    dC_by_ell[el][iq, it] += diagram_correlator(
+                        dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
+                        n_t=nt, n_s=ns, formfactor=ff)
 
     def _ft_to_x(dC_qt):                              # (n_q,n_τ) → (n_τ,n_x) real-space δC
         add = np.zeros((len(taus), len(xg)), dtype=complex)

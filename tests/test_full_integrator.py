@@ -447,3 +447,28 @@ def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
                         * dl ** d / (2 * np.pi) ** d)
         assert abs(gh - brute) <= tol * (abs(brute) + 1e-30), \
             f"{kind} d={d}: GH {gh} vs brute {brute}"
+
+
+def test_spatial_parallel_matches_serial():
+    """The fork-parallel spatial integration (over q-points) is BIT-IDENTICAL to
+    serial — same diagram-summation order, q-points independent.  Mirrors the
+    temporal test_phase_J_total_C_batch_parallel_matches_serial."""
+    import numpy as np
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import compute_cumulants
+    ac = (TheoryBuilder('ac-par', n_populations=0).physical_field('phi', spatial_dim=1)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('lam', default=0.1, domain='positive')
+          .parameter('T', default=1.0, domain='positive')
+          .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+          .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
+          .boundary('infinite').initial('stationary').build())
+    kw = dict(k=2, external_fields=[('phi', 1), ('phi', 1)],
+              fundamental={'mu': 1, 'D': 1, 'lam': 0.1, 'T': 1},
+              tau_max=0.0, tau_step=1.0, spatial_grid=np.linspace(0, 4, 7),
+              use_cache=False, verbose=False, mf_dae_n_starts=2)
+    cs = np.asarray(compute_cumulants(ac, max_ell=1, parallel=False, **kw)['C_tau_x'])
+    cp = np.asarray(compute_cumulants(ac, max_ell=1, parallel=True, **kw)['C_tau_x'])
+    assert np.array_equal(cs, cp), \
+        f'parallel != serial: max|Δ|={np.max(np.abs(cp - cs)):.2e}'

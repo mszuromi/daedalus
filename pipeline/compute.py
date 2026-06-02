@@ -426,6 +426,7 @@ def compute_cumulants(
             C_tau_x, sp_info = compute_spatial_correlator_generic(
                 ft, model, prop, num_params, external_fields,
                 tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
+                parallel=parallel, n_workers=n_workers,
             )
         else:
             C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
