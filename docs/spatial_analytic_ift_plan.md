@@ -94,7 +94,14 @@ The chamber/Schwinger quadrature `∫dw` runs **once per diagram**; the
 **Keep the numerical-FT path as the validated reference** (behind a flag) for
 cross-checks throughout.
 
-**Phase 1 — Case A (plain vertices), the clean win.**
+**Phase 1 — Case A (plain vertices), the clean win.** ✅ DONE (June 2026).
+`_symanzik_kernel_batch` + `diagram_kinematic(xs=…)` heat-kernel path +
+`diagram_{value,correlator}_x` / `correlator_2pt_x`; `compute_spatial_correlator_
+generic` routes all-plain theories through it (gate `_all_plain`), retiring the
+q-grid + FT. Validated: analytic vs numerical FT ≤1e-4 (`test_analytic_ift_vs_
+numerical_ft`); Allen-Cahn φ⁴ e2e exact (0.5000/0.4625/0.4707), `max_ell=2`
+**~17 min → 16.6 s** (the `n_q` factor gone); works at d≥2 (the heat kernel is
+isotropic). 25/25 regression. Original plan below:
 1. `_symanzik_gaussian_batch` (or extend `_momentum_factor_batch` return): per
    sample give `(pref, Qeff, M, N, ok)` — the un-collapsed Gaussian.
 2. `diagram_kinematic_x(descr, xs, external_times, mu, D, spatial_dim)`: same

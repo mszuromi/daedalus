@@ -632,7 +632,8 @@ def compute_spatial_correlator_generic(
     Returns ``(C1_tau_x, info)``.
     """
     from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.full_integrator import diagram_correlator
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_correlator, diagram_correlator_x)
 
     if verbose:
         print('[5/7] (spatial) Certify tree modes (A,B,N) vs the shared-pipeline '
@@ -769,74 +770,81 @@ def compute_spatial_correlator_generic(
     # δC(q,τ) accumulated PER loop order — ONE integration pass over all diagrams
     # (the ℓ=L run already contains every ℓ<L diagram, so a single call yields the
     # whole cumulative progression; no need to re-run for each order).
-    dC_by_ell = {el: np.zeros((len(qg), len(taus)), dtype=complex) for el in ells}
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
-    # ──────────────────────────────────────────────────────────────────────
-    # THREAD-based parallelism over (q, diagram) work units.  This is SAFE in a
-    # Jupyter kernel on macOS: threads do NOT fork (the fork-Pool crash — fork
-    # after matplotlib/Cocoa init — cannot occur).  The per-diagram cost is numpy
-    # (einsum / cholesky / solve + the chamber quadrature + the GH form-factor
-    # average), and numpy RELEASES THE GIL during those, so threads give real
-    # multi-core speedup.  Each task computes one diagram's (n_τ,) column at one q;
-    # results are accumulated IN THE MAIN THREAD in task order → deterministic and
-    # bit-identical to the serial sum.  (Process/fork parallelism is forbidden
-    # here — see the project note.)  Falls back to serial below the batch
-    # threshold or when parallel=False.
-    import os
-    _cores = os.cpu_count() or 4
-    _nw = (int(n_workers) if n_workers is not None else min(8, max(1, _cores)))
-    _ntasks = len(qg) * len(live)
-    # SMART GATE: threading only pays when each task is big-array numpy with the
-    # GIL released — measured ~2.5× (4 workers) at L≥2 (large GH grid + chamber
-    # batch), but 0.7× (SLOWER) at L=1 (tiny 1×1 matrices, dispatch-overhead-
-    # bound, GIL-held).  So thread only when a heavy (loop-order ≥2) diagram is
-    # present; stay serial for the cheap ℓ=1 case.
-    _heavy = any(rec[3] >= 2 for rec in live_g)        # rec = (dd,pv,ff,el,nt,ns)
-    if parallel and _heavy and _nw > 1 and _ntasks >= max(8, 2 * _nw):
-        from concurrent.futures import ThreadPoolExecutor
+    _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns)
+    dCx_by_ell = {el: np.zeros((len(taus), len(xg))) for el in ells}   # real-space δC(τ,x)
 
-        def _one(task):                               # one diagram's column at one q
-            iq, q, dd, pv, ff, el, nt, ns = task
-            col = np.array(
-                [diagram_correlator(dd, pv, q, float(tau), A0, B0, spatial_dim=d,
-                                    n_t=nt, n_s=ns, formfactor=ff) for tau in taus],
-                dtype=complex)
-            return iq, el, col
-
-        tasks = [(iq, float(q)) + rec
-                 for iq, q in enumerate(qg) for rec in live_g]
+    if _all_plain:
+        # ── ANALYTIC heat-kernel IFT (Phase 1, Case A — plain vertices) ──
+        # δC(x,τ) directly: each Schwinger/chamber sample's q-Gaussian becomes a
+        # heat kernel (4πB)^{−d/2}e^{−|x|²/4B}, summed over the (single) chamber
+        # quadrature.  NO q-grid, NO numerical FT — exact, no ringing, no n_q/q_cut.
         if verbose:
-            print(f'        parallel: {_nw} THREAD(s) over {len(qg)} q-points × '
-                  f'{len(live)} diagram(s) — no fork (GIL released in numpy)')
-        with ThreadPoolExecutor(max_workers=_nw) as ex:
-            for iq, el, col in ex.map(_one, tasks):   # main-thread accumulate, in order
-                dC_by_ell[el][iq, :] += col
-    else:
-        for iq, q in enumerate(qg):
+            print('        analytic heat-kernel IFT (plain vertices) — '
+                  'no q-grid / no FT (exact)')
+        for dd, pv, ff, el, nt, ns in live_g:
             for it, tau in enumerate(taus):
-                for dd, pv, ff, el, nt, ns in live_g:
-                    dC_by_ell[el][iq, it] += diagram_correlator(
-                        dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
-                        n_t=nt, n_s=ns, formfactor=ff)
+                dCx_by_ell[el][it, :] += diagram_correlator_x(
+                    dd, pv, xg, float(tau), A0, B0, spatial_dim=d, n_t=nt, n_s=ns)
+    else:
+        # ── NUMERICAL q→x FT (derivative-vertex form factors; Phase 2 will do
+        #    these analytically via the joint (ℓ,q) Gaussian) ──
+        dC_by_ell = {el: np.zeros((len(qg), len(taus)), dtype=complex) for el in ells}
+        import os
+        _cores = os.cpu_count() or 4
+        _nw = (int(n_workers) if n_workers is not None else min(8, max(1, _cores)))
+        _ntasks = len(qg) * len(live)
+        # SMART thread gate: threading pays only at L≥2 (big-array numpy, GIL
+        # released — ~2.5×); L=1 is dispatch-bound (0.7×, slower).  Threads only
+        # (no fork — safe in Jupyter/macOS); main-thread accumulate → bit-identical.
+        _heavy = any(rec[3] >= 2 for rec in live_g)
+        if parallel and _heavy and _nw > 1 and _ntasks >= max(8, 2 * _nw):
+            from concurrent.futures import ThreadPoolExecutor
 
-    def _ft_to_x(dC_qt):                              # (n_q,n_τ) → (n_τ,n_x) real-space δC
-        add = np.zeros((len(taus), len(xg)), dtype=complex)
-        if d == 1:                                    # δC(x,τ)=(1/π)∫₀^∞cos(qx)δC dq
-            for it in range(len(taus)):
-                col = dC_qt[:, it]
-                for ix, x in enumerate(xg):
-                    add[it, ix] = np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+            def _one(task):                           # one diagram's column at one q
+                iq, q, dd, pv, ff, el, nt, ns = task
+                col = np.array(
+                    [diagram_correlator(dd, pv, q, float(tau), A0, B0, spatial_dim=d,
+                                        n_t=nt, n_s=ns, formfactor=ff) for tau in taus],
+                    dtype=complex)
+                return iq, el, col
+
+            tasks = [(iq, float(q)) + rec
+                     for iq, q in enumerate(qg) for rec in live_g]
+            if verbose:
+                print(f'        parallel: {_nw} THREAD(s) over {len(qg)} q-points × '
+                      f'{len(live)} diagram(s) — no fork (GIL released in numpy)')
+            with ThreadPoolExecutor(max_workers=_nw) as ex:
+                for iq, el, col in ex.map(_one, tasks):
+                    dC_by_ell[el][iq, :] += col
         else:
-            from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
-            for it in range(len(taus)):
-                add[it, :] = radial_inverse_ft(qg, dC_qt[:, it], xg, d)
-        return add
+            for iq, q in enumerate(qg):
+                for it, tau in enumerate(taus):
+                    for dd, pv, ff, el, nt, ns in live_g:
+                        dC_by_ell[el][iq, it] += diagram_correlator(
+                            dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
+                            n_t=nt, n_s=ns, formfactor=ff)
+
+        def _ft_to_x(dC_qt):                          # (n_q,n_τ) → (n_τ,n_x) real-space δC
+            add = np.zeros((len(taus), len(xg)), dtype=complex)
+            if d == 1:                                # δC(x,τ)=(1/π)∫₀^∞cos(qx)δC dq
+                for it in range(len(taus)):
+                    col = dC_qt[:, it]
+                    for ix, x in enumerate(xg):
+                        add[it, ix] = np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+            else:
+                from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+                for it in range(len(taus)):
+                    add[it, :] = radial_inverse_ft(qg, dC_qt[:, it], xg, d)
+            return add
+        for el in ells:
+            dCx_by_ell[el] = _ft_to_x(dC_by_ell[el])
 
     # cumulative correlator at each order: {0: tree, 1: tree+1-loop, …, L: total}
     C_by_order = {0: np.array(C0, dtype=np.complex128)}
     running = np.array(C0, dtype=np.complex128)
     for el in ells:
-        running = running + _ft_to_x(dC_by_ell[el])
+        running = running + dCx_by_ell[el]
         C_by_order[el] = running.copy()
     C1 = running                                      # total = highest order
 

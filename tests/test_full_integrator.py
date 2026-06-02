@@ -475,3 +475,50 @@ def test_spatial_parallel_matches_serial():
                                       n_workers=2, **kw)['C_tau_x'])
     assert np.array_equal(cs, cp), \
         f'spatial parallel != serial: max|Δ|={np.max(np.abs(cp - cs)):.2e}'
+
+
+def test_analytic_ift_vs_numerical_ft():
+    """The analytic heat-kernel IFT (Case A, plain vertices — correlator_2pt_x)
+    reproduces the numerical q→x FT (correlator_2pt sampled on a fine q-grid) in
+    the q_cut→∞ limit, with NO q-grid.  Allen-Cahn φ⁴ 1-loop (φ³ Hartree)."""
+    import numpy as np, math
+    from sage.all import SR
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx)
+    from msrjd.integration.spatial.full_integrator import (
+        correlator_2pt, correlator_2pt_x)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    ac = (TheoryBuilder('ac', n_populations=0).physical_field('phi', spatial_dim=1)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('lam', default=0.1, domain='positive')
+          .parameter('T', default=1.0, domain='positive')
+          .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+          .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
+          .boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(ac, taylor_order=4); ft.expand()
+    prop = build_propagator(ft, ac, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('lam'): 0.1,
+            SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
+    be = build_pipeline_records(ft, ac, prop, ext, max_ell=1, verbose=False)
+    descrs = [(diagram_to_cstack(td), float(SR(p).subs(base)))
+              for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
+    assert descrs, 'no live Allen-Cahn 1-loop diagram'
+    mu = D = 1.0
+    xs = np.array([0.0, 0.5, 1.0, 2.0])
+    an = correlator_2pt_x(descrs, xs, 0.0, mu, D, spatial_dim=1)        # analytic
+    qg = np.linspace(0.0, 60.0, 3000)                                  # numerical FT
+    dCq = np.array([correlator_2pt(descrs, float(q), 0.0, mu, D, spatial_dim=1)
+                    for q in qg])
+    num = np.array([np.trapz(np.cos(qg * x) * np.real(dCq), qg) / math.pi for x in xs])
+    for i, x in enumerate(xs):
+        assert abs(an[i] - num[i]) <= 1e-4 * (abs(num[i]) + 1e-12), \
+            f"analytic IFT {an[i]} vs numerical FT {num[i]} at x={x}"

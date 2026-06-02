@@ -81,6 +81,44 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
     return (out, M, N, ok) if return_gaussian else out
 
 
+def _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim, u_floor=1e-300):
+    """Per-Schwinger-sample heat-kernel ingredients for the ANALYTIC spatial IFT
+    (Case A — plain vertices).  Returns ``(pref, B, ok)`` (each ``(P,)``): the
+    q-Gaussian ``pref·exp(−B q²)`` UN-collapsed from q, with
+    ``pref = (4πD)^{−Ld/2} U^{−d/2}`` and ``B = D·Q_eff`` (scalar — k=2, one
+    external momentum).  The spatial IFT is then exact and analytic:
+
+        ∫dᵈq/(2π)ᵈ e^{iq·x} pref·e^{−Bq²} = pref·(4πB)^{−d/2} e^{−|x|²/4B}
+
+    — the heat kernel — so NO q-grid and NO numerical FT.  ``L=0`` (tree):
+    ``pref=1``, ``B=D·Q``.  Mirrors :func:`_momentum_factor_batch` but does not
+    contract with q (the x-dependence stays analytic)."""
+    E, L = a.shape
+    P = w_batch.shape[0]
+    Q = np.einsum('pe,ej,ek->pjk', w_batch, b, b)            # (P, n_ext, n_ext)
+    if Q.shape[1] != 1:
+        raise NotImplementedError(
+            'analytic heat-kernel IFT: implemented for k=2 (one external '
+            f'momentum) so far; got n_ext={Q.shape[1]} (k>2 → multivariate '
+            'Gaussian, future work).')
+    if L == 0:
+        return np.ones(P), D * Q[:, 0, 0], np.ones(P, dtype=bool)
+    M = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
+    N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
+    U = np.linalg.det(M)                                     # (P,)
+    ok = U > u_floor
+    pref = np.zeros(P)
+    B = np.zeros(P)
+    if np.any(ok):
+        Mok, Nok, Qok, Uok = M[ok], N[ok], Q[ok], U[ok]
+        MiN = np.linalg.solve(Mok, Nok)
+        Qeff = (Qok - np.einsum('plj,plk->pjk', Nok, MiN))[:, 0, 0]   # (P',)
+        pref[ok] = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
+            * np.power(Uok, -0.5 * spatial_dim)
+        B[ok] = D * Qeff
+    return pref, B, ok
+
+
 def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=1):
     """``⟨F(ℓ,q)⟩`` of a derivative-vertex form factor over the loop-momentum
     Gaussian ``ℓ ~ N(ℓ̄, Σ)``, ``ℓ̄ = −M⁻¹N q``, ``Σ = (2D M)⁻¹``, by
@@ -169,7 +207,8 @@ def _gl_on(lower, upper, n):
 
 
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
-                      W=None, n_t=22, n_s=24, formfactor=None, gh_order=6):
+                      W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
+                      xs=None):
     """The kinematic (unit-amplitude, no couplings) full-diagram integral
     ``∫ ∏dt_v ∏dσ_e 𝟙(θ) e^{−μΣw} MomFactor`` by **causal-chamber quadrature**.
 
@@ -236,7 +275,16 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
         s_flat, s_wflat = [], np.array([1.0])
     Ps = s_wflat.size
 
-    total = 0.0
+    # ANALYTIC spatial IFT (xs given): accumulate the heat kernel over the output
+    # grid instead of evaluating MomFactor at a single q — Σ_chambers ∫dw runs
+    # ONCE, the x-dependence is analytic.  Phase 1 = plain vertices (no form
+    # factor); the derivative-vertex joint-(ℓ,q) case is Phase 2.
+    if xs is not None and formfactor is not None:
+        raise NotImplementedError(
+            'analytic heat-kernel IFT with a derivative-vertex form factor is '
+            'Phase 2 (joint (ℓ,q) Gaussian); Phase 1 covers plain vertices.')
+    xs_arr = None if xs is None else np.asarray(xs, dtype=float)
+    total = np.zeros(len(xs_arr)) if xs_arr is not None else 0.0
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
     for order in chambers:
         # 1. nested internal-time grid (latest→earliest); each level bounded above
@@ -279,6 +327,16 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 w_batch[:, ei] = dt + sig[ci]
                 mu_resid += dt
                 ci += 1
+        if xs_arr is not None:                            # ── analytic heat-kernel IFT
+            pref, Bk, okk = _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim)
+            good = okk & (Bk > 1e-300)                    # B>0 (q-dependent edges)
+            if np.any(good):
+                Bg = Bk[good]
+                wamp = (wfull * np.exp(-mu * mu_resid) * pref)[good]   # (P',) amplitude
+                hk = ((4.0 * math.pi * Bg)[:, None] ** (-0.5 * spatial_dim)
+                      * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bg[:, None])))  # (P',n_x)
+                total = total + np.einsum('p,px->x', wamp, hk)
+            continue                                      # next chamber (skip the q-eval)
         if formfactor is None:
             momfac = _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim)
         else:
@@ -300,6 +358,8 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     # factor (∂_x→ik) can be complex per diagram (e.g. odd # of ∂'s), so return
     # complex — the physical C(q,τ) is real and the imaginary parts cancel in the
     # diagram sum / are dropped at the real-space output.
+    if xs_arr is not None:                                # analytic IFT → (n_x,) real
+        return np.real(total)
     return complex(total) if formfactor is not None else float(np.real(total))
 
 
@@ -356,4 +416,47 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
             continue
         total += diagram_correlator(descr, pre, q, tau, mu, D,
                                     spatial_dim=spatial_dim, **kw)
+    return total
+
+
+# ─────────────────────── ANALYTIC heat-kernel IFT (Case A) ───────────────────────
+# Real-space δC(x,τ) directly, via the per-Schwinger-sample heat kernel — no
+# q-grid, no numerical q→x FT (no ringing, no n_q, no q_cut).  Plain (non-
+# derivative) vertices only (Phase 1); derivative vertices are Phase 2.
+
+def diagram_value_x(descr, prefactor_val, xs, external_times, mu, D,
+                    spatial_dim=1, **kw):
+    """Analytic-IFT analogue of :func:`diagram_value` — one diagram's REAL-SPACE
+    δC(x) as a vector over ``xs`` (``2^{−n_C}·prefactor·kinematic_x``)."""
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    kin = diagram_kinematic(descr, [0.0], external_times, mu, D,
+                            spatial_dim=spatial_dim, xs=xs, **kw)
+    return (2.0 ** (-n_C)) * float(prefactor_val) * kin       # (n_x,) real
+
+
+def diagram_correlator_x(descr, prefactor_val, xs, tau, mu, D, spatial_dim=1, **kw):
+    """Analytic-IFT analogue of :func:`diagram_correlator` — δC(x,τ) (vector) with
+    the retarded+advanced sum applied per diagram."""
+    et = external_times_2pt(descr, tau)
+    val = diagram_value_x(descr, prefactor_val, xs, et, mu, D,
+                          spatial_dim=spatial_dim, **kw)
+    if _is_retarded_type(descr) and tau != 0.0:
+        et_m = external_times_2pt(descr, -tau)
+        val = val + diagram_value_x(descr, prefactor_val, xs, et_m, mu, D,
+                                    spatial_dim=spatial_dim, **kw)
+    elif _is_retarded_type(descr):
+        val = val * 2.0                                       # τ=0: Γ(0)+Γ(0)
+    return val
+
+
+def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
+    """Analytic-IFT analogue of :func:`correlator_2pt` — the real-space δC(x,τ)
+    summed over all diagrams via the heat-kernel IFT (no q-grid / numerical FT)."""
+    xs_arr = np.asarray(xs, dtype=float)
+    total = np.zeros(len(xs_arr))
+    for descr, pre in descrs_prefactors:
+        if abs(float(pre)) < 1e-14:
+            continue
+        total = total + diagram_correlator_x(descr, pre, xs_arr, tau, mu, D,
+                                             spatial_dim=spatial_dim, **kw)
     return total
