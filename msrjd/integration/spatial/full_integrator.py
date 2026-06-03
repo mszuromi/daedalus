@@ -300,7 +300,7 @@ def _gl_on(lower, upper, n):
 
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
-                      xs=None):
+                      xs=None, method='grid', mc_n=1000000, mc_seed=0):
     """The kinematic (unit-amplitude, no couplings) full-diagram integral
     ``∫ ∏dt_v ∏dσ_e 𝟙(θ) e^{−μΣw} MomFactor`` by **causal-chamber quadrature**.
 
@@ -374,34 +374,58 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr)) if xs_arr is not None else 0.0
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    _use_mc = method == 'mc' and (n_V + n_C) > 0
+    _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
-        # 1. nested internal-time grid (latest→earliest); each level bounded above
-        #    by the next-later time (and its external scalar bound).
-        placed = {}                                          # vertex idx → (Pt,) array
-        wt = np.array([1.0])
-        later = None
-        for vi in reversed(order):
+        if _use_mc:
+            # ── Monte-Carlo: importance-sample the (n_V+n_C)-D chamber/Schwinger
+            #    integral (P=mc_n random points, NOT n_t^{n_V}·n_s^{n_C}) — bounded
+            #    memory, O(1/√N).  Internal times via nested Exp(μ) gaps (matching
+            #    the retarded poset bounds), correlation σ's ~ Exp(μ); each σ-edge's
+            #    e^{−μσ} is consumed by its proposal.  (Validated for PLAIN vertices;
+            #    derivative-vertex form factors are biased — det M→0 singularity.)
+            P = int(mc_n)
+            placed = {}
+            later = None
+            Sgap = np.zeros(P)
+            for vi in reversed(order):
+                upper = (np.full(P, s_up[vi]) if later is None
+                         else np.minimum(s_up[vi], later))
+                g = -np.log(_rng.random(P)) / mu              # gap ~ Exp(μ)
+                placed[vi] = upper - g
+                later = placed[vi]
+                Sgap += g
+            tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
+            for v in internal:
+                tvals[v] = placed[idx[v]]
+            sig = [(-np.log(_rng.random(P)) / mu) for _ in range(n_C)]
+        else:
+            # ── deterministic causal-chamber PRODUCT GRID (the validated path) ──
+            # nested internal-time grid (latest→earliest; each level bounded above
+            # by the next-later time and its external scalar bound), × the σ-grid.
+            placed = {}                                       # vertex idx → (Pt,) array
+            wt = np.array([1.0])
+            later = None
+            for vi in reversed(order):
+                Pt = wt.size
+                upper = np.full(Pt, s_up[vi]) if later is None \
+                    else np.minimum(s_up[vi], later)
+                lower = np.full(Pt, s_lo[vi])
+                tnode, wnode = _gl_on(lower, upper, n_t)       # (Pt, n_t)
+                for k in placed:
+                    placed[k] = np.repeat(placed[k], n_t)
+                placed[vi] = tnode.ravel()
+                wt = (wt[:, None] * wnode).ravel()
+                later = placed[vi]
             Pt = wt.size
-            upper = np.full(Pt, s_up[vi]) if later is None \
-                else np.minimum(s_up[vi], later)
-            lower = np.full(Pt, s_lo[vi])
-            tnode, wnode = _gl_on(lower, upper, n_t)          # (Pt, n_t)
-            for k in placed:
-                placed[k] = np.repeat(placed[k], n_t)
-            placed[vi] = tnode.ravel()
-            wt = (wt[:, None] * wnode).ravel()
-            later = placed[vi]
-        Pt = wt.size
+            P = Pt * Ps
+            tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
+            for i, v in enumerate(internal):
+                tvals[v] = np.repeat(placed[idx[v]], Ps)
+            sig = [np.tile(sf, Pt) for sf in s_flat]
+            wfull = np.repeat(wt, Ps) * np.tile(s_wflat, Pt)
 
-        # 2. outer product time-grid × σ-grid → full grid of P = Pt·Ps points
-        P = Pt * Ps
-        tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
-        for i, v in enumerate(internal):
-            tvals[v] = np.repeat(placed[idx[v]], Ps)
-        sig = [np.tile(sf, Pt) for sf in s_flat]
-        wfull = np.repeat(wt, Ps) * np.tile(s_wflat, Pt)
-
-        # 3. edge weights + Symanzik + e^{−μΣw}
+        # edge weights + Symanzik + e^{−μΣw} (SHARED by grid and MC)
         w_batch = np.empty((P, len(edges)))
         mu_resid = np.zeros(P)
         ci = 0
@@ -415,13 +439,19 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 w_batch[:, ei] = dt + sig[ci]
                 mu_resid += dt
                 ci += 1
+        # per-sample amplitude weight: grid = wfull·e^{−μ·mu_resid}; MC = the
+        # importance weight e^{−μ(mu_resid−Σgap)}/(μ^{n_V+n_C}·N) (each σ's e^{−μσ}
+        # cancels against its Exp(μ) proposal; ÷N is the MC mean).
+        amp = (np.exp(-mu * (mu_resid - Sgap)) / (mu ** (n_V + n_C) * P)
+               if _use_mc else wfull * np.exp(-mu * mu_resid))
+
         if xs_arr is not None:                            # ── analytic heat-kernel IFT
             if formfactor is None:                        # Phase 1: plain → pure heat kernel
                 pref, Bk, okk = _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim)
                 good = okk & (Bk > 1e-300)                # B>0 (q-dependent edges)
                 if np.any(good):
                     Bg = Bk[good]
-                    wamp = (wfull * np.exp(-mu * mu_resid) * pref)[good]
+                    wamp = (amp * pref)[good]
                     hk = ((4.0 * math.pi * Bg)[:, None] ** (-0.5 * spatial_dim)
                           * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bg[:, None])))
                     total = total + np.einsum('p,px->x', wamp, hk)
@@ -432,7 +462,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                     else np.zeros(len(pref), dtype=bool)
                 if np.any(good):
                     Bg = Bk[good]
-                    wamp = (wfull * np.exp(-mu * mu_resid) * pref)[good]
+                    wamp = (amp * pref)[good]
                     hk = ((4.0 * math.pi * Bg)[:, None] ** (-0.5 * spatial_dim)
                           * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bg[:, None])))
                     qdeg = getattr(formfactor, 'q_poly_deg', None) or 8
@@ -459,7 +489,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 momfac = momfac * _formfactor_average(
                     formfactor, Mb, Nb, q_vec, D, okb, eff_gh,
                     spatial_dim=spatial_dim)
-        total += np.sum(wfull * np.exp(-mu * mu_resid) * momfac)
+        total += np.sum(amp * momfac)
     # `formfactor=None` → real (unchanged float return); a derivative/∇ form
     # factor (∂_x→ik) can be complex per diagram (e.g. odd # of ∂'s), so return
     # complex — the physical C(q,τ) is real and the imaginary parts cancel in the

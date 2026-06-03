@@ -923,6 +923,19 @@ def compute_spatial_correlator_generic(
     # whole cumulative progression; no need to re-run for each order).
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
 
+    # Integrator backend (switchable): 'grid' (deterministic causal-chamber product
+    # quadrature, default, validated) or 'mc' (importance-sampled Monte-Carlo —
+    # bounded memory, O(1/√N); the feasible ℓ≥2 path for PLAIN φⁿ theories where
+    # the product grid OOMs).  See docs/spatial_loop_integral_analytic_mc.md.
+    import os as _osi
+    _integrator = _osi.environ.get('SPATIAL_INTEGRATOR', 'grid').strip().lower()
+    _mc_n = int(float(_osi.environ.get('SPATIAL_MC_N', '1000000')))
+    if _integrator == 'mc' and verbose:
+        _msg = ('plain vertices' if all(rec[2] is None for rec in live_g)
+                else 'WARNING — DERIVATIVE vertices are BIASED under MC (det M→0 '
+                      'singularity → infinite variance); treat ℓ≥2 as indicative only')
+        print(f'        [MC] Monte-Carlo integrator, N={_mc_n:.0e}/chamber ({_msg})')
+
     # ── MEMORY GUARD ──────────────────────────────────────────────────────────
     # A chamber's causal-time × Schwinger quadrature is P = n_t^{n_V}·n_s^{n_C}
     # samples (n_V internal vertices, n_C correlation edges → an (n_V+n_C)-D grid).
@@ -940,7 +953,7 @@ def compute_spatial_correlator_generic(
         _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
-    if _peak_gb > _budget_gb:
+    if _integrator != 'mc' and _peak_gb > _budget_gb:
         _el, _nV, _nC, _nt, _ns, _P = _worst
         raise SpatialPropagatorError(
             f'spatial ℓ={max(ells)} loop integration would allocate ~{_peak_gb:.0f} GB '
@@ -951,8 +964,10 @@ def compute_spatial_correlator_generic(
             f'(n_t={_nt}, n_s={_ns}), × {_nx} output points.  This is the curse of '
             f'dimensionality in the time/σ quadrature (NOT the form factor).  '
             f'Options: (1) use a lower max_ell — max_ell=1 is fast + validated; '
-            f'(2) coarsen the loop grid via env SPATIAL_GRID_NT / SPATIAL_GRID_NS '
-            f'(accuracy tradeoff — validate vs the simulator); (3) raise the cap '
+            f'(2) SPATIAL_INTEGRATOR=mc — the Monte-Carlo backend (bounded memory, '
+            f'O(1/√N); validated <0.1% for PLAIN φⁿ vertices, BIASED for derivative '
+            f'vertices); (3) coarsen the loop grid via SPATIAL_GRID_NT / SPATIAL_GRID_NS '
+            f'(accuracy tradeoff — validate vs the simulator); (4) raise the cap '
             f'via SPATIAL_MEM_BUDGET_GB if you truly have the RAM + time.')
     # ──────────────────────────────────────────────────────────────────────────
     _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns)
@@ -979,11 +994,12 @@ def compute_spatial_correlator_generic(
                      else 'plain + d=1 derivative vertices')
             print(f'        analytic heat-kernel IFT ({_kind}) — '
                   'no q-grid / no FT (exact)')
-        for dd, pv, ff, el, nt, ns in live_g:
+        for _di, (dd, pv, ff, el, nt, ns) in enumerate(live_g):
             for it, tau in enumerate(taus):
                 dCx_by_ell[el][it, :] += diagram_correlator_x(
                     dd, pv, xg, float(tau), A0, B0, spatial_dim=d,
-                    n_t=nt, n_s=ns, formfactor=ff)
+                    n_t=nt, n_s=ns, formfactor=ff,
+                    method=_integrator, mc_n=_mc_n, mc_seed=1234 + _di)
     else:
         # ── NUMERICAL q→x FT (derivative-vertex form factors; Phase 2 will do
         #    these analytically via the joint (ℓ,q) Gaussian) ──

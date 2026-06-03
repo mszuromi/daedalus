@@ -71,10 +71,13 @@ confirmed — the plain xs-path MC converges, only the form-factor moment biases
 
 ## Synthesis / recommendation
 
-- **Plain theories (Allen-Cahn, reaction-diffusion, all φⁿ):** MC is **ready and
-  validated** — a memory-safe, ~0.1% accurate, fast ℓ=2 path. Worth wiring as an
-  integrator option (`SPATIAL_INTEGRATOR=mc`, `SPATIAL_MC_N`). Resolves the ℓ=2
-  dimensionality wall for these models.
+- **Plain theories (Allen-Cahn, reaction-diffusion, all φⁿ):** MC is **ready,
+  validated, and WIRED** — `SPATIAL_INTEGRATOR=mc` (+ `SPATIAL_MC_N`, default 1e6)
+  on `compute_cumulants`/the bridge selects the importance-sampled MC backend in
+  `diagram_kinematic(method='mc')`. Memory-safe, ~0.1% accurate, fast; resolves the
+  ℓ=2 dimensionality wall for these models. The grid path is the default and stays
+  bit-identical (regression 16/16; `test_mc_integrator_matches_grid_plain`).
+  e2e plain φ⁴ max_ell=2: ell1 matches the grid to 0.18%, ell2 in 18 s, no OOM.
 - **Derivative theories (KPZ, Model B, Burgers):** plain MC is **not enough** —
   needs variance reduction targeting the loop-degeneracy (`det M → 0`) singularity:
   the **analytic radial (Bessel-K) reduction is the natural cure** (the singularity

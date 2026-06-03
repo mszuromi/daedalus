@@ -599,3 +599,52 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
         assert abs(np.real(an[i]) - num[i]) <= tol * (abs(num[i]) + 1e-12), \
             f"{kind} analytic IFT {np.real(an[i]):.7f} vs numerical FT " \
             f"{num[i]:.7f} at x={x} (rel {abs(np.real(an[i])-num[i])/(abs(num[i])+1e-30):.2e})"
+
+
+def test_mc_integrator_matches_grid_plain():
+    """The Monte-Carlo backend (method='mc') reproduces the deterministic grid for
+    the PLAIN chamber/Schwinger integral (formfactor=None) — importance-sampled,
+    O(1/√N), memory-bounded.  (Validated for plain vertices; derivative-vertex
+    form-factor moments are biased by the det M→0 singularity and intentionally
+    not asserted — see docs/spatial_loop_integral_analytic_mc.md.)"""
+    import numpy as np
+    from sage.all import SR
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx)
+    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('c', default=0.3, domain='real')
+          .parameter('T', default=1.0, domain='positive'))
+    b = (tb.equation(lhs='(Dt+mu-D*Laplacian)*h', rhs='0')
+         .set_action_text('ht*(Dt(h)+mu*h-D*Lap(h)-(c/2)*Dx(h,0)^2)-T*ht^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=4); ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('h', 1), ('h', 1)], pidx)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('c'): 0.3,
+            SR.var('T'): 1.0, SR.var('hstar1'): 0.0}
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    raw = [td for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
+    assert raw, 'no live 1-loop diagram'
+    dd = diagram_to_cstack(raw[0])
+    et = {0: 0.0, 1: 0.0}
+    grid = diagram_kinematic(dd, [0.7], et, 1.0, 1.0, spatial_dim=1,
+                             n_t=24, n_s=26, formfactor=None)
+    # default method must be the (untouched) grid path, bit-for-bit
+    assert diagram_kinematic(dd, [0.7], et, 1.0, 1.0, spatial_dim=1, n_t=24,
+                             n_s=26, formfactor=None, method='grid') == grid
+    mc = diagram_kinematic(dd, [0.7], et, 1.0, 1.0, spatial_dim=1,
+                           method='mc', mc_n=2_000_000, mc_seed=0, formfactor=None)
+    assert grid != 0.0
+    rel = abs(mc - grid) / abs(grid)
+    assert rel < 0.02, f'MC {mc:.6e} vs grid {grid:.6e} (rel {rel:.2e})'
