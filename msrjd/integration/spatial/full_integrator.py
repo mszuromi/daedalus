@@ -229,6 +229,18 @@ def _formfactor_average_x(formfactor, M, N, Q, D, ok, xs, spatial_dim=1,
     Bg = B[good]                                              # (Pg,)
     Pg = Mg.shape[0]
 
+    # PRINCIPLED route — the joint-(ℓ,q)-Gaussian moment (Case C): one pass per
+    # diagram, NO q-node loop / NO GH grid.  ℓ̄=−M⁻¹N·q gives a=ℓ̄/q; Σ=(2DM)⁻¹.
+    # (Falls back to the polynomial fit below if the moment callable is absent.)
+    moment_x = getattr(formfactor, 'moment_x', None)
+    if moment_x is not None:
+        a = -np.linalg.solve(Mg, Ng)[:, :, 0]                # (Pg, L): ℓ̄ = a·q
+        Sg = np.linalg.inv(Mg) / (2.0 * D)                   # (Pg, L, L): Σ
+        out_good = np.zeros((Mok.shape[0], xv.size), dtype=complex)
+        out_good[good] = moment_x(a, Sg, Bg, xv)             # (Pg, n_x)
+        out[ok] = out_good
+        return out
+
     # 1. interpolate P(q)=⟨F⟩_ℓ from (q_deg+1) real nodes — scaled (t=q/qsc) for
     #    a well-conditioned Vandermonde.  EXACT (P is a polynomial of degree q_deg).
     n_nodes = int(q_deg) + 1

@@ -519,6 +519,132 @@ def _min_gh_order(F, loop_syms):
     return max(1, (D + 2) // 2)                     # ⌈(D+1)/2⌉
 
 
+def _isserlis(idx, Sget):
+    """Symbolic Isserlis/Wick moment ``E[∏_a ξ_{idx[a]}]`` for a zero-mean
+    Gaussian with covariance ``Sget(i,j)=Σ_ij``: sum over all perfect matchings
+    of the index multiset ``idx`` of ``∏_{pairs} Σ``.  Odd length → ``0``
+    (caller guarantees even).  ``∏`` over the ``(len-1)!!`` pairings."""
+    import sympy as _sp
+    if not idx:
+        return _sp.Integer(1)
+    first, rest = idx[0], idx[1:]
+    return sum((Sget(first, rest[j]) * _isserlis(rest[:j] + rest[j + 1:], Sget)
+                for j in range(len(rest))), _sp.Integer(0))
+
+
+def _build_wick_moment(F, ls, qs):
+    """Analytic spatial IFT of a derivative-vertex form factor by the **joint
+    `(ℓ,q)`-Gaussian moment** (Case C of docs/spatial_analytic_ift_plan.md) —
+    the principled one-pass route that replaces the `q_deg+1`-node polynomial
+    fit.  Returns a numpy callable ``moment_x(a, S, B, xs) → (P, n_x)`` complex.
+
+    Per chamber the IFT factorizes as ``δC(x)|_w = A·K(B,x)·M_F`` with the
+    heat kernel ``K`` applied by the caller and the **form-factor moment**
+
+        M_F = E_{Q~N(c,s)} E_{ξ~N(0,Σ)}[ F(a·Q+ξ, Q) ],  c=ix/2B, s=1/2B,
+
+    where the loop momentum is split ``ℓ = ℓ̄(q)+ξ = a·q + ξ`` (``a=−M⁻¹N``,
+    ``Σ=(2DM)⁻¹``) and the FT source turns the external ``q`` into the complex
+    Gaussian ``Q``.  Both expectations are closed-form Gaussian moments of a
+    polynomial: ``E[Q^m]`` (non-central, in ``c,s``) and ``E[∏ξ^k]`` (Isserlis
+    in ``Σ``).  The symbolic moment is built **once per diagram** and lambdified
+    in the per-chamber numerics ``(a, Σ, B, x)`` — no q-grid, no GH grid, exact.
+
+    ``k=2`` only (single external ``q`` symbol); ``d=1``.  ``a``/``S`` are the
+    FULL ``(P,L)``/``(P,L,L)`` Gaussians — only the loop indices appearing in
+    ``F`` are used (the marginal sub-block; ``F`` is independent of the rest)."""
+    import sympy as _sp
+    from math import comb
+
+    # loop indices actually present in F (e.g. ['l0','l2'] → [0,2]); F is
+    # independent of the absent loops, so the Gaussian marginal sub-block of
+    # (a, Σ) over exactly these indices is all that enters.
+    lidx = [int(str(s)[1:]) for s in ls]
+    p = len(ls)
+    if len(qs) > 1:
+        raise NotImplementedError('Wick-moment IFT is k=2 (one external q); '
+                                  f'got {len(qs)} external momentum symbols.')
+
+    Qv = _sp.Symbol('_Q')                                  # external momentum r.v.
+    Xi = list(_sp.symbols('_Xi0:%d' % p)) if p else []
+    asym = list(_sp.symbols('_a0:%d' % p)) if p else []
+    subs = {ls[k]: asym[k] * Qv + Xi[k] for k in range(p)}
+    for qq in qs:
+        subs[qq] = Qv                                      # k=2: single external → Q
+    G = _sp.expand(_sp.sympify(F).subs(subs))
+
+    csym, ssym = _sp.Symbol('_c'), _sp.Symbol('_s')        # mean/var of Q
+
+    def Qmom(m):                                            # E[Q^m], Q~N(c,s)
+        return sum((_sp.binomial(m, 2 * j) * _sp.factorial2(2 * j - 1)
+                    * ssym ** j * csym ** (m - 2 * j)
+                    for j in range(m // 2 + 1)), _sp.Integer(0))
+
+    Ssym = {(i, j): _sp.Symbol('_S%d_%d' % (i, j))
+            for i in range(p) for j in range(i, p)}
+
+    def Sget(i, j):
+        return Ssym[(i, j)] if i <= j else Ssym[(j, i)]
+
+    xi_cache = {}
+
+    def xi_moment(kvec):                                   # E[∏ ξ_i^{k_i}]
+        if kvec in xi_cache:
+            return xi_cache[kvec]
+        if sum(kvec) % 2:
+            val = _sp.Integer(0)
+        else:
+            ids = []
+            for i, k in enumerate(kvec):
+                ids += [i] * k
+            val = _sp.expand(_isserlis(ids, Sget))
+        xi_cache[kvec] = val
+        return val
+
+    Gp = _sp.Poly(G, Qv)
+    EF = _sp.Integer(0)
+    for (m,), coeff in Gp.terms():
+        coeff = _sp.expand(coeff)
+        if p and any(x in coeff.free_symbols for x in Xi):
+            cp = _sp.Poly(coeff, *Xi)
+            acc = sum((ccoef * xi_moment(tuple(kvec))
+                       for kvec, ccoef in cp.terms()), _sp.Integer(0))
+        else:
+            acc = coeff                                    # no ξ → ⟨1⟩=1
+        EF += Qmom(m) * acc
+
+    Xs, Bs = _sp.Symbol('_X'), _sp.Symbol('_B')
+    EF = _sp.expand(EF.subs({csym: _sp.I * Xs / (2 * Bs), ssym: 1 / (2 * Bs)}))
+
+    # KEY perf factorization: EF is a polynomial in X (degree ≤ deg_q F) whose
+    # coefficients gₖ(a,Σ,B) are x-INDEPENDENT.  Evaluate the expensive per-sample
+    # gₖ ONCE (not once per x-point), then contract with the cheap X-powers — a
+    # ~n_x speedup (n_x≈25 on a real grid), where the form-factor moment eval is
+    # otherwise the 2-loop bottleneck (chamber quad is cheap).  ``cse=True`` folds
+    # the shared 1/Bᵏ / aⁱ subexpressions.
+    Sord = [(i, j) for i in range(p) for j in range(i, p)]
+    EFp = _sp.Poly(EF, Xs) if EF != 0 else None
+    Kdeg = EFp.degree() if EFp is not None else 0
+    gcoeffs = ([EFp.coeff_monomial(Xs ** k) for k in range(Kdeg + 1)]
+               if EFp is not None else [_sp.Integer(0)])
+    gargs = asym + [Ssym[ij] for ij in Sord] + [Bs]
+    gfn = _sp.lambdify(tuple(gargs), gcoeffs, 'numpy', cse=True)
+
+    def moment_x(a, S, B, xs):
+        """``a:(P,L)``, ``S:(P,L,L)``, ``B:(P,)``, ``xs:(n_x,)`` → ``(P,n_x)``."""
+        P = a.shape[0]
+        vals = ([a[:, lidx[k]] for k in range(p)]
+                + [S[:, lidx[i], lidx[j]] for (i, j) in Sord] + [B])   # each (P,)
+        g = gfn(*vals)                                      # list of (P,) or scalars
+        gmat = np.stack([np.broadcast_to(np.asarray(gk, dtype=complex), (P,))
+                         for gk in g], axis=0)              # (K+1, P)
+        X = np.asarray(xs, dtype=float)
+        Xpow = (X[None, :] ** np.arange(Kdeg + 1)[:, None]).astype(complex)  # (K+1,n_x)
+        return np.einsum('kp,kx->px', gmat, Xpow)          # (P, n_x)
+
+    return moment_x
+
+
 def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
     diagram form factor (:func:`diagram_form_factor`).  Possibly **complex**
@@ -557,6 +683,13 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
             ff.q_poly_deg = int(_sp.Poly(F, *(ls + qs)).total_degree()) if (ls or qs) else 0
         except Exception:
             ff.q_poly_deg = 8
+        # Principled analytic IFT: the joint-(ℓ,q)-Gaussian moment (one pass per
+        # diagram, no q-node loop / no GH grid).  Used by _formfactor_average_x;
+        # falls back to the polynomial fit if construction fails.
+        try:
+            ff.moment_x = _build_wick_moment(F, ls, qs)
+        except Exception:
+            ff.moment_x = None
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
