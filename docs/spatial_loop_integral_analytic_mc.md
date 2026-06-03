@@ -93,3 +93,26 @@ confirmed — the plain xs-path MC converges, only the form-factor moment biases
   shift carried through.
 - The radial Bessel-K reduction is derived but **not yet implemented**; it is the
   concrete next step for a feasible *derivative-vertex* ℓ=2.
+
+## Part 3 — Bessel-K radial reduction (foundational check, `scratch/besselk_rayfit.py`)
+
+Reparametrize each chamber's `(u_v=−t_v, σ_e) = λ·ŝ`, `ŝ` on the `(n−1)`-simplex
+(`n=n_V+n_C`). Then `U→λ^L Û`, `F→λ^{L+1}F̂`, `W→λŴ`, and the radial integral is
+`∫₀^∞ λᵖ e^{−aλ−c/λ}dλ = 2(c/a)^{(p+1)/2}K_{p+1}(2√(ac))`, `a=μŴ`, `c=x²Û/(4DF̂)`.
+
+**Validated numerically:**
+- Bessel-K identity vs numeric quadrature: **1.9e-16**.
+- PLAIN integrand along a ray fits `A·λᵖ·e^{−aλ−c/λ}` with **p=−(L+1)d/2 exactly,
+  R²=1.000000** ⟹ the radial integral is a **single Bessel-K** (exact). The
+  remaining `(n−1)`-D angular integral over the (ordered) simplex is smooth and
+  bounded (the `det M→0` singularity is in the radial λ, now done analytically).
+- DERIVATIVE integrand: R²=0.9995, c<0 — **NOT** a single Bessel-K. Expected: the
+  Wick moment `M_F` is a polynomial whose monomials scale as distinct `λ^{p_k}`, so
+  the derivative radial integral is a **SUM of Bessel-K's** (one per moment term).
+
+**Implementation plan (next):** (1) per chamber, per angular simplex point ŝ:
+compute `Û,F̂,Ŵ` + the moment's per-`λ`-power decomposition `Σ_k g_k(ŝ,x)λ^{p_k}`;
+(2) radial integral → `Σ_k g_k·2(c/a)^{(p_k+1)/2}K_{p_k+1}(2√(ac))`; (3) angular
+integral by low-D quadrature / MC over the ordered simplex (smooth, fast-converging).
+This unlocks feasible, accurate ℓ≥2 for DERIVATIVE vertices (KPZ/Model B) — the case
+where pure MC fails.
