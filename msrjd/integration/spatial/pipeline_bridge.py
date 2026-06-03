@@ -890,9 +890,15 @@ def compute_spatial_correlator_generic(
               f'saddle ({len(descrs) - len(live)} zero-prefactor dropped)')
     # adaptive quadrature grid: coarser for the bigger (higher-n_C) diagrams so
     # ell=2 stays tractable (validated: n_t=16,n_s=14 is <0.1% on the sunset).
+    # SPATIAL_GRID_NT / SPATIAL_GRID_NS override the loop grid (coarsen 2-loop to
+    # make it memory-feasible — accuracy tradeoff; see the memory guard below).
+    import os as _osg
+    _nt_ov, _ns_ov = _osg.environ.get('SPATIAL_GRID_NT'), _osg.environ.get('SPATIAL_GRID_NS')
+
     def _grid(dd):
         nC = sum(1 for e in dd.edges if e.kind == 'C')
-        return (22, 24) if nC <= 2 else (16, 14)
+        nt, ns = (22, 24) if nC <= 2 else (16, 14)
+        return (int(_nt_ov) if _nt_ov else nt, int(_ns_ov) if _ns_ov else ns)
     if verbose:
         print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·M(Γ) '
               f'∫dᵈℓ(Symanzik) ∫dt(causal chambers) → ret+adv → q→x FT '
@@ -916,6 +922,39 @@ def compute_spatial_correlator_generic(
     # (the ℓ=L run already contains every ℓ<L diagram, so a single call yields the
     # whole cumulative progression; no need to re-run for each order).
     live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
+
+    # ── MEMORY GUARD ──────────────────────────────────────────────────────────
+    # A chamber's causal-time × Schwinger quadrature is P = n_t^{n_V}·n_s^{n_C}
+    # samples (n_V internal vertices, n_C correlation edges → an (n_V+n_C)-D grid).
+    # At ℓ=2 this hits the curse of dimensionality: a KPZ 2-loop diagram has
+    # n_V=4, n_C=3 ⇒ P≈1.8e8/chamber at (n_t=16,n_s=14), and the (P, n_x) heat-
+    # kernel array alone is tens of GB → an OOM that crashes the kernel AND the OS.
+    # Refuse up-front (vs silently thrashing/crashing) with the numbers + the knobs.
+    _nx = max(1, len(np.asarray(spatial_grid, dtype=float)))
+    _budget_gb = float(_osg.environ.get('SPATIAL_MEM_BUDGET_GB', '6'))
+    _peak_gb, _worst = 0.0, None
+    for _dd, _pv, _ff, _el, _nt, _ns in live_g:
+        _nV = len(_dd.internal_vertices)
+        _nC = sum(1 for e in _dd.edges if e.kind == 'C')
+        _P = (_nt ** _nV) * (_ns ** _nC)
+        _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
+        if _gb > _peak_gb:
+            _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
+    if _peak_gb > _budget_gb:
+        _el, _nV, _nC, _nt, _ns, _P = _worst
+        raise SpatialPropagatorError(
+            f'spatial ℓ={max(ells)} loop integration would allocate ~{_peak_gb:.0f} GB '
+            f'for a single chamber and almost certainly OOM-crash the machine.  The '
+            f'worst diagram (ℓ={_el}) has n_V={_nV} internal vertices + n_C={_nC} '
+            f'correlation edges ⇒ an {_nV + _nC}-D causal-chamber/Schwinger '
+            f'quadrature of P=n_t^{_nV}·n_s^{_nC}={_P:.1e} points at grid '
+            f'(n_t={_nt}, n_s={_ns}), × {_nx} output points.  This is the curse of '
+            f'dimensionality in the time/σ quadrature (NOT the form factor).  '
+            f'Options: (1) use a lower max_ell — max_ell=1 is fast + validated; '
+            f'(2) coarsen the loop grid via env SPATIAL_GRID_NT / SPATIAL_GRID_NS '
+            f'(accuracy tradeoff — validate vs the simulator); (3) raise the cap '
+            f'via SPATIAL_MEM_BUDGET_GB if you truly have the RAM + time.')
+    # ──────────────────────────────────────────────────────────────────────────
     _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns)
     # ANALYTIC heat-kernel IFT covers: plain vertices (Phase 1, Case A) AND — at
     # d=1 — derivative-vertex form factors (Phase 2, Cases B/C: joint (ℓ,q)
