@@ -34,6 +34,9 @@ This is enforced by the canonical time remapping in
 
 from sage.all import SR
 
+import sys
+import warnings
+
 from msrjd.integration.time_domain.final_integral import (
     integrate_diagram,
     _loop_number_from_graph,
@@ -112,6 +115,70 @@ from msrjd.integration.time_domain.final_integral import (
 # simple rollback of the batch API is always available.
 
 _WORKER_STATE = {}
+
+# ───────────────────────────────────────────────────────────────────────
+# Fork-in-notebook safety guard (2026-06, spatial→temporal lesson)
+# ───────────────────────────────────────────────────────────────────────
+# Forking a process AFTER an Objective-C framework (Cocoa via matplotlib),
+# the Accelerate/BLAS pools, or any other init has run can HARD-CRASH the
+# Jupyter kernel *and* macOS itself — intermittently, depending on what was
+# initialised in the parent before the fork.  This is the exact failure mode
+# that crashed the user's machine twice (June 2026) and was removed from the
+# spatial integrator (now thread-based / serial-gated, commit fd3af81).
+#
+# Setting ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` (as the batch helpers do
+# to silence the runtime's own fork-after-init *warning*) makes the actual
+# crash MORE likely, not less — it removes the guard rail without removing the
+# hazard.  The ``test_phase_J_total_C_batch_*`` bit-identity tests pass only
+# because pytest runs in a plain interpreter (never a ZMQ kernel) where Cocoa
+# was never initialised — they certify *numerical* determinism, NOT notebook
+# crash-safety.
+#
+# This guard is deliberately NARROW: it trips ONLY in the genuinely dangerous
+# context — macOS + a live Jupyter/ZMQ kernel + the ``fork`` start method —
+# and silently degrades that one case to the (always-correct) serial path with
+# a one-time warning.  Linux, terminal IPython, plain ``sage -python`` scripts,
+# and the test suite are all unaffected and keep the fast fork path.
+
+_FORK_GUARD_WARNED = False
+
+
+def _fork_unsafe_in_notebook(start_method):
+    """Return True iff a ``fork`` here risks crashing a macOS Jupyter kernel.
+
+    Narrow by design: ``start_method == 'fork'`` AND ``sys.platform ==
+    'darwin'`` AND we are inside a ZMQ/Jupyter interactive kernel.  Returns
+    False for spawn/forkserver, non-macOS, terminal IPython, plain scripts,
+    and pytest — none of which are exposed to the fork-after-Cocoa-init crash.
+    """
+    if start_method != 'fork':
+        return False
+    if sys.platform != 'darwin':
+        return False
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+    except Exception:
+        return False
+    return ip is not None and ip.__class__.__name__ == 'ZMQInteractiveShell'
+
+
+def _warn_fork_guard_once():
+    """Emit the fork-in-notebook fallback warning at most once per process."""
+    global _FORK_GUARD_WARNED
+    if _FORK_GUARD_WARNED:
+        return
+    _FORK_GUARD_WARNED = True
+    warnings.warn(
+        "Phase-J parallel batch: fork-based multiprocessing is UNSAFE inside "
+        "a Jupyter kernel on macOS — forking after Cocoa/BLAS init can hard-"
+        "crash the kernel and the OS.  Automatically falling back to SERIAL "
+        "evaluation.  To parallelise the τ sweep, run as a plain script "
+        "(`sage -python run.py`, not a notebook) where fork-after-init is "
+        "safe.  (Mirrors the fork removal already done on the spatial path.)",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 def _worker_eval_total_C(tau_tuple):
@@ -372,6 +439,12 @@ def compute_correction_td(
         (nested).
         """
         tau_list = [tuple(pt) for pt in tau_points]
+        # Fork-in-notebook crash guard (see module header): degrade to
+        # serial in the one dangerous context rather than risk a kernel/OS
+        # crash.  No-op under pytest, Linux, terminal IPython, and scripts.
+        if parallel and _fork_unsafe_in_notebook(start_method):
+            _warn_fork_guard_once()
+            parallel = False
         if not parallel or len(tau_list) == 0:
             return [total_C(*pt) for pt in tau_list]
 
@@ -465,6 +538,11 @@ def compute_correction_td(
         total_tasks = len(tau_list) * n_diag
         n_w_cap = (n_workers if n_workers is not None
                    else (__import__('os').cpu_count() or 4))
+
+        # Fork-in-notebook crash guard (see module header).
+        if parallel and _fork_unsafe_in_notebook(start_method):
+            _warn_fork_guard_once()
+            parallel = False
 
         if (not parallel) or total_tasks < max(4, 2 * n_w_cap):
             # Serial path.  Still honours original diagram order.

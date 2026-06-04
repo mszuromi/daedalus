@@ -21,6 +21,7 @@ Run with:
 
 import os
 import sys
+import warnings
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -1585,6 +1586,68 @@ def test_phase_J_total_C_batch_nested_matches_serial():
     assert max_abs_diff == 0.0, (
         f'small-batch nested parallel vs serial max |diff| = {max_abs_diff!r}, '
         f'expected 0.0.  Aggregation order mismatch?'
+    )
+
+
+def test_phase_J_fork_in_notebook_guard_degrades_to_serial(monkeypatch):
+    r"""Fork-in-notebook crash guard (spatial→temporal safety lesson, 2026-06).
+
+    ``total_C_batch`` / ``eval_per_diagram_batch`` default to fork-based
+    multiprocessing.  Forking after Cocoa/BLAS init inside a Jupyter kernel
+    on macOS can HARD-CRASH the kernel and the OS (it did, twice).  The guard
+    ``_fork_unsafe_in_notebook`` must:
+
+      (a) be INERT outside that exact context — plain scripts / pytest / Linux
+          / terminal IPython keep the fast fork path (otherwise this whole
+          test file, which exercises the fork path above, would change
+          behaviour); and
+      (b) TRIP inside a *simulated* macOS Jupyter (ZMQ) kernel, degrading
+          ``parallel=True`` to a serial evaluation that is bit-identical to
+          the explicit serial path — and NEVER forking.
+
+    The simulation patches ``sys.platform`` and ``IPython.get_ipython`` so the
+    test is deterministic on any host OS (CI is typically Linux).
+    """
+    from msrjd.integration.time_domain import pipeline as P
+
+    # (a) No ZMQ kernel → guard inert for every start method.
+    monkeypatch.setattr(P.sys, 'platform', 'darwin', raising=False)
+    monkeypatch.setattr('IPython.get_ipython', lambda: None, raising=False)
+    assert P._fork_unsafe_in_notebook('fork') is False
+    assert P._fork_unsafe_in_notebook('spawn') is False
+
+    # (b) Simulated macOS Jupyter kernel: fork unsafe, spawn still safe.
+    class ZMQInteractiveShell:           # class name is what the guard checks
+        pass
+    monkeypatch.setattr('IPython.get_ipython',
+                        lambda: ZMQInteractiveShell(), raising=False)
+    assert P._fork_unsafe_in_notebook('fork') is True
+    assert P._fork_unsafe_in_notebook('spawn') is False
+
+    # End-to-end: in the simulated kernel, parallel=True must degrade to
+    # serial (warn once) and match the serial result EXACTLY — no fork.
+    pd = _propagator_data_2pop_nondiagonal()
+    td = _tree_k2_cross_population()
+    kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
+    j_result = compute_correction_td(
+        kernel_groups=kernel_groups, propagator_data=pd, k=2,
+        num_params=None, origin_leaf_idx=1,
+    )
+    total_C_batch = j_result['total_C_batch']
+    tau_points = [(tv, 0.0) for tv in (-3.0, -1.0, 0.3, 1.0, 3.0, 5.0, 7.0)]
+
+    P._FORK_GUARD_WARNED = False          # reset one-shot so warning is catchable
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
+        guarded = total_C_batch(tau_points, parallel=True, n_workers=8)
+    serial = total_C_batch(tau_points, parallel=False)
+
+    assert any('fork-based multiprocessing is UNSAFE' in str(r.message)
+               for r in rec), 'fork-guard fallback warning was not emitted'
+    maxdiff = max(abs(complex(a) - complex(b))
+                  for a, b in zip(guarded, serial))
+    assert maxdiff == 0.0, (
+        f'guarded parallel→serial fallback != serial: max |diff| = {maxdiff!r}'
     )
 
 
