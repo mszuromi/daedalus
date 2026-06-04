@@ -642,7 +642,37 @@ def _build_wick_moment(F, ls, qs):
         Xpow = (X[None, :] ** np.arange(Kdeg + 1)[:, None]).astype(complex)  # (K+1,n_x)
         return np.einsum('kp,kx->px', gmat, Xpow)          # (P, n_x)
 
-    return moment_x
+    # ── λ-grading for the Bessel-K backend ──────────────────────────────────
+    # Under the radial scaling w→λw: Σ→Σ/λ and B→λB, so each EF monomial scales as
+    # λ^{−m}, m = (Σ-degree) + (1/B-degree).  Grade EF by m → M_F(λ)=Σ_m λ^{−m}·EF_m,
+    # so the radial integral is Σ_m EF_m·K(P−m).  Extract m via Σ→tg·Σ, B→B/tg.
+    _tg = _sp.Symbol('_tg')
+    _gsub = {Ssym[ij]: _tg * Ssym[ij] for ij in Sord}
+    _gsub[Bs] = Bs / _tg
+    EFg = _sp.expand(EF.subs(_gsub))
+    EFgp = _sp.Poly(EFg, _tg) if EFg != 0 else None
+    bpowers = ([int(m) for (m,), _c in EFgp.terms()] if EFgp is not None else [0])
+    bcoeffs = ([EFgp.coeff_monomial(_tg ** m) for m in bpowers]
+               if EFgp is not None else [_sp.Integer(0)])
+    bfn = _sp.lambdify(tuple(gargs + [Xs]), bcoeffs, 'numpy', cse=True)
+    _bpow = np.array(bpowers, dtype=float)
+
+    def moment_bessel(a, S, B, xs):
+        """λ-graded moment for the Bessel backend.  Returns
+        ``(powers:(n_m,), g:(n_m,P,n_x))`` with ``M_F(λ)=Σ_m g[m]·λ^{−powers[m]}``."""
+        P = a.shape[0]
+        X = np.asarray(xs, dtype=float)
+        aS = [a[:, lidx[k]] for k in range(p)]
+        SS = [S[:, lidx[i], lidx[j]] for (i, j) in Sord]
+        outg = np.empty((_bpow.size, P, X.size), dtype=complex)
+        for ix in range(X.size):
+            gx = bfn(*(aS + SS + [B, np.full(P, X[ix])]))
+            for im in range(_bpow.size):
+                outg[im, :, ix] = np.broadcast_to(
+                    np.asarray(gx[im], dtype=complex), (P,))
+        return _bpow, outg
+
+    return moment_x, moment_bessel
 
 
 def _formfactor_callable(td, vertex_terms, mode=None, d=1):
@@ -687,9 +717,9 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         # diagram, no q-node loop / no GH grid).  Used by _formfactor_average_x;
         # falls back to the polynomial fit if construction fails.
         try:
-            ff.moment_x = _build_wick_moment(F, ls, qs)
+            ff.moment_x, ff.moment_bessel = _build_wick_moment(F, ls, qs)
         except Exception:
-            ff.moment_x = None
+            ff.moment_x = ff.moment_bessel = None
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
