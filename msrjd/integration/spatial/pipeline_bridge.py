@@ -963,8 +963,12 @@ def compute_spatial_correlator_generic(
     if _integrator == 'mc' and verbose:
         _msg = ('plain vertices' if all(rec[2] is None for rec in live_g)
                 else 'WARNING — DERIVATIVE vertices are BIASED under MC (det M→0 '
-                      'singularity → infinite variance); treat ℓ≥2 as indicative only')
-        print(f'        [MC] Monte-Carlo integrator, N={_mc_n:.0e}/chamber ({_msg})')
+                      'singularity → infinite variance); use SPATIAL_INTEGRATOR=bessel')
+        print(f'        [MC] Monte-Carlo integrator, N={_mc_n:.0e} ({_msg})')
+    if _integrator == 'bessel' and verbose:
+        print(f'        [BESSEL] radial-Bessel-K × angular-MC integrator, N={_mc_n:.0e} '
+              '(memory-safe; regularizes the det M→0 singularity → handles DERIVATIVE '
+              'vertices at ℓ≥2; x=0 equal-point is UV-sensitive)')
 
     # ── MEMORY GUARD ──────────────────────────────────────────────────────────
     # A chamber's causal-time × Schwinger quadrature is P = n_t^{n_V}·n_s^{n_C}
@@ -983,7 +987,7 @@ def compute_spatial_correlator_generic(
         _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
-    if _integrator != 'mc' and _peak_gb > _budget_gb:
+    if _integrator not in ('mc', 'bessel') and _peak_gb > _budget_gb:
         _el, _nV, _nC, _nt, _ns, _P = _worst
         raise SpatialPropagatorError(
             f'spatial ℓ={max(ells)} loop integration would allocate ~{_peak_gb:.0f} GB '

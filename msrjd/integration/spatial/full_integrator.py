@@ -298,6 +298,107 @@ def _gl_on(lower, upper, n):
     return t, w
 
 
+def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
+                       xs, mu, D, spatial_dim, formfactor, N, seed):
+    """``method='bessel'`` — the radial-Bessel-K × angular-MC backend for `δC(x)`.
+
+    Reparametrize each causal-region point `(u_v=−t_v, σ_e) = λ·ŝ`, `ŝ` on the
+    `(n−1)`-simplex (`n=n_V+n_C`).  The Symanzik polynomials are homogeneous
+    (`U→λ^L Û`, `F→λ^{L+1}F̂`, `W→λŴ`), so the radial `λ`-integral is EXACTLY a
+    modified Bessel function `∫₀^∞ λ^P e^{−aλ−c/λ}dλ = 2(c/a)^{(P+1)/2}K_{P+1}(2√(ac))`
+    (`a=μŴ`, `c=|x|²Û/4DF̂`, `P=n−1−(L+1)d/2`).  Only the smooth angular simplex is
+    sampled — Dirichlet(1,…,1) with **causal poset rejection** for the internal R
+    edges; the measure is `1/((n−1)!·N)`.  The radial reduction does the `det M→0`
+    (degenerate-loop) direction analytically, regularizing what breaks pure MC.
+
+    Plain (`formfactor=None` / no `moment_bessel`): a single Bessel-K.  Derivative
+    (`ff.moment_bessel`): the form-factor moment is `M_F(λ)=Σ_m λ^{−m}EF_m`, so the
+    radial sum is `Σ_m EF_m·K(P−m)`.  Returns `(n_x,)` real.  `x=0` (equal point) is
+    UV-sensitive (divergent term-by-term); only the convergent part is kept."""
+    from math import factorial as _fact
+    from scipy.special import kv as _kv, gamma as _gamma
+    n_V = len(internal)
+    n_C = sum(1 for e in edges if e.kind == 'C')
+    L = a.shape[1]
+    n = n_V + n_C
+    xs = np.asarray(xs, dtype=float)
+    total = np.zeros(xs.size)
+    if n == 0 or L == 0:
+        return total                                        # tree / no loop scale
+    rng = np.random.default_rng(seed)
+    Es = rng.standard_exponential((int(N), n))
+    s = Es / Es.sum(1, keepdims=True)                       # Dirichlet(1..1) on the simplex
+    tvals = {leaf: np.full(int(N), tt) for leaf, tt in external_times.items()}
+    for k, v in enumerate(internal):
+        tvals[v] = -s[:, k]                                 # t_v = −ŝ_v  (in the past)
+    sig = [s[:, n_V + c] for c in range(n_C)]
+    w = np.empty((int(N), len(edges)))
+    valid = np.ones(int(N), dtype=bool)
+    ci = 0
+    for ei, e in enumerate(edges):
+        tu, tv = tvals[e.u], tvals[e.v]
+        if e.kind == 'R':
+            dd = tv - tu
+            w[:, ei] = dd
+            if (e.u in idx) and (e.v in idx):
+                valid &= (dd >= 0.0)                        # causal poset (R-edge ≥ 0)
+            else:
+                w[:, ei] = np.maximum(dd, 1e-15)
+        else:
+            w[:, ei] = np.abs(tu - tv) + sig[ci]
+            ci += 1
+    wv = w[valid]
+    if wv.shape[0] == 0:
+        return total
+    _pref, Bk, ok, M, Nn, Q = _symanzik_kernel_batch(
+        a, b, wv, D, spatial_dim, return_gaussian=True)
+    if M is None or not np.any(ok & (Bk > 1e-300)):
+        return total
+    good = ok & (Bk > 1e-300)
+    Mg, Ng, Qg, wg = M[good], Nn[good], Q[good], wv[good]
+    Uhat = np.linalg.det(Mg)
+    Qeff = (Qg - np.einsum('plj,plk->pjk', Ng,
+                           np.linalg.solve(Mg, Ng)))[:, 0, 0]
+    Fhat = Uhat * Qeff
+    What = wg.sum(1)
+    okF = (Uhat > 1e-300) & (np.real(Fhat) > 1e-300) & (What > 0)
+    if not np.any(okF):
+        return total
+    Mg, Ng = Mg[okF], Ng[okF]
+    Uhat, Fhat, What = Uhat[okF], Fhat[okF], What[okF]
+    Pg = Mg.shape[0]
+    c0 = ((4.0 * math.pi * D) ** (-0.5 * L * spatial_dim)
+          * (4.0 * math.pi * D * Fhat) ** (-0.5 * spatial_dim))
+    aa = mu * What
+    Pp = n - 1 - (L + 1) * spatial_dim / 2.0
+    norm = _fact(n - 1) * int(N)
+    mom_b = getattr(formfactor, 'moment_bessel', None) if formfactor is not None else None
+    if mom_b is not None:                                   # derivative vertex: Σ_m EF_m λ^{−m}
+        ahat = -np.linalg.solve(Mg, Ng)[:, :, 0]
+        Shat = np.linalg.inv(Mg) / (2.0 * D)
+        Bhat = D * Fhat / Uhat
+        powers, g = mom_b(ahat, Shat, Bhat, xs)            # (n_m,), (n_m, Pg, n_x)
+    else:                                                   # plain: single Bessel-K
+        powers = np.array([0.0])
+        g = np.ones((1, Pg, xs.size), dtype=complex)
+    for ix in range(xs.size):
+        x = xs[ix]
+        acc = np.zeros(Pg, dtype=complex)
+        if x == 0.0:                                        # c=0 → Γ; drop UV-divergent terms
+            for im in range(powers.size):
+                P1 = Pp - powers[im] + 1.0
+                if P1 > 0:
+                    acc += g[im, :, ix] * _gamma(P1) / aa ** P1
+        else:
+            cc = x * x * Uhat / (4.0 * D * Fhat)
+            z = 2.0 * np.sqrt(aa * cc)
+            for im in range(powers.size):
+                P1 = Pp - powers[im] + 1.0
+                acc += g[im, :, ix] * 2.0 * (cc / aa) ** (P1 / 2.0) * _kv(P1, z)
+        total[ix] = float(np.real(np.sum(c0 * acc)))
+    return total / norm
+
+
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
                       xs=None, method='grid', mc_n=1000000, mc_seed=0):
@@ -373,6 +474,10 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     # factor); the derivative-vertex joint-(ℓ,q) case is Phase 2.
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr)) if xs_arr is not None else 0.0
+    if method == 'bessel' and xs_arr is not None:           # ── radial-Bessel × angular-MC
+        return _diagram_bessel_xs(
+            a, b, edges, internal, idx, internal_R, external_times, xs_arr,
+            mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
     _use_mc = method == 'mc' and (n_V + n_C) > 0
     _rng = np.random.default_rng(mc_seed) if _use_mc else None

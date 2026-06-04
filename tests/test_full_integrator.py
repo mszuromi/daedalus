@@ -648,3 +648,61 @@ def test_mc_integrator_matches_grid_plain():
     assert grid != 0.0
     rel = abs(mc - grid) / abs(grid)
     assert rel < 0.02, f'MC {mc:.6e} vs grid {grid:.6e} (rel {rel:.2e})'
+
+
+def test_bessel_integrator_matches_grid():
+    """The Bessel-K backend (method='bessel') — radial λ analytically (a modified
+    Bessel function), only the angular simplex sampled — reproduces the grid for the
+    analytic-IFT δC(x) at x>0, for BOTH plain vertices (≈exact) AND derivative
+    vertices (KPZ, where pure MC is biased by the det M→0 singularity).  x>0 only:
+    x=0 equal-point is UV-sensitive (see docs/spatial_loop_integral_analytic_mc.md §3)."""
+    import numpy as np
+    from sage.all import SR
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
+          .parameter('mu', default=1.0, domain='positive')
+          .parameter('D', default=1.0, domain='positive')
+          .parameter('c', default=0.3, domain='real')
+          .parameter('T', default=1.0, domain='positive'))
+    b = (tb.equation(lhs='(Dt+mu-D*Laplacian)*h', rhs='0')
+         .set_action_text('ht*(Dt(h)+mu*h-D*Lap(h)-(c/2)*Dx(h,0)^2)-T*ht^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=4); ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext = _legs_to_phys_idx([('h', 1), ('h', 1)], pidx)
+    base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('c'): 0.3,
+            SR.var('T'): 1.0, SR.var('hstar1'): 0.0}
+    vt = [{'weight': float(SR(t['weight']).subs(base)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
+    raw = [td for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
+    assert raw, 'no live 1-loop diagram'
+    dd = diagram_to_cstack(raw[0]); ff = _formfactor_callable(raw[0], vt, d=1)
+    assert getattr(ff, 'moment_bessel', None) is not None, 'no moment_bessel built'
+    et = {0: 0.0, 1: 0.0}
+    xs = np.array([2.0])                                 # one clean x>0 point
+    # PLAIN: the radial reduction is a single Bessel-K → ≈exact
+    gp = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, n_t=24, n_s=26,
+                           xs=xs, formfactor=None)[0]
+    bp = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, xs=xs,
+                           formfactor=None, method='bessel', mc_n=2_000_000, mc_seed=0)[0]
+    assert gp != 0.0
+    assert abs(bp - gp) / abs(gp) < 0.01, f'plain bessel {bp:.6e} vs grid {gp:.6e}'
+    # DERIVATIVE (KPZ): radial sum of Bessel-K's via the λ-graded moment
+    gd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, n_t=24, n_s=26,
+                           xs=xs, formfactor=ff)[0]
+    bd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, xs=xs,
+                           formfactor=ff, method='bessel', mc_n=4_000_000, mc_seed=0)[0]
+    assert gd != 0.0
+    assert abs(bd - gd) / abs(gd) < 0.06, f'KPZ bessel {bd:.6e} vs grid {gd:.6e}'
