@@ -191,7 +191,13 @@ tens of GB → OOM. Controls (all in `compute_cumulants`/the bridge via env or `
 | `SPATIAL_GRID_NT` / `SPATIAL_GRID_NS` | coarsen the loop grid (accuracy tradeoff — validate vs the simulator). |
 
 **Practical guidance:** ℓ=1 is fast + exact for every theory; for ℓ=2, plain theories use
-`SPATIAL_INTEGRATOR=mc`, derivative theories await the Bessel-K backend.
+`SPATIAL_INTEGRATOR=mc`, derivative theories use `SPATIAL_INTEGRATOR=bessel` at d=1.
+
+**Backend `d`-support matrix** (`mc`/`bessel` ride the analytic-IFT path):
+| vertices | d=1 | d≥2 |
+|---|---|---|
+| **plain** (`φⁿ`) | grid / mc / bessel ✓ | grid / mc / bessel ✓ (validated d=2,3) |
+| **derivative** (KPZ/Model B) | grid / mc(biased) / **bessel** ✓ | **numerical FT (grid) only** — the d≥2 Wick/Bessel moment (transverse handling) is Phase 3; `bessel`/`mc` raise/fall-back cleanly |
 
 **In progress — the Bessel-K × angular-MC backend (`method='bessel'`):** does the radial
 (overall-scale) `λ`-integral **analytically** via a modified Bessel function,
