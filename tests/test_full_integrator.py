@@ -706,3 +706,19 @@ def test_bessel_integrator_matches_grid():
                            formfactor=ff, method='bessel', mc_n=4_000_000, mc_seed=0)[0]
     assert gd != 0.0
     assert abs(bd - gd) / abs(gd) < 0.06, f'KPZ bessel {bd:.6e} vs grid {gd:.6e}'
+    # d-robustness: the radial Bessel-K + isotropic heat kernel work at d≥2 (plain)
+    for dim in (2, 3):
+        gpd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=dim, n_t=24,
+                                n_s=26, xs=xs, formfactor=None)[0]
+        bpd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=dim, xs=xs,
+                                formfactor=None, method='bessel', mc_n=3_000_000, mc_seed=0)[0]
+        assert abs(bpd - gpd) / abs(gpd) < 0.10, f'd={dim} plain bessel {bpd:.3e} vs {gpd:.3e}'
+    # the backend must FAIL CLEANLY for a derivative vertex with no λ-graded moment
+    # (e.g. d≥2 derivative, ff.moment_bessel is None) — never silently use plain K
+    import pytest
+
+    class _FFNoMoment:
+        pass
+    with pytest.raises(NotImplementedError):
+        diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=2, xs=xs,
+                          formfactor=_FFNoMoment(), method='bessel', mc_n=10_000)

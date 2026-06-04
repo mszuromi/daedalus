@@ -373,6 +373,12 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     Pp = n - 1 - (L + 1) * spatial_dim / 2.0
     norm = _fact(n - 1) * int(N)
     mom_b = getattr(formfactor, 'moment_bessel', None) if formfactor is not None else None
+    if formfactor is not None and mom_b is None:
+        raise NotImplementedError(
+            "the Bessel backend's λ-graded moment is built for d=1 derivative "
+            "vertices only (ff.moment_bessel is None — e.g. a d≥2 derivative "
+            "vertex); d≥2 derivative analytic IFT is Phase 3.  Use method='grid' "
+            "(numerical FT) for this case.")
     if mom_b is not None:                                   # derivative vertex: Σ_m EF_m λ^{−m}
         ahat = -np.linalg.solve(Mg, Ng)[:, :, 0]
         Shat = np.linalg.inv(Mg) / (2.0 * D)

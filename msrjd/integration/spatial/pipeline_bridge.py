@@ -1015,6 +1015,10 @@ def compute_spatial_correlator_generic(
     import os as _os
     _force_num = _os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
     _use_analytic = (_all_plain or d == 1) and not _force_num
+    if _integrator in ('mc', 'bessel') and not _use_analytic and verbose:
+        print(f'        [{_integrator.upper()}] NOTE: requested backend does NOT apply here '
+              '(d≥2 derivative vertices route to the numerical FT) — falling back to the '
+              'grid q-loop.  Analytic mc/bessel cover plain (any d) + derivative (d=1).')
     dCx_by_ell = {el: np.zeros((len(taus), len(xg))) for el in ells}   # real-space δC(τ,x)
 
     if _use_analytic:
