@@ -1,9 +1,12 @@
 # The Spatial Loop Pipeline (current-state reference)
 
-*Branch `spatial-extension`, May 2026. This is the authoritative description of how
-Daedalus computes spatial-field-theory correlators today. For the forward-looking
-momentum-native rearchitecture see `spatial_v2_architecture.md`; for the historical
-planning docs that led here (now superseded) see `docs/archive/spatial/`.*
+*Branch `spatial-extension`, June 2026. This is the authoritative description of how
+Daedalus computes spatial-field-theory correlators today. For the analytic `q→x` IFT +
+Monte-Carlo + Bessel-K reduction of the loop integral see
+`spatial_loop_integral_analytic_mc.md`; for the full reduction chain see
+`spatial_reduction_derivation.md`; for the forward-looking momentum-native rearchitecture
+see `spatial_v2_architecture.md`; for the historical planning docs that led here (now
+superseded) see `docs/archive/spatial/`.*
 
 ## What it computes
 
@@ -65,7 +68,7 @@ compute_cumulants(model, k=2, max_ell=ℓ, spatial_grid=xs, …)        [pipelin
   │        classify M(Γ)·prefactor → map each to a C-stack descriptor → live set
   │  [7/7] for every live diagram at every 1 ≤ ell ≤ max_ell:
   │            Symanzik ∫dᵈℓ  →  causal-chamber ∫dt  →  ret+adv  →  Γ(q,τ)
-  │        Σ_Γ 2^(−n_C) M(Γ) Γ(q,τ)  →  C(q,τ)  →  q→x (radial / erf)  →  C(x,τ)
+  │        Σ_Γ 2^(−n_C) M(Γ) Γ(q,τ)  →  ANALYTIC q→x heat-kernel IFT  →  C(x,τ)
   ▼  returns {C_tau_x, spatial_grid, spatial_info, …}
 ```
 
@@ -78,10 +81,10 @@ and the back half diverges into the integrator instead of the ω-domain Phase J.
 
 | File | Role |
 |---|---|
-| `msrjd/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator` (ret+adv), `diagram_value` (2^−n_C · M · kinematic), `diagram_kinematic` (causal-chamber quadrature), `_momentum_factor_batch` (Symanzik, vectorized). |
+| `msrjd/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator`/`_value`/`_kinematic` (momentum-space, ret+adv, Symanzik chamber quadrature); the analytic-IFT analogues `diagram_correlator_x`/`_value_x` + `_symanzik_kernel_batch` (per-sample heat-kernel) + `_formfactor_average_x` (derivative-vertex moment); `diagram_kinematic(method='grid'|'mc', mc_n, mc_seed)` (switchable backend); `_momentum_factor_batch` (Symanzik, vectorized). |
 | `msrjd/integration/spatial/causal_chambers.py` | enumerate the retarded-poset chambers; the smooth nested-time quadrature primitive. |
 | `msrjd/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
-| `msrjd/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator, sums all `1≤ell≤max_ell`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
+| `msrjd/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
 | `pipeline/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
 | `msrjd/integration/spatial/spatial_reduce.py` | Symanzik U/F polynomials. |
 
@@ -153,6 +156,52 @@ GH average, `_formfactor_average(…, spatial_dim)` + the per-component
 form factor raises the superficial degree of divergence, so the *bare* loop is
 cutoff-sensitive (needs renormalisation).
 
+## Real-space output: the analytic `q→x` IFT
+
+Closing the pipeline back to real space is **analytic**, not a numerical FT. After
+Symanzik reduction each chamber sample's `q`-dependence is `(polynomial)×Gaussian`, so the
+inverse transform is closed form:
+- **plain vertices** (Phase 1): `∫dᵈq/(2π)ᵈ e^{iq·x} e^{−Bq²} = (4πB)^{−d/2} e^{−|x|²/4B}` —
+  a heat kernel, summed over the chamber quadrature. No `q`-grid, no ringing, no `n_q`/`q_cut`.
+- **derivative vertices, d=1** (Phase 2): the form factor's `q`-dependence folds *into* the
+  transform — the FT source makes `q ~ N(ix/2B, 1/2B)` a complex Gaussian, so `δC(x)` is the
+  **joint-`(ℓ,q)` Wick moment** `M_F(a,Σ,B,x)`, built symbolically once per diagram
+  (`pipeline_bridge._build_wick_moment` → `ff.moment_x`, the Isserlis sum) and EXACT. This
+  retired the old per-diagram polynomial-fit (which re-ran the loop average `q_deg+1`× and
+  caused a ~10× ℓ=2 blow-up).
+
+Gate (`compute_spatial_correlator_generic`): `_use_analytic = _all_plain or d==1`. `d≥2`
+derivative vertices fall back to the numerical FT (kept as the validated cross-check — env
+`SPATIAL_FORCE_NUMERICAL_FT=1`, `SPATIAL_Q_CUT`/`SPATIAL_N_Q`). Full derivation:
+`docs/spatial_reduction_derivation.md`; analytic-vs-MC study: `docs/spatial_loop_integral_analytic_mc.md`.
+
+## Integrator backends & the ℓ≥2 cost wall
+
+After the analytic IFT a diagram is a Schwinger-parametric integral over the `n_V` internal
+times + `n_C` correlation σ's — an `(n_V+n_C)`-D chamber/Schwinger quadrature. **ℓ=2 hits the
+curse of dimensionality**: a KPZ 2-loop diagram has `n_V=4, n_C=3` ⇒ a **7-D** grid,
+`≈1.8e8` points/chamber at the accuracy grid `(n_t=16, n_s=14)` — one `(P, n_x)` array is
+tens of GB → OOM. Controls (all in `compute_cumulants`/the bridge via env or `method=`):
+
+| Backend / knob | Effect |
+|---|---|
+| **memory guard** (always on) | estimates the worst chamber's `(P, n_x)` allocation up front; raises `SpatialPropagatorError` with the `n_V/n_C/P` numbers if it exceeds `SPATIAL_MEM_BUDGET_GB` (default 6) — ℓ≥2 can **never silently OOM-crash**. |
+| `SPATIAL_INTEGRATOR=grid` (default) | deterministic causal-chamber product quadrature — the validated path; **bit-identical** regardless of the other knobs. |
+| `SPATIAL_INTEGRATOR=mc` (+ `SPATIAL_MC_N`, default 1e6) | importance-sampled Monte-Carlo (`diagram_kinematic(method='mc')`): nested `Exp(μ)` time-gaps + `Exp(μ)` σ's; bounded memory, `O(1/√N)`. **Validated <0.1% for PLAIN φⁿ vertices** (the feasible ℓ=2 path for Allen-Cahn/RD where the grid OOMs); **BIASED for derivative vertices** (the `det M→0` loop-degeneracy singularity → infinite variance). |
+| `SPATIAL_GRID_NT` / `SPATIAL_GRID_NS` | coarsen the loop grid (accuracy tradeoff — validate vs the simulator). |
+
+**Practical guidance:** ℓ=1 is fast + exact for every theory; for ℓ=2, plain theories use
+`SPATIAL_INTEGRATOR=mc`, derivative theories await the Bessel-K backend.
+
+**In progress — the Bessel-K × angular-MC backend (`method='bessel'`):** does the radial
+(overall-scale) `λ`-integral **analytically** via a modified Bessel function,
+`∫₀^∞ λ^p e^{−aλ−c/λ}dλ = 2(c/a)^{(p+1)/2} K_{p+1}(2√(ac))` — exactly the direction the
+`det M→0` singularity lives in, so it **regularizes** what breaks pure MC — and quadratures
+only the smooth angular simplex. Unlocks feasible, accurate **derivative-vertex ℓ≥2**.
+Foundational check (`scratch/besselk_rayfit.py`): plain integrand = a single Bessel-K
+(R²=1.0, `p=−(L+1)d/2`, robust across `d=1,2,3`); derivative = a sum of Bessel-K's. Plan:
+`spatial_loop_integral_analytic_mc.md` §3.
+
 ## Validation
 
 | Test | Result |
@@ -164,6 +213,8 @@ cutoff-sensitive (needs renormalisation).
 | **φ⁶ generalization** (Allen-Cahn + `−γφ⁵`) | new `φ̃φ⁵` (deg-6) vertex handled with zero special-casing: γ correctly absent at tree/1-loop (degree-6 vertex needs `taylor_order = k+2·max_ell = 6` ⇒ only at `ℓ=2`), enters at 2-loop as the double-tadpole. At λ=0.05, γ=0.005 the isolated γ contribution is −0.0047, moving 2-loop from 0.4833 (φ⁴-only) to 0.4786 — 3× closer to sim 0.4797. |
 | **derivative-vertex form factor** (GH vs brute) | `⟨F⟩·MomFactor` reproduces brute `∫dℓ F(ℓ,q)·Gaussian` to **1e-12** for `F∈{ℓ², ℓ²q², ℓ²(ℓ-q)², ℓ(ℓ-q)}` (Gauss–Hermite is exact for the polynomial form factor). |
 | **Model-B conserved `g∇²(φ²)`** (full integrator vs oracle) | the 1-loop form-factor bubble matches the independent, sim-validated `loop_dyson` oracle to **~1%** per q (`tests/test_full_integrator.py::test_formfactor_bubble_vs_oracle`). Runs end-to-end through `compute_cumulants(max_ell=1)`. *(Note: the equal-time variance shift is conservation-suppressed — small and a weak end-to-end target; the per-q oracle agreement is the rigorous validation.)* |
+| **analytic `q→x` IFT** (Wick moment vs polynomial-fit vs numerical FT) | KPZ + Model B `δC(x)`: the joint-`(ℓ,q)` Wick moment matches the polynomial-fit to **1e-12–1e-17** (both exact); both match the numerical FT (Model B `0.03337` vs numFT `0.03184` confirms the numerical FT under-resolves the `q⁴` tail). KPZ e2e `max_ell=1`: `C(0,0)=0.50109`. |
+| **Monte-Carlo backend** (`SPATIAL_INTEGRATOR=mc`) | `test_mc_integrator_matches_grid_plain`; the grid path stays bit-identical (regression 16/16). PLAIN δC(x): 1-loop 0.03–0.35% (stable/5 seeds vs fine grid), 2-loop matches the converged grid to **<0.1%** where the `n_t=16` grid OOMs. e2e plain φ⁴ `max_ell=2` via MC: no OOM. |
 
 ## Notebooks
 
