@@ -298,10 +298,20 @@ def compute_spatial_correlator_via_pipeline(
     if not prop.get('spatial_dim'):
         raise SpatialPropagatorError('propagator has no spatial block.')
     if prop.get('G_tx_sym') is None:
+        # Diagonal Tier-1 heat-kernel block unavailable (e.g. off-diagonal
+        # coupling).  If the inverse propagator is COUPLED but scalar-diffusion,
+        # route to the spectral-Lyapunov coupled tree-level driver (Dyson 3b);
+        # otherwise re-raise with the original reason.
         why = prop.get('spatial_tier1_error', 'no closed-form spatial block')
-        raise NotImplementedError(
-            'pipeline bridge supports only the Tier-1 diagonal heat-kernel '
-            f'propagator (reason: {why}).')
+        try:
+            return compute_coupled_tree_correlator(
+                ft, model, prop, num_params, external_fields, tau_grid,
+                spatial_grid, verbose=verbose)
+        except (NotImplementedError, SpatialPropagatorError) as e:
+            raise NotImplementedError(
+                'pipeline bridge: the diagonal Tier-1 heat-kernel propagator is '
+                f'unavailable ({why}) and the coupled scalar-diffusion path does '
+                f'not apply ({type(e).__name__}: {e}).')
 
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items()
@@ -448,14 +458,33 @@ def compute_coupled_tree_correlator(
             'diffusion requires the Dyson–Duhamel series (not yet wired).')
     N = extract_noise_matrix(ft, nps_str)
 
-    # External legs → physical field indices (i, j).
-    i = _field_index(prop, external_fields[0][0]
-                     if isinstance(external_fields[0], (tuple, list))
-                     else external_fields[0])
-    last = external_fields[-1]
-    j = _field_index(prop, last[0] if isinstance(last, (tuple, list)) else last)
+    # External legs → physical field indices (i, j).  Robust to the
+    # 'd'-prefixed fluctuation names compute_cumulants passes (e.g. 'da'→'a').
+    phys_names = list(prop['ring_gen_names'][prop['nf']:])
 
-    bc_mode, L = _bc_from_prop(prop, nps_sr)
+    def _leg_idx(spec):
+        nm = str(spec[0] if isinstance(spec, (tuple, list)) else spec)
+        for cand in (nm, nm[1:] if nm.startswith('d') else nm):
+            base = cand.rstrip('0123456789')
+            for idx, pn in enumerate(phys_names):
+                if cand == pn or base == pn.rstrip('0123456789'):
+                    return idx
+        return 0
+
+    i = _leg_idx(external_fields[0])
+    j = _leg_idx(external_fields[-1])
+
+    # Boundary from the MODEL (the coupled prop skips build_spatial_propagator,
+    # so it carries no bc_mode/bc_params).
+    bnd = model.get('boundary') or {}
+    bc_mode = bnd.get('mode', 'infinite')
+    L = None
+    if bc_mode == 'periodic':
+        lname = bnd.get('length')
+        if isinstance(lname, str):
+            L = float(nps_sr[SR.var(lname)])
+        elif lname is not None:
+            L = float(lname)
     taus = [float(t) for t in tau_grid]
     xs = np.array([float(x) for x in spatial_grid])
     C = np.zeros((len(taus), len(xs)), dtype=np.complex128)

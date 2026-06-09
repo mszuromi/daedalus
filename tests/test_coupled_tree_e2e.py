@@ -113,6 +113,28 @@ def test_coupled_extraction_and_cross_correlation():
         assert C_ab[it, 0].real == pytest.approx(C_ab[it, 2].real, abs=2e-3)
 
 
+def test_coupled_routes_through_compute_cumulants():
+    """compute_cumulants (public API, max_ell=0) on a coupled theory routes to the
+    coupled driver and returns C(x,τ) matching a direct driver call."""
+    from pipeline import compute_cumulants
+    g, h = 0.4, 0.3
+    model = _two_species(g, h)
+    sg = np.array([0.0, 0.5, 1.0])
+    th = compute_cumulants(
+        model=model, k=2, max_ell=0, fundamental=_fund(g, h),
+        external_fields=[('a', 1), ('a', 1)], tau_max=1.0, tau_step=0.5,
+        spatial_grid=sg, parallel=False, verbose=False, use_cache=False)
+    C = np.asarray(th['C_tau_x']).real
+    ft, prop = _setup(model)
+    Cd, info = compute_coupled_tree_correlator(
+        ft, model, prop, _fund(g, h), [('da', 1), ('da', 1)],
+        np.asarray(th['tau_grid']), sg)
+    assert info['coupled'] is True
+    assert np.allclose(C, Cd.real, atol=1e-6)               # routed to the driver
+    i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
+    assert C[i0, 0] > 0                                     # C_aa(0,0) is a variance
+
+
 def test_noise_matrix_diagonal_and_cross():
     model = _two_species(0.4, 0.3, cross_noise=0.5)
     ft, _ = _setup(model)

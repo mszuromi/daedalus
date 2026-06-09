@@ -124,12 +124,12 @@ def _allen_cahn_model():
         .boundary('infinite').initial('stationary').build())
 
 
-def test_coupled_multifield_raises_clean_tier2_error():
-    """A coupled (off-diagonal) multi-field spatial theory is a Tier-2 /
-    v2 case; it must raise a CLEAR NotImplementedError, not a cryptic
-    KeyError on 'G_tx_sym'."""
+def test_coupled_multifield_scalar_diffusion_supported():
+    """A coupled (off-diagonal) multi-field theory with EQUAL (scalar) diffusion
+    is now handled by the spectral-Lyapunov coupled driver (Dyson 3b):
+    compute_cumulants returns a finite C(x,τ) instead of raising."""
     model = (
-        TheoryBuilder('coupled spatial', n_populations=0)
+        TheoryBuilder('coupled spatial (scalar D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -143,10 +143,41 @@ def test_coupled_multifield_raises_clean_tier2_error():
         .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
         .equation(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
         .boundary('infinite').initial('stationary').build())
-    with pytest.raises(NotImplementedError, match='Tier'):
+    th = compute_cumulants(
+        model=model, k=2, max_ell=0,
+        fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0},
+        external_fields=[('phi', 1), ('phi', 2)],
+        tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
+        parallel=False, verbose=False, use_cache=False)
+    C = np.asarray(th['C_tau_x']).real
+    assert np.all(np.isfinite(C))
+    i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
+    assert C[i0, 0] > 0                                # C_phiphi(0,0) is a variance
+
+
+def test_coupled_multifield_unequal_diffusion_raises_clean():
+    """Coupled WITH UNEQUAL diffusion (𝒟̂≠0) still needs the Dyson series, so
+    compute_cumulants raises a CLEAR NotImplementedError."""
+    model = (
+        TheoryBuilder('coupled spatial (unequal D)', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .physical_field('psi', spatial_dim=1)
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('D1', default=1.0, domain='positive')
+        .parameter('D2', default=0.5, domain='positive')
+        .parameter('g', default=0.3, domain='real')
+        .parameter('T', default=1.0, domain='positive')
+        .set_action_text(
+            'phit*((Dt+mu-D1*Laplacian)*phi + g*psi) '
+            '+ psit*((Dt+mu-D2*Laplacian)*psi + g*phi) '
+            '- T*phit^2 - T*psit^2')
+        .equation(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
+        .equation(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
+        .boundary('infinite').initial('stationary').build())
+    with pytest.raises(NotImplementedError, match='scalar-diffusion'):
         compute_cumulants(
             model=model, k=2, max_ell=0,
-            fundamental={'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0},
+            fundamental={'mu': 1.0, 'D1': 1.0, 'D2': 0.5, 'g': 0.3, 'T': 1.0},
             external_fields=[('phi', 1), ('phi', 2)],
             tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
             parallel=False, verbose=False, use_cache=False)

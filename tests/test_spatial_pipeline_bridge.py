@@ -172,11 +172,12 @@ def test_bridge_multifield_resolves_each_field(leg, fi, mu, D, T):
     np.testing.assert_allclose(Cp.real[it0], closed, rtol=1e-9, atol=1e-12)
 
 
-def test_bridge_tier2_coupled_raises_clean():
-    """A coupled (off-diagonal) multi-field spatial theory has no Tier-1
-    heat-kernel block, so the bridge must raise a clean NotImplementedError."""
+def test_bridge_coupled_scalar_diffusion_supported():
+    """A coupled (off-diagonal) multi-field theory with EQUAL (scalar) diffusion
+    has no diagonal Tier-1 block, but the bridge now routes it to the spectral-
+    Lyapunov coupled driver (Dyson 3b) and returns a finite C(x,τ)."""
     model = (
-        TheoryBuilder('coupled spatial bridge', n_populations=0)
+        TheoryBuilder('coupled spatial bridge (scalar D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -195,7 +196,39 @@ def test_bridge_tier2_coupled_raises_clean():
     prop = build_propagator(ft, model, use_cache=False, verbose=False)
     nps = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('g'): 0.3,
            SR.var('T'): 1.0}
-    with pytest.raises(NotImplementedError, match='Tier-1'):
+    C, info = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, nps, _EXT, _TAUS, _XS, verbose=False)
+    assert info.get('coupled') is True
+    assert np.all(np.isfinite(C.real))
+    it0 = int(np.argmin(np.abs(_TAUS)))
+    assert C[it0, 0].real > 0                      # C_phiphi(x=0, τ=0) is a variance
+
+
+def test_bridge_coupled_unequal_diffusion_raises_clean():
+    """A coupled theory with UNEQUAL diffusion (𝒟̂≠0) still needs the Dyson–Duhamel
+    series, so the bridge raises a clean NotImplementedError."""
+    model = (
+        TheoryBuilder('coupled spatial bridge (unequal D)', n_populations=0)
+        .physical_field('phi', spatial_dim=1)
+        .physical_field('psi', spatial_dim=1)
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('D1', default=1.0, domain='positive')
+        .parameter('D2', default=0.5, domain='positive')
+        .parameter('g', default=0.3, domain='real')
+        .parameter('T', default=1.0, domain='positive')
+        .set_action_text(
+            'phit*((Dt+mu-D1*Laplacian)*phi + g*psi) '
+            '+ psit*((Dt+mu-D2*Laplacian)*psi + g*phi) '
+            '- T*phit^2 - T*psit^2')
+        .equation(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
+        .equation(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
+        .boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(model, taylor_order=2)
+    ft.expand()
+    prop = build_propagator(ft, model, use_cache=False, verbose=False)
+    nps = {SR.var('mu'): 1.0, SR.var('D1'): 1.0, SR.var('D2'): 0.5,
+           SR.var('g'): 0.3, SR.var('T'): 1.0}
+    with pytest.raises(NotImplementedError, match='scalar-diffusion'):
         compute_spatial_correlator_via_pipeline(
             ft, model, prop, nps, _EXT, _TAUS, _XS, verbose=False)
 
