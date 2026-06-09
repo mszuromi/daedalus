@@ -43,6 +43,16 @@ import numpy as np
 from msrjd.integration.spatial.causal_chambers import causal_chambers
 
 
+# ── Notation (code ↔ paper App. B) ───────────────────────────────────
+#   Lam      Λ        loop / first-Symanzik matrix  Σ_e w_e a_e a_eᵀ  (U=det Lam)
+#   Bcal     𝓑(w)     external quadratic form  = D·Q_eff = Q − Nᵀ Lam⁻¹ N
+#   N, Q     N_rb,Q_ab   Symanzik cross / external blocks ;  Q_eff = 𝓑/D
+#   a, b     B_er,C_eb   edge routing coefficients (plain B,C in paper)
+#   D        D_0      scalar reference diffusion ;  w,q ↔ w_e,q_b
+#   M(Γ)     𝒮(Γ)     symmetry factor (kept as M(Γ); Tier-3 rename → Scal pending)
+# ─────────────────────────────────────────────────────────────────────
+
+
 def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
                            return_gaussian=False):
     """``MomFactor(w,q)`` for a BATCH of Schwinger-weight vectors ``w_batch``
@@ -50,13 +60,13 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
 
     ``a`` (``E×L``), ``b`` (``E×n_ext``): the per-edge routing coefficients.
     Returns ``(P,)``.  ``L=0`` (tree) → ``exp(−D qᵀQq)``, ``Q=Σ_e w_e b_e b_eᵀ``;
-    ``L≥1`` → ``(4πD)^{−Ld/2} U^{−d/2} exp(−D qᵀ Q_eff q)`` with ``U=det M``,
-    ``Q_eff=Q−Nᵀ M⁻¹ N`` (batched ``det``/``solve``).
+    ``L≥1`` → ``(4πD)^{−Ld/2} U^{−d/2} exp(−D qᵀ Q_eff q)`` with ``U=det Lam``,
+    ``Q_eff=Q−Nᵀ Lam⁻¹ N`` (batched ``det``/``solve``).
 
-    ``return_gaussian`` also returns ``(M, N, ok)`` (the loop-momentum Gaussian's
-    precision ``M=Σw_e a_e a_eᵀ`` and cross-term ``N=Σw_e a_e b_eᵀ``, with a
+    ``return_gaussian`` also returns ``(Lam, N, ok)`` (the loop-momentum Gaussian's
+    precision ``Lam=Σw_e a_e a_eᵀ`` and cross-term ``N=Σw_e a_e b_eᵀ``, with a
     non-degenerate mask) so a derivative-vertex **form factor** can be averaged
-    over ``ℓ~N(−M⁻¹Nq, (2D M)⁻¹)`` — see :func:`_formfactor_average`.  ``M,N`` are
+    over ``ℓ~N(−Lam⁻¹Nq, (2D Lam)⁻¹)`` — see :func:`_formfactor_average`.  ``Lam,N`` are
     ``None`` for ``L=0``."""
     E, L = a.shape
     qv = np.atleast_1d(np.asarray(q_vec, dtype=float))
@@ -65,36 +75,36 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
         quad = np.einsum('j,pjk,k->p', qv, Q, qv)
         mf = np.exp(-D * quad)
         return (mf, None, None, None) if return_gaussian else mf
-    M = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
+    Lam = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
-    U = np.linalg.det(M)                                     # (P,)
+    U = np.linalg.det(Lam)                                     # (P,)
     ok = U > u_floor
     out = np.zeros(w_batch.shape[0])
     if np.any(ok):
-        Mok, Nok, Qok, Uok = M[ok], N[ok], Q[ok], U[ok]
-        MiN = np.linalg.solve(Mok, Nok)                      # (P', L, n_ext)
-        Qeff = Qok - np.einsum('plj,plk->pjk', Nok, MiN)
+        Lamok, Nok, Qok, Uok = Lam[ok], N[ok], Q[ok], U[ok]
+        LamiN = np.linalg.solve(Lamok, Nok)                      # (P', L, n_ext)
+        Qeff = Qok - np.einsum('plj,plk->pjk', Nok, LamiN)
         quad = np.einsum('j,pjk,k->p', qv, Qeff, qv)
         pref = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
             * np.power(Uok, -0.5 * spatial_dim)
         out[ok] = pref * np.exp(-D * quad)
-    return (out, M, N, ok) if return_gaussian else out
+    return (out, Lam, N, ok) if return_gaussian else out
 
 
 def _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim, u_floor=1e-300,
                            return_gaussian=False):
     """Per-Schwinger-sample heat-kernel ingredients for the ANALYTIC spatial IFT
-    (Case A — plain vertices).  Returns ``(pref, B, ok)`` (each ``(P,)``): the
-    q-Gaussian ``pref·exp(−B q²)`` UN-collapsed from q, with
-    ``pref = (4πD)^{−Ld/2} U^{−d/2}`` and ``B = D·Q_eff`` (scalar — k=2, one
+    (Case A — plain vertices).  Returns ``(pref, Bcal, ok)`` (each ``(P,)``): the
+    q-Gaussian ``pref·exp(−Bcal q²)`` UN-collapsed from q, with
+    ``pref = (4πD)^{−Ld/2} U^{−d/2}`` and ``Bcal = D·Q_eff`` (scalar — k=2, one
     external momentum).  The spatial IFT is then exact and analytic:
 
-        ∫dᵈq/(2π)ᵈ e^{iq·x} pref·e^{−Bq²} = pref·(4πB)^{−d/2} e^{−|x|²/4B}
+        ∫dᵈq/(2π)ᵈ e^{iq·x} pref·e^{−Bcal q²} = pref·(4πBcal)^{−d/2} e^{−|x|²/4Bcal}
 
     — the heat kernel — so NO q-grid and NO numerical FT.  ``L=0`` (tree):
-    ``pref=1``, ``B=D·Q``.  Mirrors :func:`_momentum_factor_batch` but does not
+    ``pref=1``, ``Bcal=D·Q``.  Mirrors :func:`_momentum_factor_batch` but does not
     contract with q (the x-dependence stays analytic).  ``return_gaussian`` also
-    returns ``(M, N, Q)`` (``None`` for L=0) for the derivative-vertex Phase-2
+    returns ``(Lam, N, Q)`` (``None`` for L=0) for the derivative-vertex Phase-2
     form-factor average (:func:`_formfactor_average_x`)."""
     E, L = a.shape
     P = w_batch.shape[0]
@@ -107,25 +117,25 @@ def _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim, u_floor=1e-300,
     if L == 0:
         ret = (np.ones(P), D * Q[:, 0, 0], np.ones(P, dtype=bool))
         return ret + (None, None, Q) if return_gaussian else ret
-    M = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
+    Lam = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
-    U = np.linalg.det(M)                                     # (P,)
+    U = np.linalg.det(Lam)                                     # (P,)
     ok = U > u_floor
     pref = np.zeros(P)
-    B = np.zeros(P)
+    Bcal = np.zeros(P)
     if np.any(ok):
-        Mok, Nok, Qok, Uok = M[ok], N[ok], Q[ok], U[ok]
-        MiN = np.linalg.solve(Mok, Nok)
-        Qeff = (Qok - np.einsum('plj,plk->pjk', Nok, MiN))[:, 0, 0]   # (P',)
+        Lamok, Nok, Qok, Uok = Lam[ok], N[ok], Q[ok], U[ok]
+        LamiN = np.linalg.solve(Lamok, Nok)
+        Qeff = (Qok - np.einsum('plj,plk->pjk', Nok, LamiN))[:, 0, 0]   # (P',)
         pref[ok] = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
             * np.power(Uok, -0.5 * spatial_dim)
-        B[ok] = D * Qeff
-    return (pref, B, ok, M, N, Q) if return_gaussian else (pref, B, ok)
+        Bcal[ok] = D * Qeff
+    return (pref, Bcal, ok, Lam, N, Q) if return_gaussian else (pref, Bcal, ok)
 
 
-def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=1):
+def _formfactor_average(formfactor, Lam, N, q_vec, D, ok, gh_order=6, spatial_dim=1):
     """``⟨F(ℓ,q)⟩`` of a derivative-vertex form factor over the loop-momentum
-    Gaussian ``ℓ ~ N(ℓ̄, Σ)``, ``ℓ̄ = −M⁻¹N q``, ``Σ = (2D M)⁻¹``, by
+    Gaussian ``ℓ ~ N(ℓ̄, Σ)``, ``ℓ̄ = −Lam⁻¹N q``, ``Σ = (2D Lam)⁻¹``, by
     Gauss–Hermite — **EXACT** for a polynomial ``F`` (a momentum-space derivative
     vertex deposits exactly a polynomial: ``Lap→−|k|²``, ``∂_x→ik``).  The base
     ``MomFactor`` already carries the Gaussian normalization + the ``1/(2π)^{Ld}``
@@ -135,22 +145,22 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=
     Generic in the loop number ``L``, the number of externals ``n_ext``, AND the
     spatial dimension ``d=spatial_dim``.  The loop covariance factorizes as
     ``Σ ⊗ I_d`` (isotropic propagators ⇒ the ``d`` spatial components are
-    independent, same ``L×L`` precision ``M``, means from the matching component
+    independent, same ``L×L`` precision ``Lam``, means from the matching component
     of ``q``).  Placing ``q`` on **axis 0** (legit for rotation-invariant Lap /
-    full-gradient vertices), the parallel component (α=0) gets ``ℓ̄=−M⁻¹N|q|`` and
+    full-gradient vertices), the parallel component (α=0) gets ``ℓ̄=−Lam⁻¹N|q|`` and
     the transverse components (α≥1) are zero-mean — an ``L·d``-dimensional GH grid.
 
     ``d=1``: ``formfactor(ell, q)`` with ``ell`` ``(P',G,L)`` and ``q`` ``(n_ext,)``.
     ``d≥2``: ``ell`` is ``(P',G,L,d)`` and ``q`` is ``(n_ext,d)`` (``q[:,0]=|q|``,
     rest 0).  Returns ``(P,)``; ``1.0`` where the loop is degenerate."""
-    P, L = M.shape[0], M.shape[1]
+    P, L = Lam.shape[0], Lam.shape[1]
     out = np.ones(P, dtype=complex)                          # COMPLEX: ∂_x→ik
     if not np.any(ok):
         return out
     qv = np.atleast_1d(np.asarray(q_vec, dtype=float))       # (n_ext,) magnitudes
-    Mok, Nok = M[ok], N[ok]                                  # (P',L,L), (P',L,n_ext)
-    lbar0 = -np.einsum('plj,j->pl', np.linalg.solve(Mok, Nok), qv)  # parallel mean (P',L)
-    Sig = np.linalg.inv(Mok) / (2.0 * D)                     # (P',L,L)
+    Lamok, Nok = Lam[ok], N[ok]                                  # (P',L,L), (P',L,n_ext)
+    lbar0 = -np.einsum('plj,j->pl', np.linalg.solve(Lamok, Nok), qv)  # parallel mean (P',L)
+    Sig = np.linalg.inv(Lamok) / (2.0 * D)                     # (P',L,L)
     Ch = np.linalg.cholesky(Sig)                             # (P',L,L)
     xg, wg = np.polynomial.hermite_e.hermegauss(gh_order)    # weight e^{−x²/2}
     d = int(spatial_dim)
@@ -176,7 +186,7 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=
         Wg = Wg * wgrid.ravel()
     Wg = Wg / (2.0 * math.pi) ** (0.5 * Ld)                                # (G,)
     Zr = Z.reshape(Z.shape[0], d, L)                          # (G, α, loop) — α-major
-    nP, G = Mok.shape[0], Z.shape[0]
+    nP, G = Lamok.shape[0], Z.shape[0]
     ell = np.zeros((nP, G, L, d))
     for al in range(d):
         comp = np.einsum('plm,gm->pgl', Ch, Zr[:, al, :])    # (P',G,L)  zero-mean draw
@@ -189,27 +199,27 @@ def _formfactor_average(formfactor, M, N, q_vec, D, ok, gh_order=6, spatial_dim=
     return out
 
 
-def _formfactor_average_x(formfactor, M, N, Q, D, ok, xs, spatial_dim=1,
+def _formfactor_average_x(formfactor, Lam, N, Q, D, ok, xs, spatial_dim=1,
                           gh_order=6, q_deg=8):
     """Phase 2 — analytic q→x IFT of a derivative-vertex form factor (d=1, k=2).
 
     Returns ``FF`` of shape ``(P, n_x)``: the loop-averaged form factor's
     contribution to the spatial IFT, EXCLUDING the heat-kernel prefactor ``pref·
-    K(B,x)`` (applied by the caller).  Method (the polynomial-fit route):
+    K(Bcal,x)`` (applied by the caller).  Method (the polynomial-fit route):
 
       1. ``P(q) = ⟨F(ℓ,q)⟩_ℓ`` is a polynomial in ``q`` (the ℓ-average of a
          polynomial form factor) of degree ≤ ``q_deg`` (= total degree of F).
          Recover it by interpolating the EXISTING ℓ-Gauss–Hermite average
          (:func:`_formfactor_average`) at ``q_deg+1`` real q-nodes.
-      2. The q→x transform is then analytic: ``∫dq/2π e^{iqx} q^n e^{−Bq²} =
-         K(B,x)·E[(u+ix/2B)^n]`` with ``u~N(0,1/2B)`` (closed-form heat-kernel
-         moments).  So ``FF(x) = Σ_n p_n E[(u+ix/2B)^n]`` and the full diagram
-         contribution is ``pref·K(B,x)·FF(x)``.
+      2. The q→x transform is then analytic: ``∫dq/2π e^{iqx} q^n e^{−Bcal q²} =
+         K(Bcal,x)·E[(u+ix/2Bcal)^n]`` with ``u~N(0,1/2Bcal)`` (closed-form heat-kernel
+         moments).  So ``FF(x) = Σ_n p_n E[(u+ix/2Bcal)^n]`` and the full diagram
+         contribution is ``pref·K(Bcal,x)·FF(x)``.
 
     This replaces the n_q-point numerical FT with ``q_deg+1`` ℓ-GH evaluations —
     exact (no ringing / q_cut), and ~``n_q/(q_deg+1)`` fewer form-factor evals."""
     from math import comb
-    P, L = M.shape[0], M.shape[1]
+    P, L = Lam.shape[0], Lam.shape[1]
     xv = np.asarray(xs, dtype=float)
     out = np.zeros((P, xv.size), dtype=complex)
     if spatial_dim != 1:
@@ -218,48 +228,48 @@ def _formfactor_average_x(formfactor, M, N, Q, D, ok, xs, spatial_dim=1,
             'd≥2 transverse handling is Phase 3.')
     if not np.any(ok):
         return out
-    Mok, Nok, Qok = M[ok], N[ok], Q[ok]
+    Lamok, Nok, Qok = Lam[ok], N[ok], Q[ok]
     Qeff = (Qok - np.einsum('plj,plk->pjk', Nok,
-                            np.linalg.solve(Mok, Nok)))[:, 0, 0]   # (P',)
-    B = D * Qeff
-    good = B > 1e-300
+                            np.linalg.solve(Lamok, Nok)))[:, 0, 0]   # (P',)
+    Bcal = D * Qeff
+    good = Bcal > 1e-300
     if not np.any(good):
         return out
-    Mg, Ng = Mok[good], Nok[good]
-    Bg = B[good]                                              # (Pg,)
-    Pg = Mg.shape[0]
+    Lamg, Ng = Lamok[good], Nok[good]
+    Bcal_g = Bcal[good]                                              # (Pg,)
+    Pg = Lamg.shape[0]
 
     # PRINCIPLED route — the joint-(ℓ,q)-Gaussian moment (Case C): one pass per
-    # diagram, NO q-node loop / NO GH grid.  ℓ̄=−M⁻¹N·q gives a=ℓ̄/q; Σ=(2DM)⁻¹.
+    # diagram, NO q-node loop / NO GH grid.  ℓ̄=−Lam⁻¹N·q gives a=ℓ̄/q; Σ=(2D·Lam)⁻¹.
     # (Falls back to the polynomial fit below if the moment callable is absent.)
     moment_x = getattr(formfactor, 'moment_x', None)
     if moment_x is not None:
-        a = -np.linalg.solve(Mg, Ng)[:, :, 0]                # (Pg, L): ℓ̄ = a·q
-        Sg = np.linalg.inv(Mg) / (2.0 * D)                   # (Pg, L, L): Σ
-        out_good = np.zeros((Mok.shape[0], xv.size), dtype=complex)
-        out_good[good] = moment_x(a, Sg, Bg, xv)             # (Pg, n_x)
+        a = -np.linalg.solve(Lamg, Ng)[:, :, 0]                # (Pg, L): ℓ̄ = a·q
+        Sg = np.linalg.inv(Lamg) / (2.0 * D)                   # (Pg, L, L): Σ
+        out_good = np.zeros((Lamok.shape[0], xv.size), dtype=complex)
+        out_good[good] = moment_x(a, Sg, Bcal_g, xv)             # (Pg, n_x)
         out[ok] = out_good
         return out
 
     # 1. interpolate P(q)=⟨F⟩_ℓ from (q_deg+1) real nodes — scaled (t=q/qsc) for
     #    a well-conditioned Vandermonde.  EXACT (P is a polynomial of degree q_deg).
     n_nodes = int(q_deg) + 1
-    qsc = 1.0 / float(np.sqrt(np.median(Bg)))                # ~ Gaussian q-width
+    qsc = 1.0 / float(np.sqrt(np.median(Bcal_g)))                # ~ Gaussian q-width
     tnodes = 0.35 + 2.3 * (0.5 - 0.5 * np.cos(
         np.pi * (np.arange(n_nodes) + 0.5) / n_nodes))       # ~Chebyshev in (0,~3)
     qnodes = qsc * tnodes
     Fbar = np.empty((Pg, n_nodes), dtype=complex)
     okg = np.ones(Pg, dtype=bool)
     for j in range(n_nodes):
-        Fbar[:, j] = _formfactor_average(formfactor, Mg, Ng, [float(qnodes[j])],
+        Fbar[:, j] = _formfactor_average(formfactor, Lamg, Ng, [float(qnodes[j])],
                                          D, okg, gh_order, spatial_dim)
     Vt = np.vander(tnodes, n_nodes, increasing=True)         # in t (well-cond.)
     ptil = np.linalg.solve(Vt, Fbar.T).T                     # (Pg, n_nodes): coeffs in t
     pcoef = ptil / (qsc ** np.arange(n_nodes))[None, :]      # back to q: p_n = p̃_n/qsc^n
 
-    # 2. heat-kernel q-moments E_n(x) = E[(u+ix/2B)^n], u~N(0, 1/2B).
-    c = 1j * xv[None, :] / (2.0 * Bg[:, None])               # (Pg, n_x): ix/2B
-    sig2 = 1.0 / (2.0 * Bg)                                  # (Pg,): Var(u)=1/2B
+    # 2. heat-kernel q-moments E_n(x) = E[(u+ix/2Bcal)^n], u~N(0, 1/2Bcal).
+    c = 1j * xv[None, :] / (2.0 * Bcal_g[:, None])               # (Pg, n_x): ix/2Bcal
+    sig2 = 1.0 / (2.0 * Bcal_g)                                  # (Pg,): Var(u)=1/2Bcal
     FF = np.zeros((Pg, xv.size), dtype=complex)
     for n in range(n_nodes):
         En = np.zeros((Pg, xv.size), dtype=complex)
@@ -271,7 +281,7 @@ def _formfactor_average_x(formfactor, M, N, Q, D, ok, xs, spatial_dim=1,
                 kk -= 2
             En += comb(n, k) * c ** (n - k) * (sig2[:, None] ** (k // 2)) * df
         FF += pcoef[:, n][:, None] * En
-    out_good = np.zeros((Mok.shape[0], xv.size), dtype=complex)
+    out_good = np.zeros((Lamok.shape[0], xv.size), dtype=complex)
     out_good[good] = FF
     out[ok] = out_good
     return out
@@ -308,7 +318,7 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     modified Bessel function `∫₀^∞ λ^P e^{−aλ−c/λ}dλ = 2(c/a)^{(P+1)/2}K_{P+1}(2√(ac))`
     (`a=μŴ`, `c=|x|²Û/4DF̂`, `P=n−1−(L+1)d/2`).  Only the smooth angular simplex is
     sampled — Dirichlet(1,…,1) with **causal poset rejection** for the internal R
-    edges; the measure is `1/((n−1)!·N)`.  The radial reduction does the `det M→0`
+    edges; the measure is `1/((n−1)!·N)`.  The radial reduction does the `det Lam→0`
     (degenerate-loop) direction analytically, regularizing what breaks pure MC.
 
     Plain (`formfactor=None` / no `moment_bessel`): a single Bessel-K.  Derivative
@@ -350,23 +360,23 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     wv = w[valid]
     if wv.shape[0] == 0:
         return total
-    _pref, Bk, ok, M, Nn, Q = _symanzik_kernel_batch(
+    _pref, Bcal_k, ok, Lam, Nn, Q = _symanzik_kernel_batch(
         a, b, wv, D, spatial_dim, return_gaussian=True)
-    if M is None or not np.any(ok & (Bk > 1e-300)):
+    if Lam is None or not np.any(ok & (Bcal_k > 1e-300)):
         return total
-    good = ok & (Bk > 1e-300)
-    Mg, Ng, Qg, wg = M[good], Nn[good], Q[good], wv[good]
-    Uhat = np.linalg.det(Mg)
+    good = ok & (Bcal_k > 1e-300)
+    Lamg, Ng, Qg, wg = Lam[good], Nn[good], Q[good], wv[good]
+    Uhat = np.linalg.det(Lamg)
     Qeff = (Qg - np.einsum('plj,plk->pjk', Ng,
-                           np.linalg.solve(Mg, Ng)))[:, 0, 0]
+                           np.linalg.solve(Lamg, Ng)))[:, 0, 0]
     Fhat = Uhat * Qeff
     What = wg.sum(1)
     okF = (Uhat > 1e-300) & (np.real(Fhat) > 1e-300) & (What > 0)
     if not np.any(okF):
         return total
-    Mg, Ng = Mg[okF], Ng[okF]
+    Lamg, Ng = Lamg[okF], Ng[okF]
     Uhat, Fhat, What = Uhat[okF], Fhat[okF], What[okF]
-    Pg = Mg.shape[0]
+    Pg = Lamg.shape[0]
     c0 = ((4.0 * math.pi * D) ** (-0.5 * L * spatial_dim)
           * (4.0 * math.pi * D * Fhat) ** (-0.5 * spatial_dim))
     aa = mu * What
@@ -380,8 +390,8 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
             "vertex); d≥2 derivative analytic IFT is Phase 3.  Use method='grid' "
             "(numerical FT) for this case.")
     if mom_b is not None:                                   # derivative vertex: Σ_m EF_m λ^{−m}
-        ahat = -np.linalg.solve(Mg, Ng)[:, :, 0]
-        Shat = np.linalg.inv(Mg) / (2.0 * D)
+        ahat = -np.linalg.solve(Lamg, Ng)[:, :, 0]
+        Shat = np.linalg.inv(Lamg) / (2.0 * D)
         Bhat = D * Fhat / Uhat
         powers, g = mom_b(ahat, Shat, Bhat, xs)            # (n_m,), (n_m, Pg, n_x)
     else:                                                   # plain: single Bessel-K
@@ -494,7 +504,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             #    memory, O(1/√N).  Internal times via nested Exp(μ) gaps (matching
             #    the retarded poset bounds), correlation σ's ~ Exp(μ); each σ-edge's
             #    e^{−μσ} is consumed by its proposal.  (Validated for PLAIN vertices;
-            #    derivative-vertex form factors are biased — det M→0 singularity.)
+            #    derivative-vertex form factors are biased — det Lam→0 singularity.)
             P = int(mc_n)
             placed = {}
             later = None
@@ -558,28 +568,28 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
 
         if xs_arr is not None:                            # ── analytic heat-kernel IFT
             if formfactor is None:                        # Phase 1: plain → pure heat kernel
-                pref, Bk, okk = _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim)
-                good = okk & (Bk > 1e-300)                # B>0 (q-dependent edges)
+                pref, Bcal_k, okk = _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim)
+                good = okk & (Bcal_k > 1e-300)                # Bcal>0 (q-dependent edges)
                 if np.any(good):
-                    Bg = Bk[good]
+                    Bcal_g = Bcal_k[good]
                     wamp = (amp * pref)[good]
-                    hk = ((4.0 * math.pi * Bg)[:, None] ** (-0.5 * spatial_dim)
-                          * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bg[:, None])))
+                    hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
+                          * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
                     total = total + np.einsum('p,px->x', wamp, hk)
             else:                                         # Phase 2: derivative → heat kernel × form-factor moments
-                pref, Bk, okk, Mb, Nb, Qb = _symanzik_kernel_batch(
+                pref, Bcal_k, okk, Lamb, Nb, Qb = _symanzik_kernel_batch(
                     a, b, w_batch, D, spatial_dim, return_gaussian=True)
-                good = (okk & (Bk > 1e-300)) if Mb is not None \
+                good = (okk & (Bcal_k > 1e-300)) if Lamb is not None \
                     else np.zeros(len(pref), dtype=bool)
                 if np.any(good):
-                    Bg = Bk[good]
+                    Bcal_g = Bcal_k[good]
                     wamp = (amp * pref)[good]
-                    hk = ((4.0 * math.pi * Bg)[:, None] ** (-0.5 * spatial_dim)
-                          * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bg[:, None])))
+                    hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
+                          * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
                     qdeg = getattr(formfactor, 'q_poly_deg', None) or 8
                     eff_gh = getattr(formfactor, 'gh_order_needed', None) or gh_order
                     FF = _formfactor_average_x(
-                        formfactor, Mb[good], Nb[good], Qb[good], D,
+                        formfactor, Lamb[good], Nb[good], Qb[good], D,
                         np.ones(int(np.sum(good)), dtype=bool), xs_arr,
                         spatial_dim=spatial_dim, gh_order=eff_gh, q_deg=qdeg)
                     total = total + np.einsum('p,px,px->x', wamp, hk, FF)
@@ -591,14 +601,14 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             # MomFactor·⟨F⟩, ⟨F⟩ a Gauss–Hermite average (exact for the polynomial
             # form factor) over the loop-momentum Gaussian — d-dim (the d spatial
             # components are independent, q on axis 0; transverse moments).
-            momfac, Mb, Nb, okb = _momentum_factor_batch(
+            momfac, Lamb, Nb, okb = _momentum_factor_batch(
                 a, b, w_batch, q_vec, D, spatial_dim, return_gaussian=True)
-            if Mb is not None:                               # L>=1 (loop diagram)
+            if Lamb is not None:                               # L>=1 (loop diagram)
                 # The polynomial form factor needs only its minimal exact GH order
                 # per variable (the d≥2 grid is gh_order^{L·d} — a big saving).
                 eff_gh = getattr(formfactor, 'gh_order_needed', None) or gh_order
                 momfac = momfac * _formfactor_average(
-                    formfactor, Mb, Nb, q_vec, D, okb, eff_gh,
+                    formfactor, Lamb, Nb, q_vec, D, okb, eff_gh,
                     spatial_dim=spatial_dim)
         total += np.sum(amp * momfac)
     # `formfactor=None` → real (unchanged float return); a derivative/∇ form

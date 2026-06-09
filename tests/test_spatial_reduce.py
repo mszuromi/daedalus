@@ -59,9 +59,9 @@ def test_c0_sunset_symanzik(w):
 
 
 def test_c0_matrices_shapes():
-    M, N, Q = symanzik_matrices(_SUNSET_A, _SUNSET_B, [0.5, 0.6, 0.7])
-    assert M.shape == (2, 2) and N.shape == (2, 1) and Q.shape == (1, 1)
-    assert np.allclose(M, M.T)                     # M symmetric
+    Lam, N, Q = symanzik_matrices(_SUNSET_A, _SUNSET_B, [0.5, 0.6, 0.7])
+    assert Lam.shape == (2, 2) and N.shape == (2, 1) and Q.shape == (1, 1)
+    assert np.allclose(Lam, Lam.T)                     # Lam symmetric
 
 
 def test_c0_zero_weights_raises():
