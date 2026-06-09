@@ -45,6 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.linalg import expm, solve_continuous_lyapunov
 
 # Conditioning above which the eigenvector matrix is treated as too close to
 # defective for a reliable spectral projector decomposition.
@@ -134,3 +135,52 @@ def reference_propagator(eigvals, projectors, D0: float, ksq: float,
     for m_a, P_a in zip(eigvals, projectors):
         G = G + P_a * np.exp(-(m_a + D0 * ksq) * t)
     return G
+
+
+# ── Tree-level coupled 2-point: matrix Lyapunov / FDT (Dyson step 3a) ──────────
+#
+# The free 2-point of a coupled linear theory is NOT a sum of independent OU modes
+# (that diagonal form is what pipeline_bridge._modes_C_q_tau builds).  With the
+# relaxation matrix A(q) = M + 𝒟|q|² and the (symmetric) noise covariance N (the
+# response-field (2,0) sector, ⟨ξξᵀ⟩ = N), the stationary covariance solves the
+# Lyapunov equation and the 2-point follows by the fluctuation–regression theorem:
+#
+#     A(q) Σ(q) + Σ(q) A(q)ᵀ = N,           (stationary covariance)
+#     C(q, τ) = e^{−A(q)|τ|} Σ(q)   (τ ≥ 0),   C(q, −τ) = Σ(q) e^{−A(q)ᵀ|τ|}.
+#
+# For SCALAR diffusion (𝒟 = D₀ I, i.e. ref.is_scalar_diffusion) A(q)=M+D₀|q|²I
+# shares M's eigenprojectors, so e^{−A|τ|} = G₀(|q|², |τ|) is EXACT — no Dyson
+# series.  Unequal diffusion (𝒟̂≠0) needs the n≥1 corrections and is rejected here.
+
+
+def lyapunov_covariance(A, N) -> np.ndarray:
+    """Stationary covariance ``Σ`` solving the Lyapunov equation
+    ``A Σ + Σ Aᵀ = N`` (steady state of ``dx = −A x dt + ξ``, ``⟨ξξᵀ⟩ = N δ``).
+
+    ``A`` must be a stable relaxation matrix (eigenvalues with positive real
+    part); ``N`` is the symmetric noise covariance.  Uses
+    ``scipy.linalg.solve_continuous_lyapunov`` (which solves ``A X + X Aᴴ = Q``;
+    for the real ``A`` here ``Aᴴ = Aᵀ``)."""
+    A = np.asarray(A, dtype=float)
+    N = np.asarray(N, dtype=float)
+    return solve_continuous_lyapunov(A, N)
+
+
+def coupled_two_point(ref: SpectralReference, N, qsq: float,
+                      tau: float) -> np.ndarray:
+    """Free 2-point **matrix** ``C(q, τ)`` for a SCALAR-diffusion coupled theory.
+
+    ``A(q) = M + D₀·qsq·I``; ``Σ`` solves ``A Σ + Σ Aᵀ = N``;
+    ``C(q,τ) = e^{−A|τ|} Σ`` (``τ ≥ 0``), ``= Σ e^{−Aᵀ|τ|}`` (``τ < 0``, i.e.
+    ``C(q,τ) = C(q,|τ|)ᵀ``).  Exact when ``ref.is_scalar_diffusion``; raises for
+    unequal diffusion (that needs the Dyson–Duhamel series).  Returns a real
+    ``(N, N)`` array (``C_ij`` = cross-correlation of fields ``i`` and ``j``)."""
+    if not ref.is_scalar_diffusion:
+        raise ValueError(
+            'coupled_two_point needs scalar diffusion (𝒟̂ = 0); unequal '
+            'diffusion requires the Dyson–Duhamel series (not yet wired).')
+    n = ref.n_fields
+    A = np.asarray(ref.M, dtype=float) + ref.D0 * float(qsq) * np.eye(n)
+    Sigma = lyapunov_covariance(A, N)
+    G = expm(-A * abs(float(tau)))                 # e^{−A|τ|}  (= G₀ for scalar 𝒟)
+    return G @ Sigma if tau >= 0 else Sigma @ G.T
