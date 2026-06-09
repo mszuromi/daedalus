@@ -1,5 +1,35 @@
 # Plan: integrate the Dyson–Duhamel expansion (unequal‑diffusion propagator)
 
+## ✅ STATUS (June 2026): 3c + D‑1..D‑5 EXECUTED (loop‑level dressing gated)
+
+| step | status | where |
+|---|---|---|
+| 3c‑1 per‑segment masses | **DONE** | `full_integrator.spectral_rows` + `diagram_kinematic_spectral` (batched mass table; two‑glued‑segment C representation; `I_orig = 2^{n_C}·I_spec` pinned) |
+| 3c‑2 assignment driver | **DONE** | `pipeline_bridge.compute_coupled_loop_correlator` (`value = pv·ΣW·I_spec`, weights `[P_α]_{p,r}` from `CEdge.fpairs`, NO `2^{−n_C}`) |
+| 3c‑3 gate lift | **DONE** | dispatch on `tree_info['coupled']` in `compute_spatial_correlator_generic`; honors `SPATIAL_GRID_NT/NS` |
+| 3c‑4 validation | **DONE** | tree anchor ≡ Lyapunov (3 cases); decoupled limit ≡ single‑field generic loop path (bit‑identical at equal grids); coupled nonlinear e2e; `tests/test_coupled_loop.py` |
+| D‑1 `Φ_n` | **DONE** | `spectral_propagator.phi_n` (Hermite–Genocchi + Opitz expm‑bidiagonal, complex/confluent‑safe; 29 tests) |
+| D‑2 `𝓗_n` | **DONE** | `dyson_dressing.hcal_n` / `dressed_GR` (B26/B27; geometric convergence to `expm(−(M+𝒟q²)t)` pinned) |
+| D‑3 tree dressing | **DONE** | `dyson_dressing.dressed_tree_C` wired into `compute_coupled_tree_correlator` (policy‑gated; q‑grid cosine FT / periodic mode sum) |
+| D‑3 **loop** dressing | **GATED** (clean `NotImplementedError`) | see "remaining" below |
+| D‑4 policy | **DONE** | `SpatialTheoryBuilder.dyson/dyson_order/reference_diffusion` → `model['spatial']`; serializer round‑trip; `SPATIAL_DYSON_ORDER` env; divergence guard `‖𝒟̂‖/D₀ ≥ 1` |
+| D‑5 ladder | **DONE (tree)** | N=0..3 vs exact `expm`/Lyapunov oracle (N=3 ≤ 2e‑3); unequal‑D e2e through `compute_cumulants` (periodic) vs exact mode‑sum oracle; sim transitivity via `coupled_box_correlator` (pinned against the 2‑species Langevin sim in `tests/test_coupled_rd_sim.py`) |
+
+Plus: the coupled TREE IFT is now **analytic** (spectral `Σ_{αβ}` × `free_two_point(μ_d,D₀,½)` with `μ_d=(m_α+m_β)/2` — no q_cut truncation).
+
+**Remaining (the one gated item): loop‑level dressing.** Implementation route, worked
+out and recorded here: (i) partial‑fraction the dressed segment — for distinct
+eigenvalues `e^{−m_{α_0}w}Φ_n(w;ν)` is a sum of `n+1` pure exponentials, so dressing
+just EXPANDS the 3c spectral‑assignment label set (per‑row `(n, string, pole)`),
+reusing the batched mass machinery (confluent nodes need a `w^k e^{−mw}` amplitude
+column — guard); (ii) the momentum insertion has the closed‑form identity
+`(−|k_r|²)^n · integrand = D^{−n}·∂ⁿ/∂w_rⁿ [Symanzik factors]` (e.g.
+`∂U/∂w_r = U·tr(Λ⁻¹a_ra_rᵀ)`, `∂𝓑/∂w_r = D(b_r − a_rᵀΛ⁻¹N)²`) — no new GH machinery;
+(iii) the sharp validator must be a brute matrix‑heat‑kernel loop oracle (the
+2‑species sim's resolution is too coarse for a dressing‑of‑a‑loop correction).
+
+---
+
 **Status (June 2026): step‑1 FOUNDATIONS done; coupled e2e wiring is the next phase.**
 This wires the paper's Appendix‑B §B.24–B.30 Dyson/Duhamel series into the spatial
 pipeline so **coupled multi‑field theories with unequal diffusion** (`𝒟̂ ≠ 0`) become

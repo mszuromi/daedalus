@@ -108,13 +108,23 @@ def _legs_to_phys_idx(external_fields, phys_idx):
         else:
             name = str(leg)
         base = name.rstrip('0123456789')
+        # try the natural name AND the 'd'-prefixed fluctuation name (a user
+        # passes ('b',1); the ring key is ('db',1))
+        cands = (name, 'd' + name)
+        bases = (base, 'd' + base)
         match = None
         for key in keys:
             kn = str(key[0])
-            if kn == name or kn.rstrip('0123456789') == base:
+            if kn in cands or kn.rstrip('0123456789') in bases:
                 match = key
                 break
-        out.append(match if match is not None else (keys[0] if keys else None))
+        if match is None:
+            # NEVER fall back silently (a wrong leg would quietly compute a
+            # DIFFERENT correlator — e.g. C_aa instead of C_ab)
+            raise SpatialPropagatorError(
+                f'external leg {leg!r} does not name any physical field '
+                f'(available: {keys}).')
+        out.append(match)
     return out
 
 
@@ -452,11 +462,34 @@ def compute_coupled_tree_correlator(
         raise NotImplementedError(
             'coupled tree correlator: drift (V≠0) not supported (scalar-diffusion '
             'coupled v1).')
-    ref = build_reference(M, Dm)
+    # Reference diffusion D₀: user override (.reference_diffusion(D0), stored
+    # in the model) else trace/N (build_reference default).
+    _ref_D0 = (model.get('spatial') or {}).get('reference_diffusion')
+    ref = build_reference(M, Dm, D0=_ref_D0)
+    dyson_order = None
     if not ref.is_scalar_diffusion:
-        raise SpatialPropagatorError(
-            'coupled tree correlator needs scalar diffusion (𝒟̂=0); unequal '
-            'diffusion requires the Dyson–Duhamel series (not yet wired).')
+        # UNEQUAL diffusion (𝒟̂≠0): consume the Dyson policy (builder D-4 —
+        # model['spatial']['dyson'], or the SPATIAL_DYSON_ORDER env override).
+        _env = os.environ.get('SPATIAL_DYSON_ORDER')
+        pol = ({'mode': 'fixed', 'order': int(_env)} if _env else
+               (model.get('spatial') or {}).get('dyson') or {'mode': 'off'})
+        if pol.get('mode') != 'fixed':
+            raise SpatialPropagatorError(
+                'coupled tree correlator needs scalar diffusion (𝒟̂=0); unequal '
+                'diffusion requires the Dyson–Duhamel series — set a truncation '
+                'order with SpatialTheoryBuilder.dyson_order(N) (or the '
+                'SPATIAL_DYSON_ORDER env) to enable the dressed propagator.')
+        dyson_order = int(pol['order'])
+        # series convergence: the insertion 𝒟̂|k|² vs the reference D₀|k|²
+        rho = float(np.max(np.abs(np.linalg.eigvals(ref.Dhat)))) / ref.D0
+        if rho >= 1.0:
+            raise SpatialPropagatorError(
+                f'Dyson series divergent: ‖𝒟̂‖/D₀ = {rho:.3f} >= 1 (the '
+                f'large-|k| insertion outgrows the reference).  Choose a '
+                f'better D₀ via .reference_diffusion() or reformulate.')
+        if verbose and rho > 0.6:
+            print(f'[coupled-tree] WARNING: ‖𝒟̂‖/D₀ = {rho:.2f} — slow Dyson '
+                  f'convergence; consider a larger truncation order.')
     N = extract_noise_matrix(ft, nps_str)
 
     # External legs → physical field indices (i, j).  Robust to the
@@ -465,12 +498,15 @@ def compute_coupled_tree_correlator(
 
     def _leg_idx(spec):
         nm = str(spec[0] if isinstance(spec, (tuple, list)) else spec)
-        for cand in (nm, nm[1:] if nm.startswith('d') else nm):
+        for cand in (nm, nm[1:] if nm.startswith('d') else 'd' + nm):
             base = cand.rstrip('0123456789')
             for idx, pn in enumerate(phys_names):
                 if cand == pn or base == pn.rstrip('0123456789'):
                     return idx
-        return 0
+        # NEVER default silently — a wrong leg index computes a different C_ij
+        raise SpatialPropagatorError(
+            f'external leg {spec!r} does not name any physical field '
+            f'(available: {phys_names}).')
 
     i = _leg_idx(external_fields[0])
     j = _leg_idx(external_fields[-1])
@@ -483,27 +519,51 @@ def compute_coupled_tree_correlator(
     if bc_mode == 'periodic':
         lname = bnd.get('length')
         if isinstance(lname, str):
-            L = float(nps_sr[SR.var(lname)])
+            _lkey = SR.var(lname)
+            if _lkey in nps_sr:
+                L = float(nps_sr[_lkey])
+            else:
+                # auto-created PBC length (inline-number shortcut backs it
+                # with a hidden parameter carrying the default)
+                _pdef = next((p.get('default')
+                              for p in (model.get('parameters') or [])
+                              if p.get('name') == lname), None)
+                if _pdef is None:
+                    raise SpatialPropagatorError(
+                        f'periodic length parameter {lname!r} has no value in '
+                        f'num_params and no model default.')
+                L = float(_pdef)
         elif lname is not None:
             L = float(lname)
     taus = [float(t) for t in tau_grid]
     xs = np.array([float(x) for x in spatial_grid])
     C = np.zeros((len(taus), len(xs)), dtype=np.complex128)
 
+    if dyson_order is not None:
+        # dressed (unequal-𝒟) q-space 2-point, truncated at the policy order
+        from msrjd.integration.spatial.dyson_dressing import dressed_tree_C
+
+        def _Cq(q, tau):
+            return dressed_tree_C(q, tau, M, ref.Dhat, ref.D0, N,
+                                  dyson_order)[i, j]
+    else:
+        def _Cq(q, tau):
+            return coupled_two_point(ref, N, q * q, tau)[i, j]
+
     if bc_mode == 'periodic' and L:
         Lf = float(L)
         qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
         for it, tau in enumerate(taus):
-            Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qs])
+            Cq = np.array([_Cq(q, tau) for q in qs])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
-    elif os.environ.get('SPATIAL_FORCE_NUMERICAL_FT'):
-        # cross-check escape hatch: brute cosine-FT on a finite q-grid (the
-        # pre-analytic path; q_cut truncation error ~ N_ij/(π·D₀·q_cut))
+    elif dyson_order is not None or os.environ.get('SPATIAL_FORCE_NUMERICAL_FT'):
+        # dressed (unequal-𝒟) path, or the cross-check escape hatch: brute
+        # cosine-FT on a finite q-grid (q_cut truncation ~ N_ij/(π·D₀·q_cut))
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
         dq = qg[1] - qg[0]
         for it, tau in enumerate(taus):
-            Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qg])
+            Cq = np.array([_Cq(q, tau) for q in qg])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / np.pi) * np.sum(np.cos(qg * x) * Cq) * dq
     else:
@@ -546,6 +606,8 @@ def compute_coupled_tree_correlator(
 
     info = {'coupled': True, 'M': M, 'D0': ref.D0, 'Dhat': ref.Dhat, 'N': N,
             'legs': (i, j), 'bc_mode': bc_mode, 'L': L, 'spatial_dim': d}
+    if dyson_order is not None:
+        info['dyson_order'] = dyson_order
     return C, info
 
 
@@ -1064,22 +1126,50 @@ def compute_coupled_loop_correlator(
             # same accuracy overrides as the single-field generic path (_grid)
             nt = int(os.environ.get('SPATIAL_GRID_NT', nt))
             ns = int(os.environ.get('SPATIAL_GRID_NS', ns))
-            retd = _is_retarded_type(dd)
+
+            # ── External-time ORIENTATION (the i≠j fix) ────────────────────
+            # Enumeration sums over leg-to-leaf permutations.  For i==j the
+            # mirror pair DEDUPES to one record and the retarded Γ(τ)+Γ(−τ)
+            # completion restores it.  For i≠j BOTH mirror records survive, so
+            # each record must be evaluated ONCE, at the times matching ITS OWN
+            # leaf field order (C_ij(τ) = ⟨φ_i(t+τ)φ_j(t)⟩, the tree-driver
+            # convention: leg i later for τ>0) — applying the ±τ completion
+            # there would double-count and symmetrize away the genuine
+            # τ-asymmetry of the cross-correlator.
+            ext_i = int(phys_idx[ext_int[0]])
+            ext_j = int(phys_idx[ext_int[-1]])
+            leaves = list(dd.external_legs)
+            if ext_i == ext_j:
+                retd = _is_retarded_type(dd)
+
+                def _ets(tau):
+                    return [external_times_2pt(dd, float(tau))] + \
+                        ([external_times_2pt(dd, -float(tau))]
+                         if retd and tau != 0.0 else []), \
+                        (2.0 if retd and tau == 0.0 else 1.0)
+            else:
+                lf = {leaf: int(phys_idx[fld])
+                      for leaf, fld in td.external_legs.items()}
+                f0, f1 = lf[leaves[0]], lf[leaves[1]]
+                if (f0, f1) == (ext_i, ext_j):
+                    li, lj = leaves[0], leaves[1]
+                elif (f0, f1) == (ext_j, ext_i):
+                    li, lj = leaves[1], leaves[0]
+                else:                                  # not this correlator
+                    continue
+
+                def _ets(tau):
+                    return [{li: float(tau), lj: 0.0}], 1.0
+
             for it, tau in enumerate(taus):
-                I = diagram_kinematic_spectral(
-                    dd, [0.0], external_times_2pt(dd, float(tau)), mass_table,
-                    D0, spatial_dim=d, xs=xg, n_t=nt, n_s=ns,
-                    mu_scale=mu_scale)                  # (n_kept, n_x)
-                val = pv * (Wk @ I)
-                if retd and tau != 0.0:
-                    I_m = diagram_kinematic_spectral(
-                        dd, [0.0], external_times_2pt(dd, -float(tau)),
-                        mass_table, D0, spatial_dim=d, xs=xg, n_t=nt, n_s=ns,
-                        mu_scale=mu_scale)
-                    val = val + pv * (Wk @ I_m)
-                elif retd:
-                    val = 2.0 * val
-                dCx_by_ell[el][it, :] += val
+                et_list, fac = _ets(tau)
+                val = 0.0
+                for et in et_list:
+                    I = diagram_kinematic_spectral(
+                        dd, [0.0], et, mass_table, D0, spatial_dim=d, xs=xg,
+                        n_t=nt, n_s=ns, mu_scale=mu_scale)   # (n_kept, n_x)
+                    val = val + pv * (Wk @ I)
+                dCx_by_ell[el][it, :] += fac * val
 
     C_by_order = {0: np.array(C0, dtype=np.complex128)}
     running = np.array(C0, dtype=np.complex128)

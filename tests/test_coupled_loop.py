@@ -115,6 +115,7 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
     assert trees, 'no tree record enumerated'
 
     nps_sr = _norm_sr(fund)
+    ei_, ej_ = int(phys_idx[ext_int[0]]), int(phys_idx[ext_int[-1]])
     total = 0.0 + 0.0j
     for td, pre in trees:
         pv = float(SR(pre).subs(nps_sr))
@@ -130,14 +131,24 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
         assign = np.array(list(itertools.product(range(2), repeat=n_rows))).T
         Wgt = np.prod(elems[np.arange(n_rows)[:, None], assign], axis=0)
         mass_table = eig[assign]
+        # orientation-resolved external times (the i≠j rule): the i leaf sits
+        # at +τ (C_ij(τ) = ⟨φ_i(t+τ)φ_j(t)⟩); mirror records swap leaves
+        leaves = list(dd.external_legs)
+        if ei_ == ej_:
+            et = external_times_2pt(dd, tau)
+        else:
+            lf = {leaf: int(phys_idx[fld])
+                  for leaf, fld in td.external_legs.items()}
+            if (lf[leaves[0]], lf[leaves[1]]) == (ei_, ej_):
+                et = {leaves[0]: tau, leaves[1]: 0.0}
+            else:
+                et = {leaves[0]: 0.0, leaves[1]: tau}
         I = diagram_kinematic_spectral(
-            dd, [qv], external_times_2pt(dd, tau), mass_table, ref.D0,
-            n_s=40)
+            dd, [qv], et, mass_table, ref.D0, n_s=40)
         total += pv * (Wgt @ I)
 
     # Lyapunov / fluctuation-regression oracle (3a, sim-validated)
-    i, j = int(phys_idx[ext_int[0]]), int(phys_idx[ext_int[1]])
-    expected = coupled_two_point(ref, N, qv * qv, tau)[i, j]
+    expected = coupled_two_point(ref, N, qv * qv, tau)[ei_, ej_]
     assert abs(total.imag) < 1e-10
     assert total.real == pytest.approx(float(expected.real), rel=2e-5), \
         f'assignment tree {total.real:.8f} vs Lyapunov {expected.real:.8f}'
@@ -193,6 +204,65 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
     scale = np.max(np.abs(C_s))
     assert np.max(np.abs(C_c - C_s)) < 4e-3 * scale, \
         f'decoupled-limit mismatch:\ncoupled\n{C_c}\nvs single-field\n{C_s}'
+
+
+def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
+    """The DISCRIMINATING cross-correlator check (reviewer's instrument): for a
+    coupled CUBIC theory the 1-loop correction is exactly the first-order
+    response to the Hartree mass shift δM = diag(3g_i·C_ii(x=0,τ=0)).  Compare
+    δC_ab(x,τ) from the spectral-assignment driver against the matrix
+    finite-difference of the exact tree correlator — at ±τ (the cross
+    correlator is genuinely τ-ASYMMETRIC; the old symmetrized double-count
+    would fail this at both signs and by 2× at τ=0)."""
+    from scipy.linalg import expm, solve_continuous_lyapunov
+    from pipeline import compute_cumulants
+
+    monkeypatch.setenv('SPATIAL_GRID_NT', '40')
+    monkeypatch.setenv('SPATIAL_GRID_NS', '40')
+    g, h, ga, gb = 0.4, 0.3, 0.3, 0.25
+    model = _two_species(g, h, ga=ga, gb=gb)
+    xs = np.array([0.0, 0.8])
+    th = compute_cumulants(model=model, k=2, max_ell=1,
+                           fundamental=_fund(g, h, ga, gb),
+                           external_fields=[('a', 1), ('b', 1)],
+                           tau_max=0.7, tau_step=0.7, spatial_grid=xs,
+                           parallel=False, verbose=False, use_cache=False)
+    info = th['spatial_info']
+    assert info.get('coupled_loop')
+    taus = np.asarray(th['tau_grid'])
+    dC = info['C_by_order'][1] - info['C_by_order'][0]   # the 1-loop piece
+
+    # exact x-space tree correlator C_ij(x,τ; M) by q-quadrature
+    M0 = np.array([[_MUA, g], [-h, _MUB]])
+    Nz = np.diag([2 * _TA, 2 * _TB])
+    qg = np.linspace(1e-3, 80.0, 8000)
+    dq = qg[1] - qg[0]
+
+    def C_x(Mm, x, tau, i, j):
+        ii, jj = (i, j) if tau >= 0 else (j, i)
+        vals = np.empty(qg.size)
+        for iq, q in enumerate(qg):
+            A = Mm + _D * q * q * np.eye(2)
+            Sig = solve_continuous_lyapunov(A, Nz)
+            vals[iq] = (expm(-A * abs(tau)) @ Sig)[ii, jj]
+        return float(np.sum(np.cos(qg * x) * vals) * dq / np.pi)
+
+    Caa0 = C_x(M0, 0.0, 0.0, 0, 0)
+    Cbb0 = C_x(M0, 0.0, 0.0, 1, 1)
+    dM = np.diag([3 * ga * Caa0, 3 * gb * Cbb0])
+    eps = 1e-4
+    for it, tau in enumerate(taus):
+        for ix, x in enumerate(xs):
+            oracle = (C_x(M0 + eps * dM, x, float(tau), 0, 1)
+                      - C_x(M0 - eps * dM, x, float(tau), 0, 1)) / (2 * eps)
+            assert abs(dC[it, ix] - oracle) < 0.03 * max(abs(oracle), 1e-3), \
+                (f'(τ={tau}, x={x}): driver δC_ab={dC[it, ix]:.6f} vs '
+                 f'Hartree oracle {oracle:.6f}')
+    # genuine τ-asymmetry must survive (the old bug symmetrized it away)
+    i_p = int(np.argmin(np.abs(taus - 0.7)))
+    i_m = int(np.argmin(np.abs(taus + 0.7)))
+    assert abs(dC[i_p, 0] - dC[i_m, 0]) > 0.2 * max(abs(dC[i_p, 0]), 1e-4), \
+        f'δC_ab(±0.7) suspiciously symmetric: {dC[i_p, 0]} vs {dC[i_m, 0]}'
 
 
 def test_coupled_nonlinear_loop_e2e_smoke():
