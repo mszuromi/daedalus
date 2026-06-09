@@ -1,10 +1,33 @@
 # Plan: integrate the Dyson–Duhamel expansion (unequal‑diffusion propagator)
 
-**Status: planned, not executed (June 2026).** This wires the paper's Appendix‑B
-§B.24–B.30 Dyson/Duhamel series into the spatial pipeline so **coupled multi‑field
-theories with unequal diffusion** (`𝒟̂ ≠ 0`) become computable. Today the code is
-hard‑gated to a single scalar diffusion `D` (`𝒟̂ = 0`), so only the `n=0` term is
-realized. Builds on `docs/theory_builder_split_plan.md` (the new authoring layer).
+**Status (June 2026): step‑1 FOUNDATIONS done; coupled e2e wiring is the next phase.**
+This wires the paper's Appendix‑B §B.24–B.30 Dyson/Duhamel series into the spatial
+pipeline so **coupled multi‑field theories with unequal diffusion** (`𝒟̂ ≠ 0`) become
+computable. Today the code is hard‑gated to a single scalar diffusion `D` (`𝒟̂ = 0`),
+so only the `n=0` term is realized. Builds on `docs/theory_builder_split_plan.md`.
+
+**Done (validated, committed):**
+- **Spectral reference propagator** `G₀` — `msrjd/integration/spatial/spectral_propagator.py`
+  (`D₀` split, eigenprojectors `P_α`, `G₀=Σ_α P_α e^{−(m_α+D₀|k|²)t}`). Commit `24135f1`.
+- **`M`/`𝒟` extraction** from the symbolic `K_ft` — `heat_kernel.reaction_diffusion_matrices`.
+  Commit `0205e42`. (Full chain `K_ft → M,𝒟 → G₀ == expm` validated.)
+
+**⚠ FINDING that refines this plan (June 2026).** The plan below ("feed the dressing
+through the existing mode machinery") is correct for the **loop dressing** (the
+per‑edge `|k|^{2n}` insertions, §3). But the *base coupled propagator and its tree
+2‑point* need a genuine generalization first: the current tree 2‑point
+(`pipeline_bridge._modes_C_q_tau`) is a sum of **independent diagonal OU modes**
+`Σ_α κ_α/(μ_α+D_α q²)·e^{−(μ_α+D_α q²)|τ|}`, which has **no cross‑mode terms**. A coupled
+theory's free 2‑point is the **matrix Lyapunov / FDT** object
+`C(q,τ)=e^{−A(q)|τ|}·Σ(q)`, `A(q)=M+D₀q²`, with `Σ(q)` solving `A Σ + Σ Aᵀ = N` (noise
+matrix) — it carries cross‑mode `1/(λ_α+λ_β)` weights the diagonal mode‑sum cannot
+express, and its `q→x` FT is matrix‑valued. So the coupled wiring needs, in order:
+**(3a)** a spectral‑Lyapunov tree 2‑point (generalize `diagonal_modes_from_propagator`
++ `_modes_C_q_tau` to the matrix form; validate vs `scipy.linalg.solve_continuous_lyapunov`
++ a 2‑species sim), **(3b)** lift the diagonal gate (`heat_kernel.py:310`, `pipeline_bridge.py:823`)
+for the scalar‑`𝒟` coupled case and wire (3a) → coupled tree‑level e2e, **(3c)** the
+loop‑level matrix‑propagator integrator (projector vertices), THEN the §3 Dyson
+dressing for `𝒟̂≠0`. The reaction‑matrix diagonalization is reusable across all of these.
 
 ## What it is, and why
 
