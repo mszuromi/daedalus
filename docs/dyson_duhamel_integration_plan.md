@@ -11,6 +11,16 @@ so only the `n=0` term is realized. Builds on `docs/theory_builder_split_plan.md
   (`D₀` split, eigenprojectors `P_α`, `G₀=Σ_α P_α e^{−(m_α+D₀|k|²)t}`). Commit `24135f1`.
 - **`M`/`𝒟` extraction** from the symbolic `K_ft` — `heat_kernel.reaction_diffusion_matrices`.
   Commit `0205e42`. (Full chain `K_ft → M,𝒟 → G₀ == expm` validated.)
+- **(3a) spectral-Lyapunov tree 2-point** — `spectral_propagator.lyapunov_covariance` /
+  `coupled_two_point` (`C(q,τ)=e^{−A|τ|}Σ`, `A Σ+Σ Aᵀ=N`). Commit `ab75084`. Validated
+  vs scipy Lyapunov + a 2-species OU simulation + diagonal mode-sum reproduction.
+- **(3b) coupled scalar-diffusion tree-level e2e** — `extract_noise_matrix` (matrix `N`)
+  + `pipeline_bridge.compute_coupled_tree_correlator` + routing in
+  `compute_spatial_correlator_via_pipeline` (additive; diagonal path untouched).
+  Commits `7975f54`, `0bd934a`. A coupled multi-field EQUAL-diffusion theory now flows
+  through `compute_cumulants` → `C_ij(x,τ)`; validated against `free_two_point`
+  (decoupled limit) + exact `M`/`N` extraction. **Unequal diffusion still raises**
+  (needs the dressing below).
 
 **⚠ FINDING that refines this plan (June 2026).** The plan below ("feed the dressing
 through the existing mode machinery") is correct for the **loop dressing** (the
@@ -22,12 +32,13 @@ theory's free 2‑point is the **matrix Lyapunov / FDT** object
 `C(q,τ)=e^{−A(q)|τ|}·Σ(q)`, `A(q)=M+D₀q²`, with `Σ(q)` solving `A Σ + Σ Aᵀ = N` (noise
 matrix) — it carries cross‑mode `1/(λ_α+λ_β)` weights the diagonal mode‑sum cannot
 express, and its `q→x` FT is matrix‑valued. So the coupled wiring needs, in order:
-**(3a)** a spectral‑Lyapunov tree 2‑point (generalize `diagonal_modes_from_propagator`
-+ `_modes_C_q_tau` to the matrix form; validate vs `scipy.linalg.solve_continuous_lyapunov`
-+ a 2‑species sim), **(3b)** lift the diagonal gate (`heat_kernel.py:310`, `pipeline_bridge.py:823`)
-for the scalar‑`𝒟` coupled case and wire (3a) → coupled tree‑level e2e, **(3c)** the
-loop‑level matrix‑propagator integrator (projector vertices), THEN the §3 Dyson
-dressing for `𝒟̂≠0`. The reaction‑matrix diagonalization is reusable across all of these.
+**(3a) ✅ DONE** a spectral‑Lyapunov tree 2‑point (validated vs
+`scipy.linalg.solve_continuous_lyapunov` + a 2‑species OU sim), **(3b) ✅ DONE** the
+coupled scalar‑`𝒟` tree‑level e2e via a dedicated driver reading `prop['K_ft']`
+(no gate surgery needed — `build_propagator` always keeps `K_ft`), **(3c) REMAINS**
+the loop‑level matrix‑propagator integrator (projector vertices; lift
+`pipeline_bridge.py:823`), THEN the §3 Dyson dressing for `𝒟̂≠0` (unequal diffusion).
+The reaction‑matrix diagonalization is reusable across all of these.
 
 ## What it is, and why
 
