@@ -44,7 +44,7 @@ import math
 from typing import Callable, Optional
 
 import mpmath as mp
-from sage.all import SR, I as SR_I
+from sage.all import SR, I as SR_I, matrix
 
 
 class SpatialPropagatorError(Exception):
@@ -221,6 +221,67 @@ def extract_mass_diffusion(kft_entry, omega, k_var, lap_sym, grad_sym=None):
     V = e0.coefficient(k_var, 1)
     A = e0.coefficient(k_var, 0)
     return A, B, V
+
+
+def reaction_diffusion_matrices(K_ft, omega, k_var, lap_sym, grad_sym=None):
+    """Extract the (matrix) reaction ``M``, diffusion ``𝒟`` and drift ``V`` from
+    the FULL inverse-propagator matrix ``K_ft`` — the coupled-field generalization
+    of :func:`extract_mass_diffusion`.  After ``lap_sym → −k_var²`` (and, when
+    present, ``grad_sym → i·k_var``) each entry must have the form
+
+        K_ft[i,j] = i·ω·δ_ij + M[i,j] + V[i,j]·k_var + 𝒟[i,j]·k_var²,
+
+    i.e. the time derivative ``i·ω`` is DIAGONAL and unit-normalized, the
+    off-diagonal entries are ω-independent, and no entry has a ``k`` power > 2.
+    Returns SR matrices ``(M, D, V)`` (each ``N×N``) in the model parameters /
+    saddle symbols.  For a diagonal ``K_ft`` they reduce to
+    ``diag(ac_mass / ac_diffusion / ac_drift)`` — bit-identical, per entry, to
+    :func:`extract_mass_diffusion`.
+
+    This feeds the spectral reference propagator (``spectral_propagator.py``,
+    paper B23) once the parameters are numeric; it is the coupled-field input
+    that the diagonal Tier-1 path (``build_spatial_propagator``) does not handle.
+
+    Raises :class:`SpatialPropagatorError` on a non-MSR / higher-derivative
+    kernel (residual operator symbol, wrong ω structure, or ``k`` power > 2).
+    """
+    n = int(K_ft.nrows())
+    subs = {lap_sym: -k_var**2}
+    if grad_sym is not None:
+        subs[grad_sym] = SR_I * k_var
+    Mrows, Drows, Vrows = [], [], []
+    for i in range(n):
+        Mr, Dr, Vr = [], [], []
+        for j in range(n):
+            e = SR(K_ft[i, j]).subs(subs).expand()
+            if e.has(lap_sym) or (grad_sym is not None and e.has(grad_sym)):
+                raise SpatialPropagatorError(
+                    f'inverse-propagator entry [{i},{j}] still contains an '
+                    f'operator symbol after k-substitution: {e}')
+            omega_coeff = e.coefficient(omega, 1)
+            expected = SR_I if i == j else SR(0)
+            if (omega_coeff - expected).simplify_full() != 0:
+                role = ('the diagonal +i·ω time derivative' if i == j
+                        else 'no ω dependence (off-diagonal)')
+                raise SpatialPropagatorError(
+                    f'inverse-propagator entry [{i},{j}] has ∂/∂ω = '
+                    f'{omega_coeff}, expected {expected} ({role}).')
+            e0 = e.coefficient(omega, 0)
+            try:
+                deg = e0.degree(k_var)
+            except Exception:
+                deg = 0
+            if deg > 2:
+                raise SpatialPropagatorError(
+                    f'inverse-propagator entry [{i},{j}] has k-power {deg} > 2 '
+                    f'(higher-derivative operator not supported): {e0}')
+            Dr.append(e0.coefficient(k_var, 2))
+            Vr.append(e0.coefficient(k_var, 1))
+            Mr.append(e0.coefficient(k_var, 0))
+        Mrows.append(Mr)
+        Drows.append(Dr)
+        Vrows.append(Vr)
+    return matrix(SR, Mrows), matrix(SR, Drows), matrix(SR, Vrows)
 
 
 def _make_numeric(expr, free_symbol_names):
