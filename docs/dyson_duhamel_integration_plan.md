@@ -176,6 +176,81 @@ adaptive policy (C) prunes this later.
    `N=1,2` vs a direct matrix‑heat‑kernel oracle (brute `∫dℓ` with `e^{−𝒟|k|²t}`).
 4. **Policy dispatch** (`off/fixed`) + env escape hatch; then v2 `auto‑tol`.
 
+## 3c plan: loop-level coupled integrator via SPECTRAL ASSIGNMENTS (June 2026)
+
+**Scope:** loop corrections (`max_ell≥1`) for coupled fields with **scalar diffusion**
+(`𝒟̂=0`) — the loop companion of 3a/3b. Unequal diffusion stays gated until the
+dressing below.
+
+**Central reduction.** With scalar diffusion every edge's momentum factor is the SAME
+heat kernel `e^{−D₀k²w}` as today — `D₀` is field-independent, so the entire
+Symanzik/heat-kernel-IFT/Wick/Bessel machinery is untouched. The coupling lives ONLY
+in the time/matrix factor: each retarded edge carries `G₀(w_e,k)=Σ_α P_α e^{−m_α w_e}
+· e^{−D₀k²w_e}`. Expanding every edge in its spectral components turns one coupled
+diagram into a finite sum of SCALAR diagrams:
+
+```
+value(Γ) = Σ_{{α_e}}  W({α_e}) × I_scalar({m_{α_e}}; D₀, …)
+W({α_e}) = full field-index contraction of [P_{α_e}] over the diagram's vertex
+           coupling tensors, the noise matrices N at source vertices, and the
+           external legs   (a pure numeric tensor network — no integrals)
+I_scalar  = the EXISTING chamber integral, with per-edge masses m_{α_e}
+```
+
+Consistency anchor: at tree level this machinery must reproduce 3a exactly —
+`Σ_{αβ} P_α N P_βᵀ/(m_α+m_β)` IS the spectral form of the Lyapunov solution.
+
+**The one real integrator change — per-edge masses.** `diagram_kinematic` currently
+hoists a UNIFORM `mu` out of the chamber integral (`exp(−mu·s_nodes)` at
+`full_integrator.py:474`; the analytic `mu**(n_V+n_C)` marginal at :566). 3c
+generalizes `C(w)`'s mass factor to `exp(−Σ_e m_e w_e)` with per-edge `m_e` (complex
+allowed — conjugate eigenvalue pairs; the assignment sum is real). The uniform-mass
+analytic shortcuts must be re-derived per-edge or bypassed for the coupled path
+(diagonal theories keep the uniform fast path bit-identically).
+
+**Steps (each test-gated):**
+1. **3c-1 per-edge masses in `diagram_kinematic`** (+ `diagram_correlator/_x`):
+   `mu: float` → `mu: float | ndarray[n_edges]`; uniform input must stay
+   bit-identical (regression-pinned). Validate per-edge vs brute ∫dℓ oracle on the
+   bubble with two different masses.
+2. **3c-2 spectral-assignment driver** in `pipeline_bridge`: read `M,D₀,N` from the
+   3b info dict → `m_α,P_α`; enumerate `{α_e}` per diagram; build `W({α_e})` by
+   contracting projectors at vertices (per-node vertex-type table from the lowering,
+   task #143 machinery) + `N` at noise sources; call 3c-1 per assignment; sum.
+3. **3c-3 lift the single-mode gate** (`pipeline_bridge.py:946` block): dispatch
+   `len(modes)==1` → today's path (bit-identical), coupled scalar-D → 3c-2.
+4. **3c-4 validation:** (i) tree-level via {α_e} == 3a Lyapunov (anchor); (ii) a
+   decoupled 2-field theory == two independent single-field runs (exactness);
+   (iii) coupled 2-species RD with a nonlinearity, `max_ell=1`, vs the 2-species
+   spatial Langevin simulator (physics oracle); (iv) full diagonal+loop regression.
+
+**Cost:** `(N_fields)^{|E_R|}` scalar integrals per diagram (2-field bubble ≈ 8) —
+same shape as the Dyson `{n_e}` sum; the two compose multiplicatively later, which is
+fine at small N.
+
+## Dyson dressing plan (unequal diffusion, 𝒟̂≠0) — after 3c
+
+1. **D-1 `Φ_n` evaluator** (`spectral_propagator.py`): divided difference of
+   `e^{−τ t}` on eigenvalue nodes via the Opitz/`expm`-of-bidiagonal form (nodes on
+   the diagonal, `t` on the superdiagonal) — confluent-safe by construction. Unit-test
+   vs brute nested-simplex quadrature + the equal-nodes limit `t^n e^{−mt}/n!`.
+2. **D-2 `𝓗_n(w)` assembly:** projector strings `P_{α_0}𝒟̂P_{α_1}⋯𝒟̂P_{α_n}`
+   × `e^{−m_{α_0}w}` × `Φ_n(w; m_{α_i}−m_{α_0})` (B27). This EXTENDS 3c-2's
+   assignment machinery: an edge's label grows from `α_e` to
+   `(n_e, α_0..α_{n_e})`; `W` picks up the 𝒟̂ string factors.
+3. **D-3 momentum side:** the `(−1)^{n_e}|k_e|^{2n_e}` insertion folds into the
+   per-edge form factor `Rcal` (even polynomial in the routed momentum → existing
+   GH/Wick-moment average, exact). Time side: `𝓗_{n_e}(w_e)` multiplies `𝒞(w)`
+   via the (already per-edge after 3c-1) mass factor.
+4. **D-4 builder + policy:** `SpatialTheoryBuilder.dyson_order(N)` /
+   `.reference_diffusion(D0)` → `model['spatial']['dyson']={'mode':'fixed','order':N}`
+   (+ `'off'`); build-time `‖𝒟̂‖/D₀` convergence warning; `SPATIAL_DYSON_ORDER` env
+   escape hatch. `compute_cumulants` signature unchanged.
+5. **D-5 validation ladder:** tree-level unequal-D 2-point at `N=0,1,2` vs the exact
+   `expm(−(M+𝒟q²)τ)`+Lyapunov oracle (convergence rate ~ `(‖𝒟̂‖/D₀)^{N+1}`);
+   then loop-level vs brute ∫dℓ with the matrix heat kernel; then a 2-species
+   unequal-D Langevin sim.
+
 ## Risks
 - **Convergence**: the series needs `‖𝒟̂‖/D_0` small; a bad `D_0` choice diverges.
   The auto‑tol policy (B) and a build‑time convergence check mitigate this.
