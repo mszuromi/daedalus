@@ -20,12 +20,12 @@ Phase 1 status: this file ``build()``s and ``FieldTheory.expand()``s.
 Propagator construction (heat kernel × exp decay) lands in Phase 2;
 the (t, x) loop integral in Phase 5.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D stochastic Allen-Cahn (subcritical, infinite domain)',
+        SpatialTheoryBuilder('1D stochastic Allen-Cahn (subcritical, infinite domain)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='order parameter')
         .parameter('mu',  default=1.0, domain='positive')

@@ -21,12 +21,12 @@ simulation (``docs/spatial_spikes/stageC5_derivative_vertex_validation.py``;
 sim force ``g_lap`` in ``models/spatial_field_1d_sim.py``).  It is the
 first-class backend-C test theory for derivative / form-factor vertices.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D conserved reaction-diffusion (derivative vertex)',
+        SpatialTheoryBuilder('1D conserved reaction-diffusion (derivative vertex)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='conserved density')
         .parameter('mu', default=1.0, domain='positive')

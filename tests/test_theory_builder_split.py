@@ -105,3 +105,38 @@ def test_spatial_requires_spatial_field():
          .parameter('T', default=1.0, domain='positive')
          .set_action_text('phit*((Dt+mu)*phi) - T*phit^2')
          .equation(lhs='(Dt+mu)*phi', rhs='0').build())
+
+
+def test_serializer_phase1_round_trip():
+    """Serializer Phase 1: render_theory_file emits the domain-specific forward
+    builder (Spatial for a spatial spec, Temporal otherwise), and
+    load_spec_from_file accepts the new constructor names."""
+    import os
+    import shutil
+    import tempfile
+    from pipeline.theory_serialize import load_spec_from_file, render_theory_file
+
+    root = os.path.join(os.path.dirname(__file__), '..')
+
+    def emit(rel):
+        return render_theory_file(load_spec_from_file(os.path.join(root, rel)))
+
+    sp = emit('theories/kpz_1d.theory.py')               # spatial fixture
+    assert 'from pipeline.theory import SpatialTheoryBuilder' in sp
+    assert 'SpatialTheoryBuilder(' in sp
+
+    tp = emit('theories/linear_hawkes.theory.py')        # temporal fixture
+    assert 'from pipeline.theory import TemporalTheoryBuilder' in tp
+    assert 'TemporalTheoryBuilder(' in tp
+
+    # the loader round-trips the rendered (new-name) source
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, 'rt.theory.py')
+        with open(p, 'w') as fh:
+            fh.write(sp)
+        spec2 = load_spec_from_file(p)
+        assert spec2['name']
+        assert any(f.get('spatial_dim') for f in spec2['physical_fields'])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

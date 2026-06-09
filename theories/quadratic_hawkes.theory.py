@@ -18,7 +18,7 @@ Every saved theory file in this directory exposes:
 
 Edit by hand or regenerate from the UI.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
@@ -28,7 +28,7 @@ def build():
       g(t) = (1/τ_g) · exp(-t/τ_g) · Θ(t)   (exp synapse)
     """
     return (
-        TheoryBuilder('Quadratic Hawkes 2-pop', n_populations=2)
+        TemporalTheoryBuilder('Quadratic Hawkes 2-pop', n_populations=2)
 
         # ── Field variables ───────────────────────────────────────
         # Just declare the natural physical fields — the framework

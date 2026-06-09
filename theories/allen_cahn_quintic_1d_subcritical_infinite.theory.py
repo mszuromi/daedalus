@@ -29,12 +29,12 @@ Exercising it checks that the model-independent pipeline enumerates,
 classifies, maps to a C-stack descriptor, and integrates a brand-new
 higher-degree vertex with no special-casing.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D stochastic phi^6 (Allen-Cahn + quintic, infinite)',
+        SpatialTheoryBuilder('1D stochastic phi^6 (Allen-Cahn + quintic, infinite)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='order parameter')
         .parameter('mu',    default=1.0, domain='positive')

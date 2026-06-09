@@ -17,12 +17,12 @@ parameters chosen so the three roots are well-separated:
 Use with ``compute_cumulants(..., fixed_point_index=N)`` for N in
 {0, 1, 2} to compute cumulants around each branch separately.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('Single population Bistable Demo')
+        TemporalTheoryBuilder('Single population Bistable Demo')
         .population('E', size=1, description='Excitatory')
         .physical_field('n', population='E', description='spike train (sigmoidal rate)')
         .physical_field('v', population='E', description='voltage')

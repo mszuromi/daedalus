@@ -1,9 +1,29 @@
 # Plan: split `TheoryBuilder` → `TemporalTheoryBuilder` + `SpatialTheoryBuilder`
 
-**Status: planned, not executed (June 2026).** Prepares the authoring layer for the
-new (coupled / spectral) spatial propagator machinery (the Dyson–Duhamel work —
-see `docs/dyson_duhamel_integration_plan.md`). The pipeline keeps auto‑routing on
-theory type exactly as it does today.
+**Status (June 2026): Step 1 + serializer Phase‑1 DONE** (commits `b17fd30` refactor,
+`21a883d` test, plus the serializer change + 33-file migration). The 9 spatial theory
+files now construct `SpatialTheoryBuilder`, the 24 temporal ones
+`TemporalTheoryBuilder`; `render_theory_file` emits the domain-specific builder and
+`load_spec_from_file` accepts all three constructor names (legacy `TheoryBuilder`
+still loads). Prepares the authoring layer for the new (coupled / spectral) spatial
+propagator machinery (the Dyson–Duhamel work — see
+`docs/dyson_duhamel_integration_plan.md`). The pipeline keeps auto‑routing on theory
+type exactly as it does today.
+
+**Decisions taken:** #1 keep `TheoryBuilder` shim (zero caller churn); #2 now doing
+serializer Phase‑1; #3 **literal mixins** (the user-chosen structure — `SpatialTheoryBuilder`
+genuinely lacks `.markovianize`, etc., as an `AttributeError`); #4 refactor +
+working forward builders only (no new propagator methods yet).
+
+**Step 1 as built** (`pipeline/theory.py`): `_BaseTheoryBuilder` (shared state +
+methods + `build()`; new `_resolve_spatial_dim()` detection hook + `_inject_autopop()`
+helper so `build()`'s scalar‑autopop no longer needs the relocated `population()`);
+`_TemporalMethods` / `_SpatialMethods` mixins (the disjoint method bodies, relocated
+via an **ast‑based exact‑block move** — no transcription); `TemporalTheoryBuilder` /
+`SpatialTheoryBuilder` forward builders (each + a `_resolve_spatial_dim` domain‑guard
+override); `TheoryBuilder` back‑compat shim (both mixins + auto‑detect). Verified:
+forward builders produce model dicts **identical** to the shim, clean per‑domain API,
+domain guards fire — `tests/test_theory_builder_split.py` (5) + ~194 regression tests.
 
 ## Governing invariant (why this is low‑risk)
 

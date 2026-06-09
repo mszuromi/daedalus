@@ -21,12 +21,12 @@ produces a *bilinear* cross-term ``μ_drift·φ̃·∂_x(δφ)`` whose coefficie
 
 Companion: ``theories/kpz_1d.theory.py`` (the *per-leg* ``(∂_xφ)²`` sibling).
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D damped Burgers (composite gradient vertex)',
+        SpatialTheoryBuilder('1D damped Burgers (composite gradient vertex)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='velocity potential')
         .parameter('mu',  default=1.0, domain='positive')

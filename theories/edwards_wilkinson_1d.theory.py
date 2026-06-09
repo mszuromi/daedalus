@@ -14,12 +14,12 @@ field) so the correlator is normalizable.  Serves as a second
 independent check of the spatial machinery (no φ³, distinct from
 Allen-Cahn).
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D Edwards-Wilkinson (linear, massive)',
+        SpatialTheoryBuilder('1D Edwards-Wilkinson (linear, massive)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='height field')
         .parameter('mu', default=0.5, domain='positive')

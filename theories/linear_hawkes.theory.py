@@ -6,7 +6,7 @@ transfer function.  Useful as a comparison reference (the linear
 case has a closed-form mean-field solution, so it doubles as a
 sanity check on the saddle solver).
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
@@ -16,7 +16,7 @@ def build():
       g(t) = (1/τ_g) · exp(-t/τ_g) · Θ(t)
     """
     return (
-        TheoryBuilder('Linear Hawkes 2-pop', n_populations=2)
+        TemporalTheoryBuilder('Linear Hawkes 2-pop', n_populations=2)
 
         .physical_field('n')
         .physical_field('v')

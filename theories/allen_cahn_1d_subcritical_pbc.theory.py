@@ -13,12 +13,12 @@ check that the boundary + integration machinery is wired correctly).
 The periodic propagator is the image-source sum
 ``G_PBC(t, x) = Σ_n G_inf(t, x + nL)``.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D stochastic Allen-Cahn (subcritical, periodic domain)',
+        SpatialTheoryBuilder('1D stochastic Allen-Cahn (subcritical, periodic domain)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='order parameter')
         .parameter('mu',  default=1.0, domain='positive')

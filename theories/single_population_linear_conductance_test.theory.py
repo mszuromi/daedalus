@@ -10,12 +10,12 @@ non-local interaction in the (≥3)-degree sectors.  Lets us probe
 the conductance-vertex code path on a diagram set that's an order of
 magnitude smaller than the cubic-phi theory.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('Single population Linear Conductance Test')
+        TemporalTheoryBuilder('Single population Linear Conductance Test')
         .population('E', size=1, description='Excitatory')
         .physical_field('n', population='E', description='spike train')
         .physical_field('v', population='E', description='voltage')

@@ -362,9 +362,18 @@ def render_theory_file(spec: dict) -> str:
         '"""',
     ]
 
+    # Builder-split Phase 1: emit the domain-specific forward builder so a
+    # round-tripped file declares its kind explicitly.  Spatial iff any physical
+    # field carries spatial_dim>=1; otherwise temporal.  The back-compat
+    # TheoryBuilder shim still loads either (load_spec_from_file accepts all three
+    # constructor names).
+    _is_spatial = any(int(f.get('spatial_dim', 0) or 0) > 0
+                      for f in physical_fields)
+    builder_cls = 'SpatialTheoryBuilder' if _is_spatial else 'TemporalTheoryBuilder'
+
     out = []
     out.append('\n'.join(docstring_lines))
-    out.append('from pipeline.theory import TheoryBuilder')
+    out.append(f'from pipeline.theory import {builder_cls}')
     out.append('')
     out.append('')
     out.append('def build():')
@@ -373,7 +382,7 @@ def render_theory_file(spec: dict) -> str:
         # Heterogeneous populations: just name in the constructor,
         # populations come via chained .population(...) calls so each
         # one's size is explicit and the declaration order is visible.
-        out.append(f'        TheoryBuilder({_py_repr(name)})')
+        out.append(f'        {builder_cls}({_py_repr(name)})')
         for pop in populations:
             pop_kwargs = _kw_chain(
                 ('size',        int(pop.get('size', 1))),
@@ -384,7 +393,7 @@ def render_theory_file(spec: dict) -> str:
             out.append(f'        {line}')
     else:
         out.append(
-            f'        TheoryBuilder({_py_repr(name)}, n_populations={n_pop})')
+            f'        {builder_cls}({_py_repr(name)}, n_populations={n_pop})')
 
     # Response fields: only emit if user explicitly declared them.
     # The new natural-name style relies on TheoryBuilder.physical_field
@@ -611,7 +620,8 @@ def load_spec_from_file(path: str) -> dict:
 
     for call in chain:
         # Constructor: TheoryBuilder('name', n_populations=N)
-        if isinstance(call.func, ast.Name) and call.func.id == 'TheoryBuilder':
+        if isinstance(call.func, ast.Name) and call.func.id in (
+                'TheoryBuilder', 'SpatialTheoryBuilder', 'TemporalTheoryBuilder'):
             if call.args:
                 spec['name'] = _lit(call.args[0], '')
             kw = _kwargs(call)

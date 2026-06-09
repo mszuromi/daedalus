@@ -9,12 +9,12 @@ to the n-leg).
 Used as a development fixture for the ConvVertexType pipeline work
 (``docs/conductance_vertex_kernels_design.md``).
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('Single population Conductance Test')
+        TemporalTheoryBuilder('Single population Conductance Test')
         .population('E', size=1, description='Excitatory')
         .physical_field('n', population='E', description='spike train')
         .physical_field('v', population='E', description='voltage')

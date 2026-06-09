@@ -7,12 +7,12 @@ Throwaway test theory: scalar quartic Langevin in MSR-JD form.
 Single field x (size=1), single response field xt.  Used to
 exercise the 1×1 K_ft path in the propagator + Phase J integrator.
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import TemporalTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('Quartic Double Well Toy')
+        TemporalTheoryBuilder('Quartic Double Well Toy')
         .population('A', size=1, description='single scalar field')
         .physical_field('x', population='A', description='order parameter')
         .parameter('mu', default=[-1.0], indexed_by=['A'], domain='real')

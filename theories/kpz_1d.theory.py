@@ -19,12 +19,12 @@ This is genuinely ``(∂φ)² ≠ ∂(φ²)`` — the distinguishing case from B
 Companion: ``theories/burgers_1d.theory.py`` (the *composite* ``∂_x(φ²)``
 sibling).
 """
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D KPZ (per-leg gradient vertex)',
+        SpatialTheoryBuilder('1D KPZ (per-leg gradient vertex)',
                       n_populations=0)
         .physical_field('h', spatial_dim=1, description='interface height')
         .parameter('mu',  default=1.0, domain='positive')

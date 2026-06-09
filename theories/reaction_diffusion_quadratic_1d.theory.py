@@ -21,12 +21,12 @@ Subcritical / stable fixed point: φ* = 0 (the other root φ* = −μ/g is
 unstable); we expand around φ* = 0.
 """
 
-from pipeline.theory import TheoryBuilder
+from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
     return (
-        TheoryBuilder('1D reaction-diffusion (quadratic, bubble test)',
+        SpatialTheoryBuilder('1D reaction-diffusion (quadratic, bubble test)',
                       n_populations=0)
         .physical_field('phi', spatial_dim=1, description='density field')
         .parameter('mu', default=1.0, domain='positive',
