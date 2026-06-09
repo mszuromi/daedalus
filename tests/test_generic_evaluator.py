@@ -104,9 +104,9 @@ def test_bubble_loop_kinematics_match_oracle(rd_ell1):
 
 def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
     """Phase 2b: the GENERIC per-diagram δC (Symanzik σ + single-mode Dyson
-    convolution, weighted by 2^{-n_C}·M(Γ)) summed over the bubble diagrams
+    convolution, weighted by 2^{-n_C}·𝒮(Γ)) summed over the bubble diagrams
     reproduces the bespoke loop_dyson δC(q,τ) — with NO pinned C_R/C_K (the
-    weights come from the enumeration M(Γ): 16/4=4=C_R, 8/4=2=C_K)."""
+    weights come from the enumeration 𝒮(Γ): 16/4=4=C_R, 8/4=2=C_K)."""
     mu, D, T = 1.0, 1.0, 1.0
     A, B = mu, D                                    # single tree mode mass (μ,D)
     bubbles = [(d, pre) for d, pre in rd_ell1 if not d.is_tadpole_like()]
@@ -126,7 +126,7 @@ def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
 
 @pytest.fixture(scope='module')
 def allencahn_ell1():
-    """Allen-Cahn (φ̃φ³) d=1, λ=0.1: ell=1 (descriptor, M(Γ)·prefactor) pairs."""
+    """Allen-Cahn (φ̃φ³) d=1, λ=0.1: ell=1 (descriptor, 𝒮(Γ)·prefactor) pairs."""
     from pipeline._propagator import build_propagator
     from pipeline.compute import FieldTheory
     repo = os.path.join(os.path.dirname(__file__), '..')
@@ -155,7 +155,7 @@ def test_tadpole_matches_allen_cahn_oracle(allencahn_ell1):
     same Dyson machinery in the δ-limit) on Allen-Cahn reproduces the validated
     oracle.  Decisive end-to-end check: ∫dq/2π δC(q,0) == δ⟨φ²⟩ = 0.4625−0.5 =
     −0.0375 (the compute_spatial_correlator_one_loop number at λ=0.1) — with the
-    coupling/combinatorics read from the enumeration M(Γ), NOT g=3λ hardcoded."""
+    coupling/combinatorics read from the enumeration 𝒮(Γ), NOT g=3λ hardcoded."""
     mu, D, T = 1.0, 1.0, 1.0
     A, B = mu, D
     tads = [(d, pre) for d, pre in allencahn_ell1

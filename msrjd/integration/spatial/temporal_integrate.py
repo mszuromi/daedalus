@@ -67,7 +67,7 @@ def sigma_parametric(edges, q, t, mu, D, T, spatial_dim=1, s_cap=None,
             params run ``[|t|, ∞)``).  ``t=0`` ⇒ equal-time (use a tiny floor).
 
     Returns ``Σ(q,t)`` (float).  ``T^{n_C}`` and ``e^{−μΣw}`` are included; the
-    diagram's combinatorial factor ``M(Γ)`` is applied by the caller.
+    diagram's combinatorial factor ``𝒮(Γ)`` is applied by the caller.
     """
     a_all = [e[0] for e in edges]
     b_all = [e[1] for e in edges]

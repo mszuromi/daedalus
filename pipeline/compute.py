@@ -419,7 +419,7 @@ def compute_cumulants(
         # (A,B,N) structure, then does the q→x FT.  At max_ell≥1 the FULL-DIAGRAM
         # integrator sums EVERY enumerated diagram up to max_ell loops through one
         # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
-        # ret+adv), weighted by the enumeration M(Γ) — no shortcut, no diagram
+        # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
         # dropped (docs/spatial_generic_pipeline_plan.md).
         if max_ell >= 1:
             from msrjd.integration.spatial.pipeline_bridge import (
@@ -604,7 +604,7 @@ def compute_cumulants(
                 td, time_dep_params, noise_structure
             )
             # Path A: ``combinatorial_factor`` in symmetry.py now
-            # computes M(Γ) = ∏ n_leg! / |Aut_fixed_ext(Γ)| using the
+            # computes 𝒮(Γ) = ∏ n_leg! / |Aut_fixed_ext(Γ)| using the
             # full coloured incidence-graph automorphism order.  That
             # already accounts for every Feynman-rule symmetry —
             # same-type vertex swaps, parallel-edge swaps, self-loop

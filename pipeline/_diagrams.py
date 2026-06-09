@@ -110,7 +110,7 @@ def enumerate_unique_diagrams(
     multiplicity_by_ell : dict[int, list[int]]
         Parallel to ``unique_by_ell``: ``multiplicity_by_ell[ell][i]``
         is the dedup-equivalence-class size for ``unique_by_ell[ell][i]``,
-        needed to recover the correct M(Γ) when the per-vertex
+        needed to recover the correct 𝒮(Γ) when the per-vertex
         combinatorial formula misses physical-leg permutations at
         sink vertices (see ``deduplicate_with_multiplicities``).
     all_unique    : list[TypedDiagram]

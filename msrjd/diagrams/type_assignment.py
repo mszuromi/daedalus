@@ -364,16 +364,16 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     ``enumerate_typed_diagrams`` wall time on cold runs.
 
     **Correctness under this change.**  The physics weight of a typed
-    diagram is ``M(Γ) × ∏_v coeff(v) × ∫(propagators)`` where
-    ``M(Γ) = ∏_v M_v`` is the ``combinatorial_factor`` from
+    diagram is ``𝒮(Γ) × ∏_v coeff(v) × ∫(propagators)`` where
+    ``𝒮(Γ) = ∏_v M_v`` is the ``combinatorial_factor`` from
     ``msrjd/diagrams/symmetry.py::combinatorial_factor``.  ``M_v``
     is *exactly* the count of response-leg permutations at vertex ``v``
     that preserve the same typed diagram — i.e. the orbit size of
-    identical-leg swaps.  So: old code generated ``M(Γ)`` identical
+    identical-leg swaps.  So: old code generated ``𝒮(Γ)`` identical
     copies and each copy carried its own full weight; dedup kept one,
-    with the integrator then multiplying by ``M(Γ)``.  New code
+    with the integrator then multiplying by ``𝒮(Γ)``.  New code
     generates the single canonical copy directly, and the integrator
-    multiplies by the same ``M(Γ)``.  Numerical output is bit-
+    multiplies by the same ``𝒮(Γ)``.  Numerical output is bit-
     identical; only the intermediate typed-diagram count (and
     therefore the enumeration wall time) changes.
 

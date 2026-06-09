@@ -161,7 +161,7 @@ def test_max_ell_1_computes_tadpole_loop():
     assert loop < tree                         # the loop suppresses ⟨φ²⟩
     # The GENERIC pipeline sums every enumerated ell=1 diagram (no bubble/tadpole
     # branch).  Allen-Cahn at φ*=0 has exactly ONE live diagram — the φ̃φ³ tadpole
-    # — and its δC reproduces the validated mass-shift 0.4625 (M(Γ) from the
+    # — and its δC reproduces the validated mass-shift 0.4625 (𝒮(Γ) from the
     # enumeration, NOT g=3λ hardcoded).
     si = th1['spatial_info']
     assert si.get('one_loop') is True and si.get('generic') is True

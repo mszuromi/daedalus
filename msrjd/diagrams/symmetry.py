@@ -1,13 +1,13 @@
 """
 msrjd.diagrams.symmetry
 ========================
-Combinatorial factor M(Γ) for fully-typed labeled diagrams, and
+Combinatorial factor 𝒮(Γ) for fully-typed labeled diagrams, and
 deduplication of typed diagrams into unique representatives.
 
 Definition (Attachment)
 -----------------------
 Given a typed diagram Γ with directed graph D = (V, E) and a fixed
-propagator type on each edge, the combinatorial factor M(Γ) counts
+propagator type on each edge, the combinatorial factor 𝒮(Γ) counts
 the number of ways to permute the *outgoing* (response) legs at each
 vertex that yield the same typed diagram — i.e. the same multiset of
 (response_type, physical_type) pairings on the outgoing edges.
@@ -26,11 +26,11 @@ Then the per-vertex factor is:
 
 and the full combinatorial factor is:
 
-    M(Γ) = ∏_v  M_v
+    𝒮(Γ) = ∏_v  M_v
 
 The diagram's contribution to the k-point function is:
 
-    weight(Γ) = M(Γ) × ∏_v coeff(v) × ∫(propagators)
+    weight(Γ) = 𝒮(Γ) × ∏_v coeff(v) × ∫(propagators)
 
 where the vertex coefficients already contain 1/n! from the Taylor
 expansion of the action.
@@ -128,7 +128,7 @@ def _wick_leg_factor(typed_diagram):
     each vertex were treated as distinguishable.  It is the
     "numerator" in the Feynman rule
 
-        M(Γ)  =  ∏_v ∏_ℓ n_{v,ℓ}!  /  |Aut(Γ)|
+        𝒮(Γ)  =  ∏_v ∏_ℓ n_{v,ℓ}!  /  |Aut(Γ)|
 
     See ``combinatorial_factor`` for the full formula.
     """
@@ -344,7 +344,7 @@ def combinatorial_factor(typed_diagram):
     r"""
     Symmetry factor for a typed Feynman diagram (Path A):
 
-        M(Γ)  =  ∏_v ∏_ℓ n_{v,ℓ}!  /  |Aut_{\text{fixed ext}}(Γ)|
+        𝒮(Γ)  =  ∏_v ∏_ℓ n_{v,ℓ}!  /  |Aut_{\text{fixed ext}}(Γ)|
 
     where the numerator is the per-vertex Wick combinatorial (the
     factorials of identical-leg multiplicities at each vertex, both
@@ -359,7 +359,7 @@ def combinatorial_factor(typed_diagram):
 
     The diagram's contribution to the connected k-point function is
 
-        weight(Γ)  =  M(Γ)  ×  ∏_v c_{\text{user},v}  ×  ∏_e P_e
+        weight(Γ)  =  𝒮(Γ)  ×  ∏_v c_{\text{user},v}  ×  ∏_e P_e
                               ×  ∫dt_v
 
     where ``c_user`` is the literal coefficient written in the action
@@ -388,7 +388,7 @@ def combinatorial_factor(typed_diagram):
 
 def compute_all_combinatorial_factors(typed_diagrams):
     """
-    Compute M(Γ) for each typed diagram.
+    Compute 𝒮(Γ) for each typed diagram.
 
     Parameters
     ----------
@@ -554,7 +554,7 @@ def deduplicate_typed_diagrams(typed_diagrams):
     Use ``deduplicate_with_multiplicities`` instead if you need the
     bug-correct combinatorial weight.  This function drops the
     dedup-equivalence-class size, which under-counts the symmetry
-    factor M(Γ) for theories whose interaction vertices have ≥3
+    factor 𝒮(Γ) for theories whose interaction vertices have ≥3
     identical physical legs fed by multiple distinct source vertices
     (e.g. cubic εxtx³ tadpoles).  See
     ``deduplicate_with_multiplicities`` for the corrected variant.
@@ -577,7 +577,7 @@ def deduplicate_with_multiplicities(typed_diagrams):
     x-legs fed by one v3-edge + two v4-edges), the dedup step
     silently merges 3 typed diagrams into one representative,
     losing the 3× combinatorial that those alternative leg-pairings
-    would have contributed.  The downstream M(Γ) for the survivor
+    would have contributed.  The downstream 𝒮(Γ) for the survivor
     is then a factor of 3 too small.
 
     Returning the equivalence-class size lets the caller multiply
@@ -654,9 +654,9 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     noise_type = ns.get('temporal_type', 'white')
     noise_amp_prefixes = list(ns.get('amplitude_params', []))
 
-    M = combinatorial_factor(typed_diagram)
+    Scal = combinatorial_factor(typed_diagram)
 
-    scalar_parts = [SR(M)]
+    scalar_parts = [SR(Scal)]
     vertex_time_factors = {}
     source_time_info = {}
 
@@ -712,7 +712,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     )
 
     return {
-        'M': M,
+        'M': Scal,                 # key 'M' kept (interface); value is 𝒮(Γ)
         'scalar_prefactor': scalar_prefactor,
         'vertex_time_factors': vertex_time_factors,
         'source_time_info': source_time_info,

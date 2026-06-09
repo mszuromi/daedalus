@@ -59,7 +59,7 @@ from msrjd.integration.spatial.spatial_correlator import (
 #   Bcal     𝓑(w)    external quadratic form (= D·Q_eff)  [wick-moment scope]
 #   Lam      Λ       loop / first-Symanzik matrix (in the form-factor moment math)
 #   (A,B,N)  m_α,D_i,κ  per-mode mass/diffusion/noise — kept as (A,B,N) (Tier-4)
-#   M(Γ)     𝒮(Γ)    symmetry factor — kept as M(Γ) (Tier-3 rename → Scal pending)
+#   Scal     𝒮(Γ)    symmetry factor — prose 𝒮(Γ); local var Scal; dict key 'M' kept
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -230,7 +230,7 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
         for ell in sorted(by_ell):
             prefs = [str(p) for _, p in by_ell[ell]]
             print(f'        ell={ell}: {len(by_ell[ell])} typed diagram(s); '
-                  f'M(Γ)·prefactor(s) = {prefs}')
+                  f'𝒮(Γ)·prefactor(s) = {prefs}')
     return by_ell
 
 
@@ -797,7 +797,7 @@ def compute_spatial_correlator_generic(
     is mapped to the C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and
     evaluated by the SAME full integral (``full_integrator.diagram_correlator``:
     Symanzik ``∫dᵈℓ`` → causal-chamber time integral → retarded+advanced sum),
-    weighted by the enumeration ``M(Γ)·prefactor`` (× the universal ``2^{−n_C}``).
+    weighted by the enumeration ``𝒮(Γ)·prefactor`` (× the universal ``2^{−n_C}``).
     No Dyson convolution, no mass-shift, no diagram dropped — the loop correction
     is the honest ``Σ_Γ Γ(q,τ)`` summed over every live diagram at every
     ``1 ≤ ell ≤ max_ell``.
@@ -908,7 +908,7 @@ def compute_spatial_correlator_generic(
     by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
                                     verbose=verbose, header=None)
     # map every enumerated diagram (all loop orders 1..max_ell) → (descriptor,
-    # M(Γ)·prefactor value at saddle).  No filter, no shortcut.
+    # 𝒮(Γ)·prefactor value at saddle).  No filter, no shortcut.
     _d = int(prop.get('spatial_dim', 1))         # form factors are d-aware (vector legs)
     descrs = []
     for ell in range(1, max_ell + 1):
@@ -939,7 +939,7 @@ def compute_spatial_correlator_generic(
         nt, ns = (22, 24) if nC <= 2 else (16, 14)
         return (int(_nt_ov) if _nt_ov else nt, int(_ns_ov) if _ns_ov else ns)
     if verbose:
-        print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·M(Γ) '
+        print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·𝒮(Γ) '
               f'∫dᵈℓ(Symanzik) ∫dt(causal chambers) → ret+adv → q→x FT '
               f'[{len(live)} live diagram(s), q-grid n_q={n_q}, '
               f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})]...')

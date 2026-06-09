@@ -1,7 +1,7 @@
 """
 tests/test_symmetry.py
 ======================
-Tests for msrjd.diagrams.symmetry — combinatorial factor M(Γ)
+Tests for msrjd.diagrams.symmetry — combinatorial factor 𝒮(Γ)
 and typed diagram deduplication.
 
 Build Phase G.
@@ -42,12 +42,12 @@ def _make_td(edges, leaves, vert_assignments=None, edge_types=None,
     )
 
 
-# ── Tests: M(Γ) = 1 for all-distinct legs ─────────────────────────────────
+# ── Tests: 𝒮(Γ) = 1 for all-distinct legs ─────────────────────────────────
 
 def test_all_distinct_legs_m_equals_one():
     """
     Vertex with all distinct legs → only 1 valid attachment.
-    M(Γ) = 1.
+    𝒮(Γ) = 1.
     """
     vt = VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1))
     td = _make_td(
@@ -171,7 +171,7 @@ def test_two_identical_physical_legs_not_counted():
 
 def test_multi_vertex_product():
     """
-    M(Γ) is the product across all vertices (response legs only).
+    𝒮(Γ) is the product across all vertices (response legs only).
     Vertex 2: 2 identical resp legs → M_2 = 2.
     Vertex 3: 1 resp leg (phys legs not counted) → M_3 = 1.
     Total M = 2 × 1 = 2.
@@ -354,12 +354,12 @@ def test_signature_deterministic():
     assert diagram_signature(td) == diagram_signature(td)
 
 
-# ── Tests: M(Γ) matches enumeration multiplicity ─────────────────────────
+# ── Tests: 𝒮(Γ) matches enumeration multiplicity ─────────────────────────
 
 def test_m_matches_multiplicity():
     """
     Enumerate duplicates explicitly: 2 identical resp legs produce 2
-    typed diagrams with the same signature.  M(Γ) must equal 2.
+    typed diagrams with the same signature.  𝒮(Γ) must equal 2.
     """
     st = SourceType(SR(1)/2, [('nt', 1), ('nt', 1)], (2, 0))
 
@@ -388,7 +388,7 @@ def test_m_matches_multiplicity():
     unique = deduplicate_typed_diagrams([td1, td2])
     assert len(unique) == 1
 
-    # M(Γ) = 2 = multiplicity
+    # 𝒮(Γ) = 2 = multiplicity
     assert combinatorial_factor(unique[0]) == 2
 
 
@@ -399,7 +399,7 @@ def test_mixed_response_legs_distinct_pairings():
     Under Path A's position-aware convention (each external leaf is a
     distinct color class in ``Aut_fixed_ext``), the two x̃ legs go to
     two distinct leaf positions; no graph automorphism swaps them.
-    So M(Γ) = ∏ n_leg! / |Aut_fixed_ext| = (2!·1!·1!) / 1 = 2.
+    So 𝒮(Γ) = ∏ n_leg! / |Aut_fixed_ext| = (2!·1!·1!) / 1 = 2.
 
     Pre-Path-A this test asserted M=4 using a "field-type-pairing"
     convention (treating same-field-type leaves as interchangeable in

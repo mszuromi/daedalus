@@ -97,7 +97,7 @@ FIXTURES: list[FixtureConfig] = [
     # Previously omitted (30+ min/probe in the audit era); now ~6 s
     # per path thanks to the Stage 3b causal-poset integrator + the
     # May 2026 Wick-permutation fix (commit a3fbbf3) + the principled
-    # M(Γ) automorphism fix (commit 0e13a6d).  This is the
+    # 𝒮(Γ) automorphism fix (commit 0e13a6d).  This is the
     # ``spike_reset k=2 ell=1`` configuration that
     # ``docs/m_ge3_precision_bug_audit.md`` originally flagged as a
     # 4× perdiag-vs-grouped discrepancy; the discrepancy has since

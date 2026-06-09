@@ -70,7 +70,7 @@ def test_delta_S_positive_and_decaying():
 
 def test_physical_weights_pinned():
     """bubble_delta_S applies the framework-pinned weights g²(C_R·T1 + C_K·T2)
-    with C_R=4, C_K=2 (from the M(Γ)=16,8 uniform-momentum diagram values)."""
+    with C_R=4, C_K=2 (from the 𝒮(Γ)=16,8 uniform-momentum diagram values)."""
     assert (C_R, C_K) == (4.0, 2.0)
     q, g = 0.7, 1.3
     t1, t2 = _dyson_terms(q, MU, D, T)

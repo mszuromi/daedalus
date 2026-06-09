@@ -32,7 +32,7 @@ Edge sign convention is irrelevant to the Symanzik forms: flipping one edge's
 coefficients.
 
 Normalization: this descriptor is **kinematic only** — couplings, noise
-amplitudes, and the combinatorial ``M(Γ)`` all live in the enumeration's
+amplitudes, and the combinatorial ``𝒮(Γ)`` all live in the enumeration's
 ``scalar_prefactor`` and are applied by the evaluator (Phase 2), NOT here.
 """
 from __future__ import annotations

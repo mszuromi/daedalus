@@ -12,7 +12,7 @@ momenta ``{q_j}``, and edges (retarded ``R`` or correlation ``C``, each with a
 momentum routing ``k_e = a_e·ℓ + b_e·q``), the diagram's contribution to the
 connected ``k``-point cumulant is
 
-  Γ(q,{τ}) = 2^{−n_C}·M(Γ) · ∫ ∏_v dt_v ∏_{C edges} dσ_e  𝟙(θ's) ·
+  Γ(q,{τ}) = 2^{−n_C}·𝒮(Γ) · ∫ ∏_v dt_v ∏_{C edges} dσ_e  𝟙(θ's) ·
                               e^{−μ Σ_e w_e} · MomFactor(w, q),
 
   w_e = t_head − t_tail   (R, with θ: w_e ≥ 0),
@@ -49,7 +49,7 @@ from msrjd.integration.spatial.causal_chambers import causal_chambers
 #   N, Q     N_rb,Q_ab   Symanzik cross / external blocks ;  Q_eff = 𝓑/D
 #   a, b     B_er,C_eb   edge routing coefficients (plain B,C in paper)
 #   D        D_0      scalar reference diffusion ;  w,q ↔ w_e,q_b
-#   M(Γ)     𝒮(Γ)     symmetry factor (kept as M(Γ); Tier-3 rename → Scal pending)
+#   Scal     𝒮(Γ)     symmetry factor — prose 𝒮(Γ); local var Scal; dict key 'M' kept
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -624,7 +624,7 @@ def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
                   spatial_dim=1, **kw):
     """One diagram's contribution to the cumulant: ``2^{−n_C}·prefactor·kinematic``.
 
-    ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at the
+    ``prefactor_val`` is the enumeration ``𝒮(Γ)·prefactor`` evaluated at the
     params (couplings + noise amplitudes, e.g. ``2T`` for the tree, ``8T²g²`` /
     ``16T²g²`` for the bubbles); the ``2^{−n_C}`` converts the ``2T`` noise-vertex
     convention to the kinematic unit-amplitude ``C`` edges."""
@@ -665,7 +665,7 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
     enumerated diagrams (tree + every loop), each via the SAME full integral, with
     the retarded+advanced sum applied per diagram (:func:`diagram_correlator`).
 
-    ``descrs_prefactors`` : iterable of ``(CStackDiagram, M(Γ)·prefactor value)``.
+    ``descrs_prefactors`` : iterable of ``(CStackDiagram, 𝒮(Γ)·prefactor value)``.
     Returns the momentum-space ``C(q,τ)`` (FT to position is done by the caller)."""
     total = 0.0
     for descr, pre in descrs_prefactors:

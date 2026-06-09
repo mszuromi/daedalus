@@ -27,7 +27,7 @@ Two entry points (built/validated incrementally):
     for ``compute_correction_td``.  *(under construction)*
 
 Normalization: **kinematic only** — couplings, noise amplitudes and the
-combinatorial ``M(Γ)`` are the enumeration's ``scalar_prefactor`` and are applied
+combinatorial ``𝒮(Γ)`` are the enumeration's ``scalar_prefactor`` and are applied
 by the caller.  A bare ``C`` edge contributes its Schwinger ``e^{−m|Δt|}/m`` with
 unit weight (no extra ``T``).
 """
@@ -47,7 +47,7 @@ def loop_self_energy(descr, q, t, mu, D, T=1.0, spatial_dim=1, **quad):
     Valid for a 2-vertex loop (a bubble): all loop edges span the same
     inter-vertex time ``t`` (one ordering chamber), which is exactly
     ``sigma_parametric``'s domain.  Returns ``Σ(q,t)`` (kinematic; the caller
-    multiplies the enumeration ``M(Γ)·prefactor``).  Diagrams whose loop has a
+    multiplies the enumeration ``𝒮(Γ)·prefactor``).  Diagrams whose loop has a
     self-loop (a tadpole) or >2 internal vertices are handled by the full
     :func:`evaluate_diagram` (Phase 2b), not here.
     """
@@ -187,7 +187,7 @@ def _dyson_keldysh(ag, sK, m, taus):
 
 def _kinematic_to_physical(descr):
     """The universal kinematic↔enumeration normalization for a diagram: the
-    enumeration ``M(Γ)·prefactor`` uses the noise-source action coefficient, while
+    enumeration ``𝒮(Γ)·prefactor`` uses the noise-source action coefficient, while
     the kinematic convolution uses a unit (T=1) correlation amplitude per C edge.
     They differ by ``2^{−n_C}`` (``n_C`` = number of correlation edges = number of
     contracted 2-point noise sources).  VERIFIED universal across the φ̃φ² Σ_R/Σ_K
@@ -202,11 +202,11 @@ def bubble_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     """The full 1-loop **bubble** contribution ``δC_Γ(q,τ)`` of one diagram,
     the generic momentum-first way: ``σ_Γ`` from the Symanzik route
     (:func:`loop_self_energy`), dressed by the generic single-mode Dyson
-    convolution, weighted by ``2^{−n_C}·(M(Γ)·prefactor)``.
+    convolution, weighted by ``2^{−n_C}·(𝒮(Γ)·prefactor)``.
 
     ``descr`` must be a non-tadpole (no self-loop) 2-vertex bubble; classified
     Σ_R (loop kinds ``{R,C}``) → retarded dressing, Σ_K (``{C,C}``) → Keldysh.
-    ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at the
+    ``prefactor_val`` is the enumeration ``𝒮(Γ)·prefactor`` evaluated at the
     params (carries the couplings AND all noise amplitudes — one ``T`` per C
     edge).  The kinematics are therefore computed at **unit noise**: ``σ_Γ`` with
     ``T=1`` and the external-leg dressing (``C₀``) with unit amplitude, so the
@@ -257,7 +257,7 @@ def tadpole_delta_C(descr, prefactor_val, q, taus, A, B, mu, D,
     through :func:`_dyson_retarded` gives ``Σ·(−∂C₀/∂A)`` analytically, so
 
         δC_Γ(q,τ) = Σ_Γ · (−∂C₀/∂A),   −∂C₀/∂A = (1/m)e^{−m|τ|}(|τ|+1/m),
-        Σ_Γ = 2^{−n_C}·(M(Γ)·prefactor)·⟨φ²⟩₀^kin,
+        Σ_Γ = 2^{−n_C}·(𝒮(Γ)·prefactor)·⟨φ²⟩₀^kin,
 
     with ``⟨φ²⟩₀^kin`` the self-loop's loop integral (``sigma_parametric`` on the
     self-loop edge at equal time, T=1), ``m = A + B q²``, and a factor
@@ -325,7 +325,7 @@ def delta_C_one_loop(descrs_with_prefactors, q, taus, A, B, mu, D,
     special-cased away.
 
     ``descrs_with_prefactors`` : iterable of ``(CStackDiagram, prefactor_val)``
-    where ``prefactor_val`` is the enumeration ``M(Γ)·prefactor`` evaluated at
+    where ``prefactor_val`` is the enumeration ``𝒮(Γ)·prefactor`` evaluated at
     the params/saddle.  Dead diagrams (``|prefactor| < tol``, e.g. φ*²-vertices
     at φ*=0) are skipped.  ``formfactors`` : optional list parallel to
     ``descrs_with_prefactors`` of per-diagram derivative-vertex form factors

@@ -32,7 +32,7 @@ route — the ``m≥3`` close-pair bug lived ONLY in Phase J's time-polytope, wh
 this assembly bypasses.  So the bubble integrator is fast and robust at any q.
 
 Normalization here is per ``Σ_R = ∫dℓ G_R·C``, ``Σ_K = ∫dℓ C·C`` with NO
-coupling / combinatorial factor — the caller multiplies by ``M(Γ)·(coupling)``
+coupling / combinatorial factor — the caller multiplies by ``𝒮(Γ)·(coupling)``
 (``g²`` for the bubble), pinned from the pipeline.
 """
 from __future__ import annotations
@@ -76,8 +76,8 @@ def sigma_K_time(q, t, mu, D, T, formfactor=None):
 
 
 # Principled per-diagram normalizations, pinned from the framework's own
-# uniform-momentum diagram values (Σ_R diagram d[1][0] M(Γ)=16, Σ_K diagram
-# d[1][1] M(Γ)=8): with the Dyson terms T1 (Σ_R) and T2 (Σ_K) normalized as
+# uniform-momentum diagram values (Σ_R diagram d[1][0] 𝒮(Γ)=16, Σ_K diagram
+# d[1][1] 𝒮(Γ)=8): with the Dyson terms T1 (Σ_R) and T2 (Σ_K) normalized as
 # below, the physical bubble correction is  c_R·T1 + c_K·T2  with
 #
 # CONFIRMED at 1-loop vs simulation: a φ²-only (lam=0) sim at the perturbative
@@ -110,7 +110,7 @@ def _dyson_terms(q, mu, D, T, formfactor=None):
 def bubble_delta_S(q, mu, D, T, g=1.0, formfactor=None):
     """PHYSICAL bubble contribution to the equal-time structure factor
     ``δC(q, τ=0)`` for the ``φ̃φ²`` theory: ``g²·(C_R·T1 + C_K·T2)`` with the
-    principled weights ``C_R=4, C_K=2`` (from the framework's M(Γ)).  Even in q.
+    principled weights ``C_R=4, C_K=2`` (from the framework's 𝒮(Γ)).  Even in q.
     Excludes the q-independent ``φ²``-tadpole (the mass shift, d[1][2]).
 
     ``formfactor=F(ℓ)`` (Phase 4) injects a derivative-vertex form factor into

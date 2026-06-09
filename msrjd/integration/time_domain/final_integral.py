@@ -2707,7 +2707,7 @@ def integrate_diagram(
         #     lands at ``anchor_time - τ``.
         #   * homogeneous-field legs (e.g. ``['xt','xt']``): no field
         #     info distinguishes them — use label ordering instead.
-        #     M(Γ) already counts both orderings of indistinguishable
+        #     𝒮(Γ) already counts both orderings of indistinguishable
         #     legs, so the specific choice of "first label → anchor"
         #     just picks ONE representative of the orbit.
         incident_edges = [
@@ -2738,7 +2738,7 @@ def integrate_diagram(
                     edge_to_time[ek] = anchor_time
         else:
             # Homogeneous (or order≠2): use label ordering to
-            # disambiguate parallel edges.  M(Γ) absorbs the choice.
+            # disambiguate parallel edges.  𝒮(Γ) absorbs the choice.
             sorted_edges = sorted(incident_edges)
             for i, ek in enumerate(sorted_edges):
                 edge_to_time[ek] = (
