@@ -34,6 +34,7 @@ from __future__ import annotations
 import cmath
 import math
 
+import numpy as np
 from sage.all import SR
 
 from msrjd.integration.spatial.heat_kernel import (
@@ -87,6 +88,50 @@ def extract_noise_coefficients(ft, num_params):
             if abs(Dn) > 1e-300:
                 out[i] = Dn
     return out
+
+
+def extract_noise_matrix(ft, num_params):
+    """Return the ``(n_tilde × n_tilde)`` noise covariance **matrix** ``N`` (numpy
+    float array), ``⟨ξξᵀ⟩ = N``, from the action's ``(2, 0)`` response-field sector
+    — the coupled-field generalization of :func:`extract_noise_coefficients`.
+
+    Convention (calibrated so the diagonal reproduces the scalar OU result
+    ``action −D·x̃² ⇒ ⟨x²⟩ = D/μ`` and the Lyapunov 2-point ``Σ = N/2A``):
+
+        N_ii = −2·coeff(φ̃_i²),      N_ij = −coeff(φ̃_i φ̃_j)   (i ≠ j).
+
+    So ``N_ii = 2·κ_i`` with ``κ_i`` the value :func:`extract_noise_coefficients`
+    returns.  Reads only the q⁰ (white-noise) part; q²-dependent (conserved /
+    Model-B) noise is skipped (left 0), matching the diagonal extractor's scope.
+    """
+    by_tp = getattr(ft, '_by_tp', None)
+    if by_tp is None:
+        raise SpatialPropagatorError('FieldTheory not expanded (no _by_tp).')
+    n_tilde = ft._n_tilde
+    n_gens = len(ft.ring().gens())
+    N = np.zeros((n_tilde, n_tilde), dtype=float)
+    noise_sector = by_tp.get((2, 0))
+    if noise_sector is None:
+        return N
+    sub = {SR.var(str(kk)): vv for kk, vv in num_params.items()}
+    try:
+        terms = noise_sector.dict().items()
+    except AttributeError:
+        return N
+    for exp_vec, coeff in terms:
+        nz = [idx for idx in range(n_gens) if exp_vec[idx] != 0]
+        try:
+            c = complex(SR(coeff).subs(sub)).real      # white-noise (q⁰) part
+        except Exception:
+            continue                                   # q-dependent noise → skip
+        if len(nz) == 1 and nz[0] < n_tilde and exp_vec[nz[0]] == 2:
+            i = nz[0]
+            N[i, i] = -2.0 * c
+        elif (len(nz) == 2 and all(p < n_tilde for p in nz)
+              and exp_vec[nz[0]] == 1 and exp_vec[nz[1]] == 1):
+            i, j = nz
+            N[i, j] = N[j, i] = -c
+    return N
 
 
 # ── Free two-point correlator ─────────────────────────────────────

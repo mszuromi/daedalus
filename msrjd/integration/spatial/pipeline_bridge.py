@@ -390,6 +390,96 @@ def compute_spatial_correlator_via_pipeline(
     return C, info
 
 
+def compute_coupled_tree_correlator(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        *, q_cut=60.0, n_q=6000, n_modes=600, verbose=False):
+    """Coupled-field tree-level ``C_ij(x, τ)`` via the spectral-Lyapunov 2-point
+    (Dyson step 3a) + a ``q → x`` FT — for theories whose inverse propagator has
+    OFF-DIAGONAL coupling (so the diagonal heat-kernel block is absent) but whose
+    diffusion is SCALAR (``𝒟̂ = 0``, exact at ``n=0``, no Dyson series).
+
+    Reads ``prop['K_ft']`` (always built by ``build_propagator`` even when the
+    diagonal Tier-1 block is rejected), extracts the reaction matrix ``M``,
+    diffusion ``𝒟`` and drift ``V`` (``heat_kernel.reaction_diffusion_matrices``),
+    requires scalar ``𝒟`` and ``V=0``, extracts the noise matrix ``N``
+    (``spatial_correlator.extract_noise_matrix``), then for the ``(i, j)`` external
+    legs FTs ``C_ij(q,τ) = coupled_two_point(ref, N, q², τ)`` to real space.
+
+    Returns ``(C, info)`` mirroring :func:`compute_spatial_correlator_via_pipeline`
+    (``C`` is ``[len(tau_grid), len(spatial_grid)]`` for the external pair).
+    """
+    from msrjd.integration.spatial.heat_kernel import (
+        reaction_diffusion_matrices, SpatialPropagatorError)
+    from msrjd.integration.spatial.spectral_propagator import (
+        build_reference, coupled_two_point)
+    from msrjd.integration.spatial.spatial_correlator import extract_noise_matrix
+
+    K_ft = prop.get('K_ft')
+    if K_ft is None:
+        raise SpatialPropagatorError('coupled tree correlator: prop has no K_ft.')
+    d = int(prop.get('spatial_dim', 1))
+    if d != 1:
+        raise NotImplementedError('coupled tree correlator: d=1 only (v1).')
+
+    ns = ft._ns
+    omega = prop['omega']
+    k_var = SR.var('k')
+    lap_sym = ns.Laplacian
+    grad_sym = getattr(ns, 'GradX', None)
+    nps_sr = _norm_sr(num_params)
+    nps_str = {str(kk): vv for kk, vv in num_params.items()}
+
+    M_sr, D_sr, V_sr = reaction_diffusion_matrices(K_ft, omega, k_var, lap_sym, grad_sym)
+    n = int(M_sr.nrows())
+
+    def _num(sm):
+        return np.array([[complex(SR(sm[a, b]).subs(nps_sr)).real for b in range(n)]
+                         for a in range(n)], dtype=float)
+
+    M, Dm, Vm = _num(M_sr), _num(D_sr), _num(V_sr)
+    if not np.allclose(Vm, 0.0, atol=1e-9):
+        raise NotImplementedError(
+            'coupled tree correlator: drift (V≠0) not supported (scalar-diffusion '
+            'coupled v1).')
+    ref = build_reference(M, Dm)
+    if not ref.is_scalar_diffusion:
+        raise SpatialPropagatorError(
+            'coupled tree correlator needs scalar diffusion (𝒟̂=0); unequal '
+            'diffusion requires the Dyson–Duhamel series (not yet wired).')
+    N = extract_noise_matrix(ft, nps_str)
+
+    # External legs → physical field indices (i, j).
+    i = _field_index(prop, external_fields[0][0]
+                     if isinstance(external_fields[0], (tuple, list))
+                     else external_fields[0])
+    last = external_fields[-1]
+    j = _field_index(prop, last[0] if isinstance(last, (tuple, list)) else last)
+
+    bc_mode, L = _bc_from_prop(prop, nps_sr)
+    taus = [float(t) for t in tau_grid]
+    xs = np.array([float(x) for x in spatial_grid])
+    C = np.zeros((len(taus), len(xs)), dtype=np.complex128)
+
+    if bc_mode == 'periodic' and L:
+        Lf = float(L)
+        qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
+        for it, tau in enumerate(taus):
+            Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qs])
+            for ix, x in enumerate(xs):
+                C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
+    else:
+        qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
+        dq = qg[1] - qg[0]
+        for it, tau in enumerate(taus):
+            Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qg])
+            for ix, x in enumerate(xs):
+                C[it, ix] = (1.0 / np.pi) * np.sum(np.cos(qg * x) * Cq) * dq
+
+    info = {'coupled': True, 'M': M, 'D0': ref.D0, 'Dhat': ref.Dhat, 'N': N,
+            'legs': (i, j), 'bc_mode': bc_mode, 'L': L, 'spatial_dim': d}
+    return C, info
+
+
 def _diagram_is_bubble(td):
     """True iff the 1-loop diagram is a momentum-DEPENDENT **bubble**: some edge
     carries a momentum MIXING the external ``q`` and the loop ``ℓ`` — a cross
