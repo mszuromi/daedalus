@@ -278,7 +278,7 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k):
     # Title row
     ax_title = fig.add_subplot(gs[0, 0])
     ax_title.set_axis_off()
-    M = info.get('M', '?')
+    M = info.get('Scal', '?')
     title_lines = [
         f'Diagram {idx} / {total}',
         f'M = {M}',

@@ -90,23 +90,23 @@ def extract_noise_coefficients(ft, num_params):
 
 
 # ── Free two-point correlator ─────────────────────────────────────
-def free_two_point(A, B, D_noise, x, tau, bc_mode='infinite', L=None,
+def free_two_point(mu, D, kap, x, tau, bc_mode='infinite', L=None,
                    n_images_cap=200):
     """``C(x, τ)`` for one diagonal field.
 
-    A : mass (float/complex), B : diffusion (>0), D_noise : noise
+    mu : mass (float/complex), D : diffusion (>0), kap : noise
     spectral coefficient.  Infinite domain → erf closed form;
     periodic → image sum over ``x → x + nL`` of the infinite-domain
     correlator (the ring's periodicity).
     """
-    B = float(B)
-    A = complex(A)
-    Dn = float(D_noise)
-    pref = Dn / math.sqrt(4.0 * math.pi * B)
+    D = float(D)
+    mu = complex(mu)
+    kapf = float(kap)
+    pref = kapf / math.sqrt(4.0 * math.pi * D)
 
     def _C_inf(xx):
-        beta = (xx * xx) / (4.0 * B)
-        integ = erf_time_integral(A, beta, abs(tau), U_hi=None)
+        beta = (xx * xx) / (4.0 * D)
+        integ = erf_time_integral(mu, beta, abs(tau), U_hi=None)
         return complex(pref * integ)
 
     if bc_mode == 'infinite':

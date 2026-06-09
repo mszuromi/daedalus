@@ -21,12 +21,12 @@ This bridge instead reproduces the same answer THROUGH the shared pipeline:
      and returns the mixed correlator ``C(q, τ)``;
 
   2. CERTIFY that the pipeline's ``C(q, τ)`` equals the per-mode heat-kernel
-     structure ``Σ_α N_α/(A_α+B_α q²)·e^{-(A_α+B_α q²)|τ|}`` read from the
+     structure ``Σ_α κ_α/(μ_α+D_α q²)·e^{-(μ_α+D_α q²)|τ|}`` read from the
      propagator (``ac_mass``, ``ac_diffusion``) and the noise sector — the
      bridge between "the diagrams are right" and "the modes are right";
 
   3. do the external ``q → x`` FT analytically: ``C(x, τ) = Σ_α
-     free_two_point(A_α, B_α, N_α; x, τ)`` — each mode's q-FT IS the
+     free_two_point(μ_α, D_α, κ_α; x, τ)`` — each mode's q-FT IS the
      validated :func:`heat_kernel`-family closed form
      (:func:`spatial_correlator.free_two_point`).
 
@@ -58,7 +58,7 @@ from msrjd.integration.spatial.spatial_correlator import (
 #   Rcal     𝓡(k_e)  per-edge derivative-vertex form-factor polynomial
 #   Bcal     𝓑(w)    external quadratic form (= D·Q_eff)  [wick-moment scope]
 #   Lam      Λ       loop / first-Symanzik matrix (in the form-factor moment math)
-#   (A,B,N)  m_α,D_i,κ  per-mode mass/diffusion/noise — kept as (A,B,N) (Tier-4)
+#   mu,D,kap  μ,D_i,κ  per-mode mass/diffusion/noise (was A,B,N — Tier 4a)
 #   Scal     𝒮(Γ)    symmetry factor — prose 𝒮(Γ); local var Scal; dict key 'M' kept
 # ─────────────────────────────────────────────────────────────────────
 
@@ -135,50 +135,50 @@ def _bc_from_prop(prop, num_params_sr):
     return bc_mode, L
 
 
-# ── 1. per-mode (A, B, N) structure ───────────────────────────────
+# ── 1. per-mode (mu, D, kap) structure ───────────────────────────────
 def diagonal_modes_from_propagator(prop, ft, num_params, field_index):
-    """Return ``[(A, B, N)]`` — the per-mode heat-kernel structure for the
+    """Return ``[(mu, D, kap)]`` — the per-mode heat-kernel structure for the
     diagonal field ``field_index``.
 
-    v1 emits a SINGLE mode: ``A = ac_mass`` (relaxation), ``B = ac_diffusion``
-    (Laplacian coefficient), ``N`` = white-noise spectral weight from the
+    v1 emits a SINGLE mode: ``mu = ac_mass`` (relaxation), ``D = ac_diffusion``
+    (Laplacian coefficient), ``kap`` = white-noise spectral weight from the
     ``(2, 0)`` action sector.  The list shape is what generalizes to a
     multi-mode dressed propagator.  ``num_params`` may be str- or SR-keyed.
     """
     nps_sr = _norm_sr(num_params)
     nps_str = {str(kk): vv for kk, vv in num_params.items()}
 
-    A_expr = prop['ac_mass'][field_index]
-    B_expr = prop['ac_diffusion'][field_index]
-    A = complex(SR(A_expr).subs(nps_sr))
-    Bsub = SR(B_expr).subs(nps_sr)
-    B = float(Bsub.real() if hasattr(Bsub, 'real') else Bsub)
-    if B <= 0.0:
-        if B < 0.0:
+    mu_expr = prop['ac_mass'][field_index]
+    D_expr = prop['ac_diffusion'][field_index]
+    mu = complex(SR(mu_expr).subs(nps_sr))
+    Dsub = SR(D_expr).subs(nps_sr)
+    D = float(Dsub.real() if hasattr(Dsub, 'real') else Dsub)
+    if D <= 0.0:
+        if D < 0.0:
             raise SpatialPropagatorError(
-                f'field index {field_index} has NEGATIVE diffusion B={B}: the '
+                f'field index {field_index} has NEGATIVE diffusion D={D}: the '
                 f'spatial operator is anti-diffusive / ill-posed.  Check the '
                 f'sign of the Laplacian term (should be "- D*Laplacian", D>0).')
         raise SpatialPropagatorError(
-            f'field index {field_index} has zero diffusion (B=0): it is a '
+            f'field index {field_index} has zero diffusion (D=0): it is a '
             f'time-only (spatial_dim=0) field with no heat-kernel mode.  A '
             f'spatial correlator is only defined for dim >= 1.')
     noise = extract_noise_coefficients(ft, nps_str)
-    N = noise.get(field_index)
-    if N is None:
+    kap = noise.get(field_index)
+    if kap is None:
         raise SpatialPropagatorError(
             f'no white-noise coefficient for field index {field_index} '
             f'(noise sector empty?). Available: {noise}')
-    return [(A, B, float(N))]
+    return [(mu, D, float(kap))]
 
 
 def _modes_C_q_tau(modes, qval, taus):
-    """Reference ``C(q, τ) = Σ_α N_α/(A_α+B_α q²)·e^{-(A_α+B_α q²)|τ|}``."""
+    """Reference ``C(q, τ) = Σ_α κ_α/(μ_α+D_α q²)·e^{-(μ_α+D_α q²)|τ|}``."""
     taus = np.asarray(taus, dtype=float)
     out = np.zeros(taus.shape, dtype=np.complex128)
-    for (A, B, N) in modes:
-        m = A + B * qval * qval
-        out += (N / m) * np.exp(-m * np.abs(taus))
+    for (mu, D, kap) in modes:
+        m = mu + D * qval * qval
+        out += (kap / m) * np.exp(-m * np.abs(taus))
     return out
 
 
@@ -287,10 +287,10 @@ def compute_spatial_correlator_via_pipeline(
     """Drop-in alternative to :func:`compute_spatial_correlator_tree` that
     ROUTES THROUGH THE SHARED PIPELINE.
 
-    Steps: read the per-mode ``(A, B, N)`` from the propagator; (optionally)
+    Steps: read the per-mode ``(mu, D, kap)`` from the propagator; (optionally)
     CERTIFY them against the pipeline's diagram-based ``C(q, τ)`` at a few
     sample momenta; then build ``C(x, τ)`` by the analytic ``q → x`` FT
-    ``Σ_α free_two_point(A_α, B_α, N_α; x, τ)`` (exact at ``τ = 0``).
+    ``Σ_α free_two_point(μ_α, D_α, κ_α; x, τ)`` (exact at ``τ = 0``).
 
     Returns ``(C_tau_x, info)`` mirroring the bespoke API; ``info`` adds
     ``pipeline_certified`` and ``certify_max_rel``.
@@ -321,10 +321,10 @@ def compute_spatial_correlator_via_pipeline(
     bc_mode, L = _bc_from_prop(prop, nps_sr)
 
     if verbose and stage_headers:
-        print('[5/7] (spatial) Read per-mode (A,B,N) from the propagator '
+        print('[5/7] (spatial) Read per-mode (mu,D,kap) from the propagator '
               '+ certify vs the shared-pipeline C(q,τ)...')
     if verbose:
-        A, B, N = modes[0]
+        mu, D, kap = modes[0]
         print(f'      modes: field#{fi}={[(complex(a), b, n) for a, b, n in modes]} '
               f'bc={bc_mode}' + (f' L={L}' if L else ''))
 
@@ -349,12 +349,12 @@ def compute_spatial_correlator_via_pipeline(
             raise SpatialPropagatorError(
                 f'pipeline certification failed: the shared-pipeline C(q,τ) '
                 f'disagrees with the propagator modes by {certify_max_rel:.2e} '
-                f'(> tol {certify_tol:.0e}).  The (A,B,N) extraction or the '
+                f'(> tol {certify_tol:.0e}).  The (mu,D,kap) extraction or the '
                 f'diagram routing is wrong for this theory.')
 
     if verbose and stage_headers:
         print('[6/7] (spatial) Tree level — no loop diagrams to enumerate.')
-        print('[7/7] (spatial) Analytic q→x FT: Σ_modes free_two_point(A,B,N; x,τ) '
+        print('[7/7] (spatial) Analytic q→x FT: Σ_modes free_two_point(mu,D,kap; x,τ) '
               f'on {len(tau_grid)} τ × {len(spatial_grid)} x points...')
     d = int(prop.get('spatial_dim', 1))
     C = np.zeros((len(tau_grid), len(spatial_grid)), dtype=np.complex128)
@@ -363,25 +363,25 @@ def compute_spatial_correlator_via_pipeline(
         for it, tau in enumerate(tau_grid):
             for ix, x in enumerate(spatial_grid):
                 val = 0j
-                for (A, B, N) in modes:
-                    val += free_two_point(A, B, N, float(x), float(tau),
+                for (mu, D, kap) in modes:
+                    val += free_two_point(mu, D, kap, float(x), float(tau),
                                           bc_mode=bc_mode, L=L)
                 C[it, ix] = val
     else:
         # d≥2: the radial/Hankel q→x transform of the momentum-space correlator
-        # Σ_modes N/(A+Bq²) e^{−(A+Bq²)|τ|}, truncated at q_cut (Regime 1 — a
+        # Σ_modes kap/(mu+Dq²) e^{−(mu+Dq²)|τ|}, truncated at q_cut (Regime 1 — a
         # physical cutoff; the continuum limit is q_cut→∞ with fine n_q).
         from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
         xs = np.array([float(x) for x in spatial_grid])
-        m_modes = [(float(np.real(A)), float(np.real(B)), float(np.real(N)))
-                   for (A, B, N) in modes]
+        m_modes = [(float(np.real(mu)), float(np.real(D)), float(np.real(kap)))
+                   for (mu, D, kap) in modes]
         for it, tau in enumerate(tau_grid):
             at = abs(float(tau))
             Cq = np.zeros_like(qg)
-            for (A, B, N) in m_modes:
-                m = A + B * qg * qg
-                Cq += (N / m) * np.exp(-m * at)
+            for (mu, D, kap) in m_modes:
+                m = mu + D * qg * qg
+                Cq += (kap / m) * np.exp(-m * at)
             C[it, :] = radial_inverse_ft(qg, Cq, xs, d)
 
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
@@ -814,7 +814,7 @@ def compute_spatial_correlator_generic(
         diagram_correlator, diagram_correlator_x)
 
     if verbose:
-        print('[5/7] (spatial) Certify tree modes (A,B,N) vs the shared-pipeline '
+        print('[5/7] (spatial) Certify tree modes (mu,D,kap) vs the shared-pipeline '
               'C(q,τ) at sample momenta (mode-structure check)...')
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
@@ -824,8 +824,8 @@ def compute_spatial_correlator_generic(
         raise NotImplementedError(
             'generic spatial 1-loop v1 supports a single-mode (single-field) '
             'tree only.')
-    A0, B0, N0 = modes[0]
-    A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
+    mu0, D0, kap0 = modes[0]
+    mu0 = float(np.real(mu0)); D0 = float(np.real(D0)); kap0 = float(np.real(kap0))
 
     # Derivative/∇ interaction vertices (operator-IR theories, e.g. Model-B
     # conserved ∇²(φ²)) deposit a momentum-space FORM FACTOR Rcal(ℓ,q) on the loop.
@@ -942,7 +942,7 @@ def compute_spatial_correlator_generic(
         print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·𝒮(Γ) '
               f'∫dᵈℓ(Symanzik) ∫dt(causal chambers) → ret+adv → q→x FT '
               f'[{len(live)} live diagram(s), q-grid n_q={n_q}, '
-              f'(A,B,N)=({A0:.4f},{B0:.4f},{N0:.4f})]...')
+              f'(mu,D,kap)=({mu0:.4f},{D0:.4f},{kap0:.4f})]...')
 
     d = int(prop.get('spatial_dim', 1))
     taus = np.asarray(tau_grid, dtype=float)
@@ -1044,7 +1044,7 @@ def compute_spatial_correlator_generic(
         for _di, (dd, pv, ff, el, nt, ns) in enumerate(live_g):
             for it, tau in enumerate(taus):
                 dCx_by_ell[el][it, :] += diagram_correlator_x(
-                    dd, pv, xg, float(tau), A0, B0, spatial_dim=d,
+                    dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
                     n_t=nt, n_s=ns, formfactor=ff,
                     method=_integrator, mc_n=_mc_n, mc_seed=1234 + _di)
     else:
@@ -1065,7 +1065,7 @@ def compute_spatial_correlator_generic(
             def _one(task):                           # one diagram's column at one q
                 iq, q, dd, pv, ff, el, nt, ns = task
                 col = np.array(
-                    [diagram_correlator(dd, pv, q, float(tau), A0, B0, spatial_dim=d,
+                    [diagram_correlator(dd, pv, q, float(tau), mu0, D0, spatial_dim=d,
                                         n_t=nt, n_s=ns, formfactor=ff) for tau in taus],
                     dtype=complex)
                 return iq, el, col
@@ -1083,7 +1083,7 @@ def compute_spatial_correlator_generic(
                 for it, tau in enumerate(taus):
                     for dd, pv, ff, el, nt, ns in live_g:
                         dC_by_ell[el][iq, it] += diagram_correlator(
-                            dd, pv, float(q), float(tau), A0, B0, spatial_dim=d,
+                            dd, pv, float(q), float(tau), mu0, D0, spatial_dim=d,
                             n_t=nt, n_s=ns, formfactor=ff)
 
         def _ft_to_x(dC_qt):                          # (n_q,n_τ) → (n_τ,n_x) real-space δC
@@ -1122,7 +1122,7 @@ def compute_spatial_correlator_generic(
     info = dict(tree_info)
     info.update({'one_loop': max_ell >= 1, 'generic': True,
                  'full_integrator': True, 'max_ell': max_ell,
-                 'A_tree': A0, 'mu': A0, 'D': B0, 'T': N0,
+                 'A_tree': mu0, 'mu': mu0, 'D': D0, 'T': kap0,
                  'vertex_mode': ('+'.join(sorted({t['mode'] for t in vterms_sym}))
                                  if vterms_sym else None),
                  'max_abs_imag': max_abs_imag, 'imag_frac': max_abs_imag / ref,

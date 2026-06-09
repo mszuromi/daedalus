@@ -646,7 +646,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     Returns
     -------
     dict with keys:
-        'M', 'scalar_prefactor', 'vertex_time_factors',
+        'Scal', 'scalar_prefactor', 'vertex_time_factors',
         'source_time_info', 'is_stationary'
     """
     prefixes = list(time_dep_params or [])
@@ -712,7 +712,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     )
 
     return {
-        'M': Scal,                 # key 'M' kept (interface); value is 𝒮(Γ)
+        'Scal': Scal,
         'scalar_prefactor': scalar_prefactor,
         'vertex_time_factors': vertex_time_factors,
         'source_time_info': source_time_info,
