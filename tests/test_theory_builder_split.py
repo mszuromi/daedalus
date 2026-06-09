@@ -140,3 +140,126 @@ def test_serializer_phase1_round_trip():
         assert any(f.get('spatial_dim') for f in spec2['physical_fields'])
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# ── Dyson policy authoring (D-4, docs/dyson_duhamel_integration_plan.md) ──
+
+def _spatial_dyson(**dyson_calls):
+    """Spatial fixture with optional .dyson_order(N)/.reference_diffusion(D0)
+    chained before .build()."""
+    b = (SpatialTheoryBuilder('lin_diff')
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('T', default=1.0, domain='positive')
+         .set_action_text('phit*((Dt+mu-D*Laplacian)*phi) - T*phit^2')
+         .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0'))
+    if 'order' in dyson_calls:
+        b = b.dyson_order(dyson_calls['order'])
+    if 'D0' in dyson_calls:
+        b = b.reference_diffusion(dyson_calls['D0'])
+    return b.build()
+
+
+def test_dyson_policy_lands_in_model():
+    """.dyson_order(2) + .reference_diffusion(0.5) land in model['spatial'];
+    never calling them ⇒ {'mode': 'off'} and no reference_diffusion key."""
+    m = _spatial_dyson(order=2, D0=0.5)
+    assert m['spatial']['dyson'] == {'mode': 'fixed', 'order': 2}
+    assert m['spatial']['reference_diffusion'] == 0.5
+
+    m0 = _spatial_dyson()
+    assert m0['spatial']['dyson'] == {'mode': 'off'}
+    assert 'reference_diffusion' not in m0['spatial']
+
+
+def test_dyson_policy_validation():
+    b = SpatialTheoryBuilder('s')
+    # v2+ policies raise NotImplementedError naming the mode
+    for v2_mode in ('auto', 'adaptive', 'resum'):
+        with pytest.raises(NotImplementedError, match=v2_mode):
+            b.dyson(mode=v2_mode)
+    # unknown mode is a plain ValueError
+    with pytest.raises(ValueError, match='unrecognized'):
+        b.dyson(mode='bogus')
+    # mode='fixed' requires an int order >= 0
+    with pytest.raises(ValueError, match='order'):
+        b.dyson_order(-1)
+    with pytest.raises(ValueError, match='order'):
+        b.dyson(mode='fixed')
+    # reference_diffusion must be > 0
+    with pytest.raises(ValueError, match='D0'):
+        b.reference_diffusion(0.0)
+    with pytest.raises(ValueError, match='D0'):
+        b.reference_diffusion(-1.0)
+
+
+def test_dyson_methods_absent_on_temporal_builder():
+    """The Dyson surface is spatial-only — TemporalTheoryBuilder doesn't
+    expose it (so calling it is an AttributeError)."""
+    for m in ('dyson', 'dyson_order', 'reference_diffusion'):
+        assert not hasattr(TemporalTheoryBuilder, m), \
+            f'TemporalTheoryBuilder should not expose spatial method {m!r}'
+        assert not hasattr(_BaseTheoryBuilder, m)
+    assert hasattr(SpatialTheoryBuilder, 'dyson_order')
+    assert hasattr(TheoryBuilder, 'dyson_order')
+
+
+def test_dyson_on_non_spatial_shim_raises():
+    """The back-compat TheoryBuilder exposes .dyson_order, but build()
+    rejects the policy when no physical field is spatial (mirrors the
+    .boundary()-on-non-spatial validation)."""
+    with pytest.raises(ValueError, match=r'\.dyson\(\)'):
+        (TheoryBuilder('ou')
+         .physical_field('x')
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('T', default=1.0, domain='positive')
+         .set_action_text('xt*((Dt+mu)*x) - T*xt^2')
+         .equation(lhs='(Dt+mu)*x', rhs='0')
+         .dyson_order(2).build())
+
+
+def test_serializer_dyson_round_trip():
+    """Serializer D-4: spec['dyson'] / spec['reference_diffusion'] render as
+    .dyson_order(N) / .reference_diffusion(X); load_spec_from_file recovers
+    both; and the rendered file BUILDS with the policy in model['spatial']."""
+    import shutil
+    import tempfile
+    from pipeline.theory_serialize import load_spec_from_file, render_theory_file
+
+    spec = {
+        'name': 'lin_diff_dyson',
+        'physical_fields': [{'name': 'phi', 'spatial_dim': 1}],
+        'parameters': [
+            {'name': 'mu', 'default': 1.0, 'domain': 'positive'},
+            {'name': 'D',  'default': 1.0, 'domain': 'positive'},
+            {'name': 'T',  'default': 1.0, 'domain': 'positive'},
+        ],
+        'action_text': 'phit*((Dt+mu-D*Laplacian)*phi) - T*phit^2',
+        'equations': [{'lhs': '(Dt+mu-D*Laplacian)*phi', 'rhs': '0',
+                       'population': None}],
+        'boundary': {'mode': 'infinite'},
+        'initial': {'mode': 'stationary'},
+        'dyson': {'mode': 'fixed', 'order': 2},
+        'reference_diffusion': 0.5,
+    }
+    src = render_theory_file(spec)
+    assert '.dyson_order(2)' in src
+    assert '.reference_diffusion(0.5)' in src
+
+    d = tempfile.mkdtemp()
+    try:
+        p = os.path.join(d, 'dy.theory.py')
+        with open(p, 'w') as fh:
+            fh.write(src)
+        spec2 = load_spec_from_file(p)
+        assert spec2['dyson'] == {'mode': 'fixed', 'order': 2}
+        assert spec2['reference_diffusion'] == 0.5
+        # the rendered file BUILDS (exec + build()) with the policy wired
+        ns: dict = {}
+        exec(compile(src, p, 'exec'), ns)
+        model = ns['build']()
+        assert model['spatial']['dyson']['order'] == 2
+        assert model['spatial']['reference_diffusion'] == 0.5
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

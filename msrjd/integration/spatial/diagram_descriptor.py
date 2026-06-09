@@ -48,13 +48,22 @@ class CEdge:
     """One C-stack edge.  ``a`` = loop-momentum coefficients (over the diagram's
     loop momenta), ``b`` = external-``q`` coefficients; ``kind`` ∈ {'R','C'};
     ``u, v`` are the endpoint vertex ids (``u == v`` ⇒ a self-loop, i.e. a
-    tadpole loop).  ``external`` is True iff the edge touches an external leaf."""
+    tadpole loop).  ``external`` is True iff the edge touches an external leaf.
+
+    ``fpairs`` (coupled-field extension, Dyson 3c): the propagator matrix
+    indices of the underlying ``G_R`` half-edge(s), from
+    ``td.propagator_indices`` — each entry is ``(resp_idx, phys_idx)``.
+    For an ``R`` edge: ``((ri, pi),)``.  For a ``C`` edge:
+    ``((ri_u, pi_u), (ri_v, pi_v))`` — the half attached to endpoint ``u``
+    first, then the half attached to ``v``.  Empty tuple for hand-built
+    descriptors; the single-field paths never read it."""
     a: tuple
     b: tuple
     kind: str
     u: int
     v: int
     external: bool
+    fpairs: tuple = ()
 
     def couples_loop(self):
         """True iff this edge carries any loop momentum (``a`` not all zero) —
@@ -148,9 +157,12 @@ def diagram_to_cstack(td) -> CStackDiagram:
             used.add(e)
         a, b = ec[inc[0]]                                  # sign-invariant downstream
         ext = any(p in leaf_set for p in endpoints)
+        pidx = getattr(td, 'propagator_indices', None) or {}
+        fp = (pidx.get(inc[0]), pidx.get(inc[1]))
         out_edges.append(CEdge(a=tuple(a), b=tuple(b), kind='C',
                                u=int(endpoints[0]), v=int(endpoints[1]),
-                               external=ext))
+                               external=ext,
+                               fpairs=(fp if None not in fp else ())))
 
     # 2) every remaining (G_R) edge → an R edge
     for e in edges:
@@ -159,8 +171,10 @@ def diagram_to_cstack(td) -> CStackDiagram:
         u, v, _lbl = e
         a, b = ec[e]
         ext = (u in leaf_set) or (v in leaf_set)
+        pr = (getattr(td, 'propagator_indices', None) or {}).get(e)
         out_edges.append(CEdge(a=tuple(a), b=tuple(b), kind='R',
-                               u=int(u), v=int(v), external=ext))
+                               u=int(u), v=int(v), external=ext,
+                               fpairs=((tuple(pr),) if pr is not None else ())))
 
     return CStackDiagram(
         internal_vertices=tuple(sorted(interaction)),

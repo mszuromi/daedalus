@@ -199,6 +199,85 @@ class _SpatialMethods:
         self._initial = {'mode': mode, **params}
         return self
 
+    def dyson(self, mode: str = 'fixed', order: int = None, tol=None):
+        """Declare the Dyson–Duhamel truncation policy for coupled
+        unequal-diffusion theories (``𝒟̂ ≠ 0``).
+
+        Parameters
+        ----------
+        mode : {'off', 'fixed'}
+            ``'off'`` — no Dyson dressing (the default when ``.dyson``
+            is never called); only the scalar-``D₀`` reference
+            propagator runs (exact iff ``𝒟̂ = 0``).
+            ``'fixed'`` — truncate every retarded edge's Dyson series
+            at a user-picked order ``N`` (the v1 policy; step D-4 in
+            ``docs/dyson_duhamel_integration_plan.md``).  Requires
+            ``order``.
+        order : int ≥ 0, required for ``mode='fixed'``
+            Truncation order ``N`` — each retarded edge sums Dyson
+            insertions ``n = 0…N``.
+        tol : float, optional
+            Reserved for the v2+ tolerance policies; unused in v1.
+
+        The policy is a MODEL property — stored as
+        ``model['spatial']['dyson']`` and read by the propagator
+        builder / pipeline_bridge, never a ``compute_cumulants``
+        kwarg (see the plan doc §"Keeping compute_cumulants simple").
+        """
+        mode = str(mode)
+        if mode in ('auto', 'adaptive', 'resum'):
+            raise NotImplementedError(
+                f"dyson(mode={mode!r}): {mode!r} is a v2+ policy "
+                f"('auto' = auto-tol, 'adaptive' = per-edge adaptive, "
+                f"'resum' = resummed/exact — see the policy table in "
+                f"docs/dyson_duhamel_integration_plan.md).  v1 supports "
+                f"only 'off' and 'fixed'.")
+        if mode not in ('off', 'fixed'):
+            raise ValueError(
+                f"dyson(mode={mode!r}): unrecognized policy; v1 "
+                f"supports 'off' and 'fixed' (see "
+                f"docs/dyson_duhamel_integration_plan.md).")
+        if mode == 'fixed':
+            if isinstance(order, bool) or not isinstance(order, int) \
+                    or order < 0:
+                raise ValueError(
+                    f"dyson(mode='fixed', order={order!r}): a "
+                    f"truncation order int >= 0 is required (each "
+                    f"retarded edge sums Dyson insertions n = 0…order).")
+            self._dyson = {'mode': mode, 'order': int(order)}
+        else:
+            self._dyson = {'mode': mode}
+        return self
+
+    def dyson_order(self, order: int):
+        """Sugar for ``.dyson(mode='fixed', order=order)`` — the v1
+        fixed-truncation Dyson policy (step D-4 in
+        ``docs/dyson_duhamel_integration_plan.md``)."""
+        return self.dyson(mode='fixed', order=order)
+
+    def reference_diffusion(self, D0):
+        """Declare the scalar reference diffusion ``D₀`` for the
+        ``𝒟 = D₀·I + 𝒟̂`` split underlying the Dyson–Duhamel series
+        (see ``docs/dyson_duhamel_integration_plan.md``).
+
+        Parameters
+        ----------
+        D0 : float > 0
+            Reference diffusion constant.  When never declared, the
+            propagator builder picks its own default (mean / min
+            eigenvalue of ``𝒟``).  Convergence needs ``‖𝒟̂‖/D₀``
+            small — a bad ``D₀`` choice diverges.
+
+        Stored as ``model['spatial']['reference_diffusion']``.
+        """
+        D0 = float(D0)
+        if not D0 > 0:
+            raise ValueError(
+                f"reference_diffusion(D0={D0!r}): D0 must be > 0 "
+                f"(the scalar reference in the 𝒟 = D0·I + 𝒟̂ split).")
+        self._reference_diffusion = D0
+        return self
+
 
 class _TemporalMethods:
     """Temporal-only authoring methods (mixed into TemporalTheoryBuilder
@@ -685,6 +764,17 @@ class _BaseTheoryBuilder:
         # None until declared; emitted as ``model['initial']``.  v1
         # supports {'stationary'}.
         self._initial: Optional[dict] = None
+        # Dyson–Duhamel truncation policy (``.dyson(...)`` /
+        # ``.dyson_order(N)``).  None until declared; emitted as
+        # ``model['spatial']['dyson']`` (default ``{'mode': 'off'}``).
+        # Lives on the base — like ``_boundary`` — so ``build()`` can
+        # read it on ANY builder and reject it on non-spatial
+        # theories.  See docs/dyson_duhamel_integration_plan.md (D-4).
+        self._dyson: Optional[dict] = None
+        # Scalar reference diffusion D₀ (``.reference_diffusion(D0)``).
+        # None until declared; emitted as
+        # ``model['spatial']['reference_diffusion']`` when set.
+        self._reference_diffusion: Optional[float] = None
 
     # ── Population declarations ───────────────────────────────────
 
@@ -1772,6 +1862,21 @@ class _BaseTheoryBuilder:
 
         initial_block = dict(self._initial) if self._initial is not None else None
 
+        # Dyson policy / reference diffusion on a non-spatial theory is
+        # a declaration error (mirrors the .boundary() check above).
+        if self._dyson is not None and not is_spatial:
+            raise ValueError(
+                f'TheoryBuilder("{self.name}").build(): .dyson() '
+                f'was declared but no physical field is spatial '
+                f'(set spatial_dim≥1 on a field or call '
+                f'.spatial_dim(d)).')
+        if self._reference_diffusion is not None and not is_spatial:
+            raise ValueError(
+                f'TheoryBuilder("{self.name}").build(): '
+                f'.reference_diffusion() was declared but no physical '
+                f'field is spatial (set spatial_dim≥1 on a field or '
+                f'call .spatial_dim(d)).')
+
         model = {
             'name':            self.name,
             'populations':     list(self.populations),    # heterogeneous metadata
@@ -1839,15 +1944,26 @@ class _BaseTheoryBuilder:
                     if int(getattr(f, 'spatial_dim', 0) or 0) > 0
                 ],
             }
+            # Dyson policy defaults to {'mode': 'off'} when .dyson()
+            # was never declared (scalar-D₀ reference propagator only;
+            # exact iff 𝒟̂ = 0).  See
+            # docs/dyson_duhamel_integration_plan.md (D-4).
+            model['spatial']['dyson'] = (dict(self._dyson) if self._dyson
+                                         else {'mode': 'off'})
+            # Reference diffusion D₀ is emitted only when declared —
+            # absent means "let the propagator builder pick".
+            if self._reference_diffusion is not None:
+                model['spatial']['reference_diffusion'] = \
+                    self._reference_diffusion
             # Boundary defaults to 'infinite' when the theory is spatial
             # but no .boundary() was declared.
             model['boundary'] = boundary_block or {'mode': 'infinite'}
             # Initial defaults to 'stationary'.
             model['initial'] = initial_block or {'mode': 'stationary'}
         else:
-            # Defensive: a .boundary()/.initial() on a non-spatial
-            # theory already raised in the resolution block above, so
-            # there is nothing to emit here.
+            # Defensive: a .boundary()/.dyson()/.reference_diffusion()
+            # on a non-spatial theory already raised in the resolution
+            # block above, so there is nothing to emit here.
             pass
         return model
 

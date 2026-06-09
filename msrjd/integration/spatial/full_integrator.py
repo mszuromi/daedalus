@@ -620,6 +620,206 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     return complex(total) if formfactor is not None else float(np.real(total))
 
 
+def spectral_rows(descr):
+    """The expanded ROW list for the coupled-field (Dyson 3c) kinematic.
+
+    Each ``R`` edge is one retarded segment (one row).  Each ``C`` edge is
+    **two glued retarded segments** sharing one Schwinger ``σ`` (the noise-
+    source time integrated out): with endpoint times ``t_u, t_v`` and
+    ``s = min(t_u,t_v) − σ`` the half durations are
+
+        w_u = t_u − s = relu(t_u − t_v) + σ        (mass m_u),
+        w_v = t_v − s = relu(t_v − t_u) + σ        (mass m_v),
+
+    each carrying the SAME routed momentum (rows duplicated), so the edge's
+    heat-kernel weight is ``D(|Δt|+2σ)`` and the σ integral produces the
+    Lyapunov denominator ``1/(m_u+m_v+2D|k|²)``.  Uniform-mass check:
+    ``∫dσ e^{−m(|Δt|+2σ)} = e^{−m|Δt|}/(2m)`` — exactly ``2^{−1}`` per ``C``
+    edge of the single-field one-segment convention, so a coupled diagram is
+    ``pv·Σ_assign W·I_spec`` with **no** ``2^{−n_C}`` (the enumeration ``pv``
+    keeps its ``2T``-convention noise coefficients).
+
+    Returns ``[(edge_index, edge, half)]`` with ``half ∈ {'R','Cu','Cv'}``.
+    """
+    rows = []
+    for ei, e in enumerate(descr.edges):
+        if e.kind == 'R':
+            rows.append((ei, e, 'R'))
+        else:
+            rows.append((ei, e, 'Cu'))
+            rows.append((ei, e, 'Cv'))
+    return rows
+
+
+def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
+                               spatial_dim=1, W=None, n_t=22, n_s=24, xs=None,
+                               mu_scale=None):
+    """Coupled-field kinematic integral with PER-SEGMENT masses (Dyson 3c).
+
+    The spectral-assignment companion of :func:`diagram_kinematic`: same
+    causal-chamber quadrature, same Symanzik momentum reduction, but the mass
+    factor is ``∏_rows e^{−m_r w_r}`` over the :func:`spectral_rows` expansion
+    (R edges one row; C edges two glued retarded segments sharing a σ), with a
+    **batch of mass assignments** evaluated against ONE shared quadrature/
+    Symanzik pass — the ``N_modes^{labels}`` spectral sum costs almost nothing
+    beyond the single-mass integral.
+
+    Parameters
+    ----------
+    mass_table : (n_rows, n_assign) complex array
+        Column ``j`` = the per-row masses ``m_α`` of spectral assignment ``j``
+        (rows ordered as :func:`spectral_rows`).  Complex eigenvalues are
+        allowed (conjugate pairs; the driver's weighted sum is real).
+    xs : None | array
+        ``None`` → return ``(n_assign,)`` complex values at external ``q_vec``;
+        array → analytic heat-kernel IFT, return ``(n_assign, n_x)`` complex.
+
+    Plain vertices only (no form factor), deterministic grid only — the
+    coupled v1 surface.  The single-field/diagonal path is untouched
+    (:func:`diagram_kinematic`); this function is additive.
+    """
+    edges = list(descr.edges)
+    internal = list(descr.internal_vertices)
+    n_V = len(internal)
+    idx = {v: i for i, v in enumerate(internal)}
+    n_C = sum(1 for e in edges if e.kind == 'C')
+    rows = spectral_rows(descr)
+    n_rows = len(rows)
+    a = np.array([rows[r][1].a for r in range(n_rows)],
+                 dtype=float).reshape(n_rows, -1)
+    b = np.array([rows[r][1].b for r in range(n_rows)],
+                 dtype=float).reshape(n_rows, -1)
+    mass_table = np.asarray(mass_table, dtype=complex)
+    if mass_table.ndim == 1:
+        mass_table = mass_table[:, None]
+    if mass_table.shape[0] != n_rows:
+        raise ValueError(
+            f'diagram_kinematic_spectral: mass_table has {mass_table.shape[0]} '
+            f'rows, expected {n_rows} (= n_R + 2·n_C segments).')
+    n_assign = mass_table.shape[1]
+    re_min = float(np.min(mass_table.real))
+    if not re_min > 0.0:
+        raise ValueError(
+            f'diagram_kinematic_spectral: all segment masses need Re m > 0 '
+            f'(stability); got min Re m = {re_min}.')
+    if mu_scale is None:
+        mu_scale = re_min                              # slowest decay sets scales
+    mu_scale = float(min(mu_scale, re_min))            # never narrower than needed
+
+    if W is None:
+        W = 22.0 / mu_scale
+    ext_t = list(external_times.values())
+    me, mn = max(ext_t), min(ext_t)
+    lo, hi = mn - W, me + 3.0 / mu_scale
+
+    # retarded poset / leaf bounds — identical to diagram_kinematic
+    internal_R = []
+    s_up = [hi] * n_V
+    s_lo = [lo] * n_V
+    for e in edges:
+        if e.kind != 'R':
+            continue
+        ui, vi = e.u in idx, e.v in idx
+        if ui and vi:
+            internal_R.append((idx[e.u], idx[e.v]))
+        elif ui:
+            s_up[idx[e.u]] = min(s_up[idx[e.u]], external_times[e.v])
+        elif vi:
+            s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
+
+    # σ grid: GEOMETRIC weights only (the per-segment e^{−mσ} decay lives in
+    # the complex amplitude, not folded into the weights as in the uniform path)
+    s_cap = 32.0 / mu_scale
+    xv, wv = np.polynomial.legendre.leggauss(n_s)
+    vv = 0.5 * (xv + 1.0)
+    s_nodes = s_cap * vv * vv
+    s_w = wv * s_cap * vv                              # dσ = 2·s_cap·v·(dv/2)
+    if n_C > 0:
+        sg = np.meshgrid(*([s_nodes] * n_C), indexing='ij')
+        swg = np.meshgrid(*([s_w] * n_C), indexing='ij')
+        s_flat = [g.ravel() for g in sg]
+        s_wflat = np.ones(s_flat[0].size)
+        for g in swg:
+            s_wflat = s_wflat * g.ravel()
+    else:
+        s_flat, s_wflat = [], np.array([1.0])
+    Ps = s_wflat.size
+
+    xs_arr = None if xs is None else np.asarray(xs, dtype=float)
+    L = a.shape[1]
+    total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
+             if xs_arr is not None else np.zeros(n_assign, dtype=complex))
+    chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    for order in chambers:
+        # deterministic causal-chamber product grid (as diagram_kinematic)
+        placed = {}
+        wt = np.array([1.0])
+        later = None
+        for vi in reversed(order):
+            Pt = wt.size
+            upper = np.full(Pt, s_up[vi]) if later is None \
+                else np.minimum(s_up[vi], later)
+            lower = np.full(Pt, s_lo[vi])
+            tnode, wnode = _gl_on(lower, upper, n_t)
+            for k in placed:
+                placed[k] = np.repeat(placed[k], n_t)
+            placed[vi] = tnode.ravel()
+            wt = (wt[:, None] * wnode).ravel()
+            later = placed[vi]
+        Pt = wt.size
+        P = Pt * Ps
+        tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
+        for i, v in enumerate(internal):
+            tvals[v] = np.repeat(placed[idx[v]], Ps)
+        sig = [np.tile(sf, Pt) for sf in s_flat]
+        wfull = np.repeat(wt, Ps) * np.tile(s_wflat, Pt)
+
+        # per-ROW durations (R segment; Cu/Cv glued halves share the C edge's σ)
+        w_rows = np.empty((P, n_rows))
+        ci_of = {}
+        ci = 0
+        for ei, e in enumerate(edges):
+            if e.kind == 'C':
+                ci_of[ei] = ci
+                ci += 1
+        for r, (ei, e, half) in enumerate(rows):
+            tu, tv = tvals[e.u], tvals[e.v]
+            if half == 'R':
+                w_rows[:, r] = np.maximum(tv - tu, 1e-12)
+            elif half == 'Cu':
+                w_rows[:, r] = np.maximum(tu - tv, 0.0) + sig[ci_of[ei]]
+            else:                                      # 'Cv'
+                w_rows[:, r] = np.maximum(tv - tu, 0.0) + sig[ci_of[ei]]
+
+        # batched mass amplitude: (P, n_assign), shared Symanzik per chamber
+        amp = wfull[:, None] * np.exp(-(w_rows @ mass_table))
+
+        if xs_arr is not None:                         # analytic heat-kernel IFT
+            if L == 0:                                 # tree: Bcal = D·Σ w_r b_r²
+                Bcal_k = D * (w_rows @ (b[:, 0] ** 2))
+                pref = np.ones(P)
+                okk = Bcal_k > 1e-300
+            else:
+                pref, Bcal_k, okk = _symanzik_kernel_batch(a, b, w_rows, D,
+                                                           spatial_dim)
+            good = okk & (Bcal_k > 1e-300)
+            if np.any(good):
+                Bcal_g = Bcal_k[good]
+                hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
+                      * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
+                wamp = amp[good, :] * pref[good][:, None]
+                total = total + np.einsum('pj,px->jx', wamp, hk)
+        else:
+            if L == 0:                                 # tree: e^{−D q² Σ w_r b_r²}
+                qv = float(q_vec[0])
+                momfac = np.exp(-D * (qv * qv) * (w_rows @ (b[:, 0] ** 2)))
+            else:
+                momfac = _momentum_factor_batch(a, b, w_rows, q_vec, D,
+                                                spatial_dim)
+            total = total + amp.T @ momfac
+    return total
+
+
 def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
                   spatial_dim=1, **kw):
     """One diagram's contribution to the cumulant: ``2^{−n_C}·prefactor·kinematic``.

@@ -466,6 +466,18 @@ def render_theory_file(spec: dict) -> str:
         line = f'        .initial({_py_repr(ic["mode"])}'
         out.append(line + (', ' + ic_kwargs if ic_kwargs else '') + ')')
 
+    # Dyson–Duhamel policy + reference diffusion (spatial, step D-4 in
+    # docs/dyson_duhamel_integration_plan.md).  Emitted only for a
+    # non-'off' policy so theories on the default stay textually
+    # quiet.  v1 has only the fixed-order policy, rendered through the
+    # ``.dyson_order(N)`` sugar.
+    dy = spec.get('dyson')
+    if dy and dy.get('mode') and dy.get('mode') != 'off':
+        out.append(f'        .dyson_order({int(dy.get("order", 0))})')
+    rd = spec.get('reference_diffusion')
+    if rd is not None:
+        out.append(f'        .reference_diffusion({_py_repr(float(rd))})')
+
     out.append('        .build()')
     out.append('    )')
     out.append('')
@@ -789,6 +801,37 @@ def load_spec_from_file(path: str) -> dict:
                 if k != 'mode':
                     entry[k] = v
             spec['initial'] = entry
+
+        elif method == 'dyson':
+            # ``.dyson(mode=..., order=...)`` — Dyson–Duhamel policy
+            # (D-4 in docs/dyson_duhamel_integration_plan.md).  Mode
+            # positional or kwarg (builder default 'fixed'); order is
+            # the second positional or kwarg.  Absent ⇒ no spec key
+            # (build() then defaults to {'mode': 'off'}).
+            mode = (kw.get('mode') if 'mode' in kw
+                    else (args[0] if args else 'fixed'))
+            entry = {'mode': mode or 'fixed'}
+            order = (kw.get('order') if 'order' in kw
+                     else (args[1] if len(args) >= 2 else None))
+            if order is not None:
+                entry['order'] = int(order)
+            spec['dyson'] = entry
+
+        elif method == 'dyson_order':
+            # Sugar: ``.dyson_order(N)`` == ``.dyson(mode='fixed',
+            # order=N)`` — the canonical emission for the v1 policy.
+            order = args[0] if args else kw.get('order')
+            spec['dyson'] = {
+                'mode':  'fixed',
+                'order': int(order) if order is not None else 0,
+            }
+
+        elif method == 'reference_diffusion':
+            # ``.reference_diffusion(D0)`` — scalar reference for the
+            # 𝒟 = D0·I + 𝒟̂ split.  Absent ⇒ no spec key.
+            d0 = args[0] if args else kw.get('D0')
+            if d0 is not None:
+                spec['reference_diffusion'] = float(d0)
 
         elif method == 'build':
             continue
