@@ -440,9 +440,11 @@ def compute_cumulants(
                 tau_grid, spatial_grid_arr, verbose=verbose, stage_headers=True,
             )
         if verbose:
+            _cmr = sp_info.get("certify_max_rel")
+            _cmr_s = f'{_cmr:.1e}' if _cmr is not None else 'n/a (coupled driver)'
             print(f'[spatial] done — C(x,τ) ready; tree-mode certified='
                   f'{sp_info.get("pipeline_certified")} '
-                  f'(max rel {sp_info.get("certify_max_rel"):.1e})')
+                  f'(max rel {_cmr_s})')
         # x=0 slice as the conventional C_tau (matches the time-only
         # API's C_tau shape).
         x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))

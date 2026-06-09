@@ -44,6 +44,7 @@ retiring the bespoke short-circuit (Stage B).
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 from sage.all import SR
@@ -496,13 +497,52 @@ def compute_coupled_tree_correlator(
             Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qs])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
-    else:
+    elif os.environ.get('SPATIAL_FORCE_NUMERICAL_FT'):
+        # cross-check escape hatch: brute cosine-FT on a finite q-grid (the
+        # pre-analytic path; q_cut truncation error ~ N_ij/(π·D₀·q_cut))
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
         dq = qg[1] - qg[0]
         for it, tau in enumerate(taus):
             Cq = np.array([coupled_two_point(ref, N, q * q, tau)[i, j] for q in qg])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / np.pi) * np.sum(np.cos(qg * x) * Cq) * dq
+    else:
+        # ANALYTIC spectral IFT (exact — no q-grid, no q_cut truncation).
+        # C(q,τ≥0) = Σ_{αβ} (P_α N P_βᵀ)/(m_α+m_β+2D₀q²)·e^{−(m_α+D₀q²)τ}; each
+        # (α,β) term is a single-mode correlator with denominator mass
+        # μ_d=(m_α+m_β)/2 and an extra factor e^{−(m_α−μ_d)τ}:
+        #   IFT = (P_αNP_βᵀ)_{ij}·e^{−(m_α−μ_d)τ}·free_two_point(μ_d, D₀, ½; x, τ).
+        # τ<0 uses C_ij(−τ)=C_ji(τ).  free_two_point handles complex μ_d (the
+        # erf/mpmath path); conjugate (α,β)↔(β,α)* pairs make the sum real.
+        from msrjd.integration.spatial.spectral_propagator import (
+            spectral_projectors as _spectral_projectors)
+        eig, proj = _spectral_projectors(ref.M)
+        nf = len(eig)
+        PNP = {(a_, b_): proj[a_] @ np.asarray(N, float) @ proj[b_].T
+               for a_ in range(nf) for b_ in range(nf)}
+        _f2p_cache = {}
+
+        def _f2p(mu_d, x, at):
+            key = (complex(mu_d), float(x), float(at))
+            if key not in _f2p_cache:
+                _f2p_cache[key] = free_two_point(mu_d, ref.D0, 0.5,
+                                                 float(x), float(at))
+            return _f2p_cache[key]
+
+        for it, tau in enumerate(taus):
+            at = abs(float(tau))
+            ii, jj = (i, j) if tau >= 0 else (j, i)
+            for ix, x in enumerate(xs):
+                val = 0.0 + 0.0j
+                for a_ in range(nf):
+                    for b_ in range(nf):
+                        w = PNP[(a_, b_)][ii, jj]
+                        if abs(w) < 1e-300:
+                            continue
+                        mu_d = 0.5 * (eig[a_] + eig[b_])
+                        val += (w * np.exp(-(eig[a_] - mu_d) * at)
+                                * _f2p(mu_d, x, at))
+                C[it, ix] = val
 
     info = {'coupled': True, 'M': M, 'D0': ref.D0, 'Dhat': ref.Dhat, 'N': N,
             'legs': (i, j), 'bc_mode': bc_mode, 'L': L, 'spatial_dim': d}
@@ -905,6 +945,162 @@ def _live_bubbles(records, num_params):
 # batching the q-grid into the numpy ops) is future work — must NOT use fork.
 
 
+def compute_coupled_loop_correlator(
+        ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
+        C0, tree_info, max_ell=1, verbose=False):
+    """Loop corrections for a COUPLED scalar-diffusion theory via **spectral
+    assignments** (Dyson 3c).
+
+    With scalar diffusion every edge's momentum factor is the same heat kernel
+    ``e^{−D₀k²w}`` — the Symanzik machinery is untouched.  The coupling lives in
+    the time/matrix factor: each retarded segment carries ``Σ_α P_α e^{−m_α w}``
+    (``m_α, P_α`` = eigenvalues / spectral projectors of the reaction matrix
+    ``M``).  Expanding every segment (R edge = 1; C edge = 2 glued halves,
+    :func:`full_integrator.spectral_rows`) turns one coupled diagram into a
+    weighted sum of SCALAR diagrams::
+
+        value(Γ) = pv · Σ_{{α_r}} ∏_r [P_{α_r}]_{p_r r_r} · I_spec({m_{α_r}})
+
+    where ``(r_r, p_r)`` are the segment's (response, physical) matrix indices
+    threaded through ``CEdge.fpairs``, ``pv`` is the enumeration
+    ``𝒮(Γ)·prefactor`` (noise + couplings, UNCHANGED — the two-segment C
+    representation natively produces the Lyapunov ``1/(m_α+m_β+2Dk²)`` so the
+    single-field ``2^{−n_C}`` conversion does NOT apply), and ``I_spec`` is
+    :func:`full_integrator.diagram_kinematic_spectral` (one shared quadrature/
+    Symanzik pass per diagram, all assignments batched).
+
+    Tree-level anchor: the SAME machinery applied to the tree diagram equals the
+    spectral form ``Σ_{αβ} P_α N P_βᵀ/(m_α+m_β+2Dq²)`` — the Lyapunov solution
+    (pinned in tests/test_coupled_loop.py).
+
+    Scope (v1): scalar diffusion (``𝒟̂=0``; unequal diffusion → Dyson dressing),
+    plain (non-derivative) vertices, infinite boundary, k=2.
+    Returns ``(C1_tau_x_real, info)``.
+    """
+    import itertools
+
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_kinematic_spectral, spectral_rows, external_times_2pt,
+        _is_retarded_type)
+    from msrjd.integration.spatial.spectral_propagator import spectral_projectors
+
+    M = np.asarray(tree_info['M'], dtype=float)
+    Dhat = np.asarray(tree_info['Dhat'], dtype=float)
+    D0 = float(tree_info['D0'])
+    if not np.allclose(Dhat, 0.0):
+        raise NotImplementedError(
+            'coupled loop corrections need scalar diffusion (𝒟̂=0); unequal '
+            'diffusion requires the Dyson–Duhamel per-edge dressing (D-3).')
+    if tree_info.get('bc_mode') == 'periodic':
+        raise NotImplementedError(
+            'coupled loop corrections v1: infinite boundary only.')
+    vterms_sym = getattr(ft._ns, '_operator_ir_vertex_terms', None) or []
+    if vterms_sym:
+        raise NotImplementedError(
+            'coupled loop corrections v1: plain (non-derivative) interaction '
+            'vertices only; derivative-vertex form factors are not yet combined '
+            'with the spectral-assignment sum.')
+    eig, proj = spectral_projectors(M)
+    nf = len(eig)
+    mu_scale = float(np.min(eig.real))
+    if not mu_scale > 0.0:
+        raise SpatialPropagatorError(
+            f'coupled loop: reaction matrix M has an eigenvalue with '
+            f'Re m = {mu_scale} <= 0 (unstable/critical theory).')
+
+    ring_var_names = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
+    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
+
+    if verbose:
+        print(f'[coupled-loop] spectral assignments over {nf} modes '
+              f'(eig Re: {np.round(eig.real, 4)}), max_ell={max_ell}...')
+    by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
+                                    verbose=verbose, header=None)
+    d = int(prop.get('spatial_dim', 1))
+    taus = np.asarray(tau_grid, dtype=float)
+    xg = np.asarray(spatial_grid, dtype=float)
+    dCx_by_ell = {el: np.zeros((len(taus), len(xg)), dtype=complex)
+                  for el in range(1, max_ell + 1)}
+    n_diag = n_live = 0
+    for el in range(1, max_ell + 1):
+        for td, pre in by_ell.get(el, []):
+            n_diag += 1
+            try:
+                pv = float(SR(pre).subs(base_np_sr))
+            except (TypeError, ValueError):
+                continue                              # q-dependent prefactor
+            if abs(pv) < 1e-14:
+                continue
+            dd = diagram_to_cstack(td)
+            rows = spectral_rows(dd)
+            n_rows = len(rows)
+            # per-segment (resp, phys) matrix indices from CEdge.fpairs
+            elems = np.empty((n_rows, nf), dtype=complex)
+            for r, (ei, e, half) in enumerate(rows):
+                if not e.fpairs:
+                    raise SpatialPropagatorError(
+                        'coupled loop: a C-stack edge carries no propagator '
+                        'field indices (fpairs) — descriptor built from a '
+                        'typed diagram without propagator_indices?')
+                ri_, pi_ = e.fpairs[0] if half in ('R', 'Cu') else e.fpairs[1]
+                for a_i in range(nf):
+                    elems[r, a_i] = proj[a_i][pi_, ri_]
+            assign = np.array(list(itertools.product(range(nf), repeat=n_rows)),
+                              dtype=int).T              # (n_rows, n_assign)
+            Wgt = np.prod(elems[np.arange(n_rows)[:, None], assign], axis=0)
+            keep = np.abs(Wgt) > 1e-14 * max(np.max(np.abs(Wgt)), 1e-300)
+            if not np.any(keep):
+                continue
+            n_live += 1
+            Wk = Wgt[keep]
+            mass_table = eig[assign[:, keep]]           # (n_rows, n_kept)
+            n_C = sum(1 for e_ in dd.edges if e_.kind == 'C')
+            nt, ns = (22, 24) if n_C <= 2 else (16, 14)
+            # same accuracy overrides as the single-field generic path (_grid)
+            nt = int(os.environ.get('SPATIAL_GRID_NT', nt))
+            ns = int(os.environ.get('SPATIAL_GRID_NS', ns))
+            retd = _is_retarded_type(dd)
+            for it, tau in enumerate(taus):
+                I = diagram_kinematic_spectral(
+                    dd, [0.0], external_times_2pt(dd, float(tau)), mass_table,
+                    D0, spatial_dim=d, xs=xg, n_t=nt, n_s=ns,
+                    mu_scale=mu_scale)                  # (n_kept, n_x)
+                val = pv * (Wk @ I)
+                if retd and tau != 0.0:
+                    I_m = diagram_kinematic_spectral(
+                        dd, [0.0], external_times_2pt(dd, -float(tau)),
+                        mass_table, D0, spatial_dim=d, xs=xg, n_t=nt, n_s=ns,
+                        mu_scale=mu_scale)
+                    val = val + pv * (Wk @ I_m)
+                elif retd:
+                    val = 2.0 * val
+                dCx_by_ell[el][it, :] += val
+
+    C_by_order = {0: np.array(C0, dtype=np.complex128)}
+    running = np.array(C0, dtype=np.complex128)
+    for el in range(1, max_ell + 1):
+        running = running + dCx_by_ell[el]
+        C_by_order[el] = running.copy()
+    C1 = running
+    max_abs_imag = float(np.max(np.abs(np.imag(C1))))
+    ref = float(np.max(np.abs(np.real(C1)))) or 1.0
+    info = dict(tree_info)
+    info.update({'one_loop': max_ell >= 1, 'generic': True,
+                 'full_integrator': True, 'coupled_loop': True,
+                 'max_ell': max_ell, 'n_modes': nf,
+                 'eigvals': eig, 'max_abs_imag': max_abs_imag,
+                 'imag_frac': max_abs_imag / ref,
+                 'n_diagrams': n_diag, 'n_live_diagrams': n_live,
+                 'C_by_order': {el: np.real(C).astype(float)
+                                for el, C in C_by_order.items()}})
+    return np.real(C1).astype(float), info
+
+
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q_cut=30.0, n_q=64, max_ell=1,
@@ -938,6 +1134,12 @@ def compute_spatial_correlator_generic(
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=verbose, certify=True, enum_verbose=False, stage_headers=False)
+    if tree_info.get('coupled'):
+        # Coupled (matrix-M) theory: the tree routed to the spectral-Lyapunov
+        # driver; loops go through the spectral-assignment path (Dyson 3c).
+        return compute_coupled_loop_correlator(
+            ft, model, prop, num_params, external_fields, tau_grid,
+            spatial_grid, C0, tree_info, max_ell=max_ell, verbose=verbose)
     modes = tree_info['modes']
     if len(modes) != 1:
         raise NotImplementedError(
