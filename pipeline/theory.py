@@ -115,7 +115,479 @@ class KernelSpec:
                                        # ['E', 'I'] = matrix
 
 
-class TheoryBuilder:
+class _SpatialMethods:
+    """Spatial-only authoring methods (mixed into SpatialTheoryBuilder
+    and the back-compat TheoryBuilder)."""
+
+    def spatial_dim(self, d: int):
+        """Bulk-set the spatial dimension of every physical field.
+
+        Convenience for the common single-dimension case (D1 in
+        ``docs/spatial_design_decisions_v1.md``).  Sets ``spatial_dim
+        = d`` on every physical field already declared AND establishes
+        ``d`` as the default for fields declared afterwards.  Per-field
+        ``physical_field(spatial_dim=...)`` still overrides this.
+
+        Underneath, spatial dimension is per-field (on ``FieldSpec``);
+        this method is purely an ergonomic surface.  Call it before or
+        after ``physical_field`` declarations — fields declared before
+        get retro-set, fields declared after inherit the default.
+
+        ``d = 0`` reverts to time-only.  v1 supports ``d ∈ {0, 1}``.
+        """
+        d = int(d)
+        self._default_spatial_dim = d
+        for f in self.physical_fields:
+            f.spatial_dim = d
+        return self
+
+    def boundary(self, mode: str, **params):
+        """Declare the spatial boundary condition.
+
+        Parameters
+        ----------
+        mode : {'infinite', 'periodic'}
+            ``'infinite'`` — unbounded domain (the default if
+            ``.boundary`` is never called on a spatial theory).
+            ``'periodic'`` — periodic cell; requires a ``length``.
+        length : str or float, optional (periodic only)
+            Spatial period ``L``.  A **string** names a declared
+            ``.parameter`` (sweepable; the recommended form, e.g.
+            ``length='L'`` with ``.parameter('L', default=20.0)``).
+            A **number** is an inline shortcut: ``build()`` auto-
+            creates a hidden positive parameter to back it.  See D2 in
+            ``docs/spatial_design_decisions_v1.md``.
+
+        Stored as ``model['boundary']`` and consumed by the propagator
+        builder (Phase 2/3).  Only meaningful once at least one field
+        is spatial; ``build()`` validates this.
+        """
+        mode = str(mode)
+        if mode not in ('infinite', 'periodic'):
+            raise ValueError(
+                f"boundary(mode={mode!r}): v1 supports only 'infinite' "
+                f"and 'periodic'.  Dirichlet/Neumann/Robin are v2 "
+                f"(see docs/spatial_implementation_plan.md §scope).")
+        if mode == 'periodic' and 'length' not in params:
+            raise ValueError(
+                "boundary('periodic', ...): a 'length' is required "
+                "(name a parameter, e.g. length='L', or pass a number).")
+        self._boundary = {'mode': mode, **params}
+        return self
+
+    def initial(self, mode: str = 'stationary', **params):
+        """Declare the initial condition.
+
+        Parameters
+        ----------
+        mode : {'stationary'}
+            ``'stationary'`` — the system sits at its mean-field
+            stationary state; no extra action term needed.  The only
+            mode supported in v1 (transient ICs are v1.5 — see
+            Lefèvre-Biroli §2.5's ``S_I`` term).
+
+        Stored as ``model['initial']``.  ``compute_cumulants`` (Phase 4)
+        validates that requested observables are compatible with the
+        declared IC.
+        """
+        mode = str(mode)
+        if mode != 'stationary':
+            raise ValueError(
+                f"initial(mode={mode!r}): v1 supports only 'stationary'.  "
+                f"Transient ICs are v1.5 (see "
+                f"docs/spatial_implementation_plan.md §scope).")
+        self._initial = {'mode': mode, **params}
+        return self
+
+
+class _TemporalMethods:
+    """Temporal-only authoring methods (mixed into TemporalTheoryBuilder
+    and the back-compat TheoryBuilder)."""
+
+    def population(self, name: str, *, size: int = 1,
+                   description: str = ''):
+        """Declare a population (a named index set with its own size).
+
+        Heterogeneous-population theories chain one ``.population()``
+        per group, then annotate each field / parameter / kernel with
+        the population(s) it's indexed by.  Recorded on the builder
+        but NOT yet propagated into the symbolic / diagrammatic
+        pipeline — the pipeline currently treats all populations as
+        a single combined index set of size ``sum(sizes)``.  Full
+        per-population machinery is a separate refactor.
+
+        Calling ``.population()`` overrides any previous
+        ``n_populations=`` constructor argument.
+        """
+        size = max(int(size), 1)
+        self.populations.append({
+            'name':        name,
+            'size':        size,
+            'description': description,
+        })
+        # Keep n_populations in sync so legacy lookups still see a
+        # sensible value (for now: just the count of declared pops).
+        self.n_populations = len(self.populations)
+        return self
+
+    def kernel(self, name: str, frequency_image: Callable = None,
+               sage_name: str = '', latex_name: str = '',
+               description: str = '', indexed=False,
+               indexed_by: Optional[list] = None):
+        """Declare a convolution kernel symbol.
+
+        Parameters
+        ----------
+        indexed_by : list of population names, optional
+            Heterogeneous-population annotation.  ``[]`` or ``None``
+            → scalar (one shared symbol, used as ``g``); ``['E']``
+            → per-population kernel ``g[i]``; ``['E', 'I']`` →
+            per-pair kernel ``g[i, j]``.  Overrides legacy
+            ``indexed=`` when both are given.
+        indexed : legacy
+            ``False`` / ``True`` / ``'vector'`` / ``'matrix'``.
+            Pre-heterogeneous-population flag.
+
+        Indexed kernels let each population (or pair) have its own
+        frequency image — declared via ``define_kernel(freq_image=...)``
+        with an expression that may reference ``i`` (and ``j`` for
+        matrix) and indexed parameters like ``tau_g[i, j]``.
+        """
+        if indexed_by is not None:
+            ib = list(indexed_by)
+            is_vec = (len(ib) == 1)
+            is_mat = (len(ib) == 2)
+        else:
+            ib = None
+            is_vec = (indexed in (True, 'vector'))
+            is_mat = (indexed == 'matrix')
+        self.kernels.append(KernelSpec(
+            name=name, sage_name=sage_name or f'z_{name}',
+            latex_name=latex_name or name,
+            frequency_image=frequency_image, description=description,
+            indexed=(is_vec or is_mat), matrix=is_mat,
+            indexed_by=ib,
+        ))
+        return self
+
+    def define_kernel(self, name: str, *, time_expr: str = None,
+                      freq_image: str = None, latex_name: str = '',
+                      sage_name: str = '', description: str = '',
+                      indexed=False,
+                      indexed_by: Optional[list] = None):
+        """Declare a convolution kernel via either its time-domain
+        expression OR its frequency image (or both).
+
+        At least one of ``time_expr`` / ``freq_image`` must be given.
+        ``freq_image`` is preferred because it's used directly by
+        the propagator construction; if only ``time_expr`` is given,
+        the build will warn that the FT must be supplied.
+
+        Parameters
+        ----------
+        name : str
+            Kernel symbol name (referenced in the action as ``<name>``
+            for scalar kernels, ``<name>[i]`` for vector, or
+            ``<name>[i, j]`` for matrix).
+        time_expr, freq_image : str
+            Sage-syntax expressions.  May reference ``i`` (and ``j``
+            for matrix-indexed kernels) and any declared parameter.
+            E.g. ``'1/(1 + I*omega*tau_g[i, j])'`` for a per-pair
+            exponential synapse with matrix time constants.
+        indexed : bool / 'vector' / 'matrix', default False
+            * ``False`` — single shared kernel (default).
+            * ``True`` / ``'vector'`` — per-population kernel ``g[i]``.
+            * ``'matrix'`` — per-pair kernel ``g[i, j]``.
+
+            Indexed kernels produce ``N`` (or ``N*N``) SR symbols
+            internally (``g_<i+1>``, ``g_<i+1>_<j+1>``); the
+            propagator builder substitutes each with its own
+            frequency image evaluated at the corresponding ``i`` / ``j``.
+
+        The kernel is also registered as a regular ``kernel(...)``
+        symbol for the MSR-JD framework's name resolution.
+        """
+        if time_expr is None and freq_image is None:
+            raise ValueError(
+                f"define_kernel({name!r}): supply at least one of "
+                f"time_expr= or freq_image=")
+        # Register the kernel symbol with the regular .kernel() call.
+        # ``indexed_by`` (when given) takes precedence over ``indexed=``.
+        if not any(k.name == name for k in self.kernels):
+            self.kernel(name, sage_name=sage_name or f'z_{name}',
+                        latex_name=latex_name or name,
+                        description=description, indexed=indexed,
+                        indexed_by=indexed_by)
+        spec = {
+            'name':       name,
+            'time_expr':  time_expr,
+            'freq_image': freq_image,
+            'indexed':    indexed,
+        }
+        if indexed_by is not None:
+            spec['indexed_by'] = list(indexed_by)
+        self._kernel_specs.append(spec)
+        return self
+
+    def markovianize(self, enabled: bool = True):
+        """Toggle the colored-noise → Markovian-embedding preprocessor.
+
+        Parameters
+        ----------
+        enabled : bool, default True
+            When ``True`` (default), ``.build()`` walks ``_cgf_terms``
+            and rewrites every row whose kernel matches
+            ``c·exp(-|tau|/tauc)`` into a white-noise CGF row on an
+            auxiliary OU field plus the corresponding linear filter
+            in the action.  This unblocks ``max_ell >= 1`` colored-
+            noise computations, which would otherwise hang in
+            ``scipy.nquad``.
+
+            When ``False``, no rewriting is performed and the legacy
+            smooth-residual path runs.  Use this if you've hand-coded
+            your colored kernel into the action and don't want the
+            preprocessor to touch it, or if your kernel doesn't match
+            the v1 single-Lorentzian template.
+
+        Per-row overrides
+        -----------------
+        ``declare_cgf_term(..., markovianize=True | False)`` on an
+        individual row takes precedence over this builder-level flag.
+
+        See ``docs/correlated_noise_capabilities.md`` §1.5 for the
+        complete reference (supported kernels, naming convention for
+        auxiliary fields, v2 follow-ups).
+        """
+        self._markovianize_default = bool(enabled)
+        return self
+
+    def declare_cgf_term(self, name: str,
+                         response_field: str | None = None,
+                         order: int = 2,
+                         coefficient: str = '',
+                         kernel: str | None = None,
+                         *,
+                         response_legs: list[str] | str | None = None,
+                         markovianize: bool | str | None = None):
+        """Add one term to a non-closed-form cumulant generating
+        functional (e.g. GTaS noise, cross-field colored noise).
+
+        Parameters
+        ----------
+        name : str
+            CGF identifier — multiple rows with the same name + order
+            sum into a single cumulant.
+        response_field : str, optional
+            **Legacy / single-field path.**  The response field this
+            cumulant's legs all sit on (e.g. ``'mt'``).  At order ``n``,
+            this gets broadcast to all ``n`` legs.  Use ``response_legs``
+            instead when different legs need different response fields.
+        order : int
+            Cumulant order: 2 for κ⁽²⁾, 3 for κ⁽³⁾, 4 for κ⁽⁴⁾, ...
+        coefficient : str
+            Sage-syntax expression for the cumulant coefficient
+            (e.g. ``'lambda_X * p_part'``).
+        kernel : str, optional
+            Optional time-domain kernel multiplier.  At order 2 the
+            kernel is a function of ``tau``; at order 3 of ``t1, t2``;
+            etc.  Examples: ``'dirac_delta(tau)'`` (white),
+            ``'exp(-abs(tau)/tauc)'`` (OU-colored),
+            ``'dirac_delta(t1)*dirac_delta(t2)'`` (Poisson shot noise
+            at κ³).  Defaults to ``None`` which the compiler treats as
+            ``∏_k δ(τ_k)`` — fully-local cumulant.
+        response_legs : list of str OR comma-separated str, keyword-only
+            **New / multi-field path.**  Per-leg list of response field
+            names, length = ``order``.  Use for cross-field cumulants:
+            e.g. ``response_legs=['xt', 'yt']`` at order 2 gives
+            ``κ²(xt, yt)``.  A single-element list (or string with no
+            commas) is broadcast across all legs — equivalent to
+            ``response_field=<name>``.  When both are supplied,
+            ``response_legs`` wins.
+        markovianize : bool or 'auto' or None, keyword-only
+            Per-row override for the colored-noise → Markovian-
+            embedding preprocessor.  Defaults to ``None`` (=
+            ``'auto'``): the row is markovianized if its kernel
+            matches the v1 single-Lorentzian template AND the
+            builder-level ``.markovianize(...)`` toggle is on
+            (default).  Set ``True`` to FAIL LOUDLY if the kernel
+            doesn't match (use this when you've hand-tuned a
+            Lorentzian and want to be sure the auto-detect doesn't
+            silently reject it).  Set ``False`` to keep this row's
+            colored kernel even when the builder-level toggle is on
+            (e.g. you've prototyped a hand-rolled embedding in the
+            action text).
+
+        See ``docs/correlated_noise_capabilities.md`` for the
+        complete reference on supported / unsupported noise models —
+        in particular §1.5 (Markovian embedding), the n ≥ 3
+        smooth-kernel limit, multiplicative-noise workaround, and
+        non-stationary / Lévy gaps.
+        """
+        if response_legs is None and response_field is None:
+            raise ValueError(
+                "declare_cgf_term: supply either `response_field` "
+                "(legacy single) or `response_legs` (per-leg list)."
+            )
+        # Normalize response_legs to a list of names; None → derive
+        # from response_field at compile time (handled in
+        # make_correlated_noises_block).
+        if isinstance(response_legs, str):
+            response_legs = [s.strip() for s in response_legs.split(',')
+                             if s.strip()]
+        # Normalize ``markovianize=`` to a bool / None for downstream
+        # consumers.  Accept the string 'auto' as a synonym for None.
+        if isinstance(markovianize, str):
+            if markovianize.lower() == 'auto':
+                markovianize_norm = None
+            else:
+                raise ValueError(
+                    f"declare_cgf_term: markovianize={markovianize!r} "
+                    f"unrecognised; allowed: True / False / 'auto' / None."
+                )
+        else:
+            markovianize_norm = markovianize
+        self._cgf_terms.append({
+            'name':           name,
+            'response_field': response_field,
+            'response_legs':  response_legs,    # None when legacy single
+            'order':          int(order),
+            'coefficient':    coefficient,
+            'kernel':         kernel,
+            'markovianize':   markovianize_norm,
+        })
+        return self
+
+    def correlated_noise(self, name: str, **kwargs):
+        self._correlated_noises[name] = kwargs
+        return self
+
+    def use_action_template(self, template):
+        """Apply a HawkesAction (or compatible) template.  The template
+        emits the action / mf_bg_conditions / mf_equations /
+        specializations / phi_concrete / mf_substitutions / functions
+        block; everything is registered on this builder.
+        """
+        self._action          = template.action()
+        self._phi_concrete    = template.phi_concrete()
+        self._specializations = template.specializations()
+        self._mf_bg           = template.mf_bg_conditions()
+        self._mf_equations    = template.mf_equations()
+        self._mf_substitutions = template.mf_substitutions()
+        self._functions       = list(template.functions_list())
+        return self
+
+    def use_synaptic_kernel(self, template):
+        """Apply an ExpSynapticKernel (or DeltaKernel) template.
+
+        For ExpSynapticKernel, sets the model's ``kernel_ft_image`` hook
+        so the FT of g symbolically becomes 1 / (1 + iωτ_g).
+
+        For DeltaKernel, no FT image is needed; instead the template
+        contributes an EXTRA specialization ``g → delta_D`` that gets
+        merged into the action template's specializations dict so the
+        kernel acts as δ(t) at cell-8 propagator-construction time.
+        """
+        ft_hook = template.kernel_ft_image()
+        if ft_hook is not None:
+            self._kernel_ft_image = ft_hook
+
+        # Merge any kernel-side specializations into the action's
+        # specializations dict.  Capture the current specs lambda and
+        # extend it.
+        extra_specs = (template.extra_specializations()
+                       if hasattr(template, 'extra_specializations')
+                       else None)
+        if extra_specs is not None and self._specializations is not None:
+            base_specs = self._specializations
+            self._specializations = (
+                lambda ns, _base=base_specs, _extra=extra_specs: {
+                    **_base(ns), **_extra(ns),
+                }
+            )
+        return self
+
+    def add_gtas_noise(self, template):
+        """Apply a GTaSNoise template.  Adds the dm/mt fields, the
+        mstar parameter, the GTaS feedforward terms in the action /
+        saddle / MF equations (via the HawkesAction template's
+        ``_gtas`` hook), and the correlated_noises block."""
+        # Register the GTaS metadata so the HawkesAction template
+        # picks up the feedforward + saddle terms when its lambdas
+        # are emitted.  Do this BEFORE use_action_template() if the
+        # user calls them in the wrong order, but supporting the more
+        # convenient order (action then noise) too.
+        self._pending_gtas = template
+
+        # Add the dm physical field + mt response field automatically.
+        # natural_name='m' lets users say external_fields=[('m', 1)]
+        # and mf['m', 1] without remembering the 'dm'/'mstar' internals.
+        self.physical_field(
+            template.physical_field, indexed=True,
+            latex=r'\delta m',
+            description='GTaS external rate fluctuation (zero-mean)',
+            natural_name='m',
+        )
+        self.response_field(
+            template.response_field, indexed=True,
+            latex=r'\tilde m',
+            description='GTaS response field conjugate to dm',
+        )
+
+        # Add the GTaS parameters automatically (with sane defaults
+        # the user can override via .parameter() before .build()).
+        for pname, default, dom in [
+            (template.feedforward_weight, 0.25,  None),
+            (template.mother_rate,        1.7,   'positive'),
+            (template.participation,      0.6,   'positive'),
+        ]:
+            if not any(p.name == pname for p in self.parameters):
+                self.parameter(pname, default=default, domain=dom)
+        if template.mu_diff is not None and not any(
+                p.name == template.mu_diff for p in self.parameters):
+            self.parameter(template.mu_diff, default=0.0)
+        if template.sigma_diff_sq is not None and not any(
+                p.name == template.sigma_diff_sq for p in self.parameters):
+            self.parameter(template.sigma_diff_sq, default=1.0,
+                           domain='positive')
+        if template.background_param is not None and not any(
+                p.name == template.background_param for p in self.parameters):
+            self.parameter(template.background_param, indexed=True,
+                           domain='positive',
+                           mean_field=True, natural_name='m',
+                           description=f'background external rate b_X = '
+                                       f'{template.mother_rate} · '
+                                       f'{template.participation}')
+
+        self._correlated_noises.update(template.correlated_noises_block())
+
+        # Re-emit the action with the GTaS hook now wired in.  The
+        # HawkesAction template stores ``_gtas`` so the emitted
+        # lambdas know to add feedforward terms.
+        if hasattr(self, '_action_template'):
+            self._action_template._gtas = template
+            # Rebuild the lambdas
+            self.use_action_template(self._action_template)
+        return self
+
+    def use_action_template(self, template):
+        """Override the previous use_action_template to remember the
+        template object so add_gtas_noise() can re-emit with the GTaS
+        hook installed."""
+        self._action_template = template
+        # Apply any pending GTaS hook
+        if getattr(self, '_pending_gtas', None) is not None:
+            template._gtas = self._pending_gtas
+        self._action          = template.action()
+        self._phi_concrete    = template.phi_concrete()
+        self._specializations = template.specializations()
+        self._mf_bg           = template.mf_bg_conditions()
+        self._mf_equations    = template.mf_equations()
+        self._mf_substitutions = template.mf_substitutions()
+        self._functions       = list(template.functions_list())
+        return self
+
+
+class _BaseTheoryBuilder:
     """
     Accumulator for a model declaration.  Call ``.build()`` to emit the
     HAWKES_MODEL dict suitable for ``pipeline.compute_cumulants``.
@@ -215,31 +687,6 @@ class TheoryBuilder:
         self._initial: Optional[dict] = None
 
     # ── Population declarations ───────────────────────────────────
-    def population(self, name: str, *, size: int = 1,
-                   description: str = ''):
-        """Declare a population (a named index set with its own size).
-
-        Heterogeneous-population theories chain one ``.population()``
-        per group, then annotate each field / parameter / kernel with
-        the population(s) it's indexed by.  Recorded on the builder
-        but NOT yet propagated into the symbolic / diagrammatic
-        pipeline — the pipeline currently treats all populations as
-        a single combined index set of size ``sum(sizes)``.  Full
-        per-population machinery is a separate refactor.
-
-        Calling ``.population()`` overrides any previous
-        ``n_populations=`` constructor argument.
-        """
-        size = max(int(size), 1)
-        self.populations.append({
-            'name':        name,
-            'size':        size,
-            'description': description,
-        })
-        # Keep n_populations in sync so legacy lookups still see a
-        # sensible value (for now: just the count of declared pops).
-        self.n_populations = len(self.populations)
-        return self
 
     # ── Field declarations ─────────────────────────────────────────
     def response_field(self, name: str, indexed: bool = True,
@@ -405,45 +852,6 @@ class TheoryBuilder:
         return self
 
     # ── Kernel declaration ─────────────────────────────────────────
-    def kernel(self, name: str, frequency_image: Callable = None,
-               sage_name: str = '', latex_name: str = '',
-               description: str = '', indexed=False,
-               indexed_by: Optional[list] = None):
-        """Declare a convolution kernel symbol.
-
-        Parameters
-        ----------
-        indexed_by : list of population names, optional
-            Heterogeneous-population annotation.  ``[]`` or ``None``
-            → scalar (one shared symbol, used as ``g``); ``['E']``
-            → per-population kernel ``g[i]``; ``['E', 'I']`` →
-            per-pair kernel ``g[i, j]``.  Overrides legacy
-            ``indexed=`` when both are given.
-        indexed : legacy
-            ``False`` / ``True`` / ``'vector'`` / ``'matrix'``.
-            Pre-heterogeneous-population flag.
-
-        Indexed kernels let each population (or pair) have its own
-        frequency image — declared via ``define_kernel(freq_image=...)``
-        with an expression that may reference ``i`` (and ``j`` for
-        matrix) and indexed parameters like ``tau_g[i, j]``.
-        """
-        if indexed_by is not None:
-            ib = list(indexed_by)
-            is_vec = (len(ib) == 1)
-            is_mat = (len(ib) == 2)
-        else:
-            ib = None
-            is_vec = (indexed in (True, 'vector'))
-            is_mat = (indexed == 'matrix')
-        self.kernels.append(KernelSpec(
-            name=name, sage_name=sage_name or f'z_{name}',
-            latex_name=latex_name or name,
-            frequency_image=frequency_image, description=description,
-            indexed=(is_vec or is_mat), matrix=is_mat,
-            indexed_by=ib,
-        ))
-        return self
 
     # ── Text-driven theory declaration (UI-friendly) ──────────────
     # Each method below stores a Sage-syntax text string.  At
@@ -489,64 +897,6 @@ class TheoryBuilder:
         self._function_specs.append(entry)
         return self
 
-    def define_kernel(self, name: str, *, time_expr: str = None,
-                      freq_image: str = None, latex_name: str = '',
-                      sage_name: str = '', description: str = '',
-                      indexed=False,
-                      indexed_by: Optional[list] = None):
-        """Declare a convolution kernel via either its time-domain
-        expression OR its frequency image (or both).
-
-        At least one of ``time_expr`` / ``freq_image`` must be given.
-        ``freq_image`` is preferred because it's used directly by
-        the propagator construction; if only ``time_expr`` is given,
-        the build will warn that the FT must be supplied.
-
-        Parameters
-        ----------
-        name : str
-            Kernel symbol name (referenced in the action as ``<name>``
-            for scalar kernels, ``<name>[i]`` for vector, or
-            ``<name>[i, j]`` for matrix).
-        time_expr, freq_image : str
-            Sage-syntax expressions.  May reference ``i`` (and ``j``
-            for matrix-indexed kernels) and any declared parameter.
-            E.g. ``'1/(1 + I*omega*tau_g[i, j])'`` for a per-pair
-            exponential synapse with matrix time constants.
-        indexed : bool / 'vector' / 'matrix', default False
-            * ``False`` — single shared kernel (default).
-            * ``True`` / ``'vector'`` — per-population kernel ``g[i]``.
-            * ``'matrix'`` — per-pair kernel ``g[i, j]``.
-
-            Indexed kernels produce ``N`` (or ``N*N``) SR symbols
-            internally (``g_<i+1>``, ``g_<i+1>_<j+1>``); the
-            propagator builder substitutes each with its own
-            frequency image evaluated at the corresponding ``i`` / ``j``.
-
-        The kernel is also registered as a regular ``kernel(...)``
-        symbol for the MSR-JD framework's name resolution.
-        """
-        if time_expr is None and freq_image is None:
-            raise ValueError(
-                f"define_kernel({name!r}): supply at least one of "
-                f"time_expr= or freq_image=")
-        # Register the kernel symbol with the regular .kernel() call.
-        # ``indexed_by`` (when given) takes precedence over ``indexed=``.
-        if not any(k.name == name for k in self.kernels):
-            self.kernel(name, sage_name=sage_name or f'z_{name}',
-                        latex_name=latex_name or name,
-                        description=description, indexed=indexed,
-                        indexed_by=indexed_by)
-        spec = {
-            'name':       name,
-            'time_expr':  time_expr,
-            'freq_image': freq_image,
-            'indexed':    indexed,
-        }
-        if indexed_by is not None:
-            spec['indexed_by'] = list(indexed_by)
-        self._kernel_specs.append(spec)
-        return self
 
     def set_action_text(self, text: str):
         """Set the per-population action integrand ``S_i`` as a
@@ -699,37 +1049,6 @@ class TheoryBuilder:
         })
         return self
 
-    def markovianize(self, enabled: bool = True):
-        """Toggle the colored-noise → Markovian-embedding preprocessor.
-
-        Parameters
-        ----------
-        enabled : bool, default True
-            When ``True`` (default), ``.build()`` walks ``_cgf_terms``
-            and rewrites every row whose kernel matches
-            ``c·exp(-|tau|/tauc)`` into a white-noise CGF row on an
-            auxiliary OU field plus the corresponding linear filter
-            in the action.  This unblocks ``max_ell >= 1`` colored-
-            noise computations, which would otherwise hang in
-            ``scipy.nquad``.
-
-            When ``False``, no rewriting is performed and the legacy
-            smooth-residual path runs.  Use this if you've hand-coded
-            your colored kernel into the action and don't want the
-            preprocessor to touch it, or if your kernel doesn't match
-            the v1 single-Lorentzian template.
-
-        Per-row overrides
-        -----------------
-        ``declare_cgf_term(..., markovianize=True | False)`` on an
-        individual row takes precedence over this builder-level flag.
-
-        See ``docs/correlated_noise_capabilities.md`` §1.5 for the
-        complete reference (supported kernels, naming convention for
-        auxiliary fields, v2 follow-ups).
-        """
-        self._markovianize_default = bool(enabled)
-        return self
 
     def stability_analysis(self, enabled: bool):
         """Toggle linear-stability classification for the DAE solver.
@@ -760,181 +1079,9 @@ class TheoryBuilder:
         return self
 
     # ── Spatial-extension declarations (v1) ────────────────────────
-    def spatial_dim(self, d: int):
-        """Bulk-set the spatial dimension of every physical field.
 
-        Convenience for the common single-dimension case (D1 in
-        ``docs/spatial_design_decisions_v1.md``).  Sets ``spatial_dim
-        = d`` on every physical field already declared AND establishes
-        ``d`` as the default for fields declared afterwards.  Per-field
-        ``physical_field(spatial_dim=...)`` still overrides this.
 
-        Underneath, spatial dimension is per-field (on ``FieldSpec``);
-        this method is purely an ergonomic surface.  Call it before or
-        after ``physical_field`` declarations — fields declared before
-        get retro-set, fields declared after inherit the default.
 
-        ``d = 0`` reverts to time-only.  v1 supports ``d ∈ {0, 1}``.
-        """
-        d = int(d)
-        self._default_spatial_dim = d
-        for f in self.physical_fields:
-            f.spatial_dim = d
-        return self
-
-    def boundary(self, mode: str, **params):
-        """Declare the spatial boundary condition.
-
-        Parameters
-        ----------
-        mode : {'infinite', 'periodic'}
-            ``'infinite'`` — unbounded domain (the default if
-            ``.boundary`` is never called on a spatial theory).
-            ``'periodic'`` — periodic cell; requires a ``length``.
-        length : str or float, optional (periodic only)
-            Spatial period ``L``.  A **string** names a declared
-            ``.parameter`` (sweepable; the recommended form, e.g.
-            ``length='L'`` with ``.parameter('L', default=20.0)``).
-            A **number** is an inline shortcut: ``build()`` auto-
-            creates a hidden positive parameter to back it.  See D2 in
-            ``docs/spatial_design_decisions_v1.md``.
-
-        Stored as ``model['boundary']`` and consumed by the propagator
-        builder (Phase 2/3).  Only meaningful once at least one field
-        is spatial; ``build()`` validates this.
-        """
-        mode = str(mode)
-        if mode not in ('infinite', 'periodic'):
-            raise ValueError(
-                f"boundary(mode={mode!r}): v1 supports only 'infinite' "
-                f"and 'periodic'.  Dirichlet/Neumann/Robin are v2 "
-                f"(see docs/spatial_implementation_plan.md §scope).")
-        if mode == 'periodic' and 'length' not in params:
-            raise ValueError(
-                "boundary('periodic', ...): a 'length' is required "
-                "(name a parameter, e.g. length='L', or pass a number).")
-        self._boundary = {'mode': mode, **params}
-        return self
-
-    def initial(self, mode: str = 'stationary', **params):
-        """Declare the initial condition.
-
-        Parameters
-        ----------
-        mode : {'stationary'}
-            ``'stationary'`` — the system sits at its mean-field
-            stationary state; no extra action term needed.  The only
-            mode supported in v1 (transient ICs are v1.5 — see
-            Lefèvre-Biroli §2.5's ``S_I`` term).
-
-        Stored as ``model['initial']``.  ``compute_cumulants`` (Phase 4)
-        validates that requested observables are compatible with the
-        declared IC.
-        """
-        mode = str(mode)
-        if mode != 'stationary':
-            raise ValueError(
-                f"initial(mode={mode!r}): v1 supports only 'stationary'.  "
-                f"Transient ICs are v1.5 (see "
-                f"docs/spatial_implementation_plan.md §scope).")
-        self._initial = {'mode': mode, **params}
-        return self
-
-    def declare_cgf_term(self, name: str,
-                         response_field: str | None = None,
-                         order: int = 2,
-                         coefficient: str = '',
-                         kernel: str | None = None,
-                         *,
-                         response_legs: list[str] | str | None = None,
-                         markovianize: bool | str | None = None):
-        """Add one term to a non-closed-form cumulant generating
-        functional (e.g. GTaS noise, cross-field colored noise).
-
-        Parameters
-        ----------
-        name : str
-            CGF identifier — multiple rows with the same name + order
-            sum into a single cumulant.
-        response_field : str, optional
-            **Legacy / single-field path.**  The response field this
-            cumulant's legs all sit on (e.g. ``'mt'``).  At order ``n``,
-            this gets broadcast to all ``n`` legs.  Use ``response_legs``
-            instead when different legs need different response fields.
-        order : int
-            Cumulant order: 2 for κ⁽²⁾, 3 for κ⁽³⁾, 4 for κ⁽⁴⁾, ...
-        coefficient : str
-            Sage-syntax expression for the cumulant coefficient
-            (e.g. ``'lambda_X * p_part'``).
-        kernel : str, optional
-            Optional time-domain kernel multiplier.  At order 2 the
-            kernel is a function of ``tau``; at order 3 of ``t1, t2``;
-            etc.  Examples: ``'dirac_delta(tau)'`` (white),
-            ``'exp(-abs(tau)/tauc)'`` (OU-colored),
-            ``'dirac_delta(t1)*dirac_delta(t2)'`` (Poisson shot noise
-            at κ³).  Defaults to ``None`` which the compiler treats as
-            ``∏_k δ(τ_k)`` — fully-local cumulant.
-        response_legs : list of str OR comma-separated str, keyword-only
-            **New / multi-field path.**  Per-leg list of response field
-            names, length = ``order``.  Use for cross-field cumulants:
-            e.g. ``response_legs=['xt', 'yt']`` at order 2 gives
-            ``κ²(xt, yt)``.  A single-element list (or string with no
-            commas) is broadcast across all legs — equivalent to
-            ``response_field=<name>``.  When both are supplied,
-            ``response_legs`` wins.
-        markovianize : bool or 'auto' or None, keyword-only
-            Per-row override for the colored-noise → Markovian-
-            embedding preprocessor.  Defaults to ``None`` (=
-            ``'auto'``): the row is markovianized if its kernel
-            matches the v1 single-Lorentzian template AND the
-            builder-level ``.markovianize(...)`` toggle is on
-            (default).  Set ``True`` to FAIL LOUDLY if the kernel
-            doesn't match (use this when you've hand-tuned a
-            Lorentzian and want to be sure the auto-detect doesn't
-            silently reject it).  Set ``False`` to keep this row's
-            colored kernel even when the builder-level toggle is on
-            (e.g. you've prototyped a hand-rolled embedding in the
-            action text).
-
-        See ``docs/correlated_noise_capabilities.md`` for the
-        complete reference on supported / unsupported noise models —
-        in particular §1.5 (Markovian embedding), the n ≥ 3
-        smooth-kernel limit, multiplicative-noise workaround, and
-        non-stationary / Lévy gaps.
-        """
-        if response_legs is None and response_field is None:
-            raise ValueError(
-                "declare_cgf_term: supply either `response_field` "
-                "(legacy single) or `response_legs` (per-leg list)."
-            )
-        # Normalize response_legs to a list of names; None → derive
-        # from response_field at compile time (handled in
-        # make_correlated_noises_block).
-        if isinstance(response_legs, str):
-            response_legs = [s.strip() for s in response_legs.split(',')
-                             if s.strip()]
-        # Normalize ``markovianize=`` to a bool / None for downstream
-        # consumers.  Accept the string 'auto' as a synonym for None.
-        if isinstance(markovianize, str):
-            if markovianize.lower() == 'auto':
-                markovianize_norm = None
-            else:
-                raise ValueError(
-                    f"declare_cgf_term: markovianize={markovianize!r} "
-                    f"unrecognised; allowed: True / False / 'auto' / None."
-                )
-        else:
-            markovianize_norm = markovianize
-        self._cgf_terms.append({
-            'name':           name,
-            'response_field': response_field,
-            'response_legs':  response_legs,    # None when legacy single
-            'order':          int(order),
-            'coefficient':    coefficient,
-            'kernel':         kernel,
-            'markovianize':   markovianize_norm,
-        })
-        return self
 
     def set_transfer_function(self, name: str = 'phi'):
         """Mark which declared function plays the role of the MSR-JD
@@ -985,135 +1132,11 @@ class TheoryBuilder:
         self._operators.append(spec)
         return self
 
-    def correlated_noise(self, name: str, **kwargs):
-        self._correlated_noises[name] = kwargs
-        return self
 
     # ── High-level template wiring ─────────────────────────────────
-    def use_action_template(self, template):
-        """Apply a HawkesAction (or compatible) template.  The template
-        emits the action / mf_bg_conditions / mf_equations /
-        specializations / phi_concrete / mf_substitutions / functions
-        block; everything is registered on this builder.
-        """
-        self._action          = template.action()
-        self._phi_concrete    = template.phi_concrete()
-        self._specializations = template.specializations()
-        self._mf_bg           = template.mf_bg_conditions()
-        self._mf_equations    = template.mf_equations()
-        self._mf_substitutions = template.mf_substitutions()
-        self._functions       = list(template.functions_list())
-        return self
 
-    def use_synaptic_kernel(self, template):
-        """Apply an ExpSynapticKernel (or DeltaKernel) template.
 
-        For ExpSynapticKernel, sets the model's ``kernel_ft_image`` hook
-        so the FT of g symbolically becomes 1 / (1 + iωτ_g).
 
-        For DeltaKernel, no FT image is needed; instead the template
-        contributes an EXTRA specialization ``g → delta_D`` that gets
-        merged into the action template's specializations dict so the
-        kernel acts as δ(t) at cell-8 propagator-construction time.
-        """
-        ft_hook = template.kernel_ft_image()
-        if ft_hook is not None:
-            self._kernel_ft_image = ft_hook
-
-        # Merge any kernel-side specializations into the action's
-        # specializations dict.  Capture the current specs lambda and
-        # extend it.
-        extra_specs = (template.extra_specializations()
-                       if hasattr(template, 'extra_specializations')
-                       else None)
-        if extra_specs is not None and self._specializations is not None:
-            base_specs = self._specializations
-            self._specializations = (
-                lambda ns, _base=base_specs, _extra=extra_specs: {
-                    **_base(ns), **_extra(ns),
-                }
-            )
-        return self
-
-    def add_gtas_noise(self, template):
-        """Apply a GTaSNoise template.  Adds the dm/mt fields, the
-        mstar parameter, the GTaS feedforward terms in the action /
-        saddle / MF equations (via the HawkesAction template's
-        ``_gtas`` hook), and the correlated_noises block."""
-        # Register the GTaS metadata so the HawkesAction template
-        # picks up the feedforward + saddle terms when its lambdas
-        # are emitted.  Do this BEFORE use_action_template() if the
-        # user calls them in the wrong order, but supporting the more
-        # convenient order (action then noise) too.
-        self._pending_gtas = template
-
-        # Add the dm physical field + mt response field automatically.
-        # natural_name='m' lets users say external_fields=[('m', 1)]
-        # and mf['m', 1] without remembering the 'dm'/'mstar' internals.
-        self.physical_field(
-            template.physical_field, indexed=True,
-            latex=r'\delta m',
-            description='GTaS external rate fluctuation (zero-mean)',
-            natural_name='m',
-        )
-        self.response_field(
-            template.response_field, indexed=True,
-            latex=r'\tilde m',
-            description='GTaS response field conjugate to dm',
-        )
-
-        # Add the GTaS parameters automatically (with sane defaults
-        # the user can override via .parameter() before .build()).
-        for pname, default, dom in [
-            (template.feedforward_weight, 0.25,  None),
-            (template.mother_rate,        1.7,   'positive'),
-            (template.participation,      0.6,   'positive'),
-        ]:
-            if not any(p.name == pname for p in self.parameters):
-                self.parameter(pname, default=default, domain=dom)
-        if template.mu_diff is not None and not any(
-                p.name == template.mu_diff for p in self.parameters):
-            self.parameter(template.mu_diff, default=0.0)
-        if template.sigma_diff_sq is not None and not any(
-                p.name == template.sigma_diff_sq for p in self.parameters):
-            self.parameter(template.sigma_diff_sq, default=1.0,
-                           domain='positive')
-        if template.background_param is not None and not any(
-                p.name == template.background_param for p in self.parameters):
-            self.parameter(template.background_param, indexed=True,
-                           domain='positive',
-                           mean_field=True, natural_name='m',
-                           description=f'background external rate b_X = '
-                                       f'{template.mother_rate} · '
-                                       f'{template.participation}')
-
-        self._correlated_noises.update(template.correlated_noises_block())
-
-        # Re-emit the action with the GTaS hook now wired in.  The
-        # HawkesAction template stores ``_gtas`` so the emitted
-        # lambdas know to add feedforward terms.
-        if hasattr(self, '_action_template'):
-            self._action_template._gtas = template
-            # Rebuild the lambdas
-            self.use_action_template(self._action_template)
-        return self
-
-    def use_action_template(self, template):
-        """Override the previous use_action_template to remember the
-        template object so add_gtas_noise() can re-emit with the GTaS
-        hook installed."""
-        self._action_template = template
-        # Apply any pending GTaS hook
-        if getattr(self, '_pending_gtas', None) is not None:
-            template._gtas = self._pending_gtas
-        self._action          = template.action()
-        self._phi_concrete    = template.phi_concrete()
-        self._specializations = template.specializations()
-        self._mf_bg           = template.mf_bg_conditions()
-        self._mf_equations    = template.mf_equations()
-        self._mf_substitutions = template.mf_substitutions()
-        self._functions       = list(template.functions_list())
-        return self
 
     # ── Text → lambda compilation ─────────────────────────────────
     def _auto_populate_mf_eqs_from_equations(self) -> None:
@@ -1486,6 +1509,42 @@ class TheoryBuilder:
             })
 
     # ── Build the HAWKES_MODEL dict ───────────────────────────────
+    def _inject_autopop(self) -> None:
+        """Scalar-mode autopop: inject a single-position population ``pop``
+        (size 1) and bind every unbound physical/response field to it.  Used
+        by ``build()`` so it never depends on the public ``population()``
+        method (which lives in the temporal mixin after the builder split)."""
+        self.populations.append({
+            'name':        'pop',
+            'size':        1,
+            'description': 'auto-injected scalar population',
+        })
+        self.n_populations = len(self.populations)
+        for f in self.physical_fields:
+            if f.population is None:
+                f.population = 'pop'
+        for f in self.response_fields:
+            if getattr(f, 'population', None) is None:
+                f.population = 'pop'
+
+    def _resolve_spatial_dim(self) -> int:
+        """Resolve the theory's single spatial dimension from the physical
+        fields (``0`` = time-only); validate the v1 single-dimension
+        constraint.  Overridden by the forward builders to assert their
+        domain (Temporal: must be 0; Spatial: must be > 0)."""
+        spatial_dims = {int(getattr(f, 'spatial_dim', 0) or 0)
+                        for f in self.physical_fields}
+        nonzero_dims = {d for d in spatial_dims if d > 0}
+        if len(nonzero_dims) > 1:
+            raise ValueError(
+                f'TheoryBuilder("{self.name}").build(): v1 does not '
+                f'support mixed spatial dimensions; physical fields '
+                f'declare dims {sorted(nonzero_dims)}.  All spatial '
+                f'fields must share one dimension (mixed-dim is a v2 '
+                f'feature — see docs/spatial_implementation_plan.md '
+                f'§"Out of v1 scope").')
+        return next(iter(nonzero_dims), 0)
+
     def build(self) -> dict:
         """Emit a HAWKES_MODEL dict.
 
@@ -1507,14 +1566,7 @@ class TheoryBuilder:
         # truly scalar theories — bare ``xt * x`` instead of
         # ``sum(xt[i]*x[i] for i in pop)``.
         if not self.populations and self.physical_fields:
-            self.population('pop', size=1,
-                            description='auto-injected scalar population')
-            for f in self.physical_fields:
-                if f.population is None:
-                    f.population = 'pop'
-            for f in self.response_fields:
-                if getattr(f, 'population', None) is None:
-                    f.population = 'pop'
+            self._inject_autopop()
 
         # Apply the colored-noise → Markovian-embedding preprocessor
         # BEFORE compiling text declarations: this rewrite mutates
@@ -1623,18 +1675,7 @@ class TheoryBuilder:
         # ``length`` shortcut, and build the operators list (adding a
         # ``Laplacian`` symbol when spatial).  See
         # ``docs/spatial_design_decisions_v1.md``.
-        spatial_dims = {int(getattr(f, 'spatial_dim', 0) or 0)
-                        for f in self.physical_fields}
-        nonzero_dims = {d for d in spatial_dims if d > 0}
-        if len(nonzero_dims) > 1:
-            raise ValueError(
-                f'TheoryBuilder("{self.name}").build(): v1 does not '
-                f'support mixed spatial dimensions; physical fields '
-                f'declare dims {sorted(nonzero_dims)}.  All spatial '
-                f'fields must share one dimension (mixed-dim is a v2 '
-                f'feature — see docs/spatial_implementation_plan.md '
-                f'§"Out of v1 scope").')
-        theory_spatial_dim = next(iter(nonzero_dims), 0)
+        theory_spatial_dim = self._resolve_spatial_dim()
         is_spatial = theory_spatial_dim > 0
 
         # ── Reserved-name validation (scoped hard error) ─────────────
@@ -1862,3 +1903,45 @@ class TheoryBuilder:
         if k.indexed_by is not None:
             d['indexed_by'] = list(k.indexed_by)
         return d
+
+
+class TemporalTheoryBuilder(_TemporalMethods, _BaseTheoryBuilder):
+    """Authoring API for time-domain (non-spatial) theories: carries the
+    temporal-only methods (populations, kernels, colored-noise/markovianize,
+    action templates); has no spatial methods."""
+
+    def _resolve_spatial_dim(self) -> int:
+        d = super()._resolve_spatial_dim()
+        if d > 0:
+            raise ValueError(
+                f'TemporalTheoryBuilder("{self.name}"): a physical field '
+                f'declared spatial_dim={d} > 0.  Use SpatialTheoryBuilder for '
+                f'spatial (PDE) theories.')
+        return 0
+
+
+class SpatialTheoryBuilder(_SpatialMethods, _BaseTheoryBuilder):
+    """Authoring API for spatial (PDE / field-theory) theories: carries the
+    spatial-only methods (spatial_dim, boundary, initial); has no temporal
+    kernel/colored-noise methods.  Multi-field spatial theories use repeated
+    physical_field(...) calls (not populations)."""
+
+    def __init__(self, name: str, n_populations: int = 0):
+        super().__init__(name, n_populations=n_populations)
+
+    def _resolve_spatial_dim(self) -> int:
+        d = super()._resolve_spatial_dim()
+        if d <= 0:
+            raise ValueError(
+                f'SpatialTheoryBuilder("{self.name}"): no physical field is '
+                f'spatial.  Set spatial_dim>=1 on a field '
+                f'(physical_field(..., spatial_dim=d)) or call .spatial_dim(d).')
+        return d
+
+
+class TheoryBuilder(_SpatialMethods, _TemporalMethods, _BaseTheoryBuilder):
+    """Back-compat unified builder: exposes BOTH method sets and auto-detects
+    spatial-vs-temporal at build() (via the base _resolve_spatial_dim).
+    Behaviorally identical to the pre-split TheoryBuilder.  New code should
+    prefer TemporalTheoryBuilder / SpatialTheoryBuilder."""
+    pass
