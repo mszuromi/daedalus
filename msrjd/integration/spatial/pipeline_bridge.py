@@ -54,6 +54,15 @@ from msrjd.integration.spatial.spatial_correlator import (
 )
 
 
+# ── Notation (code ↔ paper App. B) ───────────────────────────────────
+#   Rcal     𝓡(k_e)  per-edge derivative-vertex form-factor polynomial
+#   Bcal     𝓑(w)    external quadratic form (= D·Q_eff)  [wick-moment scope]
+#   Lam      Λ       loop / first-Symanzik matrix (in the form-factor moment math)
+#   (A,B,N)  m_α,D_i,κ  per-mode mass/diffusion/noise — kept as (A,B,N) (Tier-4)
+#   M(Γ)     𝒮(Γ)    symmetry factor — kept as M(Γ) (Tier-3 rename → Scal pending)
+# ─────────────────────────────────────────────────────────────────────
+
+
 # ── helpers ───────────────────────────────────────────────────────
 def _norm_sr(num_params):
     """Normalize ``num_params`` (str- or SR-keyed) to an SR-keyed dict."""
@@ -403,7 +412,7 @@ def _diagram_is_bubble(td):
 
 
 def diagram_form_factor(td, vertex_terms, mode=None, d=1):
-    """Assemble the momentum-space **form factor** ``F(q,ℓ)`` a derivative-vertex
+    """Assemble the momentum-space **form factor** ``Rcal(q,ℓ)`` a derivative-vertex
     theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell``, any
     ``k``, and any MIX of derivative-vertex types** (NOT bubble-specific and NOT
     single-type: it is a product over the diagram's interaction vertices, and
@@ -412,7 +421,7 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
 
     A derivative is a LOCAL per-vertex feature, so
 
-        F(q,ℓ) = ∏_{interaction vertices v}  𝔉(v),
+        Rcal(q,ℓ) = ∏_{interaction vertices v}  𝔉(v),
 
     and the per-vertex factor sums over the derivative-vertex *types* whose
     physical-leg count matches this node (``v``):
@@ -484,7 +493,7 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
             f *= _f_chain(term['chain'], p)
         return f
 
-    F = _sp.Integer(1)
+    Rcal = _sp.Integer(1)
     for n in iverts:
         n_phys = len(in_mom.get(n, []))
         matched = [t for t in vertex_terms
@@ -494,26 +503,26 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
         node = _sp.Integer(0)
         for t in matched:
             node += _sp.sympify(t['weight']) * _term_factor(t, n)
-        F *= node
-    return _sp.expand(F)
+        Rcal *= node
+    return _sp.expand(Rcal)
 
 
 # Backward-compatible alias (the function used to be bubble-specific in name).
 bubble_loop_form_factor = diagram_form_factor
 
 
-def _min_gh_order(F, loop_syms):
-    """Minimal Gauss–Hermite order that integrates the POLYNOMIAL form factor ``F``
+def _min_gh_order(Rcal, loop_syms):
+    """Minimal Gauss–Hermite order that integrates the POLYNOMIAL form factor ``Rcal``
     EXACTLY over the loop Gaussian.  GH(n) is exact for degree ≤ 2n−1; after the
     Cholesky map ``ℓ = ℓ̄ + Ch·Z`` a monomial of TOTAL loop-degree ``D`` can place
     degree ``D`` on a single ``Z`` (e.g. ``ℓ₀ℓ₁ → Z₀²``), so ``n = ⌈(D+1)/2⌉`` with
-    ``D`` the total degree of ``F`` in the loop momenta.  Returns a safe high
-    fallback (6) if ``F`` is not a polynomial in the loop symbols."""
+    ``D`` the total degree of ``Rcal`` in the loop momenta.  Returns a safe high
+    fallback (6) if ``Rcal`` is not a polynomial in the loop symbols."""
     import sympy as _sp
     if not loop_syms:
         return 1                                   # constant in ℓ → 1 node is exact
     try:
-        D = int(_sp.Poly(_sp.expand(F), *loop_syms).total_degree())
+        D = int(_sp.Poly(_sp.expand(Rcal), *loop_syms).total_degree())
     except Exception:
         return 6                                   # non-polynomial → caller's default
     return max(1, (D + 2) // 2)                     # ⌈(D+1)/2⌉
@@ -532,31 +541,31 @@ def _isserlis(idx, Sget):
                 for j in range(len(rest))), _sp.Integer(0))
 
 
-def _build_wick_moment(F, ls, qs):
+def _build_wick_moment(Rcal, ls, qs):
     """Analytic spatial IFT of a derivative-vertex form factor by the **joint
     `(ℓ,q)`-Gaussian moment** (Case C of docs/spatial_analytic_ift_plan.md) —
     the principled one-pass route that replaces the `q_deg+1`-node polynomial
-    fit.  Returns a numpy callable ``moment_x(a, S, B, xs) → (P, n_x)`` complex.
+    fit.  Returns a numpy callable ``moment_x(a, S, Bcal, xs) → (P, n_x)`` complex.
 
-    Per chamber the IFT factorizes as ``δC(x)|_w = A·K(B,x)·M_F`` with the
+    Per chamber the IFT factorizes as ``δC(x)|_w = A·K(Bcal,x)·M_F`` with the
     heat kernel ``K`` applied by the caller and the **form-factor moment**
 
-        M_F = E_{Q~N(c,s)} E_{ξ~N(0,Σ)}[ F(a·Q+ξ, Q) ],  c=ix/2B, s=1/2B,
+        M_F = E_{Q~N(c,s)} E_{ξ~N(0,Σ)}[ Rcal(a·Q+ξ, Q) ],  c=ix/2Bcal, s=1/2Bcal,
 
-    where the loop momentum is split ``ℓ = ℓ̄(q)+ξ = a·q + ξ`` (``a=−M⁻¹N``,
-    ``Σ=(2DM)⁻¹``) and the FT source turns the external ``q`` into the complex
+    where the loop momentum is split ``ℓ = ℓ̄(q)+ξ = a·q + ξ`` (``a=−Lam⁻¹N``,
+    ``Σ=(2D·Lam)⁻¹``) and the FT source turns the external ``q`` into the complex
     Gaussian ``Q``.  Both expectations are closed-form Gaussian moments of a
     polynomial: ``E[Q^m]`` (non-central, in ``c,s``) and ``E[∏ξ^k]`` (Isserlis
     in ``Σ``).  The symbolic moment is built **once per diagram** and lambdified
-    in the per-chamber numerics ``(a, Σ, B, x)`` — no q-grid, no GH grid, exact.
+    in the per-chamber numerics ``(a, Σ, Bcal, x)`` — no q-grid, no GH grid, exact.
 
     ``k=2`` only (single external ``q`` symbol); ``d=1``.  ``a``/``S`` are the
     FULL ``(P,L)``/``(P,L,L)`` Gaussians — only the loop indices appearing in
-    ``F`` are used (the marginal sub-block; ``F`` is independent of the rest)."""
+    ``Rcal`` are used (the marginal sub-block; ``Rcal`` is independent of the rest)."""
     import sympy as _sp
     from math import comb
 
-    # loop indices actually present in F (e.g. ['l0','l2'] → [0,2]); F is
+    # loop indices actually present in Rcal (e.g. ['l0','l2'] → [0,2]); Rcal is
     # independent of the absent loops, so the Gaussian marginal sub-block of
     # (a, Σ) over exactly these indices is all that enters.
     lidx = [int(str(s)[1:]) for s in ls]
@@ -571,7 +580,7 @@ def _build_wick_moment(F, ls, qs):
     subs = {ls[k]: asym[k] * Qv + Xi[k] for k in range(p)}
     for qq in qs:
         subs[qq] = Qv                                      # k=2: single external → Q
-    G = _sp.expand(_sp.sympify(F).subs(subs))
+    G = _sp.expand(_sp.sympify(Rcal).subs(subs))
 
     csym, ssym = _sp.Symbol('_c'), _sp.Symbol('_s')        # mean/var of Q
 
@@ -613,28 +622,28 @@ def _build_wick_moment(F, ls, qs):
             acc = coeff                                    # no ξ → ⟨1⟩=1
         EF += Qmom(m) * acc
 
-    Xs, Bs = _sp.Symbol('_X'), _sp.Symbol('_B')
-    EF = _sp.expand(EF.subs({csym: _sp.I * Xs / (2 * Bs), ssym: 1 / (2 * Bs)}))
+    Xs, Bcals = _sp.Symbol('_X'), _sp.Symbol('_Bcal')
+    EF = _sp.expand(EF.subs({csym: _sp.I * Xs / (2 * Bcals), ssym: 1 / (2 * Bcals)}))
 
-    # KEY perf factorization: EF is a polynomial in X (degree ≤ deg_q F) whose
-    # coefficients gₖ(a,Σ,B) are x-INDEPENDENT.  Evaluate the expensive per-sample
+    # KEY perf factorization: EF is a polynomial in X (degree ≤ deg_q Rcal) whose
+    # coefficients gₖ(a,Σ,Bcal) are x-INDEPENDENT.  Evaluate the expensive per-sample
     # gₖ ONCE (not once per x-point), then contract with the cheap X-powers — a
     # ~n_x speedup (n_x≈25 on a real grid), where the form-factor moment eval is
     # otherwise the 2-loop bottleneck (chamber quad is cheap).  ``cse=True`` folds
-    # the shared 1/Bᵏ / aⁱ subexpressions.
+    # the shared 1/Bcalᵏ / aⁱ subexpressions.
     Sord = [(i, j) for i in range(p) for j in range(i, p)]
     EFp = _sp.Poly(EF, Xs) if EF != 0 else None
     Kdeg = EFp.degree() if EFp is not None else 0
     gcoeffs = ([EFp.coeff_monomial(Xs ** k) for k in range(Kdeg + 1)]
                if EFp is not None else [_sp.Integer(0)])
-    gargs = asym + [Ssym[ij] for ij in Sord] + [Bs]
+    gargs = asym + [Ssym[ij] for ij in Sord] + [Bcals]
     gfn = _sp.lambdify(tuple(gargs), gcoeffs, 'numpy', cse=True)
 
-    def moment_x(a, S, B, xs):
-        """``a:(P,L)``, ``S:(P,L,L)``, ``B:(P,)``, ``xs:(n_x,)`` → ``(P,n_x)``."""
+    def moment_x(a, S, Bcal, xs):
+        """``a:(P,L)``, ``S:(P,L,L)``, ``Bcal:(P,)``, ``xs:(n_x,)`` → ``(P,n_x)``."""
         P = a.shape[0]
         vals = ([a[:, lidx[k]] for k in range(p)]
-                + [S[:, lidx[i], lidx[j]] for (i, j) in Sord] + [B])   # each (P,)
+                + [S[:, lidx[i], lidx[j]] for (i, j) in Sord] + [Bcal])   # each (P,)
         g = gfn(*vals)                                      # list of (P,) or scalars
         gmat = np.stack([np.broadcast_to(np.asarray(gk, dtype=complex), (P,))
                          for gk in g], axis=0)              # (K+1, P)
@@ -643,12 +652,12 @@ def _build_wick_moment(F, ls, qs):
         return np.einsum('kp,kx->px', gmat, Xpow)          # (P, n_x)
 
     # ── λ-grading for the Bessel-K backend ──────────────────────────────────
-    # Under the radial scaling w→λw: Σ→Σ/λ and B→λB, so each EF monomial scales as
-    # λ^{−m}, m = (Σ-degree) + (1/B-degree).  Grade EF by m → M_F(λ)=Σ_m λ^{−m}·EF_m,
-    # so the radial integral is Σ_m EF_m·K(P−m).  Extract m via Σ→tg·Σ, B→B/tg.
+    # Under the radial scaling w→λw: Σ→Σ/λ and Bcal→λBcal, so each EF monomial scales as
+    # λ^{−m}, m = (Σ-degree) + (1/Bcal-degree).  Grade EF by m → M_F(λ)=Σ_m λ^{−m}·EF_m,
+    # so the radial integral is Σ_m EF_m·K(P−m).  Extract m via Σ→tg·Σ, Bcal→Bcal/tg.
     _tg = _sp.Symbol('_tg')
     _gsub = {Ssym[ij]: _tg * Ssym[ij] for ij in Sord}
-    _gsub[Bs] = Bs / _tg
+    _gsub[Bcals] = Bcals / _tg
     EFg = _sp.expand(EF.subs(_gsub))
     EFgp = _sp.Poly(EFg, _tg) if EFg != 0 else None
     bpowers = ([int(m) for (m,), _c in EFgp.terms()] if EFgp is not None else [0])
@@ -657,7 +666,7 @@ def _build_wick_moment(F, ls, qs):
     bfn = _sp.lambdify(tuple(gargs + [Xs]), bcoeffs, 'numpy', cse=True)
     _bpow = np.array(bpowers, dtype=float)
 
-    def moment_bessel(a, S, B, xs):
+    def moment_bessel(a, S, Bcal, xs):
         """λ-graded moment for the Bessel backend.  Returns
         ``(powers:(n_m,), g:(n_m,P,n_x))`` with ``M_F(λ)=Σ_m g[m]·λ^{−powers[m]}``."""
         P = a.shape[0]
@@ -666,7 +675,7 @@ def _build_wick_moment(F, ls, qs):
         SS = [S[:, lidx[i], lidx[j]] for (i, j) in Sord]
         outg = np.empty((_bpow.size, P, X.size), dtype=complex)
         for ix in range(X.size):
-            gx = bfn(*(aS + SS + [B, np.full(P, X[ix])]))
+            gx = bfn(*(aS + SS + [Bcal, np.full(P, X[ix])]))
             for im in range(_bpow.size):
                 outg[im, :, ix] = np.broadcast_to(
                     np.asarray(gx[im], dtype=complex), (P,))
@@ -676,7 +685,7 @@ def _build_wick_moment(F, ls, qs):
 
 
 def _formfactor_callable(td, vertex_terms, mode=None, d=1):
-    """Numpy ``F(ell, q)`` for the full-diagram integrator from the symbolic
+    """Numpy ``Rcal(ell, q)`` for the full-diagram integrator from the symbolic
     diagram form factor (:func:`diagram_form_factor`).  Possibly **complex**
     (``∂_x → ik``) — NOT forced real here (the imaginary part is resolved at the
     real-space output).  Generic in ``L`` (any ``ell``), ``n_ext`` (any ``k``),
@@ -685,52 +694,52 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     The table's weights MUST already be numeric (couplings substituted).
     ``d=1``: ``ell`` is ``(...,L)``, ``q`` is ``(n_ext,)`` — symbols ``lᵢ→ell[...,i]``,
     ``qⱼ→q[j]``.  ``d≥2``: ``ell`` is ``(...,L,d)``, ``q`` is ``(n_ext,d)`` — the
-    per-axis symbols ``lᵢ_α → ell[...,i,α]``, ``qⱼ_α → q[j,α]``.  ``F=0`` → zeros."""
+    per-axis symbols ``lᵢ_α → ell[...,i,α]``, ``qⱼ_α → q[j,α]``.  ``Rcal=0`` → zeros."""
     import sympy as _sp
-    F = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode, d=d))
+    Rcal = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode, d=d))
     if d == 1:
-        if F == 0:
+        if Rcal == 0:
             return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
-        ls = sorted([s for s in F.free_symbols if str(s)[:1] == 'l'], key=str)
-        qs = sorted([s for s in F.free_symbols if str(s)[:1] == 'q'], key=str)
-        fn = _sp.lambdify(tuple(ls) + tuple(qs), F, 'numpy')
+        ls = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'l'], key=str)
+        qs = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'q'], key=str)
+        fn = _sp.lambdify(tuple(ls) + tuple(qs), Rcal, 'numpy')
         nl, nq = len(ls), len(qs)
 
         def ff(ell, q):
             qvec = np.atleast_1d(np.asarray(q, dtype=float))
             args = ([ell[..., i] for i in range(nl)]
                     + [float(qvec[j]) for j in range(nq)])
-            return fn(*args) * np.ones(ell.shape[:-1])   # complex if F has i (∂_x)
+            return fn(*args) * np.ones(ell.shape[:-1])   # complex if Rcal has i (∂_x)
         # Minimal EXACT Gauss–Hermite order: GH(n) integrates degree ≤ 2n−1
-        # exactly.  Use the TOTAL degree of F in the loop momenta (NOT max per-
+        # exactly.  Use the TOTAL degree of Rcal in the loop momenta (NOT max per-
         # variable): the Cholesky map ℓ=ℓ̄+Ch·Z mixes loops, so ℓ₀ℓ₁ → a Z₀² term
         # whose per-Z degree reaches the total degree.  This is the cheap, exact
         # speedup (e.g. 6 → 2-3 ⇒ the GH grid shrinks (n/6)^L).
-        ff.gh_order_needed = _min_gh_order(F, ls)
-        # q-degree of ⟨F⟩_ℓ ≤ total degree of F (the ℓ-average turns ℓ̄∝q into q):
+        ff.gh_order_needed = _min_gh_order(Rcal, ls)
+        # q-degree of ⟨Rcal⟩_ℓ ≤ total degree of Rcal (the ℓ-average turns ℓ̄∝q into q):
         # the number of q-nodes for the analytic-IFT polynomial fit (Phase 2).
         try:
-            ff.q_poly_deg = int(_sp.Poly(F, *(ls + qs)).total_degree()) if (ls or qs) else 0
+            ff.q_poly_deg = int(_sp.Poly(Rcal, *(ls + qs)).total_degree()) if (ls or qs) else 0
         except Exception:
             ff.q_poly_deg = 8
         # Principled analytic IFT: the joint-(ℓ,q)-Gaussian moment (one pass per
         # diagram, no q-node loop / no GH grid).  Used by _formfactor_average_x;
         # falls back to the polynomial fit if construction fails.
         try:
-            ff.moment_x, ff.moment_bessel = _build_wick_moment(F, ls, qs)
+            ff.moment_x, ff.moment_bessel = _build_wick_moment(Rcal, ls, qs)
         except Exception:
             ff.moment_x = ff.moment_bessel = None
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
-    if F == 0:
+    if Rcal == 0:
         return lambda ell, q: np.zeros(ell.shape[:-2], dtype=complex)
     parsed = []                       # (symbol, kind 'l'/'q', index, axis)
-    for s in sorted(F.free_symbols, key=str):
+    for s in sorted(Rcal.free_symbols, key=str):
         nm = str(s)
         idx, ax = nm[1:].split('_')
         parsed.append((s, nm[0], int(idx), int(ax)))
-    fn = _sp.lambdify(tuple(s for s, *_ in parsed), F, 'numpy')
+    fn = _sp.lambdify(tuple(s for s, *_ in parsed), Rcal, 'numpy')
 
     def ff(ell, q):
         qarr = np.asarray(q, dtype=float)                # (n_ext, d)
@@ -741,7 +750,7 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     # Minimal EXACT Gauss–Hermite order from the TOTAL loop-degree (see d=1
     # note): the d≥2 grid is gh_order^{L·d}, so this is a large saving.
     loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
-    ff.gh_order_needed = _min_gh_order(F, loopsyms)
+    ff.gh_order_needed = _min_gh_order(Rcal, loopsyms)
     return ff
 
 
@@ -819,9 +828,9 @@ def compute_spatial_correlator_generic(
     A0 = float(np.real(A0)); B0 = float(np.real(B0)); N0 = float(np.real(N0))
 
     # Derivative/∇ interaction vertices (operator-IR theories, e.g. Model-B
-    # conserved ∇²(φ²)) deposit a momentum-space FORM FACTOR F(ℓ,q) on the loop.
+    # conserved ∇²(φ²)) deposit a momentum-space FORM FACTOR Rcal(ℓ,q) on the loop.
     # The full-diagram integrator averages it over the loop-momentum Gaussian by
-    # Gauss–Hermite (exact for the polynomial F).  Extracted per diagram below;
+    # Gauss–Hermite (exact for the polynomial Rcal).  Extracted per diagram below;
     # bubble-specific ⇒ 1-loop only (higher-loop form factors are future work).
     # The operator-IR lowering stashes a per-vertex-type TABLE: each
     # derivative-vertex type carries its coupling weight, physical-leg count,
@@ -855,7 +864,7 @@ def compute_spatial_correlator_generic(
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
     # Substitute the numeric couplings into the symbolic weights c_t/Σc → a
-    # numeric form-factor table (the lambdified F then carries only momentum
+    # numeric form-factor table (the lambdified Rcal then carries only momentum
     # symbols).  For a single derivative vertex the weight is 1 (unchanged).  A
     # 0/0 weight means ALL couplings of that signature are 0 — the diagram's
     # prefactor is then 0 too (dropped by the live filter), so weight 0 is safe.
