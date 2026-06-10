@@ -196,6 +196,14 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     gvec = None if g is None else np.broadcast_to(
         np.asarray(g, dtype=float), (n_f,)).copy()
 
+    # Coerce scalar arguments to plain python types: under the Sage NOTEBOOK
+    # kernel, numeric literals arrive as sage Integer/RealNumber, which break
+    # round()/np arithmetic below (no __round__).  Harmless under sage -python.
+    L, dt = float(L), float(dt)
+    t_burn, t_run = float(t_burn), float(t_run)
+    n_x, n_rep, seed = int(n_x), int(n_rep), int(seed)
+    lags = tuple(float(t) for t in lags)
+
     dx = L / n_x
     # Diffusive Courant constraint: explicit FD diffusion is stable for
     # dt*D/dx^2 < 0.5; we keep BOTH schemes below 0.4 (margin + Pade
@@ -318,6 +326,9 @@ def coupled_box_correlator(M, Dvec, Nnoise, L, n_x, taus,
     'taus': (n_tau,)} with the same layout/normalization as
     :func:`simulate_coupled_rd_1d` (C[..., r] = C(x = r*dx)).
     """
+    L = float(L)
+    n_x = int(n_x)
+    taus = [float(t) for t in taus]
     M = np.asarray(M, dtype=float)
     n_f = M.shape[0]
     n_x = int(n_x)

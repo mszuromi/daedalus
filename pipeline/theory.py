@@ -238,13 +238,20 @@ class _SpatialMethods:
                 f"supports 'off' and 'fixed' (see "
                 f"docs/dyson_duhamel_integration_plan.md).")
         if mode == 'fixed':
-            if isinstance(order, bool) or not isinstance(order, int) \
-                    or order < 0:
+            # accept any integral type (e.g. a Sage Integer from the notebook
+            # preparser) but reject bools, floats, and negatives
+            import operator
+            try:
+                order_i = (None if isinstance(order, bool)
+                           else operator.index(order))
+            except TypeError:
+                order_i = None
+            if order_i is None or order_i < 0:
                 raise ValueError(
                     f"dyson(mode='fixed', order={order!r}): a "
                     f"truncation order int >= 0 is required (each "
                     f"retarded edge sums Dyson insertions n = 0…order).")
-            self._dyson = {'mode': mode, 'order': int(order)}
+            self._dyson = {'mode': mode, 'order': order_i}
         else:
             self._dyson = {'mode': mode}
         return self
