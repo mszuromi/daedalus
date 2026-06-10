@@ -126,7 +126,17 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
     for j in range(0, j_max + 1):
         num_leaves = k + j
         v3_max = k + j - 2
-        v2_max = 2 * v3_max + 3 * ell - k - 3 * j - (j // 3) + 3
+        # |V2^T| <= k + 3*ell - j - 1 (= 2*v3_max + 3*ell - k - 3*j + 3): the
+        # PROVEN tree-decomposition bound (paper appendix, corrected theorem:
+        # degree-partition identity + |V2^G| <= k + ell - 1 from orientability
+        # + theta <= 2*ell - j by incidence counting).  The earlier extra
+        # "- (j // 3)" tightening came from a theta-lemma that is FALSE at
+        # ell >= 3 (counterexample: three doubled-edge bubbles on a hub —
+        # every decomposition has j = 3, theta = 3 > 2*ell - j - j//3); it
+        # never happened to bind at small orders (slack >= 2 verified by
+        # exhaustive enumeration at (k,ell) in {(2,1),(3,1),(2,2),(3,2),
+        # (4,1),(2,3)}), but only the proven bound guarantees completeness.
+        v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
 
         min_n = num_leaves if num_leaves == 1 else num_leaves + 1
         max_n = min(num_leaves + v2_max + v3_max, max_vertices_search)
