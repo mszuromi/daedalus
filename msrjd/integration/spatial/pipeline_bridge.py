@@ -1051,10 +1051,24 @@ def compute_coupled_loop_correlator(
     M = np.asarray(tree_info['M'], dtype=float)
     Dhat = np.asarray(tree_info['Dhat'], dtype=float)
     D0 = float(tree_info['D0'])
+    dress_order = 0
     if not np.allclose(Dhat, 0.0):
-        raise NotImplementedError(
-            'coupled loop corrections need scalar diffusion (𝒟̂=0); unequal '
-            'diffusion requires the Dyson–Duhamel per-edge dressing (D-3).')
+        # UNEQUAL diffusion: per-edge Dyson dressing (D-3 loop), policy-gated.
+        _env = os.environ.get('SPATIAL_DYSON_ORDER')
+        pol = ({'mode': 'fixed', 'order': int(_env)} if _env else
+               (model.get('spatial') or {}).get('dyson') or {'mode': 'off'})
+        if pol.get('mode') != 'fixed':
+            raise NotImplementedError(
+                'coupled loop corrections with unequal diffusion (𝒟̂≠0) need '
+                'the Dyson–Duhamel dressing — set a truncation order with '
+                'SpatialTheoryBuilder.dyson_order(N) (loops support N=1, the '
+                'leading O(𝒟̂) correction).')
+        dress_order = int(pol['order'])
+        if dress_order > 1:
+            raise NotImplementedError(
+                f'coupled LOOP dressing supports dyson order <= 1 (the leading '
+                f'O(𝒟̂) insertion; tree level supports any order); requested '
+                f'order={dress_order}.  Run loops at dyson_order(1).')
     if tree_info.get('bc_mode') == 'periodic':
         raise NotImplementedError(
             'coupled loop corrections v1: infinite boundary only.')
@@ -1066,6 +1080,9 @@ def compute_coupled_loop_correlator(
             'with the spectral-assignment sum.')
     eig, proj = spectral_projectors(M)
     nf = len(eig)
+    # 𝓗₁ string matrices P_α𝒟̂P_β (B27 at n=1) for the dressing patterns
+    PDP = ([[proj[a_] @ Dhat @ proj[b_] for b_ in range(nf)]
+            for a_ in range(nf)] if dress_order >= 1 else None)
     mu_scale = float(np.min(eig.real))
     if not mu_scale > 0.0:
         raise SpatialPropagatorError(
@@ -1103,6 +1120,7 @@ def compute_coupled_loop_correlator(
             n_rows = len(rows)
             # per-segment (resp, phys) matrix indices from CEdge.fpairs
             elems = np.empty((n_rows, nf), dtype=complex)
+            fp_rows = []
             for r, (ei, e, half) in enumerate(rows):
                 if not e.fpairs:
                     raise SpatialPropagatorError(
@@ -1110,6 +1128,7 @@ def compute_coupled_loop_correlator(
                         'field indices (fpairs) — descriptor built from a '
                         'typed diagram without propagator_indices?')
                 ri_, pi_ = e.fpairs[0] if half in ('R', 'Cu') else e.fpairs[1]
+                fp_rows.append((ri_, pi_))
                 for a_i in range(nf):
                     elems[r, a_i] = proj[a_i][pi_, ri_]
             assign = np.array(list(itertools.product(range(nf), repeat=n_rows)),
@@ -1121,6 +1140,51 @@ def compute_coupled_loop_correlator(
             n_live += 1
             Wk = Wgt[keep]
             mass_table = eig[assign[:, keep]]           # (n_rows, n_kept)
+
+            # ── Dyson dressing patterns (𝒟̂≠0, total order 1) ──────────────
+            # Each pattern dresses ONE segment r at n=1: its label set expands
+            # to the partial-fraction poles of 𝓗₁ — string (α,β) with matrix
+            # element [P_α𝒟̂P_β]_{p,r} gives poles (m_α, +mel/Δm), (m_β,
+            # −mel/Δm) (Δm=m_β−m_α), or the CONFLUENT w·e^{−mw} (κ=1, weight
+            # mel) when Δm≈0; the (−|k_r|²) momentum insertion rides
+            # diagram_kinematic_spectral(insert_row=r).
+            patterns = [(None, Wk, mass_table, None)]
+            if dress_order >= 1:
+                eig_scale = float(np.max(np.abs(eig))) or 1.0
+                for r in range(n_rows):
+                    ri_r, pi_r = fp_rows[r]
+                    labels_r = []
+                    for al in range(nf):
+                        for be in range(nf):
+                            mel = PDP[al][be][pi_r, ri_r]
+                            if abs(mel) < 1e-300:
+                                continue
+                            dm = eig[be] - eig[al]
+                            if abs(dm) > 1e-8 * eig_scale:
+                                labels_r.append((eig[al], 0.0, mel / dm))
+                                labels_r.append((eig[be], 0.0, -mel / dm))
+                            else:
+                                labels_r.append(
+                                    (0.5 * (eig[al] + eig[be]), 1.0, mel))
+                    if not labels_r:
+                        continue
+                    per_row = [labels_r if s == r else
+                               [(eig[a2], 0.0, elems[s, a2])
+                                for a2 in range(nf)]
+                               for s in range(n_rows)]
+                    combos = list(itertools.product(*per_row))
+                    Wp = np.array([np.prod([c[s][2] for s in range(n_rows)])
+                                   for c in combos], dtype=complex)
+                    kp = np.abs(Wp) > 1e-14 * max(np.max(np.abs(Wp)), 1e-300)
+                    if not np.any(kp):
+                        continue
+                    mt = np.array([[c[s][0] for c in combos]
+                                   for s in range(n_rows)], dtype=complex)
+                    pt = np.array([[c[s][1] for c in combos]
+                                   for s in range(n_rows)], dtype=float)
+                    pt_k = pt[:, kp]
+                    patterns.append((r, Wp[kp], mt[:, kp],
+                                     pt_k if np.any(pt_k) else None))
             n_C = sum(1 for e_ in dd.edges if e_.kind == 'C')
             nt, ns = (22, 24) if n_C <= 2 else (16, 14)
             # same accuracy overrides as the single-field generic path (_grid)
@@ -1165,10 +1229,12 @@ def compute_coupled_loop_correlator(
                 et_list, fac = _ets(tau)
                 val = 0.0
                 for et in et_list:
-                    I = diagram_kinematic_spectral(
-                        dd, [0.0], et, mass_table, D0, spatial_dim=d, xs=xg,
-                        n_t=nt, n_s=ns, mu_scale=mu_scale)   # (n_kept, n_x)
-                    val = val + pv * (Wk @ I)
+                    for irow, Wp, mt, pt in patterns:
+                        I = diagram_kinematic_spectral(
+                            dd, [0.0], et, mt, D0, spatial_dim=d, xs=xg,
+                            n_t=nt, n_s=ns, mu_scale=mu_scale,
+                            power_table=pt, insert_row=irow)  # (n_kept, n_x)
+                        val = val + pv * (Wp @ I)
                 dCx_by_ell[el][it, :] += fac * val
 
     C_by_order = {0: np.array(C0, dtype=np.complex128)}

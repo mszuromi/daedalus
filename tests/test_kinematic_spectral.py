@@ -158,3 +158,85 @@ def test_rejects_nonpositive_mass():
     with pytest.raises(ValueError, match='Re m > 0'):
         diagram_kinematic_spectral(_tree(), [0.0], {0: 0.0, 1: 0.5},
                                    np.array([1.0, -0.2]), 0.5)
+
+
+# ── Dyson loop dressing primitives (D-3 loop, order n=1) ─────────────────────
+
+def test_insertion_identity_vs_finite_difference():
+    """The closed-form n=1 insertion factor (−|k_r|²) == (1/D)∂/∂w_r of the
+    momentum factor — pinned per-sample against a central finite difference of
+    _momentum_factor_batch, for a LOOP row and an EXTERNAL row of the bubble."""
+    from msrjd.integration.spatial.full_integrator import _momentum_factor_batch
+
+    descr = _bubble()
+    rows = spectral_rows(descr)
+    a = np.array([r[1].a for r in rows], dtype=float).reshape(len(rows), -1)
+    b = np.array([r[1].b for r in rows], dtype=float).reshape(len(rows), -1)
+    D, qv = 0.7, 0.9
+    rng = np.random.default_rng(3)
+    w = 0.3 + rng.random((5, len(rows)))                  # (P, n_rows)
+    base, Lam, N, ok = _momentum_factor_batch(a, b, w, [qv], D, 1,
+                                              return_gaussian=True)
+    assert np.all(ok)
+    for r in (0, 2):                                      # external row, loop row
+        # closed form: (1/D)[−(1/2)g_r − q²·D(b_r − a_rᵀΛ⁻¹N)²]
+        LamiA = np.linalg.solve(Lam, np.broadcast_to(a[r], (5, a.shape[1]))[..., None])[..., 0]
+        g = LamiA @ a[r]
+        u = np.einsum('pl,pl->p', LamiA, N[:, :, 0])
+        fac = (-(0.5) * g - qv * qv * D * (b[r, 0] - u) ** 2) / D
+        # finite difference of the momentum factor in w_r
+        h = 1e-6
+        wp, wm = w.copy(), w.copy()
+        wp[:, r] += h
+        wm[:, r] -= h
+        fd = (_momentum_factor_batch(a, b, wp, [qv], D, 1)
+              - _momentum_factor_batch(a, b, wm, [qv], D, 1)) / (2 * h * D)
+        assert np.allclose(base * fac, fd, rtol=2e-6), (r, base * fac, fd)
+
+
+def test_insertion_on_external_row_is_d2dx2():
+    """Inserting (−|k_r|²) on a purely-external row (k_r = q) multiplies by −q²
+    in q-space ⇒ the xs-path insertion equals ∂²/∂x² of the base result."""
+    descr = _tree()
+    D, tau = 0.6, 0.5
+    table = np.array([0.9, 1.7], dtype=complex)
+    et = {0: 0.0, 1: tau}
+    hx = 0.05
+    x0s = np.array([0.4, 1.0])
+    xs = np.concatenate([[x - 2 * hx, x - hx, x, x + hx, x + 2 * hx]
+                         for x in x0s])
+    base = diagram_kinematic_spectral(descr, [0.0], et, table, D, n_s=48,
+                                      xs=xs)[0].real
+    ins = diagram_kinematic_spectral(descr, [0.0], et, table, D, n_s=48,
+                                     xs=x0s, insert_row=0)[0].real
+    scale = float(np.max(np.abs(ins)))
+    for k, x in enumerate(x0s):
+        f = base[5 * k:5 * k + 5]
+        # 5-point central second derivative, O(h⁴)
+        d2 = (-f[0] + 16 * f[1] - 30 * f[2] + 16 * f[3] - f[4]) / (12 * hx ** 2)
+        assert abs(ins[k] - d2) < 2e-3 * scale, (x, ins[k], d2)
+    # q-path: trivially −q² × base
+    qv = 0.8
+    b_q = diagram_kinematic_spectral(descr, [qv], et, table, D, n_s=48)[0]
+    i_q = diagram_kinematic_spectral(descr, [qv], et, table, D, n_s=48,
+                                     insert_row=1)[0]
+    assert i_q == pytest.approx(-qv * qv * b_q, rel=1e-10)
+
+
+def test_power_table_confluent_amplitude():
+    """κ=1 on the late C half: ∫dσ (τ+σ)·e^{−m_uσ−m_v(τ+σ)}e^{−Dq²(τ+2σ)} —
+    the confluent dressed-segment form w·e^{−mw}, vs direct quadrature."""
+    descr = _tree()
+    D, qv, tau = 0.6, 0.7, 0.5
+    m_u, m_v = 0.9, 1.4
+    table = np.array([m_u, m_v], dtype=complex)
+    powers = np.array([0.0, 1.0])
+    val = diagram_kinematic_spectral(descr, [qv], {0: 0.0, 1: tau}, table, D,
+                                     n_s=48, power_table=powers)[0]
+
+    def f(s):
+        return ((tau + s) * np.exp(-m_u * s - m_v * (tau + s))
+                * np.exp(-D * qv * qv * (tau + 2 * s)))
+    oracle = quad(f, 0, 80.0, limit=400)[0]
+    assert val.real == pytest.approx(oracle, rel=1e-7)
+    assert abs(val.imag) < 1e-14

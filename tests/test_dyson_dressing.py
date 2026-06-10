@@ -201,14 +201,105 @@ def test_unequal_D_default_policy_raises_actionable():
                           parallel=False, verbose=False, use_cache=False)
 
 
-def test_unequal_D_loops_still_gated():
-    """Loops + unequal D = the per-edge loop dressing (future work): max_ell=1
-    on a dressed unequal-D theory raises cleanly."""
+def test_unequal_D_loops_order2_gated():
+    """Loops support the leading O(𝒟̂) insertion only: dyson_order(2) with
+    max_ell=1 raises cleanly (order ≤ 1 for loops; trees support any order)."""
     from pipeline import compute_cumulants
     model = _unequal_model(order=2, periodic_L=20.0)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match='order'):
         compute_cumulants(model=model, k=2, max_ell=1, fundamental=_UF,
                           external_fields=[('a', 1), ('a', 1)],
                           tau_max=0.5, tau_step=0.5,
                           spatial_grid=np.array([0.0, 1.0]),
                           parallel=False, verbose=False, use_cache=False)
+
+
+# ── D-3 LOOP dressing: the decoupled-unequal-D ladder (the sharp referee) ───
+
+def _ladder_coupled_model(order):
+    """(Near-)decoupled 2-field theory, UNEQUAL D, with BOTH a² (bubble,
+    momentum-mixing) and a³ (tadpole) vertices on field a.  eps=1e-8 keeps the
+    coupled routing (symbolically nonzero K_ft off-diagonals) while the exact
+    physics is two independent fields — field a's answer is the trusted
+    single-field generic loop path at D=Da."""
+    from pipeline.theory import SpatialTheoryBuilder
+    b = (SpatialTheoryBuilder('ladder_unequalD')
+         .physical_field('a', spatial_dim=1)
+         .physical_field('b', spatial_dim=1)
+         .parameter('mua', default=_MU1, domain='positive')
+         .parameter('mub', default=_MU2, domain='positive')
+         .parameter('Da', default=_D1, domain='positive')
+         .parameter('Db', default=_D2, domain='positive')
+         .parameter('eps', default=1e-8)
+         .parameter('gq', default=0.3)
+         .parameter('ga', default=0.3)
+         .parameter('Ta', default=_T1, domain='positive')
+         .parameter('Tb', default=_T2, domain='positive'))
+    action = ('at*((Dt+mua-Da*Laplacian)*a + eps*b + gq*a^2 + ga*a^3) '
+              '+ bt*((Dt+mub-Db*Laplacian)*b - eps*a) '
+              '- Ta*at^2 - Tb*bt^2')
+    return (b.set_action_text(action)
+            .equation(lhs='(Dt+mua-Da*Laplacian)*a + eps*b + gq*a^2 + ga*a^3',
+                      rhs='0')
+            .equation(lhs='(Dt+mub-Db*Laplacian)*b - eps*a', rhs='0')
+            .boundary('infinite').initial('stationary')
+            .dyson_order(order).build())
+
+
+_LUF = {'mua': _MU1, 'mub': _MU2, 'Da': _D1, 'Db': _D2, 'eps': 1e-8,
+        'gq': 0.3, 'ga': 0.3, 'Ta': _T1, 'Tb': _T2}
+
+
+def test_unequal_D_loop_dressing_ladder():
+    """THE loop-dressing referee: the decoupled-unequal-D loop correction dC
+    must converge to the single-field answer at D=Da — order 0 (no dressing,
+    the wrong D₀=(Da+Db)/2 heat kernel, error O(ρ)) → order 1 (the (−|k|²)
+    insertion + 𝓗₁ poles, error O(ρ²)); ρ = ‖𝒟̂‖/D₀ ≈ 0.29.  Covers tadpole
+    AND momentum-mixing bubble topologies (a² + a³ vertices)."""
+    from pipeline import compute_cumulants
+    from pipeline.theory import SpatialTheoryBuilder
+
+    sg = np.array([0.0, 0.8])
+    kw = dict(k=2, max_ell=1, tau_max=0.6, tau_step=0.6,
+              parallel=False, verbose=False, use_cache=False)
+
+    def loop_piece(th):
+        info = th['spatial_info']
+        return (np.asarray(info['C_by_order'][1])
+                - np.asarray(info['C_by_order'][0]))
+
+    dC = {}
+    for order in (0, 1):
+        th = compute_cumulants(model=_ladder_coupled_model(order),
+                               fundamental=_LUF,
+                               external_fields=[('a', 1), ('a', 1)],
+                               spatial_grid=sg, **kw)
+        assert th['spatial_info'].get('coupled_loop')
+        dC[order] = loop_piece(th)
+
+    scalar = (SpatialTheoryBuilder('ladder_single')
+              .physical_field('phi', spatial_dim=1)
+              .parameter('mu', default=_MU1, domain='positive')
+              .parameter('D', default=_D1, domain='positive')
+              .parameter('gq', default=0.3)
+              .parameter('ga', default=0.3)
+              .parameter('T', default=_T1, domain='positive')
+              .set_action_text('phit*((Dt+mu-D*Laplacian)*phi + gq*phi^2 '
+                               '+ ga*phi^3) - T*phit^2')
+              .equation(lhs='(Dt+mu-D*Laplacian)*phi + gq*phi^2 + ga*phi^3',
+                        rhs='0')
+              .boundary('infinite').initial('stationary').build())
+    th_s = compute_cumulants(model=scalar,
+                             fundamental={'mu': _MU1, 'D': _D1, 'gq': 0.3,
+                                          'ga': 0.3, 'T': _T1},
+                             external_fields=[('phi', 1), ('phi', 1)],
+                             spatial_grid=sg, **kw)
+    dC_ref = loop_piece(th_s)
+
+    scale = np.max(np.abs(dC_ref))
+    err0 = np.max(np.abs(dC[0] - dC_ref)) / scale
+    err1 = np.max(np.abs(dC[1] - dC_ref)) / scale
+    # the LADDER: the n=1 insertion must remove the O(ρ) error
+    assert err1 < 0.55 * err0, f'no ladder improvement: err0={err0:.4f} err1={err1:.4f}'
+    assert err1 < 0.15, f'order-1 dressing too far off: err1={err1:.4f} (err0={err0:.4f})'
+    assert err0 > 0.10, f'order-0 suspiciously accurate (test not discriminating): {err0:.4f}'

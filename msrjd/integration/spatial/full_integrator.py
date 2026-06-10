@@ -653,7 +653,7 @@ def spectral_rows(descr):
 
 def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                                spatial_dim=1, W=None, n_t=22, n_s=24, xs=None,
-                               mu_scale=None):
+                               mu_scale=None, power_table=None, insert_row=None):
     """Coupled-field kinematic integral with PER-SEGMENT masses (Dyson 3c).
 
     The spectral-assignment companion of :func:`diagram_kinematic`: same
@@ -673,6 +673,24 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     xs : None | array
         ``None`` → return ``(n_assign,)`` complex values at external ``q_vec``;
         array → analytic heat-kernel IFT, return ``(n_assign, n_x)`` complex.
+    power_table : None | (n_rows, n_assign) int array  (Dyson loop dressing)
+        Per-row polynomial powers κ: amplitude ``∏_r w_r^{κ_r} e^{−m_r w_r}``
+        — the CONFLUENT dressed-segment form ``w·e^{−mw}`` (equal-eigenvalue
+        Duhamel string) that partial fractions cannot produce.
+    insert_row : None | int  (Dyson loop dressing, order n=1)
+        Multiply the momentum integral by ``(−|k_r|²)`` for this row's routed
+        momentum — evaluated EXACTLY via the derivative identity
+        ``(−k_r²)·e^{−D w_r k_r²} = (1/D)·∂/∂w_r`` applied to the closed-form
+        Symanzik factors:  ``∂U/∂w_r = U·g_r`` (rank-1, ``g_r=a_rᵀΛ⁻¹a_r``),
+        ``∂𝓑/∂w_r = D·(b_r − a_rᵀΛ⁻¹N)²``, so
+
+          xs path: factor = (1/D)[−(d/2)·g_r − ∂𝓑_r·(d/(2𝓑) − x²/(4𝓑²))·D⁻¹·D]
+          q  path: factor = (1/D)[−(d/2)·g_r − q²·∂𝓑_r]
+
+        (the heat kernel's 𝓑-derivative gives the x-dependent term).  This is
+        the B26 ``(−|k|²)^n`` insertion at ``n=1`` — the leading O(𝒟̂) loop
+        dressing.  Higher ``n`` is not implemented here (tree-level dressing
+        supports all orders via ``dyson_dressing``).
 
     Plain vertices only (no form factor), deterministic grid only — the
     coupled v1 surface.  The single-field/diagonal path is untouched
@@ -697,6 +715,16 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             f'diagram_kinematic_spectral: mass_table has {mass_table.shape[0]} '
             f'rows, expected {n_rows} (= n_R + 2·n_C segments).')
     n_assign = mass_table.shape[1]
+    if power_table is not None:
+        power_table = np.asarray(power_table, dtype=float)
+        if power_table.ndim == 1:
+            power_table = power_table[:, None]
+        if power_table.shape != mass_table.shape:
+            raise ValueError(
+                f'power_table shape {power_table.shape} != mass_table '
+                f'{mass_table.shape}.')
+    if insert_row is not None and not (0 <= int(insert_row) < n_rows):
+        raise ValueError(f'insert_row {insert_row} out of range (n_rows={n_rows}).')
     re_min = float(np.min(mass_table.real))
     if not re_min > 0.0:
         raise ValueError(
@@ -791,31 +819,76 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             else:                                      # 'Cv'
                 w_rows[:, r] = np.maximum(tv - tu, 0.0) + sig[ci_of[ei]]
 
-        # batched mass amplitude: (P, n_assign), shared Symanzik per chamber
-        amp = wfull[:, None] * np.exp(-(w_rows @ mass_table))
+        # batched mass amplitude: (P, n_assign), shared Symanzik per chamber;
+        # power_table adds the confluent ∏ w_r^{κ_r} (via exp(κ·log w))
+        expo = -(w_rows @ mass_table)
+        if power_table is not None:
+            expo = expo + np.log(np.maximum(w_rows, 1e-300)) @ power_table
+        amp = wfull[:, None] * np.exp(expo)
+
+        # n=1 momentum insertion (−|k_r|²): per-sample Gaussian pieces for row r
+        def _ins_pieces(Lam_b, N_b, okm):
+            """(g_r, dB_r) per sample: g=a_rᵀΛ⁻¹a_r, dB=D(b_r−a_rᵀΛ⁻¹N)²."""
+            r = int(insert_row)
+            br = float(b[r, 0])
+            if L == 0 or Lam_b is None:
+                return np.zeros(P), np.full(P, D * br * br)
+            g = np.zeros(P)
+            u = np.zeros(P)
+            if np.any(okm):
+                LamiA = np.linalg.solve(Lam_b[okm],
+                                        np.broadcast_to(a[r], (int(np.sum(okm)), L))[..., None])[..., 0]
+                g[okm] = LamiA @ a[r]
+                u[okm] = np.einsum('pl,pl->p', LamiA, N_b[okm][:, :, 0])
+            return g, D * (br - u) ** 2
 
         if xs_arr is not None:                         # analytic heat-kernel IFT
             if L == 0:                                 # tree: Bcal = D·Σ w_r b_r²
                 Bcal_k = D * (w_rows @ (b[:, 0] ** 2))
                 pref = np.ones(P)
                 okk = Bcal_k > 1e-300
+                Lamb = Nb = None
+            elif insert_row is not None:
+                pref, Bcal_k, okk, Lamb, Nb, _Qb = _symanzik_kernel_batch(
+                    a, b, w_rows, D, spatial_dim, return_gaussian=True)
             else:
                 pref, Bcal_k, okk = _symanzik_kernel_batch(a, b, w_rows, D,
                                                            spatial_dim)
+                Lamb = Nb = None
             good = okk & (Bcal_k > 1e-300)
             if np.any(good):
                 Bcal_g = Bcal_k[good]
                 hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
                       * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
                 wamp = amp[good, :] * pref[good][:, None]
-                total = total + np.einsum('pj,px->jx', wamp, hk)
+                if insert_row is not None:
+                    g_r, dB_r = _ins_pieces(Lamb, Nb, okk)
+                    d_ = float(spatial_dim)
+                    fac = (-(0.5 * d_) * g_r[good, None] / D
+                           - (dB_r[good, None] / D)
+                           * (0.5 * d_ / Bcal_g[:, None]
+                              - (xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None] ** 2)))
+                    total = total + np.einsum('pj,px,px->jx', wamp, hk, fac)
+                else:
+                    total = total + np.einsum('pj,px->jx', wamp, hk)
         else:
             if L == 0:                                 # tree: e^{−D q² Σ w_r b_r²}
                 qv = float(q_vec[0])
                 momfac = np.exp(-D * (qv * qv) * (w_rows @ (b[:, 0] ** 2)))
+                Lam_b = N_b = None
+                okm = np.ones(P, dtype=bool)
+            elif insert_row is not None:
+                momfac, Lam_b, N_b, okm = _momentum_factor_batch(
+                    a, b, w_rows, q_vec, D, spatial_dim, return_gaussian=True)
             else:
                 momfac = _momentum_factor_batch(a, b, w_rows, q_vec, D,
                                                 spatial_dim)
+            if insert_row is not None:
+                g_r, dB_r = _ins_pieces(Lam_b, N_b, okm)
+                d_ = float(spatial_dim)
+                qv = float(q_vec[0])
+                fac = (-(0.5 * d_) * g_r - (qv * qv) * dB_r) / D
+                momfac = momfac * fac
             total = total + amp.T @ momfac
     return total
 
