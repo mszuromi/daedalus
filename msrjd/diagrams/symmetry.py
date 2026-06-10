@@ -241,7 +241,7 @@ def _colored_incidence_digraph(typed_diagram, fix_external=True):
     D.add_edges(edges_directed)
 
     partition = list(color_groups.values())
-    return D, partition, vertex_label_map
+    return D, partition, vertex_label_map, color_groups
 
 
 def vertex_role_signature(vertex, typed_diagram):
@@ -333,11 +333,71 @@ def _automorphism_order(typed_diagram, fix_external=True):
     convention used by Phase J, where the external Wick permutations
     are handled separately by the per-prediagram enumeration loop).
     """
-    D, partition, _ = _colored_incidence_digraph(
+    D, partition, _, _ = _colored_incidence_digraph(
         typed_diagram, fix_external=fix_external
     )
     grp = D.automorphism_group(partition=partition)
     return int(grp.order())
+
+
+def external_wick_compensation(typed_diagram):
+    r"""
+    Number of external-leaf permutations of *typed_diagram* that are
+    realizable by graph automorphisms:
+
+        comp  =  |Aut(Γ, leaves free)| / |Aut(Γ, leaves fixed)|
+
+    This is the EXACT divisor for the external-Wick mapping sum in
+    ``integrate_diagram`` / ``integrate_grouped_diagram``.  Those
+    integrators enumerate every field-respecting assignment of
+    canonical external positions to diagram leaves and sum the
+    integrand over all of them.  By orbit–stabilizer, two assignments
+    yield the same *pinned-external* diagram iff they differ by an
+    automorphism that permutes leaves, and the stabilizer of any
+    assignment is exactly ``Aut_fixed_ext`` — so every distinct
+    pinned-external diagram class is counted
+
+        |Aut(Γ, leaves free)| / |Aut(Γ, leaves fixed)|
+
+    times by the mapping sum.  Dividing by this index makes the sum
+    equal to the sum over distinct pinned diagrams, which is what the
+    Feynman rules require (each pinned diagram already carries its
+    full weight via ``combinatorial_factor``, whose denominator is
+    the SAME ``Aut_fixed_ext``).
+
+    History
+    -------
+    The previous implementation approximated this index as
+    ``∏ N_{sig,field}!`` over leaves grouped by the
+    ``vertex_role_signature`` of their attachment vertex.  That
+    heuristic over-divides whenever two attachment vertices share a
+    role signature (a shallow, depth-1 invariant) but are NOT related
+    by any automorphism — e.g. the k=4 OU+εx³ 1-loop cascades, where
+    three noise vertices all read "noise feeding a cubic" at depth 1
+    yet hang off structurally distinct cubics.  The resulting ×⅓ / ×½
+    deficits broke every k≥3 1-loop cumulant while leaving k=2 exact
+    (at k=2 the heuristic happens to coincide with the index).
+    Validated against the exact Boltzmann series κ₄ = −6ε + 126ε²
+    (per-diagram match to the hand-enumerated Wick classes).
+
+    Returns
+    -------
+    int
+        The index (always >= 1; equals 1 when no leaf permutation is
+        an automorphism, e.g. all-distinct external fields).
+    """
+    aut_free = _automorphism_order(typed_diagram, fix_external=False)
+    aut_fixed = _automorphism_order(typed_diagram, fix_external=True)
+    if aut_fixed <= 0 or aut_free % aut_fixed != 0:
+        # Aut_fixed is a subgroup of Aut_free, so the order must
+        # divide — anything else is a Sage edge case.  Fail loudly:
+        # silently mis-weighting diagrams is exactly the bug class
+        # this function exists to fix.
+        raise RuntimeError(
+            f'external_wick_compensation: |Aut_free|={aut_free} not '
+            f'divisible by |Aut_fixed|={aut_fixed}'
+        )
+    return aut_free // aut_fixed
 
 
 def combinatorial_factor(typed_diagram):
@@ -406,32 +466,36 @@ def compute_all_combinatorial_factors(typed_diagrams):
 
 def diagram_signature(td):
     """
-    Build a hashable canonical signature for a typed diagram.
+    Build a hashable canonical signature for a typed diagram: the
+    canonical form of the colour-preserving incidence digraph with
+    leaves coloured by FIELD only (``fix_external=False``).
 
-    Two typed diagrams with the same signature are identical — they
-    represent the same Feynman diagram Gamma and differ only in the
-    internal choice of which identical leg was assigned to which edge
-    (an attachment degree of freedom).
+    Two typed diagrams get the same signature **iff** they are
+    isomorphic as coloured graphs — same vertex types (class,
+    coefficient, bigrade), same propagator types on corresponding
+    edges, same topology — allowing same-field external leaves to be
+    permuted.  This is exactly the equivalence the integration layer
+    expects: leaf-permuted variants are merged here and re-expanded by
+    the ``_all_mappings`` sum in ``integrate_diagram`` /
+    ``integrate_grouped_diagram`` (divided by
+    ``external_wick_compensation``), while every genuinely distinct
+    topology survives as its own representative.
 
-    The signature encodes, for each internal vertex:
-      - vertex type (coefficient, legs, bigrade)
-      - the sorted multiset of (external_field, propagator_index) for
-        every leaf attached to that vertex
-      - the sorted multiset of (target-vertex-type-signature,
-        propagator_index) for every INTERNAL edge incident to that
-        vertex — needed to distinguish topologically distinct
-        diagrams that share per-vertex attributes but differ in their
-        internal-edge wiring (e.g., 2-loop watermelon "3 K's between
-        2 cubics" vs 2-loop tadpole-tadpole "1 K between cubics +
-        2 self-loop K's", which both have 3 noise vertices + 2 cubic
-        vertices each attached to 1 leaf but differ in HOW the noise
-        edges distribute across the cubics).
-
-    Crucially, the per-vertex leaf grouping ensures that two diagrams
-    which differ in which leaf connects to which vertex (e.g. dn2 at
-    a source vertex vs at an interaction vertex) are NOT merged.
-    The vertex information is sorted by type (not by vertex id) to be
-    invariant under vertex relabeling.
+    History
+    -------
+    The previous signature was a hand-rolled isomorphism INVARIANT
+    (per-vertex leaf/internal-edge multisets with depth-1 type tags)
+    rather than a complete one.  At k=3, 1-loop, the OU+ax^2+bx^3 a^3
+    sector has 11 distinct diagram classes; the old signature
+    collided 4 of them into 2 representatives (mult=3 each), and --
+    since the dedup multiplicity is correctly NOT multiplied back
+    (the Aut-based S(Gamma) already carries each class's full weight)
+    -- the collided classes' integrals were silently dropped: the
+    kappa_3 1-loop coefficient came out -68/3*a^3 instead of -32*a^3.
+    A complete invariant cannot collide, so this failure mode is
+    closed for every k, ell, and theory.  (Validated against the
+    exact Boltzmann series at k=3 and k=4, and a brute-force labeled
+    Wick enumeration per class -- see scratch/wick_count_k3_a3.py.)
 
     Parameters
     ----------
@@ -440,94 +504,24 @@ def diagram_signature(td):
     Returns
     -------
     tuple
-        Hashable canonical signature.
+        Hashable canonical signature ``(colour_keys, colour_cells,
+        canonical_edges)``.
     """
-    leaf_set = set(td.external_legs.keys())
-
-    # Field-type-based deduplication.  Two diagrams that differ only
-    # by permuting same-type leaves (within or across internal
-    # vertices) are merged here; the inter-vertex Wick contractions
-    # are enumerated separately in integrate_tree_diagram, with a
-    # compensation factor for same-vertex permutations.
-    vertex_leaf_map = {}
-    for v in td.vertex_assignments:
-        leaf_edges = []
-        for ek, et in td.edge_types.items():
-            if ek[0] == v and ek[1] in leaf_set:
-                field = td.external_legs[ek[1]]
-                prop = td.propagator_indices[ek]
-                leaf_edges.append((field, prop))
-            elif ek[1] == v and ek[0] in leaf_set:
-                field = td.external_legs[ek[0]]
-                prop = td.propagator_indices[ek]
-                leaf_edges.append((field, prop))
-        vertex_leaf_map[v] = tuple(sorted(leaf_edges))
-
-    # Per-vertex "type tag" used to group internal edges: encodes the
-    # vertex's intrinsic role (type+coeff+bigrade) but ignores its
-    # specific id so vertices of identical role are interchangeable.
-    def _type_tag(v):
-        vtype = td.vertex_assignments.get(v)
-        if vtype is None:
-            return ('leaf', td.external_legs.get(v, ()))
-        return (
-            type(vtype).__name__,
-            str(vtype.coefficient),
-            vtype.bigrade,
-        )
-
-    # For each vertex, record the multiset of internal incident edges
-    # GROUPED BY THE OTHER ENDPOINT INSTANCE.  Two outgoing edges that
-    # go to the SAME target vertex collapse into one ``(target_tag,
-    # count, propagator_indices)`` entry; two outgoing edges that go
-    # to DIFFERENT targets of the same type produce two separate
-    # entries.  This breaks the watermelon-vs-tadpole-tadpole
-    # ambiguity: a watermelon source has 2 edges to 2 distinct cubic
-    # vertices → two entries ``(cubic_tag, 1, ...)``; a tadpole-source
-    # has 2 edges to the SAME cubic → one entry ``(cubic_tag, 2,
-    # ...)``.  Sorted across each vertex, this is invariant under
-    # vertex relabeling but distinguishes topologically distinct
-    # diagrams that share per-vertex attributes.
-    from collections import defaultdict
-    vertex_internal_map = {}
-    for v in td.vertex_assignments:
-        out_groups = defaultdict(list)
-        in_groups = defaultdict(list)
-        for ek in td.edge_types:
-            u, w = ek[0], ek[1]
-            if u == v and w not in leaf_set:
-                out_groups[w].append(td.propagator_indices[ek])
-            elif w == v and u not in leaf_set:
-                in_groups[u].append(td.propagator_indices[ek])
-        entries = []
-        for w, props in out_groups.items():
-            entries.append(('out', _type_tag(w), len(props),
-                            tuple(sorted(props))))
-        for u, props in in_groups.items():
-            entries.append(('in', _type_tag(u), len(props),
-                            tuple(sorted(props))))
-        vertex_internal_map[v] = tuple(sorted(entries))
-
-    # Vertex assignments with leaf + internal-edge info, sorted by type
-    # (not by id) for invariance under vertex relabeling.
-    verts = []
-    for v, vtype in td.vertex_assignments.items():
-        tname = type(vtype).__name__
-        resp = tuple(vtype.response_legs)
-        phys = tuple(vtype.physical_legs) if hasattr(vtype, 'physical_legs') else ()
-        verts.append((tname, str(vtype.coefficient), vtype.bigrade, resp, phys,
-                      vertex_leaf_map.get(v, ()),
-                      vertex_internal_map.get(v, ())))
-    verts = tuple(sorted(verts))
-
-    # Internal edges: edges between non-leaf vertices (sorted by prop index)
-    internal_edges = tuple(sorted(
-        td.propagator_indices[ek]
-        for ek in td.edge_types
-        if ek[0] not in leaf_set and ek[1] not in leaf_set
-    ))
-
-    return (verts, internal_edges)
+    D, _, _, color_groups = _colored_incidence_digraph(
+        td, fix_external=False
+    )
+    # Deterministic, label-independent cell order: sort colour classes
+    # by their (hashable, fully value-based) colour key.
+    keys = sorted(color_groups.keys(), key=str)
+    partition = [color_groups[k] for k in keys]
+    C, cert = D.canonical_label(partition=partition, certificate=True)
+    # Record which canonical vertex ids each colour class maps to --
+    # the canonical edge list alone would confuse two graphs with the
+    # same shape but different colourings.
+    cells = tuple(tuple(sorted(cert[v] for v in color_groups[k]))
+                  for k in keys)
+    edges = tuple(sorted(C.edges(labels=False)))
+    return (tuple(str(k) for k in keys), cells, edges)
 
 
 def deduplicate_typed_diagrams(typed_diagrams):
@@ -535,10 +529,13 @@ def deduplicate_typed_diagrams(typed_diagrams):
     Remove duplicate typed diagrams, keeping one representative per
     unique diagram Γ.
 
-    Two TypedDiagrams are duplicates if they have identical external
-    leg assignments, vertex type assignments, and propagator indices
-    on every edge — i.e. they differ only in the internal leg-to-edge
-    bijection (attachment).
+    Two TypedDiagrams are duplicates iff they are isomorphic as
+    coloured graphs (``diagram_signature`` is a complete invariant —
+    canonical form of the coloured incidence digraph with leaves
+    coloured by field), i.e. they differ only by relabeling, by the
+    internal leg-to-edge bijection (attachment), or by a permutation
+    of same-field external leaves (re-expanded downstream by the
+    ``_all_mappings`` sum).
 
     Parameters
     ----------
@@ -548,16 +545,6 @@ def deduplicate_typed_diagrams(typed_diagrams):
     -------
     unique : list of TypedDiagram
         One representative per unique diagram.
-
-    Notes
-    -----
-    Use ``deduplicate_with_multiplicities`` instead if you need the
-    bug-correct combinatorial weight.  This function drops the
-    dedup-equivalence-class size, which under-counts the symmetry
-    factor 𝒮(Γ) for theories whose interaction vertices have ≥3
-    identical physical legs fed by multiple distinct source vertices
-    (e.g. cubic εxtx³ tadpoles).  See
-    ``deduplicate_with_multiplicities`` for the corrected variant.
     """
     unique, _mult = deduplicate_with_multiplicities(typed_diagrams)
     return unique
@@ -568,25 +555,16 @@ def deduplicate_with_multiplicities(typed_diagrams):
     Like ``deduplicate_typed_diagrams`` but also returns the size of
     each diagram's equivalence class.
 
-    Background
-    ----------
-    ``_vertex_combinatorial_factor`` only counts permutations of
-    *outgoing* (response) legs at each vertex.  When a sink vertex
-    has ≥3 identical *incoming* (physical) legs sourced by multiple
-    distinct vertices (e.g. the εxtx³ tadpole at 1-loop: v2 has 3
-    x-legs fed by one v3-edge + two v4-edges), the dedup step
-    silently merges 3 typed diagrams into one representative,
-    losing the 3× combinatorial that those alternative leg-pairings
-    would have contributed.  The downstream 𝒮(Γ) for the survivor
-    is then a factor of 3 too small.
-
-    Returning the equivalence-class size lets the caller multiply
-    the surviving diagram's prefactor by it, recovering the correct
-    total weight.
-
-    For Hawkes-style theories whose interactions are at most
-    quadratic in any single field, every equivalence class has
-    size 1 and the multiplicity is a no-op.
+    The multiplicity is DIAGNOSTIC ONLY.  Under Path A the weight of
+    a diagram is carried entirely by ``combinatorial_factor`` (the
+    orbit–stabilizer count of Wick pairings on the representative) —
+    multiplying by the class size would double-count, because the
+    merged entries are isomorphic copies whose pairings 𝒮(Γ) already
+    includes.  (Historically a caller-side ``mult`` multiplication
+    compensated for incomplete-signature collisions that merged
+    NON-isomorphic diagrams; ``diagram_signature`` is now a complete
+    isomorphism invariant, so such collisions cannot occur and the
+    compensation story is moot.)
 
     Parameters
     ----------

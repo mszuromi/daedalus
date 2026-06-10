@@ -140,7 +140,14 @@ def enumerate_unique_diagrams(
     # collapses every colored-noise diagram to the white-limit
     # answer.  Bumping the version sidesteps the per-leg integrity
     # check we'd otherwise need.
-    stage_name = f'unique_typed_mult_v2_{ext_tag}_taylor{ft.taylor_order}'
+    # Cache version bumped 2026-06-10 (v2 → v3): ``diagram_signature``
+    # became a complete isomorphism invariant (canonical form of the
+    # coloured incidence digraph).  v2 caches were deduplicated with
+    # the old incomplete signature, which COLLIDED non-isomorphic
+    # diagram classes at k>=3 (e.g. 4 of the 11 a^3-sector 1-loop
+    # classes at k=3 for OU+ax^2+bx^3), silently dropping their
+    # integrals.  Loading a v2 cache would resurrect that bug.
+    stage_name = f'unique_typed_mult_v3_{ext_tag}_taylor{ft.taylor_order}'
 
     unique_by_ell: dict[int, list] = {}
     multiplicity_by_ell: dict[int, list] = {}

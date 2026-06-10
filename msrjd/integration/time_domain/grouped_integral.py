@@ -324,7 +324,6 @@ def integrate_grouped_diagram(
     and grouped paths without touching downstream code.
     """
     import itertools as _itertools
-    from math import factorial as _factorial
 
     if not typed_diagrams:
         return {
@@ -396,11 +395,13 @@ def integrate_grouped_diagram(
             _leaves_by_field.setdefault(field, []).append(j)
 
         _all_mappings = [{}]
+        _mapping_fallback = False
         for field in sorted(_cp_by_field.keys(), key=str):
             cps = _cp_by_field[field]
             lfs = _leaves_by_field.get(field, [])
             if len(cps) != len(lfs):
                 _all_mappings = [{j: j for j in range(len(leaves))}]
+                _mapping_fallback = True
                 break
             perms = list(_itertools.permutations(lfs))
             new_mappings = []
@@ -413,34 +414,39 @@ def integrate_grouped_diagram(
             _all_mappings = new_mappings
 
         # Compensation factor — mirrors the per-diagram path in
-        # ``final_integral.py``.  Groups leaves by the Aut-invariant
-        # ``vertex_role_signature`` of the vertex they attach to, then
-        # divides ``_all_mappings`` by ``∏(N_{sig,field}!)``.  This
-        # removes ext-leaf permutations that ARE graph automorphisms
-        # (e.g. swapping the two cubic vertices in the OU+εx³
-        # watermelon), preventing double-counting in the
-        # ``_all_mappings`` sum.
-        from msrjd.diagrams.symmetry import vertex_role_signature
-        _vertex_of_leaf = {}
-        for ek in td0.edge_types:
-            u, v = ek[0], ek[1]
-            if u in leaf_set and v not in leaf_set:
-                _vertex_of_leaf[u] = v
-            elif v in leaf_set and u not in leaf_set:
-                _vertex_of_leaf[v] = u
-        _sig_field_counts: dict = {}
-        for lf in leaves:
-            v = _vertex_of_leaf.get(lf)
-            if v is None:
-                continue
-            sig = vertex_role_signature(v, td0)
-            field = td0.external_legs.get(lf)
-            _sig_field_counts.setdefault(sig, {}).setdefault(field, 0)
-            _sig_field_counts[sig][field] += 1
-        _compensation = 1
-        for sig, fcounts in _sig_field_counts.items():
-            for field, count in fcounts.items():
-                _compensation *= _factorial(count)
+        # ``final_integral.py``: the exact orbit–stabilizer index
+        # ``|Aut(Γ, leaves free)| / |Aut(Γ, leaves fixed)|``, which is
+        # the number of times the ``_all_mappings`` sum counts each
+        # distinct pinned-external diagram (see
+        # ``external_wick_compensation`` in symmetry.py for the proof
+        # and for why the old role-signature ∏N! heuristic
+        # over-divided at k≥3).
+        #
+        # The divisor is shared across the whole kernel group, so
+        # every member must agree on it.  Group members share the
+        # same prediagram and kernel, hence the same automorphism
+        # structure — but verify rather than assume: a silent
+        # mismatch would mis-weight every diagram in the group.
+        if _mapping_fallback:
+            # Identity mapping only — no permutation sum, no divisor.
+            _compensation = 1
+        else:
+            from msrjd.diagrams.symmetry import external_wick_compensation
+            _comps = {external_wick_compensation(td)
+                      for td in typed_diagrams}
+            if len(_comps) > 1:
+                return {
+                    'status': 'failed', 'contribution': None,
+                    'n_diagrams': len(typed_diagrams),
+                    'reason': (
+                        'external_wick_compensation differs across '
+                        f'kernel-group members ({sorted(_comps)}); '
+                        'the shared mapping-sum divisor would '
+                        'mis-weight the group. Use the per-diagram '
+                        'path for this correlator.'
+                    ),
+                }
+            _compensation = _comps.pop()
     else:
         _all_mappings = [{j: j for j in range(len(leaves))}]
         _compensation = 1

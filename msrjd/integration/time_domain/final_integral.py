@@ -2528,7 +2528,6 @@ def integrate_diagram(
     # For cross-vertex permutations (dn₁ at different vertices), the
     # integrands differ → summing gives the full answer.
     import itertools as _itertools
-    from math import factorial as _factorial
 
     if external_fields is not None and len(external_fields) == len(leaves):
         _leaf_fields = [typed_diagram.external_legs.get(lf) for lf in leaves]
@@ -2542,11 +2541,13 @@ def integrate_diagram(
 
         # Enumerate all canonical-to-leaf mappings
         _all_mappings = [{}]
+        _mapping_fallback = False
         for field in sorted(_cp_by_field.keys(), key=str):
             cps = _cp_by_field[field]
             lfs = _leaves_by_field.get(field, [])
             if len(cps) != len(lfs):
                 _all_mappings = [{j: j for j in range(len(leaves))}]
+                _mapping_fallback = True
                 break
             perms = list(_itertools.permutations(lfs))
             new_mappings = []
@@ -2560,43 +2561,29 @@ def integrate_diagram(
 
         # Compensation factor: divides the ``_all_mappings`` sum to
         # remove ext-leaf permutations that are ALREADY graph
-        # automorphisms of the typed diagram (under ``Aut_fixed_ext``).
+        # automorphisms of the typed diagram.
         #
-        # Two leaves can be "swapped" by a graph automorphism iff they
-        # attach to vertices in the same Aut-orbit.  Without
-        # quotienting these swaps out, the loop over ``_all_mappings``
-        # over-counts every diagram by the number of leaf permutations
-        # that are also automorphisms.
+        # By orbit–stabilizer, the mapping sum counts every distinct
+        # pinned-external diagram exactly
+        # ``|Aut(Γ, leaves free)| / |Aut(Γ, leaves fixed)|`` times, so
+        # that index is the exact divisor — see
+        # ``external_wick_compensation`` in symmetry.py.
         #
-        # Concretely, leaves are grouped by the ``vertex_role_signature``
-        # of the vertex they attach to (which is invariant under the
-        # ``Aut_fixed_ext`` graph automorphism — see symmetry.py).  For
-        # each (signature, field) class with N leaves, divide by N!.
-        # This generalises the historical "leaves attached to the same
-        # vertex" check (which only caught literal-same-vertex cases
-        # and missed structurally-equivalent vertices like the two
-        # cubic vertices of the OU+εx³ watermelon).
-        from msrjd.diagrams.symmetry import vertex_role_signature
-        _vertex_of_leaf = {}
-        for ek in typed_diagram.edge_types:
-            u, v = ek[0], ek[1]
-            if u in leaf_set and v not in leaf_set:
-                _vertex_of_leaf[u] = v
-            elif v in leaf_set and u not in leaf_set:
-                _vertex_of_leaf[v] = u
-        _sig_field_counts: dict = {}
-        for lf in leaves:
-            v = _vertex_of_leaf.get(lf)
-            if v is None:
-                continue
-            sig = vertex_role_signature(v, typed_diagram)
-            field = typed_diagram.external_legs.get(lf)
-            _sig_field_counts.setdefault(sig, {}).setdefault(field, 0)
-            _sig_field_counts[sig][field] += 1
-        _compensation = 1
-        for sig, fcounts in _sig_field_counts.items():
-            for field, count in fcounts.items():
-                _compensation *= _factorial(count)
+        # (A previous heuristic divided by ∏N! over leaves grouped by
+        # ``vertex_role_signature`` of their attachment vertex; same
+        # role signature does NOT imply the leaf swap is realizable as
+        # an automorphism, so the heuristic over-divided — ×⅓/×½
+        # deficits on the k=4 OU+εx³ 1-loop cascades/double-exchange
+        # while k=2 stayed exact by coincidence.)
+        if _mapping_fallback:
+            # Field-count mismatch: only the identity mapping is
+            # summed, so there is no permutation overcounting to
+            # divide out.  (The old code applied the heuristic divisor
+            # even here, silently shrinking the single-mapping sum.)
+            _compensation = 1
+        else:
+            from msrjd.diagrams.symmetry import external_wick_compensation
+            _compensation = external_wick_compensation(typed_diagram)
     else:
         # SAFETY WARNING: falling back to identity leaf→position
         # mapping.  For diagrams whose leaves have MIXED field types
