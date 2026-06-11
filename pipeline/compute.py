@@ -123,6 +123,8 @@ def compute_cumulants(
     parallel: bool = True,
     spatial_parallel: bool = True,   # spatial THREADS (no fork — safe); smart-gated to L≥2 where it helps (~2.5×)
     spatial_n_q: int = 64,           # spatial loop q-grid count — cost is LINEAR in it (64→16 = 4× faster; coarsens C(x) at large x)
+    spatial_points=None,             # k>=3 spatial: (n_pts, k-1, 2) of (x_j, tau_j) offsets per non-anchor slot
+
     n_workers: int = None,
     use_grouped_phase_j: bool = False,
     fixed_point_index: int = 0,
@@ -379,7 +381,8 @@ def compute_cumulants(
             'spatial_grid was provided but the model is not spatial (no field '
             'declares spatial_dim>=1); it is ignored and the temporal C(τ) is '
             'returned.', stacklevel=2)
-    if model.get('spatial') and spatial_grid is not None:
+    if model.get('spatial') and (spatial_grid is not None
+                                 or spatial_points is not None):
         import numpy as _np
         from msrjd.integration.spatial.pipeline_bridge import (
             compute_spatial_correlator_via_pipeline,
@@ -387,10 +390,29 @@ def compute_cumulants(
         from msrjd.integration.spatial.spatial_correlator import (
             free_two_point,
         )
-        if k != 2:
+        if k != 2 and spatial_points is None:
             raise NotImplementedError(
-                f'spatial correlators are implemented for k=2 (two-point) '
-                f'in v1; got k={k}.')
+                f'spatial k={k}: pass spatial_points (an (n_pts, {k-1}, 2) '
+                'array of (x_j, tau_j) offsets per non-anchor external '
+                'slot) to evaluate the k-point cumulant at explicit '
+                'events.  Grid output (spatial_grid/tau_max) is k=2 only.')
+        if k != 2:
+            # ── general-k spatial path: explicit evaluation events ──
+            from msrjd.integration.spatial.pipeline_bridge import (
+                compute_spatial_kpoint,
+            )
+            vals, kp_info = compute_spatial_kpoint(
+                ft, model, prop, num_params, external_fields,
+                spatial_points, max_ell=max_ell, verbose=verbose)
+            _phase_time('spatial-kpoint', _t_phase)
+            return {
+                'C_kpoint':        vals,
+                'C_kpoint_by_ell': kp_info['per_ell'],
+                'points':          _np.asarray(spatial_points, dtype=float),
+                'spatial_info':    kp_info,
+                'k': k, 'max_ell': max_ell,
+                'mf':              mf,
+            }
         if max_ell > 2:
             raise NotImplementedError(
                 f'spatial v1 implements tree (max_ell=0), 1-loop (max_ell=1) and '

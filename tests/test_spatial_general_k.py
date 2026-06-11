@@ -330,3 +330,34 @@ def test_k3_e2e_vs_simulator():
         print('  x=%.1f: theory(tree)=%.5f tree+1loop=%.5f  sim=%.5f+-%.5f'
               % (xv, theory[0][i], theory_tot[i], sim_v, sim_e))
         assert diff < tol, (xv, theory_tot[i], sim_v, sim_e)
+
+
+@pytest.mark.slow
+def test_k3_public_api_compute_cumulants():
+    """k=3 through the public compute_cumulants(spatial_points=...) API
+    reproduces the bridge-level (sim-anchored) values."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline import compute_cumulants
+    g = 0.25
+    model = (TheoryBuilder('rd-quad-kpoint-api-test', n_populations=0)
+             .physical_field('p', spatial_dim=1)
+             .parameter('mu', default=1.0, domain='positive')
+             .parameter('DD', default=1.0, domain='positive')
+             .parameter('g', default=g, domain='real')
+             .parameter('T', default=1.0, domain='positive')
+             .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+             .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
+             .operator_ir().boundary('infinite').initial('stationary')
+             .build())
+    pts = np.array([[[0.0, 0.0], [0.0, 0.0]],
+                    [[1.0, 0.0], [1.0, 0.0]]])
+    th = compute_cumulants(
+        model, k=3, max_ell=1, external_fields=[('p', 1)] * 3,
+        fundamental={'mu': 1.0, 'DD': 1.0, 'g': g, 'T': 1.0},
+        spatial_points=pts, use_cache=False, parallel=False, verbose=False)
+    tree = th['C_kpoint_by_ell'][0]
+    tot = th['C_kpoint']
+    # bridge-level values, sim-anchored within 0.4 sigma (see
+    # test_k3_e2e_vs_simulator)
+    assert np.allclose(tree, [-0.041667, -0.025020], atol=2e-4), tree
+    assert np.allclose(tot, [-0.050562, -0.031481], atol=3e-4), tot

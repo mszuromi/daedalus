@@ -1609,3 +1609,107 @@ def compute_spatial_correlator_generic(
                  # — the whole progression from ONE call (no per-ℓ re-runs).
                  'C_by_order': C_by_order})
     return C1, info
+
+
+def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
+                           points, max_ell=1, verbose=False,
+                           n_t_loop=10, n_s_loop=12):
+    """k-point spatial cumulant at external EVENTS (general-k public path).
+
+    ``points`` : array-like ``(n_pts, k-1, 2)`` — for each evaluation
+    point, the ``(x_j, tau_j)`` offsets of external slots ``1..k-1``
+    relative to slot 0 (pinned at the origin; cumulants are
+    translation-invariant in space and time under the stationary IC).
+
+    Sums every enumerated diagram (ell = 0..max_ell) through the
+    k-generic mapping-sum driver ``diagram_correlator_pts`` (the
+    orbit-stabilizer external-Wick architecture — see
+    ``tests/test_spatial_general_k.py`` for the trust battery and the
+    k=3 sim anchor).  Loop descriptors with ``n_V >= 3`` use the
+    reduced chamber quadrature ``(n_t_loop, n_s_loop)`` — the default
+    ``22^{n_V}·24^{n_C}`` grid is prohibitive there; convergence is
+    certified by the route-equivalence test.  Points sharing a
+    tau-configuration are batched through one chamber integral.
+
+    Returns ``(values (n_pts,), info)`` with per-ell breakdown in
+    ``info['per_ell']``.
+    """
+    import numpy as _np
+    from sage.all import SR as _SR
+    from msrjd.diagrams.symmetry import external_wick_compensation
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_correlator_pts, field_respecting_mappings)
+
+    k = len(external_fields)
+    pts = _np.asarray(points, dtype=float)
+    if pts.ndim == 2 and k == 2:
+        pts = pts[:, None, :]
+    if pts.ndim != 3 or pts.shape[1] != k - 1 or pts.shape[2] != 2:
+        raise ValueError(
+            f'compute_spatial_kpoint: points must be (n_pts, {k-1}, 2) '
+            f'[(x_j, tau_j) offsets per non-anchor slot]; got {pts.shape}.')
+    n_pts = pts.shape[0]
+
+    # (mu, D) from the certified tree modes of the SAME field's 2-point
+    # function — the same extraction the generic k=2 driver uses.
+    pair = [external_fields[0], external_fields[0]]
+    _xg = _np.array([0.0, 1.0])
+    _tg = _np.array([0.0])
+    _C0, tree_info = compute_spatial_correlator_via_pipeline(
+        ft, model, prop, num_params, pair, _tg, _xg,
+        verbose=False, certify=True, enum_verbose=False,
+        stage_headers=False)
+    modes = tree_info['modes']
+    if len(modes) != 1:
+        raise NotImplementedError(
+            'compute_spatial_kpoint: single-field (one tree mode) only; '
+            f'got {len(modes)} modes.  Coupled-field k>=3 is deferred.')
+    mu0, D0, _kap0 = modes[0]
+    mu0 = float(_np.real(mu0))
+    D0 = float(_np.real(D0))
+    spatial_dim = int(tree_info.get('spatial_dim', 1))
+
+    be = build_pipeline_records(ft, model, prop, external_fields,
+                                max_ell=max_ell, k=k, verbose=verbose)
+    slot_fields = list(external_fields)
+    per_ell = {}
+    total = _np.zeros(n_pts)
+    # group evaluation points by tau-configuration (slot 0 at tau=0)
+    tau_groups = {}
+    for ip in range(n_pts):
+        key = tuple(float(t) for t in pts[ip, :, 1])
+        tau_groups.setdefault(key, []).append(ip)
+
+    for ell in sorted(be):
+        acc = _np.zeros(n_pts)
+        for td, p in be[ell]:
+            pv = float(_SR(p).subs(num_params))
+            if abs(pv) < 1e-14:
+                continue
+            d = diagram_to_cstack(td)
+            leaf_fields = slot_fields  # enumeration emits matching multiset
+            maps = field_respecting_mappings(slot_fields, leaf_fields)
+            comp = external_wick_compensation(td)
+            n_V = len(d.internal_vertices)
+            kw = {} if n_V < 3 else {'n_t': int(n_t_loop),
+                                     'n_s': int(n_s_loop)}
+            for tkey, idxs in tau_groups.items():
+                x_pts = _np.zeros((len(idxs), k))
+                for col, j in enumerate(range(1, k)):
+                    x_pts[:, j] = pts[idxs, j - 1, 0]
+                t_pts = [0.0] + list(tkey)
+                v = diagram_correlator_pts(
+                    d, pv, x_pts, t_pts, mu0, D0,
+                    spatial_dim=spatial_dim, mappings=maps, comp=comp,
+                    **kw)
+                acc[idxs] += v
+        per_ell[ell] = acc
+        total = total + acc
+        if verbose:
+            print(f'[spatial k={k}] ell={ell}: '
+                  f'{len(be[ell])} records summed')
+
+    info = {'per_ell': per_ell, 'mu': mu0, 'D': D0,
+            'spatial_dim': spatial_dim, 'k': k, 'max_ell': max_ell}
+    return total, info
