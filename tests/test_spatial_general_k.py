@@ -361,3 +361,63 @@ def test_k3_public_api_compute_cumulants():
     # test_k3_e2e_vs_simulator)
     assert np.allclose(tree, [-0.041667, -0.025020], atol=2e-4), tree
     assert np.allclose(tot, [-0.050562, -0.031481], atol=3e-4), tot
+
+
+@pytest.mark.slow
+def test_k3_derivative_vertex_qpath():
+    """k=3 derivative-vertex (KPZ) escape hatch: the q-path evaluates
+    every record finite with form factors active, and the analytic IFT
+    gates cleanly (NotImplementedError) for derivative records."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+
+    b = (TheoryBuilder('kpz-k3-qpath-test', n_populations=0)
+         .physical_field('h', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('c', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt+mu-D*Laplacian)*h', rhs='0')
+         .set_action_text('ht*(Dt(h)+mu*h-D*Lap(h)-(c/2)*Dx(h,0)^2)-T*ht^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=5)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext3 = _legs_to_phys_idx([('h', 1)] * 3, pidx)
+    base = {SR.var('mu'): 1., SR.var('D'): 1., SR.var('c'): 0.3,
+            SR.var('T'): 1., SR.var('hstar1'): 0.}
+    vt = [{'weight': float(SR(t['weight']).subs(base)),
+           'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    be = build_pipeline_records(ft, b, prop, ext3, max_ell=1, k=3,
+                                verbose=False)
+    n_checked = 0
+    for ell in sorted(be):
+        for td, p in be[ell]:
+            pv = float(SR(p).subs(base))
+            if abs(pv) < 1e-14:
+                continue
+            d = diagram_to_cstack(td)
+            ff = _formfactor_callable(td, vt, d=1)
+            legs = list(d.external_legs)
+            et = {legs[j]: t for j, t in enumerate((0.0, 0.2, -0.1))}
+            kw = {} if len(d.internal_vertices) < 3 else {'n_t': 6, 'n_s': 8}
+            v = diagram_kinematic(d, [0.4, -0.7], et, 1.0, 1.0,
+                                  spatial_dim=1, formfactor=ff, **kw)
+            assert np.isfinite(complex(v).real), (ell, v)
+            n_checked += 1
+            if ff is not None:
+                with pytest.raises(NotImplementedError):
+                    diagram_kinematic(d, [0.0, 0.0], et, 1.0, 1.0,
+                                      spatial_dim=1,
+                                      xs=np.array([[0.3, -0.2]]),
+                                      formfactor=ff, **kw)
+    assert n_checked >= 12
