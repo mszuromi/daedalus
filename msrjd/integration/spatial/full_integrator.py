@@ -94,43 +94,94 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
 def _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim, u_floor=1e-300,
                            return_gaussian=False):
     """Per-Schwinger-sample heat-kernel ingredients for the ANALYTIC spatial IFT
-    (Case A — plain vertices).  Returns ``(pref, Bcal, ok)`` (each ``(P,)``): the
-    q-Gaussian ``pref·exp(−Bcal q²)`` UN-collapsed from q, with
-    ``pref = (4πD)^{−Ld/2} U^{−d/2}`` and ``Bcal = D·Q_eff`` (scalar — k=2, one
-    external momentum).  The spatial IFT is then exact and analytic:
+    (Case A — plain vertices).  Returns ``(pref, Bcal, ok)``: the q-Gaussian
+    ``pref·exp(−q⃗ᵀ𝓑q⃗)`` UN-collapsed from q, with
+    ``pref = (4πD)^{−Ld/2} U^{−d/2}`` and ``𝓑 = D·Q_eff``.
 
-        ∫dᵈq/(2π)ᵈ e^{iq·x} pref·e^{−Bcal q²} = pref·(4πBcal)^{−d/2} e^{−|x|²/4Bcal}
+    ``n_ext = 1`` (k=2): ``Bcal`` is scalar ``(P,)`` and the IFT is the heat
+    kernel
 
-    — the heat kernel — so NO q-grid and NO numerical FT.  ``L=0`` (tree):
-    ``pref=1``, ``Bcal=D·Q``.  Mirrors :func:`_momentum_factor_batch` but does not
-    contract with q (the x-dependence stays analytic).  ``return_gaussian`` also
-    returns ``(Lam, N, Q)`` (``None`` for L=0) for the derivative-vertex Phase-2
+        ∫dᵈq/(2π)ᵈ e^{iq·x} pref·e^{−Bcal q²} = pref·(4πBcal)^{−d/2} e^{−|x|²/4Bcal}.
+
+    ``n_ext ≥ 2`` (k ≥ 3): ``Bcal`` is the MATRIX ``(P, n, n)`` and the IFT is
+    the multivariate Gaussian (see :func:`_heat_kernel_x_general`)
+
+        ∫∏ⱼdᵈqⱼ/(2π)^{nd} e^{iΣqⱼ·Xⱼ} pref·e^{−q⃗ᵀ𝓑q⃗}
+            = pref·(4π)^{−nd/2} det(𝓑)^{−d/2} e^{−¼ Σ_c X⃗_cᵀ𝓑⁻¹X⃗_c}
+
+    (one factor per spatial component ``c``; the same ``𝓑`` for every
+    component because the propagators are isotropic).  Either way NO q-grid
+    and NO numerical FT.  ``L=0`` (tree): ``pref=1``, ``𝓑=D·Q``.  Mirrors
+    :func:`_momentum_factor_batch` but does not contract with q (the
+    x-dependence stays analytic).  ``return_gaussian`` also returns
+    ``(Lam, N, Q)`` (``None`` for L=0) for the derivative-vertex Phase-2
     form-factor average (:func:`_formfactor_average_x`)."""
     E, L = a.shape
     P = w_batch.shape[0]
     Q = np.einsum('pe,ej,ek->pjk', w_batch, b, b)            # (P, n_ext, n_ext)
-    if Q.shape[1] != 1:
-        raise NotImplementedError(
-            'analytic heat-kernel IFT: implemented for k=2 (one external '
-            f'momentum) so far; got n_ext={Q.shape[1]} (k>2 → multivariate '
-            'Gaussian, future work).')
+    n = Q.shape[1]
     if L == 0:
-        ret = (np.ones(P), D * Q[:, 0, 0], np.ones(P, dtype=bool))
+        B0 = D * Q[:, 0, 0] if n == 1 else D * Q
+        ret = (np.ones(P), B0, np.ones(P, dtype=bool))
         return ret + (None, None, Q) if return_gaussian else ret
     Lam = np.einsum('pe,el,em->plm', w_batch, a, a)            # (P, L, L)
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
     U = np.linalg.det(Lam)                                     # (P,)
     ok = U > u_floor
     pref = np.zeros(P)
-    Bcal = np.zeros(P)
+    Bcal = np.zeros(P) if n == 1 else np.zeros((P, n, n))
     if np.any(ok):
         Lamok, Nok, Qok, Uok = Lam[ok], N[ok], Q[ok], U[ok]
         LamiN = np.linalg.solve(Lamok, Nok)
-        Qeff = (Qok - np.einsum('plj,plk->pjk', Nok, LamiN))[:, 0, 0]   # (P',)
+        Qeff = Qok - np.einsum('plj,plk->pjk', Nok, LamiN)     # (P', n, n)
         pref[ok] = (4.0 * math.pi * D) ** (-0.5 * spatial_dim * L) \
             * np.power(Uok, -0.5 * spatial_dim)
-        Bcal[ok] = D * Qeff
+        Bcal[ok] = D * Qeff[:, 0, 0] if n == 1 else D * Qeff
     return (pref, Bcal, ok, Lam, N, Q) if return_gaussian else (pref, Bcal, ok)
+
+
+def _heat_kernel_x_general(Bcal_g, xs_arr, spatial_dim):
+    """Analytic spatial IFT of the per-sample q-Gaussian ``e^{−q⃗ᵀ𝓑q⃗}`` at the
+    evaluation points ``xs_arr`` — the (multivariate) heat kernel.  Returns
+    ``hk`` of shape ``(P', n_x)``.
+
+    ``n_ext = 1``: ``Bcal_g`` is ``(P',)`` and ``xs_arr`` is ``(n_x,)`` [d=1
+    scalar offsets] or ``(n_x, d)`` [d≥2 vectors]; ``hk = (4πB)^{−d/2}
+    e^{−|x|²/4B}``.
+
+    ``n_ext ≥ 2``: ``Bcal_g`` is ``(P', n, n)`` and ``xs_arr`` is ``(n_x, n)``
+    [d=1] or ``(n_x, n, d)`` [d≥2], where column ``j`` is the FT conjugate
+    ``X_j`` of the j-th external momentum in the descriptor's ``b`` routing
+    (``q_syms[j]`` = the momentum of ``external_legs[j]``; momentum
+    conservation eliminated the LAST leaf, so ``X_j = x_{leg_j} −
+    x_{leg_{k−1}}``).  ``hk = (4π)^{−nd/2} det(𝓑)^{−d/2}
+    exp(−¼ Σ_c X⃗_cᵀ𝓑⁻¹X⃗_c)`` (product over the ``d`` spatial components,
+    which share 𝓑 by isotropy).
+
+    Callers must pre-filter degenerate samples (``det 𝓑 > 0``)."""
+    d = float(spatial_dim)
+    xs_arr = np.asarray(xs_arr, dtype=float)
+    if Bcal_g.ndim == 1:                                     # n_ext = 1 (k=2)
+        if xs_arr.ndim == 1:                                 # scalar offsets
+            x2 = xs_arr ** 2                                  # (n_x,)
+        else:                                                # (n_x, d) vectors
+            x2 = np.sum(xs_arr ** 2, axis=-1)
+        return ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * d)
+                * np.exp(-x2[None, :] / (4.0 * Bcal_g[:, None])))
+    n = Bcal_g.shape[1]
+    if xs_arr.ndim == 1:
+        raise ValueError(
+            f'n_ext={n} multivariate IFT needs evaluation points of shape '
+            f'(n_x, {n}) [d=1] or (n_x, {n}, d); got 1-d xs.')
+    detB = np.linalg.det(Bcal_g)                             # (P',)
+    Binv = np.linalg.inv(Bcal_g)                             # (P', n, n)
+    if xs_arr.ndim == 2:                                     # d=1: (n_x, n)
+        quad = np.einsum('xj,pjk,xk->px', xs_arr, Binv, xs_arr)
+    else:                                                    # d≥2: (n_x, n, d)
+        quad = np.einsum('xjc,pjk,xkc->px', xs_arr, Binv, xs_arr)
+    return ((4.0 * math.pi) ** (-0.5 * n * d)
+            * detB[:, None] ** (-0.5 * d)
+            * np.exp(-0.25 * quad))
 
 
 def _formfactor_average(formfactor, Lam, N, q_vec, D, ok, gh_order=6, spatial_dim=1):
@@ -491,6 +542,11 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr)) if xs_arr is not None else 0.0
     if method == 'bessel' and xs_arr is not None:           # ── radial-Bessel × angular-MC
+        if b.shape[1] > 1:
+            raise NotImplementedError(
+                "method='bessel' (radial Bessel-K × angular MC) is k=2 only "
+                f"(single |x|); got n_ext={b.shape[1]}.  Use method='grid' "
+                "(multivariate analytic IFT) for k>=3.")
         return _diagram_bessel_xs(
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
@@ -569,16 +625,23 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
         if xs_arr is not None:                            # ── analytic heat-kernel IFT
             if formfactor is None:                        # Phase 1: plain → pure heat kernel
                 pref, Bcal_k, okk = _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim)
-                good = okk & (Bcal_k > 1e-300)                # Bcal>0 (q-dependent edges)
+                # degenerate-sample filter: B>0 (scalar) / det B>0 (matrix)
+                _Bpos = (Bcal_k > 1e-300) if Bcal_k.ndim == 1 \
+                    else (np.linalg.det(Bcal_k) > 1e-300)
+                good = okk & _Bpos
                 if np.any(good):
-                    Bcal_g = Bcal_k[good]
                     wamp = (amp * pref)[good]
-                    hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
-                          * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
+                    hk = _heat_kernel_x_general(Bcal_k[good], xs_arr, spatial_dim)
                     total = total + np.einsum('p,px->x', wamp, hk)
             else:                                         # Phase 2: derivative → heat kernel × form-factor moments
                 pref, Bcal_k, okk, Lamb, Nb, Qb = _symanzik_kernel_batch(
                     a, b, w_batch, D, spatial_dim, return_gaussian=True)
+                if Bcal_k.ndim != 1:
+                    raise NotImplementedError(
+                        'derivative-vertex analytic IFT (form-factor moments) '
+                        f'is k=2 only so far; got n_ext={Bcal_k.shape[1]}.  '
+                        'Use the q-path (numerical FT) for k>=3 derivative '
+                        'vertices.')
                 good = (okk & (Bcal_k > 1e-300)) if Lamb is not None \
                     else np.zeros(len(pref), dtype=bool)
                 if np.any(good):
@@ -990,3 +1053,109 @@ def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
         total = total + diagram_correlator_x(descr, pre, xs_arr, tau, mu, D,
                                              spatial_dim=spatial_dim, **kw)
     return total
+
+
+# ── General-k external-event evaluation (June 2026) ─────────────────────────
+
+def field_respecting_mappings(point_fields, leaf_fields):
+    """All bijections canonical-point-slot → leaf-position that respect the
+    field type, as tuples ``m`` with ``m[j] = slot assigned to leaf j``.
+
+    Mirrors the temporal ``_all_mappings`` enumeration in
+    ``final_integral.integrate_diagram`` (there keyed slot→leaf; here we
+    return the leaf-indexed inverse, which is what the kinematic assembly
+    consumes).  Each mapping is one external Wick contraction; summing the
+    kinematic over all of them counts every pinned-external diagram exactly
+    ``external_wick_compensation(td)`` times (orbit–stabilizer), so the
+    caller divides by that index — the SAME architecture validated to
+    machine precision against the Boltzmann series at k ≤ 5 in the temporal
+    pipeline (tests/test_all_k_boltzmann.py)."""
+    import itertools as _it
+    k = len(leaf_fields)
+    if len(point_fields) != k:
+        return [tuple(range(k))]
+    slots_by_field = {}
+    for s, f in enumerate(point_fields):
+        slots_by_field.setdefault(f, []).append(s)
+    leaves_by_field = {}
+    for j, f in enumerate(leaf_fields):
+        leaves_by_field.setdefault(f, []).append(j)
+    if {f: len(v) for f, v in slots_by_field.items()} != \
+            {f: len(v) for f, v in leaves_by_field.items()}:
+        return [tuple(range(k))]
+    mappings = [{}]
+    for f in sorted(slots_by_field, key=str):
+        slots = slots_by_field[f]
+        lfs = leaves_by_field[f]
+        new = []
+        for m in mappings:
+            for perm in _it.permutations(slots):
+                nm = dict(m)
+                for j, s in zip(lfs, perm):
+                    nm[j] = s
+                new.append(nm)
+        mappings = new
+    return [tuple(m[j] for j in range(k)) for m in mappings]
+
+
+def diagram_correlator_pts(descr, prefactor_val, x_pts, t_pts, mu, D,
+                           spatial_dim=1, mappings=None, comp=1, **kw):
+    """One diagram's contribution to the k-point cumulant at general external
+    EVENTS — the k-generic replacement for the 2-point ``Γ(τ)+Γ(−τ)``
+    completion in :func:`diagram_correlator_x`.
+
+    ``x_pts`` : ``(n_pts, k)`` (d=1) or ``(n_pts, k, d)`` absolute positions,
+        one column per canonical external slot (the user's external_fields
+        order).
+    ``t_pts`` : ``(k,)`` absolute times per canonical slot (all ``n_pts``
+        share the time configuration; vectorization is over positions).
+    ``mappings`` : list of slot-assignment tuples from
+        :func:`field_respecting_mappings` (``m[j]`` = slot on leaf j).
+        Default = identity only (single pinned assignment — oracle use).
+    ``comp`` : ``external_wick_compensation`` of the typed diagram.
+
+    For each mapping the kinematic runs with leaf times ``t_pts[m[j]]`` and
+    IFT conjugates ``X_j = x(m[j]) − x(m[k−1])`` (momentum conservation
+    eliminated the last leaf's momentum in the ``b`` routing).  k=2 with both
+    mappings and the right comp reproduces :func:`diagram_correlator_x`
+    exactly: retarded-type insertions have comp=1 → Γ(τ)+Γ(−τ); symmetric
+    insertions have comp=2 and a τ-even kinematic → Γ(τ).
+
+    Returns ``(n_pts,)`` real."""
+    legs = list(descr.external_legs)
+    k = len(legs)
+    x_arr = np.asarray(x_pts, dtype=float)
+    if x_arr.ndim == 1:
+        x_arr = x_arr[None, :]
+    t_arr = np.asarray(t_pts, dtype=float)
+    if x_arr.shape[1] != k or t_arr.shape != (k,):
+        raise ValueError(
+            f'diagram_correlator_pts: expected x_pts (n_pts, {k}[, d]) and '
+            f't_pts ({k},); got {x_arr.shape} and {t_arr.shape}.')
+    if mappings is None:
+        mappings = [tuple(range(k))]
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    total = np.zeros(x_arr.shape[0])
+    # Group mappings that produce the SAME (leaf-times, X-conjugates)
+    # configuration — e.g. permuting two slots that sit at identical
+    # events — and evaluate each unique configuration once, weighted by
+    # its multiplicity.  Pure optimization: the sum is unchanged.
+    config_count = {}
+    config_data = {}
+    for m in mappings:
+        et = {legs[j]: float(t_arr[m[j]]) for j in range(k)}
+        # FT conjugates of q_syms[0..k−2]: X_j = x_{slot on leg j} − x_{slot on leg k−1}
+        X = np.stack([x_arr[:, m[j]] - x_arr[:, m[k - 1]]
+                      for j in range(k - 1)], axis=1)       # (n_pts, k−1[, d])
+        key = (tuple(sorted(et.items())), X.tobytes())
+        config_count[key] = config_count.get(key, 0) + 1
+        config_data[key] = (et, X)
+    for key, (et, X) in config_data.items():
+        if k == 2 and X.ndim == 2:
+            xs_eval = X[:, 0]                               # scalar path (k=2, d=1)
+        else:
+            xs_eval = X
+        kin = diagram_kinematic(descr, [0.0] * (k - 1), et, mu, D,
+                                spatial_dim=spatial_dim, xs=xs_eval, **kw)
+        total = total + config_count[key] * np.asarray(kin, dtype=float)
+    return (2.0 ** (-n_C)) * float(prefactor_val) * total / float(comp)

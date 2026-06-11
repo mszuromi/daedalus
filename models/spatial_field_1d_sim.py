@@ -210,3 +210,33 @@ def lattice_sum_variance(L, N, mu, D, T):
     ks = 2.0 * np.pi * np.fft.fftfreq(N, d=dx)
     disp = mu + (2.0 * D / dx**2) * (1.0 - np.cos(ks * dx))
     return (T / L) * np.sum(1.0 / disp)
+
+
+def third_cumulant_x(snaps):
+    """Estimate the equal-time third cumulant slice
+
+        kappa_3(m) = < dphi(x0) * dphi(x0 + m*dx)^2 >
+
+    averaged over x0 (periodic translational average) and snapshots,
+    with dphi = phi - <phi> (global empirical mean; cumulants are
+    shift-invariant so this matches the theory's connected 3-point
+    function around the saddle).  m=0 gives <dphi^3>.
+
+    Returns (kappa3, stderr), each length N: per-snapshot estimates are
+    treated as i.i.d. for the error bar (conservative for
+    record_every >= the correlation time).
+
+    The circular average is one cross-correlation per snapshot:
+        kappa_3(m) = (1/N) IFFT( conj(FFT(dphi)) * FFT(dphi^2) )[m].
+    """
+    n_rec, N = snaps.shape
+    mean = float(np.mean(snaps))
+    per = np.empty((n_rec, N))
+    for r in range(n_rec):
+        d = snaps[r] - mean
+        f1 = np.fft.rfft(d)
+        f2 = np.fft.rfft(d * d)
+        per[r] = np.fft.irfft(np.conj(f1) * f2, n=N) / N
+    k3 = per.mean(axis=0)
+    se = per.std(axis=0, ddof=1) / np.sqrt(n_rec)
+    return k3, se
