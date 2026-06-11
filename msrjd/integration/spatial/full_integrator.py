@@ -637,11 +637,36 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 pref, Bcal_k, okk, Lamb, Nb, Qb = _symanzik_kernel_batch(
                     a, b, w_batch, D, spatial_dim, return_gaussian=True)
                 if Bcal_k.ndim != 1:
-                    raise NotImplementedError(
-                        'derivative-vertex analytic IFT (form-factor moments) '
-                        f'is k=2 only so far; got n_ext={Bcal_k.shape[1]}.  '
-                        'Use the q-path (numerical FT) for k>=3 derivative '
-                        'vertices.')
+                    # ── n_ext >= 2 (k >= 3): multivariate Wick-moment IFT ──
+                    mxm = getattr(formfactor, 'moment_x_multi', None)
+                    if mxm is None:
+                        raise NotImplementedError(
+                            'derivative-vertex analytic IFT at '
+                            f'n_ext={Bcal_k.shape[1]} needs '
+                            'formfactor.moment_x_multi (multivariate '
+                            'joint-Gaussian moment); construction failed '
+                            'for this form factor.  Use the q-path '
+                            '(numerical FT) instead.')
+                    good = okk & (np.linalg.det(Bcal_k) > 1e-300)
+                    if np.any(good):
+                        wamp = (amp * pref)[good]
+                        hk = _heat_kernel_x_general(Bcal_k[good], xs_arr,
+                                                    spatial_dim)
+                        Binv_g = np.linalg.inv(Bcal_k[good])
+                        L = a.shape[1]
+                        n = Bcal_k.shape[1]
+                        if L > 0 and Lamb is not None:
+                            Lg, Ng = Lamb[good], Nb[good]
+                            a_g = -np.linalg.solve(Lg, Ng)        # (P', L, n)
+                            S_g = np.linalg.inv(Lg) / (2.0 * D)   # (P', L, L)
+                        else:
+                            P_g = int(np.sum(good))
+                            a_g = np.zeros((P_g, max(L, 1), n))
+                            S_g = np.zeros((P_g, max(L, 1), max(L, 1)))
+                        FF = mxm(a_g, S_g, Binv_g, xs_arr)        # (P', n_x)
+                        total = total + np.real(
+                            np.einsum('p,px,px->x', wamp, hk, FF))
+                    continue                              # next chamber
                 good = (okk & (Bcal_k > 1e-300)) if Lamb is not None \
                     else np.zeros(len(pref), dtype=bool)
                 if np.any(good):
@@ -666,7 +691,15 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             # components are independent, q on axis 0; transverse moments).
             momfac, Lamb, Nb, okb = _momentum_factor_batch(
                 a, b, w_batch, q_vec, D, spatial_dim, return_gaussian=True)
-            if Lamb is not None:                               # L>=1 (loop diagram)
+            if Lamb is None:
+                # L=0 tree WITH a derivative vertex (first arises at k>=3:
+                # k=2 trees are vertex-free).  No loop average — the form
+                # factor is a pure polynomial in the EXTERNAL momenta;
+                # evaluate it directly.  (Previously silently dropped.)
+                P0 = w_batch.shape[0]
+                momfac = momfac * np.asarray(
+                    formfactor(np.zeros((P0, 0)), q_vec), dtype=complex)
+            else:                                              # L>=1 (loop diagram)
                 # The polynomial form factor needs only its minimal exact GH order
                 # per variable (the d≥2 grid is gh_order^{L·d} — a big saving).
                 eff_gh = getattr(formfactor, 'gh_order_needed', None) or gh_order

@@ -950,6 +950,15 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
             ff.moment_x, ff.moment_bessel = _build_wick_moment(Rcal, ls, qs)
         except Exception:
             ff.moment_x = ff.moment_bessel = None
+        # n_ext>=2 (k>=3): the multivariate joint-(ℓ,Q)-Gaussian moment
+        # for the analytic IFT (vector complex Gaussian
+        # Q ~ N((i/2)·Binv·X, Binv/2)).
+        ff.moment_x_multi = None
+        if len(qs) >= 2:
+            try:
+                ff.moment_x_multi = _build_wick_moment_multi(Rcal, ls, qs)
+            except Exception:
+                ff.moment_x_multi = None
         return ff
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
@@ -1713,3 +1722,110 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     info = {'per_ell': per_ell, 'mu': mu0, 'D': D0,
             'spatial_dim': spatial_dim, 'k': k, 'max_ell': max_ell}
     return total, info
+
+
+def _build_wick_moment_multi(Rcal, ls, qs):
+    """Multivariate (k>=3) analytic-IFT form-factor moment — the n_ext>=2
+    generalization of :func:`_build_wick_moment`.
+
+    Under the multivariate IFT the external momenta become a complex
+    Gaussian VECTOR ``Q ~ N(c, S_Q)`` with
+
+        c = (i/2) * Binv @ X,      S_Q = Binv / 2,    Binv = (D*Qeff)^{-1},
+
+    (k=2 scalar reduction: c = iX/2Bcal, s = 1/2Bcal), and the loop split
+    is ``l_k = sum_j a_kj Q_j + Xi_k`` with ``a = -Lam^{-1} N`` now (L, n).
+    Writing ``Q_j = c_j + zeta_j`` with ``zeta ~ N(0, S_Q)`` independent of
+    ``Xi ~ N(0, Sigma)``, the moment is ONE joint Isserlis pass over the
+    block-diagonal zero-mean vector ``(Xi, zeta)`` with the means ``c_j``
+    entering as symbols.
+
+    Returns ``moment_x_multi(a, S, Binv, X) -> (P, n_x)`` complex, with
+    ``a:(P,L,n)``, ``S:(P,L,L)`` (= (2D Lam)^{-1}), ``Binv:(P,n,n)``,
+    ``X:(n_x,n)`` the IFT conjugates.  Vectorized over samples P, loop
+    over the (short, event-list) n_x.
+    """
+    import sympy as _sp
+
+    lidx = [int(str(s)[1:]) for s in ls]
+    p = len(ls)
+    n = len(qs)
+    if n < 2:
+        raise ValueError('use _build_wick_moment for n_ext == 1')
+
+    Xi = list(_sp.symbols('_Xi0:%d' % p)) if p else []
+    Ze = list(_sp.symbols('_Ze0:%d' % n))
+    Cm = list(_sp.symbols('_c0:%d' % n))
+    Am = {(k, j): _sp.Symbol('_a%d_%d' % (k, j))
+          for k in range(p) for j in range(n)}
+    subs = {}
+    for k in range(p):
+        subs[ls[k]] = sum(Am[(k, j)] * (Cm[j] + Ze[j])
+                          for j in range(n)) + Xi[k]
+    for j, qq in enumerate(qs):
+        subs[qq] = Cm[j] + Ze[j]
+    G = _sp.expand(_sp.sympify(Rcal).subs(subs))
+
+    # joint covariance symbols: Xi-Xi -> Sigma, zeta-zeta -> S_Q, cross -> 0
+    Ssym = {(i, j): _sp.Symbol('_S%d_%d' % (i, j))
+            for i in range(p) for j in range(i, p)}
+    SQsym = {(i, j): _sp.Symbol('_SQ%d_%d' % (i, j))
+             for i in range(n) for j in range(i, n)}
+
+    def Sget(i, j):
+        i, j = min(i, j), max(i, j)
+        if i < p and j < p:
+            return Ssym[(i, j)]
+        if i >= p and j >= p:
+            return SQsym[(i - p, j - p)]
+        return _sp.Integer(0)
+
+    mom_cache = {}
+
+    def joint_moment(kvec):
+        if kvec in mom_cache:
+            return mom_cache[kvec]
+        if sum(kvec) % 2:
+            val = _sp.Integer(0)
+        else:
+            ids = []
+            for i, k in enumerate(kvec):
+                ids += [i] * k
+            val = _sp.expand(_isserlis(ids, Sget))
+        mom_cache[kvec] = val
+        return val
+
+    gauss = Xi + Ze                               # joint zero-mean vector
+    Gp = _sp.Poly(G, *gauss) if gauss else None
+    EF = _sp.Integer(0)
+    if Gp is None:
+        EF = G
+    else:
+        for kvec, coeff in Gp.terms():
+            EF += coeff * joint_moment(tuple(kvec))
+    EF = _sp.expand(EF)
+
+    Sord = [(i, j) for i in range(p) for j in range(i, p)]
+    SQord = [(i, j) for i in range(n) for j in range(i, n)]
+    gargs = ([Am[(k, j)] for k in range(p) for j in range(n)]
+             + [Ssym[ij] for ij in Sord]
+             + [SQsym[ij] for ij in SQord] + Cm)
+    gfn = _sp.lambdify(tuple(gargs), EF, 'numpy', cse=True)
+
+    def moment_x_multi(a, S, Binv, X):
+        P = Binv.shape[0]
+        X = np.asarray(X, dtype=float)
+        n_x = X.shape[0]
+        SQ = 0.5 * Binv                                   # (P, n, n)
+        cfull = 0.5j * np.einsum('pjk,xk->pxj', Binv, X)  # (P, n_x, n)
+        base = ([a[:, lidx[k], j] for k in range(p) for j in range(n)]
+                + [S[:, lidx[i], lidx[j]] for (i, j) in Sord]
+                + [SQ[:, i, j] for (i, j) in SQord])
+        out = np.empty((P, n_x), dtype=complex)
+        for ix in range(n_x):
+            cv = [cfull[:, ix, j] for j in range(n)]
+            out[:, ix] = np.broadcast_to(
+                np.asarray(gfn(*(base + cv)), dtype=complex), (P,))
+        return out
+
+    return moment_x_multi
