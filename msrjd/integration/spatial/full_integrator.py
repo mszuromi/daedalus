@@ -938,11 +938,21 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                 u[okm] = np.einsum('pl,pl->p', LamiA, N_b[okm][:, :, 0])
             return g, D * (br - u) ** 2
 
+        n_ext = b.shape[1]
+        if insert_row is not None and n_ext > 1:
+            raise NotImplementedError(
+                'diagram_kinematic_spectral: the Dyson (-|k_r|^2) insertion '
+                f'is k=2 only (scalar dB_r); got n_ext={n_ext}.  Coupled '
+                'unequal-D loop dressing at k>=3 is deferred.')
         if xs_arr is not None:                         # analytic heat-kernel IFT
-            if L == 0:                                 # tree: Bcal = D·Σ w_r b_r²
-                Bcal_k = D * (w_rows @ (b[:, 0] ** 2))
+            if L == 0:                                 # tree: 𝓑 = D·Σ w_r b_r b_rᵀ
+                if n_ext == 1:
+                    Bcal_k = D * (w_rows @ (b[:, 0] ** 2))
+                    okk = Bcal_k > 1e-300
+                else:
+                    Bcal_k = D * np.einsum('pr,rj,rk->pjk', w_rows, b, b)
+                    okk = np.linalg.det(Bcal_k) > 1e-300
                 pref = np.ones(P)
-                okk = Bcal_k > 1e-300
                 Lamb = Nb = None
             elif insert_row is not None:
                 pref, Bcal_k, okk, Lamb, Nb, _Qb = _symanzik_kernel_batch(
@@ -951,13 +961,14 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                 pref, Bcal_k, okk = _symanzik_kernel_batch(a, b, w_rows, D,
                                                            spatial_dim)
                 Lamb = Nb = None
-            good = okk & (Bcal_k > 1e-300)
+            _Bpos = (Bcal_k > 1e-300) if Bcal_k.ndim == 1 \
+                else (np.linalg.det(Bcal_k) > 1e-300)
+            good = okk & _Bpos
             if np.any(good):
-                Bcal_g = Bcal_k[good]
-                hk = ((4.0 * math.pi * Bcal_g)[:, None] ** (-0.5 * spatial_dim)
-                      * np.exp(-(xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None])))
+                hk = _heat_kernel_x_general(Bcal_k[good], xs_arr, spatial_dim)
                 wamp = amp[good, :] * pref[good][:, None]
-                if insert_row is not None:
+                if insert_row is not None:             # n_ext == 1 (gated above)
+                    Bcal_g = Bcal_k[good]
                     g_r, dB_r = _ins_pieces(Lamb, Nb, okk)
                     d_ = float(spatial_dim)
                     fac = (-(0.5 * d_) * g_r[good, None] / D
@@ -968,9 +979,15 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                 else:
                     total = total + np.einsum('pj,px->jx', wamp, hk)
         else:
-            if L == 0:                                 # tree: e^{−D q² Σ w_r b_r²}
-                qv = float(q_vec[0])
-                momfac = np.exp(-D * (qv * qv) * (w_rows @ (b[:, 0] ** 2)))
+            if L == 0:                                 # tree: e^{−q⃗ᵀ(D·Q)q⃗}
+                if n_ext == 1:
+                    qv = float(q_vec[0])
+                    momfac = np.exp(-D * (qv * qv) * (w_rows @ (b[:, 0] ** 2)))
+                else:
+                    qv_arr = np.asarray(q_vec, dtype=float)
+                    Qmat = np.einsum('pr,rj,rk->pjk', w_rows, b, b)
+                    momfac = np.exp(-D * np.einsum('j,pjk,k->p',
+                                                   qv_arr, Qmat, qv_arr))
                 Lam_b = N_b = None
                 okm = np.ones(P, dtype=bool)
             elif insert_row is not None:
@@ -979,7 +996,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             else:
                 momfac = _momentum_factor_batch(a, b, w_rows, q_vec, D,
                                                 spatial_dim)
-            if insert_row is not None:
+            if insert_row is not None:                 # n_ext == 1 (gated above)
                 g_r, dB_r = _ins_pieces(Lam_b, N_b, okm)
                 d_ = float(spatial_dim)
                 qv = float(q_vec[0])
