@@ -593,3 +593,73 @@ def test_k3_coupled_cross_complex_modes():
     assert i1['max_abs_imag'] < 1e-12
     d1 = i1['per_ell'][1][0]
     assert 0 < abs(d1) < 0.5 * abs(i1['per_ell'][0][0]), (d1, i1['per_ell'])
+
+
+@pytest.mark.slow
+def test_k3_nongaussian_noise_source_tree():
+    """Spatial NON-GAUSSIAN noise: a phi-tilde^3 source (third noise
+    cumulant kappa^(3) = 3! S3) maps to an internal vertex with three
+    retarded edges and flows through the generic chamber integrator.
+    Tree kappa_3(x1, x2) vs the independent semi-analytic oracle
+    (analytic q2 + s integrals, 1-d quadrature) to ~1e-4 at n_t=60.
+    The equal-point value kappa_3(0,0) is UV log-divergent in d=1
+    (integrand ~ ds/s) — excluded by design, like the d>=2 Gaussian
+    divergences (bare values are cutoff-sensitive)."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_correlator_pts, field_respecting_mappings)
+    from msrjd.diagrams.symmetry import external_wick_compensation
+    from scipy.integrate import quad
+
+    mu, DD, T, S3 = 1.0, 1.0, 1.0, 0.1
+    b = (TheoryBuilder('ng-noise-test', n_populations=0)
+         .physical_field('p', spatial_dim=1)
+         .parameter('mu', default=mu, domain='positive')
+         .parameter('DD', default=DD, domain='positive')
+         .parameter('T', default=T, domain='positive')
+         .parameter('S3', default=S3)
+         .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+         .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)) - T*pt^2 - S3*pt^3')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=3)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    rvn = list(ft._ns._ring_var_names)
+    _, pidx = build_field_index_map(rvn, ft._n_tilde)
+    ext3 = _legs_to_phys_idx([('p', 1)] * 3, pidx)
+    base = {SR.var('mu'): mu, SR.var('DD'): DD, SR.var('T'): T,
+            SR.var('S3'): S3, SR.var('pstar1'): 0.}
+    be = build_pipeline_records(ft, b, prop, ext3, max_ell=0, k=3,
+                                verbose=False)
+    td, p = be[0][0]
+    pv = float(SR(p).subs(base))
+    assert abs(pv - 6 * S3) < 1e-12          # kappa^(3) = 3! S3, S(Gamma)=3!
+    d = diagram_to_cstack(td)
+    assert sorted(e.kind for e in d.edges) == ['R', 'R', 'R']
+    assert len(d.internal_vertices) == 1     # the source IS the vertex
+    maps = field_respecting_mappings(['p'] * 3, ['p'] * 3)
+    comp = external_wick_compensation(td)
+    pts = [(0.4, 0.4), (0.6, 0.6), (0.3, 0.9), (0.0, 0.8)]
+    x_pts = np.array([[0.0, a_, b_] for a_, b_ in pts])
+    v = diagram_correlator_pts(d, pv, x_pts, [0.0, 0.0, 0.0], mu, DD,
+                               spatial_dim=1, mappings=maps, comp=comp,
+                               n_t=60)
+
+    def oracle(x1, x2):
+        def f(q1):
+            al = 3*mu + 1.5*DD*q1*q1
+            return (np.cos(q1*(x1 - x2/2.0)) * np.pi/np.sqrt(2*DD*al)
+                    * np.exp(-abs(x2)*np.sqrt(al/(2*DD))))
+        val, _ = quad(f, -np.inf, np.inf, epsabs=1e-13, epsrel=1e-12,
+                      limit=400)
+        return pv * val / (2*np.pi)**2
+
+    o = np.array([oracle(a_, b_) for a_, b_ in pts])
+    rel = np.max(np.abs(v - o) / np.abs(o))
+    assert rel < 2e-4, (v, o, rel)

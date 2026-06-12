@@ -122,11 +122,21 @@ def diagram_to_cstack(td) -> CStackDiagram:
         elif _is_two_point_noise_source(asg):
             noise.add(v)
         elif isinstance(asg, SourceType):
-            raise NotImplementedError(
-                f"diagram_to_cstack: source vertex {v} has "
-                f"{len(asg.response_legs)} response legs (bigrade {asg.bigrade}); "
-                f"only 2-point Gaussian noise sources (→ a C line) are supported "
-                f"in this milestone (non-Gaussian / >2-point noise is future work).")
+            # n ≥ 3 (non-Gaussian) noise source: keep it as an INTERNAL
+            # vertex with n outgoing R edges — exactly the paper's
+            # all-retarded formulation.  Its time is integrated by the
+            # causal-chamber machinery like any vertex, and its κ⁽ⁿ⁾
+            # amplitude (= n!·coeff for the φ̃ⁿ action monomial) is
+            # already carried by the enumeration prefactor.  Only the
+            # n=2 (Gaussian) source gets the C-line contraction below —
+            # that is an optimization (analytic σ integral), not a
+            # requirement.
+            if len(asg.response_legs) < 2:
+                raise NotImplementedError(
+                    f"diagram_to_cstack: source vertex {v} has "
+                    f"{len(asg.response_legs)} response legs (bigrade "
+                    f"{asg.bigrade}); a noise source needs >= 2.")
+            interaction.add(v)
         else:
             raise NotImplementedError(
                 f"diagram_to_cstack: unrecognized vertex assignment {asg!r} at {v}.")
