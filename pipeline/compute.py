@@ -401,9 +401,46 @@ def compute_cumulants(
             from msrjd.integration.spatial.pipeline_bridge import (
                 compute_spatial_kpoint,
             )
-            vals, kp_info = compute_spatial_kpoint(
-                ft, model, prop, num_params, external_fields,
-                spatial_points, max_ell=max_ell, verbose=verbose)
+            try:
+                vals, kp_info = compute_spatial_kpoint(
+                    ft, model, prop, num_params, external_fields,
+                    spatial_points, max_ell=max_ell, verbose=verbose)
+            except NotImplementedError as _e:
+                if 'single-field' not in str(_e):
+                    raise
+                # ── COUPLED multi-field theory at k>=3: the spectral-
+                # assignment driver (scalar diffusion, plain vertices).
+                from msrjd.integration.spatial.heat_kernel import (
+                    reaction_diffusion_matrices)
+                from msrjd.integration.spatial.pipeline_bridge import (
+                    compute_coupled_kpoint, _norm_sr)
+                from msrjd.integration.spatial.spectral_propagator import (
+                    split_reference_diffusion)
+                _ns = ft._ns
+                _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
+                    prop['K_ft'], prop['omega'], SR.var('k'),
+                    _ns.Laplacian, getattr(_ns, 'GradX', None))
+                _nf = int(_Msr.nrows())
+                _sub = _norm_sr(num_params)
+
+                def _numm(sm):
+                    return _np.array(
+                        [[complex(SR(sm[a_, b_]).subs(_sub)).real
+                          for b_ in range(_nf)] for a_ in range(_nf)],
+                        dtype=float)
+                _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
+                if not _np.allclose(_Vn, 0.0, atol=1e-9):
+                    raise NotImplementedError(
+                        'coupled k>=3: drift (V != 0) not supported.')
+                _D0, _Dhat = split_reference_diffusion(_Dn)
+                tree_info_k = {
+                    'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),
+                    'bc_mode': (model.get('boundary')
+                                or {}).get('mode', 'infinite')}
+                vals, kp_info = compute_coupled_kpoint(
+                    ft, model, prop, num_params, external_fields,
+                    spatial_points, tree_info_k, max_ell=max_ell,
+                    verbose=verbose)
             _phase_time('spatial-kpoint', _t_phase)
             return {
                 'C_kpoint':        vals,

@@ -1669,11 +1669,12 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
         ft, model, prop, num_params, pair, _tg, _xg,
         verbose=False, certify=True, enum_verbose=False,
         stage_headers=False)
-    modes = tree_info['modes']
-    if len(modes) != 1:
+    modes = tree_info.get('modes')
+    if not modes or len(modes) != 1:
         raise NotImplementedError(
             'compute_spatial_kpoint: single-field (one tree mode) only; '
-            f'got {len(modes)} modes.  Coupled-field k>=3 is deferred.')
+            f'got {len(modes) if modes else 0} modes.  Coupled-field '
+            'k>=3 routes through compute_coupled_kpoint.')
     mu0, D0, _kap0 = modes[0]
     mu0 = float(_np.real(mu0))
     D0 = float(_np.real(D0))
