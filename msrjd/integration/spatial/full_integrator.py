@@ -749,7 +749,8 @@ def spectral_rows(descr):
 
 def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                                spatial_dim=1, W=None, n_t=22, n_s=24, xs=None,
-                               mu_scale=None, power_table=None, insert_row=None):
+                               mu_scale=None, power_table=None, insert_row=None,
+                               insert_rows=None):
     """Coupled-field kinematic integral with PER-SEGMENT masses (Dyson 3c).
 
     The spectral-assignment companion of :func:`diagram_kinematic`: same
@@ -819,8 +820,21 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             raise ValueError(
                 f'power_table shape {power_table.shape} != mass_table '
                 f'{mass_table.shape}.')
-    if insert_row is not None and not (0 <= int(insert_row) < n_rows):
-        raise ValueError(f'insert_row {insert_row} out of range (n_rows={n_rows}).')
+    # Normalize the insertion spec: ``insert_rows`` is a tuple of row
+    # indices, ONE entry per (−|k_r|²) insertion (repeats allowed: (r, r)
+    # is the same-row n=2 insertion).  ``insert_row=r`` ≡ ``insert_rows=(r,)``.
+    if insert_rows is None and insert_row is not None:
+        insert_rows = (int(insert_row),)
+    if insert_rows is not None:
+        insert_rows = tuple(int(r) for r in insert_rows)
+        if not 1 <= len(insert_rows) <= 2:
+            raise NotImplementedError(
+                f'insert_rows supports total insertion order <= 2; got '
+                f'{len(insert_rows)} insertions.')
+        for r in insert_rows:
+            if not 0 <= r < n_rows:
+                raise ValueError(
+                    f'insert_rows entry {r} out of range (n_rows={n_rows}).')
     re_min = float(np.min(mass_table.real))
     if not re_min > 0.0:
         raise ValueError(
@@ -922,27 +936,51 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             expo = expo + np.log(np.maximum(w_rows, 1e-300)) @ power_table
         amp = wfull[:, None] * np.exp(expo)
 
-        # n=1 momentum insertion (−|k_r|²): per-sample Gaussian pieces for row r
+        # (−|k_r|²)ⁿ momentum insertions (total order ≤ 2): per-sample
+        # Gaussian pieces.  With V the momentum factor and E_r ≡ (1/D)∂_r lnV,
+        # one insertion contributes E_r; two insertions on rows (r, s)
+        # (repeats allowed) contribute E_r·E_s + (1/D²)∂_s∂_r lnV, with the
+        # second-derivative pieces following from ∂_sΛ⁻¹ = −Λ⁻¹a_s a_sᵀΛ⁻¹:
+        #   ∂_s g_r = −g_rs²,   ∂_s v_r = −g_rs·v_s,   g_rs = a_rᵀΛ⁻¹a_s,
+        #   v_r = b_r − a_rᵀΛ⁻¹N,   ∂_r𝓑 = D·v_r²,   ∂_s∂_r𝓑 = −2D·g_rs·v_r·v_s.
         def _ins_pieces(Lam_b, N_b, okm):
-            """(g_r, dB_r) per sample: g=a_rᵀΛ⁻¹a_r, dB=D(b_r−a_rᵀΛ⁻¹N)²."""
-            r = int(insert_row)
-            br = float(b[r, 0])
-            if L == 0 or Lam_b is None:
-                return np.zeros(P), np.full(P, D * br * br)
-            g = np.zeros(P)
-            u = np.zeros(P)
-            if np.any(okm):
-                LamiA = np.linalg.solve(Lam_b[okm],
-                                        np.broadcast_to(a[r], (int(np.sum(okm)), L))[..., None])[..., 0]
-                g[okm] = LamiA @ a[r]
-                u[okm] = np.einsum('pl,pl->p', LamiA, N_b[okm][:, :, 0])
-            return g, D * (br - u) ** 2
+            """Per-sample (g_r, v_r) for each unique inserted row, plus the
+            cross overlap g_rs.  L=0 / degenerate samples: g ≡ 0, v_r = b_r."""
+            rows_u = sorted(set(insert_rows))
+            data = {}
+            sols = {}
+            for r in rows_u:
+                br = float(b[r, 0])
+                if L == 0 or Lam_b is None:
+                    data[r] = (np.zeros(P), np.full(P, br))
+                    continue
+                g = np.zeros(P)
+                u = np.zeros(P)
+                if np.any(okm):
+                    LamiA = np.linalg.solve(
+                        Lam_b[okm],
+                        np.broadcast_to(a[r], (int(np.sum(okm)), L))[..., None]
+                    )[..., 0]
+                    sols[r] = LamiA
+                    g[okm] = LamiA @ a[r]
+                    u[okm] = np.einsum('pl,pl->p', LamiA, N_b[okm][:, :, 0])
+                data[r] = (g, br - u)
+            g_rs = None
+            if len(insert_rows) == 2:
+                r0, r1 = insert_rows
+                if r0 == r1 or L == 0 or Lam_b is None:
+                    g_rs = data[r0][0]                  # g_rr = g_r (0 at L=0)
+                else:
+                    g_rs = np.zeros(P)
+                    if np.any(okm):
+                        g_rs[okm] = sols[r0] @ a[r1]
+            return data, g_rs
 
         n_ext = b.shape[1]
-        if insert_row is not None and n_ext > 1:
+        if insert_rows is not None and n_ext > 1:
             raise NotImplementedError(
                 'diagram_kinematic_spectral: the Dyson (-|k_r|^2) insertion '
-                f'is k=2 only (scalar dB_r); got n_ext={n_ext}.  Coupled '
+                f'is k=2 only (scalar v_r); got n_ext={n_ext}.  Coupled '
                 'unequal-D loop dressing at k>=3 is deferred.')
         if xs_arr is not None:                         # analytic heat-kernel IFT
             if L == 0:                                 # tree: 𝓑 = D·Σ w_r b_r b_rᵀ
@@ -954,7 +992,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                     okk = np.linalg.det(Bcal_k) > 1e-300
                 pref = np.ones(P)
                 Lamb = Nb = None
-            elif insert_row is not None:
+            elif insert_rows is not None:
                 pref, Bcal_k, okk, Lamb, Nb, _Qb = _symanzik_kernel_batch(
                     a, b, w_rows, D, spatial_dim, return_gaussian=True)
             else:
@@ -967,14 +1005,31 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             if np.any(good):
                 hk = _heat_kernel_x_general(Bcal_k[good], xs_arr, spatial_dim)
                 wamp = amp[good, :] * pref[good][:, None]
-                if insert_row is not None:             # n_ext == 1 (gated above)
-                    Bcal_g = Bcal_k[good]
-                    g_r, dB_r = _ins_pieces(Lamb, Nb, okk)
+                if insert_rows is not None:            # n_ext == 1 (gated above)
+                    Bg = Bcal_k[good][:, None]
+                    x2 = (xs_arr[None, :] ** 2)
                     d_ = float(spatial_dim)
-                    fac = (-(0.5 * d_) * g_r[good, None] / D
-                           - (dB_r[good, None] / D)
-                           * (0.5 * d_ / Bcal_g[:, None]
-                              - (xs_arr[None, :] ** 2) / (4.0 * Bcal_g[:, None] ** 2)))
+                    # h1 = ∂_B ln[(4πB)^{−d/2}e^{−x²/4B}], h2 = ∂_B h1
+                    h1 = -(0.5 * d_) / Bg + x2 / (4.0 * Bg ** 2)
+                    data, g_rs = _ins_pieces(Lamb, Nb, okk)
+                    r0 = insert_rows[0]
+                    g0, v0 = data[r0]
+                    E0 = (-(0.5 * d_) * g0[good, None]
+                          + h1 * (D * v0[good, None] ** 2)) / D
+                    if len(insert_rows) == 1:
+                        fac = E0
+                    else:
+                        r1 = insert_rows[1]
+                        g1, v1 = data[r1]
+                        E1 = (-(0.5 * d_) * g1[good, None]
+                              + h1 * (D * v1[good, None] ** 2)) / D
+                        h2 = (0.5 * d_) / Bg ** 2 - x2 / (2.0 * Bg ** 3)
+                        gx = g_rs[good, None]
+                        vv = (v0 * v1)[good, None]
+                        X = ((0.5 * d_) * gx ** 2
+                             + h2 * (D * D) * vv ** 2
+                             - 2.0 * D * gx * vv * h1) / (D * D)
+                        fac = E0 * E1 + X
                     total = total + np.einsum('pj,px,px->jx', wamp, hk, fac)
                 else:
                     total = total + np.einsum('pj,px->jx', wamp, hk)
@@ -990,17 +1045,28 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                                                    qv_arr, Qmat, qv_arr))
                 Lam_b = N_b = None
                 okm = np.ones(P, dtype=bool)
-            elif insert_row is not None:
+            elif insert_rows is not None:
                 momfac, Lam_b, N_b, okm = _momentum_factor_batch(
                     a, b, w_rows, q_vec, D, spatial_dim, return_gaussian=True)
             else:
                 momfac = _momentum_factor_batch(a, b, w_rows, q_vec, D,
                                                 spatial_dim)
-            if insert_row is not None:                 # n_ext == 1 (gated above)
-                g_r, dB_r = _ins_pieces(Lam_b, N_b, okm)
+            if insert_rows is not None:                # n_ext == 1 (gated above)
+                data, g_rs = _ins_pieces(Lam_b, N_b, okm)
                 d_ = float(spatial_dim)
-                qv = float(q_vec[0])
-                fac = (-(0.5 * d_) * g_r - (qv * qv) * dB_r) / D
+                q2 = float(q_vec[0]) ** 2
+                r0 = insert_rows[0]
+                g0, v0 = data[r0]
+                E0 = (-(0.5 * d_) * g0 - q2 * (D * v0 ** 2)) / D
+                if len(insert_rows) == 1:
+                    fac = E0
+                else:
+                    r1 = insert_rows[1]
+                    g1, v1 = data[r1]
+                    E1 = (-(0.5 * d_) * g1 - q2 * (D * v1 ** 2)) / D
+                    X = ((0.5 * d_) * g_rs ** 2
+                         + 2.0 * D * q2 * g_rs * (v0 * v1)) / (D * D)
+                    fac = E0 * E1 + X
                 momfac = momfac * fac
             total = total + amp.T @ momfac
     return total

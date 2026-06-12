@@ -240,3 +240,79 @@ def test_power_table_confluent_amplitude():
     oracle = quad(f, 0, 80.0, limit=400)[0]
     assert val.real == pytest.approx(oracle, rel=1e-7)
     assert abs(val.imag) < 1e-14
+
+
+def test_insertion_order2_vs_fd():
+    """Order-2 Dyson insertion factors (same-row n=2 AND cross-row 1+1)
+    vs Richardson-extrapolated finite differences of the closed-form
+    momentum factor, on BOTH the q-path and the analytic-IFT xs-path:
+
+        factor(r,s) = E_r E_s + (1/D^2) d2 lnV / dw_r dw_s,
+        E_r = (1/D) d lnV / dw_r .
+
+    The implemented pieces (g_r, v_r, g_rs and the h1/h2 B-derivatives)
+    are replicated here independently from first principles."""
+    import numpy as np
+    from msrjd.integration.spatial.full_integrator import (
+        _momentum_factor_batch, _symanzik_kernel_batch)
+
+    rng = np.random.default_rng(3)
+    E, L, D, d, qv, xv = 6, 2, 1.3, 1.0, 0.7, 0.9
+    a = rng.normal(size=(E, L))
+    b = rng.normal(size=(E, 1))
+    w0 = rng.uniform(0.3, 1.5, size=(1, E))
+
+    def Vq(w):
+        return complex(_momentum_factor_batch(
+            a, b, w.reshape(1, E), [qv], D, 1)[0]).real
+
+    def Vx(w):
+        pref, B, ok = _symanzik_kernel_batch(a, b, w.reshape(1, E), D, 1)
+        B = float(B[0])
+        return float(pref[0]) * (4*np.pi*B)**(-0.5) * np.exp(-xv**2/(4*B))
+
+    def fd2(V, r, s, eps):
+        if r == s:
+            wp = w0.copy(); wp[0, r] += eps
+            wm = w0.copy(); wm[0, r] -= eps
+            num = (V(wp) - 2*V(w0) + V(wm)) / eps**2
+        else:
+            num = 0.0
+            for sr, ss in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                wp = w0.copy(); wp[0, r] += sr*eps; wp[0, s] += ss*eps
+                num += sr*ss*V(wp)
+            num /= 4*eps**2
+        return num / V(w0) / D**2
+
+    def rich(V, r, s):
+        return (4*fd2(V, r, s, 2e-4) - fd2(V, r, s, 4e-4)) / 3
+
+    w = w0[0]
+    Lam = (w[:, None]*a).T @ a
+    N = (w[:, None]*a).T @ b
+    Q = float((w * b[:, 0]**2).sum())
+    Lami = np.linalg.inv(Lam)
+    B = D * (Q - float(N[:, 0] @ Lami @ N[:, 0]))
+    g = lambda r_, s_: float(a[r_] @ Lami @ a[s_])
+    v = lambda r_: float(b[r_, 0] - a[r_] @ Lami @ N[:, 0])
+    h1 = -(d/2)/B + xv**2/(4*B**2)
+    h2 = (d/2)/B**2 - xv**2/(2*B**3)
+
+    def f_q(r, s):
+        Er = (-(d/2)*g(r, r) - qv**2*D*v(r)**2)/D
+        Es = (-(d/2)*g(s, s) - qv**2*D*v(s)**2)/D
+        X = ((d/2)*g(r, s)**2 + 2*D*qv**2*g(r, s)*v(r)*v(s))/D**2
+        return Er*Es + X
+
+    def f_x(r, s):
+        Er = (-(d/2)*g(r, r) + h1*D*v(r)**2)/D
+        Es = (-(d/2)*g(s, s) + h1*D*v(s)**2)/D
+        X = ((d/2)*g(r, s)**2 + h2*(D*v(r)**2)*(D*v(s)**2)
+             - 2*D*g(r, s)*v(r)*v(s)*h1)/D**2
+        return Er*Es + X
+
+    for (r, s) in ((0, 0), (1, 3), (2, 2), (4, 5), (0, 5)):
+        for V, f in ((Vq, f_q), (Vx, f_x)):
+            fd = rich(V, r, s)
+            fo = f(r, s)
+            assert abs(fd - fo)/max(abs(fo), 1e-300) < 1e-5, (r, s, fd, fo)
