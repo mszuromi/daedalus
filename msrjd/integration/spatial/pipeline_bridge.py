@@ -1829,3 +1829,163 @@ def _build_wick_moment_multi(Rcal, ls, qs):
         return out
 
     return moment_x_multi
+
+
+def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
+                           points, tree_info, max_ell=1, verbose=False,
+                           n_t_loop=10, n_s_loop=12):
+    """k-point cumulant for a COUPLED scalar-diffusion theory at external
+    EVENTS (H2 driver) — the general-k companion of
+    :func:`compute_coupled_loop_correlator`, built on the same spectral-
+    assignment sum but with the orbit-stabilizer external-Wick mapping
+    sum replacing the k=2 orientation/±τ machinery (the two coincide at
+    k=2: mixed-field leaves give singleton mappings with comp=1 — the
+    per-record orientation; same-field leaves give the 2-mapping sum ÷
+    comp — the ±τ completion).
+
+    ``points`` : (n_pts, k-1, 2) of (x_j, tau_j) offsets per non-anchor
+    canonical slot (slot 0 at the origin), as in
+    :func:`compute_spatial_kpoint`.
+
+    Every record (ell = 0..max_ell) flows through ONE path:
+    ``value = pv * sum_assign W * I_spec`` with
+    :func:`full_integrator.diagram_kinematic_spectral` (matrix-B branches
+    for n_ext >= 2; NO 2^{-n_C} — the glued-segment C convention natively
+    carries the Lyapunov denominator).
+
+    Scope (v1): scalar diffusion only (Dhat = 0 — coupled unequal-D loop
+    dressing is k=2: the (-|k_r|^2) insertion is gated in the kinematic),
+    plain vertices, infinite boundary, stationary IC.
+
+    Returns ``(values (n_pts,), info)`` with per-ell breakdown.
+    """
+    import itertools
+
+    from msrjd.diagrams.symmetry import external_wick_compensation
+    from msrjd.diagrams.type_assignment import build_field_index_map
+    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_kinematic_spectral, spectral_rows, field_respecting_mappings)
+    from msrjd.integration.spatial.spectral_propagator import (
+        spectral_projectors)
+
+    M = np.asarray(tree_info['M'], dtype=float)
+    Dhat = np.asarray(tree_info['Dhat'], dtype=float)
+    D0 = float(tree_info['D0'])
+    if not np.allclose(Dhat, 0.0):
+        raise NotImplementedError(
+            'compute_coupled_kpoint v1: scalar diffusion only (Dhat = 0).  '
+            'Coupled unequal-D at k>=3 needs the Dyson insertion, which is '
+            'k=2-gated in diagram_kinematic_spectral.')
+    if tree_info.get('bc_mode') == 'periodic':
+        raise NotImplementedError(
+            'compute_coupled_kpoint v1: infinite boundary only.')
+    if getattr(ft._ns, '_operator_ir_vertex_terms', None):
+        raise NotImplementedError(
+            'compute_coupled_kpoint v1: plain (non-derivative) vertices only.')
+
+    eig, proj = spectral_projectors(M)
+    nf = len(eig)
+    mu_scale = float(np.min(eig.real))
+    if not mu_scale > 0.0:
+        raise SpatialPropagatorError(
+            f'coupled k-point: reaction matrix M has Re m = {mu_scale} <= 0.')
+
+    k = len(external_fields)
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 3 or pts.shape[1] != k - 1 or pts.shape[2] != 2:
+        raise ValueError(
+            f'points must be (n_pts, {k-1}, 2); got {pts.shape}.')
+    n_pts = pts.shape[0]
+
+    ring_var_names = list(ft._ns._ring_var_names)
+    _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
+    ext_int = _legs_to_phys_idx(external_fields, phys_idx)
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items()
+                  if str(kk) != 'Laplacian'}
+    d = int(prop.get('spatial_dim', 1))
+
+    be = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
+                                k=k, verbose=verbose, header=None)
+    tau_groups = {}
+    for ip in range(n_pts):
+        key = tuple(float(t) for t in pts[ip, :, 1])
+        tau_groups.setdefault(key, []).append(ip)
+
+    per_ell = {}
+    total = np.zeros(n_pts, dtype=complex)
+    slot_fields = [tuple(f) for f in external_fields]
+    for el in sorted(be):
+        acc = np.zeros(n_pts, dtype=complex)
+        for td, pre in be.get(el, []):
+            try:
+                pv = float(SR(pre).subs(base_np_sr))
+            except (TypeError, ValueError):
+                continue
+            if abs(pv) < 1e-14:
+                continue
+            dd = diagram_to_cstack(td)
+            rows = spectral_rows(dd)
+            n_rows = len(rows)
+            elems = np.empty((n_rows, nf), dtype=complex)
+            for r, (ei, e, half) in enumerate(rows):
+                if not e.fpairs:
+                    raise SpatialPropagatorError(
+                        'coupled k-point: C-stack edge without fpairs.')
+                ri_, pi_ = e.fpairs[0] if half in ('R', 'Cu') else e.fpairs[1]
+                elems[r, :] = [proj[a_i][pi_, ri_] for a_i in range(nf)]
+            assign = np.array(
+                list(itertools.product(range(nf), repeat=n_rows)),
+                dtype=int).T
+            Wgt = np.prod(elems[np.arange(n_rows)[:, None], assign], axis=0)
+            keep = np.abs(Wgt) > 1e-14 * max(np.max(np.abs(Wgt)), 1e-300)
+            if not np.any(keep):
+                continue
+            Wk = Wgt[keep]
+            mass_table = eig[assign[:, keep]]
+
+            leaves = list(dd.external_legs)
+            leaf_fields = [tuple(td.external_legs[lf]) for lf in leaves]
+            maps = field_respecting_mappings(slot_fields, leaf_fields)
+            comp = external_wick_compensation(td)
+            n_V = len(dd.internal_vertices)
+            n_C = sum(1 for e_ in dd.edges if e_.kind == 'C')
+            if n_V >= 3:
+                nt, ns = int(n_t_loop), int(n_s_loop)
+            else:
+                nt, ns = (22, 24) if n_C <= 2 else (16, 14)
+            nt = int(os.environ.get('SPATIAL_GRID_NT', nt))
+            ns = int(os.environ.get('SPATIAL_GRID_NS', ns))
+
+            for tkey, idxs in tau_groups.items():
+                x_full = np.zeros((len(idxs), k))
+                for j in range(1, k):
+                    x_full[:, j] = pts[idxs, j - 1, 0]
+                t_full = np.array([0.0] + list(tkey))
+                # dedup identical (times, X) mapping configurations
+                cfgs = {}
+                for m in maps:
+                    et = {leaves[j]: float(t_full[m[j]]) for j in range(k)}
+                    X = np.stack([x_full[:, m[j]] - x_full[:, m[k - 1]]
+                                  for j in range(k - 1)], axis=1)
+                    ck = (tuple(sorted(et.items())), X.tobytes())
+                    if ck in cfgs:
+                        cfgs[ck][2] += 1
+                    else:
+                        cfgs[ck] = [et, X, 1]
+                for et, X, mult in cfgs.values():
+                    I = diagram_kinematic_spectral(
+                        dd, [0.0] * (k - 1), et, mass_table, D0,
+                        spatial_dim=d, xs=X, n_t=nt, n_s=ns,
+                        mu_scale=mu_scale)              # (n_kept, n_x)
+                    acc[idxs] += (mult * pv / comp) * (Wk @ I)
+        per_ell[el] = np.real(acc).astype(float)
+        total = total + acc
+        if verbose:
+            print(f'[coupled k={k}] ell={el}: summed')
+
+    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k,
+            'max_ell': max_ell, 'n_modes': nf,
+            'max_abs_imag': float(np.max(np.abs(np.imag(total))))}
+    return np.real(total).astype(float), info

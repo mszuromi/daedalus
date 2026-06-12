@@ -457,3 +457,75 @@ def test_k3_spectral_uniform_mass_identity(recs3):
         worst = max(worst, abs(complex(kxs[0, 0]).real - refx)
                     / max(abs(refx), 1e-300))
     assert worst < 5e-4, worst
+
+
+@pytest.mark.slow
+def test_k3_coupled_decoupled_limit():
+    """H2 anchor: compute_coupled_kpoint on a DECOUPLED 2-species theory
+    (m_a=1, m_b=1.7, nonlinearity g*a^2 in species a only, externals all
+    species a) reproduces the single-field compute_spatial_kpoint values
+    at matched quadrature (tree + 1-loop, 3 event configurations).
+    Exercises the full coupled chain: 2-species enumeration, fpairs
+    threading, spectral projector weights (b-mode assignments must drop
+    out), mapping-sum externals, matrix-B spectral kinematic at
+    n_ext=2.  Residual is sigma-quadrature only (~4e-5)."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.pipeline_bridge import (
+        compute_spatial_kpoint, compute_coupled_kpoint, _legs_to_phys_idx)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
+    b2 = (TheoryBuilder('coup-k3-anchor-test', n_populations=0)
+          .physical_field('a', spatial_dim=1)
+          .physical_field('b', spatial_dim=1)
+          .parameter('ma', default=ma, domain='positive')
+          .parameter('mb', default=mb, domain='positive')
+          .parameter('DD', default=DD, domain='positive')
+          .parameter('g', default=g, domain='real')
+          .parameter('T', default=1.0, domain='positive')
+          .equation(lhs='(Dt+ma-DD*Laplacian)*a', rhs='0')
+          .equation(lhs='(Dt+mb-DD*Laplacian)*b', rhs='0')
+          .set_action_text('at*(Dt(a)+ma*a-DD*Lap(a)+g*a^2) - T*at^2'
+                           ' + bt*(Dt(b)+mb*b-DD*Lap(b)) - T*bt^2')
+          .operator_ir().boundary('infinite').initial('stationary').build())
+    ft2 = FieldTheory(b2, taylor_order=5)
+    ft2.expand()
+    prop2 = build_propagator(ft2, b2, use_cache=False, verbose=False)
+    np2 = {SR.var('ma'): ma, SR.var('mb'): mb, SR.var('DD'): DD,
+           SR.var('g'): g, SR.var('T'): 1.0,
+           SR.var('astar1'): 0.0, SR.var('bstar1'): 0.0}
+    tree_info = {'M': np.diag([ma, mb]), 'Dhat': np.zeros((2, 2)),
+                 'D0': DD, 'bc_mode': 'infinite'}
+    pts = np.array([[[0.0, 0.0], [0.0, 0.0]],
+                    [[0.8, 0.0], [0.8, 0.0]],
+                    [[0.5, 0.3], [-0.4, -0.2]]])
+    _, pidx2 = build_field_index_map(list(ft2._ns._ring_var_names),
+                                     ft2._n_tilde)
+    extA = _legs_to_phys_idx([('a', 1)] * 3, pidx2)
+    vc, _ic = compute_coupled_kpoint(ft2, b2, prop2, np2, extA, pts,
+                                     tree_info, max_ell=1, verbose=False,
+                                     n_t_loop=10, n_s_loop=24)
+
+    b1 = (TheoryBuilder('coup-k3-anchor-test-ref', n_populations=0)
+          .physical_field('p', spatial_dim=1)
+          .parameter('mu', default=ma, domain='positive')
+          .parameter('DD', default=DD, domain='positive')
+          .parameter('g', default=g, domain='real')
+          .parameter('T', default=1.0, domain='positive')
+          .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+          .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
+          .operator_ir().boundary('infinite').initial('stationary').build())
+    ft1 = FieldTheory(b1, taylor_order=5)
+    ft1.expand()
+    prop1 = build_propagator(ft1, b1, use_cache=False, verbose=False)
+    np1 = {SR.var('mu'): ma, SR.var('DD'): DD, SR.var('g'): g,
+           SR.var('T'): 1.0, SR.var('pstar1'): 0.0}
+    _, pidx1 = build_field_index_map(list(ft1._ns._ring_var_names),
+                                     ft1._n_tilde)
+    extP = _legs_to_phys_idx([('p', 1)] * 3, pidx1)
+    vs, _is = compute_spatial_kpoint(ft1, b1, prop1, np1, extP, pts,
+                                     max_ell=1, verbose=False)
+    rel = np.max(np.abs(vc - vs) / np.maximum(np.abs(vs), 1e-300))
+    assert rel < 5e-3, (vc, vs, rel)
