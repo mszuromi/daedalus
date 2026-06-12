@@ -316,3 +316,82 @@ def test_insertion_order2_vs_fd():
             fd = rich(V, r, s)
             fo = f(r, s)
             assert abs(fd - fo)/max(abs(fo), 1e-300) < 1e-5, (r, s, fd, fo)
+
+
+def test_insertion_general_order_vs_symbolic():
+    """ANY-order insertion factors vs EXACT symbolic differentiation of
+    lnV(w) (sympy, no FD noise): orders 1-4, same/mixed/repeated rows,
+    q-path and xs-path.  Pins the partition expansion
+    (1/D^n) d^n V / V = sum_{partitions} prod_blocks (1/D^|b|) d^b lnV
+    with d^b lnU = closed g-chains and d^b B = open v-g-v chains."""
+    import numpy as np
+    import sympy as sp
+    from math import factorial as fct
+    from msrjd.integration.spatial.full_integrator import (
+        _set_partitions, _dlnU_block, _dB_block)
+
+    rng = np.random.default_rng(5)
+    E, L, D, d, qv, xv = 5, 2, 1.3, 1.0, 0.7, 0.9
+    a = rng.normal(size=(E, L))
+    b = rng.normal(size=(E, 1))
+    w0 = rng.uniform(0.3, 1.5, size=E)
+    ws = sp.symbols('w0:%d' % E, positive=True)
+    Lam_s = sp.Matrix(L, L, lambda i, j: sum(ws[e]*a[e, i]*a[e, j]
+                                             for e in range(E)))
+    N_s = sp.Matrix(L, 1, lambda i, j: sum(ws[e]*a[e, i]*b[e, 0]
+                                           for e in range(E)))
+    Q_s = sum(ws[e]*b[e, 0]**2 for e in range(E))
+    U_s = Lam_s.det()
+    B_s = D*(Q_s - (N_s.T*Lam_s.inv()*N_s)[0, 0])
+    lnV = {'q': -sp.Rational(1, 2)*d*sp.log(U_s) - qv**2*B_s,
+           'x': (-sp.Rational(1, 2)*d*sp.log(U_s)
+                 - sp.Rational(1, 2)*d*sp.log(B_s) - xv**2/(4*B_s))}
+    subs0 = {ws[e]: float(w0[e]) for e in range(E)}
+
+    def oracle(path, rows):
+        expr = sp.exp(lnV[path])
+        for r in rows:
+            expr = sp.diff(expr, ws[r])
+        return float(sp.N(expr.subs(subs0)
+                          / sp.exp(lnV[path]).subs(subs0), 30)) / D**len(rows)
+
+    Lam = (w0[:, None]*a).T @ a
+    N = (w0[:, None]*a).T @ b
+    Lami = np.linalg.inv(Lam)
+    Gd = {(r, s): np.array([float(a[r] @ Lami @ a[s])])
+          for r in range(E) for s in range(E)}
+    Vd = {r: np.array([float(b[r, 0] - a[r] @ Lami @ N[:, 0])])
+          for r in range(E)}
+    Bv = D*(float((w0*b[:, 0]**2).sum()) - float(N[:, 0] @ Lami @ N[:, 0]))
+
+    def hm(m):
+        return (-(0.5*d)*((-1.0)**(m-1))*fct(m-1)/Bv**m
+                - 0.25*xv**2*((-1.0)**m)*fct(m)/Bv**(m+1))
+
+    def factor(rows, path):
+        tot = 0.0
+        for part in _set_partitions(list(range(len(rows)))):
+            term = 1.0
+            for blk in part:
+                rb = [rows[i] for i in blk]
+                if path == 'q':
+                    dlnf = -qv**2*float(_dB_block(rb, Gd, Vd, D)[0])
+                else:
+                    dlnf = 0.0
+                    for p2 in _set_partitions(list(range(len(rb)))):
+                        t2 = hm(len(p2))
+                        for b2 in p2:
+                            t2 *= float(_dB_block([rb[i] for i in b2],
+                                                  Gd, Vd, D)[0])
+                        dlnf += t2
+                term *= (-(0.5*d)*float(_dlnU_block(rb, Gd)[0])
+                         + dlnf)/D**len(rb)
+            tot += term
+        return tot
+
+    for rows in [(0,), (1, 3), (2, 2), (0, 1, 2), (1, 1, 3), (4, 4, 4),
+                 (0, 1, 2, 3), (2, 2, 3, 3)]:
+        for path in ('q', 'x'):
+            o = oracle(path, rows)
+            f = factor(rows, path)
+            assert abs(f - o)/max(abs(o), 1e-300) < 1e-10, (rows, path, f, o)

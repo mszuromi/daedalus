@@ -747,6 +747,58 @@ def spectral_rows(descr):
     return rows
 
 
+def _set_partitions(items):
+    """All set partitions of ``items`` (a list), as lists of blocks.
+    Standard recursion; Bell(n) partitions — insertion orders are small."""
+    if not items:
+        yield []
+        return
+    first, rest = items[0], items[1:]
+    for part in _set_partitions(rest):
+        # put `first` in its own block
+        yield [[first]] + part
+        # or into each existing block
+        for i in range(len(part)):
+            yield part[:i] + [[first] + part[i]] + part[i + 1:]
+
+
+def _dlnU_block(rows, G):
+    """``∂^{rows} ln U`` for a multiset of inserted rows:
+    ``(−1)^{m−1} Σ_{cyclic orders} ∏_i g_{r_i r_{i+1}}`` (closed g-chains),
+    from ``∂_t Λ = a_t a_tᵀ``.  ``G[(r,s)]`` are per-sample arrays."""
+    import itertools as _it
+    m = len(rows)
+    if m == 1:
+        return G[(rows[0], rows[0])]
+    first, rest = rows[0], list(rows[1:])
+    acc = 0.0
+    for perm in _it.permutations(rest):
+        order = (first,) + perm
+        term = G[(order[-1], order[0])]
+        for i in range(m - 1):
+            term = term * G[(order[i], order[i + 1])]
+        acc = acc + term
+    return ((-1.0) ** (m - 1)) * acc
+
+
+def _dB_block(rows, G, V, D):
+    """``∂^{rows} 𝓑`` for a multiset of inserted rows:
+    ``(−1)^{m−1} D Σ_{orderings} v_{p₁} (∏ g) v_{p_m}`` (open v–g–v
+    chains), from ``∂_t v_r = −g_rt v_t``."""
+    import itertools as _it
+    m = len(rows)
+    if m == 1:
+        r = rows[0]
+        return D * V[r] * V[r]
+    acc = 0.0
+    for perm in _it.permutations(rows):
+        term = V[perm[0]] * V[perm[-1]]
+        for i in range(m - 1):
+            term = term * G[(perm[i], perm[i + 1])]
+        acc = acc + term
+    return ((-1.0) ** (m - 1)) * D * acc
+
+
 def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                                spatial_dim=1, W=None, n_t=22, n_s=24, xs=None,
                                mu_scale=None, power_table=None, insert_row=None,
@@ -827,10 +879,8 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
         insert_rows = (int(insert_row),)
     if insert_rows is not None:
         insert_rows = tuple(int(r) for r in insert_rows)
-        if not 1 <= len(insert_rows) <= 2:
-            raise NotImplementedError(
-                f'insert_rows supports total insertion order <= 2; got '
-                f'{len(insert_rows)} insertions.')
+        if len(insert_rows) < 1:
+            raise ValueError('insert_rows must contain >= 1 row index.')
         for r in insert_rows:
             if not 0 <= r < n_rows:
                 raise ValueError(
@@ -936,25 +986,26 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             expo = expo + np.log(np.maximum(w_rows, 1e-300)) @ power_table
         amp = wfull[:, None] * np.exp(expo)
 
-        # (−|k_r|²)ⁿ momentum insertions (total order ≤ 2): per-sample
-        # Gaussian pieces.  With V the momentum factor and E_r ≡ (1/D)∂_r lnV,
-        # one insertion contributes E_r; two insertions on rows (r, s)
-        # (repeats allowed) contribute E_r·E_s + (1/D²)∂_s∂_r lnV, with the
-        # second-derivative pieces following from ∂_sΛ⁻¹ = −Λ⁻¹a_s a_sᵀΛ⁻¹:
-        #   ∂_s g_r = −g_rs²,   ∂_s v_r = −g_rs·v_s,   g_rs = a_rᵀΛ⁻¹a_s,
-        #   v_r = b_r − a_rᵀΛ⁻¹N,   ∂_r𝓑 = D·v_r²,   ∂_s∂_r𝓑 = −2D·g_rs·v_r·v_s.
+        # (−|k_r|²)ⁿ momentum insertions, ANY total order n: the factor is
+        # (1/Dⁿ)·∂ⁿV/V over the insertion multiset, expanded over set
+        # partitions (Bell):  Σ_π ∏_{blocks β} (1/D^{|β|}) ∂^β lnV, with
+        #   ∂^β lnU = closed g-chains (_dlnU_block),
+        #   ∂^β 𝓑  = open v–g–v chains (_dB_block),
+        # from ∂_tΛ⁻¹ = −Λ⁻¹a_t a_tᵀΛ⁻¹ ⇒ ∂_t g_rs = −g_rt g_ts,
+        # ∂_t v_r = −g_rt v_t.  q-path: lnV = −(d/2)lnU − q²𝓑.  xs-path:
+        # lnV = −(d/2)lnU + ln f(𝓑) via Faà di Bruno with
+        # h_m = ∂_𝓑^m ln f = −(d/2)(−1)^{m−1}(m−1)!/𝓑^m − (x²/4)(−1)^m m!/𝓑^{m+1}.
+        # n = 1, 2 reproduce the earlier closed forms exactly.
         def _ins_pieces(Lam_b, N_b, okm):
-            """Per-sample (g_r, v_r) for each unique inserted row, plus the
-            cross overlap g_rs.  L=0 / degenerate samples: g ≡ 0, v_r = b_r."""
+            """Per-sample G[(r,s)] (all pairs of unique inserted rows) and
+            V[r].  L=0 / degenerate samples: g ≡ 0, v_r = b_r."""
             rows_u = sorted(set(insert_rows))
-            data = {}
-            sols = {}
+            Gd, Vd, sols = {}, {}, {}
             for r in rows_u:
                 br = float(b[r, 0])
                 if L == 0 or Lam_b is None:
-                    data[r] = (np.zeros(P), np.full(P, br))
+                    Vd[r] = np.full(P, br)
                     continue
-                g = np.zeros(P)
                 u = np.zeros(P)
                 if np.any(okm):
                     LamiA = np.linalg.solve(
@@ -962,19 +1013,35 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                         np.broadcast_to(a[r], (int(np.sum(okm)), L))[..., None]
                     )[..., 0]
                     sols[r] = LamiA
-                    g[okm] = LamiA @ a[r]
                     u[okm] = np.einsum('pl,pl->p', LamiA, N_b[okm][:, :, 0])
-                data[r] = (g, br - u)
-            g_rs = None
-            if len(insert_rows) == 2:
-                r0, r1 = insert_rows
-                if r0 == r1 or L == 0 or Lam_b is None:
-                    g_rs = data[r0][0]                  # g_rr = g_r (0 at L=0)
-                else:
-                    g_rs = np.zeros(P)
-                    if np.any(okm):
-                        g_rs[okm] = sols[r0] @ a[r1]
-            return data, g_rs
+                Vd[r] = br - u
+            for i, r in enumerate(rows_u):
+                for s in rows_u[i:]:
+                    if L == 0 or Lam_b is None or r not in sols:
+                        g = np.zeros(P)
+                    else:
+                        g = np.zeros(P)
+                        g[okm] = sols[r] @ a[s]
+                    Gd[(r, s)] = g
+                    Gd[(s, r)] = g
+            return Gd, Vd
+
+        def _ins_factor(Gd, Vd, d_, dB_to_dlnf):
+            """Σ over set partitions of the insertion list of
+            ∏_blocks (1/D^{|β|})·[−(d/2)∂^β lnU + dB_to_dlnf(β-blocks)].
+            ``dB_to_dlnf(block)`` maps the 𝓑-derivative part of one lnV
+            block (q-path: −q²·∂^β𝓑; xs-path: Faà di Bruno in h_m)."""
+            idx = list(range(len(insert_rows)))
+            total = 0.0
+            for part in _set_partitions(idx):
+                term = 1.0
+                for block in part:
+                    rows_b = [insert_rows[i] for i in block]
+                    dlnv = (-(0.5 * d_) * _dlnU_block(rows_b, Gd)
+                            + dB_to_dlnf(rows_b))
+                    term = term * dlnv / (D ** len(rows_b))
+                total = total + term
+            return total
 
         n_ext = b.shape[1]
         if insert_rows is not None and n_ext > 1:
@@ -1009,27 +1076,35 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                     Bg = Bcal_k[good][:, None]
                     x2 = (xs_arr[None, :] ** 2)
                     d_ = float(spatial_dim)
-                    # h1 = ∂_B ln[(4πB)^{−d/2}e^{−x²/4B}], h2 = ∂_B h1
-                    h1 = -(0.5 * d_) / Bg + x2 / (4.0 * Bg ** 2)
-                    data, g_rs = _ins_pieces(Lamb, Nb, okk)
-                    r0 = insert_rows[0]
-                    g0, v0 = data[r0]
-                    E0 = (-(0.5 * d_) * g0[good, None]
-                          + h1 * (D * v0[good, None] ** 2)) / D
-                    if len(insert_rows) == 1:
-                        fac = E0
-                    else:
-                        r1 = insert_rows[1]
-                        g1, v1 = data[r1]
-                        E1 = (-(0.5 * d_) * g1[good, None]
-                              + h1 * (D * v1[good, None] ** 2)) / D
-                        h2 = (0.5 * d_) / Bg ** 2 - x2 / (2.0 * Bg ** 3)
-                        gx = g_rs[good, None]
-                        vv = (v0 * v1)[good, None]
-                        X = ((0.5 * d_) * gx ** 2
-                             + h2 * (D * D) * vv ** 2
-                             - 2.0 * D * gx * vv * h1) / (D * D)
-                        fac = E0 * E1 + X
+                    # h_m = ∂_𝓑^m ln[(4π𝓑)^{−d/2}e^{−x²/4𝓑}]
+                    from math import factorial as _fct
+                    _hcache = {}
+
+                    def _hm(m):
+                        if m not in _hcache:
+                            _hcache[m] = (
+                                -(0.5 * d_) * ((-1.0) ** (m - 1))
+                                * _fct(m - 1) / Bg ** m
+                                - 0.25 * x2 * ((-1.0) ** m)
+                                * _fct(m) / Bg ** (m + 1))
+                        return _hcache[m]
+
+                    Gd, Vd = _ins_pieces(Lamb, Nb, okk)
+                    Gg = {k_: v_[good, None] for k_, v_ in Gd.items()}
+                    Vg = {k_: v_[good, None] for k_, v_ in Vd.items()}
+
+                    def _dlnf(rows_b):
+                        # Faà di Bruno: Σ_{partitions ρ} h_{|ρ|} ∏_γ ∂^γ𝓑
+                        out = 0.0
+                        for part in _set_partitions(list(range(len(rows_b)))):
+                            term = _hm(len(part))
+                            for blk in part:
+                                term = term * _dB_block(
+                                    [rows_b[i] for i in blk], Gg, Vg, D)
+                            out = out + term
+                        return out
+
+                    fac = _ins_factor(Gg, Vg, d_, _dlnf)
                     total = total + np.einsum('pj,px,px->jx', wamp, hk, fac)
                 else:
                     total = total + np.einsum('pj,px->jx', wamp, hk)
@@ -1052,22 +1127,14 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                 momfac = _momentum_factor_batch(a, b, w_rows, q_vec, D,
                                                 spatial_dim)
             if insert_rows is not None:                # n_ext == 1 (gated above)
-                data, g_rs = _ins_pieces(Lam_b, N_b, okm)
+                Gd, Vd = _ins_pieces(Lam_b, N_b, okm)
                 d_ = float(spatial_dim)
                 q2 = float(q_vec[0]) ** 2
-                r0 = insert_rows[0]
-                g0, v0 = data[r0]
-                E0 = (-(0.5 * d_) * g0 - q2 * (D * v0 ** 2)) / D
-                if len(insert_rows) == 1:
-                    fac = E0
-                else:
-                    r1 = insert_rows[1]
-                    g1, v1 = data[r1]
-                    E1 = (-(0.5 * d_) * g1 - q2 * (D * v1 ** 2)) / D
-                    X = ((0.5 * d_) * g_rs ** 2
-                         + 2.0 * D * q2 * g_rs * (v0 * v1)) / (D * D)
-                    fac = E0 * E1 + X
-                momfac = momfac * fac
+
+                def _dlnf_q(rows_b):
+                    return -q2 * _dB_block(rows_b, Gd, Vd, D)
+
+                momfac = momfac * _ins_factor(Gd, Vd, d_, _dlnf_q)
             total = total + amp.T @ momfac
     return total
 

@@ -201,17 +201,22 @@ def test_unequal_D_default_policy_raises_actionable():
                           parallel=False, verbose=False, use_cache=False)
 
 
-def test_unequal_D_loops_order3_gated():
-    """Loops support insertions to total order 2 (O(𝒟̂) + O(𝒟̂²)):
-    dyson_order(3) with max_ell=1 raises cleanly (trees support any order)."""
+def test_unequal_D_loops_order3_runs():
+    """Loop insertions have NO order cap (exact at every order via the
+    ln-derivative partition expansion + generalized-partial-fraction
+    H_n labels): dyson_order(3) with max_ell=1 must RUN and return
+    finite real values.  (Periodic loop corrections are still gated —
+    use the infinite-boundary ladder model.)"""
     from pipeline import compute_cumulants
-    model = _unequal_model(order=3, periodic_L=20.0)
-    with pytest.raises(NotImplementedError, match='order'):
-        compute_cumulants(model=model, k=2, max_ell=1, fundamental=_UF,
-                          external_fields=[('a', 1), ('a', 1)],
-                          tau_max=0.5, tau_step=0.5,
-                          spatial_grid=np.array([0.0, 1.0]),
-                          parallel=False, verbose=False, use_cache=False)
+    model = _ladder_coupled_model(3)
+    th = compute_cumulants(model=model, k=2, max_ell=1, fundamental=_LUF,
+                           external_fields=[('a', 1), ('a', 1)],
+                           tau_max=0.6, tau_step=0.6,
+                           spatial_grid=np.array([0.0, 0.8]),
+                           parallel=False, verbose=False, use_cache=False)
+    assert th['spatial_info'].get('coupled_loop')
+    C = np.asarray(th['C_tau_x'])
+    assert np.all(np.isfinite(C))
 
 
 # ── D-3 LOOP dressing: the decoupled-unequal-D ladder (the sharp referee) ───

@@ -1073,12 +1073,11 @@ def compute_coupled_loop_correlator(
                 'SpatialTheoryBuilder.dyson_order(N) (loops support N=1, the '
                 'leading O(𝒟̂) correction).')
         dress_order = int(pol['order'])
-        if dress_order > 2:
-            raise NotImplementedError(
-                f'coupled LOOP dressing supports dyson order <= 2 (the O(𝒟̂) '
-                f'and O(𝒟̂²) insertions; tree level supports any order); '
-                f'requested order={dress_order}.  Run loops at '
-                f'dyson_order(2).')
+        # No order cap: insertions are exact at every order via the
+        # ln-derivative partition expansion (kinematic) and the
+        # generalized-partial-fraction 𝓗_n labels (driver).  Cost grows
+        # combinatorially with the order — that is the honest price of
+        # the Dyson series, not a correctness limit.
     if tree_info.get('bc_mode') == 'periodic':
         raise NotImplementedError(
             'coupled loop corrections v1: infinite boundary only.')
@@ -1090,13 +1089,8 @@ def compute_coupled_loop_correlator(
             'with the spectral-assignment sum.')
     eig, proj = spectral_projectors(M)
     nf = len(eig)
-    # 𝓗₁ string matrices P_α𝒟̂P_β (B27 at n=1) for the dressing patterns
-    PDP = ([[proj[a_] @ Dhat @ proj[b_] for b_ in range(nf)]
-            for a_ in range(nf)] if dress_order >= 1 else None)
-    # 𝓗₂ string matrices P_α𝒟̂P_β𝒟̂P_γ (B27 at n=2)
-    PDPP = ([[[proj[a_] @ Dhat @ proj[b_] @ Dhat @ proj[c_]
-               for c_ in range(nf)] for b_ in range(nf)]
-             for a_ in range(nf)] if dress_order >= 2 else None)
+    # 𝓗_n string matrices P(𝒟̂P)^n are built on demand inside
+    # ``_hn_labels`` (tiny nf×nf products) — no precomputed tables.
     mu_scale = float(np.min(eig.real))
     if not mu_scale > 0.0:
         raise SpatialPropagatorError(
@@ -1170,64 +1164,72 @@ def compute_coupled_loop_correlator(
             eig_scale = float(np.max(np.abs(eig))) or 1.0
             _tol = 1e-8 * eig_scale
 
-            def _h1_labels(r):
-                ri_r, pi_r = fp_rows[r]
-                out = []
-                for al in range(nf):
-                    for be in range(nf):
-                        mel = PDP[al][be][pi_r, ri_r]
-                        if abs(mel) < 1e-300:
-                            continue
-                        dm = eig[be] - eig[al]
-                        if abs(dm) > _tol:
-                            out.append((eig[al], 0.0, mel / dm))
-                            out.append((eig[be], 0.0, -mel / dm))
-                        else:
-                            out.append((0.5 * (eig[al] + eig[be]), 1.0, mel))
-                return out
-
-            def _dd3_labels(masses, mel):
-                """Divided-difference expansion of f[m0,m1,m2], f=e^{−mw},
-                as (mass, κ, coeff) labels weighted by ``mel``."""
-                m = list(masses)
-                # group by closeness (pairwise within _tol)
-                d01 = abs(m[0] - m[1]) <= _tol
-                d02 = abs(m[0] - m[2]) <= _tol
-                d12 = abs(m[1] - m[2]) <= _tol
-                if d01 and d02 and d12:
-                    mu = (m[0] + m[1] + m[2]) / 3.0
-                    return [(mu, 2.0, 0.5 * mel)]
-                if d01 or d02 or d12:
-                    if d01:
-                        a_, b_ = 0.5 * (m[0] + m[1]), m[2]
-                    elif d02:
-                        a_, b_ = 0.5 * (m[0] + m[2]), m[1]
+            def _pf_labels(masses, mel):
+                """Generalized partial fractions of the n-fold Duhamel
+                convolution: time factor = L⁻¹[∏ᵢ 1/(s+mᵢ)](w) as labels
+                (μ_j, κ, coeff)·mel.  Masses are grouped by closeness
+                (``_tol``); a group of multiplicity m_j contributes
+                A_{jp}·w^{p−1}e^{−μ_j w}/(p−1)! for p = 1..m_j, with
+                A_{jp} = g_j^{(m_j−p)}(−μ_j)/(m_j−p)! and g_j(s) =
+                ∏_{l≠j}(s+μ_l)^{−m_l}; derivatives of g_j via the
+                log-derivative Bell expansion (g^{(p)}/g over set
+                partitions of h^{(q)} = −Σ m_l(−1)^{q−1}(q−1)!/(s+μ_l)^q)."""
+                from math import factorial as _fct
+                from msrjd.integration.spatial.full_integrator import (
+                    _set_partitions)
+                groups = []                       # [mean, mult]
+                for m_ in masses:
+                    for gr in groups:
+                        if abs(m_ - gr[0]) <= _tol:
+                            gr[0] = (gr[0] * gr[1] + m_) / (gr[1] + 1)
+                            gr[1] += 1
+                            break
                     else:
-                        a_, b_ = 0.5 * (m[1] + m[2]), m[0]
-                    db = b_ - a_
-                    return [(b_, 0.0, mel / db ** 2),
-                            (a_, 0.0, -mel / db ** 2),
-                            (a_, 1.0, mel / db)]
+                        groups.append([complex(m_), 1])
                 out = []
-                for i in range(3):
-                    den = 1.0
-                    for j in range(3):
-                        if j != i:
-                            den = den * (m[i] - m[j])
-                    out.append((m[i], 0.0, mel / den))
+                for j, (mu_j, mj) in enumerate(groups):
+                    s0 = -mu_j
+                    others = [(mu_l, ml) for l, (mu_l, ml)
+                              in enumerate(groups) if l != j]
+                    g0 = 1.0 + 0.0j
+                    for mu_l, ml in others:
+                        g0 = g0 / (s0 + mu_l) ** ml
+
+                    def _hq(q):
+                        return -sum(ml * ((-1.0) ** (q - 1)) * _fct(q - 1)
+                                    / (s0 + mu_l) ** q for mu_l, ml in others)
+
+                    def _gp(p):
+                        if p == 0:
+                            return g0
+                        acc = 0.0 + 0.0j
+                        for part in _set_partitions(list(range(p))):
+                            t_ = 1.0 + 0.0j
+                            for blk in part:
+                                t_ = t_ * _hq(len(blk))
+                            acc = acc + t_
+                        return g0 * acc
+
+                    for p in range(1, mj + 1):
+                        A = _gp(mj - p) / _fct(mj - p)
+                        out.append((mu_j, float(p - 1),
+                                    mel * A / _fct(p - 1)))
                 return out
 
-            def _h2_labels(r):
+            def _hn_labels(r, n_r):
+                """𝓗_{n_r} labels for row r: mode strings (α₀..α_{n_r})
+                with mel = [P(𝒟̂P)^{n_r}]_{p,r}, expanded by ``_pf_labels``."""
+                import itertools as _it2
                 ri_r, pi_r = fp_rows[r]
                 out = []
-                for al in range(nf):
-                    for be in range(nf):
-                        for ga in range(nf):
-                            mel = PDPP[al][be][ga][pi_r, ri_r]
-                            if abs(mel) < 1e-300:
-                                continue
-                            out.extend(_dd3_labels(
-                                (eig[al], eig[be], eig[ga]), mel))
+                for alphas in _it2.product(range(nf), repeat=n_r + 1):
+                    Mstr = proj[alphas[0]]
+                    for al in alphas[1:]:
+                        Mstr = Mstr @ Dhat @ proj[al]
+                    mel = Mstr[pi_r, ri_r]
+                    if abs(mel) < 1e-300:
+                        continue
+                    out.extend(_pf_labels([eig[al] for al in alphas], mel))
                 return out
 
             def _undressed(s):
@@ -1254,30 +1256,35 @@ def compute_coupled_loop_correlator(
 
             patterns = [(None, Wk, mass_table, None)]
             if dress_order >= 1:
-                h1 = {r: _h1_labels(r) for r in range(n_rows)}
-                for r in range(n_rows):
-                    if not h1[r]:
-                        continue
-                    p = _mk_pattern({r: h1[r]}, (r,))
-                    if p is not None:
-                        patterns.append(p)
-                if dress_order >= 2:
-                    # two distinct rows, n=1 each
-                    for r in range(n_rows):
-                        if not h1[r]:
+                # Dyson order n: distribute n insertions over the rows
+                # (multisets); a row carrying n_r insertions gets the
+                # 𝓗_{n_r} label set.  Cost grows combinatorially —
+                # C(n_rows+n−1, n) multisets × nf^{n_r+1} mode strings per
+                # dressed row — which is the honest price of the series.
+                _label_cache = {}
+
+                def _labels(r, n_r):
+                    if (r, n_r) not in _label_cache:
+                        _label_cache[(r, n_r)] = _hn_labels(r, n_r)
+                    return _label_cache[(r, n_r)]
+
+                for order_n in range(1, dress_order + 1):
+                    for multiset in itertools.combinations_with_replacement(
+                            range(n_rows), order_n):
+                        counts = {}
+                        for r in multiset:
+                            counts[r] = counts.get(r, 0) + 1
+                        dressed = {}
+                        ok_ms = True
+                        for r, n_r in counts.items():
+                            lab = _labels(r, n_r)
+                            if not lab:
+                                ok_ms = False
+                                break
+                            dressed[r] = lab
+                        if not ok_ms:
                             continue
-                        for s in range(r + 1, n_rows):
-                            if not h1[s]:
-                                continue
-                            p = _mk_pattern({r: h1[r], s: h1[s]}, (r, s))
-                            if p is not None:
-                                patterns.append(p)
-                    # one row, n=2
-                    for r in range(n_rows):
-                        l2 = _h2_labels(r)
-                        if not l2:
-                            continue
-                        p = _mk_pattern({r: l2}, (r, r))
+                        p = _mk_pattern(dressed, tuple(multiset))
                         if p is not None:
                             patterns.append(p)
             n_C = sum(1 for e_ in dd.edges if e_.kind == 'C')
