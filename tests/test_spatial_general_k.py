@@ -421,3 +421,39 @@ def test_k3_derivative_vertex_qpath():
                                       xs=np.array([[0.3, -0.2]]),
                                       formfactor=ff, **kw)
     assert n_checked >= 12
+
+
+@pytest.mark.slow
+def test_k3_spectral_uniform_mass_identity(recs3):
+    """Coupled-field spectral kinematic at k=3: with UNIFORM masses the
+    glued-segment (Lyapunov) convention must reduce to the single-field
+    kinematic, I_spec = 2^{-n_C} * I_single, on BOTH the q-path and the
+    analytic-IFT xs-path.  Pins the matrix-B branches added to
+    diagram_kinematic_spectral (H2 core).  Residual is sigma-quadrature
+    only (4e-2 -> 1e-5 at n_s = 8 -> 24); n_s=24 here."""
+    from msrjd.integration.spatial.full_integrator import (
+        diagram_kinematic, diagram_kinematic_spectral, spectral_rows)
+    mu = 1.0
+    worst = 0.0
+    for td, d, pv, ell in recs3:
+        n_C = sum(1 for e in d.edges if e.kind == 'C')
+        mt = np.full((len(spectral_rows(d)), 1), mu, dtype=complex)
+        legs = list(d.external_legs)
+        et = {legs[j]: t for j, t in enumerate((0.0, 0.3, -0.2))}
+        kw = {'n_t': 8, 'n_s': 24}
+        ks = diagram_kinematic_spectral(d, [0.4, -0.7], et, mt, 1.0,
+                                        spatial_dim=1, **kw)
+        k1 = diagram_kinematic(d, [0.4, -0.7], et, mu, 1.0,
+                               spatial_dim=1, **kw)
+        ref = k1 / 2.0 ** n_C
+        worst = max(worst, abs(complex(ks[0]).real - ref)
+                    / max(abs(ref), 1e-300))
+        X = np.array([[0.5, -0.4]])
+        kxs = diagram_kinematic_spectral(d, [0.0, 0.0], et, mt, 1.0,
+                                         spatial_dim=1, xs=X, **kw)
+        kx1 = diagram_kinematic(d, [0.0, 0.0], et, mu, 1.0,
+                                spatial_dim=1, xs=X, **kw)
+        refx = kx1[0] / 2.0 ** n_C
+        worst = max(worst, abs(complex(kxs[0, 0]).real - refx)
+                    / max(abs(refx), 1e-300))
+    assert worst < 5e-4, worst
