@@ -529,3 +529,67 @@ def test_k3_coupled_decoupled_limit():
                                      max_ell=1, verbose=False)
     rel = np.max(np.abs(vc - vs) / np.maximum(np.abs(vs), 1e-300))
     assert rel < 5e-3, (vc, vs, rel)
+
+
+@pytest.mark.slow
+def test_k3_coupled_cross_complex_modes():
+    """Cross-coupled 2-species k=3 (M = [[1.5,.4],[-.3,1.2]], complex
+    eigenvalue pair 1.35 +- 0.31i): the spectral sum over ALL 2^n_rows
+    assignments must stay REAL to machine precision (conjugate-mode
+    cancellation) at tree (3 external-field configs) AND 1-loop, with a
+    sensible cross-cumulant hierarchy (nonlinearity in species a only).
+    1-loop runs at the memory-safe grid: the (grid x assignments) amp
+    array is the cost driver (17 GB at n_t=8/n_s=16 -> use 6/8)."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline.compute import FieldTheory
+    from pipeline._propagator import build_propagator
+    from msrjd.integration.spatial.pipeline_bridge import (
+        compute_coupled_kpoint, _legs_to_phys_idx)
+    from msrjd.diagrams.type_assignment import build_field_index_map
+
+    ga, DD = 0.3, 1.0
+    b2 = (TheoryBuilder('coup-k3-cross-test', n_populations=0)
+          .physical_field('a', spatial_dim=1)
+          .physical_field('b', spatial_dim=1)
+          .parameter('DD', default=DD, domain='positive')
+          .parameter('ga', default=ga, domain='real')
+          .parameter('T', default=1.0, domain='positive')
+          .equation(lhs='(Dt+1.5-DD*Laplacian)*a+0.4*b', rhs='0')
+          .equation(lhs='(Dt+1.2-DD*Laplacian)*b-0.3*a', rhs='0')
+          .set_action_text(
+              'at*(Dt(a)+1.5*a+0.4*b-DD*Lap(a)+ga*a^2) - T*at^2'
+              ' + bt*(Dt(b)-0.3*a+1.2*b-DD*Lap(b)) - T*bt^2')
+          .operator_ir().boundary('infinite').initial('stationary').build())
+    ft2 = FieldTheory(b2, taylor_order=5)
+    ft2.expand()
+    prop2 = build_propagator(ft2, b2, use_cache=False, verbose=False)
+    np2 = {SR.var('DD'): DD, SR.var('ga'): ga, SR.var('T'): 1.0,
+           SR.var('astar1'): 0.0, SR.var('bstar1'): 0.0}
+    M = np.array([[1.5, 0.4], [-0.3, 1.2]])
+    tree_info = {'M': M, 'Dhat': np.zeros((2, 2)), 'D0': DD,
+                 'bc_mode': 'infinite'}
+    _, pidx = build_field_index_map(list(ft2._ns._ring_var_names),
+                                    ft2._n_tilde)
+    pts2 = np.array([[[0.0, 0.0], [0.0, 0.0]], [[0.7, 0.0], [0.7, 0.0]]])
+    vals = {}
+    for name, legs in (('aaa', [('a', 1)] * 3),
+                       ('aab', [('a', 1), ('a', 1), ('b', 1)]),
+                       ('abb', [('a', 1), ('b', 1), ('b', 1)])):
+        ext = _legs_to_phys_idx(legs, pidx)
+        v, info = compute_coupled_kpoint(ft2, b2, prop2, np2, ext, pts2,
+                                         tree_info, max_ell=0,
+                                         verbose=False)
+        assert info['max_abs_imag'] < 1e-12, (name, info['max_abs_imag'])
+        vals[name] = v
+    # nonlinearity is in species a only: cross-cumulants are suppressed
+    assert abs(vals['aaa'][0]) > 10 * abs(vals['aab'][0]) > 0
+    assert abs(vals['aab'][0]) > abs(vals['abb'][0]) > 0
+    # 1-loop at the origin: stays real, sensible size relative to tree
+    ext = _legs_to_phys_idx([('a', 1)] * 3, pidx)
+    pts1 = np.array([[[0.0, 0.0], [0.0, 0.0]]])
+    v1, i1 = compute_coupled_kpoint(ft2, b2, prop2, np2, ext, pts1,
+                                    tree_info, max_ell=1, verbose=False,
+                                    n_t_loop=6, n_s_loop=8)
+    assert i1['max_abs_imag'] < 1e-12
+    d1 = i1['per_ell'][1][0]
+    assert 0 < abs(d1) < 0.5 * abs(i1['per_ell'][0][0]), (d1, i1['per_ell'])
