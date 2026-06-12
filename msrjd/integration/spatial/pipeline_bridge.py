@@ -1073,11 +1073,12 @@ def compute_coupled_loop_correlator(
                 'SpatialTheoryBuilder.dyson_order(N) (loops support N=1, the '
                 'leading O(𝒟̂) correction).')
         dress_order = int(pol['order'])
-        if dress_order > 1:
+        if dress_order > 2:
             raise NotImplementedError(
-                f'coupled LOOP dressing supports dyson order <= 1 (the leading '
-                f'O(𝒟̂) insertion; tree level supports any order); requested '
-                f'order={dress_order}.  Run loops at dyson_order(1).')
+                f'coupled LOOP dressing supports dyson order <= 2 (the O(𝒟̂) '
+                f'and O(𝒟̂²) insertions; tree level supports any order); '
+                f'requested order={dress_order}.  Run loops at '
+                f'dyson_order(2).')
     if tree_info.get('bc_mode') == 'periodic':
         raise NotImplementedError(
             'coupled loop corrections v1: infinite boundary only.')
@@ -1092,6 +1093,10 @@ def compute_coupled_loop_correlator(
     # 𝓗₁ string matrices P_α𝒟̂P_β (B27 at n=1) for the dressing patterns
     PDP = ([[proj[a_] @ Dhat @ proj[b_] for b_ in range(nf)]
             for a_ in range(nf)] if dress_order >= 1 else None)
+    # 𝓗₂ string matrices P_α𝒟̂P_β𝒟̂P_γ (B27 at n=2)
+    PDPP = ([[[proj[a_] @ Dhat @ proj[b_] @ Dhat @ proj[c_]
+               for c_ in range(nf)] for b_ in range(nf)]
+             for a_ in range(nf)] if dress_order >= 2 else None)
     mu_scale = float(np.min(eig.real))
     if not mu_scale > 0.0:
         raise SpatialPropagatorError(
@@ -1150,50 +1155,131 @@ def compute_coupled_loop_correlator(
             Wk = Wgt[keep]
             mass_table = eig[assign[:, keep]]           # (n_rows, n_kept)
 
-            # ── Dyson dressing patterns (𝒟̂≠0, total order 1) ──────────────
-            # Each pattern dresses ONE segment r at n=1: its label set expands
-            # to the partial-fraction poles of 𝓗₁ — string (α,β) with matrix
-            # element [P_α𝒟̂P_β]_{p,r} gives poles (m_α, +mel/Δm), (m_β,
-            # −mel/Δm) (Δm=m_β−m_α), or the CONFLUENT w·e^{−mw} (κ=1, weight
-            # mel) when Δm≈0; the (−|k_r|²) momentum insertion rides
-            # diagram_kinematic_spectral(insert_row=r).
-            patterns = [(None, Wk, mass_table, None)]
-            if dress_order >= 1:
-                eig_scale = float(np.max(np.abs(eig))) or 1.0
-                for r in range(n_rows):
-                    ri_r, pi_r = fp_rows[r]
-                    labels_r = []
-                    for al in range(nf):
-                        for be in range(nf):
-                            mel = PDP[al][be][pi_r, ri_r]
+            # ── Dyson dressing patterns (𝒟̂≠0, total order ≤ 2) ────────────
+            # Each Dyson order n on a segment carries (−|k_r|²)ⁿ·𝒟̂ⁿ-strings
+            # times the n-fold Duhamel convolution of e^{−mw} — the divided
+            # difference f[m₀,…,m_n] of f(m)=e^{−mw} (all-equal limit
+            # wⁿe^{−mw}/n!).  𝓗₁ (string P_α𝒟̂P_β): poles (m_α, +mel/Δm),
+            # (m_β, −mel/Δm), confluent (μ, κ=1, mel).  𝓗₂ (string
+            # P_α𝒟̂P_β𝒟̂P_γ): triple divided difference — distinct poles
+            # e^{−m_iw}/∏_{j≠i}(m_i−m_j); two-equal (a,a,b):
+            # (b,0,1/(b−a)²),(a,0,−1/(b−a)²),(a,1,1/(b−a)); all-equal
+            # (μ,2,1/2).  Total order 2 = one row at n=2 OR two distinct
+            # rows at n=1 each; the momentum insertions ride
+            # diagram_kinematic_spectral(insert_rows=...).
+            eig_scale = float(np.max(np.abs(eig))) or 1.0
+            _tol = 1e-8 * eig_scale
+
+            def _h1_labels(r):
+                ri_r, pi_r = fp_rows[r]
+                out = []
+                for al in range(nf):
+                    for be in range(nf):
+                        mel = PDP[al][be][pi_r, ri_r]
+                        if abs(mel) < 1e-300:
+                            continue
+                        dm = eig[be] - eig[al]
+                        if abs(dm) > _tol:
+                            out.append((eig[al], 0.0, mel / dm))
+                            out.append((eig[be], 0.0, -mel / dm))
+                        else:
+                            out.append((0.5 * (eig[al] + eig[be]), 1.0, mel))
+                return out
+
+            def _dd3_labels(masses, mel):
+                """Divided-difference expansion of f[m0,m1,m2], f=e^{−mw},
+                as (mass, κ, coeff) labels weighted by ``mel``."""
+                m = list(masses)
+                # group by closeness (pairwise within _tol)
+                d01 = abs(m[0] - m[1]) <= _tol
+                d02 = abs(m[0] - m[2]) <= _tol
+                d12 = abs(m[1] - m[2]) <= _tol
+                if d01 and d02 and d12:
+                    mu = (m[0] + m[1] + m[2]) / 3.0
+                    return [(mu, 2.0, 0.5 * mel)]
+                if d01 or d02 or d12:
+                    if d01:
+                        a_, b_ = 0.5 * (m[0] + m[1]), m[2]
+                    elif d02:
+                        a_, b_ = 0.5 * (m[0] + m[2]), m[1]
+                    else:
+                        a_, b_ = 0.5 * (m[1] + m[2]), m[0]
+                    db = b_ - a_
+                    return [(b_, 0.0, mel / db ** 2),
+                            (a_, 0.0, -mel / db ** 2),
+                            (a_, 1.0, mel / db)]
+                out = []
+                for i in range(3):
+                    den = 1.0
+                    for j in range(3):
+                        if j != i:
+                            den = den * (m[i] - m[j])
+                    out.append((m[i], 0.0, mel / den))
+                return out
+
+            def _h2_labels(r):
+                ri_r, pi_r = fp_rows[r]
+                out = []
+                for al in range(nf):
+                    for be in range(nf):
+                        for ga in range(nf):
+                            mel = PDPP[al][be][ga][pi_r, ri_r]
                             if abs(mel) < 1e-300:
                                 continue
-                            dm = eig[be] - eig[al]
-                            if abs(dm) > 1e-8 * eig_scale:
-                                labels_r.append((eig[al], 0.0, mel / dm))
-                                labels_r.append((eig[be], 0.0, -mel / dm))
-                            else:
-                                labels_r.append(
-                                    (0.5 * (eig[al] + eig[be]), 1.0, mel))
-                    if not labels_r:
+                            out.extend(_dd3_labels(
+                                (eig[al], eig[be], eig[ga]), mel))
+                return out
+
+            def _undressed(s):
+                return [(eig[a2], 0.0, elems[s, a2]) for a2 in range(nf)]
+
+            def _mk_pattern(dressed, irows):
+                """dressed: {row: labels}; others undressed.  Returns the
+                (irows, Wp, mt, pt) pattern or None if all weights vanish."""
+                per_row = [dressed.get(s, _undressed(s))
+                           for s in range(n_rows)]
+                combos = list(itertools.product(*per_row))
+                Wp = np.array([np.prod([c[s][2] for s in range(n_rows)])
+                               for c in combos], dtype=complex)
+                kp = np.abs(Wp) > 1e-14 * max(np.max(np.abs(Wp)), 1e-300)
+                if not np.any(kp):
+                    return None
+                mt = np.array([[c[s][0] for c in combos]
+                               for s in range(n_rows)], dtype=complex)
+                pt = np.array([[c[s][1] for c in combos]
+                               for s in range(n_rows)], dtype=float)
+                pt_k = pt[:, kp]
+                return (irows, Wp[kp], mt[:, kp],
+                        pt_k if np.any(pt_k) else None)
+
+            patterns = [(None, Wk, mass_table, None)]
+            if dress_order >= 1:
+                h1 = {r: _h1_labels(r) for r in range(n_rows)}
+                for r in range(n_rows):
+                    if not h1[r]:
                         continue
-                    per_row = [labels_r if s == r else
-                               [(eig[a2], 0.0, elems[s, a2])
-                                for a2 in range(nf)]
-                               for s in range(n_rows)]
-                    combos = list(itertools.product(*per_row))
-                    Wp = np.array([np.prod([c[s][2] for s in range(n_rows)])
-                                   for c in combos], dtype=complex)
-                    kp = np.abs(Wp) > 1e-14 * max(np.max(np.abs(Wp)), 1e-300)
-                    if not np.any(kp):
-                        continue
-                    mt = np.array([[c[s][0] for c in combos]
-                                   for s in range(n_rows)], dtype=complex)
-                    pt = np.array([[c[s][1] for c in combos]
-                                   for s in range(n_rows)], dtype=float)
-                    pt_k = pt[:, kp]
-                    patterns.append((r, Wp[kp], mt[:, kp],
-                                     pt_k if np.any(pt_k) else None))
+                    p = _mk_pattern({r: h1[r]}, (r,))
+                    if p is not None:
+                        patterns.append(p)
+                if dress_order >= 2:
+                    # two distinct rows, n=1 each
+                    for r in range(n_rows):
+                        if not h1[r]:
+                            continue
+                        for s in range(r + 1, n_rows):
+                            if not h1[s]:
+                                continue
+                            p = _mk_pattern({r: h1[r], s: h1[s]}, (r, s))
+                            if p is not None:
+                                patterns.append(p)
+                    # one row, n=2
+                    for r in range(n_rows):
+                        l2 = _h2_labels(r)
+                        if not l2:
+                            continue
+                        p = _mk_pattern({r: l2}, (r, r))
+                        if p is not None:
+                            patterns.append(p)
             n_C = sum(1 for e_ in dd.edges if e_.kind == 'C')
             nt, ns = (22, 24) if n_C <= 2 else (16, 14)
             # same accuracy overrides as the single-field generic path (_grid)
@@ -1242,7 +1328,7 @@ def compute_coupled_loop_correlator(
                         I = diagram_kinematic_spectral(
                             dd, [0.0], et, mt, D0, spatial_dim=d, xs=xg,
                             n_t=nt, n_s=ns, mu_scale=mu_scale,
-                            power_table=pt, insert_row=irow)  # (n_kept, n_x)
+                            power_table=pt, insert_rows=irow)  # (n_kept, n_x)
                         val = val + pv * (Wp @ I)
                 dCx_by_ell[el][it, :] += fac * val
 

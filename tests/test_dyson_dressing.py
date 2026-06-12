@@ -201,11 +201,11 @@ def test_unequal_D_default_policy_raises_actionable():
                           parallel=False, verbose=False, use_cache=False)
 
 
-def test_unequal_D_loops_order2_gated():
-    """Loops support the leading O(𝒟̂) insertion only: dyson_order(2) with
-    max_ell=1 raises cleanly (order ≤ 1 for loops; trees support any order)."""
+def test_unequal_D_loops_order3_gated():
+    """Loops support insertions to total order 2 (O(𝒟̂) + O(𝒟̂²)):
+    dyson_order(3) with max_ell=1 raises cleanly (trees support any order)."""
     from pipeline import compute_cumulants
-    model = _unequal_model(order=2, periodic_L=20.0)
+    model = _unequal_model(order=3, periodic_L=20.0)
     with pytest.raises(NotImplementedError, match='order'):
         compute_cumulants(model=model, k=2, max_ell=1, fundamental=_UF,
                           external_fields=[('a', 1), ('a', 1)],
@@ -269,7 +269,7 @@ def test_unequal_D_loop_dressing_ladder():
                 - np.asarray(info['C_by_order'][0]))
 
     dC = {}
-    for order in (0, 1):
+    for order in (0, 1, 2):
         th = compute_cumulants(model=_ladder_coupled_model(order),
                                fundamental=_LUF,
                                external_fields=[('a', 1), ('a', 1)],
@@ -299,7 +299,10 @@ def test_unequal_D_loop_dressing_ladder():
     scale = np.max(np.abs(dC_ref))
     err0 = np.max(np.abs(dC[0] - dC_ref)) / scale
     err1 = np.max(np.abs(dC[1] - dC_ref)) / scale
-    # the LADDER: the n=1 insertion must remove the O(ρ) error
+    err2 = np.max(np.abs(dC[2] - dC_ref)) / scale
+    # the LADDER: each insertion order must remove the leading 𝒟̂-power of
+    # the error — O(ρ) → O(ρ²) → O(ρ³), ρ ≈ 0.29
     assert err1 < 0.55 * err0, f'no ladder improvement: err0={err0:.4f} err1={err1:.4f}'
+    assert err2 < 0.60 * err1, f'order-2 no improvement: err1={err1:.4f} err2={err2:.4f}'
     assert err1 < 0.15, f'order-1 dressing too far off: err1={err1:.4f} (err0={err0:.4f})'
     assert err0 > 0.10, f'order-0 suspiciously accurate (test not discriminating): {err0:.4f}'
