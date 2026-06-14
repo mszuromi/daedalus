@@ -238,6 +238,17 @@ def compute_cumulants(
                              the user-passed form (e.g. ``[('n', 1)]``)
                              while ``external_fields`` stores the
                              internal form (e.g. ``[('dn', 1)]``).
+
+    SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
+    early return), keyed by the explicit evaluation events rather than a
+    τ-grid:
+        'C_kpoint'        : ndarray ``(n_pts,)`` — the k-point cumulant
+                             at each event configuration
+        'C_kpoint_by_ell' : {ell: ndarray (n_pts,)} per-loop-order
+        'points'          : the ``spatial_points`` array echoed back
+                             ``(n_pts, k-1, 2)`` of ``(x_j, τ_j)`` offsets
+        'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
+        'k', 'max_ell', 'mf'
     """
     if fundamental is None:
         fundamental = {}
@@ -396,6 +407,13 @@ def compute_cumulants(
                 'array of (x_j, tau_j) offsets per non-anchor external '
                 'slot) to evaluate the k-point cumulant at explicit '
                 'events.  Grid output (spatial_grid/tau_max) is k=2 only.')
+        if k == 2 and spatial_grid is None:
+            # spatial_points is the k>=3 event API; the k=2 path is the
+            # grid path and needs spatial_grid.  (Without this guard the
+            # k=2 grid code below would reach np.asarray(None) → nan.)
+            raise ValueError(
+                'spatial k=2 returns C(x,τ) on a grid — pass spatial_grid '
+                '(spatial_points is the k>=3 event API).')
         if k != 2:
             # ── general-k spatial path: explicit evaluation events ──
             from msrjd.integration.spatial.pipeline_bridge import (

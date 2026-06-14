@@ -364,10 +364,14 @@ def test_k3_public_api_compute_cumulants():
 
 
 @pytest.mark.slow
-def test_k3_derivative_vertex_qpath():
-    """k=3 derivative-vertex (KPZ) escape hatch: the q-path evaluates
-    every record finite with form factors active, and the analytic IFT
-    gates cleanly (NotImplementedError) for derivative records."""
+def test_k3_derivative_vertex_analytic_ift():
+    """k=3 derivative-vertex (KPZ) analytic IFT (H1, commit f3221eb): the
+    q-path evaluates every record finite with form factors active, the
+    analytic xs-path (multivariate Wick moment, ff.moment_x_multi) now
+    returns finite values for every derivative record (no longer gated),
+    and on the tree record the analytic xs value matches the numerical
+    Fourier transform of the q-path to FT-grid tolerance — the same
+    route-equivalence check used for plain vertices."""
     from pipeline.theory import TheoryBuilder
     from pipeline.compute import FieldTheory
     from pipeline._propagator import build_propagator
@@ -377,7 +381,7 @@ def test_k3_derivative_vertex_qpath():
     from msrjd.diagrams.type_assignment import build_field_index_map
     from msrjd.integration.spatial.full_integrator import diagram_kinematic
 
-    b = (TheoryBuilder('kpz-k3-qpath-test', n_populations=0)
+    b = (TheoryBuilder('kpz-k3-ift-test', n_populations=0)
          .physical_field('h', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -399,7 +403,9 @@ def test_k3_derivative_vertex_qpath():
           for t in ft._ns._operator_ir_vertex_terms]
     be = build_pipeline_records(ft, b, prop, ext3, max_ell=1, k=3,
                                 verbose=False)
+    X = np.array([[0.5, -0.4]])
     n_checked = 0
+    tree_rec = None
     for ell in sorted(be):
         for td, p in be[ell]:
             pv = float(SR(p).subs(base))
@@ -415,12 +421,34 @@ def test_k3_derivative_vertex_qpath():
             assert np.isfinite(complex(v).real), (ell, v)
             n_checked += 1
             if ff is not None:
-                with pytest.raises(NotImplementedError):
-                    diagram_kinematic(d, [0.0, 0.0], et, 1.0, 1.0,
-                                      spatial_dim=1,
-                                      xs=np.array([[0.3, -0.2]]),
-                                      formfactor=ff, **kw)
+                # analytic xs-path now WORKS (was NotImplementedError before
+                # f3221eb) — finite, no raise
+                assert ff.moment_x_multi is not None, (ell, 'no moment_x_multi')
+                vx = diagram_kinematic(d, [0.0, 0.0], et, 1.0, 1.0,
+                                       spatial_dim=1, xs=X, formfactor=ff,
+                                       **kw)
+                assert np.all(np.isfinite(np.real(vx))), (ell, vx)
+                if ell == 0 and tree_rec is None:
+                    tree_rec = (d, ff, et)
     assert n_checked >= 12
+
+    # route equivalence on the tree record: analytic xs == numerical q-FT
+    assert tree_rec is not None
+    d, ff, et = tree_rec
+    kin_x = diagram_kinematic(d, [0.0, 0.0], et, 1.0, 1.0, spatial_dim=1,
+                              xs=X, formfactor=ff)
+    qm, nq = 14.0, 161
+    qg = np.linspace(-qm, qm, nq)
+    dq = qg[1] - qg[0]
+    acc = 0.0
+    for q0 in qg:
+        row = np.array([complex(diagram_kinematic(
+            d, [q0, q1], et, 1.0, 1.0, spatial_dim=1, formfactor=ff))
+            for q1 in qg])
+        acc += np.sum(np.exp(1j * (q0 * X[0, 0] + qg * X[0, 1])) * row).real \
+            * dq * dq
+    acc /= (2 * np.pi) ** 2
+    assert abs(kin_x[0] - acc) / max(abs(acc), 1e-300) < 1e-3, (kin_x[0], acc)
 
 
 @pytest.mark.slow
@@ -529,6 +557,57 @@ def test_k3_coupled_decoupled_limit():
                                      max_ell=1, verbose=False)
     rel = np.max(np.abs(vc - vs) / np.maximum(np.abs(vs), 1e-300))
     assert rel < 5e-3, (vc, vs, rel)
+
+
+@pytest.mark.slow
+def test_k3_coupled_public_api_fallback():
+    """The public compute_cumulants(k=3, spatial_points=...) coupled
+    fallback (compute.py: catch 'single-field' NotImplementedError →
+    extract M/D/V via reaction_diffusion_matrices + split_reference_
+    diffusion → compute_coupled_kpoint).  Exercises the extraction chain
+    that the direct-driver tests bypass.  A DECOUPLED 2-species theory
+    (g*a^2 in species a only, externals all-a) through the public API
+    must reproduce the single-field public-API tree value."""
+    from pipeline.theory import TheoryBuilder
+    from pipeline import compute_cumulants
+
+    g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
+    coupled = (TheoryBuilder('coup-k3-pubfallback', n_populations=0)
+               .physical_field('a', spatial_dim=1)
+               .physical_field('b', spatial_dim=1)
+               .parameter('ma', default=ma, domain='positive')
+               .parameter('mb', default=mb, domain='positive')
+               .parameter('DD', default=DD, domain='positive')
+               .parameter('g', default=g, domain='real')
+               .parameter('T', default=1.0, domain='positive')
+               .equation(lhs='(Dt+ma-DD*Laplacian)*a', rhs='0')
+               .equation(lhs='(Dt+mb-DD*Laplacian)*b', rhs='0')
+               .set_action_text('at*(Dt(a)+ma*a-DD*Lap(a)+g*a^2) - T*at^2'
+                                ' + bt*(Dt(b)+mb*b-DD*Lap(b)) - T*bt^2')
+               .operator_ir().boundary('infinite').initial('stationary')
+               .build())
+    single = (TheoryBuilder('coup-k3-pubfallback-ref', n_populations=0)
+              .physical_field('p', spatial_dim=1)
+              .parameter('mu', default=ma, domain='positive')
+              .parameter('DD', default=DD, domain='positive')
+              .parameter('g', default=g, domain='real')
+              .parameter('T', default=1.0, domain='positive')
+              .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+              .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
+              .operator_ir().boundary('infinite').initial('stationary')
+              .build())
+    pts = np.array([[[0.0, 0.0], [0.0, 0.0]], [[1.0, 0.0], [1.0, 0.0]]])
+    kw = dict(k=3, max_ell=0, spatial_points=pts,
+              use_cache=False, parallel=False, verbose=False)
+    th_c = compute_cumulants(coupled, external_fields=[('a', 1)] * 3,
+                             fundamental={'ma': ma, 'mb': mb, 'DD': DD,
+                                          'g': g, 'T': 1.0}, **kw)
+    th_s = compute_cumulants(single, external_fields=[('p', 1)] * 3,
+                             fundamental={'mu': ma, 'DD': DD, 'g': g,
+                                          'T': 1.0}, **kw)
+    rel = np.max(np.abs(th_c['C_kpoint'] - th_s['C_kpoint'])
+                 / np.maximum(np.abs(th_s['C_kpoint']), 1e-300))
+    assert rel < 5e-3, (th_c['C_kpoint'], th_s['C_kpoint'], rel)
 
 
 @pytest.mark.slow

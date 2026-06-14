@@ -918,9 +918,30 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     per-axis symbols ``lᵢ_α → ell[...,i,α]``, ``qⱼ_α → q[j,α]``.  ``Rcal=0`` → zeros."""
     import sympy as _sp
     Rcal = _sp.expand(diagram_form_factor(td, vertex_terms, mode=mode, d=d))
+
+    def _zero_ff_with_moments(squeeze_axes):
+        """A form factor that is identically zero — the diagram vanishes by
+        the conservation law (e.g. the ∇²(φ²) / (∂φ)² tadpole with a
+        forced-zero leg momentum).  Every evaluation path must see 0, NOT
+        a missing-moment error: attach zero-returning moment callables so
+        the analytic IFT (scalar AND multivariate) contributes 0 just like
+        the q-path GH average does."""
+        def ff(ell, q):
+            return np.zeros(ell.shape[:squeeze_axes], dtype=complex)
+        ff.gh_order_needed = 1
+        ff.q_poly_deg = 0
+        ff.moment_x = lambda a, S, Bcal, xs: np.zeros(
+            (a.shape[0], np.asarray(xs).shape[0]), dtype=complex)
+        ff.moment_x_multi = lambda a, S, Binv, X: np.zeros(
+            (Binv.shape[0], np.asarray(X).shape[0]), dtype=complex)
+        ff.moment_bessel = lambda a, S, Bcal, xs: (
+            np.array([0.0]),
+            np.zeros((1, a.shape[0], np.asarray(xs).shape[0]), dtype=complex))
+        return ff
+
     if d == 1:
         if Rcal == 0:
-            return lambda ell, q: np.zeros(ell.shape[:-1], dtype=complex)
+            return _zero_ff_with_moments(-1)
         ls = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'l'], key=str)
         qs = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'q'], key=str)
         fn = _sp.lambdify(tuple(ls) + tuple(qs), Rcal, 'numpy')
@@ -963,7 +984,7 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
 
     # ── d ≥ 2: symbols are lᵢ_α / qⱼ_α (loop/external index _ spatial axis) ──
     if Rcal == 0:
-        return lambda ell, q: np.zeros(ell.shape[:-2], dtype=complex)
+        return _zero_ff_with_moments(-2)
     parsed = []                       # (symbol, kind 'l'/'q', index, axis)
     for s in sorted(Rcal.free_symbols, key=str):
         nm = str(s)
