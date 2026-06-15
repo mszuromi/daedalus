@@ -43,3 +43,23 @@ def build():
         .boundary('infinite')
         .initial('stationary')
         .build())
+
+
+# Run defaults — the build()'s param defaults (mu=1, D=1, g=0.3, T=1) are
+# already a mildly-perturbative regime around the stable fixed point φ*=0,
+# so DEFAULT_FUNDAMENTAL just pins them explicitly for the demo notebooks.
+DEFAULT_FUNDAMENTAL = {
+    'mu': 1.0,
+    'D': 1.0,
+    'g': 0.3,
+    'T': 1.0,
+}
+
+METADATA = {
+    'k_default': 2,
+    'ell_default': 1,
+    'recommended_external_fields': [('dphi', 1), ('dphi', 1)],
+    'spatial_grid': [-6.0, 6.0, 49],
+    'tau_max': 0.0,
+    'tau_step': 1.0,
+}

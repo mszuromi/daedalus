@@ -22,13 +22,22 @@ def build():
     )
 
 
-DEFAULT_FUNDAMENTAL = {}
+# Perturbative-regime run defaults (override the build()'s near-bifurcation
+# author default mu=0.1).  The loop expansion parameter is g_eff ≈ eps·D/mu²;
+# at mu=1, eps=0.1, D=1 → g_eff=0.1 (mildly perturbative, runs cleanly).
+# Lower mu toward 0 (or mu<0 for the genuine double well) to stress the
+# series — but Phase J runtime explodes with |mu| at ell≥1.
+DEFAULT_FUNDAMENTAL = {
+    'mu': 1.0,
+    'eps': 0.1,
+    'D': 1.0,
+}
 
 
 METADATA = {
     'k_default': 2,
     'ell_default': 0,
-    'recommended_external_fields': [('x', 1)],
+    'recommended_external_fields': [('dx', 1), ('dx', 1)],
     'tau_max': 50.0,
     'tau_step': 0.5,
     'fixed_point_index_default': 0,

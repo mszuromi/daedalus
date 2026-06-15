@@ -60,7 +60,7 @@ DEFAULT_FUNDAMENTAL = {
 METADATA = {
     'k_default': 2,
     'ell_default': 1,
-    'recommended_external_fields': [('h', 1), ('h', 1)],
+    'recommended_external_fields': [('dh', 1), ('dh', 1)],
     'tau_max': 2.0,
     'tau_step': 0.5,
     'spatial_grid': [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],

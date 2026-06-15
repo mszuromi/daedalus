@@ -186,13 +186,21 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     max_ell = (cfg.max_ell if cfg.max_ell is not None
                else (_meta(module, 'ell_default', 0) if module else 0))
     ext = cfg.external_fields
+    ext_is_explicit = ext is not None
     if ext is None and module is not None:
         ext = _meta(module, 'recommended_external_fields')
-    # Auto-build a k-matching external_fields when none was given (or the
-    # theory's recommendation was for a different k): k copies of the first
-    # physical field's leg.  Multi-field correlators should set
-    # Config.external_fields explicitly.
-    if ext is None or len(ext) != k:
+    # Auto-build a k-matching external_fields when none usable was given:
+    # k copies of the first physical field's leg.  Triggers when ext is
+    # absent, the wrong length for k, or (for a METADATA *recommendation*
+    # only) names a field the model doesn't have — so a stale recommended
+    # list never crashes the run.  An explicit Config.external_fields is
+    # respected verbatim (it may legitimately name a response leg).
+    valid = set(field_names(model))
+    def _nm(e):
+        return e[0] if isinstance(e, (tuple, list)) else e
+    if (ext is None or len(ext) != k
+            or (not ext_is_explicit
+                and not all(_nm(e) in valid for e in ext))):
         fld = field_names(model)
         f0 = fld[0] if fld else 'phi'
         ext = [(f0, 1)] * k
