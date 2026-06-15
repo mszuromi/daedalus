@@ -262,6 +262,62 @@ def test_serializer_roundtrip_spatial_boundary_initial():
     assert phi.get('spatial_dim') == 1
 
 
+def test_serializer_roundtrip_operator_ir_and_dyson():
+    """operator_ir (LOAD-BEARING for KPZ/Burgers/Model B derivative
+    vertices) and the Dyson policy + reference_diffusion must round-trip
+    render -> load -> re-render -> build.  Regression for the bug where
+    .operator_ir() was silently dropped, changing the physics of a
+    re-saved derivative theory."""
+    from pipeline.theory_serialize import (
+        render_theory_file, load_spec_from_file, save_theory_to_file,
+    )
+    import importlib.util
+    spec = {
+        'name': 'RT opir dyson',
+        'populations': [],
+        'physical_fields': [
+            {'name': 'a', 'natural_name': 'a', 'spatial_dim': 1},
+            {'name': 'b', 'natural_name': 'b', 'spatial_dim': 1}],
+        'response_fields': [], 'kernels': [], 'functions': [],
+        'cgf_terms': [], 'mf_equations': [],
+        'parameters': [
+            {'name': 'mu', 'default': 1.0, 'domain': 'positive'},
+            {'name': 'D', 'default': 1.0, 'domain': 'positive'},
+            {'name': 'g', 'default': 0.3, 'domain': 'real'},
+            {'name': 'T', 'default': 1.0, 'domain': 'positive'}],
+        'equations': [
+            {'lhs': '(Dt+mu-D*Laplacian)*a', 'rhs': '0', 'population': None},
+            {'lhs': '(Dt+mu-D*Laplacian)*b', 'rhs': '0', 'population': None}],
+        'action_text': ('at*(Dt(a)+mu*a-D*Lap(a)+g*a^2) - T*at^2'
+                        ' + bt*(Dt(b)+mu*b-D*Lap(b)) - T*bt^2'),
+        'operator_ir': True,
+        'boundary': {'mode': 'infinite'}, 'initial': {'mode': 'stationary'},
+        'dyson': {'mode': 'fixed', 'order': 3},
+        'reference_diffusion': 1.0,
+    }
+    src = render_theory_file(spec)
+    assert '.operator_ir()' in src
+    assert '.dyson_order(3)' in src
+    assert '.reference_diffusion(1.0)' in src
+
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, 'rt_opir.theory.py')
+    save_theory_to_file(spec, path)
+    # parse back: every property survives
+    spec2 = load_spec_from_file(path)
+    assert spec2.get('operator_ir') is True
+    assert spec2.get('dyson') == {'mode': 'fixed', 'order': 3}
+    assert spec2.get('reference_diffusion') == 1.0
+    # idempotent re-render
+    assert '.operator_ir()' in render_theory_file(spec2)
+    # the generated file builds and the model carries operator_ir
+    sm = importlib.util.spec_from_file_location('rt_opir', path)
+    mod = importlib.util.module_from_spec(sm)
+    sm.loader.exec_module(mod)
+    model = mod.build()
+    assert model.get('operator_ir') is True
+
+
 def test_serializer_spatial_dim_convenience_roundtrip():
     """A hand-written ``.spatial_dim(d)`` call (convenience form)
     parses back to per-field spatial_dim."""

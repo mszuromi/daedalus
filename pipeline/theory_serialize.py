@@ -448,6 +448,16 @@ def render_theory_file(spec: dict) -> str:
     if spec.get('markovianize_default') is False:
         out.append('        .markovianize(False)')
 
+    # Operator-IR action toggle (spatial derivative vertices).  Emitted
+    # right after the action so the chain reads
+    # ``.set_action_text(...).operator_ir().boundary(...)`` like the
+    # notebooks.  LOAD-BEARING: without it a re-saved KPZ/Burgers/Model B
+    # theory silently loses the Dt()/Lap()/Dx() lowering and computes the
+    # wrong physics.  Emitted only when ON so v1 bare-Laplacian theories
+    # stay textually quiet.
+    if spec.get('operator_ir'):
+        out.append('        .operator_ir()')
+
     # Spatial boundary / initial conditions (v1).  ``spatial_dim`` is
     # carried per-field (round-trips via _emit_field above), so only
     # the BC/IC declarations need their own emit lines.  Emitted only
@@ -616,6 +626,12 @@ def load_spec_from_file(path: str) -> dict:
         # ``pipeline/colored_to_markovian.py`` and
         # ``docs/correlated_noise_capabilities.md`` §1.5.
         'markovianize_default': True,
+        # Operator-IR action toggle from ``.operator_ir(bool)``; default
+        # OFF.  LOAD-BEARING for derivative-vertex spatial theories
+        # (KPZ/Burgers/Model B): it gates the Dt()/Lap()/Dx() call-syntax
+        # lowering in field_theory.  Stays False until the parser hits an
+        # explicit ``.operator_ir()`` call.
+        'operator_ir': False,
         'default_fundamental': default_fund,
         'metadata':        metadata,
     }
@@ -772,6 +788,18 @@ def load_spec_from_file(path: str) -> dict:
                 spec['markovianize_default'] = bool(kw['enabled'])
             else:
                 spec['markovianize_default'] = True
+
+        elif method == 'operator_ir':
+            # ``.operator_ir()`` / ``.operator_ir(on)`` — the action uses
+            # Dt()/Lap()/Dx() CALL syntax (derivative vertices).  Absence
+            # ⇒ default OFF (bare-multiplicative Laplacian form).  Default
+            # arg is True (no-arg call turns it ON).
+            if args:
+                spec['operator_ir'] = bool(args[0])
+            elif 'on' in kw:
+                spec['operator_ir'] = bool(kw['on'])
+            else:
+                spec['operator_ir'] = True
 
         elif method == 'spatial_dim':
             # ``.spatial_dim(d)`` bulk-set convenience.  Apply to every

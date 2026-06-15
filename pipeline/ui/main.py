@@ -435,8 +435,8 @@ class TheoryUI:
                 "scalar field per variable (most 1D and 2D Langevin "
                 "examples).  Populations are only needed when you have "
                 "groups of <i>multiple</i> identical units that share "
-                "the same dynamics &mdash; e.g. <i>N</i> neurons in a "
-                "network, <i>N</i> spins in a lattice."
+                "the same dynamics &mdash; e.g. <i>N</i> coupled "
+                "oscillators, <i>N</i> spins in a lattice."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
                 "When you do need them: each row declares one named "
@@ -507,6 +507,10 @@ class TheoryUI:
                 if 'spatial_dim' in w_dict:
                     w_dict['spatial_dim'].value = d
             self._tbl_physical._notify_change()
+            # Re-run validation immediately so the spatial reserved-name
+            # checks (x/y/z/k/Laplacian) surface the instant a field
+            # becomes spatial, not on the next unrelated edit.
+            self._refresh_validation()
         self._w_spatial_apply.on_click(_apply_spatial_dim_to_all)
 
         # Boundary + initial conditions (only meaningful for spatial
@@ -528,6 +532,34 @@ class TheoryUI:
             description='initial',
             style={'description_width': 'initial'},
             layout=W.Layout(width='220px'),
+        )
+
+        # Operator-IR action toggle — required for DERIVATIVE vertices
+        # (KPZ / Burgers / Model B), where the action uses Dt()/Lap()/Dx()
+        # CALL syntax instead of the bare-multiplicative Laplacian.
+        self._w_operator_ir = W.Checkbox(
+            value=False,
+            description='Operator-IR action (Dt()/Lap()/Dx() call syntax '
+                        '— required for KPZ / Burgers / Model B)',
+            indent=False,
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='560px'),
+        )
+        # Dyson policy for COUPLED unequal-diffusion theories.  Order 0
+        # = off (the default); any N ≥ 0 (the loop-insertion order cap
+        # was removed).  reference_diffusion is the scalar D0 in the
+        # 𝒟 = D0·I + 𝒟̂ split (blank ⇒ the propagator builder picks it).
+        self._w_dyson_order = W.BoundedIntText(
+            value=0, min=0, max=99,
+            description='Dyson order N (coupled unequal-D; 0 = off)',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='340px'),
+        )
+        self._w_reference_diffusion = W.Text(
+            value='', placeholder='auto (blank) or a number, e.g. 1.0',
+            description='reference D0',
+            style={'description_width': 'initial'},
+            layout=W.Layout(width='320px'),
         )
 
         tab_fields = W.VBox([
@@ -575,8 +607,20 @@ class TheoryUI:
                 "Use the button to give every field the same dimension, "
                 "or set the per-field <code>spatial_dim</code> column "
                 "directly (a dimension-0 auxiliary may coexist with "
-                "dimension-1 fields).  v1 supports dimension 0 or 1, and "
-                "all spatial fields must share one dimension."
+                "spatial fields).  Dimensions 1, 2, 3 are supported "
+                "(2-D/3-D use the radial transform and are "
+                "<code>infinite</code>-boundary only); all spatial "
+                "fields must share one dimension."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                "<b>Derivative vertices</b> (KPZ, Burgers, Model B) — "
+                "where a spatial derivative sits <i>inside</i> a "
+                "nonlinearity, e.g. <code>(&part;<sub>x</sub>h)&sup2;</code> "
+                "or <code>&nabla;&sup2;(&phi;&sup2;)</code> — are written "
+                "with <code>Dt()</code>/<code>Lap()</code>/<code>Dx(&phi;,i)</code> "
+                "<i>call</i> syntax and need the <b>Operator-IR</b> box "
+                "below ticked.  Plain reaction&ndash;diffusion "
+                "(<code>g&middot;&phi;&sup2;</code>) does not."
                 '</p>'
                 '<p style="color:#a00;font-size:88%;">'
                 "<b>Naming:</b> in a spatial theory, "
@@ -603,6 +647,20 @@ class TheoryUI:
                 '</p>'),
             W.HBox([self._w_boundary_mode, self._w_boundary_length]),
             self._w_initial_mode,
+            self._w_operator_ir,
+            W.HTML(
+                '<p style="color:#555;font-size:90%;margin-top:10px;">'
+                "<b>Dyson dressing</b> (only for <i>coupled</i> theories "
+                "with <i>unequal</i> diffusion constants).  Set the order "
+                "to <code>N &ge; 1</code> to dress the propagator to "
+                "<code>O(&Dscr;&#770;<sup>N</sup>)</code> in the "
+                "off-diagonal diffusion; <code>0</code> leaves it off "
+                "(exact when all diffusion constants are equal).  Give a "
+                "<b>reference D0</b> for the "
+                "<code>&Dscr; = D0&middot;I + &Dscr;&#770;</code> split, or "
+                "leave it blank to let the builder pick one."
+                '</p>'),
+            W.HBox([self._w_dyson_order, self._w_reference_diffusion]),
         ])
 
         # Tab 4: Parameters.
@@ -902,7 +960,7 @@ class TheoryUI:
             self._tbl_cgfs.show(),
         ])
 
-        # Tab 7: Action — full S in physical fields, with explicit sums.
+        # Tab 8: Action — full S in physical fields, with explicit sums.
         # Placeholder shows the smallest example that illustrates EVERY
         # syntactic building block at once: response × deterministic
         # dynamics, a polynomial nonlinearity, Dt as a time-derivative
@@ -969,6 +1027,15 @@ class TheoryUI:
                 "declared on the <b>Noise</b> tab.  Use whichever is more "
                 "natural &mdash; the noise tab is mandatory only for "
                 "colored / cross-correlated noise."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                "<b>Non-Gaussian white noise</b> is a response-field "
+                "monomial of degree &ge; 3 written directly here &mdash; "
+                "e.g. <code>&minus;S3*phit^3</code> adds a third noise "
+                "cumulant (<code>&kappa;&#8317;&sup3;&#8318; = 3!&middot;S3</code>).  "
+                "(The Noise tab declares cumulant <i>kernels</i> for "
+                "correlated noise; a plain higher white cumulant goes in "
+                "the action.)"
                 '</p>'),
             self._w_action,
         ])
@@ -1120,7 +1187,7 @@ class TheoryUI:
             layout=W.Layout(width='250px'),
         )
         self._w_ell_default = W.BoundedIntText(
-            value=0, min=0, max=3, step=1,
+            value=0, min=0, max=6, step=1,
             description='max_ell (loop order):',
             style={'description_width': '150px'},
             layout=W.Layout(width='250px'),
@@ -1210,7 +1277,7 @@ class TheoryUI:
         for i, title in enumerate([
             '1. Model', '2. Populations', '3. Fields', '4. Parameters',
             '5. Functions', '6. Kernels', '7. Noise', '8. Action',
-            '9. MF', '10. Defaults',
+            '9. Mean-field', '10. Defaults',
         ]):
             self._tabs.set_title(i, title)
 
@@ -1379,6 +1446,8 @@ class TheoryUI:
                   self._w_seed_box,
                   self._w_spatial_dim, self._w_boundary_mode,
                   self._w_boundary_length, self._w_initial_mode,
+                  self._w_operator_ir, self._w_dyson_order,
+                  self._w_reference_diffusion,
                   self._w_k_default, self._w_ell_default,
                   self._w_tau_max, self._w_tau_step):
             try:
@@ -1526,10 +1595,15 @@ class TheoryUI:
         # Spatial theories use the inert ``Laplacian`` operator multiplicatively
         # in the action (like ``Dt``, e.g. ``D*Laplacian*phi``); accept it so the
         # readiness sidebar does not flag a false "undeclared name: Laplacian" on
-        # every correct spatial theory.
+        # every correct spatial theory.  When the Operator-IR toggle is on, the
+        # action instead uses the operator CALL forms ``Lap()``/``Dx()``/
+        # ``Gradient()``/``GradX()`` (and ``Dt`` is already a builtin) — accept
+        # those too so KPZ/Burgers/Model B actions validate cleanly.
         if any(int(f.get('spatial_dim') or 0) > 0
                for f in (spec.get('physical_fields') or [])):
             names.add('Laplacian')
+            if spec.get('operator_ir'):
+                names.update({'Lap', 'Dx', 'Gradient', 'GradX'})
         return names, pop_set
 
     def _validate_action(self, action_text: str,
@@ -1759,18 +1833,25 @@ class TheoryUI:
                      + " — rename it"
                      + (f" (e.g. '{_hint[nm]}')" if nm in _hint else ''))
 
-        # ── Spatial scope caps (mirror compute.py's spatial guards) ──
-        # Spatial v1 supports only the k=2 two-point correlator and max_ell≤2;
-        # surface it here so the user doesn't hit a run-time NotImplementedError.
+        # ── Spatial scope notes ─────────────────────────────────────
+        # Spatial k≥3 and any loop order are supported (general-k +
+        # any-order Dyson).  k≥3 returns a k-point cumulant at explicit
+        # EVENTS, so the runner must pass ``spatial_points=`` rather than
+        # ``spatial_grid=`` — surface that as an info note (not an error)
+        # so the user isn't surprised at run time.  Higher loop orders
+        # work by construction but get costly; that's a warning, not a cap.
         if _is_spatial:
             if int(self._w_k_default.value) != 2:
-                _add(10, 'error',
-                     "spatial theories support k = 2 (two-point) only in v1 — "
-                     "set k_default = 2 on the '10. Defaults' tab")
+                _add(10, 'info',
+                     "spatial k ≥ 3 returns a k-point cumulant at explicit "
+                     "events — the runner passes "
+                     "compute_cumulants(spatial_points=(n_pts, k−1, 2)) "
+                     "instead of spatial_grid")
             if int(self._w_ell_default.value) > 2:
-                _add(10, 'error',
-                     "spatial theories support max_ell ≤ 2 in v1 — "
-                     "lower ell_default on the '10. Defaults' tab")
+                _add(10, 'warn',
+                     "spatial loop order > 2 works but is increasingly "
+                     "expensive (more diagrams, higher-dimensional "
+                     "integrals) — consider a reduced chamber grid")
 
         # ── Tab 4 — Parameters: stale population references ──────────
         for p in spec.get('parameters') or []:
@@ -1792,6 +1873,30 @@ class TheoryUI:
         for sev, msg in self._validate_action(
                 spec.get('action_text') or '', spec):
             _add(8, sev, msg)
+
+        # ── Tab 9 — Mean-field: every field needs an equation ────────
+        # A COUPLED theory must declare one saddle equation per physical
+        # field; a field that appears in no equation LHS otherwise fails
+        # at run time with an opaque "MF sector does not vanish" error.
+        # Warn (not block) — a purely-linear field may legitimately use
+        # the auto saddle = 0.  Match by substring of the field name in
+        # each equation's lhs (the lhs is free-form Sage text).
+        eq_lhs = ' || '.join((e.get('lhs') or '')
+                             for e in (spec.get('equations') or []))
+        fields = [f for f in (spec.get('physical_fields') or [])
+                  if (f.get('name') or '').strip()]
+        if eq_lhs and len(fields) >= 2:
+            import re as _re
+            for f in fields:
+                nm = f['name'].strip()
+                if not _re.search(r'(?<![A-Za-z0-9_])'
+                                  + _re.escape(nm)
+                                  + r'(?![A-Za-z0-9_])', eq_lhs):
+                    _add(9, 'warn',
+                         f"field '{nm}' is not the subject of any "
+                         f"mean-field equation — coupled theories usually "
+                         f"need one .equation(lhs=…) per field (a linear "
+                         f"field with saddle 0 can ignore this)")
 
         return out
 
@@ -1892,7 +1997,7 @@ class TheoryUI:
         tab_titles = [
             '1. Model', '2. Populations', '3. Fields', '4. Parameters',
             '5. Functions', '6. Kernels', '7. Noise', '8. Action',
-            '9. MF', '10. Defaults',
+            '9. Mean-field', '10. Defaults',
         ]
         findings = self._validate()
         # Top: per-tab readiness badges
@@ -1919,7 +2024,12 @@ class TheoryUI:
         items = []
         for tab_idx, msgs in sorted(findings.items()):
             for sev, msg in msgs:
-                cls = {'ok': 'tb-v-ok',
+                # 'info' is the lowest, non-nagging level: it renders with
+                # the neutral 'ok' tag and does NOT trip the per-tab
+                # error/warn badge above (that logic only checks
+                # 'error'/'warn'), so a valid-but-noteworthy config (e.g.
+                # spatial k≥3) stays green while still surfacing guidance.
+                cls = {'ok': 'tb-v-ok', 'info': 'tb-v-ok',
                        'warn': 'tb-v-warn',
                        'error': 'tb-v-error'}.get(sev, '')
                 items.append(
@@ -2333,6 +2443,21 @@ class TheoryUI:
             spec['boundary'] = boundary_block
         if initial_block is not None:
             spec['initial'] = initial_block
+        # Operator-IR toggle + Dyson policy — spatial-only, emitted only
+        # when set so plain/time-only specs stay textually quiet (matches
+        # the serializer's "emit only when present/non-default" rule).
+        if is_spatial:
+            if bool(self._w_operator_ir.value):
+                spec['operator_ir'] = True
+            dorder = int(self._w_dyson_order.value)
+            if dorder > 0:
+                spec['dyson'] = {'mode': 'fixed', 'order': dorder}
+            rd_txt = (self._w_reference_diffusion.value or '').strip()
+            if rd_txt:
+                try:
+                    spec['reference_diffusion'] = float(rd_txt)
+                except ValueError:
+                    pass    # surfaced by _validate (see the Fields-tab check)
         return spec
 
     def _collect_metadata(self) -> dict:
@@ -2787,6 +2912,14 @@ class TheoryUI:
                                          else str(length))
         ic = spec.get('initial') or {}
         self._w_initial_mode.value = ic.get('mode', 'stationary')
+
+        # Operator-IR toggle + Dyson policy (spatial-only; absent ⇒ off).
+        self._w_operator_ir.value = bool(spec.get('operator_ir', False))
+        dy = spec.get('dyson') or {}
+        self._w_dyson_order.value = (int(dy.get('order', 0) or 0)
+                                     if dy.get('mode') == 'fixed' else 0)
+        rd = spec.get('reference_diffusion')
+        self._w_reference_diffusion.value = ('' if rd is None else str(rd))
 
         md = spec.get('metadata') or {}
         if isinstance(md, dict):

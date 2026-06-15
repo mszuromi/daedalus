@@ -133,7 +133,11 @@ class _SpatialMethods:
         after ``physical_field`` declarations — fields declared before
         get retro-set, fields declared after inherit the default.
 
-        ``d = 0`` reverts to time-only.  v1 supports ``d ∈ {0, 1}``.
+        ``d = 0`` reverts to time-only.  ``d ∈ {1, 2, 3}`` are validated
+        end-to-end (``d ≥ 2`` uses the radial inverse-FT and is
+        infinite-boundary only; periodic is ``d = 1``).  All spatial
+        fields must share ONE dimension (mixed-dimension is future work,
+        enforced in :meth:`build`).
         """
         d = int(d)
         self._default_spatial_dim = d
@@ -218,6 +222,13 @@ class _SpatialMethods:
             insertions ``n = 0…N``.
         tol : float, optional
             Reserved for the v2+ tolerance policies; unused in v1.
+
+        The same order ``N`` also bounds the Dyson loop-correction
+        insertions on every retarded segment — and there is NO upper
+        cap: the former loop-order ≤ 1, then ≤ 2 restrictions were
+        removed (insertions are exact at every order via the
+        ln-derivative partition expansion + generalized-partial-fraction
+        𝓗_n labels; cost grows combinatorially with ``N``).
 
         The policy is a MODEL property — stored as
         ``model['spatial']['dyson']`` and read by the propagator
@@ -810,13 +821,16 @@ class _BaseTheoryBuilder:
         ``spatial_dim`` (int) declares a continuous spatial field
         ``φ(x, t)`` in ``spatial_dim`` dimensions.  ``0`` (or the
         builder default, set via ``.spatial_dim(d)``) keeps the field
-        time-only.  v1 supports ``spatial_dim ∈ {0, 1}`` and requires
-        every spatial field in a theory to share the same non-zero
+        time-only.  ``spatial_dim ∈ {1, 2, 3}`` are validated end-to-end
+        (``d ≥ 2`` uses the radial inverse-FT, infinite-boundary only).
+        Every spatial field in a theory must share the same non-zero
         dimension (mixed-dim is a v2 feature).  When any field is
         spatial, ``build()`` registers a ``Laplacian`` operator symbol
         (usable multiplicatively in the action text, exactly like
-        ``Dt``) and emits a ``model['spatial']`` block.  See
-        ``docs/spatial_design_decisions_v1.md``.
+        ``Dt``) and emits a ``model['spatial']`` block.  For derivative
+        vertices (KPZ/Burgers/Model B) use ``Dt()/Lap()/Dx()`` call
+        syntax in the action and turn on :meth:`operator_ir`.  See
+        ``docs/spatial_pipeline.md``.
 
         If ``spatial_dim`` is left as ``None``, the field inherits the
         builder-level default (``self._default_spatial_dim``, normally
@@ -1009,6 +1023,33 @@ class _BaseTheoryBuilder:
             - vt[i] * sum(w[i, j] * g * dn[j] for j in pop)
 
         ``pop = range(n_populations)`` is pre-bound for inner sums.
+
+        Spatial actions
+        ---------------
+        For a spatial field ``φ(x, t)`` the action is a SCALAR (no
+        per-population index).  Two authoring styles:
+
+        - **Plain (v1)** — the ``Laplacian`` operator symbol is used
+          multiplicatively, exactly like ``Dt``::
+
+              pt*(Dt(p) + mu*p - DD*Lap(p) + g*p^2) - T*pt^2
+
+          (Reaction–diffusion with a ``g·p²`` interaction vertex.)
+        - **Derivative vertices (KPZ/Burgers/Model B)** — author the
+          differential operators as calls ``Dt(φ)``, ``Lap(φ)``,
+          ``Dx(φ, i)`` and turn on :meth:`operator_ir`; e.g. KPZ::
+
+              ht*(Dt(h) + mu*h - D*Lap(h) - (c/2)*Dx(h,0)^2) - T*ht^2
+
+        **Non-Gaussian white noise** is a response-field monomial of
+        degree ≥ 3 — it becomes a higher noise-cumulant source vertex.
+        For example a third noise cumulant ``κ⁽³⁾ = 3!·S3``::
+
+            pt*(Dt(p) + mu*p - DD*Lap(p)) - T*pt^2 - S3*pt^3
+
+        **Coupled fields** carry one term per field; cross-coupling
+        appears as off-diagonal terms (e.g. ``+ 0.4*b`` inside the
+        ``a`` block).
         """
         self._action_text = text
         return self

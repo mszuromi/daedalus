@@ -1091,8 +1091,9 @@ def compute_coupled_loop_correlator(
             raise NotImplementedError(
                 'coupled loop corrections with unequal diffusion (𝒟̂≠0) need '
                 'the Dyson–Duhamel dressing — set a truncation order with '
-                'SpatialTheoryBuilder.dyson_order(N) (loops support N=1, the '
-                'leading O(𝒟̂) correction).')
+                'SpatialTheoryBuilder.dyson_order(N) (any N≥0; loop '
+                'insertions are exact at every order, cost grows '
+                'combinatorially).')
         dress_order = int(pol['order'])
         # No order cap: insertions are exact at every order via the
         # ln-derivative partition expansion (kinematic) and the
