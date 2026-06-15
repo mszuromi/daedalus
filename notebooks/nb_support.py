@@ -248,7 +248,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     res = compute_cumulants(**kw)
     res['_cfg'] = cfg
     res['_model'] = model
-    res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext)
+    res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,
+                            fundamental=fundamental)
     return res
 
 
