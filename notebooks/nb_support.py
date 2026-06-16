@@ -133,6 +133,15 @@ class Config:
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
 
+    # ── mean-field DAE root selection (multi-root theories) ──
+    # Multi-root saddles (e.g. the double-well regime mu<0, with two
+    # stable wells) must choose which root to expand around.  Leave
+    # ``None`` to inherit ``compute_cumulants``' own defaults
+    # (fixed_point_index=0, 64 multi-starts, no seed box).
+    fixed_point_index: Optional[int] = None   # which stable root (0, 1, …)
+    mf_dae_n_starts: Optional[int] = None     # multi-start Newton count
+    mf_dae_seed_box: Optional[dict] = None    # {field: (lo, hi)} start range
+
     # ── execution ──
     parallel: bool = False
     verbose: bool = False
@@ -224,6 +233,17 @@ def run(model: dict, cfg: Config, module=None) -> dict:
 
     kw = dict(model=model, k=k, max_ell=max_ell, fundamental=fundamental,
               external_fields=ext, parallel=cfg.parallel, verbose=cfg.verbose)
+
+    # Mean-field DAE root-selection overrides (multi-root theories such as
+    # the double-well regime mu<0).  Forward each only when set, so that
+    # ``compute_cumulants``' own defaults (fixed_point_index=0,
+    # mf_dae_n_starts=64, mf_dae_seed_box=None) are preserved otherwise.
+    if cfg.fixed_point_index is not None:
+        kw['fixed_point_index'] = int(cfg.fixed_point_index)
+    if cfg.mf_dae_n_starts is not None:
+        kw['mf_dae_n_starts'] = int(cfg.mf_dae_n_starts)
+    if cfg.mf_dae_seed_box is not None:
+        kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
 
     if is_spatial(model):
         if k != 2 and cfg.spatial_points is None:
