@@ -62,7 +62,16 @@ simulator on the same core (the only addition is the simulator cell + passing
 and [`template_spatial_single_sim_compare.ipynb`](templates/template_spatial_single_sim_compare.ipynb).
 
 Each `*_sim_compare` notebook below is a per-theory deep dive: the theory side is
-this same flow; only the simulator differs per model.
+this same flow; only the simulator differs per model.  **27 of these have been
+migrated onto the `nb_support` core** — they `nb.load_theory()` + `nb.run()`
+in place of an inline/importlib model build, keeping their simulator, plots, and
+validated diagnostics byte-for-byte (physics verified bit-identical).  Six are
+not migrated, all due to **pre-existing pipeline/theory-file breakage** (not the
+migration): the three 2-population Hawkes demos (`pipeline_demo`,
+`quad_expg_loop_rate`, `quad_expg_sim_compare` — legacy `indexed=` models fail in
+the propagator/MF solver) and `linear_delta_third_moment` (a corrupted voltage
+theory file) currently do not run; `singlepop_quad_spike_reset` and `kpz_1d`
+are pending a follow-up pass.
 
 ## `spatial/` — spatial field theories (Laplacian; `C(x, τ)` correlators)
 
