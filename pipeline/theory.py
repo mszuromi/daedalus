@@ -618,11 +618,22 @@ class _TemporalMethods:
         # Add the dm physical field + mt response field automatically.
         # natural_name='m' lets users say external_fields=[('m', 1)]
         # and mf['m', 1] without remembering the 'dm'/'mstar' internals.
+        #
+        # ``auto_response=False``: physical_field() would otherwise
+        # auto-generate a conjugate response field named ``mt`` (from
+        # natural_name='m'), and we declare the response field
+        # explicitly just below.  Leaving auto-response on declares
+        # ``mt`` twice → a duplicate ``mt1`` generator in the bigrade
+        # PolynomialRing → ``ValueError: variable name 'mt1' appears
+        # more than once``.  The explicit declaration also honors a
+        # custom ``template.response_field`` name, which the
+        # auto-generated ``<natural>t`` would not.
         self.physical_field(
             template.physical_field, indexed=True,
             latex=r'\delta m',
             description='GTaS external rate fluctuation (zero-mean)',
             natural_name='m',
+            auto_response=False,
         )
         self.response_field(
             template.response_field, indexed=True,
@@ -1651,7 +1662,13 @@ class _BaseTheoryBuilder:
         """Scalar-mode autopop: inject a single-position population ``pop``
         (size 1) and bind every unbound physical/response field to it.  Used
         by ``build()`` so it never depends on the public ``population()``
-        method (which lives in the temporal mixin after the builder split)."""
+        method (which lives in the temporal mixin after the builder split).
+
+        Only fires for scalar theories (``n_populations <= 1``); the
+        ``build()`` caller gates on that.  Legacy multi-population theories
+        (``n_populations >= 2`` with no explicit ``.population(...)``) skip
+        autopop and keep an empty ``populations`` list — see the call
+        site for why."""
         self.populations.append({
             'name':        'pop',
             'size':        1,
@@ -1703,7 +1720,20 @@ class _BaseTheoryBuilder:
         # wrappers in ``theory_compiler``, this lets users write
         # truly scalar theories — bare ``xt * x`` instead of
         # ``sum(xt[i]*x[i] for i in pop)``.
-        if not self.populations and self.physical_fields:
+        #
+        # Gate on ``n_populations <= 1``: the autopop always injects a
+        # size-1 population, so firing it for a legacy
+        # ``n_populations >= 2`` theory (e.g. the 2-pop Hawkes models,
+        # which declare indexed fields but never call
+        # ``.population(...)``) would clobber the requested population
+        # count down to 1 — dropping ``nt2``/``vt2``/… and zeroing
+        # every cross-population correlator.  Those theories instead
+        # keep an empty ``populations`` list and fall through to the
+        # flat ``index_sets = {'pop': range(n_populations)}`` legacy
+        # path (and the matching legacy ``solve_mean_field`` branch),
+        # exactly as the hand-written ``models/hawkes_*`` dicts do.
+        if (not self.populations and self.physical_fields
+                and self.n_populations <= 1):
             self._inject_autopop()
 
         # Apply the colored-noise → Markovian-embedding preprocessor

@@ -236,17 +236,19 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     for i in ns.pop:
         num_params[ns.nstar[i]] = float(nstar_vals[i])
         num_params[ns.vstar[i]] = float(vstar_vals[i])
-    # mstar (if declared in the model — gracefully skip if not)
-    if hasattr(ns, 'mstar'):
+    # mstar (if declared in the model — gracefully skip if not).
+    # m*_i = b_X = lambda_X · p_part for GTaS models.  (The earlier
+    # ``SR(model['mf_equations'](ns))`` probe here raised on the
+    # equation *list* and, being inside the try, silently swallowed the
+    # assignment below — so mstar never made it into num_params and the
+    # GTaS rate b_X showed as missing.)
+    if hasattr(ns, 'mstar') and 'lambda_X' in fundamental \
+            and 'p_part' in fundamental:
         for i in ns.pop:
             try:
-                # m*_i = b_X = lambda_X · p_part for GTaS models
-                m_expr = SR(model.get('mf_equations', lambda ns: [])(ns))
-                # Simpler: just compute it from fundamental params
-                if 'lambda_X' in fundamental and 'p_part' in fundamental:
-                    num_params[ns.mstar[i]] = float(
-                        fundamental['lambda_X'] * fundamental['p_part']
-                    )
+                num_params[ns.mstar[i]] = float(
+                    fundamental['lambda_X'] * fundamental['p_part']
+                )
             except (TypeError, ValueError):
                 pass
     for i in ns.pop:
@@ -254,6 +256,27 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             sym = SR.var(f'phi{dk}_{i+1}')
             if (dk, i) in phi_deriv_vals:
                 num_params[sym] = phi_deriv_vals[(dk, i)]
+
+    # ── phi0_i (φ at the saddle) from mf_bg_conditions ───────────
+    # Template-built theories declare φ as a FORMAL function, so the
+    # (2,0) Poisson-noise sector carries the formal symbol ``phi0_i``
+    # (= the mean firing rate ``nstar_i`` at the saddle).  The
+    # per-derivative loop above only resolves ``phi1_i`` upward, so
+    # without this ``phi0_i`` stays symbolic, the noise-source
+    # coefficient ``-1/2*phi0_i`` never becomes numeric, and the whole
+    # correlator collapses to 0.  ``vstar_subs_dict`` (the model's
+    # ``mf_bg_conditions``) maps ``phi0_i -> nstar_i``; evaluate each
+    # non-saddle entry at the solved saddle.  (Text-built theories
+    # inline a concrete φ and declare no ``phi0_i`` key, so this is a
+    # no-op for them.)
+    for _lhs, _rhs in vstar_subs_dict.items():
+        if _lhs in num_params:
+            continue          # saddle vars already resolved above
+        try:
+            num_params[_lhs] = float(
+                SR(_rhs).subs(g_to_one).subs(num_params))
+        except (TypeError, ValueError):
+            pass              # still symbolic — leave it out
 
     return {
         'nstar_vals':     nstar_vals,
