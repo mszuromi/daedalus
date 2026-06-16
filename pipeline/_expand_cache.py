@@ -62,9 +62,20 @@ Each ``expand_taylor<N>.sobj`` holds a dict with:
     the request the caller is asking for).
   * ``'n_tilde'`` — number of response variables (for MF-sector
     filtering checks).
+  * ``'vertex_signature'`` — fingerprint of the operator-IR
+    derivative-vertex form-factor table (``None`` for plain/temporal
+    theories).  The on-disk slug is only ``model['name']`` + taylor
+    order, which does NOT capture the per-vertex form-factor / mode
+    state (it lives on the namespace as an *action-eval side effect*,
+    not in ``_by_tp``).  ``load_expand`` reconstructs the live table and
+    rejects a bundle whose signature differs — otherwise a Model-B⊕KPZ
+    1-loop value silently loads as the bare φ̃φ² number.  See
+    :func:`vertex_form_factor_signature`.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 
@@ -83,6 +94,7 @@ __all__ = [
     'save_expand',
     'load_expand',
     'downgrade_by_tp_dict',
+    'vertex_form_factor_signature',
 ]
 
 
@@ -178,6 +190,98 @@ def downgrade_by_tp_dict(by_tp_dict: dict, target_order: int) -> dict:
             if sum(key) <= target_order}
 
 
+# ── Operator-IR form-factor signature ─────────────────────────────────
+
+
+def _canon_chain(chain) -> list | None:
+    """Canonical JSON-able form of an operator chain tuple.
+
+    ``(('Lap',),)`` → ``[['Lap']]``;  ``(('Dx', 0),)`` → ``[['Dx', '0']]``.
+    Every entry is stringified so the form round-trips identically
+    through pickle and across Sage sessions.
+    """
+    if chain is None:
+        return None
+    return [[str(x) for x in entry] for entry in chain]
+
+
+def vertex_form_factor_signature(ns) -> str | None:
+    """Stable fingerprint of a theory's operator-IR derivative-vertex
+    form-factor table (``ns._operator_ir_vertex_terms``).
+
+    Returns ``None`` for a theory that does NOT use the operator IR
+    (``ns._operator_ir`` falsey, or ``ns is None``) — so the expand
+    cache of every pre-existing temporal / plain-vertex theory keeps its
+    ``None``-vs-``None`` match and continues to load unchanged.  For an
+    operator-IR theory it returns ``'operator_ir:' + <sha256[:16]>``
+    built from each vertex term's ``mode``, physical-leg count, operator
+    ``chain``, and (coupling-mixing) ``weight`` — the four pieces that
+    decide which momentum form factor every interaction node carries
+    (see
+    :func:`msrjd.integration.spatial.pipeline_bridge.diagram_form_factor`).
+
+    Adding the KPZ ``(∂ₓφ)²`` vertex to a Model-B-only theory, dropping
+    it, or re-weighting the mix all change the signature, so a stale
+    on-disk expand bundle whose signature does not match the
+    freshly-built model is rejected by :func:`load_expand` (which then
+    falls back to a fresh ``expand()``).
+
+    Stability note: the weight is serialised via ``str()`` of the
+    already-``simplify_full``'d SR expression.  A purely cosmetic
+    re-ordering across Sage versions would, at worst, force one extra
+    fresh ``expand()`` (then a re-save with the new signature) — never a
+    wrong load.
+    """
+    if ns is None or not getattr(ns, '_operator_ir', False):
+        return None
+    terms = getattr(ns, '_operator_ir_vertex_terms', None)
+    canon: list = []
+    for t in (terms or []):
+        n_phys = t.get('n_phys')
+        canon.append([
+            str(t.get('mode')),
+            int(n_phys) if n_phys is not None else None,
+            _canon_chain(t.get('chain')),
+            str(t.get('weight')),
+        ])
+    # Order-independent: the table-build order is not contractual.
+    canon.sort(key=lambda e: json.dumps(e, sort_keys=True))
+    blob = json.dumps(canon, sort_keys=True)
+    return 'operator_ir:' + hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def _reconstruct_operator_ir_table(ft) -> None:
+    """Re-populate ``ft._ns._operator_ir_vertex_terms`` for an
+    operator-IR theory that is being loaded from cache.
+
+    The derivative-vertex form-factor table is a *side effect of
+    evaluating the action lambda* — ``_lower_operator_ir_action`` runs
+    inside ``model['action'](ns)`` — NOT of ``_build_namespace``.  A
+    cache load deliberately skips ``FieldTheory.expand()`` (where that
+    evaluation lives), so the loaded namespace would otherwise carry NO
+    table: every derivative vertex then silently collapses to its plain
+    value (form factor ``1``), e.g. a Model-B⊕KPZ 1-loop variance loads
+    as the bare φ̃φ² number instead of the correct composite+perleg one.
+
+    Re-running the action lambda is cheap (it builds the symbolic action
+    and lowers the IR — no Taylor expansion) and reproduces the table
+    bit-identically.  ``hasattr``-guarded so it is a no-op when the
+    table is already present (a fresh ``expand()`` or a prior
+    reconstruct) and skipped entirely for non-operator-IR theories.
+    """
+    ns = getattr(ft, '_ns', None)
+    if ns is None or not getattr(ns, '_operator_ir', False):
+        return
+    if hasattr(ns, '_operator_ir_vertex_terms'):
+        return
+    try:
+        ft.model['action'](ns)
+    except Exception:
+        # Leave the table absent; the signature check below (or a
+        # downstream fresh expand) catches the resulting inconsistency.
+        pass
+
+
 # ── Save / load (live FieldTheory) ────────────────────────────────────
 
 
@@ -200,13 +304,19 @@ def prepare_for_load(ft) -> None:
     Used by callers that intend to load ``_by_tp`` from disk: the
     namespace + ring must exist before the load can coerce the
     cached polynomials back into a live ring.
+
+    For operator-IR theories this also rebuilds the derivative-vertex
+    form-factor table (``_reconstruct_operator_ir_table``), which a bare
+    ``_build_namespace`` does not populate — see that helper's docstring.
     """
-    if ft._ns is not None and ft._R is not None:
-        return    # already prepared (e.g. caller already called expand())
-    ns, R, n_tilde = ft._build_namespace()
-    ft._ns      = ns
-    ft._R       = R
-    ft._n_tilde = n_tilde
+    if ft._ns is None or ft._R is None:
+        ns, R, n_tilde = ft._build_namespace()
+        ft._ns      = ns
+        ft._R       = R
+        ft._n_tilde = n_tilde
+    # No-op for non-operator-IR theories and when the table is already
+    # present (e.g. the caller already ran expand()).
+    _reconstruct_operator_ir_table(ft)
 
 
 def save_expand(model: dict, ft, cache_dir_root: str = 'saved_theories',
@@ -229,7 +339,8 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_theories',
         'ring_var_names':  _get_ring_var_names(ft),
         'taylor_order':    int(target),
         'n_tilde':         int(ft._n_tilde),
-        'cache_version':   1,
+        'vertex_signature': vertex_form_factor_signature(ft._ns),
+        'cache_version':   2,
     }
     sage_save(bundle, path.removesuffix('.sobj'))
     if verbose:
@@ -285,6 +396,25 @@ def load_expand(model: dict, ft, target_order: int,
     if int(bundle.get('n_tilde', -1)) != int(ft._n_tilde):
         if verbose:
             print(f'[expand-cache] n_tilde mismatch — stale cache.')
+        return False
+
+    # Operator-IR form-factor signature.  The on-disk slug is only the
+    # theory name + taylor order; it does NOT capture the per-vertex
+    # form-factor / mode table, which lives on the namespace as an
+    # action-eval side effect (NOT in ``_by_tp``).  Reconstruct the live
+    # table (cheap; no-op if ``prepare_for_load`` already did it) and
+    # reject the bundle if its recorded signature differs — this catches
+    # both a genuinely changed model that re-used the same slug AND any
+    # pre-signature bundle for a derivative-vertex theory (cached_sig is
+    # ``None`` there, but the live operator-IR model signs non-``None``),
+    # which would otherwise load with the form factors silently dropped.
+    _reconstruct_operator_ir_table(ft)
+    expect_sig = vertex_form_factor_signature(ft._ns)
+    cached_sig = bundle.get('vertex_signature')
+    if expect_sig != cached_sig:
+        if verbose:
+            print(f'[expand-cache] form-factor signature mismatch — stale '
+                  f'cache.  expect {expect_sig!r}, cached {cached_sig!r}')
         return False
 
     # Filter to target_order if we loaded a higher one.

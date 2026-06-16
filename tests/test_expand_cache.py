@@ -253,3 +253,176 @@ def test_default_taylor_order_matches_diagrammatic_minimum(
     assert new_expand_files == set(), (
         f'default-taylor compute_cumulants produced new expand caches: '
         f'{sorted(new_expand_files)} — the auto-picker floor is too high')
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Operator-IR form-factor signature (spatial derivative-vertex theories)
+# ──────────────────────────────────────────────────────────────────────
+# The expand-cache slug is only ``model['name']`` + taylor order, which
+# does NOT capture the per-vertex form-factor / mode table.  That table
+# (``ns._operator_ir_vertex_terms``) is an *action-eval side effect*, not
+# part of ``_by_tp``, so a cache load that skips ``expand()`` used to drop
+# it silently — a Model-B⊕KPZ 1-loop value then loaded as the bare φ̃φ²
+# number (vertex_mode None instead of 'composite+perleg').  These tests
+# pin the two halves of the fix: (a) the table is rebuilt on load, and
+# (b) a stale pre-signature bundle is rejected.
+
+# The combined Allen-Cahn ⊕ Model B ⊕ KPZ theory: φ³ plain vertex + Model
+# B ∇²(φ²) composite vertex + KPZ (∂ₓφ)² per-leg vertex, all on one φ̃φ²
+# node — the canonical mixed composite+perleg form-factor table.
+COMBINED_THEORY_FILENAME = 'combined_allencahn_modelb_kpz_1d.theory.py'
+
+
+@pytest.fixture
+def combined_model():
+    """Load the combined operator-IR theory model (absolute path, so it
+    survives the ``isolated_cache`` chdir)."""
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    theory_path = os.path.join(here, '..', 'theories', COMBINED_THEORY_FILENAME)
+    spec = importlib.util.spec_from_file_location('combined_th', theory_path)
+    th = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(th)
+    return th.build()
+
+
+# Standard parameter point + a small-but-representative external slice.
+_COMBINED_FUND = {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'g': 0.15, 'kpz': 0.3,
+                  'T': 1.0}
+
+
+def _combined_kwargs():
+    import numpy as np
+    return dict(
+        k=2, max_ell=1,
+        fundamental=_COMBINED_FUND,
+        external_fields=[('dphi', 1), ('dphi', 1)],
+        spatial_grid=np.linspace(0.0, 6.0, 9),   # coarse → fast; bug is grid-free
+        tau_max=0.0, tau_step=1.0,
+        verbose=False,
+    )
+
+
+def test_operator_ir_table_rebuilt_on_prepare_for_load(combined_model):
+    """``prepare_for_load`` (the cache-load namespace setup) must rebuild
+    ``ns._operator_ir_vertex_terms`` identically to a fresh ``expand()``.
+
+    A bare ``_build_namespace`` sets ``_operator_ir`` but NOT the table —
+    that is what the cache-load path used to inherit.
+    """
+    from msrjd.core.field_theory import FieldTheory
+    from pipeline import _expand_cache as ec
+
+    # Reference: a fresh expand populates the table.
+    ft_fresh = FieldTheory(combined_model, taylor_order=4)
+    ft_fresh.expand()
+    fresh = getattr(ft_fresh._ns, '_operator_ir_vertex_terms', None)
+    assert fresh, 'fresh expand produced no form-factor table'
+    assert {t['mode'] for t in fresh} == {'composite', 'perleg'}
+
+    # Cache-load setup: prepare_for_load alone must reproduce it.
+    ft_load = FieldTheory(combined_model, taylor_order=4)
+    ec.prepare_for_load(ft_load)            # NO expand()
+    rebuilt = getattr(ft_load._ns, '_operator_ir_vertex_terms', None)
+    assert rebuilt, 'prepare_for_load left the form-factor table empty'
+
+    def _key(t):
+        return (t['mode'], t['n_phys'], t['chain'], str(t['weight']))
+    assert sorted(map(_key, rebuilt)) == sorted(map(_key, fresh))
+
+    # And the signatures of the two namespaces agree.
+    assert (ec.vertex_form_factor_signature(ft_load._ns)
+            == ec.vertex_form_factor_signature(ft_fresh._ns)
+            is not None)
+
+
+def test_operator_ir_stale_unsigned_cache_rejected(combined_model,
+                                                   isolated_cache):
+    """A pre-signature bundle (``cache_version`` 1, no ``vertex_signature``)
+    for a derivative-vertex theory is the exact shape of the on-disk stale
+    file that caused the bug.  ``load_expand`` must reject it (return
+    ``False``) rather than load it with the form factors dropped."""
+    from msrjd.core.field_theory import FieldTheory
+    from pipeline import _expand_cache as ec
+    from sage.all import save as sage_save, load as sage_load
+
+    # 1) Save a healthy (signed) bundle.
+    ft = _expand_fresh(combined_model, taylor_order=4)
+    path = ec.save_expand(combined_model, ft, cache_dir_root=isolated_cache)
+
+    bundle = sage_load(path)
+    assert bundle.get('vertex_signature') is not None  # signed by the fix
+
+    # 2) Downgrade it to the old, unsigned format in place.
+    bundle.pop('vertex_signature', None)
+    bundle['cache_version'] = 1
+    sage_save(bundle, path.removesuffix('.sobj'))
+
+    # 3) load_expand must now reject the stale bundle.
+    ft2 = FieldTheory(combined_model, taylor_order=4)
+    ec.prepare_for_load(ft2)
+    ok = ec.load_expand(combined_model, ft2, target_order=4, cached_order=4,
+                        cache_dir_root=isolated_cache, verbose=False)
+    assert ok is False, 'stale unsigned operator-IR cache was NOT rejected'
+
+
+def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
+    """A bundle saved by the fix carries a matching signature, so a
+    subsequent ``load_expand`` accepts it (the cache still works — the
+    signature only rejects *mismatches*)."""
+    from msrjd.core.field_theory import FieldTheory
+    from pipeline import _expand_cache as ec
+
+    ft = _expand_fresh(combined_model, taylor_order=4)
+    ec.save_expand(combined_model, ft, cache_dir_root=isolated_cache)
+
+    ft2 = FieldTheory(combined_model, taylor_order=4)
+    ec.prepare_for_load(ft2)
+    ok = ec.load_expand(combined_model, ft2, target_order=4, cached_order=4,
+                        cache_dir_root=isolated_cache, verbose=False)
+    assert ok is True, 'signed cache from the same model should load'
+    # by_tp round-trips bigrade-for-bigrade.
+    assert set(ft._by_tp.keys()) == set(ft2._by_tp.keys())
+    for key, poly in ft._by_tp.items():
+        assert poly == ft2._by_tp[key], f'bigrade {key} differs'
+
+
+def test_combined_operator_ir_cached_matches_uncached(combined_model,
+                                                      isolated_cache):
+    """Headline regression: ``compute_cumulants`` for the combined
+    Model-B⊕KPZ operator-IR theory at ``max_ell=1`` agrees whether the
+    expand cache is used or bypassed — and the cached run keeps the
+    'composite+perleg' form factors (vertex_mode) rather than collapsing
+    to the bare φ̃φ² value."""
+    import numpy as np
+    from pipeline import compute_cumulants
+
+    def _c00_mode(res):
+        si = res.get('spatial_info') or {}
+        return np.asarray(res['C_tau']), si.get('vertex_mode')
+
+    kw = _combined_kwargs()
+
+    # Reference: cache fully bypassed.
+    C_nc, m_nc = _c00_mode(
+        compute_cumulants(model=combined_model, use_cache=False, **kw))
+
+    # Cold cache: isolated tmp is empty → fresh expand, then save (signed).
+    C_cold, m_cold = _c00_mode(
+        compute_cumulants(model=combined_model, use_cache=True, **kw))
+
+    # Warm cache: the signed bundle must be HIT and its form-factor table
+    # rebuilt on load.
+    C_warm, m_warm = _c00_mode(
+        compute_cumulants(model=combined_model, use_cache=True, **kw))
+
+    assert m_nc == m_cold == m_warm == 'composite+perleg', (
+        f'vertex_mode dropped: no-cache={m_nc!r}, cold={m_cold!r}, '
+        f'warm={m_warm!r} — form-factor table was lost on cache load')
+    assert np.allclose(C_cold, C_nc), 'cold-cache C(x) != uncached'
+    assert np.allclose(C_warm, C_nc), 'warm-cache C(x) != uncached'
+    # The 1-loop value must be the corrected one, not the plain +0.495.
+    assert C_nc.flat[0] < 0.0, (
+        f'C(0,0)={C_nc.flat[0]} — expected the composite+perleg 1-loop '
+        f'value (~-0.888), not the dropped-form-factor +0.495')
