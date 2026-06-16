@@ -22,26 +22,14 @@ def build():
     return (
         TemporalTheoryBuilder('Single population Linear Delta Voltage Test')
         .population('E', size=2, description='Excitatory')
-        .physical_field('nS', population='E', description='Somatic Spike Train')
-        .physical_field('nD', population='E')
+        .physical_field('n', population='E', description='spike train')
+        .physical_field('v', population='E', description='voltage')
         .parameter('Em', default=[0.8, 0.78], indexed_by=['E'], domain='positive')
         .parameter('tau', default=[10, 9], indexed_by=['E'], domain='positive')
-        .parameter('wSS', default=[
-    [0.0, 0.0],
-    [0.0, 0.0],
-], indexed_by=['E', 'E'], domain='real')
-        .parameter('wSD', default=[
-    [0.1, 0.0],
-    [0.0, 0.1],
-], indexed_by=['E', 'E'], domain='real')
-        .parameter('wDS', default=[
-    [0.1, 0.1],
-    [0.1, 0.1],
-], indexed_by=['E', 'E'], domain='real')
-        .parameter('wDD', default=[
-    [0.0, 0.0],
-    [0.0, 0.0],
-], indexed_by=['E', 'E'], domain='real')
+        .parameter('w', default=[
+    [0.0, 0.25],
+    [0.2, 0.0],
+], indexed_by=['E', 'E'], domain='positive')
         .define_function('phi', args=['v'], expression='v', population='E')
         .define_kernel('g', time_expr='dirac_delta(t)', latex_name='g')
         .set_action_text('''
@@ -51,8 +39,19 @@ def build():
             - sum(w[i,j]*Conv(g,n[j]) for j in E))
             for i in E)
         ''')
-        .equation(lhs='(tau[i]*Dt + 1) * v[i]', rhs='Em[i] + sum(w[i, j]*n[j] for j in E)', population='E')
-        .equation(lhs='n[i]', rhs='phi[i](v[i])', population='E')
+        # DAE form: one residual per call.  Dt allowed on LHS only;
+        # the MF solver substitutes Dt → 0 to get the algebraic
+        # system, and uses ∂/∂Dt for the linearization Jacobian.
+        .equation(
+            lhs='(tau[i]*Dt + 1) * v[i]',
+            rhs='Em[i] + sum(w[i, j]*n[j] for j in E)',
+            population='E',
+        )
+        .equation(
+            lhs='n[i]',
+            rhs='phi[i](v[i])',
+            population='E',
+        )
         .build()
     )
 
@@ -66,5 +65,4 @@ METADATA = {
     'recommended_external_fields': [('nE', 1), ('nE', 2)],
     'tau_max': 20.0,
     'tau_step': 2.5,
-    'fixed_point_index_default': 0,
 }
