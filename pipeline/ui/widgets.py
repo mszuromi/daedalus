@@ -249,6 +249,7 @@ class DynamicTable:
         self._row_widgets: list[dict] = []   # list of {col_name: widget}
         self._row_boxes:   list[W.HBox] = []  # one HBox per row, for layout
         self._change_callbacks: list[Callable[[], None]] = []
+        self._hidden_cols: set = set()       # columns hidden via set_column_visible
 
         self._header = W.HBox([
             W.HTML(f"<b style='width:{c.get('width', '120px')};'>{c['name']}</b>",
@@ -341,6 +342,14 @@ class DynamicTable:
 
         children.append(rm_btn)
         row_box = W.HBox(children)
+        # Re-apply any hidden-column state so new rows match existing ones.
+        for nm in self._hidden_cols:
+            try:
+                ci = [c['name'] for c in self._columns].index(nm)
+            except ValueError:
+                continue
+            if ci < len(row_box.children):
+                row_box.children[ci].layout.display = 'none'
         self._row_widgets.append(widgets)
         self._row_boxes.append(row_box)
         self._rows_container.children = tuple(self._row_boxes)
@@ -362,6 +371,25 @@ class DynamicTable:
                 continue
             out.append(row)
         return out
+
+    def set_column_visible(self, name: str, visible: bool) -> None:
+        """Show or hide one column — its header cell and every row's cell,
+        current and future (used e.g. to drop ``spatial_dim`` from a
+        time-only theory)."""
+        if visible:
+            self._hidden_cols.discard(name)
+        else:
+            self._hidden_cols.add(name)
+        try:
+            ci = [c['name'] for c in self._columns].index(name)
+        except ValueError:
+            return
+        disp = '' if visible else 'none'
+        if ci < len(self._header.children):
+            self._header.children[ci].layout.display = disp
+        for rb in self._row_boxes:
+            if ci < len(rb.children):
+                rb.children[ci].layout.display = disp
 
     def show(self) -> W.VBox:
         return W.VBox([self._header, self._rows_container, self._add_btn])

@@ -19,26 +19,32 @@ from pipeline.theory import SpatialTheoryBuilder
 
 
 def build():
-    b = (SpatialTheoryBuilder('coupled-rd-2species-1d')
-         .physical_field('a', spatial_dim=1)
-         .physical_field('b', spatial_dim=1)
-         .parameter('mua', default=1.5, domain='positive')
-         .parameter('mub', default=1.2, domain='positive')
-         .parameter('Da', default=0.8, domain='positive')
-         .parameter('Db', default=0.8, domain='positive')
-         .parameter('g',  default=0.4)
-         .parameter('h',  default=0.3)
-         .parameter('ga', default=0.3)
-         .parameter('gb', default=0.3)
-         .parameter('Ta', default=1.0, domain='positive')
-         .parameter('Tb', default=0.7, domain='positive'))
-    act = ('at*((Dt+mua-Da*Laplacian)*a + g*b + ga*a^3) '
-           '+ bt*((Dt+mub-Db*Laplacian)*b - h*a + gb*b^3) '
-           '- Ta*at^2 - Tb*bt^2')
-    return (b.set_action_text(act)
-            .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b + ga*a^3', rhs='0')
-            .equation(lhs='(Dt+mub-Db*Laplacian)*b - h*a + gb*b^3', rhs='0')
-            .boundary('infinite').initial('stationary').build())
+    # Single chained expression (no intermediate variable / no variable
+    # action string) so the GUI source-parser (theory_serialize) can load
+    # it as well as `nb.load_theory` (which imports it).
+    return (
+        SpatialTheoryBuilder('coupled-rd-2species-1d')
+        .physical_field('a', spatial_dim=1)
+        .physical_field('b', spatial_dim=1)
+        .parameter('mua', default=1.5, domain='positive')
+        .parameter('mub', default=1.2, domain='positive')
+        .parameter('Da', default=0.8, domain='positive')
+        .parameter('Db', default=0.8, domain='positive')
+        .parameter('g',  default=0.4)
+        .parameter('h',  default=0.3)
+        .parameter('ga', default=0.3)
+        .parameter('gb', default=0.3)
+        .parameter('Ta', default=1.0, domain='positive')
+        .parameter('Tb', default=0.7, domain='positive')
+        .set_action_text(
+            'at*((Dt+mua-Da*Laplacian)*a + g*b + ga*a^3) '
+            '+ bt*((Dt+mub-Db*Laplacian)*b - h*a + gb*b^3) '
+            '- Ta*at^2 - Tb*bt^2')
+        .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b + ga*a^3', rhs='0')
+        .equation(lhs='(Dt+mub-Db*Laplacian)*b - h*a + gb*b^3', rhs='0')
+        .boundary('infinite')
+        .initial('stationary')
+        .build())
 
 
 DEFAULT_FUNDAMENTAL = {

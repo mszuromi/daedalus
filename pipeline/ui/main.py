@@ -663,6 +663,26 @@ class TheoryUI:
             W.HBox([self._w_dyson_order, self._w_reference_diffusion]),
         ])
 
+        # ── Theory type: Temporal vs Spatial ────────────────────────
+        # One toggle.  In Temporal mode EVERY spatial control is hidden
+        # (the per-field ``spatial_dim`` column, the dimension /
+        # boundary / initial panel, Operator-IR, Dyson) so a time-only
+        # theory shows none of it.  Implemented by regrouping the Fields
+        # tab into [help, toggle, table, spatial-block] and toggling the
+        # block's visibility — no spatial widget is rebuilt.
+        self._w_theory_mode = W.ToggleButtons(
+            options=['Temporal (time only)', 'Spatial (PDE)'],
+            value='Temporal (time only)',
+            description='Theory type',
+            style={'description_width': 'initial'},
+        )
+        self._w_theory_mode.observe(
+            lambda _ch: self._on_mode_change(), names='value')
+        _fh, _tbl, *_spatial_items = list(tab_fields.children)
+        self._w_spatial_block = W.VBox(_spatial_items)
+        tab_fields.children = (_fh, self._w_theory_mode, _tbl,
+                               self._w_spatial_block)
+
         # Tab 4: Parameters.
         # ``index_1`` / ``index_2`` are dropdowns over the declared
         # populations (or '—' for none).  Both empty → scalar.
@@ -1470,6 +1490,41 @@ class TheoryUI:
             pass
         # Initial render of derived-filename hint + validation panel.
         self._refresh_save_hint()
+        # Apply the initial theory-type (Temporal) — hides the spatial
+        # block + the spatial_dim column without marking the form dirty.
+        self._on_mode_change(mark_dirty=False)
+
+    # ── Theory type (Temporal / Spatial) ──────────────────────────
+    def _is_spatial_mode(self) -> bool:
+        return str(self._w_theory_mode.value).startswith('Spatial')
+
+    def _on_mode_change(self, mark_dirty: bool = True) -> None:
+        """Show/hide every spatial control according to the
+        Temporal/Spatial toggle.  In Temporal mode the spatial block and
+        the ``spatial_dim`` column are hidden AND all fields are forced to
+        ``spatial_dim=0`` with the spatial-only knobs cleared, so a saved
+        time-only theory carries no spatial structure at all."""
+        spatial = self._is_spatial_mode()
+        self._w_spatial_block.layout.display = '' if spatial else 'none'
+        self._tbl_physical.set_column_visible('spatial_dim', spatial)
+        if not spatial:
+            for w_dict in self._tbl_physical._row_widgets:
+                if 'spatial_dim' in w_dict:
+                    w_dict['spatial_dim'].value = 0
+            self._w_operator_ir.value = False
+            self._w_dyson_order.value = 0
+            self._w_reference_diffusion.value = ''
+            self._w_boundary_mode.value = 'infinite'
+            self._w_boundary_length.value = ''
+            self._w_initial_mode.value = 'stationary'
+        elif int(self._w_spatial_dim.value) < 1:
+            self._w_spatial_dim.value = 1
+        try:
+            self._refresh_validation()
+        except Exception:
+            pass
+        if mark_dirty:
+            self._dirty = True
 
     # ── Bottom action bar ─────────────────────────────────────────
     def _build_bottom_bar(self) -> W.VBox:
@@ -2920,6 +2975,18 @@ class TheoryUI:
                                      if dy.get('mode') == 'fixed' else 0)
         rd = spec.get('reference_diffusion')
         self._w_reference_diffusion.value = ('' if rd is None else str(rd))
+
+        # Pick the Temporal/Spatial mode from the loaded fields and apply
+        # it (show/hide the spatial block + spatial_dim column).  Spatial
+        # mode preserves the loaded per-field dimensions; temporal mode
+        # has nothing spatial to preserve.
+        _spatial = any(int(r.get('spatial_dim') or 0) > 0
+                       for r in (self._tbl_physical.get_rows() or []))
+        _target = 'Spatial (PDE)' if _spatial else 'Temporal (time only)'
+        if self._w_theory_mode.value != _target:
+            self._w_theory_mode.value = _target      # fires _on_mode_change
+        else:
+            self._on_mode_change(mark_dirty=False)   # already right; re-apply
 
         md = spec.get('metadata') or {}
         if isinstance(md, dict):
