@@ -266,6 +266,43 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                           if cfg.tau_step is None else cfg.tau_step)
 
     res = compute_cumulants(**kw)
+
+    # Temporal k≥3: compute_cumulants returns ``C_tau=None`` and callable
+    # ``total_C`` / ``total_C_by_ell`` (the connected k-point cumulant is a
+    # function of the k external times).  Synthesise the natural 1-D slice
+    # C_k(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩_c — sweep leg 1, pin the others at
+    # τ=0 — and store it as ``C_tau`` / ``C_tau_by_ell`` so k≥3 plots and
+    # compares exactly like k=2 (a curve over ``tau_grid``).  The simulator
+    # estimates the matching slice with ``lag_bins=[0, None, 0, …]``.
+    if (not is_spatial(model) and k >= 3 and res.get('C_tau') is None
+            and callable(res.get('total_C'))):
+        tau = np.asarray(res.get('tau_grid'))
+        if tau is None or tau.size == 0:
+            tau = np.array([0.0])
+            res['tau_grid'] = tau
+        elif tau.size > 41:                      # bound the # of evaluations
+            tau = np.linspace(float(tau.min()), float(tau.max()), 41)
+            res['tau_grid'] = tau
+
+        def _slice(fn):
+            out = np.empty(tau.size, dtype=complex)
+            for i, t in enumerate(tau):
+                args = [0.0] * k
+                args[1] = float(t)               # leg 1 swept; rest at τ=0
+                out[i] = complex(fn(*args))
+            return out
+
+        try:
+            res['C_tau'] = _slice(res['total_C'])
+            res['C_tau_by_ell'] = {
+                e: _slice(f)
+                for e, f in (res.get('total_C_by_ell') or {}).items()
+                if callable(f)}
+            res['_kpoint_slice'] = ('leg 1 swept over tau_grid; '
+                                    'legs 0,2..k-1 pinned at τ=0')
+        except Exception:
+            pass        # leave None/scalar form; plot_temporal_kpoint handles it
+
     res['_cfg'] = cfg
     res['_model'] = model
     res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,
