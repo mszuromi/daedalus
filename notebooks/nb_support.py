@@ -316,6 +316,11 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
         return plot_kpoint(result, cfg, model)
     if is_spatial(model) or 'C_tau_x' in result:
         return plot_spatial(result, cfg, model, sim)
+    # Temporal k≥3: there is no C(τ) curve — the connected k-point cumulant is
+    # the equal-time scalar per loop order (compute_cumulants returns
+    # ``C_tau=None`` and a callable ``total_C``).  Draw it as per-order bars.
+    if result.get('C_tau') is None:
+        return plot_temporal_kpoint(result, cfg, model, sim)
     return plot_temporal(result, cfg, model, sim)
 
 
@@ -336,6 +341,8 @@ def _orders_to_draw(by_ell: dict, cfg: Config):
 def plot_temporal(result, cfg, model, sim=None):
     """C(τ) with a per-loop-order overlay (the temporal group plot)."""
     cfg = cfg or Config()
+    if result.get('C_tau') is None:          # temporal k≥3 → scalar k-point
+        return plot_temporal_kpoint(result, cfg, model, sim)
     tau = np.asarray(result['tau_grid'])
     by_ell = {e: v for e, v in (result.get('C_tau_by_ell') or {}).items()
               if v is not None}
@@ -362,6 +369,58 @@ def plot_temporal(result, cfg, model, sim=None):
     ax.set_title(cfg.title or f"{model.get('name','')}: C(τ)")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_temporal_kpoint(result, cfg, model, sim=None):
+    """Temporal k≥3: the equal-time connected k-point cumulant is a single
+    scalar per loop order (``compute_cumulants`` returns ``C_tau=None`` and a
+    callable ``total_C``; the τ=0 value lives in ``C_tau_by_ell``).  Draw the
+    tree / +loop bars, honouring ``cfg.show_orders``; overlay a scalar sim
+    value if given as ``sim={'C': <scalar>, 'C_err': <scalar or None>}``."""
+    cfg = cfg or Config()
+    by_ell = {e: float(np.real(np.asarray(v)))
+              for e, v in (result.get('C_tau_by_ell') or {}).items()
+              if v is not None}
+    fig, ax = plt.subplots(figsize=cfg.figsize or (6.0, 4.3))
+    if by_ell:
+        if cfg.show_orders == 'incremental':
+            labs = [('%d-loop' % e if e else 'tree', by_ell[e])
+                    for e in sorted(by_ell)]
+        else:
+            cum, run = {}, 0.0
+            for e in sorted(by_ell):
+                run += by_ell[e]
+                cum[e] = run
+            if cfg.show_orders == 'total':
+                top = max(cum)
+                labs = [(_order_label(top), cum[top])]
+            else:
+                labs = [(_order_label(e), cum[e]) for e in sorted(cum)]
+        idx = np.arange(len(labs))
+        ax.bar(idx, [v for _, v in labs], width=0.6,
+               color=[_ORDER_COLORS[i % len(_ORDER_COLORS)]
+                      for i in range(len(labs))])
+        ax.set_xticks(idx)
+        ax.set_xticklabels([l for l, _ in labs], fontsize=8,
+                           rotation=15, ha='right')
+    if sim is not None and sim.get('C') is not None:
+        sv = float(np.real(np.asarray(sim['C']).ravel()[0]))
+        se = sim.get('C_err')
+        ax.axhline(sv, color='#222', lw=1.5, ls='--', label='sim')
+        if se is not None:
+            se = float(np.asarray(se).ravel()[0])
+            ax.axhspan(sv - se, sv + se, color='#222', alpha=0.12)
+        ax.legend(fontsize=8)
+    k = (result.get('_resolved') or {}).get('k', '?')
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.set_ylabel(r'$\kappa_{%s}$ (equal-time)' % k)
+    ax.set_title(cfg.title or f"{model.get('name','')}: "
+                 f"k={k} cumulant at τ=0")
+    ax.grid(alpha=0.25, axis='y')
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')

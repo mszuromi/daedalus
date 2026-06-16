@@ -66,7 +66,7 @@ cells = [
         "THEORY = 'ou_quartic_double_well'",
         "",
         "cfg = nb.Config(",
-        "    k=2,",
+        "    k=2,                # 2 = ⟨xx⟩ C(τ) curve; 3+ = equal-time κ_k scalar",
         "    max_ell=1,          # tree + 1-loop",
         "    tau_max=8.0,",
         "    tau_step=0.5,",
@@ -116,34 +116,55 @@ cells = [
         "        int(bin_size_steps), int(n_bins), int(1234 + run))",
         "    var_runs.append(float((x_bins**2).mean()))",
         "    mean_runs.append(float(x_bins.mean()))",
-        "    _, C_run = compute_kpoint_slice(",
-        "        binned_counts=np.zeros_like(x_bins), dt_bin=float(dt_bin_eff),",
-        "        pop_indices=[0, 0], lag_bins=[0, None],",
-        "        max_lag_bins=int(max_lag_bins), field_types=['dv', 'dv'],",
-        "        voltage_bins=x_bins)",
-        "    C_runs.append(np.asarray(C_run).real)",
+        "    if int(cfg.k) == 2:                       # 2-point C(τ) estimate",
+        "        _, C_run = compute_kpoint_slice(",
+        "            binned_counts=np.zeros_like(x_bins), dt_bin=float(dt_bin_eff),",
+        "            pop_indices=[0, 0], lag_bins=[0, None],",
+        "            max_lag_bins=int(max_lag_bins), field_types=['dv', 'dv'],",
+        "            voltage_bins=x_bins)",
+        "        C_runs.append(np.asarray(C_run).real)",
         "",
-        "C_runs = np.array(C_runs)",
-        "sim = {",
-        "    'tau':   tau_sim_grid,",
-        "    'C':     C_runs.mean(axis=0),",
-        "    'C_err': C_runs.std(axis=0, ddof=1) / np.sqrt(N_RUNS),",
-        "}",
-        "_mid = len(sim['C']) // 2",
-        "_i0  = int(np.argmin(np.abs(np.asarray(res['tau_grid']))))",
         "print(f'sim: {N_RUNS} runs x T={T_sim:.0g} in "
         "{time.perf_counter()-t0:.1f}s')",
-        "print(f'  <x>         = {np.mean(mean_runs):+.4f}  (≈0 by symmetry)')",
-        "print(f'  sim    C(0) = {sim[\"C\"][_mid]:.4f}  "
+        "print(f'  <x>   = {np.mean(mean_runs):+.4f}    "
+        "<x^2> = {np.mean(var_runs):.4f}')",
+        "",
+        "if int(cfg.k) == 2:",
+        "    # 2-point correlator: overlay the simulated C(τ) on the theory curve.",
+        "    C_runs = np.array(C_runs)",
+        "    sim = {'tau': tau_sim_grid, 'C': C_runs.mean(axis=0),",
+        "           'C_err': C_runs.std(axis=0, ddof=1) / np.sqrt(N_RUNS)}",
+        "    _mid = len(sim['C']) // 2",
+        "    _i0  = int(np.argmin(np.abs(np.asarray(res['tau_grid']))))",
+        "    print(f'  sim    C(0) = {sim[\"C\"][_mid]:.4f}  "
         "(bin-averaged, dt_bin={float(dt_bin):.2f})')",
-        "print(f'  theory C(0) = {float(np.real(res[\"C_tau\"])[_i0]):.4f}  "
+        "    print(f'  theory C(0) = {float(np.real(res[\"C_tau\"])[_i0]):.4f}  "
         "(tree + {cfg.max_ell}-loop)')",
+        "else:",
+        "    # k≥3: there is no C(τ) curve — the connected k-point cumulant is a",
+        "    # SCALAR per loop order (res['C_tau'] is None; res['total_C'] is a",
+        "    # callable).  The 2-point OU C(τ) overlay above is k=2-specific, so",
+        "    # we report the THEORY κ_k here and skip the sim overlay.",
+        "    sim = None",
+        "    _be = {e: (0.0 if v is None else float(np.real(np.asarray(v))))",
+        "           for e, v in (res['C_tau_by_ell'] or {}).items()}",
+        "    _cum = 0.0",
+        "    for e in sorted(_be):",
+        "        _cum += _be[e]",
+        "        _lab = 'tree' if e == 0 else f'tree+{e}loop'",
+        "        print(f'  theory κ{int(cfg.k)}(τ=0)  {_lab:12s} = {_cum:+.4e}')",
+        "    print('  (odd cumulants vanish at the symmetric saddle x*=0 → κ₃=0;'",
+        "          ' set Config.fixed_point_index to sit in one well)')",
     ),
     md(
         "## 4. Theory vs simulation",
         "",
-        "`nb.plot_cumulant` draws the per-loop-order theory overlay (set by "
-        "`cfg.show_orders`) and the simulator points with error bars.",
+        "`nb.plot_cumulant` auto-dispatches on `k`: for **k=2** it draws the "
+        "per-loop-order theory `C(τ)` overlay (set by `cfg.show_orders`) with "
+        "the simulator points + error bars; for **k≥3** there is no `C(τ)` "
+        "curve, so it draws the equal-time connected k-point cumulant κ_k as "
+        "per-loop-order bars (`sim=None` — the 2-point estimator above is "
+        "k=2-specific).",
     ),
     code(
         "fig = nb.plot_cumulant(res, cfg, model, sim=sim)",
