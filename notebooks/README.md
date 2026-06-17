@@ -35,6 +35,13 @@ theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`:
   (an `(n_pts, k-1, 2)` array of `(x_j, τ_j)` offsets).
 * **Dyson dressing** — `dyson_order` (any order ≥ 0) + `reference_diffusion`
   override the model's policy at run time (for coupled, unequal-diffusion fields).
+* **Output quantity** — `output` ∈ `'cumulant'` (default) | `'moment'` |
+  `'central_moment'`. The diagrammatics give connected cumulants κ; the moment
+  options assemble the full k-point moment `⟨φ(x₁)…φ(x_k)⟩` (resp. of the
+  centred field) via the set-partition expansion `M = Σ_π ∏_B κ(B)` and return
+  it as `res['moment']` (temporal any `k`, spatial `k=2`; costs `k−1` extra
+  backend runs). Raw moments add the mean ⟨φ⟩ on singleton blocks; central
+  moments drop them.
 * **Adaptable plotting** — `show_orders` (`'cumulative'` | `'incremental'` |
   `'total'`), `logy`, `components`, `figsize`, `title`, `save`. `plot_cumulant`
   dispatches on (spatial?, multi-field?, k): `C(τ)` for temporal, equal-time
