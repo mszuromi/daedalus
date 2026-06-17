@@ -558,21 +558,6 @@ class _TemporalMethods:
         self._correlated_noises[name] = kwargs
         return self
 
-    def use_action_template(self, template):
-        """Apply a HawkesAction (or compatible) template.  The template
-        emits the action / mf_bg_conditions / mf_equations /
-        specializations / phi_concrete / mf_substitutions / functions
-        block; everything is registered on this builder.
-        """
-        self._action          = template.action()
-        self._phi_concrete    = template.phi_concrete()
-        self._specializations = template.specializations()
-        self._mf_bg           = template.mf_bg_conditions()
-        self._mf_equations    = template.mf_equations()
-        self._mf_substitutions = template.mf_substitutions()
-        self._functions       = list(template.functions_list())
-        return self
-
     def use_synaptic_kernel(self, template):
         """Apply an ExpSynapticKernel (or DeltaKernel) template.
 

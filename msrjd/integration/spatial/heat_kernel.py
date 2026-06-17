@@ -284,11 +284,11 @@ def reaction_diffusion_matrices(K_ft, omega, k_var, lap_sym, grad_sym=None):
     return matrix(SR, Mrows), matrix(SR, Drows), matrix(SR, Vrows)
 
 
-def _make_numeric(expr, free_symbol_names):
-    """Return a Python callable ``f(**num_params) -> complex`` for an
-    SR ``expr`` whose free symbols are named in ``free_symbol_names``.
-    Missing symbols at call time raise KeyError (caller supplies all
-    parameters + saddle values)."""
+def _make_numeric(expr):
+    """Return a Python callable ``f(**num_params) -> complex`` for an SR
+    ``expr`` (its free symbols are read off the expression).  Missing symbols
+    at call time raise KeyError (caller supplies all parameters + saddle
+    values)."""
     expr = SR(expr)
     syms = sorted(expr.variables(), key=str)
 
@@ -458,11 +458,11 @@ def make_g_tx_callables(prop):
             G_entries[key] = _zero_entry
             continue
         A_expr, B_expr = ab
-        A_num = _make_numeric(A_expr, None)
-        B_num = _make_numeric(B_expr, None)
+        A_num = _make_numeric(A_expr)
+        B_num = _make_numeric(B_expr)
         # Drift V for this diagonal entry (0 for Laplacian-only kernels).
         V_expr = ac_drift.get(key[0], 0) if key[0] == key[1] else 0
-        V_num = (_make_numeric(V_expr, None)
+        V_num = (_make_numeric(V_expr)
                  if not SR(V_expr).is_zero() else None)
 
         def _make_entry(A_num=A_num, B_num=B_num, V_num=V_num):

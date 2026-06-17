@@ -838,6 +838,16 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
     return prop
 
 
+def _horner(coeffs, x):
+    """Horner-rule polynomial evaluation: ``Σ coeffs[i]·x^i``.  Empty ⇒ 0j."""
+    if not coeffs:
+        return 0j
+    v = coeffs[-1]
+    for c in reversed(coeffs[:-1]):
+        v = v * x + c
+    return v
+
+
 def compute_poles_and_residues(prop, num_params, verbose=True):
     """
     Given a propagator dict (from build_propagator) and a num_params
@@ -1045,15 +1055,6 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
             print(f'      K polynomial-coeff cache took '
                   f'{_time.perf_counter() - t1:.2f}s')
 
-        def _horner(coeffs, x):
-            """Horner-rule polynomial evaluation."""
-            if not coeffs:
-                return 0j
-            v = coeffs[-1]
-            for c in reversed(coeffs[:-1]):
-                v = v * x + c
-            return v
-
         def _K_at(omega_val):
             K_at = np.zeros((nf, nf), dtype=complex)
             for i in range(nf):
@@ -1247,14 +1248,6 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
                 except Exception:
                     K_num_coeffs[i][j] = [complex(e)]
                     K_den_coeffs[i][j] = [1+0j]
-
-        def _horner(coeffs, x):
-            if not coeffs:
-                return 0j
-            v = coeffs[-1]
-            for c in reversed(coeffs[:-1]):
-                v = v * x + c
-            return v
 
         def _K_at(omega_val):
             K_at = np.zeros((nf, nf), dtype=complex)
@@ -1542,12 +1535,6 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
                 except Exception:
                     K_ft_num_coeffs_num[i][j] = [complex(e)]
                     K_ft_num_coeffs_den[i][j] = [1+0j]
-
-        def _horner(coeffs, x):
-            v = 0j
-            for c in reversed(coeffs):
-                v = v * x + c
-            return v
 
         def _K_at_lean(omega_val):
             K_at = np.zeros((nf, nf), dtype=complex)

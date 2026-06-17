@@ -1008,7 +1008,7 @@ class FieldTheory:
             _show(expr)
 
     def free_action(self):
-        """Return the (1,1) sector polynomial."""
+        """Return the (1,1) sector polynomial, or ``R.zero()`` if absent."""
         self._require_expanded()
         return self._by_tp.get((1, 1), self._R.zero())
 
