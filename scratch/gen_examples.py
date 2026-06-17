@@ -215,6 +215,77 @@ EXAMPLES.append(dict(
 ))
 
 
+EXAMPLES.append(dict(
+    fname='spatial_reaction_diffusion_2d',
+    theory='reaction_diffusion_2d',
+    title='Reaction–diffusion in d=2 — a UV-finite loop above d=1',
+    headline=(
+        "**Showcases:** the pipeline in **d=2** with a *convergent* loop. The "
+        "quadratic nonlinearity gives a cubic MSR vertex, so the 1-loop "
+        "self-energy is a genuine momentum-dependent **bubble** $\\propto g^2$; "
+        "the integral $\\int d^2\\ell\\,$ behaves as $\\int d^2\\ell/\\ell^4$ in "
+        "the UV, which converges for $d<4$ (the φ⁴ upper critical dimension). So "
+        "the d=2 correction is **finite — no cutoff**.\n\n"
+        "$$\\partial_t\\phi = D\\,\\nabla^2\\phi - \\mu\\phi - g\\phi^2 + "
+        "\\eta,\\qquad x\\in\\mathbb{R}^2.$$"),
+    body=[
+        md("## 2. The pipeline → theoretical cumulants (tree vs 1-loop)", "",
+           "Two runs at the same separations: tree, and tree+1-loop. The "
+           "difference `dC(r)` is the finite d=2 bubble correction."),
+        code(
+            "rs = np.linspace(0.4, 4.0, 14)        # radial separations r ≥ 0",
+            "common = dict(k=2, external_fields=[('dphi', 1), ('dphi', 1)],",
+            "              spatial_grid=rs, tau_max=1.0, tau_step=1.0)",
+            "tree = dd.run(model, dd.Config(max_ell=0, **common), mod)",
+            "loop = dd.run(model, dd.Config(max_ell=1, **common), mod)",
+            "mid = tree['C_tau_x'].shape[0] // 2   # τ = 0 row",
+            "C0 = np.real(tree['C_tau_x'])[mid]",
+            "C1 = np.real(loop['C_tau_x'])[mid]",
+            "dC = C1 - C0",
+            "print('tree C(r0) = %.4f   1-loop C(r0) = %.4f   dC = %.4f'",
+            "      % (C0[0], C1[0], dC[0]))",
+            "print('1-loop correction all finite? ', bool(np.all(np.isfinite(dC))),",
+            "      '  max|dC| = %.4g' % np.max(np.abs(dC)))",
+            "plt.plot(rs, C0, '-o', ms=4, label='tree')",
+            "plt.plot(rs, C1, '-s', ms=4, label='tree + 1-loop')",
+            "plt.xlabel('r'); plt.ylabel('C(r)'); plt.legend()",
+            "plt.title('d=2 reaction–diffusion: tree vs 1-loop'); plt.show()"),
+        md("## 3. Independent simulation", "",
+           "Two checks. (a) The free ($g=0$) **2-D structure factor** $S(q)$ "
+           "against the tree propagator $T/(\\mu+Dq^2)$. (b) The **$g^2$-scaling** "
+           "of the loop: doubling $g$ quadruples `dC`, confirming a genuine "
+           "$O(g^2)$ bubble (tree is $g$-independent since $\\phi^*=0$)."),
+        code(
+            "from models.spatial_field_2d_sim import simulate_2d, "
+            "radial_structure_factor_2d",
+            "fp = dd.fundamental_from_model(model)",
+            "snaps, meta = simulate_2d(L=20.0, N=64, mu=fp['mu'], D=fp['D'], "
+            "T=fp['T'], g=0.0,",
+            "                          n_steps=50000, burn_in=10000, "
+            "record_every=15, seed=3)",
+            "kc, Sq = radial_structure_factor_2d(snaps, meta, n_bins=30)",
+            "plt.plot(kc, Sq, 'o', ms=4, label='2-D simulation (free)')",
+            "plt.plot(kc, fp['T'] / (fp['mu'] + fp['D'] * kc**2), '-', "
+            "label=r'tree $T/(\\mu+Dq^2)$')",
+            "plt.xlim(0, 3); plt.xlabel('q'); plt.ylabel('S(q)'); plt.legend()",
+            "plt.title('d=2 structure factor: tree vs simulation'); plt.show()",
+            "",
+            "# g²-scaling of the loop correction (an O(g²) bubble → ratio 4).",
+            "loop2 = dd.run(model, dd.Config(max_ell=1,",
+            "               fundamental={**fp, 'g': 2 * fp['g']}, **common), mod)",
+            "dC2 = np.real(loop2['C_tau_x'])[mid] - C0",
+            "print('dC(2g)/dC(g) at r0 = %.3f   (O(g²) bubble → 4.0)'",
+            "      % (dC2[0] / dC[0]))"),
+    ],
+    summary=(
+        "The d=2 reaction–diffusion bubble is the pipeline working **above one "
+        "dimension with a finite loop**: the cubic vertex's momentum-dependent "
+        "self-energy converges (d=2 < 4), the correction needs no cutoff, the "
+        "free structure factor matches the 2-D simulation, and the loop scales "
+        "as g² as a genuine bubble must."),
+))
+
+
 # ── assemble ─────────────────────────────────────────────────────────────────
 
 def build_nb(spec):
@@ -223,15 +294,20 @@ def build_nb(spec):
         md("## 0. Setup"),
         SETUP,
         MODEL_MD, model_code(spec['theory']),
-        THEORY_MD, spec['config'],
-        code("res = dd.run(model, cfg, mod)",
-             "print(dd.summary(res))",
-             "dd.plot_cumulant(res, cfg, model)   # theory only",
-             "plt.show()"),
-        SIM_MD, spec['sim'],
     ]
-    if spec.get('extra_md') and spec.get('extra'):
-        cells += [spec['extra_md'], spec['extra']]
+    if spec.get('body'):                       # fully-custom §2/§3 (bespoke examples)
+        cells += spec['body']
+    else:
+        cells += [
+            THEORY_MD, spec['config'],
+            code("res = dd.run(model, cfg, mod)",
+                 "print(dd.summary(res))",
+                 "dd.plot_cumulant(res, cfg, model)   # theory only",
+                 "plt.show()"),
+            SIM_MD, spec['sim'],
+        ]
+        if spec.get('extra_md') and spec.get('extra'):
+            cells += [spec['extra_md'], spec['extra']]
     cells.append(md("## Summary", "", spec['summary']))
     return {
         'cells': cells,
