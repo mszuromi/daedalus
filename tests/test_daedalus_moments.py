@@ -68,3 +68,32 @@ def test_central_equals_cumulant_for_k_le_3():
                                  **_TAU), mod)
         assert np.allclose(np.real(rk['moment']),
                            np.real(rc['C_tau']), atol=1e-9), k
+
+
+def _zi(res):
+    return int(np.argmin(np.abs(np.asarray(res['tau_grid']))))
+
+
+def test_one_loop_moment_shares_the_loop_budget():
+    """The perturbatively-consistent convention: at L=1 the 4-pt central
+    moment's pair-blocks sum over Σℓ_B ≤ 1 — i.e. κ₂⁽⁰⁾² + 2κ₂⁽⁰⁾κ₂⁽¹⁾ —
+    NOT the dressed product (κ₂⁽⁰⁾+κ₂⁽¹⁾)², which would add a stray κ₂⁽¹⁾²
+    (a partial, incomplete 2-loop term).  Pins the convention so a regression
+    to the dressed product is caught."""
+    m, mod = dd.load_theory('ou_quartic_double_well')
+    r2 = dd.run(m, dd.Config(k=2, max_ell=1, **_TAU), mod)
+    r4 = dd.run(m, dd.Config(k=4, max_ell=1, output='central_moment',
+                             **_TAU), mod)
+    z2, z4 = _zi(r2), _zi(r4)
+    k2_0 = float(np.real(r2['C_tau_by_ell'][0])[z2])
+    k2_1 = float(np.real(r2['C_tau_by_ell'][1])[z2])
+    k4_0 = float(np.real(r4['C_tau_by_ell'][0])[z4])
+    k4_1 = float(np.real(r4['C_tau_by_ell'][1])[z4])
+    M4 = float(np.real(r4['moment'])[z4])
+
+    consistent = (k4_0 + k4_1) + 3.0 * (k2_0 * k2_0 + 2.0 * k2_0 * k2_1)
+    dressed = (k4_0 + k4_1) + 3.0 * (k2_0 + k2_1) ** 2
+    assert abs(M4 - consistent) < 1e-7, (M4, consistent)
+    # the two conventions genuinely differ here (κ₂⁽¹⁾ ≠ 0), so this is a
+    # real discriminating test, not a tautology:
+    assert abs(consistent - dressed) > 1e-4, (k2_1, consistent, dressed)

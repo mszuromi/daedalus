@@ -227,65 +227,95 @@ def _external_mean(model: dict, res: dict) -> float:
 def _assemble_moment_temporal(model, res, kw, k, central):
     """Full / central k-point MOMENT along the same 1-D slice as ``C_tau``:
 
-        M(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩ = Σ_π ∏_{B∈π} κ(B)
+        M(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩
+             = Σ_π  Σ_{(ℓ_B): Σℓ_B ≤ L}  ∏_{B∈π} κ(B)^{(ℓ_B)}
 
-    — the set-partition (cluster) expansion.  Singleton blocks contribute the
-    mean ⟨φ⟩ (raw) or 0 (central → only no-singleton partitions survive).
-    ``κ(B)`` for a block of size j is the j-point cumulant at the block's
-    times; one extra ``compute_cumulants`` run per order 2..k gives the
-    j-point evaluator (the order-k run is reused), each evaluated at every
-    sub-point-set."""
+    — the set-partition (cluster) expansion truncated at ONE shared loop budget
+    ``L = max_ell``.  This is the perturbatively-consistent L-loop moment: the
+    total loop order of every surviving term is ≤ L, so a 1-loop moment never
+    smuggles in a partial 2-loop ℓ_B₁·ℓ_B₂ cross-term (which the naive
+    product-of-fully-dressed-cumulants would).  The two agree only at tree
+    (L=0); they diverge at L≥1 for any multi-block partition.
+
+    Singleton blocks contribute the tree mean ⟨φ⟩ at ℓ=0 (raw) or drop out
+    (central → only no-singleton partitions survive); their 1-loop tadpole is
+    not folded in (a documented refinement).  The per-order cumulants
+    κ_j^{(ℓ)} come straight from the ``*_by_ell`` increments — one extra
+    ``compute_cumulants`` run per order 2..k, each delivering every loop order
+    at once (the order-k run is reused)."""
+    import itertools
     from pipeline import compute_cumulants
     tau = np.asarray(res['tau_grid'], dtype=float)
     f0 = kw['external_fields'][0]
+    L = int(kw.get('max_ell', 0) or 0)
     mu = 0.0 if central else _external_mean(model, res)
 
-    # κ_2 as an even function of the lag.  Reuse the order-k run when k==2,
-    # else a single 2-point run on the same grid.
+    def _by_ell_2pt(r):
+        """{ℓ: even-lag interpolator} of the 2-point cumulant's ℓ-loop piece."""
+        be = r.get('C_tau_by_ell') or {0: r.get('C_tau')}
+        t = np.asarray(r['tau_grid']); a = np.abs(t); o = np.argsort(a); ax = a[o]
+        out = {}
+        for e in range(L + 1):
+            arr = be.get(e)
+            if arr is None:
+                out[e] = (lambda lag: 0.0 + 0.0j)
+            else:
+                ay = np.real(np.asarray(arr))[o]
+                out[e] = (lambda lag, ax=ax, ay=ay:
+                          complex(np.interp(abs(lag), ax, ay)))
+        return out
+
+    # κ_2 per loop order (reuse the order-k run when k==2, else one 2-pt run).
     if k == 2:
-        C2, t2 = np.real(np.asarray(res['C_tau'])), np.asarray(res['tau_grid'])
+        k2 = _by_ell_2pt(res)
     else:
         kw2 = dict(kw); kw2.update(k=2, external_fields=[f0] * 2)
-        r2 = compute_cumulants(**kw2)
-        C2, t2 = np.real(np.asarray(r2['C_tau'])), np.asarray(r2['tau_grid'])
-    _abs = np.abs(np.asarray(t2)); _o = np.argsort(_abs)
-    _ax, _ay = _abs[_o], C2[_o]
+        k2 = _by_ell_2pt(compute_cumulants(**kw2))
 
-    def _k2(lag):
-        return float(np.interp(abs(lag), _ax, _ay))
-
-    # κ_j callables for j = 3..k (reuse the order-k total_C when present).
-    evals = {}
+    # κ_j per loop order for j = 3..k (reuse the order-k ``*_by_ell``).
+    kj = {}
     for j in range(3, k + 1):
-        if j == k and callable(res.get('total_C')):
-            evals[j] = res['total_C']
+        if j == k and res.get('total_C_by_ell'):
+            be = res['total_C_by_ell']
         else:
             kwj = dict(kw); kwj.update(k=j, external_fields=[f0] * j)
-            evals[j] = compute_cumulants(**kwj)['total_C']
+            be = compute_cumulants(**kwj).get('total_C_by_ell') or {}
+        kj[j] = {e: (be.get(e) if callable(be.get(e))
+                     else (lambda *t: 0.0 + 0.0j))
+                 for e in range(L + 1)}
 
     parts = list(_set_partitions(list(range(k))))
 
-    def _kappa(block, ti):
+    def _kappa(block, ell, ti):
+        """ℓ-loop piece of the |block|-point cumulant at the slice times."""
         b = sorted(block)
         if len(b) == 2:                       # leg 1 swept (τ); rest pinned (0)
-            return _k2(float(tau[ti]) if 1 in b else 0.0)
+            return k2[ell](float(tau[ti]) if 1 in b else 0.0)
         times = [float(tau[ti]) if idx == 1 else 0.0 for idx in b]
-        return complex(evals[len(b)](*times))
+        return complex(kj[len(b)][ell](*times))
 
     M = np.empty(tau.size, dtype=complex)
     for ti in range(tau.size):
         tot = 0.0 + 0.0j
         for part in parts:
-            prod, ok = 1.0 + 0.0j, True
-            for block in part:
-                if len(block) == 1:
-                    if central:
-                        ok = False
-                        break
-                    prod *= mu
-                else:
-                    prod *= _kappa(block, ti)
-            if ok:
+            singles = [bl for bl in part if len(bl) == 1]
+            multis = [bl for bl in part if len(bl) > 1]
+            if central and singles:           # central drops every singleton
+                continue
+            mu_factor = mu ** len(singles)    # singletons: tree mean, ℓ=0 only
+            if singles and mu_factor == 0.0:  # zero mean → singleton terms die
+                continue
+            if not multis:                    # all-singleton (raw): pure μ^k
+                tot += mu_factor
+                continue
+            # share the loop budget L across the multi-blocks (Σℓ_B ≤ L);
+            # singletons consume none (only the ℓ=0 mean is available).
+            for assign in itertools.product(range(L + 1), repeat=len(multis)):
+                if sum(assign) > L:
+                    continue
+                prod = mu_factor
+                for bl, e in zip(multis, assign):
+                    prod *= _kappa(bl, e, ti)
                 tot += prod
         M[ti] = tot
     return M

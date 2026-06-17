@@ -38,10 +38,14 @@ theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`:
 * **Output quantity** — `output` ∈ `'cumulant'` (default) | `'moment'` |
   `'central_moment'`. The diagrammatics give connected cumulants κ; the moment
   options assemble the full k-point moment `⟨φ(x₁)…φ(x_k)⟩` (resp. of the
-  centred field) via the set-partition expansion `M = Σ_π ∏_B κ(B)` and return
-  it as `res['moment']` (temporal any `k`, spatial `k=2`; costs `k−1` extra
-  backend runs). Raw moments add the mean ⟨φ⟩ on singleton blocks; central
-  moments drop them.
+  centred field) via the set-partition expansion and return it as
+  `res['moment']` (temporal any `k`, spatial `k=2`; costs `k−1` extra backend
+  runs). The chosen `max_ell` is one **shared loop budget** across the whole
+  moment — `M = Σ_π Σ_{Σℓ_B ≤ max_ell} ∏_B κ(B)^{(ℓ_B)}` — so it is the
+  perturbatively-consistent L-loop moment (no partial higher-order cross-terms,
+  e.g. a 1-loop moment never contains a 1-loop×1-loop = 2-loop piece). Raw
+  moments add the (tree) mean ⟨φ⟩ on singleton blocks; central moments drop
+  them.
 * **Adaptable plotting** — `show_orders` (`'cumulative'` | `'incremental'` |
   `'total'`), `logy`, `components`, `figsize`, `title`, `save`. `plot_cumulant`
   dispatches on (spatial?, multi-field?, k): `C(τ)` for temporal, equal-time
