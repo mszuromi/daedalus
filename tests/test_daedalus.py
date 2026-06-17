@@ -79,6 +79,29 @@ def test_kpoint_slices_synthesized():
     plt.close(fig)
 
 
+def test_kpoint_base_lags_and_full_grid():
+    """k≥3: kpoint_base_lags fixes the non-swept legs (validated against the
+    full grid), and kpoint_full_grid returns the (k−1)-dim tensor."""
+    import matplotlib.pyplot as plt
+    m, mod = dd.load_theory('ou_quartic_double_well')
+    T = dict(tau_max=2.0, tau_step=1.0)
+    # wrong-length base → clear error
+    with pytest.raises(ValueError, match='k.1 = 2 entries'):
+        dd.run(m, dd.Config(k=3, max_ell=0, kpoint_base_lags=[1.0], **T), mod)
+    # full 2-D grid for k=3 + heatmap dispatch
+    rg = dd.run(m, dd.Config(k=3, max_ell=0, kpoint_full_grid=True, **T), mod)
+    ax = np.asarray(rg['tau_axes'][0])
+    assert np.asarray(rg['C_tau_grid']).shape == (ax.size, ax.size)
+    fig = dd.plot_cumulant(rg, rg['_cfg'], m)
+    assert len(fig.axes) == 2                       # pcolormesh + colorbar
+    plt.close(fig)
+    # base-shifted slice 2 (leg 1 fixed at 1.0) == the matching grid row
+    ia = int(np.argmin(np.abs(ax - 1.0)))
+    rb = dd.run(m, dd.Config(k=3, max_ell=0, kpoint_base_lags=[1.0, 0.0], **T), mod)
+    assert np.allclose(np.real(rb['C_tau_slices'][2]),
+                       np.real(rg['C_tau_grid'])[ia, :], atol=1e-9)
+
+
 def test_config_grid_resolution():
     cfg = dd.Config(spatial_grid=(-6, 6, 13))
     g = cfg.resolved_grid()

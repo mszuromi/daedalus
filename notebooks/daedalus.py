@@ -273,6 +273,17 @@ class Config:
     spatial_grid: Any = None                # array | (lo, hi, n) | None
     spatial_points: Any = None              # k≥3: (n_pts, k-1, 2) of (x_j, τ_j)
 
+    # ── temporal k≥3 cumulant slicing ──
+    # The connected k-point cumulant depends on k−1 time differences
+    # τ_j = t_j − t_0.  By default run() returns the k−1 axis-parallel slices
+    # through the origin (sweep leg j, others at 0).
+    kpoint_base_lags: Optional[list] = None  # length k−1: the fixed τ for the
+                                             # non-swept legs (the base point the
+                                             # slices pass through); default 0
+    kpoint_full_grid: bool = False           # compute the full (k−1)-dim tensor
+                                             # C(τ_1..τ_{k−1}) instead of slices
+                                             # (cost ~n^{k−1}; k=3 → heatmap)
+
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
@@ -587,24 +598,41 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         if tau is None or tau.size == 0:
             tau = np.array([0.0])
             res['tau_grid'] = tau
-        elif tau.size > 41:                      # bound the # of evaluations
+        elif tau.size > 41:                      # bound the # of 1-D evaluations
             tau = np.linspace(float(tau.min()), float(tau.max()), 41)
             res['tau_grid'] = tau
 
-        def _slice(fn, j):
+        # The connected k-point cumulant depends on k−1 time differences
+        # τ_j = t_j − t_0 (leg 0 anchored at τ=0).  ``base`` is the fixed point
+        # the axis-parallel slices pass through (the non-swept legs sit here).
+        base = cfg.kpoint_base_lags
+        if base is not None:
+            base = [float(b) for b in base]
+            if len(base) != k - 1:
+                raise ValueError(
+                    f"kpoint_base_lags must have k−1 = {k-1} entries (one per "
+                    f"non-anchor leg); got {len(base)}.")
+        else:
+            base = [0.0] * (k - 1)
+
+        def _args(vals):                # vals: τ for legs 1..k−1 (leg 0 = 0)
+            a = [0.0] * k
+            for leg in range(1, k):
+                a[leg] = float(vals[leg - 1])
+            return a
+
+        def _slice(fn, j):              # sweep leg j over tau, others at base
             out = np.empty(tau.size, dtype=complex)
-            for i, t in enumerate(tau):
-                args = [0.0] * k
-                args[j] = float(t)       # sweep leg j (τ_j = t_j − t_0); rest 0
-                out[i] = complex(fn(*args))
+            for i in range(tau.size):
+                v = list(base)
+                v[j - 1] = float(tau[i])
+                out[i] = complex(fn(*_args(v)))
             return out
 
         try:
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
-            # A k-point cumulant has k−1 independent time differences
-            # τ_j = t_j − t_0.  Synthesise one 1-D slice per difference: sweep
-            # leg j over tau_grid, pin the rest at τ=0, for j = 1..k−1.
+            # The k−1 axis-parallel slices through ``base``.
             slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
             slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
                              for j in range(1, k)}
@@ -612,9 +640,34 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             res['C_tau_slices_by_ell'] = slices_by_ell
             res['C_tau'] = slices[1]                    # canonical single slice
             res['C_tau_by_ell'] = slices_by_ell[1]
+            res['_kpoint_base'] = base
             res['_kpoint_slice'] = (
                 f'{k-1} slices: leg j swept over tau_grid (τ_j = t_j − t_0), '
-                f'legs ≠ j pinned at τ=0, for j = 1..{k-1}')
+                f'legs ≠ j fixed at base={base}, for j = 1..{k-1}')
+
+            # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).  Downsample
+            # the axis so the total n^{k−1} evaluations stay bounded.
+            if cfg.kpoint_full_grid:
+                import itertools
+                n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
+                gtau = (tau if n >= tau.size else
+                        np.linspace(float(tau.min()), float(tau.max()), n))
+
+                def _grid(fn):
+                    out = np.empty((gtau.size,) * (k - 1), dtype=complex)
+                    for idx in itertools.product(range(gtau.size),
+                                                 repeat=k - 1):
+                        out[idx] = complex(fn(*_args([gtau[m] for m in idx])))
+                    return out
+
+                res['C_tau_grid'] = _grid(res['total_C'])
+                res['C_tau_grid_by_ell'] = {e: _grid(f)
+                                            for e, f in tcb.items()}
+                res['tau_axes'] = [gtau] * (k - 1)
+                if gtau.size < tau.size:
+                    res['_kpoint_grid_note'] = (
+                        f'τ downsampled to {gtau.size} pts/axis '
+                        f'({gtau.size ** (k - 1)} evals) to bound grid cost')
         except Exception:
             pass        # leave None/scalar form; plot_temporal_kpoint handles it
 
@@ -696,6 +749,8 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     # ``C_tau=None`` and a callable ``total_C``).  Draw it as per-order bars.
     if result.get('C_tau') is None:
         return plot_temporal_kpoint(result, cfg, model, sim)
+    if result.get('C_tau_grid') is not None:         # k≥3 full grid → heatmap
+        return plot_temporal_kpoint_grid(result, cfg, model, sim)
     if len(result.get('C_tau_slices') or {}) >= 2:   # k≥3: one panel per τ_j
         return plot_temporal_kpoint_slices(result, cfg, model, sim)
     return plot_temporal(result, cfg, model, sim)
@@ -853,8 +908,37 @@ def plot_temporal_kpoint_slices(result, cfg, model, sim=None):
             ax.set_yscale('log')
         ax.grid(alpha=0.25)
         ax.legend(fontsize=8)
+    base = result.get('_kpoint_base')
+    base_s = (f'  (others fixed at base={base})'
+              if base is not None and any(abs(b) > 1e-12 for b in base) else '')
     fig.suptitle(cfg.title or
-                 f"{model.get('name', '')}: k={k} cumulant, {len(js)} slices")
+                 f"{model.get('name', '')}: k={k} cumulant, "
+                 f"{len(js)} slices{base_s}")
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_temporal_kpoint_grid(result, cfg, model, sim=None):
+    """k=3: heatmap of the full 2-D cumulant κ_3(τ_1, τ_2) (the whole grid of
+    the two independent time differences).  For k≥4 there is no 2-D view, so
+    fall back to the k−1 axis-parallel slices."""
+    cfg = cfg or Config()
+    axes_ = result.get('tau_axes') or []
+    grid = result.get('C_tau_grid')
+    if grid is None or len(axes_) != 2:              # k≥4 (or no grid)
+        return plot_temporal_kpoint_slices(result, cfg, model, sim)
+    t1, t2 = np.asarray(axes_[0]), np.asarray(axes_[1])
+    Z = np.real(np.asarray(grid))                    # (τ_1, τ_2)
+    fig, ax = plt.subplots(figsize=cfg.figsize or (6.4, 5.0))
+    im = ax.pcolormesh(t1, t2, Z.T, shading='auto', cmap='RdBu_r')
+    fig.colorbar(im, ax=ax, label=r'$\kappa_3(\tau_1,\tau_2)$')
+    ax.set_xlabel(r'$\tau_1 = t_1 - t_0$')
+    ax.set_ylabel(r'$\tau_2 = t_2 - t_0$')
+    note = result.get('_kpoint_grid_note')
+    ax.set_title((cfg.title or f"{model.get('name', '')}: k=3 cumulant grid")
+                 + (f'\n{note}' if note else ''))
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
