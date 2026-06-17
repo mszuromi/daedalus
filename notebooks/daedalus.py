@@ -255,7 +255,8 @@ class Config:
     k: Optional[int] = None                 # correlator order (1, 2, 3, …)
     max_ell: Optional[int] = None           # loop order (0=tree, 1, 2, …)
     external_fields: Optional[list] = None  # e.g. [('x', 1), ('x', 1)]
-    fundamental: Optional[dict] = None       # numeric parameter overrides
+    parameters: Optional[dict] = None        # numeric parameter overrides, by name
+    fundamental: Optional[dict] = None       # deprecated alias for ``parameters``
     # Output quantity.  The diagrammatics produce CONNECTED cumulants
     # κ(x₁…x_k); 'moment'/'central_moment' assemble the full k-point moment
     # ⟨φ(x₁)…φ(x_k)⟩ (resp. of the centred field) via the set-partition
@@ -296,6 +297,15 @@ class Config:
     title: Optional[str] = None
     save: Optional[str] = None              # path to savefig, or None
 
+    def __post_init__(self):
+        # ``parameters`` is the canonical name; ``fundamental`` is kept as a
+        # backward-compatible alias.  Mirror whichever the caller set onto the
+        # other (``parameters`` wins if both are given) so either reads fine.
+        if self.parameters is None and self.fundamental is not None:
+            self.parameters = self.fundamental
+        elif self.fundamental is None and self.parameters is not None:
+            self.fundamental = self.parameters
+
     def resolved_grid(self):
         """Materialise ``spatial_grid`` (accepts an ``(lo, hi, n)`` tuple)."""
         g = self.spatial_grid
@@ -323,6 +333,11 @@ def fundamental_from_model(model: dict) -> dict:
             continue
         out[name] = p['default']
     return out
+
+
+# Canonical alias (matches the ``Config.parameters`` rename); the original
+# name is kept for the existing notebooks that import it.
+parameters_from_model = fundamental_from_model
 
 
 # ── Cumulants → moments (full multivariate set-partition assembly) ──────────
@@ -494,8 +509,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     fundamental = fundamental_from_model(model)
     fundamental.update(getattr(module, 'DEFAULT_FUNDAMENTAL', {}) or {}
                        if module else {})
-    if cfg.fundamental:
-        fundamental.update(cfg.fundamental)
+    if cfg.parameters:
+        fundamental.update(cfg.parameters)
 
     # Dyson override: inject into the model's spatial policy at run time.
     if cfg.dyson_order is not None and model.get('spatial'):

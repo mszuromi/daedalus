@@ -272,7 +272,7 @@ EXAMPLES.append(dict(
             "",
             "# g²-scaling of the loop correction (an O(g²) bubble → ratio 4).",
             "loop2 = dd.run(model, dd.Config(max_ell=1,",
-            "               fundamental={**fp, 'g': 2 * fp['g']}, **common), mod)",
+            "               parameters={**fp, 'g': 2 * fp['g']}, **common), mod)",
             "dC2 = np.real(loop2['C_tau_x'])[mid] - C0",
             "print('dC(2g)/dC(g) at r0 = %.3f   (O(g²) bubble → 4.0)'",
             "      % (dC2[0] / dC[0]))"),
