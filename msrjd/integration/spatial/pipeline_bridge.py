@@ -289,6 +289,25 @@ def certify_modes(modes, prop, records, external_fields, base_np_sr,
     return worst
 
 
+def _noise_matrix_is_offdiagonal(ft, num_params, tol=1e-12):
+    """True iff the (numeric) noise matrix ``N_ij`` has a non-zero
+    off-diagonal entry — i.e. cross-correlated white noise between distinct
+    fields (``ã·b̃`` in the action).  Single-field / diagonal-noise theories
+    return False (no routing change)."""
+    try:
+        from msrjd.integration.spatial.spatial_correlator import (
+            extract_noise_matrix)
+        N = np.asarray(extract_noise_matrix(ft, num_params))
+        if N.ndim != 2 or N.shape[0] < 2:
+            return False
+        Z = np.array([[complex(N[i, j]) for j in range(N.shape[1])]
+                      for i in range(N.shape[0])])
+    except Exception:
+        return False
+    off = Z - np.diag(np.diag(Z))
+    return bool(np.max(np.abs(off)) > tol)
+
+
 # ── 3. top-level: pipeline-certified, analytic q-FT correlator ────
 def compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
@@ -338,6 +357,23 @@ def compute_spatial_correlator_via_pipeline(
     leg_names = [f[0] if isinstance(f, (tuple, list)) else f
                  for f in ext_int]
     fi = _field_index(prop, leg_names[0])
+
+    # The diagonal per-mode form below is valid ONLY for a single-field
+    # AUTO-correlator with diagonal (independent) noise.  Route to the genuine
+    # coupled scalar-diffusion correlator — which solves the full N×N
+    # Lyapunov 2-point — whenever either
+    #   (a) the external legs span TWO different fields (a cross-correlator
+    #       ⟨a b⟩; the per-mode form would wrongly reconstruct ⟨a a⟩), or
+    #   (b) the noise matrix is OFF-DIAGONAL (correlated white noise,
+    #       e.g. ``-2ρ√(Ta·Tb)·ã·b̃`` in the action).
+    # Single-field / diagonal-noise auto-correlators are unaffected.
+    _cross_legs = (len(leg_names) >= 2
+                   and _field_index(prop, leg_names[1]) != fi)
+    if _cross_legs or _noise_matrix_is_offdiagonal(ft, num_params):
+        return compute_coupled_tree_correlator(
+            ft, model, prop, num_params, external_fields, tau_grid,
+            spatial_grid, verbose=verbose)
+
     modes = diagonal_modes_from_propagator(prop, ft, num_params, fi)
     bc_mode, L = _bc_from_prop(prop, nps_sr)
 

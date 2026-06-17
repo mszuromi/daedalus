@@ -135,6 +135,42 @@ def test_coupled_routes_through_compute_cumulants():
     assert C[i0, 0] > 0                                     # C_aa(0,0) is a variance
 
 
+def test_public_api_noise_only_coupling_cross_correlator():
+    """Routing fix: a NOISE-ONLY-coupled theory (diagonal drift g=h=0 but cross
+    white noise Tab≠0) used to fail the diagonal per-mode certification on the
+    public API.  It must now route to the coupled driver and return the
+    cross-correlator ⟨a b⟩ (matching a direct driver call); and the cross legs
+    of an UNCOUPLED theory (Tab=0) must give ⟨a b⟩ = 0, not raise."""
+    from pipeline import compute_cumulants
+    sg = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])   # symmetric → check evenness
+    ix0 = int(np.argmin(np.abs(sg)))             # x=0 (centre)
+    # (i) cross noise present → cross-correlator nonzero, matches the driver
+    model = _two_species(0.0, 0.0, cross_noise=0.5)
+    th = compute_cumulants(
+        model=model, k=2, max_ell=0, fundamental=_fund(0.0, 0.0, 0.5),
+        external_fields=[('a', 1), ('b', 1)], tau_max=1.0, tau_step=0.5,
+        spatial_grid=sg, parallel=False, verbose=False, use_cache=False)
+    Cab = np.asarray(th['C_tau_x']).real
+    ft, prop = _setup(model)
+    Cd, info = compute_coupled_tree_correlator(
+        ft, model, prop, _fund(0.0, 0.0, 0.5), [('da', 1), ('db', 1)],
+        np.asarray(th['tau_grid']), sg)
+    assert info['coupled'] is True
+    assert np.allclose(Cab, Cd.real, atol=1e-6)           # routed to the driver
+    i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
+    assert abs(Cab[i0, ix0]) > 1e-3                        # cross-correlation ≠ 0
+    assert np.allclose(Cab[i0], Cab[i0][::-1], atol=1e-6)  # even in x
+    # (ii) Tab=0 ⇒ the cross-correlator of an uncoupled theory is 0 (the cross
+    # legs still route to the coupled driver, not the auto-correlation per-mode
+    # path that would wrongly reconstruct ⟨a a⟩ and fail certification).
+    model0 = _two_species(0.0, 0.0, cross_noise=0.0)
+    th0 = compute_cumulants(
+        model=model0, k=2, max_ell=0, fundamental=_fund(0.0, 0.0, 0.0),
+        external_fields=[('a', 1), ('b', 1)], tau_max=1.0, tau_step=0.5,
+        spatial_grid=sg, parallel=False, verbose=False, use_cache=False)
+    assert np.max(np.abs(np.asarray(th0['C_tau_x']).real)) < 1e-6
+
+
 def test_noise_matrix_diagonal_and_cross():
     model = _two_species(0.4, 0.3, cross_noise=0.5)
     ft, _ = _setup(model)
