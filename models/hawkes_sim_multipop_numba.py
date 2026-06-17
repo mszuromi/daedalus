@@ -447,6 +447,99 @@ def sim_hawkes_multipop_cubic_alpha_numba(n_steps, dt_sim,
 
 
 @numba.njit
+def sim_hawkes_multipop_quad_alpha_numba(n_steps, dt_sim,
+                                         tau_v, a_gain, E_drive,
+                                         W, tau_g,
+                                         v_init,
+                                         bin_size_steps, n_bins, seed):
+    """
+    Euler-step simulator for **quadratic-rate, no-reset, alpha-kernel** Hawkes.
+
+      dF_aux_{ij}/dt = (1/tau_g[i,j]) * (n_j(t) - F_aux_{ij})    # 1st exp stage
+      dF_{ij}/dt     = (1/tau_g[i,j]) * (F_aux_{ij} - F_{ij})    # 2nd exp stage
+      tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
+      lambda_i(t)    = max(a_i · v_i^2, 0)                       # QUADRATIC rate
+      n_i(t)         ~ Poisson(lambda_i(t) dt)
+
+    Matches ``theories/quadratic_hawkes_alpha.theory.py``: no spike reset,
+    quadratic φ(v) = a·v², alpha synaptic kernel
+    α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
+
+    This is the **quadratic-transfer sibling** of
+    ``sim_hawkes_multipop_cubic_alpha_numba`` — the only difference is the
+    rate exponent (``v_i²`` here, ``v_i³`` there).  The alpha-kernel
+    machinery (two-stage exponential cascade realising the α-function as
+    the convolution of two identical exponential low-pass filters, with
+    unit DC gain so ∫α(t)dt = 1) is byte-for-byte identical, so the same
+    ``build_sim_arrays`` / ``flat_index_of`` helpers work unchanged.
+
+    With φ(v) = a·v² the curvature φ''(v*) = 2a ≠ 0, so the cubic vertex
+    ``nt·δv·δv`` at bigrade (1, 2) is present — the source of the 1-loop
+    corrections this theory exercises.
+
+    Same call signature and return shape as the other multipop sim
+    variants: ``(binned_counts, voltage_bins, total_spikes)``.
+    """
+    np.random.seed(seed)
+    N = len(tau_v)
+    v = v_init.copy()
+    F_aux = np.zeros((N, N))     # first-stage filter state
+    F     = np.zeros((N, N))     # second-stage filter state (== α * n_j)
+
+    binned_counts = np.zeros((N, n_bins))
+    voltage_bins = np.zeros((N, n_bins))
+    voltage_accum = np.zeros(N)
+    total_spikes = np.zeros(N)
+    current_bin = 0
+    steps_in_bin = 0
+    spikes = np.zeros(N, dtype=np.int64)
+
+    for step in range(n_steps):
+        if current_bin < n_bins:
+            for i in range(N):
+                voltage_accum[i] += v[i]
+
+        for i in range(N):
+            v_i = v[i]
+            lam = a_gain[i] * v_i * v_i             # quadratic rate
+            if lam < 0.0:
+                lam = 0.0
+            spikes[i] = np.random.poisson(lam * dt_sim)
+            total_spikes[i] += spikes[i]
+            if current_bin < n_bins:
+                binned_counts[i, current_bin] += spikes[i]
+
+        steps_in_bin += 1
+        if steps_in_bin >= bin_size_steps:
+            if current_bin < n_bins:
+                for i in range(N):
+                    voltage_bins[i, current_bin] = (voltage_accum[i] /
+                                                    bin_size_steps)
+                    voltage_accum[i] = 0.0
+            current_bin += 1
+            steps_in_bin = 0
+
+        # Two-stage cascade → alpha kernel (identical to the cubic-alpha
+        # variant).  F (alpha-filtered rate) is updated from OLD F_aux as a
+        # continuous-rate exponential filter; F_aux (single-exp-filtered
+        # spike rate) is updated from this step's spike COUNTS.  DC gain 1.
+        for i in range(N):
+            for j in range(N):
+                tg = tau_g[i, j]
+                decay = 1.0 - dt_sim / tg
+                F[i, j]     = decay * F[i, j]     + (dt_sim / tg) * F_aux[i, j]
+                F_aux[i, j] = decay * F_aux[i, j] + (1.0    / tg) * spikes[j]
+
+        for i in range(N):
+            drive = E_drive[i]
+            for j in range(N):
+                drive += W[i, j] * F[i, j]
+            v[i] += dt_sim / tau_v[i] * (-v[i] + drive)
+
+    return binned_counts, voltage_bins, total_spikes
+
+
+@numba.njit
 def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
                                            tau_v, a_gain, E_drive,
                                            W, tau_g,
