@@ -1,5 +1,5 @@
 """Regenerate notebooks/theory_runner.ipynb as the thin universal runner
-built on nb_support (load -> configure -> run -> inspect -> plot -> save).
+built on daedalus (load -> configure -> run -> inspect -> plot -> save).
 Run with `sage -python`."""
 import json
 import os
@@ -29,12 +29,12 @@ cells = [
         "",
         "Loads **any** theory from `theories/*.theory.py` and runs the full "
         "pipeline against it through the shared "
-        "[`nb_support.py`](nb_support.py) engine — the same engine the four "
+        "[`daedalus.py`](daedalus.py) engine — the same engine the four "
         "group templates in [`templates/`](templates/) use.  One notebook "
         "works for every theory: temporal or spatial, single- or multi-field, "
         "any `k`, any loop order, with or without Dyson dressing.",
         "",
-        "**Workflow:** pick a theory → set one `nb.Config` → run → inspect → "
+        "**Workflow:** pick a theory → set one `dd.Config` → run → inspect → "
         "plot → (optionally) save.",
     ),
     md("## 1. Setup"),
@@ -50,8 +50,8 @@ cells = [
         "    _root = os.path.dirname(_root)",
         "sys.path.insert(0, _root)",
         "sys.path.insert(0, os.path.join(_root, 'notebooks'))",
-        "import nb_support as nb",
-        "print('nb_support \\u2192', nb.REPO_ROOT)",
+        "import daedalus as dd",
+        "print('daedalus \\u2192', dd.REPO_ROOT)",
     ),
     md(
         "## 2. Pick a theory",
@@ -61,20 +61,20 @@ cells = [
         "[`theory_builder.ipynb`](theory_builder.ipynb).",
     ),
     code(
-        "for _n in nb.list_theories():",
+        "for _n in dd.list_theories():",
         "    print(' ', _n)",
     ),
     md(
         "## 3. Configure the run",
         "",
-        "One `nb.Config` holds everything.  Leave a field `None` to inherit "
+        "One `dd.Config` holds everything.  Leave a field `None` to inherit "
         "the theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`.  All knobs are "
         "shown below — most runs only need `k` and `max_ell`.",
     ),
     code(
         "THEORY = 'ou_quartic_double_well'   # any name printed above",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    # --- what to compute (arbitrary k and loop order) ---",
         "    k=2,            # correlator order: 2 = ⟨··⟩, 3 = ⟨···⟩, …",
         "    max_ell=1,      # loop order: 0 = tree, 1 = +1-loop, …",
@@ -100,24 +100,24 @@ cells = [
     ),
     md("## 4. Load the theory"),
     code(
-        "model, mod = nb.load_theory(THEORY)",
+        "model, mod = dd.load_theory(THEORY)",
         "print('loaded :', model.get('name'))",
-        "print('fields :', nb.field_names(model),",
-        "      '| spatial_dim:', nb.spatial_dim(model),",
-        "      '| multi-field:', nb.is_multifield(model))",
+        "print('fields :', dd.field_names(model),",
+        "      '| spatial_dim:', dd.spatial_dim(model),",
+        "      '| multi-field:', dd.is_multifield(model))",
         "print('params :', [p['name'] for p in (model.get('parameters') or [])])",
     ),
     md(
         "## 5. Run the pipeline",
         "",
-        "`nb.run` resolves the config against the theory defaults and calls "
+        "`dd.run` resolves the config against the theory defaults and calls "
         "`compute_cumulants` (mean-field solve → diagram enumeration → causal "
         "integration), dispatching temporal vs spatial and the k≥3 / Dyson "
         "paths automatically.",
     ),
     code(
-        "res = nb.run(model, cfg, mod)",
-        "print(nb.summary(res))",
+        "res = dd.run(model, cfg, mod)",
+        "print(dd.summary(res))",
     ),
     md(
         "## 6. Inspect the result",
@@ -147,13 +147,13 @@ cells = [
     md(
         "## 7. Plot",
         "",
-        "`nb.plot_cumulant` auto-dispatches: C(τ) for temporal, equal-time "
+        "`dd.plot_cumulant` auto-dispatches: C(τ) for temporal, equal-time "
         "C(x,0) (+ a C(x,τ) heatmap when a τ grid is present) for spatial "
         "k=2, and a per-event bar chart for spatial k≥3.  `cfg.show_orders` "
         "controls the per-loop-order overlay.",
     ),
     code(
-        "fig = nb.plot_cumulant(res, cfg, model)",
+        "fig = dd.plot_cumulant(res, cfg, model)",
         "plt.show()",
     ),
     md(

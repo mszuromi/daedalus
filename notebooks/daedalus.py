@@ -1,15 +1,15 @@
-"""notebooks/nb_support.py — shared scaffolding for the pipeline demo notebooks.
+"""notebooks/daedalus.py — shared scaffolding for the pipeline demo notebooks.
 
 Centralises the **load → run → plot** flow so every demo notebook is thin and
 uniform regardless of its group (temporal / spatial × single / multi-field).
 The four group templates (``notebooks/templates/``) and every
 ``*_sim_compare`` notebook import this module so the thematics are common.
 
-    import nb_support as nb
-    model, mod = nb.load_theory('kpz_1d')          # from theories/*.theory.py
-    cfg = nb.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
-    res = nb.run(model, cfg, mod)                  # k/ell/Dyson all here
-    nb.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
+    import daedalus as dd
+    model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
+    cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+    res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
+    dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
 
 Design choices
 --------------

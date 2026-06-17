@@ -1,6 +1,6 @@
 """Generate notebooks/templates/template_spatial_single_sim_compare.ipynb —
 the spatial counterpart of the temporal sim-compare reference.  Same
-nb_support core; the only group difference is the simulator and that the
+daedalus core; the only group difference is the simulator and that the
 sim dict carries {x, C, C_err} (spatial) instead of {tau, C, C_err}.
 Run with `sage -python`."""
 import json
@@ -33,10 +33,10 @@ cells = [
         "The spatial twin of "
         "[`template_temporal_single_sim_compare.ipynb`]"
         "(template_temporal_single_sim_compare.ipynb).  Identical "
-        "`nb_support` core — the only differences are the simulator "
+        "`daedalus` core — the only differences are the simulator "
         "(`models.spatial_field_1d_sim`) and that the `sim` dict carries "
         "`{x, C, C_err}` (a spatial slice) instead of `{tau, C, C_err}`.  "
-        "`nb.plot_cumulant` dispatches on the model and draws the equal-time "
+        "`dd.plot_cumulant` dispatches on the model and draws the equal-time "
         "`C(x, 0)` overlay automatically.",
     ),
     md("## 1. Setup"),
@@ -51,9 +51,9 @@ cells = [
         "    _root = os.path.dirname(_root)",
         "sys.path.insert(0, _root)",
         "sys.path.insert(0, os.path.join(_root, 'notebooks'))",
-        "import nb_support as nb",
+        "import daedalus as dd",
         "from models.spatial_field_1d_sim import simulate, equal_time_correlator",
-        "print('nb_support \\u2192', nb.REPO_ROOT)",
+        "print('daedalus \\u2192', dd.REPO_ROOT)",
     ),
     md(
         "## 2. Theory side (identical to the plain template)",
@@ -62,7 +62,7 @@ cells = [
         "THEORY = 'allen_cahn_1d_subcritical_infinite'   # plain cubic vertex,",
         "                                                # tree ⟨φ²⟩ = 0.5",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    k=2,",
         "    max_ell=1,                  # tree + 1-loop tadpole",
         "    spatial_grid=(0.0, 5.0, 26),",
@@ -71,9 +71,9 @@ cells = [
         "    show_orders='cumulative',",
         ")",
         "",
-        "model, mod = nb.load_theory(THEORY)",
-        "res = nb.run(model, cfg, mod)",
-        "print(nb.summary(res))",
+        "model, mod = dd.load_theory(THEORY)",
+        "res = dd.run(model, cfg, mod)",
+        "print(dd.summary(res))",
     ),
     md(
         "## 3. Simulation side (matched parameters)",
@@ -119,7 +119,7 @@ cells = [
     ),
     md("## 4. Theory vs simulation"),
     code(
-        "fig = nb.plot_cumulant(res, cfg, model, sim=sim)",
+        "fig = dd.plot_cumulant(res, cfg, model, sim=sim)",
         "plt.show()",
     ),
 ]

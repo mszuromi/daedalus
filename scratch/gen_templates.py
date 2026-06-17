@@ -1,6 +1,6 @@
 """Generate the 4 group template notebooks under notebooks/templates/.
 
-All four share ONE skeleton (load → run → plot via nb_support); only the
+All four share ONE skeleton (load → run → plot via daedalus); only the
 title/description markdown and the single Config cell differ per group, so
 the demos are maximally uniform.  Run with `sage -python`.
 """
@@ -44,26 +44,26 @@ ROOT_CELL = code(
     "    _root = os.path.dirname(_root)",
     "sys.path.insert(0, _root)",
     "sys.path.insert(0, os.path.join(_root, 'notebooks'))",
-    "import nb_support as nb",
-    "print('nb_support \\u2192', nb.REPO_ROOT)",
+    "import daedalus as dd",
+    "print('daedalus \\u2192', dd.REPO_ROOT)",
 )
 
 LOAD_CELL = code(
-    "model, mod = nb.load_theory(THEORY)",
+    "model, mod = dd.load_theory(THEORY)",
     "print('loaded :', model.get('name'))",
-    "print('fields :', nb.field_names(model),",
-    "      '| spatial_dim:', nb.spatial_dim(model),",
-    "      '| multi-field:', nb.is_multifield(model))",
+    "print('fields :', dd.field_names(model),",
+    "      '| spatial_dim:', dd.spatial_dim(model),",
+    "      '| multi-field:', dd.is_multifield(model))",
     "print('params :', [p['name'] for p in (model.get('parameters') or [])])",
 )
 
 RUN_CELL = code(
-    "res = nb.run(model, cfg, mod)",
-    "print(nb.summary(res))",
+    "res = dd.run(model, cfg, mod)",
+    "print(dd.summary(res))",
 )
 
 PLOT_CELL = code(
-    "fig = nb.plot_cumulant(res, cfg, model)",
+    "fig = dd.plot_cumulant(res, cfg, model)",
     "plt.show()",
 )
 
@@ -74,14 +74,14 @@ def header_md(title, group, shape, swap_hint):
         "",
         f"The **{group}** template.  Every demo in this group follows the same "
         "three steps — **load → run → plot** — all driven by "
-        "[`nb_support.py`](../nb_support.py):",
+        "[`daedalus.py`](../daedalus.py):",
         "",
         "1. **Load** a theory from `theories/<name>.theory.py` (the single "
         "source of truth — no inline model building).",
-        "2. **Run** it with one `nb.Config(...)`: the correlator order `k`, the "
+        "2. **Run** it with one `dd.Config(...)`: the correlator order `k`, the "
         "loop order `max_ell`, the Dyson order, the grids, and every plotting "
         "option live there.",
-        "3. **Plot** with `nb.plot_cumulant`, which auto-dispatches to the form "
+        "3. **Plot** with `dd.plot_cumulant`, which auto-dispatches to the form "
         "natural to this group.",
         "",
         f"This template ships with **`{shape}`**.  To demo a different "
@@ -137,7 +137,7 @@ templates['temporal_single'] = (
     code(
         "THEORY = 'ou_quartic_double_well'   # any single-field temporal theory",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    # --- what to compute (arbitrary k and loop order) ---",
         "    k=2,            # 2 = ⟨xx⟩, 3 = ⟨xxx⟩, …",
         "    max_ell=1,      # 0 = tree, 1 = +1-loop, 2 = +2-loop, …",
@@ -164,7 +164,7 @@ templates['temporal_multi'] = (
     code(
         "THEORY = 'ou_quartic_two_dim'   # any multi-field temporal theory",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    k=2,",
         "    max_ell=0,      # tree; bump to 1 for the 1-loop correction",
         "    # Multi-field: choose which legs to correlate.  None → auto",
@@ -190,7 +190,7 @@ templates['spatial_single'] = (
     code(
         "THEORY = 'kpz_1d'   # any single-field spatial theory",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    k=2,",
         "    max_ell=1,      # 0 = tree, 1 = +1-loop, …",
         "",
@@ -216,7 +216,7 @@ templates['spatial_multi'] = (
     code(
         "THEORY = 'coupled_rd_2species_1d'   # any multi-field spatial theory",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    k=2,",
         "    max_ell=1,      # 0 = tree, 1 = +1-loop, …",
         "",
@@ -241,11 +241,11 @@ KPOINT_MD = md(
     "For 3-point and higher spatial cumulants, replace `spatial_grid` with "
     "explicit evaluation events: `spatial_points` is an `(n_pts, k-1, 2)` "
     "array giving, for each of the `k-1` non-anchor legs, its `(x_j, τ_j)` "
-    "offset from the anchor.  `nb.plot_cumulant` then draws the per-event bar "
+    "offset from the anchor.  `dd.plot_cumulant` then draws the per-event bar "
     "chart automatically.  Example (`k=3`, two events):",
     "",
     "```python",
-    "cfg = nb.Config(k=3, max_ell=0, spatial_points=[",
+    "cfg = dd.Config(k=3, max_ell=0, spatial_points=[",
     "    [[0.5, 0.0], [1.0, 0.0]],   # event 1: legs at x=0.5 and x=1.0",
     "    [[1.0, 0.0], [2.0, 0.0]],   # event 2",
     "])",

@@ -1,7 +1,7 @@
 """Generate notebooks/templates/template_temporal_single_sim_compare.ipynb —
 the worked reference showing how a deep-dive sim-vs-theory notebook adopts the
-nb_support core (load -> run -> plot) and overlays a real simulator via
-nb.plot_cumulant(..., sim=...).  Run with `sage -python`."""
+daedalus core (load -> run -> plot) and overlays a real simulator via
+dd.plot_cumulant(..., sim=...).  Run with `sage -python`."""
 import json
 import os
 
@@ -33,11 +33,11 @@ cells = [
         "[`template_temporal_single.ipynb`](template_temporal_single.ipynb), "
         "with a matched simulator overlaid.  The only addition over the plain "
         "template is section 3 (the simulator) and passing its result to "
-        "`nb.plot_cumulant(..., sim=...)`.",
+        "`dd.plot_cumulant(..., sim=...)`.",
         "",
         "Every `*_sim_compare` notebook in [`../temporal/`](../temporal) and "
         "[`../spatial/`](../spatial) follows this shape: the theory side is "
-        "`nb_support`; only the simulator differs per model.",
+        "`daedalus`; only the simulator differs per model.",
     ),
     md("## 1. Setup"),
     code(
@@ -51,21 +51,21 @@ cells = [
         "    _root = os.path.dirname(_root)",
         "sys.path.insert(0, _root)",
         "sys.path.insert(0, os.path.join(_root, 'notebooks'))",
-        "import nb_support as nb",
+        "import daedalus as dd",
         "# simulator + cumulant estimator for THIS model",
         "from models.ou_langevin_sim_numba import sim_ou_quartic_numba",
         "from models.cumulant_estimator import compute_kpoint_slice",
-        "print('nb_support \\u2192', nb.REPO_ROOT)",
+        "print('daedalus \\u2192', dd.REPO_ROOT)",
     ),
     md(
         "## 2. Theory side (identical to the plain template)",
         "",
-        "Load the theory from its file, set one `nb.Config`, run.",
+        "Load the theory from its file, set one `dd.Config`, run.",
     ),
     code(
         "THEORY = 'ou_quartic_double_well'",
         "",
-        "cfg = nb.Config(",
+        "cfg = dd.Config(",
         "    k=2,                # any k: 2 = C(τ); 3+ = k-point slice C_k(τ)",
         "    max_ell=1,          # tree + 1-loop",
         "    tau_max=8.0,",
@@ -73,9 +73,9 @@ cells = [
         "    show_orders='cumulative',",
         ")",
         "",
-        "model, mod = nb.load_theory(THEORY)",
-        "res = nb.run(model, cfg, mod)",
-        "print(nb.summary(res))",
+        "model, mod = dd.load_theory(THEORY)",
+        "res = dd.run(model, cfg, mod)",
+        "print(dd.summary(res))",
     ),
     md(
         "## 3. Simulation side (matched parameters, any k)",
@@ -109,7 +109,7 @@ cells = [
         "",
         "# k-generic k-point slice C_k(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩_c: leg 1 is",
         "# swept, legs 0 and 2..k-1 are pinned at τ=0 — the SAME slice the theory",
-        "# stores in res['C_tau'] (nb.run synthesises it from total_C for k≥3).",
+        "# stores in res['C_tau'] (dd.run synthesises it from total_C for k≥3).",
         "lag_bins    = [0, None] + [0] * (K - 2)",
         "field_types = ['dv'] * K",
         "pop_indices = [0] * K",
@@ -154,16 +154,16 @@ cells = [
     md(
         "## 4. Theory vs simulation",
         "",
-        "`nb.plot_cumulant` overlays the simulated k-point slice on the theory "
+        "`dd.plot_cumulant` overlays the simulated k-point slice on the theory "
         "curve for **any k**.  For k=2 this is the usual `C(τ)`; for k≥3 it is "
         "the 1-D slice `C_k(τ) = ⟨φ(0) φ(τ) φ(0)…⟩_c` (leg 1 swept, the rest "
-        "pinned at τ=0) — `nb.run` synthesises the matching theory slice from "
+        "pinned at τ=0) — `dd.run` synthesises the matching theory slice from "
         "`res['total_C']`, and the simulator estimates it with "
         "`compute_kpoint_slice`.  `cfg.show_orders` controls the per-loop-order "
         "theory overlay.",
     ),
     code(
-        "fig = nb.plot_cumulant(res, cfg, model, sim=sim)",
+        "fig = dd.plot_cumulant(res, cfg, model, sim=sim)",
         "plt.show()",
     ),
 ]

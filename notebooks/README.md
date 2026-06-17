@@ -12,7 +12,7 @@ source of truth for theories.
 | [`templates/`](templates/) | Copy a clean per-group starting point (see the four groups below). |
 | [`theory_runner.ipynb`](theory_runner.ipynb) | Run **any** `theories/*.theory.py` with no edits beyond one config cell — temporal or spatial, single- or multi-field, any `k`, any loop order, with/without Dyson. |
 | [`theory_builder.ipynb`](theory_builder.ipynb) | Author a new theory in the interactive UI; it writes `theories/<name>.theory.py`. |
-| [`nb_support.py`](nb_support.py) | The shared engine every template, the runner, and (the migrated) demos import. |
+| [`daedalus.py`](daedalus.py) | The shared engine every template, the runner, and (the migrated) demos import. |
 
 ### The shared flow — load → run → plot
 
@@ -20,14 +20,14 @@ Theories live in **`theories/*.theory.py`** (the single source of truth — no
 notebook re-builds a model inline). Every notebook is thin:
 
 ```python
-import nb_support as nb
-model, mod = nb.load_theory('kpz_1d')              # from theories/*.theory.py
-cfg = nb.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
-res = nb.run(model, cfg, mod)                       # k / ℓ / Dyson all here
-nb.plot_cumulant(res, cfg, model)                   # auto-dispatched, adaptable
+import daedalus as dd
+model, mod = dd.load_theory('kpz_1d')              # from theories/*.theory.py
+cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+res = dd.run(model, cfg, mod)                       # k / ℓ / Dyson all here
+dd.plot_cumulant(res, cfg, model)                   # auto-dispatched, adaptable
 ```
 
-`nb.Config` holds everything a demo chooses; leave a field `None` to inherit the
+`dd.Config` holds everything a demo chooses; leave a field `None` to inherit the
 theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`:
 
 * **Arbitrary `k` / loop order** — `k` (2 = ⟨··⟩, 3 = ⟨···⟩, …) and `max_ell`
@@ -63,7 +63,7 @@ and [`template_spatial_single_sim_compare.ipynb`](templates/template_spatial_sin
 
 Each `*_sim_compare` notebook below is a per-theory deep dive: the theory side is
 this same flow; only the simulator differs per model.  **27 of these have been
-migrated onto the `nb_support` core** — they `nb.load_theory()` + `nb.run()`
+migrated onto the `daedalus` core** — they `dd.load_theory()` + `dd.run()`
 in place of an inline/importlib model build, keeping their simulator, plots, and
 validated diagnostics byte-for-byte (physics verified bit-identical).  Six are
 not migrated, all due to **pre-existing pipeline/theory-file breakage** (not the
