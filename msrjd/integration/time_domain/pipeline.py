@@ -146,21 +146,11 @@ _FORK_GUARD_WARNED = False
 def _fork_unsafe_in_notebook(start_method):
     """Return True iff a ``fork`` here risks crashing a macOS Jupyter kernel.
 
-    Narrow by design: ``start_method == 'fork'`` AND ``sys.platform ==
-    'darwin'`` AND we are inside a ZMQ/Jupyter interactive kernel.  Returns
-    False for spawn/forkserver, non-macOS, terminal IPython, plain scripts,
-    and pytest — none of which are exposed to the fork-after-Cocoa-init crash.
-    """
-    if start_method != 'fork':
-        return False
-    if sys.platform != 'darwin':
-        return False
-    try:
-        from IPython import get_ipython
-        ip = get_ipython()
-    except Exception:
-        return False
-    return ip is not None and ip.__class__.__name__ == 'ZMQInteractiveShell'
+    Thin local alias for the canonical
+    :func:`msrjd.fork_safety.fork_unsafe_in_notebook` (kept so the existing
+    Phase-J call sites read unchanged; one source of truth for the logic)."""
+    from msrjd.fork_safety import fork_unsafe_in_notebook
+    return fork_unsafe_in_notebook(start_method)
 
 
 def _warn_fork_guard_once():

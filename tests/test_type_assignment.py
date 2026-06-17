@@ -440,6 +440,42 @@ def test_enumerate_all_parallel_matches_serial():
         )
 
 
+def test_enumerate_all_guard_falls_back_to_serial(monkeypatch):
+    """Fork-safety: when ``fork_unsafe_in_notebook`` reports True (macOS
+    Jupyter), ``enumerate_all(parallel=True)`` must degrade to SERIAL — never
+    fork — and still return the serial result.  Pins the fix for the
+    previously-unguarded type-assignment fork."""
+    from msrjd.diagrams.type_assignment import enumerate_all
+    import msrjd.fork_safety as fs
+    import multiprocessing as mp
+
+    # Same non-trivial fixture as test_enumerate_all_parallel_matches_serial.
+    pd1 = _make_pd([(0, 1)], leaves=[0, 1])
+    pd2 = _make_pd([(0, 2), (2, 1)], leaves=[0, 1])
+    pd3 = _make_pd([(2, 0), (2, 1)], leaves=[0, 1])
+    prediagrams = [pd1, pd2, pd3]
+    resp_idx, phys_idx = _simple_index_maps()
+    G_ft = _full_propagator_2x2()
+    vtypes = [VertexType(SR(1), [('nt', 1)], [('dn', 1)], (1, 1)),
+              VertexType(SR(1), [('nt', 2)], [('dn', 2)], (1, 1))]
+    stypes = [SourceType(SR(1), [('nt', 1), ('nt', 2)], (2, 0))]
+    external_fields = [('nt', 1), ('dn', 1)]
+    args = (prediagrams, external_fields, vtypes, stypes,
+            G_ft, resp_idx, phys_idx)
+
+    serial = enumerate_all(*args, parallel=False)
+
+    # Force "unsafe" and make ANY fork attempt explode loudly.
+    monkeypatch.setattr(fs, 'fork_unsafe_in_notebook', lambda *a, **k: True)
+
+    def _boom(*a, **k):
+        raise AssertionError('enumerate_all forked despite the notebook guard')
+    monkeypatch.setattr(mp, 'get_context', _boom)
+
+    guarded = enumerate_all(*args, parallel=True, n_workers=3)  # would fork
+    assert len(guarded) == len(serial)                          # → fell back
+
+
 def test_enumerate_typed_distinct_legs_regression():
     """Regression: when all legs are distinct, the canonical change
     must produce the EXACT same set of typed diagrams as the old

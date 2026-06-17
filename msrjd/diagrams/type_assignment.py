@@ -623,6 +623,16 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     ``test_enumerate_all_parallel_matches_serial`` in
     ``tests/test_type_assignment.py``.
     """
+    # Fork-safety guard: forking after Cocoa/BLAS init inside a macOS Jupyter
+    # kernel can hard-crash the kernel AND the OS.  Degrade to serial there
+    # (mirrors the temporal Phase-J path); fork stays available in scripts,
+    # pytest, Linux, and terminal IPython.
+    from msrjd.fork_safety import fork_unsafe_in_notebook, warn_fork_fallback_once
+    if (parallel and len(prediagrams) > 1
+            and fork_unsafe_in_notebook(start_method)):
+        warn_fork_fallback_once('diagram type-assignment enumeration')
+        parallel = False
+
     if not parallel or len(prediagrams) <= 1:
         # Serial path.  Keeps 'prediagrams' iteration for back-compat
         # with any downstream code that relies on yield ordering.
@@ -637,6 +647,9 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
 
     import multiprocessing as mp
     import os
+    # Needed for fork to proceed at all on macOS (objc otherwise aborts).  Only
+    # reached for a LEGITIMATE fork — the notebook case fell back to serial
+    # above, so this never runs in the lethal darwin+Jupyter context.
     os.environ.setdefault(
         'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
     )
