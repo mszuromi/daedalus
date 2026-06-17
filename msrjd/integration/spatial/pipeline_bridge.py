@@ -458,8 +458,9 @@ def compute_coupled_tree_correlator(
     if K_ft is None:
         raise SpatialPropagatorError('coupled tree correlator: prop has no K_ft.')
     d = int(prop.get('spatial_dim', 1))
-    if d != 1:
-        raise NotImplementedError('coupled tree correlator: d=1 only (v1).')
+    if d not in (1, 2, 3):
+        raise NotImplementedError(
+            f'coupled tree correlator: d must be 1, 2 or 3 (got {d}).')
 
     ns = ft._ns
     omega = prop['omega']
@@ -569,7 +570,23 @@ def compute_coupled_tree_correlator(
         def _Cq(q, tau):
             return coupled_two_point(ref, N, q * q, tau)[i, j]
 
-    if bc_mode == 'periodic' and L:
+    if d >= 2:
+        # d≥2: radial/Hankel q→x transform of the ISOTROPIC coupled C_ij(q,τ)
+        # — the same ``radial_inverse_ft`` the diagonal d≥2 path uses.  ``_Cq``
+        # is already dimension-agnostic (it depends on |k|²=q²), so this covers
+        # the scalar-𝒟 case, the Dyson-dressed case, and any external (i,j).
+        # Periodic BC at d≥2 (image lattice) is a separate task — infinite only.
+        if bc_mode == 'periodic':
+            raise NotImplementedError(
+                'coupled tree correlator: periodic BC at d≥2 is not supported '
+                'yet (infinite-domain only).')
+        from msrjd.integration.spatial.spatial_correlator import (
+            radial_inverse_ft)
+        qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
+        for it, tau in enumerate(taus):
+            Cq = np.array([_Cq(q, tau) for q in qg], dtype=complex)
+            C[it, :] = radial_inverse_ft(qg, Cq, xs, d)
+    elif bc_mode == 'periodic' and L:
         Lf = float(L)
         qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
         for it, tau in enumerate(taus):

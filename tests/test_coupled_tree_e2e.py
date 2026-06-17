@@ -41,10 +41,10 @@ from msrjd.integration.spatial.pipeline_bridge import (         # noqa: E402
 _MUA, _MUB, _D, _TA, _TB = 1.5, 1.2, 0.8, 1.0, 0.7
 
 
-def _two_species(g, h, *, cross_noise=0.0):
+def _two_species(g, h, *, cross_noise=0.0, dim=1):
     b = (SpatialTheoryBuilder('coupled2')
-         .physical_field('a', spatial_dim=1)
-         .physical_field('b', spatial_dim=1)
+         .physical_field('a', spatial_dim=dim)
+         .physical_field('b', spatial_dim=dim)
          .parameter('mua', default=_MUA, domain='positive')
          .parameter('mub', default=_MUB, domain='positive')
          .parameter('D', default=_D, domain='positive')
@@ -169,6 +169,47 @@ def test_public_api_noise_only_coupling_cross_correlator():
         external_fields=[('a', 1), ('b', 1)], tau_max=1.0, tau_step=0.5,
         spatial_grid=sg, parallel=False, verbose=False, use_cache=False)
     assert np.max(np.abs(np.asarray(th0['C_tau_x']).real)) < 1e-6
+
+
+def _equal_mass_cross(dim, rho):
+    """2 fields, EQUAL mass+diffusion, cross white noise — so the EXACT
+    C_ab/C_aa = ρ at every x and every d (the radial IFT is linear and
+    C_ab(q)=ρ·C_aa(q) in q-space when the masses are equal)."""
+    return (SpatialTheoryBuilder('emx')
+            .physical_field('a', spatial_dim=dim)
+            .physical_field('b', spatial_dim=dim)
+            .parameter('mu', default=1.0, domain='positive')
+            .parameter('D', default=1.0, domain='positive')
+            .parameter('Ta', default=1.0, domain='positive')
+            .parameter('Tb', default=1.0, domain='positive')
+            .parameter('rho', default=rho)
+            .set_action_text(
+                'at*((Dt+mu-D*Laplacian)*a) + bt*((Dt+mu-D*Laplacian)*b) '
+                '- Ta*at^2 - Tb*bt^2 - 2*rho*sqrt(Ta*Tb)*at*bt')
+            .equation(lhs='(Dt+mu-D*Laplacian)*a', rhs='0')
+            .equation(lhs='(Dt+mu-D*Laplacian)*b', rhs='0')
+            .boundary('infinite').initial('stationary').build())
+
+
+@pytest.mark.parametrize('d', [2, 3])
+def test_coupled_tree_dge2_radial(d):
+    """The coupled tree correlator works at d=2,3 via the radial/Hankel q→x
+    transform (``radial_inverse_ft``).  Equal-mass cross-noise ⇒ the cross/auto
+    ratio is EXACTLY ρ at every x (linear radial IFT of C_ab(q)=ρ·C_aa(q))."""
+    rho = 0.5
+    model = _equal_mass_cross(d, rho)
+    ft, prop = _setup(model)
+    assert int(prop.get('spatial_dim')) == d
+    fund = {'mu': 1.0, 'D': 1.0, 'Ta': 1.0, 'Tb': 1.0, 'rho': rho}
+    taus = np.array([0.0]); xs = np.array([0.2, 0.6, 1.2])
+    Caa, info = compute_coupled_tree_correlator(
+        ft, model, prop, fund, [('a', 1), ('a', 1)], taus, xs)
+    Cab, _ = compute_coupled_tree_correlator(
+        ft, model, prop, fund, [('a', 1), ('b', 1)], taus, xs)
+    assert info['spatial_dim'] == d
+    assert np.all(np.isfinite(Caa)) and np.all(np.isfinite(Cab))
+    assert np.allclose(Cab.real / Caa.real, rho, atol=1e-9)        # exact ρ
+    assert Caa.real[0, 0] > Caa.real[0, -1] > 0                    # positive, decaying
 
 
 def test_noise_matrix_diagonal_and_cross():

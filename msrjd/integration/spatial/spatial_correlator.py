@@ -314,9 +314,10 @@ def radial_inverse_ft(q_grid, Cq, x, spatial_dim):
     import numpy as np
     from scipy.special import j0
     q = np.asarray(q_grid, dtype=float)
-    Cq = np.asarray(Cq, dtype=float)
+    Cq = np.asarray(Cq)                       # keep complex if C(q) is complex
+    cplx = np.iscomplexobj(Cq)               # (e.g. a coupled cross-correlator)
     xs = np.atleast_1d(np.asarray(x, dtype=float))
-    out = np.empty(xs.shape, dtype=float)
+    out = np.empty(xs.shape, dtype=complex if cplx else float)
     for i, xi in enumerate(xs):
         axi = abs(float(xi))
         if spatial_dim == 1:
@@ -332,7 +333,9 @@ def radial_inverse_ft(q_grid, Cq, x, spatial_dim):
         else:
             raise SpatialPropagatorError(
                 f'radial_inverse_ft supports d=1,2,3; got spatial_dim={spatial_dim}')
-    return out.reshape(np.asarray(x).shape) if np.ndim(x) else float(out[0])
+    if np.ndim(x):
+        return out.reshape(np.asarray(x).shape)
+    return complex(out[0]) if cplx else float(out[0])
 
 
 def free_correlator_static_closed_form(r, mu, D, T, spatial_dim):
