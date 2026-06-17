@@ -91,7 +91,7 @@ MODEL_MD = md(
 MODEL_CODE = code(
     "model, mod = dd.load_theory('coupled_rd_2species_1d')",
     "dd.describe_model(model, mod)",
-    "fp = dd.fundamental_from_model(model)   # parameters baked into the theory",
+    "fp = dd.parameters_from_model(model)   # parameters baked into the theory",
     "eig = np.linalg.eigvals([[fp['mua'], fp['g']], [-fp['h'], fp['mub']]])",
     "print('\\nreaction-matrix eigenvalues:', np.round(eig, 4),",
     "      ' (complex pair -> damped oscillation -> tau-asymmetric C_ab)')")

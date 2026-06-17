@@ -80,7 +80,7 @@ def _spatial1d_sim(coupling, cparam, L, N, nsteps, burn):
         "# Independent SPDE simulation (direct ETD1 integration) — NOT the",
         "# pipeline.  Same physical parameters as the theory (read from the model).",
         "from models.spatial_field_1d_sim import simulate, equal_time_correlator",
-        "fp = dd.fundamental_from_model(model)",
+        "fp = dd.parameters_from_model(model)",
         f"snaps, x_grid, meta = simulate(L={L}, N={N}, mu=fp['mu'], D=fp['D'], "
         f"T=fp['T'],",
         f"                               {coupling}=fp['{cparam}'],",
@@ -258,7 +258,7 @@ EXAMPLES.append(dict(
         code(
             "from models.spatial_field_2d_sim import simulate_2d, "
             "radial_structure_factor_2d",
-            "fp = dd.fundamental_from_model(model)",
+            "fp = dd.parameters_from_model(model)",
             "snaps, meta = simulate_2d(L=20.0, N=64, mu=fp['mu'], D=fp['D'], "
             "T=fp['T'], g=0.0,",
             "                          n_steps=50000, burn_in=10000, "

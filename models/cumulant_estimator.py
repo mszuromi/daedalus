@@ -442,6 +442,47 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     return tau_grid, C_slice
 
 
+def estimate_kpoint_slices(dt_bin, pop_indices, field_types, base_bins,
+                           max_lag_bins, binned_counts=None, voltage_bins=None,
+                           ext_binned_counts=None):
+    """Estimate the k−1 axis-parallel slices of the connected k-point cumulant.
+
+    For each j = 1..k−1, sweep leg j (lag = None) while leg 0 is anchored at
+    lag 0 and the other non-anchor legs are held at ``base_bins`` (a length-(k−1)
+    list of integer bin offsets — the base point, one entry per non-anchor leg).
+    This mirrors the theory side's ``res['C_tau_slices']`` (the differences
+    τ_j = t_j − t_0, others fixed at the base point), so the k−1 sim curves line
+    up panel-for-panel with ``dd.plot_cumulant``'s k≥3 slices.
+
+    ``pop_indices`` / ``field_types`` have length k (one per leg, leg 0 = the
+    anchor); the remaining kwargs are exactly :func:`compute_kpoint_slice`'s.
+
+    Returns
+    -------
+    tau_grid : ndarray (2*max_lag_bins+1,)
+    C : ndarray (k−1, 2*max_lag_bins+1)  — row j−1 is slice j (sweep leg j).
+    """
+    k = len(pop_indices)
+    if len(base_bins) != k - 1:
+        raise ValueError(f"base_bins must have k-1 = {k-1} entries (one per "
+                         f"non-anchor leg); got {len(base_bins)}.")
+    if binned_counts is None and voltage_bins is not None:
+        binned_counts = np.zeros_like(voltage_bins)   # pure-voltage legs
+    rows, tau = [], None
+    for j in range(1, k):
+        lag = [0] * k                            # leg 0 anchored at 0
+        for i in range(1, k):
+            lag[i] = int(base_bins[i - 1])       # non-anchor legs at the base...
+        lag[j] = None                            # ...except leg j, which sweeps
+        tau, C = compute_kpoint_slice(
+            binned_counts=binned_counts, dt_bin=float(dt_bin),
+            pop_indices=[int(p) for p in pop_indices], lag_bins=lag,
+            max_lag_bins=int(max_lag_bins), field_types=list(field_types),
+            voltage_bins=voltage_bins, ext_binned_counts=ext_binned_counts)
+        rows.append(np.asarray(C))
+    return tau, np.array(rows)
+
+
 def compute_kpoint_slice_direct(binned_counts, dt_bin, pop_indices, lag_bins,
                                 max_lag_bins):
     """
