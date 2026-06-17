@@ -252,7 +252,8 @@ class Config:
     ``DEFAULT_FUNDAMENTAL`` default.
     """
     # ── what to compute ──
-    k: Optional[int] = None                 # correlator order (1, 2, 3, …)
+    k: Optional[int] = None                 # correlator order; inferred from
+                                            # external_fields if left None
     max_ell: Optional[int] = None           # loop order (0=tree, 1, 2, …)
     external_fields: Optional[list] = None  # e.g. [('x', 1), ('x', 1)]
     parameters: Optional[dict] = None        # numeric parameter overrides, by name
@@ -479,26 +480,43 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
     from pipeline import compute_cumulants
 
-    k = cfg.k if cfg.k is not None else (_meta(module, 'k_default', 2)
-                                         if module else 2)
     max_ell = (cfg.max_ell if cfg.max_ell is not None
                else (_meta(module, 'ell_default', 0) if module else 0))
     ext = cfg.external_fields
     ext_is_explicit = ext is not None
+
+    # Resolve the correlator order k.  Explicit ``cfg.k`` wins; otherwise infer
+    # it from an explicit ``external_fields`` (a k-point correlator has exactly
+    # k legs); otherwise fall back to the theory's ``k_default``.  If BOTH are
+    # given they must agree — a mismatch is a contradiction, not something to
+    # silently paper over.
+    if cfg.k is not None:
+        k = cfg.k
+        if ext_is_explicit and len(ext) != k:
+            raise ValueError(
+                f"Config mismatch: k={k} but external_fields lists "
+                f"{len(ext)} leg(s) {ext}.  A k-point correlator needs exactly "
+                f"k legs.  Drop k (it is inferred from external_fields), set "
+                f"k={len(ext)}, or pass {k} legs.")
+    elif ext_is_explicit:
+        k = len(ext)
+    else:
+        k = _meta(module, 'k_default', 2) if module else 2
+
     if ext is None and module is not None:
         ext = _meta(module, 'recommended_external_fields')
-    # Auto-build a k-matching external_fields when none usable was given:
-    # k copies of the first physical field's leg.  Triggers when ext is
-    # absent, the wrong length for k, or (for a METADATA *recommendation*
-    # only) names a field the model doesn't have — so a stale recommended
-    # list never crashes the run.  An explicit Config.external_fields is
-    # respected verbatim (it may legitimately name a response leg).
+    # Auto-build a k-matching external_fields ONLY when the caller gave none
+    # explicitly: k copies of the first physical field's leg.  Triggers when
+    # ext is absent, or a stale METADATA *recommendation* is the wrong length
+    # or names a missing field.  An explicit Config.external_fields is used
+    # verbatim (it may legitimately name a response leg); any k-mismatch was
+    # caught above.
     valid = set(field_names(model))
     def _nm(e):
         return e[0] if isinstance(e, (tuple, list)) else e
-    if (ext is None or len(ext) != k
-            or (not ext_is_explicit
-                and not all(_nm(e) in valid for e in ext))):
+    if not ext_is_explicit and (
+            ext is None or len(ext) != k
+            or not all(_nm(e) in valid for e in ext)):
         fld = field_names(model)
         f0 = fld[0] if fld else 'phi'
         ext = [(f0, 1)] * k

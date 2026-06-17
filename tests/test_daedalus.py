@@ -7,6 +7,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 import matplotlib
 matplotlib.use('Agg')
 
@@ -41,6 +42,28 @@ def test_fundamental_layering():
     # param defaults, saddle (*star) skipped
     assert base['mu'] == 1.0 and base['g'] == 0.3 and base['T'] == 1.0
     assert not any(k.endswith('star') for k in base)
+
+
+def test_k_external_fields_mismatch_raises():
+    """An explicit k that disagrees with the explicit external_fields length is
+    a contradiction — it must raise, not silently rebuild the legs.  (Raises
+    early in run(), before compute_cumulants.)"""
+    m, mod = dd.load_theory('ou_quartic_double_well')
+    with pytest.raises(ValueError, match='k=4 but external_fields'):
+        dd.run(m, dd.Config(k=4, external_fields=[('dx', 1), ('dx', 1)],
+                            tau_max=2.0, tau_step=2.0), mod)
+
+
+def test_k_inferred_from_external_fields():
+    """Omit k and it is counted from external_fields (a k-point correlator has
+    exactly k legs)."""
+    m, mod = dd.load_theory('ou_quartic_double_well')
+    r2 = dd.run(m, dd.Config(external_fields=[('dx', 1), ('dx', 1)],
+                             max_ell=0, tau_max=2.0, tau_step=2.0), mod)
+    assert r2['_resolved']['k'] == 2
+    r3 = dd.run(m, dd.Config(external_fields=[('dx', 1)] * 3,
+                             max_ell=0, tau_max=2.0, tau_step=2.0), mod)
+    assert r3['_resolved']['k'] == 3
 
 
 def test_config_grid_resolution():
