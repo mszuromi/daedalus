@@ -212,6 +212,51 @@ def test_coupled_tree_dge2_radial(d):
     assert Caa.real[0, 0] > Caa.real[0, -1] > 0                    # positive, decaying
 
 
+def test_dyson_dge2_vs_exact_lyapunov():
+    """Unequal-D Dyson dressing at d=2: the order-N dressed C_aa(x) matches the
+    EXACT per-q matrix Lyapunov solution (radial-IFT'd on the SAME q-grid),
+    confirming the Dyson series rides the new d≥2 radial path correctly."""
+    from scipy.linalg import solve_continuous_lyapunov
+    from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+    mua, mub, Da, Db, gg, hh, Ta, Tb = 1.5, 1.2, 0.95, 0.7, 0.4, 0.3, 1.0, 0.7
+    b = (SpatialTheoryBuilder('uneqD2')
+         .physical_field('a', spatial_dim=2).physical_field('b', spatial_dim=2)
+         .parameter('mua', default=mua, domain='positive')
+         .parameter('mub', default=mub, domain='positive')
+         .parameter('Da', default=Da, domain='positive')
+         .parameter('Db', default=Db, domain='positive')
+         .parameter('g', default=gg).parameter('h', default=hh)
+         .parameter('Ta', default=Ta, domain='positive')
+         .parameter('Tb', default=Tb, domain='positive'))
+    model = (b.set_action_text(
+                'at*((Dt+mua-Da*Laplacian)*a + g*b) '
+                '+ bt*((Dt+mub-Db*Laplacian)*b - h*a) - Ta*at^2 - Tb*bt^2')
+             .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b', rhs='0')
+             .equation(lhs='(Dt+mub-Db*Laplacian)*b - h*a', rhs='0')
+             .boundary('infinite').initial('stationary')
+             .dyson_order(2).reference_diffusion(0.825).build())
+    ft, prop = _setup(model)
+    assert int(prop.get('spatial_dim')) == 2
+    fund = {'mua': mua, 'mub': mub, 'Da': Da, 'Db': Db,
+            'g': gg, 'h': hh, 'Ta': Ta, 'Tb': Tb}
+    xs = np.array([0.4, 1.0]); taus = np.array([0.0])
+    q_cut, n_q = 50.0, 1200
+    C, info = compute_coupled_tree_correlator(
+        ft, model, prop, fund, [('a', 1), ('a', 1)], taus, xs,
+        q_cut=q_cut, n_q=n_q)
+    assert info.get('dyson_order') == 2 and info['spatial_dim'] == 2
+    assert np.all(np.isfinite(C))
+    # exact reference: per-q continuous Lyapunov on the SAME radial grid
+    M = np.array([[mua, gg], [-hh, mub]])
+    Dmat = np.diag([Da, Db]); Nm = np.diag([2 * Ta, 2 * Tb])
+    qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
+    Cq = np.array([solve_continuous_lyapunov(M + Dmat * q * q, Nm)[0, 0]
+                   for q in qg])
+    ref = np.real(radial_inverse_ft(qg, Cq, xs, 2))
+    assert np.max(np.abs(C.real[0] - ref)) < 5e-3, (C.real[0], ref)
+    assert C.real[0, 0] > C.real[0, -1] > 0                # positive, decaying
+
+
 def test_noise_matrix_diagonal_and_cross():
     model = _two_species(0.4, 0.3, cross_noise=0.5)
     ft, _ = _setup(model)
