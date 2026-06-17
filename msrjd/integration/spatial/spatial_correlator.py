@@ -338,6 +338,63 @@ def radial_inverse_ft(q_grid, Cq, x, spatial_dim):
     return complex(out[0]) if cplx else float(out[0])
 
 
+def periodic_inverse_ft(q_grid, Cq, x, spatial_dim, L, n_cut=None):
+    """Inverse spatial FT of an ISOTROPIC ``C(|q|)`` (sampled on ``q_grid``)
+    on a PERIODIC cubic box of period ``L`` in each of ``spatial_dim`` dims —
+    the discrete-momentum analogue of :func:`radial_inverse_ft`::
+
+        C(x) = (1/L^d)  Σ_{n ∈ ℤ^d}  cos((2π/L) n₁ x) · C(|k_n|),
+               k_n = (2π/L)·n,   summed for |k_n| ≤ k_max = q_grid[-1].
+
+    ``x`` is the displacement along ONE axis (the separation the spatial grid
+    encodes).  ``C(|k_n|)`` is obtained by interpolating ``Cq`` (the SAME radial
+    array the infinite-domain path builds) onto the lattice magnitudes, so both
+    boundary conditions share one momentum-space correlator.  The continuum
+    limit ``(1/L^d)Σ → (1/2π)^d ∫d^dk`` recovers :func:`radial_inverse_ft` as
+    ``L → ∞``.  ``n_cut`` defaults to ``ceil(k_max·L/2π)`` (the same UV cutoff
+    as the radial path).  Returns the shape of ``x``; complex-safe."""
+    import numpy as np
+    q = np.asarray(q_grid, dtype=float)
+    Cq = np.asarray(Cq)
+    cplx = np.iscomplexobj(Cq)
+    xs = np.atleast_1d(np.asarray(x, dtype=float))
+    d = int(spatial_dim)
+    L = float(L)
+    two_pi_L = 2.0 * math.pi / L
+    k_max = float(q[-1])
+    if n_cut is None:
+        n_cut = int(math.ceil(k_max / two_pi_L)) + 1
+    ns = np.arange(-n_cut, n_cut + 1)
+    if d == 1:
+        n1 = ns.astype(float)
+        nsq = n1 * n1
+    elif d == 2:
+        n1, n2 = np.meshgrid(ns, ns, indexing='ij')
+        n1 = n1.astype(float)
+        nsq = n1 * n1 + n2.astype(float) ** 2
+    elif d == 3:
+        n1, n2, n3 = np.meshgrid(ns, ns, ns, indexing='ij')
+        n1 = n1.astype(float)
+        nsq = n1 * n1 + n2.astype(float) ** 2 + n3.astype(float) ** 2
+    else:
+        raise SpatialPropagatorError(
+            f'periodic_inverse_ft supports d=1,2,3; got spatial_dim={d}')
+    k_lat = two_pi_L * np.sqrt(nsq)                    # |k_n| on the lattice
+    flat = k_lat.ravel()
+    Sk = np.interp(flat, q, Cq.real)
+    if cplx:
+        Sk = Sk + 1j * np.interp(flat, q, Cq.imag)
+    Sk = np.where(flat <= k_max, Sk, 0.0).reshape(k_lat.shape)
+    kx = two_pi_L * n1                                 # phase wavenumber on axis 1
+    out = np.empty(xs.shape, dtype=complex if cplx else float)
+    pref = 1.0 / L ** d
+    for i, xi in enumerate(xs):
+        out[i] = pref * np.sum(np.cos(kx * float(xi)) * Sk)
+    if np.ndim(x):
+        return out.reshape(np.asarray(x).shape)
+    return complex(out[0]) if cplx else float(out[0])
+
+
 def free_correlator_static_closed_form(r, mu, D, T, spatial_dim):
     """The exact static (τ=0) free correlator ``C(|r|)`` — the closed-form oracle
     for :func:`radial_inverse_ft` (the inverse FT of ``C(q,0)=T/(μ+Dq²)``)::

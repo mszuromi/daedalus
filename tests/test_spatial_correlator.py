@@ -213,6 +213,62 @@ def test_radial_inverse_ft_matches_closed_form(d, tol):
         assert abs(got - ref) <= tol * abs(ref)
 
 
+@pytest.mark.parametrize('d', [1, 2, 3])
+def test_periodic_inverse_ft_limits(d):
+    """periodic_inverse_ft (discrete-momentum lattice sum on a period-L cubic
+    box) reproduces the infinite-domain radial_inverse_ft at large L, and gives
+    a LARGER correlator at small L (the field's periodic images add)."""
+    from msrjd.integration.spatial.spatial_correlator import (
+        radial_inverse_ft, periodic_inverse_ft)
+    mu = D = T = 1.0
+    q = np.linspace(60.0 / 24000, 60.0, 6000)
+    Cq = T / (mu + D * q * q)
+    rs = np.array([0.3, 0.8, 1.5])
+    inf = np.real(radial_inverse_ft(q, Cq, rs, d))
+    big = np.real(periodic_inverse_ft(q, Cq, rs, d, L=30.0))
+    sml = np.real(periodic_inverse_ft(q, Cq, rs, d, L=4.0))
+    assert np.max(np.abs(big - inf)) < 5e-3            # L→∞ recovers infinite
+    assert np.all(sml >= inf - 1e-9)                   # periodic enhancement
+    assert sml[-1] > inf[-1] + 1e-4                    # strictly larger at large r
+
+
+def test_d2_periodic_through_compute_cumulants():
+    """END-TO-END: a d=2 PERIODIC linear theory runs through compute_cumulants;
+    large L matches the infinite-domain value and small L exceeds it — via the
+    d≥2 periodic lattice-sum path + the model-boundary fallback in _bc_from_prop."""
+    from pipeline.compute import compute_cumulants
+    from pipeline.theory import TheoryBuilder
+
+    def build(bc, L):
+        b = (TheoryBuilder('p2d', n_populations=0)
+             .physical_field('phi', spatial_dim=2)
+             .parameter('mu', default=1.0, domain='positive')
+             .parameter('D', default=1.0, domain='positive')
+             .parameter('T', default=1.0, domain='positive')
+             .parameter('L', default=L, domain='positive')
+             .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+             .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2'))
+        b = (b.boundary('periodic', length='L') if bc == 'periodic'
+             else b.boundary('infinite'))
+        return b.initial('stationary').build()
+
+    rs = np.array([0.3, 1.0, 1.8])
+
+    def run(m, fund):
+        th = compute_cumulants(model=m, k=2, max_ell=0, fundamental=fund,
+                               external_fields=[('dphi', 1), ('dphi', 1)],
+                               spatial_grid=rs, tau_max=0.0, tau_step=1.0,
+                               verbose=False)
+        return np.real(np.asarray(th['C_tau_x']))[0]
+
+    inf = run(build('infinite', 6.0), {'mu': 1, 'D': 1, 'T': 1, 'L': 6.0})
+    perL = run(build('periodic', 30.0), {'mu': 1, 'D': 1, 'T': 1, 'L': 30.0})
+    perS = run(build('periodic', 4.0), {'mu': 1, 'D': 1, 'T': 1, 'L': 4.0})
+    assert np.max(np.abs(perL - inf)) < 5e-3                 # large L ≈ infinite
+    assert np.all(perS >= inf - 1e-9)                        # periodic ≥ infinite
+    assert perS[-1] > inf[-1] + 1e-4                         # strictly enhanced
+
+
 def test_d2_tree_through_compute_cumulants():
     """END-TO-END: a d=2 linear theory runs through ``compute_cumulants`` (tree,
     max_ell=0) and the returned ``C(r,0)`` matches the exact d=2 free correlator

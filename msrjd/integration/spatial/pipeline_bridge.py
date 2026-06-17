@@ -128,10 +128,21 @@ def _legs_to_phys_idx(external_fields, phys_idx):
     return out
 
 
-def _bc_from_prop(prop, num_params_sr):
-    """Resolve (bc_mode, L) the way the bespoke correlator does."""
-    bc_mode = prop.get('bc_mode', 'infinite')
+def _bc_from_prop(prop, num_params_sr, model=None):
+    """Resolve (bc_mode, L) for the diagonal correlator path.  Reads the BC off
+    the propagator; falls back to ``model['boundary']`` when the prop does not
+    carry it (``build_propagator`` does not always surface bc_mode/bc_params —
+    the coupled path reads the model directly for the same reason)."""
+    bc_mode = prop.get('bc_mode')
     bc_params = prop.get('bc_params', {}) or {}
+    # The diagonal prop can carry a stale ``bc_mode='infinite'`` default even
+    # for a periodic model, so trust the model whenever it declares periodic.
+    if (bc_mode is None or bc_mode == 'infinite') and model is not None:
+        bnd = model.get('boundary') or {}
+        bc_mode = bnd.get('mode', 'infinite')
+        if bc_params == {} and 'length' in bnd:
+            bc_params = {'length': bnd['length']}
+    bc_mode = bc_mode or 'infinite'
     L = None
     if bc_mode == 'periodic':
         lname = bc_params.get('length')
@@ -358,7 +369,7 @@ def compute_spatial_correlator_via_pipeline(
             spatial_grid, verbose=verbose)
 
     modes = diagonal_modes_from_propagator(prop, ft, num_params, fi)
-    bc_mode, L = _bc_from_prop(prop, nps_sr)
+    bc_mode, L = _bc_from_prop(prop, nps_sr, model=model)
 
     if verbose and stage_headers:
         print('[5/7] (spatial) Read per-mode (mu,D,kap) from the propagator '
@@ -411,18 +422,23 @@ def compute_spatial_correlator_via_pipeline(
         # d≥2: the radial/Hankel q→x transform of the momentum-space correlator
         # Σ_modes kap/(mu+Dq²) e^{−(mu+Dq²)|τ|}, truncated at q_cut (Regime 1 — a
         # physical cutoff; the continuum limit is q_cut→∞ with fine n_q).
-        from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+        from msrjd.integration.spatial.spatial_correlator import (
+            radial_inverse_ft, periodic_inverse_ft)
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
         xs = np.array([float(x) for x in spatial_grid])
         m_modes = [(float(np.real(mu)), float(np.real(D)), float(np.real(kap)))
                    for (mu, D, kap) in modes]
+        _periodic = bc_mode == 'periodic' and L
         for it, tau in enumerate(tau_grid):
             at = abs(float(tau))
             Cq = np.zeros_like(qg)
             for (mu, D, kap) in m_modes:
                 m = mu + D * qg * qg
                 Cq += (kap / m) * np.exp(-m * at)
-            C[it, :] = radial_inverse_ft(qg, Cq, xs, d)
+            # periodic cubic box → discrete-momentum lattice sum; else the
+            # continuous radial/Hankel transform (infinite domain).
+            C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
+                        if _periodic else radial_inverse_ft(qg, Cq, xs, d))
 
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
             'spatial_dim': d,
@@ -571,21 +587,19 @@ def compute_coupled_tree_correlator(
             return coupled_two_point(ref, N, q * q, tau)[i, j]
 
     if d >= 2:
-        # d≥2: radial/Hankel q→x transform of the ISOTROPIC coupled C_ij(q,τ)
-        # — the same ``radial_inverse_ft`` the diagonal d≥2 path uses.  ``_Cq``
-        # is already dimension-agnostic (it depends on |k|²=q²), so this covers
-        # the scalar-𝒟 case, the Dyson-dressed case, and any external (i,j).
-        # Periodic BC at d≥2 (image lattice) is a separate task — infinite only.
-        if bc_mode == 'periodic':
-            raise NotImplementedError(
-                'coupled tree correlator: periodic BC at d≥2 is not supported '
-                'yet (infinite-domain only).')
+        # d≥2: q→x transform of the ISOTROPIC coupled C_ij(q,τ).  ``_Cq`` is
+        # dimension-agnostic (depends on |k|²=q²), so this covers the scalar-𝒟
+        # case, the Dyson-dressed case, and any external (i,j).  Infinite domain
+        # → the continuous radial/Hankel ``radial_inverse_ft``; periodic cubic
+        # box → the discrete-momentum ``periodic_inverse_ft`` (lattice sum).
         from msrjd.integration.spatial.spatial_correlator import (
-            radial_inverse_ft)
+            radial_inverse_ft, periodic_inverse_ft)
+        _periodic = bc_mode == 'periodic' and L
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
         for it, tau in enumerate(taus):
             Cq = np.array([_Cq(q, tau) for q in qg], dtype=complex)
-            C[it, :] = radial_inverse_ft(qg, Cq, xs, d)
+            C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
+                        if _periodic else radial_inverse_ft(qg, Cq, xs, d))
     elif bc_mode == 'periodic' and L:
         Lf = float(L)
         qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
