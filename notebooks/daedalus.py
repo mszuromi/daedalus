@@ -106,6 +106,118 @@ def field_names(model: dict) -> list[str]:
     return [f['name'] for f in (model.get('physical_fields') or [])]
 
 
+def _fmt_default(v, maxlen: int = 52) -> str:
+    s = repr(v)
+    return s if len(s) <= maxlen else s[:maxlen - 1] + '…'
+
+
+def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
+    """Pretty-print the structure of a loaded theory — the *model information
+    from the theory file*: domain, fields, populations, parameters, kernels,
+    transfer functions, and the governing equation(s).  Prints and returns the
+    text.  Pass the theory ``module`` (the 2nd value of :func:`load_theory`) to
+    also surface its docstring + ``METADATA`` run recommendations.
+
+    This is the canonical "what is this model?" cell for the example
+    notebooks — it reads only the model dict, so it stays model-independent."""
+    out = []
+    bar = '─' * 72
+    out.append(bar)
+    out.append(f"  {model.get('name', '(unnamed theory)')}")
+    out.append(bar)
+
+    def _mode(v, default):
+        if isinstance(v, dict):
+            return v.get('mode', default)
+        return v or default
+
+    if is_spatial(model):
+        sp = model.get('spatial') or {}
+        bc = _mode(model.get('boundary') or sp.get('boundary'), 'infinite')
+        ic = _mode(model.get('initial'), 'stationary')
+        out.append(f"Domain         : spatial PDE · d={spatial_dim(model)} · "
+                   f"boundary={bc} · initial={ic}")
+    else:
+        out.append("Domain         : temporal ODE (time-only)")
+
+    def _fld(f):
+        nm = f.get('natural_name') or f.get('name')
+        pop = f.get('population')
+        tag = f"[{pop}]" if pop and pop != 'pop' else ''
+        sd = f.get('spatial_dim')
+        sdt = f" (x∈ℝ^{sd})" if sd else ''
+        desc = f.get('description') or ''
+        return f"{nm}{tag}{sdt}" + (f" — {desc}" if desc else '')
+
+    pf = model.get('physical_fields') or []
+    out.append("Fields         : " + ('; '.join(_fld(f) for f in pf) or '(none)'))
+    rf = []
+    for r in (model.get('response_fields') or []):
+        rf.append(r.get('name') if isinstance(r, dict) else str(r))
+    if rf:
+        out.append("Response fields: " + ', '.join(rf))
+
+    pops = [p for p in (model.get('populations') or [])
+            if p.get('name') != 'pop']            # skip auto scalar population
+    if pops:
+        out.append("Populations    : " + ', '.join(
+            f"{p.get('name')} (size {p.get('size')})"
+            + (f" — {p['description']}" if p.get('description') else '')
+            for p in pops))
+
+    params = model.get('parameters') or []
+    numeric = [p for p in params if not str(p.get('name', '')).endswith('star')]
+    saddle = [p.get('name') for p in params
+              if str(p.get('name', '')).endswith('star')]
+    if numeric:
+        out.append("Parameters     :")
+        for p in numeric:
+            ix = p.get('indexed_by')
+            ixt = f" [{','.join(ix)}]" if ix else ''
+            dom = f"  ({p['domain']})" if p.get('domain') else ''
+            out.append(f"    {p.get('name')}{ixt} = "
+                       f"{_fmt_default(p.get('default'))}{dom}")
+    if saddle:
+        out.append("Mean-field saddle (solved by the pipeline): "
+                   + ', '.join(saddle))
+
+    ker = model.get('kernels') or []
+    for kr in ker:
+        ix = kr.get('indexed_by')
+        ixt = f"[{','.join(ix)}]" if ix else ''
+        out.append(f"Kernel         : {kr.get('name')}{ixt} — "
+                   "non-Markovian temporal convolution")
+    fns = model.get('functions') or []
+    for fn in fns:
+        out.append(f"Function       : {fn.get('name')}(·) "
+                   f"— {fn.get('n_args')}-arg transfer")
+
+    eqs = model.get('equations') or []
+    for eq in eqs:
+        rhs = (eq.get('rhs_text') or '').strip()
+        # Skip a trivial/empty rhs: either the dynamics are linear, or the
+        # nonlinearity lives in the action text (e.g. KPZ's gradient vertex)
+        # rather than a simple rhs — the notebook's markdown states it in full.
+        if eq.get('lhs_text') and rhs and rhs not in ('0', '0.0'):
+            out.append(f"Governing eqn  : {eq['lhs_text']} = {rhs}")
+
+    meta = (getattr(module, 'METADATA', {}) or {}) if module else {}
+    rec = []
+    if meta.get('k_default') is not None:
+        rec.append(f"k={meta['k_default']}")
+    if meta.get('ell_default') is not None:
+        rec.append(f"max_ell={meta['ell_default']}")
+    if rec:
+        out.append("Suggested run  : " + ', '.join(rec))
+
+    text = '\n'.join(out)
+    doc = (getattr(module, '__doc__', '') or '').strip() if module else ''
+    if show_doc and doc:
+        text += '\n\n' + doc
+    print(text)
+    return text
+
+
 # ── Run configuration ────────────────────────────────────────────────────────
 
 @dataclass
