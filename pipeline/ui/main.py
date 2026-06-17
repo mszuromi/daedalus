@@ -393,6 +393,21 @@ class TheoryUI:
             description='Description:',
             style={'description_width': '120px'},
         )
+        # ── Theory type: Temporal (ODE) vs Spatial (PDE) ────────────
+        # Created here so it lives on the Model tab.  Switching to
+        # Spatial reveals the spatial-structure controls on the Fields
+        # tab; Temporal hides them and forces every field to
+        # spatial_dim=0 (see _on_mode_change).  The observer lambda is
+        # safe to attach now — it only fires on user change, by which
+        # time _w_spatial_block / _tbl_physical exist.
+        self._w_theory_mode = W.ToggleButtons(
+            options=['Temporal (ODE)', 'Spatial (PDE)'],
+            value='Temporal (ODE)',
+            description='Theory type',
+            style={'description_width': 'initial'},
+        )
+        self._w_theory_mode.observe(
+            lambda _ch: self._on_mode_change(), names='value')
         tab_model = W.VBox([
             W.HTML(
                 '<h4>Theory metadata</h4>'
@@ -404,6 +419,21 @@ class TheoryUI:
                 "the tabs to the right."
                 '</p>'),
             self._w_name, self._w_description,
+            W.HTML(
+                '<br><h4>Theory type</h4>'
+                '<p style="color:#555;font-size:90%;">'
+                "<b>Temporal (ODE)</b> &mdash; a time-only theory "
+                "(<code>Dt</code> dynamics: OU, Hawkes, neural &hellip;).  "
+                "<b>Spatial (PDE)</b> &mdash; continuous fields "
+                "<code>&phi;(x, t)</code> with spatial derivatives "
+                "(<code>Laplacian</code> / <code>&part;<sub>x</sub></code>: "
+                "reaction&ndash;diffusion, KPZ, Model B &hellip;).  Choosing "
+                "<b>Spatial</b> reveals the spatial-structure controls "
+                "(dimension, boundary, initial, Operator-IR, Dyson) and the "
+                "per-field <code>spatial_dim</code> column on the "
+                "<b>Fields</b> tab; <b>Temporal</b> hides them."
+                '</p>'),
+            self._w_theory_mode,
         ])
 
         # Tab 2: Populations — declare named populations + their sizes.
@@ -663,25 +693,13 @@ class TheoryUI:
             W.HBox([self._w_dyson_order, self._w_reference_diffusion]),
         ])
 
-        # ── Theory type: Temporal vs Spatial ────────────────────────
-        # One toggle.  In Temporal mode EVERY spatial control is hidden
-        # (the per-field ``spatial_dim`` column, the dimension /
-        # boundary / initial panel, Operator-IR, Dyson) so a time-only
-        # theory shows none of it.  Implemented by regrouping the Fields
-        # tab into [help, toggle, table, spatial-block] and toggling the
-        # block's visibility — no spatial widget is rebuilt.
-        self._w_theory_mode = W.ToggleButtons(
-            options=['Temporal (time only)', 'Spatial (PDE)'],
-            value='Temporal (time only)',
-            description='Theory type',
-            style={'description_width': 'initial'},
-        )
-        self._w_theory_mode.observe(
-            lambda _ch: self._on_mode_change(), names='value')
+        # ── Group the spatial controls so the Model-tab "Theory type"
+        # toggle can hide them all at once.  The Fields tab becomes
+        # [help, table, spatial-block]; in Temporal (ODE) mode the block
+        # AND the spatial_dim column are hidden (see _on_mode_change). ──
         _fh, _tbl, *_spatial_items = list(tab_fields.children)
         self._w_spatial_block = W.VBox(_spatial_items)
-        tab_fields.children = (_fh, self._w_theory_mode, _tbl,
-                               self._w_spatial_block)
+        tab_fields.children = (_fh, _tbl, self._w_spatial_block)
 
         # Tab 4: Parameters.
         # ``index_1`` / ``index_2`` are dropdowns over the declared
@@ -2982,7 +3000,7 @@ class TheoryUI:
         # has nothing spatial to preserve.
         _spatial = any(int(r.get('spatial_dim') or 0) > 0
                        for r in (self._tbl_physical.get_rows() or []))
-        _target = 'Spatial (PDE)' if _spatial else 'Temporal (time only)'
+        _target = 'Spatial (PDE)' if _spatial else 'Temporal (ODE)'
         if self._w_theory_mode.value != _target:
             self._w_theory_mode.value = _target      # fires _on_mode_change
         else:
