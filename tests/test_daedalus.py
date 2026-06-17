@@ -66,6 +66,19 @@ def test_k_inferred_from_external_fields():
     assert r3['_resolved']['k'] == 3
 
 
+def test_kpoint_slices_synthesized():
+    """k≥3 temporal: run() synthesizes the k−1 independent-difference slices
+    (τ_j = t_j − t_0), and plot_cumulant draws one panel per slice."""
+    import matplotlib.pyplot as plt
+    m, mod = dd.load_theory('ou_quartic_double_well')
+    r = dd.run(m, dd.Config(k=3, max_ell=0, tau_max=2.0, tau_step=1.0), mod)
+    assert set(r['C_tau_slices']) == {1, 2}              # k-1 = 2 slices
+    assert np.array_equal(r['C_tau'], r['C_tau_slices'][1])
+    fig = dd.plot_cumulant(r, r['_cfg'], m)
+    assert len(fig.axes) == 2                            # one panel per slice
+    plt.close(fig)
+
+
 def test_config_grid_resolution():
     cfg = dd.Config(spatial_grid=(-6, 6, 13))
     g = cfg.resolved_grid()

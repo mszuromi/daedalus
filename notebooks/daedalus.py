@@ -591,22 +591,30 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             tau = np.linspace(float(tau.min()), float(tau.max()), 41)
             res['tau_grid'] = tau
 
-        def _slice(fn):
+        def _slice(fn, j):
             out = np.empty(tau.size, dtype=complex)
             for i, t in enumerate(tau):
                 args = [0.0] * k
-                args[1] = float(t)               # leg 1 swept; rest at τ=0
+                args[j] = float(t)       # sweep leg j (τ_j = t_j − t_0); rest 0
                 out[i] = complex(fn(*args))
             return out
 
         try:
-            res['C_tau'] = _slice(res['total_C'])
-            res['C_tau_by_ell'] = {
-                e: _slice(f)
-                for e, f in (res.get('total_C_by_ell') or {}).items()
-                if callable(f)}
-            res['_kpoint_slice'] = ('leg 1 swept over tau_grid; '
-                                    'legs 0,2..k-1 pinned at τ=0')
+            tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
+                   if callable(f)}
+            # A k-point cumulant has k−1 independent time differences
+            # τ_j = t_j − t_0.  Synthesise one 1-D slice per difference: sweep
+            # leg j over tau_grid, pin the rest at τ=0, for j = 1..k−1.
+            slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
+            slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
+                             for j in range(1, k)}
+            res['C_tau_slices'] = slices
+            res['C_tau_slices_by_ell'] = slices_by_ell
+            res['C_tau'] = slices[1]                    # canonical single slice
+            res['C_tau_by_ell'] = slices_by_ell[1]
+            res['_kpoint_slice'] = (
+                f'{k-1} slices: leg j swept over tau_grid (τ_j = t_j − t_0), '
+                f'legs ≠ j pinned at τ=0, for j = 1..{k-1}')
         except Exception:
             pass        # leave None/scalar form; plot_temporal_kpoint handles it
 
@@ -688,6 +696,8 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     # ``C_tau=None`` and a callable ``total_C``).  Draw it as per-order bars.
     if result.get('C_tau') is None:
         return plot_temporal_kpoint(result, cfg, model, sim)
+    if len(result.get('C_tau_slices') or {}) >= 2:   # k≥3: one panel per τ_j
+        return plot_temporal_kpoint_slices(result, cfg, model, sim)
     return plot_temporal(result, cfg, model, sim)
 
 
@@ -766,8 +776,12 @@ def plot_temporal(result, cfg, model, sim=None):
     if sim is not None:
         st, sc = np.asarray(sim['tau']), np.asarray(sim['C'])
         se = sim.get('C_err')
+        se = np.asarray(se) if se is not None else None
+        if sc.ndim == 2:                  # a k≥3 multi-slice sim → show slice 1
+            sc = sc[0]
+            se = se[0] if se is not None else None
         if se is not None:
-            ax.errorbar(st, sc, yerr=np.asarray(se), fmt='o', ms=3,
+            ax.errorbar(st, sc, yerr=se, fmt='o', ms=3,
                         color='#222', alpha=0.6, capsize=2, label='sim')
         else:
             ax.plot(st, sc, 'o', ms=3, color='#222', alpha=0.6, label='sim')
@@ -778,6 +792,69 @@ def plot_temporal(result, cfg, model, sim=None):
     ax.set_title(cfg.title or f"{model.get('name','')}: C(τ)")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_temporal_kpoint_slices(result, cfg, model, sim=None):
+    """k≥3: the connected k-point cumulant has k−1 independent time differences
+    τ_j = t_j − t_0.  Draw one panel per difference — slice j sweeps leg j over
+    the τ-grid with the other legs pinned at τ=0 — each with the per-loop-order
+    overlay and (optionally) the matching simulator slice.
+
+    For a single symmetric field the k−1 slices coincide (a visible check of the
+    cumulant's permutation symmetry); when the external legs are different
+    fields they genuinely differ.
+
+    ``sim['C']`` / ``sim['C_err']`` may be 2-D ``(k−1, n_tau)`` — row p is the
+    sim for panel p — or 1-D (applied to the first panel only)."""
+    cfg = cfg or Config()
+    tau = np.asarray(result['tau_grid'])
+    slices = result.get('C_tau_slices') or {}
+    sl_by_ell = result.get('C_tau_slices_by_ell') or {}
+    js = sorted(slices)
+    k = len(js) + 1
+    fig, axes = plt.subplots(1, len(js),
+                             figsize=cfg.figsize or (4.4 * len(js), 4.3),
+                             squeeze=False)
+    axes = axes[0]
+    sim_t = np.asarray(sim['tau']) if sim is not None else None
+    sim_C = np.asarray(sim['C']) if sim is not None else None
+    sim_E = (np.asarray(sim['C_err'])
+             if (sim is not None and sim.get('C_err') is not None) else None)
+    for p, j in enumerate(js):
+        ax = axes[p]
+        by_ell = {e: v for e, v in (sl_by_ell.get(j) or {}).items()
+                  if v is not None}
+        curves = _orders_to_draw(by_ell, cfg) or \
+            [('total', np.real(np.asarray(slices[j])))]
+        for i, (lab, c) in enumerate(curves):
+            ax.plot(tau, c, '-', lw=1.8,
+                    color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
+                    label=f'theory: {lab}')
+        if sim_C is not None:
+            row = sim_C[p] if sim_C.ndim == 2 else (sim_C if p == 0 else None)
+            err = None
+            if sim_E is not None:
+                err = sim_E[p] if sim_E.ndim == 2 else (sim_E if p == 0 else None)
+            if row is not None:
+                if err is not None:
+                    ax.errorbar(sim_t, row, yerr=err, fmt='o', ms=3,
+                                color='#222', alpha=0.6, capsize=2, label='sim')
+                else:
+                    ax.plot(sim_t, row, 'o', ms=3, color='#222', alpha=0.6,
+                            label='sim')
+        ax.set_xlabel(r'$\tau_{%d}=t_{%d}-t_0$' % (j, j))
+        ax.set_ylabel(r'$\kappa_{%d}$' % k)
+        ax.set_title(r'slice %d: sweep leg %d' % (j, j))
+        if cfg.logy:
+            ax.set_yscale('log')
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=8)
+    fig.suptitle(cfg.title or
+                 f"{model.get('name', '')}: k={k} cumulant, {len(js)} slices")
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
