@@ -1307,17 +1307,23 @@ class TheoryUI:
         ])
 
         # Compose into Tab widget
-        self._tabs = W.Tab(children=[
-            tab_model, tab_populations, tab_fields, tab_params,
-            tab_functions, tab_kernels, tab_cgfs, tab_action,
-            tab_mfeqs, tab_defaults,
-        ])
-        for i, title in enumerate([
-            '1. Model', '2. Populations', '3. Fields', '4. Parameters',
-            '5. Functions', '6. Kernels', '7. Noise', '8. Action',
-            '9. Mean-field', '10. Defaults',
-        ]):
-            self._tabs.set_title(i, title)
+        # Full tab set as (widget, base title).  _apply_visible_tabs picks
+        # the visible subset by theory type: Spatial (PDE) hides the
+        # Kernels (temporal convolution kernels) and Noise (CGF) tabs —
+        # spatial theories support only Gaussian white independent noise,
+        # and there are no convolution kernels in the spatial path.
+        self._tab_kernels = tab_kernels
+        self._tab_cgfs = tab_cgfs
+        self._all_tabs = [
+            (tab_model, 'Model'), (tab_populations, 'Populations'),
+            (tab_fields, 'Fields'), (tab_params, 'Parameters'),
+            (tab_functions, 'Functions'), (tab_kernels, 'Kernels'),
+            (tab_cgfs, 'Noise'), (tab_action, 'Action'),
+            (tab_mfeqs, 'Mean-field'), (tab_defaults, 'Defaults'),
+        ]
+        self._tabs = W.Tab(children=[w for w, _ in self._all_tabs])
+        for i, (_, t) in enumerate(self._all_tabs):
+            self._tabs.set_title(i, f'{i + 1}. {t}')
 
         # ── Live wiring: when the Populations tab changes, refresh
         # every other tab's population-aware dropdowns and re-template
@@ -1535,14 +1541,42 @@ class TheoryUI:
             self._w_boundary_mode.value = 'infinite'
             self._w_boundary_length.value = ''
             self._w_initial_mode.value = 'stationary'
-        elif int(self._w_spatial_dim.value) < 1:
-            self._w_spatial_dim.value = 1
+        else:
+            # Spatial theories take only Gaussian white independent noise
+            # and have no convolution kernels — drop any temporal kernels
+            # / CGF noise terms so they can't leak into a saved PDE theory.
+            self._tbl_kernels.clear()
+            self._tbl_cgfs.clear()
+            if int(self._w_spatial_dim.value) < 1:
+                self._w_spatial_dim.value = 1
+        self._apply_visible_tabs()
         try:
             self._refresh_validation()
         except Exception:
             pass
         if mark_dirty:
             self._dirty = True
+
+    def _apply_visible_tabs(self) -> None:
+        """Show the tab subset for the current theory type.  Spatial (PDE)
+        hides the Kernels + Noise tabs; titles are renumbered sequentially
+        and the current selection is preserved when it stays visible."""
+        spatial = self._is_spatial_mode()
+        hidden = {id(self._tab_kernels), id(self._tab_cgfs)} if spatial else set()
+        cur = None
+        try:
+            cur = self._tabs.children[self._tabs.selected_index]
+        except Exception:
+            pass
+        visible = [(w, t) for (w, t) in self._all_tabs if id(w) not in hidden]
+        self._tabs.children = tuple(w for w, _ in visible)
+        for i, (_, t) in enumerate(visible):
+            self._tabs.set_title(i, f'{i + 1}. {t}')
+        new_idx = next((i for i, (w, _) in enumerate(visible) if w is cur), 0)
+        try:
+            self._tabs.selected_index = new_idx
+        except Exception:
+            pass
 
     # ── Bottom action bar ─────────────────────────────────────────
     def _build_bottom_bar(self) -> W.VBox:
