@@ -30,6 +30,7 @@ dd.plot_cumulant(res, cfg, model, sim=sim)         # §3 overlay
 
 | Notebook | Headline capability | Theory vs simulation |
 |---|---|---|
+| [`temporal_ou_quartic_white`](temporal_ou_quartic_white.ipynb) | **White Gaussian noise — the baseline nonlinear model** — single-field quartic OU; full **2-loop** `C_xx(τ)` over the whole grid in ~20 s (no embedding, no field doubling) | `C_xx(0)`: tree 1.000 → 2-loop **0.950** vs sim **0.945** (0.5%) |
 | [`temporal_ou_quartic_correlated`](temporal_ou_quartic_correlated.ipynb) | **Correlated (off-diagonal) white noise** — coupled 2-field OU; the cross-noise routes through the coupled path → nonzero cross-correlator `C_xy` | `C_xy(0)`: tree +1.33 → 1-loop +1.04 vs sim **+1.12** |
 | [`temporal_ou_quartic_colored`](temporal_ou_quartic_colored.ipynb) | **Colored noise** — finite-τc noise via the Markovian-embedding preprocessor (auxiliary OU field, surfaced by `describe_model`) | `C_xx(0)`: 1-loop **1.191** vs sim **1.186** (0.45%) |
 | [`temporal_quadratic_hawkes_alpha`](temporal_quadratic_hawkes_alpha.ipynb) | **α-function synaptic kernel** — a rise-then-decay non-Markovian convolution + quadratic Hawkes transfer | `C(0)`: theory **0.00300** vs sim **0.00278** (~0.4σ) |
