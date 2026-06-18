@@ -357,10 +357,11 @@ only a proven bound; empirical slack at small orders is not a proof.} If anyone
 re-tightens \code{v2\_max} (or \code{j\_max}), the new expression must come from a
 \emph{proven} statement. The June~2026 fix (commit \code{40454e7}) removed the
 false $-\lfloor j/3\rfloor$ term; it changed only the \emph{proof}, not the
-observed output at the tested orders. The deduplicated \emph{topology} counts ---
-$(k,\ell)=(2,1)\to 9$, $(3,1)\to 67$, $(2,2)\to 289$
-(\file{loop\_diagram\_enumeration.py:138} comment) --- are the same before and
-after the fix.
+observed output at the tested orders. The deduplicated \emph{topology} counts at the tested orders ---
+$(k,\ell)=(2,1)\to 9$, $(3,1)\to 67$, $(2,2)\to 289$ --- are the same before and
+after the fix. (The comment at \file{loop\_diagram\_enumeration.py:138} records
+the \emph{orders} that were exhaustively slack-verified,
+$\{(2,1),(3,1),(2,2),(3,2),(4,1),(2,3)\}$, not these counts.)
 \end{gotcha}
 
 \section{Stage 1: generating the trees}
@@ -1122,11 +1123,10 @@ Each surviving tree then has $\ell=1$ extra edge added in every
 \code{combinations\_with\_replacement} way (including the double-edge that makes a
 bubble), and only the results with loop number exactly $1$ that pass the
 structural constraints are kept. After leaf-colored deduplication this yields
-\textbf{9 topologies} --- the anchor number recorded in the code comment at
-\file{loop\_diagram\_enumeration.py:138}. Orienting those 9 topologies under the
+\textbf{9 topologies} for $(k,\ell)=(2,1)$. Orienting those 9 topologies under the
 causality constraints of \S\ref{sec:iso} and deduplicating again gives the final
-prediagram list that flows downstream to type assignment. (For reference, the
-comment also records $(3,1)\to 67$ and $(2,2)\to 289$ topologies.)
+prediagram list that flows downstream to type assignment. (The corresponding
+deduplicated counts at the next orders are $(3,1)\to 67$ and $(2,2)\to 289$.)
 
 \section{Performance notes and known limitations}
 

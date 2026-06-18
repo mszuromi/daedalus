@@ -116,6 +116,39 @@ algebra and the multivariate polynomial rings the engine relies on; a stock
 required.
 \end{gotcha}
 
+\section*{Getting the engine running}
+
+Everything in this manual assumes a working \textbf{SageMath} with the project's
+dependencies importable. If you are starting from nothing:
+\begin{enumerate}
+  \item \textbf{Install SageMath} (10.x). On macOS the binary app or a conda
+        install both work; the engine only needs \code{import sage.all} to
+        succeed.
+  \item \textbf{Make the repository importable.} The example notebooks do this
+        automatically by walking up to the directory that contains the
+        \file{pipeline/} package and adding it (and \file{notebooks/}) to
+        \code{sys.path}.
+  \item \textbf{Use the project's environment and launcher.} The pipeline is
+        developed in a dedicated conda environment (named \code{MSRJD\_diagrams}
+        in this project) layered on Sage, and \emph{every} script is run with
+        \code{sage -python}, never a bare \code{python3} (Appendix~B explains
+        why).
+  \item \textbf{Smoke-test} in under a second from the repository root:
+\begin{lstlisting}[style=console]
+$ sage -python -c "import sys; sys.path.insert(0,'notebooks'); import daedalus as dd; print(dd.list_theories()[:3])"
+\end{lstlisting}
+        If that prints a few theory names, the environment is green and you can
+        go straight to the Quickstart (Chapter~\ref{ch:quickstart}).
+\end{enumerate}
+
+\begin{gotcha}
+A stock miniforge/conda \emph{base} environment can ship a \textbf{broken NumPy}
+(a \code{libgfortran} rpath problem) that makes \code{import numpy} fail under
+Sage. If you hit an opaque NumPy import error, you are almost certainly in the
+wrong environment --- activate the project's \code{MSRJD\_diagrams} env and try
+again.
+\end{gotcha}
+
 \section*{A note on accuracy}
 
 This manual was assembled by reading the source directly, and each chapter was

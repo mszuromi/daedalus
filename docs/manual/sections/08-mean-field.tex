@@ -152,8 +152,10 @@ What consumes its output: the \emph{primary} consumer is
 the symbolic kernel $K_{\mathrm{ft}}(\omega)$ to get a numeric matrix-valued
 rational function of $\omega$, then finds its retarded poles and residue
 matrices. A second consumer, \code{\_solve\_mf\_at\_saddle}
-(\file{pipeline/\_precompute.py:200}), re-runs the solver to verify the action's
-linear term vanishes at the saddle. The handoff from the saddle to the
+(\file{pipeline/\_precompute.py:200}), re-runs the solver purely to record the
+saddle values for the precompute summary; the separate check that the action's
+linear term actually vanishes at the saddle is \code{sanity\_check}, run earlier
+at precompute Stage~2 (\file{pipeline/\_precompute.py:141}). The handoff from the saddle to the
 perturbative expansion is, in both cases, \emph{purely substitutional}.
 
 \section{Two solvers, one routing decision}

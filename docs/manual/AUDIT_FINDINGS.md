@@ -2,7 +2,7 @@
 
 _Working log of things found while documenting the codebase, for us to go over together. Three kinds of entry: **(A)** likely code inconsistencies / dead code worth a decision, **(B)** manual-vs-code accuracy fixes (already applied to the chapters), **(C)** accepted limitations that are documented, not bugs._
 
-**Status (2026-06-18):** Preliminary. The deep-read briefs are complete and seeded Part A below. Of the 19 per-chapter accuracy audits, **2 landed before the session limit** (theory-spec, colored-markovian); the remaining 17 + the holistic final audit will run when the agent quota resets (2:40pm ET) and their findings get appended. Nothing here is auto-fixed except where Part B says "applied".
+**Status (2026-06-18, FINAL):** Audit complete — all 20 per-chapter accuracy audits + 3 holistic audits ran. **All 7 major accuracy findings are fixed** (Part B); the manual compiles to **406 pp, 0 errors, 0 undefined references**. The ~60 remaining minor/nit findings are catalogued per chapter in `docs/manual/_briefs/_audit_<slug>.md` (per-chapter verdicts in Part E) and were left for review rather than each individually patched. Code-side cleanup items are in Part A; holistic findings in Part F.
 
 ---
 
@@ -38,12 +38,21 @@ These came out of the read-only subsystem deep-reads. None is necessarily a bug;
 
 ## Part B — Manual-vs-code accuracy fixes (APPLIED to the chapters)
 
-From the 2 per-chapter audits that completed:
+**All 7 major accuracy findings are fixed.** Every fix was re-verified against the code before editing.
 
-- **[major, FIXED] Ch.3 Fourier sign.** Chapter said `fourier_transform` computes `∫g(t)e^{+iωt}dt`; the code uses the **e^{−iωt}** convention (`msrjd/core/field_theory.py:35-39`), consistent with the exponential-synapse image `1/(1+iωτ_g)`. Corrected in `03-theory-spec.tex`.
-- **[minor, FIXED] Ch.3 lambda count.** "six companion lambdas" → **seven** (`use_action_template` also pulls `mf_substitutions()`); `HawkesAction` method list now includes `mf_substitutions()`. Corrected in `03-theory-spec.tex`.
-- **[accurate] Ch.5 colored→Markovian.** Audit verdict: accurate, no corrections.
-- **[fixed during compile] Appendix A glossary** had a `\item[...]` whose bracketed math `$f[x_0,\dots,x_n]$` prematurely closed the optional argument (23 cascading LaTeX errors). Brace-wrapped; manual now compiles to 0 errors.
+- **[major, FIXED] Ch.3 Fourier sign.** Chapter said `fourier_transform` computes `∫g(t)e^{+iωt}dt`; code uses **e^{−iωt}** (`msrjd/core/field_theory.py:35-39`), consistent with `1/(1+iωτ_g)`. Corrected.
+- **[major, FIXED] Ch.6 wrong consumer.** Said the enumerator `degree_scan.py` "reads `available_degrees`"; it is actually imported/called only in `msrjd/diagrams/filter.py:60-61`. Reworded to name the prediagram **filter**.
+- **[major, FIXED] Ch.6 Conv over-claim.** Said `models/hawkes_quad_expg.py` "exercises every feature" incl. the `Conv` operator; that model uses plain multiplication (no `Conv` atom). Reworded: `Conv` is exercised by the conductance theory files.
+- **[major, FIXED] Ch.8 `_solve_mf_at_saddle`.** Said it "re-runs the solver to verify the linear term vanishes"; it only returns the saddle-values dict (`_precompute.py:200`). The linear-term check is `sanity_check` at Stage 2 (`_precompute.py:141`). Corrected.
+- **[major, FIXED] Ch.9 fabricated attribution (×2).** Topology counts 9/67/289 were attributed to "the code comment at `loop_diagram_enumeration.py:138`"; that comment records the slack-verified **orders** `{(2,1),(3,1),(2,2),(3,2),(4,1),(2,3)}`, not counts (9/67/289 appear nowhere in the file). Reworded both spots.
+- **[major, FIXED] Ch.9 broken `\ref{gotcha:…}`.** The `gotcha` box was a counterless `tcolorbox`, so its `\label`/`\ref` resolved to the wrong (enclosing) counter. Added `[auto counter, number within=chapter]` to the `gotcha` box in the preamble → all 7 gotcha refs now resolve (e.g. "Gotcha 9.3"), 0 undefined refs.
+- **[major, FIXED] Ch.10 non-existent tests (×2).** Cited `test_leg_matchings_canonical` and `test_enumerate_typed_signatures_match_pre_change` — neither exists (copied from a **stale source docstring**, `type_assignment.py:380-381`). Replaced with the real `test_leg_matchings_*` family + `test_enumerate_typed_distinct_legs_regression`. *(The source docstring is itself stale — a code-side cleanup, logged in Part A.)*
+- **[major, FIXED] Ch.16 1500-line-off citation.** Cited `pipeline_bridge.py:509` for the "coincide at k=2" comment; line 509 is unrelated (a Dyson env-var read). Real comment is at `:2007`. Corrected.
+- **[minor, FIXED] Ch.3 lambda count.** "six companion lambdas" → **seven** (incl. `mf_substitutions()`). Corrected.
+- **[holistic, ADDED] Getting-started on-ramp.** The completeness critic flagged no install/first-run guidance. Added a "Getting the engine running" section to Ch.0 (obtain Sage → make repo importable → `MSRJD_diagrams` env + `sage -python` → broken-base-numpy caveat → a 1-line smoke test).
+- **[holistic, ADDED] Ch.12 contour clause.** The readability critic flagged the contour-closing derivation skipped *why* it closes upward. Added a Jordan's-lemma sentence.
+- **[fixed during compile] Appendix A glossary** bracket bug (a `\item[$f[\dots]$]` prematurely closing the optional arg) — brace-wrapped.
+- **[accurate] Ch.5, Ch.12, Ch.15, Ch.18** — audit verdict accurate, no corrections.
 
 ---
 
@@ -61,8 +70,39 @@ These are known and tracked elsewhere; listed so we don't re-litigate them as "f
 
 ---
 
-## Part D — Pending (to append after the 2:40pm quota reset)
+## Part E — Per-chapter audit results (verdicts + finding counts)
 
-- Per-chapter accuracy audits NOT yet run: 02-quickstart, 04-theory-files, 06-fieldtheory-core, 07-propagator, 08-mean-field, 09-enumeration, 10-type-assignment, 11-caching, 12-phasej-temporal, 13-grouped-phasej, 14-spatial-core, 15-spatial-heatkernel, 16-spatial-coupled, 17-compute-orchestration, 18-engine-api, 19-cumulants-moments, 20-simulators, 21-ui.
-- The big **holistic final audit** (manual read end-to-end vs the code + a completeness critic).
-- Their findings will be appended to Parts A/B above, and any **critical/major** manual errors fixed in the chapters before the final commit.
+Full per-chapter findings (including all minors/nits) are in `docs/manual/_briefs/_audit_<slug>.md`. Summary:
+
+| Chapter | Verdict | Findings | Majors (all fixed) |
+|---|---|---|---|
+| 02 quickstart | minor | 3 | — |
+| 03 theory-spec | minor | (fixed) | Fourier sign |
+| 04 theory-files | minor | 3 | — |
+| 05 colored-markovian | accurate | 0 | — |
+| 06 fieldtheory-core | major | 6 | wrong consumer; Conv over-claim |
+| 07 propagator | minor | 5 | — |
+| 08 mean-field | minor | 3 | `_solve_mf_at_saddle` |
+| 09 enumeration | minor | 6 | fabricated attribution; gotcha refs |
+| 10 type-assignment | minor | 4 | non-existent tests |
+| 11 caching | minor | 3 | — |
+| 12 phasej-temporal | accurate | 3 (nits) | — |
+| 13 grouped-phasej | minor | 4 | — |
+| 14 spatial-core | minor | 3 | — |
+| 15 spatial-heatkernel | accurate | 3 | — |
+| 16 spatial-coupled | minor | 4 | :509→:2007 citation |
+| 17 compute-orchestration | minor | 3 | — |
+| 18 engine-api | accurate | 1 | — |
+| 19 cumulants-moments | minor | 2 | — |
+| 20 simulators | minor | 3 | — |
+| 21 ui | minor | 7 | — |
+
+The ~60 minor/nit items (slightly-off line citations, mild overstatements, notation nits) are **not yet individually patched** — they are catalogued in the `_audit_*.md` files for a follow-up sweep if you want one.
+
+---
+
+## Part F — Holistic audit findings
+
+- **Completeness:** the manual is substantially complete at the file/capability level (Appendix C maps every non-test source file to a chapter). The one **major** gap — no install/getting-started on-ramp — is now **fixed** (Part B). Minor: Appendix C promises a `save`/`report` output-tail chapter that the body only lightly delivers — noted for review.
+- **Consistency:** **clean.** `𝒮(Γ)` (not `M(Γ)`) used as the symmetry factor everywhere; propagator/pole/residue naming uniform; Phase-J gate-flag names match across Ch.12/13. Nits only: `Aut_{fixed-ext}` hyphenation drift, and the symmetry-factor numerator abbreviated two equivalent ways. (Cosmetic; not changed.)
+- **Readability (novice lens):** strong overall — nauty, SymPy, numba, einsum, fork-vs-spawn all introduced from scratch as promised. One **major** gap (Ch.12 contour-closing skipped *why* it closes upward) is now **fixed** (Part B). Other minor "term used a few lines before its definition" spots are listed in `_briefs/_holistic_readability.md`.

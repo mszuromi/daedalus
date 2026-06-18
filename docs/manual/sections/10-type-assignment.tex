@@ -606,10 +606,11 @@ integrator then multiplied by $\Sym(\Gamma)$. The new code skips the inflation
 entirely: it generates the single \emph{canonical} ordering directly, and the
 integrator multiplies by the \emph{same} $\Sym(\Gamma)$. The output is
 bit-identical; only the intermediate count (and the cold-start enumeration wall
-time) shrinks. This equivalence is pinned by the regression tests
-\code{test\_leg\_matchings\_canonical} and
-\code{test\_enumerate\_typed\_signatures\_match\_pre\_change} in
-\file{tests/test\_type\_assignment.py}.
+time) shrinks. This equivalence is pinned by the regression tests in
+\file{tests/test\_type\_assignment.py} --- the \code{test\_leg\_matchings\_*}
+family (\code{all\_distinct\_legs}, \code{duplicate\_response\_legs},
+\code{mixed\_multiset}, \code{empty\_legs}) and
+\code{test\_enumerate\_typed\_distinct\_legs\_regression}.
 
 \begin{gotcha}
 This optimisation is correct \emph{only because} the integrator multiplies by
@@ -1273,7 +1274,8 @@ context above and in the code at the cited lines.
         it can over-generate vanishing diagrams but never produces a wrong number.
   \item \textbf{\code{\_leg\_matchings} emits only the canonical leg ordering.}
         Correct only because the integrator multiplies by $\Sym(\Gamma)$
-        afterward; pinned by \code{test\_leg\_matchings\_canonical}.
+        afterward; pinned by the \code{test\_leg\_matchings\_*} family in
+        \file{tests/test\_type\_assignment.py}.
   \item \textbf{Dedup multiplicity is diagnostic only.} Never multiply it back;
         under Path A the weight is entirely in \code{combinatorial\_factor}
         (\file{symmetry.py:556--568}).

@@ -106,8 +106,8 @@
 % ---------------------------------------------------------------------
 \newtcolorbox{note}[1][]{colback=notebg,colframe=noteframe,
   fonttitle=\bfseries,title={Note},sharp corners,boxrule=0.6pt,#1}
-\newtcolorbox{gotcha}[1][]{colback=warnbg,colframe=warnframe,
-  fonttitle=\bfseries,title={Gotcha},sharp corners,boxrule=0.6pt,#1}
+\newtcolorbox[auto counter,number within=chapter]{gotcha}[1][]{colback=warnbg,colframe=warnframe,
+  fonttitle=\bfseries,title={Gotcha~\thetcbcounter},sharp corners,boxrule=0.6pt,#1}
 \newtcolorbox{defn}[1][]{colback=defbg,colframe=defframe,
   fonttitle=\bfseries,title={Definition},sharp corners,boxrule=0.6pt,#1}
 

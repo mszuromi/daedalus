@@ -37,8 +37,11 @@ Ornstein--Uhlenbeck model from Chapter~\ref{ch:quickstart} --- one physical fiel
 white noise, a single cubic vertex --- because it is small enough that you can
 hold the entire expanded action in your head. The running ``real'' example is the
 quadratic Hawkes model shipped in \file{models/hawkes\_quad\_expg.py} --- two
-populations, a synaptic convolution kernel, a formal transfer function --- because
-it exercises every feature the subsystem has. Reading that model file alongside
+populations, a synaptic kernel, a formal transfer function --- because
+it exercises most of the subsystem's features. (That model multiplies its kernel
+image directly; the literal \code{Conv} convolution \emph{operator} of
+\S\ref{sec:conv} is exercised not here but by the conductance theory files, which
+use the \code{v*Conv(g,n)} form.) Reading that model file alongside
 this chapter is recommended; it is the canonical shape of the ``model dict'' the
 core consumes.
 
@@ -940,10 +943,11 @@ def available_degrees(vertex_types, source_types):
 \end{lstlisting}
 
 It returns a set of \code{(in\_degree, out\_degree)} pairs from the vertices and a set
-of \code{out\_degree} integers from the sources. The diagram enumerator
-(\file{msrjd/enumeration/degree\_scan.py}) reads exactly this to know which
-``shapes'' of vertex and source it may attach when it builds graphs --- the topic of
-Chapter~\ref{ch:enumeration}.
+of \code{out\_degree} integers from the sources. The prediagram filter
+(\file{msrjd/diagrams/filter.py}, which imports and calls \code{available\_degrees})
+reads exactly this to discard candidate prediagrams whose vertices would demand a
+degree that no available vertex or source can supply --- one screening step of the
+enumeration pipeline of Chapter~\ref{ch:enumeration}.
 
 \section{Picklability and the process boundary}\label{sec:pickle}
 

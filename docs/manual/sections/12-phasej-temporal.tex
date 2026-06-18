@@ -140,7 +140,12 @@ fixed convention
   G(t) \;=\; \frac{1}{2\pi}\int \dd\omega \; \ee^{\ii \omega t}\,\widehat{G}(\omega),
   \label{eq:fourier-convention}
 \end{equation}
-is computed by closing the $\omega$ contour and summing residues. The causality
+is computed by closing the $\omega$ contour and summing residues. \emph{Why
+upward?} For $t>0$ the kernel $\ee^{\ii\omega t}$ decays as
+$\operatorname{Im}\omega\to+\infty$, so by Jordan's lemma the contour may be
+closed by a large semicircle in the \emph{upper} half plane at no added cost,
+enclosing exactly the upper-half-plane poles (and for $t<0$ one closes downward,
+enclosing none). The causality
 filter built into the propagator construction guarantees that every pole
 $p_\alpha$ of $\widehat{G}$ lies in the \emph{upper} half plane,
 $\operatorname{Im} p_\alpha > 0$. Each residue term therefore carries a factor
