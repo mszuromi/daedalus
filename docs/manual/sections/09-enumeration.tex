@@ -1,0 +1,1205 @@
+% ---------------------------------------------------------------------
+%  Chapter 9 : Diagram Enumeration -- Prediagrams, nauty, and the
+%              loop-order completeness bound
+% ---------------------------------------------------------------------
+\chapter{Diagram Enumeration}\label{ch:enumeration}
+
+Every loop calculation in this manual ultimately reduces to a sum over Feynman
+diagrams. Before the engine can evaluate that sum, it must first \emph{know which
+diagrams are in it} --- and it must know that the list is \emph{complete}, with
+nothing missing and nothing double-counted. That bookkeeping is the job of the
+subsystem dissected in this chapter. Given just two integers --- $k$, the number
+of external legs of the correlation function we want, and $\ell$, the loop order
+of the correction we are computing --- it produces the complete, deduplicated
+list of every bare graph topology that could possibly contribute, \emph{before
+any physical field labels are attached}. Those bare graphs are called
+\term{prediagrams}.
+
+The whole subsystem lives in two files and we read both in full:
+\file{msrjd/enumeration/loop\_diagram\_enumeration.py} (the topological
+generator) and \file{msrjd/enumeration/degree\_scan.py} (a small feedback bridge
+back to the algebra). The generator is \emph{theory-agnostic}: it never looks at
+the action, the fields, or the parameters. It answers a purely combinatorial
+question --- \emph{what graph shapes are even possible at $(k,\ell)$?} --- and
+leaves the physical question --- \emph{which of those shapes the theory actually
+populates, and with what propagators and vertices} --- to the type-assignment
+subsystem in the next chapter.
+
+The reader is assumed to know \msrjd{} field theory but \emph{not} the tooling.
+The heavy lifting here is done by \term{SageMath} and, inside it, by the graph
+canonical-labeling engine \term{nauty}; both are introduced from first
+principles, as are the handful of Python standard-library helpers
+(\code{itertools}, \code{collections}, \code{concurrent.futures}) the module
+leans on. When in doubt we over-explain.
+
+\section{What a prediagram is, and why we strip the physics first}
+
+In \msrjd{} (Martin--Siggia--Rose--Janssen--De~Dominicis) field theory, a genuine
+Feynman diagram is a graph in which \emph{every edge is a specific propagator}
+and \emph{every internal vertex is a specific interaction monomial} from the
+action. The doubled field content of \msrjd{} means there are two flavors of
+propagator: a \emph{response} propagator $\avg{\phi\,\tilde\phi}$ (causal,
+directed --- it carries a definite time direction, from cause to effect) and a
+\emph{correlation} propagator $\avg{\phi\,\phi}$. The vertices come from the
+Taylor-expanded interaction part of the action --- a cubic vertex $\tilde\phi\,
+\phi^2$, a noise vertex $\tilde\phi^2$, and so on.
+
+A \term{prediagram} strips all of that physics away and keeps only the
+combinatorial skeleton. Concretely it retains exactly three things:
+
+\begin{itemize}
+  \item the \textbf{shape} of the graph --- which vertices connect to which;
+  \item the \textbf{leaf-vs-internal} distinction --- which vertices are
+        \emph{external legs} of the correlation function, and which are
+        \emph{internal} interaction points; and
+  \item an \textbf{orientation} on every edge (an arrow $u \to v$), because
+        \msrjd{} propagators are causal: a response propagator flows in a
+        definite time direction, so the edges of a valid diagram must carry
+        arrows.
+\end{itemize}
+
+So a prediagram is, in one phrase, ``a Feynman diagram with the physics not yet
+filled in.''
+
+\begin{defn}
+A \textbf{prediagram} is a bare, oriented graph topology: a partition of vertices
+into \emph{leaves} (external legs) and \emph{internal} vertices, together with an
+arrow on every edge, but with \emph{no} propagator types and \emph{no} vertex
+monomials assigned yet. It is the output object of the enumeration subsystem,
+carried as the 4-tuple \code{(D, G, leaves, internal)}.
+\end{defn}
+
+\subsection{Why separate the topology from the physics?}
+
+Two reasons, one practical and one conceptual.
+
+The conceptual reason is that the set of admissible \emph{shapes} depends only on
+$k$ and $\ell$ --- it is the same for an Ornstein--Uhlenbeck particle, the
+Kardar--Parisi--Zhang equation, or a coupled multi-field reaction--diffusion
+model. Solving the topology problem once, model-independently, means the
+expensive graph-isomorphism work is never repeated per theory.
+
+The practical reason is that it cleanly factors a hard combinatorial problem into
+two tractable stages. Stage one (this chapter) enumerates shapes. Stage two
+(Chapter~\ref{ch:type-assignment}) walks each shape and tries every consistent
+way to label its edges with propagators and its vertices with monomials, throwing
+away the labelings the theory does not support. Keeping the two apart means each
+stage has a single, checkable correctness criterion: \emph{completeness} for the
+topology stage (we miss no shape), and \emph{validity} for the typing stage (we
+keep only labelings the action provides).
+
+\subsection{Where it sits in the pipeline}
+
+The project is organized into lettered ``build phases'' (documented in
+\file{docs/BUILD\_PHASE\_OUTLINES.md}). This subsystem is the topological
+generator --- it is invoked as phase~\code{[5/7]} of the temporal trace you saw
+in Chapter~\ref{ch:quickstart} (``Enumerate prediagrams''). Schematically:
+
+\begin{lstlisting}[style=console]
+  Phase 1 (FieldTheory.expand)     Phase 2 (THIS SUBSYSTEM)        Phase D/E
+  ----------------------------     -------------------------       ------------
+  Action -> Taylor-expanded        enumerate_prediagrams(k,ell)    type_assignment
+  vertices + noise kernel,     --> trees -> topologies ->      --> .enumerate_typed
+  saved as a "theory"              prediagrams                     _diagrams
+                                        |
+                                        v
+                               Phase C: degree_scan
+                               .ensure_taylor_order
+                               (feedback to Phase 1)
+\end{lstlisting}
+
+\begin{itemize}
+  \item \textbf{What feeds it:} essentially nothing but the two integers $k$ and
+        $\ell$. The generation is theory-agnostic; the action enters only later.
+  \item \textbf{What consumes it:} two downstream readers.
+        \code{msrjd/diagrams/type\_assignment.py} is the direct consumer --- its
+        \code{enumerate\_typed\_diagrams(prediagram, ...)} unpacks one prediagram
+        tuple \code{(D, G, leaves, internal)} and produces every valid fully-typed
+        diagram for it. And \code{msrjd/enumeration/degree\_scan.py} (build
+        phase~C) scans the same tuples for their maximum vertex degree, to decide
+        whether the saved theory was Taylor-expanded far enough --- the feedback
+        bridge of \S\ref{sec:degree-scan}.
+\end{itemize}
+
+\subsection{The three-stage refinement}
+
+The generator works in three successive refinements. Each stage is a
+\emph{filter-and-deduplicate} pass on the previous one:
+
+\begin{enumerate}
+  \item \textbf{Trees} --- connected acyclic graphs with the right number of
+        leaves. A tree is the loop-free ``spanning skeleton'' of every possible
+        diagram. Trees have zero loops, so to reach $\ell$ loops we will later add
+        $\ell$ extra edges.
+  \item \textbf{Topologies} --- undirected multigraphs obtained by adding exactly
+        $\ell$ extra edges to a tree (creating exactly $\ell$ independent
+        cycles), keeping only those that satisfy \msrjd's structural constraints,
+        then removing isomorphic duplicates.
+  \item \textbf{Prediagrams} --- topologies with every edge given an arrow,
+        keeping only physically admissible (causal, acyclic) orientations, then
+        removing isomorphic duplicates again.
+\end{enumerate}
+
+The public entry points (\code{enumerate\_all}, \code{enumerate\_prediagrams},
+and friends) wrap these three stages; \S\ref{sec:api} is the reference.
+
+\section{A graph-theory primer for field theorists}
+
+This subsystem is pure graph theory, so we build the vocabulary from the ground
+up. A reader who knows \msrjd{} but not the combinatorics should be able to
+follow every later step.
+
+\subsection{Vertices, edges, degree, leaves}
+
+A \term{graph} is a set of \emph{vertices} (points) and \emph{edges}
+(connections between pairs of points). The \term{degree} of a vertex $v$, written
+$\deg(v)$, is the number of edge-ends touching it. If two vertices are joined by
+a \emph{double edge} --- a multi-edge --- that contributes $2$ to each of their
+degrees.
+
+We partition the vertices by degree:
+
+\begin{itemize}
+  \item \term{Leaves} are the degree-1 vertices. In our setting these are the
+        \emph{external legs} of the correlation function; a $k$-point function has
+        exactly $k$ of them in the final diagram.
+  \item \term{Internal vertices} are the degree-$\ge 2$ vertices. These are the
+        interaction points.
+  \item Internal vertices split further into \emph{degree-2} vertices ($V_2$) and
+        \emph{degree-$\ge 3$} vertices ($V_3$, written \code{degree\_3plus} in the
+        code).
+\end{itemize}
+
+In code this partition is computed by \code{classify\_vertices\_sage}
+(\file{loop\_diagram\_enumeration.py:32}), which returns the four lists
+\code{(leaves, internal, degree\_2, degree\_3plus)} by one filtered
+list-comprehension per category over \code{G.vertices()}:
+
+\begin{lstlisting}
+def classify_vertices_sage(G):
+    leaves       = [v for v in G.vertices() if G.degree(v) == 1]
+    internal     = [v for v in G.vertices() if G.degree(v) > 1]
+    degree_2     = [v for v in G.vertices() if G.degree(v) == 2]
+    degree_3plus = [v for v in G.vertices() if G.degree(v) >= 3]
+    return leaves, internal, degree_2, degree_3plus
+\end{lstlisting}
+
+Note \code{internal} is the union of \code{degree\_2} and \code{degree\_3plus}.
+This is the single most-called helper in the module --- nearly every constraint
+check begins by classifying the vertices.
+
+\subsection{Trees and the loop number}
+
+A \term{tree} is a connected graph with no cycles. The defining counting
+identity of a tree is
+\begin{equation}
+  |E| \;=\; |V| - 1
+  \qquad\text{(a tree on $|V|$ vertices has exactly $|V|-1$ edges).}
+  \label{eq:tree-edges}
+\end{equation}
+For \emph{any} connected graph $G$, the number of \term{independent cycles} ---
+equivalently the \term{loop number} or first Betti number --- is
+\begin{equation}
+  L(G) \;=\; |E| - |V| + 1.
+  \label{eq:loop-number}
+\end{equation}
+This is exactly \code{count\_cycles\_sage} (\file{loop\_diagram\_enumeration.py:68}):
+
+\begin{lstlisting}
+def count_cycles_sage(G):
+    if not G.is_connected():
+        return -1
+    return G.size() - G.order() + 1
+\end{lstlisting}
+
+In SageMath, \code{G.size()} is the number of edges $|E|$ and \code{G.order()} is
+the number of vertices $|V|$. The function returns $-1$ as a sentinel when the
+graph is disconnected, since \eqref{eq:loop-number} is only meaningful for a
+connected graph. (That $-1$ is load-bearing: it is never equal to any $\ell\ge0$,
+so a disconnected candidate is automatically rejected by the
+``\code{== ell}'' loop test downstream --- see Gotcha~\ref{gotcha:sentinel}.)
+
+\begin{note}
+The consequence we use \emph{everywhere}: starting from a tree ($L=0$) and adding
+$\ell$ extra edges \emph{without adding new vertices} raises $|E|$ by $\ell$ and
+leaves $|V|$ unchanged, so by \eqref{eq:loop-number} it raises the loop number by
+exactly $\ell$. This is the engine of the whole topology stage: \emph{take a
+tree, add $\ell$ edges, demand $L(G)=\ell$.}
+\end{note}
+
+\section{The leaf surplus \texorpdfstring{$j$}{j} and the loop budget}
+
+The final diagram must have exactly $k$ external legs. But the \emph{intermediate
+trees} may temporarily carry \emph{more} than $k$ leaves, because some of those
+extra leaves will be ``eaten'' when we add the loop edges: an added edge can
+attach to a former leaf, raising its degree above 1 so it stops being a leaf.
+
+The code calls this surplus $j$. A tree is generated with $k+j$ leaves, where
+$j\ge 0$ counts the leaves that the $\ell$ added edges will consume.
+
+\subsection{How large can the surplus be?}
+
+Each added edge has two endpoints, so $\ell$ added edges provide $2\ell$
+endpoint-attachments. In the most leaf-consuming case, attaching those endpoints
+to leaves is what converts leaves into internal vertices. The code caps the
+surplus at
+\begin{equation}
+  j_{\max} \;=\; \ell + \left\lfloor \tfrac{\ell}{2} \right\rfloor
+  \;=\; \left\lfloor \tfrac{3\ell}{2} \right\rfloor,
+  \label{eq:jmax}
+\end{equation}
+implemented verbatim as \code{j\_max = ell + (ell // 2)}
+(\file{loop\_diagram\_enumeration.py:124}; \code{//} is Python's integer
+floor-division). Intuitively this is the maximum number of tree-leaves the
+$\ell$ loop-edges can absorb across all valid decompositions; the $3\ell/2$ form
+is the integer ceiling on how many degree-1 nodes the loop structure can use up.
+For $\ell=1$ this gives $j_{\max}=1$; for $\ell=2$, $j_{\max}=3$; for $\ell=3$,
+$j_{\max}=4$.
+
+\section{The degree bounds and the completeness theorem}
+\label{sec:bounds}
+
+Not every tree with $k+j$ leaves can be the skeleton of a valid \msrjd{} diagram.
+Two structural bounds prune the tree search. Both are computed at the top of the
+$j$-loop in \code{generate\_trees\_with\_constraints}
+(\file{loop\_diagram\_enumeration.py:118}).
+
+\subsection{Bound on degree-\texorpdfstring{$\ge 3$}{>=3} vertices}
+
+The first bound limits the number of high-degree (branching) vertices:
+\begin{equation}
+  |V_3| \;\le\; k + j - 2 \;=\; \code{v3\_max}
+  \qquad (\file{loop\_diagram\_enumeration.py:128}).
+  \label{eq:v3max}
+\end{equation}
+This is the standard fact about trees: a tree with $m$ leaves has at most $m-2$
+vertices of degree $\ge 3$ (the extreme case being a binary tree, where every
+internal branching is exactly three-way). Here $m = k+j$, so $\code{v3\_max} =
+k+j-2$.
+
+\subsection{Bound on degree-2 vertices: the completeness bound}
+
+The second bound is the subtle one --- the \term{enumeration completeness bound}
+referenced throughout the project. The code
+(\file{loop\_diagram\_enumeration.py:139}) sets
+\begin{lstlisting}
+v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
+\end{lstlisting}
+and the in-code comment records that this algebraically equals the \emph{proven}
+upper bound on the number of degree-2 vertices of the final topology $G$:
+\begin{equation}
+  |V_2^{T}| \;\le\; k + 3\ell - j - 1.
+  \label{eq:v2max}
+\end{equation}
+Let us verify the algebra by substituting $\code{v3\_max}=k+j-2$:
+\begin{align*}
+  2\,\code{v3\_max} + 3\ell - k - 3j + 3
+   &= 2(k+j-2) + 3\ell - k - 3j + 3 \\
+   &= 2k + 2j - 4 + 3\ell - k - 3j + 3 \\
+   &= k - j - 1 + 3\ell \;=\; k + 3\ell - j - 1. \qquad\checkmark
+\end{align*}
+So the code's \code{v2\_max} is exactly the bound \eqref{eq:v2max}.
+
+\subsection{Why \texorpdfstring{$k+3\ell-j-1$}{k+3l-j-1} is the right bound}
+
+The full proof lives in the paper appendix; the in-code comment
+(\file{loop\_diagram\_enumeration.py:129--138}) and the project note
+\file{project\_enumeration\_bound\_fix.md} summarize the three ingredients:
+
+\begin{enumerate}
+  \item a \textbf{degree-partition identity} --- the handshake/incidence count
+        relating leaves, $V_2$, $V_3$, edges, and the loop number;
+  \item the \textbf{orientability constraint} $|V_2^{G}| \le k + \ell - 1$ --- a
+        degree-2 internal vertex of an \msrjd{} diagram must be orientable as
+        one-in/one-out, and there is a hard ceiling on how many such vertices a
+        valid causal orientation can admit; and
+  \item an \textbf{incidence-counting} bound $\theta \le 2\ell - j$, where
+        $\theta$ counts certain doubled-edge / multi-edge incidences.
+\end{enumerate}
+Combining the three yields \eqref{eq:v2max}.
+
+\begin{defn}
+The \textbf{completeness bound} $|V_2^{T}| \le k+3\ell-j-1$ is the proven upper
+bound on the number of degree-2 vertices a valid topology can have at fixed
+$(k,\ell,j)$. Pruning the tree search by this bound is what \emph{guarantees}
+the search misses no contributing topology --- this is the sense in which the
+enumeration is provably complete.
+\end{defn}
+
+\subsection{The bound-correction story: a false lemma at \texorpdfstring{$\ell\ge 3$}{l>=3}}
+
+This bound has a cautionary history worth telling, because it encodes a principle
+the whole subsystem now lives by. An \emph{earlier} version of the code used a
+\emph{tighter} bound carrying an extra $-\lfloor j/3\rfloor$ term:
+\begin{equation}
+  \code{v2\_max\_OLD} \;=\; k + 3\ell - j - 1 - \left\lfloor \tfrac{j}{3}
+  \right\rfloor .
+  \label{eq:v2old}
+\end{equation}
+That extra tightening came from a claimed lemma $\theta \le 2\ell - j -
+\lfloor j/3\rfloor$, which is \emph{false at $\ell\ge 3$}. The counterexample,
+recorded in the comment at \file{loop\_diagram\_enumeration.py:133} (and in
+\file{scratch/bound\_check.py}), is \emph{three doubled-edge bubbles on a hub},
+$|V|=8$, where every decomposition has $j=3$ and $\theta = 3 > 2\ell - j -
+\lfloor j/3\rfloor$.
+
+The insidious part: the false lemma never actually \emph{bound} at the small
+orders that had been tested. Exhaustive enumeration at $(k,\ell)\in\{(2,1),(3,1),
+(2,2),(3,2),(4,1),(2,3)\}$ showed a slack of $\ge 2$, so the tighter
+\eqref{eq:v2old} and the true \eqref{eq:v2max} produced \emph{identical output} at
+every tested order. Only the proven bound \eqref{eq:v2max}, however,
+\emph{guarantees} completeness at $\ell\ge 3$.
+
+\begin{gotcha}
+\label{gotcha:proof-not-slack}
+The headline lesson, recorded in the project memory: \textbf{a prune must follow
+only a proven bound; empirical slack at small orders is not a proof.} If anyone
+re-tightens \code{v2\_max} (or \code{j\_max}), the new expression must come from a
+\emph{proven} statement. The June~2026 fix (commit \code{40454e7}) removed the
+false $-\lfloor j/3\rfloor$ term; it changed only the \emph{proof}, not the
+observed output at the tested orders. The deduplicated \emph{topology} counts ---
+$(k,\ell)=(2,1)\to 9$, $(3,1)\to 67$, $(2,2)\to 289$
+(\file{loop\_diagram\_enumeration.py:138} comment) --- are the same before and
+after the fix.
+\end{gotcha}
+
+\section{Stage 1: generating the trees}
+
+With the bounds in hand we can read the tree generator. The function
+\code{generate\_trees\_with\_constraints(k, ell, max\_vertices\_search=50)}
+(\file{loop\_diagram\_enumeration.py:118}) returns a list of triples
+\code{(tree, j, num\_leaves)} --- every non-isomorphic tree satisfying the degree
+constraints, tagged with its surplus $j$ and its leaf count $\code{num\_leaves} =
+k+j$.
+
+\begin{lstlisting}
+def generate_trees_with_constraints(k, ell, max_vertices_search=50):
+    valid_trees = []
+    j_max = ell + (ell // 2)
+
+    for j in range(0, j_max + 1):
+        num_leaves = k + j
+        v3_max = k + j - 2
+        v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
+
+        min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        max_n = min(num_leaves + v2_max + v3_max, max_vertices_search)
+        max_n = min(max_n, num_leaves + min(10, v2_max + v3_max))
+
+        if max_n < min_n:
+            continue
+
+        for n in range(min_n, max_n + 1):
+            for tree in graphs.trees(n):
+                leaves, internal, degree_2, degree_3plus = classify_vertices_sage(tree)
+                if len(leaves) != num_leaves:
+                    continue
+                if len(degree_3plus) > v3_max:
+                    continue
+                if len(degree_2) > v2_max:
+                    continue
+                valid_trees.append((tree, j, num_leaves))
+
+    return valid_trees
+\end{lstlisting}
+
+Reading it in order:
+
+\begin{enumerate}
+  \item $j_{\max}$ is set by \eqref{eq:jmax}, and we loop $j$ from $0$ to
+        $j_{\max}$. For each $j$ we fix $\code{num\_leaves}=k+j$, then compute
+        \code{v3\_max} \eqref{eq:v3max} and \code{v2\_max} \eqref{eq:v2max}.
+  \item The vertex-count search window $[\code{min\_n}, \code{max\_n}]$ is set:
+        \code{min\_n} is \code{num\_leaves} if there is a single leaf (the
+        degenerate one-vertex tree), else $\code{num\_leaves}+1$ (you need at
+        least one internal vertex). The upper end is $\code{num\_leaves}+
+        \code{v2\_max}+\code{v3\_max}$ (the most vertices the bounds permit),
+        capped by \code{max\_vertices\_search}, and then capped \emph{again} by
+        the \code{+10} guard discussed below.
+  \item If the window is empty (\code{max\_n < min\_n}), this $j$ is skipped.
+  \item For each $n$ in the window, \code{graphs.trees(n)} yields every
+        non-isomorphic tree on $n$ vertices exactly once (\S\ref{sec:sage}). A
+        tree is \emph{kept} iff its leaf count equals \code{num\_leaves}, its
+        $V_3$ count is $\le\code{v3\_max}$, and its $V_2$ count is
+        $\le\code{v2\_max}$.
+\end{enumerate}
+
+\begin{gotcha}
+\label{gotcha:plus10}
+\textbf{The \code{+10} vertex-search cap can in principle undercut completeness at
+high order.} The line
+\code{max\_n = min(max\_n, num\_leaves + min(10, v2\_max + v3\_max))}
+(\file{loop\_diagram\_enumeration.py:143}) clamps the \emph{internal}-vertex
+budget to at most $10$. The proven bound only guarantees that all needed
+topologies fit within $\code{num\_leaves}+\code{v2\_max}+\code{v3\_max}$
+vertices. For small $(k,\ell)$ the proven budget is well under $10$, so the cap is
+inert. But at large enough orders $\code{v2\_max}+\code{v3\_max} > 10$, and then
+the cap could \emph{skip trees the proven bound says we need}, silently dropping
+topologies. This is a performance guard, not a proven-safe bound --- flag it for
+review at high order.
+\end{gotcha}
+
+\section{Stage 2: adding edges to make topologies}
+
+A tree has $L=0$. To reach $\ell$ loops we add exactly $\ell$ edges, then keep
+only the results that have exactly $\ell$ loops, satisfy the structural
+constraints, and are not isomorphic duplicates of something already kept.
+
+\subsection{Enumerating the edges to add}
+
+The candidate edges are produced by \code{generate\_edge\_multisets}
+(\file{loop\_diagram\_enumeration.py:166}):
+
+\begin{lstlisting}
+def generate_edge_multisets(all_vertices, ell):
+    if len(all_vertices) < 2:
+        return []
+    possible_edges = list(combinations(all_vertices, 2))
+    return list(combinations_with_replacement(possible_edges, ell))
+\end{lstlisting}
+
+The two \code{itertools} generators here matter (\S\ref{sec:itertools}):
+\code{combinations(all\_vertices, 2)} lists every \emph{possible} edge --- every
+unordered pair of distinct vertices. Then
+\code{combinations\_with\_replacement(possible\_edges, ell)} lists every
+\emph{multiset} of $\ell$ edges to add. ``With replacement'' is essential: it
+permits choosing the \emph{same} edge twice, which creates a double-edge between
+that pair of vertices --- a \emph{bubble}, the simplest one-loop topology. A
+plain \code{combinations} would forbid bubbles and the enumeration would be
+incomplete.
+
+The chosen edges are spliced onto a copy of the tree by \code{add\_edges\_to\_tree}
+(\file{loop\_diagram\_enumeration.py:173}), which builds the copy as a Sage
+\code{Graph(tree, multiedges=True, loops=False)} --- multi-edges \emph{allowed}
+(we just argued we need them), self-loops \emph{forbidden} (an edge from a vertex
+to itself is never physical here).
+
+\subsection{The structural constraints on a topology}
+
+Beyond having the right loop number, a topology must satisfy local structural
+rules so that it reduces to a unique canonical diagram. These are enforced by
+\code{check\_topology\_constraints(G, k, ell=None)}
+(\file{loop\_diagram\_enumeration.py:180}):
+
+\begin{lstlisting}
+def check_topology_constraints(G, k, ell=None):
+    leaves, internal, degree_2, degree_3plus = classify_vertices_sage(G)
+    if len(leaves) != k:
+        return False
+    if not G.is_connected():
+        return False
+    if ell is None or ell > 0:
+        if has_adjacent_degree2_sage(G, degree_2):
+            return False
+        if not check_deg3_has_non_deg2_neighbor(G, degree_3plus, degree_2):
+            return False
+        if not check_leaf_neighbors_not_all_deg2(G, leaves, degree_2):
+            return False
+    return True
+\end{lstlisting}
+
+The unconditional checks are the obvious ones: the final topology must have
+exactly $k$ external legs (\code{len(leaves) == k}), and it must be
+\code{is\_connected} (a diagram contributing to a \emph{connected} cumulant must
+be connected). The three conditional checks are all ``degree-2 pruning'' rules
+that remove redundant subdivisions of a single propagator line:
+
+\begin{description}
+  \item[No two adjacent degree-2 vertices] (\code{has\_adjacent\_degree2\_sage},
+        \file{loop\_diagram\_enumeration.py:41}). A chain of two degree-2 vertices
+        in a row is a redundant subdivision of one propagator line; only one
+        canonical representative is kept.
+  \item[Every degree-$\ge3$ vertex has a non-degree-2 neighbor]
+        (\code{check\_deg3\_has\_non\_deg2\_neighbor},
+        \file{loop\_diagram\_enumeration.py:50}). This returns \code{False} if
+        some branching vertex is surrounded \emph{only} by subdivision chains ---
+        an ``isolated hub.''
+  \item[Leaf neighbors are not all degree-2]
+        (\code{check\_leaf\_neighbors\_not\_all\_deg2},
+        \file{loop\_diagram\_enumeration.py:58}). An external leg should not
+        attach \emph{only} through a chain of degree-2 subdivisions.
+\end{description}
+
+\begin{gotcha}
+\label{gotcha:ell0-skip}
+The three degree-2 pruning checks are \emph{skipped at tree level} ($\ell=0$). The
+gate is \code{if ell is None or ell > 0:} (\file{loop\_diagram\_enumeration.py:189}),
+and the comment explains why: at $\ell=0$ ``the tree IS the topology --- no
+contraction ambiguity'' (\file{loop\_diagram\_enumeration.py:188}). The constraint
+set is therefore \emph{different} at tree level vs.\ loop level. Passing the wrong
+\code{ell} into this function would change which topologies survive --- a subtle
+correctness trap.
+\end{gotcha}
+
+\subsection{Processing one tree, then deduplicating}
+
+The unit of work is \code{process\_tree\_parallel(args)}
+(\file{loop\_diagram\_enumeration.py:203}), where \code{args = (tree, j,
+num\_leaves, k, ell)}. For each edge-multiset it adds the edges, demands
+\code{count\_cycles\_sage(G) == ell}, demands \code{check\_topology\_constraints},
+then relabels the survivor leaves-first and re-classifies:
+
+\begin{lstlisting}
+def process_tree_parallel(args):
+    tree, j, num_leaves, k, ell = args
+    local_candidates = []
+    all_verts = list(tree.vertices())
+    for edge_multiset in generate_edge_multisets(all_verts, ell):
+        G = add_edges_to_tree(tree, edge_multiset)
+        if count_cycles_sage(G) != ell:
+            continue
+        if not check_topology_constraints(G, k, ell=ell):
+            continue
+        G_relabeled, _ = relabel_leaves_first(G)
+        leaves_final, internal_final, _, _ = classify_vertices_sage(G_relabeled)
+        local_candidates.append((G_relabeled, leaves_final, internal_final))
+    return local_candidates
+\end{lstlisting}
+
+The name says ``parallel'' because this is the function submitted to the thread
+pool (\S\ref{sec:parallel}); it runs perfectly well serially too. The relabeling
+step \code{relabel\_leaves\_first} (\file{loop\_diagram\_enumeration.py:74})
+renumbers the graph so that \emph{leaves are $0\ldots|L|-1$ and internal vertices
+are $|L|\ldots|V|-1$}; it calls \code{G.relabel(dict, inplace=False)}, which
+(because of \code{inplace=False}) returns a \emph{new} relabeled graph rather than
+mutating the original. This canonical leaf-first labeling is the invariant the
+downstream code relies on (Gotcha~\ref{gotcha:leaffirst}).
+
+The candidates from all trees are then collapsed by
+\code{\_remove\_isomorphic\_undirected} (\file{loop\_diagram\_enumeration.py:219}):
+
+\begin{lstlisting}
+def _remove_isomorphic_undirected(candidates):
+    unique = []
+    for G, leaves, internal in candidates:
+        if not any(graphs_isomorphic_with_labels(G, leaves, G2, l2)
+                   for G2, l2, _ in unique):
+            unique.append((G, leaves, internal))
+    return unique
+\end{lstlisting}
+
+This is a classic $O(n^2)$ dedup: walk the candidates, keep one only if it is
+\emph{not} isomorphic to any already-kept representative. The isomorphism
+predicate \code{graphs\_isomorphic\_with\_labels} is the subject of
+\S\ref{sec:iso}; each comparison is cheap because it fast-rejects on cheap
+invariants before invoking the expensive test.
+
+\section{Stage 3: orienting the edges into prediagrams}
+
+An \msrjd{} edge is a \emph{directed} propagator, so each undirected topology must
+be oriented. With $|E|$ edges there are $2^{|E|}$ raw orientations; only the
+physically admissible ones survive.
+
+\subsection{Building one orientation}
+
+\code{orient\_edges(G, orientation\_bits)}
+(\file{loop\_diagram\_enumeration.py:264}) turns a bit-vector into a
+\code{DiGraph}:
+
+\begin{lstlisting}
+def orient_edges(G, orientation_bits):
+    D = DiGraph(multiedges=True, loops=False)
+    D.add_vertices(G.vertices())
+    for i, (u, v) in enumerate(G.edges(labels=False)):
+        if orientation_bits[i] == 0:
+            D.add_edge(u, v, i)
+        else:
+            D.add_edge(v, u, i)
+    return D
+\end{lstlisting}
+
+The $i$-th edge keeps its direction $u\to v$ when $\code{orientation\_bits}[i]=0$,
+and flips to $v\to u$ otherwise. Crucially \textbf{the edge index $i$ is used as
+the edge label} (\code{D.add\_edge(u, v, i)}). This preserves multi-edge identity:
+when a topology has a double edge between the same pair, the two parallel arrows
+remain distinguishable by their labels, and downstream code
+(\code{type\_assignment} iterates \code{D.edges()} as 3-tuples \code{(u, v,
+label)}) depends on those labels being present and distinct
+(Gotcha~\ref{gotcha:edgelabels}). The per-edge order comes from
+\code{G.edges(labels=False)}, which is deterministic for a fixed graph object.
+
+\subsection{The MSR-JD causality constraints}
+
+The admissible orientations are selected by \code{check\_orientation\_constraints}
+(\file{loop\_diagram\_enumeration.py:275}):
+
+\begin{lstlisting}
+def check_orientation_constraints(D, leaves):
+    leaves_set = set(leaves)
+    if not D.is_directed_acyclic():
+        return False
+    for v in D.vertices():
+        in_deg  = D.in_degree(v)
+        out_deg = D.out_degree(v)
+        if (in_deg + out_deg) == 1 and in_deg != 1:
+            return False
+        if out_deg == 0 and in_deg >= 2:
+            return False
+        if in_deg == 1 and out_deg == 1:
+            return False
+    sources = [v for v in D.vertices() if D.in_degree(v) == 0]
+    for v in sources:
+        if any(u in sources for u in D.neighbors_out(v)):
+            return False
+    return True
+\end{lstlisting}
+
+Each clause has a direct physical reading:
+
+\begin{description}
+  \item[Acyclic.] \code{D.is\_directed\_acyclic()} --- \msrjd{} response
+        propagators are causal, so a valid diagram has no directed cycle: you
+        cannot return to your own past.
+  \item[A leaf must be incoming.] If $\code{in\_deg}+\code{out\_deg}=1$ (i.e.\ the
+        vertex is a degree-1 leaf) we require $\code{in\_deg}=1$: the external leg
+        carries the field \emph{in}; the arrow points \emph{into} the leaf.
+  \item[No multi-line pure sink.] $\code{out\_deg}=0$ with $\code{in\_deg}\ge 2$ is
+        forbidden --- a pure sink absorbing two or more lines is not an admissible
+        \msrjd{} vertex.
+  \item[No pass-through degree-2 vertex.] $\code{in\_deg}=1$ and
+        $\code{out\_deg}=1$ is forbidden --- a one-in/one-out degree-2 vertex is
+        again a trivial line-subdivision.
+  \item[No two adjacent sources.] A \emph{source} is a vertex with
+        $\code{in\_deg}=0$ (and not a leaf). Two adjacent sources are forbidden:
+        sources represent noise-injection points, and two of them cannot be wired
+        directly together.
+\end{description}
+
+This is the \term{source / interaction / leaf} trichotomy that drives all the
+downstream physics: \textbf{sources} (in-degree 0, not a leaf) are
+\emph{noise-kernel} insertion points; \textbf{interaction vertices} (both in- and
+out-edges) are \emph{action-vertex} insertion points; \textbf{leaves} are
+\emph{external legs}. The next chapter and \code{degree\_scan.py} re-derive
+exactly this trichotomy.
+
+\subsection{Enumerating and deduplicating orientations}
+
+The brute-force orientation sweep is \code{enumerate\_orientations(G, leaves)}
+(\file{loop\_diagram\_enumeration.py:295}):
+
+\begin{lstlisting}
+def enumerate_orientations(G, leaves):
+    edges = list(G.edges(labels=False))
+    return [orient_edges(G, [(bits >> i) & 1 for i in range(len(edges))])
+            for bits in range(2 ** len(edges))
+            if check_orientation_constraints(
+                orient_edges(G, [(bits >> i) & 1 for i in range(len(edges))]),
+                leaves)]
+\end{lstlisting}
+
+It iterates \code{bits} over $0 \ldots 2^{|E|}-1$, decoding each integer into a
+length-$|E|$ orientation vector via the bit-extraction \code{(bits >> i) \& 1}
+(shift right by $i$, mask the low bit), builds the \code{DiGraph}, and keeps it
+iff the constraints pass.
+
+\begin{gotcha}
+\label{gotcha:double-build}
+\textbf{\code{enumerate\_orientations} builds each candidate \code{DiGraph}
+twice} (\file{loop\_diagram\_enumeration.py:297--301}) --- once \emph{inside} the
+\code{check\_orientation\_constraints(...)} call, and once again to materialize
+the kept result in the list comprehension. This is functionally correct but
+doubles the orientation-construction cost; a clean rewrite would build once and
+reuse.
+\end{gotcha}
+
+The oriented candidates are deduplicated by \code{remove\_isomorphic\_directed}
+(\file{loop\_diagram\_enumeration.py:304}) --- the same $O(n^2)$ pattern as the
+undirected case, but using the \emph{directed} isomorphism predicate
+\code{directed\_graphs\_isomorphic\_with\_labels}, in which arrows must match too.
+Each result is carried as the final 4-tuple \code{(D, G, leaves, internal)}.
+
+\section{Graph isomorphism and nauty, from scratch}
+\label{sec:iso}
+
+The dedup steps in both stages rest on \emph{graph isomorphism}, which deserves a
+proper introduction since it is where almost all the compute time goes at high
+order.
+
+\subsection{Why dedup is needed, and what isomorphism means}
+
+After adding edges, and again after orienting, the same \emph{abstract} graph is
+produced many times with different vertex \emph{labels} --- ``vertex $5$ here is
+vertex $7$ there.'' Two graphs are \term{isomorphic} if one can be turned into
+the other purely by \emph{relabeling vertices}: a bijection of vertices that maps
+edges to edges. For Feynman-diagram bookkeeping, isomorphic graphs are the
+\emph{same diagram} and must be counted exactly once.
+
+Deciding isomorphism naively means trying all $n!$ relabelings --- hopeless even
+for modest $n$. The classic engine that does it efficiently is \term{nauty}
+(``No AUTomorphisms, Yes?''), by Brendan~McKay. Nauty computes a \emph{canonical
+form}: a deterministic relabeling such that two graphs are isomorphic \emph{iff}
+their canonical forms are \emph{literally identical}. It does this by iteratively
+\emph{refining a coloring} of the vertices --- partitioning them by degree, then
+by their neighbors' degrees, and so on --- and backtracking through the residual
+symmetries, pruning the search with the automorphisms it discovers along the way.
+
+\begin{note}
+You will not see the string \code{nauty} anywhere in this code --- it lives
+\emph{inside} SageMath. Every \code{is\_isomorphic} call routes to nauty's
+canonical-form machinery. That is the \emph{only} graph-isomorphism technology
+this subsystem relies on, and it is what makes deduplication tractable at all.
+\end{note}
+
+\subsection{Colored isomorphism: leaves are not interchangeable}
+
+A plain isomorphism may map \emph{any} vertex to any other. But in our diagrams
+that is too permissive: \textbf{a leaf must not be mapped onto an internal
+vertex}. An external leg and an interaction point play different physical roles,
+so a relabeling that swaps the two is \emph{not} a legal symmetry.
+
+The fix is \term{vertex coloring}. Assign color $0$ to leaves and color $1$ to
+internal vertices, and ask for a \emph{color-preserving} isomorphism: nauty/Sage
+honors the coloring as an initial vertex partition and only searches over
+relabelings that keep colors fixed. The undirected predicate
+\code{graphs\_isomorphic\_with\_labels} (\file{loop\_diagram\_enumeration.py:84})
+implements exactly this:
+
+\begin{lstlisting}
+def graphs_isomorphic_with_labels(G1, leaves1, G2, leaves2):
+    if G1.order() != G2.order() or G1.size() != G2.size():
+        return False
+    if len(leaves1) != len(leaves2):
+        return False
+    leaves1_set = set(leaves1)
+    leaves2_set = set(leaves2)
+    G1c = G1.copy(); G2c = G2.copy()
+    for v in G1.vertices():
+        G1c.set_vertex(v, 0 if v in leaves1_set else 1)
+    for v in G2.vertices():
+        G2c.set_vertex(v, 0 if v in leaves2_set else 1)
+    return G1c.is_isomorphic(G2c)
+\end{lstlisting}
+
+Three things to read here. First, the \emph{fast rejects}: different vertex count
+(\code{order}), different edge count (\code{size}), or different leaf count
+returns \code{False} immediately, without invoking nauty. These cheap invariants
+are what keep the $O(n^2)$ dedup affordable at small orders. Second, the coloring:
+\code{set\_vertex(v, 0\_or\_1)} attaches a payload to each vertex that Sage
+interprets as its color. Third, the test itself: \code{G1c.is\_isomorphic(G2c)} is
+now a color-preserving comparison, so leaves can only map to leaves.
+
+The directed analog \code{directed\_graphs\_isomorphic\_with\_labels}
+(\file{loop\_diagram\_enumeration.py:99}) is structurally identical; the only
+difference is that the final \code{is\_isomorphic} on \code{DiGraph}s also
+requires the arrows to match.
+
+\section{External tools, from first principles}
+
+This subsystem touches SageMath heavily, three Python standard-library modules,
+and --- only transitively, through \code{degree\_scan.py} --- the project's own
+serialization and \code{FieldTheory}. It does \emph{not} itself import
+\code{sympy}, \code{scipy}, \code{numba}, or \code{networkx}. Each tool is
+explained from scratch below; the imports at the top of
+\file{loop\_diagram\_enumeration.py:22--25} are:
+
+\begin{lstlisting}
+from sage.all import *
+from itertools import combinations, combinations_with_replacement
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+\end{lstlisting}
+
+\subsection{SageMath}
+\label{sec:sage}
+
+\term{SageMath} is a large open-source mathematics system built on top of Python.
+It bundles dozens of specialized math libraries (Pari, GAP, Singular, nauty,
+NetworkX, NumPy, $\ldots$) behind a uniform Python API, and adds its own types
+for exact arithmetic, symbolic expressions (the ``Symbolic Ring'' \code{SR}),
+and --- most relevant here --- \emph{graph theory}: the \code{Graph}, \code{DiGraph},
+and \code{graphs.*} generator classes.
+
+Because Sage replaces some Python built-ins (e.g.\ integer literals become Sage
+\code{Integer}s) and needs its bundled libraries on the path, \emph{this module
+can only run inside a SageMath kernel/interpreter}. The module docstring says so
+plainly --- \code{"Requires a SageMath kernel."}
+(\file{loop\_diagram\_enumeration.py:7}) --- and the tests are run via \code{sage
+-python -m pytest}. The whole API is pulled in with the conventional wildcard
+import \code{from sage.all import *} (\file{loop\_diagram\_enumeration.py:22}),
+which brings \code{Graph}, \code{DiGraph}, \code{graphs}, \code{Integer}, and the
+rest into scope.
+
+The specific Sage features this code uses:
+
+\begin{itemize}
+  \item \code{graphs.trees(n)} (\file{loop\_diagram\_enumeration.py:149}) --- a
+        \emph{generator} yielding every non-isomorphic tree on $n$ vertices,
+        exactly once each. This is the brute-force engine of the tree stage; Sage
+        generates these efficiently so the user never enumerates trees by hand.
+  \item \code{Graph(tree, multiedges=True, loops=False)}
+        (\file{loop\_diagram\_enumeration.py:174}) --- an undirected graph that
+        \emph{allows} multiple edges between the same pair (\code{multiedges=True},
+        needed because a loop-edge can double an existing edge to make a bubble)
+        but \emph{forbids} self-loops (\code{loops=False}).
+  \item \code{DiGraph(multiedges=True, loops=False)}
+        (\file{loop\_diagram\_enumeration.py:265}) --- the directed analog, used to
+        hold an oriented topology (a prediagram).
+  \item \textbf{Inspection methods:} \code{G.vertices()}, \code{G.edges(labels=...)},
+        \code{G.degree(v)}, \code{G.neighbors(v)}, \code{G.is\_connected()},
+        \code{G.order()} ($=|V|$), \code{G.size()} ($=|E|$), \code{G.add\_edge(u, v)},
+        \code{G.copy()}, \code{G.relabel(dict, inplace=False)}.
+  \item \code{G.set\_vertex(v, value)} (\file{loop\_diagram\_enumeration.py:93})
+        --- attaches an arbitrary payload (here the color $0$/$1$) to a vertex;
+        Sage's isomorphism test treats these payloads as a vertex coloring.
+  \item \code{G.is\_isomorphic(H)} (\file{loop\_diagram\_enumeration.py:96}) ---
+        the \textbf{nauty-backed} isomorphism test; with vertex colors set first
+        it becomes the color-preserving test of \S\ref{sec:iso}.
+  \item \textbf{DiGraph-specific:} \code{D.add\_vertices(...)}, \code{D.add\_edge(u,
+        v, label)}, \code{D.in\_degree(v)}, \code{D.out\_degree(v)},
+        \code{D.is\_directed\_acyclic()}, \code{D.neighbors\_out(v)}.
+  \item \textbf{Plotting:} \code{graphics\_array}, \code{G.plot(...)},
+        \code{.show()}, \code{.save()} --- used only by the \code{\_plot\_*}
+        helpers and the \code{show\_*} API for inline notebook display, not by the
+        data pipeline.
+\end{itemize}
+
+\subsection{\texttt{itertools}}
+\label{sec:itertools}
+
+A Python standard-library module of memory-efficient combinatorial iterators. Two
+functions are used:
+
+\begin{itemize}
+  \item \code{combinations(iterable, r)} yields every $r$-subset (no repeats,
+        order ignored). In \code{generate\_edge\_multisets}
+        (\file{loop\_diagram\_enumeration.py:169}),
+        \code{combinations(all\_vertices, 2)} enumerates every possible edge ---
+        every unordered pair of distinct vertices.
+  \item \code{combinations\_with\_replacement(iterable, r)} is like
+        \code{combinations} but \emph{allows the same element more than once}. At
+        \file{loop\_diagram\_enumeration.py:170},
+        \code{combinations\_with\_replacement(possible\_edges, ell)} enumerates
+        every multiset of $\ell$ edges to add. ``With replacement'' is what permits
+        adding the \emph{same} edge twice --- the double-edge that makes a bubble.
+\end{itemize}
+
+\subsection{\texttt{collections}}
+
+\begin{itemize}
+  \item \code{defaultdict(list)} --- a dict that auto-creates an empty list on
+        first access to a missing key. Used in \code{\_plot\_trees}
+        (\file{loop\_diagram\_enumeration.py:349}) to bucket trees by their $j$
+        value for grouped display.
+  \item \code{Counter} is imported (\file{loop\_diagram\_enumeration.py:24}) but
+        \textbf{not actually referenced} anywhere in the file --- a harmless dead
+        import (see Gotcha~\ref{gotcha:deadimport}).
+\end{itemize}
+
+\subsection{\texttt{concurrent.futures}}
+\label{sec:parallel}
+
+\begin{itemize}
+  \item \code{ThreadPoolExecutor(max\_workers=n)} runs callables on a pool of OS
+        \emph{threads} (not processes). Used in \code{\_enumerate\_topologies\_raw}
+        (\file{loop\_diagram\_enumeration.py:248}) and
+        \code{\_enumerate\_prediagrams\_raw}
+        (\file{loop\_diagram\_enumeration.py:332}) to fan the per-tree /
+        per-topology work across threads when \code{n\_threads > 1}.
+  \item \code{as\_completed(futures)} yields each submitted future \emph{as it
+        finishes} (not in submission order), so results are collected as soon as
+        they are ready.
+\end{itemize}
+
+\begin{gotcha}
+\label{gotcha:threads}
+\textbf{Thread-only parallelism is intentional and load-bearing for safety.} The
+choice of a thread pool over a process/fork pool is deliberate. Per the project's
+macOS fork-safety history, \emph{fork-based multiprocessing crashes the user's
+machine} when a kernel forks after BLAS/Cocoa/matplotlib initialization. Threads
+avoid \code{fork} entirely. The trade-off is the Python GIL --- but Sage's graph
+routines spend most of their time in compiled C (nauty, the graph backend), which
+\emph{releases} the GIL, so threads still parallelize the heavy isomorphism work.
+The default is \code{n\_threads=1} (serial) everywhere; the pool only activates
+when the caller opts in. Do \textbf{not} ``optimize'' this to a
+\code{ProcessPoolExecutor} or fork --- it can crash the machine.
+\end{gotcha}
+
+\section{The public API}
+\label{sec:api}
+
+The module exposes a small, regular surface. The \code{enumerate\_*} functions
+return data; the \code{show\_*} variants additionally render the graphs inline in
+a notebook and return just the count(s). The colors quoted below are documented in
+the corresponding \code{show\_*} docstrings.
+
+\begin{itemize}
+  \item \code{enumerate\_all(k, ell, n\_threads=1, max\_vertices\_search=50,
+        verbose=True)} (\file{loop\_diagram\_enumeration.py:434}) runs the full
+        pipeline \emph{once}, sharing the tree list across stages: it passes
+        \code{trees\_with\_j=trees} into \code{\_enumerate\_topologies\_raw} so the
+        trees are not regenerated. Returns \code{(trees, topologies, prediagrams,
+        counts)} where \code{counts = \{n\_trees, n\_topologies, n\_prediagrams\}}.
+  \item \code{enumerate\_trees(k, ell, ...)}
+        (\file{loop\_diagram\_enumeration.py:478}) --- a thin wrapper over
+        \code{generate\_trees\_with\_constraints}; returns \code{(trees, count)}.
+  \item \code{enumerate\_topologies(k, ell, ...)}
+        (\file{loop\_diagram\_enumeration.py:498}) --- returns \code{(topologies,
+        count)}.
+  \item \code{enumerate\_prediagrams(k, ell, ...)}
+        (\file{loop\_diagram\_enumeration.py:515}) --- runs topologies then
+        orientations; returns \code{(prediagrams, count)}. \textbf{This is the
+        canonical entry point the rest of the pipeline calls.}
+  \item \code{show\_all} / \code{show\_trees} / \code{show\_topologies} /
+        \code{show\_prediagrams} (\file{loop\_diagram\_enumeration.py:462},
+        \file{:535}, \file{:552}, \file{:569}) --- display each non-empty stage and
+        return the count(s). The prediagram plot colors \emph{leaves} black,
+        \emph{sources} red, and other internal vertices light blue, recomputing
+        sources on the fly as the vertices with \code{in\_degree == 0}.
+\end{itemize}
+
+\begin{note}
+The shared-tree optimization in \code{enumerate\_all} matters because tree
+generation walks \code{graphs.trees(n)} for every $n$ in the search window, which
+is not free. Running the three stages through \code{enumerate\_all} (rather than
+calling \code{enumerate\_trees}, \code{enumerate\_topologies}, and
+\code{enumerate\_prediagrams} separately) generates the trees exactly once and
+threads them through.
+\end{note}
+
+\section{The degree-scan feedback bridge (build phase~C)}
+\label{sec:degree-scan}
+
+The second file, \file{msrjd/enumeration/degree\_scan.py}, is small but
+important: it closes the loop between the \emph{topological} world (this chapter)
+and the \emph{algebraic} world (the Taylor-expanded action of Phase~1). The
+generator does not look at the action --- but the prediagrams it produces may
+\emph{demand} interaction monomials of a higher degree than the action was
+expanded to. Phase~C detects that and triggers a re-expansion.
+
+Unlike the generator, this file imports no third-party libraries --- only project
+internals (\file{degree\_scan.py:13--14}):
+
+\begin{lstlisting}
+from msrjd.core.serialize import load_theory, save_theory, reload_model
+from msrjd.core.field_theory import FieldTheory
+\end{lstlisting}
+
+\subsection{Reading the degree a theory must support}
+
+\code{max\_vertex\_degree(prediagrams)} (\file{degree\_scan.py:17}) returns the
+maximum total degree $\code{in\_degree}(v)+\code{out\_degree}(v)$ over all
+\emph{non-leaf} vertices across all prediagrams (or $0$ if none):
+
+\begin{lstlisting}
+def max_vertex_degree(prediagrams):
+    max_deg = 0
+    for (D, G, leaves, internal) in prediagrams:
+        leaf_set = set(leaves)
+        for v in D.vertices():
+            if v in leaf_set:
+                continue
+            deg = D.in_degree(v) + D.out_degree(v)
+            if deg > max_deg:
+                max_deg = deg
+    return max_deg
+\end{lstlisting}
+
+This is the \emph{required Taylor order}: a degree-$d$ internal vertex needs a
+$d$-leg interaction monomial, which exists only if the action was expanded to
+order $d$. Its sibling \code{scan\_source\_vertices(prediagrams)}
+(\file{degree\_scan.py:45}) returns the \emph{set of out-degrees} exhibited by
+\emph{source} vertices (non-leaf, \code{in\_degree == 0}) --- these out-degrees
+tell the noise-kernel machinery which noise arities are needed.
+
+\subsection{Comparing to the saved order, and re-expanding}
+
+\code{check\_taylor\_order(meta, max\_degree)} (\file{degree\_scan.py:70}) is a
+one-liner comparison returning \code{(sufficient, current\_order,
+required\_order)} with $\code{sufficient} = (\code{meta['taylor\_order']} \ge
+\code{max\_degree})$. The driver is \code{ensure\_taylor\_order(theory\_path,
+prediagrams, project\_root=None)} (\file{degree\_scan.py:91}):
+
+\begin{lstlisting}
+def ensure_taylor_order(theory_path, prediagrams, project_root=None):
+    meta, data = load_theory(theory_path)
+    max_deg = max_vertex_degree(prediagrams)
+    sufficient, current, required = check_taylor_order(meta, max_deg)
+    if sufficient:
+        return meta, data
+    # Re-expand at the required order
+    print(f'Re-expanding theory from order {current} to {required}...')
+    model = reload_model(meta, project_root=project_root)
+    ft = FieldTheory(model, taylor_order=required)
+    ft.expand()
+    save_theory(
+        theory_path, ft,
+        propagator_data=None,  # propagator must be recomputed separately
+        stationarity=meta.get('stationarity', True),
+        model_file=meta.get('model_file'),
+        model_var_name=meta.get('model_var_name'),
+    )
+    print(f'Theory re-expanded and saved. Note: propagator data must be recomputed.')
+    return load_theory(theory_path)
+\end{lstlisting}
+
+In the common case (\code{sufficient == True}) the function returns the
+already-loaded theory immediately and never touches \code{FieldTheory}. Only on
+the re-expansion branch does it reload the model definition
+(\code{reload\_model}), rebuild a \code{FieldTheory(model,
+taylor\_order=required)}, call \code{.expand()}, re-save, and re-read from disk.
+The supporting serialization calls are: \code{load\_theory(path)} returning
+\code{(meta, data)} and \code{save\_theory(path, ft, ...)} (read/write a
+previously-expanded theory, where \code{meta} carries \code{meta['taylor\_order']}
+and, on the re-expansion path, \code{meta['stationarity']},
+\code{meta['model\_file']}, \code{meta['model\_var\_name']}); and
+\code{reload\_model(meta, project\_root=...)} (re-import the model definition from
+\code{meta['model\_file']} / \code{meta['model\_var\_name']}).
+
+\begin{gotcha}
+\label{gotcha:stale-prop}
+\textbf{\code{ensure\_taylor\_order} leaves the propagator stale after
+re-expansion.} It passes \code{propagator\_data=None} to \code{save\_theory} and
+prints ``propagator data must be recomputed''
+(\file{degree\_scan.py:128--133}). A caller that re-expands and then immediately
+uses the propagator without recomputing it will get a wrong or missing
+propagator. This is by design --- propagator computation is a separate phase ---
+but it is an easy footgun.
+\end{gotcha}
+
+\section{Data structures and the downstream contract}
+
+The subsystem passes around a small number of tuple shapes; no dataclasses are
+defined here (the \code{TypedDiagram} dataclass lives downstream in
+\code{type\_assignment.py}).
+
+\begin{description}
+  \item[Tree record] \code{(tree, j, num\_leaves)} --- \code{tree} a Sage
+        \code{Graph} (acyclic); \code{j} the leaf surplus; \code{num\_leaves =
+        k + j} the leaf count.
+  \item[Topology record] \code{(G, leaves, internal)} --- \code{G} a Sage
+        \code{Graph} (undirected, multi-edges allowed, exactly $\ell$ loops),
+        relabeled leaves-first; \code{leaves} the vertex IDs $0\ldots k-1$;
+        \code{internal} the remaining IDs.
+  \item[Prediagram record] \code{(D, G, leaves, internal)} --- \emph{the} output
+        object. \code{D} a Sage \code{DiGraph} (the oriented graph, edge labels
+        carrying the original edge index for multi-edge identity); \code{G} the
+        underlying undirected topology; \code{leaves} / \code{internal} as above.
+        This 4-tuple is exactly what
+        \code{type\_assignment.enumerate\_typed\_diagrams} unpacks and what
+        \code{degree\_scan.*} iterate over.
+  \item[Counts dict] \code{\{'n\_trees', 'n\_topologies', 'n\_prediagrams'\}},
+        built in \code{enumerate\_all} (\file{loop\_diagram\_enumeration.py:454}).
+  \item[Edge-multiset] a tuple of $\ell$ vertex-pairs, e.g.\ \code{((0,3),(0,3))}
+        for a double-edge bubble between vertices $0$ and $3$.
+  \item[Orientation vector] a length-$|E|$ list of bits ($0$ = keep $(u,v)$,
+        $1$ = flip to $(v,u)$), produced by \code{(bits >> i) \& 1}.
+\end{description}
+
+The end-to-end flow of a single \code{enumerate\_prediagrams(k, ell)} call is then:
+
+\begin{lstlisting}[style=console]
+  (k, ell)
+     |  generate_trees_with_constraints
+  [ (tree, j, num_leaves), ... ]                      trees passing degree bounds
+     |  process_tree_parallel  (add ell edges; demand L==ell; constraints;
+     |                          relabel leaves-first)
+  [ (G, leaves, internal), ... ]  (with isomorphic duplicates)
+     |  _remove_isomorphic_undirected   (nauty, leaf-colored)
+  [ (G, leaves, internal), ... ]  unique TOPOLOGIES
+     |  enumerate_orientations  (2^|E| orientations, keep admissible)
+  [ (D, G, leaves, internal), ... ]  (with isomorphic duplicates)
+     |  remove_isomorphic_directed   (nauty, leaf-colored, directed)
+  [ (D, G, leaves, internal), ... ]  unique PREDIAGRAMS  --->  downstream
+\end{lstlisting}
+
+\section{A worked walk-through: \texorpdfstring{$(k,\ell)=(2,1)$}{(k,l)=(2,1)}}
+
+It helps to trace the smallest non-trivial case --- the one-loop correction to a
+two-point function. We have $k=2$, $\ell=1$, so by \eqref{eq:jmax} the surplus
+runs $j\in\{0,1\}$.
+
+\begin{itemize}
+  \item For $j=0$: $\code{num\_leaves}=2$, $\code{v3\_max}=k+j-2=0$ (no branching
+        vertices allowed), $\code{v2\_max}=k+3\ell-j-1=4$. The trees here are
+        simple paths with two leaves and a short chain of degree-2 vertices
+        between them.
+  \item For $j=1$: $\code{num\_leaves}=3$, $\code{v3\_max}=1$ (one branching
+        vertex allowed --- a ``Y'' joint), $\code{v2\_max}=3$. The third leaf is
+        the one the single loop-edge will consume.
+\end{itemize}
+
+Each surviving tree then has $\ell=1$ extra edge added in every
+\code{combinations\_with\_replacement} way (including the double-edge that makes a
+bubble), and only the results with loop number exactly $1$ that pass the
+structural constraints are kept. After leaf-colored deduplication this yields
+\textbf{9 topologies} --- the anchor number recorded in the code comment at
+\file{loop\_diagram\_enumeration.py:138}. Orienting those 9 topologies under the
+causality constraints of \S\ref{sec:iso} and deduplicating again gives the final
+prediagram list that flows downstream to type assignment. (For reference, the
+comment also records $(3,1)\to 67$ and $(2,2)\to 289$ topologies.)
+
+\section{Performance notes and known limitations}
+
+We collect the sharp edges that were flagged inline, plus the remaining
+performance caveats, so they live in one place.
+
+\begin{gotcha}
+\label{gotcha:deadimport}
+\code{Counter} is imported but unused (\file{loop\_diagram\_enumeration.py:24}) ---
+only \code{defaultdict} is referenced. Harmless dead import.
+\end{gotcha}
+
+\begin{gotcha}
+\label{gotcha:on2}
+\textbf{$O(n^2)$ isomorphism dedup.} Both \code{\_remove\_isomorphic\_undirected}
+and \code{remove\_isomorphic\_directed} compare each new candidate against
+\emph{every} kept representative. The cheap invariant fast-rejects (order, size,
+leaf-count) keep this affordable at small orders, but the comparison count is
+quadratic in the candidate count and will dominate at high order. A canonical-form
+bucket (Sage's \code{Graph.canonical\_label}, hashing the canonical form and
+bucketing) would make it near-linear; that is not done here.
+\end{gotcha}
+
+\begin{gotcha}
+\label{gotcha:edgelabels}
+\textbf{Edge labels carry the original edge index.} \code{orient\_edges} adds each
+arrow as \code{D.add\_edge(u, v, i)} with \code{i} the edge index
+(\file{loop\_diagram\_enumeration.py:269--271}). This is what preserves multi-edge
+identity through orientation and into the prediagram \code{D}. Downstream
+multi-edge handling (\code{type\_assignment} iterating \code{D.edges()} as 3-tuples
+\code{(u, v, label)}) depends on these labels being present and distinct.
+\end{gotcha}
+
+\begin{gotcha}
+\label{gotcha:leaffirst}
+\textbf{The leaf-first labeling is assumed downstream.} \code{relabel\_leaves\_first}
+is applied to every accepted topology inside \code{process\_tree\_parallel}
+(\file{loop\_diagram\_enumeration.py:213}), and downstream code
+(\code{type\_assignment}, \code{degree\_scan}) treats \code{leaves} as the
+canonical external-leg set, relying on the relabeling having been done. Any code
+path that builds prediagrams \emph{without} going through
+\code{process\_tree\_parallel} (e.g.\ hand-built mocks in tests) will not have
+leaf-first labels.
+\end{gotcha}
+
+\begin{gotcha}
+\label{gotcha:sentinel}
+\code{count\_cycles\_sage} returns $-1$ for a disconnected graph
+(\file{loop\_diagram\_enumeration.py:69--71}), which is not $\ell$ for any
+$\ell\ge 0$; the disconnected graph is therefore rejected automatically by the
+\code{== ell} test in \code{process\_tree\_parallel}. The $-1$ is a deliberate
+sentinel, not an error.
+\end{gotcha}
+
+The remaining structural limitations were stated in context and are recalled here
+for completeness: the \code{+10} vertex-search cap (Gotcha~\ref{gotcha:plus10})
+can in principle undercut the proven completeness bound at high order; the
+double-build in \code{enumerate\_orientations} (Gotcha~\ref{gotcha:double-build})
+doubles the orientation-construction cost; the $\ell=0$ constraint skip
+(Gotcha~\ref{gotcha:ell0-skip}) means the topology constraint set differs at tree
+level; and the whole module requires a SageMath kernel (\S\ref{sec:sage}). None of
+these affect correctness at the small orders the pipeline routinely runs, but all
+are worth keeping in view when pushing $\ell$ to three loops and beyond.
+
+\section{Where to go next}
+
+The prediagram list this chapter produces is consumed in
+Chapter~\ref{ch:type-assignment}, where each bare \code{(D, G, leaves, internal)}
+tuple is walked and every consistent assignment of propagators to edges and
+interaction monomials to vertices is tried, the invalid ones discarded, and a
+fully-typed \code{TypedDiagram} emitted for each survivor. That is the step where
+the physics --- the response-versus-correlation propagator distinction, the
+specific vertices the action provides, and the symmetry factor $\Sym(\Gamma)$ ---
+finally re-enters. The completeness guaranteed here (every shape) and the validity
+guaranteed there (only labelings the action supports) together ensure the diagram
+sum the engine evaluates is exactly the right one.

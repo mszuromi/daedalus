@@ -1,0 +1,1098 @@
+% ---------------------------------------------------------------------
+%  Chapter 21 : The Theory-Builder UI
+% ---------------------------------------------------------------------
+\chapter{The Theory-Builder UI}\label{ch:ui}
+
+Every other chapter of this manual assumes a \file{theories/<name>.theory.py}
+file already exists --- a small Python module with a \code{build()} function that
+chains a fluent builder (\code{TemporalTheoryBuilder(...)} or
+\code{SpatialTheoryBuilder(...)}, then \code{.physical\_field(...)},
+\code{.parameter(...)}, \code{.set\_action\_text(...)}, \code{.equation(...)},
+\code{.build()}) into a model dict. The chapters on the theory specification
+(Chapter~\ref{ch:theory-spec}) and on theory files (Chapter~\ref{ch:theory-files})
+teach you to write those modules by hand. This chapter is about the alternative:
+a point-and-click form, rendered \emph{inside the notebook}, that writes the file
+for you.
+
+The form is the class \code{TheoryUI}, and it lives in two files:
+\file{pipeline/ui/main.py} (the form itself --- the ten-tab editor, the
+validation sidebar, the buttons) and \file{pipeline/ui/widgets.py} (the small
+reusable widget primitives the tabs are built from). The entire subsystem is
+written on top of one external library, \term{ipywidgets}, the Jupyter project's
+interactive-widget toolkit. If you have never used ipywidgets, this chapter
+teaches you exactly as much of it as you need, from the ground up.
+
+The single most important thing to understand before we start is what the UI
+\emph{does not} do. \term{It does no physics.} It never enumerates a diagram,
+never builds a propagator, never solves a saddle (with one small, optional
+exception we will meet at the end). It is pure \emph{input specification}: it
+collects the state of a form, assembles it into a plain Python dictionary --- the
+\term{spec dict} --- and hands that dictionary to the serializer
+\file{pipeline/theory\_serialize.py}, which renders it to a \code{.theory.py}
+source file on disk. \textbf{Load} reverses the trip: it parses a saved file back
+into a spec dict and repopulates the widgets. That is the whole job.
+
+\begin{note}
+Why a GUI at all, when the builder API is only a dozen lines? Because writing
+those lines \emph{correctly} requires knowing the framework's conventions that
+are easy to get wrong: the auto-generated response field \code{<name>t}, the
+saddle parameter \code{<name>star}, the action grammar (\code{Dt} as a
+time-derivative operator, \code{for i in pop} comprehensions, \code{Laplacian} in
+spatial theories), and a pile of optional knobs (boundary conditions, Dyson
+dressing order, operator-IR mode, stability analysis, run metadata). The form
+surfaces every one of those as a labelled widget with help text, and a live
+sidebar flags undeclared names and reserved-symbol collisions \emph{as you type}
+--- so a typo is caught at authoring time instead of blowing up later with an
+opaque \code{Sage} error deep in the engine.
+\end{note}
+
+\section{Where the UI sits in the pipeline}
+
+The UI is the front door. A user opens the notebook
+\file{notebooks/theory\_builder.ipynb}, runs one cell, fills in tabs, and clicks
+\textbf{Save theory file}. From there the deliverable --- the \code{.theory.py}
+file --- flows downstream exactly as if it had been hand-written. The data path
+is short and one-directional on save, and reversible on load:
+
+\begin{center}
+\begin{tikzpicture}[
+    node distance=6mm,
+    box/.style={draw, rounded corners=2pt, align=center, font=\small,
+                inner sep=5pt, fill=codebg},
+    lbl/.style={font=\scriptsize\itshape, color=cmt},
+    arr/.style={-{Stealth[length=2.4mm]}, thick}]
+  \node[box] (nb) {\code{theory\_builder.ipynb}\\\code{TheoryUI().show()}};
+  \node[box, below=of nb] (collect) {\code{TheoryUI.\_collect()}\\
+        snapshot form $\rightarrow$ \textbf{spec dict}};
+  \node[box, below=of collect] (ser) {\code{theory\_serialize}\\
+        \code{save\_theory\_to\_file(spec, dir)}};
+  \node[box, below=of ser] (file) {\file{theories/<slug>.theory.py}\\
+        the deliverable on disk};
+  \node[box, below=of file] (runner) {\code{theory\_runner.ipynb}\\
+        \code{build()} $\rightarrow$ \code{compute\_cumulants(...)}};
+  \draw[arr] (nb) -- (collect) node[lbl, midway, right] {user types in 10 tabs};
+  \draw[arr] (collect) -- (ser) node[lbl, midway, right] {Save};
+  \draw[arr] (ser) -- (file);
+  \draw[arr] (file) -- (runner) node[lbl, midway, right] {the rest of the pipeline};
+  % Load reverse arrow
+  \draw[arr, dashed, color=Maroon] (file.west) to[out=180, in=180]
+        node[lbl, midway, left, align=right] {Load:\\\code{load\_spec\_from\_file}\\
+        $\rightarrow$ repopulate} (collect.west);
+\end{tikzpicture}
+\end{center}
+
+\begin{itemize}
+  \item \textbf{What feeds the UI:} the \emph{user} (keyboard input), and --- on
+        \textbf{Load} --- an existing \file{theories/*.theory.py} file, parsed
+        back into a spec dict by \code{load\_spec\_from\_file}.
+  \item \textbf{What consumes the UI's output:} \code{pipeline.theory\_serialize}
+        (the serializer that turns the spec dict into a \code{.theory.py} source
+        string). The file in turn is consumed by the runner notebook (and the
+        \code{nb\_support} engine), which calls \code{build()} to get the model
+        dict and feeds it to \code{compute\_cumulants}. The UI also writes a
+        one-line scratch file \file{.theories/.last\_built} so the
+        \textbf{Open in runner notebook} button can hand the runner the
+        just-saved name.
+\end{itemize}
+
+The boundary is clean: the UI's single output is the spec dict, and (via the
+serializer) the \code{.theory.py} file. Everything downstream of that file is the
+subject of the other chapters.
+
+\section{Launching it}
+
+The entire UI is two lines in a notebook cell. The package
+\file{pipeline/ui/\_\_init\_\_.py} re-exports the class, so:
+
+\begin{lstlisting}
+from pipeline.ui import TheoryUI
+TheoryUI().show()
+\end{lstlisting}
+
+That is the contents of the one cell in \file{notebooks/theory\_builder.ipynb}.
+Constructing \code{TheoryUI()} builds every widget; \code{.show()} renders the
+form into the cell's output area. The form then stays \emph{live}: typing in a box
+or clicking a button runs Python on the kernel without re-executing the cell.
+
+Two things happen the first time you call \code{show()}, and they are worth
+knowing because they explain a small surprise later. Reading
+\file{pipeline/ui/main.py:2311}:
+
+\begin{lstlisting}
+def show(self) -> None:
+    global _CSS_INJECTED
+    if not _CSS_INJECTED:
+        display(HTML(_THEORY_BUILDER_CSS))
+        _CSS_INJECTED = True
+    try:
+        self._refresh_validation()
+    except Exception:
+        pass
+    display(self._root)
+\end{lstlisting}
+
+First, it injects an inline stylesheet --- one big \code{<style>} block in the
+\code{tb-*} CSS namespace (\file{pipeline/ui/main.py:63}) --- but only \emph{once
+per kernel session}, guarded by the module-level flag \code{\_CSS\_INJECTED}
+(\file{pipeline/ui/main.py:244}). Second, it runs the validator a single time so
+the sidebar shows real state on first render rather than placeholder text. Then it
+\code{display}s the root container.
+
+\begin{gotcha}
+Because the CSS injection is guarded by a module-level flag, multiple
+\code{TheoryUI()} instances in one kernel share the one stylesheet. If you edit
+\code{\_THEORY\_BUILDER\_CSS} in the source, you must \emph{restart the kernel} to
+see the change --- re-running the cell will not re-inject it. This is a deliberate
+trade (the alternative is duplicate \code{<style>} blocks piling up on every
+re-render), but it surprises people who are iterating on the styling.
+\end{gotcha}
+
+After you save, two attributes and one method form the public surface:
+\code{ui.last\_saved} (the path of the last file written),
+\code{ui.theories\_dir} (where saves land by default), and \code{ui.spec()}
+(\file{pipeline/ui/main.py:2330}), which returns the current form state as a spec
+dict without writing anything --- handy if you want to inspect or post-process the
+dict in a later cell.
+
+\section{ipywidgets in five minutes}
+
+The rest of this chapter quotes ipywidgets code constantly, so here is the whole
+mental model a physicist needs. Skip this section if you already know the library.
+
+\term{ipywidgets} is a library of interactive HTML controls --- buttons, text
+boxes, dropdowns, checkboxes, tabs, sliders --- that render inside a notebook
+output cell and stay \emph{live}. The trick is that each widget is two halves kept
+in sync: a Python object on the \emph{kernel} side and a DOM element on the
+\emph{browser} side, connected over Jupyter's ``comm'' (communication) channel.
+When you type in a box, the browser sends the new text to the kernel, the Python
+object's \code{.value} attribute updates, and any callbacks you registered fire.
+This is what lets a notebook cell host a full GUI with no web server of its own.
+
+The conventional import alias is \code{W}, used in both source files
+(\file{pipeline/ui/main.py:27}, \file{pipeline/ui/widgets.py:20}):
+
+\begin{lstlisting}
+import ipywidgets as W
+from IPython.display import display, HTML
+\end{lstlisting}
+
+The handful of widget classes this code uses fall into four groups.
+
+\paragraph{Layout containers.} \code{W.VBox([...])} and \code{W.HBox([...])} stack
+their children vertically and horizontally. \code{W.Tab(children=[...])} is the
+tab strip; \code{.set\_title(i, str)} names tab \code{i} and
+\code{.selected\_index} reads or sets the active tab. \code{W.Layout(...)} is the
+CSS-like layout object you attach to any widget --- \code{width='400px'},
+\code{height='60px'}, or \code{display='none'} to hide it entirely.
+
+\paragraph{Inputs.} \code{W.Text} (single line), \code{W.Textarea} (multi-line ---
+used for the action and the seed box), \code{W.Dropdown} (single-select),
+\code{W.Checkbox} (booleans), \code{W.ToggleButtons} (the Temporal/Spatial
+switch), and the numeric trio \code{W.IntText} / \code{W.FloatText} /
+\code{W.BoundedIntText} (where \emph{bounded} clamps to a \code{[min, max]}
+range).
+
+\paragraph{Output and display.} \code{W.HTML(value=...)} renders a static HTML
+string --- every tab's help text, the readiness sidebar, and the cheat sheet are
+\code{W.HTML} widgets. \code{W.Output(...)} is a \emph{capture region}: a panel
+into which ordinary \code{print(...)} can be redirected. The UI's status panel is
+one \code{W.Output}; the button handlers write to it with a
+\code{with self.\_status:} context (\file{pipeline/ui/main.py:2642}), which
+temporarily routes \code{stdout} into the panel, and \code{.clear\_output()} wipes
+it. From \code{IPython.display}, \code{display(obj)} renders a rich object in the
+current cell, \code{HTML(str)} wraps a raw HTML string, and \code{Javascript(str)}
+ships a JS snippet to the browser (the \textbf{Open in runner} button uses it).
+
+\paragraph{The event model.} Two registration calls appear everywhere:
+
+\begin{lstlisting}
+# fire a callback whenever a widget's .value changes:
+self._w_theory_mode.observe(lambda _ch: self._on_mode_change(), names='value')
+# fire a callback when a button is clicked:
+self._btn_save.on_click(self._on_save)
+\end{lstlisting}
+
+\code{widget.observe(cb, names='value')} (\file{pipeline/ui/main.py:409}) calls
+\code{cb} with a change-event object every time \code{.value} changes; the lambda
+\code{lambda \_ch: ...} simply swallows that argument. \code{button.on\_click(cb)}
+(\file{pipeline/ui/main.py:1376}) fires on click. Finally,
+\code{widget.add\_class('tb-...')} attaches a CSS class to the widget's DOM node,
+which is how the inline \code{tb-*} stylesheet finds its targets.
+
+\begin{defn}
+\term{observer} --- a callback registered with \code{widget.observe(cb,
+names='value')} that fires whenever the widget's value changes. The UI registers
+one observer, \code{\_mark\_changed}, on \emph{every} input, so any edit flips the
+``unsaved changes'' flag and refreshes the validation sidebar. This is the
+mechanism behind the live, type-as-you-go feedback.
+\end{defn}
+
+\section{The math behind each tab}
+
+The UI does not implement the \msrjd{} field theory, but it is where the user
+\emph{declares} it, so every tab maps onto a piece of the theory. A one-page
+recap fixes what each tab is collecting and why the validator flags what it flags;
+the full treatment is in Chapters~\ref{ch:theory-spec}--\ref{ch:enumeration}.
+
+A stochastic equation of motion for a field $\phi$ (a scalar $x(t)$ for a temporal
+theory, or a continuous field $\phi(x,t)$ for a spatial one) driven by noise
+$\eta$,
+\begin{equation}
+  \Dt \phi \;=\; F[\phi] \;+\; \eta,
+  \qquad \avg{\eta(t)\,\eta(t')} \;=\; 2D\,\delta(t-t'),
+  \label{eq:ui-eom}
+\end{equation}
+is recast as a path integral by introducing a \term{response field} $\tilde\phi$
+(Martin--Siggia--Rose / Janssen / De~Dominicis). The generating functional becomes
+$Z = \int \mathcal{D}\phi\,\mathcal{D}\tilde\phi\,\ee^{-S[\phi,\tilde\phi]}$ with
+the \msrjd{} \term{action}
+\begin{equation}
+  S[\phi,\tilde\phi] \;=\; \int \dd t\,\Big[\,\tilde\phi\,(\Dt\phi - F[\phi])
+        \;-\; D\,\tilde\phi^{2}\,\Big].
+  \label{eq:ui-action}
+\end{equation}
+This action is exactly the string the user types on the \textbf{Action} tab. The
+placeholder text in the form (\file{pipeline/ui/main.py:1013}) reads:
+
+\begin{lstlisting}[style=console]
+phit * ((Dt + mu) * phi + eps * phi^3) - D * phit^2
+\end{lstlisting}
+
+which is $\tilde\phi\,(\Dt\phi + \mu\phi + \varepsilon\phi^{3}) - D\tilde\phi^{2}$
+--- the action of $\dot\phi = -\mu\phi - \varepsilon\phi^{3} + \eta$ with
+$\avg{\eta\eta} = 2D\delta$. Three syntactic pieces are visible:
+
+\begin{itemize}
+  \item \code{phit} --- the \term{response field} $\tilde\phi$. The UI never asks
+        you to declare it: for every physical field \code{phi} you declare on the
+        Fields tab, the framework auto-creates \code{phit} (response),
+        \code{dphi} (fluctuation), and \code{phistar} (saddle). The action
+        validator knows about all three (\file{pipeline/ui/main.py:1684}).
+  \item \code{Dt} --- the \term{time-derivative operator} $\partial_t$, composed
+        like an algebra element: \code{(Dt + mu)*phi} means
+        $\partial_t\phi + \mu\phi$. It is one of the builtin identifiers the
+        validator always accepts (\file{pipeline/ui/main.py:1653}).
+  \item \code{- D phit\^{}2} --- the \term{Gaussian white-noise} term. Because the
+        weight is $\ee^{-S}$, a term quadratic in $\tilde\phi$ corresponds to the
+        \emph{second cumulant} of the noise: $-D\tilde\phi^{2}$ encodes
+        $\kappa^{(2)} = 2D$ with a white ($\delta(\tau)$) kernel. A
+        $-S_3\,\tilde\phi^{3}$ term would be a third white cumulant
+        $\kappa^{(3)} = 3!\,S_3$.
+\end{itemize}
+
+With that, the role of each tab is:
+
+\begin{description}
+  \item[Model] the theory's name (which derives the filename), an optional
+        description, and the Temporal/Spatial toggle.
+  \item[Populations] a named group of \code{size N} identical units. Declaring a
+        population \code{A} of size $N$ makes every field attached to it a
+        length-$N$ vector and introduces a \code{for i in A} sum in the action.
+        This is the ``$N$ coupled units'' case (oscillators, spins); a matrix
+        parameter \code{w[i,j]} is the coupling between unit $i$ and unit $j$.
+  \item[Fields] the physical fields $\phi$. The fluctuation split
+        $\phi = \phi^{*} + \delta\phi$ expands the action around its saddle; you
+        type only $\phi$ and the framework adds $\tilde\phi$, $\phi^{*}$,
+        $\delta\phi$. In Spatial mode this tab also carries the
+        \emph{spatial-structure} panel.
+  \item[Parameters] the coefficients $\mu,\varepsilon,D,\dots$ appearing in
+        $F[\phi]$ and the noise. Their \emph{shape} (scalar / vector indexed by
+        one population / matrix indexed by two) follows the population structure.
+  \item[Functions] non-polynomial transfer functions $f(\phi) = \tanh(a\phi)$ and
+        the like. The framework Taylor-expands $f$ about the saddle of its first
+        argument, $f(\phi) = f(\phi^{*}) + f'(\phi^{*})\delta\phi + \dots$, so you
+        write \code{f[i](phi[i])} and the expansion is automatic.
+  \item[Kernels] memory / convolution couplings $K * y = \int K(t-t')\,y(t')\,
+        \dd t'$. The Fourier image $\tilde K(\omega)$ is preferred because the
+        propagator builder works in frequency space.
+  \item[Noise (CGF)] correlated, coloured, or cross-correlated noise declared as
+        cumulant pieces $\avg{\eta(t)\eta(t')} = \text{coefficient}\times
+        \text{kernel}(t-t')$. White $\to$ \code{dirac\_delta(tau)}; OU-coloured
+        $\to$ \code{exp(-abs(tau)/tauc)}; cross-field $\to$ a coefficient like
+        \code{rho*sqrt(D1*D2)} on two response legs.
+  \item[Mean-field] the differential-algebraic-equation (DAE) residuals
+        $\text{LHS} - \text{RHS} = 0$ solved at the saddle. \code{Dt} on the LHS
+        marks a differential equation (set $\Dt\to 0$ at the saddle, kept symbolic
+        for linear stability); no \code{Dt} means a purely algebraic equation. The
+        solver finds \emph{all} roots and \code{fixed\_point\_index} picks which
+        sorted root the diagrammatic expansion uses.
+  \item[Defaults] the run metadata: \code{k} (number of external legs --- $k=2$ is
+        the covariance / power spectrum), \code{max\_ell} (loop order --- \code{0}
+        tree-level/LNA, \code{1} one-loop, \code{2} two-loop), the
+        $(\code{tau\_max}, \code{tau\_step})$ lag grid, and the recommended
+        external-field legs.
+\end{description}
+
+\begin{note}
+\emph{Spatial structure} lives only on the Fields tab and only in Spatial mode.
+Setting \code{spatial\_dim=1} makes $\phi$ a continuous field $\phi(x,t)$; the
+action may then use the diffusion operator \code{Laplacian} multiplicatively
+(\code{D*Laplacian*phi} $= D\Lap\phi$). \term{Derivative vertices} --- KPZ's
+$(\partial_x h)^{2}$, Burgers, Model~B's $\Lap(\phi^{2})$ --- put a spatial
+derivative \emph{inside} a nonlinearity and require the \term{Operator-IR} mode:
+the action is then written with \code{Dt()} / \code{Lap()} / \code{Dx(phi, i)}
+\emph{call} syntax instead of bare multiplication. We return to why this is
+load-bearing in the Gotchas section.
+\end{note}
+
+None of this math is computed by the UI --- it is what the UI \emph{collects}. The
+reader who wants the actual integrals should consult the theory-specification,
+propagator, mean-field, and enumeration chapters.
+
+\section{The widget primitives (\texttt{widgets.py})}
+
+Before the form itself, look at the toolbox it is built from. The file
+\file{pipeline/ui/widgets.py} (438 lines) defines a handful of small reusable
+ipywidgets composites. Most of them are thin, but one --- \code{DynamicTable} ---
+is the workhorse that every tabular tab is made of.
+
+\subsection{Reading the system clipboard}
+
+Several inputs carry a small clipboard-glyph button (rendered as a clipboard
+emoji in the live form). Its reason for existing is a
+genuine Jupyter wart, documented right in the source
+(\file{pipeline/ui/widgets.py:23}): VS~Code's notebook renderer swallows
+Ctrl/Cmd-V before it reaches an ipywidgets text input, so keyboard paste is broken
+there. Button \emph{clicks} still work, and when the kernel runs on the same
+machine as the editor (the normal case) Python can read the real system clipboard
+--- so a clicked button reads it and fills the box directly.
+
+\code{read\_system\_clipboard()} (\file{pipeline/ui/widgets.py:29}) returns the
+local clipboard text or \code{None}. It tries \code{pyperclip} (an optional
+cross-platform clipboard library) first, then falls back to OS-native command-line
+tools picked by \code{sys.platform}: \code{pbpaste} on macOS;
+\code{wl-paste}/\code{xclip}/\code{xsel} on Linux, in that preference order; and
+PowerShell \code{Get-Clipboard} on Windows. For each candidate it skips the
+command if \code{shutil.which} finds no binary, else runs it with
+\code{subprocess.run(..., capture\_output=True, text=True, timeout=5)} and returns
+\code{stdout} on a zero exit code.
+
+\begin{gotcha}
+The clipboard read happens on the machine the \emph{kernel} runs on, not your
+browser. For a local Jupyter or VS~Code session that is your machine (correct);
+for a \emph{remote} kernel it would read the server's clipboard (wrong, but
+harmless --- you simply get the wrong text or a failure glyph). \code{paste\_button}
+(\file{pipeline/ui/widgets.py:69}) handles the \code{None} case by briefly setting
+its glyph to a cross mark and a tooltip suggesting \code{pip install pyperclip} or
+a local kernel.
+\end{gotcha}
+
+\subsection{The scalar/vector/matrix and expression inputs}
+
+Four small constructors round out the file. \code{vector\_input}
+(\file{pipeline/ui/widgets.py:96}) builds a horizontal row of \code{FloatText}
+widgets for a length-$N$ vector; \code{matrix\_input}
+(\file{pipeline/ui/widgets.py:119}) an $n\times m$ grid; both expose a
+monkey-patched \code{.get\_value()}. \code{expression\_input}
+(\file{pipeline/ui/widgets.py:147}) is a single-line text box with a live
+a live check-mark / cross-mark indicator driven by a \code{validator(text)}
+callback.
+
+\begin{gotcha}
+\code{vector\_input}, \code{matrix\_input}, and \code{expression\_input} are
+exported and importable, but the \emph{current form does not use them}. The form
+takes vector and matrix defaults as a text cell on the Parameters tab, and does
+its expression validation in the sidebar rather than per-field. They are kept as
+reusable primitives; editing them will \emph{not} change the live UI. Of the bulk
+import at \file{pipeline/ui/main.py:30}, only \code{textarea\_input},
+\code{DynamicTable}, and \code{paste\_button} are actually called.
+\end{gotcha}
+
+The one composite the form \emph{does} use directly is \code{textarea\_input}
+(\file{pipeline/ui/widgets.py:192}): a multi-line text area with a label and a
+clipboard paste button, used for the action editor (\file{pipeline/ui/main.py:1008}).
+It exposes the raw \code{Textarea} as \code{box.\_text\_w}, and the form reaches
+into \code{\_text\_w} to attach observers and CSS classes.
+
+\subsection{\texttt{DynamicTable} --- the spreadsheet primitive}
+
+\code{DynamicTable} (\file{pipeline/ui/widgets.py:212}) is an add/remove-row
+spreadsheet: each row is a dict of named values, with the columns declared up
+front. Most of the form's tabs --- Populations, Fields, Parameters, Functions,
+Kernels, Noise, Mean-field, and the external-fields table --- are a single
+\code{DynamicTable}.
+
+The constructor \code{\_\_init\_\_(self, columns, initial=None,
+add\_label='+ add row')} (\file{pipeline/ui/widgets.py:245}) takes a list of
+column-spec dicts. The recognized keys, from the class docstring
+(\file{pipeline/ui/widgets.py:218}):
+
+\begin{lstlisting}
+{'name':             column key,
+ 'kind':             'text' | 'bool' | 'select' | 'int' | 'float',
+ 'options':          [...],               # static choices for 'select'
+ 'options_provider': callable() -> list,  # dynamic choices, re-queried on demand
+ 'default':          <value>,
+ 'width':            '120px',
+ 'placeholder':      'hint text',         # text columns
+ 'paste':            True}                # add a clipboard button beside a text cell
+\end{lstlisting}
+
+The factory \code{\_make\_widget} (\file{pipeline/ui/widgets.py:272}) dispatches on
+\code{kind}: \code{text} $\to$ \code{W.Text}, \code{bool} $\to$ \code{W.Checkbox},
+\code{select} $\to$ \code{W.Dropdown}, \code{int} $\to$ \code{W.IntText},
+\code{float} $\to$ \code{W.FloatText}; an unknown kind raises \code{ValueError}.
+Crucially, a \code{select} column's choices come from \code{options\_provider()} if
+present, \emph{re-queried on demand}, else from the static \code{options} list ---
+this is the hook that makes dropdowns track other tabs (see below). Every widget
+gets an observer so edits propagate:
+
+\begin{lstlisting}
+w.observe(lambda _change: self._notify_change(), names='value')
+\end{lstlisting}
+
+\code{add\_row} (\file{pipeline/ui/widgets.py:309}) builds one widget per column;
+for columns flagged \code{'paste': True} and \code{kind=='text'} it wraps the input
+in an \code{HBox([w, paste\_button(w)])} --- but the \emph{value} widget is still
+the bare \code{w}, so \code{get\_rows} reads it unchanged. Each row gets a
+remove button (a cross-mark glyph).
+
+\begin{gotcha}
+The remove button is subtle. Its handler is built by
+\code{\_make\_remove(len(self.\_row\_widgets))}, which \emph{captures} the row's
+index at creation time --- but that captured index is effectively dead code. The
+handler ignores it and instead scans \code{\_row\_boxes} for the box whose last
+child \emph{is} this button (\file{pipeline/ui/widgets.py:332}), then pops that
+index. This identity scan, not the stale captured index, is what makes removal
+correct after earlier rows have already been deleted. If you ever refactor this,
+keep the identity scan; the captured index is a trap.
+\end{gotcha}
+
+\code{get\_rows} (\file{pipeline/ui/widgets.py:365}) reads each row into a
+\code{\{name: w.value\}} dict and is the table's single data-out path. It silently
+\emph{drops rows whose \code{name} cell is blank}:
+
+\begin{lstlisting}
+def get_rows(self) -> list[dict]:
+    out = []
+    for w_dict in self._row_widgets:
+        row = {name: w.value for name, w in w_dict.items()}
+        if 'name' in row and not str(row['name']).strip():  # drop blank-name rows
+            continue
+        out.append(row)
+    return out
+\end{lstlisting}
+
+\begin{gotcha}
+Blank-row dropping is keyed on a column literally named \code{name}. The
+external-fields table on the Defaults tab is keyed \code{field}, not \code{name},
+so \code{get\_rows} does \emph{not} auto-drop its blank rows --- the metadata
+collector re-filters on \code{field} instead (\file{pipeline/ui/main.py:2607}).
+Any future table without a \code{name} column would silently keep its empty
+starter rows unless it filters itself.
+\end{gotcha}
+
+Two more methods complete the picture. \code{set\_column\_visible(name, visible)}
+(\file{pipeline/ui/widgets.py:375}) shows or hides one column --- header cell plus
+every row's cell, current and future --- by toggling \code{layout.display} between
+\code{''} and \code{'none'}; the form uses it to drop the \code{spatial\_dim}
+column in Temporal mode. And \code{refresh\_dropdown\_options(col\_name)}
+(\file{pipeline/ui/widgets.py:410}) re-queries a \code{select} column's
+\code{options\_provider()} and pushes the new option list onto every existing
+row's dropdown, preserving the prior selection when still valid:
+
+\begin{lstlisting}
+new_opts = list(provider())
+for w_dict in self._row_widgets:
+    w = w_dict.get(col_name)
+    if not isinstance(w, W.Dropdown):
+        continue
+    prev = w.value
+    try:
+        w.options = new_opts
+        if prev in new_opts:
+            w.value = prev
+        elif new_opts:
+            w.value = new_opts[0]
+    except Exception:
+        # Some ipywidgets versions reject .options while .value is invalid:
+        w.value = (new_opts[0] if new_opts else None)
+        w.options = new_opts
+\end{lstlisting}
+
+This is how a population declared on the Populations tab instantly appears in the
+index dropdowns on every other tab.
+
+\begin{gotcha}
+The \code{try/except} here is not defensive padding. Some ipywidgets versions raise
+if you set \code{.options} while the current \code{.value} is momentarily not in
+the new list; the fallback assigns \code{value} first, then \code{options}. If you
+add a new population-aware dropdown anywhere, route its refresh through this method
+--- never a raw \code{.options = ...} --- or you will hit that version-dependent
+exception.
+\end{gotcha}
+
+Finally, \code{\_notify\_change} (\file{pipeline/ui/widgets.py:403}) calls every
+registered \code{on\_change} callback inside a bare \code{except Exception: pass},
+so one buggy observer cannot wedge the form. The trade is that a buggy validator
+callback fails silently.
+
+\section{The form (\texttt{main.py})}
+
+\code{TheoryUI} (\file{pipeline/ui/main.py:289}) is the whole form. Its public
+surface is small --- \code{\_\_init\_\_}, \code{show}, \code{spec}, \code{load},
+the attributes \code{last\_saved} and \code{theories\_dir} --- and everything else
+is private.
+
+\subsection{Construction}
+
+\code{\_\_init\_\_(self, theories\_dir=None)} (\file{pipeline/ui/main.py:296})
+resolves the theories directory (default \code{\_DEFAULT\_THEORIES\_DIR}, which is
+\code{<cwd>/../theories} --- since notebooks run from \code{notebooks/}, this
+resolves to the repo's \file{theories/}), creates it if absent, and initializes
+two pieces of bookkeeping state:
+
+\begin{lstlisting}
+self.last_saved: Optional[str] = None
+self._dirty: bool = False          # unsaved-changes flag
+self._loaded_extras: dict[str, dict[str, str]] = {
+    'field_latex':    {},
+    'function_latex': {},
+    'kernel_latex':   {},
+}
+self._build_widgets()
+\end{lstlisting}
+
+\code{\_dirty} tracks unsaved edits. \code{\_loaded\_extras}
+(\file{pipeline/ui/main.py:313}) is a per-kind \code{\{name: latex\}} carry-through
+map: the \code{latex} column was removed from the UI on 2026-05-27, but older
+theory files may still carry custom \code{latex} strings, so \code{load()} stashes
+them here and \code{\_collect()} re-injects them. A load/edit/save round-trip thus
+does not silently drop them.
+
+\subsection{Population helpers --- the dropdown glue}
+
+Three small methods make the cross-tab dropdowns work.
+\code{\_pop\_names()} (\file{pipeline/ui/main.py:321}) returns the current non-blank
+population names from the Populations table --- this is the \code{options\_provider}
+that every population dropdown elsewhere is wired to. \code{\_pop\_size\_map()}
+(\file{pipeline/ui/main.py:330}) returns \code{\{name: size\}} for populations with
+a positive integer size. And \code{\_autofill\_default\_templates()}
+(\file{pipeline/ui/main.py:345}) walks every Parameters row and, if its
+\code{default} cell is empty and its index dropdowns name populations of known
+size, fills a placeholder template (\code{'[, , ]'} for a length-3 vector,
+\code{'[[, , ],[, , ]]'} for a $2\times3$ matrix) --- preserving any value the user
+already typed. Note that this reaches directly into
+\code{\_tbl\_parameters.\_row\_widgets} rather than \code{get\_rows()}, because it
+needs to \emph{write} the widget \code{.value}.
+
+\subsection{The ten tabs}
+
+\code{\_build\_widgets()} (\file{pipeline/ui/main.py:381}) is the roughly
+700-line constructor of the entire form. It builds, in order, the ten tab panels.
+Each is either a few standalone widgets or a single \code{DynamicTable}:
+
+\begin{longtable}{@{}>{\raggedright}p{0.16\textwidth}>{\raggedright\arraybackslash}p{0.78\textwidth}@{}}
+\toprule
+\textbf{Tab} & \textbf{What it builds} \\
+\midrule
+\endhead
+1. Model & \code{\_w\_name} (\code{Text}), \code{\_w\_description}
+  (\code{Textarea}), \code{\_w\_theory\_mode}
+  (\code{ToggleButtons} of \code{['Temporal (ODE)', 'Spatial (PDE)']}); the
+  toggle's observer calls \code{\_on\_mode\_change}. \\
+2. Populations & \code{\_tbl\_populations} (name / size / description; no starter
+  rows --- a scalar theory needs no populations). \\
+3. Fields & \code{\_tbl\_physical} (name / population (select via
+  \code{\_pop\_names}) / spatial\_dim / description; one starter row \code{phi}),
+  plus the spatial-structure panel: \code{\_w\_spatial\_dim}
+  (\code{BoundedIntText} 0--3), \code{\_w\_spatial\_apply} (a button that
+  bulk-writes every row's \code{spatial\_dim}), \code{\_w\_boundary\_mode},
+  \code{\_w\_boundary\_length}, \code{\_w\_initial\_mode}, \code{\_w\_operator\_ir}
+  (\code{Checkbox}), \code{\_w\_dyson\_order}, \code{\_w\_reference\_diffusion}.
+  These are grouped into \code{\_w\_spatial\_block}
+  (\file{pipeline/ui/main.py:701}) so the toggle can hide them all at once. \\
+4. Parameters & \code{\_tbl\_parameters} (name / index\_1 / index\_2 / domain /
+  default (paste-enabled) / description; one starter row \code{mu}). The two index
+  dropdowns are over \code{['\textemdash{}'] + populations} (the em-dash string is
+  the ``no population'' sentinel); the default cell auto-templates when an index
+  changes. \\
+5. Functions & \code{\_tbl\_functions} (name / population / args / expression
+  (paste) / description; no starter rows). \\
+6. Kernels & \code{\_tbl\_kernels} (name / index\_1 / index\_2 / time\_expr
+  (paste) / freq\_image (paste); no starter rows). \\
+7. Noise & \code{\_tbl\_cgfs} (name / response\_legs / order / coefficient (paste)
+  / kernel (paste); no starter rows). \\
+8. Action & \code{\_w\_action = textarea\_input('Action S', ...)}
+  (\file{pipeline/ui/main.py:1008}). \\
+9. Mean-field & \code{\_tbl\_mfeqs} (lhs (paste) / rhs (paste) / population),
+  \code{\_w\_fpi\_default} (\code{BoundedIntText} --- the default
+  \code{fixed\_point\_index}), \code{\_w\_stability\_on} (\code{Checkbox}),
+  \code{\_w\_seed\_box} (\code{Textarea} --- a multi-start Newton seed dict). \\
+10. Defaults & \code{\_w\_k\_default}, \code{\_w\_ell\_default}
+  (\code{BoundedIntText}), \code{\_w\_tau\_max}, \code{\_w\_tau\_step}
+  (\code{FloatText}), and \code{\_tbl\_ext\_fields} (field / leaf\_index; two
+  starter rows \code{phi[1], phi[2]}). \\
+\bottomrule
+\end{longtable}
+
+The list of \code{(widget, title)} pairs is \code{\_all\_tabs}
+(\file{pipeline/ui/main.py:1317}), and the \code{W.Tab} is composed from it with
+numbered titles:
+
+\begin{lstlisting}
+self._all_tabs = [
+    (tab_model, 'Model'), (tab_populations, 'Populations'),
+    (tab_fields, 'Fields'), (tab_params, 'Parameters'),
+    (tab_functions, 'Functions'), (tab_kernels, 'Kernels'),
+    (tab_cgfs, 'Noise'), (tab_action, 'Action'),
+    (tab_mfeqs, 'Mean-field'), (tab_defaults, 'Defaults'),
+]
+self._tabs = W.Tab(children=[w for w, _ in self._all_tabs])
+for i, (_, t) in enumerate(self._all_tabs):
+    self._tabs.set_title(i, f'{i + 1}. {t}')
+\end{lstlisting}
+
+After composing the tabs, \code{\_build\_widgets} wires the live plumbing
+(\code{\_on\_populations\_changed} refreshes all dependent dropdowns; the parameter
+table re-templates its defaults on an index change), builds the bottom bar,
+attaches the readiness sidebar and CSS classes, registers \code{\_mark\_changed} on
+every table and standalone widget, and finally calls \code{\_refresh\_save\_hint()}
+and \code{\_on\_mode\_change(mark\_dirty=False)} for the initial render.
+
+\begin{note}
+The module docstring at \file{pipeline/ui/main.py:4} still calls this a
+``9-section tab editor.'' That label is stale --- \code{\_all\_tabs} composes ten
+tabs. When the prose and the code disagree, trust \code{\_all\_tabs}: there are
+ten.
+\end{note}
+
+\section{Temporal vs.\ Spatial mode}
+
+The Temporal/Spatial toggle on the Model tab does more than show and hide
+controls; it actively rewrites form state so a saved theory carries only the
+structure its kind allows. \code{\_is\_spatial\_mode()}
+(\file{pipeline/ui/main.py:1522}) is simply \code{True} iff the toggle value starts
+with \code{'Spatial'}. The work is in \code{\_on\_mode\_change(mark\_dirty=True)}
+(\file{pipeline/ui/main.py:1525}):
+
+\begin{itemize}
+  \item \textbf{Switching to Temporal:} hide \code{\_w\_spatial\_block}, hide the
+        \code{spatial\_dim} column, force every field's \code{spatial\_dim=0}, and
+        \emph{clear} the operator-IR / Dyson / boundary / initial widgets, so a
+        saved time-only theory carries no spatial structure.
+  \item \textbf{Switching to Spatial:} show the block, show the column, bump
+        \code{\_w\_spatial\_dim} to $\ge 1$, and \emph{clear the Kernels and Noise
+        tables} --- spatial theories take only Gaussian white independent noise and
+        have no convolution kernels, so neither can leak into a saved PDE theory.
+\end{itemize}
+
+Then \code{\_apply\_visible\_tabs()} (\file{pipeline/ui/main.py:1560}) rebuilds
+\code{self.\_tabs.children} to the visible subset (Spatial hides the Kernels and
+Noise tabs), renumbers the titles, and preserves the current selection when it
+stays visible.
+
+\begin{gotcha}
+The clearing is \emph{intentional and silent, with no undo}. If you type kernels
+or noise rows and then flip to Spatial, they are gone (\file{pipeline/ui/main.py:1548}).
+If you set \code{spatial\_dim} and operator-IR and then flip to Temporal, those are
+force-zeroed and cleared (\file{pipeline/ui/main.py:1534}). The rationale is that
+each mode supports a strict subset of structure, but a user mid-edit can lose work.
+Save before you flip if you are unsure.
+\end{gotcha}
+
+\section{The readiness sidebar}
+
+The most valuable feature for a first-time author is the live validation sidebar.
+It re-renders on every edit (via \code{\_mark\_changed}) and shows three things: a
+per-tab readiness badge strip, a detailed list of findings, and a declared-names
+cheat sheet. The renderer is \code{\_refresh\_validation}
+(\file{pipeline/ui/main.py:2097}): a per-tab badge dot is red if any error, amber
+if any warning, green otherwise --- note that \code{info}-severity findings do
+\emph{not} trip a badge. The green ``No problems detected'' line only appears
+once you have typed at least one field, parameter, or action, so a blank starter
+form does not lie green.
+
+\subsection{The action AST validator}
+
+The flagship check is static validation of the action string. It is built on
+Python's standard-library \code{ast} module, which parses Python \emph{source code}
+into an \term{Abstract Syntax Tree} --- a tree of typed nodes (\code{ast.Name} = a
+bare identifier, \code{ast.Call} = a function call, \code{ast.GeneratorExp} = a
+\code{(... for i in ...)} comprehension) --- \emph{without executing it}. That last
+point is the whole value: the action is analysed, never \code{eval}'d, so a typo is
+caught at authoring time instead of detonating later inside Sage.
+
+\code{\_validate\_action(self, action\_text, spec)}
+(\file{pipeline/ui/main.py:1716}) first parses the string in expression mode and
+catches a \code{SyntaxError} with its exact location:
+
+\begin{lstlisting}
+import ast
+try:
+    tree = ast.parse(text, mode='eval')
+except SyntaxError as e:
+    line = (e.lineno or 1); col = (e.offset or 0)
+    return [('error', f'action syntax error at line {line}, col {col}: {e.msg}')]
+\end{lstlisting}
+
+It then walks the tree with a recursive \code{walk(node, bound)} that tracks which
+names are \emph{bound} by comprehensions (\code{for i in A} binds \code{i}) and
+lambda arguments, so an inner index is never falsely reported. Any \code{ast.Name}
+that is neither a bound target nor a \emph{known} identifier is flagged as
+undeclared (the first five are shown, then \code{+N more}); a \code{for i in X}
+where \code{X} is not a declared population is flagged as a bad population; and
+iterating over the legacy alias \code{pop} when no populations are declared is
+called out as a foot-gun.
+
+What counts as ``known'' is built by \code{\_action\_known\_names(spec)}
+(\file{pipeline/ui/main.py:1663}). The set is the union of the builtins
+(\code{\_ACTION\_BUILTINS}, \file{pipeline/ui/main.py:1651} --- operators
+\code{Dt}, \code{Conv}; math \code{exp}, \code{log}, the trig family, \code{sqrt},
+\code{abs}, \code{pi}, \code{e}, \code{I}, \code{oo}; \code{heaviside},
+\code{dirac\_delta}, \code{sign}; indexing helpers \code{sum}, \code{range},
+\code{len}), every declared parameter, every physical field \emph{with its three
+auto companions}, every kernel and function name, and every population name (and
+its \code{pop\_<name>} spelling, plus the legacy \code{pop}):
+
+\begin{lstlisting}
+for f in spec.get('physical_fields') or []:
+    nm = (f.get('name') or '').strip()
+    if not nm: continue
+    names.add(nm)           # physical field itself
+    names.add(f'{nm}t')     # response field (auto)
+    names.add(f'd{nm}')     # fluctuation (auto)
+    names.add(f'{nm}star')  # saddle
+\end{lstlisting}
+
+For spatial theories it additionally adds \code{Laplacian}; and \emph{only} when
+the operator-IR checkbox is on, it adds the call forms \code{Lap}, \code{Dx},
+\code{Gradient}, \code{GradX} (\file{pipeline/ui/main.py:1712}).
+
+\begin{defn}
+\term{AST (Abstract Syntax Tree)} --- the tree of Python syntax nodes produced by
+\code{ast.parse}. Validating the action by walking this tree (rather than
+executing the string) is what makes a typo like \code{hevyside} a tidy
+``undeclared name'' finding in the sidebar instead of an opaque exception three
+phases into the engine. Keeping \code{\_ACTION\_BUILTINS} explicit is what lets the
+validator tell a real builtin from a misspelled one.
+\end{defn}
+
+\subsection{Cross-tab validation and the cheat sheet}
+
+\code{\_validate(self)} (\file{pipeline/ui/main.py:1830}) walks the collected spec
+and returns \code{\{tab\_index\_1based: [(severity, message), ...]\}} with severity
+in \code{\{warn, error, info\}}. Its docstring is explicit about scope. It
+\emph{does} check: undeclared-population references on fields, parameters, and
+kernels (the ``silent \code{n\_populations=0} bug class''); the action AST
+cross-reference; a Defaults-dict parse failure; reserved-name collisions; and
+per-field mean-field-equation coverage for coupled theories. It deliberately does
+\emph{not} nag about the theory name still being the default, stability being off,
+or a blank action. The reserved names are \code{t}, \code{omega}, \code{Dt},
+\code{delta\_D}, \code{delta\_Dp} everywhere, plus \code{k}, \code{Laplacian},
+\code{x}, \code{y}, \code{z} in spatial theories. Critically, \code{\_validate}
+wraps \code{\_collect()} in \code{try/except} so a malformed Defaults dict becomes
+a \emph{finding} rather than a crash.
+
+The cheat sheet, \code{\_build\_cheat\_sheet} (\file{pipeline/ui/main.py:2010}),
+renders an HTML reference of all declared names by tab. Fields render as
+\emph{scalars} (\code{n}, \code{nt}, \code{nstar}) when they have no valid
+population, or \emph{indexed} (\code{n[i] for i in pop\_X}, response \code{nt[i]},
+saddle \code{nstar[i]}) when they do --- showing you the exact spellings the action
+will accept. Blank starter rows are filtered out.
+
+\begin{gotcha}
+Two blind spots are worth internalizing. First, the validator \emph{cannot} detect
+a missing operator-IR toggle: it only allowlists the \code{Lap()}/\code{Dx()} call
+names \emph{when the box is already on}, so a derivative-vertex action written
+without ticking operator-IR validates cleanly yet computes the wrong physics (see
+the next section). Second, the ``every field needs an equation'' check
+(\file{pipeline/ui/main.py:1991}) is a word-boundary substring match on the LHS
+text, not a parse, and only fires for $\ge 2$ fields (coupled theories) --- a field
+whose name appears only inside a function call could pass spuriously.
+\end{gotcha}
+
+\section{From form to file: the spec dict}
+
+Everything the form does on save funnels through one method. \code{\_collect(self)}
+(\file{pipeline/ui/main.py:2335}) snapshots every tab into the \term{spec dict} ---
+the flat dictionary the serializer consumes. It walks each table via
+\code{get\_rows()}, drops blank rows, and maps the UI shapes onto the serializer's
+shapes. The shape, assembled at \file{pipeline/ui/main.py:2498}, is:
+
+\begin{lstlisting}
+{
+  'name':            str,                 # _w_name
+  'populations':     [{'name','size','description'?}, ...],
+  'n_populations':   int,                 # derived len(populations)
+  'description':     str,
+  'response_fields': [],                  # always empty -- auto-generated downstream
+  'physical_fields': [{'name','population'?,'spatial_dim'?,'latex'?,'description'?}, ...],
+  'parameters':      [{'name','indexed_by'?,'domain'?,'default'?,'description'?}, ...],
+  'functions':       [{'name','args':[...],'expression','population'?,...}, ...],
+  'kernels':         [{'name','indexed_by'?,'time_expr'?,'freq_image'?,'latex_name'?}, ...],
+  'cgf_terms':       [{'name','response_field','response_legs'?,
+                       'order','coefficient','kernel'}, ...],
+  'action_text':     str,                 # the action textarea
+  'equations':       [{'lhs','rhs','population'(or None)}, ...],
+  'stability_analysis': bool,
+  'default_fundamental': {},              # deliberately empty
+  'metadata':        {...},               # see below
+  # spatial-only keys, present ONLY when a field is spatial:
+  'boundary':            {'mode': 'infinite'|'periodic', 'length'?: float|str},
+  'initial':             {'mode': 'stationary'},
+  'operator_ir':         True,            # only when ticked
+  'dyson':               {'mode':'fixed','order':N},   # only when order>0
+  'reference_diffusion': float,           # only when set
+}
+\end{lstlisting}
+
+A small nested helper, \code{\_index\_list(row)}
+(\file{pipeline/ui/main.py:2352}), translates the two index dropdowns (where
+the em-dash string means none) into the \code{indexed\_by} list: \code{[]} for a scalar,
+\code{[pop]} for a vector, \code{[pop1, pop2]} for a matrix. Parameter defaults are
+parsed from their text cell into Python objects (with a raw-string fallback on
+failure), the Noise rows are normalized by \code{\_normalize\_cgf\_rows}
+(\file{pipeline/ui/main.py:249}), and the spatial blocks are emitted \emph{only
+when at least one field is spatial} --- matching the serializer's
+``emit-only-when-present'' rule.
+
+\begin{gotcha}
+Two spots use the \emph{raw} \code{eval} rather than \code{ast.literal\_eval} to
+parse a default --- the \code{\_eval\_dict} helper inside \code{\_collect}
+(\file{pipeline/ui/main.py:2342}) and the per-parameter default cell
+(\file{pipeline/ui/main.py:2427}):
+\begin{lstlisting}
+obj = eval(text, {'__builtins__': {}}, {})
+\end{lstlisting}
+Passing \code{\{'\_\_builtins\_\_': \{\}\}} as globals strips access to
+\code{open}, \code{\_\_import\_\_}, and friends, so a default like
+\code{[[1,0],[0,1]]} evaluates fine but \code{\_\_import\_\_('os')} raises
+\code{NameError}. This is \emph{weaker} than \code{ast.literal\_eval} --- it still
+evaluates arbitrary operators --- but the threat model is the user's own typos on
+the user's own machine, so it is acceptable. Do not mistake it for safe evaluation
+of untrusted input. The Defaults seed-box, by contrast, \emph{does} use
+\code{ast.literal\_eval} (\file{pipeline/ui/main.py:2586}).
+\end{gotcha}
+
+The run-metadata sub-dict comes from \code{\_collect\_metadata}
+(\file{pipeline/ui/main.py:2570}):
+
+\begin{lstlisting}
+{
+  'k_default': int, 'ell_default': int, 'tau_max': float, 'tau_step': float,
+  'recommended_external_fields': [(field, leaf_index), ...],   # only if non-empty
+  'fixed_point_index_default': int,                            # always written
+  'seed_box_default': {var: (low, high), ...},                 # only if provided
+}
+\end{lstlisting}
+
+Note that \code{fixed\_point\_index\_default} is written \emph{even when 0}
+(\file{pipeline/ui/main.py:2620}), so a reload is unambiguous; most other optional
+keys are emitted only when non-default. And \code{default\_fundamental} is
+deliberately always emitted empty (\file{pipeline/ui/main.py:2544}) --- the
+per-parameter \code{default=} declarations now carry the suggested values, and a
+loaded file's \code{DEFAULT\_FUNDAMENTAL} is ignored on load.
+
+\subsection{The serialized file}
+
+When the form is filled like the placeholder --- one field \code{x} in population
+\code{pop}; parameters \code{mu}, \code{eps}, \code{D}; the OU-quartic action ---
+\code{\_collect()} yields a spec whose serialized form is exactly the on-disk file
+the quickstart chapter loads:
+
+\begin{lstlisting}
+def build():
+    return (
+        TemporalTheoryBuilder('OU Quartic (white noise)')
+        .population('pop', size=1)
+        .physical_field('x', population='pop', description='variable')
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('eps', default=0.02, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .set_action_text('sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 for i in pop)')
+        .equation(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3', population='pop')
+        .build()
+    )
+DEFAULT_FUNDAMENTAL = {'mu': 1.0, 'eps': 0.02, 'D': 1.0}
+METADATA = {'k_default': 2, 'ell_default': 0,
+            'recommended_external_fields': [('dx', 1), ('dx', 1)],
+            'tau_max': 8.0, 'tau_step': 0.5, 'fixed_point_index_default': 0}
+\end{lstlisting}
+
+The serializer chooses \code{SpatialTheoryBuilder} versus
+\code{TemporalTheoryBuilder} by whether any field carries \code{spatial\_dim} $\ge
+1$. The saddle parameter \code{xstar} is \emph{not} emitted --- \code{build()}
+auto-creates it from the field declaration. Compare this against the hand-written
+file in Chapter~\ref{ch:quickstart}: they are identical, which is the point.
+
+\begin{example}\label{ex:ui-roundtrip}
+\textbf{The round trip.} Fill the form for the OU-quartic model and click
+\textbf{Save}; you get the file above. Now in a fresh \code{TheoryUI()}, pick that
+file in the Load dropdown and click \textbf{Load}: \code{load\_spec\_from\_file}
+parses the file's \emph{source AST} (it never executes \code{build()}), the spec
+dict is reconstructed, and \code{load(...)} clears and repopulates every tab. The
+action text, equation RHS strings, function expressions, and kernel expressions
+survive verbatim because they are stored as string literals; comments and
+formatting are lost (it is an AST round-trip, not a textual one). Edit a parameter,
+save again, and the file is regenerated --- closing the loop.
+\end{example}
+
+\section{Loading an existing theory}
+
+\textbf{Load} reverses the save trip. \code{\_on\_load}
+(\file{pipeline/ui/main.py:2769}) is gated by the dirty guard (below), refreshes
+the dropdown so freshly-saved files appear, calls \code{load\_spec\_from\_file} to
+parse the file into a spec dict, and hands it to \code{self.load(spec)}.
+
+\code{load(self, spec\_or\_path)} (\file{pipeline/ui/main.py:2813}) is the big
+repopulate-the-form routine, and most of its length is historical-wrinkle handling:
+
+\begin{itemize}
+  \item It strips the auto-prefix: a field stored as \code{dn} with
+        \code{natural\_name='n'} displays as \code{n}.
+  \item It stashes any \code{latex} strings into \code{\_loaded\_extras} for
+        round-trip preservation.
+  \item It \emph{auto-skips saddle parameters} (those with \code{mean\_field=True}
+        or a name matching \code{<natural>star}) --- the framework re-creates them
+        from the field declarations, so they must not be re-added as ordinary
+        parameters.
+  \item It maps \code{indexed\_by} back to the two index dropdowns, and converts a
+        legacy \code{mf\_equations} shape (\code{\{saddle, rhs\}}) into the new
+        \code{equations} shape (\code{\{lhs, rhs, population\}}) by stripping the
+        trailing \code{star} and looking up the field's population.
+  \item Finally it restores \code{stability\_analysis} and the spatial widgets,
+        picks the Temporal/Spatial mode from the loaded fields and applies it, then
+        drives every Defaults-tab widget from \code{metadata}.
+\end{itemize}
+
+\section{The bottom bar: Save, Preview, Pre-compute, and the rest}
+
+\code{\_build\_bottom\_bar} (\file{pipeline/ui/main.py:1582}) composes the
+save-path field, a derived-filename hint, the four primary action buttons, and the
+destructive-action gate (two confirm checkboxes plus the Reset and Load rows). The
+button handlers all write into the shared \code{\_status} panel.
+
+\paragraph{Preview} \code{\_on\_preview} (\file{pipeline/ui/main.py:2640}) runs
+\code{\_collect()} $\to$ \code{render\_theory\_file(spec)} and prints the resulting
+\code{.theory.py} source into the status panel without writing anything --- a
+look-before-you-leap.
+
+\paragraph{Save} \code{\_on\_save} (\file{pipeline/ui/main.py:2650}) collects the
+spec, resolves the target path (an explicit field value, or \code{theories\_dir},
+joining a relative non-\code{.py} base), calls \code{save\_theory\_to\_file},
+records \code{last\_saved}, clears \code{\_dirty} and both confirm checkboxes, and
+prints the path plus the \code{THEORY\_NAME = <slug>} line you paste into the
+runner. Both \code{\_collect()} and the write are wrapped so a failure prints a
+humanized error rather than a traceback.
+
+\paragraph{Reset} \code{\_on\_reset} (\file{pipeline/ui/main.py:2689}) is gated by
+the dirty guard; on confirm it re-runs \code{\_build\_widgets()} to wipe state
+cleanly, clears \code{\_dirty}, and re-\code{show()}s.
+
+\paragraph{Open in runner} \code{\_on\_open\_in\_runner}
+(\file{pipeline/ui/main.py:2231}) is the bridge to the runner notebook. If nothing
+has been saved it prints a hint; otherwise it derives the slug from
+\code{last\_saved}, writes it (one line) to \file{.theories/.last\_built}, and
+\code{display}s a \code{Javascript} snippet:
+
+\begin{lstlisting}
+display(Javascript("window.open('theory_runner.ipynb', '_blank');"))
+\end{lstlisting}
+
+The runner reads \file{.theories/.last\_built} when its \code{THEORY\_NAME} is
+blank, so the just-saved theory is pre-selected. It degrades to a printed
+instruction when JS is unavailable (for example under an \code{nbconvert} export).
+
+\subsection{The dirty guard}
+
+Two pieces protect unsaved work. \code{\_mark\_changed}
+(\file{pipeline/ui/main.py:2204}) sets \code{\_dirty=True} and refreshes the
+sidebar; it is the observer registered on every input. \code{\_check\_dirty\_guard}
+(\file{pipeline/ui/main.py:2217}) returns \code{True} (action allowed) only if the
+form is clean, or if the matching confirm checkbox is ticked. Both Reset and Load
+route through it, so they cannot silently destroy unsaved edits --- you must
+explicitly tick ``discard unsaved changes'' or save first.
+
+\subsection{Pre-compute: the one place the UI touches the engine}
+
+\code{\_on\_precompute} (\file{pipeline/ui/main.py:2704}) is the single exception
+to ``the UI does no physics.'' It lets you ask, before leaving the form, ``is this
+theory structurally healthy?'' --- without writing a file. The sequence is:
+
+\begin{lstlisting}
+src = render_theory_file(spec)                 # render to source ...
+ns: dict = {}
+exec(compile(src, '<precompute-spec>', 'exec'), ns)  # ... exec in a fresh namespace ...
+model = ns['build']()                          # ... call build() for an in-memory model
+result = precompute(model, verbose=True)       # the structural sanity pass
+\end{lstlisting}
+
+\code{pipeline.precompute(model)} (a thin primitive in
+\file{pipeline/\_precompute.py}) does one cheap structural pass: Taylor-expand the
+action at order~2, verify the mean-field saddle, and build and cache the
+propagator. It returns a result dict from which the handler prints a compact
+verdict --- the mean-field check (a \code{PASS} mark when \code{mf\_check == 'PASS'}),
+the solved saddle values, whether the propagator was \code{cached} or
+\code{FAILED}, the cache directory, and the wall time. A green PASS means the
+theory builds, has a real saddle, and has a constructible propagator --- the most
+common authoring mistakes (an undeclared symbol, a saddle that does not solve, an
+ill-posed bilinear part) are caught here, in seconds, before you ever open the
+runner.
+
+\begin{gotcha}
+\textbf{Fork safety is not a concern here.} The macOS fork-crash documented in this
+project's memory lives in the spatial and temporal \emph{integrator} paths, not the
+UI. The UI runs entirely on the kernel's main thread with no multiprocessing, and
+\code{Pre-compute} runs \code{precompute} in-process. You can click it freely in a
+notebook on any platform.
+\end{gotcha}
+
+\section{Gotchas to keep in mind}
+
+Most caveats have appeared in context above; this section collects the ones most
+likely to bite, in rough order of severity.
+
+\begin{itemize}
+  \item \textbf{Operator-IR is load-bearing and silent.} Per the serializer
+        (\file{pipeline/theory\_serialize.py:455}), without \code{.operator\_ir()}
+        a re-saved KPZ/Burgers/Model-B theory \emph{silently loses} the
+        \code{Dt()}/\code{Lap()}/\code{Dx()} lowering and computes the wrong
+        physics. The UI emits it only when the checkbox is ticked, and the
+        validator does \emph{not} detect a missing tick. If your action has a
+        spatial derivative \emph{inside} a nonlinearity, you must tick Operator-IR.
+  \item \textbf{Mode-switch data loss.} Temporal~$\to$~Spatial clears the Kernels
+        and Noise tables; Spatial~$\to$~Temporal force-zeros every
+        \code{spatial\_dim} and clears operator-IR / Dyson / boundary. Both are
+        intentional and have no undo. Save before flipping.
+  \item \textbf{The \code{eval} sandbox is weak.} Parameter defaults are parsed
+        with \code{eval(text, \{'\_\_builtins\_\_': \{\}\}, \{\})}, which blocks
+        name lookups but still evaluates operators. Fine for your own typos; not
+        safe-evaluation of untrusted input.
+  \item \textbf{\code{latex} carry-through is keyed by name.} A loaded \code{latex}
+        string survives a round trip via \code{\_loaded\_extras}, but if you
+        \emph{rename} the field it was attached to, the latex is dropped.
+  \item \textbf{Clipboard reads the kernel's machine.} The clipboard buttons exist
+        because VS~Code swallows Ctrl/Cmd-V; on a remote kernel they read the
+        server's clipboard (or show a cross mark).
+  \item \textbf{Open-in-runner needs JS and relative paths.}
+        \code{window.open('theory\_runner.ipynb', ...)} assumes the runner sits next
+        to the builder in the Jupyter file tree and that JS is allowed; otherwise it
+        prints an instruction.
+  \item \textbf{The exported \code{vector\_input} / \code{matrix\_input} /
+        \code{expression\_input} are unused by the live form.} They are reusable
+        primitives; editing them changes nothing you see in the UI.
+\end{itemize}
+
+\section{What you just learned, and where to go next}
+
+The Theory-Builder UI is the only chapter in this manual that produces no numbers.
+Its job is upstream of everything else: it is a typed, validated, point-and-click
+authoring surface whose single output is a \code{.theory.py} file identical to one
+you could write by hand. You saw the kernel\,$\leftrightarrow$\,browser widget
+model that makes a live form possible inside a notebook cell; the
+\code{DynamicTable} primitive that every tabular tab is made of; the ten tabs and
+the \msrjd{} piece each one declares; the Temporal/Spatial toggle and what it
+rewrites; the AST-based action validator that catches typos before they reach the
+engine; the \code{\_collect()} method and the spec-dict shape it produces; the
+serializer round trip via \code{load\_spec\_from\_file}; and the bottom-bar buttons,
+including the in-process \code{Pre-compute} sanity pass.
+
+From here the natural next step is to take a file the UI produced and run it.
+Chapter~\ref{ch:quickstart} drives exactly such a file end to end; the theory-files
+chapter (Chapter~\ref{ch:theory-files}) documents the \code{build()} /
+\code{DEFAULT\_FUNDAMENTAL} / \code{METADATA} shapes the UI emits, from the
+serializer's side; and the serializer's own internals --- \code{render\_theory\_file},
+\code{save\_theory\_to\_file}, \code{load\_spec\_from\_file} --- live in
+\file{pipeline/theory\_serialize.py}, the module on the far side of every Save and
+Load button you just met.

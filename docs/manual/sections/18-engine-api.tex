@@ -1,0 +1,1003 @@
+% ---------------------------------------------------------------------
+%  Chapter 18 : The daedalus Engine API --- the user-facing front desk
+% ---------------------------------------------------------------------
+\chapter{The \texttt{daedalus} Engine API}\label{ch:engine-api}
+
+The previous chapters opened up the engine itself --- the symbolic algebra, the
+diagram enumeration, the loop integrals. This chapter is about the thin layer of
+Python that sits \emph{in front} of all that and is the only thing a notebook
+ever touches directly: the module \file{notebooks/daedalus.py}, imported
+everywhere as \code{dd}. You met its four verbs already in
+Chapter~\ref{ch:quickstart} --- \code{load\_theory}, \code{Config}, \code{run},
+\code{plot\_cumulant} --- and watched them drive a complete calculation. Here we
+slow down and document the module exhaustively: every function, every
+\code{Config} field, the exact rules by which a friendly configuration is turned
+into the engine's many-keyword call, the way the heterogeneous result is reshaped
+for a plot, and the handful of sharp edges worth knowing about.
+
+The single most important fact about this module sets the tone for the whole
+chapter, so we state it up front and return to it at the end: \emph{\code{daedalus}
+does almost no physics.} It imports exactly two non-standard libraries --- NumPy
+and Matplotlib --- and everything genuinely hard happens behind one line,
+\code{from pipeline import compute\_cumulants}. SageMath, the \code{nauty} graph
+generator, \code{sympy}, \code{numba}, \code{networkx}: none of them are imported
+here. They live entirely inside \code{compute\_cumulants}. So this chapter is, in
+effect, a careful reading of a \emph{translation and dispatch} layer, not of the
+machinery it drives.
+
+\section{What this module is, in one breath}
+
+A physicist in a notebook does not want to remember the exact signature of the
+heavy engine function, nor how to reshape its output for a plot. They want to
+write three or four lines. The module's own opening docstring
+(\file{notebooks/daedalus.py:8-12}) shows the intended shape:
+
+\begin{lstlisting}
+import daedalus as dd
+model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
+cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
+dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
+\end{lstlisting}
+
+The design intent, quoted directly from that docstring, is to
+``centralise the \textbf{load $\to$ run $\to$ plot} flow so every demo notebook
+is thin and uniform regardless of its group (temporal / spatial $\times$ single /
+multi-field).'' The word \term{group} recurs throughout the module: it is the
+informal label for which \emph{shape} of problem you are solving, because that
+shape decides which plot is natural (a $C(\tau)$ curve, a $C(x,\tau)$ surface, a
+$\kappa_3(\tau_1,\tau_2)$ heatmap, a bar chart of equal-time scalars). The whole
+job of \code{daedalus} is to hide the group behind one uniform set of verbs.
+
+So the module gives you three verbs and a noun:
+
+\begin{description}
+  \item[\code{load\_theory(name)}] read a \file{theories/<name>.theory.py} file
+        and return the pair \code{(model, module)};
+  \item[\code{Config(...)}] a \code{@dataclass} holding \emph{every} choice a
+        notebook can make;
+  \item[\code{run(model, cfg, module)}] resolve the config against the theory's
+        defaults, call \code{compute\_cumulants}, post-process the result, and
+        staple the config and model back on;
+  \item[\code{plot\_cumulant(result, cfg, model, sim=None)}] auto-dispatch to the
+        plotter natural to the group.
+\end{description}
+
+Around those four are a set of introspection helpers
+(\code{describe\_model}, \code{field\_names}, \code{is\_spatial},
+\code{spatial\_dim}, \code{is\_multifield}, \code{summary},
+\code{list\_theories}) and an output-conversion layer that turns connected
+cumulants into full or central moments (\code{Config.output} together with
+\code{\_assemble\_moment\_temporal}). The rest of this chapter walks every one of
+them.
+
+\subsection{Where it sits in the pipeline}
+
+It helps to keep one picture in mind. A \term{theory file} (covered in
+Chapters~\ref{ch:theory-spec} and~\ref{ch:theory-files}) is the declarative
+description of a model; a notebook's \code{Config} is the set of run choices.
+\code{daedalus} marries the two and calls the engine:
+
+\begin{center}
+\begin{tikzpicture}[
+    node distance=6mm,
+    box/.style={draw, rounded corners, align=center, inner sep=4pt,
+                font=\small, fill=codebg},
+    eng/.style={draw, rounded corners, align=center, inner sep=4pt,
+                font=\small\bfseries, fill=notebg},
+    >={Stealth[]}]
+  \node[box] (theory) {\file{theories/<name>.theory.py}\\[2pt]
+    \footnotesize\code{build()}, \code{DEFAULT\_FUNDAMENTAL}, \code{METADATA}};
+  \node[box, below=of theory] (pair) {\code{(model: dict, module)}\quad+\quad
+    \code{dd.Config}};
+  \node[eng, below=of pair] (engine) {\code{pipeline.compute\_cumulants(\ldots)}\\[2pt]
+    \footnotesize the \msrjd{} engine --- Phases 1--7};
+  \node[box, below=of engine] (post) {\code{run()} post-processes:\\[2pt]
+    \footnotesize $k\!\ge\!3$ slices/grid \,$\cdot$\, moment assembly \,$\cdot$\,
+    \code{\_cfg}/\code{\_model}/\code{\_resolved}};
+  \node[box, below=of post] (plot) {\code{plot\_cumulant()} $\to$ one of seven
+    plotters $\to$ Matplotlib \code{Figure}};
+  \draw[->] (theory) -- node[right, font=\scriptsize] {\code{load\_theory()}} (pair);
+  \draw[->] (pair)   -- node[right, font=\scriptsize] {\code{run()} resolves $k$, $\ell$, legs, grids, Dyson} (engine);
+  \draw[->] (engine) -- node[right, font=\scriptsize] {result dict} (post);
+  \draw[->] (post)   -- (plot);
+\end{tikzpicture}
+\end{center}
+
+\begin{itemize}
+  \item \textbf{What feeds it:} a theory file plus a \code{Config}.
+  \item \textbf{What it calls:} \code{pipeline.compute\_cumulants}, the full
+        \msrjd{} diagrammatic engine. Everything hard --- the field-theory Taylor
+        expansion, the propagator, the mean-field saddle solve, diagram
+        enumeration, the Symanzik or Phase-J integration --- happens \emph{inside}
+        that one call.
+  \item \textbf{What consumes its output:} the demo notebooks, which take the
+        result \code{res} and a matched simulator dict \code{sim} and hand both to
+        \code{plot\_cumulant}; they also read the result directly
+        (\code{res['\_resolved']}, \code{res['mf']}, \code{res['spatial\_info']},
+        and so on).
+\end{itemize}
+
+\section{The math the knobs control}
+
+You are assumed to know \msrjd{} field theory already, so this section is short:
+its only purpose is to tie each \emph{code} knob to the \emph{physics} object it
+controls. All math here is elementary; the detailed treatment is in the chapters
+on the field-theory core and on Phase~J.
+
+\subsection{Connected cumulants are the native output}
+
+The engine computes \term{connected $k$-point cumulants} of the physical
+field(s). For a single field $\phi(x,t)$ the order-$k$ connected cumulant is
+\begin{equation}
+  \kappa_k(x_1,t_1;\,\ldots\,;x_k,t_k)
+  \;=\; \avg{\phi(x_1,t_1)\cdots\phi(x_k,t_k)}_c ,
+\end{equation}
+the connected (cluster) part of the $k$-point correlation. You ask for a chosen
+$k$ (the number of external legs) and a chosen \code{max\_ell} (the loop order).
+The diagrammatic expansion is organised by \term{loop order} $\ell$,
+\begin{equation}
+  \kappa_k \;=\; \underbrace{\kappa_k^{(0)}}_{\text{tree}}
+              + \underbrace{\kappa_k^{(1)}}_{\text{1-loop}}
+              + \underbrace{\kappa_k^{(2)}}_{\text{2-loop}}
+              + \cdots,
+\end{equation}
+and \code{Config.max\_ell}~$=L$ truncates the sum at $\ell\le L$. The engine
+returns the \emph{per-order} pieces as \code{*\_by\_ell} dictionaries
+\code{\{ell: array\_or\_callable\}}, and the running cumulative sum
+$\sum_{\ell\le L}$ as the ``total''. The module's
+\code{cumulative\_curves} (\file{notebooks/daedalus.py:713}) and
+\code{\_order\_label} (\file{notebooks/daedalus.py:707}) exist precisely to render
+this $\ell$-progression --- the labels \code{'tree'}, \code{'tree+1loop'}, and so
+on.
+
+\subsection{The \texorpdfstring{$k=2$}{k=2} case: the correlation function}
+
+For $k=2$ the connected cumulant is just the (connected) two-point function. In
+the \term{temporal} (time-only) case the engine returns it as a curve over a lag
+grid $\tau$,
+\begin{equation}
+  C(\tau) \;=\; \avg{\phi(0)\,\phi(\tau)}_c
+  \qquad\text{(key \code{'C\_tau'} over \code{'tau\_grid'}),}
+\end{equation}
+while in the \term{spatial} case (a field with \code{spatial\_dim}~$\ge 1$) it
+returns a real-space correlator over separations $x$ and lags $\tau$,
+\begin{equation}
+  C(x,\tau) \;=\; \avg{\phi(0,0)\,\phi(x,\tau)}_c
+  \qquad\text{(key \code{'C\_tau\_x'}, shape $(n_\tau, n_x)$).}
+\end{equation}
+The equal-time slice $C(x,0)$ is the headline spatial plot.
+
+\subsection{The \texorpdfstring{$k\ge 3$}{k>=3} case: a function of \texorpdfstring{$k-1$}{k-1} time differences}
+
+By time-translation invariance the connected $k$-point cumulant depends only on
+the $k-1$ time differences relative to one anchored leg,
+\begin{equation}
+  \tau_j \;=\; t_j - t_0, \qquad j = 1,\ldots,k-1 \quad\text{(leg 0 pinned at $\tau=0$).}
+\end{equation}
+So $\kappa_k$ is a function $\kappa_k(\tau_1,\ldots,\tau_{k-1})$: for $k=2$ it is
+the one variable $C(\tau)$; for $k=3$ it is a 2-D surface $\kappa_3(\tau_1,\tau_2)$;
+for $k\ge 4$ it is a $(k-1)$-dimensional tensor that cannot be drawn directly.
+\code{compute\_cumulants} does \emph{not} materialise this whole tensor for
+$k\ge 3$. Instead it returns \code{C\_tau = None} together with a \emph{callable}
+\code{total\_C(*tau)} and per-loop callables \code{total\_C\_by\_ell = \{ell:
+callable\}}. It is \code{run} that synthesises two human-readable views from those
+callables (Section~\ref{eng:kge3}): the axis-parallel \emph{slices} (the default)
+and the optional full \emph{grid}. We return to exactly how it does this once we
+reach \code{run}.
+
+\subsection{Cumulants to moments: the set-partition expansion}\label{sec:math-moments}
+
+The engine produces \emph{connected} cumulants $\kappa$. The full (raw) and
+central \term{moments} are reconstructed by the \term{set-partition} (cluster)
+expansion: the raw $k$-point moment is the sum over all set partitions $\pi$ of
+$\{1,\ldots,k\}$ of products of cumulants over the blocks,
+\begin{equation}
+  M_k(x_1,\ldots,x_k) \;=\; \sum_{\pi}\ \prod_{B\in\pi} \kappa(B).
+  \label{eq:setpart}
+\end{equation}
+This identity is stated verbatim in the \code{Config.output} comment
+(\file{notebooks/daedalus.py:261-266}) and in the
+\code{\_assemble\_moment\_temporal} docstring
+(\file{notebooks/daedalus.py:390-408}). Two physics subtleties the code handles
+explicitly are worth flagging now, because they shape the implementation:
+
+\begin{enumerate}
+  \item \textbf{A single shared loop budget.} A naive ``product of fully-dressed
+        cumulants'' would smuggle in spurious cross-terms --- a
+        $\text{1-loop}\cdot\text{1-loop}$ product is really a 2-loop object. The
+        code instead enforces one \emph{shared} loop budget $L=\code{max\_ell}$
+        across all multi-element blocks of a partition,
+        \begin{equation}
+          M_k \;=\; \sum_\pi \;
+            \sum_{\substack{(\ell_B):\ \sum_B \ell_B \le L}}\;
+            \prod_{B\in\pi} \kappa(B)^{(\ell_B)},
+          \label{eq:sharedbudget}
+        \end{equation}
+        so every surviving term has \emph{total} loop order $\le L$. The two
+        definitions agree only at tree level ($L=0$) and diverge at $L\ge 1$ for
+        any multi-block partition.
+  \item \textbf{Singletons are the tree mean.} A singleton block $\{i\}$
+        contributes the field mean $\avg{\phi}$, which at tree level is the
+        mean-field saddle $\phi^{*}$ (read by \code{\_external\_mean},
+        \file{notebooks/daedalus.py:373}). For a \emph{central} moment all
+        singletons are dropped (only no-singleton partitions survive). For a
+        \emph{raw} moment singletons contribute $\mu^{\#\text{singletons}}$, and
+        if the mean is zero those terms die. The 1-loop tadpole shift of the mean
+        is \emph{not} yet folded in --- a documented refinement
+        (\file{notebooks/daedalus.py:376-377}, \code{:404-405}).
+\end{enumerate}
+
+\code{Config.output}~$\in$~\code{\{'cumulant', 'moment', 'central\_moment'\}}
+selects this. Producing a moment of order $k$ costs up to $k-1$ \emph{extra}
+backend runs (one per cumulant order $2..k$), because each block size needs its
+own \code{compute\_cumulants} call.
+
+\subsection{The mean-field saddle, ``fundamental'', and Dyson dressing}
+
+Two more knobs round out the physics surface. First, the pipeline solves a
+\term{mean-field saddle} --- the deterministic fixed point $\phi^{*}$ about which
+the fluctuation expansion is taken --- before any diagrams are evaluated. The
+numeric values of the model's parameters ($\mu, D, \lambda, \ldots$) are passed as
+the \code{fundamental} dict (the engine's name), which is the same thing as
+\code{Config.parameters} (the friendly name). Saddle quantities (names ending in
+\code{star}) are \emph{solved}, never supplied. Some theories --- a double well,
+$\mu<0$ --- have several stable roots, and \code{Config.fixed\_point\_index},
+\code{mf\_dae\_n\_starts}, and \code{mf\_dae\_seed\_box} choose which root the
+expansion centres on.
+
+Second, for coupled multi-field spatial theories whose fields have \emph{unequal}
+bare diffusivities, the tree-level propagator is dressed by resumming a geometric
+self-energy series --- the \term{Dyson series} --- to a finite order.
+\code{Config.dyson\_order} overrides the model's built-in Dyson policy at run
+time, optionally with a reference diffusivity $D_0$ around which the dressing is
+organised. The detailed treatment of both is in Chapters~\ref{ch:mean-field}
+and~\ref{ch:spatial-coupled}; here they are just \code{Config} fields that
+\code{run} forwards.
+
+\section{Loading a theory and finding the repository}
+
+The discovery and loading helpers are the first block of the module
+(\file{notebooks/daedalus.py:40-80}). They are small, but understanding them
+explains why the demo notebooks run unchanged from any subdirectory.
+
+\subsection{\texttt{repo\_root} --- depth-robust path discovery}
+
+\code{repo\_root() -> str} (\file{notebooks/daedalus.py:40}) returns the absolute
+path of the repository root. It starts from the directory of \emph{this file} if
+\code{\_\_file\_\_} is defined, else from the current working directory (the
+fallback covers code pasted into a bare notebook cell,
+\file{notebooks/daedalus.py:44-45}), then walks \emph{up} the directory tree until
+it finds a directory containing a \code{pipeline/} subfolder:
+
+\begin{lstlisting}
+root = here
+while root != os.path.dirname(root):
+    if os.path.isdir(os.path.join(root, 'pipeline')):
+        return root
+    root = os.path.dirname(root)
+return here
+\end{lstlisting}
+
+If the walk reaches the filesystem root without finding \code{pipeline/}, it
+returns the starting directory as a last resort. The same upward-walk idiom
+appears in the example notebooks' own setup cell (you saw it in
+Chapter~\ref{ch:quickstart}), and it is what makes them robust to being launched
+from the repository top, from \code{notebooks/}, or from
+\code{notebooks/examples/}. At import time the module records the consequences as
+module-level constants (\file{notebooks/daedalus.py:54-58}): \code{REPO\_ROOT =
+repo\_root()}, \code{THEORIES\_DIR = REPO\_ROOT/theories}, and \code{REPO\_ROOT}
+is prepended to \code{sys.path} so that \code{import pipeline} resolves no matter
+where you started.
+
+\subsection{\texttt{list\_theories} --- the menu of loadable models}
+
+\code{list\_theories() -> list[str]} (\file{notebooks/daedalus.py:61}) lists
+\code{THEORIES\_DIR}, keeps the files ending in \code{.theory.py}, strips that
+suffix, and sorts. So \file{kpz\_1d.theory.py} becomes the loadable name
+\code{'kpz\_1d'}. It serves both as the menu of theories and as the body of the
+error message in \code{load\_theory}.
+
+\subsection{\texttt{load\_theory} --- dynamic import of a \texttt{.theory.py} file}
+
+\code{load\_theory(name)} (\file{notebooks/daedalus.py:68}) takes the bare theory
+name (no \code{.theory.py}) and returns the pair \code{(model, module)}, where
+\code{model = module.build()} is the built model dictionary and \code{module} is
+the live imported theory module. Step by step it builds the path
+\code{THEORIES\_DIR/<name>.theory.py}; raises \code{FileNotFoundError} (listing
+the available theories) if it does not exist; then dynamically imports the file.
+
+The import mechanism deserves a paragraph because it is the one piece of standard
+library here that is not obvious.
+
+\begin{defn}
+\textbf{\code{importlib.util} dynamic import.} \code{importlib} is Python's
+programmatic import system. Its \code{util} submodule can import a module
+\emph{from an arbitrary file path} --- not just by name from \code{sys.path}. The
+canonical three-step idiom is: describe the module with
+\code{spec\_from\_file\_location}, create an empty module object with
+\code{module\_from\_spec}, then actually \emph{run} the file's top-level code with
+\code{spec.loader.exec\_module}.
+\end{defn}
+
+That is exactly what the function does (\file{notebooks/daedalus.py:77-80}):
+
+\begin{lstlisting}
+spec = importlib.util.spec_from_file_location(f'theories.{name}', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+return mod.build(), mod
+\end{lstlisting}
+
+Running the file's top-level code is what defines \code{build},
+\code{DEFAULT\_FUNDAMENTAL}, and \code{METADATA}; the function then returns the
+built model dict and the live module. There are \emph{two} return values for a
+real reason: the model dict drives the run, but the run \emph{recommendations}
+(\code{k\_default}, \code{ell\_default}, \code{tau\_max},
+\code{recommended\_external\_fields}, $\ldots$) and the numeric parameter
+defaults (\code{DEFAULT\_FUNDAMENTAL}) live on the \emph{module}, not in the model
+dict. You need both to run a theory the way its author intended.
+
+\begin{note}
+To see every theory you can load, call \code{dd.list\_theories()}. If you mistype
+a name, \code{load\_theory} raises a \code{FileNotFoundError} whose message
+includes that same list --- so the menu of valid names is always one error away.
+\end{note}
+
+\section{Introspecting a model}
+
+Before running, you usually want to confirm the engine is about to compute what
+you think it is. The introspection helpers read \emph{only} the model dict (and,
+optionally, the module's docstring and \code{METADATA}), so they stay
+model-independent.
+
+\subsection{The routing predicates}
+
+Four tiny predicates classify a model into its group:
+
+\begin{description}
+  \item[\code{is\_spatial(model) -> bool}] (\file{notebooks/daedalus.py:85}) ---
+        \code{True} iff \code{model['spatial']} exists and has a truthy
+        \code{dim}. This single predicate routes everything spatial versus
+        temporal.
+  \item[\code{spatial\_dim(model) -> int}] (\file{notebooks/daedalus.py:90}) ---
+        the number of spatial dimensions $d$, or $0$.
+  \item[\code{is\_multifield(model) -> bool}] (\file{notebooks/daedalus.py:95}) ---
+        \code{True} iff the theory has more than one independent field channel:
+        either more than one entry in \code{model['physical\_fields']}, or any
+        population with \code{size > 1}.
+  \item[\code{field\_names(model) -> list[str]}] (\file{notebooks/daedalus.py:105})
+        --- the list \code{[f['name'] for f in model['physical\_fields']]}, used
+        to build default external legs and to locate the mean field.
+\end{description}
+
+\subsection{\texttt{describe\_model} --- the ``what is this model?'' cell}
+
+\code{describe\_model(model, module=None, show\_doc=True) -> str}
+(\file{notebooks/daedalus.py:138}) is the canonical introspection cell. It builds
+a boxed, multi-line report and \emph{also prints it} (\file{notebooks/daedalus.py:241}).
+Reading the report top to bottom (\file{notebooks/daedalus.py:147-242}) you get,
+in order: a header bar with \code{model['name']}; a \emph{Domain} line that is
+either a spatial PDE description ($d=\ldots$, boundary, initial condition) or
+``temporal ODE (time-only)''; a \emph{Fields} line (natural name, population tag,
+$x\in\mathbb{R}^{d}$ annotation, description); response fields if any;
+populations (skipping the auto scalar population named \code{'pop'}); the
+\emph{Parameters} block split into \emph{numeric} (default-valued) and
+\emph{saddle} (names ending \code{star}, ``solved by the pipeline''); any kernels
+(non-Markovian temporal convolutions) and transfer functions; the governing
+equation(s) in $\text{lhs}=\text{rhs}$ form; a \emph{Suggested run} line from
+\code{module.METADATA}; and finally, when \code{show\_doc} is set, the theory's
+trimmed physics docstring.
+
+Two small helpers do supporting work. \code{\_fmt\_default(v, maxlen=52)}
+(\file{notebooks/daedalus.py:109}) is a \code{repr()} truncated to 52 characters
+with a trailing ellipsis --- purely cosmetic, so a long default value does not
+blow up the parameter table. And \code{\_doc\_physics(doc)}
+(\file{notebooks/daedalus.py:125}) trims a theory's docstring down to its
+\emph{physics prose}: it walks the lines, \emph{stops} at any line containing a
+\code{\_DOC\_STOP} marker (\code{'status:'}, \code{'VERBATIM'}, the
+\code{'Phase N status'} lines, \ldots), and \emph{skips} any line containing a
+\code{\_DOC\_DROP} substring (\code{'Generated by'}, \code{'.theory.py'},
+\code{'docs/'}, \ldots). The marker lists are module constants at
+\file{notebooks/daedalus.py:116} and \code{:121}. The effect is that you see the
+model, not its changelog.
+
+\begin{gotcha}
+\code{describe\_model} both \emph{prints} the report and \emph{returns} it as a
+string (\file{notebooks/daedalus.py:241-242}). In a notebook cell that means you
+will see the text twice --- once from the print, once as the cell's echoed return
+value --- unless you assign or suppress the return. Harmless, just a touch noisy.
+\end{gotcha}
+
+\section{The \texttt{Config} object, field by field}
+
+\code{Config} (\file{notebooks/daedalus.py:247}) is the single most important
+object in this module. The \code{@dataclass} decorator means Python
+auto-generates the constructor from the field declarations, so you set only what
+you care about and inherit theory defaults for everything else. Its own docstring
+states the rule plainly: ``leave a field \code{None} to inherit the theory file's
+\code{METADATA}~/~\code{DEFAULT\_FUNDAMENTAL} default.''
+
+\begin{defn}
+\textbf{\code{@dataclass}.} A standard-library Python decorator
+(\code{from dataclasses import dataclass}) that reads a class's annotated field
+declarations and auto-generates an \code{\_\_init\_\_} (and \code{\_\_repr\_\_},
+equality, \ldots) for you. Every field below becomes a constructor keyword with
+the listed default.
+\end{defn}
+
+The full field list, in declaration order, follows. The groups mirror the comment
+banners in the source.
+
+\begin{longtable}{@{}p{0.27\textwidth} p{0.12\textwidth} p{0.50\textwidth}@{}}
+\toprule
+\textbf{Field} & \textbf{Default} & \textbf{Meaning (source line)} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Field} & \textbf{Default} & \textbf{Meaning (source line)} \\
+\midrule
+\endhead
+\multicolumn{3}{@{}l}{\emph{What to compute}}\\[2pt]
+\code{k} & \code{None} & Correlator order (number of external legs). If \code{None}, inferred from \code{external\_fields}, else from \code{METADATA['k\_default']} (\code{:255}). \\
+\code{max\_ell} & \code{None} & Loop order $L$ (0=tree). \code{None} $\Rightarrow$ \code{METADATA['ell\_default']} (\code{:257}). \\
+\code{external\_fields} & \code{None} & The $k$ legs, e.g.\ \code{[('x', 1), ('x', 1)]}; may name a response leg (\code{:258}). \\
+\code{parameters} & \code{None} & Numeric parameter overrides by canonical name (\code{:259}). \\
+\code{fundamental} & \code{None} & \emph{Deprecated alias} for \code{parameters} (\code{:260}); see \code{\_\_post\_init\_\_}. \\
+\code{output} & \code{'cumulant'} & \code{'cumulant'}\,/\,\code{'moment'}\,/\,\code{'central\_moment'} --- see Section~\ref{sec:math-moments} (\code{:261}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Temporal grid}}\\[2pt]
+\code{tau\_max} & \code{None} & Temporal grid extent; \code{None} $\Rightarrow$ METADATA or $10.0$ (\code{:269}). \\
+\code{tau\_step} & \code{None} & Temporal grid spacing; \code{None} $\Rightarrow$ METADATA or $0.5$ (\code{:270}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Spatial}}\\[2pt]
+\code{spatial\_grid} & \code{None} & Separations: an array, an \code{(lo, hi, n)} tuple, or \code{None} (\code{:273}). \\
+\code{spatial\_points} & \code{None} & \emph{$k\!\ge\!3$ spatial only}: \code{(n\_pts, k-1, 2)} of $(x_j,\tau_j)$ per non-anchor leg (\code{:274}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Temporal $k\!\ge\!3$ slicing}}\\[2pt]
+\code{kpoint\_base\_lags} & \code{None} & Length $k-1$: the fixed $\tau$ for the non-swept legs (default all 0) (\code{:280}). \\
+\code{kpoint\_full\_grid} & \code{False} & Compute the full $(k\!-\!1)$-dim tensor instead of slices (\code{:283}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Dyson dressing}}\\[2pt]
+\code{dyson\_order} & \code{None} & \code{None}=leave model policy; \code{int}$\ge 0$=override (\code{:288}). \\
+\code{reference\_diffusion} & \code{None} & $D_0$ reference for the Dyson dressing (\code{:289}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Mean-field root selection}}\\[2pt]
+\code{fixed\_point\_index} & \code{None} & Which stable saddle root (0, 1, \ldots) (\code{:296}). \\
+\code{mf\_dae\_n\_starts} & \code{None} & Multi-start Newton count for the DAE saddle solve (\code{:297}). \\
+\code{mf\_dae\_seed\_box} & \code{None} & \code{\{field: (lo, hi)\}} start range for the saddle solve (\code{:298}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Execution}}\\[2pt]
+\code{parallel} & \code{False} & Execution parallelism flag forwarded to the engine (\code{:301}). \\
+\code{verbose} & \code{False} & Print engine progress (\code{:302}). \\[4pt]
+\multicolumn{3}{@{}l}{\emph{Plotting options}}\\[2pt]
+\code{show\_orders} & \code{'cumulative'} & \code{'cumulative'}\,/\,\code{'incremental'}\,/\,\code{'total'} (\code{:305}). \\
+\code{logy} & \code{False} & Log $y$-axis (\code{:306}). \\
+\code{components} & \code{None} & Which $(i,j)$/slice to draw; \code{None}=auto (\code{:307}). \emph{Declared but never read --- see Section~\ref{sec:gotchas}.} \\
+\code{figsize} & \code{None} & Matplotlib figure size tuple (\code{:308}). \\
+\code{title} & \code{None} & Plot title override (\code{:309}). \\
+\code{save} & \code{None} & Path to \code{savefig}, or \code{None} (\code{:310}). \\
+\bottomrule
+\caption{Every field of \code{Config}, in declaration order
+  (\file{notebooks/daedalus.py:247-310}).}
+\label{tab:config}
+\end{longtable}
+
+\subsection{The two \texttt{Config} methods}
+
+\paragraph{\texttt{\_\_post\_init\_\_}} (\file{notebooks/daedalus.py:312-319})
+keeps \code{parameters} and \code{fundamental} in sync. \code{parameters} is the
+canonical name and \code{fundamental} the deprecated alias; whichever the caller
+set is mirrored onto the other, with \code{parameters} winning if somehow both
+are given. So an old notebook passing \code{fundamental=\{\ldots\}} and a new one
+passing \code{parameters=\{\ldots\}} both work:
+
+\begin{lstlisting}
+if self.parameters is None and self.fundamental is not None:
+    self.parameters = self.fundamental
+elif self.fundamental is None and self.parameters is not None:
+    self.fundamental = self.parameters
+\end{lstlisting}
+
+\paragraph{\texttt{resolved\_grid}} (\file{notebooks/daedalus.py:321-328})
+materialises \code{spatial\_grid} into the array form the engine wants. If it is
+\code{None} it returns \code{None}; if it is a 3-tuple \code{(lo, hi, n)} it
+returns \code{np.linspace(lo, hi, int(n))}; otherwise it coerces whatever was
+given to a float array with \code{np.asarray(g, dtype=float)}. This is the bridge
+from the friendly tuple form \code{(-6, 6, 49)} to the 49-point NumPy array the
+spatial path consumes.
+
+\section{How \texttt{run} resolves a \texttt{Config}}\label{sec:run}
+
+\code{run(model, cfg, module=None) -> dict} (\file{notebooks/daedalus.py:487}) is
+the central orchestration function. It resolves the (mostly \code{None})
+\code{Config} against the theory's defaults, builds the keyword dict the engine
+wants, calls \code{compute\_cumulants}, post-processes the result, and stamps it.
+We walk it in the order it executes.
+
+\subsection{Resolving \texorpdfstring{$k$}{k}, the loop order, and the legs}
+
+The first job is to pin down \emph{what} to compute. The loop order is resolved
+first (\file{notebooks/daedalus.py:494-495}): \code{cfg.max\_ell} if set, else
+\code{METADATA['ell\_default']}, else \code{0}.
+
+Then $k$, which is the subtle one (\file{notebooks/daedalus.py:499-515}). The
+rule is a small decision with one deliberate hard failure:
+
+\begin{itemize}
+  \item If \code{cfg.k} is set, $k=\code{cfg.k}$ --- but if \code{external\_fields}
+        is \emph{also} explicit and its length disagrees with $k$, \code{run}
+        raises a \code{ValueError}. A $k$/legs mismatch is treated as a
+        contradiction, not silently patched.
+  \item Else if \code{external\_fields} is explicit, $k = \code{len(ext)}$ --- a
+        $k$-point correlator has exactly $k$ legs.
+  \item Else $k = \code{METADATA['k\_default']}$ (or 2).
+\end{itemize}
+
+The contradiction guard is worth quoting, because it is the kind of thing that
+saves an hour of confusion (\file{notebooks/daedalus.py:506-511}):
+
+\begin{lstlisting}
+if cfg.k is not None:
+    k = cfg.k
+    if ext_is_explicit and len(ext) != k:
+        raise ValueError(
+            f"Config mismatch: k={k} but external_fields lists "
+            f"{len(ext)} leg(s) {ext}.  A k-point correlator needs exactly "
+            f"k legs.  Drop k (it is inferred from external_fields), set "
+            f"k={len(ext)}, or pass {k} legs.")
+\end{lstlisting}
+
+Next the external legs themselves (\file{notebooks/daedalus.py:517-533}). If you
+gave none and a module exists, \code{run} first tries
+\code{METADATA['recommended\_external\_fields']}. It then \emph{auto-builds} $k$
+copies of the first physical field's leg \code{(f0, 1)} --- but \emph{only when
+the caller gave none explicitly}, and only when the candidate is absent, has the
+wrong length, or names a field that does not exist (the check uses
+\code{field\_names(model)} and a tiny \code{\_nm} helper that pulls the name out
+of a tuple or string). An explicit \code{Config.external\_fields} is used
+verbatim, because it may legitimately name a response leg; any $k$-mismatch on it
+was already caught by the guard above.
+
+\subsection{The layered \texttt{fundamental}}\label{sec:layered}
+
+Numeric parameters are resolved by a three-layer override
+(\file{notebooks/daedalus.py:534-542}), each layer winning over the one before:
+
+\begin{enumerate}
+  \item \textbf{Model defaults.} \code{fundamental\_from\_model(model)}
+        (\file{notebooks/daedalus.py:335}) builds a dict from every non-saddle
+        parameter that carries a declared \code{default}. Saddle params
+        (\code{*star}) and defaultless params are skipped. This is what lets a
+        freshly loaded theory run out of the box even when its
+        \code{DEFAULT\_FUNDAMENTAL} is empty. (The function has a canonical alias
+        \code{parameters\_from\_model} at \file{notebooks/daedalus.py:352}, kept
+        for existing imports.)
+  \item \textbf{The module's \code{DEFAULT\_FUNDAMENTAL}}, updated on top.
+  \item \textbf{Your \code{cfg.parameters}}, updated last.
+\end{enumerate}
+
+\begin{lstlisting}
+fundamental = fundamental_from_model(model)
+fundamental.update(getattr(module, 'DEFAULT_FUNDAMENTAL', {}) or {}
+                   if module else {})
+if cfg.parameters:
+    fundamental.update(cfg.parameters)
+\end{lstlisting}
+
+So a loaded theory runs with sensible numbers, and your \code{Config} can
+override any subset of them by name.
+
+\subsection{The Dyson override and the MF-root forwards}
+
+If \code{cfg.dyson\_order} is set \emph{and} the model is spatial, \code{run}
+writes the override into the model's spatial policy
+(\file{notebooks/daedalus.py:545-550}):
+
+\begin{lstlisting}
+model['spatial']['dyson'] = {'mode': 'fixed', 'order': int(cfg.dyson_order)}
+if cfg.reference_diffusion is not None:
+    model['spatial']['reference_diffusion'] = float(cfg.reference_diffusion)
+\end{lstlisting}
+
+\begin{gotcha}
+This \emph{mutates the model dict in place}. If you reuse the same \code{model}
+object across runs with different \code{dyson\_order}, the last write persists.
+Re-\code{load\_theory} for a clean model.
+\end{gotcha}
+
+The mean-field root-selection overrides
+(\file{notebooks/daedalus.py:555-564}) are forwarded into the keyword dict
+\emph{only when set}, so the engine's own defaults (\code{fixed\_point\_index=0},
+\code{mf\_dae\_n\_starts=64}, \code{mf\_dae\_seed\_box=None}) are preserved
+otherwise. This matters for multi-root theories like the double-well $\mu<0$
+regime.
+
+\subsection{Wiring the grid, spatial versus temporal}
+
+With the engine keyword dict \code{kw} assembled (\code{model, k, max\_ell,
+fundamental, external\_fields, parallel, verbose}, at
+\file{notebooks/daedalus.py:552-553}), \code{run} wires the grid according to the
+group (\file{notebooks/daedalus.py:566-584}):
+
+\begin{itemize}
+  \item \textbf{Spatial.} If $k\ne 2$ and no \code{spatial\_points} were given,
+        raise --- $k\ge 3$ spatial needs explicit events. If $k\ne 2$, set
+        \code{kw['spatial\_points']}. Else ($k=2$) materialise the separations
+        grid (defaulting to \code{np.linspace(-6, 6, 49)}) and set \code{tau\_max}
+        and \code{tau\_step}, which default to $0.0$ and $1.0$ --- i.e.\
+        equal-time-centred, one $\tau$ row.
+  \item \textbf{Temporal.} \code{tau\_max} and \code{tau\_step} come from the
+        \code{Config} or from \code{METADATA}, defaulting to $10.0$ and $0.5$.
+\end{itemize}
+
+\begin{gotcha}
+The spatial and temporal grid \emph{centrings differ}. A spatial $k=2$ run
+defaults to a single equal-time row ($\code{tau\_max}=0.0$), so \code{C\_tau\_x}
+has shape $(1, n_x)$ unless you set \code{tau\_max}. A temporal run instead spans
+$\tau\in[-10,10]$. Also note that some theories declare a \code{spatial\_grid} in
+their \code{METADATA}, but \code{run} \emph{ignores} it and falls back to
+\code{np.linspace(-6, 6, 49)}; pass \code{spatial\_grid} explicitly to use the
+theory's recommendation.
+\end{gotcha}
+
+Finally the engine is called (\file{notebooks/daedalus.py:586}):
+\code{res = compute\_cumulants(**kw)}.
+
+\subsection{The result stamps}
+
+After the engine returns (and after the $k\ge 3$ and moment post-processing
+described next), \code{run} stamps three convenience keys onto the result
+(\file{notebooks/daedalus.py:694-697}) so downstream code never has to thread the
+config around separately:
+
+\begin{lstlisting}
+res['_cfg'] = cfg
+res['_model'] = model
+res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,
+                        parameters=fundamental, fundamental=fundamental)
+\end{lstlisting}
+
+\code{res['\_resolved']} records the resolved $k$, loop order, legs, and the final
+layered parameter dict --- the values the engine actually used. As you saw in
+Chapter~\ref{ch:quickstart}, the simulator reads
+\code{res['\_resolved']['parameters']} so that it runs exactly the same physics.
+
+\section{The \texorpdfstring{$k\ge 3$}{k>=3} slice and grid synthesis}\label{eng:kge3}
+
+This is the most intricate part of \code{run}, and it is worth its own section.
+When the run is temporal, $k\ge 3$, and the engine came back with
+\code{C\_tau = None} and a callable \code{total\_C}
+(\file{notebooks/daedalus.py:595-672}), \code{run} synthesises the human-readable
+views the plotters expect.
+
+First it chooses a $\tau$-grid, capping it to 41 points to bound the number of
+1-D evaluations (\file{notebooks/daedalus.py:597-603}). Then it resolves the
+\term{base} --- the fixed point through which the axis-parallel slices pass ---
+from \code{cfg.kpoint\_base\_lags}, validating that its length is $k-1$, and
+defaulting to all zeros (\file{notebooks/daedalus.py:608-616}). Two local helpers
+do the geometry: \code{\_args(vals)} builds the $k$-length time vector with leg 0
+pinned at 0, and \code{\_slice(fn, j)} sweeps leg $j$ over the grid with the other
+legs held at the base (\file{notebooks/daedalus.py:618-630}).
+
+With those it builds the $k-1$ axis-parallel slices and their per-$\ell$ versions
+(\file{notebooks/daedalus.py:632-646}), stores them under \code{C\_tau\_slices}
+and \code{C\_tau\_slices\_by\_ell}, and --- crucially --- sets the canonical
+single slice \code{C\_tau = slices[1]} and \code{C\_tau\_by\_ell =
+slices\_by\_ell[1]}. That last move is what lets a $k\ge 3$ run \emph{plot and
+sim-compare exactly like a $k=2$ run}: a curve over \code{tau\_grid}. It also
+records \code{\_kpoint\_base} and a human-readable \code{\_kpoint\_slice}
+description.
+
+\begin{note}
+For a single symmetric field, all $k-1$ slices coincide --- which is a free,
+visible check of the cumulant's permutation symmetry
+(\file{notebooks/daedalus.py:856-867}). When the external legs name different
+fields, the slices genuinely differ.
+\end{note}
+
+If \code{cfg.kpoint\_full\_grid} is set, \code{run} additionally builds the full
+$(k-1)$-dimensional tensor \code{C\_tau\_grid} and its per-$\ell$ version, with
+each axis downsampled so the total $n^{k-1}$ evaluation count stays bounded
+(\file{notebooks/daedalus.py:650-670}). The downsample target is
+\code{min(tau.size, max(2, int(4000**(1/(k-1)))))} points per axis; it records
+\code{tau\_axes} and, if it downsampled, a \code{\_kpoint\_grid\_note}. For $k=3$
+this tensor becomes the $\kappa_3(\tau_1,\tau_2)$ heatmap.
+
+\begin{gotcha}
+The whole synthesis block is wrapped in \code{try/except Exception: pass}
+(\file{notebooks/daedalus.py:632}, \code{:671-672}). If slice synthesis fails, the
+result silently retains the \code{C\_tau=None}/scalar form and the plotter falls
+back to bars --- no error surfaces. This is by design (so a plot always renders)
+but it can mask a real failure inside \code{total\_C}. If a $k\ge 3$ plot
+unexpectedly shows bars instead of curves, suspect this swallow.
+\end{gotcha}
+
+The matching simulator estimates the same slice with
+\code{lag\_bins=[0, None, 0, \ldots]} (only the swept leg free); the contract is
+documented at \file{notebooks/daedalus.py:588-594} and revisited in the
+simulators chapter.
+
+\section{Cumulants to moments: \texttt{\_assemble\_moment\_temporal}}\label{sec:moments}
+
+When \code{cfg.output} is \code{'moment'} or \code{'central\_moment'}, \code{run}
+assembles the moment as post-processing on top of the cumulants
+(\file{notebooks/daedalus.py:674-692}); \code{compute\_cumulants} itself stays
+pure. The spatial $k=2$ case is a one-liner --- $M(x) = \kappa_2(x)$ for a central
+moment, plus $\mu^2$ for a raw one (\file{notebooks/daedalus.py:681-684}). Spatial
+$k\ge 3$ raises \code{NotImplementedError} (\file{notebooks/daedalus.py:685-688}).
+The temporal any-$k$ case is the workhorse \code{\_assemble\_moment\_temporal}
+(\file{notebooks/daedalus.py:390}), which implements the shared-loop-budget
+formula~\eqref{eq:sharedbudget} exactly. It returns a complex array $M$ over
+\code{res['tau\_grid']}, computed as follows.
+
+\begin{enumerate}
+  \item Read the $\tau$-grid, the first external leg \code{f0}, the loop budget
+        $L$, and the singleton mean \code{mu} (0 if central, else
+        \code{\_external\_mean}; \file{notebooks/daedalus.py:411-414}).
+  \item Build \code{\_by\_ell\_2pt(r)} (\file{notebooks/daedalus.py:416-429}): a
+        dict \code{\{ell: interpolator\}} for the 2-point cumulant's $\ell$-loop
+        piece. It sorts by $|\text{lag}|$ and wraps each loop order in a
+        \code{np.interp} closure (or a zero closure if that order is absent), so
+        the assembly can evaluate $\kappa_2^{(\ell)}$ at any lag.
+  \item Get $\kappa_2$ per order --- reusing \code{res} if $k=2$, else one extra
+        \code{compute\_cumulants} run with \code{k=2}
+        (\file{notebooks/daedalus.py:431-436}).
+  \item Get $\kappa_j$ per order for $j=3..k$ --- reusing the order-$k$ run's
+        \code{total\_C\_by\_ell} callables when $j=k$, else one fresh run per
+        block size (\file{notebooks/daedalus.py:438-448}).
+  \item Define \code{\_kappa(block, ell, ti)} (\file{notebooks/daedalus.py:452-458}):
+        the $\ell$-loop piece of the $|\text{block}|$-point cumulant at the slice
+        times --- leg 1 swept to \code{tau[ti]}, the rest pinned at 0. Two-blocks
+        use the interpolators; larger blocks call the $j$-point callable.
+  \item The partition sum (\file{notebooks/daedalus.py:460-483}): for each
+        $\tau$-index, loop over all set partitions; split each into singletons and
+        multi-blocks. Skip the partition if \code{central} and there are
+        singletons. Compute \code{mu\_factor = mu**len(singles)}; if there are
+        singletons but the mean is zero, the term dies. If there are no
+        multi-blocks (all-singleton, raw), add \code{mu\_factor}. Otherwise
+        distribute the loop budget across the multi-blocks with
+        \code{itertools.product(range(L+1), repeat=len(multis))}, keep only
+        assignments summing to $\le L$, multiply the per-block $\ell$-pieces by
+        \code{mu\_factor}, and accumulate.
+\end{enumerate}
+
+The combinatorial engine for ``loop over all set partitions'' is
+\code{\_set\_partitions(items)} (\file{notebooks/daedalus.py:357}), a small
+recursive generator that yields every partition of a list as a list of blocks
+(the standard recursion: partition the rest, then either insert the first element
+into an existing block or start a new singleton). For $k=4$ it yields the
+$B_4=15$ partitions (the Bell number).
+
+\begin{gotcha}
+A temporal moment of order $k$ triggers up to $k-1$ \emph{additional}
+\code{compute\_cumulants} calls (one per block size $2..k$), each with its own
+diagram enumeration. Moments are therefore meaningfully more expensive than the
+plain cumulant. And because singletons use only the \emph{tree} mean $\phi^{*}$,
+for a symmetric saddle ($\phi^{*}=0$) raw and central moments coincide and all
+singleton terms vanish.
+\end{gotcha}
+
+\section{Plotting and dispatch}\label{sec:plot}
+
+The output side of the module is a dispatcher and seven plotters. The dispatcher
+is \code{plot\_cumulant(result, cfg=None, model=None, sim=None)}
+(\file{notebooks/daedalus.py:725}); \code{cfg} and \code{model} default to the
+stamped \code{\_cfg}/\code{\_model} if omitted, so \code{dd.plot\_cumulant(res)}
+alone works. Every plotter returns a Matplotlib \code{Figure}.
+
+\begin{defn}
+\textbf{Matplotlib \code{Figure} / \code{Axes}.} Matplotlib is the standard
+Python 2-D plotting library; \code{plt} is its stateful MATLAB-style interface. A
+\code{Figure} is the whole canvas; an \code{Axes} is one subplot. The methods
+\code{ax.plot}, \code{ax.errorbar}, \code{ax.bar}, \code{ax.imshow}, and
+\code{ax.pcolormesh} draw curves, error-bar points, bars, image heatmaps, and
+mesh heatmaps respectively. Every plotter here opens with
+\code{fig, ax = plt.subplots(...)} and ends by returning \code{fig}.
+\end{defn}
+
+\subsection{The dispatch tree}
+
+The dispatch is a single ordered chain of checks
+(\file{notebooks/daedalus.py:738-756}). Read top to bottom, the first match wins:
+
+\begin{enumerate}
+  \item \code{output\_kind} is a moment and a \code{moment} array is present
+        $\to$ \code{\_plot\_moment}.
+  \item \code{'C\_kpoint'} in result (spatial $k\ge 3$ events) $\to$
+        \code{plot\_kpoint}.
+  \item \code{is\_spatial(model)} or \code{'C\_tau\_x'} in result $\to$
+        \code{plot\_spatial}.
+  \item \code{result['C\_tau'] is None} (temporal $k\ge 3$ scalar) $\to$
+        \code{plot\_temporal\_kpoint} (bars).
+  \item \code{result['C\_tau\_grid'] is not None} $\to$
+        \code{plot\_temporal\_kpoint\_grid} ($k=3$ heatmap).
+  \item \code{len(result['C\_tau\_slices']) >= 2} $\to$
+        \code{plot\_temporal\_kpoint\_slices} (one panel per $\tau_j$).
+  \item Otherwise $\to$ \code{plot\_temporal} (the $C(\tau)$ curve).
+\end{enumerate}
+
+Notice how the order makes the synthesised $k\ge 3$ slice ``just work'': because
+\code{run} set \code{C\_tau = slices[1]}, a sliced $k\ge 3$ result has a
+non-\code{None} \code{C\_tau} and falls through check 4, landing on check 6
+(slices) or, if a full grid was built, check 5 (heatmap).
+
+\subsection{The per-order machinery shared by the line plotters}
+
+Two helpers feed every line plot. \code{cumulative\_curves(by\_ell)}
+(\file{notebooks/daedalus.py:713}) turns a per-order dict \code{\{ell: array\}}
+into running cumulative sums \code{\{ell: $\Sigma_{0..\ell}$\}}; it is the basis
+for the \code{'cumulative'} plot mode. \code{\_orders\_to\_draw(by\_ell, cfg)}
+(\file{notebooks/daedalus.py:801}) then resolves \code{Config.show\_orders} into a
+list of \code{(label, curve)} pairs: \code{'incremental'} gives the per-order
+curves, \code{'total'} gives only the top cumulative curve, and
+\code{'cumulative'} (the default) gives every cumulative curve. The labels come
+from \code{\_order\_label(ell)} (\file{notebooks/daedalus.py:707}): \code{'tree'}
+for $\ell=0$, else \code{'tree+1loop+\ldots'}. Curves are drawn in a rotating
+colour from the seven-entry palette \code{\_ORDER\_COLORS}
+(\file{notebooks/daedalus.py:703}), indexed modulo its length.
+
+\subsection{The seven plotters}
+
+\begin{description}
+  \item[\code{plot\_temporal}] (\file{notebooks/daedalus.py:815}) --- the $C(\tau)$
+        curve with a per-loop-order overlay. Builds curves via
+        \code{\_orders\_to\_draw} (falling back to a single \code{'total'} curve),
+        then overlays \code{sim} (handling a 2-D $k\ge 3$ sim by taking slice 1).
+        If \code{C\_tau} is \code{None} it redirects to
+        \code{plot\_temporal\_kpoint}.
+  \item[\code{plot\_temporal\_kpoint\_slices}] (\file{notebooks/daedalus.py:856})
+        --- $k\ge 3$: one panel per time-difference $\tau_j$, from
+        \code{C\_tau\_slices} / \code{C\_tau\_slices\_by\_ell}, each with the
+        per-order overlay and (optionally) the matching sim row. Axes labelled
+        $\tau_j = t_j - t_0$ and $\kappa_k$.
+  \item[\code{plot\_temporal\_kpoint\_grid}] (\file{notebooks/daedalus.py:923})
+        --- $k=3$: a \code{pcolormesh} heatmap of $\kappa_3(\tau_1,\tau_2)$ from
+        \code{C\_tau\_grid} and \code{tau\_axes}. For $k\ge 4$ (no 2-D view) it
+        falls back to the slices plotter.
+  \item[\code{plot\_temporal\_kpoint}] (\file{notebooks/daedalus.py:948}) ---
+        temporal $k\ge 3$ equal-time: a single scalar per loop order (the $\tau=0$
+        value), drawn as tree/+loop \emph{bars} honouring \code{show\_orders}. A
+        scalar sim overlays as a dashed \code{axhline} with an \code{axhspan}
+        error band.
+  \item[\code{plot\_spatial}] (\file{notebooks/daedalus.py:1000}) --- spatial
+        $k=2$: the equal-time $C(x,0)$ slice (panel 0) plus, when a $\tau$-grid is
+        present, a $C(x,\tau)$ \code{imshow} heatmap (panel 1). The $\tau\approx 0$
+        row is picked via \code{argmin(|tau|)}; the per-order overlay reads
+        \code{spatial\_info['C\_by\_order']}.
+  \item[\code{plot\_kpoint}] (\file{notebooks/daedalus.py:1054}) --- spatial
+        $k\ge 3$ at explicit events: a per-event bar chart from \code{C\_kpoint},
+        with the tree/+loop decomposition as grouped bars unless
+        \code{show\_orders == 'total'}.
+  \item[\code{\_plot\_moment}] (\file{notebooks/daedalus.py:759}) --- the
+        assembled moment as a \emph{single} curve (moments mix loop orders, so no
+        per-order overlay): temporal $M_k(\tau)$, or spatial $k=2$ $M(x,0)$.
+        $y$-label $M_k$.
+\end{description}
+
+\begin{gotcha}
+\code{plot\_kpoint} (spatial $k\ge 3$) is the one plotter that takes \emph{no}
+\code{sim} argument (\file{notebooks/daedalus.py:1054}), so a simulator overlay of
+spatial $k\ge 3$ events is not supported through \code{plot\_cumulant}.
+\end{gotcha}
+
+\subsection{The \texttt{sim} overlay contract}
+
+The optional \code{sim} dict overlays an independent simulator on the theory plot.
+Its keys depend on the group (\file{notebooks/daedalus.py:734-736}, \code{:866-867},
+\code{:980-986}):
+
+\begin{itemize}
+  \item temporal $C(\tau)$: \code{\{'tau', 'C', 'C\_err'\}};
+  \item spatial: \code{\{'x', 'C', 'C\_err'\}};
+  \item temporal $k\ge 3$ multi-slice: \code{'C'} / \code{'C\_err'} may be 2-D
+        \code{(k-1, n\_tau)} (row $p$ is panel $p$) or 1-D (applied to panel 0);
+  \item temporal $k\ge 3$ scalar: \code{\{'C': <scalar>, 'C\_err': <scalar or
+        None>\}}.
+\end{itemize}
+
+Where \code{C\_err} is given it is drawn as error bars (or, for the scalar case,
+an \code{axhspan} band); where it is absent the points are drawn plain. This is
+the same contract the example in Chapter~\ref{ch:quickstart} used.
+
+\section{Summarising a run}
+
+\code{summary(result) -> str} (\file{notebooks/daedalus.py:1087}) is the
+one-glance digest every notebook prints. It reads the \code{\_resolved} and
+\code{\_model} stamps and reports the theory name, the resolved $k$ and
+\code{max\_ell}, the field names, the spatial dimension, the Dyson order if the
+model carries a fixed-mode Dyson policy, and the live-diagram count
+\code{spatial\_info['n\_live\_diagrams']} when present:
+
+\begin{lstlisting}[style=console]
+theory : 'OU Quartic (white noise)'
+k      : 2    max_ell : 2
+fields : ['dx']   spatial_dim : 0
+\end{lstlisting}
+
+The live-diagram count is the only place a \code{nauty}-derived number surfaces to
+the user; it is the count of distinct (deduplicated) diagrams the engine actually
+evaluated. Everything else \code{summary} prints comes straight from the stamps.
+
+\section{What lives behind \texttt{compute\_cumulants}}
+
+It is worth being explicit about the boundary, because it explains why this
+chapter never had to teach you SageMath. \code{run} and
+\code{\_assemble\_moment\_temporal} both do \code{from pipeline import
+compute\_cumulants} (\file{notebooks/daedalus.py:410}, \code{:492}); everything
+below happens \emph{inside} that call, and \code{daedalus} is a \emph{client}, not
+a user, of these libraries:
+
+\begin{description}
+  \item[SageMath] a Python computer-algebra system; its symbolic ring \code{SR},
+        symbolic matrices, and exact algebra build the propagator, find
+        $\omega$-poles and residues, and solve the mean-field self-consistency.
+        Result keys like \code{num\_params} and the \code{propagator} matrices are
+        Sage objects --- but \code{daedalus} only ever reads \emph{NumPy} arrays
+        out of the result, so it never has to know Sage exists.
+  \item[\code{nauty}] a graph canonicalisation and isomorphism library; the
+        pipeline uses it to deduplicate enumerated diagrams and compute symmetry
+        factors. It surfaces only as the diagram counts in \code{spatial\_info}.
+  \item[\code{sympy}] a lighter pure-Python CAS, used for symbolic manipulation
+        and \code{lambdify} (compiling a symbolic expression into a fast numeric
+        function).
+  \item[\code{scipy}] numerical routines on top of NumPy --- \code{quad}
+        integration as a 1-D fallback, Bessel functions for the spatial radial
+        transform.
+  \item[\code{numba}] a just-in-time compiler for the engine's hot inner loops.
+  \item[\code{networkx}] a pure-Python graph library used in enumeration and
+        connectivity checks.
+\end{description}
+
+The single takeaway: \emph{\code{daedalus.py} is pure orchestration; the only
+non-stdlib libraries it imports are NumPy and Matplotlib.} All of the
+computer-algebra, graph, and JIT machinery is on the far side of one
+\code{from pipeline import compute\_cumulants}. The chapters of Parts~III--V are
+the deep dive into what that one line does; this chapter was the deep dive into
+everything around it.
+
+\section{Gotchas and limitations}\label{sec:gotchas}
+
+A consolidated list of the sharp edges, several already flagged above. Most are by
+design; a few are dead wiring worth knowing about so you do not go looking for
+behaviour that is not there.
+
+\begin{enumerate}
+  \item \textbf{\code{run} mutates the model dict in place}
+        (\file{notebooks/daedalus.py:545-550}): the Dyson override writes into
+        \code{model['spatial']}. Reusing one \code{model} across runs with
+        different \code{dyson\_order} leaves the last write in place;
+        re-\code{load\_theory} for a clean model.
+  \item \textbf{$k$ versus \code{external\_fields} contradiction is fatal}
+        (\file{notebooks/daedalus.py:506-511}): passing both with disagreeing leg
+        counts raises rather than silently choosing.
+  \item \textbf{Explicit \code{external\_fields} is used verbatim}
+        (\file{notebooks/daedalus.py:519-533}): only an \emph{absent} value (or a
+        stale METADATA recommendation) is auto-rebuilt. An explicit list naming a
+        missing field is passed straight to the engine and fails \emph{there}, not
+        in \code{run}.
+  \item \textbf{Spatial $k\ge 3$ needs \code{spatial\_points}}
+        (\file{notebooks/daedalus.py:566-570}) --- there is no grid form --- and
+        \textbf{spatial $k\ge 3$ moments are \code{NotImplemented}}
+        (\code{:685-688}).
+  \item \textbf{The $k\ge 3$ synthesis swallows all exceptions}
+        (\file{notebooks/daedalus.py:632}, \code{:671-672}): on failure the result
+        silently keeps its scalar form and the plotter falls back to bars.
+  \item \textbf{$\tau$-grid caps for $k\ge 3$}: slices cap the grid to 41 points
+        (\file{notebooks/daedalus.py:601-603}); the full grid downsamples each
+        axis (\code{:652}). A $k\ge 3$ plot may be coarser than the same theory's
+        $k=2$ plot.
+  \item \textbf{Tadpole approximation in moments}: singleton blocks use the
+        \emph{tree} mean $\phi^{*}$; the 1-loop tadpole shift is not folded in
+        (\file{notebooks/daedalus.py:376-377}, \code{:404-405}).
+  \item \textbf{\code{Config.components} is declared but never read} in this file
+        --- the docstring advertises it (\file{notebooks/daedalus.py:23-25}) and
+        the field exists (\code{:307}), but no plotter consults it.
+  \item \textbf{\code{is\_multifield} exists but \code{plot\_cumulant} never
+        branches on it} --- the dispatcher routes on spatial/$k$ only, even though
+        the docstring mentions a multi-field axis. Multi-field plotting is not
+        wired in this file.
+  \item \textbf{\code{from dataclasses import \ldots field} is imported but
+        unused} (\file{notebooks/daedalus.py:31}) --- every \code{Config} field
+        uses a plain default. Harmless dead import.
+\end{enumerate}
+
+With the front desk fully mapped, the next chapters turn to the two pieces this
+one only gestured at: the cumulant-to-moment conversion in its own right
+(Chapter~\ref{ch:cumulants-moments}, for the combinatorics in full), and the
+independent simulators that produce the \code{sim} overlays we kept drawing on
+top of the theory.

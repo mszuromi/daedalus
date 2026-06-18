@@ -1,0 +1,1084 @@
+% ---------------------------------------------------------------------
+%  Chapter 13 : Grouped Phase J --- the fully-analytic mode-sum
+% ---------------------------------------------------------------------
+\chapter{Grouped Phase J: the Fully-Analytic Mode-Sum}\label{ch:grouped-phasej}
+
+The previous chapter walked the \emph{per-diagram} time-domain integrator: for
+each typed Feynman diagram, Phase~J takes that diagram's product of retarded
+propagators and vertex coefficients and integrates over the internal vertex
+times to produce a number $C(t_1, \dots, t_k)$. This chapter is about an
+\emph{optimisation} of that loop --- one that is mathematically exact, not an
+approximation --- together with the analytic machinery (``Stage~4a'') that
+replaces adaptive numerical quadrature with closed-form mode-sums and so lifts
+the precision floor from scipy's $\sim\!10^{-8}$ all the way to machine epsilon.
+
+The motivation is brute arithmetic. The enumerator does not emit one diagram per
+topology; it emits one diagram per \emph{typed} topology, and a single bare
+topology fans out into hundreds of typed copies that differ only in bookkeeping
+the integrator can factor out. The grouped path recognises that redundancy, does
+the expensive per-topology setup \emph{once}, and sums the integrands of the
+whole family before integrating. The result is bit-for-bit the same numbers the
+per-diagram path produces (a contract the regression suite enforces to
+round-off), produced far faster and, on the analytic path, far more precisely.
+
+Two source files carry the whole story, and we will quote both with
+\code{file:line} throughout:
+\begin{itemize}
+  \item \file{pipeline/\_grouped\_phase\_j.py} --- the \emph{grouping wrapper}
+        \code{compute\_correction\_td\_grouped}, which buckets typed diagrams
+        into groups and dispatches each group, with a three-tier fallback to the
+        per-diagram path when grouping cannot be trusted.
+  \item \file{msrjd/integration/time\_domain/grouped\_integral.py} --- the
+        \emph{grouped evaluator} \code{integrate\_grouped\_diagram}, which is
+        where the sum-then-integrate and the merged-residue mode-sum actually
+        happen.
+\end{itemize}
+
+\begin{note}
+This is a \term{prototype}, opt-in by a single flag. It is \emph{not} wired into
+the engine by default: \code{compute\_cumulants} takes a keyword
+\code{use\_grouped\_phase\_j} that defaults to \code{False}
+(\file{pipeline/compute.py:129}). Pass \code{use\_grouped\_phase\_j=True} to
+route Phase~J through the grouped path. Everything downstream --- the $\tau$-grid
+evaluation, the plotting, the saving --- is untouched, because the wrapper
+returns the \emph{same dict shape} as the per-diagram path. The two paths are
+interchangeable behind that one flag.
+\end{note}
+
+\section{Why group? The per-diagram redundancy}
+
+To see the redundancy clearly we need two definitions that recur throughout the
+chapter. They are the same objects the enumeration and type-assignment chapters
+introduced, viewed now from the integrator's side.
+
+\begin{defn}
+A \term{prediagram} is the bare graph topology of a Feynman diagram: its
+vertices, its \emph{leaves} (the external legs), its edges, and which internal
+vertices are integration variables. It carries \emph{no} field-component
+information on its edges.
+
+A \term{typed diagram} is a prediagram with two further things fixed: per edge,
+\emph{which} propagator matrix entry $(r_i, p_i)$ flows along that edge (i.e.\
+which response/physical field-component pair), and the per-vertex coefficients.
+\end{defn}
+
+Because a typed diagram only \emph{adds} edge indices and coefficients to a
+prediagram, all typed diagrams sharing one prediagram have \emph{identical graph
+topology, identical leaves, identical internal vertices, and identical
+integration variables}. They differ only in those per-edge $(r_i, p_i)$ indices
+and per-vertex coefficients. The module docstring states exactly this
+(\file{grouped\_integral.py:9--13}):
+
+\begin{lstlisting}[style=console]
+Typed diagrams sharing the same prediagram have identical graph
+topology, leaves, internal vertices, and integration variables.
+They differ only in per-edge propagator field-type indices (ri, pi)
+and per-vertex coefficients.
+\end{lstlisting}
+
+The per-diagram integrator does not exploit this. It pays the \emph{entire}
+per-diagram setup cost --- the graph walk, the allocation of vertex-time symbols,
+the $2^{|E|}$ $\delta$-edge subset bookkeeping (more on that below), the
+\code{fast\_callable} compile, the polytope and pole extraction --- once for
+\emph{every} typed diagram. The docstring records the measurement that motivated
+the whole effort (\file{grouped\_integral.py:18--21}):
+
+\begin{lstlisting}[style=console]
+For (k=2, ell=1) multipop the user saw 7736 typed diagrams across
+9 prediagrams - ~860 diagrams per prediagram, all paying full setup
+cost.
+\end{lstlisting}
+
+Eight hundred and sixty typed diagrams per prediagram, each repeating the same
+graph walk and the same JIT compile. The setup is identical across all of them;
+only a handful of complex numbers differ. That is the redundancy grouping
+removes.
+
+\section{Linearity of integration: why grouping is exact}
+
+The mathematical justification is a single line, and it is worth dwelling on
+because it is what makes grouping a \emph{drop-in} rather than a tradeoff. The
+contribution of one typed diagram is an integral over the internal vertex times;
+the contribution of the whole group is the sum of those integrals. Because the
+integration \emph{domain} is identical across every typed diagram of one
+prediagram --- the domain comes from the shared graph topology, which is the same
+for all of them --- you may sum the integrands first and integrate once
+(\file{grouped\_integral.py:33--41}):
+\begin{equation}
+  \sum_{\Gamma}\ \int \dd s_1 \cdots \dd s_m\ \mathcal{I}_\Gamma
+  \;=\;
+  \int \dd s_1 \cdots \dd s_m\ \sum_{\Gamma}\ \mathcal{I}_\Gamma ,
+  \label{eq:linearity}
+\end{equation}
+where $\mathcal{I}_\Gamma$ is the time-domain integrand of typed diagram
+$\Gamma$ and the $s_i$ are the surviving internal-vertex times. This is the
+linearity of the integral: it is \emph{exact}, holds term by term, and is not an
+approximation in any limit.
+
+So the grouped path builds the prediagram-level scaffolding once, forms the
+right-hand-side sum $\sum_\Gamma \mathcal{I}_\Gamma$, and runs a single
+integration. The expensive parts (graph walk, symbol allocation, the
+$2^{|E|}$ structure, the compile, the polytope) are shared; only the cheap parts
+(reading off each diagram's edge residues and coefficients) repeat per diagram.
+
+\begin{note}
+\eqref{eq:linearity} is the entire conceptual content of the chapter. Everything
+that follows --- the subset expansion, the polytope, the mode-sum, the merged
+residue --- is just \emph{how} the right-hand side is built and integrated
+efficiently. Keep the picture ``sum the integrands of a family that share a
+domain, then integrate once'' in mind and the code reads straightforwardly.
+\end{note}
+
+\section{From retarded propagators to a polytope integral}
+
+Before the grouping can buy anything, we need the shape of the integral it is
+grouping. This section rebuilds it from the field theory down to the convex
+polytope the closed forms integrate over. The construction is shared with the
+per-diagram path; the grouped path differs only in the very last step.
+
+\subsection{The retarded propagator in the time domain}
+
+Phase~I (the frequency-domain assembly of the previous part) hands Phase~J a
+rational propagator matrix $\hat G(\omega)$ already decomposed into poles and
+residues. Concretely it passes a \code{propagator\_data} dict whose keys are:
+\begin{description}
+  \item[\code{pole\_vals}] the poles $p_k$ of $\hat G(\omega)$. The causality
+        filter guarantees $\operatorname{Im}(p_k) > 0$ for every one of them.
+  \item[\code{C\_mats}] one residue matrix $C_k$ per pole, so that
+        $C_k[i,j]$ is the residue of $\hat G[i,j](\omega)$ at the pole $p_k$.
+  \item[\code{D\_delta}] (optional) the $\omega \to \infty$ limits of
+        $\hat G$ --- the instantaneous response weights.
+\end{description}
+The helper \code{build\_G\_t\_matrix} (\file{propagator\_td.py:135}) turns this
+into the \term{time-domain retarded propagator}. Its docstring states the
+decomposition (\file{propagator\_td.py:140--141}):
+\begin{equation}
+  \Gret[i,j](t)
+  \;=\;
+  \underbrace{\text{delta\_coeffs}[i,j]\cdot \delta(t)}_{\text{instantaneous}}
+  \;+\;
+  \underbrace{\Theta(t)\cdot\Bigl(\sum_k C_k[i,j]\,\ee^{\ii\,p_k\,t}\Bigr)}_{\text{smooth}} .
+  \label{eq:GR}
+\end{equation}
+The first term is the \emph{instantaneous} $\delta$-response (it appears for any
+entry whose frequency-domain propagator has a nonzero $\omega\to\infty$ limit,
+e.g.\ a response source producing an immediate response at the same time); the
+second is the \emph{smooth} pole--residue sum. With the pipeline-wide Fourier
+convention, each summand $C_k\,\ee^{\ii p_k t}$ \emph{decays} for $t>0$ and grows
+for $t<0$, and the Heaviside $\Theta(t)$ is exactly what makes the retarded
+propagator well-defined on the real line (\file{propagator\_td.py:157--161}).
+
+It is convenient to fold the $\ii$ into the rate. Define the \term{mode}
+convention the analytic code uses throughout:
+\begin{equation}
+  \lambda_k \;=\; \ii\,p_k ,
+  \qquad
+  C_\alpha \;=\; C_k[p_i, r_i] ,
+  \label{eq:mode}
+\end{equation}
+so $\operatorname{Re}\lambda_k < 0$ for a decaying retarded mode, and the smooth
+time-domain propagator on an edge reads $\sum_\alpha C_\alpha\,
+\ee^{\lambda_\alpha\,\Delta t}$. Here $\Delta t$ is the time difference across the
+edge: for an oriented edge $u \to v$, $\Delta t = t_v - t_u$. (The dataclass
+\code{EdgeModeSum} records this convention in its own docstring,
+\file{final\_integral.py:128--133}, with the index ordering
+$G[p_i, r_i] = \langle \varphi_{p_i}\,\tilde n_{r_i}\rangle$ --- physical row,
+response column.)
+
+\subsection{One diagram's integral and the $2^{|E|}$ subset expansion}
+
+Give each internal vertex a time --- the integration variables $s_v$ --- and each
+leaf its external time, with one leaf (the \term{origin leaf}) pinned to $t=0$.
+The contribution of one typed diagram is then
+\begin{equation}
+  C_\Gamma(t_1,\dots,t_k)
+  \;=\;
+  (\text{prefactor})\cdot
+  \int \prod_v \dd s_v\ \prod_{\text{edges } e} \Gret[p_i, r_i](\Delta t_e) .
+  \label{eq:onediagram}
+\end{equation}
+Each retarded factor is the sum of a $\delta$-part and a $\Theta$-times-smooth
+part, \eqref{eq:GR}. Expand the product of $|E|$ such factors over the binary
+choice ``$\delta$-piece versus smooth-piece'' on each edge: that gives a sum over
+$2^{|E|}$ \term{subsets}. In a given subset, the edges chosen as
+``$\delta$-edges'' each carry a $\delta(\Delta t_e)$, which \emph{collapses one
+integration variable} via the linear equality $\Delta t_e = 0$; the remaining
+``smooth-edges'' each carry $\sum_\alpha C_\alpha \ee^{\lambda_\alpha \Delta t_e}$
+together with the retardation constraint $\Delta t_e > 0$ coming from the
+Heaviside.
+
+After $\delta$-elimination, suppose $m$ integration variables $s_1,\dots,s_m$
+survive. The smooth retardation constraints $\Delta t_e > 0$ are \emph{linear
+inequalities} in the $s_i$ and the free external times --- they cut out a
+\term{convex polytope} $P$. The subset's contribution is
+\begin{equation}
+  I_{\text{subset}}
+  \;=\;
+  (\text{prefactor})\cdot
+  \int_P \dd s_1 \cdots \dd s_m\
+  \prod_{e\,\in\,\text{smooth}}
+  \Bigl[\,\sum_\alpha C^{(e)}_\alpha\, \ee^{\lambda_\alpha \Delta t_e}\,\Bigr] .
+  \label{eq:subset}
+\end{equation}
+
+\begin{defn}
+The integer $m$ --- the number of integration variables surviving
+$\delta$-elimination in a subset --- is the single most important quantity in the
+evaluator. It selects which closed form is used: $m=0$ (no integral, just a
+constraint check), $m=1$ (a 1-D interval), $m=2$ (a polygon), or $m\ge 3$ (a
+general polytope). We return to each case in \S\ref{sec:closedforms}.
+\end{defn}
+
+\subsection{Pole expansion into mode-sums}
+
+Expand the product of mode-sums in \eqref{eq:subset} into a sum over \term{pole
+tuples} $\alpha = (\alpha_1, \dots, \alpha_{n_{\text{smooth}}})$ --- one pole
+index per smooth edge. Each tuple contributes a single exponential whose exponent
+is \emph{linear} in the $s_i$:
+\begin{equation}
+  \prod_e \Bigl[\sum_\alpha C_\alpha \ee^{\lambda_\alpha \Delta t_e}\Bigr]
+  \;=\;
+  \sum_{\bm\alpha}\ \Bigl(\prod_e C_{\alpha_e}\Bigr)\,
+  \exp\!\Bigl(\sum_e \lambda_{\alpha_e}\,\Delta t_e\Bigr) .
+  \label{eq:poletuple}
+\end{equation}
+Writing each edge's time difference as a linear form
+$\Delta t_e = c_{0,e} + \sum_i a^{\text{int}}_{e,i}\,s_i + \sum_j a^{\text{ext}}_{e,j}\,t^{\text{free}}_j$,
+the exponent of \eqref{eq:poletuple} becomes $\gamma_{\bm\alpha} + \sum_i
+\alpha^{(i)}_s\,s_i$ with
+\begin{equation}
+  \alpha^{(i)}_s \;=\; \sum_e \lambda_{\alpha_e}\,a^{\text{int}}_{e,i},
+  \qquad
+  \gamma_{\bm\alpha} \;=\; \sum_e \lambda_{\alpha_e}\Bigl(c_{0,e} + \sum_j a^{\text{ext}}_{e,j}\,t^{\text{free}}_j\Bigr).
+  \label{eq:slopes}
+\end{equation}
+So the subset contribution becomes a sum over pole tuples, each a constant times
+a geometric integral of an exponential-of-linear over the polytope:
+\begin{equation}
+  I_{\text{subset}}
+  \;=\;
+  \sum_{\bm\alpha}\Bigl(\prod_e C_{\alpha_e}\Bigr)\,\ee^{\gamma_{\bm\alpha}}
+  \int_P \exp\!\Bigl(\sum_i \alpha^{(i)}_s\,s_i\Bigr)\,\dd s .
+  \label{eq:subsetfinal}
+\end{equation}
+The integral $\int_P \exp(\text{linear})\,\dd s$ has a closed form that depends
+only on $m$ and the polytope geometry --- it does \emph{not} know which pole tuple
+or which diagram produced it. That separation is what the grouped path exploits.
+
+\section{The merged-residue tensor \texorpdfstring{$B_{\bm\alpha}$}{B-alpha}}
+
+Now apply linearity, \eqref{eq:linearity}, to \eqref{eq:subsetfinal}. Take one
+prediagram with $N$ typed diagrams indexed by $j$. All $N$ share the same pole
+spectrum $\{\lambda_\alpha\}$ (they share \code{propagator\_data}) and the same
+polytope (the constraints come from the shared $\Delta t_e$ symbols). Only the
+residues $C_\alpha$ and the prefactor $\mathrm{cp}_j$ differ between typed
+diagrams --- through their per-edge $(r_i, p_i)$ indices. Summing
+\eqref{eq:subsetfinal} over $j$:
+\begin{equation}
+  I_{\text{subset}}^{\text{group}}
+  \;=\;
+  \sum_{\bm\alpha}
+  \underbrace{\Bigl[\sum_j \mathrm{cp}_j
+    \Bigl(\textstyle\prod_{\delta\text{-edge}} \delta_{\mathrm{coeff}\,j,e}\Bigr)
+    \prod_{\text{smooth }e} C^{(j)}_{\alpha_e,e}\Bigr]}_{\displaystyle B_{\bm\alpha}}
+  \ee^{\gamma_{\bm\alpha}}
+  \int_P \exp\!\Bigl(\sum_i \alpha^{(i)}_s s_i\Bigr)\dd s .
+  \label{eq:merged}
+\end{equation}
+Crucially, the $\ee^{\gamma_{\bm\alpha}} \int_P(\cdots)$ factor does \emph{not}
+depend on $j$. So the code pre-sums the residue weights over $j$ \emph{inside}
+the pole tuple, defining the \term{merged-residue tensor}
+(\file{grouped\_integral.py:71--75}):
+\begin{equation}
+  B_{\bm\alpha}
+  \;=\;
+  \sum_j\ \Bigl(\mathrm{cp}_j \cdot
+    \textstyle\prod_{\delta\text{-edge}} \delta_{\mathrm{coeff}\,j,e}\Bigr)
+  \cdot \prod_{\text{smooth }e} C^{(j)}_{\alpha_e,e} .
+  \label{eq:Bdef}
+\end{equation}
+
+\begin{defn}
+The merged-residue tensor $B_{\bm\alpha}$ is the grouped path's per-tuple
+coefficient. For the \emph{per-diagram} path the per-tuple coefficient is the
+Cartesian product $\prod_e C_{\alpha_e}$ produced by \code{\_enumerate\_pole\_tuples}
+(\file{final\_integral.py:529}). The grouped path replaces that single-diagram
+product with the sum $B_{\bm\alpha}$ over the whole group. The underlying analytic
+integration --- the $\ee^\gamma \int_P$ factor --- is byte-for-byte identical; only
+the residue accumulation moved inside the tuple sum
+(\file{grouped\_integral.py:79--86}).
+\end{defn}
+
+This is the precise sense in which grouping is a drop-in. The per-diagram analytic
+evaluators already accept the per-tuple coefficient through an iterator; the
+grouped path feeds them the merged $B_{\bm\alpha}$ instead of the Cartesian
+product, and the same closed form runs unchanged.
+
+\begin{gotcha}
+There is one subtlety, the subject of an open precision investigation, and it
+lives entirely in this reordering. The grouped path sums $B_{\bm\alpha}$
+\emph{before} the integration, so intra-group cancellations happen at the level
+of (possibly large) individual residue products. The per-diagram path sums
+\emph{after} integration. By linearity these are equal in exact arithmetic, but
+in IEEE float64 they can disagree when individual pole-tuple terms are huge ---
+close-paired poles give $O(1/\Delta p)$ residues, products of several such give
+$O(10^8)$, and catastrophic cancellation drags them down to an $O(1)$ integral.
+The disagreement is documented at \file{final\_integral.py:1690--1700} (the
+\code{USE\_POSET\_CAP\_MATCH\_SCIPY} comment block) and affects the $m\ge 3$
+case; see \S\ref{sec:precision}.
+\end{gotcha}
+
+\section{Closed forms by \texorpdfstring{$m$}{m}}\label{sec:closedforms}
+
+With $B_{\bm\alpha}$ in hand, the only thing left is the geometric integral
+$\int_P \exp(\text{linear})\,\dd s$ for each subset. Its closed form is selected
+by $m$. The grouped path implements $m=0$ and $m=1$ as \emph{stand-alone twins}
+inside \file{grouped\_integral.py}, and routes $m=2$ and $m\ge 3$ through the
+shared per-diagram evaluators in \file{final\_integral.py} via a
+\code{pole\_tuples} override. All four read the merged residue
+$(B_{\bm\alpha}, \text{lambdas})$ pairs the same way.
+
+\subsection{$m=0$: a constraint check}
+
+No integration variable survived $\delta$-elimination, so there is nothing to
+integrate --- only the constraints to check and the exponentials to sum. The
+helper \code{\_evaluate\_grouped\_m0\_modesum} (\file{grouped\_integral.py:138})
+does exactly that:
+\begin{lstlisting}
+def _evaluate_grouped_m0_modesum(pole_tuples, subset_constraint_data, free_ext_vals):
+    import cmath
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        c_eff = float(c0) + sum(float(a_ext[i]) * float(free_ext_vals[i])
+                                for i in range(len(a_ext)))
+        if c_eff <= 0:
+            return 0.0 + 0.0j
+    ...
+    total = 0.0 + 0.0j
+    for (B_alpha, lambdas) in pole_tuples:
+        gamma = 0.0 + 0.0j
+        for e in range(len(lambdas)):
+            gamma += lambdas[e] * dt_per_edge[e]
+        if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
+            return None
+        try:
+            total += B_alpha * cmath.exp(gamma)
+        except (OverflowError, ValueError):
+            return None
+    return total
+\end{lstlisting}
+It returns $\sum_{\bm\alpha} B_{\bm\alpha}\,\exp(\sum_e \lambda_{\alpha_e}\Delta t_e)$
+as a Python \code{complex}; it returns $0$ if any constraint $\Delta t_e > 0$ is
+violated (the test \code{c\_eff <= 0} at \file{grouped\_integral.py:155}, the
+$\Theta(0)=0$ convention --- the boundary is \emph{outside}); and it returns
+\code{None} on overflow, which signals the caller to fall back to numerical
+quadrature.
+
+\subsection{$m=1$: an interval, with $\pm\infty$ handled exactly}
+
+One integration variable $s$ survives, on an interval $[L,U]$. The closed form is
+elementary,
+\begin{equation}
+  \int_L^U \ee^{\alpha_s s + \gamma}\,\dd s
+  \;=\;
+  \frac{\ee^{\alpha_s U + \gamma} - \ee^{\alpha_s L + \gamma}}{\alpha_s},
+  \label{eq:m1}
+\end{equation}
+with the limit $\alpha_s \to 0$ (a constant integrand, value $(U-L)\,\ee^\gamma$)
+handled separately. The interesting part is the unbounded endpoints.
+\code{\_integrate\_grouped\_m1\_modesum} (\file{grouped\_integral.py:179}) first
+resolves the feasible interval from the linear constraints, tracking $\pm\infty$
+exactly:
+\begin{lstlisting}
+    L = -math.inf
+    U = +math.inf
+    for (a_int, a_ext, c0) in subset_constraint_data:
+        a = float(a_int[0]) if a_int else 0.0
+        c_eff = float(c0) + sum(float(a_ext[i]) * float(free_ext_vals[i])
+                                for i in range(len(a_ext)))
+        if abs(a) < 1e-15:
+            if c_eff <= 0:
+                return 0.0 + 0.0j
+            continue
+        bound = -c_eff / a
+        if a > 0:
+            if bound > L: L = bound
+        else:
+            if bound < U: U = bound
+    if L >= U:
+        return 0.0 + 0.0j
+\end{lstlisting}
+A constraint with $|a| < 10^{-15}$ is $s$-independent: if it is violated the
+subset is infeasible (return $0$), otherwise it is skipped. A constraint with
+$a>0$ tightens the lower bound, $a<0$ the upper bound. When a side is left
+unbounded, the corresponding boundary term in \eqref{eq:m1} is \emph{zeroed} only
+if the integrand decays in that direction (the sign of
+$\operatorname{Re}\alpha_s$ matches); if it would instead diverge, the function
+returns \code{None} to force the scipy fallback, which handles the unbounded
+endpoint with an adaptive substitution.
+
+\begin{gotcha}
+Why $\pm\infty$ rather than clipping at some large finite cap? The docstring
+(\file{grouped\_integral.py:196--202}) is explicit, and it is load-bearing for
+precision: clipping the interval at $\pm$\code{bbox\_cap} would leave a residual
+$\ee^{\alpha_s\cdot\text{bbox\_cap}} \approx 10^{-9}$ boundary term for typical
+Hawkes timescales --- measured on the \code{quad\_exp\_k2\_ell0} fixture before
+this fix. Treating the genuine $\pm\infty$ exactly removes that error entirely.
+The \code{bbox\_cap} argument is still passed in, but on this path it is used only
+to \emph{not} clip.
+\end{gotcha}
+
+\subsection{$m=2$: a polygon via fan-triangulation}
+
+For two surviving variables the polytope is a convex polygon. The shared
+evaluator \code{\_integrate\_2d\_polygon\_modesum} (\file{final\_integral.py:2175})
+clips the half-planes, fan-triangulates the polygon from vertex~$0$, and
+integrates $\exp(\alpha x + \beta y)$ over each triangle using the unit-triangle
+closed form $J(p,q)$ (\file{final\_integral.py:356}):
+\begin{equation}
+  J(p,q) \;=\; \int_0^1\!\dd u \int_0^{1-u}\!\dd w\ \ee^{p\,u + q\,w} .
+  \label{eq:J}
+\end{equation}
+Its docstring gives the derivation (do the $w$-integral first, then split and
+integrate in $u$) and notes a 4th-order Taylor fallback when any of $|p|$, $|q|$,
+$|p-q|$ is tiny --- the same catastrophic-cancellation guard that recurs across
+the analytic code. The grouped path calls this evaluator with the merged residues
+supplied as \code{pole\_tuples=grouped\_pole\_tuples}, a dummy
+\code{smooth\_edge\_modes=list(dummy\_modes)} (explained in
+\S\ref{sec:dummymodes}), and \code{prefactor\_complex=1.0+0.0j} --- because the
+prefactor is already folded into $B_{\bm\alpha}$.
+
+\subsection{$m\ge 3$: a causal-poset chain simplex}
+
+For three or more variables the polytope is handled by a \term{causal-poset
+chain-simplex} decomposition in \code{\_integrate\_nd\_polytope\_poset\_modesum}
+(\file{final\_integral.py:1726}). The retardation constraints define a partial
+order $s_u < s_v$ on the vertex times; each linear extension of that poset is a
+nested simplex $L \le s_{\sigma(0)} \le \cdots \le s_{\sigma(m-1)} \le U$, and the
+integrator sums $\int \exp(\sum \lambda s)$ over every nested simplex. The grouped
+path uses it with the same \code{pole\_tuples} override. This is the path with the
+known float64 cancellation issue (\S\ref{sec:precision}).
+
+\begin{note}
+The two flags \code{USE\_POLYGON\_M2\_INTEGRATOR}
+(\file{final\_integral.py:287}) and \code{USE\_POSET\_INTEGRATOR}
+(\file{final\_integral.py:1661}) gate the $m=2$ and $m\ge 3$ analytic paths
+respectively. The grouped file imports the \emph{module}, not the flag values
+(\code{import \ldots final\_integral as \_fi\_mod}, \file{grouped\_integral.py:119}),
+so each per-call read picks up a notebook override live. Flip
+\code{\_fi\_mod.USE\_POSET\_INTEGRATOR = False} in a notebook and the grouped
+$m\ge 3$ analytic path silently turns off and routes to scipy.
+\end{note}
+
+\section{The grouping wrapper}
+
+We now walk the two files top to bottom, starting with the wrapper in
+\file{pipeline/\_grouped\_phase\_j.py}. Its job is to bucket typed diagrams into
+groups, dispatch each group to the evaluator, and --- the part that earns its
+keep --- fall back to the per-diagram path whenever the grouped result cannot be
+trusted.
+
+\subsection{The skip-status guard}
+
+Before any logic, the module declares the set of subset-level statuses that mean
+``the grouped evaluator silently \emph{dropped} this subset rather than
+integrating it'' (\file{\_grouped\_phase\_j.py:49}):
+\begin{lstlisting}
+_SUBSET_SKIP_STATUSES = frozenset({
+    'shotnoise_skipped_in_prototype',
+    'dt_sym_mismatch_skipped',
+})
+\end{lstlisting}
+This frozenset is the heart of the wrapper's correctness story. A group can return
+an overall \code{status='ok'} and yet have a \emph{subset} diagnostic carrying one
+of these codes --- which means a piece of the integrand was dropped and the group
+total is numerically \emph{wrong}. The comment (\file{\_grouped\_phase\_j.py:42--48})
+calls this ``the production bug we're fixing'' and lists the statuses explicitly
+so that a \emph{new} skip status added later cannot silently regress the guard.
+
+\begin{gotcha}
+\textbf{If you add a new skip status to the evaluator, you MUST add it here.}
+Otherwise the wrapper will accept an incomplete integrand as if it were
+complete. The isolation test cited in the comment found
+``5/7 multi-diagram groups dropped to 0'' at spike-reset $k=1$, $\ell=2$ ---
+exactly the failure mode this guard exists to catch.
+\end{gotcha}
+
+\subsection{The entry point and the group key}
+
+The entry point is \code{compute\_correction\_td\_grouped}
+(\file{\_grouped\_phase\_j.py:55}):
+\begin{lstlisting}
+def compute_correction_td_grouped(
+    typed_diagrams, prefactors, propagator_data, k,
+    num_params=None, ext_time_vars=None,
+    origin_leaf_idx=0, external_fields=None,
+):
+\end{lstlisting}
+It takes a flat list of \code{typed\_diagrams} at one loop order, a parallel list
+of \code{prefactors} (the \code{combined\_prefactor} per diagram), the Phase~I
+\code{propagator\_data}, the leg count \code{k}, optional numeric substitutions
+\code{num\_params}, the external time symbols \code{ext\_time\_vars} (auto-built as
+$t_1,\dots,t_k$ if \code{None}, \file{\_grouped\_phase\_j.py:72--76}), the pinned
+\code{origin\_leaf\_idx}, and the canonical \code{external\_fields} list. It
+returns the same dict shape as \code{compute\_correction\_td}.
+
+The grouping itself is a \code{defaultdict} keyed on a pair
+(\file{\_grouped\_phase\_j.py:96--100}):
+\begin{lstlisting}
+groups = defaultdict(lambda: {'tds': [], 'cps': []})
+for td, pf in zip(typed_diagrams, prefactors):
+    key = (id(td.prediagram), _ext_legs_key(td))
+    groups[key]['tds'].append(td)
+    groups[key]['cps'].append(pf)
+\end{lstlisting}
+
+\begin{defn}
+\code{collections.defaultdict} is a \code{dict} subclass that auto-creates a
+default value for any missing key, by calling a zero-argument factory you supply.
+Here the factory \code{lambda: \{'tds': [], 'cps': []\}} makes a fresh
+two-list bucket the first time a key is seen, so
+\code{groups[key]['tds'].append(td)} works without a membership check. It is the
+idiomatic Python way to bucket items into groups.
+\end{defn}
+
+The key has two components. The first, \code{id(td.prediagram)}, is the prediagram
+identity --- Python's built-in \code{id()} returns a unique integer per object, and
+the enumerator emits the \emph{same} prediagram object for all typed diagrams of one
+topology, so identity is a valid grouping key. The second, the nested
+\code{\_ext\_legs\_key(td)} (\file{\_grouped\_phase\_j.py:87}), returns a hashable
+sorted tuple of the external-legs mapping:
+\begin{lstlisting}
+def _ext_legs_key(td):
+    return tuple(sorted((lf, fld) for lf, fld in td.external_legs.items()))
+\end{lstlisting}
+Subdividing by external-legs is \emph{required}, not cosmetic. Two typed diagrams
+that differ only in which leaf carries which external field have different Wick
+mappings and different compensation factors inside the evaluator, so they cannot
+share a sum (\file{\_grouped\_phase\_j.py:78--86}). The per-diagram path handles
+each independently; the grouped path subdivides at this finer key to stay safe.
+
+\subsection{The three-tier dispatch}
+
+For each group the wrapper tries the grouped evaluator and falls back in tiers
+(\file{\_grouped\_phase\_j.py:125--228}):
+
+\begin{description}
+  \item[Tier 1 --- accept the grouped result.] Call
+        \code{integrate\_grouped\_diagram}. If it returns \code{status='ok'}
+        \emph{and} no subset diagnostic is in \code{\_SUBSET\_SKIP\_STATUSES}
+        (the \code{has\_skipped\_subset} scan at
+        \file{\_grouped\_phase\_j.py:147--153}), accept it: append
+        \code{result['contribution']} to the running list of group callables and
+        record metadata with \code{'handled\_by': 'grouped\_evaluator'}.
+  \item[Tier 2 --- per-diagram fallback on a silent subset skip.] If
+        \code{status='ok'} but a subset \emph{was} silently dropped, re-compute
+        the \emph{entire group} via the per-diagram path
+        (\code{\_perdiag\_fallback}, \file{\_grouped\_phase\_j.py:107}), append
+        that callable, and record \code{'handled\_by': 'perdiag\_fallback'} with
+        the skip reasons. This trades the grouped speedup on that group for the
+        correct numbers --- exactly what \code{use\_grouped\_phase\_j=False} would
+        have produced.
+  \item[Tier 3 --- per-diagram fallback on a group-level failure.] If the grouped
+        evaluator failed outright (e.g.\ early validation), also fall back to
+        per-diagram. If \emph{that} throws too, record a \emph{loud}
+        \code{'skipped'} entry (\file{\_grouped\_phase\_j.py:213--228}) rather than
+        silently dropping the whole group.
+\end{description}
+
+The nested \code{\_perdiag\_fallback(tds, cps)} (\file{\_grouped\_phase\_j.py:107})
+simply calls the per-diagram \code{compute\_correction\_td} on the group's diagrams
+and returns \code{(pd\_result['total\_C'], len(tds))}, isolating the fallback so its
+returned callable has the same \code{(*ext\_time\_values) -> complex} signature as
+the grouped \code{contribution}.
+
+\subsection{Assembling the result}
+
+Finally the wrapper builds the two callables the downstream code expects
+(\file{\_grouped\_phase\_j.py:231--241}):
+\begin{lstlisting}
+def total_C(*ext_time_values):
+    total = 0.0 + 0.0j
+    for fn in group_callables:
+        total = total + complex(fn(*ext_time_values))
+    return total
+
+def total_C_batch(tau_points, parallel=False, n_workers=None):
+    return [complex(total_C(*pt)) for pt in tau_points]
+\end{lstlisting}
+\code{total\_C} sums every group callable; \code{total\_C\_batch} serially
+evaluates \code{total\_C} at each $\tau$-point. The returned dict carries
+\code{total\_C}, \code{total\_C\_batch}, the grouped bookkeeping (\code{groups},
+\code{skipped\_kernel\_ids}, \code{fallback\_to\_perdiag}), and \code{ext\_time\_vars};
+it sets \code{eval\_per\_diagram\_batch} to \code{None} and
+\code{delta\_contributions} to \code{[]} --- both unsupported in the prototype
+(\file{\_grouped\_phase\_j.py:243--252}).
+
+\begin{gotcha}
+\code{total\_C\_batch} ignores its \code{parallel} and \code{n\_workers}
+arguments --- the prototype is serial. It keeps the arguments only to match the
+per-diagram API signature. This is deliberate and safe: as the codebase memory
+records, fork-based parallelism crashes a Jupyter kernel on the user's macOS
+machine, so serial-only is the correct default here.
+\end{gotcha}
+
+\section{The grouped evaluator, walked}
+
+The evaluator \code{integrate\_grouped\_diagram} (\file{grouped\_integral.py:283})
+is where \eqref{eq:linearity} and \eqref{eq:merged} are realised. We follow its
+control flow.
+
+\subsection{Validation and shared scaffolding}
+
+It first validates the group (\file{grouped\_integral.py:328--358}): an empty list
+fails; a length mismatch between diagrams and prefactors fails; and --- the
+defining invariant --- \emph{all} typed diagrams must share the same prediagram
+object by identity (\file{grouped\_integral.py:349--350}):
+\begin{lstlisting}
+pd0 = typed_diagrams[0].prediagram
+if not all(td.prediagram is pd0 for td in typed_diagrams):
+    return {'status': 'failed', ...}
+\end{lstlisting}
+Then it builds the shared scaffolding once (\file{grouped\_integral.py:360--379}):
+the loop number $L = |E| - |V| + 1$ from \code{\_loop\_number\_from\_graph}
+(\file{final\_integral.py:2401}); the Sage graph \code{D = td0.prediagram[0]} and
+its leaves \code{td0.prediagram[2]}; and the time-domain propagator matrix
+\code{G\_t\_obj = build\_G\_t\_matrix(propagator\_data, t\_sym, num\_params)} built
+\emph{once} for the whole group.
+
+\subsection{Wick enumeration and compensation}
+
+Next it enumerates the external-Wick mappings and computes the compensation
+divisor (\file{grouped\_integral.py:381--452}). If \code{external\_fields} is
+provided and matches the leaf count, it buckets canonical external positions and
+leaves by field and takes \code{itertools.permutations} within each field,
+building the Cartesian product of per-field permutations into \code{\_all\_mappings}.
+If any field's counts mismatch it falls back to the identity mapping with
+\code{\_compensation = 1}. Otherwise it computes the \emph{exact} compensation via
+\code{external\_wick\_compensation} on every group member and asserts they all
+agree (\file{grouped\_integral.py:434--449}); a mismatch returns
+\code{status='failed'}, because a shared divisor would mis-weight the group. We
+unpack the compensation in \S\ref{sec:compensation}.
+
+\subsection{Vertex times and per-diagram edge info}
+
+For the first mapping it assigns each leaf its external time, pinning the origin
+leaf to \code{SR(0)}, and allocates a fresh symbol \code{s\_v...} per internal
+vertex into \code{integration\_vars} (\file{grouped\_integral.py:454--469}). A
+per-diagram scan handles \code{NoiseSourceType} vertices that introduce extra
+$\tau$ integration variables (\file{grouped\_integral.py:471--520}); for plain
+groups this loop is a no-op and the analytic path stays enabled.
+
+Then comes \emph{the only genuinely per-diagram work}
+(\file{grouped\_integral.py:522--591}). For each typed diagram and each edge
+$(u,v,\text{lbl})$ of the shared prediagram, it looks up $(r_i, p_i)$ via
+\code{\_lookup\_prop\_indices} (\file{final\_integral.py:5230}), resolves the head
+and tail times, and builds the per-edge data:
+\begin{lstlisting}
+dt = SR(t_v - t_u)
+delta_c = G_t_delta_coeff(G_t_obj, pi, ri)
+smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
+edge_info.append({'u': u, 'v': v, 'lbl': lbl, 'ri': ri, 'pi': pi,
+                  'dt_sym': dt, 'delta_coeff': delta_c,
+                  'smooth_factor': smooth_factor})
+\end{lstlisting}
+Note \code{include\_heaviside=False}: causality is enforced by the polytope
+constraints, not by an explicit $\Theta$. (\code{G\_t\_entry} reads the smooth
+$[p_i, r_i]$ entry --- the transpose of the kernel's $(r_i, p_i)$ convention, which
+both Phase~I and Phase~J must agree on.) It then coerces the diagram's
+\code{combined\_prefactor} to \code{SR} and substitutes \code{num\_params}.
+
+\subsection{The analytic mode-sum precomputation}
+
+The analytic path is enabled only if \code{USE\_GROUPED\_ANALYTIC\_MODESUM} is set,
+\code{pole\_vals} and \code{C\_mats} are present, \emph{and} no diagram has a
+non-empty \code{vertex\_leg\_time} (\file{grouped\_integral.py:602--607}):
+\begin{lstlisting}
+grouped_analytic_enabled = (
+    USE_GROUPED_ANALYTIC_MODESUM
+    and pole_vals is not None
+    and C_mats is not None
+    and not any(vlt for vlt in per_td_vertex_leg_time)
+)
+\end{lstlisting}
+When enabled it precomputes, once, the per-pole rates
+$\lambda_k = \texttt{complex(CDF(SR(p)))}\cdot 1j$
+(\file{grouped\_integral.py:612}) and the per-diagram/per-edge/per-pole residue
+tensor \code{residues\_per\_td\_edge} (\file{grouped\_integral.py:619--628}). These
+are reused across all $2^{|E|}$ subsets.
+
+\subsection{The subset loop and merged-residue construction}
+
+The core is the loop over \code{subset\_bits} in \code{range(2**n\_edges)}
+(\file{grouped\_integral.py:654--1033}). For each subset it: splits edges into
+$\delta$-edges (bit set) and smooth-edges (bit clear); drops any diagram with a
+near-zero $\delta$-coefficient on a $\delta$-edge; checks that all contributing
+diagrams agree on the symbolic $\Delta t$ of each $\delta$-edge (a mismatch
+records \code{dt\_sym\_mismatch\_skipped} and skips --- one of the two
+\code{\_SUBSET\_SKIP\_STATUSES}); performs $\delta$-elimination with
+\code{sage\_solve}; and skips residual shot-noise $\delta$-spikes with status
+\code{shotnoise\_skipped\_in\_prototype} (the other guarded status).
+
+It then builds the \emph{summed} subset integrand --- the right-hand side of
+\eqref{eq:linearity} --- as a single \code{SR} expression
+(\file{grouped\_integral.py:759--770}):
+\begin{lstlisting}
+subset_factor_group = SR(0)
+for td_idx in contributing_td:
+    ei = per_td_edge_info[td_idx]
+    cp = per_td_cp[td_idx]
+    term = cp
+    for i in delta_edges:
+        term = term * SR(ei[i]['delta_coeff'])
+    for i in smooth_edges:
+        term = term * ei[i]['smooth_factor']
+    term = term.subs(substitutions)
+    subset_factor_group = subset_factor_group + term
+\end{lstlisting}
+After extracting the linear constraint data $(a^{\text{int}}, a^{\text{ext}}, c_0)$
+for each smooth edge (\file{grouped\_integral.py:830--847}) and compiling a single
+\code{fast\_callable} over the summed integrand (used only on the scipy fallback),
+it constructs the merged-residue pole tuples --- the realisation of
+\eqref{eq:Bdef} (\file{grouped\_integral.py:925--948}):
+\begin{lstlisting}
+grouped_pole_tuples = []
+idx_alpha = [0] * n_smooth
+while True:
+    B_alpha = 0.0 + 0.0j
+    for j in range(len(merged_pf_per_j)):
+        prod = merged_pf_per_j[j]
+        for ee in range(n_smooth):
+            prod *= smooth_residues_per_j[j][ee][idx_alpha[ee]]
+        B_alpha += prod
+    lambdas = tuple(lambdas_per_pole[idx_alpha[ee]] for ee in range(n_smooth))
+    grouped_pole_tuples.append((B_alpha, lambdas))
+    # advance the multi-index alpha ...
+\end{lstlisting}
+The outer \code{while} enumerates the multi-index $\bm\alpha$ over per-edge poles;
+the inner sum over $j$ accumulates $B_{\bm\alpha} = \sum_j (\mathrm{cp}_j
+\prod_\delta \delta) \prod_{\text{smooth}} C^{(j)}_{\alpha_e}$, with
+\code{merged\_pf\_per\_j} the per-diagram prefactor-times-$\delta$-coefficients
+built at \file{grouped\_integral.py:904--913}. Each $(B_{\bm\alpha},
+\text{lambdas})$ pair is exactly what the closed-form evaluators consume.
+
+\subsection{The dummy modes}\label{sec:dummymodes}
+
+The per-diagram $m=2$ and $m\ge 3$ evaluators expect a list of \code{EdgeModeSum}
+objects of length $n_{\text{smooth}}$ --- a length check. On the analytic path
+those modes are never read (the real weights are in \code{pole\_tuples}), so the
+grouped code builds throwaway \code{EdgeModeSum} instances purely to satisfy the
+check (\file{grouped\_integral.py:949--961}). Their \code{modes} come from the
+first diagram's residues.
+
+\begin{gotcha}
+Do not mistake \code{grouped\_dummy\_modes} for the actual weights. They carry the
+first diagram's residues so the \code{n\_smooth} length check passes, but when
+\code{pole\_tuples} is supplied the evaluator reads its coefficients from there,
+not from the modes. The real merged weights live in \code{grouped\_pole\_tuples}.
+\end{gotcha}
+
+\subsection{The Wick-permutation sum and the divisor}
+
+The final \code{contribution(*ext\_time\_values)} closure
+(\file{grouped\_integral.py:1049--1074}) loops over the Wick permutations: for
+each it permutes the external times, time-shifts so the permuted origin leaf
+returns to $0$ (the integrand is a function of time \emph{differences}, so this
+symmetrises asymmetric integrands and is a no-op for symmetric ones), extracts the
+free-time values, and sums every subset closure. Finally it divides by the
+compensation:
+\begin{lstlisting}
+        for cfn in subset_contributions:
+            total = total + complex(cfn(free_vals))
+    return total / _comp
+\end{lstlisting}
+That \code{/ \_comp} at \file{grouped\_integral.py:1074} is the external-Wick
+compensation, the subject of the next section.
+
+\section{External-Wick compensation}\label{sec:compensation}
+
+The integrators enumerate \emph{every} field-respecting assignment of canonical
+external positions to diagram leaves and sum the integrand over all of them. Some
+of those assignments are redundant --- they map the diagram to itself via a graph
+automorphism --- so the raw sum over-counts each \emph{distinct} pinned-external
+diagram. The exact divisor that corrects this is the \term{orbit--stabilizer
+index}
+\begin{equation}
+  \mathrm{comp}
+  \;=\;
+  \frac{|\Aut(\Gamma,\ \text{leaves free})|}{|\Aut(\Gamma,\ \text{leaves fixed})|},
+  \label{eq:comp}
+\end{equation}
+computed by \code{external\_wick\_compensation} (\file{symmetry.py:343}). By
+orbit--stabilizer, two assignments yield the same pinned-external diagram iff they
+differ by a leaf-permuting automorphism, and the stabilizer of any assignment is
+exactly $\Aut(\Gamma, \text{leaves fixed})$; so the mapping sum counts each
+distinct class \eqref{eq:comp} times, and dividing by it recovers the sum over
+distinct diagrams the Feynman rules require. The grouped path applies this divisor
+once, at \file{grouped\_integral.py:1074}.
+
+\begin{note}
+\code{external\_wick\_compensation} computes \eqref{eq:comp} via two calls to
+\code{\_automorphism\_order}, which builds a coloured incidence digraph and asks
+SageMath for the order of its automorphism group. If $|\Aut_{\text{free}}|$ is not
+divisible by $|\Aut_{\text{fixed}}|$ --- impossible in exact group theory, since the
+fixed group is a subgroup of the free one, but reachable as a Sage edge case --- it
+raises a \code{RuntimeError} rather than return a wrong divisor
+(\file{symmetry.py:368--381}). Failing loudly is the whole point of a function
+that exists to prevent silent mis-weighting.
+\end{note}
+
+\subsection{Why the old heuristic broke at \texorpdfstring{$k\ge 3$}{k>=3}}
+
+The history here is instructive, because it explains a function name that still
+appears in the codebase. The previous implementation \emph{approximated} the index
+\eqref{eq:comp} as a product of factorials, $\prod N_{\text{sig,field}}!$, over
+leaves grouped by the \code{vertex\_role\_signature} (\file{symmetry.py:247}) of
+their attachment vertex. The \code{vertex\_role\_signature} is a \emph{depth-1}
+graph invariant --- a vertex's type, coefficient, bigrade, external-leaf attachment
+pattern, and internal-edge incidence pattern.
+
+That heuristic \emph{over-divides} whenever two attachment vertices share a role
+signature (a shallow, depth-1 invariant) but are \emph{not} related by any
+automorphism. The documented example is the $k=4$ OU$+\varepsilon x^3$ one-loop
+cascades, where three noise vertices all read ``noise feeding a cubic'' at depth~1
+yet hang off structurally distinct cubics. The resulting deficits broke
+\emph{every} $k\ge 3$ one-loop cumulant while leaving $k=2$ exact --- at $k=2$ the
+heuristic happens to coincide with the true index. It was replaced by the exact
+Sage automorphism ratio (\file{symmetry.py:368--381}), validated against the exact
+Boltzmann series $\kappa_4 = -6\varepsilon + 126\varepsilon^2$.
+
+\begin{gotcha}
+\code{vertex\_role\_signature} still exists and is still referenced elsewhere
+(\file{final\_integral.py:2573}), but it is \emph{not} the current compensation
+mechanism and is not on the grouped path's numerical route. Do not reach for it
+when reasoning about the divisor; the grouped path uses the exact
+\code{external\_wick\_compensation}. The signature survives only as the historical
+basis of the superseded heuristic.
+\end{gotcha}
+
+\section{The tooling, for the physicist}
+
+This subsystem leans almost entirely on \term{SageMath}, with a fallback into
+\code{scipy}. There is no direct use of nauty, sympy, numba, or networkx in the
+two primary files --- though Sage embeds several of those internally. Here is each
+piece, from the ground up, with the actual import and call sites.
+
+\subsection{SageMath: \texttt{SR}, \texttt{fast\_callable}, \texttt{CDF}, \texttt{solve}}
+
+\term{SageMath} is a large open-source mathematics system built on Python. It
+bundles dozens of specialised libraries (a symbolic-algebra engine, a numerical
+stack, graph-automorphism engines, number-theory backends) behind one Python API.
+When the code writes \code{from sage.all import ...} it is importing Sage's
+``everything'' namespace. The grouped file imports four names
+(\file{grouped\_integral.py:101}):
+\begin{lstlisting}
+from sage.all import SR, fast_callable, CDF, solve as sage_solve
+\end{lstlisting}
+
+\begin{description}
+  \item[\code{SR} --- the Symbolic Ring.] Sage's ring of symbolic expressions
+        (its analogue of SymPy's \code{Symbol}/\code{Expr}, but a different
+        engine). \code{SR.var('x')} makes a symbolic variable; \code{SR(3)} wraps
+        a number; arithmetic builds expression trees you can \code{.subs()},
+        \code{.expand()}, \code{.coefficient()}, \code{.variables()}, and so on.
+        The grouped path uses it everywhere: to allocate the internal time symbol
+        \code{t\_sym = SR.var('\_t\_td\_')} (\file{grouped\_integral.py:378}), the
+        per-vertex time symbols (\file{grouped\_integral.py:467}), the symbolic
+        per-edge $\Delta t$ via \code{dt = SR(t\_v - t\_u)}
+        (\file{grouped\_integral.py:549}), and the summed subset integrand
+        accumulated with \code{+} and \code{*}
+        (\file{grouped\_integral.py:760--770}).
+  \item[\code{fast\_callable} --- a JIT-style expression compiler.] A symbolic
+        \code{SR} expression evaluated naively re-walks its expression tree on
+        every call, which is slow. \code{fast\_callable(expr, vars=[...],
+        domain=CDF)} compiles it into a fast closure taking the listed variables
+        as positional arguments. It is Sage's analogue of SymPy's
+        \code{lambdify}. The grouped path builds it once per subset over the
+        \emph{summed} integrand (\file{grouped\_integral.py:815--818}) --- one
+        compile instead of $N$ --- but only the scipy fallback ever calls the
+        result; the analytic path never touches it.
+  \item[\code{CDF} --- the Complex Double Field.] Sage's complex numbers backed
+        by hardware \code{double} precision. \code{complex(CDF(SR(expr)))} is the
+        idiom for ``evaluate this symbolic expression to a fast machine-precision
+        Python \code{complex}.'' It is the \code{fast\_callable} domain and the
+        cast target for poles and residues, e.g.\ \code{complex(\_CDF(SR(p)))*1j}
+        for a rate (\file{grouped\_integral.py:612}).
+  \item[\code{solve} (as \code{sage\_solve}) --- symbolic equation solver.] Sage's
+        \code{solve(eqn, var, solution\_dict=True)} solves an equation
+        symbolically and returns a list of solution dicts. The grouped path uses
+        it to \emph{eliminate} an integration variable on each $\delta$-edge: the
+        $\delta$-edge imposes the linear equation $\Delta t_e = 0$, and solving it
+        for one surviving variable removes that variable from the integral
+        (\file{grouped\_integral.py:719--722}).
+\end{description}
+
+\subsection{nauty / bliss, reached through Sage}
+
+The compensation factor needs the \emph{order} of the automorphism group of a
+coloured graph. Sage computes this with its built-in graph-isomorphism engine
+(historically nauty/bliss-class algorithms). The grouped path reaches it
+indirectly, through \code{external\_wick\_compensation} $\to$
+\code{\_automorphism\_order} $\to$ Sage's \code{automorphism\_group().order()} on
+a coloured digraph. The novice takeaway: \emph{nauty/bliss answer ``how many ways
+can I relabel this graph's vertices and leave it unchanged, respecting the
+colours?'', and that count is the divisor \eqref{eq:comp} that prevents the
+external-leaf permutation sum from over-counting.}
+
+\subsection{scipy, the numerical fallback}
+
+\code{scipy} is the standard Python scientific-computing library;
+\code{scipy.integrate.nquad} performs \term{adaptive multidimensional numerical
+quadrature} --- it samples the integrand on an adaptively-refined grid until a
+relative tolerance (default $\sim\!10^{-8}$) is met. The grouped path does not
+import scipy directly, but its fallback routes through \code{\_integrate\_polytope}
+(\file{final\_integral.py:4372}), which is scipy-backed. The grouped path only
+reaches scipy when an analytic evaluator returns \code{None} (overflow, an
+unbounded-divergent endpoint, a non-rational kernel). This is the slower,
+lower-precision route; Stage~4a exists precisely to avoid it.
+
+\begin{note}
+What is \emph{not} used here: \code{numba} (the analytic mode-sum is pure
+Python-level complex arithmetic, fast enough without it; numba lives in the
+spatial path); \code{networkx} (all graph work goes through Sage \code{Graph}
+objects carried on the prediagram); and \code{sympy} (Daedalus's CAS is Sage's
+\code{SR}, not SymPy). The standard-library helpers are \code{defaultdict} (for
+the group buckets), \code{itertools.permutations} (for the Wick mappings), and
+\code{cmath}/\code{math} (the complex exponential and exact $\pm\infty$ tracking
+in the hot helpers).
+\end{note}
+
+\section{Precision: analytic versus scipy, grouped versus per-diagram}\label{sec:precision}
+
+There are two precision stories here, and they should not be confused.
+
+The first is \term{analytic versus scipy}, and the grouped path wins it cleanly.
+On the analytic merged-residue path every subset integral is a closed-form
+mode-sum, evaluated in machine-precision complex arithmetic, so the precision
+floor is machine $\varepsilon$ ($\sim\!10^{-15}$). The scipy fallback is adaptive
+quadrature at $\sim\!10^{-8}$ relative. Stage~4a (the master switch
+\code{USE\_GROUPED\_ANALYTIC\_MODESUM = True} at \file{grouped\_integral.py:130})
+is what moved the grouped path onto the analytic route by default.
+
+The second is \term{grouped versus per-diagram}, and here lies the open issue. By
+\eqref{eq:linearity} the two paths are equal in exact arithmetic, and the codebase
+treats agreement to floating-point round-off as a \emph{correctness contract}: the
+regression suite \file{tests/test\_grouped\_vs\_perdiag.py} computes the sum of $N$
+per-diagram results and the single grouped result and asserts they match to
+$\sim\!10^{-14}$ relative on the analytic path. The working fixture for this is
+\code{quad\_exp\_k2\_ell0}.
+
+\begin{gotcha}
+\textbf{Open precision bug at $m\ge 3$ with close-paired poles.} The grouped path
+sums $B_{\bm\alpha}$ \emph{before} the chain-simplex integration; the per-diagram
+path sums \emph{after}. When close-paired poles produce $O(1/\Delta p)$ residues
+and a tuple multiplies several of them into $O(10^8)$, the two summation orders
+disagree in float64 even though they agree exactly. The spike-reset $k=2$,
+$\ell=1$ case shows a $\sim\!4\times$ discrepancy (per-diagram $+2.66\times10^{-3}$
+versus grouped $+6.38\times10^{-4}$). The \code{USE\_POSET\_CAP\_MATCH\_SCIPY}
+analysis (\file{final\_integral.py:1690--1700}) concludes the bounding-box cap is
+\emph{not} the dominant cause and points to a bookkeeping difference in pole-tuple
+construction between the two paths. An attempted fix using extended-precision
+accumulation (\code{USE\_POSET\_MPMATH\_ACCUMULATION}, off by default) ``did NOT
+address the spike-reset bug.'' The authoritative writeup is
+\file{docs/m\_ge3\_precision\_bug\_audit.md}.
+\end{gotcha}
+
+\begin{note}
+A separate, easily-confused failure is \emph{not} an integrator bug at all. Four
+\code{spike\_reset\_*} cases in \file{tests/test\_grouped\_vs\_perdiag.py} fail
+because a fixture still passes a \code{taug} parameter that the theory file
+dropped when it switched to a delta synaptic kernel; the failure happens in the
+pole/residue computation \emph{before} any Phase~J integration runs. That is
+fixture/theory drift, not a Phase~J defect. Use \code{quad\_exp\_k2\_ell0} as the
+trustworthy regression fixture.
+\end{note}
+
+\section{Limitations and the fallback matrix}
+
+The grouped path is a prototype, and it is honest about what it does not handle.
+In each of the following cases the grouped evaluator either disables its analytic
+route (falling to scipy within the grouped path) or signals the wrapper to fall
+back to the per-diagram path entirely. Knowing the matrix tells you when you must
+use \code{use\_grouped\_phase\_j=False}.
+
+\begin{description}
+  \item[Noise-source kernels disable the analytic path.] If \emph{any} diagram in
+        the group has a non-empty \code{vertex\_leg\_time} --- a
+        \code{NoiseSourceType} cumulant kernel --- the integrand contains
+        non-rational factors and the merged-residue closed form cannot fire. The
+        subset falls through to \code{fast\_callable} $+$ scipy
+        (\file{grouped\_integral.py:602--607}). The numbers are still correct,
+        just at scipy precision.
+  \item[Shot-noise $\delta$-spikes are skipped.] A residual external-time equality
+        after $\delta$-elimination ($\tau=0$ same-population legs in heterogeneous
+        Hawkes) is recorded as \code{shotnoise\_skipped\_in\_prototype} and the
+        subset is dropped (\file{grouped\_integral.py:736--757}). The per-diagram
+        path accounts for these in \code{delta\_contributions}, which the grouped
+        path does not rebuild --- so the wrapper's Tier~2 falls the whole group back
+        to per-diagram.
+  \item[\code{delta\_contributions} and \code{eval\_per\_diagram\_batch} are
+        unsupported.] The grouped return sets them to \code{[]} and \code{None}
+        (\file{\_grouped\_phase\_j.py:246--248}). Any caller that needs a
+        per-diagram breakdown or the $\delta$-spike accounting must use the
+        per-diagram path.
+  \item[The group must be homogeneous in compensation.] If
+        \code{external\_wick\_compensation} differs across group members the
+        evaluator returns \code{status='failed'}
+        (\file{grouped\_integral.py:437--448}); the wrapper's Tier~3 then falls
+        back to per-diagram. (The wrapper already subdivides by external-legs to
+        make this rare.)
+  \item[The batch is serial.] As noted, \code{total\_C\_batch} ignores
+        \code{parallel}/\code{n\_workers} --- the safe default on the user's
+        machine.
+\end{description}
+
+\begin{note}
+The convention details that must match exactly between the grouped and
+per-diagram paths, or boundary contributions would shift: $\Theta(0) = 0$ (a
+constraint $\Delta t > 0$ is \emph{strict}, the boundary is outside --- enforced by
+the \code{c\_eff <= 0} rejection in both
+\code{\_evaluate\_grouped\_m0\_modesum} at \file{grouped\_integral.py:155} and
+\code{\_integrate\_grouped\_m1\_modesum} at \file{grouped\_integral.py:217}); and
+the overflow guard at $|\gamma_{\text{real}}| > 600$
+(\code{\_GROUPED\_EXP\_REAL\_LIMIT}, \file{grouped\_integral.py:135}), a deliberate
+margin below the $709$ hard ceiling of \code{cmath.exp} on IEEE doubles, which
+returns \code{None} (to fall back) rather than raising.
+\end{note}
+
+\section{Where this sits in the pipeline}
+
+To close, the data flow in one picture. The dispatch site is
+\code{compute\_cumulants} in \file{pipeline/compute.py}. For each loop order
+$\ell$ it gathers the typed diagrams and their prefactors, and if
+\code{use\_grouped\_phase\_j} is set it calls the grouped wrapper instead of the
+per-diagram path (\file{pipeline/compute.py:757--774}):
+\begin{lstlisting}
+if use_grouped_phase_j:
+    from pipeline._grouped_phase_j import compute_correction_td_grouped
+    td_result_ell = compute_correction_td_grouped(
+        typed_diagrams = [r['typed_diagram'] for r in records_ell],
+        prefactors     = [r['combined_prefactor'] for r in records_ell],
+        k              = k,
+        propagator_data= propagator_data,
+        external_fields= external_fields,
+        num_params     = num_params,
+        origin_leaf_idx= origin_leaf_idx,
+    )
+else:
+    td_result_ell = compute_correction_td(...)   # the per-diagram path
+\end{lstlisting}
+Because both paths return the same dict shape, the lines that follow ---
+\code{total\_C\_by\_ell[ell] = td\_result\_ell['total\_C']} and the $\tau$-grid
+evaluation \code{td\_result\_ell['total\_C\_batch'](tau\_points, ...)}
+(\file{pipeline/compute.py:787--794}) --- never learn which path produced the
+numbers. The master \code{total\_C} sums across loop orders and $C(\tau) =
+\sum_\ell C_\ell(\tau)$ exactly as before. The grouped bookkeeping keys are
+available for diagnostics but are not required downstream.
+
+That is the whole subsystem: recognise that a prediagram's typed diagrams share a
+domain, sum their integrands once (\eqref{eq:linearity}), pre-sum the residues
+into $B_{\bm\alpha}$ (\eqref{eq:Bdef}), integrate the shared exponential-of-linear
+in closed form by $m$, divide by the orbit--stabilizer compensation, and fall back
+to the per-diagram path the moment any of that cannot be trusted. The payoff is
+one JIT compile instead of hundreds and a precision floor at machine $\varepsilon$,
+for numbers that match the per-diagram path bit-for-bit wherever the contract
+holds.

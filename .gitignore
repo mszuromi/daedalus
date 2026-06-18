@@ -56,3 +56,13 @@ docs/figures/test_runs/
 
 # Reference papers (local only — copyrighted, not redistributed in the repo)
 Literature/
+
+# LaTeX build intermediates for the manual (regenerable)
+docs/manual/*.aux
+docs/manual/*.log
+docs/manual/*.out
+docs/manual/*.toc
+docs/manual/*.fls
+docs/manual/*.fdb_latexmk
+docs/manual/*.synctex.gz
+docs/manual/*.pdf

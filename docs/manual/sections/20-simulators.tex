@@ -1,0 +1,1142 @@
+% ---------------------------------------------------------------------
+%  Chapter 20 : Validation --- Independent Simulators & Cumulant Estimators
+% ---------------------------------------------------------------------
+\chapter{Validation: Independent Simulators and Cumulant Estimators}\label{ch:simulators}
+
+Everything in the preceding chapters builds \emph{one} half of the repository: the
+analytic pipeline that takes an \msrjd{} action, enumerates Feynman diagrams,
+assigns propagators and vertices, and computes connected correlation functions
+(cumulants) order by order in the loop expansion. This chapter documents the
+\emph{other} half --- the half whose entire job is to not believe the first one.
+
+The files described here are a set of completely independent numerical
+simulators that solve the \emph{same} stochastic equations of motion directly,
+by brute-force time-stepping, plus a set of estimators that turn the raw
+simulated time series into empirical estimates of the very same cumulant slices
+the pipeline predicts. The two are then plotted on top of each other. If the
+diagrammatic machinery is correct, the curves overlap, within Monte-Carlo error
+bars. This is the \term{trust chain}: a closed loop in which an analytic
+prediction is checked against a numerical experiment that shares \emph{no code}
+with the prediction. You met one link of that chain already, at the end of
+Chapter~\ref{ch:quickstart}, where the two-loop value $C_{xx}(0) = 0.9496$ was
+confirmed by a simulation that measured $0.9464 \pm 0.0009$. This chapter is the
+full story behind that one line of output.
+
+\begin{note}
+\textbf{These files are not part of the pipeline.} They never run during a normal
+cumulant computation. They exist solely so that a skeptical reader can confirm
+the diagrams give the right answer. The repository's confidence in every analytic
+result rests on these brute-force checks agreeing. When you read ``the pipeline''
+elsewhere in this manual, the simulators are \emph{not} included; they are the
+external referee.
+\end{note}
+
+The two primary files are
+\file{models/ou\_langevin\_sim\_numba.py} (the Euler--Maruyama SDE integrators)
+and \file{models/cumulant\_estimator.py} (the $k$-point connected-cumulant
+estimator). A wider supporting cast --- the Hawkes point-process simulators, the
+spatial-field simulators, and the coupled reaction--diffusion oracle --- is
+characterised at the end of the chapter. We open every tool from the ground up:
+unlike the pipeline, this subsystem touches no SageMath, no \code{nauty}, no
+\code{sympy}. It is deliberately lean, and that cleanness is the whole point ---
+the validators share no symbolic machinery with the code they validate.
+
+\section{Why a separate validation layer?}
+
+A number that comes out of a diagrammatic calculation is the end of a long chain
+of symbolic manipulations: a Taylor expansion of the action, a graph enumeration,
+an automorphism-counting symmetry factor, a multidimensional loop integral. A bug
+anywhere in that chain produces a wrong number that still \emph{looks} like a
+correlation function --- it is smooth, it decays, it is symmetric in $\tau$. There
+is nothing in the output itself that flags the error. The only way to catch such
+a bug is to compute the same quantity a \emph{second}, completely different way,
+and compare.
+
+The cheapest fully independent second computation for a stochastic differential
+equation is to simply \emph{simulate} it: discretise time, take small steps,
+add the right amount of random noise each step, and record the trajectory. Run it
+long enough and the time-averaged statistics of that trajectory converge (by
+ergodicity) to the stationary correlation functions the theory predicts. This
+shares nothing with the diagrammatics --- there is no action, no graph, no
+integral. A human has hand-coded the equation of motion as ordinary numeric
+arithmetic. If both routes land on the same number, the probability that they
+both contain a compensating bug is negligible, and the analytic result is
+licensed.
+
+The phrase ``within error bars'' is load-bearing. A simulation is a Monte-Carlo
+estimate: it has statistical noise that shrinks like $1/\sqrt{N}$ in the number of
+independent runs (or the length of one run), plus a few systematic biases from the
+finite step size and the finite bin width that we will quantify below. The
+comparison is therefore never an exact equality; it is ``the theory value sits
+inside the simulation's confidence interval.'' When the example notebook reports
+$0.9464 \pm 0.0009$ against a theory value of $0.9496$, the residual $0.003$ gap
+is about three standard errors --- accounted for by the two-loop truncation plus
+the estimator's finite-bin and finite-$T$ biases.
+
+\section{The two simulator families}
+
+There are two physically distinct kinds of dynamics the repository validates,
+and correspondingly two families of simulator.
+
+\begin{description}
+  \item[Langevin / SDE simulators] integrate a stochastic \emph{differential}
+        equation, $\dot x = f(x) + \text{noise}$, where the state $x$ is a
+        continuous real variable (or field). These cover the OU-type theories
+        (\file{ou\_langevin\_sim\_numba.py}), the spatial scalar fields
+        (\file{spatial\_field\_*\_sim.py}), and the coupled reaction--diffusion
+        systems (\file{coupled\_rd\_1d\_sim.py}). The workhorse is the
+        Euler--Maruyama scheme; stiffer linear parts use an exact
+        Ornstein--Uhlenbeck step, a spectral exponential-Euler step (ETD1), or a
+        semi-implicit Crank--Nicolson step.
+  \item[Point-process / Hawkes simulators] integrate a self-exciting Poisson
+        point process (\file{hawkes\_sim\_*numba.py}). The state is a discrete
+        spike count: each timestep draws $\mathrm{Poisson}(\lambda_i\,\mathrm{d}t)$
+        spikes and feeds them back into the rate. This is a discrete-event
+        process, not an SDE, and it is what makes the \emph{factorial-cumulant}
+        machinery of \S\ref{sec:factorial} necessary.
+\end{description}
+
+The same estimator file consumes both: a simulator returns a binned trajectory
+of shape \code{(npop, n\_bins)}, and the estimator cross-correlates that to
+produce a cumulant slice. Which leg is treated as a smooth continuous field and
+which as a discrete spike train is selected by a per-leg \emph{field-type} label
+(\S\ref{sec:fieldtypes}).
+
+\subsection{Where it sits in the end-to-end pipeline}
+
+The wiring is a diamond: one theory file feeds \emph{both} the pipeline and the
+simulator, and the two output streams meet in a comparison notebook.
+
+\begin{center}
+\begin{tikzpicture}[
+    box/.style={draw,rounded corners,align=center,font=\small,inner sep=5pt},
+    >=Stealth, node distance=7mm]
+  \node[box] (theory) {theory file\\ (action $S$, params)};
+  \node[box, right=28mm of theory] (pipe) {\textsc{pipeline}\\ enumerate\\$\to$ assign $\to$ integrate};
+  \node[box, below=16mm of pipe] (sim) {\textsc{simulator}\\ Euler--Maruyama\\ / Poisson};
+  \node[box, right=24mm of pipe] (res) {\code{res['C\_tau']}\\ analytic cumulants};
+  \node[box, right=24mm of sim] (est) {\textsc{estimator}\\ sim cumulant\\ slices};
+  \node[box, right=22mm of res, yshift=-8mm] (cmp) {sim-compare\\ notebook\\ (overlay plot)};
+  \draw[->] (theory) -- (pipe);
+  \draw[->] (theory.south) |- (sim.west);
+  \draw[->] (pipe) -- (res);
+  \draw[->] (sim) -- (est);
+  \draw[->] (res.east) -- (cmp.north west);
+  \draw[->] (est.east) -- (cmp.south west);
+\end{tikzpicture}
+\end{center}
+
+Three facts about that diagram matter for the rest of the chapter:
+
+\begin{itemize}
+  \item \textbf{The simulator is handed the pipeline's resolved parameters.} In
+        the sim-compare notebooks the call is literally
+        \code{fp = res['\_resolved']['parameters']} followed by
+        \code{mu = float(fp['mu'])}, and so on. The simulator gets the
+        \emph{same} numbers the theory used, cast to plain Python floats. It does
+        \emph{not} read the action --- a human has hand-coded each equation of
+        motion to match a specific theory file, and the docstring of each
+        \code{sim\_*} function names the matching \file{theories/*.theory.py}.
+  \item \textbf{The simulator output feeds the estimator.} A simulator returns a
+        binned trajectory array of shape \code{(npop, n\_bins)}; the estimator
+        cross-correlates that to produce a cumulant slice \code{(n\_tau,)} or a
+        stack \code{(k-1, n\_tau)}.
+  \item \textbf{The estimator output feeds the comparison plot.} The notebooks
+        overlay the simulation's \code{sim['C']} against the theory's
+        \code{res['C\_tau\_by\_ell']} (per loop order) or \code{res['C\_tau']}
+        (loop-summed). \emph{That overlap is the trust-chain verdict.}
+\end{itemize}
+
+\section{Euler--Maruyama from scratch}
+
+The scalar simulators integrate an It\^o stochastic differential equation
+\begin{equation}
+  \dot x \;=\; f(x) \;+\; \sqrt{2D}\,\eta(t),
+  \qquad
+  \avg{\eta(t)\,\eta(t')} \;=\; \delta(t-t'),
+  \label{eq:sde}
+\end{equation}
+where $f(x)$ is the deterministic \term{drift} and $\eta$ is unit-strength
+Gaussian white noise. For the flagship example --- the quartic double well in
+\code{sim\_ou\_quartic\_numba} --- the drift is
+\[
+  f(x) \;=\; -\mu x \;-\; \varepsilon x^{3},
+\]
+so the equation of motion is $\dot x = -\mu x - \varepsilon x^{3} + \sqrt{2D}\,
+\eta$. This is exactly the \msrjd{} action quoted in the docstring
+(\file{ou\_langevin\_sim\_numba.py:29}),
+\[
+  S \;=\; \int \dd t\; \tilde x\,\bigl((\Dt + \mu)\,x + \varepsilon x^{3}\bigr)
+        \;-\; D\,\tilde x^{2},
+\]
+where $\tilde x$ (written \code{xt} in the theory text) is the \msrjd{} response
+field. The $-D\,\tilde x^{2}$ term is the noise vertex; its coefficient $D$ fixes
+the noise strength $\avg{\xi\,\xi} = 2D\,\delta(\tau)$ with $\xi = \sqrt{2D}\,\eta$.
+
+\subsection{The defining feature: $\sqrt{\dd t}$ noise scaling}
+
+\term{Euler--Maruyama} is the stochastic analogue of the forward-Euler scheme for
+ordinary differential equations. Over a step $\dd t$ the deterministic part
+advances by $\dd t\,f(x)$, exactly as in a deterministic Euler step. The new
+ingredient is the integrated noise increment $\int_t^{t+\dd t}\sqrt{2D}\,\eta\,
+\dd t'$, which is a Gaussian with mean $0$ and variance $2D\,\dd t$. (The variance
+follows from $\mathrm{Var}\!\left[\int \eta\right] = \int\!\!\int \delta = \dd t$:
+the double integral of the delta-correlation over the step collapses to the step
+length.) Therefore one Euler--Maruyama step is
+\begin{equation}
+  x(t+\dd t) \;=\; x(t) \;+\; \dd t\, f(x) \;+\; \sqrt{2D\,\dd t}\;N(0,1).
+  \label{eq:em}
+\end{equation}
+The crucial detail is the $\sqrt{\dd t}$ scaling of the noise term --- not $\dd t$.
+A deterministic Euler step would scale \emph{everything} by $\dd t$; the noise
+must scale by $\sqrt{\dd t}$ because variance is what adds linearly in time, so
+the standard deviation grows like $\sqrt{\dd t}$. This single fact is the whole
+difference between Euler and Euler--Maruyama.
+
+In code, the noise prefactor is precomputed once outside the loop
+(\file{ou\_langevin\_sim\_numba.py:74}) and the step itself is three lines
+(\file{ou\_langevin\_sim\_numba.py:80--82}):
+
+\begin{lstlisting}
+sqrt_2D_dt = np.sqrt(2.0 * D * dt_sim)
+...
+x = (x
+     + dt_sim * (-mu * x - eps * x * x * x)
+     + sqrt_2D_dt * np.random.randn())
+\end{lstlisting}
+
+\code{np.random.randn()} draws one $N(0,1)$ sample; multiplying by
+\code{sqrt\_2D\_dt} turns it into the correctly-scaled noise increment. Note the
+cubic is written \code{eps * x * x * x} rather than \code{eps * x**3}: repeated
+multiplication is cheaper than a power call inside a hot loop, and (as we will see)
+this code runs millions of times per simulation.
+
+\subsection{Weak order one and the $\dd t \ll 1/\mu$ rule}
+
+Euler--Maruyama is a \term{weak order-1.0} scheme. ``Weak'' means we care about the
+accuracy of \emph{averages} and \emph{moments} of $x$ (which is what a correlation
+function is), not about the pathwise accuracy of any single trajectory. ``Order
+$1.0$'' means the bias in those stationary statistics scales as $O(\dd t)$ ---
+halve the step, halve the bias. The practical consequence, stated in the docstring
+(\file{ou\_langevin\_sim\_numba.py:36}), is that the step must be small relative to
+the relaxation time $1/\mu$: $\dd t_{\mathrm{sim}} \ll 1/\mu$. If you step too
+coarsely, the simulation systematically misrepresents the fast relaxation of $x$
+and biases every measured statistic.
+
+\begin{defn}
+\textbf{Stationary variance sanity check.} For the \emph{pure} OU process
+($\varepsilon = 0$, $f = -\mu x$) the stationary distribution is Gaussian with
+variance $D/\mu$, so the equal-time correlation is $C_{xx}(0) = \avg{x^{2}} =
+D/\mu$. This is the analytic target at tree level; a finite $\varepsilon$ shifts it
+by $O(\varepsilon D^{2}/\mu^{3})$ (\file{ou\_langevin\_sim\_numba.py:64--66}). It is
+exactly the number the pipeline's loop expansion should reproduce, and a quick way
+to confirm a simulation is behaving: set $\varepsilon = 0$ and check the measured
+variance lands on $D/\mu$.
+\end{defn}
+
+The sign conventions follow the theory file
+(\file{ou\_langevin\_sim\_numba.py:60--63}): positive $\mu$ gives a stable origin
+(sub-critical regime), $\mu = 0$ is a pitchfork bifurcation, and $\mu < 0$ is a
+genuine double well with minima at $x = \pm\sqrt{|\mu|/\varepsilon}$. The
+equilibrium Boltzmann potential is $U(x) = \tfrac{\mu}{2}x^{2} +
+\tfrac{\varepsilon}{4}x^{4}$ (and $+\tfrac{\gamma}{6}x^{6}$ for the sextic
+variant), bounded below --- hence stable and normalisable --- when all coefficients
+are positive.
+
+\subsection{The bin accumulator}
+
+All five functions in \file{ou\_langevin\_sim\_numba.py} share one skeleton: seed
+the random generator, initialise the state, loop \code{n\_steps} doing an Euler
+step plus a bin accumulation, and emit a bin-averaged trajectory. The simulation
+runs at a fine step \code{dt\_sim} but records output only every
+\code{bin\_size\_steps} steps, averaging $x$ over that window into one output bin
+(\file{ou\_langevin\_sim\_numba.py:84--89}):
+
+\begin{lstlisting}
+steps_in_bin += 1
+if steps_in_bin >= bin_size_steps:
+    if cur_bin < n_bins:
+        x_bins[0, cur_bin] = accum / bin_size_steps
+        accum = 0.0
+    cur_bin += 1
+    steps_in_bin = 0
+\end{lstlisting}
+
+The guard \code{if cur\_bin < n\_bins} stops writing once the output buffer is
+full; any extra Euler steps beyond \code{bin\_size\_steps}\,$\times$\,\code{n\_bins}
+are simply ignored. The output shape is always \code{(npop, n\_bins)}, matching
+the Hawkes \code{voltage\_bins} convention, so the estimator can consume an OU
+trajectory with \code{field\_types=['dv', ...]} exactly as it consumes a Hawkes
+voltage trace.
+
+\begin{gotcha}
+\textbf{Bin finely, or bias $C_{xx}(0)$ low.} A coarse bin (one whose width
+\code{dt\_bin} is not $\ll 1/\mu$) averages the field over the bin and smooths away
+the fastest fluctuations, so the bin-averaged variance \emph{underestimates} the
+instantaneous $C_{xx}(0)$ the theory reports. The example notebook sets
+\code{dt\_bin}\,$= 0.02$ for $\mu \sim 1$ precisely to keep this bias below the
+statistical error. This is a separate requirement from the $\dd t_{\mathrm{sim}}
+\ll 1/\mu$ rule: one governs the integration step, the other the recording window.
+\end{gotcha}
+
+\section{Beyond plain Euler: removing bias from the linear part}
+
+Plain Euler--Maruyama carries an $O(\dd t)$ bias in \emph{everything}, including
+the linear relaxation. Three of the simulator families improve on this by treating
+the \emph{linear} part of the dynamics exactly, leaving only the genuinely
+nonlinear pieces (and, for colored noise, the $x$ step) at $O(\dd t)$. Each trick
+removes a specific bias.
+
+\subsection{Exact Ornstein--Uhlenbeck discretisation (colored noise)}
+\label{sec:colored}
+
+Some theories use temporally correlated (\term{colored}, Lorentzian) noise rather
+than white noise. \code{sim\_ou\_quartic\_colored\_numba} realises this by running
+a \emph{second} SDE --- an auxiliary Ornstein--Uhlenbeck process $\xi$ --- and using
+its output as the forcing of $x$:
+\begin{align}
+  \dot\xi &= -\xi/\tau_c + (\sqrt{2D}/\tau_c)\,\eta(t)
+            &&\Longrightarrow&
+            \avg{\xi(t)\,\xi(t')} &= (2D/\tau_c)\,\ee^{-|t-t'|/\tau_c}, \\
+  \dot x  &= -\mu x - \varepsilon x^{3} + \xi(t). &&&&
+\end{align}
+The key trick is that a \emph{linear} OU SDE has a closed-form one-step update ---
+it does not need Euler--Maruyama at all. The exact update is
+\begin{equation}
+  \xi(t+\dd t) \;=\; \text{decay}\cdot\xi(t) \;+\; \sigma\,N(0,1),
+  \qquad
+  \text{decay} = \ee^{-\dd t/\tau_c},
+  \qquad
+  \sigma^{2} = (2D/\tau_c)(1 - \text{decay}^{2}).
+  \label{eq:exactou}
+\end{equation}
+This preserves the stationary variance for \emph{any} ratio $\dd t/\tau_c$: there
+is no $O(\dd t)$ bias in the noise statistics at all, only in the $x$ Euler step.
+In code (\file{ou\_langevin\_sim\_numba.py:146--148}):
+
+\begin{lstlisting}
+decay = np.exp(-dt_sim / tauc)
+var_factor = 1.0 - decay * decay
+sigma_xi = np.sqrt((2.0 * D / tauc) * var_factor)
+\end{lstlisting}
+
+A subtle implementation detail: at each step the code draws the new noise
+\code{xi\_new} but steps $x$ with the \emph{previous}-step \code{xi}, then commits
+both (\file{ou\_langevin\_sim\_numba.py:160--166}):
+
+\begin{lstlisting}
+xi_new = decay * xi + sigma_xi * eta
+drift = -mu * x - eps * x * x * x
+x_new = x + dt_sim * (drift + xi)   # NB: previous-step xi, not xi_new
+x = x_new
+xi = xi_new
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{Colored-noise factor of 2.} In the white limit $\tau_c \to 0$ this colored
+driver tends to $\avg{\xi\xi} \to 4D\,\delta(\tau)$ --- note \textbf{4D}, not 2D ---
+because of the $2D/\tau_c$ coefficient convention. To compare the colored
+simulator against the white simulator you must use $D_{\mathrm{white}} = 2\,
+D_{\mathrm{colored}}$ (equivalently, halve $D$ when crossing over). The docstring
+spells this out (\file{ou\_langevin\_sim\_numba.py:127--132}); forgetting it
+produces a clean-looking curve that is wrong by a constant factor.
+\end{gotcha}
+
+\subsection{Spectral exponential-Euler (ETD1) for stiff spatial fields}
+
+The spatial simulators (\file{spatial\_field\_1d\_sim.py} and its 2D/3D siblings)
+integrate a \emph{field} SDE on a periodic ring or torus, e.g.\ the
+non-conserved $\phi^{4}$ dynamics
+\[
+  \Dt \phi(x,t) \;=\; -\mu\phi + D\,\partial_x^{2}\phi - \lambda\phi^{3} + \eta(x,t),
+  \qquad
+  \avg{\eta(x,t)\,\eta(x',t')} = 2T\,\delta(x-x')\,\delta(t-t').
+\]
+A naive Euler--Maruyama in real space is unstable here because the diffusion
+operator $D\,\partial_x^{2}$ makes the system \term{stiff}: its largest eigenvalue
+grows like $D\,k_{\max}^{2}$, and an explicit step must resolve that fastest mode
+or blow up. The fix is \term{ETD1} (exponential time-differencing, order 1),
+working in Fourier space:
+
+\begin{itemize}
+  \item Each Fourier mode $\hat\phi_k$ obeys a \emph{linear} OU SDE with rate
+        $\omega_k = \mu + D k^{2}$ (the lattice version is $\omega_k = \mu +
+        (2D/\dd x^{2})(1 - \cos(k\,\dd x))$), which is integrated \emph{exactly}
+        with the same OU closed form as \eqref{eq:exactou}. Consequently the
+        $\lambda = 0$ stationary spectrum is unbiased in $\dd t$.
+  \item The nonlinear forcing $-\lambda\phi^{3}$ is added through the ETD1
+        integrating factor $(1 - \ee^{-\omega\,\dd t})/\omega$
+        (\file{spatial\_field\_1d\_sim.py:77}).
+\end{itemize}
+
+The per-mode stationary variance is $\avg{|\hat\phi_k|^{2}} = T N^{2}/(L\,\omega_k)$
+(\file{spatial\_field\_1d\_sim.py:78}), and the per-step OU increment carries
+variance $(1 - \ee^{-2\omega\,\dd t})$ times that
+(\file{spatial\_field\_1d\_sim.py:79}). Real-mode versus interior-complex-mode
+bookkeeping (\file{spatial\_field\_1d\_sim.py:83--87} and~\code{:114--118})
+handles the Hermitian structure of the real FFT. Derivative vertices --- Model~B's
+conserved $g_{\mathrm{lap}}\,\partial_x^{2}(\phi^{2})$, the Burgers
+$-(\lambda/2)\partial_x(\phi^{2})$, the KPZ $+(\lambda/2)(\partial_x\phi)^{2}$ ---
+enter through spectral multipliers \code{lap\_eig} and \code{ik\_eig}
+(\file{spatial\_field\_1d\_sim.py:70--75} and~\code{:98--107}). The spatial
+pipeline chapters describe the matching theory side; here it is enough to know the
+simulator realises the \emph{lattice} dispersion, a point we return to in the
+caveats.
+
+\subsection{Semi-implicit Crank--Nicolson (coupled reaction--diffusion)}
+
+The coupled-RD simulator (\file{coupled\_rd\_1d\_sim.py}) integrates an
+$N$-species reaction--diffusion system with cross-noise and unequal diffusion
+constants. Its default scheme is \term{semi-implicit Crank--Nicolson}: a
+trapezoidal-rule implicit step that, in this linear-stochastic setting, gives the
+stationary covariance \emph{exactly to} $O(\dd t^{2})$ via a Pad\'e(1,1)
+propagator (\file{coupled\_rd\_1d\_sim.py:30--44}). This is the most accurate of
+the three improvements for the linear part. We return to this simulator, and its
+\emph{analytic} oracle, in \S\ref{sec:coupled}.
+
+\section{Correlated and multi-field noise (Cholesky)}
+
+The two-field correlated simulators
+(\code{sim\_ou\_quartic\_two\_dim\_corr\_numba} and
+\code{sim\_ou\_quartic\_two\_dim\_color\_corr\_numba}) drive two fields with
+jointly Gaussian white noise of correlation $\rho$:
+\[
+  \avg{\eta_\alpha(t)\,\eta_\beta(t')} \;=\; C_{\alpha\beta}\,\delta(t-t'),
+  \qquad
+  C \;=\; \begin{pmatrix} 1 & \rho \\ \rho & 1 \end{pmatrix}.
+\]
+Correlated Gaussians are produced by \term{Cholesky factorization} of the
+covariance matrix $C$: writing $C = L L^{\mathsf T}$ with $L$ lower-triangular,
+multiplying a vector of i.i.d.\ unit Gaussians by $L$ yields a Gaussian vector
+with covariance exactly $C$. For the $2\times 2$ case the Cholesky factor is
+\[
+  L \;=\; \begin{pmatrix} 1 & 0 \\ \rho & \sqrt{1-\rho^{2}} \end{pmatrix},
+\]
+so the correlated drivers are (\file{ou\_langevin\_sim\_numba.py:351--352}):
+
+\begin{lstlisting}
+u = np.random.randn()
+v = np.random.randn()
+eta_x = u
+eta_y = rho * u + rho_perp * v   # rho_perp = sqrt(1 - rho^2)
+\end{lstlisting}
+
+The correlation must satisfy $\rho \in [-1, 1]$ strictly; outside that range $C$
+loses positive-semidefiniteness and no real Cholesky factor exists. The code
+clamps $1-\rho^{2}$ to $\ge 0$ defensively
+(\file{ou\_langevin\_sim\_numba.py:332--335}):
+
+\begin{lstlisting}
+one_minus_rho_sq = 1.0 - rho * rho
+if one_minus_rho_sq < 0.0:
+    one_minus_rho_sq = 0.0
+rho_perp = np.sqrt(one_minus_rho_sq)
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{An out-of-range $\rho$ yields NaN, not an error.} The clamp keeps the
+square root from raising, but an out-of-range correlation then silently propagates
+\code{NaN} through the trajectory rather than crashing
+(\file{ou\_langevin\_sim\_numba.py:332--335}). If a two-field comparison plot comes
+back empty, an out-of-bounds $\rho$ is the first thing to check.
+\end{gotcha}
+
+\section{The numba/Sage boundary}
+\label{sec:numbasage}
+
+This section is the single most important tooling fact in the subsystem. The
+simulators are decorated with \code{numba}, and they live in plain \code{.py}
+files for one specific reason that interacts with the SageMath kernel. To explain
+it we first explain numba.
+
+\subsection{What numba is}
+
+\term{Numba} is a just-in-time (JIT) compiler for a subset of Python and NumPy. The
+decorator \code{@numba.njit} (``no-python JIT'') compiles the decorated function to
+native machine code, via the LLVM compiler infrastructure, the \emph{first} time
+the function is called, then caches that compiled version for all subsequent
+calls. The \code{njit} mode (also written \code{nopython=True}) forbids any
+fallback to the slow Python interpreter: if numba cannot infer a concrete machine
+type for every variable, it raises a compilation error rather than silently
+running slowly. For the tight scalar arithmetic in an Euler step --- a loop of
+millions of iterations of $x = x + \dd t\cdot\text{drift} + \sqrt{\dd t}\cdot
+\text{noise}$ --- this buys roughly a $100\times$ speedup over pure Python (the
+Hawkes header quotes ``\textasciitilde 15M steps/sec on Apple M1'',
+\file{hawkes\_sim\_numba.py:37}).
+
+Every Euler-step simulator is one \code{@numba.njit} function with a plain
+scalar/array signature (\file{ou\_langevin\_sim\_numba.py:17--21}):
+
+\begin{lstlisting}
+@numba.njit
+def sim_ou_quartic_numba(n_steps, dt_sim, mu, eps, D, x_init,
+                         bin_size_steps, n_bins, seed):
+\end{lstlisting}
+
+\subsection{Why these must be \texttt{.py} files: the Sage-Integer trap}
+
+When a notebook runs under the \term{SageMath kernel}, Sage's \term{preparser}
+rewrites the source of every notebook cell before executing it. An integer literal
+\code{0} becomes \code{Integer(0)} (a SageMath ring element), and \code{1.5}
+becomes \code{RealNumber('1.5')}. These are \emph{not} Python \code{int}/\code{float};
+they are objects from Sage's algebra system, carrying exact-arithmetic semantics.
+Numba's type inference cannot handle them --- it only knows native machine types.
+The docstring of the Hawkes simulator states the rule directly
+(\file{hawkes\_sim\_numba.py:5--11}):
+
+\begin{quote}\itshape
+This file MUST be a plain \code{.py} file (not executed through SageMath's
+preparser) because SageMath's preparser converts integer literals like \code{0}
+to \code{Integer(0)}\,\ldots which Numba's type inference cannot handle.
+\end{quote}
+
+Two disciplines follow, and they are enforced throughout the subsystem:
+
+\begin{enumerate}
+  \item \textbf{The simulators live in \code{.py} modules, never in notebook
+        cells.} Only \emph{cell source} is preparsed; imported \code{.py} files
+        are read as ordinary Python. So \code{from models.ou\_langevin\_sim\_numba
+        import sim\_ou\_quartic\_numba} is safe --- the function body never passes
+        through the preparser.
+  \item \textbf{Every argument at the call site must be cast to a plain Python
+        \code{int}/\code{float}} before the \code{njit} function sees it. This is
+        why the notebooks read \code{mu = float(fp['mu'])} rather than passing the
+        resolved parameter straight through. The non-numba spatial simulators
+        defend the same way \emph{inside} the function body --- \code{N = int(N);
+        n\_steps = int(n\_steps); ...} (\file{spatial\_field\_1d\_sim.py:141--145})
+        --- because \code{np.random.default\_rng} also rejects a Sage
+        \code{Integer}.
+\end{enumerate}
+
+\begin{gotcha}
+\textbf{An uncast Sage scalar crashes numba.} This is not stylistic. If you pass a
+Sage \code{Integer} or \code{RealNumber} into an \code{@numba.njit} function you
+get a numba typing error at \emph{compile} time; if you pass one into
+\code{np.random.default\_rng} (the spatial path) you get a runtime rejection.
+Reading parameters off \code{res['\_resolved']['parameters']} and casting with
+\code{float(...)} / \code{int(...)} also guarantees the simulation uses
+\emph{exactly} the values the theory used.
+\end{gotcha}
+
+\subsection{The two random-number APIs}
+
+A small but real difference between the numba and non-numba simulators is which
+NumPy random API they use. The numba-jitted Langevin and Hawkes simulators use the
+\emph{legacy global} generator: \code{np.random.seed(seed)}
+(\file{ou\_langevin\_sim\_numba.py:68}) seeds it, then \code{np.random.randn()}
+(\file{ou\_langevin\_sim\_numba.py:82}) draws a single $N(0,1)$ and
+\code{np.random.poisson(lam)} draws spike counts. The numba runtime supports this
+legacy interface but not the modern generator object. The spatial simulators, which
+are \emph{not} jitted, use the modern \code{np.random.default\_rng(seed)} generator
+(\file{spatial\_field\_1d\_sim.py:154}) with \code{rng.standard\_normal(M)}, because
+they are free to use the better API --- and, as noted above, that very API is what
+forces the explicit \code{int(...)} casts inside their function bodies.
+
+\subsection{JIT warmup}
+
+Because the first call to an \code{njit} function pays the one-time compilation
+cost, the notebooks make a throwaway warmup call before the timed measurement
+loop, so the compilation is not counted in the timing:
+
+\begin{lstlisting}
+_ = sim_ou_quartic_numba(1000, dt_sim, mu, eps, D, 0.0,
+                         bin_size_steps, 100, 0)   # JIT warmup
+\end{lstlisting}
+
+The arguments are throwaway (1000 steps, 100 bins, seed 0); the only purpose is to
+trigger compilation. Every subsequent call in the run loop uses the cached native
+code.
+
+\subsection{What this subsystem does \emph{not} use}
+
+For calibration against the rest of the manual: this subsystem uses \emph{no}
+SageMath (it only avoids it), \emph{no} \code{nauty}/\code{networkx} (there is no
+graph enumeration --- there are no diagrams here), and \emph{no} \code{sympy}
+(there is no symbolic algebra --- the equations of motion are hand-coded as numeric
+arithmetic). The two primary files touch only \code{numpy}, \code{numba}, and the
+standard-library \code{collections.Counter}; the wider \file{models/} directory
+additionally uses \code{scipy.linalg} in exactly one place
+(\S\ref{sec:coupled}). That cleanness is the point.
+
+\section{The cumulant estimator: factorial moments}
+\label{sec:factorial}
+
+We now turn to \file{models/cumulant\_estimator.py}, which converts a binned
+trajectory into an empirical cumulant slice. The mathematical heart of the file is
+the \emph{factorial moment}, and to motivate it we must understand a problem that
+arises only for discrete point-process (spike-train) data.
+
+\subsection{The shot-noise diagonal}
+
+For point-process data, the raw $k$-point correlation contains delta-function
+\term{contact terms}: a spike is perfectly correlated with itself. Concretely, the
+same-bin product of counts $n^{2}$ overcounts --- it includes ``a spike paired with
+itself,'' a shot-noise term scaling like $1/\dd t_{\mathrm{bin}}$ that is \emph{not}
+part of the smooth connected correlator the diagrams compute. If you naively
+estimated $\avg{n^{2}}$ you would measure the true covariance \emph{plus} this
+spurious diagonal spike.
+
+The fix is the \term{falling factorial}. Replace the ordinary power $n^{m}$ (at $m$
+coincident same-population fields in the same bin) with
+\begin{equation}
+  n^{(m)} \;=\; n\,(n-1)\,(n-2)\cdots(n-m+1).
+  \label{eq:falling}
+\end{equation}
+For a Poisson variable the identity $\avg{n^{(m)}} = \lambda^{m}$ holds
+\emph{exactly} --- the falling factorial strips off precisely the self-coincidence
+terms. The resulting estimator targets the \term{factorial cumulant density}: the
+smooth, off-diagonal part of the connected $k$-point cumulant, with the
+$\delta$-function diagonals removed (\file{cumulant\_estimator.py:8--31}). For $k=2$
+this reduces to the ordinary rate covariance, since the only diagonal is the shot
+noise $\delta(\tau)$ (\file{cumulant\_estimator.py:13--16}). The reference is Daley
+\& Vere-Jones, \emph{An Introduction to the Theory of Point Processes}, Ch.~5 on
+factorial moment measures (\file{cumulant\_estimator.py:55--57}).
+
+The falling factorial is built elementwise over a whole bin array
+(\file{cumulant\_estimator.py:63--81}):
+
+\begin{lstlisting}
+def falling_factorial_array(n_arr, m):
+    result = np.ones_like(n_arr, dtype=float)
+    for j in range(m):
+        result *= (n_arr - j)
+    return result
+\end{lstlisting}
+
+For $m=1$ this is just $n$ itself (linear centering, no correction); for $m \ge 2$
+it removes the self-coincidence shot noise.
+
+\subsection{Rate conversion}
+
+A spike-counting field's value $n$ is a \emph{count} per bin. To convert it to a
+rate (units of Hz) it is divided by the bin width, $n/\dd t_{\mathrm{bin}}$. This is
+the \code{denom = dt\_bin} that appears throughout the estimator. Smooth voltage
+fields (field type \code{'dv'}) are \emph{not} counts and use \code{denom = 1.0}
+(no rate conversion; units of volts). The choice is made by a small closure
+(\file{cumulant\_estimator.py:218--221}):
+
+\begin{lstlisting}
+def _centering_denom(leg_idx):
+    return dt_bin if _is_spike_ft(field_types[leg_idx]) else 1.0
+\end{lstlisting}
+
+\section{The estimator algorithm, step by step}
+
+The core routine is \code{compute\_kpoint\_slice}
+(\file{cumulant\_estimator.py:84}). Its signature exposes the full machinery:
+
+\begin{lstlisting}
+def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
+                         max_lag_bins, n_fft=None,
+                         field_types=None, voltage_bins=None,
+                         ext_binned_counts=None):
+\end{lstlisting}
+
+The idea is: hold all but one of the $k$ external legs at fixed time lags, sweep
+the remaining leg's lag across a window, and report the connected cumulant as a
+function of that one sweep lag. The leg that sweeps is the \term{sweep axis}; the
+others are pinned. We walk the ten steps in order.
+
+\paragraph{1. Validate the sweep axis} (\file{cumulant\_estimator.py:139--145}).
+Exactly one entry of \code{lag\_bins} must be \code{None}; that index is recorded
+as \code{sweep\_idx}. An assertion enforces this.
+
+\paragraph{2. Normalize field types} (\file{cumulant\_estimator.py:148--202}).
+Each leg has a field type; the default is \code{'dn'}. The routine raises if a
+\code{'dv'} leg is requested without \code{voltage\_bins}, or a \code{'dm'} leg
+without \code{ext\_binned\_counts}, and maps natural names through the nested
+\code{\_normalize\_ft} helper. We discuss the field-type system and the
+bug \code{\_normalize\_ft} fixed in \S\ref{sec:fieldtypes}.
+
+\paragraph{3. Define helpers} (\file{cumulant\_estimator.py:204--221}).
+\code{\_data\_for(leg)} picks the counts/voltage/external array by field type;
+\code{\_is\_spike\_ft} is \code{True} for \code{'dn'}/\code{'dm'}; and
+\code{\_centering\_denom} returns \code{dt\_bin} for spike fields, \code{1.0} for
+voltage (shown above).
+
+\paragraph{4. Determine the valid window} (\file{cumulant\_estimator.py:225--240}).
+From the fixed lags (plus an implicit reference at lag 0) the routine computes
+\code{valid\_start = max(0, -min\_lag)}, \code{valid\_end = n\_bins - max(0,
+max\_lag)}, and \code{n\_valid = valid\_end - valid\_start}. This is the set of
+reference bins for which \emph{every} fixed leg still lands inside the array --- no
+wraparound. It raises if \code{n\_valid <= 2*max\_lag\_bins}, i.e.\ if the
+recording is too short for the requested lag window.
+
+\paragraph{5. Means} (\file{cumulant\_estimator.py:242--251}). The mean of each
+\code{(pop, field\_type)} combination is computed \emph{on the valid window}, for
+consistency with the product that follows. These means are what we subtract to
+center each field.
+
+\paragraph{6. Build the fixed-leg product} (\file{cumulant\_estimator.py:261--300}).
+The fixed legs are grouped by lag value; within each lag, legs are grouped by
+\code{(pop, ft)} via a \code{Counter} (\S\ref{sec:counter}). For multiplicity
+\code{m == 1} (or any voltage leg) the field is centered linearly,
+$(n - \text{mean})/\text{denom}$. For spike fields with \code{m >= 2} the falling
+factorial is applied and then centered:
+
+\begin{lstlisting}
+if m == 1 or ft == 'dv':
+    factor = (n_arr - mean_n) / denom
+    if m > 1:
+        factor = factor ** m          # voltage power, no factorial
+else:
+    raw = falling_factorial_array(n_arr, m) / denom**m
+    factor = raw - raw.mean()         # spike: factorial, then centered
+product *= factor
+\end{lstlisting}
+
+Note the asymmetry: a \emph{voltage} field at multiplicity $m>1$ is raised to the
+power $m$ (it is smooth, with no shot noise to remove), whereas a \emph{spike}
+field at $m \ge 2$ gets the factorial correction.
+
+\paragraph{7. Build the sweep series} (\file{cumulant\_estimator.py:302--307}).
+The swept field is centered the same way: $(\text{sweep} - \text{mean})/
+\text{denom}$.
+
+\paragraph{8. Cross-correlate by zero-padded FFT}
+(\file{cumulant\_estimator.py:309--320}). The sweep-axis cross-correlation
+$C(L) = \sum_t \text{product}(t)\cdot\text{sweep}(t+L)$ is computed with a
+zero-padded FFT, using the convolution theorem (a cross-correlation is an inverse
+FFT of one transform times the conjugate of the other):
+
+\begin{lstlisting}
+F_product = np.fft.fft(product, n=n_fft)
+F_sweep   = np.fft.fft(sweep_rate, n=n_fft)
+raw_xcorr = np.fft.ifft(F_product * np.conj(F_sweep)).real
+\end{lstlisting}
+
+The FFT must be zero-padded to \code{n\_fft >= 2*n\_valid} (the default is the next
+power of two $\ge 2\,n_{\mathrm{valid}}$, \file{cumulant\_estimator.py:310--311})
+so that the \emph{circular} convolution the FFT computes coincides with the desired
+\emph{linear} correlation over the valid window, with no periodic-wraparound
+contamination.
+
+\begin{gotcha}
+\textbf{The FFT lag indexing is fragile.} The cross-correlation lag is read as
+\code{raw\_xcorr[(-lag) \% n\_fft]}. The comment in the code is load-bearing
+(\file{cumulant\_estimator.py:316--319}): \code{ifft(F\_product * conj(F\_sweep))[L]}
+equals $\sum_t \text{product}(t)\cdot\text{sweep}(t-L)$, so the value we want at
+$+\text{lag}$ lives at $L = -\text{lag}$. The comment warns explicitly:
+\textbf{``Do NOT use \texttt{[::-1]} --- that shifts the index by 1 bin.''} A
+reversed-array shortcut introduces a one-bin offset that is easy to miss and
+poisons the whole slice.
+\end{gotcha}
+
+\paragraph{9. Extract and normalize} (\file{cumulant\_estimator.py:322--332}). For
+each lag in $[-\code{max\_lag\_bins}, +\code{max\_lag\_bins}]$ the raw correlation
+is divided by the number of \emph{overlapping} valid bin pairs,
+\code{n\_overlap = n\_valid - abs(lag)}, not by a constant. This is the
+\term{lag-dependent normalization} that makes the finite-window estimator
+unbiased: fewer pairs contribute at larger lags, and dividing by the actual count
+corrects for it.
+
+\paragraph{10. The $k=4$ cumulant subtraction} (\file{cumulant\_estimator.py:346--433}).
+Discussed next.
+
+\subsection{$k=2$, $k=3$, $k=4$, and beyond}
+
+For $k \le 3$ the connected cumulant \emph{equals} the centered moment, so the
+centered, factorial-corrected product computed above \emph{is} the cumulant ---
+there is nothing further to subtract. This is why the comment at
+\file{cumulant\_estimator.py:343--345} notes that for $k \le 3$ the cumulant equals
+the central moment.
+
+For $k=4$ the connected cumulant requires subtracting the three disconnected pair
+products (\file{cumulant\_estimator.py:334--359}):
+\begin{equation}
+  \kappa_4(X_1,X_2,X_3,X_4)
+  \;=\; m_4
+       \;-\; m_2(1,2)\,m_2(3,4)
+       \;-\; m_2(1,3)\,m_2(2,4)
+       \;-\; m_2(1,4)\,m_2(2,3),
+  \label{eq:kappa4}
+\end{equation}
+with $m_n$ the centered moments. The cross-correlation above gave $m_4$ at each
+sweep lag; the three pair products are computed by a nested helper
+\code{\_two\_point(leg\_a, leg\_b, lag\_value)}
+(\file{cumulant\_estimator.py:361--420}). That helper is itself
+factorial-corrected when the pair is same-population, same spike field type, and
+same effective lag (a genuine shot-noise coincidence to remove), and uses ordinary
+linear covariance in every other case (\file{cumulant\_estimator.py:381--420}).
+The three partitions of four legs into two pairs are
+$\{(0,1)(2,3),\,(0,2)(1,3),\,(0,3)(1,2)\}$
+(\file{cumulant\_estimator.py:357--359}), and the disconnected piece is subtracted
+lag by lag (\file{cumulant\_estimator.py:422--433}).
+
+\begin{gotcha}
+\textbf{$k>4$ is not a cumulant.} For $k>4$ the partition-based subtraction is
+\emph{not} implemented. The estimator emits a \code{RuntimeWarning} and returns the
+centered $k$-point \emph{moment} instead of the connected cumulant
+(\file{cumulant\_estimator.py:435--440}). Separately, the full diagonal/contact
+$\delta$-terms are \emph{never} estimated by this code --- they are distributions,
+not functions on a $\tau$ grid (\file{cumulant\_estimator.py:33--40}). The
+estimator targets the smooth off-diagonal part only.
+\end{gotcha}
+
+\subsection{\texttt{collections.Counter}: counting coincident legs}
+\label{sec:counter}
+
+\code{collections.Counter} is a standard-library \code{dict} subclass that counts
+hashable items: \code{Counter(['a','a','b'])} returns \code{\{'a': 2, 'b': 1\}}.
+The estimator uses it to find the \emph{multiplicity} $m$ --- how many legs of the
+same \code{(population, field\_type)} land in the same bin, which is exactly the
+order of the falling factorial to apply (\file{cumulant\_estimator.py:279--282}):
+
+\begin{lstlisting}
+pop_ft_multiplicities = Counter(
+    (pop_indices[i], field_types[i]) for i in leg_indices)
+for (pop, ft), m in pop_ft_multiplicities.items():
+    ...
+\end{lstlisting}
+
+The same idiom appears in the direct estimator (\file{cumulant\_estimator.py:547}).
+The value $m$ then selects between linear centering ($m=1$) and factorial
+correction ($m \ge 2$).
+
+\section{Field types: \texttt{dn}, \texttt{dv}, \texttt{dm}}
+\label{sec:fieldtypes}
+
+The estimator's \code{field\_types} argument labels each leg as one of three kinds
+(\file{cumulant\_estimator.py:109--121}):
+
+\begin{description}
+  \item[\code{'dn'}] a cortical spike-train fluctuation: discrete counts in
+        \code{binned\_counts}, shot-noise corrected with the falling factorial,
+        rate-converted by $\dd t_{\mathrm{bin}}$.
+  \item[\code{'dv'}] a voltage fluctuation: a smooth continuous field in
+        \code{voltage\_bins}, linearly centered, no factorial, no rate conversion.
+        \emph{This is the label the OU simulators use} --- the OU variable $x$ is a
+        smooth field, so it is passed as \code{voltage\_bins} with
+        \code{field\_types=['dv', ...]}.
+  \item[\code{'dm'}] an external GTaS rate fluctuation: spike-like, in
+        \code{ext\_binned\_counts}, treated exactly like \code{'dn'} (discrete
+        counts, $\dd t_{\mathrm{bin}}$ denominator, factorial correction).
+\end{description}
+
+\begin{gotcha}
+\textbf{The field-type normalization fixed a $1/\dd t_{\mathrm{bin}}^{2}$ bug.}
+Before the \code{\_normalize\_ft} helper (\file{cumulant\_estimator.py:166--200}),
+natural-name legs like \code{'n'} or \code{'nE'} were treated as non-spike, so they
+used \code{denom = 1.0} instead of \code{dt\_bin} and the estimator returned
+$\text{count}^{2}$ instead of $\text{rate}^{2}$ --- wrong by a factor
+$1/\dd t_{\mathrm{bin}}^{2}$ per leg (a factor of 16 at $\dd t_{\mathrm{bin}} =
+0.25$). Every notebook that built \code{field\_types = [ef[0] for ef in
+external\_fields]} hit it. New code should still prefer the canonical
+\code{'dn'}/\code{'dv'}/\code{'dm'} labels; the normalizer is a safety net, not a
+license to be sloppy.
+\end{gotcha}
+
+\section{The convenience wrapper: \texttt{estimate\_kpoint\_slices}}
+
+Notebooks rarely call \code{compute\_kpoint\_slice} directly. They call
+\code{estimate\_kpoint\_slices} (\file{cumulant\_estimator.py:445}), which produces
+all $k-1$ axis-parallel slices of the connected $k$-point cumulant in one go,
+laid out to line up panel-for-panel with the theory side's
+\code{res['C\_tau\_slices']}:
+
+\begin{lstlisting}
+def estimate_kpoint_slices(dt_bin, pop_indices, field_types, base_bins,
+                           max_lag_bins, binned_counts=None, voltage_bins=None,
+                           ext_binned_counts=None):
+\end{lstlisting}
+
+Leg 0 is the \emph{anchor}, pinned at lag 0. \code{base\_bins} is a length-$(k-1)$
+list of integer bin offsets --- the ``base point,'' one entry per non-anchor leg.
+For each $j = 1\ldots k-1$ the wrapper builds a lag list with leg 0 at 0, every
+other non-anchor leg at its \code{base\_bins} offset, and leg $j$ set to
+\code{None} (the sweep), then calls \code{compute\_kpoint\_slice} and stacks the
+result (\file{cumulant\_estimator.py:472--483}):
+
+\begin{lstlisting}
+for j in range(1, k):
+    lag = [0] * k                       # leg 0 anchored at 0
+    for i in range(1, k):
+        lag[i] = int(base_bins[i - 1])  # non-anchor legs at the base...
+    lag[j] = None                       # ...except leg j, which sweeps
+    tau, C = compute_kpoint_slice(...)
+    rows.append(np.asarray(C))
+\end{lstlisting}
+
+It returns \code{(tau\_grid, C)} with \code{tau\_grid} of shape
+\code{(2*max\_lag\_bins+1,)} and \code{C} of shape
+\code{(k-1, 2*max\_lag\_bins+1)} --- row $j-1$ is slice $j$. As a convenience, if
+\code{binned\_counts} is \code{None} but \code{voltage\_bins} is given, it
+allocates a zero \code{binned\_counts} (the pure-voltage case used by the OU
+simulators, \file{cumulant\_estimator.py:469--470}). For $k=2$ this returns a
+single autocorrelation slice; for $k\ge 3$ it returns one row per swept leg, which
+is what makes the simulation curves line up with \code{dd.plot\_cumulant}'s $k\ge3$
+slice panels.
+
+\section{The non-FFT cross-check: \texttt{compute\_kpoint\_slice\_direct}}
+
+\code{compute\_kpoint\_slice\_direct} (\file{cumulant\_estimator.py:486}) has the
+same interface and output as \code{compute\_kpoint\_slice} but uses an explicit
+double loop over \code{(sweep\_lag, t)} instead of FFTs --- $O(n_{\mathrm{bins}}
+\times n_{\mathrm{lags}})$ versus $O(n_{\mathrm{bins}}\log n_{\mathrm{bins}})$. It is
+slower but free of any FFT artifact (circular wrap, zero-pad, spectral leakage),
+which makes it the natural way to cross-check the FFT estimator.
+
+It is, deliberately, a \emph{reduced} re-implementation. It handles spike counts
+only --- there are no \code{field\_types}, \code{voltage\_bins}, or
+\code{ext\_binned\_counts} parameters --- and its $m \ge 2$ factorial mean is
+approximated by the \emph{full-array} mean rather than the valid-window mean used
+by the FFT path (\file{cumulant\_estimator.py:559--563}):
+
+\begin{lstlisting}
+ff_mean = falling_factorial_array(
+    binned_counts[pop], m
+).mean() / dt_bin**m
+val *= (ff - ff_mean)
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{Three estimators, one logic, no shared kernel.}
+\code{compute\_kpoint\_slice} (FFT), \code{compute\_kpoint\_slice\_direct} (non-FFT),
+and \code{cumulant\_direct\_numba.\_kpoint\_slice\_direct\_k3} (a numba-compiled
+$k=3$ variant) implement the \emph{same} factorial-cumulant logic three times for
+three different reasons --- FFT speed, FFT-free validation, and numba-compiled $k=3$
+throughput. They must be kept in sync by discipline; there is no shared kernel.
+Small discrepancies between the FFT path and the direct path are \emph{expected} at
+the window edges, because the direct path uses the full-array factorial mean rather
+than the valid-window mean.
+\end{gotcha}
+
+\section{Spatial estimators}
+
+The spatial simulators (\file{spatial\_field\_1d\_sim.py} and its 2D/3D siblings)
+carry their \emph{own} estimators, because a spatial field is averaged over the
+periodic translation group rather than over a temporal lag sweep. The 1D file
+exposes (\file{spatial\_field\_1d\_sim.py}):
+
+\begin{itemize}
+  \item \code{structure\_factor(snaps, meta)} --- the momentum-space two-point
+        function $S(q) = \avg{|\hat\phi_q|^{2}}$ (\code{:175}), which tends to
+        $T/(\mu + Dq^{2})$ at tree level.
+  \item \code{equal\_time\_correlator(snaps)} --- the real-space equal-time
+        correlator $C(x)$ (\code{:191}).
+  \item \code{lattice\_sum\_variance(L, N, mu, D, T)} --- the exact $\lambda = 0$
+        variance reference (\code{:205}), summed over the \emph{lattice} modes.
+  \item \code{third\_cumulant\_x(snaps)} --- $\kappa_3(m) =
+        \avg{\delta\phi(x_0)\,\delta\phi(x_0+m\,\dd x)^{2}}$ with a standard error
+        (\code{:215}).
+\end{itemize}
+
+These are the spatial counterparts of \code{compute\_kpoint\_slice}: instead of a
+temporal lag sweep they use the periodic translational average --- one circular
+cross-correlation per snapshot via FFT.
+
+\begin{gotcha}
+\textbf{Matched-cutoff principle.} The spatial simulator realises the
+\emph{lattice} dispersion $\omega = \mu + (2D/\dd x^{2})(1-\cos)$, not the continuum
+$\mu + Dq^{2}$. Quantitative validation must therefore compare against a theory
+computed at the \emph{same} UV cutoff $k_{\max} = \pi/\dd x$, or against the lattice
+oracle (\code{lattice\_sum\_variance}, or
+\code{coupled\_box\_correlator(dispersion='lattice')}). The two dispersions differ
+at $O(\dd x)$ --- about 4\% on $C(0,0)$ at $L=20$, $n_x=128$.
+\end{gotcha}
+
+\section{Coupled multi-field validation}
+\label{sec:coupled}
+
+The coupled reaction--diffusion simulator
+(\code{simulate\_coupled\_rd\_1d}, \file{coupled\_rd\_1d\_sim.py}) is the ground
+truth for the coupled Dyson series. Uniquely in this subsystem, it ships with an
+\emph{analytic} oracle as well as a simulator, and the oracle is the one place
+\code{scipy} appears.
+
+\term{SciPy} is the scientific-computing layer built on NumPy;
+\code{scipy.linalg} is its dense linear-algebra module (a set of LAPACK wrappers).
+The oracle \code{coupled\_box\_correlator} uses two of its routines, per Fourier
+mode (\file{coupled\_rd\_1d\_sim.py:73}):
+
+\begin{itemize}
+  \item \code{scipy.linalg.expm(A)} --- the \term{matrix exponential} $\ee^{A}$,
+        used to build the exact lag propagator $G(\tau) = \ee^{-A(q)\,|\tau|}$ at
+        each mode (\file{coupled\_rd\_1d\_sim.py:353}).
+  \item \code{scipy.linalg.solve\_continuous\_lyapunov(A, Q)} --- solves the
+        \term{continuous Lyapunov equation} $A\Sigma + \Sigma A^{\mathsf T} = Q$ for
+        $\Sigma$, the exact stationary covariance of the linear coupled system at
+        each mode (\file{coupled\_rd\_1d\_sim.py:351}).
+\end{itemize}
+
+Together these give an \emph{analytic} (no-simulation) reference against which the
+coupled Dyson series is validated. The simulator side
+(\code{simulate\_coupled\_rd\_1d}) returns a dict
+\code{\{'C', 'C\_err', 'C\_rep', 'x\_grid', 'taus', 'meta'\}}.
+
+\begin{gotcha}
+\textbf{Coupled-RD Courant guard.} \code{simulate\_coupled\_rd\_1d} \emph{asserts}
+$\dd t\cdot\max(D)/\dd x^{2} < 0.4$ (\file{coupled\_rd\_1d\_sim.py:212--214}) --- an
+\code{AssertionError}, not a graceful message --- to keep both schemes stable and
+the Pad\'e lag bias negligible. If you crank the step or shrink the grid spacing
+too far, this is what fires.
+\end{gotcha}
+
+\section{The rest of \texttt{models/}}
+
+For completeness, the wider supporting cast. All are independent brute-force
+validators paired with the estimator described above.
+
+\begin{center}
+\small
+\begin{longtable}{@{}p{0.30\textwidth} p{0.15\textwidth} p{0.47\textwidth}@{}}
+\toprule
+\textbf{File} & \textbf{Family} & \textbf{What it simulates} \\
+\midrule
+\endhead
+\file{cumulant\_direct\_numba.py} & estimator &
+  \code{@numba.njit} direct (non-FFT) $k=3$ factorial-cumulant slice
+  (\code{\_kpoint\_slice\_direct\_k3}); a plain \code{.py} file so numba can
+  compile it. \\
+\file{hawkes\_sim\_numba.py} & Hawkes &
+  Single-population linear Hawkes; Poisson spikes feed the voltage; returns the
+  tuple \code{(binned\_counts, voltage\_bins, total\_spikes)}. \\
+\file{hawkes\_sim\_multipop\_numba.py} & Hawkes &
+  Multipopulation linear Hawkes with per-pair exponential synaptic filters
+  $F_{ij}$; flat E/I neuron index; matches
+  \file{multipopulation\_test.theory.py}. \\
+\file{hawkes\_sim\_expg\_numba.py}, \file{hawkes\_sim\_quad\_expg\_numba.py},
+  \file{hawkes\_sim\_*\_gtas\_numba.py} & Hawkes &
+  Exponential-$g$ synaptic-filter and quadratic-rate variants; \code{gtas} =
+  ``GTaS'' external spike drive (the \code{'dm'} field, fourth return value
+  \code{ext\_binned\_counts}). \\
+\file{hawkes\_sage.py} and the \file{hawkes\_*\_sage} / \file{hawkes\_*\_expg}
+  family & Hawkes (Sage) &
+  Sage-side theory/orchestration helpers for the Hawkes models (these \emph{are}
+  preparsed; not \code{njit}). \\
+\file{dendritic\_linear\_sim\_numba.py} & Hawkes-like &
+  Dendritic linear model simulator; imports \code{compute\_kpoint\_slice}. \\
+\file{spatial\_field\_1d\_sim.py} & spatial Langevin &
+  1D scalar $\phi^{4}$ on a ring, spectral ETD1; \code{simulate},
+  \code{structure\_factor}, \code{equal\_time\_correlator},
+  \code{lattice\_sum\_variance}, \code{third\_cumulant\_x}. \\
+\file{spatial\_field\_phi6\_1d\_sim.py} & spatial Langevin &
+  1D $\phi^{6}$ (cubic+quintic force); near-copy of the $\phi^{4}$ simulator. \\
+\file{spatial\_field\_2d\_sim.py}, \file{spatial\_field\_3d\_sim.py} &
+  spatial Langevin &
+  2D scalar on a torus / 3D scalar, ETD1; radial structure-factor and correlator
+  estimators. \\
+\file{coupled\_rd\_1d\_sim.py} & coupled RD &
+  $N$-species reaction--diffusion with cross-noise and unequal $D$; semi-implicit
+  Crank--Nicolson or explicit scheme; \emph{plus} the analytic oracle
+  \code{coupled\_box\_correlator} (\code{scipy.linalg.expm} /
+  \code{solve\_continuous\_lyapunov}). \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{Putting it together: a sim-compare notebook}
+
+We close with the canonical wiring, taken from cell~9 of
+\file{notebooks/examples/temporal\_ou\_quartic\_white.ipynb} --- the notebook
+behind the Chapter~\ref{ch:quickstart} payoff. Read it against the seven salient
+points that follow:
+
+\begin{lstlisting}
+from models.ou_langevin_sim_numba import sim_ou_quartic_numba
+from models.cumulant_estimator import estimate_kpoint_slices
+
+fp = res['_resolved']['parameters']          # same physics as the theory run
+mu = float(fp['mu']); eps = float(fp['eps']); D = float(fp['D'])   # CAST to float!
+
+dt_sim, dt_bin = 0.01, 0.02
+n_steps        = int(T_sim / dt_sim)
+bin_size_steps = int(max(round(dt_bin / dt_sim), 1))
+dt_bin_eff     = bin_size_steps * dt_sim     # the EFFECTIVE bin width (use this)
+n_bins         = int(n_steps // bin_size_steps)
+max_lag_bins   = int(tau_max / dt_bin_eff)
+
+k           = int(res['_resolved']['k'])
+base_bins   = [int(round(b / dt_bin_eff)) for b in base]   # length k-1
+pop_indices = [0]*k
+field_types = ['dv']*k                       # OU field x is a 'dv' (smooth)
+
+_ = sim_ou_quartic_numba(1000, dt_sim, mu, eps, D, 0.0,
+                         bin_size_steps, 100, 0)            # JIT warmup
+for r in range(N_RUNS):
+    x_bins = sim_ou_quartic_numba(n_steps, dt_sim, mu, eps, D, 0.0,
+                                  bin_size_steps, n_bins, rng_base + r)
+    tau_sim, Cj = estimate_kpoint_slices(
+        dt_bin_eff, pop_indices, field_types, base_bins,
+        max_lag_bins, voltage_bins=x_bins)                 # Cj: (k-1, n_tau)
+    C_runs.append(np.asarray(Cj).real)
+C_sim = np.array(C_runs).mean(axis=0)
+C_err = np.array(C_runs).std(axis=0, ddof=1) / np.sqrt(N_RUNS)
+\end{lstlisting}
+
+\begin{enumerate}
+  \item \textbf{The simulator is handed \code{res['\_resolved']['parameters']}} ---
+        the pipeline-resolved physics --- so theory and simulation share parameters
+        but \emph{not} code.
+  \item \textbf{Every scalar is cast} (\code{float(fp['mu'])}, \code{int(...)})
+        before the \code{njit} call: the Sage-Integer guard of \S\ref{sec:numbasage}
+        in action.
+  \item \textbf{A throwaway warmup call} triggers JIT compilation once so it is not
+        timed in the measurement loop.
+  \item \textbf{The OU field is passed as \code{voltage\_bins} with
+        \code{field\_types=['dv']}} --- it is a smooth continuous field, so it uses
+        linear centering, not the factorial spike correction. (Hawkes spike legs
+        would use \code{'dn'} and pass \code{binned\_counts} instead.)
+  \item \textbf{\code{dt\_bin\_eff}} (= \code{bin\_size\_steps}\,$\times$\,\code{dt\_sim}),
+        not the nominal \code{dt\_bin}, is what the estimator receives --- the
+        binning rounds \code{dt\_bin/dt\_sim} to an integer number of steps, so the
+        true bin width may differ slightly from the requested one.
+  \item \textbf{Multiple independent runs} (\code{N\_RUNS}, distinct seeds) give the
+        error bar \code{C\_err = std/sqrt(N\_RUNS)}.
+  \item \textbf{The comparison} is \code{C\_sim} versus \code{res['C\_tau\_by\_ell'][0]}
+        (tree) and \code{res['C\_tau']} (loop-corrected) at the $\tau=0$ index ---
+        \emph{that overlap is the trust-chain verdict.}
+\end{enumerate}
+
+For $k\ge 3$, \code{estimate\_kpoint\_slices} returns one row per swept leg, lining
+up panel-for-panel with \code{dd.plot\_cumulant}'s theory slices, so the same loop
+validates a third or fourth cumulant with no change beyond \code{k} and
+\code{base\_bins}.
+
+\section{Caveats checklist}
+
+A consolidated list of the traps documented above, for quick reference when a
+comparison plot misbehaves:
+
+\begin{enumerate}
+  \item \textbf{Sage \code{Integer}/\code{RealNumber} crash numba.} Keep the
+        simulators in \code{.py} files; cast every call-site scalar with
+        \code{int()}/\code{float()} (\S\ref{sec:numbasage}).
+  \item \textbf{Colored-noise factor of 2.} The white limit of
+        \code{sim\_ou\_quartic\_colored\_numba} is $\avg{\xi\xi}\to 4D\,\delta$;
+        use $D_{\mathrm{white}} = 2\,D_{\mathrm{colored}}$ to compare
+        (\S\ref{sec:colored}).
+  \item \textbf{\code{sim\_ou\_quartic\_two\_dim\_corr\_numba} vs its theory file
+        disagree on the noise coefficient.} The simulator uses
+        $\avg{\xi\xi} = 2D\,\delta$; the theory file as written declares
+        \code{coefficient='D1'} ($= D\,\delta$, half strength). A quantitative
+        compare needs one side fixed --- edit the theory to \code{'2*D1'} or halve
+        the simulator's $D$ (\file{ou\_langevin\_sim\_numba.py:412--419}). Speed
+        tests are unaffected.
+  \item \textbf{$\rho$ out of $[-1,1]$ yields NaN, not an error}
+        (\file{ou\_langevin\_sim\_numba.py:332--335}).
+  \item \textbf{FFT lag indexing is fragile.} Read as
+        \code{raw\_xcorr[(-lag) \% n\_fft]}; do not use \code{[::-1]}; zero-pad to
+        \code{n\_fft >= 2*n\_valid} (\file{cumulant\_estimator.py:316--319}).
+  \item \textbf{Field-type normalization fixed a $1/\dd t_{\mathrm{bin}}^{2}$ bug.}
+        Prefer the canonical \code{'dn'}/\code{'dv'}/\code{'dm'} labels
+        (\S\ref{sec:fieldtypes}).
+  \item \textbf{$k>4$ is not a cumulant} --- the estimator returns the centered
+        moment with a \code{RuntimeWarning}
+        (\file{cumulant\_estimator.py:435--440}).
+  \item \textbf{Euler--Maruyama bias.} All \code{*\_numba} Langevin simulators are
+        weak order 1; stationary stats carry $O(\dd t)$ bias, so
+        $\dd t_{\mathrm{sim}}\ll 1/\mu$ is required. The colored and spatial
+        simulators remove this for the \emph{linear} part via the exact OU / ETD1
+        update; the coupled-RD semi-implicit scheme is $O(\dd t^{2})$-exact in the
+        stationary covariance.
+  \item \textbf{Coupled-RD Courant guard.} \code{simulate\_coupled\_rd\_1d}
+        asserts $\dd t\cdot\max(D)/\dd x^{2} < 0.4$
+        (\file{coupled\_rd\_1d\_sim.py:212--214}).
+  \item \textbf{Bin finely or bias $C_{xx}(0)$ low.} A coarse bin smooths the field
+        and underestimates the equal-time variance; the example uses
+        \code{dt\_bin}\,$=0.02$ for $\mu\sim1$.
+  \item \textbf{Matched-cutoff principle (spatial).} Compare against a theory at the
+        same $k_{\max}=\pi/\dd x$, or against the lattice oracle; the dispersions
+        differ at $O(\dd x)$.
+\end{enumerate}

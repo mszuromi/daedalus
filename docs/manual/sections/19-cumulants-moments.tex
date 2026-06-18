@@ -1,0 +1,843 @@
+% ---------------------------------------------------------------------
+%  Chapter 19 : From Cumulants to Moments, and the k>=3 Synthesis
+% ---------------------------------------------------------------------
+\chapter{From Cumulants to Moments, and the \texorpdfstring{$k\!\ge\!3$}{k>=3} Synthesis}\label{ch:cumulants-moments}
+
+The engine's native output is a \term{connected cumulant}. Everything the
+seven-phase pipeline computes --- every diagram it enumerates, every loop
+integral Phase~J performs --- adds up to one object: the connected $k$-point
+function $\kappa_k$. That is the right primitive for a diagrammatic expansion,
+because the connected diagrams \emph{are} the cumulant; nothing further has to be
+done to ``connect'' them. But it is not always the object a physicist wants to
+read off a plot. Sometimes you want a full \term{moment} $\avg{\phi\cdots\phi}$,
+or a \term{central moment} of the fluctuation $\delta\phi = \phi - \avg{\phi}$.
+And for a correlator of three or more legs, $\kappa_k$ is not a curve at all ---
+it is a function of several time differences that the engine refuses to
+materialise as a grid, handing you a \emph{callable} instead.
+
+This chapter is about the thin but conceptually dense layer that sits between the
+engine's raw cumulant output and the plot. It does three jobs, all inside
+\file{notebooks/daedalus.py} and never inside the engine:
+
+\begin{enumerate}
+  \item \textbf{Cumulant $\to$ moment assembly.} The set-partition (cluster)
+        expansion reconstructs full and central moments from cumulants, with two
+        physics subtleties handled explicitly: a single \emph{shared loop budget}
+        across the blocks of a partition, and the treatment of singleton blocks
+        as the mean-field mean. This is the \code{Config.output} switch.
+  \item \textbf{The $k\!\ge\!3$ slice / grid synthesis.} When the engine returns
+        a callable instead of an array, \code{run} synthesises the natural
+        axis-parallel slices (and, on request, the full multidimensional grid) so
+        that a three-point cumulant plots and sim-compares exactly like a
+        two-point one.
+  \item \textbf{Dispatching the result.} A short decision tree in
+        \code{plot\_cumulant} routes each of these shapes --- moment, $k\!\ge\!3$
+        scalar, $k\!\ge\!3$ slices, $k\!\ge\!3$ heatmap, ordinary curve --- to the
+        right plotter.
+\end{enumerate}
+
+A recurring theme is worth stating once, up front: the heavy engine,
+\code{compute\_cumulants} (\file{pipeline/compute.py:108}), stays \emph{pure}. It
+returns the connected cumulant and nothing else; it contains no
+moment$\leftrightarrow$cumulant bookkeeping whatsoever. Everything in this chapter
+is post-processing layered on top of that pure output by the front-desk module.
+Keeping the boundary sharp is what lets the same engine serve cumulants, moments,
+slices, and grids without a single conditional in its core.
+
+\section{Why cumulants are the native object}
+
+Recall the structure of the loop expansion. The connected $k$-point cumulant of
+a field $\phi$ is
+\begin{equation}
+  \kappa_k(x_1,t_1;\ldots;x_k,t_k)
+  \;=\; \avg{\,\phi(x_1,t_1)\cdots\phi(x_k,t_k)\,}_{\mathrm c},
+  \label{eq:cumulant-def}
+\end{equation}
+the \emph{connected} (cluster) part of the $k$-point correlation. In \msrjd{}
+field theory this is exactly the sum of all \emph{connected} Feynman diagrams
+with $k$ external legs, organised by loop order $\ell$:
+\begin{equation}
+  \kappa_k \;=\; \kappa_k^{(0)} + \kappa_k^{(1)} + \kappa_k^{(2)} + \cdots,
+  \qquad
+  \underbrace{\kappa_k^{(0)}}_{\text{tree}}\;,\;
+  \underbrace{\kappa_k^{(1)}}_{\text{1-loop}}\;,\;\ldots
+  \label{eq:cumulant-loops}
+\end{equation}
+\code{Config.max\_ell} $=L$ truncates the series at $\ell\le L$. The engine
+returns the per-order pieces as \code{*\_by\_ell} dictionaries
+$\{\ell:\text{array or callable}\}$ and their running sum $\sum_{\ell\le L}$ as
+the ``total''. This per-$\ell$ split is produced inside the engine by running
+Phase~J once for each loop order and summing the master closure across orders:
+
+\begin{lstlisting}[style=console]
+total_C(*tau) = sum over ell of total_C_by_ell[ell](*tau)   # pipeline/compute.py:802
+C_tau         = sum over ell of C_tau_by_ell[ell]           # pipeline/compute.py:808
+\end{lstlisting}
+
+The orchestrator's brief is blunt about the scope of what the engine assembles:
+\code{compute\_cumulants} returns the \emph{connected} cumulant directly (the
+diagrammatic sum \emph{is} the cumulant); moment and central-moment conversions,
+if needed, live in downstream consumers, not in that file. That downstream
+consumer is the subject of this chapter.
+
+\begin{defn}
+A \term{connected cumulant} $\kappa_k$ is the connected part of a $k$-point
+correlation function --- diagrammatically, the sum of all \emph{connected}
+diagrams. A \term{moment} is the full correlation $\avg{\phi\cdots\phi}$ (raw) or
+the same quantity for the centred field $\delta\phi=\phi-\avg{\phi}$ (central).
+Moments and cumulants are related by the set-partition (M\"obius-inversion)
+identity of \S\ref{sec:setpart}; the engine emits cumulants, and \Daedalus{}
+reconstructs moments on demand.
+\end{defn}
+
+For $k=2$ the connected cumulant is just the (connected) two-point function. In
+the \textbf{temporal} case the engine returns it as a curve over a lag grid
+$\tau$,
+\begin{equation}
+  C(\tau) \;=\; \avg{\phi(0)\,\phi(\tau)}_{\mathrm c}
+  \qquad\text{(key \code{C\_tau} over \code{tau\_grid})},
+\end{equation}
+and in the \textbf{spatial} case as a real-space correlator over separations $x$
+and lags $\tau$,
+\begin{equation}
+  C(x,\tau) \;=\; \avg{\phi(0,0)\,\phi(x,\tau)}_{\mathrm c}
+  \qquad\text{(key \code{C\_tau\_x}, shape $(n_\tau,n_x)$)}.
+\end{equation}
+The equal-time slice $C(x,0)$ is the headline spatial plot. These two-point cases
+are the easy ones: the result is already a NumPy array, and the plotter draws it
+directly. The two harder cases --- $k\!\ge\!3$, where the cumulant is a callable,
+and moments, where blocks of cumulants must be multiplied together --- are what
+the rest of the chapter builds.
+
+\section{The set-partition (cluster) expansion}\label{sec:setpart}
+
+\subsection{The combinatorial identity}
+
+Moments and cumulants are two encodings of the same statistical information,
+related by the \term{set-partition} (or \term{cluster}) expansion. For the
+centred field, the raw $k$-point moment is the sum, over every \emph{set
+partition} $\pi$ of the index set $\{1,\ldots,k\}$, of the product of cumulants
+over the blocks of that partition:
+\begin{equation}
+  M_k(x_1,\ldots,x_k)
+  \;=\; \sum_{\pi}\;\prod_{B\in\pi}\kappa\!\left(B\right).
+  \label{eq:moment-setpart}
+\end{equation}
+A \emph{set partition} of $\{1,\ldots,k\}$ is a way of splitting those indices
+into disjoint, nonempty, unordered \emph{blocks} whose union is the whole set.
+Each block $B$ contributes the connected cumulant of the legs it contains:
+$\kappa(\{i\})=\avg{\phi_i}$ is the mean, $\kappa(\{i,j\})=\avg{\phi_i\phi_j}_{\mathrm c}$
+is the connected two-point function, and so on. The number of partitions of a
+$k$-element set is the Bell number $B_k$: $B_2=2$, $B_3=5$, $B_4=15$ --- so a
+four-point moment is a sum of fifteen products of cumulants. This identity is the
+exact inverse of the more familiar statement that the cumulant is the connected
+part: it rebuilds the full (disconnected-included) moment by summing over every
+way the legs can cluster.
+
+\begin{example}\label{ex:k2-moment}
+For $k=2$ there are exactly two partitions of $\{1,2\}$: the singletons
+$\{\{1\},\{2\}\}$ and the pair $\{\{1,2\}\}$. So
+\[
+  M_2 \;=\; \kappa(\{1\})\,\kappa(\{2\}) \;+\; \kappa(\{1,2\})
+       \;=\; \avg{\phi}^2 \;+\; \avg{\phi\,\phi}_{\mathrm c}.
+\]
+The raw second moment is the squared mean plus the connected variance; the
+central second moment drops the $\avg{\phi}^2$ singleton term and is just the
+connected variance. This is exactly the spatial $k=2$ case the code handles in
+one line --- see \S\ref{sec:moment-run}.
+\end{example}
+
+This identity is stated verbatim in two places in the code. The
+\code{Config.output} comment writes it as
+\code{M = Sigma\_pi prod\_B kappa(B)}
+(\file{notebooks/daedalus.py:261--266}), and the docstring of the assembly
+workhorse \code{\_assemble\_moment\_temporal} writes the loop-resolved form we
+turn to next (\file{notebooks/daedalus.py:390--408}).
+
+\subsection{Subtlety 1: the shared loop budget}
+
+Equation~\eqref{eq:moment-setpart} is written in terms of \emph{fully dressed}
+cumulants $\kappa(B)$. If you took that literally at finite loop order you would
+introduce spurious cross-terms. Consider a two-block partition at requested loop
+order $L=1$: the naive product $\kappa(B_1)\,\kappa(B_2)$ would include the term
+$\kappa^{(1)}(B_1)\cdot\kappa^{(1)}(B_2)$, a product of two one-loop objects. But
+that term is \emph{two loops} of total order --- it has no business appearing in a
+one-loop moment. A perturbatively consistent $L$-loop moment must contain only
+terms whose \emph{total} loop order is $\le L$.
+
+The code therefore enforces a \textbf{single shared loop budget} $L=\code{max\_ell}$
+across all the multi-element blocks of each partition. The loop-resolved moment is
+\begin{equation}
+  M_k
+  \;=\;
+  \sum_{\pi}
+  \;\sum_{\substack{(\ell_B)_{B\in\pi}\\[1pt]\sum_B \ell_B\,\le\,L}}
+  \;\prod_{B\in\pi}\kappa(B)^{(\ell_B)},
+  \label{eq:moment-budget}
+\end{equation}
+where the inner sum runs over every assignment of a loop order $\ell_B$ to each
+block, subject to the constraint that the orders \emph{add up} to at most $L$.
+Every surviving term then has total loop order $\le L$ by construction. The two
+definitions --- naive product of dressed cumulants versus the
+shared-budget~\eqref{eq:moment-budget} --- agree only at tree level ($L=0$, where
+the only assignment is all-zero) and diverge at $L\ge1$ for any multi-block
+partition. The code's docstring states this precisely
+(\file{notebooks/daedalus.py:398--408}): the shared-budget form is the
+perturbatively-consistent $L$-loop moment, in which the total loop order of every
+surviving term is $\le L$, so a one-loop moment never smuggles in a partial
+two-loop $\ell_{B_1}\!\cdot\ell_{B_2}$ cross-term.
+
+\begin{note}
+The shared-budget constraint $\sum_B \ell_B\le L$ is what distinguishes a
+\emph{consistent} perturbative moment from a careless one. It is the moment-space
+echo of the same bookkeeping that the loop expansion does everywhere: you may
+spend your $L$ loops however you like across the diagram, but you may not spend
+more than $L$ of them in total. Spreading the budget across the blocks of a
+partition is the only honest way to multiply truncated cumulants.
+\end{note}
+
+\subsection{Subtlety 2: singletons and the tree mean}
+
+A singleton block $\{i\}$ contributes the one-point cumulant, which is just the
+field mean $\avg{\phi}$. At tree level the mean is the \emph{mean-field saddle}
+$\phi^{*}$ --- the deterministic fixed point the whole fluctuation expansion is
+built around (Chapter~\ref{ch:quickstart}). The code reads it from the result
+dict's \code{mf\_values} via the helper \code{\_external\_mean}
+(\file{notebooks/daedalus.py:373}):
+
+\begin{lstlisting}
+def _external_mean(model: dict, res: dict) -> float:
+    """<phi> for the (single) external field -- the mean-field saddle phi*."""
+    mfv = res.get('mf_values') or {}
+    names = field_names(model)
+    f0 = names[0] if names else None
+    cands = [f0] + ([f0[1:]] if f0 and f0.startswith('d') else [])
+    for key in cands:
+        if key in mfv:
+            try:
+                return float(np.real(np.asarray(mfv[key]).ravel()[0]))
+            except Exception:
+                pass
+    return 0.0
+\end{lstlisting}
+
+Two details earn the over-explanation. First, the candidate-key dance
+(\code{cands = [f0] + ...}): the external leg name may be the \code{d}-prefixed
+fluctuation name (e.g.\ \code{dh} for the response/fluctuation of \code{h}), so
+the helper tries both the prefixed name and the stripped one when looking up the
+saddle value. Second, the fallback to \code{0.0}: for a \emph{symmetric} saddle
+(the common $\phi^{*}=0$ case, as in the single-well OU example) the mean is
+zero, and the helper returns zero whether or not the key is found.
+
+How singletons enter the moment depends on whether you asked for a raw or a
+central moment:
+\begin{itemize}
+  \item For a \textbf{central} moment, every singleton is \emph{dropped}: only
+        no-singleton partitions survive. This is the field-theory statement that
+        the central moment is built from the fluctuation $\delta\phi=\phi-\avg{\phi}$,
+        whose own mean is zero. In the code this is the early
+        \code{continue} when \code{central and singles}
+        (\file{notebooks/daedalus.py:466}).
+  \item For a \textbf{raw} moment, a partition with $s$ singletons contributes a
+        factor $\mu^{s}$, where $\mu=\avg{\phi}$. If the mean is zero those terms
+        die automatically --- the code skips them explicitly with the
+        \code{mu\_factor == 0.0} guard (\file{notebooks/daedalus.py:468--472}).
+        So for a symmetric saddle the raw and central moments coincide and every
+        singleton term vanishes.
+\end{itemize}
+
+\begin{gotcha}
+The singleton mean is the \emph{tree-level} saddle $\phi^{*}$. The one-loop
+\term{tadpole} shift of the mean --- the correction
+$\avg{\phi}=\phi^{*}+\avg{\delta\phi}^{(1)}+\cdots$ --- is \textbf{not} folded into
+the singleton blocks. This is a documented refinement, flagged twice in the source
+(\file{notebooks/daedalus.py:376--377} and \file{:404--405}). The practical
+consequence: for a symmetric saddle ($\phi^{*}=0$) it makes no difference (the
+singleton terms vanish either way), but for an \emph{asymmetric} saddle a raw
+moment uses the bare $\phi^{*}$ for its singleton factors and is therefore only
+exact for those factors at tree level.
+\end{gotcha}
+
+\subsection{The cost: extra backend runs}
+
+There is a price for assembling a moment. Equation~\eqref{eq:moment-budget} needs
+the per-order cumulant $\kappa_j^{(\ell)}$ for \emph{every} block size $j$ that
+appears in any partition --- that is, every $j$ from $2$ up to $k$. Each block
+size is a different correlator order, and a different correlator order needs its
+own diagram enumeration and its own Phase~J integration. So producing a $k$-point
+moment costs up to $k-1$ \emph{additional} \code{compute\_cumulants} calls (one
+per order $2,3,\ldots,k$), beyond the order-$k$ run you already did. The order-$k$
+run is reused; the smaller orders are fresh. Each fresh run delivers \emph{all}
+its loop orders at once (the \code{*\_by\_ell} dict), so it is one run per block
+size, not one run per (size, loop) pair. This cost is recorded in the
+\code{Config.output} comment (\file{notebooks/daedalus.py:264--266}) and realised
+in the assembly function.
+
+\section{Walking \texttt{\_assemble\_moment\_temporal}}\label{sec:assemble}
+
+The temporal moment is built by \code{\_assemble\_moment\_temporal(model, res,
+kw, k, central)} (\file{notebooks/daedalus.py:390}). Its arguments: \code{model}
+and \code{res} are the model dict and the result dict from the order-$k$ run;
+\code{kw} is the keyword dictionary already assembled for
+\code{compute\_cumulants} (so the smaller-order reruns inherit identical
+parameters, grid, and external-leg conventions); \code{k} is the order; and
+\code{central} is the raw-versus-central flag. It returns a complex array $M$ over
+\code{res['tau\_grid']} --- the moment evaluated along the same one-dimensional
+slice that \code{C\_tau} uses, so it plots like any other curve.
+
+It proceeds in five movements.
+
+\subsection*{(a) Setup and the local imports}
+
+\begin{lstlisting}
+import itertools
+from pipeline import compute_cumulants
+tau = np.asarray(res['tau_grid'], dtype=float)
+f0  = kw['external_fields'][0]
+L   = int(kw.get('max_ell', 0) or 0)
+mu  = 0.0 if central else _external_mean(model, res)
+\end{lstlisting}
+
+\code{itertools} is Python's standard iterator-combinatorics library; here it
+supplies \code{itertools.product}, the Cartesian product used to enumerate
+loop-order assignments. \code{compute\_cumulants} is imported locally (inside the
+function, not at module top) so that \code{daedalus} can be imported even in an
+environment where the heavy engine is unavailable, and so the engine is only
+pulled in when a moment is actually requested. \code{L} is the shared loop budget;
+\code{mu} is the singleton mean, forced to zero for a central moment.
+
+\subsection*{(b) The two-point cumulant interpolators}
+
+The assembly needs to evaluate $\kappa_2^{(\ell)}$ at an arbitrary lag, but the
+engine only returns it on the grid. The nested helper \code{\_by\_ell\_2pt}
+(\file{notebooks/daedalus.py:416--429}) turns each per-order grid array into a
+one-dimensional interpolating closure:
+
+\begin{lstlisting}
+def _by_ell_2pt(r):
+    """{ell: even-lag interpolator} of the 2-point cumulant's ell-loop piece."""
+    be = r.get('C_tau_by_ell') or {0: r.get('C_tau')}
+    t = np.asarray(r['tau_grid']); a = np.abs(t); o = np.argsort(a); ax = a[o]
+    out = {}
+    for e in range(L + 1):
+        arr = be.get(e)
+        if arr is None:
+            out[e] = (lambda lag: 0.0 + 0.0j)
+        else:
+            ay = np.real(np.asarray(arr))[o]
+            out[e] = (lambda lag, ax=ax, ay=ay:
+                      complex(np.interp(abs(lag), ax, ay)))
+    return out
+\end{lstlisting}
+
+\code{np.argsort(a)} returns the index order that sorts the absolute lags, so
+\code{np.interp} (NumPy's piecewise-linear interpolator, which requires a
+monotonically increasing $x$-axis) sees a clean ascending grid. The interpolator
+is built against the absolute lag because the two-point correlator is even in
+$\tau$. The defaulted keyword arguments \code{ax=ax, ay=ay} are the standard
+Python idiom for \emph{capturing} the current arrays into the closure, so each
+loop iteration's lambda binds its own data rather than the loop variable's final
+value. A loop order that the engine did not populate (\code{arr is None}) gets a
+zero closure, so the assembly can ask for any $\ell\in\{0,\ldots,L\}$
+unconditionally.
+
+\subsection*{(c) Gathering per-order cumulants for every block size}
+
+The two-point piece comes either from the order-$k$ run already in hand (when
+$k=2$) or from one fresh two-leg run; the higher block sizes $j=3,\ldots,k$ each
+get their callable \code{total\_C\_by\_ell} (reusing the order-$k$ run when $j=k$):
+
+\begin{lstlisting}
+# kappa_2 per loop order (reuse the order-k run when k==2, else one 2-pt run).
+if k == 2:
+    k2 = _by_ell_2pt(res)
+else:
+    kw2 = dict(kw); kw2.update(k=2, external_fields=[f0] * 2)
+    k2 = _by_ell_2pt(compute_cumulants(**kw2))
+
+# kappa_j per loop order for j = 3..k (reuse the order-k *_by_ell).
+kj = {}
+for j in range(3, k + 1):
+    if j == k and res.get('total_C_by_ell'):
+        be = res['total_C_by_ell']
+    else:
+        kwj = dict(kw); kwj.update(k=j, external_fields=[f0] * j)
+        be = compute_cumulants(**kwj).get('total_C_by_ell') or {}
+    kj[j] = {e: (be.get(e) if callable(be.get(e))
+                 else (lambda *t: 0.0 + 0.0j))
+             for e in range(L + 1)}
+\end{lstlisting}
+
+This is where the ``$k-1$ extra runs'' are spent: \code{dict(kw)} clones the base
+keyword dict, then \code{.update(k=j, external\_fields=[f0]*j)} retargets it to a
+$j$-leg correlator of the first external field with itself. Each block size larger
+than two is stored as a dict of callables (one per loop order), again with a
+zero-callable fallback for missing orders.
+
+\subsection*{(d) Evaluating one cumulant block at the slice times}
+
+The slice the moment is computed along sweeps leg~$1$ over $\tau$ and pins the
+other legs at zero. The nested \code{\_kappa(block, ell, ti)} returns the
+$\ell$-loop piece of the $|\text{block}|$-point cumulant at those slice times
+(\file{notebooks/daedalus.py:452--458}):
+
+\begin{lstlisting}
+def _kappa(block, ell, ti):
+    """ell-loop piece of the |block|-point cumulant at the slice times."""
+    b = sorted(block)
+    if len(b) == 2:                       # leg 1 swept (tau); rest pinned (0)
+        return k2[ell](float(tau[ti]) if 1 in b else 0.0)
+    times = [float(tau[ti]) if idx == 1 else 0.0 for idx in b]
+    return complex(kj[len(b)][ell](*times))
+\end{lstlisting}
+
+A two-element block uses the interpolators; the lag fed in is $\tau[ti]$ if leg
+index $1$ is in the block and zero otherwise (the swept-leg convention). A larger
+block calls its $j$-point callable with a time vector that is $\tau[ti]$ in the
+swept-leg slot and zero elsewhere.
+
+\subsection*{(e) The partition sum}
+
+The heart of the function (\file{notebooks/daedalus.py:460--483}) assembles
+equation~\eqref{eq:moment-budget} index by index over the $\tau$-grid:
+
+\begin{lstlisting}
+parts = list(_set_partitions(list(range(k))))
+M = np.empty(tau.size, dtype=complex)
+for ti in range(tau.size):
+    tot = 0.0 + 0.0j
+    for part in parts:
+        singles = [bl for bl in part if len(bl) == 1]
+        multis  = [bl for bl in part if len(bl) > 1]
+        if central and singles:           # central drops every singleton
+            continue
+        mu_factor = mu ** len(singles)    # singletons: tree mean, ell=0 only
+        if singles and mu_factor == 0.0:  # zero mean -> singleton terms die
+            continue
+        if not multis:                    # all-singleton (raw): pure mu^k
+            tot += mu_factor
+            continue
+        # share the loop budget L across the multi-blocks (sum ell_B <= L):
+        for assign in itertools.product(range(L + 1), repeat=len(multis)):
+            if sum(assign) > L:
+                continue
+            prod = mu_factor
+            for bl, e in zip(multis, assign):
+                prod *= _kappa(bl, e, ti)
+            tot += prod
+    M[ti] = tot
+return M
+\end{lstlisting}
+
+Read it against the formula. For each grid index \code{ti} we sum over partitions
+\code{parts}. Each partition splits into its singletons and its multi-element
+blocks. The central/singleton skip and the zero-mean skip implement the singleton
+rules of \S\ref{sec:setpart}. An all-singleton partition (no multi-blocks)
+contributes the pure mean product $\mu^{k}$. Otherwise the
+\code{itertools.product(range(L+1), repeat=len(multis))} enumerates every
+loop-order assignment $(\ell_B)$ to the multi-blocks, the
+\code{if sum(assign) > L: continue} enforces the shared-budget constraint
+$\sum_B\ell_B\le L$ exactly, and the inner product multiplies the per-block
+$\ell$-pieces (each from \code{\_kappa}) times the singleton factor $\mu^{s}$.
+That is equation~\eqref{eq:moment-budget}, line for line.
+
+\subsection{The set-partition generator}\label{sec:setpart-gen}
+
+The partitions themselves come from \code{\_set\_partitions}
+(\file{notebooks/daedalus.py:357}), a small recursive generator:
+
+\begin{lstlisting}
+def _set_partitions(items):
+    """Yield every set partition of items (a list) as a list of blocks."""
+    items = list(items)
+    if not items:
+        yield []
+        return
+    if len(items) == 1:
+        yield [items]
+        return
+    first, rest = items[0], items[1:]
+    for sub in _set_partitions(rest):
+        for i in range(len(sub)):
+            yield sub[:i] + [[first] + sub[i]] + sub[i + 1:]
+        yield [[first]] + sub
+\end{lstlisting}
+
+It is the textbook recursion: to partition a set, partition everything except the
+first element, then for each such partition either drop the first element into one
+of the existing blocks (the inner \code{for i} loop) or start a fresh singleton
+block for it (the trailing \code{yield}). A \term{generator} is a Python function
+that \code{yield}s values lazily one at a time rather than building a list, so the
+partitions stream out without ever all living in memory at once --- though the
+caller in \code{\_assemble\_moment\_temporal} does materialise them with
+\code{list(...)} because it iterates them once per $\tau$-index. For $k=4$ it
+yields all $B_4=15$ partitions.
+
+\section{The \texttt{Config.output} switch and where it fires}\label{sec:moment-run}
+
+The user-facing control is one \code{Config} field
+(\file{notebooks/daedalus.py:266}):
+
+\begin{lstlisting}
+output: str = 'cumulant'                # 'cumulant'|'moment'|'central_moment'
+\end{lstlisting}
+
+It defaults to \code{'cumulant'}, the engine's native output, in which case none
+of this chapter's assembly runs at all. Setting it to \code{'moment'} or
+\code{'central\_moment'} triggers the conversion inside \code{run}, \emph{after}
+the engine call, as a post-processing step (\file{notebooks/daedalus.py:674--692}):
+
+\begin{lstlisting}
+out_kind = getattr(cfg, 'output', 'cumulant') or 'cumulant'
+if out_kind in ('moment', 'central_moment'):
+    central = out_kind == 'central_moment'
+    if is_spatial(model):
+        if k == 2:                      # M(x) = kappa_2(x) [+ mu^2 for raw]
+            mu = 0.0 if central else _external_mean(model, res)
+            res['moment'] = (np.real(np.asarray(res['C_tau_x']))
+                             + (0.0 if central else mu * mu))
+        else:
+            raise NotImplementedError(
+                f"Config.output={out_kind!r} for spatial k>=3 is not "
+                "implemented yet (temporal any-k and spatial k=2 are).")
+    else:
+        res['moment'] = _assemble_moment_temporal(
+            model, res, kw, k, central)
+    res['output_kind'] = out_kind
+\end{lstlisting}
+
+There are three branches, matching the three cases the framework supports:
+
+\begin{description}
+  \item[Spatial $k=2$] The whole set-partition sum collapses to
+        Example~\ref{ex:k2-moment}: $M(x)=\kappa_2(x)+\mu^{2}$ (raw) or
+        $M(x)=\kappa_2(x)$ (central). The code reads the connected correlator
+        straight out of \code{C\_tau\_x} and adds $\mu^2$ for the raw case --- no
+        extra backend runs needed, because a two-point moment needs only the
+        two-point cumulant plus the mean.
+  \item[Spatial $k\!\ge\!3$] Raises \code{NotImplementedError}. The multivariate
+        moment assembly is wired for temporal-any-$k$ and spatial $k=2$ only;
+        spatial $k\!\ge\!3$ moments are an open gap.
+  \item[Temporal (any $k$)] Delegates to \code{\_assemble\_moment\_temporal} of
+        \S\ref{sec:assemble}, the full shared-budget cluster expansion.
+\end{description}
+
+In all surviving cases the assembled curve is stored under \code{res['moment']}
+and the chosen kind is recorded under \code{res['output\_kind']} --- the two keys
+the dispatcher checks first (\S\ref{sec:dispatch}).
+
+\begin{note}
+The engine call itself is identical whether you ask for a cumulant or a moment;
+the moment is computed entirely from the cumulant output afterward. This is the
+clean-boundary principle in action: \code{compute\_cumulants} never learns that a
+moment was requested. If you want both a cumulant plot and a moment plot for the
+same parameter point, you pay the engine cost once and the extra moment-assembly
+runs once.
+\end{note}
+
+\section{The \texorpdfstring{$k\!\ge\!3$}{k>=3} synthesis}\label{sec:kge3}
+
+\subsection{Why a three-point cumulant is not a curve}
+
+By time-translation invariance, a connected $k$-point cumulant depends only on the
+$k-1$ time differences relative to one anchored leg:
+\begin{equation}
+  \tau_j \;=\; t_j - t_0,\qquad j=1,\ldots,k-1
+  \qquad\text{(leg $0$ pinned at $\tau=0$)}.
+  \label{eq:taudiffs}
+\end{equation}
+So $\kappa_k$ is a function $\kappa_k(\tau_1,\ldots,\tau_{k-1})$. For $k=2$ that is
+a single variable (the familiar $C(\tau)$); for $k=3$ it is a two-dimensional
+surface $\kappa_3(\tau_1,\tau_2)$; for $k\ge4$ it is a $(k-1)$-dimensional tensor
+that cannot be drawn directly. Materialising that whole tensor on a grid would cost
+$n^{k-1}$ evaluations --- prohibitive even for modest $n$ and $k$. So the engine
+\textbf{does not} build it. For $k\ge3$ it returns \code{C\_tau = None} and hands
+back a \emph{callable} \code{total\_C(*tau)} plus the per-loop callables
+\code{total\_C\_by\_ell = \{ell: callable\}}. This is exactly what we saw at the
+aggregation step: \code{C\_tau} is \code{None} when the per-$\tau$ evaluation
+pattern was skipped for $k\ge3$ (\file{pipeline/compute.py:807--810}).
+
+\Daedalus{}'s \code{run} then synthesises two derived views from those callables so
+that a $k\ge3$ cumulant can still be plotted and sim-compared. The whole block
+lives at \file{notebooks/daedalus.py:588--672} and fires only when the model is
+temporal, $k\ge3$, the engine returned \code{C\_tau is None}, and \code{total\_C}
+is callable:
+
+\begin{lstlisting}
+if (not is_spatial(model) and k >= 3 and res.get('C_tau') is None
+        and callable(res.get('total_C'))):
+\end{lstlisting}
+
+\subsection{Choosing the evaluation grid and the base point}
+
+First the synthesis bounds the cost by capping the $\tau$-grid to $41$ points
+(each evaluation of \code{total\_C} is a full diagram sum, so the count matters):
+
+\begin{lstlisting}
+tau = np.asarray(res.get('tau_grid'))
+if tau is None or tau.size == 0:
+    tau = np.array([0.0])
+    res['tau_grid'] = tau
+elif tau.size > 41:                      # bound the # of 1-D evaluations
+    tau = np.linspace(float(tau.min()), float(tau.max()), 41)
+    res['tau_grid'] = tau
+\end{lstlisting}
+
+Then it resolves the \term{base point} --- the fixed values the non-swept legs sit
+at while one leg is swept. By default all non-swept legs sit at $\tau=0$, but
+\code{Config.kpoint\_base\_lags} can move them, and its length is validated to be
+exactly $k-1$ (\file{notebooks/daedalus.py:608--616}):
+
+\begin{lstlisting}
+base = cfg.kpoint_base_lags
+if base is not None:
+    base = [float(b) for b in base]
+    if len(base) != k - 1:
+        raise ValueError(
+            f"kpoint_base_lags must have k-1 = {k-1} entries (one per "
+            f"non-anchor leg); got {len(base)}.")
+else:
+    base = [0.0] * (k - 1)
+\end{lstlisting}
+
+Two small closures translate between the $(k-1)$ time differences and the
+$k$-length time vector the callable wants. \code{\_args(vals)} pads leg~$0$ to zero
+and fills legs $1..k-1$ from \code{vals}; \code{\_slice(fn, j)} sweeps leg $j$ over
+the grid while the others sit at \code{base} (\file{notebooks/daedalus.py:618--630}):
+
+\begin{lstlisting}
+def _args(vals):                # vals: tau for legs 1..k-1 (leg 0 = 0)
+    a = [0.0] * k
+    for leg in range(1, k):
+        a[leg] = float(vals[leg - 1])
+    return a
+
+def _slice(fn, j):              # sweep leg j over tau, others at base
+    out = np.empty(tau.size, dtype=complex)
+    for i in range(tau.size):
+        v = list(base)
+        v[j - 1] = float(tau[i])
+        out[i] = complex(fn(*_args(v)))
+    return out
+\end{lstlisting}
+
+\subsection{The axis-parallel slices (the default)}
+
+The default view is the set of $k-1$ \term{axis-parallel slices}: for each leg
+$j$, sweep $\tau_j$ over the grid while pinning the other legs at the base point,
+\begin{equation}
+  \mathrm{slice}_j(\tau)
+  \;=\;
+  \kappa_k\!\left(\tau_1=\text{base}_1,\;\ldots,\;\tau_j=\tau,\;\ldots,\;\tau_{k-1}=\text{base}_{k-1}\right).
+\end{equation}
+The code wraps the whole construction in \code{try/except Exception: pass}
+(\file{notebooks/daedalus.py:632}, \file{:671--672}) so that any failure inside the
+callables leaves the \code{None}/scalar form for the bar-chart plotter to handle
+(see the gotcha below):
+
+\begin{lstlisting}
+try:
+    tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
+           if callable(f)}
+    # The k-1 axis-parallel slices through base.
+    slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
+    slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
+                     for j in range(1, k)}
+    res['C_tau_slices'] = slices
+    res['C_tau_slices_by_ell'] = slices_by_ell
+    res['C_tau'] = slices[1]                    # canonical single slice
+    res['C_tau_by_ell'] = slices_by_ell[1]
+    res['_kpoint_base'] = base
+    res['_kpoint_slice'] = (
+        f'{k-1} slices: leg j swept over tau_grid (tau_j = t_j - t_0), '
+        f'legs != j fixed at base={base}, for j = 1..{k-1}')
+\end{lstlisting}
+
+The crucial line is \code{res['C\_tau'] = slices[1]}: the first slice is promoted
+to the canonical \code{C\_tau} key (and its per-$\ell$ version to
+\code{C\_tau\_by\_ell}). That single move is what makes a $k\ge3$ run plot and
+sim-compare \emph{exactly} like a $k=2$ run --- downstream code that reaches for
+\code{C\_tau} finds a curve over \code{tau\_grid}, regardless of $k$. The full set
+of slices is kept under \code{C\_tau\_slices} for the per-panel plotter.
+
+\begin{note}
+For a single, permutation-symmetric field all $k-1$ slices \emph{coincide} ---
+sweeping leg $1$ gives the same curve as sweeping leg $2$, because the cumulant is
+symmetric under exchange of identical legs. Seeing the panels overlap is thus a
+free visual check of the cumulant's permutation symmetry, noted in the source at
+\file{notebooks/daedalus.py:856--867}. If the legs name \emph{different} fields,
+the slices genuinely differ and each panel carries distinct information.
+\end{note}
+
+The matching simulator estimates the same slice by freeing only the swept leg ---
+\code{lag\_bins = [0, None, 0, ...]}, with \code{None} in the swept slot ---
+documented at \file{notebooks/daedalus.py:588--594}.
+
+\subsection{The full grid (opt-in)}
+
+Setting \code{Config.kpoint\_full\_grid = True} additionally builds the whole
+$(k-1)$-dimensional tensor $\kappa_k(\tau_1,\ldots,\tau_{k-1})$. Because the cost
+is $n^{k-1}$, each axis is downsampled so the total number of evaluations stays
+bounded near $4000$ (\file{notebooks/daedalus.py:650--670}):
+
+\begin{lstlisting}
+if cfg.kpoint_full_grid:
+    import itertools
+    n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
+    gtau = (tau if n >= tau.size else
+            np.linspace(float(tau.min()), float(tau.max()), n))
+
+    def _grid(fn):
+        out = np.empty((gtau.size,) * (k - 1), dtype=complex)
+        for idx in itertools.product(range(gtau.size), repeat=k - 1):
+            out[idx] = complex(fn(*_args([gtau[m] for m in idx])))
+        return out
+
+    res['C_tau_grid'] = _grid(res['total_C'])
+    res['C_tau_grid_by_ell'] = {e: _grid(f) for e, f in tcb.items()}
+    res['tau_axes'] = [gtau] * (k - 1)
+    if gtau.size < tau.size:
+        res['_kpoint_grid_note'] = (
+            f'tau downsampled to {gtau.size} pts/axis '
+            f'({gtau.size ** (k - 1)} evals) to bound grid cost')
+\end{lstlisting}
+
+The per-axis point count is \code{int(4000 ** (1.0 / (k - 1)))} --- the
+$(k-1)$-th root of the evaluation budget --- floored at $2$ and capped at the grid
+size. So for $k=3$ that is about $\sqrt{4000}\approx63$ points per axis (then
+capped to the $41$-point $\tau$-grid), giving the $\kappa_3(\tau_1,\tau_2)$
+heatmap; for $k=4$ it is about $4000^{1/3}\approx16$ points per axis. The
+nested-loop \code{itertools.product(range(gtau.size), repeat=k-1)} walks every cell
+of the $(k-1)$-dimensional grid. If downsampling happened, a human-readable
+\code{\_kpoint\_grid\_note} records it.
+
+\begin{gotcha}
+The entire $k\ge3$ synthesis block is wrapped in
+\code{try/except Exception: pass}. If evaluating \code{total\_C} fails for any
+reason, the result silently retains the engine's \code{C\_tau=None}/scalar form,
+and the dispatcher falls back to the equal-time bar-chart plotter
+(\S\ref{sec:dispatch}) --- no error surfaces. This is deliberate (a coarse
+equal-time number is better than a crash), but it can mask a genuine failure inside
+the callable. If a $k\ge3$ plot unexpectedly shows bars instead of slices, a
+swallowed exception in \code{total\_C} is the first thing to suspect.
+\end{gotcha}
+
+\begin{gotcha}
+A $k\ge3$ plot is generally \emph{coarser} than the same theory's $k=2$ plot.
+Slices cap the $\tau$-grid at $41$ points; the full grid downsamples each axis to
+keep $n^{k-1}$ bounded. Both caps are deliberate cost controls, but they mean you
+should not read fine structure off a $k\ge3$ figure that you would trust on a
+two-point curve.
+\end{gotcha}
+
+\section{Dispatching the result}\label{sec:dispatch}
+
+All of the above produces a result dict whose \emph{shape} encodes which case you
+are in: a moment curve, a $k\ge3$ scalar, a set of slices, a heatmap, or an
+ordinary curve. \code{plot\_cumulant} (\file{notebooks/daedalus.py:725}) reads that
+shape and routes to the right plotter. The decision tree, in order
+(\file{notebooks/daedalus.py:738--756}):
+
+\begin{enumerate}
+  \item \code{output\_kind} is a moment \emph{and} a \code{moment} array is present
+        $\to$ \code{\_plot\_moment}. (Checked first, so a requested moment always
+        wins over the cumulant shape it was assembled from.)
+  \item \code{'C\_kpoint' in result} $\to$ \code{plot\_kpoint} (spatial $k\ge3$
+        events).
+  \item \code{is\_spatial(model)} or \code{'C\_tau\_x' in result} $\to$
+        \code{plot\_spatial} (the $C(x,0)$ slice, optionally a $C(x,\tau)$ heatmap).
+  \item \code{result['C\_tau'] is None} $\to$ \code{plot\_temporal\_kpoint} (the
+        temporal $k\ge3$ equal-time scalar, drawn as per-order bars --- the fallback
+        when slice synthesis was skipped or failed).
+  \item \code{result['C\_tau\_grid'] is not None} $\to$
+        \code{plot\_temporal\_kpoint\_grid} (the $k=3$ $\kappa_3(\tau_1,\tau_2)$
+        heatmap).
+  \item \code{len(result['C\_tau\_slices']) >= 2} $\to$
+        \code{plot\_temporal\_kpoint\_slices} (one panel per $\tau_j$).
+  \item otherwise $\to$ \code{plot\_temporal} (the ordinary $C(\tau)$ curve).
+\end{enumerate}
+
+The moment plotter \code{\_plot\_moment} (\file{notebooks/daedalus.py:759}) draws
+the assembled moment as a \emph{single} curve --- there is no per-order overlay,
+because a moment deliberately mixes loop orders (recall the shared-budget sum runs
+over assignments of different $\ell_B$ to different blocks, so ``the one-loop
+moment'' is not a sum of separable per-order curves). For a temporal model it plots
+$M_k(\tau)$ over \code{tau\_grid}; for spatial $k=2$ it plots $M(x,0)$, selecting
+the $\tau\approx0$ row with \code{argmin(|tau|)} if the moment array is
+two-dimensional. The $y$-axis is labelled $M_k$, and it honours the usual
+\code{logy}, \code{title}, and \code{save} options, overlaying \code{sim} as points
+or error bars when supplied.
+
+\begin{note}
+The dispatch is on \emph{shape}, not on a stored ``mode'' flag. Because the
+$k\ge3$ synthesis stamps \code{C\_tau} with slice~$1$ and (optionally)
+\code{C\_tau\_grid} with the full tensor, the same dict can satisfy several
+branches; the \emph{order} of the checks resolves it. A full-grid $k=3$ run, for
+instance, has both \code{C\_tau\_slices} and \code{C\_tau\_grid} populated, and the
+grid check (branch~5) comes before the slices check (branch~6), so it draws the
+heatmap. A slices-only run skips branch~5 and lands on branch~6.
+\end{note}
+
+\section{Putting it together: a temporal \texorpdfstring{$k=3$}{k=3} run}
+
+The data flow for a three-point temporal run ties the whole chapter together.
+Starting from
+
+\begin{lstlisting}
+cfg = dd.Config(k=3, max_ell=1)
+res = dd.run(model, cfg, mod)
+\end{lstlisting}
+
+\code{run} resolves $k=3$, auto-builds \code{external\_fields = [(f0, 1)] * 3}
+(three copies of the first physical field's leg, since none was passed), and calls
+the engine. The engine returns \code{C\_tau = None} together with the callables
+\code{total\_C} and \code{total\_C\_by\_ell}. The synthesis block of
+\S\ref{sec:kge3} then builds the $k-1=2$ axis-parallel slices
+\code{C\_tau\_slices = \{1: ..., 2: ...\}}, promotes slice~$1$ to \code{C\_tau},
+and (because \code{kpoint\_full\_grid} is left \code{False}) stops there. Finally
+\code{plot\_cumulant} walks its decision tree: not a moment, no \code{C\_kpoint},
+not spatial, \code{C\_tau} is \emph{not} \code{None} (we set it to slice~$1$),
+\code{C\_tau\_grid} is absent, and \code{len(C\_tau\_slices) == 2 >= 2} --- so it
+lands on branch~6, \code{plot\_temporal\_kpoint\_slices}, and draws two panels, one
+per time difference.
+
+Add \code{kpoint\_full\_grid=True} and the same run additionally fills
+\code{C\_tau\_grid}; the dispatcher now hits branch~5 first and draws the
+$\kappa_3(\tau_1,\tau_2)$ heatmap instead. Add \code{output='central\_moment'} and
+\code{run} also calls \code{\_assemble\_moment\_temporal} --- which spends two extra
+backend runs (orders $2$ and $3$, the order-$3$ run reused) to build the
+shared-budget cluster sum --- and stamps \code{res['moment']} and
+\code{res['output\_kind']}, so the dispatcher takes branch~1 and draws the single
+moment curve. One \code{Config}, three different figures, all from the same pure
+cumulant engine.
+
+\section{Summary and caveats}
+
+\begin{itemize}
+  \item The engine emits \emph{connected cumulants} only; every moment and every
+        $k\ge3$ view in this chapter is post-processing inside
+        \file{notebooks/daedalus.py}, never inside \file{pipeline/compute.py}.
+  \item Moments are reconstructed by the set-partition expansion
+        \eqref{eq:moment-setpart}, evaluated under a single \emph{shared loop
+        budget} $\sum_B\ell_B\le L$ \eqref{eq:moment-budget} so that no term
+        exceeds the requested total loop order. Singletons contribute the
+        \emph{tree} mean $\phi^{*}$ (raw) or are dropped (central); the one-loop
+        tadpole shift of the mean is not folded in.
+  \item A temporal moment of order $k$ costs up to $k-1$ extra
+        \code{compute\_cumulants} runs (one per block size $2..k$); spatial $k=2$
+        moments are free (one line from \code{C\_tau\_x}); spatial $k\ge3$ moments
+        raise \code{NotImplementedError}.
+  \item For $k\ge3$ the cumulant is a callable, not a curve. \code{run} synthesises
+        $k-1$ axis-parallel slices (capped to $41$ $\tau$-points) and, on request,
+        the full $(k-1)$-dimensional grid (downsampled to bound $n^{k-1}$). Slice~$1$
+        is promoted to \code{C\_tau} so $k\ge3$ plots like $k=2$.
+  \item The $k\ge3$ synthesis swallows exceptions and degrades to an equal-time bar
+        chart; a $k\ge3$ figure is intentionally coarser than its $k=2$ counterpart.
+  \item \code{plot\_cumulant} dispatches on result \emph{shape} in a fixed order:
+        moment $\to$ spatial-$k\ge3$ $\to$ spatial-$k=2$ $\to$ temporal-$k\ge3$
+        scalar $\to$ $k=3$ grid $\to$ $k\ge3$ slices $\to$ ordinary curve.
+\end{itemize}
+
+The next chapter turns to the simulators --- the independent stochastic
+integrations that produce the \code{sim} overlays this chapter's plotters consume,
+and against which every cumulant and moment in the manual is checked.

@@ -1,0 +1,1017 @@
+% ---------------------------------------------------------------------
+%  Chapter 4 : Theory Files and Serialization
+% ---------------------------------------------------------------------
+\chapter{Theory Files and Serialization}\label{ch:theory-files}
+
+The previous chapter introduced the four verbs that drive the engine, and the
+first of them --- \code{load\_theory} --- read a small Python file off disk to
+get its model. This chapter is about that file: what a \file{.theory.py} is,
+exactly what it may contain, how it becomes the in-memory \emph{model dict} the
+engine consumes, and the machinery that converts it back and forth between the
+graphical theory-builder form and clean, version-controllable source text.
+
+A theory file is the \emph{single source of truth} for one physical model. You
+never edit the engine to add a model; you write one of these declarative
+modules, and everything downstream --- the field-theory expansion, the
+propagator, the diagram enumeration, the loop integrals --- consumes the dict
+its \code{build()} produces. Because the file is the authoritative description,
+it pays to understand it from the ground up: every chainable builder method,
+every module-level constant, and the two distinct ``serialization'' layers that
+unfortunately share a name and a directory.
+
+We will work almost entirely from the running example of
+Chapter~\ref{ch:quickstart}, \file{theories/ou\_quartic.theory.py}, with a
+couple of richer files (a coloured-noise sibling and a spatial KPZ model) brought
+in to show the features the simple file does not exercise.
+
+\begin{note}
+Two things in this subsystem are both called ``serialization,'' and conflating
+them is the single most common source of confusion. The \emph{first} is the
+\file{.theory.py} \emph{text} format --- plain, human-readable Python source,
+documented in this chapter and handled by \file{pipeline/theory\_serialize.py}.
+The \emph{second} is the \file{saved\_theories/<slug>/} \emph{binary} cache ---
+pickled SageMath objects (\code{.sobj}) plus a \code{manifest.json}, written when
+a theory is actually \emph{run}. You never need Sage to read a \file{.theory.py};
+you always need Sage to load a \code{.sobj}. The last section of the chapter
+disentangles the two; until then, ``theory file'' always means the text format.
+\end{note}
+
+\section{Why theory files exist}
+
+The design promise of a theory file is twofold. First, it is the \term{single
+source of truth}: one file fully describes one model --- its fields, parameters,
+\msrjd{} action, mean-field equations, and (for spatial models) the boundary and
+initial conditions --- with no per-model code anywhere in the engine. Second, it
+is the \term{authoring and persistence boundary}: the same content can be
+produced either by a human typing the file directly, or by a graphical form in a
+Jupyter notebook, and it can be read back into that form for editing.
+
+That second promise is what \file{pipeline/theory\_serialize.py} delivers. The
+module is a \emph{bidirectional bridge} between a flat ``spec'' dictionary --- the
+internal data the UI form collects --- and \file{.theory.py} source text:
+
+\begin{itemize}
+  \item \textbf{Forward} (\code{render\_theory\_file} / \code{save\_theory\_to\_file}):
+        the theory-builder UI collects your input as a flat dict and emits a
+        clean, diff-friendly \file{.theory.py} file.
+  \item \textbf{Reverse} (\code{load\_spec\_from\_file}): given an existing
+        \file{.theory.py}, parse its source \emph{as text} --- via Python's
+        \code{ast} module, \emph{not} by executing it --- and reconstruct the
+        original spec dict, so the UI's ``Load existing theory'' button can
+        re-populate the form.
+\end{itemize}
+
+The arrangement is worth a diagram. There are two ways a theory file is born (a
+UI form, or a human), one canonical way it is loaded (\code{load\_theory}), and a
+separate binary cache that is written only when the model is run:
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Stealth, node distance=6mm,
+    box/.style={draw, rounded corners=2pt, align=center,
+                font=\footnotesize, inner sep=4pt, fill=codebg},
+    file/.style={draw, align=center, font=\footnotesize\ttfamily,
+                 inner sep=4pt, fill=notebg},
+    lbl/.style={font=\scriptsize\itshape, color=cmt}]
+  \node[box] (ui)   {theory-builder UI\\(\code{ipywidgets} form)};
+  \node[box, right=28mm of ui] (hand) {hand-authored\\\file{.theory.py}};
+  \node[box, below=12mm of ui] (render) {\code{render\_theory\_file(spec)}\\emits source text};
+  \node[file, below=24mm of $(ui)!0.5!(hand)$] (tf) {theories/<name>.theory.py};
+  \node[box, below=10mm of tf] (model) {model dict\\(\code{mod.build()})};
+  \node[box, below=10mm of model] (calc) {FieldTheory / compute\_cumulants\\full\_integrator};
+  \node[file, right=14mm of calc] (cache) {saved\_theories/<slug>/\\*.sobj + manifest.json};
+
+  \draw[->] (ui)   -- node[lbl,left]{\code{\_collect()}} (render);
+  \draw[->] (render) -- (tf);
+  \draw[->] (hand) -- (tf);
+  \draw[->] (tf)   -- node[lbl,right]{\code{load\_theory}} (model);
+  \draw[->] (model) -- (calc);
+  \draw[->] (calc) -- node[lbl,above,align=center]{heavy\\symbolic}(cache);
+  % reverse load arrow
+  \draw[->, dashed] (tf.west) .. controls +(-3,0) and +(-3,0) ..
+       node[lbl,left,align=center]{\code{load\_spec}\\\code{\_from\_file}} (render.west);
+\end{tikzpicture}
+\end{center}
+
+The dashed arrow is the reverse path: it reads the file back into a spec so the
+form can show it. The solid path down the middle is the run-time path you met in
+Chapter~\ref{ch:quickstart}.
+
+The key correctness property of the forward/reverse pair is \term{round-trip
+fidelity}: a cycle \code{spec} $\to$ \code{render} $\to$ \code{file} $\to$
+\code{load} $\to$ \code{spec'} reproduces the \emph{meaningful} content of the
+original spec. Because the reverse path reads the abstract syntax tree rather
+than running the module, string literals (action text, equation right-hand
+sides, kernel expressions) round-trip \emph{verbatim}, while comments and exact
+formatting are lost. We will return to the precise limits of that guarantee in
+\S\ref{sec:tf-reverse}.
+
+\section{Anatomy of a \texttt{.theory.py}}
+
+A theory file is an ordinary, importable Python module with exactly three public
+symbols:
+
+\begin{description}
+  \item[\code{build()}] a function returning the \term{model dict} --- the
+        in-memory object the rest of the pipeline consumes. Internally it
+        constructs the model with a fluent \emph{builder} object whose chained
+        method calls declare the fields, parameters, action, and equations.
+  \item[\code{DEFAULT\_FUNDAMENTAL}] a plain dict of default numeric parameter
+        values --- the ``working point'' the calculation is evaluated at.
+  \item[\code{METADATA}] a plain dict of \emph{run recommendations}: the default
+        cumulant order $k$, the default loop order $\ell$, which external fields
+        to plot, the time grid, and (for spatial models) the spatial grid.
+\end{description}
+
+Here is the entire white-noise quartic file again, this time as the object of
+study rather than a passing reference (\file{theories/ou\_quartic.theory.py},
+docstring elided):
+
+\begin{lstlisting}
+from pipeline.theory import TemporalTheoryBuilder
+
+
+def build():
+    return (
+        TemporalTheoryBuilder('OU Quartic (white noise)')
+        .population('pop', size=1)
+        .physical_field('x', population='pop', description='variable')
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('eps', default=0.02, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .set_action_text(
+            'sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 for i in pop)')
+        .equation(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3', population='pop')
+        .build()
+    )
+
+
+DEFAULT_FUNDAMENTAL = {'mu': 1.0, 'eps': 0.02, 'D': 1.0}
+
+METADATA = {
+    'k_default': 2,
+    'ell_default': 0,
+    'recommended_external_fields': [('dx', 1), ('dx', 1)],
+    'tau_max': 8.0,
+    'tau_step': 0.5,
+    'fixed_point_index_default': 0,
+}
+\end{lstlisting}
+
+Read top to bottom this is almost self-documenting. The \code{import} line names
+the builder class (here \code{TemporalTheoryBuilder}; \S\ref{sec:tf-split}
+explains the temporal/spatial choice). \code{build()} returns a single
+parenthesised expression: a constructor call followed by a chain of
+\code{.method(...)} calls, terminated by \code{.build()}. Each method declares
+one ingredient of the model. \code{DEFAULT\_FUNDAMENTAL} and \code{METADATA} are
+module-level constants the loader hands back alongside the model dict --- they are
+\emph{not} part of \code{build()}'s return value, which is why
+\code{load\_theory} returns the \emph{pair} \code{(model, module)} you saw in
+Chapter~\ref{ch:quickstart}: the model dict carries the physics, the module
+carries the run recommendations.
+
+\subsection{The math the file encodes}
+
+A theory file encodes a stochastic field theory in the \msrjd{} formalism. We
+assume you know that physics; here is only the minimal vocabulary needed to read
+the code.
+
+Each physical field \code{x} (or \code{phi}, \code{h}, \code{n}, \dots) gets a
+conjugate \term{response field} \code{xt} (the ``tilde'' field $\tilde x$). A
+Langevin process
+\[
+  \frac{\dd x}{\dd t} = F[x] + \xi,
+  \qquad \avg{\xi(t)\,\xi(t')} = 2D\,\delta(t-t'),
+\]
+is rewritten as a path integral with the \msrjd{} action $S[x,\tilde x]$. For the
+running example,
+\[
+  \frac{\dd x}{\dd t} = -\mu x - \varepsilon x^{3} + \xi,
+\]
+the action --- exactly as it appears in \code{set\_action\_text} --- is
+\begin{equation}
+  S \;=\; \int \dd t \,\Bigl[\, \tilde x\bigl((\Dt + \mu)\,x + \varepsilon x^{3}\bigr)
+       \;-\; D\,\tilde x^{2} \,\Bigr].
+  \label{eq:tf-action}
+\end{equation}
+The string passed to \code{.set\_action\_text(...)} is this expression with
+\code{xt} for $\tilde x$ and \code{\^{}} for powers
+(\file{theories/ou\_quartic.theory.py:27--28}):
+
+\begin{lstlisting}
+'sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 for i in pop)'
+\end{lstlisting}
+
+The time-derivative $\partial_t$ is the operator \code{Dt}; the quadratic
+response term $-D\,\tilde x^{2}$ is the white-noise vertex; the cubic
+$\varepsilon x^{3}$ is the single interaction. The \code{sum(\dots\ for i in pop)}
+wrapper is a \emph{population comprehension} --- see \S\ref{sec:tf-indexing}.
+
+\paragraph{Mean field / saddle point.} The classical (noise-free) trajectory is
+the \term{mean-field saddle} $x^{*}$. Theory files declare it one of two ways.
+The preferred, newer form is the \term{DAE} (differential-algebraic equation)
+\code{.equation(lhs=..., rhs=..., population=...)}; in the running example
+(\file{theories/ou\_quartic.theory.py:29})
+
+\begin{lstlisting}
+.equation(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3', population='pop')
+\end{lstlisting}
+
+reads as ``$(\partial_t + \mu)\,x = -\varepsilon x^{3}$,'' a DAE the solver
+integrates to a fixed point. The legacy alternative names the saddle symbol
+explicitly with \code{.set\_mf\_equation('xstar', 'rhs')}; you will meet it in
+heterogeneous Hawkes models. The forward serializer prefers \code{.equation(...)}
+when the spec carries an \code{equations} list and falls back to
+\code{.set\_mf\_equation(...)} otherwise
+(\file{pipeline/theory\_serialize.py:424--433}).
+
+\paragraph{Propagator, cumulants, loop expansion.} After choosing $x^{*}$, the
+theory is expanded around it. The \term{propagator} is the inverse of the
+quadratic part of $S$; \term{cumulants} (connected correlation functions) are
+computed order by order in a \term{loop expansion}. Two integers parametrise the
+request, and you met both as \code{Config} fields in Chapter~\ref{ch:quickstart}:
+$k$, the cumulant order (number of external legs), and $\ell$ (the
+\code{max\_ell} / loop order), the highest loop order included. In the theory
+file these appear in \code{METADATA} as \code{k\_default} and \code{ell\_default},
+and they later become file-name keys in the binary cache (e.g.
+\code{...\_k2\_l1.sobj}).
+
+\begin{note}
+The small parameter of the loop expansion for this model is roughly
+$g_{\mathrm{eff}} \approx \varepsilon D / \mu^{2}$. The comment at
+\file{theories/ou\_quartic.theory.py:34} records $g_{\mathrm{eff}} \approx 0.02$
+at the default working point, which is why the series converges fast. This is the
+same number that drove the regime discussion in Chapter~\ref{ch:quickstart}; the
+theory file is simply where that working point is written down.
+\end{note}
+
+\subsection{\texttt{DEFAULT\_FUNDAMENTAL} and \texttt{METADATA}}
+
+\code{DEFAULT\_FUNDAMENTAL} is the numeric \emph{working point}. It may contain
+scalars, vectors (lists), or matrices (lists of lists). Three styles appear
+across the shipped theories:
+
+\begin{itemize}
+  \item \code{\{'mu': 1.0, 'eps': 0.02, 'D': 1.0\}} --- scalar defaults
+        (\code{ou\_quartic}).
+  \item \code{\{\}} --- \emph{empty}, when defaults are carried on each
+        \code{.parameter(default=...)} instead (as in \code{ou\_quartic\_colored}
+        and \code{quadratic\_hawkes\_alpha}).
+  \item \code{\{'E': [0.78, 0.81], 'w': [[0.30,0.25],[0.30,0.35]], ...\}} ---
+        vector and matrix entries for heterogeneous populations
+        (\code{linear\_hawkes}).
+\end{itemize}
+
+\begin{gotcha}
+\code{DEFAULT\_FUNDAMENTAL} \emph{can be empty}. Several theories leave it
+\code{\{\}} and carry the numbers on the individual \code{.parameter(default=...)}
+calls. Both styles are valid; \code{run} merges the model's own parameter
+defaults, then \code{DEFAULT\_FUNDAMENTAL}, then your \code{Config.parameters}
+(the layering you saw in Chapter~\ref{ch:quickstart}), so a freshly loaded theory
+runs out of the box regardless of which style its author chose.
+\end{gotcha}
+
+\code{METADATA} is the bundle of \emph{run recommendations}. The keys observed
+across the shipped theories are:
+
+\begin{center}
+\begin{longtable}{@{}llp{0.46\textwidth}@{}}
+\toprule
+\textbf{Key} & \textbf{Example} & \textbf{Meaning} \\
+\midrule
+\endhead
+\code{k\_default} & \code{2} & Default cumulant order. \\
+\code{ell\_default} & \code{0}, \code{1} & Default loop order. \\
+\code{recommended\_external\_fields} & \code{[('dx',1),('dx',1)]} &
+  \code{(field, population\_index)} legs to compute/plot. \\
+\code{tau\_max}, \code{tau\_step} & \code{8.0}, \code{0.5} & Time grid. \\
+\code{fixed\_point\_index\_default} & \code{0} & Which saddle root to use
+  (temporal only). \\
+\code{spatial\_grid} & \code{[-8.0, 8.0, 65]} & Spatial sampling, as an explicit
+  list or a \code{(start, stop, n)} triple. \\
+\code{description} & string & Optional short label. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\begin{gotcha}
+The entries of \code{recommended\_external\_fields} are \emph{tuples}, e.g.
+\code{('dx', 1)}, and downstream code expects the shape
+\code{(field\_name, population\_index)}. They render as tuples and reload as
+tuples (the reverse path recovers them with \code{ast.literal\_eval}). If you
+hand-author \code{METADATA} and write them as \emph{lists}, the type would change
+on reload --- so keep them tuples.
+\end{gotcha}
+
+\section{The builder DSL}
+
+The body of \code{build()} is a fluent chain on a builder object. Each method is
+a small declaration; the chain reads top to bottom like a specification. This
+section walks every chainable method you are likely to write, grouped by what it
+declares. The methods live on \code{TemporalTheoryBuilder} /
+\code{SpatialTheoryBuilder} (imported from \code{pipeline.theory}); the forward
+serializer's \code{\_emit\_*} helpers, cited per method below, are the authority
+on exactly which keyword arguments each call accepts.
+
+\subsection{Fields and parameters}
+
+\paragraph{\code{.physical\_field('x', \dots)}.} Declares one physical field. The
+positional \code{'x'} is the user-facing \emph{natural name}; the builder
+auto-prefixes \code{d} to form the internal fluctuation name (\code{dx}) and
+auto-creates both the conjugate response field (\code{xt}) and the saddle
+(\code{xstar}). This is why the model in Chapter~\ref{ch:quickstart} reported its
+field as \code{dx} even though the file wrote \code{x}, and why you almost never
+write a \code{.response\_field(...)} line by hand. Optional keywords, emitted by
+\code{\_emit\_field} (\file{pipeline/theory\_serialize.py:112}), are
+\code{population=} (heterogeneous style) \emph{or} \code{indexed=} (legacy
+style), \code{natural\_name=}, \code{latex=}, \code{description=}, and a per-field
+\code{spatial\_dim=}.
+
+\paragraph{\code{.parameter('mu', default=1.0, domain='positive')}.} Declares one
+numeric parameter. The keywords (emitted by \code{\_emit\_parameter},
+\file{pipeline/theory\_serialize.py:151}) are \code{default=}, the indexing
+declaration (\code{indexed\_by=} new-style or \code{indexed=} legacy),
+\code{domain=} (e.g. \code{'positive'}, \code{'real'}), \code{natural\_name=}, and
+\code{description=}.
+
+\begin{gotcha}
+\textbf{Saddle parameters are never written by hand and never emitted.} A
+parameter whose name matches the auto-generated \code{<natural>star} convention
+(e.g. \code{xstar}), or one flagged \code{mean\_field}, is \emph{filtered out} by
+the forward serializer (\file{pipeline/theory\_serialize.py:334--339}) because the
+framework re-creates it from the physical-field declaration. Emitting it would
+double-declare the saddle. The filter is even applied twice --- belt and braces ---
+since \code{\_emit\_parameter} guards \code{mean\_field} again at line~181.
+\end{gotcha}
+
+\paragraph{\code{.response\_field('xt', \dots)}.} Rarely needed --- only emitted
+when you \emph{explicitly} declared a response field rather than relying on the
+auto-creation a \code{.physical\_field(...)} performs. Most files therefore carry
+no \code{.response\_field(...)} line at all.
+
+\subsection{Functions and kernels}
+
+\paragraph{\code{.define\_function('phi', args=[...], expression='...')}.} Declares
+a named scalar function used in the action or saddle (handler
+\code{\_emit\_function}, \file{pipeline/theory\_serialize.py:189}). \code{args}
+and \code{expression} are mandatory; \code{population=}, \code{latex=}, and
+\code{description=} are optional. For example
+\code{.define\_function('phi', args=['v'], expression='a[i]*v\^{}2', population='E')}
+declares a per-population quadratic transfer function. Functions exist precisely
+to support the saddle indirection some models need.
+
+\paragraph{\code{.define\_kernel(\dots)}.} Declares a convolution kernel (handler
+\code{\_emit\_kernel}, \file{pipeline/theory\_serialize.py:200}). A kernel may be
+given in the time domain via \code{time\_expr=} (e.g.
+\code{'(t/taug[i,j]\^{}2)*exp(-t/taug[i,j])*heaviside(t)'}) \emph{or} directly as
+a frequency image via \code{freq\_image=} (e.g.
+\code{'1 / (1 + I*omega*tau\_g)'}). It also accepts \code{latex\_name=},
+\code{sage\_name=}, \code{description=}, and the same indexing duality as
+parameters.
+
+\subsection{The action and the mean-field equations}
+
+\paragraph{\code{.set\_action\_text('...')}.} The heart of the model: the \msrjd{}
+action of \eqref{eq:tf-action} as a single string, with \code{xt} for the
+response field and \code{\^{}} for powers. The handler \code{\_emit\_action}
+(\file{pipeline/theory\_serialize.py:277}) emits single-line bodies as a plain
+\code{repr}; multi-line bodies are first run through \code{textwrap.dedent} and
+then re-indented four spaces inside a triple-quoted block. The dedent is
+load-bearing for whitespace stability --- see the gotcha in \S\ref{sec:tf-forward}.
+
+\paragraph{\code{.equation(lhs=..., rhs=..., population=...)} (preferred) and
+\code{.set\_mf\_equation('xstar', 'rhs')} (legacy).} The two saddle-declaration
+forms introduced above. The new DAE form is emitted by \code{\_emit\_equation}
+(\file{pipeline/theory\_serialize.py:297}), which omits \code{population=} when it
+is falsy; the legacy form by \code{\_emit\_mf\_equation}
+(\file{pipeline/theory\_serialize.py:292}).
+
+\subsection{Toggles}
+
+A handful of methods set boolean toggles or scalar policies. The forward
+serializer emits each \emph{only when it departs from the builder's default}, so
+files stay ``textually quiet'' --- a recurring design phrase meaning a file
+contains only what is non-trivial, which keeps diffs clean. These are:
+
+\begin{itemize}
+  \item \code{.stability\_analysis(True)} --- emitted only when on
+        (\file{pipeline/theory\_serialize.py:439--440});
+  \item \code{.markovianize(False)} --- emitted only when explicitly off
+        (\file{pipeline/theory\_serialize.py:448--449}); see
+        \S\ref{sec:tf-colored};
+  \item \code{.operator\_ir()} --- emitted only when on, and \emph{load-bearing}
+        for derivative-vertex spatial theories
+        (\file{pipeline/theory\_serialize.py:452--459}); see
+        \S\ref{sec:tf-spatial};
+  \item \code{.boundary(mode, **params)} / \code{.initial(mode, **params)} ---
+        spatial boundary and initial conditions, emitted only when present
+        (\file{pipeline/theory\_serialize.py:466--477});
+  \item \code{.dyson\_order(N)} / \code{.reference\_diffusion(D0)} --- the
+        Dyson--Duhamel policy and reference-diffusion split, emitted only for a
+        non-\code{'off'} policy or a set $D_{0}$
+        (\file{pipeline/theory\_serialize.py:484--489}).
+\end{itemize}
+
+\section{Temporal versus spatial: the builder split}\label{sec:tf-split}
+
+The \code{import} line at the top of a theory file names one of two builder
+classes. \code{TemporalTheoryBuilder} is for time-only (ODE) models like the
+running example; \code{SpatialTheoryBuilder} is for spatial (PDE) models where
+the field lives on $x \in \mathbb{R}^{d}$ and the action carries the Laplacian.
+
+The forward serializer does \emph{not} ask you which one you want --- it infers it.
+The choice is driven purely by whether any physical field carries a non-zero
+\code{spatial\_dim} (\file{pipeline/theory\_serialize.py:370--372}):
+
+\begin{lstlisting}
+_is_spatial = any(int(f.get('spatial_dim', 0) or 0) > 0
+                  for f in physical_fields)
+builder_cls = 'SpatialTheoryBuilder' if _is_spatial else 'TemporalTheoryBuilder'
+\end{lstlisting}
+
+If any field declares $\code{spatial\_dim} \ge 1$, the file is emitted as spatial;
+otherwise it is temporal.
+
+\begin{gotcha}
+The builder split is \emph{inferred from \code{spatial\_dim}, not declared}. A
+spatial theory whose fields all forgot \code{spatial\_dim} would be emitted as a
+\emph{temporal} file --- and would then compute the wrong physics. The reverse
+(loading) path is forgiving: it accepts \code{TheoryBuilder} (a legacy
+back-compat shim), \code{SpatialTheoryBuilder}, \emph{and}
+\code{TemporalTheoryBuilder} as constructor names
+(\file{pipeline/theory\_serialize.py:651--652}). But the forward path can only
+emit the right class if at least one field carries the dimension.
+\end{gotcha}
+
+\section{Indexing and populations}\label{sec:tf-indexing}
+
+A theory can be \term{homogeneous} (one population, scalar fields) or
+\term{heterogeneous} (multiple populations of different sizes, with vector or
+matrix parameters). The action's \code{sum(... for i in pop)} comprehension you
+saw above is how a field equation is written once and applied across a
+population: \code{i} ranges over the population \code{pop}, and \code{x[i]},
+\code{xt[i]} are the per-member fields. For the running example \code{pop} has
+size~1, so the sum is a single term --- but the same syntax scales to genuine
+networks.
+
+Indexing is encoded in one of two styles, and the serializer round-trips both:
+
+\begin{description}
+  \item[New population style.] \code{.population('E', size=2)} declares a named
+        population of size $N$; fields attach via \code{population='E'} and
+        parameters via \code{indexed\_by=['E']} (vector) or
+        \code{indexed\_by=['E','E']} (matrix). The running example uses the
+        single-member form \code{.population('pop', size=1)}.
+  \item[Legacy style.] \code{n\_populations=N} in the constructor, plus
+        \code{indexed=True} (vector) or \code{indexed='matrix'} on parameters. The
+        coloured-noise file in \S\ref{sec:tf-colored} uses
+        \code{TemporalTheoryBuilder('OU Quartic Colored', n\_populations=0)} with
+        \code{.physical\_field('x', indexed=True)}.
+\end{description}
+
+\begin{gotcha}
+\code{indexed\_by} \emph{wins} over the legacy \code{indexed}/\code{type}. Both
+\code{\_emit\_parameter} and \code{\_emit\_kernel} accept either; if a spec
+somehow carries both, the new population-style \code{indexed\_by} is used and the
+legacy \code{indexed=} is suppressed. Mixing the two styles in a single
+hand-written file is best avoided --- pick one.
+\end{gotcha}
+
+\section{Colored noise and CGF terms}\label{sec:tf-colored}
+
+White noise enters the action as the local term $-D\,\tilde x^{2}$ --- a single
+noise vertex with no memory. \term{Colored} (finite-correlation-time) noise
+instead enters as a \term{CGF term} (cumulant-generating-function term), declared
+with \code{.declare\_cgf\_term(...)} and carrying an \code{order}, a
+\code{coefficient}, and a temporal \code{kernel}. The coloured sibling of the
+running model, \file{theories/ou\_quartic\_colored.theory.py}, is the canonical
+example. Its \code{build()} reads (verbatim, \file{...:10--23}):
+
+\begin{lstlisting}
+def build():
+    return (
+        TemporalTheoryBuilder('OU Quartic Colored', n_populations=0)
+        .physical_field('x', indexed=True, description='variable')
+        .parameter('mu', default=0.1, domain='real')
+        .parameter('eps', default=0.1, domain='positive')
+        .parameter('D', default=1.0, domain='positive')
+        .parameter('tauc', default=1.0, domain='positive')
+        .declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2,
+                          coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)')
+        .set_action_text('xt*((Dt+mu)*x + eps*x^3)')
+        .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+        .stability_analysis(True)
+        .build()
+    )
+\end{lstlisting}
+
+Two differences from the white-noise file are the whole point. First, the action
+\code{'xt*((Dt+mu)*x + eps*x\^{}3)'} has \emph{no} $-D\,\tilde x^{2}$ term --- the
+noise is no longer local. Second, that noise is supplied by the CGF row
+
+\begin{lstlisting}
+.declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2,
+                  coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)')
+\end{lstlisting}
+
+which encodes the Ornstein--Uhlenbeck noise spectrum
+$\avg{\xi\,\xi} \propto (D/\tau_c)\,\ee^{-|\tau|/\tau_c}$. The \code{response\_legs}
+list says the term couples two response fields ($\tilde x$ with $\tilde x$), the
+\code{order} is the cumulant order of the term, \code{coefficient} its prefactor,
+and \code{kernel} its time profile.
+
+The handler \code{\_emit\_cgf\_term} (\file{pipeline/theory\_serialize.py:233})
+renders two shapes. The multi-leg shape above is used when \code{response\_legs}
+has more than one entry; a legacy single-leg shape
+\code{.declare\_cgf\_term('name', 'mt', order=..., ...)} passes the single
+response field as the second positional argument. \code{order} is forced to
+\code{int}, and a per-row \code{markovianize=} is emitted only when it is an
+explicit boolean.
+
+\paragraph{Markovianization.} By default the pipeline \term{Markovianizes} a
+coloured kernel --- it embeds the finite-correlation-time noise in an auxiliary
+Markovian field so the system becomes local in time again (the embedding lives in
+\file{pipeline/colored\_to\_markovian.py}). The builder-level
+\code{.markovianize(False)} opts the whole theory out, and a per-term
+\code{markovianize=True/False} overrides individual rows. The forward serializer
+emits the builder-level \code{.markovianize(False)} only when the spec explicitly
+turned it off (\file{pipeline/theory\_serialize.py:448--449}), so theories that
+accept the default stay quiet.
+
+\begin{note}
+Chapter~\ref{ch:quickstart}'s note on ``what colour costs'' is exactly this
+mechanism: the white-noise model has no $\tau_c$ to embed, hence no auxiliary
+field and a small diagram count, while the coloured sibling adds the embedding.
+The two files differ in precisely the action term and the one CGF row shown
+above. The dedicated chapter on coloured and Markovian noise
+(Chapter~\ref{ch:colored-markovian}) opens up the embedding itself.
+\end{note}
+
+\section{Spatial derivative vertices and the operator IR}\label{sec:tf-spatial}
+
+For spatial theories the action carries the Laplacian $\nabla^{2}$ and, for
+derivative-vertex models, gradient operators. There are two distinct authoring
+styles, and the difference between them is not cosmetic --- it changes the physics
+the loop integrals compute.
+
+\begin{description}
+  \item[Bare-multiplicative Laplacian (v1).] The inert symbol \code{Laplacian} is
+        used multiplicatively, e.g. \code{(Dt + mu - D*Laplacian)*phi}. No
+        operator IR is needed.
+  \item[Operator IR (v2).] The action uses \emph{call syntax} --- \code{Dt(h)},
+        \code{Lap(h)}, \code{Dx(h, 0)} --- for genuine derivative \emph{vertices}.
+        A theory using call syntax \emph{must} carry \code{.operator\_ir()}.
+\end{description}
+
+\begin{defn}
+The \term{operator IR} is the v2 intermediate representation in which derivative
+operators are call-syntax nodes (\code{Dt(h)}, \code{Lap(h)}, \code{Dx(h, axis)})
+rather than inert multiplicative symbols. Because a derivative \emph{vertex}
+contributes a momentum-dependent \term{form factor} to a loop integral, the IR is
+what lets the engine attach the right form factor to each vertex. The integer in
+\code{Dx(h, 0)} is the \term{spatial axis index} (here $d=1$, so axis~0).
+\end{defn}
+
+Why the IR is load-bearing is best seen on KPZ. The Kardar--Parisi--Zhang
+equation in \file{theories/kpz\_1d.theory.py} is
+\[
+  \partial_t h = -\mu h + D\nabla^{2}h + \tfrac{\lambda}{2}(\partial_x h)^{2} + \eta,
+  \qquad \avg{\eta\,\eta} = 2T\,\delta(x-x')\,\delta(t-t'),
+\]
+written as
+
+\begin{lstlisting}
+.set_action_text(
+    'ht*(Dt(h) + mu*h - D*Lap(h) - (lam/2)*Dx(h, 0)^2) - T*ht^2')
+.operator_ir()
+.boundary('infinite')
+.initial('stationary')
+\end{lstlisting}
+
+The KPZ nonlinearity $\tfrac{\lambda}{2}(\partial_x h)^{2}$ is a \emph{per-leg}
+gradient vertex, written \code{Dx(h, 0)\^{}2}. Contrast Model B's conserving flux
+$g\nabla^{2}(\phi^{2})$, a \emph{composite} derivative vertex written
+\code{g*Lap(phi\^{}2)}. These differ --- $(\partial_x h)^{2} \neq
+\partial_x(h^{2})$ --- and they produce different momentum form factors in the
+loop integral.
+
+\begin{gotcha}
+\code{.operator\_ir()} is \textbf{load-bearing and silent}. The comment at
+\file{pipeline/theory\_serialize.py:452--457} is explicit: a re-saved
+KPZ/Burgers/Model-B theory that loses the \code{.operator\_ir()} line will
+``silently lose the \code{Dt()/Lap()/Dx()} lowering and compute the wrong
+physics.'' The serializer therefore round-trips the toggle precisely, and emits it
+only when on (so v1 bare-Laplacian theories stay quiet). \emph{If you hand-edit a
+derivative-vertex theory, keep that line.}
+\end{gotcha}
+
+For spatial models you will also see \code{.boundary(mode, **params)} (e.g.
+\code{.boundary('infinite')} or a periodic box with a \code{length=}) and
+\code{.initial(mode, **params)} (e.g. \code{.initial('stationary')}), and for
+coupled multi-field models the \code{.dyson\_order(N)} /
+\code{.reference\_diffusion(D0)} policy pair. The spatial chapters of Part~V cover
+what those declarations route to.
+
+\section{The spec dict: the contract with the UI}\label{sec:tf-spec}
+
+Everything above describes the \emph{file}. Internally, the UI form and the
+serializer speak a flat dictionary --- the \term{spec dict}. It is produced by the
+form's \code{\_collect()}, rendered to text by \code{render\_theory\_file}, and
+reconstructed from text by \code{load\_spec\_from\_file}. Knowing its shape makes
+both the forward and reverse paths legible, because every \code{\_emit\_*} helper
+is really ``read this key, write that line,'' and every reverse-path branch is the
+mirror image. The defaults below are exactly those the reverse path initialises
+(\file{pipeline/theory\_serialize.py:601--637}):
+
+\begin{center}
+\begin{longtable}{@{}llp{0.50\textwidth}@{}}
+\toprule
+\textbf{Key} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+\endhead
+\code{name} & str & Human theory name (also the slug source). \\
+\code{description} & str & User prose (boilerplate-stripped on reload). \\
+\code{populations} & list[dict] & \code{[\{'name','size','description'?\}, ...]}
+  (heterogeneous style). \\
+\code{n\_populations} & int & Legacy population count; synced to
+  \code{len(populations)} when populations are present. \\
+\code{response\_fields} & list[dict] & Explicitly-declared response fields;
+  usually empty. \\
+\code{physical\_fields} & list[dict] & Field records (name, indexing, natural
+  name, latex, description, \code{spatial\_dim}). \\
+\code{parameters} & list[dict] & Parameter records (name, default, indexing,
+  domain, \dots). \\
+\code{functions} & list[dict] & \code{define\_function} records (name, args,
+  expression, \dots). \\
+\code{kernels} & list[dict] & \code{define\_kernel} records (time/freq exprs,
+  names, indexing). \\
+\code{cgf\_terms} & list[dict] & Coloured-noise rows (legs, order, coefficient,
+  kernel, markovianize). \\
+\code{action\_text} & str & The \msrjd{} action expression (verbatim). \\
+\code{mf\_equations} & list[dict] & Legacy \code{[\{'saddle','rhs'\}, ...]}. \\
+\code{equations} & list[dict] & DAE form \code{[\{'lhs','rhs','population'\}, ...]}. \\
+\code{stability\_analysis} & bool & Default \code{False}. \\
+\code{markovianize\_default} & bool & Default \code{True}. \\
+\code{operator\_ir} & bool & Default \code{False}. \textbf{Load-bearing} for
+  derivative-vertex spatial theories. \\
+\code{boundary} & dict & \code{\{'mode', **params\}}, e.g.
+  \code{\{'mode':'infinite'\}}. \\
+\code{initial} & dict & \code{\{'mode', **params\}}, e.g.
+  \code{\{'mode':'stationary'\}}. \\
+\code{dyson} & dict & \code{\{'mode':'fixed','order':N\}}. \\
+\code{reference\_diffusion} & float & Scalar $D_{0}$ for the
+  $\mathcal{D} = D_{0}\,I + \hat{\mathcal{D}}$ split. \\
+\code{default\_fundamental} & dict & Emitted as \code{DEFAULT\_FUNDAMENTAL}. \\
+\code{metadata} & dict & Emitted as \code{METADATA}. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+One transient key, \code{\_default\_spatial\_dim}, is set during reverse parsing
+by a \code{.spatial\_dim(d)} call and is not normally re-emitted; it exists only
+so a bulk \code{.spatial\_dim(d)} can back-fill fields that lacked a per-field
+\code{spatial\_dim=}. We return to it in \S\ref{sec:tf-reverse}.
+
+\section{Forward serialization: spec to file}\label{sec:tf-forward}
+
+The forward heart is \code{render\_theory\_file(spec) -> str}
+(\file{pipeline/theory\_serialize.py:310}), which takes a spec dict and returns
+the full \file{.theory.py} source string. \code{save\_theory\_to\_file(spec, path)}
+(\file{...:504}) is the thin wrapper that picks a filename and writes it. The
+module itself is deliberately \emph{dependency-light}: it touches only the Python
+standard library (\code{ast}, \code{re}, \code{textwrap}, \code{os}, \code{typing}).
+No SageMath, no \code{ipywidgets}, no \code{numpy} --- those enter only in the
+companion loader and the binary cache.
+
+\code{render\_theory\_file} proceeds in a fixed order. Abbreviated, it:
+
+\begin{enumerate}
+  \item reads the spec fields with \code{.get(key, default)} so partial specs
+        still render (\file{...:320--351});
+  \item filters out saddle parameters --- those flagged \code{mean\_field} or named
+        \code{<natural>star} (\file{...:334--339});
+  \item picks the builder class from \code{spatial\_dim} (\S\ref{sec:tf-split},
+        \file{...:370--372});
+  \item emits the docstring header --- a \code{"<name> --- text-driven theory
+        file."} line plus the optional description and the ``Generated by\dots\ /
+        Loaded by\dots'' boilerplate the reverse path later strips
+        (\file{...:354--363});
+  \item emits \code{from pipeline.theory import <BuilderCls>} and
+        \code{def build(): return (} (\file{...:376--380});
+  \item emits the constructor: with \code{populations} present, a bare
+        \code{BuilderCls('name')} followed by one \code{.population(...)} per
+        population; otherwise \code{BuilderCls('name', n\_populations=N)}
+        (\file{...:381--396});
+  \item emits, in fixed order, response fields, physical fields, parameters,
+        functions, kernels, CGF terms (\file{...:401--412});
+  \item emits the action, then the equations (preferring \code{.equation(...)},
+        else \code{.set\_mf\_equation(...)}) (\file{...:414--433});
+  \item emits the non-default toggles --- stability, \code{markovianize(False)},
+        \code{operator\_ir()}, boundary/initial, Dyson/reference-diffusion
+        (\file{...:439--489});
+  \item closes the chain with \code{.build()} and the \code{)}
+        (\file{...:491--492}), then appends \code{DEFAULT\_FUNDAMENTAL = \{...\}}
+        and \code{METADATA = \{...\}} (\file{...:495--498}).
+\end{enumerate}
+
+The low-level work is done by a handful of helpers worth knowing by name.
+\code{\_py\_repr(value)} (\file{...:46}) pretty-prints a Python value as a
+source-code literal: a 2D list (a matrix) becomes a multi-line block with one row
+per line, a short 1D list stays on one line, a dict becomes one
+\code{key: value} per line. This is what makes a matrix default print as a
+readable block rather than one long line. \code{\_kw\_chain(*pairs)}
+(\file{...:85}) joins \code{name=value} pairs but \emph{omits any pair whose value
+is \code{None} or \code{''}} --- this is the mechanism behind the ``textually
+quiet'' principle, so \code{.parameter('mu', default=1.0)} does not emit
+\code{description=None}. \code{\_slugify(name)} (\file{...:96}) is the
+filesystem-safe identifier
+\code{re.sub(r'[\^{}A-Za-z0-9]+', '\_', name).strip('\_').lower()}.
+
+\begin{gotcha}
+In \code{\_py\_repr}, \code{bool} is checked \emph{before} \code{int}
+(\file{...:54}). In Python \code{bool} is a subclass of \code{int}, so a naive
+\code{isinstance(value, int)} test would catch \code{True}/\code{False} first and
+print them as \code{1}/\code{0}. The order is deliberate; do not swap it.
+\end{gotcha}
+
+\begin{gotcha}
+Whitespace stability depends on the dedent in \code{\_emit\_action}
+(\file{...:281--289}). The action body is run through \code{textwrap.dedent}
+\emph{before} being re-indented four spaces. Without that dedent, every
+load$\to$save cycle would accumulate four more leading spaces on each line of a
+multi-line action. Do not ``simplify'' it away.
+\end{gotcha}
+
+\code{save\_theory\_to\_file} normalises the path before writing
+(\file{...:513--518}): if \code{path} is a directory, the filename is
+\code{<slugify(name)>.theory.py} inside it; otherwise, if \code{path} does not
+already end in \code{.theory.py}, the suffix is appended \emph{unless} it already
+ends in \code{.py}.
+
+\begin{gotcha}
+The extension logic has a subtlety. A path ending in \code{.py} but \emph{not}
+\code{.theory.py} is left untouched, so \code{save\_theory\_to\_file(spec, 'foo.py')}
+writes \code{foo.py} --- which \code{dd.list\_theories()} would then \emph{not}
+discover, because discovery requires the \code{.theory.py} suffix
+(\file{notebooks/daedalus.py:63--65}). If you want a loadable theory, give it a
+bare name or the full \code{.theory.py} suffix.
+\end{gotcha}
+
+\section{Reverse serialization: file to editable form}\label{sec:tf-reverse}
+
+The reverse path is \code{load\_spec\_from\_file(path) -> dict}
+(\file{pipeline/theory\_serialize.py:528}). Its job is to reconstruct the spec
+dict from an existing \file{.theory.py} so the UI's ``Load'' button can
+re-populate the form. The defining choice is that it reads the file's
+\emph{abstract syntax tree} and never executes it.
+
+\begin{defn}
+The Python standard-library module \term{\code{ast}} (Abstract Syntax Tree)
+parses source \emph{text} into a tree of node objects --- the program's grammar,
+before execution. Inspecting this tree lets you learn what a program \emph{says}
+without ever \emph{running} it, which is exactly what you want when reading a
+configuration file you would rather not execute as a side effect of loading the
+form.
+\end{defn}
+
+The whole reverse path is an \code{ast} walk. The load-bearing calls are
+(\file{pipeline/theory\_serialize.py}, lines noted):
+
+\begin{lstlisting}
+import ast                                   # 545
+tree = ast.parse(src)                        # 550  text -> AST
+description = ast.get_docstring(tree)        # 553  module docstring
+val = ast.literal_eval(node.value)           # 568  a *safe* eval of a literal
+\end{lstlisting}
+
+\code{ast.parse} turns the file into a module node (a malformed file raises
+\code{SyntaxError} here). \code{ast.get\_docstring} pulls the leading
+triple-quoted string. The critical one is \code{ast.literal\_eval}:
+
+\begin{defn}
+\term{\code{ast.literal\_eval}} evaluates a node \emph{only if it is a literal} ---
+a number, string, list, dict, tuple, boolean, or \code{None}. It refuses function
+calls and bare names, so it can \emph{never} run arbitrary code. This is why the
+reverse path can safely recover a matrix default like \code{[[2,3],[1,3]]} or a
+metadata tuple like \code{('dx', 1)} from the source text.
+\end{defn}
+
+The code wraps it in a local helper \code{\_lit(node, default=None)}
+(\file{...:639}) that returns the fallback on
+\code{ValueError}/\code{SyntaxError}/\code{TypeError}, and a sibling
+\code{\_kwargs(call)} (\file{...:646}) that reads a call's keyword arguments into
+a dict. With those in hand the walk proceeds:
+
+\begin{enumerate}
+  \item read the file and \code{ast.parse} it (\file{...:548--550});
+  \item recover the description from the docstring, then strip the auto-header
+        with \code{\_strip\_doc\_boilerplate} (\file{...:553--556});
+  \item scan \code{tree.body} for the module-level \code{ast.Assign} nodes that
+        target \code{DEFAULT\_FUNDAMENTAL} / \code{METADATA} and
+        \code{literal\_eval} their values (\file{...:561--574});
+  \item find the \code{build} function (an \code{ast.FunctionDef}), and its
+        \code{ast.Return}; a missing \code{build()} or a return that is not a call
+        raises \code{ValueError} (\file{...:577--585});
+  \item \textbf{unwind the method chain}: starting at the return-call, step into
+        \code{cur.func.value} while the node is an \code{ast.Call}, stopping at
+        the constructor \code{ast.Name}; then \emph{reverse} so the constructor is
+        first and methods follow in source order (\file{...:588--598});
+  \item initialise the spec with all expected keys at their defaults, including
+        the four toggle defaults that mirror the builder's own
+        (\file{...:601--637});
+  \item dispatch over the chain --- a long \code{if/elif} on the method name
+        (\code{population}, \code{physical\_field}, \code{parameter},
+        \code{define\_function}, \code{define\_kernel}, \code{declare\_cgf\_term},
+        \code{set\_action\_text}, \code{set\_mf\_equation}, \code{equation}, the
+        toggles, \code{boundary}/\code{initial}, \code{dyson}/\code{dyson\_order},
+        \code{reference\_diffusion}, \code{build}) --- each branch reconstructing
+        one spec sub-list (\file{...:649--865});
+  \item sync \code{n\_populations} to \code{len(populations)} when the populations
+        list is non-empty (\file{...:868--869}).
+\end{enumerate}
+
+A few dispatch branches deserve a sentence. The constructor branch accepts all
+three class names (\file{...:651--652}). The \code{physical\_field} branch
+\emph{inherits} a builder-level \code{\_default\_spatial\_dim} (set by an earlier
+\code{.spatial\_dim(d)} call) when no per-field \code{spatial\_dim=} is given
+(\file{...:682--683}) --- this is why the transient spec key from
+\S\ref{sec:tf-spec} exists. The \code{declare\_cgf\_term} branch handles both the
+legacy positional \code{response\_field} and the new \code{response\_legs} (which
+it accepts as a list literal \emph{or} a comma-separated string). The toggle
+branches use sensible no-argument defaults: \code{markovianize()} reads as
+\code{True}, \code{operator\_ir()} reads as \code{True}.
+
+Finally, \code{\_strip\_doc\_boilerplate(doc)} (\file{...:873}) removes the
+auto-generated header so a reloaded theory shows only the user's own prose: it
+drops the leading \code{"<name> --- text-driven theory file."} line (recognised by
+its em-dash), stops at the ``Generated by\dots\ / Loaded by\dots'' lines, and trims
+surrounding blanks. This is the same trimming \code{describe\_model} performed in
+Chapter~\ref{ch:quickstart}.
+
+\subsection{The round-trip guarantee and its limits}
+
+The reverse path is an \emph{AST} round-trip, not a textual one, which fixes
+exactly what survives:
+
+\begin{itemize}
+  \item String literals --- action text, equation right-hand sides, function and
+        kernel expressions --- survive \emph{verbatim}.
+  \item Python literals --- numeric defaults, \code{indexed\_by} lists, metadata
+        tuples --- survive exactly via \code{literal\_eval}.
+  \item Comments and exact formatting do \emph{not} survive.
+\end{itemize}
+
+\begin{gotcha}
+\textbf{Non-literal arguments are lost on reload.} \code{\_lit} returns the
+fallback for anything that is not \code{literal\_eval}-able. If a hand-written
+theory passes a \emph{computed} expression as a builder keyword --- say
+\code{default=2*0.4} instead of \code{default=0.8} --- then
+\code{load\_spec\_from\_file} recovers \code{None} for it. Defaults are normally
+plain literals, so this rarely bites, but a hand-authored file that puts logic in
+its \code{build()} can carry meaning the AST round-trip silently flattens. The
+loader (next section) \emph{executes} the file, so it sees the computed value; the
+UI ``Load'' button, reading the AST, does not.
+\end{gotcha}
+
+\begin{gotcha}
+\code{load\_spec\_from\_file} \emph{raises} on a malformed file: \code{ast.parse}
+raises \code{SyntaxError}, and a missing \code{build()} or a \code{build()} that
+does not return a call expression raises \code{ValueError}
+(\file{...:581}, \file{...:585}). The UI must catch these.
+\end{gotcha}
+
+\section{Discovery and loading by name}
+
+You already used the canonical loader in Chapter~\ref{ch:quickstart}. It lives in
+\file{notebooks/daedalus.py} and is worth re-reading now that you know what it
+loads. \code{daedalus.load\_theory(name)} (\file{notebooks/daedalus.py:68})
+resolves \file{theories/<name>.theory.py}, imports it via \code{importlib.util}
+--- \emph{executing} it --- and returns \code{(module.build(), module)}:
+
+\begin{lstlisting}
+spec = importlib.util.spec_from_file_location(f'theories.{name}', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+return mod.build(), mod
+\end{lstlisting}
+
+\code{spec\_from\_file\_location} builds an import ``spec'' for an arbitrary file
+path (so the file need not be on \code{sys.path}); \code{module\_from\_spec}
+creates an empty module object; \code{exec\_module} actually runs the file's
+top-level code, defining \code{build}, \code{DEFAULT\_FUNDAMENTAL}, and
+\code{METADATA}.
+
+\begin{gotcha}
+\textbf{The reverse path reads; the loader executes.} \code{load\_spec\_from\_file}
+uses \code{ast} and never runs the file --- safe, but it cannot recover
+non-literal values. \code{daedalus.load\_theory} (and the binary serializer's
+\code{reload\_model}) \emph{do} execute the file. So a \file{.theory.py} runs real
+Python at run time: a hand-authored theory may legitimately contain logic the
+AST-only reverse path would flatten. If you put logic in \code{build()}, the
+engine will honour it but the UI ``Load'' button may not faithfully reflect it.
+\end{gotcha}
+
+The companions are small. \code{list\_theories()} (\file{notebooks/daedalus.py:61})
+lists every \file{theories/*.theory.py} and strips the suffix to give the loadable
+name. \code{THEORIES\_DIR} (\file{...:55}) is \code{<repo\_root>/theories}, where
+\code{repo\_root()} (\file{...:40}) walks up the directory tree until it finds a
+\code{pipeline/} folder --- the same depth-robust walk the setup cell performed in
+Chapter~\ref{ch:quickstart}.
+
+\section{The binary cache (\texttt{saved\_theories/})}
+
+We close where the chapter's opening note began: the \emph{other} thing called
+serialization. When a theory is actually \emph{run}, the heavy symbolic objects
+--- the propagator, the Taylor-expanded action, the per-diagram integrands --- are
+pickled to disk under \file{saved\_theories/<slug>/} as SageMath \code{.sobj}
+files plus a \code{manifest.json}. This cache is managed by
+\file{pipeline/\_expand\_cache.py} and \file{msrjd/core/serialize.py} --- \emph{not}
+by \code{theory\_serialize.py}.
+
+\begin{defn}
+\term{SageMath} is a large open-source computer-algebra system built on Python; it
+provides exact symbolic objects (polynomials over chosen rings, symbolic matrices,
+\dots). Its \code{save}/\code{load} functions pickle these objects to
+\term{\code{.sobj}} files (the extension is appended automatically). You need Sage
+to load a \code{.sobj}; you do \emph{not} need it to read a \file{.theory.py}.
+\end{defn}
+
+The on-disk \term{slug} is \code{model['name']} lowercased with non-alphanumerics
+collapsed to underscores --- the \emph{same} pattern \code{\_slugify} uses for the
+text-format filename (\file{pipeline/\_expand\_cache.py} uses an identical regex),
+so the human-facing filename and the cache directory agree. Thus
+\code{'OU Quartic (white noise)'} caches under
+\file{saved\_theories/ou\_quartic\_white\_noise/}. The directory's contents:
+
+\begin{center}
+\begin{longtable}{@{}lll@{}}
+\toprule
+\textbf{File} & \textbf{Producer} & \textbf{Contents} \\
+\midrule
+\endhead
+\code{manifest.json} & \code{\_expand\_cache.py} & index of cached artefacts
+  (\code{key}, \code{stage}, \code{k}, \code{loop\_order}, \code{saved\_at}). \\
+\code{propagator.sobj} & \code{\_expand\_cache.py} & Sage-pickled propagator
+  (Taylor-order-independent). \\
+\code{expand\_taylor<N>.sobj} & \code{\_expand\_cache.py} & Sage-pickled
+  Taylor-expanded action at order $N$. \\
+\code{unique\_typed\_mult\_v3\_...\_k<k>\_l<l>.sobj} &
+  \code{\_expand\_cache.py} & Per-diagram integrand bundle, keyed by external legs,
+  Taylor order, $k$, loop order. \\
+\code{metadata.json} + \code{symbolic\_data.sobj} & \code{msrjd/core/serialize.py} &
+  the older (separate) save format. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+A representative \code{manifest.json} entry (from
+\file{saved\_theories/ou\_quartic\_white\_noise/}) shows how the cache key encodes
+the request --- this is where the $k$ and $\ell$ from \code{METADATA}/\code{Config}
+end up as file-name keys:
+
+\begin{lstlisting}[style=console]
+{ "key": "unique_typed_mult_v3_dx1_dx1_taylor6_k2_l2",
+  "stage": "unique_typed_mult_v3_dx1_dx1_taylor6",
+  "k": 2, "loop_order": 2,
+  "saved_at": "2026-06-17T23:03:39.062450" }
+\end{lstlisting}
+
+\begin{gotcha}
+\file{msrjd/core/serialize.py} defines its \emph{own} \code{save\_theory} /
+\code{load\_theory} functions --- distinct from both \code{theory\_serialize.py}
+and \code{daedalus.load\_theory}. They persist expanded symbolic objects, not
+\file{.theory.py} text. Its \code{reload\_model} even uses raw \code{exec} to
+re-import the model \code{.py}, so it runs arbitrary code. Three different
+functions across the codebase are spelled ``\code{load\_theory}''; always check
+which module you are in.
+\end{gotcha}
+
+\section{Authoring rules, in one place}
+
+Most of the chapter's gotchas reduce to a short checklist for anyone hand-writing
+or hand-editing a theory file:
+
+\begin{enumerate}
+  \item Write the action with \code{xt} for the response field and \code{\^{}} for
+        powers; wrap per-population dynamics in \code{sum(... for i in pop)}.
+  \item Declare the saddle with \code{.equation(lhs, rhs, population)} (preferred)
+        or \code{.set\_mf\_equation('xstar', rhs)} (legacy). Never declare a
+        \code{<natural>star} parameter --- the framework creates it.
+  \item For a spatial model, give at least one physical field a non-zero
+        \code{spatial\_dim} so the builder split picks
+        \code{SpatialTheoryBuilder}; and if the action uses \code{Dt()/Lap()/Dx()}
+        call syntax, \emph{keep} the \code{.operator\_ir()} line --- dropping it
+        silently computes the wrong physics.
+  \item Keep \code{recommended\_external\_fields} entries as \emph{tuples}.
+  \item Prefer plain literals for builder keyword values; a computed expression
+        works at run time but is lost when the UI reloads the file via the AST
+        path.
+  \item Remember the two serialization layers: a \file{.theory.py} is plain
+        text you can read and diff; a \file{saved\_theories/<slug>/*.sobj} is a
+        Sage pickle written when the model runs. Deleting the cache directory only
+        forces a recompute; it never touches your source.
+\end{enumerate}
+
+With the model fully specified --- by hand or by form --- the next chapter opens up
+the one feature this running example deliberately avoided: coloured noise and the
+Markovian embedding that turns it back into a local-in-time field theory.

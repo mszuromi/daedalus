@@ -1,0 +1,102 @@
+% =====================================================================
+%  APPENDIX D : Known issues, caveats, and open questions
+% =====================================================================
+\chapter{Known Issues, Caveats, and Open Questions}
+\label{app:known-issues}
+
+No production scientific code is free of rough edges, and \Daedalus{} is honest
+about its.  This appendix collects the limitations a \emph{user} should know
+before trusting a number, and points to the developer-facing log of code-hygiene
+items.
+
+\begin{note}
+A living, more granular version of this list --- including line-level code
+inconsistencies found while writing this manual and the per-chapter
+manual-vs-code audit results --- is kept in
+\file{docs/manual/AUDIT\_FINDINGS.md}.  This appendix is the curated,
+reader-facing summary.
+\end{note}
+
+% ---------------------------------------------------------------------
+\section{Numerical and physical limitations}
+% ---------------------------------------------------------------------
+
+\begin{description}[leftmargin=0pt,style=nextline]
+
+  \item[Colored-noise two-loop runs are slow]
+        A finite-$\tau_c$ (colored) theory is handled by Markovian embedding
+        (Chapter~\ref{ch:colored-markovian}), which \emph{doubles} the field
+        content.  At two loops (\code{max\_ell=2}) this produces $\sim$66 diagrams
+        whose per-$\tau$ evaluation falls back to nested numerical quadrature, so
+        a single correlator can take many minutes per lag.  This is a cost of the
+        embedding, \emph{not} a regression.  For a fast nonlinear two-loop
+        baseline use the \emph{white}-noise \code{ou\_quartic} theory, which is a
+        single field and runs in well under a second
+        (Chapter~\ref{ch:quickstart}).
+
+  \item[$\mu=1/\tau_c$ exact degeneracy]
+        The v1 colored$\to$Markovian preprocessor needs the physical relaxation
+        rate $\mu$ and the noise rate $1/\tau_c$ to be \emph{distinct} --- the
+        embedded propagator then has simple poles at each.  At exact equality the
+        pole is a double pole, which the current code does not special-case.
+        Keep $\mu\tau_c\neq 1$.
+
+  \item[Large-$|\mu|$ OU-quartic blow-up at $\ell\ge1$]
+        For the OU-quartic family the Phase-J loop integrals grow rapidly in
+        magnitude as $|\mu|$ increases at one loop and beyond; the perturbative
+        series is only well-behaved in the mildly-perturbative window
+        ($g_{\mathrm{eff}}\approx\varepsilon D/\mu^2$ small).  See
+        \file{docs/ou\_quartic\_large\_mu\_phase\_j\_audit.md}.
+
+  \item[$m\ge3$ chain-simplex precision]
+        The temporal mode-sum can lose precision when three or more propagator
+        poles are very closely spaced (the ``close-paired pole'' regime),
+        affecting e.g.\ spike-reset correlators at $k\ge2,\ \ell\ge1$.  Documented
+        with a regression fixture in
+        \file{docs/m\_ge3\_precision\_bug\_audit.md}.
+
+  \item[Spatial $d\ge2$ with derivative vertices is still numerical]
+        The analytic heat-kernel inverse Fourier transform
+        (Chapter~\ref{ch:spatial-heatkernel}) is exact for plain vertices in any
+        dimension and for $d=1$ derivative vertices (Model~B, KPZ, Burgers).  The
+        $d\ge2$ derivative-vertex transverse handling has not yet been done
+        analytically, so those cases use the numerical Fourier path.
+
+  \item[Spatial coupled fields with unequal diffusivities: tree only]
+        For coupled multi-field spatial models with \emph{equal} diffusivity the
+        full tree+loop machinery runs; for \emph{unequal} diffusivities only the
+        tree correlator (via Dyson dressing, Chapter~\ref{ch:spatial-coupled}) is
+        wired --- loop corrections are gated off.
+
+  \item[Spatial $k\ge3$ loop path]
+        The public \code{compute\_cumulants} loop path is $k=2$-gated.  The
+        spatial integrator core supports general $k$, but $k\ge3$ loop records
+        still need the reduced chamber quadrature before they go through the
+        public API.
+
+\end{description}
+
+% ---------------------------------------------------------------------
+\section{Code-hygiene items and open questions}
+% ---------------------------------------------------------------------
+
+While documenting the codebase we noted a number of small inconsistencies ---
+dead imports, a stale module docstring, two docstring-only stub modules with no
+importers, a couple of no-op code branches, and a few advertised-but-unwired
+\code{Config} fields.  None affects the correctness of a computed cumulant; they
+are tidy-up candidates.  The full itemised list (with file:line references and a
+recommended action for each) lives in \file{docs/manual/AUDIT\_FINDINGS.md},
+Part~A.
+
+% ---------------------------------------------------------------------
+\section{How this manual was checked}
+% ---------------------------------------------------------------------
+
+Each chapter was drafted from a deep read of its subsystem and then
+\emph{independently audited} against the source code by a separate pass that
+re-grepped every named identifier, verified file:line citations, and checked
+behavioural claims.  Corrections from that pass (for example the Fourier-sign and
+template-lambda-count fixes in Chapter~\ref{ch:theory-spec}) were folded back
+into the chapters.  Any audit findings still open at the time of writing are
+tracked in \file{docs/manual/AUDIT\_FINDINGS.md}; treat that file as the manual's
+errata sheet.

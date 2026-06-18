@@ -1,0 +1,1269 @@
+% ---------------------------------------------------------------------
+%  Chapter 7 : The Propagator
+% ---------------------------------------------------------------------
+\chapter{The Propagator}\label{ch:propagator}
+
+Every Feynman diagram in this framework is a graph whose \emph{edges} are
+copies of one object: the free two-point function, the \term{propagator}
+$\Gret$. Wire vertices together with copies of $\Gret$, integrate over the
+internal times, and you have a diagram. Nothing downstream --- not the
+enumeration, not the type assignment, not a single loop integral --- can run
+until $\Gret$ exists. This chapter is about how the engine builds it.
+
+The story has a clean shape. The Gaussian (free) part of the \msrjd{} action is
+a bilinear form coupling each response field to each physical field; collect its
+coefficients into a matrix $K$ (the ``kinetic'' or ``kernel'' matrix), and the
+propagator is simply its inverse $G = K^{-1}$. Because $K$ contains time
+derivatives, the natural place to invert it is \emph{frequency space}: Fourier
+transform in time to get $K_{\mathrm{ft}}(\omega)$, invert the small matrix once,
+and read off a rational function of $\omega$. The physics is then entirely in
+that rational function's \emph{poles} (which set relaxation rates), its
+\emph{residues} (which set amplitudes), and one \emph{instantaneous} piece that
+becomes a $\delta(t)$ in the time domain. The closed-form inverse Fourier
+transform reassembles those three ingredients into the time-domain retarded
+propagator that the diagram integrators actually call.
+
+This is phases \texttt{[2/7]} (\emph{Build propagator}) and \texttt{[4/7]}
+(\emph{Numerical poles + residues}) of the seven-phase trace you watched in
+Chapter~\ref{ch:quickstart}. We take them together because they are two halves
+of one object: phase~2 builds the \emph{symbolic} frequency-domain propagator
+(parameter-independent, cached to disk); phase~4 substitutes the numeric
+parameters and extracts the poles and residues. We will build the mathematics
+from the ground up, then walk the two source files that implement it ---
+\file{pipeline/\_propagator.py} (the engine) and
+\file{msrjd/integration/time\_domain/propagator\_td.py} (the time-domain
+assembler) --- quoting real code with file and line numbers throughout.
+
+\begin{gotcha}
+There is a file named \file{msrjd/core/propagator.py}. It is a \emph{stub} --- a
+ten-line docstring saying the logic ``currently lives in the demo notebook.''
+Nothing in the working pipeline imports it. The real propagator code is
+\file{pipeline/\_propagator.py}. Do not go looking for \code{build\_propagator}
+in \file{msrjd/core/propagator.py}; it is not there.
+\end{gotcha}
+
+\section{Where the propagator sits}
+
+It helps to fix the data flow before the mathematics. Two functions in
+\file{pipeline/\_propagator.py} do the work, and they run at two different points
+in \file{pipeline/compute.py}:
+
+\begin{description}
+  \item[\code{build\_propagator(ft, model, \ldots)}] (\file{pipeline/\_propagator.py:524})
+        Called at phase~2 (\file{pipeline/compute.py:357}). Takes the
+        \emph{expanded} \code{FieldTheory} \code{ft} and the \code{model} dict;
+        builds the symbolic chain $K_{\mathrm{ker}} \to K_{\mathrm{ft}} \to
+        G_{\mathrm{ft}}$, plus the adjugate, the determinant, and the
+        instantaneous matrix \code{D\_delta}. It returns a \code{prop} dict with
+        the poles and residues still set to \code{None} --- those are
+        parameter-dependent and come later. The symbolic stages \emph{are}
+        parameter-independent, so this dict is cached to disk.
+  \item[\code{compute\_poles\_and\_residues(prop, num\_params, \ldots)}] (\file{pipeline/\_propagator.py:851})
+        Called at phase~4 (\file{pipeline/compute.py:632}). Takes the \code{prop}
+        dict and \code{num\_params} --- the numeric parameter substitution
+        produced by the mean-field solve (phase~3). It substitutes those numbers,
+        finds the retarded poles, computes the residue matrices, and
+        \emph{mutates} \code{prop} in place to fill \code{prop['pole\_vals']} and
+        \code{prop['C\_mats']}.
+\end{description}
+
+A third function lives in the other file. \code{build\_G\_t\_matrix}
+(\file{msrjd/integration/time\_domain/propagator\_td.py:135}) turns the
+frequency-domain data (poles, residues, \code{D\_delta}) into a \emph{time-domain}
+matrix $G(t)$, and the per-edge lookups \code{G\_t\_entry} /
+\code{G\_t\_delta\_coeff} hand single propagator entries to the diagram
+integrators. Schematically:
+
+\begin{lstlisting}[style=console]
+  FieldTheory (expanded action)        model dict (params, kernel images)
+           |                                       |
+           +------------------+--------------------+
+                              v
+  build_propagator():   K_ker -> K_ft -> G_ft / adj_ft / D_omega / D_delta
+                              |   (cached to saved_theories/<tag>/propagator.sobj)
+                              v
+  compute_poles_and_residues(prop, num_params):
+                              fills prop['pole_vals'], prop['C_mats'], prop['D_delta']
+                              v
+  build_G_t_matrix(prop, t):  {'smooth': sum_k C_k exp(i p_k t),  'delta': D_delta,  't_var'}
+                              v
+  per-edge   G_t_entry()  /  G_t_delta_coeff()
+                              v
+  diagram tree integrators (final_integral.py, grouped_integral.py)
+\end{lstlisting}
+
+\begin{note}
+There is also a precompute entry point at \file{pipeline/\_precompute.py:168}
+that calls \code{build\_propagator} at Taylor order~2 purely to warm the cache.
+This works because the propagator depends \emph{only} on the bilinear sector of
+the action, which is fully captured at Taylor order $\ge 2$ --- so a single
+order-2 precompute fills the cache once and every higher-order run reuses it.
+The propagator is, in this precise sense, Taylor-order-independent.
+\end{note}
+
+\section{From the action to the kernel matrix \texorpdfstring{$K$}{K}}
+
+A stochastic field theory written in \msrjd{} form has an action $S[\varphi,
+\tilde\varphi]$. The fields come in two halves of equal count $n_f$:
+
+\begin{itemize}
+  \item \term{physical fields} $\varphi_j$, $j = 1,\dots,n_f$ (a density, a
+        membrane potential, \ldots),
+  \item \term{response fields} $\tilde\varphi_i$, $i = 1,\dots,n_f$, also called
+        \emph{auxiliary} or \emph{tilde} fields --- the conjugate variables that
+        the \msrjd{} construction introduces, one per physical field.
+\end{itemize}
+
+The \term{free action} is the part of $S$ that is bilinear with exactly one
+response leg and one physical leg. In the engine's bookkeeping this is
+\emph{bigrade $(1,1)$} --- one tilde factor, one physical factor --- and it is
+exactly what \code{ft.free\_action()} returns. Schematically,
+\begin{equation}
+  S_{\mathrm{free}} \;=\; \sum_{i,j}\int\!\dd t\;
+  \tilde\varphi_i(t)\,\hat K_{ij}(\Dt)\,\varphi_j(t),
+  \label{eq:freeaction}
+\end{equation}
+where each $\hat K_{ij}$ is a differential/kernel operator in time. For a plain
+Ornstein--Uhlenbeck field $\hat K = \Dt + \mu$, so $S_{\mathrm{free}} \supset
+\int \tilde n\,(\Dt n + \mu n)$.
+
+\begin{defn}
+The \term{kernel matrix} $K$ is the matrix of bilinear coefficients of
+\eqref{eq:freeaction}, with layout \emph{[response row, physical column]}:
+\[
+  K[i, j] \;=\; \text{coefficient of }(\tilde\varphi_i\,\varphi_j)
+  \text{ in } S_{\mathrm{free}}.
+\]
+The propagator is its inverse, $G = K^{-1}$.
+\end{defn}
+
+The code extracts $K$ by reading the coefficient of each $(\tilde\varphi_i\,
+\varphi_j)$ monomial out of the free action. \code{build\_propagator} first asks
+the \code{FieldTheory} for the free action and the polynomial-ring generator
+names, then splits the names into the response half and the physical half
+(\file{pipeline/\_propagator.py:586}):
+
+\begin{lstlisting}
+S_free = ft.free_action()
+ring_gen_names = [str(g) for g in R.gens()]
+
+resp_names = ring_gen_names[:ft._n_tilde]
+phys_names = ring_gen_names[ft._n_tilde:]
+pos_to_row = {ring_gen_names.index(nm): i for i, nm in enumerate(resp_names)}
+pos_to_col = {ring_gen_names.index(nm): j for j, nm in enumerate(phys_names)}
+\end{lstlisting}
+
+The first \code{ft.\_n\_tilde} generators are the response fields and the rest are
+the physical fields; \code{pos\_to\_row} and \code{pos\_to\_col} map a generator's
+position in the ring to its row (if it is a response field) or column (if it is
+physical). The extraction loop then walks the \emph{monomials} of the free action
+--- \code{S\_free.dict()} returns a mapping from exponent vector to coefficient ---
+and for each monomial finds which generators carry a positive exponent
+(\file{pipeline/\_propagator.py:595}):
+
+\begin{lstlisting}
+nf = len(resp_names)
+K_data = [[SR(0)] * nf for _ in range(nf)]
+for exp_vec, coeff in S_free.dict().items():
+    row = col = None
+    for idx in range(len(ring_gen_names)):
+        if exp_vec[idx] > 0:
+            if idx in pos_to_row:
+                row = pos_to_row[idx]
+            if idx in pos_to_col:
+                col = pos_to_col[idx]
+    if row is not None and col is not None:
+        K_data[row][col] += SR(coeff)
+K_mat = matrix(SR, K_data)
+\end{lstlisting}
+
+A bilinear $(1,1)$ monomial has exactly one response generator and one physical
+generator with positive exponent, so it pins down exactly one $(row, col)$, and
+its coefficient is accumulated into $K[\,row, col\,]$. The result \code{K\_mat} is
+a Sage symbolic matrix of size $n_f \times n_f$.
+
+\begin{note}
+\code{SR} is SageMath's \term{Symbolic Ring} --- the general symbolic-expression
+type, a Python wrapper around the GiNaC/Pynac C++ engine. \code{SR(x)} coerces
+anything (an integer, a coefficient, a string) to a symbolic expression, and
+\code{matrix(SR, data)} builds a matrix whose entries live in that ring. Almost
+every matrix in this chapter lives over \code{SR}. We meet several more Sage
+rings below; each is introduced where it first appears.
+\end{note}
+
+\section{Kernel form: the \texorpdfstring{$\delta$}{delta} and \texorpdfstring{$\delta'$}{delta-prime} symbols}
+
+We want to Fourier transform $K$ in time, but a raw coefficient like $\Dt n$ (a
+time derivative) does not Fourier-transform cleanly as written. The engine first
+rewrites every entry of $K$ into \term{kernel form}, a sum of a Dirac delta and
+its derivative:
+\begin{equation}
+  c \;\longmapsto\; c_0\,\delta(t) \;+\; c_1\,\delta'(t),
+  \qquad c_0 = c\big|_{\Dt \to 0}.
+  \label{eq:kernelform}
+\end{equation}
+There are three abstract namespace symbols involved, all carried on the
+\code{FieldTheory}'s namespace object \code{ns}:
+
+\begin{itemize}
+  \item \code{ns.Dt} --- a marker for the time-derivative operator $\Dt$,
+  \item \code{ns.delta\_D} --- the Dirac delta $\delta(t)$ (displayed as $\delta$),
+  \item \code{ns.delta\_Dp} --- its derivative $\delta'(t)$ (displayed as $\delta'$).
+\end{itemize}
+
+The helper \code{\_to\_kernel} (\file{pipeline/\_propagator.py:507}) performs the
+rewrite \eqref{eq:kernelform}:
+
+\begin{lstlisting}
+def _to_kernel(c, Dt, delta_D, delta_Dp):
+    c = SR(c)
+    if c.has(delta_D):
+        return c
+    p0   = c.subs({Dt: 0})
+    rest = (c - p0).subs({Dt: delta_Dp})
+    return p0 * delta_D + rest
+\end{lstlisting}
+
+It splits the coefficient into a constant part \code{p0} (set $\Dt \to 0$) and a
+derivative part \code{rest} (the remainder, with $\Dt$ replaced by the symbol
+$\delta'$), and returns \code{p0*delta\_D + rest}. So a plain constant $\mu$
+becomes $\mu\,\delta(t)$ --- an instantaneous coupling --- and a derivative $\Dt$
+becomes $\delta'(t)$.
+
+Why wrap the \emph{constant} part in $\delta(t)$ at all? Because of what the
+Fourier transform does to a bare constant. The transform of $\delta(t)$ is the
+constant $1$, but the transform of a bare constant $\mu$ is the distribution
+$2\pi\,\mu\,\delta(\omega)$ --- not what we want. Writing $\mu$ as $\mu\,\delta(t)$
+ensures the transform returns the clean constant $\mu$ back (the docstring at
+\file{pipeline/\_propagator.py:514} spells this out). Abstract \emph{kernel}
+symbols (for example a synaptic kernel \code{ns.g} in a coloured-noise model) are
+not constants and are left untouched here; their frequency images are applied
+later, after the transform.
+
+\code{build\_propagator} applies \code{\_to\_kernel} entrywise to build
+\code{K\_ker} (\file{pipeline/\_propagator.py:615}):
+
+\begin{lstlisting}
+Dt       = ns.Dt
+delta_D  = ns.delta_D
+delta_Dp = ns.delta_Dp
+
+K_ker = matrix(
+    SR,
+    [[_to_kernel(K_mat[i, j], Dt, delta_D, delta_Dp)
+      for j in range(nf)] for i in range(nf)],
+)
+\end{lstlisting}
+
+\section{The Fourier convention --- and why poles live in the upper half-plane}
+
+The engine uses a single, fixed Fourier convention pipeline-wide, defined in
+\code{fourier\_transform} (\file{msrjd/core/field\_theory.py:33}). It is the
+angular-frequency convention with no $2\pi$ in the exponent:
+\begin{equation}
+  F(\omega) \;=\; \int_{-\infty}^{\infty} f(t)\,\ee^{-\ii\omega t}\,\dd t.
+  \label{eq:ftconv}
+\end{equation}
+Under \eqref{eq:ftconv} the kernel symbols transform as
+\[
+  \delta(t) \;\longmapsto\; 1, \qquad
+  \delta'(t) \;\longmapsto\; \ii\omega,
+\]
+so a kernel-form entry $c_0\,\delta + c_1\,\delta'$ transforms to $c_0 + c_1\,
+(\ii\omega)$. For the OU example $\hat K = \Dt + \mu$ becomes $K_{\mathrm{ft}} =
+\ii\omega + \mu$.
+
+\code{build\_propagator} performs the transform by substituting the abstract
+$\delta$ symbols for their concrete Sage forms --- \code{dirac\_delta(t)} for
+$\delta$ and \code{diff(dirac\_delta(t), t)} for $\delta'$ --- and calling
+\code{fourier\_transform} on each nonzero entry
+(\file{pipeline/\_propagator.py:624}):
+
+\begin{lstlisting}
+t_var = SR.var('t')
+omega = SR.var('omega', latex_name=r'\omega')
+time_subs = {
+    delta_D:  dirac_delta(t_var),
+    delta_Dp: diff(dirac_delta(t_var), t_var),
+}
+K_ft_data = [[SR(0)] * nf for _ in range(nf)]
+for i in range(nf):
+    for j in range(nf):
+        c = K_ker[i, j]
+        if not c.is_zero():
+            K_ft_data[i][j] = fourier_transform(
+                SR(c).subs(time_subs), t_var, omega
+            )
+K_ft = matrix(SR, K_ft_data)
+\end{lstlisting}
+
+After the transform, any abstract kernel symbol still present (the
+coloured-noise case) is replaced by its frequency image $\hat g(\omega)$ via a
+model-supplied hook (\file{pipeline/\_propagator.py:642}):
+
+\begin{lstlisting}
+kft_hook = model.get('kernel_ft_image')
+if kft_hook is not None:
+    kft_subs = kft_hook(ns, omega)
+    K_ft = K_ft.apply_map(lambda e: SR(e).subs(kft_subs))
+\end{lstlisting}
+
+The \code{kernel\_ft\_image} hook is a callable the theory file supplies; it maps
+abstract kernel symbols to their frequency images (for a white-noise model there
+are none, and the hook is absent).
+
+\begin{defn}
+\code{dirac\_delta(t)} is Sage's symbolic Dirac delta; \code{diff(expr, var)} is
+symbolic differentiation, so \code{diff(dirac\_delta(t), t)} is the symbolic
+$\delta'(t)$. \code{fourier\_transform} is the engine's own wrapper
+(\file{msrjd/core/field\_theory.py}); internally it dispatches the integral to
+SymPy first (which handles \code{positive=True} assumptions on time constants
+without stopping to ask the sign of $\omega$) and falls back to Maxima. SymPy is
+therefore on the hot path even though no \code{import sympy} appears in the
+propagator files.
+\end{defn}
+
+\begin{gotcha}
+\textbf{Retarded $=$ $\mathrm{Im}(\omega) > 0$ is the single most important sign
+convention in this subsystem, and it is born directly from the $\ee^{-\ii\omega
+t}$ in \eqref{eq:ftconv}.} Because the forward transform carries
+$\ee^{-\ii\omega t}$, the \emph{inverse} transform carries $\ee^{+\ii\omega t}$
+and closes its $\omega$-contour in the \emph{upper} half-plane for $t > 0$. So the
+retarded (causal) propagator is parameterised by poles with $\mathrm{Im}(\omega) >
+0$: each $\ee^{\ii\omega_k t}$ then decays for $t > 0$ and grows for $t < 0$.
+Every pole filter in the code keeps roots with \code{imag > 1e-9}. If you ever
+flipped \code{fourier\_transform} to $\ee^{+\ii\omega t}$, every pole-side sign
+would flip and the entire downstream causality machinery would break. This is
+restated in the header of \file{propagator\_td.py:12}.
+\end{gotcha}
+
+\section{The frequency-domain propagator \texorpdfstring{$G_{\mathrm{ft}} = K_{\mathrm{ft}}^{-1}$}{G = K-inverse}}
+
+With $K_{\mathrm{ft}}(\omega)$ in hand, the propagator is the matrix inverse
+\begin{equation}
+  G_{\mathrm{ft}}(\omega) \;=\; K_{\mathrm{ft}}(\omega)^{-1},
+  \label{eq:Ginv}
+\end{equation}
+a matrix of \emph{rational functions of $\omega$}. Two companion objects come for
+free and matter later:
+
+\begin{itemize}
+  \item the \term{determinant} $D_\omega = \det K_{\mathrm{ft}}$. Its numerator is
+        the \emph{characteristic polynomial}, whose roots are the system poles.
+  \item the \term{adjugate} $\mathrm{adj}(K_{\mathrm{ft}})$, the transpose of the
+        cofactor matrix. By Cramer's rule $K^{-1} = \mathrm{adj}(K)/\det(K)$, so
+        $\mathrm{adj}(K_{\mathrm{ft}}) = G_{\mathrm{ft}}\cdot\det(K_{\mathrm{ft}})$.
+\end{itemize}
+
+For a diagonally-dominant $K_{\mathrm{ft}}$ every entry of $G_{\mathrm{ft}}$
+shares one common denominator $Q(\omega)$, the polynomial numerator of
+$\det(K_{\mathrm{ft}})$.
+
+\subsection{The complexity gate: when symbolic inversion is skipped}
+
+Sage's symbolic \code{K\_ft.inverse()} is \emph{cofactor-based}: it expands all
+$n_f^2$ cofactor sub-determinants symbolically, an $O(n_f!)$ operation in the
+matrix dimension. For a small matrix (the OU model is $1\times1$; a two-field
+system is $2\times2$) this is instantaneous. For a large matrix --- a spike-reset
+model can reach $n_f = 8$ --- it can run for \emph{hours}, even when the symbol set
+is lean, simply because $8! = 40\,320$ minor determinants must each be simplified
+as rational symbolic expressions.
+
+So \code{build\_propagator} gates the symbolic inversion on matrix size
+(\file{pipeline/\_propagator.py:681}):
+
+\begin{lstlisting}
+free_syms = set()
+for i in range(nf):
+    for j in range(nf):
+        free_syms.update(SR(K_ft[i, j]).variables())
+free_syms.discard(omega)
+rich = nf >= 6 or len(free_syms) > 20
+\end{lstlisting}
+
+A matrix is \term{rich} if $n_f \ge 6$ (the dominant trigger) \emph{or} if it
+carries more than twenty free symbols beyond $\omega$ (a secondary trigger). The
+comment at \file{pipeline/\_propagator.py:672} records the lesson that motivated
+the matrix-size metric: spike-reset at $n_f = 8$ with only $\sim18$ free symbols
+ran for hours under the old symbol-count gate, because the cost is $O(n_f!)$ in
+the \emph{dimension}, not in the symbol count.
+
+\begin{itemize}
+  \item If the matrix is \emph{not} rich, the engine attempts the symbolic inverse
+        under a wall-clock budget (next subsection).
+  \item If it \emph{is} rich, symbolic inversion is skipped entirely:
+        \code{G\_ft}, \code{adj\_ft}, \code{D\_omega}, and \code{D\_delta} are all
+        left \code{None}, and \emph{everything} is deferred to phase~4, which
+        works numerically after the parameters are substituted (at which point
+        every entry is a univariate rational in $\omega$, far cheaper to handle).
+\end{itemize}
+
+\subsection{The budgeted symbolic-inverse block}
+
+When the matrix is lean, the symbolic inverse, determinant, adjugate, and
+\code{D\_delta} are all computed in one block, wrapped in a $120$-second SIGALRM
+budget (\file{pipeline/\_propagator.py:706}):
+
+\begin{lstlisting}
+def _do_symbolic_inverse_block():
+    t0 = _time.perf_counter()
+    G    = K_ft.inverse()
+    D_om = K_ft.det()
+    # Adjugate via the identity  adj(K) = K^(-1) . det(K).
+    adj  = G * D_om
+    ...
+    return G, D_om, adj, matrix(SR, Dd_data)
+\end{lstlisting}
+
+Two design choices in this tiny block are worth calling out, because each is a
+hard-won performance fix.
+
+\begin{gotcha}
+\textbf{The adjugate is computed as \code{G * D\_om}, never via Sage's
+\code{.adjugate()}.} Sage's \code{K\_ft.adjugate()} re-expands all $n_f^2$
+cofactor sub-determinants from scratch, throwing away the work the inverse
+already did. The comment at \file{pipeline/\_propagator.py:710} records the
+measurement: $734$~s for \code{.adjugate()} versus $\sim11$~s for the inverse
+itself on a $4\times4$ spike-reset matrix. Reusing the inverse via
+$\mathrm{adj} = G\cdot\det$ is the whole point.
+\end{gotcha}
+
+If the block exceeds its budget --- or raises any exception, or aborts deep inside
+a native routine with a \code{SignalError} --- the four symbolic stages are set to
+\code{None} and phase~4 picks up the slack numerically
+(\file{pipeline/\_propagator.py:731}):
+
+\begin{lstlisting}
+try:
+    G_ft, D_omega, adj_ft, D_delta = _run_with_timeout(
+        _do_symbolic_inverse_block, _SYMBOLIC_INVERSE_BUDGET_SEC)
+except _PolynomialPathTimeout:
+    ...
+    G_ft = adj_ft = D_omega = D_delta = None
+\end{lstlisting}
+
+\code{\_run\_with\_timeout} (\file{pipeline/\_propagator.py:57}) is a small helper
+that installs a POSIX \code{SIGALRM} handler raising \code{\_PolynomialPathTimeout}
+after the budget expires, arms \code{signal.alarm}, runs the function, and cancels
+the alarm in a \code{finally}. On a platform without \code{SIGALRM} (Windows) or
+when the budget is \code{None}, it simply calls the function directly --- a no-op
+timeout. This is the lower-level cousin of the \code{cysignals} alarm we meet
+later for \code{factor()}.
+
+The resulting symbolic stages (or their \code{None} placeholders) are assembled
+into the \code{prop} dict, together with the as-yet-unfilled poles and residues
+(\file{pipeline/\_propagator.py:765}):
+
+\begin{lstlisting}
+prop = {
+    'K_ker':         K_ker,
+    'K_ft':          K_ft,
+    'G_ft':          G_ft,
+    'adj_ft':        adj_ft,
+    'D_omega':       D_omega,
+    'D_delta':       D_delta,
+    't_var':         t_var,
+    'omega':         omega,
+    'nf':            nf,
+    'ring_gen_names': ring_gen_names,
+    # Filled in later by compute_poles_and_residues():
+    'pole_vals':     None,
+    'C_mats':        None,
+}
+\end{lstlisting}
+
+\section{Poles as zeros of \texorpdfstring{$\det K_{\mathrm{ft}}$}{det K}}
+
+Phase~4 begins by substituting the numeric parameters. Once that is done, every
+entry of $K_{\mathrm{ft}}$ is a univariate rational function in $\omega$ with
+numeric coefficients, and the propagator's poles are the roots of the
+characteristic polynomial $Q(\omega) = \operatorname{num}(\det K_{\mathrm{ft}})$
+that lie in the upper half-plane.
+
+\begin{defn}
+A \term{pole} $\omega_k$ is a (retarded) zero of $\det K_{\mathrm{ft}}$ with
+$\mathrm{Im}(\omega_k) > 0$. It sets a relaxation or oscillation rate of the free
+theory. A \term{simple} pole is a single root; a higher-multiplicity (repeated)
+root is a \emph{Jordan-block} pole and is handled differently --- see the
+limitations section.
+\end{defn}
+
+Let $\omega_k$ be a simple zero of $Q(\omega)$. The residue of $G_{\mathrm{ft}}$
+there is, entrywise,
+\begin{equation}
+  \operatorname*{Res}_{\omega=\omega_k} G_{\mathrm{ft}}(\omega)
+  \;=\; \frac{P_{ij}(\omega_k)}{Q'(\omega_k)},
+  \qquad
+  G_{\mathrm{ft}}[i,j] = \frac{P_{ij}(\omega)}{Q(\omega)}.
+  \label{eq:residue}
+\end{equation}
+The code stores the residue matrix \emph{scaled by $\ii$} --- the ``$C_k$
+convention'' --- because that factor makes the inverse Fourier transform come out
+clean:
+\begin{equation}
+  \texttt{C\_mats}[k] \;=\; \ii\cdot
+  \operatorname*{Res}_{\omega=\omega_k} G_{\mathrm{ft}}(\omega).
+  \label{eq:Ck}
+\end{equation}
+
+The residues are \emph{always} computed numerically, even when a symbolic
+adjugate is available. This is not laziness; it is precision. The reason gets its
+own gotcha below. First, the primary path.
+
+\section{Residues, tier 1: exact arithmetic over \texorpdfstring{$\mathbb{Q}(i)[\omega]$}{Q(i)}}
+
+\code{compute\_poles\_and\_residues} tries three strategies in order. The first,
+\code{\_compute\_residues\_via\_polynomial\_fracfield}
+(\file{pipeline/\_propagator.py:81}), is the one that runs for almost every
+model. It does \emph{exact} arithmetic --- no floating point until the very last
+root-find --- over the field $\mathbb{Q}(i)$.
+
+\subsection{Why an exact field}
+
+The trick is the choice of coefficient ring. Sage can invert a matrix over the
+field of rational functions $\mathrm{Frac}(R[\omega])$, and when $R$ is an
+\emph{exact} field, polynomial GCDs are reliable: Sage returns every entry of the
+inverse in genuinely \emph{canonical irreducible} form $P_{ij}/Q$, with no
+spurious cancellable factors and no floating-point GCD noise. The denominator is
+then \emph{exactly} the characteristic polynomial.
+
+The exact field used is \code{CyclotomicField(4, 'I\_')}, which is
+$\mathbb{Q}(\zeta_4) = \mathbb{Q}(i)$ --- the rationals extended by a primitive
+fourth root of unity, which is just the imaginary unit $i$.
+
+\begin{defn}
+\term{\code{CyclotomicField(4)}} $= \mathbb{Q}(i)$ is the field of Gaussian
+rationals $a + b\,i$ with $a, b \in \mathbb{Q}$. \term{\code{PolynomialRing(R, 'x')}}
+builds the ring $R[x]$ of univariate polynomials over $R$; calling
+\code{.fraction\_field()} on it gives $\mathrm{Frac}(R[x])$, the rational
+functions $P/Q$. The point of doing the matrix inversion over an exact field is
+that GCD-over-a-field is exact, so each inverse entry is reduced to true
+irreducible $P/Q$ form. A floating-coefficient (\code{CDF}$[\omega]$) path, by
+contrast, once left ``degree-18 polynomials with $\sim13$ spurious roots''
+(\file{pipeline/\_propagator.py:104}).
+\end{defn}
+
+\subsection{Walking the exact path}
+
+The function builds the exact rings, substitutes the parameters, converts every
+entry into the exact fraction field, and inverts under the same SIGALRM watchdog
+(\file{pipeline/\_propagator.py:115}):
+
+\begin{lstlisting}
+CF = CyclotomicField(4, 'I_')
+i_CF = CF.gen()
+PR_exact = PolynomialRing(CF, 'om_exact')
+F_exact  = PR_exact.fraction_field()
+
+K_ft_num = K_ft.apply_map(lambda e: SR(e).subs(num_params))
+\end{lstlisting}
+
+The two converters are the heart of it. \code{\_sr\_complex\_to\_CF}
+(\file{pipeline/\_propagator.py:122}) turns a symbolic complex \emph{constant}
+into an exact $\mathbb{Q}(i)$ element by rationalising its real and imaginary
+parts, and \code{\_sr\_to\_F\_exact} (\file{pipeline/\_propagator.py:128}) lifts a
+whole rational entry into \code{F\_exact} by converting its numerator and
+denominator coefficient lists:
+
+\begin{lstlisting}
+def _sr_complex_to_CF(c):
+    c = SR(c)
+    re = QQ(c.real_part())
+    im = QQ(c.imag_part())
+    return CF(re) + CF(im) * i_CF
+\end{lstlisting}
+
+Here \code{QQ} is Sage's field of rational numbers $\mathbb{Q}$; \code{QQ(x)}
+rationalises a float. Once every entry is in \code{F\_exact}, the matrix is built
+and inverted (\file{pipeline/\_propagator.py:140}):
+
+\begin{lstlisting}
+K_ft_F = matrix(F_exact, K_ft_F_data)
+G_ft_F = _run_with_timeout(
+    K_ft_F.inverse, _POLYNOMIAL_PATH_BUDGET_SEC)
+\end{lstlisting}
+
+\begin{gotcha}
+The exact path \emph{requires} parameters that \code{QQ} can rationalise. The line
+\code{re = QQ(c.real\_part())} throws on a non-rationalisable (for example,
+irrational symbolic) parameter, the whole tier returns a triple of \code{None},
+and the caller falls through to the numerical cofactor path
+(\file{pipeline/\_propagator.py:122}). In practice parameters are floats, which
+\code{QQ} rationalises happily, so the exact path is what runs.
+\end{gotcha}
+
+\subsection{The universal denominator must be an LCM}
+
+After the inverse, the code needs the characteristic polynomial $Q(\omega)$. It
+is tempting to read it off the first nonzero entry's denominator --- but that is
+wrong for a structured $K_{\mathrm{ft}}$. The fix is to take the \emph{least
+common multiple} of all the per-entry denominators
+(\file{pipeline/\_propagator.py:172}):
+
+\begin{lstlisting}
+Q_poly = None
+for i in range(nf):
+    for j in range(nf):
+        if G_ft_F[i, j] == 0:
+            continue
+        d_ij = G_ft_F[i, j].denominator()
+        if Q_poly is None:
+            Q_poly = d_ij
+        else:
+            Q_poly = Q_poly.lcm(d_ij)
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{The universal denominator is an LCM, not the first entry's denominator.}
+An upper-triangular $K_{\mathrm{ft}}$ --- the shape produced by the
+Markovian-embedding preprocessor for coloured noise --- gives entries with
+\emph{different} canonical denominators: one entry might carry a single pole
+factor while another carries the product of two. Picking the first nonzero entry
+would under-count the system poles. The LCM is the universal denominator whose
+roots include every system pole; a pole that does not divide a given entry's own
+denominator simply yields a vanishing residue there
+(\file{pipeline/\_propagator.py:157}).
+\end{gotcha}
+
+\subsection{The squarefree guard}
+
+Before root-finding, the code checks that $Q(\omega)$ is \emph{squarefree} --- no
+repeated roots (\file{pipeline/\_propagator.py:196}):
+
+\begin{lstlisting}
+if not Q_poly.is_squarefree():
+    if verbose:
+        print(...)
+    return None, None, None
+\end{lstlisting}
+
+A non-squarefree $Q$ signals a higher-multiplicity (Jordan-block) pole, for
+example $Q = (\ii\omega + \mu)^2$ from a Markovianised OU process at $\mu =
+1/\tau_c$. The single-pole residue formula \eqref{eq:residue} cannot represent the
+$\tau\,\ee^{-pt}$ term such a pole produces, so the exact path bails and lets the
+fallback tier take over (the fallback shares the limitation but is more robust to
+the numerical near-degeneracy). This is the most significant \emph{known
+limitation} of the subsystem; the limitations section returns to it.
+
+\subsection{Roots and residues}
+
+With a squarefree $Q$, the polynomial is converted from the exact field to
+\code{CDF}$[\omega]$ (floating-point) for numerical root-finding, the retarded roots
+are kept and sorted, and the residues are read off entry by entry.
+
+\begin{defn}
+\term{\code{CDF}} is Sage's \term{Complex Double Field}: complex numbers backed by
+the machine \code{double} type ($\approx 10^{-16}$ precision). It is used for
+root-finding (\code{Q\_cdf.roots(CDF)}) and to store the residue matrices as
+\code{matrix(CDF, \ldots)}. \code{complex(value)} converts a \code{CDF} number back
+to a plain Python \code{complex}.
+\end{defn}
+
+The retarded filter and sort (\file{pipeline/\_propagator.py:214}):
+
+\begin{lstlisting}
+roots = Q_cdf.roots(CDF)
+pole_vals = [complex(r) for r, _ in roots
+             if complex(r).imag > 1e-9]
+pole_vals.sort(key=lambda p: (p.imag, p.real))
+\end{lstlisting}
+
+The residue loop then implements \eqref{eq:Ck} per entry, $C_k[i,j] = \ii\,
+P_{ij}(\omega_k)/Q'_{ij}(\omega_k)$, skipping any entry for which $\omega_k$ is
+not a pole of that entry's own denominator (\file{pipeline/\_propagator.py:246}):
+
+\begin{lstlisting}
+for pk in pole_vals:
+    C_entries = [[0j] * nf for _ in range(nf)]
+    for i in range(nf):
+        for j in range(nf):
+            ...
+            qij_at = complex(Q_entry_cdf[i][j](pk))
+            if abs(qij_at) > 1e-9:
+                continue           # pk is not a pole of this entry
+            qijp = complex(Q_entry_prime_cdf[i][j](pk))
+            if abs(qijp) < 1e-30:
+                continue           # higher-multiplicity: leave 0
+            P_at = complex(P_cdf[i][j](pk))
+            C_entries[i][j] = 1j * P_at / qijp
+\end{lstlisting}
+
+The function returns the triple \code{(pole\_vals, C\_mats, D\_delta)}
+(\file{pipeline/\_propagator.py:301}); the third element is the instantaneous
+matrix, computed in the same pass and discussed shortly. On success,
+\code{compute\_poles\_and\_residues} stores the poles and residues and
+\emph{returns early}, never touching the fallback tiers
+(\file{pipeline/\_propagator.py:892}):
+
+\begin{lstlisting}
+pole_vals_tier1, C_mats_tier1, D_delta_tier1 = (
+    _compute_residues_via_polynomial_fracfield(
+        K_ft, omega, num_params, nf, verbose=verbose))
+if pole_vals_tier1 is not None:
+    prop['pole_vals'] = pole_vals_tier1
+    prop['C_mats']    = C_mats_tier1
+    if prop.get('D_delta') is None and D_delta_tier1 is not None:
+        prop['D_delta'] = D_delta_tier1
+    ...
+    return prop
+\end{lstlisting}
+
+Note the third clause: if \code{build\_propagator}'s symbolic block left
+\code{D\_delta} as \code{None} (because it busted its budget or the matrix was
+rich), the exact path's \code{D\_delta} fills it in.
+
+\begin{note}
+The function's docstring (\file{pipeline/\_propagator.py:109}) says it returns
+\code{(None, None)} on failure, but every actual \code{return} statement in the
+function --- success and failure alike --- is a \emph{three}-tuple
+\code{(pole\_vals, C\_mats, D\_delta)}. The caller unpacks three values, so the
+code is self-consistent; the docstring is simply stale. When code and prose
+disagree, the code is authoritative.
+\end{note}
+
+\section{Residues, tiers 2 and 3: the numerical cofactor fallback}
+
+When the exact path returns \code{None} --- non-rationalisable parameters, a
+non-squarefree denominator, or a timeout --- \code{compute\_poles\_and\_residues}
+substitutes the parameters into $K_{\mathrm{ft}}$ and proceeds numerically
+(\file{pipeline/\_propagator.py:926} onward). Which numerical branch runs depends
+on whether \code{build\_propagator} left a symbolic adjugate behind:
+
+\begin{itemize}
+  \item the \emph{rich / heterogeneous} branch fires when \code{adj\_ft} or
+        \code{G\_ft} is \code{None} (\file{pipeline/\_propagator.py:939}), and
+  \item the \emph{legacy symbolic} branch fires when both are present
+        (\file{pipeline/\_propagator.py:1167}).
+\end{itemize}
+
+Both branches find poles the same way --- they take the symbolic
+$\det(K_{\mathrm{ft,num}})$, extract its numerator's $\omega$-coefficients, build a
+characteristic polynomial, and root it. A sanity check guards against a common
+silent failure (\file{pipeline/\_propagator.py:971}):
+
+\begin{lstlisting}
+free_syms = set()
+for i in range(nf):
+    for j in range(nf):
+        free_syms.update(SR(K_ft_num[i, j]).variables())
+free_syms.discard(omega)
+if free_syms and verbose:
+    print(f'      WARNING: K_ft_num has free symbols beyond omega: '
+          f'{sorted(str(s) for s in free_syms)}.  Pole-finding '
+          f'will likely return 0 roots.  ...')
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{Pole-finding silently returns zero roots if any free symbol other than
+$\omega$ survives.} If a kernel symbol was not substituted (a
+\code{kernel\_ft\_image} hook missing an entry) or a saddle value is absent from
+\code{num\_params}, then $\det(K_{\mathrm{ft,num}})$ has non-numeric coefficients
+and the root-finder finds nothing. The rich branch \emph{warns} about this
+explicitly (\file{pipeline/\_propagator.py:976}); the empty pole list then
+surfaces downstream as a warning inside \code{build\_G\_t\_matrix}. If you ever
+see ``$0$ retarded poles'' on a model you expect to have some, an
+unsubstituted symbol is the first thing to check.
+\end{gotcha}
+
+Both branches cache $K$'s entrywise numerator/denominator coefficients once
+(\file{pipeline/\_propagator.py:1035}) so that the kernel matrix can be evaluated
+at any $\omega$ in microseconds via Horner's rule (\code{\_horner},
+\file{pipeline/\_propagator.py:841}), candidates are deduplicated, and each is
+\term{Newton-refined} on the numerical $\det(K(\omega))$ --- Newton's method
+polishing each root to machine precision, with acceptance gated on
+$|\det(K(\omega))|/\text{scale} < 10^{-9}$, staying in the upper half-plane, and
+deduplication.
+
+The residue evaluation is the common, important part. In \emph{both} branches the
+residue is computed via the numerical \term{cofactor adjugate}, never the
+symbolic \code{adj\_ft} (\file{pipeline/\_propagator.py:1470}):
+
+\begin{lstlisting}
+def _cofactor_adj(M):
+    """adj(M) = transpose of cofactor matrix.
+    adj[i,j] = (-1)^(i+j) . det(M with row j and col i removed)."""
+    n = M.shape[0]
+    A = np.zeros_like(M)
+    for i in range(n):
+        for j in range(n):
+            minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
+            A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
+    return A
+\end{lstlisting}
+
+At a pole $K(\omega_k)$ is singular, so $K^{-1}$ does not exist --- but the
+adjugate does, by direct cofactor expansion. The determinant derivative
+$Q'(\omega_k)$ is taken by central difference, and the residue follows
+(\file{pipeline/\_propagator.py:1482}):
+
+\begin{lstlisting}
+for pk in pole_vals:
+    K_at_pk = _K_at(pk)
+    adj_at_pk = _cofactor_adj(K_at_pk)
+    h = 1e-6 * (1 + abs(pk))
+    d_prime = (_det_at(pk + h) - _det_at(pk - h)) / (2 * h)
+    ...
+    C_np = 1j * adj_at_pk / d_prime
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{The cofactor index convention is transposed.} \code{\_cofactor\_adj} sets
+\code{adj[i,j] = (-1)\^{}(i+j) * det(M with row j and col i removed)} --- note
+row~$j$, column~$i$. The adjugate is the transpose of the cofactor matrix, and
+getting this backwards would transpose every residue matrix
+(\file{pipeline/\_propagator.py:1470}).
+\end{gotcha}
+
+\begin{gotcha}
+\textbf{Residues are always numerical, even when a symbolic \code{adj\_ft}
+exists.} Sage stores the symbolic adjugate as a sum of rationals whose per-term
+denominators diverge by factors of $10^3$ to $10^4$ as $\omega$ approaches a
+kernel pole. Evaluating that sum at the pole causes \term{catastrophic
+cancellation} --- nearly-equal large terms subtracting to lose $3$ to $5$
+significant digits (a measured $11\%$ to $42\%$ relative error on a quartic
+model's residues). The numpy cofactor path builds the minor determinants directly
+and has no such leak, so both numerical branches use it
+(\file{pipeline/\_propagator.py:1503}). The ``lean symbolic'' branch keeps the
+symbolic \code{adj\_ft} around for display, but computes residues numerically all
+the same.
+\end{gotcha}
+
+\begin{note}
+The upshot is that the three tiers are \emph{numerically equivalent} in current
+code: the legacy symbolic path was patched to use the numpy cofactor evaluation
+too, so tiers~2 and~3 differ only in how they \emph{find the poles}, not in how
+they evaluate the residues. One cosmetic redundancy is worth knowing: for the
+rich branch there are two nearly-identical Newton-refine blocks
+(\file{pipeline/\_propagator.py:1297} and \file{:1389}), so a candidate can be
+refined twice --- harmless, since the second refine of an already-converged root
+is a near no-op.
+\end{note}
+
+\section{The instantaneous limit \texorpdfstring{$D_\delta$}{D-delta}}
+
+If $G_{\mathrm{ft}}(\omega)$ does not vanish as $\omega \to \infty$ --- a
+\emph{non-proper} rational function --- then its inverse Fourier transform
+produces a $\delta(t)$ term. Decompose
+\begin{equation}
+  G_{\mathrm{ft}}(\omega) \;=\; Q_{\mathrm{poly}}(\ii\omega)
+  \;+\; G_{\mathrm{proper}}(\omega),
+  \qquad
+  G_{\mathrm{proper}} \xrightarrow{\;\omega\to\infty\;} 0,
+\end{equation}
+and the polynomial part transforms to derivatives of $\delta(t)$. For the common
+case where that polynomial part is a constant matrix,
+\begin{equation}
+  D_\delta[i,j] \;=\; \lim_{\omega\to\infty} G_{\mathrm{ft}}[i,j](\omega).
+  \label{eq:Ddelta}
+\end{equation}
+
+\begin{defn}
+A rational function is \term{strictly proper} if $\deg(\text{numerator}) <
+\deg(\text{denominator})$; it vanishes at infinity and contributes no $\delta(t)$.
+A \term{non-proper} rational has a polynomial part and does contribute one. The
+matrix $D_\delta$ collects the $\delta(t)$ coefficients of the time-domain
+propagator. Physically, a nonzero entry is an \emph{immediate, same-time}
+response --- in the \msrjd{} action, a response-field source $\tilde n$ at time
+$t$ produces a $\delta n$ at the \emph{same} $t$.
+\end{defn}
+
+Concretely, per entry $G_{\mathrm{ft}}[i,j] = P_{ij}/Q$:
+\[
+  \deg(P_{ij}) < \deg(Q) \;\Rightarrow\; D_\delta[i,j] = 0,
+  \qquad
+  \deg(P_{ij}) = \deg(Q) \;\Rightarrow\; D_\delta[i,j] =
+  \frac{\operatorname{lc}(P_{ij})}{\operatorname{lc}(Q)},
+\]
+the ratio of leading coefficients. The engine computes this three different ways
+depending on which path produced the propagator:
+
+\begin{itemize}
+  \item In the \emph{exact path}, it is the leading-coefficient ratio over the
+        exact polynomials (\file{pipeline/\_propagator.py:283}).
+  \item In the \emph{lean symbolic} block, it is \code{\_omega\_inf\_limit\_fast}
+        applied per entry (\file{pipeline/\_propagator.py:719}).
+  \item In the \emph{rich} numerical branch, it is a \term{two-probe scaling test}
+        (\file{pipeline/\_propagator.py:1150}): evaluate $G(\omega)$ at $\omega =
+        10^8$ and $\omega = 10^{10}$; an entry whose value is the same at both
+        probes is a constant (so it becomes a $\delta$), while one that scales like
+        $1/\omega$ has decayed to zero.
+\end{itemize}
+
+\code{\_omega\_inf\_limit\_fast} (\file{pipeline/\_propagator.py:460}) deserves a
+look, because it exists purely to avoid a slow tool:
+
+\begin{lstlisting}
+def _omega_inf_limit_fast(expr, omega_var):
+    expr = SR(expr)
+    try:
+        num = expr.numerator()
+        den = expr.denominator()
+        num_deg = int(num.degree(omega_var))
+        den_deg = int(den.degree(omega_var))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if num_deg < den_deg:
+        return SR(0)
+    if num_deg > den_deg:
+        return None
+    # Same degree: leading-coefficient ratio.
+    ...
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{Sage's \code{limit} is avoided for the $\omega \to \infty$ limit.} It
+routes through Maxima (a Lisp computer-algebra system bundled with Sage) and, on
+raw cofactor or determinant entries, triggers thousands of FLINT divide-by-zero
+warnings and Singular thrashing. \code{\_omega\_inf\_limit\_fast} does the
+textbook rational-limit recipe --- compare numerator and denominator degrees,
+return the leading-coefficient ratio --- entirely by hand, with no Maxima
+(\file{pipeline/\_propagator.py:464}).
+\end{gotcha}
+
+\section{The time-domain propagator \texorpdfstring{$G_R(t)$}{G\_R(t)}}
+
+Putting the pieces together --- the inverse Fourier transform of a sum of simple
+poles plus a constant --- gives the time-domain \term{retarded propagator}:
+\begin{equation}
+  G_R[i,j](t) \;=\; D_\delta[i,j]\,\delta(t)
+  \;+\; \Theta(t)\sum_k C_k[i,j]\,\ee^{\ii\omega_k t}.
+  \label{eq:GR}
+\end{equation}
+The Heaviside step $\Theta(t)$ enforces \emph{retardation} (response only after
+the cause); with $\mathrm{Im}(\omega_k) > 0$ each mode decays for $t > 0$, so the
+product is well-defined.
+
+This is exactly what \code{build\_G\_t\_matrix}
+(\file{msrjd/integration/time\_domain/propagator\_td.py:135}) assembles. It
+returns a dict with a \code{smooth} matrix (the pole-residue sum, \emph{without}
+the $\Theta$ --- the caller applies that), a \code{delta} matrix (the $\delta(t)$
+coefficients), and the time variable:
+
+\begin{lstlisting}
+smooth = matrix(SR, n_propagator, n_propagator, 0)
+for k in range(len(pole_vals)):
+    smooth = smooth + C_mats[k] * exp(I * pole_vals[k] * t_var)
+\end{lstlisting}
+
+Note the accumulator is initialised as a proper $n_f \times n_f$ zero matrix
+\emph{before} the loop, so that even when \code{pole\_vals} is empty the result is
+still a matrix (a bare \code{sum} over an empty generator would collapse to the
+Python integer \code{0} and break every downstream \code{.dimensions()} call ---
+the comment at \file{propagator\_td.py:252} explains the trap). When
+\code{pole\_vals} \emph{is} empty, the function also issues a warning
+(\file{propagator\_td.py:271}), because then only the $\delta$-part survives and
+that usually means the characteristic-polynomial solve found no retarded roots.
+
+\subsection{The complex-comparison pitfall}
+
+Before substituting numbers, \code{build\_G\_t\_matrix} normalises the poles and
+residues with a small helper, \code{\_to\_sr\_ab}
+(\file{propagator\_td.py:225}):
+
+\begin{lstlisting}
+def _to_sr_ab(value):
+    """Normalise only raw complex / CDF scalars; leave SR alone."""
+    if isinstance(value, complex):
+        return SR(float(value.real)) + SR(float(value.imag)) * I
+    if isinstance(value, ComplexDoubleElement):
+        c = complex(value)
+        return SR(float(c.real)) + SR(float(c.imag)) * I
+    # Symbolic SR expression, Sage number, etc. -- preserve exactly.
+    return SR(value)
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{\code{\_to\_sr\_ab} must run before \code{.subs(num\_params)}, and it must
+\emph{not} cast genuine SR expressions through \code{complex()}.} The first half
+of that rule: a raw Python \code{complex} fed to \code{SR(\ldots)} becomes an
+opaque GiNaC node, and when that node later propagates into a product or
+expansion, GiNaC's internal term-sort tries to compare two \code{complex} objects
+with \code{<} and raises \code{TypeError: '<' not supported between instances of
+'complex' and 'complex'}. Rewriting it as $a + b\,\ii$ with real \code{float}
+components sidesteps that. The second half: an \emph{exact} closed-form pole such
+as $\ii(1 - \sqrt6/10)$ must keep its algebraic content; casting it through
+\code{complex()} would silently collapse it to double precision and bias
+correlators that compound the error across many $\tau$ evaluations
+(\file{propagator\_td.py:204}). So \code{\_to\_sr\_ab} normalises only raw complex
+scalars and leaves true SR expressions untouched.
+\end{gotcha}
+
+\subsection{The delta coefficients}
+
+\code{build\_G\_t\_matrix} prefers the precomputed \code{D\_delta}, applying
+\code{num\_params} if given, and only falls back to Sage's symbolic \code{limit}
+when no \code{D\_delta} was precomputed (\file{propagator\_td.py:311}):
+
+\begin{lstlisting}
+D_precomputed = propagator_data.get('D_delta')
+if D_precomputed is not None:
+    if num_params:
+        delta_coeffs = D_precomputed.apply_map(
+            lambda e: SR(e).subs(num_params) if not SR(e).is_zero() else SR(0)
+        )
+    else:
+        delta_coeffs = D_precomputed
+else:
+    # Compute from G_ft via symbolic limit.
+    ...
+\end{lstlisting}
+
+Since every path in phase~4 fills \code{D\_delta}, the symbolic-limit fallback is
+rarely exercised.
+
+\subsection{The per-edge lookups and the transpose}
+
+The diagram integrators do not consume the matrix directly; they ask for one
+entry at a time via \code{G\_t\_entry} (\file{propagator\_td.py:379}) for the
+smooth part and \code{G\_t\_delta\_coeff} (\file{propagator\_td.py:433}) for the
+$\delta$ coefficient. The smooth lookup is where the index transpose is applied:
+
+\begin{lstlisting}
+if isinstance(G_t_obj, dict):
+    G_t_matrix = G_t_obj['smooth']
+else:
+    G_t_matrix = G_t_obj
+
+t_var = _infer_time_variable(G_t_matrix)
+entry = SR(G_t_matrix[phys_idx, resp_idx])
+if t_var is not None:
+    entry = entry.subs({t_var: t_expr})
+if include_heaviside:
+    entry = entry * heaviside(t_expr)
+return entry
+\end{lstlisting}
+
+\begin{gotcha}
+\textbf{The kernel layout is [response, physical], but the physical retarded
+propagator is read with the indices transposed.} The physical object is ``the
+response of physical field $j$ to a response-field source $i$,'' written $G^R_{j
+\leftarrow i}$, which is the matrix entry $G[j, i]$ --- physical row, response
+column. So \code{G\_t\_entry(phys\_idx=j, resp\_idx=i, \ldots)} reads
+\code{smooth[phys\_idx, resp\_idx]} to apply the transpose. Every consumer must
+use the same transpose; this one matches \code{\_get\_propagator\_entry} in
+\file{msrjd/integration/symbolic.py} (\file{propagator\_td.py:44}). For an edge
+$u \to v$ the time argument is $t_{\mathrm v} - t_{\mathrm u}$.
+\end{gotcha}
+
+The \code{include\_heaviside} flag multiplies in $\Theta(t)$ to enforce
+retardation; only the \emph{smooth} part is returned, because the $\delta(t)$ part
+is handled separately by the tree integrator (where a $\delta$ edge collapses one
+integration variable). The companion \code{G\_t\_delta\_coeff}
+(\file{propagator\_td.py:433}) returns that $\delta$ coefficient as a Python
+\code{complex}, demoting it to a real \code{float} when the imaginary part is
+negligible, and returning \code{0.0+0.0j} when there is no $\delta$ component.
+
+\begin{gotcha}
+\textbf{$\Theta(0)$ semantics differ by path.} The numerical integrator treats
+$\Theta(0) = 0$ --- a zero time difference is strictly excluded from the retarded
+support, enforced by a Heaviside-filter integrand wrapper in
+\file{final\_integral.py} and by strict polytope inequalities. But Sage's
+\emph{symbolic} \code{heaviside(0)} returns $1/2$ by default. That $1/2$ is used
+only in the symbolic-display path, never in the JIT-compiled numerical integrand
+(\file{propagator\_td.py:30}). The two coexist precisely because they never meet.
+\end{gotcha}
+
+\subsection{Inferring the time variable without triggering Maxima}
+
+A small but instructive helper, \code{\_infer\_time\_variable}
+(\file{propagator\_td.py:459}), recovers the symbolic $t$ from the smooth matrix.
+Once parameters are substituted, $t$ is the only free variable left in each
+entry. The naive way to find a nonzero entry would be \code{entry == 0} --- but
+that comparison routes to Maxima, which fails on entries carrying embedded Python
+\code{complex} coefficients. So the helper checks \code{entry.variables()}
+directly and only uses \code{is\_trivial\_zero()} for scalar entries. It is a tiny
+function, but it embodies a recurring theme in this subsystem: \emph{avoid the
+slow, fragile symbolic tool when a cheap structural check will do.}
+
+\section{A concrete example: the OU propagator}
+
+It is worth grounding all of this in the simplest model, the white-noise OU
+process whose free action is $S_{\mathrm{free}} \supset \tilde n(\Dt n + \mu n)$.
+There is one field, so $n_f = 1$ and every matrix is $1\times1$:
+
+\begin{itemize}
+  \item The single kernel entry is $K[\tilde n, n] = \Dt + \mu$, which
+        \code{\_to\_kernel} rewrites as $\delta' + \mu\,\delta$.
+  \item Under the Fourier convention \eqref{eq:ftconv}, $K_{\mathrm{ft}} = \ii\omega
+        + \mu$.
+  \item The propagator is $G_{\mathrm{ft}} = 1/(\ii\omega + \mu)$, with a single
+        pole at $\omega = \ii\mu$ --- which has $\mathrm{Im} > 0$ for $\mu > 0$, so
+        it is retarded.
+  \item The residue of $G_{\mathrm{ft}}$ at the pole is $1/\ii = -\ii$, so by the
+        $C_k$ convention \eqref{eq:Ck} the residue matrix is $C_0 = \ii\cdot(-\ii)
+        = 1$.
+  \item $G_{\mathrm{ft}}$ is strictly proper ($\deg P = 0 < 1 = \deg Q$), so
+        $D_\delta = 0$.
+\end{itemize}
+
+Assembling \eqref{eq:GR}: $G_R(t) = \Theta(t)\cdot 1\cdot\ee^{\ii(\ii\mu)t} =
+\Theta(t)\,\ee^{-\mu t}$ --- the textbook retarded relaxation. A two-field system
+(a density coupled to a potential, say) produces a $2\times2$ $K_{\mathrm{ft}}$
+with two poles, and a $\tilde n \leftrightarrow \delta n$ coupling that yields a
+nonzero $D_\delta$ entry --- an instantaneous $\delta(t)$ piece in $G_R$.
+
+\section{Robustness machinery and external tools}
+
+This subsystem leans almost entirely on \term{SageMath} and, through it, several
+computer-algebra back-ends. None of nauty, networkx, numba, or sympy is called
+\emph{directly} here --- though, as noted, Sage's \code{fourier\_transform} routes
+through SymPy internally. A consolidated tour of the tools, since this is where
+they all first appear:
+
+\begin{description}
+  \item[SageMath / \code{SR}] The Symbolic Ring (GiNaC/Pynac-backed) and the glue
+        that routes each operation to the right back-end. \code{matrix(ring, data)}
+        builds matrices over \code{SR}, \code{CDF}, or an exact field; matrix
+        methods used include \code{.inverse()}, \code{.det()}, \code{.apply\_map(fn)}
+        (entrywise function application), and \code{.dimensions()}.
+  \item[\code{QQ}, \code{CDF}, \code{CyclotomicField(4)}] The rationals
+        $\mathbb{Q}$, the machine-precision complex field, and $\mathbb{Q}(i)$ ---
+        the three number fields the residue paths move between.
+  \item[\code{PolynomialRing} / fraction field] $R[\omega]$ and
+        $\mathrm{Frac}(R[\omega])$; the latter reduces each inverse entry to
+        canonical irreducible $P/Q$ form when $R$ is an exact field.
+  \item[NumPy] Imported lazily inside the numerical branches; \code{np.linalg.inv}
+        / \code{np.linalg.det} for the matrix evaluations, \code{np.delete} to form
+        the minors of the cofactor adjugate, and \code{np.polyfit} for the
+        fallback pole-finder. NumPy is preferred for residues because its LU-based
+        linear algebra avoids the sum-of-rationals cancellation the symbolic path
+        suffers near poles.
+  \item[\code{cysignals}] A small Cython library (bundled with Sage) that can
+        interrupt or recover from signals raised inside native C/Cython routines.
+        Plain Python \code{try/except} cannot catch a hang or crash deep inside
+        Singular; \code{cysignals} can.
+  \item[Python \code{signal}] The POSIX signal API. \code{\_run\_with\_timeout}
+        uses \code{SIGALRM} + \code{signal.alarm} to wall-clock-bound the exact
+        inverse and the symbolic-inverse block, degrading to a plain call where
+        \code{SIGALRM} is absent.
+\end{description}
+
+The most colourful piece of robustness machinery is the \code{factor()} hazard.
+\code{build\_propagator} deliberately returns the \emph{raw}, unfactored inverse,
+because \code{factor()} can hang or segfault Singular (Sage's polynomial CAS). A
+separate, purely cosmetic helper \code{factor\_propagator}
+(\file{pipeline/\_propagator.py:366}) applies factoring only for report display,
+and it does so with \emph{two} layers of protection (\code{\_safe\_factor},
+\file{pipeline/\_propagator.py:422}):
+
+\begin{lstlisting}
+from cysignals.alarm import alarm, cancel_alarm, AlarmInterrupt
+try:
+    alarm(timeout)
+    try:
+        return e.factor()
+    finally:
+        cancel_alarm()
+except (RuntimeError, ValueError, TypeError, ArithmeticError,
+        AlarmInterrupt):
+    return e
+except BaseException as exc:
+    if exc.__class__.__name__ == 'SignalError':
+        return e
+    raise
+\end{lstlisting}
+
+The \code{alarm(timeout)} arms a timer that raises \code{AlarmInterrupt} to stop a
+runaway \code{factor()} loop, and on any failure the helper falls back to the
+unfactored entry. \code{factor\_propagator} adds a one-shot ``bail'' flag that
+permanently skips factoring after any single entry exceeds a threshold, because
+the alarm does not always interrupt Singular's native loop.
+
+\begin{gotcha}
+\textbf{The \code{cysignals} \code{SignalError} is caught by class name, not by
+\code{isinstance}.} In some Sage builds \code{SignalError} (Sage's wrapper around
+a native segfault) is \emph{not} a subclass of \code{Exception}. So both
+\code{\_safe\_factor} and \code{build\_propagator} catch \code{BaseException} and
+check \code{exc.\_\_class\_\_.\_\_name\_\_ == 'SignalError'}, re-raising everything
+else --- which is what keeps \code{KeyboardInterrupt} and \code{SystemExit} from
+being swallowed (\file{pipeline/\_propagator.py:451}, \file{:746}).
+\end{gotcha}
+
+\section{Caching}
+
+The symbolic stages of the propagator are parameter-independent, so they are
+cached to disk. \code{build\_propagator} slugifies the model name into a tag and
+opens a \code{PipelineCache} on that directory
+(\file{pipeline/\_propagator.py:547}):
+
+\begin{lstlisting}
+prop_tag = re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
+cache_dir = f"{cache_dir_root}/{prop_tag}"
+cache = PipelineCache(cache_dir)
+\end{lstlisting}
+
+\code{PipelineCache} (\file{msrjd/core/cache.py}) wraps Sage's pickling ---
+\code{save} writes a \code{.sobj} (Sage object) file, \code{load} reads it back ---
+so the cache lands at \file{saved\_theories/<tag>/propagator.sobj}. The cache has
+two staleness guards (\file{pipeline/\_propagator.py:551}): it rebuilds if the
+cached \code{nf} differs from \code{ft.\_n\_tilde} (catching a field-list edit that
+did not change the model name), and it rebuilds if the model is spatial but the
+cached propagator predates the spatial block (no \code{G\_tx\_sym}).
+
+\begin{gotcha}
+\textbf{Closures do not pickle, so the spatial \code{G\_tx} callables are attached
+\emph{after} the cache save.} For a spatial model, \code{build\_propagator} builds
+the heat-kernel propagator block and merges it into \code{prop}, but the runtime
+callables \code{G\_tx} are functions, which Sage cannot pickle. So the cache is
+saved \emph{first} (\file{pipeline/\_propagator.py:817}), with only the picklable
+symbolic data, and the \code{G\_tx} callables are rebuilt and attached afterwards
+via \code{make\_g\_tx\_callables} (\file{pipeline/\_propagator.py:830}). On a cache
+hit the same rebuild step runs. The spatial heat-kernel propagator is the subject
+of its own chapter; here it appears only at its caching seam.
+\end{gotcha}
+
+\section{Known limitations and failure modes}
+
+A short field guide to the ways this subsystem can refuse or mislead, gathered in
+one place:
+
+\begin{description}
+  \item[Higher-multiplicity (Jordan-block) poles are not handled.] A
+        multiplicity-$\ge 2$ pole produces a $\tau^k\,\ee^{-pt}$ mode that the
+        single-pole residue formula \eqref{eq:residue} cannot represent. The exact
+        path \emph{bails} on a non-squarefree denominator
+        (\file{pipeline/\_propagator.py:196}); the numerical path \emph{silently
+        leaves a zero residue} where $|Q'| < 10^{-30}$. A future version would need
+        the $m$-th-derivative residue formula \emph{and} a downstream integrator
+        that can absorb the polynomial-times-exponential modes. This is the most
+        significant known limitation.
+  \item[Non-rationalisable parameters knock out the exact path.] An irrational
+        symbolic parameter throws inside \code{\_sr\_complex\_to\_CF}; the exact
+        tier returns \code{None} and the numerical cofactor path takes over.
+  \item[Surviving free symbols give zero poles.] If a kernel symbol is
+        unsubstituted or a saddle value is missing from \code{num\_params}, the
+        characteristic polynomial has non-numeric coefficients and the root-finder
+        returns nothing --- surfaced as a warning, then an empty pole list.
+  \item[An empty pole list makes the smooth propagator identically zero.] Only
+        $D_\delta$ then contributes. \code{build\_G\_t\_matrix} warns about this
+        (\file{propagator\_td.py:271}) precisely so an unexpected
+        no-retarded-roots solve does not slip through silently.
+\end{description}
+
+\section{What you just saw}
+
+The propagator is two phases of the trace --- \texttt{[2/7]} and \texttt{[4/7]}
+--- and one object, $\Gret$, built in three movements:
+
+\begin{enumerate}
+  \item \textbf{Action to frequency domain.} Read the kernel matrix $K$ out of the
+        bilinear free action, rewrite each entry in $\delta/\delta'$ kernel form,
+        Fourier transform under $\ee^{-\ii\omega t}$, and invert to get
+        $G_{\mathrm{ft}}(\omega)$ --- with a matrix-size gate that skips symbolic
+        inversion for large matrices and defers them to the numerical stage. All of
+        this is parameter-independent and cached.
+  \item \textbf{Poles and residues.} Substitute the numeric parameters; find the
+        retarded poles ($\mathrm{Im}(\omega) > 0$) and the residue matrices $C_k =
+        \ii\,\mathrm{Res}\,G_{\mathrm{ft}}$, preferring an exact $\mathbb{Q}(i)$
+        path and falling back to a numerical cofactor path, with residues always
+        evaluated numerically to dodge catastrophic cancellation.
+  \item \textbf{Back to the time domain.} Assemble $G_R(t) = D_\delta\,\delta(t) +
+        \Theta(t)\sum_k C_k\,\ee^{\ii\omega_k t}$, and serve it one edge at a time
+        --- transposed to [physical, response] --- to the diagram integrators.
+\end{enumerate}
+
+With $\Gret$ in hand, the engine has the building block for every Feynman edge.
+The next chapters open up what is wired together with those edges: the mean-field
+saddle the parameters are evaluated at --- which is where \code{num\_params} comes
+from --- the diagram enumeration that decides \emph{which} graphs to build, and
+the loop integration that finally turns a graph of $\Gret$ edges into a number.

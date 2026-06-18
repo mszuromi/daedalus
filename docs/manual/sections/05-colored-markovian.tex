@@ -1,0 +1,902 @@
+% ---------------------------------------------------------------------
+%  Chapter 5 : Colored Noise and the Markovian Embedding
+% ---------------------------------------------------------------------
+\chapter{Colored Noise and the Markovian Embedding}\label{ch:colored-markovian}
+
+Every model in the previous two chapters drove its fields with \emph{white}
+noise --- a random force that is uncorrelated across any two distinct instants.
+White noise is the easy case, and not by accident: the temporal integrators that
+do the real work at the end of the pipeline have fast, fully \emph{analytic}
+mode-sum routines that exist precisely because the noise two-point function is a
+Dirac delta in time. The moment you ask for a noise with \emph{memory} --- a
+finite correlation time $\tau_c$, a smooth kernel like $\ee^{-|\tau|/\tau_c}$ ---
+those analytic routines no longer apply, and the pipeline is forced onto a
+generic numerical quadrature that, at one loop and beyond, either crawls or
+hangs.
+
+This chapter is about the one preprocessor that makes colored noise tractable
+anyway. It is a \term{builder-level rewrite}: before your model is ever compiled,
+it silently replaces your colored-noise term with an equivalent \emph{white}-noise
+problem by introducing one extra dynamical field --- an auxiliary
+Ornstein--Uhlenbeck (OU) process --- per noisy field. The output statistics are
+identical; the representation is larger but every integral in it is again the
+fast white-noise kind. The whole subsystem lives in one file,
+\file{pipeline/colored\_to\_markovian.py}, and this chapter walks it from the
+physics down to the exact text strings it emits.
+
+It sits in Part~II (\emph{Specifying a Model}) rather than in the
+diagram-evaluation parts because it happens entirely at authoring time: it is a
+transformation \emph{of the model spec}, run inside \code{TheoryBuilder.build()}
+before any symbolic compilation. By the time the field-theory core (Chapter~6
+onward) sees your model, the colored noise is gone and only white noise remains.
+
+\section{Motivation: why colored noise breaks the fast integrators}
+
+A noisy field $x(t)$ is driven by a random force $\xi(t)$. For a Gaussian noise,
+that force is fully characterised by its mean (zero) and its two-time
+autocovariance --- the \emph{second cumulant}:
+\begin{equation}
+  \avg{\xi(t)\,\xi(t')} \;=\; \kappa(t-t') \;=\; \kappa(\tau),
+  \qquad \tau = t - t'.
+  \label{eq:cm-secondcumulant}
+\end{equation}
+Two regimes matter here.
+
+\begin{description}
+  \item[White noise.] $\kappa(\tau) = 2D\,\delta(\tau)$. The force is
+        uncorrelated across any two distinct instants. This is what the fast
+        analytic integrators handle: a delta in time collapses one of the loop
+        integrals exactly, leaving a closed-form mode sum.
+  \item[Colored noise (single Lorentzian).] $\kappa(\tau) = c\,\ee^{-|\tau|/\tau_c}$.
+        The force ``remembers'' itself for a correlation time $\tau_c$; as
+        $\tau_c \to 0$ with $c/\tau_c$ held fixed it limits back to white. The
+        name \term{Lorentzian} is because the Fourier transform of
+        $\ee^{-|\tau|/\tau_c}$ is a Lorentzian, $\propto 1/(\omega^2 + 1/\tau_c^2)$.
+\end{description}
+
+The trouble is the smooth factor. \Daedalus's temporal integrator ---
+\code{msrjd.integration.time\_domain.final\_integral} --- cannot absorb a smooth
+$\ee^{-|\tau|/\tau_c}$ into its analytic mode-sum routines. The module docstring
+states the pain exactly (\file{pipeline/colored\_to\_markovian.py:6--10}):
+
+\begin{quote}\itshape
+\code{msrjd.integration.time\_domain.final\_integral} cannot absorb a smooth
+\code{exp(-|tau|/tauc)} factor coming from a CGF-tab \code{NoiseSourceType}
+vertex into its analytic mode-sum integrators. At \code{max\_ell >= 1} the scipy
+\code{nquad} fallback path either hangs or runs for orders of magnitude longer
+than the equivalent white-noise theory.
+\end{quote}
+
+Here \code{nquad} is SciPy's nested numerical multi-dimensional quadrature --- the
+slow generic fallback. And \code{max\_ell} is the loop-order cutoff $\ell$:
+$\ell = 0$ is tree level, $\ell \ge 1$ adds the loop corrections. So the bottom
+line is blunt: at $\ell \ge 1$ a colored theory is effectively unusable.
+
+\begin{note}
+This is purely a \emph{performance} cliff, not a correctness one. At tree level
+($\ell = 0$) a colored theory will still run through the \code{nquad} fallback
+and give the right answer. The embedding in this chapter exists so that the
+\emph{loop} corrections become affordable --- it turns an intractable
+quadrature into the same fast analytic mode sum every white-noise model uses.
+\end{note}
+
+\subsection{How a colored cumulant is declared}
+
+In \Daedalus{} a colored second cumulant is declared as a \term{CGF row} ---
+a cumulant-generating-functional term --- with \code{order=2}, a
+\code{coefficient} text (the amplitude $c$), and a \code{kernel} text (the
+$\tau$-shape). The canonical example, the OU process with a cubic restoring force
+and colored driving, declares it like this
+(\file{theories/ou\_quartic\_colored.theory.py:18}):
+
+\begin{lstlisting}
+.declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2,
+                  coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)')
+\end{lstlisting}
+
+so here $c = 2D/\tau_c$ and the kernel is $\ee^{-|\tau|/\tau_c}$ --- the full
+second cumulant is $(2D/\tau_c)\,\ee^{-|\tau|/\tau_c}$. The response legs
+\code{['xt', 'xt']} say the cumulant connects the response field \code{xt}
+(the \msrjd{} conjugate of \code{x}) to itself: it is an \emph{auto}-cumulant
+on a single field. The accompanying action text is the plain deterministic
+dynamics,
+\begin{lstlisting}
+.set_action_text('xt*((Dt+mu)*x + eps*x^3)')
+\end{lstlisting}
+--- notice there is \emph{no} noise vertex in the action text. For colored noise
+the noise lives entirely in the CGF row, not as a $-D\tilde x^2$ term in the
+action (contrast the white-noise OU quartic of Chapter~2, whose action carried
+\code{- D*xt[i]\^{}2} explicitly).
+
+\begin{defn}
+A \term{CGF row} is a declared contribution to the noise's cumulants, given as a
+4-tuple \code{(coefficient, kernel, order, response\_legs)}. \code{order=2} is the
+noise \emph{covariance}. The \code{coefficient} is the amplitude, the
+\code{kernel} is the function of the lag $\tau$; \code{response\_legs} names which
+response fields the cumulant connects. Colored noise sets a smooth kernel like
+\code{exp(-abs(tau)/tauc)}; white noise sets \code{dirac\_delta(tau)}.
+\end{defn}
+
+\section{The fix in one idea: a colored noise is a filtered white noise}
+
+There is a classic trick in stochastic dynamics. A colored noise whose
+autocovariance is a single decaying exponential is \emph{exactly} the output of a
+first-order linear filter --- an Ornstein--Uhlenbeck process --- driven by white
+noise. So instead of feeding colored noise $\xi(t)$ directly into your equation,
+you do two things:
+
+\begin{enumerate}
+  \item drive $\xi$ \emph{itself} with white noise through an OU relaxation
+        equation, and
+  \item feed the OU \emph{output} $\xi$ into your field as an ordinary linear
+        coupling.
+\end{enumerate}
+
+Your field now sees a deterministic linear coupling to a new auxiliary field, and
+the only stochastic forcing left anywhere in the system is white. The white-noise
+analytic integrators apply again. The price is one extra field (and its \msrjd{}
+response partner) per noisy field: a bigger theory, but a cheaper-to-integrate
+one. The module docstring writes the two-line system out
+(\file{pipeline/colored\_to\_markovian.py:13--23}):
+\begin{align}
+  \frac{\dd x}{\dd t}  \;&=\; f(x) \;+\; \xi,
+  \label{eq:cm-toptline}\\[2pt]
+  \frac{\dd \xi}{\dd t} \;&=\; -\frac{\xi}{\tau_c}
+        \;+\; \sqrt{\tfrac{2c}{\tau_c}}\;\eta(t),
+        \qquad \avg{\eta(t)\,\eta(t')} = \delta(t-t').
+  \label{eq:cm-bottomline}
+\end{align}
+
+Read this as a coupled pair:
+
+\begin{description}
+  \item[Top line, \eqref{eq:cm-toptline}] is \emph{your} equation, except the
+        colored force $\xi$ is no longer ``random by fiat'' --- it is now a
+        genuine dynamical field.
+  \item[Bottom line, \eqref{eq:cm-bottomline}] is the \emph{auxiliary} OU
+        equation: $\xi$ relaxes toward zero with rate $1/\tau_c$, and is itself
+        kicked by \emph{white} noise $\eta$ of unit strength, scaled by the
+        amplitude $\sqrt{2c/\tau_c}$.
+\end{description}
+
+\begin{defn}
+The \term{Ornstein--Uhlenbeck (OU) process} is the simplest mean-reverting linear
+SDE, $\dd\xi/\dd t = -\xi/\tau_c + (\text{white})$. The \term{Markovian
+embedding} is the act of enlarging the state space (adding auxiliary fields) so
+that a non-Markovian, memory-carrying, colored process becomes Markovian
+(memoryless, white-driven). The observable output field is unchanged; only the
+representation grows.
+\end{defn}
+
+\subsection{Why the OU output is exactly the Lorentzian we wanted}
+
+The reason the whole construction works is a single claim: the \emph{stationary}
+autocovariance of the OU output $\xi$ defined by \eqref{eq:cm-bottomline} is
+exactly the Lorentzian we set out to reproduce,
+\begin{equation}
+  \avg{\xi(t)\,\xi(t')} \;=\; c\,\ee^{-|t-t'|/\tau_c}.
+  \label{eq:cm-ouvariance}
+\end{equation}
+
+\emph{Derivation.} The OU SDE $\dd\xi/\dd t = -\xi/\tau_c + \sigma\eta$, with
+white $\eta$ ($\avg{\eta(t)\eta(t')} = \delta(t-t')$) and
+$\sigma = \sqrt{2c/\tau_c}$, is linear, so its stationary two-point function is
+known in closed form. The stationary \emph{variance} balances the injection rate
+$\sigma^2$ against the dissipation rate $2/\tau_c$, giving $\sigma^2 \tau_c/2$;
+the decay in the lag is governed by the relaxation rate $1/\tau_c$. Hence
+\begin{equation}
+  \avg{\xi\,\xi}(\tau)
+    \;=\; \frac{\sigma^2 \tau_c}{2}\,\ee^{-|\tau|/\tau_c}
+    \;=\; \frac{(2c/\tau_c)\,\tau_c}{2}\,\ee^{-|\tau|/\tau_c}
+    \;=\; c\,\ee^{-|\tau|/\tau_c}.
+  \label{eq:cm-ouvariance-derived}
+\end{equation}
+That last equality is exactly \eqref{eq:cm-ouvariance}. \hfill$\checkmark$
+
+The derivation also pins the white drive amplitude. In \emph{variance} terms, the
+strength of the white kick is $\sigma^2 = 2c/\tau_c$; \Daedalus{} declares white
+noise as a CGF row with kernel $\delta(\tau)$, and the coefficient of such a row
+is exactly the variance strength. So the auxiliary white-noise coefficient must be
+\begin{equation}
+  \text{aux white-noise coefficient} \;=\; \frac{2c}{\tau_c}.
+  \label{eq:cm-auxdrive}
+\end{equation}
+This $2c/\tau_c$ is precisely what the detector computes and stores as the
+\code{aux\_drive\_text}. The code builds it symbolically
+(\file{pipeline/colored\_to\_markovian.py:183}):
+
+\begin{lstlisting}
+aux_drive_expr = (SR(2) * c_expr / tauc_expr).simplify_full()
+\end{lstlisting}
+
+For the worked example $c = 2D/\tau_c$, this gives
+$2\cdot(2D/\tau_c)/\tau_c = 4D/\tau_c^2$, which the test suite pins down
+(\file{tests/test\_markovianize.py:73}):
+\code{assert info['aux\_drive\_text'] == '4*D/tauc\^{}2'}.
+
+\section{From SDE to MSR-JD action: the three structural pieces}
+
+\Daedalus{} works in the \msrjd{} (Martin--Siggia--Rose / Janssen--De~Dominicis)
+path integral. Each physical field $x$ gets a conjugate \term{response field}
+$\tilde x$ (written \code{xt} in code), and a linear equation of motion
+$(\Dt + \mu)x = (\text{forcing})$ appears in the action as the bilinear term
+$\tilde x\,[(\Dt + \mu)x - (\text{forcing})]$. The preprocessor's edits are
+nothing more than the \msrjd{} encoding of the two SDE lines
+\eqref{eq:cm-toptline}--\eqref{eq:cm-bottomline}. There are exactly three
+structural pieces, plus two text edits to the action.
+
+\paragraph{Piece 1 --- the auxiliary field.} For each noisy field, inject one new
+physical field $\xi$ (code name \code{xi}). \Daedalus's authoring API auto-creates
+its conjugate response \code{xit} and its saddle parameter \code{xistar}, just as
+for any user-declared field.
+
+\paragraph{Piece 2 --- the auxiliary OU drift equation.} The OU line
+\eqref{eq:cm-bottomline}, stripped of its white drive, is the deterministic
+operator $(\Dt + 1/\tau_c)\xi = 0$. The code injects this equation directly. In
+the action it becomes a kinetic term contracted with the aux response field
+\code{xit} (\file{pipeline/colored\_to\_markovian.py:431--435}):
+\begin{lstlisting}[style=console]
+    + xit*((Dt + 1/tauc)*xi)
+\end{lstlisting}
+
+\paragraph{Piece 3 --- the auxiliary white CGF row.} The white drive
+$\sqrt{2c/\tau_c}\,\eta$ does \emph{not} appear in the action text. It is
+represented by a \emph{new white CGF row} on the aux response legs --- the
+$2c/\tau_c$ coefficient of \eqref{eq:cm-auxdrive} with kernel $\delta(\tau)$ ---
+which is how \Daedalus{} injects Gaussian white noise everywhere. This is the
+\code{new\_cgf\_rows} construction at
+\file{pipeline/colored\_to\_markovian.py:397--405}.
+
+That leaves one text edit to wire the auxiliary output into your dynamics:
+
+\paragraph{Edit --- couple the user's field to the aux output.} The colored
+force $\xi$ enters the SDE as $\dd x/\dd t = f(x) + \xi$, i.e. moving everything to
+one side, $(\Dt + \mu)x + \varepsilon x^3 - \xi = 0$. So the code inserts
+\code{- xi} inside your parenthesised dynamics block
+(\file{pipeline/colored\_to\_markovian.py:472}):
+\begin{lstlisting}[style=console]
+    xt*((Dt+mu)*x + eps*x^3)   ->   xt*((Dt+mu)*x + eps*x^3 - xi)
+\end{lstlisting}
+
+Putting the three pieces together, the auxiliary field, the aux OU drift
+equation, and the aux white CGF row jointly reproduce the bottom SDE line
+$\dd\xi/\dd t = -\xi/\tau_c + \sqrt{2c/\tau_c}\,\eta$; the \code{- xi} coupling
+plus the appended $\tilde\xi\,(\Dt + 1/\tau_c)\,\xi$ kinetic term wire $\xi$ into
+the top line. The model that emerges is a pure white-noise theory.
+
+\begin{note}
+Note the asymmetry between the two text edits. The \code{- xi} \emph{coupling} is
+inserted \emph{inside} an existing parenthesised block (it must land next to the
+right field's dynamics), whereas the aux \emph{kinetic} term is simply
+\emph{appended} to the end of the action string with a leading \code{+}. Appending
+is safe because the kinetic term is self-contained; the coupling insertion is the
+delicate one, and \S\ref{sec:cm-injectcoupling} is where its fragility lives.
+\end{note}
+
+\section{The cross-correlated multi-field case}
+
+The embedding generalises cleanly to several fields whose colored forces are
+\emph{cross}-correlated. For two fields $x, y$ with
+\begin{align}
+  \avg{\xi_x\,\xi_x}(\tau) &= c_{xx}\,\ee^{-|\tau|/\tau_c}, &
+  \avg{\xi_y\,\xi_y}(\tau) &= c_{yy}\,\ee^{-|\tau|/\tau_c}, &
+  \avg{\xi_x\,\xi_y}(\tau) &= c_{xy}\,\ee^{-|\tau|/\tau_c},
+  \label{eq:cm-cross}
+\end{align}
+the embedding gives $x$ its own auxiliary OU process $\xi_x$ (code \code{xi}) and
+$y$ its own $\xi_y$ (code \code{yi}), each driven by white noise, plus a single
+\emph{cross} white CGF row between the two aux response legs. The shared
+relaxation rate $1/\tau_c$ is what makes this work: because all three covariances
+in \eqref{eq:cm-cross} decay at the same rate, the aux white covariance matrix
+between $(\eta_x, \eta_y)$ factorises cleanly and reproduces the desired colored
+cross-covariance.
+
+The shipped two-field example
+(\file{theories/ou\_quartic\_two\_dim\_color\_corr.theory.py:25--27}) declares
+exactly this:
+\begin{lstlisting}
+.declare_cgf_term('Cxx', response_legs=['xt','xt'], order=2,
+                  coefficient='D1/tauc',           kernel='exp(-abs(tau)/tauc)')
+.declare_cgf_term('Cyy', response_legs=['yt','yt'], order=2,
+                  coefficient='D2/tauc',           kernel='exp(-abs(tau)/tauc)')
+.declare_cgf_term('Cxy', response_legs=['xt','yt'], order=2,
+                  coefficient='rho*sqrt(D1*D2)/tauc', kernel='exp(-abs(tau)/tauc)')
+\end{lstlisting}
+The three colored rows \code{Cxx}, \code{Cyy}, \code{Cxy} become three white
+aux rows: two auto rows on \code{[xit,xit]} and \code{[yit,yit]}, plus one cross
+row on \code{[xit,yit]}. The docstring lays this out at
+\file{pipeline/colored\_to\_markovian.py:33--39}.
+
+\section{The kernel matcher: \texttt{detect\_lorentzian}}\label{sec:cm-detect}
+
+Everything above is the physics. The rest of the chapter is the code that
+implements it, starting with the function that decides whether a given CGF row
+\emph{is} a single Lorentzian and, if so, extracts $\tau_c$, the amplitude $c$,
+and the aux drive $2c/\tau_c$. That function is \code{detect\_lorentzian}
+(\file{pipeline/colored\_to\_markovian.py:79}):
+
+\begin{lstlisting}
+def detect_lorentzian(kernel_text: str,
+                      coefficient_text: str,
+                      declared_params: list[str]) -> Optional[dict]:
+\end{lstlisting}
+
+It takes the row's \code{kernel} string (e.g. \code{'exp(-abs(tau)/tauc)'}), its
+\code{coefficient} string (e.g. \code{'2*D/tauc'}), and the list of declared
+parameter names (so it can build a namespace in which \code{tauc}, \code{D}, etc.
+are known symbols). It returns a dict describing the embedding on a match, or
+\code{None} if the kernel does not cleanly match the single-Lorentzian template.
+
+This is the one part of the subsystem that does real symbolic algebra, so before
+reading the steps we pause on the single library it leans on.
+
+\begin{defn}
+\term{SageMath} is a large open-source mathematics system built on top of Python;
+it bundles many math libraries behind one Python-friendly API. The piece this
+module uses is Sage's \term{Symbolic Ring}, abbreviated \code{SR} --- a
+``calculator'' that works with algebraic expressions containing \emph{named
+variables} (like \code{tauc}, \code{D}, \code{tau}) rather than just numbers. An
+element of \code{SR} is a symbolic expression, e.g. \code{exp(-abs(tau)/tauc)},
+that you can differentiate, simplify, substitute into, and pretty-print
+symbolically. This is the same \emph{idea} as \code{sympy} (which \Daedalus{}
+uses elsewhere), but Sage's \code{SR} is a separate, more powerful engine; the two
+are \emph{not} interchangeable objects.
+\end{defn}
+
+The import line is (\file{pipeline/colored\_to\_markovian.py:70--73}):
+
+\begin{lstlisting}
+from sage.all import (
+    SR, sage_eval, exp, abs_symbolic, simplify,
+    sqrt as sage_sqrt,
+)
+\end{lstlisting}
+
+What each name is, and exactly how this file uses it:
+
+\begin{description}
+  \item[\code{SR}] the Symbolic Ring object. \code{SR.var('name')} creates (and
+        globally registers) a symbolic variable; \code{SR(x)} \emph{coerces} an
+        arbitrary object $x$ into a symbolic expression so that symbolic methods
+        can be called on it. Both forms appear throughout the file.
+  \item[\code{sage\_eval}] Sage's \emph{safe, namespaced} string-to-expression
+        evaluator. You hand it a string of Sage syntax plus a dictionary mapping
+        names to Sage objects, and it parses and evaluates the string \emph{in
+        that namespace only}. It is like Python's built-in \code{eval()} but tuned
+        to Sage syntax (\code{\^{}} means power) and scoped to the dict you pass.
+  \item[\code{exp}] Sage's symbolic exponential. It plays two roles: it is put
+        \emph{into} the evaluation namespace so the kernel string's \code{exp(...)}
+        resolves to it, and it is \emph{compared against} to recognise the kernel's
+        top-level operation.
+  \item[\code{abs\_symbolic}] Sage's symbolic absolute value. Plain Python
+        \code{abs} would try to evaluate numerically; \code{abs\_symbolic} keeps
+        $|\tau|$ as an \emph{unevaluated} symbolic object so the matcher can reason
+        about it.
+  \item[\code{simplify}, \code{sqrt as sage\_sqrt}] imported but \emph{not} called
+        directly in this file. The code uses the more aggressive \emph{method}
+        \code{.simplify\_full()} instead of the free \code{simplify}, and the
+        \code{sqrt} appearing in coefficient strings is resolved by
+        \code{sage\_eval} against Sage's default namespace rather than via this
+        alias.
+\end{description}
+
+The matcher also calls a handful of methods on \code{SR} expressions:
+\code{.operator()} returns the outermost operation node (for a Lorentzian that
+must be \code{exp}); \code{.operands()} returns the arguments of that operation
+($\exp(z)$ has exactly one operand, $z$); \code{.simplify\_full()} returns a
+maximally-simplified copy; and \code{.has(sub)} is a boolean test for whether an
+expression contains a given sub-expression anywhere in its tree.
+
+\subsection{Step by step}
+
+\begin{enumerate}
+  \item \textbf{Empty guard} (\file{pipeline/colored\_to\_markovian.py:110}). If
+        \code{kernel\_text} is falsy, return \code{None}.
+
+  \item \textbf{Build the evaluation namespace}
+        (\file{pipeline/colored\_to\_markovian.py:128--135}). Create a
+        \emph{fresh local} symbol \code{tau\_sym = SR.var('\_lorentz\_tau')} but
+        bind it to the \emph{name} \code{'tau'} in the namespace, so the kernel
+        string's \code{tau} resolves to it. Add \code{exp} and \code{abs ->
+        abs\_symbolic}, then add every declared parameter as a generic
+        \code{SR.var(pname)} via \code{setdefault} (so a parameter the user
+        already declared wins, and any other name is still defined):
+\begin{lstlisting}
+tau_sym = SR.var('_lorentz_tau')
+eval_ns: dict = {
+    'tau': tau_sym,
+    'exp': exp,
+    'abs': abs_symbolic,
+}
+for pname in declared_params:
+    eval_ns.setdefault(pname, SR.var(pname))
+\end{lstlisting}
+
+  \item \textbf{Parse the kernel}
+        (\file{pipeline/colored\_to\_markovian.py:137--141}).
+        \code{K = sage\_eval(kernel\_text, eval\_ns)} inside a \code{try/except}
+        that returns \code{None} on any parse error, then \code{K = SR(K)} to
+        guarantee a symbolic object.
+
+  \item \textbf{Top-level must be \texttt{exp}}
+        (\file{pipeline/colored\_to\_markovian.py:143--148}). If
+        \code{K.operator() != exp}, return \code{None}. Then read
+        \code{operands = K.operands()}, require exactly one, take
+        \code{arg = SR(operands[0])} (the exponent), and build
+        \code{abs\_tau = abs\_symbolic(tau\_sym)}.
+
+  \item \textbf{Decompose} $\mathtt{arg} = -|\tau|/\tau_c$
+        (\file{pipeline/colored\_to\_markovian.py:154--161}). Compute
+        \code{r = (arg / abs\_tau).simplify\_full()}. For a true Lorentzian, $r$
+        should be $-1/\tau_c$ --- which is to say \emph{abs-free} and
+        \emph{tau-free}. The code rejects (\code{return None}) if
+        \code{r.has(abs\_tau)} or \code{r.has(tau\_sym)}. This single test is what
+        distinguishes the three cases below.
+
+  \item \textbf{Compute and validate} $\tau_c$
+        (\file{pipeline/colored\_to\_markovian.py:163--170}).
+        \code{tauc\_expr = (SR(-1) / r).simplify\_full()}, then reject if it still
+        references \code{tau\_sym} or \code{abs\_tau}.
+
+  \item \textbf{Parse the amplitude}
+        (\file{pipeline/colored\_to\_markovian.py:174--180}).
+        \code{c\_expr = sage\_eval(coefficient\_text or '0', eval\_ns)}, coerced
+        and \code{.simplify\_full()}-ed; \code{return None} on failure. The
+        \code{or '0'} guards an empty coefficient string. This is the $c$ in
+        $c\,\ee^{-|\tau|/\tau_c}$.
+
+  \item \textbf{Compute the aux drive}
+        (\file{pipeline/colored\_to\_markovian.py:183}). The
+        \code{aux\_drive\_expr = (SR(2) * c\_expr / tauc\_expr).simplify\_full()}
+        from \eqref{eq:cm-auxdrive}.
+
+  \item \textbf{Return the embedding dict}
+        (\file{pipeline/colored\_to\_markovian.py:185--192}) with both the SR
+        expressions and their string renderings (via \code{\_sr\_to\_text},
+        \S\ref{sec:cm-srtotext}): \code{tauc\_expr}, \code{tauc\_text},
+        \code{amplitude\_expr}, \code{amplitude\_text}, \code{aux\_drive\_expr},
+        \code{aux\_drive\_text}.
+\end{enumerate}
+
+The decomposition in step~5 is the whole matcher in miniature. Three kernels and
+what $r = \mathtt{arg}/|\tau|$ becomes for each:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+kernel & $r = \mathtt{arg}/|\tau|$ & verdict\\
+\midrule
+$\ee^{-|\tau|/\tau_c}$  & $-1/\tau_c$ (abs-free, tau-free)        & \textbf{match} \\
+$\ee^{-\tau/\tau_c}$    & $-\tau/(\tau_c\,|\tau|)$ (still has $\tau$) & reject \\
+$\ee^{-\tau^2/(\cdots)}$ & still has $\tau$                       & reject \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The middle row is the physically important rejection: a bare exponential
+$\ee^{-\tau/\tau_c}$ without the absolute value is \emph{asymmetric} in $\tau$,
+and a true autocovariance must be symmetric (it depends on $\tau = t-t'$ only
+through $|\tau|$). The matcher correctly refuses it. The test suite checks all
+three verdicts directly, including the Gaussian and the bare-exponential
+rejections (\file{tests/test\_markovianize.py}, the
+\code{test\_lorentzian\_kernel\_detection} case).
+
+\begin{gotcha}
+\textbf{The \texttt{tau} pollution guard.} Step~2 deliberately mints a fresh
+\code{SR.var('\_lorentz\_tau')} instead of reusing the global \code{tau}. The long
+comment at \file{pipeline/colored\_to\_markovian.py:116--127} explains why. Other
+parts of the pipeline routinely register a global \code{tau} symbol carrying a
+\code{domain='positive'} assumption (for instance an exponential-synapse time
+constant). If $\tau > 0$ is assumed globally, then \code{abs(tau)} collapses to
+\code{tau}, and the matcher would \emph{wrongly accept} an asymmetric kernel like
+$\ee^{-\tau/\tau_c}$ --- precisely the case it is supposed to reject. Using a name
+the caller never declares positive keeps the matcher robust against
+test-ordering pollution. This is subtle and order-dependent: a regression would
+only surface if a positive \code{tau} had been registered earlier in the same
+Sage session.
+\end{gotcha}
+
+\begin{gotcha}
+\textbf{Positivity of $\tau_c$ is documented but not enforced.} The docstring
+says $\tau_c$ ``must be POSITIVE for a physical Lorentzian'' and that the matcher
+requires the decay rate to ``evaluate to a strictly positive expression''
+(\file{pipeline/colored\_to\_markovian.py:91--93, 163--164}), but the code only
+ever checks that $\tau_c$ is abs-free and tau-free --- never that it is
+numerically positive. A symbolic $\tau_c$ that happens to be negative for some
+parameter values would still be accepted. Keep your $\tau_c$ a genuinely positive
+parameter.
+\end{gotcha}
+
+\section{The builder transform: \texttt{markovianize\_spec}}\label{sec:cm-transform}
+
+The detector is called from one place: \code{markovianize\_spec}
+(\file{pipeline/colored\_to\_markovian.py:198}), the entry point that actually
+rewrites the builder. Its signature is deceptively simple:
+
+\begin{lstlisting}
+def markovianize_spec(builder) -> None:
+\end{lstlisting}
+
+It takes a \code{TheoryBuilder} (in practice a \code{TemporalTheoryBuilder}) and
+returns \emph{nothing}. All of its effects are in-place mutations: it reads
+\code{builder.\_cgf\_terms}, \code{builder.\_markovianize\_default},
+\code{builder.parameters}, \code{builder.physical\_fields}, and
+\code{builder.\_action\_text}, and it writes them back --- crucially, by calling
+the very same public authoring methods a user would call
+(\code{builder.physical\_field(...)}, \code{builder.equation(...)}) plus direct
+overwrites of \code{\_cgf\_terms} and \code{\_action\_text}.
+
+\begin{note}
+\textbf{Idempotency.} Re-running \code{markovianize\_spec} on an
+already-markovianized builder is a no-op: no remaining row matches, because the
+injected aux rows carry \code{markovianize=False} and the original colored rows
+are gone. This safety property rests entirely on that one flag
+(\file{pipeline/colored\_to\_markovian.py:404}); if it were dropped, a second
+\code{build()} pass could try to re-embed the white aux rows.
+\end{note}
+
+\subsection{Step by step}
+
+\begin{enumerate}
+  \item \textbf{Snapshot \& empty guard}
+        (\file{pipeline/colored\_to\_markovian.py:223--225}). Copy the rows;
+        return immediately if there are none.
+
+  \item \textbf{Builder-level gating}
+        (\file{pipeline/colored\_to\_markovian.py:227--230}). Read
+        \code{builder\_default = \_markovianize\_default} (default \code{True}).
+        Compute \code{any\_explicit\_on = any(t.get('markovianize') is True ...)}.
+        If the default is OFF \emph{and} no row explicitly opts in, return. This
+        is the \code{.markovianize(False)} opt-out path.
+
+  \item \textbf{Collect declared parameter names}
+        (\file{pipeline/colored\_to\_markovian.py:232}) for the matcher.
+
+  \item \textbf{Classify each row}
+        (\file{pipeline/colored\_to\_markovian.py:240--276}) into
+        \code{matched\_rows} / \code{passthrough\_rows}:
+        \begin{itemize}
+          \item \code{markovianize is False} $\to$ passthrough.
+          \item \code{order != 2} $\to$ passthrough (the colored embedding is a
+                \emph{second}-cumulant story).
+          \item otherwise run \code{detect\_lorentzian(...)}.
+          \item on \textbf{no match}: if the row had \code{markovianize is True}
+                (an \emph{explicit} assertion), \textbf{raise \code{ValueError}}
+                telling the user their kernel doesn't match the template;
+                otherwise pass through silently.
+          \item on \textbf{match}: append \code{\{'term': term, 'info': info\}} to
+                \code{matched\_rows}.
+        \end{itemize}
+
+  \item \textbf{Early out}
+        (\file{pipeline/colored\_to\_markovian.py:278--279}). If nothing matched,
+        return.
+
+  \item \textbf{Gather response-leg fields}
+        (\file{pipeline/colored\_to\_markovian.py:292--298}). Read each matched
+        row's \code{response\_legs}; if absent, broadcast its
+        \code{response\_field} to a 2-list; collect all leg names into
+        \code{source\_field\_names}.
+
+  \item \textbf{Invert the response$\to$natural map}
+        (\file{pipeline/colored\_to\_markovian.py:303--317}). For each response
+        field name \code{rname} (e.g. \code{'xt'}), find the physical field whose
+        auto-response equals it by testing \code{f'\{nat\}t' == rname} (recall
+        \code{physical\_field('x')} auto-creates the response \code{xt}); store
+        \code{response\_to\_natural[rname] = nat} (e.g. \code{'x'}). If none is
+        found, store \code{None} --- that row will fall back to scipy because it
+        cannot be embedded.
+
+  \item \textbf{Single-$\tau_c$ enforcement}
+        (\file{pipeline/colored\_to\_markovian.py:323--334}). Collect the set of
+        distinct \code{tauc\_text} strings across matched rows. If there is more
+        than one, \textbf{raise \code{NotImplementedError}} --- v1 supports a
+        single shared $\tau_c$. Else take the one $\tau_c$.
+
+  \item \textbf{Assign aux field names}
+        (\file{pipeline/colored\_to\_markovian.py:339--352}). For each source
+        natural name, in sorted order for determinism, call
+        \code{\_pick\_aux\_field\_name(...)} (\S\ref{sec:cm-pickname}) to get a
+        collision-safe aux name (\code{x -> xi}), record it, and \emph{reserve} it
+        against later collisions in the same pass. If the map ends up empty,
+        return.
+
+  \item \textbf{Inject aux physical fields}
+        (\file{pipeline/colored\_to\_markovian.py:355--360}). For each
+        \code{(source\_nat, aux\_nat)}, call
+        \code{builder.physical\_field(aux\_nat, indexed=True, description=...)}.
+        This is the standard authoring method --- it auto-creates the conjugate
+        response \code{<aux\_nat>t} and the saddle parameter
+        \code{<aux\_nat>star}.
+
+  \item \textbf{Inject aux OU drift equations}
+        (\file{pipeline/colored\_to\_markovian.py:363--367}). For each aux field,
+        \code{builder.equation(lhs=f'(Dt + 1/\{tauc\_text\}) * \{aux\_nat\}',
+        rhs='0')} --- the deterministic part of the OU process,
+        $(\Dt + 1/\tau_c)\xi = 0$.
+
+  \item \textbf{Build replacement white CGF rows}
+        (\file{pipeline/colored\_to\_markovian.py:370--405}). For each matched
+        row, recover its two response legs, map them to natural names
+        \code{nat\_a}, \code{nat\_b}, derive the aux response names
+        \code{aux\_resp\_a}, \code{aux\_resp\_b}, and emit one white row:
+\begin{lstlisting}
+{
+    'name':           f'{term["name"]}_markov_aux',
+    'response_field': None,
+    'response_legs':  [aux_resp_a, aux_resp_b],
+    'order':          order,
+    'coefficient':    info['aux_drive_text'],   # 2c / tauc
+    'kernel':         'dirac_delta(tau)',        # white
+    'markovianize':   False,                     # don't re-process
+}
+\end{lstlisting}
+        For an auto-cumulant \code{[xt, xt]} both aux legs are \code{xit} (one
+        row). For a cross-cumulant \code{[xt, yt]} the legs are \code{[xit, yit]}
+        (the cross row); the auto rows \code{Cxx}, \code{Cyy} separately produce
+        \code{[xit,xit]} and \code{[yit,yit]}.
+
+  \item \textbf{Swap the CGF list}
+        (\file{pipeline/colored\_to\_markovian.py:408}).
+        \code{builder.\_cgf\_terms = passthrough\_rows + new\_cgf\_rows} --- the
+        colored rows are gone, replaced by white aux rows; untouched rows are
+        preserved.
+
+  \item \textbf{Augment the action text}
+        (\file{pipeline/colored\_to\_markovian.py:424--436}). For each source
+        field, call \code{\_inject\_aux\_coupling(action\_text, resp\_field,
+        aux\_nat)} with \code{resp\_field = f'\{source\_nat\}t'} to insert
+        \code{- xi} inside the user's \code{xt*(...)} block. Then for each aux
+        field, append \code{+ \{aux\_resp\}*((Dt + 1/\{tauc\_text\})*\{aux\_nat\})}
+        --- the OU kinetic term. Write back to \code{builder.\_action\_text}.
+
+  \item \textbf{Record diagnostics}
+        (\file{pipeline/colored\_to\_markovian.py:439--443}). Set
+        \code{builder.\_markovianize\_applied} to a small dict recording the aux
+        field names, the matched row names, and the shared \code{tauc\_text}.
+\end{enumerate}
+
+\subsection{Where it is wired into \texttt{build()}}
+
+The transform is invoked from exactly one place,
+\file{pipeline/theory.py:1735--1737}, inside \code{build()}:
+
+\begin{lstlisting}
+if self._cgf_terms:
+    from pipeline.colored_to_markovian import markovianize_spec
+    markovianize_spec(self)
+\end{lstlisting}
+
+This call is deliberately placed \emph{before} \code{self.\_compile\_text\_declarations()}
+(\file{pipeline/theory.py:1742}). Ordering is the whole point: by the time the
+downstream compiler turns your text into lambdas, it only ever sees the augmented,
+white-noise spec. The colored row never reaches the compiler.
+
+\begin{note}
+The two gating knobs you can reach as a user are: \code{.markovianize(False)} on
+the builder (turns the whole transform OFF), and \code{markovianize=False} (or
+\code{=True}) as a keyword on an individual \code{declare\_cgf\_term} call.
+\code{False} skips a row; \code{True} asserts ``this IS a Lorentzian --- fail if
+you disagree.'' The default (\code{None}/\code{'auto'}) means ``match if you can,
+otherwise pass through silently.'' The opt-out path is exercised directly by the
+test suite, which checks that \code{.markovianize(False)} leaves the original
+colored row in place and injects no auxiliary field
+(\file{tests/test\_markovianize.py}, the
+\code{test\_markovianize\_opt\_out\_keeps\_colored\_row} case).
+\end{note}
+
+\section{The two helpers}
+
+\subsection{\texttt{\_pick\_aux\_field\_name} --- collision-safe naming}
+\label{sec:cm-pickname}
+
+\code{\_pick\_aux\_field\_name(source\_nat, taken, additional\_taken=())}
+(\file{pipeline/colored\_to\_markovian.py:449}) picks a name for the auxiliary
+field that will not clash with anything already in the model. It unions
+\code{taken} with \code{additional\_taken}, then tries the natural candidate
+\code{f'\{source\_nat\}i'} (so \code{x -> xi}, \code{y -> yi}); if that is taken it
+tries \code{f'xi\_\{source\_nat\}'}; and failing that it loops
+\code{f'xi\_\{source\_nat\}\_\{n\}'} for $n = 2, 3, \dots$, which always terminates
+because the integer suffix grows without bound.
+
+\subsection{\texttt{\_inject\_aux\_coupling} --- action-text surgery}
+\label{sec:cm-injectcoupling}
+
+\code{\_inject\_aux\_coupling(action\_text, resp\_field, aux\_natural)}
+(\file{pipeline/colored\_to\_markovian.py:472}) is the one piece of literal
+string editing. It inserts \code{- <aux>} inside the parenthesised block that
+follows \code{<resp\_field>*(} in the action text, or returns the text unchanged
+if that pattern is not found. It is the only place the standard-library
+\code{re} (regular expressions) module is used.
+
+\begin{defn}
+\code{re} is Python's built-in regular-expression module: it matches text
+patterns. A \term{regular expression} is a small pattern language --- \code{\textbackslash{}b}
+means ``word boundary,'' \code{\textbackslash{}s*} means ``zero or more whitespace characters,''
+and \code{re.escape(s)} quotes any special characters in \code{s} so they match
+literally.
+\end{defn}
+
+The function works in three moves
+(\file{pipeline/colored\_to\_markovian.py:486--508}):
+\begin{enumerate}
+  \item Compile the pattern (word boundary, the field token, optional whitespace,
+        \code{*}, optional whitespace, \code{(}), with \code{re.escape} quoting the
+        field name:
+\begin{lstlisting}
+import re
+pattern = re.compile(
+    rf'\b{re.escape(resp_field)}\s*\*\s*\(', flags=0)
+m = pattern.search(action_text)
+\end{lstlisting}
+  \item \code{.search(...)} for the first occurrence; if there is none, return the
+        text unchanged.
+  \item From the match end, \code{start = m.end() - 1} is the index of the
+        \code{(}. Walk forward with a \code{depth} counter --- \code{+1} on
+        \code{(}, \code{-1} on \code{)} --- until \code{depth} returns to $0$; that
+        is the \emph{matching} close paren. Insert \code{f' - \{aux\_natural\}'}
+        just before it.
+\end{enumerate}
+Regex only \emph{locates} the insertion point; the brace matching is a manual
+depth counter, because regular expressions cannot reliably match balanced
+parentheses. The function edits only the \emph{first} \code{<resp\_field>*(}
+occurrence per call; \code{markovianize\_spec} calls it once per source field.
+
+\begin{gotcha}
+\textbf{Action-text surgery is fragile by design.} \code{\_inject\_aux\_coupling}
+only handles the canonical \code{<rt>*(...)} layout. If your action is written in
+a more baroque form, the insertion silently no-ops and the \code{- xi} coupling is
+simply \emph{missing} --- you get a silently \emph{wrong} theory, not an error.
+There is no validation that the coupling actually landed. This is the most
+surprising failure mode in the subsystem. The remedy the docstring prescribes
+(\file{pipeline/colored\_to\_markovian.py:418--423, 481--485}) is to opt out with
+\code{.markovianize(False)} and hand-roll the embedding yourself.
+\end{gotcha}
+
+\subsection{\texttt{\_sr\_to\_text} --- symbolic back to re-parseable string}
+\label{sec:cm-srtotext}
+
+\code{\_sr\_to\_text(expr)} (\file{pipeline/colored\_to\_markovian.py:511}) is a
+one-liner: \code{return str(SR(expr))}. The default Sage string form uses
+\code{\^{}} for power and function names like \code{sqrt}, which is exactly the
+syntax that \code{pipeline.theory\_compiler.\_CGFKernelCallable} re-evaluates
+later (\file{pipeline/colored\_to\_markovian.py:517--519}). So the round-trip
+symbolic~$\to$~text~$\to$~symbolic is lossless: every coefficient the detector
+computes can be written into a new CGF row and re-parsed downstream without loss.
+
+\section{Worked example: \texttt{ou\_quartic\_colored} before and after}
+
+Concretely, take the shipped \code{ou\_quartic\_colored} theory and watch the
+builder state change across \code{markovianize\_spec}.
+
+\paragraph{Before.} Just before the call, the builder holds:
+\begin{itemize}
+  \item \textbf{physical fields:} \code{x} (internal \code{dx}, response
+        \code{xt}).
+  \item \textbf{one CGF row:}
+        \code{\{'name': 'CXX', 'response\_legs': ['xt','xt'], 'order': 2,
+        'coefficient': '2*D/tauc', 'kernel': 'exp(-abs(tau)/tauc)',
+        'markovianize': None\}}.
+  \item \textbf{action text:} \code{'xt*((Dt+mu)*x + eps*x\^{}3)'}.
+  \item \code{\_markovianize\_default}: \code{True}.
+\end{itemize}
+
+\paragraph{Detection.} \code{detect\_lorentzian('exp(-abs(tau)/tauc)', '2*D/tauc',
+[...])} returns \code{\{'tauc\_text': 'tauc', 'amplitude\_text': '2*D/tauc',
+'aux\_drive\_text': '4*D/tauc\^{}2', ...\}}. The test suite pins both
+\code{tauc\_text == 'tauc'} and \code{aux\_drive\_text == '4*D/tauc\^{}2'}
+(\file{tests/test\_markovianize.py:71--73}).
+
+\paragraph{After.} The builder now holds:
+\begin{itemize}
+  \item \textbf{physical fields:} \code{['dx', 'dxi']} --- the auxiliary \code{xi}
+        (internal \code{dxi}, auto-response \code{xit}, auto-saddle \code{xistar})
+        was added. The test asserts \code{phys\_names == ['dx', 'dxi']}
+        (\file{tests/test\_markovianize.py:116}).
+  \item \textbf{equations:} the user's $(\Dt+\mu)x = -\varepsilon x^3$ \emph{plus}
+        the new aux drift $(\Dt + 1/\tau_c)\xi = 0$ --- two DAE equations.
+  \item \textbf{one CGF row}, the colored \code{CXX} replaced by
+        \code{\{'name': 'CXX\_markov\_aux', 'response\_legs': ['xit','xit'],
+        'order': 2, 'coefficient': '4*D/tauc\^{}2', 'kernel': 'dirac\_delta(tau)',
+        'markovianize': False\}}. The test confirms the row name ends in
+        \code{\_markov\_aux} and the resolved legs are \code{['xit','xit']}
+        (\file{tests/test\_markovianize.py:130, 132}).
+  \item \textbf{action text:}
+        \code{'xt*((Dt+mu)*x + eps*x\^{}3 - xi) + xit*((Dt + 1/tauc)*xi)'}.
+\end{itemize}
+
+\paragraph{Downstream.} \code{make\_correlated\_noises\_block} turns the white aux
+row into a \code{model['correlated\_noises']} entry whose order-2 kernel callable
+is \code{\_CGFKernelCallable('4*D/tauc\^{}2', 'dirac\_delta(tau)', 2)}. The diagram
+engine attaches it to the \code{xit}--\code{xit} noise vertex. Because the kernel
+is now $\delta(\tau)$, the fast white-noise analytic integrators run --- which was
+the entire goal.
+
+\subsection{The tree-level analytic cross-check}
+
+The payoff is checkable in closed form. With $\varepsilon = 0$ (the free theory),
+\code{compute\_cumulants(model, k=2, max\_ell=0, ...)} on the markovianized
+\code{ou\_quartic\_colored} must return the analytic colored-OU equal-time
+variance
+\begin{equation}
+  C(0) \;=\; \frac{2D}{\mu\,(\mu\,\tau_c + 1)},
+  \label{eq:cm-treevariance}
+\end{equation}
+the simple-pole result the test pins down
+(\file{tests/test\_markovianize.py}, the
+\code{test\_colored\_ou\_tree\_level\_matches\_analytic} case, which runs at
+$\mu = 0.1,\ \tau_c = 1,\ D = 1$). That the embedded white-noise model reproduces
+\eqref{eq:cm-treevariance} is direct confirmation that the OU filter recovers the
+original colored statistics.
+
+\section{Limitations and how to live with them}
+
+The v1 embedding is deliberately the minimum that unblocks the working
+OU-colored theories. Its boundaries are worth knowing precisely.
+
+\begin{description}
+  \item[Single Lorentzian only.] Only $c\,\ee^{-|\tau|/\tau_c}$ matches. Gaussian
+        kernels, the bare-exponential $\ee^{-\tau/\tau_c}$ (asymmetric),
+        double-exponential, oscillatory, and polynomially-modulated kernels all
+        fail the matcher and pass through to the slow scipy fallback. The future
+        templates are enumerated in the docstring
+        (\file{pipeline/colored\_to\_markovian.py:51--64}).
+
+  \item[Order-2 only.] Only second cumulants are embedded; an \code{order != 2}
+        row is passed through silently
+        (\file{pipeline/colored\_to\_markovian.py:250--252}). A colored
+        \emph{third} cumulant would hit the slow path.
+
+  \item[Single $\tau_c$.] If matched rows carry \emph{different} $\tau_c$
+        expressions, v1 raises \code{NotImplementedError}
+        (\file{pipeline/colored\_to\_markovian.py:323--333}). All shipped examples
+        use one shared $\tau_c$.
+
+  \item[The \texorpdfstring{$\mu = 1/\tau_c$}{mu = 1/tauc} double pole.] This is
+        the constraint most likely to bite. See the dedicated box below.
+\end{description}
+
+\begin{gotcha}
+\textbf{Keep $\mu \neq 1/\tau_c$.} The free ($\ell = 0$) two-point function of the
+embedded \emph{user} field is the convolution of the user-field propagator
+$1/(\ii\omega + \mu)$ with the OU output spectrum $\propto 1/(\omega^2 +
+1/\tau_c^2)$. In the frequency-domain residue calculus this product has poles at
+$\omega = \ii\mu$ and $\omega = \ii/\tau_c$, and the analytic mode-sum integrator
+computes residues \emph{assuming these poles are simple} (multiplicity~1). When
+$\mu = 1/\tau_c$ exactly, the two poles \emph{collide} into a single double pole,
+and the simple-pole residue infrastructure cannot form the multiplicity-2
+residue. The closed-form variance \eqref{eq:cm-treevariance} is itself the
+simple-pole result; at $\mu = 1/\tau_c$ it is the limit of a $0/0$. This is a
+\emph{downstream} limitation --- it lives in the residue calculus, not in this
+module --- and the embedding code does \emph{not} guard against it. The test
+deliberately picks $\mu = 0.1,\ \tau_c = 1$ to avoid the degeneracy, with an
+explicit inline note (\file{tests/test\_markovianize.py:165--168}). When you
+parameterise a markovianized theory, keep $\mu$ away from $1/\tau_c$.
+\end{gotcha}
+
+\begin{note}
+\textbf{Roadmap (v2).} The docstring enumerates the natural extensions, each of
+which simply enlarges the auxiliary state space
+(\file{pipeline/colored\_to\_markovian.py:51--64}): \emph{underdamped oscillatory}
+kernels $\ee^{-|\tau|/\tau_d}\cos(\omega\tau)$ as a 2-state OU process with an
+imaginary eigenvalue; \emph{double-exponential} kernels as a sum of two
+independent OU processes; and \emph{polynomially-modulated} kernels as a chain of
+OU processes (a higher-order linear filter). The single-Lorentzian case in this
+chapter is the lowest-cost member of that family.
+\end{note}
+
+\section{Summary}
+
+Colored noise is the one input that white-noise field theory cannot integrate
+analytically. The fix is structural rather than numerical: rewrite the model so
+the memory lives in an extra dynamical field. This chapter showed the full chain
+--- a single-Lorentzian autocovariance \eqref{eq:cm-secondcumulant}, the OU filter
+\eqref{eq:cm-toptline}--\eqref{eq:cm-bottomline} whose stationary covariance is
+exactly that Lorentzian \eqref{eq:cm-ouvariance}, the three \msrjd{} structural
+pieces and two action edits that encode it, the symbolic kernel matcher
+\code{detect\_lorentzian} (\S\ref{sec:cm-detect}), and the in-place builder
+rewrite \code{markovianize\_spec} (\S\ref{sec:cm-transform}) wired into
+\code{build()} before compilation. The transformation is invisible to everything
+downstream: by the time the field-theory core in the next part of the manual sees
+your model, the colored noise has become an auxiliary OU field driven by white
+noise, and the fast analytic integrators apply again.

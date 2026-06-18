@@ -4,6 +4,58 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-18 — Master manual + white-noise OU baseline + engine-API conventions + cleanup [branch `spatial-extension`]
+
+### The Daedalus Code Manual (`docs/manual/`)
+
+A book-length (~406 pp) pedagogical LaTeX manual — the master reference for the whole
+pipeline, written for a reader who knows the physics but not the tooling (SageMath,
+`nauty`, `numba`). 22 chapters (model specification → symbolic algebra → diagram
+enumeration → temporal & spatial loop integration → assembly & user surface) plus 4
+appendices (glossary, external-tools-from-scratch, annotated file index, known issues).
+Authored from 21 read-only subsystem deep-dives (`docs/manual/_briefs/`, ~18k lines);
+each chapter independently **audited against the source** (Fourier-sign and template
+lambda-count fixes already folded in). Master file `daedalus_manual.tex` compiles clean
+(0 errors) and is Overleaf-ready. Living errata: `docs/manual/AUDIT_FINDINGS.md`.
+
+### White-noise OU-quartic baseline (`theories/ou_quartic.theory.py`)
+
+The simplest nonlinear theory: a single-field white-noise quartic OU, `dx/dt = −μx − εx³ + ξ`,
+`⟨ξξ⟩=2Dδ`. The white sibling of `ou_quartic_colored` — no Markovian field-doubling, so
+2-loop runs in ~0.2 s (vs many minutes for the colored embedding). Validated: theory
+`C_xx(0)=0.9496` vs sim `0.9464±0.0009`. Example: `notebooks/examples/temporal_ou_quartic_white.ipynb`.
+
+### Engine-API conventions (`notebooks/daedalus.py`)
+
+* `Config.fundamental` → **`parameters`** (`fundamental` kept as a deprecated alias).
+* **k inferred** from `external_fields`; an explicit `k` that contradicts the leg count now
+  raises instead of silently rebuilding legs.
+* `Config.output ∈ {cumulant, moment, central_moment}` via the set-partition (cluster)
+  expansion; moment assembly shares **one** loop budget across constituent cumulants
+  (perturbatively-consistent L-loop, not the dressed product).
+* Temporal **k≥3**: `plot_cumulant` shows all k−1 cumulant slices; configurable
+  `kpoint_base_lags` (fixed lags per slice) and full (k−1)-dim `kpoint_full_grid`.
+* New `dd.describe_model`; k-aware `models.cumulant_estimator.estimate_kpoint_slices`.
+
+### Fork-safety
+
+Guarded the last unguarded fork — the diagram **type-assignment enumeration**
+(`msrjd/diagrams/type_assignment.py`) — behind the canonical `msrjd/fork_safety.py`;
+degrades to serial inside a macOS Jupyter kernel (where forking after Cocoa/BLAS init can
+crash the kernel + OS), keeping fork on Linux/terminal/pytest.
+
+### Example notebooks + repo cleanup
+
+* 9 bonafide example notebooks (`notebooks/examples/`), one per pipeline capability, aligned
+  to the new conventions.
+* Deleted untracked scratch probes/logs; moved the tropical-MC papers to
+  `Literature/tropical_monte_carlo/`; archived 6 completed plan-docs to `docs/archive/`;
+  gitignored the manual's LaTeX build artifacts. Dead-module deletions
+  (`msrjd/core/propagator.py`, `msrjd/integration/numerical.py`) and tracked-`scratch/`
+  triage are **deferred for review** — see `docs/manual/AUDIT_FINDINGS.md` Part A.
+
+---
+
 ## 2026-06-01 — Differential (∇) vertices + audit fixes + tutorial notebooks [branch `spatial-extension`]
 
 ### Differential / ∇ interaction vertices (the deferred "exotic legs")

@@ -1,0 +1,971 @@
+% ---------------------------------------------------------------------
+%  Chapter 14 : The Spatial Integrator --- Symanzik Polynomials and
+%               Causal Chambers
+% ---------------------------------------------------------------------
+\chapter{The Spatial Integrator: Symanzik Polynomials and Causal Chambers}\label{ch:spatial-core}
+
+The previous part of this manual evaluated diagrams \emph{in the time domain}:
+each diagram became a product of exponential propagators, and the loop integrals
+were done over the internal vertex times. That route works beautifully for
+temporal (time-only) models, but it carries a structural wound --- the
+\term{close-pair pathology}, a $1/\beta$ factor that blows up whenever two poles
+of the time integrand approach each other. For a \emph{spatial} model --- a
+stochastic \emph{partial} differential equation, where the field lives on a
+$d$-dimensional space as well as in time --- there is a much cleaner road, and
+this chapter is about the subsystem that paves it.
+
+The idea, in one sentence, is: \emph{do the momentum integral first, and do it
+analytically}. Every enumerated diagram --- a tree, a one-loop bubble, a one-loop
+tadpole, a two-loop sunset, for any number of external legs $k$, any loop order
+$\ell$, and any spatial dimension $d$ --- is reduced to the \emph{same} integral
+and evaluated by the \emph{same} code. There is no per-topology branch. The
+phrase the codebase repeats, in the very first lines of the production module, is
+that ``ONE genuine integral evaluates \emph{every} enumerated diagram''
+(\file{msrjd/integration/spatial/full\_integrator.py:4}). This chapter explains
+why that is possible and walks the machinery that does it.
+
+\begin{note}
+This is the first of three spatial chapters. This one builds the core ---
+momentum routing, the Symanzik polynomials, the causal chambers, and the kinematic
+integral. Chapter~\ref{ch:spatial-heatkernel} covers the analytic
+inverse Fourier transform and the derivative (form-factor) vertices in detail.
+Chapter~\ref{ch:spatial-coupled} covers the coupled multi-field (unequal-$D$)
+extension. Everything here lives under
+\file{msrjd/integration/spatial/}, and none of it imports SageMath or
+\code{nauty} --- those are upstream, in the enumeration. The only heavy
+dependencies here are NumPy, SciPy, and (in one small place) SymPy.
+\end{note}
+
+\section{Why momentum-first}
+
+\subsection{The wound in the temporal route}
+
+Recall how the temporal pipeline evaluates a loop. After enumerating and typing a
+diagram it has a product of propagators in the $(\,$frequency, or time$\,)$
+representation, and it integrates the internal vertex times by carving the time
+domain into ordering regions and integrating a product of exponentials over each.
+The integrand of one such region looks schematically like a sum of terms
+$\ee^{-\beta_1 t_1}\ee^{-\beta_2 t_2}\cdots$, and doing the nested integrals
+produces denominators built from \emph{differences} of the decay rates $\beta_i$.
+When two of those rates coincide --- a degenerate or near-degenerate pole pair ---
+the denominator $1/(\beta_i-\beta_j)$ diverges. The true integral is finite (the
+apparent pole is removable, a confluent limit), but the naive expression is not,
+and resolving it costs precision and special-case code. That is the close-pair
+pathology, and Part~IV spends real effort taming it.
+
+\subsection{The cure}
+
+For a spatial model the field also carries a momentum. The crucial observation is
+that in the heat-kernel representation the edge \emph{times are already Schwinger
+parameters} (we make this precise in \S\ref{sec:heatkernel} below), so the
+loop-\emph{momentum} integral $\int \dd^d\ell$ is a \emph{pure Gaussian}. A
+Gaussian integral can be done in closed form, exactly, at any loop order and in
+any dimension --- it collapses to the two \term{Symanzik polynomials}. And here is
+the payoff: the close-pair pathology lived entirely in the \emph{momentum}
+integral. Once that integral is done analytically, what remains is a smooth
+integral over the internal vertex times and a few auxiliary parameters, with no
+poles to collide. Ordinary quadrature converges fast, and close-pair
+\emph{cannot arise}. The comment block in \file{causal\_chambers.py:17-24} states
+this explicitly: the temporal pipeline ``integrates products of exponentials per
+chamber $\dots$ whose $1/\beta$ factors are the close-pair pathology. Here the
+loop momenta are already integrated $\dots$ so the per-chamber integrand is
+\emph{smooth} $\dots$ and close-pair cannot arise.''
+
+\begin{defn}
+The \term{one mental model} for this whole subsystem: a heat-kernel propagator in
+the momentum--time representation is $G(k,t)=\theta(t)\,\ee^{-(\mu+Dk^2)t}$. The
+edge times act as Schwinger parameters, so $\int\dd^d\ell$ is a pure Gaussian and
+collapses \emph{exactly} to the Symanzik polynomials $\Usym$ and $\Fsym$ at any
+loop order $L$ and any dimension $d$. After that collapse the only thing left is a
+smooth integral over the internal vertex times and the noise-source Schwinger
+parameters --- no pole, no close pair. That is the entire design.
+\end{defn}
+
+\subsection{Where this sits in the pipeline}
+
+The subsystem consumes a fully enumerated and typed diagram and produces that
+diagram's contribution to the connected $k$-point cumulant. Upstream, the
+enumeration has (a)~expanded the action into vertices, (b)~enumerated all
+topologically distinct Feynman diagrams up to the chosen loop order, and
+(c)~``typed'' each diagram --- decided which lines are response/retarded ($R$)
+lines and which are noise/correlation ($C$) lines, and attached a symbolic
+prefactor carrying the couplings, noise amplitudes, and symmetry factor
+$\Sym(\Gamma)$. What is left is a hard multidimensional integral \emph{per
+diagram}, and this subsystem performs it. The flow is:
+
+\begin{lstlisting}[style=console]
+   theory (.theory.py)  ->  action -> vertices
+        |
+   diagram enumeration  (msrjd/diagrams/...)   -> prediagrams
+        |  field-type assignment
+        v
+   TypedDiagram          (msrjd/diagrams/type_assignment.py)
+        |  .prediagram, .vertex_assignments, .propagator_indices, prefactor
+        v
+ +-----------------------  THIS SUBSYSTEM  --------------------------+
+ |  diagram_to_cstack(td)              -> CStackDiagram (descriptor) |
+ |  route_momenta(td) -> edge_coeffs() -> per-edge (a_e, b_e)        |
+ |  _symanzik_kernel_batch / _momentum_factor_batch -> U, F          |
+ |  causal_chambers(...)               -> orderings of {t_v}         |
+ |  diagram_kinematic(...)             -> int dt int dsigma          |
+ |  _heat_kernel_x_general / IFT       -> dC(x,tau)  directly        |
+ +------------------------------------------------------------------+
+        |  sum over diagrams, x 2^{-n_C} . S(Gamma) . prefactor
+        v
+   C(q,tau) or dC(x,tau)  ->  pipeline_bridge.py  ->  compute_cumulants(...)
+\end{lstlisting}
+
+The six files of the subsystem, and their roles:
+
+\begin{center}
+\begin{tabular}{@{}>{\ttfamily\footnotesize}l l@{}}
+\toprule
+\normalfont\textbf{file (under \file{msrjd/integration/spatial/})} & \textbf{role} \\
+\midrule
+diagram\_descriptor.py & typed diagram $\to$ flat ``C-stack'' edge list \\
+momentum\_routing.py   & momentum conservation $\to$ routing coefficients $(a_e,b_e)$ \\
+spatial\_reduce.py     & the textbook Symanzik reduction (single-sample reference) \\
+causal\_chambers.py    & the causal time-ordering chambers \\
+full\_integrator.py    & the production integrator (batched + analytic IFT) \\
+generic\_evaluator.py  & \normalfont\emph{oracle only} --- an older cross-check \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The heat-kernel representation}\label{sec:heatkernel}
+
+This section builds the relevant theory from the ground up. A reader who knows
+\msrjd{} field theory but not this particular representation should be able to
+follow every step.
+
+\subsection{The two propagators}
+
+Start from a linearized (Gaussian, ``tree'') theory with one field. In the
+momentum--time representation the \term{retarded propagator} --- the response
+function, the $R$ line --- is
+\begin{equation}
+  \Gret(k,t) \;=\; \theta(t)\,\ee^{-m(k)\,t},
+  \qquad
+  m(k) \;=\; \mu + D\,k^2,
+  \label{eq:GR}
+\end{equation}
+where $\mu$ is a mass / relaxation rate, $D$ a diffusion constant,
+$k^2=|k|^2$ the squared momentum, and $\theta$ the Heaviside step. The step
+function is causality made manifest: a response only to the past. The
+\term{correlation function} --- the $C$ line, $\avg{\phi\phi}$ --- of the
+\emph{tree} theory is
+\begin{equation}
+  C_0(k,t) \;=\; \frac{T}{m(k)}\;\ee^{-m(k)\,|t|},
+  \label{eq:C0}
+\end{equation}
+with $T$ the noise strength (the action carries a noise vertex $-T\,\tilde\phi^2$,
+or $2T\,\tilde\phi\,\tilde\phi$ in the symmetric normalization). Real-space
+correlators are inverse Fourier transforms of these over $k$.
+
+\subsection{A correlation line is two retarded segments glued at a noise source}
+
+The identity the whole subsystem rests on is that a correlation line can be
+written as two retarded segments joined at a noise source, with the source time
+integrated out. Schematically,
+\begin{equation}
+  C_0(\Delta t) \;=\; \frac{T}{m}\,\ee^{-m|\Delta t|}
+  \;=\; T\!\int_0^{\infty}\!\dd\sigma\;\ee^{-m(|\Delta t|+\sigma)}\cdot(\text{const}),
+  \label{eq:Cglue}
+\end{equation}
+i.e.\ the $C$ line is an $R$--noise--$R$ object. Integrating the noise-source
+time produces a single \term{Schwinger parameter} $\sigma\in[0,\infty)$ and the
+weight $\ee^{-m(|\Delta t|+\sigma)}$; the convention factor of $2$ is bookkept by
+$2^{-n_C}$ (\S\ref{sec:norm}). This is exactly why the enumerator can work
+entirely with all-$\Gret$ propagators plus explicit noise sources, and why the
+descriptor re-contracts a 2-point noise source back into one $C$ edge.
+
+\begin{defn}
+A \term{Schwinger parameter} is an auxiliary integration variable that linearizes
+a propagator denominator into an exponential. Here there are two kinds: an
+$R$-edge time $w$, and a noise-source parameter $\sigma\in[0,\infty)$. Their job
+is to turn the momentum dependence of every propagator into a single Gaussian
+exponent $\exp(-D\sum_e w_e k_e^2)$, so that $\int\dd^d\ell$ is exactly doable.
+\end{defn}
+
+\subsection{Edge weights and the loop-momentum integral}
+
+For a diagram with internal vertices at times $\{t_v\}$ (to be integrated),
+external leaves at fixed times $\{\tau_j\}$, and edges $e$, each edge carries a
+\term{Schwinger weight} $w_e$ (\file{full\_integrator.py:16-19}):
+\begin{align}
+  R \text{ edge } (t_{\text{head}},t_{\text{tail}}):&\quad
+     w_e = t_{\text{head}} - t_{\text{tail}} \;\ge\; 0 \ \text{(by causality)},\\
+  C \text{ edge between } t_a,t_b:&\quad
+     w_e = |t_a - t_b| + \sigma_e,\quad \sigma_e\in[0,\infty).
+\end{align}
+Each edge also carries a routed momentum $k_e$ (next section). The diagram's
+loop-momentum integral, in the heat-kernel representation, is the pure Gaussian
+\begin{equation}
+  I_{\text{mom}} \;=\; \int \prod_{i=1}^{L}\frac{\dd^d\ell_i}{(2\pi)^d}\;
+     \exp\!\Big[-D\sum_e w_e\,k_e^2\Big],
+  \label{eq:Imom}
+\end{equation}
+with $L$ the number of loops. This is the central object
+(\file{spatial\_reduce.py:12}). The next two sections compute it.
+
+\section{Momentum routing}\label{sec:routing}
+
+\subsection{Conservation at a spatial vertex}
+
+A spatial interaction vertex is \emph{local in space}: the action contains
+$\int\dd x_v$ of the product of the fields meeting at the vertex. Fourier
+transforming, that integral enforces \term{momentum conservation}
+$\sum_e k_e = 0$ at every internal vertex --- the spatial analogue of the
+time-domain vertex, which carries one integrated time $t_v$. Solving this linear
+conservation system writes each edge momentum as a linear form
+\begin{equation}
+  k_e \;=\; \sum_{i=1}^{L} a_{ei}\,\ell_i \;+\; \sum_{j=1}^{n_{\text{ext}}} b_{ej}\,q_j,
+  \label{eq:route}
+\end{equation}
+in the \term{loop momenta} $\ell_i$ (the $L$ free parameters of the conservation
+system) and the \term{external momenta} $q_j$ (one per external leg). Overall
+conservation $\sum_j q_j = 0$ is imposed by eliminating the last leaf, so
+$n_{\text{ext}} = k-1$. The coefficients $(a_e,b_e)$ are the per-edge
+\term{routing coefficients}; for a translation-invariant routing they are
+integers, $\pm1$ or $0$.
+
+Two cases make this concrete (\file{momentum\_routing.py:29-34}):
+
+\begin{itemize}
+  \item \textbf{Tree ($L=0$).} Every edge carries $\pm q$ only, so $k_e^2 = q^2$
+        uniformly. A single-mode tree therefore needs only a
+        $\Lap \to -q^2$ substitution.
+  \item \textbf{One-loop bubble.} The two internal lines carry $\ell$ and
+        $q-\ell$ respectively --- genuinely different momenta --- so the
+        substitution becomes per-edge.
+\end{itemize}
+
+\subsection{The symbolic solve}
+
+The routing is done with SymPy, the pure-Python computer-algebra system, because
+momentum conservation is a small \emph{exact} linear-algebra problem and a CAS
+gives integer $\pm1/0$ coefficients with no floating-point ambiguity.
+
+\begin{note}
+\textbf{What SymPy is.} SymPy (\code{import sympy as sp}) represents mathematical
+\emph{symbols} (\code{sp.Symbol}), does exact rational/integer arithmetic, and
+--- crucially here --- solves linear systems symbolically with
+\code{sp.linsolve}. It is the only place in this entire subsystem that SymPy
+appears; the heavy numerics are all NumPy/SciPy.
+\end{note}
+
+The function is \code{route\_momenta} (\file{momentum\_routing.py:99}). Reading
+its body, the steps are:
+
+\begin{enumerate}
+  \item Create the external-momentum symbols $q_0\dots q_{k-1}$ and one unknown
+        momentum symbol per edge:
+        \begin{lstlisting}
+q = sp.symbols(f'q0:{k}') if k > 0 else ()
+kk = {e: sp.Symbol(f'k{i}') for i, e in enumerate(edges)}   # one per edge
+        \end{lstlisting}
+  \item Build the conservation \term{residual} at each vertex --- the signed sum
+        that must vanish. The convention (\file{momentum\_routing.py:103-107}) is
+        that edge $(u,v,\text{lbl})$ is oriented $u\to v$, so it contributes
+        $+k_e$ at the vertex it flows \emph{into} and $-k_e$ at the vertex it
+        flows \emph{out of}; at a leaf the injected external momentum $q_j$ is
+        subtracted:
+        \begin{lstlisting}
+for v in vertices:
+    s = sp.Integer(0)
+    for e in edges:
+        u, w, _lbl = e
+        if w == v: s += kk[e]          # edge flows INTO v
+        if u == v: s -= kk[e]          # edge flows OUT of v
+    if v in leaves:
+        s -= q[leaves.index(v)]        # external momentum injected at leaf
+    residuals.append(sp.expand(s))
+        \end{lstlisting}
+  \item Impose overall conservation by substituting
+        $q_{k-1} = -(q_0+\dots+q_{k-2})$ into every residual.
+  \item Solve the system for the edge momenta with SymPy's linear solver:
+        \begin{lstlisting}
+sol_set = sp.linsolve(residuals, list(kk.values()))
+        \end{lstlisting}
+        An empty solution set means the system is inconsistent --- which never
+        happens for a valid \msrjd{} diagram, so the code raises a clear error if
+        it does (\file{momentum\_routing.py:139-142}).
+  \item The \emph{free symbols} SymPy leaves unpinned in the solution \emph{are}
+        the loop momenta. The code collects them
+        (\code{expr.free\_symbols}), subtracts the external symbols, sorts by
+        name, and relabels them to $\ell_0\dots\ell_{L-1}$
+        (\file{momentum\_routing.py:149-158}).
+\end{enumerate}
+
+\subsection{The routing result}
+
+The result is a small dataclass (\file{momentum\_routing.py:50}):
+
+\begin{lstlisting}
+@dataclass
+class RoutingResult:
+    edge_momenta: dict   # (u,v,lbl) -> sympy expr in q_syms + loop_syms
+    q_syms: tuple        # external-momentum symbols q_0 ... q_{k-1}
+    loop_syms: tuple     # loop-momentum symbols l_0 ... l_{L-1}
+    n_loops: int
+\end{lstlisting}
+
+It exposes two extractors. \code{edge\_coeffs()}
+(\file{momentum\_routing.py:62}) returns \code{\{edge: (a, b)\}} --- the signed
+linear coefficients of \eqref{eq:route}, each coerced to a Python \code{int} by a
+small helper \code{\_num} (\file{momentum\_routing.py:79}). \textbf{This is what
+the Symanzik step consumes.} The other extractor, \code{edge\_k2()}
+(\file{momentum\_routing.py:57}), returns the symbolic $k_e^2$ --- but it must
+\emph{not} be used for the reduction.
+
+\begin{gotcha}
+\code{edge\_k2()} squares the momentum and loses the \emph{signed} cross-term
+coefficients (the $a_{ei}b_{ej}$ products that build the loop/external coupling
+block). Only \code{edge\_coeffs()} carries the $(a,b)$ the Symanzik step needs.
+The code warns about this in the docstring at
+\file{momentum\_routing.py:72-74}. If you ever extend the integrator, consume
+\code{edge\_coeffs()}, never \code{edge\_k2()}.
+\end{gotcha}
+
+\section{Symanzik polynomials from scratch}\label{sec:symanzik}
+
+Now do the Gaussian integral \eqref{eq:Imom}. Substitute the routing
+\eqref{eq:route} and collect the loop momenta into a quadratic form. Define three
+matrices by summing the routing coefficients weighted by the Schwinger weights
+(\file{spatial\_reduce.py:18-21}):
+\begin{align}
+  \Lambda_{ii'} &= \sum_e w_e\,a_{ei}\,a_{ei'} &&(L\times L) &&\text{first-Symanzik kernel,}\\
+  N_{ij} &= \sum_e w_e\,a_{ei}\,b_{ej} &&(L\times n_{\text{ext}}) &&\text{loop/external cross block,}\\
+  Q_{jj'} &= \sum_e w_e\,b_{ej}\,b_{ej'} &&(n_{\text{ext}}\times n_{\text{ext}}) &&\text{pure external block.}
+\end{align}
+Then $\sum_e w_e k_e^2 = \ell^{\mathsf T}\Lambda\ell + 2q^{\mathsf T}N^{\mathsf T}\ell
++ q^{\mathsf T}Q\,q$. Completing the square in $\ell$ and doing the Gaussian
+integral gives the closed form (\file{spatial\_reduce.py:24-26}):
+\begin{equation}
+  I_{\text{mom}} \;=\; (4\pi D)^{-Ld/2}\;\Usym^{-d/2}\;
+     \exp\!\big[-D\,q^{\mathsf T} Q_{\text{eff}}\, q\big],
+  \label{eq:collapse}
+\end{equation}
+with
+\begin{equation}
+  \Usym = \det\Lambda,
+  \qquad
+  Q_{\text{eff}} = Q - N^{\mathsf T}\Lambda^{-1}N,
+  \qquad
+  \Fsym \equiv \Usym\cdot Q_{\text{eff}}\ \text{(scalar case)}.
+  \label{eq:UF}
+\end{equation}
+
+\subsection{What these polynomials are}
+
+It is worth saying what $\Usym$ and $Q_{\text{eff}}$ \emph{are} classically,
+because a reader may know the graph-theoretic definitions.
+
+\begin{description}
+  \item[$\Usym$ --- the first Symanzik (first graph) polynomial.] A homogeneous
+        degree-$L$ polynomial in the edge weights. Graph-theoretically,
+        $\Usym = \sum_{\text{spanning trees }T}\ \prod_{e\notin T} w_e$ --- a sum
+        over spanning trees of the product of the weights of the edges \emph{not}
+        in the tree. In this code it is computed \emph{numerically} as
+        $\det\Lambda$, which equals that combinatorial sum (the matrix-tree
+        theorem). Validated examples (\file{spatial\_reduce.py:36-38}): the
+        one-loop bubble has $\Usym = w_1+w_2$; the two-loop sunset has
+        $\Usym = w_1w_2 + w_2w_3 + w_3w_1$.
+  \item[$Q_{\text{eff}}$ --- the second Symanzik / $\Fsym$.] Carries the
+        external-momentum dependence. $Q_{\text{eff}} = Q - N^{\mathsf T}\Lambda^{-1}N$
+        is the \term{Schur complement} of $\Lambda$ in the full quadratic form ---
+        exactly the residual external quadratic form after integrating out the
+        loops. For the bubble, $Q_{\text{eff}} = w_1w_2/(w_1+w_2)$; for the
+        sunset, $Q_{\text{eff}} = w_1w_2w_3/\Usym$. For $n_{\text{ext}}=1$ (the
+        2-point function, $k=2$) $Q_{\text{eff}}$ is a scalar and
+        $\Fsym = \Usym\cdot Q_{\text{eff}}$.
+\end{description}
+
+\begin{defn}
+The \term{Schur complement} of a block $\Lambda$ in a partitioned quadratic form
+$\left(\begin{smallmatrix}\Lambda & N\\ N^{\mathsf T} & Q\end{smallmatrix}\right)$ is
+$Q - N^{\mathsf T}\Lambda^{-1}N$. It is precisely what is left of the $q$-quadratic
+form after the $\ell$ block has been integrated out (Gaussian-eliminated). That is
+why $Q_{\text{eff}}$ is the residual external form: integrating the loops
+\emph{is} taking a Schur complement.
+\end{defn}
+
+The exponents $-Ld/2$ and $-d/2$ are the \emph{only} places the spatial dimension
+$d$ enters the momentum reduction. The reduction is otherwise exact and
+$d$-agnostic --- the same algebra works in $d=1$ as in $d=7$.
+
+\subsection{The reference implementation}
+
+\file{spatial\_reduce.py} is the textbook, single-sample reference. Its three
+functions are deliberately small and quotable. \code{symanzik\_matrices}
+(\file{spatial\_reduce.py:58}) builds $(\Lambda,N,Q)$ for one set of edge weights
+by exactly the contractions above:
+\begin{lstlisting}
+aw  = a * w[:, None]          # (E, L)
+Lam = aw.T @ a                # (L, L)
+N   = aw.T @ b                # (L, n_ext)
+Q   = (b * w[:, None]).T @ b  # (n_ext, n_ext)
+\end{lstlisting}
+\code{symanzik\_polynomials} (\file{spatial\_reduce.py:82}) returns
+$(\Usym, Q_{\text{eff}})$ with $\Usym = \det\Lambda$ and $Q_{\text{eff}}$
+computed via \code{np.linalg.solve} (not an explicit inverse --- solving a linear
+system is both faster and more accurate than forming $\Lambda^{-1}$). And
+\code{momentum\_integral} (\file{spatial\_reduce.py:101}) evaluates
+\eqref{eq:collapse} for one sample. The production code re-implements all three,
+\emph{batched}, in \file{full\_integrator.py}; the reference exists so the batched
+version can be checked against it.
+
+\begin{note}
+\textbf{Why \code{np.linalg.solve} and not \code{np.linalg.inv}.} To compute
+$N^{\mathsf T}\Lambda^{-1}N$ you never need $\Lambda^{-1}$ itself --- you need the
+product $\Lambda^{-1}N$, which is the solution $X$ of the linear system
+$\Lambda X = N$. \code{np.linalg.solve(Lam, N)} computes exactly that, using an
+LU factorization rather than a full matrix inversion. It is the standard numerical
+hygiene: never invert when you can solve.
+\end{note}
+
+\section{The full diagram integral}
+
+Putting the pieces together, one diagram's contribution to the connected
+$k$-point cumulant is (\file{full\_integrator.py:15-20}):
+\begin{equation}
+  \Gamma(q,\{\tau\}) \;=\; 2^{-n_C}\,\Sym(\Gamma)\!
+     \int \prod_v \dd t_v \prod_{C\text{ edges}}\!\dd\sigma_e\;
+     \mathbf{1}(\theta\text{'s})\;
+     \ee^{-\mu\sum_e w_e}\;\text{MomFactor}(w,q),
+  \label{eq:diagram}
+\end{equation}
+\begin{equation}
+  \text{MomFactor} \;=\; (4\pi D)^{-Ld/2}\,\Usym(w)^{-d/2}\,
+     \ee^{-D\,q^{\mathsf T}Q_{\text{eff}}(w)\,q}.
+\end{equation}
+The factor $\ee^{-\mu\sum_e w_e}$ is the \term{mass damping}: every segment of
+length $w$ decays as $\ee^{-\mu w}$, since the $\mu$ part of the mass $m(k)=\mu+Dk^2$
+multiplies $w_e$ directly. The $Dk^2$ part of the mass already lives \emph{inside}
+$\text{MomFactor}$, through the Symanzik exponent. The $\mathbf{1}(\theta\text{'s})$
+are the causal step functions of the retarded edges. The residual integral is over
+the internal vertex times $t_v$ and the correlation Schwinger parameters
+$\sigma_e$ only --- and it is \emph{smooth}, because the loop integral, the source
+of the close-pair pathology, was already done analytically.
+
+\section{Normalization --- derived, not fitted}\label{sec:norm}
+
+The integrator's normalization is \emph{derived}, not tuned to a fixture
+(\file{full\_integrator.py:27-31}). The enumeration prefactor uses the $2T$
+noise-vertex convention. A kinematic $C$ edge here, by contrast, is the
+unit-amplitude Schwinger factor $\int_0^\infty\dd\sigma\,\ee^{-m\sigma}=1/m$. The
+factor $2^{-n_C}$ ($n_C$ = number of $C$ edges) converts between the two. The
+tree check makes this airtight: a tree 2-point function has no loops and one $C$
+edge between the two leaves ($n_C=1$), prefactor $2T$, and the integral gives
+\begin{equation}
+  2^{-1}\cdot 2T\cdot\frac{1}{m}\,\ee^{-m\tau}
+  \;=\; \frac{T}{m}\,\ee^{-m\tau}
+  \;=\; C_0,
+\end{equation}
+exactly the tree correlator \eqref{eq:C0}. This $2^{-n_C}$ is applied in
+\code{diagram\_value} / \code{diagram\_value\_x} (\file{full\_integrator.py:1153},
+\file{full\_integrator.py:1210}).
+
+\section{Causal chambers}\label{sec:chambers}
+
+\subsection{Posets and linear extensions}
+
+What remains after the momentum collapse is
+$\int\prod_v\dd t_v\,\mathbf{1}(\theta\text{'s})\,(\text{smooth integrand})$. The
+retarded edges impose orderings $t_v > t_u$ on the internal vertices --- a
+\term{partial order} (a poset). The domain of a poset decomposes into
+\term{ordering chambers}, one per \term{linear extension} (a total order
+consistent with the partial order). The key fact: within each chamber every
+$|\Delta t|$ has a \emph{fixed sign}, so the integrand is smooth (no cusps) and
+ordinary quadrature converges fast (\file{causal\_chambers.py:18-24}).
+
+\begin{defn}
+A \term{linear extension} of a poset is a total order of its elements that
+respects all the partial-order relations. Geometrically, each linear extension is
+one simplicial chamber of the cube $[\,\text{lo},\text{hi}\,]^{n}$, and the
+chambers \emph{partition} the constrained domain. Integrating over the whole
+constrained domain therefore equals summing the integral over the chambers --- no
+over- or under-counting.
+\end{defn}
+
+\subsection{The code, reused verbatim from the temporal pipeline}
+
+The poset machinery is not reimplemented for the spatial path. The single public
+function (\file{causal\_chambers.py:41}) wraps the temporal pipeline's
+battle-tested \code{\_CausalPoset} and \code{\_enumerate\_linear\_extensions}:
+
+\begin{lstlisting}
+def causal_chambers(n_vertices, retarded_edges):
+    poset = _CausalPoset(
+        m=int(n_vertices),
+        edges=tuple(sorted({(int(u), int(v)) for (u, v) in retarded_edges})),
+        scalar_lowers=(), scalar_uppers=())
+    return list(_enumerate_linear_extensions(poset))
+\end{lstlisting}
+
+Here \code{retarded\_edges} is an iterable of pairs $(u,v)$ meaning $t_v > t_u$.
+The function returns the list of linear extensions, each a length-$n$ tuple giving
+the vertex order (earliest first).
+
+\begin{gotcha}
+\textbf{The empty-edge case tiles the cube.} With \emph{no} retarded ordering
+constraints, \code{causal\_chambers} returns all $n!$ orderings, which
+\emph{partition} the time cube --- the integral over the cube equals the sum over
+chambers. Forgetting this gives an $n!$ over- or under-count. This is why the
+production integrator always loops over the returned chambers even when there are
+no ordering constraints.
+\end{gotcha}
+
+The module also ships a reference integrator, \code{integrate\_over\_chambers}
+(\file{causal\_chambers.py:84}), which does the chamber simplex integral by nested
+\code{scipy.integrate.quad} (adaptive Gauss--Kronrod 1-D quadrature). That path is
+an oracle; the \emph{production} integrator uses fixed Gauss--Legendre product
+grids instead, for vectorization, which we turn to next.
+
+\section{The descriptor: \texorpdfstring{\texttt{diagram\_to\_cstack}}{diagram\_to\_cstack}}\label{sec:descriptor}
+
+Before the integrator can run, the typed diagram must be flattened into the
+canonical \term{C-stack} form that every diagram shares. That is the job of
+\code{diagram\_to\_cstack} (\file{diagram\_descriptor.py:105}). The two record
+types it produces are frozen dataclasses.
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class CEdge:
+    a: tuple        # loop-momentum routing coefficients (over the L loops)
+    b: tuple        # external-q routing coefficients (over the n_ext externals)
+    kind: str       # 'R' (retarded segment) or 'C' (correlation line)
+    u: int          # endpoint vertex id
+    v: int          # endpoint vertex id  (u == v  =>  self-loop = tadpole)
+    external: bool  # True iff the edge touches an external leaf
+    fpairs: tuple = ()   # coupled-field propagator matrix indices (Dyson 3c)
+\end{lstlisting}
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class CStackDiagram:
+    internal_vertices: tuple   # interaction-vertex ids (their times integrated)
+    external_legs: tuple       # leaf vertex ids, in correlation-function order
+    edges: tuple               # tuple of CEdge
+    n_loops: int               # == diagram loop_number
+\end{lstlisting}
+
+The mapping itself, reading \file{diagram\_descriptor.py:105-193}:
+
+\begin{enumerate}
+  \item Unpack \code{td.prediagram} into the graph \code{D}, the leaves, and the
+        internal vertices; read \code{td.vertex\_assignments}.
+  \item \textbf{Classify each non-leaf vertex.} A \code{VertexType} is an
+        interaction vertex (its time is integrated). A 2-point \code{SourceType}
+        --- the Gaussian noise insertion $\avg{\tilde\phi\tilde\phi}$ that
+        represents a $C$ line --- is a \emph{noise} vertex, to be contracted away.
+        A \code{SourceType} with $\ge 3$ response legs (non-Gaussian noise) is
+        \emph{kept} as an internal vertex with $n$ outgoing $R$ edges --- the
+        paper's all-retarded formulation --- and its time is integrated like any
+        vertex. A source with fewer than 2 response legs raises
+        \code{NotImplementedError}.
+  \item Call \code{route\_momenta(td)} and read
+        \code{ec = rr.edge\_coeffs()} into a per-edge $(a,b)$ map.
+  \item Build an incidence map from each vertex to its incident edges.
+  \item \textbf{Contract each 2-point noise source} into a single $C$ edge: its
+        two incident $\Gret$ half-edges become one $C$ edge between the two
+        \emph{other} endpoints (the source time integrated out gives
+        $C(\Delta t)$). A noise source whose two edges land on the \emph{same}
+        vertex becomes a $C$ \emph{self-loop} ($u=v$) --- the tadpole. Degree
+        $\ne 2$ raises.
+  \item \textbf{Every remaining $\Gret$ edge becomes an $R$ edge.} Edges touching
+        a leaf are flagged \code{external=True}.
+  \item Assemble and return the \code{CStackDiagram}, internal vertices sorted,
+        external legs in correlation-function order, with
+        \code{n\_loops = rr.n\_loops}.
+\end{enumerate}
+
+\begin{note}
+\textbf{Why the $C$ edge may take either half's routing coefficients.} When the
+noise source is contracted, the new $C$ edge takes the $(a,b)$ of one of its two
+halves (\file{diagram\_descriptor.py:168}). This is correct because flipping
+$(a,b)\to(-a,-b)$ leaves every Symanzik sum $\sum_e w_e a a$, $\sum_e w_e a b$,
+$\sum_e w_e b b$ invariant --- the routing sign is irrelevant to the quadratic
+forms. The descriptor \emph{relies} on this; do not try to ``fix'' the sign.
+\end{note}
+
+\begin{gotcha}
+\textbf{There is no bubble / tadpole / sunset branch in the descriptor.} Whether a
+loop momentum couples to the external $q$ (a bubble) or not (a tadpole) is a
+property of the Symanzik $\Fsym$ \emph{downstream}, not of this descriptor
+(\file{diagram\_descriptor.py:10-13}). \code{CStackDiagram.is\_tadpole\_like()}
+exists (\file{diagram\_descriptor.py:93}) but is \emph{diagnostic only} --- the
+production evaluator never branches on it. This topology-blindness is the whole
+point: one integral, every diagram.
+\end{gotcha}
+
+\section{The kinematic integral: \texorpdfstring{\texttt{diagram\_kinematic}}{diagram\_kinematic}}\label{sec:kinematic}
+
+\code{diagram\_kinematic} (\file{full\_integrator.py:469}) is the heart of the
+subsystem. It computes the kinematic (unit-amplitude, no couplings) full-diagram
+integral
+$\int\prod\dd t_v\prod\dd\sigma_e\,\mathbf{1}(\theta)\,\ee^{-\mu\sum w}\,\text{MomFactor}$
+by causal-chamber quadrature. Its signature is:
+
+\begin{lstlisting}
+def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
+                      W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
+                      xs=None, method='grid', mc_n=1000000, mc_seed=0):
+\end{lstlisting}
+
+Walking the body:
+
+\begin{enumerate}
+  \item \textbf{Extract the structure} (\file{full\_integrator.py:487-493}). Pull
+        \code{edges}, \code{internal} vertices, the $a$/$b$ coefficient matrices
+        (one row per edge), and $n_C$ (the number of $C$ edges).
+  \item \textbf{Set the time window} (\file{full\_integrator.py:495-499}).
+        $[\,\text{lo},\text{hi}\,]$ comes from the external times and a window
+        $W=22/\mu$ --- about twenty-two relaxation times, well past where the
+        integrand has decayed.
+  \item \textbf{Build the retarded poset on the internal vertices}
+        (\file{full\_integrator.py:503-515}). An internal$\to$internal $R$ edge
+        becomes a poset edge \code{internal\_R}; an $R$ edge to or from a leaf
+        becomes a fixed-time scalar bound \code{s\_up}/\code{s\_lo} (the leaf time
+        clamps the vertex from one side).
+  \item \textbf{Build the correlation Schwinger grid}
+        (\file{full\_integrator.py:517-536}). This step is subtle enough to
+        deserve its own paragraph below.
+  \item \textbf{Dispatch on \code{method}} (\file{full\_integrator.py:544-555}).
+        \code{'bessel'} routes to \code{\_diagram\_bessel\_xs}; otherwise
+        enumerate \code{chambers = causal\_chambers(n\_V, internal\_R)}.
+  \item \textbf{Per chamber, build the internal-time grid.} \code{'mc'}
+        importance-samples the chamber via nested $\mathrm{Exp}(\mu)$ time gaps
+        (\file{full\_integrator.py:564-578}); \code{'grid'} (the default) builds
+        the nested causal-chamber product grid latest$\to$earliest, each level
+        bounded above by the next-later time and its external scalar bound, via
+        \code{\_gl\_on} (\file{full\_integrator.py:586-603}).
+  \item \textbf{Compute the edge weights} \code{w\_batch} and the residual mass
+        \code{mu\_resid} ($R$: $t_v-t_u$; $C$: $|t_u-t_v|+\sigma$) and the
+        per-sample amplitude \code{amp} (\file{full\_integrator.py:606-623}).
+  \item \textbf{Accumulate the result}, in one of four sub-cases
+        (\file{full\_integrator.py:625-709}): a plain analytic-IFT heat kernel; a
+        multivariate ($k\ge3$) derivative-vertex IFT; a single-external
+        ($k=2$) derivative-vertex IFT; or the $q$-evaluation path. The last three
+        are the subject of Chapter~\ref{ch:spatial-heatkernel}.
+  \item \textbf{Return} a real vector for the analytic-IFT path, complex for a
+        derivative vertex, float otherwise
+        (\file{full\_integrator.py:714-716}).
+\end{enumerate}
+
+\subsection{The retarded-time quadrature: \texorpdfstring{\texttt{\_gl\_on}}{\_gl\_on}}
+
+The internal vertex times are integrated by \code{\_gl\_on}
+(\file{full\_integrator.py:349}), Gauss--Legendre nodes on $[\text{lo},\text{hi}]$
+with a $\sqrt{\,}$-concentrating substitution toward the upper bound, where the
+retarded integrand peaks:
+
+\begin{lstlisting}
+def _gl_on(lower, upper, n):
+    xg, wg = np.polynomial.legendre.leggauss(n)
+    v = 0.5 * (xg + 1.0)
+    span = (upper - lower)[..., None]
+    t = upper[..., None] - span * (v * v)   # nodes cluster near `upper`
+    w = span * (wg * v)                     # Jacobian 2.span.v . 1/2
+    return t, w
+\end{lstlisting}
+
+The $t = \text{upper} - \text{span}\cdot v^2$ map clusters nodes near the upper
+bound (because $v^2$ is dense near $v=0$) and carries the Jacobian
+$\text{span}\cdot(w_g\,v)$. This concentration matters: the retarded propagator
+$\ee^{-m\,w}$ is largest when the segment length $w$ is smallest, i.e.\ when the
+vertex time sits just below its upper bound.
+
+\subsection{The Schwinger \texorpdfstring{$\sigma$}{sigma} grid is load-bearing}
+
+The correlation Schwinger parameters $\sigma_e\in[0,\infty)$ are integrated by the
+\emph{same} kind of substitution. Reading
+\file{full\_integrator.py:517-525}:
+
+\begin{lstlisting}
+s_cap = 32.0 / mu
+xv, wv = np.polynomial.legendre.leggauss(n_s)
+vv = 0.5 * (xv + 1.0)
+s_nodes = s_cap * vv * vv                         # sigma = s_cap . v^2
+s_w = wv * s_cap * vv * np.exp(-mu * s_nodes)     # w.s_cap.v.e^{-mu.sigma}
+\end{lstlisting}
+
+That is Gauss--Legendre on a finite window $[0,s_{\text{cap}}]$ with
+$\sigma = s_{\text{cap}}\,v^2$ and the $\ee^{-\mu\sigma}$ weight folded into the
+node weights, \emph{not} Gauss--Laguerre on $[0,\infty)$.
+
+\begin{gotcha}
+\textbf{The $\sigma$-node concentration is not optional.} The substitution
+$\sigma = s_{\text{cap}}\,v^2$ concentrates nodes near $\sigma = 0$
+specifically to resolve the integrable self-loop singularity
+$\Usym^{-d/2}\sim\sigma^{-d/2}$ (a $C$ self-loop has $\Usym = \sigma$, so as
+$\sigma\to0$ the integrand has an integrable spike). Plain Gauss--Laguerre
+\emph{under-resolves} that spike. The code comment at
+\file{full\_integrator.py:519} says exactly this. Changing this quadrature will
+quietly degrade tadpole accuracy without raising any error. (Note that the
+function's own docstring at \file{full\_integrator.py:482} still calls this
+``Gauss--Laguerre''; the body is the Legendre-plus-substitution above, and the
+body is what runs.)
+\end{gotcha}
+
+\subsection{A worked shape: the one-loop bubble}
+
+Make the abstract concrete with a one-loop bubble, $k=2$, $d=1$. It has two
+internal vertices ($n_V=2$), two correlation lines ($n_C=2$), and one loop
+($L=1$). \code{causal\_chambers(2, internal\_R)} returns the orderings of the two
+vertices. Per chamber the grid has $P \approx 22^2\cdot 24^2$ samples; $a$ is
+$(E,1)$ and $b$ is $(E,1)$; $\Lambda$ is $(P,1,1)$ so $\Usym = w_1+w_2$ and
+$Q_{\text{eff}} = w_1w_2/(w_1+w_2)$; $\mathcal{B} = D\cdot Q_{\text{eff}}$ is a
+scalar; and the heat kernel $(4\pi\mathcal{B})^{-1/2}\ee^{-x^2/4\mathcal{B}}$ is
+summed over the grid into $\delta C(x)$ (the analytic IFT of
+Chapter~\ref{ch:spatial-heatkernel}).
+
+\section{The batched Symanzik core}\label{sec:batched}
+
+The production integrator does \emph{not} call the single-sample
+\file{spatial\_reduce.py} functions in its inner loop. Instead it builds the
+Symanzik matrices for an entire grid of Schwinger samples at once, using NumPy's
+Einstein-summation engine \code{np.einsum}.
+
+\begin{note}
+\textbf{What \code{np.einsum} is.} \code{np.einsum} evaluates a tensor
+contraction written in index notation. The string \code{'pe,ej,ek->pjk'} reads
+``take an array indexed by $(p,e)$ and two indexed by $(e,j)$ and $(e,k)$, sum over
+the repeated index $e$, and keep $(p,j,k)$''. It runs in compiled C, and for the
+heavy linear algebra (\code{det}, \code{solve}) NumPy calls BLAS/LAPACK, which
+releases the Python GIL. Here $p$ indexes the Schwinger sample, $e$ the edge, $l/m$
+the loop momenta, and $j/k$ the external momenta.
+\end{note}
+
+The batched factory is \code{\_momentum\_factor\_batch}
+(\file{full\_integrator.py:56}). Its core (\file{full\_integrator.py:73-90}):
+
+\begin{lstlisting}
+Q   = np.einsum('pe,ej,ek->pjk', w_batch, b, b)   # (P, n_ext, n_ext)
+if L == 0:
+    quad = np.einsum('j,pjk,k->p', qv, Q, qv)
+    return np.exp(-D * quad)                       # tree: exp(-D q^T Q q)
+Lam = np.einsum('pe,el,em->plm', w_batch, a, a)    # (P, L, L)
+N   = np.einsum('pe,el,ej->plj', w_batch, a, b)    # (P, L, n_ext)
+U   = np.linalg.det(Lam)                           # (P,)  the first Symanzik
+ok  = U > u_floor                                  # degeneracy mask
+LamiN = np.linalg.solve(Lam[ok], N[ok])            # Lam^{-1} N, batched
+Qeff  = Q[ok] - np.einsum('plj,plk->pjk', N[ok], LamiN)
+pref  = (4.0*math.pi*D)**(-0.5*spatial_dim*L) * np.power(U[ok], -0.5*spatial_dim)
+out[ok] = pref * np.exp(-D * np.einsum('j,pjk,k->p', qv, Qeff, qv))
+\end{lstlisting}
+
+Every line corresponds to one symbol in \eqref{eq:collapse}: \code{Q}, \code{Lam},
+and \code{N} are the three Symanzik matrices for the whole batch; \code{U} is
+$\det\Lambda$ for every sample at once; \code{LamiN} is $\Lambda^{-1}N$ via the
+batched solve; \code{Qeff} is the Schur complement; and \code{pref} is the
+$(4\pi D)^{-Ld/2}\Usym^{-d/2}$ prefactor.
+
+\begin{gotcha}
+\textbf{Degeneracy floors are everywhere, and they silently zero samples.} The
+mask \code{ok = U > u\_floor} (with \code{u\_floor = 1e-300}) selects the samples
+where the loop matrix is non-degenerate; degenerate samples (a self-loop where
+$\Usym\to0$) get \emph{zero}, with no warning. The same pattern appears for the
+heat-kernel width ($\mathcal{B} > 10^{-300}$, $\det\mathcal{B} > 10^{-300}$). A
+diagram whose \emph{entire} grid is degenerate returns $0$ silently. This is
+correct (those configurations have measure zero), but it means a bug that
+degenerates every sample looks like a clean zero, not an error.
+\end{gotcha}
+
+The sibling \code{\_symanzik\_kernel\_batch} (\file{full\_integrator.py:94}) is the
+analytic-IFT version: it returns the $q$-Gaussian
+$\text{pref}\cdot\ee^{-q^{\mathsf T}\mathcal{B}q}$ \emph{without} contracting in $q$,
+so the $x$-dependence stays analytic. That function feeds the heat-kernel IFT of
+Chapter~\ref{ch:spatial-heatkernel}.
+
+\section{The three backends}\label{sec:backends}
+
+\code{diagram\_kinematic} takes a \code{method} argument selecting one of three
+quadrature backends. They trade memory against generality.
+
+\begin{description}
+  \item[\code{'grid'} (default).] The deterministic causal-chamber product grid
+        described in \S\ref{sec:kinematic}. Exact (to quadrature order), validated,
+        but its grid size is $P \approx n_t^{\,n_V}\cdot n_s^{\,n_C}$ \emph{per
+        chamber} --- the curse of dimensionality.
+  \item[\code{'mc'}.] Monte-Carlo importance sampling
+        (\file{full\_integrator.py:564-578}): internal times via nested
+        $\mathrm{Exp}(\mu)$ gaps, correlation $\sigma$'s as $\mathrm{Exp}(\mu)$,
+        with $P=$\code{mc\_n} random points instead of the product grid. Bounded
+        memory, error $O(1/\sqrt{N})$.
+  \item[\code{'bessel'}.] The radial-Bessel $\times$ angular-Monte-Carlo backend
+        (\file{full\_integrator.py:362}), covered in detail in
+        Chapter~\ref{ch:spatial-heatkernel}. It reparametrizes the causal-region
+        point as $\lambda\cdot\hat s$ with $\hat s$ on a simplex, does the radial
+        $\lambda$-integral \emph{exactly} as a modified Bessel function $K_\nu$,
+        and samples only the smooth angular simplex. The radial reduction handles
+        the $\det\Lambda\to0$ degenerate-loop direction analytically.
+\end{description}
+
+\begin{gotcha}
+\textbf{The memory wall at $\ell\ge2$.} The grid is $P=n_t^{\,n_V}\cdot n_s^{\,n_C}$
+per chamber. A KPZ two-loop diagram ($n_V=4$, $n_C=3$) is $\approx 1.8\times10^8$
+points per chamber --- tens of gigabytes. The bridge refuses up front (raising a
+\code{SpatialPropagatorError}) and points you to the escape hatches: lower
+\code{max\_ell}, set \code{SPATIAL\_INTEGRATOR=mc} or \code{=bessel}, coarsen
+\code{SPATIAL\_GRID\_NT}/\code{NS}, or raise \code{SPATIAL\_MEM\_BUDGET\_GB}.
+\end{gotcha}
+
+\begin{gotcha}
+\textbf{Monte-Carlo is biased for derivative vertices.} The \code{'mc'} backend is
+validated to better than $0.1\%$ for \emph{plain} $\phi^n$ vertices but is
+\emph{biased} for derivative (form-factor) vertices: the $\det\Lambda\to0$
+singularity gives the Monte-Carlo estimator infinite variance. For derivative
+vertices at $\ell\ge2$, use \code{SPATIAL\_INTEGRATOR=bessel} --- the radial
+reduction cures the variance. This is stated repeatedly in the source
+(\file{full\_integrator.py:560-563}).
+\end{gotcha}
+
+\section{Assembling a correlator}
+
+The kinematic integral is unit-amplitude. The amplitude, the retarded$+$advanced
+completion, and the diagram sum are layered on by a short chain of functions, all
+near the bottom of \file{full\_integrator.py}.
+
+\code{diagram\_value} (\file{full\_integrator.py:1142}) applies the amplitude:
+\begin{lstlisting}
+def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
+                  spatial_dim=1, **kw):
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    kin = diagram_kinematic(descr, q_vec, external_times, mu, D,
+                            spatial_dim=spatial_dim, **kw)
+    return (2.0 ** (-n_C)) * float(prefactor_val) * kin
+\end{lstlisting}
+That is exactly $2^{-n_C}\cdot\Sym(\Gamma)\cdot\text{kinematic}$, with the
+$2^{-n_C}$ of \S\ref{sec:norm}.
+
+\code{diagram\_correlator} (\file{full\_integrator.py:1166}) adds the
+retarded$+$advanced completion. A \emph{retarded-type} insertion --- one whose two
+external legs have \emph{different} propagator kinds, one $C$ and one $R$
+(\code{\_is\_retarded\_type}, \file{full\_integrator.py:1156}) --- dresses both the
+retarded and advanced sides of the line, so it appears as the pair
+$\Sigma_R(\tau)+\Sigma_A(\tau) = \Gamma(\tau)+\Gamma(-\tau)$. A $\{R,R\}$ (Keldysh)
+insertion is its own conjugate and contributes a single $\Gamma(\tau)$. At
+$\tau=0$ the retarded-type case becomes $2\Gamma(0)$.
+
+\code{correlator\_2pt} (\file{full\_integrator.py:1182}) sums over all enumerated
+diagrams --- tree plus every loop, each via the \emph{same} full integral ---
+skipping diagrams whose prefactor is numerically dead
+($|\text{pre}| < 10^{-14}$, ``dead at the saddle''):
+\begin{lstlisting}
+def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
+    total = 0.0
+    for descr, pre in descrs_prefactors:
+        if abs(float(pre)) < 1e-14:
+            continue
+        total += diagram_correlator(descr, pre, q, tau, mu, D,
+                                    spatial_dim=spatial_dim, **kw)
+    return total
+\end{lstlisting}
+
+The three functions \code{diagram\_value\_x}, \code{diagram\_correlator\_x}, and
+\code{correlator\_2pt\_x} (\file{full\_integrator.py:1203},
+\file{full\_integrator.py:1213}, \file{full\_integrator.py:1228}) are the
+analytic-IFT analogues: they return real-space $\delta C(x,\tau)$ as a vector over
+the output positions \code{xs}, directly, with no $q$-grid. \textbf{These are the
+production entry points} the bridge calls for real-space output, and they are the
+bridge to Chapter~\ref{ch:spatial-heatkernel}.
+
+\begin{gotcha}
+\textbf{Complex per-diagram values are normal.} A derivative vertex with an odd
+number of derivatives gives a complex per-diagram contribution, because
+$\partial_x\to\ii k$ in momentum space. The \emph{physical} correlator is real:
+the imaginary parts cancel in the diagram sum and are dropped at the real-space
+output (\file{full\_integrator.py:710-716}). Do not panic at a complex
+intermediate value --- it is a bookkeeping artifact of a single diagram, not a
+sign of error.
+\end{gotcha}
+
+\section{The oracle evaluator}
+
+The sixth file, \file{generic\_evaluator.py}, is \emph{not} on the production
+path. Its banner says so in the first lines (\file{generic\_evaluator.py:2-4}):
+``ORACLE-ONLY --- not on the production path. Superseded by
+\code{full\_integrator.py} $\dots$ reached only by its own test(s). Kept as an
+independent numerical cross-check --- \code{compute\_cumulants} does NOT use this
+module.'' It evaluates a diagram by an older \emph{Dyson-convolution} route
+(self-energy $\sigma(q,u)$ followed by a single-mode Dyson dressing).
+
+\begin{gotcha}
+\textbf{The oracle still branches on topology --- which is exactly what the
+production design avoids.} \file{generic\_evaluator.py} branches on
+\code{is\_tadpole\_like()} to split the bubble and tadpole cases (in its
+\code{diagram\_delta\_C} dispatch). That is the \emph{only} place in the spatial
+subsystem where a topology branch survives, and it is a relic of the older design.
+It is kept solely so the topology-blind production integrator can be cross-checked
+against an independent implementation. Never call it from production code.
+\end{gotcha}
+
+\section{What feeds and consumes this subsystem}
+
+To close the loop on the data flow: the orchestrator that prepares the inputs and
+consumes the outputs is \file{msrjd/integration/spatial/pipeline\_bridge.py}.
+
+\textbf{In.} \code{build\_pipeline\_records} yields $(td,\text{pre})$ pairs per
+loop order --- a \code{TypedDiagram} and a symbolic prefactor. The bridge
+substitutes numeric couplings to get a float
+$\text{pv} = \text{float}(\text{pre}\big|_{\text{saddle}})$, builds the descriptor
+\code{dd = diagram\_to\_cstack(td)}, optionally a form factor \code{ff}, and tags
+the loop order. Diagrams with $|\text{pv}| < 10^{-14}$ are dropped.
+
+\textbf{Through.} For real-space output the bridge calls, per live diagram and per
+$\tau$ (\file{pipeline\_bridge.py:1697}):
+\begin{lstlisting}
+dCx_by_ell[el][it, :] += diagram_correlator_x(
+    dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
+    n_t=nt, n_s=ns, formfactor=ff, ...)
+\end{lstlisting}
+which flows \code{dd, pv} $\to$ \code{diagram\_value\_x} $\to$
+\code{diagram\_kinematic(..., xs=xg)} $\to$ the chamber loop $\to$
+\code{\_symanzik\_kernel\_batch} $\to$ \code{\_heat\_kernel\_x\_general} $\to$ the
+accumulated $\delta C(x)$.
+
+\textbf{Out.} The bridge accumulates an array of shape $(n_\tau, n_x)$ per loop
+order, which becomes \code{compute\_cumulants}'s $\delta C(x,\tau)$.
+
+\begin{note}
+\textbf{macOS fork crash --- a project-wide rule that touches this subsystem only
+by mandate.} Fork-based multiprocessing crashes the user's Jupyter kernel and
+operating system on this machine; the spatial path is therefore serial or
+thread-only by mandate. \emph{None} of the six files in this subsystem fork --- but
+if you extend the integrator, any parallelism you add must be thread-based (NumPy
+releases the GIL for the heavy linear algebra) or $q$-grid batching, never
+process- or fork-based.
+\end{note}
+
+\section{Recap}
+
+You have now seen the spine of the spatial integrator:
+\begin{enumerate}
+  \item \textbf{Why momentum-first} --- the close-pair pathology lives in the
+        momentum integral, so doing that integral analytically removes it
+        (\S\ref{sec:heatkernel}).
+  \item \textbf{Momentum routing} --- conservation at each spatial vertex, solved
+        symbolically with SymPy, gives the routing coefficients $(a_e,b_e)$
+        (\S\ref{sec:routing}).
+  \item \textbf{Symanzik polynomials} --- the loop Gaussian collapses to
+        $(4\pi D)^{-Ld/2}\Usym^{-d/2}\ee^{-Dq^{\mathsf T}Q_{\text{eff}}q}$, with
+        $\Usym=\det\Lambda$ and $Q_{\text{eff}}$ the Schur complement, exact in $L$
+        and $d$ (\S\ref{sec:symanzik}).
+  \item \textbf{The descriptor} --- \code{diagram\_to\_cstack} flattens every
+        typed diagram into one canonical form with no topology branch
+        (\S\ref{sec:descriptor}).
+  \item \textbf{Causal chambers} --- the retarded poset's linear extensions tile
+        the time domain into smooth chambers (\S\ref{sec:chambers}).
+  \item \textbf{The kinematic integral} --- \code{diagram\_kinematic} does the
+        residual smooth integral by batched Gauss--Legendre product grids over the
+        chambers (\S\ref{sec:kinematic}, \S\ref{sec:batched}), with three backends
+        trading memory for generality (\S\ref{sec:backends}).
+\end{enumerate}
+
+What this chapter \emph{deferred} is the step from the per-sample $q$-Gaussian to
+real-space $\delta C(x,\tau)$ --- the analytic inverse Fourier transform --- and
+the handling of derivative (form-factor) vertices. Both are
+Chapter~\ref{ch:spatial-heatkernel}. The coupled multi-field (unequal-$D$)
+extension, which replaces the single mass $\mu$ with a table of per-segment masses,
+is Chapter~\ref{ch:spatial-coupled}.

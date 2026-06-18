@@ -1,0 +1,1038 @@
+% ---------------------------------------------------------------------
+%  Appendix C : An Annotated File Index of the Source Tree
+% ---------------------------------------------------------------------
+\chapter{An Annotated File Index of the Source Tree}\label{app:file-index}
+
+The preceding chapters walked the pipeline \emph{by stage} --- the
+order in which data flows from a model description to a plotted cumulant.
+This appendix walks the same code \emph{by directory}. It is a map, not a
+tutorial: one line per module, what that module is responsible for, and
+which chapter of this manual opens it up. If you arrive at the repository
+cold, knowing the physics but not the layout, read this appendix first to
+find the file you want, then jump to the chapter the table points you at.
+
+The repository has a deliberate two-layer split, and understanding it is
+the single most useful orientation you can have:
+
+\begin{description}[style=nextline,leftmargin=1.4em]
+  \item[\file{msrjd/} --- the engine.] The model-agnostic physics core. It
+        knows about \msrjd{} actions, Feynman diagrams, propagators, loop
+        integrals, and symmetry factors, but it knows \emph{nothing} about
+        any particular model. It is pure \code{import}-able Python (running
+        under SageMath) with no notebook dependencies.
+  \item[\file{pipeline/} --- the driver.] The orchestration layer that
+        sequences the engine's stages, threads data dictionaries between
+        them, caches the expensive ones to disk, and exposes a single
+        master function, \code{compute\_cumulants}. It also hosts the
+        \emph{authoring} surface: the \code{TheoryBuilder} API, the
+        text-to-Sage compiler, the colored-noise rewriter, and the
+        \code{ipywidgets} theory-builder UI.
+  \item[\file{models/} --- the validators.] Independent direct simulators
+        (Euler--Maruyama SDE integrators, Poisson--Hawkes steppers,
+        spectral PDE solvers) and the cumulant estimators that turn their
+        output into the same correlator the engine predicts. These share
+        \emph{no code} with the engine; they exist so every prediction can
+        be checked against an experiment.
+  \item[\file{theories/} --- the models.] The declarative
+        \file{*.theory.py} files: one physical model each, the
+        version-controllable single source of truth.
+  \item[\file{notebooks/} --- the front desk.] The user-facing convenience
+        layer \code{daedalus.py} and the example, template, and validation
+        notebooks that drive it.
+\end{description}
+
+\begin{note}
+\textbf{How to read the tables.} Each table lists files under one
+directory. The first column is the file (always relative to the repository
+root, the navy monospace convention of this manual). The second column is
+its role in one phrase. The third column, ``Ch.'', is the chapter that
+covers it in depth --- a dash means the file is peripheral (a stub, an
+oracle-only cross-check, or a reference asset) and is documented here only.
+The roles below are taken from each module's own docstring and verified
+against its code; where a module's docstring and its behaviour disagree,
+the table reflects the \emph{behaviour}, and the discrepancy is flagged in
+Appendix~D (Known Issues and Open Questions).
+\end{note}
+
+\begin{gotcha}
+\textbf{Two things named ``serialize'' and two things named
+``propagator''.} The tree contains deliberate near-collisions that trip up
+newcomers. There are \emph{two} serializers ---
+\file{pipeline/theory\_serialize.py} (the \file{.theory.py} \emph{text}
+format) and \file{msrjd/core/serialize.py} (the \code{.sobj} \emph{binary}
+cache) --- and \emph{two} files called \code{propagator.py}, of which only
+\file{pipeline/\_propagator.py} is live; \file{msrjd/core/propagator.py} is
+a docstring-only stub. The tables call out each one. When you grep for a
+name, check which of the pair you have landed on.
+\end{gotcha}
+
+% =====================================================================
+\section{The engine: \texttt{msrjd/}}
+% =====================================================================
+
+\file{msrjd/} is the physics core, organised into five sub-packages:
+\file{core/} (the symbolic action, vertices, propagator-time-domain, and
+caching primitives), \file{enumeration/} (diagram topology generation),
+\file{diagrams/} (typing, causality, symmetry), \file{integration/} (the
+two loop-integral back ends, temporal and spatial), and a top-level
+\file{fork\_safety.py} guard shared across the parallel paths.
+
+\subsection{\texttt{msrjd/core/} --- the symbolic core}
+
+This is where a model dict becomes a symbolic \msrjd{} action, gets
+Taylor-expanded around the saddle, and is sorted into the free part (the
+inverse propagator) and the interaction vertices. Everything here is a
+SageMath symbolic-ring object; nothing is bound to a number yet.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/core/field\_theory.py
+  & The \code{FieldTheory} expander: builds the symbolic namespace,
+    evaluates the action lambda, resolves \code{Conv(...)} atoms, injects
+    correlated-noise cumulants, runs the multivariate Taylor expansion, and
+    bigrade-classifies the result into \code{ft.\_by\_tp} sectors. The
+    front end of the whole pipeline.
+  & \ref{ch:fieldtheory-core} \tabularnewline
+\addlinespace
+msrjd/core/vertices.py
+  & Decomposes each bigrade sector polynomial into individual typed
+    monomials: \code{VertexType} (interaction), \code{SourceType} (noise),
+    and the kernel-carrying subclasses \code{ConvVertexType} (conductance
+    $g(\tau)$ kernel) and \code{NoiseSourceType} (non-local $\kappa(\tau)$
+    kernel).
+  & \ref{ch:fieldtheory-core} \tabularnewline
+\addlinespace
+msrjd/core/convolution.py
+  & The formal \code{Conv(kernel, field)} operator and its reduction rules
+    --- how a registered synaptic kernel multiplied by a field is held
+    symbolically until the propagator step can resolve it.
+  & \ref{ch:fieldtheory-core} \tabularnewline
+\addlinespace
+msrjd/core/serialize.py
+  & Save/load of an \emph{expanded} theory to a directory
+    (\code{metadata.json} $+$ \code{symbolic\_data.sobj}). The
+    \code{.sobj}-cache serializer --- not the \file{.theory.py} text format
+    (that is \file{pipeline/theory\_serialize.py}).
+  & \ref{ch:fieldtheory-core},\,\ref{ch:caching} \tabularnewline
+\addlinespace
+msrjd/core/cache.py
+  & \code{PipelineCache}: the low-level stage-keyed \code{.sobj} store both
+    higher-level caches build on. Keys each pipeline stage (enumeration,
+    filtering, typing, dedup, grouping) by $(k,\ell)$ so a notebook restart
+    skips the expensive recomputation.
+  & \ref{ch:caching} \tabularnewline
+\addlinespace
+msrjd/core/propagator.py
+  & \textbf{Stub only.} A ten-line docstring marked ``Status: Not yet
+    extracted --- logic currently lives in the demo notebook''. Imported by
+    nothing on the working path; the live propagator code is
+    \file{pipeline/\_propagator.py}.
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{msrjd/enumeration/} --- diagram topology}
+
+Given only the two integers $k$ (correlator order) and $\ell$ (loop order),
+this package produces the complete, deduplicated list of bare graph
+topologies --- \term{prediagrams} --- that could contribute, before any
+physics is attached. It is theory-agnostic: it never looks at the action.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/enumeration/\newline loop\_diagram\_enumeration.py
+  & The three-stage topology generator: nonisomorphic trees $\to$
+    topologies (add $\ell$ edges) $\to$ prediagrams (orient every edge),
+    each stage a filter-plus-deduplicate. Calls the \code{nauty} graph
+    canonicaliser through Sage for the isomorphism rejection.
+  & \ref{ch:enumeration} \tabularnewline
+\addlinespace
+msrjd/enumeration/degree\_scan.py
+  & Build Phase C, the feedback bridge. Scans the enumerated prediagrams
+    for their maximum vertex degree and, if a diagram needs a higher-degree
+    vertex than the action was expanded to, triggers a re-expansion via
+    \code{available\_degrees}.
+  & \ref{ch:enumeration} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{msrjd/diagrams/} --- typing, causality, symmetry}
+
+This package turns a bare oriented graph into a fully labelled Feynman
+diagram you can integrate: it decorates edges with propagators and vertices
+with monomials (typing), prunes the acausal ones, deduplicates, and
+attaches the symmetry factor $\Sym(\Gamma)$.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/diagrams/filter.py
+  & Build Phase D. A cheap set-membership check that discards prediagrams
+    whose vertex-degree signature no vertex or source in the theory could
+    supply --- run \emph{before} the expensive typing step.
+  & \ref{ch:type-assignment} \tabularnewline
+\addlinespace
+msrjd/diagrams/\newline type\_assignment.py
+  & Build Phase E, the heart of the subsystem. A backtracking
+    constraint-satisfaction engine that emits every valid
+    \code{TypedDiagram}: which monomial sits at each vertex, which external
+    field on each leg, and which propagator $G_{ij}$ rides each directed
+    edge.
+  & \ref{ch:type-assignment} \tabularnewline
+\addlinespace
+msrjd/diagrams/causality.py
+  & Build Phase F. Prunes typed diagrams that violate the retarded boundary
+    condition --- structurally, the graph must be a DAG (no directed cycle);
+    analytically, all propagator poles in the upper half $\omega$-plane.
+  & \ref{ch:type-assignment} \tabularnewline
+\addlinespace
+msrjd/diagrams/symmetry.py
+  & Build Phase G. Deduplicates typed diagrams via a complete
+    graph-isomorphism invariant (Sage canonical labelling) and computes the
+    symmetry factor
+    $\Sym(\Gamma)=\big(\prod_v\prod_\ell n_{v,\ell}!\big)/|\Aut_{\text{fixed-ext}}(\Gamma)|$.
+    Also hosts \code{external\_wick\_compensation} and
+    \code{vertex\_role\_signature}, used by the integrators.
+  & \ref{ch:type-assignment},\,\ref{ch:grouped-phasej} \tabularnewline
+\addlinespace
+msrjd/fork\_safety.py
+  & The canonical fork-safety guard shared by every fork-based
+    multiprocessing path. Detects ``am I inside a macOS Jupyter/ZMQ
+    kernel?'' and, if so, silently degrades a parallel path to serial to
+    avoid the fork-after-Cocoa/BLAS kernel crash.
+  & \ref{ch:type-assignment} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{msrjd/integration/time\_domain/} --- the temporal loop integrator}
+
+This is ``Phase J'': it takes each typed diagram's product of retarded
+propagators and integrates over the internal vertex times. Because every
+retarded propagator is a sum of decaying exponentials, the integral over a
+causal-ordering polytope has a closed form, so the engine almost never
+falls back to brute quadrature.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/integration/\newline time\_domain/final\_integral.py
+  & The 5{,}269-line core. \code{integrate\_diagram} and the family of
+    closed-form mode-sum evaluators (\code{\_integrate\_1d\_polytope\_modesum},
+    \code{\_integrate\_2d\_polygon\_modesum},
+    \code{\_integrate\_nd\_polytope\_poset\_modesum}), the \code{EdgeModeSum}
+    representation, and the pole-tuple enumerator. The numerical heart of
+    the temporal pipeline.
+  & \ref{ch:phasej-temporal} \tabularnewline
+\addlinespace
+msrjd/integration/\newline time\_domain/pipeline.py
+  & The orchestration/batching layer over the per-diagram core:
+    \code{compute\_correction\_td} loops the integrator once per typed
+    diagram and assembles the per-loop-order correction. Carries the
+    fork-guarded \code{total\_C\_batch} parallel path.
+  & \ref{ch:phasej-temporal} \tabularnewline
+\addlinespace
+msrjd/integration/\newline time\_domain/propagator\_td.py
+  & Turns frequency-domain propagator data (poles, residues,
+    \code{D\_delta}) into the time-domain matrix $G(t)$ = pole-residue sum
+    $+\;\delta(t)$ part, with per-edge lookups \code{G\_t\_entry} and
+    \code{G\_t\_delta\_coeff} the integrators call.
+  & \ref{ch:propagator},\,\ref{ch:phasej-temporal} \tabularnewline
+\addlinespace
+msrjd/integration/\newline time\_domain/grouped\_integral.py
+  & The grouped evaluator \code{integrate\_grouped\_diagram} and its
+    closed-form helpers: evaluates all typed diagrams sharing one prediagram
+    together, summing the per-edge propagator-index choices into one
+    mode-sum instead of re-integrating each.
+  & \ref{ch:grouped-phasej} \tabularnewline
+\addlinespace
+msrjd/integration/\newline time\_domain/subgraph.py
+  & \textbf{Near-stub.} \code{identify\_loop\_subgraphs} returns \code{[]}
+    (a never-finished loop-reduction route). Still re-exported by the
+    package \code{\_\_init\_\_} and touched by a test, so it is a live import
+    surface with a dead body.
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{msrjd/integration/spatial/} --- the spatial loop integrator}
+
+For a stochastic \emph{partial} differential equation the engine does the
+momentum integral first and analytically: every diagram, any $k$, any
+$\ell$, any dimension $d$, reduces to the \emph{same} Symanzik integral and
+is evaluated by the \emph{same} code. Several files in this package are
+banner-annotated \emph{oracle-only}: independent cross-checks that
+\code{compute\_cumulants} never calls but the production code is tested
+against.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/integration/\newline spatial/full\_integrator.py
+  & The production integrator. \code{diagram\_kinematic} and the batched
+    Symanzik core (\code{\_momentum\_factor\_batch},
+    \code{\_symanzik\_kernel\_batch}, \code{\_heat\_kernel\_x\_general}), the
+    \code{grid}/\code{mc}/\code{bessel} back ends, and the assembly chain
+    \code{diagram\_value\_x} $\to$ \code{diagram\_correlator\_x} $\to$
+    \code{correlator\_2pt\_x}. ``One genuine integral evaluates every
+    enumerated diagram.''
+  & \ref{ch:spatial-core},\,\ref{ch:spatial-heatkernel} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/diagram\_descriptor.py
+  & \code{diagram\_to\_cstack}: flattens a typed diagram into the canonical
+    \code{CStackDiagram} edge list (frozen \code{CEdge} records), contracting
+    each 2-point noise source into a single $C$ edge. Topology-blind by
+    design --- no bubble/tadpole/sunset branch.
+  & \ref{ch:spatial-core} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/momentum\_routing.py
+  & \code{route\_momenta}: solves momentum conservation at each spatial
+    vertex with SymPy's \code{linsolve}, returning the per-edge routing
+    coefficients $(a_e,b_e)$ via \code{edge\_coeffs()}. The only SymPy in
+    the spatial subsystem.
+  & \ref{ch:spatial-core} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/spatial\_reduce.py
+  & The textbook single-sample Symanzik reference:
+    \code{symanzik\_matrices} ($\Lambda,N,Q$),
+    \code{symanzik\_polynomials} ($\Usym=\det\Lambda$, $Q_{\text{eff}}$ via
+    Schur complement), \code{momentum\_integral}. Exists so the batched
+    production version can be checked against it.
+  & \ref{ch:spatial-core} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/causal\_chambers.py
+  & \code{causal\_chambers}: wraps the temporal pipeline's \code{\_CausalPoset}
+    and \code{\_enumerate\_linear\_extensions} to tile the internal-time
+    domain into smooth ordering chambers. Also a reference
+    \code{integrate\_over\_chambers} (nested \code{scipy.quad}).
+  & \ref{ch:spatial-core} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/heat\_kernel.py
+  & The real-space propagator layer. \code{build\_spatial\_propagator} /
+    \code{make\_g\_tx\_callables} and the analytic inverse Fourier transform
+    of the momentum Gaussian to the heat kernel
+    $(4\pi Bt)^{-d/2}\ee^{-x^2/4Bt}$ --- the trick that retired the
+    $q$-grid.
+  & \ref{ch:spatial-heatkernel} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/spatial\_correlator.py
+  & The analytic $q\to x$ Fourier transforms used to land the diagram answer
+    $C(q,\tau)$ in physical $(x,\tau)$ space, and the per-mode heat-kernel
+    structure the bridge certifies against.
+  & \ref{ch:spatial-heatkernel} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/spectral\_propagator.py
+  & Builds the coupled multi-field free propagator $\ee^{-Mt}$ via the
+    spectral (eigenprojector) decomposition of the reaction matrix $M$ --- the
+    equal-diffusion coupled-tree path.
+  & \ref{ch:spatial-coupled} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/dyson\_dressing.py
+  & The Dyson--Duhamel series for unequal diffusion ($\mathcal{D}\ne D_0 I$):
+    splits $\mathcal{D}=D_0 I+\hat{\mathcal{D}}$ and re-sums the residual
+    $\hat{\mathcal{D}}|k|^2$ correction order by order.
+  & \ref{ch:spatial-coupled} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/pipeline\_bridge.py
+  & The 2{,}157-line spatial$\to$shared-pipeline bridge and dispatcher.
+    ``Route through the shared pipeline, then certify'': substitutes
+    $\Lap\to-q^2$, runs the same enumeration/typing/Phase-J path, certifies
+    against the heat-kernel structure, then does the analytic $q\to x$
+    transform. Hosts the \code{SPATIAL\_*} environment knobs and the memory
+    guard.
+  & \ref{ch:spatial-core},\,\ref{ch:spatial-coupled} \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/generic\_evaluator.py
+  & \emph{Oracle only.} An older Dyson-convolution evaluator that still
+    branches on \code{is\_tadpole\_like()} --- the one surviving topology
+    branch, kept as an independent cross-check. Not on the production path.
+  & --- \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/loop\_dyson.py
+  & \emph{Oracle only.} Loop-level single-mode Dyson cross-check, reached
+    only by its own test.
+  & --- \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/loop\_parametric.py
+  & \emph{Oracle only.} A parametric (Feynman-parameter) loop cross-check.
+  & --- \tabularnewline
+\addlinespace
+msrjd/integration/\newline spatial/temporal\_integrate.py
+  & \emph{Oracle only.} A spatial-path temporal-integration cross-check.
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+\begin{note}
+\textbf{The diagnostic helpers.} A few short members of this package are
+inspection-only and never branched on in production:
+\code{CStackDiagram.is\_tadpole\_like()} in
+\file{diagram\_descriptor.py}, for example, classifies a diagram for
+display but the production evaluator stays topology-blind. Whether a loop
+momentum couples to the external $q$ is a property of the Symanzik $\Fsym$
+\emph{downstream}, not of any descriptor flag --- which is the whole
+``one integral, every diagram'' point.
+\end{note}
+
+\subsection{\texttt{msrjd/integration/} --- the two reference back ends}
+
+Two files sit directly under \file{integration/}, outside both
+\file{time\_domain/} and \file{spatial/}. Both predate the production
+integrators and survive as references or stubs.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+msrjd/integration/symbolic.py
+  & A frequency-domain symbolic diagram-integral constructor for
+    \emph{stationary} systems (the Helias \& Dahmen Ch.~9 method). A
+    reference implementation, distinct from the time-domain production path.
+  & \ref{ch:phasej-temporal} \tabularnewline
+\addlinespace
+msrjd/integration/numerical.py
+  & \textbf{Stub only.} Docstring marked ``Status: Not started'' (an
+    intended adaptive-quadrature / Monte-Carlo fallback). Imported by
+    nothing; the \code{numerical} grep hits elsewhere are the English word.
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+% =====================================================================
+\section{The driver: \texttt{pipeline/}}
+% =====================================================================
+
+\file{pipeline/} sequences the engine and exposes the authoring surface.
+It splits into the master orchestrator (\file{compute.py}), the
+underscore-prefixed phase modules it calls (\file{\_propagator.py},
+\file{\_mean\_field*.py}, \file{\_diagrams.py}, the two caches), the
+authoring API (\file{theory*.py}), the colored-noise rewriter, the result
+accessors and serializers, and the \file{ui/} sub-package.
+
+\subsection{Orchestration and the phase modules}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+pipeline/compute.py
+  & The spine. \code{compute\_cumulants(model, k, max\_ell, ...)} sequences
+    the seven phases (expand $\to$ propagator $\to$ mean field $\to$ poles
+    $\to$ enumerate $\to$ classify $\to$ Phase~J), branches spatial-vs-temporal,
+    assembles the per-loop-order decomposition, and records wall-time. Does
+    little arithmetic itself --- it is glue.
+  & \ref{ch:compute-orchestration} \tabularnewline
+\addlinespace
+pipeline/\_propagator.py
+  & The live propagator engine. Builds $K_{\text{ker}}\to K_{\text{ft}}\to
+    G_{\text{ft}}$, finds the retarded poles, and computes the residue
+    matrices \code{C\_mats} and the instantaneous matrix \code{D\_delta}.
+  & \ref{ch:propagator} \tabularnewline
+\addlinespace
+pipeline/\_mean\_field.py
+  & The legacy iteration saddle solver \code{solve\_mean\_field}: for
+    theories whose steady state is a self-consistency closure
+    $n^*_i=\phi(v^*_i)$. Iterates the rate-like variables, evaluates the
+    rest on the fly.
+  & \ref{ch:mean-field} \tabularnewline
+\addlinespace
+pipeline/\_mean\_field\_dae.py
+  & The DAE multi-root solver \code{solve\_mean\_field\_dae}: sets
+    $\partial_t\to0$ on the declared \code{.equation(...)} system,
+    multi-start Newton for all roots, dedup, optional linear-stability
+    classification, selects one root by index.
+  & \ref{ch:mean-field} \tabularnewline
+\addlinespace
+pipeline/\_diagrams.py
+  & The enumeration cache wrapper. \code{enumerate\_unique\_diagrams} wires
+    the four-stage diagram pipeline (prediagrams $\to$ typed $\to$ causal $\to$
+    unique) together with disk caching keyed by structure.
+  & \ref{ch:type-assignment},\,\ref{ch:caching} \tabularnewline
+\addlinespace
+pipeline/\_expand\_cache.py
+  & Disk cache for \code{FieldTheory.expand()} results, keyed by theory
+    structure and Taylor order, written under
+    \file{saved\_theories/<slug>/}. Avoids repeating the (up to
+    $\sim$90-minute) Taylor step.
+  & \ref{ch:caching} \tabularnewline
+\addlinespace
+pipeline/\_precompute.py
+  & \code{precompute(model)}: the one-time structural pass
+    (expand@order-2 $+$ propagator $+$ mean-field sanity check) that warms the
+    caches and is invoked by the UI's \emph{Pre-compute} button.
+  & \ref{ch:caching} \tabularnewline
+\addlinespace
+pipeline/\_grouped\_phase\_j.py
+  & The per-prediagram grouping wrapper \code{compute\_correction\_td\_grouped}
+    --- the dispatch site that hands one prediagram's typed-diagram family to
+    the grouped evaluator.
+  & \ref{ch:grouped-phasej} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{Authoring: builders, compiler, templates, serialization}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+pipeline/theory.py
+  & The fluent builder classes \code{TemporalTheoryBuilder},
+    \code{SpatialTheoryBuilder}, and the back-compatible \code{TheoryBuilder},
+    plus \code{build()}. Accumulates \code{.physical\_field(...)},
+    \code{.parameter(...)}, \code{.set\_action\_text(...)},
+    \code{.equation(...)} declarations into the model dict.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+pipeline/theory\_compiler.py
+  & Text-expression $\to$ Sage-lambda compilation. Turns the human-typed
+    action / mean-field / kernel / noise strings into the \code{SR}-returning
+    lambdas the \code{FieldTheory} expander expects; hosts \code{\_FieldScalar}
+    and the \code{ns} namespace.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+pipeline/theory\_templates.py
+  & Pre-canned action / kernel / noise templates that emit the Sage lambdas
+    directly, so a user can pick a template instead of typing the action.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+pipeline/theory\_serialize.py
+  & The \file{.theory.py} \emph{text} format bridge.
+    \code{render\_theory\_file} / \code{save\_theory\_to\_file} emit source
+    text from a spec dict; \code{load\_spec\_from\_file} parses it back via
+    the \code{ast} module (not by executing it). The round-trip behind the
+    UI's Save/Load.
+  & \ref{ch:theory-files} \tabularnewline
+\addlinespace
+pipeline/colored\_to\_markovian.py
+  & The builder-level preprocessor that rewrites a colored-noise cumulant
+    term into white noise by adding one auxiliary OU field per noisy field,
+    so the analytic integrators apply at $\ell\ge1$.
+  & \ref{ch:colored-markovian} \tabularnewline
+\addlinespace
+pipeline/spatial\_operator\_ir.py
+  & The \code{Lap}/\code{Dt}/\code{Dx} operator intermediate representation:
+    hosts spatial-derivative vertices (Model~B, Burgers, KPZ) as inert
+    symbolic nodes, gives the operator algebra, and lowers them to ring
+    generators so the Taylor machinery works unchanged.
+  & \ref{ch:theory-spec},\,\ref{ch:spatial-coupled} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{Result access, serialization, and reporting}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+pipeline/access.py
+  & Natural-name accessors for \code{compute\_cumulants} results: hides the
+    internal \msrjd{} naming (\code{dn} for fluctuations, \code{nstar} for
+    saddle values) behind the model's declared user-facing names, via
+    \code{model['naming\_convention']}.
+  & \ref{ch:cumulants-moments} \tabularnewline
+\addlinespace
+pipeline/save.py
+  & NPZ $+$ CSV serialization of results with a $k$-/$\ell$-/model-adaptive
+    schema: per-loop-order curves (\code{C\_tree}, \code{C\_<n>\_loop},
+    \code{C\_total}) plus mean-field arrays.
+  & \ref{ch:cumulants-moments} \tabularnewline
+\addlinespace
+pipeline/report.py
+  & A multi-page PDF showing prediagrams, typed-diagram assignments, and
+    per-diagram numerical contributions --- an intuition-building prototype.
+  & \ref{ch:cumulants-moments} \tabularnewline
+\addlinespace
+pipeline/\_\_init\_\_.py
+  & The package's public API surface: re-exports \code{compute\_cumulants}
+    and the high-level helpers so \code{from pipeline import ...} works in
+    scripts and notebooks.
+  & \ref{ch:compute-orchestration} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{pipeline/ui/} --- the graphical theory builder}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+pipeline/ui/main.py
+  & The 3{,}071-line \code{TheoryUI}: a 10-tab \code{ipywidgets} editor with
+    a live readiness sidebar and Save/Preview/Pre-compute/Load/Reset
+    buttons; \code{\_collect()} snapshots the form into a spec dict for
+    \code{theory\_serialize}.
+  & \ref{ch:ui} \tabularnewline
+\addlinespace
+pipeline/ui/widgets.py
+  & The reusable \code{ipywidgets} primitives the tabs compose from:
+    \code{DynamicTable}, \code{vector\_input}, \code{matrix\_input},
+    \code{expression\_input}, \code{textarea\_input}, \code{paste\_button},
+    \code{read\_system\_clipboard}.
+  & \ref{ch:ui} \tabularnewline
+\addlinespace
+pipeline/ui/\_\_init\_\_.py
+  & Re-exports \code{TheoryUI}.
+  & \ref{ch:ui} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{\texttt{pipeline/theories/} and \texttt{pipeline/examples/}}
+
+These are \emph{hand-written} model dicts and example scripts that predate
+the \file{theories/*.theory.py} format. They are not superseded --- the
+demo notebook and several tests still import them directly.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+pipeline/theories/\newline linear\_hawkes\_2pop\_delta.py
+  & Hand-written model dict: linear Hawkes, 2 populations, instantaneous
+    ($\delta$) synaptic kernel. Equivalent to
+    \file{models/hawkes\_linear\_sage.py}.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+pipeline/theories/\newline linear\_hawkes\_2pop\_expg.py,
+  \newline linear\_hawkes\_2pop\_expg\_gtas.py,
+  \newline quad\_hawkes\_2pop\_expg.py,
+  \newline quad\_hawkes\_2pop\_expg\_gtas.py
+  & The exponential-kernel and GTaS (Gaussian-truncated-and-shifted)
+    Hawkes variants, linear and quadratic. Imported by
+    \file{pipeline\_demo.ipynb}, several \file{*\_sim\_compare} notebooks, and
+    \file{pipeline/tests/test\_theory\_equivalence.py}.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+pipeline/examples/\newline run\_linear\_gtas.py
+  & A standalone end-to-end example script: compute the $k=2$
+    cross-correlator $\langle\delta n_1(0)\,\delta n_2(\tau)\rangle$ for the
+    linear-GTaS model and emit a PDF report.
+  & \ref{ch:compute-orchestration} \tabularnewline
+\addlinespace
+pipeline/tests/\newline test\_theory\_equivalence.py
+  & Asserts the hand-written \file{pipeline/theories/} dicts and the
+    builder-produced theories agree.
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+% =====================================================================
+\section{The validators: \texttt{models/}}
+% =====================================================================
+
+\file{models/} is the trust chain's other half: completely independent
+direct simulators and the estimators that turn their time series into the
+same cumulant slices the engine predicts. The two are overlaid in the
+\file{*\_sim\_compare} notebooks; if the diagrammatics are correct, the
+curves coincide within Monte-Carlo error.
+
+\subsection{SDE and field simulators}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+models/ou\_langevin\_sim\_numba.py
+  & Euler--Maruyama simulators for scalar Langevin SDEs (OU-type theories),
+    \code{numba}-JIT compiled. The simulator behind the quickstart's
+    \code{sim\_ou\_quartic\_numba}.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/spatial\_field\_1d\_sim.py
+  & Spectral exponential-Euler (ETD1) simulator for a 1D scalar stochastic
+    field on a periodic ring --- the spatial-v1 cross-check.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/spatial\_field\_2d\_sim.py
+  & 2D spectral ETD1 field simulator on a periodic square --- the $d=2$
+    validation oracle.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/spatial\_field\_3d\_sim.py
+  & 3D spectral ETD1 field simulator on a periodic cube --- the $d=3$
+    validation oracle.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/spatial\_field\_phi6\_1d\_sim.py
+  & ETD1 simulator for the 1D stochastic $\phi^6$ field (Allen--Cahn $+$
+    quintic force) --- the cross-check for the quintic theory.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/coupled\_rd\_1d\_sim.py
+  & $N$-species coupled stochastic reaction--diffusion Langevin simulator on
+    a ring --- the coupled-field cross-check.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/dendritic\_linear\_sim\_numba.py
+  & Soma$+$dendrite compartmental linear-rate simulator (\code{numba} JIT)
+    for the dendritic theory.
+  & \ref{ch:simulators} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{Hawkes / point-process simulators}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+models/hawkes\_sim\_numba.py
+  & \code{numba}-JIT Euler-step simulator for the linear Hawkes process
+    (fixed-step Poisson-draw realization).
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/hawkes\_sim\_multipop\_numba.py
+  & The linear \emph{multipopulation} Hawkes stepper.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/hawkes\_sim\_expg\_numba.py,
+  \newline hawkes\_sim\_quad\_expg\_numba.py
+  & Exponential-kernel Hawkes simulators, linear and quadratic.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/\newline hawkes\_sim\_linear\_expg\_gtas\_numba.py,
+  \newline hawkes\_sim\_quad\_expg\_gtas\_numba.py
+  & The GTaS-kernel Hawkes simulators, linear and quadratic.
+  & \ref{ch:simulators} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{Estimators and hand-written Hawkes model dicts}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+models/cumulant\_estimator.py
+  & The general $k$-point connected-cumulant estimator
+    (\code{estimate\_kpoint\_slices}): bins a trajectory and estimates the
+    connected cumulant density versus lag, removing the discrete-spike
+    shot-noise diagonal.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/cumulant\_direct\_numba.py
+  & \code{numba}-JIT direct (non-FFT) 3-point cumulant estimator --- the
+    $k=3$ companion to the general estimator.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+models/hawkes\_sage.py,
+  \newline hawkes\_linear\_sage.py
+  & Hand-written SageMath model specifications for the nonlinear and linear
+    Hawkes processes.
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+models/hawkes\_linear\_expg.py,
+  \newline hawkes\_quad\_expg.py,
+  \newline hawkes\_linear\_expg\_gtas.py,
+  \newline hawkes\_quad\_expg\_gtas.py
+  & Hand-written model dicts for the exponential- and GTaS-kernel Hawkes
+    families (the symbolic counterparts of the simulators above).
+    \file{hawkes\_quad\_expg.py} is the canonical worked example in the
+    field-theory-core chapter.
+  & \ref{ch:fieldtheory-core},\,\ref{ch:theory-spec} \tabularnewline
+\end{longtable}
+\end{center}
+
+% =====================================================================
+\section{The models: \texttt{theories/}}
+% =====================================================================
+
+Each \file{theories/<name>.theory.py} is one physical model: an importable
+module exposing exactly \code{build()} (returns the model dict),
+\code{DEFAULT\_FUNDAMENTAL} (default numeric parameters), and
+\code{METADATA} (run recommendations). \code{dd.load\_theory('<name>')}
+imports the file and calls \code{build()}. Rather than list all
+forty-plus, the table groups them by the builder they use and the
+capability each exercises; the loadable name is the filename without the
+\file{.theory.py} suffix.
+
+\begin{center}
+\begin{longtable}{@{}>{\raggedright}p{0.30\textwidth} >{\ttfamily\footnotesize\raggedright}p{0.40\textwidth} >{\centering}p{0.16\textwidth}@{}}
+\toprule
+\textbf{group (builder)} & \normalfont\textbf{representative files} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Temporal, single field, the nonlinear baseline
+  & ou\_quartic, ou\_quartic\_double\_well, ou\_sextic,
+    toy\_quartic\_double\_well
+  & \ref{ch:quickstart},\,\ref{ch:theory-files} \tabularnewline
+\addlinespace
+Temporal, colored / correlated noise
+  & ou\_quartic\_colored, ou\_quartic\_two\_dim,
+    ou\_quartic\_two\_dim\_corr, ou\_quartic\_two\_dim\_color\_corr
+  & \ref{ch:colored-markovian} \tabularnewline
+\addlinespace
+Temporal Hawkes (point process)
+  & linear\_hawkes, quadratic\_hawkes, quadratic\_hawkes\_alpha
+  & \ref{ch:theory-spec} \tabularnewline
+\addlinespace
+Temporal neuron / compartmental tests
+  & single\_pop\_dendritic\_linear,
+    single\_population\_conductance\_test,
+    single\_population\_spike\_reset\_test,
+    single\_population\_quad\_exp\_test, multipopulation\_test
+  & \ref{ch:theory-spec},\,\ref{ch:mean-field} \tabularnewline
+\addlinespace
+Spatial, single field, plain vertex
+  & allen\_cahn\_1d\_subcritical\_infinite,
+    allen\_cahn\_1d\_subcritical\_pbc,
+    allen\_cahn\_quintic\_1d\_subcritical\_infinite,
+    reaction\_diffusion\_quadratic\_1d
+  & \ref{ch:spatial-core},\,\ref{ch:spatial-heatkernel} \tabularnewline
+\addlinespace
+Spatial, derivative vertex (operator IR)
+  & kpz\_1d, kpz\_2d, burgers\_1d, edwards\_wilkinson\_1d,
+    reaction\_diffusion\_conserved\_1d
+  & \ref{ch:spatial-heatkernel},\,\ref{ch:spatial-coupled} \tabularnewline
+\addlinespace
+Spatial, coupled / combined fields
+  & coupled\_rd\_2species\_1d, reaction\_diffusion\_2d,
+    combined\_allencahn\_modelb\_kpz\_\{1,2,3\}d, linear\_field\_2d,
+    linear\_diffusion\_test
+  & \ref{ch:spatial-coupled} \tabularnewline
+\end{longtable}
+\end{center}
+
+\begin{note}
+\textbf{Builder-class hint.} Files using \code{TemporalTheoryBuilder} are
+time-only; \code{SpatialTheoryBuilder} files are PDEs; a handful (e.g.
+\file{combined\_allencahn\_modelb\_kpz\_1d.theory.py},
+\file{linear\_field\_2d.theory.py}) use the back-compatible
+\code{TheoryBuilder} that auto-detects at \code{build()} time. The
+\code{*\_test} files are regression fixtures exercising one feature each
+(spike-reset resets, conductance synapses, $\delta$- vs exponential
+voltage), not headline physics.
+\end{note}
+
+% =====================================================================
+\section{The front desk and notebooks: \texttt{notebooks/}}
+% =====================================================================
+
+\subsection{The convenience layer}
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{file} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+notebooks/daedalus.py
+  & The 1{,}101-line front desk imported as \code{dd}. The four verbs
+    (\code{load\_theory}, \code{Config}, \code{run}, \code{plot\_cumulant})
+    plus introspection helpers and the \code{output='moment'} assembly
+    layer. Thin orchestration --- it does almost no physics.
+  & \ref{ch:quickstart},\,\ref{ch:engine-api},\,\ref{ch:cumulants-moments} \tabularnewline
+\end{longtable}
+\end{center}
+
+\subsection{The notebook directories}
+
+The notebooks are not modules to read line-by-line; they are the
+runnable surface. They are grouped by purpose:
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.31\textwidth} >{\raggedright}p{0.50\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{directory} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+notebooks/examples/
+  & The nine bonafide example notebooks, one per pipeline capability,
+    each with a model-info $\to$ theory $\to$ sim structure
+    (\file{temporal\_ou\_quartic\_white.ipynb} is the quickstart's).
+  & \ref{ch:quickstart},\,\ref{ch:engine-api} \tabularnewline
+\addlinespace
+notebooks/templates/
+  & The four group templates (\{temporal,spatial\}$\times$\{single,multi\})
+    plus \code{*\_sim\_compare} variants that every demo is generated from.
+  & \ref{ch:engine-api} \tabularnewline
+\addlinespace
+notebooks/temporal/
+  & The temporal \code{*\_sim\_compare} validation notebooks (OU quartic,
+    Hawkes, conductance, spike-reset, $\dots$) --- theory overlaid on
+    simulation.
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+notebooks/spatial/
+  & The spatial \code{*\_sim\_compare} validation notebooks (Allen--Cahn,
+    KPZ, Burgers, Model~B, coupled RD, $d=1,2,3$).
+  & \ref{ch:simulators} \tabularnewline
+\addlinespace
+notebooks/legacy/
+  & The pre-pipeline demo notebooks (enumeration, field-theory-Sage,
+    Hawkes time-domain), kept for provenance.
+  & --- \tabularnewline
+\addlinespace
+notebooks/\newline theory\_builder.ipynb,
+  \newline theory\_runner.ipynb
+  & The single-cell launchers for the \code{TheoryUI} form and for running a
+    saved \file{.theory.py}.
+  & \ref{ch:ui} \tabularnewline
+\end{longtable}
+\end{center}
+
+% =====================================================================
+\section{Supporting trees: tests, scripts, legacy, docs}
+% =====================================================================
+
+The remaining top-level directories are not part of the runtime data flow
+but are essential to working in the repository.
+
+\begin{center}
+\begin{longtable}{@{}>{\ttfamily\footnotesize\raggedright}p{0.27\textwidth} >{\raggedright}p{0.54\textwidth} >{\centering}p{0.05\textwidth}@{}}
+\toprule
+\normalfont\textbf{directory} & \textbf{role} & \textbf{Ch.} \tabularnewline
+\midrule
+\endhead
+\bottomrule
+\endfoot
+tests/
+  & The pytest suite (61 \code{test\_*.py} files). One file per subsystem
+    plus the oracle cross-checks: e.g. \file{test\_full\_integrator.py},
+    \file{test\_spatial\_reduce.py}, \file{test\_momentum\_routing.py},
+    \file{test\_symmetry.py}, \file{test\_grouped\_vs\_perdiag.py},
+    \file{test\_all\_k\_boltzmann.py}, \file{test\_kpz\_burgers\_sim.py},
+    \file{test\_generic\_evaluator.py} (the spatial oracle),
+    \file{test\_fork\_safety.py}.
+  & all \tabularnewline
+\addlinespace
+scripts/
+  & Standalone runnable scripts; currently
+    \file{scripts/profile\_pipeline\_k3.py}, a $k=3$ profiling harness.
+  & --- \tabularnewline
+\addlinespace
+legacy/
+  & The pre-pipeline \code{sympy}-era codebase (the original Enumeration
+    Code, Field Theory Framework, Theory Builder, and \code{*\_sympy.py}
+    modules), isolated and kept for provenance. \emph{Not} on any live
+    path.
+  & --- \tabularnewline
+\addlinespace
+saved\_theories/
+  & The on-disk \code{.sobj} cache (per-theory \file{<slug>/} directories of
+    pickled propagators, expanded actions, and unique-diagram sets, plus a
+    \code{manifest.json}). Gitignored, regenerable.
+  & \ref{ch:caching} \tabularnewline
+\addlinespace
+docs/
+  & The prose documentation, design records, and this manual
+    (\file{docs/manual/}). \file{docs/spatial\_pipeline.md} is the
+    authoritative spatial-state reference; \file{docs/CHANGELOG.md} is the
+    chronological fix log.
+  & --- \tabularnewline
+\addlinespace
+scratch/, \newline pipeline\_outputs/
+  & Throwaway probe scripts/logs and generated run artefacts respectively.
+    Not part of the codebase; safe to delete. (\file{scratch/} also holds
+    the tropical-Monte-Carlo research PDFs cited by the efficiency roadmap.)
+  & --- \tabularnewline
+\end{longtable}
+\end{center}
+
+% =====================================================================
+\section{The shortest path to the file you want}
+% =====================================================================
+
+To close, a reverse index --- start from what you are trying to do, and
+this tells you which file (and chapter) to open:
+
+\begin{description}[style=nextline,leftmargin=1.4em]
+  \item[``I want to add a new model.''] Write a
+        \file{theories/<name>.theory.py} using \file{pipeline/theory.py}'s
+        builder (Chapter~\ref{ch:theory-spec},
+        Chapter~\ref{ch:theory-files}), or point-and-click it with
+        \file{pipeline/ui/main.py} (Chapter~\ref{ch:ui}).
+  \item[``I want to run a model and plot it.''] \file{notebooks/daedalus.py}
+        --- the \code{load\_theory $\to$ Config $\to$ run $\to$ plot} spine
+        (Chapter~\ref{ch:quickstart}, Chapter~\ref{ch:engine-api}).
+  \item[``The answer is wrong and I suspect the diagrams.''] The enumeration
+        is \file{msrjd/enumeration/loop\_diagram\_enumeration.py}
+        (Chapter~\ref{ch:enumeration}); the typing/symmetry is
+        \file{msrjd/diagrams/} (Chapter~\ref{ch:type-assignment}).
+  \item[``The answer is wrong and I suspect the loop integral.''] Temporal:
+        \file{msrjd/integration/time\_domain/final\_integral.py}
+        (Chapter~\ref{ch:phasej-temporal}). Spatial:
+        \file{msrjd/integration/spatial/full\_integrator.py}
+        (Chapter~\ref{ch:spatial-core},
+        Chapter~\ref{ch:spatial-heatkernel}).
+  \item[``The saddle looks wrong.''] \file{pipeline/\_mean\_field\_dae.py}
+        (Chapter~\ref{ch:mean-field}).
+  \item[``It is too slow / it recomputes every run.''] The caches:
+        \file{pipeline/\_expand\_cache.py} and \file{pipeline/\_diagrams.py}
+        (Chapter~\ref{ch:caching}).
+  \item[``I want to check it against a simulation.''] The matching
+        \file{models/*\_sim*.py} simulator $+$
+        \file{models/cumulant\_estimator.py} (Chapter~\ref{ch:simulators}),
+        driven from a \file{notebooks/\{temporal,spatial\}/*\_sim\_compare.ipynb}.
+  \item[``Where does it all start?''] \code{compute\_cumulants} in
+        \file{pipeline/compute.py} (Chapter~\ref{ch:compute-orchestration})
+        --- the one function every path runs through.
+\end{description}

@@ -1,0 +1,127 @@
+% ---------------------------------------------------------------------
+%  How to read this manual  (unnumbered front-matter chapter)
+% ---------------------------------------------------------------------
+\chapter*{How to Read This Manual}
+\addcontentsline{toc}{chapter}{How to Read This Manual}
+\markboth{How to Read This Manual}{How to Read This Manual}
+
+\section*{Who this is for}
+
+This manual documents the internals of \Daedalus{}, the automated
+\msrjd{} Feynman-diagram engine.  It is written for someone who
+understands the \emph{physics} --- stochastic differential equations, the
+response-field (\msrjd) formalism, Feynman diagrams, and the loop expansion ---
+but who has \emph{not} necessarily worked with the specific software libraries
+the engine is built on.  The two audiences we keep in mind are:
+
+\begin{itemize}[nosep]
+  \item a new lab member who wants to \emph{use} the pipeline to compute
+        cumulants for their own model, and
+  \item a developer who needs to \emph{modify or extend} a specific stage and
+        must understand exactly what the code does and why.
+\end{itemize}
+
+Wherever a piece of external tooling appears --- SageMath, the \code{nauty}
+graph generator, \code{sympy}, \code{numba}, \code{scipy} --- we explain what it
+is and how the engine uses it, from the ground up.  When we must choose between
+saying too much and too little, we say too much.
+
+\section*{How the manual is organised}
+
+The book is divided into six parts that follow the data as it flows through the
+pipeline, plus appendices:
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[Part I --- Orientation] A bird's-eye view of the whole pipeline and a
+        worked ``hello world'': from a text description of a model to a plotted
+        cumulant in a dozen lines.
+  \item[Part II --- Specifying a Model] How you describe a stochastic (S)PDE to
+        the engine: the \code{TheoryBuilder} authoring API, the on-disk
+        \file{.theory.py} file format, and the automatic rewriting of
+        colored noise into an auxiliary Markovian field.
+  \item[Part III --- Building the Perturbation Theory] The symbolic core:
+        expanding the action into vertices, constructing the propagator,
+        solving for the mean-field saddle, enumerating diagrams, assigning
+        edge types, computing symmetry factors, and caching all of it.
+  \item[Part IV --- Evaluating Diagrams: Temporal Models] The time-domain loop
+        integrator (``Phase~J''), both the per-diagram and the grouped analytic
+        mode-sum paths.
+  \item[Part V --- Evaluating Diagrams: Spatial Models] The momentum-space
+        integrator for stochastic PDEs: Symanzik polynomials, causal chambers,
+        the heat-kernel inverse Fourier transform, and coupled multi-field
+        dressing.
+  \item[Part VI --- Assembly and the User Surface] How the per-diagram numbers
+        are assembled into cumulants and moments, the user-facing
+        \code{daedalus} API, the validation simulators, and the graphical
+        theory-builder UI.
+  \item[Appendices] A glossary, a consolidated primer on the external tools, a
+        file-by-file index of the source tree, and a register of known issues
+        and open questions.
+\end{description}
+
+You do not have to read linearly.  If you only want to \emph{use} the pipeline,
+Part~I and the \code{daedalus} API chapter are enough.  If you are debugging a
+specific stage, jump straight to its chapter; each is written to stand on its
+own, with back-references where context is needed.
+
+\section*{Typographic conventions}
+
+\begin{itemize}[nosep]
+  \item \code{Inline monospace} denotes code: a function, variable, keyword
+        argument, or short snippet.
+  \item \file{src/path/to/file.py} (navy monospace) denotes a path in the
+        repository, always relative to the repository root.
+  \item The \emph{first} appearance of a technical \term{term} is set in bold
+        and defined nearby; every such term also appears in the glossary
+        (Appendix~A).
+  \item Multi-line code is shown in framed listings.  Python listings use
+        syntax highlighting; console sessions and output are shown verbatim.
+\end{itemize}
+
+Three kinds of callout box punctuate the text:
+
+\begin{note}
+A clarification or a useful aside --- safe to skim, helpful to read.
+\end{note}
+
+\begin{gotcha}
+A sharp edge: a non-obvious requirement, a platform-specific hazard, or a place
+where the obvious thing is wrong.  Read these.
+\end{gotcha}
+
+\begin{defn}
+A precise definition of a term or object the surrounding text depends on.
+\end{defn}
+
+\section*{Running the examples}
+
+Every runnable example assumes the engine is imported through its convenience
+layer:
+
+\begin{lstlisting}
+import daedalus as dd                 # notebooks/daedalus.py
+model, mod = dd.load_theory('ou_quartic')
+cfg = dd.Config(k=2, max_ell=2,
+                external_fields=[('dx', 1), ('dx', 1)],
+                parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0})
+res = dd.run(model, cfg, mod)
+\end{lstlisting}
+
+\begin{gotcha}
+The engine runs inside \textbf{SageMath}, not a plain CPython interpreter.  All
+scripts must be launched with \code{sage -python yourscript.py}, and notebooks
+must use the \emph{SageMath} Jupyter kernel.  Sage provides the exact symbolic
+algebra and the multivariate polynomial rings the engine relies on; a stock
+\code{python3} will not have them.  See Appendix~B for what Sage is and why it is
+required.
+\end{gotcha}
+
+\section*{A note on accuracy}
+
+This manual was assembled by reading the source directly, and each chapter was
+cross-checked against the code it describes.  Discrepancies discovered during
+that process --- places where the code and its documentation or intent did not
+line up --- are not silently papered over; they are recorded in
+Appendix~D (Known Issues and Open Questions) for follow-up.  If you find the code
+doing something this manual does not describe, Appendix~D is the first place to
+look.

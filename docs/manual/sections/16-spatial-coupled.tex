@@ -1,0 +1,1280 @@
+% ---------------------------------------------------------------------
+%  Chapter 16 : Coupled Fields, Dyson Dressing, the Operator IR, and the Bridge
+% ---------------------------------------------------------------------
+\chapter{Coupled Fields, Dyson Dressing, and the Bridge}\label{ch:spatial-coupled}
+
+The two preceding spatial chapters built the machinery for the \emph{easy}
+spatial case: a single physical field whose linear dynamics is a plain heat
+kernel, $\Gret(t,k)=\Theta(t)\,\ee^{-(\mu+Dk^{2})t}$, and whose only
+complication is a derivative-free interaction vertex. That covers a surprising
+amount of physics, but it leaves three genuinely harder situations untouched,
+and each one breaks a different assumption of the diagonal path:
+
+\begin{enumerate}
+  \item \term{Coupled multi-field theories.} When several fields
+        $\phi_{1},\dots,\phi_{N}$ have linear dynamics that \emph{mix} --- an
+        off-diagonal reaction (``mass'') matrix $M$ --- the free propagator is a
+        \emph{matrix} exponential $\ee^{-Mt}$, not a product of independent
+        scalar modes. The single-pole-per-field picture is simply wrong.
+  \item \term{Unequal diffusion.} When the diffusion matrix $\mathcal{D}$ is not
+        a scalar multiple of the identity, $M$ and $\mathcal{D}$ do not commute,
+        so $\ee^{-(M+\mathcal{D}k^{2})t}$ does not factor and has no simple
+        $k$-dependence. There is no closed-form propagator to read off.
+  \item \term{Derivative vertices.} A vertex like Model~B's conserved
+        $\Lap(\phi^{2})$, Burgers' $\partial_{x}(\phi^{2})$, or KPZ's
+        $(\partial_{x}\phi)^{2}$ carries spatial derivatives. These cannot be
+        folded into a momentum-independent coupling; each one deposits a
+        \emph{momentum form factor} that the loop integrator must average.
+\end{enumerate}
+
+This chapter is the part of the engine that handles all three. It is, in
+practice, four cooperating modules:
+\file{spectral\_propagator.py} (the coupled free propagator),
+\file{dyson\_dressing.py} (the unequal-diffusion correction series),
+\file{spatial\_operator\_ir.py} (the symbolic operator algebra for derivative
+vertices), and \file{pipeline\_bridge.py} (the 2157-line dispatcher that ties
+everything to the shared diagram pipeline). A fifth module,
+\file{loop\_dyson.py}, is an off-the-production-path cross-check oracle we
+describe at the very end.
+
+The organising idea --- stated in the bridge's own module docstring --- is
+worth fixing in your mind before any of the math: \textbf{route through the
+shared pipeline, then certify.} Rather than re-implementing diagrammatics for
+the spatial case, the bridge substitutes $\Lap\to-q^{2}$ and runs the
+\emph{same} enumeration, classification, and time-domain integration that a
+time-only theory uses; it then \emph{certifies} that the diagram answer
+$C(q,\tau)$ equals the per-mode structure read off the propagator, before doing
+the external $q\to x$ Fourier transform analytically.
+
+\begin{note}
+Everything in this chapter sits \emph{behind} the public
+\code{compute\_cumulants} call you met in the quickstart. You do not invoke
+\code{compute\_coupled\_tree\_correlator} or \code{dressed\_tree\_C} by hand;
+\code{compute\_cumulants} dispatches to them based on the shape of your theory
+(coupled or not, equal or unequal diffusion, tree or loop, $k=2$ or $k\ge3$).
+This chapter explains \emph{what} it dispatches to and \emph{why}.
+\end{note}
+
+\section{Where this subsystem sits}
+
+The end-to-end flow, from the text you type to the array that comes out, runs:
+
+\begin{lstlisting}[style=console]
+theory file (.theory.py)
+  -> SpatialTheoryBuilder / theory_compiler   (operator IR lowering lives here)
+  -> FieldTheory.expand()                      (multivariate Taylor -> vertices)
+  -> build_propagator / build_spatial_propagator   (the `prop` dict)
+  -> compute_cumulants   (the public entry; dispatches by spatial_dim/coupling)
+       -> compute_spatial_correlator_via_pipeline    (tree, diagonal)
+       -> compute_coupled_tree_correlator            (tree, coupled)
+       -> compute_spatial_correlator_generic         (loops, single-field)
+       -> compute_coupled_loop_correlator            (loops, coupled)
+       -> compute_spatial_kpoint / compute_coupled_kpoint   (k>=3)
+  -> C(x, tau) array  ->  notebook / sim comparison
+\end{lstlisting}
+
+The five drivers in the middle are all in \file{pipeline\_bridge.py}, and the
+chapter walks through them roughly in that order. The bridge \emph{feeds on} the
+expanded \code{FieldTheory} object (\code{ft}), the model dict (\code{model}),
+the propagator dict (\code{prop}), and the numeric parameters (\code{num\_params},
+which crucially includes the mean-field saddle). It \emph{calls into} the shared
+diagram pipeline, the spatial \code{full\_integrator} (the one genuine loop
+integral, Chapter~\ref{ch:spatial-core}), the coupled-field modules of this
+chapter, and the analytic $q\to x$ transforms in \code{spatial\_correlator}. It
+\emph{produces} a real-space correlator array \code{C[len(tau\_grid),
+len(spatial\_grid)]} plus an \code{info} dict of diagnostics.
+
+\section{Why coupled fields need a different propagator}
+
+Start with the linear theory, because the interaction structure rides on top of
+it. For an $N$-component field the linearized inverse propagator --- the
+bilinear ``kernel'' in the \msrjd{} action --- is, in the mixed
+frequency/momentum representation $(\omega,k)$,
+\begin{equation}
+  K(\omega,k) \;=\; -\ii\omega\,I \;+\; M \;+\; \mathcal{D}\,|k|^{2}.
+  \label{eq:Kwk}
+\end{equation}
+Two matrices appear, and both can be non-trivial:
+\begin{itemize}
+  \item $M$ is the \term{reaction matrix} (or mass matrix),
+        $M=\mathrm{diag}(\mu_{i})-A^{(0)}$. It is the $k^{0}$
+        (momentum-independent) part. Its off-diagonal entries are linear
+        couplings between fields; diagonal $M$ means decoupled fields.
+  \item $\mathcal{D}$ is the \term{diffusion matrix},
+        $\mathcal{D}=\mathrm{diag}(D_{i})+A^{(2)}$. It is the $k^{2}$ part.
+        $\mathcal{D}\propto I$ means equal (scalar) diffusion.
+\end{itemize}
+This is exactly the structure recorded in the \file{spectral\_propagator.py}
+module docstring (lines~10--16), which names \eqref{eq:Kwk} and the two
+splittings verbatim.
+
+The retarded free propagator is the matrix Green's function
+\begin{equation}
+  \Gret(t,k)\;=\;\Theta(t)\,\ee^{-(M+\mathcal{D}|k|^{2})t}.
+  \label{eq:GRmatrix}
+\end{equation}
+Here is the trouble in one sentence: \emph{if $M$ and $\mathcal{D}$ do not
+commute, the exponent $M+\mathcal{D}|k|^{2}$ cannot be split, so
+\eqref{eq:GRmatrix} is not a product of two matrix exponentials and has no
+simple $k$-dependence.} The diagonal pipeline's whole strategy --- one
+$\omega$-pole per field, $k$ entering only through $\mu+Dk^{2}$ --- collapses.
+
+\subsection{The reference-diffusion split}
+
+The escape is to split off a \emph{scalar} reference diffusion and treat the
+rest as a perturbation. Write
+\begin{equation}
+  \mathcal{D}\;=\;D_{0}\,I\;+\;\widehat{\mathcal{D}},
+  \qquad D_{0}\in\mathbb{R},\qquad
+  \widehat{\mathcal{D}}=\text{residual}\ (=0\ \text{iff}\ \mathcal{D}\propto I).
+  \label{eq:Dsplit}
+\end{equation}
+The reference kernel $K_{0}=-\ii\omega\,I+M+D_{0}|k|^{2}\,I$ now has scalar
+diffusion, which commutes with \emph{everything}. The only remaining
+non-commuting object is $M$ itself, and a diagonalizable $M$ can always be
+resolved into its spectral projectors:
+\begin{equation}
+  M\;=\;\sum_{\alpha} m_{\alpha}\,P_{\alpha},
+  \qquad \sum_{\alpha}P_{\alpha}=I,
+  \qquad P_{\alpha}P_{\beta}=\delta_{\alpha\beta}P_{\alpha}.
+  \label{eq:spectral}
+\end{equation}
+The $m_{\alpha}$ are the eigenvalues of $M$ and $P_{\alpha}$ is the rank-one
+projector onto the $\alpha$-th eigenspace, built as the outer product of the
+right eigenvector with the corresponding row of the inverse eigenvector matrix.
+With this, the \term{reference propagator} is closed form (the paper's
+Appendix~B, eq.~B23):
+\begin{equation}
+  G_{0}(t,k)\;=\;\Theta(t)\sum_{\alpha}P_{\alpha}\,
+     \ee^{-(m_{\alpha}+D_{0}|k|^{2})t}
+   \;=\;\Theta(t)\,\ee^{-Mt}\,\ee^{-D_{0}|k|^{2}t}.
+  \label{eq:G0}
+\end{equation}
+
+Two exactness facts make this more than a formal manoeuvre, and both are stated
+in the module docstring (lines~33--37) and validated in
+\file{tests/test\_spectral\_propagator.py}:
+\begin{itemize}
+  \item \textbf{If $\widehat{\mathcal{D}}=0$} (scalar diffusion, even with a
+        coupled $M$), then $G_{0}$ is the \emph{exact} full propagator. No
+        series is needed. This alone unlocks every coupled-reaction,
+        equal-diffusion theory.
+  \item \textbf{If $M$ and $\mathcal{D}$ are both diagonal}, $G_{0}$ reduces to
+        the per-field scalar heat kernel $\ee^{-(\mu_{i}+D_{i}|k|^{2})t}$ that
+        the diagonal pipeline (\code{heat\_kernel.py}) already builds. So the
+        coupled code degenerates gracefully to the case you already know.
+\end{itemize}
+
+\begin{defn}
+A matrix $M$ is \term{diagonalizable} if it has a full set of linearly
+independent eigenvectors, i.e. $M=V\,\mathrm{diag}(m_{\alpha})\,V^{-1}$ for an
+invertible $V$. The spectral resolution \eqref{eq:spectral} exists exactly when
+$M$ is diagonalizable. A \term{defective} matrix (repeated eigenvalues with
+non-trivial Jordan blocks) has no such resolution and would need the resolvent /
+confluent form; that case is deliberately deferred.
+\end{defn}
+
+\section{Building the projectors: \texttt{spectral\_propagator.py}}
+
+The numeric core lives in five functions plus a cached dataclass. We take them
+in the order the data flows.
+
+\subsection{Splitting the diffusion}
+
+\code{split\_reference\_diffusion(D\_mat, D0=None)}
+(\file{spectral\_propagator.py:55}) implements \eqref{eq:Dsplit}:
+
+\begin{lstlisting}
+def split_reference_diffusion(D_mat, D0=None):
+    D_mat = np.asarray(D_mat, dtype=float)
+    n = D_mat.shape[0]
+    if D0 is None:
+        D0 = float(np.trace(D_mat) / n)
+    Dhat = D_mat - D0 * np.eye(n)
+    return float(D0), Dhat
+\end{lstlisting}
+
+When you do not pass a $D_{0}$, it defaults to the isotropic part
+$\mathrm{trace}(\mathcal{D})/N$ --- the mean eigenvalue. That is a sensible
+reference because it minimizes a natural norm of $\widehat{\mathcal{D}}$, which
+(as \S\ref{sec:dyson} shows) is exactly what governs the convergence of the
+Dyson series. The override exists so a caller can retune $D_{0}$ to shrink the
+ratio $\lVert\widehat{\mathcal{D}}\rVert/D_{0}$.
+
+\subsection{The spectral projectors and the defectiveness guard}
+
+\code{spectral\_projectors(M)} (\file{spectral\_propagator.py:70}) is the
+literal translation of \eqref{eq:spectral}:
+
+\begin{lstlisting}
+def spectral_projectors(M):
+    M = np.asarray(M, dtype=complex)
+    w, V = np.linalg.eig(M)
+    cond = np.linalg.cond(V)
+    if not np.isfinite(cond) or cond > _COND_CAP:
+        raise ValueError(...)   # near-defective: deferred
+    Vinv = np.linalg.inv(V)
+    proj = [np.outer(V[:, a], Vinv[a, :]) for a in range(len(w))]
+    return w, proj
+\end{lstlisting}
+
+Two NumPy calls do the algebra. \code{np.linalg.eig(M)} returns the eigenvalues
+\code{w} (the $m_{\alpha}$) and the matrix \code{V} whose columns are the right
+eigenvectors. The projector $P_{\alpha}=$ \code{np.outer(V[:,a], Vinv[a,:])} is
+the outer product of the $\alpha$-th eigenvector with the $\alpha$-th row of
+$V^{-1}$ --- the standard construction of the rank-one spectral projector of a
+diagonalizable matrix.
+
+\begin{defn}
+\code{np.linalg.cond(V)} is the \term{condition number} of \code{V}: the ratio
+of its largest to smallest singular value. It measures how close \code{V} is to
+singular. A nearly defective $M$ has nearly parallel eigenvectors, so \code{V}
+is nearly singular and \code{cond} blows up. The guard
+\code{\_COND\_CAP = 1e10} (\file{spectral\_propagator.py:52}) is the line in the
+sand: above it, the projector construction is numerically unreliable and the
+function \emph{raises} \code{ValueError} rather than return garbage.
+\end{defn}
+
+\begin{gotcha}
+The guard catches a \emph{near}-defective $M$ before it produces silently wrong
+numbers, but it is the only protection: there is no fallback to a confluent or
+resolvent form. If your theory has a genuinely defective reaction matrix (a
+repeated eigenvalue with a Jordan block), this subsystem will refuse it. In
+practice this is rare --- it requires a fine-tuned degeneracy --- but it is a
+hard boundary of the implementation, not a soft warning.
+\end{gotcha}
+
+\subsection{The cached reference}
+
+\code{SpectralReference} (\file{spectral\_propagator.py:91}) is a
+\code{@dataclass} that caches the spectral data so it is computed once per
+$(M,\mathcal{D})$ and reused across the whole $q\times\tau$ grid. It carries
+\code{M}, \code{D} (the full diffusion), \code{D0}, \code{Dhat}, \code{eigvals}
+(the $m_{\alpha}$), and \code{projectors} (the $P_{\alpha}$). Three properties
+encode the facts above:
+
+\begin{itemize}
+  \item \code{n\_fields} $=$ \code{M.shape[0]}.
+  \item \code{is\_scalar\_diffusion} $=$ \code{bool(np.allclose(self.Dhat, 0.0))}.
+        \textbf{When this is true, $G_{0}$ is the exact full propagator and no
+        Dyson series is needed.} This single boolean is the most consequential
+        branch point in the coupled tree path.
+  \item \code{G0(ksq, t)} returns the matrix
+        $\sum_{\alpha}P_{\alpha}\,\ee^{-(m_{\alpha}+D_{0}\cdot\code{ksq})t}$
+        (the caller applies $\Theta(t)$).
+\end{itemize}
+
+\code{build\_reference(M, D, D0=None)} (\file{spectral\_propagator.py:116}) is
+the single constructor every coupled path uses: it validates that $M$ and $D$
+are square and the same shape, splits the diffusion, computes the projectors,
+and assembles the dataclass.
+
+\begin{note}
+A \code{@dataclass} is a Python class whose boilerplate (the constructor, a
+readable \code{repr}, equality) is generated automatically from a few typed
+field declarations. You write the field list; Python writes
+\code{\_\_init\_\_}. It is the idiomatic way to carry a small bundle of related
+values, and you will see it again for the integrator's diagram descriptors.
+\end{note}
+
+\section{The tree-level coupled two-point}
+
+The free two-point of a coupled \emph{linear} theory is \emph{not} a sum of
+independent Ornstein--Uhlenbeck modes --- that diagonal form is precisely what
+the single-field path builds and what fails here. The correct object comes from
+two classical results of linear stochastic dynamics.
+
+Let $A(q)=M+\mathcal{D}|q|^{2}$ be the relaxation matrix at momentum $q$, and
+let $N$ be the symmetric noise covariance, read from the $(2,0)$ response-field
+sector of the action (the statement $\avg{\xi\xi^{\mathsf T}}=N$). Then:
+
+\begin{description}
+  \item[Lyapunov / stationary covariance.] The equal-time covariance
+        $\Sigma(q)$ solves the \term{continuous Lyapunov equation}
+        \begin{equation}
+          A(q)\,\Sigma(q)\;+\;\Sigma(q)\,A(q)^{\mathsf T}\;=\;N.
+          \label{eq:lyap}
+        \end{equation}
+  \item[Fluctuation--regression.] The relaxation of an equilibrium fluctuation
+        follows the same exponential law as a macroscopic perturbation
+        (Onsager's regression hypothesis), so
+        \begin{equation}
+          C(q,\tau)=\ee^{-A(q)|\tau|}\,\Sigma(q)\ \ (\tau\ge0),
+          \qquad
+          C(q,-\tau)=\Sigma(q)\,\ee^{-A(q)^{\mathsf T}|\tau|},
+          \label{eq:fdt}
+        \end{equation}
+        i.e. $C(q,\tau)=C(q,|\tau|)^{\mathsf T}$.
+\end{description}
+
+For scalar diffusion $A(q)=M+D_{0}|q|^{2}\,I$ shares $M$'s eigenprojectors, so
+$\ee^{-A|\tau|}$ \emph{is} $G_{0}(|q|^{2},|\tau|)$ and \eqref{eq:fdt} is exact.
+Unequal diffusion needs the Dyson series of the next section.
+
+\subsection{\texttt{coupled\_two\_point} and the Lyapunov solver}
+
+\code{lyapunov\_covariance(A, N)} (\file{spectral\_propagator.py:156}) is a
+single call to SciPy:
+
+\begin{lstlisting}
+def lyapunov_covariance(A, N):
+    A = np.asarray(A, dtype=float)
+    N = np.asarray(N, dtype=float)
+    return solve_continuous_lyapunov(A, N)
+\end{lstlisting}
+
+\code{coupled\_two\_point(ref, N, qsq, tau)}
+(\file{spectral\_propagator.py:169}) assembles \eqref{eq:lyap}--\eqref{eq:fdt}:
+
+\begin{lstlisting}
+def coupled_two_point(ref, N, qsq, tau):
+    if not ref.is_scalar_diffusion:
+        raise ValueError(...)          # unequal diffusion needs Dyson
+    n = ref.n_fields
+    A = np.asarray(ref.M, dtype=float) + ref.D0 * float(qsq) * np.eye(n)
+    Sigma = lyapunov_covariance(A, N)
+    G = expm(-A * abs(float(tau)))     # e^{-A|tau|}  (= G0 for scalar D)
+    return G @ Sigma if tau >= 0 else Sigma @ G.T
+\end{lstlisting}
+
+It forms $A=M+D_{0}q^{2}I$, solves for $\Sigma$, exponentiates, and returns
+$G\Sigma$ (or its transpose for $\tau<0$). The returned $(N,N)$ matrix has
+$C_{ij}$ equal to the cross-correlation of fields $i$ and $j$. The
+\code{raise} on the first line is the guard: this routine is for scalar
+diffusion only.
+
+\begin{defn}
+\code{scipy.linalg.solve\_continuous\_lyapunov(A, N)} solves
+$A\,X+X\,A^{\mathsf H}=Q$ for $X$ (here $Q=N$ and $A^{\mathsf H}=A^{\mathsf T}$
+since $A$ is real). It uses the \term{Bartels--Stewart algorithm} (a Schur
+decomposition followed by back-substitution), which is far more stable than
+forming and inverting the $N^{2}\times N^{2}$ Kronecker-product system by hand.
+\code{scipy.linalg.expm(Z)} is the \term{matrix exponential} $\ee^{Z}$, computed
+by a Pad\'e approximation with scaling-and-squaring --- robust even for
+non-normal matrices, which is essential here because $A$ need not be symmetric.
+\end{defn}
+
+\section{The Dyson--Duhamel series for unequal diffusion}\label{sec:dyson}
+
+When $\widehat{\mathcal{D}}\ne0$ there is no closed-form propagator, and we
+expand $\Gret$ in powers of the insertion $\widehat{\mathcal{D}}|k|^{2}$ (paper
+Appendix~B, \S B.24--B.30):
+\begin{align}
+  \Gret(t,k)&=\sum_{n\ge0}G_{n}(t,k),\notag\\
+  G_{n}(t,k)&=(-|k|^{2})^{n}\,\ee^{-D_{0}|k|^{2}t}\,\mathcal{H}_{n}(t).
+  \label{eq:B26}
+\end{align}
+The matrix factor $\mathcal{H}_{n}(t)$ comes from the $n$-fold \term{Duhamel
+convolution} --- each $\widehat{\mathcal{D}}$ insertion sandwiched between
+reference evolutions:
+\begin{equation}
+  G_{n}(t)=(-|k|^{2})^{n}\!\!\int\limits_{t\ge s_{1}\ge\cdots\ge s_{n}\ge0}
+   \!\!\ee^{-M(t-s_{1})}\widehat{\mathcal{D}}\,
+   \ee^{-M(s_{1}-s_{2})}\widehat{\mathcal{D}}\cdots
+   \ee^{-Ms_{n}}\,\dd\mathbf{s}.
+  \label{eq:duhamel}
+\end{equation}
+Inserting the spectral resolution \eqref{eq:spectral} for every $\ee^{-M(\cdot)}$
+turns this nested time integral into a \term{divided difference}, and
+shift-invariance factors out $\ee^{-m_{\alpha_{0}}t}$:
+\begin{equation}
+  \mathcal{H}_{n}(t)=\!\!\sum_{\alpha_{0}\dots\alpha_{n}}\!\!
+   P_{\alpha_{0}}\widehat{\mathcal{D}}P_{\alpha_{1}}\cdots
+   \widehat{\mathcal{D}}P_{\alpha_{n}}\,
+   \ee^{-m_{\alpha_{0}}t}\,
+   \Phi_{n}\!\big(t;\,m_{\alpha_{1}}-m_{\alpha_{0}},\dots,
+   m_{\alpha_{n}}-m_{\alpha_{0}}\big).
+  \label{eq:B27}
+\end{equation}
+
+\subsection{The one new primitive: \texorpdfstring{$\Phi_{n}$}{Phi\_n}}
+
+Everything in \eqref{eq:B27} is projector bookkeeping except the scalar function
+$\Phi_{n}$, the nested-simplex time integral
+\begin{equation}
+  \Phi_{n}(t;\nu_{1},\dots,\nu_{n})=\int_{\sigma_{n}}
+    t^{n}\,\ee^{-t\sum_{i}u_{i}\nu_{i}}\,\dd\mathbf{u},
+  \qquad \Phi_{0}(t)=1,
+  \label{eq:phin}
+\end{equation}
+over the standard simplex $\sigma_{n}=\{u_{i}\ge0,\ \sum u_{i}\le1\}$. The
+classical \term{Hermite--Genocchi formula} with $f(z)=\ee^{-tz}$ (so
+$f^{(n)}(z)=(-t)^{n}\ee^{-tz}$) and nodes $\{0,\nu_{1},\dots,\nu_{n}\}$ states
+that this simplex integral is, up to sign, the $n$-th divided difference of $f$:
+\begin{equation}
+  \Phi_{n}(t;\nu)=(-1)^{n}\,f[0,\nu_{1},\dots,\nu_{n}].
+  \label{eq:hg}
+\end{equation}
+
+\begin{defn}
+The \term{divided difference} $f[x_{0},\dots,x_{n}]$ is the leading coefficient
+of the degree-$n$ polynomial interpolating $f$ at the nodes $x_{0},\dots,x_{n}$;
+for distinct nodes it equals $\sum_{i}f(x_{i})/\prod_{j\ne i}(x_{i}-x_{j})$. The
+\term{Hermite--Genocchi formula} writes that same object as a simplex integral
+of $f^{(n)}$, which is what links the Duhamel integral \eqref{eq:duhamel} to the
+divided difference.
+\end{defn}
+
+\subsection{Confluent-safe evaluation: the Opitz theorem}
+
+The naive formula $\sum_{i}f(x_{i})/\prod_{j\ne i}(x_{i}-x_{j})$ is a numerical
+trap: it is $0/0$ whenever two nodes coincide or nearly coincide. And the
+eigenvalue differences $\nu=m_{\alpha_{i}}-m_{\alpha_{0}}$ \emph{routinely}
+repeat --- whenever several $m_{\alpha}$ are equal, or come as the
+complex-conjugate pairs that a real $M$ produces. The \term{Opitz theorem}
+sidesteps division entirely:
+
+\begin{quote}
+For analytic $f$, build the $(n+1)\times(n+1)$ upper-bidiagonal matrix $Z$ with
+the nodes $\{0,\nu_{1},\dots,\nu_{n}\}$ on the diagonal and ones on the
+superdiagonal. Then $f(Z)[0,n]=f[0,\nu_{1},\dots,\nu_{n}]$ --- the top-right
+corner of $f$ applied to $Z$.
+\end{quote}
+
+So $\Phi_{n}(t;\nu)=(-1)^{n}\,\code{expm}(-t\,Z)[0,n]$: a single matrix
+exponential of a tiny $(n+1)\times(n+1)$ matrix, exact at coincident nodes and
+stable at near-coincident ones. The implementation
+(\file{spectral\_propagator.py:221}) is:
+
+\begin{lstlisting}
+def phi_n(t, nus):
+    nus = np.asarray(nus, dtype=complex).ravel()
+    n = nus.size
+    if n == 0:
+        return complex(1.0)
+    Z = _opitz_bidiagonal(nus)
+    return complex((-1) ** n * expm(-float(t) * Z)[0, n])
+\end{lstlisting}
+
+with \code{\_opitz\_bidiagonal} (\file{spectral\_propagator.py:211}) building
+$Z$ via \code{np.diag(np.ones(n), k=1)} (ones on the superdiagonal) and then
+writing the nodes onto the diagonal.
+
+\begin{example}\label{ex:phi1}
+The $n=1$ check from the docstring (\file{spectral\_propagator.py:240}). With
+$Z=\begin{psmallmatrix}0&1\\0&\nu\end{psmallmatrix}$,
+$\code{expm}(-tZ)[0,1]=-t\,(1-\ee^{-t\nu})/(t\nu)=-(1-\ee^{-t\nu})/\nu$; times
+$(-1)$ gives $\Phi_{1}=(1-\ee^{-t\nu})/\nu$, which is exactly
+$\int_{0}^{1}t\,\ee^{-tu\nu}\,\dd u$. The formula reduces to the textbook answer,
+and --- crucially --- it has a finite limit $\Phi_{1}\to t$ as $\nu\to0$ with no
+cancellation, because the matrix exponential never divides by $\nu$.
+\end{example}
+
+\begin{gotcha}
+\code{phi\_n} always returns a Python \code{complex}, never a float, even when
+the inputs look real. This is deliberate: a real $M$ can have a complex
+spectrum, so the node differences $\nu$ come in conjugate pairs. The callers
+decide when it is safe to take the real part. \code{phi\_n\_batch}
+(\file{spectral\_propagator.py:259}) is the vectorized version --- one
+\code{expm} per $t$ on the shared tiny $Z$ --- used by the dressing assembly.
+\end{gotcha}
+
+\subsection{Assembling the dressing: \texttt{dyson\_dressing.py}}
+
+\code{hcal\_n(ts, M, Dhat, n)} (\file{dyson\_dressing.py:47}) is the direct
+transcription of \eqref{eq:B27}:
+
+\begin{lstlisting}
+def hcal_n(ts, M, Dhat, n):
+    eig, proj = spectral_projectors(M)
+    nf = len(eig)
+    out = np.zeros((ts.size, nf, nf), dtype=complex)
+    for string in itertools.product(range(nf), repeat=n + 1):
+        mat = proj[string[0]]
+        for a_i in string[1:]:
+            mat = mat @ Dhat @ proj[a_i]
+        if not np.any(np.abs(mat) > 1e-300):
+            continue                                   # skip a zero string
+        m0 = eig[string[0]]
+        nus = [eig[a_i] - m0 for a_i in string[1:]]
+        scal = np.exp(-m0 * ts) * phi_n_batch(ts, nus)
+        out += scal[:, None, None] * mat[None, :, :]
+    return out
+\end{lstlisting}
+
+It loops over every projector string $(\alpha_{0},\dots,\alpha_{n})$ ---
+\code{itertools.product(range(nf), repeat=n+1)} enumerates all $N^{n+1}$ of
+them --- builds the outer-product chain
+$P_{\alpha_{0}}\widehat{\mathcal{D}}P_{\alpha_{1}}\cdots\widehat{\mathcal{D}}P_{\alpha_{n}}$,
+skips strings whose matrix is numerically zero, forms the scalar
+$\ee^{-m_{\alpha_{0}}t}\Phi_{n}$ via \code{phi\_n\_batch}, and accumulates the
+$\text{scalar}\otimes\text{matrix}$ product. The cost is $N^{n+1}$ strings ---
+acceptable because the truncation order $n$ stays small ($\lesssim4$).
+
+\begin{defn}
+\code{itertools.product(range(nf), repeat=m)} is the Python standard-library
+Cartesian-product generator: it yields every length-$m$ tuple of values drawn
+from $0,\dots,nf-1$, i.e. exactly the index strings summed in \eqref{eq:B27}.
+\code{np.einsum} (used below) is NumPy's Einstein-summation engine: you write the
+index pattern of a tensor contraction as a string and it performs the sum in
+compiled C.
+\end{defn}
+
+\code{dressed\_GR(ts, qsq, M, Dhat, D0, order)} (\file{dyson\_dressing.py:73})
+assembles \eqref{eq:B26}: $\sum_{n=0}^{\text{order}}(-q^{2})^{n}\mathcal{H}_{n}$,
+multiplied by $\ee^{-D_{0}q^{2}t}$. At \code{order=0} it is exactly the scalar
+reference $G_{0}$.
+
+\subsection{The dressed tree two-point and its convergence}
+
+With the dressed retarded propagator in hand, the dressed tree two-point is the
+same $\int\,\dd s\,\Gret N\Gret^{\mathsf T}$ structure as
+\eqref{eq:fdt}, now evaluated by quadrature because $\Gret$ is a series rather
+than a single exponential:
+\begin{equation}
+  C^{(N)}(q,\tau\ge0)=\int_{0}^{\infty}\dd s\;
+    \Gret^{(N)}(\tau+s,q)\,N\,\Gret^{(N)}(s,q)^{\mathsf T}.
+  \label{eq:dressedC}
+\end{equation}
+\code{dressed\_tree\_C(q, tau, M, Dhat, D0, N, order, n\_s=48,
+s\_cap\_scale=32.0)} (\file{dyson\_dressing.py:87}) does this:
+
+\begin{lstlisting}
+    cap = s_cap_scale / (mu_min + float(D0) * float(q) ** 2)
+    xv, wv = np.polynomial.legendre.leggauss(n_s)
+    vv = 0.5 * (xv + 1.0)
+    s_nodes = cap * vv * vv
+    s_w = wv * cap * vv                                  # int ds = sum w*cap*v
+    ...
+    C = np.einsum('s,sij,jk,slk->il', s_w, G_late, N, G_early)
+\end{lstlisting}
+
+Two ideas are worth unpacking. First, it validates that
+$\min\mathrm{Re}\,\mathrm{eig}(M)>0$ (a stable theory) and \emph{raises}
+otherwise. Second, the $s$-integral uses a \term{$\sigma$-concentrated
+substitution} $s=\code{cap}\cdot v^{2}$: \term{Gauss--Legendre quadrature} (fixed
+nodes \code{xv} and weights \code{wv} on $[-1,1]$, from \code{leggauss}) is mapped
+through $s=\code{cap}\,v^{2}$ so the nodes pack near $s=0$, where the integrand is
+largest, with \code{cap} set by the slowest eigenvalue. This is the same trick
+the chamber integrator uses, and it makes a modest \code{n\_s=48} accurate.
+
+\begin{defn}
+\term{Gauss--Legendre quadrature} approximates $\int_{-1}^{1}g\,\dd v$ by a
+weighted sum $\sum_{i}w_{i}\,g(v_{i})$ at fixed nodes; an $n$-point rule is exact
+for polynomials of degree $\le 2n-1$. \code{np.polynomial.legendre.leggauss(n)}
+returns the nodes and weights. The substitution $s=\code{cap}\,v^{2}$ turns the
+half-line $\int_{0}^{\infty}$ into $\int_{0}^{1}$ while concentrating sample
+points near the origin.
+\end{defn}
+
+The convergence of the truncation is governed by the \term{residual ratio}
+\begin{equation}
+  \rho=\frac{\lVert\widehat{\mathcal{D}}\rVert}{D_{0}}
+       =\frac{\max|\mathrm{eig}(\widehat{\mathcal{D}})|}{D_{0}}.
+  \label{eq:rho}
+\end{equation}
+The series is geometric in the order at large $q$ and \emph{exact at $q=0$}
+(where the insertion $\widehat{\mathcal{D}}|k|^{2}$ vanishes), so convergence
+requires $\rho<1$. The bridge checks this (\S\ref{sec:dispatch}) and you can
+shrink $\rho$ by retuning $D_{0}$.
+
+\section{Loop-level coupled fields: spectral assignments}
+
+So far this has all been tree-level (the linear theory). At loop order the
+interaction vertices return, and a beautiful simplification appears for scalar
+diffusion.
+
+With $\widehat{\mathcal{D}}=0$, \emph{every} edge's momentum factor is the same
+heat kernel $\ee^{-D_{0}k^{2}w}$. The Symanzik (parametric-momentum) machinery
+of Chapter~\ref{ch:spatial-core} --- which only ever sees scalar diffusion --- is
+therefore completely untouched. The coupling lives entirely in the time/matrix
+factor: each retarded segment carries $\sum_{\alpha}P_{\alpha}\,\ee^{-m_{\alpha}w}$.
+Expanding every segment (a retarded ``R'' edge is one segment; a correlation
+``C'' edge is two glued half-segments) turns one coupled diagram into a
+\emph{weighted sum of scalar diagrams}:
+\begin{equation}
+  \text{value}(\Gamma)=\code{pv}\cdot
+   \sum_{\{\alpha_{r}\}}\prod_{r}[P_{\alpha_{r}}]_{p_{r}r_{r}}\cdot
+   I_{\text{spec}}\big(\{m_{\alpha_{r}}\}\big).
+  \label{eq:specassign}
+\end{equation}
+Here $(r_{r},p_{r})$ are the segment's (response, physical) matrix indices,
+threaded through the edge descriptor's \code{fpairs}; \code{pv} is the
+enumeration's $\Sym(\Gamma)\cdot\text{prefactor}$; and $I_{\text{spec}}$ is the
+shared Symanzik/chamber quadrature evaluated for one mass assignment, with all
+assignments batched against a single integral pass.
+
+\code{compute\_coupled\_loop\_correlator} (\file{pipeline\_bridge.py:1090})
+implements \eqref{eq:specassign}. Its docstring (lines~1104--1110) states the
+formula and one subtle normalization point that is worth flagging:
+
+\begin{gotcha}
+The single-field generic path multiplies by a universal $2^{-n_{C}}$ factor (the
+one-segment ``C'' convention). The coupled spectral-assignment paths do
+\emph{not}: the two-glued-segment ``C'' representation natively produces the
+Lyapunov denominator $1/(m_{\alpha}+m_{\beta}+2D_{0}k^{2})$, so the conversion
+does not apply (\file{pipeline\_bridge.py:1108-1110}). Mixing the two conventions
+is a classic source of a factor-of-$2^{n_{C}}$ error.
+\end{gotcha}
+
+Mechanically, the driver maps each enumerated loop diagram to the integrator's
+``C-stack'' descriptor (\code{diagram\_to\_cstack}), expands it into rows
+(\code{spectral\_rows}), reads the $(\text{resp},\text{phys})$ indices off each
+edge's \code{fpairs}, and builds the full assignment grid with
+\code{itertools.product(range(nf), repeat=n\_rows)}. Per-assignment weights are
+the product $\prod_{r}[P_{\alpha_{r}}]_{p_{r}r_{r}}$, the live ones are kept, and
+the mass table $\{m_{\alpha_{r}}\}$ feeds the one shared quadrature pass.
+
+\begin{gotcha}
+\textbf{Cross-correlator $\tau$-asymmetry (the $i\ne j$ fix).} For an
+\emph{auto}-correlator ($i=j$) the two mirror-image records dedupe to one record
+plus the $\Gamma(\tau)+\Gamma(-\tau)$ retarded completion. For a
+\emph{cross}-correlator ($i\ne j$) \emph{both} mirror records survive and each is
+evaluated once at the times matching its own leaf field order --- applying the
+$\pm\tau$ completion there would double-count and symmetrize away the genuine
+$\tau$-asymmetry of $C_{ij}$ (\file{pipeline\_bridge.py:1368-1400}). The
+coupled-loop and coupled-$k$-point drivers handle this with the orbit-stabilizer
+mapping sum (\S\ref{sec:kpoint}); the comment notes the two views coincide at
+$k=2$.
+\end{gotcha}
+
+When the diffusion is unequal, the loop path layers the Dyson $\mathcal{H}_{n}$
+insertions onto individual segments via a generalized partial-fraction expansion
+of the $n$-fold Duhamel convolution (the \code{\_pf\_labels} / \code{\_hn\_labels}
+machinery, with a log-derivative Bell expansion for repeated masses), and refuses
+periodic boundaries or derivative vertices in this v1.
+
+\section{The operator IR for derivative vertices}
+
+We now switch from the matrix structure of coupled fields to the third hard
+case: vertices that carry spatial derivatives. The home for these is
+\file{spatial\_operator\_ir.py}, a small \term{intermediate representation} (IR)
+that hosts the operators $\Lap$ ($\nabla^{2}$), $\partial_{t}$, and
+$\partial_{x_{i}}$ as symbolic nodes and gives them an explicit algebra.
+
+\subsection{Why an IR, and why inert nodes}
+
+The module docstring (lines~10--20) argues the design from two failed
+alternatives. A bare multiplicative symbol --- writing
+\code{D*Laplacian*phi} --- loses \emph{which field the derivative acts on}
+(\code{phi*Laplacian*phi} is ambiguous) and carries no operator algebra, so
+linearity and the homogeneous-saddle annihilation would have to be hand-patched
+downstream. Sage's own \code{laplacian()} (the Laplace--Beltrami operator from
+SageManifolds) wants a manifold, a metric, and \code{DiffScalarField} objects,
+and does not compose with the \msrjd{} field-doubling and multivariate-Taylor
+machinery, which works on commutative polynomial-ring generators.
+
+The solution is to host the operators as \term{inert Sage function
+applications}:
+
+\begin{lstlisting}
+from sage.all import SR, I, function
+_LAP = function('Lap')              # nabla^2 (.)
+_DT  = function('Dt')               # d_t (.)
+_DX  = function('Dx')               # d_{x_i} (., i)
+\end{lstlisting}
+
+(\file{spatial\_operator\_ir.py:59,68-70}).
+
+\begin{defn}
+Sage's \code{function('Lap')} creates an \term{inert symbolic function}: a
+callable symbol with no defined evaluation rule. So \code{Lap(phi)} is just a
+tree node \code{Lap(phi)} that survives substitution, printing, and tree-walking
+unchanged --- Sage never tries to ``compute'' it. The entire IR design rests on
+this: the operators are inert nodes, and \emph{all} semantics live in explicit
+passes. Note also that Sage's \term{Symbolic Ring} \code{SR} caches symbols by
+name, so \code{SR.var('Laplacian')} anywhere returns the same object --- a
+property the bridge exploits when it substitutes $\Lap\to-q^{2}$.
+\end{defn}
+
+A companion bare symbol \code{GRADX\_SYM = SR.var('GradX', ...)}
+(\file{spatial\_operator\_ir.py:78}) is what a \emph{bilinear} $\partial_{x}$
+lowers to (the first-derivative analogue of \code{Laplacian}); the heat-kernel
+propagator substitutes \code{GradX}$\to \ii k$ to read off a drift coefficient
+$V$.
+
+\subsection{The passes}
+
+The IR's semantics are a sequence of tree-walking passes, each one a single
+clearly-scoped transformation.
+
+\paragraph{Linearity (always valid).}
+\code{apply\_linearity(expr, fields, coords=('x','y','z'))}
+(\file{spatial\_operator\_ir.py:147}) pushes every operator node through sums and
+constant coefficients: $\Lap(a\,\delta\phi+b\,\delta\psi)\to a\,\Lap(\delta\phi)+b\,\Lap(\delta\psi)$
+for field- and coordinate-independent $a,b$. The inner helper \code{\_lin\_node}
+first \code{.expand()}s the argument so binomial powers become sums (so
+$\Lap((\bar\phi+\delta\phi)^{3})$ distributes term by term, the Cahn--Hilliard
+$\nabla^{2}\phi^{3}$ case), distributes over $+$, pulls out the constant factor,
+and rebuilds the operator on the fluctuation part. An argument with no
+fluctuation left --- $\Lap(\bar\phi)$, $\Lap(\bar\phi^{2})$, or a pure coordinate
+coefficient --- stays \emph{atomic}.
+
+\begin{gotcha}
+A factor that depends on a \emph{coordinate} is deliberately \emph{not} pulled
+out: $f(x)\,\nabla^{2}\phi$ is left atomic, because its Leibniz/product rule and
+the resulting $\hat f(p)$ momentum injection are a separate, deferred layer
+(\file{spatial\_operator\_ir.py:51-53}). \code{apply\_linearity} is the
+\emph{constant}-coefficient rule only.
+\end{gotcha}
+
+\paragraph{Saddle expansion (mean kept).}
+\code{expand\_about\_saddle(expr, replacements, ...)}
+(\file{spatial\_operator\_ir.py:220}) substitutes
+$\phi\to\bar\phi+\delta\phi$ per \code{replacements = \{field: (mean, fluct)\}}
+and re-applies linearity, so $\Lap(\bar\phi+\delta\phi)\to\Lap(\bar\phi)+\Lap(\delta\phi)$.
+The mean term is \emph{retained}.
+
+\paragraph{Contingent annihilation.}
+\code{kill\_means(expr, mean\_syms, ops=('Lap','Dt','Dx'))}
+(\file{spatial\_operator\_ir.py:245}) sends $\mathrm{Op}(\text{arg})\to0$
+whenever \code{arg} depends only on the mean symbols. This is the
+\emph{contingent} fact that the saddle is spatially homogeneous (for
+$\Lap$/$\partial_{x}$) and/or stationary (for $\partial_{t}$).
+
+\begin{gotcha}
+\code{apply\_linearity} (always-valid algebra) and \code{kill\_means} (contingent
+on a homogeneous saddle) are \emph{two separate passes} on purpose. For an
+\emph{inhomogeneous} saddle --- a front, a pattern --- you omit \code{Lap} from
+\code{ops} so that $\Lap(\bar\phi)$ \emph{survives}; it cancels the rest of the
+stationarity condition rather than being silently dropped
+(\file{spatial\_operator\_ir.py:36-41}). Folding annihilation into linearity
+would quietly destroy this.
+\end{gotcha}
+
+\paragraph{Lowering to ring generators.}
+\code{to\_derived\_generators(expr, fluct\_syms, prefix='Dg')}
+(\file{spatial\_operator\_ir.py:275}) is the trick that lets the existing
+multivariate-Taylor \code{expand} machinery work unchanged. It replaces each
+atomic $\mathrm{Op}(\delta\phi)$ --- e.g. $\Lap(\delta\phi)$,
+$\Lap(\Lap(\delta\phi))$, $\partial_{x}(\delta\phi)$ --- with a fresh ring
+generator symbol, so Taylor expansion treats $\nabla^{2}\delta\phi$ as if it
+were just another field (the ``$u=\delta\phi,\ v=\nabla^{2}\delta\phi$'' trick).
+It returns \code{(expr2, genmap)} where \code{genmap[gen] = (base, op\_chain)}
+and \code{op\_chain} records the operators applied. It works bottom-up: an
+operator wrapping an already-introduced generator extends that generator's chain,
+so $\Lap(\Lap(\delta\phi))$ resolves to a single $\nabla^{4}$ generator with
+chain \code{(('Lap',),('Lap',))}.
+
+\begin{defn}
+A \term{derived generator} is a fresh polynomial-ring symbol standing for a
+derivative of a field. Treating $\nabla^{2}\delta\phi$ as an independent
+generator is what lets the framework's ordinary commutative-ring Taylor
+expansion handle a derivative vertex with \emph{zero} special-casing --- the
+derivative information is parked in the \code{genmap} and reapplied later by the
+Fourier rules.
+\end{defn}
+
+\paragraph{Composing the passes.}
+\code{prepare\_action(S, fields, replacements=None, homogeneous=True, ...)}
+(\file{spatial\_operator\_ir.py:346}) ties them together for two authoring
+conventions: if \code{replacements=None} the action is already in fluctuation
+fields, so it only applies linearity and lowers; if \code{replacements} is given
+it expands about the saddle, kills means (for a homogeneous saddle), then lowers.
+
+\paragraph{Classification.}
+\code{classify\_generators(expr, genmap, fluct\_syms)}
+(\file{spatial\_operator\_ir.py:388}) splits the generators into \emph{bilinear}
+(appearing only in field-degree-$\le2$ terms, so they fold into the propagator
+kernel $K(\omega,k)$) and \emph{derivative-vertex} (appearing in some
+field-degree-$\ge3$ term, so they carry per-leg form factors). A generator's
+degree contribution is the field-degree of its base. The worked distinction in
+the docstring: KPZ's $\tilde\phi\,(\partial_{x}\delta\phi)^{2}$ is degree
+$1+1+1=3$, a vertex; reaction-diffusion's $\tilde\phi\,\nabla^{2}\delta\phi$ is
+degree $2$, bilinear.
+
+\subsection{The Fourier rules and form factors}
+
+\code{form\_factor(chain, k, omega=None)} (\file{spatial\_operator\_ir.py:420})
+is the Fourier image of an operator chain on a leg of momentum $k$, frequency
+$\omega$:
+\begin{equation}
+  \Lap\ \to\ -|k|^{2},\qquad
+  \partial_{t}\ \to\ -\ii\omega,\qquad
+  \partial_{x_{i}}\ \to\ \ii k_{i},
+  \label{eq:fourierrules}
+\end{equation}
+composed multiplicatively along the chain (so $\nabla^{4}=\Lap\circ\Lap\to|k|^{4}$).
+The code is a direct transcription:
+
+\begin{lstlisting}
+    for entry in chain:
+        op = entry[0]
+        if op == 'Lap':
+            out *= -k2
+        elif op == 'Dt':
+            ...
+            out *= -I * SR(omega)
+        elif op == 'Dx':
+            out *= I * kv[int(entry[1])]
+        elif op == '__mean__':
+            out *= SR(0)                 # an un-annihilated mean derivative
+\end{lstlisting}
+
+A derivative \emph{bilinear} term (degree $\le2$) folds into the propagator
+kernel via these rules. A derivative \emph{vertex} (degree $\ge3$) instead
+deposits a per-leg \term{form factor} $\mathcal{R}(q,\ell)$ on the diagram, a
+product over the interaction vertices:
+\begin{equation}
+  \mathcal{R}(q,\ell)=\prod_{\text{vertices }v}\mathfrak{F}(v),
+  \qquad
+  \mathfrak{F}(v)=\sum_{t:\,n_{\text{phys}}(t)=\deg(v)}w_{t}\,\mathfrak{f}_{t}(v),
+  \label{eq:Rcal}
+\end{equation}
+where $w_{t}=c_{t}/\sum c$ is the coupling weight and $\mathfrak{f}_{t}$ is the
+type's Fourier kernel, evaluated either at the response-leg momentum
+(\term{composite} mode: $\nabla^{2}(\phi^{2})$, $\partial_{x}(\phi^{2})$) or as a
+product over physical-leg momenta (\term{perleg} mode: $(\partial_{x}\phi)^{2}$).
+
+\begin{defn}
+\term{Composite} vs \term{perleg} is the distinction between an operator acting
+on the whole $\phi^{n}$ composite at a vertex (one factor, the response-leg
+momentum) versus acting on each physical leg separately (a product of per-leg
+factors). $\nabla^{2}(\phi^{2})$ is composite; $(\partial_{x}\phi)^{2}$ is
+perleg. The vertex-terms table records each type's \code{mode}, and the diagram
+form-factor assembler dispatches on it.
+\end{defn}
+
+The loop integrator must then average this polynomial form factor over the
+loop-momentum Gaussian. There are two routes: a numerical Gauss--Hermite
+quadrature, or --- the principled route --- a closed-form joint $(\ell,q)$
+Gaussian moment, described next.
+
+\section{The analytic spatial inverse Fourier transform}
+
+A derivative vertex makes the loop-momentum integrand a Gaussian times a
+polynomial form factor, and the polynomial part can be integrated \emph{exactly}
+by Wick's theorem rather than sampled numerically. This retires the
+$q$-grid entirely for $d=1$ derivative-vertex theories.
+
+\code{\_build\_wick\_moment(Rcal, ls, qs)} (\file{pipeline\_bridge.py:815}) is
+the construction (it is the $k=2$, $d=1$ case; \code{\_build\_wick\_moment\_multi}
+at line~1893 generalizes to $k\ge3$). It splits the loop momentum
+$\ell=a\cdot q+\xi$, turns the external $q$ into a complex Gaussian via the
+Fourier-transform source, and writes the per-chamber inverse FT as
+$\delta C(x)=A\cdot K(\mathcal{B},x)\cdot M_{F}$ with
+\begin{equation}
+  M_{F}=\mathbb{E}_{Q\sim\mathcal{N}(c,s)}\,
+        \mathbb{E}_{\xi\sim\mathcal{N}(0,\Sigma)}
+        \big[\mathcal{R}(a\,Q+\xi,\,Q)\big],
+  \label{eq:MF}
+\end{equation}
+both expectations being closed-form Gaussian moments --- a non-central moment
+$\mathbb{E}[Q^{m}]$ for the external part and an \term{Isserlis} pairing sum for
+the loop part.
+
+\begin{defn}
+The \term{Isserlis (Wick) theorem} states that the expectation of a product of
+jointly-Gaussian zero-mean variables equals the sum, over all perfect matchings
+of the variables, of the products of pairwise covariances; an odd number of
+factors gives zero. \code{\_isserlis(idx, Sget)} (\file{pipeline\_bridge.py:802})
+is the recursive symbolic implementation: a sum over all perfect matchings of the
+index multiset of $\prod_{\text{pairs}}\Sigma$. This is what makes the
+loop-momentum average a finite \emph{exact} sum rather than a quadrature.
+\end{defn}
+
+The construction is built once per diagram and then \term{lambdified} into NumPy
+callables. The key performance factorization, recorded in the docstring of
+\code{moment\_x}: the polynomial-in-$X$ form factor has coefficients $g_{k}$ that
+are \emph{$x$-independent}, so the expensive per-sample $g_{k}$ are evaluated once
+and contracted with cheap powers of $X$ --- roughly an $n_{x}$ speedup over
+recomputing the moment at every output point. A second variant,
+\code{moment\_bessel}, grades the form factor by the radial scaling power for the
+Bessel-K backend.
+
+\begin{defn}
+\code{sympy.lambdify(args, expr, 'numpy', cse=True)} \emph{compiles} a SymPy
+symbolic expression into a fast Python function whose body is NumPy operations,
+so a whole array of samples can be evaluated at once. \code{cse=True} runs
+\term{common-subexpression elimination} first --- factoring out shared subterms
+like $1/\mathcal{B}^{k}$ --- which is a real speedup for the Wick-moment
+polynomials. This is the single most-used bridge from symbolic algebra to
+numerics in the whole subsystem (\file{pipeline\_bridge.py:911,937,997,1043,1979}).
+\end{defn}
+
+\begin{note}
+SymPy and Sage are \emph{both} present in this subsystem, deliberately. Sage's
+Symbolic Ring \code{SR} is the canonical physics-facing algebra --- the action,
+the inverse propagator $K_{\mathrm{ft}}$, the parameter substitutions. SymPy
+(imported lazily as \code{import sympy as \_sp} inside functions) handles the
+momentum-space \emph{polynomial} bookkeeping of diagrams --- routing momenta,
+building form factors, taking Wick moments --- because that work is polynomial
+algebra that does not need Sage's heavier algebraic-number machinery. They never
+mix in a single expression.
+\end{note}
+
+\section{The bridge architecture and the dispatch tree}\label{sec:dispatch}
+
+We can now assemble the pieces into the dispatcher,
+\file{pipeline\_bridge.py}. Its defining trick is the \term{Laplacian
+substitution}.
+
+\subsection{The Laplacian substitution and certification}
+
+\code{pipeline\_C\_q\_tau} (\file{pipeline\_bridge.py:259}) runs the shared,
+time-only diagram pipeline at $\Lap=-q^{2}$:
+
+\begin{lstlisting}
+    Lap = SR.var('Laplacian')
+    nps = dict(base_np_sr)
+    nps[Lap] = -(qval ** 2)
+    compute_poles_and_residues(prop, nps, verbose=False)
+    ...
+    res = compute_correction_td(typed_diagrams=[r[0] for r in records],
+                                prefactors=[r[1] for r in records],
+                                k=k, propagator_data=pdata, ...)
+\end{lstlisting}
+
+The line \code{nps[Lap] = -(qval**2)} injects $\Lap\to-q^{2}$ so the time-only
+pipeline sees a rational propagator at effective mass $m(q)=\mu+Dq^{2}$, and
+\code{compute\_poles\_and\_residues} re-solves the pole/residue cache per $q$,
+exactly as \code{compute.py} does for a temporal model. The diagram answer
+$C(q,\tau)$ is then handed to \code{certify\_modes}
+(\file{pipeline\_bridge.py:286}), which computes the maximum relative error
+between the pipeline's $C(q,\tau)$ and the per-mode reference
+$\sum_{\alpha}\kappa_{\alpha}/(\mu_{\alpha}+D_{\alpha}q^{2})\,
+\ee^{-(\mu_{\alpha}+D_{\alpha}q^{2})|\tau|}$ over a small sample grid.
+
+\begin{note}
+This is the operational meaning of ``route through the pipeline, then
+certify.'' The Laplacian substitution lets the engine reuse the entire temporal
+diagram machinery --- enumeration, classification, time-domain integration ---
+with momentum carried as a parameter. Certification then confirms that the
+diagrams the pipeline produced \emph{are} the heat-kernel modes the analytic
+$q\to x$ transform is about to use. For a single-field reaction-diffusion theory
+the relative error is around $10^{-15}$ at tree level.
+\end{note}
+
+\begin{gotcha}
+Certification is a \emph{hard gate}, not a warning.
+\code{compute\_spatial\_correlator\_via\_pipeline} \emph{raises}
+\code{SpatialPropagatorError} if \code{certify\_max\_rel} exceeds
+\code{certify\_tol} (default $10^{-8}$). The message says the $(\mu,D,\kappa)$
+extraction or the diagram routing is wrong for the theory. A failed
+certification is the engine refusing to return a number it cannot vouch for.
+\end{gotcha}
+
+\subsection{The five drivers and the branch points}
+
+\code{compute\_cumulants} chooses among the bridge's drivers based on a short
+sequence of predicates. The decisive ones are:
+
+\begin{itemize}
+  \item \code{prop['G\_tx\_sym'] is None} $\Rightarrow$ off-diagonal coupling
+        $\Rightarrow$ the \emph{coupled} path. (The diagonal heat-kernel block is
+        absent; the propagator's \code{K\_ft} is still present and the coupled
+        path reads it.)
+  \item \code{\_field\_index(leg0) != \_field\_index(leg1)} $\Rightarrow$ a
+        \emph{cross}-correlator $\Rightarrow$ the coupled path (the diagonal path
+        would wrongly reconstruct $\avg{\phi_{i}\phi_{i}}$).
+  \item \code{ref.is\_scalar\_diffusion} (i.e. $\widehat{\mathcal{D}}=0$)
+        $\Rightarrow$ the exact \code{coupled\_two\_point}; otherwise consume the
+        Dyson policy and use \code{dressed\_tree\_C}.
+  \item \code{max\_ell >= 1} $\Rightarrow$ a loop driver; if the tree was coupled,
+        the coupled loop driver.
+  \item \code{len(external\_fields) >= 3} $\Rightarrow$ a $k$-point driver.
+\end{itemize}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    >={Stealth[round]}, node distance=6mm,
+    box/.style={draw=noteframe, fill=notebg, sharp corners, rounded corners=1pt,
+                font=\footnotesize, align=center, inner sep=4pt, text width=33mm},
+    leaf/.style={draw=defframe, fill=defbg, sharp corners, font=\footnotesize\ttfamily,
+                 align=center, inner sep=4pt, text width=46mm},
+    q/.style={font=\scriptsize\itshape, fill=white, inner sep=1pt}]
+  \node[box] (start) {\code{compute\_cumulants}\\ (spatial)};
+  \node[box, below=10mm of start] (coupled) {diagonal heat-kernel\\ block present?};
+  \node[leaf, right=24mm of coupled] (treepipe)
+        {compute\_spatial\_\\correlator\_via\_pipeline};
+  \node[box, below=12mm of coupled] (scalar) {scalar diffusion\\ ($\widehat{\mathcal D}=0$)?};
+  \node[leaf, right=24mm of scalar] (dyson) {dressed\_tree\_C\\ (Dyson series)};
+  \node[leaf, below=10mm of scalar] (twopt) {coupled\_two\_point\\ (Lyapunov / FDT)};
+  % edges
+  \draw[->] (start) -- (coupled);
+  \draw[->] (coupled) -- node[q,above]{yes (+ same field)} (treepipe);
+  \draw[->] (coupled) -- node[q,right]{no / cross} (scalar);
+  \draw[->] (scalar) -- node[q,above]{no} (dyson);
+  \draw[->] (scalar) -- node[q,right]{yes} (twopt);
+\end{tikzpicture}
+\caption{The tree-level dispatch. A diagonal heat-kernel block and a same-field
+correlator take the certified single-field path; off-diagonal coupling or a
+cross-correlator routes to the coupled path, which then branches on scalar
+vs.\ unequal diffusion. (\code{max\_ell}$\ge1$ and $k\ge3$ select loop and
+$k$-point drivers on top of this.)}
+\label{fig:dispatch}
+\end{figure}
+
+The coupled-tree driver \code{compute\_coupled\_tree\_correlator}
+(\file{pipeline\_bridge.py:449}) reads \code{prop['K\_ft']}, extracts
+$(M,\mathcal{D},V)$ via \code{reaction\_diffusion\_matrices}, numericizes them,
+and \emph{requires $V=0$} (a genuine drift is not supported in the
+scalar-diffusion v1 --- it raises \code{NotImplementedError} otherwise). It then
+builds the \code{SpectralReference}, and:
+
+\begin{itemize}
+  \item if scalar diffusion, defines $C_{ij}(q,\tau)$ as
+        \code{coupled\_two\_point(ref, N, q**2, tau)[i,j]};
+  \item if unequal diffusion, consumes the Dyson policy
+        (\code{model['spatial']['dyson']} or the \code{SPATIAL\_DYSON\_ORDER} env
+        override), \emph{requires} a fixed truncation order, and checks the
+        convergence ratio $\rho$ of \eqref{eq:rho}.
+\end{itemize}
+
+\begin{gotcha}
+\textbf{The Dyson divergence guard.} \code{compute\_coupled\_tree\_correlator}
+\emph{raises} \code{SpatialPropagatorError} if $\rho=\lVert\widehat{\mathcal{D}}\rVert/D_{0}\ge1$
+(``the large-$|k|$ insertion outgrows the reference'') and warns if $\rho>0.6$
+(slow convergence). The series is exact at $q=0$ regardless --- the insertion
+vanishes there --- but for the whole grid to converge you need $\rho<1$. Retune
+$D_{0}$ to shrink it (\file{pipeline\_bridge.py:519-523}).
+\end{gotcha}
+
+For $d=1$ infinite boundary with scalar diffusion the external $q\to x$ transform
+is done by the \term{analytic spectral inverse FT}: each $(\alpha,\beta)$ term
+$(P_{\alpha}NP_{\beta}^{\mathsf T})/(m_{\alpha}+m_{\beta}+2D_{0}q^{2})$ is a
+single-mode correlator at denominator mass $\mu_{d}=(m_{\alpha}+m_{\beta})/2$,
+transformed exactly via \code{free\_two\_point}$(\mu_{d},D_{0},\tfrac12;x,\tau)$,
+with $C_{ij}(-\tau)=C_{ji}(\tau)$.
+
+\section{The single-field generic loop path}
+
+The single-field loop driver \code{compute\_spatial\_correlator\_generic}
+(\file{pipeline\_bridge.py:1434}) is the one genuine momentum-integral path, and
+it is where the form factors of the operator IR and the analytic IFT of the
+previous sections actually get used. Its outline:
+
+\begin{enumerate}
+  \item Compute the tree $C_{0}$ via the certified
+        \code{compute\_spatial\_correlator\_via\_pipeline}; if the tree turned
+        out coupled, route to \code{compute\_coupled\_loop\_correlator}.
+  \item Build the numeric derivative-vertex form-factor table from
+        \code{ns.\_operator\_ir\_vertex\_terms} (substitute couplings into the
+        symbolic weights $c_{t}/\sum c$).
+  \item Enumerate records, map every diagram to a (descriptor, prefactor,
+        form-factor callable, $\ell$) tuple, and filter to the live ones.
+  \item Choose an integrator backend, check the memory guard, and do either the
+        analytic or the numerical $q\to x$ transform.
+\end{enumerate}
+
+\begin{gotcha}
+\textbf{Drift is refused on this path too.} For any field with a non-zero saddle
+drift $V\ne0$ (a genuine advection $v\cdot\partial_{x}\phi$), the driver raises:
+the drifting propagator is validated only at the heat-kernel oracle level, not
+in the momentum integrator (which uses $m_{k}=\mu+Dk^{2}$). Gradient theories
+like Burgers and KPZ, where $V\to0$ at $\phi^{*}=0$, run fine
+(\file{pipeline\_bridge.py:1540-1554}).
+\end{gotcha}
+
+\subsection{Backends, the memory guard, and the analytic/numerical gate}
+
+The \code{SPATIAL\_INTEGRATOR} environment variable selects the backend: the
+default \code{grid} (deterministic product quadrature), \code{mc}
+(importance-sampled Monte-Carlo, bounded memory but biased for derivative
+vertices), or \code{bessel} (radial Bessel-K times angular Monte-Carlo, which
+regularizes the $\det M\to0$ singularity and handles derivative vertices at two
+loops).
+
+\begin{gotcha}
+\textbf{The memory guard / curse of dimensionality.} A chamber's quadrature is
+$P=n_{t}^{\,n_{V}}\cdot n_{s}^{\,n_{C}}$ samples ($n_{V}$ internal vertices,
+$n_{C}$ correlation edges). A KPZ two-loop diagram has $n_{V}=4$, $n_{C}=3$,
+giving $P\approx1.8\times10^{8}$ at $(n_{t}{=}16,n_{s}{=}14)$, and the
+$(P,n_{x})$ heat-kernel array alone is tens of gigabytes --- an out-of-memory
+crash. The guard (\file{pipeline\_bridge.py:1633-1665}) refuses \emph{up front}
+with the exact numbers and four mitigation knobs: lower \code{max\_ell}, use the
+\code{mc} backend, coarsen \code{SPATIAL\_GRID\_NT}/\code{SPATIAL\_GRID\_NS}, or
+raise \code{SPATIAL\_MEM\_BUDGET\_GB} (default 6). It is bypassed for the
+bounded-memory \code{mc}/\code{bessel} backends.
+\end{gotcha}
+
+The final branch is the \term{analytic-vs-numerical FT gate}
+(\file{pipeline\_bridge.py:1677}):
+\begin{lstlisting}
+    _all_plain = all(rec[2] is None for rec in live_g)
+    _force_num = _os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
+    _use_analytic = (_all_plain or d == 1) and not _force_num
+\end{lstlisting}
+The analytic path (Chapter~\ref{ch:spatial-heatkernel} for plain vertices; the
+Wick-moment construction above for $d=1$ derivative vertices) computes
+$\delta C(x,\tau)$ directly --- no $q$-grid, no ringing. The numerical path
+computes $\delta C(q,\tau)$ on a grid and then Fourier-transforms; it is reachable
+as a cross-check via \code{SPATIAL\_FORCE\_NUMERICAL\_FT=1} but is exact only in
+the $q_{\text{cut}}\to\infty$, $n_{q}\to\infty$ limit.
+
+\begin{gotcha}
+\textbf{The \texttt{Rcal == 0} form factor must still evaluate to zero on every
+path.} A diagram that vanishes by a conservation law (e.g. the
+$\nabla^{2}(\phi^{2})$ tadpole with a forced-zero leg momentum) returns
+\code{\_zero\_ff\_with\_moments}, which attaches zero-returning \code{moment\_x},
+\code{moment\_x\_multi}, and \code{moment\_bessel} callables --- otherwise the
+analytic IFT would hit a missing-moment error instead of contributing zero
+(\file{pipeline\_bridge.py:972-990}).
+\end{gotcha}
+
+\subsection{The bubble-versus-tadpole test}
+
+One small but load-bearing classifier deserves mention.
+\code{\_diagram\_is\_bubble(td)} (\file{pipeline\_bridge.py:664}) decides whether
+a one-loop diagram is a momentum-\emph{dependent} bubble:
+
+\begin{lstlisting}
+    for v in route_momenta(td).edge_k2().values():
+        e = _sp.expand(v)
+        syms = sorted(e.free_symbols, key=str)
+        for ii in range(len(syms)):
+            for jj in range(ii + 1, len(syms)):
+                if _sp.expand(e.diff(syms[ii]).diff(syms[jj])) != 0:
+                    return True
+    return False
+\end{lstlisting}
+
+It routes the momenta, then for each edge's $k^{2}$ checks for a nonzero
+\emph{mixed second partial} --- a $q\cdot\ell$ cross term. A bubble has such a
+term (some edge carries $(q-\ell)^{2}$); a tadpole has every edge at pure
+$q^{2}$, $\ell^{2}$, or $0$. The test is topology-agnostic.
+
+\begin{gotcha}
+A topological bubble whose scalar prefactor is $\propto\phi^{*2}$ is \emph{dead}
+at $\phi^{*}=0$ and must not trigger the bubble route.
+\code{\_prefactor\_is\_live} (\file{pipeline\_bridge.py:1058}) substitutes the
+saddle-carrying \code{num\_params} and filters these out: only \emph{live}
+bubbles count. (If free symbols remain it conservatively returns true.)
+\end{gotcha}
+
+\section{General-\texorpdfstring{$k$}{k} cumulants}\label{sec:kpoint}
+
+For correlators with three or more external legs the bridge has two more drivers,
+the $k$-point companions of the tree and loop paths.
+\code{compute\_spatial\_kpoint} (\file{pipeline\_bridge.py:1788}) is the
+single-field general-$k$ path; \code{compute\_coupled\_kpoint}
+(\file{pipeline\_bridge.py:2000}) is the coupled scalar-diffusion companion. Both
+take \code{points}, an array of $(x_{j},\tau_{j})$ offsets of slots
+$1,\dots,k-1$ relative to slot~0.
+
+The key structural difference from $k=2$ is how external legs are wired. The
+$k$-point drivers use an \term{orbit-stabilizer external-Wick mapping sum}
+(\code{field\_respecting\_mappings} plus \code{external\_wick\_compensation})
+rather than the explicit orientation and $\pm\tau$ completion of the two-point
+case. As the comment at \file{pipeline\_bridge.py:509} notes, the two views
+coincide at $k=2$; at higher $k$ the mapping sum is the general machinery. Points
+that share a $\tau$-configuration are batched, and the coupled $k$-point driver
+is scoped to scalar diffusion, plain vertices, and infinite boundary.
+
+\section{Operational guardrails}
+
+Several of the boxes above are instances of a single design stance: this
+subsystem prefers to \emph{refuse} a computation it cannot certify rather than
+return a plausible-looking wrong number. Collected in one place, the guardrails
+are:
+
+\begin{itemize}
+  \item \textbf{The macOS fork prohibition (the big one).} Fork-based parallelism
+        was \emph{removed} from the spatial path. Forking a Jupyter kernel on
+        macOS after the GUI/BLAS libraries have initialized crashes the kernel
+        \emph{and} the OS, even with a single worker. The only safe speedup is
+        thread-based (NumPy releases the GIL during heavy array ops) or
+        $q$-grid NumPy batching. The numerical-FT path uses a
+        \emph{smart-gated} \code{ThreadPoolExecutor}
+        (\file{pipeline\_bridge.py:1713}): threads engage only when a
+        loop-order-$\ge2$ diagram is present (about $2.5\times$ at two loops;
+        \emph{slower} at one loop, where the tiny matrices are dispatch-bound, so
+        one loop stays serial), with accumulation on the main thread for
+        bit-identical results.
+  \item \textbf{The memory budget.} As above: refuse up front when a chamber's
+        quadrature would exceed \code{SPATIAL\_MEM\_BUDGET\_GB}.
+  \item \textbf{Certification is a hard gate.} A failed mode certification raises
+        \code{SpatialPropagatorError}.
+  \item \textbf{Defective reaction matrix.} \code{spectral\_projectors} raises if
+        the eigenvector condition number exceeds $10^{10}$.
+  \item \textbf{Dyson divergence.} $\rho\ge1$ raises; $\rho>0.6$ warns.
+  \item \textbf{Drift $V\ne0$ is refused} on both the single-field generic and the
+        coupled-tree paths.
+  \item \textbf{Never default a leg index silently.} Both
+        \code{\_legs\_to\_phys\_idx} (\file{pipeline\_bridge.py:89}) and the
+        per-leg index resolver \emph{raise} rather than fall back --- a wrong leg
+        would quietly compute a \emph{different} correlator ($C_{aa}$ instead of
+        $C_{ab}$). The point is emphasized twice in the source comments
+        (\file{pipeline\_bridge.py:122-124,542-543}).
+\end{itemize}
+
+\begin{defn}
+The \term{GIL} (Global Interpreter Lock) is the CPython mechanism that lets only
+one thread execute Python bytecode at a time. The reason \emph{thread}
+parallelism can still help here is that NumPy's heavy array operations release
+the GIL while they run in compiled C --- so several threads can do NumPy work
+genuinely in parallel. Process/fork parallelism would side-step the GIL too, but
+it is forbidden here for the macOS-crash reason above.
+\end{defn}
+
+\begin{note}
+\textbf{Environment escape hatches.} Several knobs exist for cross-checks and
+debugging, not normal use: \code{SPATIAL\_FORCE\_NUMERICAL\_FT=1} keeps the
+numerical-FT path reachable; \code{SPATIAL\_Q\_CUT} and \code{SPATIAL\_N\_Q} tune
+it; \code{SPATIAL\_DYSON\_ORDER} overrides the model's Dyson policy;
+\code{SPATIAL\_INTEGRATOR}, \code{SPATIAL\_GRID\_NT}/\code{NS},
+\code{SPATIAL\_MC\_N}, and \code{SPATIAL\_MEM\_BUDGET\_GB} tune the loop
+integrator. In ordinary use you set none of them.
+\end{note}
+
+\section{The oracle module: \texttt{loop\_dyson.py}}
+
+The fifth module, \file{loop\_dyson.py}, carries a prominent banner
+(\file{loop\_dyson.py:1-5}):
+
+\begin{quote}\itshape
+``$\triangle$ ORACLE-ONLY --- not on the production path. Superseded by
+\code{full\_integrator.py}; reached only by its own test(s).
+\code{compute\_cumulants} does NOT use this module.''
+\end{quote}
+
+It is an \emph{independent} implementation of the one-loop $\tilde\phi\phi^{2}$
+reaction-diffusion \term{bubble} self-energy via the MSR Dyson equation --- both
+the equal-time structure-factor correction $\delta C(q,0)$ and the full
+$\tau$-dependent correction. It computes the retarded and Keldysh bubbles
+($\Sigma_{R}=\int\,\dd\ell\,F(\ell)\,\Gret(\ell,t)\,C(q-\ell,t)$ and the
+even-in-$t$ Keldysh analogue) by adaptive Gauss--Kronrod quadrature
+(\code{scipy.integrate.quad}), and assembles the Dyson terms with the pinned
+normalization \code{C\_R, C\_K = 4.0, 2.0} (\file{loop\_dyson.py:89}), validated
+to give a fitted coefficient $B=0.99$ against a perturbative simulation.
+
+Its value is precisely that it shares \emph{no code} with the production
+\code{full\_integrator} path: a number that both produce independently is a
+genuine cross-check. But the $C_{R}=4,C_{K}=2$ normalization and the $B=0.99$
+validation are historical context, not the live computation.
+
+\begin{defn}
+\code{scipy.integrate.quad(f, a, b, limit=...)} is \term{adaptive Gauss--Kronrod
+quadrature} (QUADPACK's \code{QAGS}/\code{QAGI}). Unlike the fixed-node
+Gauss--Legendre rule, it recursively subdivides the interval until a local error
+estimate is met; \code{limit} caps the number of subdivisions. The oracle uses it
+for the self-energy momentum integrals and the Dyson time integrals.
+\end{defn}
+
+\section{What you just learned}
+
+This chapter covered the part of the engine that handles every spatial case the
+diagonal path cannot:
+
+\begin{enumerate}
+  \item \textbf{Coupled fields} need a matrix propagator. The reference-diffusion
+        split $\mathcal{D}=D_{0}I+\widehat{\mathcal{D}}$ and the spectral
+        resolution $M=\sum m_{\alpha}P_{\alpha}$ give a closed-form reference
+        $G_{0}$ that is \emph{exact} when diffusion is scalar
+        (\file{spectral\_propagator.py}).
+  \item \textbf{The tree two-point} of a coupled linear theory is the
+        Lyapunov/fluctuation--regression $C(q,\tau)=\ee^{-A|\tau|}\Sigma$, not a
+        sum of independent modes (\code{coupled\_two\_point}).
+  \item \textbf{Unequal diffusion} is handled by the Dyson--Duhamel series in
+        powers of $\widehat{\mathcal{D}}|k|^{2}$, whose one new primitive
+        $\Phi_{n}$ is evaluated confluent-safely by the Opitz matrix exponential
+        (\file{dyson\_dressing.py}).
+  \item \textbf{Derivative vertices} are hosted as inert operator nodes in an IR
+        with explicit linearity, saddle-expansion, annihilation, and lowering
+        passes; each deposits a momentum form factor whose loop average is taken
+        either numerically or exactly by the Wick-moment construction
+        (\file{spatial\_operator\_ir.py}, \code{\_build\_wick\_moment}).
+  \item \textbf{The bridge} ties it all to the shared diagram pipeline via the
+        $\Lap\to-q^{2}$ substitution, certifies the diagram answer against the
+        per-mode reference, dispatches to the right driver, and guards
+        aggressively against the cases it cannot certify
+        (\file{pipeline\_bridge.py}).
+\end{enumerate}
+
+The recurring lesson is the one in the bridge's docstring and in nearly every
+\emph{Gotcha} box above: the engine reuses the temporal machinery wherever it
+can, and where it cannot prove the answer is right it refuses to return one. The
+next part of the manual steps back out to the assembly layer ---
+\code{compute\_cumulants} itself and the user-facing engine API --- which is what
+selects every driver this chapter described.

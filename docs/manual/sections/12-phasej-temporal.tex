@@ -1,0 +1,1141 @@
+% ---------------------------------------------------------------------
+%  Chapter 12 : Phase J --- The Temporal Loop-Integral Engine
+% ---------------------------------------------------------------------
+\chapter{Phase J: The Temporal Loop-Integral Engine}\label{ch:phasej-temporal}
+
+Every chapter so far has been preparation for this one. The theory file gave us
+an action; the field-theory core expanded it into vertices; the propagator
+chapter built the free two-point function; the mean-field solve found the
+saddle; the enumeration and type-assignment chapters produced a list of typed
+Feynman diagrams, each tagged with a scalar prefactor. What we do \emph{not} yet
+have is a single number. A diagram is still an abstract graph plus a
+prefactor; turning it into a value --- a function of the external times we can
+plot against a simulation --- is the job of \term{Phase~J}, the final,
+time-domain evaluation layer of the temporal pipeline.
+
+This is the numerical heart of the whole temporal branch. It is also the most
+intricate piece of code in the repository: \file{final\_integral.py} is a single
+file of roughly 5{,}300 lines. The intricacy is not gratuitous. The integral a
+diagram represents is, in general, a multi-dimensional integral over a region
+carved out by causality constraints, and the engine goes to considerable
+lengths to evaluate that integral \emph{analytically} --- in closed form ---
+rather than handing it to a black-box numerical quadrature routine. This chapter
+explains, from the ground up, why that integral has a closed form, what the
+closed form is in each of the cases the engine distinguishes, and how the code
+realises it.
+
+\begin{note}
+The name ``Phase~J'' is a historical artifact. The temporal pipeline was
+originally built as a hybrid: the early phases (``I'' and before) work in
+frequency space, and ``J'' was the last phase, the one that returns to the time
+domain to finish the job. It began life as a tree-level ``minimum viable
+product,'' but the core integrator (\code{integrate\_diagram}) has since been
+generalised to handle \emph{any} loop order. The label stuck even though the
+algorithm outgrew its original scope.
+\end{note}
+
+\section{What Phase J computes}
+
+In the Martin--Siggia--Rose--Janssen--De~Dominicis (\msrjd) formalism the
+quantity we ultimately want is a time-domain correlation or response function of
+a stochastic dynamical system --- for example the autocorrelation
+$C(\tau) = \avg{\delta n(t)\,\delta n(t+\tau)}$ of a Hawkes process, or a
+higher-order cumulant of any of the temporal models in the library. Perturbation
+theory expresses that correlator as a sum over Feynman diagrams. Each diagram is
+a graph whose
+
+\begin{itemize}
+  \item \textbf{edges} are \emph{retarded propagators} $\Gret(t_v - t_u)$ --- the
+        linear response of one field to another, carrying a Heaviside step
+        $\Theta$ that enforces causality (a response can only happen \emph{after}
+        its cause), and whose
+  \item \textbf{internal vertices} are interaction points whose \emph{times}
+        must be integrated over the whole real line, subject to the causal
+        orderings the Heavisides impose.
+\end{itemize}
+
+So the value of one diagram is a multi-dimensional integral of the schematic
+form
+\begin{equation}
+  C_\Gamma(\text{external times})
+   \;=\; \text{prefactor} \cdot
+   \int \dd s_1 \cdots \dd s_m \;\prod_{e \in E} \Gret\big(t_{\text{head}(e)} - t_{\text{tail}(e)}\big),
+  \label{eq:diagram-integral}
+\end{equation}
+where $s_1, \dots, s_m$ are the internal-vertex times. \textbf{Phase~J is the
+machine that performs that integral}, for every diagram, at every loop order,
+returning a Python callable \code{f(*external\_times) -> complex} that you can
+evaluate on any grid of external times.
+
+\begin{defn}
+A \textbf{retarded propagator} $\Gret(\Delta t)$ is the linear response of a
+physical field to a perturbation in its conjugate response field a time
+$\Delta t$ earlier. ``Retarded'' means it vanishes for $\Delta t < 0$: the
+effect cannot precede the cause. In the diagrams this causality is carried by an
+explicit Heaviside factor $\Theta(\Delta t)$ on every edge, and those Heavisides
+are precisely what turn \eqref{eq:diagram-integral} from an integral over all of
+$\mathbb{R}^m$ into an integral over a bounded \emph{causal region}.
+\end{defn}
+
+The cleverness of the engine is that it almost never falls back to brute-force
+numerical quadrature. Because every retarded propagator turns out to be a
+\emph{finite sum of decaying complex exponentials} (we derive this in
+\S\ref{sec:modesum}), the whole integrand is a sum of terms of the form
+$A \cdot \exp(\text{linear combination of the times})$, and the integral of such
+a term over the causal region --- which is a \emph{polytope}, a region bounded by
+flat faces --- has a closed form. The engine therefore carries three dedicated
+\emph{analytic} integrators, one each for $1$, $2$, and $\ge 3$ internal-vertex
+integration variables, and only routes to \code{scipy}'s numerical quadrature
+when the analytic path hits a genuine degeneracy or a floating-point overflow.
+
+\subsection{Where it sits, and what feeds it}
+
+Phase~J consumes four things, all produced by earlier phases:
+
+\begin{enumerate}
+  \item a list of \term{typed diagrams} (\code{TypedDiagram} objects) from the
+        enumeration, typing, and symmetry-deduplication pipeline;
+  \item a \emph{scalar prefactor} per diagram --- the combinatorial and coupling
+        weight, from \code{classify\_coefficient\_factors};
+  \item the retarded propagator in \term{pole--residue form}: a dictionary
+        \code{propagator\_data} with keys \code{pole\_vals} (the poles $p_\alpha$),
+        \code{C\_mats} (one residue matrix per pole), and \code{D\_delta} (the
+        instantaneous $\delta$-function part);
+  \item the user's external-field list and the numerical parameter
+        substitutions \code{num\_params}.
+\end{enumerate}
+
+\noindent The public entry point is \code{compute\_correction\_td} in
+\file{pipeline.py}, which loops over the diagrams calling \code{integrate\_diagram}
+(in \file{final\_integral.py}) on each. Downstream, the result feeds the
+notebook-facing callables \code{total\_C} and \code{total\_C\_batch} that produce
+the theory curves you overlay on simulation data.
+
+The three source files this chapter dissects are:
+
+\begin{description}
+  \item[\file{final\_integral.py}] the $\sim$5{,}300-line core: the per-diagram
+        integrator and all of the analytic primitives.
+  \item[\file{pipeline.py}] the orchestration and batching layer: it loops over
+        diagrams and fans the $\tau$-grid evaluation out over worker processes.
+  \item[\file{subgraph.py}] a near-stub for a frequency-domain loop-reduction
+        route that was designed but never finished --- the time-domain integrator
+        superseded it. We cover it briefly at the end so you know it is dead
+        weight, not a live path.
+\end{description}
+
+\section{The retarded propagator as a mode sum}\label{sec:modesum}
+
+Everything downstream rests on one fact: the time-domain retarded propagator is
+a finite sum of complex exponentials. Let us derive it, because the code is a
+literal transcription of the result.
+
+\subsection{From frequency to time by residues}
+
+For a \emph{linear} response system the frequency-domain propagator
+$\widehat{G}(\omega)$ is a rational matrix function of $\omega$ --- a ratio of
+polynomials, entry by entry. Its inverse Fourier transform, under the project's
+fixed convention
+\begin{equation}
+  G(t) \;=\; \frac{1}{2\pi}\int \dd\omega \; \ee^{\ii \omega t}\,\widehat{G}(\omega),
+  \label{eq:fourier-convention}
+\end{equation}
+is computed by closing the $\omega$ contour and summing residues. The causality
+filter built into the propagator construction guarantees that every pole
+$p_\alpha$ of $\widehat{G}$ lies in the \emph{upper} half plane,
+$\operatorname{Im} p_\alpha > 0$. Each residue term therefore carries a factor
+$\ee^{\ii p_\alpha t}$, which \emph{decays} for $t > 0$ (its exponent has real
+part $-\operatorname{Im} p_\alpha < 0$) and \emph{grows} for $t < 0$. The
+physical retarded propagator is this analytic sum multiplied by a Heaviside that
+kills the growing $t<0$ half:
+\begin{equation}
+  \Gret[p, r](\Delta t)
+   \;=\; \underbrace{\texttt{delta\_coeff}[p,r]\cdot\delta(\Delta t)}_{\text{instantaneous part}}
+   \;+\; \Theta(\Delta t)\cdot\sum_\alpha C_\alpha[p,r]\,\ee^{\ii p_\alpha \Delta t}.
+  \label{eq:GR-decomp}
+\end{equation}
+
+Three pieces of nomenclature, each of which has a direct counterpart in the
+code:
+
+\begin{itemize}
+  \item The indices $[p, r]$ are the \textbf{(physical-row, response-column)}
+        matrix indices. The convention is $G[p_i, r_i] = \avg{\phi_{p_i}\,
+        \tilde n_{r_i}}$ --- the response of physical field $p_i$ to a
+        response-field (hatted) source $r_i$. There is a transpose to watch
+        here: the kernel matrix $K$ from which the propagator is built is laid
+        out \code{[resp, phys]}, so to read off a retarded entry you index
+        $G$\code{[phys, resp]}. The propagator chapter covers this; Phase~J just
+        respects it.
+  \item $\texttt{delta\_coeff}[p,r] = \lim_{\omega\to\infty}\widehat{G}[p,r](\omega)$
+        is the \textbf{instantaneous response} --- the polynomial (non-proper)
+        part of the rational $\widehat{G}$. It is nonzero exactly when there is
+        an instantaneous coupling: for example the $\tilde n \times \delta n$
+        term in an \msrjd{} action, where a $\tilde n$ source at time $t$
+        produces an \emph{immediate} $\delta n$ at the same $t$. It is captured
+        in \code{propagator\_data['D\_delta']}.
+  \item $C_\alpha[p,r]$ is the residue of $\widehat{G}$ at pole $p_\alpha$,
+        position $[p,r]$.
+\end{itemize}
+
+To keep the inner loops in plain Python arithmetic, the code stores not the pole
+$p_\alpha$ but the combination $\lambda_\alpha := \ii\, p_\alpha$, so that a mode
+reads simply $C_\alpha\,\ee^{\lambda_\alpha \Delta t}$ with no factor of $\ii$ to
+re-apply on every evaluation.
+
+\subsection{The \code{EdgeModeSum} record}
+
+This entire object --- one edge's worth of \eqref{eq:GR-decomp} --- is packaged
+into a single frozen dataclass, \code{EdgeModeSum}
+(\file{final\_integral.py:116}). Its documented fields are the residue and pole
+indices, the $\delta$-coefficient, and the list of modes:
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class EdgeModeSum:
+    ri: int
+    pi: int
+    delta_coeff: complex
+    modes: tuple                 # tuple[tuple[complex, complex], ...]  i.e. (C_alpha, lambda_alpha)
+    dt_c0: float = 0.0
+    dt_int_pairs: tuple = ()     # sparse coefficients on integration vars
+    dt_ext_pairs: tuple = ()     # sparse coefficients on free external times
+\end{lstlisting}
+
+\begin{note}
+\code{@dataclass} is a standard-library decorator (from the \code{dataclasses}
+module) that auto-generates a class's constructor, \code{\_\_repr\_\_}, and
+equality from a list of typed field declarations --- you write the fields, Python
+writes the boilerplate. \code{frozen=True} makes instances immutable (assigning
+to a field raises), which is what lets these records be safely cached and shared
+across the evaluation without fear of one code path mutating another's data.
+\end{note}
+
+The \code{modes} tuple holds the $(C_\alpha, \lambda_\alpha)$ pairs. The three
+\code{dt\_*} fields are left empty at construction; they hold the linear form for
+$\Delta t$ in terms of the integration variables and external times, and they
+are filled in later, once we know which subset of edges we are in (see
+\S\ref{sec:polytope}). Carrying them on the same object means the one
+\code{EdgeModeSum} threads through the whole evaluation chain.
+
+The builder \code{\_build\_edge\_mode\_sums(edge\_info, propagator\_data)}
+(\file{final\_integral.py:150}) does the extraction \emph{once} per edge. It
+reads the poles and residue matrices out of \code{propagator\_data} and converts
+them to machine-precision Python \code{complex} numbers:
+
+\begin{lstlisting}
+modes_lambdas = tuple(complex(CDF(SR(p))) * 1j for p in pole_vals)
+# ... then per edge, per pole:
+residues = tuple(
+    complex(CDF(SR(C_mats[k][pi, ri])))
+    for k in range(n_poles)
+)
+modes = tuple(zip(residues, modes_lambdas))
+\end{lstlisting}
+
+\noindent The idiom \code{complex(CDF(SR(expr)))} is how this codebase turns a
+fully-substituted symbolic scalar into a Python \code{complex}: \code{SR} coerces
+to a symbolic expression, \code{CDF} (the Complex Double Field) evaluates it to
+machine precision, and \code{complex(...)} hands back a native Python number. We
+explain \code{SR} and \code{CDF} in \S\ref{sec:tools}. If the propagator data is
+incomplete --- missing \code{pole\_vals} or \code{C\_mats} --- the builder returns
+\code{None}, which is the signal for the caller to fall back to the slow
+symbolic path.
+
+\begin{gotcha}
+Extracting the residues once, here, rather than re-extracting them inside the
+per-call evaluator, is a deliberate and important optimisation. The original
+code re-derived the smooth-part data on every \code{(diagram, subset)} call even
+though it depends only on the $(p_i, r_i)$ of the edge. Lifting the extraction to
+this single per-edge step is what keeps the hot numerical loop in plain
+\code{cmath}, never touching Sage --- Sage is far too slow to call per
+evaluation.
+\end{gotcha}
+
+\section{From a diagram to a polytope integral}\label{sec:polytope}
+
+We now assemble \eqref{eq:diagram-integral} concretely and watch it collapse to
+the analytic form. There are three moving parts: the $\delta$-subset expansion,
+the elimination of variables by $\delta$-edge equations, and the half-space
+constraints that build the polytope.
+
+\subsection{The $\delta$-subset expansion}
+
+A diagram with edge set $E$ has integrand $\prod_{e\in E}\Gret(\Delta t_e)$.
+Substitute the two-piece decomposition \eqref{eq:GR-decomp} into each factor and
+\emph{expand the product}. Each edge is taken either in its $\delta$-form or in
+its smooth (exponential) form, so the product becomes a sum over subsets
+$S\subseteq E$ of ``which edges are $\delta$'':
+\begin{equation}
+  C_\Gamma = \sum_{S\subseteq E}\int \dd s_1\cdots \dd s_m\;
+    \underbrace{\Big(\prod_{e\in S}\texttt{delta\_coeff}[e]\,\delta(\Delta t_e)\Big)}_{\delta\text{ edges}}
+    \cdot
+    \underbrace{\Big(\prod_{e\notin S}\Theta(\Delta t_e)\sum_\alpha C_\alpha[e]\,\ee^{\lambda_\alpha \Delta t_e}\Big)}_{\text{smooth edges}}
+    \cdot \text{prefactor}.
+  \label{eq:subset-sum}
+\end{equation}
+
+This is the central organising idea of the engine. Within each subset:
+
+\begin{itemize}
+  \item A \textbf{$\delta$-edge equation} $\Delta t_e = 0$ (for $e\in S$) is
+        linear in the vertex times. Each one is solved to \emph{eliminate one
+        integration variable} by substitution --- it pins one internal vertex's
+        time to another's. This \emph{reduces} the dimension $m$ of the remaining
+        integral.
+  \item If a $\delta$-edge equation has \emph{no integration variable left to
+        solve for}, it becomes a constraint among the external times alone --- a
+        \textbf{shot-noise $\delta(\tau)$ spike}. The correlator then contains a
+        term $\propto \delta(a\cdot\tau + c)$. These are distributional and are
+        \emph{not} added to the smooth callable; they are emitted separately as
+        structured \code{delta\_contributions} (covered in
+        \S\ref{sec:deltaspike}).
+  \item A \textbf{smooth edge} contributes its mode sum
+        $\sum_\alpha C_\alpha\,\ee^{\lambda_\alpha \Delta t_e}$ and, via its
+        Heaviside, a \textbf{half-space constraint} $\Delta t_e > 0$. Together,
+        the smooth edges' constraints carve a convex \term{polytope} out of the
+        space of remaining integration variables.
+\end{itemize}
+
+\begin{defn}
+A \textbf{polytope} is the intersection of finitely many half-spaces --- a
+convex region with flat faces (a polygon in 2D, a polyhedron in 3D, and so on).
+In Phase~J the polytope is the set of internal-vertex times that respect all the
+causal orderings $\{\Delta t_e > 0\}$ a subset imposes. The integral
+\eqref{eq:subset-sum} is, per subset, an exponential integrated over this
+polytope.
+\end{defn}
+
+\begin{gotcha}
+Naively the subset sum has $2^{|E|}$ terms. The engine shrinks this
+dramatically: edges whose $\delta$-coefficient is numerically zero
+(\code{|delta\_coeff| < 1e-15}) are \emph{forced smooth} --- they have no
+$\delta$-form to branch on --- so the sum runs only over the edges that actually
+carry an instantaneous part, turning $2^{|E|}$ into $2^{|\text{branch}|}$. For
+most temporal models only a handful of edges (the noise vertices) have a
+$\delta$-part at all, so $|\text{branch}|$ is small.
+\end{gotcha}
+
+\subsection{Affine $\Delta t$ and the pole-tuple expansion}
+
+After $\delta$-elimination, every surviving $\Delta t_e$ is an \emph{affine}
+(linear-plus-constant) function of the integration variables
+$s = (s_0, \dots, s_{m-1})$, the free external times $t_{\text{free}}$, and a
+constant:
+\begin{equation}
+  \Delta t_e = c^{(e)}_0 + \sum_v a^{(e)}_{\text{int}}[v]\, s_v + \sum_j a^{(e)}_{\text{ext}}[j]\, t_{\text{free}}[j].
+  \label{eq:dt-affine}
+\end{equation}
+
+Now choose one pole $\alpha_e$ per smooth edge --- a \term{pole tuple}. With that
+choice fixed, the product of the chosen modes is a \emph{single} exponential
+$C_{\text{prod}}\cdot\exp\!\big(\sum_e \lambda_{\alpha_e}\Delta t_e\big)$. Group
+the exponent by what it multiplies:
+\begin{align}
+  \alpha_s[v]  &= \sum_e \lambda_{\alpha_e}\, a^{(e)}_{\text{int}}[v]   &&\text{(coefficient of } s_v\text{)}, \label{eq:alpha-s}\\
+  \gamma       &= \sum_e \lambda_{\alpha_e}\Big(c^{(e)}_0 + \sum_j a^{(e)}_{\text{ext}}[j]\,t_{\text{free}}[j]\Big) &&\text{(the } s\text{-independent part)}. \label{eq:gamma}
+\end{align}
+So the integrand for one pole tuple is
+$\text{prefactor}\cdot C_{\text{prod}}\cdot \ee^{\gamma}\cdot \exp\!\big(\sum_v \alpha_s[v]\,s_v\big)$,
+and the whole subset integral is the sum, over all
+$\prod_e (\#\text{poles}_e)$ pole tuples, of
+\begin{equation}
+  \int_{\text{polytope}} \exp\!\Big(\sum_v \alpha_s[v]\,s_v\Big)\,\dd s.
+  \label{eq:exp-over-polytope}
+\end{equation}
+Each of these is a closed-form \emph{exponential-over-a-polytope}. This is the
+integral the three analytic backends evaluate.
+
+\begin{defn}
+A \textbf{pole tuple} is a choice of exactly one pole $\alpha_e$ for each smooth
+edge $e$ of a subset. Because the propagator's time-domain form is a sum over
+poles, the product over edges of those sums expands into a sum over pole tuples;
+each tuple contributes one pure exponential, and the polytope integral of a pure
+exponential is closed-form. The number of pole tuples is the product of the
+per-edge pole counts.
+\end{defn}
+
+\subsection{The plan cache}
+
+The coefficients $\alpha_s[v]$ depend only on the pole tuple and the diagram
+geometry --- \emph{not} on the value of the external times. Only $\gamma$ depends
+on $t_{\text{free}}$, and it does so \emph{linearly}. The engine exploits this by
+pre-computing, once per subset, everything that is $\tau$-invariant. That is what
+\code{\_build\_modesum\_plan(...)} (\file{final\_integral.py:595}) does: it
+returns a dict whose keys are \code{pole\_tuples}, \code{alphas\_per\_tuple} (the
+$\alpha_s[v]$ of \eqref{eq:alpha-s}), \code{gamma\_const\_per\_tuple} ($\gamma$
+evaluated at $t_{\text{free}}=0$), and \code{gamma\_slope\_per\_tuple\_per\_ext}
+($\partial\gamma/\partial t_{\text{free}}[j]$). The per-$\tau$ work then collapses
+to a single linear combination
+\[
+  \gamma = \gamma_{\text{const}} + \sum_j \text{slope}[j]\cdot t_{\text{free}}[j],
+\]
+followed by the closed-form polytope integral. The expensive part --- enumerating
+pole tuples and building the $\alpha_s$ vectors --- is paid once, not once per
+grid point.
+
+The pole tuples themselves are produced by \code{\_enumerate\_pole\_tuples}
+(\file{final\_integral.py:529}), a generator yielding $(C_{\text{product}},
+\lambda\text{s})$ over the Cartesian product of the per-edge modes. It advances a
+stack of indices by hand rather than calling \code{itertools.product}, to avoid
+the per-tuple object-allocation overhead; an empty edge set yields the single
+trivial tuple $(1.0+0j, ())$.
+
+\section{Translation invariance and external-Wick sums}\label{sec:wick}
+
+Before we reach the integrators, two correctness subtleties have to be handled in
+the construction of the callable: pinning the origin, and summing over Wick
+contractions of identical external legs.
+
+\subsection{Origin pinning}
+
+A stationary correlator depends only on \emph{time differences}. There is no
+absolute clock, so we are free to fix one external leaf at $t=0$. The engine pins
+the leaf at canonical position \code{origin\_leaf\_idx} (default $0$) to
+\code{SR(0)} during integrand construction. The callable it returns therefore
+computes a function of $(t_j - t_{\text{origin}})$ --- exactly the physical
+content, with the redundant overall time shift removed. For a $k=2$
+autocorrelator this means \code{total\_C(t\_1, t\_2)} returns $C$ at
+$\tau = t_2 - t_1$.
+
+\subsection{Summing Wick contractions, and the compensation divisor}
+
+When several external legs carry the \emph{same} field type --- say two $\delta
+n_1$ legs --- the symmetry-deduplication upstream has merged diagrams that differ
+only in which same-type leaf attaches where. Phase~J must compensate by summing
+over all such leaf permutations. Concretely, it enumerates every
+field-respecting assignment of canonical positions to leaves (the
+\code{\_all\_mappings} list), sums the integrand over them, and divides by the
+\textbf{external-Wick compensation factor}
+\begin{equation}
+  \texttt{comp} \;=\; \frac{|\Aut(\Gamma,\ \text{leaves free})|}{|\Aut(\Gamma,\ \text{leaves fixed})|}.
+  \label{eq:wick-comp}
+\end{equation}
+This is computed by \code{external\_wick\_compensation} in
+\file{symmetry.py:343}. The justification is orbit--stabilizer: two assignments
+yield the same pinned-external diagram iff they differ by an automorphism that
+permutes leaves, and the stabilizer of any assignment is exactly
+$\Aut_{\text{fixed}}$, so the mapping sum reproduces each distinct pinned diagram
+$|\Aut_{\text{free}}|/|\Aut_{\text{fixed}}|$ times. Dividing by that index makes
+the sum equal the sum over \emph{distinct} pinned diagrams --- which is what the
+Feynman rules require, since each pinned diagram already carries its full weight
+through its combinatorial factor (whose denominator is the same
+$\Aut_{\text{fixed}}$).
+
+\begin{gotcha}
+The compensation divisor must be the \emph{exact} orbit--stabilizer index of
+\eqref{eq:wick-comp}, not a cheaper proxy. A previous implementation approximated
+it as $\prod N!$ over leaves grouped by their attachment vertex's
+\emph{role signature} (a shallow depth-1 invariant). That over-divides whenever
+two attachment vertices share a role signature but are \emph{not} related by any
+automorphism --- e.g. the $k=4$ OU$+\varepsilon x^3$ one-loop cascades, where
+three noise vertices all read ``noise feeding a cubic'' yet hang off
+structurally distinct cubics. The resulting $\times\frac13$ / $\times\frac12$
+deficits broke every $k\ge 3$ one-loop cumulant while coincidentally leaving
+$k=2$ exact. The fix (validated against the exact Boltzmann series
+$\kappa_4 = -6\varepsilon + 126\varepsilon^2$) is the true automorphism index.
+When \code{external\_fields} is not supplied and a field-count mismatch forces
+the identity-mapping fallback, the divisor must be exactly $1$, never the old
+heuristic.
+\end{gotcha}
+
+\subsection{Re-pinning the origin per permutation}
+
+There is a second, subtler point in the final callable
+(\file{final\_integral.py:3759}). The integrand was \emph{built} with the origin
+leaf pinned to $0$. When a non-identity permutation relabels which leaf occupies
+which canonical position, the origin leaf may land at a non-zero time in the
+user's input frame. The callable therefore time-translates each permuted
+configuration so the origin returns to $0$ --- it subtracts the permuted origin's
+time from all the others:
+
+\begin{lstlisting}
+total = 0.0 + 0.0j
+for perm in _perms:
+    permuted = [ext_time_values[perm[j]] for j in range(_k)]
+    if origin_leaf_idx is not None:
+        t_origin = permuted[origin_leaf_idx]
+        # ... subtract t_origin from the free legs ...
+\end{lstlisting}
+
+\begin{gotcha}
+This per-permutation re-pinning is load-bearing. For an \emph{asymmetric}
+integrand --- which is every one-loop-and-higher diagram with a distinguished leaf,
+such as a cubic-vertex tadpole --- the different permutations are physically
+distinct evaluations (for a $k=2$ swap, $V(\tau)$ and $V(-\tau)$) and must be
+genuinely summed, not merely counted. Before this fix the swap permutation was
+fed the pinned origin's actual time, $\code{free\_val}=0$, producing spurious
+asymmetry in $C(\tau)$ for every non-tree $k=2$ identical-externals case.
+\end{gotcha}
+
+\section{The $m=1$ interval integrator}\label{sec:m1}
+
+We now turn to the three analytic backends, in order of increasing dimension.
+The dispatch on $m$ (the number of integration variables surviving
+$\delta$-elimination) happens inside each subset's contribution closure.
+
+For $m=1$ the polytope is an interval $[L, U]$ on the single integration variable
+$s$. With one variable, \eqref{eq:exp-over-polytope} is the elementary
+\begin{equation}
+  \int_L^U \ee^{\alpha_s\, s + \gamma}\,\dd s
+   = \ee^{\gamma}\cdot\frac{\ee^{\alpha_s U} - \ee^{\alpha_s L}}{\alpha_s},
+  \label{eq:m1-closed}
+\end{equation}
+with the removable-singularity limit $(U-L)\,\ee^{\gamma}$ as $\alpha_s\to 0$. The
+implementation is \code{\_integrate\_1d\_polytope\_modesum}
+(\file{final\_integral.py:1976}). The bounds $L$ and $U$ come from intersecting
+the smooth-edge half-line constraints $a^{(e)}_{\text{int}}[0]\,s + c_{\text{ext}}^{(e)} > 0$.
+
+\begin{note}
+\textbf{Unbounded endpoints are allowed.} If a side of the interval is $\pm\infty$,
+the corresponding boundary term in \eqref{eq:m1-closed} evaluates to $0$
+\emph{provided} the integrand decays in that direction --- that is, provided
+$\operatorname{sign}(\operatorname{Re}\alpha_s)$ matches the unbounded side. If it
+does not, the integral genuinely diverges along the analytic path, and the
+integrator returns \code{None}, which tells the caller to fall back to
+\code{scipy.quad} (which handles $\pm\infty$ bounds natively via a coordinate
+transform). Returning \code{None} is the universal ``I cannot do this one
+analytically, try numerics'' signal throughout the engine.
+\end{note}
+
+This same function is also called directly by the \emph{grouped} Phase~J path
+(Chapter~\ref{ch:grouped-phasej}) through its optional \code{pole\_tuples}
+argument, which lets that path inject pre-summed residues. We mention it so the
+shared interface is on your radar; the grouped path is the subject of the next
+chapter.
+
+\section{The $m=2$ polygon integrator}\label{sec:m2}
+
+For $m=2$ the polytope is a convex \emph{polygon} in the plane $(s_0, s_1)$ ---
+the intersection of the half-planes from the retardation constraints. The
+integral \eqref{eq:exp-over-polytope} becomes $\iint_{\text{polygon}}
+\exp(\alpha s_0 + \beta s_1)\,\dd A$. The engine evaluates it in four steps,
+implemented across \code{\_integrate\_2d\_polygon\_modesum}
+(\file{final\_integral.py:2175}) and its helpers.
+
+\subsection{Step 1 --- build the polygon by clipping}
+
+Start from a counter-clockwise bounding box of half-width \code{POLYGON\_BBOX\_CAP}
+($=200$) and \emph{clip} it against each constraint half-plane in turn. The
+clipping uses the \term{Sutherland--Hodgman} algorithm,
+\code{\_clip\_polygon\_to\_halfplane} (\file{final\_integral.py:454}).
+
+\begin{defn}
+\textbf{Sutherland--Hodgman polygon clipping} is a classic computer-graphics
+algorithm. It walks the edges of a polygon and, for each clipping half-plane,
+keeps the vertices on the ``inside,'' inserts the intersection point wherever an
+edge crosses the boundary, and drops the outside vertices. Applied once per
+constraint, it produces the convex intersection of the box with all the
+half-planes. Vertices lying exactly on a boundary are counted as inside --- a
+measure-zero choice that does not affect the area integral.
+\end{defn}
+
+The driver \code{\_polygon\_from\_2d\_constraints} (\file{final\_integral.py:499})
+substitutes the current external-time values into each constraint's affine offset
+and clips:
+
+\begin{lstlisting}
+polygon = [(-bbox_cap, -bbox_cap), (bbox_cap, -bbox_cap),
+           (bbox_cap, bbox_cap), (-bbox_cap, bbox_cap)]
+for (a_int, a_ext, c0) in constraint_data:
+    c_eff = float(c0) + sum(float(a_ext[j]) * float(free_ext_vals[j])
+                            for j in range(len(a_ext)))
+    polygon = _clip_polygon_to_halfplane(polygon, float(a_int[0]), float(a_int[1]), c_eff)
+    if not polygon:
+        return []
+\end{lstlisting}
+
+\noindent An empty result (the constraints are jointly infeasible at this
+$\tau$) integrates to $0$.
+
+\subsection{Steps 2--4 --- triangulate and map to the unit triangle}
+
+Fan-triangulate the polygon from vertex $0$ (every triangle shares vertex $0$).
+For each triangle, affine-map it to the \emph{unit triangle}
+$\{0\le u, w;\ u+w\le 1\}$; the exponential integrand becomes
+$\exp(\alpha_0 + p\,u + q\,w)$ for some complex $p, q$ read off the vertices. The
+unit-triangle integral then has the closed form
+\begin{equation}
+  J(p, q) = \int_0^1\!\dd u\int_0^{1-u}\!\dd w\;\ee^{p u + q w}
+   = \frac{1}{q}\left[\frac{\ee^{p} - \ee^{q}}{p - q} - \frac{\ee^{p} - 1}{p}\right],
+  \label{eq:Jpq}
+\end{equation}
+implemented in \code{\_exp\_over\_unit\_triangle} (\file{final\_integral.py:356}).
+The per-triangle wrapper \code{\_exp\_over\_triangle} (\file{final\_integral.py:406})
+maps the vertices, calls $J$, and scales by the Jacobian
+$|\det|\cdot\ee^{v_0\text{-term}}$.
+
+\begin{gotcha}
+\textbf{Equation \eqref{eq:Jpq} is a minefield of removable singularities.} The
+denominators $q$, $p$, and $p-q$ each vanish in a different degenerate regime,
+and the formula then takes the indeterminate $0/0$ form --- numerically, that is
+catastrophic cancellation. The code guards \emph{all four} regimes with
+4th-order Taylor expansions, triggered when any of $|p|, |q|, |p-q|$ drops below
+\code{\_J\_TAYLOR\_EPS} $= 10^{-6}$. For instance the doubly-degenerate
+$|p|,|q|\to 0$ case returns the moment expansion of the triangle directly:
+\begin{lstlisting}
+return (0.5
+        + (p + q) / 6.0
+        + (p*p)/24.0 + (q*q)/24.0 + (p*q)/24.0
+        + (p**3 + q**3)/120.0
+        + (p*p*q + p*q*q)/120.0)
+\end{lstlisting}
+the coefficients being the moments $\iint 1 = \tfrac12$, $\iint u = \iint w =
+\tfrac16$, and so on.
+\end{gotcha}
+
+\subsection{The bilateral overflow guard}
+
+\code{\_exp\_over\_triangle} returns \code{None} --- abort, fall back to scipy ---
+whenever any of $|\operatorname{Re} p|$, $|\operatorname{Re} q|$,
+$|\operatorname{Re}(v_0\text{-term})|$ exceeds \code{EXP\_REAL\_LIMIT} $= 600$.
+Note this guard is \emph{bilateral}: it checks the magnitude on \emph{both} signs,
+not just the overflow ($+$) side.
+
+\begin{gotcha}
+The bilateral guard is not an over-caution; it is a hard-won correctness fix. The
+structural cancellation in \eqref{eq:Jpq}, $(\ee^p-\ee^q)/(p-q) -
+(\ee^p-1)/p$, becomes dominated by floating-point noise when \emph{one} of
+$\ee^p$, $\ee^q$ underflows to zero and the other does not. A 2026 optimisation
+(commit 7f0bf05) relaxed the guard to one-sided, reasoning that the underflow
+direction is harmless; in fact it introduced wrong-direction loop corrections in
+the spike-reset $k=2$, $\ell=1$ case (which exercises the $m=2$ path heavily) and
+was reverted. The lesson, recorded in the code comment at line~436: keep the
+guard bilateral so the fragile-cancellation cases route to \code{scipy.nquad},
+which handles the well-conditioned integral natively.
+\end{gotcha}
+
+\section{The $m\ge 3$ causal-poset integrator}\label{sec:m3}
+
+For three or more integration variables the polygon picture no longer scales, and
+the engine switches to a combinatorial decomposition built on the
+\emph{structure} of the causal constraints. This is the most involved of the
+three backends, \code{\_integrate\_nd\_polytope\_poset\_modesum}
+(\file{final\_integral.py:1726}).
+
+\subsection{The constraint set as a directed acyclic graph}
+
+Read the constraint set $\{\Delta t_e > 0\}$ as a directed graph on the $m$
+integration variables. Each inter-axis constraint $s_v - s_u > 0$ becomes a
+directed edge $u\to v$ (read ``$u$ precedes $v$''); each single-variable
+constraint becomes a scalar bound $s_v > c$ or $s_v < c$. Because all the
+constraints come from causal orderings, this graph is acyclic --- a
+\term{directed acyclic graph} (DAG), equivalently a \term{partial order} (poset).
+This is extracted into the frozen \code{\_CausalPoset} dataclass
+(\file{final\_integral.py:691}) by \code{\_extract\_causal\_poset}
+(\file{final\_integral.py:720}), which classifies each constraint as an inter-axis
+edge, a scalar lower bound, a scalar upper bound, or --- if it is none of these
+clean forms (a mixed or shifted constraint) --- returns \code{None} to force the
+scipy fallback.
+
+\subsection{Linear extensions and the chain simplex}
+
+The key geometric fact: the full polytope is the \emph{disjoint union of simplex
+regions, one per linear extension of the poset}.
+
+\begin{defn}
+A \textbf{linear extension} of a partial order is a total order consistent with
+it --- a way of laying all the variables in a single line $s_{\sigma(0)} \le
+s_{\sigma(1)} \le \cdots$ that never violates a ``precedes'' relation. It is
+exactly a topological sort of the DAG. Each linear extension corresponds to one
+\textbf{chain simplex}
+\[
+  L \le s_{\sigma(0)} \le s_{\sigma(1)} \le \cdots \le s_{\sigma(m-1)} \le U_\sigma,
+\]
+and these simplices tile the polytope without overlap.
+\end{defn}
+
+The linear extensions are enumerated by \code{\_enumerate\_linear\_extensions}
+(\file{final\_integral.py:806}), a recursive Kahn-style topological-sort generator
+that yields every extension in deterministic order. The common scalar lower bound
+$L$ is resolved by \code{\_causal\_poset\_consistent\_scalar\_lower}
+(\file{final\_integral.py:857}); when no variable carries an explicit lower bound,
+a physical-margin fallback sets $L = (\text{earliest external time}) -
+\code{POSET\_PHYSICAL\_MARGIN}$ with \code{POSET\_PHYSICAL\_MARGIN} $= 50$.
+
+\begin{gotcha}
+Why the physical margin $50$ rather than the polygon's $200$? Because
+\code{POLYGON\_BBOX\_CAP}$=200$ is too loose for the chain simplex: combined with
+retarded poles ($|\operatorname{Re}\beta| > 3$ when three or four poles sum), the
+factor $\ee^{\beta\cdot L}$ at $L=-200$ overflows the $600$ guard and bails to
+scipy. The poset path uses the tighter margin $50$ --- several correlation times
+beyond the earliest external time, where the retarded integrand is already
+negligible --- so the analytic path actually completes. The comment block at
+\file{final\_integral.py:290} records this trade-off in detail.
+\end{gotcha}
+
+\subsection{The chain-simplex closed form}
+
+The nested exponential integral over one chain
+$\{L\le s_1\le\cdots\le s_N\le U\}$ has a closed form obtained by integrating
+inside-out. The reference implementation is \code{\_exp\_over\_chain\_simplex}
+(\file{final\_integral.py:910}). Its derivation, quoted from the docstring:
+
+\begin{quote}\small
+Integrate inside-out. After each step the running integrand is a sum of terms
+$C\cdot\exp(\beta\cdot s_{\text{outer}} + \text{const})$. Each inner integration
+produces two new terms --- one ``upper-bound'' piece (whose $\beta$ merges with the
+next-outer variable's coefficient) and one ``lower-bound'' piece (a numerical
+prefactor $\ee^{\beta\cdot L}$ falls out). After $N$ steps the sum has $2^N$
+constant terms; their sum is the integral.
+\end{quote}
+
+\noindent Two boundary behaviours are essential:
+
+\begin{itemize}
+  \item An \textbf{empty chain} ($U \le L$) returns $0$ --- the domain has zero
+        measure. This is precisely the $\tau < 0$ situation where the chain-bottom
+        lower bound (from a leaf at $t=0$) and the chain-top upper bound (from a
+        leaf at $t=\tau<0$) cross. Causality makes the diagram vanish there, and
+        the code returns exactly $0$.
+  \item A \textbf{degenerate cumulative coefficient} ($|\beta| < \epsilon$) makes
+        the closed form's $1/\beta$ singular; the function returns \code{None} so
+        the caller switches to the polynomial-prefactor variant below. There is
+        also the same bilateral $600$ overflow guard as in the polygon path.
+\end{itemize}
+
+Two variants extend this base case:
+
+\begin{description}
+  \item[\code{\_exp\_over\_chain\_simplex\_polynomial}
+        (\file{final\_integral.py:1339})] When a level's cumulative $\beta$
+        vanishes, the antiderivative is a \emph{polynomial} in $s$ rather than an
+        exponential. This variant carries a polynomial (in the basis
+        $(s-\text{lower})^k$) through the subsequent levels, using the closed form
+        $\int (s-\text{lower})^k\,\ee^{\beta s}\,\dd s$. It returns \code{None}
+        only on overflow, never on degenerate $\beta$ --- it is the engine's answer
+        to the $1/\beta$ singularity.
+  \item[\code{\_chain\_with\_intermediate\_uppers}
+        (\file{final\_integral.py:1489})] The base chain assumes the only scalar
+        upper bound sits at the top of the chain. When scalar uppers appear at
+        \emph{intermediate} positions, this function computes a non-decreasing
+        ``effective upper'' per position, groups them into levels, and enumerates
+        monotone ``cut tuples'' marking where the chain crosses each lower upper
+        bound, multiplying the chain-simplex value of each non-empty piece. It
+        subsumes an older, cruder ``maximality bail.''
+\end{description}
+
+\subsection{The numba fast path}
+
+For $m\ge 3$ the $2^N$ term expansion is the dominant cost, so it is also
+reimplemented for speed. \code{\_exp\_over\_chain\_simplex\_numba\_core}
+(\file{final\_integral.py:1219}) is a \code{numba}-compiled translation operating
+on pre-allocated complex buffers.
+
+\begin{defn}
+\textbf{Numba} is a just-in-time (JIT) compiler for a subset of Python and NumPy.
+You decorate a function with \code{@numba.njit} (``no-python JIT'') and the first
+time it runs, numba compiles it to native machine code through LLVM --- typically
+$10$--$100\times$ faster than the interpreted version for tight numeric loops. The
+\code{cache=True} option persists the compiled code to disk so the compilation
+cost is paid only once across runs.
+\end{defn}
+
+The numba core returns a \code{(status, value)} pair --- status $0$ for ok, $1$
+for degenerate $\beta$, $2$ for overflow --- so the pure-Python caller can take the
+same fallback branches it would for the reference implementation. The import is
+guarded, and there is a master switch:
+
+\begin{lstlisting}
+try:
+    import numba as _numba
+    _HAVE_NUMBA = True
+except ImportError:
+    _HAVE_NUMBA = False
+    _numba = None
+
+USE_NUMBA_CHAIN_SIMPLEX = True
+\end{lstlisting}
+
+\noindent The dispatcher \code{\_exp\_over\_chain\_simplex\_fast}
+(\file{final\_integral.py:1303}) prefers the numba core when it is available and
+enabled, and otherwise uses the pure-Python reference --- which is guaranteed
+bit-compatible on converged results. If numba is not installed, nothing breaks;
+the engine is simply slower on $m\ge 3$ diagrams.
+
+\section{The scipy fallback layer}\label{sec:scipy}
+
+Whenever an analytic backend returns \code{None} --- degenerate, overflowing,
+mixed-constraint, or unbounded-divergent --- the subset closure routes to a
+numerical-quadrature fallback built on SciPy. The dispatcher
+\code{\_integrate\_polytope} (\file{final\_integral.py:4372}) branches on $m$ and
+forwards to \code{\_integrate\_1d\_polytope}, \code{\_integrate\_2d\_polytope}, or
+\code{\_integrate\_nd\_polytope}, all built on \code{scipy.integrate.quad} (1D)
+and \code{nquad} (nested multi-D). Real and imaginary parts are integrated
+separately by \code{\_complex\_quad} (\file{final\_integral.py:4520}), since
+\code{quad} works on real-valued integrands. The accuracy is tuned by the
+module-level \code{QUAD\_OPTS = \{'limit': 200\}}.
+
+This fallback layer has three subtle correctness requirements, each of which has
+its own regression test:
+
+\begin{description}
+  \item[The Heaviside filter.] The polytope \emph{bounds} passed to \code{nquad}
+        can overshoot the true causal region (the cap fallbacks and deferred
+        cross-axis constraints are loose). For retarded poles the smooth
+        propagator \emph{grows} for $\Delta t < 0$, so an overshooting box would
+        let the integrand add a large spurious positive contribution.
+        \code{\_make\_heaviside\_filtered\_integrand}
+        (\file{final\_integral.py:4411}) wraps the integrand to return $0$
+        whenever any $\Delta t_e \le 0$, enforcing the $\Theta(0)=0$ convention.
+  \item[Deferred constraints.] In \code{\_integrate\_nd\_polytope}
+        (\file{final\_integral.py:4805}) each axis's bound function must
+        \emph{skip} any constraint that still couples to a more-inner axis ---
+        otherwise the bound would depend on a variable not yet integrated. This is
+        the deferred-constraint correctness handled by \code{\_make\_bound\_fn},
+        guarded by the test
+        \code{test\_phase\_J\_nd\_polytope\_preserves\_deferred\_constraints}.
+  \item[The degenerate-empty sentinel.] \code{\_resolve\_1d\_bounds}
+        (\file{final\_integral.py:4550}) returns a degenerate $(0.0, 0.0)$ --- not
+        $(\infty, -\infty)$ --- when the constraints are infeasible. The reason is
+        sharp: \code{scipy.quad(f, +inf, -inf)} returns the \emph{sign-flipped}
+        full-line integral, which would silently poison any outer \code{nquad}.
+        A zero-width interval correctly integrates to $0$.
+\end{description}
+
+\begin{gotcha}
+A specific trap in \code{\_integrate\_2d\_polytope}: a constraint with both
+$a_{\text{int}}[0]\approx 0$ and $a_{\text{int}}[1]\approx 0$ is a
+\emph{pure-external} inequality (a condition on $\tau$ alone), not a bound on
+$s_1$. Treating it as an $s_1$ bound sets a \code{pure\_s1\_found} flag that
+skips the $\pm 200$ cap fallback and oversamples an unbounded axis --- the source
+of roughly $12\%$ of the $k=4$ theory-versus-simulation overshoot. The code is
+careful to distinguish the two.
+\end{gotcha}
+
+\section{Non-local kernels: noise sources and conductance vertices}\label{sec:kernels}
+
+Two vertex types break the pure rational-propagator structure and need extra
+integration variables. Both are recognised by importing the vertex classes
+\code{NoiseSourceType} and \code{ConvVertexType} from \code{msrjd.core.vertices}.
+
+\paragraph{\code{NoiseSourceType} (coloured-noise cumulants).} The source's legs
+sit at \emph{independent} times coupled by a noise kernel $\kappa^{(n)}(\tau)$.
+The engine adds one $\tau$ per noise vertex, routes one leg to
+$\text{anchor} - \tau$, and substitutes the kernel $\kappa(\tau)$ into the
+prefactor. Because $\kappa$ is generally \emph{not} a sum of exponentials --- a
+Gaussian $\ee^{-\tau^2/2\sigma^2}$, say --- these diagrams cannot stay on the
+analytic path and are forced through the symbolic-plus-\code{scipy.nquad} route.
+
+\paragraph{\code{ConvVertexType} (conductance/synaptic kernels $g(\tau)$).} Same
+scaffold, but with a rescue. If $g(\tau)$ \emph{single-exponential-extracts} ---
+i.e. it is of the form $C\,\ee^{\lambda\tau}$ --- the engine can absorb it. The
+extraction is \code{\_extract\_exp\_mode} (\file{final\_integral.py:203}), which
+uses the log-derivative trick: $\lambda = \tfrac{\dd}{\dd\tau}\log g\big|_{\tau=0}$
+and $C = g(0)$. A successfully extracted kernel becomes a synthetic
+\textbf{pseudo-edge} $(C, \lambda)$ with constraint $\Delta t = +\tau > 0$, and
+the diagram stays on the fast analytic path.
+
+\begin{gotcha}
+\code{\_extract\_exp\_mode} returns \code{None} for \emph{polynomial-prefactor}
+kernels --- the classic example being the ``alpha'' synaptic kernel
+$\tau/\tau_g^2\cdot\ee^{-\tau/\tau_g}$, for which $g(0)=0$. Such kernels need a
+multi-mode decomposition the single-exponential extractor cannot provide, so they
+fall back to the slow path. The single-exponential conductance kernel
+$\tau_g\,\ee^{-\tau/\tau_g}$ is fine; the alpha kernel is not.
+\end{gotcha}
+
+\begin{gotcha}
+The extra $\tau$ variables are capped to $\pm\code{TAU\_KERNEL\_CAP}$ ($=50$). This
+is a quadrature band-aid for the slow path: without the cap, \code{scipy.quad}
+over $(\text{retard}_L, +\infty)$ lets the standard $\tan$-substitution compress a
+Gaussian kernel's peak against the boundary, where the adaptive sampler
+intermittently misses it and produces spurious spikes. Conductance $\tau$ uses a
+lower bound of $0$ (causality); noise $\tau$ uses the symmetric $\pm$ cap.
+\end{gotcha}
+
+\section{Batching and parallelism}\label{sec:parallel}
+
+The orchestration layer (\file{pipeline.py}) builds, on top of the per-diagram
+callables, two batched evaluators for sweeping a $\tau$ grid:
+
+\begin{itemize}
+  \item \code{total\_C\_batch(tau\_points, parallel=True, ...)}
+        (\file{pipeline.py:374}, a closure inside \code{compute\_correction\_td})
+        --- evaluates the full summed correlator over a grid.
+  \item \code{eval\_per\_diagram\_batch(...)} (\file{pipeline.py:502}) --- returns
+        the full \code{(n\_tau, n\_diagram)} grid of per-diagram contributions, for
+        diagnostics.
+\end{itemize}
+
+Both can fan out over a pool of worker processes. The parallelism uses
+\code{multiprocessing.Pool} with the \code{fork} start method --- and that choice
+is forced, for a reason that also makes it dangerous.
+
+\begin{defn}
+\textbf{Fork vs.\ spawn.} These are the two ways the \code{multiprocessing} module
+creates worker processes. \code{fork} (POSIX only) copies the parent's entire
+memory image into each child --- the children inherit every live object for free.
+\code{spawn} starts a fresh Python interpreter and \emph{pickles} the arguments
+across the process boundary.
+\end{defn}
+
+Fork is \emph{mandatory} here because the per-diagram \code{contribution}
+callables are nested closures (defined inside
+\code{integrate\_diagram.<locals>.contribution}), and the standard-library
+\code{pickle} cannot serialise a nested closure. With \code{fork}, the workers
+inherit those closures through the copied memory image; a module-level
+\code{\_WORKER\_STATE} dict carries them in. The module-level worker entry points
+\code{\_worker\_eval\_total\_C} (\file{pipeline.py:174}) and
+\code{\_worker\_eval\_one\_diagram} (\file{pipeline.py:186}) are themselves
+picklable (they are top-level functions) and simply look up the inherited
+closures.
+
+There are two parallel strategies, auto-chosen by batch shape: per-$\tau$
+parallelism (each worker evaluates the full \code{total\_C} at one $\tau$) when
+there are at least \code{n\_workers} grid points, and per-$(\tau, \text{diagram})$
+nested parallelism otherwise --- the latter aggregates results in ascending
+diagram order so that floating-point accumulation is bit-identical to the serial
+path.
+
+\begin{gotcha}
+\textbf{Fork can crash the OS inside a notebook.} Forking a process \emph{after}
+the Cocoa/BLAS libraries have initialised --- which is the state of any macOS
+Jupyter kernel --- has hard-crashed the development machine twice. The environment
+variable \code{OBJC\_DISABLE\_INITIALIZE\_FORK\_SAFETY=YES} makes it \emph{worse}:
+it removes the guard rail, not the hazard. Phase~J therefore consults
+\code{\_fork\_unsafe\_in\_notebook} (\file{pipeline.py:146}) --- which is true iff
+the start method is \code{fork} \emph{and} the platform is macOS \emph{and} the
+process is running inside a ZMQ/Jupyter kernel --- and silently degrades to serial
+evaluation with a one-time warning. The bit-identity tests
+\code{test\_phase\_J\_total\_C\_batch\_*} pass under \emph{pytest}, which is a plain
+interpreter and never a ZMQ kernel, so they certify numerical determinism but
+\emph{not} notebook crash-safety. The lesson, learned twice: in a notebook on a
+Mac, keep \code{parallel=False}.
+\end{gotcha}
+
+\begin{gotcha}
+Windows has no \code{fork}, and the per-diagram closures are unpicklable, so
+\code{total\_C\_batch(parallel=True)} raises \code{ValueError: cannot find context
+for 'fork'} on Windows. The parallel batch path is POSIX-only; on Windows, run
+serially.
+\end{gotcha}
+
+\section{$\delta$-spike discretisation}\label{sec:deltaspike}
+
+Recall from \S\ref{sec:polytope} that a $\delta$-edge equation with no
+integration variable to solve for becomes a constraint among external times --- a
+distributional shot-noise spike $\delta(a\cdot\tau + c)$. These are collected
+into the result's \code{delta\_contributions} list rather than folded into the
+smooth callable, because a $\delta$-function has no value to evaluate pointwise;
+it must be deposited onto a grid.
+
+\code{eval\_delta\_contributions\_on\_tau\_grid} (\file{final\_integral.py:3828})
+does this for a 1D $\tau$ grid. For each contribution with equality
+$a\cdot x + c = 0$ it solves for the firing lag $\tau_{\text{fire}} =
+-c'/a_{\text{vary}}$, evaluates the (compiled) coefficient callable there, checks
+the retardation half-spaces, and deposits $\text{coeff}/|a_{\text{vary}}|/\dd\tau$
+into the nearest bin --- the $1/\dd\tau$ being the discrete stand-in for the
+$\delta$'s unit area.
+
+\begin{gotcha}
+There is a degenerate case the code handles explicitly: when $a_{\text{vary}}
+\approx 0$ \emph{and} $c'\approx 0$, the $\delta$ fires along the \emph{whole}
+slice rather than at a single point. The code then deposits the
+\emph{continuous} coefficient $\text{coeff}_{\text{fc}}(\tau)$ with \emph{no}
+$1/\dd\tau$ divisor --- treating it as a smooth contribution along the slice, not a
+point spike.
+\end{gotcha}
+
+The 2D analogue \code{eval\_delta\_contributions\_on\_2d\_grid}
+(\file{final\_integral.py:4004}) sweeps the $\delta$-line
+$a_1\tau_1 + a_2\tau_2 + c = 0$ along whichever axis carries the larger
+coefficient, depositing into the nearest cell.
+
+\section{External tools used}\label{sec:tools}
+
+This subsystem straddles SageMath and the scientific-Python stack. Each library
+appears for a specific, narrow reason; here is the inventory.
+
+\subsection{SageMath (\code{sage.all})}
+
+SageMath is a large open-source mathematics system that wraps dozens of
+specialised libraries (Maxima for symbolic algebra, PARI, GMP, and more) behind a
+unified Python API. Phase~J uses it only as the \emph{authoring and extraction}
+layer --- the diagram's propagator entries, the $\delta$-coefficients, and the
+prefactor all arrive as Sage symbolic expressions. The relevant objects:
+
+\begin{description}
+  \item[\code{SR} --- the Symbolic Ring.] \code{SR.var('x')} makes a symbolic
+        variable; \code{SR(expr)} coerces a value into a symbolic expression.
+        Symbolic expressions support \code{.subs(dict)}, \code{.expand()},
+        \code{.diff()}, \code{.coefficient(v)}, and \code{.variables()}.
+  \item[\code{CDF} --- the Complex Double Field.] Machine-precision complex
+        numbers. \code{complex(CDF(SR(expr)))} is the standard idiom for turning a
+        fully-substituted symbolic scalar into a Python \code{complex}.
+  \item[\code{fast\_callable(expr, vars, domain=CDF)}.] Sage's JIT compiler
+        \emph{for symbolic expressions}. It walks the expression tree once and
+        produces a fast callable (backed by a bytecode interpreter) that evaluates
+        \code{expr} numerically. Phase~J uses it to compile the residual symbolic
+        integrand for the \code{scipy.nquad} fallback path only.
+  \item[\code{solve} (imported as \code{sage\_solve}).] The symbolic equation
+        solver, used on the $\delta$-edge equations $\Delta t_e == 0$ to solve for
+        an integration variable.
+\end{description}
+
+\noindent The exact import (\file{final\_integral.py:83}):
+
+\begin{lstlisting}
+from sage.all import SR, fast_callable, CDF, solve as sage_solve
+\end{lstlisting}
+
+The discipline is: extract the numerical pole/residue data \emph{once}, solve the
+$\delta$ equations, read linear coefficients off the constraint expressions --- and
+then never touch Sage again. The hot numerical loops are pure Python
+\code{complex} and \code{cmath}, because Sage is too slow per call.
+
+\subsection{\code{cmath} / \code{math} (standard library)}
+
+\code{cmath.exp} is the complex exponential at the core of every analytic
+integrator's inner loop; \code{math.inf}, \code{math.isinf}, and
+\code{math.factorial} appear in the bound resolution and the polynomial-prefactor
+chain. These are imported \emph{locally} inside the hot functions (e.g.
+\code{import cmath}) so the module-level namespace stays clean.
+
+\subsection{NumPy and Numba}
+
+\term{NumPy} (\code{import numpy as np}, \file{final\_integral.py:1041}) plays two
+roles: it backs the numba chain-simplex kernel, which works on pre-allocated
+\code{np.complex128} buffers, and it provides the output arrays (and
+\code{np.argmin}/\code{np.abs}) for the $\delta$-spike grid discretisers.
+\term{Numba} is the JIT compiler for the chain-simplex inner loop covered in
+\S\ref{sec:m3}; its import is guarded so the engine runs without it.
+
+\subsection{mpmath}
+
+\term{mpmath} is a pure-Python arbitrary-precision floating-point library;
+\code{mpmath.mpc} is a complex number with a configurable number of decimal
+digits (\code{mp.dps}). Phase~J uses it in two \emph{experimental,
+off-by-default} precision-rescue paths for the $m\ge 3$ chain simplex, where the
+$2^N$ cancellation can lose precision on close-paired poles. Both
+\code{USE\_CHAIN\_SIMPLEX\_PRECISION\_FIX} and
+\code{USE\_POSET\_MPMATH\_ACCUMULATION} default to \code{False} --- they did not
+actually cure the targeted bug (see \S\ref{sec:knownbugs}).
+
+\subsection{SciPy}
+
+\term{SciPy}'s \code{integrate} submodule provides adaptive numerical quadrature:
+\code{quad(f, a, b)} for adaptive 1D integration (Gauss--Kronrod / QUADPACK,
+handling $\pm\infty$ bounds natively), and \code{nquad(f, [bounds...])} for nested
+multi-dimensional quadrature where each axis's bounds may be a callable of the
+outer variables. It is the engine's universal fallback, reached whenever an
+analytic integrator returns \code{None}.
+
+\subsection{What is \emph{not} used}
+
+NetworkX, nauty, and SymPy do \emph{not} appear in this subsystem. Graph
+structure is handled through SageMath's own graph objects
+(\code{D.vertices()}, \code{D.edges()}, \code{D.num\_edges()}); nauty (graph
+canonicalisation) lives in the upstream enumeration subsystem; and all symbolic
+work here is Sage's \code{SR}, never SymPy.
+
+\section{Diagnostics and tuning knobs}\label{sec:diagnostics}
+
+The engine exposes a handful of module-level knobs and a runtime-counter
+mechanism, all so you can see \emph{which} path actually fired and tune the
+trade-offs.
+
+\begin{description}
+  \item[\code{\_RUNTIME\_COUNTERS} (\file{final\_integral.py:315}).] A diagnostic
+        dict counting, per $m$, how often each analytic path was \emph{attempted},
+        how often it \emph{returned \code{None}}, and how often the run fell
+        through to \code{scipy.nquad}. Call \code{\_reset\_runtime\_counters()}
+        before a timed run, then read the dict after. These are \emph{runtime}
+        observations; the \emph{intent} of each subset (which path it was
+        \emph{set up} to take) is recorded separately in
+        \code{subset\_diagnostics['evaluator']}.
+  \item[\code{QUAD\_OPTS = \{'limit': 200\}}.] The accuracy knob for the scipy
+        fallback's quadrature.
+  \item[\code{TAU\_KERNEL\_CAP = 50.0}.] The cap on the extra non-local-kernel
+        $\tau$ variables (\S\ref{sec:kernels}).
+  \item[\code{POLYGON\_BBOX\_CAP = 200.0} vs.\ \code{POSET\_PHYSICAL\_MARGIN = 50.0}.]
+        The bounding-box half-widths for the $m=2$ and $m\ge 3$ paths respectively
+        (\S\ref{sec:m2}, \S\ref{sec:m3}).
+  \item[The \code{USE\_*} flags.] \code{USE\_NUMBA\_CHAIN\_SIMPLEX} (default
+        \code{True}) toggles the numba fast path; \code{USE\_POLYGON\_M2\_INTEGRATOR}
+        and \code{USE\_1D\_INTEGRATOR} toggle the analytic $m=2$ and $m=1$ paths;
+        and the precision-rescue flags
+        \code{USE\_CHAIN\_SIMPLEX\_PRECISION\_FIX},
+        \code{USE\_POSET\_MPMATH\_ACCUMULATION}, and
+        \code{USE\_POSET\_CAP\_MATCH\_SCIPY} all default \code{False}.
+\end{description}
+
+\section{Known precision caveats and open bugs}\label{sec:knownbugs}
+
+Honesty about the limits of the engine matters more than a clean narrative. There
+is one genuinely open bug and a cluster of near-misses around it.
+
+\begin{gotcha}
+\textbf{The $m\ge 3$ chain-simplex close-pole overestimate (OPEN).} On
+close-paired poles --- e.g.\ the spike-reset poles $0.329\ii$ and $0.351\ii$, a
+difference of only $0.022\ii$ --- the $2^N$ closed form suffers
+cancellation-driven precision loss. Empirically this shows up as roughly a
+$4\times$ aggregate overestimate of the one-loop value at spike-reset $k=2$,
+$\ell=1$. Two attempted fixes are \emph{both off by default} because neither
+actually cured it: \code{USE\_CHAIN\_SIMPLEX\_PRECISION\_FIX} (an mpmath dispatch
+on close poles) and \code{USE\_POSET\_MPMATH\_ACCUMULATION} (mpmath outer
+accumulation, which improved the cancellation factor only $\sim 21\times$). The
+audit (\file{docs/m\_ge3\_precision\_bug\_audit.md}) now points at a
+\emph{bookkeeping difference in pole-tuple construction between the grouped and
+per-diagram paths} --- by linearity they should agree, so the $4\times$ discrepancy
+points to a construction bug, not an arithmetic-precision one. This is
+unresolved.
+\end{gotcha}
+
+The related near-miss flag \code{USE\_POSET\_CAP\_MATCH\_SCIPY} was meant to align
+the analytic poset's unbounded-below fallback ($L = \text{earliest\_ext} - 50$)
+with the scipy \code{OUTER\_CAP} of $200$, for marginally-stable theories where
+the integral is genuinely cap-dependent. The code comment records that aligning
+the caps does \emph{not} bring the per-diagram path into agreement with the
+grouped path --- confirming the dominant error lies elsewhere. It too defaults
+\code{False}.
+
+\section{The loop-subgraph stub}\label{sec:subgraph}
+
+For completeness: \file{subgraph.py} is a near-stub for a route that was designed
+but never built. Its \code{identify\_loop\_subgraphs} (\file{subgraph.py:66})
+returns \code{[]} for tree-level diagrams (empty \code{free\_freqs}) and
+\emph{raises \code{NotImplementedError}} otherwise. The frequency-domain
+loop-reduction algorithm this file was meant to enable was superseded: the
+current \code{integrate\_diagram} handles loops directly in the time domain,
+treating every internal vertex as an integration variable regardless of loop
+order. The module is never exercised on the live path; its docstring documents
+only the \emph{planned} algorithm. If you go looking for ``where the loop
+reduction happens,'' the answer is that there is no separate loop reduction ---
+the DAG-and-polytope machinery of this chapter \emph{is} the loop handling.
+
+\begin{note}
+The same point bears on a stale docstring you may notice while reading the code:
+\file{pipeline.py}'s module header and the \code{compute\_correction\_td}
+docstring both say loop diagrams are \emph{skipped}. They are not. The live code
+evaluates every loop order through \code{integrate\_diagram}; the inline comment at
+\file{pipeline.py:291} explains why (the enumerator produces DAGs, so tree and
+loop share the same vertex-time integration algorithm). Trust the code, not the
+header.
+\end{note}
+
+\section{What you just learned}
+
+Phase~J turns each typed diagram into a number by recognising that the retarded
+propagator is a finite sum of decaying exponentials \eqref{eq:GR-decomp}, so the
+diagram integral \eqref{eq:diagram-integral} is a sum --- over $\delta$-subsets
+and pole tuples --- of pure exponentials integrated over a causal polytope
+\eqref{eq:exp-over-polytope}. Three analytic backends evaluate that polytope
+integral in closed form, dispatched by the surviving dimension $m$: an interval
+formula for $m=1$ (\S\ref{sec:m1}), Sutherland--Hodgman clipping plus a
+unit-triangle formula for $m=2$ (\S\ref{sec:m2}), and a causal-poset
+linear-extension decomposition into chain simplices for $m\ge 3$
+(\S\ref{sec:m3}). A \code{scipy} quadrature layer catches every degeneracy
+(\S\ref{sec:scipy}), non-local noise and conductance kernels add extra
+$\tau$ variables (\S\ref{sec:kernels}), distributional spikes are deposited onto
+the grid separately (\S\ref{sec:deltaspike}), and a fork-based batch layer ---
+with a hard-won notebook safety guard --- sweeps the $\tau$ grid
+(\S\ref{sec:parallel}).
+
+The natural next step is Chapter~\ref{ch:grouped-phasej}, the \emph{grouped}
+Phase~J path. It reuses the very same analytic primitives ---
+\code{\_integrate\_1d\_polytope\_modesum}, \code{\_integrate\_2d\_polygon\_modesum},
+and the poset integrator --- but sums residues \emph{across} diagrams before
+integrating, trading per-diagram independence for a reduction in the pole-tuple
+count. The discrepancy between that path and this one is, as
+\S\ref{sec:knownbugs} noted, the current prime suspect for the $m\ge 3$ open bug.

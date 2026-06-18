@@ -1,0 +1,1066 @@
+% ---------------------------------------------------------------------
+%  Chapter 6 : The Field-Theory Core --- Action, Taylor Expansion, Vertices
+% ---------------------------------------------------------------------
+\chapter{The Field-Theory Core: Action, Taylor Expansion, Vertices}\label{ch:fieldtheory-core}
+
+This is the first of the machinery chapters, and it opens the very first of the
+seven phases you watched scroll past in the quickstart trace: \code{[1/7]
+FieldTheory.expand}. Everything downstream --- the propagator, the mean-field
+solve, the diagram enumeration, the loop integrals --- consumes the output of
+this one stage. If you understand nothing else about the internals, understand
+this: the field-theory core is the machine that turns a \emph{declarative model}
+(a Python dictionary of strings, lists, and small functions) into a
+\emph{classified symbolic action} --- a dictionary of polynomial pieces sorted by
+how many response legs and how many physical legs each piece carries. The free
+propagator, the noise sources, and the interaction vertices all fall out of that
+single classification.
+
+The subsystem lives in four files, all under \file{msrjd/core/}:
+
+\begin{itemize}
+  \item \file{field\_theory.py} --- the \code{FieldTheory} expander itself: it
+        builds the symbolic namespace, evaluates the action, Taylor-expands every
+        nonlinearity, classifies the result by ``bigrade,'' and verifies the
+        mean-field sector vanishes.
+  \item \file{vertices.py} --- decomposes each classified sector into individual
+        typed records (\code{VertexType}, \code{SourceType}, and their
+        kernel-carrying subclasses) that the diagram machinery can build with.
+  \item \file{convolution.py} --- the formal \code{Conv(kernel, field)} operator
+        and the rules that resolve it, so a synaptic kernel times a field means
+        \emph{convolution in time}, not ordinary multiplication.
+  \item \file{serialize.py} --- saves an expanded theory to disk (so the
+        expensive Taylor step is not repeated) and re-imports a model on demand.
+\end{itemize}
+
+We will work two examples in parallel. The running ``toy'' is the quartic
+Ornstein--Uhlenbeck model from Chapter~\ref{ch:quickstart} --- one physical field,
+white noise, a single cubic vertex --- because it is small enough that you can
+hold the entire expanded action in your head. The running ``real'' example is the
+quadratic Hawkes model shipped in \file{models/hawkes\_quad\_expg.py} --- two
+populations, a synaptic convolution kernel, a formal transfer function --- because
+it exercises every feature the subsystem has. Reading that model file alongside
+this chapter is recommended; it is the canonical shape of the ``model dict'' the
+core consumes.
+
+\begin{note}
+A vocabulary reminder from the physics, since the code leans on it constantly. In
+the \msrjd{} construction every \term{physical field} (the thing that actually
+fluctuates --- a voltage $v$, a spike rate $n$, our $x$) is paired with a
+conjugate \term{response field}, written with a tilde ($\tilde v$, $\tilde n$,
+$\tilde x$) and called the ``tilde'' or ``hat'' field. In diagram language a
+physical leg is an ``in-leg'' and a response leg is an ``out-leg.'' The entire
+classification scheme of this chapter is built on counting these two kinds of
+legs separately.
+\end{note}
+
+\section{The MSR-JD action as data}
+
+The single most important design choice in this subsystem --- the one that makes
+it model-independent --- is that \emph{a model is data, not code}. You do not
+write a new expander for each physics problem. You hand the one expander a Python
+dictionary describing your model, and it does the rest. So before any algebra, we
+need to understand the shape of that dictionary and the object the framework
+builds from it.
+
+\subsection{The model dictionary}
+
+A model is a \code{dict}. Its values are a mix of plain data (strings, numbers,
+lists of small spec dictionaries) and \emph{lambdas} --- small functions that,
+given a namespace object, return a symbolic expression. The keys the core reads
+are summarized in Table~\ref{tab:modeldict}.
+
+\begin{table}[h]
+\centering
+\caption{The keys of a model dict that the field-theory core reads. ``lambda
+\code{ns}$\to$\,\dots'' means a function taking the namespace object and returning
+the indicated thing. Optional keys are noted.}
+\label{tab:modeldict}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+key & type & meaning \\
+\midrule
+\code{name}              & str  & human-readable model name \\
+\code{index\_sets}       & dict & named index ranges; first is the primary index \\
+\code{populations}       & list & per-population \code{\{name, size\}} (optional) \\
+\code{response\_fields}  & list & specs for the tilde fields \\
+\code{physical\_fields}  & list & specs for the fluctuation fields \\
+\code{parameters}        & list & \code{\{name, indexed\_by, domain, default, \dots\}} \\
+\code{kernels}           & list & \code{\{name, sage\_name, indexed\_by, \dots\}} \\
+\code{operators}         & list & \code{\{name, sage\_name\}} (e.g.\ \code{Dt}) \\
+\code{functions}         & list & nonlinear fns: \code{expression} or \code{taylor\_coeffs} \\
+\code{mf\_substitutions} & list & \code{\{name, value: lambda ns$\to$SR\}} \\
+\code{mf\_bg\_conditions}& lambda & saddle substitutions for sector verification \\
+\code{specializations}   & lambda & rename abstract derivative symbols to values \\
+\code{correlated\_noises}& dict & colored-noise cumulant declarations (optional) \\
+\code{kernel\_ft\_image} & lambda & $\{$kernel\,$\mapsto\hat g(\omega)\}$ (Fourier image) \\
+\code{kernel\_td\_image} & lambda & $\{$kernel\,$\mapsto g(\tau)\}$ (time-domain image) \\
+\code{action}            & lambda & \textbf{the action} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+You will rarely author this dict by hand. The theory builders of
+Chapter~\ref{ch:theory-spec} generate it for you from a much friendlier fluent
+API (recall
+\code{TemporalTheoryBuilder('OU Quartic')\allowbreak.physical\_field('x')\dots}).
+But the core does not know about the builders; it only sees the dict. So
+everything in this chapter is phrased in terms of these keys.
+
+The one key that does the real work is \code{action}: a function that, handed the
+namespace, returns one big symbolic expression for $S$. For the quartic OU model
+the builder produces an action equivalent to
+\[
+  S \;=\; \sum_{i}\Bigl[\tilde x_i\,\bigl((\partial_t + \mu)\,x_i + \varepsilon\,x_i^{3}\bigr)
+          \;-\; D\,\tilde x_i^{2}\Bigr],
+\]
+which is exactly the action text \code{xt[i]*((Dt+mu)*x[i] + eps*x[i]\^{}3) - D*xt[i]\^{}2}
+you saw in the quickstart theory file. For the Hawkes model the action authored at
+\file{hawkes\_quad\_expg.py:236} is the richer
+\[
+  S \;=\; \sum_i\Bigl[\tilde n_i\,(\dot{n}^{*}_i + \delta n_i)
+        \;-\;(\ee^{\tilde n_i}-1)\,\phi_i(\delta v_i)
+        \;+\;\tilde v_i\bigl[(\tau\partial_t+1)\delta v_i + v^{*}_i - E_i
+              - \textstyle\sum_j w_{ij}\,g\!\cdot\!(n^{*}_j+\delta n_j)\bigr]\Bigr],
+\]
+with response fields $\tilde n_i,\tilde v_i$, fluctuation fields
+$\delta n_i,\delta v_i$, a synaptic kernel $g$ (a convolution), and a nonlinear
+transfer function $\phi_i(v)=a\,v^2$.
+
+\subsection{The namespace object}
+
+The action lambda takes one argument, conventionally called \code{ns}, and writes
+the action in terms of attributes of \code{ns}: \code{ns.xt[i]}, \code{ns.x[i]},
+\code{ns.mu}, \code{ns.Dt}, and so on. That \code{ns} object is an instance of a
+deliberately empty class:
+
+\begin{lstlisting}
+# msrjd/core/field_theory.py:185
+class _Namespace:
+    pass
+\end{lstlisting}
+
+It is empty because it is a blank slate that \code{FieldTheory.\_build\_namespace}
+fills, one attribute at a time, with a symbolic variable for every field, every
+parameter, every kernel, every operator, and every function the model declares
+(we walk that construction in detail in \S\ref{sec:buildns}). The action lambda
+never has to import anything model-specific; it just reaches into the namespace it
+was handed. This indirection is the whole trick that lets one expander serve every
+model.
+
+\begin{gotcha}
+\code{\_Namespace} also carries a pile of private bookkeeping attributes whose
+names start with an underscore: \code{ns.\_all\_field\_sr\_vars} (the list of every
+field symbol), \code{ns.\_ring\_var\_names} (the ring generator names, tilde
+first), \code{ns.\_deriv\_rename\_subs} (the formal-derivative rename map), and
+more. These are not for the model author to touch; they are how the expander
+passes state from \code{\_build\_namespace} to the rest of \code{expand}. The
+namespace is also \emph{unpicklable} --- it holds inner closures --- which becomes
+important in \S\ref{sec:pickle}.
+\end{gotcha}
+
+\section{SageMath in one page}
+
+Every field, parameter, kernel, and operator in this subsystem is a SageMath
+symbolic object. If you have never used Sage, this section is the minimum you need
+to read the code; everything here recurs throughout the manual.
+
+\term{SageMath} is a large open-source mathematics system built on Python. It
+bundles many computer-algebra engines (Maxima, Pari, Singular, FLINT, GMP, SymPy,
+\dots) behind one Python API. This subsystem uses exactly two pieces of it.
+
+\paragraph{The Symbolic Ring \code{SR}.} \code{SR} is Sage's universal ring of
+symbolic expressions --- think ``anything you could write on a blackboard'':
+\code{a*x\^{}2 + sin(t) + exp(nt)}. \code{SR.var('a')} creates a symbolic variable
+named \code{a}. Wrapping a value in \code{SR(...)} coerces it into the symbolic
+ring, so \code{SR(0)} is the symbolic zero. Crucially, an \code{SR} variable can
+carry an \emph{assumption} (e.g.\ \code{domain='positive'}, which tells Sage the
+symbol is a positive real) and a \emph{LaTeX display name} (\code{latex\_name=...},
+so a notebook renders $\mu$ instead of \code{mu}).
+
+\paragraph{\code{PolynomialRing(SR, names)}.} This builds a polynomial ring
+\emph{whose coefficients live in \code{SR}} and whose \emph{generators} are the
+named field variables. So \code{PolynomialRing(SR, ['xt','dx'])} represents the
+action as a genuine polynomial in the two field generators \code{xt} and
+\code{dx}, while the parameters ($\mu$, $\varepsilon$, $D$) live symbolically
+\emph{in the coefficients}. This separation is the linchpin of the whole chapter:
+a polynomial-ring element exposes its monomials through \code{.dict()}, a map
+\code{\{exponent\_vector: coefficient\}}, and the exponent vector immediately tells
+you how many of each field a monomial contains.
+
+The exact imports the expander uses make the surface concrete:
+
+\begin{lstlisting}
+# field_theory.py:26-29
+from sage.all import (
+    SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
+    diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
+)
+\end{lstlisting}
+
+A quick gloss of the less obvious names: \code{factorial} and \code{QQ} (Sage's
+field of \emph{exact} rationals) build Taylor coefficients $1/k!$ without ever
+touching floating point; \code{diff} is symbolic differentiation; \code{function}
+builds a \emph{formal} (unevaluated) symbolic function (\S\ref{sec:formal});
+\code{dirac\_delta} and \code{heaviside} are $\delta(t)$ and the step function;
+\code{integrate} is symbolic integration; \code{oo} is $\infty$, \code{I} is
+$\sqrt{-1}$, \code{pi} is $\pi$; and \code{taylor} is the multivariate Taylor
+expander (\S\ref{sec:taylor}).
+
+Two Sage behaviors trip up newcomers so hard that the code comments call them out
+by name. They are worth a callout box of their own, because getting either wrong
+\emph{silently corrupts the answer}.
+
+\begin{gotcha}
+\textbf{A Sage sum is \code{add\_vararg}, not \code{operator.add}.} When you ask a
+Sage expression for its top-level operator with \code{expr.operator()}, a sum does
+\emph{not} report Python's \code{operator.add}; it reports Sage's own internal
+n-ary callable \code{add\_vararg}. So the code never compares operators by
+identity. Everywhere it needs to ask ``is this a sum?'' it does a name-based test:
+\begin{lstlisting}
+# field_theory.py:266-267  (inside _sr_to_ring)
+_op_obj = expanded.operator()
+if _op_obj is not None and 'add' in getattr(_op_obj, '__name__', '').lower():
+    summands = expanded.operands()
+\end{lstlisting}
+The same pattern appears in \file{convolution.py:254}. Getting this wrong does not
+raise an error --- it just fails to recognize the sum, and terms are silently
+dropped.
+\end{gotcha}
+
+\begin{gotcha}
+\textbf{\code{expr != 0} is unreliable for symbolic zero.} Under Sage, when an
+expression contains an unbound real parameter with no positivity assumption (e.g.\
+a symbol declared \code{domain='real'}), the comparison \code{expr != 0} can return
+\code{False} --- Sage cannot decide the sign and refuses to commit. The correct
+\emph{syntactic} zero test is \code{.is\_trivial\_zero()}, which is \code{True}
+exactly when the expression is literally zero, regardless of any parameter
+assumptions. The cumulant injector relies on it (\file{field\_theory.py:490}),
+with the reason spelled out in the comment right above the call.
+\end{gotcha}
+
+\section{From action to polynomial: the \texttt{expand()} pipeline}
+
+With the vocabulary in place we can read the heart of the subsystem:
+\code{FieldTheory.expand} at \file{field\_theory.py:814}. It is a single method
+that performs an eight-step transform. We list the steps first, then spend the
+following sections opening up the ones that carry real subtlety (Taylor expansion,
+convolution, bigrade classification, mean-field verification). Here is the
+skeleton, lightly trimmed:
+
+\begin{lstlisting}
+# field_theory.py:814  (FieldTheory.expand, abridged)
+def expand(self) -> None:
+    ns, R, n_tilde = self._build_namespace()           # 1. build namespace
+    self._ns, self._R, self._n_tilde = ns, R, n_tilde
+
+    S_sr = SR(self.model['action'](ns))                # 2. evaluate the action
+
+    # 3. resolve Conv(kernel, field) atoms
+    S_sr = reduce_conv_in_action(S_sr, fluct_vars,
+               taylor_order=self.taylor_order, attachments_out=attachments)
+    ns._kernel_attachments = attachments
+
+    # 4. inject correlated-noise cumulant series
+    S_sr = S_sr + _build_cumulant_action(ns, self.model)
+
+    # 5. multivariate Taylor to total degree taylor_order
+    if ns._all_field_sr_vars:
+        S_sr = taylor(S_sr, *[(v, 0) for v in ns._all_field_sr_vars],
+                      self.taylor_order)
+
+    # 6. rename formal-derivative symbols  D[0](phi_1)(0) -> phi1_1
+    S_sr = S_sr.subs(ns._deriv_rename_subs)
+
+    # 7. apply model specializations  phi1_i -> 2 a vstar_i, ...
+    S_sr = S_sr.subs(self.model['specializations'](ns))
+
+    # 8. coerce to the polynomial ring and classify BEFORE MF subs
+    S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
+    by_tp  = _collect_bigrade(S_poly, n_tilde)
+    # ... then verify+zero the mean-field sector, rebuild S_raw ...
+    self._by_tp = by_tp
+\end{lstlisting}
+
+Read top to bottom:
+
+\begin{enumerate}
+  \item \textbf{Build the namespace.} \code{\_build\_namespace} returns the triple
+        \code{(ns, R, n\_tilde)}: the populated namespace, the polynomial ring, and
+        the number of response-field generators. Detailed in \S\ref{sec:buildns}.
+  \item \textbf{Evaluate the action.} \code{self.model['action'](ns)} calls the
+        model's action lambda with the namespace; the result is one large \code{SR}
+        expression. Wrapping it in \code{SR(...)} guarantees it is in the symbolic
+        ring even if the lambda returned a bare integer.
+  \item \textbf{Resolve convolutions.} Every \code{Conv(g, field)} atom is rewritten
+        by \code{reduce\_conv\_in\_action} (\S\ref{sec:conv}). The whole step is
+        wrapped in a \code{try/except (AttributeError, TypeError)} so a model with
+        no convolutions passes through untouched.
+  \item \textbf{Inject correlated-noise cumulants.} If the model declares colored
+        noise, \code{\_build\_cumulant\_action} appends a cumulant series to the
+        action; otherwise it returns \code{SR(0)}, a true no-op (\S\ref{sec:cumulant}).
+  \item \textbf{Taylor-expand.} Every nonlinear function of the fields becomes a
+        finite polynomial, truncated at total degree \code{taylor\_order}
+        (\S\ref{sec:taylor}).
+  \item \textbf{Rename derivative symbols.} Sage produces ugly atoms like
+        \code{D[0](phi\_1)(0)} when it differentiates a formal function; these are
+        renamed to clean polynomial-friendly names like \code{phi1\_1}
+        (\S\ref{sec:formal}).
+  \item \textbf{Apply specializations.} The model substitutes concrete values for
+        those abstract derivative symbols (for $\phi=a v^2$, $\phi''\to 2a$). These
+        are pure renames, safe to apply to every sector.
+  \item \textbf{Coerce and classify.} The \code{SR} expression is converted into a
+        polynomial-ring element by \code{\_sr\_to\_ring}, then split into bigrade
+        sectors by \code{\_collect\_bigrade} (\S\ref{sec:bigrade}). Only \emph{after}
+        this does the mean-field sector get verified and zeroed (\S\ref{sec:mf}).
+\end{enumerate}
+
+\begin{gotcha}
+The docstring of \code{expand} (\file{field\_theory.py:818}) still describes step~5
+as ``sequential \code{taylor()}.'' The code at \file{field\_theory.py:894} actually
+does a single one-shot multivariate \code{taylor}. Trust the code: the expansion is
+multivariate, for the reason given in \S\ref{sec:taylor}.
+\end{gotcha}
+
+The order of these steps is not arbitrary. The most important ordering constraint
+--- classify \emph{before} applying mean-field substitutions --- is the subject of
+\S\ref{sec:mf}, and the comment at \file{field\_theory.py:913--922} is worth
+reading in the source.
+
+\subsection{Building the namespace}\label{sec:buildns}
+
+\code{FieldTheory.\_build\_namespace} (\file{field\_theory.py:1041}) is the longest
+method in the file. You do not need every line, but you should know the order in
+which it populates \code{ns}, because that order fixes the ring generator ordering
+that the entire classification depends on.
+
+\begin{enumerate}
+  \item \textbf{Index sets and populations.} Each entry of \code{model['index\_sets']}
+        is bound onto \code{ns}; the first is the ``primary'' index. For each
+        \code{model['populations']} entry it builds a $0\!\dots\!(\text{size}-1)$
+        index list, so action text can write \code{for i in pop}. Legacy theories
+        with no populations fall back to a single flat \code{pop}.
+  \item \textbf{Field variables.} For each \code{response\_fields} and
+        \code{physical\_fields} spec it creates the \code{SR} symbols: an indexed
+        field becomes a list \code{[SR.var(f"\{fname\}\{i+1\}", latex\_name=...)]}
+        (so field \code{x} in a population of one becomes the symbol \code{x1}); a
+        scalar field becomes a single symbol. It accumulates the tilde symbols and
+        the physical symbols separately and stashes them as
+        \code{ns.\_tilde\_sr\_vars}, \code{ns.\_phys\_sr\_vars}, and the union
+        \code{ns.\_all\_field\_sr\_vars}.
+  \item \textbf{The polynomial ring.} It forms
+        \code{ring\_var\_names = tilde\_names + phys\_names} --- \emph{tilde names
+        first} --- sets \code{n\_tilde = len(tilde\_names)}, and builds
+        \code{R = PolynomialRing(SR, ring\_var\_names)}. This is why every later
+        exponent-vector split at index \code{n\_tilde} cleanly separates response
+        from physical legs.
+  \item \textbf{Parameters.} Scalar parameters get one symbol (with a \code{domain}
+        assumption if declared); vector/matrix parameters get a flat list of symbols
+        sized by population.
+  \item \textbf{Kernels and operators.} A scalar kernel becomes one symbol named by
+        its \code{sage\_name}; a vector kernel becomes \code{z\_<name>\_<i+1>}; a
+        matrix kernel becomes a list-of-lists \code{z\_<name>\_<i+1>\_<j+1>}.
+        Operators (like the time derivative \code{Dt}) become one symbol each. It
+        also defines \code{ns.delta\_D = SR.var('z\_delta', \dots)} and a primed
+        variant. The leading \code{z} in these internal names is deliberate: \code{z}
+        sorts \emph{after} \code{phi}/\code{tau} in any Sage product, giving a
+        canonical, reproducible factor ordering.
+  \item \textbf{Nonlinear functions.} Each \code{model['functions']} spec installs
+        a callable on \code{ns} and registers its derivative-rename entries. There
+        are two authoring paths --- an \code{'expression'} path and a legacy
+        \code{'taylor\_coeffs'} path --- detailed in \S\ref{sec:formal}.
+  \item \textbf{Mean-field substitutions.} For each \code{model['mf\_substitutions']}
+        it does \code{setattr(ns, sub['name'], sub['value'](ns))}, computing the
+        value once at build time (this is how a saddle quantity like \code{vstar}
+        gets onto the namespace so the action lambda can reference it).
+\end{enumerate}
+
+The method returns \code{(ns, R, n\_tilde)}. The take-away to carry forward: the
+ring generators are ordered \emph{all tilde fields, then all physical fields}, and
+\code{n\_tilde} is the boundary between the two halves.
+
+\section{Taylor expansion and formal-function renaming}\label{sec:taylor}
+
+A field theory's interactions live in the nonlinear terms of its action: the
+$\varepsilon x^3$ of the OU model, the $\ee^{\tilde n}-1$ and the $\phi(v)$ of the
+Hawkes model. To compute Feynman diagrams these must be replaced by finite
+polynomials. That is what step~5 of \code{expand} does.
+
+\subsection{Why total-degree truncation}
+
+For a single-argument function expanded around the saddle ($\delta\phi=0$), the
+Taylor series truncated at order $N$ is the familiar
+\[
+  f(\delta\phi) \;=\; \sum_{k=0}^{N} \frac{f^{(k)}(0)}{k!}\,\delta\phi^{\,k}.
+\]
+For a multi-argument function the framework uses the multivariate Taylor series
+truncated at \emph{total} degree $N$:
+\[
+  f(x) \;=\; \sum_{|\alpha|\le N} \frac{1}{\alpha!}\,(\partial^{\alpha} f)(0)\,x^{\alpha},
+\]
+where $\alpha=(k_1,\dots,k_n)$ is a multi-index, $|\alpha|=\sum_j k_j$,
+$\alpha!=\prod_j k_j!$, and $x^{\alpha}=\prod_j x_j^{k_j}$.
+
+Truncating at \emph{total} degree (not per-variable degree) is the physically
+correct choice, and it is worth being explicit about why. The total degree of a
+monomial in the fields equals the number of legs of the diagrammatic vertex it
+produces. So ``Taylor order $N$'' means exactly ``keep every vertex with up to $N$
+legs.'' This is the single knob \code{taylor\_order} (default $4$), and it is the
+same knob the quickstart's \code{[1/7]} trace printed as \code{taylor\_order=...}.
+
+The code realizes this with one Sage call:
+
+\begin{lstlisting}
+# field_theory.py:894
+S_sr = taylor(
+    S_sr,
+    *[(v, 0) for v in ns._all_field_sr_vars],
+    self.taylor_order,
+)
+\end{lstlisting}
+
+Sage's \code{taylor(expr, (v1,0), (v2,0), ..., N)} expands \code{expr} jointly in
+all listed variables, each about $0$, to total order $N$. The \code{*[(v, 0) for
+...]} splat hands it one \code{(variable, 0)} pair per field.
+
+\begin{gotcha}
+This is a \emph{one-shot multivariate} Taylor, and it must be. An earlier version
+of the code chained single-variable \code{.taylor()} calls in a loop. That is wrong
+for multi-argument formal functions: chained \code{.taylor()} does not compose at
+non-zero expansion points, because the outer call freezes the inner-argument
+substructure of the formal function. The comment at \file{field\_theory.py:884--892}
+documents the switch. For single-argument functions the one-shot result is identical
+to the old loop, so the generalization is safe.
+\end{gotcha}
+
+\subsection{Formal functions and the rename dance}\label{sec:formal}
+
+A model author often does not want to commit to a closed form for a transfer
+function. Instead they declare $\phi$ as a \term{formal function}: a Sage symbolic
+function left unevaluated, built with \code{function('phi\_1')(v)}. A formal
+function stays inert through symbolic manipulation --- you can differentiate it,
+multiply it, Taylor-expand it, all abstractly. That is exactly what we want: we
+expand $\phi$ without ever saying what $\phi$ is.
+
+The catch is what Sage produces when it Taylor-expands a formal function. The
+$k$-th derivative at $0$ comes out as an atom like \code{D[0](phi\_1)(0)} (first
+derivative of \code{phi\_1} at $0$) or \code{D[0,0](phi\_1)(0)} (second
+derivative). These are not valid polynomial-ring coefficients. So step~6 renames
+them to clean symbols:
+\[
+  \texttt{phi\_1(0)} \;\to\; \texttt{phi0\_1}, \qquad
+  \texttt{D[0](phi\_1)(0)} \;\to\; \texttt{phi1\_1}, \qquad
+  \texttt{D[0,0](phi\_1)(0)} \;\to\; \texttt{phi2\_1}.
+\]
+For a single-argument function the suffix is just the derivative order $k$; for a
+multi-argument function it is the concatenated multi-index, so $f^{(2,1)}$ becomes
+\code{f21\_<i>}. That suffix encoding is a one-liner:
+
+\begin{lstlisting}
+# field_theory.py:225
+def _multi_index_suffix(multi_idx):
+    return ''.join(str(k) for k in multi_idx)
+\end{lstlisting}
+
+The rename map itself, \code{ns.\_deriv\_rename\_subs}, is built during
+\code{\_build\_namespace}. To know \emph{which} derivative atoms to expect, the
+framework enumerates every multi-index up to the Taylor order with a small
+generator:
+
+\begin{lstlisting}
+# field_theory.py:202
+def _iter_multi_indices(n_args, max_total):
+    if n_args == 0:
+        yield ()
+        return
+    from itertools import product
+    for combo in product(range(max_total + 1), repeat=n_args):
+        if sum(combo) <= max_total:
+            yield combo
+\end{lstlisting}
+
+\begin{note}
+Why \code{itertools.product} rather than a tidy self-recursive generator? Because
+this code runs in Jupyter under \code{\%autoreload}. A self-recursive generator
+holds a reference to itself through the module's global namespace; when
+\code{\%autoreload} hot-swaps the module, that self-reference is broken and the
+generator fails mid-iteration. \code{itertools.product} carries no such
+self-reference, so it survives the reload. The comment at
+\file{field\_theory.py:210--215} records this hard-won lesson. You will see the same
+defensive pattern in a few other places in the codebase.
+\end{note}
+
+Once the abstract symbols are in place, a model gives them concrete values through
+its \code{specializations} lambda (step~7). For the Hawkes transfer function
+$\phi=a v^2$, the specialization (at \file{hawkes\_quad\_expg.py:186}) sets
+\code{phi1\_i}$\to 2a\,v^{*}_i$, \code{phi2\_i}$\to 2a$, and every higher
+derivative to $0$ --- and just like that the formal $\phi$ collapses to its
+quadratic reality. The \code{'expression'} authoring path in
+\code{\_build\_namespace} automates even this: the model supplies the closed-form
+expression, and the framework differentiates it symbolically at the all-zero point
+with \code{diff} to compute each $\partial^{\alpha}f(0)$ itself, skipping any
+derivative that comes out purely numeric. The legacy \code{'taylor\_coeffs'} path
+instead takes a literal list of derivative coefficients and feeds them to
+\code{\_poly\_taylor} (\file{field\_theory.py:193}), which assembles
+$\sum_n (c_n/n!)\,x^n$ using the exact rational $1/n!$ from \code{QQ}.
+
+\section{The convolution operator}\label{sec:conv}
+
+This section explains step~3 of \code{expand}, and it is the one piece of the
+pipeline whose \emph{whole reason to exist} is a subtle physics correctness issue.
+
+\subsection{Why \texorpdfstring{$g \ast n$}{g*n} is not multiplication}
+
+When a synaptic kernel $g$ multiplies a field $n$ in the action, the \code{*} in
+the source text \emph{reads} as scalar multiplication but \emph{means} convolution
+in time:
+\[
+  (g \ast n)(t) \;=\; \int g(t-s)\,n(s)\,\dd s.
+\]
+The framework represents this with a formal two-argument Sage function:
+
+\begin{lstlisting}
+# convolution.py:70
+Conv = _sr_function('Conv', nargs=2)
+\end{lstlisting}
+
+\begin{defn}
+\code{Conv(kernel, field)} is a formal time-convolution operator: by convention the
+\emph{kernel} is the first argument and the \emph{field} is the second. It never
+auto-evaluates --- it stays a formal symbol through all symbolic manipulation, so
+each downstream consumer (the stationary mean field, the Fourier propagator, the
+time-domain integrator) can apply its own reduction. The \code{nargs=2} declaration
+makes Sage reject malformed calls like \code{Conv(g)} or \code{Conv(g, n, extra)}
+immediately rather than producing a silently wrong expression.
+\end{defn}
+
+The asymmetry between the two arguments is the entire point. Only the second
+argument (the field) carries time-domain content; the first (the kernel) is a
+fixed translation-invariant filter. Consider a conductance-style term
+$v\cdot\mathrm{Conv}(g,n)$ and expand both fields around the saddle,
+$v=v^{*}+\delta v$, $n=n^{*}+\delta n$:
+\[
+  v\cdot\mathrm{Conv}(g,n)
+  \;=\; v^{*}n^{*} \;+\; v^{*}\,g\,\delta n \;+\; \delta v\,n^{*} \;+\; \delta v\,g\,\delta n.
+\]
+Notice $\delta v$ multiplies the bare $n^{*}$ --- \emph{not} $g\cdot n^{*}$. A naive
+``flatten $\mathrm{Conv}(g,n)\to g\cdot n$'' would instead give
+$v\cdot g\cdot n = v^{*}g\,n^{*}+\dots$, spuriously attaching the kernel to the
+$\delta v$ side of the bilinear. That single wrong coefficient would poison the free
+propagator. The \code{Conv} operator exists precisely so this expansion comes out
+right.
+
+\subsection{The four reduction rules}
+
+\code{reduce\_conv\_in\_action} (\file{convolution.py:110}) resolves every
+\code{Conv} atom by handing Sage a Python callback through
+\code{.substitute\_function(Conv, \_reduce\_arg)} --- Sage's mechanism for replacing
+every occurrence of a formal function with the result of a callback that receives
+the function's arguments. The callback applies, in order:
+
+\begin{description}
+  \item[Rule 0 --- pre-Taylor.] When a \code{taylor\_order} is supplied (it always
+        is, from \code{expand}), Taylor-expand the \emph{argument} first, so a
+        nonlinear inner field like $\phi(v)$ becomes a polynomial that the linearity
+        rule can distribute over. A no-op for an already-polynomial argument such as
+        a bare \code{n[j]}.
+  \item[Rule 1 --- linearity.] $\mathrm{Conv}(g, a+b)\to\mathrm{Conv}(g,a)+\mathrm{Conv}(g,b)$,
+        recursing over the summands of a sum.
+  \item[Rule 2 --- pull constants.] $\mathrm{Conv}(g, c\cdot X)\to c\cdot\mathrm{Conv}(g,X)$
+        for any factor $c$ with no fluctuation-field dependence (time-constant
+        factors come out of the time convolution).
+  \item[Rule 3 --- DC reduction.] $\mathrm{Conv}(g, c)\to\hat g(0)\cdot c = c$ for a
+        time-constant leaf, under the normalized-kernel assumption $\hat g(0)=1$.
+  \item[Rule 4 --- defer to the Fourier transform.] $\mathrm{Conv}(g, X)\to g\cdot X$
+        for a genuinely fluctuating $X$. The kernel \emph{symbol} $g$ is left in
+        place; downstream it is replaced by $\hat g(\omega)$ via
+        \code{model['kernel\_ft\_image']}, which is just the convolution theorem
+        $(g\ast n)\hat{\phantom{x}}(\omega)=\hat g(\omega)\,\hat n(\omega)$.
+\end{description}
+
+\begin{gotcha}
+The \code{normalized=True} assumption ($\hat g(0)=1$, i.e.\ every kernel integrates
+to one) is hard-wired in rule~3. Non-normalized kernels would need per-kernel DC
+gains, which are not yet implemented; see \file{convolution.py:182--185}. For the
+neural-style kernels this framework targets --- a synaptic filter normalized to unit
+area --- the assumption holds by construction.
+\end{gotcha}
+
+\subsection{Kernel attachments}
+
+Rule~4 has a side effect that matters two phases downstream. When it emits
+$g\cdot X$ it records, into the \code{attachments\_out} dictionary, which
+fluctuation variables the surviving kernel symbol $g$ attached to (set-union
+accumulating across reuse). \code{expand} stashes this on the namespace as
+\code{ns.\_kernel\_attachments}. Later, vertex extraction reads it to recover which
+\emph{physical leg} each leftover kernel symbol belongs to, so the time-domain
+integrator can place that leg at the correct convolved time. We pick this thread
+back up in \S\ref{sec:typed} when we meet \code{ConvVertexType}.
+
+\section{Bigrade classification}\label{sec:bigrade}
+
+We have reached the conceptual core. After Taylor expansion, renaming, and
+specialization, the action is one big polynomial in the field generators. Step~8
+turns it into something the rest of the pipeline can navigate: a dictionary keyed
+by \emph{bigrade}.
+
+\begin{defn}
+The \term{bigrade} of a monomial is the pair
+$(n_{\tilde{}}, n_{\mathrm{phys}})$ where $n_{\tilde{}}$ is the total exponent over
+the \emph{response} (tilde) generators and $n_{\mathrm{phys}}$ is the total exponent
+over the \emph{physical} (fluctuation) generators. It is the number of response legs
+and the number of physical legs the corresponding diagrammatic object carries.
+\end{defn}
+
+The physical meaning of each sector is the whole reason to classify this way:
+
+\begin{table}[h]
+\centering
+\caption{The bigrade sectors and their physical roles. The first three rows are
+collectively the mean-field (saddle-equation) sector and must vanish at the saddle.}
+\label{tab:bigrade}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+bigrade $(n_{\tilde{}},n_p)$ & name & meaning \\
+\midrule
+$(0,0)$        & constant      & must vanish (no constant piece at the saddle) \\
+$(1,0)$        & tadpole       & response-linear; must vanish at the saddle \\
+$(0,1)$        & EOM residual  & physical-linear; must vanish at the background \\
+$(1,1)$        & \textbf{free action}   & the bilinear kernel; its inverse is the free propagator \\
+$(\ge 2,\,0)$  & \textbf{noise kernel}  & response-only, $\ge$ quadratic; the noise sources \\
+total $\ge 3$  & \textbf{interaction vertex} & every higher-order monomial is a vertex \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The mechanics are remarkably short because the polynomial ring does the heavy
+lifting. First, \code{\_sr\_to\_ring} (\file{field\_theory.py:241}) converts the
+\code{SR} expression into a ring element. It expands the expression, splits it into
+summands (using the name-based \code{add} test from the earlier gotcha), and for
+each summand reads off the degree in each field generator, stripping it away and
+accumulating whatever symbolic coefficient remains:
+
+\begin{lstlisting}
+# field_theory.py:272-281  (inside _sr_to_ring)
+for term in summands:
+    exponents = []
+    coeff = SR(term)
+    for v_sr in gen_sr:
+        deg = int(coeff.degree(v_sr))
+        exponents.append(deg)
+        if deg > 0:
+            coeff = coeff.coefficient(v_sr, deg)
+    result += SR(coeff) * R.monomial(*exponents)
+\end{lstlisting}
+
+\begin{gotcha}
+The summand/single-term distinction in \code{\_sr\_to\_ring} is explicit for a
+reason. If the expanded action is a single product --- say $\tau\cdot\mathrm{Dt}\cdot v$
+--- then calling \code{.operands()} on it would iterate its \emph{factors}
+($\tau$, $\mathrm{Dt}$, $v$), not its summands, and the coefficient $\tau\cdot\mathrm{Dt}$
+would be torn apart and lost. So the code wraps any non-sum in a one-element list
+\code{[expanded]} before iterating (\file{field\_theory.py:268--271}). This is the
+same \code{add\_vararg} hazard wearing a different hat.
+\end{gotcha}
+
+Then \code{\_collect\_bigrade} (\file{field\_theory.py:570}) walks the ring
+element's \code{.dict()} and buckets each monomial by its bigrade. Because the ring
+generators are ordered tilde-first, the split index is exactly \code{n\_tilde}:
+
+\begin{lstlisting}
+# field_theory.py:570
+def _collect_bigrade(poly, n_tilde: int) -> dict:
+    R = poly.parent()
+    sectors: dict = {}
+    for exp_vec, coeff in poly.dict().items():
+        n_t = int(sum(exp_vec[:n_tilde]))
+        n_p = int(sum(exp_vec[n_tilde:]))
+        key = (n_t, n_p)
+        sectors[key] = sectors.get(key, R.zero()) + SR(coeff) * R.monomial(*exp_vec)
+    return sectors
+\end{lstlisting}
+
+That five-line loop is the payoff of every design decision so far. The result is
+\code{ft.\_by\_tp}, a dictionary \code{\{(n\_tilde, n\_phys): polynomial\}}. The
+accessors on \code{FieldTheory} read directly off it:
+
+\begin{itemize}
+  \item \code{free\_action()} (\file{field\_theory.py:1010}) returns the $(1,1)$
+        sector --- the bilinear kernel whose inverse is the free propagator
+        (Chapter~\ref{ch:propagator}).
+  \item \code{noise\_kernel()} (\file{field\_theory.py:1015}) returns all
+        $(\ge 2,0)$ sectors --- the noise sources.
+  \item \code{vertices()} (\file{field\_theory.py:1021}) returns all
+        total-degree-$\ge 3$ sectors --- the interaction vertices.
+  \item \code{sectors()} (\file{field\_theory.py:1027}) returns the full nonzero
+        bigrade dictionary; \code{summary()} pretty-prints each labeled sector.
+\end{itemize}
+
+The human-readable labels come from the static helper \code{\_sector\_label}
+(\file{field\_theory.py:1380}), which is itself a compact transcription of
+Table~\ref{tab:bigrade}.
+
+\begin{example}
+\textbf{The OU quartic, classified.} With $\phi=\varepsilon x^3$ and white noise
+$-D\tilde x^2$, expanding the action and classifying gives a tiny \code{\_by\_tp}.
+The $(1,1)$ sector is $\tilde x\,(\partial_t+\mu)x$ --- the free OU kernel. The
+$(2,0)$ sector is $-D\tilde x^2$ --- the single noise source. And the
+total-degree-4 $(1,3)$ sector is $\varepsilon\,\tilde x\,x^3$ --- the lone
+interaction vertex, with one response leg and three physical legs. That one vertex
+is the source of every loop diagram in the quickstart's $C_{xx}(\tau)$ calculation.
+\end{example}
+
+\section{Mean-field sector verification}\label{sec:mf}
+
+Three of the bigrade sectors --- $(0,0)$, $(1,0)$, $(0,1)$ --- are special. They are
+the constant, the response-linear ``tadpole,'' and the physical-linear
+``equation-of-motion residual.'' Collectively they are the \term{mean-field (saddle)
+sector}, and at the correct saddle point they must \emph{vanish}. The framework does
+not solve the saddle equations itself --- that is a downstream module --- but it does
+two things here: it \emph{verifies} this sector vanishes under the model's declared
+saddle substitutions, and then it forcibly \emph{zeroes} it.
+
+\subsection{Why classify before substituting}
+
+This is the single most important ordering constraint in \code{expand}, and it is
+easy to get backwards. The mean-field substitutions are rewrites like
+$v^{*}\to (E+\sum_j w_{ij}g\cdot n^{*}_j)/(1+\tau\,n^{*})$. If you applied them to the
+\emph{whole} action before classifying, that rewrite would fire \emph{everywhere}
+$v^{*}$ appears --- including inside the $(1,1)$ propagator kernel and the $\ge 2$
+interaction vertices, where $v^{*}$ and $n^{*}$ must remain \emph{free symbolic
+parameters} to be bound numerically much later. You would inject saddle-equation
+algebra into the propagator. So the code coerces and classifies first
+(\file{field\_theory.py:921--922}), and applies the saddle substitutions \emph{only}
+to the three mean-field sectors, purely as a test. The long comment at
+\file{field\_theory.py:913--922} states this explicitly.
+
+\subsection{The two-tier check}
+
+\code{\_verify\_and\_zero\_mf\_sector} (\file{field\_theory.py:585}) applies the
+saddle substitutions to each monomial coefficient in the three sectors and checks it
+vanishes, in two tiers:
+
+\begin{enumerate}
+  \item \textbf{Symbolic.} Substitute the mean-field conditions (then the
+        specializations), and if \code{.simplify\_full() == 0}, the term passes.
+  \item \textbf{Numerical fallback.} Only if the symbolic check fails, evaluate the
+        residual numerically at a representative parameter point via
+        \code{\_mf\_numerical\_residual}; pass if its magnitude is below a tolerance
+        (default $10^{-9}$), recording a \emph{soft pass} (warned, not failed).
+\end{enumerate}
+
+Any term that passes neither tier raises an \code{AssertionError} naming the
+offending bigrade, its post-substitution symbolic form, and its numerical residual.
+The error message is blunt: \emph{``Either the MF solver is wrong or the action's
+bigrade-$\le 1$ sector is not the saddle-eq sector.''} This assertion is a genuine
+structural safety net --- it catches a miswired mean-field solver or a mis-specified
+action before any diagrams are computed. After the checks, each mean-field sector
+key is set to \code{R.zero()}.
+
+\begin{note}
+The numerical fallback is non-trivial machinery in its own right.
+\code{\_mf\_numerical\_residual} (\file{field\_theory.py:662}) builds a representative
+parameter point (preferring each parameter's declared \code{default}, since theories
+ship defaults that admit a well-behaved saddle), then prefers the differential-algebraic
+mean-field solver when the model declares \code{equations} --- the legacy iterative
+solver cannot handle self-referential implicit saddles like
+$x^{*}=-\varepsilon (x^{*})^3$ --- and falls back to the simple solver otherwise. The
+companion \code{\_default\_fundamental\_point} (\file{field\_theory.py:730}) warns in
+its docstring that an all-ones fallback is a poor universal default for a nonlinear
+closure (for $\phi=av^2$ with $E=a=w=1$ the saddle equation $2v^2-v+1=0$ has no real
+root), which is exactly why declared defaults are preferred.
+\end{note}
+
+\begin{gotcha}
+Specializations run \emph{twice}. Once after the Taylor (step~7, on every sector),
+and again \emph{inside} the verifier (\file{field\_theory.py:949}). The reason: the
+\code{mf\_bg} lambda builds its right-hand sides \emph{before} specializations have
+run, so a substitution like $v^{*}\to(\dots\phi_0\dots)$ reintroduces raw
+$\phi$-Taylor tokens that need a second specialization pass to resolve.
+\end{gotcha}
+
+After verification the action is rebuilt from the now-zeroed \code{by\_tp} into
+\code{self.\_S\_raw}, and \code{self.\_by\_tp} is the authoritative output. The quick
+public sanity check \code{sanity\_check()} (\file{field\_theory.py:966}) simply
+confirms those three sectors are \code{R.zero()} and prints a PASS/FAIL table --- and
+it always prints a FAIL, even when called with \code{verbose=False}, so a failure is
+never silent.
+
+\section{Correlated-noise cumulants}\label{sec:cumulant}
+
+This section covers step~4, which is a no-op for most models and so can be skipped on
+a first read. White noise (the OU model) contributes a single local term
+$-D\tilde x^2$ that lives entirely in the $(2,0)$ sector; nothing special is needed.
+But \emph{colored} or \emph{correlated} external noise contributes a whole series to
+the action: the cumulant-generating functional $-W_m[\tilde m]$,
+\[
+  S_{\mathrm{cum}} \;=\; -\sum_n \frac{1}{n!}\int \dd t_1\cdots\dd t_n
+     \sum_{i_1\cdots i_n} \kappa^{(n)}_{i_1\cdots i_n}(\tau\text{'s})\,
+     \tilde m_{i_1}(t_1)\cdots\tilde m_{i_n}(t_n),
+\]
+where $\kappa^{(n)}$ is the $n$-th cumulant of the noise and the $\tilde m$ are the
+response legs the noise couples to. \code{\_build\_cumulant\_action}
+(\file{field\_theory.py:293}) injects this series symbolically from the declarative
+\code{model['correlated\_noises']} block, returning \code{SR(0)} when there is no such
+block.
+
+The key idea is that each per-leg kernel $K(\tau)$ is split into a
+\emph{local (delta-correlated)} part and a \emph{smooth non-local} part:
+\[
+  K(\tau) \;=\; c_{\mathrm{local}}\,\delta(\tau) \;+\; K_{\mathrm{smooth}}(\tau).
+\]
+The framework peels off the local part by repeatedly taking the coefficient of
+$\delta(\tau_k)$:
+
+\begin{lstlisting}
+# field_theory.py:460-463  (inside _build_cumulant_action)
+c_local = K
+for tau_k in tau_syms:
+    try:
+        c_local = c_local.coefficient(dirac_delta(tau_k))
+\end{lstlisting}
+
+The local part collapses every time integral and is injected as an ordinary monomial
+(using the \code{is\_trivial\_zero()} test from the earlier gotcha, at
+\file{field\_theory.py:490}). The smooth residual, by contrast, cannot collapse: it
+introduces a placeholder symbol \code{z\_kappa\_...} (the \code{z} prefix again for
+canonical ordering) and registers the actual kernel function in
+\code{ns.\_cumulant\_kernels} for the downstream integrator to pick up. The injector
+also handles \emph{cross-field} cumulants by enumerating distinct permutations of the
+leg-field tuple --- so a noise correlating two different fields $[x_t,y_t]$ sums over
+both orderings.
+
+\begin{gotcha}
+The smooth (non-$\delta$) residual is only handled at cumulant order $n=2$. At order
+$n\ge 3$, a smooth residual is \emph{silently dropped} with a \code{warnings.warn}
+(the local $\delta$ part of the same kernel, if any, is still injected correctly).
+The reason is purely a limitation of the time-domain integrator downstream, which
+currently allocates one relative-time variable per noise vertex and would need an
+$n$-leg time map to handle higher non-local cumulants (\file{field\_theory.py:550--565}).
+For the Gaussian-and-shifts noise models this machinery was built for, all
+order-$\ge 3$ cumulants happen to be fully local, so the dropped branch never fires
+in practice --- but it is a real ceiling for future non-local higher-order kernels.
+\end{gotcha}
+
+\section{Typed vertices and sources}\label{sec:typed}
+
+We now cross from \file{field\_theory.py} into \file{vertices.py}. The bigrade
+sectors are polynomials; the diagram machinery wants \emph{individual typed records},
+one per monomial, each tagged with its legs. That conversion is what
+\file{vertices.py} does.
+
+\subsection{Leg tuples and the record types}
+
+A \term{leg} is one attachment point of a vertex or source, tagged
+\code{(field\_base\_name, population\_index)} --- for example \code{('dv', 1)} for the
+first population's $\delta v$ field. The population index is 1-based, or $0$ when the
+field is not indexed. A monomial's exponent in a given generator becomes that many
+repeated leg entries.
+
+The records themselves are lightweight classes that use \code{\_\_slots\_\_} (a
+Python optimization that removes the per-instance \code{\_\_dict\_\_}, saving memory
+and forbidding stray attributes). There are four:
+
+\begin{description}
+  \item[\code{VertexType}] (\file{vertices.py:80}) --- one interaction monomial
+        (total degree $\ge 3$). Carries \code{coefficient} (the SR coupling times
+        combinatorial prefactor), \code{response\_legs}, \code{physical\_legs}, and
+        \code{bigrade}. Its properties \code{in\_degree} (number of physical legs),
+        \code{out\_degree} (number of response legs), and \code{total\_degree} are
+        the diagram-facing vocabulary.
+  \item[\code{ConvVertexType}] (\file{vertices.py:134}) --- a \code{VertexType}
+        subclass for a conductance-style vertex, where one or more physical legs sit
+        at independent times linked to the vertex by a synaptic kernel $g(\tau)$. It
+        adds \code{kernel\_attachments}: a list of dicts, each recording the kernel
+        \code{'symbol'}, the \code{'leg'} it attaches to, that leg's 0-based
+        \code{'leg\_index'}, and a \code{'kernel\_td\_fn'} callable
+        $\tau\mapsto g(\tau)$. This is where the kernel attachments from
+        \S\ref{sec:conv} are finally consumed.
+  \item[\code{SourceType}] (\file{vertices.py:216}) --- one noise-kernel monomial
+        ($n_{\tilde{}}\ge 2$, $n_{\mathrm{phys}}=0$). Carries \code{coefficient},
+        \code{response\_legs}, \code{bigrade}, and an \code{out\_degree} property.
+  \item[\code{NoiseSourceType}] (\file{vertices.py:256}) --- a \code{SourceType}
+        subclass backed by a non-local cumulant kernel $\kappa^{(n)}$, whose response
+        legs sit at independent times. It adds \code{cumulant\_specs}, the records
+        that tie each placeholder symbol back to its kernel function. Locally
+        correlated ($\delta$) cumulants stay plain \code{SourceType}.
+\end{description}
+
+The bridge from polynomial to records is \code{decompose\_sector}
+(\file{vertices.py:349}). For every \code{(exponent\_vector, coefficient)} in a
+sector's \code{.dict()}, it parses each nonzero generator's name into a leg tuple and
+appends it (to the response legs if the generator index is below \code{n\_tilde}, else
+to the physical legs), repeated by the exponent. If there are no physical legs it
+emits a \code{SourceType}; otherwise a \code{VertexType}:
+
+\begin{lstlisting}
+# vertices.py:386-393  (inside decompose_sector)
+n_t = len(resp_legs)
+n_p = len(phys_legs)
+bigrade = (n_t, n_p)
+if n_p == 0:
+    results.append(SourceType(SR(coeff), resp_legs, bigrade))
+else:
+    results.append(VertexType(SR(coeff), resp_legs, phys_legs, bigrade))
+\end{lstlisting}
+
+The generator-name parsing is done by \code{\_parse\_field\_name}
+(\file{vertices.py:327}): it walks backward over trailing digits to split a name like
+\code{dn2} into base \code{dn} and population index $2$ (returning index $0$ when
+there are no trailing digits).
+
+The two top-level extractors \code{extract\_vertex\_types} (\file{vertices.py:500})
+and \code{extract\_source\_types} (\file{vertices.py:629}) wrap
+\code{decompose\_sector} and then do the kernel/cumulant upgrade: scanning each
+coefficient for kernel symbols, resolving which leg each attaches to, and promoting
+the plain record to a \code{ConvVertexType} or \code{NoiseSourceType} when an
+attachment resolves.
+
+\begin{gotcha}
+If a kernel symbol cannot be resolved to a specific leg, \code{extract\_vertex\_types}
+deliberately \emph{leaves it in the coefficient} and emits a plain \code{VertexType}
+(\file{vertices.py:589--595}). The point is fail-loud: a surviving kernel symbol in a
+coefficient will trip a downstream diagnostic, which is far better than silently
+treating the unresolved attachment as zero.
+\end{gotcha}
+
+\subsection{What the enumerator actually asks for}
+
+The diagram enumerator does not consume the full vertex objects --- it only needs to
+know which vertex \emph{shapes} exist. That is the entire job of
+\code{available\_degrees} (\file{vertices.py:777}):
+
+\begin{lstlisting}
+# vertices.py:777
+def available_degrees(vertex_types, source_types):
+    interaction_degrees = {(vt.in_degree, vt.out_degree) for vt in vertex_types}
+    source_degrees      = {st.out_degree for st in source_types}
+    return interaction_degrees, source_degrees
+\end{lstlisting}
+
+It returns a set of \code{(in\_degree, out\_degree)} pairs from the vertices and a set
+of \code{out\_degree} integers from the sources. The diagram enumerator
+(\file{msrjd/enumeration/degree\_scan.py}) reads exactly this to know which
+``shapes'' of vertex and source it may attach when it builds graphs --- the topic of
+Chapter~\ref{ch:enumeration}.
+
+\section{Picklability and the process boundary}\label{sec:pickle}
+
+A short but load-bearing section, because it explains design choices in
+\file{vertices.py} that otherwise look arbitrary. The downstream time-domain
+integrator (Phase~J) can farm diagram evaluation across a
+\code{multiprocessing.Pool}, which means the vertex and source objects may be
+\emph{pickled} and shipped to worker processes. This subsystem never imports
+\code{multiprocessing}, but it is engineered around that possibility. Three
+consequences:
+
+\begin{itemize}
+  \item \code{\_NamespaceBoundKernel} (\file{vertices.py:25}) is a \emph{module-level}
+        class, not a closure, so \code{pickle} can locate it by its fully-qualified
+        name. It \emph{pre-evaluates} the user's kernel function once against the
+        namespace at construction time and caches the resulting \code{SR} expression
+        (\file{vertices.py:56}) --- because the full namespace is unpicklable (it
+        holds inner closures), but a plain \code{SR} expression pickles cleanly.
+  \item The record classes implement explicit
+        \code{\_\_getstate\_\_}/\code{\_\_setstate\_\_} because \code{\_\_slots\_\_}
+        classes have no \code{\_\_dict\_\_} for pickle to grab automatically.
+  \item In a \code{\_\_slots\_\_} inheritance chain, the base class's pickle methods
+        must reference the base \code{\_\_slots\_\_} \emph{by name}.
+        \code{SourceType.\_\_getstate\_\_} therefore writes
+        \code{SourceType.\_\_slots\_\_} explicitly, not \code{self.\_\_slots\_\_} ---
+        on a \code{NoiseSourceType} instance the latter resolves only to the
+        subclass's own \code{('cumulant\_specs',)}, which would drop the base fields
+        from the pickle (\file{vertices.py:235--238}).
+\end{itemize}
+
+\begin{gotcha}
+Because \code{\_NamespaceBoundKernel} pre-evaluates \emph{eagerly} at extraction time,
+a kernel function that errors will throw during \code{extract\_source\_types}, not
+later during integration. That is usually a feature (you find out early), but it can
+surprise you if you expected lazy evaluation.
+
+A project-wide caveat, recorded in the framework's memory: fork-based multiprocessing
+has crashed this user's macOS machine. The spatial path is serial-only and the
+temporal path is fork-guarded. The picklability machinery here is what \emph{allows}
+these objects to cross a (guarded) process boundary at all, but the guard itself lives
+elsewhere in the pipeline.
+\end{gotcha}
+
+\section{Serialization}
+
+The last file, \file{serialize.py}, persists an expanded theory so the expensive
+multivariate Taylor step is not repeated every run. \code{save\_theory}
+(\file{serialize.py:52}) writes a directory with two artifacts:
+
+\begin{itemize}
+  \item \file{metadata.json} --- plain-Python metadata: format and Sage version, a
+        timestamp, the model identity (\code{model\_name}, \code{model\_file},
+        \code{model\_var\_name}), the expansion info (\code{taylor\_order},
+        \code{n\_tilde}, \code{ring\_var\_names}), the field/parameter/kernel specs
+        with callables stripped, and a sorted list of nonzero bigrade keys for quick
+        inspection.
+  \item \file{symbolic\_data.sobj} --- a Sage \emph{binary} object dump (via
+        \code{sage\_save}) of the polynomial ring, the raw action, the bigrade
+        dictionary, \code{n\_tilde}, and the propagator matrices. Sage's \code{.sobj}
+        format can pickle arbitrary Sage objects --- polynomial rings, symbolic
+        expressions, matrices --- that plain \code{pickle}/\code{json} cannot.
+\end{itemize}
+
+\begin{gotcha}
+Two deliberate omissions. First, the model dict itself (with its lambdas) is
+\emph{not} serialized; instead the metadata records the model's file path and
+variable name so it can be re-imported. Second, the \code{VertexType}/\code{SourceType}
+objects are \emph{not} saved either --- they are cheap to re-extract from the bigrade
+dictionary on load, and they carry namespace-derived callables that are better
+reconstructed than persisted.
+\end{gotcha}
+
+\code{load\_theory} (\file{serialize.py:156}) returns the \code{(metadata, data)} pair,
+and \code{reload\_model} (\file{serialize.py:192}) re-imports the model dict from the
+stored path. The diagram enumerator uses exactly this round-trip to re-expand a saved
+theory at a \emph{higher} Taylor order on demand, when a particular diagram needs more
+vertex legs than the cached expansion provides.
+
+\begin{gotcha}
+A trap for the Sage-literate. The comment at \file{serialize.py:232} says ``Use
+SageMath's \code{load()} which handles .py files,'' but the body actually uses a plain
+Python \code{exec(compile(code, full\_path, 'exec'), ns)}. The comment is stale. The
+practical consequence: this \code{exec} does \emph{not} run Sage's preparser, so a
+model file relying on Sage-only syntax (\code{\^{}} for power, a bare \code{2/3} meaning
+an exact rational) would not be preparsed. Every model in this repository imports from
+\code{sage.all} and uses plain Python syntax, so it works --- but do not author a model
+file in Sage-preparser dialect and expect \code{reload\_model} to cope.
+\end{gotcha}
+
+\section{Where this sits in the pipeline}
+
+Step back and place the whole subsystem. It is the front end --- phase \code{[1/7]}
+--- and its job is one transform:
+\[
+  \underbrace{\text{model dict}}_{\text{declarative}}
+  \;\xrightarrow{\ \text{\code{FieldTheory(...).expand()}}\ }\;
+  \underbrace{\code{ft.\_by\_tp}}_{\{(n_{\tilde{}},n_p)\,:\,\text{polynomial}\}}.
+\]
+
+What \emph{feeds} it is the model dict, authored via the theory builders of
+Chapter~\ref{ch:theory-spec}. The main driver \file{pipeline/compute.py} makes the
+entry call \code{FieldTheory(model, taylor\_order).expand()} as its first phase.
+
+What \emph{consumes} it splits three ways, all reading off \code{ft.\_by\_tp}:
+
+\begin{itemize}
+  \item \code{ft.free\_action()} (the $(1,1)$ sector) feeds the \textbf{propagator
+        extractor} of Chapter~\ref{ch:propagator}, which inverts the bilinear kernel
+        to get the free propagator $\Gret$.
+  \item \code{extract\_source\_types(ft)} and \code{extract\_vertex\_types(ft)} feed
+        \code{available\_degrees}, which feeds the \textbf{diagram enumerator} of
+        Chapter~\ref{ch:enumeration}.
+  \item The full \code{VertexType}/\code{SourceType}/\code{ConvVertexType}/\code{NoiseSourceType}
+        records feed the \textbf{integrators} (temporal and spatial) of Parts~IV
+        and~V, which finally turn the diagrams into numbers.
+\end{itemize}
+
+Everything else in this manual builds on the classified action you have just watched
+get constructed. With the free action in hand, the next chapter inverts it to obtain
+the propagator.

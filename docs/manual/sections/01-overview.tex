@@ -1,0 +1,217 @@
+% ---------------------------------------------------------------------
+%  Chapter 1 : Overview and Architecture
+% ---------------------------------------------------------------------
+\chapter{Overview and Architecture}
+\label{ch:overview}
+
+\section{What the engine computes}
+
+You hand \Daedalus{} a stochastic differential equation --- an ordinary one in
+time, or a partial one in space and time --- of the general semilinear
+(Langevin) form
+\begin{equation}
+  \Dt \phi_a(\mathbf x,t)
+   \;=\; -\,\mu_a\,\phi_a + D_a \Lap \phi_a
+          \;+\; V_a\big(\{\phi\}\big) \;+\; \xi_a(\mathbf x,t),
+  \label{eq:langevin}
+\end{equation}
+where $\phi_a$ are the fields, $V_a$ collects the (poly)nonlinear interactions,
+and $\xi_a$ is a Gaussian noise with a prescribed covariance (white, or
+exponentially correlated in time).  In return the engine computes the connected
+\term{cumulants} of the fields,
+\begin{equation}
+  \kappa_k(t_1,\dots,t_k)
+    \;=\; \big\langle \phi(t_1)\cdots\phi(t_k)\big\rangle_{\mathrm c},
+\end{equation}
+to a chosen order in the loop expansion, as exact symbolic-then-numeric
+expressions --- with \emph{no} model-specific code.  The same machinery handles
+an Ornstein--Uhlenbeck particle, a multi-population nonlinear Hawkes network, a
+reaction--diffusion field, and the KPZ equation, because each is just a different
+instance of \eqref{eq:langevin}.
+
+\begin{defn}
+\term{Model-independence} is the central design principle: every algorithm in the
+pipeline reads the structure of the action symbolically and does the right thing,
+rather than special-casing a particular equation.  Adding a new model means
+writing a short text description (Chapter on theory files); it never means
+touching the integrator.
+\end{defn}
+
+\section{The MSR--JD formalism in one page}
+
+The engine never works with the SDE \eqref{eq:langevin} directly.  It works with
+the equivalent field theory obtained by the
+Martin--Siggia--Rose--Janssen--De~Dominicis (\msrjd) construction, which trades a
+stochastic equation for a deterministic path integral over \emph{two} fields per
+degree of freedom.
+
+For each physical field $\phi_a$ one introduces a \term{response field}
+$\tilde\phi_a$ (the engine writes it \code{xt} for a physical field \code{x}).
+Averaging the SDE's noise produces the action
+\begin{equation}
+  S[\phi,\tilde\phi]
+   \;=\; \int \dd t \; \Big[\,
+      \tilde\phi_a\big(\Dt + \mu_a - D_a\Lap\big)\phi_a
+      \;-\; \tilde\phi_a\,V_a(\{\phi\})
+      \;-\; \tfrac12 \tilde\phi_a\,\Sigma_{ab}\,\tilde\phi_b
+   \Big],
+  \label{eq:msrjd}
+\end{equation}
+where $\Sigma_{ab}$ is the noise covariance (for white noise of strength $D$ this
+is the local $-D\,\tilde\phi^2$ term).  Correlation and response functions of the
+original SDE become correlation functions in this field theory:
+\begin{equation}
+  \avg{\phi_a(t)\,\phi_b(t')} \quad\text{and}\quad
+  \avg{\phi_a(t)\,\tilde\phi_b(t')} = \text{(response/propagator)}.
+\end{equation}
+From \eqref{eq:msrjd} one reads off the two ingredients every diagrammatic
+calculation needs:
+
+\begin{itemize}
+  \item the \term{bare propagators}, from the quadratic part --- a
+        \emph{response} (retarded) propagator $\Gret$ that is causal
+        ($\propto \theta(t-t')$), and a \emph{correlation} propagator from the
+        noise vertex $\Sigma$;
+  \item the \term{interaction vertices}, from the nonlinear terms
+        $\tilde\phi_a V_a$ --- each monomial in the fields is a vertex with a
+        definite number of legs and a prefactor.
+\end{itemize}
+
+Connected cumulants are then sums of connected Feynman diagrams built from these
+propagators and vertices, organised by the number of independent loops $\ell$.
+Tree diagrams ($\ell=0$) give the mean-field/linear answer; each extra loop is a
+higher-order fluctuation correction.  \emph{Everything} the engine does is in
+service of (i) enumerating those diagrams and (ii) evaluating their integrals.
+
+\begin{note}
+Because the response propagator is causal, the loop integrals are not the
+relativistic Feynman integrals of high-energy physics; they are
+\emph{time-ordered}, retarded integrals.  This is why the engine has its own
+integrator (Parts IV and V) rather than reusing an off-the-shelf high-energy
+loop-integral library.
+\end{note}
+
+\section{The pipeline at a glance}
+
+A single call --- \code{compute\_cumulants} in \file{pipeline/compute.py},
+wrapped for users by \code{dd.run} in \file{notebooks/daedalus.py} --- drives the
+whole computation.  Internally it proceeds through seven numbered phases, which
+you can watch scroll past when \code{verbose=True}:
+
+\begin{enumerate}
+  \item \textbf{expand} --- Taylor/functional-expand the symbolic action about the
+        mean-field saddle and extract the interaction vertices
+        (Chapter on the action and vertices).
+  \item \textbf{propagator} --- build the frequency-domain propagator matrix
+        $G(\omega) = K(\omega)^{-1}$ over the (physical, response) field basis
+        (Chapter on the propagator).
+  \item \textbf{mean\_field} --- solve the deterministic saddle-point equations
+        for the steady state $\phi^{*}$ about which the expansion is taken
+        (Chapter on the mean-field solver).
+  \item \textbf{poles} --- find the retarded poles of $G(\omega)$ and the residue
+        matrices that give the time-domain propagator (same chapter as
+        propagator).
+  \item \textbf{diagrams} --- enumerate the distinct diagram topologies for the
+        requested $(k,\ell)$ and assign causal edge types, loading from cache
+        when possible (Chapters on enumeration and typing).
+  \item \textbf{classify} --- for each diagram compute its combinatorial prefactor
+        and symmetry factor (Chapter on typing and symmetry).
+  \item \textbf{phase\_j} --- evaluate every diagram's loop integral and sum them
+        into the cumulant (Part IV for temporal models, Part V for spatial).
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+   node distance=6.2mm,
+   box/.style={draw,rounded corners,align=center,inner sep=4pt,
+               minimum width=58mm,font=\small,fill=notebg},
+   io/.style ={draw,align=center,inner sep=4pt,minimum width=58mm,
+               font=\small,fill=defbg},
+   arr/.style={-{Latex[length=2mm]},thick}]
+  \node[io]  (txt)  {Model as text \;/\; \file{.theory.py}};
+  \node[box,below=of txt] (build){\textbf{build}: parse action $\to$ symbolic model};
+  \node[box,below=of build](mark) {\textbf{markovianize} (if colored noise)};
+  \node[box,below=of mark] (exp)  {\textbf{expand}: vertices about the saddle};
+  \node[box,below=of exp]  (prop) {\textbf{propagator} \& \textbf{mean\_field} \& \textbf{poles}};
+  \node[box,below=of prop] (enum) {\textbf{diagrams}: enumerate \& type \& symmetry};
+  \node[box,below=of enum] (intg) {\textbf{phase\_j}: loop integration\\(temporal \emph{or} spatial)};
+  \node[box,below=of intg] (asm)  {\textbf{assemble}: cumulants / moments};
+  \node[io, below=of asm]  (out)  {$\kappa_k(\tau)$, plots, saved results};
+  \foreach \a/\b in {txt/build,build/mark,mark/exp,exp/prop,prop/enum,enum/intg,intg/asm,asm/out}
+     \draw[arr] (\a) -- (\b);
+\end{tikzpicture}
+\caption{The end-to-end pipeline.  Green boxes are user-facing input/output;
+blue boxes are internal phases.  The branch into a temporal or spatial integrator
+happens at \textbf{phase\_j}; everything above it is shared.}
+\label{fig:pipeline}
+\end{figure}
+
+Figure~\ref{fig:pipeline} shows the flow.  The crucial structural fact is that
+\emph{everything above the integrator is shared between temporal and spatial
+models}: the same action parser, the same vertex extraction, the same diagram
+enumeration.  Only the final loop-integration phase splits into a time-domain
+engine (Part~IV) and a momentum-space engine (Part~V).
+
+\section{How the source tree is organised}
+
+The code lives in three layers, from user-facing down to mathematical core:
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[\file{notebooks/daedalus.py} --- the engine API] A single
+        $\sim$1100-line convenience module that users import as \code{dd}.  It
+        defines the \code{Config} dataclass, \code{load\_theory}, \code{run},
+        \code{describe\_model}, and the plotting helpers.  It \emph{orchestrates};
+        it contains no physics of its own (Chapter on the API).
+  \item[\file{pipeline/} --- orchestration] The high-level stages:
+        \file{compute.py} (the seven-phase driver), the theory-authoring API
+        (\file{theory.py}, \file{theory\_compiler.py}), the propagator and
+        mean-field builders (\file{\_propagator.py}, \file{\_mean\_field*.py}),
+        the diagram-cache front end (\file{\_diagrams.py}), the colored-noise
+        preprocessor (\file{colored\_to\_markovian.py}), and the caching
+        machinery (\file{\_expand\_cache.py}, \file{\_precompute.py}).
+  \item[\file{msrjd/} --- the mathematical engine] The lower-level core:
+        \file{core/} (the symbolic action, vertices, convolutions),
+        \file{enumeration/} and \file{diagrams/} (diagram generation, typing,
+        causality, symmetry factors), and \file{integration/} which splits into
+        \file{time\_domain/} (the temporal Phase-J integrator, dominated by the
+        5000-line \file{final\_integral.py}) and \file{spatial/} (the
+        fourteen-module momentum-space integrator).
+\end{description}
+
+Two further directories complete the picture: \file{theories/} holds the on-disk
+\file{*.theory.py} model descriptions, and \file{models/} holds the
+\emph{independent} simulators used to validate the diagrammatic output --- direct
+Euler--Maruyama and Gillespie integrators that share no code with the pipeline
+(Chapter on simulators).
+
+\section{Caching: why a second run is instant}
+
+Several phases are expensive but deterministic functions of a small key, so the
+engine caches them on disk under \file{saved\_theories/<model>/}.  The most
+important is the \term{diagram-enumeration cache}: enumerating and typing all
+diagrams for a given $(k,\ell)$ is combinatorially heavy at two loops, but it
+depends only on the model's topology, not on parameter values, so it is computed
+once and reloaded from a Sage-object (\file{.sobj}) file thereafter.  A second
+cache stores the expanded vertices.  Together they are why changing
+$\mu$ and re-running is fast even though the first run of a new two-loop model is
+not (Chapter on caching).
+
+\section{Validation philosophy}
+
+Every nontrivial result is checked against an independent Monte-Carlo
+simulation.  The simulators in \file{models/} integrate the \emph{original} SDE
+directly --- no diagrams, no propagators --- and estimate the same cumulant the
+pipeline predicts.  Agreement between the two is the engine's ground truth; the
+example notebooks (\file{notebooks/examples/}) each end with such an overlay.  As
+a concrete instance, the white-noise quartic oscillator of
+\eqref{eq:langevin} with $\mu=1,\varepsilon=0.02,D=1$ has an equal-time variance
+the linear theory puts at $D/\mu = 1$; the two-loop pipeline corrects this to
+$0.950$, and a direct simulation gives $0.946\pm0.001$ --- agreement to a fraction
+of a percent.
+
+\section{Where to go next}
+
+The next chapter walks through a complete worked example end to end.  After that,
+Part~II shows how to describe your own model, and Parts~III--V open up each stage
+of the machinery in full detail.
