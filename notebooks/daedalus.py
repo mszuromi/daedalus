@@ -1082,6 +1082,54 @@ def plot_kpoint(result, cfg, model):
     return fig
 
 
+# ── Diagram structure (prediagram topologies, not numbers) ───────────────────
+
+def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
+    """Draw the *contributing prediagrams* — the MSR-JD directed topologies that
+    survive the theory's vertex/source filter — for the k-point cumulant up to
+    loop order ``max_ell``, grouped by topology family.
+
+    Buice/Ocker convention: time flows right → left, with sources on the right,
+    interaction (internal) vertices in the middle, and external legs on the
+    left.  Labels are GENERIC (role + index only): sources *i, ii, …*; internal
+    vertices *a, b, c, …*; propagators numbered *1, 2, 3, …*.  The specific
+    typing of any one diagram (propagator 1 → Δ_xy, source i → K⁽²⁾, a → φ″, …)
+    is a separate label-mapping table.
+
+    ``model`` is a model dict (from :func:`load_theory`) or a theory-name
+    string.  Layout uses graphviz ``dot`` when installed, else a built-in
+    fallback.  Returns the Matplotlib ``Figure`` (and writes a PNG if ``save``
+    is given).  Practical range: ``k + max_ell ≤ 4``.
+    """
+    from msrjd.diagrams.prediagram_plot import plot_prediagrams as _pp
+    return _pp(model, int(k), int(max_ell), save=save, ncol=ncol)
+
+
+def prediagram_mappings(model, k, max_ell, external_fields=None,
+                        use_propagator=False, max_typings=6, printout=True):
+    """The label-mapping tables that accompany :func:`plot_prediagrams`.
+
+    For each contributing prediagram (same numbering as the figure), list its
+    typed realizations as maps from the GENERIC labels to the actual field
+    types::
+
+        source i      → K⁽²⁾⟨x̃ x̃⟩          (noise cumulant on response legs)
+        vertex a      → coeff · φ-vertex     (the interaction monomial)
+        propagator 1  → G[φ ← φ̃]             (bare response propagator)
+        external ○1   → φ                    (the correlator's external field)
+
+    ``model`` is a model dict (from :func:`load_theory`) or a theory name.
+    Returns ``(result, text)`` and prints ``text`` by default; ``result`` is
+    ``{ell: [entry…]}`` keeping every typing.  ``max_typings`` caps how many are
+    printed per prediagram.  ``use_propagator=True`` builds the propagator and
+    drops identically-zero typings (the exact contributing set).
+    """
+    from msrjd.diagrams.prediagram_plot import prediagram_mappings as _pm
+    return _pm(model, int(k), int(max_ell), external_fields=external_fields,
+               use_propagator=use_propagator, max_typings=max_typings,
+               printout=printout)
+
+
 # ── Run summary (printed in every notebook) ──────────────────────────────────
 
 def summary(result: dict) -> str:
