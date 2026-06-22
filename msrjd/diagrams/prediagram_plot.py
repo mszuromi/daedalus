@@ -272,21 +272,34 @@ def draw_prediagram(D, leaves, ax, title=None):
                     rad = -min(0.72 / span, 0.45) * side * (1 if dxv >= 0 else -1)
                 else:
                     rad = 0.0
-            ax.add_patch(FancyArrowPatch(pos[u], pos[v], connectionstyle=f'arc3,rad={rad}',
-                         arrowstyle='-|>', mutation_scale=12, lw=1.5, color=EDGEC,
-                         shrinkA=11, shrinkB=11, zorder=1, joinstyle='round'))
             dx, dy = pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]
             mx, my = (pos[u][0] + pos[v][0]) / 2.0, (pos[u][1] + pos[v][1]) / 2.0
+            cx, cy = mx + rad * dy, my - rad * dx          # arc3 control point
+            P0, P1 = pos[u], pos[v]
+            def _bez(t, P0=P0, P1=P1, cx=cx, cy=cy):       # point on the (curved) edge
+                a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+                return (a * P0[0] + b * cx + c * P1[0], a * P0[1] + b * cy + c * P1[1])
+            # The edge line runs to the vertex CENTRES (shrink 0) so it physically reaches
+            # each node; the filled/hollow circles are drawn on top (higher zorder) and
+            # hide the overshoot, so the line emerges right at the vertex boundary.
+            ax.add_patch(FancyArrowPatch(P0, P1, connectionstyle=f'arc3,rad={rad}',
+                         arrowstyle='-', lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
+                         zorder=1, joinstyle='round'))
+            # Arrowhead at the MIDDLE of the edge (not the end), pointing along the flow
+            # u -> v.  Drawn between two nearby points on the curve so it follows the arc.
+            ax.add_patch(FancyArrowPatch(_bez(0.42), _bez(0.56), arrowstyle='-|>',
+                         mutation_scale=13, lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
+                         zorder=2))
+            # Propagator number, set off the line near t=0.3 -- clear of the mid arrowhead,
+            # and (being near each edge's source) clear of a crossing partner's number.
             L = max((dx * dx + dy * dy) ** 0.5, 1e-6)
-            if abs(rad) < 1e-6:                # straight: 40% toward the source, nudged aside
-                nx = pos[u][0] + 0.40 * dx - dy / L * 0.24   # (so two crossing edges'
-                ny = pos[u][1] + 0.40 * dy + dx / L * 0.24   #  numbers don't pile up)
-            else:                              # curved: just outside the arc apex
-                nx, ny = mx + dy * rad * 0.62, my - dx * rad * 0.62
+            ps = 1.0 if rad >= 0 else -1.0
+            bx, by = _bez(0.30)
+            nx, ny = bx + ps * dy / L * 0.24, by - ps * dx / L * 0.24
             ax.text(nx, ny, str(pnum[e]), ha='center', va='center', fontsize=7.5,
                     color=NUMC, zorder=5, bbox=dict(boxstyle='circle,pad=0.10', fc='white', ec=NUMC, lw=0.6))
-            track.append([mx + 0.5 * rad * dy, my - 0.5 * rad * dx])   # arc apex (matplotlib convention)
-            track.append([nx, ny])                                    # propagator number
+            track.append(list(_bez(0.5)))                  # arc apex
+            track.append([nx, ny])                         # propagator number
     for v in ext_v:
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
     for v in int_v:
