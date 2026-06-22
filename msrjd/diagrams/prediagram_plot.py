@@ -30,7 +30,7 @@ Public API (also surfaced as ``daedalus.plot_prediagrams``):
 import collections, string
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, Circle
+from matplotlib.patches import FancyArrowPatch, Circle, Rectangle
 
 XS, YS = 2.9, 1.9   # layer (x) and within-layer (y) spacing
 
@@ -334,19 +334,23 @@ def draw_prediagram(D, leaves, ax, title=None):
     for v in ext_v:                                        # external legs: hollow, labelled 1,2,…
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
         ax.text(pos[v][0] - 0.34, pos[v][1], extlab[v], ha='right', va='center', fontsize=10.5)
-        track.append([pos[v][0] - 0.55, pos[v][1]])        # room for the leg label
+        track.append([pos[v][0] - 0.62, pos[v][1]])        # external-leg label
     for v in int_v:
         ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
         ax.text(pos[v][0], pos[v][1] + 0.36, intlab[v], ha='center', va='bottom', fontsize=11, fontweight='bold')
-    for v in src_v:
-        ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
+        track.append([pos[v][0], pos[v][1] + 0.62])        # internal label (above) -> title clearance
+    for v in src_v:                                        # noise sources: filled SQUARE
+        s = 0.155                                          # (distinct from circular vertices/legs)
+        ax.add_patch(Rectangle((pos[v][0] - s, pos[v][1] - s), 2 * s, 2 * s,
+                               fc=BLACK, ec=BLACK, zorder=3))
         ax.text(pos[v][0] + 0.34, pos[v][1], srclab[v], ha='left', va='center', fontsize=11, fontstyle='italic')
-    # Limits enclose nodes, arc apexes and the leg labels, so nothing is clipped;
-    # a little extra room on the right/top for the source/internal labels.
+        track.append([pos[v][0] + 0.6, pos[v][1]])         # source label (right)
+    # Limits enclose nodes, arc apexes AND every label, so nothing clips and the
+    # title clears the topmost vertex label; small uniform margin beyond that.
     xs = [p[0] for p in track]; ys = [p[1] for p in track]
-    ax.set_xlim(min(xs) - 0.4, max(xs) + 0.95); ax.set_ylim(min(ys) - 0.55, max(ys) + 0.6)
+    ax.set_xlim(min(xs) - 0.25, max(xs) + 0.3); ax.set_ylim(min(ys) - 0.3, max(ys) + 0.32)
     ax.set_aspect('equal'); ax.axis('off')
-    if title: ax.set_title(title, fontsize=10, pad=2)
+    if title: ax.set_title(title, fontsize=10, pad=5)
 
 
 # ── grouped figure (public entry point) ───────────────────────────────
@@ -372,7 +376,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
         for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
             groups.append((ell, sig, bysig[sig]))
     # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.5, 3.5
+    HEAD, CELL = 0.5, 3.05
     plan = []   # ('head', text) | ('row', [pds])
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
@@ -388,7 +392,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
         return fig
     heights = [HEAD if p[0] == 'head' else CELL for p in plan]
     fig = plt.figure(figsize=(4.1 * ncol, sum(heights) + 0.8))
-    gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.45, wspace=0.20,
+    gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.32, wspace=0.16,
                   left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.4 / (sum(heights) + 0.8))
     for ri, p in enumerate(plan):
         if p[0] == 'head':
@@ -403,7 +407,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
     fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ\;1,2$ external legs      '
-             r'$\bullet\;i,ii$ sources      $\bullet\;a,b,c$ internal vertices      '
+             r'$\blacksquare\;i,ii$ sources      $\bullet\;a,b,c$ internal vertices      '
              r'(propagators named by endpoints, e.g. $a\to b$)',
              ha='center', fontsize=10, color='#555')
     if save:
