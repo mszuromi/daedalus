@@ -1091,10 +1091,12 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
 
     Buice/Ocker convention: time flows right → left, with sources on the right,
     interaction (internal) vertices in the middle, and external legs on the
-    left.  Labels are GENERIC (role + index only): sources *i, ii, …*; internal
-    vertices *a, b, c, …*; propagators numbered *1, 2, 3, …*.  The specific
-    typing of any one diagram (propagator 1 → Δ_xy, source i → K⁽²⁾, a → φ″, …)
-    is a separate label-mapping table.
+    left.  Labels are GENERIC and role-distinct: sources *i, ii, …*; internal
+    vertices *a, b, c, …*; external legs *1, 2, …*.  Propagators carry no symbol
+    of their own — each is named by its endpoints (e.g. *a→b*, with a mid-edge
+    arrowhead for the direction).  The specific typing of any one diagram
+    (propagator a→b → Δ_xy, source i → K⁽²⁾, a → φ″, leg 1 → field) is a
+    separate label-mapping table.
 
     ``model`` is a model dict (from :func:`load_theory`) or a theory-name
     string.  Layout uses graphviz ``dot`` when installed, else a built-in
@@ -1113,10 +1115,10 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
     typed realizations as maps from the GENERIC labels to the actual field
     types::
 
-        source i      → K⁽²⁾⟨x̃ x̃⟩          (noise cumulant on response legs)
-        vertex a      → coeff · φ-vertex     (the interaction monomial)
-        propagator 1  → G[φ ← φ̃]             (bare response propagator)
-        external ○1   → φ                    (the correlator's external field)
+        source i        → K⁽²⁾⟨x̃ x̃⟩        (noise cumulant on response legs)
+        vertex a        → coeff · φ-vertex   (the interaction monomial)
+        propagator a→b  → G[φ ← φ̃]           (bare response propagator)
+        external leg 1  → φ                  (the correlator's external field)
 
     ``model`` is a model dict (from :func:`load_theory`) or a theory name.
     Returns ``(result, text)`` and prints ``text`` by default; ``result`` is

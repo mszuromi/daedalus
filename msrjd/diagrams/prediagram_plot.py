@@ -6,16 +6,19 @@ filter -- i.e. the ones the theory can actually realise -- in the Buice/Ocker
 convention: time flows RIGHT -> LEFT, with sources on the right, interaction
 (internal) vertices in the middle, and external (response) legs on the left.
 
-Roles are structural (``filter.classify_prediagram_vertices``):
-  * source      = non-leaf, in-degree 0   (filled, labelled i, ii, ... on the right)
-  * interaction = non-leaf, in-degree > 0 (filled, labelled a, b, c, ...)
-  * external    = leaf                     (hollow on the left, no label/stub)
-Propagators (edges) are numbered 1, 2, 3, ...; parallel propagators fan into
-lens-shaped bubbles.  Diagrams are grouped by a topology signature.
+Roles are structural (``filter.classify_prediagram_vertices``), with a clean,
+role-distinct symbolic taxonomy:
+  * source      = non-leaf, in-degree 0   (filled, labelled i, ii, ...  -- right)
+  * interaction = non-leaf, in-degree > 0 (filled, labelled a, b, c, ... -- middle)
+  * external    = leaf                     (hollow, labelled 1, 2, ...   -- left)
+Propagators carry NO symbol of their own: each is named by its endpoints, e.g.
+``a->b`` (a mid-edge arrowhead gives the direction, so the two halves of a
+bubble are just ``a->b`` and ``b->a``).  Diagrams are grouped by a topology
+signature.
 
 Labels are GENERIC (role + index only) -- the specific typing of any chosen
-diagram (propagator 1 -> Delta_xy, source i -> K^(2), a -> phi'', ...) is a
-separate label-mapping table.
+diagram (propagator a->b -> Delta_xy, source i -> K^(2), a -> phi'', external
+leg 1 -> field) is a separate label-mapping table.
 
 Layout uses graphviz 'dot' (proper layered layout) when available, falling back
 to a hand-rolled SCC-aware layered layout otherwise.
@@ -223,25 +226,45 @@ def sig_label(sig):
 
 
 # ── draw one prediagram ───────────────────────────────────────────────
+_SUB = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
+
+
 def _generic_labels(D, leaves):
     """Layout + generic role labels for a prediagram, shared by the figure and
-    the mapping table so their indexing matches exactly.  Sources are numbered
-    i, ii, … top→bottom; internals a, b, c, … top→bottom; propagators 1, 2, 3, …
-    in a stable edge order; externals returned top→bottom.  Returns
-    (pos, ext_v, src_v, int_v, edges, srclab, intlab, pnum, ext_order)."""
+    the mapping table so they agree exactly.  A clean, role-distinct taxonomy:
+
+        sources           -> i, ii, iii, …   (roman numerals, right)
+        internal vertices -> a, b, c, …      (latin letters, middle)
+        external legs     -> 1, 2, …         (arabic numerals, left)
+
+    all ordered top→bottom.  Propagators are NOT given their own symbol; each is
+    named by its endpoints, e.g. ``a→b`` (direction distinguishes the two halves
+    of a bubble), with a subscript only to separate same-direction parallel
+    edges.  Returns (pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab,
+    ext_order, edge_name)."""
     pos, ext_v, src_v, int_v, edges = _layout(D, leaves)
     srclab = {v: _roman(i + 1) for i, v in enumerate(sorted(src_v, key=lambda v: -pos[v][1]))}
     intlab = {v: string.ascii_lowercase[i] for i, v in enumerate(sorted(int_v, key=lambda v: -pos[v][1]))}
-    pnum, nxt = {}, 1
-    for e in sorted(edges, key=lambda e: (min(e[0], e[1]), max(e[0], e[1]), e[2])):
-        pnum[e] = nxt; nxt += 1
     ext_order = sorted(ext_v, key=lambda v: -pos[v][1])      # top -> bottom
-    return pos, ext_v, src_v, int_v, edges, srclab, intlab, pnum, ext_order
+    extlab = {v: str(i + 1) for i, v in enumerate(ext_order)}
+    vlab = {**srclab, **intlab, **extlab}
+    by_dir = collections.defaultdict(list)
+    for e in edges:
+        by_dir[(e[0], e[1])].append(e)
+    edge_name = {}
+    for (u, w), es in by_dir.items():
+        base = '%s→%s' % (vlab.get(u, '?'), vlab.get(w, '?'))
+        if len(es) == 1:
+            edge_name[es[0]] = base
+        else:                                # same-direction parallel edges -> a→b₁, a→b₂
+            for j, e in enumerate(sorted(es, key=lambda e: e[2])):
+                edge_name[e] = base + str(j + 1).translate(_SUB)
+    return pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, edge_name
 
 
 def draw_prediagram(D, leaves, ax, title=None):
-    pos, ext_v, src_v, int_v, edges, srclab, intlab, pnum, _ = _generic_labels(D, leaves)
-    BLACK, EDGEC, NUMC = '#181818', '#3a3a3a', '#b03030'
+    pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, _ = _generic_labels(D, leaves)
+    BLACK, EDGEC = '#181818', '#3a3a3a'
     # Rank index per x-column -- scale-INDEPENDENT, so a "skip" edge is detected
     # as long whatever the layout's absolute units (graphviz vs the fallback).
     xcols = sorted(set(round(pos[v][0], 2) for v in pos))
@@ -290,28 +313,23 @@ def draw_prediagram(D, leaves, ax, title=None):
             ax.add_patch(FancyArrowPatch(_bez(0.42), _bez(0.56), arrowstyle='-|>',
                          mutation_scale=13, lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
                          zorder=2))
-            # Propagator number, set off the line near t=0.3 -- clear of the mid arrowhead,
-            # and (being near each edge's source) clear of a crossing partner's number.
-            L = max((dx * dx + dy * dy) ** 0.5, 1e-6)
-            ps = 1.0 if rad >= 0 else -1.0
-            bx, by = _bez(0.30)
-            nx, ny = bx + ps * dy / L * 0.24, by - ps * dx / L * 0.24
-            ax.text(nx, ny, str(pnum[e]), ha='center', va='center', fontsize=7.5,
-                    color=NUMC, zorder=5, bbox=dict(boxstyle='circle,pad=0.10', fc='white', ec=NUMC, lw=0.6))
-            track.append(list(_bez(0.5)))                  # arc apex
-            track.append([nx, ny])                         # propagator number
-    for v in ext_v:
+            track.append(list(_bez(0.5)))                  # arc apex (for the limits)
+    # Propagators carry no symbol of their own -- they are named by their endpoints
+    # (a→b) in the mapping table, so the figure stays uncluttered.
+    for v in ext_v:                                        # external legs: hollow, labelled 1,2,…
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
+        ax.text(pos[v][0] - 0.34, pos[v][1], extlab[v], ha='right', va='center', fontsize=10.5)
+        track.append([pos[v][0] - 0.55, pos[v][1]])        # room for the leg label
     for v in int_v:
         ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
         ax.text(pos[v][0], pos[v][1] + 0.36, intlab[v], ha='center', va='bottom', fontsize=11, fontweight='bold')
     for v in src_v:
         ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
         ax.text(pos[v][0] + 0.34, pos[v][1], srclab[v], ha='left', va='center', fontsize=11, fontstyle='italic')
-    # Limits enclose nodes, arc apexes AND propagator numbers (so curves are never
-    # clipped), with extra room on the right/top for the source/internal labels.
+    # Limits enclose nodes, arc apexes and the leg labels, so nothing is clipped;
+    # a little extra room on the right/top for the source/internal labels.
     xs = [p[0] for p in track]; ys = [p[1] for p in track]
-    ax.set_xlim(min(xs) - 0.6, max(xs) + 0.95); ax.set_ylim(min(ys) - 0.55, max(ys) + 0.6)
+    ax.set_xlim(min(xs) - 0.4, max(xs) + 0.95); ax.set_ylim(min(ys) - 0.55, max(ys) + 0.6)
     ax.set_aspect('equal'); ax.axis('off')
     if title: ax.set_title(title, fontsize=10, pad=2)
 
@@ -320,8 +338,8 @@ def draw_prediagram(D, leaves, ax, title=None):
 def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
     """Draw the contributing prediagrams for ``model`` at correlator order
     ``k`` and loop order ``max_ell``, grouped by topology family and labelled
-    by role (sources i,ii on the right; internals a,b,c; externals hollow on
-    the left; propagators numbered).  ``model`` is a model dict (from
+    by role (sources i,ii right; internals a,b,c middle; external legs 1,2 left;
+    propagators named by endpoints, e.g. a→b).  ``model`` is a model dict (from
     :func:`daedalus.load_theory`) or a theory-name string.  Returns the
     matplotlib ``Figure``; also writes a PNG when ``save`` is given."""
     from matplotlib.gridspec import GridSpec
@@ -369,8 +387,9 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
                 draw_prediagram(pd[0], pd[2], ax, title='#%d' % (ci + 1))
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
-    fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ$ external      $\bullet\;i,ii$ source      '
-             r'$\bullet\;a,b,c$ internal      $\bigcirc\!\!\mathsf{\,n}$ propagator',
+    fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ\;1,2$ external legs      '
+             r'$\bullet\;i,ii$ sources      $\bullet\;a,b,c$ internal vertices      '
+             r'(propagators named by endpoints, e.g. $a\to b$)',
              ha='center', fontsize=10, color='#555')
     if save:
         fig.savefig(save, dpi=145, bbox_inches='tight')
@@ -397,7 +416,7 @@ def diagram_label_map(td, labels):
     the tuple from :func:`_generic_labels` for the SAME prediagram, so the
     indices line up with the figure.  Returns a dict with keys 'sources',
     'internals', 'propagators', 'externals' (lists of rows)."""
-    _, _, _, _, _, srclab, intlab, pnum, ext_order = labels
+    _, _, _, _, _, srclab, intlab, extlab, ext_order, edge_name = labels
     # normalise keys to plain ints / int-tuples to match the figure's labels
     va = {int(v): a for v, a in td.vertex_assignments.items()}
     et = {(int(u), int(v), lbl): rp for (u, v, lbl), rp in td.edge_types.items()}
@@ -416,15 +435,15 @@ def diagram_label_map(td, labels):
         phys = ' '.join(_leg_str(l) for l in getattr(a, 'physical_legs', []))
         out['internals'].append((intlab[v], _coeff_str(a.coefficient),
                                  'resp⟨%s⟩ phys⟨%s⟩' % (resp, phys)))
-    for e in sorted(pnum, key=lambda e: pnum[e]):
+    for e in sorted(edge_name, key=lambda e: edge_name[e]):
         rp = et.get(e)
         if rp is None:
-            out['propagators'].append((pnum[e], '?')); continue
+            out['propagators'].append((edge_name[e], '?')); continue
         resp_leg, phys_leg = rp
         out['propagators'].append(
-            (pnum[e], 'G[%s ← %s]' % (_leg_str(phys_leg), _leg_str(resp_leg))))
-    for i, leaf in enumerate(ext_order):
-        out['externals'].append((i + 1, _leg_str(el.get(leaf))))
+            (edge_name[e], 'G[%s ← %s]' % (_leg_str(phys_leg), _leg_str(resp_leg))))
+    for leaf in ext_order:
+        out['externals'].append((extlab[leaf], _leg_str(el.get(leaf))))
     return out
 
 
@@ -501,9 +520,9 @@ def _format_mappings(name, k, max_ell, result, max_typings=6):
                 for lab, co, legs in tm['internals']:
                     L.append('     vertex %-4s → coeff %s   %s' % (lab, co, legs))
                 for num, pr in tm['propagators']:
-                    L.append('     propagator %-2s → %s' % (num, pr))
-                exts = ', '.join('○%d=%s' % (n, f) for n, f in tm['externals'])
-                L.append('     externals    → %s' % exts)
+                    L.append('     propagator %-7s → %s' % (num, pr))
+                exts = ', '.join('%s=%s' % (n, f) for n, f in tm['externals'])
+                L.append('     external legs → %s' % exts)
             if nt > max_typings:
                 L.append('  … +%d more typing(s) (in the returned data)'
                          % (nt - max_typings))
