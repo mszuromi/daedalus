@@ -242,8 +242,15 @@ def _generic_labels(D, leaves):
 def draw_prediagram(D, leaves, ax, title=None):
     pos, ext_v, src_v, int_v, edges, srclab, intlab, pnum, _ = _generic_labels(D, leaves)
     BLACK, EDGEC, NUMC = '#181818', '#3a3a3a', '#b03030'
+    # Rank index per x-column -- scale-INDEPENDENT, so a "skip" edge is detected
+    # as long whatever the layout's absolute units (graphviz vs the fallback).
+    xcols = sorted(set(round(pos[v][0], 2) for v in pos))
+    rank_of = {x: i for i, x in enumerate(xcols)}
+    def _span(u, w):
+        return abs(rank_of[round(pos[u][0], 2)] - rank_of[round(pos[w][0], 2)])
     pair = collections.defaultdict(list)
     for e in edges: pair[frozenset((e[0], e[1]))].append(e)
+    track = [list(pos[v]) for v in pos]              # extent: nodes + arc apexes + numbers
     for key, es in pair.items():
         m = len(es)
         for i, e in enumerate(es):
@@ -251,25 +258,32 @@ def draw_prediagram(D, leaves, ax, title=None):
             if m > 1:                                    # parallel edges -> lens bubble
                 rad = 0.42 * (i - (m - 1) / 2.0) * 2
             else:
-                span = abs(int(round((pos[u][0] - pos[v][0]) / XS)))
-                if span >= 2:                            # long edge -> arc over/under the spine
+                span = _span(u, v)
+                if span >= 2:        # long ("skip") edge: bow clear of the skipped
+                                     # nodes, to the side the edge already sits on
+                                     # (away from the spine).  rad ~ 1/span keeps the
+                                     # clearance roughly constant -- no ballooning.
                     avgy = (pos[u][1] + pos[v][1]) / 2.0
+                    side = 1.0 if avgy >= 0 else -1.0
                     dxv = pos[v][0] - pos[u][0]
-                    rad = 0.34 * (span - 1) * (1 if avgy >= 0 else -1) * (1 if dxv >= 0 else -1)
+                    rad = min(0.72 / span, 0.45) * side * (1 if dxv >= 0 else -1)
                 else:
                     rad = 0.0
             ax.add_patch(FancyArrowPatch(pos[u], pos[v], connectionstyle=f'arc3,rad={rad}',
                          arrowstyle='-|>', mutation_scale=12, lw=1.5, color=EDGEC,
                          shrinkA=11, shrinkB=11, zorder=1, joinstyle='round'))
-            mx, my = (pos[u][0] + pos[v][0]) / 2, (pos[u][1] + pos[v][1]) / 2
             dx, dy = pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]
+            mx, my = (pos[u][0] + pos[v][0]) / 2.0, (pos[u][1] + pos[v][1]) / 2.0
             L = max((dx * dx + dy * dy) ** 0.5, 1e-6)
-            if abs(rad) < 1e-6:                           # straight edge: nudge to one side
-                ox, oy = -dy / L * 0.27, dx / L * 0.27
-            else:                                         # curved edge: sit on the arc apex
-                ox, oy = -dy * rad * 0.62, dx * rad * 0.62
-            ax.text(mx + ox, my + oy, str(pnum[e]), ha='center', va='center', fontsize=7.5,
+            if abs(rad) < 1e-6:                # straight: 40% toward the source, nudged aside
+                nx = pos[u][0] + 0.40 * dx - dy / L * 0.24   # (so two crossing edges'
+                ny = pos[u][1] + 0.40 * dy + dx / L * 0.24   #  numbers don't pile up)
+            else:                              # curved: just outside the arc apex
+                nx, ny = mx - dy * rad * 0.62, my + dx * rad * 0.62
+            ax.text(nx, ny, str(pnum[e]), ha='center', va='center', fontsize=7.5,
                     color=NUMC, zorder=5, bbox=dict(boxstyle='circle,pad=0.10', fc='white', ec=NUMC, lw=0.6))
+            track.append([mx - 0.5 * rad * dy, my + 0.5 * rad * dx])   # arc apex
+            track.append([nx, ny])                                    # propagator number
     for v in ext_v:
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
     for v in int_v:
@@ -278,8 +292,10 @@ def draw_prediagram(D, leaves, ax, title=None):
     for v in src_v:
         ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
         ax.text(pos[v][0] + 0.34, pos[v][1], srclab[v], ha='left', va='center', fontsize=11, fontstyle='italic')
-    xs = [p[0] for p in pos.values()]; ys = [p[1] for p in pos.values()]
-    ax.set_xlim(min(xs) - 1.1, max(xs) + 1.3); ax.set_ylim(min(ys) - 1.0, max(ys) + 1.0)
+    # Limits enclose nodes, arc apexes AND propagator numbers (so curves are never
+    # clipped), with extra room on the right/top for the source/internal labels.
+    xs = [p[0] for p in track]; ys = [p[1] for p in track]
+    ax.set_xlim(min(xs) - 0.6, max(xs) + 0.95); ax.set_ylim(min(ys) - 0.55, max(ys) + 0.6)
     ax.set_aspect('equal'); ax.axis('off')
     if title: ax.set_title(title, fontsize=10, pad=2)
 
@@ -307,7 +323,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
         for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
             groups.append((ell, sig, bysig[sig]))
     # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.42, 2.55
+    HEAD, CELL = 0.42, 2.75
     plan = []   # ('head', text) | ('row', [pds])
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
