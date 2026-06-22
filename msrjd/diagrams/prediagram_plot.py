@@ -286,13 +286,15 @@ def draw_prediagram(D, leaves, ax, title=None):
                 x0, y0 = pos[u]; x1, y1 = pos[v]
                 ddx, ddy = x1 - x0, y1 - y0
                 seg_L2 = ddx * ddx + ddy * ddy
+                ru, rv = rank_of[round(x0, 2)], rank_of[round(x1, 2)]
                 blockers = []
                 for w in pos:
                     if w == u or w == v:
                         continue
                     xw, yw = pos[w]
-                    if not (min(x0, x1) - 0.05 < xw < max(x0, x1) + 0.05):
-                        continue                          # not between the endpoints
+                    rw = rank_of[round(xw, 2)]
+                    if not (min(ru, rv) < rw < max(ru, rv)):
+                        continue                          # only strictly-intermediate ranks block
                     t = 0.5 if seg_L2 < 1e-12 else max(0.0, min(
                         1.0, ((xw - x0) * ddx + (yw - y0) * ddy) / seg_L2))
                     if ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5 < 0.32:
