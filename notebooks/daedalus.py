@@ -1084,7 +1084,7 @@ def plot_kpoint(result, cfg, model):
 
 # ── Diagram structure (prediagram topologies, not numbers) ───────────────────
 
-def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
+def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
     """Draw the *contributing prediagrams* — the MSR-JD directed topologies that
     survive the theory's vertex/source filter — for the k-point cumulant up to
     loop order ``max_ell``, grouped by topology family.

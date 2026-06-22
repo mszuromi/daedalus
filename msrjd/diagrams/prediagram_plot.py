@@ -335,7 +335,7 @@ def draw_prediagram(D, leaves, ax, title=None):
 
 
 # ── grouped figure (public entry point) ───────────────────────────────
-def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
+def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
     """Draw the contributing prediagrams for ``model`` at correlator order
     ``k`` and loop order ``max_ell``, grouped by topology family and labelled
     by role (sources i,ii right; internals a,b,c middle; external legs 1,2 left;
@@ -357,7 +357,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
         for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
             groups.append((ell, sig, bysig[sig]))
     # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.42, 2.75
+    HEAD, CELL = 0.5, 3.5
     plan = []   # ('head', text) | ('row', [pds])
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
@@ -372,7 +372,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=4):
             fig.savefig(save, dpi=145, bbox_inches='tight')
         return fig
     heights = [HEAD if p[0] == 'head' else CELL for p in plan]
-    fig = plt.figure(figsize=(3.05 * ncol, sum(heights) + 0.8))
+    fig = plt.figure(figsize=(4.1 * ncol, sum(heights) + 0.8))
     gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.45, wspace=0.20,
                   left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.4 / (sum(heights) + 0.8))
     for ri, p in enumerate(plan):
