@@ -266,7 +266,10 @@ def draw_prediagram(D, leaves, ax, title=None):
                     avgy = (pos[u][1] + pos[v][1]) / 2.0
                     side = 1.0 if avgy >= 0 else -1.0
                     dxv = pos[v][0] - pos[u][0]
-                    rad = min(0.72 / span, 0.45) * side * (1 if dxv >= 0 else -1)
+                    # matplotlib arc3 control point = midpoint + rad·(dy, −dx); to bow
+                    # the apex toward `side` (away from the spine) the rad sign must be
+                    # −side·sign(dx) -- this is the sign that was previously backwards.
+                    rad = -min(0.72 / span, 0.45) * side * (1 if dxv >= 0 else -1)
                 else:
                     rad = 0.0
             ax.add_patch(FancyArrowPatch(pos[u], pos[v], connectionstyle=f'arc3,rad={rad}',
@@ -279,10 +282,10 @@ def draw_prediagram(D, leaves, ax, title=None):
                 nx = pos[u][0] + 0.40 * dx - dy / L * 0.24   # (so two crossing edges'
                 ny = pos[u][1] + 0.40 * dy + dx / L * 0.24   #  numbers don't pile up)
             else:                              # curved: just outside the arc apex
-                nx, ny = mx - dy * rad * 0.62, my + dx * rad * 0.62
+                nx, ny = mx + dy * rad * 0.62, my - dx * rad * 0.62
             ax.text(nx, ny, str(pnum[e]), ha='center', va='center', fontsize=7.5,
                     color=NUMC, zorder=5, bbox=dict(boxstyle='circle,pad=0.10', fc='white', ec=NUMC, lw=0.6))
-            track.append([mx - 0.5 * rad * dy, my + 0.5 * rad * dx])   # arc apex
+            track.append([mx + 0.5 * rad * dy, my - 0.5 * rad * dx])   # arc apex (matplotlib convention)
             track.append([nx, ny])                                    # propagator number
     for v in ext_v:
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
