@@ -281,20 +281,33 @@ def draw_prediagram(D, leaves, ax, title=None):
             if m > 1:                                    # parallel edges -> lens bubble
                 rad = 0.42 * (i - (m - 1) / 2.0) * 2
             else:
-                span = _span(u, v)
-                if span >= 2:        # long ("skip") edge: bow clear of the skipped
-                                     # nodes, to the side the edge already sits on
-                                     # (away from the spine).  rad ~ 1/span keeps the
-                                     # clearance roughly constant -- no ballooning.
-                    avgy = (pos[u][1] + pos[v][1]) / 2.0
-                    side = 1.0 if avgy >= 0 else -1.0
-                    dxv = pos[v][0] - pos[u][0]
-                    # matplotlib arc3 control point = midpoint + rad·(dy, −dx); to bow
-                    # the apex toward `side` (away from the spine) the rad sign must be
-                    # −side·sign(dx) -- this is the sign that was previously backwards.
-                    rad = -min(0.72 / span, 0.45) * side * (1 if dxv >= 0 else -1)
+                # Keep the edge STRAIGHT unless its segment passes too close to an
+                # intermediate node; only then arc it (and bow away from that node).
+                x0, y0 = pos[u]; x1, y1 = pos[v]
+                ddx, ddy = x1 - x0, y1 - y0
+                seg_L2 = ddx * ddx + ddy * ddy
+                blockers = []
+                for w in pos:
+                    if w == u or w == v:
+                        continue
+                    xw, yw = pos[w]
+                    if not (min(x0, x1) - 0.05 < xw < max(x0, x1) + 0.05):
+                        continue                          # not between the endpoints
+                    t = 0.5 if seg_L2 < 1e-12 else max(0.0, min(
+                        1.0, ((xw - x0) * ddx + (yw - y0) * ddy) / seg_L2))
+                    if ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5 < 0.32:
+                        blockers.append(w)
+                if not blockers:
+                    rad = 0.0                              # nothing in the way -> straight
                 else:
-                    rad = 0.0
+                    soff = 0.0                             # which side are the blockers on?
+                    for w in blockers:
+                        t = 0.5 if abs(ddx) < 1e-9 else (pos[w][0] - x0) / ddx
+                        soff += pos[w][1] - (y0 + t * ddy)
+                    side = -1.0 if soff >= 0 else 1.0      # bow AWAY from the blockers
+                    span = max(_span(u, v), 1)
+                    # matplotlib arc3 apex_y ~ −rad·dx, so rad = −side·sign(dx)·mag
+                    rad = -min(0.72 / span, 0.45) * side * (1 if ddx >= 0 else -1)
             dx, dy = pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]
             mx, my = (pos[u][0] + pos[v][0]) / 2.0, (pos[u][1] + pos[v][1]) / 2.0
             cx, cy = mx + rad * dy, my - rad * dx          # arc3 control point
