@@ -54,6 +54,17 @@ User's standing complaint: edges still arc when a straight line would do.
 Net: tree/1-loop are clean straights; only bubbles + truly-obstructed long edges
 curve; 3 roles read at a glance; no overlaps; titles never collide.
 
+### Round 4 (k≥3 legibility — user flagged "most of these are illegible")
+- ROOT CAUSE: k=3 diagrams have 3 sources + 3 externals + internals (~8 nodes) +
+  a bubble, but were rendered at the same small cell size as k=2 (ncol=3), so the
+  many edges crammed and the curves tangled.
+- [FIX] adaptive sizing: k≤2 keeps ncol=3 / cell 4.1×3.05 (unchanged, user liked
+  it); k≥3 uses ncol=2 and larger cells (5.6×4.0) so each diagram gets ~2× the
+  area.  ncol=None now means "auto" (dd wrapper too).
+- [FIX] wider node spacing: graphviz nodesep 0.5→0.7, ranksep 0.95→1.05 — gives
+  the fan-out room and opens the bubble lenses (helps k=2 too).
+- VERIFIED: k=3 "2 internal, 3 sources" group now legible; k=2 unchanged/better.
+
 ## Decision log
 - Did NOT cap marker size for sparse diagrams (would add whitespace the user
   disliked; trees-bigger is acceptable since grouped by complexity).

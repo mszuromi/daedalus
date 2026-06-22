@@ -83,7 +83,7 @@ def _layout_graphviz(D, leaves):
     nodes = [int(v) for v in D.vertices()]
     edges = [(int(u), int(v), lbl) for (u, v, lbl) in D.edges()]
     ext_v, src_v, int_v = _roles(D, leaves)
-    g = pydot.Dot(graph_type='digraph', rankdir='RL', nodesep='0.5', ranksep='0.95')
+    g = pydot.Dot(graph_type='digraph', rankdir='RL', nodesep='0.7', ranksep='1.05')
     for n in nodes:
         g.add_node(pydot.Node(str(n), shape='point', width='0.12'))
     seen = set()
@@ -354,7 +354,7 @@ def draw_prediagram(D, leaves, ax, title=None):
 
 
 # ── grouped figure (public entry point) ───────────────────────────────
-def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
+def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     """Draw the contributing prediagrams for ``model`` at correlator order
     ``k`` and loop order ``max_ell``, grouped by topology family and labelled
     by role (sources i,ii right; internals a,b,c middle; external legs 1,2 left;
@@ -375,8 +375,13 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
             bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
         for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
             groups.append((ell, sig, bysig[sig]))
+    # Adaptive sizing: k≥3 diagrams carry many external legs + sources (more
+    # fan-out and crossings), so render them with fewer-per-row + larger cells.
+    if ncol is None:
+        ncol = 3 if k <= 2 else 2
+    PANELW = 4.1 if k <= 2 else 5.6
     # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.5, 3.05
+    HEAD, CELL = 0.5, (3.05 if k <= 2 else 4.0)
     plan = []   # ('head', text) | ('row', [pds])
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
@@ -391,7 +396,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=3):
             fig.savefig(save, dpi=145, bbox_inches='tight')
         return fig
     heights = [HEAD if p[0] == 'head' else CELL for p in plan]
-    fig = plt.figure(figsize=(4.1 * ncol, sum(heights) + 0.8))
+    fig = plt.figure(figsize=(PANELW * ncol, sum(heights) + 0.8))
     gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.32, wspace=0.16,
                   left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.4 / (sum(heights) + 0.8))
     for ri, p in enumerate(plan):
