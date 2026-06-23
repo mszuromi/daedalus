@@ -4,7 +4,25 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
-## 2026-06-22 — Prediagram visualization + k=1 plotting [branch `spatial-extension`]
+## 2026-06-22 — Prediagram visualization + k=1 plotting + expand perf [branch `spatial-extension`]
+
+### Performance: O(N²)→O(N) action expansion (`msrjd/core/field_theory.py`)
+
+`FieldTheory.expand()` coerced the expanded SR action into the polynomial ring one
+monomial at a time (`result += SR(coeff)*R.monomial(...)` in `_sr_to_ring`), which
+re-normalizes the entire growing polynomial on every step — **O(N²)**, and pathological
+when the SR coefficients are large (a sigmoid/Bernoulli mean-field saddle baked in via
+`set_mf_equation` puts the same giant exp-denominator on every monomial). Now the
+coefficients are accumulated into a `{exponents: coeff}` dict and the ring element is
+built once via `R(dict)` — **O(N)**, bit-identical. Measured on
+`dendritic_quad_soma_sigmoid`: order-2 expand **>10 min → 73 s**, order-3 **36 min →
+135 s (~16×)**. Verified result-preserving (test_all_k_boltzmann, test_expand_cache,
+test_daedalus, test_filter, test_coupled_two_point — 40 tests). Found via a
+parallel-agent investigation (the bottleneck was this accumulation, not the
+transcendental algebra). Remaining levers (not yet done): wire the expand cache into
+`FieldTheory.expand()` so repeat calls / `plot_prediagrams` reuse a prior expand; and
+keep the MF saddle symbolic through expansion so the coefficients stay small.
+
 
 ### Prediagram visualization (`dd.plot_prediagrams`, `dd.prediagram_mappings`)
 
