@@ -4,6 +4,36 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-22 — Prediagram visualization + k=1 plotting [branch `spatial-extension`]
+
+### Prediagram visualization (`dd.plot_prediagrams`, `dd.prediagram_mappings`)
+
+Draw the **contributing prediagrams** (filtered directed topologies) for a theory at
+`(k, max_ell)`, grouped by topology family, in the Buice/Ocker **time right→left**
+convention. Role-distinct markers — ○ external legs (`1,2,…`, left) · ● internal
+vertices (`a,b,c,…`, middle) · ■ noise sources (`i,ii,…`, right). Each propagator
+carries a **mid-edge arrowhead** and is **named by its endpoints** (`a→b`) rather than
+a per-edge symbol, so dense diagrams stay legible. `prediagram_mappings` lists each
+prediagram's typed realizations (source `i`→`K⁽ⁿ⁾`, vertex `a`→interaction monomial,
+propagator `a→b`→`G[φ←φ̃]`, leg→field). Layout via graphviz `dot` (+ `pydot`) with a
+built-in SCC-aware fallback; an edge is drawn **straight unless a strictly-intermediate
+node blocks the path**, then arcs away from it; **adaptive sizing** (k≥3 rendered ~2×
+larger for their fan-out). Practical range `k + max_ell ≤ 4`. Code:
+`msrjd/diagrams/prediagram_plot.py`; doc: `docs/prediagram_visualization.md`; demoed in
+`notebooks/examples/temporal_ou_sextic_white.ipynb` §2. Optional dep:
+`brew install graphviz` + `pip install pydot` (graceful fallback if absent).
+
+### k=1 (1-point mean) plotting (`dd.plot_cumulant`)
+
+`plot_cumulant` now handles **k=1** — a 1-POINT function (the mean of the external
+field; for a fluctuation field δφ the tree mean is 0 and the value is the 1-loop
+tadpole shift of the mean). New `plot_temporal_mean` renders it as tree/+loop bars
+instead of a misleading flat C(τ) line. The dendritic example's sim cell is now
+k-aware: it reports the somatic rate vs `nS*` for any k, and runs the C(τ) correlation
+estimator (which returns `tau=None` for k=1 — the old `len(None)` crash) only for k≥2.
+
+---
+
 ## 2026-06-18 — Master manual + white-noise OU baseline + engine-API conventions + cleanup [branch `spatial-extension`]
 
 ### The Daedalus Code Manual (`docs/manual/`)
