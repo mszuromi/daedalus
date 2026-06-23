@@ -269,6 +269,15 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
     else:
         summands = [expanded]
 
+    # Accumulate into a {exponent_tuple: SR coeff} dict, then build the ring
+    # element in ONE shot via R(dict).  The old incremental
+    # ``result += SR(coeff) * R.monomial(*exponents)`` re-normalises the whole
+    # growing polynomial on every step -- O(N^2), and brutal when the SR
+    # coefficients are large (e.g. the shared exp-denominators that a
+    # sigmoid/Bernoulli mean-field saddle bakes into every monomial: the
+    # dendritic order-3 expand spent ~36 min almost entirely here).  The dict
+    # build is O(N) and yields a bit-identical polynomial.
+    acc = {}
     for term in summands:
         exponents = []
         coeff = SR(term)
@@ -277,8 +286,9 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
             exponents.append(deg)
             if deg > 0:
                 coeff = coeff.coefficient(v_sr, deg)
-        result += SR(coeff) * R.monomial(*exponents)
-    return result
+        key = tuple(exponents)
+        acc[key] = (acc[key] + SR(coeff)) if key in acc else SR(coeff)
+    return R(acc) if acc else result
 
 
 # ---------------------------------------------------------------------------
