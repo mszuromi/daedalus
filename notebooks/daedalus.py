@@ -740,6 +740,11 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     if result.get('output_kind') in ('moment', 'central_moment') \
             and result.get('moment') is not None:
         return _plot_moment(result, cfg, model, sim)
+    # k=1 is a 1-POINT function: the mean of the external field (τ-independent),
+    # i.e. the loop correction to the mean-field value.  It has no C(τ) curve and
+    # no τ-correlation, so draw it as tree/+loop bars rather than a flat line.
+    if (result.get('_resolved') or {}).get('k') == 1 and not is_spatial(model):
+        return plot_temporal_mean(result, cfg, model, sim)
     if 'C_kpoint' in result:
         return plot_kpoint(result, cfg, model)
     if is_spatial(model) or 'C_tau_x' in result:
@@ -990,6 +995,63 @@ def plot_temporal_kpoint(result, cfg, model, sim=None):
     ax.set_ylabel(r'$\kappa_{%s}$ (equal-time)' % k)
     ax.set_title(cfg.title or f"{model.get('name','')}: "
                  f"k={k} cumulant at τ=0")
+    ax.grid(alpha=0.25, axis='y')
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_temporal_mean(result, cfg, model, sim=None):
+    """k=1: the 1-point cumulant is the MEAN of the external field — a single
+    τ-independent number (the loop correction to the mean-field value; for a
+    fluctuation field δφ the tree mean is 0 and the value is the 1-loop tadpole
+    shift).  Drawn as tree / +loop bars (``Config.show_orders`` honoured); a
+    scalar simulation mean ``sim={'C': value, 'C_err': err}`` overlays as a
+    dashed line.  There is no C(τ) curve to draw — for a correlation use k≥2."""
+    cfg = cfg or Config()
+    tau = np.asarray(result.get('tau_grid', [0.0]))
+    i0 = int(np.argmin(np.abs(tau))) if tau.size else 0
+    by_ell = {}
+    for e, v in (result.get('C_tau_by_ell') or {}).items():
+        if v is None:
+            continue
+        arr = np.real(np.asarray(v)).ravel()
+        by_ell[e] = float(arr[i0] if arr.size > i0 else arr[0])
+    fig, ax = plt.subplots(figsize=cfg.figsize or (6.0, 4.3))
+    if by_ell:
+        if cfg.show_orders == 'incremental':
+            labs = [('%d-loop' % e if e else 'tree', by_ell[e])
+                    for e in sorted(by_ell)]
+        else:
+            cum, run = {}, 0.0
+            for e in sorted(by_ell):
+                run += by_ell[e]
+                cum[e] = run
+            if cfg.show_orders == 'total':
+                top = max(cum)
+                labs = [(_order_label(top), cum[top])]
+            else:
+                labs = [(_order_label(e), cum[e]) for e in sorted(cum)]
+        idx = np.arange(len(labs))
+        ax.bar(idx, [v for _, v in labs], width=0.6,
+               color=[_ORDER_COLORS[i % len(_ORDER_COLORS)]
+                      for i in range(len(labs))])
+        ax.set_xticks(idx)
+        ax.set_xticklabels([l for l, _ in labs], fontsize=8, rotation=15, ha='right')
+    if sim is not None and sim.get('C') is not None:
+        sv = float(np.real(np.asarray(sim['C']).ravel()[0]))
+        ax.axhline(sv, color='#222', lw=1.5, ls='--', label='sim')
+        se = sim.get('C_err')
+        if se is not None:
+            se = float(np.asarray(se).ravel()[0])
+            ax.axhspan(sv - se, sv + se, color='#222', alpha=0.12)
+        ax.legend(fontsize=8)
+    fld = (result.get('_resolved') or {}).get('external_fields') or [('phi', 1)]
+    fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
+    ax.axhline(0, color='gray', lw=0.5)
+    ax.set_ylabel(r'$\langle\,\delta %s\,\rangle$  (1-point cumulant)' % fb)
+    ax.set_title(cfg.title or f"{model.get('name','')}: 1-point mean (k=1)")
     ax.grid(alpha=0.25, axis='y')
     fig.tight_layout()
     if cfg.save:
