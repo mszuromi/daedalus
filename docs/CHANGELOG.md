@@ -4,6 +4,23 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — `Config.chi_grid`: rename `spatial_grid` → `chi_grid` (paper notation χ=x_j−x_k) [branch `spatial-extension`]
+
+The user-facing spatial-separation grid is renamed `spatial_grid` → **`chi_grid`** to
+match the paper's notation: χ_jk = x_j − x_k is the real-space *difference* variable the
+correlation function is expressed over (paper eq. B47, verified against
+`Automated_Calculation_of_Feynman_Diagrams_for_SDEs`). `spatial_grid` is kept as a
+**backward-compat alias** — mirrored in `Config.__post_init__` (same pattern as
+`parameters`/`fundamental`), so all existing code, tests, templates, and the `spatial/`
+pipeline notebooks keep working unchanged (e.g. `test_daedalus` still calls
+`dd.Config(spatial_grid=…)`). The backend `compute_cumulants(spatial_grid=…)` parameter
+and the `result['spatial_grid']` key stay as-is (internal names). Updated to χ: the 5
+spatial example notebooks (active configs + options blocks), `dd.config_options()`, and
+the spatial plot axis labels (`C(χ,0)`, `C(χ,τ)`, xlabel χ). Verified `chi_grid` and
+`spatial_grid` give bit-identical runs; 15 tests green.
+
+---
+
 ## 2026-06-24 — `Config.tau_grid`: an explicit τ grid (like `spatial_grid`) [branch `spatial-extension`]
 
 `dd.Config` now accepts an explicit **`tau_grid`** — an array or `(lo, hi, n)` tuple,

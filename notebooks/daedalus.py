@@ -7,7 +7,7 @@ The four group templates (``notebooks/templates/``) and every
 
     import daedalus as dd
     model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
-    cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+    cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))   # χ = spatial sep.
     res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
     dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
 
@@ -267,14 +267,17 @@ class Config:
 
     # ── temporal grid (the τ axis; also the τ axis of spatial C(x,τ)) ──
     # Give EITHER tau_max+tau_step (uniform symmetric grid −tau_max…tau_max) OR
-    # an explicit tau_grid (array | (lo,hi,n) tuple, like spatial_grid) — the
+    # an explicit tau_grid (array | (lo,hi,n) tuple, like chi_grid) — the
     # latter is used verbatim and wins if both are set.
     tau_max: Optional[float] = None
     tau_step: Optional[float] = None
     tau_grid: Any = None                    # array | (lo, hi, n) | None
 
     # ── spatial ──
-    spatial_grid: Any = None                # array | (lo, hi, n) | None
+    # chi_grid is the grid of spatial DIFFERENCES χ = x_j − x_k (the paper's
+    # real-space variable, eq. B47); spatial_grid is the backward-compat alias.
+    chi_grid: Any = None                    # array | (lo, hi, n) | None
+    spatial_grid: Any = None                # deprecated alias for chi_grid
     spatial_points: Any = None              # k≥3: (n_pts, k-1, 2) of (x_j, τ_j)
 
     # ── temporal k≥3 cumulant slicing ──
@@ -329,10 +332,18 @@ class Config:
             self.parameters = self.fundamental
         elif self.fundamental is None and self.parameters is not None:
             self.fundamental = self.parameters
+        # ``chi_grid`` (the paper's spatial-difference grid χ=x_j−x_k) is the
+        # canonical name; ``spatial_grid`` is the backward-compat alias.  Mirror
+        # whichever was set onto the other (``chi_grid`` wins if both are given).
+        if self.chi_grid is None and self.spatial_grid is not None:
+            self.chi_grid = self.spatial_grid
+        elif self.spatial_grid is None and self.chi_grid is not None:
+            self.spatial_grid = self.chi_grid
 
     def resolved_grid(self):
-        """Materialise ``spatial_grid`` (accepts an ``(lo, hi, n)`` tuple)."""
-        return self._resolve_grid(self.spatial_grid)
+        """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
+        (accepts an ``(lo, hi, n)`` tuple).  ``spatial_grid`` is the alias."""
+        return self._resolve_grid(self.chi_grid)
 
     def resolved_tau_grid(self):
         """Materialise ``tau_grid`` (accepts an ``(lo, hi, n)`` tuple), or None."""
@@ -386,10 +397,10 @@ def config_options(spatial=None):
       temporal  C(τ)         tau_max, tau_step
       temporal  k≥3 cumulant kpoint_base_lags (fix the non-swept legs),
                              kpoint_full_grid (full (k−1)-D tensor vs slices)
-      spatial   C(x,τ)       spatial_grid (x axis), tau_max/tau_step (τ axis)
-                             • full (x,τ) grid : ranged spatial_grid + tau_max>0
-                             • equal-time C(x,0): tau_max=0.0
-                             • fixed-x  C(x₀,τ) : spatial_grid=[x0], tau_max>0
+      spatial   C(χ,τ)       chi_grid (χ=x_j−x_k axis), tau_max/tau_step (τ axis)
+                             • full (χ,τ) grid : ranged chi_grid + tau_max>0
+                             • equal-time C(χ,0): tau_max=0.0
+                             • fixed-χ  C(χ₀,τ) : chi_grid=[χ0], tau_max>0
       spatial   k≥3 events   spatial_points = (n_pts, k−1, 2) of (x_j, τ_j)
     """
     import dataclasses
@@ -414,9 +425,9 @@ def config_options(spatial=None):
         ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
     ])
-    spatial_grid_ = ('spatial grid / slicing (x and τ axes)', [
-        ('spatial_grid',  'x grid: (lo,hi,n) or array; a single [x0] fixes x'),
-        ('tau_max',       'τ grid extent: 0.0 → equal-time C(x,0); >0 → vary τ'),
+    spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
+        ('chi_grid',      'spatial-difference grid χ=x_j−x_k: (lo,hi,n) or array; [χ0] fixes χ'),
+        ('tau_max',       'τ grid extent: 0.0 → equal-time C(χ,0); >0 → vary τ'),
         ('tau_step',      'τ grid spacing (when tau_max>0)'),
         ('tau_grid',      'explicit τ grid: array | (lo,hi,n); overrides tau_max/tau_step'),
         ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
@@ -943,7 +954,7 @@ def _plot_moment(result, cfg, model, sim=None):
         m = M[int(np.argmin(np.abs(tau)))] if M.ndim == 2 else M
         ax.plot(xs, m, '-', lw=1.8, color='#8E44AD',
                 label=f'theory: {lab}')
-        ax.set_xlabel('x')
+        ax.set_xlabel(r'$\chi$')
     else:
         ax.plot(np.asarray(result['tau_grid']), M, '-', lw=1.8,
                 color='#8E44AD', label=f'theory: {lab}')
@@ -1278,11 +1289,11 @@ def plot_spatial(result, cfg, model, sim=None):
                          color='#222', alpha=0.6, capsize=2, label='sim')
         else:
             ax0.plot(sx, sc, 'o', ms=3, color='#222', alpha=0.6, label='sim')
-    ax0.set_xlabel('x')
-    ax0.set_ylabel(r'$C(x,\,0)$')
+    ax0.set_xlabel(r'$\chi$')
+    ax0.set_ylabel(r'$C(\chi,\,0)$')
     if cfg.logy:
         ax0.set_yscale('log')
-    ax0.set_title(cfg.title or f"{model.get('name','')}: equal-time C(x,0)")
+    ax0.set_title(cfg.title or f"{model.get('name','')}: equal-time C(χ,0)")
     ax0.grid(alpha=0.25)
     ax0.legend(fontsize=8)
 
@@ -1290,9 +1301,9 @@ def plot_spatial(result, cfg, model, sim=None):
         im = axes[1].imshow(C, aspect='auto', origin='lower',
                             extent=[xs.min(), xs.max(), tau.min(), tau.max()],
                             cmap='viridis')
-        axes[1].set_xlabel('x')
+        axes[1].set_xlabel(r'$\chi$')
         axes[1].set_ylabel(r'$\tau$')
-        axes[1].set_title(r'$C(x,\tau)$')
+        axes[1].set_title(r'$C(\chi,\tau)$')
         fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
     fig.tight_layout()
     if cfg.save:
