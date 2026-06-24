@@ -19,6 +19,16 @@ spatial example notebooks (active configs + options blocks), `dd.config_options(
 the spatial plot axis labels (`C(χ,0)`, `C(χ,τ)`, xlabel χ). Verified `chi_grid` and
 `spatial_grid` give bit-identical runs; 15 tests green.
 
+**Follow-up prose sweep:** χ is now used for the spatial *separation* throughout the
+markdown prose, code comments, math, and labels of the example notebooks, the 3 spatial
+templates, the 14 `notebooks/spatial/` pipeline notebooks, and the 2 READMEs —
+carefully distinguishing the separation χ = x_j − x_k (the correlation-function argument:
+`C(x)`→`C(χ)`, `|x|`→`|χ|`, "separation x"→χ, axis labels) from the position coordinate
+**x**, which keeps `x` (∂ₓ, ∇², the domain x∈ℝ^d, the k≥3 event positions like
+`legs at x=0.5`, and δ(x−x')). The 2-D reaction–diffusion notebook keeps `r` for the
+radial separation |χ|. All notebooks recompile; the backend `spatial_grid` param +
+`result['spatial_grid']` key are untouched.
+
 ---
 
 ## 2026-06-24 — `Config.tau_grid`: an explicit τ grid (like `spatial_grid`) [branch `spatial-extension`]

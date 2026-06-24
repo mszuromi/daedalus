@@ -22,7 +22,7 @@ notebook re-builds a model inline). Every notebook is thin:
 ```python
 import daedalus as dd
 model, mod = dd.load_theory('kpz_1d')              # from theories/*.theory.py
-cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))
 res = dd.run(model, cfg, mod)                       # k / ℓ / Dyson all here
 dd.plot_cumulant(res, cfg, model)                   # auto-dispatched, adaptable
 ```
@@ -49,7 +49,7 @@ theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`:
 * **Adaptable plotting** — `show_orders` (`'cumulative'` | `'incremental'` |
   `'total'`), `logy`, `components`, `figsize`, `title`, `save`. `plot_cumulant`
   dispatches on (spatial?, multi-field?, k): `C(τ)` for temporal, equal-time
-  `C(x,0)` (+ a `C(x,τ)` heatmap when a τ grid is present) for spatial `k=2`,
+  `C(χ,0)` (+ a `C(χ,τ)` heatmap when a τ grid is present) for spatial `k=2`,
   and a per-event bar chart for spatial `k ≥ 3`. Pass a real simulator with
   `plot_cumulant(..., sim={'tau'|'x', 'C', 'C_err'})` to overlay it.
 
@@ -63,8 +63,8 @@ field **or** a population of size > 1.
 |---|---|---|---|
 | temporal · single | [`template_temporal_single.ipynb`](templates/template_temporal_single.ipynb) | `ou_quartic_double_well` | `C(τ)` + per-loop overlay |
 | temporal · multi | [`template_temporal_multi.ipynb`](templates/template_temporal_multi.ipynb) | `ou_quartic_two_dim` | `C(τ)`; pick legs via `external_fields` |
-| spatial · single | [`template_spatial_single.ipynb`](templates/template_spatial_single.ipynb) | `kpz_1d` | `C(x,0)` (+ heatmap); `k≥3` bar chart |
-| spatial · multi | [`template_spatial_multi.ipynb`](templates/template_spatial_multi.ipynb) | `coupled_rd_2species_1d` | `C(x,0)`; Dyson for unequal `D` |
+| spatial · single | [`template_spatial_single.ipynb`](templates/template_spatial_single.ipynb) | `kpz_1d` | `C(χ,0)` (+ heatmap); `k≥3` bar chart |
+| spatial · multi | [`template_spatial_multi.ipynb`](templates/template_spatial_multi.ipynb) | `coupled_rd_2species_1d` | `C(χ,0)`; Dyson for unequal `D` |
 
 Two **sim-vs-theory references** show how a deep-dive notebook overlays a real
 simulator on the same core (the only addition is the simulator cell + passing
@@ -84,7 +84,7 @@ the propagator/MF solver) and `linear_delta_third_moment` (a corrupted voltage
 theory file) currently do not run; `singlepop_quad_spike_reset` and `kpz_1d`
 are pending a follow-up pass.
 
-## `spatial/` — spatial field theories (Laplacian; `C(x, τ)` correlators)
+## `spatial/` — spatial field theories (Laplacian; `C(χ, τ)` correlators)
 
 | Notebook | Group | What |
 |---|---|---|

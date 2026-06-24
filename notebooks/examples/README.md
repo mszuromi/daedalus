@@ -21,7 +21,7 @@ Every example follows the **same three steps**:
 import daedalus as dd
 model, mod = dd.load_theory('kpz_1d')
 dd.describe_model(model, mod)                      # §1
-res = dd.run(model, dd.Config(k=2, max_ell=1, spatial_grid=(0, 10, 30)), mod)
+res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(0, 10, 30)), mod)
 dd.plot_cumulant(res, cfg, model)                  # §2 theory
 dd.plot_cumulant(res, cfg, model, sim=sim)         # §3 overlay
 ```

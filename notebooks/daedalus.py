@@ -265,7 +265,7 @@ class Config:
     # backend runs (one per order 2..k).
     output: str = 'cumulant'                # 'cumulant'|'moment'|'central_moment'
 
-    # ── temporal grid (the τ axis; also the τ axis of spatial C(x,τ)) ──
+    # ── temporal grid (the τ axis; also the τ axis of spatial C(χ,τ)) ──
     # Give EITHER tau_max+tau_step (uniform symmetric grid −tau_max…tau_max) OR
     # an explicit tau_grid (array | (lo,hi,n) tuple, like chi_grid) — the
     # latter is used verbatim and wins if both are set.
@@ -750,7 +750,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                           if cfg.tau_step is None else cfg.tau_step)
 
     # An explicit tau_grid (array | (lo,hi,n)) overrides tau_max/tau_step on the
-    # paths that build a τ grid — temporal (any k) and spatial k=2 C(x,τ).  The
+    # paths that build a τ grid — temporal (any k) and spatial k=2 C(χ,τ).  The
     # spatial event paths (k=1 mean, k≥3 spatial_points) carry their own times.
     tg = cfg.resolved_tau_grid()
     if tg is not None and not (is_spatial(model) and k != 2):
@@ -918,7 +918,7 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
         return _plot_moment(result, cfg, model, sim)
     # k=1 is a 1-POINT function: the mean ⟨φ⟩ of the external field.  Its TREE
     # level is the mean-field saddle φ*; ℓ≥1 add the loop tadpole shifts.  There
-    # is no C(τ)/C(x) curve, so draw it as tree/+loop bars (works for both
+    # is no C(τ)/C(χ) curve, so draw it as tree/+loop bars (works for both
     # temporal and the spatial mean-field, which is x-independent).
     if (result.get('_resolved') or {}).get('k') == 1:
         return plot_temporal_mean(result, cfg, model, sim)
@@ -1258,7 +1258,7 @@ def plot_temporal_mean(result, cfg, model, sim=None):
 
 
 def plot_spatial(result, cfg, model, sim=None):
-    """Equal-time C(x,0) slice + per-loop overlay, and a C(x,τ) heatmap
+    """Equal-time C(χ,0) slice + per-loop overlay, and a C(χ,τ) heatmap
     when a τ grid is present (the spatial group plot)."""
     cfg = cfg or Config()
     C = np.real(np.asarray(result['C_tau_x']))
