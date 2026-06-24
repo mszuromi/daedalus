@@ -4,6 +4,21 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — Example notebooks: pin `parameters=` in every `dd.Config` cell [branch `spatial-extension`]
+
+Every `dd.Config(...)` cell across the example notebooks now **explicitly declares**
+its `parameters=` (previously the spatial + neural notebooks relied silently on the
+theory file's defaults). Each notebook is now self-documenting about its parameter
+regime and reproducible without the theory's `DEFAULT_FUNDAMENTAL`. The inlined
+values are **exactly** the theory defaults (verified: explicit-params runs are
+bit-identical, max|Δ|=0), so no behavior changed. Covers kpz / allen_cahn / model_b /
+coupled_rd / reaction_diffusion_2d (spatial) and dendritic_quad_sigmoid /
+quadratic_hawkes_alpha (temporal); the OU notebooks + dendritic_linear already pinned
+theirs. `reaction_diffusion_2d` inlines per-`Config` call (cell 8 already overrides `g`
+via `**common`, so a `common`-level `parameters` would have been a duplicate kwarg).
+
+---
+
 ## 2026-06-24 — `Config.n_workers`: surface the parallel worker count [branch `spatial-extension`]
 
 `dd.Config` exposed only `parallel: bool`; the underlying `compute_cumulants(...,
