@@ -4,6 +4,22 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — Example notebooks: all `dd.Config` options inline (uncomment in place) [branch `main`]
+
+Reworked how the example notebooks expose Config options. Instead of a **detached**
+commented block after the cell, every `dd.Config(...)` call now lists **all** its
+arguments — the active ones uncommented, the rest as individual commented lines
+**inside the parentheses** — so you enable an option *in place* (swap the leading `#`
+for a space) and it's a live kwarg. Each block is tailored (temporal shows
+`kpoint_*`; spatial shows `chi_grid`/`spatial_points`), de-duplicated against the
+active args, and the last active arg gets a trailing comma so uncommenting the first
+option parses. `reaction_diffusion_2d` (two runs sharing `**common`) lists the options
+inside its `common = dict(...)`. All 13 notebooks compile, uncommenting any option
+still compiles, and the active behaviour is unchanged. `dd.config_options()` remains
+the full annotated reference.
+
+---
+
 ## 2026-06-24 — `Config.chi_grid`: rename `spatial_grid` → `chi_grid` (paper notation χ=x_j−x_k) [branch `spatial-extension`]
 
 The user-facing spatial-separation grid is renamed `spatial_grid` → **`chi_grid`** to
