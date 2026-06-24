@@ -202,6 +202,40 @@ def equal_time_correlator(snaps):
     return acc / n_rec
 
 
+def space_time_correlator(snaps, meta, max_lag=None, n_lags=None):
+    """Estimate the space–time correlator
+    ``C(χ, τ) = ⟨φ(x, t) φ(x + χ, t + τ)⟩`` averaged over x (periodic ring) and t.
+
+    Returns ``(tau, C2d)`` where ``C2d`` has shape ``(n_tau, N)``
+    (``C2d[i, m]`` = correlator at separation ``m·dx`` and lag ``tau[i]``) and
+    ``tau`` is the SYMMETRIC physical-time grid — C is even in τ by stationarity +
+    time-reversal, so the τ<0 half is mirrored from τ≥0.  χ runs over the full
+    ring: ``χ = arange(N) * meta['dx']`` (take the ``χ ≤ L/2`` half to compare to a
+    one-sided theory grid).
+
+    Lag spacing is the recording interval ``record_every · dt``.  Bound the τ
+    extent with ``max_lag`` (physical time) or ``n_lags`` (# of non-negative
+    lags); default ≈ ``n_rec // 4`` lags.  Same FFT/normalization convention as
+    :func:`equal_time_correlator` (its output is the ``τ = 0`` row)."""
+    snaps = np.asarray(snaps)
+    n_rec, N = snaps.shape
+    dt_rec = float(meta['record_every']) * float(meta['dt'])
+    if n_lags is None:
+        n_lags = (int(round(float(max_lag) / dt_rec)) + 1 if max_lag is not None
+                  else max(1, min(n_rec // 4, 256)))
+    n_lags = int(max(1, min(n_lags, n_rec - 1)))
+    F = np.fft.rfft(snaps, axis=1)                      # (n_rec, N//2+1)
+    Cpos = np.empty((n_lags, N))
+    for lag in range(n_lags):
+        # cross power spectrum ⟨φ_t(k)* φ_{t+lag}(k)⟩ averaged over t → C(χ) via iFFT
+        cps = np.mean(F[:n_rec - lag].conj() * F[lag:], axis=0)
+        Cpos[lag] = np.fft.irfft(cps, n=N) / N
+    tau_pos = np.arange(n_lags) * dt_rec
+    tau = np.concatenate([-tau_pos[:0:-1], tau_pos])   # [-τmax … 0 … τmax]
+    C2d = np.concatenate([Cpos[:0:-1], Cpos], axis=0)  # even in τ → mirror
+    return tau, C2d
+
+
 def lattice_sum_variance(L, N, mu, D, T):
     """Discretized-theory exact equal-time variance ⟨φ²⟩ with the
     finite-difference dispersion — the simulator's λ=0 reference."""

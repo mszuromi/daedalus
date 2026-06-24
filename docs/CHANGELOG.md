@@ -4,6 +4,26 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — Spatial C(χ,τ) plot: τ-slices, loop-labeled heatmap, theory-vs-sim heatmaps [branch `main`]
+
+`plot_spatial` (the `dd.plot_cumulant` spatial-k=2 path) is reworked. When a τ grid is
+present it now shows a 2×2:
+- **(a)** equal-time `C(χ,0)` — χ-slices at fixed τ=0 (per-loop overlay), as before;
+- **(b)** temporal `C(χ₀,τ)` — **τ-slices at a few fixed χ** (new), theory lines + sim points;
+- **(c)** the theory `C(χ,τ)` **heatmap with the loop order in the title** (e.g.
+  `[tree+1loop]`) — it always contained every loop order in the run; now it *says so*;
+- **(d)** when `sim` carries a 2-D correlator (`sim={'x','tau','C'}` with a 2-D `C`),
+  the **matching simulation heatmap on a shared colour scale** (the theory↔sim comparison).
+
+Equal-time-only runs (no τ grid) stay a single panel; a 1-D `sim={'x','C'[,'C_err']}`
+still overlays on (a) — backward compatible. New
+`models.spatial_field_1d_sim.space_time_correlator(snaps, meta, max_lag=…)` computes the
+sim `C(χ,τ)` (FFT in χ, lag-average in τ; even in τ by stationarity; its τ=0 row equals
+`equal_time_correlator` to 1e-15). Demonstrated in the `spatial_allen_cahn_phi4_1d`
+example (theory & sim heatmaps agree on the shared scale).
+
+---
+
 ## 2026-06-24 — Example notebooks: all `dd.Config` options inline (uncomment in place) [branch `main`]
 
 Reworked how the example notebooks expose Config options. Instead of a **detached**

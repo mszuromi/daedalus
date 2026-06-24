@@ -1258,53 +1258,107 @@ def plot_temporal_mean(result, cfg, model, sim=None):
 
 
 def plot_spatial(result, cfg, model, sim=None):
-    """Equal-time C(χ,0) slice + per-loop overlay, and a C(χ,τ) heatmap
-    when a τ grid is present (the spatial group plot)."""
+    """Spatial correlator C(χ,τ).
+
+    Always shows the **equal-time C(χ,0)** χ-slice (per-loop overlay).  When a τ
+    grid is present it ALSO shows the **temporal C(χ₀,τ) slices at fixed χ**, the
+    **theory C(χ,τ) heatmap** (which contains *every* loop order in the run — the
+    title states the order), and — when ``sim`` carries a 2-D correlator
+    (``sim={'x','tau','C'}`` with a 2-D ``C(τ,χ)``) — the matching **simulation
+    heatmap on a shared colour scale**.  A 1-D ``sim={'x','C'[,'C_err']}`` still
+    overlays on the equal-time panel."""
     cfg = cfg or Config()
-    C = np.real(np.asarray(result['C_tau_x']))
+    C = np.real(np.asarray(result['C_tau_x']))     # (n_tau, n_x) — total, all loops
     xs = np.asarray(result['spatial_grid'])
     tau = np.asarray(result['tau_grid'])
     i0 = int(np.argmin(np.abs(tau)))
     si = result.get('spatial_info') or {}
-    by_order = si.get('C_by_order')          # {ell: (n_tau, n_x)} cumulative
+    by_order = si.get('C_by_order')                # {ell: (n_tau, n_x)} cumulative
+    ell_top = (max(by_order) if by_order
+               else ((result.get('_resolved') or {}).get('max_ell', 0) or 0))
+    loop_lab = _order_label(ell_top)               # e.g. 'tree+1loop'
+    sim2d = (sim is not None and sim.get('tau') is not None
+             and np.ndim(np.asarray(sim.get('C'))) == 2)
+    has_tau = tau.size > 1
 
-    ncol = 2 if len(tau) > 1 else 1
-    fig, axes = plt.subplots(1, ncol, figsize=cfg.figsize or (5.6 * ncol, 4.3))
-    ax0 = axes[0] if ncol > 1 else axes
+    if not has_tau:                                # equal-time only → single panel
+        fig, axA = plt.subplots(figsize=cfg.figsize or (6.0, 4.3))
+        axB = axH = axS = None
+    elif sim2d:                                    # slices + theory & sim heatmaps
+        fig, ax = plt.subplots(2, 2, figsize=cfg.figsize or (11.5, 8.2))
+        axA, axB, axH, axS = ax[0, 0], ax[0, 1], ax[1, 0], ax[1, 1]
+    else:                                          # slices + theory heatmap
+        fig, ax = plt.subplots(1, 3, figsize=cfg.figsize or (15.0, 4.4))
+        axA, axB, axH = ax
+        axS = None
 
+    # ── Panel A: equal-time C(χ, 0) — χ-slice at fixed τ=0 ──
     if by_order and cfg.show_orders != 'total':
         for i, ell in enumerate(sorted(by_order)):
             c = np.real(np.asarray(by_order[ell]))
             c = c[i0] if c.ndim == 2 else c
-            ax0.plot(xs, c, '-', lw=1.8,
+            axA.plot(xs, c, '-', lw=1.8,
                      color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
                      label=f'theory: {_order_label(ell)}')
     else:
-        ax0.plot(xs, C[i0], '-', lw=1.8, color='#1F9FCC', label='theory')
-    if sim is not None:
-        sx, sc = np.asarray(sim['x']), np.asarray(sim['C'])
+        axA.plot(xs, C[i0], '-', lw=1.8, color='#1F9FCC',
+                 label=f'theory: {loop_lab}')
+    if sim2d:
+        st = np.asarray(sim['tau']); sj0 = int(np.argmin(np.abs(st)))
+        axA.plot(np.asarray(sim['x']), np.real(np.asarray(sim['C']))[sj0],
+                 'o', ms=3, color='#222', alpha=0.6, label='sim')
+    elif sim is not None and sim.get('C') is not None:
+        sx, sc = np.asarray(sim['x']), np.real(np.asarray(sim['C']))
         se = sim.get('C_err')
         if se is not None:
-            ax0.errorbar(sx, sc, yerr=np.asarray(se), fmt='o', ms=3,
+            axA.errorbar(sx, sc, yerr=np.asarray(se), fmt='o', ms=3,
                          color='#222', alpha=0.6, capsize=2, label='sim')
         else:
-            ax0.plot(sx, sc, 'o', ms=3, color='#222', alpha=0.6, label='sim')
-    ax0.set_xlabel(r'$\chi$')
-    ax0.set_ylabel(r'$C(\chi,\,0)$')
+            axA.plot(sx, sc, 'o', ms=3, color='#222', alpha=0.6, label='sim')
+    axA.set_xlabel(r'$\chi$'); axA.set_ylabel(r'$C(\chi,\,0)$')
     if cfg.logy:
-        ax0.set_yscale('log')
-    ax0.set_title(cfg.title or f"{model.get('name','')}: equal-time C(χ,0)")
-    ax0.grid(alpha=0.25)
-    ax0.legend(fontsize=8)
+        axA.set_yscale('log')
+    axA.set_title(cfg.title or f"{model.get('name','')}: equal-time C(χ,0)")
+    axA.grid(alpha=0.25); axA.legend(fontsize=8)
 
-    if ncol > 1:
-        im = axes[1].imshow(C, aspect='auto', origin='lower',
-                            extent=[xs.min(), xs.max(), tau.min(), tau.max()],
-                            cmap='viridis')
-        axes[1].set_xlabel(r'$\chi$')
-        axes[1].set_ylabel(r'$\tau$')
-        axes[1].set_title(r'$C(\chi,\tau)$')
-        fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+    # ── Panel B: temporal C(χ₀, τ) — τ-slices at a few fixed χ ──
+    if has_tau:
+        jcols = sorted({0, xs.size // 4, xs.size // 2})
+        for ci, j in enumerate(jcols):
+            col = _ORDER_COLORS[ci % len(_ORDER_COLORS)]
+            axB.plot(tau, C[:, j], '-', lw=1.6, color=col,
+                     label=r'theory $\chi$=%.2g' % xs[j])
+            if sim2d:
+                sxa = np.asarray(sim['x']); sj = int(np.argmin(np.abs(sxa - xs[j])))
+                axB.plot(np.asarray(sim['tau']),
+                         np.real(np.asarray(sim['C']))[:, sj],
+                         'o', ms=2.5, color=col, alpha=0.5)
+        axB.set_xlabel(r'$\tau$'); axB.set_ylabel(r'$C(\chi,\tau)$')
+        if cfg.logy:
+            axB.set_yscale('log')
+        ttl = r'$C(\chi,\tau)$ at fixed $\chi$'
+        if sim2d:
+            ttl += '  (lines=theory · pts=sim)'
+        axB.set_title(ttl); axB.grid(alpha=0.25); axB.legend(fontsize=8)
+
+    # ── theory (+ sim) C(χ,τ) heatmaps, on a shared colour scale ──
+    if has_tau:
+        vmin, vmax = float(np.min(C)), float(np.max(C))
+        im = axH.imshow(C, aspect='auto', origin='lower',
+                        extent=[xs.min(), xs.max(), tau.min(), tau.max()],
+                        cmap='viridis', vmin=vmin, vmax=vmax)
+        axH.set_xlabel(r'$\chi$'); axH.set_ylabel(r'$\tau$')
+        axH.set_title(r'theory $C(\chi,\tau)$  [%s]' % loop_lab)
+        fig.colorbar(im, ax=axH, fraction=0.046, pad=0.04)
+        if sim2d:
+            sxa, sta = np.asarray(sim['x']), np.asarray(sim['tau'])
+            sC = np.real(np.asarray(sim['C']))
+            im2 = axS.imshow(sC, aspect='auto', origin='lower',
+                             extent=[sxa.min(), sxa.max(), sta.min(), sta.max()],
+                             cmap='viridis', vmin=vmin, vmax=vmax)
+            axS.set_xlabel(r'$\chi$'); axS.set_ylabel(r'$\tau$')
+            axS.set_title(r'sim $C(\chi,\tau)$  (shared scale)')
+            fig.colorbar(im2, ax=axS, fraction=0.046, pad=0.04)
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
