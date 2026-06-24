@@ -4,6 +4,23 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — `Config.tau_grid`: an explicit τ grid (like `spatial_grid`) [branch `spatial-extension`]
+
+`dd.Config` now accepts an explicit **`tau_grid`** — an array or `(lo, hi, n)` tuple,
+exactly like `spatial_grid` — as an alternative to `tau_max`+`tau_step`. It is passed
+verbatim to `compute_cumulants` (new `tau_grid=` keyword) and **overrides**
+`tau_max`/`tau_step` on every path that builds a τ grid: temporal `C(τ)` (any k) and the
+τ axis of spatial `C(x,τ)` (k=2). Because it's a true pass-through (not a max/step
+conversion) it honours **one-sided and non-uniform** grids — `tau_grid=[0,1,2,3]`
+evaluates exactly those lags; `tau_grid=[0.0]` is the spatial equal-time slice;
+`tau_grid=(-4,4,9)` the full `C(x,τ)` grid. `Config.resolved_tau_grid()` materialises
+the `(lo,hi,n)` form (shared with `resolved_grid`). Verified bit-identical to the
+equivalent `tau_max`/`tau_step` calls (temporal + spatial, equal-time + full grid);
+32 tests green (incl. spatial `full_integrator`). Surfaced in `dd.config_options()` and
+the per-notebook options blocks.
+
+---
+
 ## 2026-06-24 — `dd.config_options()` + expose all `dd.Config` knobs in the notebooks [branch `spatial-extension`]
 
 - **New `dd.config_options(spatial=None)`** — prints every `dd.Config` argument

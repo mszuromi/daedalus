@@ -265,9 +265,13 @@ class Config:
     # backend runs (one per order 2..k).
     output: str = 'cumulant'                # 'cumulant'|'moment'|'central_moment'
 
-    # ── temporal grid ──
+    # ── temporal grid (the τ axis; also the τ axis of spatial C(x,τ)) ──
+    # Give EITHER tau_max+tau_step (uniform symmetric grid −tau_max…tau_max) OR
+    # an explicit tau_grid (array | (lo,hi,n) tuple, like spatial_grid) — the
+    # latter is used verbatim and wins if both are set.
     tau_max: Optional[float] = None
     tau_step: Optional[float] = None
+    tau_grid: Any = None                    # array | (lo, hi, n) | None
 
     # ── spatial ──
     spatial_grid: Any = None                # array | (lo, hi, n) | None
@@ -328,7 +332,15 @@ class Config:
 
     def resolved_grid(self):
         """Materialise ``spatial_grid`` (accepts an ``(lo, hi, n)`` tuple)."""
-        g = self.spatial_grid
+        return self._resolve_grid(self.spatial_grid)
+
+    def resolved_tau_grid(self):
+        """Materialise ``tau_grid`` (accepts an ``(lo, hi, n)`` tuple), or None."""
+        return self._resolve_grid(self.tau_grid)
+
+    @staticmethod
+    def _resolve_grid(g):
+        """``(lo, hi, n)`` → ``linspace``; array → array; None → None."""
         if g is None:
             return None
         if isinstance(g, tuple) and len(g) == 3:
@@ -398,6 +410,7 @@ def config_options(spatial=None):
     temporal_grid = ('temporal grid / slicing (τ axis)', [
         ('tau_max',          'τ (lag) grid extent for C(τ)'),
         ('tau_step',         'τ grid spacing'),
+        ('tau_grid',         'explicit τ grid: array | (lo,hi,n); overrides tau_max/tau_step'),
         ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
     ])
@@ -405,6 +418,7 @@ def config_options(spatial=None):
         ('spatial_grid',  'x grid: (lo,hi,n) or array; a single [x0] fixes x'),
         ('tau_max',       'τ grid extent: 0.0 → equal-time C(x,0); >0 → vary τ'),
         ('tau_step',      'τ grid spacing (when tau_max>0)'),
+        ('tau_grid',      'explicit τ grid: array | (lo,hi,n); overrides tau_max/tau_step'),
         ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
     ])
     rest = [
@@ -723,6 +737,13 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                          if cfg.tau_max is None else cfg.tau_max)
         kw['tau_step'] = (_meta(module, 'tau_step', 0.5)
                           if cfg.tau_step is None else cfg.tau_step)
+
+    # An explicit tau_grid (array | (lo,hi,n)) overrides tau_max/tau_step on the
+    # paths that build a τ grid — temporal (any k) and spatial k=2 C(x,τ).  The
+    # spatial event paths (k=1 mean, k≥3 spatial_points) carry their own times.
+    tg = cfg.resolved_tau_grid()
+    if tg is not None and not (is_spatial(model) and k != 2):
+        kw['tau_grid'] = tg
 
     res = compute_cumulants(**kw)
 

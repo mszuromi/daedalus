@@ -114,6 +114,7 @@ def compute_cumulants(
     *,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
+    tau_grid=None,                   # explicit τ grid (array); overrides tau_max/tau_step
     spatial_grid=None,
     taylor_order: int = None,
     origin_leaf_idx: int = 0,
@@ -482,7 +483,8 @@ def compute_cumulants(
                 f"spatial v1 supports the 'stationary' initial condition "
                 f"only; got {ic_mode!r}.")
 
-        tau_grid = _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
+        tau_grid = (_np.asarray(tau_grid, dtype=float) if tau_grid is not None
+                    else _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step))
         spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
         if verbose:
             print('[4/7] (spatial) Momentum stays symbolic (Laplacian) — skip the '
@@ -709,7 +711,8 @@ def compute_cumulants(
         print(f'[7/7] Phase J: compute_correction_td per ell '
               f'(0..{max_ell})...')
     _t_phase = time.perf_counter()
-    tau_grid = np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
+    tau_grid = (np.asarray(tau_grid, dtype=float) if tau_grid is not None
+                else np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step))
 
     propagator_data = {
         'K_ker':   prop['K_ker'],
