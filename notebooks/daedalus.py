@@ -360,6 +360,96 @@ def fundamental_from_model(model: dict) -> dict:
 parameters_from_model = fundamental_from_model
 
 
+def config_options(spatial=None):
+    """Print every ``dd.Config`` argument — grouped, with its live default and a
+    one-line description — so the full set of knobs is discoverable from any
+    notebook.
+
+    ``spatial=True`` / ``False`` tailors the grid/slicing section to the spatial
+    / temporal case; ``None`` (default) prints both.  Pass a model dict and it
+    auto-detects: ``dd.config_options(dd.is_spatial(model))``.
+
+    The grid/slicing knobs (what the cumulant is evaluated *over*):
+
+      temporal  C(τ)         tau_max, tau_step
+      temporal  k≥3 cumulant kpoint_base_lags (fix the non-swept legs),
+                             kpoint_full_grid (full (k−1)-D tensor vs slices)
+      spatial   C(x,τ)       spatial_grid (x axis), tau_max/tau_step (τ axis)
+                             • full (x,τ) grid : ranged spatial_grid + tau_max>0
+                             • equal-time C(x,0): tau_max=0.0
+                             • fixed-x  C(x₀,τ) : spatial_grid=[x0], tau_max>0
+      spatial   k≥3 events   spatial_points = (n_pts, k−1, 2) of (x_j, τ_j)
+    """
+    import dataclasses
+    d = {f.name: f.default for f in dataclasses.fields(Config)}
+
+    def row(name, desc):
+        return '    %-17s = %-11s  %s' % (name, repr(d.get(name)), desc)
+
+    common_grid = [
+        ('what to compute', [
+            ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
+            ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
+            ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
+            ('parameters',      "numeric overrides {name: value}; None → theory defaults"),
+            ('output',          "'cumulant' | 'moment' | 'central_moment'"),
+        ]),
+    ]
+    temporal_grid = ('temporal grid / slicing (τ axis)', [
+        ('tau_max',          'τ (lag) grid extent for C(τ)'),
+        ('tau_step',         'τ grid spacing'),
+        ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
+        ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
+    ])
+    spatial_grid_ = ('spatial grid / slicing (x and τ axes)', [
+        ('spatial_grid',  'x grid: (lo,hi,n) or array; a single [x0] fixes x'),
+        ('tau_max',       'τ grid extent: 0.0 → equal-time C(x,0); >0 → vary τ'),
+        ('tau_step',      'τ grid spacing (when tau_max>0)'),
+        ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
+    ])
+    rest = [
+        ('mean-field root (multi-root theories)', [
+            ('fixed_point_index', 'which stable saddle root to expand around (0,1,…)'),
+            ('mf_dae_n_starts',   'multi-start Newton count for the saddle solve'),
+            ('mf_dae_seed_box',   '{field: (lo,hi)} start range for the saddle search'),
+        ]),
+        ('Dyson dressing (coupled unequal-D)', [
+            ('dyson_order',         'None=leave model; int≥0 overrides the Dyson order'),
+            ('reference_diffusion', 'reference D for the Dyson expansion'),
+        ]),
+        ('execution', [
+            ('parallel',  'enable the parallel backend'),
+            ('n_workers', 'worker count (spatial threads; temporal batch outside Jupyter)'),
+            ('verbose',   'print backend progress'),
+        ]),
+        ('plotting', [
+            ('show_orders', "'cumulative' | 'incremental' | 'total'"),
+            ('logy',        'log-scale the y axis'),
+            ('components',  'which (i,j)/slice to draw (multi-field); None=auto'),
+            ('figsize',     'matplotlib figure size, e.g. (7.5, 4.6)'),
+            ('title',       'override the plot title'),
+            ('save',        'path to savefig, or None'),
+        ]),
+    ]
+
+    groups = list(common_grid)
+    if spatial is None:
+        groups += [temporal_grid, spatial_grid_]
+    elif spatial:
+        groups += [spatial_grid_]
+    else:
+        groups += [temporal_grid]
+    groups += rest
+
+    print('dd.Config arguments  (defaults shown; leave None to inherit the '
+          "theory's METADATA):\n")
+    for title, items in groups:
+        print('  ' + title)
+        for name, desc in items:
+            print(row(name, desc))
+        print()
+
+
 # ── Cumulants → moments (full multivariate set-partition assembly) ──────────
 
 def _set_partitions(items):

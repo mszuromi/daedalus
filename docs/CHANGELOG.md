@@ -4,6 +4,30 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — `dd.config_options()` + expose all `dd.Config` knobs in the notebooks [branch `spatial-extension`]
+
+- **New `dd.config_options(spatial=None)`** — prints every `dd.Config` argument
+  grouped with its live default and a one-line description (single source of truth;
+  defaults pulled from the dataclass so they never go stale). `spatial=True/False`
+  tailors the grid/slicing section. Documents the **grid vs slice** controls explicitly:
+  - temporal `C(τ)`: `tau_max`, `tau_step`.
+  - temporal **k≥3** cumulant (a function of k−1 lags τ_j=t_j−t_0): `kpoint_base_lags`
+    (fix the non-swept legs — where the axis slices cross) and `kpoint_full_grid`
+    (full (k−1)-D tensor `C(τ₁,…)` instead of the axis-parallel slices).
+  - spatial `C(x,τ)`: `spatial_grid` (x axis) + `tau_max`/`tau_step` (τ axis) →
+    **full (x,τ) grid** (ranged `spatial_grid` + `tau_max>0`), **equal-time** `C(x,0)`
+    (`tau_max=0`), or **fixed-x decay** `C(x₀,τ)` (`spatial_grid=[x0]`, `tau_max>0`);
+    spatial **k≥3**: `spatial_points=(n_pts,k−1,2)` explicit `(x_j,τ_j)` events.
+    Verified all three spatial modes produce the expected `C_tau_x` shapes.
+- **Every example notebook's `dd.Config` cell now carries a commented “more knobs”
+  reference** (temporal/spatial-tailored) so the available options — grids/slices,
+  `output`, `show_orders`, parallel, Dyson, mean-field-root, plotting — are visible
+  inline, with a pointer to `dd.config_options()`. Added to 11 notebooks; the two with
+  uncommitted local WIP (`temporal_ou_quartic_correlated`, `temporal_ou_quartic_white`)
+  were left untouched to avoid clobbering in-progress edits.
+
+---
+
 ## 2026-06-24 — Example notebooks: pin `parameters=` in every `dd.Config` cell [branch `spatial-extension`]
 
 Every `dd.Config(...)` cell across the example notebooks now **explicitly declares**
