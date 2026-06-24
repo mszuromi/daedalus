@@ -4,6 +4,19 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — `Config.n_workers`: surface the parallel worker count [branch `spatial-extension`]
+
+`dd.Config` exposed only `parallel: bool`; the underlying `compute_cumulants(...,
+n_workers=...)` worker count was never forwarded from `run()`. Added
+`Config.n_workers` (default `None` → backend default) and wired it through. It tunes
+the **spatial** thread pool (`ThreadPoolExecutor(max_workers=n_workers)`, default
+`min(8, cores)`) — the thread-based path that is safe inside a Jupyter kernel. The
+**temporal** batch path is fork-based and is force-serialized on macOS+Jupyter (the
+fork guard), so `n_workers` there only takes effect outside a notebook
+(scripts / pytest / Linux). Usage: `dd.Config(..., parallel=True, n_workers=4)`.
+
+---
+
 ## 2026-06-23 — k=1 mean: tree level = mean-field saddle (all notebooks) [branch `spatial-extension`]
 
 The k=1 1-point plot (`dd.plot_cumulant` → `plot_temporal_mean`) now anchors the

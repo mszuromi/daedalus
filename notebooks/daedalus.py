@@ -299,6 +299,14 @@ class Config:
 
     # ── execution ──
     parallel: bool = False
+    # Worker count for the parallel backend (forwarded to compute_cumulants).
+    # None → the backend's own default (spatial threads: min(8, cores);
+    # temporal batch: os.cpu_count()).  NOTE: the SPATIAL backend is
+    # thread-based (safe in a Jupyter kernel) and is the one this actually
+    # tunes in a notebook; the TEMPORAL batch is fork-based and is force-
+    # serialized on macOS+Jupyter (see the fork guard), so n_workers there
+    # only takes effect outside a notebook (scripts / pytest / Linux).
+    n_workers: Optional[int] = None
     verbose: bool = False
 
     # ── plotting options (adaptable) ──
@@ -581,7 +589,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 float(cfg.reference_diffusion)
 
     kw = dict(model=model, k=k, max_ell=max_ell, fundamental=fundamental,
-              external_fields=ext, parallel=cfg.parallel, verbose=cfg.verbose)
+              external_fields=ext, parallel=cfg.parallel, verbose=cfg.verbose,
+              n_workers=cfg.n_workers)
 
     # Mean-field DAE root-selection overrides (multi-root theories such as
     # the double-well regime mu<0).  Forward each only when set, so that
