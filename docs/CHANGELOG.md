@@ -4,6 +4,43 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-23 — k=1 mean: tree level = mean-field saddle (all notebooks) [branch `spatial-extension`]
+
+The k=1 1-point plot (`dd.plot_cumulant` → `plot_temporal_mean`) now anchors the
+**tree level at the mean-field saddle φ\***, with the ℓ≥1 loop tadpoles stacked on top
+— i.e. ⟨φ⟩ = φ\* + Σ_{ℓ≥1} tadpole, the quantity a simulation mean should match.
+Previously the tree bar showed the *fluctuation* field's tree 1-point, which is **0 by
+the saddle condition** (the pipeline expands around the saddle), so a nonzero mean read
+as 0.
+
+- **Root-cause fix — `_external_mean` (`notebooks/daedalus.py`).** It looked up the
+  saddle under `mf_values['dnS']` / `['nS']`, but the actual key follows the
+  `'<base>star'` convention (`nSstar`, `xstar`, `hstar`, …), so it *always* returned
+  0.0 for nonzero-saddle models. It now (i) reads the actual external leg from
+  `_resolved` (not just `field_names[0]`), (ii) strips the response/fluctuation `d` to
+  the base physical field and tries `'<base>star'`, and (iii) also reads the spatial
+  mean-field at `res['mf']['mf_values']` (a list of per-component dicts). This also
+  corrects the singleton (mean) contribution `μ = φ\*` in the raw-moment assembly
+  (`_assemble_moment_temporal`), which was silently 0 before.
+- **`plot_temporal_mean`** injects `by_ell[0] = φ\* + (fluctuation tree, ≈0)`, draws a
+  dotted reference line at φ\* (so the loop shift is visible under
+  `show_orders='total'`), and labels the physical mean ⟨φ⟩ (dropping the misleading
+  `δ`). Linear-drift models correctly show **zero** tadpole (the mean equation closes →
+  ⟨φ⟩ = φ\* exactly); nonlinear models get a real loop shift (e.g. bistable: tree
+  n\*=0.9993 → tree+1loop 0.9884).
+- **k=1 supported for every notebook group.** `plot_cumulant` routes k=1 to the mean
+  plot for **spatial as well as temporal** (the spatial mean is x-independent by
+  translation invariance). `run` now accepts spatial k=1 (single event,
+  `spatial_points=(1,0,2)`); the spatial loop integrator does not yet assemble the k=1
+  tadpole, so spatial shows the **tree-level mean-field** value with a printed note.
+- **Verified** across all 13 example-notebook theories (temporal + spatial): every one
+  runs k=1 with the tree bar == φ\*. Nonzero saddles picked up correctly
+  (`single_pop_dendritic_linear` 0.532, `quadratic_hawkes_alpha` 0.465,
+  `dendritic_quad_soma_sigmoid` 0.0765); symmetric/zero saddles (OU, KPZ, Allen–Cahn,
+  reaction–diffusion) read 0. `test_daedalus` + `test_daedalus_moments` (15) green.
+
+---
+
 ## 2026-06-22 — Prediagram visualization + k=1 plotting + expand perf [branch `spatial-extension`]
 
 ### Performance: O(N²)→O(N) action expansion (`msrjd/core/field_theory.py`)

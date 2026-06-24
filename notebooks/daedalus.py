@@ -371,19 +371,50 @@ def _set_partitions(items):
 
 
 def _external_mean(model: dict, res: dict) -> float:
-    """⟨φ⟩ for the (single) external field — the mean-field saddle φ* (the
-    tree-level mean; 0 for a symmetric saddle).  The 1-loop tadpole shift of
-    the mean is not yet folded in (a documented refinement)."""
-    mfv = res.get('mf_values') or {}
-    names = field_names(model)
-    f0 = names[0] if names else None
-    cands = [f0] + ([f0[1:]] if f0 and f0.startswith('d') else [])
-    for key in cands:
-        if key in mfv:
-            try:
-                return float(np.real(np.asarray(mfv[key]).ravel()[0]))
-            except Exception:
-                pass
+    """Mean-field saddle φ* for the external leg's field — the TREE-level value
+    of the 1-point function ⟨φ⟩.
+
+    The cumulant pipeline expands around the saddle, so the *fluctuation*
+    field's tree-level 1-point function is 0; the physical mean is the saddle
+    value plus the ℓ≥1 loop tadpole shifts.  The saddle is stored under the
+    ``'<base>star'`` convention (``nSstar``, ``xstar``, ``hstar`` …) in the
+    temporal ``res['mf_values']`` or the spatial ``res['mf']['mf_values']``
+    (a list of per-component dicts).  Returns the saddle for the external
+    leg's base physical field (0.0 for a symmetric/zero saddle, or if none is
+    found)."""
+    # Collect every candidate saddle dict {'<base>star': [vals]} — temporal
+    # exposes one at the top level; spatial nests them under res['mf'].
+    dicts = []
+    mv = res.get('mf_values')
+    if isinstance(mv, dict):
+        dicts.append(mv)
+    spat = res.get('mf')
+    if isinstance(spat, dict):
+        smv = spat.get('mf_values') or spat.get('saddle_values')
+        if isinstance(smv, dict):
+            dicts.append(smv)
+        elif isinstance(smv, (list, tuple)):
+            dicts.extend(d for d in smv if isinstance(d, dict))
+    if not dicts:
+        return 0.0
+    # External leg's field → base physical field (strip the response/fluct 'd').
+    ext = (res.get('_resolved') or {}).get('external_fields')
+    if ext:
+        e0 = ext[0]
+        fld = e0[0] if isinstance(e0, (tuple, list)) else str(e0)
+    else:
+        names = field_names(model)
+        fld = names[0] if names else ''
+    base = fld[1:] if fld.startswith('d') else fld
+    keys = [base + 'star', fld + 'star', base, fld]
+    for d in dicts:
+        for key in keys:
+            if key in d:
+                try:
+                    val = float(np.real(np.asarray(d[key]).ravel()[0]))
+                    return 0.0 if abs(val) < 1e-14 else val   # kill subnormals
+                except Exception:
+                    pass
     return 0.0
 
 
@@ -564,11 +595,22 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
 
     if is_spatial(model):
-        if k != 2 and cfg.spatial_points is None:
+        if k == 1:
+            # k=1 spatial mean ⟨φ⟩: by translation invariance the mean is
+            # x-independent (= the mean-field saddle φ*), so a single event
+            # suffices.  The spatial loop integrator does not assemble the k=1
+            # tadpole, so the 1-point mean is the tree-level (mean-field) value.
+            if max_ell:
+                print('  [k=1 spatial] loop tadpoles for the 1-point mean are '
+                      'not yet supported by the spatial integrator — showing '
+                      'the mean-field (tree) value.')
+            kw['max_ell'] = 0
+            kw['spatial_points'] = np.zeros((1, 0, 2), dtype=float)
+        elif k != 2 and cfg.spatial_points is None:
             raise ValueError(
                 'spatial k≥3 needs Config.spatial_points = (n_pts, k-1, 2) '
                 'array of (x_j, τ_j) offsets per non-anchor external slot.')
-        if k != 2:
+        elif k != 2:
             kw['spatial_points'] = np.asarray(cfg.spatial_points, dtype=float)
         else:
             grid = cfg.resolved_grid()
@@ -727,12 +769,15 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     """Plot the cumulant in the form natural to the theory's group.
 
     Dispatch:
+      * k=1 (any group)     → :func:`plot_temporal_mean` (the 1-point mean
+                              ⟨φ⟩; tree level = the mean-field saddle φ*)
       * spatial k≥3 events  → :func:`plot_kpoint`
       * spatial k=2         → :func:`plot_spatial`
       * temporal            → :func:`plot_temporal`
 
     ``sim`` (optional) overlays a matched simulator: a dict with
-    ``tau``/``C``/``C_err`` (temporal) or ``x``/``C``/``C_err`` (spatial).
+    ``tau``/``C``/``C_err`` (temporal) or ``x``/``C``/``C_err`` (spatial); for
+    k=1 a scalar mean ``{'C': value, 'C_err': err}``.
     Returns the Matplotlib ``Figure``.
     """
     cfg = cfg or result.get('_cfg') or Config()
@@ -740,10 +785,11 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     if result.get('output_kind') in ('moment', 'central_moment') \
             and result.get('moment') is not None:
         return _plot_moment(result, cfg, model, sim)
-    # k=1 is a 1-POINT function: the mean of the external field (τ-independent),
-    # i.e. the loop correction to the mean-field value.  It has no C(τ) curve and
-    # no τ-correlation, so draw it as tree/+loop bars rather than a flat line.
-    if (result.get('_resolved') or {}).get('k') == 1 and not is_spatial(model):
+    # k=1 is a 1-POINT function: the mean ⟨φ⟩ of the external field.  Its TREE
+    # level is the mean-field saddle φ*; ℓ≥1 add the loop tadpole shifts.  There
+    # is no C(τ)/C(x) curve, so draw it as tree/+loop bars (works for both
+    # temporal and the spatial mean-field, which is x-independent).
+    if (result.get('_resolved') or {}).get('k') == 1:
         return plot_temporal_mean(result, cfg, model, sim)
     if 'C_kpoint' in result:
         return plot_kpoint(result, cfg, model)
@@ -1003,12 +1049,19 @@ def plot_temporal_kpoint(result, cfg, model, sim=None):
 
 
 def plot_temporal_mean(result, cfg, model, sim=None):
-    """k=1: the 1-point cumulant is the MEAN of the external field — a single
-    τ-independent number (the loop correction to the mean-field value; for a
-    fluctuation field δφ the tree mean is 0 and the value is the 1-loop tadpole
-    shift).  Drawn as tree / +loop bars (``Config.show_orders`` honoured); a
-    scalar simulation mean ``sim={'C': value, 'C_err': err}`` overlays as a
-    dashed line.  There is no C(τ) curve to draw — for a correlation use k≥2."""
+    """k=1: the 1-point cumulant is the MEAN ⟨φ⟩ of the external field — a single
+    τ-independent number.
+
+    Its TREE level is the **mean-field saddle φ\\*** (the mean-field solution);
+    the ℓ≥1 orders add the loop tadpole shifts, so the cumulative tree+loops is
+    the perturbative ⟨φ⟩ that the simulation mean should match.  (The pipeline
+    expands around the saddle, so the *fluctuation* tree 1-point is 0 — the
+    physical tree value is φ*, injected here from the mean-field data.)  Drawn
+    as tree / +loop bars (``Config.show_orders`` honoured); a scalar simulation
+    mean ``sim={'C': value, 'C_err': err}`` overlays as a dashed line.  Works
+    for temporal models and the spatial mean-field (x-independent; loop tadpoles
+    for the spatial 1-point are not yet assembled, so spatial shows tree only).
+    There is no C(τ) curve to draw — for a correlation use k≥2."""
     cfg = cfg or Config()
     tau = np.asarray(result.get('tau_grid', [0.0]))
     i0 = int(np.argmin(np.abs(tau))) if tau.size else 0
@@ -1018,6 +1071,11 @@ def plot_temporal_mean(result, cfg, model, sim=None):
             continue
         arr = np.real(np.asarray(v)).ravel()
         by_ell[e] = float(arr[i0] if arr.size > i0 else arr[0])
+    # TREE level of the 1-point function IS the mean-field saddle φ*: the
+    # fluctuation's tree 1-point is 0 (saddle condition), so anchor tree at φ*
+    # and let ℓ≥1 stack the tadpole shifts on top.  ⟨φ⟩ = φ* + Σ_{ℓ≥1} tadpole.
+    mf_star = _external_mean(model, result)
+    by_ell[0] = mf_star + by_ell.get(0, 0.0)
     fig, ax = plt.subplots(figsize=cfg.figsize or (6.0, 4.3))
     if by_ell:
         if cfg.show_orders == 'incremental':
@@ -1049,9 +1107,18 @@ def plot_temporal_mean(result, cfg, model, sim=None):
         ax.legend(fontsize=8)
     fld = (result.get('_resolved') or {}).get('external_fields') or [('phi', 1)]
     fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
+    base = fb[1:] if fb.startswith('d') else fb        # physical field (drop 'd')
     ax.axhline(0, color='gray', lw=0.5)
-    ax.set_ylabel(r'$\langle\,\delta %s\,\rangle$  (1-point cumulant)' % fb)
+    # Mark the mean-field tree value φ* so the loop shift off it is visible
+    # (especially under show_orders='total', where the tree bar is hidden).
+    if abs(mf_star) > 1e-12:
+        ax.axhline(mf_star, color='#3F00FF', lw=1.0, ls=':',
+                   label=r'mean-field $%s^\ast=%.4g$' % (base, mf_star))
+    ax.set_ylabel(r'$\langle\,%s\,\rangle$  (1-point mean; tree $=%s^\ast$)'
+                  % (base, base))
     ax.set_title(cfg.title or f"{model.get('name','')}: 1-point mean (k=1)")
+    if abs(mf_star) > 1e-12 or (sim is not None and sim.get('C') is not None):
+        ax.legend(fontsize=8)
     ax.grid(alpha=0.25, axis='y')
     fig.tight_layout()
     if cfg.save:
