@@ -28,11 +28,22 @@ dd.plot_cumulant(res, cfg, model)                   # auto-dispatched, adaptable
 ```
 
 `dd.Config` holds everything a demo chooses; leave a field `None` to inherit the
-theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`:
+theory file's `METADATA` / `DEFAULT_FUNDAMENTAL`. Run **`dd.config_options()`**
+(optionally `dd.config_options(dd.is_spatial(model))`) for the full annotated list
+of every field with its default:
 
-* **Arbitrary `k` / loop order** — `k` (2 = ⟨··⟩, 3 = ⟨···⟩, …) and `max_ell`
-  (0 = tree, 1, 2, …) are free. Spatial `k ≥ 3` uses `spatial_points`
-  (an `(n_pts, k-1, 2)` array of `(x_j, τ_j)` offsets).
+* **Arbitrary `k` / loop order** — `k` (1 = mean ⟨φ⟩, 2 = ⟨··⟩, 3 = ⟨···⟩, …) and
+  `max_ell` (0 = tree, 1, 2, …) are free. `k=1` plots the 1-point mean with
+  **tree = the mean-field saddle φ\*** and ℓ≥1 the loop tadpoles. Spatial `k ≥ 3`
+  uses `spatial_points` (an `(n_pts, k-1, 2)` array of `(x_j, τ_j)` offsets).
+* **Grids & slicing** — the τ axis via `tau_max`/`tau_step` **or** an explicit
+  `tau_grid` (array | `(lo, hi, n)`); the spatial **separation** via `chi_grid`
+  (χ = x_j − x_k; `spatial_grid` is a kept backward-compat alias). Do the full
+  grid or a slice: spatial equal-time `C(χ,0)` is `tau_max=0` (or `tau_grid=[0.0]`),
+  a fixed-χ decay `C(χ₀,τ)` is `chi_grid=[χ0]`; temporal `k ≥ 3` slices via
+  `kpoint_base_lags` (fix the non-swept legs) / `kpoint_full_grid` (full tensor).
+* **Execution** — `parallel` + `n_workers` (worker count; spatial threads tune
+  in-notebook, the temporal fork batch only outside Jupyter on macOS).
 * **Dyson dressing** — `dyson_order` (any order ≥ 0) + `reference_diffusion`
   override the model's policy at run time (for coupled, unequal-diffusion fields).
 * **Output quantity** — `output` ∈ `'cumulant'` (default) | `'moment'` |

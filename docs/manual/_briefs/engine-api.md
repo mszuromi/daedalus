@@ -25,7 +25,7 @@ function, nor how to reshape its output for a plot. Instead they write three lin
 ```python
 import daedalus as dd
 model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
-cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))
 res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
 dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
 ```
@@ -800,7 +800,7 @@ model, mod = dd.load_theory('kpz_1d')
 #            'physical_fields':[{'name':'h',...}], 'parameters':[mu,D,lam,T], ...}
 #   mod.METADATA = {'k_default':2,'ell_default':1,
 #                   'recommended_external_fields':[('dh',1),('dh',1)],...}
-cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))
 res = dd.run(model, cfg, mod)
 ```
 

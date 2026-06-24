@@ -35,7 +35,7 @@ write three or four lines. The module's own opening docstring
 \begin{lstlisting}
 import daedalus as dd
 model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
-cfg = dd.Config(k=2, max_ell=1, spatial_grid=(-6, 6, 49))
+cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))   # chi = spatial sep.
 res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
 dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
 \end{lstlisting}

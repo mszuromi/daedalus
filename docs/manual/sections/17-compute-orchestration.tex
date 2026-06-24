@@ -192,6 +192,7 @@ def compute_cumulants(
     *,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
+    tau_grid=None,                   # explicit tau grid; overrides tau_max/tau_step
     spatial_grid=None,
     taylor_order: int = None,
     origin_leaf_idx: int = 0,
@@ -827,7 +828,8 @@ $\tau$-grid and the \code{propagator\_data} dict --- precisely the subset of
 \code{prop} that Phase~J consumes (\file{pipeline/compute.py:714}):
 
 \begin{lstlisting}
-tau_grid = np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step)
+tau_grid = (np.asarray(tau_grid, dtype=float) if tau_grid is not None
+            else np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step))
 
 propagator_data = {
     'K_ker':   prop['K_ker'],   'K_ft':    prop['K_ft'],
