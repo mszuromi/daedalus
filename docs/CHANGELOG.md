@@ -4,6 +4,32 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — Example-notebook polish (multi-agent audit, obvious fixes) [branch `main`]
+
+A multi-agent audit reviewed all 13 public example notebooks for accuracy / clarity /
+functionality / polish (report: `scratch/notebook_audit_report.md`). The **obvious,
+behaviour-preserving** fixes were applied (the trickier suggestions await author review):
+
+- Removed the duplicate `dd.describe_model` echo — the call returns the string *and* prints
+  it, so as a cell's last expression it was echoed a second time; added `;` (6 notebooks).
+- Dropped the unused `import … time` (4 spatial notebooks).
+- Corrected stale / copy-pasted comments: KPZ "excess velocity" comment on the equal-time
+  `⟨φ⟩`/`⟨h⟩` line (model_b, kpz); `'dn'` field reference (dendritic_linear, fields are
+  nS/nD); `τ∈[0,20]` → `[−20,20]` lag-grid comment; over-stated `~1-min` sim runtime
+  (ou_quartic_white, actually ~10 s); misleading χ-clip comment (allen_cahn).
+- Markdown accuracy: allen_cahn noise correlator now written `⟨η(x,t)η(x',t')⟩=2Tδ(x−x')δ(t−t')`;
+  model_b title `∇²φ²`→`∇²(φ²)`; dendritic_linear "two populations"→"single size-2 population";
+  em-dash consistency (` --- `→` — `, 3 notebooks).
+- Robustness: allen_cahn τ=0 row via `argmin(|tau_grid|)` (was `shape//2`); reaction_diffusion_2d
+  single-sources its params via `parameters_from_model` (was a duplicated literal dict).
+
+No outputs changed in meaning; the 6 notebooks whose stored output changed (echo removal /
+code edits) were re-executed clean. Trickier items (README/index refresh, the
+`dendritic_quad_sigmoid` central-overlay mismatch, summary-prose physics claims, per-theory
+METADATA staleness) are catalogued for author review.
+
+---
+
 ## 2026-06-24 — Notebooks default to `tau_grid`; `tau_max`/`tau_step` kept under the hood [branch `main`]
 
 Every example notebook's `dd.Config` now specifies the τ axis with **`tau_grid`** instead of
