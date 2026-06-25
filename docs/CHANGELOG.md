@@ -17,8 +17,11 @@ changed. The commented τ lines were dropped from the notebooks' inline option b
   under-the-hood alternative (also fixed a duplicated `spatial_points` row).
 - Sim cells that read `cfg.tau_max` for the lag range now derive it from the computed grid,
   `np.max(np.abs(res['tau_grid']))`, so they don't depend on how τ was specified (they'd
-  otherwise have hit `float(None)` once the config switched to `tau_grid`). allen_cahn
-  re-executed.
+  otherwise have hit `float(None)` once the config switched to `tau_grid`). **All 13 example
+  notebooks were re-executed** to refresh outputs (fresh χ labels, `tau_grid`, plots);
+  `dendritic_quad_sigmoid` needed a join-based fix — its sim-cell source string was split
+  mid-token across JSON `source` elements (`…float(cfg.` + `tau_max)…`), so the per-element
+  replace had silently missed that `cfg.tau_max`.
 - **No `tau_points` arg exists.** For spatial models: k=2 uses `chi_grid` + `tau_grid`
   (the C(χ,τ) grid); **k≥3 uses `spatial_points` = `(n_pts, k−1, 2)` of explicit
   `(x_j, τ_j)` events** — that's the spatial "points" arg (it bundles x *and* τ per event).
