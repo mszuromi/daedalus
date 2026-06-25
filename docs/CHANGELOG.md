@@ -4,6 +4,32 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-25 — Itô equal-time (τ=0) right-limit: fix spurious single-point dip in temporal C(τ) [branch `main`]
+
+Temporal correlators showed a spurious single-point **downward spike at exactly τ=0**
+(everywhere else the curve already matched simulation). Root cause: the analytic Phase J
+integrator enforces causal edges with the strict Itô convention **Θ(0)=0** (`grouped_integral.py`,
+`final_integral.py`) — so when the τ-grid lands on τ=0, the forward-ordering chamber's edge
+slack `c_eff` is exactly 0 and the contribution is dropped (and its backward mirror too),
+collapsing the equal-time value.
+
+Our SDEs are **Itô** (strictly-causal retarded propagators, Θ(0)=0); the equal-time
+*observable* is the **right limit Θ(0⁺)=1** — precisely what a finite-Δt Itô simulation's
+τ=0 bin measures. Fix: the τ=0 grid entry is evaluated at `t=+_ITO_EPS` (1e-6) instead of
+exactly 0, which keeps the forward causal chamber (`c_eff=+ε>0`) and excludes its backward
+mirror (`−ε<0`) — the right limit, with **no double-counting** (½ would be Stratonovich; not
+ours). The integrator's strict Θ(0)=0 convention is untouched (correct for Itô); only the
+equal-time *evaluation point* is nudged. Applied to k=2 (`compute.py` tau_points) and the
+k≥3 axis-parallel slices (`daedalus._args`).
+
+Verified: `dendritic_quad_sigmoid` somatic cross-correlator C(0) **0.00001 (dip) → 0.00036**,
+matching sim **0.00033 ± 0.00004** (was 33× off, opposite shape); OU-quartic auto-correlator
+unchanged; **49 temporal tests pass**. Re-executed the dendritic example — its theory↔sim
+overlay now matches end-to-end (resolves the audit's lone not-ship-ready notebook). The
+spatial C(χ,τ) path uses a different integrator and does not exhibit this dip.
+
+---
+
 ## 2026-06-24 — Example-notebook polish (multi-agent audit, obvious fixes) [branch `main`]
 
 A multi-agent audit reviewed all 13 public example notebooks for accuracy / clarity /

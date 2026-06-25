@@ -794,7 +794,12 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         def _args(vals):                # vals: τ for legs 1..k−1 (leg 0 = 0)
             a = [0.0] * k
             for leg in range(1, k):
-                a[leg] = float(vals[leg - 1])
+                t = float(vals[leg - 1])
+                # Itô right-limit (Θ(0⁺)=1): a leg coinciding with the anchor
+                # (t=0) is nudged to 0⁺ so the forward causal ordering survives
+                # and the equal-time step discontinuity isn't sampled — same
+                # convention as the k=2 path (pipeline.compute._ITO_EPS).
+                a[leg] = t if abs(t) > 1e-12 else 1e-6
             return a
 
         def _slice(fn, j):              # sweep leg j over tau, others at base
