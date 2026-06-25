@@ -4,20 +4,20 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
-## 2026-06-25 — Align `spatial_coupled_rd_2species_1d` to the house notebook format [branch `main`]
+## 2026-06-25 — Make `spatial_coupled_rd_2species_1d` a line-by-line clone of allen_cahn [branch `main`]
 
-coupled_rd was the outlier among the spatial examples: §1 loaded the theory by literal
-string (no `THEORY = '…'` variable), and §2 crammed the `dd.Config`, the auto/cross
-`LEGS` run-loop, and a hand-rolled 2-panel plot into a single 44-line cell. Reformatted to
-the shared arc used by allen_cahn / kpz / model_b: **§1** uses `THEORY = '…'` +
-`load_theory(THEORY)` + `describe_model(…);` (keeping the reaction-matrix eigenvalue note),
-and **§2 splits** the `cfg = dd.Config(…)` cell (with the inline options block;
-`base`→`cfg`, `chi_grid` as an `(lo,hi,n)` tuple) from a separate run+plot cell. The
-multi-field auto+cross demo and its custom 2-panel figure are preserved (inherent to a
-2-field example), as are `C` / `xs_th` / `fp` (the sim cell's dependencies). Behaviour
-identical — C_aa(0)=0.394, C_ab(0)=−0.0016 unchanged; re-executed clean. Remaining minor
-drift: `reaction_diffusion_2d` also combines config+run (its O(g²) three-run scaling demo) —
-not yet aligned.
+coupled_rd was the spatial outlier — it plotted TWO correlators (auto `C_aa` + cross `C_ab`)
+in a hand-rolled 2-panel figure, with the `dd.Config` + a `LEGS` run-loop crammed into one
+cell and no `THEORY` variable. **Rebuilt as a faithful clone of the reference example**
+(`spatial_allen_cahn_phi4_1d`): identical 11-cell structure, the setup / §1 / §2-markdown /
+run cells copied verbatim, and a **single** correlator — field a's auto-correlator
+`C_aa(χ,τ)` via `external_fields=[('da',1),('da',1)]` — plotted with `dd.plot_cumulant` (the
+same 4-panel: equal-time slice, temporal slices, theory & sim `C(χ,τ)` heatmaps on a shared
+scale). The §3 sim pulls the `[0,0]` (field-a auto) block from the coupled simulator over a
+τ-grid of lags and mirrors it to the symmetric τ axis. theory C_aa(0,0)=0.394 vs sim 0.406;
+re-executed clean (2 plots, exactly like allen_cahn). The cross-correlator is no longer
+plotted — the Summary notes you can swap the leg pair to probe it. (`reaction_diffusion_2d`
+remains the one spatial example with a custom multi-run layout, for its O(g²) scaling demo.)
 
 ---
 
