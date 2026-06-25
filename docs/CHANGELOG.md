@@ -4,6 +4,27 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-24 — Notebooks default to `tau_grid`; `tau_max`/`tau_step` kept under the hood [branch `main`]
+
+Every example notebook's `dd.Config` now specifies the τ axis with **`tau_grid`** instead of
+`tau_max`/`tau_step`: equal-time spatial → `tau_grid=[0.0]`; temporal & spatial grids →
+`tau_grid=(-T, T, n)` — the *exact same* grid (verified bit-identical runs), so no behaviour
+changed. The commented τ lines were dropped from the notebooks' inline option blocks.
+
+- `tau_max`/`tau_step` remain fully functional `Config` fields (and the
+  `compute_cumulants` params) — kept **under the hood**. `config_options()` now lists
+  `tau_grid` first as the primary τ knob and labels `tau_max`/`tau_step` as the
+  under-the-hood alternative (also fixed a duplicated `spatial_points` row).
+- Sim cells that read `cfg.tau_max` for the lag range now derive it from the computed grid,
+  `np.max(np.abs(res['tau_grid']))`, so they don't depend on how τ was specified (they'd
+  otherwise have hit `float(None)` once the config switched to `tau_grid`). allen_cahn
+  re-executed.
+- **No `tau_points` arg exists.** For spatial models: k=2 uses `chi_grid` + `tau_grid`
+  (the C(χ,τ) grid); **k≥3 uses `spatial_points` = `(n_pts, k−1, 2)` of explicit
+  `(x_j, τ_j)` events** — that's the spatial "points" arg (it bundles x *and* τ per event).
+
+---
+
 ## 2026-06-24 — Spatial C(χ,τ) plot: τ-slices, loop-labeled heatmap, theory-vs-sim heatmaps [branch `main`]
 
 `plot_spatial` (the `dd.plot_cumulant` spatial-k=2 path) is reworked. When a τ grid is

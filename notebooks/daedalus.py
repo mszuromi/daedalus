@@ -419,17 +419,17 @@ def config_options(spatial=None):
         ]),
     ]
     temporal_grid = ('temporal grid / slicing (τ axis)', [
-        ('tau_max',          'τ (lag) grid extent for C(τ)'),
-        ('tau_step',         'τ grid spacing'),
-        ('tau_grid',         'explicit τ grid: array | (lo,hi,n); overrides tau_max/tau_step'),
+        ('tau_grid',         'τ (lag) grid for C(τ): array | (lo,hi,n)  — the primary τ knob'),
+        ('tau_max',          'under-the-hood: τ extent (symmetric −tau_max…tau_max) if no tau_grid'),
+        ('tau_step',         'under-the-hood: τ spacing (paired with tau_max)'),
         ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
         ('chi_grid',      'spatial-difference grid χ=x_j−x_k: (lo,hi,n) or array; [χ0] fixes χ'),
-        ('tau_max',       'τ grid extent: 0.0 → equal-time C(χ,0); >0 → vary τ'),
-        ('tau_step',      'τ grid spacing (when tau_max>0)'),
-        ('tau_grid',      'explicit τ grid: array | (lo,hi,n); overrides tau_max/tau_step'),
+        ('tau_grid',      'τ grid for C(χ,τ): array | (lo,hi,n); [0.0] → equal-time C(χ,0)'),
+        ('tau_max',       'under-the-hood: τ extent if no tau_grid (0.0 → equal-time)'),
+        ('tau_step',      'under-the-hood: τ spacing (paired with tau_max)'),
         ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
     ])
     rest = [
