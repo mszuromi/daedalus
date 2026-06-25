@@ -4,6 +4,23 @@ All notable fixes, features, and known issues for the MSR-JD Feynman diagram pip
 
 ---
 
+## 2026-06-25 — Align `spatial_coupled_rd_2species_1d` to the house notebook format [branch `main`]
+
+coupled_rd was the outlier among the spatial examples: §1 loaded the theory by literal
+string (no `THEORY = '…'` variable), and §2 crammed the `dd.Config`, the auto/cross
+`LEGS` run-loop, and a hand-rolled 2-panel plot into a single 44-line cell. Reformatted to
+the shared arc used by allen_cahn / kpz / model_b: **§1** uses `THEORY = '…'` +
+`load_theory(THEORY)` + `describe_model(…);` (keeping the reaction-matrix eigenvalue note),
+and **§2 splits** the `cfg = dd.Config(…)` cell (with the inline options block;
+`base`→`cfg`, `chi_grid` as an `(lo,hi,n)` tuple) from a separate run+plot cell. The
+multi-field auto+cross demo and its custom 2-panel figure are preserved (inherent to a
+2-field example), as are `C` / `xs_th` / `fp` (the sim cell's dependencies). Behaviour
+identical — C_aa(0)=0.394, C_ab(0)=−0.0016 unchanged; re-executed clean. Remaining minor
+drift: `reaction_diffusion_2d` also combines config+run (its O(g²) three-run scaling demo) —
+not yet aligned.
+
+---
+
 ## 2026-06-25 — Itô equal-time (τ=0) right-limit: fix spurious single-point dip in temporal C(τ) [branch `main`]
 
 Temporal correlators showed a spurious single-point **downward spike at exactly τ=0**
