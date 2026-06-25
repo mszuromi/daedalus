@@ -41,11 +41,13 @@ from pipeline.access     import (
     MeanField, Parameters, normalize_external_fields,
 )
 
-# Itô equal-time regularizer.  Our SDEs use the Itô convention ⇒ strictly-causal
-# retarded propagators with Θ(0)=0; the equal-time *observable* is the right limit
-# Θ(0⁺)=1.  At a τ=0 grid point we therefore evaluate the correlator at +_ITO_EPS
-# (≪ every physical timescale here, O(1)) instead of exactly 0, so the forward
-# causal chamber survives and the spurious single-point τ=0 dip disappears.
+# Itô equal-time regularizer (magnitude).  Our SDEs use the Itô convention, which
+# is LEFT-continuous (Θ(0)=Θ(0⁻)); the equal-time *observable* is therefore the
+# LEFT limit.  At a τ=0 grid point we evaluate the correlator at −_ITO_EPS
+# (≪ every physical timescale here, O(1)) instead of exactly 0, so a coincident
+# causal chamber survives and the spurious single-point τ=0 dip disappears.  (For
+# the stationary/symmetric correlators here C is even, so the left limit equals the
+# right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
 
 
@@ -740,15 +742,15 @@ def compute_cumulants(
         tau_points = [(float(t),) for t in tau_grid]
     elif k == 2:
         # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned at 0.
-        # Itô right-limit at equal time (Θ(0⁺)=1): the τ=0 entry is sampled at
-        # t_1 = +_ITO_EPS rather than exactly 0.  Our SDEs are Itô, so the
-        # propagators are strictly-causal retarded (Θ(0)=0); landing the τ-grid
-        # on that measure-zero step discontinuity drops the forward-ordering
+        # Itô LEFT-limit at equal time (Itô ⇒ left-continuous, Θ(0)=Θ(0⁻)): the
+        # τ=0 entry is sampled at t_1 = −_ITO_EPS rather than exactly 0.  The
+        # propagators are strictly-causal retarded with Θ(0)=0; landing the τ-grid
+        # on that measure-zero step discontinuity drops a coincident-ordering
         # contribution and produces a spurious single-point dip at τ=0.  Nudging
-        # to 0⁺ keeps the forward causal chamber (c_eff=+ε>0) and excludes its
-        # backward mirror (−ε<0) — i.e. the right limit, which is the quantity a
-        # finite-Δt Itô simulation's τ=0 bin measures.  The grid LABEL stays 0.
-        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _ITO_EPS)
+        # to 0⁻ keeps the surviving causal chamber and gives the left limit (= the
+        # right limit for an even/stationary C; differs only at a genuine τ=0
+        # jump, where Itô takes the left).  The grid LABEL stays 0.
+        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else -_ITO_EPS)
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation

@@ -13,14 +13,15 @@ integrator enforces causal edges with the strict Itô convention **Θ(0)=0** (`g
 slack `c_eff` is exactly 0 and the contribution is dropped (and its backward mirror too),
 collapsing the equal-time value.
 
-Our SDEs are **Itô** (strictly-causal retarded propagators, Θ(0)=0); the equal-time
-*observable* is the **right limit Θ(0⁺)=1** — precisely what a finite-Δt Itô simulation's
-τ=0 bin measures. Fix: the τ=0 grid entry is evaluated at `t=+_ITO_EPS` (1e-6) instead of
-exactly 0, which keeps the forward causal chamber (`c_eff=+ε>0`) and excludes its backward
-mirror (`−ε<0`) — the right limit, with **no double-counting** (½ would be Stratonovich; not
-ours). The integrator's strict Θ(0)=0 convention is untouched (correct for Itô); only the
-equal-time *evaluation point* is nudged. Applied to k=2 (`compute.py` tau_points) and the
-k≥3 axis-parallel slices (`daedalus._args`).
+Our SDEs are **Itô**, which is **left-continuous** (Θ(0)=Θ(0⁻)); the equal-time *observable*
+is therefore the **left limit**. Fix: the τ=0 grid entry is evaluated at `t=−_ITO_EPS`
+(1e-6) instead of exactly 0, so a coincident causal chamber survives and the equal-time
+value is the left limit — with **no double-counting** (½ would be Stratonovich; not ours).
+For the stationary/symmetric correlators here `C(τ)` is even, so the left limit equals the
+right (the dendritic value is identical either way); the sign matters only at a genuine τ=0
+jump, where Itô takes the left. The integrator's strict Θ(0)=0 convention is untouched;
+only the equal-time *evaluation point* is nudged. Applied to k=2 (`compute.py` tau_points)
+and the k≥3 axis-parallel slices (`daedalus._args`).
 
 Verified: `dendritic_quad_sigmoid` somatic cross-correlator C(0) **0.00001 (dip) → 0.00036**,
 matching sim **0.00033 ± 0.00004** (was 33× off, opposite shape); OU-quartic auto-correlator
