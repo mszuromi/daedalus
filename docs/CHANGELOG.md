@@ -33,7 +33,9 @@ changed. The commented τ lines were dropped from the notebooks' inline option b
 `plot_spatial` (the `dd.plot_cumulant` spatial-k=2 path) is reworked. When a τ grid is
 present it now shows a 2×2:
 - **(a)** equal-time `C(χ,0)` — χ-slices at fixed τ=0 (per-loop overlay), as before;
-- **(b)** temporal `C(χ₀,τ)` — **τ-slices at a few fixed χ** (new), theory lines + sim points;
+- **(b)** temporal `C(χ₀,τ)` — at **one fixed χ₀** with the *same* tree / tree+1loop
+  per-loop overlay as (a) (the τ-sweep counterpart of the equal-time panel; χ₀ defaults to
+  the χ closest to 0, set `Config.tau_slice_chi` to pick another), + sim points;
 - **(c)** the theory `C(χ,τ)` **heatmap with the loop order in the title** (e.g.
   `[tree+1loop]`) — it always contained every loop order in the run; now it *says so*;
 - **(d)** when `sim` carries a 2-D correlator (`sim={'x','tau','C'}` with a 2-D `C`),

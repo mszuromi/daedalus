@@ -320,6 +320,8 @@ class Config:
     show_orders: str = 'cumulative'         # 'cumulative' | 'incremental' | 'total'
     logy: bool = False
     components: Any = None                  # which (i,j)/slice to draw; None=auto
+    tau_slice_chi: Optional[float] = None   # spatial: the fixed χ₀ for the C(χ₀,τ)
+                                            # temporal-slice panel; None → χ closest to 0
     figsize: Optional[tuple] = None
     title: Optional[str] = None
     save: Optional[str] = None              # path to savefig, or None
@@ -451,6 +453,7 @@ def config_options(spatial=None):
             ('show_orders', "'cumulative' | 'incremental' | 'total'"),
             ('logy',        'log-scale the y axis'),
             ('components',  'which (i,j)/slice to draw (multi-field); None=auto'),
+            ('tau_slice_chi','spatial: fixed χ₀ for the C(χ₀,τ) panel; None → χ≈0'),
             ('figsize',     'matplotlib figure size, e.g. (7.5, 4.6)'),
             ('title',       'override the plot title'),
             ('save',        'path to savefig, or None'),
@@ -1261,8 +1264,11 @@ def plot_spatial(result, cfg, model, sim=None):
     """Spatial correlator C(χ,τ).
 
     Always shows the **equal-time C(χ,0)** χ-slice (per-loop overlay).  When a τ
-    grid is present it ALSO shows the **temporal C(χ₀,τ) slices at fixed χ**, the
-    **theory C(χ,τ) heatmap** (which contains *every* loop order in the run — the
+    grid is present it ALSO shows the **temporal C(χ₀,τ) at one fixed χ** with the
+    same per-loop (tree / tree+1loop…) overlay — the τ-sweep counterpart of the
+    equal-time panel (χ₀ defaults to the χ closest to 0; ``Config.tau_slice_chi``
+    picks another), the **theory C(χ,τ) heatmap** (which contains *every* loop
+    order in the run — the
     title states the order), and — when ``sim`` carries a 2-D correlator
     (``sim={'x','tau','C'}`` with a 2-D ``C(τ,χ)``) — the matching **simulation
     heatmap on a shared colour scale**.  A 1-D ``sim={'x','C'[,'C_err']}`` still
@@ -1321,25 +1327,34 @@ def plot_spatial(result, cfg, model, sim=None):
     axA.set_title(cfg.title or f"{model.get('name','')}: equal-time C(χ,0)")
     axA.grid(alpha=0.25); axA.legend(fontsize=8)
 
-    # ── Panel B: temporal C(χ₀, τ) — τ-slices at a few fixed χ ──
+    # ── Panel B: temporal C(χ₀, τ) at ONE fixed χ — per-loop overlay (mirrors Panel A) ──
+    # τ-sweep counterpart of A: same tree / tree+1loop decomposition, at a single
+    # χ₀ (default the χ closest to 0 — the on-site temporal decay; set
+    # ``Config.tau_slice_chi`` to pick another separation).
     if has_tau:
-        jcols = sorted({0, xs.size // 4, xs.size // 2})
-        for ci, j in enumerate(jcols):
-            col = _ORDER_COLORS[ci % len(_ORDER_COLORS)]
-            axB.plot(tau, C[:, j], '-', lw=1.6, color=col,
-                     label=r'theory $\chi$=%.2g' % xs[j])
-            if sim2d:
-                sxa = np.asarray(sim['x']); sj = int(np.argmin(np.abs(sxa - xs[j])))
-                axB.plot(np.asarray(sim['tau']),
-                         np.real(np.asarray(sim['C']))[:, sj],
-                         'o', ms=2.5, color=col, alpha=0.5)
-        axB.set_xlabel(r'$\tau$'); axB.set_ylabel(r'$C(\chi,\tau)$')
+        j0 = (int(np.argmin(np.abs(xs - float(cfg.tau_slice_chi))))
+              if cfg.tau_slice_chi is not None else int(np.argmin(np.abs(xs))))
+        chi0 = float(xs[j0])
+        if by_order and cfg.show_orders != 'total':
+            for i, ell in enumerate(sorted(by_order)):
+                c = np.real(np.asarray(by_order[ell]))
+                cc = c[:, j0] if c.ndim == 2 else c
+                axB.plot(tau, cc, '-', lw=1.8,
+                         color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
+                         label=f'theory: {_order_label(ell)}')
+        else:
+            axB.plot(tau, C[:, j0], '-', lw=1.8, color='#1F9FCC',
+                     label=f'theory: {loop_lab}')
+        if sim2d:
+            sxa = np.asarray(sim['x']); sj = int(np.argmin(np.abs(sxa - chi0)))
+            axB.plot(np.asarray(sim['tau']),
+                     np.real(np.asarray(sim['C']))[:, sj],
+                     'o', ms=3, color='#222', alpha=0.6, label='sim')
+        axB.set_xlabel(r'$\tau$'); axB.set_ylabel(r'$C(\chi_0,\,\tau)$')
         if cfg.logy:
             axB.set_yscale('log')
-        ttl = r'$C(\chi,\tau)$ at fixed $\chi$'
-        if sim2d:
-            ttl += '  (lines=theory · pts=sim)'
-        axB.set_title(ttl); axB.grid(alpha=0.25); axB.legend(fontsize=8)
+        axB.set_title(r'$C(\chi_0,\tau)$ at $\chi_0=%.2g$' % chi0)
+        axB.grid(alpha=0.25); axB.legend(fontsize=8)
 
     # ── theory (+ sim) C(χ,τ) heatmaps, on a shared colour scale ──
     if has_tau:
