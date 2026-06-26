@@ -1,4 +1,4 @@
-# MSRJD Field Theory Framework
+# Daedalus
 
 A model-agnostic framework for automated Feynman-diagram computation in MSR–JD
 (Martin–Siggia–Rose–Janssen–De Dominicis) field theories, built on SageMath. Given a

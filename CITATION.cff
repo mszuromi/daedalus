@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
-title: "MSRJD Field Theory Framework"
+title: "Daedalus — MSRJD Field Theory Framework"
 abstract: >-
   A model-agnostic framework for automated Feynman diagram computation
   in MSRJD (Martin-Siggia-Rose-Janssen-de Dominicis) field theories,
