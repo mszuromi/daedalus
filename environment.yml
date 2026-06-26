@@ -1,0 +1,17 @@
+# Conda environment for the MSRJD Field Theory Framework.
+#
+#   conda env create -f environment.yml      # or:  mamba env create -f environment.yml
+#   conda activate daedalus
+#
+# SageMath brings Python 3.13 and most of the stack (numpy, scipy, sympy, matplotlib,
+# networkx, cysignals, the Jupyter stack incl. ipywidgets, and a SageMath kernel).
+# The remaining lines are the only extras Daedalus adds on top.
+name: daedalus
+channels:
+  - conda-forge
+dependencies:
+  - sage=10.8
+  - numba            # loop-integrator speed; required by the sim cells in notebooks/examples/
+  - pydot            # optional: diagram / prediagram plots
+  - graphviz         # optional: renders pydot output
+  # - pyperclip      # optional: copy buttons in the graphical theory builder

@@ -8,9 +8,26 @@ integration). The notebook front-end is the `daedalus` module, imported as `dd`.
 
 ---
 
+## Quick start
+
+With conda or mamba installed ([Miniforge](https://github.com/conda-forge/miniforge) if you
+have neither):
+
+```bash
+git clone <repository-url>
+cd <repository>
+conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
+conda activate daedalus
+jupyter lab                             # then open notebooks/build_your_own_theory.ipynb
+```
+
+[`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
+that is the entire setup. The sections below explain each step, give a non-conda alternative,
+and list tested versions.
+
 ## Requirements
 
-The one prerequisite is **SageMath 10.8**. Sage provides Python 3.13 and almost the entire
+The one prerequisite is **SageMath 10.8**. Sage provides Python 3.12+ and almost the entire
 stack — numpy, scipy, sympy, matplotlib, mpmath, networkx, cysignals, the Jupyter stack
 (JupyterLab / notebook / ipykernel / **ipywidgets**), and a `SageMath` Jupyter kernel. Only a
 couple of extras are added on top (`numba`, optionally `pydot`).
@@ -20,18 +37,20 @@ couple of extras are added on top (`numba`, optionally `pydot`).
 
 ## Installation
 
-### Option A — conda-forge (recommended: reproducible, version-pinned, cross-platform)
+### Option A — conda environment file (recommended: reproducible, cross-platform)
 
-Works on macOS, Linux, and Windows (via WSL2). If you don't have `mamba`/`conda`, install
-[Miniforge](https://github.com/conda-forge/miniforge) first.
+Works on macOS, Linux, and Windows (via WSL2); needs conda or mamba
+([Miniforge](https://github.com/conda-forge/miniforge) if you have neither). From the cloned
+repo root:
 
 ```bash
-mamba create -n daedalus -c conda-forge sage=10.8 numba pydot graphviz
-mamba activate daedalus
+conda env create -f environment.yml      # or:  mamba env create -f environment.yml   (faster)
+conda activate daedalus
 ```
 
-(`conda create …` works too — just slower than `mamba`. `graphviz` is only needed for the
-optional diagram plots.)
+[`environment.yml`](environment.yml) installs SageMath 10.8 plus the `numba`/`pydot`/`graphviz`
+extras from conda-forge (validated to resolve on macOS/Linux). For the optional GUI clipboard,
+also `pip install pyperclip`.
 
 ### Option B — native SageMath + extras
 
@@ -100,7 +119,7 @@ differently-named kernel — just pick your **SageMath** kernel from Jupyter's k
 | component | tested version | source | needed for |
 |---|---|---|---|
 | **SageMath** | **10.8** | *install this* | the whole framework |
-| Python | 3.13 | Sage | — |
+| Python | 3.12 (conda) / 3.13 (native) | Sage | — |
 | numpy / scipy / sympy / mpmath | 2.3.2 / 1.15.2 / 1.13.2 / 1.3.0 | Sage | core computation |
 | matplotlib | 3.10.5 | Sage | plotting |
 | networkx | 3.5 | Sage | diagram / report bookkeeping |
