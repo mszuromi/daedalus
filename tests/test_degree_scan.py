@@ -179,7 +179,7 @@ def test_check_exact():
 # ── Tests: ensure_taylor_order ──────────────────────────────────────────────
 
 def _load_hawkes_model():
-    models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+    models_dir = os.path.join(os.path.dirname(__file__), '..', 'simulations')
     sys.path.insert(0, models_dir)
     from hawkes_sage import HAWKES_MODEL
     return HAWKES_MODEL
@@ -195,7 +195,7 @@ def test_ensure_no_reexpansion():
     try:
         theory_path = os.path.join(tmpdir, 'test_theory')
         model_file = os.path.relpath(
-            os.path.join(os.path.dirname(__file__), '..', 'models', 'hawkes_sage.py'),
+            os.path.join(os.path.dirname(__file__), '..', 'simulations', 'hawkes_sage.py'),
             os.path.dirname(__file__) + '/..',
         )
         save_theory(theory_path, ft, model_file=model_file,
@@ -221,7 +221,7 @@ def test_ensure_reexpands():
     try:
         theory_path = os.path.join(tmpdir, 'test_theory')
         model_file = os.path.relpath(
-            os.path.join(os.path.dirname(__file__), '..', 'models', 'hawkes_sage.py'),
+            os.path.join(os.path.dirname(__file__), '..', 'simulations', 'hawkes_sage.py'),
             os.path.dirname(__file__) + '/..',
         )
         save_theory(theory_path, ft, model_file=model_file,

@@ -73,18 +73,14 @@ notebooks/examples/temporal_ou_quartic_correlated.ipynb
 notebooks/examples/temporal_dendritic_linear.ipynb
 
 # Unused theory/sim files — kept local; the public set keeps only what the
-# example notebooks + tests reference (16 theories, 9 sims).
+# example notebooks + tests reference (24 theories, 9 sims).
 theories/allen_cahn_quintic_1d_subcritical_infinite.theory.py
-theories/burgers_1d.theory.py
-theories/combined_allencahn_modelb_kpz_1d.theory.py
 theories/combined_allencahn_modelb_kpz_2d.theory.py
 theories/combined_allencahn_modelb_kpz_3d.theory.py
 theories/kpz_2d.theory.py
 theories/linear_field_2d.theory.py
-theories/linear_hawkes.theory.py
 theories/multipopulation_spike_reset_test.theory.py
 theories/my_stochastic_theory.theory.py
-theories/ou_quartic_colored.theory.py
 theories/ou_quartic_two_dim.theory.py
 theories/ou_quartic_two_dim_corr.theory.py
 theories/quadratic_hawkes.theory.py
@@ -94,20 +90,15 @@ theories/single_population_conductance_synapse_test.theory.py
 theories/single_population_conductance_test.theory.py
 theories/single_population_cubic_alpha_test.theory.py
 theories/single_population_linear_conductance_test.theory.py
-theories/single_population_linear_delta_spikes_test.theory.py
 theories/single_population_linear_delta_voltage_test.theory.py
 theories/single_population_linear_exp_voltage_test.theory.py
-theories/single_population_quad_exp_test.theory.py
 theories/single_population_quad_spike_reset_test.theory.py
-theories/single_population_spike_reset_test.theory.py
-theories/toy_quartic_double_well.theory.py
 simulations/cumulant_direct_numba.py
 simulations/dendritic_linear_sim_numba.py
 simulations/hawkes_linear_expg.py
 simulations/hawkes_linear_expg_gtas.py
 simulations/hawkes_quad_expg.py
 simulations/hawkes_quad_expg_gtas.py
-simulations/hawkes_sage.py
 simulations/hawkes_sim_expg_numba.py
 simulations/hawkes_sim_linear_expg_gtas_numba.py
 simulations/hawkes_sim_numba.py

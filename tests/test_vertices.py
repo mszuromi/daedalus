@@ -25,7 +25,7 @@ from engine.core.field_theory import FieldTheory
 
 def _load_hawkes():
     """Load the Hawkes model and expand at taylor_order=4."""
-    models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+    models_dir = os.path.join(os.path.dirname(__file__), '..', 'simulations')
     sys.path.insert(0, models_dir)
     from hawkes_sage import HAWKES_MODEL
     ft = FieldTheory(HAWKES_MODEL, taylor_order=4)

@@ -23,7 +23,7 @@ _REPO = os.path.join(os.path.dirname(__file__), '..')
 
 
 def _load_sim():
-    p = os.path.join(_REPO, 'models', 'spatial_field_1d_sim.py')
+    p = os.path.join(_REPO, 'simulations', 'spatial_field_1d_sim.py')
     spec = importlib.util.spec_from_file_location('sim', p)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
@@ -85,7 +85,7 @@ def test_vectorized_noise_is_finite_and_stationary():
 
 
 def _load_sim2d():
-    p = os.path.join(_REPO, 'models', 'spatial_field_2d_sim.py')
+    p = os.path.join(_REPO, 'simulations', 'spatial_field_2d_sim.py')
     spec = importlib.util.spec_from_file_location('s2', p)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

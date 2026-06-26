@@ -38,7 +38,7 @@ def _make_expanded_ft():
     # We need to load the SageMath files the SageMath way.
     # Import the field_theory module and model.
     ft_code_path = os.path.join(_PROJECT_ROOT, 'engine', 'core', 'field_theory.py')
-    model_path   = os.path.join(_PROJECT_ROOT, 'models', 'hawkes_sage.py')
+    model_path   = os.path.join(_PROJECT_ROOT, 'simulations', 'hawkes_sage.py')
 
     ns_ft = {}
     with open(ft_code_path, 'r') as f:
