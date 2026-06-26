@@ -14,7 +14,7 @@ authors:
     given-names: Gabriel K.
     affiliation: "Boston University"
 license: BSD-3-Clause
-repository-code: "https://github.com/matthewszuromi/msrjd"
+repository-code: "https://github.com/mszuromi/daedalus"
 date-released: "2026-01-01"
 keywords:
   - field theory
