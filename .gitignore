@@ -57,14 +57,17 @@ docs/figures/test_runs/
 # Reference papers (local only — copyrighted, not redistributed in the repo)
 Literature/
 
-# Curated download: only notebooks/examples/ (the 10 curated examples) plus the
-# tutorial, builder, and runner are tracked. The rest stay local but unshipped.
+# Public repo = pipeline code + tests + new-user docs (the README files) + the
+# curated notebooks. Everything below stays local but is not tracked / shipped.
+docs/
+scratch/
+legacy/
+scripts/
+pipeline/README.md
 notebooks/legacy/
 notebooks/spatial/
 notebooks/temporal/
 notebooks/templates/
-legacy/*.ipynb
-legacy/**/*.ipynb
 notebooks/examples/temporal_ou_quartic_colored.ipynb
 notebooks/examples/temporal_ou_quartic_correlated.ipynb
 notebooks/examples/temporal_dendritic_linear.ipynb
