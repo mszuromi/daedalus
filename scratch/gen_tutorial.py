@@ -11,20 +11,12 @@ def code(t): CELLS.append(('code', t))
 # ───────────────────────────────────────────────────────────────────────
 md(r"""# Building a temporal theory
 
-This notebook is a guide to declaring **temporal** stochastic theories for the Daedalus
-MSR–JD pipeline and computing their correlation functions. It covers, in order:
+Declare a temporal theory for the MSR-JD pipeline and compute its correlators. Sections: the
+action (§1), the theory components (§2), the graphical builder (§3), the Python builder (§4),
+worked examples (§5 Langevin SDE, §6 Hawkes process), your own theory (§7), syntax reference (§8).
 
-1. what a temporal theory *is* — the action, and why one equation form is not enough;
-2. every component a temporal theory can contain;
-3. the two ways to author one — the graphical builder, and the Python `TheoryBuilder`;
-4. two fully worked examples spanning the range of models the pipeline handles — a Langevin
-   SDE and a nonlinear Hawkes point process;
-5. a section for you to declare and run your own.
-
-**Scope.** Temporal theories only — fields that depend on time, with no spatial extent. The
-pipeline computes the mean field, multi-point cumulants, and loop corrections *analytically*
-(action → Feynman diagrams → cumulants). There is no Monte-Carlo simulation anywhere in this
-notebook.""")
+Temporal theories only (no spatial extent). No simulation — mean field, cumulants, and loop
+corrections are computed analytically.""")
 
 # ───────────────────────────────────────────────────────────────────────
 md("""## 0. Setup
@@ -51,61 +43,34 @@ from pipeline.theory import TemporalTheoryBuilder
 print('daedalus →', dd.REPO_ROOT)""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 1. What a temporal theory is
+md(r"""## 1. The action
 
-The pipeline does **not** assume a single fixed equation form. Its fundamental object is the
-**MSR–JD action** $S$ — a functional of the model's physical fields together with an equal
-number of auxiliary **response fields**. Propagators, interaction vertices, the mean field,
-and every cumulant are derived from $S$ automatically.
+A theory is one expression: the MSR-JD action $S$, a functional of the physical fields and an
+equal number of response fields. The pipeline derives the propagators, vertices, mean field,
+and cumulants from it. Form:
 
-Every temporal action has the same skeleton:
+$$S \;=\; \sum_{\text{fields}}(\text{response field})\times(\text{equation of motion}) \;+\; (\text{source terms}).$$
 
-$$S \;=\; \underbrace{\sum_{\text{fields}}\;(\text{response field})\times(\text{equation of motion})}_{\text{dynamics}}
-\;+\; \underbrace{(\text{source terms})}_{\text{noise / drive}}.$$
+Build $S$ from the pieces below; the right column is what goes in `set_action_text` (§2.8).
+Field `x` has response field `xt`.
 
-What makes the formalism general is *what goes inside* the equation of motion and the source
-terms. The three model classes below share this skeleton yet look nothing alike — and all
-three are expressible here.
+| piece | equation | action term |
+|---|---|---|
+| drift / relaxation | $\dot x = -\mu x - \varepsilon x^3$ | `xt*((Dt+mu)*x + eps*x^3)` |
+| white Gaussian noise | $\langle\xi\xi\rangle = 2D\delta$ | `- D*xt^2` |
+| point-process spikes | $n \sim \mathrm{Poisson}[\varphi(v)]$ | `nt*n - (exp(nt)-1)*phi(v)` |
+| memory / synaptic kernel | $\tau\dot v = -(v-E) + w\,(g*n)$ | `vt*((tau*Dt+1)*v - E - w*Conv(g,n))` |
+| cross-correlated noise | $\langle\xi_a\xi_b\rangle = \rho\sqrt{D_aD_b}\,\delta$ | `- 2*rho*sqrt(Da*Db)*at*bt` |
 
----
-
-**(a) Langevin SDE — additive Gaussian noise.** A variable relaxing in a potential, kicked by
-white noise:
-
-$$\dot x = -\mu x - \varepsilon x^{3} + \xi, \qquad \langle \xi(t)\,\xi(t')\rangle = 2D\,\delta(t-t')$$
-$$\Longrightarrow\quad S = \tilde x\big[(\partial_t + \mu)\,x + \varepsilon x^{3}\big]\; -\; D\,\tilde x^{2}.$$
-
-The source is the Gaussian term $-D\,\tilde x^{2}$.
-
----
-
-**(b) Nonlinear Hawkes point process — events at a state-dependent rate.** A spike train $n$
-fires at a rate $\varphi(v)$ set by a synaptic voltage $v$, which is itself driven by past
-spikes filtered through a synaptic kernel $g$:
-
-$$\tau\,\dot v = -(v - E) + \textstyle\sum_j w_{ij}\,(g * n)_j, \qquad n_i \sim \mathrm{Poisson}\!\left[\varphi(v_i)\right]$$
-$$\Longrightarrow\quad S = \tilde n\,n \;-\; (e^{\tilde n}-1)\,\varphi(v)\; +\; \tilde v\big[(\tau\partial_t+1)\,v - E - \textstyle\sum_j w\,(g * n)\big].$$
-
-Here the source is the **point-process** term $-(e^{\tilde n}-1)\,\varphi(v)$ — *not* Gaussian.
-$\varphi$ is a nonlinear **transfer function** and $g$ is a **convolution kernel** (memory).
-This is exactly the structure an additive-noise Langevin equation cannot represent.
-
----
-
-**(c) Coupled / multi-population models.** Several fields with matrix coupling, replicated over
-a population index $i$ — networks of neurons, interacting species, multi-compartment cells.
-The same skeleton, summed over the index.
-
-So you do not choose a template and fill in blanks. You **assemble the action from a small set
-of components**. Those components are the next section.""")
+Multi-population models replicate fields over an index $i$ and sum the action `for i in pop`.
+§5 assembles the first two rows; §6 assembles rows 1–4.""")
 
 # ───────────────────────────────────────────────────────────────────────
 md(r"""## 2. The components of a temporal theory
 
-A theory is specified by the ten ingredients below. They are the **tabs of the graphical
-builder** (§3) and the **methods of the Python builder** (§4) — two front-ends to one
-specification. Most theories use only a subset; the *Model*, *Fields*, *Parameters*,
-*Action*, and *mean-field* pieces are always present.
+The ten ingredients below are the tabs of the graphical builder (§3) and the methods of the
+Python builder (§4). *Model*, *Fields*, *Parameters*, *Action*, and *Mean-field* are required;
+the rest are used as needed.
 
 ### 2.1 Model
 A name (and optional description). On save it becomes the `.theory.py` filename.
@@ -198,37 +163,28 @@ which fluctuation fields sit on the correlator. A leg names the `d`-prefixed fie
 auto-correlator of the first field.""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 3. Authoring option A — the graphical builder
+md(r"""## 3. Graphical builder
 
-The builder you will most often reach for is the point-and-click form in
-[`theory_builder.ipynb`](theory_builder.ipynb). Its tabs are exactly the components of §2:
-*Model · Populations · Fields · Parameters · Functions · Kernels · Noise · Action · MF ·
-Defaults*. You fill them in, a live sidebar flags undeclared names and syntax errors, and
-**Save** writes a `theories/<name>.theory.py` you can load by name in
-[`theory_runner.ipynb`](theory_runner.ipynb).
-
-You can launch that same form right here — fill it in, save, and skip straight to §7 to run
-what you built:""")
+[`theory_builder.ipynb`](theory_builder.ipynb) is a form whose tabs are the §2 components
+(*Model · Populations · Fields · Parameters · Functions · Kernels · Noise · Action · MF ·
+Defaults*); a sidebar flags undeclared names and syntax errors, and **Save** writes
+`theories/<name>.theory.py`. Launch it here:""")
 
 code("""from pipeline.ui import TheoryUI
 ui = TheoryUI()
 ui.show()      # fill the tabs, then 'Save theory file' → theories/<name>.theory.py""")
 
-md("""After saving, load and run it by name — either in `theory_runner.ipynb`, or here:
+md("""Load a saved theory by name (in `theory_runner.ipynb`, or here):
 
 ```python
-model, mod = dd.load_theory('<your-theory-name>')   # filename minus '.theory.py'
+model, mod = dd.load_theory('<name>')        # filename minus '.theory.py'
 res = dd.run(model, dd.Config(k=2, max_ell=0), mod)
-```
-
-The rest of this notebook uses **option B**, the Python builder, because seeing each component
-as an explicit method call is the clearest way to learn what the form is doing.""")
+```""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 4. Authoring option B — the Python builder
+md(r"""## 4. Python builder
 
-The same specification, in code. Each §2 component is one chained method; `.build()` returns a
-`model` dictionary ready to run. The chain reads top-to-bottom in roughly tab order:
+Each §2 component is one chained method; `.build()` returns the `model`:
 
 ```python
 model = (
@@ -242,21 +198,13 @@ model = (
     .equation(...) / .set_mf_equation(...)   # 2.9 Mean field
     .build()
 )
-```
-
-The two worked examples below are complete instances of this pattern.""")
+```""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 5. Worked example I — a Langevin SDE (quartic OU)
+md(r"""## 5. Example — Langevin SDE
 
-The simplest case: one scalar field, additive Gaussian noise. The model is an
-Ornstein–Uhlenbeck variable with a cubic restoring force,
-
-$$\dot x = -\mu x - \varepsilon x^{3} + \xi, \qquad \langle\xi\xi\rangle = 2D\,\delta.$$
-
-Following §1(a), the equation-of-motion bracket is $\dot x - f(x) = (\partial_t+\mu)x +
-\varepsilon x^{3}$, and the Gaussian source is $-D\,\tilde x^{2}$, giving the action
-`xt*((Dt+mu)*x + eps*x^3) - D*xt^2`.""")
+Model: $\dot x = -\mu x - \varepsilon x^{3} + \xi$, $\langle\xi\xi\rangle = 2D\delta$.
+Action: `xt*((Dt+mu)*x + eps*x^3) - D*xt^2`.""")
 
 code("""ou = (
     TemporalTheoryBuilder('Quartic OU process')
@@ -274,7 +222,7 @@ code("""ou = (
 )
 dd.describe_model(ou);""")
 
-md(r"""Run it: solve the mean field, enumerate the diagrams, integrate, and plot $C(\tau)$.""")
+md(r"""Run and plot $C(\tau)$:""")
 
 code("""ou_cfg = dd.Config(
     k=2,                                      # two-point correlator <x x>
@@ -289,20 +237,16 @@ fig = dd.plot_cumulant(ou_res, ou_cfg, ou)
 plt.show()""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 6. Worked example II — a nonlinear Hawkes process
+md(r"""## 6. Example — Hawkes process
 
-A genuinely different model class: a **point process**, not an SDE with additive noise. A
-population of two units carries a spike train $n_i$ that fires at rate $\varphi(v_i) = a_i
-v_i^2$, driven by a synaptic voltage $v_i$ that integrates past spikes through an
-**alpha-function** synaptic kernel $g_{ij}(t) = (t/\tau_g^2)e^{-t/\tau_g}\Theta(t)$:
+Two units; spike train $n_i$ at rate $\varphi(v_i)=a_i v_i^2$; voltage $v_i$ integrating past
+spikes through an alpha kernel $g_{ij}(t)=(t/\tau_g^2)e^{-t/\tau_g}\Theta(t)$:
 
 $$\tau_i\,\dot v_i = -(v_i - E_i) + \textstyle\sum_j w_{ij}\,(g_{ij} * n_j), \qquad n_i \sim \mathrm{Poisson}[\varphi(v_i)].$$
 
-This single example exercises almost every component of §2 at once: a **population** (2.2),
-**two fields** $n,v$ (2.3), **vector and matrix parameters** (2.4), a **transfer function**
-$\varphi$ (2.5), a **convolution kernel** $g$ (2.6), a **point-process source**
-$-(e^{\tilde n}-1)\varphi(v)$ (2.7), and **algebraic mean-field equations** (2.9). Compare its
-action with the OU action above — same skeleton, completely different physics.""")
+Uses a population (2.2), two fields (2.3), vector + matrix parameters (2.4), a transfer
+function (2.5), a kernel (2.6), a point-process source (2.7), and algebraic mean-field
+equations (2.9).""")
 
 code("""hawkes = (
     TemporalTheoryBuilder('Quadratic Hawkes (alpha-kernel)')
@@ -329,8 +273,7 @@ code("""hawkes = (
 )
 dd.describe_model(hawkes);""")
 
-md(r"""Run the spike-train auto-correlator $C_{nn}(\tau)$. The external legs are the
-`n`-fluctuation, `dn`:""")
+md(r"""Spike-train auto-correlator $C_{nn}(\tau)$ (legs on the `n`-fluctuation, `dn`):""")
 
 code("""hawkes_cfg = dd.Config(
     k=2, max_ell=0,
@@ -344,26 +287,16 @@ fig = dd.plot_cumulant(hawkes_res, hawkes_cfg, hawkes)
 plt.show()""")
 
 # ───────────────────────────────────────────────────────────────────────
-md(r"""## 7. Build and run your own
+md(r"""## 7. Your own theory
 
-The cell below is a working theory you can edit into yours. It ships as the quartic OU of §5
-(so the notebook runs end to end) — change the lines marked `# EDIT`, or replace the whole
-builder chain.
+Edit the cell below (starts as the §5 OU); for a point-process or multi-population model, copy
+the §6 chain instead.
 
-**To start from a point process or a neural / multi-population model**, copy the `hawkes`
-chain in §6 instead: it already shows how to add a population, a second field, a transfer
-function, a synaptic kernel, the `-(exp(nt)-1)*phi(v)` point-process source, and algebraic
-mean-field equations. Mix and match the components from §2 as your model needs.
-
-Guidance:
-
-- assemble the action as *response × equation-of-motion + source* (§2.7–2.8);
-- keep each field's `set_action_text` term and its `equation` / `set_mf_equation` consistent —
-  the action's force is minus the EOM's right-hand side;
-- start at `max_ell=0`, and (for the OU-type case) keep `mu > 0` for a single, well-defined
-  saddle;
-- leave `external_fields=None` to get the first field's auto-correlator, or name the legs
-  explicitly for a cross-correlator.""")
+- a field's action drift term is minus its `equation` / `set_mf_equation` right-hand side —
+  keep them consistent;
+- `max_ell=0` is tree level; raise for loop corrections;
+- `external_fields=None` gives the first field's auto-correlator; name the legs for a
+  cross-correlator.""")
 
 code("""my_model = (
     TemporalTheoryBuilder('My Theory')                     # EDIT: name it
