@@ -1,59 +1,41 @@
 # Example notebooks
 
-Nine curated examples, each headlining **one** capability of the Daedalus
-MSR-JD pipeline and spanning the full reach of the framework — temporal ODEs to
-spatial PDEs, single- to multi-field, white / colored / correlated noise, and
-the three spatial vertex classes.
+Ten curated examples, each headlining **one** capability of the pipeline and together spanning
+its range — temporal ODEs to spatial PDEs, single- to multi-field, Gaussian / colored /
+correlated / point-process noise, and the spatial vertex classes.
 
-Every example follows the **same three steps**:
+Each example follows the same three steps:
 
-1. **The model** — `dd.load_theory(...)` + `dd.describe_model(...)` print the
-   structure straight from the theory file (domain, fields, parameters,
-   kernels, transfer functions, governing equation).
-2. **The pipeline → theoretical cumulants** — one `dd.run(...)` drives the whole
-   diagrammatic chain (enumerate → propagator → mean-field saddle → loop
-   integrals → cumulant); the plot is the **theory alone**.
-3. **Independent simulation** — a from-scratch simulator (reused from
-   `models/`), appended at the end and overlaid on the pipeline curve. The
-   simulation is *not* part of the pipeline — it is the external check.
+1. **The model** — `dd.load_theory(...)` + `dd.describe_model(...)` print the structure.
+2. **The pipeline → cumulants** — one `dd.run(...)` drives the chain (enumerate → propagator →
+   mean-field → loop integrals → cumulant); the plot is the theory alone.
+3. **Independent simulation** — a from-scratch simulator overlaid on the pipeline curve as an
+   external check (not part of the pipeline).
 
-```python
-import daedalus as dd
-model, mod = dd.load_theory('kpz_1d')
-dd.describe_model(model, mod)                      # §1
-res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(0, 10, 30)), mod)
-dd.plot_cumulant(res, cfg, model)                  # §2 theory
-dd.plot_cumulant(res, cfg, model, sim=sim)         # §3 overlay
-```
+## Temporal (ODE / point process)
 
-## Temporal (ODE)
-
-| Notebook | Headline capability | Theory vs simulation |
-|---|---|---|
-| [`temporal_ou_quartic_white`](temporal_ou_quartic_white.ipynb) | **White Gaussian noise — the baseline nonlinear model** — single-field quartic OU; full **2-loop** `C_xx(τ)` over the whole grid in ~20 s (no embedding, no field doubling) | `C_xx(0)`: tree 1.000 → 2-loop **0.950** vs sim **0.945** (0.5%) |
-| [`temporal_ou_quartic_correlated`](temporal_ou_quartic_correlated.ipynb) | **Correlated (off-diagonal) white noise** — coupled 2-field OU; the cross-noise routes through the coupled path → nonzero cross-correlator `C_xy` | `C_xy(0)`: tree +1.33 → 1-loop +1.04 vs sim **+1.12** |
-| [`temporal_ou_quartic_colored`](temporal_ou_quartic_colored.ipynb) | **Colored noise** — finite-τc noise via the Markovian-embedding preprocessor (auxiliary OU field, surfaced by `describe_model`) | `C_xx(0)`: 1-loop **1.191** vs sim **1.186** (0.45%) |
-| [`temporal_quadratic_hawkes_alpha`](temporal_quadratic_hawkes_alpha.ipynb) | **α-function synaptic kernel** — a rise-then-decay non-Markovian convolution + quadratic Hawkes transfer | `C(0)`: theory **0.00300** vs sim **0.00278** (~0.4σ) |
-| [`temporal_dendritic_linear`](temporal_dendritic_linear.ipynb) | **DAE mean-field + multi-compartment** — soma/dendrite neural model, exp synaptic filters, Bernoulli CGF | cross-corr peak: theory **0.00119** vs sim **0.00135** (~1σ) |
+| Notebook | Capability |
+|---|---|
+| [`OU_quartic_white`](OU_quartic_white.ipynb) | White Gaussian noise — single-field quartic OU; full 2-loop `C(τ)`. |
+| [`OU_sextic_white`](OU_sextic_white.ipynb) | A φ⁶ nonlinearity — the degree-6 vertex. |
+| [`OU_quartic_correlated_colored`](OU_quartic_correlated_colored.ipynb) | Two coupled OU fields with **correlated, colored** noise — Markovian embedding of a finite-τc cross-correlated drive; nonzero cross-correlator. |
+| [`Hawkes_quadratic_alpha`](Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
+| [`Dendritic_nonlinear`](Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
 
 ## Spatial (PDE)
 
-| Notebook | Headline capability | Theory vs simulation |
-|---|---|---|
-| [`spatial_allen_cahn_phi4_1d`](spatial_allen_cahn_phi4_1d.ipynb) | **Polynomial vertex** φ⁴ — the spatial MSR-JD machinery (heat kernels, Symanzik / causal-chamber loop integrals) | `C(0)`: theory **0.4625** vs sim **0.4689** (1.4%) |
-| [`spatial_kpz_1d`](spatial_kpz_1d.ipynb) | **Per-leg gradient vertex** `(∂ₓh)²` — `∂ₓ → ik` form-factor on each leg | static `C(0)` 0.501 vs 0.500 (λ-independent EW); **excess velocity** 0.406 vs 0.411 (1%) |
-| [`spatial_model_b_conserved_1d`](spatial_model_b_conserved_1d.ipynb) | **Composite-∇² vertex** `∇²(φ²)` — conserved order parameter, q²-suppressed variance | `C(0)`: theory **0.3574** vs sim **0.3560** (0.4%) |
-| [`spatial_reaction_diffusion_2d`](spatial_reaction_diffusion_2d.ipynb) | **d=2 with a UV-finite loop** — the cubic-vertex bubble converges (d<4); finite, no cutoff | `dC(2g)/dC(g) = 4.00` (O(g²) bubble); free `S(q)` matches the 2-D sim |
-| [`spatial_coupled_rd_2species_1d`](spatial_coupled_rd_2species_1d.ipynb) | **Coupled multi-field** — matrix reaction coupling → auto + cross correlators | `C_aa(0)` 0.394 vs 0.406 (3%); `C_ab(0)` −0.0016 vs −0.0017 (within error) |
+| Notebook | Capability |
+|---|---|
+| [`Allen_Cahn_phi4`](Allen_Cahn_phi4.ipynb) | **Polynomial vertex** φ⁴ — the spatial MSR-JD machinery (heat kernels, Symanzik / causal-chamber loop integrals). |
+| [`KPZ`](KPZ.ipynb) | **Per-leg gradient vertex** `(∂ₓh)²` — a `∂ₓ → ik` form factor on each leg; excess-velocity cross-check. |
+| [`Model_B_conserved`](Model_B_conserved.ipynb) | **Composite-∇² vertex** `∇²(φ²)` — conserved order parameter, q²-suppressed variance. |
+| [`RD_2D`](RD_2D.ipynb) | **d=2 with a UV-finite loop** — the cubic-vertex bubble converges for d < 4; no cutoff. |
+| [`RD_2_species`](RD_2_species.ipynb) | **Coupled multi-field** — matrix reaction coupling → auto + cross correlators; Dyson dressing for unequal diffusion. |
 
 ## Notes
 
-- **Connected cumulants.** The pipeline produces *connected* correlators; the
-  simulator cells subtract the mean where it is nonzero (e.g. KPZ's large drift)
-  before comparing.
-- **Speed.** Simulations use reduced Monte-Carlo / SPDE settings so each notebook
-  runs in roughly 10–60 s — these are showcases, not precision benchmarks.
-- The four spatial-1d / 2-d examples are generated by
-  [`scratch/gen_examples.py`](../../scratch/gen_examples.py); the rest have a
-  standalone `scratch/gen_ex_*.py` generator (run with `sage -python`, then
-  execute in place with `scratch/exec_nb.py`).
+- **Connected cumulants.** The pipeline produces *connected* correlators; the simulator cells
+  subtract the mean where it is nonzero before comparing.
+- **Speed.** Simulations use reduced Monte-Carlo / SPDE settings so each notebook runs in
+  roughly 10–60 s — showcases, not precision benchmarks. `numba` is required for the simulation
+  cells (see the top-level [README](../../README.md)).

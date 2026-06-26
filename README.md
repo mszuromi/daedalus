@@ -18,7 +18,7 @@ git clone <repository-url>
 cd <repository>
 conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
 conda activate daedalus
-jupyter lab                             # then open notebooks/build_your_own_theory.ipynb
+jupyter lab                             # then open notebooks/theory_builder_tutorial.ipynb
 ```
 
 [`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
@@ -106,7 +106,7 @@ Then open one of:
 
 | notebook | purpose |
 |---|---|
-| [`notebooks/build_your_own_theory.ipynb`](notebooks/build_your_own_theory.ipynb) | guided tour — build a temporal theory and run it |
+| [`notebooks/theory_builder_tutorial.ipynb`](notebooks/theory_builder_tutorial.ipynb) | guided tour — build a temporal theory and run it |
 | [`notebooks/theory_builder.ipynb`](notebooks/theory_builder.ipynb) | point-and-click theory builder (the `TheoryUI` form) |
 | [`notebooks/theory_runner.ipynb`](notebooks/theory_runner.ipynb) | load and run any saved `theories/*.theory.py` |
 | [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
@@ -131,7 +131,7 @@ differently-named kernel — just pick your **SageMath** kernel from Jupyter's k
 | pyperclip | — | extra (optional) | optional copy buttons in the GUI |
 
 Everything marked *Sage* comes with a standard SageMath 10.8 install; only the **extra** rows
-are installed separately (Option A folds them into the `mamba create`; Option B uses
+are installed separately (Option A folds them into `environment.yml`; Option B uses
 `sage -pip install`).
 
 ## Tests (optional)
