@@ -2,7 +2,7 @@
 tests/test_spectral_propagator.py
 =================================
 Step 1 of the Dyson–Duhamel integration: validate the spectral coupled-field
-reference propagator ``G₀`` (``msrjd.integration.spatial.spectral_propagator``).
+reference propagator ``G₀`` (``engine.integration.spatial.spectral_propagator``).
 
   * ``split_reference_diffusion`` / ``spectral_projectors`` algebra
     (𝒟 = D₀I + 𝒟̂; Σ P_α = I, P_α P_β = δ P_α, Σ m_α P_α = M);
@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.linalg import expm                                  # noqa: E402
 
-from msrjd.integration.spatial.spectral_propagator import (    # noqa: E402
+from engine.integration.spatial.spectral_propagator import (    # noqa: E402
     split_reference_diffusion, spectral_projectors, build_reference,
 )
 

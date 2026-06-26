@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.linalg import expm                                   # noqa: E402
 
-from msrjd.integration.spatial.spectral_propagator import (     # noqa: E402
+from engine.integration.spatial.spectral_propagator import (     # noqa: E402
     build_reference, lyapunov_covariance, coupled_two_point,
 )
 

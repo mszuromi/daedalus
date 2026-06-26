@@ -1,7 +1,7 @@
 """
 tests/test_degree_scan.py
 =========================
-Tests for msrjd.enumeration.degree_scan — Build Phase C.
+Tests for engine.enumeration.degree_scan — Build Phase C.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,12 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import DiGraph, Graph
 
-from msrjd.enumeration.degree_scan import (
+from engine.enumeration.degree_scan import (
     max_vertex_degree, scan_source_vertices,
     check_taylor_order, ensure_taylor_order,
 )
-from msrjd.core.field_theory import FieldTheory
-from msrjd.core.serialize import save_theory
+from engine.core.field_theory import FieldTheory
+from engine.core.serialize import save_theory
 
 
 # ── Helpers: build mock prediagrams ──────────────────────────────────────────

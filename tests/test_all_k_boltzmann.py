@@ -52,14 +52,14 @@ from sage.all import SR  # noqa: E402
 
 
 def _run_pipeline(action, eq, params, k, max_ell, name):
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline._propagator import build_propagator, compute_poles_and_residues
-    from pipeline._diagrams import enumerate_unique_diagrams
-    from msrjd.diagrams.symmetry import classify_coefficient_factors
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    from msrjd.core.vertices import extract_vertex_types, extract_source_types
-    from msrjd.integration.time_domain.final_integral import integrate_diagram
-    from pipeline.theory import TemporalTheoryBuilder
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator, compute_poles_and_residues
+    from api._diagrams import enumerate_unique_diagrams
+    from engine.diagrams.symmetry import classify_coefficient_factors
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.core.vertices import extract_vertex_types, extract_source_types
+    from engine.integration.time_domain.final_integral import integrate_diagram
+    from api.theory import TemporalTheoryBuilder
 
     b = (TemporalTheoryBuilder(name).physical_field('x')
          .parameter('mu', default=1.0, domain='positive')

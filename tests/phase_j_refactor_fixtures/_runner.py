@@ -52,7 +52,7 @@ def evaluate(config: FixtureConfig) -> dict[str, Any]:
     """
     # Local import so pytest collection doesn't pay the pipeline import
     # cost when a config can be resolved purely from _configs.py.
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
 
     model = _load_theory(config.theory_file)
 

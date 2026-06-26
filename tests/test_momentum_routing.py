@@ -2,7 +2,7 @@
 tests/test_momentum_routing.py
 ==============================
 Unit tests for the spatial momentum-routing pass
-(``msrjd.integration.spatial.momentum_routing.route_momenta``), the
+(``engine.integration.spatial.momentum_routing.route_momenta``), the
 §4a pre-integration step of the spatial re-architecture.
 
 Most tests use SYNTHETIC diagram graphs (no enumeration pipeline) so they
@@ -31,7 +31,7 @@ import sympy as sp
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import DiGraph
-from msrjd.integration.spatial.momentum_routing import route_momenta
+from engine.integration.spatial.momentum_routing import route_momenta
 
 
 class _FakeTD:
@@ -157,13 +157,13 @@ def test_route_real_enumerated_allen_cahn_diagrams():
     """
     import importlib.util
 
-    from msrjd.core.field_theory import FieldTheory
-    from msrjd.core.vertices import (
+    from engine.core.field_theory import FieldTheory
+    from engine.core.vertices import (
         extract_vertex_types, extract_source_types,
     )
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    from pipeline._propagator import build_propagator
-    from pipeline._diagrams import enumerate_unique_diagrams
+    from engine.diagrams.type_assignment import build_field_index_map
+    from api._propagator import build_propagator
+    from api._diagrams import enumerate_unique_diagrams
 
     p = os.path.join(os.path.dirname(__file__), '..', 'theories',
                      'allen_cahn_1d_subcritical_infinite.theory.py')

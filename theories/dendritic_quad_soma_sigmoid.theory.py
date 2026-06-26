@@ -23,7 +23,7 @@ convolution to all powers).
 The sigmoid is what makes the dendritic output a true probability in (0,1).
 Cross-neuron coupling is carried by the off-diagonal weights wSD, wDS.
 """
-from pipeline.theory import TemporalTheoryBuilder
+from api.theory import TemporalTheoryBuilder
 
 
 def build():

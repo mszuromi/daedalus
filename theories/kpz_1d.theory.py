@@ -19,7 +19,7 @@ This is genuinely ``(∂φ)² ≠ ∂(φ²)`` — the distinguishing case from B
 Companion: ``theories/burgers_1d.theory.py`` (the *composite* ``∂_x(φ²)``
 sibling).
 """
-from pipeline.theory import SpatialTheoryBuilder
+from api.theory import SpatialTheoryBuilder
 
 
 def build():

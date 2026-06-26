@@ -1,7 +1,7 @@
 """
 tests/test_serialize.py
 ========================
-Round-trip tests for msrjd.core.serialize: save_theory / load_theory / reload_model.
+Round-trip tests for engine.core.serialize: save_theory / load_theory / reload_model.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -25,7 +25,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from msrjd.core.serialize import save_theory, load_theory, reload_model, _strip_callables
+from engine.core.serialize import save_theory, load_theory, reload_model, _strip_callables
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ def _make_expanded_ft():
     """
     # We need to load the SageMath files the SageMath way.
     # Import the field_theory module and model.
-    ft_code_path = os.path.join(_PROJECT_ROOT, 'msrjd', 'core', 'field_theory.py')
+    ft_code_path = os.path.join(_PROJECT_ROOT, 'engine', 'core', 'field_theory.py')
     model_path   = os.path.join(_PROJECT_ROOT, 'models', 'hawkes_sage.py')
 
     ns_ft = {}
@@ -134,7 +134,7 @@ def test_save_creates_files():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         assert os.path.isfile(os.path.join(save_path, 'metadata.json')), \
@@ -153,7 +153,7 @@ def test_metadata_contents():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         with open(os.path.join(save_path, 'metadata.json'), 'r') as f:
@@ -161,7 +161,7 @@ def test_metadata_contents():
 
         assert meta['format_version'] == 1
         assert meta['model_name'] == 'Nonlinear Hawkes 2-population'
-        assert meta['model_file'] == 'models/hawkes_sage.py'
+        assert meta['model_file'] == 'simulations/hawkes_sage.py'
         assert meta['model_var_name'] == 'HAWKES_MODEL'
         assert meta['taylor_order'] == 4
         assert meta['stationarity'] is True
@@ -183,7 +183,7 @@ def test_round_trip_no_propagator():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         meta, data = load_theory(save_path)
@@ -227,7 +227,7 @@ def test_round_trip_with_propagator():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, propagator_data=pd, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         meta, data = load_theory(save_path)
@@ -273,7 +273,7 @@ def test_reload_model():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         meta, data = load_theory(save_path)
@@ -302,14 +302,14 @@ def test_reload_and_reexpand():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft_orig, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         meta, data = load_theory(save_path)
         model = reload_model(meta, project_root=_PROJECT_ROOT)
 
         # Re-expand at order 3 (lower than original 4)
-        ft_code_path = os.path.join(_PROJECT_ROOT, 'msrjd', 'core', 'field_theory.py')
+        ft_code_path = os.path.join(_PROJECT_ROOT, 'engine', 'core', 'field_theory.py')
         ns_ft = {}
         with open(ft_code_path, 'r') as f:
             exec(compile(f.read(), ft_code_path, 'exec'), ns_ft)
@@ -399,7 +399,7 @@ def test_reload_model_bad_varname():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='NONEXISTENT_VAR')
 
         meta, _ = load_theory(save_path)
@@ -421,10 +421,10 @@ def test_idempotent_save():
     save_path = os.path.join(tmpdir, 'test_theory')
     try:
         save_theory(save_path, ft, stationarity=True,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
         save_theory(save_path, ft, stationarity=False,
-                    model_file='models/hawkes_sage.py',
+                    model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
         meta, data = load_theory(save_path)

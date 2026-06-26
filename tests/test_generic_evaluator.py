@@ -27,25 +27,25 @@ from sage.all import SR
 
 import importlib.util
 
-from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-from msrjd.integration.spatial.generic_evaluator import (
+from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from engine.integration.spatial.generic_evaluator import (
     loop_self_energy, bubble_delta_C, tadpole_delta_C,
 )
-from msrjd.integration.spatial.temporal_integrate import (
+from engine.integration.spatial.temporal_integrate import (
     sigma_parametric, bubble_edges,
 )
-from msrjd.integration.spatial import loop_dyson
-from msrjd.integration.spatial.pipeline_bridge import (
+from engine.integration.spatial import loop_dyson
+from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from msrjd.diagrams.type_assignment import build_field_index_map
+from engine.diagrams.type_assignment import build_field_index_map
 
 
 @pytest.fixture(scope='module')
 def rd_ell1():
-    from pipeline.theory import TheoryBuilder
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
+    from api.theory import TheoryBuilder
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
 
     model = (TheoryBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)
@@ -127,8 +127,8 @@ def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
 @pytest.fixture(scope='module')
 def allencahn_ell1():
     """Allen-Cahn (φ̃φ³) d=1, λ=0.1: ell=1 (descriptor, 𝒮(Γ)·prefactor) pairs."""
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
     repo = os.path.join(os.path.dirname(__file__), '..')
     spec = importlib.util.spec_from_file_location(
         'ac', os.path.join(repo, 'theories',

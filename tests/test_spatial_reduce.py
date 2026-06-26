@@ -2,7 +2,7 @@
 tests/test_spatial_reduce.py
 ============================
 Backend C — C0 (graph→Symanzik) and C1 (L-loop momentum integral),
-``msrjd.integration.spatial.spatial_reduce``.
+``engine.integration.spatial.spatial_reduce``.
 
 Validates:
   * C0: the Symanzik polynomials U, Q_eff reproduce the hand formulas of
@@ -25,10 +25,10 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.spatial.spatial_reduce import (
+from engine.integration.spatial.spatial_reduce import (
     symanzik_polynomials, symanzik_matrices, momentum_integral,
 )
-from msrjd.integration.spatial.loop_parametric import gaussian_momentum_integral
+from engine.integration.spatial.loop_parametric import gaussian_momentum_integral
 
 D = 1.3
 

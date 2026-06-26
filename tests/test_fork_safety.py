@@ -1,4 +1,4 @@
-"""Unit tests for the shared fork-safety guard (msrjd/fork_safety.py).
+"""Unit tests for the shared fork-safety guard (engine/fork_safety.py).
 
 Forking after Cocoa/BLAS init inside a macOS Jupyter kernel can hard-crash the
 kernel AND the OS, so every fork-based path must consult
@@ -11,7 +11,7 @@ Run:  sage -python -m pytest tests/test_fork_safety.py -q
 import sys
 import types
 
-from msrjd.fork_safety import fork_unsafe_in_notebook
+from engine.fork_safety import fork_unsafe_in_notebook
 
 
 def _fake_ipython(shell_class_name):

@@ -20,7 +20,7 @@ Phase 1 status: this file ``build()``s and ``FieldTheory.expand()``s.
 Propagator construction (heat kernel × exp decay) lands in Phase 2;
 the (t, x) loop integral in Phase 5.
 """
-from pipeline.theory import SpatialTheoryBuilder
+from api.theory import SpatialTheoryBuilder
 
 
 def build():

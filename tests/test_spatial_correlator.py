@@ -43,7 +43,7 @@ def _load(theory_file):
 
 def _compute(model, fundamental, spatial_grid, tau_max=2.0, tau_step=1.0,
              max_ell=0, k=2):
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     return compute_cumulants(
         model=model, k=k, max_ell=max_ell, fundamental=fundamental,
         external_fields=[('phi', 1), ('phi', 2)],
@@ -179,7 +179,7 @@ def test_max_ell_above_2_raises():
 
 
 def test_k_not_2_raises():
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
     # 3 external legs so we pass the len(external_fields)==k check and
     # reach the spatial k!=2 guard.
@@ -201,7 +201,7 @@ def test_radial_inverse_ft_matches_closed_form(d, tol):
     turns a self-energy-dressed δC(|q|,τ) into the real-space correlator in any d.
     (d=3 sinc converges more slowly under plain trapz — FFTLog would tighten it;
     the result is cutoff-limited, Regime 1.)"""
-    from msrjd.integration.spatial.spatial_correlator import (
+    from engine.integration.spatial.spatial_correlator import (
         radial_inverse_ft, free_correlator_static_closed_form as oracle,
     )
     mu = D = T = 1.0
@@ -218,7 +218,7 @@ def test_periodic_inverse_ft_limits(d):
     """periodic_inverse_ft (discrete-momentum lattice sum on a period-L cubic
     box) reproduces the infinite-domain radial_inverse_ft at large L, and gives
     a LARGER correlator at small L (the field's periodic images add)."""
-    from msrjd.integration.spatial.spatial_correlator import (
+    from engine.integration.spatial.spatial_correlator import (
         radial_inverse_ft, periodic_inverse_ft)
     mu = D = T = 1.0
     q = np.linspace(60.0 / 24000, 60.0, 6000)
@@ -236,8 +236,8 @@ def test_d2_periodic_through_compute_cumulants():
     """END-TO-END: a d=2 PERIODIC linear theory runs through compute_cumulants;
     large L matches the infinite-domain value and small L exceeds it — via the
     d≥2 periodic lattice-sum path + the model-boundary fallback in _bc_from_prop."""
-    from pipeline.compute import compute_cumulants
-    from pipeline.theory import TheoryBuilder
+    from api.compute import compute_cumulants
+    from api.theory import TheoryBuilder
 
     def build(bc, L):
         b = (TheoryBuilder('p2d', n_populations=0)
@@ -274,9 +274,9 @@ def test_d2_tree_through_compute_cumulants():
     max_ell=0) and the returned ``C(r,0)`` matches the exact d=2 free correlator
     (T/2πD)·K₀(r√(μ/D)).  Confirms the d=2 spatial dispatch (relaxed d≠1 gate +
     radial q→x transform) works through the public API."""
-    from pipeline.compute import compute_cumulants
-    from pipeline.theory import TheoryBuilder
-    from msrjd.integration.spatial.spatial_correlator import (
+    from api.compute import compute_cumulants
+    from api.theory import TheoryBuilder
+    from engine.integration.spatial.spatial_correlator import (
         free_correlator_static_closed_form as oracle,
     )
     m = (TheoryBuilder('lin2d', n_populations=0)
@@ -307,8 +307,8 @@ def test_d2_bubble_loop_through_compute_cumulants():
     correction δC(r,0)=C₁−C₀ is positive and q-dependent, and scales as g²
     (δC(2g)/δC(g)≈4) — confirming the d=2 bubble path (the d=2 ∫d²ℓ self-energy,
     validated vs the C-stack, + the d-independent Dyson collapse + radial q→x)."""
-    from pipeline.compute import compute_cumulants
-    from pipeline.theory import TheoryBuilder
+    from api.compute import compute_cumulants
+    from api.theory import TheoryBuilder
 
     def rd2(g):
         return (TheoryBuilder('rd2', n_populations=0)

@@ -1,7 +1,7 @@
 """
 tests/test_symbolic_integration.py
 ===================================
-Tests for msrjd.integration.symbolic — Build Phase H.
+Tests for engine.integration.symbolic — Build Phase H.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix, I, pi, var, exp
 
-from msrjd.integration.symbolic import (
+from engine.integration.symbolic import (
     check_propagator_available,
     assign_frequencies,
     solve_conservation,
@@ -22,8 +22,8 @@ from msrjd.integration.symbolic import (
     integrate_tree_level,
     integrate_to_time_domain,
 )
-from msrjd.diagrams.type_assignment import TypedDiagram
-from msrjd.core.vertices import VertexType, SourceType
+from engine.diagrams.type_assignment import TypedDiagram
+from engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

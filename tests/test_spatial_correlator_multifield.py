@@ -25,8 +25,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from pipeline.theory import TheoryBuilder
-from pipeline import compute_cumulants
+from api.theory import TheoryBuilder
+from api import compute_cumulants
 
 
 def _closed_equal_time(x, mu, D, T):
@@ -229,7 +229,7 @@ def test_mixed_dim0_field_spatial_request_raises_clean():
     """Requesting the SPATIAL correlator of a time-only (dim=0) field
     must raise a CLEAR SpatialPropagatorError (its heat-kernel block has
     B=0 diffusion), not a bare ZeroDivisionError from 1/sqrt(4*pi*B)."""
-    from msrjd.integration.spatial.heat_kernel import SpatialPropagatorError
+    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
     model = _mixed_dim_model()
     with pytest.raises(SpatialPropagatorError, match='time-only'):
         compute_cumulants(
@@ -269,7 +269,7 @@ def test_negative_diffusion_raises_anti_diffusive_error():
     """A wrong-sign Laplacian ("+ D*Laplacian") makes B<0 (anti-diffusion).
     The error must identify it as anti-diffusive / ill-posed and hint at the
     sign — NOT mislabel it as a zero-diffusion time-only (dim=0) field."""
-    from msrjd.integration.spatial.heat_kernel import SpatialPropagatorError
+    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
     model = (
         TheoryBuilder('neg diffusion', n_populations=0)
         .physical_field('phi', spatial_dim=1)

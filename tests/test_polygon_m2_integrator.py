@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.time_domain.final_integral import (
+from engine.integration.time_domain.final_integral import (
     EdgeModeSum,
     _exp_over_unit_triangle,
     _exp_over_triangle,

@@ -2,7 +2,7 @@
 tests/test_spatial_pipeline_bridge.py
 =====================================
 Stage A production — the "symbolic-in-q bridge"
-(``msrjd.integration.spatial.pipeline_bridge``).
+(``engine.integration.spatial.pipeline_bridge``).
 
 These tests pin the bridge that routes a Tier-1 spatial theory THROUGH the
 shared diagram pipeline (``compute_poles_and_residues`` +
@@ -36,16 +36,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR
 
-from msrjd.core.field_theory import FieldTheory
-from pipeline._propagator import build_propagator
-from msrjd.integration.spatial.spatial_correlator import (
+from engine.core.field_theory import FieldTheory
+from api._propagator import build_propagator
+from engine.integration.spatial.spatial_correlator import (
     compute_spatial_correlator_tree,
 )
-from msrjd.integration.spatial.pipeline_bridge import (
+from engine.integration.spatial.pipeline_bridge import (
     compute_spatial_correlator_via_pipeline,
 )
-from pipeline.theory import TheoryBuilder
-from pipeline import compute_cumulants
+from api.theory import TheoryBuilder
+from api import compute_cumulants
 
 _THEORY_DIR = os.path.join(os.path.dirname(__file__), '..', 'theories')
 _EXT = [('dphi', 1), ('dphi', 1)]
@@ -242,7 +242,7 @@ def test_generic_rd_full_diagram_1loop():
     to ~1e-4 in tests, and the φ̃φ³ tadpole == the −0.0375 oracle; this end-to-end
     test just checks the φ̃φ² path runs and is sane — the multi-vertex tadpole's
     magnitude is left to the simulator.)"""
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from engine.integration.spatial.pipeline_bridge import (
         compute_spatial_correlator_generic,
     )
     g_true = 0.35
@@ -272,11 +272,11 @@ def test_bubble_loop_form_factor_extraction():
     and F = q⁴ (Σ_K: both vertices external) — matching the hand derivation;
     an empty chain gives 1 (the plain bubble)."""
     import sympy as sp
-    from msrjd.core.vertices import extract_vertex_types, extract_source_types
-    from msrjd.diagrams.symmetry import classify_coefficient_factors
-    from pipeline._diagrams import enumerate_unique_diagrams
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from engine.core.vertices import extract_vertex_types, extract_source_types
+    from engine.diagrams.symmetry import classify_coefficient_factors
+    from api._diagrams import enumerate_unique_diagrams
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.pipeline_bridge import (
         bubble_loop_form_factor, _diagram_is_bubble)
 
     model = _load('reaction_diffusion_quadratic_1d')
@@ -304,10 +304,10 @@ def test_diagram_classification_bubble_vs_tadpole():
     """``_diagram_is_bubble`` (q·ℓ cross-term) + ``_prefactor_is_live`` (φ*²
     dead at φ*=0) correctly separate the φ̃φ² LIVE bubbles from the φ²-tadpole,
     and mark a φ⁴ theory's φ*²-bubbles DEAD at φ*=0 (→ the tadpole path)."""
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _live_bubbles,
     )
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
     # reaction-diffusion: 2 LIVE bubbles (16/8 T²g²) + 1 tadpole
     model = _load('reaction_diffusion_quadratic_1d')
     ft = FieldTheory(model, taylor_order=3); ft.expand()

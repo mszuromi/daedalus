@@ -31,9 +31,9 @@ import os
 import numpy as np
 import pytest
 
-# Load pipeline/save.py in isolation — avoids importing the whole
+# Load api/save.py in isolation — avoids importing the whole
 # (Sage-heavy) ``pipeline`` package just to test the path helpers.
-_SAVE_PY = os.path.join(os.path.dirname(__file__), '..', 'pipeline', 'save.py')
+_SAVE_PY = os.path.join(os.path.dirname(__file__), '..', 'api', 'save.py')
 _spec = importlib.util.spec_from_file_location('pipeline_save_under_test',
                                                _SAVE_PY)
 save = importlib.util.module_from_spec(_spec)

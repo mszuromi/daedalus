@@ -25,7 +25,7 @@ Mirrors the inline build of
 VERBATIM (same field, parameters, equation, action, boundary, initial).
 """
 
-from pipeline.theory import TheoryBuilder
+from api.theory import TheoryBuilder
 
 
 def build():

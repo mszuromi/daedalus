@@ -1,7 +1,7 @@
 """
 tests/test_causal_chambers.py
 =============================
-Backend C — C2-full core (``msrjd.integration.spatial.causal_chambers``): the
+Backend C — C2-full core (``engine.integration.spatial.causal_chambers``): the
 reused causal-poset chamber enumeration + smooth per-chamber quadrature.
 
 Validates:
@@ -27,7 +27,7 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.spatial.causal_chambers import (
+from engine.integration.spatial.causal_chambers import (
     causal_chambers, integrate_over_chambers,
 )
 

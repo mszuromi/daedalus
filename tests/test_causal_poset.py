@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.time_domain.final_integral import (
+from engine.integration.time_domain.final_integral import (
     _CausalPoset,
     _extract_causal_poset,
     _enumerate_linear_extensions,
@@ -489,7 +489,7 @@ def test_poset_integrator_m3_chain_two_modes_vs_scipy():
 
     # The poset integrator uses POLYGON_BBOX_CAP (=200) as the
     # outer cap when no scalar upper is given.  Match that here.
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         POLYGON_BBOX_CAP,
     )
     ref, _ = nquad(

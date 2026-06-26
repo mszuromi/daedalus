@@ -2,9 +2,9 @@
 fields, in BOTH the per-diagram and grouped Phase J paths.
 
 Before the fix, both ``integrate_diagram``'s ``contribution`` closure
-(``msrjd/integration/time_domain/final_integral.py``) and
+(``engine/integration/time_domain/final_integral.py``) and
 ``integrate_grouped_diagram``'s ``contribution`` closure
-(``msrjd/integration/time_domain/grouped_integral.py``) enumerated 2!
+(``engine/integration/time_domain/grouped_integral.py``) enumerated 2!
 Wick contractions for ⟨x(t1) x(t2)⟩ when both externals were the same
 field (e.g. ``[('x', 1), ('x', 1)]``) and re-fed ``ext_time_values``
 through each permutation.  With ``origin_leaf_idx`` pinning one leaf at
@@ -43,7 +43,7 @@ def _load_theory(path):
 def _run_tree(use_grouped):
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     m = _load_theory(THEORY_PATH)
     mu, D = -1.0, 0.1
     fundamental = {'mu': [mu], 'g': [1.0], 'D': [D]}
@@ -88,7 +88,7 @@ def test_identical_externals_match_OU_grouped():
     """Grouped Phase J path: same OU agreement as per-diagram.
 
     The grouped path had the same Wick-permutation bug in its own
-    ``contribution`` closure (``msrjd/integration/time_domain/
+    ``contribution`` closure (``engine/integration/time_domain/
     grouped_integral.py``); this regression locks in the parallel fix."""
     _assert_matches_OU(_run_tree(use_grouped=True), 'grouped')
 
@@ -96,7 +96,7 @@ def test_identical_externals_match_OU_grouped():
 def _run_1loop(use_grouped):
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     m = _load_theory(THEORY_PATH)
     fundamental = {'mu': [-1.0], 'g': [1.0], 'D': [0.1]}
     return compute_cumulants(
@@ -151,7 +151,7 @@ def _run_ou_quartic_2loop(eps, use_grouped=False):
     """
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     theory_path = os.path.join(
         os.path.dirname(__file__), '..', 'theories',
         'ou_quartic_double_well.theory.py',
@@ -196,7 +196,7 @@ def test_ou_quartic_2loop_matches_boltzmann_grouped():
     """Same as the per-diagram test, on the grouped Phase J path.
 
     Locks in the parallel ``_compensation`` fix in
-    ``msrjd/integration/time_domain/grouped_integral.py``.
+    ``engine/integration/time_domain/grouped_integral.py``.
     """
     for eps in (0.001, 0.01, 0.1):
         res = _run_ou_quartic_2loop(eps, use_grouped=True)

@@ -1,7 +1,7 @@
 """
 tests/test_temporal_integrate.py
 ================================
-Backend C — C2 (causal time-simplex), ``msrjd.integration.spatial.temporal_integrate``.
+Backend C — C2 (causal time-simplex), ``engine.integration.spatial.temporal_integrate``.
 
 Validates the parametric self-energy assembly Σ(q,t) for 2-vertex diagrams:
   * 1-loop bubble Σ_R / Σ_K vs backend B (loop_parametric.sigma_R/K_kernel, itself
@@ -22,13 +22,13 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.spatial.temporal_integrate import (
+from engine.integration.spatial.temporal_integrate import (
     sigma_parametric, bubble_edges, sunset_edges, bubble_delta_equal_time_via_C,
 )
-from msrjd.integration.spatial.loop_parametric import (
+from engine.integration.spatial.loop_parametric import (
     sigma_R_kernel, sigma_K_kernel,
 )
-from msrjd.integration.spatial.loop_dyson import bubble_delta_S
+from engine.integration.spatial.loop_dyson import bubble_delta_S
 
 MU = D = T = 1.0
 

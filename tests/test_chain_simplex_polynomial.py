@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.time_domain.final_integral import (
+from engine.integration.time_domain.final_integral import (
     _exp_over_chain_simplex,
     _exp_over_chain_simplex_polynomial,
 )

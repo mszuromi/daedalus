@@ -3,7 +3,7 @@ tests/test_kpz_burgers_sim.py
 =============================
 Fast, deterministic (fixed-seed) smoke + physics checks for the KPZ /
 Burgers gradient-vertex forcings added to the 1-D spectral simulator
-(``models/spatial_field_1d_sim.py``).  The quantitative multi-seed sim-vs-
+(``simulations/spatial_field_1d_sim.py``).  The quantitative multi-seed sim-vs-
 framework validation lives in ``docs/kpz_burgers_sim_validation.py``.
 
 Run::

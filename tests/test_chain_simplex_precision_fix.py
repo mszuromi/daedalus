@@ -3,7 +3,7 @@ tests/test_chain_simplex_precision_fix.py
 =========================================
 Regression tests for the chain-simplex close-pole precision fix
 (``USE_CHAIN_SIMPLEX_PRECISION_FIX`` flag at
-``msrjd/integration/time_domain/final_integral.py:1017+``).
+``engine/integration/time_domain/final_integral.py:1017+``).
 
 Background
 ----------
@@ -30,8 +30,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.time_domain import final_integral as _fi
-from msrjd.integration.time_domain.final_integral import (
+from engine.integration.time_domain import final_integral as _fi
+from engine.integration.time_domain.final_integral import (
     _exp_over_chain_simplex,
     _exp_over_chain_simplex_fast,
     _exp_over_chain_simplex_mpmath,

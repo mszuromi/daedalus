@@ -28,10 +28,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from sage.all import SR, var, matrix, I as SR_I                 # noqa: E402
 from scipy.linalg import expm                                   # noqa: E402
 
-from msrjd.integration.spatial.heat_kernel import (             # noqa: E402
+from engine.integration.spatial.heat_kernel import (             # noqa: E402
     reaction_diffusion_matrices, extract_mass_diffusion, SpatialPropagatorError,
 )
-from msrjd.integration.spatial.spectral_propagator import build_reference  # noqa: E402
+from engine.integration.spatial.spectral_propagator import build_reference  # noqa: E402
 
 omega = var('omega')
 k = var('k')

@@ -1,7 +1,7 @@
 """
 tests/test_vertices.py
 ======================
-Tests for msrjd.core.vertices — vertex decomposition (Build Phase B).
+Tests for engine.core.vertices — vertex decomposition (Build Phase B).
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,12 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, PolynomialRing
 
-from msrjd.core.vertices import (
+from engine.core.vertices import (
     VertexType, SourceType, _parse_field_name,
     decompose_sector, extract_vertex_types, extract_source_types,
     available_degrees,
 )
-from msrjd.core.field_theory import FieldTheory
+from engine.core.field_theory import FieldTheory
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

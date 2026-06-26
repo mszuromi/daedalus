@@ -34,5 +34,5 @@ tutorial), or by loading a saved `theories/*.theory.py` file (`dd.load_theory`).
 ---
 
 `saved_results/` and `saved_theories/` are shared output directories (gitignored). Every
-notebook opens with a depth-robust root cell that locates the `pipeline/` package and puts
+notebook opens with a depth-robust root cell that locates the `api/` package and puts
 `notebooks/` on the path, so it runs from any working directory.

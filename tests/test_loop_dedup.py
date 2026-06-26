@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix, I
 
-from msrjd.integration.symbolic import (
+from engine.integration.symbolic import (
     assign_frequencies,
     solve_conservation,
     build_integrand_stationary,
@@ -24,8 +24,8 @@ from msrjd.integration.symbolic import (
     loop_kernel_signature,
     group_diagrams_by_kernel,
 )
-from msrjd.diagrams.type_assignment import TypedDiagram
-from msrjd.core.vertices import VertexType, SourceType
+from engine.diagrams.type_assignment import TypedDiagram
+from engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

@@ -26,10 +26,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.integrate import quad                                  # noqa: E402
 
-from msrjd.integration.spatial.diagram_descriptor import (        # noqa: E402
+from engine.integration.spatial.diagram_descriptor import (        # noqa: E402
     CEdge, CStackDiagram,
 )
-from msrjd.integration.spatial.full_integrator import (           # noqa: E402
+from engine.integration.spatial.full_integrator import (           # noqa: E402
     diagram_kinematic, diagram_kinematic_spectral, spectral_rows,
 )
 
@@ -166,7 +166,7 @@ def test_insertion_identity_vs_finite_difference():
     """The closed-form n=1 insertion factor (−|k_r|²) == (1/D)∂/∂w_r of the
     momentum factor — pinned per-sample against a central finite difference of
     _momentum_factor_batch, for a LOOP row and an EXTERNAL row of the bubble."""
-    from msrjd.integration.spatial.full_integrator import _momentum_factor_batch
+    from engine.integration.spatial.full_integrator import _momentum_factor_batch
 
     descr = _bubble()
     rows = spectral_rows(descr)
@@ -253,7 +253,7 @@ def test_insertion_order2_vs_fd():
     The implemented pieces (g_r, v_r, g_rs and the h1/h2 B-derivatives)
     are replicated here independently from first principles."""
     import numpy as np
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _symanzik_kernel_batch)
 
     rng = np.random.default_rng(3)
@@ -327,7 +327,7 @@ def test_insertion_general_order_vs_symbolic():
     import numpy as np
     import sympy as sp
     from math import factorial as fct
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _set_partitions, _dlnU_block, _dB_block)
 
     rng = np.random.default_rng(5)

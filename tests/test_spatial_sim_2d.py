@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from models.spatial_field_2d_sim import (
+from simulations.spatial_field_2d_sim import (
     simulate_2d, structure_factor_2d, radial_structure_factor_2d,
     radial_correlator_2d, _dispersion_2d,
 )

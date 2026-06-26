@@ -20,7 +20,7 @@ import daedalus as dd  # noqa: E402
 
 
 def test_repo_root_and_theories():
-    assert os.path.isdir(os.path.join(dd.REPO_ROOT, 'pipeline'))
+    assert os.path.isdir(os.path.join(dd.REPO_ROOT, 'api'))
     names = dd.list_theories()
     assert 'kpz_1d' in names and 'ou_quartic_double_well' in names
 

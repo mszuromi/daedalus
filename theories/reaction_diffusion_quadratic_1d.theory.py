@@ -21,7 +21,7 @@ Subcritical / stable fixed point: φ* = 0 (the other root φ* = −μ/g is
 unstable); we expand around φ* = 0.
 """
 
-from pipeline.theory import SpatialTheoryBuilder
+from api.theory import SpatialTheoryBuilder
 
 
 def build():

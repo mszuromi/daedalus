@@ -28,13 +28,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.core.field_theory import FieldTheory                 # noqa: E402
-from pipeline._propagator import build_propagator               # noqa: E402
-from pipeline.theory import SpatialTheoryBuilder                # noqa: E402
-from msrjd.integration.spatial.spatial_correlator import (      # noqa: E402
+from engine.core.field_theory import FieldTheory                 # noqa: E402
+from api._propagator import build_propagator               # noqa: E402
+from api.theory import SpatialTheoryBuilder                # noqa: E402
+from engine.integration.spatial.spatial_correlator import (      # noqa: E402
     free_two_point, extract_noise_matrix,
 )
-from msrjd.integration.spatial.pipeline_bridge import (         # noqa: E402
+from engine.integration.spatial.pipeline_bridge import (         # noqa: E402
     compute_coupled_tree_correlator,
 )
 
@@ -116,7 +116,7 @@ def test_coupled_extraction_and_cross_correlation():
 def test_coupled_routes_through_compute_cumulants():
     """compute_cumulants (public API, max_ell=0) on a coupled theory routes to the
     coupled driver and returns C(x,τ) matching a direct driver call."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     g, h = 0.4, 0.3
     model = _two_species(g, h)
     sg = np.array([0.0, 0.5, 1.0])
@@ -141,7 +141,7 @@ def test_public_api_noise_only_coupling_cross_correlator():
     public API.  It must now route to the coupled driver and return the
     cross-correlator ⟨a b⟩ (matching a direct driver call); and the cross legs
     of an UNCOUPLED theory (Tab=0) must give ⟨a b⟩ = 0, not raise."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     sg = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])   # symmetric → check evenness
     ix0 = int(np.argmin(np.abs(sg)))             # x=0 (centre)
     # (i) cross noise present → cross-correlator nonzero, matches the driver
@@ -217,7 +217,7 @@ def test_dyson_dge2_vs_exact_lyapunov():
     EXACT per-q matrix Lyapunov solution (radial-IFT'd on the SAME q-grid),
     confirming the Dyson series rides the new d≥2 radial path correctly."""
     from scipy.linalg import solve_continuous_lyapunov
-    from msrjd.integration.spatial.spatial_correlator import radial_inverse_ft
+    from engine.integration.spatial.spatial_correlator import radial_inverse_ft
     mua, mub, Da, Db, gg, hh, Ta, Tb = 1.5, 1.2, 0.95, 0.7, 0.4, 0.3, 1.0, 0.7
     b = (SpatialTheoryBuilder('uneqD2')
          .physical_field('a', spatial_dim=2).physical_field('b', spatial_dim=2)

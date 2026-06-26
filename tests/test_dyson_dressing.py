@@ -2,7 +2,7 @@
 tests/test_dyson_dressing.py
 ============================
 Dyson dressing D-2/D-3 core + the D-5 tree-level validation LADDER
-(``msrjd.integration.spatial.dyson_dressing``).
+(``engine.integration.spatial.dyson_dressing``).
 
   * ``𝓗_0(t) = e^{−Mt}`` (the bare matrix decay; B27 at n=0);
   * ``dressed_GR`` order-convergence: ``G^{(N)}(t,q) → expm(−(M+𝒟q²)t)``
@@ -26,10 +26,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.linalg import expm, solve_continuous_lyapunov         # noqa: E402
 
-from msrjd.integration.spatial.dyson_dressing import (           # noqa: E402
+from engine.integration.spatial.dyson_dressing import (           # noqa: E402
     hcal_n, dressed_GR, dressed_tree_C,
 )
-from msrjd.integration.spatial.spectral_propagator import (      # noqa: E402
+from engine.integration.spatial.spectral_propagator import (      # noqa: E402
     build_reference, coupled_two_point, split_reference_diffusion,
 )
 
@@ -114,7 +114,7 @@ _MU1, _MU2, _D1, _D2, _G, _T1, _T2 = 1.5, 1.2, 0.9, 0.5, 0.4, 0.5, 0.4
 
 
 def _unequal_model(order=None, periodic_L=None):
-    from pipeline.theory import SpatialTheoryBuilder
+    from api.theory import SpatialTheoryBuilder
     b = (SpatialTheoryBuilder('coupled2_unequalD')
          .physical_field('a', spatial_dim=1)
          .physical_field('b', spatial_dim=1)
@@ -169,7 +169,7 @@ def test_unequal_D_e2e_compute_cumulants_periodic():
     """D-5 e2e: unequal-D coupled theory + .dyson_order(3) flows through
     compute_cumulants (periodic box) and matches the exact per-mode
     expm/Lyapunov oracle to the truncation accuracy."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     L = 20.0
     model = _unequal_model(order=3, periodic_L=L)
     xs = np.array([0.0, 1.0])
@@ -191,7 +191,7 @@ def test_unequal_D_e2e_compute_cumulants_periodic():
 def test_unequal_D_default_policy_raises_actionable():
     """No .dyson_order ⇒ the default {'mode':'off'} policy still raises the
     clean unequal-D error (mentioning dyson_order)."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     model = _unequal_model(order=None)
     with pytest.raises(NotImplementedError, match='scalar-diffusion'):
         compute_cumulants(model=model, k=2, max_ell=0, fundamental=_UF,
@@ -207,7 +207,7 @@ def test_unequal_D_loops_order3_runs():
     H_n labels): dyson_order(3) with max_ell=1 must RUN and return
     finite real values.  (Periodic loop corrections are still gated —
     use the infinite-boundary ladder model.)"""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     model = _ladder_coupled_model(3)
     th = compute_cumulants(model=model, k=2, max_ell=1, fundamental=_LUF,
                            external_fields=[('a', 1), ('a', 1)],
@@ -227,7 +227,7 @@ def _ladder_coupled_model(order):
     coupled routing (symbolically nonzero K_ft off-diagonals) while the exact
     physics is two independent fields — field a's answer is the trusted
     single-field generic loop path at D=Da."""
-    from pipeline.theory import SpatialTheoryBuilder
+    from api.theory import SpatialTheoryBuilder
     b = (SpatialTheoryBuilder('ladder_unequalD')
          .physical_field('a', spatial_dim=1)
          .physical_field('b', spatial_dim=1)
@@ -261,8 +261,8 @@ def test_unequal_D_loop_dressing_ladder():
     the wrong D₀=(Da+Db)/2 heat kernel, error O(ρ)) → order 1 (the (−|k|²)
     insertion + 𝓗₁ poles, error O(ρ²)); ρ = ‖𝒟̂‖/D₀ ≈ 0.29.  Covers tadpole
     AND momentum-mixing bubble topologies (a² + a³ vertices)."""
-    from pipeline import compute_cumulants
-    from pipeline.theory import SpatialTheoryBuilder
+    from api import compute_cumulants
+    from api.theory import SpatialTheoryBuilder
 
     sg = np.array([0.0, 0.8])
     kw = dict(k=2, max_ell=1, tau_max=0.6, tau_step=0.6,

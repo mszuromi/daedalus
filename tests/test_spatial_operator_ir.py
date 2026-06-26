@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, var, function
 
-from pipeline.spatial_operator_ir import (
+from api.spatial_operator_ir import (
     Lap, Dt, Dx, apply_linearity, expand_about_saddle, kill_means,
     to_derived_generators, form_factor, prepare_action, fourier_lower,
     classify_generators,
@@ -171,8 +171,8 @@ def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
     the ∇²(δφ²)/∇²(δφ³) vertices are correctly flagged as needing the
     momentum-first form-factor integrator."""
     import pytest
-    from pipeline.theory import TheoryBuilder
-    from msrjd.core.field_theory import FieldTheory
+    from api.theory import TheoryBuilder
+    from engine.core.field_theory import FieldTheory
 
     m = (TheoryBuilder('ch_v2', n_populations=0)
          .physical_field('phi', spatial_dim=1)
@@ -198,8 +198,8 @@ def test_temporal_theory_untouched_by_spatial_v2():
     and the operator-IR overrides on ``ns._operator_ir`` (theory_compiler), so
     asserting those are absent/off PROVES neither path can fire — ``Dt`` stays
     the bare v1 multiplicative symbol and the action expands exactly as before."""
-    from pipeline.theory import TheoryBuilder
-    from msrjd.core.field_theory import FieldTheory
+    from api.theory import TheoryBuilder
+    from engine.core.field_theory import FieldTheory
 
     m = (TheoryBuilder('ou_temporal', n_populations=0)
          .physical_field('phi')                       # NO spatial_dim → temporal
@@ -258,8 +258,8 @@ def test_operator_ir_authoring_through_theorybuilder():
     field_theory namespace → theory_compiler action lambda — with the IR ops
     overriding the bare symbols ONLY in this opted-in theory's action namespace.
     """
-    from pipeline.theory import TheoryBuilder
-    from msrjd.core.field_theory import FieldTheory
+    from api.theory import TheoryBuilder
+    from engine.core.field_theory import FieldTheory
 
     m = (TheoryBuilder('rd_v2_operator_ir', n_populations=0)
          .physical_field('phi', spatial_dim=1)
@@ -302,8 +302,8 @@ def test_operator_ir_reduces_to_v1_action_for_reaction_diffusion():
     ``.operator_ir()`` reaction-diffusion theory flows through the entire
     validated v1 pipeline unchanged.  Compares the evaluated/processed action
     SR expression of the two authorings term-for-term."""
-    from pipeline.theory import TheoryBuilder
-    from msrjd.core.field_theory import FieldTheory
+    from api.theory import TheoryBuilder
+    from engine.core.field_theory import FieldTheory
 
     def _build(use_ir):
         tb = (TheoryBuilder('rd_cmp', n_populations=0)
@@ -335,8 +335,8 @@ def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
     confirming the v2 authoring flows through the whole pipeline (MF solve,
     propagator, spatial bridge) unchanged."""
     import numpy as np
-    from pipeline.compute import compute_cumulants
-    from pipeline.theory import TheoryBuilder
+    from api.compute import compute_cumulants
+    from api.theory import TheoryBuilder
 
     def _build(use_ir):
         tb = (TheoryBuilder('rd_e2e', n_populations=0)
@@ -379,8 +379,8 @@ def test_operator_ir_derivative_vertex_one_loop():
     it is correct but expensive end-to-end, so it is not exercised here."""
     import numpy as np
     import pytest
-    from pipeline.compute import compute_cumulants
-    from pipeline.theory import TheoryBuilder
+    from api.compute import compute_cumulants
+    from api.theory import TheoryBuilder
 
     m = (TheoryBuilder('rd_deriv_e2e', n_populations=0)
          .physical_field('phi', spatial_dim=1)
@@ -420,12 +420,12 @@ def test_operator_ir_multivertex_table_and_formfactor():
     types PER NODE, reducing to the single-mode form factor when one weight→0."""
     import sympy as _sp
     from sage.all import SR
-    from pipeline.theory import TheoryBuilder
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, diagram_form_factor, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     m = (TheoryBuilder('mb+kpz', n_populations=0)
          .physical_field('phi', spatial_dim=1)

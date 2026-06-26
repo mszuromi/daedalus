@@ -13,7 +13,7 @@ white-noise system and the loop integrals stay cheap.  At mu>0 the mean-field
 saddle is x*=0 (single well); mu<0 is the genuine double well (see
 ``ou_quartic_double_well``).
 """
-from pipeline.theory import TemporalTheoryBuilder
+from api.theory import TemporalTheoryBuilder
 
 
 def build():

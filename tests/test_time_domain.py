@@ -4,7 +4,7 @@ tests/test_time_domain.py
 Phase J (time-domain integration) MVP tests.
 
 Scope: only the Phase J evaluation layer — tree-level diagrams handled
-by `msrjd.integration.time_domain`. Loop kernel reduction, kernel
+by `engine.integration.time_domain`. Loop kernel reduction, kernel
 caching, and parent-diagram contraction are NOT yet implemented and
 those paths should raise or be marked 'skipped'.
 
@@ -29,14 +29,14 @@ from sage.all import (
     SR, I, matrix, DiGraph, solve as sage_solve, heaviside, exp,
 )
 
-from msrjd.diagrams.type_assignment import TypedDiagram
-from msrjd.core.vertices import VertexType, SourceType
-from msrjd.integration.symbolic import (
+from engine.diagrams.type_assignment import TypedDiagram
+from engine.core.vertices import VertexType, SourceType
+from engine.integration.symbolic import (
     build_integrand_stationary,
     group_diagrams_by_kernel,
     integrate_to_time_domain,
 )
-from msrjd.integration.time_domain import (
+from engine.integration.time_domain import (
     build_G_t_matrix,
     G_t_entry,
     identify_loop_subgraphs,
@@ -871,7 +871,7 @@ def test_phase_J_2d_polytope_decays_at_large_tau():
     internal vertices (forcing `m = 2` polytope integration) and
     verifies the result decays at large |τ|.
     """
-    # VertexType is imported from msrjd.core.vertices at the top of this file
+    # VertexType is imported from engine.core.vertices at the top of this file
 
     # Build a 2×2 propagator with two retarded poles
     omega = SR.var('omega')
@@ -994,7 +994,7 @@ def test_phase_J_nd_polytope_preserves_deferred_constraints():
                                          -5 to 0 by the deferred-
                                          inner constraint `s_1 > s_0`)
     """
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1053,7 +1053,7 @@ def test_phase_J_nd_polytope_simplex_gaussian():
     up to ~1e-7 tail corrections.
     """
     import math
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1109,7 +1109,7 @@ def test_phase_J_heaviside_filter_kills_overshoot():
     would give a different and CAP-sensitive answer.
     """
     import math
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1185,7 +1185,7 @@ def test_phase_J_2d_polytope_pure_external_constraint():
     Exact: `(1 - exp(-0.5))² / 0.01 ≈ 15.485`
     """
     import math
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _integrate_polytope,
     )
 
@@ -1255,7 +1255,7 @@ def test_phase_J_fix_D_vectorized_bound_fn_matches_scalar():
     silent regression of the vectorised path would move the integral
     by at least one simplex-edge worth of volume.
     """
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1327,7 +1327,7 @@ def test_phase_J_fix_D_heaviside_filter_sparse_path():
       3. For a mixed constraint, the filter correctly evaluates
          `a_int · s_vals + c_eff` using only the nonzero entries.
     """
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _make_heaviside_filtered_integrand,
     )
 
@@ -1395,7 +1395,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
       2. The per-point values match the fast_callable path to
          absolute tolerance 1e-10 (double-precision roundoff).
     """
-    from msrjd.integration.time_domain.final_integral import (
+    from engine.integration.time_domain.final_integral import (
         _build_fast_subset_evaluator,
     )
     pd = _propagator_data_2pop_nondiagonal()
@@ -1608,7 +1608,7 @@ def test_phase_J_fork_in_notebook_guard_degrades_to_serial(monkeypatch):
     The simulation patches ``sys.platform`` and ``IPython.get_ipython`` so the
     test is deterministic on any host OS (CI is typically Linux).
     """
-    from msrjd.integration.time_domain import pipeline as P
+    from engine.integration.time_domain import pipeline as P
 
     # (a) No ZMQ kernel → guard inert for every start method.
     monkeypatch.setattr(P.sys, 'platform', 'darwin', raising=False)

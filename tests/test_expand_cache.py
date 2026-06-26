@@ -1,5 +1,5 @@
 """
-Unit tests for ``pipeline/_expand_cache.py``.
+Unit tests for ``api/_expand_cache.py``.
 
 Coverage:
   * Save → load round-trip at the same taylor_order produces identical
@@ -64,7 +64,7 @@ def isolated_cache(monkeypatch, tmp_path):
 
 def _expand_fresh(model, taylor_order: int):
     """Build + expand a fresh ``FieldTheory`` at ``taylor_order``."""
-    from msrjd.core.field_theory import FieldTheory
+    from engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=taylor_order)
     ft.expand()
     return ft
@@ -76,8 +76,8 @@ def _expand_fresh(model, taylor_order: int):
 def test_round_trip_same_order(model_and_fund, isolated_cache):
     """Save and reload at the same order — ``_by_tp`` must match
     bigrade-by-bigrade."""
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
 
     model, _ = model_and_fund
     ft1 = _expand_fresh(model, taylor_order=4)
@@ -101,8 +101,8 @@ def test_round_trip_same_order(model_and_fund, isolated_cache):
 def test_downgrade_filter(model_and_fund, isolated_cache):
     """Save at order 4, load with target_order 2 — bigrades with
     total degree > 2 must be dropped."""
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
 
     model, _ = model_and_fund
     ft1 = _expand_fresh(model, taylor_order=4)
@@ -127,8 +127,8 @@ def test_find_best_cached_order_picks_smallest_above_target(
         model_and_fund, isolated_cache):
     """When multiple cached orders satisfy ``>= target``, pick the
     smallest one (least filter work)."""
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
 
     model, _ = model_and_fund
 
@@ -157,7 +157,7 @@ def test_compute_cumulants_warm_cache_speedup(
     and produces identical numerical output."""
     import time
     import numpy as np
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
 
     model, fundamental = model_and_fund
 
@@ -195,8 +195,8 @@ def test_compute_cumulants_warm_cache_speedup(
 def test_precompute_populates_cache(model_and_fund, isolated_cache):
     """``precompute(model)`` writes expand_taylor2.sobj + propagator.sobj
     and reports PASS for a healthy theory."""
-    from pipeline import precompute
-    from pipeline._expand_cache import cache_dir
+    from api import precompute
+    from api._expand_cache import cache_dir
 
     model, _ = model_and_fund
     result = precompute(model, verbose=False)
@@ -222,8 +222,8 @@ def test_default_taylor_order_matches_diagrammatic_minimum(
     a default-taylor compute_cumulants(k=2, max_ell=0) call must HIT
     that cache (and not produce expand_taylor4.sobj as a side effect).
     """
-    from pipeline import compute_cumulants, precompute
-    from pipeline._expand_cache import cache_dir
+    from api import compute_cumulants, precompute
+    from api._expand_cache import cache_dir
 
     model, fundamental = model_and_fund
 
@@ -311,8 +311,8 @@ def test_operator_ir_table_rebuilt_on_prepare_for_load(combined_model):
     A bare ``_build_namespace`` sets ``_operator_ir`` but NOT the table —
     that is what the cache-load path used to inherit.
     """
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
 
     # Reference: a fresh expand populates the table.
     ft_fresh = FieldTheory(combined_model, taylor_order=4)
@@ -343,8 +343,8 @@ def test_operator_ir_stale_unsigned_cache_rejected(combined_model,
     for a derivative-vertex theory is the exact shape of the on-disk stale
     file that caused the bug.  ``load_expand`` must reject it (return
     ``False``) rather than load it with the form factors dropped."""
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
     from sage.all import save as sage_save, load as sage_load
 
     # 1) Save a healthy (signed) bundle.
@@ -371,8 +371,8 @@ def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
     """A bundle saved by the fix carries a matching signature, so a
     subsequent ``load_expand`` accepts it (the cache still works — the
     signature only rejects *mismatches*)."""
-    from msrjd.core.field_theory import FieldTheory
-    from pipeline import _expand_cache as ec
+    from engine.core.field_theory import FieldTheory
+    from api import _expand_cache as ec
 
     ft = _expand_fresh(combined_model, taylor_order=4)
     ec.save_expand(combined_model, ft, cache_dir_root=isolated_cache)
@@ -396,7 +396,7 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
     'composite+perleg' form factors (vertex_mode) rather than collapsing
     to the bare φ̃φ² value."""
     import numpy as np
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
 
     def _c00_mode(res):
         si = res.get('spatial_info') or {}

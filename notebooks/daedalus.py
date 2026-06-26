@@ -39,13 +39,13 @@ import matplotlib.pyplot as plt
 
 def repo_root() -> str:
     """Walk up from this file (or cwd, in a bare notebook) until the
-    ``pipeline/`` package is found.  Robust to running from any of the
+    ``api/`` package is found.  Robust to running from any of the
     ``notebooks/`` subdirectories."""
     here = os.path.dirname(os.path.abspath(__file__)) \
         if '__file__' in globals() else os.path.abspath('')
     root = here
     while root != os.path.dirname(root):
-        if os.path.isdir(os.path.join(root, 'pipeline')):
+        if os.path.isdir(os.path.join(root, 'api')):
             return root
         root = os.path.dirname(root)
     return here
@@ -63,26 +63,26 @@ if REPO_ROOT not in _sys.path:
 # alongside the notebook helpers defined below (``Config``, ``run``, ``plot_*``,
 # ``load_theory``, …).  Resolved lazily on first access (PEP 562) so
 # ``import daedalus`` stays light and only pulls in Sage when something is
-# actually used.  The canonical ``from pipeline... import <name>`` forms keep
+# actually used.  The canonical ``from api... import <name>`` forms keep
 # working — these are aliases; that explicit form is the one to use inside a
 # saved ``theories/*.theory.py`` file (which cannot import this notebook helper).
 _PIPELINE_EXPORTS = {
     # authoring — build a theory in code (pipeline.theory)
-    'TheoryBuilder':             'pipeline.theory',
-    'TemporalTheoryBuilder':     'pipeline.theory',
-    'SpatialTheoryBuilder':      'pipeline.theory',
+    'TheoryBuilder':             'api.theory',
+    'TemporalTheoryBuilder':     'api.theory',
+    'SpatialTheoryBuilder':      'api.theory',
     # graphical builder (pipeline.ui)
-    'TheoryUI':                  'pipeline.ui',
+    'TheoryUI':                  'api.ui',
     # compute / report / precompute / persistence / access (pipeline top level)
-    'compute_cumulants':         'pipeline',
-    'generate_report':           'pipeline',
-    'precompute':                'pipeline',
-    'save_npz':                  'pipeline',
-    'save_csv':                  'pipeline',
-    'params_slug':               'pipeline',
-    'MeanField':                 'pipeline',
-    'Parameters':                'pipeline',
-    'normalize_external_fields': 'pipeline',
+    'compute_cumulants':         'api',
+    'generate_report':           'api',
+    'precompute':                'api',
+    'save_npz':                  'api',
+    'save_csv':                  'api',
+    'params_slug':               'api',
+    'MeanField':                 'api',
+    'Parameters':                'api',
+    'normalize_external_fields': 'api',
 }
 
 
@@ -605,7 +605,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     ``compute_cumulants`` run per order 2..k, each delivering every loop order
     at once (the order-k run is reused)."""
     import itertools
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
     tau = np.asarray(res['tau_grid'], dtype=float)
     f0 = kw['external_fields'][0]
     L = int(kw.get('max_ell', 0) or 0)
@@ -687,7 +687,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
     k≥3 event path, and the Dyson-order override.  Returns the result
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
 
     max_ell = (cfg.max_ell if cfg.max_ell is not None
                else (_meta(module, 'ell_default', 0) if module else 0))
@@ -1478,7 +1478,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     fallback.  Returns the Matplotlib ``Figure`` (and writes a PNG if ``save``
     is given).  Practical range: ``k + max_ell ≤ 4``.
     """
-    from msrjd.diagrams.prediagram_plot import plot_prediagrams as _pp
+    from engine.diagrams.prediagram_plot import plot_prediagrams as _pp
     return _pp(model, int(k), int(max_ell), save=save, ncol=ncol)
 
 
@@ -1501,7 +1501,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
     printed per prediagram.  ``use_propagator=True`` builds the propagator and
     drops identically-zero typings (the exact contributing set).
     """
-    from msrjd.diagrams.prediagram_plot import prediagram_mappings as _pm
+    from engine.diagrams.prediagram_plot import prediagram_mappings as _pm
     return _pm(model, int(k), int(max_ell), external_fields=external_fields,
                use_propagator=use_propagator, max_typings=max_typings,
                printout=printout)

@@ -21,7 +21,7 @@ sys.path.insert(0, '/Users/matthewszuromi/Documents/Education/BU PhD/'
                    'Ocker Lab/Automated Feynman Calculations')
 
 from sage.all import SR
-from msrjd.core.convolution import (
+from engine.core.convolution import (
     Conv, reduce_conv_in_action, kernel_attachments_in_coefficient,
 )
 

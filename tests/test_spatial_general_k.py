@@ -44,13 +44,13 @@ from sage.all import SR  # noqa: E402
 
 
 def _build_records(k, max_ell=1):
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     b = (TheoryBuilder('rd-quad-generalk', n_populations=0)
          .physical_field('p', spatial_dim=1)
@@ -93,8 +93,8 @@ def recs3():
 
 def test_k2_reduction_general_driver(recs2):
     """General mapping-sum driver == production k=2 path, every diagram."""
-    from msrjd.diagrams.symmetry import external_wick_compensation
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.diagrams.symmetry import external_wick_compensation
+    from engine.integration.spatial.full_integrator import (
         diagram_correlator_x, diagram_correlator_pts,
         field_respecting_mappings)
     xs = np.array([0.0, 0.7, 1.5])
@@ -114,7 +114,7 @@ def test_k2_reduction_general_driver(recs2):
 
 def test_symanzik_matrix_per_sample_identity(recs3):
     """momfac(q⃗) == pref·exp(−q⃗ᵀ𝓑q⃗) exactly, n_ext=2, random w samples."""
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _symanzik_kernel_batch, _momentum_factor_batch)
     rng = np.random.default_rng(0)
     for td, d, pv, ell in [recs3[0], recs3[1], recs3[-1]]:
@@ -138,7 +138,7 @@ def test_symanzik_matrix_per_sample_identity(recs3):
 def test_multivariate_ift_vs_quadrature():
     """_heat_kernel_x_general == direct 2-d quadrature, asymmetric B."""
     from scipy.integrate import dblquad
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _heat_kernel_x_general)
     Bm = np.array([[[0.9, 0.3], [0.3, 1.4]],
                    [[2.0, -0.5], [-0.5, 0.7]]])
@@ -158,7 +158,7 @@ def test_multivariate_ift_vs_quadrature():
 
 def test_k3_route_equivalence_tree(recs3):
     """Analytic xs-IFT == numerical FT of the q-path (k=3 tree)."""
-    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+    from engine.integration.spatial.full_integrator import diagram_kinematic
     td, d, pv, ell = recs3[0]
     assert ell == 0
     legs = list(d.external_legs)
@@ -183,7 +183,7 @@ def test_k3_route_equivalence_1loop(recs3):
     """Analytic xs-IFT == numerical FT of the q-path (k=3 1-loop diagram).
     Coarse chamber quadrature on BOTH routes (shared w-grid) so the only
     difference is the q-FT discretization."""
-    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+    from engine.integration.spatial.full_integrator import diagram_kinematic
     td, d, pv, ell = recs3[1]
     assert ell == 1
     legs = list(d.external_legs)
@@ -206,8 +206,8 @@ def test_k3_route_equivalence_1loop(recs3):
 def test_k3_permutation_invariance(recs3):
     """The full mapping-sum cumulant is symmetric under permuting
     identical-field external events (any single diagram need not be)."""
-    from msrjd.diagrams.symmetry import external_wick_compensation
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.diagrams.symmetry import external_wick_compensation
+    from engine.integration.spatial.full_integrator import (
         diagram_correlator_pts, field_respecting_mappings)
     maps = field_respecting_mappings(['p'] * 3, ['p'] * 3)
     assert len(maps) == 6
@@ -252,22 +252,22 @@ def test_k3_e2e_vs_simulator():
     dphi/dt = -mu phi + DD d2phi - g phi^2 + sqrt(2T) eta
     (tree + 1-loop, mapping-sum driver over all enumerated diagrams)
     against the spectral ETD1 lattice simulator's translational-average
-    estimator (models/spatial_field_1d_sim.third_cumulant_x)."""
-    from msrjd.diagrams.symmetry import external_wick_compensation
-    from msrjd.integration.spatial.full_integrator import (
+    estimator (simulations/spatial_field_1d_sim.third_cumulant_x)."""
+    from engine.diagrams.symmetry import external_wick_compensation
+    from engine.integration.spatial.full_integrator import (
         diagram_correlator_pts, field_respecting_mappings)
-    from models.spatial_field_1d_sim import simulate, third_cumulant_x
+    from simulations.spatial_field_1d_sim import simulate, third_cumulant_x
 
     g = 0.25
     # theory records at this coupling (rebuild: module fixture used g=0.1)
     import tests.test_spatial_general_k as _self
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
     b = (TheoryBuilder('rd-quad-k3-e2e', n_populations=0)
          .physical_field('p', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
@@ -336,8 +336,8 @@ def test_k3_e2e_vs_simulator():
 def test_k3_public_api_compute_cumulants():
     """k=3 through the public compute_cumulants(spatial_points=...) API
     reproduces the bridge-level (sim-anchored) values."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline import compute_cumulants
+    from api.theory import TheoryBuilder
+    from api import compute_cumulants
     g = 0.25
     model = (TheoryBuilder('rd-quad-kpoint-api-test', n_populations=0)
              .physical_field('p', spatial_dim=1)
@@ -372,14 +372,14 @@ def test_k3_derivative_vertex_analytic_ift():
     and on the tree record the analytic xs value matches the numerical
     Fourier transform of the q-path to FT-grid tolerance — the same
     route-equivalence check used for plain vertices."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    from msrjd.integration.spatial.full_integrator import diagram_kinematic
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.full_integrator import diagram_kinematic
 
     b = (TheoryBuilder('kpz-k3-ift-test', n_populations=0)
          .physical_field('h', spatial_dim=1)
@@ -459,7 +459,7 @@ def test_k3_spectral_uniform_mass_identity(recs3):
     analytic-IFT xs-path.  Pins the matrix-B branches added to
     diagram_kinematic_spectral (H2 core).  Residual is sigma-quadrature
     only (4e-2 -> 1e-5 at n_s = 8 -> 24); n_s=24 here."""
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         diagram_kinematic, diagram_kinematic_spectral, spectral_rows)
     mu = 1.0
     worst = 0.0
@@ -497,12 +497,12 @@ def test_k3_coupled_decoupled_limit():
     threading, spectral projector weights (b-mode assignments must drop
     out), mapping-sum externals, matrix-B spectral kinematic at
     n_ext=2.  Residual is sigma-quadrature only (~4e-5)."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.pipeline_bridge import (
         compute_spatial_kpoint, compute_coupled_kpoint, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
     b2 = (TheoryBuilder('coup-k3-anchor-test', n_populations=0)
@@ -568,8 +568,8 @@ def test_k3_coupled_public_api_fallback():
     that the direct-driver tests bypass.  A DECOUPLED 2-species theory
     (g*a^2 in species a only, externals all-a) through the public API
     must reproduce the single-field public-API tree value."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline import compute_cumulants
+    from api.theory import TheoryBuilder
+    from api import compute_cumulants
 
     g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
     coupled = (TheoryBuilder('coup-k3-pubfallback', n_populations=0)
@@ -619,12 +619,12 @@ def test_k3_coupled_cross_complex_modes():
     sensible cross-cumulant hierarchy (nonlinearity in species a only).
     1-loop runs at the memory-safe grid: the (grid x assignments) amp
     array is the cost driver (17 GB at n_t=8/n_s=16 -> use 6/8)."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.pipeline_bridge import (
         compute_coupled_kpoint, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     ga, DD = 0.3, 1.0
     b2 = (TheoryBuilder('coup-k3-cross-test', n_populations=0)
@@ -684,16 +684,16 @@ def test_k3_nongaussian_noise_source_tree():
     The equal-point value kappa_3(0,0) is UV log-divergent in d=1
     (integrand ~ ds/s) — excluded by design, like the d>=2 Gaussian
     divergences (bare values are cutoff-sensitive)."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from msrjd.diagrams.type_assignment import build_field_index_map
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.full_integrator import (
         diagram_correlator_pts, field_respecting_mappings)
-    from msrjd.diagrams.symmetry import external_wick_compensation
+    from engine.diagrams.symmetry import external_wick_compensation
     from scipy.integrate import quad
 
     mu, DD, T, S3 = 1.0, 1.0, 1.0, 0.1

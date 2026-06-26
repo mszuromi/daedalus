@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from pipeline.theory import (                       # noqa: E402
+from api.theory import (                       # noqa: E402
     TheoryBuilder, SpatialTheoryBuilder, TemporalTheoryBuilder,
     _BaseTheoryBuilder,
 )
@@ -114,7 +114,7 @@ def test_serializer_phase1_round_trip():
     import os
     import shutil
     import tempfile
-    from pipeline.theory_serialize import load_spec_from_file, render_theory_file
+    from api.theory_serialize import load_spec_from_file, render_theory_file
 
     root = os.path.join(os.path.dirname(__file__), '..')
 
@@ -122,11 +122,11 @@ def test_serializer_phase1_round_trip():
         return render_theory_file(load_spec_from_file(os.path.join(root, rel)))
 
     sp = emit('theories/kpz_1d.theory.py')               # spatial fixture
-    assert 'from pipeline.theory import SpatialTheoryBuilder' in sp
+    assert 'from api.theory import SpatialTheoryBuilder' in sp
     assert 'SpatialTheoryBuilder(' in sp
 
     tp = emit('theories/linear_hawkes.theory.py')        # temporal fixture
-    assert 'from pipeline.theory import TemporalTheoryBuilder' in tp
+    assert 'from api.theory import TemporalTheoryBuilder' in tp
     assert 'TemporalTheoryBuilder(' in tp
 
     # the loader round-trips the rendered (new-name) source
@@ -225,7 +225,7 @@ def test_serializer_dyson_round_trip():
     both; and the rendered file BUILDS with the policy in model['spatial']."""
     import shutil
     import tempfile
-    from pipeline.theory_serialize import load_spec_from_file, render_theory_file
+    from api.theory_serialize import load_spec_from_file, render_theory_file
 
     spec = {
         'name': 'lin_diff_dyson',

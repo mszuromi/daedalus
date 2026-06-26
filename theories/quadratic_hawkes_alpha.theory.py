@@ -24,7 +24,7 @@ nonlinearity enters through ``(exp(nt)-1)·φ(v)`` (the Hawkes/​point-process
 generating term), and the alpha kernel is a genuine non-Markovian convolution
 ``g * n`` handled by the pipeline's kernel machinery.
 """
-from pipeline.theory import TemporalTheoryBuilder
+from api.theory import TemporalTheoryBuilder
 
 
 def build():

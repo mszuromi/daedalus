@@ -2,7 +2,7 @@
 tests/test_phi_n.py
 ===================
 Dyson step D-1: validate the ``Φ_n`` divided-difference evaluator
-(``msrjd.integration.spatial.spectral_propagator.phi_n`` / ``phi_n_batch``),
+(``engine.integration.spatial.spectral_propagator.phi_n`` / ``phi_n_batch``),
 
     Φ_n(t; ν_1,…,ν_n) = ∫_{σ_n} tⁿ e^{−t Σ uᵢ νᵢ} d𝐮     (σ_n = {uᵢ ≥ 0, Σ uᵢ ≤ 1}),
 
@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.integrate import quad                               # noqa: E402
 
-from msrjd.integration.spatial.spectral_propagator import (    # noqa: E402
+from engine.integration.spatial.spectral_propagator import (    # noqa: E402
     phi_n, phi_n_batch,
 )
 

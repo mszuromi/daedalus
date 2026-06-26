@@ -2,7 +2,7 @@
 tests/test_grouped_vs_perdiag.py
 ================================
 End-to-end correctness check for the prototype grouped Phase J path
-(``pipeline/_grouped_phase_j.compute_correction_td_grouped``) against
+(``api/_grouped_phase_j.compute_correction_td_grouped``) against
 the canonical per-diagram path (``compute_correction_td``).
 
 Mathematical equivalence
@@ -111,7 +111,7 @@ def test_grouped_matches_perdiag_with_tight_quadrature(fx):
     fails, the grouped path has a *real* bookkeeping bug (not a
     quadrature-precision artifact).
     """
-    from msrjd.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import final_integral as _fi
     saved = dict(_fi.QUAD_OPTS)
     _fi.QUAD_OPTS = {
         'limit':  400,

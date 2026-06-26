@@ -1,7 +1,7 @@
 """
 tests/test_symmetry.py
 ======================
-Tests for msrjd.diagrams.symmetry — combinatorial factor 𝒮(Γ)
+Tests for engine.diagrams.symmetry — combinatorial factor 𝒮(Γ)
 and typed diagram deduplication.
 
 Build Phase G.
@@ -16,12 +16,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph
 
-from msrjd.diagrams.symmetry import (
+from engine.diagrams.symmetry import (
     combinatorial_factor, compute_all_combinatorial_factors,
     diagram_signature, deduplicate_typed_diagrams,
 )
-from msrjd.diagrams.type_assignment import TypedDiagram
-from msrjd.core.vertices import VertexType, SourceType
+from engine.diagrams.type_assignment import TypedDiagram
+from engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

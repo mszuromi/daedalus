@@ -27,19 +27,19 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-from msrjd.integration.spatial.pipeline_bridge import (
+from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from msrjd.diagrams.type_assignment import build_field_index_map
+from engine.diagrams.type_assignment import build_field_index_map
 
 
 @pytest.fixture(scope='module')
 def rd_records():
     """Reaction-diffusion (φ̃φ²) d=1: built once, ell=0 and ell=1 records."""
-    from pipeline.theory import TheoryBuilder
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
+    from api.theory import TheoryBuilder
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
 
     model = (TheoryBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)

@@ -1,6 +1,6 @@
 """
 Unit tests for the colored-noise → Markovian-embedding preprocessor
-(``pipeline/colored_to_markovian.py``).
+(``api/colored_to_markovian.py``).
 
 Coverage:
   * ``detect_lorentzian`` matches the v1 single-Lorentzian template
@@ -62,7 +62,7 @@ def test_lorentzian_kernel_detection():
     ``c·exp(-|tau|/tauc)`` shape (including parameter name variants)
     and reject confusing non-matches.  Returns the τc expression and
     aux-drive coefficient on a match."""
-    from pipeline.colored_to_markovian import detect_lorentzian
+    from api.colored_to_markovian import detect_lorentzian
 
     # Standard form, as in the user's worked example.
     info = detect_lorentzian('exp(-abs(tau)/tauc)', '2*D/tauc',
@@ -136,7 +136,7 @@ def test_markovianize_opt_out_keeps_colored_row():
     """Builder-level ``.markovianize(False)`` must leave the original
     colored CGF row untouched.  Required for users whose kernels don't
     match the v1 template, or who've hand-coded their own embedding."""
-    from pipeline.theory import TheoryBuilder
+    from api.theory import TheoryBuilder
 
     builder = (
         TheoryBuilder('Test colored opt-out', n_populations=0)
@@ -171,7 +171,7 @@ def test_colored_ou_tree_level_matches_analytic(isolated_cache):
     """``compute_cumulants`` on the Markovianized OU at k=2, max_ell=0
     must agree with the analytic free-theory variance
     ``C(0) = 2D / (μ (μτc + 1))``."""
-    from pipeline import compute_cumulants
+    from api import compute_cumulants
 
     model = _build_colored()
     mu, D, tauc = 0.1, 1.0, 1.0
@@ -201,7 +201,7 @@ def test_markovianize_serialize_round_trip():
     """``theory_serialize`` must preserve the explicit per-row
     ``markovianize=`` keyword AND the builder-level
     ``.markovianize(False)`` opt-out across save → load."""
-    from pipeline.theory_serialize import (
+    from api.theory_serialize import (
         render_theory_file, load_spec_from_file, save_theory_to_file,
     )
 

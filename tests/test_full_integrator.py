@@ -1,7 +1,7 @@
 """
 tests/test_full_integrator.py
 =============================
-The genuine full-diagram integrator (``msrjd.integration.spatial.full_integrator``)
+The genuine full-diagram integrator (``engine.integration.spatial.full_integrator``)
 at the **tree** and **2-loop (ell=2)** level, in ``d=1`` AND ``d=2``.
 
   * tree ``Γ == C₀(q,τ)`` to machine precision;
@@ -29,14 +29,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 _REPO = os.path.join(os.path.dirname(__file__), '..')
 
-from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-from msrjd.integration.spatial.full_integrator import (
+from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from engine.integration.spatial.full_integrator import (
     diagram_value, diagram_kinematic, external_times_2pt,
 )
-from msrjd.integration.spatial.pipeline_bridge import (
+from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from msrjd.diagrams.type_assignment import build_field_index_map
+from engine.diagrams.type_assignment import build_field_index_map
 
 
 def _allen_cahn():
@@ -51,8 +51,8 @@ def _allen_cahn():
 @pytest.fixture(scope='module')
 def ac_records():
     from sage.all import SR
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
     b = _allen_cahn()
     ft = FieldTheory(b, taylor_order=6)            # k + 2·ell = 2 + 4
     ft.expand()
@@ -154,14 +154,14 @@ def test_formfactor_bubble_vs_oracle():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import diagram_correlator
-    from msrjd.integration.spatial import loop_dyson
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.full_integrator import diagram_correlator
+    from engine.integration.spatial import loop_dyson
+    from engine.diagrams.type_assignment import build_field_index_map
 
     path = os.path.join(_REPO, 'theories',
                         'reaction_diffusion_conserved_1d.theory.py')
@@ -201,7 +201,7 @@ def test_formfactor_average_convolution_kernel():
     brute Gaussian average ``∫ŵ·G/∫G``: a Gaussian kernel ~exact, a Lorentzian to
     ~1e-3.  (See ``docs/spatiotemporal_convolutions.md``.)"""
     import numpy as np
-    from msrjd.integration.spatial.full_integrator import _formfactor_average
+    from engine.integration.spatial.full_integrator import _formfactor_average
 
     D, q = 0.8, 0.7
     a = np.array([1.0, 1.0]); b = np.array([0.0, -1.0]); w = np.array([0.6, 0.9])
@@ -232,14 +232,14 @@ def test_diagram_form_factor_ell2_momentum():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     path = os.path.join(_REPO, 'theories',
                         'reaction_diffusion_conserved_1d.theory.py')
@@ -303,14 +303,14 @@ def test_perleg_and_complex_form_factor():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     path = os.path.join(_REPO, 'theories',
                         'reaction_diffusion_conserved_1d.theory.py')
@@ -365,7 +365,7 @@ def test_perleg_and_complex_form_factor():
 
 def _build_ff_theory(kind, d):
     """Model B ∇²(φ²) (composite Lap) or KPZ (∇h)²=Σ_i(∂_i h)² (per-leg) at dim d."""
-    from pipeline.theory import TheoryBuilder
+    from api.theory import TheoryBuilder
     tb = (TheoryBuilder(kind, n_populations=0).physical_field('phi', spatial_dim=d)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
@@ -390,14 +390,14 @@ def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
     d=2 is exact, d=3 to the (coarse) brute grid."""
     import numpy as np
     from sage.all import SR
-    from pipeline._propagator import build_propagator
-    from pipeline.compute import FieldTheory
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api._propagator import build_propagator
+    from api.compute import FieldTheory
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     b = _build_ff_theory(kind, d)
     ft = FieldTheory(b, taylor_order=4); ft.expand()
@@ -454,8 +454,8 @@ def test_spatial_parallel_matches_serial():
     serial — same diagram-summation order, q-points independent.  Mirrors the
     temporal test_phase_J_total_C_batch_parallel_matches_serial."""
     import numpy as np
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import compute_cumulants
+    from api.theory import TheoryBuilder
+    from api.compute import compute_cumulants
     ac = (TheoryBuilder('ac-par', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
@@ -483,15 +483,15 @@ def test_analytic_ift_vs_numerical_ft():
     the q_cut→∞ limit, with NO q-grid.  Allen-Cahn φ⁴ 1-loop (φ³ Hartree)."""
     import numpy as np, math
     from sage.all import SR
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         correlator_2pt, correlator_2pt_x)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     ac = (TheoryBuilder('ac', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -547,15 +547,15 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
     comparison exact while staying fast — the time-quadrature error cancels."""
     import numpy as np, math
     from sage.all import SR
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import (
+    from engine.integration.spatial.full_integrator import (
         diagram_correlator, diagram_correlator_x)
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.diagrams.type_assignment import build_field_index_map
 
     tb = (TheoryBuilder(kind, n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -609,14 +609,14 @@ def test_mc_integrator_matches_grid_plain():
     not asserted — see docs/spatial_loop_integral_analytic_mc.md.)"""
     import numpy as np
     from sage.all import SR
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from msrjd.integration.spatial.full_integrator import diagram_kinematic
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.full_integrator import diagram_kinematic
+    from engine.diagrams.type_assignment import build_field_index_map
 
     tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -658,14 +658,14 @@ def test_bessel_integrator_matches_grid():
     x=0 equal-point is UV-sensitive (see docs/spatial_loop_integral_analytic_mc.md §3)."""
     import numpy as np
     from sage.all import SR
-    from pipeline.theory import TheoryBuilder
-    from pipeline.compute import FieldTheory
-    from pipeline._propagator import build_propagator
-    from msrjd.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from msrjd.integration.spatial.pipeline_bridge import (
+    from api.theory import TheoryBuilder
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from msrjd.integration.spatial.full_integrator import diagram_kinematic
-    from msrjd.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.full_integrator import diagram_kinematic
+    from engine.diagrams.type_assignment import build_field_index_map
 
     tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')

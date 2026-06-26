@@ -1,4 +1,4 @@
-"""Tests for msrjd.core.cache — PipelineCache round-trip serialization."""
+"""Tests for engine.core.cache — PipelineCache round-trip serialization."""
 
 import os
 import tempfile
@@ -6,9 +6,9 @@ import tempfile
 import pytest
 from sage.all import SR, DiGraph
 
-from msrjd.core.cache import PipelineCache
-from msrjd.core.vertices import VertexType, SourceType
-from msrjd.diagrams.type_assignment import TypedDiagram
+from engine.core.cache import PipelineCache
+from engine.core.vertices import VertexType, SourceType
+from engine.diagrams.type_assignment import TypedDiagram
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

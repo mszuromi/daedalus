@@ -13,7 +13,7 @@ check that the boundary + integration machinery is wired correctly).
 The periodic propagator is the image-source sum
 ``G_PBC(t, x) = Σ_n G_inf(t, x + nL)``.
 """
-from pipeline.theory import SpatialTheoryBuilder
+from api.theory import SpatialTheoryBuilder
 
 
 def build():

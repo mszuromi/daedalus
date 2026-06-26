@@ -2,7 +2,7 @@
 tests/test_coupled_rd_sim.py
 ============================
 Validation of the N-species coupled reaction-diffusion Langevin simulator
-(``models/coupled_rd_1d_sim.py``) against the EXACT linear box oracle
+(``simulations/coupled_rd_1d_sim.py``) against the EXACT linear box oracle
 ``coupled_box_correlator`` — the ground truth the coupled-field spatial
 Dyson series will be tested against.
 
@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from models.coupled_rd_1d_sim import (
+from simulations.coupled_rd_1d_sim import (
     simulate_coupled_rd_1d, coupled_box_correlator,
 )
 
@@ -90,7 +90,7 @@ def test_box_oracle_consistent_with_spectral_propagator(case_equal_d):
     """For SCALAR diffusion the continuum box oracle must reproduce the
     framework's free coupled 2-point (spectral_propagator.coupled_two_point)
     mode-summed over the box — analytic vs analytic, ~machine precision."""
-    from msrjd.integration.spatial.spectral_propagator import (
+    from engine.integration.spatial.spectral_propagator import (
         build_reference, coupled_two_point,
     )
     _sim, _lat, con = case_equal_d

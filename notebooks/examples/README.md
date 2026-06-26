@@ -39,7 +39,7 @@ simulator. The simulators are deliberately shared where the physics is the same 
 simulator serves all three OU notebooks, one 1-D spatial simulator serves the three 1-D
 spatial notebooks.
 
-| Notebook | theory (`theories/…`) | simulator (`models/…`) |
+| Notebook | theory (`theories/…`) | simulator (`simulations/…`) |
 |---|---|---|
 | `OU_quartic_white` | `ou_quartic` | `ou_langevin_sim_numba` |
 | `OU_sextic_white` | `ou_sextic` | `ou_langevin_sim_numba` |

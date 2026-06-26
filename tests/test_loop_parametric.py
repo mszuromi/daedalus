@@ -2,7 +2,7 @@
 tests/test_loop_parametric.py
 =============================
 The momentum-FIRST parametric loop integrator core (Stage C.5 pivot,
-``msrjd.integration.spatial.loop_parametric``).
+``engine.integration.spatial.loop_parametric``).
 
 The whole point of the pivot: doing the loop-momentum integral analytically
 (Schwinger + Gaussian) reproduces the direct ``∫dℓ`` with NO momentum-dependent
@@ -24,7 +24,7 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from msrjd.integration.spatial.loop_parametric import (
+from engine.integration.spatial.loop_parametric import (
     gaussian_momentum_integral, sigma_R_kernel, sigma_K_kernel, symanzik_UF,
 )
 
