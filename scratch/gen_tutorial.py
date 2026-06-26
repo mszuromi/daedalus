@@ -38,8 +38,7 @@ while _root != os.path.dirname(_root) and not os.path.isdir(os.path.join(_root, 
 sys.path.insert(0, _root)
 sys.path.insert(0, os.path.join(_root, 'notebooks'))
 
-import daedalus as dd                            # run / summary / plot front-end
-from pipeline.theory import TemporalTheoryBuilder
+import daedalus as dd    # one entry point: dd.TemporalTheoryBuilder, dd.run, dd.plot_cumulant, ...
 print('daedalus →', dd.REPO_ROOT)""")
 
 # ───────────────────────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ the rest are used as needed.
 
 ### 2.1 Model
 A name (and optional description). On save it becomes the `.theory.py` filename.
-Python: the constructor argument, `TemporalTheoryBuilder('My model')`.
+Python: the constructor argument, `dd.TemporalTheoryBuilder('My model')`.
 
 ### 2.2 Populations *(optional)*
 A **population** is a set of identical units sharing the same dynamics — $N$ neurons, $N$
@@ -170,8 +169,7 @@ md(r"""## 3. Graphical builder
 Defaults*); a sidebar flags undeclared names and syntax errors, and **Save** writes
 `theories/<name>.theory.py`. Launch it here:""")
 
-code("""from pipeline.ui import TheoryUI
-ui = TheoryUI()
+code("""ui = dd.TheoryUI()
 ui.show()      # fill the tabs, then 'Save theory file' → theories/<name>.theory.py""")
 
 md("""Load a saved theory by name (in `theory_runner.ipynb`, or here):
@@ -188,7 +186,7 @@ Each §2 component is one chained method; `.build()` returns the `model`:
 
 ```python
 model = (
-    TemporalTheoryBuilder('name')      # 2.1 Model
+    dd.TemporalTheoryBuilder('name')   # 2.1 Model
     .population(...)                   # 2.2 Populations   (optional)
     .physical_field(...)              # 2.3 Fields
     .parameter(...)                   # 2.4 Parameters
@@ -207,7 +205,7 @@ Model: $\dot x = -\mu x - \varepsilon x^{3} + \xi$, $\langle\xi\xi\rangle = 2D\d
 Action: `xt*((Dt+mu)*x + eps*x^3) - D*xt^2`.""")
 
 code("""ou = (
-    TemporalTheoryBuilder('Quartic OU process')
+    dd.TemporalTheoryBuilder('Quartic OU process')
     .population('pop', size=1)                              # 2.2  one scalar unit
     .physical_field('x', population='pop',                  # 2.3  field x (+ response xt, saddle xstar)
                     description='the state variable')
@@ -249,7 +247,7 @@ function (2.5), a kernel (2.6), a point-process source (2.7), and algebraic mean
 equations (2.9).""")
 
 code("""hawkes = (
-    TemporalTheoryBuilder('Quadratic Hawkes (alpha-kernel)')
+    dd.TemporalTheoryBuilder('Quadratic Hawkes (alpha-kernel)')
     .population('E', size=2, description='excitatory units')                    # 2.2
     .physical_field('n', population='E', description='spike train')             # 2.3
     .physical_field('v', population='E', description='synaptic voltage')        # 2.3
@@ -299,7 +297,7 @@ the §6 chain instead.
   cross-correlator.""")
 
 code("""my_model = (
-    TemporalTheoryBuilder('My Theory')                     # EDIT: name it
+    dd.TemporalTheoryBuilder('My Theory')                  # EDIT: name it
     .population('pop', size=1)                              # EDIT: a population, or keep size=1 for a scalar
     .physical_field('x', population='pop',                  # EDIT: your field(s)
                     description='the state variable')
@@ -371,8 +369,10 @@ md(r"""## 8. Reference
 **Saving an inline theory as a reusable file.** Wrap the builder chain in a `build()` function
 in `theories/<name>.theory.py`, and add module-level `DEFAULT_FUNDAMENTAL = {...}` (numeric
 defaults) and `METADATA = {...}` (`k_default`, `tau_max`, `recommended_external_fields`, …).
-Copy the structure of any file in `theories/` — `ou_quartic.theory.py` is §5, and
-`quadratic_hawkes_alpha.theory.py` is §6. It then loads by name in the runner.""")
+In a file, import the builder directly — `from pipeline.theory import TemporalTheoryBuilder` —
+since `dd` is a notebook helper, not importable from a standalone module. Copy the structure of
+any file in `theories/` — `ou_quartic.theory.py` is §5, `quadratic_hawkes_alpha.theory.py` is §6.
+It then loads by name in the runner.""")
 
 # ───────────────────────────────────────────────────────────────────────
 nb = {

@@ -58,6 +58,47 @@ if REPO_ROOT not in _sys.path:
     _sys.path.insert(0, REPO_ROOT)
 
 
+# ── Lazy re-exports of the user-facing pipeline API ──────────────────────────
+# Every major pipeline symbol a user touches is reachable as ``dd.<name>``,
+# alongside the notebook helpers defined below (``Config``, ``run``, ``plot_*``,
+# ``load_theory``, …).  Resolved lazily on first access (PEP 562) so
+# ``import daedalus`` stays light and only pulls in Sage when something is
+# actually used.  The canonical ``from pipeline... import <name>`` forms keep
+# working — these are aliases; that explicit form is the one to use inside a
+# saved ``theories/*.theory.py`` file (which cannot import this notebook helper).
+_PIPELINE_EXPORTS = {
+    # authoring — build a theory in code (pipeline.theory)
+    'TheoryBuilder':             'pipeline.theory',
+    'TemporalTheoryBuilder':     'pipeline.theory',
+    'SpatialTheoryBuilder':      'pipeline.theory',
+    # graphical builder (pipeline.ui)
+    'TheoryUI':                  'pipeline.ui',
+    # compute / report / precompute / persistence / access (pipeline top level)
+    'compute_cumulants':         'pipeline',
+    'generate_report':           'pipeline',
+    'precompute':                'pipeline',
+    'save_npz':                  'pipeline',
+    'save_csv':                  'pipeline',
+    'params_slug':               'pipeline',
+    'MeanField':                 'pipeline',
+    'Parameters':                'pipeline',
+    'normalize_external_fields': 'pipeline',
+}
+
+
+def __getattr__(name):                   # PEP 562 — lazy module-level attribute
+    """Resolve ``dd.<name>`` for the re-exported pipeline symbols on first use."""
+    target = _PIPELINE_EXPORTS.get(name)
+    if target is not None:
+        import importlib
+        return getattr(importlib.import_module(target), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_PIPELINE_EXPORTS))
+
+
 def list_theories() -> list[str]:
     """Every ``theories/<name>.theory.py`` available to load."""
     return sorted(f[:-len('.theory.py')]
