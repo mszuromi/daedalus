@@ -72,6 +72,50 @@ notebooks/examples/temporal_ou_quartic_colored.ipynb
 notebooks/examples/temporal_ou_quartic_correlated.ipynb
 notebooks/examples/temporal_dendritic_linear.ipynb
 
+# Unused theory/sim files — kept local; the public set keeps only what the
+# example notebooks + tests reference (16 theories, 9 sims).
+theories/allen_cahn_quintic_1d_subcritical_infinite.theory.py
+theories/burgers_1d.theory.py
+theories/combined_allencahn_modelb_kpz_1d.theory.py
+theories/combined_allencahn_modelb_kpz_2d.theory.py
+theories/combined_allencahn_modelb_kpz_3d.theory.py
+theories/kpz_2d.theory.py
+theories/linear_field_2d.theory.py
+theories/linear_hawkes.theory.py
+theories/multipopulation_spike_reset_test.theory.py
+theories/my_stochastic_theory.theory.py
+theories/ou_quartic_colored.theory.py
+theories/ou_quartic_two_dim.theory.py
+theories/ou_quartic_two_dim_corr.theory.py
+theories/quadratic_hawkes.theory.py
+theories/single_pop_dendritic_linear.theory.py
+theories/single_population_bistable_demo.theory.py
+theories/single_population_conductance_synapse_test.theory.py
+theories/single_population_conductance_test.theory.py
+theories/single_population_cubic_alpha_test.theory.py
+theories/single_population_linear_conductance_test.theory.py
+theories/single_population_linear_delta_spikes_test.theory.py
+theories/single_population_linear_delta_voltage_test.theory.py
+theories/single_population_linear_exp_voltage_test.theory.py
+theories/single_population_quad_exp_test.theory.py
+theories/single_population_quad_spike_reset_test.theory.py
+theories/single_population_spike_reset_test.theory.py
+theories/toy_quartic_double_well.theory.py
+models/cumulant_direct_numba.py
+models/dendritic_linear_sim_numba.py
+models/hawkes_linear_expg.py
+models/hawkes_linear_expg_gtas.py
+models/hawkes_quad_expg.py
+models/hawkes_quad_expg_gtas.py
+models/hawkes_sage.py
+models/hawkes_sim_expg_numba.py
+models/hawkes_sim_linear_expg_gtas_numba.py
+models/hawkes_sim_numba.py
+models/hawkes_sim_quad_expg_gtas_numba.py
+models/hawkes_sim_quad_expg_numba.py
+models/spatial_field_3d_sim.py
+models/spatial_field_phi6_1d_sim.py
+
 # LaTeX build intermediates for the manual (regenerable)
 docs/manual/*.aux
 docs/manual/*.log
