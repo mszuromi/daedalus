@@ -393,7 +393,7 @@ class TheoryUI:
             description='Description:',
             style={'description_width': '120px'},
         )
-        # ── Theory type: Temporal (ODE) vs Spatial (PDE) ────────────
+        # ── Theory type: Temporal (SDE) vs Spatial (SPDE) ────────────
         # Created here so it lives on the Model tab.  Switching to
         # Spatial reveals the spatial-structure controls on the Fields
         # tab; Temporal hides them and forces every field to
@@ -401,8 +401,8 @@ class TheoryUI:
         # safe to attach now — it only fires on user change, by which
         # time _w_spatial_block / _tbl_physical exist.
         self._w_theory_mode = W.ToggleButtons(
-            options=['Temporal (ODE)', 'Spatial (PDE)'],
-            value='Temporal (ODE)',
+            options=['Temporal (SDE)', 'Spatial (SPDE)'],
+            value='Temporal (SDE)',
             description='Theory type',
             style={'description_width': 'initial'},
         )
@@ -422,9 +422,9 @@ class TheoryUI:
             W.HTML(
                 '<br><h4>Theory type</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "<b>Temporal (ODE)</b> &mdash; a time-only theory "
+                "<b>Temporal (SDE)</b> &mdash; a time-only theory "
                 "(<code>Dt</code> dynamics: OU, Hawkes, neural &hellip;).  "
-                "<b>Spatial (PDE)</b> &mdash; continuous fields "
+                "<b>Spatial (SPDE)</b> &mdash; continuous fields "
                 "<code>&phi;(x, t)</code> with spatial derivatives "
                 "(<code>Laplacian</code> / <code>&part;<sub>x</sub></code>: "
                 "reaction&ndash;diffusion, KPZ, Model B &hellip;).  Choosing "
@@ -695,7 +695,7 @@ class TheoryUI:
 
         # ── Group the spatial controls so the Model-tab "Theory type"
         # toggle can hide them all at once.  The Fields tab becomes
-        # [help, table, spatial-block]; in Temporal (ODE) mode the block
+        # [help, table, spatial-block]; in Temporal (SDE) mode the block
         # AND the spatial_dim column are hidden (see _on_mode_change). ──
         _fh, _tbl, *_spatial_items = list(tab_fields.children)
         self._w_spatial_block = W.VBox(_spatial_items)
@@ -814,11 +814,15 @@ class TheoryUI:
             W.HTML(
                 '<h4>Functions</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "<b>Skip this tab</b> unless your dynamics include a "
-                "non-polynomial transformation of a field &mdash; e.g. "
-                "<code>tanh(phi)</code>, <code>exp(v)</code>, or any "
-                "user-defined transfer function.  Polynomial nonlinearities "
-                "(like <code>phi^3</code>) go straight in the action."
+                "<b>Optional.</b> A named function abbreviates an "
+                "expression you reuse in the action &mdash; you write it "
+                "once and the action stays compact.  It can be "
+                "<i>polynomial</i> (e.g. <code>a*v^2</code>) or "
+                "<i>non-polynomial</i> (<code>tanh(phi)</code>, "
+                "<code>exp(v)</code>, any transfer function); both are "
+                "fine.  You can always inline the expression instead "
+                "&mdash; a function is purely a convenience to avoid "
+                "repetition."
                 '</p>'
                 '<p style="color:#555;font-size:90%;">'
                 "When you do need it: declare each function as a named "
@@ -955,6 +959,20 @@ class TheoryUI:
                 "kernel(t&minus;t')</code>.  Leave the table empty if "
                 "your action already includes the noise term as an "
                 "explicit <code>D*phit^2</code>-style line."
+                '</p>'
+                '<p style="color:#555;font-size:90%;">'
+                "<b>What this tab supports.</b> A <i>colored</i> (non-delta) "
+                "kernel is available only for <b>Gaussian</b>, order-2 "
+                "noise; the supported colored form is the OU / "
+                "single-exponential <code>exp(&minus;|tau|/tauc)</code> "
+                "(it is Markovian-embeddable, so the pipeline can handle "
+                "it).  <b>Higher cumulants</b> (order &ge; 3) are white "
+                "&mdash; a delta kernel (shot noise).  A plain white "
+                "higher cumulant is simplest written straight in the "
+                "action: e.g. <code>&minus;S3*phit^3</code> adds a third "
+                "noise cumulant (<code>&kappa;&#8317;&sup3;&#8318; = "
+                "3!&middot;S3</code>).  Use a row here only when the "
+                "higher cumulant itself carries a correlation kernel."
                 '</p>'
                 '<p style="color:#555;font-size:90%;"><b>Per row:</b><ul>'
                 '<li><b>name</b> &mdash; any label you choose '
@@ -1308,7 +1326,7 @@ class TheoryUI:
 
         # Compose into Tab widget
         # Full tab set as (widget, base title).  _apply_visible_tabs picks
-        # the visible subset by theory type: Spatial (PDE) hides the
+        # the visible subset by theory type: Spatial (SPDE) hides the
         # Kernels (temporal convolution kernels) and Noise (CGF) tabs —
         # spatial theories support only Gaussian white independent noise,
         # and there are no convolution kernels in the spatial path.
@@ -1558,7 +1576,7 @@ class TheoryUI:
             self._dirty = True
 
     def _apply_visible_tabs(self) -> None:
-        """Show the tab subset for the current theory type.  Spatial (PDE)
+        """Show the tab subset for the current theory type.  Spatial (SPDE)
         hides the Kernels + Noise tabs; titles are renumbered sequentially
         and the current selection is preserved when it stays visible."""
         spatial = self._is_spatial_mode()
@@ -3034,7 +3052,7 @@ class TheoryUI:
         # has nothing spatial to preserve.
         _spatial = any(int(r.get('spatial_dim') or 0) > 0
                        for r in (self._tbl_physical.get_rows() or []))
-        _target = 'Spatial (PDE)' if _spatial else 'Temporal (ODE)'
+        _target = 'Spatial (SPDE)' if _spatial else 'Temporal (SDE)'
         if self._w_theory_mode.value != _target:
             self._w_theory_mode.value = _target      # fires _on_mode_change
         else:

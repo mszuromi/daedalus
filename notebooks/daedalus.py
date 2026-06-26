@@ -71,6 +71,8 @@ _PIPELINE_EXPORTS = {
     'TheoryBuilder':             'api.theory',
     'TemporalTheoryBuilder':     'api.theory',
     'SpatialTheoryBuilder':      'api.theory',
+    # noise template (api.theory_templates) for builder.add_gtas_noise(...)
+    'GTaSNoise':                 'api.theory_templates',
     # graphical builder (pipeline.ui)
     'TheoryUI':                  'api.ui',
     # compute / report / precompute / persistence / access (pipeline top level)
@@ -265,6 +267,13 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
         # rather than a simple rhs — the notebook's markdown states it in full.
         if eq.get('lhs_text') and rhs and rhs not in ('0', '0.0'):
             out.append(f"Governing eqn  : {eq['lhs_text']} = {rhs}")
+
+    act = (model.get('action_text') or '').strip()
+    if act:
+        act_lines = act.splitlines()
+        out.append(f"Action  S      : {act_lines[0]}")
+        for ln in act_lines[1:]:
+            out.append(f"                 {ln}")
 
     meta = (getattr(module, 'METADATA', {}) or {}) if module else {}
     rec = []

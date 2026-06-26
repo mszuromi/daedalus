@@ -12,7 +12,7 @@ Each example follows the same three steps:
 3. **Independent simulation** — a from-scratch simulator overlaid on the pipeline curve as an
    external check (not part of the pipeline).
 
-## Temporal (ODE / point process)
+## Temporal (SDE / point process)
 
 | Notebook | Capability |
 |---|---|
@@ -22,7 +22,7 @@ Each example follows the same three steps:
 | [`Hawkes_quadratic_alpha`](Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
 | [`Dendritic_nonlinear`](Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
 
-## Spatial (PDE)
+## Spatial (SPDE)
 
 | Notebook | Capability |
 |---|---|

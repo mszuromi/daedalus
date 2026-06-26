@@ -1961,6 +1961,11 @@ class _BaseTheoryBuilder:
             'mf_substitutions': self._mf_substitutions,
             'phi_concrete':    self._phi_concrete,
             'action':          self._action,
+            # Human-readable action text (what the user typed via
+            # set_action_text, with any Noise-tab sources appended).
+            # None for template-built theories; surfaced by
+            # daedalus.describe_model.
+            'action_text':     self._action_text,
             'naming_convention': naming_convention,
             # Whether the DAE solver classifies linear stability and
             # restricts ``fixed_point_index`` to the stable subset.
