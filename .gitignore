@@ -116,6 +116,14 @@ models/hawkes_sim_quad_expg_numba.py
 models/spatial_field_3d_sim.py
 models/spatial_field_phi6_1d_sim.py
 
+# Legacy Hawkes model-dict equivalence cluster (old hand-written-model format,
+# superseded by theories/*.theory.py) + manual diagnostic scripts. Kept local.
+models/hawkes_linear_sage.py
+pipeline/theories/
+pipeline/tests/
+tests/diagnostic_hawkes_k2_mirror.py
+tests/diagnostic_k2_origin_stationarity.py
+
 # LaTeX build intermediates for the manual (regenerable)
 docs/manual/*.aux
 docs/manual/*.log
