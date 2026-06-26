@@ -2,7 +2,7 @@
 
 A model-agnostic framework for automated Feynman-diagram computation in MSR–JD
 (Martin–Siggia–Rose–Janssen–De Dominicis) field theories, built on SageMath. Given a
-stochastic (S)ODE/PDE written as an MSR–JD action, it computes the mean field, multi-point
+stochastic SDE/SPDE written as an MSR–JD action, it computes the mean field, multi-point
 cumulants, and loop corrections **analytically** (action → diagram enumeration → causal
 integration). The notebook front-end is the `daedalus` module, imported as `dd`.
 
