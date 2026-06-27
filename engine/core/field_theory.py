@@ -642,7 +642,18 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 failures.append((key, exp_vec, c_simpl, num_resid))
 
     if failures:
-        lines = ["MF sector does not vanish at saddle:"]
+        lines = [
+            "This theory's mean-field saddle does not satisfy its own "
+            "equations — the MF action sector is non-zero at the saddle.",
+            "Likely causes:",
+            "  - a .set_mf_equation(...) / .equation(...) that doesn't match "
+            "the action's deterministic drift; or",
+            "  - parameters with no default= (only DEFAULT_FUNDAMENTAL), so "
+            "the saddle can't be checked numerically — the 'numerical "
+            "residual' below then reads 'N/A'.  Add default= to those "
+            "parameters.",
+            "Diagnostics (internal):",
+        ]
         for key, exp_vec, c_simpl, num_resid in failures:
             num_str = (f"{num_resid:.3e}"
                        if num_resid is not None else "N/A")
@@ -650,9 +661,6 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 f"  bigrade={key}  monomial_exponents={exp_vec}\n"
                 f"    symbolic residual: {c_simpl}\n"
                 f"    numerical residual: {num_str}")
-        lines.append(
-            "Either the MF solver is wrong or the action's bigrade-≤1 "
-            "sector is not the saddle-eq sector.")
         raise AssertionError('\n'.join(lines))
 
     if soft_passes:
