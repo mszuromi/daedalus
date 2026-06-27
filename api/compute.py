@@ -268,6 +268,14 @@ def compute_cumulants(
         raise ValueError(
             f'external_fields has {len(external_fields)} entries but k={k}'
         )
+    if k < 1:
+        raise ValueError(f'k must be >= 1; got {k}')
+    if max_ell < 0:
+        raise ValueError(f'max_ell must be >= 0; got {max_ell}')
+    if tau_grid is None and not (tau_step > 0 and tau_max >= 0):
+        raise ValueError(
+            f'need tau_step > 0 and tau_max >= 0 (got tau_step={tau_step}, '
+            f'tau_max={tau_max}), or pass an explicit tau_grid.')
 
     # Auto-pick a Taylor budget that covers every vertex the
     # prediagram enumerator could ask for at the chosen (k, max_ell).

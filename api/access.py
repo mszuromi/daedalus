@@ -121,7 +121,12 @@ def normalize_external_fields(external_fields,
     """
     fluct_map = _build_fluct_map(naming_convention)
     out = []
-    for name, pop in external_fields:
+    for entry in external_fields:
+        if not (isinstance(entry, (tuple, list)) and len(entry) == 2):
+            raise ValueError(
+                "external_fields entries must be (field, population) pairs; "
+                f"got {entry!r}.  E.g. [('x', 1), ('x', 1)].")
+        name, pop = entry
         canonical = fluct_map.get(name, name)
         out.append((canonical, int(pop)))
     return out
@@ -176,6 +181,10 @@ class MeanField:
             vals = self._by_internal.get(internal)
             if vals is None:
                 raise KeyError(f'unknown mean-field key: {name!r}')
+            if not 1 <= pop <= len(vals):
+                raise IndexError(
+                    f'population index {pop} out of range for {name!r} '
+                    f'(valid 1..{len(vals)}); indices are 1-based.')
             return float(vals[pop - 1])
 
         internal = self._resolve(key)
@@ -232,7 +241,12 @@ class Parameters:
             indices = key[1:]
             val = self._raw[name]
             for i in indices:
-                val = val[int(i) - 1]      # 1-based
+                ii = int(i)
+                if hasattr(val, '__len__') and not 1 <= ii <= len(val):
+                    raise IndexError(
+                        f'index {ii} out of range for parameter {name!r} '
+                        f'(valid 1..{len(val)}); indices are 1-based.')
+                val = val[ii - 1]      # 1-based
             return val
         return self._raw[key]
 

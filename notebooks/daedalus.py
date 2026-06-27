@@ -119,8 +119,12 @@ def load_theory(name: str):
             f'No theory file at {path}. Available: {list_theories()}')
     spec = importlib.util.spec_from_file_location(f'theories.{name}', path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.build(), mod
+    try:
+        spec.loader.exec_module(mod)
+        return mod.build(), mod
+    except Exception as e:
+        raise RuntimeError(
+            f'Failed to load theory {name!r} from {path}: {e}') from e
 
 
 # ── Model introspection ──────────────────────────────────────────────────────
@@ -146,7 +150,11 @@ def is_multifield(model: dict) -> bool:
 
 
 def field_names(model: dict) -> list[str]:
-    return [f['name'] for f in (model.get('physical_fields') or [])]
+    # Natural (authored) name, e.g. 'x' — not the internal fluctuation
+    # name 'dx' — so summary() matches describe_model() and the result is
+    # safe to read back into external_fields.
+    return [f.get('natural_name') or f['name']
+            for f in (model.get('physical_fields') or [])]
 
 
 def _fmt_default(v, maxlen: int = 52) -> str:
@@ -391,6 +399,12 @@ class Config:
             self.chi_grid = self.spatial_grid
         elif self.spatial_grid is None and self.chi_grid is not None:
             self.spatial_grid = self.chi_grid
+        # Fail early on a mistyped output kind (otherwise it silently
+        # degrades to the connected cumulant — a wrong-kind result).
+        if self.output not in ('cumulant', 'moment', 'central_moment'):
+            raise ValueError(
+                "Config.output must be 'cumulant', 'moment', or "
+                f"'central_moment'; got {self.output!r}.")
 
     def resolved_grid(self):
         """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
@@ -403,10 +417,14 @@ class Config:
 
     @staticmethod
     def _resolve_grid(g):
-        """``(lo, hi, n)`` → ``linspace``; array → array; None → None."""
+        """``(lo, hi, n)`` → ``linspace``; array/list → array; None → None."""
         if g is None:
             return None
-        if isinstance(g, tuple) and len(g) == 3:
+        if isinstance(g, tuple):
+            if len(g) != 3:
+                raise ValueError(
+                    f"grid tuple must be (lo, hi, n); got a {len(g)}-tuple "
+                    f"{g!r}. For an arbitrary grid pass a list/array instead.")
             return np.linspace(g[0], g[1], int(g[2]))
         return np.asarray(g, dtype=float)
 
@@ -746,10 +764,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     fundamental.update(getattr(module, 'DEFAULT_FUNDAMENTAL', {}) or {}
                        if module else {})
     if cfg.parameters:
+        # Reject mistyped override names instead of silently inserting a
+        # key the backend ignores (which would run with the DEFAULT value).
+        _valid = {p['name'] for p in (model.get('parameters') or [])
+                  if not str(p.get('name', '')).endswith('star')
+                  and not p.get('mean_field')}
+        _unknown = [kk for kk in cfg.parameters if kk not in _valid]
+        if _valid and _unknown:
+            raise ValueError(
+                f"Unknown parameter override(s) {_unknown}. "
+                f"Declared parameters: {sorted(_valid)}.")
         fundamental.update(cfg.parameters)
 
     # Dyson override: inject into the model's spatial policy at run time.
+    # Copy first so we never mutate the caller's model dict — load_theory
+    # returns it un-copied and the documented flow is load-once-run-many,
+    # so an in-place write would leak the Dyson policy into later runs.
     if cfg.dyson_order is not None and model.get('spatial'):
+        model = dict(model)
+        model['spatial'] = dict(model['spatial'])
         model['spatial']['dyson'] = {'mode': 'fixed',
                                      'order': int(cfg.dyson_order)}
         if cfg.reference_diffusion is not None:
