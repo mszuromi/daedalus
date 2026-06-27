@@ -1457,6 +1457,8 @@ def plot_spatial(result, cfg, model, sim=None):
     heatmap on a shared colour scale**.  A 1-D ``sim={'x','C'[,'C_err']}`` still
     overlays on the equal-time panel."""
     cfg = cfg or Config()
+    if spatial_dim(model) >= 2:                     # d≥2: χ is a VECTOR → C(τ, χ¹, χ²)
+        return _plot_spatial_2d(result, cfg, model)
     C = np.real(np.asarray(result['C_tau_x']))     # (n_tau, n_x) — total, all loops
     xs = np.asarray(result['spatial_grid'])
     tau = np.asarray(result['tau_grid'])
@@ -1557,6 +1559,96 @@ def plot_spatial(result, cfg, model, sim=None):
             axS.set_xlabel(r'$\chi$'); axS.set_ylabel(r'$\tau$')
             axS.set_title(r'sim $C(\chi,\tau)$  (shared scale)')
             fig.colorbar(im2, ax=axS, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def _plot_spatial_2d(result, cfg, model):
+    """Spatial correlator in d≥2: the separation χ is a VECTOR, so the k=2
+    correlator depends on (τ, χ¹, χ²).  The pipeline computes the isotropic
+    radial C(r,τ); this presents it as the three axis SLICES (χ¹, χ², τ — each
+    with the tree / tree+1loop per-order overlay) and the three pairwise
+    HEATMAPS over {χ¹, χ², τ}.  Built by C(χ¹,χ²,τ) = C_rad(√((χ¹)²+(χ²)²), τ)
+    (rotational invariance), so for an isotropic theory the χ¹ and χ² views
+    coincide — that redundancy is the visual signature of isotropy."""
+    cfg = cfg or Config()
+    r   = np.asarray(result['spatial_grid'], float)        # radial separations ≥ 0
+    tau = np.asarray(result['tau_grid'], float)
+    it0 = int(np.argmin(np.abs(tau)))                       # τ = 0 row
+    si  = result.get('spatial_info') or {}
+    by  = si.get('C_by_order') or {}
+    ell_top = max(by) if by else (_result_meta(result, 'max_ell', 0) or 0)
+    loop_lab = _order_label(ell_top)
+    full = np.real(np.asarray(result['C_tau_x']))          # (n_tau, n_r) total
+    R = float(r.max())
+    has_tau = tau.size > 1
+
+    def rad(arr2d, rq, it):                                 # radial interpolant at lag-index it
+        return np.interp(np.clip(np.abs(rq), float(r.min()), R), r, np.real(arr2d)[it])
+
+    orders = sorted(by) if (by and cfg.show_orders != 'total') else [None]
+
+    def overlay(ax, xvals, fn):                            # per-order curves on a slice axis
+        for i, o in enumerate(orders):
+            arr = np.real(np.asarray(by[o])) if o is not None else full
+            ax.plot(xvals, fn(arr), '-', lw=1.7,
+                    color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
+                    label=('theory: %s' % _order_label(o)) if o is not None else 'theory')
+        ax.grid(alpha=.25); ax.legend(fontsize=8)
+
+    chi = np.linspace(-R, R, 121)                           # χ¹ / χ² slice + (χ,τ) heatmap axis
+    name = model.get('name', '')
+
+    if not has_tau:                                         # equal-time only → χ¹, χ² slices + (χ¹,χ²) map
+        fig, ax = plt.subplots(1, 3, figsize=cfg.figsize or (15.0, 4.4))
+        overlay(ax[0], chi, lambda a: rad(a, chi, it0))
+        ax[0].set_xlabel(r'$\chi^1$'); ax[0].set_ylabel(r'$C(\chi^1,0,0)$')
+        ax[0].set_title(r'slice $\chi^1$  ($\chi^2{=}0$)')
+        overlay(ax[1], chi, lambda a: rad(a, chi, it0))
+        ax[1].set_xlabel(r'$\chi^2$'); ax[1].set_ylabel(r'$C(0,\chi^2,0)$')
+        ax[1].set_title(r'slice $\chi^2$  ($\chi^1{=}0$)')
+        Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
+        CX, CY = np.meshgrid(cb, cb)
+        im = ax[2].imshow(rad(full, np.sqrt(CX**2 + CY**2), it0), origin='lower',
+                          extent=[-Xb, Xb, -Xb, Xb], aspect='auto', cmap='viridis')
+        ax[2].set_xlabel(r'$\chi^1$'); ax[2].set_ylabel(r'$\chi^2$')
+        ax[2].set_title(r'$C(\chi^1,\chi^2,0)$  [%s]' % loop_lab)
+        fig.colorbar(im, ax=ax[2], fraction=.046, pad=.04)
+        fig.suptitle(r'%s: equal-time $C(\chi^1,\chi^2)$' % name)
+        fig.tight_layout()
+        if cfg.save:
+            fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+        return fig
+
+    # full τ grid → 3 slices (top) + 3 pairwise heatmaps (bottom)
+    fig, ax = plt.subplots(2, 3, figsize=cfg.figsize or (15.5, 8.6))
+    overlay(ax[0, 0], chi, lambda a: rad(a, chi, it0))
+    ax[0, 0].set_xlabel(r'$\chi^1$'); ax[0, 0].set_ylabel(r'$C(\chi^1,0,0)$')
+    ax[0, 0].set_title(r'slice $\chi^1$  ($\chi^2{=}0,\tau{=}0$)')
+    overlay(ax[0, 1], chi, lambda a: rad(a, chi, it0))
+    ax[0, 1].set_xlabel(r'$\chi^2$'); ax[0, 1].set_ylabel(r'$C(0,\chi^2,0)$')
+    ax[0, 1].set_title(r'slice $\chi^2$  ($\chi^1{=}0,\tau{=}0$)')
+    overlay(ax[0, 2], tau, lambda a: np.array([rad(a, 0.0, it) for it in range(tau.size)]))
+    ax[0, 2].set_xlabel(r'$\tau$'); ax[0, 2].set_ylabel(r'$C(0,0,\tau)$')
+    ax[0, 2].set_title(r'slice $\tau$  ($\chi^1{=}\chi^2{=}0$)')
+
+    Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
+    CX, CY = np.meshgrid(cb, cb)
+    M_xy = rad(full, np.sqrt(CX**2 + CY**2), it0)           # C(χ¹,χ²,0)
+    M_xt = np.array([rad(full, chi, it) for it in range(tau.size)])  # C(χ¹,0,τ)
+    for axh, M, ext, xl, yl, ttl in [
+        (ax[1, 0], M_xy, [-Xb, Xb, -Xb, Xb], r'$\chi^1$', r'$\chi^2$',
+         r'$C(\chi^1,\chi^2,0)$  [%s]' % loop_lab),
+        (ax[1, 1], M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^1$', r'$\tau$',
+         r'$C(\chi^1,0,\tau)$  [%s]' % loop_lab),
+        (ax[1, 2], M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^2$', r'$\tau$',
+         r'$C(0,\chi^2,\tau)$  [%s]' % loop_lab)]:
+        im = axh.imshow(M, origin='lower', extent=ext, aspect='auto', cmap='viridis')
+        axh.set_xlabel(xl); axh.set_ylabel(yl); axh.set_title(ttl)
+        fig.colorbar(im, ax=axh, fraction=.046, pad=.04)
+    fig.suptitle(r'%s: $C(\chi^1,\chi^2,\tau)$ (isotropic d=2 — χ¹ and χ² views coincide)' % name)
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
