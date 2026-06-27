@@ -68,9 +68,9 @@ notebooks/legacy/
 notebooks/spatial/
 notebooks/temporal/
 notebooks/templates/
-notebooks/examples/temporal_ou_quartic_colored.ipynb
-notebooks/examples/temporal_ou_quartic_correlated.ipynb
-notebooks/examples/temporal_dendritic_linear.ipynb
+notebooks/examples/SDE/temporal_ou_quartic_colored.ipynb
+notebooks/examples/SDE/temporal_ou_quartic_correlated.ipynb
+notebooks/examples/SDE/temporal_dendritic_linear.ipynb
 
 # Unused theory/sim files — kept local; the public set keeps only what the
 # example notebooks + tests reference (24 theories, 9 sims).

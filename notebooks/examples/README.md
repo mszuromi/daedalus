@@ -1,7 +1,7 @@
 # Example notebooks
 
 Ten curated examples, each headlining **one** capability of the pipeline and together spanning
-its range — temporal ODEs to spatial PDEs, single- to multi-field, Gaussian / colored /
+its range — temporal SDEs to spatial SPDEs, single- to multi-field, Gaussian / colored /
 correlated / point-process noise, and the spatial vertex classes.
 
 Each example follows the same three steps:
@@ -12,25 +12,27 @@ Each example follows the same three steps:
 3. **Independent simulation** — a from-scratch simulator overlaid on the pipeline curve as an
    external check (not part of the pipeline).
 
+They are split into [`SDE/`](SDE) (temporal — SDEs / point processes) and [`SPDE/`](SPDE) (spatial PDEs).
+
 ## Temporal (SDE / point process)
 
 | Notebook | Capability |
 |---|---|
-| [`OU_quartic_white`](OU_quartic_white.ipynb) | White Gaussian noise — single-field quartic OU; full 2-loop `C(τ)`. |
-| [`OU_sextic_white`](OU_sextic_white.ipynb) | A φ⁶ nonlinearity — the degree-6 vertex. |
-| [`OU_quartic_correlated_colored`](OU_quartic_correlated_colored.ipynb) | Two coupled OU fields with **correlated, colored** noise — Markovian embedding of a finite-τc cross-correlated drive; nonzero cross-correlator. |
-| [`Hawkes_quadratic_alpha`](Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
-| [`Dendritic_nonlinear`](Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
+| [`OU_quartic_white`](SDE/OU_quartic_white.ipynb) | White Gaussian noise — single-field quartic OU; full 2-loop `C(τ)`. |
+| [`OU_sextic_white`](SDE/OU_sextic_white.ipynb) | A φ⁶ nonlinearity — the degree-6 vertex. |
+| [`OU_quartic_correlated_colored`](SDE/OU_quartic_correlated_colored.ipynb) | Two coupled OU fields with **correlated, colored** noise — Markovian embedding of a finite-τc cross-correlated drive; nonzero cross-correlator. |
+| [`Hawkes_quadratic_alpha`](SDE/Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
+| [`Dendritic_nonlinear`](SDE/Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
 
 ## Spatial (SPDE)
 
 | Notebook | Capability |
 |---|---|
-| [`Allen_Cahn_phi4`](Allen_Cahn_phi4.ipynb) | **Polynomial vertex** φ⁴ — the spatial MSR-JD machinery (heat kernels, Symanzik / causal-chamber loop integrals). |
-| [`KPZ`](KPZ.ipynb) | **Per-leg gradient vertex** `(∂ₓh)²` — a `∂ₓ → ik` form factor on each leg; excess-velocity cross-check. |
-| [`Model_B_conserved`](Model_B_conserved.ipynb) | **Composite-∇² vertex** `∇²(φ²)` — conserved order parameter, q²-suppressed variance. |
-| [`RD_2D`](RD_2D.ipynb) | **d=2 with a UV-finite loop** — the cubic-vertex bubble converges for d < 4; no cutoff. |
-| [`RD_2_species`](RD_2_species.ipynb) | **Coupled multi-field** — matrix reaction coupling → auto + cross correlators; Dyson dressing for unequal diffusion. |
+| [`Allen_Cahn_phi4`](SPDE/Allen_Cahn_phi4.ipynb) | **Polynomial vertex** φ⁴ — the spatial MSR-JD machinery (heat kernels, Symanzik / causal-chamber loop integrals). |
+| [`KPZ`](SPDE/KPZ.ipynb) | **Per-leg gradient vertex** `(∂ₓh)²` — a `∂ₓ → ik` form factor on each leg; excess-velocity cross-check. |
+| [`Model_B_conserved`](SPDE/Model_B_conserved.ipynb) | **Composite-∇² vertex** `∇²(φ²)` — conserved order parameter, q²-suppressed variance. |
+| [`RD_2D`](SPDE/RD_2D.ipynb) | **d=2 with a UV-finite loop** — the cubic-vertex bubble converges for d < 4; no cutoff. |
+| [`RD_2_species`](SPDE/RD_2_species.ipynb) | **Coupled multi-field** — matrix reaction coupling → auto + cross correlators; Dyson dressing for unequal diffusion. |
 
 ## What each notebook loads
 
