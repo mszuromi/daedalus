@@ -576,6 +576,16 @@ def _set_partitions(items):
         yield [[first]] + sub
 
 
+def _result_meta(result, key, default=None):
+    """Read a run-config field (k, max_ell, external_fields) from a result —
+    from dd.run's ``_resolved``, falling back to compute_cumulants' ``config``
+    so the plotters also work on a raw ``dd.compute_cumulants`` result."""
+    rv = result.get('_resolved')
+    if rv and key in rv:
+        return rv[key]
+    return (result.get('config') or {}).get(key, default)
+
+
 def _external_mean(model: dict, res: dict) -> float:
     """Mean-field saddle φ* for the external leg's field — the TREE-level value
     of the 1-point function ⟨φ⟩.
@@ -604,7 +614,7 @@ def _external_mean(model: dict, res: dict) -> float:
     if not dicts:
         return 0.0
     # External leg's field → base physical field (strip the response/fluct 'd').
-    ext = (res.get('_resolved') or {}).get('external_fields')
+    ext = _result_meta(res, 'external_fields')
     if ext:
         e0 = ext[0]
         fld = e0[0] if isinstance(e0, (tuple, list)) else str(e0)
@@ -1029,7 +1039,7 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     # level is the mean-field saddle φ*; ℓ≥1 add the loop tadpole shifts.  There
     # is no C(τ)/C(χ) curve, so draw it as tree/+loop bars (works for both
     # temporal and the spatial mean-field, which is x-independent).
-    if (result.get('_resolved') or {}).get('k') == 1:
+    if _result_meta(result, 'k') == 1:
         return plot_temporal_mean(result, cfg, model, sim)
     if 'C_kpoint' in result:
         return plot_kpoint(result, cfg, model)
@@ -1053,7 +1063,7 @@ def _plot_moment(result, cfg, model, sim=None):
     A single curve (the moment mixes loop orders, so no per-order overlay)."""
     cfg = cfg or Config()
     kind = result.get('output_kind', 'moment')
-    k = (result.get('_resolved') or {}).get('k', '?')
+    k = _result_meta(result, 'k', '?')
     lab = 'central moment' if kind == 'central_moment' else 'raw moment'
     M = np.real(np.asarray(result['moment']))
     fig, ax = plt.subplots(figsize=cfg.figsize or (7.5, 4.6))
@@ -1276,7 +1286,7 @@ def plot_temporal_kpoint(result, cfg, model, sim=None):
             se = float(np.asarray(se).ravel()[0])
             ax.axhspan(sv - se, sv + se, color='#222', alpha=0.12)
         ax.legend(fontsize=8)
-    k = (result.get('_resolved') or {}).get('k', '?')
+    k = _result_meta(result, 'k', '?')
     ax.axhline(0, color='gray', lw=0.5)
     ax.set_ylabel(r'$\kappa_{%s}$ (equal-time)' % k)
     ax.set_title(cfg.title or f"{model.get('name','')}: "
@@ -1345,7 +1355,7 @@ def plot_temporal_mean(result, cfg, model, sim=None):
             se = float(np.asarray(se).ravel()[0])
             ax.axhspan(sv - se, sv + se, color='#222', alpha=0.12)
         ax.legend(fontsize=8)
-    fld = (result.get('_resolved') or {}).get('external_fields') or [('phi', 1)]
+    fld = _result_meta(result, 'external_fields') or [('phi', 1)]
     fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
     base = fb[1:] if fb.startswith('d') else fb        # physical field (drop 'd')
     ax.axhline(0, color='gray', lw=0.5)
@@ -1387,7 +1397,7 @@ def plot_spatial(result, cfg, model, sim=None):
     si = result.get('spatial_info') or {}
     by_order = si.get('C_by_order')                # {ell: (n_tau, n_x)} cumulative
     ell_top = (max(by_order) if by_order
-               else ((result.get('_resolved') or {}).get('max_ell', 0) or 0))
+               else (_result_meta(result, 'max_ell', 0) or 0))
     loop_lab = _order_label(ell_top)               # e.g. 'tree+1loop'
     sim2d = (sim is not None and sim.get('tau') is not None
              and np.ndim(np.asarray(sim.get('C'))) == 2)
