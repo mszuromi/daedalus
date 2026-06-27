@@ -1,4 +1,4 @@
-"""Fast logic tests for notebooks/daedalus.py (the shared demo
+"""Fast logic tests for daedalus.py (the shared demo
 scaffolding).  Exercises load/introspection/Config/fundamental layering
 and that the adaptable plotters run on synthetic result dicts — WITHOUT
 calling compute_cumulants (the e2e runs are validated in the notebooks

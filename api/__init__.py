@@ -55,7 +55,11 @@ from api.save        import save_npz, save_csv, params_slug
 from api.access      import MeanField, Parameters, normalize_external_fields
 from api._precompute import precompute
 
+#: Daedalus version (keep in sync with pyproject.toml + CITATION.cff).
+__version__ = '0.1.0'
+
 __all__ = [
+    '__version__',
     'compute_cumulants', 'generate_report',
     'save_npz', 'save_csv', 'params_slug',
     'MeanField', 'Parameters', 'normalize_external_fields',

@@ -1,4 +1,4 @@
-"""notebooks/daedalus.py — shared scaffolding for the pipeline demo notebooks.
+"""daedalus.py — shared scaffolding for the pipeline demo notebooks.
 
 Centralises the **load → run → plot** flow so every demo notebook is thin and
 uniform regardless of its group (temporal / spatial × single / multi-field).
@@ -33,6 +33,9 @@ from typing import Any, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
+
+#: Daedalus version (keep in sync with pyproject.toml + CITATION.cff).
+__version__ = '0.1.0'
 
 
 # ── Repo / theory discovery ──────────────────────────────────────────────────

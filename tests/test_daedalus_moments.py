@@ -1,5 +1,5 @@
 """Validation of the cumulants → moments cluster expansion in
-notebooks/daedalus.py (Config.output = 'moment' | 'central_moment').
+daedalus.py (Config.output = 'moment' | 'central_moment').
 
 The moment of a k-point set is the set-partition sum over cumulants
 M(1…k) = Σ_π ∏_B κ(B); central = the same with singleton blocks → 0, raw =

@@ -74,15 +74,22 @@ git clone https://github.com/mszuromi/daedalus.git
 cd daedalus
 ```
 
-There is **no build or install step for the framework itself** — it runs straight from the
-clone. The notebooks add the repository to the Python path automatically (each opens with a
-depth-robust cell that locates the repo root); from a script, see *Using it from a script* below.
+It runs straight from the clone — the notebooks add the repo to the Python path automatically
+(each opens with a depth-robust cell that locates the repo root). To import it from anywhere
+with **no path setup**, optionally install it editable into Sage's Python:
+
+```bash
+sage -pip install -e .      # then `import daedalus` / `import api` work from any directory
+```
+
+(SageMath itself stays an external prerequisite — this only registers the in-repo packages.)
+From a script without installing, see *Using it from a script* below.
 
 ## Package layout
 
 | path | what it is |
 |---|---|
-| [`notebooks/daedalus.py`](notebooks/daedalus.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
+| [`daedalus.py`](daedalus.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
 | [`api/`](api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `TheoryBuilder`, `generate_report`, `save_npz`) |
 | [`engine/`](engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
 | [`simulations/`](simulations/) | independent numerical simulators used to validate the analytic results |

@@ -11,7 +11,7 @@ All notebooks run on the shared `daedalus` engine (imported as `dd`) — see the
 | [`theory_builder.ipynb`](theory_builder.ipynb) | Author a theory in the interactive `TheoryUI` form; it writes `theories/<name>.theory.py`. |
 | [`theory_runner.ipynb`](theory_runner.ipynb) | Load and run **any** `theories/*.theory.py` with a single config cell — temporal or spatial, single- or multi-field, any `k`, any loop order, with/without Dyson dressing. |
 | [`examples/`](examples/) | Ten worked examples, one per capability, each overlaying a from-scratch simulation on the pipeline result. See [`examples/README.md`](examples/README.md). |
-| [`daedalus.py`](daedalus.py) | The shared engine every notebook imports. |
+| [`daedalus.py`](../daedalus.py) | The shared front-end (`dd`) every notebook imports (at the repo root). |
 
 ## The shared flow — load → run → plot
 

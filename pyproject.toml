@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daedalus"
+version = "0.1.0"
+description = "Automated MSR-JD Feynman-diagram computation for stochastic (S)PDE field theories, on SageMath."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "Matthew Szuromi" },
+    { name = "Gabriel K. Ocker" },
+]
+keywords = ["field theory", "Feynman diagrams", "MSRJD", "stochastic processes", "SageMath"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+# SageMath supplies the scientific stack (numpy / scipy / sympy / matplotlib / networkx / mpmath
+# / cysignals / the Jupyter stack) and is an EXTERNAL prerequisite — it is not pip-installable
+# here. Install SageMath 10.8 first (see the README), then:  sage -pip install -e .
+# The only pip extras Daedalus layers on top of Sage are below.
+dependencies = []
+
+[project.optional-dependencies]
+extras = ["numba>=0.61,<0.66", "pydot>=4,<5"]
+
+[project.urls]
+Homepage = "https://github.com/mszuromi/daedalus"
+Repository = "https://github.com/mszuromi/daedalus"
+
+[tool.setuptools]
+# daedalus.py is the front-end module (import daedalus as dd); api/engine/simulations are the packages.
+py-modules = ["daedalus"]
+
+[tool.setuptools.packages.find]
+include = ["api*", "engine*", "simulations*"]
+
+# theories/*.theory.py are loaded by path (dd.load_theory), not imported. An editable install
+# (sage -pip install -e .) resolves them from the repo via daedalus.repo_root(); they are not
+# packaged as importable modules.

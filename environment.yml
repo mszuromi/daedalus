@@ -11,7 +11,7 @@ channels:
   - conda-forge
 dependencies:
   - sage=10.8
-  - numba            # loop-integrator speed; required by the sim cells in notebooks/examples/
-  - pydot            # optional: diagram / prediagram plots
-  - graphviz         # optional: renders pydot output
-  # - pyperclip      # optional: copy buttons in the graphical theory builder
+  - numba>=0.61,<0.66    # loop-integrator speed; required by the sim cells in notebooks/examples/
+  - pydot>=4,<5          # optional: diagram / prediagram plots
+  - graphviz             # optional: renders pydot output
+  # - pyperclip          # optional: clipboard buttons in the graphical theory builder

@@ -14,8 +14,9 @@ authors:
     given-names: Gabriel K.
     affiliation: "Boston University"
 license: BSD-3-Clause
+version: "0.1.0"
 repository-code: "https://github.com/mszuromi/daedalus"
-date-released: "2026-01-01"
+date-released: "2026-06-27"
 keywords:
   - field theory
   - Feynman diagrams

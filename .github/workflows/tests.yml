@@ -1,0 +1,28 @@
+name: tests
+
+# Runs the test suite under a real SageMath install. The conda SageMath package is large, so
+# the environment is cached; the first run (and any environment.yml change) is slow (~20-40 min),
+# cached runs are quick. pytest.ini deselects the minutes-long tests by default.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}        # login shell so the conda env is active
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SageMath 10.8 + extras (conda)
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Run the test suite (slow tests deselected via pytest.ini)
+        run: sage -python -m pytest tests/ -q
