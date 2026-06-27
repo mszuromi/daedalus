@@ -417,27 +417,48 @@ class Config:
             raise ValueError(
                 "Config.output must be 'cumulant', 'moment', or "
                 f"'central_moment'; got {self.output!r}.")
+        # Validate the grids eagerly so the list-vs-tuple range slip
+        # (tau_grid=[-5,5,51] → 3 literal points, not a 51-pt range) is caught
+        # at Config construction, not deep inside run().
+        self.resolved_tau_grid()
+        self.resolved_grid()
 
     def resolved_grid(self):
         """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
         (accepts an ``(lo, hi, n)`` tuple).  ``spatial_grid`` is the alias."""
-        return self._resolve_grid(self.chi_grid)
+        return self._resolve_grid(self.chi_grid, 'chi_grid')
 
     def resolved_tau_grid(self):
         """Materialise ``tau_grid`` (accepts an ``(lo, hi, n)`` tuple), or None."""
-        return self._resolve_grid(self.tau_grid)
+        return self._resolve_grid(self.tau_grid, 'tau_grid')
 
     @staticmethod
-    def _resolve_grid(g):
-        """``(lo, hi, n)`` → ``linspace``; array/list → array; None → None."""
+    def _resolve_grid(g, name='grid'):
+        """``(lo, hi, n)`` TUPLE → ``linspace``; list/array → literal points;
+        None → None.
+
+        A 3-element *list* whose last entry is an integer count (e.g.
+        ``[-5, 5, 51]``) is the classic "I meant a range" slip — a list is taken
+        literally, so that would be the 3 points {-5, 5, 51} (note the 51!).
+        Rather than silently mis-grid, we raise and point at the tuple form."""
         if g is None:
             return None
         if isinstance(g, tuple):
             if len(g) != 3:
                 raise ValueError(
-                    f"grid tuple must be (lo, hi, n); got a {len(g)}-tuple "
+                    f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
                     f"{g!r}. For an arbitrary grid pass a list/array instead.")
             return np.linspace(g[0], g[1], int(g[2]))
+        if (isinstance(g, list) and len(g) == 3
+                and isinstance(g[2], (int, float))
+                and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
+            lo, hi, n = g[0], g[1], int(g[2])
+            raise ValueError(
+                f"{name}={g!r} is a 3-element LIST, so it is read as 3 literal "
+                f"grid points {{{float(lo)}, {float(hi)}, {float(n)}}} — note the "
+                f"{n}!  For a linspace RANGE of {n} points from {lo} to {hi}, use "
+                f"a TUPLE: {name}=({lo}, {hi}, {n}).  For {n} literal points, pass "
+                f"a numpy array: {name}=np.array({g!r}).")
         return np.asarray(g, dtype=float)
 
 
@@ -501,15 +522,15 @@ def config_options(spatial=None):
         ]),
     ]
     temporal_grid = ('temporal grid / slicing (τ axis)', [
-        ('tau_grid',         'τ (lag) grid for C(τ): array | (lo,hi,n)  — the primary τ knob'),
+        ('tau_grid',         'τ (lag) grid: (lo,hi,n) TUPLE→linspace, or an array of points — the primary τ knob'),
         ('tau_max',          'under-the-hood: τ extent (symmetric −tau_max…tau_max) if no tau_grid'),
         ('tau_step',         'under-the-hood: τ spacing (paired with tau_max)'),
         ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
-        ('chi_grid',      'spatial-difference grid χ=x_j−x_k: (lo,hi,n) or array; [χ0] fixes χ'),
-        ('tau_grid',      'τ grid for C(χ,τ): array | (lo,hi,n); [0.0] → equal-time C(χ,0)'),
+        ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ'),
+        ('tau_grid',      'τ grid: (lo,hi,n) TUPLE→linspace, or array; [0.0] → equal-time C(χ,0)'),
         ('tau_max',       'under-the-hood: τ extent if no tau_grid (0.0 → equal-time)'),
         ('tau_step',      'under-the-hood: τ spacing (paired with tau_max)'),
         ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
