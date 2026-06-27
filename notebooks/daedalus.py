@@ -513,7 +513,7 @@ def config_options(spatial=None):
             ('reference_diffusion', 'reference D for the Dyson expansion'),
         ]),
         ('execution', [
-            ('parallel',  'enable the parallel backend'),
+            ('parallel',  'enable the parallel backend (temporal fork-parallelism is force-serialized in a macOS Jupyter kernel)'),
             ('n_workers', 'worker count (spatial threads; temporal batch outside Jupyter)'),
             ('verbose',   'print backend progress'),
         ]),
@@ -932,8 +932,14 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                     res['_kpoint_grid_note'] = (
                         f'τ downsampled to {gtau.size} pts/axis '
                         f'({gtau.size ** (k - 1)} evals) to bound grid cost')
-        except Exception:
-            pass        # leave None/scalar form; plot_temporal_kpoint handles it
+        except Exception as e:
+            # Don't swallow silently: record it and surface a note when verbose.
+            # (The catch stays broad — lambdified callables have a wide failure
+            # surface — but we instrument rather than hide it.)
+            res['_kpoint_slice_error'] = repr(e)
+            if cfg.verbose:
+                print(f'  [k>=3 slice synthesis failed: {e!r}; '
+                      f'using the equal-time fallback]')
 
     # Optional output conversion: assemble the full / central k-point MOMENT
     # from the cumulants (the set-partition / cluster expansion).
