@@ -21,11 +21,16 @@ def build():
         .physical_field('n')
         .physical_field('v')
 
-        .parameter('E',     indexed=True)
+        # Per-parameter defaults (matching DEFAULT_FUNDAMENTAL) so the MF
+        # saddle-sector check has a real parameter point to verify against —
+        # without them the verifier falls back to all-ones (no real saddle)
+        # and the numerical residual is N/A, hard-failing the load.
+        .parameter('E',     indexed=True,      default=[0.78, 0.81])
         .parameter('tau',   default=10.0, domain='positive')
         .parameter('a',     default=1.0)
         .parameter('tau_g', default=2.5,  domain='positive')
-        .parameter('w',     indexed='matrix')
+        .parameter('w',     indexed='matrix',  default=[[0.30, 0.25],
+                                                        [0.30, 0.35]])
 
         .define_function('phi', args=['v'], expression='a * v',
                          latex=r'\varphi')
