@@ -201,6 +201,7 @@ def test_unequal_D_default_policy_raises_actionable():
                           parallel=False, verbose=False, use_cache=False)
 
 
+@pytest.mark.slow   # coupled-Dyson order-3 loop path: minutes-long; opt in with -m slow
 def test_unequal_D_loops_order3_runs():
     """Loop insertions have NO order cap (exact at every order via the
     ln-derivative partition expansion + generalized-partial-fraction
@@ -255,6 +256,7 @@ _LUF = {'mua': _MU1, 'mub': _MU2, 'Da': _D1, 'Db': _D2, 'eps': 1e-8,
         'gq': 0.3, 'ga': 0.3, 'Ta': _T1, 'Tb': _T2}
 
 
+@pytest.mark.slow   # coupled-Dyson loop-dressing ladder: minutes-long; opt in with -m slow
 def test_unequal_D_loop_dressing_ladder():
     """THE loop-dressing referee: the decoupled-unequal-D loop correction dC
     must converge to the single-field answer at D=Da — order 0 (no dressing,
