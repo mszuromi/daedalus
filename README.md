@@ -14,8 +14,8 @@ With conda or mamba installed ([Miniforge](https://github.com/conda-forge/minifo
 have neither):
 
 ```bash
-git clone <repository-url>
-cd <repository>
+git clone https://github.com/mszuromi/daedalus.git
+cd daedalus
 conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
 conda activate daedalus
 jupyter lab                             # then open notebooks/theory_builder_tutorial.ipynb
@@ -27,7 +27,7 @@ and list tested versions.
 
 ## Requirements
 
-The one prerequisite is **SageMath 10.8**. Sage provides Python 3.12+ and almost the entire
+The one prerequisite is **SageMath 10.8**. Sage provides Python 3.13 and almost the entire
 stack — numpy, scipy, sympy, matplotlib, mpmath, networkx, cysignals, the Jupyter stack
 (JupyterLab / notebook / ipykernel / **ipywidgets**), and a `SageMath` Jupyter kernel. Only a
 couple of extras are added on top (`numba`, optionally `pydot`).
@@ -70,13 +70,37 @@ also `pip install pyperclip`.
 ## Get the code
 
 ```bash
-git clone <repository-url>
-cd <repository>
+git clone https://github.com/mszuromi/daedalus.git
+cd daedalus
 ```
 
 There is **no build or install step for the framework itself** — it runs straight from the
-clone. The notebooks add the repository to the Python path automatically; from a script, do
-`sys.path.insert(0, '<repo>'); sys.path.insert(0, '<repo>/notebooks')`.
+clone. The notebooks add the repository to the Python path automatically (each opens with a
+depth-robust cell that locates the repo root); from a script, see *Using it from a script* below.
+
+## Package layout
+
+| path | what it is |
+|---|---|
+| [`notebooks/daedalus.py`](notebooks/daedalus.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
+| [`api/`](api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `TheoryBuilder`, `generate_report`, `save_npz`) |
+| [`engine/`](engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
+| [`simulations/`](simulations/) | independent numerical simulators used to validate the analytic results |
+| [`theories/`](theories/) | `*.theory.py` specs loaded by `dd.load_theory(name)` |
+
+## Using it from a script
+
+`dd` runs from a plain `sage -python` script, not just notebooks — put the repo root and its
+`notebooks/` directory on the path:
+
+```python
+import sys; sys.path[:0] = ['/path/to/daedalus', '/path/to/daedalus/notebooks']
+import daedalus as dd
+model, mod = dd.load_theory('kpz_1d')
+res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
+```
+
+For lower-level access the API layer is importable directly, e.g. `from api import compute_cumulants`.
 
 ## Verify the install
 
@@ -119,7 +143,7 @@ differently-named kernel — just pick your **SageMath** kernel from Jupyter's k
 | component | tested version | source | needed for |
 |---|---|---|---|
 | **SageMath** | **10.8** | *install this* | the whole framework |
-| Python | 3.12 (conda) / 3.13 (native) | Sage | — |
+| Python | 3.13 | Sage | — |
 | numpy / scipy / sympy / mpmath | 2.3.2 / 1.15.2 / 1.13.2 / 1.3.0 | Sage | core computation |
 | matplotlib | 3.10.5 | Sage | plotting |
 | networkx | 3.5 | Sage | diagram / report bookkeeping |
