@@ -504,7 +504,8 @@ def config_options(spatial=None):
                              • full (χ,τ) grid : ranged chi_grid + tau_max>0
                              • equal-time C(χ,0): tau_max=0.0
                              • fixed-χ  C(χ₀,τ) : chi_grid=[χ0], tau_max>0
-      spatial   k≥3 events   spatial_points = (n_pts, k−1, 2) of (x_j, τ_j)
+      spatial   k≥3          spatial_points = (n_pts, k−1, 2) explicit (x_j, τ_j) events,
+                             OR chi_grid (+ tau_grid) → full 2(k−1)-D grid of all legs
     """
     import dataclasses
     d = {f.name: f.default for f in dataclasses.fields(Config)}
@@ -533,7 +534,7 @@ def config_options(spatial=None):
         ('tau_grid',      'τ grid: (lo,hi,n) TUPLE→linspace, or array; [0.0] → equal-time C(χ,0)'),
         ('tau_max',       'under-the-hood: τ extent if no tau_grid (0.0 → equal-time)'),
         ('tau_step',      'under-the-hood: τ spacing (paired with tau_max)'),
-        ('spatial_points','k≥3: (n_pts, k−1, 2) array of explicit (x_j, τ_j) events'),
+        ('spatial_points','k≥3: explicit (n_pts, k−1, 2) (x_j, τ_j) events — OR omit and pass chi_grid(+tau_grid) to sweep the full 2(k−1)-D grid → result["C_kpoint_grid"]'),
     ])
     rest = [
         ('mean-field root (multi-root theories)', [
@@ -847,6 +848,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if cfg.mf_dae_seed_box is not None:
         kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
 
+    _kpoint_grid = None            # set below if a k≥3 spatial grid is built
     if is_spatial(model):
         if k == 1:
             # k=1 spatial mean ⟨φ⟩: by translation invariance the mean is
@@ -860,9 +862,37 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             kw['max_ell'] = 0
             kw['spatial_points'] = np.zeros((1, 0, 2), dtype=float)
         elif k != 2 and cfg.spatial_points is None:
-            raise ValueError(
-                'spatial k≥3 needs Config.spatial_points = (n_pts, k-1, 2) '
-                'array of (x_j, τ_j) offsets per non-anchor external slot.')
+            # No explicit events → sweep the FULL 2(k-1)-D grid: each of the k-1
+            # non-anchor legs ranges over chi_grid (× tau_grid).  Pure convenience
+            # over the same k-point evaluator (events built from the grid axes);
+            # the flat result is reshaped to the (τ,χ)×(k-1) grid after the run.
+            chi_g = cfg.resolved_grid()
+            if chi_g is None:
+                raise ValueError(
+                    'spatial k≥3 needs EITHER Config.spatial_points='
+                    '(n_pts, k-1, 2) explicit (x_j, τ_j) events, OR a chi_grid '
+                    '(+ optional tau_grid) to sweep the full 2(k-1)-D grid over '
+                    'the k-1 non-anchor legs.')
+            tau_g = cfg.resolved_tau_grid()
+            if tau_g is None:
+                tau_g = np.array([0.0])              # equal-time grid (τ axes = 1 pt)
+            legs = [(float(x), float(t)) for t in tau_g for x in chi_g]
+            n_ev = len(legs) ** (k - 1)
+            if n_ev > 20000:
+                raise ValueError(
+                    f'k={k} grid would be {n_ev} events = '
+                    f'({len(chi_g)}*{len(tau_g)})^(k-1); too many — k-point grids '
+                    'scale combinatorially. Shrink chi_grid/tau_grid, or pass '
+                    'explicit Config.spatial_points.')
+            if cfg.verbose or n_ev > 400:
+                print(f'  [k={k} grid] {n_ev} events = '
+                      f'({len(chi_g)}*{len(tau_g)})^(k-1); tree ~{n_ev * 0.3:.0f}s'
+                      ', 1-loop is far slower.')
+            import itertools as _it
+            kw['spatial_points'] = np.array(
+                [[list(p) for p in combo]
+                 for combo in _it.product(legs, repeat=k - 1)], dtype=float)
+            _kpoint_grid = (np.asarray(tau_g), np.asarray(chi_g), k - 1)
         elif k != 2:
             kw['spatial_points'] = np.asarray(cfg.spatial_points, dtype=float)
         else:
@@ -886,6 +916,20 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['tau_grid'] = tg
 
     res = compute_cumulants(**kw)
+
+    # Spatial k≥3 grid: reshape the flat per-event k-point cumulant back into the
+    # full 2(k-1)-D grid — one (τ, χ) pair per non-anchor leg, axis order
+    # (τ₂, χ₂, τ₃, χ₃, …) — so it slices like the k=2 C(χ,τ).
+    if _kpoint_grid is not None and isinstance(res, dict):
+        tau_g, chi_g, nlegs = _kpoint_grid
+        shp = (len(tau_g), len(chi_g)) * nlegs
+        if res.get('C_kpoint') is not None:
+            res['C_kpoint_grid'] = np.asarray(res['C_kpoint']).reshape(shp)
+        be = res.get('C_kpoint_by_ell') or {}
+        if be:
+            res['C_kpoint_grid_by_ell'] = {
+                e: np.asarray(v).reshape(shp) for e, v in be.items()}
+        res['kpoint_grid_axes'] = {'tau': tau_g, 'chi': chi_g, 'n_legs': nlegs}
 
     # Temporal k≥3: compute_cumulants returns ``C_tau=None`` and callable
     # ``total_C`` / ``total_C_by_ell`` (the connected k-point cumulant is a
@@ -1062,6 +1106,8 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     # temporal and the spatial mean-field, which is x-independent).
     if _result_meta(result, 'k') == 1:
         return plot_temporal_mean(result, cfg, model, sim)
+    if result.get('C_kpoint_grid') is not None:      # k≥3 spatial grid → slice heatmap
+        return plot_kpoint_grid(result, cfg, model, sim)
     if 'C_kpoint' in result:
         return plot_kpoint(result, cfg, model)
     if is_spatial(model) or 'C_tau_x' in result:
@@ -1542,6 +1588,47 @@ def plot_kpoint(result, cfg, model):
                  " cumulant at events")
     ax.grid(alpha=0.25, axis='y')
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    if cfg.save:
+        fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_kpoint_grid(result, cfg, model, sim=None):
+    """Spatial k≥3 cumulant swept over the full 2(k-1)-D (χ,τ) grid.  The object
+    is 2(k-1)-dimensional, so this draws a 2-D SLICE as a heatmap: at equal time
+    (a single τ) the spatial map κ_k(χ₂,χ₃); otherwise κ_k(χ₂,τ₂) with the other
+    legs pinned at the grid origin (χ≈0, τ≈0).  The full array is in
+    ``result['C_kpoint_grid']`` (axes in ``result['kpoint_grid_axes']``) for any
+    other slice you want."""
+    cfg = cfg or Config()
+    g = np.real(np.asarray(result['C_kpoint_grid']))
+    ax = result.get('kpoint_grid_axes') or {}
+    tau = np.asarray(ax.get('tau')); chi = np.asarray(ax.get('chi'))
+    nlegs = int(ax.get('n_legs', g.ndim // 2))
+    k = result.get('k', nlegs + 1)
+    it0 = int(np.argmin(np.abs(tau))); ix0 = int(np.argmin(np.abs(chi)))
+    if tau.size == 1:                          # equal time → κ_k(χ₂,χ₃) map
+        sl = [0, slice(None)]                   # leg2: τ=0, χ₂ varies (rows)
+        sl += [0, slice(None)] if nlegs >= 2 else []   # leg3: τ=0, χ₃ varies (cols)
+        sl += [0, ix0] * max(0, nlegs - 2)     # legs 4..k pinned at origin
+        M = g[tuple(sl)]
+        extent = [chi.min(), chi.max(), chi.min(), chi.max()]
+        xlab, ylab = r'$\chi_3$', r'$\chi_2$'
+        sub = r'$\kappa_%d(\chi_2,\chi_3)$ at $\tau=0$' % k
+    else:                                      # κ_k(χ₂,τ₂), other legs pinned
+        sl = [slice(None), slice(None)]        # leg2: τ₂ (rows), χ₂ (cols)
+        sl += [it0, ix0] * max(0, nlegs - 1)   # legs 3..k pinned at (τ≈0,χ≈0)
+        M = g[tuple(sl)]
+        extent = [chi.min(), chi.max(), tau.min(), tau.max()]
+        xlab, ylab = r'$\chi_2$', r'$\tau_2$'
+        sub = r'$\kappa_%d(\chi_2,\tau_2)$  (other legs at $\chi{=}0,\tau{=}0$)' % k
+    fig, axp = plt.subplots(figsize=cfg.figsize or (6.6, 4.8))
+    im = axp.imshow(np.real(M), aspect='auto', origin='lower', extent=extent,
+                    cmap='viridis')
+    axp.set_xlabel(xlab); axp.set_ylabel(ylab)
+    axp.set_title(cfg.title or f"{model.get('name','')}: {sub}")
+    fig.colorbar(im, ax=axp, fraction=0.046, pad=0.04)
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
