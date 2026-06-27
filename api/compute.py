@@ -121,10 +121,12 @@ def compute_cumulants(
     fundamental: dict = None,
     external_fields: list[tuple[str, int]] = None,
     *,
+    parameters: dict = None,         # canonical name for ``fundamental`` (wins if both given)
     tau_max: float = 50.0,
     tau_step: float = 0.5,
     tau_grid=None,                   # explicit τ grid (array); overrides tau_max/tau_step
     spatial_grid=None,
+    chi_grid=None,                   # canonical name for ``spatial_grid`` (wins if both given)
     taylor_order: int = None,
     origin_leaf_idx: int = 0,
     output_npz: str = None,
@@ -260,6 +262,12 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
     """
+    # Accept the canonical names the dd.Config layer uses (``parameters`` /
+    # ``chi_grid``), mirroring onto the internal names; canonical wins.
+    if parameters is not None:
+        fundamental = parameters
+    if chi_grid is not None:
+        spatial_grid = chi_grid
     if fundamental is None:
         fundamental = {}
     if external_fields is None:
@@ -611,6 +619,7 @@ def compute_cumulants(
             'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
             'tau_grid':       tau_grid,
             'spatial_grid':   spatial_grid_arr,
+            'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
             'spatial_info':   sp_info,
             'mf_values':      mf_values_sp,
             'mf':             MeanField(mf_values_sp,
@@ -622,6 +631,7 @@ def compute_cumulants(
                 'k':               k,
                 'max_ell':         max_ell,
                 'fundamental':     fundamental,
+                'parameters':      fundamental,
                 'external_fields': external_fields,
                 'tau_max':         tau_max,
                 'tau_step':        tau_step,
@@ -927,6 +937,7 @@ def compute_cumulants(
             'k':                  k,
             'max_ell':            max_ell,
             'fundamental':        fundamental,
+            'parameters':         fundamental,
             'external_fields':    external_fields,        # internal names
             'external_fields_in': external_fields_user,   # as user passed
             'tau_max':            tau_max,

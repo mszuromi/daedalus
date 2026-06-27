@@ -353,10 +353,11 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k):
 def generate_report(
     model: dict,
     k: int,
-    fundamental: dict,
-    external_fields: list[tuple[str, int]],
-    output_pdf: str,
+    fundamental: dict = None,
+    external_fields: list[tuple[str, int]] = None,
+    output_pdf: str = None,
     *,
+    parameters: dict = None,         # canonical name for ``fundamental`` (wins if both given)
     max_ell: int = 0,
     tau_max: float = 50.0,
     tau_step: float = 0.5,
@@ -374,7 +375,18 @@ def generate_report(
 
     Returns the result dict so the caller can do further analysis.
     """
+    # Accept the canonical name ``parameters`` (the dd.Config name); it wins
+    # over the legacy ``fundamental`` if both are given.
+    if parameters is not None:
+        fundamental = parameters
+    if output_pdf is None:
+        raise ValueError('generate_report needs output_pdf=.')
     if result is None:
+        if fundamental is None:
+            raise ValueError(
+                'generate_report needs parameters= (or fundamental=).')
+        if external_fields is None:
+            raise ValueError('generate_report needs external_fields=.')
         result = compute_cumulants(
             model           = model,
             k               = k,
