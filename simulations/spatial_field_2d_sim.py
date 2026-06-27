@@ -144,3 +144,38 @@ def radial_correlator_2d(snaps, meta, n_bins=40, r_max=None):
     Cr = np.array([Cf[idx == b].mean() if np.any(idx == b) else np.nan
                    for b in range(n_bins)])
     return rc, Cr
+
+
+def space_time_correlator_2d(snaps, meta, max_lag=None, n_lags=None,
+                             connected=True):
+    """Full space-time correlator ``C(χ¹,χ²,τ) = ⟨φ(x,t) φ(x+χ,t+τ)⟩`` on the 2-D
+    ring, averaged over x and t.
+
+    Returns ``(tau, chi, C)`` where ``chi`` is the CENTRED lattice axis (length
+    N, χ=0 at the middle), ``C`` has shape ``(n_tau, N, N)`` with
+    ``C[i, a, b]`` the correlator at ``χ¹=chi[a], χ²=chi[b], τ=tau[i]``, and
+    ``tau`` is the symmetric lag grid (C is even in τ by stationarity + parity,
+    so τ<0 is mirrored from τ≥0).  ``connected`` subtracts ⟨φ⟩².  Its ``τ=0``
+    plane equals the equal-time 2-D correlator (cf. :func:`radial_correlator_2d`),
+    and it is directly comparable to ``compute_cumulants``' d=2 ``C(χ¹,χ²,τ)``.
+    Lag spacing is the recording interval ``record_every·dt``."""
+    snaps = np.asarray(snaps)
+    n_rec, N, _ = snaps.shape
+    dt_rec = float(meta['record_every']) * float(meta['dt'])
+    dx = float(meta['L']) / N
+    if n_lags is None:
+        n_lags = (int(round(float(max_lag) / dt_rec)) + 1 if max_lag is not None
+                  else max(1, min(n_rec // 4, 128)))
+    n_lags = int(max(1, min(n_lags, n_rec - 1)))
+    mean = float(snaps.mean()) if connected else 0.0
+    F = np.fft.fft2(snaps - mean, axes=(1, 2))          # (n_rec, N, N)
+    Cpos = np.empty((n_lags, N, N))
+    for lag in range(n_lags):
+        cps = np.mean(np.conj(F[:n_rec - lag]) * F[lag:], axis=0)
+        Cpos[lag] = np.real(np.fft.ifft2(cps)) / N ** 2
+    Cpos = np.fft.fftshift(Cpos, axes=(1, 2))           # centre χ=0
+    chi = (np.arange(N) - (N // 2)) * dx
+    tau_pos = np.arange(n_lags) * dt_rec
+    tau = np.concatenate([-tau_pos[:0:-1], tau_pos])    # [-τmax … 0 … τmax]
+    C = np.concatenate([Cpos[:0:-1], Cpos], axis=0)     # even in τ → mirror
+    return tau, chi, C

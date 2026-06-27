@@ -1458,7 +1458,7 @@ def plot_spatial(result, cfg, model, sim=None):
     overlays on the equal-time panel."""
     cfg = cfg or Config()
     if spatial_dim(model) >= 2:                     # d≥2: χ is a VECTOR → C(τ, χ¹, χ²)
-        return _plot_spatial_2d(result, cfg, model)
+        return _plot_spatial_2d(result, cfg, model, sim)
     C = np.real(np.asarray(result['C_tau_x']))     # (n_tau, n_x) — total, all loops
     xs = np.asarray(result['spatial_grid'])
     tau = np.asarray(result['tau_grid'])
@@ -1565,14 +1565,16 @@ def plot_spatial(result, cfg, model, sim=None):
     return fig
 
 
-def _plot_spatial_2d(result, cfg, model):
+def _plot_spatial_2d(result, cfg, model, sim=None):
     """Spatial correlator in d≥2: the separation χ is a VECTOR, so the k=2
     correlator depends on (τ, χ¹, χ²).  The pipeline computes the isotropic
     radial C(r,τ); this presents it as the three axis SLICES (χ¹, χ², τ — each
     with the tree / tree+1loop per-order overlay) and the three pairwise
-    HEATMAPS over {χ¹, χ², τ}.  Built by C(χ¹,χ²,τ) = C_rad(√((χ¹)²+(χ²)²), τ)
-    (rotational invariance), so for an isotropic theory the χ¹ and χ² views
-    coincide — that redundancy is the visual signature of isotropy."""
+    HEATMAPS over {χ¹, χ², τ}, via C(χ¹,χ²,τ) = C_rad(√((χ¹)²+(χ²)²), τ)
+    (rotational invariance, so the χ¹ and χ² views coincide — the visual
+    signature of isotropy).  A ``sim`` dict ``{'chi','tau','C'}`` with a 3-D
+    ``C[i,a,b]`` = C(χ¹=chi[a], χ²=chi[b], τ=tau[i]) adds sim points on the
+    slices and a matching row of sim heatmaps on the shared colour scale."""
     cfg = cfg or Config()
     r   = np.asarray(result['spatial_grid'], float)        # radial separations ≥ 0
     tau = np.asarray(result['tau_grid'], float)
@@ -1590,18 +1592,33 @@ def _plot_spatial_2d(result, cfg, model):
 
     orders = sorted(by) if (by and cfg.show_orders != 'total') else [None]
 
-    def overlay(ax, xvals, fn):                            # per-order curves on a slice axis
+    def overlay(ax, xvals, fn, simxy=None):                # per-order theory curves (+ sim dots)
         for i, o in enumerate(orders):
             arr = np.real(np.asarray(by[o])) if o is not None else full
             ax.plot(xvals, fn(arr), '-', lw=1.7,
                     color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
                     label=('theory: %s' % _order_label(o)) if o is not None else 'theory')
+        if simxy is not None:
+            ax.plot(simxy[0], simxy[1], 'o', ms=3, color='#222', alpha=.6, label='sim')
         ax.grid(alpha=.25); ax.legend(fontsize=8)
 
-    chi = np.linspace(-R, R, 121)                           # χ¹ / χ² slice + (χ,τ) heatmap axis
+    chi = np.linspace(-R, R, 121)
     name = model.get('name', '')
+    Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
+    CX, CY = np.meshgrid(cb, cb)
+    M_xy = rad(full, np.sqrt(CX**2 + CY**2), it0)           # theory C(χ¹,χ²,0)
+    M_xt = (np.array([rad(full, chi, it) for it in range(tau.size)])
+            if has_tau else None)                          # theory C(χ¹,0,τ)
 
-    if not has_tau:                                         # equal-time only → χ¹, χ² slices + (χ¹,χ²) map
+    have_sim = (sim is not None and sim.get('C') is not None
+                and np.ndim(np.asarray(sim['C'])) == 3 and has_tau)
+    if have_sim:
+        sC = np.real(np.asarray(sim['C'])); sx = np.asarray(sim['chi'], float)
+        st = np.asarray(sim['tau'], float)
+        a0 = int(np.argmin(np.abs(sx))); is0 = int(np.argmin(np.abs(st)))
+        km = np.abs(sx) <= R; sxm = sx[km]
+
+    if not has_tau:                                         # equal-time only → 1×3
         fig, ax = plt.subplots(1, 3, figsize=cfg.figsize or (15.0, 4.4))
         overlay(ax[0], chi, lambda a: rad(a, chi, it0))
         ax[0].set_xlabel(r'$\chi^1$'); ax[0].set_ylabel(r'$C(\chi^1,0,0)$')
@@ -1609,46 +1626,60 @@ def _plot_spatial_2d(result, cfg, model):
         overlay(ax[1], chi, lambda a: rad(a, chi, it0))
         ax[1].set_xlabel(r'$\chi^2$'); ax[1].set_ylabel(r'$C(0,\chi^2,0)$')
         ax[1].set_title(r'slice $\chi^2$  ($\chi^1{=}0$)')
-        Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
-        CX, CY = np.meshgrid(cb, cb)
-        im = ax[2].imshow(rad(full, np.sqrt(CX**2 + CY**2), it0), origin='lower',
-                          extent=[-Xb, Xb, -Xb, Xb], aspect='auto', cmap='viridis')
+        im = ax[2].imshow(M_xy, origin='lower', extent=[-Xb, Xb, -Xb, Xb],
+                          aspect='auto', cmap='viridis')
         ax[2].set_xlabel(r'$\chi^1$'); ax[2].set_ylabel(r'$\chi^2$')
         ax[2].set_title(r'$C(\chi^1,\chi^2,0)$  [%s]' % loop_lab)
         fig.colorbar(im, ax=ax[2], fraction=.046, pad=.04)
-        fig.suptitle(r'%s: equal-time $C(\chi^1,\chi^2)$' % name)
-        fig.tight_layout()
+        fig.suptitle(r'%s: equal-time $C(\chi^1,\chi^2)$' % name); fig.tight_layout()
         if cfg.save:
             fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
         return fig
 
-    # full τ grid → 3 slices (top) + 3 pairwise heatmaps (bottom)
-    fig, ax = plt.subplots(2, 3, figsize=cfg.figsize or (15.5, 8.6))
-    overlay(ax[0, 0], chi, lambda a: rad(a, chi, it0))
+    nrows = 3 if have_sim else 2
+    fig, ax = plt.subplots(nrows, 3, figsize=cfg.figsize or (15.5, 4.3 * nrows + 0.4))
+
+    # ── row 0: the three axis slices (theory per-order + optional sim points) ──
+    overlay(ax[0, 0], chi, lambda a: rad(a, chi, it0),
+            simxy=(sxm, sC[is0][km][:, a0]) if have_sim else None)
     ax[0, 0].set_xlabel(r'$\chi^1$'); ax[0, 0].set_ylabel(r'$C(\chi^1,0,0)$')
     ax[0, 0].set_title(r'slice $\chi^1$  ($\chi^2{=}0,\tau{=}0$)')
-    overlay(ax[0, 1], chi, lambda a: rad(a, chi, it0))
+    overlay(ax[0, 1], chi, lambda a: rad(a, chi, it0),
+            simxy=(sxm, sC[is0][a0][km]) if have_sim else None)
     ax[0, 1].set_xlabel(r'$\chi^2$'); ax[0, 1].set_ylabel(r'$C(0,\chi^2,0)$')
     ax[0, 1].set_title(r'slice $\chi^2$  ($\chi^1{=}0,\tau{=}0$)')
-    overlay(ax[0, 2], tau, lambda a: np.array([rad(a, 0.0, it) for it in range(tau.size)]))
+    overlay(ax[0, 2], tau, lambda a: np.array([rad(a, 0.0, it) for it in range(tau.size)]),
+            simxy=(st, sC[:, a0, a0]) if have_sim else None)
     ax[0, 2].set_xlabel(r'$\tau$'); ax[0, 2].set_ylabel(r'$C(0,0,\tau)$')
     ax[0, 2].set_title(r'slice $\tau$  ($\chi^1{=}\chi^2{=}0$)')
 
-    Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
-    CX, CY = np.meshgrid(cb, cb)
-    M_xy = rad(full, np.sqrt(CX**2 + CY**2), it0)           # C(χ¹,χ²,0)
-    M_xt = np.array([rad(full, chi, it) for it in range(tau.size)])  # C(χ¹,0,τ)
-    for axh, M, ext, xl, yl, ttl in [
-        (ax[1, 0], M_xy, [-Xb, Xb, -Xb, Xb], r'$\chi^1$', r'$\chi^2$',
-         r'$C(\chi^1,\chi^2,0)$  [%s]' % loop_lab),
-        (ax[1, 1], M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^1$', r'$\tau$',
-         r'$C(\chi^1,0,\tau)$  [%s]' % loop_lab),
-        (ax[1, 2], M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^2$', r'$\tau$',
-         r'$C(0,\chi^2,\tau)$  [%s]' % loop_lab)]:
-        im = axh.imshow(M, origin='lower', extent=ext, aspect='auto', cmap='viridis')
-        axh.set_xlabel(xl); axh.set_ylabel(yl); axh.set_title(ttl)
-        fig.colorbar(im, ax=axh, fraction=.046, pad=.04)
-    fig.suptitle(r'%s: $C(\chi^1,\chi^2,\tau)$ (isotropic d=2 — χ¹ and χ² views coincide)' % name)
+    # ── theory heatmaps (row 1) + matching sim heatmaps (row 2), shared scale/col ──
+    theory_maps = [
+        (M_xy, [-Xb, Xb, -Xb, Xb], r'$\chi^1$', r'$\chi^2$', r'$C(\chi^1,\chi^2,0)$'),
+        (M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^1$', r'$\tau$', r'$C(\chi^1,0,\tau)$'),
+        (M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^2$', r'$\tau$', r'$C(0,\chi^2,\tau)$')]
+    if have_sim:
+        sim_maps = [
+            (sC[is0][np.ix_(km, km)], [sxm.min(), sxm.max(), sxm.min(), sxm.max()]),
+            (sC[:, :, a0][:, km], [sxm.min(), sxm.max(), st.min(), st.max()]),
+            (sC[:, a0, :][:, km], [sxm.min(), sxm.max(), st.min(), st.max()])]
+    for c, (M, ext, xl, yl, base) in enumerate(theory_maps):
+        vmin, vmax = float(np.nanmin(M)), float(np.nanmax(M))
+        im = ax[1, c].imshow(M, origin='lower', extent=ext, aspect='auto',
+                             cmap='viridis', vmin=vmin, vmax=vmax)
+        ax[1, c].set_xlabel(xl); ax[1, c].set_ylabel(yl)
+        ax[1, c].set_title(base + r'  [theory, %s]' % loop_lab)
+        fig.colorbar(im, ax=ax[1, c], fraction=.046, pad=.04)
+        if have_sim:
+            Ms, exts = sim_maps[c]
+            im2 = ax[2, c].imshow(Ms, origin='lower', extent=exts, aspect='auto',
+                                  cmap='viridis', vmin=vmin, vmax=vmax)
+            ax[2, c].set_xlabel(xl); ax[2, c].set_ylabel(yl)
+            ax[2, c].set_title(base + r'  [sim]')
+            fig.colorbar(im2, ax=ax[2, c], fraction=.046, pad=.04)
+    sub = ('isotropic d=2; sim on the shared theory colour scale'
+           if have_sim else 'isotropic d=2 — χ¹ and χ² views coincide')
+    fig.suptitle(r'%s: $C(\chi^1,\chi^2,\tau)$ (%s)' % (name, sub))
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
