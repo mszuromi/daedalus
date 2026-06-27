@@ -1,5 +1,5 @@
 """
-pipeline._grouped_phase_j
+api._grouped_phase_j
 =========================
 Prototype prediagram-grouped Phase J wrapper.
 

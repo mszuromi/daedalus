@@ -94,7 +94,7 @@ def precompute(model: dict, *, force: bool = False,
         from api._propagator import build_propagator
         from api import _expand_cache as _ec
     except ImportError as e:
-        _log(f'[precompute] FATAL: cannot import pipeline modules ({e!r})')
+        _log(f'[precompute] FATAL: cannot import api modules ({e!r})')
         out['mf_check'] = f'IMPORT_FAILED: {e}'
         out['wall_seconds'] = time.perf_counter() - t0
         return out

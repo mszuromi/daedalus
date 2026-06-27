@@ -1,5 +1,5 @@
 """
-pipeline.access — natural-name accessors for compute_cumulants results.
+api.access — natural-name accessors for compute_cumulants results.
 
 Hides the MSR-JD internal naming (``dn`` for fluctuations, ``nstar``
 for saddle values, etc.) behind the model's declared user-facing

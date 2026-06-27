@@ -1,5 +1,5 @@
 """
-pipeline.spatial_operator_ir
+api.spatial_operator_ir
 ============================
 A small **operator intermediate representation** (IR) for the spatial
 differential operators that appear in a field-theory action — the Laplacian

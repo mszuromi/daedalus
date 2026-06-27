@@ -1,5 +1,5 @@
 """
-pipeline — high-level user-facing API for the MSR-JD Feynman pipeline.
+api — high-level user-facing API for the MSR-JD Feynman pipeline.
 
 This package wraps the lower-level engine machinery (FieldTheory expansion,
 type assignment, propagator construction, Phase J integration) into
@@ -42,11 +42,12 @@ The result dict includes:
   - ``propagator``   : {'G_ft': matrix, 'pole_vals': [...], 'C_mats': [...]}
   - ``config``       : the call args echoed back
 
-Status (prototype):
-  ✓ compute_cumulants — full pipeline up to and including Phase J
-  ✓ generate_report   — multi-page PDF with prediagrams + per-diagram values
-  ✗ theory builder API (declarative theory input)  — design sketched in
-    api/theory.py; full implementation pending.
+Shipped capabilities:
+  - compute_cumulants — full pipeline up to and including Phase J
+  - generate_report   — multi-page PDF with prediagrams + per-diagram values
+  - theory builder API (declarative theory input) — TemporalTheoryBuilder /
+    SpatialTheoryBuilder in api/theory.py; call .build() to produce a model
+    dict consumable by compute_cumulants. This is the primary authoring path.
 """
 from api.compute     import compute_cumulants
 from api.report      import generate_report

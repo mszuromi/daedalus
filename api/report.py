@@ -1,22 +1,18 @@
 """
-pipeline.report — multi-page PDF showing prediagrams, typed-diagram
+api.report — multi-page PDF showing prediagrams, typed-diagram
 assignments, and per-diagram numerical contributions.
 
 The report is meant for *intuition-building*:  scroll through diagrams,
 see what the cumulant slice looks like, see how each diagram contributes
 to the total.
 
-Status (prototype):
-  ✓ cover page (model name, parameters, MF values, total slice plot)
-  ✓ one page per typed diagram with:
+generate_report() produces:
+  - a cover page (model name, parameters, MF values, total slice plot)
+  - one page per typed diagram with:
       - prediagram graph rendered via networkx + matplotlib
       - vertex assignments table
       - edge propagator labels
       - per-diagram contribution C_Γ(τ) line plot
-  ✗ rich LaTeX rendering of action / vertex coefficients (TODO: pdflatex
-    or matplotlib-mathtext fallback)
-  ✗ symbolic propagator matrix display (deferred; the user typically
-    inspects this in the notebook directly)
 """
 from __future__ import annotations
 
@@ -413,7 +409,7 @@ def generate_report(
         return result
 
     # Backstop: never let a path built from ``str(params_dict)`` create a
-    # junk ``{...}/`` directory (see pipeline.save._sanitize_output_path).
+    # junk ``{...}/`` directory (see api.save._sanitize_output_path).
     from api.save import _sanitize_output_path
     output_pdf = _sanitize_output_path(output_pdf)
 

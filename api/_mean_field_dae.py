@@ -444,7 +444,7 @@ def solve_mean_field_dae(
         raise ValueError(
             "solve_mean_field_dae: model has no equations declared via "
             "TheoryBuilder.equation(...).  Use the legacy iteration "
-            "solver in pipeline._mean_field instead."
+            "solver in api._mean_field instead."
         )
 
     state_vars = _state_variables(model)
@@ -862,7 +862,7 @@ def solve_mean_field_dae_compat(
         rtol: float = 1e-6,
         atol: float = 1e-10,
 ) -> dict:
-    """Drop-in replacement for ``pipeline._mean_field.solve_mean_field``
+    """Drop-in replacement for ``api._mean_field.solve_mean_field``
     when ``model['equations']`` is populated.
 
     Returns the same keys the legacy solver does (``nstar_vals``,

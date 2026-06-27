@@ -26,7 +26,7 @@ ones).  So:
     already contains the (0,0)/(1,0)/(0,1) saddle sectors and the
     (1,1) bilinear propagator kernel.  That's everything the MF check
     + propagator construction need, regardless of how high the
-    downstream cumulant calculation reaches.  ``pipeline.precompute``
+    downstream cumulant calculation reaches.  ``api.precompute``
     populates this cache as a one-time, ~few-second pass.
 
 Cache layout

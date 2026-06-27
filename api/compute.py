@@ -1,13 +1,10 @@
 """
-pipeline.compute — single-call entry point for the full MSR-JD pipeline.
+api.compute — single-call entry point for the full MSR-JD pipeline.
 
 Wraps the notebook flow (cells 1–28 of hawkes_td_*.ipynb) into a
 function that takes a model dict + parameter dict + run config, runs
 the entire FT expansion → diagram enumeration → Phase J integration
 chain, and returns a result dict (with optional .npz save).
-
-Status (prototype): k=2 / k=3 tree + 1-loop validated end-to-end.
-Higher-k slice machinery deferred to future iteration.
 """
 from __future__ import annotations
 
@@ -198,17 +195,19 @@ def compute_cumulants(
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
         If given, save the result to this ``.npz`` path via
-        ``pipeline.save.save_npz``.  See that module for the schema —
+        ``api.save.save_npz``.  See that module for the schema —
         per-loop-order curves (``C_tree``, ``C_1_loop``, ...,
         ``C_total``), adaptive mean-field arrays, parameter keys.
     output_csv : str or None
         If given, save a wide-format CSV companion to ``output_npz``
-        via ``pipeline.save.save_csv`` (parameter / mean-field
+        via ``api.save.save_csv`` (parameter / mean-field
         metadata as comment lines, then a τ-grid table).
     use_cache : bool
         Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
         and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
-        Both caches live under ``saved_theories/<model-tag>_taylor<N>/``.
+        Both caches live as sibling files under ``saved_theories/<theory>/``
+        (e.g. ``saved_theories/<theory>/expand_taylor<N>.sobj``), one per
+        Taylor order.
     parallel : bool, default True
         Enable fork-based multiprocessing for the two heavy stages
         that support it: per-prediagram type assignment in step [5]
@@ -233,10 +232,10 @@ def compute_cumulants(
                              grid eval; ``C_tau == sum(values())``
         'tau_grid'        : ndarray of τ values
         'mf_values'       : raw {internal_name: [v_pop1, ...]}, adaptive
-        'mf'              : :class:`pipeline.access.MeanField` accessor —
+        'mf'              : :class:`api.access.MeanField` accessor —
                              ``mf['v', 1]`` returns ``v*_1``,
                              ``mf['n']`` returns the whole nstar vector
-        'params'          : :class:`pipeline.access.Parameters` accessor —
+        'params'          : :class:`api.access.Parameters` accessor —
                              ``params['E', 1]``, ``params['w', 1, 2]``,
                              ``params['tau']`` (1-based indexing)
         'num_params'      : {SR symbol: float}
@@ -971,7 +970,7 @@ def compute_cumulants(
                 print(f'  [stability] skipped: {type(e).__name__}: {e}')
             result['mf_stability'] = None
 
-    # ── Optional NPZ / CSV save (pipeline.save handles the schema) ─
+    # ── Optional NPZ / CSV save (api.save handles the schema) ─
     if output_npz or output_csv:
         from api.save import save_npz, save_csv
         if output_npz:

@@ -1,64 +1,40 @@
 """
-pipeline.theory — declarative theory input (PROTOTYPE / STUB).
+api.theory — declarative theory input (the primary authoring path).
 
-The current MSR-JD pipeline takes a Python dict (``HAWKES_MODEL``) with
+The MSR-JD model dict (the example ``HAWKES_MODEL`` structure) carries
 several Sage-aware lambdas (action, mf_bg_conditions, kernel_ft_image,
-phi_concrete, mf_equations).  Writing one of these by hand requires
-familiarity with Sage's symbolic algebra and the framework's
-conventions.
+phi_concrete, mf_equations).  Writing one by hand requires familiarity
+with Sage's symbolic algebra and the framework's conventions.  This
+module is the high-level alternative: a fluent builder that takes
+plain Sage-syntax strings, compiles them to those lambdas, and emits
+the model dict for you.
 
-The goal of this module is a higher-level, more-user-friendly way to
-describe a theory and have the framework generate the model dict
-automatically.  Two designs under consideration:
+``TemporalTheoryBuilder`` describes time-only (SDE) theories;
+``SpatialTheoryBuilder`` is the spatial (SPDE) analogue.  Both subclass
+the same accumulator, share the string-based authoring methods, and
+produce a dict consumable directly by ``api.compute_cumulants``.
 
-  A) Python builder API (this file's direction)::
+Typical use::
 
-        from api.theory import TheoryBuilder, HawkesAction
+    from api.theory import TemporalTheoryBuilder
 
-        t = TheoryBuilder(name="My Hawkes 2-pop", n_populations=2)
-        t.response_field('nt', latex=r'\\tilde{n}')
-        t.response_field('vt', latex=r'\\tilde{v}')
-        t.physical_field('dn', latex=r'\\delta\\dot{n}')
-        t.physical_field('dv', latex=r'\\delta v')
-        t.parameter('a',     default=1.0)
-        t.parameter('tau',   default=10.0,  domain='positive')
-        t.parameter('tau_g', default=2.5,   domain='positive')
-        t.parameter('E',     default=[1.1, 1.05], indexed='vector')
-        t.parameter('w',     default=[[0.35, 0.4], [0.3, 0.5]],
-                             indexed='matrix')
-        t.kernel('g', frequency_image=lambda omega, p:
-                       1 / (1 + 1j * omega * p['tau_g']))
-        t.transfer_function('phi', form='linear')   # or 'quadratic'
+    model = (TemporalTheoryBuilder("My model")
+             .physical_field("x", description="...")
+             .parameter("mu",  default=1.0,  domain="positive")
+             .parameter("eps", default=0.05, domain="positive")
+             .parameter("D",   default=1.0,  domain="positive")
+             .set_action_text("xt*((Dt+mu)*x + eps*x^3) - D*xt^2")
+             .equation(lhs="(Dt+mu)*x", rhs="-eps*x^3")  # or .set_mf_equation("xstar", ...)
+             .build())
 
-        # Standard Hawkes action template:
-        t.use_action_template(HawkesAction(
-            phi_name='phi', kernel_name='g',
-            external_drive='E', recurrent_weight='w',
-        ))
-        # Alternatively, drop down to a Sage lambda for unusual actions:
-        # t.set_action(lambda ns: ...)
+Response fields (``xt`` above) are introduced automatically from the
+action text; you only declare the physical fields and parameters.
 
-        model = t.build()    # produces HAWKES_MODEL dict
-
-  B) YAML / JSON schema with a small expression DSL.  Cleaner for
-     non-programmers and shareable by config file, but loses some
-     expressiveness without a parser.
-
-This file currently provides only the SCAFFOLDING for option A — a
-``TheoryBuilder`` class that accumulates declarations and emits a
-model dict.  The action / saddle-equation / kernel-image lambdas
-still need to be supplied by the user (or by a template) until the
-template library is fleshed out.
-
-Roadmap:
-  1. Flesh out ``TheoryBuilder.build()`` to produce a working dict
-     from the field/parameter/kernel declarations alone (no template).
-  2. Add common templates: ``HawkesAction(phi='linear')``,
-     ``HawkesAction(phi='quadratic')``, ``OUNoise(...)``, etc.
-  3. Add a YAML loader that produces a ``TheoryBuilder`` from a
-     declarative file.
-  4. Wire ``TheoryBuilder`` into ``pipeline.compute_cumulants`` so
-     the user can pass either a model dict OR a Theory.
+Reusable actions live in ``api.theory_templates`` (e.g. ``HawkesAction``)
+and are applied via ``.use_action_template(...)`` instead of
+``.set_action_text(...)``.  For unusual theories that no string or
+template covers, the lambda hooks (``.set_action(...)`` etc.) remain
+as an optional escape hatch.
 """
 from __future__ import annotations
 
@@ -683,11 +659,19 @@ class _TemporalMethods:
 class _BaseTheoryBuilder:
     """
     Accumulator for a model declaration.  Call ``.build()`` to emit the
-    HAWKES_MODEL dict suitable for ``pipeline.compute_cumulants``.
+    MSR-JD model dict (same structure as the example ``HAWKES_MODEL``)
+    suitable for ``api.compute_cumulants``.
 
-    NOTE: prototype.  The action / mf_bg_conditions / kernel_ft_image
-    lambdas still need to be set explicitly via ``set_action(...)`` etc.
-    Templates ("HawkesAction") are roadmap items.
+    Shared base for ``TemporalTheoryBuilder`` and ``SpatialTheoryBuilder``.
+    The usual flow is string-based: declare fields and parameters, then
+    supply Sage-syntax text via ``set_action_text(...)``,
+    ``set_mf_equation(...)`` (or ``equation(...)``), ``define_kernel(...)``,
+    and ``define_function(...)``.  ``build()`` compiles those strings to
+    the action / mf_bg_conditions / kernel_ft_image / phi_concrete /
+    mf_equations lambdas the model dict expects.  Reusable actions are
+    applied with ``use_action_template(...)``.  The raw lambda hooks
+    (``set_action(...)`` etc.) remain available as an optional escape
+    hatch for theories no string or template covers.
     """
 
     def __init__(self, name: str, n_populations: int = 1):
@@ -723,7 +707,7 @@ class _BaseTheoryBuilder:
         # Text-driven declarations (used by the UI and by
         # ``define_function`` / ``set_action_text`` / etc.).  When any
         # of these are populated, ``build()`` compiles them to lambdas
-        # via ``pipeline.theory_compiler``, overriding the lambda hooks
+        # via ``api.theory_compiler``, overriding the lambda hooks
         # above.  Empty by default → existing template-based flow runs
         # unchanged.
         self._function_specs:   list[dict] = []
@@ -752,7 +736,7 @@ class _BaseTheoryBuilder:
         # via ``.stability_analysis(True)``.
         self._stability_analysis: bool = False
         # Whether ``build()`` invokes the colored-noise → Markovian-
-        # embedding preprocessor (``pipeline.colored_to_markovian``)
+        # embedding preprocessor (``api.colored_to_markovian``)
         # on this builder before compiling text declarations.  Default
         # ON: every CGF row that matches the v1 single-Lorentzian
         # template ``c·exp(-|tau|/tauc)`` is rewritten as a white-
@@ -963,7 +947,7 @@ class _BaseTheoryBuilder:
     # ── Text-driven theory declaration (UI-friendly) ──────────────
     # Each method below stores a Sage-syntax text string.  At
     # ``.build()`` time the strings are compiled to Python lambdas via
-    # ``pipeline.theory_compiler`` and dropped into the model dict.
+    # ``api.theory_compiler`` and dropped into the model dict.
     # Calling any of these overrides the corresponding lambda hook.
 
     def define_function(self, name: str, args: list[str],
@@ -1057,7 +1041,7 @@ class _BaseTheoryBuilder:
         symbols (``Dt*phi``, ``D*Laplacian*phi``).
 
         When on, the action is parsed into the operator IR
-        (``pipeline.spatial_operator_ir``) and lowered to derived ring
+        (``api.spatial_operator_ir``) and lowered to derived ring
         generators (the ``u=δφ, v=∇²δφ`` representation) before expansion, so
         derivative-inside-nonlinearity vertices and per-leg momentum form
         factors are represented exactly.  Default OFF — every existing theory is
@@ -1207,7 +1191,7 @@ class _BaseTheoryBuilder:
 
         The setting is stored on the built model as
         ``model['stability_analysis']`` and consumed by
-        ``pipeline._mean_field_dae.solve_mean_field_dae``.
+        ``api._mean_field_dae.solve_mean_field_dae``.
         """
         self._stability_analysis = bool(enabled)
         return self
@@ -1227,7 +1211,7 @@ class _BaseTheoryBuilder:
         self._phi_function_name = name
         return self
 
-    # ── Lambda hooks for the harder stuff (until templates land) ───
+    # ── Lambda hooks (optional escape hatch for the harder stuff) ───
     def set_action(self, fn: Callable):
         """``fn(ns) -> SR``  — the model action.  See
         simulations/hawkes_quad_expg_gtas.py for examples."""
@@ -1642,7 +1626,8 @@ class _BaseTheoryBuilder:
                 'value': _matrix_subst,
             })
 
-    # ── Build the HAWKES_MODEL dict ───────────────────────────────
+    # ── Build the MSR-JD model dict (same structure as the example
+    #    HAWKES_MODEL) ───────────────────────────────────────────────
     def _inject_autopop(self) -> None:
         """Scalar-mode autopop: inject a single-position population ``pop``
         (size 1) and bind every unbound physical/response field to it.  Used
@@ -1686,7 +1671,8 @@ class _BaseTheoryBuilder:
         return next(iter(nonzero_dims), 0)
 
     def build(self) -> dict:
-        """Emit a HAWKES_MODEL dict.
+        """Emit the MSR-JD model dict (same structure as the example
+        HAWKES_MODEL).
 
         Compiles text-based declarations (set_action_text,
         define_function, set_mf_equation, declare_cgf_term, …) to
@@ -1954,7 +1940,7 @@ class _BaseTheoryBuilder:
             # ``solve_mean_field`` (multi-start Newton + sort +
             # ``fixed_point_index`` selection + linear stability)
             # instead of the legacy iteration solver in
-            # ``pipeline._solve_mf``.
+            # ``api._solve_mf``.
             'equations':       [dict(eq) for eq in self._equations],
             'operators':       operators_list,
             'functions':       list(self._functions),

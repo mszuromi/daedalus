@@ -1,5 +1,5 @@
 """
-pipeline.theory_serialize — emit a ``.theory.py`` file from a form-
+api.theory_serialize — emit a ``.theory.py`` file from a form-
 state spec dict.
 
 The theory-input UI collects user input as a flat dict; this module

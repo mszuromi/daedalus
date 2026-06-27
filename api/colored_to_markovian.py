@@ -47,21 +47,14 @@ existing scipy.nquad fallback (with its warning) runs.  Users may
 opt out per-builder via ``.markovianize(False)`` or per-row via
 ``markovianize=False`` on ``declare_cgf_term``.
 
-Limitations (v1)
-----------------
-Only the single-Lorentzian kernel ``c · exp(-|tau|/tauc)`` is matched.
-Future v2 work:
-  * **Underdamped oscillatory** kernels of the form
-    ``exp(-|tau|/tau_d) cos(omega tau)`` — embed as a 2-state OU process
-    with imaginary eigenvalue.
-  * **Double-exponential** ``c1 exp(-|tau|/t1) + c2 exp(-|tau|/t2)`` —
-    embed as a sum of two independent OU processes.
-  * **Polynomially-modulated** kernels — embed as higher-order linear
-    filters (a chain of OU processes).
-
-Each of these expands the auxiliary state space; the v1 single-
-Lorentzian case is the minimum-cost extension that unblocks the user's
-working OU-colored theories at ell ≥ 1.
+Matched scope
+-------------
+The single-Lorentzian kernel ``c · exp(-|tau|/tauc)`` is matched and
+embedded, including the cross-correlated 2D variant.  Rows whose kernel
+does not match this template pass through untouched, so the scipy.nquad
+fallback handles them.  Richer kernels (underdamped-oscillatory,
+double-exponential, polynomially-modulated) would each expand the
+auxiliary state space and are not embedded by this preprocessor.
 """
 from __future__ import annotations
 
@@ -515,6 +508,6 @@ def _sr_to_text(expr) -> str:
     The default ``str(expr)`` form uses Sage's preferred operators
     (``^`` for power, ``*`` / ``/`` for products, function names like
     ``sqrt``), which is exactly what
-    ``pipeline.theory_compiler._CGFKernelCallable`` accepts.
+    ``api.theory_compiler._CGFKernelCallable`` accepts.
     """
     return str(SR(expr))

@@ -8,10 +8,11 @@ Wraps the four-stage diagram pipeline:
 
 into a single ``enumerate_unique_diagrams(...)`` call that caches the
 final ``unique`` list per ``(model_tag, taylor_order, k, ell, ext_fields)``
-under ``saved_theories/<model-tag>_taylor<N>/``.
+as a sibling ``.sobj`` file under ``saved_theories/<theory>/``, alongside
+the Taylor-expansion artefact ``saved_theories/<theory>/expand_taylor<N>.sobj``.
 
 The cache slot lives in the same directory as the propagator cache
-written by ``pipeline._propagator``, so a single ``model-tag_taylor<N>``
+written by ``api._propagator``, so a single ``saved_theories/<theory>``
 directory holds all symbolic+combinatorial state for a theory.
 
 Cache invalidation

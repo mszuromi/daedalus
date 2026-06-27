@@ -1,5 +1,5 @@
 """
-pipeline.theory_compiler — text expressions → Sage lambdas.
+api.theory_compiler — text expressions → Sage lambdas.
 
 When a ``TheoryBuilder`` is fed text expressions (via
 ``set_action_text``, ``define_function``, ``define_kernel``,

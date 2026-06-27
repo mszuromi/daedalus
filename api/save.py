@@ -1,5 +1,5 @@
 """
-pipeline.save — NPZ + CSV serialization of compute_cumulants results.
+api.save — NPZ + CSV serialization of compute_cumulants results.
 
 The schema is k-/ell-/model-adaptive:
 
@@ -148,7 +148,7 @@ def _sanitize_output_path(path: str) -> str:
     warnings.warn(
         f'save path component looked like a stringified params dict; '
         f'slugified to avoid a junk directory: {path!r} -> {new_path!r}. '
-        f'Build output paths with pipeline.save.params_slug(...) instead '
+        f'Build output paths with api.save.params_slug(...) instead '
         f'of str(params).',
         stacklevel=3,
     )
@@ -195,7 +195,7 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     Parameters
     ----------
     result : dict
-        The dict returned by ``pipeline.compute_cumulants``.  Must
+        The dict returned by ``api.compute_cumulants``.  Must
         contain ``tau_grid``, ``C_tau``, ``C_tau_by_ell``,
         ``mf_values``, ``config``.
     path : str
