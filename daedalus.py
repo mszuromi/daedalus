@@ -160,6 +160,15 @@ def field_names(model: dict) -> list[str]:
             for f in (model.get('physical_fields') or [])]
 
 
+def param_names(model: dict) -> list[str]:
+    """The parameter names you can override via ``Config(parameters={...})`` —
+    the declared parameters, excluding the mean-field saddle symbols.  Use this
+    to get the exact spellings (a mistyped name now raises in ``dd.run``)."""
+    return [p['name'] for p in (model.get('parameters') or [])
+            if not str(p.get('name', '')).endswith('star')
+            and not p.get('mean_field')]
+
+
 def _fmt_default(v, maxlen: int = 52) -> str:
     s = repr(v)
     return s if len(s) <= maxlen else s[:maxlen - 1] + '…'
@@ -487,7 +496,7 @@ def config_options(spatial=None):
             ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
             ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
-            ('parameters',      "numeric overrides {name: value}; None → theory defaults"),
+            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → theory defaults"),
             ('output',          "'cumulant' | 'moment' | 'central_moment'"),
         ]),
     ]
