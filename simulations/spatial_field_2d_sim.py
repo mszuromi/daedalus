@@ -155,9 +155,11 @@ def space_time_correlator_2d(snaps, meta, max_lag=None, n_lags=None,
     N, χ=0 at the middle), ``C`` has shape ``(n_tau, N, N)`` with
     ``C[i, a, b]`` the correlator at ``χ¹=chi[a], χ²=chi[b], τ=tau[i]``, and
     ``tau`` is the symmetric lag grid (C is even in τ by stationarity + parity,
-    so τ<0 is mirrored from τ≥0).  ``connected`` subtracts ⟨φ⟩².  Its ``τ=0``
-    plane equals the equal-time 2-D correlator (cf. :func:`radial_correlator_2d`),
-    and it is directly comparable to ``compute_cumulants``' d=2 ``C(χ¹,χ²,τ)``.
+    so τ<0 is mirrored from τ≥0).  ``connected`` subtracts ⟨φ⟩² (the default —
+    matching ``compute_cumulants``' connected cumulant, the intended comparison).
+    With ``connected=False`` (or a zero-mean field) its ``τ=0`` plane equals the
+    equal-time 2-D correlator (:func:`radial_correlator_2d`, which never subtracts
+    the mean); the connected default differs from that raw correlator by ⟨φ⟩².
     Lag spacing is the recording interval ``record_every·dt``."""
     snaps = np.asarray(snaps)
     n_rec, N, _ = snaps.shape

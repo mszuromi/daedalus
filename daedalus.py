@@ -400,17 +400,17 @@ class Config:
         # ``parameters`` is the canonical name; ``fundamental`` is kept as a
         # backward-compatible alias.  Mirror whichever the caller set onto the
         # other (``parameters`` wins if both are given) so either reads fine.
-        if self.parameters is None and self.fundamental is not None:
-            self.parameters = self.fundamental
-        elif self.fundamental is None and self.parameters is not None:
+        if self.parameters is not None:
             self.fundamental = self.parameters
+        elif self.fundamental is not None:
+            self.parameters = self.fundamental
         # ``chi_grid`` (the paper's spatial-difference grid χ=x_j−x_k) is the
         # canonical name; ``spatial_grid`` is the backward-compat alias.  Mirror
         # whichever was set onto the other (``chi_grid`` wins if both are given).
-        if self.chi_grid is None and self.spatial_grid is not None:
-            self.chi_grid = self.spatial_grid
-        elif self.spatial_grid is None and self.chi_grid is not None:
+        if self.chi_grid is not None:
             self.spatial_grid = self.chi_grid
+        elif self.spatial_grid is not None:
+            self.chi_grid = self.spatial_grid
         # Fail early on a mistyped output kind (otherwise it silently
         # degrades to the connected cumulant — a wrong-kind result).
         if self.output not in ('cumulant', 'moment', 'central_moment'):
@@ -459,7 +459,12 @@ class Config:
                 f"{n}!  For a linspace RANGE of {n} points from {lo} to {hi}, use "
                 f"a TUPLE: {name}=({lo}, {hi}, {n}).  For {n} literal points, pass "
                 f"a numpy array: {name}=np.array({g!r}).")
-        return np.asarray(g, dtype=float)
+        arr = np.asarray(g, dtype=float)
+        if arr.size == 0:
+            raise ValueError(
+                f"{name} is empty — pass a non-empty grid, or omit it (None) to use "
+                f"the default.")
+        return arr
 
 
 def _meta(mod, key, default=None):
@@ -1617,6 +1622,11 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
         st = np.asarray(sim['tau'], float)
         a0 = int(np.argmin(np.abs(sx))); is0 = int(np.argmin(np.abs(st)))
         km = np.abs(sx) <= R; sxm = sx[km]
+        if not km.any():               # no sim separation inside the theory radius
+            import warnings as _w
+            _w.warn(f'sim correlator: no separation within the theory radius '
+                    f'(max |χ|={R:g}); skipping the sim overlay.', stacklevel=2)
+            have_sim = False
 
     if not has_tau:                                         # equal-time only → 1×3
         fig, ax = plt.subplots(1, 3, figsize=cfg.figsize or (15.0, 4.4))
@@ -1660,7 +1670,9 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
         (M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^2$', r'$\tau$', r'$C(0,\chi^2,\tau)$')]
     if have_sim:
         sim_maps = [
-            (sC[is0][np.ix_(km, km)], [sxm.min(), sxm.max(), sxm.min(), sxm.max()]),
+            # .T: sim C[a,b]=C(χ¹=a,χ²=b) has row=χ¹/col=χ²; the theory M_xy and the
+            # reused χ¹(x)/χ²(y) labels want row=χ²/col=χ¹ (no-op for an isotropic sim).
+            (sC[is0][np.ix_(km, km)].T, [sxm.min(), sxm.max(), sxm.min(), sxm.max()]),
             (sC[:, :, a0][:, km], [sxm.min(), sxm.max(), st.min(), st.max()]),
             (sC[:, a0, :][:, km], [sxm.min(), sxm.max(), st.min(), st.max()])]
     for c, (M, ext, xl, yl, base) in enumerate(theory_maps):
