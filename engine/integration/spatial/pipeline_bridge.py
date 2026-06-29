@@ -1077,6 +1077,55 @@ def _live_bubbles(records, num_params):
             if _diagram_is_bubble(r[0]) and _prefactor_is_live(r[1], num_params)]
 
 
+def _model_param_basenames(model):
+    """The set of base parameter names declared by ``model`` (couplings AND the
+    mean-field saddle ``*star`` params).  Indexed params expand to ``name1``,
+    ``name2``, … in prefactors, so the membership test below strips a trailing
+    numeric index before comparing against these base names."""
+    names = set()
+    for p in (model.get('parameters') or []):
+        nm = p.get('name')
+        if nm:
+            names.add(str(nm))
+    return names
+
+
+def _check_prefactor_resolved(pre, base_np_sr, model):
+    """Diagnose WHY a diagram's scalar prefactor did not reduce to a float.
+
+    The enumeration/classification that produces ``scalar_prefactor`` is
+    q-independent by construction (the loop momentum lives in the form factors
+    and the Symanzik integral, NOT in this scalar prefactor — instrumentation
+    over every tracked spatial theory at ``max_ell=1`` confirmed this branch
+    NEVER fires when the params are complete).  So a leftover free symbol that
+    names a MODEL PARAMETER (a coupling or the mean-field saddle) means that
+    parameter is simply MISSING from ``base_np_sr`` — silently dropping the
+    diagram would under-count the correlator with no error.  Raise instead.
+
+    A leftover symbol that is NOT a known model parameter is treated as a
+    genuine momentum/integration symbol (a real q-dependent prefactor): the
+    caller keeps the existing skip.  ``pre`` already failed ``float(...)``.
+    """
+    try:
+        leftover = SR(pre).subs(base_np_sr).free_variables()
+    except (TypeError, ValueError):
+        leftover = SR(pre).free_variables()
+    param_names = _model_param_basenames(model)
+    missing = []
+    for sym in leftover:
+        nm = str(sym)
+        base = nm.rstrip('0123456789')          # strip indexed suffix (phistar1)
+        if nm in param_names or base in param_names:
+            missing.append(nm)
+    if missing:
+        raise SpatialPropagatorError(
+            'missing parameter ' + ', '.join(sorted(set(missing))) +
+            ': the diagram prefactor ' + repr(str(pre)) + ' still has free '
+            'model-parameter symbol(s) after substituting the supplied params '
+            '(supply a value for every coupling / mean-field saddle).  Silently '
+            'dropping this diagram would under-count the correlator.')
+
+
 # ── 4. the GENERIC 1-loop correlator — sum ALL enumerated diagrams ────
 #    (the ONE path; the bespoke per-self-energy routines it replaced — the
 #     constant-mass-shift tadpole and the Stage-C.5 bubble — have been removed.)
@@ -1192,8 +1241,9 @@ def compute_coupled_loop_correlator(
             try:
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
+                _check_prefactor_resolved(pre, base_np_sr, model)
                 continue                              # q-dependent prefactor
-            if abs(pv) < 1e-14:
+            if SR(pre).subs(base_np_sr).is_zero():
                 continue
             dd = diagram_to_cstack(td)
             rows = spectral_rows(dd)
@@ -1564,12 +1614,18 @@ def compute_spatial_correlator_generic(
     descrs = []
     for ell in range(1, max_ell + 1):
         for td, pre in by_ell.get(ell, []):
+            pre_num = SR(pre).subs(base_np_sr)        # symbolic prefactor @ saddle
             try:
-                pv = float(SR(pre).subs(base_np_sr))
+                pv = float(pre_num)
             except (TypeError, ValueError):
+                _check_prefactor_resolved(pre, base_np_sr, model)
                 continue                             # q-dependent prefactor (skip)
             ff = _formfactor_callable(td, vterms, d=_d) if vterms else None
-            descrs.append((diagram_to_cstack(td), pv, ff, ell))   # tag the loop order
+            # carry the symbolic prefactor so the live filter below can use an
+            # exact symbolic is_zero test (matching the drift-guard pattern)
+            # instead of an absolute float threshold that would drop a
+            # legitimately tiny coupling as "zero".
+            descrs.append((diagram_to_cstack(td), pv, ff, ell, pre_num))
     if not descrs:
         raise SpatialPropagatorError(
             f'no loop diagrams were enumerated at max_ell={max_ell}.  This is the '
@@ -1578,7 +1634,8 @@ def compute_spatial_correlator_generic(
             f'IS the tree level — request max_ell=0.  (If this theory does have '
             f'interaction vertices, an empty enumeration would instead point to a '
             f'bug worth reporting.)')
-    live = [(dd, pv, ff, el) for dd, pv, ff, el in descrs if abs(pv) > 1e-14]
+    live = [(dd, pv, ff, el) for dd, pv, ff, el, pn in descrs
+            if not SR(pn).is_zero()]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
     if verbose:
@@ -2094,8 +2151,9 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
             try:
                 pv = float(SR(pre).subs(base_np_sr))
             except (TypeError, ValueError):
+                _check_prefactor_resolved(pre, base_np_sr, model)
                 continue
-            if abs(pv) < 1e-14:
+            if SR(pre).subs(base_np_sr).is_zero():
                 continue
             dd = diagram_to_cstack(td)
             rows = spectral_rows(dd)
