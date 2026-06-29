@@ -117,7 +117,7 @@ from engine.integration.time_domain.final_integral import (
 # Module reference so per-call reads pick up notebook overrides of
 # ``USE_POLYGON_M2_INTEGRATOR`` / ``USE_POSET_INTEGRATOR``.
 from engine.integration.time_domain import final_integral as _fi_mod
-from engine.core.vertices import NoiseSourceType
+from engine.core.vertices import NoiseSourceType, ConvVertexType
 
 
 # Master switch for the analytic merged-residue path inside
@@ -356,6 +356,51 @@ def integrate_grouped_diagram(
                 'prediagram (by identity); got mixed prediagrams.'
             ),
         }
+
+    # ── Colored-kernel safety guard ───────────────────────────────
+    # The grouped per-leg time map (built below from ``edge_pop_idx``)
+    # keys each noise source's two response-leg times by leg ordinal,
+    # which COLLAPSES the two legs of a homogeneous auto-cumulant
+    # (e.g. ``Cxx`` with legs ``(0, 0)``) onto a single dict key and
+    # DROPS the relative-time coupling τ that the kernel κ(τ) rides on.
+    # That silently degrades a colored noise source to its white-noise
+    # limit (the per-diagram path in ``final_integral.py`` routes by
+    # EDGE-KEY instead and is correct — so the two paths would
+    # DISAGREE).  ``ConvVertexType`` conductance kernels are not built
+    # into the grouped per-td scaffolding at ALL, so their kernel
+    # factor would be dropped entirely.
+    #
+    # Rather than risk the high-complexity edge-key routing rewrite in
+    # the grouped path, refuse the group: returning ``status='failed'``
+    # makes the caller (``api/_grouped_phase_j.py``) fall back to the
+    # correct per-diagram path for THIS group only, leaving every
+    # white-noise group on the fast grouped path untouched.
+    for _td in typed_diagrams:
+        _va = getattr(_td, 'vertex_assignments', None) or {}
+        for _v, _vt in _va.items():
+            if isinstance(_vt, NoiseSourceType) and _vt.cumulant_specs:
+                return {
+                    'status': 'failed', 'contribution': None,
+                    'n_diagrams': len(typed_diagrams),
+                    'reason': (
+                        'colored (non-local) noise-source kernel present '
+                        '(NoiseSourceType with cumulant_specs) — the '
+                        'grouped per-leg time routing keys on leg ordinal '
+                        'and drops the kernel τ-coupling; falling back to '
+                        'the per-diagram path which routes by edge key.'
+                    ),
+                }
+            if isinstance(_vt, ConvVertexType) and _vt.kernel_attachments:
+                return {
+                    'status': 'failed', 'contribution': None,
+                    'n_diagrams': len(typed_diagrams),
+                    'reason': (
+                        'conductance-style convolution kernel present '
+                        '(ConvVertexType with kernel_attachments) — the '
+                        'grouped path has no per-leg kernel scaffolding '
+                        'for it; falling back to the per-diagram path.'
+                    ),
+                }
 
     # ── Shared scaffolding (prediagram-level) ─────────────────────
     td0 = typed_diagrams[0]
