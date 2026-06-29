@@ -11,6 +11,15 @@ channels:
   - conda-forge
 dependencies:
   - sage=10.8
+  # Pin the scientific stack to the versions the suite is tested against.  Left unpinned,
+  # conda-forge resolves the bleeding edge (numpy 2.4 / scipy 1.18 / sympy 1.14 / py3.14),
+  # which removed np.trapz, made float(size-1 array) a hard error, and shifts the symbolic
+  # mean-field solve onto spurious saddles — 105 CI failures (see git history).  The bounds
+  # below keep the env on the tested stack (numpy 2.3.x, scipy 1.15-1.17, sympy 1.13.x, py3.13).
+  - python <3.14
+  - numpy <2.4
+  - scipy <1.18
+  - sympy <1.14
   - numba>=0.61,<0.66    # loop-integrator speed; required by the sim cells in notebooks/examples/
   - pydot>=4,<5          # optional: diagram / prediagram plots
   - graphviz             # optional: renders pydot output
