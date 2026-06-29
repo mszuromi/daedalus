@@ -1571,7 +1571,13 @@ def compute_spatial_correlator_generic(
             ff = _formfactor_callable(td, vterms, d=_d) if vterms else None
             descrs.append((diagram_to_cstack(td), pv, ff, ell))   # tag the loop order
     if not descrs:
-        raise SpatialPropagatorError('no loop diagrams were enumerated.')
+        raise SpatialPropagatorError(
+            f'no loop diagrams were enumerated at max_ell={max_ell}.  This is the '
+            f'expected outcome for a FREE / purely-Gaussian theory (no interaction '
+            f'vertices): such a theory has no loop corrections, so its exact result '
+            f'IS the tree level — request max_ell=0.  (If this theory does have '
+            f'interaction vertices, an empty enumeration would instead point to a '
+            f'bug worth reporting.)')
     live = [(dd, pv, ff, el) for dd, pv, ff, el in descrs if abs(pv) > 1e-14]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
