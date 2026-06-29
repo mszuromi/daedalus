@@ -314,6 +314,19 @@ class TheoryUI:
             'field_latex':    {},
             'function_latex': {},
             'kernel_latex':   {},
+            # Legacy ``indexed=`` (True / 'vector' / 'matrix') for params
+            # and kernels of theories that predate named populations
+            # (``n_populations=N`` only, no ``.population(...)`` calls).
+            # ``load()`` cannot route these through the population
+            # dropdowns (there are no population NAMES to select), so it
+            # stashes them here keyed by name and ``_collect()`` re-emits
+            # them on the spec entry when the dropdowns came back scalar.
+            # Without this a matrix parameter silently degrades to scalar
+            # on a UI load → save cycle (the serializer's _emit_parameter
+            # / _emit_kernel legacy fallback only fires when the entry
+            # still carries ``indexed``).
+            'param_indexed':  {},
+            'kernel_indexed': {},
         }
         self._build_widgets()
 
@@ -2436,6 +2449,17 @@ class TheoryUI:
             idx = _index_list(row)
             if idx:
                 entry['indexed_by'] = idx
+            else:
+                # Re-emit a legacy ``indexed=`` value carried over from
+                # a load of an old ``n_populations``-only theory (no
+                # named populations → the dropdowns can't hold it).  The
+                # serializer's _emit_parameter consumes this when
+                # ``indexed_by`` is absent — preserving matrix / vector
+                # shape across a load → save cycle.
+                legacy = self._loaded_extras.get(
+                    'param_indexed', {}).get(name)
+                if legacy is not None:
+                    entry['indexed'] = legacy
             dom = (row.get('domain') or '').strip()
             if dom:
                 entry['domain'] = dom
@@ -2481,6 +2505,14 @@ class TheoryUI:
             idx = _index_list(row)
             if idx:
                 entry['indexed_by'] = idx
+            else:
+                # Re-emit a legacy ``indexed=`` value (mirror the
+                # parameter block above) so a vector / matrix kernel from
+                # an ``n_populations``-only theory survives load → save.
+                legacy = self._loaded_extras.get(
+                    'kernel_indexed', {}).get(name)
+                if legacy is not None:
+                    entry['indexed'] = legacy
             for k in ('time_expr', 'freq_image'):
                 v = (row.get(k) or '').strip()
                 if v:
@@ -2896,10 +2928,40 @@ class TheoryUI:
         nat_names = {(f.get('natural_name') or f.get('name', ''))
                      for f in spec.get('physical_fields', []) or []}
         auto_saddle_names = {f'{n}star' for n in nat_names if n}
+        # Available population NAMES for the index dropdowns.  Legacy
+        # ``indexed=`` (no names) needs these to map onto the dropdowns;
+        # when none exist the legacy value is stashed on _loaded_extras
+        # and re-emitted by _collect() instead (see below).
+        _pop_names_now = self._pop_names()
+        self._loaded_extras['param_indexed'] = {}
         for p in spec.get('parameters', []) or []:
             if p.get('mean_field') or p.get('name') in auto_saddle_names:
                 continue
-            ib = p.get('indexed_by') or []
+            ib = list(p.get('indexed_by') or [])
+            # Legacy fallback: a parameter that predates named
+            # populations carries ``indexed=`` (True / 'vector' /
+            # 'matrix') instead of ``indexed_by``.  Translate it to the
+            # right NUMBER of population indices, mirroring the
+            # serializer's _emit_parameter legacy translation.
+            if not ib and p.get('indexed') is not None:
+                legacy = p.get('indexed')
+                if legacy in (True, 'vector'):
+                    n_idx = 1
+                elif legacy == 'matrix':
+                    n_idx = 2
+                else:
+                    n_idx = 0
+                if n_idx:
+                    # Map onto the first declared population(s) when
+                    # names exist; otherwise stash for _collect() to
+                    # re-emit as the legacy ``indexed`` key (the
+                    # dropdowns can only hold declared names).
+                    if _pop_names_now:
+                        ib = [_pop_names_now[min(i, len(_pop_names_now) - 1)]
+                              for i in range(n_idx)]
+                    else:
+                        self._loaded_extras['param_indexed'][
+                            p.get('name', '')] = legacy
             row = {
                 'name':    p.get('name', ''),
                 'index_1': (ib[0] if len(ib) >= 1 else _NONE),
@@ -2941,9 +3003,29 @@ class TheoryUI:
         # Kernels.
         self._tbl_kernels.clear()
         self._loaded_extras['kernel_latex'] = {}
+        self._loaded_extras['kernel_indexed'] = {}
         for k in spec.get('kernels', []) or []:
-            ib = k.get('indexed_by') or []
+            ib = list(k.get('indexed_by') or [])
             kname = k.get('name', '')
+            # Legacy fallback (mirror the parameter block above): a
+            # kernel that predates named populations carries
+            # ``indexed=`` ('vector' / 'matrix') instead of
+            # ``indexed_by``.  Translate to index count, then map onto
+            # declared populations or stash for _collect() to re-emit.
+            if not ib and k.get('indexed') is not None:
+                legacy = k.get('indexed')
+                if legacy in (True, 'vector'):
+                    n_idx = 1
+                elif legacy == 'matrix':
+                    n_idx = 2
+                else:
+                    n_idx = 0
+                if n_idx:
+                    if _pop_names_now:
+                        ib = [_pop_names_now[min(i, len(_pop_names_now) - 1)]
+                              for i in range(n_idx)]
+                    else:
+                        self._loaded_extras['kernel_indexed'][kname] = legacy
             latex_str = (k.get('latex_name') or '').strip()
             if latex_str:
                 self._loaded_extras['kernel_latex'][kname] = latex_str

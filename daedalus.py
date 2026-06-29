@@ -160,6 +160,67 @@ def field_names(model: dict) -> list[str]:
             for f in (model.get('physical_fields') or [])]
 
 
+def _field_pop_size(model: dict, natural_name: str) -> int:
+    """How many population components the physical field ``natural_name``
+    carries (1 for a scalar / single-population field).
+
+    Used to spread an auto-built ``external_fields`` over distinct
+    (field, pop) legs for a MULTI-population model — otherwise every leg
+    collapses onto population 1 and the framework computes the wrong
+    correlator (e.g. ⟨n₁ n₁⟩ instead of the intended cross-population
+    ⟨n₁ n₂⟩)."""
+    pf = next((f for f in (model.get('physical_fields') or [])
+               if (f.get('natural_name') or f.get('name')) == natural_name),
+              None)
+    if pf is None:
+        return 1
+    # Named-population field → its declared population's size.
+    pop = pf.get('population')
+    if pop:
+        for p in (model.get('populations') or []):
+            if p.get('name') == pop:
+                return max(1, int(p.get('size') or 1))
+    # Anonymous indexed field (legacy ``n_populations`` style) → the size
+    # of the global ``pop`` index set the saddle solver built.
+    if pf.get('indexed'):
+        idx = (model.get('index_sets') or {}).get('pop')
+        if idx:
+            return max(1, len(idx))
+    return 1
+
+
+def _ext_is_valid(model: dict, ext, k: int) -> bool:
+    """True iff ``ext`` is a usable k-leg external_fields list for ``model``:
+    present, of length ``k``, and every leg names a real physical field.
+
+    A stale METADATA recommendation (wrong length, or naming a field that
+    no longer exists) fails this check so :func:`run` auto-builds a fresh
+    one instead of feeding garbage to ``compute_cumulants``."""
+    if not ext or len(ext) != k:
+        return False
+    valid = set(field_names(model))
+    def _nm(e):
+        return e[0] if isinstance(e, (tuple, list)) else e
+    return all(_nm(e) in valid for e in ext)
+
+
+def _auto_external_fields(model: dict, k: int) -> list:
+    """Build a default k-leg ``external_fields`` for ``model``.
+
+    The legs sit on the FIRST physical field, spread over its populations:
+    ``[(f0, 1), (f0, 2), …]`` cycling modulo the population count.  For a
+    MULTI-population model this gives distinct (field, pop) legs (e.g. k=2
+    → ``[('n', 1), ('n', 2)]``) instead of collapsing every leg onto
+    population 1 — which would silently compute the WRONG correlator
+    (⟨n₁ n₁⟩ rather than the intended cross-population ⟨n₁ n₂⟩).  A
+    single-population field keeps the old behaviour (npop=1 ⇒ every leg is
+    pop 1, i.e. ``[(f0, 1)] * k``)."""
+    fld = field_names(model)
+    f0 = fld[0] if fld else 'phi'
+    npop = _field_pop_size(model, f0)
+    return [(f0, (i % npop) + 1) for i in range(k)]
+
+
 def param_names(model: dict) -> list[str]:
     """The parameter names you can override via ``Config(parameters={...})`` —
     the declared parameters, excluding the mean-field saddle symbols.  Use this
@@ -801,15 +862,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # or names a missing field.  An explicit Config.external_fields is used
     # verbatim (it may legitimately name a response leg); any k-mismatch was
     # caught above.
-    valid = set(field_names(model))
-    def _nm(e):
-        return e[0] if isinstance(e, (tuple, list)) else e
-    if not ext_is_explicit and (
-            ext is None or len(ext) != k
-            or not all(_nm(e) in valid for e in ext)):
-        fld = field_names(model)
-        f0 = fld[0] if fld else 'phi'
-        ext = [(f0, 1)] * k
+    if not ext_is_explicit and not _ext_is_valid(model, ext, k):
+        ext = _auto_external_fields(model, k)
     # Layered fundamental: model param defaults ← theory DEFAULT_FUNDAMENTAL
     # ← explicit cfg override.  Each layer wins over the one before, so a
     # loaded theory runs out of the box and the notebook can override any
@@ -870,6 +924,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                       'not yet supported by the spatial integrator — showing '
                       'the mean-field (tree) value.')
             kw['max_ell'] = 0
+            # Keep the LOCAL max_ell in lockstep so result['_resolved']
+            # reports what was actually computed (tree only), not the
+            # requested order the spatial integrator silently dropped.
+            max_ell = 0
             kw['spatial_points'] = np.zeros((1, 0, 2), dtype=float)
         elif k != 2 and cfg.spatial_points is None:
             # No explicit events → sweep the FULL 2(k-1)-D grid: each of the k-1
@@ -1045,7 +1103,14 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if out_kind in ('moment', 'central_moment'):
         central = out_kind == 'central_moment'
         if is_spatial(model):
-            if k == 2:                      # M(x) = κ₂(x) [+ μ² for raw]
+            if k == 1:                      # M₁ = ⟨φ⟩: the raw first moment
+                # The 1-point MOMENT is the mean itself (the mean-field
+                # saddle φ*); its CENTRAL counterpart ⟨φ−⟨φ⟩⟩ is 0 by
+                # definition.  (Without this special-case k==1 fell into
+                # the k≥3 branch and raised a misleading "spatial k≥3 not
+                # implemented" error.)
+                res['moment'] = 0.0 if central else _external_mean(model, res)
+            elif k == 2:                    # M(x) = κ₂(x) [+ μ² for raw]
                 mu = 0.0 if central else _external_mean(model, res)
                 res['moment'] = (np.real(np.asarray(res['C_tau_x']))
                                  + (0.0 if central else mu * mu))
