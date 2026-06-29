@@ -1155,7 +1155,7 @@ def cumulative_curves(by_ell: dict) -> dict:
 # ── Plotting (adaptable, auto-dispatched) ────────────────────────────────────
 
 def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
-                  sim: dict = None):
+                  sim: dict = None, residual: bool = False):
     """Plot the cumulant in the form natural to the theory's group.
 
     Dispatch:
@@ -1168,6 +1168,12 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     ``sim`` (optional) overlays a matched simulator: a dict with
     ``tau``/``C``/``C_err`` (temporal) or ``x``/``C``/``C_err`` (spatial); for
     k=1 a scalar mean ``{'C': value, 'C_err': err}``.
+
+    ``residual=True`` (temporal C(τ) with a ``sim`` and at least one loop order)
+    adds a companion panel plotting C(τ) − C_tree(τ): the per-order loop
+    contributions (1-loop, 1+2-loop, …) against the simulated residual
+    sim − tree, so a loop that is a tiny fraction of the tree becomes the whole
+    signal.  Ignored where it does not apply.
     Returns the Matplotlib ``Figure``.
     """
     cfg = cfg or result.get('_cfg') or Config()
@@ -1196,7 +1202,7 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
         return plot_temporal_kpoint_grid(result, cfg, model, sim)
     if len(result.get('C_tau_slices') or {}) >= 2:   # k≥3: one panel per τ_j
         return plot_temporal_kpoint_slices(result, cfg, model, sim)
-    return plot_temporal(result, cfg, model, sim)
+    return plot_temporal(result, cfg, model, sim, residual=residual)
 
 
 def _plot_moment(result, cfg, model, sim=None):
@@ -1255,15 +1261,40 @@ def _orders_to_draw(by_ell: dict, cfg: Config):
     return [(_order_label(ell), cum[ell]) for ell in sorted(cum)]
 
 
-def plot_temporal(result, cfg, model, sim=None):
-    """C(τ) with a per-loop-order overlay (the temporal group plot)."""
+def plot_temporal(result, cfg, model, sim=None, residual=False):
+    """C(τ) with a per-loop-order overlay (the temporal group plot).
+
+    ``residual=True`` (with a ``sim`` and at least one loop order present) adds a
+    companion panel on the right plotting C(τ) − C_tree(τ): the cumulative loop
+    contributions (1-loop, 1+2-loop, …) against the simulated residual
+    sim − tree.  A loop that is only a few percent of the tree — and so invisible
+    where the curves overlap on the left — becomes the whole signal on the right.
+    """
     cfg = cfg or Config()
     if result.get('C_tau') is None:          # temporal k≥3 → scalar k-point
         return plot_temporal_kpoint(result, cfg, model, sim)
     tau = np.asarray(result['tau_grid'])
     by_ell = {e: v for e, v in (result.get('C_tau_by_ell') or {}).items()
               if v is not None}
-    fig, ax = plt.subplots(figsize=cfg.figsize or (7.5, 4.6))
+
+    def _sim_curve():
+        """sim (C, C_err) as 1-D arrays on sim['tau'] (collapse a k≥3 slice)."""
+        st = np.asarray(sim['tau']); sc = np.asarray(sim['C'])
+        se = sim.get('C_err'); se = np.asarray(se) if se is not None else None
+        if sc.ndim == 2:                  # a k≥3 multi-slice sim → show slice 1
+            sc = sc[0]
+            se = se[0] if se is not None else None
+        return st, sc, se
+
+    # The residual companion needs a tree (ℓ=0), ≥1 loop order, and a sim.
+    want_resid = bool(residual and sim is not None and 0 in by_ell
+                      and any(e >= 1 for e in by_ell))
+    if want_resid:
+        fig, (ax, ax2) = plt.subplots(1, 2, figsize=cfg.figsize or (12.0, 4.6))
+    else:
+        fig, ax = plt.subplots(figsize=cfg.figsize or (7.5, 4.6))
+
+    # ── left panel: the usual per-order overlay ──────────────────────────────
     curves = _orders_to_draw(by_ell, cfg)
     if not curves:
         curves = [('total', np.real(np.asarray(result['C_tau'])))]
@@ -1272,12 +1303,7 @@ def plot_temporal(result, cfg, model, sim=None):
                 color=_ORDER_COLORS[i % len(_ORDER_COLORS)],
                 label=f'theory: {lab}')
     if sim is not None:
-        st, sc = np.asarray(sim['tau']), np.asarray(sim['C'])
-        se = sim.get('C_err')
-        se = np.asarray(se) if se is not None else None
-        if sc.ndim == 2:                  # a k≥3 multi-slice sim → show slice 1
-            sc = sc[0]
-            se = se[0] if se is not None else None
+        st, sc, se = _sim_curve()
         if se is not None:
             ax.errorbar(st, sc, yerr=se, fmt='o', ms=3,
                         color='#222', alpha=0.6, capsize=2, label='sim')
@@ -1290,6 +1316,32 @@ def plot_temporal(result, cfg, model, sim=None):
     ax.set_title(cfg.title or f"{model.get('name','')}: C(τ)")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
+
+    # ── right panel: residual C(τ) − C_tree(τ), loop contributions isolated ──
+    if want_resid:
+        tree = np.real(np.asarray(by_ell[0]))
+        cum = cumulative_curves(by_ell)
+        ax2.axhline(0.0, color='gray', lw=0.8)
+        for ell in [e for e in sorted(cum) if e >= 1]:
+            lab = '+'.join(str(e) for e in range(1, ell + 1)) + '-loop'
+            ax2.plot(tau, np.real(cum[ell]) - tree, '-', lw=1.8,
+                     color=_ORDER_COLORS[ell % len(_ORDER_COLORS)],
+                     label=f'theory: {lab}')
+        st, sc, se = _sim_curve()
+        sc_i = np.interp(tau, st, sc)         # sim onto the theory τ-grid
+        se_i = np.interp(tau, st, se) if se is not None else None
+        if se_i is not None:
+            ax2.errorbar(tau, sc_i - tree, yerr=se_i, fmt='o', ms=3,
+                         color='#222', alpha=0.6, capsize=2, label='sim − tree')
+        else:
+            ax2.plot(tau, sc_i - tree, 'o', ms=3, color='#222', alpha=0.6,
+                     label='sim − tree')
+        ax2.set_xlabel(r'$\tau$')
+        ax2.set_ylabel(r'$C(\tau) - C_{\mathrm{tree}}(\tau)$')
+        ax2.set_title('residual: loop contributions isolated')
+        ax2.grid(alpha=0.25)
+        ax2.legend(fontsize=8)
+
     fig.tight_layout()
     if cfg.save:
         fig.savefig(cfg.save, dpi=130, bbox_inches='tight')
