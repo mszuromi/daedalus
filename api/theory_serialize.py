@@ -163,16 +163,16 @@ def _emit_parameter(p: dict) -> str:
     indexed_by = p.get('indexed_by')
     if indexed_by:                       # new-style annotation wins
         indexed_kw = None                # don't emit ``indexed=``
-    else:                                # legacy translation
-        ptype = p.get('type', 'scalar')
-        if ptype in ('scalar',):
+    else:                                # legacy translation (mirror _emit_kernel)
+        indexed = p.get('indexed')       # the loader stores it here, not 'type'
+        if indexed in (None, False, 'scalar'):
             indexed_kw = None
-        elif ptype in ('vector',):
+        elif indexed is True or indexed == 'vector':
             indexed_kw = True
-        elif ptype == 'matrix':
+        elif indexed == 'matrix':
             indexed_kw = 'matrix'
         else:
-            indexed_kw = p.get('indexed')
+            indexed_kw = indexed
     kwargs = _kw_chain(
         ('default',      p.get('default')),
         ('indexed_by',   list(indexed_by) if indexed_by else None),
@@ -257,7 +257,7 @@ def _emit_cgf_term(c: dict) -> str:
         markov_extra.append(('markovianize', mk))
     base_kwargs = _kw_chain(
         ('order',          int(c['order'])),
-        ('coefficient',    c['coefficient']),
+        ('coefficient',    c.get('coefficient', '')),
         ('kernel',         c.get('kernel')),
         *markov_extra,
     )
@@ -685,7 +685,7 @@ def load_spec_from_file(path: str) -> dict:
 
         elif method == 'response_field':
             entry = {'name': args[0] if args else ''}
-            for k in ('indexed', 'latex', 'description'):
+            for k in ('indexed', 'population', 'latex', 'description'):
                 if k in kw:
                     entry[k] = kw[k]
             spec['response_fields'].append(entry)

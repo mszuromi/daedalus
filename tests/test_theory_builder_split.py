@@ -128,6 +128,11 @@ def test_serializer_phase1_round_trip():
     tp = emit('theories/linear_hawkes.theory.py')        # temporal fixture
     assert 'from api.theory import TemporalTheoryBuilder' in tp
     assert 'TemporalTheoryBuilder(' in tp
+    # legacy indexed=True / indexed='matrix' must survive the round-trip
+    # (regression guard: _emit_parameter once read a never-set 'type' key and
+    # silently downgraded vector/matrix parameters E[i] / w[i,j] to scalar)
+    assert 'indexed=True' in tp, 'vector parameter lost its indexing on round-trip'
+    assert "indexed='matrix'" in tp, 'matrix parameter lost its indexing on round-trip'
 
     # the loader round-trips the rendered (new-name) source
     d = tempfile.mkdtemp()
