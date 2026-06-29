@@ -11,7 +11,7 @@ def build():
     return (
         TemporalTheoryBuilder('OU Quartic Double Well')
         .population('pop', size=1)
-        .physical_field('x', population='pop', description='variable')
+        .physical_field('x', population='pop', description='variable', domain='real')
         .parameter('mu', default=0.1, domain='real')
         .parameter('eps', default=0.1, domain='positive')
         .parameter('D', default=1.0, domain='positive')

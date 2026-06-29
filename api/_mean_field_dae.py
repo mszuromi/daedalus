@@ -317,9 +317,11 @@ def _seed_box_default(state_vars, model, fundamental):
     declared ``domain`` and a heuristic scale.
 
     Heuristic: scale = max(|param value|) over all declared parameters
-    (fallback 1.0).  For ``domain='positive'`` we sample uniformly in
-    ``[0, 5·scale]``; for any other declared domain (``'real'`` or
-    unspecified) we sample in ``[-3·scale, 3·scale]``.
+    (fallback 1.0).  Sample ``[0, 5·scale]`` for a ``'positive'`` OR an
+    undeclared domain (the historical default — preserves every existing
+    theory's seed box); use the SYMMETRIC ``[-3·scale, 3·scale]`` ONLY when a
+    field's saddle explicitly declares ``domain='real'``/``'symmetric'`` (a
+    double-well opting into the negative half-line).
 
     Returns ``{var_name: (low, high)}``.
     """
@@ -331,15 +333,27 @@ def _seed_box_default(state_vars, model, fundamental):
     if scale <= 0.0:
         scale = 1.0
 
+    # Resolve each variable's domain from its mean-field SADDLE PARAMETER
+    # (<natural>star, mean_field=True) — physical fields carry no domain key.
+    # The auto-saddle sets 'positive' for rate fields ('n' or an explicit
+    # physical_field(domain='positive')), inherits an explicit
+    # physical_field(domain='real') for symmetric / double-well order
+    # parameters, and is None otherwise.
+    saddle_domain = {}
+    for p in model.get('parameters', []):
+        if p.get('mean_field') and p.get('natural_name'):
+            saddle_domain[p['natural_name']] = p.get('domain')
     boxes = {}
-    field_specs = {f['name']: f for f in model.get('physical_fields', [])}
     for var, _, _ in state_vars:
-        domain = (field_specs.get(var, {}).get('domain')
-                  or 'positive')   # default: positive (Hawkes-like)
-        if domain == 'positive':
-            boxes[var] = (0.0, 5.0 * scale)
-        else:
+        # SYMMETRIC box only for an EXPLICIT 'real'/'symmetric' domain (opt-in
+        # for negative wells); 'positive' OR undeclared -> POSITIVE box.  This
+        # preserves the historical seed box of every existing theory: widening
+        # an undeclared field's box (e.g. a voltage) destabilises its
+        # multi-start saddle solve and was an env-sensitive regression.
+        if saddle_domain.get(var) in ('real', 'symmetric'):
             boxes[var] = (-3.0 * scale, 3.0 * scale)
+        else:
+            boxes[var] = (0.0, 5.0 * scale)
     return boxes
 
 

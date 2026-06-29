@@ -793,7 +793,8 @@ class _BaseTheoryBuilder:
                        auto_response: bool = True,
                        auto_saddle: bool = True,
                        population: str = None,
-                       spatial_dim: Optional[int] = None):
+                       spatial_dim: Optional[int] = None,
+                       domain: str = None):
         """Declare a physical field.
 
         Spatial fields
@@ -883,7 +884,13 @@ class _BaseTheoryBuilder:
         if auto_saddle:
             saddle_name = f'{natural_name}star'
             if not any(p.name == saddle_name for p in self.parameters):
-                domain = 'positive' if natural_name == 'n' else None
+                # An explicit physical_field(domain=...) wins; otherwise rates
+                # ('n') default to 'positive' and everything else to None.  The
+                # saddle's domain drives the mean-field seed box: 'real' opts a
+                # double-well into the symmetric (negative-inclusive) box.
+                saddle_dom = (domain if domain is not None
+                              else ('positive' if natural_name == 'n' else None))
+                domain = saddle_dom
                 kwargs = dict(
                     indexed=True, domain=domain,
                     mean_field=True, natural_name=natural_name,
