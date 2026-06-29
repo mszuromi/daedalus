@@ -312,14 +312,55 @@ def _build_residual(model: dict, params_np: dict,
 # ── Initial-guess sampling ───────────────────────────────────────────
 
 
+def _var_domain(var, model):
+    """Resolve the declared ``domain`` of a state variable (its
+    user-facing natural name).
+
+    Physical fields themselves carry no ``domain`` key — it lives on the
+    auto-generated saddle PARAMETER (``<natural>star``, ``mean_field=True``).
+    The builder sets ``domain='positive'`` for rate fields (Hawkes ``n``)
+    and leaves it ``None`` (free / real) for everything else.  We look the
+    saddle parameter up by ``natural_name`` (preferred) or by the
+    ``<var>star`` name as a fallback.  Returns the domain string or
+    ``None`` when none is declared (⇒ treat as real/symmetric).
+    """
+    for p in model.get('parameters', []):
+        if not p.get('mean_field'):
+            continue
+        if p.get('natural_name') == var or p.get('name') == f'{var}star':
+            return p.get('domain')
+    return None
+
+
 def _seed_box_default(state_vars, model, fundamental):
     """Per-variable default sampling box derived from the variable's
     declared ``domain`` and a heuristic scale.
 
     Heuristic: scale = max(|param value|) over all declared parameters
     (fallback 1.0).  For ``domain='positive'`` we sample uniformly in
-    ``[0, 5·scale]``; for any other declared domain (``'real'`` or
-    unspecified) we sample in ``[-3·scale, 3·scale]``.
+    ``[0, 5·scale]`` (rates / non-negative fields, Hawkes-like).
+
+    For fields with NO declared domain (or ``'real'``) we sample in the
+    SYMMETRIC box ``[-3·scale, 3·scale]`` so negative / symmetric saddles
+    (e.g. the ``-√(-μ/ε)`` well of a double-well potential at ``μ<0``)
+    are actually probed.  Previously this symmetric branch was dead code
+    (the lookup keyed the field-spec dict by the INTERNAL name but
+    iterated NATURAL names, so it always missed and the ``or 'positive'``
+    fallback always fired) — negative wells were never sampled and the
+    wrong saddle was silently selected.
+
+    The symmetric widening is GATED on ``model['stability_analysis']``.
+    With stability analysis ON, ``fixed_point_index`` ranges over the
+    linearly-STABLE subset, so completing the root set with the negative
+    well merely makes both wells reachable (the cure).  With stability
+    analysis OFF, ``fixed_point_index`` ranges over EVERY converged root
+    sorted ascending — there, adding a negative root would silently shift
+    which root index 0 selects (e.g. the reaction-diffusion bubble
+    theories document ``φ*=0`` as the chosen root and ``-μ/g`` as the
+    unstable one they expand AWAY from).  Such theories keep the positive
+    box so their selection is preserved exactly; an explicit ``seed_box``
+    override (or declaring ``stability_analysis(True)``) re-enables the
+    negative half-line when a stability-off theory genuinely wants it.
 
     Returns ``{var_name: (low, high)}``.
     """
@@ -331,14 +372,20 @@ def _seed_box_default(state_vars, model, fundamental):
     if scale <= 0.0:
         scale = 1.0
 
+    stab_on = bool(model.get('stability_analysis', False))
+
     boxes = {}
-    field_specs = {f['name']: f for f in model.get('physical_fields', [])}
     for var, _, _ in state_vars:
-        domain = (field_specs.get(var, {}).get('domain')
-                  or 'positive')   # default: positive (Hawkes-like)
-        if domain == 'positive':
+        domain = _var_domain(var, model)
+        if domain == 'positive' or not stab_on:
+            # Positive box for declared-positive fields always, and for
+            # ALL fields when stability is off (preserves the historical
+            # fixed_point_index selection over the sorted root list).
             boxes[var] = (0.0, 5.0 * scale)
         else:
+            # No declared domain (or 'real') AND stability filtering is
+            # on: symmetric box so the negative half-line is sampled and
+            # both wells of a symmetric potential become reachable.
             boxes[var] = (-3.0 * scale, 3.0 * scale)
     return boxes
 
