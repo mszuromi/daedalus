@@ -253,9 +253,11 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
             for p in pops))
 
     params = model.get('parameters') or []
-    numeric = [p for p in params if not str(p.get('name', '')).endswith('star')]
-    saddle = [p.get('name') for p in params
-              if str(p.get('name', '')).endswith('star')]
+    def _is_saddle(p):                # saddle iff named '<base>star' OR mean_field
+        return (str(p.get('name', '')).endswith('star')
+                or bool(p.get('mean_field')))
+    numeric = [p for p in params if not _is_saddle(p)]
+    saddle = [p.get('name') for p in params if _is_saddle(p)]
     if numeric:
         out.append("Parameters     :")
         for p in numeric:
@@ -276,8 +278,11 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
                    "non-Markovian temporal convolution")
     fns = model.get('functions') or []
     for fn in fns:
+        na = fn.get('n_args')
+        if na is None:                # template-built fns carry 'args', not 'n_args'
+            na = len(fn.get('args') or []) or '?'
         out.append(f"Function       : {fn.get('name')}(·) "
-                   f"— {fn.get('n_args')}-arg transfer")
+                   f"— {na}-arg transfer")
 
     eqs = model.get('equations') or []
     for eq in eqs:
