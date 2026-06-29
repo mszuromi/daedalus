@@ -394,7 +394,8 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
                  % (name, k, max_ell), ha='center', va='center', fontsize=12)
         if save:
             fig.savefig(save, dpi=145, bbox_inches='tight')
-        return fig
+        plt.close(fig)        # drop from pyplot's registry so the inline backend
+        return fig            # doesn't auto-show it (the returned fig renders once)
     heights = [HEAD if p[0] == 'head' else CELL for p in plan]
     fig = plt.figure(figsize=(PANELW * ncol, sum(heights) + 0.8))
     gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.32, wspace=0.16,
@@ -417,7 +418,8 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
              ha='center', fontsize=10, color='#555')
     if save:
         fig.savefig(save, dpi=145, bbox_inches='tight')
-    return fig
+    plt.close(fig)            # drop from pyplot's registry so the inline backend
+    return fig                # doesn't auto-show it (the returned fig renders once)
 
 
 # ── label-mapping tables (generic label -> typed-diagram field types) ─────────
