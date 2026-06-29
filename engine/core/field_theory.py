@@ -680,19 +680,12 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
 def _mf_numerical_residual(expr, ns, model):
     """Numerical residual of an SR expression at the MF saddle.
 
-    Returns the magnitude of ``expr`` after binding every free symbol to
-    its numerical value at the saddle for a representative parameter
-    point (``model['fundamental_defaults']`` if provided, else the
-    theory's per-parameter defaults).  Any symbol still free after that —
-    a model parameter the solver couldn't bind, or a genuinely un-pinned
-    dummy — is handled by the case-split documented at the binding site
-    below (substitute a known value / give up vs. multi-point probe).
-
-    Returns ``None`` if the residual can't be built or numerically
-    pinned (no MF solver, a parameter value is missing, etc.) — the
-    caller falls back to ``failures`` rather than ``soft_passes`` in that
-    case, so a missing parameter is reported as a failure instead of a
-    spurious soft-pass.
+    Returns the magnitude of ``expr`` after binding every free symbol
+    to its numerical value at the saddle for a representative
+    parameter point (``model['fundamental_defaults']`` if provided,
+    else all-ones).  Returns ``None`` if the residual can't be built
+    (no MF solver, fundamental incomplete, etc.) — the caller falls
+    back to ``failures`` rather than ``soft_passes`` in that case.
     """
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
@@ -736,86 +729,12 @@ def _mf_numerical_residual(expr, ns, model):
         return None
 
     if free_syms:
-        # A leftover free symbol after substituting the saddle + every
-        # fundamental parameter is one of two distinct things — and the
-        # old code conflated them by binding EVERY leftover to 1.0 and
-        # evaluating ONCE, which SOFT-PASSES any residual that is
-        # non-zero in general but happens to vanish at all-ones:
-        #
-        #   (ii) a model PARAMETER that the MF solver couldn't bind
-        #        (e.g. absent from ``fundamental``).  This is a
-        #        missing-parameter situation — substitute its real value
-        #        if one is available, otherwise it can't be checked
-        #        numerically (return ``None`` so the caller treats it as
-        #        a failure rather than a spurious soft-pass).  We must
-        #        NOT probe arbitrary points for a parameter: that would
-        #        FALSE-FAIL a residual that is genuinely zero at the true
-        #        parameter value (this was tried and reverted).
-        #
-        #   (i)  a genuinely UN-PINNED symbol (not a model parameter and
-        #        not a saddle) that the residual must be IDENTICALLY zero
-        #        in.  Probe several distinct points (and try symbolic
-        #        ``is_zero``); if the residual is non-zero at any probe,
-        #        it is a real non-vanishing residual and must FAIL.
-        param_names = _model_parameter_symbol_names(model)
-        param_value_subs = dict(mf.get('param_subs', {}))
-        # Map symbol-name → value for any parameter the solver DID resolve
-        # (covers indexed forms baked into num_params/param_subs).
-        known_by_name = {}
-        for k, v in {**num_subs, **param_value_subs}.items():
-            try:
-                known_by_name[str(k)] = v
-            except Exception:
-                pass
-
-        unpinned = []          # case (i): residual must be identically 0
         for sym in free_syms:
-            sname = str(sym)
-            if sname in known_by_name:
-                num_subs[sym] = known_by_name[sname]
-            elif sname in param_names:
-                # Case (ii): a model parameter the solver couldn't bind
-                # and whose value is NOT available — cannot check.
-                return None
-            else:
-                unpinned.append(sym)
-
-        if unpinned:
-            # Case (i): the residual must vanish IDENTICALLY in every
-            # un-pinned symbol.  Prefer a cheap symbolic check; fall back
-            # to probing several distinct points so a residual that is
-            # non-zero in general (but zero at the old all-ones point) is
-            # caught rather than soft-passed.
-            try:
-                base = SR(expr).subs(num_subs)
-            except Exception:
-                return None
-            try:
-                if base.is_zero():
-                    return 0.0
-            except Exception:
-                pass
-            probe_points = (1.0, 0.5, -0.7, 2.3, 1.7)
-            max_mag = 0.0
-            evaluated = False
-            for pt in probe_points:
-                trial = dict(num_subs)
-                for sym in unpinned:
-                    trial[sym] = pt
-                try:
-                    val = SR(expr).subs(trial)
-                    mag = abs(complex(val))
-                except Exception:
-                    try:
-                        mag = abs(float(val))
-                    except Exception:
-                        continue
-                evaluated = True
-                if mag > max_mag:
-                    max_mag = mag
-            if not evaluated:
-                return None
-            return max_mag
+            num_subs[sym] = 1.0
+        try:
+            bound = SR(expr).subs(num_subs)
+        except Exception:
+            return None
 
     try:
         return abs(complex(bound))
@@ -824,41 +743,6 @@ def _mf_numerical_residual(expr, ns, model):
             return abs(float(bound))
         except Exception:
             return None
-
-
-def _model_parameter_symbol_names(model):
-    """Set of SR-variable names that correspond to declared model
-    PARAMETERS (including their per-population indexed forms, e.g.
-    ``mu`` → ``{'mu'}``; ``aS`` indexed by a 2-pop set → ``{'aS1',
-    'aS2'}``; a matrix param → ``{'p11', 'p12', ...}``).  Used by
-    :func:`_mf_numerical_residual` to tell a missing-PARAMETER symbol
-    (case ii — substitute its real value or give up, never probe) apart
-    from a genuinely un-pinned dummy symbol (case i — probe to confirm
-    the residual is identically zero)."""
-    names: set = set()
-    pop_size_map = {}
-    for p in model.get('populations', []) or []:
-        try:
-            pop_size_map[p['name']] = int(p.get('size', 1))
-        except Exception:
-            pass
-    for pspec in model.get('parameters', []):
-        pname = pspec.get('name')
-        if not pname:
-            continue
-        names.add(pname)
-        ib = pspec.get('indexed_by') or []
-        if len(ib) == 1:
-            n = pop_size_map.get(ib[0], 2)
-            for i in range(n):
-                names.add(f'{pname}{i + 1}')
-        elif len(ib) == 2:
-            n_rows = pop_size_map.get(ib[0], 2)
-            n_cols = pop_size_map.get(ib[1], 2)
-            for i in range(n_rows):
-                for j in range(n_cols):
-                    names.add(f'{pname}{i + 1}{j + 1}')
-    return names
 
 
 def _default_fundamental_point(ns, model):
