@@ -25,4 +25,4 @@ jobs:
           cache-environment: true
 
       - name: Run the test suite (slow tests deselected via pytest.ini)
-        run: sage -python -m pytest tests/ -q
+        run: python -m pytest tests/ -q     # the activated conda env's python already has Sage
