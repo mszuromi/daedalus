@@ -139,8 +139,14 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
         v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
 
         min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        # Only the PROVEN vertex-count bound (num_leaves + v2_max + v3_max) and
+        # the global search cap (max_vertices_search=50) apply here; the per-tree
+        # degree constraints below (v3_max / v2_max) do the rest.  An earlier
+        # extra clamp ``min(max_n, num_leaves + min(10, v2_max + v3_max))`` was
+        # un-proven (it silently truncated the search at high vertex counts and
+        # could drop valid trees at loop order >= 3); removed to restore
+        # completeness.  Inert at ell <= 2 (the proven bound already binds).
         max_n = min(num_leaves + v2_max + v3_max, max_vertices_search)
-        max_n = min(max_n, num_leaves + min(10, v2_max + v3_max))
 
         if max_n < min_n:
             continue

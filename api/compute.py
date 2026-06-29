@@ -48,6 +48,22 @@ from api.access     import (
 _ITO_EPS = 1e-6
 
 
+def _ito_nudge_callable(fn, k):
+    """Wrap a user-facing C(τ) callable so its equal-time evaluation matches the
+    Itô LEFT-limit used on the C_tau grid (see ``_ITO_EPS`` and the k=2 grid
+    construction below).  Without this, ``total_C(t0, t0)`` would sample the
+    measure-zero τ=0 step discontinuity and disagree with ``C_tau`` at τ=0.
+
+    Only the k=2 single-axis slice has a well-defined "anchor leg" (leg 0); for
+    other k the callable is returned unchanged (the k≥3 caller applies its own
+    nudge in ``daedalus._args``).  Mirrors the grid nudge: a second-leg time
+    within 1e-12 of the anchor leg's time is moved to ``anchor − _ITO_EPS``.
+    """
+    if k != 2:
+        return fn
+    return lambda t0, t1: fn(t0, t1 if abs(t1 - t0) > 1e-12 else t0 - _ITO_EPS)
+
+
 def _trunc(s, maxlen=200):
     s = str(s)
     return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
@@ -822,7 +838,7 @@ def compute_cumulants(
                 num_params       = num_params,
                 origin_leaf_idx  = origin_leaf_idx,
             )
-        total_C_by_ell[ell] = td_result_ell['total_C']
+        total_C_by_ell[ell] = _ito_nudge_callable(td_result_ell['total_C'], k)
         phase_j_by_ell[ell] = td_result_ell
 
         if tau_points is not None:
