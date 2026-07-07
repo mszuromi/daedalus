@@ -86,6 +86,18 @@ def _layout_graphviz(D, leaves):
     g = pydot.Dot(graph_type='digraph', rankdir='RL', nodesep='0.7', ranksep='1.05')
     for n in nodes:
         g.add_node(pydot.Node(str(n), shape='point', width='0.12'))
+    # Pin the roles to their conventional columns (sources rightmost = min rank,
+    # externals leftmost = max rank).  Without this, dot may park a source in an
+    # internal column or an external mid-figure, producing role-mixed columns
+    # that read badly and that the _untangle column permutation cannot fix.
+    if src_v:
+        sg = pydot.Subgraph(rank='min')
+        for n in src_v: sg.add_node(pydot.Node(str(n)))
+        g.add_subgraph(sg)
+    if ext_v:
+        sg = pydot.Subgraph(rank='max')
+        for n in ext_v: sg.add_node(pydot.Node(str(n)))
+        g.add_subgraph(sg)
     seen = set()
     for u, v, _ in edges:
         if u != v and (u, v) not in seen:
@@ -117,11 +129,97 @@ def _layout_graphviz(D, leaves):
     return pos, ext_v, src_v, int_v, edges
 
 
+def _untangle(pos, edges):
+    """Deterministic post-pass: within each x-column, permute which node sits on
+    which of the column's existing y-slots to minimise, in order, (a) pairwise
+    edge crossings, (b) edges forced to arc around an intermediate node, and
+    (c) total squared edge length (compact, symmetric fan-outs).  This is the
+    "permute the sources" freedom: role labels (i, ii / a, b / 1, 2) are
+    assigned from the FINAL y-positions by :func:`_generic_labels`, and the
+    mapping table re-derives them through this same deterministic pipeline, so
+    figure and label map stay consistent by construction."""
+    from itertools import permutations, product
+    from math import factorial
+    cols = collections.defaultdict(list)                 # x-column -> nodes
+    for v in pos:
+        cols[round(pos[v][0], 2)].append(v)
+    xs_sorted = sorted(cols)
+    rank_of = {x: i for i, x in enumerate(xs_sorted)}
+    colnodes = [sorted(cols[x]) for x in xs_sorted]      # deterministic order
+    slots = [sorted((pos[v][1] for v in cols[x])) for x in xs_sorted]
+    pairs = sorted({frozenset((u, v)) for (u, v, _) in edges if u != v},
+                   key=lambda fs: tuple(sorted(fs)))
+    pairs = [tuple(sorted(fs)) for fs in pairs]
+    rank_v = {v: rank_of[round(pos[v][0], 2)] for v in pos}
+
+    def cost(p):
+        cross = 0
+        for a in range(len(pairs)):
+            u1, v1 = pairs[a]
+            for b in range(a + 1, len(pairs)):
+                u2, v2 = pairs[b]
+                if len({u1, v1, u2, v2}) < 4:
+                    continue
+                if _seg_int(p[u1], p[v1], p[u2], p[v2]):
+                    cross += 1
+        blocked, L2 = 0, 0.0
+        for (u, v) in pairs:
+            x0, y0 = p[u]; x1, y1 = p[v]
+            ddx, ddy = x1 - x0, y1 - y0
+            L2 += ddx * ddx + ddy * ddy
+            seg = ddx * ddx + ddy * ddy
+            ru, rv = rank_v[u], rank_v[v]
+            for w in p:                                   # draw-time blocker rule
+                if w == u or w == v or not (min(ru, rv) < rank_v[w] < max(ru, rv)):
+                    continue
+                xw, yw = p[w]
+                t = 0.5 if seg < 1e-12 else max(0.0, min(
+                    1.0, ((xw - x0) * ddx + (yw - y0) * ddy) / seg))
+                if ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5 < 0.32:
+                    blocked += 1
+                    break
+        return (cross, blocked, round(L2, 6))
+
+    def build(assign_per_col):
+        p = {}
+        for ci, order in enumerate(assign_per_col):
+            for si, v in enumerate(order):
+                p[v] = [pos[v][0], slots[ci][si]]
+        return p
+
+    total = 1
+    for ns in colnodes:
+        total *= factorial(len(ns))
+    if total <= 20000:                                   # small: exact joint search
+        best, best_c = None, None
+        for combo in product(*(list(permutations(ns)) for ns in colnodes)):
+            p = build(combo); c = cost(p)
+            if best_c is None or c < best_c:
+                best, best_c = p, c
+        return best
+    # large: deterministic per-column exhaustive coordinate descent
+    cur = [list(ns) for ns in colnodes]
+    best_c = cost(build(cur))
+    for _sweep in range(6):
+        improved = False
+        for ci in range(len(cur)):
+            for perm in permutations(sorted(cur[ci])):
+                trial = list(cur); trial[ci] = list(perm)
+                c = cost(build(trial))
+                if c < best_c:
+                    best_c = c; cur = trial; improved = True
+        if not improved:
+            break
+    return build(cur)
+
+
 def _layout(D, leaves):
     try:
-        return _layout_graphviz(D, leaves)
+        pos, ext_v, src_v, int_v, edges = _layout_graphviz(D, leaves)
     except Exception:
-        return _layout_layered(D, leaves)
+        pos, ext_v, src_v, int_v, edges = _layout_layered(D, leaves)
+    pos = _untangle(pos, edges)
+    return pos, ext_v, src_v, int_v, edges
 
 
 def _layout_layered(D, leaves):
@@ -214,14 +312,31 @@ def topo_signature(D, leaves):
     ext_v, src_v, int_v = _roles(D, leaves)
     mult = collections.Counter()
     for (u, v, _) in D.edges(): mult[frozenset((int(u), int(v)))] += 1
-    maxmult = max(mult.values()) if mult else 1
-    idegs = tuple(sorted((int(D.in_degree(v)), int(D.out_degree(v))) for v in int_v))
-    return (len(int_v), len(src_v), idegs, maxmult)
+    # full multi-edge profile (one entry per vertex pair with multiplicity > 1,
+    # descending), so e.g. one bubble and two bubbles land in DIFFERENT groups.
+    # The signature carries exactly what the group header shows — grouping any
+    # finer (e.g. by internal degree profile) splits groups whose headers read
+    # identically, which displays as confusing duplicate headings.
+    mults = tuple(sorted((m for m in mult.values() if m > 1), reverse=True))
+    return (len(int_v), len(src_v), mults)
+
+
+def _sig_sort_key(sig):
+    """Deterministic group order, shared by the figure and the mapping table:
+    fewer internals first, then fewer sources, then richer multi-edge motifs
+    (higher max multiplicity, then more of them)."""
+    n_int, n_src, mults = sig
+    return (n_int, n_src, -(mults[0] if mults else 1), -len(mults), mults)
 
 
 def sig_label(sig):
-    n_int, n_src, idegs, maxmult = sig
-    motif = {1: '', 2: ' · bubble', 3: ' · sunset', 4: ' · 4-edge'}.get(maxmult, ' · %d-edge' % maxmult)
+    n_int, n_src, mults = sig
+    c = collections.Counter(mults)
+    parts = []
+    for m in sorted(c, reverse=True):
+        name = {2: 'bubble', 3: 'sunset'}.get(m, '%d-edge' % m)
+        parts.append(name if c[m] == 1 else '%d %ss' % (c[m], name))
+    motif = (' · ' + ' + '.join(parts)) if parts else ''
     return '%d internal, %d source%s%s' % (n_int, n_src, '' if n_src == 1 else 's', motif)
 
 
@@ -373,7 +488,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
         bysig = collections.OrderedDict()
         for pd in pre[ell]:
             bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
-        for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
+        for sig in sorted(bysig, key=_sig_sort_key):
             groups.append((ell, sig, bysig[sig]))
     # Adaptive sizing: k≥3 diagrams carry many external legs + sources (more
     # fan-out and crossings), so render them with fewer-per-row + larger cells.
@@ -387,7 +502,8 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
                      % (ell, sig_label(sig), len(pds), '' if len(pds) == 1 else 's')))
         for c in range(0, len(pds), ncol):
-            plan.append(('row', pds[c:c + ncol]))
+            plan.append(('row', pds[c:c + ncol], c))   # c = index of the row's first
+                                                       # diagram within its group
     if not plan:                          # nothing contributes at this (k, ell)
         fig = plt.figure(figsize=(6.5, 1.8))
         fig.text(0.5, 0.5, 'No contributing prediagrams for %s at k=%d, ℓ≤%d'
@@ -409,7 +525,9 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
         else:
             for ci, pd in enumerate(p[1]):
                 ax = fig.add_subplot(gs[ri, ci])
-                draw_prediagram(pd[0], pd[2], ax, title='#%d' % (ci + 1))
+                # continuous numbering within the group (#1..#N across rows),
+                # matching the #idx of the prediagram_mappings table exactly
+                draw_prediagram(pd[0], pd[2], ax, title='#%d' % (p[2] + ci + 1))
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
     fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ\;1,2$ external legs      '
@@ -513,7 +631,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
         for pd in pre[ell]:
             bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
         entries = []
-        for sig in sorted(bysig, key=lambda s: (s[0], s[1], -s[3])):
+        for sig in sorted(bysig, key=_sig_sort_key):
             for idx, pd in enumerate(bysig[sig]):
                 labels = _generic_labels(pd[0], pd[2])
                 typings = [diagram_label_map(td, labels)
@@ -556,4 +674,4 @@ def _format_mappings(name, k, max_ell, result, max_typings=6):
 
 
 if __name__ == '__main__':
-    make_figure('ou_quartic', 2, 1, '/tmp/v3_ou_quartic_k2_l1.png')
+    plot_prediagrams('ou_quartic', 2, 1, save='/tmp/prediagrams_ou_quartic_k2_l1.png')
