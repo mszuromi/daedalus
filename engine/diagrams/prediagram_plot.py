@@ -219,9 +219,10 @@ def _layout_graphviz(D, leaves):
         d = np.hypot(*(P - P[i]).T); d[i] = np.inf
         gaps.append(d.min())
     sc = 2.0 / (np.median(gaps) or 1.0)
-    # stretch y by 1.6: graphviz packs rows tightly; the extra vertical air
-    # separates fan-outs and (with per-row panel heights) fills the cell
-    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc * 1.6]
+    # stretch y by 1.85: graphviz packs rows tightly; the extra vertical air
+    # separates fan-outs and (with per-row panel heights) fills the cell —
+    # a taller total figure is preferred over cramped prediagrams
+    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc * 1.85]
     return pos, ext_v, src_v, int_v, edges
 
 
@@ -656,7 +657,8 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     # Adaptive sizing: k≥3 diagrams carry many external legs + sources (more
     # fan-out and crossings), so render them with fewer-per-row + larger cells.
     if ncol is None:
-        ncol = 3 if k <= 2 else 2
+        ncol = 2          # 2-up: each prediagram gets half the figure width
+                          # (a longer figure is preferred over small panels)
     PANELW = 4.3 if k <= 2 else 5.6
     # build a row plan: a thin header row per group, then diagram rows.
     # Layouts are computed ONCE here (reused by draw_prediagram below) so each
@@ -671,13 +673,13 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
         labs = [_generic_labels(pd[0], pd[2]) for pd in pds]
         for c in range(0, len(pds), ncol):
             row = list(zip(pds[c:c + ncol], labs[c:c + ncol]))
-            row_h = 2.0
-            for _pd, lb in row:
+            row_h = 2.4                                # generous floor: even flat
+            for _pd, lb in row:                        # chains get a roomy panel
                 xs = [p[0] for p in lb[0].values()]; ys = [p[1] for p in lb[0].values()]
                 w = (max(xs) - min(xs)) + 2.1          # side labels + margins
-                h = (max(ys) - min(ys)) + 1.6          # top/bottom labels + title
+                h = (max(ys) - min(ys)) + 1.8          # top/bottom labels + title
                 row_h = max(row_h, PANELW * h / max(w, 1e-9))
-            plan.append(('row', row, c, min(row_h, 6.2)))   # c = index of the row's
+            plan.append(('row', row, c, min(row_h, 7.5)))   # c = index of the row's
                                                             # first diagram in its group
     if not plan:                          # nothing contributes at this (k, ell)
         fig = plt.figure(figsize=(6.5, 1.8))
@@ -706,7 +708,9 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
                                 labels=lb)
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
-    fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ\;1,2$ external legs      '
+    # pin the legend 0.12in above the bottom edge (a FRACTION would drift into
+    # the last row as the figure grows taller)
+    fig.text(0.5, 0.12 / (sum(heights) + 0.8), r'time $\leftarrow$      $\circ\;1,2$ external legs      '
              r'$\blacksquare\;i,ii$ sources      $\bullet\;a,b,c$ internal vertices      '
              r'(propagators named by endpoints, e.g. $a\to b$)',
              ha='center', fontsize=10, color='#555')
