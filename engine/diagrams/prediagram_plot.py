@@ -219,9 +219,9 @@ def _layout_graphviz(D, leaves):
         d = np.hypot(*(P - P[i]).T); d[i] = np.inf
         gaps.append(d.min())
     sc = 2.0 / (np.median(gaps) or 1.0)
-    # stretch y by 1.35: graphviz packs rows tightly; the extra vertical air
+    # stretch y by 1.6: graphviz packs rows tightly; the extra vertical air
     # separates fan-outs and (with per-row panel heights) fills the cell
-    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc * 1.35]
+    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc * 1.6]
     return pos, ext_v, src_v, int_v, edges
 
 
@@ -333,7 +333,7 @@ def _untangle(pos, edges):
                 yn = y0 + dy
                 if not (ylo <= yn <= yhi):
                     continue
-                if any(abs(best[w][1] - yn) < 0.7 for w in same_col):
+                if any(abs(best[w][1] - yn) < 0.9 for w in same_col):
                     continue                              # keep same-column spacing
                 best[v][1] = yn
                 c = cost(best)
@@ -395,7 +395,7 @@ def _layout_layered(D, leaves):
         pos = {}
         for d, vs in layers.items():
             endcap = (d == 0) or (d == maxd)
-            sp = YS if endcap else YS * 0.8
+            sp = YS if endcap else YS * 0.95
             for i, v in enumerate(vs):
                 pos[v] = (XS * (maxd - d), (i - (len(vs) - 1) / 2.0) * sp)
         return pos
@@ -677,7 +677,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
                 w = (max(xs) - min(xs)) + 2.1          # side labels + margins
                 h = (max(ys) - min(ys)) + 1.6          # top/bottom labels + title
                 row_h = max(row_h, PANELW * h / max(w, 1e-9))
-            plan.append(('row', row, c, min(row_h, 5.2)))   # c = index of the row's
+            plan.append(('row', row, c, min(row_h, 6.2)))   # c = index of the row's
                                                             # first diagram in its group
     if not plan:                          # nothing contributes at this (k, ell)
         fig = plt.figure(figsize=(6.5, 1.8))
