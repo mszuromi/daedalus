@@ -69,6 +69,84 @@ def _seg_int(p, q, r, s):
     return (d1 * d2 < 0) and (d3 * d4 < 0)
 
 
+def _edge_rads(pos, edges):
+    """arc3 curvature for every edge copy — the SINGLE source of truth shared by
+    the drawing and the layout optimiser, so the optimiser scores exactly what
+    gets drawn.  Parallel edges fan into a lens; a single edge stays straight
+    unless its segment passes too close to another node, in which case it bows
+    away from the offenders (rad sign: positive pushes the apex to the right of
+    travel u→v, i.e. toward −(perp) since the control point is mid + rad·(dy,−dx))."""
+    xcols = sorted(set(round(pos[v][0], 2) for v in pos))
+    rank_of = {x: i for i, x in enumerate(xcols)}
+
+    def _rank(v):
+        return rank_of[round(pos[v][0], 2)]
+
+    pair = collections.defaultdict(list)
+    for e in edges:
+        pair[frozenset((e[0], e[1]))].append(e)
+    rads = {}
+    for key, es in pair.items():
+        m = len(es)
+        for i, e in enumerate(sorted(es, key=lambda e: str(e[2]))):
+            u, v, _ = e
+            if m > 1:                                    # parallel edges -> lens bubble
+                rads[e] = 0.42 * (i - (m - 1) / 2.0) * 2
+                continue
+            x0, y0 = pos[u]; x1, y1 = pos[v]
+            ddx, ddy = x1 - x0, y1 - y0
+            seg = ddx * ddx + ddy * ddy
+            side, nblk = 0.0, 0
+            for w in pos:                                # ANY nearby node blocks
+                if w == u or w == v:
+                    continue
+                xw, yw = pos[w]
+                t = 0.5 if seg < 1e-12 else ((xw - x0) * ddx + (yw - y0) * ddy) / seg
+                if not (0.04 < t < 0.96):
+                    continue
+                d = ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5
+                if d < 0.32:
+                    nblk += 1
+                    ss = ddx * (yw - y0) - ddy * (xw - x0)    # >0: w left of u->v
+                    # weight by 1/d: bow away from the CLOSEST blocker; without
+                    # this, blockers on opposite sides cancel and the edge runs
+                    # dead straight THROUGH one of them
+                    side += (1.0 if ss > 0 else -1.0) / max(d, 0.05)
+            if nblk == 0:
+                rads[e] = 0.0
+            else:
+                span = max(abs(_rank(u) - _rank(v)), 1)
+                # apex goes to the RIGHT of travel for rad>0; blockers left -> bow right.
+                # Floor of 0.26: long-span edges would otherwise get a bow too weak
+                # to actually clear the node they are dodging (reads as a false
+                # incidence), which is worse than a visibly curved edge.
+                rads[e] = max(min(0.72 / span, 0.45), 0.26) * (1.0 if side >= 0 else -1.0)
+    return rads
+
+
+def _edge_poly(pos, e, rad, ts=(0.0, 1 / 3.0, 2 / 3.0, 1.0)):
+    """Sampled points of the drawn (quadratic-bezier) edge curve."""
+    u, v = e[0], e[1]
+    (x0, y0), (x1, y1) = pos[u], pos[v]
+    dx, dy = x1 - x0, y1 - y0
+    cx = (x0 + x1) / 2.0 + rad * dy
+    cy = (y0 + y1) / 2.0 - rad * dx
+    out = []
+    for t in ts:
+        a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+        out.append((a * x0 + b * cx + c * x1, a * y0 + b * cy + c * y1))
+    return out
+
+
+def _pt_seg_d2(p, a, b):
+    ax, ay = a; bx, by = b; px, py = p
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    qx, qy = ax + t * dx, ay + t * dy
+    return (px - qx) ** 2 + (py - qy) ** 2
+
+
 def _roles(D, leaves):
     from engine.diagrams.filter import classify_prediagram_vertices
     s, i = classify_prediagram_vertices(D, leaves)
@@ -130,11 +208,20 @@ def _layout_graphviz(D, leaves):
 
 
 def _untangle(pos, edges):
-    """Deterministic post-pass: within each x-column, permute which node sits on
-    which of the column's existing y-slots to minimise, in order, (a) pairwise
-    edge crossings, (b) edges forced to arc around an intermediate node, and
-    (c) total squared edge length (compact, symmetric fan-outs).  This is the
-    "permute the sources" freedom: role labels (i, ii / a, b / 1, 2) are
+    """Deterministic layout post-pass, in two stages.
+
+    Stage 1 — slot permutation: within each x-column, permute which node sits
+    on which of the column's y-slots (exact joint search when the space is
+    small, per-column coordinate descent otherwise).  This is the "permute the
+    sources" freedom.
+    Stage 2 — y-nudging: a deterministic local search that moves individual
+    nodes OFF the slots vertically, e.g. lifting the far vertex of a bubble
+    clear of a crowded corridor.
+
+    Both stages score the geometry that is ACTUALLY drawn — bezier arcs via
+    the shared :func:`_edge_rads` (bubble lenses, blocker bows), counting in
+    order (a) curve–curve crossings, (b) nodes lying on a foreign edge curve,
+    (c) edges forced to arc, and (d) total edge length.  Role labels are
     assigned from the FINAL y-positions by :func:`_generic_labels`, and the
     mapping table re-derives them through this same deterministic pipeline, so
     figure and label map stay consistent by construction."""
@@ -144,41 +231,46 @@ def _untangle(pos, edges):
     for v in pos:
         cols[round(pos[v][0], 2)].append(v)
     xs_sorted = sorted(cols)
-    rank_of = {x: i for i, x in enumerate(xs_sorted)}
     colnodes = [sorted(cols[x]) for x in xs_sorted]      # deterministic order
     slots = [sorted((pos[v][1] for v in cols[x])) for x in xs_sorted]
-    pairs = sorted({frozenset((u, v)) for (u, v, _) in edges if u != v},
-                   key=lambda fs: tuple(sorted(fs)))
-    pairs = [tuple(sorted(fs)) for fs in pairs]
-    rank_v = {v: rank_of[round(pos[v][0], 2)] for v in pos}
+    ecopies = sorted((e for e in edges if e[0] != e[1]),
+                     key=lambda e: (e[0], e[1], str(e[2])))
 
     def cost(p):
+        rads = _edge_rads(p, ecopies)
+        polys = [(_edge_poly(p, e, rads[e]), e) for e in ecopies]
         cross = 0
-        for a in range(len(pairs)):
-            u1, v1 = pairs[a]
-            for b in range(a + 1, len(pairs)):
-                u2, v2 = pairs[b]
-                if len({u1, v1, u2, v2}) < 4:
+        for a in range(len(polys)):
+            pa, ea = polys[a]
+            for b in range(a + 1, len(polys)):
+                pb, eb = polys[b]
+                if len({ea[0], ea[1], eb[0], eb[1]}) < 4:
+                    continue                              # shared endpoint: skip
+                hit = False
+                for i in range(len(pa) - 1):
+                    for j in range(len(pb) - 1):
+                        if _seg_int(pa[i], pa[i + 1], pb[j], pb[j + 1]):
+                            hit = True; break
+                    if hit: break
+                if hit: cross += 1
+        node_hits, arcs, L2 = 0, 0, 0.0
+        for poly, e in polys:
+            u, v = e[0], e[1]
+            L2 += (p[v][0] - p[u][0]) ** 2 + (p[v][1] - p[u][1]) ** 2
+            if abs(rads[e]) > 1e-9:
+                arcs += 1
+            for w in p:                                   # node sitting on a foreign curve
+                if w == u or w == v:
                     continue
-                if _seg_int(p[u1], p[v1], p[u2], p[v2]):
-                    cross += 1
-        blocked, L2 = 0, 0.0
-        for (u, v) in pairs:
-            x0, y0 = p[u]; x1, y1 = p[v]
-            ddx, ddy = x1 - x0, y1 - y0
-            L2 += ddx * ddx + ddy * ddy
-            seg = ddx * ddx + ddy * ddy
-            ru, rv = rank_v[u], rank_v[v]
-            for w in p:                                   # draw-time blocker rule
-                if w == u or w == v or not (min(ru, rv) < rank_v[w] < max(ru, rv)):
-                    continue
-                xw, yw = p[w]
-                t = 0.5 if seg < 1e-12 else max(0.0, min(
-                    1.0, ((xw - x0) * ddx + (yw - y0) * ddy) / seg))
-                if ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5 < 0.32:
-                    blocked += 1
-                    break
-        return (cross, blocked, round(L2, 6))
+                d2 = min(_pt_seg_d2(p[w], poly[i], poly[i + 1])
+                         for i in range(len(poly) - 1))
+                if d2 < 0.38 * 0.38:
+                    node_hits += 1
+        vs = sorted(p)                                    # crowded node pairs (any column)
+        crowd = sum(1 for i in range(len(vs)) for j in range(i + 1, len(vs))
+                    if (p[vs[i]][0] - p[vs[j]][0]) ** 2
+                    + (p[vs[i]][1] - p[vs[j]][1]) ** 2 < 0.85 * 0.85)
+        return (cross, node_hits, arcs, crowd, round(L2, 6))
 
     def build(assign_per_col):
         p = {}
@@ -187,30 +279,53 @@ def _untangle(pos, edges):
                 p[v] = [pos[v][0], slots[ci][si]]
         return p
 
+    # ── stage 1: slot permutations ────────────────────────────────────
     total = 1
     for ns in colnodes:
         total *= factorial(len(ns))
-    if total <= 20000:                                   # small: exact joint search
+    if total <= 2000:                                    # small: exact joint search
         best, best_c = None, None
         for combo in product(*(list(permutations(ns)) for ns in colnodes)):
             p = build(combo); c = cost(p)
             if best_c is None or c < best_c:
                 best, best_c = p, c
-        return best
-    # large: deterministic per-column exhaustive coordinate descent
-    cur = [list(ns) for ns in colnodes]
-    best_c = cost(build(cur))
-    for _sweep in range(6):
+    else:                                                # deterministic coord. descent
+        cur = [list(ns) for ns in colnodes]
+        best = build(cur); best_c = cost(best)
+        for _sweep in range(6):
+            improved = False
+            for ci in range(len(cur)):
+                for perm in permutations(sorted(cur[ci])):
+                    trial = list(cur); trial[ci] = list(perm)
+                    p = build(trial); c = cost(p)
+                    if c < best_c:
+                        best, best_c, cur = p, c, trial; improved = True
+            if not improved:
+                break
+    # ── stage 2: vertical nudging off the slots ───────────────────────
+    ylo = min(y for ys in slots for y in ys) - 1.6
+    yhi = max(y for ys in slots for y in ys) + 1.6
+    for _sweep in range(3):
         improved = False
-        for ci in range(len(cur)):
-            for perm in permutations(sorted(cur[ci])):
-                trial = list(cur); trial[ci] = list(perm)
-                c = cost(build(trial))
+        for v in sorted(best):
+            same_col = [w for w in best
+                        if w != v and round(best[w][0], 2) == round(best[v][0], 2)]
+            y0 = best[v][1]
+            for dy in (-1.4, -1.05, -0.7, -0.35, 0.35, 0.7, 1.05, 1.4):
+                yn = y0 + dy
+                if not (ylo <= yn <= yhi):
+                    continue
+                if any(abs(best[w][1] - yn) < 0.7 for w in same_col):
+                    continue                              # keep same-column spacing
+                best[v][1] = yn
+                c = cost(best)
                 if c < best_c:
-                    best_c = c; cur = trial; improved = True
+                    best_c = c; y0 = yn; improved = True
+                else:
+                    best[v][1] = y0
         if not improved:
             break
-    return build(cur)
+    return best
 
 
 def _layout(D, leaves):
@@ -329,6 +444,20 @@ def _sig_sort_key(sig):
     return (n_int, n_src, -(mults[0] if mults else 1), -len(mults), mults)
 
 
+def _grouped(pre):
+    """``[(ell, sig, [prediagram, ...])]`` in the shared display order — the
+    SINGLE grouping used by both the figure and the mapping table, so their
+    group order and #index numbering agree structurally."""
+    out = []
+    for ell in sorted(pre):
+        bysig = collections.OrderedDict()
+        for pd in pre[ell]:
+            bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
+        for sig in sorted(bysig, key=_sig_sort_key):
+            out.append((ell, sig, bysig[sig]))
+    return out
+
+
 def sig_label(sig):
     n_int, n_src, mults = sig
     c = collections.Counter(mults)
@@ -380,86 +509,106 @@ def _generic_labels(D, leaves):
 def draw_prediagram(D, leaves, ax, title=None):
     pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, _ = _generic_labels(D, leaves)
     BLACK, EDGEC = '#181818', '#3a3a3a'
-    # Rank index per x-column -- scale-INDEPENDENT, so a "skip" edge is detected
-    # as long whatever the layout's absolute units (graphviz vs the fallback).
-    xcols = sorted(set(round(pos[v][0], 2) for v in pos))
-    rank_of = {x: i for i, x in enumerate(xcols)}
-    def _span(u, w):
-        return abs(rank_of[round(pos[u][0], 2)] - rank_of[round(pos[w][0], 2)])
-    pair = collections.defaultdict(list)
-    for e in edges: pair[frozenset((e[0], e[1]))].append(e)
-    track = [list(pos[v]) for v in pos]              # extent: nodes + arc apexes + numbers
-    for key, es in pair.items():
-        m = len(es)
-        for i, e in enumerate(es):
-            u, v, _ = e
-            if m > 1:                                    # parallel edges -> lens bubble
-                rad = 0.42 * (i - (m - 1) / 2.0) * 2
-            else:
-                # Keep the edge STRAIGHT unless its segment passes too close to an
-                # intermediate node; only then arc it (and bow away from that node).
-                x0, y0 = pos[u]; x1, y1 = pos[v]
-                ddx, ddy = x1 - x0, y1 - y0
-                seg_L2 = ddx * ddx + ddy * ddy
-                ru, rv = rank_of[round(x0, 2)], rank_of[round(x1, 2)]
-                blockers = []
-                for w in pos:
-                    if w == u or w == v:
-                        continue
-                    xw, yw = pos[w]
-                    rw = rank_of[round(xw, 2)]
-                    if not (min(ru, rv) < rw < max(ru, rv)):
-                        continue                          # only strictly-intermediate ranks block
-                    t = 0.5 if seg_L2 < 1e-12 else max(0.0, min(
-                        1.0, ((xw - x0) * ddx + (yw - y0) * ddy) / seg_L2))
-                    if ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5 < 0.32:
-                        blockers.append(w)
-                if not blockers:
-                    rad = 0.0                              # nothing in the way -> straight
-                else:
-                    soff = 0.0                             # which side are the blockers on?
-                    for w in blockers:
-                        t = 0.5 if abs(ddx) < 1e-9 else (pos[w][0] - x0) / ddx
-                        soff += pos[w][1] - (y0 + t * ddy)
-                    side = -1.0 if soff >= 0 else 1.0      # bow AWAY from the blockers
-                    span = max(_span(u, v), 1)
-                    # matplotlib arc3 apex_y ~ −rad·dx, so rad = −side·sign(dx)·mag
-                    rad = -min(0.72 / span, 0.45) * side * (1 if ddx >= 0 else -1)
-            dx, dy = pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]
-            mx, my = (pos[u][0] + pos[v][0]) / 2.0, (pos[u][1] + pos[v][1]) / 2.0
-            cx, cy = mx + rad * dy, my - rad * dx          # arc3 control point
-            P0, P1 = pos[u], pos[v]
-            def _bez(t, P0=P0, P1=P1, cx=cx, cy=cy):       # point on the (curved) edge
-                a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
-                return (a * P0[0] + b * cx + c * P1[0], a * P0[1] + b * cy + c * P1[1])
-            # The edge line runs to the vertex CENTRES (shrink 0) so it physically reaches
-            # each node; the filled/hollow circles are drawn on top (higher zorder) and
-            # hide the overshoot, so the line emerges right at the vertex boundary.
-            ax.add_patch(FancyArrowPatch(P0, P1, connectionstyle=f'arc3,rad={rad}',
-                         arrowstyle='-', lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
-                         zorder=1, joinstyle='round'))
-            # Arrowhead at the MIDDLE of the edge (not the end), pointing along the flow
-            # u -> v.  Drawn between two nearby points on the curve so it follows the arc.
-            ax.add_patch(FancyArrowPatch(_bez(0.42), _bez(0.56), arrowstyle='-|>',
-                         mutation_scale=13, lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
-                         zorder=2))
-            track.append(list(_bez(0.5)))                  # arc apex (for the limits)
+    track = [list(pos[v]) for v in pos]              # extent: nodes + arc apexes + labels
+    # Curvatures from the SAME helper the layout optimiser scored, so what was
+    # optimised is exactly what is drawn.
+    rads = _edge_rads(pos, edges)
+    dense = []                                       # sampled curves (label placement)
+    for e in sorted(rads, key=lambda e: (e[0], e[1], str(e[2]))):
+        u, v = e[0], e[1]
+        rad = rads[e]
+        dx, dy = pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]
+        mx, my = (pos[u][0] + pos[v][0]) / 2.0, (pos[u][1] + pos[v][1]) / 2.0
+        cx, cy = mx + rad * dy, my - rad * dx        # arc3 control point
+        P0, P1 = pos[u], pos[v]
+        def _bez(t, P0=P0, P1=P1, cx=cx, cy=cy):     # point on the (curved) edge
+            a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+            return (a * P0[0] + b * cx + c * P1[0], a * P0[1] + b * cy + c * P1[1])
+        # The edge line runs to the vertex CENTRES (shrink 0) so it physically reaches
+        # each node; the filled/hollow circles are drawn on top (higher zorder) and
+        # hide the overshoot, so the line emerges right at the vertex boundary.
+        ax.add_patch(FancyArrowPatch(P0, P1, connectionstyle=f'arc3,rad={rad}',
+                     arrowstyle='-', lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
+                     zorder=1, joinstyle='round'))
+        # Arrowhead at the MIDDLE of the edge (not the end), pointing along the flow
+        # u -> v.  Drawn between two nearby points on the curve so it follows the arc.
+        ax.add_patch(FancyArrowPatch(_bez(0.42), _bez(0.56), arrowstyle='-|>',
+                     mutation_scale=13, lw=1.5, color=EDGEC, shrinkA=0, shrinkB=0,
+                     zorder=2))
+        track.append(list(_bez(0.5)))                # arc apex (for the limits)
+        dense.append((e, [_bez(t / 8.0) for t in range(9)]))
+
+    # ── collision-aware label placement ──────────────────────────────
+    # Try the conventional anchor first (internals above, sources right,
+    # externals left); if an edge curve or another node sits on it, walk the
+    # candidate list and take the first clear spot (else the clearest).
+    placed = []                                       # already-placed label anchors
+    def _clearance(p, skip):
+        d2 = 9.0
+        for e, pts in dense:
+            # skip the segment where an edge emerges from under the label's own
+            # node disc — being near one's own departure point is not occlusion
+            i0 = 1 if e[0] == skip else 0
+            i1 = (len(pts) - 2) if e[1] == skip else (len(pts) - 1)
+            for i in range(i0, i1):
+                d2 = min(d2, _pt_seg_d2(p, pts[i], pts[i + 1]))
+        for w in pos:
+            if w == skip:
+                continue
+            d2 = min(d2, (p[0] - pos[w][0]) ** 2 + (p[1] - pos[w][1]) ** 2)
+        for q in placed:                              # labels must not overlap each other
+            d2 = min(d2, ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) * 0.4)
+        return d2
+    def _glyph_center(p, ha, va):
+        # ha/va offset the glyph box from the anchor; clearance must be judged
+        # where the TEXT actually sits (e.g. va='top' text grows downward)
+        return (p[0] + (0.11 if ha == 'left' else -0.11 if ha == 'right' else 0.0),
+                p[1] + (0.14 if va == 'bottom' else -0.14 if va == 'top' else 0.0))
+    def _place(v, cands, clear=0.30):
+        best = None
+        for (dxo, dyo, ha, va) in cands:
+            p = (pos[v][0] + dxo, pos[v][1] + dyo)
+            pc = _glyph_center(p, ha, va)
+            c2 = _clearance(pc, v)
+            if c2 >= clear * clear:
+                placed.append(pc)
+                return p, ha, va
+            if best is None or c2 > best[0]:
+                best = (c2, p, ha, va, pc)
+        placed.append(best[4])
+        return best[1], best[2], best[3]
+    C_INT = [(0.0, 0.40, 'center', 'bottom'), (0.0, -0.42, 'center', 'top'),
+             (-0.32, 0.32, 'right', 'bottom'), (0.32, 0.32, 'left', 'bottom'),
+             (-0.32, -0.34, 'right', 'top'), (0.32, -0.34, 'left', 'top'),
+             (-0.40, 0.0, 'right', 'center'), (0.40, 0.0, 'left', 'center'),
+             # escape ring, when every near anchor is blocked
+             (0.0, 0.66, 'center', 'bottom'), (0.0, -0.68, 'center', 'top'),
+             (-0.52, 0.52, 'right', 'bottom'), (0.52, 0.52, 'left', 'bottom'),
+             (-0.52, -0.54, 'right', 'top'), (0.52, -0.54, 'left', 'top')]
+    C_SRC = [(0.34, 0.0, 'left', 'center'), (0.32, 0.30, 'left', 'bottom'),
+             (0.32, -0.32, 'left', 'top'), (0.0, 0.40, 'center', 'bottom'),
+             (0.0, -0.42, 'center', 'top')]
+    C_EXT = [(-0.34, 0.0, 'right', 'center'), (-0.32, 0.30, 'right', 'bottom'),
+             (-0.32, -0.32, 'right', 'top')]
     # Propagators carry no symbol of their own -- they are named by their endpoints
     # (a→b) in the mapping table, so the figure stays uncluttered.
     for v in ext_v:                                        # external legs: hollow, labelled 1,2,…
         ax.add_patch(Circle(pos[v], 0.16, fc='white', ec=BLACK, lw=1.8, zorder=3))
-        ax.text(pos[v][0] - 0.34, pos[v][1], extlab[v], ha='right', va='center', fontsize=10.5)
-        track.append([pos[v][0] - 0.62, pos[v][1]])        # external-leg label
-    for v in int_v:
-        ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
-        ax.text(pos[v][0], pos[v][1] + 0.36, intlab[v], ha='center', va='bottom', fontsize=11, fontweight='bold')
-        track.append([pos[v][0], pos[v][1] + 0.62])        # internal label (above) -> title clearance
+        p, ha, va = _place(v, C_EXT)
+        ax.text(p[0], p[1], extlab[v], ha=ha, va=va, fontsize=10.5, zorder=4)
+        track.append([p[0] - (0.28 if ha == 'right' else 0.0), p[1]])
     for v in src_v:                                        # noise sources: filled SQUARE
         s = 0.155                                          # (distinct from circular vertices/legs)
         ax.add_patch(Rectangle((pos[v][0] - s, pos[v][1] - s), 2 * s, 2 * s,
                                fc=BLACK, ec=BLACK, zorder=3))
-        ax.text(pos[v][0] + 0.34, pos[v][1], srclab[v], ha='left', va='center', fontsize=11, fontstyle='italic')
-        track.append([pos[v][0] + 0.6, pos[v][1]])         # source label (right)
+        p, ha, va = _place(v, C_SRC)
+        ax.text(p[0], p[1], srclab[v], ha=ha, va=va, fontsize=11, fontstyle='italic', zorder=4)
+        track.append([p[0] + (0.34 if ha == 'left' else 0.0), p[1]])
+    for v in int_v:
+        ax.add_patch(Circle(pos[v], 0.17, fc=BLACK, ec=BLACK, zorder=3))
+        p, ha, va = _place(v, C_INT)
+        ax.text(p[0], p[1], intlab[v], ha=ha, va=va, fontsize=11, fontweight='bold', zorder=4)
+        track.append([p[0], p[1] + (0.26 if va == 'bottom' else -0.26 if va == 'top' else 0.0)])
     # Limits enclose nodes, arc apexes AND every label, so nothing clips and the
     # title clears the topmost vertex label; small uniform margin beyond that.
     xs = [p[0] for p in track]; ys = [p[1] for p in track]
@@ -483,20 +632,14 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     else:
         name = model.get('name', 'model')
     pre = contributing_prediagrams(model, k, max_ell)
-    groups = []   # (ell, sig, [prediagrams]) ordered
-    for ell in sorted(pre):
-        bysig = collections.OrderedDict()
-        for pd in pre[ell]:
-            bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
-        for sig in sorted(bysig, key=_sig_sort_key):
-            groups.append((ell, sig, bysig[sig]))
+    groups = _grouped(pre)   # (ell, sig, [prediagrams]) — shared with mappings
     # Adaptive sizing: k≥3 diagrams carry many external legs + sources (more
     # fan-out and crossings), so render them with fewer-per-row + larger cells.
     if ncol is None:
         ncol = 3 if k <= 2 else 2
-    PANELW = 4.1 if k <= 2 else 5.6
+    PANELW = 4.3 if k <= 2 else 5.6
     # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.5, (3.05 if k <= 2 else 4.0)
+    HEAD, CELL = 0.5, (3.4 if k <= 2 else 4.0)
     plan = []   # ('head', text) | ('row', [pds])
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
@@ -626,20 +769,16 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
         G_ft = build_propagator(ft, model, verbose=False)['G_ft']
     pre = contributing_prediagrams(model, k, max_ell)
     result = {}
-    for ell in sorted(pre):
-        bysig = collections.OrderedDict()
-        for pd in pre[ell]:
-            bysig.setdefault(topo_signature(pd[0], pd[2]), []).append(pd)
-        entries = []
-        for sig in sorted(bysig, key=_sig_sort_key):
-            for idx, pd in enumerate(bysig[sig]):
-                labels = _generic_labels(pd[0], pd[2])
-                typings = [diagram_label_map(td, labels)
-                           for td in enumerate_typed_diagrams(
-                               pd, external_fields, vt, st, G_ft, ri, pi)]
-                entries.append({'sig': sig, 'idx': idx + 1,
-                                'labels': labels, 'typings': typings})
-        result[ell] = entries
+    for (ell, sig, pds) in _grouped(pre):     # same groups/order as the figure
+        for idx, pd in enumerate(pds):
+            labels = _generic_labels(pd[0], pd[2])
+            typings = [diagram_label_map(td, labels)
+                       for td in enumerate_typed_diagrams(
+                           pd, external_fields, vt, st, G_ft, ri, pi)]
+            result.setdefault(ell, []).append({'sig': sig, 'idx': idx + 1,
+                                               'labels': labels, 'typings': typings})
+    for ell in pre:
+        result.setdefault(ell, [])
     text = _format_mappings(name, k, max_ell, result, max_typings)
     if printout:
         print(text)
