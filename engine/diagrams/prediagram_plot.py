@@ -91,12 +91,14 @@ def _edge_rads(pos, edges):
         for i, e in enumerate(sorted(es, key=lambda e: str(e[2]))):
             u, v, _ = e
             if m > 1:                                    # parallel edges -> lens bubble
-                rads[e] = 0.42 * (i - (m - 1) / 2.0) * 2
+                # lens half-width = rad*L/2; 0.27 keeps the two arcs clearly
+                # separate but much slimmer than the old 0.42 (user feedback)
+                rads[e] = 0.27 * (i - (m - 1) / 2.0) * 2
                 continue
             x0, y0 = pos[u]; x1, y1 = pos[v]
             ddx, ddy = x1 - x0, y1 - y0
             seg = ddx * ddx + ddy * ddy
-            side, nblk = 0.0, 0
+            side, blockers = 0.0, []
             for w in pos:                                # ANY nearby node blocks
                 if w == u or w == v:
                     continue
@@ -105,22 +107,36 @@ def _edge_rads(pos, edges):
                 if not (0.04 < t < 0.96):
                     continue
                 d = ((xw - (x0 + t * ddx)) ** 2 + (yw - (y0 + t * ddy)) ** 2) ** 0.5
-                if d < 0.32:
-                    nblk += 1
+                if d < 0.34:
                     ss = ddx * (yw - y0) - ddy * (xw - x0)    # >0: w left of u->v
+                    blockers.append((t, d, ss))
                     # weight by 1/d: bow away from the CLOSEST blocker; without
                     # this, blockers on opposite sides cancel and the edge runs
                     # dead straight THROUGH one of them
                     side += (1.0 if ss > 0 else -1.0) / max(d, 0.05)
-            if nblk == 0:
+            if not blockers:
                 rads[e] = 0.0
             else:
-                span = max(abs(_rank(u) - _rank(v)), 1)
-                # apex goes to the RIGHT of travel for rad>0; blockers left -> bow right.
-                # Floor of 0.26: long-span edges would otherwise get a bow too weak
-                # to actually clear the node they are dodging (reads as a false
-                # incidence), which is worse than a visibly curved edge.
-                rads[e] = max(min(0.72 / span, 0.45), 0.26) * (1.0 if side >= 0 else -1.0)
+                # ADAPTIVE curvature: the quad-bezier offset from the chord at
+                # parameter t is 2t(1-t)*rad*L, so bow with just enough rad that
+                # every blocker on the fled side clears by >= 0.36 -- long edges
+                # get a gentle sweep instead of a fixed bulge, short dodges stay
+                # tight.  Blockers on the approached side cap the bow (squeeze ->
+                # compromise midway); the untangler's node-on-curve term steers
+                # layouts away from genuinely squeezed configurations.
+                L = seg ** 0.5
+                sgn = 1.0 if side >= 0 else -1.0      # rad>0: apex RIGHT of travel
+                lo, hi = 0.12, 0.45
+                for (t, d, ss) in blockers:
+                    f = 2.0 * t * (1.0 - t) * L
+                    if f < 1e-9:
+                        continue
+                    if (ss > 0) == (sgn > 0):          # fled side: must clear it
+                        lo = max(lo, (0.36 - d) / f)
+                    else:                              # approached side: don't hit it
+                        hi = min(hi, max((d - 0.30) / f, 0.0))
+                mag = min(lo, 0.45) if hi >= lo else max(0.12, min(0.45, (lo + hi) / 2.0))
+                rads[e] = mag * sgn
     return rads
 
 
@@ -203,7 +219,9 @@ def _layout_graphviz(D, leaves):
         d = np.hypot(*(P - P[i]).T); d[i] = np.inf
         gaps.append(d.min())
     sc = 2.0 / (np.median(gaps) or 1.0)
-    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc]
+    # stretch y by 1.35: graphviz packs rows tightly; the extra vertical air
+    # separates fan-outs and (with per-row panel heights) fills the cell
+    for v in pos: pos[v] = [pos[v][0] * sc, pos[v][1] * sc * 1.35]
     return pos, ext_v, src_v, int_v, edges
 
 
@@ -377,7 +395,7 @@ def _layout_layered(D, leaves):
         pos = {}
         for d, vs in layers.items():
             endcap = (d == 0) or (d == maxd)
-            sp = YS if endcap else YS * 0.55
+            sp = YS if endcap else YS * 0.8
             for i, v in enumerate(vs):
                 pos[v] = (XS * (maxd - d), (i - (len(vs) - 1) / 2.0) * sp)
         return pos
@@ -506,8 +524,10 @@ def _generic_labels(D, leaves):
     return pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, edge_name
 
 
-def draw_prediagram(D, leaves, ax, title=None):
-    pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, _ = _generic_labels(D, leaves)
+def draw_prediagram(D, leaves, ax, title=None, labels=None):
+    if labels is None:
+        labels = _generic_labels(D, leaves)
+    pos, ext_v, src_v, int_v, edges, srclab, intlab, extlab, ext_order, _ = labels
     BLACK, EDGEC = '#181818', '#3a3a3a'
     track = [list(pos[v]) for v in pos]              # extent: nodes + arc apexes + labels
     # Curvatures from the SAME helper the layout optimiser scored, so what was
@@ -638,15 +658,27 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     if ncol is None:
         ncol = 3 if k <= 2 else 2
     PANELW = 4.3 if k <= 2 else 5.6
-    # build a row plan: a thin header row per group, then diagram rows
-    HEAD, CELL = 0.5, (3.4 if k <= 2 else 4.0)
-    plan = []   # ('head', text) | ('row', [pds])
+    # build a row plan: a thin header row per group, then diagram rows.
+    # Layouts are computed ONCE here (reused by draw_prediagram below) so each
+    # row's height can match its tallest diagram -- a flat chain gets a short
+    # row, a stacked 2-loop diagram a tall one, killing the letterbox whitespace
+    # that fixed-height cells produced under aspect='equal'.
+    HEAD = 0.5
+    plan = []   # ('head', text) | ('row', [(pd, labels)], c, row_h)
     for (ell, sig, pds) in groups:
         plan.append(('head', r'$\ell=%d$   ·   %s   ·   %d diagram%s'
                      % (ell, sig_label(sig), len(pds), '' if len(pds) == 1 else 's')))
+        labs = [_generic_labels(pd[0], pd[2]) for pd in pds]
         for c in range(0, len(pds), ncol):
-            plan.append(('row', pds[c:c + ncol], c))   # c = index of the row's first
-                                                       # diagram within its group
+            row = list(zip(pds[c:c + ncol], labs[c:c + ncol]))
+            row_h = 2.0
+            for _pd, lb in row:
+                xs = [p[0] for p in lb[0].values()]; ys = [p[1] for p in lb[0].values()]
+                w = (max(xs) - min(xs)) + 2.1          # side labels + margins
+                h = (max(ys) - min(ys)) + 1.6          # top/bottom labels + title
+                row_h = max(row_h, PANELW * h / max(w, 1e-9))
+            plan.append(('row', row, c, min(row_h, 5.2)))   # c = index of the row's
+                                                            # first diagram in its group
     if not plan:                          # nothing contributes at this (k, ell)
         fig = plt.figure(figsize=(6.5, 1.8))
         fig.text(0.5, 0.5, 'No contributing prediagrams for %s at k=%d, ℓ≤%d'
@@ -655,9 +687,9 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
             fig.savefig(save, dpi=145, bbox_inches='tight')
         plt.close(fig)        # drop from pyplot's registry so the inline backend
         return fig            # doesn't auto-show it (the returned fig renders once)
-    heights = [HEAD if p[0] == 'head' else CELL for p in plan]
+    heights = [HEAD if p[0] == 'head' else p[3] for p in plan]
     fig = plt.figure(figsize=(PANELW * ncol, sum(heights) + 0.8))
-    gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.32, wspace=0.16,
+    gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.26, wspace=0.16,
                   left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.4 / (sum(heights) + 0.8))
     for ri, p in enumerate(plan):
         if p[0] == 'head':
@@ -666,11 +698,12 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
             ax.text(0.012, 0.5, p[1], transform=ax.transAxes, fontsize=11, fontweight='bold',
                     color='#1c3a66', va='center', ha='left')
         else:
-            for ci, pd in enumerate(p[1]):
+            for ci, (pd, lb) in enumerate(p[1]):
                 ax = fig.add_subplot(gs[ri, ci])
                 # continuous numbering within the group (#1..#N across rows),
                 # matching the #idx of the prediagram_mappings table exactly
-                draw_prediagram(pd[0], pd[2], ax, title='#%d' % (p[2] + ci + 1))
+                draw_prediagram(pd[0], pd[2], ax, title='#%d' % (p[2] + ci + 1),
+                                labels=lb)
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
     fig.text(0.5, 0.008, r'time $\leftarrow$      $\circ\;1,2$ external legs      '
