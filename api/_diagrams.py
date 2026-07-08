@@ -8,12 +8,12 @@ Wraps the four-stage diagram pipeline:
 
 into a single ``enumerate_unique_diagrams(...)`` call that caches the
 final ``unique`` list per ``(model_tag, taylor_order, k, ell, ext_fields)``
-as a sibling ``.sobj`` file under ``saved_theories/<theory>/``, alongside
-the Taylor-expansion artefact ``saved_theories/<theory>/expand_taylor<N>.sobj``.
+as a sibling ``.sobj`` file under ``saved_models/<model>/``, alongside
+the Taylor-expansion artefact ``saved_models/<model>/expand_taylor<N>.sobj``.
 
 The cache slot lives in the same directory as the propagator cache
-written by ``api._propagator``, so a single ``saved_theories/<theory>``
-directory holds all symbolic+combinatorial state for a theory.
+written by ``api._propagator``, so a single ``saved_models/<model>``
+directory holds all symbolic+combinatorial state for a model.
 
 Cache invalidation
 ------------------
@@ -43,7 +43,7 @@ def _ext_fields_tag(external_fields):
 def _model_cache_dir(model, taylor_order, cache_dir_root):
     """Cache directory for a model's cross-call artefacts.
 
-    Per-theory (NOT per-taylor-order): the propagator and any other
+    Per-model (NOT per-taylor-order): the propagator and any other
     taylor-order-independent assets live here.  Artefacts that DO
     depend on taylor_order (the diagram set, the expand result) carry
     that dependence in their filenames instead (``_taylor<N>`` suffix).
@@ -64,7 +64,7 @@ def enumerate_unique_diagrams(
     phys_idx,
     vtypes,
     stypes,
-    cache_dir_root: str = 'saved_theories',
+    cache_dir_root: str = 'saved_models',
     use_cache: bool = True,
     parallel: bool = False,
     n_workers: int | None = None,
@@ -130,7 +130,7 @@ def enumerate_unique_diagrams(
     # got included — higher taylor_order brings in higher-degree
     # interaction vertices, which can produce additional valid
     # diagrams at the same (k, ell).  Sibling files for different
-    # taylor orders coexist in the same theory's cache dir.
+    # taylor orders coexist in the same model's cache dir.
     # Cache version bumped 2026-05-26 (v1 → v2): the
     # ``extract_source_types`` upgrade that promotes cross-cumulant /
     # auto-cumulant source monomials to :class:`NoiseSourceType` (so

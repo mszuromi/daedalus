@@ -3,7 +3,7 @@ engine.integration.spatial.spectral_propagator
 ==============================================
 Step 1 of the Dyson–Duhamel integration (``docs/dyson_duhamel_integration_plan.md``):
 the **spectral coupled-field reference propagator** ``G₀`` for the new
-``SpatialTheoryBuilder`` machinery.  Self-contained numeric core — NOT yet wired into
+``SpatialModelBuilder`` machinery.  Self-contained numeric core — NOT yet wired into
 the production propagator path (``heat_kernel.py`` still hard-gates to the diagonal
 case); the wiring is a later increment.
 
@@ -32,7 +32,7 @@ commutes with ``M``.  Diagonalizing ``M = Σ_α m_α P_α`` with spectral projec
 
   * **𝒟̂ = 0** (scalar diffusion, possibly coupled ``M``): ``G₀`` is the **exact**
     full propagator ``e^{−(M + D₀|k|²)t}`` — no Dyson series needed.  This already
-    unlocks coupled-reaction / equal-diffusion theories.
+    unlocks coupled-reaction / equal-diffusion models.
   * **M and 𝒟 both diagonal**: ``G₀`` reduces to the per-field scalar heat kernel
     ``e^{−(μ_i + D_i|k|²)t}`` the current pipeline builds (``heat_kernel.py``).
 
@@ -139,7 +139,7 @@ def reference_propagator(eigvals, projectors, D0: float, ksq: float,
 
 # ── Tree-level coupled 2-point: matrix Lyapunov / FDT (Dyson step 3a) ──────────
 #
-# The free 2-point of a coupled linear theory is NOT a sum of independent OU modes
+# The free 2-point of a coupled linear model is NOT a sum of independent OU modes
 # (that diagonal form is what pipeline_bridge._modes_C_q_tau builds).  With the
 # relaxation matrix A(q) = M + 𝒟|q|² and the (symmetric) noise covariance N (the
 # response-field (2,0) sector, ⟨ξξᵀ⟩ = N), the stationary covariance solves the
@@ -168,7 +168,7 @@ def lyapunov_covariance(A, N) -> np.ndarray:
 
 def coupled_two_point(ref: SpectralReference, N, qsq: float,
                       tau: float) -> np.ndarray:
-    """Free 2-point **matrix** ``C(q, τ)`` for a SCALAR-diffusion coupled theory.
+    """Free 2-point **matrix** ``C(q, τ)`` for a SCALAR-diffusion coupled model.
 
     ``A(q) = M + D₀·qsq·I``; ``Σ`` solves ``A Σ + Σ Aᵀ = N``;
     ``C(q,τ) = e^{−A|τ|} Σ`` (``τ ≥ 0``), ``= Σ e^{−Aᵀ|τ|}`` (``τ < 0``, i.e.

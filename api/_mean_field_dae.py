@@ -2,7 +2,7 @@
 DAE-based mean-field solver — multi-root + linear-stability ready.
 
 Consumes ``model['equations']`` (declared via
-``TheoryBuilder.equation(lhs=..., rhs=..., population=...)``) and finds
+``ModelBuilder.equation(lhs=..., rhs=..., population=...)``) and finds
 ALL fixed points of the algebraic system obtained by setting ``Dt → 0``
 on every equation's LHS.  Uses multi-start Newton (scipy ``optimize.root``
 with the ``hybr`` Powell hybrid method), deduplicates clusters, filters
@@ -15,7 +15,7 @@ using the same equation parsing infrastructure here.
 
 This module is INTENTIONALLY decoupled from
 ``api/_mean_field.py`` — the legacy iteration solver still runs
-for theories without ``.equation(...)`` declarations.  Routing happens
+for models without ``.equation(...)`` declarations.  Routing happens
 in ``compute_cumulants`` (step d).
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ def _sage_to_python(text: str) -> str:
     so it parses cleanly under ``eval``.
 
     The only difference that matters in practice is the power
-    operator: Sage and TheoryBuilder docstrings use ``^`` (which Sage
+    operator: Sage and ModelBuilder docstrings use ``^`` (which Sage
     preparses to ``**``), but plain Python's ``^`` is bitwise XOR.
     Without this translation, an expression like ``eps*x[i]^3`` raises
     ``TypeError: ufunc 'bitwise_xor' not supported`` when ``x[i]`` is
@@ -89,7 +89,7 @@ def _state_variables(model: dict) -> list[tuple[str, Optional[str], int]]:
     out = []
     for f in model.get('physical_fields', []):
         # Prefer the user-facing natural name; fall back to the
-        # internal name for theories that didn't declare one.
+        # internal name for models that didn't declare one.
         var_name = f.get('natural_name') or f['name']
         pop = f.get('population')
         size = _pop_size(model, pop)
@@ -133,7 +133,7 @@ class _PhiCallableList:
 
     def __call__(self, *args, **kwargs):
         # Scalar mode: ``f(v)`` resolves to the single callable.  In
-        # multi-pop theories the user always writes ``f[i](v)`` so this
+        # multi-pop models the user always writes ``f[i](v)`` so this
         # path is harmless (the test would just go through __getitem__).
         if len(self._callables) != 1:
             raise TypeError(
@@ -162,7 +162,7 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableLis
     """
     out = {}
     for fn_spec in model.get('functions', []):
-        # Read text-form spec preserved by TheoryBuilder (see
+        # Read text-form spec preserved by ModelBuilder (see
         # ``expression_text`` / ``args_text`` in ``_compile_text_
         # declarations``).  Falls back to the compiled lambda's spec
         # if the user defined the function via the older add_function
@@ -285,7 +285,7 @@ def _build_residual(model: dict, params_np: dict,
             **_MATH_NS,
             'Dt':           0,
             # Spatially-uniform mean field ⇒ ∇²(const) = 0.  Spatial
-            # theories write a ``Laplacian`` operator in the drift; it
+            # models write a ``Laplacian`` operator in the drift; it
             # must vanish on the homogeneous saddle exactly as ``Dt``
             # does.  Without this the numerical residual eval hits an
             # unbound ``Laplacian`` and the saddle solve goes wrong.
@@ -319,7 +319,7 @@ def _seed_box_default(state_vars, model, fundamental):
     Heuristic: scale = max(|param value|) over all declared parameters
     (fallback 1.0).  Sample ``[0, 5·scale]`` for a ``'positive'`` OR an
     undeclared domain (the historical default — preserves every existing
-    theory's seed box); use the SYMMETRIC ``[-3·scale, 3·scale]`` ONLY when a
+    model's seed box); use the SYMMETRIC ``[-3·scale, 3·scale]`` ONLY when a
     field's saddle explicitly declares ``domain='real'``/``'symmetric'`` (a
     double-well opting into the negative half-line).
 
@@ -347,7 +347,7 @@ def _seed_box_default(state_vars, model, fundamental):
     for var, _, _ in state_vars:
         # SYMMETRIC box only for an EXPLICIT 'real'/'symmetric' domain (opt-in
         # for negative wells); 'positive' OR undeclared -> POSITIVE box.  This
-        # preserves the historical seed box of every existing theory: widening
+        # preserves the historical seed box of every existing model: widening
         # an undeclared field's box (e.g. a voltage) destabilises its
         # multi-start saddle solve and was an env-sensitive regression.
         if saddle_domain.get(var) in ('real', 'symmetric'):
@@ -414,12 +414,12 @@ def solve_mean_field_dae(
         rng_seed: int = 0,
 ) -> dict:
     """Solve the MF DAE system declared via
-    ``TheoryBuilder.equation(...)`` calls.
+    ``ModelBuilder.equation(...)`` calls.
 
     Parameters
     ----------
     model : dict
-        Theory dict from ``TheoryBuilder.build()``.  Must contain
+        Model dict from ``ModelBuilder.build()``.  Must contain
         ``model['equations']`` (non-empty) — equation residuals
         ``LHS - RHS = 0``, ``Dt`` allowed on LHS only.
     fundamental : dict
@@ -457,7 +457,7 @@ def solve_mean_field_dae(
     if not model.get('equations'):
         raise ValueError(
             "solve_mean_field_dae: model has no equations declared via "
-            "TheoryBuilder.equation(...).  Use the legacy iteration "
+            "ModelBuilder.equation(...).  Use the legacy iteration "
             "solver in api._mean_field instead."
         )
 
@@ -533,11 +533,11 @@ def solve_mean_field_dae(
                 for var, _, _ in state_vars}
 
     # Stability classification is gated by ``model['stability_analysis']``
-    # (default: False).  Theories whose equations are ALL algebraic
+    # (default: False).  Models whose equations are ALL algebraic
     # (typical when voltages have been integrated out) have no
     # differential structure — the generalized-eigenvalue ``(σA + B)``
     # has A ≡ 0, every eigenvalue lands at infinity, and "linear
-    # stability" has no physical meaning.  Such theories should leave
+    # stability" has no physical meaning.  Such models should leave
     # the toggle OFF; ``fixed_point_index`` then ranges over ALL
     # converged roots, sorted ascending by the first state variable.
     #
@@ -594,7 +594,7 @@ def solve_mean_field_dae(
                 f"root)`` and revisit the equations or parameters.\n"
                 f"(If your equations are all algebraic — voltages "
                 f"integrated out, no Dt anywhere — set "
-                f"``.stability_analysis(False)`` on the TheoryBuilder; "
+                f"``.stability_analysis(False)`` on the ModelBuilder; "
                 f"``fixed_point_index`` will then range over every "
                 f"converged root.)"
             )
@@ -669,7 +669,7 @@ def linear_stability(
     Parameters
     ----------
     model : dict
-        Theory dict with ``model['equations']`` populated.
+        Model dict with ``model['equations']`` populated.
     fundamental : dict
         Concrete parameter values.
     root : dict
@@ -698,7 +698,7 @@ def linear_stability(
     if not model.get('equations'):
         raise ValueError(
             "linear_stability: model has no equations declared via "
-            "TheoryBuilder.equation(...)."
+            "ModelBuilder.equation(...)."
         )
 
     state_vars = _state_variables(model)
@@ -759,9 +759,9 @@ def linear_stability(
     idx_sets = _index_sets(model)
     # Wrap single-position state-var symbol lists so bare-name
     # arithmetic works in the symbolic eval too (mirroring the
-    # ``_FieldScalar`` wrapping in ``theory_compiler``).  Multi-
+    # ``_FieldScalar`` wrapping in ``model_compiler``).  Multi-
     # position lists stay raw — the user must use ``[i]`` access.
-    from api.theory_compiler import _FieldScalar
+    from api.model_compiler import _FieldScalar
     sym_per_var_eval = {
         var: (_FieldScalar(arr) if len(arr) == 1 else arr)
         for var, arr in sym_per_var.items()

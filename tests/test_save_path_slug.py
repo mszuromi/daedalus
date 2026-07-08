@@ -113,7 +113,7 @@ def test_slug_from_dict_repr_recovers_both_fingerprints():
 def test_looks_like_dict_repr():
     assert save._looks_like_dict_repr(_FP_OU)
     assert save._looks_like_dict_repr("{'mu': 0.1}")
-    assert not save._looks_like_dict_repr('saved_theories')
+    assert not save._looks_like_dict_repr('saved_models')
     assert not save._looks_like_dict_repr('k2_ell1')
     assert not save._looks_like_dict_repr('{nobraces')
 

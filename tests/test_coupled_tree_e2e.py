@@ -1,7 +1,7 @@
 """
 tests/test_coupled_tree_e2e.py
 ==============================
-Dyson step 3b: a COUPLED multi-field scalar-diffusion theory flows end-to-end to
+Dyson step 3b: a COUPLED multi-field scalar-diffusion model flows end-to-end to
 C_ij(x,τ) via the dedicated coupled tree-level driver
 (``pipeline_bridge.compute_coupled_tree_correlator``), which reads ``prop['K_ft']``
 (built even when the diagonal heat-kernel block is rejected), extracts M/𝒟/N, and
@@ -11,7 +11,7 @@ Validation:
   * **chain vs trusted oracle** — a DECOUPLED 2-field theory (g=h=0) run through
     the coupled driver reproduces ``free_two_point`` (the analytic diagonal
     correlator) → validates M/𝒟/N extraction + Lyapunov + numerical FT together;
-  * **coupling extraction** — a coupled theory's off-diagonal reaction M is read
+  * **coupling extraction** — a coupled model's off-diagonal reaction M is read
     correctly and the cross-correlation C_ab is nonzero and even in x;
   * **noise matrix** — extract_noise_matrix recovers the diagonal (= 2·κ) and the
     cross noise.
@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.core.field_theory import FieldTheory                 # noqa: E402
 from api._propagator import build_propagator               # noqa: E402
-from api.theory import SpatialTheoryBuilder                # noqa: E402
+from api.model import SpatialModelBuilder                # noqa: E402
 from engine.integration.spatial.spatial_correlator import (      # noqa: E402
     free_two_point, extract_noise_matrix,
 )
@@ -42,7 +42,7 @@ _MUA, _MUB, _D, _TA, _TB = 1.5, 1.2, 0.8, 1.0, 0.7
 
 
 def _two_species(g, h, *, cross_noise=0.0, dim=1):
-    b = (SpatialTheoryBuilder('coupled2')
+    b = (SpatialModelBuilder('coupled2')
          .physical_field('a', spatial_dim=dim)
          .physical_field('b', spatial_dim=dim)
          .parameter('mua', default=_MUA, domain='positive')
@@ -114,7 +114,7 @@ def test_coupled_extraction_and_cross_correlation():
 
 
 def test_coupled_routes_through_compute_cumulants():
-    """compute_cumulants (public API, max_ell=0) on a coupled theory routes to the
+    """compute_cumulants (public API, max_ell=0) on a coupled model routes to the
     coupled driver and returns C(x,τ) matching a direct driver call."""
     from api import compute_cumulants
     g, h = 0.4, 0.3
@@ -136,11 +136,11 @@ def test_coupled_routes_through_compute_cumulants():
 
 
 def test_public_api_noise_only_coupling_cross_correlator():
-    """Routing fix: a NOISE-ONLY-coupled theory (diagonal drift g=h=0 but cross
+    """Routing fix: a NOISE-ONLY-coupled model (diagonal drift g=h=0 but cross
     white noise Tab≠0) used to fail the diagonal per-mode certification on the
     public API.  It must now route to the coupled driver and return the
     cross-correlator ⟨a b⟩ (matching a direct driver call); and the cross legs
-    of an UNCOUPLED theory (Tab=0) must give ⟨a b⟩ = 0, not raise."""
+    of an UNCOUPLED model (Tab=0) must give ⟨a b⟩ = 0, not raise."""
     from api import compute_cumulants
     sg = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])   # symmetric → check evenness
     ix0 = int(np.argmin(np.abs(sg)))             # x=0 (centre)
@@ -160,7 +160,7 @@ def test_public_api_noise_only_coupling_cross_correlator():
     i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
     assert abs(Cab[i0, ix0]) > 1e-3                        # cross-correlation ≠ 0
     assert np.allclose(Cab[i0], Cab[i0][::-1], atol=1e-6)  # even in x
-    # (ii) Tab=0 ⇒ the cross-correlator of an uncoupled theory is 0 (the cross
+    # (ii) Tab=0 ⇒ the cross-correlator of an uncoupled model is 0 (the cross
     # legs still route to the coupled driver, not the auto-correlation per-mode
     # path that would wrongly reconstruct ⟨a a⟩ and fail certification).
     model0 = _two_species(0.0, 0.0, cross_noise=0.0)
@@ -175,7 +175,7 @@ def _equal_mass_cross(dim, rho):
     """2 fields, EQUAL mass+diffusion, cross white noise — so the EXACT
     C_ab/C_aa = ρ at every x and every d (the radial IFT is linear and
     C_ab(q)=ρ·C_aa(q) in q-space when the masses are equal)."""
-    return (SpatialTheoryBuilder('emx')
+    return (SpatialModelBuilder('emx')
             .physical_field('a', spatial_dim=dim)
             .physical_field('b', spatial_dim=dim)
             .parameter('mu', default=1.0, domain='positive')
@@ -219,7 +219,7 @@ def test_dyson_dge2_vs_exact_lyapunov():
     from scipy.linalg import solve_continuous_lyapunov
     from engine.integration.spatial.spatial_correlator import radial_inverse_ft
     mua, mub, Da, Db, gg, hh, Ta, Tb = 1.5, 1.2, 0.95, 0.7, 0.4, 0.3, 1.0, 0.7
-    b = (SpatialTheoryBuilder('uneqD2')
+    b = (SpatialModelBuilder('uneqD2')
          .physical_field('a', spatial_dim=2).physical_field('b', spatial_dim=2)
          .parameter('mua', default=mua, domain='positive')
          .parameter('mub', default=mub, domain='positive')

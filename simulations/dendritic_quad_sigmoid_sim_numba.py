@@ -1,6 +1,6 @@
 """
 Two-compartment (soma + dendrite) point-process simulator (Numba JIT) for
-``theories/dendritic_quad_soma_sigmoid.theory.py``.
+``models/dendritic_quad_soma_sigmoid.model.py``.
 
 Voltage formulation — each compartment carries a voltage that exponentially
 low-pass-filters its synaptic input:
@@ -147,7 +147,7 @@ def sim_dendritic_quad_sigmoid_numba(n_steps, dt_sim,
             total_nS, total_nD)
 
 
-# ── Build sim arrays from a theory model dict ─────────────────────────
+# ── Build sim arrays from a model model dict ─────────────────────────
 
 
 def build_sim_arrays(model: dict, fundamental: dict, mf_values: dict):
@@ -159,7 +159,7 @@ def build_sim_arrays(model: dict, fundamental: dict, mf_values: dict):
     if len(populations) != 1:
         raise ValueError(
             "build_sim_arrays: this simulator supports a single declared "
-            f"population; the theory has {len(populations)}."
+            f"population; the model has {len(populations)}."
         )
     N = int(populations[0]['size'])
 

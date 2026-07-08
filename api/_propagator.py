@@ -13,7 +13,7 @@ Given an expanded ``FieldTheory`` and the model dict, build:
   D_delta — coefficient matrix of δ(t) in the time-domain propagator
             (= lim_{ω→∞} G_ft(ω) entrywise)
 
-Cached on disk under ``saved_theories/<model-tag>_taylor<N>/propagator.sobj``
+Cached on disk under ``saved_models/<model-tag>_taylor<N>/propagator.sobj``
 so kernel restarts skip the expensive 6×6 inverse + factor() pass.
 """
 from __future__ import annotations
@@ -521,7 +521,7 @@ def _to_kernel(c, Dt, delta_D, delta_Dp):
     return p0 * delta_D + rest
 
 
-def build_propagator(ft, model, cache_dir_root='saved_theories',
+def build_propagator(ft, model, cache_dir_root='saved_models',
                      use_cache=True, verbose=True, force=False):
     """
     Build the symbolic propagator data dict for the given expanded
@@ -531,7 +531,7 @@ def build_propagator(ft, model, cache_dir_root='saved_theories',
       'K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta',
       't_var', 'omega', 'nf', 'ring_gen_names'
 
-    Cached under ``saved_theories/<theory_slug>/propagator.sobj``.
+    Cached under ``saved_models/<model_slug>/propagator.sobj``.
     The propagator is taylor-order-independent: it depends only on
     the bilinear (1,1) sector of the action, which is fully captured
     at ``taylor_order >= 2``.  A precompute call at order 2 fills this

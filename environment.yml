@@ -24,4 +24,4 @@ dependencies:
   - pydot>=4,<5          # optional: diagram / prediagram plots
   - graphviz             # optional: renders pydot output
   - pytest               # test runner (used by the CI workflow)
-  # - pyperclip          # optional: clipboard buttons in the graphical theory builder
+  # - pyperclip          # optional: clipboard buttons in the graphical model builder

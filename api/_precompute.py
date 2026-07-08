@@ -1,9 +1,9 @@
 """
-``precompute(model)`` — one-time structural pass for a theory.
+``precompute(model)`` — one-time structural pass for a model.
 
 What it does
 ------------
-For a given ``model`` (the dict returned by ``TheoryBuilder.build()``)
+For a given ``model`` (the dict returned by ``ModelBuilder.build()``)
 this function:
 
   1. Expands the action at ``taylor_order=2``.  This is the smallest
@@ -17,11 +17,11 @@ this function:
   3. Solves the mean-field equations (the same DAE / iteration
      solver used by ``compute_cumulants``) and reports the saddle.
   4. Builds the symbolic propagator and caches it under
-     ``saved_theories/<theory>/propagator.sobj``.
+     ``saved_models/<model>/propagator.sobj``.
   5. Caches the expand result under
-     ``saved_theories/<theory>/expand_taylor2.sobj``.
+     ``saved_models/<model>/expand_taylor2.sobj``.
 
-The point: cheap (~seconds for any theory) and produces durable
+The point: cheap (~seconds for any model) and produces durable
 artefacts that subsequent ``compute_cumulants`` calls hit
 immediately — no matter what taylor_order the caller requests, the
 propagator + MF check are free.  For higher-order interaction
@@ -37,7 +37,7 @@ A status dict with keys:
   ``'sanity_ok'``     — bool, the FieldTheory's internal sanity check.
   ``'mf_values'``     — dict of saddle values keyed by ``<var>star``.
   ``'taylor_order'``  — int, always ``2`` (this is the pre-compute order).
-  ``'cache_dir'``     — str, the per-theory cache directory.
+  ``'cache_dir'``     — str, the per-model cache directory.
   ``'propagator_built'`` — bool.
   ``'wall_seconds'``  — float, total wall time.
   ``'log'``           — list of strings, status messages collected
@@ -54,12 +54,12 @@ __all__ = ['precompute']
 
 def precompute(model: dict, *, force: bool = False,
                verbose: bool = True) -> dict:
-    """Run the structural pre-compute pass for a theory.
+    """Run the structural pre-compute pass for a model.
 
     Parameters
     ----------
     model : dict
-        Theory dict from ``TheoryBuilder.build()``.
+        Model dict from ``ModelBuilder.build()``.
     force : bool, default False
         If True, ignore any existing expand / propagator caches and
         rebuild from scratch.
@@ -100,7 +100,7 @@ def precompute(model: dict, *, force: bool = False,
         return out
 
     out['cache_dir'] = _ec.cache_dir(model)
-    _log(f'[precompute] theory={model.get("name", "<unnamed>")!r}, '
+    _log(f'[precompute] model={model.get("name", "<unnamed>")!r}, '
          f'cache_dir={out["cache_dir"]}')
 
     # ── Stage 1: expand at order 2 (or load from cache) ────────────

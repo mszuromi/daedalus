@@ -52,7 +52,7 @@ Implementation details
   to ensure the FFT correlation is a linear (non-circular) correlation
   over the valid window.
 
-Reference: Daley & Vere-Jones, "An Introduction to the Theory of Point
+Reference: Daley & Vere-Jones, "An Introduction to the Model of Point
 Processes", Ch. 5 (factorial moment measures).
 """
 
@@ -169,7 +169,7 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
 
         Natural-name labels — bare ``'n'`` / ``'v'`` / ``'m'`` for the
         legacy Hawkes models, or ``'nE'`` / ``'vI'`` etc. for the
-        heterogeneous-population theories — drop the population suffix
+        heterogeneous-population models — drop the population suffix
         and map through the same first-letter table.  Anything that
         doesn't match falls through to ``'dn'`` (the long-standing
         default, since the vast majority of comparison legs are spike
@@ -450,7 +450,7 @@ def estimate_kpoint_slices(dt_bin, pop_indices, field_types, base_bins,
     For each j = 1..k−1, sweep leg j (lag = None) while leg 0 is anchored at
     lag 0 and the other non-anchor legs are held at ``base_bins`` (a length-(k−1)
     list of integer bin offsets — the base point, one entry per non-anchor leg).
-    This mirrors the theory side's ``res['C_tau_slices']`` (the differences
+    This mirrors the model side's ``res['C_tau_slices']`` (the differences
     τ_j = t_j − t_0, others fixed at the base point), so the k−1 sim curves line
     up panel-for-panel with ``dd.plot_cumulant``'s k≥3 slices.
 

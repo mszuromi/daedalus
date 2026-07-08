@@ -79,7 +79,7 @@ from sage.all import SR, I, exp, heaviside, matrix, CDF
 #   * the per-edge mode-sum cache (``edge_mode_sums``) is available,
 #     AND
 #   * the combined prefactor coerces to a complex number.
-# For plain rational-propagator theories — cortical Poisson, linear/
+# For plain rational-propagator models — cortical Poisson, linear/
 # quadratic φ, spike-reset, GTaS auto-cumulants — every subset is
 # analytic-eligible.  The simplified smooth matrix gets built and
 # never queried; the Maxima cost is pure overhead.  Measured wall-time
@@ -122,7 +122,7 @@ from sage.all import SR, I, exp, heaviside, matrix, CDF
 # How to benchmark the trade-off
 # ------------------------------
 # Run the same config twice — once ``True``, once ``False`` — and
-# compare ``Theory side took ...s``.  Also check Cell C output (the
+# compare ``Model side took ...s``.  Also check Cell C output (the
 # diagnostic counters) for the ``fast_callable`` call count: that
 # climbs into the hundreds for ``NoiseSourceType`` configs (the
 # Stage 4a opt #1 ``_analytic_eligible`` short-circuit doesn't fire),

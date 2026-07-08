@@ -961,7 +961,7 @@ def test_phase_J_2d_polytope_decays_at_large_tau():
 def test_phase_J_nd_polytope_preserves_deferred_constraints():
     r"""
     Regression for the `m >= 3` polytope bounds-filter bug (found
-    2026-04-15 via agent audit of the k=4 theory-vs-sim mismatch).
+    2026-04-15 via agent audit of the k=4 model-vs-sim mismatch).
 
     `_integrate_nd_polytope._make_bound_fn(k_var)` substitutes OUTER
     axes (indices > k_var) into `c_eff` but passes the original
@@ -1159,7 +1159,7 @@ def test_phase_J_heaviside_filter_kills_overshoot():
 def test_phase_J_2d_polytope_pure_external_constraint():
     r"""
     Regression for the `pure_s1_found` bug in `_integrate_2d_polytope`
-    (found 2026-04-15 via agent audit of k=4 theory/sim overshoot).
+    (found 2026-04-15 via agent audit of k=4 model/sim overshoot).
 
     The bug: `pure_s1_found = True` was set as soon as `a_int[0] ≈ 0`,
     BEFORE verifying that `a_int[1] ≠ 0`.  A constraint that is purely
@@ -1453,7 +1453,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
     ``[total_C(*pt) for pt in tau_points]`` loop).
 
     Background: the 2026-04-20 thread-pool parallelism attempt was
-    reverted amid confusion — the observed k=3 theory-vs-sim drift at
+    reverted amid confusion — the observed k=3 model-vs-sim drift at
     the time was ACTUALLY an unrelated ``_to_sr_ab`` precision
     regression that happened to land in the same commit, but the
     debugging couldn't cleanly separate the two.  Pinning this test as

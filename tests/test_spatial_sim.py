@@ -30,7 +30,7 @@ def _lattice_disp(q, mu, D, dx):
 
 @pytest.fixture(scope='module')
 def _linear_sim():
-    # linear (λ=g=0) Gaussian theory: S(q) and ⟨φ²⟩ have exact lattice values.
+    # linear (λ=g=0) Gaussian model: S(q) and ⟨φ²⟩ have exact lattice values.
     return simulate(L=20.0, N=128, mu=1.0, D=1.0, T=1.0, lam=0.0,
                     n_steps=120000, burn_in=20000, record_every=10, seed=7)
 
@@ -43,7 +43,7 @@ def test_meta_k_max(_linear_sim):
 
 
 def test_structure_factor_matches_lattice_linear(_linear_sim):
-    """The linear-theory equal-time S(q) equals the exact lattice T/disp(q) in a
+    """The linear-model equal-time S(q) equals the exact lattice T/disp(q) in a
     low/mid-q band (the matched-cutoff oracle), within Monte-Carlo noise."""
     snaps, _x, meta = _linear_sim
     q, S = structure_factor(snaps, meta)

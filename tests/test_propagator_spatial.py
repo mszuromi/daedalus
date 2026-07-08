@@ -12,8 +12,8 @@ Covers:
   * PBC: G_tx equals the image-source sum; is periodic; → infinite
     as L grows
   * precompute() builds + caches the propagator for both spatial
-    theories, and G_tx callables survive a cache round-trip
-  * non-regression: a time-only theory's propagator has no spatial
+    models, and G_tx callables survive a cache round-trip
+  * non-regression: a time-only model's propagator has no spatial
     block
 
 Run::
@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 _REPO = os.path.join(os.path.dirname(__file__), '..')
 
 
-def _load_model(theory_file: str):
-    path = os.path.join(_REPO, 'theories', theory_file)
+def _load_model(model_file: str):
+    path = os.path.join(_REPO, 'models', model_file)
     spec = importlib.util.spec_from_file_location('m', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -55,7 +55,7 @@ _NUM = {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0, 'phistar1': 0.0}
 
 # ── Phase 2: infinite-domain heat kernel ──────────────────────────
 def test_spatial_block_present():
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.model.py'))
     assert prop.get('spatial_dim') == 1
     assert prop.get('bc_mode') == 'infinite'
     assert prop.get('G_tx') is not None
@@ -64,7 +64,7 @@ def test_spatial_block_present():
 
 def test_mass_diffusion_extraction():
     from sage.all import SR
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.model.py'))
     A, B = prop['G_tx_sym'][(0, 0)]
     # B = D (diffusion).
     assert str(B) == 'D'
@@ -75,7 +75,7 @@ def test_mass_diffusion_extraction():
 
 
 def test_g_tx_matches_heat_kernel_infinite():
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.model.py'))
     G = prop['G_tx'][(0, 0)]
     maxrel = 0.0
     for t in [0.05, 0.5, 2.0, 5.0]:
@@ -88,7 +88,7 @@ def test_g_tx_matches_heat_kernel_infinite():
 
 
 def test_g_tx_causal():
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_infinite.model.py'))
     G = prop['G_tx'][(0, 0)]
     assert G(-1.0, 0.0, **_NUM) == 0j
     assert G(0.0, 0.0, **_NUM) == 0j
@@ -97,7 +97,7 @@ def test_g_tx_causal():
 # ── Phase 3: periodic boundary ────────────────────────────────────
 def test_pbc_propagator_is_image_sum():
     from engine.integration.spatial.heat_kernel import image_sum
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.model.py'))
     assert prop['bc_mode'] == 'periodic'
     G = prop['G_tx'][(0, 0)]
     num = dict(_NUM, L=6.0)
@@ -111,7 +111,7 @@ def test_pbc_propagator_is_image_sum():
 
 
 def test_pbc_periodicity():
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.model.py'))
     G = prop['G_tx'][(0, 0)]
     num = dict(_NUM, L=6.0)
     for t in [0.5, 2.0]:
@@ -123,7 +123,7 @@ def test_pbc_periodicity():
 
 def test_pbc_approaches_infinite_as_L_grows():
     from engine.integration.spatial.heat_kernel import gaussian_heat_kernel
-    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.theory.py'))
+    prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.model.py'))
     G = prop['G_tx'][(0, 0)]
     ginf = gaussian_heat_kernel(1.0, 0.0, 1.0, 1.0)
     prev = None
@@ -137,15 +137,15 @@ def test_pbc_approaches_infinite_as_L_grows():
 
 
 # ── precompute + cache round-trip ─────────────────────────────────
-@pytest.mark.parametrize('theory_file', [
-    'allen_cahn_1d_subcritical_infinite.theory.py',
-    'allen_cahn_1d_subcritical_pbc.theory.py',
+@pytest.mark.parametrize('model_file', [
+    'allen_cahn_1d_subcritical_infinite.model.py',
+    'allen_cahn_1d_subcritical_pbc.model.py',
 ])
-def test_precompute_builds_and_caches_spatial(theory_file):
+def test_precompute_builds_and_caches_spatial(model_file):
     from api._precompute import precompute
     from engine.core.field_theory import FieldTheory
     from api._propagator import build_propagator
-    model = _load_model(theory_file)
+    model = _load_model(model_file)
     out = precompute(model, force=True, verbose=False)
     assert out['propagator_built'] is True
     assert out['mf_check'] == 'PASS'
@@ -157,10 +157,10 @@ def test_precompute_builds_and_caches_spatial(theory_file):
     assert (0, 0) in prop['G_tx']
 
 
-# ── Non-regression: time-only theory has no spatial block ─────────
+# ── Non-regression: time-only model has no spatial block ─────────
 def test_time_only_propagator_has_no_spatial_block():
-    # Reuse a known time-only fixture theory.
-    prop = _build_prop(_load_model('single_population_quad_exp_test.theory.py'))
+    # Reuse a known time-only fixture model.
+    prop = _build_prop(_load_model('single_population_quad_exp_test.model.py'))
     assert prop.get('G_tx') is None
     assert prop.get('G_tx_sym') is None
 
@@ -208,7 +208,7 @@ def test_burgers_compiles_with_saddle_drift():
     propagator DRIFT V ∝ φ* (→0 at the saddle), the propagator is the
     pure heat kernel (mass μ, diffusion D), and the vertex is composite."""
     from sage.all import SR
-    prop = _build_prop(_load_model('burgers_1d.theory.py'))
+    prop = _build_prop(_load_model('burgers_1d.model.py'))
     A, B = prop['G_tx_sym'][(0, 0)]
     assert str(B) == 'D'
     assert (SR(A) - SR.var('mu')).is_zero()        # mass = mu
@@ -223,9 +223,9 @@ def test_burgers_kpz_vertex_modes():
     Burgers ∂_x(φ²) → 'composite', KPZ (∂_x h)² → 'perleg'."""
     from engine.core.field_theory import FieldTheory
     from api._propagator import build_propagator
-    for theory_file, want_mode in (('burgers_1d.theory.py', 'composite'),
-                                    ('kpz_1d.theory.py', 'perleg')):
-        model = _load_model(theory_file)
+    for model_file, want_mode in (('burgers_1d.model.py', 'composite'),
+                                    ('kpz_1d.model.py', 'perleg')):
+        model = _load_model(model_file)
         ft = FieldTheory(model, taylor_order=4)
         ft.expand()
         build_propagator(ft, model, use_cache=False, verbose=False)
@@ -236,7 +236,7 @@ def test_kpz_has_no_propagator_drift():
     """KPZ (∂_x h)² has NO bilinear Dx (∂_x of the homogeneous mean is 0),
     so the propagator drift is identically zero — pure heat kernel."""
     from sage.all import SR
-    prop = _build_prop(_load_model('kpz_1d.theory.py'))
+    prop = _build_prop(_load_model('kpz_1d.model.py'))
     A, B = prop['G_tx_sym'][(0, 0)]
     assert str(B) == 'D' and (SR(A) - SR.var('mu')).is_zero()
     assert SR(prop['ac_drift'][0]).is_zero()

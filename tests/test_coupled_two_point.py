@@ -4,7 +4,7 @@ tests/test_coupled_two_point.py
 Dyson step 3a: the spectral-Lyapunov tree 2-point for COUPLED fields
 (``spectral_propagator.lyapunov_covariance`` / ``coupled_two_point``).
 
-A coupled theory's free 2-point is the matrix Lyapunov/FDT object
+A coupled model's free 2-point is the matrix Lyapunov/FDT object
 ``C(q,τ)=e^{−A(q)|τ|}Σ(q)``, ``A(q)=M+D₀q²I``, ``A Σ+Σ Aᵀ=N`` — NOT the diagonal
 independent-mode sum.  Validated against:
   * the Lyapunov residual (``A Σ + Σ Aᵀ − N ≈ 0``);
@@ -99,7 +99,7 @@ def test_coupled_two_point_vs_ou_simulation():
         Cthy = coupled_two_point(ref, N, 0.0, tau)       # = e^{−Mτ}Σ
         assert np.allclose(Cthy, expm(-M * tau) @ Sig, atol=1e-12)
         assert np.allclose(Cemp, Cthy, atol=0.04), \
-            f'τ={tau}: sim\n{Cemp}\n vs theory\n{Cthy}'
+            f'τ={tau}: sim\n{Cemp}\n vs model\n{Cthy}'
 
 
 def test_unequal_diffusion_rejected():

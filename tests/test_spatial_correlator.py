@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 _REPO = os.path.join(os.path.dirname(__file__), '..')
 
 
-def _load(theory_file):
-    path = os.path.join(_REPO, 'theories', theory_file)
+def _load(model_file):
+    path = os.path.join(_REPO, 'models', model_file)
     spec = importlib.util.spec_from_file_location('m', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -54,7 +54,7 @@ def _compute(model, fundamental, spatial_grid, tau_max=2.0, tau_step=1.0,
 
 # ── Infinite domain: equal-time + two-time ────────────────────────
 def test_allen_cahn_infinite_equal_time():
-    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     mu = D = T = 1.0
     xi = math.sqrt(D / mu)
     xs = np.linspace(-3, 3, 13)
@@ -68,8 +68,8 @@ def test_allen_cahn_infinite_equal_time():
 
 
 def test_edwards_wilkinson_equal_time():
-    """Linear theory, distinct params (μ=0.5, D=2)."""
-    model = _load('edwards_wilkinson_1d.theory.py')
+    """Linear model, distinct params (μ=0.5, D=2)."""
+    model = _load('edwards_wilkinson_1d.model.py')
     mu, D, T = 0.5, 2.0, 1.0
     xi = math.sqrt(D / mu)
     xs = np.linspace(-6, 6, 13)
@@ -83,7 +83,7 @@ def test_edwards_wilkinson_equal_time():
 
 def test_two_time_vs_direct_quadrature():
     from scipy import integrate
-    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     mu = D = T = 1.0
 
     def Gh(t, x):
@@ -113,7 +113,7 @@ def test_two_time_vs_direct_quadrature():
 
 # ── Periodic: equal-time variance vs exact coth, + → infinite ─────
 def test_pbc_variance_matches_coth():
-    model = _load('allen_cahn_1d_subcritical_pbc.theory.py')
+    model = _load('allen_cahn_1d_subcritical_pbc.model.py')
     mu = D = T = 1.0
     for L in [4.0, 10.0, 20.0]:
         th = _compute(model, {'mu': mu, 'D': D, 'lam': 0.1, 'T': T, 'L': L},
@@ -127,7 +127,7 @@ def test_pbc_variance_matches_coth():
 
 
 def test_pbc_approaches_infinite():
-    model = _load('allen_cahn_1d_subcritical_pbc.theory.py')
+    model = _load('allen_cahn_1d_subcritical_pbc.model.py')
     mu = D = T = 1.0
     inf_var = T / (2 * math.sqrt(mu * D))
     prev = None
@@ -147,7 +147,7 @@ def test_max_ell_1_computes_tadpole_loop():
     """max_ell=1 on Allen-Cahn now computes the 1-loop tadpole (Stage C):
     ⟨φ²⟩ is suppressed below the tree value 0.5 and matches the strict-1-loop
     0.4625 at λ=0.1.  (Previously this warned and returned tree-level.)"""
-    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     th0 = _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
                    np.array([0.0, 1.0]), max_ell=0)
     th1 = _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
@@ -172,7 +172,7 @@ def test_max_ell_above_2_raises():
     """v1 supports tree/1-loop/2-loop through the full-diagram integrator;
     max_ell > 2 must raise a clear NotImplementedError, not silently truncate.
     (Higher loops work by construction but are deliberately gated on cost.)"""
-    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     with pytest.raises(NotImplementedError, match='max_ell'):
         _compute(model, {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
                  np.array([0.0, 1.0]), max_ell=3)
@@ -180,7 +180,7 @@ def test_max_ell_above_2_raises():
 
 def test_k_not_2_raises():
     from api import compute_cumulants
-    model = _load('allen_cahn_1d_subcritical_infinite.theory.py')
+    model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     # 3 external legs so we pass the len(external_fields)==k check and
     # reach the spatial k!=2 guard.
     with pytest.raises(NotImplementedError, match='k=2'):
@@ -233,14 +233,14 @@ def test_periodic_inverse_ft_limits(d):
 
 
 def test_d2_periodic_through_compute_cumulants():
-    """END-TO-END: a d=2 PERIODIC linear theory runs through compute_cumulants;
+    """END-TO-END: a d=2 PERIODIC linear model runs through compute_cumulants;
     large L matches the infinite-domain value and small L exceeds it — via the
     d≥2 periodic lattice-sum path + the model-boundary fallback in _bc_from_prop."""
     from api.compute import compute_cumulants
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
 
     def build(bc, L):
-        b = (TheoryBuilder('p2d', n_populations=0)
+        b = (ModelBuilder('p2d', n_populations=0)
              .physical_field('phi', spatial_dim=2)
              .parameter('mu', default=1.0, domain='positive')
              .parameter('D', default=1.0, domain='positive')
@@ -270,16 +270,16 @@ def test_d2_periodic_through_compute_cumulants():
 
 
 def test_d2_tree_through_compute_cumulants():
-    """END-TO-END: a d=2 linear theory runs through ``compute_cumulants`` (tree,
+    """END-TO-END: a d=2 linear model runs through ``compute_cumulants`` (tree,
     max_ell=0) and the returned ``C(r,0)`` matches the exact d=2 free correlator
     (T/2πD)·K₀(r√(μ/D)).  Confirms the d=2 spatial dispatch (relaxed d≠1 gate +
     radial q→x transform) works through the public API."""
     from api.compute import compute_cumulants
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.integration.spatial.spatial_correlator import (
         free_correlator_static_closed_form as oracle,
     )
-    m = (TheoryBuilder('lin2d', n_populations=0)
+    m = (ModelBuilder('lin2d', n_populations=0)
          .physical_field('phi', spatial_dim=2)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -302,16 +302,16 @@ def test_d2_tree_through_compute_cumulants():
 
 
 def test_d2_bubble_loop_through_compute_cumulants():
-    """END-TO-END: a d=2 reaction-diffusion (φ̃φ²) theory runs through
+    """END-TO-END: a d=2 reaction-diffusion (φ̃φ²) model runs through
     ``compute_cumulants(max_ell=1)`` and returns tree + 1-loop bubble.  The loop
     correction δC(r,0)=C₁−C₀ is positive and q-dependent, and scales as g²
     (δC(2g)/δC(g)≈4) — confirming the d=2 bubble path (the d=2 ∫d²ℓ self-energy,
     validated vs the C-stack, + the d-independent Dyson collapse + radial q→x)."""
     from api.compute import compute_cumulants
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
 
     def rd2(g):
-        return (TheoryBuilder('rd2', n_populations=0)
+        return (ModelBuilder('rd2', n_populations=0)
                 .physical_field('phi', spatial_dim=2)
                 .parameter('mu', default=1.0, domain='positive')
                 .parameter('D', default=1.0, domain='positive')

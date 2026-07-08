@@ -35,7 +35,7 @@ def main() -> int:
     print()
     for fx in FIXTURES:
         print(f'  [{fx.name}]')
-        print(f'    theory   = {fx.theory_file}')
+        print(f'    model   = {fx.model_file}')
         print(f'    k={fx.k}, max_ell={fx.max_ell}, '
               f'n_probes={len(fx.tau_probes)}')
         result = evaluate(fx)

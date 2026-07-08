@@ -2,7 +2,7 @@
 tests/test_spatial_sim_2d.py
 ============================
 Correctness pins for the 2D Langevin simulator (``models.spatial_field_2d_sim``)
-— the d=2 backend-C validation oracle.  Validates the linear-theory structure
+— the d=2 backend-C validation oracle.  Validates the linear-model structure
 factor S(k) against the exact lattice spectrum T/ω_k (per-mode and radial), and
 the equal-time variance against the lattice sum.
 

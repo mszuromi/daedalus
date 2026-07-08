@@ -120,7 +120,7 @@ def test_c1_d2_matches_brute_force(q, w1, w2):
 @pytest.mark.parametrize('d', [1, 2, 3, 4])
 @pytest.mark.parametrize('q', [0.0, 1.1])
 def test_c1_dimension_factorization(d, q):
-    """For an isotropic theory the d-dim Gaussian factorizes over spatial
+    """For an isotropic model the d-dim Gaussian factorizes over spatial
     components: I_d(q) = I_1(q)·I_1(0)^{d−1} (the external momentum lives along one
     axis; the other d−1 axes see q=0).  Confirms the U^{−d/2}/(4πD)^{−Ld/2}
     exponent is right for ANY d, so d is a parameter, not a re-derivation."""

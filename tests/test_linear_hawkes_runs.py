@@ -1,11 +1,11 @@
-"""Regression: the shipped ``linear_hawkes`` theory must LOAD and RUN at its own
+"""Regression: the shipped ``linear_hawkes`` model must LOAD and RUN at its own
 defaults.
 
 It used to load but fail on run with ``MF sector does not vanish at saddle`` —
 the MF saddle-sector check could not verify numerically because ``E``/``w`` had
 no per-parameter ``default=`` (only ``DEFAULT_FUNDAMENTAL`` did), so the verifier
 fell back to all-ones (no real saddle) and the numerical residual came back N/A.
-Adding the defaults (theories/linear_hawkes.theory.py) fixes it.  This guards
+Adding the defaults (models/linear_hawkes.model.py) fixes it.  This guards
 against re-dropping them.
 """
 import os
@@ -24,7 +24,7 @@ import daedalus as dd  # noqa: E402
 
 
 def test_linear_hawkes_runs_at_defaults():
-    m, mod = dd.load_theory('linear_hawkes')
+    m, mod = dd.load_model('linear_hawkes')
     res = dd.run(m, dd.Config(k=2, max_ell=0, tau_grid=(-20.0, 20.0, 21)), mod)
 
     C = np.asarray(res['C_tau']).real

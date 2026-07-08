@@ -6,9 +6,9 @@ correlated / point-process noise.
 
 Each example follows the same three steps:
 
-1. **The model** — `dd.load_theory(...)` + `dd.describe_model(...)` print the structure.
+1. **The model** — `dd.load_model(...)` + `dd.describe_model(...)` print the structure.
 2. **The pipeline → cumulants** — one `dd.run(...)` drives the chain (enumerate → propagator →
-   mean-field → loop integrals → cumulant); the plot is the theory alone.
+   mean-field → loop integrals → cumulant); the plot is the model alone.
 3. **Independent simulation** — a from-scratch simulator overlaid on the pipeline curve as an
    external check (not part of the pipeline).
 
@@ -34,11 +34,11 @@ They are split into [`SDE/`](SDE) (temporal — SDEs / point processes) and [`SP
 
 ## What each notebook loads
 
-Each example loads its theory by name (`dd.load_theory(...)`) and overlays a matched
+Each example loads its model by name (`dd.load_model(...)`) and overlays a matched
 simulator. The simulators are deliberately shared where the physics is the same — one OU
 simulator serves all three OU notebooks.
 
-| Notebook | theory (`theories/…`) | simulator (`simulations/…`) |
+| Notebook | model (`models/…`) | simulator (`simulations/…`) |
 |---|---|---|
 | `OU_quartic_white` | `ou_quartic` | `ou_langevin_sim_numba` |
 | `OU_sextic_white` | `ou_sextic` | `ou_langevin_sim_numba` |

@@ -1,16 +1,16 @@
 """
-pipeline.ui.main — the TheoryUI form.
+pipeline.ui.main — the ModelUI form.
 
-Composes the 9-section tab editor that ``notebooks/theory_builder.ipynb``
-launches, with a Save button that writes a ``.theory.py`` file via
-``pipeline.theory_serialize``.
+Composes the 9-section tab editor that ``notebooks/model_builder.ipynb``
+launches, with a Save button that writes a ``.model.py`` file via
+``pipeline.model_serialize``.
 
 Usage in a notebook
 -------------------
 ::
 
-    from api.ui import TheoryUI
-    ui = TheoryUI()
+    from api.ui import ModelUI
+    ui = ModelUI()
     ui.show()
 
     # … fill out the form, hit Save …
@@ -35,17 +35,17 @@ from api.ui.widgets import (
     textarea_input,
     vector_input,
 )
-from api.theory_serialize import (
-    save_theory_to_file,
-    render_theory_file,
+from api.model_serialize import (
+    save_model_to_file,
+    render_model_file,
     load_spec_from_file,
 )
 
 
-# Default theories directory — relative to current working dir, since
+# Default models directory — relative to current working dir, since
 # notebooks/ runs from there
-_DEFAULT_THEORIES_DIR = os.path.abspath(
-    os.path.join(os.getcwd(), '..', 'theories')
+_DEFAULT_MODELS_DIR = os.path.abspath(
+    os.path.join(os.getcwd(), '..', 'models')
 )
 
 
@@ -60,7 +60,7 @@ _DEFAULT_THEORIES_DIR = os.path.abspath(
 #   • code font: ui-monospace (system mono) → JetBrains Mono → Menlo
 #   • 4-button palette: btn-primary / btn-secondary / btn-link /
 #                       btn-muted (replaces ad-hoc button_style mixes)
-_THEORY_BUILDER_CSS = """
+_MODEL_BUILDER_CSS = """
 <style>
 /* ── Outer container ──────────────────────────────────────────── */
 .tb-root {
@@ -242,7 +242,7 @@ _THEORY_BUILDER_CSS = """
 </style>
 """
 _CSS_INJECTED = False  # module-level guard — inject the <style> once
-                       # per kernel session (multiple TheoryUI() calls
+                       # per kernel session (multiple ModelUI() calls
                        # would otherwise repeat the stylesheet).
 
 
@@ -268,7 +268,7 @@ def _normalize_cgf_rows(rows: list[dict]) -> list[dict]:
         parts = [s.strip() for s in legs_text.split(',') if s.strip()]
         if len(parts) <= 1:
             # Single-leg row — emit the legacy single-field key for
-            # back-compat with the old loader / older theory files.
+            # back-compat with the old loader / older model files.
             out.append({
                 **{k: v for k, v in r.items() if k != 'response_legs'},
                 'response_field': parts[0] if parts else '',
@@ -286,17 +286,17 @@ def _normalize_cgf_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-class TheoryUI:
-    """Notebook-based form for declaring stochastic theories.
+class ModelUI:
+    """Notebook-based form for declaring stochastic models.
 
     Render with :meth:`show`.  After saving, :attr:`last_saved` holds
     the path written and :meth:`spec` returns the form's spec dict.
     """
 
-    def __init__(self, theories_dir: Optional[str] = None):
-        self.theories_dir = (theories_dir
-                             or _DEFAULT_THEORIES_DIR)
-        os.makedirs(self.theories_dir, exist_ok=True)
+    def __init__(self, models_dir: Optional[str] = None):
+        self.models_dir = (models_dir
+                             or _DEFAULT_MODELS_DIR)
+        os.makedirs(self.models_dir, exist_ok=True)
         self.last_saved: Optional[str] = None
         # Unsaved-changes tracking — flipped True by ``_mark_changed``
         # whenever any widget fires its observer, reset by Save / Load
@@ -305,7 +305,7 @@ class TheoryUI:
         self._dirty: bool = False
         # Carry-through for spec keys that no longer have a UI input.
         # ``latex`` for fields / functions / kernels used to be a UI
-        # column; the column was removed (2026-05-27) but old theory
+        # column; the column was removed (2026-05-27) but old model
         # files may still carry custom strings.  Populated by
         # ``load()`` and re-injected by ``_collect()`` so a load /
         # edit / save round-trip preserves them.  Keyed by name to
@@ -315,7 +315,7 @@ class TheoryUI:
             'function_latex': {},
             'kernel_latex':   {},
             # Legacy ``indexed=`` (True / 'vector' / 'matrix') for params
-            # and kernels of theories that predate named populations
+            # and kernels of models that predate named populations
             # (``n_populations=N`` only, no ``.population(...)`` calls).
             # ``load()`` cannot route these through the population
             # dropdowns (there are no population NAMES to select), so it
@@ -396,46 +396,46 @@ class TheoryUI:
         # ``n_populations`` is derived from the Populations tab; no
         # standalone spinner on this tab.
         self._w_name = W.Text(
-            value='My Stochastic Theory', placeholder='Theory name',
+            value='My Stochastic Model', placeholder='Model name',
             layout=W.Layout(width='400px'),
             description='Name:', style={'description_width': '80px'},
         )
         self._w_description = W.Textarea(
-            value='', placeholder='Optional theory description / notes',
+            value='', placeholder='Optional model description / notes',
             layout=W.Layout(width='600px', height='60px'),
             description='Description:',
             style={'description_width': '120px'},
         )
-        # ── Theory type: Temporal (SDE) vs Spatial (SPDE) ────────────
+        # ── Model type: Temporal (SDE) vs Spatial (SPDE) ────────────
         # Created here so it lives on the Model tab.  Switching to
         # Spatial reveals the spatial-structure controls on the Fields
         # tab; Temporal hides them and forces every field to
         # spatial_dim=0 (see _on_mode_change).  The observer lambda is
         # safe to attach now — it only fires on user change, by which
         # time _w_spatial_block / _tbl_physical exist.
-        self._w_theory_mode = W.ToggleButtons(
+        self._w_model_mode = W.ToggleButtons(
             options=['Temporal (SDE)', 'Spatial (SPDE)'],
             value='Temporal (SDE)',
-            description='Theory type',
+            description='Model type',
             style={'description_width': 'initial'},
         )
-        self._w_theory_mode.observe(
+        self._w_model_mode.observe(
             lambda _ch: self._on_mode_change(), names='value')
         tab_model = W.VBox([
             W.HTML(
-                '<h4>Theory metadata</h4>'
+                '<h4>Model metadata</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "Give your theory a name (used to derive the "
-                "<code>.theory.py</code> filename on save) and an "
+                "Give your model a name (used to derive the "
+                "<code>.model.py</code> filename on save) and an "
                 "optional one-line description.  Everything else "
                 "&mdash; fields, parameters, dynamics &mdash; lives on "
                 "the tabs to the right."
                 '</p>'),
             self._w_name, self._w_description,
             W.HTML(
-                '<br><h4>Theory type</h4>'
+                '<br><h4>Model type</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "<b>Temporal (SDE)</b> &mdash; a time-only theory "
+                "<b>Temporal (SDE)</b> &mdash; a time-only model "
                 "(<code>Dt</code> dynamics: OU, Hawkes, neural &hellip;).  "
                 "<b>Spatial (SPDE)</b> &mdash; continuous fields "
                 "<code>&phi;(x, t)</code> with spatial derivatives "
@@ -446,7 +446,7 @@ class TheoryUI:
                 "per-field <code>spatial_dim</code> column on the "
                 "<b>Fields</b> tab; <b>Temporal</b> hides them."
                 '</p>'),
-            self._w_theory_mode,
+            self._w_model_mode,
         ])
 
         # Tab 2: Populations — declare named populations + their sizes.
@@ -474,7 +474,7 @@ class TheoryUI:
             W.HTML(
                 '<h4>Populations</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "<b>Skip this tab</b> if your theory has just a single "
+                "<b>Skip this tab</b> if your model has just a single "
                 "scalar field per variable (most 1D and 2D Langevin "
                 "examples).  Populations are only needed when you have "
                 "groups of <i>multiple</i> identical units that share "
@@ -513,9 +513,9 @@ class TheoryUI:
                  'width': '90px', 'default': 0},
                 # latex column dropped (2026-05-27): the framework
                 # auto-derives a sensible latex name from ``name``; the
-                # column was clutter for the 95% case.  Theory files
+                # column was clutter for the 95% case.  Model files
                 # that already carry a custom ``latex`` round-trip
-                # through ``theory_serialize`` untouched.
+                # through ``model_serialize`` untouched.
                 {'name': 'description', 'kind': 'text',
                  'placeholder': '(optional)', 'width': '280px'},
             ],
@@ -524,7 +524,7 @@ class TheoryUI:
                 # population.  ``phi`` (not ``x``) so the default name
                 # never collides with the spatial coordinate when a user
                 # later sets spatial_dim≥1 (x/y/z/k are reserved in
-                # spatial theories — see TheoryBuilder.build()).
+                # spatial models — see ModelBuilder.build()).
                 {'name': 'phi', 'population': '', 'spatial_dim': 0,
                  'description': ''},
             ],
@@ -557,7 +557,7 @@ class TheoryUI:
         self._w_spatial_apply.on_click(_apply_spatial_dim_to_all)
 
         # Boundary + initial conditions (only meaningful for spatial
-        # theories; ignored at build() when no field is spatial).
+        # models; ignored at build() when no field is spatial).
         self._w_boundary_mode = W.Dropdown(
             options=['infinite', 'periodic'], value='infinite',
             description='boundary',
@@ -588,7 +588,7 @@ class TheoryUI:
             style={'description_width': 'initial'},
             layout=W.Layout(width='560px'),
         )
-        # Dyson policy for COUPLED unequal-diffusion theories.  Order 0
+        # Dyson policy for COUPLED unequal-diffusion models.  Order 0
         # = off (the default); any N ≥ 0 (the loop-insertion order cap
         # was removed).  reference_diffusion is the scalar D0 in the
         # 𝒟 = D0·I + 𝒟̂ split (blank ⇒ the propagator builder picks it).
@@ -609,7 +609,7 @@ class TheoryUI:
             W.HTML(
                 '<h4>Fields</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "These are the actual physical quantities your theory "
+                "These are the actual physical quantities your model "
                 "describes &mdash; the variables you'd write in an SDE.  "
                 "Give each one a short name (<code>phi</code>, <code>rho</code>, "
                 "<code>v</code>, &hellip;) and the population it belongs to "
@@ -639,7 +639,7 @@ class TheoryUI:
                 '<br><h4>Spatial structure '
                 '<span style="font-weight:normal;color:#888;">'
                 '(optional &mdash; leave dimension 0 for a time-only '
-                'theory)</span></h4>'
+                'model)</span></h4>'
                 '<p style="color:#555;font-size:90%;">'
                 "Set a field's <code>spatial_dim</code> to 1 to make it a "
                 "continuous field <code>&phi;(x, t)</code>.  The framework "
@@ -666,7 +666,7 @@ class TheoryUI:
                 "(<code>g&middot;&phi;&sup2;</code>) does not."
                 '</p>'
                 '<p style="color:#a00;font-size:88%;">'
-                "<b>Naming:</b> in a spatial theory, "
+                "<b>Naming:</b> in a spatial model, "
                 "<code>x</code>,&nbsp;<code>y</code>,&nbsp;<code>z</code> "
                 "are the spatial coordinates, <code>k</code> is the "
                 "wavevector, and <code>Laplacian</code> is the diffusion "
@@ -674,7 +674,7 @@ class TheoryUI:
                 "parameter names.  Call your field <code>phi</code>, "
                 "<code>rho</code>, <code>h</code>, &hellip; "
                 "(<code>t</code>&nbsp;and <code>omega</code> are reserved "
-                "in every theory)."
+                "in every model)."
                 '</p>'),
             W.HBox([self._w_spatial_dim, self._w_spatial_apply]),
             W.HTML(
@@ -693,7 +693,7 @@ class TheoryUI:
             self._w_operator_ir,
             W.HTML(
                 '<p style="color:#555;font-size:90%;margin-top:10px;">'
-                "<b>Dyson dressing</b> (only for <i>coupled</i> theories "
+                "<b>Dyson dressing</b> (only for <i>coupled</i> models "
                 "with <i>unequal</i> diffusion constants).  Set the order "
                 "to <code>N &ge; 1</code> to dress the propagator to "
                 "<code>O(&Dscr;&#770;<sup>N</sup>)</code> in the "
@@ -706,7 +706,7 @@ class TheoryUI:
             W.HBox([self._w_dyson_order, self._w_reference_diffusion]),
         ])
 
-        # ── Group the spatial controls so the Model-tab "Theory type"
+        # ── Group the spatial controls so the Model-tab "Model type"
         # toggle can hide them all at once.  The Fields tab becomes
         # [help, table, spatial-block]; in Temporal (SDE) mode the block
         # AND the spatial_dim column are hidden (see _on_mode_change). ──
@@ -817,7 +817,7 @@ class TheoryUI:
                 {'name': 'description', 'kind': 'text',
                  'placeholder': '(optional)', 'width': '180px'},
             ],
-            # No starter row — most theories declare zero or one
+            # No starter row — most models declare zero or one
             # function, and the default ``phi(v) = a*v`` was leading users
             # to think a transfer-function declaration is mandatory.
             # Click "+ add row" to declare functions when actually needed.
@@ -894,7 +894,7 @@ class TheoryUI:
             ],
             # No starter row — kernels are an optional feature (only
             # used by conv-style synapses / shaped filters), not a
-            # required ingredient of every theory.
+            # required ingredient of every model.
             initial=[],
         )
         tab_kernels = W.VBox([
@@ -966,7 +966,7 @@ class TheoryUI:
             W.HTML(
                 '<h4>Noise</h4>'
                 '<p style="color:#555;font-size:90%;">'
-                "Declare the random forcing that drives your theory.  "
+                "Declare the random forcing that drives your model.  "
                 "Each row specifies one piece of the noise correlator "
                 "<code>&lt;&eta;(t) &eta;(t')&gt; = coefficient &times; "
                 "kernel(t&minus;t')</code>.  Leave the table empty if "
@@ -1043,7 +1043,7 @@ class TheoryUI:
                 "#   dphi/dt = -mu*phi - eps*phi^3 + noise,  <eta eta> = 2D\n"
                 "phit * ((Dt + mu) * phi + eps * phi^3) - D * phit^2\n"
                 "\n"
-                "# (For population-indexed theories use comprehensions:\n"
+                "# (For population-indexed models use comprehensions:\n"
                 "#   sum(phit[i]*(Dt + mu[i])*phi[i] - D[i]*phit[i]^2 for i in A))"
             ),
             rows=10,
@@ -1054,7 +1054,7 @@ class TheoryUI:
                 '<h4>Action</h4>'
                 '<p style="color:#555;font-size:90%;">'
                 "The MSR-JD action <i>S</i> &mdash; one expression that "
-                "captures every term in your theory's dynamics.  The "
+                "captures every term in your model's dynamics.  The "
                 "general shape is <b>response field &times; (equation "
                 "of motion)</b>:"
                 '<pre style="background:#f3f4f6;padding:8px;'
@@ -1080,7 +1080,7 @@ class TheoryUI:
                 'parse equivalently.</li>'
                 '</ul></p>'
                 '<p style="color:#555;font-size:90%;"><b>Indexed (population) '
-                'theories</b>: wrap each term in a Python comprehension over '
+                'models</b>: wrap each term in a Python comprehension over '
                 'the population.  E.g. for a population named <code>A</code>:'
                 '<pre style="background:#f3f4f6;padding:8px;'
                 'border-radius:4px;font-size:0.9em;">'
@@ -1133,27 +1133,27 @@ class TheoryUI:
             initial=[],
         )
         # Default fixed-point index for the multi-root MF solver.
-        # When the DAE system has multiple roots (a bistable theory,
+        # When the DAE system has multiple roots (a bistable model,
         # say), this picks WHICH sorted root the diagrammatic expansion
         # uses.  Sorted ascending by the first declared physical
         # field's first population index.  ``0`` = lowest, ``1`` =
         # second-lowest, ...  Out-of-range values get clamped at run
         # time with a warning.  This default is written into METADATA;
-        # the theory runner picks it up unless overridden per-run.
+        # the model runner picks it up unless overridden per-run.
         self._w_fpi_default = W.BoundedIntText(
             value=0, min=0, max=99, step=1,
             description='Default fixed_point_index:',
             style={'description_width': 'initial'},
             layout=W.Layout(width='280px'),
         )
-        # Linear-stability toggle.  Off by default — theories that
+        # Linear-stability toggle.  Off by default — models that
         # integrate out their voltages have all-algebraic equations
         # (no Dt anywhere); the generalized-eigenvalue ``(σA + B)``
         # has A ≡ 0, every eigenvalue lands at infinity, and "linear
         # stability" has no physical meaning.  Bistable / differential
-        # theories that want stability-based root filtering must check
+        # models that want stability-based root filtering must check
         # this box explicitly.  Writes ``.stability_analysis(True)``
-        # into the generated theory file when on.
+        # into the generated model file when on.
         self._w_stability_on = W.Checkbox(
             value=False,
             description='Run linear stability analysis',
@@ -1209,7 +1209,7 @@ class TheoryUI:
                 "<br><br>"
                 "<b>Stability filter</b> (the checkbox below).  "
                 "<u>ON</u>: keep only the linearly stable roots before "
-                "indexing.  This is what you want for a bistable theory "
+                "indexing.  This is what you want for a bistable model "
                 "where you only care about the stable branch.  "
                 "<u>OFF</u> (default): use every root.  Leave OFF when "
                 "none of your equations contain <code>Dt</code> "
@@ -1339,9 +1339,9 @@ class TheoryUI:
 
         # Compose into Tab widget
         # Full tab set as (widget, base title).  _apply_visible_tabs picks
-        # the visible subset by theory type: Spatial (SPDE) hides the
+        # the visible subset by model type: Spatial (SPDE) hides the
         # Kernels (temporal convolution kernels) and Noise (CGF) tabs —
-        # spatial theories support only Gaussian white independent noise,
+        # spatial models support only Gaussian white independent noise,
         # and there are no convolution kernels in the spatial path.
         self._tab_kernels = tab_kernels
         self._tab_cgfs = tab_cgfs
@@ -1375,20 +1375,20 @@ class TheoryUI:
 
         # ── Bottom buttons + status ───────────────────────────────
         self._w_save_path = W.Text(
-            value='', placeholder='leave blank → auto-name from theory name',
+            value='', placeholder='leave blank → auto-name from model name',
             layout=W.Layout(width='420px'),
             description='Save to:',
             style={'description_width': '80px'},
         )
-        self._btn_preview = W.Button(description='Preview .theory.py',
+        self._btn_preview = W.Button(description='Preview .model.py',
                                      button_style='', icon='eye',
                                      layout=W.Layout(width='180px'))
-        self._btn_save    = W.Button(description='Save theory file',
+        self._btn_save    = W.Button(description='Save model file',
                                      button_style='success', icon='save',
                                      layout=W.Layout(width='180px'))
         # Pre-compute essentials: one-shot structural validation +
         # propagator + saddle cache.  Lives next to Save because it's
-        # the "is this theory healthy" check you run right after
+        # the "is this model healthy" check you run right after
         # saving (the file isn't strictly required — precompute reads
         # the in-memory spec).  Status output goes to the same global
         # ``self._status`` panel the save / load buttons use.
@@ -1408,18 +1408,18 @@ class TheoryUI:
         self._btn_precompute.on_click(self._on_precompute)
         self._btn_reset.on_click(self._on_reset)
 
-        # Load existing theory: dropdown of files in theories_dir,
+        # Load existing model: dropdown of files in models_dir,
         # plus a Load button.  The dropdown auto-refreshes on each
-        # _on_load click so a freshly-saved theory shows up without
+        # _on_load click so a freshly-saved model shows up without
         # restarting the UI.
         self._w_load_pick = W.Dropdown(
-            options=self._list_theory_files(),
+            options=self._list_model_files(),
             value=None,
             description='Load:',
             style={'description_width': '60px'},
             layout=W.Layout(width='420px'),
         )
-        self._btn_load = W.Button(description='Load theory file',
+        self._btn_load = W.Button(description='Load model file',
                                   button_style='info', icon='upload',
                                   layout=W.Layout(width='180px'))
         self._btn_load.on_click(self._on_load)
@@ -1431,13 +1431,13 @@ class TheoryUI:
 
         # Header
         self._header = W.HTML(
-            '<h2 style="margin-bottom:4px;">MSR-JD Theory Builder</h2>'
+            '<h2 style="margin-bottom:4px;">MSR-JD Model Builder</h2>'
             '<p style="margin-top:0;color:#555;">'
-            'Fill in the tabs below.  Hit <b>Save theory file</b> to write a '
-            '<code>.theory.py</code> in <code>theories/</code> — '
-            '<code>notebooks/theory_runner.ipynb</code> picks it up '
-            'automatically.  Use <b>Load theory file</b> to re-open a '
-            'saved theory for editing.'
+            'Fill in the tabs below.  Hit <b>Save model file</b> to write a '
+            '<code>.model.py</code> in <code>models/</code> — '
+            '<code>notebooks/model_runner.ipynb</code> picks it up '
+            'automatically.  Use <b>Load model file</b> to re-open a '
+            'saved model for editing.'
             '</p>')
         self._header.add_class('tb-header')
 
@@ -1481,7 +1481,7 @@ class TheoryUI:
 
         # Button-palette classes (replaces the inconsistent
         # ``button_style=`` ad-hoc settings).  Each class maps to one of
-        # the four-button palette defined in ``_THEORY_BUILDER_CSS``.
+        # the four-button palette defined in ``_MODEL_BUILDER_CSS``.
         self._btn_save.add_class('tb-btn-primary')
         self._btn_save.button_style = ''     # let CSS win
         self._btn_preview.add_class('tb-btn-secondary')
@@ -1535,7 +1535,7 @@ class TheoryUI:
         except Exception:
             pass
         # Save-path field: update the derived-filename hint as the user
-        # types the theory name.
+        # types the model name.
         try:
             self._w_name.observe(
                 lambda _c: self._refresh_save_hint(), names='value')
@@ -1545,20 +1545,20 @@ class TheoryUI:
             pass
         # Initial render of derived-filename hint + validation panel.
         self._refresh_save_hint()
-        # Apply the initial theory-type (Temporal) — hides the spatial
+        # Apply the initial model-type (Temporal) — hides the spatial
         # block + the spatial_dim column without marking the form dirty.
         self._on_mode_change(mark_dirty=False)
 
-    # ── Theory type (Temporal / Spatial) ──────────────────────────
+    # ── Model type (Temporal / Spatial) ──────────────────────────
     def _is_spatial_mode(self) -> bool:
-        return str(self._w_theory_mode.value).startswith('Spatial')
+        return str(self._w_model_mode.value).startswith('Spatial')
 
     def _on_mode_change(self, mark_dirty: bool = True) -> None:
         """Show/hide every spatial control according to the
         Temporal/Spatial toggle.  In Temporal mode the spatial block and
         the ``spatial_dim`` column are hidden AND all fields are forced to
         ``spatial_dim=0`` with the spatial-only knobs cleared, so a saved
-        time-only theory carries no spatial structure at all."""
+        time-only model carries no spatial structure at all."""
         spatial = self._is_spatial_mode()
         self._w_spatial_block.layout.display = '' if spatial else 'none'
         self._tbl_physical.set_column_visible('spatial_dim', spatial)
@@ -1573,9 +1573,9 @@ class TheoryUI:
             self._w_boundary_length.value = ''
             self._w_initial_mode.value = 'stationary'
         else:
-            # Spatial theories take only Gaussian white independent noise
+            # Spatial models take only Gaussian white independent noise
             # and have no convolution kernels — drop any temporal kernels
-            # / CGF noise terms so they can't leak into a saved PDE theory.
+            # / CGF noise terms so they can't leak into a saved PDE model.
             self._tbl_kernels.clear()
             self._tbl_cgfs.clear()
             if int(self._w_spatial_dim.value) < 1:
@@ -1589,7 +1589,7 @@ class TheoryUI:
             self._dirty = True
 
     def _apply_visible_tabs(self) -> None:
-        """Show the tab subset for the current theory type.  Spatial (SPDE)
+        """Show the tab subset for the current model type.  Spatial (SPDE)
         hides the Kernels + Noise tabs; titles are renumbered sequentially
         and the current selection is preserved when it stays visible."""
         spatial = self._is_spatial_mode()
@@ -1627,15 +1627,15 @@ class TheoryUI:
         self._save_hint.add_class('tb-save-hint')
 
         # "Open in runner" bridge (item 5).  After Save, the user can
-        # click this to open ``theory_runner.ipynb`` and have the just-
-        # saved THEORY_NAME picked up automatically via a tiny scratch
+        # click this to open ``model_runner.ipynb`` and have the just-
+        # saved MODEL_NAME picked up automatically via a tiny scratch
         # file written by ``_on_save``.
         self._btn_open_runner = W.Button(
             description='Open in runner notebook',
             icon='external-link',
             layout=W.Layout(width='220px'),
-            tooltip='Open theory_runner.ipynb with the last-saved '
-                    'theory pre-selected.')
+            tooltip='Open model_runner.ipynb with the last-saved '
+                    'model pre-selected.')
         self._btn_open_runner.add_class('tb-btn-link')
         self._btn_open_runner.button_style = ''
         self._btn_open_runner.on_click(self._on_open_in_runner)
@@ -1730,10 +1730,10 @@ class TheoryUI:
                 names.add(nm)          # legal in ``for i in <pop>``
                 names.add(f'pop_{nm}')  # legal too
         names.add('pop')               # legacy alias for the only-pop case
-        # Spatial theories use the inert ``Laplacian`` operator multiplicatively
+        # Spatial models use the inert ``Laplacian`` operator multiplicatively
         # in the action (like ``Dt``, e.g. ``D*Laplacian*phi``); accept it so the
         # readiness sidebar does not flag a false "undeclared name: Laplacian" on
-        # every correct spatial theory.  When the Operator-IR toggle is on, the
+        # every correct spatial model.  When the Operator-IR toggle is on, the
         # action instead uses the operator CALL forms ``Lap()``/``Dx()``/
         # ``Gradient()``/``GradX()`` (and ``Dt`` is already a builtin) — accept
         # those too so KPZ/Burgers/Model B actions validate cleanly.
@@ -1881,10 +1881,10 @@ class TheoryUI:
 
         What we DON'T check
         -------------------
-        * "Theory name still at default" — user can clear with one period;
+        * "Model name still at default" — user can clear with one period;
           it's not an error, just a starting value.
         * "Stability analysis OFF" — that's a sensible default, not a
-          mistake.  Stability OFF for an algebraic-MF (no ``Dt``) theory
+          mistake.  Stability OFF for an algebraic-MF (no ``Dt``) model
           is correct.
         * "Action is blank" — the only reason to flag this is at Save
           time; emitting it on every keystroke is just noise.
@@ -1937,9 +1937,9 @@ class TheoryUI:
                      f"field '{f.get('name')}' references unknown "
                      f"population '{pop}'")
 
-        # ── Reserved-name check (mirrors TheoryBuilder.build()) ──────
+        # ── Reserved-name check (mirrors ModelBuilder.build()) ──────
         # t/omega/Dt are reserved everywhere; x/y/z/k/Laplacian only in
-        # spatial theories (they're the coordinate / wavevector /
+        # spatial models (they're the coordinate / wavevector /
         # diffusion-operator symbols).  Surfacing it here means the
         # readiness sidebar flags it before precompute hard-errors.
         _is_spatial = any(int(f.get('spatial_dim') or 0) > 0 for f in fields)
@@ -1952,7 +1952,7 @@ class TheoryUI:
             if nm in _reserved:
                 _add(3, 'error',
                      f"field name '{nm}' is reserved"
-                     + (' in spatial theories' if nm not in
+                     + (' in spatial models' if nm not in
                         {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'} else '')
                      + f" (it's the framework's "
                      + ('spatial coordinate / wavevector / diffusion '
@@ -1966,7 +1966,7 @@ class TheoryUI:
             if nm in _reserved:
                 _add(4, 'error',
                      f"parameter name '{nm}' is reserved"
-                     + (' in spatial theories' if nm in
+                     + (' in spatial models' if nm in
                         {'k', 'Laplacian', 'x', 'y', 'z'} else '')
                      + " — rename it"
                      + (f" (e.g. '{_hint[nm]}')" if nm in _hint else ''))
@@ -2013,7 +2013,7 @@ class TheoryUI:
             _add(8, sev, msg)
 
         # ── Tab 9 — Mean-field: every field needs an equation ────────
-        # A COUPLED theory must declare one saddle equation per physical
+        # A COUPLED model must declare one saddle equation per physical
         # field; a field that appears in no equation LHS otherwise fails
         # at run time with an opaque "MF sector does not vanish" error.
         # Warn (not block) — a purely-linear field may legitimately use
@@ -2032,7 +2032,7 @@ class TheoryUI:
                                   + r'(?![A-Za-z0-9_])', eq_lhs):
                     _add(9, 'warn',
                          f"field '{nm}' is not the subject of any "
-                         f"mean-field equation — coupled theories usually "
+                         f"mean-field equation — coupled models usually "
                          f"need one .equation(lhs=…) per field (a linear "
                          f"field with saddle 0 can ignore this)")
 
@@ -2218,18 +2218,18 @@ class TheoryUI:
             if os.path.isabs(explicit) or explicit.endswith('.py'):
                 path = explicit
             else:
-                path = os.path.join(self.theories_dir, explicit)
+                path = os.path.join(self.models_dir, explicit)
         else:
-            # Auto-slugify from the theory name.
-            from api.theory_serialize import _slugify
+            # Auto-slugify from the model name.
+            from api.model_serialize import _slugify
             try:
                 slug = _slugify(self._w_name.value or '')
             except Exception:
-                slug = 'theory'
-            path = os.path.join(self.theories_dir, f'{slug}.theory.py')
-        rel = os.path.relpath(path, self.theories_dir)
-        # Tidy display: ``theories/foo.theory.py`` rather than absolute.
-        self._save_hint.value = f'→ writes <code>theories/{rel}</code>'
+                slug = 'model'
+            path = os.path.join(self.models_dir, f'{slug}.model.py')
+        rel = os.path.relpath(path, self.models_dir)
+        # Tidy display: ``models/foo.model.py`` rather than absolute.
+        self._save_hint.value = f'→ writes <code>models/{rel}</code>'
 
     # ── Dirty / unsaved-changes tracking ──────────────────────────
     def _mark_changed(self) -> None:
@@ -2260,11 +2260,11 @@ class TheoryUI:
 
     # ── Open in runner notebook (item 5) ──────────────────────────
     def _on_open_in_runner(self, _btn) -> None:
-        """Write a tiny scratch file with the last-saved theory name
-        and emit JS to open ``theory_runner.ipynb`` in a new tab.
+        """Write a tiny scratch file with the last-saved model name
+        and emit JS to open ``model_runner.ipynb`` in a new tab.
 
-        The runner notebook reads ``.theories/.last_built`` if
-        ``THEORY_NAME`` is left blank.  Gracefully degrades to a
+        The runner notebook reads ``.models/.last_built`` if
+        ``MODEL_NAME`` is left blank.  Gracefully degrades to a
         printed instruction when JS escape isn't available (e.g.
         nbconvert export).
         """
@@ -2272,27 +2272,27 @@ class TheoryUI:
         self._status.clear_output()
         with self._status:
             if not self.last_saved:
-                print('[runner] no theory has been saved yet — '
+                print('[runner] no model has been saved yet — '
                       'click Save first.')
                 return
             slug = os.path.basename(
-                self.last_saved)[:-len('.theory.py')]
-            scratch_dir = os.path.join(self.theories_dir, '..',
-                                       '.theories')
+                self.last_saved)[:-len('.model.py')]
+            scratch_dir = os.path.join(self.models_dir, '..',
+                                       '.models')
             os.makedirs(scratch_dir, exist_ok=True)
             scratch_path = os.path.join(scratch_dir, '.last_built')
             with open(scratch_path, 'w') as fh:
                 fh.write(slug + '\n')
             print(f'[runner] wrote scratch file → {scratch_path}')
-            print(f'[runner] THEORY_NAME = {slug!r}')
+            print(f'[runner] MODEL_NAME = {slug!r}')
             try:
                 display(Javascript(
-                    "window.open('theory_runner.ipynb', '_blank');"))
-                print('[runner] opening theory_runner.ipynb in a new '
+                    "window.open('model_runner.ipynb', '_blank');"))
+                print('[runner] opening model_runner.ipynb in a new '
                       'tab…')
             except Exception:
                 print('[runner] (could not open via JS; navigate to '
-                      'notebooks/theory_runner.ipynb manually)')
+                      'notebooks/model_runner.ipynb manually)')
 
     # ── Humanized error messages ──────────────────────────────────
     def _humanize_error(self, exc: BaseException, context: str) -> str:
@@ -2348,7 +2348,7 @@ class TheoryUI:
         """
         global _CSS_INJECTED
         if not _CSS_INJECTED:
-            display(HTML(_THEORY_BUILDER_CSS))
+            display(HTML(_MODEL_BUILDER_CSS))
             _CSS_INJECTED = True
         # Make sure the spec is validated once on first render so the
         # sidebar shows real state rather than placeholder text.
@@ -2451,7 +2451,7 @@ class TheoryUI:
                 entry['indexed_by'] = idx
             else:
                 # Re-emit a legacy ``indexed=`` value carried over from
-                # a load of an old ``n_populations``-only theory (no
+                # a load of an old ``n_populations``-only model (no
                 # named populations → the dropdowns can't hold it).  The
                 # serializer's _emit_parameter consumes this when
                 # ``indexed_by`` is absent — preserving matrix / vector
@@ -2508,7 +2508,7 @@ class TheoryUI:
             else:
                 # Re-emit a legacy ``indexed=`` value (mirror the
                 # parameter block above) so a vector / matrix kernel from
-                # an ``n_populations``-only theory survives load → save.
+                # an ``n_populations``-only model survives load → save.
                 legacy = self._loaded_extras.get(
                     'kernel_indexed', {}).get(name)
                 if legacy is not None:
@@ -2526,8 +2526,8 @@ class TheoryUI:
             kernels.append(entry)
 
         # Spatial boundary / initial blocks — emitted only when at
-        # least one field is spatial, so time-only theories carry
-        # neither key (matching TheoryBuilder.build()'s own behaviour).
+        # least one field is spatial, so time-only models carry
+        # neither key (matching ModelBuilder.build()'s own behaviour).
         is_spatial = any(f.get('spatial_dim', 0) for f in physical_fields)
         boundary_block = None
         initial_block = None
@@ -2567,7 +2567,7 @@ class TheoryUI:
             'cgf_terms':       _normalize_cgf_rows(self._tbl_cgfs.get_rows()),
             'action_text':     self._w_action.get_value(),
             # New DAE form: list of {lhs, rhs, population} records,
-            # consumed by ``render_theory_file`` to emit
+            # consumed by ``render_model_file`` to emit
             # ``.equation(...)`` calls.  Legacy specs that came in via
             # ``set_mf_equation`` get re-rendered as ``.equation(...)``
             # calls too, with population back-inferred from the saddle
@@ -2581,9 +2581,9 @@ class TheoryUI:
                 if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
             ],
             # Stability-analysis toggle on the MF tab.  Default OFF —
-            # set when the user checks the box; theories that integrate
+            # set when the user checks the box; models that integrate
             # out voltages (all-algebraic equations) should leave it
-            # off, bistable / differential theories that want
+            # off, bistable / differential models that want
             # stability-based root selection should turn it on.
             'stability_analysis':  bool(self._w_stability_on.value),
             # default_fundamental is no longer a separate UI input —
@@ -2692,7 +2692,7 @@ class TheoryUI:
         with self._status:
             try:
                 spec = self._collect()
-                src = render_theory_file(spec)
+                src = render_model_file(spec)
                 print(src)
             except Exception as e:
                 print(self._humanize_error(e, 'preview'))
@@ -2707,10 +2707,10 @@ class TheoryUI:
                 return
             try:
                 target = (self._w_save_path.value.strip()
-                          or self.theories_dir)
+                          or self.models_dir)
                 if not os.path.isabs(target) and not target.endswith('.py'):
-                    target = os.path.join(self.theories_dir, target)
-                path = save_theory_to_file(spec, target)
+                    target = os.path.join(self.models_dir, target)
+                path = save_model_to_file(spec, target)
             except Exception as e:
                 print(self._humanize_error(e, 'save'))
                 return
@@ -2725,11 +2725,11 @@ class TheoryUI:
             except Exception:
                 pass
             print(f'[OK] Wrote {path}')
-            rel = os.path.basename(path)[:-len('.theory.py')]
-            print(f'\nIn notebooks/theory_runner.ipynb set:')
-            print(f'    THEORY_NAME = {rel!r}')
+            rel = os.path.basename(path)[:-len('.model.py')]
+            print(f'\nIn notebooks/model_runner.ipynb set:')
+            print(f'    MODEL_NAME = {rel!r}')
             print(f"\nOr click 'Open in runner notebook' to launch the "
-                  f"runner with this theory pre-selected.")
+                  f"runner with this model pre-selected.")
             # Refresh validation so the user sees the new save status.
             try:
                 self._refresh_validation()
@@ -2755,12 +2755,12 @@ class TheoryUI:
         """Run ``pipeline.precompute(model)`` on the current UI state.
 
         Builds an in-memory ``model`` from the current spec (without
-        writing a ``.theory.py`` file), then invokes the pre-compute
+        writing a ``.model.py`` file), then invokes the pre-compute
         primitive.  Output goes to the global ``self._status`` panel,
         same as Save / Load.
         """
         from api import precompute
-        from api.theory_serialize import render_theory_file
+        from api.model_serialize import render_model_file
 
         self._status.clear_output()
         with self._status:
@@ -2771,10 +2771,10 @@ class TheoryUI:
                 return
 
             # In-memory build: render to source, exec, call build().
-            # This sidesteps writing a temp .theory.py just for a
-            # validation pass.  ``render_theory_file`` already produces
+            # This sidesteps writing a temp .model.py just for a
+            # validation pass.  ``render_model_file`` already produces
             # a syntactically-valid module-level source.
-            src = render_theory_file(spec)
+            src = render_model_file(spec)
             ns: dict = {}
             try:
                 exec(compile(src, '<precompute-spec>', 'exec'), ns)
@@ -2804,14 +2804,14 @@ class TheoryUI:
             print(f'  Cache dir:      {result.get("cache_dir")}')
             print(f'  Wall time:      {result.get("wall_seconds", 0):.2f}s')
 
-    # ── Loading existing theories ─────────────────────────────────
-    def _list_theory_files(self) -> list[str]:
-        """Return the list of ``*.theory.py`` filenames in
-        ``self.theories_dir``, alphabetically sorted.  Used to
+    # ── Loading existing models ─────────────────────────────────
+    def _list_model_files(self) -> list[str]:
+        """Return the list of ``*.model.py`` filenames in
+        ``self.models_dir``, alphabetically sorted.  Used to
         populate the Load dropdown."""
         try:
-            files = [f for f in os.listdir(self.theories_dir)
-                     if f.endswith('.theory.py')]
+            files = [f for f in os.listdir(self.models_dir)
+                     if f.endswith('.model.py')]
         except OSError:
             files = []
         return sorted(files)
@@ -2827,10 +2827,10 @@ class TheoryUI:
                       "'discard unsaved changes' checkbox next to "
                       'Load to confirm, or click Save first.')
             return
-        # Refresh the file list so newly-saved theories appear without
+        # Refresh the file list so newly-saved models appear without
         # restarting the UI.
         current = self._w_load_pick.value
-        opts = self._list_theory_files()
+        opts = self._list_model_files()
         self._w_load_pick.options = opts
         if current in opts:
             self._w_load_pick.value = current
@@ -2842,7 +2842,7 @@ class TheoryUI:
                 print('[load] No file selected — pick one from the '
                       'dropdown first.')
                 return
-            path = os.path.join(self.theories_dir, target)
+            path = os.path.join(self.models_dir, target)
             try:
                 spec = load_spec_from_file(path)
                 self.load(spec)
@@ -2861,7 +2861,7 @@ class TheoryUI:
                   f'write back.')
 
     def load(self, spec_or_path) -> None:
-        """Populate the form from a spec dict OR a ``.theory.py`` path.
+        """Populate the form from a spec dict OR a ``.model.py`` path.
 
         Existing widget contents are cleared and replaced.  Convenient
         for programmatic round-trips (load + tweak + save) without
@@ -2902,7 +2902,7 @@ class TheoryUI:
         self._loaded_extras['field_latex'] = {}
         for f in spec.get('physical_fields', []) or []:
             # Strip the auto-prefix 'd' if the loaded model went
-            # through TheoryBuilder.physical_field with natural_name
+            # through ModelBuilder.physical_field with natural_name
             # — the user typed 'n' and the framework stored 'dn'.
             display_name = f.get('natural_name') or f.get('name', '')
             latex_str = (f.get('latex') or '').strip()
@@ -3069,7 +3069,7 @@ class TheoryUI:
         # (list of ``{saddle, rhs}``) is auto-converted to the new
         # form: ``lhs = '<natural>[i]'`` (saddle name minus trailing
         # ``star``), population back-looked-up from the physical field
-        # of that natural name.  Theories with both keys prefer the
+        # of that natural name.  Models with both keys prefer the
         # explicit ``equations`` list.
         self._tbl_mfeqs.clear()
         equations = spec.get('equations') or []
@@ -3111,7 +3111,7 @@ class TheoryUI:
 
         # Spatial boundary / initial conditions (v1).  Absent keys →
         # reset to the time-only defaults so a freshly-loaded non-
-        # spatial theory shows the unchanged controls.
+        # spatial model shows the unchanged controls.
         bc = spec.get('boundary') or {}
         self._w_boundary_mode.value = bc.get('mode', 'infinite')
         length = bc.get('length')
@@ -3135,8 +3135,8 @@ class TheoryUI:
         _spatial = any(int(r.get('spatial_dim') or 0) > 0
                        for r in (self._tbl_physical.get_rows() or []))
         _target = 'Spatial (SPDE)' if _spatial else 'Temporal (SDE)'
-        if self._w_theory_mode.value != _target:
-            self._w_theory_mode.value = _target      # fires _on_mode_change
+        if self._w_model_mode.value != _target:
+            self._w_model_mode.value = _target      # fires _on_mode_change
         else:
             self._on_mode_change(mark_dirty=False)   # already right; re-apply
 

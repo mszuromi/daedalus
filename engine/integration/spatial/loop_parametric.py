@@ -6,7 +6,7 @@ independent numerical cross-check — ``compute_cumulants`` does NOT use this mo
 engine.integration.spatial.loop_parametric
 ==========================================
 Momentum-FIRST parametric loop integration for spatial (heat-kernel) field
-theories — the general loop integrator's core (Stage C.5 pivot).
+models — the general loop integrator's core (Stage C.5 pivot).
 
 The time-first integrator (reuse Phase J + numerical ``∫dℓ``) is blocked by the
 ``m≥3`` close-pair precision slow path, which spatial loops trip GENERICALLY

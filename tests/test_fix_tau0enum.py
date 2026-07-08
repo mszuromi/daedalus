@@ -44,7 +44,7 @@ from engine.enumeration.loop_diagram_enumeration import (  # noqa: E402
 
 def test_total_C_callable_matches_C_tau_at_tau0():
     """total_C(t0, t0) must equal C_tau at τ=0 (same Itô left-limit nudge)."""
-    model, _mod = dd.load_theory('ou_quartic')
+    model, _mod = dd.load_model('ou_quartic')
     tau = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
     res = compute_cumulants(
         model, k=2, max_ell=1,

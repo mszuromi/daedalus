@@ -40,8 +40,8 @@ from engine.diagrams.type_assignment import build_field_index_map
 
 
 def _allen_cahn():
-    path = os.path.join(_REPO, 'theories',
-                        'allen_cahn_1d_subcritical_infinite.theory.py')
+    path = os.path.join(_REPO, 'models',
+                        'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('ac', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -163,8 +163,8 @@ def test_formfactor_bubble_vs_oracle():
     from engine.integration.spatial import loop_dyson
     from engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'theories',
-                        'reaction_diffusion_conserved_1d.theory.py')
+    path = os.path.join(_REPO, 'models',
+                        'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -241,8 +241,8 @@ def test_diagram_form_factor_ell2_momentum():
         _momentum_factor_batch, _formfactor_average)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'theories',
-                        'reaction_diffusion_conserved_1d.theory.py')
+    path = os.path.join(_REPO, 'models',
+                        'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -298,7 +298,7 @@ def test_perleg_and_complex_form_factor():
     the new machinery for KPZ ``(∂φ)²`` / Burgers.  On a φ̃φ² bubble topology, the
     per-leg extraction (``∂_x`` on each physical/incoming leg → ``∏ i·p_leg``) and
     the complex Gauss–Hermite average match a brute ``∫dℓ`` to machine precision.
-    (The end-to-end wiring of a KPZ/Burgers THEORY is separately gated on the v2
+    (The end-to-end wiring of a KPZ/Burgers MODEL is separately gated on the v2
     k-explicit propagator kernel — see ``docs/spatial_kpz_burgers_plan.md``.)"""
     import importlib.util
     import numpy as np
@@ -312,8 +312,8 @@ def test_perleg_and_complex_form_factor():
         _momentum_factor_batch, _formfactor_average)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'theories',
-                        'reaction_diffusion_conserved_1d.theory.py')
+    path = os.path.join(_REPO, 'models',
+                        'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -363,10 +363,10 @@ def test_perleg_and_complex_form_factor():
             f"per-leg/complex form factor: {gh} vs {br}"
 
 
-def _build_ff_theory(kind, d):
+def _build_ff_model(kind, d):
     """Model B ∇²(φ²) (composite Lap) or KPZ (∇h)²=Σ_i(∂_i h)² (per-leg) at dim d."""
-    from api.theory import TheoryBuilder
-    tb = (TheoryBuilder(kind, n_populations=0).physical_field('phi', spatial_dim=d)
+    from api.model import ModelBuilder
+    tb = (ModelBuilder(kind, n_populations=0).physical_field('phi', spatial_dim=d)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('c', default=0.3, domain='real')
@@ -399,7 +399,7 @@ def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
         _momentum_factor_batch, _formfactor_average)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    b = _build_ff_theory(kind, d)
+    b = _build_ff_model(kind, d)
     ft = FieldTheory(b, taylor_order=4); ft.expand()
     prop = build_propagator(ft, b, use_cache=False, verbose=False)
     rvn = list(ft._ns._ring_var_names)
@@ -454,9 +454,9 @@ def test_spatial_parallel_matches_serial():
     serial — same diagram-summation order, q-points independent.  Mirrors the
     temporal test_phase_J_total_C_batch_parallel_matches_serial."""
     import numpy as np
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import compute_cumulants
-    ac = (TheoryBuilder('ac-par', n_populations=0).physical_field('phi', spatial_dim=1)
+    ac = (ModelBuilder('ac-par', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('lam', default=0.1, domain='positive')
@@ -483,7 +483,7 @@ def test_analytic_ift_vs_numerical_ft():
     the q_cut→∞ limit, with NO q-grid.  Allen-Cahn φ⁴ 1-loop (φ³ Hartree)."""
     import numpy as np, math
     from sage.all import SR
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -493,7 +493,7 @@ def test_analytic_ift_vs_numerical_ft():
         correlator_2pt, correlator_2pt_x)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    ac = (TheoryBuilder('ac', n_populations=0).physical_field('phi', spatial_dim=1)
+    ac = (ModelBuilder('ac', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('lam', default=0.1, domain='positive')
@@ -547,7 +547,7 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
     comparison exact while staying fast — the time-quadrature error cancels."""
     import numpy as np, math
     from sage.all import SR
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -557,7 +557,7 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
         diagram_correlator, diagram_correlator_x)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    tb = (TheoryBuilder(kind, n_populations=0).physical_field('h', spatial_dim=1)
+    tb = (ModelBuilder(kind, n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('c', default=0.3, domain='real')
@@ -609,7 +609,7 @@ def test_mc_integrator_matches_grid_plain():
     not asserted — see docs/spatial_loop_integral_analytic_mc.md.)"""
     import numpy as np
     from sage.all import SR
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -618,7 +618,7 @@ def test_mc_integrator_matches_grid_plain():
     from engine.integration.spatial.full_integrator import diagram_kinematic
     from engine.diagrams.type_assignment import build_field_index_map
 
-    tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
+    tb = (ModelBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('c', default=0.3, domain='real')
@@ -658,7 +658,7 @@ def test_bessel_integrator_matches_grid():
     x=0 equal-point is UV-sensitive (see docs/spatial_loop_integral_analytic_mc.md §3)."""
     import numpy as np
     from sage.all import SR
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -667,7 +667,7 @@ def test_bessel_integrator_matches_grid():
     from engine.integration.spatial.full_integrator import diagram_kinematic
     from engine.diagrams.type_assignment import build_field_index_map
 
-    tb = (TheoryBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
+    tb = (ModelBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
           .parameter('c', default=0.3, domain='real')

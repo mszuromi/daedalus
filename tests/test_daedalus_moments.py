@@ -34,7 +34,7 @@ def test_set_partitions_are_bell_numbers():
 def test_central_moment_k4_is_kappa4_plus_3_kappa2_sq():
     """k=4 central equal-time moment must equal κ₄(0) + 3·κ₂(0)² — the full
     block + the 3 pair-partitions (singletons dropped)."""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     r4 = dd.run(m, dd.Config(k=4, max_ell=0, output='central_moment', **_TAU), mod)
     tau = np.asarray(r4['tau_grid'])
     zi = int(np.argmin(np.abs(tau)))
@@ -50,7 +50,7 @@ def test_central_moment_k4_is_kappa4_plus_3_kappa2_sq():
 def test_raw_moment_adds_mean_squared(monkeypatch):
     """k=2 raw moment = κ₂(τ) + ⟨φ⟩²; force a non-zero mean and check the
     constant μ² offset over the whole curve."""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     monkeypatch.setattr(dd, '_external_mean', lambda model, res: 2.0)
     rm = dd.run(m, dd.Config(k=2, max_ell=0, output='moment', **_TAU), mod)
     monkeypatch.undo()
@@ -61,7 +61,7 @@ def test_raw_moment_adds_mean_squared(monkeypatch):
 
 def test_central_equals_cumulant_for_k_le_3():
     """Central moments coincide with cumulants for k ≤ 3 (μ₂=κ₂, μ₃=κ₃)."""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     for k in (2, 3):
         rc = dd.run(m, dd.Config(k=k, max_ell=0, **_TAU), mod)
         rk = dd.run(m, dd.Config(k=k, max_ell=0, output='central_moment',
@@ -80,7 +80,7 @@ def test_one_loop_moment_shares_the_loop_budget():
     NOT the dressed product (κ₂⁽⁰⁾+κ₂⁽¹⁾)², which would add a stray κ₂⁽¹⁾²
     (a partial, incomplete 2-loop term).  Pins the convention so a regression
     to the dressed product is caught."""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     r2 = dd.run(m, dd.Config(k=2, max_ell=1, **_TAU), mod)
     r4 = dd.run(m, dd.Config(k=4, max_ell=1, output='central_moment',
                              **_TAU), mod)

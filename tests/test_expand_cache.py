@@ -11,7 +11,7 @@ Coverage:
   * ``find_best_cached_order`` picks the smallest cached order
     ``>= target``.
   * Compute-time speedup: cold ``compute_cumulants`` vs warm rerun on
-    the same theory.
+    the same model.
 
 Run with:
     sage -python -m pytest tests/test_expand_cache.py -v
@@ -25,21 +25,21 @@ import tempfile
 import pytest
 
 
-# A theory file we can hit cheaply (~9 s cold, ~0.2 s warm at order 4).
-THEORY_FILENAME = 'single_population_linear_delta_spikes_test.theory.py'
+# A model file we can hit cheaply (~9 s cold, ~0.2 s warm at order 4).
+MODEL_FILENAME = 'single_population_linear_delta_spikes_test.model.py'
 
 
 @pytest.fixture
 def model_and_fund():
-    """Load the test theory + its standard fundamental.
+    """Load the test model + its standard fundamental.
 
     Returns (model_dict, fundamental_dict).
     """
     import importlib.util
 
     here = os.path.dirname(os.path.abspath(__file__))
-    theory_path = os.path.join(here, '..', 'theories', THEORY_FILENAME)
-    spec = importlib.util.spec_from_file_location('test_th', theory_path)
+    model_path = os.path.join(here, '..', 'models', MODEL_FILENAME)
+    spec = importlib.util.spec_from_file_location('test_th', model_path)
     th = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(th)
     model = th.build()
@@ -186,7 +186,7 @@ def test_compute_cumulants_warm_cache_speedup(
         'C_tau differs between cold and warm runs'
 
     # Warm run must be substantially faster than cold.  Conservative
-    # threshold (10x) — typical speedup on this small theory is ~40x.
+    # threshold (10x) — typical speedup on this small model is ~40x.
     assert t_warm < t_cold / 10, \
         (f'expected warm run < cold / 10; got cold={t_cold:.2f}s, '
          f'warm={t_warm:.2f}s')
@@ -194,7 +194,7 @@ def test_compute_cumulants_warm_cache_speedup(
 
 def test_precompute_populates_cache(model_and_fund, isolated_cache):
     """``precompute(model)`` writes expand_taylor2.sobj + propagator.sobj
-    and reports PASS for a healthy theory."""
+    and reports PASS for a healthy model."""
     from api import precompute
     from api._expand_cache import cache_dir
 
@@ -256,7 +256,7 @@ def test_default_taylor_order_matches_diagrammatic_minimum(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Operator-IR form-factor signature (spatial derivative-vertex theories)
+# Operator-IR form-factor signature (spatial derivative-vertex models)
 # ──────────────────────────────────────────────────────────────────────
 # The expand-cache slug is only ``model['name']`` + taylor order, which
 # does NOT capture the per-vertex form-factor / mode table.  That table
@@ -267,21 +267,21 @@ def test_default_taylor_order_matches_diagrammatic_minimum(
 # pin the two halves of the fix: (a) the table is rebuilt on load, and
 # (b) a stale pre-signature bundle is rejected.
 
-# The combined Allen-Cahn ⊕ Model B ⊕ KPZ theory: φ³ plain vertex + Model
+# The combined Allen-Cahn ⊕ Model B ⊕ KPZ model: φ³ plain vertex + Model
 # B ∇²(φ²) composite vertex + KPZ (∂ₓφ)² per-leg vertex, all on one φ̃φ²
 # node — the canonical mixed composite+perleg form-factor table.
-COMBINED_THEORY_FILENAME = 'combined_allencahn_modelb_kpz_1d.theory.py'
+COMBINED_MODEL_FILENAME = 'combined_allencahn_modelb_kpz_1d.model.py'
 
 
 @pytest.fixture
 def combined_model():
-    """Load the combined operator-IR theory model (absolute path, so it
+    """Load the combined operator-IR model model (absolute path, so it
     survives the ``isolated_cache`` chdir)."""
     import importlib.util
 
     here = os.path.dirname(os.path.abspath(__file__))
-    theory_path = os.path.join(here, '..', 'theories', COMBINED_THEORY_FILENAME)
-    spec = importlib.util.spec_from_file_location('combined_th', theory_path)
+    model_path = os.path.join(here, '..', 'models', COMBINED_MODEL_FILENAME)
+    spec = importlib.util.spec_from_file_location('combined_th', model_path)
     th = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(th)
     return th.build()
@@ -340,7 +340,7 @@ def test_operator_ir_table_rebuilt_on_prepare_for_load(combined_model):
 def test_operator_ir_stale_unsigned_cache_rejected(combined_model,
                                                    isolated_cache):
     """A pre-signature bundle (``cache_version`` 1, no ``vertex_signature``)
-    for a derivative-vertex theory is the exact shape of the on-disk stale
+    for a derivative-vertex model is the exact shape of the on-disk stale
     file that caused the bug.  ``load_expand`` must reject it (return
     ``False``) rather than load it with the form factors dropped."""
     from engine.core.field_theory import FieldTheory
@@ -391,7 +391,7 @@ def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
 def test_combined_operator_ir_cached_matches_uncached(combined_model,
                                                       isolated_cache):
     """Headline regression: ``compute_cumulants`` for the combined
-    Model-B⊕KPZ operator-IR theory at ``max_ell=1`` agrees whether the
+    Model-B⊕KPZ operator-IR model at ``max_ell=1`` agrees whether the
     expand cache is used or bypassed — and the cached run keeps the
     'composite+perleg' form factors (vertex_mode) rather than collapsing
     to the bare φ̃φ² value."""

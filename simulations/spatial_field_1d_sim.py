@@ -15,8 +15,8 @@ unbiased in the time step dt — unlike plain Euler-Maruyama, which
 inflates the fast (large-k) modes by O(dt·ω_max).  The nonlinear
 forcing ``-λφ³`` is added via the ETD1 integrating factor.
 
-Matches ``theories/allen_cahn_1d_subcritical_pbc.theory.py`` (and the
-infinite-domain theory in the large-L limit) with action
+Matches ``models/allen_cahn_1d_subcritical_pbc.model.py`` (and the
+infinite-domain model in the large-L limit) with action
 ``phit·((Dt + μ - D·Laplacian)φ + λφ³) - T·phit²``.
 
 Self-consistency reference (λ=0): the stationary equal-time variance
@@ -179,7 +179,7 @@ def structure_factor(snaps, meta):
     physical cutoff ``meta['k_max']``.
 
     This is the matched-cutoff oracle for backend-C milestones III.0/III.2:
-    compare a theory ``S(q)`` computed at ``meta['k_max']`` against this.
+    compare a model ``S(q)`` computed at ``meta['k_max']`` against this.
     """
     L, N = meta['L'], int(meta['N'])
     q_grid = 2.0 * np.pi * np.fft.rfftfreq(N, d=L / N)
@@ -211,7 +211,7 @@ def space_time_correlator(snaps, meta, max_lag=None, n_lags=None):
     ``tau`` is the SYMMETRIC physical-time grid — C is even in τ by stationarity +
     time-reversal, so the τ<0 half is mirrored from τ≥0.  χ runs over the full
     ring: ``χ = arange(N) * meta['dx']`` (take the ``χ ≤ L/2`` half to compare to a
-    one-sided theory grid).
+    one-sided model grid).
 
     Lag spacing is the recording interval ``record_every · dt``.  Bound the τ
     extent with ``max_lag`` (physical time) or ``n_lags`` (# of non-negative
@@ -237,7 +237,7 @@ def space_time_correlator(snaps, meta, max_lag=None, n_lags=None):
 
 
 def lattice_sum_variance(L, N, mu, D, T):
-    """Discretized-theory exact equal-time variance ⟨φ²⟩ with the
+    """Discretized-model exact equal-time variance ⟨φ²⟩ with the
     finite-difference dispersion — the simulator's λ=0 reference."""
     N = int(N)                 # guard against Sage-kernel Integer
     dx = L / N
@@ -253,7 +253,7 @@ def third_cumulant_x(snaps):
 
     averaged over x0 (periodic translational average) and snapshots,
     with dphi = phi - <phi> (global empirical mean; cumulants are
-    shift-invariant so this matches the theory's connected 3-point
+    shift-invariant so this matches the model's connected 3-point
     function around the saddle).  m=0 gives <dphi^3>.
 
     Returns (kappa3, stderr), each length N: per-snapshot estimates are

@@ -1,5 +1,5 @@
 """
-Euler-Maruyama simulators for scalar Langevin SDEs (OU-type theories).
+Euler-Maruyama simulators for scalar Langevin SDEs (OU-type models).
 
 Distinct from the Poisson-Hawkes simulators in ``hawkes_sim_multipop_numba.py``:
 no spike events, no synaptic filters — just a continuous stochastic ODE
@@ -24,7 +24,7 @@ def sim_ou_quartic_numba(n_steps, dt_sim,
 
         dx/dt = -mu·x - eps·x³ + √(2D)·η(t),     ⟨η η⟩ = δ(t − t')
 
-    matching the action in ``theories/ou_quartic_double_well.theory.py``:
+    matching the action in ``models/ou_quartic_double_well.model.py``:
 
         S = ∫ dt  xt·((Dt + mu)·x + eps·x³) - D·xt²
 
@@ -57,7 +57,7 @@ def sim_ou_quartic_numba(n_steps, dt_sim,
 
     Notes
     -----
-    * Sign convention follows the theory file: positive ``mu`` =
+    * Sign convention follows the model file: positive ``mu`` =
       stable origin (sub-critical); ``mu = 0`` = pitchfork
       bifurcation; ``mu < 0`` = double-well wells at
       ``x = ±√(|mu|/eps)``.
@@ -97,7 +97,7 @@ def sim_ou_quartic_colored_numba(n_steps, dt_sim,
                                   bin_size_steps, n_bins, seed):
     """
     Scalar quartic Langevin driven by COLORED Gaussian noise.
-    Matches the κ² block in ``theories/ou_quartic_colored.theory.py``.
+    Matches the κ² block in ``models/ou_quartic_colored.model.py``.
 
     System
     ------
@@ -185,7 +185,7 @@ def sim_ou_sextic_numba(n_steps, dt_sim,
 
         dx/dt = -mu·x - eps·x³ - gamma·x⁵ + √(2D)·η(t)
 
-    matching the action in ``theories/ou_sextic.theory.py``:
+    matching the action in ``models/ou_sextic.model.py``:
 
         S = ∫ dt  xt·((Dt+mu)·x + eps·x³ + gamma·x⁵) - D·xt²
 
@@ -248,7 +248,7 @@ def sim_ou_quartic_two_dim_color_corr_numba(
     """
     Coupled-quartic 2D Langevin driven by COLORED, CROSS-CORRELATED
     Gaussian noise.  Matches the κ² block in
-    ``theories/ou_quartic_two_dim_color_corr.theory.py``.
+    ``models/ou_quartic_two_dim_color_corr.model.py``.
 
     System
     ------
@@ -390,7 +390,7 @@ def sim_ou_quartic_two_dim_corr_numba(
     WHITE, CROSS-CORRELATED Gaussian noise.  Same dynamics as
     ``sim_ou_quartic_two_dim_numba`` but with non-zero noise
     correlation ρ between the η_x and η_y drivers — matches the κ²
-    block in ``theories/ou_quartic_two_dim_corr.theory.py``.
+    block in ``models/ou_quartic_two_dim_corr.model.py``.
 
     System
     ------
@@ -411,10 +411,10 @@ def sim_ou_quartic_two_dim_corr_numba(
     Convention note
     ---------------
     This sim uses the standard MSR-JD convention ⟨ξ ξ⟩ = 2D·δ(τ).
-    The theory file as currently written declares
+    The model file as currently written declares
     ``coefficient='D1'``, which corresponds to ⟨ξ ξ⟩ = D·δ(τ) (half-
-    strength).  For a quantitative theory-vs-sim comparison, either
-    edit the theory file to ``coefficient='2*D1'`` (and similarly for
+    strength).  For a quantitative model-vs-sim comparison, either
+    edit the model file to ``coefficient='2*D1'`` (and similarly for
     ``D2`` and ``Cxy``'s coefficient), OR rerun this sim with
     half-strength D values.  Speed-test comparisons are unaffected.
 
@@ -495,7 +495,7 @@ def sim_ou_quartic_two_dim_numba(
         dx/dt = -mu1·x - eps1·x³ + J1·y + √(2 D1)·η_x(t)
         dy/dt = -mu2·y - eps2·y³ + J2·x + √(2 D2)·η_y(t)
 
-    matching the action in ``theories/ou_quartic_two_dim.theory.py``:
+    matching the action in ``models/ou_quartic_two_dim.model.py``:
 
         S = xt·((Dt + mu1)·x + eps1·x³ - J1·y) - D1·xt²
           + yt·((Dt + mu2)·y + eps2·y³ - J2·x) - D2·yt²

@@ -2,7 +2,7 @@
 engine.integration.spatial.pipeline_bridge
 ==========================================
 The "symbolic-in-q bridge" (spatial Phase 5, Stage A production) — route a
-Tier-1 spatial theory through the SHARED diagram pipeline in the mixed
+Tier-1 spatial model through the SHARED diagram pipeline in the mixed
 ``(t, k)`` representation, then do the external ``q → x`` Fourier transform
 ANALYTICALLY (heat-kernel / erf closed form: exact at ``τ = 0``, no ringing).
 
@@ -13,7 +13,7 @@ directly from the propagator's heat-kernel block.  It is correct but
 bypasses the shared diagram machinery, so it does not generalize to loops.
 This bridge instead reproduces the same answer THROUGH the shared pipeline:
 
-  1. run the SAME pipeline a time-only theory uses
+  1. run the SAME pipeline a time-only model uses
      (``compute_poles_and_residues`` → ``enumerate_unique_diagrams`` →
      ``classify_coefficient_factors`` → ``compute_correction_td``) with
      ``Laplacian → -q²`` substituted into ``num_params``, so the pipeline
@@ -401,7 +401,7 @@ def compute_spatial_correlator_via_pipeline(
                 f'pipeline certification failed: the shared-pipeline C(q,τ) '
                 f'disagrees with the propagator modes by {certify_max_rel:.2e} '
                 f'(> tol {certify_tol:.0e}).  The (mu,D,kap) extraction or the '
-                f'diagram routing is wrong for this theory.')
+                f'diagram routing is wrong for this model.')
 
     if verbose and stage_headers:
         print('[6/7] (spatial) Tree level — no loop diagrams to enumerate.')
@@ -450,7 +450,7 @@ def compute_coupled_tree_correlator(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         *, q_cut=60.0, n_q=6000, n_modes=600, verbose=False):
     """Coupled-field tree-level ``C_ij(x, τ)`` via the spectral-Lyapunov 2-point
-    (Dyson step 3a) + a ``q → x`` FT — for theories whose inverse propagator has
+    (Dyson step 3a) + a ``q → x`` FT — for models whose inverse propagator has
     OFF-DIAGONAL coupling (so the diagonal heat-kernel block is absent) but whose
     diffusion is SCALAR (``𝒟̂ = 0``, exact at ``n=0``, no Dyson series).
 
@@ -513,7 +513,7 @@ def compute_coupled_tree_correlator(
             raise SpatialPropagatorError(
                 'coupled tree correlator needs scalar diffusion (𝒟̂=0); unequal '
                 'diffusion requires the Dyson–Duhamel series — set a truncation '
-                'order with SpatialTheoryBuilder.dyson_order(N) (or the '
+                'order with SpatialModelBuilder.dyson_order(N) (or the '
                 'SPATIAL_DYSON_ORDER env) to enable the dressed propagator.')
         dyson_order = int(pol['order'])
         # series convergence: the insertion 𝒟̂|k|² vs the reference D₀|k|²
@@ -684,7 +684,7 @@ def _diagram_is_bubble(td):
 
 def diagram_form_factor(td, vertex_terms, mode=None, d=1):
     """Assemble the momentum-space **form factor** ``Rcal(q,ℓ)`` a derivative-vertex
-    theory puts on an ARBITRARY diagram ``td`` — **any loop order ``ell``, any
+    model puts on an ARBITRARY diagram ``td`` — **any loop order ``ell``, any
     ``k``, and any MIX of derivative-vertex types** (NOT bubble-specific and NOT
     single-type: it is a product over the diagram's interaction vertices, and
     each vertex looks up its OWN factor, so vertices "wire together" by
@@ -1058,7 +1058,7 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
 def _prefactor_is_live(pre, num_params, tol=1e-12):
     """True if the diagram's scalar prefactor is nonzero at the saddle/params.
     A topological bubble whose prefactor ``∝ φ*²`` (e.g. the cubic-from-quartic
-    vertex of a φ⁴ theory expanded around φ*=0) is DEAD at φ*=0 and must NOT
+    vertex of a φ⁴ model expanded around φ*=0) is DEAD at φ*=0 and must NOT
     trigger the bubble route — only LIVE bubbles do.  Substitutes ``num_params``
     (which carries the saddle ``phistar*``) into the SR prefactor; if free
     symbols remain (a param is missing) it conservatively returns True."""
@@ -1096,7 +1096,7 @@ def _check_prefactor_resolved(pre, base_np_sr, model):
     The enumeration/classification that produces ``scalar_prefactor`` is
     q-independent by construction (the loop momentum lives in the form factors
     and the Symanzik integral, NOT in this scalar prefactor — instrumentation
-    over every tracked spatial theory at ``max_ell=1`` confirmed this branch
+    over every tracked spatial model at ``max_ell=1`` confirmed this branch
     NEVER fires when the params are complete).  So a leftover free symbol that
     names a MODEL PARAMETER (a coupling or the mean-field saddle) means that
     parameter is simply MISSING from ``base_np_sr`` — silently dropping the
@@ -1139,7 +1139,7 @@ def _check_prefactor_resolved(pre, base_np_sr, model):
 def compute_coupled_loop_correlator(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         C0, tree_info, max_ell=1, verbose=False):
-    """Loop corrections for a COUPLED scalar-diffusion theory via **spectral
+    """Loop corrections for a COUPLED scalar-diffusion model via **spectral
     assignments** (Dyson 3c).
 
     With scalar diffusion every edge's momentum factor is the same heat kernel
@@ -1190,7 +1190,7 @@ def compute_coupled_loop_correlator(
             raise NotImplementedError(
                 'coupled loop corrections with unequal diffusion (𝒟̂≠0) need '
                 'the Dyson–Duhamel dressing — set a truncation order with '
-                'SpatialTheoryBuilder.dyson_order(N) (any N≥0; loop '
+                'SpatialModelBuilder.dyson_order(N) (any N≥0; loop '
                 'insertions are exact at every order, cost grows '
                 'combinatorially).')
         dress_order = int(pol['order'])
@@ -1216,7 +1216,7 @@ def compute_coupled_loop_correlator(
     if not mu_scale > 0.0:
         raise SpatialPropagatorError(
             f'coupled loop: reaction matrix M has an eigenvalue with '
-            f'Re m = {mu_scale} <= 0 (unstable/critical theory).')
+            f'Re m = {mu_scale} <= 0 (unstable/critical model).')
 
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
@@ -1515,7 +1515,7 @@ def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=verbose, certify=True, enum_verbose=False, stage_headers=False)
     if tree_info.get('coupled'):
-        # Coupled (matrix-M) theory: the tree routed to the spectral-Lyapunov
+        # Coupled (matrix-M) model: the tree routed to the spectral-Lyapunov
         # driver; loops go through the spectral-assignment path (Dyson 3c).
         return compute_coupled_loop_correlator(
             ft, model, prop, num_params, external_fields, tau_grid,
@@ -1528,7 +1528,7 @@ def compute_spatial_correlator_generic(
     mu0, D0, kap0 = modes[0]
     mu0 = float(np.real(mu0)); D0 = float(np.real(D0)); kap0 = float(np.real(kap0))
 
-    # Derivative/∇ interaction vertices (operator-IR theories, e.g. Model-B
+    # Derivative/∇ interaction vertices (operator-IR models, e.g. Model-B
     # conserved ∇²(φ²)) deposit a momentum-space FORM FACTOR Rcal(ℓ,q) on the loop.
     # The full-diagram integrator averages it over the loop-momentum Gaussian by
     # Gauss–Hermite (exact for the polynomial Rcal).  Extracted per diagram below;
@@ -1538,7 +1538,7 @@ def compute_spatial_correlator_generic(
     # operator chain, and mode ('composite' — operator on the φⁿ composite, the
     # response-leg momentum: Model B ∇²(φ²), Burgers ∂_x(φ²); 'perleg' — operator
     # on EACH physical leg: KPZ (∂_xφ)², ∏ i·p_leg).  diagram_form_factor sums the
-    # matching types PER NODE (coupling-weighted), so a theory mixing distinct
+    # matching types PER NODE (coupling-weighted), so a model mixing distinct
     # derivative vertices (even of the same φ̃φ² signature, e.g. Model B + KPZ)
     # reconstructs every cross term — the couplings (substituted below) are real.
     vterms_sym = getattr(ft._ns, '_operator_ir_vertex_terms', None) or []
@@ -1547,11 +1547,11 @@ def compute_spatial_correlator_generic(
     # so ANY ell works — the L=2 momentum integral matches a brute ∫dℓ₀dℓ₁ to
     # 1e-14.  The remaining real limits are gated elsewhere: d≥2
     # (full_integrator.diagram_kinematic), and field-degree≥3 composite vertices
-    # (pipeline.theory_compiler).
+    # (pipeline.model_compiler).
     if vterms_sym and max_ell >= 2:
         import warnings as _warnings
         _warnings.warn(
-            'derivative-vertex (form-factor) theory at max_ell>=2: correct '
+            'derivative-vertex (form-factor) model at max_ell>=2: correct '
             '(the L-loop form-factor average is validated), but EXPENSIVE — the '
             'GH loop-momentum grid multiplies the already-heavy ell>=2 chamber '
             'quadrature. Expect long runtimes; consider a coarser q-grid (n_q).',
@@ -1601,7 +1601,7 @@ def compute_spatial_correlator_generic(
                 f'(a genuine advection v·∂_xφ).  The drifting propagator is '
                 f'validated at the heat-kernel (oracle) level but is not yet '
                 f'wired into the momentum integrator (m_k=μ+D·k²); only φ*=0 '
-                f'gradient theories (Burgers/KPZ, where V→0) run end-to-end.')
+                f'gradient models (Burgers/KPZ, where V→0) run end-to-end.')
 
     if verbose:
         print(f'[6/7] (spatial) Enumerate prediagrams + typed diagrams → classify '
@@ -1629,9 +1629,9 @@ def compute_spatial_correlator_generic(
     if not descrs:
         raise SpatialPropagatorError(
             f'no loop diagrams were enumerated at max_ell={max_ell}.  This is the '
-            f'expected outcome for a FREE / purely-Gaussian theory (no interaction '
-            f'vertices): such a theory has no loop corrections, so its exact result '
-            f'IS the tree level — request max_ell=0.  (If this theory does have '
+            f'expected outcome for a FREE / purely-Gaussian model (no interaction '
+            f'vertices): such a model has no loop corrections, so its exact result '
+            f'IS the tree level — request max_ell=0.  (If this model does have '
             f'interaction vertices, an empty enumeration would instead point to a '
             f'bug worth reporting.)')
     live = [(dd, pv, ff, el) for dd, pv, ff, el, pn in descrs
@@ -1678,7 +1678,7 @@ def compute_spatial_correlator_generic(
 
     # Integrator backend (switchable): 'grid' (deterministic causal-chamber product
     # quadrature, default, validated) or 'mc' (importance-sampled Monte-Carlo —
-    # bounded memory, O(1/√N); the feasible ℓ≥2 path for PLAIN φⁿ theories where
+    # bounded memory, O(1/√N); the feasible ℓ≥2 path for PLAIN φⁿ models where
     # the product grid OOMs).  See docs/spatial_loop_integral_analytic_mc.md.
     import os as _osi
     _integrator = _osi.environ.get('SPATIAL_INTEGRATOR', 'grid').strip().lower()
@@ -2063,7 +2063,7 @@ def _build_wick_moment_multi(Rcal, ls, qs):
 def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
                            points, tree_info, max_ell=1, verbose=False,
                            n_t_loop=10, n_s_loop=12):
-    """k-point cumulant for a COUPLED scalar-diffusion theory at external
+    """k-point cumulant for a COUPLED scalar-diffusion model at external
     EVENTS (H2 driver) — the general-k companion of
     :func:`compute_coupled_loop_correlator`, built on the same spectral-
     assignment sum but with the orbit-stabilizer external-Wick mapping

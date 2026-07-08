@@ -18,7 +18,7 @@ from engine.enumeration.degree_scan import (
     check_taylor_order, ensure_taylor_order,
 )
 from engine.core.field_theory import FieldTheory
-from engine.core.serialize import save_theory
+from engine.core.serialize import save_model
 
 
 # ── Helpers: build mock prediagrams ──────────────────────────────────────────
@@ -193,18 +193,18 @@ def test_ensure_no_reexpansion():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        theory_path = os.path.join(tmpdir, 'test_theory')
+        model_path = os.path.join(tmpdir, 'test_model')
         model_file = os.path.relpath(
             os.path.join(os.path.dirname(__file__), '..', 'simulations', 'hawkes_sage.py'),
             os.path.dirname(__file__) + '/..',
         )
-        save_theory(theory_path, ft, model_file=model_file,
+        save_model(model_path, ft, model_file=model_file,
                     model_var_name='HAWKES_MODEL')
 
         # Prediagrams with max degree 3 — order 4 is sufficient
         pds = [_degree3_prediagram()]
         project_root = os.path.join(os.path.dirname(__file__), '..')
-        meta, data = ensure_taylor_order(theory_path, pds,
+        meta, data = ensure_taylor_order(model_path, pds,
                                          project_root=project_root)
         assert meta['taylor_order'] == 4
     finally:
@@ -219,18 +219,18 @@ def test_ensure_reexpands():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        theory_path = os.path.join(tmpdir, 'test_theory')
+        model_path = os.path.join(tmpdir, 'test_model')
         model_file = os.path.relpath(
             os.path.join(os.path.dirname(__file__), '..', 'simulations', 'hawkes_sage.py'),
             os.path.dirname(__file__) + '/..',
         )
-        save_theory(theory_path, ft, model_file=model_file,
+        save_model(model_path, ft, model_file=model_file,
                     model_var_name='HAWKES_MODEL')
 
         # Prediagrams need degree 4
         pds = [_degree4_prediagram()]
         project_root = os.path.join(os.path.dirname(__file__), '..')
-        meta, data = ensure_taylor_order(theory_path, pds,
+        meta, data = ensure_taylor_order(model_path, pds,
                                          project_root=project_root)
         assert meta['taylor_order'] == 4
     finally:

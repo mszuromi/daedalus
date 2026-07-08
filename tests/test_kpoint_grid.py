@@ -25,7 +25,7 @@ _P = {'mu': 1.0, 'D': 1.0, 'lam': 0.3, 'T': 1.0}
 
 
 def test_k3_grid_shape_symmetry_and_matches_explicit():
-    model, mod = dd.load_theory('kpz_1d')
+    model, mod = dd.load_model('kpz_1d')
     # equal-time grid: chi = [0, 0.5, 1, 1.5, 2], single tau=0
     res = dd.run(model, dd.Config(
         k=3, max_ell=0, external_fields=[('dh', 1)] * 3,
@@ -45,7 +45,7 @@ def test_k3_grid_shape_symmetry_and_matches_explicit():
 
 
 def test_k3_full_chi_tau_grid_is_4d():
-    model, mod = dd.load_theory('kpz_1d')
+    model, mod = dd.load_model('kpz_1d')
     res = dd.run(model, dd.Config(
         k=3, max_ell=0, external_fields=[('dh', 1)] * 3,
         parameters=_P, chi_grid=(0.0, 1.0, 3), tau_grid=(-1.0, 1.0, 3)), mod)
@@ -55,7 +55,7 @@ def test_k3_full_chi_tau_grid_is_4d():
 
 
 def test_k3_grid_requires_points_or_chi_grid():
-    model, mod = dd.load_theory('kpz_1d')
+    model, mod = dd.load_model('kpz_1d')
     with pytest.raises(ValueError):
         dd.run(model, dd.Config(
             k=3, max_ell=0, external_fields=[('dh', 1)] * 3, parameters=_P), mod)

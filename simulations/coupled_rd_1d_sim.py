@@ -4,7 +4,7 @@ simulations/coupled_rd_1d_sim.py
 N-species coupled stochastic reaction-diffusion Langevin simulator on a
 1D ring (periodic boundary) + the exact linear "box correlator" oracle.
 This is the physics oracle for COUPLED-FIELD theory validation (the
-spatial Dyson series for multi-species theories with cross-noise and
+spatial Dyson series for multi-species models with cross-noise and
 per-species — possibly unequal — diffusion).
 
 Dynamics (fields phi_i(x,t), i = 0..N-1, periodic grid of n_x points,

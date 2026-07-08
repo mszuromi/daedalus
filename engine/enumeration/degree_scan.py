@@ -3,14 +3,14 @@ engine.enumeration.degree_scan
 ==============================
 Scan prediagrams for max vertex degree, compare to stored Taylor order,
 and trigger re-expansion if needed.  This bridges the enumeration output
-(Phase 2) back to the theory data (Phase 1).
+(Phase 2) back to the model data (Phase 1).
 
 Build Phase C.
 """
 
 import os
 
-from engine.core.serialize import load_theory, save_theory, reload_model
+from engine.core.serialize import load_model, save_model, reload_model
 from engine.core.field_theory import FieldTheory
 
 
@@ -69,12 +69,12 @@ def scan_source_vertices(prediagrams):
 
 def check_taylor_order(meta, max_degree):
     """
-    Check whether the saved theory's Taylor order is sufficient.
+    Check whether the saved model's Taylor order is sufficient.
 
     Parameters
     ----------
     meta : dict
-        Metadata from load_theory().
+        Metadata from load_model().
     max_degree : int
         Maximum vertex degree from max_vertex_degree().
 
@@ -88,15 +88,15 @@ def check_taylor_order(meta, max_degree):
     return current >= max_degree, current, max_degree
 
 
-def ensure_taylor_order(theory_path, prediagrams, project_root=None):
+def ensure_taylor_order(model_path, prediagrams, project_root=None):
     """
-    Load a saved theory and re-expand if the Taylor order is too low
+    Load a saved model and re-expand if the Taylor order is too low
     for the given prediagrams.
 
     Parameters
     ----------
-    theory_path : str
-        Path to the saved theory directory.
+    model_path : str
+        Path to the saved model directory.
     prediagrams : list of (D, G, leaves, internal)
         Prediagrams to scan.
     project_root : str or None
@@ -107,7 +107,7 @@ def ensure_taylor_order(theory_path, prediagrams, project_root=None):
     meta : dict
     data : dict
     """
-    meta, data = load_theory(theory_path)
+    meta, data = load_model(model_path)
     max_deg = max_vertex_degree(prediagrams)
 
     sufficient, current, required = check_taylor_order(meta, max_deg)
@@ -116,20 +116,20 @@ def ensure_taylor_order(theory_path, prediagrams, project_root=None):
         return meta, data
 
     # Re-expand at the required order
-    print(f'Re-expanding theory from order {current} to {required}...')
+    print(f'Re-expanding model from order {current} to {required}...')
 
     model = reload_model(meta, project_root=project_root)
     ft = FieldTheory(model, taylor_order=required)
     ft.expand()
 
     # Re-save, preserving model identity info
-    save_theory(
-        theory_path, ft,
+    save_model(
+        model_path, ft,
         propagator_data=None,  # propagator must be recomputed separately
         stationarity=meta.get('stationarity', True),
         model_file=meta.get('model_file'),
         model_var_name=meta.get('model_var_name'),
     )
-    print(f'Theory re-expanded and saved. Note: propagator data must be recomputed.')
+    print(f'Model re-expanded and saved. Note: propagator data must be recomputed.')
 
-    return load_theory(theory_path)
+    return load_model(model_path)

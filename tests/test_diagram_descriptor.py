@@ -3,7 +3,7 @@ tests/test_diagram_descriptor.py
 ================================
 Generic spatial loop pipeline — **Phase 1**: ``diagram_descriptor.diagram_to_cstack``
 maps an enumerated typed diagram onto the C-stack edge list.  Validated on the
-reaction-diffusion (φ̃φ²) theory, whose ell=1 inventory is known
+reaction-diffusion (φ̃φ²) model, whose ell=1 inventory is known
 (``docs/spatial_loop_diagram_inventory.md``): 2 bubbles + 1 tadpole.
 
 Asserts (classifying by STRUCTURE, not diagram index):
@@ -37,11 +37,11 @@ from engine.diagrams.type_assignment import build_field_index_map
 @pytest.fixture(scope='module')
 def rd_records():
     """Reaction-diffusion (φ̃φ²) d=1: built once, ell=0 and ell=1 records."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api._propagator import build_propagator
     from api.compute import FieldTheory
 
-    model = (TheoryBuilder('rd1', n_populations=0)
+    model = (ModelBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)
              .parameter('mu', default=1.0, domain='positive')
              .parameter('D', default=1.0, domain='positive')

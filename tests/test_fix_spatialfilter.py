@@ -18,7 +18,7 @@ loop diagrams" rather than naming the missing parameter).
 
 The scalar prefactor is q-independent by construction (the loop momentum lives
 in the form factors / Symanzik integral, NOT in the scalar prefactor —
-instrumentation over every tracked spatial theory at ``max_ell=1`` showed this
+instrumentation over every tracked spatial model at ``max_ell=1`` showed this
 branch NEVER fires with complete params).  So a leftover free symbol that names
 a model parameter ⇒ that parameter is MISSING ⇒ we now RAISE a clear
 ``missing parameter <name>`` error instead of dropping the diagram.
@@ -51,7 +51,7 @@ from engine.integration.spatial.pipeline_bridge import (
 
 
 def _allen_cahn_model():
-    """The shipped 1D stochastic Allen-Cahn (φ⁴, μ>0, infinite domain) theory.
+    """The shipped 1D stochastic Allen-Cahn (φ⁴, μ>0, infinite domain) model.
 
     Its single ``ell=1`` loop diagram (φ³ Hartree from the quartic vertex
     expanded around φ*=0) carries the scalar prefactor ``-12·T²·λ`` — i.e. the
@@ -59,8 +59,8 @@ def _allen_cahn_model():
     quadratic propagator, so the propagator builds fine even when ``lam`` is
     omitted.  That is exactly the seam the fix guards.
     """
-    path = os.path.join(_REPO, 'theories',
-                        'allen_cahn_1d_subcritical_infinite.theory.py')
+    path = os.path.join(_REPO, 'models',
+                        'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('ac_thy', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

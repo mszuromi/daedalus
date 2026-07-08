@@ -59,9 +59,9 @@ def _run_pipeline(action, eq, params, k, max_ell, name):
     from engine.diagrams.type_assignment import build_field_index_map
     from engine.core.vertices import extract_vertex_types, extract_source_types
     from engine.integration.time_domain.final_integral import integrate_diagram
-    from api.theory import TemporalTheoryBuilder
+    from api.model import TemporalModelBuilder
 
-    b = (TemporalTheoryBuilder(name).physical_field('x')
+    b = (TemporalModelBuilder(name).physical_field('x')
          .parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive'))
     for p, v in params.items():

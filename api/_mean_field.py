@@ -31,10 +31,10 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     The returned ``num_params`` is suitable for direct use in
     ``compute_poles_and_residues`` and ``compute_correction_td``.
 
-    Heterogeneous-population theories take the
+    Heterogeneous-population models take the
     :func:`_solve_mean_field_hetero` branch — multiple iteration
     saddles (one per pop), separate phi-functions per pop, per-pop
-    field arrays.  Legacy single-pop theories keep the original
+    field arrays.  Legacy single-pop models keep the original
     flat-pop code path below.
     """
     if model.get('populations'):
@@ -158,7 +158,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     # Try a sequence of initial guesses, starting with small values
     # safe for mf_eqs that have singularities at large nstar (e.g.
     # spike-reset with vstar = ... / (1 - nstar)), and falling back
-    # to the legacy [1.0] guess for theories whose saddle lives
+    # to the legacy [1.0] guess for models whose saddle lives
     # there.  ``fsolve`` returns ier=1 on clean convergence; we
     # keep the first ier=1 result and otherwise fall through with
     # the last attempt.
@@ -258,7 +258,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
                 num_params[sym] = phi_deriv_vals[(dk, i)]
 
     # ── phi0_i (φ at the saddle) from mf_bg_conditions ───────────
-    # Template-built theories declare φ as a FORMAL function, so the
+    # Template-built models declare φ as a FORMAL function, so the
     # (2,0) Poisson-noise sector carries the formal symbol ``phi0_i``
     # (= the mean firing rate ``nstar_i`` at the saddle).  The
     # per-derivative loop above only resolves ``phi1_i`` upward, so
@@ -266,7 +266,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     # coefficient ``-1/2*phi0_i`` never becomes numeric, and the whole
     # correlator collapses to 0.  ``vstar_subs_dict`` (the model's
     # ``mf_bg_conditions``) maps ``phi0_i -> nstar_i``; evaluate each
-    # non-saddle entry at the solved saddle.  (Text-built theories
+    # non-saddle entry at the solved saddle.  (Text-built models
     # inline a concrete φ and declare no ``phi0_i`` key, so this is a
     # no-op for them.)
     for _lhs, _rhs in vstar_subs_dict.items():
@@ -289,7 +289,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
 
 # ── Heterogeneous-population MF solver ────────────────────────────
 def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
-    """MF solver for theories that declare ``model['populations']``.
+    """MF solver for models that declare ``model['populations']``.
 
     Generalises the legacy single-pop solver:
 
@@ -360,7 +360,7 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
     # it's an iteration saddle.
 
     # Iteration vs compound classification.  Prefer the model's
-    # ``iteration_saddles`` list (computed at TheoryBuilder build()
+    # ``iteration_saddles`` list (computed at ModelBuilder build()
     # time by the same _classify_mf_eqs the compiler uses) — that's
     # the authoritative source.  Fall back to a structural heuristic
     # only if it's missing.
@@ -450,7 +450,7 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             for i, v in enumerate(vals):
                 sub[saddle_info[sname]['sr_array'][i]] = v
         # Compound saddles also reference each other?  For Hawkes
-        # theories, compounds depend only on iteration saddles.
+        # models, compounds depend only on iteration saddles.
         # Evaluate each compound RHS once with the iteration subs.
         out = {}
         for sname in compound_saddles:

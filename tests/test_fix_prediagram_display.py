@@ -19,7 +19,7 @@ import daedalus as dd                                      # noqa: E402
 
 
 def test_plot_prediagrams_returns_closed_figure():
-    model, _ = dd.load_theory('ou_quartic')
+    model, _ = dd.load_model('ou_quartic')
     n_before = len(plt.get_fignums())
     fig = dd.plot_prediagrams(model, k=2, max_ell=1)
     assert isinstance(fig, Figure)

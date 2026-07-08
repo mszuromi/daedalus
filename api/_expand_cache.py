@@ -3,8 +3,8 @@ Disk cache for ``FieldTheory.expand()`` results.
 
 Why this exists
 ---------------
-`FieldTheory.expand()` is the dominant cost for non-trivial theories
-— for a 4-field × 2-population compartmental Bernoulli theory at
+`FieldTheory.expand()` is the dominant cost for non-trivial models
+— for a 4-field × 2-population compartmental Bernoulli model at
 ``taylor_order=4`` it runs ~90 minutes single-threaded inside Sage's
 multivariate ``taylor()``.  The output is the bigrade-classified
 action dict ``ft._by_tp`` (key = ``(n_tilde, n_phys)``, value =
@@ -33,7 +33,7 @@ Cache layout
 ------------
 ::
 
-    saved_theories/<theory_slug>/
+    saved_models/<model_slug>/
         propagator.sobj                       # taylor-order-independent
         expand_taylor2.sobj                   # base layer (MF + propagator)
         expand_taylor4.sobj                   # optional
@@ -41,7 +41,7 @@ Cache layout
         unique_typed_mult_v1_<ext>_k<k>_l<l>_taylor<N>.sobj
         manifest.json                         # PipelineCache bookkeeping
 
-``<theory_slug>`` is ``re.sub(r'[^A-Za-z0-9]+', '_', name).lower()`` —
+``<model_slug>`` is ``re.sub(r'[^A-Za-z0-9]+', '_', name).lower()`` —
 the same slug `_propagator.py` and `_diagrams.py` use.
 
 What gets pickled
@@ -64,7 +64,7 @@ Each ``expand_taylor<N>.sobj`` holds a dict with:
     filtering checks).
   * ``'vertex_signature'`` — fingerprint of the operator-IR
     derivative-vertex form-factor table (``None`` for plain/temporal
-    theories).  The on-disk slug is only ``model['name']`` + taylor
+    models).  The on-disk slug is only ``model['name']`` + taylor
     order, which does NOT capture the per-vertex form-factor / mode
     state (it lives on the namespace as an *action-eval side effect*,
     not in ``_by_tp``).  ``load_expand`` reconstructs the live table and
@@ -106,20 +106,31 @@ def _slug(model: dict) -> str:
     return re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
 
 
-def cache_dir(model: dict, cache_dir_root: str = 'saved_theories') -> str:
-    """Return ``<cache_dir_root>/<theory_slug>/`` for a given model."""
+def cache_dir(model: dict, cache_dir_root: str = 'saved_models') -> str:
+    """Return ``<cache_dir_root>/<model_slug>/`` for a given model.
+
+    Migration: pre-July-2026 the cache root was named ``saved_theories``; if
+    the old directory exists and the new one does not, rename it in place so
+    warm caches survive the theory -> model rename."""
+    legacy = cache_dir_root.replace('saved_models', 'saved_theories')
+    if (legacy != cache_dir_root and not os.path.isdir(cache_dir_root)
+            and os.path.isdir(legacy)):
+        try:
+            os.rename(legacy, cache_dir_root)
+        except OSError:
+            pass
     return os.path.join(cache_dir_root, _slug(model))
 
 
 def expand_cache_path(model: dict, taylor_order: int,
-                      cache_dir_root: str = 'saved_theories') -> str:
+                      cache_dir_root: str = 'saved_models') -> str:
     """Path to the expand-cache file at this order."""
     return os.path.join(cache_dir(model, cache_dir_root),
                         f'expand_taylor{int(taylor_order)}.sobj')
 
 
 def list_cached_orders(model: dict,
-                       cache_dir_root: str = 'saved_theories') -> list[int]:
+                       cache_dir_root: str = 'saved_models') -> list[int]:
     """Return all taylor orders that have a cached expand result, sorted."""
     d = cache_dir(model, cache_dir_root)
     if not os.path.isdir(d):
@@ -134,7 +145,7 @@ def list_cached_orders(model: dict,
 
 
 def find_best_cached_order(model: dict, target_order: int,
-                           cache_dir_root: str = 'saved_theories') -> int | None:
+                           cache_dir_root: str = 'saved_models') -> int | None:
     """Return the smallest cached order ``>= target_order``, or ``None``.
 
     Choosing the smallest minimizes the post-load filter work — every
@@ -206,21 +217,21 @@ def _canon_chain(chain) -> list | None:
 
 
 def vertex_form_factor_signature(ns) -> str | None:
-    """Stable fingerprint of a theory's operator-IR derivative-vertex
+    """Stable fingerprint of a model's operator-IR derivative-vertex
     form-factor table (``ns._operator_ir_vertex_terms``).
 
-    Returns ``None`` for a theory that does NOT use the operator IR
+    Returns ``None`` for a model that does NOT use the operator IR
     (``ns._operator_ir`` falsey, or ``ns is None``) — so the expand
-    cache of every pre-existing temporal / plain-vertex theory keeps its
+    cache of every pre-existing temporal / plain-vertex model keeps its
     ``None``-vs-``None`` match and continues to load unchanged.  For an
-    operator-IR theory it returns ``'operator_ir:' + <sha256[:16]>``
+    operator-IR model it returns ``'operator_ir:' + <sha256[:16]>``
     built from each vertex term's ``mode``, physical-leg count, operator
     ``chain``, and (coupling-mixing) ``weight`` — the four pieces that
     decide which momentum form factor every interaction node carries
     (see
     :func:`engine.integration.spatial.pipeline_bridge.diagram_form_factor`).
 
-    Adding the KPZ ``(∂ₓφ)²`` vertex to a Model-B-only theory, dropping
+    Adding the KPZ ``(∂ₓφ)²`` vertex to a Model-B-only model, dropping
     it, or re-weighting the mix all change the signature, so a stale
     on-disk expand bundle whose signature does not match the
     freshly-built model is rejected by :func:`load_expand` (which then
@@ -252,7 +263,7 @@ def vertex_form_factor_signature(ns) -> str | None:
 
 def _reconstruct_operator_ir_table(ft) -> None:
     """Re-populate ``ft._ns._operator_ir_vertex_terms`` for an
-    operator-IR theory that is being loaded from cache.
+    operator-IR model that is being loaded from cache.
 
     The derivative-vertex form-factor table is a *side effect of
     evaluating the action lambda* — ``_lower_operator_ir_action`` runs
@@ -267,7 +278,7 @@ def _reconstruct_operator_ir_table(ft) -> None:
     and lowers the IR — no Taylor expansion) and reproduces the table
     bit-identically.  ``hasattr``-guarded so it is a no-op when the
     table is already present (a fresh ``expand()`` or a prior
-    reconstruct) and skipped entirely for non-operator-IR theories.
+    reconstruct) and skipped entirely for non-operator-IR models.
     """
     ns = getattr(ft, '_ns', None)
     if ns is None or not getattr(ns, '_operator_ir', False):
@@ -305,7 +316,7 @@ def prepare_for_load(ft) -> None:
     namespace + ring must exist before the load can coerce the
     cached polynomials back into a live ring.
 
-    For operator-IR theories this also rebuilds the derivative-vertex
+    For operator-IR models this also rebuilds the derivative-vertex
     form-factor table (``_reconstruct_operator_ir_table``), which a bare
     ``_build_namespace`` does not populate — see that helper's docstring.
     """
@@ -314,15 +325,15 @@ def prepare_for_load(ft) -> None:
         ft._ns      = ns
         ft._R       = R
         ft._n_tilde = n_tilde
-    # No-op for non-operator-IR theories and when the table is already
+    # No-op for non-operator-IR models and when the table is already
     # present (e.g. the caller already ran expand()).
     _reconstruct_operator_ir_table(ft)
 
 
-def save_expand(model: dict, ft, cache_dir_root: str = 'saved_theories',
+def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
                 verbose: bool = False) -> str:
     """Pickle ``ft._by_tp`` + ``_S_raw`` + ``_mf_sector_raw`` for this
-    theory at ``ft.taylor_order``.
+    model at ``ft.taylor_order``.
 
     Returns the file path written.
     """
@@ -350,7 +361,7 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_theories',
 
 def load_expand(model: dict, ft, target_order: int,
                 cached_order: int | None = None,
-                cache_dir_root: str = 'saved_theories',
+                cache_dir_root: str = 'saved_models',
                 verbose: bool = False) -> bool:
     """Populate ``ft._by_tp`` / ``ft._S_raw`` / ``ft._mf_sector_raw``
     from disk for the requested ``target_order``.
@@ -399,13 +410,13 @@ def load_expand(model: dict, ft, target_order: int,
         return False
 
     # Operator-IR form-factor signature.  The on-disk slug is only the
-    # theory name + taylor order; it does NOT capture the per-vertex
+    # model name + taylor order; it does NOT capture the per-vertex
     # form-factor / mode table, which lives on the namespace as an
     # action-eval side effect (NOT in ``_by_tp``).  Reconstruct the live
     # table (cheap; no-op if ``prepare_for_load`` already did it) and
     # reject the bundle if its recorded signature differs — this catches
     # both a genuinely changed model that re-used the same slug AND any
-    # pre-signature bundle for a derivative-vertex theory (cached_sig is
+    # pre-signature bundle for a derivative-vertex model (cached_sig is
     # ``None`` there, but the live operator-IR model signs non-``None``),
     # which would otherwise load with the form factors silently dropped.
     _reconstruct_operator_ir_table(ft)
@@ -458,7 +469,7 @@ def load_expand(model: dict, ft, target_order: int,
     # Cure: re-execute ``_build_cumulant_action`` for its side effect.
     # We discard the SR return value because the action term it
     # produces is already in ``_by_tp`` from the cache; we only need
-    # ``ns._cumulant_kernels`` populated.  This is a no-op for theories
+    # ``ns._cumulant_kernels`` populated.  This is a no-op for models
     # without a ``correlated_noises`` block (the function returns SR(0)
     # immediately).  See bug write-up in commit-message body.
     try:
@@ -467,7 +478,7 @@ def load_expand(model: dict, ft, target_order: int,
     except Exception as e:
         if verbose:
             print(f'[expand-cache] _cumulant_kernels rebuild failed '
-                  f'({e!r}); noise-source theories may silently produce 0. '
+                  f'({e!r}); noise-source models may silently produce 0. '
                   f'Falling back to a fresh expand() is the safe path.')
         return False
 

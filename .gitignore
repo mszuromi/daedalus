@@ -21,10 +21,10 @@ Thumbs.db
 .idea/
 .claude/
 
-# Saved theories / results (cache artifacts — regenerable)
-saved_theories/
+# Saved models / results (cache artifacts — regenerable)
+saved_models/
 saved_results/
-notebooks/saved_theories/
+notebooks/saved_models/
 notebooks/saved_results/
 legacy/Enumeration Code/counts/
 legacy/Enumeration Code/diagrams_*/
@@ -72,27 +72,27 @@ notebooks/examples/SDE/temporal_ou_quartic_colored.ipynb
 notebooks/examples/SDE/temporal_ou_quartic_correlated.ipynb
 notebooks/examples/SDE/temporal_dendritic_linear.ipynb
 
-# Unused theory/sim files — kept local; the public set keeps only what the
-# example notebooks + tests reference (24 theories, 9 sims).
-theories/allen_cahn_quintic_1d_subcritical_infinite.theory.py
-theories/combined_allencahn_modelb_kpz_2d.theory.py
-theories/combined_allencahn_modelb_kpz_3d.theory.py
-theories/kpz_2d.theory.py
-theories/linear_field_2d.theory.py
-theories/multipopulation_spike_reset_test.theory.py
-theories/my_stochastic_theory.theory.py
-theories/ou_quartic_two_dim.theory.py
-theories/ou_quartic_two_dim_corr.theory.py
-theories/quadratic_hawkes.theory.py
-theories/single_pop_dendritic_linear.theory.py
-theories/single_population_bistable_demo.theory.py
-theories/single_population_conductance_synapse_test.theory.py
-theories/single_population_conductance_test.theory.py
-theories/single_population_cubic_alpha_test.theory.py
-theories/single_population_linear_conductance_test.theory.py
-theories/single_population_linear_delta_voltage_test.theory.py
-theories/single_population_linear_exp_voltage_test.theory.py
-theories/single_population_quad_spike_reset_test.theory.py
+# Unused model/sim files — kept local; the public set keeps only what the
+# example notebooks + tests reference (24 models, 9 sims).
+models/allen_cahn_quintic_1d_subcritical_infinite.model.py
+models/combined_allencahn_modelb_kpz_2d.model.py
+models/combined_allencahn_modelb_kpz_3d.model.py
+models/kpz_2d.model.py
+models/linear_field_2d.model.py
+models/multipopulation_spike_reset_test.model.py
+models/my_stochastic_model.model.py
+models/ou_quartic_two_dim.model.py
+models/ou_quartic_two_dim_corr.model.py
+models/quadratic_hawkes.model.py
+models/single_pop_dendritic_linear.model.py
+models/single_population_bistable_demo.model.py
+models/single_population_conductance_synapse_test.model.py
+models/single_population_conductance_test.model.py
+models/single_population_cubic_alpha_test.model.py
+models/single_population_linear_conductance_test.model.py
+models/single_population_linear_delta_voltage_test.model.py
+models/single_population_linear_exp_voltage_test.model.py
+models/single_population_quad_spike_reset_test.model.py
 simulations/cumulant_direct_numba.py
 simulations/dendritic_linear_sim_numba.py
 simulations/hawkes_linear_expg.py
@@ -108,9 +108,9 @@ simulations/spatial_field_3d_sim.py
 simulations/spatial_field_phi6_1d_sim.py
 
 # Legacy Hawkes model-dict equivalence cluster (old hand-written-model format,
-# superseded by theories/*.theory.py) + manual diagnostic scripts. Kept local.
+# superseded by models/*.model.py) + manual diagnostic scripts. Kept local.
 simulations/hawkes_linear_sage.py
-api/theories/
+api/models/
 api/tests/
 api/examples/
 tests/diagnostic_hawkes_k2_mirror.py

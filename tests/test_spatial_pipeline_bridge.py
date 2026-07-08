@@ -4,7 +4,7 @@ tests/test_spatial_pipeline_bridge.py
 Stage A production — the "symbolic-in-q bridge"
 (``engine.integration.spatial.pipeline_bridge``).
 
-These tests pin the bridge that routes a Tier-1 spatial theory THROUGH the
+These tests pin the bridge that routes a Tier-1 spatial model THROUGH the
 shared diagram pipeline (``compute_poles_and_residues`` +
 ``enumerate_unique_diagrams`` + ``compute_correction_td`` with
 ``Laplacian → -q²``), CERTIFIES that the pipeline's ``C(q, τ)`` equals the
@@ -12,13 +12,13 @@ propagator-derived heat-kernel modes ``Σ_α N_α/(A_α+B_α q²)e^{-(A_α+B_α 
 then does the external ``q → x`` FT analytically via ``free_two_point``.
 
 Checks:
-  * for every real spatial theory file the bridge reproduces the bespoke
+  * for every real spatial model file the bridge reproduces the bespoke
     ``compute_spatial_correlator_tree`` oracle to <= 1e-10, and the pipeline
     certification residual is at machine precision (the diagrams the SHARED
     pipeline produced ARE the modes the analytic q-FT transforms);
   * the equal-time value matches the analytic closed form
-    ``C(x,0) = T/(2√(μD)) e^{-|x|√(μ/D)}`` for the linear theories;
-  * a Tier-2 (coupled) theory raises a clean NotImplementedError.
+    ``C(x,0) = T/(2√(μD)) e^{-|x|√(μ/D)}`` for the linear models;
+  * a Tier-2 (coupled) model raises a clean NotImplementedError.
 
 Run:  sage -python -m pytest tests/test_spatial_pipeline_bridge.py -q
 """
@@ -44,17 +44,17 @@ from engine.integration.spatial.spatial_correlator import (
 from engine.integration.spatial.pipeline_bridge import (
     compute_spatial_correlator_via_pipeline,
 )
-from api.theory import TheoryBuilder
+from api.model import ModelBuilder
 from api import compute_cumulants
 
-_THEORY_DIR = os.path.join(os.path.dirname(__file__), '..', 'theories')
+_MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')
 _EXT = [('dphi', 1), ('dphi', 1)]
 _TAUS = np.array([0.0, 0.5, 1.0])
 _XS = np.array([0.0, 1.0, 2.0])
 
 
 def _load(name):
-    p = os.path.join(_THEORY_DIR, f'{name}.theory.py')
+    p = os.path.join(_MODEL_DIR, f'{name}.model.py')
     s = importlib.util.spec_from_file_location('m', p)
     m = importlib.util.module_from_spec(s)
     s.loader.exec_module(m)
@@ -124,7 +124,7 @@ def test_bridge_equal_time_matches_closed_form(name, params, closed):
 
 def _two_field_model():
     return (
-        TheoryBuilder('two-field decoupled bridge', n_populations=0)
+        ModelBuilder('two-field decoupled bridge', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu1', default=1.0, domain='positive')
@@ -151,7 +151,7 @@ _FUND2 = {'mu1': 1.0, 'D1': 1.0, 'mu2': 2.0, 'D2': 0.5, 'T1': 1.0, 'T2': 1.5}
 ])
 def test_bridge_multifield_resolves_each_field(leg, fi, mu, D, T):
     """The bridge must resolve the correct field INDEX for a 2-field
-    decoupled theory and certify/transform each field's OWN heat-kernel
+    decoupled model and certify/transform each field's OWN heat-kernel
     mode (its own μ, D, T) — exercising the multi-field phys-column path
     the single-field bridge tests never touch."""
     model = _two_field_model()
@@ -177,7 +177,7 @@ def test_bridge_coupled_scalar_diffusion_supported():
     has no diagonal Tier-1 block, but the bridge now routes it to the spectral-
     Lyapunov coupled driver (Dyson 3b) and returns a finite C(x,τ)."""
     model = (
-        TheoryBuilder('coupled spatial bridge (scalar D)', n_populations=0)
+        ModelBuilder('coupled spatial bridge (scalar D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -205,10 +205,10 @@ def test_bridge_coupled_scalar_diffusion_supported():
 
 
 def test_bridge_coupled_unequal_diffusion_raises_clean():
-    """A coupled theory with UNEQUAL diffusion (𝒟̂≠0) still needs the Dyson–Duhamel
+    """A coupled model with UNEQUAL diffusion (𝒟̂≠0) still needs the Dyson–Duhamel
     series, so the bridge raises a clean NotImplementedError."""
     model = (
-        TheoryBuilder('coupled spatial bridge (unequal D)', n_populations=0)
+        ModelBuilder('coupled spatial bridge (unequal D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -303,7 +303,7 @@ def test_bubble_loop_form_factor_extraction():
 def test_diagram_classification_bubble_vs_tadpole():
     """``_diagram_is_bubble`` (q·ℓ cross-term) + ``_prefactor_is_live`` (φ*²
     dead at φ*=0) correctly separate the φ̃φ² LIVE bubbles from the φ²-tadpole,
-    and mark a φ⁴ theory's φ*²-bubbles DEAD at φ*=0 (→ the tadpole path)."""
+    and mark a φ⁴ model's φ*²-bubbles DEAD at φ*=0 (→ the tadpole path)."""
     from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _live_bubbles,
     )

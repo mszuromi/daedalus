@@ -43,11 +43,11 @@ from engine.diagrams.type_assignment import build_field_index_map
 
 @pytest.fixture(scope='module')
 def rd_ell1():
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api._propagator import build_propagator
     from api.compute import FieldTheory
 
-    model = (TheoryBuilder('rd1', n_populations=0)
+    model = (ModelBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)
              .parameter('mu', default=1.0, domain='positive')
              .parameter('D', default=1.0, domain='positive')
@@ -131,8 +131,8 @@ def allencahn_ell1():
     from api.compute import FieldTheory
     repo = os.path.join(os.path.dirname(__file__), '..')
     spec = importlib.util.spec_from_file_location(
-        'ac', os.path.join(repo, 'theories',
-                           'allen_cahn_1d_subcritical_infinite.theory.py'))
+        'ac', os.path.join(repo, 'models',
+                           'allen_cahn_1d_subcritical_infinite.model.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     model = mod.build()

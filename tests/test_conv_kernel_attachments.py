@@ -104,7 +104,7 @@ def test_distinct_kernels_distinct_attachments():
 
 
 def test_same_kernel_multiple_legs_accumulates():
-    """A theory can reuse a single kernel symbol ``g`` for several
+    """A model can reuse a single kernel symbol ``g`` for several
     legs (e.g. one shared synapse kernel coupling to two distinct
     presynaptic populations).  The attachment dict accumulates both
     fields, and the caller is expected to disambiguate per-vertex
@@ -141,7 +141,7 @@ def test_kernel_attachments_in_coefficient_basic():
 
 def test_kernel_attachments_in_coefficient_no_kernel():
     """A vertex whose coefficient has no kernel symbol returns
-    empty dict — the (1,2) sector of a purely-local theory like the
+    empty dict — the (1,2) sector of a purely-local model like the
     quad-exp ``-(exp(nt)-1)*phi(v)`` interaction shouldn't trigger
     any Conv-vertex special handling."""
     s = _symbols()

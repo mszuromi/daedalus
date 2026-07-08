@@ -146,7 +146,7 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
     # call ``SR(G_ft[pi, ri]).is_zero()`` — for a symbolic G_ft (legacy
     # path) that triggers full Sage simplification on a long rational
     # expression, easily costing several seconds per entry on rich
-    # theories.  Both ``e.is_zero()`` and ``e == SR(0)`` exhibit this
+    # models.  Both ``e.is_zero()`` and ``e == SR(0)`` exhibit this
     # pathology (they both invoke the SR canonicalisation engine).
     # We only need this check to prune diagrams that would carry an
     # identically-zero propagator; ``str(e) == '0'`` is a purely

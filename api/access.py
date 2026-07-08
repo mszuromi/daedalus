@@ -8,7 +8,7 @@ naming convention.
 Source of truth
 ---------------
 The mapping comes from ``model['naming_convention']``, which is built
-by ``TheoryBuilder.build()`` from the ``natural_name=`` declarations
+by ``ModelBuilder.build()`` from the ``natural_name=`` declarations
 on physical fields and parameters::
 
     .physical_field('dn', natural_name='n', ...)
@@ -45,7 +45,7 @@ from typing import Optional
 # hand-written model files in simulations/).  Covers the classic Hawkes
 # letters n/v/m.  Extend this only if you want to bake new defaults
 # into the pipeline itself; the preferred path for new physics is to
-# declare ``natural_name=`` in the TheoryBuilder.
+# declare ``natural_name=`` in the ModelBuilder.
 
 _DEFAULT_FLUCT = {
     'n':  'dn',  'dn': 'dn',

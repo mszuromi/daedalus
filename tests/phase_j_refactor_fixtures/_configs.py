@@ -20,7 +20,7 @@ from typing import Any, Optional
 @dataclass(frozen=True)
 class FixtureConfig:
     name: str                       # short slug, used as .npz filename
-    theory_file: str                # path under repo's theories/ dir
+    model_file: str                # path under repo's models/ dir
     k: int
     max_ell: int
     fundamental: dict
@@ -31,7 +31,7 @@ class FixtureConfig:
     taylor_order: Optional[int] = None        # None → pipeline default
     use_grouped_phase_j: bool = False
     # Tolerance for the regression test (set per-fixture in case some
-    # configs are inherently noisier than others — e.g. theories with
+    # configs are inherently noisier than others — e.g. models with
     # very small C(τ) where machine ε dominates).
     rtol: float = 1e-10
     atol: float = 1e-12
@@ -39,15 +39,15 @@ class FixtureConfig:
     notes: str = ''
 
 
-# --- Shared parameter dictionaries (one per theory) ------------------
+# --- Shared parameter dictionaries (one per model) ------------------
 
 _FUNDAMENTAL_SPIKE_RESET = {
     'Em':   [3.5, 3.5],
     'tau':  [10.0, 9.0],
     'a':    [2.5, 2.5],
-    # taug dropped 2026-05-19: the spike-reset theory switched its
+    # taug dropped 2026-05-19: the spike-reset model switched its
     # synapse kernel from per-pair exp to scalar dirac_delta, so the
-    # taug parameter is no longer declared by the theory.  Leaving
+    # taug parameter is no longer declared by the model.  Leaving
     # the stale key in caused propagator-symbol failures in the
     # grouped-vs-perdiag suite — see memory note
     # ``project_spike_reset_fixture_drift.md``.
@@ -69,7 +69,7 @@ FIXTURES: list[FixtureConfig] = [
     # ─── single_population_spike_reset_test ─────────────────────────
     FixtureConfig(
         name='spike_reset_k1_ell1',
-        theory_file='single_population_spike_reset_test.theory.py',
+        model_file='single_population_spike_reset_test.model.py',
         k=1,
         max_ell=1,
         fundamental=_FUNDAMENTAL_SPIKE_RESET,
@@ -81,7 +81,7 @@ FIXTURES: list[FixtureConfig] = [
     ),
     FixtureConfig(
         name='spike_reset_k2_ell0',
-        theory_file='single_population_spike_reset_test.theory.py',
+        model_file='single_population_spike_reset_test.model.py',
         k=2,
         max_ell=0,
         fundamental=_FUNDAMENTAL_SPIKE_RESET,
@@ -115,7 +115,7 @@ FIXTURES: list[FixtureConfig] = [
     # {0, 3, 10} avoids the τ_2 ≈ ±5, ±8 zero-crossing valleys.
     FixtureConfig(
         name='spike_reset_k2_ell1',
-        theory_file='single_population_spike_reset_test.theory.py',
+        model_file='single_population_spike_reset_test.model.py',
         k=2,
         max_ell=1,
         fundamental=_FUNDAMENTAL_SPIKE_RESET,
@@ -132,7 +132,7 @@ FIXTURES: list[FixtureConfig] = [
     # ─── single_population_quad_exp_test ────────────────────────────
     FixtureConfig(
         name='quad_exp_k2_ell0',
-        theory_file='single_population_quad_exp_test.theory.py',
+        model_file='single_population_quad_exp_test.model.py',
         k=2,
         max_ell=0,
         fundamental=_FUNDAMENTAL_QUAD,

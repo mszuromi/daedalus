@@ -5,7 +5,7 @@ Save and load expanded field theories and their propagator data.
 
 File format
 -----------
-Each saved theory is a directory containing:
+Each saved model is a directory containing:
     metadata.json       — plain-Python data (field names, taylor_order, etc.)
     symbolic_data.sobj  — SageMath symbolic objects (matrices, polynomials)
 
@@ -49,7 +49,7 @@ def _jsonable_index_sets(index_sets):
 
 # ── Save ─────────────────────────────────────────────────────────────────────
 
-def save_theory(path, ft, propagator_data=None, stationarity=True,
+def save_model(path, ft, propagator_data=None, stationarity=True,
                 model_file=None, model_var_name=None):
     """
     Save an expanded FieldTheory and its propagator data to disk.
@@ -153,9 +153,9 @@ def save_theory(path, ft, propagator_data=None, stationarity=True,
 
 # ── Load ─────────────────────────────────────────────────────────────────────
 
-def load_theory(path):
+def load_model(path):
     """
-    Load a saved theory from disk.
+    Load a saved model from disk.
 
     Parameters
     ----------
@@ -196,7 +196,7 @@ def reload_model(meta, project_root=None):
     Parameters
     ----------
     meta : dict
-        The metadata dict (from load_theory).
+        The metadata dict (from load_model).
     project_root : str or None
         Root directory to resolve model_file relative to.
         If None, uses the current working directory.

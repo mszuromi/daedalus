@@ -34,7 +34,7 @@ is doing with the expression:
     first-order filters (``F_aux`` and ``F``) instead of computing the
     integral directly.
 
-To make the dispatch unambiguous, the theory builder rewrites every
+To make the dispatch unambiguous, the model builder rewrites every
 kernel-field product inside an expression into the formal Sage function
 :func:`Conv`.  Each downstream consumer then registers its own
 reduction rule (substitution, FT, state-space realisation) and applies
@@ -49,7 +49,7 @@ threaded into ``_build_namespace_for_eval`` so user expressions can
 already reference it.  Auto-rewriting of ``g * n`` patterns to
 ``Conv(g, n)`` lives in a later step (the ``set_equation`` builder
 method).  Until that lands, ``Conv`` is available but inert — existing
-``set_action_text`` theories keep their current ``g * n``-as-scalar-
+``set_action_text`` models keep their current ``g * n``-as-scalar-
 multiplication semantics, with the kernel's frequency image substituted
 in via ``model['kernel_ft_image']`` after Fourier transform of the
 action.

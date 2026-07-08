@@ -145,7 +145,7 @@ def test_external_momentum_conservation():
 
 def test_route_real_enumerated_allen_cahn_diagrams():
     """Route the REAL typed diagrams from the enumeration pipeline (not
-    synthetic graphs) for the Allen-Cahn λφ³ theory.
+    synthetic graphs) for the Allen-Cahn λφ³ model.
 
     Invariants Stage C relies on:
       * every tree (ℓ=0) diagram has L=0 and all edges k² = q₀²;
@@ -165,8 +165,8 @@ def test_route_real_enumerated_allen_cahn_diagrams():
     from api._propagator import build_propagator
     from api._diagrams import enumerate_unique_diagrams
 
-    p = os.path.join(os.path.dirname(__file__), '..', 'theories',
-                     'allen_cahn_1d_subcritical_infinite.theory.py')
+    p = os.path.join(os.path.dirname(__file__), '..', 'models',
+                     'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('m', p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

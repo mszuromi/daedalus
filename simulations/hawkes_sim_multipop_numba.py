@@ -3,7 +3,7 @@ simulations/hawkes_sim_multipop_numba.py
 ====================================
 Numba-JIT Euler-step simulator for the **linear multipopulation Hawkes
 process** with per-pair exponential synaptic filters.  Matches the
-theory file ``theories/multipopulation_test.theory.py``.
+model file ``models/multipopulation_test.model.py``.
 
 Continuous-time dynamics (MSR-JD tree of the heterogeneous-population
 model, two populations E and I of arbitrary size):
@@ -31,7 +31,7 @@ Neurons are stacked into a flat 1-D index ``i ∈ {0, ..., N-1}`` where
 
 The pair-specific filter ``F_{ij}`` makes this faithful to the
 ``taugEE[i,j]``, ``taugEI[i,j]``, ``taugIE[i,j]``, ``taugII[i,j]``
-matrices in the heterogeneous theory — there's no single "synaptic
+matrices in the heterogeneous model — there's no single "synaptic
 filter" shared across all connections.
 
 Usage (from a Sage notebook cell):
@@ -172,7 +172,7 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate hard-spike-reset**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``theories/multipopulation_spike_reset_test.theory.py``:
+    ``models/multipopulation_spike_reset_test.model.py``:
 
       dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
@@ -199,7 +199,7 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
     All other plumbing (per-pair exp-filter ``F[i,j]``, signed coupling
     ``W[i,j]``, binning) is identical to the linear-rate sim — so
     ``build_sim_arrays`` and ``flat_index_of`` work without changes
-    for either theory.
+    for either model.
 
     Parameters are the same as ``sim_hawkes_multipop_numba``.  Returns
     are the same too: ``(binned_counts, voltage_bins, total_spikes)``.
@@ -207,8 +207,8 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
     Sign convention.  Both phi-quadratic and spike-reset are *strictly
     self-coupling* effects — each population only resets its own
     voltage (``-v_i · n_i``, not ``-v_i · n_j`` with j≠i).  If your
-    theory file declares cross-population reset terms, this simulator
-    will under-count them and you'll see a sim/theory mismatch.
+    model file declares cross-population reset terms, this simulator
+    will under-count them and you'll see a sim/model mismatch.
     """
     np.random.seed(seed)
     N = len(tau_v)
@@ -289,8 +289,8 @@ def sim_hawkes_multipop_quad_numba(n_steps, dt_sim,
       lambda_i(t)  = max(a_i · v_i^2, 0)
       n_i(t)       ~ Poisson(lambda_i(t) dt)
 
-    Matches ``theories/single_population_quad_exp_test.theory.py`` and
-    any other quad-φ Hawkes theory without spike reset.  Identical to
+    Matches ``models/single_population_quad_exp_test.model.py`` and
+    any other quad-φ Hawkes model without spike reset.  Identical to
     ``sim_hawkes_multipop_quad_reset_numba`` except the ``v → 0``
     hard-reset step is removed — voltage drifts continuously through
     spike events.
@@ -366,7 +366,7 @@ def sim_hawkes_multipop_cubic_alpha_numba(n_steps, dt_sim,
       lambda_i(t)    = max(a_i · v_i^3, 0)                       # CUBIC rate
       n_i(t)         ~ Poisson(lambda_i(t) dt)
 
-    Matches ``theories/single_population_cubic_alpha_test.theory.py``:
+    Matches ``models/single_population_cubic_alpha_test.model.py``:
     no spike reset, cubic φ, alpha synaptic kernel
     α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
 
@@ -461,7 +461,7 @@ def sim_hawkes_multipop_quad_alpha_numba(n_steps, dt_sim,
       lambda_i(t)    = max(a_i · v_i^2, 0)                       # QUADRATIC rate
       n_i(t)         ~ Poisson(lambda_i(t) dt)
 
-    Matches ``theories/quadratic_hawkes_alpha.theory.py``: no spike reset,
+    Matches ``models/quadratic_hawkes_alpha.model.py``: no spike reset,
     quadratic φ(v) = a·v², alpha synaptic kernel
     α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
 
@@ -475,7 +475,7 @@ def sim_hawkes_multipop_quad_alpha_numba(n_steps, dt_sim,
 
     With φ(v) = a·v² the curvature φ''(v*) = 2a ≠ 0, so the cubic vertex
     ``nt·δv·δv`` at bigrade (1, 2) is present — the source of the 1-loop
-    corrections this theory exercises.
+    corrections this model exercises.
 
     Same call signature and return shape as the other multipop sim
     variants: ``(binned_counts, voltage_bins, total_spikes)``.
@@ -548,8 +548,8 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **linear-rate hard-spike-reset** variant
     of the heterogeneous-population Hawkes process.  Matches
-    ``theories/single_population_spike_reset_test.theory.py`` (and any
-    other linear-φ + hard-reset theory).
+    ``models/single_population_spike_reset_test.model.py`` (and any
+    other linear-φ + hard-reset model).
 
       dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
@@ -563,7 +563,7 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
       * The (1, 2)-bigrade vertex from the spike-reset term
         ``vt · τ · dv · dn`` is STILL present, so 1-loop diagrams from
         the reset alone are physically observable.  This makes the
-        linear + reset theory a clean diagnostic for reset-induced
+        linear + reset model a clean diagnostic for reset-induced
         loop corrections in isolation.
 
     All other plumbing (per-pair exp-filter, signed coupling, binning,
@@ -636,7 +636,7 @@ def sim_hawkes_multipop_linear_conductance_numba(
     """
     Euler-step simulator for the **linear-rate CONDUCTANCE-synapse**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``theories/single_population_conductance_synapse_test.theory.py``:
+    ``models/single_population_conductance_synapse_test.model.py``:
 
       dF_{ij}/dt   = (1/tau_g) * (n_j(t) - F_{ij})         # exp synapse filter
       tau_v_i · dv_i/dt = -v_i + E_drive_i
@@ -725,7 +725,7 @@ def sim_hawkes_multipop_linear_softreset_numba(
     """
     Euler-step simulator for **linear-rate + SOFT spike-reset +
     exponential-synapse** Hawkes.  Matches
-    ``theories/single_population_spike_reset_test.theory.py`` after its
+    ``models/single_population_spike_reset_test.model.py`` after its
     2026-05-18 update (reset term changed from full ``tau[i]*v[i]*n[i]``
     to the parameter-free ``reset_coeff*v[i]*n[i]``).
 
@@ -830,7 +830,7 @@ def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate + hard-spike-reset +
     delta synapse** Hawkes process.  Matches
-    ``theories/single_population_quad_spike_reset_test.theory.py``:
+    ``models/single_population_quad_spike_reset_test.model.py``:
 
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
                          - tau_v_i · v_i · n_i(t)                # hard reset
@@ -924,7 +924,7 @@ def sim_hawkes_multipop_quad_softreset_delta_numba(
     """
     Euler-step simulator for **quadratic-rate + SOFT spike-reset +
     delta-synapse** Hawkes.  Matches
-    ``theories/single_population_quad_spike_reset_test.theory.py``
+    ``models/single_population_quad_spike_reset_test.model.py``
     after its 2026-05-18 update (reset term changed from full
     ``tau[i]*v[i]*n[i]`` to the parameter-free ``reset_coeff*v[i]*n[i]``
     with ``reset_coeff = 0.5``).
@@ -1031,7 +1031,7 @@ def sim_hawkes_multipop_linear_softreset_delta_numba(
     """
     Euler-step simulator for **linear-rate + SOFT spike-reset +
     delta-synapse** Hawkes.  Matches
-    ``theories/single_population_spike_reset_test.theory.py`` after its
+    ``models/single_population_spike_reset_test.model.py`` after its
     2026-05-18 update (kernel changed from per-pair exponential
     ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to scalar ``dirac_delta(t)``, and
     reset term changed from full ``tau[i]*v[i]*n[i]`` to the
@@ -1131,7 +1131,7 @@ def sim_hawkes_multipop_linear_conductance_delta_numba(
     """
     Euler-step simulator for **linear-rate + CONDUCTANCE-synapse +
     delta-kernel** Hawkes.  Matches
-    ``theories/single_population_conductance_synapse_test.theory.py``
+    ``models/single_population_conductance_synapse_test.model.py``
     after switching its synapse kernel from
     ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to ``dirac_delta(t)``.
 
@@ -1217,13 +1217,13 @@ def build_sim_arrays(model, fundamental, mf_values):
     Parameters
     ----------
     model : dict
-        The build()-output dict from a heterogeneous-pop theory file.
+        The build()-output dict from a heterogeneous-pop model file.
         Must declare ``model['populations']`` (a list of
         ``{'name': str, 'size': int}`` records).
     fundamental : dict
         Numerical parameter values keyed by name (matches the keys
         used in ``compute_cumulants``).  Required keys depend on the
-        theory; ``tauE``, ``tauI``, ``aE``, ``aI``, ``EmE``, ``EmI``,
+        model; ``tauE``, ``tauI``, ``aE``, ``aI``, ``EmE``, ``EmI``,
         ``wEE``, ``wEI``, ``wIE``, ``wII``, ``taugEE``, ``taugEI``,
         ``taugIE``, ``taugII`` for the multipop_test file.
     mf_values : dict
@@ -1293,7 +1293,7 @@ def build_sim_arrays(model, fundamental, mf_values):
     #     one population to disambiguate).
     # ``mf_values`` always uses the auto-saddle convention
     # (``v<natural>star`` from the field's ``natural_name``).  Single-pop
-    # theories with field name ``v`` give ``vstar``; multipop with
+    # models with field name ``v`` give ``vstar``; multipop with
     # ``vE`` gives ``vEstar``.
     for p in pops:
         pname = p['name']
@@ -1326,7 +1326,7 @@ def build_sim_arrays(model, fundamental, mf_values):
     # into W here so the simulator's voltage update is just sum_j
     # W[i,j] * F[i,j] with no extra logic.
     #
-    # For single-pop theories the matrix params are bare (``w``,
+    # For single-pop models the matrix params are bare (``w``,
     # ``taug``) and the only pair is (E, E) so the sign is + by default.
     sign_map = {
         # (post_pop, pre_pop): sign
@@ -1340,7 +1340,7 @@ def build_sim_arrays(model, fundamental, mf_values):
             wname_pop   = f'w{post["name"]}{pre["name"]}'
             tgname_pop  = f'taug{post["name"]}{pre["name"]}'
             # Coupling matrix W — required.  ``taug`` may be absent for
-            # theories with a delta kernel (the simulator that consumes
+            # models with a delta kernel (the simulator that consumes
             # them ignores tau_g).
             if wname_pop in fundamental:
                 ws = fundamental[wname_pop]
@@ -1404,7 +1404,7 @@ def flat_index_of(model, pop_offsets, pop_name, idx_one_based):
         else:
             # Strategy 2: look up the population from the field's
             # ``population`` annotation in the model.  This handles
-            # single-pop theories where the field is just 'n' (no
+            # single-pop models where the field is just 'n' (no
             # population suffix to strip).
             field_pop = None
             for f in (model.get('physical_fields', []) +

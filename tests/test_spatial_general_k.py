@@ -44,7 +44,7 @@ from sage.all import SR  # noqa: E402
 
 
 def _build_records(k, max_ell=1):
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -52,7 +52,7 @@ def _build_records(k, max_ell=1):
         build_pipeline_records, _legs_to_phys_idx)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    b = (TheoryBuilder('rd-quad-generalk', n_populations=0)
+    b = (ModelBuilder('rd-quad-generalk', n_populations=0)
          .physical_field('p', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('DD', default=1.0, domain='positive')
@@ -248,7 +248,7 @@ if __name__ == '__main__':
 @pytest.mark.slow
 def test_k3_e2e_vs_simulator():
     """End-to-end anchor: the k=3 equal-time third cumulant
-    kappa_3(x) = <dphi(0) dphi(x)^2> of the 1-d RD theory
+    kappa_3(x) = <dphi(0) dphi(x)^2> of the 1-d RD model
     dphi/dt = -mu phi + DD d2phi - g phi^2 + sqrt(2T) eta
     (tree + 1-loop, mapping-sum driver over all enumerated diagrams)
     against the spectral ETD1 lattice simulator's translational-average
@@ -259,16 +259,16 @@ def test_k3_e2e_vs_simulator():
     from simulations.spatial_field_1d_sim import simulate, third_cumulant_x
 
     g = 0.25
-    # theory records at this coupling (rebuild: module fixture used g=0.1)
+    # model records at this coupling (rebuild: module fixture used g=0.1)
     import tests.test_spatial_general_k as _self
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
     from engine.diagrams.type_assignment import build_field_index_map
-    b = (TheoryBuilder('rd-quad-k3-e2e', n_populations=0)
+    b = (ModelBuilder('rd-quad-k3-e2e', n_populations=0)
          .physical_field('p', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('DD', default=1.0, domain='positive')
@@ -297,7 +297,7 @@ def test_k3_e2e_vs_simulator():
 
     maps = field_respecting_mappings(['p'] * 3, ['p'] * 3)
     x_eval = np.array([0.0, 0.5, 1.0])
-    theory = np.zeros((2, x_eval.size))            # rows: tree, +1loop
+    model = np.zeros((2, x_eval.size))            # rows: tree, +1loop
     for td, d, pv, ell in recs:
         comp = external_wick_compensation(td)
         x_pts = np.stack([np.zeros_like(x_eval), x_eval, x_eval], axis=1)
@@ -311,10 +311,10 @@ def test_k3_e2e_vs_simulator():
                                    spatial_dim=1, mappings=maps, comp=comp,
                                    **kw)
         if ell == 0:
-            theory[0] += v
-        theory[1] += v if ell == 1 else (v if ell == 0 else 0)
-    # theory[1] currently tree+1loop summed by the loop above for ell<=1
-    theory_tot = theory[1]
+            model[0] += v
+        model[1] += v if ell == 1 else (v if ell == 0 else 0)
+    # model[1] currently tree+1loop summed by the loop above for ell<=1
+    model_tot = model[1]
 
     snaps, x_grid, meta = simulate(L=20.0, N=200, mu=1.0, D=1.0, T=1.0,
                                    g=g, n_steps=1200000, burn_in=80000,
@@ -325,21 +325,21 @@ def test_k3_e2e_vs_simulator():
         m = int(round(xv / dx))
         sim_v = k3[m]
         sim_e = se[m]
-        diff = abs(theory_tot[i] - sim_v)
+        diff = abs(model_tot[i] - sim_v)
         tol = max(5.0 * sim_e, 0.05 * abs(sim_v))
         print('  x=%.1f: theory(tree)=%.5f tree+1loop=%.5f  sim=%.5f+-%.5f'
-              % (xv, theory[0][i], theory_tot[i], sim_v, sim_e))
-        assert diff < tol, (xv, theory_tot[i], sim_v, sim_e)
+              % (xv, model[0][i], model_tot[i], sim_v, sim_e))
+        assert diff < tol, (xv, model_tot[i], sim_v, sim_e)
 
 
 @pytest.mark.slow
 def test_k3_public_api_compute_cumulants():
     """k=3 through the public compute_cumulants(spatial_points=...) API
     reproduces the bridge-level (sim-anchored) values."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api import compute_cumulants
     g = 0.25
-    model = (TheoryBuilder('rd-quad-kpoint-api-test', n_populations=0)
+    model = (ModelBuilder('rd-quad-kpoint-api-test', n_populations=0)
              .physical_field('p', spatial_dim=1)
              .parameter('mu', default=1.0, domain='positive')
              .parameter('DD', default=1.0, domain='positive')
@@ -372,7 +372,7 @@ def test_k3_derivative_vertex_analytic_ift():
     and on the tree record the analytic xs value matches the numerical
     Fourier transform of the q-path to FT-grid tolerance — the same
     route-equivalence check used for plain vertices."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -381,7 +381,7 @@ def test_k3_derivative_vertex_analytic_ift():
     from engine.diagrams.type_assignment import build_field_index_map
     from engine.integration.spatial.full_integrator import diagram_kinematic
 
-    b = (TheoryBuilder('kpz-k3-ift-test', n_populations=0)
+    b = (ModelBuilder('kpz-k3-ift-test', n_populations=0)
          .physical_field('h', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -489,7 +489,7 @@ def test_k3_spectral_uniform_mass_identity(recs3):
 
 @pytest.mark.slow
 def test_k3_coupled_decoupled_limit():
-    """H2 anchor: compute_coupled_kpoint on a DECOUPLED 2-species theory
+    """H2 anchor: compute_coupled_kpoint on a DECOUPLED 2-species model
     (m_a=1, m_b=1.7, nonlinearity g*a^2 in species a only, externals all
     species a) reproduces the single-field compute_spatial_kpoint values
     at matched quadrature (tree + 1-loop, 3 event configurations).
@@ -497,7 +497,7 @@ def test_k3_coupled_decoupled_limit():
     threading, spectral projector weights (b-mode assignments must drop
     out), mapping-sum externals, matrix-B spectral kinematic at
     n_ext=2.  Residual is sigma-quadrature only (~4e-5)."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.pipeline_bridge import (
@@ -505,7 +505,7 @@ def test_k3_coupled_decoupled_limit():
     from engine.diagrams.type_assignment import build_field_index_map
 
     g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
-    b2 = (TheoryBuilder('coup-k3-anchor-test', n_populations=0)
+    b2 = (ModelBuilder('coup-k3-anchor-test', n_populations=0)
           .physical_field('a', spatial_dim=1)
           .physical_field('b', spatial_dim=1)
           .parameter('ma', default=ma, domain='positive')
@@ -536,7 +536,7 @@ def test_k3_coupled_decoupled_limit():
                                      tree_info, max_ell=1, verbose=False,
                                      n_t_loop=10, n_s_loop=24)
 
-    b1 = (TheoryBuilder('coup-k3-anchor-test-ref', n_populations=0)
+    b1 = (ModelBuilder('coup-k3-anchor-test-ref', n_populations=0)
           .physical_field('p', spatial_dim=1)
           .parameter('mu', default=ma, domain='positive')
           .parameter('DD', default=DD, domain='positive')
@@ -565,14 +565,14 @@ def test_k3_coupled_public_api_fallback():
     fallback (compute.py: catch 'single-field' NotImplementedError →
     extract M/D/V via reaction_diffusion_matrices + split_reference_
     diffusion → compute_coupled_kpoint).  Exercises the extraction chain
-    that the direct-driver tests bypass.  A DECOUPLED 2-species theory
+    that the direct-driver tests bypass.  A DECOUPLED 2-species model
     (g*a^2 in species a only, externals all-a) through the public API
     must reproduce the single-field public-API tree value."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api import compute_cumulants
 
     g, ma, mb, DD = 0.25, 1.0, 1.7, 1.0
-    coupled = (TheoryBuilder('coup-k3-pubfallback', n_populations=0)
+    coupled = (ModelBuilder('coup-k3-pubfallback', n_populations=0)
                .physical_field('a', spatial_dim=1)
                .physical_field('b', spatial_dim=1)
                .parameter('ma', default=ma, domain='positive')
@@ -586,7 +586,7 @@ def test_k3_coupled_public_api_fallback():
                                 ' + bt*(Dt(b)+mb*b-DD*Lap(b)) - T*bt^2')
                .operator_ir().boundary('infinite').initial('stationary')
                .build())
-    single = (TheoryBuilder('coup-k3-pubfallback-ref', n_populations=0)
+    single = (ModelBuilder('coup-k3-pubfallback-ref', n_populations=0)
               .physical_field('p', spatial_dim=1)
               .parameter('mu', default=ma, domain='positive')
               .parameter('DD', default=DD, domain='positive')
@@ -619,7 +619,7 @@ def test_k3_coupled_cross_complex_modes():
     sensible cross-cumulant hierarchy (nonlinearity in species a only).
     1-loop runs at the memory-safe grid: the (grid x assignments) amp
     array is the cost driver (17 GB at n_t=8/n_s=16 -> use 6/8)."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.pipeline_bridge import (
@@ -627,7 +627,7 @@ def test_k3_coupled_cross_complex_modes():
     from engine.diagrams.type_assignment import build_field_index_map
 
     ga, DD = 0.3, 1.0
-    b2 = (TheoryBuilder('coup-k3-cross-test', n_populations=0)
+    b2 = (ModelBuilder('coup-k3-cross-test', n_populations=0)
           .physical_field('a', spatial_dim=1)
           .physical_field('b', spatial_dim=1)
           .parameter('DD', default=DD, domain='positive')
@@ -684,7 +684,7 @@ def test_k3_nongaussian_noise_source_tree():
     The equal-point value kappa_3(0,0) is UV log-divergent in d=1
     (integrand ~ ds/s) — excluded by design, like the d>=2 Gaussian
     divergences (bare values are cutoff-sensitive)."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
@@ -697,7 +697,7 @@ def test_k3_nongaussian_noise_source_tree():
     from scipy.integrate import quad
 
     mu, DD, T, S3 = 1.0, 1.0, 1.0, 0.1
-    b = (TheoryBuilder('ng-noise-test', n_populations=0)
+    b = (ModelBuilder('ng-noise-test', n_populations=0)
          .physical_field('p', spatial_dim=1)
          .parameter('mu', default=mu, domain='positive')
          .parameter('DD', default=DD, domain='positive')

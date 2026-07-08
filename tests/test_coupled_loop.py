@@ -8,7 +8,7 @@ Dyson 3c (loop-level coupled integrator via spectral assignments):
     as enumerated, NO 2^{−n_C}) equals the spectral-Lyapunov 2-point
     ``coupled_two_point`` — pins weights, pv convention, fpairs threading and
     the two-segment C representation against 3a's sim-validated result;
-  * **DECOUPLED-LIMIT CROSS-VALIDATION** — a 2-species theory with tiny cross
+  * **DECOUPLED-LIMIT CROSS-VALIDATION** — a 2-species model with tiny cross
     coupling (g=h=1e−8, symbolically nonzero ⇒ routes through the coupled
     spectral-assignment path) reproduces the TRUSTED single-field generic loop
     path (max_ell=1) for C_aa — the strongest end-to-end check: every loop
@@ -31,13 +31,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.core.field_theory import FieldTheory                  # noqa: E402
 from api._propagator import build_propagator                # noqa: E402
-from api.theory import SpatialTheoryBuilder                 # noqa: E402
+from api.model import SpatialModelBuilder                 # noqa: E402
 
 _MUA, _MUB, _D, _TA, _TB = 1.5, 1.2, 0.8, 1.0, 0.7
 
 
 def _two_species(g, h, ga=0.0, gb=0.0):
-    b = (SpatialTheoryBuilder('coupled2_loop')
+    b = (SpatialModelBuilder('coupled2_loop')
          .physical_field('a', spatial_dim=1)
          .physical_field('b', spatial_dim=1)
          .parameter('mua', default=_MUA, domain='positive')
@@ -157,7 +157,7 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
 def test_decoupled_limit_matches_single_field_loop(monkeypatch):
     """g=h=1e-8 (symbolically coupled ⇒ spectral-assignment path) at max_ell=1
     == the trusted single-field generic loop path on the equivalent scalar
-    theory.  Cross-validates every loop diagram through both drivers.
+    model.  Cross-validates every loop diagram through both drivers.
 
     Both paths run at SPATIAL_GRID_NT/NS = 40 (the shared env override): at
     the 22-node default each path carries ~1-4% quadrature error on the {C,R}
@@ -180,10 +180,10 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
                              external_fields=[('a', 1), ('a', 1)],
                              spatial_grid=sg, **kw)
     assert th_c['spatial_info'].get('coupled_loop'), \
-        'coupled theory did not route through the spectral-assignment loop path'
+        'coupled model did not route through the spectral-assignment loop path'
     C_c = np.asarray(th_c['C_tau_x']).real
 
-    scalar = (SpatialTheoryBuilder('single_a')
+    scalar = (SpatialModelBuilder('single_a')
               .physical_field('phi', spatial_dim=1)
               .parameter('mu', default=_MUA, domain='positive')
               .parameter('D', default=_D, domain='positive')
@@ -208,7 +208,7 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
 
 def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
     """The DISCRIMINATING cross-correlator check (reviewer's instrument): for a
-    coupled CUBIC theory the 1-loop correction is exactly the first-order
+    coupled CUBIC model the 1-loop correction is exactly the first-order
     response to the Hartree mass shift δM = diag(3g_i·C_ii(x=0,τ=0)).  Compare
     δC_ab(x,τ) from the spectral-assignment driver against the matrix
     finite-difference of the exact tree correlator — at ±τ (the cross
@@ -266,7 +266,7 @@ def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
 
 
 def test_coupled_nonlinear_loop_e2e_smoke():
-    """Coupled (g,h≠0) cubic theory at max_ell=1: runs through compute_cumulants,
+    """Coupled (g,h≠0) cubic model at max_ell=1: runs through compute_cumulants,
     real output, and the stabilizing cubic REDUCES C_aa(0,0) vs tree."""
     from api import compute_cumulants
 

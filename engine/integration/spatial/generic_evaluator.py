@@ -129,7 +129,7 @@ def sigma_grid_direct(descr, q, u_grid, mu, D, spatial_dim=1, n_l=2600,
 #   Keldysh :  δC_K(τ) = (G_R⁰⊛Σ_K⊛G_A⁰)(τ)
 #
 # Model-independent: it depends ONLY on the tree mode (A,B,N) and the self-energy
-# grid ``σ(a)`` — no theory-specific constants.  (This is the same convolution the
+# grid ``σ(a)`` — no model-specific constants.  (This is the same convolution the
 # now-retired bespoke ``loop_dyson`` did for the φ̃φ² bubble, generalized to any
 # self-energy and parametrized by the mode; the small-``a`` power-law sliver is
 # kept so equal-time / derivative-vertex self-energies integrate accurately.)

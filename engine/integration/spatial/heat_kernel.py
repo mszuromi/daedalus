@@ -373,7 +373,7 @@ def build_spatial_propagator(K_ft, omega, ns, model,
                     f'inverse propagator has off-diagonal coupling '
                     f'K_ft[{i},{j}] = {K_ft[i, j]} ≠ 0; Tier-1 closed-'
                     f'form heat kernel needs a diagonal K_ft.  '
-                    f'(Multi-field coupled spatial theories are a v2 '
+                    f'(Multi-field coupled spatial models are a v2 '
                     f'feature.)')
 
     bc = model.get('boundary') or {'mode': 'infinite'}

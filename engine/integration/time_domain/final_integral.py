@@ -108,7 +108,7 @@ from engine.core.vertices import NoiseSourceType, ConvVertexType
 # ``integrate_diagram`` eliminates the redundant work and gives the
 # downstream integrators a clean, JSON-able data structure to consume.
 #
-# Spatial-extension hook: in a future spatial theory ``λ_α`` and
+# Spatial-extension hook: in a future spatial model ``λ_α`` and
 # ``C_α`` become callables of momentum ``k`` rather than complex
 # scalars.  The integrator backends will then gain an outer loop over
 # momentum, but the EdgeModeSum interface stays the same.
@@ -1083,7 +1083,7 @@ USE_CHAIN_SIMPLEX_PRECISION_FIX = False
 # Threshold below which any subset-sum magnitude of ``alphas`` triggers
 # the high-precision (mpmath) path.  Calibrated to catch the spike-reset
 # 0.022i pole-difference case (which causes ~10% per-subset bias) while
-# not unduly slowing well-conditioned theories.  Lower → fewer mpmath
+# not unduly slowing well-conditioned models.  Lower → fewer mpmath
 # calls (faster but less safe); higher → more mpmath calls (safer but
 # slower).
 _CHAIN_SIMPLEX_CANCEL_THRESHOLD = 0.1
@@ -1667,9 +1667,9 @@ USE_POSET_INTEGRATOR = True
 # lower bound on the chain when no scalar lower constraint was present,
 # while the scipy fallback used ``L = -OUTER_CAP`` (default 200.0).
 # The two paths therefore integrated different domains on the unbounded
-# direction of the polytope.  For theories with strictly retarded poles
+# direction of the polytope.  For models with strictly retarded poles
 # (Re β ≪ 0) the smooth integrand decays fast enough that the difference
-# is negligible.  But for marginal-stability theories (Re β ≈ 0 — e.g.
+# is negligible.  But for marginal-stability models (Re β ≈ 0 — e.g.
 # spike-reset near the firing-rate fixed point) the integrand oscillates
 # without decay and the integral is genuinely cap-dependent: analytic
 # at L=-50 and scipy at L=-200 disagree by ~10-13% per m≥3 subset, which
@@ -4733,7 +4733,7 @@ def _integrate_2d_polytope(integrand_callable, s_constraints, free_ext_vals):
     # with distinct fields, δ-sifting can pin an integration variable
     # to external times and leave residual pure-external constraints
     # that trigger this path — the overshoot source for ~12% of
-    # theory-vs-sim at k=4.
+    # model-vs-sim at k=4.
     L1, U1 = math.inf, -math.inf
     pure_s1_found = False
     tmp_L, tmp_U = -math.inf, math.inf
@@ -4973,10 +4973,10 @@ def _integrate_nd_polytope(integrand_callable, s_constraints, free_ext_vals, m):
     # 2026-05-17: when USE_POSET_CAP_MATCH_SCIPY is enabled (default),
     # we tie OUTER_CAP to POSET_PHYSICAL_MARGIN so the m≥3 scipy
     # fallback integrates over the same domain as the analytic poset
-    # path's unbounded-below fallback.  For marginal-stability theories
+    # path's unbounded-below fallback.  For marginal-stability models
     # (Re β ≈ 0) the integral is genuinely cap-dependent and the two
     # paths must agree on the cap or the grouped/per-diag comparison
-    # disagrees.  For strongly-decaying theories the integrand is
+    # disagrees.  For strongly-decaying models the integrand is
     # negligible at |s| > 50 anyway, so this is harmless.
     if USE_POSET_CAP_MATCH_SCIPY:
         OUTER_CAP = POSET_PHYSICAL_MARGIN

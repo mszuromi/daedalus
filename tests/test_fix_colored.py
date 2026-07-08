@@ -41,7 +41,7 @@ What this file asserts
    white ``SourceType`` does NOT trip the guard (control; the function
    proceeds past the guard).
 4. ``test_white_noise_grouped_still_matches_perdiag`` — END-TO-END:
-   a white-noise theory through the grouped path still agrees with the
+   a white-noise model through the grouped path still agrees with the
    per-diagram path (proves the guard left white noise unaffected).
 
 Run with::
@@ -233,26 +233,26 @@ def test_grouped_guard_does_not_trip_on_white_source():
 
 
 # ── (4) End-to-end: white noise grouped == per-diagram (unaffected) ──
-def _load_theory(name):
+def _load_model(name):
     path = os.path.join(
-        os.path.dirname(__file__), '..', 'theories', name)
-    spec = importlib.util.spec_from_file_location('theory', path)
+        os.path.dirname(__file__), '..', 'models', name)
+    spec = importlib.util.spec_from_file_location('model', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.build()
 
 
 def test_white_noise_grouped_still_matches_perdiag():
-    """The guard must leave WHITE-noise theories on the fast grouped
+    """The guard must leave WHITE-noise models on the fast grouped
     path and unchanged vs the per-diagram path.
 
     Uses the toy scalar quartic Langevin (white ``-D·xt²`` noise, no
-    colored cgf term) at k=2 / 1-loop — the same theory the grouped
+    colored cgf term) at k=2 / 1-loop — the same model the grouped
     Wick-permutation regression already exercises.
     """
     from api import compute_cumulants
 
-    m = _load_theory('toy_quartic_double_well.theory.py')
+    m = _load_model('toy_quartic_double_well.model.py')
     fundamental = {'mu': [-1.0], 'g': [1.0], 'D': [0.1]}
 
     def run(use_grouped):

@@ -1,10 +1,10 @@
 """
 tests/test_spatial_correlator_multifield.py
 ===========================================
-Additional spatial-correlator coverage on NEW theories, beyond
+Additional spatial-correlator coverage on NEW models, beyond
 ``test_spatial_correlator.py``:
 
-  * a 2-field DECOUPLED spatial theory — each field's auto-correlator
+  * a 2-field DECOUPLED spatial model — each field's auto-correlator
     must match its own free closed form (exercises the multi-field
     Tier-1 / block-diagonal heat-kernel propagator path)
   * single-field linear diffusion at several (μ, D, T) — parametric
@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.theory import TheoryBuilder
+from api.model import ModelBuilder
 from api import compute_cumulants
 
 
@@ -36,7 +36,7 @@ def _closed_equal_time(x, mu, D, T):
 
 def _two_field_model():
     return (
-        TheoryBuilder('two-field decoupled spatial', n_populations=0)
+        ModelBuilder('two-field decoupled spatial', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu1', default=1.0, domain='positive')
@@ -62,7 +62,7 @@ _FUND2 = {'mu1': 1.0, 'D1': 1.0, 'mu2': 2.0, 'D2': 0.5, 'T1': 1.0, 'T2': 1.5}
     ('psi', 2.0, 0.5, 1.5),
 ])
 def test_two_field_decoupled_each_matches_closed_form(field, mu, D, T):
-    """Each field of a decoupled 2-field spatial theory reproduces its
+    """Each field of a decoupled 2-field spatial model reproduces its
     own free equal-time correlator (block-diagonal heat-kernel path)."""
     model = _two_field_model()
     xs = np.array([0.0, 1.0, 2.0, 3.0])
@@ -79,7 +79,7 @@ def test_two_field_decoupled_each_matches_closed_form(field, mu, D, T):
 
 def _linear_model():
     return (
-        TheoryBuilder('linear diffusion param', n_populations=0)
+        ModelBuilder('linear diffusion param', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
         .parameter('D', default=1.0, domain='positive')
@@ -111,7 +111,7 @@ def test_linear_diffusion_varied_params(mu, D, T):
 
 def _allen_cahn_model():
     return (
-        TheoryBuilder('allen-cahn tree test', n_populations=0)
+        ModelBuilder('allen-cahn tree test', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
         .parameter('D', default=1.0, domain='positive')
@@ -129,7 +129,7 @@ def test_coupled_multifield_scalar_diffusion_supported():
     is now handled by the spectral-Lyapunov coupled driver (Dyson 3b):
     compute_cumulants returns a finite C(x,τ) instead of raising."""
     model = (
-        TheoryBuilder('coupled spatial (scalar D)', n_populations=0)
+        ModelBuilder('coupled spatial (scalar D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -159,7 +159,7 @@ def test_coupled_multifield_unequal_diffusion_raises_clean():
     """Coupled WITH UNEQUAL diffusion (𝒟̂≠0) still needs the Dyson series, so
     compute_cumulants raises a CLEAR NotImplementedError."""
     model = (
-        TheoryBuilder('coupled spatial (unequal D)', n_populations=0)
+        ModelBuilder('coupled spatial (unequal D)', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('psi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
@@ -189,7 +189,7 @@ def _mixed_dim_model():
     of the spatial design doc explicitly allows mixing dim=0 with
     dim>=1 fields in v1."""
     return (
-        TheoryBuilder('mixed dim0/dim1', n_populations=0)
+        ModelBuilder('mixed dim0/dim1', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .physical_field('m', spatial_dim=0)
         .parameter('mu', default=1.0, domain='positive')
@@ -209,7 +209,7 @@ _FUND_MIXED = {'mu': 1.0, 'D': 1.0, 'a': 2.0, 'T': 1.0, 'Tm': 1.0}
 
 
 def test_mixed_dim0_dim1_spatial_field_matches_closed_form():
-    """In a theory mixing a spatial field (dim=1) with a time-only
+    """In a model mixing a spatial field (dim=1) with a time-only
     auxiliary (dim=0), the SPATIAL field's correlator still reproduces
     its free closed form — the dim=0 block must not perturb it."""
     model = _mixed_dim_model()
@@ -240,13 +240,13 @@ def test_mixed_dim0_field_spatial_request_raises_clean():
 
 
 def test_higher_derivative_k4_raises_clean():
-    """A higher-derivative (Laplacian² → k⁴) spatial theory is not Tier-1
+    """A higher-derivative (Laplacian² → k⁴) spatial model is not Tier-1
     (the heat kernel needs dispersion λ = -(A + B·k²)).  It must raise a
     clear NotImplementedError whose recorded reason names the offending
     k-power — NOT a misleading 'coupled multi-field' message, since a
-    single-field k⁴ theory has no field coupling at all."""
+    single-field k⁴ model has no field coupling at all."""
     model = (
-        TheoryBuilder('k4 dispersion', n_populations=0)
+        ModelBuilder('k4 dispersion', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
         .parameter('D', default=1.0, domain='positive')
@@ -271,7 +271,7 @@ def test_negative_diffusion_raises_anti_diffusive_error():
     sign — NOT mislabel it as a zero-diffusion time-only (dim=0) field."""
     from engine.integration.spatial.heat_kernel import SpatialPropagatorError
     model = (
-        TheoryBuilder('neg diffusion', n_populations=0)
+        ModelBuilder('neg diffusion', n_populations=0)
         .physical_field('phi', spatial_dim=1)
         .parameter('mu', default=1.0, domain='positive')
         .parameter('D', default=1.0, domain='positive')

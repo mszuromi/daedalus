@@ -9,7 +9,7 @@ engine.integration.spatial.loop_dyson
 momentum-first self-energies (``loop_parametric``) into the dressed
 correlator correction.
 
-For the ``φ̃φ²`` reaction-diffusion theory the 1-loop self-energy is a
+For the ``φ̃φ²`` reaction-diffusion model the 1-loop self-energy is a
 **bubble** (momentum-DEPENDENT), with a retarded part ``Σ_R = G_R·C`` and a
 Keldysh part ``Σ_K = C·C``.  The dressed correlation is the standard MSR Dyson
 
@@ -50,7 +50,7 @@ def _mk(k, mu, D):
 # ── self-energy time kernels (direct ∫dℓ; pole-free, fast) ─────────
 # ``formfactor`` (Phase 4): an optional callable ``F(ℓ)`` multiplying the loop
 # integrand — the product of the two vertices' per-leg momentum form factors for
-# a DERIVATIVE-vertex theory (e.g. ``F(ℓ)=−ℓ²`` for a ∇² on the loop leg, or
+# a DERIVATIVE-vertex model (e.g. ``F(ℓ)=−ℓ²`` for a ∇² on the loop leg, or
 # ``F(ℓ)=−ℓ·(q−ℓ)`` for a KPZ gradient pair).  ``None`` ⇒ the plain bubble
 # (``F=1``), exactly reproducing the validated Stage-C.5 result.  The momentum-
 # first ∫dℓ stays pole-free with the polynomial factor, so this is robust.
@@ -84,7 +84,7 @@ def sigma_K_time(q, t, mu, D, T, formfactor=None):
 # sweet spot (g=0.20, moderate run BEFORE the metastable −gφ³ potential drifts)
 # gives fit coefficient B = sim-bubble/principled-bubble = 0.99 — bang on the
 # 1-loop prediction B=1.  Longer runs / larger g inflate B (1.7–2.6) because the
-# φ²-only theory is metastable (higher-order drift), NOT because the factors are
+# φ²-only model is metastable (higher-order drift), NOT because the factors are
 # wrong.  So c_R=4, c_K=2 are the correct 1-loop normalization.
 C_R, C_K = 4.0, 2.0
 
@@ -109,7 +109,7 @@ def _dyson_terms(q, mu, D, T, formfactor=None):
 
 def bubble_delta_S(q, mu, D, T, g=1.0, formfactor=None):
     """PHYSICAL bubble contribution to the equal-time structure factor
-    ``δC(q, τ=0)`` for the ``φ̃φ²`` theory: ``g²·(C_R·T1 + C_K·T2)`` with the
+    ``δC(q, τ=0)`` for the ``φ̃φ²`` model: ``g²·(C_R·T1 + C_K·T2)`` with the
     principled weights ``C_R=4, C_K=2`` (from the framework's 𝒮(Γ)).  Even in q.
     Excludes the q-independent ``φ²``-tadpole (the mass shift, d[1][2]).
 
@@ -139,7 +139,7 @@ def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None,
 
     ``formfactor`` (Phase 4): a numpy-vectorized ``F_R(ℓ)`` on the retarded
     bubble; ``formfactor_K`` the (possibly different) Keldysh form factor — a
-    derivative-vertex theory has F_R≠F_K (e.g. ∇²φ²: F_R=q²ℓ², F_K=q⁴).  If
+    derivative-vertex model has F_R≠F_K (e.g. ∇²φ²: F_R=q²ℓ², F_K=q⁴).  If
     ``formfactor_K`` is None it falls back to ``formfactor``; both None ⇒ the
     plain bubble.
     """

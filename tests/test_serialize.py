@@ -1,7 +1,7 @@
 """
 tests/test_serialize.py
 ========================
-Round-trip tests for engine.core.serialize: save_theory / load_theory / reload_model.
+Round-trip tests for engine.core.serialize: save_model / load_model / reload_model.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -25,7 +25,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from engine.core.serialize import save_theory, load_theory, reload_model, _strip_callables
+from engine.core.serialize import save_model, load_model, reload_model, _strip_callables
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -128,12 +128,12 @@ def test_strip_callables():
 
 
 def test_save_creates_files():
-    """save_theory creates metadata.json and symbolic_data.sobj."""
+    """save_model creates metadata.json and symbolic_data.sobj."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
@@ -150,9 +150,9 @@ def test_metadata_contents():
     """metadata.json has the expected keys and values."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
@@ -180,13 +180,13 @@ def test_round_trip_no_propagator():
     """Save and load without propagator data — bigrade sectors round-trip."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
-        meta, data = load_theory(save_path)
+        meta, data = load_model(save_path)
 
         # Ring round-trips
         R_loaded = data['R']
@@ -224,13 +224,13 @@ def test_round_trip_with_propagator():
     ft = _make_expanded_ft()
     pd = _make_propagator_data(ft)
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, propagator_data=pd, stationarity=True,
+        save_model(save_path, ft, propagator_data=pd, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
-        meta, data = load_theory(save_path)
+        meta, data = load_model(save_path)
 
         # Metadata reflects propagator info
         assert meta['propagator_branch'] == 'residue'
@@ -270,13 +270,13 @@ def test_reload_model():
     """reload_model re-imports the model dict and it can be used for re-expansion."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
-        meta, data = load_theory(save_path)
+        meta, data = load_model(save_path)
         model = reload_model(meta, project_root=_PROJECT_ROOT)
 
         # Model dict has expected keys
@@ -294,18 +294,18 @@ def test_reload_model():
 
 def test_reload_and_reexpand():
     """
-    Reload model from saved theory, re-expand at a different Taylor order,
+    Reload model from saved model, re-expand at a different Taylor order,
     and verify the result is consistent.
     """
     ft_orig = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft_orig, stationarity=True,
+        save_model(save_path, ft_orig, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
-        meta, data = load_theory(save_path)
+        meta, data = load_model(save_path)
         model = reload_model(meta, project_root=_PROJECT_ROOT)
 
         # Re-expand at order 3 (lower than original 4)
@@ -339,12 +339,12 @@ def test_reload_and_reexpand():
 
 
 def test_load_missing_files():
-    """load_theory raises FileNotFoundError for missing files."""
+    """load_model raises FileNotFoundError for missing files."""
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
     try:
         # Empty directory
         try:
-            load_theory(tmpdir)
+            load_model(tmpdir)
             assert False, 'Should have raised FileNotFoundError'
         except FileNotFoundError:
             pass
@@ -353,7 +353,7 @@ def test_load_missing_files():
         with open(os.path.join(tmpdir, 'metadata.json'), 'w') as f:
             json.dump({}, f)
         try:
-            load_theory(tmpdir)
+            load_model(tmpdir)
             assert False, 'Should have raised FileNotFoundError'
         except FileNotFoundError:
             pass
@@ -396,13 +396,13 @@ def test_reload_model_bad_varname():
     """reload_model raises AttributeError for wrong variable name."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='NONEXISTENT_VAR')
 
-        meta, _ = load_theory(save_path)
+        meta, _ = load_model(save_path)
         try:
             reload_model(meta, project_root=_PROJECT_ROOT)
             assert False, 'Should have raised AttributeError'
@@ -418,16 +418,16 @@ def test_idempotent_save():
     """Saving twice to the same path overwrites cleanly."""
     ft = _make_expanded_ft()
     tmpdir = tempfile.mkdtemp(prefix='msrjd_test_')
-    save_path = os.path.join(tmpdir, 'test_theory')
+    save_path = os.path.join(tmpdir, 'test_model')
     try:
-        save_theory(save_path, ft, stationarity=True,
+        save_model(save_path, ft, stationarity=True,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
-        save_theory(save_path, ft, stationarity=False,
+        save_model(save_path, ft, stationarity=False,
                     model_file='simulations/hawkes_sage.py',
                     model_var_name='HAWKES_MODEL')
 
-        meta, data = load_theory(save_path)
+        meta, data = load_model(save_path)
         assert meta['stationarity'] is False, 'Second save did not overwrite'
         assert data['S_raw'] == ft._S_raw, 'S_raw mismatch after overwrite'
 

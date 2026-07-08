@@ -375,7 +375,7 @@ class DynamicTable:
     def set_column_visible(self, name: str, visible: bool) -> None:
         """Show or hide one column — its header cell and every row's cell,
         current and future (used e.g. to drop ``spatial_dim`` from a
-        time-only theory)."""
+        time-only model)."""
         if visible:
             self._hidden_cols.discard(name)
         else:

@@ -1,5 +1,5 @@
 """
-Markovian embedding preprocessor for colored-noise theories.
+Markovian embedding preprocessor for colored-noise models.
 
 Why this exists
 ---------------
@@ -7,7 +7,7 @@ Why this exists
 ``exp(-|tau|/tauc)`` factor coming from a CGF-tab ``NoiseSourceType``
 vertex into its analytic mode-sum integrators.  At ``max_ell >= 1`` the
 scipy ``nquad`` fallback path either hangs or runs for orders of
-magnitude longer than the equivalent white-noise theory.
+magnitude longer than the equivalent white-noise model.
 
 A standard workaround in stochastic dynamics is to rewrite the colored-
 noise process as a deterministic linear filter driven by a white noise:
@@ -22,7 +22,7 @@ The stationary autocovariance of the auxiliary ``xi`` is
 which recovers the user's colored kernel.  In Phase 1 we only handle the
 single-Lorentzian case, including the cross-correlated 2D variant.
 
-The transform is applied at ``TheoryBuilder.build()`` time, mutating the
+The transform is applied at ``ModelBuilder.build()`` time, mutating the
 builder in place.  Every matched CGF row is replaced with:
 
   * One new ``physical_field`` per affected response field (e.g. an
@@ -411,7 +411,7 @@ def markovianize_spec(builder) -> None:
     # name as a token immediately before "*(" and insert " - <aux>"
     # just before the closing parenthesis of that parenthesized block.
     # This handles the common "<rt>*((Dt+...)*x + ...)" form used by
-    # all the user's theories.  If the user's action layout is more
+    # all the user's models.  If the user's action layout is more
     # baroque, the user can opt out with ``.markovianize(False)`` and
     # do the rewrite manually.
     action_text = builder._action_text or ''
@@ -503,11 +503,11 @@ def _inject_aux_coupling(action_text: str,
 
 def _sr_to_text(expr) -> str:
     """Render an SR expression as a Sage-syntax string that the
-    text-driven theory pipeline can re-eval.
+    text-driven model pipeline can re-eval.
 
     The default ``str(expr)`` form uses Sage's preferred operators
     (``^`` for power, ``*`` / ``/`` for products, function names like
     ``sqrt``), which is exactly what
-    ``api.theory_compiler._CGFKernelCallable`` accepts.
+    ``api.model_compiler._CGFKernelCallable`` accepts.
     """
     return str(SR(expr))

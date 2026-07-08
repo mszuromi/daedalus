@@ -104,7 +104,7 @@ def momentum_integral(a_list, b_list, weights, q, D, spatial_dim=1):
     ``n_ext`` external momenta.
 
     ``q`` : the external momentum/momenta — a scalar (``n_ext==1``) or a
-            length-``n_ext`` sequence (for an isotropic theory, the components
+            length-``n_ext`` sequence (for an isotropic model, the components
             along one fixed axis suffice since ``Q_eff`` couples only ``qᵢ·qⱼ``).
     Returns a float.  Generalizes :func:`loop_parametric.gaussian_momentum_integral`
     (the ``L=1`` case) to any ``L`` and any ``d``.

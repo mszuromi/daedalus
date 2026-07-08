@@ -18,7 +18,7 @@ git clone https://github.com/mszuromi/daedalus.git
 cd daedalus
 conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
 conda activate daedalus
-jupyter lab                             # then open notebooks/theory_builder_tutorial.ipynb
+jupyter lab                             # then open notebooks/model_builder_tutorial.ipynb
 ```
 
 [`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
@@ -90,10 +90,10 @@ From a script without installing, see *Using it from a script* below.
 | path | what it is |
 |---|---|
 | [`daedalus.py`](daedalus.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
-| [`api/`](api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `TheoryBuilder`, `generate_report`, `save_npz`) |
+| [`api/`](api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `ModelBuilder`, `generate_report`, `save_npz`) |
 | [`engine/`](engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
 | [`simulations/`](simulations/) | independent numerical simulators used to validate the analytic results |
-| [`theories/`](theories/) | `*.theory.py` specs loaded by `dd.load_theory(name)` |
+| [`models/`](models/) | `*.model.py` specs loaded by `dd.load_model(name)` |
 
 ## Using it from a script
 
@@ -103,7 +103,7 @@ From a script without installing, see *Using it from a script* below.
 ```python
 import sys; sys.path[:0] = ['/path/to/daedalus', '/path/to/daedalus/notebooks']
 import daedalus as dd
-model, mod = dd.load_theory('kpz_1d')
+model, mod = dd.load_model('kpz_1d')
 res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 ```
 
@@ -117,13 +117,13 @@ From the repository root:
 sage -python - <<'PY'
 import sys; sys.path[:0] = ['.', 'notebooks']
 import daedalus as dd
-model, mod = dd.load_theory('ou_quartic')
+model, mod = dd.load_model('ou_quartic')
 res = dd.run(model, dd.Config(k=2, max_ell=0), mod)
 print('OK —', dd.summary(res).splitlines()[0])
 PY
 ```
 
-Expected output: `OK — theory : 'OU Quartic (white noise)'`.
+Expected output: `OK — model : 'OU Quartic (white noise)'`.
 
 ## Run the notebooks
 
@@ -137,9 +137,9 @@ Then open one of:
 
 | notebook | purpose |
 |---|---|
-| [`notebooks/theory_builder_tutorial.ipynb`](notebooks/theory_builder_tutorial.ipynb) | guided tour — build a temporal theory and run it |
-| [`notebooks/theory_builder.ipynb`](notebooks/theory_builder.ipynb) | point-and-click theory builder (the `TheoryUI` form) |
-| [`notebooks/theory_runner.ipynb`](notebooks/theory_runner.ipynb) | load and run any saved `theories/*.theory.py` |
+| [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) | guided tour — build a temporal model and run it |
+| [`notebooks/model_builder.ipynb`](notebooks/model_builder.ipynb) | point-and-click model builder (the `ModelUI` form) |
+| [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `models/*.model.py` |
 | [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
 
 If a notebook reports its kernel (`sagemath-10.8`) is missing — e.g. your Sage registered a
@@ -156,7 +156,7 @@ differently-named kernel — just pick your **SageMath** kernel from Jupyter's k
 | networkx | 3.5 | Sage | diagram / report bookkeeping |
 | cysignals | 1.12.6 | Sage | interruptible long computations |
 | JupyterLab / notebook / ipykernel | 4.5 / 7.5 / 7.1 | Sage | running the notebooks |
-| ipywidgets | 8.1.1 | Sage | the graphical theory builder (`TheoryUI`) |
+| ipywidgets | 8.1.1 | Sage | the graphical model builder (`ModelUI`) |
 | **numba** (+ llvmlite) | 0.65.1 (+ 0.47.0) | **extra** (`sage -pip` / conda) | loop-integrator speed; **required** by the numba simulation cells in `examples/` (the pipeline itself falls back to pure Python without it) |
 | pydot | 4.0.1 | extra (optional) | optional diagram / prediagram plots (needs the `graphviz` binary) |
 | pyperclip | — | extra (optional) | optional copy buttons in the GUI |

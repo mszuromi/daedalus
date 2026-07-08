@@ -39,6 +39,6 @@ py-modules = ["daedalus"]
 [tool.setuptools.packages.find]
 include = ["api*", "engine*", "simulations*"]
 
-# theories/*.theory.py are loaded by path (dd.load_theory), not imported. An editable install
+# models/*.model.py are loaded by path (dd.load_model), not imported. An editable install
 # (sage -pip install -e .) resolves them from the repo via daedalus.repo_root(); they are not
 # packaged as importable modules.

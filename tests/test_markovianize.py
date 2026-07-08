@@ -5,7 +5,7 @@ Unit tests for the colored-noise → Markovian-embedding preprocessor
 Coverage:
   * ``detect_lorentzian`` matches the v1 single-Lorentzian template
     and rejects everything else.
-  * Building ``ou_quartic_colored.theory.py`` (the worked example)
+  * Building ``ou_quartic_colored.model.py`` (the worked example)
     through the default-ON preprocessor produces the expected
     auxiliary-field + white-noise spec.
   * Tree-level free-theory ``C(τ=0)`` matches the analytic OU result
@@ -13,7 +13,7 @@ Coverage:
     ``μ = 1/τc`` exact-degeneracy edge case (see v2 follow-up).
   * Builder-level ``.markovianize(False)`` opt-out keeps the legacy
     colored row in the spec.
-  * The ``markovianize=`` round-trip through ``theory_serialize``
+  * The ``markovianize=`` round-trip through ``model_serialize``
     (save → load) preserves both per-row and per-builder overrides.
 
 Run with:
@@ -29,14 +29,14 @@ import time
 import pytest
 
 
-# Where ``ou_quartic_colored.theory.py`` lives.
+# Where ``ou_quartic_colored.model.py`` lives.
 HERE          = os.path.dirname(os.path.abspath(__file__))
-COLORED_FILE  = os.path.join(HERE, '..', 'theories',
-                             'ou_quartic_colored.theory.py')
+COLORED_FILE  = os.path.join(HERE, '..', 'models',
+                             'ou_quartic_colored.model.py')
 
 
 def _build_colored() -> dict:
-    """Build the user's worked-example colored-noise theory using
+    """Build the user's worked-example colored-noise model using
     its on-disk file (so we exercise the load → builder → markovianize
     chain end-to-end)."""
     import importlib.util
@@ -48,7 +48,7 @@ def _build_colored() -> dict:
 
 @pytest.fixture
 def isolated_cache(monkeypatch, tmp_path):
-    """Run with an isolated cache root so the markovianized theory's
+    """Run with an isolated cache root so the markovianized model's
     rebuilt cache doesn't interfere with other tests."""
     monkeypatch.chdir(tmp_path)
     yield str(tmp_path)
@@ -136,10 +136,10 @@ def test_markovianize_opt_out_keeps_colored_row():
     """Builder-level ``.markovianize(False)`` must leave the original
     colored CGF row untouched.  Required for users whose kernels don't
     match the v1 template, or who've hand-coded their own embedding."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
 
     builder = (
-        TheoryBuilder('Test colored opt-out', n_populations=0)
+        ModelBuilder('Test colored opt-out', n_populations=0)
         .physical_field('x', indexed=True)
         .parameter('mu',   default=0.1, domain='real')
         .parameter('D',    default=1.0, domain='positive')
@@ -198,11 +198,11 @@ def test_colored_ou_tree_level_matches_analytic(isolated_cache):
 
 
 def test_markovianize_serialize_round_trip():
-    """``theory_serialize`` must preserve the explicit per-row
+    """``model_serialize`` must preserve the explicit per-row
     ``markovianize=`` keyword AND the builder-level
     ``.markovianize(False)`` opt-out across save → load."""
-    from api.theory_serialize import (
-        render_theory_file, load_spec_from_file, save_theory_to_file,
+    from api.model_serialize import (
+        render_model_file, load_spec_from_file, save_model_to_file,
     )
 
     spec = {
@@ -236,7 +236,7 @@ def test_markovianize_serialize_round_trip():
         'default_fundamental': {},
         'metadata': {},
     }
-    src = render_theory_file(spec)
+    src = render_model_file(spec)
     # Builder-level opt-out emits a ``.markovianize(False)`` call.
     assert '.markovianize(False)' in src
     # Per-row keyword emits ``markovianize=False`` inside the
@@ -245,7 +245,7 @@ def test_markovianize_serialize_round_trip():
 
     # Round-trip on disk.
     with tempfile.TemporaryDirectory() as tmp:
-        path = save_theory_to_file(spec, tmp)
+        path = save_model_to_file(spec, tmp)
         loaded = load_spec_from_file(path)
         assert loaded['markovianize_default'] is False
         assert loaded['cgf_terms'][0]['markovianize'] is False

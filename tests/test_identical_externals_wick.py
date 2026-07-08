@@ -18,7 +18,7 @@ exact tree-level cumulant is the OU formula
 tree-level k=2 evaluation against that closed form and asserts
 agreement at machine precision.
 
-Hawkes-style theories with distinct external fields (e.g.
+Hawkes-style models with distinct external fields (e.g.
 ``[('n', 1), ('n', 2)]``) never triggered the bug because each field
 group had exactly one canonical position → no permutations enumerated.
 """
@@ -27,14 +27,14 @@ import os
 import sys
 import numpy as np
 
-THEORY_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'theories',
-    'toy_quartic_double_well.theory.py',
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), '..', 'models',
+    'toy_quartic_double_well.model.py',
 )
 
 
-def _load_theory(path):
-    spec = importlib.util.spec_from_file_location('theory', path)
+def _load_model(path):
+    spec = importlib.util.spec_from_file_location('model', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.build()
@@ -44,7 +44,7 @@ def _run_tree(use_grouped):
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
     from api import compute_cumulants
-    m = _load_theory(THEORY_PATH)
+    m = _load_model(MODEL_PATH)
     mu, D = -1.0, 0.1
     fundamental = {'mu': [mu], 'g': [1.0], 'D': [D]}
     return compute_cumulants(
@@ -100,7 +100,7 @@ def _run_1loop(use_grouped):
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
     from api import compute_cumulants
-    m = _load_theory(THEORY_PATH)
+    m = _load_model(MODEL_PATH)
     fundamental = {'mu': [-1.0], 'g': [1.0], 'D': [0.1]}
     return compute_cumulants(
         m, k=2, max_ell=1,
@@ -148,18 +148,18 @@ def test_1loop_symmetric_in_tau_grouped():
 def _run_ou_quartic_2loop(eps, use_grouped=False):
     """Helper: run OU+εx³ to 2 loops at the symmetric saddle xstar=0.
 
-    Uses the production theory ``theories/ou_quartic_double_well``
+    Uses the production model ``models/ou_quartic_double_well``
     (with literal sign convention ``dx = (−μx − εx³)dt + √(2D)dW``)
     so the Boltzmann perturbative coefficients match exactly.
     """
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
     from api import compute_cumulants
-    theory_path = os.path.join(
-        os.path.dirname(__file__), '..', 'theories',
-        'ou_quartic_double_well.theory.py',
+    model_path = os.path.join(
+        os.path.dirname(__file__), '..', 'models',
+        'ou_quartic_double_well.model.py',
     )
-    m = _load_theory(theory_path)
+    m = _load_model(model_path)
     return compute_cumulants(
         m, k=2, max_ell=2,
         external_fields=[('x', 1), ('x', 1)],

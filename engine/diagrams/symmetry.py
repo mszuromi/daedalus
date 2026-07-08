@@ -493,7 +493,7 @@ def diagram_signature(td):
     -- the collided classes' integrals were silently dropped: the
     kappa_3 1-loop coefficient came out -68/3*a^3 instead of -32*a^3.
     A complete invariant cannot collide, so this failure mode is
-    closed for every k, ell, and theory.  (Validated against the
+    closed for every k, ell, and model.  (Validated against the
     exact Boltzmann series at k=3 and k=4, and a brute-force labeled
     Wick enumeration per class -- see scratch/wick_count_k3_a3.py.)
 

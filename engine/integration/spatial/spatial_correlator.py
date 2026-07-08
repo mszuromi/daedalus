@@ -24,7 +24,7 @@ analytic ``C(x,0) = D^noise/(2√(AB)) e^{-|x|√(A/B)}``) in
 ``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
 
 This is the **tree-level / Gaussian** correlator: exact for the free
-theory, and the leading term for an interacting one (the λφ³ vertex
+model, and the leading term for an interacting one (the λφ³ vertex
 enters at 1-loop, which is the remaining Phase-5 work — see
 ``docs/spatial_implementation_plan.md`` §5).  Off-diagonal field
 coupling and loops are deferred to v2.
@@ -48,7 +48,7 @@ def extract_noise_coefficients(ft, num_params):
     coefficient per (response) field, read from the action's (2,0)
     bigrade sector (the ``- D^noise · φ̃²`` term).
 
-    Convention (matching the framework's OU theories, e.g. action
+    Convention (matching the framework's OU models, e.g. action
     ``- D·x̃²`` ⇒ ⟨x²⟩ = D/μ): ``D_noise_i = -coeff(φ̃_i²)``.
     Cross-noise (i≠j, off-diagonal) is read but only the diagonal is
     used by the diagonal-propagator correlator.  ``num_params`` is
@@ -241,7 +241,7 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
         raise NotImplementedError(
             'spatial v1 supports only the Tier-1 diagonal heat-kernel '
             'propagator (dispersion λ = -(A + B·k²), one decoupled field per '
-            'block).  This theory is not Tier-1 — the usual causes are '
+            'block).  This model is not Tier-1 — the usual causes are '
             'off-diagonal / coupled multi-field structure OR a higher-'
             'derivative operator (k⁴+, e.g. Laplacian²).  Both are v2 '
             'features — see docs/spatial_phase5_rearchitecture_plan.md. '
@@ -263,7 +263,7 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
             raise SpatialPropagatorError(
                 f'field {leg_names[0]!r} (index {fi}) has NEGATIVE diffusion '
                 f'B={B}: the spatial operator is anti-diffusive, so the heat '
-                f'kernel diverges (the theory is short-wavelength unstable / '
+                f'kernel diverges (the model is short-wavelength unstable / '
                 f'ill-posed).  Check the sign of the Laplacian term — it '
                 f'should enter as "- D*Laplacian" with D>0 (dispersion +D·k²) '
                 f'— and that D itself is positive.')

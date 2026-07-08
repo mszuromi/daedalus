@@ -45,8 +45,8 @@ The result dict includes:
 Shipped capabilities:
   - compute_cumulants — full pipeline up to and including Phase J
   - generate_report   — multi-page PDF with prediagrams + per-diagram values
-  - theory builder API (declarative theory input) — TemporalTheoryBuilder /
-    SpatialTheoryBuilder in api/theory.py; call .build() to produce a model
+  - model builder API (declarative model input) — TemporalModelBuilder /
+    SpatialModelBuilder in api/model.py; call .build() to produce a model
     dict consumable by compute_cumulants. This is the primary authoring path.
 """
 from api.compute     import compute_cumulants

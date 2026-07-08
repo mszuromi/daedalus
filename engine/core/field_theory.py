@@ -643,7 +643,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
 
     if failures:
         lines = [
-            "This theory's mean-field saddle does not satisfy its own "
+            "This model's mean-field saddle does not satisfy its own "
             "equations — the MF action sector is non-zero at the saddle.",
             "Likely causes:",
             "  - a .set_mf_equation(...) / .equation(...) that doesn't match "
@@ -747,14 +747,14 @@ def _mf_numerical_residual(expr, ns, model):
 
 def _default_fundamental_point(ns, model):
     """Build a ``fundamental`` dict for the verification's numerical
-    fallback.  Prefers the theory author's per-parameter ``default``
-    values (which the theory ships specifically because they admit a
+    fallback.  Prefers the model author's per-parameter ``default``
+    values (which the model ships specifically because they admit a
     well-behaved MF solution); falls back to all-ones only when a
     parameter has no default declared.
 
     All-ones is a poor universal fallback for non-linear closures —
     e.g. quad ``phi(v) = a·v²`` with ``Em=a=w=1`` yields the saddle
-    equation ``2v² - v + 1 = 0`` (no real root).  The theory's own
+    equation ``2v² - v + 1 = 0`` (no real root).  The model's own
     defaults sidestep this.
     """
     fundamental: dict = {}
@@ -868,7 +868,7 @@ class FieldTheory:
             # (``Conv(g, h(v, n))`` with non-polynomial h) get Taylor-
             # expanded at the same order the action itself is about to
             # be expanded at downstream.  For polynomial-of-degree-≤N
-            # arguments the Taylor is a no-op, so existing theories
+            # arguments the Taylor is a no-op, so existing models
             # using simple ``Conv(g, n[j])`` form keep bit-identical
             # output.
             #
@@ -1076,11 +1076,11 @@ class FieldTheory:
         primary_idx = list(list(idx.values())[0])
 
         # ── Population-aware sizing ────────────────────────────
-        # For heterogeneous theories, every population in
+        # For heterogeneous models, every population in
         # ``model['populations']`` has its own index range
         # ``[0, ..., size-1]`` exposed on the namespace under both
         # ``pop_<name>`` and (for ergonomic action text) ``<name>``.
-        # Legacy theories have an empty ``populations`` list and
+        # Legacy models have an empty ``populations`` list and
         # fall back to the single flat ``pop`` index.
         populations = m.get('populations') or []
         pop_size = {p['name']: int(p.get('size', 1)) for p in populations}
@@ -1255,7 +1255,7 @@ class FieldTheory:
         # binding syntax) so the action-eval namespace and the action lambda
         # route through ``pipeline.spatial_operator_ir``.  Default False —
         # the bare multiplicative ``Dt``/``Laplacian`` symbols above are
-        # untouched for every existing theory.
+        # untouched for every existing model.
         ns._operator_ir = bool(m.get('operator_ir', False))
 
         # Internal names start with 'z' so they sort after tau ('t') and phi ('p')

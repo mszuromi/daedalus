@@ -6,16 +6,16 @@ The four group templates (``notebooks/templates/``) and every
 ``*_sim_compare`` notebook import this module so the thematics are common.
 
     import daedalus as dd
-    model, mod = dd.load_theory('kpz_1d')          # from theories/*.theory.py
+    model, mod = dd.load_model('kpz_1d')          # from models/*.model.py
     cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))   # χ = spatial sep.
     res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
     dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
 
 Design choices
 --------------
-* **Single source of truth for theories.**  ``load_theory`` imports a
-  ``theories/<name>.theory.py`` file and returns ``(model, module)``; demo
-  notebooks never re-build a theory inline.
+* **Single source of truth for models.**  ``load_model`` imports a
+  ``models/<name>.model.py`` file and returns ``(model, module)``; demo
+  notebooks never re-build a model inline.
 * **Arbitrary k and ℓ.**  ``Config.k`` / ``Config.max_ell`` are free; the
   spatial k≥3 path is wired through ``Config.spatial_points``.
 * **Dyson dressing exposed.**  ``Config.dyson_order`` (+ ``reference_diffusion``)
@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 __version__ = '0.1.0'
 
 
-# ── Repo / theory discovery ──────────────────────────────────────────────────
+# ── Repo / model discovery ──────────────────────────────────────────────────
 
 def repo_root() -> str:
     """Walk up from this file (or cwd, in a bare notebook) until the
@@ -55,7 +55,7 @@ def repo_root() -> str:
 
 
 REPO_ROOT = repo_root()
-THEORIES_DIR = os.path.join(REPO_ROOT, 'theories')
+MODELS_DIR = os.path.join(REPO_ROOT, 'models')
 import sys as _sys
 if REPO_ROOT not in _sys.path:
     _sys.path.insert(0, REPO_ROOT)
@@ -64,19 +64,25 @@ if REPO_ROOT not in _sys.path:
 # ── Lazy re-exports of the user-facing pipeline API ──────────────────────────
 # Every major pipeline symbol a user touches is reachable as ``dd.<name>``,
 # alongside the notebook helpers defined below (``Config``, ``run``, ``plot_*``,
-# ``load_theory``, …).  Resolved lazily on first access (PEP 562) so
+# ``load_model``, …).  Resolved lazily on first access (PEP 562) so
 # ``import daedalus`` stays light and only pulls in Sage when something is
 # actually used.  The canonical ``from api... import <name>`` forms keep
 # working — these are aliases; that explicit form is the one to use inside a
-# saved ``theories/*.theory.py`` file (which cannot import this notebook helper).
+# saved ``models/*.model.py`` file (which cannot import this notebook helper).
 _PIPELINE_EXPORTS = {
-    # authoring — build a theory in code (pipeline.theory)
-    'TheoryBuilder':             'api.theory',
-    'TemporalTheoryBuilder':     'api.theory',
-    'SpatialTheoryBuilder':      'api.theory',
-    # noise template (api.theory_templates) for builder.add_gtas_noise(...)
-    'GTaSNoise':                 'api.theory_templates',
+    # authoring — build a model in code (pipeline.model)
+    'ModelBuilder':             'api.model',
+    'TemporalModelBuilder':     'api.model',
+    'SpatialModelBuilder':      'api.model',
+    # noise template (api.model_templates) for builder.add_gtas_noise(...)
+    'GTaSNoise':                 'api.model_templates',
     # graphical builder (pipeline.ui)
+    'ModelUI':                  'api.ui',
+    # deprecated aliases (pre-July-2026 name: "theory") — kept so existing
+    # scripts and notebooks keep working; new code should use the Model* names
+    'TheoryBuilder':             'api.model',
+    'TemporalTheoryBuilder':     'api.model',
+    'SpatialTheoryBuilder':      'api.model',
     'TheoryUI':                  'api.ui',
     # compute / report / precompute / persistence / access (pipeline top level)
     'compute_cumulants':         'api',
@@ -104,33 +110,38 @@ def __dir__():
     return sorted(set(globals()) | set(_PIPELINE_EXPORTS))
 
 
-def list_theories() -> list[str]:
-    """Every ``theories/<name>.theory.py`` available to load."""
-    return sorted(f[:-len('.theory.py')]
-                  for f in os.listdir(THEORIES_DIR)
-                  if f.endswith('.theory.py'))
+def list_models() -> list[str]:
+    """Every ``models/<name>.model.py`` available to load."""
+    return sorted(f[:-len('.model.py')]
+                  for f in os.listdir(MODELS_DIR)
+                  if f.endswith('.model.py'))
 
 
-def load_theory(name: str):
-    """Import ``theories/<name>.theory.py`` and return ``(model, module)``.
+def load_model(name: str):
+    """Import ``models/<name>.model.py`` and return ``(model, module)``.
 
     ``model = module.build()`` is the model dict; ``module`` exposes
     ``DEFAULT_FUNDAMENTAL`` and ``METADATA`` (the run defaults)."""
-    path = os.path.join(THEORIES_DIR, f'{name}.theory.py')
+    path = os.path.join(MODELS_DIR, f'{name}.model.py')
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f'No theory file at {path}. Available: {list_theories()}')
-    spec = importlib.util.spec_from_file_location(f'theories.{name}', path)
+            f'No model file at {path}. Available: {list_models()}')
+    spec = importlib.util.spec_from_file_location(f'models.{name}', path)
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
         return mod.build(), mod
     except Exception as e:
         raise RuntimeError(
-            f'Failed to load theory {name!r} from {path}: {e}') from e
+            f'Failed to load model {name!r} from {path}: {e}') from e
 
 
 # ── Model introspection ──────────────────────────────────────────────────────
+
+# — deprecated aliases (pre-July-2026 names) — new code: load_model / list_models
+load_theory = load_model
+list_theories = list_models
+
 
 def is_spatial(model: dict) -> bool:
     sp = model.get('spatial')
@@ -143,7 +154,7 @@ def spatial_dim(model: dict) -> int:
 
 
 def is_multifield(model: dict) -> bool:
-    """True iff the theory has more than one independent field channel —
+    """True iff the model has more than one independent field channel —
     either >1 physical field or a population of size >1.  Drives the
     plotting (multi-field → per-component grid)."""
     if len(model.get('physical_fields') or []) > 1:
@@ -235,10 +246,10 @@ def _fmt_default(v, maxlen: int = 52) -> str:
     return s if len(s) <= maxlen else s[:maxlen - 1] + '…'
 
 
-# Provenance / dev-status boilerplate to strip from a theory docstring so
+# Provenance / dev-status boilerplate to strip from a model docstring so
 # describe_model shows the model's physics, not its changelog.
-_DOC_DROP = ('text-driven theory file', 'Generated by', 'Loaded by',
-             '.theory.py', '====', '----', 'Schema', 'exposes:', 'docs/',
+_DOC_DROP = ('text-driven model file', 'Generated by', 'Loaded by',
+             '.model.py', '====', '----', 'Schema', 'exposes:', 'docs/',
              '``build()``', '``DEFAULT_FUNDAMENTAL``', '``METADATA``',
              'returning a ``model``', 'suggested numerical', 'free-form info',
              'ready for', 'pattern).')
@@ -247,7 +258,7 @@ _DOC_STOP = ('Phase 1 status', 'Phase 2 status', 'Phase 3 status',
 
 
 def _doc_physics(doc: str) -> str:
-    """Trim a theory docstring to its physics prose — drop UI-provenance
+    """Trim a model docstring to its physics prose — drop UI-provenance
     boilerplate and the dev-status / cross-reference tail."""
     keep = []
     for ln in doc.splitlines():
@@ -260,10 +271,10 @@ def _doc_physics(doc: str) -> str:
 
 
 def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
-    """Pretty-print the structure of a loaded theory — the *model information
-    from the theory file*: domain, fields, populations, parameters, kernels,
+    """Pretty-print the structure of a loaded model — the *model information
+    from the model file*: domain, fields, populations, parameters, kernels,
     transfer functions, and the governing equation(s).  Prints and returns the
-    text.  Pass the theory ``module`` (the 2nd value of :func:`load_theory`) to
+    text.  Pass the model ``module`` (the 2nd value of :func:`load_model`) to
     also surface its docstring + ``METADATA`` run recommendations.
 
     This is the canonical "what is this model?" cell for the example
@@ -271,7 +282,7 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
     out = []
     bar = '─' * 72
     out.append(bar)
-    out.append(f"  {model.get('name', '(unnamed theory)')}")
+    out.append(f"  {model.get('name', '(unnamed model)')}")
     out.append(bar)
 
     def _mode(v, default):
@@ -384,7 +395,7 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
 class Config:
     """Everything a demo notebook chooses, in one object.
 
-    Leave a field ``None`` to inherit the theory file's ``METADATA`` /
+    Leave a field ``None`` to inherit the model file's ``METADATA`` /
     ``DEFAULT_FUNDAMENTAL`` default.
     """
     # ── what to compute ──
@@ -431,7 +442,7 @@ class Config:
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
 
-    # ── mean-field DAE root selection (multi-root theories) ──
+    # ── mean-field DAE root selection (multi-root models) ──
     # Multi-root saddles (e.g. the double-well regime mu<0, with two
     # stable wells) must choose which root to expand around.  Leave
     # ``None`` to inherit ``compute_cumulants``' own defaults
@@ -540,7 +551,7 @@ def _meta(mod, key, default=None):
 def fundamental_from_model(model: dict) -> dict:
     """Build a ``fundamental`` dict from the parameters' own ``default``
     values baked into the model — every non-saddle parameter with a
-    declared default.  Lets a loaded theory run out of the box even when
+    declared default.  Lets a loaded model run out of the box even when
     its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``*star``,
     solved by the mean-field step) and defaultless params are skipped."""
     out = {}
@@ -589,7 +600,7 @@ def config_options(spatial=None):
             ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
             ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
-            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → theory defaults"),
+            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults"),
             ('output',          "'cumulant' | 'moment' | 'central_moment'"),
         ]),
     ]
@@ -608,7 +619,7 @@ def config_options(spatial=None):
         ('spatial_points','k≥3: explicit (n_pts, k−1, 2) (x_j, τ_j) events — OR omit and pass chi_grid(+tau_grid) to sweep the full 2(k−1)-D grid → result["C_kpoint_grid"]'),
     ])
     rest = [
-        ('mean-field root (multi-root theories)', [
+        ('mean-field root (multi-root models)', [
             ('fixed_point_index', 'which stable saddle root to expand around (0,1,…)'),
             ('mf_dae_n_starts',   'multi-start Newton count for the saddle solve'),
             ('mf_dae_seed_box',   '{field: (lo,hi)} start range for the saddle search'),
@@ -643,7 +654,7 @@ def config_options(spatial=None):
     groups += rest
 
     print('dd.Config arguments  (defaults shown; leave None to inherit the '
-          "theory's METADATA):\n")
+          "model's METADATA):\n")
     for title, items in groups:
         print('  ' + title)
         for name, desc in items:
@@ -825,7 +836,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 
 
 def run(model: dict, cfg: Config, module=None) -> dict:
-    """Resolve the config against the theory's defaults and call
+    """Resolve the config against the model's defaults and call
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
     k≥3 event path, and the Dyson-order override.  Returns the result
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
@@ -838,7 +849,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
 
     # Resolve the correlator order k.  Explicit ``cfg.k`` wins; otherwise infer
     # it from an explicit ``external_fields`` (a k-point correlator has exactly
-    # k legs); otherwise fall back to the theory's ``k_default``.  If BOTH are
+    # k legs); otherwise fall back to the model's ``k_default``.  If BOTH are
     # given they must agree — a mismatch is a contradiction, not something to
     # silently paper over.
     if cfg.k is not None:
@@ -864,9 +875,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # caught above.
     if not ext_is_explicit and not _ext_is_valid(model, ext, k):
         ext = _auto_external_fields(model, k)
-    # Layered fundamental: model param defaults ← theory DEFAULT_FUNDAMENTAL
+    # Layered fundamental: model param defaults ← model DEFAULT_FUNDAMENTAL
     # ← explicit cfg override.  Each layer wins over the one before, so a
-    # loaded theory runs out of the box and the notebook can override any
+    # loaded model runs out of the box and the notebook can override any
     # subset.
     fundamental = fundamental_from_model(model)
     fundamental.update(getattr(module, 'DEFAULT_FUNDAMENTAL', {}) or {}
@@ -885,7 +896,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         fundamental.update(cfg.parameters)
 
     # Dyson override: inject into the model's spatial policy at run time.
-    # Copy first so we never mutate the caller's model dict — load_theory
+    # Copy first so we never mutate the caller's model dict — load_model
     # returns it un-copied and the documented flow is load-once-run-many,
     # so an in-place write would leak the Dyson policy into later runs.
     if cfg.dyson_order is not None and model.get('spatial'):
@@ -901,7 +912,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
               external_fields=ext, parallel=cfg.parallel, verbose=cfg.verbose,
               n_workers=cfg.n_workers)
 
-    # Mean-field DAE root-selection overrides (multi-root theories such as
+    # Mean-field DAE root-selection overrides (multi-root models such as
     # the double-well regime mu<0).  Forward each only when set, so that
     # ``compute_cumulants``' own defaults (fixed_point_index=0,
     # mf_dae_n_starts=64, mf_dae_seed_box=None) are preserved otherwise.
@@ -1156,7 +1167,7 @@ def cumulative_curves(by_ell: dict) -> dict:
 
 def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
                   sim: dict = None, residual: bool = False):
-    """Plot the cumulant in the form natural to the theory's group.
+    """Plot the cumulant in the form natural to the model's group.
 
     Dispatch:
       * k=1 (any group)     → :func:`plot_temporal_mean` (the 1-point mean
@@ -1328,7 +1339,7 @@ def plot_temporal(result, cfg, model, sim=None, residual=False):
                      color=_ORDER_COLORS[ell % len(_ORDER_COLORS)],
                      label=f'theory: {lab}')
         st, sc, se = _sim_curve()
-        sc_i = np.interp(tau, st, sc)         # sim onto the theory τ-grid
+        sc_i = np.interp(tau, st, sc)         # sim onto the model τ-grid
         se_i = np.interp(tau, st, se) if se is not None else None
         if se_i is not None:
             ax2.errorbar(tau, sc_i - tree, yerr=se_i, fmt='o', ms=3,
@@ -1577,7 +1588,7 @@ def plot_spatial(result, cfg, model, sim=None):
     grid is present it ALSO shows the **temporal C(χ₀,τ) at one fixed χ** with the
     same per-loop (tree / tree+1loop…) overlay — the τ-sweep counterpart of the
     equal-time panel (χ₀ defaults to the χ closest to 0; ``Config.tau_slice_chi``
-    picks another), the **theory C(χ,τ) heatmap** (which contains *every* loop
+    picks another), the **model C(χ,τ) heatmap** (which contains *every* loop
     order in the run — the
     title states the order), and — when ``sim`` carries a 2-D correlator
     (``sim={'x','tau','C'}`` with a 2-D ``C(τ,χ)``) — the matching **simulation
@@ -1602,10 +1613,10 @@ def plot_spatial(result, cfg, model, sim=None):
     if not has_tau:                                # equal-time only → single panel
         fig, axA = plt.subplots(figsize=cfg.figsize or (6.0, 4.3))
         axB = axH = axS = None
-    elif sim2d:                                    # slices + theory & sim heatmaps
+    elif sim2d:                                    # slices + model & sim heatmaps
         fig, ax = plt.subplots(2, 2, figsize=cfg.figsize or (11.5, 8.2))
         axA, axB, axH, axS = ax[0, 0], ax[0, 1], ax[1, 0], ax[1, 1]
-    else:                                          # slices + theory heatmap
+    else:                                          # slices + model heatmap
         fig, ax = plt.subplots(1, 3, figsize=cfg.figsize or (15.0, 4.4))
         axA, axB, axH = ax
         axS = None
@@ -1668,7 +1679,7 @@ def plot_spatial(result, cfg, model, sim=None):
         axB.set_title(r'$C(\chi_0,\tau)$ at $\chi_0=%.2g$' % chi0)
         axB.grid(alpha=0.25); axB.legend(fontsize=8)
 
-    # ── theory (+ sim) C(χ,τ) heatmaps, on a shared colour scale ──
+    # ── model (+ sim) C(χ,τ) heatmaps, on a shared colour scale ──
     if has_tau:
         vmin, vmax = float(np.min(C)), float(np.max(C))
         im = axH.imshow(C, aspect='auto', origin='lower',
@@ -1733,9 +1744,9 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
     name = model.get('name', '')
     Xb = R / np.sqrt(2.0); cb = np.linspace(-Xb, Xb, 81)
     CX, CY = np.meshgrid(cb, cb)
-    M_xy = rad(full, np.sqrt(CX**2 + CY**2), it0)           # theory C(χ¹,χ²,0)
+    M_xy = rad(full, np.sqrt(CX**2 + CY**2), it0)           # model C(χ¹,χ²,0)
     M_xt = (np.array([rad(full, chi, it) for it in range(tau.size)])
-            if has_tau else None)                          # theory C(χ¹,0,τ)
+            if has_tau else None)                          # model C(χ¹,0,τ)
 
     have_sim = (sim is not None and sim.get('C') is not None
                 and np.ndim(np.asarray(sim['C'])) == 3 and has_tau)
@@ -1744,9 +1755,9 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
         st = np.asarray(sim['tau'], float)
         a0 = int(np.argmin(np.abs(sx))); is0 = int(np.argmin(np.abs(st)))
         km = np.abs(sx) <= R; sxm = sx[km]
-        if not km.any():               # no sim separation inside the theory radius
+        if not km.any():               # no sim separation inside the model radius
             import warnings as _w
-            _w.warn(f'sim correlator: no separation within the theory radius '
+            _w.warn(f'sim correlator: no separation within the model radius '
                     f'(max |χ|={R:g}); skipping the sim overlay.', stacklevel=2)
             have_sim = False
 
@@ -1771,7 +1782,7 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
     nrows = 3 if have_sim else 2
     fig, ax = plt.subplots(nrows, 3, figsize=cfg.figsize or (15.5, 4.3 * nrows + 0.4))
 
-    # ── row 0: the three axis slices (theory per-order + optional sim points) ──
+    # ── row 0: the three axis slices (model per-order + optional sim points) ──
     overlay(ax[0, 0], chi, lambda a: rad(a, chi, it0),
             simxy=(sxm, sC[is0][km][:, a0]) if have_sim else None)
     ax[0, 0].set_xlabel(r'$\chi^1$'); ax[0, 0].set_ylabel(r'$C(\chi^1,0,0)$')
@@ -1785,19 +1796,19 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
     ax[0, 2].set_xlabel(r'$\tau$'); ax[0, 2].set_ylabel(r'$C(0,0,\tau)$')
     ax[0, 2].set_title(r'slice $\tau$  ($\chi^1{=}\chi^2{=}0$)')
 
-    # ── theory heatmaps (row 1) + matching sim heatmaps (row 2), shared scale/col ──
-    theory_maps = [
+    # ── model heatmaps (row 1) + matching sim heatmaps (row 2), shared scale/col ──
+    model_maps = [
         (M_xy, [-Xb, Xb, -Xb, Xb], r'$\chi^1$', r'$\chi^2$', r'$C(\chi^1,\chi^2,0)$'),
         (M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^1$', r'$\tau$', r'$C(\chi^1,0,\tau)$'),
         (M_xt, [chi.min(), chi.max(), tau.min(), tau.max()], r'$\chi^2$', r'$\tau$', r'$C(0,\chi^2,\tau)$')]
     if have_sim:
         sim_maps = [
-            # .T: sim C[a,b]=C(χ¹=a,χ²=b) has row=χ¹/col=χ²; the theory M_xy and the
+            # .T: sim C[a,b]=C(χ¹=a,χ²=b) has row=χ¹/col=χ²; the model M_xy and the
             # reused χ¹(x)/χ²(y) labels want row=χ²/col=χ¹ (no-op for an isotropic sim).
             (sC[is0][np.ix_(km, km)].T, [sxm.min(), sxm.max(), sxm.min(), sxm.max()]),
             (sC[:, :, a0][:, km], [sxm.min(), sxm.max(), st.min(), st.max()]),
             (sC[:, a0, :][:, km], [sxm.min(), sxm.max(), st.min(), st.max()])]
-    for c, (M, ext, xl, yl, base) in enumerate(theory_maps):
+    for c, (M, ext, xl, yl, base) in enumerate(model_maps):
         vmin, vmax = float(np.nanmin(M)), float(np.nanmax(M))
         im = ax[1, c].imshow(M, origin='lower', extent=ext, aspect='auto',
                              cmap='viridis', vmin=vmin, vmax=vmax)
@@ -1811,7 +1822,7 @@ def _plot_spatial_2d(result, cfg, model, sim=None):
             ax[2, c].set_xlabel(xl); ax[2, c].set_ylabel(yl)
             ax[2, c].set_title(base + r'  [sim]')
             fig.colorbar(im2, ax=ax[2, c], fraction=.046, pad=.04)
-    sub = ('isotropic d=2; sim on the shared theory colour scale'
+    sub = ('isotropic d=2; sim on the shared model colour scale'
            if have_sim else 'isotropic d=2 — χ¹ and χ² views coincide')
     fig.suptitle(r'%s: $C(\chi^1,\chi^2,\tau)$ (%s)' % (name, sub))
     fig.tight_layout()
@@ -1896,7 +1907,7 @@ def plot_kpoint_grid(result, cfg, model, sim=None):
 
 def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     """Draw the *contributing prediagrams* — the MSR-JD directed topologies that
-    survive the theory's vertex/source filter — for the k-point cumulant up to
+    survive the model's vertex/source filter — for the k-point cumulant up to
     loop order ``max_ell``, grouped by topology family.
 
     Buice/Ocker convention: time flows right → left, with sources on the right,
@@ -1908,7 +1919,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     (propagator a→b → Δ_xy, source i → K⁽²⁾, a → φ″, leg 1 → field) is a
     separate label-mapping table.
 
-    ``model`` is a model dict (from :func:`load_theory`) or a theory-name
+    ``model`` is a model dict (from :func:`load_model`) or a model-name
     string.  Layout uses graphviz ``dot`` when installed, else a built-in
     fallback.  Returns the Matplotlib ``Figure`` (and writes a PNG if ``save``
     is given).  Practical range: ``k + max_ell ≤ 4``.
@@ -1930,7 +1941,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
         propagator a→b  → G[φ ← φ̃]           (bare response propagator)
         external leg 1  → φ                  (the correlator's external field)
 
-    ``model`` is a model dict (from :func:`load_theory`) or a theory name.
+    ``model`` is a model dict (from :func:`load_model`) or a model name.
     Returns ``(result, text)`` and prints ``text`` by default; ``result`` is
     ``{ell: [entry…]}`` keeping every typing.  ``max_typings`` caps how many are
     printed per prediagram.  ``use_propagator=True`` builds the propagator and
@@ -1948,7 +1959,7 @@ def summary(result: dict) -> str:
     """One-glance text summary of what was computed."""
     r = result.get('_resolved', {})
     model = result.get('_model', {})
-    lines = [f"theory : {model.get('name','?')!r}",
+    lines = [f"model : {model.get('name','?')!r}",
              f"k      : {r.get('k')}    max_ell : {r.get('max_ell')}",
              f"fields : {field_names(model)}"
              f"   spatial_dim : {spatial_dim(model)}"]

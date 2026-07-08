@@ -114,8 +114,8 @@ _MU1, _MU2, _D1, _D2, _G, _T1, _T2 = 1.5, 1.2, 0.9, 0.5, 0.4, 0.5, 0.4
 
 
 def _unequal_model(order=None, periodic_L=None):
-    from api.theory import SpatialTheoryBuilder
-    b = (SpatialTheoryBuilder('coupled2_unequalD')
+    from api.model import SpatialModelBuilder
+    b = (SpatialModelBuilder('coupled2_unequalD')
          .physical_field('a', spatial_dim=1)
          .physical_field('b', spatial_dim=1)
          .parameter('mua', default=_MU1, domain='positive')
@@ -166,7 +166,7 @@ def _exact_box_C(xs, taus, L, i, j, n_modes=600):
 
 
 def test_unequal_D_e2e_compute_cumulants_periodic():
-    """D-5 e2e: unequal-D coupled theory + .dyson_order(3) flows through
+    """D-5 e2e: unequal-D coupled model + .dyson_order(3) flows through
     compute_cumulants (periodic box) and matches the exact per-mode
     expm/Lyapunov oracle to the truncation accuracy."""
     from api import compute_cumulants
@@ -228,8 +228,8 @@ def _ladder_coupled_model(order):
     coupled routing (symbolically nonzero K_ft off-diagonals) while the exact
     physics is two independent fields — field a's answer is the trusted
     single-field generic loop path at D=Da."""
-    from api.theory import SpatialTheoryBuilder
-    b = (SpatialTheoryBuilder('ladder_unequalD')
+    from api.model import SpatialModelBuilder
+    b = (SpatialModelBuilder('ladder_unequalD')
          .physical_field('a', spatial_dim=1)
          .physical_field('b', spatial_dim=1)
          .parameter('mua', default=_MU1, domain='positive')
@@ -264,7 +264,7 @@ def test_unequal_D_loop_dressing_ladder():
     insertion + 𝓗₁ poles, error O(ρ²)); ρ = ‖𝒟̂‖/D₀ ≈ 0.29.  Covers tadpole
     AND momentum-mixing bubble topologies (a² + a³ vertices)."""
     from api import compute_cumulants
-    from api.theory import SpatialTheoryBuilder
+    from api.model import SpatialModelBuilder
 
     sg = np.array([0.0, 0.8])
     kw = dict(k=2, max_ell=1, tau_max=0.6, tau_step=0.6,
@@ -284,7 +284,7 @@ def test_unequal_D_loop_dressing_ladder():
         assert th['spatial_info'].get('coupled_loop')
         dC[order] = loop_piece(th)
 
-    scalar = (SpatialTheoryBuilder('ladder_single')
+    scalar = (SpatialModelBuilder('ladder_single')
               .physical_field('phi', spatial_dim=1)
               .parameter('mu', default=_MU1, domain='positive')
               .parameter('D', default=_D1, domain='positive')

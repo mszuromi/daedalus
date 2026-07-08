@@ -1,7 +1,7 @@
 """
 Phase J refactor — fixture-running utilities.
 
-Single entry point ``evaluate(config) -> dict`` that loads a theory,
+Single entry point ``evaluate(config) -> dict`` that loads a model,
 runs ``compute_cumulants``, and evaluates ``total_C`` at the
 configured probe τ-points.  Used by both ``_freeze.py`` (which writes
 .npz files) and ``test_phase_j_refactor_regression.py`` (which
@@ -19,14 +19,14 @@ import numpy as np
 from tests.phase_j_refactor_fixtures._configs import FixtureConfig
 
 
-def _load_theory(theory_file: str):
-    """Load a theories/<file> via importlib and return the model dict."""
+def _load_model(model_file: str):
+    """Load a models/<file> via importlib and return the model dict."""
     repo_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..')
     )
-    full_path = os.path.join(repo_root, 'theories', theory_file)
+    full_path = os.path.join(repo_root, 'models', model_file)
     spec = importlib.util.spec_from_file_location(
-        f'_phase_j_fixture_theory_{os.path.basename(theory_file)}',
+        f'_phase_j_fixture_model_{os.path.basename(model_file)}',
         full_path,
     )
     mod = importlib.util.module_from_spec(spec)
@@ -54,7 +54,7 @@ def evaluate(config: FixtureConfig) -> dict[str, Any]:
     # cost when a config can be resolved purely from _configs.py.
     from api import compute_cumulants
 
-    model = _load_theory(config.theory_file)
+    model = _load_model(config.model_file)
 
     # Pick the smallest τ-grid that compute_cumulants accepts so the
     # pipeline's internal sweep does minimal wasted work; we evaluate

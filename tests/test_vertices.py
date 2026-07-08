@@ -204,7 +204,7 @@ def test_total_degree_property():
         assert vt.total_degree == vt.in_degree + vt.out_degree
 
 
-def test_empty_theory():
+def test_empty_model():
     """A free theory (only (1,1) sector) returns empty vertex/source lists."""
     # Build a trivial model with only a free action (no interaction terms)
     trivial_model = {

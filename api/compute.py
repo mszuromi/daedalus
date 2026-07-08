@@ -202,11 +202,11 @@ def compute_cumulants(
         content or when probing higher-order vertices for cache
         invalidation testing).
 
-        **Previously this floor was 4**, which forced theories at
+        **Previously this floor was 4**, which forced models at
         ``k=2, max_ell=0`` to pay an order-4 expansion they didn't
         mathematically need — see ``docs/CHANGELOG.md``
-        (theory-precompute-cache branch) for the cost it imposed on
-        the dendritic-linear theory.
+        (model-precompute-cache branch) for the cost it imposed on
+        the dendritic-linear model.
     origin_leaf_idx : int
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
@@ -221,8 +221,8 @@ def compute_cumulants(
     use_cache : bool
         Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
         and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
-        Both caches live as sibling files under ``saved_theories/<theory>/``
-        (e.g. ``saved_theories/<theory>/expand_taylor<N>.sobj``), one per
+        Both caches live as sibling files under ``saved_models/<model>/``
+        (e.g. ``saved_models/<model>/expand_taylor<N>.sobj``), one per
         Taylor order.
     parallel : bool, default True
         Enable fork-based multiprocessing for the two heavy stages
@@ -310,11 +310,11 @@ def compute_cumulants(
     #
     # Historically this floor was 4 — chosen to keep all 1-loop
     # 2-cumulant runs in one cache directory back when the layout
-    # was ``saved_theories/<theory>_taylor<N>/``.  The new layout
-    # (``saved_theories/<theory>/expand_taylor<N>.sobj``) sibling-
+    # was ``saved_models/<model>_taylor<N>/``.  The new layout
+    # (``saved_models/<model>/expand_taylor<N>.sobj``) sibling-
     # files different orders cleanly, so the floor is no longer
     # needed for cache-directory cohesion.  Dropping it from 4 → 2
-    # saves ~90 min on heavy Bernoulli theories at ``k=2, max_ell=0``
+    # saves ~90 min on heavy Bernoulli models at ``k=2, max_ell=0``
     # (the only case where the old floor exceeded the math minimum).
     if taylor_order is None:
         taylor_order = max(k + 2 * max_ell, 2)
@@ -322,7 +322,7 @@ def compute_cumulants(
     # Accept user-facing natural names and translate to the internal
     # fluctuation names the action / propagator-typing code expect.
     # The mapping comes from ``model['naming_convention']`` (declared
-    # by TheoryBuilder); pipeline falls back to a classic n/v/m map
+    # by ModelBuilder); pipeline falls back to a classic n/v/m map
     # when the model doesn't declare its own.
     naming_convention   = model.get('naming_convention')
     external_fields_user = list(external_fields)
@@ -403,7 +403,7 @@ def compute_cumulants(
         print('[3/7] Solve MF self-consistency...')
     _t_phase = time.perf_counter()
     if model.get('equations'):
-        # Route to the DAE-based multi-root solver when the theory
+        # Route to the DAE-based multi-root solver when the model
         # declares ``.equation(lhs=..., rhs=..., population=...)``.
         # Returns the same legacy-shape keys plus DAE-specific extras
         # (mf_all_roots, mf_index_used, ...) that we surface on the
@@ -666,7 +666,7 @@ def compute_cumulants(
             f"declares spatial_dim>=1): compute_cumulants requires spatial_grid="
             f"... to route to the spatial integrator.  The temporal pole-finder/"
             f"Phase-J path cannot consume the Laplacian operator.  Pass "
-            f"spatial_grid (e.g. the theory's METADATA['spatial_grid'], or a "
+            f"spatial_grid (e.g. the model's METADATA['spatial_grid'], or a "
             f"numpy array like np.linspace(0.0, 6.0, 25)).")
 
     # ── 4. Numerical poles + residues (fills prop in place) ───────
@@ -866,7 +866,7 @@ def compute_cumulants(
     # ── Adaptive mean-field dict ──────────────────────────────────
     # Discover MF saddle quantities from the model itself.  Two paths:
     #   1. ``model['naming_convention']['mf_parameters']`` (preferred,
-    #      written by TheoryBuilder when ``mean_field=True`` is set)
+    #      written by ModelBuilder when ``mean_field=True`` is set)
     #   2. ``parameters[i]['mean_field']`` flag (the same data)
     #   3. Classic n/v/m fallback for hand-written model files that
     #      pre-date the declarative API.
@@ -887,9 +887,9 @@ def compute_cumulants(
                     mf_param_names.append(legacy)
 
     # Map each MF param name to the range of local indices it owns.
-    # Heterogeneous theories declare ``indexed_by=['<pop>']`` on each
+    # Heterogeneous models declare ``indexed_by=['<pop>']`` on each
     # saddle; the param's SR array is sized to ``len(pop_<pop>)``.
-    # Legacy single-pop theories use the flat ``ns.pop`` length.
+    # Legacy single-pop models use the flat ``ns.pop`` length.
     param_specs_by_name = {
         pspec['name']: pspec
         for pspec in (model.get('parameters', []) or [])

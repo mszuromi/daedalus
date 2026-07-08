@@ -2,7 +2,7 @@
 engine.diagrams.filter
 ======================
 Remove prediagrams whose vertex degree signatures cannot be matched
-by any vertex or source type in the theory.  Fast set-membership check
+by any vertex or source type in the model.  Fast set-membership check
 that avoids the expensive type-assignment step for impossible prediagrams.
 
 Build Phase D.
@@ -42,7 +42,7 @@ def classify_prediagram_vertices(D, leaves):
 
 def filter_prediagrams(prediagrams, vertex_types, source_types):
     """
-    Keep only prediagrams whose vertex degrees are available in the theory.
+    Keep only prediagrams whose vertex degrees are available in the model.
 
     Parameters
     ----------

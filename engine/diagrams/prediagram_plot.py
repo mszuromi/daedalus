@@ -1,8 +1,8 @@
 """Contributing-prediagram plots, grouped by topology family.
 
-For a theory at correlator order ``k`` and loop order ``max_ell``, draw the
+For a model at correlator order ``k`` and loop order ``max_ell``, draw the
 MSR-JD *prediagrams* (directed topologies) that survive the vertex/source
-filter -- i.e. the ones the theory can actually realise -- in the Buice/Ocker
+filter -- i.e. the ones the model can actually realise -- in the Buice/Ocker
 convention: time flows RIGHT -> LEFT, with sources on the right, interaction
 (internal) vertices in the middle, and external (response) legs on the left.
 
@@ -45,7 +45,7 @@ def _roman(n):
 def contributing_prediagrams(model, k, max_ell):
     """The prediagrams (filtered directed topologies) contributing to the
     ``k``-point cumulant up to loop order ``max_ell`` for ``model`` (a model
-    dict from :func:`daedalus.load_theory`).  Returns ``{ell: [prediagram]}``
+    dict from :func:`daedalus.load_model`).  Returns ``{ell: [prediagram]}``
     where each prediagram is the ``(D, G, leaves, internal)`` tuple from the
     enumerator (``D`` a Sage DiGraph)."""
     from engine.core.field_theory import FieldTheory
@@ -644,12 +644,12 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     ``k`` and loop order ``max_ell``, grouped by topology family and labelled
     by role (sources i,ii right; internals a,b,c middle; external legs 1,2 left;
     propagators named by endpoints, e.g. a→b).  ``model`` is a model dict (from
-    :func:`daedalus.load_theory`) or a theory-name string.  Returns the
+    :func:`daedalus.load_model`) or a model-name string.  Returns the
     matplotlib ``Figure``; also writes a PNG when ``save`` is given."""
     from matplotlib.gridspec import GridSpec
     if isinstance(model, str):
         import daedalus as dd
-        name = model; model, _ = dd.load_theory(model)
+        name = model; model, _ = dd.load_model(model)
     else:
         name = model.get('name', 'model')
     pre = contributing_prediagrams(model, k, max_ell)
@@ -785,7 +785,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
     set); the default skips that build and may list a few extra zero typings."""
     if isinstance(model, str):
         import daedalus as dd
-        name = model; model, _ = dd.load_theory(model)
+        name = model; model, _ = dd.load_model(model)
     else:
         name = model.get('name', 'model')
     from engine.core.field_theory import FieldTheory

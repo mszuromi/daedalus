@@ -165,16 +165,16 @@ def test_classify_kpz_gradient_vertex():
 
 
 def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
-    """A derivative-VERTEX theory (Cahn-Hilliard ∇²φ³) authored with
+    """A derivative-VERTEX model (Cahn-Hilliard ∇²φ³) authored with
     ``.operator_ir()`` reaches a CLEAN, precise Phase-4 NotImplementedError on
     expand (not a crash, not silent wrong numbers) — the bilinear ∇²φ lowers,
     the ∇²(δφ²)/∇²(δφ³) vertices are correctly flagged as needing the
     momentum-first form-factor integrator."""
     import pytest
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.core.field_theory import FieldTheory
 
-    m = (TheoryBuilder('ch_v2', n_populations=0)
+    m = (ModelBuilder('ch_v2', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -191,17 +191,17 @@ def test_operator_ir_derivative_vertex_raises_clean_phase4_error():
         ft.expand()
 
 
-def test_temporal_theory_untouched_by_spatial_v2():
-    """A spatial_dim=0 (temporal-only) theory must use the well-optimized
+def test_temporal_model_untouched_by_spatial_v2():
+    """A spatial_dim=0 (temporal-only) model must use the well-optimized
     TEMPORAL pipeline, fully untouched by the spatial-v2 / operator-IR work.
     The code GATES the spatial short-circuit on ``model['spatial']`` (compute.py)
-    and the operator-IR overrides on ``ns._operator_ir`` (theory_compiler), so
+    and the operator-IR overrides on ``ns._operator_ir`` (model_compiler), so
     asserting those are absent/off PROVES neither path can fire — ``Dt`` stays
     the bare v1 multiplicative symbol and the action expands exactly as before."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.core.field_theory import FieldTheory
 
-    m = (TheoryBuilder('ou_temporal', n_populations=0)
+    m = (ModelBuilder('ou_temporal', n_populations=0)
          .physical_field('phi')                       # NO spatial_dim → temporal
          .parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
@@ -215,12 +215,12 @@ def test_temporal_theory_untouched_by_spatial_v2():
     assert getattr(ns, '_operator_ir', False) is False  # IR not engaged
     assert SR(ns.Dt).is_symbol()                        # Dt is the bare v1 symbol
     # the action evaluates with the bare multiplicative Dt — no Lap/Dg nodes,
-    # i.e. the operator-IR binding/lowering never ran for this temporal theory.
+    # i.e. the operator-IR binding/lowering never ran for this temporal model.
     S = SR(m['action'](ns))
     assert 'Dt' in str(S) and 'Lap(' not in str(S) and 'Dg' not in str(S)
 
 
-# ── end-to-end transform on the Phase-2 target theory ─────────────
+# ── end-to-end transform on the Phase-2 target model ─────────────
 def test_reaction_diffusion_action_to_kernel_and_vertex():
     """The Phase-2 target: the φ̃φ² reaction-diffusion action authored with the
     operator IR,
@@ -231,7 +231,7 @@ def test_reaction_diffusion_action_to_kernel_and_vertex():
     ``fourier_lower`` reproduces EXACTLY the v1 ingredients: the bilinear kernel
     ``K(ω,k) = −iω + μ + Dk²`` (the φ̃φ propagator denominator) and the
     momentum-independent ``g`` bubble vertex, with the white-noise ``−Tφ̃²``
-    untouched.  (String authoring in TheoryBuilder lands with Phase 3; this is
+    untouched.  (String authoring in ModelBuilder lands with Phase 3; this is
     the semantic content.)
     """
     phit, g, T, om = var('phit g T omega')
@@ -249,19 +249,19 @@ def test_reaction_diffusion_action_to_kernel_and_vertex():
     assert _zero(low.coefficient(phit, 2) + T)              # −Tφ̃² noise
 
 
-def test_operator_ir_authoring_through_theorybuilder():
-    """End-to-end of the AUTHORING path: a theory authored with
+def test_operator_ir_authoring_through_modelbuilder():
+    """End-to-end of the AUTHORING path: a model authored with
     ``.operator_ir()`` + the ``Lap(phi)``/``Dt(phi)`` string syntax builds, and
     its action lambda (which now runs the IR passes internally) yields the
     generator form whose Fourier lowering reproduces ``K(ω,k)=−iω+μ+Dk²`` and
-    the ``g`` vertex.  Proves the gate threads through TheoryBuilder →
-    field_theory namespace → theory_compiler action lambda — with the IR ops
-    overriding the bare symbols ONLY in this opted-in theory's action namespace.
+    the ``g`` vertex.  Proves the gate threads through ModelBuilder →
+    field_theory namespace → model_compiler action lambda — with the IR ops
+    overriding the bare symbols ONLY in this opted-in model's action namespace.
     """
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.core.field_theory import FieldTheory
 
-    m = (TheoryBuilder('rd_v2_operator_ir', n_populations=0)
+    m = (ModelBuilder('rd_v2_operator_ir', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -297,16 +297,16 @@ def test_operator_ir_authoring_through_theorybuilder():
 
 
 def test_operator_ir_reduces_to_v1_action_for_reaction_diffusion():
-    """Phase 3b-i: for a theory whose vertices carry NO derivatives, the
+    """Phase 3b-i: for a model whose vertices carry NO derivatives, the
     operator-IR (v2) action lowers to EXACTLY the v1 bare-symbol action — so a
-    ``.operator_ir()`` reaction-diffusion theory flows through the entire
+    ``.operator_ir()`` reaction-diffusion model flows through the entire
     validated v1 pipeline unchanged.  Compares the evaluated/processed action
     SR expression of the two authorings term-for-term."""
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.core.field_theory import FieldTheory
 
     def _build(use_ir):
-        tb = (TheoryBuilder('rd_cmp', n_populations=0)
+        tb = (ModelBuilder('rd_cmp', n_populations=0)
               .physical_field('phi', spatial_dim=1)
               .parameter('mu', default=1.0, domain='positive')
               .parameter('D', default=1.0, domain='positive')
@@ -331,15 +331,15 @@ def test_operator_ir_reduces_to_v1_action_for_reaction_diffusion():
 
 def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
     """End-to-end: ``compute_cumulants`` (tree) on a ``.operator_ir()``
-    reaction-diffusion theory is bit-identical to the v1 bare-symbol theory,
+    reaction-diffusion model is bit-identical to the v1 bare-symbol model,
     confirming the v2 authoring flows through the whole pipeline (MF solve,
     propagator, spatial bridge) unchanged."""
     import numpy as np
     from api.compute import compute_cumulants
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
 
     def _build(use_ir):
-        tb = (TheoryBuilder('rd_e2e', n_populations=0)
+        tb = (ModelBuilder('rd_e2e', n_populations=0)
               .physical_field('phi', spatial_dim=1)
               .parameter('mu', default=1.0, domain='positive')
               .parameter('D', default=1.0, domain='positive')
@@ -380,9 +380,9 @@ def test_operator_ir_derivative_vertex_one_loop():
     import numpy as np
     import pytest
     from api.compute import compute_cumulants
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
 
-    m = (TheoryBuilder('rd_deriv_e2e', n_populations=0)
+    m = (ModelBuilder('rd_deriv_e2e', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=2.0, domain='positive')
@@ -414,20 +414,20 @@ def test_operator_ir_derivative_vertex_one_loop():
 
 
 def test_operator_ir_multivertex_table_and_formfactor():
-    """A theory mixing Model B ∇²(φ²) (composite) and KPZ (∂ₓφ)² (perleg) — both
+    """A model mixing Model B ∇²(φ²) (composite) and KPZ (∂ₓφ)² (perleg) — both
     φ̃φ² — lowers (NO single-mode gate) to a TWO-entry per-vertex form-factor
     table with coupling weights summing to 1; diagram_form_factor sums the two
     types PER NODE, reducing to the single-mode form factor when one weight→0."""
     import sympy as _sp
     from sage.all import SR
-    from api.theory import TheoryBuilder
+    from api.model import ModelBuilder
     from engine.core.field_theory import FieldTheory
     from api._propagator import build_propagator
     from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, diagram_form_factor, _legs_to_phys_idx)
     from engine.diagrams.type_assignment import build_field_index_map
 
-    m = (TheoryBuilder('mb+kpz', n_populations=0)
+    m = (ModelBuilder('mb+kpz', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')

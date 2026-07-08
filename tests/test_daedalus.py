@@ -19,25 +19,25 @@ sys.path.insert(0, os.path.abspath(
 import daedalus as dd  # noqa: E402
 
 
-def test_repo_root_and_theories():
+def test_repo_root_and_models():
     assert os.path.isdir(os.path.join(dd.REPO_ROOT, 'api'))
-    names = dd.list_theories()
+    names = dd.list_models()
     assert 'kpz_1d' in names and 'ou_quartic_double_well' in names
 
 
-def test_load_theory_and_introspection():
-    m, mod = dd.load_theory('kpz_1d')
+def test_load_model_and_introspection():
+    m, mod = dd.load_model('kpz_1d')
     assert dd.is_spatial(m) and dd.spatial_dim(m) == 1
     assert not dd.is_multifield(m)
     assert m.get('operator_ir') is True            # KPZ uses operator-IR
-    m2, _ = dd.load_theory('multipopulation_test')
+    m2, _ = dd.load_model('multipopulation_test')
     assert dd.is_multifield(m2)                     # 2 pops of size 2
-    m3, _ = dd.load_theory('ou_quartic_double_well')
+    m3, _ = dd.load_model('ou_quartic_double_well')
     assert not dd.is_spatial(m3) and not dd.is_multifield(m3)
 
 
 def test_fundamental_layering():
-    m, mod = dd.load_theory('reaction_diffusion_quadratic_1d')
+    m, mod = dd.load_model('reaction_diffusion_quadratic_1d')
     base = dd.fundamental_from_model(m)
     # param defaults, saddle (*star) skipped
     assert base['mu'] == 1.0 and base['g'] == 0.3 and base['T'] == 1.0
@@ -48,7 +48,7 @@ def test_k_external_fields_mismatch_raises():
     """An explicit k that disagrees with the explicit external_fields length is
     a contradiction — it must raise, not silently rebuild the legs.  (Raises
     early in run(), before compute_cumulants.)"""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     with pytest.raises(ValueError, match='k=4 but external_fields'):
         dd.run(m, dd.Config(k=4, external_fields=[('dx', 1), ('dx', 1)],
                             tau_max=2.0, tau_step=2.0), mod)
@@ -57,7 +57,7 @@ def test_k_external_fields_mismatch_raises():
 def test_k_inferred_from_external_fields():
     """Omit k and it is counted from external_fields (a k-point correlator has
     exactly k legs)."""
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     r2 = dd.run(m, dd.Config(external_fields=[('dx', 1), ('dx', 1)],
                              max_ell=0, tau_max=2.0, tau_step=2.0), mod)
     assert r2['_resolved']['k'] == 2
@@ -70,7 +70,7 @@ def test_kpoint_slices_synthesized():
     """k≥3 temporal: run() synthesizes the k−1 independent-difference slices
     (τ_j = t_j − t_0), and plot_cumulant draws one panel per slice."""
     import matplotlib.pyplot as plt
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     r = dd.run(m, dd.Config(k=3, max_ell=0, tau_max=2.0, tau_step=1.0), mod)
     assert set(r['C_tau_slices']) == {1, 2}              # k-1 = 2 slices
     assert np.array_equal(r['C_tau'], r['C_tau_slices'][1])
@@ -83,7 +83,7 @@ def test_kpoint_base_lags_and_full_grid():
     """k≥3: kpoint_base_lags fixes the non-swept legs (validated against the
     full grid), and kpoint_full_grid returns the (k−1)-dim tensor."""
     import matplotlib.pyplot as plt
-    m, mod = dd.load_theory('ou_quartic_double_well')
+    m, mod = dd.load_model('ou_quartic_double_well')
     T = dict(tau_max=2.0, tau_step=1.0)
     # wrong-length base → clear error
     with pytest.raises(ValueError, match='k.1 = 2 entries'):
@@ -119,7 +119,7 @@ def test_cumulative_curves():
 
 
 def test_plotters_run_on_synthetic():
-    m, _ = dd.load_theory('ou_quartic_double_well')
+    m, _ = dd.load_model('ou_quartic_double_well')
     tau = np.linspace(-2, 2, 21)
     res_t = {'tau_grid': tau,
              'C_tau': np.exp(-np.abs(tau)),
@@ -132,7 +132,7 @@ def test_plotters_run_on_synthetic():
                                     'C_err': 0.01 * np.ones_like(tau)})
         assert fig is not None
 
-    ms, _ = dd.load_theory('reaction_diffusion_quadratic_1d')
+    ms, _ = dd.load_model('reaction_diffusion_quadratic_1d')
     xs = np.linspace(-5, 5, 31)
     res_s = {'spatial_grid': xs, 'tau_grid': np.array([0.0]),
              'C_tau_x': np.exp(-xs ** 2)[None, :],
