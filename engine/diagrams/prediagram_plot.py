@@ -2,8 +2,8 @@
 
 For a model at correlator order ``k`` and loop order ``max_ell``, draw the
 MSR-JD *prediagrams* (directed topologies) that survive the vertex/source
-filter -- i.e. the ones the model can actually realise -- in the Buice/Ocker
-convention: time flows RIGHT -> LEFT, with sources on the right, interaction
+filter -- i.e. the ones the model can actually realise.  Layout convention:
+time flows RIGHT -> LEFT, with sources on the right, interaction
 (internal) vertices in the middle, and external (response) legs on the left.
 
 Roles are structural (``filter.classify_prediagram_vertices``), with a clean,
@@ -17,7 +17,7 @@ bubble are just ``a->b`` and ``b->a``).  Diagrams are grouped by a topology
 signature.
 
 Labels are GENERIC (role + index only) -- the specific typing of any chosen
-diagram (propagator a->b -> Delta_xy, source i -> K^(2), a -> phi'', external
+diagram (propagator a->b : G[dx xt], source i -> K^(2), a -> phi'', external
 leg 1 -> field) is a separate label-mapping table.
 
 Layout uses graphviz 'dot' (proper layered layout) when available, falling back
@@ -692,7 +692,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     heights = [HEAD if p[0] == 'head' else p[3] for p in plan]
     fig = plt.figure(figsize=(PANELW * ncol, sum(heights) + 0.8))
     gs = GridSpec(len(plan), ncol, height_ratios=heights, hspace=0.26, wspace=0.16,
-                  left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.4 / (sum(heights) + 0.8))
+                  left=0.02, right=0.98, top=1 - 0.5 / (sum(heights) + 0.8), bottom=0.58 / (sum(heights) + 0.8))
     for ri, p in enumerate(plan):
         if p[0] == 'head':
             ax = fig.add_subplot(gs[ri, :]); ax.axis('off')
@@ -708,9 +708,14 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
                                 labels=lb)
     fig.suptitle('Contributing prediagrams: %s,  k=%d, ℓ≤%d' % (name, k, max_ell),
                  fontsize=13, y=0.998)
-    # pin the legend 0.12in above the bottom edge (a FRACTION would drift into
-    # the last row as the figure grows taller)
-    fig.text(0.5, 0.12 / (sum(heights) + 0.8), r'time $\leftarrow$      $\circ\;1,2$ external legs      '
+    # pin the legend + disclaimer in absolute inches above the bottom edge (a
+    # FRACTION would drift into the last row as the figure grows taller)
+    fig.text(0.5, 0.10 / (sum(heights) + 0.8),
+             'Layouts are automated: edges may cross and node placement can be '
+             'visually misleading — dd.prediagram_mappings(model, k, max_ell) '
+             'gives the explicit edge and vertex definitions.',
+             ha='center', fontsize=9, color='#777', fontstyle='italic')
+    fig.text(0.5, 0.34 / (sum(heights) + 0.8), r'time $\leftarrow$      $\circ\;1,2$ external legs      '
              r'$\blacksquare\;i,ii$ sources      $\bullet\;a,b,c$ internal vertices      '
              r'(propagators named by endpoints, e.g. $a\to b$)',
              ha='center', fontsize=10, color='#555')
@@ -765,7 +770,7 @@ def diagram_label_map(td, labels):
             out['propagators'].append((edge_name[e], '?')); continue
         resp_leg, phys_leg = rp
         out['propagators'].append(
-            (edge_name[e], 'G[%s ← %s]' % (_leg_str(phys_leg), _leg_str(resp_leg))))
+            (edge_name[e], 'G[%s %s]' % (_leg_str(phys_leg), _leg_str(resp_leg))))
     for leaf in ext_order:
         out['externals'].append((extlab[leaf], _leg_str(el.get(leaf))))
     return out
@@ -840,7 +845,7 @@ def _format_mappings(name, k, max_ell, result, max_typings=6):
                 for lab, co, legs in tm['internals']:
                     L.append('     vertex %-4s → coeff %s   %s' % (lab, co, legs))
                 for num, pr in tm['propagators']:
-                    L.append('     propagator %-7s → %s' % (num, pr))
+                    L.append('     propagator %-7s : %s' % (num, pr))
                 exts = ', '.join('%s=%s' % (n, f) for n, f in tm['externals'])
                 L.append('     external legs → %s' % exts)
             if nt > max_typings:

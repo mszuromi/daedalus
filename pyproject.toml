@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "daedalus"
 version = "0.1.0"
-description = "Automated MSR-JD Feynman-diagram computation for stochastic (S)PDE field theories, on SageMath."
+description = "Stationary statistics of It\u00f4 SDEs/SPDEs via automated Feynman-diagram evaluation of perturbative MSR-JD field theories, on SageMath."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "BSD-3-Clause" }

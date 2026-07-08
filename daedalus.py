@@ -1,4 +1,6 @@
-"""daedalus.py — shared scaffolding for the pipeline demo notebooks.
+"""daedalus.py — the notebook front-end (``dd``) of Daedalus: stationary
+statistics of Itô SDEs/SPDEs via automated Feynman-diagram evaluation of
+perturbative MSR–JD field theories.
 
 Centralises the **load → run → plot** flow so every demo notebook is thin and
 uniform regardless of its group (temporal / spatial × single / multi-field).
@@ -294,10 +296,10 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
         sp = model.get('spatial') or {}
         bc = _mode(model.get('boundary') or sp.get('boundary'), 'infinite')
         ic = _mode(model.get('initial'), 'stationary')
-        out.append(f"Domain         : spatial PDE · d={spatial_dim(model)} · "
+        out.append(f"Domain         : SPDE · d={spatial_dim(model)} · "
                    f"boundary={bc} · initial={ic}")
     else:
-        out.append("Domain         : temporal ODE (time-only)")
+        out.append("Domain         : SDE")
 
     def _fld(f):
         nm = f.get('natural_name') or f.get('name')
@@ -330,17 +332,8 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
                 or bool(p.get('mean_field')))
     numeric = [p for p in params if not _is_saddle(p)]
     saddle = [p.get('name') for p in params if _is_saddle(p)]
-    if numeric:
-        out.append("Parameters     :")
-        for p in numeric:
-            ix = p.get('indexed_by')
-            ixt = f" [{','.join(ix)}]" if ix else ''
-            dom = f"  ({p['domain']})" if p.get('domain') else ''
-            out.append(f"    {p.get('name')}{ixt} = "
-                       f"{_fmt_default(p.get('default'))}{dom}")
     if saddle:
-        out.append("Mean-field saddle (solved by the pipeline): "
-                   + ', '.join(saddle))
+        out.append("Mean-field saddle: " + ', '.join(saddle))
 
     ker = model.get('kernels') or []
     for kr in ker:
@@ -371,6 +364,15 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
         out.append(f"Action  S      : {act_lines[0]}")
         for ln in act_lines[1:]:
             out.append(f"                 {ln}")
+
+    if numeric:
+        out.append("Parameters (defaults):")
+        for p in numeric:
+            ix = p.get('indexed_by')
+            ixt = f" [{','.join(ix)}]" if ix else ''
+            dom = f"  ({p['domain']})" if p.get('domain') else ''
+            out.append(f"    {p.get('name')}{ixt} = "
+                       f"{_fmt_default(p.get('default'))}{dom}")
 
     meta = (getattr(module, 'METADATA', {}) or {}) if module else {}
     rec = []
@@ -1910,7 +1912,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     survive the model's vertex/source filter — for the k-point cumulant up to
     loop order ``max_ell``, grouped by topology family.
 
-    Buice/Ocker convention: time flows right → left, with sources on the right,
+    Layout: time flows right → left, with sources on the right,
     interaction (internal) vertices in the middle, and external legs on the
     left.  Labels are GENERIC and role-distinct: sources *i, ii, …*; internal
     vertices *a, b, c, …*; external legs *1, 2, …*.  Propagators carry no symbol

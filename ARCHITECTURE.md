@@ -1,7 +1,7 @@
 # Architecture
 
-Daedalus turns an MSR–JD action for a stochastic (S)PDE into mean fields, multi-point cumulants,
-and loop corrections — analytically. Four tiers:
+Daedalus computes stationary statistics of Itô SDEs/SPDEs: it turns the MSR–JD action into
+mean fields, multi-point cumulants, and loop corrections — analytically. Four tiers:
 
 ```
 dd  (daedalus.py)   notebook/script front-end: Config, run, plot, load_model, describe_model
