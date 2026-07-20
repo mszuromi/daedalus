@@ -273,25 +273,42 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 C_np = np.where(np.abs(C_np) > atol, C_np, 0)
             C_mats.append(matrix(CDF, C_np.tolist()))
 
-        # D_delta = lim_{ω→∞} G_ft(ω), computed entrywise from leading
-        # coefficients of P_ij / Q.  For a proper rational entry:
-        #   deg(P_ij) <  deg(Q)   →  D_delta[i,j] = 0
-        #   deg(P_ij) == deg(Q)  →  D_delta[i,j] = lc(P_ij) / lc(Q)
-        # Stored back into prop so downstream consumers always see a
-        # value (the symbolic build_propagator path may have left it None
-        # if its inverse exceeded budget).
-        Q_lead = complex(Q_cdf.leading_coefficient())
-        Q_deg  = Q_cdf.degree()
+        # D_delta = lim_{ω→∞} G_ft(ω), computed entrywise as the limit of
+        # the entry's OWN reduced rational form P_ij / Q_ij:
+        #   deg(P_ij) <  deg(Q_ij)   →  D_delta[i,j] = 0        (strictly proper)
+        #   deg(P_ij) == deg(Q_ij)  →  D_delta[i,j] = lc(P_ij) / lc(Q_ij)
+        # NOTE: use the PER-ENTRY denominator Q_entry_cdf[i][j] (the same
+        # object the residue loop above uses), NOT the global common
+        # denominator Q_cdf.  With ≥2 distinct poles the global LCD has
+        # higher degree than an individual entry's own denominator, so
+        # comparing against Q_cdf.degree() / dividing by its leading coeff
+        # false-negatived every proper/constant entry and silently zeroed
+        # the whole D_delta matrix (dropping the instantaneous δ-part of
+        # the propagator → the δ×smooth tree cross-term).  See the
+        # per-entry cache built at the residue-loop setup above.
+        # Stored back into prop so downstream consumers always see a value
+        # (the symbolic build_propagator path may have left it None if its
+        # inverse exceeded budget).
         D_delta_data = [[0j] * nf for _ in range(nf)]
         for i in range(nf):
             for j in range(nf):
-                if Q_per_entry[i][j] is None:
+                q_entry = Q_entry_cdf[i][j]
+                if q_entry is None:          # zero entry / no denominator
                     continue
                 P_pij = P_cdf[i][j]
-                if P_pij.degree() == Q_deg:
+                dP, dQ = P_pij.degree(), q_entry.degree()
+                # Causal MSR-JD retarded propagator entries are proper
+                # (G(ω) → const or → 0 as ω → ∞); deg(P) > deg(Q) would be
+                # a δ'(t)-style growth, i.e. a malformed K_ft — surface it
+                # rather than silently returning 0.
+                assert dP <= dQ, (
+                    f'D_delta: improper propagator entry ({i},{j}): '
+                    f'deg(P)={dP} > deg(Q)={dQ} — K_ft is not causal/proper.')
+                if dP == dQ:
                     D_delta_data[i][j] = (
-                        complex(P_pij.leading_coefficient()) / Q_lead)
-                # else: D_delta[i,j] stays 0 (strictly proper)
+                        complex(P_pij.leading_coefficient())
+                        / complex(q_entry.leading_coefficient()))
+                # else deg(P) < deg(Q_ij): strictly proper → stays 0
         D_delta = matrix(SR, D_delta_data)
 
         if verbose:
