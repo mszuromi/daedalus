@@ -498,8 +498,18 @@ def _omega_inf_limit_fast(expr, omega_var):
     """
     expr = SR(expr)
     try:
-        num = expr.numerator()
-        den = expr.denominator()
+        # Expand into FLAT polynomials in omega before reading degree and
+        # leading coefficients.  Sage's ``.numerator()`` can hand back an
+        # UNEXPANDED product (e.g. ``(I*w*t1 - w11 + 1)*(I*w*t2 + 1)`` from a
+        # cofactor whose cross-coupling cancels multiplicatively), and
+        # ``.coefficient(omega, deg)`` does NOT auto-distribute a product —
+        # it looks for a literal top-level ``omega^deg`` term, finds none,
+        # and returns a spurious 0.  That makes the ω→∞ limit come back 0
+        # instead of the true constant (dropping e.g. slave-field δ-identity
+        # entries of D_delta).  ``.expand()`` guarantees ``.coefficient()``
+        # sees a monomial sum; ``.degree()`` is already reliable either way.
+        num = expr.numerator().expand()
+        den = expr.denominator().expand()
         num_deg = int(num.degree(omega_var))
         den_deg = int(den.degree(omega_var))
     except (AttributeError, TypeError, ValueError):

@@ -93,3 +93,52 @@ def test_ddelta_uses_per_entry_denominator_multipole():
                        for j in range(2)] for i in range(2)])
     oracle = np.linalg.inv(K_big)
     assert np.max(np.abs(Dd - oracle)) < 1e-6
+
+
+def test_ddelta_omega_inf_limit_expands_unevaluated_products():
+    """Site B regression: ``_omega_inf_limit_fast`` (the LEAN symbolic D_delta
+    path in build_propagator) must ``.expand()`` its numerator/denominator before
+    reading the leading coefficient.
+
+    Sage's ``.numerator()`` can return an UNEVALUATED product (from a cofactor
+    whose cross-coupling cancels multiplicatively), and ``.coefficient(omega, deg)``
+    does NOT auto-distribute a product — it returns a spurious 0, so the ω→∞ limit
+    comes back 0 instead of the true constant, silently dropping slave-field
+    instantaneous D_delta identity entries.
+
+    Model: ``single_population_linear_delta_spikes_test`` — nf=4, lean symbolic
+    path, with an algebraic SLAVE field ``v`` (no ∂ₜ) and an exponential membrane
+    Conv kernel.  Pre-fix, the two neuron-2 v-slave identity entries came back 0.
+    """
+    import daedalus as dd
+    from sage.all import SR
+    from api._propagator import build_propagator
+    from api._mean_field import solve_mean_field
+    from engine.core.field_theory import FieldTheory
+
+    model, _ = dd.load_model('single_population_linear_delta_spikes_test')
+    ft = FieldTheory(model, taylor_order=2); ft.expand()
+    prop = build_propagator(ft, model, verbose=False, use_cache=False)
+    D_delta = prop['D_delta']
+    assert D_delta is not None, "lean symbolic path should populate D_delta for nf=4"
+    n = D_delta.nrows()
+
+    fund = dict(Em=[0.8, 0.78], tau=[10, 9], w=[[0.0, 0.25], [0.2, 0.0]])
+    num_params = solve_mean_field(ft, model, fund, verbose=False)['num_params']
+    Dd = np.array([[complex(SR(D_delta[i, j]).subs(num_params))
+                    for j in range(n)] for i in range(n)])
+
+    # The two neuron-2 slave-field (v2) instantaneous identity entries. Convention:
+    # rows = response (nt1,nt2,vt1,vt2), cols = physical (dn1,dn2,dv1,dv2). These are
+    # the exact cells the spurious-zero bug dropped (→ 0) on the pre-fix helper.
+    assert abs(Dd[1, 3] - 1.0) < 1e-9, "<n2 v~2> instantaneous coupling dropped"
+    assert abs(Dd[3, 3] - 1.0) < 1e-9, "v2 slave-field self-identity dropped"
+
+    # Model-agnostic invariant: D_delta == lim_{ω→∞} K_ft^{-1}, cross-checked against
+    # a direct large-|ω| numerical inverse (convention-independent).
+    omega = prop.get('omega') or SR.var('omega')
+    K_ft = prop['K_ft']
+    K_big = np.array([[complex(SR(K_ft[i, j]).subs(num_params).subs({omega: 1e10}))
+                       for j in range(n)] for i in range(n)])
+    oracle = np.linalg.inv(K_big)
+    assert np.max(np.abs(Dd - oracle)) < 1e-6
