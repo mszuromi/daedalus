@@ -210,25 +210,127 @@ def process_tree_parallel(args):
     tree, j, num_leaves, k, ell = args
     local_candidates = []
     all_verts = list(tree.vertices())
-    for edge_multiset in generate_edge_multisets(all_verts, ell):
+
+    # Base-tree invariants, computed once, for the pre-build screens.
+    base_deg = {v: tree.degree(v) for v in all_verts}
+    tree_leaves = frozenset(v for v, d in base_deg.items() if d == 1)
+    base_d2 = frozenset(v for v, d in base_deg.items() if d == 2)
+    tree_edges = list(tree.edges(labels=False))
+
+    # Restrict the pair pool before enumerating multisets.  Exactly j = the
+    # tree's surplus leaves must be killed, and touching a leaf always kills
+    # it, so a pair carrying more than j leaves can never appear in a
+    # qualifying multiset.  At j = 0 this drops every leaf-incident pair and
+    # leaves only internal-internal edges.
+    n_surplus = num_leaves - k
+    pairs = [(u, v) for u, v in combinations(all_verts, 2)
+             if (u in tree_leaves) + (v in tree_leaves) <= n_surplus]
+
+    for edge_multiset in combinations_with_replacement(pairs, ell):
+        # ── Screen 1: leaf count, in O(ell) ──────────────────────────
+        # Degrees only ever increase, so no new leaf can appear and a tree
+        # leaf survives iff the multiset does not touch it:
+        #     leaves(G) = leaves(T) - |touched cap leaves(T)| .
+        # Touching only the ell added edges avoids copying the whole degree
+        # dict per multiset -- this screen runs on every multiset and
+        # rejects ~80% of them, so its constant factor dominates.
+        delta = {}
+        for u, v in edge_multiset:
+            delta[u] = delta.get(u, 0) + 1
+            delta[v] = delta.get(v, 0) + 1
+        if num_leaves - sum(1 for v in delta if v in tree_leaves) != k:
+            continue
+
+        # ── Screen 2: adjacent degree-2 vertices (Thm. no-adj-2) ─────
+        # Rejects ~93% of what survives screen 1.  Only touched vertices can
+        # change degree, so the degree-2 set updates from ``base_d2`` in
+        # O(ell); adjacency is the tree's edges together with the multiset.
+        # NOTE: the degree-2 constraints apply only for ell > 0.  At tree
+        # level the tree IS the topology -- there is no contraction ambiguity
+        # to break -- and ``check_topology_constraints`` skips them, so
+        # screening on them here would wrongly discard every tree-level
+        # record.
+        d2 = set(base_d2)
+        for v, dv in delta.items():
+            if base_deg[v] + dv == 2:
+                d2.add(v)
+            else:
+                d2.discard(v)
+        if ell > 0 and len(d2) >= 2:
+            if any(u in d2 and v in d2 for u, v in tree_edges) or \
+               any(u in d2 and v in d2 for u, v in edge_multiset):
+                continue
+
         G = add_edges_to_tree(tree, edge_multiset)
-        if count_cycles_sage(G) != ell:
-            continue
-        if not check_topology_constraints(G, k, ell=ell):
-            continue
+        # NOTE: the former ``count_cycles_sage(G) != ell`` guard here was
+        # dead.  ``generate_edge_multisets`` draws from ``combinations(V, 2)``
+        # so no edge is a self-loop, and a connected tree with V-1 edges plus
+        # ell of them has b1 = (V-1+ell) - V + 1 = ell identically.  The guard
+        # never fired but paid a full ``is_connected()`` per candidate, which
+        # ``check_topology_constraints`` then recomputed.
+
+        # The screens above already determined every degree, so the vertex
+        # classification is in hand: re-deriving it via
+        # ``classify_vertices_sage`` (which ``check_topology_constraints`` and
+        # ``relabel_leaves_first`` each did independently) is redundant.  The
+        # leaf-count and connectivity tests inside
+        # ``check_topology_constraints`` are likewise already settled -- the
+        # first by screen 1, the second because tree-plus-edges is always
+        # connected -- as is the adjacent-degree-2 test by screen 2.  Only the
+        # last two structural checks remain.
+        leaves = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 1]
+        if ell > 0:
+            d3 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) >= 3]
+            if not check_deg3_has_non_deg2_neighbor(G, d3, d2):
+                continue
+            if not check_leaf_neighbors_not_all_deg2(G, leaves, d2):
+                continue
+
         G_relabeled, _ = relabel_leaves_first(G)
-        leaves_final, internal_final, _, _ = classify_vertices_sage(G_relabeled)
+        # ``relabel_leaves_first`` maps the sorted leaves onto 0..|L|-1 and the
+        # sorted internal vertices onto |L|..|V|-1, so the post-relabel
+        # classification is these ranges by construction.
+        n_leaf = len(leaves)
+        leaves_final = list(range(n_leaf))
+        internal_final = list(range(n_leaf, len(all_verts)))
         local_candidates.append((G_relabeled, leaves_final, internal_final))
     return local_candidates
 
 
+def _iso_cert(G):
+    """Hashable isomorphism certificate for a (possibly multi-) graph.
+
+    One ``canonical_label()`` call replaces the O(N*U) pairwise
+    ``is_isomorphic`` scan the dedup loops used to run: candidates whose
+    certificates collide are isomorphic, so a dict keyed by the certificate
+    deduplicates in O(N).
+
+    Edge labels are stripped first.  ``orient_edges`` attaches a DISTINCT
+    integer label to every edge copy, and ``canonical_label`` honours edge
+    labels -- so canonicalising the labelled digraph makes every orientation
+    look unique and defeats the dedup entirely.  ``is_isomorphic`` (used by
+    the predicates this replaces) ignores edge labels by default, so
+    stripping restores exactly the old equivalence.
+
+    Vertex colouring by leaf/internal is deliberately NOT part of the
+    certificate: leaves are exactly the degree-1 vertices and degree is an
+    isomorphism invariant, so the ``set_vertex`` colouring the pairwise
+    predicates applied was redundant (and ignored by ``is_isomorphic``).
+    """
+    cls = DiGraph if G.is_directed() else Graph
+    stripped = cls(multiedges=True, loops=False)
+    stripped.add_vertices(G.vertices())
+    for u, v in G.edges(labels=False):
+        stripped.add_edge(u, v)
+    C = stripped.canonical_label()
+    return (C.order(), tuple(sorted(C.edges(labels=False))))
+
+
 def _remove_isomorphic_undirected(candidates):
-    unique = []
+    seen = {}
     for G, leaves, internal in candidates:
-        if not any(graphs_isomorphic_with_labels(G, leaves, G2, l2)
-                   for G2, l2, _ in unique):
-            unique.append((G, leaves, internal))
-    return unique
+        seen.setdefault(_iso_cert(G), (G, leaves, internal))
+    return list(seen.values())
 
 
 def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbose=True,
@@ -357,12 +459,10 @@ def enumerate_orientations(G, leaves):
 
 
 def remove_isomorphic_directed(directed_diagrams):
-    unique = []
+    seen = {}
     for D, G, leaves, internal in directed_diagrams:
-        if not any(directed_graphs_isomorphic_with_labels(D, leaves, D2, l2)
-                   for D2, G2, l2, _ in unique):
-            unique.append((D, G, leaves, internal))
-    return unique
+        seen.setdefault(_iso_cert(D), (D, G, leaves, internal))
+    return list(seen.values())
 
 
 def process_orientation_parallel(args):

@@ -40,6 +40,23 @@ def _ext_fields_tag(external_fields):
     return '_'.join(f'{name}{idx}' for name, idx in external_fields)
 
 
+#: Root for the MODEL-INDEPENDENT prediagram cache.
+#:
+#: ``enumerate_prediagrams_all`` depends on ``(k, ell)`` ALONE -- not on the
+#: model, its external fields, or its taylor order.  Caching it under
+#: ``saved_models/<model>/`` (where the typed-diagram cache lives) would
+#: therefore recompute it once per model, once per external-field choice and
+#: once per taylor order, which at (k=2, ell=2) costs ~76 s every time.  This
+#: root is deliberately a sibling of ``cache_dir_root`` so a single copy is
+#: shared by every model.
+PREDIAGRAM_CACHE_ROOT = 'saved_prediagrams'
+
+#: Stage name for the prediagram slot.  Bump on any change to the enumeration
+#: that alters the prediagram set at fixed ``(k, ell)`` -- e.g. the causal
+#: orientation rules, or ``max_vertices_search`` ceasing to be the default.
+_PREDIAGRAM_STAGE = 'prediagrams_v1'
+
+
 def _model_cache_dir(model, taylor_order, cache_dir_root):
     """Cache directory for a model's cross-call artefacts.
 
@@ -65,6 +82,7 @@ def enumerate_unique_diagrams(
     vtypes,
     stypes,
     cache_dir_root: str = 'saved_models',
+    prediagram_cache_root: str = PREDIAGRAM_CACHE_ROOT,
     use_cache: bool = True,
     parallel: bool = False,
     n_workers: int | None = None,
@@ -92,6 +110,9 @@ def enumerate_unique_diagrams(
     vtypes, stypes : lists
         Vertex/source type lists from ``extract_*_types``.
     cache_dir_root : str
+    prediagram_cache_root : str
+        Root for the shared, model-independent prediagram cache.
+        Keyed by ``(k, ell)`` only, so one copy serves every model.
     use_cache : bool
         If False, always recompute and never write.
     parallel : bool, default False
@@ -119,6 +140,8 @@ def enumerate_unique_diagrams(
     """
     cache_dir = _model_cache_dir(model, ft.taylor_order, cache_dir_root)
     cache = PipelineCache(cache_dir)
+    # Shared across models: prediagrams depend only on (k, ell).
+    pd_cache = PipelineCache(prediagram_cache_root)
 
     ext_tag = _ext_fields_tag(external_fields)
     # Bumped from ``unique_typed_*`` to invalidate caches written before
@@ -174,9 +197,23 @@ def enumerate_unique_diagrams(
                           f'rebuilding.')
 
         # ── Build the four stages ────────────────────────────────
-        _, _, prediagrams, _ = enumerate_prediagrams_all(
-            k=k, ell=ell, verbose=False,
-        )
+        if use_cache:
+            _pd_hit = pd_cache.exists(_PREDIAGRAM_STAGE, k=k, loop_order=ell)
+            prediagrams = pd_cache.get_or_compute(
+                _PREDIAGRAM_STAGE,
+                lambda: enumerate_prediagrams_all(
+                    k=k, ell=ell, verbose=False,
+                )[2],
+                k=k, loop_order=ell,
+            )
+            if verbose:
+                print(f'      ell={ell}: {len(prediagrams)} prediagrams '
+                      f'{"loaded from" if _pd_hit else "computed and written to"} '
+                      f'{prediagram_cache_root}')
+        else:
+            _, _, prediagrams, _ = enumerate_prediagrams_all(
+                k=k, ell=ell, verbose=False,
+            )
         typed = enumerate_all_typed(
             prediagrams, external_fields, vtypes, stypes,
             G_ft=G_ft,

@@ -23,6 +23,7 @@ Thumbs.db
 
 # Saved models / results (cache artifacts — regenerable)
 saved_models/
+saved_prediagrams/
 saved_results/
 notebooks/saved_models/
 notebooks/saved_results/
@@ -106,6 +107,19 @@ simulations/hawkes_sim_quad_expg_gtas_numba.py
 simulations/hawkes_sim_quad_expg_numba.py
 simulations/spatial_field_3d_sim.py
 simulations/spatial_field_phi6_1d_sim.py
+
+# Dendrite / Teasley-Ocker compartmental diagnostic family — LOCAL ONLY.
+# Per the project owner these models/sims/notebooks are never pushed to GitHub.
+models/dendritic_linear_gate.model.py
+models/dendritic_output_to_dendrite.model.py
+models/teasley_ocker_quad_sigmoid.model.py
+simulations/dendritic_linear_gate_sim_numba.py
+simulations/dendritic_output_to_dendrite_sim_numba.py
+simulations/teasley_ocker_quad_sigmoid_sim_numba.py
+notebooks/examples/SDE/Dendritic_linear_gate.ipynb
+notebooks/examples/SDE/Dendritic_output_to_dendrite.ipynb
+notebooks/examples/SDE/Dendritic_intrinsic_kcorr.ipynb
+notebooks/examples/SDE/Teasley_Ocker_compartmental.ipynb
 
 # Legacy Hawkes model-dict equivalence cluster (old hand-written-model format,
 # superseded by models/*.model.py) + manual diagnostic scripts. Kept local.
