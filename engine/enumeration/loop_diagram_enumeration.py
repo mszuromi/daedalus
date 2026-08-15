@@ -146,7 +146,22 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
         # un-proven (it silently truncated the search at high vertex counts and
         # could drop valid trees at loop order >= 3); removed to restore
         # completeness.  Inert at ell <= 2 (the proven bound already binds).
-        max_n = min(num_leaves + v2_max + v3_max, max_vertices_search)
+        # Orientability caps |V| independently of the tree decomposition.
+        # Partitioning G by degree, sum(deg) = 2|E| = 2(|V|-1+ell) and
+        # sum(deg) >= k + 2|V2^G| + 3|V3^G| give
+        #     |V3^G| <= k + 2*ell - 2 ,
+        # which with |V2^G| <= k + ell - 1 (Lemma v2g, from orientability)
+        # yields
+        #     |V| = k + |V2^G| + |V3^G| <= 3k + 3*ell - 3 .
+        # T and G share a vertex set, so a larger tree can only ever produce
+        # NON-ORIENTABLE topologies -- verified exhaustively at (k,ell) in
+        # {(2,1),(3,1),(4,1),(2,2)}: every topology above the cap admits zero
+        # valid orientations, so no prediagram is lost.  Both bounds are tight
+        # (attained at each of those points).  This is what makes ell=3
+        # tractable: it removes 33x of the candidate multisets there.
+        v_max_orientable = 3 * k + 3 * ell - 3
+        max_n = min(num_leaves + v2_max + v3_max, v_max_orientable,
+                    max_vertices_search)
 
         if max_n < min_n:
             continue
