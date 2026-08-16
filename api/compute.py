@@ -284,7 +284,25 @@ def compute_cumulants(
     if chi_grid is not None:
         spatial_grid = chi_grid
     if fundamental is None:
-        fundamental = {}
+        # Fall back to the defaults declared via ``ModelBuilder.parameter(
+        # ..., default=...)``.  Leaving this ``{}`` surfaced as a bare
+        # ``NameError: name 'mu' is not defined`` from inside the Sage
+        # substitution -- naming neither the caller's omission nor which
+        # parameter was missing.  Mean-field parameters (``mean_field=True``,
+        # e.g. ``xstar``/``nstar``) are SOLVED, not supplied, so they are
+        # never required here.
+        _pspecs = model.get('parameters', []) or []
+        fundamental = {p['name']: p['default'] for p in _pspecs
+                       if p.get('default') is not None}
+        _missing = sorted(p['name'] for p in _pspecs
+                          if p.get('default') is None
+                          and not p.get('mean_field'))
+        if _missing:
+            raise ValueError(
+                'compute_cumulants: no ``parameters=`` given, and these model '
+                'parameters declare no default: ' + ', '.join(_missing) + '. '
+                'Pass parameters={...} or declare defaults via '
+                'ModelBuilder.parameter(name, default=...).')
     if external_fields is None:
         raise ValueError('external_fields is required')
     if len(external_fields) != k:
