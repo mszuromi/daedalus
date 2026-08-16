@@ -115,6 +115,21 @@ def directed_graphs_isomorphic_with_labels(D1, leaves1, D2, leaves2):
 # Tree generation
 # ===========================================================================
 
+def v_max_orientable_bound(k, ell):
+    """Orientability cap on |V|:  |V| <= 3k + 3*ell - 3.
+
+    Derivation (see the block comment in ``generate_trees_with_constraints``):
+    sum(deg) = 2|E| = 2(|V|-1+ell) with sum(deg) >= k + 2|V2^G| + 3|V3^G| gives
+    |V3^G| <= k + 2*ell - 2, which with |V2^G| <= k + ell - 1 (Lemma v2g)
+    yields |V| <= 3k + 3*ell - 3.
+
+    Factored out of the tree loop so ``tests/test_orientability_cap.py`` can
+    monkeypatch it to +infinity and assert that lifting the cap adds no
+    prediagram -- i.e. that every topology above it really is non-orientable.
+    """
+    return 3 * k + 3 * ell - 3
+
+
 def generate_trees_with_constraints(k, ell, max_vertices_search=50):
     """
     Generate all trees T with k+j leaves satisfying degree constraints.
@@ -159,7 +174,7 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
         # valid orientations, so no prediagram is lost.  Both bounds are tight
         # (attained at each of those points).  This is what makes ell=3
         # tractable: it removes 33x of the candidate multisets there.
-        v_max_orientable = 3 * k + 3 * ell - 3
+        v_max_orientable = v_max_orientable_bound(k, ell)
         max_n = min(num_leaves + v2_max + v3_max, v_max_orientable,
                     max_vertices_search)
 
