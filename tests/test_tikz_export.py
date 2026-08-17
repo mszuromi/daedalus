@@ -16,7 +16,8 @@ from engine.diagrams.typed_diagram_layout import (
 )
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
-    edge_bends, path_point, arrow_positions,
+    edge_bends, path_point, arrow_positions, place_labels,
+    _label_box, _label_extent_mm, _box_overlap, _seg_in_box,
 )
 
 
@@ -515,6 +516,216 @@ def test_fermion_and_with_arrow_are_never_combined(prediagrams_2_2):
             assert not ('fermion' in ln and 'with arrow' in ln), ln
             assert 'fermion' in ln or 'with arrow' in ln, (
                 f'propagator drawn with no causal arrow: {ln.strip()}')
+
+
+# ── labels ──────────────────────────────────────────────────────────
+
+def test_label_extent_matches_latex():
+    """The box model is calibrated, not guessed.
+
+    Reference widths come from ``\settowidth`` at 11pt on the labels this
+    emitter actually produces.  The estimator is allowed to run a little
+    small -- callers pad it -- but not by enough to call a collision clear.
+    """
+    for tex, w_mm, h_mm in ((r'v_2', 3.535, 2.234),
+                            (r'\kappa_2', 3.887, 2.234),
+                            (r'\delta x(y_1)', 10.604, 3.849)):
+        w, h = _label_extent_mm(tex)
+        assert 0.85 * w_mm <= w <= 1.15 * w_mm, (tex, w, w_mm)
+        assert 0.75 * h_mm <= h <= 1.25 * h_mm, (tex, h, h_mm)
+
+
+def test_a_lone_label_keeps_the_canonical_place():
+    """Nothing in the way -> straight up, hard against the vertex."""
+    got = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, [], [(0.0, 0.0)])
+    assert got['a'] == (90, 1.0)
+
+
+def test_a_label_moves_off_a_propagator():
+    """A line through the default position must push the label elsewhere."""
+    above = [[(-20.0, 3.0), (20.0, 3.0)]]        # a wire just overhead
+    got = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, above, [(0.0, 0.0)])
+    assert got['a'] != (90, 1.0)
+    box = _label_box(0.0, 0.0, got['a'][0], got['a'][1], 3.5, 2.2, 0.825)
+    assert _seg_in_box(above[0][0], above[0][1], box) == 0.0
+
+
+def test_labels_are_placed_jointly_not_first_come_first_served():
+    """Two vertices close together must not both claim the same spot.
+
+    Greedy placement gives the first vertex the best angle and leaves the
+    second to overlap it; the sweep re-places both against each other.
+    """
+    anchors = {'a': (0.0, 0.0, 5.0, 2.2), 'b': (2.0, 0.0, 5.0, 2.2)}
+    got = place_labels(anchors, [], [(0.0, 0.0), (2.0, 0.0)])
+    boxes = [_label_box(*anchors[k][:2], *got[k], *anchors[k][2:], 0.825)
+             for k in anchors]
+    assert _box_overlap(*boxes) == 0.0
+
+
+def _labelled(pd):
+    """A prediagram dressed with real vertex types, so labels are emitted."""
+    from engine.core.vertices import SourceType, VertexType
+    D = pd[0]
+    leaf = set(pd[2])
+    assign = {}
+    for v in D.vertices():
+        if v in leaf:
+            continue
+        if D.in_degree(v) == 0:
+            assign[v] = SourceType('-D', [('xt', 1)] * D.out_degree(v), (2, 0))
+        else:
+            assign[v] = VertexType('eps', [('xt', 1)],
+                                   [('dx', 1)] * max(1, D.out_degree(v)),
+                                   (1, 3))
+
+    class _TD:
+        prediagram = pd
+        vertex_assignments = assign
+        external_legs = {v: ('dx', 1) for v in leaf}
+    return _TD()
+
+
+def _label_boxes(tex, mm):
+    """Every label in an emitted picture, as a printed-mm box."""
+    import re
+    out = []
+    for ln in tex.splitlines():
+        m = re.search(r'at \(([-\d.]+), ([-\d.]+)\)', ln)
+        lm = re.search(r'label distance=([\d.]+)pt\]\s*(-?\d+):'
+                       r'\\\((.*?)\\\)\}', ln)
+        if not (m and lm):
+            continue
+        w, h = _label_extent_mm(lm.group(3))
+        out.append(_label_box(float(m.group(1)) * mm, float(m.group(2)) * mm,
+                              int(lm.group(2)), float(lm.group(1)),
+                              w, h, DOT_RADIUS_MM))
+    return out
+
+
+def test_no_propagator_is_drawn_through_a_label(prediagrams_2_2):
+    """The defect that survived the first placement pass.
+
+    Labels were scored by the clearance of their ANCHOR POINT, but a label is
+    a BOX -- and one that does not shrink with the panel, since `scale=`
+    moves coordinates and not node text.  A `v_2` prints 3.5 mm wide inside a
+    46 mm panel, so a point could be 'clear' while two thirds of the text lay
+    across a propagator.  Measured over the 66 printed two-loop panels, 33 mm
+    of propagator ran through label text on 6 of them.
+    """
+    for pd in prediagrams_2_2[:60]:
+        dia = _labelled(pd)
+        pos = layout_typed_diagram(pd)
+        mm = mm_per_unit(pos)
+        tex = to_tikz_feynman(dia, symbolic_factors=True,
+                              propagator_label=None)
+        boxes = _label_boxes(tex, mm)
+        edges = sorted(pd[0].edges(labels=False))
+        bends = edge_bends(edges, 14)
+        for (u, v), b in zip(edges, bends):
+            poly = [tuple(c * mm for c in path_point(pos[u], pos[v], b,
+                                                     k / 12.0))
+                    for k in range(13)]
+            for box in boxes:
+                inside = sum(_seg_in_box(p, q, box)
+                             for p, q in zip(poly, poly[1:]))
+                assert inside < 0.5, (
+                    f'{inside:.2f} mm of propagator {u}->{v} runs through a '
+                    f'label')
+
+
+def test_labels_do_not_collide_with_each_other_or_with_a_vertex(
+        prediagrams_2_2):
+    """A label touching the wrong dot names the wrong vertex."""
+    for pd in prediagrams_2_2[:60]:
+        dia = _labelled(pd)
+        pos = layout_typed_diagram(pd)
+        mm = mm_per_unit(pos)
+        boxes = _label_boxes(to_tikz_feynman(dia, symbolic_factors=True,
+                                             propagator_label=None), mm)
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                assert _box_overlap(boxes[i], boxes[j]) == 0.0
+            for x, y in pos.values():
+                r = DOT_RADIUS_MM
+                assert _box_overlap(boxes[i], (x * mm - r, y * mm - r,
+                                               x * mm + r, y * mm + r)) == 0.0
+
+
+# ── one stroke, one meaning ─────────────────────────────────────────
+
+class _Styled:
+    """A diagram carrying only the edge typing the style map reads."""
+
+    def __init__(self, *pairs):
+        self.edge_types = {i: p for i, p in enumerate(pairs)}
+
+
+_XX = (('xt', 1), ('dx', 1))
+_XY = (('xt', 1), ('dy', 1))
+_YY = (('yt', 1), ('dy', 1))
+
+
+def test_a_stroke_means_one_component_across_the_whole_figure():
+    """Line styles are a symbol map, and break the same way per-panel.
+
+    Handed out over the pairings each panel happens to contain, the FIRST
+    style goes to whatever that panel has first -- so a solid line means
+    G_xx in one panel and G_xy in the next, while the key claims a single
+    meaning for the figure.  Measured on the 24-panel two-field figure,
+    `solid` covered three different components and `dashed` three more.
+    """
+    from engine.diagrams.tikz_export import edge_style_map
+    a, b = _Styled(_XX, _XY), _Styled(_XX, _YY)
+    per_panel = (edge_style_map(a), edge_style_map(b))
+    assert per_panel[0][('x', 'y')] == per_panel[1][('y', 'y')], (
+        'the per-panel collision this test exists to prevent is gone; '
+        'rewrite the test rather than deleting it')
+
+    shared = edge_style_map([a, b])
+    assert len({shared[('x', 'x')], shared[('x', 'y')],
+                shared[('y', 'y')]}) == 3
+    for dia in (a, b):
+        for pair in {(_field_pair_of(k)) for k in dia.edge_types.values()}:
+            assert shared[pair] == shared[pair]
+
+
+def _field_pair_of(legs):
+    from engine.diagrams.tikz_export import _field_symbol
+    return (_field_symbol(legs[0]), _field_symbol(legs[1]))
+
+
+def test_a_shared_style_map_overrides_the_per_panel_one(prediagrams_2_1):
+    """A panel must draw with the FIGURE's map, not with its own.
+
+    On its own this diagram carries one component, so its per-panel map
+    would give it the first style -- solid -- exactly as some other panel's
+    G_xx.  Handed the figure-wide map it must draw the stroke that means
+    G_yy everywhere in the figure.
+    """
+    from engine.diagrams.tikz_export import edge_style_map
+    pd = prediagrams_2_1[0]
+
+    from collections import Counter
+    _copies = Counter()
+
+    def _keys():
+        for u, v in pd[0].edges(labels=False):
+            yield (u, v, _copies[(u, v)])
+            _copies[(u, v)] += 1
+
+    class _TD:
+        prediagram = pd
+        edge_types = {k: _YY for k in _keys()}
+
+    shared = edge_style_map([_Styled(_XX, _XY), _Styled(_XX, _YY)])
+    want = shared[('y', 'y')]
+    assert want, 'G_yy should not be the unstyled default here'
+    alone = to_tikz_feynman(_TD(), style_by_field=True)
+    figure = to_tikz_feynman(_TD(), style_by_field=True, edge_styles=shared)
+    drawn = [ln for ln in figure.splitlines() if ' -- [' in ln]
+    assert drawn and all(want in ln for ln in drawn)
+    assert not any(want in ln for ln in alone.splitlines() if ' -- [' in ln)
 
 
 # ── source vs interaction naming ────────────────────────────────────

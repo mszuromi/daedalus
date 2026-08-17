@@ -139,55 +139,214 @@ def _edge_label(diagram, edge_key, propagator_label):
     return 'G_{%s%s}' % (resp, phys)
 
 
-# Candidate compass angles for a vertex-factor label, in preference order:
-# straight up/down read best, the diagonals are fallbacks.
+# ── labels, placed jointly ──────────────────────────────────────────
+# A label is NOT scaled with the picture: `scale=` transforms coordinates,
+# not node text, so at the panel scale used in a figure array a `v_2` prints
+# 3.5 mm wide inside a diagram only 46 mm wide.  Placement therefore has to
+# reason about the label's BOX in printed millimetres; scoring the clearance
+# of its anchor POINT, as this first did, calls a label clear when two thirds
+# of it lies across a propagator.
+
+# Candidate compass angles, in preference order: straight up/down read best,
+# the diagonals are fallbacks.
 _LABEL_ANGLES = (90, 270, 45, 135, 315, 225, 0, 180)
-_LABEL_RADIUS = 0.42        # where the label sits, in layout units
+# Candidate gaps between vertex and label, in TeX points.
+_LABEL_DISTANCES_PT = (1.0, 4.0, 8.0)
+_PT_MM = 0.35146            # 1 TeX point in millimetres
+# Widths of an 11pt math atom, measured with \settowidth (see the commit).
+_ATOM_MM = 2.10             # a letter, italic, incl. side bearing
+_DIGIT_MM = 1.92
+_PAREN_MM = 1.25
+_SCRIPT = 0.72              # sub/superscripts are set smaller
+_LINE_MM = 1.66             # height of an x-height math box
+_DEEP_MM = 0.58             # extra depth once a subscript is present
+_TALL_MM = 1.30             # extra height for parentheses and \delta
 
 
-def _point_seg_distance(p, a, b):
-    """Distance from point ``p`` to segment ``a``-``b``."""
-    (px, py), (ax, ay), (bx, by) = p, a, b
-    dx, dy = bx - ax, by - ay
-    if dx == 0.0 and dy == 0.0:
-        return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
-    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-    t = max(0.0, min(1.0, t))
-    cx, cy = ax + t * dx, ay + t * dy
-    return ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+def _distance_pt(dim):
+    """A TeX dimension string as points, for geometry (``'1pt'`` -> 1.0)."""
+    import re
+    m = re.match(r'\s*([-\d.]+)\s*([a-z]*)', str(dim))
+    if not m:
+        return 1.0
+    val = float(m.group(1))
+    return {'pt': 1.0, 'mm': 1.0 / _PT_MM, 'cm': 10.0 / _PT_MM,
+            'ex': 4.3, 'em': 10.0}.get(m.group(2), 1.0) * val
 
 
-def _best_label_angle(v, pos, edges, occupied, radius=_LABEL_RADIUS):
-    """Angle whose label position is furthest from anything already drawn.
+def _label_extent_mm(tex):
+    """Printed ``(width, height)`` of a math label at 11pt, in millimetres.
 
-    A fixed angle puts the factor wherever the rule says, and on a busy
-    diagram that can be on the far side of two other propagators from the
-    vertex it belongs to -- at which point the reader cannot tell WHICH
-    vertex it labels.  Score each candidate by its clearance from every edge
-    segment, every other vertex, and every label already placed, and take
-    the best.  Ties break toward the earlier (more readable) angle.
+    Calibrated against ``\settowidth`` on the labels this emitter actually
+    produces: ``v_2`` 3.54 x 2.23 mm, ``\kappa_2`` 3.89 x 2.23 mm,
+    ``\delta x(y_1)`` 10.60 x 3.85 mm.  Approximate by construction -- a real
+    metric needs TeX -- so callers pad it.
+    """
+    w, i, sub, tall = 0.0, 0, False, False
+    script, group = 1.0, 0            # script scale, and its brace depth
+    depth = 0
+    while i < len(tex):
+        c = tex[i]
+        if c == '{':
+            depth += 1
+            i += 1
+            continue
+        if c == '}':
+            depth -= 1
+            if script != 1.0 and depth < group:
+                script = 1.0
+            i += 1
+            continue
+        if c in '_^':
+            script, sub = _SCRIPT, True
+            group = depth + 1 if i + 1 < len(tex) and tex[i + 1] == '{' else -1
+            i += 1
+            continue
+        if c == '\\':
+            j = i + 1
+            while j < len(tex) and tex[j].isalpha():
+                j += 1
+            name = tex[i + 1:j]
+            if name in ('delta', 'partial', 'phi', 'psi', 'lambda', 'beta'):
+                tall = True
+            if name not in ('!', ',', ';', ' '):
+                w += _ATOM_MM * script
+            i = max(j, i + 2)
+        elif c in ' $':
+            i += 1
+            continue
+        else:
+            if c in '()[]':
+                w += _PAREN_MM * script
+                tall = True
+            elif c.isdigit():
+                w += _DIGIT_MM * script
+            elif c.isalpha():
+                w += _ATOM_MM * script
+            else:
+                w += _DIGIT_MM * script
+            i += 1
+        if group == -1:               # a one-atom script ends after it
+            script, group = 1.0, 0
+    h = _LINE_MM + (_DEEP_MM if sub else 0.0) + (_TALL_MM if tall else 0.0)
+    return max(w, 1.0), h
+
+
+def _label_box(vx, vy, angle_deg, dist_pt, w, h, dot_r):
+    """Box a tikz ``label=`` option puts the text in, in printed mm.
+
+    TikZ anchors the label node by its own border in the OPPOSITE direction,
+    so the box centre sits one border-crossing further out than the gap: this
+    reproduces that, which is what makes the diagonal angles score honestly
+    against the cardinal ones (a box reaches further at 45 degrees).
     """
     import math as _m
-    vx, vy = pos[v]
-    segs = [(pos[a], pos[b]) for a, b in edges if a in pos and b in pos]
-    # Other vertices count as obstacles too: a label that drifts toward a
-    # neighbouring dot reads as labelling THAT vertex instead.
-    others = [p for u, p in pos.items() if u != v]
-    best, best_clear = _LABEL_ANGLES[0], -1.0
-    for ang in _LABEL_ANGLES:
-        r = _m.radians(ang)
-        lx, ly = vx + radius * _m.cos(r), vy + radius * _m.sin(r)
-        clear = min(
-            [_point_seg_distance((lx, ly), a, b)
-             for a, b in segs
-             if not (a == (vx, vy) and b == (vx, vy))]
-            + [((lx - ox) ** 2 + (ly - oy) ** 2) ** 0.5
-               for ox, oy in others]
-            + [((lx - ox) ** 2 + (ly - oy) ** 2) ** 0.5
-               for ox, oy in occupied] or [9e9])
-        if clear > best_clear + 1e-9:
-            best, best_clear = ang, clear
-    return best
+    a = _m.radians(angle_deg)
+    ca, sa = _m.cos(a), _m.sin(a)
+    hw, hh = w / 2.0, h / 2.0
+    tx = abs(hw / ca) if abs(ca) > 1e-9 else 1e18
+    ty = abs(hh / sa) if abs(sa) > 1e-9 else 1e18
+    reach = dot_r + dist_pt * _PT_MM + min(tx, ty)
+    cx, cy = vx + reach * ca, vy + reach * sa
+    return (cx - hw, cy - hh, cx + hw, cy + hh)
+
+
+def _box_overlap(a, b):
+    """Area two boxes share."""
+    dx = min(a[2], b[2]) - max(a[0], b[0])
+    dy = min(a[3], b[3]) - max(a[1], b[1])
+    return dx * dy if dx > 0 and dy > 0 else 0.0
+
+
+def _seg_in_box(p, q, box):
+    """Length of segment ``p``-``q`` inside ``box`` (Liang-Barsky)."""
+    import math as _m
+    x0, y0, x1, y1 = box
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    t0, t1 = 0.0, 1.0
+    for num, den in ((p[0] - x0, -dx), (x1 - p[0], dx),
+                     (p[1] - y0, -dy), (y1 - p[1], dy)):
+        if den == 0:
+            if num < 0:
+                return 0.0
+            continue
+        t = num / den
+        if den < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return 0.0
+    return (t1 - t0) * _m.hypot(dx, dy)
+
+
+def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
+                 dot_r=DOT_RADIUS_MM):
+    """Choose an (angle, distance) for every vertex label, jointly.
+
+    Greedy one-at-a-time placement gives the first vertex the best spot and
+    leaves the last with whatever is free, which on a dense panel is a
+    position across two propagators.  This scores the same candidates but
+    then SWEEPS: each label is re-placed against the boxes the others
+    currently occupy, repeatedly, until nothing moves.  That is coordinate
+    descent on the joint cost -- still not a global optimum, but it escapes
+    the orderings a single pass cannot.
+
+    ``anchors`` maps a key to ``(x_mm, y_mm, text_width_mm, text_height_mm)``.
+    Returns ``{key: (angle_deg, distance_pt)}``.
+    """
+    keys = list(anchors)
+    cands = [(a, d) for d in _LABEL_DISTANCES_PT for a in _LABEL_ANGLES]
+    # Prefer a near, canonical placement: the tie-break that keeps a clean
+    # panel looking exactly as it did before this pass existed.
+    rank = {(a, d): (_LABEL_DISTANCES_PT.index(d) * len(_LABEL_ANGLES)
+                     + _LABEL_ANGLES.index(a))
+            for a, d in cands}
+
+    def cost(box, others):
+        c = 0.0
+        for b in others:
+            c += 3.0 * _box_overlap(box, b)          # label on a label
+        for b in fixed_boxes:
+            c += 3.0 * _box_overlap(box, b)
+        for (cx, cy) in dots:
+            c += 6.0 * _box_overlap(box, (cx - dot_r, cy - dot_r,
+                                          cx + dot_r, cy + dot_r))
+        for poly in polylines:
+            for p, q in zip(poly, poly[1:]):
+                c += 1.5 * _seg_in_box(p, q, box)    # label across a line
+        return c
+
+    chosen = {}
+    for k in keys:                                   # first pass: greedy
+        x, y, w, h = anchors[k]
+        boxes = [_label_box(*anchors[j][:2], *chosen[j], *anchors[j][2:],
+                            dot_r) for j in chosen]
+        best = None
+        for a, d in cands:
+            box = _label_box(x, y, a, d, w, h, dot_r)
+            sc = (cost(box, boxes), rank[(a, d)])
+            if best is None or sc < best[0]:
+                best = (sc, (a, d))
+        chosen[k] = best[1]
+
+    for _ in range(rounds):                          # then sweep to a fixpoint
+        moved = False
+        for k in keys:
+            x, y, w, h = anchors[k]
+            boxes = [_label_box(*anchors[j][:2], *chosen[j], *anchors[j][2:],
+                                dot_r) for j in keys if j != k]
+            best = None
+            for a, d in cands:
+                box = _label_box(x, y, a, d, w, h, dot_r)
+                sc = (cost(box, boxes), rank[(a, d)])
+                if best is None or sc < best[0]:
+                    best = (sc, (a, d))
+            if best[1] != chosen[k]:
+                chosen[k], moved = best[1], True
+        if not moved:
+            break
+    return chosen
 
 
 # ── the path pgf actually draws, and where the arrowhead lands ──────
@@ -303,20 +462,29 @@ def _field_pair(diagram, edge_key):
     return (_field_symbol(legs[0]), _field_symbol(legs[1]))
 
 
-def edge_style_map(diagram):
+def edge_style_map(diagrams):
     """Assign a distinct line style to each field pairing present.
 
     In a multi-field model different edges are different components of G, and
     a label alone makes the reader parse subscripts to see the structure.
-    Giving each pairing its own stroke makes it visible at a glance.  The
-    mapping is sorted, so the same pairing gets the same style in every panel
-    of a figure.
+    Giving each pairing its own stroke makes it visible at a glance.
+
+    Accepts one diagram or MANY, and the difference matters: built per panel,
+    the styles are handed out over the pairings THAT panel happens to
+    contain, so a solid line means G_xx in one panel and G_xy in the next
+    while the key claims one meaning for the whole figure.  Measured on the
+    24-panel two-field figure, `solid` covered three different components.
+    Pass the whole set -- the same rule as ``vertex_symbol_map``.
     """
-    et = getattr(diagram, 'edge_types', None) or {}
-    pairs = sorted({(_field_symbol(a), _field_symbol(b))
-                    for a, b in et.values()})
+    if not isinstance(diagrams, (list, tuple)):
+        diagrams = [diagrams]
+    pairs = set()
+    for dia in diagrams:
+        et = getattr(dia, 'edge_types', None) or {}
+        pairs.update((_field_symbol(a), _field_symbol(b))
+                     for a, b in et.values())
     return {p: _EDGE_STYLES[i % len(_EDGE_STYLES)]
-            for i, p in enumerate(pairs)}
+            for i, p in enumerate(sorted(pairs))}
 
 
 try:                                    # pragma: no cover - import guard
@@ -472,7 +640,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                     factor_label_angle='auto', dot_size=None, bend_angle=14,
                     external_label_distance='1pt', style_by_field=False,
                     symbolic_factors=False, vertex_symbols=None,
-                    indent='  '):
+                    edge_styles=None, indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
     Parameters
@@ -528,6 +696,10 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         A symbol map shared across a whole figure.  Supply this whenever
         drawing more than one panel, or each panel numbers its own factors
         and the same symbol means different things in different panels.
+    edge_styles : dict or None
+        A line-style map shared across a whole figure, for the same reason:
+        built per panel, a stroke names whichever component that panel
+        happened to contain.  ``tikz_figure`` supplies it automatically.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -556,28 +728,26 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
 
     # ── vertices ────────────────────────────────────────────────────
     edge_list = sorted(D.edges(labels=False))
-    style_of = edge_style_map(diagram) if style_by_field else {}
+    style_of = ((edge_styles if edge_styles is not None
+                 else edge_style_map(diagram))
+                if style_by_field else {})
     # Each distinct propagator symbol is named once.  Repeating one symbol on
     # every edge tells the reader nothing after the first time, and once the
     # line STYLE also encodes the component the labels are pure clutter.
     _seen_edge_labels = set()
-    placed_labels = []
     ext_legs = getattr(diagram, 'external_legs', None) or {}
+
+    # ── what every label SAYS ───────────────────────────────────────
+    # Decided before anything is emitted, because the placement below is
+    # joint: it needs every box at once, and a label's size depends on its
+    # text.
+    ext_text = {}
     for idx, v in enumerate(sorted(leaves), start=1):
-        x, y = pos[v]
         if external_label == 'auto':
             sym = _field_symbol(ext_legs.get(v)) or r'\phi'
-            lab = r'\delta %s(y_{%d})' % (sym, idx)
+            ext_text[v] = r'\delta %s(y_{%d})' % (sym, idx)
         else:
-            lab = external_label % idx
-        # The label rides on a ``label=`` option, NOT in the node body: an
-        # ``[empty dot]`` sized to contain ``\delta x(y_1)`` becomes a huge
-        # circle with text inside it.  Placed at 180 degrees it sits to the
-        # LEFT of a small circle, outside the diagram, where nothing crosses it.
-        lines.append(
-            indent * 2 + r'\vertex [empty dot, label={[label distance=%s]'
-                         r'180:\(%s\)}] (%s) at (%.3f, %.3f) {};'
-            % (external_label_distance, lab, _node_name(v), x, y))
+            ext_text[v] = external_label % idx
 
     # ``show_factors='auto'``: print each DISTINCT factor once.  Every
     # interaction vertex of a one-species model carries the same coefficient,
@@ -588,8 +758,8 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     vsym = (vertex_symbols if vertex_symbols is not None
             else (vertex_symbol_map(diagram, symbol_map, keyed=True)
                   if symbolic_factors else {}))
+    int_text = {}
     for v in sorted(set(D.vertices()) - leaf_set):
-        x, y = pos[v]
         label = _vertex_label(assignments.get(v),
                               bool(show_factors), symbol_map)
         if label and symbolic_factors:
@@ -601,28 +771,59 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                 label = ''
             else:
                 _seen_factors.add(label)
+        int_text[v] = label
+
+    # ── where every label GOES ──────────────────────────────────────
+    # In printed millimetres: node text is not affected by ``scale=``, so in
+    # a shrunk panel the labels keep their size while the diagram loses its,
+    # and only a millimetre model gets the collisions right.
+    mm = mm_per_unit(pos)
+    _P = {u: (x * mm, y * mm) for u, (x, y) in pos.items()}
+    _bends = edge_bends(edge_list, bend_angle)
+    _polys = [[tuple(c * mm for c in path_point(pos[a], pos[b], bd, k / 12.0))
+               for k in range(13)]
+              for (a, b), bd in zip(edge_list, _bends)]
+    _ext_pt = _distance_pt(external_label_distance)
+
+    def _pad(t):
+        w, h = _label_extent_mm(t)
+        return w * 1.08 + 0.5, h * 1.08 + 0.3     # the estimator runs ~5% low
+
+    ext_boxes = [_label_box(_P[v][0], _P[v][1], 180, _ext_pt,
+                            *_pad(t), DOT_RADIUS_MM)
+                 for v, t in ext_text.items() if t]
+    anchors = {v: (_P[v][0], _P[v][1]) + _pad(t)
+               for v, t in int_text.items() if t}
+    if factor_label_angle == 'auto':
+        placed = place_labels(anchors, _polys, list(_P.values()),
+                              fixed_boxes=ext_boxes)
+    else:
+        placed = {v: (factor_label_angle, 1.0) for v in anchors}
+
+    # ── vertices ────────────────────────────────────────────────────
+    for v in sorted(leaves):
+        x, y = pos[v]
+        # The label rides on a ``label=`` option, NOT in the node body: an
+        # ``[empty dot]`` sized to contain ``\delta x(y_1)`` becomes a huge
+        # circle with text inside it.  Placed at 180 degrees it sits to the
+        # LEFT of a small circle, outside the diagram, where nothing crosses it.
+        lines.append(
+            indent * 2 + r'\vertex [empty dot, label={[label distance=%s]'
+                         r'180:\(%s\)}] (%s) at (%.3f, %.3f) {};'
+            % (external_label_distance, ext_text[v], _node_name(v), x, y))
+
+    for v in sorted(set(D.vertices()) - leaf_set):
+        x, y = pos[v]
+        label = int_text[v]
         # A ``[dot]`` vertex is a FILLED node: anything in its node body is
         # drawn inside the ink and invisible.  The factor must therefore ride
-        # on a ``label=`` option, placed below the vertex so it clears the
-        # propagator lines converging on it.
+        # on a ``label=`` option, placed clear of the propagator lines
+        # converging on it.
         opts = 'dot'
         if label:
-            # Place the factor on the side AWAY from the diagram's midline:
-            # vertices above y=0 label upward, below label downward.  Pinning
-            # every factor to one side stacks them into the same horizontal
-            # band as the edge labels, which is what makes a dense panel
-            # unreadable.  An explicit angle overrides the heuristic.
-            if factor_label_angle != 'auto':
-                angle = factor_label_angle
-            else:
-                angle = _best_label_angle(v, pos, edge_list, placed_labels)
-                import math as _m
-                _r = _m.radians(angle)
-                placed_labels.append(
-                    (x + _LABEL_RADIUS * _m.cos(_r),
-                     y + _LABEL_RADIUS * _m.sin(_r)))
-            opts += r', label={[label distance=1pt]%d:\(%s\)}' % (
-                angle, label)
+            angle, dist = placed[v]
+            opts += r', label={[label distance=%gpt]%d:\(%s\)}' % (
+                dist, angle, label)
         lines.append(indent * 2 + r'\vertex [%s] (%s) at (%.3f, %.3f) {};'
                      % (opts, _node_name(v), x, y))
 

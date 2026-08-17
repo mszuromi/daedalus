@@ -10,7 +10,7 @@ import pytest
 
 import engine.enumeration.loop_diagram_enumeration as L
 from engine.diagrams.tikz_figure import (
-    diagrams_to_figure, diagrams_to_standalone,
+    diagrams_to_figure, diagrams_to_standalone, legend_table,
 )
 
 
@@ -239,3 +239,32 @@ def test_pages_share_one_map_across_sources_and_interactions():
     assert r'v_{1}' in tex and r'v_{2}' in tex
     # the key covers BOTH panels, not just the one it was built from
     assert r'\(v_{2}\) & \(h\)' in tex
+
+
+def test_the_key_describes_the_whole_figure_not_one_panel():
+    """`legend_from` names ONE diagram; the key must still cover them all.
+
+    Derived from that diagram alone the key lists only the components that
+    panel contains, so a stroke used elsewhere in the figure appears in the
+    drawing with nothing in the key to explain it.  Passing the figure-wide
+    style map fixes both halves at once.
+    """
+    from engine.diagrams.tikz_export import edge_style_map
+
+    class _Styled:
+        def __init__(self, *pairs):
+            self.edge_types = {i: p for i, p in enumerate(pairs)}
+
+    xx = (('xt', 1), ('dx', 1))
+    xy = (('xt', 1), ('dy', 1))
+    yy = (('yt', 1), ('dy', 1))
+    one_panel, whole = _Styled(xx), [_Styled(xx), _Styled(xy), _Styled(yy)]
+
+    narrow = legend_table(one_panel, vertices=False)
+    assert narrow.count(r'\\') == 1, 'one panel knows only its own component'
+
+    wide = legend_table(one_panel, vertices=False,
+                        edge_styles=edge_style_map(whole))
+    assert wide.count(r'\\') == 3
+    for name in ('G_{x}', 'G_{xy}', 'G_{y}'):
+        assert name in wide

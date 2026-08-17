@@ -151,6 +151,11 @@ def diagrams_to_figure(records, *, ncol=3, panel_width=r'0.30\textwidth',
         tikz_kw['vertex_symbols'] = vertex_symbol_map(
             [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'),
             keyed=True)
+    # Line styles are a symbol map too, and go wrong the same way: handed out
+    # per panel, one stroke names a different component in each.
+    if tikz_kw.get('style_by_field') and 'edge_styles' not in tikz_kw:
+        tikz_kw['edge_styles'] = edge_style_map(
+            [_as_diagram(r) for r in records])
     out = [r'\begin{figure}[t]', r'  \centering']
     for i, rec in enumerate(records):
         dia = _as_diagram(rec)
@@ -219,16 +224,21 @@ def _style_sample(style):
 
 
 def legend_table(diagram, *, edges=True, vertices=True, symbol_map=None,
-                 vertex_symbols=None):
+                 vertex_symbols=None, edge_styles=None):
     """A key mapping line styles to field pairings and symbols to factors.
 
     Once the drawing encodes components by stroke and vertices by short name,
     the figure is only readable with a key.  Emitting it from the same maps
-    the renderer uses means the two cannot drift apart.
+    the renderer uses means the two cannot drift apart -- which is why both
+    maps are passed IN when the caller has one for the whole figure: derived
+    from ``diagram`` alone, the key lists only the components and factors
+    that one panel contains, and silently mis-names the rest.
     """
     rows = []
     if edges:
-        for (a, b), st in sorted(edge_style_map(diagram).items()):
+        styles = (edge_styles if edge_styles is not None
+                  else edge_style_map(diagram))
+        for (a, b), st in sorted(styles.items()):
             name = ('G_{%s%s}' % (a, b)) if a != b else ('G_{%s}' % a)
             rows.append((_style_sample(st), r'\(%s\)' % name))
     if vertices:
@@ -275,6 +285,11 @@ def diagrams_to_pages(records, *, ncol=2, panel_width=r'0.46\textwidth',
         tikz_kw['vertex_symbols'] = vertex_symbol_map(
             [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'),
             keyed=True)
+    # Line styles are a symbol map too, and go wrong the same way: handed out
+    # per panel, one stroke names a different component in each.
+    if tikz_kw.get('style_by_field') and 'edge_styles' not in tikz_kw:
+        tikz_kw['edge_styles'] = edge_style_map(
+            [_as_diagram(r) for r in records])
     out = []
     if caption:
         out.append(r'\captionof{figure}{%s}' % caption)
@@ -283,7 +298,8 @@ def diagrams_to_pages(records, *, ncol=2, panel_width=r'0.46\textwidth',
         out.append('')
     if legend_from is not None:
         key = legend_table(legend_from, symbol_map=tikz_kw.get('symbol_map'),
-                           vertex_symbols=tikz_kw.get('vertex_symbols'))
+                           vertex_symbols=tikz_kw.get('vertex_symbols'),
+                           edge_styles=tikz_kw.get('edge_styles'))
         if key:
             out.append(r'\begin{center}')
             out.append(key)
