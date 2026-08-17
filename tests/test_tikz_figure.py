@@ -136,3 +136,54 @@ def test_export_tikz_writes_standalone_for_tex_path(tmp_path, pds):
     txt = out.read_text()
     assert txt.startswith(r'\documentclass')
     assert txt.rstrip().endswith(r'\end{document}')
+
+
+# ── key table and pagination ────────────────────────────────────────
+
+def test_symbol_map_is_shared_across_the_figure():
+    """v_1 must mean the same factor in every panel, and the key must list
+    every factor the figure uses -- not just the first panel's."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+
+    class _C:
+        def __init__(self, t): self.t = t
+        def _latex_(self): return self.t
+
+    class _V:
+        def __init__(self, t): self.coefficient = _C(t)
+
+    class _TD:
+        def __init__(self, ts):
+            self.prediagram = None
+            self.vertex_assignments = {i: _V(t) for i, t in enumerate(ts)}
+
+    a, b = _TD(['A', 'B']), _TD(['B', 'C'])
+    per_panel_a = vertex_symbol_map(a)
+    shared = vertex_symbol_map([a, b])
+    assert set(shared) == {'A', 'B', 'C'}, 'key must cover every panel'
+    # 'B' keeps its symbol when the map is built over both panels
+    assert shared['B'] == per_panel_a['B']
+    assert len(set(shared.values())) == 3, 'symbols must be distinct'
+
+
+def test_legend_lists_styles_and_symbols(pds):
+    from engine.diagrams.tikz_figure import legend_table
+    tex = legend_table(pds[0], vertex_symbols={r'-D': r'v_{1}'})
+    assert 'tabular' in tex
+    assert r'v_{1}' in tex and '-D' in tex
+
+
+def test_pages_output_is_not_a_float(pds):
+    """A complete set must flow across pages; a figure float cannot break."""
+    from engine.diagrams.tikz_figure import diagrams_to_pages
+    tex = diagrams_to_pages(pds, ncol=2, caption='All of them.')
+    assert r'\begin{figure}' not in tex, 'must not be a float'
+    assert r'\captionof{figure}' in tex, 'caption without a float'
+    assert tex.count(r'\begin{minipage}') == len(pds), 'every diagram drawn'
+
+
+def test_pages_draws_everything_with_no_truncation(pds):
+    from engine.diagrams.tikz_figure import diagrams_to_pages
+    tex = diagrams_to_pages(pds)
+    assert 'omitted' not in tex
+    assert tex.count(r'\begin{tikzpicture}') == len(pds)

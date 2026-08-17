@@ -29,7 +29,7 @@ import math
 from collections import defaultdict
 
 __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram',
-           'DX', 'DY', 'DY_EXTERNAL']
+           'DX', 'DY', 'DY_EXTERNAL', 'ASPECT']
 
 # Column pitch (x) and row pitch (y) in TikZ units.
 DX = 2.3
@@ -37,6 +37,10 @@ DY = 1.25
 # External vertices sit BESIDE their label rather than inside it, so the node
 # is a small circle and needs only slightly more room than an internal dot.
 DY_EXTERNAL = 1.5
+# Minimum height/width for a finished diagram.  Without this a deep, weakly
+# branching diagram is drawn many columns wide and two rows tall, and shrinks
+# into an illegible sliver inside a panel.
+ASPECT = 0.55
 
 
 def _unpack(diagram):
@@ -301,7 +305,8 @@ def _relax_y(layers, adj, y_of, pitch_of, rounds=6, weight=0.3):
     return y_of
 
 
-def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True):
+def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True,
+                         aspect=ASPECT):
     """Assign ``(x, y)`` to every vertex of a typed diagram or prediagram.
 
     Parameters
@@ -313,6 +318,9 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True):
         Let the external column be permuted for crossing reduction.  ``False``
         pins them in leaf order, keeping panels of a figure array mutually
         consistent at the cost of extra crossings.
+    aspect : float
+        Minimum height/width of the finished drawing; y is stretched to reach
+        it.  ``None`` disables.
 
     Returns
     -------
@@ -392,7 +400,33 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True):
         for v in y_of:
             y_of[v] -= mid
 
-    return {v: (-layer_of[v] * dx, y_of[v]) for v in D.vertices()}
+    pos = {v: (-layer_of[v] * dx, y_of[v]) for v in D.vertices()}
+    return _fit_aspect(pos, aspect)
+
+
+def _fit_aspect(pos, target):
+    """Scale y so the drawing is not a flat ribbon.
+
+    A diagram deep in causal depth but shallow in branching comes out many
+    columns wide and one or two rows tall.  Shrunk into a panel it becomes an
+    unreadable sliver, and the vertex labels have nowhere to go.  Stretching y
+    to a target height/width ratio fixes both, and is safe: a uniform positive
+    scale on y preserves the vertex ORDER in every column, so the
+    minimum-crossing ordering chosen earlier still holds exactly.
+    """
+    if not pos or not target:
+        return pos
+    xs = [x for x, _ in pos.values()]
+    ys = [y for _, y in pos.values()]
+    w = max(xs) - min(xs)
+    h = max(ys) - min(ys)
+    if w <= 0 or h <= 0:
+        return pos
+    want = target * w
+    if h >= want:
+        return pos
+    k = want / h
+    return {v: (x, y * k) for v, (x, y) in pos.items()}
 
 
 layout_prediagram = layout_typed_diagram

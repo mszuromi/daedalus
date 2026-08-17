@@ -19,7 +19,7 @@ hand-built diagram.
 from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
 __all__ = ['to_tikz_feynman', 'diagram_to_standalone',
-           'DEFAULT_SYMBOL_MAP', 'edge_style_map']
+           'DEFAULT_SYMBOL_MAP', 'edge_style_map', 'vertex_symbol_map']
 
 _PREAMBLE = r"""\documentclass[border=6pt]{standalone}
 \usepackage{tikz}
@@ -218,6 +218,36 @@ def edge_style_map(diagram):
             for i, p in enumerate(pairs)}
 
 
+def vertex_symbol_map(diagrams, symbol_map=None):
+    """Short symbol for each distinct vertex factor, plus its LaTeX.
+
+    Printing ``3\,\varepsilon x^{*}_{1}`` on a vertex is unreadable once a
+    diagram has more than a couple of them, and at two loops the copies
+    collide outright.  Naming the factors ``v_1, v_2, ...`` and giving the
+    expressions once in a key keeps every value while freeing the drawing.
+
+    Accepts one diagram or MANY.  Pass the whole set: numbering built
+    per-diagram would make ``v_1`` mean one factor in one panel and a
+    different factor in the next, and the key would list only whatever the
+    first panel happened to contain.
+    """
+    if symbol_map is None:
+        symbol_map = DEFAULT_SYMBOL_MAP
+    if not isinstance(diagrams, (list, tuple)):
+        diagrams = [diagrams]
+    seen = []
+    for dia in diagrams:
+        assignments = getattr(dia, 'vertex_assignments', {}) or {}
+        for v in sorted(assignments):
+            tex = _apply_symbol_map(
+                _latex_coefficient(
+                    getattr(assignments[v], 'coefficient', None)),
+                symbol_map)
+            if tex and tex not in seen:
+                seen.append(tex)
+    return {tex: r'v_{%d}' % (i + 1) for i, tex in enumerate(seen)}
+
+
 def _node_name(v):
     """TikZ node names must be simple; vertex ids are ints."""
     return 'v%s' % v
@@ -228,6 +258,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                     show_factors='auto', symbol_map=None, scale=1.0,
                     factor_label_angle='auto', dot_size=None, bend_angle=14,
                     external_label_distance='1pt', style_by_field=False,
+                    symbolic_factors=False, vertex_symbols=None,
                     indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
@@ -273,7 +304,17 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     style_by_field : bool
         Give each distinct (response, physical) field pairing its own line
         style, so the component structure of a multi-field diagram is visible
-        without reading subscripts.  All styles keep the causal arrow.
+        without reading subscripts.  All styles keep the causal arrow.  When
+        set, edge labels are redundant and should be turned off; the key
+        emitted by ``tikz_figure.legend_table`` carries the mapping.
+    symbolic_factors : bool
+        Label vertices ``v_1, v_2, ...`` instead of printing the coefficient,
+        with the expressions given once in the key.  Short names are cheap
+        enough to repeat on every vertex; expressions are not.
+    vertex_symbols : dict or None
+        A symbol map shared across a whole figure.  Supply this whenever
+        drawing more than one panel, or each panel numbers its own factors
+        and the same symbol means different things in different panels.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -331,11 +372,18 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # order allows and, past one loop, the copies collide with each other.
     # One instance of each distinct value loses no information.
     _seen_factors = set()
+    vsym = (vertex_symbols if vertex_symbols is not None
+            else (vertex_symbol_map(diagram, symbol_map)
+                  if symbolic_factors else {}))
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]
         label = _vertex_label(assignments.get(v),
                               bool(show_factors), symbol_map)
-        if label and show_factors == 'auto':
+        if label and symbolic_factors:
+            # Symbolic mode names EVERY vertex -- the whole point is that the
+            # short name is cheap enough to repeat, unlike the expression.
+            label = vsym.get(label, label)
+        elif label and show_factors == 'auto':
             if label in _seen_factors:
                 label = ''
             else:

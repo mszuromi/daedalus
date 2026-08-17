@@ -13,10 +13,13 @@ Two output shapes:
   for checking the array before it goes near the paper.
 """
 
-from engine.diagrams.tikz_export import to_tikz_feynman
+from engine.diagrams.tikz_export import (
+    to_tikz_feynman, edge_style_map, vertex_symbol_map,
+)
 from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
-__all__ = ['diagrams_to_figure', 'diagrams_to_standalone', 'PREAMBLE_PACKAGES']
+__all__ = ['diagrams_to_figure', 'diagrams_to_standalone',
+           'legend_table', 'diagrams_to_pages', 'PREAMBLE_PACKAGES']
 
 PREAMBLE_PACKAGES = r"""\usepackage{tikz}
 \usepackage[compat=1.1.0]{tikz-feynman}
@@ -197,3 +200,96 @@ def diagrams_to_standalone(records, *, total_width='16cm', **kw):
                 .replace(r'\end{figure}', r'\end{center}'))
     return (_STANDALONE_HEAD % (PREAMBLE_PACKAGES, total_width)
             + body + _STANDALONE_TAIL)
+
+
+def _style_sample(style):
+    """A short line drawn in ``style``, for the key."""
+    opt = 'fermion' + (', ' + style if style else '')
+    return (r'\tikz[baseline=-0.5ex]{\begin{feynman}'
+            r'\vertex (a) at (0,0); \vertex (b) at (1.1,0);'
+            r'\diagram*{(b) -- [%s] (a)};\end{feynman}}' % opt)
+
+
+def legend_table(diagram, *, edges=True, vertices=True, symbol_map=None,
+                 vertex_symbols=None):
+    """A key mapping line styles to field pairings and symbols to factors.
+
+    Once the drawing encodes components by stroke and vertices by short name,
+    the figure is only readable with a key.  Emitting it from the same maps
+    the renderer uses means the two cannot drift apart.
+    """
+    rows = []
+    if edges:
+        for (a, b), st in sorted(edge_style_map(diagram).items()):
+            name = ('G_{%s%s}' % (a, b)) if a != b else ('G_{%s}' % a)
+            rows.append((_style_sample(st), r'\(%s\)' % name))
+    if vertices:
+        vs = (vertex_symbols if vertex_symbols is not None
+              else vertex_symbol_map(diagram, symbol_map))
+        for tex, sym in vs.items():
+            rows.append((r'\(%s\)' % sym, r'\(%s\)' % tex))
+    if not rows:
+        return ''
+    out = [r'\begin{tabular}{@{}ll@{}}', r'  \hline']
+    for left, right in rows:
+        out.append('  %s & %s \\\\' % (left, right))
+    out.append(r'  \hline')
+    out.append(r'\end{tabular}')
+    return '\n'.join(out) + '\n'
+
+
+def diagrams_to_pages(records, *, ncol=2, panel_width=r'0.46\textwidth',
+                      scale='auto', caption=None, label=None,
+                      legend_from=None, row_skip='2.2em', **tikz_kw):
+    """Every diagram, flowing across as many pages as it needs.
+
+    ``diagrams_to_figure`` builds a ``figure``, which LaTeX floats and cannot
+    break: past a page of panels it silently overflows or is dropped.  For a
+    complete set -- and a complete set is the point, since a truncated one
+    misrepresents the expansion -- the panels must be ordinary page content
+    that flows.  The caption is set with ``\\captionof`` so it still reads as
+    a figure caption without a float to carry it.
+    """
+    records = list(records)
+    # ONE symbol map for the whole figure: numbering per panel would make the
+    # same symbol mean different factors in different panels, and the key
+    # would only list what the first panel happened to use.
+    if tikz_kw.get('symbolic_factors') and 'vertex_symbols' not in tikz_kw:
+        tikz_kw['vertex_symbols'] = vertex_symbol_map(
+            [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'))
+    out = []
+    if caption:
+        out.append(r'\captionof{figure}{%s}' % caption)
+        if label:
+            out.append(r'\label{%s}' % label)
+        out.append('')
+    if legend_from is not None:
+        key = legend_table(legend_from, symbol_map=tikz_kw.get('symbol_map'),
+                           vertex_symbols=tikz_kw.get('vertex_symbols'))
+        if key:
+            out.append(r'\begin{center}')
+            out.append(key)
+            out.append(r'\end{center}')
+            out.append(r'\vspace{1em}')
+    for i, rec in enumerate(records):
+        dia = _as_diagram(rec)
+        panel_scale = scale
+        if scale == 'auto':
+            panel_scale = _auto_scale(dia, ncol) or 0.9
+        body = to_tikz_feynman(dia, scale=panel_scale, **tikz_kw)
+        body = '\n'.join('    ' + ln for ln in body.strip().splitlines())
+        out.append(r'\begin{minipage}[t]{%s}' % panel_width)
+        out.append(r'  \centering')
+        out.append(r'  \resizebox{\ifdim\width>\linewidth'
+                   r'\linewidth\else\width\fi}{!}{%')
+        out.append(body)
+        out.append('  }%')
+        out.append(r'  \\[0.4em] \footnotesize (%d)%s' % (
+            i + 1, (r' \(\ell=%d\)' % rec['ell'])
+            if isinstance(rec, dict) and rec.get('ell') is not None else ''))
+        out.append(r'\end{minipage}')
+        if (i + 1) % ncol == 0:
+            out.append(r'\par\vspace{%s}' % row_skip)
+        else:
+            out.append(r'\hfill')
+    return '\n'.join(out) + '\n'
