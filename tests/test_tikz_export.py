@@ -215,3 +215,32 @@ def test_auto_external_label_uses_the_field(prediagrams_2_1):
     tex = to_tikz_feynman(_TD())
     assert r'\delta x(y_{1})' in tex
     assert r'\delta y(y_{2})' in tex
+
+
+def test_no_self_loops_to_draw():
+    """Self-loops are structurally impossible, so the emitter need not draw them.
+
+    ``add_edges_to_tree`` builds with ``loops=False`` and draws candidate edges
+    from ``combinations(V, 2)``, so a vertex can never connect to itself.  That
+    matches the physics: the retarded propagator has G(t,t)=0 under Ito, so a
+    tadpole would vanish anyway.  Pinned here because a drawing routine that
+    silently mishandled one would be hard to notice.
+    """
+    import engine.enumeration.loop_diagram_enumeration as L
+    for k, ell in ((2, 1), (2, 2), (3, 1)):
+        for D, _G, _lv, _in in L.enumerate_all(k, ell, verbose=False)[2]:
+            assert not any(u == v for u, v in D.edges(labels=False))
+
+
+def test_external_column_is_spaced_wider_than_internal_rows():
+    """External nodes carry inline text, so they need more room than dots."""
+    import engine.enumeration.loop_diagram_enumeration as L
+    from engine.diagrams.typed_diagram_layout import DY, DY_EXTERNAL
+    assert DY_EXTERNAL > DY
+    pd = [p for p in L.enumerate_all(4, 0, verbose=False)[2]][0]
+    pos = layout_typed_diagram(pd)
+    leaves = sorted(pd[2])
+    ys = sorted(pos[v][1] for v in leaves)
+    gaps = [b - a for a, b in zip(ys, ys[1:])]
+    assert all(g >= DY_EXTERNAL - 1e-9 for g in gaps), (
+        f'external rows {gaps} tighter than the external pitch {DY_EXTERNAL}')

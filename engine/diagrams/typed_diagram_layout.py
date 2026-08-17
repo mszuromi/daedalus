@@ -23,7 +23,8 @@ about ``y = 0``.
 
 from collections import defaultdict
 
-__all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram']
+__all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram',
+           'DX', 'DY', 'DY_EXTERNAL']
 
 # Column pitch (x) and row pitch (y) in TikZ units.  Sized so a vertex-factor
 # label hanging below a vertex clears the ``G`` labels on the propagators
@@ -31,6 +32,11 @@ __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram']
 # unreadable, which is the first thing that goes wrong when this is tuned down.
 DX = 2.3
 DY = 1.5
+# External vertices are drawn as circles around an inline label
+# (``\delta x(y_4)``), so their nodes are far wider and taller than the bare
+# dots used for sources and interactions.  At k>=4 a shared pitch makes the
+# external circles touch; give that column its own, larger spacing.
+DY_EXTERNAL = 2.1
 
 
 def _unpack(diagram):
@@ -107,7 +113,8 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY):
     # ordered by leaf index so the k external points read top-to-bottom in a
     # stable order across diagrams.
     x_ext = -(max_internal_depth + 1) * dx
-    for v, y in zip(sorted(leaves), _spread(len(leaves), dy)):
+    dy_ext = dy * (DY_EXTERNAL / DY)
+    for v, y in zip(sorted(leaves), _spread(len(leaves), dy_ext)):
         pos[v] = (x_ext, y)
 
     return pos
