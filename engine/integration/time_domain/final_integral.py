@@ -324,6 +324,9 @@ _RUNTIME_COUNTERS = {
     'chain_simplex_fast_returned_none': 0,
     'chain_simplex_polynomial_called': 0,
     'chain_simplex_polynomial_returned_none': 0,
+    # memoisation (see the wrappers below)
+    'chain_simplex_memo_hits': 0,
+    'chain_simplex_memo_misses': 0,
     'poset_returned_none_total': 0,
     # m=1 interval path
     'interval_attempted': 0,
@@ -1300,7 +1303,7 @@ if _HAVE_NUMBA:
         return 0, total
 
 
-def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
+def _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps=1e-9):
     """Dispatcher: numba version when available + enabled, else Python.
 
     Returns the integral value or ``None`` (degenerate β / overflow),
@@ -1336,7 +1339,7 @@ def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
     return complex(val)
 
 
-def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
+def _exp_over_chain_simplex_polynomial_uncached(alphas, lower, upper, eps=1e-9):
     r"""Polynomial-prefactor extension of ``_exp_over_chain_simplex``.
 
     Same closed-form integral as ``_exp_over_chain_simplex`` but DOES
@@ -1484,6 +1487,83 @@ def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
         return total
     except (OverflowError, ValueError, ZeroDivisionError):
         return None
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Memoised chain-simplex evaluation
+# ───────────────────────────────────────────────────────────────────────
+# Both chain-simplex routines are pure functions of (alphas, lower, upper,
+# eps), and the poset walk calls them with a TINY set of distinct arguments
+# over and over.  Measured on ou_quartic k=4, ell=2: 508,176 calls to each of
+# the fast and polynomial routines, with just 9 DISTINCT argument tuples --
+# a redundancy of 56,464x.  (The fast routine returns None on 100% of those
+# calls because this model has a single retarded pole, so every alpha is
+# degenerate and the polynomial path runs every time; memoising the None is
+# worth as much as memoising the value.)
+#
+# Keys use the raw float/complex values -- the repeats are bit-identical
+# because they come from the same pole data, so no rounding is applied and
+# no result can be silently aliased onto a nearby-but-different argument.
+_CHAIN_SIMPLEX_MEMO_MAX = 200_000
+_chain_simplex_memo_fast = {}
+_chain_simplex_memo_poly = {}
+
+
+def _chain_simplex_memo_clear():
+    """Drop both chain-simplex memo tables (call when poles change)."""
+    _chain_simplex_memo_fast.clear()
+    _chain_simplex_memo_poly.clear()
+
+
+def _chain_simplex_key(alphas, lower, upper, eps):
+    return (tuple(alphas), lower, upper, eps)
+
+
+def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
+    """Memoised wrapper -- see ``_exp_over_chain_simplex_fast_uncached``."""
+    try:
+        key = _chain_simplex_key(alphas, lower, upper, eps)
+    except TypeError:            # unhashable argument: skip the cache
+        return _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps)
+    memo = _chain_simplex_memo_fast
+    if key in memo:
+        _RUNTIME_COUNTERS['chain_simplex_memo_hits'] += 1
+        val = memo[key]
+        if val is None:
+            _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
+        return val
+    _RUNTIME_COUNTERS['chain_simplex_memo_misses'] += 1
+    val = _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps)
+    if val is None:
+        _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
+    if len(memo) < _CHAIN_SIMPLEX_MEMO_MAX:
+        memo[key] = val
+    return val
+
+
+def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
+    """Memoised wrapper -- see ``_exp_over_chain_simplex_polynomial_uncached``."""
+    try:
+        key = _chain_simplex_key(alphas, lower, upper, eps)
+    except TypeError:
+        return _exp_over_chain_simplex_polynomial_uncached(
+            alphas, lower, upper, eps)
+    _RUNTIME_COUNTERS['chain_simplex_polynomial_called'] += 1
+    memo = _chain_simplex_memo_poly
+    if key in memo:
+        _RUNTIME_COUNTERS['chain_simplex_memo_hits'] += 1
+        val = memo[key]
+        if val is None:
+            _RUNTIME_COUNTERS['chain_simplex_polynomial_returned_none'] += 1
+        return val
+    _RUNTIME_COUNTERS['chain_simplex_memo_misses'] += 1
+    val = _exp_over_chain_simplex_polynomial_uncached(
+        alphas, lower, upper, eps)
+    if val is None:
+        _RUNTIME_COUNTERS['chain_simplex_polynomial_returned_none'] += 1
+    if len(memo) < _CHAIN_SIMPLEX_MEMO_MAX:
+        memo[key] = val
+    return val
 
 
 def _chain_with_intermediate_uppers(
