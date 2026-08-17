@@ -94,8 +94,10 @@ def test_parallel_edges_are_bowed_apart(prediagrams_2_1):
 
 def test_propagator_label_is_configurable(prediagrams_2_1):
     pd = prediagrams_2_1[0]
-    assert r'edge label=\(G\)' in to_tikz_feynman(pd)
-    assert r'edge label=\(R\)' in to_tikz_feynman(pd, propagator_label='R')
+    # ``edge label'`` (primed) puts the label on the opposite side of the
+    # line from the vertex factors, which ride above their vertices.
+    assert r"edge label'=\(G\)" in to_tikz_feynman(pd)
+    assert r"edge label'=\(R\)" in to_tikz_feynman(pd, propagator_label='R')
     assert 'edge label' not in to_tikz_feynman(pd, propagator_label=None)
 
 
@@ -129,3 +131,27 @@ def test_symbol_map_rewrites_parameter_names():
     out = _vertex_label(_V(), True, DEFAULT_SYMBOL_MAP)
     assert r'\varepsilon' in out and r'\phi^{*}' in out
     assert 'mathit' not in out
+
+
+# ── compilation ─────────────────────────────────────────────────────
+
+@pytest.mark.slow
+def test_standalone_document_compiles(tmp_path, prediagrams_2_1):
+    """The emitted document must actually build under pdflatex.
+
+    Skipped where no TeX toolchain or no tikz-feynman is installed -- this is
+    the only check that catches a syntactically valid but semantically broken
+    picture (e.g. an option tikz-feynman does not accept).
+    """
+    import shutil, subprocess
+    if shutil.which('pdflatex') is None:
+        pytest.skip('pdflatex not installed')
+    src = tmp_path / 'd.tex'
+    src.write_text(diagram_to_standalone(prediagrams_2_1[0]))
+    proc = subprocess.run(
+        ['pdflatex', '-interaction=nonstopmode', '-halt-on-error', 'd.tex'],
+        cwd=tmp_path, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0 and 'tikz-feynman' in (proc.stdout + proc.stderr):
+        pytest.skip('tikz-feynman package not installed')
+    assert proc.returncode == 0, proc.stdout[-2000:]
+    assert (tmp_path / 'd.pdf').exists()

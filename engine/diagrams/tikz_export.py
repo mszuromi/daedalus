@@ -94,7 +94,7 @@ def _node_name(v):
 def to_tikz_feynman(diagram, *, propagator_label='G',
                     external_label=r'\delta\phi(y_{%d})',
                     show_factors=True, symbol_map=None, scale=1.0,
-                    indent='  '):
+                    factor_label_angle=90, dot_size=None, indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
     Parameters
@@ -111,6 +111,14 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     symbol_map : dict or None
         Parameter-name -> LaTeX overrides applied to vertex factors.
         ``None`` uses :data:`DEFAULT_SYMBOL_MAP`; pass ``{}`` to disable.
+    factor_label_angle : int
+        Compass angle (degrees) for the vertex-factor label; 90 = above.
+        Vertex factors go ABOVE and edge labels BELOW by default -- the two
+        label families are separated by convention, because placing both near
+        a vertex makes them overlap on any diagram with fanned-out edges.
+    dot_size : str or None
+        Overrides the filled-vertex diameter, e.g. ``'1.6mm'``.  The
+        tikz-feynman default is large relative to our column pitch.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -128,7 +136,13 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     pos = layout_typed_diagram(diagram)
 
     lines = []
-    lines.append(r'\begin{tikzpicture}[scale=%g]' % scale)
+    pic_opts = ['scale=%g' % scale]
+    if dot_size:
+        pic_opts.append(
+            r'/tikzfeynman/every dot/.style={minimum size=%s}' % dot_size)
+        pic_opts.append(
+            r'/tikzfeynman/every empty dot/.style={minimum size=%s}' % dot_size)
+    lines.append(r'\begin{tikzpicture}[%s]' % ', '.join(pic_opts))
     lines.append(indent + r'\begin{feynman}')
 
     # ── vertices ────────────────────────────────────────────────────
@@ -141,9 +155,16 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]
         label = _vertex_label(assignments.get(v), show_factors, symbol_map)
-        body = r' {\(%s\)}' % label if label else ''
-        lines.append(indent * 2 + r'\vertex [dot] (%s) at (%.3f, %.3f)%s;'
-                     % (_node_name(v), x, y, body))
+        # A ``[dot]`` vertex is a FILLED node: anything in its node body is
+        # drawn inside the ink and invisible.  The factor must therefore ride
+        # on a ``label=`` option, placed below the vertex so it clears the
+        # propagator lines converging on it.
+        opts = 'dot'
+        if label:
+            opts += r', label={[label distance=1pt]%d:\(%s\)}' % (
+                factor_label_angle, label)
+        lines.append(indent * 2 + r'\vertex [%s] (%s) at (%.3f, %.3f) {};'
+                     % (opts, _node_name(v), x, y))
 
     # ── edges ───────────────────────────────────────────────────────
     # Edge direction is the retarded propagator's time arrow (earlier ->
@@ -151,7 +172,9 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # already points the arrow leftward; no reversal is needed.
     opts = ['fermion']
     if propagator_label:
-        opts.append(r'edge label=\(%s\)' % propagator_label)
+        # ``edge label'`` (primed) places the label on the far side of the
+        # line from ``edge label``, keeping it clear of the vertex factors.
+        opts.append(r"edge label'=\(%s\)" % propagator_label)
     opt_str = ', '.join(opts)
 
     lines.append(indent * 2 + r'\diagram* {')

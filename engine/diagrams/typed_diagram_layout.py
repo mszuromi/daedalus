@@ -25,10 +25,12 @@ from collections import defaultdict
 
 __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram']
 
-# Column pitch (x) and row pitch (y) in TikZ units.  Chosen so a 1-loop
-# diagram sits comfortably in a single column of a two-column paper.
-DX = 1.6
-DY = 1.1
+# Column pitch (x) and row pitch (y) in TikZ units.  Sized so a vertex-factor
+# label hanging below a vertex clears the ``G`` labels on the propagators
+# converging there -- at tighter pitches the two collide and the figure is
+# unreadable, which is the first thing that goes wrong when this is tuned down.
+DX = 2.3
+DY = 1.5
 
 
 def _unpack(diagram):
