@@ -158,6 +158,8 @@ _ATOM_MM = 2.10             # a letter, italic, incl. side bearing
 _DIGIT_MM = 1.92
 _PAREN_MM = 1.25
 _SCRIPT = 0.72              # sub/superscripts are set smaller
+_LABEL_MARGIN_MM = 0.4      # labels that merely touch still read as one
+_OWNERSHIP = 1.15           # a label must stay this much nearer ITS vertex
 _LINE_MM = 1.66             # height of an x-height math box
 _DEEP_MM = 0.58             # extra depth once a subscript is present
 _TALL_MM = 1.30             # extra height for parentheses and \delta
@@ -303,18 +305,40 @@ def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
                      + _LABEL_ANGLES.index(a))
             for a, d in cands}
 
-    def cost(box, others):
+    def _is(cx, cy, owner):
+        return abs(cx - owner[0]) < 1e-9 and abs(cy - owner[1]) < 1e-9
+
+    def cost(box, others, owner):
+        import math as _m
+        # Judge collisions on a slightly grown box: two labels that merely
+        # touch are already hard to read as two.
+        grown = (box[0] - _LABEL_MARGIN_MM, box[1] - _LABEL_MARGIN_MM,
+                 box[2] + _LABEL_MARGIN_MM, box[3] + _LABEL_MARGIN_MM)
         c = 0.0
         for b in others:
-            c += 3.0 * _box_overlap(box, b)          # label on a label
+            c += 3.0 * _box_overlap(grown, b)        # label on a label
         for b in fixed_boxes:
-            c += 3.0 * _box_overlap(box, b)
+            c += 3.0 * _box_overlap(grown, b)
         for (cx, cy) in dots:
-            c += 6.0 * _box_overlap(box, (cx - dot_r, cy - dot_r,
-                                          cx + dot_r, cy + dot_r))
+            if _is(cx, cy, owner):      # a label always abuts its OWN dot
+                continue
+            c += 6.0 * _box_overlap(grown, (cx - dot_r, cy - dot_r,
+                                            cx + dot_r, cy + dot_r))
         for poly in polylines:
             for p, q in zip(poly, poly[1:]):
                 c += 1.5 * _seg_in_box(p, q, box)    # label across a line
+        # OWNERSHIP.  A label that ends up nearer some other vertex than its
+        # own names the wrong vertex, which no amount of clearance fixes --
+        # and on a dense panel two labels can sit side by side between the
+        # pair they belong to, with nothing to say which is which.
+        mx, my = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        own = _m.hypot(mx - owner[0], my - owner[1])
+        for (cx, cy) in dots:
+            if _is(cx, cy, owner):
+                continue
+            slack = own * _OWNERSHIP - _m.hypot(mx - cx, my - cy)
+            if slack > 0.0:
+                c += 1.5 * slack
         return c
 
     chosen = {}
@@ -325,7 +349,7 @@ def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
         best = None
         for a, d in cands:
             box = _label_box(x, y, a, d, w, h, dot_r)
-            sc = (cost(box, boxes), rank[(a, d)])
+            sc = (cost(box, boxes, (x, y)), rank[(a, d)])
             if best is None or sc < best[0]:
                 best = (sc, (a, d))
         chosen[k] = best[1]
@@ -339,7 +363,7 @@ def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
             best = None
             for a, d in cands:
                 box = _label_box(x, y, a, d, w, h, dot_r)
-                sc = (cost(box, boxes), rank[(a, d)])
+                sc = (cost(box, boxes, (x, y)), rank[(a, d)])
                 if best is None or sc < best[0]:
                     best = (sc, (a, d))
             if best[1] != chosen[k]:

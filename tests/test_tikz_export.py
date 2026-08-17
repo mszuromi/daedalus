@@ -17,6 +17,7 @@ from engine.diagrams.typed_diagram_layout import (
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
     edge_bends, path_point, arrow_positions, place_labels, MIN_BUBBLE_MM,
+    _LABEL_MARGIN_MM,
     _label_box, _label_extent_mm, _box_overlap, _seg_in_box,
 )
 
@@ -601,7 +602,35 @@ def test_labels_are_placed_jointly_not_first_come_first_served():
     got = place_labels(anchors, [], [(0.0, 0.0), (2.0, 0.0)])
     boxes = [_label_box(*anchors[k][:2], *got[k], *anchors[k][2:], 0.825)
              for k in anchors]
-    assert _box_overlap(*boxes) == 0.0
+    # Not merely disjoint: two labels that just touch still read as one, so
+    # the placement is scored on a box grown by the margin.
+    grown = (boxes[0][0] - _LABEL_MARGIN_MM, boxes[0][1] - _LABEL_MARGIN_MM,
+             boxes[0][2] + _LABEL_MARGIN_MM, boxes[0][3] + _LABEL_MARGIN_MM)
+    assert _box_overlap(grown, boxes[1]) == 0.0
+
+
+def test_a_label_stays_nearer_its_own_vertex_than_any_other():
+    """A label closer to a neighbour than to its owner names the wrong vertex.
+
+    Clearance alone does not catch this: the label can be clear of every line
+    and every dot and still sit between two vertices, reading as either.  The
+    placement therefore also charges for a foreign vertex that comes within
+    1.15x of the owner's own distance.  Inert on the current figures -- their
+    vertices are never that close -- and a guard against the case that is.
+    """
+    import math
+    lone = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, [], [(0.0, 0.0)])
+    crowd = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, [],
+                         [(0.0, 0.0), (0.0, 4.6)])
+    assert lone['a'] == (90, 1.0), 'the canonical place, with room'
+    assert crowd['a'] != lone['a'], 'a neighbour overhead must push it off'
+    box = _label_box(0.0, 0.0, *crowd['a'], 3.5, 2.2, 0.825)
+    cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+    assert math.hypot(cx, cy) * 1.15 <= math.hypot(cx, cy - 4.6)
+
+    far = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, [],
+                       [(0.0, 0.0), (0.0, 6.0)])
+    assert far['a'] == (90, 1.0), 'a distant neighbour must not disturb it'
 
 
 def _labelled(pd):
