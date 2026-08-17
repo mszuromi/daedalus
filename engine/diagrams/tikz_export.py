@@ -16,10 +16,13 @@ coefficient's ``_latex_`` needs, so the emitter can be unit-tested on a
 hand-built diagram.
 """
 
-from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
+from engine.diagrams.typed_diagram_layout import (
+    DX, ARROWHEAD_MM, DOT_RADIUS_MM, layout_typed_diagram, mm_per_unit,
+)
 
 __all__ = ['to_tikz_feynman', 'diagram_to_standalone',
-           'DEFAULT_SYMBOL_MAP', 'edge_style_map', 'vertex_symbol_map']
+           'DEFAULT_SYMBOL_MAP', 'edge_style_map', 'vertex_symbol_map',
+           'edge_bends', 'path_point', 'arrow_positions']
 
 _PREAMBLE = r"""\documentclass[border=6pt]{standalone}
 \usepackage{tikz}
@@ -185,6 +188,104 @@ def _best_label_angle(v, pos, edges, occupied, radius=_LABEL_RADIUS):
         if clear > best_clear + 1e-9:
             best, best_clear = ang, clear
     return best
+
+
+# ── the path pgf actually draws, and where the arrowhead lands ──────
+# tikz-feynman marks the `fermion` arrow at t = 0.5.  The layered layout is
+# symmetric, so two edges that cross between the same pair of layers cross at
+# BOTH their midpoints -- which stacks their two arrowheads on one point, and
+# a solid triangular blob at a line crossing reads as a VERTEX.  Measured over
+# the 66 printed two-loop panels: 34 collisions on 30 of them, 13 at exactly
+# 0.00 mm.  The cure is to slide the arrowheads along their own lines; an
+# arrow's position carries no meaning, only its direction does.
+
+_ARROW_CTRL = 0.3915       # pgf's `to[bend]` control point, as a chord fraction
+# Tried in order, so an edge keeps the canonical midpoint unless it must move.
+_ARROW_POSITIONS = (0.5, 0.42, 0.58, 0.35, 0.65, 0.28, 0.72, 0.22, 0.78)
+
+
+def edge_bends(edges, bend_angle):
+    """Signed bend in degrees per drawn edge (positive = tikz ``bend left``).
+
+    Parallel edges between one pair of vertices are bowed symmetrically apart
+    so the pair reads as a bubble instead of a single line.  Returned as data
+    so the arrow placement can reconstruct the curve the reader sees rather
+    than the straight chord.
+    """
+    from collections import Counter
+    multiplicity, drawn, out = Counter(edges), Counter(), []
+    for (u, v) in edges:
+        n, j = multiplicity[(u, v)], drawn[(u, v)]
+        drawn[(u, v)] += 1
+        b = 0
+        if n > 1:
+            offset = j - (n - 1) / 2.0
+            if abs(offset) > 1e-9:
+                mag = int(round(bend_angle * abs(offset) * 2))
+                b = mag if offset < 0 else -mag
+        out.append(b)
+    return out
+
+
+def path_point(pu, pv, bend_deg, t):
+    """Point at parameter ``t`` on the path pgf draws from ``pu`` to ``pv``.
+
+    A straight ``--`` is a line; a ``to[bend=x]`` is the cubic Bezier pgf
+    builds with its control points at ``_ARROW_CTRL`` of the chord, turned by
+    the bend angle.  Reconstructing it exactly is what makes the arrow
+    positions below correct on a bowed bubble as well as a straight edge.
+    """
+    import math as _m
+    if not bend_deg:
+        return (pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]))
+    L = _m.hypot(pv[0] - pu[0], pv[1] - pu[1])
+    th = _m.atan2(pv[1] - pu[1], pv[0] - pu[0])
+    a = _m.radians(bend_deg)
+    c1 = (pu[0] + _ARROW_CTRL * L * _m.cos(th + a),
+          pu[1] + _ARROW_CTRL * L * _m.sin(th + a))
+    c2 = (pv[0] - _ARROW_CTRL * L * _m.cos(th - a),
+          pv[1] - _ARROW_CTRL * L * _m.sin(th - a))
+    m = 1.0 - t
+    w = (m * m * m, 3 * m * m * t, 3 * m * t * t, t * t * t)
+    return (w[0] * pu[0] + w[1] * c1[0] + w[2] * c2[0] + w[3] * pv[0],
+            w[0] * pu[1] + w[1] * c1[1] + w[2] * c2[1] + w[3] * pv[1])
+
+
+def arrow_positions(pos, edges, bends, mm=None):
+    """Where along each edge to mark its arrow, in path parameter ``t``.
+
+    Greedy, and deliberately biased: every edge is offered the midpoint
+    first, so a diagram with no collision is drawn exactly as before.  An
+    edge moves only when its arrowhead would land within an arrowhead's width
+    of one already placed, or on a vertex dot it is not entering -- both of
+    which invent structure that is not in the graph.
+    """
+    import math as _m
+    if mm is None:
+        mm = mm_per_unit(pos)
+    dots = [p for p in pos.values()]
+    placed, out = [], []
+    for (u, v), b in zip(edges, bends):
+        if u not in pos or v not in pos:
+            out.append(0.5)
+            continue
+        best_t, best_score = _ARROW_POSITIONS[0], None
+        for t in _ARROW_POSITIONS:
+            q = path_point(pos[u], pos[v], b, t)
+            score = min(
+                [_m.hypot(q[0] - r[0], q[1] - r[1]) * mm - ARROWHEAD_MM
+                 for r in placed]
+                + [_m.hypot(q[0] - c[0], q[1] - c[1]) * mm
+                   - (DOT_RADIUS_MM + ARROWHEAD_MM / 2.0)
+                   for c in dots]
+                or [9e9])
+            if best_score is None or score > best_score:
+                best_t, best_score = t, score
+            if score >= 0.0:                  # good enough; keep it central
+                break
+        out.append(best_t)
+        placed.append(path_point(pos[u], pos[v], b, best_t))
+    return out
 
 
 # Line styles cycled across distinct (response, physical) field pairs.  All
@@ -536,24 +637,19 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # tikz-feynman draws them on top of each other.  Bend symmetrically about
     # the straight line so the pair reads as a bubble.
     from collections import Counter
-    multiplicity = Counter(edges)
     drawn = Counter()
+    # Bow parallel propagators apart symmetrically.  NOT ``half left/right``:
+    # that is a SEMICIRCULAR arc, so between two distant vertices it balloons
+    # into a circle bigger than the diagram.  A fixed modest angle bows by the
+    # same visual amount at any separation.
+    bends = edge_bends(edges, bend_angle)
+    arrows = arrow_positions(pos, edges, bends)
     for i, (u, v) in enumerate(edges):
-        n = multiplicity[(u, v)]
         j = drawn[(u, v)]
         drawn[(u, v)] += 1
-        bend = ''
-        if n > 1:
-            # Bow parallel propagators apart symmetrically.  NOT ``half
-            # left/right``: that is a SEMICIRCULAR arc, so between two distant
-            # vertices it balloons into a circle bigger than the diagram.  A
-            # fixed modest angle bows by the same visual amount at any
-            # separation.
-            offset = j - (n - 1) / 2.0
-            if abs(offset) > 1e-9:
-                side = 'left' if offset < 0 else 'right'
-                bend = ', bend %s=%d' % (
-                    side, int(round(bend_angle * abs(offset) * 2)))
+        b = bends[i]
+        bend = (', bend %s=%d' % ('left' if b > 0 else 'right', abs(b))
+                if b else '')
         # Per-edge label: with ``propagator_label='auto'`` different lines
         # are different matrix elements of G and must be named separately.
         lab = _edge_label(diagram, (u, v, j), propagator_label)
@@ -562,7 +658,13 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                 lab = None
             else:
                 _seen_edge_labels.add(lab)
-        opts = ['fermion']
+        # ``fermion`` IS ``plain`` plus an arrow at t = 0.5, and the two keys
+        # do not compose -- asking for both marks the line TWICE.  An edge
+        # whose arrow has been slid away from the midpoint therefore has to
+        # be spelled out the long way.
+        t = arrows[i]
+        opts = (['fermion'] if abs(t - 0.5) < 1e-9
+                else ['plain', 'with arrow=%.3f' % t])
         if style_of:
             st = style_of.get(_field_pair(diagram, (u, v, j)))
             if st:

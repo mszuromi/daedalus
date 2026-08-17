@@ -16,6 +16,7 @@ from engine.diagrams.typed_diagram_layout import (
 )
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
+    edge_bends, path_point, arrow_positions,
 )
 
 
@@ -432,6 +433,88 @@ def test_legibility_never_costs_a_crossing(monkeypatch, prediagrams_2_2):
     plain = [T._geometric_crossings(layout_typed_diagram(pd), edges_of[i])
              for i, pd in enumerate(prediagrams_2_2)]
     assert tidy == plain
+
+
+def _arrow_points(pd):
+    """Where every arrowhead is actually printed, in layout coordinates."""
+    edges = sorted(pd[0].edges(labels=False))
+    pos = layout_typed_diagram(pd)
+    bends = edge_bends(edges, 14)
+    ts = arrow_positions(pos, edges, bends)
+    return pos, [path_point(pos[u], pos[v], b, t)
+                 for (u, v), b, t in zip(edges, bends, ts)]
+
+
+def test_arrowheads_do_not_stack_at_a_crossing(prediagrams_2_2):
+    """Two arrowheads on one point read as a vertex that is not there.
+
+    tikz-feynman marks the `fermion` arrow at the path midpoint, and a
+    symmetric layered layout makes two crossing edges cross at BOTH their
+    midpoints -- so the arrowheads coincide exactly.  That fired 34 times on
+    30 of the 66 printed two-loop panels, 13 of them at 0.00 mm, each one a
+    solid triangular blob sitting where the lines cross.
+    """
+    import math
+    for pd in prediagrams_2_2:
+        pos, heads = _arrow_points(pd)
+        mm = mm_per_unit(pos)
+        for i in range(len(heads)):
+            for j in range(i + 1, len(heads)):
+                d = math.hypot(heads[i][0] - heads[j][0],
+                               heads[i][1] - heads[j][1]) * mm
+                assert d >= ARROWHEAD_MM, (
+                    f'two arrowheads {d:.2f} mm apart, arrowhead is '
+                    f'{ARROWHEAD_MM} mm wide')
+
+
+def test_no_arrowhead_lands_on_a_vertex(prediagrams_2_2):
+    """An arrowhead touching a dot reads as an arrow ENTERING that vertex."""
+    import math
+    for pd in prediagrams_2_2:
+        pos, heads = _arrow_points(pd)
+        mm = mm_per_unit(pos)
+        need = DOT_RADIUS_MM + ARROWHEAD_MM / 2.0
+        for h in heads:
+            for c in pos.values():
+                d = math.hypot(h[0] - c[0], h[1] - c[1]) * mm
+                assert d >= need, f'arrowhead {d:.2f} mm from a vertex dot'
+
+
+def test_arrow_stays_at_the_midpoint_unless_it_must_move(prediagrams_2_2):
+    """Minimal intervention: only a colliding arrow is displaced.
+
+    The midpoint is the convention, so an edge keeps it unless the arrowhead
+    would collide.  Pinned as a fraction because a routine that moved every
+    arrow would satisfy the two tests above while making every diagram
+    slightly wrong.
+    """
+    moved = total = 0
+    for pd in prediagrams_2_2:
+        edges = sorted(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        for t in arrow_positions(pos, edges, edge_bends(edges, 14)):
+            total += 1
+            moved += abs(t - 0.5) > 1e-9
+    assert moved < 0.15 * total, (
+        f'{moved} of {total} arrows displaced; the midpoint should be kept '
+        f'except where arrowheads actually collide')
+
+
+def test_fermion_and_with_arrow_are_never_combined(prediagrams_2_2):
+    """`fermion` IS `plain` + an arrow at 0.5, and the keys do not compose.
+
+    Asking for both marks the line TWICE -- two arrowheads on one propagator,
+    which was the first attempt at this and is worse than the defect it was
+    meant to fix.  An edge with a displaced arrow must be spelled
+    `plain, with arrow=t`.
+    """
+    for pd in prediagrams_2_2[:40]:
+        for ln in to_tikz_feynman(pd).splitlines():
+            if ' -- [' not in ln:
+                continue
+            assert not ('fermion' in ln and 'with arrow' in ln), ln
+            assert 'fermion' in ln or 'with arrow' in ln, (
+                f'propagator drawn with no causal arrow: {ln.strip()}')
 
 
 # ── source vs interaction naming ────────────────────────────────────
