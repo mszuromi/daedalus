@@ -18,6 +18,7 @@ hand-built diagram.
 
 from engine.diagrams.typed_diagram_layout import (
     DX, ARROWHEAD_MM, DOT_RADIUS_MM, layout_typed_diagram, mm_per_unit,
+    _seg_distance,
 )
 
 __all__ = ['to_tikz_feynman', 'diagram_to_standalone',
@@ -160,6 +161,13 @@ _PAREN_MM = 1.25
 _SCRIPT = 0.72              # sub/superscripts are set smaller
 _LABEL_MARGIN_MM = 0.4      # labels that merely touch still read as one
 _OWNERSHIP = 1.15           # a label must stay this much nearer ITS vertex
+# TikZ pads every node by `inner sep` (0.3333em, = 3.65pt at 11pt) plus
+# `outer sep` (half the line width) BEFORE it works out where the node's
+# border is -- and it is the border, not the text, that `label distance`
+# is measured from.  Ignoring this puts the printed glyphs further out than
+# the placement scored them: measured against \pgfpointanchor over the 66
+# two-loop panels, +1.0 mm at a cardinal angle and +2.0 mm at a diagonal.
+_INNER_SEP_MM = 1.283 + 0.07
 _LINE_MM = 1.66             # height of an x-height math box
 _DEEP_MM = 0.58             # extra depth once a subscript is present
 _TALL_MM = 1.30             # extra height for parentheses and \delta
@@ -241,13 +249,21 @@ def _label_box(vx, vy, angle_deg, dist_pt, w, h, dot_r):
     so the box centre sits one border-crossing further out than the gap: this
     reproduces that, which is what makes the diagonal angles score honestly
     against the cardinal ones (a box reaches further at 45 degrees).
+
+    The border it anchors by is the NODE's, which is the text grown by
+    ``inner sep`` -- so the border crossing is computed on the padded box
+    while the box returned, the one that has to clear the drawing, stays the
+    size of the ink.  Conflating the two printed every label about a
+    millimetre further out than it was scored, which is how labels ended up
+    across propagators that the placement believed it had avoided.
     """
     import math as _m
     a = _m.radians(angle_deg)
     ca, sa = _m.cos(a), _m.sin(a)
     hw, hh = w / 2.0, h / 2.0
-    tx = abs(hw / ca) if abs(ca) > 1e-9 else 1e18
-    ty = abs(hh / sa) if abs(sa) > 1e-9 else 1e18
+    bw, bh = hw + _INNER_SEP_MM, hh + _INNER_SEP_MM      # the NODE's border
+    tx = abs(bw / ca) if abs(ca) > 1e-9 else 1e18
+    ty = abs(bh / sa) if abs(sa) > 1e-9 else 1e18
     reach = dot_r + dist_pt * _PT_MM + min(tx, ty)
     cx, cy = vx + reach * ca, vy + reach * sa
     return (cx - hw, cy - hh, cx + hw, cy + hh)
@@ -385,6 +401,15 @@ def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
 _ARROW_CTRL = 0.3915       # pgf's `to[bend]` control point, as a chord fraction
 # Tried in order, so an edge keeps the canonical midpoint unless it must move.
 _ARROW_POSITIONS = (0.5, 0.42, 0.58, 0.35, 0.65, 0.28, 0.72, 0.22, 0.78)
+# Clearance ON TOP of the ink, so two marks do not merely GRAZE.  A `fermion`
+# head measures 1.905 mm both along and across the line (measured off an
+# 800 dpi render of a one-edge picture), so a rule of `centre distance >=
+# ARROWHEAD_MM` is satisfied exactly when two solid triangles touch corner to
+# corner -- which is what the two heads of a bubble were doing, filling its
+# lens with one black bowtie.  A panel is additionally shrunk to its column
+# by `tikz_figure` (measured 0.78-0.90 over the 66-panel figure), so the gap
+# has to be worth having before that shrink eats a fifth of it.
+_ARROW_GAP_MM = 0.6
 
 
 # A ``to[bend=a]`` cubic departs from its chord by about this fraction of
@@ -466,27 +491,47 @@ def arrow_positions(pos, edges, bends, mm=None):
     Greedy, and deliberately biased: every edge is offered the midpoint
     first, so a diagram with no collision is drawn exactly as before.  An
     edge moves only when its arrowhead would land within an arrowhead's width
-    of one already placed, or on a vertex dot it is not entering -- both of
-    which invent structure that is not in the graph.
+    of one already placed, on a vertex dot it is not entering, or ON ANOTHER
+    PROPAGATOR -- all three of which invent structure that is not in the
+    graph.  The last is the commonest: a symmetric layered drawing crosses
+    two edges at their mutual midpoints, so separating the two ARROWHEADS
+    from each other still leaves one of them centred on the crossing, and a
+    solid triangle sitting on a line crossing reads as a VERTEX.  The line
+    an arrow belongs to, and any line sharing an endpoint with it, are not
+    obstacles: those converge on a shared dot by construction, and charging
+    for them would drive every arrow onto the far ends of its propagator.
     """
     import math as _m
     if mm is None:
         mm = mm_per_unit(pos)
     dots = [p for p in pos.values()]
+    # The drawn path of every edge, sampled -- an obstacle for the arrowheads
+    # of the edges it does not touch.
+    paths = [[path_point(pos[a], pos[c], bd, k / 24.0) for k in range(25)]
+             if a in pos and c in pos else None
+             for (a, c), bd in zip(edges, bends)]
     placed, out = [], []
-    for (u, v), b in zip(edges, bends):
+    for i, ((u, v), b) in enumerate(zip(edges, bends)):
         if u not in pos or v not in pos:
             out.append(0.5)
             continue
+        foreign = [P for j, P in enumerate(paths)
+                   if P is not None and j != i
+                   and u not in edges[j] and v not in edges[j]]
         best_t, best_score = _ARROW_POSITIONS[0], None
         for t in _ARROW_POSITIONS:
             q = path_point(pos[u], pos[v], b, t)
             score = min(
-                [_m.hypot(q[0] - r[0], q[1] - r[1]) * mm - ARROWHEAD_MM
+                [_m.hypot(q[0] - r[0], q[1] - r[1]) * mm
+                 - (ARROWHEAD_MM + _ARROW_GAP_MM)
                  for r in placed]
                 + [_m.hypot(q[0] - c[0], q[1] - c[1]) * mm
-                   - (DOT_RADIUS_MM + ARROWHEAD_MM / 2.0)
+                   - (DOT_RADIUS_MM + ARROWHEAD_MM / 2.0 + _ARROW_GAP_MM)
                    for c in dots]
+                + [min(_seg_distance(q, P[k], P[k + 1])
+                       for k in range(len(P) - 1)) * mm
+                   - (ARROWHEAD_MM / 2.0 + _ARROW_GAP_MM)
+                   for P in foreign]
                 or [9e9])
             if best_score is None or score > best_score:
                 best_t, best_score = t, score

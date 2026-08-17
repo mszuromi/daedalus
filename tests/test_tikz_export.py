@@ -17,7 +17,7 @@ from engine.diagrams.typed_diagram_layout import (
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
     edge_bends, path_point, arrow_positions, place_labels, MIN_BUBBLE_MM,
-    _LABEL_MARGIN_MM,
+    _LABEL_MARGIN_MM, _INNER_SEP_MM, _PT_MM,
     _label_box, _label_extent_mm, _box_overlap, _seg_in_box,
 )
 
@@ -628,9 +628,40 @@ def test_a_label_stays_nearer_its_own_vertex_than_any_other():
     cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
     assert math.hypot(cx, cy) * 1.15 <= math.hypot(cx, cy - 4.6)
 
+    # "Distant" has to be measured against where the glyphs PRINT.  A 2.2 mm
+    # label at 1pt sits 3.63 mm out once the node's own padding is counted,
+    # so a dot 6 mm up is only 2.4 mm away -- nearer than the owner, and the
+    # placement is right to move.  9 mm is distant; 6 mm never was.
     far = place_labels({'a': (0.0, 0.0, 3.5, 2.2)}, [],
-                       [(0.0, 0.0), (0.0, 6.0)])
+                       [(0.0, 0.0), (0.0, 9.0)])
     assert far['a'] == (90, 1.0), 'a distant neighbour must not disturb it'
+
+
+def test_a_label_box_is_where_tikz_actually_prints_the_glyphs():
+    """``label distance`` is measured from the NODE border, not from the ink.
+
+    TikZ pads a label node by ``inner sep`` (0.3333em) plus ``outer sep``
+    before deciding where its border is, so the text lands that much further
+    out than a naive text-box model predicts.  Checked against
+    ``\\pgfpointanchor`` on the 66 printed two-loop panels, the omission cost
+    +1.0 mm at a cardinal angle and +2.0 mm at a diagonal -- enough to print
+    seven labels across a propagator the placement had scored as clear.
+    """
+    import math
+    w, h, dot_r, dist = 3.5, 2.2, 0.825, 1.0
+    box = _label_box(0.0, 0.0, 90, dist, w, h, dot_r)
+    cy = (box[1] + box[3]) / 2.0
+    assert math.isclose(cy, dot_r + dist * _PT_MM + h / 2.0 + _INNER_SEP_MM,
+                        rel_tol=1e-9), 'the node padding is part of the reach'
+    # The box handed back is still the size of the INK: padding moves the
+    # label, it is not something the drawing has to be kept clear of.
+    assert math.isclose(box[2] - box[0], w, rel_tol=1e-9)
+    assert math.isclose(box[3] - box[1], h, rel_tol=1e-9)
+    # A diagonal reaches further than a cardinal, and by more than the text
+    # box alone would say -- which is why the two score honestly together.
+    diag = _label_box(0.0, 0.0, 45, dist, w, h, dot_r)
+    dcx, dcy = (diag[0] + diag[2]) / 2.0, (diag[1] + diag[3]) / 2.0
+    assert math.hypot(dcx, dcy) > cy
 
 
 def _labelled(pd):
