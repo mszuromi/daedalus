@@ -839,6 +839,20 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         w, h = _label_extent_mm(t)
         return w * 1.08 + 0.5, h * 1.08 + 0.3     # the estimator runs ~5% low
 
+    # Arrowheads are obstacles in their own right.  A propagator is a
+    # zero-width polyline to `_seg_in_box`, but its arrow is a solid triangle
+    # 1.91 mm across, so a label scored clear of the LINE could still be
+    # printed through the head -- seen on panel 17 of the two-loop figure.
+    _arrows = arrow_positions(pos, edge_list, _bends, mm)
+    _ahw = ARROWHEAD_MM / 2.0
+    arrow_boxes = []
+    for (a, b), bd, t in zip(edge_list, _bends, _arrows):
+        if a not in pos or b not in pos:
+            continue
+        q = path_point(pos[a], pos[b], bd, t)
+        qx, qy = q[0] * mm, q[1] * mm
+        arrow_boxes.append((qx - _ahw, qy - _ahw, qx + _ahw, qy + _ahw))
+
     ext_boxes = [_label_box(_P[v][0], _P[v][1], 180, _ext_pt,
                             *_pad(t), DOT_RADIUS_MM)
                  for v, t in ext_text.items() if t]
@@ -846,7 +860,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                for v, t in int_text.items() if t}
     if factor_label_angle == 'auto':
         placed = place_labels(anchors, _polys, list(_P.values()),
-                              fixed_boxes=ext_boxes)
+                              fixed_boxes=ext_boxes + arrow_boxes)
     else:
         placed = {v: (factor_label_angle, 1.0) for v in anchors}
 
@@ -894,7 +908,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # into a circle bigger than the diagram.  A fixed modest angle bows by the
     # same visual amount at any separation.
     bends = _bends
-    arrows = arrow_positions(pos, edges, bends, mm)
+    arrows = _arrows
     for i, (u, v) in enumerate(edges):
         j = drawn[(u, v)]
         drawn[(u, v)] += 1

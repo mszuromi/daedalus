@@ -722,6 +722,33 @@ def test_labels_do_not_collide_with_each_other_or_with_a_vertex(
                                                x * mm + r, y * mm + r)) == 0.0
 
 
+def test_no_label_is_printed_through_an_arrowhead(prediagrams_2_2):
+    """A propagator is a line to the collision test, but its arrow is a blob.
+
+    Scoring a label against the zero-width polyline alone lets it be placed
+    just clear of the line and straight through the 1.91 mm arrowhead -- seen
+    on panel 17 of the two-loop figure, where the head cut into the `v` of a
+    `v_2`.  The heads are obstacles in their own right.
+    """
+    half = ARROWHEAD_MM / 2.0
+    for pd in prediagrams_2_2[:60]:
+        dia = _labelled(pd)
+        pos = layout_typed_diagram(pd)
+        mm = mm_per_unit(pos)
+        boxes = _label_boxes(to_tikz_feynman(dia, symbolic_factors=True,
+                                             propagator_label=None), mm)
+        edges = sorted(pd[0].edges(labels=False))
+        bends = edge_bends(edges, 14, pos, mm)
+        for (u, v), b, t in zip(edges, bends,
+                                arrow_positions(pos, edges, bends, mm)):
+            q = path_point(pos[u], pos[v], b, t)
+            head = (q[0] * mm - half, q[1] * mm - half,
+                    q[0] * mm + half, q[1] * mm + half)
+            for box in boxes:
+                assert _box_overlap(box, head) == 0.0, (
+                    f'a label is printed over the arrowhead of {u}->{v}')
+
+
 # ── one stroke, one meaning ─────────────────────────────────────────
 
 class _Styled:
