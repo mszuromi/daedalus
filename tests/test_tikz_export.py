@@ -87,8 +87,11 @@ def test_parallel_edges_are_bowed_apart(prediagrams_2_1):
             continue
         checked = True
         tex = to_tikz_feynman(pd)
-        assert 'half left' in tex and 'half right' in tex, (
+        assert 'bend left=' in tex and 'bend right=' in tex, (
             'parallel propagators must be bent in opposite directions')
+        # a semicircular ``half left/right`` balloons between distant
+        # vertices; the bow must be a bounded angle instead
+        assert 'half left' not in tex and 'half right' not in tex
     assert checked, 'expected at least one multi-edge prediagram at (2,1)'
 
 

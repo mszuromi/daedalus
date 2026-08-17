@@ -16,7 +16,7 @@ coefficient's ``_latex_`` needs, so the emitter can be unit-tested on a
 hand-built diagram.
 """
 
-from engine.diagrams.typed_diagram_layout import layout_typed_diagram
+from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
 __all__ = ['to_tikz_feynman', 'diagram_to_standalone', 'DEFAULT_SYMBOL_MAP']
 
@@ -94,7 +94,8 @@ def _node_name(v):
 def to_tikz_feynman(diagram, *, propagator_label='G',
                     external_label=r'\delta\phi(y_{%d})',
                     show_factors=True, symbol_map=None, scale=1.0,
-                    factor_label_angle=90, dot_size=None, indent='  '):
+                    factor_label_angle='auto', dot_size=None, bend_angle=28,
+                    indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
     Parameters
@@ -111,14 +112,19 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     symbol_map : dict or None
         Parameter-name -> LaTeX overrides applied to vertex factors.
         ``None`` uses :data:`DEFAULT_SYMBOL_MAP`; pass ``{}`` to disable.
-    factor_label_angle : int
+    factor_label_angle : int or 'auto'
         Compass angle (degrees) for the vertex-factor label; 90 = above.
+        ``'auto'`` (default) labels upward for vertices at or above the
+        midline and downward for those below, spreading the factors instead
+        of stacking them into one band.
         Vertex factors go ABOVE and edge labels BELOW by default -- the two
         label families are separated by convention, because placing both near
         a vertex makes them overlap on any diagram with fanned-out edges.
     dot_size : str or None
         Overrides the filled-vertex diameter, e.g. ``'1.6mm'``.  The
         tikz-feynman default is large relative to our column pitch.
+    bend_angle : int
+        Degrees of bow applied to each side of a parallel-edge bundle.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -161,8 +167,22 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         # propagator lines converging on it.
         opts = 'dot'
         if label:
+            # Place the factor on the side AWAY from the diagram's midline:
+            # vertices above y=0 label upward, below label downward.  Pinning
+            # every factor to one side stacks them into the same horizontal
+            # band as the edge labels, which is what makes a dense panel
+            # unreadable.  An explicit angle overrides the heuristic.
+            if factor_label_angle != 'auto':
+                angle = factor_label_angle
+            elif abs(y) > 1e-9:
+                angle = 90 if y > 0 else 270
+            else:
+                # Every vertex of a linear chain sits ON the midline, so the
+                # away-from-midline rule would put all their factors in one
+                # band again.  Alternate by column instead.
+                angle = 90 if int(round(-x / DX)) % 2 == 0 else 270
             opts += r', label={[label distance=1pt]%d:\(%s\)}' % (
-                factor_label_angle, label)
+                angle, label)
         lines.append(indent * 2 + r'\vertex [%s] (%s) at (%.3f, %.3f) {};'
                      % (opts, _node_name(v), x, y))
 
@@ -191,13 +211,16 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         drawn[(u, v)] += 1
         bend = ''
         if n > 1:
-            # n=2 -> (left, right); n=3 -> (left, straight, right); etc.
-            amount = 50 if n == 2 else 60
+            # Bow parallel propagators apart symmetrically.  NOT ``half
+            # left/right``: that is a SEMICIRCULAR arc, so between two distant
+            # vertices it balloons into a circle bigger than the diagram.  A
+            # fixed modest angle bows by the same visual amount at any
+            # separation.
             offset = j - (n - 1) / 2.0
             if abs(offset) > 1e-9:
                 side = 'left' if offset < 0 else 'right'
-                bend = ', half %s' % side if n == 2 else \
-                       ', bend %s=%d' % (side, int(amount * abs(offset) * 2))
+                bend = ', bend %s=%d' % (
+                    side, int(round(bend_angle * abs(offset) * 2)))
         sep = ',' if i < len(edges) - 1 else ''
         lines.append(indent * 3 + '(%s) -- [%s%s] (%s)%s'
                      % (_node_name(u), opt_str, bend, _node_name(v), sep))
