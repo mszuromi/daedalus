@@ -29,7 +29,11 @@ import math
 from collections import defaultdict
 
 __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram',
-           'DX', 'DY', 'DY_EXTERNAL', 'ASPECT']
+           'panel_scale', 'mm_per_unit', 'legibility_penalty',
+           'vertex_edge_clearances', 'fan_separations',
+           'DX', 'DY', 'DY_EXTERNAL', 'ASPECT',
+           'DOT_RADIUS_MM', 'ARROWHEAD_MM', 'PANEL_BUDGET_COLS',
+           'PANEL_MAX_SCALE']
 
 # Column pitch (x) and row pitch (y) in TikZ units.
 DX = 2.3
@@ -41,6 +45,44 @@ DY_EXTERNAL = 1.5
 # branching diagram is drawn many columns wide and two rows tall, and shrinks
 # into an illegible sliver inside a panel.
 ASPECT = 0.55
+
+# ── printed size of the ink ──────────────────────────────────────────
+# A layout is scale-free, but whether two lines are DISTINGUISHABLE is not:
+# it depends on how big the marks are once printed.  Both constants below
+# were measured off a 400 dpi render of a one-edge picture at scale 1, so
+# they are the real tikz-feynman ink, not a guess.
+DOT_RADIUS_MM = 0.825          # radius of a filled [dot] vertex
+ARROWHEAD_MM = 1.91            # perpendicular width of a `fermion` arrowhead
+
+# How a panel of an array is printed.  ``tikz_figure._auto_scale`` shrinks a
+# drawing wider than ``PANEL_BUDGET_COLS`` columns to fit its column, and
+# otherwise draws it at ``PANEL_MAX_SCALE``; the two live here so the layout
+# can reason in millimetres and so the pair cannot drift apart.
+PANEL_BUDGET_COLS = 2.0
+PANEL_MAX_SCALE = 0.75
+
+
+def panel_scale(pos, budget_cols=PANEL_BUDGET_COLS,
+                max_scale=PANEL_MAX_SCALE):
+    """``tikzpicture`` scale a panel holding this drawing is printed at."""
+    if not pos:
+        return max_scale
+    xs = [x for x, _ in pos.values()]
+    span = (max(xs) - min(xs)) / DX
+    if span <= budget_cols:
+        return max_scale
+    return budget_cols / span
+
+
+def mm_per_unit(pos):
+    """Printed millimetres per layout unit for a drawing in a panel array.
+
+    A TikZ unit is 1 cm before scaling, so this is just ``10 * scale`` -- but
+    routing it through :func:`panel_scale` means a wide diagram, which is
+    shrunk to fit, is correctly judged to have SMALLER printed features than
+    a narrow one at the same layout separation.
+    """
+    return 10.0 * panel_scale(pos)
 
 
 def _unpack(diagram):
@@ -137,6 +179,145 @@ def _geometric_crossings(pos, edges):
                                segs[j][0], segs[j][1]):
                 n += 1
     return n
+
+
+def _seg_distance(p, a, b):
+    """Distance from point ``p`` to the segment ``a``-``b``."""
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    ux, uy = bx - ax, by - ay
+    den = ux * ux + uy * uy
+    if den == 0.0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * ux + (py - ay) * uy) / den))
+    return math.hypot(px - ax - t * ux, py - ay - t * uy)
+
+
+def vertex_edge_clearances(pos, edges, mm=None):
+    """Printed distance from every vertex to every edge it is NOT on.
+
+    Yields ``(mm, vertex, edge)``.  A value below the vertex dot's own radius
+    means the propagator is drawn THROUGH the dot's ink, and the reader sees
+    one line passing behind a vertex as two lines meeting at it -- a
+    different graph.
+    """
+    if mm is None:
+        mm = mm_per_unit(pos)
+    for (u, v) in sorted({tuple(e) for e in edges}):
+        if u not in pos or v not in pos:
+            continue
+        for w, q in pos.items():
+            if w == u or w == v:
+                continue
+            yield _seg_distance(q, pos[u], pos[v]) * mm, w, (u, v)
+
+
+def fan_separations(pos, edges, mm=None):
+    """Printed gap between two edges leaving a shared vertex.
+
+    Measured at the nearer of the two far endpoints -- ``min(L1, L2) *
+    sin(theta)`` -- because that is where the pair is still drawn on top of
+    each other.  Below one arrowhead width the two propagators print as a
+    single line with a sliver, and the diagram reads as having one propagator
+    fewer than it has.  Yields ``(mm, edge, edge)``.
+    """
+    if mm is None:
+        mm = mm_per_unit(pos)
+    es = sorted({tuple(e) for e in edges})
+    for i in range(len(es)):
+        for j in range(i + 1, len(es)):
+            a, b = es[i], es[j]
+            shared = set(a) & set(b)
+            if not shared:
+                continue
+            s = shared.pop()
+            fa = a[1] if a[0] == s else a[0]
+            fb = b[1] if b[0] == s else b[0]
+            if fa == fb or s not in pos or fa not in pos or fb not in pos:
+                continue
+            sx, sy = pos[s]
+            ax, ay = pos[fa][0] - sx, pos[fa][1] - sy
+            bx, by = pos[fb][0] - sx, pos[fb][1] - sy
+            la, lb = math.hypot(ax, ay), math.hypot(bx, by)
+            if la == 0.0 or lb == 0.0:
+                continue
+            sin_t = abs(ax * by - ay * bx) / (la * lb)
+            yield min(la, lb) * sin_t * mm, a, b
+
+
+def legibility_penalty(pos, edges, mm=None):
+    """How badly this drawing misrepresents its own graph, in mm^2.
+
+    ``_geometric_crossings`` is blind to the failure that actually ruins a
+    panel: a configuration where a vertex lands ON an unrelated propagator,
+    or two edges leave a vertex almost parallel, scores a PERFECT zero
+    crossings while printing as a different graph entirely.  This is the
+    missing term.  Both contributions are squared hinges in printed
+    millimetres, so they are commensurable and vanish exactly when every
+    feature is separated by more than the ink that would merge it.
+    """
+    if mm is None:
+        mm = mm_per_unit(pos)
+    pen = 0.0
+    for d, _w, _e in vertex_edge_clearances(pos, edges, mm):
+        gap = 2.0 * DOT_RADIUS_MM - d          # clear the whole dot, not half
+        if gap > 0.0:
+            pen += gap * gap
+    for d, _a, _b in fan_separations(pos, edges, mm):
+        gap = ARROWHEAD_MM - d
+        if gap > 0.0:
+            pen += gap * gap
+    return pen
+
+
+def _nudge_y(layers, layer_of, y_of, D_edges, dx, pitch_of, rounds=4):
+    """Slide vertices off the lines they are sitting on.
+
+    The repair for the case no ORDERING can fix: when the only y consistent
+    with the chosen column order puts a vertex on a propagator, a small
+    perpendicular offset removes the ambiguity, and because it never reorders
+    a column the minimum-crossing ordering still holds.  Guarded twice
+    anyway -- a move is kept only if the DRAWN crossing count does not rise
+    and the penalty strictly falls -- so this pass can only improve a
+    drawing.
+    """
+    def pos_of():
+        return {v: (-layer_of[v] * dx, y_of[v]) for v in y_of}
+
+    pos = pos_of()
+    base_cross = _geometric_crossings(pos, D_edges)
+    best = legibility_penalty(pos, D_edges)
+    if best <= 0.0:
+        return y_of
+    fracs = (0.18, -0.18, 0.36, -0.36, 0.55, -0.55, 0.8, -0.8)
+    for _ in range(rounds):
+        moved = False
+        for d in sorted(layers):
+            col = layers[d]
+            pitch = pitch_of(d)
+            for i, v in enumerate(col):
+                if v not in y_of:
+                    continue
+                lo = (y_of[col[i - 1]] + pitch) if i > 0 else -1e18
+                hi = (y_of[col[i + 1]] - pitch) if i < len(col) - 1 else 1e18
+                y0 = y_of[v]
+                pick, pick_pen = y0, best
+                for f in fracs:
+                    yt = y0 + f * pitch
+                    if yt < lo - 1e-9 or yt > hi + 1e-9:
+                        continue
+                    y_of[v] = yt
+                    cand = pos_of()
+                    if _geometric_crossings(cand, D_edges) > base_cross:
+                        continue
+                    pen = legibility_penalty(cand, D_edges)
+                    if pen < pick_pen - 1e-9:
+                        pick, pick_pen = yt, pen
+                y_of[v] = pick
+                if pick != y0:
+                    best, moved = pick_pen, True
+        if not moved or best <= 0.0:
+            break
+    return y_of
 
 
 def _with_dummies(layer_of, D_edges):
@@ -372,6 +553,11 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True,
     space = 1
     for d in depths:
         space *= math.factorial(len(layers[d]))
+    # Crossings first, then LEGIBILITY.  Ties on crossing count are the rule
+    # rather than the exception here, and among equally-crossing orderings
+    # some put a vertex straight onto a propagator; ranking the ties by
+    # `legibility_penalty` picks a readable one.  Lexicographic, so the
+    # proven-minimum crossing count is never traded away for tidiness.
     best = None
     if space <= 20000:
         for combo in itertools.product(*(itertools.permutations(layers[d])
@@ -382,9 +568,14 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True,
             y = place(cand)
             pos_try = {v: (-layer_of[v] * dx, y[v]) for v in y}
             n = _geometric_crossings(pos_try, D_edges)
-            if best is None or n < best[0]:
-                best = (n, cand, y)
-                if n == 0:
+            if best is not None and n > best[0]:
+                continue
+            # Score the penalty in the frame the panel is actually drawn in:
+            # `_fit_aspect` stretches y only, so it changes every angle.
+            pen = legibility_penalty(_fit_aspect(pos_try, aspect), D_edges)
+            if best is None or (n, pen) < (best[0], best[1]):
+                best = (n, pen, cand, y)
+                if n == 0 and pen == 0.0:
                     break
     if best is None:                              # too large: keep heuristic
         if not order_externals:
@@ -392,16 +583,24 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True,
         y_of = place({d: list(layers[d]) for d in depths})
     else:
         for d in depths:
-            layers[d][:] = best[1][d]
-        y_of = best[2]
+            layers[d][:] = best[2][d]
+        y_of = best[3]
+
+    # Stretch to the target aspect BEFORE the repair pass, so the repair sees
+    # the geometry the reader will.
+    k = _aspect_scale({v: (-layer_of[v] * dx, y_of[v]) for v in y_of}, aspect)
+    if k != 1.0:
+        for v in y_of:
+            y_of[v] *= k
+    _nudge_y(layers, layer_of, y_of, D_edges, dx,
+             lambda d, _k=k: pitch_of(d) * _k)
 
     if y_of:                                   # re-centre about y = 0
         mid = 0.5 * (max(y_of.values()) + min(y_of.values()))
         for v in y_of:
             y_of[v] -= mid
 
-    pos = {v: (-layer_of[v] * dx, y_of[v]) for v in D.vertices()}
-    return _fit_aspect(pos, aspect)
+    return {v: (-layer_of[v] * dx, y_of[v]) for v in D.vertices()}
 
 
 def _fit_aspect(pos, target):
@@ -414,19 +613,24 @@ def _fit_aspect(pos, target):
     scale on y preserves the vertex ORDER in every column, so the
     minimum-crossing ordering chosen earlier still holds exactly.
     """
-    if not pos or not target:
+    k = _aspect_scale(pos, target)
+    if k == 1.0:
         return pos
+    return {v: (x, y * k) for v, (x, y) in pos.items()}
+
+
+def _aspect_scale(pos, target):
+    """The y stretch :func:`_fit_aspect` would apply (1.0 for none)."""
+    if not pos or not target:
+        return 1.0
     xs = [x for x, _ in pos.values()]
     ys = [y for _, y in pos.values()]
     w = max(xs) - min(xs)
     h = max(ys) - min(ys)
     if w <= 0 or h <= 0:
-        return pos
+        return 1.0
     want = target * w
-    if h >= want:
-        return pos
-    k = want / h
-    return {v: (x, y * k) for v, (x, y) in pos.items()}
+    return 1.0 if h >= want else want / h
 
 
 layout_prediagram = layout_typed_diagram

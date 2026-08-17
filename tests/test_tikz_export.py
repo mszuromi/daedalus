@@ -10,7 +10,9 @@ import pytest
 
 import engine.enumeration.loop_diagram_enumeration as L
 from engine.diagrams.typed_diagram_layout import (
-    causal_depths, layout_typed_diagram,
+    causal_depths, layout_typed_diagram, legibility_penalty,
+    vertex_edge_clearances, fan_separations, mm_per_unit,
+    DOT_RADIUS_MM, ARROWHEAD_MM,
 )
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
@@ -20,6 +22,12 @@ from engine.diagrams.tikz_export import (
 @pytest.fixture(scope='module')
 def prediagrams_2_1():
     return L.enumerate_all(2, 1, verbose=False)[2]
+
+
+@pytest.fixture(scope='module')
+def prediagrams_2_2():
+    """Two loops -- where the layout actually gets hard (283 diagrams)."""
+    return L.enumerate_all(2, 2, verbose=False)[2]
 
 
 # ── layout ──────────────────────────────────────────────────────────
@@ -331,6 +339,99 @@ def test_layout_minimises_drawn_crossings(prediagrams_2_1):
                 break
         assert drawn == best, (
             f'laid out with {drawn} crossings, minimum is {best}')
+
+
+# ── legibility: a drawing must not read as a different graph ────────
+
+def test_penalty_sees_a_vertex_sitting_on_a_propagator():
+    """The unit check behind the two set-wide tests below.
+
+    Zero crossings is not the same as legible: this configuration has none
+    and is still unreadable, because vertex 2 lies exactly on the propagator
+    1->3 and the segment 1->2 is drawn on top of the first half of it.
+    """
+    pos = {1: (0.0, 0.0), 2: (-2.3, 0.0), 3: (-4.6, 0.0)}
+    edges = [(1, 3), (1, 2)]
+    worst = min(d for d, _v, _e in vertex_edge_clearances(pos, edges))
+    assert worst == pytest.approx(0.0, abs=1e-9)
+    assert min(d for d, _a, _b in fan_separations(pos, edges)) \
+        == pytest.approx(0.0, abs=1e-9)
+    assert legibility_penalty(pos, edges) > 0.0
+
+    pos[2] = (-2.3, 1.0)                      # lift it off the line
+    assert min(d for d, _v, _e in vertex_edge_clearances(pos, edges)) \
+        > 2 * DOT_RADIUS_MM
+    assert legibility_penalty(pos, edges) == 0.0
+
+
+def test_printed_scale_shrinks_with_width():
+    """A wide diagram is scaled down to fit its panel, so its ink is smaller.
+
+    The legibility thresholds are in printed millimetres, which is only
+    meaningful because this conversion tracks the panel shrink.
+    """
+    narrow = {1: (0.0, 0.0), 2: (-2.3, 1.0)}
+    wide = {1: (0.0, 0.0), 2: (-23.0, 1.0)}
+    assert mm_per_unit(narrow) > mm_per_unit(wide)
+    assert mm_per_unit(wide) * 23.0 == pytest.approx(46.0)
+
+
+def test_no_vertex_is_drawn_on_an_unrelated_propagator(prediagrams_2_2):
+    """No propagator may pass through a vertex dot it is not attached to.
+
+    Measured, not eyeballed: the drawn straight segments against the real
+    tikz-feynman dot, whose radius was taken off a 400 dpi render.  Before
+    the placement objective scored this, 11 pairs across 10 of the 66 printed
+    two-loop panels were closer than the dot RADIUS -- the worst at 0.03 mm,
+    i.e. the line running through the middle of the ink, which made the panel
+    read as a chain of two propagators instead of one passing behind a
+    vertex.
+    """
+    for pd in prediagrams_2_2:
+        edges = list(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        d, v, e = min(vertex_edge_clearances(pos, edges), default=(9e9, 0, 0))
+        assert d >= 2 * DOT_RADIUS_MM, (
+            f'vertex {v} is {d:.2f} mm from propagator {e} '
+            f'(dot radius {DOT_RADIUS_MM} mm)')
+
+
+def test_edges_leaving_a_vertex_stay_apart(prediagrams_2_2):
+    """Two propagators out of one vertex must be told apart where they part.
+
+    The separation is taken at the nearer far endpoint, which is where a
+    near-parallel pair is still superimposed.  Below one arrowhead width the
+    pair prints as a single line with a hairline sliver; that fired 28 times
+    on 18 of the 66 two-loop panels before the fix.
+    """
+    for pd in prediagrams_2_2:
+        edges = list(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        d, a, b = min(fan_separations(pos, edges), default=(9e9, 0, 0))
+        assert d >= ARROWHEAD_MM, (
+            f'edges {a} and {b} are only {d:.2f} mm apart where they '
+            f'separate (arrowhead is {ARROWHEAD_MM} mm wide)')
+
+
+def test_legibility_never_costs_a_crossing(monkeypatch, prediagrams_2_2):
+    """The legibility term is a strict tie-break, never a trade.
+
+    Laid out twice -- once as shipped, once with the penalty forced to zero
+    so only crossings are optimised -- the drawn crossing count must agree on
+    every diagram.  This is the guarantee that makes the repair safe to run
+    unconditionally, and it fails loudly if either guard (the lexicographic
+    order in the search, or the crossing check inside the y nudge) is ever
+    relaxed into a weighted sum.
+    """
+    import engine.diagrams.typed_diagram_layout as T
+    edges_of = {i: list(pd[0].edges(labels=False))
+                for i, pd in enumerate(prediagrams_2_2)}
+    tidy = [T._geometric_crossings(layout_typed_diagram(pd), edges_of[i])
+            for i, pd in enumerate(prediagrams_2_2)]
+    monkeypatch.setattr(T, 'legibility_penalty', lambda *a, **k: 0.0)
+    plain = [T._geometric_crossings(layout_typed_diagram(pd), edges_of[i])
+             for i, pd in enumerate(prediagrams_2_2)]
+    assert tidy == plain
 
 
 # ── source vs interaction naming ────────────────────────────────────
