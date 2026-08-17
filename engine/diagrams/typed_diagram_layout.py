@@ -294,16 +294,109 @@ def fan_separations(pos, edges, mm=None):
             yield min(la, lb) * sin_t * mm, a, b
 
 
+def _seg_seg_distance(p, q, r, t):
+    """Distance between two segments; zero when they properly cross."""
+    if _segments_cross(p, q, r, t):
+        return 0.0
+    return min(_seg_distance(p, r, t), _seg_distance(q, r, t),
+               _seg_distance(r, p, q), _seg_distance(t, p, q))
+
+
+def _bow_reach(pos, edges, mm):
+    """How far past its chord each drawn edge sweeps, in mm, keyed by edge."""
+    reach = {}
+    for key, n in Counter(tuple(e) for e in edges).items():
+        u, v = key
+        if n > 1 and u in pos and v in pos:
+            L = math.hypot(pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]) * mm
+            reach[key] = bubble_half_width_mm(L)
+        else:
+            reach[key] = 0.0
+    return reach
+
+
+def edge_edge_clearances(pos, edges, mm=None):
+    """Printed gap between two propagators that share NO vertex and do not cross.
+
+    The blind spot behind the task's second defect: two edges belonging to
+    unrelated parts of the graph can be laid almost on top of one another,
+    and every guard we had -- crossing count, vertex clearance, fan
+    separation -- scores that arrangement as perfect.  The reader then sees
+    one propagator where the graph has two.
+
+    The merge scale is the arrowhead: a `fermion` mark is
+    :data:`ARROWHEAD_MM` across, so two lines closer than that cannot both
+    carry a legible mark, and :func:`arrow_positions` has nowhere along the
+    edge to move one to.  Yields ``(mm, edge, edge)``.
+    """
+    if mm is None:
+        mm = mm_per_unit(pos)
+    reach = _bow_reach(pos, edges, mm)
+    es = sorted({tuple(e) for e in edges})
+    for i in range(len(es)):
+        for j in range(i + 1, len(es)):
+            a, b = es[i], es[j]
+            if set(a) & set(b):
+                continue
+            if not all(v in pos for v in a + b):
+                continue
+            d = _seg_seg_distance(pos[a[0]], pos[a[1]],
+                                  pos[b[0]], pos[b[1]]) * mm
+            if d == 0.0:                      # a crossing, not an approach
+                continue
+            yield max(0.0, d - reach[a] - reach[b]), a, b
+
+
+def crossing_separations(pos, edges, mm=None):
+    """How far apart two crossing propagators are by the time either ends.
+
+    A crossing is unavoidable and perfectly readable at a right angle; at a
+    shallow one the two strands run merged for a long sliver and the reader
+    cannot tell which continues into which, so the drawing reads as a
+    different graph.  Scored with exactly the rule :func:`fan_separations`
+    uses at a real vertex -- the strands must diverge by an arrowhead width
+    before the first of the four arms ends -- because a crossing is just a
+    junction the graph does not have.  Yields ``(mm, edge, edge)``.
+    """
+    if mm is None:
+        mm = mm_per_unit(pos)
+    es = sorted({tuple(e) for e in edges})
+    for i in range(len(es)):
+        for j in range(i + 1, len(es)):
+            a, b = es[i], es[j]
+            if set(a) & set(b) or not all(v in pos for v in a + b):
+                continue
+            p, q, r, t = pos[a[0]], pos[a[1]], pos[b[0]], pos[b[1]]
+            if not _segments_cross(p, q, r, t):
+                continue
+            ux, uy = q[0] - p[0], q[1] - p[1]
+            wx, wy = t[0] - r[0], t[1] - r[1]
+            nu, nw = math.hypot(ux, uy), math.hypot(wx, wy)
+            if nu == 0.0 or nw == 0.0:
+                continue
+            den = ux * wy - uy * wx
+            if den == 0.0:
+                continue
+            s = ((r[0] - p[0]) * wy - (r[1] - p[1]) * wx) / den
+            xp = (p[0] + s * ux, p[1] + s * uy)
+            arms = [math.hypot(xp[0] - e[0], xp[1] - e[1])
+                    for e in (p, q, r, t)]
+            sin_t = abs(ux * wy - uy * wx) / (nu * nw)
+            yield min(arms) * sin_t * mm, a, b
+
+
 def legibility_penalty(pos, edges, mm=None):
     """How badly this drawing misrepresents its own graph, in mm^2.
 
     ``_geometric_crossings`` is blind to the failure that actually ruins a
     panel: a configuration where a vertex lands ON an unrelated propagator,
-    or two edges leave a vertex almost parallel, scores a PERFECT zero
-    crossings while printing as a different graph entirely.  This is the
-    missing term.  Both contributions are squared hinges in printed
-    millimetres, so they are commensurable and vanish exactly when every
-    feature is separated by more than the ink that would merge it.
+    or two edges leave a vertex almost parallel, or two unrelated edges lie
+    almost on top of each other, or two edges cross at a glancing angle --
+    each of these scores a PERFECT zero crossings while printing as a
+    different graph entirely.  These are the missing terms.  All four
+    contributions are squared hinges in printed millimetres, so they are
+    commensurable and vanish exactly when every feature is separated by more
+    than the ink that would merge it.
     """
     if mm is None:
         mm = mm_per_unit(pos)
@@ -312,10 +405,11 @@ def legibility_penalty(pos, edges, mm=None):
         gap = 2.0 * DOT_RADIUS_MM - d          # clear the whole dot, not half
         if gap > 0.0:
             pen += gap * gap
-    for d, _a, _b in fan_separations(pos, edges, mm):
-        gap = ARROWHEAD_MM - d
-        if gap > 0.0:
-            pen += gap * gap
+    for gen in (fan_separations, crossing_separations, edge_edge_clearances):
+        for d, _a, _b in gen(pos, edges, mm):
+            gap = ARROWHEAD_MM - d
+            if gap > 0.0:
+                pen += gap * gap
     return pen
 
 
@@ -344,6 +438,40 @@ def _nudge_y(layers, layer_of, y_of, D_edges, dx, pitch_of, rounds=4):
         for d in sorted(layers):
             col = layers[d]
             pitch = pitch_of(d)
+            # Whole-column moves FIRST.  Sliding one vertex at a time is a
+            # coordinate descent that stalls as soon as no single vertex can
+            # improve alone: on the three-loop set 157 of 1798 panels came
+            # out of the pass still scoring a defect, most of them columns
+            # that had to move together.  Shifting or spreading a column
+            # rigidly changes neither its internal order nor its internal
+            # separations, so the minimum-crossing ordering and the row
+            # pitch both survive by construction; the guards below still
+            # apply.
+            members = [v for v in col if v in y_of]
+            if members:
+                base = dict(y_of)
+                mid = sum(y_of[v] for v in members) / len(members)
+                moves = [('shift', f) for f in fracs]
+                if len(members) > 1:
+                    moves += [('spread', g) for g in (1.25, 1.6, 2.1)]
+                pick_move, pick_pen = None, best
+                for kind, amt in moves:
+                    for v in members:
+                        y_of[v] = (base[v] + amt * pitch if kind == 'shift'
+                                   else mid + amt * (base[v] - mid))
+                    cand = pos_of()
+                    if _geometric_crossings(cand, D_edges) <= base_cross:
+                        pen = legibility_penalty(cand, D_edges)
+                        if pen < pick_pen - 1e-9:
+                            pick_move, pick_pen = (kind, amt), pen
+                    for v in members:
+                        y_of[v] = base[v]
+                if pick_move is not None:
+                    kind, amt = pick_move
+                    for v in members:
+                        y_of[v] = (base[v] + amt * pitch if kind == 'shift'
+                                   else mid + amt * (base[v] - mid))
+                    best, moved = pick_pen, True
             for i, v in enumerate(col):
                 if v not in y_of:
                     continue
@@ -644,6 +772,26 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True,
             y_of[v] *= k
     _nudge_y(layers, layer_of, y_of, D_edges, dx,
              lambda d, _k=k: pitch_of(d) * _k)
+
+    # Last resort: give the panel more room.  `aspect` is a MINIMUM height,
+    # so stretching past it is always legal, and a taller panel is a far
+    # smaller price than a drawing that reads as a different graph.  Only
+    # reached when everything above has left a real defect on the page --
+    # never on the two-loop production figure, which finishes clean.
+    def _pen(ys):
+        return legibility_penalty({v: (-layer_of[v] * dx, ys[v]) for v in ys},
+                                  D_edges)
+
+    if _pen(y_of) > 0.0:
+        base_y = dict(y_of)
+        for stretch in (1.3, 1.7, 2.2):
+            trial = {v: y * stretch for v, y in base_y.items()}
+            _nudge_y(layers, layer_of, trial, D_edges, dx,
+                     lambda d, _k=k * stretch: pitch_of(d) * _k)
+            if _pen(trial) < _pen(y_of) - 1e-9:
+                y_of = trial
+            if _pen(y_of) <= 0.0:
+                break
 
     if y_of:                                   # re-centre about y = 0
         mid = 0.5 * (max(y_of.values()) + min(y_of.values()))

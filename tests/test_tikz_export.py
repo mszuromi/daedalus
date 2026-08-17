@@ -12,6 +12,7 @@ import engine.enumeration.loop_diagram_enumeration as L
 from engine.diagrams.typed_diagram_layout import (
     causal_depths, layout_typed_diagram, legibility_penalty,
     vertex_edge_clearances, fan_separations, mm_per_unit,
+    edge_edge_clearances, crossing_separations,
     DOT_RADIUS_MM, ARROWHEAD_MM,
 )
 from engine.diagrams.tikz_export import (
@@ -414,6 +415,98 @@ def test_edges_leaving_a_vertex_stay_apart(prediagrams_2_2):
         assert d >= ARROWHEAD_MM, (
             f'edges {a} and {b} are only {d:.2f} mm apart where they '
             f'separate (arrowhead is {ARROWHEAD_MM} mm wide)')
+
+
+def test_penalty_sees_two_unrelated_propagators_laid_together():
+    """Zero crossings, every vertex clear, every fan wide -- and unreadable.
+
+    Edges 1-2 and 3-4 share no vertex, never cross, and no vertex is near
+    either of them, so the crossing count and both of the older legibility
+    terms score this drawing as perfect.  It still prints as ONE propagator,
+    because the two lie 0.1 mm apart along their whole length.  This is the
+    blind spot the task named as defect 2.
+    """
+    pos = {1: (0.0, 0.0), 2: (-4.6, 0.0), 3: (0.0, 0.01), 4: (-4.6, 0.01)}
+    edges = [(1, 2), (3, 4)]
+    assert min(d for d, _v, _e in vertex_edge_clearances(pos, edges)) \
+        == pytest.approx(0.1, abs=0.05)
+    assert list(fan_separations(pos, edges)) == []
+    gap = min(d for d, _a, _b in edge_edge_clearances(pos, edges))
+    assert gap < ARROWHEAD_MM
+    assert legibility_penalty(pos, edges) > 0.0
+
+    pos[3], pos[4] = (0.0, 1.0), (-4.6, 1.0)      # pull them apart
+    assert min(d for d, _a, _b in edge_edge_clearances(pos, edges)) \
+        > ARROWHEAD_MM
+    assert legibility_penalty(pos, edges) == 0.0
+
+
+def test_penalty_sees_a_glancing_crossing():
+    """A crossing is fine at a right angle and a misread at a glancing one.
+
+    Same graph, same crossing count, same everything the older terms
+    measure; only the angle differs.  At 3 degrees the two strands run
+    merged either side of the crossing and the reader cannot tell which
+    continues into which, so the drawing reads as a junction the graph does
+    not have.
+    """
+    steep = {1: (0.0, -2.0), 2: (-4.6, 2.0), 3: (0.0, 2.0), 4: (-4.6, -2.0)}
+    edges = [(1, 2), (3, 4)]
+    assert min(d for d, _a, _b in crossing_separations(steep, edges)) \
+        > ARROWHEAD_MM
+    assert legibility_penalty(steep, edges) == 0.0
+
+    glancing = {1: (0.0, 0.0), 2: (-4.6, 0.12),
+                3: (0.0, 0.12), 4: (-4.6, 0.0)}
+    assert min(d for d, _a, _b in crossing_separations(glancing, edges)) \
+        < ARROWHEAD_MM
+    assert legibility_penalty(glancing, edges) > 0.0
+
+
+def test_unrelated_propagators_stay_apart(prediagrams_2_2):
+    """No two propagators may be drawn within an arrowhead of each other.
+
+    The set-wide form of the unit check above.  An arrowhead is the widest
+    ink on a propagator, so a pair closer than that cannot both carry a
+    legible mark and `arrow_positions` has nowhere along the line to move
+    one to.
+    """
+    for pd in prediagrams_2_2:
+        edges = list(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        d, a, b = min(edge_edge_clearances(pos, edges), default=(9e9, 0, 0))
+        assert d >= ARROWHEAD_MM, (
+            f'propagators {a} and {b} run {d:.2f} mm apart '
+            f'(arrowhead is {ARROWHEAD_MM} mm wide)')
+
+
+def test_crossings_are_not_glancing(prediagrams_2_2):
+    """Where two propagators must cross, they must part promptly."""
+    for pd in prediagrams_2_2:
+        edges = list(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        d, a, b = min(crossing_separations(pos, edges), default=(9e9, 0, 0))
+        assert d >= ARROWHEAD_MM, (
+            f'{a} and {b} cross and are still only {d:.2f} mm apart '
+            f'where the first of them ends')
+
+
+def test_every_panel_finishes_legible(prediagrams_2_2):
+    """The end-to-end statement: no shipped panel misreads as another graph.
+
+    One assertion covering all four terms at once, on the whole two-loop
+    set.  Before the whole-column moves and the stretch of last resort
+    existed, the per-vertex repair was a coordinate descent that stalled:
+    on the three-loop set 157 of 1798 panels came out of it still scoring a
+    defect no single vertex could fix alone.
+    """
+    bad = []
+    for i, pd in enumerate(prediagrams_2_2, 1):
+        pos = layout_typed_diagram(pd)
+        pen = legibility_penalty(pos, list(pd[0].edges(labels=False)))
+        if pen > 0.0:
+            bad.append((i, pen))
+    assert not bad, f'{len(bad)} panels score a legibility defect: {bad[:5]}'
 
 
 def test_legibility_never_costs_a_crossing(monkeypatch, prediagrams_2_2):

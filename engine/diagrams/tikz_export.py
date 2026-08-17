@@ -151,7 +151,13 @@ def _edge_label(diagram, edge_key, propagator_label):
 
 # Candidate compass angles, in preference order: straight up/down read best,
 # the diagonals are fallbacks.
-_LABEL_ANGLES = (90, 270, 45, 135, 315, 225, 0, 180)
+# The eight compass points FIRST -- `rank` breaks ties by this order, so a
+# panel with room keeps the canonical placement it always had.  The
+# half-steps are an escape for dense panels: with 45-degree steps alone a
+# label whose every compass direction is blocked has to settle for lying
+# ACROSS a propagator, which is what panel 10 of the two-loop figure did.
+_LABEL_ANGLES = (90, 270, 45, 135, 315, 225, 0, 180,
+                 68, 112, 248, 292, 22, 158, 202, 338)
 # Candidate gaps between vertex and label, in TeX points.
 _LABEL_DISTANCES_PT = (1.0, 4.0, 8.0)
 _PT_MM = 0.35146            # 1 TeX point in millimetres
@@ -343,7 +349,12 @@ def place_labels(anchors, polylines, dots, fixed_boxes=(), rounds=4,
                                             cx + dot_r, cy + dot_r))
         for poly in polylines:
             for p, q in zip(poly, poly[1:]):
-                c += 1.5 * _seg_in_box(p, q, box)    # label across a line
+                # A propagator running through a label is not a near miss,
+                # it is a misread: the reader cannot tell the symbol from the
+                # graph.  Charged per mm of line inside the box, heavily
+                # enough to outrank the mild label-on-label crowding the
+                # placer would otherwise prefer it to.
+                c += 4.0 * _seg_in_box(p, q, box)
         # OWNERSHIP.  A label that ends up nearer some other vertex than its
         # own names the wrong vertex, which no amount of clearance fixes --
         # and on a dense panel two labels can sit side by side between the
