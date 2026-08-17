@@ -143,8 +143,8 @@ def _node_name(v):
 def to_tikz_feynman(diagram, *, propagator_label='G',
                     external_label='auto',
                     show_factors=True, symbol_map=None, scale=1.0,
-                    factor_label_angle='auto', dot_size=None, bend_angle=28,
-                    indent='  '):
+                    factor_label_angle='auto', dot_size=None, bend_angle=14,
+                    external_label_distance='1pt', indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
     Parameters
@@ -178,7 +178,11 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         Overrides the filled-vertex diameter, e.g. ``'1.6mm'``.  The
         tikz-feynman default is large relative to our column pitch.
     bend_angle : int
-        Degrees of bow applied to each side of a parallel-edge bundle.
+        Degrees of bow applied to each side of a parallel-edge bundle.  Kept
+        small: enough to separate the two lines of a bubble, not enough to
+        make a straight propagator look curved.
+    external_label_distance : str
+        Gap between an external node and its label.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -214,9 +218,14 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
             lab = r'\delta %s(y_{%d})' % (sym, idx)
         else:
             lab = external_label % idx
+        # The label rides on a ``label=`` option, NOT in the node body: an
+        # ``[empty dot]`` sized to contain ``\delta x(y_1)`` becomes a huge
+        # circle with text inside it.  Placed at 180 degrees it sits to the
+        # LEFT of a small circle, outside the diagram, where nothing crosses it.
         lines.append(
-            indent * 2 + r'\vertex [empty dot] (%s) at (%.3f, %.3f) {\(%s\)};'
-            % (_node_name(v), x, y, lab))
+            indent * 2 + r'\vertex [empty dot, label={[label distance=%s]'
+                         r'180:\(%s\)}] (%s) at (%.3f, %.3f) {};'
+            % (external_label_distance, lab, _node_name(v), x, y))
 
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]

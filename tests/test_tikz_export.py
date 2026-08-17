@@ -70,8 +70,10 @@ def test_emits_one_node_per_vertex_and_one_edge_per_propagator(prediagrams_2_1):
 def test_external_and_internal_vertex_styles(prediagrams_2_1):
     D, _G, leaves, internal = prediagrams_2_1[0]
     tex = to_tikz_feynman((D, _G, leaves, internal))
-    assert tex.count('[empty dot]') == len(leaves), 'externals unshaded'
-    assert tex.count('[dot]') == len(internal), 'sources/interactions solid'
+    assert tex.count('empty dot') == len(leaves), 'externals unshaded'
+    # '[dot,' or '[dot]' -- the option list may carry a factor label
+    assert (tex.count('[dot,') + tex.count('[dot]')) == len(internal), \
+        'sources/interactions solid'
     # spacing after \delta is required for single-letter fields (\delta x,
     # not \deltax), so match the parts rather than an exact string
     assert r'\delta' in tex and r'(y_{1})' in tex
@@ -244,3 +246,30 @@ def test_external_column_is_spaced_wider_than_internal_rows():
     gaps = [b - a for a, b in zip(ys, ys[1:])]
     assert all(g >= DY_EXTERNAL - 1e-9 for g in gaps), (
         f'external rows {gaps} tighter than the external pitch {DY_EXTERNAL}')
+
+
+def test_labels_ride_outside_their_nodes(prediagrams_2_1):
+    """Neither an external name nor a vertex factor may sit in the node BODY.
+
+    An ``[empty dot]`` sized to contain ``\delta x(y_1)`` becomes a huge
+    circle with text inside it, and a filled ``[dot]`` draws its body text
+    inside the ink where it is invisible.  Both must use ``label=``.
+    """
+    D, _G, leaves, internal = prediagrams_2_1[0]
+    tex = to_tikz_feynman((D, _G, leaves, internal))
+    for line in tex.splitlines():
+        if r'\vertex' not in line:
+            continue
+        body = line.rsplit(')', 1)[-1]        # what follows the coordinate
+        assert '{}' in body or body.strip() in (';', ''), (
+            f'node body must be empty, got: {line.strip()}')
+    assert 'label=' in tex, 'labels must be carried as options'
+
+
+def test_external_labels_sit_to_the_left(prediagrams_2_1):
+    """180 degrees keeps the name clear of the diagram it annotates."""
+    D, _G, leaves, internal = prediagrams_2_1[0]
+    tex = to_tikz_feynman((D, _G, leaves, internal))
+    for line in tex.splitlines():
+        if 'empty dot' in line:
+            assert '180:' in line, f'external label not at 180: {line.strip()}'
