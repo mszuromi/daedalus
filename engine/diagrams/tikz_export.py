@@ -18,7 +18,8 @@ hand-built diagram.
 
 from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
-__all__ = ['to_tikz_feynman', 'diagram_to_standalone', 'DEFAULT_SYMBOL_MAP']
+__all__ = ['to_tikz_feynman', 'diagram_to_standalone',
+           'DEFAULT_SYMBOL_MAP', 'edge_style_map']
 
 _PREAMBLE = r"""\documentclass[border=6pt]{standalone}
 \usepackage{tikz}
@@ -186,6 +187,37 @@ def _best_label_angle(v, pos, edges, occupied, radius=_LABEL_RADIUS):
     return best
 
 
+# Line styles cycled across distinct (response, physical) field pairs.  All
+# keep the ``fermion`` arrow, since the arrow carries causality and must not
+# be traded away for the sake of distinguishing components.
+_EDGE_STYLES = ('', 'dashed', 'dotted', 'dash dot', 'densely dashed',
+                'loosely dotted', 'dash dot dot')
+
+
+def _field_pair(diagram, edge_key):
+    """``(response, physical)`` field symbols for one edge, or None."""
+    legs = (getattr(diagram, 'edge_types', None) or {}).get(edge_key)
+    if not legs:
+        return None
+    return (_field_symbol(legs[0]), _field_symbol(legs[1]))
+
+
+def edge_style_map(diagram):
+    """Assign a distinct line style to each field pairing present.
+
+    In a multi-field model different edges are different components of G, and
+    a label alone makes the reader parse subscripts to see the structure.
+    Giving each pairing its own stroke makes it visible at a glance.  The
+    mapping is sorted, so the same pairing gets the same style in every panel
+    of a figure.
+    """
+    et = getattr(diagram, 'edge_types', None) or {}
+    pairs = sorted({(_field_symbol(a), _field_symbol(b))
+                    for a, b in et.values()})
+    return {p: _EDGE_STYLES[i % len(_EDGE_STYLES)]
+            for i, p in enumerate(pairs)}
+
+
 def _node_name(v):
     """TikZ node names must be simple; vertex ids are ints."""
     return 'v%s' % v
@@ -193,9 +225,10 @@ def _node_name(v):
 
 def to_tikz_feynman(diagram, *, propagator_label='G',
                     external_label='auto',
-                    show_factors=True, symbol_map=None, scale=1.0,
+                    show_factors='auto', symbol_map=None, scale=1.0,
                     factor_label_angle='auto', dot_size=None, bend_angle=14,
-                    external_label_distance='1pt', indent='  '):
+                    external_label_distance='1pt', style_by_field=False,
+                    indent='  '):
     """Return ``tikz-feynman`` source for one typed diagram or prediagram.
 
     Parameters
@@ -206,14 +239,17 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     propagator_label : str or None
         Edge label (``None`` suppresses it).  ``'auto'`` subscripts each
         propagator with its response and physical field, which distinguishes
-        the matrix elements of G in a multi-field model.
+        the matrix elements of G in a multi-field model, and names each
+        distinct component ONCE rather than on every edge carrying it.
     external_label : str
         ``'auto'`` (default) names each external by its own field, e.g.
         ``\delta x(y_1)`` -- correct for a multi-field model where the
         externals are not all the same field.  Otherwise a ``%d``-style
         template receiving the 1-based external index.
-    show_factors : bool
-        Print each interaction/source vertex's coefficient on the vertex.
+    show_factors : bool or 'auto'
+        ``'auto'`` (default) prints each DISTINCT coefficient once; ``True``
+        prints one on every vertex, which past one loop repeats a single value
+        until the copies collide; ``False`` suppresses them.
     symbol_map : dict or None
         Parameter-name -> LaTeX overrides applied to vertex factors.
         ``None`` uses :data:`DEFAULT_SYMBOL_MAP`; pass ``{}`` to disable.
@@ -234,6 +270,10 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         make a straight propagator look curved.
     external_label_distance : str
         Gap between an external node and its label.
+    style_by_field : bool
+        Give each distinct (response, physical) field pairing its own line
+        style, so the component structure of a multi-field diagram is visible
+        without reading subscripts.  All styles keep the causal arrow.
     scale : float
         ``tikzpicture`` scale factor.
 
@@ -262,6 +302,11 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
 
     # ── vertices ────────────────────────────────────────────────────
     edge_list = sorted(D.edges(labels=False))
+    style_of = edge_style_map(diagram) if style_by_field else {}
+    # Each distinct propagator symbol is named once.  Repeating one symbol on
+    # every edge tells the reader nothing after the first time, and once the
+    # line STYLE also encodes the component the labels are pure clutter.
+    _seen_edge_labels = set()
     placed_labels = []
     ext_legs = getattr(diagram, 'external_legs', None) or {}
     for idx, v in enumerate(sorted(leaves), start=1):
@@ -280,9 +325,21 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                          r'180:\(%s\)}] (%s) at (%.3f, %.3f) {};'
             % (external_label_distance, lab, _node_name(v), x, y))
 
+    # ``show_factors='auto'``: print each DISTINCT factor once.  Every
+    # interaction vertex of a one-species model carries the same coefficient,
+    # so labelling all of them repeats one value as many times as the loop
+    # order allows and, past one loop, the copies collide with each other.
+    # One instance of each distinct value loses no information.
+    _seen_factors = set()
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]
-        label = _vertex_label(assignments.get(v), show_factors, symbol_map)
+        label = _vertex_label(assignments.get(v),
+                              bool(show_factors), symbol_map)
+        if label and show_factors == 'auto':
+            if label in _seen_factors:
+                label = ''
+            else:
+                _seen_factors.add(label)
         # A ``[dot]`` vertex is a FILLED node: anything in its node body is
         # drawn inside the ink and invisible.  The factor must therefore ride
         # on a ``label=`` option, placed below the vertex so it clears the
@@ -340,7 +397,16 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         # Per-edge label: with ``propagator_label='auto'`` different lines
         # are different matrix elements of G and must be named separately.
         lab = _edge_label(diagram, (u, v, j), propagator_label)
+        if lab and propagator_label == 'auto':
+            if lab in _seen_edge_labels:
+                lab = None
+            else:
+                _seen_edge_labels.add(lab)
         opts = ['fermion']
+        if style_of:
+            st = style_of.get(_field_pair(diagram, (u, v, j)))
+            if st:
+                opts.append(st)
         if lab:
             # ``edge label'`` (primed) sits on the far side of the line from
             # ``edge label``, keeping it clear of the vertex factors above.
