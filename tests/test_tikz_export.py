@@ -273,3 +273,61 @@ def test_external_labels_sit_to_the_left(prediagrams_2_1):
     for line in tex.splitlines():
         if 'empty dot' in line:
             assert '180:' in line, f'external label not at 180: {line.strip()}'
+
+
+def test_layout_minimises_drawn_crossings(prediagrams_2_1):
+    """Every diagram must be laid out at its minimum crossing count.
+
+    Pinned because the first three attempts each got this wrong in a
+    different way: barycentre alone stalled at a local minimum; adjacent-swap
+    refinement could not escape it either; and a dummy-vertex layer count
+    optimised a ROUTE the renderer discards, since a multi-layer edge is drawn
+    as one straight line.  Scoring the drawn geometry is what actually works.
+    """
+    import itertools, math
+    from collections import defaultdict
+    from engine.diagrams.typed_diagram_layout import (
+        causal_depths, _neighbours, _relax_y, _geometric_crossings,
+        DX, DY, DY_EXTERNAL,
+    )
+    for pd in prediagrams_2_1:
+        D, _G, leaves, _internal = pd
+        leaf = set(leaves)
+        dep = causal_depths(D)
+        adj = _neighbours(D)
+        ext = max((dep[v] for v in D.vertices() if v not in leaf),
+                  default=0) + 1
+        lo = {v: (ext if v in leaf else dep[v]) for v in D.vertices()}
+        edges = list(D.edges(labels=False))
+
+        drawn = _geometric_crossings(layout_typed_diagram(pd), edges)
+
+        layers = defaultdict(list)
+        for v in sorted(D.vertices()):
+            layers[lo[v]].append(v)
+        depths = sorted(layers)
+        if math.prod(math.factorial(len(layers[d])) for d in depths) > 5000:
+            continue                       # exhaustive check too costly here
+        dy_ext = DY * (DY_EXTERNAL / DY)
+
+        def pitch(d, _e=ext, _de=dy_ext):
+            return _de if d == _e else DY
+
+        best = None
+        for combo in itertools.product(
+                *(itertools.permutations(layers[d]) for d in depths)):
+            cand = {d: list(c) for d, c in zip(depths, combo)}
+            y = {}
+            for d, col in cand.items():
+                n = len(col)
+                for j, v in enumerate(col):
+                    y[v] = (j - (n - 1) / 2.0) * pitch(d)
+            _relax_y(cand, adj, y, pitch)
+            c = _geometric_crossings(
+                {v: (-lo[v] * DX, y[v]) for v in y}, edges)
+            if best is None or c < best:
+                best = c
+            if best == 0:
+                break
+        assert drawn == best, (
+            f'laid out with {drawn} crossings, minimum is {best}')

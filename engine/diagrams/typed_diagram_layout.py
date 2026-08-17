@@ -24,6 +24,8 @@ two passes after layering matter as much as the layering itself:
    the edges reaching them; letting them slide straightens the picture.
 """
 
+import itertools
+import math
 from collections import defaultdict
 
 __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram',
@@ -101,6 +103,171 @@ def _order_layers(layer_of, layers, adj, sweeps=6):
     return index
 
 
+def _segments_cross(p, q, r, t):
+    """Do open segments p-q and r-t properly cross?  Shared endpoints do not."""
+    if p in (r, t) or q in (r, t):
+        return False
+
+    def side(a, b, c):
+        return ((b[0] - a[0]) * (c[1] - a[1])
+                - (b[1] - a[1]) * (c[0] - a[0]))
+
+    d1, d2 = side(p, q, r), side(p, q, t)
+    d3, d4 = side(r, t, p), side(r, t, q)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _geometric_crossings(pos, edges):
+    """Count crossings among the straight segments actually drawn.
+
+    Layer-by-layer counting -- even with dummy nodes -- optimises a ROUTE
+    that the renderer then ignores, because a multi-layer edge is drawn as
+    one straight line from its real endpoints.  Scoring the drawn geometry
+    instead optimises what the reader sees, and needs no dummies at all.
+    """
+    segs = [(pos[u], pos[v]) for u, v in edges if u in pos and v in pos]
+    n = 0
+    for i in range(len(segs)):
+        for j in range(i + 1, len(segs)):
+            if _segments_cross(segs[i][0], segs[i][1],
+                               segs[j][0], segs[j][1]):
+                n += 1
+    return n
+
+
+def _with_dummies(layer_of, D_edges):
+    """Split multi-layer edges with dummy nodes, one per intermediate layer.
+
+    Without this an edge spanning several layers -- a source wired straight
+    to an external, say -- is invisible to both the barycentre pass and the
+    crossing count, because those only ever compare ADJACENT layers.  Such an
+    edge sails over the intermediate vertices and crosses whatever is in the
+    way, which is exactly the crossing that survives an otherwise clean
+    ordering.  Sugiyama's answer is to make the long edge into a chain of
+    unit-length segments so the intermediate layers can order around it.
+
+    Returns ``(layer_of2, segments)`` where segments are all unit-length.
+    """
+    layer_of2 = dict(layer_of)
+    segments = []
+    for n, (u, v) in enumerate(D_edges):
+        lu, lv = layer_of[u], layer_of[v]
+        lo, hi = (lu, lv) if lu <= lv else (lv, lu)
+        a, b = (u, v) if lu <= lv else (v, u)
+        if hi - lo <= 1:
+            segments.append((a, b))
+            continue
+        prev = a
+        for d in range(lo + 1, hi):
+            dummy = ('_d', n, d)
+            layer_of2[dummy] = d
+            segments.append((prev, dummy))
+            prev = dummy
+        segments.append((prev, b))
+    return layer_of2, segments
+
+
+def _layer_pair_crossings(upper, lower, layer_of, adj_pairs):
+    """Crossings between two adjacent layers, given their orderings."""
+    iu = {v: i for i, v in enumerate(upper)}
+    il = {v: i for i, v in enumerate(lower)}
+    es = [(iu[a], il[b]) for a, b in adj_pairs
+          if a in iu and b in il]
+    n = 0
+    for i in range(len(es)):
+        a1, b1 = es[i]
+        for j in range(i + 1, len(es)):
+            a2, b2 = es[j]
+            if (a1 - a2) * (b1 - b2) < 0:
+                n += 1
+    return n
+
+
+def _edge_pairs_between(D_edges, layer_of, d_up, d_lo):
+    """Edges spanning layers ``d_up`` -> ``d_lo``, as (upper, lower) pairs."""
+    out = []
+    for u, v in D_edges:
+        lu, lv = layer_of.get(u), layer_of.get(v)
+        if lu == d_up and lv == d_lo:
+            out.append((u, v))
+        elif lv == d_up and lu == d_lo:
+            out.append((v, u))
+    return out
+
+
+def _total_crossings(layers, layer_of, D_edges):
+    depths = sorted(layers)
+    tot = 0
+    for a, b in zip(depths, depths[1:]):
+        pairs = _edge_pairs_between(D_edges, layer_of, a, b)
+        tot += _layer_pair_crossings(layers[a], layers[b], layer_of, pairs)
+    return tot
+
+
+def _exhaustive_order(layers, layer_of, D_edges, budget=50000):
+    """Exact minimum-crossing ordering, when the search space is small enough.
+
+    Diagram layers here are tiny -- typically one or two vertices -- so the
+    whole ordering space is usually a few dozen permutations.  Hill-climbing
+    that is both pointless and unreliable: measured on the two-point one-loop
+    set, adjacent-swap refinement stalled at 2 crossings on a diagram whose
+    true minimum is 0, needing only the external pair exchanged, because no
+    SINGLE swap improved the count.  Enumerate instead whenever the product
+    of layer factorials fits ``budget``, and fall back to the heuristic when
+    it does not.
+
+    Returns the achieved crossing count, or ``None`` if the space was too big.
+    """
+    import itertools, math
+    depths = sorted(layers)
+    total = 1
+    for d in depths:
+        total *= math.factorial(len(layers[d]))
+        if total > budget:
+            return None
+    best_n, best = None, None
+    for combo in itertools.product(*(itertools.permutations(layers[d])
+                                     for d in depths)):
+        cand = {d: list(c) for d, c in zip(depths, combo)}
+        n = _total_crossings(cand, layer_of, D_edges)
+        if best_n is None or n < best_n:
+            best_n, best = n, cand
+            if n == 0:
+                break
+    for d in depths:
+        layers[d][:] = best[d]
+    return best_n
+
+
+def _refine_by_swaps(layers, layer_of, D_edges, max_rounds=12):
+    """Adjacent-transposition refinement against a real crossing count.
+
+    The barycentre pass is only a heuristic -- it has no crossing objective
+    and readily stops at an ordering with an obvious avoidable crossing (for
+    the two-point one-loop set, one panel needed nothing more than the two
+    SOURCES exchanged).  Here we try every adjacent swap in every layer and
+    keep the ones that actually reduce the count, so such cases are removed
+    automatically rather than by eye.  A swap is kept only on strict
+    improvement, so this can never make a drawing worse.
+    """
+    best = _total_crossings(layers, layer_of, D_edges)
+    for _ in range(max_rounds):
+        improved = False
+        for d in sorted(layers):
+            col = layers[d]
+            for i in range(len(col) - 1):
+                col[i], col[i + 1] = col[i + 1], col[i]
+                cand = _total_crossings(layers, layer_of, D_edges)
+                if cand < best:
+                    best = cand
+                    improved = True
+                else:
+                    col[i], col[i + 1] = col[i + 1], col[i]
+        if not improved:
+            break
+    return best
+
+
 def _relax_y(layers, adj, y_of, pitch_of, rounds=6, weight=0.3):
     """Slide vertices toward their neighbours, keeping order and separation.
 
@@ -171,22 +338,54 @@ def layout_typed_diagram(diagram, dx=DX, dy=DY, order_externals=True):
         layers[layer_of[v]].append(v)
 
     fixed_ext = sorted(leaves)
-    _order_layers(layer_of, layers, adj)
-    if not order_externals:
-        layers[ext_depth] = fixed_ext
-
+    D_edges = list(D.edges(labels=False))
     dy_ext = dy * (DY_EXTERNAL / DY)
 
     def pitch_of(d):
         return dy_ext if d == ext_depth else dy
 
-    y_of = {}
-    for d, col in layers.items():
-        pitch = pitch_of(d)
-        n = len(col)
-        for i, v in enumerate(col):
-            y_of[v] = (i - (n - 1) / 2.0) * pitch
-    _relax_y(layers, adj, y_of, pitch_of)
+    def place(cand):
+        """y for one candidate ordering, after relaxation."""
+        y = {}
+        for d, col in cand.items():
+            pitch, n = pitch_of(d), len(col)
+            for i, v in enumerate(col):
+                y[v] = (i - (n - 1) / 2.0) * pitch
+        _relax_y(cand, adj, y, pitch_of)
+        return y
+
+    # Choose the layer orderings by the crossings ACTUALLY DRAWN.  Layers here
+    # hold one or two vertices, so the whole space is a few dozen orderings and
+    # an exact search is both affordable and reliable -- barycentre and
+    # adjacent-swap refinement each stalled at a local minimum on this set,
+    # leaving a crossing that a single exchange of the external pair removed.
+    _order_layers(layer_of, layers, adj)          # good starting point
+    depths = sorted(layers)
+    space = 1
+    for d in depths:
+        space *= math.factorial(len(layers[d]))
+    best = None
+    if space <= 20000:
+        for combo in itertools.product(*(itertools.permutations(layers[d])
+                                         for d in depths)):
+            cand = {d: list(c) for d, c in zip(depths, combo)}
+            if not order_externals and cand[ext_depth] != fixed_ext:
+                continue
+            y = place(cand)
+            pos_try = {v: (-layer_of[v] * dx, y[v]) for v in y}
+            n = _geometric_crossings(pos_try, D_edges)
+            if best is None or n < best[0]:
+                best = (n, cand, y)
+                if n == 0:
+                    break
+    if best is None:                              # too large: keep heuristic
+        if not order_externals:
+            layers[ext_depth] = fixed_ext
+        y_of = place({d: list(layers[d]) for d in depths})
+    else:
+        for d in depths:
+            layers[d][:] = best[1][d]
+        y_of = best[2]
 
     if y_of:                                   # re-centre about y = 0
         mid = 0.5 * (max(y_of.values()) + min(y_of.values()))
