@@ -135,6 +135,57 @@ def _edge_label(diagram, edge_key, propagator_label):
     return 'G_{%s%s}' % (resp, phys)
 
 
+# Candidate compass angles for a vertex-factor label, in preference order:
+# straight up/down read best, the diagonals are fallbacks.
+_LABEL_ANGLES = (90, 270, 45, 135, 315, 225, 0, 180)
+_LABEL_RADIUS = 0.42        # where the label sits, in layout units
+
+
+def _point_seg_distance(p, a, b):
+    """Distance from point ``p`` to segment ``a``-``b``."""
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    dx, dy = bx - ax, by - ay
+    if dx == 0.0 and dy == 0.0:
+        return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+
+
+def _best_label_angle(v, pos, edges, occupied, radius=_LABEL_RADIUS):
+    """Angle whose label position is furthest from anything already drawn.
+
+    A fixed angle puts the factor wherever the rule says, and on a busy
+    diagram that can be on the far side of two other propagators from the
+    vertex it belongs to -- at which point the reader cannot tell WHICH
+    vertex it labels.  Score each candidate by its clearance from every edge
+    segment, every other vertex, and every label already placed, and take
+    the best.  Ties break toward the earlier (more readable) angle.
+    """
+    import math as _m
+    vx, vy = pos[v]
+    segs = [(pos[a], pos[b]) for a, b in edges if a in pos and b in pos]
+    # Other vertices count as obstacles too: a label that drifts toward a
+    # neighbouring dot reads as labelling THAT vertex instead.
+    others = [p for u, p in pos.items() if u != v]
+    best, best_clear = _LABEL_ANGLES[0], -1.0
+    for ang in _LABEL_ANGLES:
+        r = _m.radians(ang)
+        lx, ly = vx + radius * _m.cos(r), vy + radius * _m.sin(r)
+        clear = min(
+            [_point_seg_distance((lx, ly), a, b)
+             for a, b in segs
+             if not (a == (vx, vy) and b == (vx, vy))]
+            + [((lx - ox) ** 2 + (ly - oy) ** 2) ** 0.5
+               for ox, oy in others]
+            + [((lx - ox) ** 2 + (ly - oy) ** 2) ** 0.5
+               for ox, oy in occupied] or [9e9])
+        if clear > best_clear + 1e-9:
+            best, best_clear = ang, clear
+    return best
+
+
 def _node_name(v):
     """TikZ node names must be simple; vertex ids are ints."""
     return 'v%s' % v
@@ -210,6 +261,8 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     lines.append(indent + r'\begin{feynman}')
 
     # ── vertices ────────────────────────────────────────────────────
+    edge_list = sorted(D.edges(labels=False))
+    placed_labels = []
     ext_legs = getattr(diagram, 'external_legs', None) or {}
     for idx, v in enumerate(sorted(leaves), start=1):
         x, y = pos[v]
@@ -243,13 +296,13 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
             # unreadable.  An explicit angle overrides the heuristic.
             if factor_label_angle != 'auto':
                 angle = factor_label_angle
-            elif abs(y) > 1e-9:
-                angle = 90 if y > 0 else 270
             else:
-                # Every vertex of a linear chain sits ON the midline, so the
-                # away-from-midline rule would put all their factors in one
-                # band again.  Alternate by column instead.
-                angle = 90 if int(round(-x / DX)) % 2 == 0 else 270
+                angle = _best_label_angle(v, pos, edge_list, placed_labels)
+                import math as _m
+                _r = _m.radians(angle)
+                placed_labels.append(
+                    (x + _LABEL_RADIUS * _m.cos(_r),
+                     y + _LABEL_RADIUS * _m.sin(_r)))
             opts += r', label={[label distance=1pt]%d:\(%s\)}' % (
                 angle, label)
         lines.append(indent * 2 + r'\vertex [%s] (%s) at (%.3f, %.3f) {};'
