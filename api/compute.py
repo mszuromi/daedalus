@@ -283,7 +283,13 @@ def compute_cumulants(
         fundamental = parameters
     if chi_grid is not None:
         spatial_grid = chi_grid
-    if fundamental is None:
+    if not fundamental:
+        # Treat an EMPTY dict like None.  Several models ship
+        # ``DEFAULT_FUNDAMENTAL = {}``, and a caller forwarding that verbatim
+        # would otherwise sail past this fallback and fail much later with a
+        # bare ``NameError`` from inside the mean-field solve.  An empty
+        # parameter set cannot be intentional for a model that declares
+        # parameters.
         # Fall back to the defaults declared via ``ModelBuilder.parameter(
         # ..., default=...)``.  Leaving this ``{}`` surfaced as a bare
         # ``NameError: name 'mu' is not defined`` from inside the Sage

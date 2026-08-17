@@ -663,11 +663,34 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
         gamma_const_per_tuple.append(gamma_const)
         gamma_slope_per_tuple_per_ext.append(tuple(gamma_slope))
 
+    # ── group tuples that share an alpha vector ──────────────────────
+    # The chain-simplex integral depends on the pole tuple ONLY through
+    # ``alphas`` -- ``C_prod`` and gamma enter as a scalar prefactor.  So
+    # tuples with identical alphas yield identical chain values and can be
+    # evaluated once, with their prefactors summed.
+    #
+    # This is where multi-pole cost actually lives: the tuple count is a
+    # cartesian product, n_poles ** n_edges (measured: 6 tuples at one pole
+    # vs 211,968 at two, k=4 ell=1), but the DISTINCT alpha vectors grow far
+    # more slowly (2,240,064 chain calls collapsing onto 4,729 distinct sums
+    # on a two-field model).  Grouping converts the per-tuple work into
+    # per-group work.
+    #
+    # Keys are the EXACT complex tuples, never rounded: identical alphas give
+    # identical chain values, whereas near-equal ones do not, and merging
+    # those would silently change the answer.
+    groups = {}
+    for t_idx, alphas in enumerate(alphas_per_tuple):
+        groups.setdefault(alphas, []).append(t_idx)
+    tuple_groups = tuple((alphas, tuple(idxs))
+                         for alphas, idxs in groups.items())
+
     return {
         'pole_tuples':                  pole_tuples,
         'alphas_per_tuple':             tuple(alphas_per_tuple),
         'gamma_const_per_tuple':        tuple(gamma_const_per_tuple),
         'gamma_slope_per_tuple_per_ext': tuple(gamma_slope_per_tuple_per_ext),
+        'tuple_groups':                 tuple_groups,
     }
 
 
@@ -1950,18 +1973,23 @@ def _integrate_nd_polytope_poset_modesum(
             'gamma_slope_per_tuple_per_ext'
         ]
         n_ext = len(free_ext_vals)
-        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
-            alphas_orig = alphas_per_tuple[t_idx]
-            gamma = gamma_const_per_tuple[t_idx]
-            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
-            for j in range(n_ext):
-                gamma = gamma + slope_row[j] * free_ext_vals[j]
-            if gamma.real > 600.0:
-                return None
-            try:
-                term_const = pref * C_prod * cmath.exp(gamma)
-            except (OverflowError, ValueError):
-                return None
+        # Iterate GROUPS of pole tuples sharing an alpha vector: the chain
+        # integral is evaluated once per group with the group's summed
+        # prefactor, instead of once per tuple.  See ``_build_modesum_plan``.
+        for alphas_orig, t_idxs in plan['tuple_groups']:
+            term_const = 0.0 + 0.0j
+            for t_idx in t_idxs:
+                C_prod = pole_iter[t_idx][0]
+                gamma = gamma_const_per_tuple[t_idx]
+                slope_row = gamma_slope_per_tuple_per_ext[t_idx]
+                for j in range(n_ext):
+                    gamma = gamma + slope_row[j] * free_ext_vals[j]
+                if gamma.real > 600.0:
+                    return None
+                try:
+                    term_const = term_const + pref * C_prod * cmath.exp(gamma)
+                except (OverflowError, ValueError):
+                    return None
             if term_const == 0:
                 continue
             for sigma, U_ext, upp_per_pos in zip(
