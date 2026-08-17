@@ -5,7 +5,8 @@ C(0) sweep plus tree / 1-loop / 2-loop / 3-loop theory, one real pipeline run
 per plotted epsilon.
 
 The 3-loop curve used to be opt-in behind ``--loop3``, farmed out to
-``_fig1_loop3_worker.py`` subprocesses, and reconstructed by fitting a single
+per-epsilon subprocesses (that worker script is now deleted), and
+reconstructed by fitting a single
 c3 coefficient, because one epsilon at ``max_ell=3`` was measured at >10.5 h
 and 3.2 GB.  That cost is gone: the enumeration work merged in 95c79e6
 (canonical-form dedup, the |V| <= 3k+3l-3 orientability cap, and the shared
@@ -106,7 +107,8 @@ print('  %.1f s' % (time.perf_counter() - t0), flush=True)
 checkpoint(eps_dense=eps_dense, C_dense=C_dense, has_loop3=True)
 
 # NOTE: 3-loop used to be opt-in behind ``--loop3``, farmed out to
-# ``_fig1_loop3_worker.py`` subprocesses, and the curve was reconstructed by
+# per-epsilon subprocesses (worker script deleted), and the curve was
+# reconstructed by
 # fitting a single c3 coefficient and extrapolating C2 + c3*eps^3.  That was a
 # workaround for a cost that no longer exists: after the enumeration work on
 # perf/canonical-form-dedup (canonical-form dedup, the |V| <= 3k+3l-3
