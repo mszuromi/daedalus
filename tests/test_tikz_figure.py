@@ -89,3 +89,50 @@ def test_panel_array_compiles(tmp_path, pds):
         pytest.skip('tikz-feynman package not installed')
     assert proc.returncode == 0, proc.stdout[-2000:]
     assert (tmp_path / 'f.pdf').exists()
+
+
+# ── public entry point ──────────────────────────────────────────────
+
+def test_export_tikz_accepts_bare_records(pds):
+    """dd.export_tikz should take records, a result dict, or one diagram."""
+    import daedalus as dd
+    recs = [{'typed_diagram': p, 'ell': 1, 'multiplicity': 1} for p in pds[:3]]
+
+    arr = dd.export_tikz(recs)
+    assert arr.count(r'\subcaptionbox') == 3
+
+    one = dd.export_tikz(recs, index=1)
+    assert one.count(r'\begin{tikzpicture}') == 1
+    assert r'\subcaptionbox' not in one
+
+    as_result = dd.export_tikz({'diagrams': recs})
+    assert as_result.count(r'\subcaptionbox') == 3
+
+
+def test_export_tikz_single_labels_array_does_not(pds):
+    import daedalus as dd
+    recs = [{'typed_diagram': p, 'ell': 1} for p in pds[:2]]
+    assert 'edge label' in dd.export_tikz(recs, index=0)
+    assert 'edge label' not in dd.export_tikz(recs)
+
+
+def test_export_tikz_ell_filter(pds):
+    import daedalus as dd
+    recs = ([{'typed_diagram': pds[0], 'ell': 0}]
+            + [{'typed_diagram': p, 'ell': 1} for p in pds[1:4]])
+    assert dd.export_tikz(recs, ell=1).count(r'\subcaptionbox') == 3
+    assert dd.export_tikz(recs, ell=0).count(r'\subcaptionbox') == 1
+    with pytest.raises(ValueError, match='no diagrams at ell=7'):
+        dd.export_tikz(recs, ell=7)
+
+
+def test_export_tikz_writes_standalone_for_tex_path(tmp_path, pds):
+    """A .tex path must be compilable on its own, without the caller
+    remembering to ask for standalone."""
+    import daedalus as dd
+    recs = [{'typed_diagram': p, 'ell': 1} for p in pds[:2]]
+    out = tmp_path / 'd.tex'
+    dd.export_tikz(recs, path=str(out))
+    txt = out.read_text()
+    assert txt.startswith(r'\documentclass')
+    assert txt.rstrip().endswith(r'\end{document}')

@@ -1972,3 +1972,84 @@ def summary(result: dict) -> str:
     if si.get('n_live_diagrams') is not None:
         lines.append(f"diagrams (live): {si.get('n_live_diagrams')}")
     return '\n'.join(lines)
+
+
+# ── diagram figures (tikz-feynman) ──────────────────────────────────────
+def export_tikz(result, *, index=None, path=None, standalone=None,
+                ell=None, **kw):
+    """Emit ``tikz-feynman`` source for the diagrams of a completed run.
+
+    Parameters
+    ----------
+    result : dict or list
+        A result from :func:`run` / ``compute_cumulants`` (its ``'diagrams'``
+        records are used), a list of records, or a single typed diagram or
+        prediagram.
+    index : int or None
+        ``None`` (default) draws every diagram as a panel array; an integer
+        draws just that one.
+    path : str or None
+        Write the source here as well as returning it.  A ``.tex`` path
+        defaults ``standalone=True`` so the file compiles on its own.
+    standalone : bool or None
+        Wrap in a compilable document.  ``None`` means "True if writing a
+        ``.tex`` file, else False".
+    ell : int or None
+        Keep only diagrams at this loop order.
+    **kw
+        Forwarded to the emitter / assembler: ``propagator_label``,
+        ``show_factors``, ``symbol_map``, ``scale``, ``ncol``,
+        ``panel_width``, ``caption``, ``label``, ``max_panels``.
+
+    Returns
+    -------
+    str
+        The LaTeX source.
+
+    Notes
+    -----
+    A lone diagram labels its propagators (``G``) because it is usually
+    pedagogical; an array suppresses them because repeating one symbol on
+    every edge of every panel crowds the vertex factors without adding
+    information.  Pass ``propagator_label`` explicitly to override either.
+    """
+    from engine.diagrams.tikz_export import (
+        to_tikz_feynman, diagram_to_standalone,
+    )
+    from engine.diagrams.tikz_figure import (
+        diagrams_to_figure, diagrams_to_standalone,
+    )
+
+    if isinstance(result, dict) and 'diagrams' in result:
+        records = list(result['diagrams'] or [])
+    elif isinstance(result, (list, tuple)) and not (
+            len(result) == 4 and hasattr(result[0], 'vertices')):
+        records = list(result)
+    else:
+        records = [result]
+
+    if ell is not None:
+        records = [r for r in records
+                   if isinstance(r, dict) and r.get('ell') == ell]
+        if not records:
+            raise ValueError(f'no diagrams at ell={ell}')
+
+    if standalone is None:
+        standalone = bool(path) and str(path).endswith('.tex')
+
+    if index is not None:
+        rec = records[index]
+        one = rec.get('typed_diagram', rec) if isinstance(rec, dict) else rec
+        single_kw = {k: v for k, v in kw.items()
+                     if k not in ('ncol', 'panel_width', 'caption',
+                                  'label', 'max_panels')}
+        tex = (diagram_to_standalone(one, **single_kw) if standalone
+               else to_tikz_feynman(one, **single_kw))
+    else:
+        tex = (diagrams_to_standalone(records, **kw) if standalone
+               else diagrams_to_figure(records, **kw))
+
+    if path:
+        with open(path, 'w') as fh:
+            fh.write(tex)
+    return tex
