@@ -14,6 +14,7 @@ Two output shapes:
 """
 
 from engine.diagrams.tikz_export import to_tikz_feynman
+from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
 __all__ = ['diagrams_to_figure', 'diagrams_to_standalone', 'PREAMBLE_PACKAGES']
 
@@ -63,6 +64,32 @@ def _fmt_number(x):
     return '%.4g' % f
 
 
+def _auto_scale(diagram, ncol, budget_cols=2.0):
+    """Shrink a panel so a wide diagram still fits its column.
+
+    A high-k or high-loop diagram can be five or more layout columns wide;
+    drawn at the same scale as a tree it overruns its panel and collides with
+    the neighbour.  Scale inversely with the diagram's own width, measured in
+    columns, and never enlarge beyond the caller's scale.
+
+    ``budget_cols=2.0`` is set from the geometry, not taste: the default
+    panel is 0.30\textwidth, so at a 16 cm text width each panel gets
+    ~4.8 cm, and a column is DX = 2.3 units ~ 2.3 cm at scale 1.  Widen
+    ``panel_width`` and this can rise.
+    """
+    try:
+        pos = layout_typed_diagram(diagram)
+    except Exception:
+        return None
+    if not pos:
+        return None
+    span = (max(x for x, _ in pos.values()) -
+            min(x for x, _ in pos.values())) / DX
+    if span <= budget_cols:
+        return None
+    return round(budget_cols / span, 3)
+
+
 def _as_diagram(rec):
     """Accept a diagram record dict, a TypedDiagram, or a raw prediagram."""
     if isinstance(rec, dict):
@@ -84,8 +111,10 @@ def diagrams_to_figure(records, *, ncol=3, panel_width=r'0.30\textwidth',
         Panels per row.
     panel_width : str
         LaTeX width for each panel.
-    scale : float
-        ``tikzpicture`` scale inside each panel.
+    scale : float or 'auto'
+        ``tikzpicture`` scale inside each panel.  A wide diagram is shrunk
+        below this automatically so it does not overrun its column and
+        collide with the neighbouring panel.
     caption, label : str or None
         Figure-level caption and ``\\label``; omitted when ``None`` so the
         result can be embedded in a caller's own float.
@@ -113,12 +142,28 @@ def diagrams_to_figure(records, *, ncol=3, panel_width=r'0.30\textwidth',
 
     out = [r'\begin{figure}[t]', r'  \centering']
     for i, rec in enumerate(records):
-        body = to_tikz_feynman(_as_diagram(rec), scale=scale,
+        dia = _as_diagram(rec)
+        panel_scale = scale
+        if scale == 'auto':
+            panel_scale = _auto_scale(dia, ncol) or 0.75
+        else:
+            shrink = _auto_scale(dia, ncol)
+            if shrink is not None:
+                panel_scale = min(scale, shrink)
+        body = to_tikz_feynman(dia, scale=panel_scale,
                                propagator_label=propagator_label, **tikz_kw)
         body = '\n'.join('      ' + ln for ln in body.strip().splitlines())
         out.append(r'  \subcaptionbox{%s}[%s]{%%'
                    % (_panel_caption(rec, i + 1), panel_width))
+        # ``\subcaptionbox`` neither clips nor scales its content: a picture
+        # wider than the panel simply overruns and collides with the next
+        # one.  Shrink-to-fit makes the declared panel width authoritative.
+        # The \ifdim guard keeps it shrink-ONLY, so a small diagram is not
+        # blown up to fill the column.
+        out.append(r'    \resizebox{\ifdim\width>\linewidth'
+                   r'\linewidth\else\width\fi}{!}{%')
         out.append(body)
+        out.append('    }%')
         out.append('  }')
         if (i + 1) % ncol == 0 and i + 1 < len(records):
             out.append(r'  \\[1.2em]')

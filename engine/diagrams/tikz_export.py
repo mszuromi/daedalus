@@ -40,17 +40,28 @@ DEFAULT_SYMBOL_MAP = {
     'lambda_X': r'\lambda_X',
     'tauc':     r'\tau_c',
     'tau_g':    r'\tau_g',
-    'xstar':    r'\phi^{*}',
-    'nstar':    r'n^{*}',
-    'vstar':    r'v^{*}',
+    # NOTE: <field>star is handled generically in _apply_symbol_map, which
+    # renders the saddle in the model's OWN field name (x -> x^{*}).  That is
+    # self-consistent with the external labels (\delta x(y_1)); mapping it to
+    # a fixed \phi^{*} here would contradict them on any model whose field is
+    # not called phi.
 }
 
 
 def _apply_symbol_map(tex, symbol_map):
-    """Rewrite ``\mathit{name}`` / bare ``name`` occurrences via the map."""
+    """Rewrite ``\mathit{name}`` / bare ``name`` occurrences via the map.
+
+    A generic ``<field>star -> <field>^{*}`` rule runs first.  Every model
+    names its mean-field saddle ``<field>star``, so enumerating them in the
+    explicit map is hopeless -- without this, a model the map has not heard
+    of renders its saddle as ``\mathit{ystar}``.
+    """
     if not symbol_map:
         return tex
     import re
+    tex = re.sub(r'\\mathit\{([A-Za-z][A-Za-z0-9]*)star\}', r'\1^{*}', tex)
+    tex = re.sub(r'(?<![A-Za-z_\\])([A-Za-z][A-Za-z0-9]*)star(?![A-Za-z0-9_])',
+                 r'\1^{*}', tex)
     for name in sorted(symbol_map, key=len, reverse=True):
         repl = symbol_map[name]
         tex = tex.replace(r'\mathit{%s}' % name, repl)
@@ -86,13 +97,51 @@ def _vertex_label(vtype, show_factors, symbol_map):
         _latex_coefficient(getattr(vtype, 'coefficient', None)), symbol_map)
 
 
+def _field_symbol(leg):
+    """Physics symbol for a leg ``(field_base, pop_idx)``.
+
+    Response bases carry a trailing ``t`` (``yt`` = y-tilde) and physical
+    bases a leading ``d`` (``dx`` = delta-x); strip the marker so the
+    subscript reads as the field name.
+    """
+    if not leg:
+        return ''
+    base = leg[0] if isinstance(leg, (tuple, list)) else str(leg)
+    base = str(base)
+    if base.endswith('t') and len(base) > 1:
+        base = base[:-1]
+    elif base.startswith('d') and len(base) > 1:
+        base = base[1:]
+    return base
+
+
+def _edge_label(diagram, edge_key, propagator_label):
+    """Per-edge propagator label.
+
+    ``'auto'`` subscripts the propagator with the response and physical
+    field of that line -- meaningless for a single-field model (every edge
+    would read the same) but essential for a multi-field one, where
+    different edges ARE different matrix elements of G.
+    """
+    if propagator_label != 'auto':
+        return propagator_label
+    edge_types = getattr(diagram, 'edge_types', None) or {}
+    legs = edge_types.get(edge_key)
+    if not legs:
+        return 'G'
+    resp, phys = _field_symbol(legs[0]), _field_symbol(legs[1])
+    if not resp or not phys or resp == phys:
+        return 'G' if not resp else 'G_{%s}' % resp
+    return 'G_{%s%s}' % (resp, phys)
+
+
 def _node_name(v):
     """TikZ node names must be simple; vertex ids are ints."""
     return 'v%s' % v
 
 
 def to_tikz_feynman(diagram, *, propagator_label='G',
-                    external_label=r'\delta\phi(y_{%d})',
+                    external_label='auto',
                     show_factors=True, symbol_map=None, scale=1.0,
                     factor_label_angle='auto', dot_size=None, bend_angle=28,
                     indent='  '):
@@ -104,9 +153,14 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         A typed diagram draws vertex factors and knows sources from
         interactions; a bare prediagram still draws, with generic styling.
     propagator_label : str or None
-        Edge label (``None`` suppresses it).
+        Edge label (``None`` suppresses it).  ``'auto'`` subscripts each
+        propagator with its response and physical field, which distinguishes
+        the matrix elements of G in a multi-field model.
     external_label : str
-        ``%d``-style template receiving the 1-based external index.
+        ``'auto'`` (default) names each external by its own field, e.g.
+        ``\delta x(y_1)`` -- correct for a multi-field model where the
+        externals are not all the same field.  Otherwise a ``%d``-style
+        template receiving the 1-based external index.
     show_factors : bool
         Print each interaction/source vertex's coefficient on the vertex.
     symbol_map : dict or None
@@ -152,11 +206,17 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     lines.append(indent + r'\begin{feynman}')
 
     # ── vertices ────────────────────────────────────────────────────
+    ext_legs = getattr(diagram, 'external_legs', None) or {}
     for idx, v in enumerate(sorted(leaves), start=1):
         x, y = pos[v]
+        if external_label == 'auto':
+            sym = _field_symbol(ext_legs.get(v)) or r'\phi'
+            lab = r'\delta %s(y_{%d})' % (sym, idx)
+        else:
+            lab = external_label % idx
         lines.append(
             indent * 2 + r'\vertex [empty dot] (%s) at (%.3f, %.3f) {\(%s\)};'
-            % (_node_name(v), x, y, external_label % idx))
+            % (_node_name(v), x, y, lab))
 
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]
@@ -190,12 +250,6 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # Edge direction is the retarded propagator's time arrow (earlier ->
     # later).  Since later times sit further LEFT, drawing tail -> head
     # already points the arrow leftward; no reversal is needed.
-    opts = ['fermion']
-    if propagator_label:
-        # ``edge label'`` (primed) places the label on the far side of the
-        # line from ``edge label``, keeping it clear of the vertex factors.
-        opts.append(r"edge label'=\(%s\)" % propagator_label)
-    opt_str = ', '.join(opts)
 
     lines.append(indent * 2 + r'\diagram* {')
     edges = sorted(D.edges(labels=False))
@@ -221,9 +275,18 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                 side = 'left' if offset < 0 else 'right'
                 bend = ', bend %s=%d' % (
                     side, int(round(bend_angle * abs(offset) * 2)))
+        # Per-edge label: with ``propagator_label='auto'`` different lines
+        # are different matrix elements of G and must be named separately.
+        lab = _edge_label(diagram, (u, v, j), propagator_label)
+        opts = ['fermion']
+        if lab:
+            # ``edge label'`` (primed) sits on the far side of the line from
+            # ``edge label``, keeping it clear of the vertex factors above.
+            opts.append(r"edge label'=\(%s\)" % lab)
         sep = ',' if i < len(edges) - 1 else ''
         lines.append(indent * 3 + '(%s) -- [%s%s] (%s)%s'
-                     % (_node_name(u), opt_str, bend, _node_name(v), sep))
+                     % (_node_name(u), ', '.join(opts), bend,
+                        _node_name(v), sep))
     lines.append(indent * 2 + '};')
 
     lines.append(indent + r'\end{feynman}')

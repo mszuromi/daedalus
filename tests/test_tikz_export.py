@@ -72,7 +72,9 @@ def test_external_and_internal_vertex_styles(prediagrams_2_1):
     tex = to_tikz_feynman((D, _G, leaves, internal))
     assert tex.count('[empty dot]') == len(leaves), 'externals unshaded'
     assert tex.count('[dot]') == len(internal), 'sources/interactions solid'
-    assert r'\delta\phi(y_{1})' in tex
+    # spacing after \delta is required for single-letter fields (\delta x,
+    # not \deltax), so match the parts rather than an exact string
+    assert r'\delta' in tex and r'(y_{1})' in tex
 
 
 def test_parallel_edges_are_bowed_apart(prediagrams_2_1):
@@ -132,8 +134,21 @@ def test_symbol_map_rewrites_parameter_names():
 
     from engine.diagrams.tikz_export import _vertex_label
     out = _vertex_label(_V(), True, DEFAULT_SYMBOL_MAP)
-    assert r'\varepsilon' in out and r'\phi^{*}' in out
+    assert r'\varepsilon' in out
+    # the saddle renders in the model's OWN field name, matching the
+    # external labels, rather than a hard-coded \phi
+    assert r'x^{*}' in out
     assert 'mathit' not in out
+
+
+def test_saddle_symbols_render_for_unmapped_fields():
+    """<field>star must work for a model the explicit map never listed."""
+    from engine.diagrams.tikz_export import _apply_symbol_map, DEFAULT_SYMBOL_MAP
+    out = _apply_symbol_map(r'3 \, \varepsilon_{2} \mathit{ystar}_{1}',
+                            DEFAULT_SYMBOL_MAP)
+    assert r'y^{*}' in out and 'mathit' not in out
+    assert r'n^{*}' in _apply_symbol_map(r'\mathit{nstar}_{2}',
+                                         DEFAULT_SYMBOL_MAP)
 
 
 # ── compilation ─────────────────────────────────────────────────────
@@ -158,3 +173,45 @@ def test_standalone_document_compiles(tmp_path, prediagrams_2_1):
         pytest.skip('tikz-feynman package not installed')
     assert proc.returncode == 0, proc.stdout[-2000:]
     assert (tmp_path / 'd.pdf').exists()
+
+
+# ── multi-field labelling ───────────────────────────────────────────
+
+def test_field_symbol_strips_response_and_delta_markers():
+    from engine.diagrams.tikz_export import _field_symbol
+    assert _field_symbol(('yt', 1)) == 'y'    # response: trailing t
+    assert _field_symbol(('dx', 1)) == 'x'    # physical: leading d
+    assert _field_symbol(('n', 0)) == 'n'     # unmarked passes through
+    assert _field_symbol(None) == ''
+
+
+def test_auto_propagator_label_names_the_matrix_element():
+    """In a multi-field model different edges are different G_{ab}."""
+    from engine.diagrams.tikz_export import _edge_label
+
+    class _TD:
+        edge_types = {(2, 1, 0): (('yt', 1), ('dx', 1)),
+                      (3, 2, 0): (('xt', 1), ('dx', 1))}
+
+    td = _TD()
+    assert _edge_label(td, (2, 1, 0), 'auto') == 'G_{yx}'
+    # same field on both ends -> single subscript, not "G_{xx}"
+    assert _edge_label(td, (3, 2, 0), 'auto') == 'G_{x}'
+    # unknown edge falls back rather than raising
+    assert _edge_label(td, (9, 9, 9), 'auto') == 'G'
+    # an explicit label always wins
+    assert _edge_label(td, (2, 1, 0), 'G') == 'G'
+
+
+def test_auto_external_label_uses_the_field(prediagrams_2_1):
+    """Externals of different fields must not all read \delta\phi."""
+    D, _G, leaves, internal = prediagrams_2_1[0]
+
+    class _TD:
+        prediagram = (D, _G, leaves, internal)
+        vertex_assignments = {}
+        external_legs = {leaves[0]: ('dx', 1), leaves[1]: ('dy', 1)}
+
+    tex = to_tikz_feynman(_TD())
+    assert r'\delta x(y_{1})' in tex
+    assert r'\delta y(y_{2})' in tex
