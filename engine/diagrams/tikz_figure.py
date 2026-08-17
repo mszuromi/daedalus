@@ -143,6 +143,14 @@ def diagrams_to_figure(records, *, ncol=3, panel_width=r'0.30\textwidth',
         dropped = total - max_panels
         records = records[:max_panels]
 
+    # ONE symbol map for the whole array, for the same reason as
+    # ``diagrams_to_pages``: built per panel, ``v_1`` would name a different
+    # factor in each one.  Built over the panels actually drawn, so the key
+    # matches the figure after truncation.
+    if tikz_kw.get('symbolic_factors') and 'vertex_symbols' not in tikz_kw:
+        tikz_kw['vertex_symbols'] = vertex_symbol_map(
+            [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'),
+            keyed=True)
     out = [r'\begin{figure}[t]', r'  \centering']
     for i, rec in enumerate(records):
         dia = _as_diagram(rec)
@@ -225,8 +233,17 @@ def legend_table(diagram, *, edges=True, vertices=True, symbol_map=None,
             rows.append((_style_sample(st), r'\(%s\)' % name))
     if vertices:
         vs = (vertex_symbols if vertex_symbols is not None
-              else vertex_symbol_map(diagram, symbol_map))
-        for tex, sym in vs.items():
+              else vertex_symbol_map(diagram, symbol_map, keyed=True))
+        # The map may be keyed by expression (older callers, and the plain
+        # form) or by factor key (kind, order, expression); the expression is
+        # the last component either way.  Interactions are listed before the
+        # noise cumulants so the key reads as two blocks rather than as the
+        # order the panels happened to walk the vertices in.
+        pairs = [((k[-1] if isinstance(k, tuple) else k), sym)
+                 for k, sym in vs.items()]
+        inter = [p for p in pairs if not p[1].lstrip().startswith(r'\kappa')]
+        srcs = [p for p in pairs if p[1].lstrip().startswith(r'\kappa')]
+        for tex, sym in inter + srcs:
             rows.append((r'\(%s\)' % sym, r'\(%s\)' % tex))
     if not rows:
         return ''
@@ -256,7 +273,8 @@ def diagrams_to_pages(records, *, ncol=2, panel_width=r'0.46\textwidth',
     # would only list what the first panel happened to use.
     if tikz_kw.get('symbolic_factors') and 'vertex_symbols' not in tikz_kw:
         tikz_kw['vertex_symbols'] = vertex_symbol_map(
-            [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'))
+            [_as_diagram(r) for r in records], tikz_kw.get('symbol_map'),
+            keyed=True)
     out = []
     if caption:
         out.append(r'\captionof{figure}{%s}' % caption)

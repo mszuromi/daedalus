@@ -331,3 +331,105 @@ def test_layout_minimises_drawn_crossings(prediagrams_2_1):
                 break
         assert drawn == best, (
             f'laid out with {drawn} crossings, minimum is {best}')
+
+
+# ── source vs interaction naming ────────────────────────────────────
+
+def _real_types():
+    from engine.core.vertices import SourceType, VertexType
+    return SourceType, VertexType
+
+
+def _fig(*assignments):
+    """A minimal diagram carrying just the vertex types, for the symbol map."""
+    class _TD:
+        prediagram = None
+        vertex_assignments = dict(enumerate(assignments))
+    return _TD()
+
+
+def test_source_is_named_by_its_leg_count():
+    """A noise source IS its cumulant order; an opaque index would hide it."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+    SourceType, _V = _real_types()
+    two = SourceType('-D', [('xt', 1)] * 2, (2, 0))
+    three = SourceType('K', [('xt', 1)] * 3, (3, 0))
+    m = vertex_symbol_map(_fig(two, three))
+    assert m['-D'] == r'\kappa_{2}'
+    assert m['K'] == r'\kappa_{3}'
+
+
+def test_sources_do_not_consume_an_interaction_index():
+    """v_j runs over the DISTINCT INTERACTION factors only."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+    SourceType, VertexType = _real_types()
+    src = SourceType('-D', [('xt', 1)] * 2, (2, 0))
+    a = VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3))
+    b = VertexType('h', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
+    m = vertex_symbol_map(_fig(src, a, b))
+    assert m['g'] == r'v_{1}' and m['h'] == r'v_{2}'
+    assert m['-D'] == r'\kappa_{2}'
+
+
+def test_a_bare_factor_object_is_still_an_interaction():
+    """Nothing declaring itself a source must not be named as one."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+
+    class _C:
+        def _latex_(self): return 'A'
+
+    class _V:
+        coefficient = _C()
+
+    assert vertex_symbol_map(_fig(_V()))['A'] == r'v_{1}'
+
+
+def test_source_and_interaction_stay_apart_when_expressions_agree():
+    """Same LaTeX, different KIND -> different symbol; a tex-keyed map alone
+    could not tell them apart."""
+    from engine.diagrams.tikz_export import vertex_symbol_map, _symbol_for
+    SourceType, VertexType = _real_types()
+    src = SourceType('D', [('xt', 1)] * 2, (2, 0))
+    vtx = VertexType('D', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
+    m = vertex_symbol_map(_fig(src, vtx), keyed=True)
+    assert set(m.values()) == {r'\kappa_{2}', r'v_{1}'}
+    assert _symbol_for(m, src, 'D') == r'\kappa_{2}'
+    assert _symbol_for(m, vtx, 'D') == r'v_{1}'
+
+
+def test_same_order_sources_of_different_fields_are_distinguishable():
+    """Two 2-leg noises would both want \\kappa_2; the key must stay usable."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+    SourceType, _V = _real_types()
+    dx = SourceType('-D_1', [('xt', 1)] * 2, (2, 0))
+    dy = SourceType('-D_2', [('yt', 1)] * 2, (2, 0))
+    m = vertex_symbol_map(_fig(dx, dy))
+    assert m['-D_1'] != m['-D_2']
+    assert m['-D_1'].startswith(r'\kappa_{2}')
+    assert 'x' in m['-D_1'] and 'y' in m['-D_2']
+
+
+def test_a_lone_source_keeps_the_plain_symbol():
+    """The disambiguating superscript must fire only on a real collision."""
+    from engine.diagrams.tikz_export import vertex_symbol_map
+    SourceType, _V = _real_types()
+    m = vertex_symbol_map(_fig(SourceType('-D', [('xt', 1)] * 2, (2, 0))))
+    assert m['-D'] == r'\kappa_{2}'
+
+
+def test_drawn_panel_labels_sources_with_kappa(prediagrams_2_1):
+    """End to end: the picture itself must carry the source symbols."""
+    SourceType, VertexType = _real_types()
+    D, G, leaves, internal = prediagrams_2_1[0]
+    src = SourceType('-D', [('xt', 1)] * 2, (2, 0))
+    vtx = VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3))
+
+    class _TD:
+        prediagram = (D, G, leaves, internal)
+        vertex_assignments = {v: (src if i == 0 else vtx)
+                              for i, v in enumerate(sorted(internal))}
+
+    tex = to_tikz_feynman(_TD(), symbolic_factors=True)
+    assert r'\kappa_{2}' in tex
+    assert r'v_{1}' in tex
+    assert '-D' not in tex, 'the expression belongs in the key, not the panel'

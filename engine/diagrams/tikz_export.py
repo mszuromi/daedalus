@@ -218,7 +218,75 @@ def edge_style_map(diagram):
             for i, p in enumerate(pairs)}
 
 
-def vertex_symbol_map(diagrams, symbol_map=None):
+try:                                    # pragma: no cover - import guard
+    from engine.core.vertices import SourceType as _SourceType
+except Exception:                       # pragma: no cover
+    _SourceType = ()
+
+
+def _is_source(vtype):
+    """True for a SOURCE (noise cumulant) vertex, False for an interaction.
+
+    A source has only response legs -- bigrade ``(n, 0)``.  ``isinstance``
+    settles it for the real types; the bigrade fallback keeps hand-built
+    stand-ins working.  Anything carrying no evidence either way is an
+    interaction, so a bare object with just a ``coefficient`` still gets a
+    ``v_j``.
+    """
+    if _SourceType and isinstance(vtype, _SourceType):
+        return True
+    bg = getattr(vtype, 'bigrade', None)
+    if bg is not None and len(tuple(bg)) == 2:
+        n_resp, n_phys = tuple(bg)
+        return n_phys == 0 and n_resp > 0
+    return False
+
+
+def _source_n_legs(vtype):
+    """Number of legs on a source -- the order of the noise cumulant."""
+    legs = getattr(vtype, 'response_legs', None)
+    if legs is not None:
+        return len(legs)
+    bg = getattr(vtype, 'bigrade', None)
+    return int(tuple(bg)[0]) if bg else 0
+
+
+def _source_field(vtype):
+    """The field a source's legs belong to, or '' if they are not all one."""
+    legs = getattr(vtype, 'response_legs', None) or []
+    syms = {_field_symbol(l) for l in legs}
+    return syms.pop() if len(syms) == 1 else ''
+
+
+def _factor_key(vtype, tex):
+    """Figure-wide identity of a vertex factor.
+
+    Two factors are the same entry in the key only if they are the same KIND
+    (source vs interaction) with the same expression -- and, for a source,
+    the same number of legs, since that is what its symbol is built from.
+    """
+    if _is_source(vtype):
+        return ('source', _source_n_legs(vtype), tex)
+    return ('vertex', tex)
+
+
+def _symbol_for(vsym, vtype, tex):
+    """Look a factor up in a symbol map keyed either way.
+
+    ``vertex_symbol_map(..., keyed=True)`` keys by ``_factor_key`` so that a
+    source and an interaction that happen to print the same expression stay
+    distinct; a plain ``{tex: symbol}`` dict (what callers passed before, and
+    what the key table is built from) still resolves.
+    """
+    if not vsym:
+        return tex
+    key = _factor_key(vtype, tex)
+    if key in vsym:
+        return vsym[key]
+    return vsym.get(tex, tex)
+
+
+def vertex_symbol_map(diagrams, symbol_map=None, keyed=False):
     """Short symbol for each distinct vertex factor, plus its LaTeX.
 
     Printing ``3\,\varepsilon x^{*}_{1}`` on a vertex is unreadable once a
@@ -230,22 +298,66 @@ def vertex_symbol_map(diagrams, symbol_map=None):
     per-diagram would make ``v_1`` mean one factor in one panel and a
     different factor in the next, and the key would list only whatever the
     first panel happened to contain.
+
+    The two kinds of vertex are named differently because they mean
+    different things.  A SOURCE is a noise cumulant, and its order is the
+    only thing a reader needs from the drawing, so it is named
+    ``\kappa_n`` with ``n`` its number of legs -- an arbitrary index would
+    hide information the diagram already carries.  An INTERACTION has no
+    such canonical name, so it keeps ``v_1, v_2, ...``, numbered over the
+    distinct interaction factors only (sources do not consume a ``v``).
+
+    ``keyed=True`` keys the result by ``_factor_key`` instead of by the
+    expression, which keeps a source and an interaction apart even if their
+    coefficients print identically.  The default expression-keyed form is
+    what the key table and older callers expect.
     """
     if symbol_map is None:
         symbol_map = DEFAULT_SYMBOL_MAP
     if not isinstance(diagrams, (list, tuple)):
         diagrams = [diagrams]
-    seen = []
+    entries, seen = [], set()
     for dia in diagrams:
         assignments = getattr(dia, 'vertex_assignments', {}) or {}
         for v in sorted(assignments):
+            vtype = assignments[v]
             tex = _apply_symbol_map(
-                _latex_coefficient(
-                    getattr(assignments[v], 'coefficient', None)),
+                _latex_coefficient(getattr(vtype, 'coefficient', None)),
                 symbol_map)
-            if tex and tex not in seen:
-                seen.append(tex)
-    return {tex: r'v_{%d}' % (i + 1) for i, tex in enumerate(seen)}
+            if not tex:
+                continue
+            key = _factor_key(vtype, tex)
+            if key not in seen:
+                seen.add(key)
+                entries.append((key, tex, vtype))
+
+    # A source's name is fixed by its leg count, so two DIFFERENT source
+    # factors of the same order would both want the same name.  Only then --
+    # and only over the colliding group -- add a superscript, so the common
+    # single-noise case stays plain \kappa_2.
+    extra = {}
+    by_order = {}
+    for key, tex, vtype in entries:
+        if key[0] == 'source':
+            by_order.setdefault(key[1], []).append((key, vtype))
+    for _n, group in by_order.items():
+        if len(group) < 2:
+            continue
+        fields = [_source_field(vt) for _k, vt in group]
+        distinct_fields = all(fields) and len(set(fields)) == len(group)
+        for i, (key, _vt) in enumerate(group):
+            extra[key] = ('^{%s}' % fields[i] if distinct_fields
+                          else '^{(%d)}' % (i + 1))
+
+    out, n_int = {}, 0
+    for key, tex, _vtype in entries:
+        if key[0] == 'source':
+            sym = r'\kappa_{%d}%s' % (key[1], extra.get(key, ''))
+        else:
+            n_int += 1
+            sym = r'v_{%d}' % n_int
+        out[key if keyed else tex] = sym
+    return out
 
 
 def _node_name(v):
@@ -373,7 +485,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # One instance of each distinct value loses no information.
     _seen_factors = set()
     vsym = (vertex_symbols if vertex_symbols is not None
-            else (vertex_symbol_map(diagram, symbol_map)
+            else (vertex_symbol_map(diagram, symbol_map, keyed=True)
                   if symbolic_factors else {}))
     for v in sorted(set(D.vertices()) - leaf_set):
         x, y = pos[v]
@@ -382,7 +494,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         if label and symbolic_factors:
             # Symbolic mode names EVERY vertex -- the whole point is that the
             # short name is cheap enough to repeat, unlike the expression.
-            label = vsym.get(label, label)
+            label = _symbol_for(vsym, assignments.get(v), label)
         elif label and show_factors == 'auto':
             if label in _seen_factors:
                 label = ''

@@ -187,3 +187,55 @@ def test_pages_draws_everything_with_no_truncation(pds):
     tex = diagrams_to_pages(pds)
     assert 'omitted' not in tex
     assert tex.count(r'\begin{tikzpicture}') == len(pds)
+
+
+def test_legend_lists_sources_and_interactions_with_expressions(pds):
+    """Both kinds of vertex appear on the drawings, so both must be in the
+    key -- a symbol the key omits is unreadable."""
+    from engine.diagrams.tikz_figure import legend_table
+    from engine.core.vertices import SourceType, VertexType
+
+    class _TD:
+        prediagram = None
+        vertex_assignments = {
+            0: SourceType('-D', [('xt', 1)] * 2, (2, 0)),
+            1: VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3)),
+        }
+
+    tex = legend_table(_TD(), edges=False)
+    assert r'\(\kappa_{2}\) & \(-D\)' in tex
+    assert r'\(v_{1}\) & \(g\)' in tex
+    # interactions first, then the noise cumulants: the key reads as blocks
+    assert tex.index(r'v_{1}') < tex.index(r'\kappa_{2}')
+
+
+def test_pages_share_one_map_across_sources_and_interactions():
+    """kappa_2 and v_1 must mean the same factor in every panel."""
+    from engine.diagrams.tikz_figure import diagrams_to_pages
+    from engine.core.vertices import SourceType, VertexType
+    import engine.enumeration.loop_diagram_enumeration as L
+
+    pd = L.enumerate_all(2, 1, verbose=False)[2][0]
+    D, G, leaves, internal = pd
+    src = SourceType('-D', [('xt', 1)] * 2, (2, 0))
+    a = VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3))
+    b = VertexType('h', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
+
+    def td(types):
+        class _TD:
+            prediagram = pd
+            vertex_assignments = {v: t for v, t in
+                                  zip(sorted(internal), types)}
+        return _TD()
+
+    # panel 1 never shows 'h'; panel 2 leads with it.  Numbered per panel,
+    # 'h' would be v_1 in panel 2 and v_2 overall.
+    n = len(internal)
+    p1 = td([src] + [a] * (n - 1))
+    p2 = td([b] * n)
+    tex = diagrams_to_pages([p1, p2], ncol=2, symbolic_factors=True,
+                            legend_from=p1)
+    assert r'\kappa_{2}' in tex
+    assert r'v_{1}' in tex and r'v_{2}' in tex
+    # the key covers BOTH panels, not just the one it was built from
+    assert r'\(v_{2}\) & \(h\)' in tex
