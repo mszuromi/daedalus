@@ -18,7 +18,8 @@ hand-built diagram.
 
 from engine.diagrams.typed_diagram_layout import (
     DX, ARROWHEAD_MM, DOT_RADIUS_MM, layout_typed_diagram, mm_per_unit,
-    _seg_distance,
+    _seg_distance, bubble_bend_deg, BOW as _BOW, MAX_BEND as _MAX_BEND,
+    MIN_BUBBLE_MM,
 )
 
 __all__ = ['to_tikz_feynman', 'diagram_to_standalone',
@@ -412,12 +413,11 @@ _ARROW_POSITIONS = (0.5, 0.42, 0.58, 0.35, 0.65, 0.28, 0.72, 0.22, 0.78)
 _ARROW_GAP_MM = 0.6
 
 
-# A ``to[bend=a]`` cubic departs from its chord by about this fraction of
-# the chord length per unit sin(a) -- the maximum of the Bezier with pgf's
-# control points.  Used to turn a wanted printed gap into a bend angle.
-_BOW = 0.2936
-_MAX_BEND = 30              # past this a propagator stops looking straight
-MIN_BUBBLE_MM = 2.0         # printed gap that reads as two lines, not one
+# The bow of a parallel pair is defined ONCE, in the layout module: it is
+# geometry the layout must reason about (a bubble's arc sweeps a lens that
+# has to stay clear of other vertices) and geometry this module strokes, and
+# two copies of it would drift.  ``_BOW``, ``_MAX_BEND`` and
+# ``MIN_BUBBLE_MM`` are imported above and re-exported here unchanged.
 
 
 def edge_bends(edges, bend_angle, pos=None, mm=None,
@@ -445,8 +445,7 @@ def edge_bends(edges, bend_angle, pos=None, mm=None,
         if n > 1 and pos is not None and mm and u in pos and v in pos:
             L = _m.hypot(pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]) * mm
             if L > 0:
-                want = min(0.95, min_lens_mm / (2 * _BOW * L))
-                a = min(_MAX_BEND, max(a, _m.degrees(_m.asin(want))))
+                a = bubble_bend_deg(L, bend_angle, min_lens_mm)
         angle_of[(u, v)] = a
     for (u, v) in edges:
         n, j = multiplicity[(u, v)], drawn[(u, v)]

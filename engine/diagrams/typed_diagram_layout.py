@@ -26,11 +26,13 @@ two passes after layering matter as much as the layering itself:
 
 import itertools
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 __all__ = ['causal_depths', 'layout_typed_diagram', 'layout_prediagram',
            'panel_scale', 'mm_per_unit', 'legibility_penalty',
            'vertex_edge_clearances', 'fan_separations',
+           'bubble_bend_deg', 'bubble_half_width_mm',
+           'BEND_ANGLE', 'BOW', 'MAX_BEND', 'MIN_BUBBLE_MM',
            'DX', 'DY', 'DY_EXTERNAL', 'ASPECT',
            'DOT_RADIUS_MM', 'ARROWHEAD_MM', 'PANEL_BUDGET_COLS',
            'PANEL_MAX_SCALE']
@@ -53,6 +55,42 @@ ASPECT = 0.55
 # they are the real tikz-feynman ink, not a guess.
 DOT_RADIUS_MM = 0.825          # radius of a filled [dot] vertex
 ARROWHEAD_MM = 1.91            # perpendicular width of a `fermion` arrowhead
+
+# ── how a parallel pair is DRAWN ─────────────────────────────────────
+# Two propagators between the same pair of vertices are bowed apart into a
+# bubble, so their ink is NOT on the straight chord: it sweeps a lens around
+# it.  The layout has to know this, because judging a bubble by its chord
+# says a drawing is clear when the arc is passing through a vertex dot.
+BEND_ANGLE = 14             # default bow, degrees, on each side of a bundle
+BOW = 0.2936                # a to[bend=a] cubic departs its chord by this
+                            # fraction of the chord length per unit sin(a)
+MAX_BEND = 30               # past this a propagator stops looking straight
+MIN_BUBBLE_MM = 2.0         # printed gap that reads as two lines, not one
+
+
+def bubble_bend_deg(length_mm, bend_angle=BEND_ANGLE,
+                    min_lens_mm=MIN_BUBBLE_MM):
+    """Bow angle a parallel pair of this printed length is drawn with.
+
+    A FIXED angle bows by a fixed FRACTION of the chord, so a short pair gets
+    a proportionally narrow lens; the angle is raised until the printed gap
+    reaches ``min_lens_mm``, and capped so a bubble never balloons.  Shared
+    with ``tikz_export.edge_bends``, which draws it, so the geometry the
+    layout reasons about and the geometry pgf strokes cannot drift apart.
+    """
+    if length_mm <= 0:
+        return bend_angle
+    want = min(0.95, min_lens_mm / (2 * BOW * length_mm))
+    return min(MAX_BEND, max(bend_angle, math.degrees(math.asin(want))))
+
+
+def bubble_half_width_mm(length_mm, bend_angle=BEND_ANGLE,
+                         min_lens_mm=MIN_BUBBLE_MM):
+    """How far a bubble's arc reaches from its chord, in printed mm."""
+    if length_mm <= 0:
+        return 0.0
+    a = bubble_bend_deg(length_mm, bend_angle, min_lens_mm)
+    return BOW * length_mm * math.sin(math.radians(a))
 
 # How a panel of an array is printed.  ``tikz_figure._auto_scale`` shrinks a
 # drawing wider than ``PANEL_BUDGET_COLS`` columns to fit its column, and
@@ -199,16 +237,28 @@ def vertex_edge_clearances(pos, edges, mm=None):
     means the propagator is drawn THROUGH the dot's ink, and the reader sees
     one line passing behind a vertex as two lines meeting at it -- a
     different graph.
+
+    Measured against the INK, not the chord: a parallel pair is bowed apart
+    into a bubble, so its two arcs sweep a lens around the chord and reach
+    ``bubble_half_width_mm`` beyond it on each side.  Judging a bubble by its
+    chord is how a three-loop panel came to have an arc drawn 0.04 mm from an
+    unrelated vertex while every guard scored the drawing as perfect.
     """
     if mm is None:
         mm = mm_per_unit(pos)
-    for (u, v) in sorted({tuple(e) for e in edges}):
+    multiplicity = Counter(tuple(e) for e in edges)
+    for (u, v), n in sorted(multiplicity.items()):
         if u not in pos or v not in pos:
             continue
+        reach = 0.0
+        if n > 1:
+            L = math.hypot(pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]) * mm
+            reach = bubble_half_width_mm(L)
         for w, q in pos.items():
             if w == u or w == v:
                 continue
-            yield _seg_distance(q, pos[u], pos[v]) * mm, w, (u, v)
+            d = _seg_distance(q, pos[u], pos[v]) * mm - reach
+            yield max(0.0, d), w, (u, v)
 
 
 def fan_separations(pos, edges, mm=None):

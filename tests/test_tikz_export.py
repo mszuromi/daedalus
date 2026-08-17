@@ -956,3 +956,96 @@ def test_drawn_panel_labels_sources_with_kappa(prediagrams_2_1):
     assert r'\kappa_{2}' in tex
     assert r'v_{1}' in tex
     assert '-D' not in tex, 'the expression belongs in the key, not the panel'
+
+
+# ── the drawing must not invent structure it does not have ──────────
+
+def test_no_arrowhead_is_drawn_on_a_propagator_it_does_not_belong_to():
+    """A solid triangle on a line crossing reads as a VERTEX.
+
+    The layered layout is symmetric, so two edges between the same pair of
+    layers cross at BOTH their midpoints; separating the two ARROWHEADS from
+    each other still leaves one of them centred on the crossing, sitting on
+    the other propagator.  Measured over the 66 printed two-loop panels: 18
+    such overlaps on 18 panels, the worst with the head's centre 0.00 mm from
+    the foreign line.  Foreign propagators are therefore obstacles too.
+    """
+    import math
+    from engine.diagrams.tikz_export import (arrow_positions, path_point,
+                                             edge_bends)
+    from engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
+                                                      mm_per_unit)
+    pos = {'a': (0.0, 1.0), 'b': (2.3, -1.0), 'c': (0.0, -1.0), 'd': (2.3, 1.0)}
+    edges = [('a', 'b'), ('c', 'd')]
+    bends = edge_bends(edges, 14)
+    mm = mm_per_unit(pos)
+    ts = arrow_positions(pos, edges, bends, mm)
+    assert any(abs(t - 0.5) > 1e-9 for t in ts), 'the midpoint IS the crossing'
+
+    def clearance(i, j, t):
+        q = path_point(pos[edges[i][0]], pos[edges[i][1]], bends[i], t)
+        P = [path_point(pos[edges[j][0]], pos[edges[j][1]], bends[j], k / 40.0)
+             for k in range(41)]
+        return min(math.hypot(q[0] - p[0], q[1] - p[1]) for p in P) * mm
+
+    for i, j in ((0, 1), (1, 0)):
+        assert clearance(i, j, 0.5) < ARROWHEAD_MM / 2.0, 'premise: midpoints clash'
+        assert clearance(i, j, ts[i]) >= ARROWHEAD_MM / 2.0, (
+            'arrowhead %d still drawn on the other propagator' % i)
+
+
+def test_two_arrowheads_are_separated_not_merely_tangent():
+    """Touching triangles print as one blob, which is what a bubble did.
+
+    A `fermion` head measures 1.905 mm both along and across the line, so a
+    rule of `centre distance >= ARROWHEAD_MM` is met exactly when two heads
+    touch corner to corner.  The two heads of a bubble sat at the same point
+    along their arcs, one lens-width apart, and the lens is opened to
+    MIN_BUBBLE_MM = 2.0 mm -- so they grazed by 0.04 mm and filled the bubble
+    with a single black bowtie.
+    """
+    import math
+    from engine.diagrams.tikz_export import (arrow_positions, path_point,
+                                             edge_bends)
+    from engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
+                                                      mm_per_unit)
+    pos = {'u': (0.0, 0.0), 'v': (2.3, 0.0)}
+    edges = [('u', 'v'), ('u', 'v')]
+    mm = mm_per_unit(pos)
+    bends = edge_bends(edges, 14, pos, mm)
+    ts = arrow_positions(pos, edges, bends, mm)
+    heads = [path_point(pos['u'], pos['v'], b, t) for b, t in zip(bends, ts)]
+    gap = math.hypot(heads[0][0] - heads[1][0],
+                     heads[0][1] - heads[1][1]) * mm
+    assert gap > ARROWHEAD_MM + 0.3, (
+        'the two heads of a bubble are %.2f mm apart, %.2f mm of ink'
+        % (gap, ARROWHEAD_MM))
+
+
+def test_a_bubble_is_judged_by_its_ARC_and_not_by_its_chord():
+    """Every clearance used to be measured on the straight chord.
+
+    A parallel pair is drawn bowed, so its ink sweeps a lens around the chord
+    -- and a vertex clear of the chord can be sitting on the arc.  Found on
+    three-loop panel 479 of the quartic OU set: the guard scored the drawing
+    a PERFECT zero while an arc passed 0.04 mm from an unrelated vertex.
+    """
+    from engine.diagrams.typed_diagram_layout import (
+        vertex_edge_clearances, legibility_penalty, mm_per_unit,
+        bubble_half_width_mm, DOT_RADIUS_MM, _seg_distance)
+    pos = {'u': (0.0, 0.0), 'v': (4.0, 0.0), 'w': (2.0, 0.5)}
+    pair = [('u', 'v'), ('u', 'v')]
+    single = [('u', 'v')]
+    mm = mm_per_unit(pos)
+    chord = _seg_distance(pos['w'], pos['u'], pos['v']) * mm
+    assert chord > 2 * DOT_RADIUS_MM, 'premise: clear of the CHORD'
+    assert bubble_half_width_mm(4.0 * mm) > 0.0, 'premise: the pair is bowed'
+
+    def worst(edges):
+        return min(d for d, _v, _e in vertex_edge_clearances(pos, edges, mm))
+
+    assert worst(single) == chord, 'a lone edge is still its chord'
+    assert worst(pair) < 2 * DOT_RADIUS_MM, 'the ARC runs through the dot'
+    assert legibility_penalty(pos, single) == 0.0
+    assert legibility_penalty(pos, pair) > 0.0, (
+        'a bubble sweeping a vertex must cost the layout something')
