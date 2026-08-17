@@ -16,7 +16,7 @@ from engine.diagrams.typed_diagram_layout import (
 )
 from engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
-    edge_bends, path_point, arrow_positions, place_labels,
+    edge_bends, path_point, arrow_positions, place_labels, MIN_BUBBLE_MM,
     _label_box, _label_extent_mm, _box_overlap, _seg_in_box,
 )
 
@@ -516,6 +516,47 @@ def test_fermion_and_with_arrow_are_never_combined(prediagrams_2_2):
             assert not ('fermion' in ln and 'with arrow' in ln), ln
             assert 'fermion' in ln or 'with arrow' in ln, (
                 f'propagator drawn with no causal arrow: {ln.strip()}')
+
+
+def test_a_bubble_opens_wide_enough_to_read_as_two_lines(prediagrams_2_2):
+    """A parallel pair must not print as one thick line.
+
+    The two copies are bowed apart by a fixed ANGLE, which bows them by a
+    fixed FRACTION of the edge -- so a short bubble got a proportionally
+    narrow lens.  The tightest in the two-loop figure opened to 1.33 mm,
+    narrower than the vertex dots at either end.  The angle is now raised on
+    short pairs until the printed gap clears `MIN_BUBBLE_MM`; the tolerance
+    below absorbs the small-angle model, the 30 degree cap and the integer
+    degrees tikz is given.
+    """
+    import math
+    from collections import Counter
+    for pd in prediagrams_2_2:
+        edges = sorted(pd[0].edges(labels=False))
+        pos = layout_typed_diagram(pd)
+        mm = mm_per_unit(pos)
+        bends = edge_bends(edges, 14, pos, mm)
+        polys = [[path_point(pos[u], pos[v], b, k / 20.0) for k in range(21)]
+                 for (u, v), b in zip(edges, bends)]
+        for pair, n in Counter(edges).items():
+            if n < 2:
+                continue
+            idx = [k for k, e in enumerate(edges) if e == pair]
+            for i in range(len(idx)):
+                for j in range(i + 1, len(idx)):
+                    gap = max(min(math.hypot(p[0] - q[0], p[1] - q[1])
+                                  for q in polys[idx[j]])
+                              for p in polys[idx[i]]) * mm
+                    assert gap >= 0.95 * MIN_BUBBLE_MM, (
+                        f'bubble {pair} opens only {gap:.2f} mm')
+
+
+def test_a_long_bubble_is_not_over_bowed(prediagrams_2_2):
+    """Widening is for SHORT pairs; a long one keeps the modest default."""
+    pos = {1: (0.0, 0.0), 2: (-4.6, 0.0)}
+    edges = [(1, 2), (1, 2)]
+    wide = edge_bends(edges, 14, pos, mm_per_unit(pos))
+    assert [abs(b) for b in wide] == [14, 14]
 
 
 # ── labels ──────────────────────────────────────────────────────────

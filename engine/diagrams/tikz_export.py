@@ -363,16 +363,42 @@ _ARROW_CTRL = 0.3915       # pgf's `to[bend]` control point, as a chord fraction
 _ARROW_POSITIONS = (0.5, 0.42, 0.58, 0.35, 0.65, 0.28, 0.72, 0.22, 0.78)
 
 
-def edge_bends(edges, bend_angle):
+# A ``to[bend=a]`` cubic departs from its chord by about this fraction of
+# the chord length per unit sin(a) -- the maximum of the Bezier with pgf's
+# control points.  Used to turn a wanted printed gap into a bend angle.
+_BOW = 0.2936
+_MAX_BEND = 30              # past this a propagator stops looking straight
+MIN_BUBBLE_MM = 2.0         # printed gap that reads as two lines, not one
+
+
+def edge_bends(edges, bend_angle, pos=None, mm=None,
+               min_lens_mm=MIN_BUBBLE_MM):
     """Signed bend in degrees per drawn edge (positive = tikz ``bend left``).
 
     Parallel edges between one pair of vertices are bowed symmetrically apart
     so the pair reads as a bubble instead of a single line.  Returned as data
     so the arrow placement can reconstruct the curve the reader sees rather
     than the straight chord.
+
+    A FIXED angle bows by a fixed FRACTION of the edge, so a short bubble
+    gets a proportionally narrow lens: at 14 degrees the tightest bubble in
+    the two-loop figure opened to 1.33 mm, less than the width of the vertex
+    dots at either end, and read as a single thick line.  Given ``pos`` and a
+    millimetre scale, the angle is therefore raised on short pairs until the
+    printed gap reaches ``min_lens_mm``, capped so a bubble never balloons.
     """
+    import math as _m
     from collections import Counter
     multiplicity, drawn, out = Counter(edges), Counter(), []
+    angle_of = {}
+    for (u, v), n in multiplicity.items():
+        a = bend_angle
+        if n > 1 and pos is not None and mm and u in pos and v in pos:
+            L = _m.hypot(pos[v][0] - pos[u][0], pos[v][1] - pos[u][1]) * mm
+            if L > 0:
+                want = min(0.95, min_lens_mm / (2 * _BOW * L))
+                a = min(_MAX_BEND, max(a, _m.degrees(_m.asin(want))))
+        angle_of[(u, v)] = a
     for (u, v) in edges:
         n, j = multiplicity[(u, v)], drawn[(u, v)]
         drawn[(u, v)] += 1
@@ -380,7 +406,7 @@ def edge_bends(edges, bend_angle):
         if n > 1:
             offset = j - (n - 1) / 2.0
             if abs(offset) > 1e-9:
-                mag = int(round(bend_angle * abs(offset) * 2))
+                mag = int(round(angle_of[(u, v)] * abs(offset) * 2))
                 b = mag if offset < 0 else -mag
         out.append(b)
     return out
@@ -779,7 +805,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # and only a millimetre model gets the collisions right.
     mm = mm_per_unit(pos)
     _P = {u: (x * mm, y * mm) for u, (x, y) in pos.items()}
-    _bends = edge_bends(edge_list, bend_angle)
+    _bends = edge_bends(edge_list, bend_angle, pos, mm)
     _polys = [[tuple(c * mm for c in path_point(pos[a], pos[b], bd, k / 12.0))
                for k in range(13)]
               for (a, b), bd in zip(edge_list, _bends)]
@@ -833,7 +859,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # already points the arrow leftward; no reversal is needed.
 
     lines.append(indent * 2 + r'\diagram* {')
-    edges = sorted(D.edges(labels=False))
+    edges = edge_list
     # Parallel edges (a loop between two vertices) must be bowed apart or
     # tikz-feynman draws them on top of each other.  Bend symmetrically about
     # the straight line so the pair reads as a bubble.
@@ -843,8 +869,8 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     # that is a SEMICIRCULAR arc, so between two distant vertices it balloons
     # into a circle bigger than the diagram.  A fixed modest angle bows by the
     # same visual amount at any separation.
-    bends = edge_bends(edges, bend_angle)
-    arrows = arrow_positions(pos, edges, bends)
+    bends = _bends
+    arrows = arrow_positions(pos, edges, bends, mm)
     for i, (u, v) in enumerate(edges):
         j = drawn[(u, v)]
         drawn[(u, v)] += 1
