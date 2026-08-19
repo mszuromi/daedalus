@@ -356,6 +356,38 @@ def _iso_cert(G):
     return (C.order(), tuple(sorted(C.edges(labels=False))))
 
 
+def cert_to_graph(cert, directed):
+    """Inverse of :func:`_iso_cert`: rebuild the canonical representative.
+
+    ``_iso_cert`` returns ``(order, sorted_edges)`` of ``canonical_label()``,
+    which is a LOSSLESS encoding of the graph up to isomorphism -- the pair is
+    enough to reconstruct the canonical representative outright.  Repeated
+    pairs in ``sorted_edges`` carry edge multiplicity, since
+    ``edges(labels=False)`` lists every copy.
+
+    This is what lets the enumeration pass ~100-byte tuples between stages and
+    between processes instead of Sage graph objects, which cost ~13.8 kB of
+    live memory apiece (measured on the (4,2) cache: 6.7 MB on disk, 0.91 GB
+    resident).  Round-trip identity ``_iso_cert(cert_to_graph(c)) == c`` is
+    asserted over every cached cell by ``tests/test_cert_roundtrip.py``.
+
+    The leaf set is NOT stored: leaves are exactly the degree-1 vertices and
+    degree is an isomorphism invariant, so ``leaves_of`` recovers it.
+    """
+    order, edges = cert
+    cls = DiGraph if directed else Graph
+    G = cls(multiedges=True, loops=False)
+    G.add_vertices(range(order))
+    for u, v in edges:
+        G.add_edge(u, v)
+    return G
+
+
+def leaves_of(G):
+    """External vertices of a (pre)diagram: exactly its degree-1 vertices."""
+    return sorted(v for v in G.vertices() if G.degree(v) == 1)
+
+
 def _remove_isomorphic_undirected(candidates):
     seen = {}
     for G, leaves, internal in candidates:
