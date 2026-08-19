@@ -26,6 +26,8 @@ from typing import Optional
 import numpy as np
 from scipy.optimize import root as _scipy_root
 
+from engine.core.dt_order import NonlinearDtError
+
 
 # Math functions that may appear in user equation text (LHS / RHS of
 # .equation(...), or inside .define_function(...) expressions).
@@ -553,6 +555,11 @@ def solve_mean_field_dae(
             rd = _build_root_dict(x)
             try:
                 stab = linear_stability(model, fundamental, rd, verbose=False)
+            except NonlinearDtError:
+                # A model nonlinear in Dt is not a flaky-stability
+                # nuisance — it is unrepresentable.  Let the actionable
+                # message out instead of demoting the root to "unknown".
+                raise
             except Exception as e:
                 # Defensive: if stability fails for some reason, mark as
                 # unknown and skip rather than blowing up the solve.
@@ -640,6 +647,60 @@ def solve_mean_field_dae(
 
 
 # ── Linear stability via generalized eigenvalue problem ──────────────
+
+
+def _dt_offending_fields(resid, Dt_sym, sym_per_var) -> list:
+    """State-variable names carrying the ``Dt``-degree ≥ 2 part of
+    ``resid``, rendered ``'v[0]'`` / ``'x'`` for the error message."""
+    from sage.all import SR, diff
+    try:
+        d2 = diff(diff(SR(resid), Dt_sym), Dt_sym).expand()
+    except (AttributeError, TypeError, ValueError):
+        return []
+    hits = []
+    for var, syms in sym_per_var.items():
+        for idx, s in enumerate(syms):
+            try:
+                if d2.has(s):
+                    hits.append(f'{var}[{idx}]' if len(syms) > 1 else var)
+            except (AttributeError, TypeError, ValueError):
+                continue
+    return hits
+
+
+def _check_equation_first_order_in_dt(resid, Dt_sym, model, eq, eq_no,
+                                      i, pop, sym_per_var) -> None:
+    """Raise ``NonlinearDtError`` if one declared equation is nonlinear
+    in ``Dt``, naming the equation, its population slot, and the field(s)
+    the offending term acts on."""
+    from engine.core.dt_order import (check_first_order_in_dt,
+                                      dt_degree_exceeds_one)
+
+    # Fast path: this runs once per scalar residual, so the per-field
+    # diagnostics below (O(M) symbolic ``has`` probes) must stay off it.
+    if not dt_degree_exceeds_one(resid, Dt_sym):
+        return
+
+    where = (f"ModelBuilder.equation(lhs={eq['lhs_text']!r}, "
+             f"rhs={eq['rhs_text']!r}"
+             + (f", population={pop!r}" if pop is not None else '') + ')')
+    fields = _dt_offending_fields(resid, Dt_sym, sym_per_var)
+    subject = f'equation #{eq_no}'
+    if pop is not None:
+        subject += f' at population index i={i}'
+    if fields:
+        subject += f', field(s) {", ".join(sorted(set(fields)))}'
+    display_subs = {
+        str(s): (f'{var}[{idx}]' if len(syms) > 1 else var)
+        for var, syms in sym_per_var.items()
+        for idx, s in enumerate(syms)
+    }
+    check_first_order_in_dt(
+        resid, Dt_sym,
+        context=f"model {model.get('name', '<unnamed>')!r}, {where}",
+        subject=subject,
+        display_subs=display_subs,
+    )
 
 
 def linear_stability(
@@ -767,7 +828,7 @@ def linear_stability(
         for var, arr in sym_per_var.items()
     }
     residuals_sym = []
-    for eq in model['equations']:
+    for eq_no, eq in enumerate(model['equations'], start=1):
         pop = eq['population']
         pop_size_val = _pop_size(model, pop) if pop is not None else 1
         lhs_py = _sage_to_python(eq['lhs_text'])
@@ -792,7 +853,15 @@ def linear_stability(
             }
             lhs = eval(lhs_py, ns)
             rhs = eval(rhs_py, ns)
-            residuals_sym.append(SR(lhs - rhs))
+            resid = SR(lhs - rhs)
+            # First-order-in-Dt guard.  A term of Dt-degree >= 2 falls
+            # out of BOTH halves of the pencil built below — B is
+            # evaluated at Dt=0, and A differentiates once wrt Dt and
+            # THEN evaluates at Dt=0 — so it would vanish from the
+            # linearization without a trace.  Reject it loudly instead.
+            _check_equation_first_order_in_dt(
+                resid, Dt_sym, model, eq, eq_no, i, pop, sym_per_var)
+            residuals_sym.append(resid)
 
     if len(residuals_sym) != M:
         raise ValueError(

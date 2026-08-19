@@ -981,6 +981,33 @@ class FieldTheory:
         self._S_raw = S_raw
         self._by_tp = by_tp
 
+        # First-order-in-time invariant.  Every downstream consumer of
+        # ``_by_tp`` (propagator kernel, MF linearization pencil,
+        # vertex form factors) assumes each ``Dt`` appears at most
+        # linearly; a ``Dt^2`` term would silently vanish from the
+        # linearization instead of being rejected.  Check once, here,
+        # where the whole action is in hand.
+        self.check_first_order_in_dt()
+
+    def check_first_order_in_dt(self) -> None:
+        """Reject an action with any term of ``Dt``-degree ≥ 2.
+
+        Raises :class:`engine.core.dt_order.NonlinearDtError` (a
+        ``ValueError``).  Called at the end of :meth:`expand`, and again
+        by the expand-cache loader so a bundle written before this guard
+        existed cannot sneak a second-order action back in.
+        """
+        from engine.core.dt_order import check_action_first_order_in_dt
+        ns = self._ns
+        if ns is None or self._by_tp is None:
+            return
+        check_action_first_order_in_dt(
+            self._by_tp,
+            getattr(ns, 'Dt', None),
+            getattr(ns, '_ring_var_names', []),
+            model_name=self.model.get('name', '<unnamed>'),
+        )
+
     def sanity_check(self, verbose=True) -> bool:
         """
         Verify zero sectors:

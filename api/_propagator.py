@@ -539,6 +539,14 @@ def _to_kernel(c, Dt, delta_D, delta_Dp):
     constant back (instead of a 2π·δ(ω) distribution).  Kernel symbols
     (e.g. ns.g) survive untransformed; their frequency image is applied
     after FT via the model's ``kernel_ft_image`` hook.
+
+    ASSUMES ``c`` is at most LINEAR in ``Dt`` — the split below is
+    exactly ``c = c(0) + Dt·c′``, and a ``Dt^2`` term would be mapped to
+    the meaningless ``δ′(t)²`` (whose Fourier transform Sage renders
+    with ``dirac_delta(0)`` factors).  That invariant is enforced
+    upstream by ``FieldTheory.check_first_order_in_dt()``, which runs at
+    the tail of every ``expand()`` and on every expand-cache load, so no
+    action reaching here can carry ``Dt``-degree ≥ 2.
     """
     c = SR(c)
     if c.has(delta_D):
