@@ -195,6 +195,104 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
     return valid_trees
 
 
+def _tree_bounds_by_j(k, ell, max_vertices_search=50):
+    """``{j: (num_leaves, v3_max, v2_max, min_n, max_n)}`` for the admissible j.
+
+    Factored out of :func:`generate_trees_with_constraints` so the same bounds
+    drive both the serial path and the parallel one.
+    """
+    spec = {}
+    for j in range(0, ell + (ell // 2) + 1):
+        num_leaves = k + j
+        v3_max = k + j - 2
+        v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
+        min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        max_n = min(num_leaves + v2_max + v3_max,
+                    v_max_orientable_bound(k, ell), max_vertices_search)
+        if max_n < min_n:
+            continue
+        spec[j] = (num_leaves, v3_max, v2_max, min_n, max_n)
+    return spec
+
+
+def _trees_of_order(args):
+    """Worker: admissible trees in one ``(n, residue)`` slice, as packed certs.
+
+    Two things are going on.  First, ``graphs.trees(n)`` is the expensive call
+    and the serial path invokes it once per admissible ``j`` -- up to j_max+1
+    times over the same trees.  A tree's leaf count fixes its surplus,
+    ``j = |L| - k``, so ONE pass can dispatch each tree to its single
+    admissible j.
+
+    Second, splitting only by ``n`` balances terribly: the largest ``n``
+    carries most of the trees (2.14M of 3.5M at (6,2)) and cannot be split,
+    because ``graphs.trees`` is a sequential generator.  nauty's ``gentreeg``
+    accepts a ``res/mod`` argument that partitions its own search, verified
+    disjoint and complete against ``graphs.trees``, so each ``n`` splits into
+    ``mod`` balanced slices instead.
+
+    Returns packed certs rather than Sage trees so the pool pays tens of bytes
+    of IPC per tree instead of pickling a graph.
+    """
+    n, res, mod, k, spec = args
+    gen = (graphs.nauty_gentreeg(f'{n} {res}/{mod}') if mod > 1
+           else graphs.trees(n))
+    out = []
+    for tree in gen:
+        leaves, _internal, degree_2, degree_3plus = classify_vertices_sage(tree)
+        j = len(leaves) - k
+        s = spec.get(j)
+        if s is None:
+            continue
+        num_leaves, v3_max, v2_max, min_n, max_n = s
+        if not (min_n <= n <= max_n):
+            continue
+        if len(degree_3plus) > v3_max or len(degree_2) > v2_max:
+            continue
+        out.append((pack_cert(_iso_cert(tree)), j, num_leaves))
+    return out
+
+
+def generate_trees_parallel(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """``(packed_tree_cert, j, num_leaves)`` records, one pass, in parallel.
+
+    Two independent savings over :func:`generate_trees_with_constraints`:
+    ``graphs.trees(n)`` runs once per ``n`` rather than once per ``(j, n)``,
+    and the ``n`` are farmed out.  Load balance is poor by construction --
+    the largest ``n`` dominates and cannot be split, since Sage's tree
+    generator is sequential -- so most of the win is the deduplication.
+
+    Returns CERTS, not Sage trees: (6,2) admits 1.47M trees, which as live
+    graph objects would be ~20 GB in the parent, reintroducing exactly the
+    ceiling this module exists to remove.  Consumers rebuild per tree.
+    """
+    spec = _tree_bounds_by_j(k, ell, max_vertices_search)
+    if not spec:
+        return []
+    ns = range(min(v[3] for v in spec.values()), max(v[4] for v in spec.values()) + 1)
+    # Split each order into ``mod`` balanced slices so the largest n, which
+    # dominates, is not stuck on one worker.  Below _SPLIT_MIN_N the split is
+    # not merely pointless but WRONG: gentreeg's search tree is too shallow to
+    # partition, and every residue emits the whole set (measured at n=3: the
+    # lone tree came back 12 times).  Those orders hold a handful of trees, so
+    # they run as single units.
+    args = []
+    for n in ns:
+        mod = max(1, n_procs) if n >= _SPLIT_MIN_N else 1
+        args.extend((n, res, mod, k, spec) for res in range(mod))
+    # Dedup defensively: gentreeg residues are disjoint for n >= _SPLIT_MIN_N
+    # and graphs.trees yields pairwise non-isomorphic trees, so a repeat can
+    # only be a generator quirk, never a legitimate duplicate.
+    seen = set()
+    out = []
+    for chunk in _map_unordered(_trees_of_order, args, n_procs, verbose, 'order'):
+        for rec in chunk:
+            if rec not in seen:
+                seen.add(rec)
+                out.append(rec)
+    return out
+
+
 # ===========================================================================
 # Edge addition
 # ===========================================================================
@@ -656,6 +754,7 @@ def _plot_prediagrams(prediagrams, k, ell, save=False):
 # ===========================================================================
 
 _CERT_VMAX = 255          # struct 'B'; |V| <= 3k+3ell-3 stays far below this
+_SPLIT_MIN_N = 8         # below this, gentreeg res/mod emits duplicates
 
 
 def pack_cert(cert):
@@ -679,13 +778,15 @@ def unpack_cert(blob):
 
 
 def _tree_to_topology_certs(args):
-    """Worker: one tree -> packed certs of the topologies it generates.
+    """Worker: one packed tree cert -> packed certs of the topologies it makes.
 
-    Returns packed bytes rather than Sage graphs so that a process pool pays
-    23 bytes of IPC per result instead of pickling a ~13.8 kB graph.
+    Takes and returns packed bytes so the pool never pickles a Sage graph, in
+    either direction.
     """
+    blob, j, num_leaves, k, ell = args
+    tree = cert_to_graph(unpack_cert(blob), directed=False)
     out = set()
-    for G, _leaves, _internal in process_tree_parallel(args):
+    for G, _leaves, _internal in process_tree_parallel((tree, j, num_leaves, k, ell)):
         out.add(pack_cert(_iso_cert(G)))
     return out
 
@@ -741,8 +842,8 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
 
 def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
     """Packed certs of every topology at ``(k, ell)``, deduplicated."""
-    trees = generate_trees_with_constraints(k, ell, max_vertices_search)
-    args = [(t, j, nl, k, ell) for t, j, nl in trees]
+    trees = generate_trees_parallel(k, ell, n_procs, max_vertices_search, verbose)
+    args = [(blob, j, nl, k, ell) for blob, j, nl in trees]
     seen = set()
     for chunk in _map_unordered(_tree_to_topology_certs, args, n_procs,
                                 verbose, 'tree'):
