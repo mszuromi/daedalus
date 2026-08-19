@@ -120,6 +120,9 @@ notebooks/examples/SDE/Dendritic_linear_gate.ipynb
 notebooks/examples/SDE/Dendritic_output_to_dendrite.ipynb
 notebooks/examples/SDE/Dendritic_intrinsic_kcorr.ipynb
 notebooks/examples/SDE/Teasley_Ocker_compartmental.ipynb
+models/teasley_ocker_constrate_common.model.py
+simulations/teasley_ocker_constrate_common_sim_numba.py
+notebooks/examples/SDE/Teasley_Ocker_constrate_common.ipynb
 
 # Legacy Hawkes model-dict equivalence cluster (old hand-written-model format,
 # superseded by models/*.model.py) + manual diagnostic scripts. Kept local.
