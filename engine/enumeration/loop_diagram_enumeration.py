@@ -644,6 +644,127 @@ def _plot_prediagrams(prediagrams, k, ell, save=False):
     ga.show(figsize=[6 * n_cols, 5 * n_rows])
 
 
+
+# ===========================================================================
+# Streaming enumeration
+#
+# The eager path holds every prediagram as a live Sage graph (~13.8 kB each,
+# measured), which is what caps (6,2) and (4,3) -- not CPU.  The streaming
+# path carries PACKED CERTIFICATES instead: 23 bytes each, so a plain
+# in-memory set deduplicates 207M of them in under 5 GB.  Sage objects are
+# rebuilt only where a consumer needs one.
+# ===========================================================================
+
+_CERT_VMAX = 255          # struct 'B'; |V| <= 3k+3ell-3 stays far below this
+
+
+def pack_cert(cert):
+    """Pack ``(order, edges)`` into bytes.  23 bytes typical vs 770 as a tuple."""
+    import struct
+    order, edges = cert
+    if order > _CERT_VMAX:
+        raise ValueError(f'pack_cert: order {order} exceeds {_CERT_VMAX}')
+    out = [struct.pack('!B', order)]
+    for u, v in edges:
+        out.append(struct.pack('!BB', u, v))
+    return b''.join(out)
+
+
+def unpack_cert(blob):
+    """Inverse of :func:`pack_cert`."""
+    import struct
+    order = blob[0]
+    edges = tuple((blob[i], blob[i + 1]) for i in range(1, len(blob), 2))
+    return (order, edges)
+
+
+def _tree_to_topology_certs(args):
+    """Worker: one tree -> packed certs of the topologies it generates.
+
+    Returns packed bytes rather than Sage graphs so that a process pool pays
+    23 bytes of IPC per result instead of pickling a ~13.8 kB graph.
+    """
+    out = set()
+    for G, _leaves, _internal in process_tree_parallel(args):
+        out.add(pack_cert(_iso_cert(G)))
+    return out
+
+
+def _topology_cert_to_prediagram_certs(blob):
+    """Worker: one packed topology cert -> packed certs of its orientations."""
+    G = cert_to_graph(unpack_cert(blob), directed=False)
+    leaves = leaves_of(G)
+    return {pack_cert(_iso_cert(D)) for D in enumerate_orientations(G, leaves)}
+
+
+def _map_unordered(fn, items, n_procs, verbose=False, label=''):
+    """Map ``fn`` over ``items``, with processes when that is safe here.
+
+    Threads are GIL-bound for Sage graph work, so processes are the point.
+    macOS + Jupyter forbids fork entirely (it has hard-crashed this project's
+    machine), so the guard degrades to serial there rather than to threads.
+    """
+    if n_procs == 1 or len(items) == 0:
+        for i, it in enumerate(items):
+            if verbose and (i + 1) % 200 == 0:
+                print(f'  {label} {i+1}/{len(items)}...', end='\r')
+            yield fn(it)
+        return
+
+    from engine.fork_safety import fork_unsafe_in_notebook
+    if fork_unsafe_in_notebook('fork'):
+        import warnings
+        warnings.warn(
+            'Streaming enumeration: fork-based multiprocessing is unsafe in a '
+            'Jupyter kernel on macOS; falling back to serial.  Run as a script '
+            '(`sage -python run.py`) to use all cores.')
+        for it in items:
+            yield fn(it)
+        return
+
+    # 'fork', not the macOS default 'spawn': spawn re-imports the calling
+    # module in every worker, which both re-runs an unguarded caller and pays
+    # a full `from sage.all import *` per process.  The guard above has
+    # already established that forking here is safe (script, not notebook),
+    # which is the same contract the temporal pipeline runs under.
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=n_procs,
+                             mp_context=mp.get_context('fork')) as ex:
+        done = 0
+        for res in ex.map(fn, items, chunksize=max(1, len(items) // (n_procs * 8))):
+            done += 1
+            if verbose and done % 200 == 0:
+                print(f'  {label} {done}/{len(items)}...', end='\r')
+            yield res
+
+
+def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """Packed certs of every topology at ``(k, ell)``, deduplicated."""
+    trees = generate_trees_with_constraints(k, ell, max_vertices_search)
+    args = [(t, j, nl, k, ell) for t, j, nl in trees]
+    seen = set()
+    for chunk in _map_unordered(_tree_to_topology_certs, args, n_procs,
+                                verbose, 'tree'):
+        seen |= chunk
+    return seen
+
+
+def stream_prediagram_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """Packed certs of every prediagram at ``(k, ell)``, deduplicated.
+
+    Two passes -- topologies first, then orientations -- because a topology is
+    reachable from several spanning trees (three, for the worked example of
+    Sec. IV), so fusing them would re-orient each topology that many times.
+    """
+    topo = sorted(stream_topology_certs(k, ell, n_procs, max_vertices_search, verbose))
+    seen = set()
+    for chunk in _map_unordered(_topology_cert_to_prediagram_certs, topo, n_procs,
+                                verbose, 'topology'):
+        seen |= chunk
+    return seen
+
+
 # ===========================================================================
 # Public API
 # ===========================================================================
