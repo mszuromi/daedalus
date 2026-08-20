@@ -2,9 +2,9 @@
 Diagram-stage enumeration with disk caching.
 
 Wraps the four-stage diagram pipeline:
-    enumerate_prediagrams_all → enumerate_all_typed
-                              → filter_causal
-                              → deduplicate_typed_diagrams
+    prediagram_cache.load_prediagrams → enumerate_all_typed
+                                      → filter_causal
+                                      → deduplicate_typed_diagrams
 
 into a single ``enumerate_unique_diagrams(...)`` call that caches the
 final ``unique`` list per ``(model_tag, taylor_order, k, ell, ext_fields)``
@@ -30,9 +30,7 @@ from engine.core.cache import PipelineCache
 from engine.diagrams.causality import filter_causal
 from engine.diagrams.symmetry import deduplicate_with_multiplicities
 from engine.diagrams.type_assignment import enumerate_all as enumerate_all_typed
-from engine.enumeration.loop_diagram_enumeration import (
-    enumerate_all as enumerate_prediagrams_all,
-)
+from engine.enumeration import prediagram_cache as pd_format
 
 
 def _ext_fields_tag(external_fields):
@@ -42,7 +40,7 @@ def _ext_fields_tag(external_fields):
 
 #: Root for the MODEL-INDEPENDENT prediagram cache.
 #:
-#: ``enumerate_prediagrams_all`` depends on ``(k, ell)`` ALONE -- not on the
+#: The prediagram set depends on ``(k, ell)`` ALONE -- not on the
 #: model, its external fields, or its taylor order.  Caching it under
 #: ``saved_models/<model>/`` (where the typed-diagram cache lives) would
 #: therefore recompute it once per model, once per external-field choice and
@@ -51,10 +49,11 @@ def _ext_fields_tag(external_fields):
 #: shared by every model.
 PREDIAGRAM_CACHE_ROOT = 'saved_prediagrams'
 
-#: Stage name for the prediagram slot.  Bump on any change to the enumeration
-#: that alters the prediagram set at fixed ``(k, ell)`` -- e.g. the causal
-#: orientation rules, or ``max_vertices_search`` ceasing to be the default.
-_PREDIAGRAM_STAGE = 'prediagrams_v1'
+#: Format selection, lookup order and the v1/v2 file layout all live in
+#: :mod:`engine.enumeration.prediagram_cache`.  In short: v2 (packed certs --
+#: ~4-5x smaller on disk, ~350x smaller live) is preferred, v1 (pickled Sage
+#: records, 16 shipped files) is still read but never written, and a miss
+#: computes via the streaming path and writes v2.
 
 
 def _model_cache_dir(model, taylor_order, cache_dir_root):
@@ -82,7 +81,7 @@ def enumerate_unique_diagrams(
     vtypes,
     stypes,
     cache_dir_root: str = 'saved_models',
-    prediagram_cache_root: str = PREDIAGRAM_CACHE_ROOT,
+    prediagram_cache_root: str | None = None,
     use_cache: bool = True,
     parallel: bool = False,
     n_workers: int | None = None,
@@ -110,9 +109,12 @@ def enumerate_unique_diagrams(
     vtypes, stypes : lists
         Vertex/source type lists from ``extract_*_types``.
     cache_dir_root : str
-    prediagram_cache_root : str
+    prediagram_cache_root : str or None
         Root for the shared, model-independent prediagram cache.
         Keyed by ``(k, ell)`` only, so one copy serves every model.
+        ``None`` resolves to :data:`PREDIAGRAM_CACHE_ROOT` at call time
+        (rather than at import time, so the module constant stays
+        overridable).
     use_cache : bool
         If False, always recompute and never write.
     parallel : bool, default False
@@ -141,7 +143,8 @@ def enumerate_unique_diagrams(
     cache_dir = _model_cache_dir(model, ft.taylor_order, cache_dir_root)
     cache = PipelineCache(cache_dir)
     # Shared across models: prediagrams depend only on (k, ell).
-    pd_cache = PipelineCache(prediagram_cache_root)
+    if prediagram_cache_root is None:
+        prediagram_cache_root = PREDIAGRAM_CACHE_ROOT
 
     ext_tag = _ext_fields_tag(external_fields)
     # Bumped from ``unique_typed_*`` to invalidate caches written before
@@ -197,23 +200,17 @@ def enumerate_unique_diagrams(
                           f'rebuilding.')
 
         # ── Build the four stages ────────────────────────────────
-        if use_cache:
-            _pd_hit = pd_cache.exists(_PREDIAGRAM_STAGE, k=k, loop_order=ell)
-            prediagrams = pd_cache.get_or_compute(
-                _PREDIAGRAM_STAGE,
-                lambda: enumerate_prediagrams_all(
-                    k=k, ell=ell, verbose=False,
-                )[2],
-                k=k, loop_order=ell,
-            )
-            if verbose:
-                print(f'      ell={ell}: {len(prediagrams)} prediagrams '
-                      f'{"loaded from" if _pd_hit else "computed and written to"} '
-                      f'{prediagram_cache_root}')
-        else:
-            _, _, prediagrams, _ = enumerate_prediagrams_all(
-                k=k, ell=ell, verbose=False,
-            )
+        prediagrams, _pd_source = pd_format.load_prediagrams(
+            prediagram_cache_root, k, ell,
+            use_cache=use_cache, verbose=False,
+        )
+        if verbose:
+            _how = {'computed': f'computed and written to '
+                                f'{prediagram_cache_root} as v2',
+                    'eager': 'enumerated (cache bypassed)'}.get(
+                _pd_source, f'loaded from {_pd_source} in '
+                            f'{prediagram_cache_root}')
+            print(f'      ell={ell}: {len(prediagrams)} prediagrams {_how}')
         typed = enumerate_all_typed(
             prediagrams, external_fields, vtypes, stypes,
             G_ft=G_ft,
