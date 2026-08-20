@@ -521,6 +521,17 @@ def extract_vertex_types(ft):
     -------
     list of VertexType (with ConvVertexType instances mixed in for
     conductance vertices)
+
+    Notes
+    -----
+    A vertex coefficient may legitimately carry ONE factor of ``Dt``
+    (a derivative vertex; the spatial form-factor pass maps it to
+    ``-iω``).  ``Dt^2`` has no such image, and nothing here would
+    notice — it would ride into the scalar prefactor as an unbound
+    symbol.  ``FieldTheory.check_first_order_in_dt()`` rejects it at the
+    tail of ``expand()`` (and on every expand-cache load), so every
+    ``ft.vertices()`` sector reaching this function is guaranteed at
+    most linear in ``Dt``.
     """
     from engine.core.convolution import kernel_attachments_in_coefficient
 

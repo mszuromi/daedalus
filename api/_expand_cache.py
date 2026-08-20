@@ -482,6 +482,12 @@ def load_expand(model: dict, ft, target_order: int,
                   f'Falling back to a fresh expand() is the safe path.')
         return False
 
+    # A cache-load skips ``FieldTheory.expand()`` and therefore skips the
+    # first-order-in-Dt guard that lives at its tail.  Re-run it on the
+    # restored sectors so a bundle written before that guard existed
+    # can't reintroduce a silently-dropped ``Dt^2`` term.
+    ft.check_first_order_in_dt()
+
     if verbose:
         if cached_order == target_order:
             print(f'[expand-cache] hit at order={target_order} '

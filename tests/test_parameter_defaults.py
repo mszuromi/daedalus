@@ -47,13 +47,33 @@ def test_explicit_parameters_still_win():
     assert got == pytest.approx(0.5, rel=1e-5), 'D/mu with mu=2'
 
 
+def _model_without_defaults():
+    """A minimal model whose parameters declare no defaults.
+
+    Built inline rather than loaded from ``models/``: the only shipped model
+    with no defaults at all is gitignored (kept local), so loading it made
+    this test pass in a working tree and fail in a fresh clone.
+    """
+    from api.model import TemporalModelBuilder
+    return (
+        TemporalModelBuilder('no-defaults probe')
+        .population('pop', size=1)
+        .physical_field('x', population='pop', description='variable')
+        .parameter('E', domain='positive')
+        .parameter('w', domain='positive')
+        .set_action_text('sum(xt[i]*((Dt+E)*x[i]) - w*xt[i]^2 for i in pop)')
+        .equation(lhs='(Dt+E)*x[i]', rhs='0', population='pop')
+        .build()
+    )
+
+
 def test_missing_required_parameters_are_named():
     """A model with no defaults must say WHICH parameters it needs, not raise
     a bare NameError from deep inside the Sage substitution."""
-    model = _load('quadratic_hawkes').build()
+    model = _model_without_defaults()
     with pytest.raises(ValueError) as exc:
         compute_cumulants(model, k=2, max_ell=0,
-                          external_fields=[('dn', 1)] * 2,
+                          external_fields=[('dx', 1)] * 2,
                           tau_grid=np.array([0.0]), use_cache=False,
                           verbose=False)
     msg = str(exc.value)
