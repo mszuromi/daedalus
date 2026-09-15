@@ -44,10 +44,10 @@ import math
 import numpy as np
 
 
-# ── Notation (code ↔ paper App. B) ───────────────────────────────────
+# ── Notation (code ↔ paper App. A3c) ─────────────────────────────────
 #   Lam      Λ        loop / first-Symanzik matrix  Σ_e w_e a_e a_eᵀ
 #   N, Q     N_rb,Q_ab   Symanzik cross / external blocks  (match paper)
-#   U        U_Γ      first Symanzik polynomial = det Lam
+#   U        U_𝓕      first Symanzik polynomial = det Λ  (paper Eq. for U_𝓕)
 #   Q_eff    𝓑(w)/D   reduced external form  Q − Nᵀ Lam⁻¹ N   (𝓑 = D·Q_eff)
 #   a, b     B_er,C_eb   edge routing coefficients (plain B,C in paper)
 #   D        D_0      scalar reference diffusion ;  w,q ↔ w_e,q_b

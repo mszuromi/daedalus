@@ -55,12 +55,12 @@ from engine.integration.spatial.spatial_correlator import (
 )
 
 
-# ── Notation (code ↔ paper App. B) ───────────────────────────────────
+# ── Notation (code ↔ paper App. A3) ──────────────────────────────────
 #   Rcal     𝓡(k_e)  per-edge derivative-vertex form-factor polynomial
 #   Bcal     𝓑(w)    external quadratic form (= D·Q_eff)  [wick-moment scope]
 #   Lam      Λ       loop / first-Symanzik matrix (in the form-factor moment math)
 #   mu,D,kap  μ,D_i,κ  per-mode mass/diffusion/noise (was A,B,N — Tier 4a)
-#   Scal     𝒮(Γ)    symmetry factor — prose 𝒮(Γ); local var Scal; dict key 'M' kept
+#   Scal     M(𝓕)    symmetry factor — prose M(𝓕); local var Scal; dict key 'M' kept
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -252,7 +252,7 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
         for ell in sorted(by_ell):
             prefs = [str(p) for _, p in by_ell[ell]]
             print(f'        ell={ell}: {len(by_ell[ell])} typed diagram(s); '
-                  f'𝒮(Γ)·prefactor(s) = {prefs}')
+                  f'M(𝓕)·prefactor(s) = {prefs}')
     return by_ell
 
 
@@ -1154,7 +1154,7 @@ def compute_coupled_loop_correlator(
 
     where ``(r_r, p_r)`` are the segment's (response, physical) matrix indices
     threaded through ``CEdge.fpairs``, ``pv`` is the enumeration
-    ``𝒮(Γ)·prefactor`` (noise + couplings, UNCHANGED — the two-segment C
+    ``M(𝓕)·prefactor`` (noise + couplings, UNCHANGED — the two-segment C
     representation natively produces the Lyapunov ``1/(m_α+m_β+2Dk²)`` so the
     single-field ``2^{−n_C}`` conversion does NOT apply), and ``I_spec`` is
     :func:`full_integrator.diagram_kinematic_spectral` (one shared quadrature/
@@ -1174,7 +1174,7 @@ def compute_coupled_loop_correlator(
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     from engine.integration.spatial.full_integrator import (
         diagram_kinematic_spectral, spectral_rows, external_times_2pt,
-        _is_retarded_type)
+        _needs_mirror)
     from engine.integration.spatial.spectral_propagator import spectral_projectors
 
     M = np.asarray(tree_info['M'], dtype=float)
@@ -1417,8 +1417,8 @@ def compute_coupled_loop_correlator(
 
             # ── External-time ORIENTATION (the i≠j fix) ────────────────────
             # Enumeration sums over leg-to-leaf permutations.  For i==j the
-            # mirror pair DEDUPES to one record and the retarded Γ(τ)+Γ(−τ)
-            # completion restores it.  For i≠j BOTH mirror records survive, so
+            # mirror pair DEDUPES to one record and the Γ(τ)+Γ(−τ) completion
+            # (index [Aut:Aut_ext] = 1, _needs_mirror) restores it.  For i≠j BOTH mirror records survive, so
             # each record must be evaluated ONCE, at the times matching ITS OWN
             # leaf field order (C_ij(τ) = ⟨φ_i(t+τ)φ_j(t)⟩, the tree-driver
             # convention: leg i later for τ>0) — applying the ±τ completion
@@ -1428,7 +1428,7 @@ def compute_coupled_loop_correlator(
             ext_j = int(phys_idx[ext_int[-1]])
             leaves = list(dd.external_legs)
             if ext_i == ext_j:
-                retd = _is_retarded_type(dd)
+                retd = _needs_mirror(dd)
 
                 def _ets(tau):
                     return [external_times_2pt(dd, float(tau))] + \
@@ -1492,7 +1492,7 @@ def compute_spatial_correlator_generic(
     is mapped to the C-stack (:func:`diagram_descriptor.diagram_to_cstack`) and
     evaluated by the SAME full integral (``full_integrator.diagram_correlator``:
     Symanzik ``∫dᵈℓ`` → causal-chamber time integral → retarded+advanced sum),
-    weighted by the enumeration ``𝒮(Γ)·prefactor`` (× the universal ``2^{−n_C}``).
+    weighted by the enumeration ``M(𝓕)·prefactor`` (× the universal ``2^{−n_C}``).
     No Dyson convolution, no mass-shift, no diagram dropped — the loop correction
     is the honest ``Σ_Γ Γ(q,τ)`` summed over every live diagram at every
     ``1 ≤ ell ≤ max_ell``.
@@ -1609,7 +1609,7 @@ def compute_spatial_correlator_generic(
     by_ell = build_pipeline_records(ft, model, prop, ext_int, max_ell=max_ell,
                                     verbose=verbose, header=None)
     # map every enumerated diagram (all loop orders 1..max_ell) → (descriptor,
-    # 𝒮(Γ)·prefactor value at saddle).  No filter, no shortcut.
+    # M(𝓕)·prefactor value at saddle).  No filter, no shortcut.
     _d = int(prop.get('spatial_dim', 1))         # form factors are d-aware (vector legs)
     descrs = []
     for ell in range(1, max_ell + 1):
@@ -1648,12 +1648,14 @@ def compute_spatial_correlator_generic(
     import os as _osg
     _nt_ov, _ns_ov = _osg.environ.get('SPATIAL_GRID_NT'), _osg.environ.get('SPATIAL_GRID_NS')
 
+    from engine.integration.spatial.full_integrator import (
+        grid_settings, quadrature_settings)
+
     def _grid(dd):
         nC = sum(1 for e in dd.edges if e.kind == 'C')
-        nt, ns = (22, 24) if nC <= 2 else (16, 14)
-        return (int(_nt_ov) if _nt_ov else nt, int(_ns_ov) if _ns_ov else ns)
+        return grid_settings(nC, _nt_ov, _ns_ov)
     if verbose:
-        print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·𝒮(Γ) '
+        print(f'[7/7] (spatial) Full-diagram integration: Σ_Γ 2^(-n_C)·M(𝓕) '
               f'∫dᵈℓ(Symanzik) ∫dt(causal chambers) → ret+adv → q→x FT '
               f'[{len(live)} live diagram(s), q-grid n_q={n_q}, '
               f'(mu,D,kap)=({mu0:.4f},{D0:.4f},{kap0:.4f})]...')
@@ -1842,6 +1844,11 @@ def compute_spatial_correlator_generic(
                  'max_abs_imag': max_abs_imag, 'imag_frac': max_abs_imag / ref,
                  'n_diagrams': len(descrs), 'n_live_diagrams': len(live),
                  'n_ell1_diagrams': len(by_ell.get(1, [])),
+                 # the accuracy knobs that produced this result (time window,
+                 # σ cap, Gauss–Legendre orders, integrator backend)
+                 'quadrature': dict(quadrature_settings(),
+                                    integrator=_integrator,
+                                    n_t_override=_nt_ov, n_s_override=_ns_ov),
                  # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …}
                  # — the whole progression from ONE call (no per-ℓ re-runs).
                  'C_by_order': C_by_order})

@@ -7,7 +7,7 @@ the **spectral coupled-field reference propagator** ``G₀`` for the new
 the production propagator path (``heat_kernel.py`` still hard-gates to the diagonal
 case); the wiring is a later increment.
 
-Setup (paper Appendix B §B.15–B.23).  For an ``N``-component field the linearized
+Setup (paper App. A3b, Propagator).  For an ``N``-component field the linearized
 inverse propagator is
 
     K(ω, k) = −iω·I + M + 𝒟·|k|²,
@@ -23,7 +23,7 @@ so the reference kernel ``K₀ = −iω·I + M + D₀|k|²·I`` has scalar diffu
 commutes with ``M``.  Diagonalizing ``M = Σ_α m_α P_α`` with spectral projectors
 ``P_α`` (``Σ_α P_α = I``, ``P_α P_β = δ_αβ P_α``), the retarded REFERENCE propagator is
 
-    G₀(t, k) = Θ(t) · Σ_α P_α · e^{−(m_α + D₀|k|²) t}                 (eq. B23)
+    G₀(t, k) = Θ(t) · Σ_α P_α · e^{−(m_α + D₀|k|²) t}                 (App. A3b, G_0)
              = Θ(t) · e^{−M t} · e^{−D₀|k|² t}.
 
 ``G₀`` is the **n = 0 term** of the Dyson–Duhamel series; the ``𝒟̂`` corrections
@@ -194,7 +194,7 @@ def coupled_two_point(ref: SpectralReference, N, qsq: float,
 #     Φ_n(t; ν_1,…,ν_n) = ∫_{σ_n} tⁿ · e^{−t·Σᵢ uᵢ νᵢ} d𝐮,        Φ_0(t) = 1,
 #
 # over the standard simplex σ_n = {uᵢ ≥ 0, Σ uᵢ ≤ 1}.  It multiplies the
-# projector strings in the 𝓗_n(w) assembly (paper Appendix B eq. B27, step D-2):
+# projector strings in the 𝓗_n(w) assembly (paper App. A3b, 𝓗_n; step D-2):
 #
 #     𝓗_n(t) = Σ_{α_0..α_n} P_{α_0}𝒟̂P_{α_1}⋯𝒟̂P_{α_n} · e^{−m_{α_0}t}
 #               · Φ_n(t; m_{α_1}−m_{α_0}, …, m_{α_n}−m_{α_0}).
@@ -246,8 +246,8 @@ def phi_n(t: float, nus) -> complex:
     ``M`` with complex spectrum come in conjugate pairs, so complex support is
     required.  Always returns a python ``complex``; callers decide whether to
     take the real part.  This is the time-side primitive feeding the
-    ``𝓗_n(w)`` assembly of the Dyson–Duhamel dressing (paper Appendix B
-    eq. B27, step D-2)."""
+    ``𝓗_n(w)`` assembly of the Dyson–Duhamel dressing (paper App. A3b,
+    𝓗_n; step D-2)."""
     nus = np.asarray(nus, dtype=complex).ravel()
     n = nus.size
     if n == 0:

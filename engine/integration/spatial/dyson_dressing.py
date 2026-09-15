@@ -1,16 +1,16 @@
 """
 engine.integration.spatial.dyson_dressing
 =========================================
-Dyson–Duhamel dressing for UNEQUAL diffusion (paper Appendix B §B.24–B.30;
+Dyson–Duhamel dressing for UNEQUAL diffusion (paper App. A3b, Dyson–Duhamel expansion;
 ``docs/dyson_duhamel_integration_plan.md`` steps D-2/D-3).
 
 With ``𝒟 = D₀·I + 𝒟̂`` (``𝒟̂ ≠ 0``) the retarded propagator expands in powers of
 the residual-diffusion insertion ``𝒟̂|k|²``::
 
     G_R(t,k) = Σ_{n≥0} G_n(t,k),
-    G_n(t,k) = (−|k|²)^n · e^{−D₀|k|²t} · 𝓗_n(t),                      (B26)
+    G_n(t,k) = (−|k|²)^n · e^{−D₀|k|²t} · 𝓗_n(t),                 (App. A3b, G_n)
     𝓗_n(t)  = Σ_{α_0..α_n} P_{α_0}𝒟̂P_{α_1}⋯𝒟̂P_{α_n} ·
-              e^{−m_{α_0}t} · Φ_n(t; m_{α_1}−m_{α_0}, …, m_{α_n}−m_{α_0}),   (B27)
+              e^{−m_{α_0}t} · Φ_n(t; m_{α_1}−m_{α_0}, …, m_{α_n}−m_{α_0}),   (App. A3b, 𝓗_n)
 
 derived from the n-fold Duhamel convolution
 ``G_n(t) = (−|k|²)^n ∫_{t≥s_1≥…≥s_n≥0} e^{−M(t−s_1)}𝒟̂e^{−M(s_1−s_2)}𝒟̂⋯e^{−Ms_n}``
@@ -45,7 +45,7 @@ from engine.integration.spatial.spectral_propagator import (
 
 
 def hcal_n(ts, M, Dhat, n):
-    """``𝓗_n(t)`` (B27) for an array of times — returns ``(n_t, nf, nf)``.
+    """``𝓗_n(t)`` (App. A3b) for an array of times — returns ``(n_t, nf, nf)``.
 
     ``n = 0`` → ``e^{−Mt}`` (the bare matrix decay).  Cost ``nf^{n+1}`` strings;
     each string is an outer-product chain ``P_{α_0}𝒟̂P_{α_1}⋯𝒟̂P_{α_n}`` times

@@ -12,7 +12,7 @@ momenta ``{q_j}``, and edges (retarded ``R`` or correlation ``C``, each with a
 momentum routing ``k_e = a_e·ℓ + b_e·q``), the diagram's contribution to the
 connected ``k``-point cumulant is
 
-  Γ(q,{τ}) = 2^{−n_C}·𝒮(Γ) · ∫ ∏_v dt_v ∏_{C edges} dσ_e  𝟙(θ's) ·
+  Γ(q,{τ}) = 2^{−n_C}·M(𝓕) · ∫ ∏_v dt_v ∏_{C edges} dσ_e  𝟙(θ's) ·
                               e^{−μ Σ_e w_e} · MomFactor(w, q),
 
   w_e = t_head − t_tail   (R, with θ: w_e ≥ 0),
@@ -43,14 +43,69 @@ import numpy as np
 from engine.integration.spatial.causal_chambers import causal_chambers
 
 
-# ── Notation (code ↔ paper App. B) ───────────────────────────────────
-#   Lam      Λ        loop / first-Symanzik matrix  Σ_e w_e a_e a_eᵀ  (U=det Lam)
-#   Bcal     𝓑(w)     external quadratic form  = D·Q_eff = Q − Nᵀ Lam⁻¹ N
+# ── Notation (code ↔ paper App. A3c, "Diagram Integration") ─────────────
+#   Lam      Λ        loop / first-Symanzik matrix  Σ_e ρ_e B_er B_es  (U_𝓕=det Λ)
+#   Bcal     𝓑(w)     external quadratic form  = Q − Nᵀ Λ⁻¹ N  (paper 𝓑 = D·Q_eff here)
 #   N, Q     N_rb,Q_ab   Symanzik cross / external blocks ;  Q_eff = 𝓑/D
-#   a, b     B_er,C_eb   edge routing coefficients (plain B,C in paper)
-#   D        D_0      scalar reference diffusion ;  w,q ↔ w_e,q_b
-#   Scal     𝒮(Γ)     symmetry factor — prose 𝒮(Γ); local var Scal; dict key 'M' kept
+#   a, b     B_er,C_eb   edge routing coefficients (Eq. eq:routing)
+#   D        D_0      scalar reference diffusion ;  w_e ↔ edge duration, ρ_e = D_0 w_e
+#   M(𝓕)    multiplicity (Thm. thm_multiplicity; resolved form of
+#            Rem. rem_multiplicity_convention) — carried in ``prefactor_val``
+#   ext_index [Aut:Aut_ext] (Prop. prop_ext_compensation) — on the descriptor
+#
+# Implementation choices NOT spelled out in the appendix (all exact):
+#   * a Gaussian source is contracted into a correlation (``C``) line whose
+#     Schwinger parameter σ is the source time (paper Rem. rem:lyap); the
+#     single-field path writes w_C = |Δt| + σ with a 2^{−n_C} factor, which is
+#     the two-half form D(|Δt| + 2σ) after σ → 2σ;
+#   * internal times run over [min t_ext − WINDOW_PAST/μ, max t_ext + WINDOW_FUTURE/μ]
+#     and σ over [0, SIGMA_CAP/μ] (nodes concentrated at 0 by σ = cap·v²), i.e.
+#     the appendix's ℝ is truncated where e^{−μt} < e^{−22};
+#   * the (−|k_r|²)ⁿ Dyson insertion is applied as ∂/∂w_r of the closed-form
+#     Symanzik factors rather than as the polynomial 𝒯_{n_e} under 𝔼_Λ.
 # ─────────────────────────────────────────────────────────────────────
+
+# Quadrature settings (one place; logged into the bridge's ``info['quadrature']``).
+WINDOW_PAST = 22.0      # internal-time window below the earliest external time, in 1/μ
+WINDOW_FUTURE = 3.0     # … above the latest external time, in 1/μ
+SIGMA_CAP = 32.0        # correlation Schwinger-parameter cap, in 1/μ
+DEFAULT_NT, DEFAULT_NS = 22, 24     # Gauss–Legendre nodes per internal time / per σ
+COARSE_NT, COARSE_NS = 16, 14       # used when n_C > 2 (validated <0.1% on the sunset)
+
+
+def grid_settings(n_C, nt_override=None, ns_override=None):
+    """``(n_t, n_s)`` for a diagram with ``n_C`` correlation edges — the adaptive
+    default (coarser for the bigger grids) unless overridden."""
+    nt, ns = (DEFAULT_NT, DEFAULT_NS) if n_C <= 2 else (COARSE_NT, COARSE_NS)
+    return (int(nt_override) if nt_override else nt,
+            int(ns_override) if ns_override else ns)
+
+
+def quadrature_settings():
+    """The accuracy knobs, for logging alongside a result."""
+    return {'window_past': WINDOW_PAST, 'window_future': WINDOW_FUTURE,
+            'sigma_cap': SIGMA_CAP, 'n_t': (DEFAULT_NT, COARSE_NT),
+            'n_s': (DEFAULT_NS, COARSE_NS)}
+
+
+_DEGENERATE_TOL = 1e-6
+
+
+def _warn_degenerate(ok, where):
+    """Samples with ``U = det Λ ≤ u_floor`` are dropped from the Gaussian
+    reduction.  On the interior of the causal polytope every edge duration is
+    positive and Λ ≻ 0 (the routing matrix has full column rank), so a
+    non-negligible dropped fraction means a routing/duration bug, not
+    quadrature — say so instead of silently mis-integrating."""
+    n = ok.size
+    if n and (n - int(np.count_nonzero(ok))) > _DEGENERATE_TOL * n:
+        import warnings
+        frac = 1.0 - np.count_nonzero(ok) / n
+        warnings.warn(f'{where}: {frac:.2e} of the Schwinger samples have a '
+                      f'degenerate loop-momentum Gaussian (det Λ ≤ floor) and were '
+                      f'dropped; Λ ≻ 0 should hold on the interior of the causal '
+                      f'polytope — check the routing / edge durations.',
+                      RuntimeWarning, stacklevel=3)
 
 
 def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
@@ -79,6 +134,7 @@ def _momentum_factor_batch(a, b, w_batch, q_vec, D, spatial_dim, u_floor=1e-300,
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
     U = np.linalg.det(Lam)                                     # (P,)
     ok = U > u_floor
+    _warn_degenerate(ok, '_momentum_factor_batch')
     out = np.zeros(w_batch.shape[0])
     if np.any(ok):
         Lamok, Nok, Qok, Uok = Lam[ok], N[ok], Q[ok], U[ok]
@@ -128,6 +184,7 @@ def _symanzik_kernel_batch(a, b, w_batch, D, spatial_dim, u_floor=1e-300,
     N = np.einsum('pe,el,ej->plj', w_batch, a, b)            # (P, L, n_ext)
     U = np.linalg.det(Lam)                                     # (P,)
     ok = U > u_floor
+    _warn_degenerate(ok, '_symanzik_kernel_batch')
     pref = np.zeros(P)
     Bcal = np.zeros(P) if n == 1 else np.zeros((P, n, n))
     if np.any(ok):
@@ -493,10 +550,10 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     b = np.array([e.b for e in edges], dtype=float).reshape(len(edges), -1)
 
     if W is None:
-        W = 22.0 / mu
+        W = WINDOW_PAST / mu
     ext_t = list(external_times.values())
     me, mn = max(ext_t), min(ext_t)
-    lo, hi = mn - W, me + 3.0 / mu
+    lo, hi = mn - W, me + WINDOW_FUTURE / mu
 
     # retarded structure on the internal vertices: internal→internal R edges give
     # the ordering poset; R edges to/from a leaf give a fixed-time scalar bound.
@@ -518,7 +575,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     # the nodes CONCENTRATE near σ=0 — that resolves the integrable U^{−d/2}∼σ^{−d/2}
     # singularity of a self-loop (U=σ) that plain Gauss–Laguerre under-resolves.
     # The e^{−μσ} weight is folded into ``s_w``; ``mu_resid`` excludes σ.
-    s_cap = 32.0 / mu
+    s_cap = SIGMA_CAP / mu
     xv, wv = np.polynomial.legendre.leggauss(n_s)
     vv = 0.5 * (xv + 1.0)
     s_nodes = s_cap * vv * vv
@@ -895,10 +952,10 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     mu_scale = float(min(mu_scale, re_min))            # never narrower than needed
 
     if W is None:
-        W = 22.0 / mu_scale
+        W = WINDOW_PAST / mu_scale
     ext_t = list(external_times.values())
     me, mn = max(ext_t), min(ext_t)
-    lo, hi = mn - W, me + 3.0 / mu_scale
+    lo, hi = mn - W, me + WINDOW_FUTURE / mu_scale
 
     # retarded poset / leaf bounds — identical to diagram_kinematic
     internal_R = []
@@ -917,7 +974,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
 
     # σ grid: GEOMETRIC weights only (the per-segment e^{−mσ} decay lives in
     # the complex amplitude, not folded into the weights as in the uniform path)
-    s_cap = 32.0 / mu_scale
+    s_cap = SIGMA_CAP / mu_scale
     xv, wv = np.polynomial.legendre.leggauss(n_s)
     vv = 0.5 * (xv + 1.0)
     s_nodes = s_cap * vv * vv
@@ -1143,7 +1200,7 @@ def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
                   spatial_dim=1, **kw):
     """One diagram's contribution to the cumulant: ``2^{−n_C}·prefactor·kinematic``.
 
-    ``prefactor_val`` is the enumeration ``𝒮(Γ)·prefactor`` evaluated at the
+    ``prefactor_val`` is the enumeration ``M(𝓕)·prefactor`` evaluated at the
     params (couplings + noise amplitudes, e.g. ``2T`` for the tree, ``8T²g²`` /
     ``16T²g²`` for the bubbles); the ``2^{−n_C}`` converts the ``2T`` noise-vertex
     convention to the kinematic unit-amplitude ``C`` edges."""
@@ -1153,28 +1210,44 @@ def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
     return (2.0 ** (-n_C)) * float(prefactor_val) * kin
 
 
-def _is_retarded_type(descr):
-    """True iff the diagram's two external legs have DIFFERENT propagator kinds
-    (one ``C``, one ``R``) — a **retarded** self-energy insertion, which dresses
-    both the retarded and advanced sides of the line and so appears as the pair
-    ``Σ_R(τ)+Σ_A(τ) = Γ(τ)+Γ(−τ)``.  A ``{R,R}`` (Keldysh) insertion is its own
-    conjugate ⇒ a single ``Γ(τ)``."""
+def _needs_mirror(descr):
+    """k=2 completion rule: does the mirror assignment (legs swapped, i.e.
+    ``Γ(−τ)``) count as a SECOND pinned diagram?
+
+    Typed diagrams are deduplicated with the external leaves free (one record
+    per unpinned class); the pinned diagrams of the Feynman rules are recovered
+    by summing over the ``k!`` leaf assignments and dividing by the index
+    ``[Aut : Aut_ext]`` (paper Prop. prop_ext_compensation, the same rule the
+    general-k path :func:`diagram_correlator_pts` uses).  At k=2 the two
+    assignments give ``Γ(τ)`` and ``Γ(−τ)``, so a record contributes
+    ``Γ(τ)+Γ(−τ)`` when the index is 1 (the orientations are distinct pinned
+    diagrams) and ``Γ(τ)`` when it is 2 (a leaf-swapping automorphism exists,
+    which also makes the kinematic τ-even).
+
+    The former rule keyed on the external edge KINDS (``{C,R}`` ⇒ mirror,
+    ``{R,R}`` ⇒ none).  That coincides with the index for every Allen–Cahn
+    φ⁴ record at ℓ ≤ 2, but at ℓ = 3 six ``{R,R}`` classes have index 1 and
+    the kind rule dropped their mirrors.  Hand-built descriptors (no typed
+    diagram, ``ext_index is None``) fall back to the kind rule."""
+    idx = getattr(descr, 'ext_index', None)
+    if idx is not None:
+        return int(idx) == 1
     kinds = sorted(e.kind for e in descr.edges if e.external)
     return kinds == ['C', 'R']
 
 
 def diagram_correlator(descr, prefactor_val, q, tau, mu, D, spatial_dim=1, **kw):
-    """One diagram's contribution to ``C(q,τ)``, with the retarded+advanced sum
-    applied: ``Γ(τ)+Γ(−τ)`` for a retarded-type insertion (``{C,R}`` external
-    legs), else ``Γ(τ)``."""
+    """One diagram's contribution to ``C(q,τ)``, with the mirror (leaf-swap)
+    completion applied: ``Γ(τ)+Γ(−τ)`` when the two leaf assignments are
+    distinct pinned diagrams (index 1), else ``Γ(τ)`` (:func:`_needs_mirror`)."""
     et = external_times_2pt(descr, tau)
     val = diagram_value(descr, prefactor_val, [q], et, mu, D,
                         spatial_dim=spatial_dim, **kw)
-    if _is_retarded_type(descr) and tau != 0.0:
+    if _needs_mirror(descr) and tau != 0.0:
         et_m = external_times_2pt(descr, -tau)
         val += diagram_value(descr, prefactor_val, [q], et_m, mu, D,
                              spatial_dim=spatial_dim, **kw)
-    elif _is_retarded_type(descr):
+    elif _needs_mirror(descr):
         val *= 2.0                                           # τ=0: Γ(0)+Γ(0)
     return val
 
@@ -1184,7 +1257,7 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
     enumerated diagrams (tree + every loop), each via the SAME full integral, with
     the retarded+advanced sum applied per diagram (:func:`diagram_correlator`).
 
-    ``descrs_prefactors`` : iterable of ``(CStackDiagram, 𝒮(Γ)·prefactor value)``.
+    ``descrs_prefactors`` : iterable of ``(CStackDiagram, M(𝓕)·prefactor value)``.
     Returns the momentum-space ``C(q,τ)`` (FT to position is done by the caller)."""
     total = 0.0
     for descr, pre in descrs_prefactors:
@@ -1212,15 +1285,15 @@ def diagram_value_x(descr, prefactor_val, xs, external_times, mu, D,
 
 def diagram_correlator_x(descr, prefactor_val, xs, tau, mu, D, spatial_dim=1, **kw):
     """Analytic-IFT analogue of :func:`diagram_correlator` — δC(x,τ) (vector) with
-    the retarded+advanced sum applied per diagram."""
+    the mirror completion of :func:`_needs_mirror` applied per diagram."""
     et = external_times_2pt(descr, tau)
     val = diagram_value_x(descr, prefactor_val, xs, et, mu, D,
                           spatial_dim=spatial_dim, **kw)
-    if _is_retarded_type(descr) and tau != 0.0:
+    if _needs_mirror(descr) and tau != 0.0:
         et_m = external_times_2pt(descr, -tau)
         val = val + diagram_value_x(descr, prefactor_val, xs, et_m, mu, D,
                                     spatial_dim=spatial_dim, **kw)
-    elif _is_retarded_type(descr):
+    elif _needs_mirror(descr):
         val = val * 2.0                                       # τ=0: Γ(0)+Γ(0)
     return val
 

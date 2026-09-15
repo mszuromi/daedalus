@@ -32,7 +32,7 @@ Edge sign convention is irrelevant to the Symanzik forms: flipping one edge's
 coefficients.
 
 Normalization: this descriptor is **kinematic only** — couplings, noise
-amplitudes, and the combinatorial ``𝒮(Γ)`` all live in the enumeration's
+amplitudes, and the multiplicity ``M(𝓕)`` all live in the enumeration's
 ``scalar_prefactor`` and are applied by the evaluator (Phase 2), NOT here.
 """
 from __future__ import annotations
@@ -85,6 +85,11 @@ class CStackDiagram:
     external_legs: tuple
     edges: tuple
     n_loops: int
+    # [Aut(Γ, leaves free) : Aut(Γ, leaves fixed)] of the typed diagram this
+    # descriptor was built from (paper App. A1g, Prop. prop_ext_compensation):
+    # the number of external assignments that map onto the SAME pinned
+    # diagram.  ``None`` for hand-built descriptors (no typed diagram).
+    ext_index: int | None = None
 
     def loop_edges(self):
         """The internal (non-external) edges — the self-energy loop."""
@@ -186,8 +191,15 @@ def diagram_to_cstack(td) -> CStackDiagram:
                                u=int(u), v=int(v), external=ext,
                                fpairs=((tuple(pr),) if pr is not None else ())))
 
+    # external-assignment index (orbit–stabilizer divisor of the mapping sum
+    # and the k=2 mirror rule) — computed from the SAME automorphism groups
+    # that fix M(𝓕), so the two quotients can never disagree.
+    from engine.diagrams.symmetry import external_wick_compensation
+    ext_index = int(external_wick_compensation(td))
+
     return CStackDiagram(
         internal_vertices=tuple(sorted(interaction)),
         external_legs=tuple(int(l) for l in leaves),
         edges=tuple(out_edges),
-        n_loops=int(rr.n_loops))
+        n_loops=int(rr.n_loops),
+        ext_index=ext_index)
