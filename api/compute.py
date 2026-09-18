@@ -257,7 +257,9 @@ def compute_cumulants(
         'num_params'      : {SR symbol: float}
         'propagator'      : the propagator data dict
         'diagrams'        : list of dicts {'typed_diagram', 'classify',
-                             'combined_prefactor', 'multiplicity', 'ell'}
+                             'combined_prefactor', 'multiplicity' (M(F),
+                             prod n_leg!/|Aut_ext|), 'dedup_class_size',
+                             'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
         'config'          : input args echoed back; in addition to the
@@ -767,7 +769,16 @@ def compute_cumulants(
                 'typed_diagram':      td,
                 'classify':           info,
                 'combined_prefactor': combined_prefactor,
-                'multiplicity':       mult,
+                # M(F) in the resolved convention of the paper's
+                # Remark rem_multiplicity_convention: prod n_leg! /
+                # |Aut_ext|, the weight that multiplies the literal
+                # vertex coefficients (combined_prefactor = M * coeffs).
+                'multiplicity':       info['Scal'],
+                # size of the deduplication class the representative
+                # stands for — diagnostic only, NOT a weight (it used
+                # to be stored under 'multiplicity', which the TikZ
+                # panel captions then printed as M).
+                'dedup_class_size':   mult,
                 'ell':                ell,
             })
     _phase_time('classify', _t_phase)
