@@ -351,6 +351,9 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
         'taylor_order':    int(target),
         'n_tilde':         int(ft._n_tilde),
         'vertex_signature': vertex_form_factor_signature(ft._ns),
+        # Text fingerprint from ModelBuilder.build() (None for models
+        # built without it); checked on load, see load_expand.
+        'spec_signature':  model.get('spec_signature'),
         'cache_version':   2,
     }
     sage_save(bundle, path.removesuffix('.sobj'))
@@ -407,6 +410,22 @@ def load_expand(model: dict, ft, target_order: int,
     if int(bundle.get('n_tilde', -1)) != int(ft._n_tilde):
         if verbose:
             print(f'[expand-cache] n_tilde mismatch — stale cache.')
+        return False
+
+    # Model-text fingerprint.  The on-disk slug is the model NAME + order
+    # only, so an edit to the action or the mean-field rows under the same
+    # name would otherwise be served the previous expansion — whose MF
+    # sector carries the previous saddle substitution.  A bundle written
+    # before fingerprinting (``None``) is treated as stale too: re-expanding
+    # once is cheap, silently reusing a wrong sector is not.
+    expect_spec = model.get('spec_signature')
+    cached_spec = bundle.get('spec_signature')
+    if expect_spec is not None and cached_spec != expect_spec:
+        if verbose:
+            print(f'[expand-cache] model-text fingerprint mismatch — stale '
+                  f'cache (the action or mean-field declarations changed '
+                  f'since this bundle was written; re-expanding).  '
+                  f'expect {expect_spec!r}, cached {cached_spec!r}')
         return False
 
     # Operator-IR form-factor signature.  The on-disk slug is only the
