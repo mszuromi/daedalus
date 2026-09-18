@@ -147,6 +147,13 @@ def precompute(model: dict, *, force: bool = False,
         _log(f'[precompute] sanity_check raised: {e!r}')
         out['mf_check'] = f'SANITY_RAISED: {type(e).__name__}: {e}'
 
+    if (not out['sanity_ok'] and 'mf_bg_conditions' not in model
+            and 'mf_bg_conditions_action' not in model):
+        _log('[precompute] HINT: this model carries no mean-field equations '
+             '(no .equation(...) / .set_mf_equation(...) reached build(); in '
+             'the model-builder UI, check that every MF row has a left-hand '
+             'side — an empty right-hand side is taken as 0).  Without them '
+             'the saddle defaults to 0 and the tadpole sector cannot vanish.')
     if not out['sanity_ok']:
         out['wall_seconds'] = time.perf_counter() - t0
         return out

@@ -1478,6 +1478,28 @@ class _BaseModelBuilder:
         c_state = bool(set(c.variables()) & state_syms)
         return back(c), back(rest), bool(c.is_zero()), c_state
 
+    def _spec_signature(self) -> str:
+        """sha256[:16] of the text declarations the expansion depends on."""
+        import hashlib
+        import json
+        blob = json.dumps({
+            'action':    self._action_text or '',
+            'mf':        sorted((self._mf_eqs_text or {}).items()),
+            'equations': [(e.get('lhs_text'), e.get('rhs_text'),
+                           e.get('population')) for e in (self._equations or [])],
+            'functions': [(f.get('name'), f.get('expression') or f.get('expr'),
+                           tuple(f.get('args') or ()))
+                          for f in (self._function_specs or [])],
+            'kernels':   [(k.get('name'), k.get('time_expr'), k.get('freq_image'))
+                          for k in (self._kernel_specs or [])],
+            'cgf':       [str(c) for c in (self._cgf_terms or [])],
+            'fields':    [(f.name, getattr(f, 'population', None),
+                           int(getattr(f, 'spatial_dim', 0) or 0))
+                          for f in self.physical_fields],
+            'params':    sorted(p.name for p in self.parameters),
+        }, default=str, sort_keys=True)
+        return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
     def _compile_text_declarations(self) -> None:
         """Walk the text-based declarations and compile each into the
         corresponding lambda hook.  No-op if no text declarations
@@ -2107,6 +2129,25 @@ class _BaseModelBuilder:
             model['mf_bg_conditions'] = self._mf_bg
         if self._mf_equations is not None:
             model['mf_equations'] = self._mf_equations
+        # Fingerprint of everything the expansion depends on that the
+        # expand cache cannot see from the model NAME alone: the action
+        # text, the mean-field text (declared or derived), functions,
+        # kernels, CGF terms, fields and parameters.  The cache loader
+        # rejects a bundle whose fingerprint differs, so editing the
+        # action or the MF rows under the same model name can no longer
+        # serve a stale expansion (with the old saddle substitution
+        # baked into the MF sector).
+        model['spec_signature'] = self._spec_signature()
+        if (self._action_text and self.physical_fields
+                and not self._mf_eqs_text and not self._equations):
+            import warnings
+            warnings.warn(
+                'ModelBuilder.build(): no mean-field equations were declared '
+                '(no .equation(...) / .set_mf_equation(...) calls, or the MF '
+                'rows were empty).  The saddle then defaults to 0 and the '
+                'tadpole sanity check will fail for any field with a drive.  '
+                'In the model-builder UI every MF row needs a left-hand side; '
+                'an empty right-hand side is taken as 0.', stacklevel=2)
         if self._kernel_ft_image is not None:
             model['kernel_ft_image'] = self._kernel_ft_image
         if self._kernel_td_image is not None:
