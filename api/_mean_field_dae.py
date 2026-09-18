@@ -301,7 +301,16 @@ def _build_residual(model: dict, params_np: dict,
             try:
                 lhs = eval(lhs_text, ns)
                 rhs = eval(rhs_text, ns)
-                out[k] = float(lhs - rhs)
+                # A scalar (no-population) model evaluates its state as
+                # 1-element arrays; ``float(array)`` is deprecated for
+                # ndim > 0 (NumPy 1.25) and will raise, so unwrap explicitly.
+                diff = np.asarray(lhs - rhs, dtype=float).reshape(-1)
+                if diff.size != 1:
+                    raise ValueError(
+                        f'residual of equation {k} ({lhs_text!r} = '
+                        f'{rhs_text!r}, i={i}) is not a scalar: shape '
+                        f'{np.shape(lhs - rhs)}.')
+                out[k] = float(diff[0])
             except (ValueError, ZeroDivisionError, OverflowError,
                     FloatingPointError):
                 # Penalize: send the solver away from this region.
