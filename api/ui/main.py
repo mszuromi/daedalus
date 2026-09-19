@@ -38,6 +38,7 @@ from api.ui.widgets import (
 from api.model_serialize import (
     save_model_to_file,
     render_model_file,
+    normalize_equation_rows,
     load_spec_from_file,
 )
 
@@ -2572,14 +2573,12 @@ class ModelUI:
             # ``set_mf_equation`` get re-rendered as ``.equation(...)``
             # calls too, with population back-inferred from the saddle
             # name (see ``load_spec_from_file``).
-            'equations':       [
-                {'lhs':        r['lhs'],
-                 'rhs':        r['rhs'],
-                 'population': (None if r['population'] in (_NONE, '', None)
+            'equations':       normalize_equation_rows([
+                {'lhs': r.get('lhs'), 'rhs': r.get('rhs'),
+                 'population': (None if r.get('population') in (_NONE, '', None)
                                 else r['population'])}
                 for r in self._tbl_mfeqs.get_rows()
-                if (r.get('lhs') or '').strip() and (r.get('rhs') or '').strip()
-            ],
+            ]),
             # Stability-analysis toggle on the MF tab.  Default OFF —
             # set when the user checks the box; models that integrate
             # out voltages (all-algebraic equations) should leave it

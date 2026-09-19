@@ -141,17 +141,25 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
     for j in range(0, j_max + 1):
         num_leaves = k + j
         v3_max = k + j - 2
-        # |V2^T| <= k + 3*ell - j - 1 (= 2*v3_max + 3*ell - k - 3*j + 3): the
-        # PROVEN tree-decomposition bound (paper appendix, corrected theorem:
-        # degree-partition identity + |V2^G| <= k + ell - 1 from orientability
-        # + theta <= 2*ell - j by incidence counting).  The earlier extra
-        # "- (j // 3)" tightening came from a theta-lemma that is FALSE at
-        # ell >= 3 (counterexample: three doubled-edge bubbles on a hub —
-        # every decomposition has j = 3, theta = 3 > 2*ell - j - j//3); it
-        # never happened to bind at small orders (slack >= 2 verified by
-        # exhaustive enumeration at (k,ell) in {(2,1),(3,1),(2,2),(3,2),
-        # (4,1),(2,3)}), but only the proven bound guarantees completeness.
-        v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
+        # |V2^T| <= k + 3*ell - 2*j - 1: the PROVEN tree-decomposition bound
+        # (paper, sharpened Sept 2026).  Split the j retired tree leaves J by
+        # their G-degree, j = j2 + j3 (G-degree 2 -> one F-endpoint; >= 3 ->
+        # at least two), and V2^T into A (untouched by F, still degree 2 in
+        # G) and B (touched).  A and J2 are disjoint subsets of V2^G, so
+        # |A| <= k + ell - 1 - j2 (source bound, Lemma v2g); the 2*ell
+        # F-endpoints give |B| <= 2*ell - j2 - 2*j3.  Hence
+        #     |V2^T| <= k + 3*ell - 1 - 2*j .
+        # The older k + 3*ell - j - 1 charged the source budget and the
+        # endpoint budget separately and so counted the retired leaves twice.
+        # With this bound num_leaves + v2_max + v3_max == 3k + 3*ell - 3 for
+        # every j, i.e. the orientability cap below is implied and never
+        # binds.  Verified: identical prediagram counts at (k,ell) in
+        # {(2,1),(3,1),(4,1),(2,2),(3,2),(1,3),(2,3),(4,2)} with 12-48% fewer
+        # trees generated.  (An even earlier "- (j // 3)" tightening came
+        # from a theta-lemma that is FALSE at ell >= 3 — counterexample:
+        # three doubled-edge bubbles on a hub, j = theta = 3 — and is NOT
+        # what is used here.)
+        v2_max = k + 3 * ell - 2 * j - 1
 
         min_n = num_leaves if num_leaves == 1 else num_leaves + 1
         # Only the PROVEN vertex-count bound (num_leaves + v2_max + v3_max) and
@@ -178,7 +186,7 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
         max_n = min(num_leaves + v2_max + v3_max, v_max_orientable,
                     max_vertices_search)
 
-        if max_n < min_n:
+        if max_n < min_n or v2_max < 0:
             continue
 
         for n in range(min_n, max_n + 1):

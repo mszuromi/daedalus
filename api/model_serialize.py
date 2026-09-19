@@ -289,6 +289,33 @@ def _emit_action(action_text: str) -> str:
     return f'.set_action_text({_py_repr(body)})'
 
 
+def normalize_equation_rows(rows) -> list:
+    """Normalise mean-field rows from the UI's MF tab into
+    ``{lhs, rhs, population}`` records.
+
+    Accepts what people actually type:  an empty right-hand side means
+    ``0`` (a residual ``expr = 0``), and a single box holding
+    ``lhs = rhs`` is split at its first ``=``.  Rows with an empty
+    left-hand side are skipped.  Previously a row with a blank RHS was
+    dropped silently, so a model entered as three residuals lost every
+    mean-field equation and failed the tadpole check with no hint.
+    """
+    out = []
+    for r in rows or []:
+        lhs = (r.get('lhs') or '').strip()
+        rhs = (r.get('rhs') or '').strip()
+        if not lhs:
+            continue
+        if '=' in lhs and not rhs:
+            lhs, rhs = (s.strip() for s in lhs.split('=', 1))
+        if not rhs:
+            rhs = '0'
+        pop = r.get('population')
+        out.append({'lhs': lhs, 'rhs': rhs,
+                    'population': (None if pop in ('', None, '<none>') else pop)})
+    return out
+
+
 def _emit_mf_equation(saddle: str, rhs: str) -> str:
     return (f'.set_mf_equation({_py_repr(saddle)}, '
             f'{_py_repr(rhs)})')
