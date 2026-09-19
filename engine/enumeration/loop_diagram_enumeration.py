@@ -38,6 +38,43 @@ def classify_vertices_sage(G):
     return leaves, internal, degree_2, degree_3plus
 
 
+def two_path_lengths(G, degree_2_vertices):
+    """Lengths of the maximal runs of adjacent degree-2 vertices of ``G``.
+
+    In a tree these are the subdivision counts of its skeleton edges (the
+    paper's *maximal 2-paths*).
+    """
+    d2 = set(degree_2_vertices)
+    seen, runs = set(), []
+    for v in degree_2_vertices:
+        if v in seen:
+            continue
+        comp, stack = {v}, [v]
+        while stack:
+            x = stack.pop()
+            for y in G.neighbors(x):
+                if y in d2 and y not in comp:
+                    comp.add(y)
+                    stack.append(y)
+        seen |= comp
+        runs.append(len(comp))
+    return runs
+
+
+def endpoint_condition_holds(tree, degree_2_vertices, j, ell):
+    """The 2-path endpoint condition:  sum_e floor(m_e/2) + j <= 2*ell.
+
+    Every maximal 2-path of the tree must be broken by the added edges so that
+    no two adjacent degree-2 vertices survive in the topology -- a vertex
+    cover of a path of m vertices needs floor(m/2) of them, each costing one
+    of the 2*ell edge endpoints -- and each of the j retired leaves needs an
+    endpoint of its own.  Necessary, not sufficient; it never rejects a tree
+    that yields a prediagram (checked exhaustively at (3,1),(4,1),(5,1),(2,2),
+    (3,2),(2,3)).
+    """
+    return sum(m // 2 for m in two_path_lengths(tree, degree_2_vertices)) + j <= 2 * ell
+
+
 def has_adjacent_degree2_sage(G, degree_2_vertices):
     degree_2_set = set(degree_2_vertices)
     for v in degree_2_vertices:
@@ -198,6 +235,8 @@ def generate_trees_with_constraints(k, ell, max_vertices_search=50):
                     continue
                 if len(degree_2) > v2_max:
                     continue
+                if not endpoint_condition_holds(tree, degree_2, j, ell):
+                    continue
                 valid_trees.append((tree, j, num_leaves))
 
     return valid_trees
@@ -213,11 +252,11 @@ def _tree_bounds_by_j(k, ell, max_vertices_search=50):
     for j in range(0, ell + (ell // 2) + 1):
         num_leaves = k + j
         v3_max = k + j - 2
-        v2_max = 2 * v3_max + 3 * ell - k - 3 * j + 3
+        v2_max = k + 3 * ell - 2 * j - 1          # sharpened bound, see generate_trees_with_constraints
         min_n = num_leaves if num_leaves == 1 else num_leaves + 1
         max_n = min(num_leaves + v2_max + v3_max,
                     v_max_orientable_bound(k, ell), max_vertices_search)
-        if max_n < min_n:
+        if max_n < min_n or v2_max < 0:
             continue
         spec[j] = (num_leaves, v3_max, v2_max, min_n, max_n)
     return spec
@@ -242,7 +281,7 @@ def _trees_of_order(args):
     Returns packed certs rather than Sage trees so the pool pays tens of bytes
     of IPC per tree instead of pickling a graph.
     """
-    n, res, mod, k, spec = args
+    n, res, mod, k, ell, spec = args
     gen = (graphs.nauty_gentreeg(f'{n} {res}/{mod}') if mod > 1
            else graphs.trees(n))
     out = []
@@ -256,6 +295,8 @@ def _trees_of_order(args):
         if not (min_n <= n <= max_n):
             continue
         if len(degree_3plus) > v3_max or len(degree_2) > v2_max:
+            continue
+        if not endpoint_condition_holds(tree, degree_2, j, ell):
             continue
         out.append((pack_cert(_iso_cert(tree)), j, num_leaves))
     return out
@@ -287,7 +328,7 @@ def generate_trees_parallel(k, ell, n_procs=1, max_vertices_search=50, verbose=F
     args = []
     for n in ns:
         mod = max(1, n_procs) if n >= _SPLIT_MIN_N else 1
-        args.extend((n, res, mod, k, spec) for res in range(mod))
+        args.extend((n, res, mod, k, ell, spec) for res in range(mod))
     # Dedup defensively: gentreeg residues are disjoint for n >= _SPLIT_MIN_N
     # and graphs.trees yields pairwise non-isomorphic trees, so a repeat can
     # only be a generator quirk, never a legitimate duplicate.
@@ -342,7 +383,175 @@ def check_topology_constraints(G, k, ell=None):
 # Topology enumeration
 # ===========================================================================
 
+# Which (E2) generator ``process_tree_parallel`` dispatches to.  'degree_first'
+# builds the added edges from their degree-increment vector (forced endpoints
+# first); 'multiset' is the former enumerate-every-multiset-then-screen path,
+# kept for A/B comparison.  Env ``DAEDALUS_EDGE_GENERATOR`` overrides.
+import os as _os
+EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'degree_first')
+
+
 def process_tree_parallel(args):
+    if EDGE_GENERATOR == 'multiset':
+        return process_tree_multiset(args)
+    return process_tree_degree_first(args)
+
+
+def _degree_vectors(order, nbrs, base_d2, retired, budget):
+    """Yield ``delta`` dicts (vertex -> number of added-edge endpoints) with
+    ``sum(delta) == budget``, ``delta >= 1`` on the retired leaves, ``0`` on
+    the other leaves, and no two TREE-adjacent vertices both of topology
+    degree 2 (a tree degree-2 vertex with delta 0, or a retired leaf with
+    delta 1).  Vertices are assigned in ``order`` (retired leaves, then tree
+    degree-2 vertices, then branching vertices), pruning as soon as the
+    remaining budget cannot pay for the endpoints the assignment still owes.
+    """
+    n = len(order)
+    delta = {}
+
+    def in_d2(v):                      # topology degree 2, given current assignment
+        d = delta.get(v)
+        if d is None:
+            return False
+        return (v in base_d2 and d == 0) or (v in retired and d == 1)
+
+    def owed(i):
+        """Endpoints the unassigned vertices order[i:] must still take."""
+        need = 0
+        for v in order[i:]:
+            if v in retired:
+                need += 1
+            elif v in base_d2 and any(in_d2(u) for u in nbrs[v]):
+                need += 1              # its D2 neighbour forces it to be touched
+        return need
+
+    def rec(i, rem):
+        if rem < owed(i):
+            return
+        if i == n:
+            if rem == 0:
+                yield dict(delta)
+            return
+        v = order[i]
+        lo = 1 if v in retired else 0
+        for d in range(lo, rem + 1):
+            # adjacency screen against the already-assigned neighbours
+            if (v in base_d2 and d == 0) or (v in retired and d == 1):
+                if any(in_d2(u) for u in nbrs[v]):
+                    continue
+            delta[v] = d
+            yield from rec(i + 1, rem - d)
+            del delta[v]
+
+    yield from rec(0, budget)
+
+
+def _realizations(vs, rem, forbidden):
+    """All multisets of edges (no self-loops) on the vertices ``vs`` with the
+    prescribed degrees ``rem`` (a dict, mutated during the recursion), each
+    multiset exactly once.  ``forbidden`` is a set of frozenset pairs that
+    may not be joined."""
+    a = next((i for i, v in enumerate(vs) if rem[v] > 0), None)
+    if a is None:
+        yield []
+        return
+    u = vs[a]
+    need = rem[u]
+    rem[u] = 0
+    partners = [w for w in vs[a + 1:] if rem[w] > 0 and frozenset((u, w)) not in forbidden]
+
+    def choose(start, left, chosen):
+        if left == 0:
+            for rest in _realizations(vs, rem, forbidden):
+                yield chosen + rest
+            return
+        for pi in range(start, len(partners)):
+            w = partners[pi]
+            if rem[w] == 0:
+                continue
+            rem[w] -= 1
+            yield from choose(pi, left - 1, chosen + [(u, w)])
+            rem[w] += 1
+
+    yield from choose(0, need, [])
+    rem[u] = need
+
+
+def process_tree_degree_first(args):
+    """(E2) by degree increments: for a tree with surplus ``j``, enumerate the
+    endpoint vectors ``delta`` of the ``ell`` added edges (retired leaves and
+    2-path vertex covers first, so most endpoints are forced), then realize
+    each as edge multisets.  Produces exactly the candidates that survive the
+    multiset path's screens, without generating the ~98% that do not."""
+    tree, j, num_leaves, k, ell = args
+    all_verts = sorted(tree.vertices())
+    base_deg = {v: tree.degree(v) for v in all_verts}
+    tree_leaves = [v for v in all_verts if base_deg[v] == 1]
+    base_d2 = frozenset(v for v in all_verts if base_deg[v] == 2)
+    nbrs = {v: tree.neighbors(v) for v in all_verts}
+    if num_leaves - j != k:
+        return []
+    local_candidates = []
+
+    def emit(G, delta):
+        leaves = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 1]
+        if ell > 0:
+            d2 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 2]
+            d3 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) >= 3]
+            if not check_deg3_has_non_deg2_neighbor(G, d3, d2):
+                return
+            if not check_leaf_neighbors_not_all_deg2(G, leaves, d2):
+                return
+        # Raw labelling: the leaves-first relabelling is applied by the
+        # consumer to the representatives that survive isomorphism dedup
+        # (``_remove_isomorphic_undirected``); the streaming path certifies
+        # the raw graph directly.  Doing it here cost ~45 us per candidate,
+        # most of them duplicates.
+        local_candidates.append((G, leaves, [v for v in all_verts if v not in leaves]))
+
+    if ell == 0:
+        emit(Graph(tree, multiedges=True, loops=False), {})
+        return local_candidates
+
+    internal = [v for v in all_verts if base_deg[v] >= 2]
+    d2_first = sorted(base_d2) + [v for v in internal if v not in base_d2]
+    # Orbit dedup of the endpoint vectors under Aut(T): two deltas related by a
+    # tree automorphism realize isomorphic topologies, so only one is kept.
+    # The orbit representative is identified by the canonical label of the
+    # tree with delta as a vertex colouring -- one C call, no group listing
+    # (stars have |Aut| in the thousands).  Removes ~half of the within-tree
+    # duplicates; the rest sit inside a delta's realizations.
+    seen_delta = set()
+    for retired_tuple in combinations(tree_leaves, j):
+        retired = frozenset(retired_tuple)
+        order = list(retired_tuple) + d2_first
+        for delta in _degree_vectors(order, nbrs, base_d2, retired, 2 * ell):
+            cells = {}
+            for v in all_verts:
+                cells.setdefault(delta.get(v, 0), []).append(v)
+            colours = sorted(cells)
+            C, cert = tree.canonical_label(partition=[cells[c] for c in colours],
+                                           certificate=True)
+            key = (tuple(colours), tuple(sorted(C.edges(labels=False))),
+                   tuple(tuple(sorted(cert[v] for v in cells[c])) for c in colours))
+            if key in seen_delta:
+                continue
+            seen_delta.add(key)
+            support = [v for v in all_verts if delta.get(v, 0) > 0]
+            # two retired leaves of delta 1 joined by an added edge would be
+            # adjacent degree-2 vertices of the topology
+            ones = [v for v in support if v in retired and delta[v] == 1]
+            forbidden = {frozenset(p) for p in combinations(ones, 2)}
+            rem = {v: delta[v] for v in support}
+            for F in _realizations(support, rem, forbidden):
+                G = Graph(tree, multiedges=True, loops=False)
+                for u, w in F:
+                    G.add_edge(u, w)
+                emit(G, delta)
+    return local_candidates
+
+
+def process_tree_multiset(args):
     tree, j, num_leaves, k, ell = args
     local_candidates = []
     all_verts = list(tree.vertices())
@@ -495,10 +704,18 @@ def leaves_of(G):
 
 
 def _remove_isomorphic_undirected(candidates):
+    """One representative per isomorphism class, in the leaves-first labelling
+    (``relabel_leaves_first``) that the downstream typing relies on.  The
+    relabel is applied here, to the survivors only."""
     seen = {}
     for G, leaves, internal in candidates:
         seen.setdefault(_iso_cert(G), (G, leaves, internal))
-    return list(seen.values())
+    out = []
+    for G, leaves, internal in seen.values():
+        G_rel, _ = relabel_leaves_first(G)
+        n_leaf = len(leaves)
+        out.append((G_rel, list(range(n_leaf)), list(range(n_leaf, G_rel.order()))))
+    return out
 
 
 def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbose=True,
