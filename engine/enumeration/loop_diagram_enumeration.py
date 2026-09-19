@@ -880,7 +880,126 @@ def check_orientation_constraints(D, leaves):
     return True
 
 
+# Which (E3) checker ``enumerate_orientations`` dispatches to.
+#   'integer' -- the causal checks run on plain Python integers (degrees,
+#                adjacency, Kahn acyclicity) and a Sage DiGraph is built only
+#                for the ~12% of patterns that pass;
+#   'sage'    -- the former path: build a DiGraph per pattern, check with Sage.
+# Same output (tests/test_orientation_integer.py); measured 2-2.6x faster
+# stage at (3,2), (4,2), (2,3).  Env ``DAEDALUS_ORIENTATION_CHECKER`` overrides.
+ORIENTATION_CHECKER = _os.environ.get('DAEDALUS_ORIENTATION_CHECKER', 'integer')
+
+
 def enumerate_orientations(G, leaves):
+    """Valid orientations of ``G`` as Sage DiGraphs (edge copy ``i`` carries
+    label ``i``, as ``orient_edges`` sets it).  Dispatches on
+    ``ORIENTATION_CHECKER``; both implementations return the same set."""
+    if ORIENTATION_CHECKER == 'sage':
+        return enumerate_orientations_sage(G, leaves)
+    return enumerate_orientations_integer(G, leaves)
+
+
+def _forced_orientation_bits(edges, leafset, deg):
+    """``(base, free)``: the bit of every edge fixed by the two forcings --
+    (R2) an edge at a leaf points INTO the leaf; every degree-2 vertex is a
+    source, so both its edge copies point OUT of it -- and the indices of the
+    edges left undetermined.  ``orient_edges`` reads bit 0 as u -> v and bit
+    1 as v -> u.  Returns ``None`` when the forcings contradict (no legal
+    orientation)."""
+    base = [0] * len(edges)
+    free = []
+    for i, (u, v) in enumerate(edges):
+        head_v = (v in leafset) or (deg[u] == 2)      # u -> v
+        head_u = (u in leafset) or (deg[v] == 2)      # v -> u
+        if head_v and head_u:
+            return None
+        if head_v:
+            base[i] = 0
+        elif head_u:
+            base[i] = 1
+        else:
+            free.append(i)
+    return base, free
+
+
+def enumerate_orientations_integer(G, leaves):
+    """(E3) with the causal checks on plain integers.
+
+    For each pattern of the free edges (see ``_forced_orientation_bits``) the
+    in- and out-degrees, the successor lists and the undirected adjacency are
+    small Python lists, and the four tests of ``check_orientation_constraints``
+    are applied in the same order and with the same meaning:
+
+      * a degree-1 vertex has in-degree 1                 (R2, external legs),
+      * no vertex has out-degree 0 and in-degree >= 2     (no internal sink),
+      * no vertex has (in, out) = (1, 1)                  (no bilinear vertex),
+      * no two sources (in-degree 0) are adjacent,
+      * the digraph is acyclic (Kahn's algorithm, ``|V|`` vertices popped).
+
+    A Sage ``DiGraph`` is built only for the patterns that pass -- one in
+    eight at (4,2) -- which is where the former path spent two thirds of the
+    stage.  Output identical to ``enumerate_orientations_sage``.
+    """
+    edges = list(G.edges(labels=False))
+    verts = list(G.vertices())
+    idx = {v: i for i, v in enumerate(verts)}
+    E = [(idx[u], idx[v]) for u, v in edges]
+    n = len(verts)
+    leafset = set(leaves)
+    deg = {v: G.degree(v) for v in verts}
+    forced = _forced_orientation_bits(edges, leafset, deg)
+    if forced is None:
+        return []
+    base, free = forced
+    nbr = [set() for _ in range(n)]
+    for a, b in E:
+        nbr[a].add(b)
+        nbr[b].add(a)
+    out = []
+    for bits in range(1 << len(free)):
+        pat = base[:]
+        for slot, i in enumerate(free):
+            pat[i] = (bits >> slot) & 1
+        indeg = [0] * n
+        outdeg = [0] * n
+        succ = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(E):
+            if pat[i]:
+                a, b = b, a
+            outdeg[a] += 1
+            indeg[b] += 1
+            succ[a].append(b)
+        ok = True
+        for v in range(n):
+            i_, o_ = indeg[v], outdeg[v]
+            if (i_ + o_ == 1 and i_ != 1) or (o_ == 0 and i_ >= 2) or (i_ == 1 and o_ == 1):
+                ok = False
+                break
+        if not ok:
+            continue
+        for v in range(n):
+            if indeg[v] == 0 and any(indeg[w] == 0 for w in nbr[v]):
+                ok = False
+                break
+        if not ok:
+            continue
+        rem = indeg[:]
+        stack = [v for v in range(n) if rem[v] == 0]
+        popped = 0
+        while stack:
+            v = stack.pop()
+            popped += 1
+            for w in succ[v]:
+                rem[w] -= 1
+                if rem[w] == 0:
+                    stack.append(w)
+        if popped != n:
+            continue                                    # directed cycle
+        out.append(orient_edges(G, pat))
+    return out
+
+
+def enumerate_orientations_sage(G, leaves):
     """Valid orientations of ``G``, branching only on the UNDETERMINED edges.
 
     Most edge directions are fixed before any search, by two of the causal
