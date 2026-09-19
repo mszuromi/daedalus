@@ -294,8 +294,16 @@ def test_bubble_loop_form_factor_extraction():
 
     q0, l0 = sp.Symbol('q0'), sp.Symbol('l0')
     lap = (('Lap',),)
-    Fs = {sp.expand(bubble_loop_form_factor(td, lap)) for td in bubbles}
-    assert Fs == {sp.expand(q0 ** 2 * (q0 - l0) ** 2), sp.expand(q0 ** 4)}
+    # ``route_momenta`` fixes the loop-momentum gauge from the edge order of the
+    # stored topology representative, so the Σ_R factor may come out as
+    # q²(q−ℓ)² or, after ℓ → q−ℓ, as q²ℓ²; both are the same integrand.
+    # Normalise each factor to the lexicographically smaller of the two gauges.
+    def _gauge_free(F):
+        F = sp.expand(F)
+        alt = sp.expand(F.subs(l0, q0 - l0))
+        return min(F, alt, key=lambda e: sp.srepr(e))
+    Fs = {_gauge_free(bubble_loop_form_factor(td, lap)) for td in bubbles}
+    assert Fs == {_gauge_free(q0 ** 2 * (q0 - l0) ** 2), _gauge_free(q0 ** 4)}
     # plain (no derivative) → form factor 1 on every bubble
     assert all(bubble_loop_form_factor(td, ()) == 1 for td in bubbles)
 

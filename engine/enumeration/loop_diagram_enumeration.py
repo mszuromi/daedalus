@@ -30,11 +30,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ===========================================================================
 
 def classify_vertices_sage(G):
-    """Returns (leaves, internal, degree_2, degree_3plus)."""
-    leaves      = [v for v in G.vertices() if G.degree(v) == 1]
-    internal    = [v for v in G.vertices() if G.degree(v) > 1]
-    degree_2    = [v for v in G.vertices() if G.degree(v) == 2]
-    degree_3plus = [v for v in G.vertices() if G.degree(v) >= 3]
+    """Returns (leaves, internal, degree_2, degree_3plus).
+
+    One ``degree(labels=True)`` call instead of four per-vertex scans: this
+    runs on every tree ``graphs.trees`` produces (~200k at (6,1)) and was the
+    largest single cost of tree generation.
+    """
+    deg = G.degree(labels=True)
+    leaves, internal, degree_2, degree_3plus = [], [], [], []
+    for v, d in deg.items():
+        if d == 1:
+            leaves.append(v)
+        else:
+            internal.append(v)
+            if d == 2:
+                degree_2.append(v)
+            elif d >= 3:
+                degree_3plus.append(v)
     return leaves, internal, degree_2, degree_3plus
 
 
@@ -383,18 +395,78 @@ def check_topology_constraints(G, k, ell=None):
 # Topology enumeration
 # ===========================================================================
 
-# Which (E2) generator ``process_tree_parallel`` dispatches to.  'degree_first'
-# builds the added edges from their degree-increment vector (forced endpoints
-# first); 'multiset' is the former enumerate-every-multiset-then-screen path,
-# kept for A/B comparison.  Env ``DAEDALUS_EDGE_GENERATOR`` overrides.
+# Which (E2) generator ``process_tree_parallel`` dispatches to.
+#   'canonical'    -- degree-first, and a (tree, added-edges) pair is built only
+#                     if the added edges are a locally maximal co-tree of the
+#                     topology (``_cotree_is_local_max``); every topology is
+#                     still produced from at least one of its spanning trees.
+#   'degree_first' -- builds the added edges from their degree-increment
+#                     vector (forced endpoints first), every spanning tree.
+#   'multiset'     -- the former enumerate-every-multiset-then-screen path.
+# All three yield the same set of topologies (tests/test_degree_first_edges.py,
+# tests/test_canonical_cotree.py).  Env ``DAEDALUS_EDGE_GENERATOR`` overrides.
 import os as _os
-EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'degree_first')
+EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'canonical')
 
 
 def process_tree_parallel(args):
     if EDGE_GENERATOR == 'multiset':
         return process_tree_multiset(args)
-    return process_tree_degree_first(args)
+    if EDGE_GENERATOR == 'degree_first':
+        return process_tree_degree_first(args, cotree_filter=False)
+    return process_tree_degree_first(args, cotree_filter=True)
+
+
+def _tree_paths(tree, verts):
+    """``paths[(u, w)]`` = the edges of the unique tree path from ``u`` to
+    ``w``, as sorted pairs, for every unordered pair (u < w)."""
+    nbrs = {v: tree.neighbors(v) for v in verts}
+    paths = {}
+    for u in verts:
+        parent = {u: None}
+        stack = [u]
+        while stack:
+            x = stack.pop()
+            for y in nbrs[x]:
+                if y not in parent:
+                    parent[y] = x
+                    stack.append(y)
+        for w in verts:
+            if w <= u:
+                continue
+            edges = []
+            x = w
+            while parent[x] is not None:
+                edges.append((min(x, parent[x]), max(x, parent[x])))
+                x = parent[x]
+            paths[(u, w)] = edges
+    return paths
+
+
+def _cotree_is_local_max(F, deg, paths):
+    """Canonical-decomposition filter for ``G = T + F``.
+
+    ``T + F`` is one spanning-tree decomposition of the topology ``G``;
+    exchanging an added edge ``f`` for a tree edge ``e`` on the tree path
+    between the endpoints of ``f`` gives another, ``T' = T + f - e``,
+    ``F' = F - f + e``, with the same ``G``.  Rank edges by the invariant
+    ``inv(e) = (max, min)`` of the degrees of their endpoints IN ``G``.  A
+    decomposition is accepted iff no single exchange strictly raises the
+    invariant of the replaced edge.  The set of accepted co-trees of ``G`` is
+    a graph invariant of ``G`` and contains the global maximum, so every
+    topology is produced from at least one of its trees, while a topology
+    with several inequivalent spanning trees is no longer built once per
+    tree.  Costs O(ell * |V|) integer comparisons, before any Sage graph is
+    built; no isomorphism test is involved."""
+    for u, w in F:
+        du, dw = deg[u], deg[w]
+        inv_f = (du, dw) if du >= dw else (dw, du)
+        for a, b in paths[(u, w) if u < w else (w, u)]:
+            da, db = deg[a], deg[b]
+            inv_e = (da, db) if da >= db else (db, da)
+            if inv_e > inv_f:
+                return False
+    return True
 
 
 def _degree_vectors(order, nbrs, base_d2, retired, budget):
@@ -477,15 +549,31 @@ def _realizations(vs, rem, forbidden):
     rem[u] = need
 
 
-def process_tree_degree_first(args):
+# Orbit-deduplicate the endpoint vectors under Aut(T) (one canonical_label per
+# vector).  Worth it without the co-tree filter; with it, the filter already
+# removes most repeats and the per-vector labelling costs more than the extra
+# certificates it saves (measured: see tests/test_canonical_cotree.py header).
+DELTA_ORBIT_DEDUP = _os.environ.get('DAEDALUS_DELTA_ORBIT_DEDUP', 'auto')
+
+
+def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None):
     """(E2) by degree increments: for a tree with surplus ``j``, enumerate the
     endpoint vectors ``delta`` of the ``ell`` added edges (retired leaves and
     2-path vertex covers first, so most endpoints are forced), then realize
     each as edge multisets.  Produces exactly the candidates that survive the
-    multiset path's screens, without generating the ~98% that do not."""
+    multiset path's screens, without generating the ~98% that do not.
+
+    With ``cotree_filter`` a realization is built only if its added edges are
+    a locally maximal co-tree of the resulting topology
+    (``_cotree_is_local_max``), which removes most of the copies a topology
+    otherwise receives from its other spanning trees."""
     tree, j, num_leaves, k, ell = args
     all_verts = sorted(tree.vertices())
     base_deg = {v: tree.degree(v) for v in all_verts}
+    paths = _tree_paths(tree, all_verts) if (cotree_filter and ell > 0) else None
+    if delta_dedup is None:
+        delta_dedup = ({'auto': not cotree_filter, '1': True, '0': False}
+                       .get(DELTA_ORBIT_DEDUP, not cotree_filter))
     tree_leaves = [v for v in all_verts if base_deg[v] == 1]
     base_d2 = frozenset(v for v in all_verts if base_deg[v] == 2)
     nbrs = {v: tree.neighbors(v) for v in all_verts}
@@ -526,24 +614,31 @@ def process_tree_degree_first(args):
         retired = frozenset(retired_tuple)
         order = list(retired_tuple) + d2_first
         for delta in _degree_vectors(order, nbrs, base_d2, retired, 2 * ell):
-            cells = {}
-            for v in all_verts:
-                cells.setdefault(delta.get(v, 0), []).append(v)
-            colours = sorted(cells)
-            C, cert = tree.canonical_label(partition=[cells[c] for c in colours],
-                                           certificate=True)
-            key = (tuple(colours), tuple(sorted(C.edges(labels=False))),
-                   tuple(tuple(sorted(cert[v] for v in cells[c])) for c in colours))
-            if key in seen_delta:
-                continue
-            seen_delta.add(key)
+            if delta_dedup:
+                cells = {}
+                for v in all_verts:
+                    cells.setdefault(delta.get(v, 0), []).append(v)
+                colours = sorted(cells)
+                C, cert = tree.canonical_label(partition=[cells[c] for c in colours],
+                                               certificate=True)
+                key = (tuple(colours), tuple(sorted(C.edges(labels=False))),
+                       tuple(tuple(sorted(cert[v] for v in cells[c])) for c in colours))
+                if key in seen_delta:
+                    continue
+                seen_delta.add(key)
             support = [v for v in all_verts if delta.get(v, 0) > 0]
             # two retired leaves of delta 1 joined by an added edge would be
             # adjacent degree-2 vertices of the topology
             ones = [v for v in support if v in retired and delta[v] == 1]
             forbidden = {frozenset(p) for p in combinations(ones, 2)}
             rem = {v: delta[v] for v in support}
+            if paths is not None:
+                deg = dict(base_deg)
+                for v in support:
+                    deg[v] += delta[v]
             for F in _realizations(support, rem, forbidden):
+                if paths is not None and not _cotree_is_local_max(F, deg, paths):
+                    continue
                 G = Graph(tree, multiedges=True, loops=False)
                 for u, w in F:
                     G.add_edge(u, w)
