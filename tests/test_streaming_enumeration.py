@@ -10,16 +10,23 @@ import pytest
 pytest.importorskip("sage.all")
 from sage.all import load                                     # noqa: E402
 import engine.enumeration.loop_diagram_enumeration as L       # noqa: E402
+from engine.enumeration import prediagram_cache as pdc        # noqa: E402
 
 CACHE = 'saved_prediagrams'
 CELLS = [(2, 1), (3, 1), (2, 2), (4, 1)]      # fast cells; (3,2)+ marked slow
 
 
 def _cached_certs(k, ell):
+    """Reference cert set: the local v1 file when present, else the shipped
+    v2 file re-expressed in this machine's canonical form, else the eager
+    enumerator.  Never skips."""
     path = f'{CACHE}/prediagrams_v1_k{k}_l{ell}.sobj'
-    if not os.path.exists(path):
-        pytest.skip(f'{path} not built')
-    return {L.pack_cert(L._iso_cert(r[0])) for r in load(path)}
+    if os.path.exists(path):
+        return {L.pack_cert(L._iso_cert(r[0])) for r in load(path)}
+    if pdc.shipped_exists(k, ell):
+        return pdc.recanonicalize(pdc.load_shipped_certs(k, ell))
+    return {L.pack_cert(L._iso_cert(r[0]))
+            for r in pdc._enumerate_eager(k=k, ell=ell, verbose=False)[2]}
 
 
 @pytest.mark.parametrize('k,ell', CELLS)

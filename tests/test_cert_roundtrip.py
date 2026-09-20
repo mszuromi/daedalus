@@ -21,10 +21,15 @@ CELLS = [(2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (4, 0), (4, 1), (4, 2)]
 
 
 def _load(k, ell):
+    """Records for ``(k, ell)``: the local v1 file when present, else the
+    records rebuilt from the shipped v2 file, else the eager enumerator."""
     path = f'{CACHE}/prediagrams_v1_k{k}_l{ell}.sobj'
-    if not os.path.exists(path):
-        pytest.skip(f'{path} not built')
-    return load(path)
+    if os.path.exists(path):
+        return load(path)
+    from engine.enumeration import prediagram_cache as pdc
+    if pdc.shipped_exists(k, ell):
+        return pdc.records_from_certs(pdc.load_shipped_certs(k, ell))
+    return list(pdc._enumerate_eager(k=k, ell=ell, verbose=False)[2])
 
 
 @pytest.mark.parametrize('k,ell', CELLS)

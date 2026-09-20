@@ -49,11 +49,15 @@ def _ext_fields_tag(external_fields):
 #: shared by every model.
 PREDIAGRAM_CACHE_ROOT = 'saved_prediagrams'
 
-#: Format selection, lookup order and the v1/v2 file layout all live in
-#: :mod:`engine.enumeration.prediagram_cache`.  In short: v2 (packed certs --
-#: ~4-5x smaller on disk, ~350x smaller live) is preferred, v1 (pickled Sage
-#: records, 16 shipped files) is still read but never written, and a miss
-#: computes via the streaming path and writes v2.
+#: Format selection, lookup order and the file layout all live in
+#: :mod:`engine.enumeration.prediagram_cache`.  In short: a local v2 file
+#: (packed certs -- ~4-5x smaller on disk, ~350x smaller live) is preferred,
+#: a local v1 file (pickled Sage records, written by older runs) is still
+#: read but never written, the cells shipped with the package
+#: (``engine/enumeration/shipped_prediagrams/``, k <= 4 and ell <= 2 plus a few
+#: more) are read next, and only a miss on all three computes via the
+#: streaming path and writes a local v2 file.  Nothing under this root is
+#: tracked in git.
 
 
 def _model_cache_dir(model, taylor_order, cache_dir_root):
@@ -207,6 +211,7 @@ def enumerate_unique_diagrams(
         if verbose:
             _how = {'computed': f'computed and written to '
                                 f'{prediagram_cache_root} as v2',
+                    'shipped': 'loaded from the files shipped with the package',
                     'eager': 'enumerated (cache bypassed)'}.get(
                 _pd_source, f'loaded from {_pd_source} in '
                             f'{prediagram_cache_root}')

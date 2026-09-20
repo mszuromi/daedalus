@@ -35,6 +35,21 @@ from engine.enumeration import prediagram_cache as pdc           # noqa: E402
 CACHE = 'saved_prediagrams'
 
 
+def _v1_root(k, ell, tmp_dir):
+    """A cache root holding a v1 file for ``(k, ell)``: the local one when it
+    exists, else one built into ``tmp_dir`` from the eager enumerator (the
+    v1 format IS the eager record list).  Lets the v1/v2 comparisons run on a
+    fresh clone instead of skipping."""
+    if pdc.v1_exists(CACHE, k, ell):
+        return CACHE
+    from sage.all import save as sage_save
+    root = os.path.join(str(tmp_dir), 'v1root')
+    os.makedirs(root, exist_ok=True)
+    records = list(pdc._enumerate_eager(k=k, ell=ell, verbose=False)[2])
+    sage_save(records, pdc.v1_path(root, k, ell))
+    return root
+
+
 # ── Format mechanics ────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -81,35 +96,44 @@ def test_rebuild_preserves_the_isomorphism_class(fmt_auto):
 
 
 @pytest.mark.parametrize('k,ell', [(2, 0), (2, 1), (2, 2), (3, 1), (4, 1)])
-def test_v1_files_still_load_and_describe_the_same_set(k, ell, monkeypatch):
-    """The 16 shipped v1 files keep working, and agree with v2 up to iso."""
-    if not pdc.v1_exists(CACHE, k, ell):
-        pytest.skip(f'v1 cache for ({k},{ell}) not built')
+def test_v1_files_still_load_and_describe_the_same_set(k, ell, monkeypatch, tmp_path):
+    """v1 files (local, or built here from the eager enumerator) keep working,
+    and agree with the streamed certs up to isomorphism."""
+    root = _v1_root(k, ell, tmp_path)
     monkeypatch.setenv('DAEDALUS_PREDIAGRAM_FORMAT', 'v1')
-    v1, source = pdc.load_prediagrams(CACHE, k, ell)
+    v1, source = pdc.load_prediagrams(root, k, ell)
     assert source == 'v1'
     assert all(len(rec) == 4 for rec in v1)
     assert pdc.certs_from_records(v1) == L.stream_prediagram_certs(
         k, ell, n_procs=1)
 
 
-def test_lookup_order_is_v2_then_v1_then_compute(tmp_path, fmt_auto):
+def test_lookup_order_is_v2_then_v1_then_shipped_then_compute(tmp_path, fmt_auto):
     from sage.all import save as sage_save
 
     root = str(tmp_path)
-    # (a) nothing on disk -> compute, and the miss is written back as v2
+    # (a) nothing on disk, shipped cell -> shipped, and the hit is copied in as v2
     records, source = pdc.load_prediagrams(root, 2, 1)
-    assert source == 'computed'
+    assert source == 'shipped'
     assert pdc.v2_exists(root, 2, 1)
     assert not pdc.v1_exists(root, 2, 1)
+
+    # (a') nothing on disk, cell not shipped -> compute, written back as v2
+    assert not pdc.shipped_exists(1, 0)
+    assert pdc.load_prediagrams(root, 1, 0)[1] == 'computed'
+    assert pdc.v2_exists(root, 1, 0)
 
     # (b) v2 present -> v2 wins even with a v1 file alongside
     sage_save(list(records), pdc.v1_path(root, 2, 1).removesuffix('.sobj'))
     assert pdc.load_prediagrams(root, 2, 1)[1] == 'v2'
 
-    # (c) v1 only -> v1
+    # (c) v1 only -> v1 beats the shipped file (keeps a machine's old numbers)
     os.remove(pdc.v2_path(root, 2, 1))
     assert pdc.load_prediagrams(root, 2, 1)[1] == 'v1'
+
+    # (d) neither -> shipped again
+    os.remove(pdc.v1_path(root, 2, 1))
+    assert pdc.load_prediagrams(root, 2, 1)[1] == 'shipped'
 
 
 def test_use_cache_false_uses_the_eager_path_and_touches_no_disk(tmp_path,
@@ -140,19 +164,22 @@ def test_format_override_is_validated(monkeypatch):
         pdc.cache_format()
 
 
-def test_precomputed_streaming_v2_files_are_picked_up():
-    """The expensive cells already streamed to disk must be found by name."""
-    path = pdc.v2_path(CACHE, 1, 4)
-    if not os.path.isfile(path):
-        pytest.skip('streaming_v2/prediagrams_v2_k1_l4.pkl not built')
+def test_shipped_v2_file_is_picked_up():
+    """The (1,4) cell ships with the package and must be found by name."""
+    path = pdc.shipped_path(1, 4)
+    assert os.path.isfile(path), path
     with open(path, 'rb') as f:
         certs = pickle.load(f)
     assert isinstance(certs, set) and len(certs) == 22332
     # Spot-check the rebuild rather than materialising all 22k Sage graphs.
+    # Compared up to isomorphism: the bytes depend on the canonical-labelling
+    # backend of the machine that wrote the file (module docstring).
     for blob in sorted(certs)[:50]:
         D, _, leaves, _ = pdc.record_from_cert(blob)
         assert leaves == [0]
-        assert L.pack_cert(L._iso_cert(D)) == blob
+        c = L._iso_cert(D)
+        assert L._iso_cert(L.cert_to_graph(c, directed=True)) == c
+        assert D.is_isomorphic(L.cert_to_graph(L.unpack_cert(blob), directed=True))
 
 
 # ── Numerical identity ──────────────────────────────────────────────────────
@@ -244,13 +271,12 @@ def _both_sources(ctx, k, ell, monkeypatch, tmp_root):
     on this machine, which is exactly the silent behaviour change these tests
     exist to characterise.
     """
-    if not pdc.v1_exists(CACHE, k, ell):
-        pytest.skip(f'v1 cache for ({k},{ell}) not built')
+    root1 = _v1_root(k, ell, tmp_root)
     monkeypatch.setenv('DAEDALUS_PREDIAGRAM_FORMAT', 'v1')
-    v1, s1 = pdc.load_prediagrams(CACHE, k, ell)
+    v1, s1 = pdc.load_prediagrams(root1, k, ell)
     monkeypatch.setenv('DAEDALUS_PREDIAGRAM_FORMAT', 'v2')
-    v2, s2 = pdc.load_prediagrams(str(tmp_root), k, ell)
-    assert s1 == 'v1' and s2 in ('v2', 'computed')
+    v2, s2 = pdc.load_prediagrams(os.path.join(str(tmp_root), 'v2root'), k, ell)
+    assert s1 == 'v1' and s2 in ('v2', 'shipped', 'computed')
     assert len(v1) == len(v2)
     return v1, v2
 

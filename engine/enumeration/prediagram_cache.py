@@ -17,6 +17,30 @@ v2 (``saved_prediagrams/streaming_v2/prediagrams_v2_k{k}_l{ell}.pkl``)
     computed by the streaming path drop straight in.  Records are rebuilt on
     load by :func:`record_from_cert`.
 
+shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl``)
+    The v2 files for the cells in :data:`SHIPPED_CELLS` (every cell with
+    k <= 4 and ell <= 2, plus (1,3), (1,4), (2,3), (5,0), (5,1), (6,0);
+    3.4 MB in total), tracked in git and found relative to this module, so a
+    fresh clone never recomputes them and does not depend on the working
+    directory.  Nothing under ``saved_prediagrams/`` is tracked: that directory
+    is the per-machine cache, and the four large cells that live there on the
+    development machine ((6,2), (4,3), (2,4), (8,1)) are 790 MB.  Rebuild the
+    shipped files with ``sage -python -m engine.enumeration.prediagram_cache
+    --rebuild-shipped --procs N``; ``tests/test_shipped_prediagrams.py`` checks
+    them against a fresh enumeration.
+
+    One portability caveat.  A certificate is ``canonical_label()`` of the
+    graph, and Sage picks the backend by graph, not by machine: bliss when it
+    is installed and the graph has no parallel edges, its own algorithm
+    otherwise.  On a machine without bliss the simple-graph prediagrams
+    therefore canonicalise to DIFFERENT bytes for the SAME isomorphism class.
+    Every consumer here only rebuilds a representative from a certificate, so
+    loading is unaffected; but two certificate sets from different backends
+    must be compared up to isomorphism (:func:`recanonicalize`), never as
+    bytes, and the record order (sorted by certificate) can differ between
+    backends, which moves totals by the same last bit that the v1/v2 switch
+    does (below).
+
 Why the record rebuild is not a verbatim replay of v1
 -----------------------------------------------------
 A certificate is an isomorphism-class representative: it stores nauty's
@@ -94,6 +118,57 @@ from engine.enumeration.loop_diagram_enumeration import (
 #: Subdirectory of the prediagram cache root holding the v2 cert files.  Fixed
 #: by the files ``stream_prediagram_certs`` runs have already written.
 V2_SUBDIR = 'streaming_v2'
+
+#: Directory of the v2 cert files tracked in git, next to this module.
+SHIPPED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'shipped_prediagrams')
+
+#: The cells shipped with the package (see the module docstring).
+SHIPPED_CELLS = ((1, 1), (1, 2), (1, 3), (1, 4),
+                 (2, 0), (2, 1), (2, 2), (2, 3),
+                 (3, 0), (3, 1), (3, 2),
+                 (4, 0), (4, 1), (4, 2),
+                 (5, 0), (5, 1), (6, 0))
+
+
+def shipped_path(k, ell):
+    """Path of the shipped v2 cert file for ``(k, ell)``."""
+    return os.path.join(SHIPPED_DIR, f'{V2_STAGE}_k{int(k)}_l{int(ell)}.pkl')
+
+
+def shipped_exists(k, ell):
+    return os.path.isfile(shipped_path(k, ell))
+
+
+def load_shipped_certs(k, ell):
+    """The shipped packed-cert set for ``(k, ell)``."""
+    with open(shipped_path(k, ell), 'rb') as f:
+        certs = pickle.load(f)
+    if not isinstance(certs, (set, frozenset)):
+        raise ValueError(f'{shipped_path(k, ell)}: expected a set of packed certs')
+    return certs
+
+
+def recanonicalize(certs):
+    """Re-express packed certs in THIS machine's canonical form.
+
+    Identity when the certs were produced by the same canonical-labelling
+    backend; otherwise the map from one backend's representatives to the
+    other's.  Use it before comparing a shipped set with a locally computed
+    one (see the module docstring)."""
+    return {pack_cert(_iso_cert(cert_to_graph(unpack_cert(b), directed=True)))
+            for b in certs}
+
+
+def write_shipped_cell(k, ell, n_procs=1, verbose=False):
+    """(Re)build the shipped file for one cell from a fresh enumeration."""
+    certs = set(stream_prediagram_certs(k, ell, n_procs=n_procs, verbose=verbose))
+    os.makedirs(SHIPPED_DIR, exist_ok=True)
+    path = shipped_path(k, ell)
+    with open(path + '.tmp', 'wb') as f:
+        pickle.dump(certs, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(path + '.tmp', path)
+    return path, len(certs)
 
 #: Filename stems.  Both match what :class:`~engine.core.cache.PipelineCache`
 #: would produce for these stages at ``(k, ell)``, so the shipped v1 ``.sobj``
@@ -221,9 +296,12 @@ def save_v2_certs(root, k, ell, certs):
 def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
 
-    Lookup order is v2, then v1, then compute.  A compute miss is served by
-    :func:`stream_prediagram_certs` (the packed-cert path) and written back as
-    v2 --- v1 files are never created, only read.
+    Lookup order is local v2, then local v1, then the shipped v2 file, then
+    compute.  A shipped hit is copied into the local root as v2 (so the next
+    run is a local v2 hit, exactly as after a compute); a compute miss is
+    served by :func:`stream_prediagram_certs` (the packed-cert path) and
+    written back as local v2.  v1 files are never created, only read, and the
+    shipped files are never written to.
 
     Because v1 wins over computing, a cell that already has a v1 file keeps
     being served from v1 and keeps its exact previous numbers: no shipped cell
@@ -244,7 +322,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False):
     Returns
     -------
     records : list of (D, G, leaves, internal)
-    source : {'v2', 'v1', 'computed', 'eager'}
+    source : {'v2', 'v1', 'shipped', 'computed', 'eager'}
     """
     from sage.all import load as sage_load
 
@@ -259,8 +337,27 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False):
     if fmt in ('auto', 'v1') and v1_exists(root, k, ell):
         return list(sage_load(v1_path(root, k, ell))), 'v1'
 
+    if fmt in ('auto', 'v2') and shipped_exists(k, ell):
+        certs = load_shipped_certs(k, ell)
+        save_v2_certs(root, k, ell, certs)
+        return records_from_certs(certs), 'shipped'
+
     certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
                                     verbose=verbose)
     if fmt in ('auto', 'v2'):
         save_v2_certs(root, k, ell, certs)
     return records_from_certs(certs), 'computed'
+
+
+if __name__ == '__main__':                      # sage -python -m engine.enumeration.prediagram_cache
+    import argparse
+    ap = argparse.ArgumentParser(description='Rebuild the shipped prediagram cert files.')
+    ap.add_argument('--rebuild-shipped', action='store_true')
+    ap.add_argument('--procs', type=int, default=1)
+    ns = ap.parse_args()
+    if ns.rebuild_shipped:
+        for _k, _l in SHIPPED_CELLS:
+            _p, _n = write_shipped_cell(_k, _l, n_procs=ns.procs)
+            print(f'({_k},{_l}) {_n:7d} certs -> {_p}')
+    else:
+        ap.print_help()
