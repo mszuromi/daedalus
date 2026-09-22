@@ -409,12 +409,16 @@ import os as _os
 EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'canonical')
 
 
-def process_tree_parallel(args):
+def process_tree_parallel(args, raw=False):
+    """``raw=True`` (degree-first generators only) returns ``(n, edges, leaves)``
+    index data instead of Sage graphs, for the certificate fast path."""
     if EDGE_GENERATOR == 'multiset':
+        if raw:
+            return [(_graph_index_data(G) + (leaves,)) for G, leaves, _ in process_tree_multiset(args)]
         return process_tree_multiset(args)
     if EDGE_GENERATOR == 'degree_first':
-        return process_tree_degree_first(args, cotree_filter=False)
-    return process_tree_degree_first(args, cotree_filter=True)
+        return process_tree_degree_first(args, cotree_filter=False, raw=raw)
+    return process_tree_degree_first(args, cotree_filter=True, raw=raw)
 
 
 def _tree_paths(tree, verts):
@@ -556,7 +560,7 @@ def _realizations(vs, rem, forbidden):
 DELTA_ORBIT_DEDUP = _os.environ.get('DAEDALUS_DELTA_ORBIT_DEDUP', 'auto')
 
 
-def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None):
+def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None, raw=False):
     """(E2) by degree increments: for a tree with surplus ``j``, enumerate the
     endpoint vectors ``delta`` of the ``ell`` added edges (retired leaves and
     2-path vertex covers first, so most endpoints are forced), then realize
@@ -581,6 +585,29 @@ def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None):
         return []
     local_candidates = []
 
+    idx = {v: i for i, v in enumerate(all_verts)}
+    tree_edges_idx = [(idx[u], idx[w]) for u, w in tree.edges(labels=False)]
+
+    def emit_raw(F, delta):
+        """Raw-mode emit: the same two structural checks on adjacency lists,
+        no Sage graph; appends ``(n, edges, leaves)`` in 0..n-1 indices."""
+        deg_f = {v: base_deg[v] + delta.get(v, 0) for v in all_verts}
+        leaves = [v for v in all_verts if deg_f[v] == 1]
+        if ell > 0:
+            d2 = {v for v in all_verts if deg_f[v] == 2}
+            adj = {v: list(nbrs[v]) for v in all_verts}
+            for u, w in F:
+                adj[u].append(w)
+                adj[w].append(u)
+            for v in all_verts:
+                if deg_f[v] >= 3 and all(x in d2 for x in adj[v]):
+                    return
+            ln = {x for l in leaves for x in adj[l]}
+            if ln and all(x in d2 for x in ln):
+                return
+        edges = tree_edges_idx + [(idx[u], idx[w]) for u, w in F]
+        local_candidates.append((len(all_verts), edges, [idx[v] for v in leaves]))
+
     def emit(G, delta):
         leaves = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 1]
         if ell > 0:
@@ -598,7 +625,10 @@ def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None):
         local_candidates.append((G, leaves, [v for v in all_verts if v not in leaves]))
 
     if ell == 0:
-        emit(Graph(tree, multiedges=True, loops=False), {})
+        if raw:
+            emit_raw([], {})
+        else:
+            emit(Graph(tree, multiedges=True, loops=False), {})
         return local_candidates
 
     internal = [v for v in all_verts if base_deg[v] >= 2]
@@ -638,6 +668,9 @@ def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None):
                     deg[v] += delta[v]
             for F in _realizations(support, rem, forbidden):
                 if paths is not None and not _cotree_is_local_max(F, deg, paths):
+                    continue
+                if raw:
+                    emit_raw(F, delta)
                     continue
                 G = Graph(tree, multiedges=True, loops=False)
                 for u, w in F:
@@ -737,6 +770,26 @@ def process_tree_multiset(args):
     return local_candidates
 
 
+# Certificate backend.  'fast' = engine.enumeration._fastenum.aux_cert (Cython,
+# subdivision encoding on a DenseGraph, ~3x cheaper); 'sage' = canonical_label()
+# of the multigraph.  Both are complete isomorphism invariants in the same
+# (order, sorted_edges) format, but their BYTES differ for the same class:
+# compare certificate sets across backends only via
+# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND overrides.
+from engine.enumeration import fastenum as _fe
+CERT_BACKEND = _os.environ.get('DAEDALUS_CERT_BACKEND', 'fast' if _fe.available else 'sage')
+if CERT_BACKEND == 'fast' and not _fe.available:
+    CERT_BACKEND = 'sage'
+
+
+def _graph_index_data(G):
+    """``(n, edges)`` of a Sage (di)graph with its vertices renumbered 0..n-1 in
+    sorted order; edge labels dropped, multiplicity kept."""
+    vs = sorted(G.vertices())
+    idx = {v: i for i, v in enumerate(vs)}
+    return len(vs), [(idx[u], idx[v]) for u, v in G.edges(labels=False)]
+
+
 def _iso_cert(G):
     """Hashable isomorphism certificate for a (possibly multi-) graph.
 
@@ -752,11 +805,18 @@ def _iso_cert(G):
     the predicates this replaces) ignores edge labels by default, so
     stripping restores exactly the old equivalence.
 
+    With ``CERT_BACKEND == 'fast'`` the certificate is computed by
+    ``_fastenum.aux_cert`` from the index data instead (same format, different
+    bytes; see the backend note above).
+
     Vertex colouring by leaf/internal is deliberately NOT part of the
     certificate: leaves are exactly the degree-1 vertices and degree is an
     isomorphism invariant, so the ``set_vertex`` colouring the pairwise
     predicates applied was redundant (and ignored by ``is_isomorphic``).
     """
+    if CERT_BACKEND == 'fast':
+        n, edges = _graph_index_data(G)
+        return _fe.aux_cert(n, edges, bool(G.is_directed()))
     cls = DiGraph if G.is_directed() else Graph
     stripped = cls(multiedges=True, loops=False)
     stripped.add_vertices(G.vertices())
@@ -951,6 +1011,11 @@ def enumerate_orientations_integer(G, leaves):
     if forced is None:
         return []
     base, free = forced
+    if _fe.available:
+        dl = [deg[v] for v in verts]
+        leaf = [1 if leaf_flag else 0 for leaf_flag in (v in leafset for v in verts)]
+        pats = _fe.orientation_patterns(n, [a for a, b in E], [b for a, b in E], base, free, leaf, dl)
+        return [orient_edges(G, [(pat >> i) & 1 for i in range(len(E))]) for pat in pats]
     nbr = [set() for _ in range(n)]
     for a, b in E:
         nbr[a].add(b)
@@ -1223,15 +1288,70 @@ def _tree_to_topology_certs(args):
     either direction.
     """
     blob, j, num_leaves, k, ell = args
+    if CERT_BACKEND == 'fast' and ell > 0 and EDGE_GENERATOR != 'multiset':
+        n, tedges = unpack_cert(blob)
+        return _tree_topology_certs_fast(n, list(tedges), j, num_leaves, k, ell)
     tree = cert_to_graph(unpack_cert(blob), directed=False)
     out = set()
+    if CERT_BACKEND == 'fast':
+        for n, edges, _leaves in process_tree_parallel((tree, j, num_leaves, k, ell), raw=True):
+            out.add(pack_cert(_fe.aux_cert(n, edges, False)))
+        return out
     for G, _leaves, _internal in process_tree_parallel((tree, j, num_leaves, k, ell)):
         out.add(pack_cert(_iso_cert(G)))
     return out
 
 
+def _tree_topology_certs_fast(n, tedges, j, num_leaves, k, ell):
+    """(E2) for one tree in C (``_fastenum.tree_candidates``): for each
+    ``j``-subset of the tree's leaves, endpoint vectors, realizations,
+    co-tree filter, structural checks and certificates.  Same set as the
+    Python degree-first path."""
+    if num_leaves - j != k:
+        return set()
+    deg = [0] * n
+    for u, v in tedges:
+        deg[u] += 1
+        deg[v] += 1
+    leaves = [v for v in range(n) if deg[v] == 1]
+    eu = [u for u, v in tedges]
+    ev = [v for u, v in tedges]
+    cotree = EDGE_GENERATOR != 'degree_first'
+    out = set()
+    for retired in combinations(leaves, j):
+        for cert in _fe.tree_candidates(n, eu, ev, list(retired), ell, cotree):
+            out.add(pack_cert(cert))
+    return out
+
+
+def _prediagram_certs_fast(n, edges):
+    """Packed certs of the causal orientations of the multigraph ``(n, edges)``
+    without building a DiGraph: compiled pattern search, then ``aux_cert`` on
+    the oriented edge list."""
+    deg = [0] * n
+    for u, v in edges:
+        deg[u] += 1
+        deg[v] += 1
+    leafset = {v for v in range(n) if deg[v] == 1}
+    forced = _forced_orientation_bits(edges, leafset, deg)
+    if forced is None:
+        return set()
+    base, free = forced
+    leaf = [1 if deg[v] == 1 else 0 for v in range(n)]
+    pats = _fe.orientation_patterns(n, [u for u, v in edges], [v for u, v in edges],
+                                    base, free, leaf, deg)
+    out = set()
+    for pat in pats:
+        dedges = [(v, u) if (pat >> i) & 1 else (u, v) for i, (u, v) in enumerate(edges)]
+        out.add(pack_cert(_fe.aux_cert(n, dedges, True)))
+    return out
+
+
 def _topology_cert_to_prediagram_certs(blob):
     """Worker: one packed topology cert -> packed certs of its orientations."""
+    if CERT_BACKEND == 'fast' and ORIENTATION_CHECKER == 'integer':
+        n, edges = unpack_cert(blob)
+        return _prediagram_certs_fast(n, list(edges))
     G = cert_to_graph(unpack_cert(blob), directed=False)
     leaves = leaves_of(G)
     return {pack_cert(_iso_cert(D)) for D in enumerate_orientations(G, leaves)}
