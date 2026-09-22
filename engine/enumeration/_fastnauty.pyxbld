@@ -1,0 +1,10 @@
+# pyximport build hook: link Sage's bundled nauty (libnauty.a, nauty.h).
+def make_ext(modname, pyxfilename):
+    import os
+    from setuptools import Extension
+    import sage.env
+    loc = sage.env.SAGE_LOCAL
+    return Extension(name=modname, sources=[pyxfilename],
+                     include_dirs=[os.path.join(loc, 'include'), os.path.join(loc, 'include', 'nauty')],
+                     library_dirs=[os.path.join(loc, 'lib')],
+                     libraries=['nauty'], extra_compile_args=['-O2'])

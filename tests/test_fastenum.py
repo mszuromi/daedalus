@@ -65,7 +65,7 @@ def test_aux_cert_is_invariant_and_idempotent(directed):
         perm = list(range(n)); random.shuffle(perm)
         e2 = [(perm[u], perm[v]) for u, v in e]; random.shuffle(e2)
         assert F.aux_cert(n, e2, directed) == c
-        assert L._iso_cert(L.cert_to_graph(c, directed=directed)) == c
+        assert F.aux_cert(*_index_data(L.cert_to_graph(c, directed=directed)), directed) == c
         assert c[0] == n and len(c[1]) == len(e)
 
 
@@ -102,7 +102,7 @@ def test_orientation_patterns_match_python_checker():
         pats = F.orientation_patterns(n, [u for u, v in e], [v for u, v in e], base, free,
                                       [1 if d == 1 else 0 for d in deg], deg)
         assert len(pats) == len(ref)
-        assert {L._iso_cert(D) for D in ref} == \
+        assert {F.aux_cert(*_index_data(D), True) for D in ref} == \
             {F.aux_cert(n, [(v, u) if (p >> i) & 1 else (u, v) for i, (u, v) in enumerate(e)], True) for p in pats}
 
 
@@ -115,9 +115,10 @@ def test_streaming_with_fast_backend_matches_shipped_cells(k, ell):
 
 def test_raw_and_graph_paths_agree():
     """process_tree_parallel(raw=True) must yield the same topology classes as
-    the Sage-graph path for every tree at (3,2)."""
+    the Sage-graph path for every tree at (3,2) (both certified with the
+    selected backend)."""
     for tree, j, nl in L.generate_trees_with_constraints(3, 2):
-        a = {F.aux_cert(n, e, False) for n, e, _ in L.process_tree_parallel((tree, j, nl, 3, 2), raw=True)}
+        a = {F.cert(n, e, False) for n, e, _ in L.process_tree_parallel((tree, j, nl, 3, 2), raw=True)}
         b = {L._iso_cert(G) for G, _, _ in L.process_tree_parallel((tree, j, nl, 3, 2))}
         assert a == b
 
@@ -132,3 +133,61 @@ def test_compiled_edge_stage_matches_python_tree_by_tree(k, ell):
         fast = L._tree_topology_certs_fast(n, te, j, nl, k, ell)
         ref = {L.pack_cert(L._iso_cert(G)) for G, _, _ in L.process_tree_parallel((tree, j, nl, k, ell))}
         assert fast == ref
+
+
+def test_certificate_backend_reported():
+    assert F.cert_backend in ('nauty', 'aux')
+    assert F.cert is not None
+
+
+@pytest.mark.parametrize('directed', [False, True])
+def test_selected_cert_is_invariant_and_idempotent(directed):
+    """Whichever backend the loader picked (nauty when it links)."""
+    random.seed(11)
+    Gs = _topologies(2, 3)[:300]
+    if directed:
+        Gs = [D for G in Gs[:120] for D in L.enumerate_orientations(G, L.leaves_of(G))]
+    for G in Gs:
+        n, e = _index_data(G)
+        c = F.cert(n, e, directed)
+        perm = list(range(n)); random.shuffle(perm)
+        e2 = [(perm[u], perm[v]) for u, v in e]; random.shuffle(e2)
+        assert F.cert(n, e2, directed) == c
+        assert L._iso_cert(L.cert_to_graph(c, directed=directed)) == c
+
+
+def test_sparse6_parser_matches_sage():
+    import subprocess
+    from sage.all import Graph
+    permissive = ([1] * 40, [99] * 40, [99] * 40, [0] * 40, [99] * 40)
+    total = 0
+    for n in range(2, 11):
+        proc = subprocess.Popen([L._gentreeg_path(), '-q', str(n)], stdout=subprocess.PIPE)
+        for line in proc.stdout:
+            line = line.rstrip(b'\n'); total += 1
+            rec = F.tree_filter_sparse6(line, 0, 10, *permissive)
+            G = Graph(line.decode())
+            assert rec is not None and rec[2] == G.order()
+            assert sorted(tuple(sorted(e)) for e in rec[3]) == sorted(tuple(sorted(e)) for e in G.edges(labels=False))
+        proc.wait()
+    assert total == 106 + 47 + 23 + 11 + 6 + 3 + 2 + 1 + 1       # trees on 2..10 vertices
+
+
+@pytest.mark.parametrize('k,ell', [(3, 2), (5, 1), (2, 3)])
+def test_compiled_tree_stage_matches_sage_path(k, ell):
+    fast = L.generate_trees_parallel(k, ell, 1, 50, False)
+    old = L.CERT_BACKEND
+    L.CERT_BACKEND = 'sage'
+    try:
+        ref = L.generate_trees_parallel(k, ell, 1, 50, False)
+    finally:
+        L.CERT_BACKEND = old
+    def recanon(recs):
+        return {(L.pack_cert(L._iso_cert(L.cert_to_graph(L.unpack_cert(b), False))), j, nl) for b, j, nl in recs}
+    assert len(fast) == len(ref) and recanon(fast) == recanon(ref)
+
+
+def test_compiled_orientation_glue_matches_python():
+    for b in sorted(L.stream_topology_certs(3, 2, 1, 50, False))[:800]:
+        n, e = L.unpack_cert(b)
+        assert {L.pack_cert(c) for c in F.prediagram_certs(n, list(e))} == L._prediagram_certs_fast(n, list(e))

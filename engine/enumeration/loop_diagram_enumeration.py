@@ -294,6 +294,8 @@ def _trees_of_order(args):
     of IPC per tree instead of pickling a graph.
     """
     n, res, mod, k, ell, spec = args
+    if CERT_BACKEND == 'fast':
+        return _trees_of_order_fast(n, res, mod, k, ell, spec)
     gen = (graphs.nauty_gentreeg(f'{n} {res}/{mod}') if mod > 1
            else graphs.trees(n))
     out = []
@@ -311,6 +313,35 @@ def _trees_of_order(args):
         if not endpoint_condition_holds(tree, degree_2, j, ell):
             continue
         out.append((pack_cert(_iso_cert(tree)), j, num_leaves))
+    return out
+
+
+def _gentreeg_path():
+    from sage.features.nauty import NautyExecutable
+    return NautyExecutable('gentreeg').absolute_filename()
+
+
+def _trees_of_order_fast(n, res, mod, k, ell, spec):
+    """Compiled tree stage: read gentreeg's sparse6 output directly and apply
+    the (E1) filters in C (``_fastenum.tree_filter_sparse6``), certifying only
+    the survivors.  Same records as the Sage-graph path."""
+    import subprocess
+    jmax = max(spec) if spec else -1
+    valid = [1 if j in spec else 0 for j in range(jmax + 1)]
+    v3max = [spec[j][1] if j in spec else 0 for j in range(jmax + 1)]
+    v2max = [spec[j][2] if j in spec else 0 for j in range(jmax + 1)]
+    nmin = [spec[j][3] if j in spec else 0 for j in range(jmax + 1)]
+    nmax = [spec[j][4] if j in spec else 0 for j in range(jmax + 1)]
+    cmd = [_gentreeg_path(), '-q', str(n)] + ([f'{res}/{mod}'] if mod > 1 else [])
+    out = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    for line in proc.stdout:
+        rec = _fe.tree_filter_sparse6(line.rstrip(b'\n'), k, ell, valid, v3max, v2max, nmin, nmax)
+        if rec is None:
+            continue
+        j, num_leaves, nn, edges = rec
+        out.append((pack_cert(_fe.cert(nn, edges, False)), j, num_leaves))
+    proc.wait()
     return out
 
 
@@ -770,11 +801,12 @@ def process_tree_multiset(args):
     return local_candidates
 
 
-# Certificate backend.  'fast' = engine.enumeration._fastenum.aux_cert (Cython,
-# subdivision encoding on a DenseGraph, ~3x cheaper); 'sage' = canonical_label()
-# of the multigraph.  Both are complete isomorphism invariants in the same
-# (order, sorted_edges) format, but their BYTES differ for the same class:
-# compare certificate sets across backends only via
+# Certificate backend.  'fast' = engine.enumeration.fastenum.cert: nauty's
+# densenauty on a coloured subdivision encoding (~4-6 us) when Sage's bundled
+# libnauty links, else Sage's search_tree on a DenseGraph (~30 us); 'sage' =
+# canonical_label() of the multigraph (~100 us).  All are complete isomorphism
+# invariants in the same (order, sorted_edges) format, but their BYTES differ
+# for the same class: compare certificate sets across backends only via
 # prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND overrides.
 from engine.enumeration import fastenum as _fe
 CERT_BACKEND = _os.environ.get('DAEDALUS_CERT_BACKEND', 'fast' if _fe.available else 'sage')
@@ -816,7 +848,7 @@ def _iso_cert(G):
     """
     if CERT_BACKEND == 'fast':
         n, edges = _graph_index_data(G)
-        return _fe.aux_cert(n, edges, bool(G.is_directed()))
+        return _fe.cert(n, edges, bool(G.is_directed()))
     cls = DiGraph if G.is_directed() else Graph
     stripped = cls(multiedges=True, loops=False)
     stripped.add_vertices(G.vertices())
@@ -1295,7 +1327,7 @@ def _tree_to_topology_certs(args):
     out = set()
     if CERT_BACKEND == 'fast':
         for n, edges, _leaves in process_tree_parallel((tree, j, num_leaves, k, ell), raw=True):
-            out.add(pack_cert(_fe.aux_cert(n, edges, False)))
+            out.add(pack_cert(_fe.cert(n, edges, False)))
         return out
     for G, _leaves, _internal in process_tree_parallel((tree, j, num_leaves, k, ell)):
         out.add(pack_cert(_iso_cert(G)))
@@ -1343,7 +1375,7 @@ def _prediagram_certs_fast(n, edges):
     out = set()
     for pat in pats:
         dedges = [(v, u) if (pat >> i) & 1 else (u, v) for i, (u, v) in enumerate(edges)]
-        out.add(pack_cert(_fe.aux_cert(n, dedges, True)))
+        out.add(pack_cert(_fe.cert(n, dedges, True)))
     return out
 
 
@@ -1351,7 +1383,7 @@ def _topology_cert_to_prediagram_certs(blob):
     """Worker: one packed topology cert -> packed certs of its orientations."""
     if CERT_BACKEND == 'fast' and ORIENTATION_CHECKER == 'integer':
         n, edges = unpack_cert(blob)
-        return _prediagram_certs_fast(n, list(edges))
+        return {pack_cert(c) for c in _fe.prediagram_certs(n, list(edges))}
     G = cert_to_graph(unpack_cert(blob), directed=False)
     leaves = leaves_of(G)
     return {pack_cert(_iso_cert(D)) for D in enumerate_orientations(G, leaves)}

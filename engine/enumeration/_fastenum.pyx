@@ -6,7 +6,20 @@ Hot loops of the prediagram enumeration, compiled.  Loaded through
 ``engine.enumeration.fastenum`` (pyximport with a pure-Python fallback), so the
 package still runs without a C compiler; ``DAEDALUS_FASTENUM=0`` disables it.
 
-Three things live here.
+Five things live here; ``CERT_FN`` (set by the loader) is the certificate
+they call: nauty's ``densenauty`` through ``_fastnauty`` when Sage's bundled
+libnauty links, else ``aux_cert`` below.
+
+``tree_filter_sparse6(line, k, ell, valid, v3max, v2max, nmin, nmax)``
+    The (E1) filters on one sparse6 line of ``gentreeg`` output: leaf count
+    (hence the surplus j), vertex-count window, degree bounds and the endpoint
+    condition, with the sparse6 decoding done here so no Sage graph is built
+    for the ~90% of trees that fail.
+
+``prediagram_certs(n, edges)``
+    The (E3) stage for one topology: forced edge directions, the pattern
+    search, the oriented edge lists and the certificate of each causal
+    orientation.
 
 ``tree_candidates(n, eu, ev, retired, ell, cotree)``
     The whole (E2) stage for one tree and one retired-leaf subset: endpoint
@@ -287,7 +300,7 @@ cdef void on_F(TS* s, int* F, int nF, list out):
         edges.append((s.eu[i], s.ev[i]))
     for i in range(nF):
         edges.append((F[2 * i], F[2 * i + 1]))
-    out.append(aux_cert(n, edges, False))
+    out.append(CERT_FN(n, edges, False))
 
 
 cdef void rec_real(TS* s, int* rem, int* F, int nF, list out):
@@ -409,3 +422,152 @@ def tree_candidates(int n, eu, ev, retired, int ell, bint cotree):
     free(s.eu); free(s.ev); free(s.base_deg); free(s.is_d2); free(s.is_retired); free(s.delta)
     free(s.adj_ptr); free(s.adj); free(s.order); free(s.parent); free(cnt); free(stack)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Certificate hook: the loader points CERT_FN at the best available backend
+# (nauty when Sage's libnauty links, else aux_cert).  on_F and the helpers
+# below call it once per survivor.
+# ---------------------------------------------------------------------------
+CERT_FN = aux_cert
+
+
+def set_cert_fn(fn):
+    global CERT_FN
+    CERT_FN = fn
+
+
+# ---------------------------------------------------------------------------
+# (E3) glue: forced bits, the pattern search, oriented edge lists and the
+# certificate of each causal orientation, for one topology given as index
+# data.  Returns the list of certificates.
+# ---------------------------------------------------------------------------
+def prediagram_certs(int n, edges):
+    cdef int m = len(edges)
+    cdef int i, u, v, hv, hu
+    deg = [0] * n
+    for i in range(m):
+        deg[edges[i][0]] += 1; deg[edges[i][1]] += 1
+    leaf = [1 if deg[v] == 1 else 0 for v in range(n)]
+    base = [0] * m
+    free_idx = []
+    for i in range(m):
+        u = edges[i][0]; v = edges[i][1]
+        hv = leaf[v] or deg[u] == 2          # u -> v forced
+        hu = leaf[u] or deg[v] == 2          # v -> u forced
+        if hv and hu:
+            return []
+        if hv:
+            base[i] = 0
+        elif hu:
+            base[i] = 1
+        else:
+            free_idx.append(i)
+    pats = orientation_patterns(n, [e[0] for e in edges], [e[1] for e in edges], base, free_idx, leaf, deg)
+    out = []
+    cdef unsigned long long pat
+    for pat in pats:
+        dedges = []
+        for i in range(m):
+            if (pat >> i) & 1:
+                dedges.append((edges[i][1], edges[i][0]))
+            else:
+                dedges.append(edges[i])
+        out.append(CERT_FN(n, dedges, True))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# (E1) glue: parse one sparse6 line from gentreeg and apply the tree filters
+# (leaf count -> j, vertex-count window, degree bounds, endpoint condition).
+# Returns (j, num_leaves, n, edges) or None.
+# ---------------------------------------------------------------------------
+def tree_filter_sparse6(bytes line, int k, int ell, valid, v3max, v2max, nmin, nmax):
+    cdef const unsigned char* s = line
+    cdef int L = len(line)
+    cdef int p = 0, n, kbits, i, b, x, v, nbits, bitpos, j, nl, n3, n2, need, cnt, u, w
+    if L < 2 or s[0] != 58:                     # ':'
+        return None
+    p = 1
+    if s[p] != 126:                             # '~'
+        n = s[p] - 63; p += 1
+    elif p + 1 < L and s[p + 1] != 126:
+        n = ((s[p+1]-63) << 12) | ((s[p+2]-63) << 6) | (s[p+3]-63); p += 4
+    else:
+        n = 0
+        for i in range(6):
+            n = (n << 6) | (s[p+2+i]-63)
+        p += 8
+    kbits = 1
+    while (1 << kbits) < n:
+        kbits += 1
+    nbits = 6 * (L - p)
+    cdef int* eu = <int*> malloc((n + 1) * sizeof(int))
+    cdef int* ev = <int*> malloc((n + 1) * sizeof(int))
+    cdef int* deg = <int*> malloc((n + 1) * sizeof(int))
+    for i in range(n):
+        deg[i] = 0
+    cdef int ne = 0
+    bitpos = 0
+    v = 0
+    while bitpos + 1 + kbits <= nbits:
+        b = (s[p + bitpos // 6] - 63) >> (5 - bitpos % 6) & 1
+        bitpos += 1
+        x = 0
+        for i in range(kbits):
+            x = (x << 1) | ((s[p + bitpos // 6] - 63) >> (5 - bitpos % 6) & 1)
+            bitpos += 1
+        if b:
+            v += 1
+        if x >= n or v >= n:
+            break
+        if x > v:
+            v = x
+        else:
+            if ne >= n - 1:
+                free(eu); free(ev); free(deg)
+                return None                     # not a tree
+            eu[ne] = x; ev[ne] = v; ne += 1
+            deg[x] += 1; deg[v] += 1
+    if ne != n - 1:
+        free(eu); free(ev); free(deg)
+        return None
+    nl = 0; n2 = 0; n3 = 0
+    for i in range(n):
+        if deg[i] == 1: nl += 1
+        elif deg[i] == 2: n2 += 1
+        elif deg[i] >= 3: n3 += 1
+    j = nl - k
+    if j < 0 or j >= len(valid) or not valid[j] or n < nmin[j] or n > nmax[j] \
+            or n3 > v3max[j] or n2 > v2max[j]:
+        free(eu); free(ev); free(deg)
+        return None
+    # endpoint condition: sum over maximal runs of degree-2 vertices of floor(m/2)
+    cdef int* comp = <int*> malloc((n + 1) * sizeof(int))
+    for i in range(n):
+        comp[i] = i
+    # union-find over tree edges joining two degree-2 vertices
+    for i in range(ne):
+        u = eu[i]; w = ev[i]
+        if deg[u] == 2 and deg[w] == 2:
+            while comp[u] != u: u = comp[u]
+            while comp[w] != w: w = comp[w]
+            if u != w: comp[u] = w
+    cdef int* size = <int*> malloc((n + 1) * sizeof(int))
+    for i in range(n):
+        size[i] = 0
+    for i in range(n):
+        if deg[i] == 2:
+            u = i
+            while comp[u] != u: u = comp[u]
+            size[u] += 1
+    need = j
+    for i in range(n):
+        need += size[i] // 2
+    free(comp); free(size)
+    if need > 2 * ell:
+        free(eu); free(ev); free(deg)
+        return None
+    edges = [(eu[i], ev[i]) for i in range(ne)]
+    free(eu); free(ev); free(deg)
+    return (j, nl, n, edges)
