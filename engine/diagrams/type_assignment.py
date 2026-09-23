@@ -24,6 +24,39 @@ def _distinct_permutations(seq):
     return set(permutations(seq))
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=None)
+def _distinct_orderings(legs):
+    """The distinct orderings of the leg multiset ``legs`` (a tuple of
+    ``(field_base, pop_idx)`` pairs), as a tuple of lists, in the order
+    sympy's ``multiset_permutations`` produced them (lexicographic in the
+    sorted distinct entries), so downstream emission order is unchanged.
+    Cached per multiset: the same handful of vertex types is visited
+    millions of times per enumeration."""
+    if not legs:
+        return ([],)
+    distinct = sorted(set(legs), key=repr)
+    counts = {x: legs.count(x) for x in distinct}
+    out = []
+
+    def rec(prefix, remaining):
+        if len(prefix) == len(legs):
+            out.append(list(prefix))
+            return
+        for x in distinct:
+            if remaining[x]:
+                remaining[x] -= 1
+                prefix.append(x)
+                rec(prefix, remaining)
+                prefix.pop()
+                remaining[x] += 1
+
+    rec([], dict(counts))
+    return tuple(out)
+
+
 # ── Data structures ──────────────────────────────────────────────────────────
 
 class TypedDiagram:
@@ -112,8 +145,44 @@ def build_field_index_map(ring_var_names, n_tilde):
 
 # ── Core enumeration ─────────────────────────────────────────────────────────
 
+_BIDEGREE_CACHE = {}
+
+
+def _types_by_bidegree(vertex_types, source_types):
+    """``({out_degree: [source types]}, {(in, out): [vertex types]})`` for the
+    given type lists, cached on their identities: the lists are the same
+    objects for every prediagram of an enumeration."""
+    key = (id(vertex_types), id(source_types))
+    hit = _BIDEGREE_CACHE.get(key)
+    if hit is not None and hit[0] is vertex_types and hit[1] is source_types:
+        return hit[2], hit[3]
+    src = {}
+    for st in source_types:
+        src.setdefault(st.out_degree, []).append(st)
+    vts = {}
+    for vt in vertex_types:
+        vts.setdefault((vt.in_degree, vt.out_degree), []).append(vt)
+    _BIDEGREE_CACHE.clear()
+    _BIDEGREE_CACHE[key] = (vertex_types, source_types, src, vts)
+    return src, vts
+
+
+def _zero_mask(G_ft):
+    """``{(i, j): entry is literally SR(0)}`` for the propagator matrix, a
+    purely structural test (see the note in ``enumerate_typed_diagrams``).
+    Depends only on ``G_ft``, so ``enumerate_all`` computes it once per
+    call; computing it per prediagram cost one ``str()`` of every
+    symbolic entry per prediagram (14 928 x 9 conversions at k=2, ell=3
+    for a three-field model)."""
+    if G_ft is None:
+        return None
+    return {(i, j): (str(G_ft[i, j]) == '0')
+            for i in range(G_ft.nrows()) for j in range(G_ft.ncols())}
+
+
 def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
-                             source_types, G_ft, resp_index, phys_index):
+                             source_types, G_ft, resp_index, phys_index,
+                             g_zero_mask=None):
     """
     Enumerate all valid typed diagrams for a single prediagram.
 
@@ -155,14 +224,8 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
     # what build_propagator initialises empty cells with).  A
     # mathematically-zero-after-cancellation entry would just
     # enumerate a few extra diagrams that Phase J integrates to 0.
-    g_zero_mask = None
-    if G_ft is not None:
-        g_zero_mask = {}
-        for _i in range(G_ft.nrows()):
-            for _j in range(G_ft.ncols()):
-                # Pure-structural: '0' iff the entry is the literal
-                # SR(0); any non-trivial expression has a longer repr.
-                g_zero_mask[(_i, _j)] = (str(G_ft[_i, _j]) == '0')
+    if g_zero_mask is None:
+        g_zero_mask = _zero_mask(G_ft)
 
     # Classify non-leaf vertices
     source_verts = []
@@ -183,19 +246,18 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
         out_edges_of[v] = list(D.outgoing_edges(v))
         in_edges_of[v]  = list(D.incoming_edges(v))
 
-    # Build candidate types for each non-leaf vertex
+    # Build candidate types for each non-leaf vertex, from the types
+    # bucketed by bidegree (computed once per type list, not per prediagram).
+    src_by_deg, vt_by_deg = _types_by_bidegree(vertex_types, source_types)
     candidates = {}
     for v in source_verts:
-        od = D.out_degree(v)
-        cands = [st for st in source_types if st.out_degree == od]
+        cands = src_by_deg.get(D.out_degree(v))
         if not cands:
             return
         candidates[v] = cands
 
     for v in interaction_verts:
-        ind, od = D.in_degree(v), D.out_degree(v)
-        cands = [vt for vt in vertex_types
-                 if vt.in_degree == ind and vt.out_degree == od]
+        cands = vt_by_deg.get((D.in_degree(v), D.out_degree(v)))
         if not cands:
             return
         candidates[v] = cands
@@ -250,20 +312,22 @@ def enumerate_typed_diagrams(prediagram, external_fields, vertex_types,
             )
             continue
 
-        # Enumerate vertex type assignments (Cartesian product)
-        candidate_lists = [candidates[v] for v in ordered_internal]
-
-        for combo in product(*candidate_lists):
-            vert_assignment = {ordered_internal[i]: combo[i]
-                               for i in range(len(ordered_internal))}
-
-            yield from _try_build_diagram(
-                prediagram, edges, ext_assignment, vert_assignment,
-                ordered_internal, leaf_set, leaf_directions,
-                out_edges_of, in_edges_of,
-                G_ft, resp_index, phys_index,
-                g_zero_mask=g_zero_mask,
-            )
+        # Joint backtracking over (vertex type, leg matching) per vertex,
+        # in an order where every vertex after the first shares an edge with
+        # an already-assigned vertex or a leaf, so each choice is checked
+        # against the propagator mask as soon as it determines an edge.
+        # This replaces the former Cartesian product over type combinations
+        # followed by per-combination leg backtracking, which could not
+        # reject a combination until every vertex had a type: on a model
+        # with 24 vertex types at k=2, ell=3 it visited ~10^7 (combination,
+        # vertex) pairs to find that nothing survives.  Same set of typed
+        # diagrams (tests/test_type_assignment.py pins the signatures).
+        yield from _joint_backtrack(
+            prediagram, edges, ext_assignment, _pruning_order(
+                ordered_internal, out_edges_of, in_edges_of, leaf_set),
+            candidates, leaf_set, out_edges_of, in_edges_of,
+            resp_index, phys_index, g_zero_mask,
+            0, {}, {}, {})
 
 
 def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
@@ -393,21 +457,18 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     if len(resp_legs) != len(out_edges) or len(phys_legs) != len(in_edges):
         return
 
-    # Use sympy's multiset_permutations: yields only the N!/∏n_r!
-    # distinct orderings of a multiset, rather than the full N!
-    # orderings of index positions.  Materialise to list so the inner
-    # loop can re-iterate the phys_perms list.  For typical Hawkes
-    # vertex types (R up to ~4, P up to ~2), list sizes stay small
-    # (≤ 24) and memory is not a concern.
-    #
-    # Note: sympy.utilities.iterables.multiset_permutations expects a
-    # list-like input.  Leg values are ``(field_base, pop_idx)``
-    # tuples (hashable), so the multiset comparison works.
-    from sympy.utilities.iterables import multiset_permutations
-    resp_perms = (list(multiset_permutations(list(resp_legs)))
-                  if resp_legs else [[]])
-    phys_perms = (list(multiset_permutations(list(phys_legs)))
-                  if phys_legs else [[]])
+    # The distinct orderings of a leg multiset depend only on the vertex
+    # TYPE, so they are computed once per multiset and cached
+    # (``_distinct_orderings``).  This used to call sympy's
+    # ``multiset_permutations`` on every (prediagram, external permutation,
+    # type combination, vertex) visit; sympy sorts the entries with
+    # ``default_sort_key``, which sympifies the ``(field, pop)`` tuples
+    # through the string parser, so a single call cost tens to hundreds of
+    # microseconds and the typing stage spent ~90% of its time there (10.6M
+    # calls, 205 s of 229 s, for the three-field vesicle model at k=2,
+    # ell=3).  Same yielded pairs, same order.
+    resp_perms = _distinct_orderings(tuple(resp_legs))
+    phys_perms = _distinct_orderings(tuple(phys_legs))
 
     for rp in resp_perms:
         resp_map = dict(zip(out_edges, rp))
@@ -538,6 +599,122 @@ def _backtrack(prediagram, edges, ext_assignment, vert_assignment,
             )
 
 
+def _pruning_order(internal, out_edges_of, in_edges_of, leaf_set):
+    """Order the internal vertices so that the first has the most edges to
+    leaves and every later one is adjacent to an earlier one when the
+    diagram allows it (BFS by adjacency, ties by leaf edges)."""
+    def nbrs(v):
+        return [e[1] for e in out_edges_of[v]] + [e[0] for e in in_edges_of[v]]
+    leaf_edges = {v: sum(1 for w in nbrs(v) if w in leaf_set) for v in internal}
+    remaining = set(internal)
+    order = []
+    while remaining:
+        if order:
+            adj = [v for v in remaining if any(w in order for w in nbrs(v))]
+            pool = adj or list(remaining)
+        else:
+            pool = list(remaining)
+        v = max(pool, key=lambda x: (leaf_edges[x], -internal.index(x)))
+        order.append(v)
+        remaining.discard(v)
+    return order
+
+
+def _edge_ok(edge, resp_leg, phys_leg, resp_index, phys_index, g_zero_mask):
+    ri = resp_index.get(resp_leg)
+    pi = phys_index.get(phys_leg)
+    if ri is None or pi is None:
+        return False
+    if g_zero_mask is not None and g_zero_mask.get((pi, ri), False):
+        return False
+    return True
+
+
+def _joint_backtrack(prediagram, edges, ext_assignment, order, candidates,
+                     leaf_set, out_edges_of, in_edges_of,
+                     resp_index, phys_index, g_zero_mask,
+                     idx, vert_assignment, assigned_resp, assigned_phys):
+    if idx == len(order):
+        # every internal vertex typed and matched; resolve leaf ends and
+        # build the record (the leaf-side checks below repeat ones already
+        # made, harmlessly, for edges whose internal end was assigned last)
+        edge_types = {}
+        prop_indices = {}
+        for edge in edges:
+            u, v = edge[0], edge[1]
+            if edge in assigned_resp:
+                resp_leg = assigned_resp[edge]
+            elif u in leaf_set:
+                resp_leg = ext_assignment.get(u)
+                if resp_leg is None or resp_leg not in resp_index:
+                    return
+            else:
+                return
+            if edge in assigned_phys:
+                phys_leg = assigned_phys[edge]
+            elif v in leaf_set:
+                phys_leg = ext_assignment.get(v)
+                if phys_leg is None or phys_leg not in phys_index:
+                    return
+            else:
+                return
+            if not _edge_ok(edge, resp_leg, phys_leg, resp_index, phys_index, g_zero_mask):
+                return
+            edge_types[edge] = (resp_leg, phys_leg)
+            prop_indices[edge] = (resp_index[resp_leg], phys_index[phys_leg])
+        yield TypedDiagram(prediagram, dict(vert_assignment), edge_types,
+                           dict(ext_assignment), prop_indices)
+        return
+
+    v = order[idx]
+    out_e = out_edges_of[v]
+    in_e = in_edges_of[v]
+    for vtype in candidates[v]:
+        for resp_map, phys_map in _leg_matchings(vtype, out_e, in_e):
+            ok = True
+            for edge, resp_leg in resp_map.items():
+                w = edge[1]
+                if edge in assigned_phys:
+                    phys_leg = assigned_phys[edge]
+                elif w in leaf_set:
+                    phys_leg = ext_assignment.get(w)
+                    if phys_leg is None or phys_leg not in phys_index:
+                        ok = False
+                        break
+                else:
+                    continue
+                if not _edge_ok(edge, resp_leg, phys_leg, resp_index, phys_index, g_zero_mask):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            for edge, phys_leg in phys_map.items():
+                u = edge[0]
+                if edge in assigned_resp:
+                    resp_leg = assigned_resp[edge]
+                elif u in leaf_set:
+                    resp_leg = ext_assignment.get(u)
+                    if resp_leg is None or resp_leg not in resp_index:
+                        ok = False
+                        break
+                else:
+                    continue
+                if not _edge_ok(edge, resp_leg, phys_leg, resp_index, phys_index, g_zero_mask):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            vert_assignment[v] = vtype
+            new_resp = dict(assigned_resp); new_resp.update(resp_map)
+            new_phys = dict(assigned_phys); new_phys.update(phys_map)
+            yield from _joint_backtrack(
+                prediagram, edges, ext_assignment, order, candidates,
+                leaf_set, out_edges_of, in_edges_of,
+                resp_index, phys_index, g_zero_mask,
+                idx + 1, vert_assignment, new_resp, new_phys)
+            del vert_assignment[v]
+
+
 # ── Convenience: enumerate across all prediagrams ────────────────────────────
 #
 # Parallelism rationale (2026-04-23, enumeration-speedup branch):
@@ -576,6 +753,7 @@ def _worker_enumerate_one_prediagram(pd_idx):
         pd, state['external_fields'],
         state['vertex_types'], state['source_types'],
         state['G_ft'], state['resp_index'], state['phys_index'],
+        g_zero_mask=state.get('g_zero_mask'),
     ))
 
 
@@ -637,10 +815,11 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
         # Serial path.  Keeps 'prediagrams' iteration for back-compat
         # with any downstream code that relies on yield ordering.
         results = []
+        mask = _zero_mask(G_ft)
         for pd in prediagrams:
             for td in enumerate_typed_diagrams(
                 pd, external_fields, vertex_types, source_types,
-                G_ft, resp_index, phys_index,
+                G_ft, resp_index, phys_index, g_zero_mask=mask,
             ):
                 results.append(td)
         return results
@@ -665,6 +844,7 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     _ENUM_WORKER_STATE['G_ft'] = G_ft
     _ENUM_WORKER_STATE['resp_index'] = resp_index
     _ENUM_WORKER_STATE['phys_index'] = phys_index
+    _ENUM_WORKER_STATE['g_zero_mask'] = _zero_mask(G_ft)
 
     ctx = mp.get_context(start_method)
     n_w_cap = (n_workers if n_workers is not None
