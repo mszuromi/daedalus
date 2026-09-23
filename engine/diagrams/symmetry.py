@@ -507,6 +507,8 @@ def diagram_signature(td):
         Hashable canonical signature ``(colour_keys, colour_cells,
         canonical_edges)``.
     """
+    if _fast_signature_available():
+        return _diagram_signature_nauty(td)
     D, _, _, color_groups = _colored_incidence_digraph(
         td, fix_external=False
     )
@@ -522,6 +524,70 @@ def diagram_signature(td):
                   for k in keys)
     edges = tuple(sorted(C.edges(labels=False)))
     return (tuple(str(k) for k in keys), cells, edges)
+
+
+# ── nauty-backed signature ──────────────────────────────────────────────────
+#
+# Same equivalence as the Sage path above (colour-preserving isomorphism of
+# the typed diagram with leaves coloured by field only), computed by nauty
+# through engine.enumeration._fastnauty.nauty_cert_coloured on the diagram
+# itself (vertex colours + edge-copy colours) instead of on a Sage DiGraph
+# of the incidence encoding: ~10 us per diagram against ~230 us.  The
+# returned tuples are NOT byte-compatible with the Sage path's; both are
+# complete invariants, and only equality within one run is relied upon.
+# DAEDALUS_FASTENUM=0 (or a failed build) falls back to the Sage path.
+
+def _fast_signature_available():
+    try:
+        from engine.enumeration import fastenum as _fe
+        return _fe.available and _fe.cert_backend == 'nauty'
+    except Exception:                                    # pragma: no cover
+        return False
+
+
+_VT_COLOUR_CACHE = {}
+
+
+def _vertex_colour_key(vt):
+    """('vertex', class, coefficient, bigrade) for an internal vertex type,
+    cached per type object: str(coefficient) is a Sage conversion."""
+    key = _VT_COLOUR_CACHE.get(id(vt))
+    if key is None:
+        key = ('vertex', type(vt).__name__, str(vt.coefficient), vt.bigrade)
+        _VT_COLOUR_CACHE[id(vt)] = (key, vt)        # keep vt alive so id() stays unique
+    else:
+        key = key[0]
+    return key
+
+
+def _diagram_signature_nauty(td):
+    from engine.enumeration import _fastnauty as _nauty
+    D = td.prediagram[0]
+    verts = sorted(D.vertices())
+    idx = {v: i for i, v in enumerate(verts)}
+    leaf_set = set(td.external_legs.keys())
+    vkeys = []
+    for v in verts:
+        if v in leaf_set:
+            vkeys.append(('leaf', td.external_legs.get(v)))
+        else:
+            vt = td.vertex_assignments.get(v)
+            vkeys.append(('vertex', 'unassigned') if vt is None else _vertex_colour_key(vt))
+    edges = []
+    ekeys = []
+    for ek, (resp_leg, phys_leg) in td.edge_types.items():
+        edges.append((idx[ek[0]], idx[ek[1]]))
+        ekeys.append(('edge', resp_leg, phys_leg, td.propagator_indices.get(ek, None)))
+    # colour ids: rank of the key among the distinct keys of THIS diagram,
+    # ordered by str; the sorted key tuple is part of the signature so two
+    # diagrams with different colour sets never collide.
+    vdistinct = sorted(set(vkeys), key=str)
+    edistinct = sorted(set(ekeys), key=str)
+    vrank = {k: i for i, k in enumerate(vdistinct)}
+    erank = {k: i for i, k in enumerate(edistinct)}
+    cert = _nauty.nauty_cert_coloured(len(verts), edges,
+                                      [vrank[k] for k in vkeys], [erank[k] for k in ekeys])
+    return (tuple(str(k) for k in vdistinct), tuple(str(k) for k in edistinct), cert)
 
 
 def deduplicate_typed_diagrams(typed_diagrams):
