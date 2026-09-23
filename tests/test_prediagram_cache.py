@@ -399,9 +399,14 @@ def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,
         return {ell: [complex(fn(0.0, t)).real for t in taus]
                 for ell, fn in res['total_C_by_ell'].items()}
 
+    # Guard: this test's v2 run must write only under tmp_path.  On a fresh
+    # clone earlier tests can legitimately have populated the real cache at
+    # (2,0) (a compute miss, or the copy of the shipped cell), so compare
+    # before/after rather than asserting absence.
+    had_v2 = pdc.v2_exists(CACHE, 2, 0)
     a = curves('v1', 'a', CACHE)
     b = curves('v2', 'b', f'{tmp_path}/pd')
-    assert not pdc.v2_exists(CACHE, 2, 0), 'the test wrote into the real cache'
+    assert pdc.v2_exists(CACHE, 2, 0) == had_v2, 'the test wrote into the real cache'
     assert pdc.v2_exists(f'{tmp_path}/pd', 2, 0)
     assert sorted(a) == sorted(b) == [0, 1]
     for ell in a:
