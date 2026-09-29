@@ -1,0 +1,3560 @@
+{
+ "schema_version": 1,
+ "generated": "2026-09-28T20:46:38",
+ "generator": "tests/tools/phase_j_zoo_baseline.py",
+ "plan": "docs/integration_speedup_plan.md \u00a74.3 / M0.3 (pre-M1 values)",
+ "tau_convention": "k=2 grid \u03c4=0 is evaluated at t1=-_ITO_EPS=-1e-6 (It\u00f4 left limit); k>=3 points are raw, with the API-nudged variant alongside",
+ "npz_key_format": "'<entry>::<array>' complex128/float64 arrays; '__meta__' = this JSON as utf-8 bytes (uint8)",
+ "code": {
+  "git_head": "b2bf559e816f758ba55e6cbe2c29942e07e71726",
+  "git_branch": "perf/integration-fast-poles",
+  "git_dirty_tracked": [
+   " M .gitignore",
+   " M engine/integration/time_domain/final_integral.py",
+   " M engine/integration/time_domain/grouped_integral.py",
+   " M notebooks/figures/fig1_moment_closure.pdf",
+   " M notebooks/figures/fig1_moment_closure.png",
+   " M notebooks/paper_figures.ipynb"
+  ],
+  "sha256_final_integral": "eced6cf898befd8624267b4d41ce253c703a5f04e40c01a95ecceba85cf7a5bf",
+  "sha256_grouped_integral": "41a0a73ee32838d36ddd42291340d63be5bc6f5933d6082afc6044af2dba8638",
+  "note": "sha256_final_integral / code_at_run record the working-tree file at capture time (uncommitted; git_head b2bf559 plus the dirty M0 edits). final_integral.py then received further observational-only M0 edits (including the counter_semantics 1 -> 2 split, see migrations) before it was committed, so that hash matches no committed version.  The M0 file committed with this baseline has sha256_final_integral 92a46f6e956c4fdb73fa87bfdd08b32d0a4668208e744033123a283a4b30778f; sha256_grouped_integral is unchanged.  The later edits were proven bit-identical to b2bf559 in-process (pre-M0 sources exec'd into the live modules vs the M0 sources, all array_equal), and tests/test_phase_j_legacy_baseline.py reproduces the cheap entries on the M0 file.  Values were not recomputed.",
+  "sha256_final_integral_m0_committed": "92a46f6e956c4fdb73fa87bfdd08b32d0a4668208e744033123a283a4b30778f"
+ },
+ "run_meta": {
+  "assembled_by": "phase_j_zoo_baseline --assemble",
+  "run_dir": "scratch/phase_j_zoo_baseline/runs",
+  "compare_dir": "scratch/phase_j_zoo_baseline/runs_pass1",
+  "note": "values: pass 2 (2026-09-28 20:32-20:40, 4 workers) for every entry that finished within budget in pass 1; TIMEOUT records are from pass 1 (19:41-20:30).  reproducibility: pass 2 vs pass 1 (independent processes, same code, PYTHONHASHSEED=0)."
+ },
+ "destination": "tracked",
+ "runtime": {
+  "flags": {
+   "USE_POLYGON_M2_INTEGRATOR": true,
+   "POLYGON_BBOX_CAP": 200.0,
+   "POSET_PHYSICAL_MARGIN": 50.0,
+   "USE_1D_INTEGRATOR": true,
+   "USE_NUMBA_CHAIN_SIMPLEX": true,
+   "USE_CHAIN_SIMPLEX_PRECISION_FIX": false,
+   "USE_POSET_INTEGRATOR": true,
+   "USE_POSET_CAP_MATCH_SCIPY": false,
+   "USE_POSET_MPMATH_ACCUMULATION": false,
+   "TAU_KERNEL_CAP": 50.0,
+   "QUAD_OPTS": {
+    "limit": 200
+   },
+   "_HAVE_NUMBA": true,
+   "_SUBSET_HOOK_is_None": true
+  },
+  "versions": {
+   "python": "3.13.7",
+   "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+   "numpy": "2.3.2",
+   "scipy": "1.15.2",
+   "sympy": "1.13.2",
+   "mpmath": "1.3.0",
+   "numba": "0.65.1",
+   "sage": "10.8"
+  },
+  "env": {
+   "OPENBLAS_NUM_THREADS": "1",
+   "PYTHONHASHSEED": "0"
+  },
+  "code_at_run": {
+   "git_head": "b2bf559e816f758ba55e6cbe2c29942e07e71726",
+   "sha256_final_integral": "eced6cf898befd8624267b4d41ce253c703a5f04e40c01a95ecceba85cf7a5bf",
+   "sha256_grouped_integral": "41a0a73ee32838d36ddd42291340d63be5bc6f5933d6082afc6044af2dba8638"
+  }
+ },
+ "entries": {
+  "ou_quartic-k2-l3": {
+   "status": "ok",
+   "wall_compute": 3.282331333961338,
+   "wall_eval_points": 3.0708033591508865e-05,
+   "wall_process": 8.777678728103638,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/ou_quartic.model.py",
+   "model_sha256": "72608300b14aac0c0a1373433b28178966f384681296ada7fcf7f4528f5a0ae9",
+   "model_spec_signature": "50712ce698fd0f90",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "eps": 0.02,
+    "D": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    3.87890625,
+    6.04345703125,
+    10.47509765625
+   ],
+   "process_started": "2026-09-28T20:34:00",
+   "config": {
+    "model": "ou_quartic",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 3,
+    "ext": [
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5,
+     2.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "ou_quartic",
+   "m1_expected": "unchanged",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 168,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 168,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 19014,
+    "chain_simplex_polynomial_called": 19014,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 54413,
+    "chain_simplex_memo_misses": 439,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 6,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.9999990000005-6.12e-17j",
+      "0.606530659712633-1.86e-17j",
+      "0.135335283236613+8.29e-18j"
+     ],
+     "1": [
+      "-0.05999999999997+7.35e-18j",
+      "-0.054587759374137+6.13e-18j",
+      "-0.0243603509825903+9.94e-19j"
+     ],
+     "2": [
+      "0.0095999999999982-1.76e-18j",
+      "0.00914085839282166-1.63e-18j",
+      "0.00511716095764996-6.11e-19j"
+     ],
+     "3": [
+      "-0.00237599999999971+5.82e-19j",
+      "-0.00229663301803115+5.53e-19j",
+      "-0.00141575587949776+2.66e-19j"
+     ]
+    },
+    "total": [
+     "0.947223000000529-5.51e-17j",
+     "0.558787125713287-1.35e-17j",
+     "0.114676337332175+8.94e-18j"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5,
+     2.0
+    ]
+   },
+   "max_abs_total": 0.9472230000005285,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/ou_quartic-k2-l3.json",
+    "other_started": "2026-09-28T19:41:43"
+   }
+  },
+  "ou_quartic-k3-l2": {
+   "status": "ok",
+   "wall_compute": 1.3919357908889651,
+   "wall_eval_points": 0.005832834169268608,
+   "wall_process": 8.229619979858398,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/ou_quartic.model.py",
+   "model_sha256": "72608300b14aac0c0a1373433b28178966f384681296ada7fcf7f4528f5a0ae9",
+   "model_spec_signature": "50712ce698fd0f90",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "eps": 0.02,
+    "D": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    8.44873046875,
+    6.92138671875,
+    10.73291015625
+   ],
+   "process_started": "2026-09-28T20:34:09",
+   "config": {
+    "model": "ou_quartic",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 3,
+    "max_ell": 2,
+    "ext": [
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ]
+    ],
+    "tau_grid": null,
+    "points": [
+     [
+      0.0,
+      0.4,
+      1.0
+     ],
+     [
+      0.0,
+      0.7,
+      0.7
+     ],
+     [
+      0.0,
+      0.0,
+      0.7
+     ]
+    ],
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "ou_quartic",
+   "m1_expected": "unchanged",
+   "notes": "symmetric saddle: odd cumulants vanish; tied points kept",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 0,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0",
+      "0",
+      "0"
+     ],
+     "1": [
+      "0",
+      "0",
+      "0"
+     ],
+     "2": [
+      "0",
+      "0",
+      "0"
+     ]
+    },
+    "total": [
+     "0",
+     "0",
+     "0"
+    ],
+    "total_api_nudged": [
+     "0",
+     "0",
+     "0"
+    ],
+    "points": [
+     [
+      0.0,
+      0.4,
+      1.0
+     ],
+     [
+      0.0,
+      0.7,
+      0.7
+     ],
+     [
+      0.0,
+      0.0,
+      0.7
+     ]
+    ]
+   },
+   "max_abs_total": 0.0,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/ou_quartic-k3-l2.json",
+    "other_started": "2026-09-28T20:14:36"
+   }
+  },
+  "ou_quartic-k4-l2": {
+   "status": "ok",
+   "wall_compute": 7.506664208834991,
+   "wall_eval_points": 26.559643333079293,
+   "wall_process": 41.21782112121582,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/ou_quartic.model.py",
+   "model_sha256": "72608300b14aac0c0a1373433b28178966f384681296ada7fcf7f4528f5a0ae9",
+   "model_spec_signature": "50712ce698fd0f90",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "eps": 0.02,
+    "D": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    23.14599609375,
+    10.95947265625,
+    12.04248046875
+   ],
+   "process_started": "2026-09-28T20:34:17",
+   "config": {
+    "model": "ou_quartic",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 4,
+    "max_ell": 2,
+    "ext": [
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ]
+    ],
+    "tau_grid": null,
+    "points": [
+     [
+      0.0,
+      0.3,
+      0.6,
+      0.9
+     ],
+     [
+      0.0,
+      0.5,
+      0.5,
+      0.5
+     ]
+    ],
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "ou_quartic",
+   "m1_expected": "unchanged",
+   "notes": "one generic point + one with t1=t2=t3 tied",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 2160,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 2160,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 4497465,
+    "chain_simplex_polynomial_called": 4497465,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 17297665,
+    "chain_simplex_memo_misses": 4208,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 0,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "-0.0741367275300167+1.02e-17j",
+      "-0.0957877091393682+1.55e-17j"
+     ],
+     "1": [
+      "0.0371656129032708-7.89e-18j",
+      "0.0440321202018717-1.01e-17j"
+     ],
+     "2": [
+      "-0.0171635267543115+4.82e-18j",
+      "-0.0194956327257343+5.75e-18j"
+     ]
+    },
+    "total": [
+     "-0.0541346413810574+7.15e-18j",
+     "-0.0712512216632308+1.11e-17j"
+    ],
+    "total_api_nudged": [
+     "-0.0541346413810574+7.15e-18j",
+     "-0.0712512216632308+1.11e-17j"
+    ],
+    "points": [
+     [
+      0.0,
+      0.3,
+      0.6,
+      0.9
+     ],
+     [
+      0.0,
+      0.5,
+      0.5,
+      0.5
+     ]
+    ]
+   },
+   "max_abs_total": 0.07125122166323078,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/ou_quartic-k4-l2.json",
+    "other_started": "2026-09-28T20:14:46"
+   }
+  },
+  "ou_quartic_colored-k2-l1": {
+   "status": "ok",
+   "wall_compute": 0.6565993749536574,
+   "wall_eval_points": 2.187490463256836e-05,
+   "wall_process": 5.970134973526001,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/ou_quartic_colored.model.py",
+   "model_sha256": "890cbf433374db5ec3c4e2797b9284983ee8d7d558e3835647416360fab2714a",
+   "model_spec_signature": "2943c44b21ec6c37",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "eps": 0.02,
+    "D": 1.0,
+    "tauc": 0.5
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    17.47705078125,
+    14.66455078125,
+    13.47412109375
+   ],
+   "process_started": "2026-09-28T20:37:18",
+   "config": {
+    "model": "ou_quartic_colored",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dx",
+      1
+     ],
+     [
+      "dx",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     4.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "ou_quartic_colored",
+   "m1_expected": "unchanged",
+   "notes": "NoiseSource \u03c4 rows, TAU_KERNEL_CAP box, SR branch",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 6,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 6,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 254,
+    "chain_simplex_memo_misses": 106,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 6,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "1.333333333332+1.19e-15j",
+      "0.800564798808362+7.33e-16j",
+      "0.0483944201994211+4.99e-17j"
+     ],
+     "1": [
+      "-0.142222222222182-2.51e-16j",
+      "-0.114265105630032-2.04e-16j",
+      "-0.016955645737347-3.19e-17j"
+     ]
+    },
+    "total": [
+     "1.19111111110982+9.43e-16j",
+     "0.68629969317833+5.3e-16j",
+     "0.0314387744620741+1.79e-17j"
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     4.0
+    ]
+   },
+   "max_abs_total": 1.1911111111098172,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/ou_quartic_colored-k2-l1.json",
+    "other_started": "2026-09-28T20:08:18"
+   }
+  },
+  "ou_quartic_two_dim_color_corr-k2-l1": {
+   "status": "ok",
+   "wall_compute": 3.416823084000498,
+   "wall_eval_points": 1.8541933968663216e-05,
+   "wall_process": 8.833569765090942,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/ou_quartic_two_dim_color_corr.model.py",
+   "model_sha256": "525fbc7b7077c1d7e79d95a6e363a0a331bb5fa6333e294d703949f34b5212e4",
+   "model_spec_signature": "325029e162ea2dea",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu1": 1.0,
+    "mu2": 1.0,
+    "eps1": 0.02,
+    "eps2": 0.02,
+    "J1": 0.3,
+    "J2": 0.3,
+    "D1": 1.0,
+    "D2": 1.0,
+    "rho": 0.5,
+    "tauc": 2.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    15.94580078125,
+    14.42822265625,
+    13.40380859375
+   ],
+   "process_started": "2026-09-28T20:37:24",
+   "config": {
+    "model": "ou_quartic_two_dim_color_corr",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dx",
+      1
+     ],
+     [
+      "dy",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     4.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "ou_quartic_two_dim_color_corr",
+   "m1_expected": "unchanged",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 144,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 144,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 79353,
+    "chain_simplex_memo_misses": 567,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.393009768009676-1.07e-14j",
+      "0.349928206936487-9.42e-15j",
+      "0.132029332312893-3.45e-15j"
+     ],
+     "1": [
+      "-0.0281617133428151+1.37e-15j",
+      "-0.0265954801546147+1.29e-15j",
+      "-0.0134717994757611+6.43e-16j"
+     ]
+    },
+    "total": [
+     "0.364848054666861-9.3e-15j",
+     "0.323332726781873-8.13e-15j",
+     "0.118557532837132-2.81e-15j"
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     4.0
+    ]
+   },
+   "max_abs_total": 0.3648480546668613,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/ou_quartic_two_dim_color_corr-k2-l1.json",
+    "other_started": "2026-09-28T20:08:25"
+   }
+  },
+  "spike_reset-k2-l1": {
+   "status": "ok",
+   "wall_compute": 9.196973375044763,
+   "wall_eval_points": 3.258301876485348e-05,
+   "wall_process": 14.69935393333435,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/single_population_spike_reset_test.model.py",
+   "model_sha256": "e9fcacca7411eb8166a78f1b52fdddd36ac62d45b3d5e673982a1f0e9a7ae839",
+   "model_spec_signature": "ba0e01f95ee51569",
+   "model_git": "tracked",
+   "params_effective": {
+    "Em": [
+     3.5,
+     3.5
+    ],
+    "tau": [
+     10.0,
+     9.0
+    ],
+    "a": [
+     2.5,
+     2.5
+    ],
+    "w": [
+     [
+      0.55,
+      0.65
+     ],
+     [
+      0.7,
+      0.8
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    16.81103515625,
+    9.11279296875,
+    11.44091796875
+   ],
+   "process_started": "2026-09-28T20:34:21",
+   "config": {
+    "model": "single_population_spike_reset_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ],
+     [
+      "n",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     3.0,
+     5.0,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "single_population_spike_reset_test",
+   "m1_expected": "moves",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 360,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 40,
+    "scipy_nquad_called_mge3": 320,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 40,
+     "polygon_other": 0,
+     "poset_extract_none": 160,
+     "poset_no_extension": 160,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 460,
+    "polygon_attempted": 860,
+    "poset_attempted": 2760,
+    "polytope_m0_direct": 20
+   },
+   "counters": {
+    "polygon_attempted": 860,
+    "polygon_returned_none": 0,
+    "poset_attempted": 2760,
+    "poset_extract_returned_none": 160,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 523327,
+    "chain_simplex_memo_misses": 981,
+    "poset_returned_none_total": 160,
+    "interval_attempted": 190,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 40,
+    "scipy_nquad_called_mge3": 320,
+    "nquad_calls": 360,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 40,
+     "polygon_other": 0,
+     "poset_extract_none": 160,
+     "poset_no_extension": 160,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 460,
+    "polytope_m0_direct": 20
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.530988924772577-5.48e-16j",
+      "0.173363691137423-3.87e-16j",
+      "0.00250240483323442-5.48e-17j",
+      "-0.00477440434821245-6.39e-18j",
+      "-0.000318650045208282+5.09e-20j"
+     ],
+     "1": [
+      "-0.0425257581498562+1.29e-16j",
+      "-0.0341720882125849+1.31e-16j",
+      "-0.00461860881151234+4.91e-17j",
+      "0.00122483116618409+1.3e-17j",
+      "0.000248020434966043+4.09e-19j"
+     ]
+    },
+    "total": [
+     "0.488463166622721-4.19e-16j",
+     "0.139191602924838-2.56e-16j",
+     "-0.00211620397827791-5.68e-18j",
+     "-0.00354957318202836+6.6e-18j",
+     "-7.06296102422395e-05+4.6e-19j"
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     3.0,
+     5.0,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.4884631666227212,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": false,
+    "max_rel": 7.675266568560968e-16,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spike_reset-k2-l1.json",
+    "other_started": "2026-09-28T19:41:43"
+   }
+  },
+  "spike_reset-k2-l1-grouped": {
+   "status": "ok",
+   "wall_compute": 10.611393959028646,
+   "wall_eval_points": 5.579204298555851e-05,
+   "wall_process": 15.526916027069092,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/single_population_spike_reset_test.model.py",
+   "model_sha256": "e9fcacca7411eb8166a78f1b52fdddd36ac62d45b3d5e673982a1f0e9a7ae839",
+   "model_spec_signature": "ba0e01f95ee51569",
+   "model_git": "tracked",
+   "params_effective": {
+    "Em": [
+     3.5,
+     3.5
+    ],
+    "tau": [
+     10.0,
+     9.0
+    ],
+    "a": [
+     2.5,
+     2.5
+    ],
+    "w": [
+     [
+      0.55,
+      0.65
+     ],
+     [
+      0.7,
+      0.8
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    17.30126953125,
+    8.78173828125,
+    11.3671875
+   ],
+   "process_started": "2026-09-28T20:34:06",
+   "config": {
+    "model": "single_population_spike_reset_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ],
+     [
+      "n",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     3.0,
+     5.0,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": true,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "single_population_spike_reset_test",
+   "m1_expected": "moves",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 180,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 10,
+    "scipy_nquad_called_mge3": 170,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 10,
+     "polygon_other": 0,
+     "poset_extract_none": 10,
+     "poset_no_extension": 160,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 105,
+    "polygon_attempted": 465,
+    "poset_attempted": 1825,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 465,
+    "polygon_returned_none": 0,
+    "poset_attempted": 1825,
+    "poset_extract_returned_none": 10,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 362007,
+    "chain_simplex_memo_misses": 981,
+    "poset_returned_none_total": 10,
+    "interval_attempted": 40,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 10,
+    "scipy_nquad_called_mge3": 170,
+    "nquad_calls": 180,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 10,
+     "polygon_other": 0,
+     "poset_extract_none": 10,
+     "poset_no_extension": 160,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 105,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.530988924772577-5.48e-16j",
+      "0.173363691137423-3.87e-16j",
+      "0.00250240483323442-5.48e-17j",
+      "-0.00477440434821245-6.39e-18j",
+      "-0.000318650045208282+5.09e-20j"
+     ],
+     "1": [
+      "-0.0425257581592535+1.29e-16j",
+      "-0.0341720882172523+1.31e-16j",
+      "-0.00461860881995695+4.91e-17j",
+      "0.0012248311654429+1.3e-17j",
+      "0.000248020434312413+4.09e-19j"
+     ]
+    },
+    "total": [
+     "0.488463166613324-4.19e-16j",
+     "0.139191602920171-2.56e-16j",
+     "-0.00211620398672253-5.68e-18j",
+     "-0.00354957318276955+6.6e-18j",
+     "-7.06296108958699e-05+4.6e-19j"
+    ],
+    "tau_grid": [
+     0.0,
+     1.0,
+     3.0,
+     5.0,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.48846316661332384,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": false,
+    "max_rel": 1.6394671656048253e-15,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spike_reset-k2-l1-grouped.json",
+    "other_started": "2026-09-28T19:41:57"
+   }
+  },
+  "spike_reset-k1-l1": {
+   "status": "ok",
+   "wall_compute": 1.2765868329443038,
+   "wall_eval_points": 2.995808608829975e-05,
+   "wall_process": 6.080773830413818,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/single_population_spike_reset_test.model.py",
+   "model_sha256": "e9fcacca7411eb8166a78f1b52fdddd36ac62d45b3d5e673982a1f0e9a7ae839",
+   "model_spec_signature": "ba0e01f95ee51569",
+   "model_git": "tracked",
+   "params_effective": {
+    "Em": [
+     3.5,
+     3.5
+    ],
+    "tau": [
+     10.0,
+     9.0
+    ],
+    "a": [
+     2.5,
+     2.5
+    ],
+    "w": [
+     [
+      0.55,
+      0.65
+     ],
+     [
+      0.7,
+      0.8
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    3.87890625,
+    6.04345703125,
+    10.47509765625
+   ],
+   "process_started": "2026-09-28T20:34:00",
+   "config": {
+    "model": "single_population_spike_reset_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 1,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "single_population_spike_reset_test",
+   "m1_expected": "unchanged",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 4,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 4,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 2,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0"
+     ],
+     "1": [
+      "-0.0379870524813791-5.59e-18j"
+     ]
+    },
+    "total": [
+     "-0.0379870524813791-5.59e-18j"
+    ],
+    "tau_grid": [
+     0.0
+    ]
+   },
+   "max_abs_total": 0.03798705248137909,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spike_reset-k1-l1.json",
+    "other_started": "2026-09-28T19:42:10"
+   }
+  },
+  "quad_exp-k2-l1": {
+   "status": "ok",
+   "wall_compute": 111.20062104193494,
+   "wall_eval_points": 2.908380702137947e-05,
+   "wall_process": 116.20001912117004,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/single_population_quad_exp_test.model.py",
+   "model_sha256": "66fc870d93fd95559d254618a542ba7f202edd32c8ec07fd552f00f6b66c5745",
+   "model_spec_signature": "cb6e0b49c8aa806a",
+   "model_git": "tracked",
+   "params_effective": {
+    "Em": [
+     0.8,
+     0.78
+    ],
+    "tau": [
+     10.0,
+     9.0
+    ],
+    "a": [
+     0.44,
+     0.44
+    ],
+    "taug": [
+     [
+      2.0,
+      3.0
+     ],
+     [
+      1.0,
+      3.0
+     ]
+    ],
+    "w": [
+     [
+      0.25,
+      0.25
+     ],
+     [
+      0.2,
+      0.3
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    15.30908203125,
+    14.3212890625,
+    13.3720703125
+   ],
+   "process_started": "2026-09-28T20:35:40",
+   "config": {
+    "model": "single_population_quad_exp_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ],
+     [
+      "n",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 900.0
+   },
+   "row": "single_population_quad_exp_test",
+   "m1_expected": "unchanged",
+   "notes": "355 s in the M0.8 scan under load",
+   "nquad": {
+    "nquad_calls": 48,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 48,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 48,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 48,
+    "polygon_attempted": 213,
+    "poset_attempted": 576,
+    "polytope_m0_direct": 12
+   },
+   "counters": {
+    "polygon_attempted": 213,
+    "polygon_returned_none": 0,
+    "poset_attempted": 576,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 26303110,
+    "chain_simplex_memo_misses": 192266,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 66,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 48,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 48,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 48,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 48,
+    "polytope_m0_direct": 12
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.00347245221370064+1.07e-16j",
+      "0.0103631005976476-6.27e-18j",
+      "0.00717674603570724-3.49e-18j"
+     ],
+     "1": [
+      "0.000201642752718858+2.42e-18j",
+      "0.000377433569121069+2.11e-19j",
+      "0.000292007105087698+1.95e-19j"
+     ]
+    },
+    "total": [
+     "0.0036740949664195+1.1e-16j",
+     "0.0107405341667687-6.06e-18j",
+     "0.00746875314079494-3.3e-18j"
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.010740534166768718,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/quad_exp-k2-l1.json",
+    "other_started": "2026-09-28T19:42:49"
+   }
+  },
+  "linear_hawkes-k2-l1": {
+   "status": "ok",
+   "wall_compute": 1.1281002501491457,
+   "wall_eval_points": 2.8624897822737694e-05,
+   "wall_process": 5.695574045181274,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/linear_hawkes.model.py",
+   "model_sha256": "cf67da345719d81a94eaea756885b37b4d68a72252d09721a9b66d3d59e39be5",
+   "model_spec_signature": "34e554dcae108db0",
+   "model_git": "tracked",
+   "params_effective": {
+    "E": [
+     0.78,
+     0.81
+    ],
+    "w": [
+     [
+      0.3,
+      0.25
+     ],
+     [
+      0.3,
+      0.35
+     ]
+    ],
+    "tau": 10.0,
+    "a": 1.0,
+    "tau_g": 2.5
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    18.52197265625,
+    14.771484375,
+    13.49755859375
+   ],
+   "process_started": "2026-09-28T20:37:04",
+   "config": {
+    "model": "linear_hawkes",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ],
+     [
+      "n",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "linear_hawkes",
+   "m1_expected": "unknown",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 6
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 6,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 6
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.0353846140364769-6.96e-17j",
+      "0.0657080562803553+3.02e-17j",
+      "0.0643217650474002+6.5e-17j"
+     ],
+     "1": [
+      "0",
+      "0",
+      "0"
+     ]
+    },
+    "total": [
+     "0.0353846140364769-6.96e-17j",
+     "0.0657080562803553+3.02e-17j",
+     "0.0643217650474002+6.5e-17j"
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.06570805628035534,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/linear_hawkes-k2-l1.json",
+    "other_started": "2026-09-28T20:08:47"
+   }
+  },
+  "multipopulation_test-k2-l1": {
+   "status": "ok",
+   "wall_compute": 3.501414667116478,
+   "wall_eval_points": 2.895807847380638e-05,
+   "wall_process": 8.09864616394043,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/multipopulation_test.model.py",
+   "model_sha256": "e95ab352ad844561363008526dc1f9efb9fe6918dc8fe6c2d585da33aacc03d1",
+   "model_spec_signature": "3ab56dd35f816f61",
+   "model_git": "tracked",
+   "params_effective": {
+    "tauE": [
+     10.0,
+     9.5
+    ],
+    "tauI": [
+     8.0,
+     7.0
+    ],
+    "EmE": [
+     0.7,
+     0.72
+    ],
+    "EmI": [
+     0.4,
+     0.42
+    ],
+    "aE": [
+     0.37,
+     0.41
+    ],
+    "aI": [
+     0.23,
+     0.28
+    ],
+    "wEE": [
+     [
+      0.25,
+      0.22
+     ],
+     [
+      0.21,
+      0.19
+     ]
+    ],
+    "wEI": [
+     [
+      0.12,
+      0.15
+     ],
+     [
+      0.13,
+      0.1
+     ]
+    ],
+    "wIE": [
+     [
+      0.19,
+      0.17
+     ],
+     [
+      0.15,
+      0.12
+     ]
+    ],
+    "wII": [
+     [
+      0.12,
+      0.13
+     ],
+     [
+      0.14,
+      0.15
+     ]
+    ],
+    "taugEE": [
+     [
+      4.0,
+      4.0
+     ],
+     [
+      3.0,
+      3.0
+     ]
+    ],
+    "taugEI": [
+     [
+      2.0,
+      1.0
+     ],
+     [
+      1.0,
+      3.0
+     ]
+    ],
+    "taugIE": [
+     [
+      5.0,
+      6.0
+     ],
+     [
+      2.0,
+      1.0
+     ]
+    ],
+    "taugII": [
+     [
+      1.5,
+      1.2
+     ],
+     [
+      1.1,
+      1.0
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    17.51904296875,
+    14.62548828125,
+    13.45361328125
+   ],
+   "process_started": "2026-09-28T20:37:10",
+   "config": {
+    "model": "multipopulation_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "nE",
+      1
+     ],
+     [
+      "nE",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "multipopulation_test",
+   "m1_expected": "unchanged",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 6
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 6
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.0002177699028828+1.26e-08j",
+      "0.00153898833294602-2.71e-08j",
+      "0.0014371972987927-1.31e-08j"
+     ],
+     "1": [
+      "0",
+      "0",
+      "0"
+     ]
+    },
+    "total": [
+     "0.0002177699028828+1.26e-08j",
+     "0.00153898833294602-2.71e-08j",
+     "0.0014371972987927-1.31e-08j"
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.001538988333183885,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": false,
+    "max_rel": 2.8179607340657343e-16,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/multipopulation_test-k2-l1.json",
+    "other_started": "2026-09-28T20:08:54"
+   }
+  },
+  "linear_delta_spikes-k2-l1": {
+   "status": "ok",
+   "wall_compute": 1.1080619578715414,
+   "wall_eval_points": 2.895807847380638e-05,
+   "wall_process": 5.5821051597595215,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/single_population_linear_delta_spikes_test.model.py",
+   "model_sha256": "e294f014ef0a37828b99d0af123c6cb473a7a4af8977991e44cea53ddce6daf0",
+   "model_spec_signature": "707c62a32dcdfdf4",
+   "model_git": "tracked",
+   "params_effective": {
+    "Em": [
+     0.8,
+     0.78
+    ],
+    "tau": [
+     10.0,
+     9.0
+    ],
+    "w": [
+     [
+      0.0,
+      0.25
+     ],
+     [
+      0.2,
+      0.0
+     ]
+    ]
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    19.97607421875,
+    14.91748046875,
+    13.53369140625
+   ],
+   "process_started": "2026-09-28T20:36:59",
+   "config": {
+    "model": "single_population_linear_delta_spikes_test",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "n",
+      1
+     ],
+     [
+      "n",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "single_population_linear_delta_spikes_test",
+   "m1_expected": "unchanged",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 6
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 6,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 6
+   },
+   "values": {
+    "by_ell": {
+     "0": [
+      "0.0253695849278038-3.64e-18j",
+      "0.0182796889704001+6.08e-19j",
+      "0.00835203737595902+1.99e-21j"
+     ],
+     "1": [
+      "0",
+      "0",
+      "0"
+     ]
+    },
+    "total": [
+     "0.0253695849278038-3.64e-18j",
+     "0.0182796889704001+6.08e-19j",
+     "0.00835203737595902+1.99e-21j"
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ]
+   },
+   "max_abs_total": 0.025369584927803814,
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/linear_delta_spikes-k2-l1.json",
+    "other_started": "2026-09-28T20:09:01"
+   }
+  },
+  "dendritic_quad_soma_sigmoid-k2-l1": {
+   "status": "TIMEOUT",
+   "wall_process": 900.1399002075195,
+   "loadavg_at_start": [
+    13.2001953125,
+    12.16943359375,
+    19.6220703125
+   ],
+   "process_started": "2026-09-28T19:53:18",
+   "timeout": 900.0,
+   "config": {
+    "model": "dendritic_quad_soma_sigmoid",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dnS",
+      1
+     ],
+     [
+      "dnS",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 900.0
+   },
+   "row": "notebook delta-model",
+   "m1_expected": "unknown",
+   "notes": "timed out at 900 s (3 \u03c4) in M0.8",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/dendritic_quad_soma_sigmoid-k2-l1.json",
+    "other_started": "2026-09-28T19:53:18"
+   }
+  },
+  "quadratic_hawkes_alpha-k2-l1": {
+   "status": "TIMEOUT",
+   "wall_process": 900.0888719558716,
+   "loadavg_at_start": [
+    12.3271484375,
+    12.65185546875,
+    18.130859375
+   ],
+   "process_started": "2026-09-28T19:57:10",
+   "timeout": 900.0,
+   "config": {
+    "model": "quadratic_hawkes_alpha",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dn",
+      1
+     ],
+     [
+      "dn",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 900.0
+   },
+   "row": "notebook delta-model / ConvVertex",
+   "m1_expected": "unknown",
+   "notes": "timed out at 900 s in M0.8",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/quadratic_hawkes_alpha-k2-l1.json",
+    "other_started": "2026-09-28T19:57:10"
+   }
+  },
+  "spatial-allen_cahn_1d-l2": {
+   "status": "ok",
+   "wall_compute": 5.319932207930833,
+   "wall_eval_points": 4.4791027903556824e-05,
+   "wall_process": 10.804765939712524,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/allen_cahn_1d_subcritical_infinite.model.py",
+   "model_sha256": "78dbc36eaa7e5e41e934ea553e0f31b4d4ddc017798180c5145f1ad89cb574a0",
+   "model_spec_signature": "54d61d4597e8ac5e",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "D": 1.0,
+    "lam": 0.1,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    14.4990234375,
+    14.17919921875,
+    13.33203125
+   ],
+   "process_started": "2026-09-28T20:37:36",
+   "config": {
+    "model": "allen_cahn_1d_subcritical_infinite",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 2,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "cumulative_by_order": {
+     "0": [
+      "0.5",
+      "0.183939720585721",
+      "0.158655253931457",
+      "0.122890495427751"
+     ],
+     "1": [
+      "0.46249992062493",
+      "0.156348911060087",
+      "0.128207168601233",
+      "0.0978235526039089"
+     ],
+     "2": [
+      "0.470703659072021",
+      "0.16295161196668",
+      "0.135471293085985",
+      "0.104022997575344"
+     ]
+    },
+    "total": [
+     "0.470703659072021",
+     "0.16295161196668",
+     "0.135471293085985",
+     "0.104022997575344"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "chi_grid": [
+     0.0,
+     1.0
+    ]
+   },
+   "max_abs_total": 0.4707036590720206,
+   "spatial": {
+    "pipeline_certified": true,
+    "certify_max_rel": 1.8349966888529688e-16,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "residual": 0.0,
+      "pass": true
+     },
+     "0.7": {
+      "residual": 1.8349966888529688e-16,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 1.4540210135027378e-16,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-allen_cahn_1d-l2.json",
+    "other_started": "2026-09-28T20:09:04"
+   }
+  },
+  "spatial-reaction_diffusion_2d-l2": {
+   "status": "TIMEOUT",
+   "wall_process": 601.8451509475708,
+   "loadavg_at_start": [
+    8.04736328125,
+    13.904296875,
+    17.5244140625
+   ],
+   "process_started": "2026-09-28T20:09:08",
+   "timeout": 600.0,
+   "config": {
+    "model": "reaction_diffusion_2d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 2,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.4,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-reaction_diffusion_2d-l2.json",
+    "other_started": "2026-09-28T20:09:08"
+   }
+  },
+  "spatial-coupled_rd_2species_1d-l2": {
+   "status": "TIMEOUT",
+   "wall_process": 600.194659948349,
+   "loadavg_at_start": [
+    8.60693359375,
+    13.826171875,
+    17.45361328125
+   ],
+   "process_started": "2026-09-28T20:09:17",
+   "timeout": 600.0,
+   "config": {
+    "model": "coupled_rd_2species_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 2,
+    "ext": [
+     [
+      "da",
+      1
+     ],
+     [
+      "da",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-coupled_rd_2species_1d-l2.json",
+    "other_started": "2026-09-28T20:09:17"
+   }
+  },
+  "spatial-reaction_diffusion_conserved_1d-l1": {
+   "status": "ok",
+   "wall_compute": 2.1923532499931753,
+   "wall_eval_points": 5.6999968364834785e-05,
+   "wall_process": 9.523941040039062,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/reaction_diffusion_conserved_1d.model.py",
+   "model_sha256": "c921dbe94bc3da09c67b605cb0c6ad713592ed73aa8e60d7f843d5117465633f",
+   "model_spec_signature": "2413944aa18acbe6",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "D": 2.0,
+    "g": 0.3,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    23.14599609375,
+    10.95947265625,
+    12.04248046875
+   ],
+   "process_started": "2026-09-28T20:34:48",
+   "config": {
+    "model": "reaction_diffusion_conserved_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "conserved derivative vertex (\u03a3(q\u21920) \u221d q\u00b2)",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "cumulative_by_order": {
+     "0": [
+      "0.353553390593274",
+      "0.174326107638176",
+      "0.112186205925807",
+      "0.0985601664156924"
+     ],
+     "1": [
+      "0.35741718948162",
+      "0.174251656512425",
+      "0.113081322841629",
+      "0.0990038272407239"
+     ]
+    },
+    "total": [
+     "0.35741718948162",
+     "0.174251656512425",
+     "0.113081322841629",
+     "0.0990038272407239"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "chi_grid": [
+     0.0,
+     1.0
+    ]
+   },
+   "max_abs_total": 0.35741718948162005,
+   "spatial": {
+    "pipeline_certified": true,
+    "certify_max_rel": 1.990162355833103e-16,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "residual": 0.0,
+      "pass": true
+     },
+     "0.7": {
+      "residual": 1.990162355833103e-16,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 1.4924602415560495e-16,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-reaction_diffusion_conserved_1d-l1.json",
+    "other_started": "2026-09-28T20:12:10"
+   }
+  },
+  "spatial-edwards_wilkinson_1d-massless-l0": {
+   "status": "ERR: IndexError: tuple index out of range",
+   "wall_compute": 0.28035904187709093,
+   "wall_process": 6.460598707199097,
+   "model_path": "models/edwards_wilkinson_1d.model.py",
+   "model_sha256": "fcbd4d4a4095a367f8f43f230e0ae98d4a46c1ac5ac9508f481cf52c2c78fa2f",
+   "model_spec_signature": "616335294f6f4220",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 0.0,
+    "D": 2.0,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    15.7021484375,
+    9.1259765625,
+    11.41796875
+   ],
+   "process_started": "2026-09-28T20:34:42",
+   "config": {
+    "model": "edwards_wilkinson_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 0,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial (massless)",
+   "m1_expected": "unknown",
+   "notes": "mu=0: \u03bb=0 at q=0 (massless probe).  EW is free: \u2113\u22651 has no diagrams (SpatialPropagatorError), so tree + certify only",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 0,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "spatial": {
+    "pipeline_certified": null,
+    "certify_max_rel": null,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "error": "IndexError: tuple index out of range"
+     },
+     "0.7": {
+      "residual": 1.4494889272691645e-16,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 0.0,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "traceback_tail": "^^^^^^^^^\n  File \"<repo>/engine/integration/spatial/pipeline_bridge.py\", line 277, in pipeline_C_q_tau\n    res = compute_correction_td(\n        typed_diagrams=[r[0] for r in records],\n        prefactors=[r[1] for r in records],\n        k=k, propagator_data=pdata, external_fields=external_fields,\n        num_params=nps, origin_leaf_idx=0)\n  File \"<repo>/engine/integration/time_domain/pipeline.py\", line 301, in compute_correction_td\n    result = integrate_diagram(\n        typed_diagram=td,\n    ...<8 lines>...\n            if edge_mode_sums_builder_fn is not None else None),\n    )\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 4015, in integrate_diagram\n    _modesum_plan = _build_modesum_plan(\n        _smooth_edge_modes,\n    ...<2 lines>...\n        len(free_ext_syms),\n    )\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 885, in _build_modesum_plan\n    pole_tuples = tuple(_enumerate_pole_tuples(smooth_edge_modes))\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 812, in _enumerate_pole_tuples\n    C, lam = edge_mode_sums[e].modes[idx[e]]\n             ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\nIndexError: tuple index out of range\n",
+   "reproducibility": {
+    "status": [
+     "ERR: IndexError: tuple index out of rang",
+     "ERR: IndexError: tuple index out of rang"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-edwards_wilkinson_1d-massless-l0.json",
+    "other_started": "2026-09-28T20:13:41"
+   }
+  },
+  "spatial-edwards_wilkinson_1d-l0": {
+   "status": "ok",
+   "wall_compute": 0.33316991687752306,
+   "wall_eval_points": 1.7333077266812325e-05,
+   "wall_process": 5.777145862579346,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/edwards_wilkinson_1d.model.py",
+   "model_sha256": "fcbd4d4a4095a367f8f43f230e0ae98d4a46c1ac5ac9508f481cf52c2c78fa2f",
+   "model_spec_signature": "616335294f6f4220",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 0.5,
+    "D": 2.0,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    16.02490234375,
+    9.07763671875,
+    11.41455078125
+   ],
+   "process_started": "2026-09-28T20:34:36",
+   "config": {
+    "model": "edwards_wilkinson_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 0,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "massive reference for the massless probe (free model: tree)",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "cumulative_by_order": {
+     "0": [
+      "0.5",
+      "0.303265329856317",
+      "0.239750061093477",
+      "0.216468302060176"
+     ]
+    },
+    "total": [
+     "0.5",
+     "0.303265329856317",
+     "0.239750061093477",
+     "0.216468302060176"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "chi_grid": [
+     0.0,
+     1.0
+    ]
+   },
+   "max_abs_total": 0.5,
+   "spatial": {
+    "pipeline_certified": true,
+    "certify_max_rel": 2.1133258269577985e-16,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "residual": 0.0,
+      "pass": true
+     },
+     "0.7": {
+      "residual": 0.0,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 2.1133258269577985e-16,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-edwards_wilkinson_1d-l0.json",
+    "other_started": "2026-09-28T20:13:48"
+   }
+  },
+  "spatial-reaction_diffusion_conserved_1d-massless-l1": {
+   "status": "ERR: IndexError: tuple index out of range",
+   "wall_compute": 0.35204916587099433,
+   "wall_process": 6.877546310424805,
+   "model_path": "models/reaction_diffusion_conserved_1d.model.py",
+   "model_sha256": "c921dbe94bc3da09c67b605cb0c6ad713592ed73aa8e60d7f843d5117465633f",
+   "model_spec_signature": "2413944aa18acbe6",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 0.0,
+    "D": 2.0,
+    "g": 0.3,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    26.25244140625,
+    12.0556640625,
+    12.42041015625
+   ],
+   "process_started": "2026-09-28T20:34:58",
+   "config": {
+    "model": "reaction_diffusion_conserved_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial (massless)",
+   "m1_expected": "unknown",
+   "notes": "mu=0: interacting massless probe (\u03bb=0 at q=0)",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 0,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "spatial": {
+    "pipeline_certified": null,
+    "certify_max_rel": null,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "error": "IndexError: tuple index out of range"
+     },
+     "0.7": {
+      "residual": 3.5956073637650946e-16,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 0.0,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "traceback_tail": "^^^^^^^^^\n  File \"<repo>/engine/integration/spatial/pipeline_bridge.py\", line 277, in pipeline_C_q_tau\n    res = compute_correction_td(\n        typed_diagrams=[r[0] for r in records],\n        prefactors=[r[1] for r in records],\n        k=k, propagator_data=pdata, external_fields=external_fields,\n        num_params=nps, origin_leaf_idx=0)\n  File \"<repo>/engine/integration/time_domain/pipeline.py\", line 301, in compute_correction_td\n    result = integrate_diagram(\n        typed_diagram=td,\n    ...<8 lines>...\n            if edge_mode_sums_builder_fn is not None else None),\n    )\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 4015, in integrate_diagram\n    _modesum_plan = _build_modesum_plan(\n        _smooth_edge_modes,\n    ...<2 lines>...\n        len(free_ext_syms),\n    )\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 885, in _build_modesum_plan\n    pole_tuples = tuple(_enumerate_pole_tuples(smooth_edge_modes))\n  File \"<repo>/engine/integration/time_domain/final_integral.py\", line 812, in _enumerate_pole_tuples\n    C, lam = edge_mode_sums[e].modes[idx[e]]\n             ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\nIndexError: tuple index out of range\n",
+   "reproducibility": {
+    "status": [
+     "ERR: IndexError: tuple index out of rang",
+     "ERR: IndexError: tuple index out of rang"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-reaction_diffusion_conserved_1d-massless-l1.json",
+    "other_started": "2026-09-28T20:13:41"
+   }
+  },
+  "spatial-reaction_diffusion_2d-l1": {
+   "status": "ok",
+   "wall_compute": 0.8956695001106709,
+   "wall_eval_points": 3.200001083314419e-05,
+   "wall_process": 6.226279258728027,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/reaction_diffusion_2d.model.py",
+   "model_sha256": "94d08686828d37bfedbde10d7c14f8f6c2e9cf68cfa865077de6ae481fbc6b41",
+   "model_spec_signature": "f8cbb1199aea349f",
+   "model_git": "tracked",
+   "params_effective": {
+    "mu": 1.0,
+    "D": 1.0,
+    "g": 0.2,
+    "T": 1.0
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    13.33935546875,
+    13.94189453125,
+    13.2578125
+   ],
+   "process_started": "2026-09-28T20:37:53",
+   "config": {
+    "model": "reaction_diffusion_2d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dphi",
+      1
+     ],
+     [
+      "dphi",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.4,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 12,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "cumulative_by_order": {
+     "0": [
+      "0.178471880001776",
+      "0.0674992877732983",
+      "0.0425167878239314",
+      "0.0334996336632398"
+     ],
+     "1": [
+      "0.183736746095375",
+      "0.0711521941919654",
+      "0.0461588395837985",
+      "0.0365135418907228"
+     ]
+    },
+    "total": [
+     "0.183736746095375",
+     "0.0711521941919654",
+     "0.0461588395837985",
+     "0.0365135418907228"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "chi_grid": [
+     0.4,
+     1.0
+    ]
+   },
+   "max_abs_total": 0.1837367460953752,
+   "spatial": {
+    "pipeline_certified": true,
+    "certify_max_rel": 1.8349966888529688e-16,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 1,
+    "coupled": null,
+    "per_q": {
+     "0.0": {
+      "residual": 0.0,
+      "pass": true
+     },
+     "0.7": {
+      "residual": 1.8349966888529688e-16,
+      "pass": true
+     },
+     "1.5": {
+      "residual": 1.4540210135027378e-16,
+      "pass": true
+     }
+    },
+    "q_samples": [
+     0.0,
+     0.7,
+     1.5
+    ],
+    "tau_samples": [
+     0.5,
+     1.0
+    ]
+   },
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-reaction_diffusion_2d-l1.json",
+    "other_started": "2026-09-28T20:19:52"
+   }
+  },
+  "spatial-coupled_rd_2species_1d-l1": {
+   "status": "ok",
+   "wall_compute": 1.6496421250049025,
+   "wall_eval_points": 2.8165988624095917e-05,
+   "wall_process": 6.916682004928589,
+   "census_only": false,
+   "stub_calls": null,
+   "model_path": "models/coupled_rd_2species_1d.model.py",
+   "model_sha256": "83b3fe27017b204dbb64717503b2c21403541962376ea830c0f6fbd20d7fe82f",
+   "model_spec_signature": "900a2565b90f91ab",
+   "model_git": "tracked",
+   "params_effective": {
+    "mua": 1.5,
+    "mub": 1.2,
+    "Da": 0.8,
+    "Db": 0.8,
+    "g": 0.4,
+    "h": 0.3,
+    "ga": 0.3,
+    "gb": 0.3,
+    "Ta": 1.0,
+    "Tb": 0.7
+   },
+   "cache_dir_existed": true,
+   "pythonhashseed": "0",
+   "loadavg_at_start": [
+    13.978515625,
+    14.076171875,
+    13.30078125
+   ],
+   "process_started": "2026-09-28T20:37:47",
+   "config": {
+    "model": "coupled_rd_2species_1d",
+    "model_file": null,
+    "kind": "spatial",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "da",
+      1
+     ],
+     [
+      "da",
+      1
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "points": null,
+    "chi_grid": [
+     0.0,
+     1.0
+    ],
+    "grouped": false,
+    "stub_nquad": false,
+    "timeout": 600.0
+   },
+   "row": "spatial",
+   "m1_expected": "unknown",
+   "notes": "",
+   "nquad": {
+    "nquad_calls": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polygon_attempted": 0,
+    "poset_attempted": 0,
+    "polytope_m0_direct": 0
+   },
+   "counters": {
+    "polygon_attempted": 0,
+    "polygon_returned_none": 0,
+    "poset_attempted": 0,
+    "poset_extract_returned_none": 0,
+    "poset_consistent_lower_failed": 0,
+    "poset_maximality_failed": 0,
+    "chain_simplex_fast_returned_none": 0,
+    "chain_simplex_polynomial_called": 0,
+    "chain_simplex_polynomial_returned_none": 0,
+    "chain_simplex_memo_hits": 0,
+    "chain_simplex_memo_misses": 0,
+    "poset_returned_none_total": 0,
+    "interval_attempted": 0,
+    "interval_returned_none": 0,
+    "scipy_nquad_called_m1": 0,
+    "scipy_nquad_called_m2": 0,
+    "scipy_nquad_called_mge3": 0,
+    "nquad_calls": 0,
+    "nquad_fallback_by_reason": {
+     "polygon_guard": 0,
+     "polygon_other": 0,
+     "poset_extract_none": 0,
+     "poset_no_extension": 0,
+     "poset_chain_none": 0,
+     "other": 0
+    },
+    "zero_normal_rows_seen": 0,
+    "polytope_m0_direct": 0
+   },
+   "values": {
+    "cumulative_by_order": {
+     "0": [
+      "0.457016766821672",
+      "0.11658138097714",
+      "0.0996096497962714",
+      "0.0695961474540018"
+     ],
+     "1": [
+      "0.394085082539322",
+      "0.0785468206848726",
+      "0.0577729786710177",
+      "0.0382617426562028"
+     ]
+    },
+    "total": [
+     "0.394085082539322",
+     "0.0785468206848726",
+     "0.0577729786710177",
+     "0.0382617426562028"
+    ],
+    "tau_grid": [
+     0.0,
+     0.5
+    ],
+    "chi_grid": [
+     0.0,
+     1.0
+    ]
+   },
+   "max_abs_total": 0.3940850825393217,
+   "spatial": {
+    "pipeline_certified": null,
+    "certify_max_rel": null,
+    "certify_tol": 1e-08,
+    "n_certify_calls": 0,
+    "coupled": true,
+    "per_q": {},
+    "per_q_note": "certify_modes not called (coupled driver / n/a)"
+   },
+   "reproducibility": {
+    "status": [
+     "ok",
+     "ok"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "array_equal": true,
+    "max_rel": 0.0,
+    "within_rtol_1e-13": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/spatial-coupled_rd_2species_1d-l1.json",
+    "other_started": "2026-09-28T20:19:52"
+   }
+  },
+  "dendritic_quad_soma_sigmoid-k2-l1-nquadstub": {
+   "status": "TIMEOUT",
+   "wall_process": 600.0824797153473,
+   "loadavg_at_start": [
+    6.81298828125,
+    8.5048828125,
+    12.6376953125
+   ],
+   "process_started": "2026-09-28T20:19:52",
+   "timeout": 600.0,
+   "config": {
+    "model": "dendritic_quad_soma_sigmoid",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dnS",
+      1
+     ],
+     [
+      "dnS",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": true,
+    "timeout": 600.0
+   },
+   "row": "notebook delta-model",
+   "m1_expected": "unknown",
+   "notes": "CENSUS ONLY (nquad stubbed -> 0) of dendritic_quad_soma_sigmoid-k2-l1",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/dendritic_quad_soma_sigmoid-k2-l1-nquadstub.json",
+    "other_started": "2026-09-28T20:19:52"
+   }
+  },
+  "quadratic_hawkes_alpha-k2-l1-nquadstub": {
+   "status": "TIMEOUT",
+   "wall_process": 600.0286450386047,
+   "loadavg_at_start": [
+    6.46630859375,
+    8.37255859375,
+    12.54248046875
+   ],
+   "process_started": "2026-09-28T20:19:59",
+   "timeout": 600.0,
+   "config": {
+    "model": "quadratic_hawkes_alpha",
+    "model_file": null,
+    "kind": "temporal",
+    "k": 2,
+    "max_ell": 1,
+    "ext": [
+     [
+      "dn",
+      1
+     ],
+     [
+      "dn",
+      2
+     ]
+    ],
+    "tau_grid": [
+     0.0,
+     2.5,
+     10.0
+    ],
+    "points": null,
+    "chi_grid": null,
+    "grouped": false,
+    "stub_nquad": true,
+    "timeout": 600.0
+   },
+   "row": "notebook delta-model / ConvVertex",
+   "m1_expected": "unknown",
+   "notes": "CENSUS ONLY (nquad stubbed -> 0) of quadratic_hawkes_alpha-k2-l1",
+   "reproducibility": {
+    "status": [
+     "TIMEOUT",
+     "TIMEOUT"
+    ],
+    "counters_equal": true,
+    "params_equal": true,
+    "against": "scratch/phase_j_zoo_baseline/runs_pass1/quadratic_hawkes_alpha-k2-l1-nquadstub.json",
+    "other_started": "2026-09-28T20:19:59"
+   }
+  }
+ },
+ "counter_semantics": 2,
+ "migrations": [
+  {
+   "date": "2026-09-28",
+   "what": "counter_semantics 1 -> 2: nquad_calls now counts only m>=1 _integrate_polytope entries (real scipy.nquad); m=0 entries moved to polytope_m0_direct.  Exact conversion from the recorded scipy_nquad_called_* counters (phase_j_zoo_baseline.migrate_counters).  Arrays unchanged."
+  },
+  {
+   "date": "2026-09-28",
+   "what": "entries defined in local extension files (DAEDALUS_ZOO_EXTRA) moved to the local baseline; the records and arrays of the remaining entries are unchanged (bit-exact)."
+  }
+ ]
+}

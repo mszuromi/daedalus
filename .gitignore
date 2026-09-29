@@ -63,6 +63,8 @@ Literature/
 docs/
 scratch/
 legacy/
+# ...except the pre-M1 Phase J fixture copies, which ARE tracked test data.
+!tests/phase_j_refactor_fixtures/legacy/
 scripts/
 api/README.md
 notebooks/legacy/
