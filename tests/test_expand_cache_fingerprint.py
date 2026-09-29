@@ -26,16 +26,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from api.model import TemporalModelBuilder
 from api.model_serialize import normalize_equation_rows
 
-ACTION = ('nt*n - (exp(nt)-1)*f + ut*u - (exp(ut)-1)*m*r - log(1 + p*(exp(ut)-1))*m*n'
-          ' + mt*(Dt*m + u) - (exp(mt)-1)*(M-m)/tauM')
-ROWS = [{'lhs': 'n-f', 'rhs': '0'}, {'lhs': 'u-m*r-m*n*p', 'rhs': '0'},
-        {'lhs': 'Dt*m + u - (M-m)/tauM', 'rhs': '0'}]
+# Immigration–death with explicit flux fields: input train n (rate f), decay
+# flux u (rate r*m), direct loss d*m.  Exact saddle m* = f/(r+d) = 1.25.
+ACTION = ('nt*n - (exp(nt)-1)*f + ut*u - (exp(ut)-1)*r*m'
+          ' + mt*(Dt*m + u - n) - (exp(-mt)-1)*d*m')
+ROWS = [{'lhs': 'n-f', 'rhs': '0'}, {'lhs': 'u-r*m', 'rhs': '0'},
+        {'lhs': 'Dt*m + u + d*m - n', 'rhs': '0'}]
 
 
 def _model(rows, name='Cache Fingerprint Model'):
     b = (TemporalModelBuilder(name).physical_field('n').physical_field('u').physical_field('m')
-         .parameter('f', default=0.5).parameter('r', default=0.3).parameter('p', default=0.2)
-         .parameter('M', default=2.0).parameter('tauM', default=1.5)
+         .parameter('f', default=0.5).parameter('r', default=0.3).parameter('d', default=0.1)
          .set_action_text(ACTION))
     for r in rows:
         b = b.equation(lhs=r['lhs'], rhs=r['rhs'])
