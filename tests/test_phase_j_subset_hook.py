@@ -46,8 +46,23 @@ Cost: the default suite runs ``ou_quartic`` and ``spike1`` (both cheap:
 ``spike1``'s fresh-cache setup is ~3 s, the two-population model's ~15 s).
 The repo spike-reset model -- the one with guard-bailed polygons
 (``polygon_triangle_guard``) -- is ``@pytest.mark.slow``.
+
+M1 (Θ(0) = 0 for constant constraint rows, plan §2.4) moves the one-loop of
+the δ models, so the pre-M0.1 captures (i) are now reproduced with
+``final_integral.THETA0_CONST_ROW_MODE = 'legacy_clip'`` (``_PRE_M1_MODE``);
+``ou_quartic`` has no constant rows and is compared in the default mode.
+Everything else runs in the default ('ito') mode, where ``spike1`` no longer
+reaches the scipy.nquad fallback at all; the hook's nquad-path records and
+counters are exercised on ``spike1`` under 'legacy_clip' (the hook does not
+depend on the mode) and on ``spike`` (slow) in both modes.  The payload's
+``row_kinds`` is the M1 row provenance.  The harness's references are
+computed per (subset, free values, tie context) -- every tie orientation of
+a subset separately (``test_harness_references_every_tie_orientation``,
+model-free).
 """
+import contextlib
 import inspect
+import math
 import os
 import re
 import sys
@@ -117,8 +132,14 @@ _CONFIGS = {
                   max_ell=1, external_fields=[('n', 1), ('n', 2)],
                   parameters=_SPIKE_PARAMS, tau_grid=[0.0, 3.0]),
 }
-# Configurations whose runs reach the scipy.nquad fallback (m>=1).
-_NQUAD_CONFIGS = {'spike1', 'spike'}
+# Configurations whose DEFAULT-mode runs reach the scipy.nquad fallback
+# (m>=1).  Before M1 ``spike1`` did too (poset_extract_none /
+# poset_no_extension on constant rows and order cycles); with the Θ(0) rule
+# it answers every subset analytically.
+_NQUAD_CONFIGS = {'spike'}
+# The mode that reproduces the pre-M1 captures in ``_BEFORE`` (``None``: the
+# default mode; the model has no constant constraint rows).
+_PRE_M1_MODE = {'ou': None, 'spike1': 'legacy_clip', 'spike': 'legacy_clip'}
 
 # C_tau_by_ell captured on b2bf559 before the M0.1 edit (exact reprs).
 _BEFORE = {
@@ -190,7 +211,22 @@ def _fresh_cache_cwd(tmp_path_factory):
 _MODELS = {}
 _RUNS = {}
 _HOOKED = {}
+_PRE = {}
 _WARM = set()
+
+
+@contextlib.contextmanager
+def _theta0_mode(mode):
+    """Run with ``THETA0_CONST_ROW_MODE = mode`` (``None``: unchanged)."""
+    if mode is None:
+        yield
+        return
+    saved = FI.THETA0_CONST_ROW_MODE
+    FI.THETA0_CONST_ROW_MODE = mode
+    try:
+        yield
+    finally:
+        FI.THETA0_CONST_ROW_MODE = saved
 
 
 def _model(spec):
@@ -271,6 +307,21 @@ def _hooked(key):
     return _HOOKED[key]
 
 
+def _pre_m1_runs(key):
+    """Like ``_runs`` but in the mode that reproduces the pre-M1 captures
+    (``_PRE_M1_MODE``): warm-up, then plain, then hooked, same process."""
+    name, grouped = key
+    if _PRE_M1_MODE[name] is None:
+        return _runs(key)
+    if key not in _PRE:
+        _warm(name)
+        with _theta0_mode(_PRE_M1_MODE[name]):
+            plain = _plain_arrays(_compute(_CONFIGS[name], grouped))
+            run, hooked = _hooked_run(_CONFIGS[name], grouped)
+        _PRE[key] = {'plain': plain, 'run': run, 'hooked': hooked}
+    return _PRE[key]
+
+
 def _assert_before(arrays, key):
     before = _BEFORE[key]
     assert sorted(arrays) == sorted(before)
@@ -284,14 +335,23 @@ def _assert_before(arrays, key):
 
 @pytest.mark.parametrize('key', _KEYS)
 def test_hook_unset_matches_pre_m01_values(key):
-    _assert_before(_runs(key)['plain'], key)
+    """(δ models under 'legacy_clip' since M1, see ``_PRE_M1_MODE``.)"""
+    _assert_before(_pre_m1_runs(key)['plain'], key)
 
 
 @pytest.mark.parametrize('key', _KEYS)
 def test_hooked_run_matches_pre_m01_values(key):
     """The recorded run itself (hook installed) reproduces the pre-M0.1
     values -- on spike reset through the δ / zero-normal-row paths."""
-    _assert_before(_hooked(key)[1], key)
+    _assert_before(_pre_m1_runs(key)['hooked'], key)
+
+
+@pytest.mark.parametrize('key', _KEYS)
+def test_legacy_mode_hook_is_transparent(key):
+    r = _pre_m1_runs(key)
+    assert sorted(r['plain']) == sorted(r['hooked'])
+    for ell in r['plain']:
+        assert np.array_equal(r['plain'][ell], r['hooked'][ell]), ell
 
 
 # ── (ii) hook installed: transparent, records both dispatches ─────────
@@ -320,7 +380,10 @@ def _check_records(recs):
             assert r['bail_category'] is None and r['bail_reason'] is None
         assert r['m'] == (len(r['constraints'][0][0])
                           if r['constraints'] else r['m'])
-        assert r['row_kinds'] is None             # M1 adds provenance
+        # M1 row provenance: one kind per constraint row
+        assert isinstance(r['row_kinds'], tuple)
+        assert len(r['row_kinds']) == len(r['constraints'])
+        assert set(r['row_kinds']) <= set(FI.ROW_KINDS)
         assert r['perm_index'] is not None and r['compensation'] is not None
 
 
@@ -334,8 +397,13 @@ def test_hook_records_per_diagram(name):
     assert recs and {r['source'] for r in recs} == {'per_diagram'}
     paths = {(r['path'], r['branch']) for r in recs}
     assert {('m1', 'plan'), ('polygon', 'plan'), ('poset', 'plan'),
-            ('nquad', 'plan'), ('m0', None)} <= paths
+            ('m0', None)} <= paths
+    assert (('nquad', 'plan') in paths) == (name in _NQUAD_CONFIGS)
     _check_records(recs)
+    # the nquad-path payload, on the pre-M1 route
+    lrecs = _pre_m1_runs((name, False))['run']['records']
+    assert ('nquad', 'plan') in {(r['path'], r['branch']) for r in lrecs}
+    _check_records(lrecs)
 
 
 @pytest.mark.parametrize('name', ['ou'] + _DELTA_MODELS)
@@ -349,6 +417,12 @@ def test_hook_records_grouped(name):
     assert {('poset', 'noplan'), ('polygon', 'noplan')} & gpaths
     if name in _NQUAD_CONFIGS:
         assert {('polygon', 'noplan'), ('nquad', 'noplan')} <= gpaths
+    if _PRE_M1_MODE[name] is not None:
+        lrecs = _pre_m1_runs((name, True))['run']['records']
+        _check_records(lrecs)
+        lpaths = {(r['path'], r['branch']) for r in lrecs
+                  if r['source'] == 'grouped'}
+        assert {('polygon', 'noplan'), ('nquad', 'noplan')} <= lpaths
 
 
 def test_hook_is_read_at_call_time():
@@ -417,15 +491,18 @@ def test_points_mode_records_only_the_requested_points(name):
 
 # ── (iv) counters ─────────────────────────────────────────────────────
 
+@pytest.mark.parametrize('pre_m1', [True, False], ids=['legacy', 'ito'])
 @pytest.mark.parametrize('name', _DELTA_MODELS)
-def test_new_counters_present_and_consistent(name):
-    run = _hooked((name, False))[0]
+def test_new_counters_present_and_consistent(name, pre_m1):
+    run = (_pre_m1_runs((name, False)) if pre_m1
+           else {'run': _hooked((name, False))[0]})['run']
     c = run['counters']
     by = c['nquad_fallback_by_reason']
     assert set(by) == set(FI._NQUAD_FALLBACK_REASONS)
     n_mge1 = (c['scipy_nquad_called_m1'] + c['scipy_nquad_called_m2']
               + c['scipy_nquad_called_mge3'])
-    assert sum(by.values()) == n_mge1 > 0
+    assert sum(by.values()) == n_mge1
+    assert (n_mge1 > 0) == (pre_m1 or name in _NQUAD_CONFIGS)
     # nquad_calls counts entries into the scipy.nquad fallback (m>=1) only;
     # the m=0 δ-collapsed subsets that reach _integrate_polytope are direct
     # evaluations, counted separately.
@@ -437,6 +514,10 @@ def test_new_counters_present_and_consistent(name):
     assert c['polytope_m0_direct'] == n_m0 > 0
     assert by['polygon_guard'] == sum(
         1 for r in recs if r['bail_reason'] == 'polygon_triangle_guard')
+    # M1 Θ(0) counters: only the Itô rule calls the helper
+    n_theta0 = c['theta0_const_empty'] + c['theta0_const_drop']
+    assert (n_theta0 > 0) == (not pre_m1)
+    assert c['theta0_tie'] <= c['theta0_const_empty']
 
 
 def test_reset_runtime_counters_resets_new_entries():
@@ -525,3 +606,146 @@ def test_harness_references_closed_form_m2():
         PSD.dbm_reference()
     with pytest.raises(NotImplementedError):
         PSD.certify_box_reference()
+
+
+# ── the harness's own constant-row rule ──────────────────────────────
+
+def _tie_cases():
+    """(a_ext, c0, free_vals, tie_ctx) constant rows: signs, exact ties of
+    two legs in every Wick framing of k = 3 (origin 0/1/2), raw-time
+    near ties that round to 0 after the translation, rows that are not a
+    two-leg difference, and no context."""
+    out = [((1.0,), 0.0, (0.3,), None), ((1.0,), 0.0, (-0.3,), None),
+           ((0.0,), 0.0, (0.0,), None), ((0.0,), 0.5, (0.0,), None),
+           ((1.0,), -0.3, (0.3,), ((0.0, 0.3), (1,), 0))]    # c0 != 0 tie
+    for times in ((0.0, 0.7, 0.7), (0.7, 0.7, 0.0), (0.4, 0.4, 0.4),
+                  (0.0, 0.7, 0.1 + 0.2 + 0.4), (1e6, 1e6 + 0.7, 1e6 + 0.7)):
+        for origin in range(3):
+            free = tuple(j for j in range(3) if j != origin)
+            fv = tuple(times[j] - times[origin] for j in free)
+            ctx = (times, free, origin)
+            for a_ext in ((1.0, -1.0), (-1.0, 1.0), (1.0, 0.0), (0.0, 1.0),
+                          (-1.0, 0.0), (0.0, -1.0), (1.0, 1.0), (0.0, 0.0),
+                          (2.0, -2.0)):
+                out.append((a_ext, 0.0, fv, ctx))
+    return out
+
+
+def test_harness_const_row_rule_agrees_with_production():
+    """The harness decides constant rows with its OWN implementation of
+    the 0.2.0 rule; on every case it agrees with production, and its
+    divergence log stays empty."""
+    n_tie = 0
+    for a_ext, c0, fv, ctx in _tie_cases():
+        tc = None if ctx is None else FI._TieContext(*ctx)
+        a_int = (0.0,) * 2
+        prod, basis = FI._const_row_decision(a_int, a_ext, c0, fv, 'edge', tc)
+        mine = PSD.reference_const_row_verdict(a_ext, c0, fv, 'edge', ctx)
+        assert mine == prod, (a_ext, c0, fv, ctx, mine, prod)
+        n_tie += basis == 'tie_order'
+    assert n_tie >= 20                  # the tie order is really exercised
+    with pytest.raises(ValueError):
+        PSD.reference_const_row_verdict((0.0,), 0.0, (0.0,), 'noise_box')
+
+
+def test_harness_row_kind_tag_flags_constant_rows():
+    """With M1 provenance every smooth-edge row is 'edge', so the constant
+    rows are tagged from the rows themselves ('--ref-scope zero_normal')."""
+    plain = {'row_kinds': ('edge', 'edge'),
+             'constraints': [((1.0, -1.0), (0.0,), 0.0),
+                             ((0.0, 1.0), (1.0,), 0.0)]}
+    const = {'row_kinds': ('edge', 'edge'),
+             'constraints': [((1.0, -1.0), (0.0,), 0.0),
+                             ((0.0, 0.0), (1.0,), 0.0)]}
+    legacy = {'row_kinds': None, 'constraints': const['constraints']}
+    assert PSD.row_kind_tag(plain) == 'edge'
+    assert not PSD.has_zero_normal_row(plain)
+    assert PSD.row_kind_tag(const) == 'edge+zero_normal'
+    assert PSD.has_zero_normal_row(const)
+    assert PSD.row_kind_tag(legacy) == 'edge+zero_normal'
+
+
+def test_harness_reports_a_wrong_production_tie_order(monkeypatch):
+    """A production tie order flipped at exact ties is caught: the harness
+    keeps its own verdict and logs the divergence."""
+    real = FI._tie_order_sign
+    monkeypatch.setattr(FI, '_tie_order_sign',
+                        lambda *a, **k: -real(*a, **k))
+    start = len(PSD.RULE_DIVERGENCES)
+    ctx = ((0.0, 0.7, 0.7), (1, 2), 0)
+    # the row t_1 − t_2 at t_1 == t_2 (leg 2 is later-listed: earlier) holds
+    rows = [((0.0, 0.0), (1.0, -1.0), 0.0)]
+    verdict, _ = PSD._resolve_rows(rows, (0.7, 0.7), ctx, ('edge',))
+    assert verdict == 'OK'
+    new = PSD.RULE_DIVERGENCES[start:]
+    assert len(new) == 1
+    assert (new[0]['harness'], new[0]['production']) == ('DROP', 'EMPTY')
+    del PSD.RULE_DIVERGENCES[start:]
+
+
+# ── references at an exact tie: one per (subset, tie context) ──────────
+
+def _tie_payload(tie_ctx, perm_index, value, integrand):
+    """A hook payload for ONE m=1 subset (t − s > 0, plus the constant row
+    Δ = (free leg) − (origin leg)) at the free value 0.0, i.e. an exact tie
+    of legs 0 and 1 of a k = 2 call, from Wick permutation ``perm_index``.
+    Model-free: the closure is the closed form e^{s − t}."""
+    return {
+        'free_ext_vals': (0.0,), 'diagram_serial': 7, 'subset_index': 0,
+        'tie_ctx': tie_ctx,
+        'ctx': {'compensation': 1, 'call_serial': 3, 'eval_serial': 0,
+                'ext_time_values': (0.0, 0.0), 'perm_index': perm_index,
+                'n_perms': 2},
+        'prefactor': 1.0 + 0j, 'source': 'per_diagram', 'loop_number': 1,
+        'subset_id': 0, 'delta_edges': (), 'smooth_edges': (0, 1), 'm': 1,
+        'constraints': [((-1.0,), (1.0,), 0.0), ((0.0,), (1.0,), 0.0)],
+        'row_kinds': ('edge', 'edge'), 'modes_summary': None,
+        'path': 'm1', 'evaluator': '_integrate_1d_polytope_modesum',
+        'branch': 'plan', 'attempted': 'm1', 'bail_reason': None,
+        'bail_category': None, 'value': value, 'integrand': integrand,
+        'modes': None, 'plan': None, 'pole_tuples': None, 'diagram': None,
+    }
+
+
+def test_harness_references_every_tie_orientation():
+    """(Review round 3.)  At an exact tie two Wick permutations evaluate
+    the same subset at the same free values, but with different legs
+    behind the free value, so the constant row t_1 − t_0 empties the
+    region in one (leg 1 is later-listed: earlier) and holds in the other.
+    The references are keyed by (subset, tie context): each orientation
+    gets its own reference, and the disagreement table and the attribution
+    compare each record with its own.  (Keyed by the subset alone, the
+    second orientation was compared with the first one's reference: a
+    spurious attribution of +1 here.)"""
+    def f(s, t):
+        return np.exp(s - t)
+    identity = ((0.0, 0.0), (1,), 0)        # free value = t_1 − t_0
+    swapped = ((0.0, 0.0), (0,), 1)         # free value = t_0 − t_1
+    tc = [FI._TieContext(*c) for c in (identity, swapped)]
+    rows = [((-1.0,), (1.0,), 0.0), ((0.0,), (1.0,), 0.0)]
+    assert [FI._any_const_row_empty(rows, (0.0,), None, c) for c in tc] == [
+        True, False]
+    one = 1.0 - math.exp(-200.0)            # ∫_{-200}^{0} e^{s} ds
+    rec = PSD.SubsetRecorder()
+    rec(_tie_payload(identity, 0, 0j, f))
+    rec(_tie_payload(swapped, 1, one + 0j, f))
+    assert rec.records[0]['key'] == rec.records[1]['key']
+    assert rec.records[0]['ref_key'] != rec.records[1]['ref_key']
+    run_ = {'config': {'stub_nquad': False}, 'records': rec.records,
+            'live': rec.live, 'refs': {}, 'ref_meta': {}}
+    start = len(PSD.RULE_DIVERGENCES)
+    PSD.compute_references(run_, ('a',), ref_max_m=1)
+    assert len(PSD.RULE_DIVERGENCES) == start
+    assert run_['ref_meta']['n_candidates'] == 2
+    refs = {k: v['a'] for k, v in run_['refs'].items()}
+    assert refs[rec.records[0]['ref_key']] == 0
+    assert abs(refs[rec.records[1]['ref_key']] - one) < 1e-10
+    table, worst = PSD.disagreement_table(run_)
+    assert sum(row['n'] for row in table.values()) == 2
+    assert sum(row['n_disagree'] for row in table.values()) == 0, worst
+    (s, n_with, n_without), = PSD.attribution(run_, 'a').values()
+    assert (n_with, n_without) == (2, 0) and abs(s) < 1e-10
+    # a time without a float value (a symbolic one) still keys the record
+    from sage.all import SR
+    assert PSD.tie_ctx_key(((SR.var('t'), 0.5), (1,), 0)) == (
+        ('t', 0.5), (1,), 0)

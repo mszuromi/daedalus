@@ -26,7 +26,14 @@ What it does
    1/_compensation and summed over Wick perms.
 3. **References** on the SAME closure (the callable production hands to
    scipy.nquad) and constraints, once per unique (diagram build, subset,
-   free_ext_vals):
+   free_ext_vals, tie context) -- the record's ``ref_key``.  The tie
+   context is part of it because at an exact external-time tie several
+   Wick permutations evaluate the same subset at the same free values with
+   DIFFERENT tie contexts (other legs behind the free values), and the
+   constant-row verdicts legitimately differ between them; every such
+   orientation gets its own reference and its own rule cross-check, and
+   the disagreement table and the attribution compare each record with
+   the reference of its own tie context:
 
    ``a``    tight iterated quadrature (``scipy.integrate.quad_vec`` per
             level, epsabs = 1e-13 · scale, epsrel = 1e-10) on the ±200 box.
@@ -47,21 +54,31 @@ What it does
             actually used -- **NOT AVAILABLE until M8**:
             ``certify_box_reference`` raises ``NotImplementedError``.
 
-   All references use the Itô convention Θ(0)=0 for constant (zero-normal)
-   rows, with the plan's tie policy (§2.4): c_eff <= 64·eps·S with
-   S = |c0| + Σ_i |a_ext_i t_i| is a tie and makes the region EMPTY; a
-   constant row with c_eff above that is dropped from the geometry only.
-   So they are what the code SHOULD return.  Before M1 the production m=2
-   polygon keeps such rows (Θ(0)=1, plan P1), so disagreements on
-   ``row_kind='edge+zero_normal'`` m=2 subsets are EXPECTED until M1.
+   All references decide constant (zero-normal) rows by the 0.2.0 rule
+   (CHANGELOG.md; plan Appendix D.1), implemented HERE independently of
+   production (``reference_const_row_verdict``): exact sign of
+   ``c_eff = c0 + Σ_i a_ext_i t_i`` (> 0: dropped from the geometry only;
+   < 0: EMPTY; no tolerance); at ``c_eff == 0.0`` a row that is the
+   difference t_p − t_q of two external legs' times (``c0 == 0``, mapped to
+   legs through the record's ``tie_ctx``, origin leg included) takes the
+   one-sided limit in which leg j sits at t_j − j·δ, δ → 0⁺ (raw times
+   first, then the leg order: a later-listed leg is infinitesimally
+   earlier); any other zero row is Θ(0) = 0 (EMPTY).  So they are what the
+   code SHOULD return.  Every constant row is also given production's
+   ``final_integral._const_row_decision``; a different verdict is recorded
+   in ``RULE_DIVERGENCES`` / ``ref_meta['rule_divergences']`` and reported
+   (the references keep the harness's own verdict).  Under
+   ``THETA0_CONST_ROW_MODE = 'legacy_clip'`` the production m=2 polygon
+   keeps zero-valued rows (Θ(0) = 1, plan P1), so disagreements on m=2
+   subsets with a constant row are EXPECTED in that mode.
 4. **Disagreement table**: |value - ref| > max(1e-8·|ref|, 1e-14), grouped by
    (reference, m, bail reason / answering path, row kind), plus the
    ``_RUNTIME_COUNTERS`` snapshot (``nquad_calls`` = entries into the
    scipy.nquad fallback with m>=1, ``polytope_m0_direct`` = m=0 δ-collapsed
    subsets evaluated directly, ``nquad_fallback_by_reason``,
-   ``zero_normal_rows_seen``, ...).  Row kind:
-   the M1 ``row_kinds`` provenance when present; until then a derived tag
-   ``edge`` / ``edge+zero_normal``.
+   ``zero_normal_rows_seen``, ...).  Row kind: the M1 ``row_kinds``
+   provenance (``edge`` without it), plus ``+zero_normal`` when the subset
+   has a constant row (``--ref-scope zero_normal`` selects those subsets).
 5. **--stub-nquad**: replaces ``_integrate_polytope`` (in final_integral AND
    grouped_integral, which imports it by name) with a counting stub that
    returns 0 for m>=1 (m=0 passes through: it is a direct evaluation, not
@@ -73,7 +90,9 @@ What it does
 6. **fixture_delta_report()**: max abs / rel deltas of the four frozen
    Phase J fixtures (``tests/phase_j_refactor_fixtures``) between the
    current code and both the frozen ``.npz`` and the ``legacy/`` copies
-   (absent until the M0.3 step creates them; reported as missing).
+   (absent until the M0.3 step creates them; reported as missing), per
+   probe too.  ``mode='legacy'`` (CLI ``--fixture-mode legacy|both``)
+   evaluates under the legacy umbrella's flags, set in-process.
 
 Provenance: ``run()`` records in ``config['diagram_sources']`` where every
 (k, ell) diagram list came from -- the typed-diagram cache
@@ -108,7 +127,8 @@ CLI examples (repo root)::
         --k 4 --max-ell 1 --points '0,0.3,0.6,0.9;0,0.5,0.5,0.5' \\
         --fields dx:1,dx:1,dx:1,dx:1 \\
         --params '{"mu": 1.0, "D": 1.0, "eps": 0.02}'
-    sage -python -m tests.tools.phase_j_subset_diff --fixture-report
+    sage -python -m tests.tools.phase_j_subset_diff --fixture-report \\
+        --fixture-mode both          # current defaults AND legacy umbrella
 
 ``--model-file path/to/file.py:builder`` loads a model from any file instead
 of ``--model``.
@@ -138,8 +158,10 @@ if _REPO_ROOT not in sys.path:
 
 DEFAULT_OUT_DIR = os.path.join(_REPO_ROOT, 'scratch', 'phase_j_subset_diff')
 
-# Tolerances (plan §4.4 / §2.4).
-TIE_RTOL = 64 * sys.float_info.epsilon      # constant-row tie tolerance
+# Tolerances (plan §4.4 / §2.4).  Constant rows have no tie tolerance: the
+# references decide them with the harness's own ``reference_const_row_
+# verdict`` (exact sign; the recorded ``tie_ctx`` orders an external-time
+# tie), cross-checked against production's ``_const_row_decision``.
 ROW_COEF_ATOL = 1e-12                       # "zero normal" threshold
 DISAGREE_RTOL = 1e-8
 DISAGREE_ATOL = 1e-14
@@ -178,22 +200,58 @@ def _zero_normal(a_int):
     return all(abs(float(x)) <= ROW_COEF_ATOL for x in a_int)
 
 
+def has_zero_normal_row(record):
+    """True if the record's subset has a constant (zero-normal) row."""
+    return any(_zero_normal(a) for (a, _e, _c) in record['constraints'])
+
+
 def row_kind_tag(record):
-    """Row provenance for grouping: M1's ``row_kinds`` when present, else a
-    derived tag (``edge`` or ``edge+zero_normal``)."""
+    """Row provenance for grouping: M1's ``row_kinds`` when present (else
+    ``edge``), plus ``+zero_normal`` when the subset has a constant row."""
     rk = record.get('row_kinds')
-    if rk:
-        return '+'.join(sorted(set(rk)))
-    if any(_zero_normal(a) for (a, _e, _c) in record['constraints']):
-        return 'edge+zero_normal'
-    return 'edge'
+    tag = '+'.join(sorted(set(rk))) if rk else 'edge'
+    if has_zero_normal_row(record):
+        tag += '+zero_normal'
+    return tag
+
+
+def _hashable_time(t):
+    """A time of a tie context as a hashable, comparable key entry."""
+    try:
+        return float(t)
+    except (TypeError, ValueError):
+        return repr(t)
+
+
+def tie_ctx_key(tie_ctx):
+    """Hashable form of a record's ``tie_ctx`` ``(times, free_legs,
+    origin_leg)`` (``None`` stays ``None``)."""
+    if tie_ctx is None:
+        return None
+    times, free_legs, origin = tie_ctx
+    return (tuple(_hashable_time(t) for t in times), tuple(free_legs),
+            origin)
+
+
+def ref_key(record):
+    """The reference key of a record: ``(key, tie context)``.  ``key`` =
+    (diagram build, subset, free_ext_vals) identifies the integrand and the
+    rows; the tie context decides the constant rows at an exact tie, which
+    can differ between Wick permutations that share ``key``.  (Derived from
+    ``key`` and ``tie_ctx`` for a record without the field, e.g. one
+    pickled by an earlier version of this harness.)"""
+    rk = record.get('ref_key')
+    if rk is None:
+        rk = (record['key'], tie_ctx_key(record.get('tie_ctx')))
+    return rk
 
 
 class SubsetRecorder:
     """``_SUBSET_HOOK`` callable.  Keeps a picklable record per call and,
     once per unique (diagram build, subset, free_ext_vals), the live
     references (integrand closure, modes, plan, pole tuples) needed to
-    compute references afterwards."""
+    compute references afterwards (they do not depend on the Wick
+    permutation, so ``live`` is keyed by ``key``, not ``ref_key``)."""
 
     def __init__(self, keep_live=True):
         self.records = []
@@ -204,10 +262,14 @@ class SubsetRecorder:
         ctx = p.get('ctx') or {}
         fv = tuple(p['free_ext_vals'])
         key = (p['diagram_serial'], p['subset_index'], fv)
+        tie_ctx = (None if p.get('tie_ctx') is None
+                   else tuple(p['tie_ctx']))
         comp = ctx.get('compensation')
         pref = p.get('prefactor')
         rec = {
             'key': key,
+            # (key, tie context): what a reference is computed for
+            'ref_key': (key, tie_ctx_key(tie_ctx)),
             'source': p['source'],
             'diagram_serial': p['diagram_serial'],
             'loop_number': p['loop_number'],
@@ -229,6 +291,9 @@ class SubsetRecorder:
             ],
             'row_kinds': p.get('row_kinds'),
             'free_ext_vals': fv,
+            # (times, free_legs, origin_leg) of the M1 ``_TieContext``, or
+            # None: what ordered an exact external-time tie in this call.
+            'tie_ctx': tie_ctx,
             'modes_summary': p.get('modes_summary'),
             'prefactor': None if pref is None else complex(pref),
             'path': p['path'],
@@ -270,10 +335,13 @@ class NquadStub:
         self.calls = collections.Counter()
         self._orig = None
 
-    def __call__(self, integrand_callable, s_constraints, free_ext_vals, m):
+    def __call__(self, integrand_callable, s_constraints, free_ext_vals, m,
+                 **kw):
+        # ``**kw``: the M1 keywords (``raw_rows``, ``row_kinds``) are passed
+        # through to the real m=0 evaluation.
         if m == 0:
             return self._orig(integrand_callable, s_constraints,
-                              free_ext_vals, m)
+                              free_ext_vals, m, **kw)
         self.calls[m] += 1
         return 0.0 + 0.0j
 
@@ -497,22 +565,102 @@ def reconstruction_check(run_):
 # References
 # ═══════════════════════════════════════════════════════════════════════
 
-def _resolve_rows(constraints, free_vals):
+_EDGE_KINDS = ('edge', 'conv_pseudo')
+_BOX_KINDS = ('noise_box', 'conv_tau')
+
+#: Constant rows whose harness verdict differs from production's
+#: ``final_integral._const_row_decision``: dicts with the row, the free
+#: values, the tie context and both verdicts.  ``compute_references``
+#: copies its share into ``run_['ref_meta']['rule_divergences']``.
+RULE_DIVERGENCES = []
+
+
+def reference_const_row_verdict(a_ext, c0, free_vals, kind='edge',
+                                 tie_ctx=None):
+    r"""The harness's own statement of the 0.2.0 constant-row rule
+    (``'DROP'`` or ``'EMPTY'``), written from the rule's definition rather
+    than from production's code, so that the references are an independent
+    check of the decision.
+
+    ``c_eff = c0 + Σ_i a_ext_i t_i`` (the row's value; exact sign, no
+    tolerance): > 0 DROP, < 0 (or NaN) EMPTY.  At ``c_eff == 0.0``: if
+    ``c0 == 0`` and the row, rewritten on the legs' RAW times through
+    ``tie_ctx = (times, free_legs, origin_leg)`` (``free_ext_vals[i] =
+    times[free_legs[i]] − times[origin_leg]``), is ``t_p − t_q`` for two
+    legs, it is evaluated in the one-sided limit where leg j sits at
+    ``t_j − j·δ``, δ → 0⁺: lexicographically, first the exactly rounded raw
+    difference, then ``−Σ_j coef_j · j``.  Any other zero row is
+    Θ(0) = 0: EMPTY.  A constant box row ('noise_box' / 'conv_tau')
+    raises (never expected, plan §7.6).
+    """
+    if kind in _BOX_KINDS:
+        raise ValueError(f'constant {kind!r} row: not expected (plan §7.6)')
+    if kind not in _EDGE_KINDS:
+        raise ValueError(f'unknown row kind {kind!r}')
+    c = float(c0) + sum(float(a_ext[j]) * float(free_vals[j])
+                        for j in range(len(a_ext)))
+    if c > 0.0:
+        return 'DROP'
+    if not c == 0.0:
+        return 'EMPTY'
+    if tie_ctx is None or float(c0) != 0.0:
+        return 'EMPTY'
+    times, free_legs, origin = tie_ctx
+    if len(a_ext) > len(free_legs):
+        return 'EMPTY'
+    coef = collections.defaultdict(float)
+    for i, a in enumerate(a_ext):
+        coef[free_legs[i]] += float(a)
+        if origin is not None:
+            coef[origin] -= float(a)
+    coef = {leg: a for leg, a in coef.items() if a != 0.0}
+    if sorted(coef.values()) != [-1.0, 1.0]:
+        return 'EMPTY'
+    raw = math.fsum(a * float(times[leg]) for leg, a in coef.items())
+    if raw != raw:                      # NaN time: no order
+        return 'EMPTY'
+    if raw != 0.0:
+        return 'DROP' if raw > 0.0 else 'EMPTY'
+    pert = -sum(a * leg for leg, a in coef.items())
+    return 'DROP' if pert > 0 else 'EMPTY'
+
+
+def _resolve_rows(constraints, free_vals, tie_ctx=None, row_kinds=None):
     """Itô constant-row verdict + the non-constant rows.
 
-    Returns ('EMPTY', None) or ('OK', [(a ndarray, c_eff), ...]).
+    Constant rows are decided by ``reference_const_row_verdict`` (the
+    harness's own rule); ``tie_ctx`` is a record's ``(times, free_legs,
+    origin_leg)`` (or ``None``: an exact tie is Θ(0) = 0).  Each constant
+    row is also given production's ``final_integral._const_row_decision``
+    (side-effect free); a different verdict is appended to
+    ``RULE_DIVERGENCES``.  Returns ('EMPTY', None) or
+    ('OK', [(a ndarray, c_eff), ...]).
     """
+    FI = _fi()
+    tc = None if tie_ctx is None else FI._TieContext(*tie_ctx)
     out = []
-    for (a_int, a_ext, c0) in constraints:
+    empty = False
+    for idx, (a_int, a_ext, c0) in enumerate(constraints):
         c = float(c0) + sum(float(a_ext[j]) * float(free_vals[j])
                             for j in range(len(a_ext)))
         if _zero_normal(a_int):
-            S = abs(float(c0)) + sum(abs(float(a_ext[j]) * float(free_vals[j]))
-                                     for j in range(len(a_ext)))
-            if c <= TIE_RTOL * S:
-                return 'EMPTY', None        # Θ(0)=0, ties included
+            kind = 'edge' if not row_kinds else row_kinds[idx]
+            verdict = reference_const_row_verdict(a_ext, c0, free_vals,
+                                                  kind, tie_ctx)
+            prod = FI._const_row_decision(a_int, a_ext, c0, free_vals,
+                                          kind, tc)[0]
+            if prod != verdict:
+                RULE_DIVERGENCES.append({
+                    'row': (tuple(a_int), tuple(a_ext), c0),
+                    'free_ext_vals': tuple(free_vals), 'kind': kind,
+                    'tie_ctx': tie_ctx, 'harness': verdict,
+                    'production': prod})
+            if verdict == 'EMPTY':
+                empty = True                # Θ(0)=0 / ordered tie
             continue                        # DROP: geometry only
         out.append((np.array([float(x) for x in a_int]), c))
+    if empty:
+        return 'EMPTY', None
     return 'OK', out
 
 
@@ -540,7 +688,7 @@ def _vertex_coords(A, C, k_axis, max_combos=20000):
 
 def tight_quad_reference(integrand, constraints, free_vals, m, *, box,
                          scale=1.0, epsabs_factor=1e-13, epsrel=1e-10,
-                         limit=400):
+                         limit=400, tie_ctx=None, row_kinds=None):
     """Tight iterated quadrature of ``integrand(s_0..s_{m-1}, *free)`` over
     {rows > 0} ∩ [-box, box]^m (Itô constant rows).  Innermost s_0.
 
@@ -548,7 +696,7 @@ def tight_quad_reference(integrand, constraints, free_vals, m, *, box,
     and status (0 = converged) over all levels.
     """
     from scipy.integrate import quad_vec
-    verdict, rows = _resolve_rows(constraints, free_vals)
+    verdict, rows = _resolve_rows(constraints, free_vals, tie_ctx, row_kinds)
     info = {'verdict': verdict, 'max_err': 0.0, 'worst_status': 0,
             'vertex_breakpoints': True}
     if verdict == 'EMPTY' or m == 0:
@@ -663,14 +811,16 @@ def _mp_J(p, q, mp):
         return (E(q) - E(p)) / (q - p)
 
 
-def mp_fan_reference(terms, constraints, free_vals, *, box, dps=50):
+def mp_fan_reference(terms, constraints, free_vals, *, box, dps=50,
+                     tie_ctx=None, row_kinds=None):
     """m=2: Σ_terms coef · ∫∫_poly exp(α s0 + β s1 + γ) at ``dps`` digits,
     polygon = [-box, box]² clipped by the non-constant rows (Itô constant
     rows).  ``terms`` from ``_pole_terms``."""
     import mpmath
     mp = mpmath.mp
     with mp.workdps(dps):
-        verdict, rows = _resolve_rows(constraints, free_vals)
+        verdict, rows = _resolve_rows(constraints, free_vals, tie_ctx,
+                                      row_kinds)
         if verdict == 'EMPTY':
             return 0j
         c_eff_all = []
@@ -752,10 +902,13 @@ def certify_box_reference(*_args, **_kwargs):
 def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,
                        scope='all', max_subsets=None, time_budget=None,
                        verbose=False):
-    """Fill ``run_['refs'][key][ref_name] = complex`` for unique subset
-    evaluations with 1 <= m <= ref_max_m.  ``scope``: 'all', 'fallback'
-    (answered by nquad), 'analytic' (answered analytically) or
-    'zero_normal' (has a constant row)."""
+    """Fill ``run_['refs'][ref_key][ref_name] = complex`` for unique subset
+    evaluations with 1 <= m <= ref_max_m, one per ``ref_key`` = (diagram
+    build, subset, free_ext_vals, tie context): every tie orientation of a
+    subset is referenced, with its own tie context, and cross-checked
+    against production's rule.  ``scope``: 'all', 'fallback' (answered by
+    nquad), 'analytic' (answered analytically) or 'zero_normal' (has a
+    constant row)."""
     for kd in kinds:
         if kd == 'd':
             dbm_reference()
@@ -774,22 +927,23 @@ def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,
             continue
         if scope == 'analytic' and r['path'] == 'nquad':
             continue
-        if scope == 'zero_normal' and row_kind_tag(r) == 'edge':
+        if scope == 'zero_normal' and not has_zero_normal_row(r):
             continue
-        uniq.setdefault(r['key'], r)
+        uniq.setdefault(ref_key(r), r)
     t0 = time.perf_counter()
     n_done = 0
-    for key, r in uniq.items():
+    n_div0 = len(RULE_DIVERGENCES)
+    for rkey, r in uniq.items():
         if max_subsets is not None and n_done >= max_subsets:
             break
         if time_budget is not None and time.perf_counter() - t0 > time_budget:
             run_['ref_meta']['truncated_by_time_budget'] = True
             break
-        live = run_['live'].get(key)
+        live = run_['live'].get(r['key'])    # the integrand: per subset
         if live is None or live.get('integrand') is None:
             continue
-        refs = run_['refs'].setdefault(key, {})
-        meta = run_['ref_meta'].setdefault(key, {})
+        refs = run_['refs'].setdefault(rkey, {})
+        meta = run_['ref_meta'].setdefault(rkey, {})
         scale = _integrand_scale(live)
         meta['scale'] = scale
         for kd in kinds:
@@ -798,7 +952,8 @@ def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,
                 ts = time.perf_counter()
                 v, info = tight_quad_reference(
                     live['integrand'], r['constraints'], r['free_ext_vals'],
-                    r['m'], box=box, scale=scale)
+                    r['m'], box=box, scale=scale, tie_ctx=r.get('tie_ctx'),
+                    row_kinds=r.get('row_kinds'))
                 refs[kd] = v
                 meta[kd] = dict(info, seconds=time.perf_counter() - ts)
             elif kd == 'c' and r['m'] == 2:
@@ -808,13 +963,17 @@ def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,
                     continue
                 for box in (150.0, 400.0):
                     refs[f'c{int(box)}'] = mp_fan_reference(
-                        terms, r['constraints'], r['free_ext_vals'], box=box)
+                        terms, r['constraints'], r['free_ext_vals'], box=box,
+                        tie_ctx=r.get('tie_ctx'),
+                        row_kinds=r.get('row_kinds'))
         n_done += 1
         if verbose and n_done % 25 == 0:
             print(f'  references: {n_done}/{len(uniq)} subsets '
                   f'({time.perf_counter() - t0:.0f}s)', flush=True)
     run_['ref_meta']['n_subsets_with_refs'] = n_done
     run_['ref_meta']['n_candidates'] = len(uniq)
+    run_['ref_meta'].setdefault('rule_divergences', []).extend(
+        RULE_DIVERGENCES[n_div0:])
     return run_
 
 
@@ -822,17 +981,21 @@ def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,
 # Tables / reports
 # ═══════════════════════════════════════════════════════════════════════
 
-def _first_record_by_key(run_):
+def _first_record_by_ref_key(run_):
+    """``ref_key`` -> the first record with it (every record with the same
+    ``ref_key`` evaluates the same subset, free values and tie context)."""
     out = {}
     for r in run_['records']:
-        out.setdefault(r['key'], r)
+        out.setdefault(ref_key(r), r)
     return out
 
 
 def disagreement_table(run_):
     """Per (ref, m, bail-reason-or-path, row kind): n compared, n disagree
-    (|value-ref| > max(1e-8|ref|, 1e-14)), non-finite refs, max abs/rel."""
-    by_key = _first_record_by_key(run_)
+    (|value-ref| > max(1e-8|ref|, 1e-14)), non-finite refs, max abs/rel.
+    One comparison per ``ref_key``: each tie orientation of a subset is
+    compared with the reference of its own tie context."""
+    by_key = _first_record_by_ref_key(run_)
     table = {}
     worst = []
     for key, refs in run_['refs'].items():
@@ -862,8 +1025,10 @@ def attribution(run_, ref_name):
     """(ell, point) -> (Σ (value - ref)/comp, n_terms_with_ref,
     n_terms_without_ref) over the reconstruction records: how much of the
     pipeline total moves if every subset returned ``ref_name`` instead of
-    its production value (the per-subset attribution).  Only exact
-    when every subset that differs has that reference (``ref_max_m``)."""
+    its production value (the per-subset attribution).  Each record is
+    compared with the reference of its own ``ref_key`` (its own tie
+    context).  Only exact when every subset that differs has that
+    reference (``ref_max_m``)."""
     first = {}
     for r in run_['records']:
         if r['call_serial'] is None:
@@ -878,7 +1043,7 @@ def attribution(run_, ref_name):
             continue
         g = (int(r['loop_number']), r['ext_time_values'])
         s, n_with, n_without = out.get(g, (0j, 0, 0))
-        ref = run_['refs'].get(r['key'], {}).get(ref_name)
+        ref = run_['refs'].get(ref_key(r), {}).get(ref_name)
         if ref is None or not cmath.isfinite(ref):
             out[g] = (s, n_with, n_without + 1)
         else:
@@ -945,7 +1110,17 @@ def format_report(run_, *, max_worst=15):
         table, worst = disagreement_table(run_)
         lines.append(f"references: {run_['ref_meta'].get('n_subsets_with_refs')}"
                      f" of {run_['ref_meta'].get('n_candidates')} candidate "
-                     f"subset evaluations")
+                     f"(subset, free values, tie context) evaluations")
+        div = run_['ref_meta'].get('rule_divergences') or []
+        lines.append(f"constant-row rule: {len(div)} verdict(s) where the "
+                     f"harness differs from final_integral._const_row_"
+                     f"decision" + (' (references use the harness verdict)'
+                                    if div else ''))
+        for d in div[:max_worst]:
+            lines.append(f"   rule divergence: row={d['row']} "
+                         f"free={d['free_ext_vals']} tie_ctx={d['tie_ctx']} "
+                         f"harness={d['harness']} production="
+                         f"{d['production']}")
         lines.append('disagreements (ref, m, bail_reason|path, row_kind): '
                      'n / n_disagree / nonfinite / max_abs / max_rel')
         for g, row in sorted(table.items(), key=lambda x: str(x[0])):
@@ -1010,10 +1185,41 @@ def save(run_, out_prefix):
 # Fixture delta report
 # ═══════════════════════════════════════════════════════════════════════
 
-def fixture_delta_report(names=None, *, verbose=True):
+@contextlib.contextmanager
+def phase_j_flags(mode='default'):
+    """Set the Phase J flags in-process for the duration of the block.
+
+    ``'default'`` leaves the module attributes as they are; ``'legacy'``
+    applies what ``DAEDALUS_PHASE_J_LEGACY=1`` selects
+    (``final_integral._initial_phase_j_flags``).  The flags are read at call
+    time, so this takes effect at once; restored on exit.
+    """
+    if mode == 'default':
+        yield {}
+        return
+    if mode != 'legacy':
+        raise ValueError(f"mode must be 'default' or 'legacy', got {mode!r}")
+    FI = _fi()
+    flags = FI._initial_phase_j_flags({'DAEDALUS_PHASE_J_LEGACY': '1'})
+    saved = {k: getattr(FI, k) for k in flags}
+    try:
+        for k, v in flags.items():
+            setattr(FI, k, v)
+        yield flags
+    finally:
+        for k, v in saved.items():
+            setattr(FI, k, v)
+
+
+def fixture_delta_report(names=None, *, verbose=True, mode='default'):
     """Max abs / rel deltas of each frozen Phase J fixture: current code vs
     the frozen ``.npz`` and vs ``legacy/<name>.npz`` (reported 'missing'
-    when that copy does not exist yet)."""
+    when that copy does not exist yet).
+
+    ``mode='legacy'`` evaluates under the legacy umbrella's flags (set
+    in-process, see ``phase_j_flags``): the pre-change numbers, which must
+    reproduce the ``legacy/`` copies.  With ``verbose`` the per-probe values
+    are printed as well."""
     from tests.phase_j_refactor_fixtures._configs import FIXTURES
     from tests.phase_j_refactor_fixtures._runner import evaluate, fixture_path
     names = tuple(names or FIXTURE_NAMES)
@@ -1021,8 +1227,11 @@ def fixture_delta_report(names=None, *, verbose=True):
     for fx in FIXTURES:
         if fx.name not in names:
             continue
-        cur = evaluate(fx)
-        entry = {'wall': cur['wall_time'], 'current': cur['C_values']}
+        with phase_j_flags(mode):
+            cur = evaluate(fx)
+        entry = {'wall': cur['wall_time'], 'current': cur['C_values'],
+                 'mode': mode,
+                 'tau_probes': [tuple(p) for p in cur['tau_probes'].tolist()]}
         for label, path in (
                 ('frozen', fixture_path(fx.name)),
                 ('legacy', os.path.join(os.path.dirname(fixture_path(fx.name)),
@@ -1035,15 +1244,26 @@ def fixture_delta_report(names=None, *, verbose=True):
             rel = d / np.maximum(np.abs(ref), 1e-300)
             entry[label] = {'max_abs': float(d.max()),
                             'max_rel': float(rel.max()),
-                            'per_probe_abs': d.tolist()}
+                            'per_probe_abs': d.tolist(),
+                            'per_probe_rel': rel.tolist(),
+                            'values': ref}
         out[fx.name] = entry
         if verbose:
             def fmt(e):
                 return e if isinstance(e, str) else (
                     f"max_abs={e['max_abs']:.3e} max_rel={e['max_rel']:.3e}")
-            print(f"{fx.name:22s} ({entry['wall']:.1f}s)  vs frozen: "
+            print(f"{fx.name:22s} [{mode}] ({entry['wall']:.1f}s)  vs frozen: "
                   f"{fmt(entry['frozen'])}   vs legacy: "
                   f"{fmt(entry['legacy'])}", flush=True)
+            ref = entry['legacy'] if not isinstance(
+                entry['legacy'], str) else entry['frozen']
+            if not isinstance(ref, str):
+                for i, (pt, v) in enumerate(zip(entry['tau_probes'],
+                                                cur['C_values'])):
+                    r = ref['values'][i]
+                    print(f"    probe {pt}: current {v.real:+.12e}  "
+                          f"pre-M1 {r.real:+.12e}  |d|={ref['per_probe_abs'][i]:.3e}"
+                          f"  rel={ref['per_probe_rel'][i]:.3e}", flush=True)
     return out
 
 
@@ -1086,11 +1306,18 @@ def main(argv=None):
     ap.add_argument('--out', default=None, help='output prefix (no ext)')
     ap.add_argument('--fixture-report', action='store_true')
     ap.add_argument('--fixtures', default=None, help='comma list of names')
+    ap.add_argument('--fixture-mode', default='default',
+                    choices=['default', 'legacy', 'both'],
+                    help="flags for --fixture-report: the current defaults, "
+                         "the legacy umbrella's (in-process), or both")
     args = ap.parse_args(argv)
 
     if args.fixture_report:
-        fixture_delta_report(args.fixtures.split(',') if args.fixtures
-                             else None)
+        modes = (('default', 'legacy') if args.fixture_mode == 'both'
+                 else (args.fixture_mode,))
+        for mode in modes:
+            fixture_delta_report(args.fixtures.split(',') if args.fixtures
+                                 else None, mode=mode)
         return 0
     if not (args.model or args.model_file) or not args.fields:
         ap.error('--model or --model-file, and --fields, are required')

@@ -44,8 +44,39 @@ from tests.phase_j_refactor_fixtures._runner import (
 )
 
 
-def _fixture_ids():
-    return [fx.name for fx in FIXTURES]
+# Fixtures whose values moved at a number-moving milestone of the Phase J
+# integration plan (docs/integration_speedup_plan.md §5, "Fixture refreeze
+# policy"): strict xfail until the SINGLE refreeze at M9, so that later
+# milestones' moves stay attributable.  The pre-change values are kept in
+# ``phase_j_refactor_fixtures/legacy/`` (never refrozen); every probe of them
+# is re-evaluated under the legacy flags and compared at the fixture
+# tolerance by ``test_phase_j_legacy_baseline.py::
+# test_legacy_fixture_values_reproduce`` (the rollback guard of the moved
+# fixture).
+#
+# M1 fixture delta report (``tests.tools.phase_j_subset_diff --fixture-report
+# --fixture-mode both``): only spike_reset_k2_ell1 moves -- Θ(0) = 0 for
+# constant constraint rows in the m=2 polygon path changes its one-loop
+# term, which moves total_C by up to 2.85 relative (τ=10) and flips the sign
+# of total_C at τ=3 (−2.116e-3 → +1.207e-3).  The other three fixtures
+# give the same values under the new defaults and the legacy flags, and
+# under the legacy flags spike_reset_k2_ell1 reproduces its frozen values;
+# every such comparison agrees to ~1e-14 relative or better (cross-process
+# rounding, well inside the fixture tolerance).  P3/P4 are still pending,
+# hence no refreeze before M9.
+_MOVED = {
+    'spike_reset_k2_ell1': 'Theta(0)=0 fix (M1); refrozen once at M9',
+}
+
+
+def _fixture_params():
+    return [
+        pytest.param(fx, id=fx.name, marks=(
+            [pytest.mark.xfail(strict=True, raises=AssertionError,
+                               reason=_MOVED[fx.name])]
+            if fx.name in _MOVED else []))
+        for fx in FIXTURES
+    ]
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -69,7 +100,7 @@ def _check_all_fixtures_frozen():
         )
 
 
-@pytest.mark.parametrize('fx', FIXTURES, ids=_fixture_ids())
+@pytest.mark.parametrize('fx', _fixture_params())
 def test_total_C_matches_frozen_reference(fx):
     """For each fixture, total_C at the probe τ-points must match the
     frozen reference values to within the per-fixture tolerance.

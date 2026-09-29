@@ -139,21 +139,34 @@ def _evaluate_grouped_m0_modesum(
     pole_tuples,
     subset_constraint_data,
     free_ext_vals,
+    row_kinds=None,
+    tie_ctx=None,
 ):
     """Analytic merged-residue evaluation for m=0 (no integration vars).
 
     Returns ``Σ_α B_α · exp(Σ_e λ_α_e · Δt_e)`` after checking each
     smooth-edge constraint ``Δt_e > 0`` (Θ(0) = 0 convention).  Returns
     ``0`` if any constraint is violated, ``None`` on overflow.
+
+    Every row is constant here.  ``final_integral.THETA0_CONST_ROW_MODE``
+    (read at call time) 'ito': ``_const_row_verdict`` decides (exact, with
+    ``tie_ctx`` ordering an external-time tie); 'legacy_clip': the pre-M1
+    ``c_eff <= 0`` rule.  ``row_kinds``: the rows' provenance (``None``:
+    all 'edge').
     """
     import cmath
-    for (a_int, a_ext, c0) in subset_constraint_data:
-        c_eff = float(c0) + sum(
-            float(a_ext[i]) * float(free_ext_vals[i])
-            for i in range(len(a_ext))
-        )
-        if c_eff <= 0:
+    if not _fi_mod._theta0_legacy():
+        if _fi_mod._any_const_row_empty(subset_constraint_data,
+                                        free_ext_vals, row_kinds, tie_ctx):
             return 0.0 + 0.0j
+    else:
+        for (a_int, a_ext, c0) in subset_constraint_data:
+            c_eff = float(c0) + sum(
+                float(a_ext[i]) * float(free_ext_vals[i])
+                for i in range(len(a_ext))
+            )
+            if c_eff <= 0:
+                return 0.0 + 0.0j
     # ``a_int`` is empty for m=0; Δt_e = c_eff.
     dt_per_edge = [
         float(c0) + sum(
@@ -180,7 +193,9 @@ def _integrate_grouped_m1_modesum(
     pole_tuples,
     subset_constraint_data,
     free_ext_vals,
-    bbox_cap,
+    bbox_cap=None,
+    row_kinds=None,
+    tie_ctx=None,
 ):
     r"""Analytic merged-residue 1D integral.
 
@@ -201,19 +216,36 @@ def _integrate_grouped_m1_modesum(
 
     Returns ``0`` if the interval is empty / infeasible, ``None`` on
     overflow or unbounded interval with non-decaying integrand.
+
+    ``bbox_cap`` is unused (both sides are tracked exactly); ``None``
+    resolves at call time like the per-diagram integrators.  Constant rows
+    follow ``final_integral.THETA0_CONST_ROW_MODE`` (call time): 'ito' uses
+    ``_const_row_verdict``, 'legacy_clip' the pre-M1 ``|a| < 1e-15``,
+    ``c_eff <= 0`` rule.  ``row_kinds``: the rows' provenance;
+    ``tie_ctx``: see ``final_integral._tie_order_sign``.
     """
     import cmath
     import math
+    bbox_cap = _fi_mod._resolve_bbox_cap(bbox_cap)      # (unused)
+    legacy = _fi_mod._theta0_legacy()
     # Resolve the feasible interval — track unbounded sides exactly.
     L = -math.inf
     U = +math.inf
-    for (a_int, a_ext, c0) in subset_constraint_data:
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
         a = float(a_int[0]) if a_int else 0.0
         c_eff = float(c0) + sum(
             float(a_ext[i]) * float(free_ext_vals[i])
             for i in range(len(a_ext))
         )
-        if abs(a) < 1e-15:
+        if not legacy:
+            if abs(a) <= _fi_mod._ROW_COEF_ATOL:
+                if _fi_mod._const_row_verdict(
+                        (a,), a_ext, c0, free_ext_vals,
+                        _fi_mod._row_kind(row_kinds, idx),
+                        tie_ctx) == 'EMPTY':
+                    return 0.0 + 0.0j
+                continue
+        elif abs(a) < 1e-15:
             if c_eff <= 0:
                 return 0.0 + 0.0j
             continue
@@ -895,6 +927,9 @@ def integrate_grouped_diagram(
                 constraint_err = exc
                 break
             subset_constraint_data.append((a_int, a_ext, c0))
+        # M1 row provenance, parallel to ``subset_constraint_data``
+        # (``final_integral.ROW_KINDS``): smooth-edge rows, then τ box rows.
+        subset_row_kinds = ['edge'] * len(subset_constraint_data)
         if constraint_err is not None:
             return {
                 'status': 'failed', 'contribution': None,
@@ -907,7 +942,14 @@ def integrate_grouped_diagram(
             }
 
         # τ_v finite caps for non-local cumulant kernels (rare in
-        # heterogeneous Hawkes; harmless when absent).
+        # heterogeneous Hawkes; harmless when absent).  Unreachable while
+        # the colored-kernel guard at the top of this function refuses
+        # every group with a NoiseSourceType (cumulant_specs) or a
+        # ConvVertexType (kernel_attachments) -- the per-diagram path
+        # builds (and labels) those rows instead; kept, with its
+        # 'noise_box' provenance, for when the guard is lifted
+        # (tests/test_phase_j_theta0.py::
+        # test_integrate_diagram_labels_every_row checks the guard).
         if grouped_extra_tau and remaining_int_vars:
             n_iv = len(remaining_int_vars)
             n_ext = len(free_ext_syms)
@@ -925,6 +967,7 @@ def integrate_grouped_diagram(
                 subset_constraint_data.append(
                     (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
                 )
+                subset_row_kinds.extend(('noise_box', 'noise_box'))
 
         # ── Analytic mode-sum path (Stage 4a grouped polygon / poset).
         # Builds the merged-residue pole-tuple list
@@ -1016,13 +1059,17 @@ def integrate_grouped_diagram(
         # Build this subset's contribution closure.
         def _make_subset_contrib(fc, cdata, m_val,
                                   pole_tuples=None, dummy_modes=None,
-                                  hook_meta=None):
+                                  hook_meta=None, row_kinds=None):
             # M0.1: ``_hook_ctx`` is passed by ``contribution()`` only while
             # ``_fi_mod._SUBSET_HOOK`` is set; the hook is read from the
             # module at call time.  The analytic/nquad calls and their
             # arguments are unchanged (the polygon/poset calls still run
-            # their NO-PLAN branch, as before).
-            def _contrib(free_vals, _hook_ctx=None):
+            # their NO-PLAN branch, as before).  M1: ``row_kinds`` (the
+            # subset's row provenance) and ``_tie_ctx`` (the
+            # ``_TieContext`` of this Wick permutation) go to every
+            # integrator, and the flags are read through ``_fi_mod`` at
+            # call time.
+            def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
                 _hook = _fi_mod._SUBSET_HOOK
                 _attempted = None
                 _bail_reason = None
@@ -1038,6 +1085,8 @@ def integrate_grouped_diagram(
                             pole_tuples=pole_tuples,
                             subset_constraint_data=cdata,
                             free_ext_vals=free_vals,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
                         )
                     elif m_val == 1:
                         _attempted, _path = 'm1', 'm1'
@@ -1046,7 +1095,8 @@ def integrate_grouped_diagram(
                             pole_tuples=pole_tuples,
                             subset_constraint_data=cdata,
                             free_ext_vals=free_vals,
-                            bbox_cap=_fi_mod.POLYGON_BBOX_CAP,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
                         )
                     elif m_val == 2 and dummy_modes is not None:
                         _attempted, _path = 'polygon', 'polygon'
@@ -1057,6 +1107,8 @@ def integrate_grouped_diagram(
                             subset_constraint_data=cdata,
                             free_ext_vals=free_vals,
                             pole_tuples=pole_tuples,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
                         )
                     elif m_val >= 3 and dummy_modes is not None:
                         _attempted, _path = 'poset', 'poset'
@@ -1068,6 +1120,8 @@ def integrate_grouped_diagram(
                             free_ext_vals=free_vals,
                             m=m_val,
                             pole_tuples=pole_tuples,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
                         )
                     if val is not None:
                         if _hook is not None:
@@ -1080,7 +1134,8 @@ def integrate_grouped_diagram(
                                 value=val, bail_reason=None,
                                 attempted=_attempted, modes=dummy_modes,
                                 prefactor=1.0 + 0.0j, plan=None,
-                                pole_tuples=pole_tuples, integrand=fc)
+                                pole_tuples=pole_tuples, integrand=fc,
+                                row_kinds=row_kinds, tie_ctx=_tie_ctx)
                         return val
                     if _attempted is not None:
                         _bail_reason = _fi_mod._pop_bail_reason()
@@ -1091,7 +1146,10 @@ def integrate_grouped_diagram(
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
                                      for i in range(len(a_ext)))
                     resolved.append((list(a_int), c_eff))
-                _val = _integrate_polytope(fc, resolved, free_vals, m_val)
+                _val = _integrate_polytope(fc, resolved, free_vals, m_val,
+                                           raw_rows=cdata,
+                                           row_kinds=row_kinds,
+                                           tie_ctx=_tie_ctx)
                 if _hook is not None:
                     if m_val < 1:
                         _reason = _bail_reason
@@ -1109,7 +1167,8 @@ def integrate_grouped_diagram(
                         value=_val, bail_reason=_reason,
                         attempted=_attempted, modes=dummy_modes,
                         prefactor=1.0 + 0.0j, plan=None,
-                        pole_tuples=pole_tuples, integrand=fc)
+                        pole_tuples=pole_tuples, integrand=fc,
+                        row_kinds=row_kinds, tie_ctx=_tie_ctx)
                 return _val
             return _contrib
 
@@ -1118,6 +1177,7 @@ def integrate_grouped_diagram(
                 integrand_fc, subset_constraint_data, m_sub,
                 pole_tuples=grouped_pole_tuples,
                 dummy_modes=grouped_dummy_modes,
+                row_kinds=tuple(subset_row_kinds),
                 hook_meta={
                     'source': 'grouped',
                     'diagram_serial': _diag_serial,
@@ -1169,9 +1229,16 @@ def integrate_grouped_diagram(
         # with a topologically distinguished leaf), and is a no-op
         # for symmetric ones (tree-level identical-leaf cumulants).
         # See final_integral.py for the full derivation.
+        # M1: ``tie_ctx`` (``final_integral._TieContext``) orders an exact
+        # external-time tie of a constant row by the legs' raw times, the
+        # same in every permutation; it never changes a time value, and it
+        # keeps the times as passed (only the two times of an exact tie are
+        # converted, in ``_tie_order_sign``), so any argument the pre-0.2.0
+        # callable accepted still is.
         _hook_on = _fi_mod._SUBSET_HOOK is not None   # M0.1
         _call_serial = (_fi_mod._next_hook_call_serial() if _hook_on
                         else None)
+        _raw_times = tuple(ext_time_values)
         total = 0.0 + 0.0j
         for _perm_idx, perm in enumerate(_perms):
             permuted = [ext_time_values[perm[j]] for j in range(_k)]
@@ -1179,15 +1246,18 @@ def integrate_grouped_diagram(
                 t_origin = permuted[origin_leaf_idx]
                 permuted = [pt - t_origin for pt in permuted]
             free_vals = [float(permuted[j]) for j in free_ext_idx]
+            tie_ctx = _fi_mod._TieContext(
+                _raw_times, tuple(perm[j] for j in free_ext_idx),
+                None if origin_leaf_idx is None else perm[origin_leaf_idx])
             if not _hook_on:
                 for cfn in subset_contributions:
-                    total = total + complex(cfn(free_vals))
+                    total = total + complex(cfn(free_vals, None, tie_ctx))
             else:
                 _ctx = _fi_mod._hook_eval_context(
                     _diag_serial, ext_time_values, _perm_idx, perm,
                     len(_perms), _comp, _call_serial)
                 for cfn in subset_contributions:
-                    total = total + complex(cfn(free_vals, _ctx))
+                    total = total + complex(cfn(free_vals, _ctx, tie_ctx))
         return total / _comp
 
     return {

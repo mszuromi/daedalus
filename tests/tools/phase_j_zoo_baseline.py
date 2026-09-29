@@ -94,9 +94,23 @@ spike_reset (both paths) and multipopulation_test showed ulp-level jitter
 (max rel 2.8e-16 to 1.6e-15), with PYTHONHASHSEED=0 in both runs.  So in-repo
 comparisons use rtol 1e-13 (plan §4.4), never ``==``.
 
+The baseline is never refrozen: ``--assemble`` refuses to replace it unless
+``--overwrite-baseline`` is given.  A number-moving milestone re-runs the zoo
+into its own directory, assembles it elsewhere and prints the delta table
+against the baseline (status, max abs/rel change, nquad and zero-normal
+counters before/after, Θ(0) counters; an entry that moves although the
+baseline saw no zero-normal row AND the new run's ``M1_VALUE_KEYS`` counters
+are all 0 is flagged ``VIOLATION``, see ``delta_table``)::
+
+    PYTHONHASHSEED=0 sage -python -m tests.tools.phase_j_zoo_baseline \\
+        --run all --workers 4 --out-dir scratch/<milestone>/runs
+    PYTHONHASHSEED=0 sage -python -m tests.tools.phase_j_zoo_baseline \\
+        --assemble --out-dir scratch/<milestone>/runs \\
+        --assemble-to scratch/<milestone>/zoo --delta scratch/<milestone>/zoo
+
 Importable API: ``ZOO``, ``all_entries()``, ``entry_by_name()``,
 ``run_entry()`` (in-process, used by ``tests/test_phase_j_legacy_baseline.py``),
-``load_baseline()``, ``compare_values()``.
+``load_baseline()``, ``compare_values()``, ``load_merged()``, ``delta_table()``.
 """
 from __future__ import annotations
 
@@ -229,6 +243,8 @@ ZOO = [
     _E('ou_quartic-k2-l3', model='ou_quartic', k=2, max_ell=3,
        ext=[('dx', 1), ('dx', 1)], params=P_OU, tau_grid=T_OU,
        row='ou_quartic', m1='unchanged'),
+    # k=3: identically 0 at the symmetric saddle, no Phase J integral runs
+    # (poset/interval/polygon attempted = 0): NOT tie evidence (use k=4).
     _E('ou_quartic-k3-l2', model='ou_quartic', k=3, max_ell=2,
        ext=[('dx', 1), ('dx', 1), ('dx', 1)], params=P_OU,
        points=[(0.0, 0.4, 1.0), (0.0, 0.7, 0.7), (0.0, 0.0, 0.7)],
@@ -518,7 +534,9 @@ def _numeric_flags():
              'USE_NUMBA_CHAIN_SIMPLEX', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
              'USE_POSET_INTEGRATOR', 'USE_POSET_CAP_MATCH_SCIPY',
              'USE_POSET_MPMATH_ACCUMULATION', 'TAU_KERNEL_CAP', 'QUAD_OPTS',
-             '_HAVE_NUMBA')
+             '_HAVE_NUMBA',
+             # M1 call-time flag ('<absent>' in pre-M1 records)
+             'THETA0_CONST_ROW_MODE')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')
@@ -622,10 +640,13 @@ class _NquadStub:
         self.calls = {}
         self._orig = None
 
-    def __call__(self, integrand_callable, s_constraints, free_ext_vals, m):
+    def __call__(self, integrand_callable, s_constraints, free_ext_vals, m,
+                 **kw):
+        # ``**kw``: the M1 keywords (``raw_rows``, ``row_kinds``) are passed
+        # through to the real m=0 evaluation.
         if m == 0:
             return self._orig(integrand_callable, s_constraints,
-                              free_ext_vals, m)
+                              free_ext_vals, m, **kw)
         self.calls[m] = self.calls.get(m, 0) + 1
         return 0.0 + 0.0j
 
@@ -1057,7 +1078,8 @@ def reproducibility(rec_a, rec_b):
 
 def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
              tracked_json=TRACKED_JSON, local_npz=LOCAL_NPZ,
-             local_json=LOCAL_JSON, run_meta=None, compare_dir=None):
+             local_json=LOCAL_JSON, run_meta=None, compare_dir=None,
+             plan_label='M0.3 (pre-M1 values)'):
     """Build the tracked and local npz/json files from the per-entry run JSONs
     in ``run_dir``.  Entries without a run JSON are recorded as NOT_RUN.
     With ``compare_dir`` (an independent run of the same entries), each entry
@@ -1068,7 +1090,7 @@ def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
         'schema_version': SCHEMA_VERSION,
         'generated': datetime.datetime.now().isoformat(timespec='seconds'),
         'generator': 'tests/tools/phase_j_zoo_baseline.py',
-        'plan': 'docs/integration_speedup_plan.md §4.3 / M0.3 (pre-M1 values)',
+        'plan': f'docs/integration_speedup_plan.md §4.3 / {plan_label}',
         'tau_convention': ('k=2 grid τ=0 is evaluated at t1=-_ITO_EPS=-1e-6 '
                            '(Itô left limit); k>=3 points are raw, with the '
                            'API-nudged variant alongside'),
@@ -1220,6 +1242,155 @@ def compare_values(ref, cur, *, rtol=1e-13, floor_rel=1e-15):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Milestone deltas: a later zoo run vs the pre-change baseline
+# ═══════════════════════════════════════════════════════════════════════
+
+#: Counters shown in the delta table (after = the new run).  The ``theta0_*``
+#: / ``polygon_zero_area`` / ``poset_empty_*`` counters exist from M1 on.
+DELTA_THETA0_KEYS = ('theta0_const_empty', 'theta0_const_drop', 'theta0_tie',
+                     'theta0_tie_ordered', 'theta0_subsets_pruned',
+                     'polygon_zero_area', 'poset_empty_const',
+                     'poset_empty_cycle')
+#: The M1 bit-identity invariant.  'ito' can differ from the pre-M1 code only
+#: on an evaluation where it decided a constant row with the Θ(0) helper (in
+#: ANY path: ``zero_normal_rows_seen`` counts only the polygon and poset
+#: paths, so e.g. m=1 / m=0 constant rows at k>=3 ties are missed by it),
+#: skipped a τ-independent EMPTY subset, or made an exact structural
+#: emptiness decision that needs no constant row (``polygon_zero_area``: an
+#: m=2 polygon with an exactly contradictory opposite pair of rows or
+#: exactly zero area; ``poset_empty_cycle``: an order cycle whose shifts sum
+#: to <= 0; both may replace a rounding-level value, or an nquad value /
+#: exception, by an exact 0).  With all of these counters of the NEW run at
+#: 0 (and the baseline's ``zero_normal_rows_seen`` at 0) the values must be
+#: unchanged.
+M1_VALUE_KEYS = ('theta0_const_empty', 'theta0_const_drop',
+                 'theta0_subsets_pruned', 'polygon_zero_area',
+                 'poset_empty_cycle')
+#: The subset of ``M1_VALUE_KEYS`` that can also change ROUTE counters
+#: (skipped subsets and answered-empty regions that bailed to nquad before);
+#: a constant row decided inside an analytic path does not.
+M1_ROUTE_KEYS = ('theta0_subsets_pruned', 'polygon_zero_area',
+                 'poset_empty_cycle')
+
+
+def load_merged(paths):
+    """Merge assembled npz files (e.g. a tracked and a local one) into one
+    (meta, arrays).  An entry recorded ``NOT_RUN`` in one file yields to a
+    real record in another.  Missing paths are skipped."""
+    merged_entries, merged_arrays, metas = {}, {}, []
+    for p in paths:
+        if not p or not os.path.exists(p):
+            continue
+        meta, arrays = load_baseline(p)
+        metas.append(meta)
+        for name, s in (meta.get('entries') or {}).items():
+            old = merged_entries.get(name)
+            if old is None or old.get('status') == 'NOT_RUN':
+                merged_entries[name] = s
+        for name, arrs in arrays.items():
+            merged_arrays.setdefault(name, arrs)
+    code = [m.get('code') for m in metas]
+    return {'entries': merged_entries, 'code': code}, merged_arrays
+
+
+def _ctr(s, key):
+    c = (s or {}).get('counters') or {}
+    return c.get(key)
+
+
+def delta_table(base, new, *, rtol=1e-13):
+    """One row per entry of ``base`` ∪ ``new`` (each ``(meta, arrays)`` from
+    ``load_merged``): status before/after, max abs / rel change over every
+    stored array (and of ``total`` alone), whether that is within ``rtol``
+    (``compare_values``; cross-process jitter is ~1e-16, plan §4.4), nquad
+    and zero-normal counters before/after, the new run's Θ(0) counters and a
+    verdict:
+
+    * ``unchanged`` -- every array within ``rtol``;
+    * ``MOVES``     -- some array outside it;
+    * ``VIOLATION`` -- moved although the baseline saw no zero-normal row
+      (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS`` counter
+      of the new run is 0 or absent: such an entry must not move at M1;
+    * ``status``    -- the status changed (e.g. TIMEOUT -> ok);
+    * ``census``    -- nquad-stubbed on both sides (counts only);
+    * ``n/a``       -- no values on either side (TIMEOUT / ERR both times).
+    """
+    import numpy as np
+    bmeta, barr = base
+    nmeta, narr = new
+    names = sorted(set(bmeta['entries']) | set(nmeta['entries']))
+    rows = []
+    for name in names:
+        sb = bmeta['entries'].get(name) or {}
+        sn = nmeta['entries'].get(name) or {}
+        st_b = str(sb.get('status', 'absent'))[:40]
+        st_n = str(sn.get('status', 'absent'))[:40]
+        row = {'name': name, 'status_before': st_b, 'status_after': st_n,
+               'm1_expected': sb.get('m1_expected', sn.get('m1_expected')),
+               'wall_before': sb.get('wall_process'),
+               'wall_after': sn.get('wall_process'),
+               'nquad_before': _ctr(sb, 'nquad_calls'),
+               'nquad_after': _ctr(sn, 'nquad_calls'),
+               'zero_normal_before': _ctr(sb, 'zero_normal_rows_seen'),
+               'zero_normal_after': _ctr(sn, 'zero_normal_rows_seen'),
+               'stub_calls_before': sb.get('stub_calls'),
+               'stub_calls_after': sn.get('stub_calls'),
+               'theta0': {k: _ctr(sn, k) for k in DELTA_THETA0_KEYS}}
+        if name in barr and name in narr:
+            cmp = compare_values(barr[name], narr[name], rtol=rtol)
+            row['max_abs'] = max(v[0] for v in cmp.values())
+            row['max_rel'] = max(v[1] for v in cmp.values())
+            if 'total' in cmp:
+                row['total_max_abs'], row['total_max_rel'] = cmp['total'][:2]
+            row['within_rtol'] = all(v[2] for v in cmp.values())
+            row['arrays_moved'] = sorted(k for k, v in cmp.items() if not v[2])
+            if row['within_rtol']:
+                row['verdict'] = 'unchanged'
+            elif (sb.get('counters')
+                  and _ctr(sb, 'zero_normal_rows_seen') == 0
+                  and not any(_ctr(sn, k) for k in M1_VALUE_KEYS)):
+                row['verdict'] = 'VIOLATION'
+            else:
+                row['verdict'] = 'MOVES'
+        elif st_b.startswith('census') and st_n.startswith('census'):
+            row['verdict'] = 'census'
+        elif st_b != st_n:
+            row['verdict'] = 'status'
+        else:
+            row['verdict'] = 'n/a'
+        rows.append(row)
+    return rows
+
+
+def format_delta_table(rows):
+    def f(x, spec):
+        return '-' if x is None else format(x, spec)
+
+    def cnt(x):
+        return '-' if x is None else str(x)
+    hdr = (f"{'entry':48s} {'status (before -> after)':34s} {'verdict':9s} "
+           f"{'max_abs':>9s} {'max_rel':>9s} {'nquad b->a':>12s} "
+           f"{'zero-normal b->a':>17s}  theta0 (empty/drop/tie/ordered/"
+           f"pruned/zero_area/poset_const/poset_cycle)")
+    out = [hdr]
+    for r in rows:
+        th = r['theta0']
+        th_s = '/'.join(cnt(th[k]) for k in DELTA_THETA0_KEYS)
+        st = f"{r['status_before'][:15]} -> {r['status_after'][:15]}"
+        out.append(
+            f"{r['name']:48s} {st:34s} {r['verdict']:9s} "
+            f"{f(r.get('max_abs'), '9.2e')} {f(r.get('max_rel'), '9.2e')} "
+            f"{cnt(r['nquad_before']) + '->' + cnt(r['nquad_after']):>12s} "
+            f"{cnt(r['zero_normal_before']) + '->' + cnt(r['zero_normal_after']):>17s}"
+            f"  {th_s}")
+        if r['verdict'] == 'census' and (r['stub_calls_before']
+                                         or r['stub_calls_after']):
+            out.append(f"{'':48s}   stub calls by m: {r['stub_calls_before']}"
+                       f" -> {r['stub_calls_after']}")
+    return '\n'.join(out)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1241,6 +1412,21 @@ def main(argv=None):
                     help='independent run dir for the reproducibility record')
     ap.add_argument('--note', default='', help='free-text run_meta note')
     ap.add_argument('--log', default=None)
+    ap.add_argument('--assemble-to', default=None, metavar='PREFIX',
+                    help='write the assembled run to PREFIX.{npz,json} '
+                         '(tracked-routable entries) and PREFIX_local.'
+                         '{npz,json} (local-only entries) instead of the '
+                         'baseline files; use a gitignored path (scratch/)')
+    ap.add_argument('--overwrite-baseline', action='store_true',
+                    help='allow --assemble without --assemble-to to replace '
+                         'the existing pre-change baseline (never after M0)')
+    ap.add_argument('--delta', default=None, metavar='PREFIX',
+                    help='print the delta table of PREFIX.npz (+ '
+                         'PREFIX_local.npz) against the baseline and write '
+                         'PREFIX_delta.json')
+    ap.add_argument('--delta-base', default=None,
+                    help='comma list of baseline npz files (default: the '
+                         'tracked baseline + the local one when present)')
     ap.add_argument('--child', help=argparse.SUPPRESS)
     ap.add_argument('--child-out', help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
@@ -1263,7 +1449,14 @@ def main(argv=None):
                   f"m1={e['m1']}")
         return 0
 
+    if a.delta and not (a.run or a.assemble):
+        return _delta_main(a)
     _require_hashseed()
+    if a.assemble and not a.assemble_to and not a.overwrite_baseline and (
+            os.path.exists(TRACKED_NPZ) or os.path.exists(LOCAL_NPZ)):
+        sys.exit('phase_j_zoo_baseline: refusing to overwrite the pre-change '
+                 'baseline (it is never refrozen).  Use --assemble-to '
+                 'scratch/<prefix> for a later run, or --overwrite-baseline.')
     if a.run:
         if a.run in ('all', 'tracked', 'local'):
             names = [e['name'] for e in all_entries()
@@ -1279,10 +1472,40 @@ def main(argv=None):
                 'compare_dir': (os.path.relpath(a.compare_dir, _REPO_ROOT)
                                 if a.compare_dir else None),
                 'note': a.note}
+        paths = {}
+        if a.assemble_to:
+            pre = os.path.abspath(a.assemble_to)
+            paths = dict(tracked_npz=pre + '.npz', tracked_json=pre + '.json',
+                         local_npz=pre + '_local.npz',
+                         local_json=pre + '_local.json',
+                         plan_label=a.note or 'post-change zoo run')
         for p in assemble(a.out_dir, run_meta=meta,
-                          compare_dir=a.compare_dir):
+                          compare_dir=a.compare_dir, **paths):
             print('wrote', os.path.relpath(p, _REPO_ROOT))
+    if a.delta:
+        return _delta_main(a)
     return 0
+
+
+def _delta_main(a):
+    pre = os.path.abspath(a.delta)
+    new = load_merged([pre + '.npz', pre + '_local.npz'])
+    base_paths = (a.delta_base.split(',') if a.delta_base
+                  else [TRACKED_NPZ, LOCAL_NPZ])
+    base = load_merged(base_paths)
+    rows = delta_table(base, new)
+    print(format_delta_table(rows))
+    counts = {}
+    for r in rows:
+        counts[r['verdict']] = counts.get(r['verdict'], 0) + 1
+    print('verdicts:', counts)
+    out = pre + '_delta.json'
+    _write_json_atomic(out, _jsonable({
+        'base': [os.path.relpath(p, _REPO_ROOT) for p in base_paths],
+        'new': os.path.relpath(pre, _REPO_ROOT), 'rows': rows,
+        'verdicts': counts}))
+    print('wrote', os.path.relpath(out, _REPO_ROOT))
+    return 1 if counts.get('VIOLATION') else 0
 
 
 if __name__ == '__main__':

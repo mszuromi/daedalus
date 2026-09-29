@@ -78,6 +78,7 @@ large negative `s`. (See the 2026-04-08 overflow fix in the CHANGELOG.)
 
 import math
 import functools as _functools
+from collections import namedtuple
 from dataclasses import dataclass
 
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
@@ -286,6 +287,146 @@ def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
 
 USE_POLYGON_M2_INTEGRATOR = True
 POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
+# The three analytic modesum integrators take ``bbox_cap=None`` and resolve it
+# at CALL TIME from this module attribute (``_resolve_bbox_cap``), so
+# ``final_integral.POLYGON_BBOX_CAP = x`` takes effect immediately, in every
+# Θ(0) mode.  Before M1 the default was bound at definition time
+# (``bbox_cap=POLYGON_BBOX_CAP``) and changing the attribute did nothing.
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Phase J flags (read at CALL TIME) and the legacy umbrella
+# ───────────────────────────────────────────────────────────────────────
+# docs/integration_speedup_plan.md §3.1 "Rollback and flag hygiene".  Every
+# Phase J flag is a module attribute; its environment variable is read ONCE,
+# at import, only to initialise it.  Call sites read the attribute at call
+# time (never through a default argument or a closure capture), so
+# ``monkeypatch.setattr(final_integral, FLAG, value)`` takes effect at once,
+# including for closures built before the change.  ``grouped_integral``
+# reads them through the module object (``_fi_mod``), never by name.
+#
+# ``DAEDALUS_PHASE_J_LEGACY=1`` (the umbrella) sets EVERY Phase J flag to its
+# legacy value, reproducing the pre-M1 numbers bit-for-bit within one
+# process.  For now that is ``THETA0_CONST_ROW_MODE = 'legacy_clip'``.  The
+# bounding box is not a flag: the umbrella also reads ``POLYGON_BBOX_CAP`` at
+# call time (so it reproduces a pre-M1 run at any cap, e.g. the cap-12 trap).
+import os as _os
+
+
+def _env_truthy(name, environ=None):
+    env = _os.environ if environ is None else environ
+    return env.get(name, '').strip().lower() not in (
+        '', '0', 'false', 'no', 'off')
+
+
+# ── Θ(0) convention for constant constraint rows (M1; plan §2.4, §3.1 L0) ──
+# After δ-elimination a smooth edge can have Δt ≡ const (both endpoints
+# merged by δ edges, or the edge parallel to a δ edge), i.e. a constraint row
+# with a zero normal: a_int ≡ 0, so the row reads ``c_eff > 0`` with
+# ``c_eff = c0 + Σ_j a_ext_j t_j``.  Its Heaviside is Θ(c_eff).  The package
+# convention is the Itô one, Θ(0) = 0 -- the same convention that evaluates
+# the k=2 τ = 0 grid point at the left limit τ = −``api.compute._ITO_EPS``
+# (memory note ``project_ito_equal_time_tau0``).  ``_const_row_verdict`` is
+# the ONE place that applies it; every integrator (m=0, m=1, m=2 polygon,
+# m≥3 poset, scipy.nquad fallback, grouped m0/m1) calls it.
+#
+# The rule is EXACT: c_eff > 0 keeps the row (DROP), c_eff < 0 empties the
+# region, and only c_eff == 0.0 is a tie.  (A relative tie tolerance was
+# tried and rejected in the M1 review: ``contribution()`` evaluates each
+# Wick permutation on time differences taken relative to a different origin
+# leg, so a tolerance on those differences declared a rounding-level
+# near-tie a tie in some permutations and not in others, giving a value
+# that was neither the distinct-time nor the tied-time one.  The sign of a
+# difference of two floats is exact, so the exact rule is the same in every
+# permutation.)  A tie is resolved as follows:
+#
+# * a row whose Δt does not depend on the external times (a_ext ≡ 0,
+#   c0 == 0: both endpoints merged into one vertex time by δ edges) is
+#   Θ(0) = 0 (``THETA_AT_ZERO_CONST_ROW``): the Itô rule proper;
+# * a row whose Δt is the difference of two external legs' times,
+#   Δt = t_p − t_q, is decided by the order of the legs' RAW times
+#   (``_TieContext``, built per Wick permutation by ``contribution()``), and
+#   when those are exactly equal by the leg order: a leg with a larger
+#   index counts as infinitesimally EARLIER (``_tie_order_sign``).  So of
+#   Θ(t_p − t_q) and Θ(t_q − t_p) exactly one holds at t_p == t_q, and the
+#   value at a tie is the one-sided limit in which the later leg approaches
+#   from below -- for k = 2 exactly the Itô left limit τ = t_1 − t_0 → 0⁻
+#   that the τ grid samples at −_ITO_EPS, and for k ≥ 3 its natural
+#   extension (Θ(0) = 0 on both orientations would drop both and give a
+#   value that is neither limit);
+# * any other constant row with c_eff == 0.0 (no row context, or an
+#   unusual row shape) is Θ(0) = 0.
+THETA_AT_ZERO_CONST_ROW = 0
+# A row has a zero normal when every |a_int_j| <= _ROW_COEF_ATOL.  The δ-solve
+# produces small-integer coefficients, so real rows are exactly 0 or ±1.
+_ROW_COEF_ATOL = 1e-12
+# Emptiness of an m=2 polygon is decided structurally and exactly too (no
+# area tolerance: a genuine strip of any width, e.g. between external times
+# 1e-12 apart, is integrated as before 0.2.0).  See
+# ``_polygon_from_2d_constraints``: two rows with exactly opposite normals
+# whose constants sum to <= 0 (the 2-cycle rows s1 > s0, s0 > s1, or a strip
+# between two coincident external times) empty the region, and a clipped
+# polygon with fewer than 3 vertices or an exactly zero computed area is
+# degenerate.
+
+# THETA0_CONST_ROW_MODE:
+#   'ito'          (default) Θ(0) = 0 everywhere through ``_const_row_verdict``,
+#                  with the external-time tie order above; an m=2 polygon
+#                  with an exactly contradictory pair of opposite rows or an
+#                  exactly zero area, and a directed cycle of m≥3 order rows
+#                  whose shifts sum to <= 0, are empty; a δ-subset with a
+#                  τ-independent EMPTY row returns 0 without integration
+#                  (decided at call time, see ``integrate_diagram``).
+#   'legacy_clip'  the pre-M1 behaviour, bit-for-bit: the m=2 polygon clip
+#                  keeps a zero-normal row with c_eff == 0 (Θ(0) = 1), every
+#                  other path uses its own absolute tolerances.
+# The two modes can differ only on an evaluation where 'ito' decides a
+# constant row with the helper, in any path (``theta0_const_empty`` /
+# ``theta0_const_drop``; ``zero_normal_rows_seen`` counts only the polygon
+# and poset paths), skips a τ-independent EMPTY subset
+# (``theta0_subsets_pruned``), or makes an exact structural emptiness
+# decision that needs no constant row (``polygon_zero_area``,
+# ``poset_empty_cycle``; these may turn a rounding-level value, or an nquad
+# value / exception, into an exact 0).  With all five counters at 0 the
+# modes are bit-identical in-process.
+# Environment: DAEDALUS_PHASE_J_THETA0_CONST_ROW = ito | legacy_clip.
+_THETA0_MODES = ('ito', 'legacy_clip')
+
+
+def _initial_phase_j_flags(environ=None):
+    """The import-time values of the Phase J flags from ``environ``
+    (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...}``.  The
+    umbrella wins over the per-flag variable.  An unknown value raises (a
+    silent fallback to the default would hide a requested rollback)."""
+    env = _os.environ if environ is None else environ
+    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
+        return {'THETA0_CONST_ROW_MODE': 'legacy_clip'}
+    mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
+            .strip().lower() or 'ito')
+    if mode not in _THETA0_MODES:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_THETA0_CONST_ROW={mode!r}: expected one of '
+            f'{_THETA0_MODES}')
+    return {'THETA0_CONST_ROW_MODE': mode}
+
+
+THETA0_CONST_ROW_MODE = _initial_phase_j_flags()['THETA0_CONST_ROW_MODE']
+
+
+def _theta0_legacy():
+    """True when the pre-M1 constant-row behaviour is selected (call time)."""
+    mode = THETA0_CONST_ROW_MODE
+    if mode == 'ito':
+        return False
+    if mode == 'legacy_clip':
+        return True
+    raise ValueError(f'final_integral.THETA0_CONST_ROW_MODE={mode!r}: '
+                     f'expected one of {_THETA0_MODES}')
+
+
+def _resolve_bbox_cap(bbox_cap):
+    """``bbox_cap`` if given, else ``POLYGON_BBOX_CAP`` (read at call time)."""
+    return POLYGON_BBOX_CAP if bbox_cap is None else bbox_cap
 
 # ───────────────────────────────────────────────────────────────────────
 # Physical fallback margin for unbounded polytope sides (Stage 3b)
@@ -363,6 +504,39 @@ _RUNTIME_COUNTERS = {
     # constant after δ-elimination) processed by ``_polygon_from_2d_
     # constraints`` or ``_extract_causal_poset``.
     'zero_normal_rows_seen': 0,
+    # ── M1 Θ(0) counters (plan §2.4 item 8).  One count per
+    # ``_const_row_verdict`` call (i.e. per zero-normal row per evaluation;
+    # never incremented in 'legacy_clip' mode):
+    #   theta0_const_empty -- verdict EMPTY (c_eff < 0, or a tie decided
+    #                         empty);
+    #   theta0_const_drop  -- verdict DROP (c_eff > 0, or a tie decided by
+    #                         the leg order to hold);
+    #   theta0_tie         -- c_eff == 0.0 exactly, decided EMPTY by
+    #                         Θ(0) = 0 itself (no external-time dependence);
+    #   theta0_tie_ordered -- c_eff == 0.0 exactly on a difference of two
+    #                         legs' times, decided by their raw times / the
+    #                         leg order (``_tie_order_sign``; DROP or EMPTY).
+    'theta0_const_empty': 0,
+    'theta0_const_drop': 0,
+    'theta0_tie': 0,
+    'theta0_tie_ordered': 0,
+    # δ-subset evaluations that returned 0 without integration because a
+    # smooth-edge row is constant, τ-independent and EMPTY (a_int ≡ 0,
+    # a_ext ≡ 0, c0 <= 0).  The subset is flagged when ``integrate_diagram``
+    # builds it (in any mode) and the mode is read at call time.
+    'theta0_subsets_pruned': 0,
+    # m=2 polygons that survived the clip but are empty or degenerate by an
+    # exact test, answered 0 ('ito' only; ``_polygon_from_2d_constraints``):
+    # two rows with exactly opposite normals whose constants sum to <= 0
+    # (e.g. the 2-cycle rows s1 > s0, s0 > s1, which the closed clip leaves
+    # as the segment s0 = s1), or fewer than 3 vertices / an exactly zero
+    # computed area.
+    'polygon_zero_area': 0,
+    # m≥3 posets answered 0 without integration: a constant EMPTY row, or a
+    # directed cycle of order rows whose shifts sum to <= 0 (strict
+    # inequalities around such a cycle cannot all hold: empty).
+    'poset_empty_const': 0,
+    'poset_empty_cycle': 0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -387,6 +561,234 @@ def _reset_runtime_counters():
                 v.update((r, 0) for r in _NQUAD_FALLBACK_REASONS)
         else:
             _RUNTIME_COUNTERS[k] = 0
+
+
+# ───────────────────────────────────────────────────────────────────────
+# The shared Θ(0) = 0 rule for constant constraint rows (M1)
+# ───────────────────────────────────────────────────────────────────────
+# Row provenance (``row_kinds``, parallel to ``subset_constraint_data``;
+# built by ``integrate_diagram`` and the grouped build, ``None`` = every row
+# is 'edge', which is what external callers and the spatial path get):
+#   'edge'         a smooth propagator edge's Δt_e > 0;
+#   'conv_pseudo'  a ConvVertex kernel pseudo-edge Δt = +τ > 0 (a decaying
+#                  kernel mode λ = −1/τ_g by construction: edge semantics);
+#   'noise_box'    a NoiseSource τ_v box row, ±TAU_KERNEL_CAP;
+#   'conv_tau'     a ConvVertex τ box row ([0, TAU_KERNEL_CAP)).
+# The box kinds always keep τ as an integration variable (a_int[τ] = ±1), so
+# they can never be constant (plan §7.6, M0.7: 0 occurrences in the zoo); a
+# constant one would mean an unexpected δ-forcing of a kernel variable, and
+# the helper raises.  No code path produces a split two-sided kernel row
+# (M0.7), so there is no 'kernel_split' rule.
+_EDGE_ROW_KINDS = ('edge', 'conv_pseudo')
+_BOX_ROW_KINDS = ('noise_box', 'conv_tau')
+ROW_KINDS = _EDGE_ROW_KINDS + _BOX_ROW_KINDS
+
+
+def _row_kind(row_kinds, idx):
+    """Kind of row ``idx`` (``'edge'`` when no provenance was threaded)."""
+    return 'edge' if row_kinds is None else row_kinds[idx]
+
+
+class _TieContext(namedtuple('_TieContext',
+                             ('times', 'free_legs', 'origin_leg'))):
+    """Which external legs the free external variables of ONE Wick
+    permutation evaluation stand for (built by ``contribution()``).
+
+    * ``times``      -- the raw external times, one per external leg, in the
+                        caller's leg order (``contribution(*times)``),
+                        exactly as passed: NOT converted to float, so a
+                        time argument that is never compared (every k=1
+                        call, any evaluation without an exact tie) may be
+                        of any type the pre-0.2.0 code accepted;
+    * ``free_legs``  -- the leg whose time each entry of ``free_ext_vals``
+                        carries (same order as ``free_ext_vals``);
+    * ``origin_leg`` -- the leg pinned at 0 (every free value is
+                        ``times[leg] − times[origin_leg]``), or ``None``.
+
+    ``_tie_order_sign`` uses it to decide a constant row that is exactly 0.0
+    by the raw order of the two legs it compares (converting only those two
+    times).  Purely descriptive: it never changes a time value.
+    """
+    __slots__ = ()
+
+
+def _raw_time_order(t_p, t_q):
+    """``t_p − t_q`` reduced to its order: a float whose sign is that of the
+    difference (0.0 for equal times), NaN when the times have no order, or
+    ``None`` when neither the times nor their difference is a real number.
+
+    Float-convertible times (every API call) are compared as floats, as
+    before.  Otherwise (e.g. translation-invariant symbolic times such as
+    ``(t, t)``, whose free values are numeric although the times are not)
+    the difference is converted instead."""
+    try:
+        a, b = float(t_p), float(t_q)
+    except (TypeError, ValueError):
+        try:
+            return float(t_p - t_q)
+        except (TypeError, ValueError):
+            return None
+    if a > b:
+        return 1.0
+    if a < b:
+        return -1.0
+    if a == b:
+        return 0.0
+    return float('nan')
+
+
+def _tie_order_sign(a_ext, c0, tie_ctx):
+    r"""Decide ``Θ(Δt)`` for a constant row whose ``c_eff`` is exactly 0.0.
+
+    Returns ``+1`` (the row holds: DROP) or ``-1`` (it fails: EMPTY) when
+    ``Δt = c0 + Σ_j a_ext_j t_j`` is the difference ``t_p − t_q`` of two
+    external legs' times (``c0 == 0``; mapped to legs through ``tie_ctx``,
+    including the origin leg the free values are measured from), and ``0``
+    otherwise (no context, or another row shape: Θ(0) = 0 applies).
+
+    The two legs are compared on their RAW times, so a difference that
+    rounded to 0.0 only after the translation to the origin leg still gets
+    its true sign, the same in every Wick permutation.  Exactly equal raw
+    times are ordered by leg index: a leg with a LARGER index counts as
+    infinitesimally EARLIER (the k=2 Itô left limit τ = t_1 − t_0 → 0⁻,
+    extended to every tie).  Exactly one of ``Θ(t_p − t_q)`` and
+    ``Θ(t_q − t_p)`` therefore holds at a tie.  (The leg index is the
+    position in the caller's argument list, i.e. in ``external_fields``:
+    at coincident times of legs of DIFFERENT fields the value depends on
+    the order in which they are listed, exactly as the k=2 τ = 0 grid
+    value does -- C_AB(τ → 0⁻) and C_BA(τ → 0⁻) are the two one-sided
+    limits of the same physical function.)
+
+    Only the two compared times are converted, and only here
+    (``_raw_time_order``); times without a real order give ``0``.
+    """
+    if tie_ctx is None or float(c0) != 0.0:
+        return 0
+    free_legs = tie_ctx.free_legs
+    if len(a_ext) > len(free_legs):
+        return 0
+    coef = {}
+    total = 0.0
+    for j, a in enumerate(a_ext):
+        a = float(a)
+        if a == 0.0:
+            continue
+        leg = free_legs[j]
+        coef[leg] = coef.get(leg, 0.0) + a
+        total += a
+    if tie_ctx.origin_leg is not None and total != 0.0:
+        leg = tie_ctx.origin_leg
+        coef[leg] = coef.get(leg, 0.0) - total
+    legs = [(leg, c) for leg, c in coef.items() if c != 0.0]
+    if len(legs) != 2:
+        return 0
+    (leg_a, c_a), (leg_b, c_b) = legs
+    if not (c_a == -c_b and abs(c_a) == 1.0):
+        return 0
+    p, q = (leg_a, leg_b) if c_a > 0 else (leg_b, leg_a)   # Δt = t_p − t_q
+    d = _raw_time_order(tie_ctx.times[p], tie_ctx.times[q])
+    if d is None or d != d:                 # no real order (NaN, complex)
+        return 0
+    if d > 0.0:
+        return 1
+    if d < 0.0:
+        return -1
+    return 1 if p < q else -1
+
+
+def _const_row_decision(a_int, a_ext, c0, free_ext_vals, kind='edge',
+                        tie_ctx=None):
+    r"""The Θ(0) = 0 rule for one row, without side effects:
+    ``(verdict, basis)``.
+
+    ``verdict`` is ``None`` for a row with a nonzero normal (a genuine
+    half-space), else ``'DROP'`` (the constant condition holds everywhere:
+    drop it from the GEOMETRY only, the edge still contributes
+    ``exp(λ_e·c_eff)`` to γ) or ``'EMPTY'`` (the region is empty).
+    ``basis`` says how: ``'sign'`` (c_eff ≠ 0), ``'theta0'`` (c_eff == 0.0,
+    Θ(0) = 0) or ``'tie_order'`` (c_eff == 0.0 on a two-leg time
+    difference, ``_tie_order_sign``).  ``c_eff = c0 + Σ_j a_ext_j t_j`` is
+    the same arithmetic as every call site.  A constant 'noise_box' /
+    'conv_tau' row, or an unknown ``kind``, raises.
+    """
+    for a in a_int:
+        if abs(float(a)) > _ROW_COEF_ATOL:
+            return None, None
+    if kind not in _EDGE_ROW_KINDS:
+        if kind in _BOX_ROW_KINDS:
+            raise ValueError(
+                f'constant {kind!r} constraint row (a_int={list(a_int)!r}, '
+                f'a_ext={list(a_ext)!r}, c0={c0!r}): a kernel/box '
+                f'integration variable was eliminated by a δ edge, which no '
+                f'model is expected to produce (plan §7.6); refusing to '
+                f'guess its Θ(0) convention')
+        raise ValueError(f'unknown constraint-row kind {kind!r}; expected '
+                         f'one of {ROW_KINDS}')
+    c_eff = float(c0) + sum(float(a_ext[j]) * float(free_ext_vals[j])
+                            for j in range(len(a_ext)))
+    if c_eff > 0.0:
+        return 'DROP', 'sign'
+    if c_eff != 0.0:                        # < 0 (or NaN): empty
+        return 'EMPTY', 'sign'
+    s = _tie_order_sign(a_ext, c0, tie_ctx)
+    if s > 0:
+        return 'DROP', 'tie_order'
+    if s < 0:
+        return 'EMPTY', 'tie_order'
+    return 'EMPTY', 'theta0'                # THETA_AT_ZERO_CONST_ROW = 0
+
+
+def _const_row_verdict(a_int, a_ext, c0, free_ext_vals, kind='edge',
+                       tie_ctx=None):
+    r"""Θ(0) = 0 verdict for one constraint row ``a_int·s + c_eff > 0``.
+
+    Returns ``None`` if the row has a nonzero normal (some
+    ``|a_int_j| > _ROW_COEF_ATOL``): it is a genuine half-space, not this
+    helper's business.  Otherwise the row is the constant condition
+    ``c_eff > 0`` with ``c_eff = c0 + Σ_j a_ext_j t_j``, and the verdict is
+
+    * ``'DROP'``  if ``c_eff > 0``: the condition holds everywhere.  Drop it
+      from the GEOMETRY only -- the row stays in the per-edge data, so the
+      edge still contributes ``exp(λ_e·c_eff)`` to γ;
+    * ``'EMPTY'`` if ``c_eff < 0``: the region is empty;
+    * a tie, ``c_eff == 0.0`` exactly: ``'EMPTY'`` by Θ(0) = 0
+      (``THETA_AT_ZERO_CONST_ROW``, the Itô convention), except a difference
+      of two external legs' times, which ``tie_ctx`` orders
+      (``_tie_order_sign``: exactly one orientation holds).
+
+    There is no tie tolerance (see the THETA_AT_ZERO_CONST_ROW comment).
+    ``kind`` is the row's provenance (see ``ROW_KINDS``): edge kinds get the
+    rule above; a constant 'noise_box' / 'conv_tau' row raises.  Counts
+    ``theta0_*`` in ``_RUNTIME_COUNTERS`` (``_const_row_decision`` is the
+    side-effect-free form).
+
+    Mode-agnostic: callers select legacy behaviour themselves
+    (``_theta0_legacy()``) and never call this in 'legacy_clip' mode.
+    """
+    verdict, basis = _const_row_decision(a_int, a_ext, c0, free_ext_vals,
+                                         kind, tie_ctx)
+    if verdict is None:
+        return None
+    if verdict == 'DROP':
+        _RUNTIME_COUNTERS['theta0_const_drop'] += 1
+    else:
+        _RUNTIME_COUNTERS['theta0_const_empty'] += 1
+    if basis == 'theta0':
+        _RUNTIME_COUNTERS['theta0_tie'] += 1
+    elif basis == 'tie_order':
+        _RUNTIME_COUNTERS['theta0_tie_ordered'] += 1
+    return verdict
+
+
+def _any_const_row_empty(subset_constraint_data, free_ext_vals,
+                         row_kinds=None, tie_ctx=None):
+    """True if some constant row of the subset has verdict ``'EMPTY'``."""
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+        if _const_row_verdict(a_int, a_ext, c0, free_ext_vals,
+                              _row_kind(row_kinds, idx),
+                              tie_ctx) == 'EMPTY':
+            return True
+    return False
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -529,7 +931,8 @@ def _modes_summary(modes, pole_tuples):
 
 def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
                       evaluator, branch, value, bail_reason, attempted,
-                      modes, prefactor, plan, pole_tuples, integrand):
+                      modes, prefactor, plan, pole_tuples, integrand,
+                      row_kinds=None, tie_ctx=None):
     """Build the ``_SUBSET_HOOK`` payload and call the hook.
 
     Only ever called when the hook is set.  Payload keys:
@@ -543,8 +946,10 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
       ``eval_serial``, ``ext_time_values``, ``perm_index``, ``perm``,
       ``n_perms``, ``compensation``.
     * geometry: ``m``, ``constraints`` (the subset_constraint_data rows
-      ``(a_int, a_ext, c0)``), ``row_kinds`` (``None`` until M1 adds row
-      provenance), ``free_ext_vals``.
+      ``(a_int, a_ext, c0)``), ``row_kinds`` (M1 row provenance: a tuple
+      parallel to ``constraints``, entries from ``ROW_KINDS``),
+      ``free_ext_vals``, ``tie_ctx`` (the ``_TieContext`` the constant rows
+      were decided with -- ``None`` outside ``contribution()``).
     * integrand: ``modes_summary`` (picklable), and live references
       ``modes`` / ``plan`` / ``pole_tuples`` / ``integrand`` (the closure
       scipy.nquad integrates) / ``prefactor``.  The live references are
@@ -583,8 +988,10 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
         'ctx': ctx,
         'm': m,
         'constraints': cdata,
-        'row_kinds': None,
+        'row_kinds': (None if row_kinds is None
+                      else tuple(row_kinds)),
         'free_ext_vals': tuple(float(x) for x in free_vals),
+        'tie_ctx': tie_ctx,
         'modes_summary': summ,
         'modes': modes,
         'plan': plan,
@@ -727,7 +1134,16 @@ def _clip_polygon_to_halfplane(polygon, a, b, c):
     treated as "on the inside" — for analytic integration over the
     polygon interior, the measure-zero boundary contribution is 0
     regardless of which side we assign.
+
+    The normal ``(a, b)`` must be nonzero.  A zero normal makes the
+    condition the constant ``c > 0``, which this closed-half-plane clip
+    would treat as Θ(0) = 1 at ``c == 0`` (keeping the whole polygon);
+    constant rows are decided by ``_const_row_verdict`` instead (M1).
     """
+    if a == 0.0 and b == 0.0:
+        raise ValueError(
+            '_clip_polygon_to_halfplane: zero normal (a = b = 0); constant '
+            'constraint rows must go through _const_row_verdict')
     if not polygon:
         return []
     n = len(polygon)
@@ -760,7 +1176,8 @@ def _clip_polygon_to_halfplane(polygon, a, b, c):
     return output
 
 
-def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap):
+def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap,
+                                 row_kinds=None, tie_ctx=None):
     r"""Build the 2D convex polygon defined by the retardation
     constraints, starting from a CCW bounding box ``±bbox_cap`` and
     clipping with each constraint.
@@ -770,6 +1187,29 @@ def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap):
 
     Returns a CCW polygon vertex list (possibly empty if the
     intersection is empty).
+
+    Constant rows (zero normal) follow ``THETA0_CONST_ROW_MODE`` (call
+    time).  'ito': ``_const_row_verdict`` decides -- EMPTY returns ``[]``,
+    DROP skips only the clip (the row stays in the caller's per-edge / γ
+    data).  After the clip, 'ito' also returns ``[]`` (counted in
+    ``polygon_zero_area``) for a region that is empty or degenerate by an
+    EXACT test, never a tolerance:
+
+    * two rows with exactly opposite normals, ``a_j == −a_i``, and
+      ``c_i + c_j <= 0.0`` (``_opposite_rows_empty``): ``a·s > −c_i`` and
+      ``a·s < c_j`` cannot both hold.  E.g. the 2-cycle rows s1 > s0,
+      s0 > s1, which the closed clip leaves as the segment s0 = s1, or a
+      strip between two exactly coincident external times;
+    * a clipped polygon with fewer than 3 vertices or an exactly zero
+      computed area (``_polygon_has_zero_area``).
+
+    A genuine strip, however thin (e.g. between external times 1e-12
+    apart), is integrated exactly as before 0.2.0.
+    'legacy_clip': the pre-M1 closed-half-plane clip, bit-for-bit (a
+    zero-normal row with c_eff >= 0 keeps the polygon: Θ(0) = 1).
+    ``row_kinds`` is the rows' provenance (``None``: all 'edge');
+    ``tie_ctx`` (a ``_TieContext`` or ``None``) orders an exact external-time
+    tie (``_tie_order_sign``).
     """
     polygon = [
         (-bbox_cap, -bbox_cap),
@@ -777,20 +1217,77 @@ def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap):
         (bbox_cap, bbox_cap),
         (-bbox_cap, bbox_cap),
     ]
-    for (a_int, a_ext, c0) in constraint_data:
+    legacy = _theta0_legacy()
+    clip_rows = []
+    for idx, (a_int, a_ext, c0) in enumerate(constraint_data):
         c_eff = float(c0) + sum(
             float(a_ext[j]) * float(free_ext_vals[j])
             for j in range(len(a_ext))
         )
         a0 = float(a_int[0])
         a1 = float(a_int[1])
-        if abs(a0) <= 1e-12 and abs(a1) <= 1e-12:
+        if abs(a0) <= _ROW_COEF_ATOL and abs(a1) <= _ROW_COEF_ATOL:
             # Observational (M0.1): a zero-normal row reaching the clip.
             _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
+            if not legacy:
+                verdict = _const_row_verdict(
+                    (a0, a1), a_ext, c0, free_ext_vals,
+                    _row_kind(row_kinds, idx), tie_ctx)
+                if verdict == 'EMPTY':
+                    return []
+                continue            # DROP: no clip; γ keeps exp(λ·c_eff)
+            if a0 == 0.0 and a1 == 0.0:
+                # legacy_clip: exactly what the closed-half-plane clip does
+                # with f ≡ c_eff (all vertices kept iff c_eff >= 0).
+                if not (c_eff >= 0.0):
+                    return []
+                continue
         polygon = _clip_polygon_to_halfplane(polygon, a0, a1, c_eff)
         if not polygon:
             return []
+        clip_rows.append((a0, a1, c_eff))
+    if not legacy and (_opposite_rows_empty(clip_rows)
+                       or _polygon_has_zero_area(polygon)):
+        _RUNTIME_COUNTERS['polygon_zero_area'] += 1
+        return []
     return polygon
+
+
+def _opposite_rows_empty(rows):
+    r"""True if two of the half-planes ``a0·s0 + a1·s1 + c > 0`` in ``rows``
+    (``(a0, a1, c)`` triples, nonzero normals) have EXACTLY opposite
+    normals, ``(a0_j, a1_j) == (−a0_i, −a1_i)``, and ``c_i + c_j <= 0.0``.
+    Then ``a·s > −c_i`` and ``a·s < c_j`` cannot both hold: the region is
+    empty (with ``c_i + c_j == 0.0`` the closed clip would leave a segment).
+    Exact comparisons only; a pair with ``c_i + c_j > 0`` is a genuine
+    strip, however thin, and is left to the clip."""
+    n = len(rows)
+    for i in range(n):
+        a0, a1, ci = rows[i]
+        for j in range(i + 1, n):
+            b0, b1, cj = rows[j]
+            if b0 == -a0 and b1 == -a1 and ci + cj <= 0.0:
+                return True
+    return False
+
+
+def _polygon_has_zero_area(polygon):
+    r"""True if the clipped polygon is degenerate: fewer than 3 vertices, or
+    twice its area (summed over the fan from ``polygon[0]``) is exactly
+    0.0.  No tolerance: a genuine thin polygon keeps its (tiny) area and is
+    integrated as before 0.2.0."""
+    n = len(polygon)
+    if n < 3:
+        return True
+    x0, y0 = polygon[0]
+    area2 = 0.0
+    for i in range(1, n - 1):
+        ax = polygon[i][0] - x0
+        ay = polygon[i][1] - y0
+        bx = polygon[i + 1][0] - x0
+        by = polygon[i + 1][1] - y0
+        area2 += ax * by - ay * bx
+    return area2 == 0.0
 
 
 def _enumerate_pole_tuples(edge_mode_sums):
@@ -1007,8 +1504,62 @@ class _CausalPoset:
     scalar_uppers: tuple
 
 
+class _EmptyPosetSentinel:
+    """Type of ``_EMPTY_POSET`` (private to FI's poset-modesum path)."""
+    __slots__ = ()
+
+    def __repr__(self):
+        return '_EMPTY_POSET'
+
+
+# Returned by ``_extract_causal_poset`` (THETA0_CONST_ROW_MODE 'ito' only)
+# when the region is EMPTY by construction: a constant row with verdict
+# EMPTY (Θ(0) = 0), or a directed cycle of order rows whose shifts sum to
+# <= 0 (s_a > s_b + … > s_a with strict inequalities cannot all hold).  The
+# poset-modesum caller returns 0j for it.  ``_CausalPoset`` and
+# ``_enumerate_linear_extensions`` are untouched
+# (``spatial/causal_chambers.py`` imports them).
+_EMPTY_POSET = _EmptyPosetSentinel()
+
+
+def _order_rows_infeasible(m, order_rows):
+    r"""True if the strict order rows cannot all hold.
+
+    ``order_rows`` holds ``(lo, up, c)`` for rows ``s_up − s_lo + c > 0``,
+    i.e. the difference constraints ``s_lo − s_up < c``.  Such a system is
+    infeasible exactly when some directed cycle of constraints has total
+    shift ``Σ c <= 0`` (summing the rows around the cycle gives
+    ``0 < Σ c``).  Floyd–Warshall on the m variables; exact for exact
+    shifts (an unshifted cycle sums to 0.0 exactly).  Any cycle it finds is
+    also a cycle of the unshifted order edges, so the poset has no linear
+    extension: a subset decided here would otherwise have bailed to the
+    scipy.nquad fallback (which integrates an identically-zero filtered
+    integrand over it).
+    """
+    if len(order_rows) < 2:
+        return False
+    inf = math.inf
+    dist = [[inf] * m for _ in range(m)]
+    for (lo, up, c) in order_rows:
+        # s_lo − s_up < c: an edge up -> lo of weight c.
+        if c < dist[up][lo]:
+            dist[up][lo] = c
+    for k in range(m):
+        dk = dist[k]
+        for i in range(m):
+            dik = dist[i][k]
+            if dik == inf:
+                continue
+            di = dist[i]
+            for j in range(m):
+                v = dik + dk[j]
+                if v < di[j]:
+                    di[j] = v
+    return any(dist[i][i] <= 0.0 for i in range(m))
+
+
 def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
-                          tol=1e-12):
+                          tol=1e-12, row_kinds=None, tie_ctx=None):
     r"""Build a ``_CausalPoset`` from a list of retardation
     constraints.
 
@@ -1018,23 +1569,57 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
 
     Constraint shape recognised:
     * **Inter-axis**: ``a_int`` has exactly two nonzero entries
-      summing to 0 (one +1, one −1), and ``c_eff ≈ 0`` (within tol).
+      summing to 0 (one +1, one −1), and ``c_eff ≈ 0``.
       Adds edge ``(u, v)`` where ``a_int[u] = −1`` (lower) and
-      ``a_int[v] = +1`` (upper).
+      ``a_int[v] = +1`` (upper).  "≈ 0" is the pre-existing SHIFT
+      tolerance ``|c_eff| <= 1000·tol`` (1e-9): a row inside it is
+      integrated as the unshifted order ``s_v > s_u``, an approximation
+      of ``s_v > s_u − c_eff`` (plan §2.4 item 1: route such rows to the
+      exact DBM path at M3).  It is not a tie rule; ties of constant rows
+      are decided exactly by ``_const_row_verdict``.
     * **Scalar lower**: ``a_int`` has exactly one +1 entry, all else 0.
       Adds (var, −c_eff) to ``scalar_lowers``.
     * **Scalar upper**: ``a_int`` has exactly one −1 entry, all else 0.
       Adds (var, c_eff) to ``scalar_uppers``.
+    * **Constant** (zero normal): THETA0_CONST_ROW_MODE 'ito' (call time)
+      applies ``_const_row_verdict`` (with ``tie_ctx``) to every constant
+      row FIRST: one EMPTY row returns ``_EMPTY_POSET``, DROP rows are
+      skipped.  'legacy_clip' (pre-M1): a row with ``c_eff <= 0`` returns
+      ``None``.
     * **Anything else** (multiple inter-axis couplings, mixed
-      coefficients, inter-axis with nonzero c_eff, etc.) → return
-      ``None``.  Caller falls back to scipy.nquad.
+      coefficients, inter-axis with a shift beyond the window, etc.) →
+      return ``None``.  Caller falls back to scipy.nquad.
 
-    Returns ``_CausalPoset`` or ``None``.
+    In 'ito' mode, inter-axis rows that form a directed cycle whose shifts
+    sum to <= 0 (``_order_rows_infeasible``; e.g. an unshifted 2-cycle, or
+    one shifted by a rounding-level −1e-16) also return ``_EMPTY_POSET``.
+    A cycle with a positive total shift encloses a thin nonempty strip and
+    is not decided here.
+
+    Returns ``_CausalPoset``, ``None`` or (``'ito'`` only) ``_EMPTY_POSET``.
+    ``row_kinds``: the rows' provenance (``None``: all 'edge');
+    ``tie_ctx``: see ``_tie_order_sign``.
     """
+    legacy = _theta0_legacy()
+    const_verdict = {}
+    if not legacy:
+        # Constant rows first: one EMPTY row empties the region whatever
+        # the other rows are (so it never reaches a fallback).
+        for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+            if any(abs(float(x)) > _ROW_COEF_ATOL for x in a_int):
+                continue
+            _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
+            verdict = _const_row_verdict(a_int, a_ext, c0, free_ext_vals,
+                                         _row_kind(row_kinds, idx), tie_ctx)
+            if verdict == 'EMPTY':
+                _RUNTIME_COUNTERS['poset_empty_const'] += 1
+                return _EMPTY_POSET
+            const_verdict[idx] = verdict      # 'DROP'
     edges = []
+    order_rows = []
     scalar_lowers = []
     scalar_uppers = []
-    for (a_int, a_ext, c0) in subset_constraint_data:
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
         c_eff = float(c0) + sum(
             float(a_ext[j]) * float(free_ext_vals[j])
             for j in range(len(a_ext))
@@ -1043,6 +1628,12 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
         nz = [(i, float(a_int[i])) for i in range(len(a_int))
               if abs(float(a_int[i])) > tol]
         if not nz:
+            if not legacy:
+                if idx in const_verdict:
+                    continue            # DROP (decided above)
+                # Coefficients in (_ROW_COEF_ATOL, tol]: only a direct
+                # caller with a looser ``tol`` gets here.  Not a clean row.
+                return None
             # Observational (M0.1): a zero-normal row reaching the
             # extractor (``tol`` may differ from 1e-12 for direct callers,
             # so re-check against the counter's definition).
@@ -1069,7 +1660,8 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
                 return None
             continue
         if len(nz) == 2:
-            # Need exactly one +1 and one −1, plus c_eff ≈ 0.
+            # Need exactly one +1 and one −1, plus c_eff inside the shift
+            # window (see the docstring).
             (i, a_i), (j, a_j) = nz
             if abs(c_eff) > 1000 * tol:
                 # Inter-axis constraint with extra constant — would
@@ -1078,16 +1670,21 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
                 return None
             if abs(a_i - 1.0) < tol and abs(a_j + 1.0) < tol:
                 # +1 at i, −1 at j  ⇔  s_i > s_j  ⇔  edge (j → i)
-                edges.append((j, i))
+                edge = (j, i)
             elif abs(a_i + 1.0) < tol and abs(a_j - 1.0) < tol:
                 # −1 at i, +1 at j  ⇔  s_j > s_i  ⇔  edge (i → j)
-                edges.append((i, j))
+                edge = (i, j)
             else:
                 return None
+            edges.append(edge)
+            order_rows.append((edge[0], edge[1], c_eff))
             continue
         # 3+ nonzero entries — mixed constraint not supported.
         return None
 
+    if not legacy and _order_rows_infeasible(m, order_rows):
+        _RUNTIME_COUNTERS['poset_empty_cycle'] += 1
+        return _EMPTY_POSET
     # Deduplicate edges.
     edges_set = tuple(sorted(set(edges)))
     return _CausalPoset(
@@ -2101,13 +2698,22 @@ def _integrate_nd_polytope_poset_modesum(
     subset_constraint_data,
     free_ext_vals,
     m,
-    bbox_cap=POLYGON_BBOX_CAP,
+    bbox_cap=None,
     pole_tuples=None,
     plan=None,
+    row_kinds=None,
+    tie_ctx=None,
 ):
     r"""Analytic ``∫_{polytope} Π_e [Σ_α C_α exp(λ_α · Δt_e)] · pref
                                 ds_1 … ds_m`` for m ≥ 3 via causal-
     poset decomposition.
+
+    ``bbox_cap=None`` resolves at call time (``_resolve_bbox_cap``);
+    ``row_kinds`` is the rows' provenance (``None``: all 'edge');
+    ``tie_ctx`` orders an exact external-time tie (``_tie_order_sign``).
+    With THETA0_CONST_ROW_MODE 'ito' a region that is empty by construction
+    (``_EMPTY_POSET``: a constant EMPTY row, or an order cycle whose shifts
+    sum to <= 0) returns 0j, in both the plan and the no-plan branch.
 
     Procedure:
       1. Extract the causal poset (DAG + scalar bounds) from the
@@ -2139,14 +2745,18 @@ def _integrate_nd_polytope_poset_modesum(
     if m < 3:
         return _bail('poset_m_lt_3')  # m=2 has its own dedicated path
     _RUNTIME_COUNTERS['poset_attempted'] += 1
+    bbox_cap = _resolve_bbox_cap(bbox_cap)
     n_smooth = len(smooth_edge_modes)
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return _bail('poset_rows_mismatch')
 
     poset = _extract_causal_poset(
-        subset_constraint_data, free_ext_vals, m,
+        subset_constraint_data, free_ext_vals, m, row_kinds=row_kinds,
+        tie_ctx=tie_ctx,
     )
+    if poset is _EMPTY_POSET:
+        return 0.0 + 0.0j
     if poset is None:
         _RUNTIME_COUNTERS['poset_extract_returned_none'] += 1
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
@@ -2355,9 +2965,11 @@ def _integrate_1d_polytope_modesum(
     prefactor_complex,
     subset_constraint_data,
     free_ext_vals,
-    bbox_cap=POLYGON_BBOX_CAP,
+    bbox_cap=None,
     pole_tuples=None,
     plan=None,
+    row_kinds=None,
+    tie_ctx=None,
 ):
     r"""Analytic ``∫_L^U Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor ds``
     for ``m = 1``.
@@ -2384,25 +2996,41 @@ def _integrate_1d_polytope_modesum(
 
     Returns ``complex`` or ``None`` on overflow / divergent unbounded
     integrand.
+
+    Constant rows: THETA0_CONST_ROW_MODE 'ito' (call time) uses
+    ``_const_row_verdict`` (EMPTY -> 0j, DROP -> no bound; the row still
+    enters γ); 'legacy_clip' the pre-M1 ``|a| < 1e-15``, ``c_eff <= 0``
+    rule.  ``bbox_cap`` is unused (both sides are tracked exactly); it is
+    accepted for signature symmetry.  ``row_kinds``: the rows' provenance;
+    ``tie_ctx``: see ``_tie_order_sign``.
     """
     import cmath
     import math
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['interval_attempted'] += 1
+    bbox_cap = _resolve_bbox_cap(bbox_cap)          # (unused; see docstring)
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['interval_returned_none'] += 1
         return _bail('interval_rows_mismatch')
 
     # Resolve the feasible interval — track unboundedness exactly.
+    legacy = _theta0_legacy()
     L = -math.inf
     U = +math.inf
-    for (a_int, a_ext, c0) in subset_constraint_data:
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
         a = float(a_int[0]) if a_int else 0.0
         c_eff = float(c0) + sum(
             float(a_ext[i]) * float(free_ext_vals[i])
             for i in range(len(a_ext))
         )
-        if abs(a) < 1e-15:
+        if not legacy:
+            if abs(a) <= _ROW_COEF_ATOL:
+                if _const_row_verdict(
+                        (a,), a_ext, c0, free_ext_vals,
+                        _row_kind(row_kinds, idx), tie_ctx) == 'EMPTY':
+                    return 0.0 + 0.0j
+                continue
+        elif abs(a) < 1e-15:
             if c_eff <= 0:
                 return 0.0 + 0.0j
             continue
@@ -2556,9 +3184,11 @@ def _integrate_2d_polygon_modesum(
     prefactor_complex,
     subset_constraint_data,
     free_ext_vals,
-    bbox_cap=POLYGON_BBOX_CAP,
+    bbox_cap=None,
     pole_tuples=None,
     plan=None,
+    row_kinds=None,
+    tie_ctx=None,
 ):
     r"""Analytic ∫∫_polygon Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
                   ds_0 ds_1.
@@ -2586,10 +3216,18 @@ def _integrate_2d_polygon_modesum(
     merged-residue tensor ``B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}``
     in place of the per-edge Cartesian product.  When ``None``, the
     per-diagram default iterator runs.
+
+    ``bbox_cap=None`` resolves at call time (``_resolve_bbox_cap``).  The
+    polygon (shared by the plan and the no-plan branch) follows
+    THETA0_CONST_ROW_MODE through ``_polygon_from_2d_constraints``; a
+    constant DROP row only skips the clip and still enters γ.
+    ``row_kinds``: the rows' provenance (``None``: all 'edge');
+    ``tie_ctx``: see ``_tie_order_sign``.
     """
     import cmath
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['polygon_attempted'] += 1
+    bbox_cap = _resolve_bbox_cap(bbox_cap)
     if len(subset_constraint_data) != n_smooth:
         # Smooth-edges-to-constraints mismatch shouldn't happen — the
         # caller built both from ``smooth_edges`` in lock-step.  Bail
@@ -2600,6 +3238,7 @@ def _integrate_2d_polygon_modesum(
     # Polygon is shared across all pole tuples.
     polygon = _polygon_from_2d_constraints(
         subset_constraint_data, free_ext_vals, bbox_cap,
+        row_kinds=row_kinds, tie_ctx=tie_ctx,
     )
     if len(polygon) < 3:
         # Empty or degenerate polygon → integral is zero.
@@ -3681,6 +4320,27 @@ def integrate_diagram(
             c = SR(edge_info[ei_idx]['dt_sym']).subs(substitutions)
             subset_retard.append(c)
 
+        # ── M1 Θ(0): τ-independent EMPTY subsets (plan §3.1 L0).  A smooth
+        # edge whose Δt is a numeric constant after δ-elimination (no
+        # integration variable, no external time: a_int ≡ 0, a_ext ≡ 0) with
+        # c0 <= 0 empties this subset at EVERY τ under Θ(0) = 0.  The subset
+        # is still built (its closure is what 'legacy_clip' integrates); the
+        # flag makes the closure return 0 without integrating while the mode
+        # read AT CALL TIME is 'ito' (so flipping the mode after the build
+        # takes effect, as for every other Phase J flag).
+        _theta0_always_empty = False
+        for c in subset_retard:
+            try:
+                if SR(c).variables():
+                    continue
+                _c0_const = float(SR(c))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if _const_row_decision((), (), _c0_const, (),
+                                   'edge')[0] == 'EMPTY':
+                _theta0_always_empty = True
+                break
+
         m_sub = len(remaining_int_vars)
         fc_vars_sub = list(remaining_int_vars) + list(free_ext_syms)
 
@@ -3796,6 +4456,10 @@ def integrate_diagram(
                 constraint_err = exc
                 break
             subset_constraint_data.append((a_int, a_ext, c0))
+        # M1 row provenance, parallel to ``subset_constraint_data`` (see
+        # ``ROW_KINDS``): the smooth-edge rows so far, then the τ box rows
+        # and the conv pseudo-edge rows appended below.
+        subset_row_kinds = ['edge'] * len(subset_constraint_data)
 
         # ── Cap each surviving τ_v integration variable to a finite
         # range ──────────────────────────────────────────────────────
@@ -3846,6 +4510,8 @@ def integrate_diagram(
                 subset_constraint_data.append(
                     (a_lo, [0.0] * n_ext, lo_c0)
                 )
+                _box_kind = 'conv_tau' if is_conv_tau else 'noise_box'
+                subset_row_kinds.extend((_box_kind, _box_kind))
         if constraint_err is not None:
             return {
                 'status': 'failed',
@@ -3902,7 +4568,9 @@ def integrate_diagram(
             if conv_pseudo_edges is not None:
                 _conv_tau_set = {tau for (tau, _, _) in conv_extracted_modes}
                 _to_keep = []
-                for c_tuple in subset_constraint_data:
+                _kinds_to_keep = []
+                for c_tuple, _c_kind in zip(subset_constraint_data,
+                                            subset_row_kinds):
                     a_int_c, a_ext_c, c0_c = c_tuple
                     # Identify "+τ + 0 > 0" rows for our τs (a_ext all
                     # zero, c0 == 0, a_int has a single +1 at the τ
@@ -3917,7 +4585,9 @@ def integrate_diagram(
                     )
                     if not is_pure_tau_pos:
                         _to_keep.append(c_tuple)
+                        _kinds_to_keep.append(_c_kind)
                 subset_constraint_data = _to_keep
+                subset_row_kinds = _kinds_to_keep
 
         # Fix E (2026-04-21): direct numerical per-edge evaluator
         # reconstructs P · Π_e Σ_k C_e^{(k)} · exp(I · p_k · Δt_e)
@@ -3959,6 +4629,10 @@ def integrate_diagram(
                     smooth_edge_modes = smooth_edge_modes + conv_pseudo_edges
                     subset_constraint_data = (
                         subset_constraint_data + conv_pseudo_constraints
+                    )
+                    subset_row_kinds = (
+                        subset_row_kinds
+                        + ['conv_pseudo'] * len(conv_pseudo_constraints)
                     )
                 _fast_eval = _build_fast_subset_evaluator_from_modes(
                     prefactor_num,
@@ -4032,14 +4706,23 @@ def integrate_diagram(
         def _make_subset_contrib(fc, cdata, m_val,
                                   modes=None, pref_c=None,
                                   pole_tuples=None, plan=None,
-                                  hook_meta=None):
+                                  hook_meta=None, row_kinds=None,
+                                  theta0_empty=False):
             # ``_hook_ctx`` is passed by ``contribution()`` only while
             # ``_SUBSET_HOOK`` is set (M0.1); the hook itself is read from
-            # the module global at call time.  Nothing below changes the
-            # value: the analytic/nquad calls and their arguments are the
-            # pre-M0.1 ones, the extra work is bookkeeping on the ``None``
+            # the module global at call time.  The hook does not change the
+            # value: the extra work is bookkeeping on the ``None``
             # (fallback) branches and, only with a hook, the payload.
-            def _contrib(free_vals, _hook_ctx=None):
+            # ``row_kinds`` (M1) is the subset's row provenance and
+            # ``_tie_ctx`` (a ``_TieContext`` from ``contribution()``) the
+            # legs behind ``free_vals``; both are threaded to every
+            # integrator for the Θ(0) rule (``_const_row_verdict``).
+            # ``theta0_empty``: the subset has a τ-independent EMPTY row;
+            # it returns 0 while the call-time mode is 'ito'.
+            def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
+                if theta0_empty and not _theta0_legacy():
+                    _RUNTIME_COUNTERS['theta0_subsets_pruned'] += 1
+                    return 0.0 + 0.0j
                 _hook = _SUBSET_HOOK
                 _attempted = None
                 _bail_reason = None
@@ -4053,6 +4736,8 @@ def integrate_diagram(
                         free_ext_vals=free_vals,
                         pole_tuples=pole_tuples,
                         plan=plan,
+                        row_kinds=row_kinds,
+                        tie_ctx=_tie_ctx,
                     )
                     if interval_val is not None:
                         if _hook is not None:
@@ -4065,7 +4750,8 @@ def integrate_diagram(
                                 value=interval_val, bail_reason=None,
                                 attempted='m1', modes=modes,
                                 prefactor=pref_c, plan=plan,
-                                pole_tuples=pole_tuples, integrand=fc)
+                                pole_tuples=pole_tuples, integrand=fc,
+                                row_kinds=row_kinds, tie_ctx=_tie_ctx)
                         return interval_val
                     _attempted = 'm1'
                     _bail_reason = _pop_bail_reason()
@@ -4079,6 +4765,8 @@ def integrate_diagram(
                         free_ext_vals=free_vals,
                         pole_tuples=pole_tuples,
                         plan=plan,
+                        row_kinds=row_kinds,
+                        tie_ctx=_tie_ctx,
                     )
                     if poly_val is not None:
                         if _hook is not None:
@@ -4091,7 +4779,8 @@ def integrate_diagram(
                                 value=poly_val, bail_reason=None,
                                 attempted='polygon', modes=modes,
                                 prefactor=pref_c, plan=plan,
-                                pole_tuples=pole_tuples, integrand=fc)
+                                pole_tuples=pole_tuples, integrand=fc,
+                                row_kinds=row_kinds, tie_ctx=_tie_ctx)
                         return poly_val
                     _attempted = 'polygon'
                     _bail_reason = _pop_bail_reason()
@@ -4106,6 +4795,8 @@ def integrate_diagram(
                         m=m_val,
                         pole_tuples=pole_tuples,
                         plan=plan,
+                        row_kinds=row_kinds,
+                        tie_ctx=_tie_ctx,
                     )
                     if poset_val is not None:
                         if _hook is not None:
@@ -4119,7 +4810,8 @@ def integrate_diagram(
                                 value=poset_val, bail_reason=None,
                                 attempted='poset', modes=modes,
                                 prefactor=pref_c, plan=plan,
-                                pole_tuples=pole_tuples, integrand=fc)
+                                pole_tuples=pole_tuples, integrand=fc,
+                                row_kinds=row_kinds, tie_ctx=_tie_ctx)
                         return poset_val
                     _attempted = 'poset'
                     _bail_reason = _pop_bail_reason()
@@ -4130,7 +4822,10 @@ def integrate_diagram(
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
                                      for i in range(len(a_ext)))
                     resolved.append((list(a_int), c_eff))
-                _val = _integrate_polytope(fc, resolved, free_vals, m_val)
+                _val = _integrate_polytope(fc, resolved, free_vals, m_val,
+                                           raw_rows=cdata,
+                                           row_kinds=row_kinds,
+                                           tie_ctx=_tie_ctx)
                 if _hook is not None:
                     if m_val < 1:
                         _reason = None
@@ -4148,7 +4843,8 @@ def integrate_diagram(
                         value=_val, bail_reason=_reason,
                         attempted=_attempted, modes=modes,
                         prefactor=pref_c, plan=plan,
-                        pole_tuples=pole_tuples, integrand=fc)
+                        pole_tuples=pole_tuples, integrand=fc,
+                        row_kinds=row_kinds, tie_ctx=_tie_ctx)
                 return _val
             return _contrib
 
@@ -4159,6 +4855,8 @@ def integrate_diagram(
                 pref_c=_modesum_prefactor_c,
                 pole_tuples=_pole_tuples_cache,
                 plan=_modesum_plan,
+                row_kinds=tuple(subset_row_kinds),
+                theta0_empty=_theta0_always_empty,
                 hook_meta={
                     'source': 'per_diagram',
                     'diagram_serial': _diag_serial,
@@ -4193,6 +4891,7 @@ def integrate_diagram(
             'status': 'evaluated',
             'm_after_delta': m_sub,
             'evaluator': _evaluator_label,
+            'theta0_always_empty': _theta0_always_empty,
         })
 
     # ── Build the final contribution callable ─────────────────────
@@ -4250,8 +4949,20 @@ def integrate_diagram(
         # fed free_val=0 (the pinned origin's actual time), producing
         # spurious asymmetry in C(τ) for any non-tree-level k=2
         # identical-externals case.
+        #
+        # M1: ``tie_ctx`` records which caller leg each free value belongs
+        # to (and the origin leg), so a constant row that is exactly 0.0 is
+        # ordered by the legs' raw times -- identically in every
+        # permutation -- instead of by Θ(0) = 0 on both orientations
+        # (``_tie_order_sign``).  It never changes a time value, and it
+        # keeps the times as passed (no float() here): only the two times
+        # of an exact tie are ever converted, so the argument types the
+        # pre-0.2.0 callable accepted (e.g. any value at k=1, whose single
+        # leg is the origin, or translation-invariant symbolic times) are
+        # still accepted, in every mode.
         _hook_on = _SUBSET_HOOK is not None     # M0.1: one check per call
         _call_serial = _next_hook_call_serial() if _hook_on else None
+        _raw_times = tuple(ext_time_values)
         total = 0.0 + 0.0j
         for _perm_idx, perm in enumerate(_perms):
             permuted = [ext_time_values[perm[j]] for j in range(_k)]
@@ -4259,15 +4970,18 @@ def integrate_diagram(
                 t_origin = permuted[origin_leaf_idx]
                 permuted = [pt - t_origin for pt in permuted]
             free_vals = [float(permuted[j]) for j in free_ext_idx]
+            tie_ctx = _TieContext(
+                _raw_times, tuple(perm[j] for j in free_ext_idx),
+                None if origin_leaf_idx is None else perm[origin_leaf_idx])
             if not _hook_on:
                 for cfn in subset_contributions:
-                    total = total + complex(cfn(free_vals))
+                    total = total + complex(cfn(free_vals, None, tie_ctx))
             else:
                 _ctx = _hook_eval_context(
                     _diag_serial, ext_time_values, _perm_idx, perm,
                     len(_perms), _comp, _call_serial)
                 for cfn in subset_contributions:
-                    total = total + complex(cfn(free_vals, _ctx))
+                    total = total + complex(cfn(free_vals, _ctx, tie_ctx))
         return total / _comp
 
     # If non-local cumulant kernels were substituted in cp, expose
@@ -4839,12 +5553,28 @@ def _build_fast_subset_evaluator_from_modes(
 # Polytope-integration helpers
 # ───────────────────────────────────────────────────────────────────────
 
-def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m):
+def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
+                        raw_rows=None, row_kinds=None, tie_ctx=None):
     """
     Integrate `integrand_callable(s_1, ..., s_m, *free_ext_vals)` over
     the polytope `{s : a_int · s + c_eff > 0 for all constraints}`.
 
     s_constraints is a list of tuples `(a_int_list_of_len_m, c_eff)`.
+
+    Constant rows (M1): with THETA0_CONST_ROW_MODE 'ito' (call time) every
+    zero-normal row is first given its ``_const_row_verdict``.  An EMPTY
+    verdict returns 0j at once; for c_eff != 0 the downstream checks (the
+    Heaviside filter's ``always_empty``, ``_integrate_2d_polytope``,
+    ``_resolve_1d_bounds``, ``_outer_bounds``, the m = 0 loop) agree with
+    the verdict, and return exactly 0 for c_eff < 0 as well.  A tie
+    (c_eff == 0.0) that the external-time order resolves as DROP
+    (``_tie_order_sign``) is removed from ``s_constraints`` before them,
+    since they would read it as Θ(0) = 0.  ``raw_rows`` -- the
+    ``(a_int, a_ext, c0)`` rows behind ``s_constraints``, same order --
+    let the helper see which legs a row compares (with ``tie_ctx``);
+    without them (external callers) a tie is Θ(0) = 0.  ``row_kinds``: the
+    rows' provenance (``None``: all 'edge').  'legacy_clip' skips all of
+    this (pre-M1 behaviour).
     """
     # M0.1 observational counters: m=0 is a direct evaluation, m>=1 is
     # real scipy.nquad quadrature.
@@ -4858,6 +5588,24 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m):
         _RUNTIME_COUNTERS['scipy_nquad_called_m2'] += 1
     elif m >= 3:
         _RUNTIME_COUNTERS['scipy_nquad_called_mge3'] += 1
+    if not _theta0_legacy():
+        rows = (raw_rows if raw_rows is not None else
+                [(a_int, (), c_eff) for (a_int, c_eff) in s_constraints])
+        fv = free_ext_vals if raw_rows is not None else ()
+        keep = None
+        for idx, (a_int, a_ext, c0) in enumerate(rows):
+            verdict = _const_row_verdict(a_int, a_ext, c0, fv,
+                                         _row_kind(row_kinds, idx),
+                                         tie_ctx)
+            if verdict == 'EMPTY':
+                return 0.0 + 0.0j
+            if verdict == 'DROP' and not float(s_constraints[idx][1]) > 0.0:
+                keep = keep if keep is not None else set(
+                    range(len(s_constraints)))
+                keep.discard(idx)              # a tie ordered as holding
+        if keep is not None:
+            s_constraints = [row for i, row in enumerate(s_constraints)
+                             if i in keep]
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or
@@ -4943,7 +5691,10 @@ def _make_heaviside_filtered_integrand(integrand_callable, s_constraints,
     # A pre-check here handles constraints that are purely trivial
     # (all `a` zero): if `c_eff > 0` the constraint is always satisfied
     # and we drop it; if `c_eff <= 0` the polytope is empty and the
-    # filter always returns 0.
+    # filter always returns 0.  (M1: with THETA0_CONST_ROW_MODE 'ito',
+    # ``_integrate_polytope`` has already applied ``_const_row_verdict``,
+    # returned 0 for an EMPTY constant row and removed a tie ordered as
+    # holding, so only rows with c_eff > 0 reach this check from there.)
     sparse = []
     always_empty = False
     for (a_int, c_eff) in s_constraints:
