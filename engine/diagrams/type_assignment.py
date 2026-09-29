@@ -465,7 +465,7 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     # ``default_sort_key``, which sympifies the ``(field, pop)`` tuples
     # through the string parser, so a single call cost tens to hundreds of
     # microseconds and the typing stage spent ~90% of its time there (10.6M
-    # calls, 205 s of 229 s, for the three-field vesicle model at k=2,
+    # calls, 205 s of 229 s, for a three-field point-process model at k=2,
     # ell=3).  Same yielded pairs, same order.
     resp_perms = _distinct_orderings(tuple(resp_legs))
     phys_perms = _distinct_orderings(tuple(phys_legs))
