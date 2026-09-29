@@ -51,17 +51,20 @@ Shipped capabilities:
 """
 from api.compute     import compute_cumulants
 from api.report      import generate_report
-from api.save        import save_npz, save_csv, params_slug
+from api.save        import save_npz, save_csv, load_npz, params_slug
 from api.access      import MeanField, Parameters, normalize_external_fields
 from api._precompute import precompute
 
-#: Daedalus version (keep in sync with pyproject.toml + CITATION.cff).
-__version__ = '0.1.0'
+#: Daedalus version (keep in sync with pyproject.toml and daedalus.py;
+#: CITATION.cff describes the latest RELEASE and is bumped, with its
+#: date-released, when this version is released; tests/
+#: test_save_version_stamp.py checks all of it).
+__version__ = '0.2.0'
 
 __all__ = [
     '__version__',
     'compute_cumulants', 'generate_report',
-    'save_npz', 'save_csv', 'params_slug',
+    'save_npz', 'save_csv', 'load_npz', 'params_slug',
     'MeanField', 'Parameters', 'normalize_external_fields',
     'precompute',
 ]

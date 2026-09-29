@@ -34,6 +34,7 @@ from api._mean_field_dae import (
     linear_stability,
 )
 from api._diagrams  import enumerate_unique_diagrams
+from api.save       import _phase_j_convention
 from api.access     import (
     MeanField, Parameters, normalize_external_fields,
 )
@@ -266,7 +267,11 @@ def compute_cumulants(
                              obvious keys, ``external_fields_in`` echoes
                              the user-passed form (e.g. ``[('n', 1)]``)
                              while ``external_fields`` stores the
-                             internal form (e.g. ``[('dn', 1)]``).
+                             internal form (e.g. ``[('dn', 1)]``), and
+                             ``phase_j_convention`` records the Phase J
+                             equal-time rule the numbers were computed
+                             with (``api.save`` stamps saved files with
+                             it).
 
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
@@ -678,6 +683,7 @@ def compute_cumulants(
                 'tau_step':        tau_step,
                 'spatial':         True,
                 'model_name':      model.get('name', '<unnamed>'),
+                'phase_j_convention': _phase_j_convention(),
             },
         }
 
@@ -994,6 +1000,9 @@ def compute_cumulants(
             'tau_step':           tau_step,
             'taylor_order':       taylor_order,
             'model_name':         model.get('name', '<unnamed>'),
+            # Read after the τ-grid evaluation above: the rule these numbers
+            # were computed with (the Phase J flags are read at call time).
+            'phase_j_convention': _phase_j_convention(),
         },
     }
 

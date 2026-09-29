@@ -36,8 +36,11 @@ from typing import Any, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 
-#: Daedalus version (keep in sync with pyproject.toml + CITATION.cff).
-__version__ = '0.1.0'
+#: Daedalus version (keep in sync with pyproject.toml and api/__init__.py;
+#: CITATION.cff describes the latest RELEASE and is bumped, with its
+#: date-released, when this version is released; tests/
+#: test_save_version_stamp.py checks all of it).
+__version__ = '0.2.0'
 
 
 # ── Repo / model discovery ──────────────────────────────────────────────────
@@ -92,6 +95,7 @@ _PIPELINE_EXPORTS = {
     'precompute':                'api',
     'save_npz':                  'api',
     'save_csv':                  'api',
+    'load_npz':                  'api',
     'params_slug':               'api',
     'MeanField':                 'api',
     'Parameters':                'api',

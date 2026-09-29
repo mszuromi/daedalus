@@ -16,6 +16,19 @@ The schema is k-/ell-/model-adaptive:
 * **Parameter metadata**: keys of ``fundamental`` saved as
   ``parameter_keys`` for cross-reference.
 
+* **Provenance stamp** (since 0.2.0): ``daedalus_version`` (the package
+  version that wrote the file) and ``phase_j_convention`` (the Phase J
+  equal-time rule the numbers were computed with; ``PHASE_J_CONVENTION``
+  for the default rules).  ``compute_cumulants`` records that rule in
+  ``result['config']['phase_j_convention']`` when it computes the numbers,
+  and the stamp copies it, so changing the Phase J flags between computing
+  and saving does not mislabel a file; only a result dict without that
+  entry (e.g. hand-built) is stamped with the rule in force when the file
+  is written.  The NPZ stores each as a one-element string array; the CSV
+  writes them as ``#`` header lines.  :func:`load_npz` warns
+  (:class:`StaleResultWarning`, once per file and process) when the stamp
+  is missing, older than 0.2.0, or names the pre-0.2.0 convention.
+
 NPZ shape conventions
 ---------------------
 For ``k ∈ {1, 2}``: each ``C_*`` is a 1D complex array whose shape
@@ -32,10 +45,204 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import warnings
 from typing import Any
 
 import numpy as np
+
+
+# ── provenance stamp (daedalus_version / phase_j_convention) ──────────
+#
+# 0.2.0 changed a number-producing convention for the constant constraint
+# rows that δ-elimination leaves (a smooth propagator whose time difference
+# is a constant; CHANGELOG.md, 0.2.0):
+#
+# * a row whose value is exactly 0 and does not depend on the external
+#   times is weighted Θ(0) = 0 (Itô) in every Phase J integrator; before
+#   0.2.0 the two-time polygon integrator kept it (Θ(0) = 1).  This moves
+#   numbers at every τ;
+# * a row that compares two external times that coincide exactly is decided
+#   by the external-time tie order (exactly one orientation holds), so a
+#   k ≥ 3 cumulant at coincident external times is a one-sided limit.  This
+#   moves such points, including those of ``dd.run``'s k ≥ 3 slices.  (The
+#   later-listed leg counts as infinitesimally earlier, so at coincident
+#   times of legs of different fields the value depends on the order of
+#   ``external_fields``, as the k = 2 τ = 0 point has since 0.1.0.)
+#
+# Saved results of models with δ / instantaneous propagator parts may
+# therefore differ from a fresh computation.  Every saved file carries the
+# version and the convention it was computed with.
+
+#: Label of the default Phase J convention of this version (the 0.2.0
+#: constant-row rules: Θ(0) = 0 for a zero row that does not depend on the
+#: external times, the external-time tie order for coincident times).
+PHASE_J_CONVENTION = 'theta0_ito_const_rows'
+
+# ``final_integral.THETA0_CONST_ROW_MODE`` -> stamp label.
+_PHASE_J_CONVENTION_BY_MODE = {
+    'ito':         PHASE_J_CONVENTION,
+    'legacy_clip': 'theta0_legacy_clip',   # DAEDALUS_PHASE_J_LEGACY=1 etc.
+}
+# Labels whose numbers follow the pre-0.2.0 rule (a load warns).
+_LEGACY_PHASE_J_CONVENTIONS = frozenset({'theta0_legacy_clip'})
+
+# Oldest package version whose saved numbers use the current convention.
+_STAMP_MIN_VERSION = (0, 2, 0)
+
+_FI_MODULE = 'engine.integration.time_domain.final_integral'
+
+_FALSY_ENV = ('', '0', 'false', 'no', 'off')
+
+
+class StaleResultWarning(UserWarning):
+    """A loaded result file predates (or opted out of) the 0.2.0 Phase J
+    equal-time convention and may need to be recomputed."""
+
+
+_INIT_VERSION_RE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""",
+                              re.M)
+
+
+def _daedalus_version() -> str:
+    """The running package version (``api.__version__``), read at call time.
+
+    ``api/__init__`` imports this module before it defines ``__version__``,
+    so the value is looked up lazily.  When the package is not imported
+    (this module loaded standalone, e.g. by a numpy-only test), it is read
+    from the ``api/__init__.py`` source next to this file instead of
+    importing the Sage-heavy package.  ``'unknown'`` if neither works.
+    """
+    v = getattr(sys.modules.get('api'), '__version__', None)
+    if v is None:
+        try:
+            init_py = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   '__init__.py')
+            with open(init_py, encoding='utf-8') as f:
+                m = _INIT_VERSION_RE.search(f.read())
+            v = m.group(1) if m else None
+        except OSError:
+            v = None
+    return str(v) if v else 'unknown'
+
+
+def _theta0_mode_from_env(environ=None) -> str:
+    """The Θ(0) mode the environment selects at import of ``final_integral``
+    (mirrors ``final_integral._initial_phase_j_flags``, without importing
+    it): the umbrella ``DAEDALUS_PHASE_J_LEGACY`` wins, then
+    ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``, else ``'ito'``."""
+    env = os.environ if environ is None else environ
+    if env.get('DAEDALUS_PHASE_J_LEGACY', '').strip().lower() not in _FALSY_ENV:
+        return 'legacy_clip'
+    return (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
+            .strip().lower() or 'ito')
+
+
+def _phase_j_convention() -> str:
+    """Label of the Phase J convention in force (call time).
+
+    Reads ``final_integral.THETA0_CONST_ROW_MODE`` when that module is loaded
+    (it is whenever Phase J ran in this process, so a monkeypatched or
+    environment-selected legacy mode is stamped as such); otherwise the mode
+    the environment would select."""
+    fi = sys.modules.get(_FI_MODULE)
+    mode = getattr(fi, 'THETA0_CONST_ROW_MODE', None)
+    if mode is None:
+        mode = _theta0_mode_from_env()
+    return _PHASE_J_CONVENTION_BY_MODE.get(str(mode), f'theta0_{mode}')
+
+
+def _result_stamp(result: dict | None = None) -> dict[str, str]:
+    """``{'daedalus_version': ..., 'phase_j_convention': ...}``.
+
+    The convention is the one ``compute_cumulants`` recorded in
+    ``result['config']['phase_j_convention']`` when it computed the numbers;
+    for a result without that entry, the convention in force now (call
+    time).  The version is the running package's (the writer's)."""
+    conv = None
+    if isinstance(result, dict):
+        cfg = result.get('config')
+        if isinstance(cfg, dict):
+            conv = cfg.get('phase_j_convention')
+    if not conv:
+        conv = _phase_j_convention()
+    return {'daedalus_version': _daedalus_version(),
+            'phase_j_convention': str(conv)}
+
+
+_VERSION_RE = re.compile(r'^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?')
+
+
+def _parse_version(v: Any) -> tuple[int, int, int] | None:
+    """``'0.2.0'`` -> ``(0, 2, 0)``; a missing minor / patch counts as 0 and
+    a pre-release / local suffix is ignored.  ``None`` if unparseable."""
+    m = _VERSION_RE.match(str(v))
+    if not m:
+        return None
+    return tuple(int(g) if g is not None else 0 for g in m.groups())
+
+
+def _stamp_value(data: Any, key: str) -> str | None:
+    """A stamp entry as ``str`` (``None`` when absent or empty).  NPZ stores
+    it as a one-element string array; a plain string is accepted too."""
+    try:
+        raw = data[key]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    arr = np.asarray(raw).ravel()
+    if arr.size == 0:
+        return None
+    s = str(arr[0]).strip()
+    return s or None
+
+
+def _stale_reason(version: str | None, convention: str | None) -> str | None:
+    """Why a saved result may be stale under the current convention, or
+    ``None`` when its stamp is current.  An unknown (newer) convention
+    label is not flagged."""
+    if version is None:
+        return 'it has no daedalus_version stamp (written before 0.2.0)'
+    parsed = _parse_version(version)
+    if parsed is None:
+        return f'its daedalus_version stamp {version!r} is not a version'
+    if parsed < _STAMP_MIN_VERSION:
+        return f'it was written by daedalus {version}'
+    if convention is None:
+        return 'it has no phase_j_convention stamp'
+    if convention in _LEGACY_PHASE_J_CONVENTIONS:
+        return (f'it was computed with the pre-0.2.0 Phase J convention '
+                f'{convention!r} (legacy flags)')
+    return None
+
+
+# (source, reason) pairs already warned about in this process.
+_STALE_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_if_stale(version: str | None, convention: str | None,
+                   source: str, *, stacklevel: int = 3) -> bool:
+    """Emit one :class:`StaleResultWarning` per (source, reason) and
+    process; return True when the stamp is stale (warned now or before)."""
+    reason = _stale_reason(version, convention)
+    if reason is None:
+        return False
+    key = (str(source), reason)
+    if key in _STALE_WARNED:
+        return True
+    _STALE_WARNED.add(key)
+    warnings.warn(
+        f'{source}: {reason}.  Daedalus 0.2.0 changed how Phase J decides '
+        f'the constant constraint rows left by δ-elimination: a row whose '
+        f'value is exactly 0 without depending on the external times is '
+        f'weighted Θ(0) = 0 (Itô) in every integrator (earlier versions '
+        f'used Θ(0) = 1 in the two-time polygon integrator), and a row '
+        f'comparing two coincident external times follows the external-time '
+        f'tie order, so k ≥ 3 values at coincident times (e.g. the points '
+        f'of dd.run\'s k ≥ 3 slices) are one-sided limits.  Results for '
+        f'models with δ (instantaneous) propagator parts may be stale and '
+        f'should be recomputed; see CHANGELOG.md (0.2.0).',
+        StaleResultWarning, stacklevel=stacklevel)
+    return True
 
 
 # ── filesystem-safe parameter slugs ───────────────────────────────────
@@ -206,7 +413,9 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
         to colocate simulation sidecar data (e.g. ``C_sim_mean``,
         ``rates_sim_mean``) in the same file.  Pipeline keys are not
         protected — passing ``'C_total'`` in ``extra`` will overwrite
-        the theoretical curve.
+        the theoretical curve.  The provenance stamp
+        (``daedalus_version``, ``phase_j_convention``) is written last
+        and cannot be overridden through ``extra``.
 
     Returns
     -------
@@ -269,11 +478,56 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
         for key, val in extra.items():
             payload[key] = np.asarray(val)
 
+    # Provenance stamp — after the extras so it always describes THIS
+    # computation (a re-save must not inherit an old file's stamp).
+    for key, val in _result_stamp(result).items():
+        payload[key] = np.asarray([val])
+
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
     np.savez(path, **payload)
     return path
+
+
+def load_npz(path: str, *, allow_pickle: bool = False,
+             warn_stale: bool = True) -> dict[str, np.ndarray]:
+    """Load a ``.npz`` written by :func:`save_npz` into a plain dict.
+
+    Checks the provenance stamp: when ``daedalus_version`` is missing or
+    older than 0.2.0, or ``phase_j_convention`` is missing or names the
+    pre-0.2.0 rule, a :class:`StaleResultWarning` is emitted once per file
+    and process.  Such results were computed before the 0.2.0 rules for
+    constant constraint rows (Θ(0) = 0 (Itô) for a zero row that does not
+    depend on the external times; the external-time tie order, i.e. a
+    one-sided limit, at coincident external times of a k ≥ 3 cumulant; see
+    CHANGELOG.md, 0.2.0); for models with δ (instantaneous) propagator
+    parts they may differ from a fresh computation and should be
+    recomputed.  The arrays are returned unchanged either way.
+
+    Parameters
+    ----------
+    path : str
+        The ``.npz`` file.
+    allow_pickle : bool
+        Passed to ``np.load``.  Only needed for files holding object
+        arrays (non-numeric parameters); never enable it for untrusted
+        files.
+    warn_stale : bool
+        Set False to skip the stamp check.
+
+    Returns
+    -------
+    dict
+        ``{key: array}`` for every entry in the file.
+    """
+    with np.load(path, allow_pickle=allow_pickle) as z:
+        data = {key: z[key] for key in z.files}
+    if warn_stale:
+        _warn_if_stale(_stamp_value(data, 'daedalus_version'),
+                       _stamp_value(data, 'phase_j_convention'),
+                       os.path.abspath(str(path)))
+    return data
 
 
 # ── CSV ───────────────────────────────────────────────────────────────
@@ -285,6 +539,8 @@ def save_csv(result: dict, path: str) -> str:
     Layout::
 
         # k=2, max_ell=1, model='Quadratic Hawkes ...'
+        # daedalus_version: 0.2.0
+        # phase_j_convention: theta0_ito_const_rows
         # parameters:
         #   E: [0.78, 0.81]
         #   ...
@@ -327,6 +583,9 @@ def save_csv(result: dict, path: str) -> str:
         # Header comments — context for the saved curves
         f.write(f'# k={k}, max_ell={max_ell}, '
                 f'model={cfg.get("model_name", "")!r}\n')
+
+        for key, val in _result_stamp(result).items():
+            f.write(f'# {key}: {val}\n')
 
         ext = cfg.get('external_fields', []) or []
         f.write(f'# external_fields: {ext}\n')

@@ -60,4 +60,5 @@ analytic pipeline.
 model's `DEFAULT_FUNDAMENTAL` / `METADATA` and calls `api.compute_cumulants`, which drives the
 `engine` and returns a result dict (`C_tau`, `tau_grid` / `chi_grid`, the mean field, the
 per-loop-order breakdown, the diagram records). `dd.plot_cumulant` renders it; `dd.save_npz`
-persists it.
+persists it with a version / Phase J convention stamp, and `dd.load_npz` reads it back (warning
+when the stamp predates 0.2.0).

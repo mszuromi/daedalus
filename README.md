@@ -172,6 +172,12 @@ are installed separately (Option A folds them into `environment.yml`; Option B u
 sage -python -m pytest tests/ -q
 ```
 
+## Changes between versions
+
+See [`CHANGELOG.md`](CHANGELOG.md). Version 0.2.0 changes the numbers of some models with
+instantaneous (δ) propagator parts. Files saved with `dd.save_npz` record the version that wrote
+them, and `dd.load_npz` warns when a file predates the change.
+
 ## Citing
 
 If you use this software, please cite it — see [`CITATION.cff`](CITATION.cff).
