@@ -1389,8 +1389,8 @@ class _BaseModelBuilder:
                         f'is 0 = ({rhs_text}) - ({rest_text}) and it does '
                         f'not define {primary}star.  Put the algebraic '
                         f'part of the drift on the LHS (e.g. '
-                        f"lhs='Dt*m + u', rhs='(M-m)/tauM' rather than "
-                        f"lhs='Dt*m', rhs='(M-m)/tauM - u'), or declare "
+                        f"lhs='Dt*m + u', rhs='a' rather than "
+                        f"lhs='Dt*m', rhs='a - u'), or declare "
                         f'the saddle with set_mf_equation(...).'
                     )
                 if c_text.strip() != '1' or rest_text.strip() != '0':
