@@ -168,11 +168,11 @@ def _evaluate_grouped_m0_modesum(
         for e in range(len(lambdas)):
             gamma += lambdas[e] * dt_per_edge[e]
         if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
-            return None
+            return _fi_mod._bail('grouped_m0_gamma_guard')
         try:
             total += B_alpha * cmath.exp(gamma)
         except (OverflowError, ValueError):
-            return None
+            return _fi_mod._bail('grouped_m0_exp_overflow')
     return total
 
 
@@ -244,38 +244,40 @@ def _integrate_grouped_m1_modesum(
             alpha_s += lam * a_int_v
             gamma += lam * c_ext
         if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
-            return None
+            return _fi_mod._bail('grouped_m1_gamma_guard')
         try:
             if abs(alpha_s) < 1e-15:
                 # α_s ≈ 0: integrand is constant in s.
                 if L_inf or U_inf:
                     # Integral diverges; bail to scipy.nquad fallback.
-                    return None
+                    return _fi_mod._bail('grouped_m1_divergent_flat')
                 contrib = (U - L) * cmath.exp(gamma)
             else:
                 # ∫ exp(α_s · s + γ) ds = (exp(α_s·U+γ) - exp(α_s·L+γ)) / α_s
                 # At ±∞ the term vanishes iff sign(Re α_s) matches.
                 if U_inf:
                     if alpha_s.real >= 0:
-                        return None  # would diverge at +∞
+                        # would diverge at +∞
+                        return _fi_mod._bail('grouped_m1_divergent_upper')
                     term_U = 0.0 + 0.0j
                 else:
                     arg = alpha_s * U + gamma
                     if abs(arg.real) > _GROUPED_EXP_REAL_LIMIT:
-                        return None
+                        return _fi_mod._bail('grouped_m1_arg_guard')
                     term_U = cmath.exp(arg)
                 if L_inf:
                     if alpha_s.real <= 0:
-                        return None  # would diverge at -∞
+                        # would diverge at -∞
+                        return _fi_mod._bail('grouped_m1_divergent_lower')
                     term_L = 0.0 + 0.0j
                 else:
                     arg = alpha_s * L + gamma
                     if abs(arg.real) > _GROUPED_EXP_REAL_LIMIT:
-                        return None
+                        return _fi_mod._bail('grouped_m1_arg_guard')
                     term_L = cmath.exp(arg)
                 contrib = (term_U - term_L) / alpha_s
         except (OverflowError, ValueError):
-            return None
+            return _fi_mod._bail('grouped_m1_exp_overflow')
         total += B_alpha * contrib
     return total
 
@@ -405,6 +407,9 @@ def integrate_grouped_diagram(
     # ── Shared scaffolding (prediagram-level) ─────────────────────
     td0 = typed_diagrams[0]
     loop_number = _loop_number_from_graph(td0)
+    # Identity of this grouped build for ``final_integral._SUBSET_HOOK``
+    # (M0.1); shares the per-diagram serial counter so ids are unique.
+    _diag_serial = _fi_mod._next_diagram_serial()
 
     D = td0.prediagram[0]
     leaves = list(td0.prediagram[2])
@@ -1010,28 +1015,42 @@ def integrate_grouped_diagram(
 
         # Build this subset's contribution closure.
         def _make_subset_contrib(fc, cdata, m_val,
-                                  pole_tuples=None, dummy_modes=None):
-            def _contrib(free_vals):
+                                  pole_tuples=None, dummy_modes=None,
+                                  hook_meta=None):
+            # M0.1: ``_hook_ctx`` is passed by ``contribution()`` only while
+            # ``_fi_mod._SUBSET_HOOK`` is set; the hook is read from the
+            # module at call time.  The analytic/nquad calls and their
+            # arguments are unchanged (the polygon/poset calls still run
+            # their NO-PLAN branch, as before).
+            def _contrib(free_vals, _hook_ctx=None):
+                _hook = _fi_mod._SUBSET_HOOK
+                _attempted = None
+                _bail_reason = None
+                _path = None
+                _evaluator = None
                 # Analytic merged-residue path first.
                 if pole_tuples is not None:
+                    val = None
                     if m_val == 0:
+                        _attempted, _path = 'm0', 'm0'
+                        _evaluator = '_evaluate_grouped_m0_modesum'
                         val = _evaluate_grouped_m0_modesum(
                             pole_tuples=pole_tuples,
                             subset_constraint_data=cdata,
                             free_ext_vals=free_vals,
                         )
-                        if val is not None:
-                            return val
                     elif m_val == 1:
+                        _attempted, _path = 'm1', 'm1'
+                        _evaluator = '_integrate_grouped_m1_modesum'
                         val = _integrate_grouped_m1_modesum(
                             pole_tuples=pole_tuples,
                             subset_constraint_data=cdata,
                             free_ext_vals=free_vals,
                             bbox_cap=_fi_mod.POLYGON_BBOX_CAP,
                         )
-                        if val is not None:
-                            return val
                     elif m_val == 2 and dummy_modes is not None:
+                        _attempted, _path = 'polygon', 'polygon'
+                        _evaluator = '_integrate_2d_polygon_modesum'
                         val = _integrate_2d_polygon_modesum(
                             smooth_edge_modes=list(dummy_modes),
                             prefactor_complex=1.0 + 0.0j,
@@ -1039,9 +1058,9 @@ def integrate_grouped_diagram(
                             free_ext_vals=free_vals,
                             pole_tuples=pole_tuples,
                         )
-                        if val is not None:
-                            return val
                     elif m_val >= 3 and dummy_modes is not None:
+                        _attempted, _path = 'poset', 'poset'
+                        _evaluator = '_integrate_nd_polytope_poset_modesum'
                         val = _integrate_nd_polytope_poset_modesum(
                             smooth_edge_modes=list(dummy_modes),
                             prefactor_complex=1.0 + 0.0j,
@@ -1050,15 +1069,48 @@ def integrate_grouped_diagram(
                             m=m_val,
                             pole_tuples=pole_tuples,
                         )
-                        if val is not None:
-                            return val
+                    if val is not None:
+                        if _hook is not None:
+                            _fi_mod._emit_subset_hook(
+                                _hook, hook_meta, _hook_ctx, free_vals,
+                                m_val, cdata, path=_path,
+                                evaluator=_evaluator,
+                                branch=('grouped' if m_val <= 1
+                                        else 'noplan'),
+                                value=val, bail_reason=None,
+                                attempted=_attempted, modes=dummy_modes,
+                                prefactor=1.0 + 0.0j, plan=None,
+                                pole_tuples=pole_tuples, integrand=fc)
+                        return val
+                    if _attempted is not None:
+                        _bail_reason = _fi_mod._pop_bail_reason()
                 # scipy.nquad fallback on the SR-summed integrand.
+                _fi_mod._count_nquad_fallback(_bail_reason, m_val)
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
                                      for i in range(len(a_ext)))
                     resolved.append((list(a_int), c_eff))
-                return _integrate_polytope(fc, resolved, free_vals, m_val)
+                _val = _integrate_polytope(fc, resolved, free_vals, m_val)
+                if _hook is not None:
+                    if m_val < 1:
+                        _reason = _bail_reason
+                    elif _attempted is None:
+                        _reason = 'not_eligible'
+                    else:
+                        _reason = _bail_reason or 'unknown'
+                    _fi_mod._emit_subset_hook(
+                        _hook, hook_meta, _hook_ctx, free_vals, m_val, cdata,
+                        path='nquad' if m_val >= 1 else 'm0',
+                        evaluator='_integrate_polytope' if m_val >= 1
+                        else 'polytope_m0',
+                        branch=(None if _attempted is None
+                                else 'grouped' if m_val <= 1 else 'noplan'),
+                        value=_val, bail_reason=_reason,
+                        attempted=_attempted, modes=dummy_modes,
+                        prefactor=1.0 + 0.0j, plan=None,
+                        pole_tuples=pole_tuples, integrand=fc)
+                return _val
             return _contrib
 
         subset_contributions.append(
@@ -1066,6 +1118,16 @@ def integrate_grouped_diagram(
                 integrand_fc, subset_constraint_data, m_sub,
                 pole_tuples=grouped_pole_tuples,
                 dummy_modes=grouped_dummy_modes,
+                hook_meta={
+                    'source': 'grouped',
+                    'diagram_serial': _diag_serial,
+                    'diagram': typed_diagrams,
+                    'loop_number': loop_number,
+                    'subset_id': subset_bits,
+                    'subset_index': len(subset_contributions),
+                    'delta_edges': tuple(delta_edges),
+                    'smooth_edges': tuple(smooth_edges),
+                },
             )
         )
         subset_diagnostics.append({
@@ -1107,15 +1169,25 @@ def integrate_grouped_diagram(
         # with a topologically distinguished leaf), and is a no-op
         # for symmetric ones (tree-level identical-leaf cumulants).
         # See final_integral.py for the full derivation.
+        _hook_on = _fi_mod._SUBSET_HOOK is not None   # M0.1
+        _call_serial = (_fi_mod._next_hook_call_serial() if _hook_on
+                        else None)
         total = 0.0 + 0.0j
-        for perm in _perms:
+        for _perm_idx, perm in enumerate(_perms):
             permuted = [ext_time_values[perm[j]] for j in range(_k)]
             if origin_leaf_idx is not None:
                 t_origin = permuted[origin_leaf_idx]
                 permuted = [pt - t_origin for pt in permuted]
             free_vals = [float(permuted[j]) for j in free_ext_idx]
-            for cfn in subset_contributions:
-                total = total + complex(cfn(free_vals))
+            if not _hook_on:
+                for cfn in subset_contributions:
+                    total = total + complex(cfn(free_vals))
+            else:
+                _ctx = _fi_mod._hook_eval_context(
+                    _diag_serial, ext_time_values, _perm_idx, perm,
+                    len(_perms), _comp, _call_serial)
+                for cfn in subset_contributions:
+                    total = total + complex(cfn(free_vals, _ctx))
         return total / _comp
 
     return {

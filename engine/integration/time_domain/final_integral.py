@@ -335,13 +335,274 @@ _RUNTIME_COUNTERS = {
     'scipy_nquad_called_m1': 0,
     'scipy_nquad_called_m2': 0,
     'scipy_nquad_called_mge3': 0,
+    # ── M0.1 observational counters (docs/integration_speedup_plan.md
+    # §2.4 item 8, §4.1).  Purely observational: nothing reads them to
+    # decide control flow.
+    #
+    # Entries into the scipy.nquad fallback: ``_integrate_polytope`` calls
+    # with m >= 1, so ``nquad_calls == scipy_nquad_called_m1 + _m2 + _mge3``
+    # always.  (An entry may still return before invoking
+    # scipy.integrate.nquad, and an invoked quadrature integrates the real
+    # and imaginary parts separately: invocations <= 2 * nquad_calls.)
+    # The plan's "0 nquad calls on the model zoo" gate (§2.4 item 8, M9) is
+    # keyed on this counter.
+    'nquad_calls': 0,
+    # ``_integrate_polytope`` entries with m = 0: a direct constraint check
+    # + evaluation of a δ-collapsed subset, NOT quadrature.
+    'polytope_m0_direct': 0,
+    # Why an m≥1 subset call reached ``_integrate_polytope`` (counted by the
+    # per-diagram and grouped dispatch closures, not by direct callers).
+    # Keys are exactly ``_NQUAD_FALLBACK_REASONS``; the fine-grained reason
+    # (e.g. 'polygon_gamma_overflow') is passed to ``_SUBSET_HOOK`` instead.
+    'nquad_fallback_by_reason': {
+        'polygon_guard': 0, 'polygon_other': 0,
+        'poset_extract_none': 0, 'poset_no_extension': 0,
+        'poset_chain_none': 0, 'other': 0,
+    },
+    # Constraint rows with every |a_int| <= 1e-12 (a smooth edge whose Δt is
+    # constant after δ-elimination) processed by ``_polygon_from_2d_
+    # constraints`` or ``_extract_causal_poset``.
+    'zero_normal_rows_seen': 0,
 }
+
+_NQUAD_FALLBACK_REASONS = (
+    'polygon_guard', 'polygon_other',
+    'poset_extract_none', 'poset_no_extension', 'poset_chain_none',
+    'other',
+)
 
 
 def _reset_runtime_counters():
-    """Zero out ``_RUNTIME_COUNTERS`` before a timed run."""
-    for k in _RUNTIME_COUNTERS:
-        _RUNTIME_COUNTERS[k] = 0
+    """Zero out ``_RUNTIME_COUNTERS`` before a timed run.
+
+    Nested dict counters (``nquad_fallback_by_reason``) are reset in place
+    to exactly their canonical keys, so a reference held by a caller stays
+    valid.
+    """
+    for k in list(_RUNTIME_COUNTERS):
+        v = _RUNTIME_COUNTERS[k]
+        if isinstance(v, dict):
+            v.clear()
+            if k == 'nquad_fallback_by_reason':
+                v.update((r, 0) for r in _NQUAD_FALLBACK_REASONS)
+        else:
+            _RUNTIME_COUNTERS[k] = 0
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Analytic-path bail reasons (M0.1; observational)
+# ───────────────────────────────────────────────────────────────────────
+# Every ``return None`` of the three analytic modesum integrators (and of the
+# grouped m0/m1 helpers) goes through ``_bail(reason)``, which records WHY the
+# path gave up and returns ``None`` -- control flow is unchanged.  The
+# dispatch closures read the reason with ``_pop_bail_reason()`` only after a
+# ``None``, to fill ``nquad_fallback_by_reason`` and the ``_SUBSET_HOOK``
+# payload.  Thread-local so a threaded caller cannot mislabel another
+# thread's fallback.
+import threading as _threading
+
+_BAIL_STATE = _threading.local()
+
+
+def _bail(reason):
+    """Record ``reason`` as the latest analytic-path bail; return ``None``."""
+    _BAIL_STATE.reason = reason
+    return None
+
+
+def _pop_bail_reason():
+    """Return and clear the latest bail reason of this thread (or ``None``)."""
+    reason = getattr(_BAIL_STATE, 'reason', None)
+    _BAIL_STATE.reason = None
+    return reason
+
+
+# Fine-grained bail reason -> ``nquad_fallback_by_reason`` key.
+_BAIL_REASON_CATEGORY = {
+    'polygon_triangle_guard': 'polygon_guard',
+    'poset_extract_none': 'poset_extract_none',
+    'poset_no_extension': 'poset_no_extension',
+    'poset_chain_none': 'poset_chain_none',
+}
+
+
+def _bail_category(reason):
+    """Map a fine-grained bail reason (or ``None``) to a counter key."""
+    cat = _BAIL_REASON_CATEGORY.get(reason)
+    if cat is not None:
+        return cat
+    if reason is not None and reason.startswith('polygon_'):
+        return 'polygon_other'
+    return 'other'
+
+
+def _count_nquad_fallback(reason, m):
+    """Dispatch-side counter: an m≥1 subset call is about to reach
+    ``_integrate_polytope`` because of ``reason`` (``None`` = no analytic
+    path was attempted).  m=0 calls are not counted (not a fallback)."""
+    if m >= 1:
+        _RUNTIME_COUNTERS['nquad_fallback_by_reason'][
+            _bail_category(reason)] += 1
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Per-subset observation hook (M0.1; docs/integration_speedup_plan.md §4.1)
+# ───────────────────────────────────────────────────────────────────────
+# ``_SUBSET_HOOK`` is ``None`` in production.  When set to a callable, the
+# per-diagram dispatch (``integrate_diagram``'s ``_contrib``) and the grouped
+# dispatch (``grouped_integral.integrate_grouped_diagram``'s ``_contrib``)
+# call ``_SUBSET_HOOK(payload)`` once per (diagram, δ-subset, free_ext_vals,
+# Wick permutation) evaluation, AFTER computing the value, with a dict
+# payload built by ``_emit_subset_hook``.  It is read at CALL TIME through
+# the module global (never a default argument), so
+# ``final_integral._SUBSET_HOOK = f`` takes effect immediately, including
+# for closures built before it was set.  With the hook ``None`` the only
+# cost is one global ``is None`` check per subset call and one per
+# ``contribution()`` call; values are bit-identical either way (the hook
+# only observes -- it must not mutate the payload's referenced objects).
+#
+# Contract: subset contributions are evaluated in the calling process.  A
+# hook set in a parent process does not see calls made in forked
+# ``total_C_batch`` workers -- run with ``parallel=False`` when observing.
+# Exceptions raised by the hook propagate (it is a diagnostic tool).  The
+# consumer is ``tests/tools/phase_j_subset_diff.py``.
+_SUBSET_HOOK = None
+
+import itertools as _itertools_hook
+_DIAGRAM_SERIAL = _itertools_hook.count()
+_HOOK_EVAL_SERIAL = _itertools_hook.count()
+_HOOK_CALL_SERIAL = _itertools_hook.count()
+
+
+def _next_diagram_serial():
+    """Monotone id for one ``integrate_diagram`` / grouped-group build."""
+    return next(_DIAGRAM_SERIAL)
+
+
+def _next_hook_call_serial():
+    """Monotone id for one hooked ``contribution(*ext_time_values)`` call."""
+    return next(_HOOK_CALL_SERIAL)
+
+
+def _hook_eval_context(diagram_serial, ext_time_values, perm_index, perm,
+                       n_perms, compensation, call_serial=None):
+    """Per-(contribution() call, Wick perm) context handed to ``_contrib``
+    when the hook is set.  ``call_serial`` is shared by every perm of one
+    ``contribution()`` call; ``eval_serial`` is unique per (call, perm)."""
+    return {
+        'call_serial': call_serial,
+        'eval_serial': next(_HOOK_EVAL_SERIAL),
+        'diagram_serial': diagram_serial,
+        'ext_time_values': tuple(float(x) for x in ext_time_values),
+        'perm_index': perm_index,
+        'perm': tuple(perm),
+        'n_perms': n_perms,
+        'compensation': compensation,
+    }
+
+
+def _modes_summary(modes, pole_tuples):
+    """Small, picklable summary of the smooth-edge pole/residue data."""
+    out = {'n_smooth': None, 'n_modes_per_edge': None, 'edge_modes': None,
+           'lambdas': None, 'n_pole_tuples': None,
+           'max_abs_tuple_coeff': None}
+    try:
+        if modes is not None:
+            out['n_smooth'] = len(modes)
+            out['n_modes_per_edge'] = [len(ms.modes) for ms in modes]
+            out['edge_modes'] = [
+                [(complex(C), complex(lam)) for (C, lam) in ms.modes]
+                for ms in modes
+            ]
+            out['lambdas'] = sorted(
+                {complex(lam) for ms in modes for (_C, lam) in ms.modes},
+                key=lambda z: (z.real, z.imag),
+            )
+        if pole_tuples is not None:
+            out['n_pole_tuples'] = len(pole_tuples)
+            out['max_abs_tuple_coeff'] = max(
+                (abs(complex(C)) for (C, _l) in pole_tuples), default=0.0)
+    except Exception as exc:          # observational only: never raise
+        out['error'] = repr(exc)
+    return out
+
+
+def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
+                      evaluator, branch, value, bail_reason, attempted,
+                      modes, prefactor, plan, pole_tuples, integrand):
+    """Build the ``_SUBSET_HOOK`` payload and call the hook.
+
+    Only ever called when the hook is set.  Payload keys:
+
+    * identity: ``source`` ('per_diagram' | 'grouped'), ``diagram_serial``,
+      ``diagram`` (TypedDiagram, or the list of them for a grouped build),
+      ``loop_number``, ``subset_id`` (δ-subset bitmask), ``subset_index``
+      (position in the diagram's subset list), ``delta_edges``,
+      ``smooth_edges``; plus the Wick/evaluation context ``ctx`` (``None``
+      when the subset closure is called outside ``contribution()``):
+      ``eval_serial``, ``ext_time_values``, ``perm_index``, ``perm``,
+      ``n_perms``, ``compensation``.
+    * geometry: ``m``, ``constraints`` (the subset_constraint_data rows
+      ``(a_int, a_ext, c0)``), ``row_kinds`` (``None`` until M1 adds row
+      provenance), ``free_ext_vals``.
+    * integrand: ``modes_summary`` (picklable), and live references
+      ``modes`` / ``plan`` / ``pole_tuples`` / ``integrand`` (the closure
+      scipy.nquad integrates) / ``prefactor``.  The live references are
+      NOT picklable; copy what you need.
+    * outcome: ``path`` ('m0' | 'm1' | 'polygon' | 'poset' | 'nquad'),
+      ``evaluator`` (function-level name), ``branch`` ('plan' | 'noplan' |
+      'grouped' | None), ``attempted`` (analytic path tried, or ``None``),
+      ``bail_reason`` (fine-grained reason the analytic path returned
+      ``None``; 'not_eligible' when none was attempted for an m≥1 call),
+      ``bail_category`` (the ``nquad_fallback_by_reason`` key, or ``None``
+      when an analytic path answered), ``value`` (complex, exactly what
+      the dispatch returns).
+    """
+    summ = meta.get('_modes_summary')
+    if summ is None:
+        summ = _modes_summary(modes, pole_tuples)
+        meta['_modes_summary'] = summ
+    loop_number = meta.get('loop_number')
+    if loop_number is None and meta.get('diagram') is not None:
+        try:
+            loop_number = _loop_number_from_graph(meta['diagram'])
+        except Exception:
+            loop_number = None
+        meta['loop_number'] = loop_number
+    answered_by_analytic = path != 'nquad' and not (
+        path == 'm0' and evaluator == 'polytope_m0')
+    payload = {
+        'source': meta.get('source'),
+        'diagram_serial': meta.get('diagram_serial'),
+        'diagram': meta.get('diagram'),
+        'loop_number': loop_number,
+        'subset_id': meta.get('subset_id'),
+        'subset_index': meta.get('subset_index'),
+        'delta_edges': meta.get('delta_edges'),
+        'smooth_edges': meta.get('smooth_edges'),
+        'ctx': ctx,
+        'm': m,
+        'constraints': cdata,
+        'row_kinds': None,
+        'free_ext_vals': tuple(float(x) for x in free_vals),
+        'modes_summary': summ,
+        'modes': modes,
+        'plan': plan,
+        'pole_tuples': pole_tuples,
+        'integrand': integrand,
+        'prefactor': prefactor,
+        'path': path,
+        'evaluator': evaluator,
+        'branch': branch,
+        'attempted': attempted,
+        'bail_reason': bail_reason,
+        'bail_category': (None if answered_by_analytic or m < 1
+                          else _bail_category(
+                              None if bail_reason == 'not_eligible'
+                              else bail_reason)),
+        'value': value,
+    }
+    hook(payload)
 
 # ───────────────────────────────────────────────────────────────────────
 # Analytic ∫_L^U exp(α·s + γ) ds  (Stage 4a-perdiag, m=1)
@@ -523,6 +784,9 @@ def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap):
         )
         a0 = float(a_int[0])
         a1 = float(a_int[1])
+        if abs(a0) <= 1e-12 and abs(a1) <= 1e-12:
+            # Observational (M0.1): a zero-normal row reaching the clip.
+            _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
         polygon = _clip_polygon_to_halfplane(polygon, a0, a1, c_eff)
         if not polygon:
             return []
@@ -779,6 +1043,11 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
         nz = [(i, float(a_int[i])) for i in range(len(a_int))
               if abs(float(a_int[i])) > tol]
         if not nz:
+            # Observational (M0.1): a zero-normal row reaching the
+            # extractor (``tol`` may differ from 1e-12 for direct callers,
+            # so re-check against the counter's definition).
+            if all(abs(float(x)) <= 1e-12 for x in a_int):
+                _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
             # Pure constant constraint.  Should be satisfied
             # (c_eff > 0); if violated, polytope is empty (signal
             # via None — caller falls back, which will also detect
@@ -1868,12 +2137,12 @@ def _integrate_nd_polytope_poset_modesum(
     """
     import cmath
     if m < 3:
-        return None  # m=2 has its own dedicated path
+        return _bail('poset_m_lt_3')  # m=2 has its own dedicated path
     _RUNTIME_COUNTERS['poset_attempted'] += 1
     n_smooth = len(smooth_edge_modes)
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-        return None
+        return _bail('poset_rows_mismatch')
 
     poset = _extract_causal_poset(
         subset_constraint_data, free_ext_vals, m,
@@ -1881,13 +2150,13 @@ def _integrate_nd_polytope_poset_modesum(
     if poset is None:
         _RUNTIME_COUNTERS['poset_extract_returned_none'] += 1
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-        return None
+        return _bail('poset_extract_none')
 
     L_value, lower_ok = _causal_poset_consistent_scalar_lower(poset)
     if not lower_ok:
         _RUNTIME_COUNTERS['poset_consistent_lower_failed'] += 1
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-        return None
+        return _bail('poset_lower_inconsistent')
     # ── Lower bound: tight physical fallback (Stage 3b-bounds) ──────
     # When ``_causal_poset_consistent_scalar_lower`` returns no scalar
     # lower (L_value is None), the integrand still extends "to the
@@ -1933,7 +2202,7 @@ def _integrate_nd_polytope_poset_modesum(
     total = 0.0 + 0.0j
     extensions = list(_enumerate_linear_extensions(poset))
     if not extensions:
-        return None
+        return _bail('poset_no_extension')
 
     # Pre-resolve the chain-top upper bound per extension.
     # The upper-bound fallback stays at bbox_cap — retarded β gives
@@ -1985,11 +2254,11 @@ def _integrate_nd_polytope_poset_modesum(
                 for j in range(n_ext):
                     gamma = gamma + slope_row[j] * free_ext_vals[j]
                 if gamma.real > 600.0:
-                    return None
+                    return _bail('poset_gamma_overflow')
                 try:
                     term_const = term_const + pref * C_prod * cmath.exp(gamma)
                 except (OverflowError, ValueError):
-                    return None
+                    return _bail('poset_exp_overflow')
             if term_const == 0:
                 continue
             for sigma, U_ext, upp_per_pos in zip(
@@ -2006,7 +2275,7 @@ def _integrate_nd_polytope_poset_modesum(
                     ] += 1
                     if use_mp_accum:
                         _mp.dps = _saved_dps
-                    return None
+                    return _bail('poset_chain_none')
                 if use_mp_accum:
                     _term_f64 = term_const * chain_val
                     total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
@@ -2037,11 +2306,11 @@ def _integrate_nd_polytope_poset_modesum(
         # negative direction underflows to 0 (correct for decayed
         # integrand).  Matches the polygon/interval guards.
         if gamma.real > 600.0:
-            return None
+            return _bail('poset_gamma_overflow')
         try:
             term_const = pref * C_prod * cmath.exp(gamma)
         except (OverflowError, ValueError):
-            return None
+            return _bail('poset_exp_overflow')
         if term_const == 0:
             continue
         # Sum across linear extensions of the poset.
@@ -2068,7 +2337,7 @@ def _integrate_nd_polytope_poset_modesum(
                 ] += 1
                 if use_mp_accum:
                     _mp.dps = _saved_dps
-                return None
+                return _bail('poset_chain_none')
             if use_mp_accum:
                 _term_f64 = term_const * chain_val
                 total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
@@ -2122,7 +2391,7 @@ def _integrate_1d_polytope_modesum(
     _RUNTIME_COUNTERS['interval_attempted'] += 1
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['interval_returned_none'] += 1
-        return None
+        return _bail('interval_rows_mismatch')
 
     # Resolve the feasible interval — track unboundedness exactly.
     L = -math.inf
@@ -2175,40 +2444,40 @@ def _integrate_1d_polytope_modesum(
             # below.  Duplicated rather than fall-through so the hot
             # path stays branch-free on (plan is not None).
             if gamma.real > 600.0:
-                return None
+                return _bail('interval_gamma_overflow')
             try:
                 term_const = pref * C_prod
             except (OverflowError, ValueError):
-                return None
+                return _bail('interval_exp_overflow')
             if term_const == 0:
                 continue
             try:
                 if abs(alpha_s) < 1e-15:
                     if L_inf or U_inf:
-                        return None
+                        return _bail('interval_divergent_flat')
                     contrib = (U - L) * cmath.exp(gamma)
                 else:
                     if U_inf:
                         if alpha_s.real >= 0:
-                            return None
+                            return _bail('interval_divergent_upper')
                         term_U = 0.0 + 0.0j
                     else:
                         arg = alpha_s * U + gamma
                         if arg.real > 600.0:
-                            return None
+                            return _bail('interval_arg_overflow')
                         term_U = cmath.exp(arg)
                     if L_inf:
                         if alpha_s.real <= 0:
-                            return None
+                            return _bail('interval_divergent_lower')
                         term_L = 0.0 + 0.0j
                     else:
                         arg = alpha_s * L + gamma
                         if arg.real > 600.0:
-                            return None
+                            return _bail('interval_arg_overflow')
                         term_L = cmath.exp(arg)
                     contrib = (term_U - term_L) / alpha_s
             except (OverflowError, ValueError):
-                return None
+                return _bail('interval_exp_overflow')
             total += term_const * contrib
         return total
 
@@ -2241,41 +2510,43 @@ def _integrate_1d_polytope_modesum(
         # ``cmath.exp``; negative direction underflows to 0 (which
         # gives the correct result for a fully-decayed integrand).
         if gamma.real > 600.0:
-            return None
+            return _bail('interval_gamma_overflow')
         try:
             term_const = pref * C_prod
         except (OverflowError, ValueError):
-            return None
+            return _bail('interval_exp_overflow')
         if term_const == 0:
             continue
         try:
             if abs(alpha_s) < 1e-15:
                 # α_s ≈ 0: integrand is constant exp(γ) in s.
                 if L_inf or U_inf:
-                    return None  # diverges
+                    return _bail('interval_divergent_flat')  # diverges
                 contrib = (U - L) * cmath.exp(gamma)
             else:
                 if U_inf:
                     if alpha_s.real >= 0:
-                        return None  # would diverge at +∞
+                        # would diverge at +∞
+                        return _bail('interval_divergent_upper')
                     term_U = 0.0 + 0.0j
                 else:
                     arg = alpha_s * U + gamma
                     if arg.real > 600.0:
-                        return None
+                        return _bail('interval_arg_overflow')
                     term_U = cmath.exp(arg)
                 if L_inf:
                     if alpha_s.real <= 0:
-                        return None  # would diverge at -∞
+                        # would diverge at -∞
+                        return _bail('interval_divergent_lower')
                     term_L = 0.0 + 0.0j
                 else:
                     arg = alpha_s * L + gamma
                     if arg.real > 600.0:
-                        return None
+                        return _bail('interval_arg_overflow')
                     term_L = cmath.exp(arg)
                 contrib = (term_U - term_L) / alpha_s
         except (OverflowError, ValueError):
-            return None
+            return _bail('interval_exp_overflow')
         total += term_const * contrib
     return total
 
@@ -2324,7 +2595,7 @@ def _integrate_2d_polygon_modesum(
         # caller built both from ``smooth_edges`` in lock-step.  Bail
         # to scipy.nquad fallback.
         _RUNTIME_COUNTERS['polygon_returned_none'] += 1
-        return None
+        return _bail('polygon_rows_mismatch')
 
     # Polygon is shared across all pole tuples.
     polygon = _polygon_from_2d_constraints(
@@ -2362,11 +2633,11 @@ def _integrate_2d_polygon_modesum(
             for j in range(n_ext):
                 gamma = gamma + slope_row[j] * free_ext_vals[j]
             if gamma.real > 600.0:
-                return None
+                return _bail('polygon_gamma_overflow')
             try:
                 term_const = pref * C_prod * cmath.exp(gamma)
             except (OverflowError, ValueError):
-                return None
+                return _bail('polygon_exp_overflow')
             if term_const == 0:
                 continue
             tri_sum = 0.0 + 0.0j
@@ -2375,7 +2646,7 @@ def _integrate_2d_polygon_modesum(
                     v0, v1, v2, alpha_s, beta_s
                 )
                 if tri_contrib is None:
-                    return None
+                    return _bail('polygon_triangle_guard')
                 tri_sum += tri_contrib
             total += term_const * tri_sum
         return total
@@ -2418,11 +2689,11 @@ def _integrate_2d_polygon_modesum(
         # overflow side, matching the fixed-direction guard inside
         # ``_exp_over_triangle``.
         if gamma.real > 600.0:
-            return None
+            return _bail('polygon_gamma_overflow')
         try:
             term_const = pref * C_prod * cmath.exp(gamma)
         except (OverflowError, ValueError):
-            return None
+            return _bail('polygon_exp_overflow')
         if term_const == 0:
             continue
         # Triangle sum.  ``_exp_over_triangle`` returns ``None`` when
@@ -2432,7 +2703,7 @@ def _integrate_2d_polygon_modesum(
         for (v0, v1, v2) in triangles:
             tri_contrib = _exp_over_triangle(v0, v1, v2, alpha_s, beta_s)
             if tri_contrib is None:
-                return None
+                return _bail('polygon_triangle_guard')
             tri_sum += tri_contrib
         total += term_const * tri_sum
     return total
@@ -2604,6 +2875,8 @@ def integrate_diagram(
             for the integrand to be nonzero.
     """
     loop_number = _loop_number_from_graph(typed_diagram)
+    # Identity of this build for the ``_SUBSET_HOOK`` payload (M0.1).
+    _diag_serial = _next_diagram_serial()
 
     D = typed_diagram.prediagram[0]
     leaves = list(typed_diagram.prediagram[2])
@@ -3758,8 +4031,18 @@ def integrate_diagram(
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
                                   modes=None, pref_c=None,
-                                  pole_tuples=None, plan=None):
-            def _contrib(free_vals):
+                                  pole_tuples=None, plan=None,
+                                  hook_meta=None):
+            # ``_hook_ctx`` is passed by ``contribution()`` only while
+            # ``_SUBSET_HOOK`` is set (M0.1); the hook itself is read from
+            # the module global at call time.  Nothing below changes the
+            # value: the analytic/nquad calls and their arguments are the
+            # pre-M0.1 ones, the extra work is bookkeeping on the ``None``
+            # (fallback) branches and, only with a hook, the payload.
+            def _contrib(free_vals, _hook_ctx=None):
+                _hook = _SUBSET_HOOK
+                _attempted = None
+                _bail_reason = None
                 # m=1 analytic 1D interval (Stage 4a-perdiag).
                 if (modes is not None and pref_c is not None
                         and m_val == 1):
@@ -3772,7 +4055,20 @@ def integrate_diagram(
                         plan=plan,
                     )
                     if interval_val is not None:
+                        if _hook is not None:
+                            _emit_subset_hook(
+                                _hook, hook_meta, _hook_ctx, free_vals,
+                                m_val, cdata, path='m1',
+                                evaluator='_integrate_1d_polytope_modesum',
+                                branch='plan' if plan is not None
+                                else 'noplan',
+                                value=interval_val, bail_reason=None,
+                                attempted='m1', modes=modes,
+                                prefactor=pref_c, plan=plan,
+                                pole_tuples=pole_tuples, integrand=fc)
                         return interval_val
+                    _attempted = 'm1'
+                    _bail_reason = _pop_bail_reason()
                 # m=2 analytic polygon (Stage 3a-full).
                 if (modes is not None and pref_c is not None
                         and m_val == 2):
@@ -3785,7 +4081,20 @@ def integrate_diagram(
                         plan=plan,
                     )
                     if poly_val is not None:
+                        if _hook is not None:
+                            _emit_subset_hook(
+                                _hook, hook_meta, _hook_ctx, free_vals,
+                                m_val, cdata, path='polygon',
+                                evaluator='_integrate_2d_polygon_modesum',
+                                branch='plan' if plan is not None
+                                else 'noplan',
+                                value=poly_val, bail_reason=None,
+                                attempted='polygon', modes=modes,
+                                prefactor=pref_c, plan=plan,
+                                pole_tuples=pole_tuples, integrand=fc)
                         return poly_val
+                    _attempted = 'polygon'
+                    _bail_reason = _pop_bail_reason()
                 # m≥3 analytic causal-poset chain simplex (Stage 3b).
                 if (modes is not None and pref_c is not None
                         and m_val >= 3):
@@ -3799,14 +4108,48 @@ def integrate_diagram(
                         plan=plan,
                     )
                     if poset_val is not None:
+                        if _hook is not None:
+                            _emit_subset_hook(
+                                _hook, hook_meta, _hook_ctx, free_vals,
+                                m_val, cdata, path='poset',
+                                evaluator=(
+                                    '_integrate_nd_polytope_poset_modesum'),
+                                branch='plan' if plan is not None
+                                else 'noplan',
+                                value=poset_val, bail_reason=None,
+                                attempted='poset', modes=modes,
+                                prefactor=pref_c, plan=plan,
+                                pole_tuples=pole_tuples, integrand=fc)
                         return poset_val
+                    _attempted = 'poset'
+                    _bail_reason = _pop_bail_reason()
                 # Closure-only fallback via scipy.nquad.
+                _count_nquad_fallback(_bail_reason, m_val)
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
                                      for i in range(len(a_ext)))
                     resolved.append((list(a_int), c_eff))
-                return _integrate_polytope(fc, resolved, free_vals, m_val)
+                _val = _integrate_polytope(fc, resolved, free_vals, m_val)
+                if _hook is not None:
+                    if m_val < 1:
+                        _reason = None
+                    elif _attempted is None:
+                        _reason = 'not_eligible'
+                    else:
+                        _reason = _bail_reason or 'unknown'
+                    _emit_subset_hook(
+                        _hook, hook_meta, _hook_ctx, free_vals, m_val,
+                        cdata, path='nquad' if m_val >= 1 else 'm0',
+                        evaluator='_integrate_polytope' if m_val >= 1
+                        else 'polytope_m0',
+                        branch=('plan' if plan is not None else 'noplan')
+                        if _attempted is not None else None,
+                        value=_val, bail_reason=_reason,
+                        attempted=_attempted, modes=modes,
+                        prefactor=pref_c, plan=plan,
+                        pole_tuples=pole_tuples, integrand=fc)
+                return _val
             return _contrib
 
         subset_contributions.append(
@@ -3816,6 +4159,16 @@ def integrate_diagram(
                 pref_c=_modesum_prefactor_c,
                 pole_tuples=_pole_tuples_cache,
                 plan=_modesum_plan,
+                hook_meta={
+                    'source': 'per_diagram',
+                    'diagram_serial': _diag_serial,
+                    'diagram': typed_diagram,
+                    'loop_number': loop_number,
+                    'subset_id': branch_bits,
+                    'subset_index': len(subset_contributions),
+                    'delta_edges': tuple(delta_edges),
+                    'smooth_edges': tuple(smooth_edges),
+                },
             )
         )
         # ``_evaluator_label`` tags the INTENDED analytic path for
@@ -3897,15 +4250,24 @@ def integrate_diagram(
         # fed free_val=0 (the pinned origin's actual time), producing
         # spurious asymmetry in C(τ) for any non-tree-level k=2
         # identical-externals case.
+        _hook_on = _SUBSET_HOOK is not None     # M0.1: one check per call
+        _call_serial = _next_hook_call_serial() if _hook_on else None
         total = 0.0 + 0.0j
-        for perm in _perms:
+        for _perm_idx, perm in enumerate(_perms):
             permuted = [ext_time_values[perm[j]] for j in range(_k)]
             if origin_leaf_idx is not None:
                 t_origin = permuted[origin_leaf_idx]
                 permuted = [pt - t_origin for pt in permuted]
             free_vals = [float(permuted[j]) for j in free_ext_idx]
-            for cfn in subset_contributions:
-                total = total + complex(cfn(free_vals))
+            if not _hook_on:
+                for cfn in subset_contributions:
+                    total = total + complex(cfn(free_vals))
+            else:
+                _ctx = _hook_eval_context(
+                    _diag_serial, ext_time_values, _perm_idx, perm,
+                    len(_perms), _comp, _call_serial)
+                for cfn in subset_contributions:
+                    total = total + complex(cfn(free_vals, _ctx))
         return total / _comp
 
     # If non-local cumulant kernels were substituted in cp, expose
@@ -4484,6 +4846,12 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m):
 
     s_constraints is a list of tuples `(a_int_list_of_len_m, c_eff)`.
     """
+    # M0.1 observational counters: m=0 is a direct evaluation, m>=1 is
+    # real scipy.nquad quadrature.
+    if m == 0:
+        _RUNTIME_COUNTERS['polytope_m0_direct'] += 1
+    else:
+        _RUNTIME_COUNTERS['nquad_calls'] += 1
     if m == 1:
         _RUNTIME_COUNTERS['scipy_nquad_called_m1'] += 1
     elif m == 2:
