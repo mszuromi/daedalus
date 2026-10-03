@@ -558,6 +558,112 @@ k ≥ 3 moment outputs of every model move as described in "Changed:
 `dd.run` k ≥ 3 slices …" above.
 Models outside the public model set are not listed.
 
+### Changed: Phase J skips identically-zero work (numbers unchanged)
+
+Phase J no longer builds or integrates two kinds of work whose result is
+exactly 0, and it checks a propagator that has no pole at all before using
+it. All three are controlled by the new call-time flag `STRUCTURAL_ZEROS`
+(on by default; see Added).
+
+- **Purely instantaneous propagator entries.** A propagator entry with a δ
+  part but no smooth part, for example the spike train of a population that
+  receives no input, makes every δ-subset that keeps its edge smooth
+  identically zero. Such a subset is no longer built, per diagram or in
+  grouped builds. In a grouped build a subset is skipped only when every
+  contributing typed diagram keeps such an edge smooth. An entry counts as
+  purely instantaneous only when this is proven: every stored pole residue
+  of the entry is exactly 0, and the entry of the frequency-domain
+  propagator `G_ft`, with the numeric parameters substituted, does not
+  contain ω. The second test looks at the propagator before the builder
+  drops any pole (it keeps only poles with Im ω > 1e−9), so an entry whose
+  residues are 0 only because its own mode is marginal, or because the
+  builder set a tiny residue to 0, is not skipped. Where `G_ft` is not
+  available, the stored residues decide. The builder does not compute
+  `G_ft` for a propagator matrix of size 6 or more, or with more than 20
+  free symbols (for example `multipopulation_test`), nor when its symbolic
+  inverse exceeds its time budget or fails. Every evaluator reads those
+  same residues, so the skipped work is exactly the 0 it would have
+  computed. (For example, `multipopulation_test` with the second row of
+  each of its four coupling matrices set to 0, k = 2 up to one loop, skips
+  5 δ-subsets in all this way on the per-diagram path, and 2 in a grouped
+  build.) Only an exact 0 counts: a tiny nonzero residue is never treated
+  as 0, and neither is a NaN or infinite one, so a corrupt
+  propagator entry still shows as NaN in the result instead of being
+  skipped. Example: `single_population_linear_delta_spikes_test` with
+  `w = [[0, 0.25], [0, 0]]` (population 2 receives no input), tree level.
+  In the per-diagram path, 31 of the 33 δ-subsets of the 10 typed k = 3
+  diagrams are skipped, and at k = 4, 344 of the 346 δ-subsets of the 68
+  typed diagrams. A grouped k = 4 build skips 105 subsets in its 12 groups
+  (of the 140 that have a contributing typed diagram), and 256 of the 258
+  δ-subsets of the 48 typed diagrams it evaluates per diagram; its counter
+  `forced_delta_pruned` adds both (361). A k = 4 run (build plus six
+  evaluations) takes 0.7 to 0.9 s instead of 2.5 to 2.7 s on the
+  per-diagram path (0.9 to 1.1 s instead of 2.5 to 3.0 s grouped; measured
+  on a loaded machine).
+  At the parameters of the tables above no public model has such an entry,
+  so their runs are unaffected.
+- **Empty order cycles at the `scipy.nquad` fallback.** The fallback returns
+  0 at once for a region whose ordering rows contain a directed cycle with
+  shifts summing to ≤ 0, in exact arithmetic. It used to integrate such a
+  region, and with fast poles could raise `OverflowError` on it. With the
+  default settings the exact emptiness tests of the Itô equal-time section
+  above answer these regions first; the fallback test is a safety net for
+  `THETA0_CONST_ROW_MODE = 'legacy_clip'`, for the two-time analytic
+  integrator switched off, and for the symbolic path.
+- **Propagators without any pole.** Because the builder keeps only strictly
+  retarded poles, a marginal or non-retarded mode, for example λ = 0 at
+  q = 0 for a massless field, is dropped, and a propagator can reach Phase J
+  with an empty pole list although it has a smooth part. Such a propagator
+  is now decided from `G_ft` alone, with the numeric parameters
+  substituted:
+  - An entry that does not contain ω is purely instantaneous, and is
+    handled as above. For example, `single_population_linear_delta_spikes_test`
+    with every coupling 0 (two independent constant-rate spike trains) now
+    gives exactly 0 at every point of its k = 2 τ grid and at k = 3, per
+    diagram and grouped. Before, these runs raised a bare `IndexError`,
+    except ⟨n₁ n₂⟩ at k = 2 in a grouped build, which already gave 0.
+  - If a diagram uses any other entry, or `G_ft` is not available, Phase J
+    raises `PoleFreePropagatorError` (a `ValueError` subclass, in
+    `engine.integration.time_domain.final_integral`), naming the entry and
+    the reason, instead of returning a value. Before, the per-diagram path
+    raised a bare `IndexError` there, and the grouped path could return a
+    value in which that smooth part was silently 0. The two massless
+    spatial probes of the model zoo (`edwards_wilkinson_1d` and
+    `reaction_diffusion_conserved_1d` at μ = 0) now stop with
+    `PoleFreePropagatorError` at their q = 0 sample instead of
+    `IndexError`.
+
+Values are bit-identical to the code before this change, compared in one
+process on 56 public configurations (per diagram and grouped counted
+separately; `ou_quartic`, `ou_quartic_colored`, `linear_hawkes`,
+`single_population_spike_reset_test` also with population 2 receiving no
+input, `single_population_linear_delta_spikes_test` also with the one-way
+and the uncoupled parameters above, `single_population_quad_exp_test` also
+with population 2 receiving no input, `multipopulation_test` also with
+the second rows, or all, of its coupling matrices set to 0,
+`dendritic_quad_soma_sigmoid`, and seven spatial entries of the model zoo),
+with the flag on, with it off, and under `DAEDALUS_PHASE_J_LEGACY=1`.
+The only differences are where the old code raised: the uncoupled linear
+delta spikes (`IndexError`; now exact zeros) and the massless spatial probes
+(`IndexError`; now `PoleFreePropagatorError`). Hand-built cases add the
+`OverflowError` of the fallback and the grouped path's silently dropped
+smooth part. With `STRUCTURAL_ZEROS = False` the old behaviour returns,
+bit-for-bit, including those errors.
+
+Developer-facing changes (values do not change):
+
+- `subset_diagnostics` can contain entries with status
+  `'forced_delta_pruned'`;
+- `n_subsets_evaluated`, and the `subset_index` of `_SUBSET_HOOK` payloads,
+  count only the subsets that are built;
+- `delta_contributions` no longer lists the zero-coefficient entries of
+  skipped shot-noise subsets;
+- a region answered by the cycle test still counts in `nquad_calls`, like
+  the Θ(0) answers given at the entry of the fallback;
+- the model-zoo baseline (`tests/fixtures/phase_j_legacy_baseline.*`,
+  recorded before this change) lists the two massless spatial probes as
+  `IndexError`; a re-run now reports `PoleFreePropagatorError` for them.
+
 ### Added
 
 - **Call-time Phase J flags.** The flags are module attributes of
@@ -573,8 +679,17 @@ Models outside the public model set are not listed.
   - `POLYGON_BBOX_CAP` is now read when the analytic integrators are called
     (`bbox_cap=None` defaults), in every mode. Before 0.2.0 the default was
     bound at definition time, so changing the attribute had no effect.
+  - `STRUCTURAL_ZEROS`: `True` (default) or `False` (the code before the
+    change "Phase J skips identically-zero work" above). Set it with the
+    environment variable `DAEDALUS_PHASE_J_STRUCTURAL_ZEROS=1|0` (also
+    `true`/`false`, `yes`/`no`, `on`/`off`). An unknown value raises. Unlike
+    the other flags, its δ-subset and pole-free decisions are made when a
+    diagram is built, that is by the value in force when `compute_cumulants`
+    runs (the skipped subsets are exactly 0, so this does not change
+    values); the cycle test reads it at every call.
 - **`DAEDALUS_PHASE_J_LEGACY=1`.** This umbrella switch sets every Phase J
-  flag to its pre-0.2.0 behaviour: currently the Θ(0) rule. It reproduces the
+  flag to its pre-0.2.0 behaviour: the Θ(0) rule (`THETA0_CONST_ROW_MODE =
+  'legacy_clip'`) and `STRUCTURAL_ZEROS = False`. It reproduces the
   pre-change Phase J numbers bit-for-bit within one process, at the same
   external times and at the bounding box in force (so a pre-change run at
   another `POLYGON_BBOX_CAP` is reproduced by setting the attribute). It
@@ -607,7 +722,9 @@ Models outside the public model set are not listed.
     - the Θ(0) rule: `theta0_const_empty`, `theta0_const_drop`,
       `theta0_tie`, `theta0_tie_ordered`, `theta0_subsets_pruned`;
     - empty regions: `polygon_zero_area`, `poset_empty_const`,
-      `poset_empty_cycle`.
+      `poset_empty_cycle`;
+    - skipped identically-zero work: `forced_delta_pruned` (δ-subsets not
+      built) and `polytope_empty_cycle` (cycles answered at the fallback).
 
 ### Tests
 
