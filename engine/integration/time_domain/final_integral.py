@@ -80,8 +80,11 @@ import math
 import functools as _functools
 from collections import namedtuple
 from dataclasses import dataclass
+from fractions import Fraction as _Fraction
 
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
+from sage.rings.complex_double import (
+    ComplexDoubleElement as _ComplexDoubleElement)
 
 from engine.integration.time_domain.propagator_td import (
     build_G_t_matrix,
@@ -201,6 +204,220 @@ def _build_edge_mode_sums(edge_info, propagator_data):
     return edge_mode_sums
 
 
+def _is_exact_zero(x):
+    r"""True iff the stored number ``x`` is exactly zero, decided on ``x``
+    itself, with no tolerance: a Python / CDF number compares exactly with 0
+    (a residue that is merely tiny is NOT zero); anything else goes through
+    ``SR(x).is_trivial_zero()`` (structural: a symbolic 0, never a proof).
+    A CDF number is compared as a Python complex (an exact conversion):
+    Sage's CDF compares a NaN in either part EQUAL to 0, Python does not.
+    NaN and inf are never zero; undecidable counts as nonzero."""
+    try:
+        if isinstance(x, _ComplexDoubleElement):
+            return complex(x) == 0
+        if isinstance(x, (int, float, complex)):
+            return bool(x == 0)
+        return bool(SR(x).is_trivial_zero())
+    except Exception:
+        return False
+
+
+class PoleFreePropagatorError(ValueError):
+    r"""Phase J was handed a propagator WITHOUT any pole
+    (``propagator_data['pole_vals']`` is empty) and a diagram needs an
+    entry whose smooth (non-instantaneous) part cannot be shown to vanish.
+
+    The propagator builder keeps only strictly retarded poles
+    (Im ω > 1e-9, ``api/_propagator.py``).  A marginal or non-retarded mode
+    -- e.g. λ = 0 at q = 0 for a massless field -- is dropped from the
+    list although the entry still has a smooth part, which then cannot be
+    evaluated from the pole list.  Raised (with ``STRUCTURAL_ZEROS`` on)
+    instead of returning a value: before M2a the per-diagram path failed
+    here with a bare ``IndexError``.  ``entries``: the offending
+    ``(pi, ri)`` entries; ``reasons``: ``{(pi, ri): why}``."""
+
+    def __init__(self, message, entries=(), reasons=None):
+        super().__init__(message)
+        self.entries = tuple(entries)
+        self.reasons = dict(reasons or {})
+
+
+def _entry_is_provably_instantaneous(propagator_data, num_params, pi, ri):
+    r"""Decide whether entry ``G[pi, ri]`` is PROVABLY a pure δ (or 0),
+    i.e. whether its smooth part ``G(ω) − G(ω → ∞)`` is identically zero.
+    That is the case exactly when the entry does not depend on ω.
+
+    Decided on ``propagator_data['G_ft']`` -- the propagator BEFORE any
+    pole was found or filtered -- with ``num_params`` substituted, by a
+    structural test with no tolerance and no simplification: the entry
+    must not contain ``propagator_data['omega']`` at all.  (A pure-δ entry
+    such as the spike train of an undriven population of
+    ``single_population_linear_delta_spikes_test`` passes: substituting
+    its zero couplings removes every ω.)  Anything else -- ω present,
+    ``G_ft`` or ``omega`` missing, an error -- is "not proven".  Returns
+    ``(True, None)`` or ``(False, reason)``."""
+    G_ft = propagator_data.get('G_ft')
+    omega = propagator_data.get('omega')
+    if G_ft is None or omega is None:
+        return False, ("propagator_data has no 'G_ft' / 'omega' to decide "
+                       "it from")
+    try:
+        e = SR(G_ft[pi, ri])
+        if num_params:
+            e = e.subs(num_params)
+        if SR(omega) not in e.variables():
+            return True, None
+        text = str(e)
+        if len(text) > 160:
+            text = text[:157] + '...'
+        return False, (f'its G_ft entry still depends on {omega} after the '
+                       f'numeric parameters are substituted: {text}')
+    except Exception as exc:                               # noqa: BLE001
+        return False, (f'its G_ft entry could not be examined '
+                       f'({type(exc).__name__}: {exc})')
+
+
+def _pole_free_forced_delta_edges(edge_info, propagator_data, zero_by_entry,
+                                  num_params):
+    r"""``_forced_delta_edges`` for a propagator with an EMPTY pole list:
+    every edge whose entry is provably a pure δ
+    (``_entry_is_provably_instantaneous``) is forced-δ.  If any edge's
+    entry is not provably a pure δ, raise ``PoleFreePropagatorError``
+    naming every such entry: its smooth part exists but is not in the
+    (empty) pole list, so no value can be computed for this diagram."""
+    out = set()
+    bad = {}
+    for i, ei in enumerate(edge_info):
+        key = (ei['pi'], ei['ri'])
+        if zero_by_entry.get(key) is True:
+            out.add(i)
+            continue
+        if key in bad:
+            continue
+        ok, why = _entry_is_provably_instantaneous(
+            propagator_data, num_params, key[0], key[1])
+        if ok:
+            zero_by_entry[key] = True
+            out.add(i)
+        else:
+            bad[key] = why
+    if bad:
+        nf = propagator_data.get('nf')
+        lines = '; '.join(f'G[pi={p}, ri={r}]: {why}'
+                          for (p, r), why in sorted(bad.items()))
+        raise PoleFreePropagatorError(
+            f'Phase J: the propagator has no pole at all '
+            f"(propagator_data['pole_vals'] is empty"
+            f"{'' if nf is None else f'; nf = {nf}'}), but the smooth "
+            f'(non-instantaneous) part of {len(bad)} entr'
+            f"{'y' if len(bad) == 1 else 'ies'} used by this diagram is "
+            f'not provably zero -- {lines}.  The propagator builder keeps '
+            f'only strictly retarded poles (Im ω > 1e-9, '
+            f'api/_propagator.py), so a marginal or non-retarded mode '
+            f'(e.g. λ = 0 at q = 0 for a massless field) was dropped from '
+            f'the pole list, and this smooth part cannot be evaluated '
+            f'from it, so no value is returned (rather than a wrong one).  '
+            f'(An entry whose G_ft contains no ω after the numeric '
+            f'parameters are substituted is a pure δ and is evaluated.)',
+            entries=sorted(bad), reasons=bad)
+    return frozenset(out)
+
+
+def _smooth_part_is_exact_zero(C_mats, n_poles, pi, ri):
+    r"""True if the propagator has at least one pole and every pole residue
+    ``C_mats[k][pi, ri]`` is an EXACT zero (``_is_exact_zero``).
+
+    With no poles at all this residue test decides nothing (False): an
+    empty pole list is not evidence of a zero smooth part, because the
+    propagator builder keeps only strictly retarded poles (Im ω > 1e-9,
+    ``api/_propagator.py``) and drops a marginal λ = 0 mode (e.g. a
+    massless spatial mode at q = 0) although its smooth part is not zero.
+    ``_forced_delta_edges`` decides a pole-free propagator from ``G_ft``
+    instead (``_entry_is_provably_instantaneous``).  Any failure to
+    decide counts as "not zero" too (the conservative answer: nothing is
+    skipped).  Exact zeros here are the builder's stored values, not a
+    proof: it keeps only the retarded poles and sets a residue to 0 by
+    numeric tests, so ``_forced_delta_edges`` also asks ``G_ft``."""
+    if n_poles < 1:
+        return False
+    for k in range(n_poles):
+        try:
+            x = C_mats[k][pi, ri]
+        except Exception:
+            return False
+        if not _is_exact_zero(x):
+            return False
+    return True
+
+
+def _forced_delta_edges(edge_info, propagator_data, zero_by_entry=None,
+                        num_params=None):
+    r"""Indices of the edges in ``edge_info`` whose smooth propagator part
+    is identically zero (M2a, plan §3.1 L1: "forced-δ" edges).
+
+    For such an edge ``G_R = δ_coeff·δ(Δt) + Θ(Δt)·0``, so every δ-subset
+    that keeps it smooth has an identically-zero integrand: the mirror image
+    of the forced-smooth edges (zero δ part), whose δ branch the subset
+    enumeration already skips.  Every evaluator of a subset (the mode-sum
+    cache ``_build_edge_mode_sums``, the fast pole/residue closure and the SR
+    ``smooth_factor`` of ``build_G_t_matrix``) reads the same
+    ``propagator_data['C_mats']`` entry, so an exact zero there is a zero
+    for all of them.  Returns a frozenset (empty when the pole data is
+    missing).
+
+    With ``G_ft`` available, an edge is forced-δ only when its smooth part
+    is provably zero, decided before any pole was filtered: every stored
+    residue of its entry is an exact zero (``_smooth_part_is_exact_zero``)
+    AND its ``G_ft`` entry contains no ω once ``num_params`` are
+    substituted (``_entry_is_provably_instantaneous``).  The stored
+    residues alone are no proof: the builder keeps only strictly retarded
+    poles, so an entry whose own mode was dropped as marginal has
+    exact-zero residues at the kept poles although its smooth part is not
+    zero; such an edge is kept (its subsets are evaluated as before M2a).
+    Without ``G_ft`` nothing can be proven, and the stored residues alone
+    decide.  ``api/_propagator.py`` leaves ``G_ft`` as None when it skips
+    the symbolic inverse for a "rich" propagator (nf ≥ 6 or more than 20
+    free symbols; e.g. ``multipopulation_test``, nf = 8), and when that
+    inverse exceeds its time budget or fails.  The stored residues are what
+    every evaluator reads, so the skipped integrand is exactly the zero it
+    would have evaluated (a mode the builder filtered stays lost, as it is
+    without the prune).
+
+    A propagator with an EMPTY pole list is decided from ``G_ft`` alone
+    (``_pole_free_forced_delta_edges``): an edge is forced-δ when its entry
+    provably contains no ω after ``num_params`` are substituted (a pure δ);
+    if some edge's entry is not provably a pure δ (its modes were dropped
+    as non-retarded, e.g. λ = 0 at q = 0), ``PoleFreePropagatorError`` is
+    raised.  ``zero_by_entry``: an optional ``{(pi, ri): bool}`` cache
+    shared between calls on the same ``propagator_data`` and
+    ``num_params``."""
+    pole_vals = propagator_data.get('pole_vals')
+    C_mats = propagator_data.get('C_mats')
+    if pole_vals is None or C_mats is None:
+        return frozenset()
+    n_poles = len(pole_vals)
+    if zero_by_entry is None:
+        zero_by_entry = {}
+    if n_poles < 1:
+        return _pole_free_forced_delta_edges(edge_info, propagator_data,
+                                             zero_by_entry, num_params)
+    have_g_ft = (propagator_data.get('G_ft') is not None
+                 and propagator_data.get('omega') is not None)
+    out = set()
+    for i, ei in enumerate(edge_info):
+        key = (ei['pi'], ei['ri'])
+        z = zero_by_entry.get(key)
+        if z is None:
+            z = _smooth_part_is_exact_zero(C_mats, n_poles, key[0], key[1])
+            if z and have_g_ft:
+                z = _entry_is_provably_instantaneous(
+                    propagator_data, num_params, key[0], key[1])[0]
+            zero_by_entry[key] = z
+        if z:
+            out.add(i)
+    return frozenset(out)
+
+
 def _extract_exp_mode(sr_expr, tau_sym):
     """Extract ``(C, λ)`` from an SR expression of the form
     ``C · exp(λ · tau_sym)`` (single-exponential kernel).
@@ -307,7 +524,8 @@ POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 #
 # ``DAEDALUS_PHASE_J_LEGACY=1`` (the umbrella) sets EVERY Phase J flag to its
 # legacy value, reproducing the pre-M1 numbers bit-for-bit within one
-# process.  For now that is ``THETA0_CONST_ROW_MODE = 'legacy_clip'``.  The
+# process.  That is ``THETA0_CONST_ROW_MODE = 'legacy_clip'`` and
+# ``STRUCTURAL_ZEROS = False`` (M2a; see ``_initial_phase_j_flags``).  The
 # bounding box is not a flag: the umbrella also reads ``POLYGON_BBOX_CAP`` at
 # call time (so it reproduces a pre-M1 run at any cap, e.g. the cap-12 trap).
 import os as _os
@@ -392,25 +610,101 @@ _ROW_COEF_ATOL = 1e-12
 # Environment: DAEDALUS_PHASE_J_THETA0_CONST_ROW = ito | legacy_clip.
 _THETA0_MODES = ('ito', 'legacy_clip')
 
+# ── Structural zeros (M2a; plan §3.1 L1) ──
+# STRUCTURAL_ZEROS (bool, read at call time):
+#   True   (default) two kinds of δ-subset work that is identically zero are
+#          skipped:
+#          * ``_integrate_polytope`` (the scipy.nquad fallback, whoever calls
+#            it: an m=2 guard bail, a poset extraction that bailed, grouped
+#            m2/m≥3, the SR path of a non-analytic subset, a direct caller)
+#            returns 0j at once when the rows contain a directed cycle of
+#            unit-coefficient pair rows whose shifts sum to <= 0 in exact
+#            arithmetic (``_region_structurally_empty``; counter
+#            ``polytope_empty_cycle``).  The strict inequalities around such
+#            a cycle cannot all hold, so the region is empty.  The fallback
+#            used to hand it to scipy.nquad anyway: an identically-zero
+#            filtered integrand, or (m=2 with exact bounds, no filter)
+#            zero-length inner intervals whose quadrature still evaluates
+#            the integrand outside the region, where fast poles overflow
+#            (OverflowError, plan Appendix C.2).
+#          * a δ-subset that keeps smooth an edge whose smooth part is
+#            provably zero (a pure-δ entry, or an entry that vanishes: every
+#            stored pole residue is an exact zero
+#            (``_smooth_part_is_exact_zero``) AND the ``G_ft`` entry -- the
+#            propagator before any pole filtering -- contains no ω once
+#            ``num_params`` are substituted
+#            (``_entry_is_provably_instantaneous``); without ``G_ft`` the
+#            stored residues decide) is never built
+#            (``_forced_delta_edges``; counter ``forced_delta_pruned``), per
+#            diagram and in grouped builds -- the mirror image of the
+#            forced-smooth edges (zero δ part) that the subset enumeration
+#            already skips.  Such a subset's integrand is a product with an
+#            identically-zero factor.  A propagator WITHOUT any pole is
+#            decided from ``G_ft`` alone: an entry is a pure δ only if it
+#            contains no ω once ``num_params`` are substituted (e.g. a
+#            spike model with all couplings 0); if a diagram uses an entry
+#            that is not provably a pure δ, its smooth part was dropped
+#            with a non-retarded mode (λ = 0 at q = 0 for a massless field)
+#            and ``PoleFreePropagatorError`` is raised -- the per-diagram
+#            path used to fail there with a bare IndexError, and the grouped
+#            path used to drop that smooth part silently.
+#          Both are value-neutral by construction: every skipped piece
+#          contributes an exact zero (the analytic paths skip zero-residue
+#          pole tuples, nquad of the zero function is exactly 0.0, and
+#          adding a signed zero to the running sum never changes it).  They
+#          remove the exceptions / NaN the legacy code could raise on those
+#          pieces.  (Constant EMPTY rows need no rule of their own here:
+#          'ito' decides them by ``_const_row_verdict`` at the entry of
+#          ``_integrate_polytope``, and the legacy inner integrators return
+#          0 on them before any quadrature -- ``_outer_bounds``,
+#          ``_resolve_1d_bounds``, ``_integrate_2d_polytope``.)
+#   False  the pre-M2a behaviour, bit-for-bit.
+# The prune is decided when the subsets are built (the flag is read at the
+# call of ``integrate_diagram`` / ``integrate_grouped_diagram``); a closure
+# built with the prune never re-creates the pruned subsets, which are
+# identically zero anyway.  The cycle test is read at every call.
+# Environment: DAEDALUS_PHASE_J_STRUCTURAL_ZEROS = 1 | 0 (also true/false,
+# yes/no, on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
+_STRUCTURAL_ZEROS_ON = ('', '1', 'true', 'yes', 'on')
+_STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
+
 
 def _initial_phase_j_flags(environ=None):
     """The import-time values of the Phase J flags from ``environ``
-    (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...}``.  The
-    umbrella wins over the per-flag variable.  An unknown value raises (a
-    silent fallback to the default would hide a requested rollback)."""
+    (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...,
+    'STRUCTURAL_ZEROS': ...}``.  The umbrella wins over the per-flag
+    variables.  An unknown value raises (a silent fallback to the default
+    would hide a requested rollback)."""
     env = _os.environ if environ is None else environ
     if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
-        return {'THETA0_CONST_ROW_MODE': 'legacy_clip'}
+        return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
+                'STRUCTURAL_ZEROS': False}
     mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
             .strip().lower() or 'ito')
     if mode not in _THETA0_MODES:
         raise ValueError(
             f'DAEDALUS_PHASE_J_THETA0_CONST_ROW={mode!r}: expected one of '
             f'{_THETA0_MODES}')
-    return {'THETA0_CONST_ROW_MODE': mode}
+    sz = env.get('DAEDALUS_PHASE_J_STRUCTURAL_ZEROS', '').strip().lower()
+    if sz not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS={sz!r}: expected 1 or 0')
+    return {'THETA0_CONST_ROW_MODE': mode,
+            'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON}
 
 
-THETA0_CONST_ROW_MODE = _initial_phase_j_flags()['THETA0_CONST_ROW_MODE']
+_PHASE_J_FLAGS_AT_IMPORT = _initial_phase_j_flags()
+THETA0_CONST_ROW_MODE = _PHASE_J_FLAGS_AT_IMPORT['THETA0_CONST_ROW_MODE']
+STRUCTURAL_ZEROS = _PHASE_J_FLAGS_AT_IMPORT['STRUCTURAL_ZEROS']
+
+
+def _structural_zeros_on():
+    """True when the M2a structural-zero skips are enabled (call time)."""
+    flag = STRUCTURAL_ZEROS
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.STRUCTURAL_ZEROS={flag!r}: expected '
+                     f'True or False')
 
 
 def _theta0_legacy():
@@ -537,6 +831,18 @@ _RUNTIME_COUNTERS = {
     # inequalities around such a cycle cannot all hold: empty).
     'poset_empty_const': 0,
     'poset_empty_cycle': 0,
+    # ── M2a structural-zero counters (``STRUCTURAL_ZEROS``) ──
+    # ``_integrate_polytope`` entries (m >= 2, counted in ``nquad_calls`` /
+    # ``scipy_nquad_called_*`` as before) answered 0j without quadrature:
+    # a directed cycle of unit-coefficient pair rows whose shifts sum to
+    # <= 0 (``_region_structurally_empty``).
+    'polytope_empty_cycle': 0,
+    # δ-subsets never built (per-diagram and grouped builds) because they
+    # keep smooth an edge whose smooth part is provably zero (every stored
+    # residue of its entry is an exact zero and its ``G_ft`` entry contains
+    # no ω; for a pole-free propagator: the ``G_ft`` test alone).  Counted
+    # once per subset per build, not per call.
+    'forced_delta_pruned': 0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -1556,6 +1862,74 @@ def _order_rows_infeasible(m, order_rows):
                 if v < di[j]:
                     di[j] = v
     return any(dist[i][i] <= 0.0 for i in range(m))
+
+
+def _region_structurally_empty(s_constraints, m):
+    r"""``'cycle'`` if the resolved rows ``s_constraints`` (``(a_int, shift)``
+    pairs for ``a_int·s + shift > 0``, as ``_integrate_polytope`` receives
+    them) contain a directed cycle of unit-coefficient pair rows whose
+    shifts sum to <= 0 in EXACT arithmetic; ``None`` otherwise.
+
+    A pair row has exactly two nonzero coefficients, exactly ``+1.0`` (at
+    ``up``) and exactly ``-1.0`` (at ``lo``): ``s_up − s_lo + shift > 0``.
+    Summing such rows around a directed cycle gives ``0 < Σ shift``, so a
+    cycle with ``Σ shift <= 0`` empties the region whatever the other rows
+    are.  The shifts are the resolved floats, summed as exact rationals
+    (``fractions.Fraction``, through ``_order_rows_infeasible``): the
+    verdict is exact for the region these rows define, with no tolerance.
+    A cycle whose shifts sum to > 0 encloses a thin nonempty strip and is
+    not decided; rows of any other shape (scalar bounds, constant rows,
+    non-unit or 3+-term rows) are ignored, never a reason for a verdict.
+    A structural pre-check (Kahn's algorithm on the unshifted order graph)
+    returns ``None`` for an acyclic order without any exact arithmetic.
+    """
+    if m < 2:
+        return None
+    pairs = []
+    try:
+        for (a_int, shift) in s_constraints:
+            up = lo = None
+            clean = True
+            for j, a in enumerate(a_int):
+                a = float(a)
+                if a == 0.0:
+                    continue
+                if a == 1.0 and up is None:
+                    up = j
+                elif a == -1.0 and lo is None:
+                    lo = j
+                else:
+                    clean = False
+                    break
+            if clean and up is not None and lo is not None:
+                pairs.append((lo, up, shift))
+    except (TypeError, ValueError):
+        return None
+    if len(pairs) < 2:
+        return None
+    # Kahn's algorithm on the order graph (an edge up -> lo per pair row):
+    # only a graph with a directed cycle can hold an infeasible one.
+    succ = [[] for _ in range(m)]
+    indeg = [0] * m
+    for (lo, up, _shift) in pairs:
+        succ[up].append(lo)
+        indeg[lo] += 1
+    stack = [v for v in range(m) if indeg[v] == 0]
+    removed = 0
+    while stack:
+        v = stack.pop()
+        removed += 1
+        for w in succ[v]:
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                stack.append(w)
+    if removed == m:
+        return None
+    try:
+        exact = [(lo, up, _Fraction(shift)) for (lo, up, shift) in pairs]
+    except (TypeError, ValueError, OverflowError):
+        return None                     # a NaN / inf / non-real shift
+    return 'cycle' if _order_rows_infeasible(m, exact) else None
 
 
 def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
@@ -4026,6 +4400,26 @@ def integrate_diagram(
     n_branch = len(branch_edge_indices)
     n_subsets_total = 2 ** n_branch
 
+    # M2a structural zeros (``STRUCTURAL_ZEROS``, read when the subsets are
+    # built): the mirror image of the forced-smooth edges.  An edge whose
+    # smooth part is provably zero (every stored residue of its entry is an
+    # exact zero and its ``G_ft`` entry contains no ω; for a propagator
+    # without any pole: the ``G_ft`` test alone) contributes nothing when
+    # kept smooth, so a δ-subset
+    # that keeps one smooth is never built (it is skipped before the
+    # δ-elimination; counter ``forced_delta_pruned``).  A pole-free
+    # propagator whose entry is not provably a pure δ raises
+    # ``PoleFreePropagatorError`` here.  Only for the time-only propagator
+    # (no ``edge_mode_sums_builder``), where every evaluator reads the same
+    # ``propagator_data['C_mats']``.  A pruned subset that would have been
+    # a shot-noise subset contributed a zero-coefficient entry to
+    # ``delta_contributions``; it is not emitted.
+    _forced_delta = (
+        _forced_delta_edges(edge_info, propagator_data,
+                            num_params=num_params)
+        if edge_mode_sums_builder is None and _structural_zeros_on()
+        else frozenset())
+
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints
     # for debugging / display, matching the pre-fix return shape.
     display_stripped = cp
@@ -4058,6 +4452,15 @@ def integrate_diagram(
             if not ((branch_bits >> k) & 1)
         ]
         smooth_edges = sorted(forced_smooth_indices + branch_smooth)
+
+        if _forced_delta and not _forced_delta.isdisjoint(smooth_edges):
+            _RUNTIME_COUNTERS['forced_delta_pruned'] += 1
+            subset_diagnostics.append({
+                'delta_edges': delta_edges,
+                'smooth_edges': smooth_edges,
+                'status': 'forced_delta_pruned',
+            })
+            continue
 
         # ── Solve the δ-edge equalities: eliminate integration vars
         # by substitution. For each δ edge, set dt_e = 0 and solve for
@@ -5575,6 +5978,15 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
     without them (external callers) a tie is Θ(0) = 0.  ``row_kinds``: the
     rows' provenance (``None``: all 'edge').  'legacy_clip' skips all of
     this (pre-M1 behaviour).
+
+    Structural zeros (M2a, ``STRUCTURAL_ZEROS``, call time): after the
+    constant rows, an m >= 2 region whose pair rows contain a directed
+    cycle with shifts summing to <= 0 (``_region_structurally_empty``,
+    exact) returns 0j without quadrature (counter ``polytope_empty_cycle``;
+    the entry is still counted in ``nquad_calls`` / ``scipy_nquad_called_*``).
+    This covers every caller: an m=2 guard bail, a poset extraction that
+    bailed before its own cycle test, grouped m2/m≥3, the SR path of a
+    non-analytic subset, and direct callers.
     """
     # M0.1 observational counters: m=0 is a direct evaluation, m>=1 is
     # real scipy.nquad quadrature.
@@ -5606,6 +6018,10 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
         if keep is not None:
             s_constraints = [row for i, row in enumerate(s_constraints)
                              if i in keep]
+    if (m >= 2 and _structural_zeros_on()
+            and _region_structurally_empty(s_constraints, m) == 'cycle'):
+        _RUNTIME_COUNTERS['polytope_empty_cycle'] += 1
+        return 0.0 + 0.0j
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or

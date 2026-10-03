@@ -13,8 +13,13 @@ For every zoo entry (model × config) it records:
     τ=0 grid point is evaluated at t1 = -``api.compute._ITO_EPS`` (Itô left
     limit), exactly as ``compute_cumulants`` does.
   - k >= 3: the raw per-ell callables at explicit external-time points.  When
-    a point has a non-anchor leg at 0, the API-nudged value (that leg moved to
-    -1e-6, as ``daedalus._args`` does) is recorded too.
+    a point has a non-anchor leg at 0, the API-nudged value (every such leg
+    moved to -1e-6, the per-leg mapping ``daedalus._args`` applies on the full
+    k-point grid) is recorded too.  (Since 0.2.0 the points of ``dd.run``'s
+    k >= 3 slices are placed by ``daedalus._kpoint_slice_times`` instead: a
+    swept leg that meets another leg goes one eps below it, so a recorded
+    ``*_api_nudged`` value is an engine value at those times, not
+    necessarily a slice's tau = 0 point.)
   - spatial: ``C_tau_x`` and the cumulative ``C_tau_x_by_order``.
 * counters: the full ``final_integral._RUNTIME_COUNTERS`` snapshot, including
   ``nquad_calls`` (real scipy.nquad calls, m>=1), ``polytope_m0_direct``
@@ -163,7 +168,7 @@ DEFAULT_ZOO_EXTRA = (os.path.join(_REPO_ROOT, 'scratch', 'integration_plan',
 
 DEFAULT_TIMEOUT = 600.0
 LONG_TIMEOUT = 900.0
-ITO_NUDGE = -1e-6            # daedalus._args k>=3 nudge (== api.compute._ITO_EPS)
+ITO_NUDGE = -1e-6            # daedalus._args k>=3 full-grid nudge (== api.compute._ITO_EPS)
 SPATIAL_CERTIFY_Q = (0.0, 0.7, 1.5)
 SEP = '::'                   # npz key separator: '<entry>::<array>'
 
@@ -536,7 +541,9 @@ def _numeric_flags():
              'USE_POSET_MPMATH_ACCUMULATION', 'TAU_KERNEL_CAP', 'QUAD_OPTS',
              '_HAVE_NUMBA',
              # M1 call-time flag ('<absent>' in pre-M1 records)
-             'THETA0_CONST_ROW_MODE')
+             'THETA0_CONST_ROW_MODE',
+             # M2a call-time flag ('<absent>' in pre-M2a records)
+             'STRUCTURAL_ZEROS')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')
@@ -692,7 +699,10 @@ def migrate_counters(c, semantics):
 
 
 def _api_nudged(pt):
-    """daedalus._args: a non-anchor leg with |t| <= 1e-12 is moved to -1e-6."""
+    """The per-leg mapping of ``daedalus._args`` (the full k-point grid): a
+    non-anchor leg with |t| <= 1e-12 is moved to -1e-6.  (Not the ``dd.run``
+    slice placement, ``daedalus._kpoint_slice_times``; see the module
+    docstring.)"""
     return [pt[0]] + [t if abs(t) > 1e-12 else ITO_NUDGE for t in pt[1:]]
 
 
@@ -1271,6 +1281,18 @@ M1_VALUE_KEYS = ('theta0_const_empty', 'theta0_const_drop',
 #: a constant row decided inside an analytic path does not.
 M1_ROUTE_KEYS = ('theta0_subsets_pruned', 'polygon_zero_area',
                  'poset_empty_cycle')
+#: The M2a structural zeros (``final_integral.STRUCTURAL_ZEROS``): an
+#: ``_integrate_polytope`` region with an order cycle whose shifts sum to <= 0
+#: answered 0 (``polytope_empty_cycle``), and δ-subsets never built because
+#: they keep an identically-zero edge smooth (``forced_delta_pruned``).  Both
+#: skip only exact zeros, so they may change a value only where the pre-M2a
+#: code raised, returned NaN, or integrated a rounding-level sliver; they are
+#: allowed to move a value in ``delta_table`` like ``M1_VALUE_KEYS``.
+M2A_VALUE_KEYS = ('polytope_empty_cycle', 'forced_delta_pruned')
+#: The M2a counters that change ROUTE counters: a pruned subset is never
+#: evaluated, so its analytic / nquad attempts disappear (a cycle answered
+#: at the entry of ``_integrate_polytope`` is still counted there).
+M2A_ROUTE_KEYS = ('forced_delta_pruned',)
 
 
 def load_merged(paths):
@@ -1309,8 +1331,9 @@ def delta_table(base, new, *, rtol=1e-13):
     * ``unchanged`` -- every array within ``rtol``;
     * ``MOVES``     -- some array outside it;
     * ``VIOLATION`` -- moved although the baseline saw no zero-normal row
-      (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS`` counter
-      of the new run is 0 or absent: such an entry must not move at M1;
+      (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS`` and
+      ``M2A_VALUE_KEYS`` counter of the new run is 0 or absent: such an
+      entry must not move at M1 / M2a;
     * ``status``    -- the status changed (e.g. TIMEOUT -> ok);
     * ``census``    -- nquad-stubbed on both sides (counts only);
     * ``n/a``       -- no values on either side (TIMEOUT / ERR both times).
@@ -1335,7 +1358,8 @@ def delta_table(base, new, *, rtol=1e-13):
                'zero_normal_after': _ctr(sn, 'zero_normal_rows_seen'),
                'stub_calls_before': sb.get('stub_calls'),
                'stub_calls_after': sn.get('stub_calls'),
-               'theta0': {k: _ctr(sn, k) for k in DELTA_THETA0_KEYS}}
+               'theta0': {k: _ctr(sn, k) for k in DELTA_THETA0_KEYS},
+               'm2a': {k: _ctr(sn, k) for k in M2A_VALUE_KEYS}}
         if name in barr and name in narr:
             cmp = compare_values(barr[name], narr[name], rtol=rtol)
             row['max_abs'] = max(v[0] for v in cmp.values())
@@ -1348,7 +1372,8 @@ def delta_table(base, new, *, rtol=1e-13):
                 row['verdict'] = 'unchanged'
             elif (sb.get('counters')
                   and _ctr(sb, 'zero_normal_rows_seen') == 0
-                  and not any(_ctr(sn, k) for k in M1_VALUE_KEYS)):
+                  and not any(_ctr(sn, k)
+                              for k in M1_VALUE_KEYS + M2A_VALUE_KEYS)):
                 row['verdict'] = 'VIOLATION'
             else:
                 row['verdict'] = 'MOVES'
@@ -1371,18 +1396,21 @@ def format_delta_table(rows):
     hdr = (f"{'entry':48s} {'status (before -> after)':34s} {'verdict':9s} "
            f"{'max_abs':>9s} {'max_rel':>9s} {'nquad b->a':>12s} "
            f"{'zero-normal b->a':>17s}  theta0 (empty/drop/tie/ordered/"
-           f"pruned/zero_area/poset_const/poset_cycle)")
+           f"pruned/zero_area/poset_const/poset_cycle)  m2a (polytope_cycle/"
+           f"forced_delta_pruned)")
     out = [hdr]
     for r in rows:
         th = r['theta0']
         th_s = '/'.join(cnt(th[k]) for k in DELTA_THETA0_KEYS)
+        m2a = r.get('m2a') or {}
+        m2a_s = '/'.join(cnt(m2a.get(k)) for k in M2A_VALUE_KEYS)
         st = f"{r['status_before'][:15]} -> {r['status_after'][:15]}"
         out.append(
             f"{r['name']:48s} {st:34s} {r['verdict']:9s} "
             f"{f(r.get('max_abs'), '9.2e')} {f(r.get('max_rel'), '9.2e')} "
             f"{cnt(r['nquad_before']) + '->' + cnt(r['nquad_after']):>12s} "
             f"{cnt(r['zero_normal_before']) + '->' + cnt(r['zero_normal_after']):>17s}"
-            f"  {th_s}")
+            f"  {th_s}  {m2a_s}")
         if r['verdict'] == 'census' and (r['stub_calls_before']
                                          or r['stub_calls_after']):
             out.append(f"{'':48s}   stub calls by m: {r['stub_calls_before']}"

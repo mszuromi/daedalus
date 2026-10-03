@@ -226,12 +226,13 @@ def test_baseline_loads_and_is_consistent(baseline):
     assert len(meta['code']['sha256_final_integral']) == 64
 
 
-# Counters added at M1 (Θ(0) helper): the legacy umbrella never reaches that
-# code, so they stay 0 in legacy mode.
+# Counters added at M1 (Θ(0) helper) and M2a (structural zeros): the legacy
+# umbrella never reaches that code, so they stay 0 in legacy mode.
 _THETA0_COUNTER_KEYS = ('theta0_const_empty', 'theta0_const_drop',
                         'theta0_tie', 'theta0_tie_ordered',
                         'theta0_subsets_pruned', 'polygon_zero_area',
-                        'poset_empty_const', 'poset_empty_cycle')
+                        'poset_empty_const', 'poset_empty_cycle') \
+    + Z.M2A_VALUE_KEYS
 
 # Relaxed value tolerance for an nquad-served entry run from other diagram
 # representatives than the baseline's (see the module docstring).
@@ -312,13 +313,15 @@ def _reproduce(baseline, name, mode, monkeypatch):
         return          # routes depend on the representatives (docstring)
     # Control flow is deterministic: counters reproduce exactly.  In the
     # default mode Θ(0)=0 may skip EMPTY constant-row subsets before they
-    # reach an integrator, and the exact emptiness tests may answer 0 where a
-    # subset bailed before (``Z.M1_ROUTE_KEYS``), so the routes are compared
-    # exactly only when the baseline saw no zero-normal row and none of those
-    # counters of this run is nonzero.
+    # reach an integrator, the exact emptiness tests may answer 0 where a
+    # subset bailed before (``Z.M1_ROUTE_KEYS``), and the M2a forced-δ prune
+    # never builds identically-zero subsets (``Z.M2A_ROUTE_KEYS``), so the
+    # routes are compared exactly only when the baseline saw no zero-normal
+    # row and none of those counters of this run is nonzero.
     if mode == 'legacy' or not (
             s['counters'].get('zero_normal_rows_seen')
-            or any(rec['counters'].get(k) for k in Z.M1_ROUTE_KEYS)):
+            or any(rec['counters'].get(k)
+                   for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS)):
         for key in _COUNTER_KEYS:
             assert rec['counters'][key] == s['counters'][key], (name, key)
     else:
@@ -424,15 +427,20 @@ def test_assemble_refuses_to_overwrite_the_baseline(monkeypatch):
 def test_fixture_report_flag_context_restores():
     import engine.integration.time_domain.final_integral as FI
     from tests.tools import phase_j_subset_diff as H
-    before = (FI.THETA0_CONST_ROW_MODE, FI.POLYGON_BBOX_CAP)
+    before = (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
+              FI.POLYGON_BBOX_CAP)
     with pytest.raises(RuntimeError):
         with H.phase_j_flags('legacy') as flags:
             assert FI.THETA0_CONST_ROW_MODE == 'legacy_clip'
-            assert set(flags) == {'THETA0_CONST_ROW_MODE'}
+            assert FI.STRUCTURAL_ZEROS is False
+            assert set(flags) == {'THETA0_CONST_ROW_MODE',
+                                  'STRUCTURAL_ZEROS'}
             raise RuntimeError('restored even on error')
-    assert (FI.THETA0_CONST_ROW_MODE, FI.POLYGON_BBOX_CAP) == before
+    assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
+            FI.POLYGON_BBOX_CAP) == before
     with H.phase_j_flags('default'):
-        assert (FI.THETA0_CONST_ROW_MODE, FI.POLYGON_BBOX_CAP) == before
+        assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
+                FI.POLYGON_BBOX_CAP) == before
     with pytest.raises(ValueError):
         with H.phase_j_flags('nope'):
             pass

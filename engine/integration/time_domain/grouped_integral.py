@@ -135,6 +135,112 @@ USE_GROUPED_ANALYTIC_MODESUM = True
 _GROUPED_EXP_REAL_LIMIT = 600.0
 
 
+def _grouped_delta_solve(dt_syms, delta_edges, integration_vars):
+    """The δ-edge elimination of ``integrate_grouped_diagram`` for one
+    subset (factored out verbatim, M2a): for each δ edge in order, apply the
+    solutions found so far (Sage ``.subs``, one parallel pass), solve for
+    the first still-remaining integration variable (in
+    ``integration_vars`` order) that appears, or record the equation as a
+    residual external-time equality when none appears.
+
+    Returns ``(substitutions, remaining_int_vars, ext_time_equalities)``,
+    or ``None`` when a solve fails (the subset is skipped).
+    """
+    substitutions = {}
+    remaining_int_vars = list(integration_vars)
+    ext_time_equalities = []
+    for ei_idx in delta_edges:
+        eq_expr = SR(dt_syms[ei_idx]).subs(substitutions)
+        try:
+            eq_vars = set(eq_expr.variables())
+        except AttributeError:
+            eq_vars = set()
+        int_var_to_eliminate = None
+        for iv in remaining_int_vars:
+            if iv in eq_vars:
+                int_var_to_eliminate = iv
+                break
+        if int_var_to_eliminate is not None:
+            try:
+                sol = sage_solve(
+                    eq_expr == 0, int_var_to_eliminate,
+                    solution_dict=True,
+                )
+            except Exception:
+                sol = []
+            if not sol:
+                return None
+            substitutions[int_var_to_eliminate] = \
+                sol[0][int_var_to_eliminate]
+            remaining_int_vars.remove(int_var_to_eliminate)
+        else:
+            ext_time_equalities.append(eq_expr)
+    return substitutions, remaining_int_vars, ext_time_equalities
+
+
+def _has_nontrivial_equality(ext_time_equalities):
+    """True if some residual equality is not identically zero (a shot-noise
+    δ(τ) subset, which the grouped prototype skips)."""
+    for eq in ext_time_equalities:
+        try:
+            if bool(eq.is_zero()):
+                continue
+        except Exception:
+            pass
+        return True
+    return False
+
+
+def _delta_solve_leaves_residual(delta_edges, edge_ends, vtok, int_order):
+    r"""Replay, on vertex TOKENS, the δ-edge elimination that
+    ``integrate_grouped_diagram`` performs with Sage for one subset
+    (``_grouped_delta_solve``), and return True iff it leaves a residual
+    equality that is not identically zero (``_has_nontrivial_equality``) --
+    i.e. iff that code would mark the subset
+    ``'shotnoise_skipped_in_prototype'`` (which makes
+    ``api._grouped_phase_j`` recompute the whole group per diagram).
+
+    Used only by the M2a forced-δ prune (``final_integral.STRUCTURAL_ZEROS``)
+    to skip an identically-zero subset BEFORE its Sage δ-solve without
+    changing that per-group fallback decision: a subset for which this
+    returns True is left to the normal path, which marks it exactly as
+    before.
+
+    The replay is exact for the vertex times of a grouped build (every
+    vertex time is one atom: an integration variable, an external-time
+    symbol or 0 -- the builder refuses the non-local kernels that would
+    route legs to ``anchor − τ``).  Each δ edge ``u -> v`` gives the
+    equation ``t_v − t_u = 0``; the code substitutes the solutions found so
+    far in ONE parallel pass (Sage ``.subs(dict)``, which does not chain),
+    solves for the first still-remaining integration variable (in
+    ``int_order``) that appears, and records the equation as residual when
+    none appears; a residual is nonzero unless both sides are the same atom.
+
+    ``edge_ends[e] = (u, v)``; ``vtok`` maps a vertex to its token
+    (hashable, equal iff the vertex times are the same atom); ``int_order``
+    lists the integration-variable tokens in the builder's order.
+    """
+    subs = {}
+    remaining = list(int_order)
+    for e in delta_edges:
+        u, v = edge_ends[e]
+        head, tail = vtok[v], vtok[u]
+        head = subs.get(head, head)
+        tail = subs.get(tail, tail)
+        if head == tail:
+            continue                            # t − t: the zero equation
+        pick = None
+        for w in remaining:
+            if w == head or w == tail:
+                pick = w
+                break
+        if pick is None:
+            return True                         # a residual, not zero
+        subs[pick] = tail if pick == head else head
+        remaining.remove(pick)
+    return False
+
+
 def _evaluate_grouped_m0_modesum(
     pole_tuples,
     subset_constraint_data,
@@ -729,6 +835,67 @@ def integrate_grouped_diagram(
     n_edges = len(per_td_edge_info[0])
     n_subsets_total = 2 ** n_edges
 
+    # ── M2a forced-δ prune (``final_integral.STRUCTURAL_ZEROS``, read when
+    # the subsets are built).  ``fd_sets[j]``: the edges of typed diagram j
+    # whose smooth part is provably zero (``_forced_delta_edges``).  A
+    # subset in which EVERY contributing td keeps such an edge smooth has an
+    # identically-zero summed integrand (the builder below would find its
+    # SR sum trivially zero and skip it after the δ-solve); it is skipped
+    # before the δ-solve instead -- unless that δ-solve would mark it
+    # shot-noise, which triggers the per-diagram fallback of the whole group
+    # (``api._grouped_phase_j``): ``_delta_solve_leaves_residual`` replays
+    # the solve on vertex tokens, and such a subset takes the normal path,
+    # so the fallback decision is unchanged.  A subset where only SOME td's
+    # are zero is built as before (their terms vanish exactly: identical
+    # values).  Needs one-atom vertex times (true for every group this
+    # builder accepts; checked, else no prune).  A propagator without any
+    # pole is checked first, whether or not the prune applies: every entry
+    # the group uses must provably be a pure δ, else
+    # ``final_integral.PoleFreePropagatorError`` is raised (its smooth part
+    # was dropped with a non-retarded mode; the builder below would
+    # silently treat it as 0).
+    fd_sets = None
+    fd_tokens = None
+    _sz_on = _fi_mod._structural_zeros_on()
+    _zero_by_entry = {}
+    if (_sz_on and pole_vals is not None and C_mats is not None
+            and len(pole_vals) == 0):
+        for ei in per_td_edge_info:
+            _fi_mod._forced_delta_edges(ei, propagator_data, _zero_by_entry,
+                                        num_params)
+    if (_sz_on and not grouped_extra_tau
+            and not any(vlt for vlt in per_td_vertex_leg_time)
+            and pole_vals is not None and C_mats is not None):
+        fd_sets = [_fi_mod._forced_delta_edges(ei, propagator_data,
+                                               _zero_by_entry, num_params)
+                   for ei in per_td_edge_info]
+        if any(fd_sets):
+            # Tokens: an internal vertex is its own integration variable
+            # (``integration_vars_grouped`` is exactly those, in
+            # ``internal_vertices`` order, when there are no τ symbols); a
+            # leaf is 0 (the origin) or an external-time symbol.
+            vtok = {}
+            try:
+                for vert in D.vertices():
+                    if vert not in leaf_set:
+                        vtok[vert] = ('int', vert)
+                        continue
+                    t_sr = SR(vertex_time[vert])
+                    if t_sr.is_trivial_zero():
+                        vtok[vert] = ('zero',)
+                    elif t_sr.is_symbol():
+                        vtok[vert] = ('ext', str(t_sr))
+                    else:
+                        vtok = None             # not one atom: no prune
+                        break
+            except (KeyError, TypeError, ValueError, AttributeError):
+                vtok = None
+            if vtok is not None:
+                fd_tokens = ([(ek[0], ek[1]) for ek in D.edges()], vtok,
+                             [('int', vert) for vert in internal_vertices])
+        if fd_tokens is None:
+            fd_sets = None
+
     # ── 2^|E| subset loop, with summation across td's ────────────
     subset_contributions = []
     subset_diagnostics = []
@@ -781,39 +948,28 @@ def integrate_grouped_diagram(
             })
             continue
 
-        substitutions = {}
-        remaining_int_vars = list(integration_vars_grouped)
-        ext_time_equalities = []
-        subset_infeasible = False
-        for ei_idx in delta_edges:
-            eq_expr = SR(ref_ei[ei_idx]['dt_sym']).subs(substitutions)
-            try:
-                eq_vars = set(eq_expr.variables())
-            except AttributeError:
-                eq_vars = set()
-            int_var_to_eliminate = None
-            for iv in remaining_int_vars:
-                if iv in eq_vars:
-                    int_var_to_eliminate = iv
-                    break
-            if int_var_to_eliminate is not None:
-                try:
-                    sol = sage_solve(
-                        eq_expr == 0, int_var_to_eliminate,
-                        solution_dict=True,
-                    )
-                except Exception:
-                    sol = []
-                if not sol:
-                    subset_infeasible = True
-                    break
-                substitutions[int_var_to_eliminate] = \
-                    sol[0][int_var_to_eliminate]
-                remaining_int_vars.remove(int_var_to_eliminate)
-            else:
-                ext_time_equalities.append(eq_expr)
-        if subset_infeasible:
+        # M2a forced-δ prune (see ``fd_sets`` above): every contributing td
+        # keeps an identically-zero edge smooth, and the δ-solve would not
+        # mark the subset shot-noise -> never built.
+        if (fd_sets is not None
+                and all(not fd_sets[j].isdisjoint(smooth_edges)
+                        for j in contributing_td)
+                and not _delta_solve_leaves_residual(
+                    delta_edges, *fd_tokens)):
+            _fi_mod._RUNTIME_COUNTERS['forced_delta_pruned'] += 1
+            subset_diagnostics.append({
+                'delta_edges': delta_edges,
+                'smooth_edges': smooth_edges,
+                'status': 'forced_delta_pruned',
+            })
             continue
+
+        solved = _grouped_delta_solve(
+            [ei['dt_sym'] for ei in ref_ei], delta_edges,
+            integration_vars_grouped)
+        if solved is None:              # a δ equation had no solution
+            continue
+        substitutions, remaining_int_vars, ext_time_equalities = solved
 
         # Shot-noise δ contributions (residual ext-time equalities):
         # for the prototype, skip these so we don't have to enumerate
@@ -821,15 +977,7 @@ def integrate_grouped_diagram(
         # at τ=0 for same-population legs in the heterogeneous Hawkes
         # cases, and the per-diagram path also marks them as separate
         # ``delta_contributions``.  Re-enable when needed.
-        has_shotnoise = False
-        for eq in ext_time_equalities:
-            try:
-                if bool(eq.is_zero()):
-                    continue
-            except Exception:
-                pass
-            has_shotnoise = True
-            break
+        has_shotnoise = _has_nontrivial_equality(ext_time_equalities)
         if has_shotnoise:
             subset_diagnostics.append({
                 'delta_edges': delta_edges,

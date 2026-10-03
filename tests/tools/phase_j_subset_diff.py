@@ -79,14 +79,26 @@ What it does
    ``zero_normal_rows_seen``, ...).  Row kind: the M1 ``row_kinds``
    provenance (``edge`` without it), plus ``+zero_normal`` when the subset
    has a constant row (``--ref-scope zero_normal`` selects those subsets).
-5. **--stub-nquad**: replaces ``_integrate_polytope`` (in final_integral AND
-   grouped_integral, which imports it by name) with a counting stub that
-   returns 0 for m>=1 (m=0 passes through: it is a direct evaluation, not
-   quadrature).  For censuses only: totals are then meaningless, the
-   reconstruction check still holds against the stubbed totals.  The stubbed
-   calls never reach the real entry, so ``nquad_calls`` and
-   ``scipy_nquad_called_*`` stay 0; they are in ``stub_calls`` (by m), and
-   the report labels the counter line accordingly.
+5. **--stub-nquad**: a counting stub that returns 0 for m>=1 in place of the
+   scipy.nquad fallback.  For censuses only: totals are then meaningless,
+   the reconstruction check still holds against the stubbed totals.  Two
+   levels (``--stub-level``, ``run(stub_level=...)``):
+
+   ``entry`` (default; the level of the M0/M1 censuses) replaces
+            ``_integrate_polytope`` itself (in final_integral AND
+            grouped_integral, which imports it by name); m=0 passes through
+            (a direct evaluation, not quadrature).  The stubbed calls never
+            reach the real entry, so ``nquad_calls`` and
+            ``scipy_nquad_called_*`` stay 0; they are in ``stub_calls`` (by
+            m), and the report labels the counter line accordingly.
+   ``quadrature`` keeps the real entry -- its constant-row verdicts and the
+            M2a structural-zero test (``polytope_empty_cycle``) run and are
+            counted -- and replaces only the three quadrature routines it
+            dispatches to (``_integrate_1d_polytope``, ``_integrate_2d_polytope``,
+            ``_integrate_nd_polytope``).  ``stub_calls`` (by m) then counts
+            the entries that would have reached scipy quadrature (some of them
+            still return early inside those routines, e.g. on crossed scalar
+            bounds), and ``nquad_calls`` counts every m>=1 entry as usual.
 6. **fixture_delta_report()**: max abs / rel deltas of the four frozen
    Phase J fixtures (``tests/phase_j_refactor_fixtures``) between the
    current code and both the frozen ``.npz`` and the ``legacy/`` copies
@@ -328,10 +340,25 @@ def installed_hook(hook):
         FI._SUBSET_HOOK = prev
 
 
-class NquadStub:
-    """Counting stand-in for ``_integrate_polytope`` (m>=1 -> 0j)."""
+STUB_LEVELS = ('entry', 'quadrature')
+# final_integral's quadrature routines behind ``_integrate_polytope`` (m >= 1).
+_QUADRATURE_ROUTINES = {'_integrate_1d_polytope': 1,
+                        '_integrate_2d_polytope': 2,
+                        '_integrate_nd_polytope': None}
 
-    def __init__(self):
+
+class NquadStub:
+    """Counting stand-in for the scipy.nquad fallback (m>=1 -> 0j).
+
+    ``level='entry'`` replaces ``_integrate_polytope`` (m=0 passes through);
+    ``level='quadrature'`` keeps the real entry and replaces the three
+    quadrature routines it dispatches to (module docstring, item 5)."""
+
+    def __init__(self, level='entry'):
+        if level not in STUB_LEVELS:
+            raise ValueError(f'stub level must be one of {STUB_LEVELS}, '
+                             f'got {level!r}')
+        self.level = level
         self.calls = collections.Counter()
         self._orig = None
 
@@ -345,9 +372,27 @@ class NquadStub:
         self.calls[m] += 1
         return 0.0 + 0.0j
 
+    def _routine_stub(self, name):
+        fixed_m = _QUADRATURE_ROUTINES[name]
+
+        def stub(integrand_callable, s_constraints, free_ext_vals, *m):
+            self.calls[fixed_m if fixed_m is not None else m[0]] += 1
+            return 0.0 + 0.0j
+        return stub
+
     @contextlib.contextmanager
     def installed(self):
         FI, GI = _fi(), _gi()
+        if self.level == 'quadrature':
+            saved = {n: getattr(FI, n) for n in _QUADRATURE_ROUTINES}
+            for n in _QUADRATURE_ROUTINES:
+                setattr(FI, n, self._routine_stub(n))
+            try:
+                yield self
+            finally:
+                for n, f in saved.items():
+                    setattr(FI, n, f)
+            return
         self._orig = FI._integrate_polytope
         saved = (FI._integrate_polytope, GI._integrate_polytope)
         FI._integrate_polytope = self
@@ -422,7 +467,8 @@ def recorded_diagram_sources():
 
 def run(model, *, k, max_ell, external_fields, parameters=None,
         tau_grid=None, points=None, use_grouped_phase_j=False,
-        stub_nquad=False, keep_live=True, compute_kwargs=None, label=None):
+        stub_nquad=False, keep_live=True, compute_kwargs=None, label=None,
+        stub_level='entry'):
     """Run ``compute_cumulants`` with the hook installed and return a run
     dict (records, pipeline totals keyed by (ell, point), counters, ...).
 
@@ -436,12 +482,15 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
     counters of that auxiliary grid evaluation are dropped (its counters are
     kept as ``counters_aux_grid``), so only the requested points are recorded,
     counted and reconstructed (the stub's ``stub_calls`` are reset too).
+
+    ``stub_level`` ('entry' | 'quadrature') selects what ``stub_nquad``
+    replaces (module docstring, item 5).
     """
     from api import compute_cumulants
     from api.compute import _ITO_EPS
     FI = _fi()
     rec = SubsetRecorder(keep_live=keep_live)
-    stub = NquadStub() if stub_nquad else None
+    stub = NquadStub(stub_level) if stub_nquad else None
     kw = dict(k=k, max_ell=max_ell, external_fields=list(external_fields),
               use_cache=True, verbose=False,
               use_grouped_phase_j=use_grouped_phase_j)
@@ -496,7 +545,9 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
             'points': None if points is None
             else [tuple(map(float, p)) for p in points],
             'use_grouped_phase_j': use_grouped_phase_j,
-            'stub_nquad': stub_nquad, 'ito_eps': _ITO_EPS,
+            'stub_nquad': stub_nquad,
+            'stub_level': stub_level if stub_nquad else None,
+            'ito_eps': _ITO_EPS,
             'aux_tau_grid': [0.0] if aux_grid else None,
             'use_cache': kw.get('use_cache'),
             'cwd': os.getcwd(),
@@ -1069,21 +1120,32 @@ def format_report(run_, *, max_worst=15):
                  f"records={len(run_['records'])}")
     c = run_['counters']
     stub_calls = run_.get('stub_calls')
+    entry_stub = cfg.get('stub_level', 'entry') in (None, 'entry')
     n_stub = (sum(n for m, n in stub_calls.items() if int(m) >= 1)
               if stub_calls is not None else 0)
-    stub_note = (f" [nquad STUBBED: {n_stub} m>=1 calls intercepted before "
-                 f"the real entry, so these stay 0; see 'stubbed nquad calls "
-                 f"by m']" if stub_calls is not None else '')
+    if stub_calls is None:
+        stub_note = ''
+    elif entry_stub:
+        stub_note = (f" [nquad STUBBED: {n_stub} m>=1 calls intercepted "
+                     f"before the real entry, so these stay 0; see 'stubbed "
+                     f"nquad calls by m']")
+    else:
+        stub_note = (f" [quadrature STUBBED behind the real entry: {n_stub} "
+                     f"of these reached a quadrature routine; see 'stubbed "
+                     f"nquad calls by m']")
     lines.append(f"counters: nquad_calls={c.get('nquad_calls')} "
                  f"(m1={c.get('scipy_nquad_called_m1')} "
                  f"m2={c.get('scipy_nquad_called_m2')} "
                  f"m>=3={c.get('scipy_nquad_called_mge3')}){stub_note}  "
                  f"polytope_m0_direct={c.get('polytope_m0_direct')}  "
-                 f"zero_normal_rows_seen={c.get('zero_normal_rows_seen')}")
+                 f"zero_normal_rows_seen={c.get('zero_normal_rows_seen')}  "
+                 f"polytope_empty_cycle={c.get('polytope_empty_cycle')}  "
+                 f"forced_delta_pruned={c.get('forced_delta_pruned')}")
     by = c.get('nquad_fallback_by_reason') or {}
+    n_extra = n_stub if entry_stub else 0
     lines.append(f"nquad_fallback_by_reason (dispatch side; sum "
                  f"{sum(by.values())} vs nquad_calls {c.get('nquad_calls')}"
-                 f" + stubbed {n_stub}): {by}")
+                 f" + stubbed {n_extra}): {by}")
     if stub_calls is not None:
         lines.append(f"stubbed nquad calls by m: {stub_calls}")
     srcs = cfg.get('diagram_sources')
@@ -1297,6 +1359,10 @@ def main(argv=None):
     ap.add_argument('--params', default=None, help='JSON dict')
     ap.add_argument('--grouped', action='store_true')
     ap.add_argument('--stub-nquad', action='store_true')
+    ap.add_argument('--stub-level', default='entry', choices=list(STUB_LEVELS),
+                    help="what --stub-nquad replaces: 'entry' "
+                         "(_integrate_polytope) or 'quadrature' (the "
+                         'routines behind its entry checks)')
     ap.add_argument('--refs', default='a,b,c',
                     help="subset of a,b,c ('' for none; d,e raise)")
     ap.add_argument('--ref-max-m', type=int, default=2)
@@ -1335,7 +1401,8 @@ def main(argv=None):
                parameters=json.loads(args.params) if args.params else None,
                tau_grid=taus, points=points,
                use_grouped_phase_j=args.grouped,
-               stub_nquad=args.stub_nquad, label=label)
+               stub_nquad=args.stub_nquad, label=label,
+               stub_level=args.stub_level)
     kinds = tuple(x for x in args.refs.split(',') if x)
     if kinds and not args.stub_nquad:
         compute_references(run_, kinds, ref_max_m=args.ref_max_m,

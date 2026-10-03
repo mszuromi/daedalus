@@ -755,7 +755,11 @@ def test_causal_chambers_unchanged():
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_flag_initialisation_from_the_environment():
-    f = FI._initial_phase_j_flags
+    # (the other Phase J flags of the same dict are checked by their own
+    # tests, e.g. STRUCTURAL_ZEROS in tests/test_phase_j_structural_zeros.py)
+    def f(env):
+        return {'THETA0_CONST_ROW_MODE':
+                FI._initial_phase_j_flags(env)['THETA0_CONST_ROW_MODE']}
     assert f({}) == {'THETA0_CONST_ROW_MODE': 'ito'}
     assert f({'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'legacy_clip'}) == {
         'THETA0_CONST_ROW_MODE': 'legacy_clip'}
@@ -1100,8 +1104,9 @@ def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model, mode,
 
 
 # k=3 ties on a spike-train field, tree level.  Legs 1 and 2 coincide
-# (non-anchor legs reach the engine as exact ties, also through the API's
-# k>=3 slice nudge).  The regular part is continuous across t1 = t2, so
+# (non-anchor legs reach the engine as exact ties, also through dd.run: on
+# the diagonals of its full k-point grid and between the non-swept legs of
+# its k>=4 slices).  The regular part is continuous across t1 = t2, so
 # with exactly one orientation of each tied edge holding the value at the
 # tie is the limit -- from both sides here.
 _K3_TIE = (0.0, 0.7, 0.7)
@@ -1135,11 +1140,12 @@ def test_k3_exact_tie_is_the_one_sided_limit(k3_tree):
     anchor = f(0.0, 0.0, 0.7)
     left = _richardson([f(0.0, -h, 0.7) for h in _H])
     assert abs(anchor - left) <= 1e-9 * abs(left)
-    # the API's k>=3 slice at τ = 0 (both non-anchor legs nudged to -1e-6):
+    # both non-anchor legs at -1e-6: the origin of dd.run's full k=3 grid
+    # (each leg at 0 -> -1e-6; the pre-0.2.0 slice point at τ = 0 too):
     # the limit with leg 2 below leg 1
-    api = f(0.0, -1e-6, -1e-6)
+    nudged = f(0.0, -1e-6, -1e-6)
     lim = _richardson([f(0.0, -1e-6, -1e-6 - h) for h in _H])
-    assert abs(api - lim) <= 1e-9 * abs(lim)
+    assert abs(nudged - lim) <= 1e-9 * abs(lim)
 
 
 def test_k3_near_ties_are_continuous_and_permutation_consistent(k3_tree):
@@ -1226,8 +1232,8 @@ def ld_cross_k3(request, private_cwd):
     return lambda *t: complex(fn(*t)).real
 
 
-# Step sizes of the one-sided samples.  At the dd.run point the legs sit at
-# −1e−6, so the samples must stay below the anchor t₀ = 0 (h <= 1e−7).
+# Step sizes of the one-sided samples.  At the full-grid origin the legs sit
+# at −1e−6, so the samples must stay below the anchor t₀ = 0 (h <= 1e−7).
 _H_API = np.array([1e-7, 1e-8, 1e-9])
 
 
@@ -1236,9 +1242,10 @@ _H_API = np.array([1e-7, 1e-8, 1e-9])
      lambda h: (0.0, 0.7, 0.7 + h), _H),
     ((0.3, 0.3, 0.7), lambda h: (0.3, 0.3 - h, 0.7),
      lambda h: (0.3, 0.3 + h, 0.7), _H),
+    # dd.run's full-grid origin (the pre-0.2.0 k=3 slice point at τ = 0)
     ((0.0, -1e-6, -1e-6), lambda h: (0.0, -1e-6, -1e-6 - h),
-     lambda h: (0.0, -1e-6, -1e-6 + h), _H_API),  # dd.run's k=3 τ=0 point
-], ids=['legs12', 'legs01', 'api_tau0'])
+     lambda h: (0.0, -1e-6, -1e-6 + h), _H_API),
+], ids=['legs12', 'legs01', 'grid_origin'])
 def test_cross_field_tie_takes_the_tie_order_side(
         ld_cross_k3, monkeypatch, tie, larger_index_earlier, other_side, hs):
     f = ld_cross_k3
