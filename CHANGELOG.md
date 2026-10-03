@@ -45,7 +45,17 @@ grouped Phase J path:
     the τ grid already samples (at τ = −1e−6). Before 0.2.0 such a pair was
     Θ(0) = 0 on both orientations (Θ(0) = 1 on both in the polygon
     integrator), and the value at coincident times was neither one-sided
-    limit.
+    limit. The value at a tie is that limit only as accurately as the tie
+    is evaluated: an exact tie can send an integration region to another
+    integrator than the points around it, and two of those routes have
+    known errors, the `scipy.nquad` fallback (default tolerance) and, for
+    regions with three or more integration times, the poset lower-bound
+    inheritance error (see the known issue under the k = 2 table below).
+    A value at a tie can then be much less accurate than the values around
+    it: on the default k = 4 `dd.run` slices of
+    `single_population_spike_reset_test`, 1.0% to 8.5% relative (about
+    1e−3 absolute) at τ = 0.5. See the known issue after the k = 3 table
+    below.
   - **So at coincident times of legs of different fields the value depends
     on the order in which `external_fields` lists them.** Where the
     cumulant jumps, listing the same (field, time) pairs in another order
@@ -92,21 +102,22 @@ and only where a constant row is exactly 0:
 - a row comparing two external times: only where those times coincide
   exactly. The k = 2 τ grid never evaluates coincident times (τ = 0 is
   sampled at −1e−6, and `total_C(t, t)` is nudged the same way), so k = 2
-  curves move only through the first case. The k ≥ 3 curves of `dd.run`
-  (`C_tau` and `C_tau_slices` of a k ≥ 3 result) do evaluate coincident
-  times. With `kpoint_base_lags` left at its default, every non-swept
-  non-anchor leg sits at −1e−6, so:
-  - for k = 3, the τ = 0 point of each slice has coincident legs;
+  curves move only through the first case. In the k ≥ 3 curves of `dd.run`
+  (`C_tau` and `C_tau_slices` of a k ≥ 3 result) the swept leg never
+  coincides with another leg either (next section). But with
+  `kpoint_base_lags` left at its default, every non-swept non-anchor leg
+  sits at −1e−6, so:
   - for k ≥ 4, EVERY point of a slice has at least two coincident legs (the
-    k − 2 non-swept ones), so a whole slice curve can move;
+    k − 2 non-swept ones), so a whole slice curve can move, and so can a
+    k ≥ 4 moment output (`Config.output = 'moment'` or `'central_moment'`,
+    evaluated at the times of slice 1, next section);
   - the full grid (`kpoint_full_grid`, `C_tau_grid`) has coincident legs on
     its diagonals.
 
   A point with coincident legs moves only where the two one-sided limits
   differ, for example legs of different fields of a model with
   instantaneous parts (tables below). With distinct, nonzero
-  `kpoint_base_lags` the non-swept legs stay apart, and the swept leg meets
-  another leg only at a τ equal to one of the base lags.
+  `kpoint_base_lags` the non-swept legs stay apart.
 
 Models without instantaneous parts (in every re-run: the OU family and the
 spatial models) have no constant rows. Their numbers are unchanged at every
@@ -117,7 +128,194 @@ exact emptiness tests above. When the counters `theta0_const_empty`,
 `theta0_const_drop`, `theta0_subsets_pruned`, `polygon_zero_area` and
 `poset_empty_cycle` all stay 0, the value is identical to the old one.
 (`zero_normal_rows_seen` alone is not enough: it counts constant rows only
-in the two-time and multi-time integrators.)
+in the two-time and multi-time integrators.) The τ = 0 points of the
+`dd.run` k ≥ 3 slices of these models, and the points of their k ≥ 3
+moment outputs, do shift slightly, because the times at which those points
+are evaluated change (next section).
+
+### Changed: `dd.run` k ≥ 3 slices take the left limit where legs meet (numbers move)
+
+`dd.run` turns a k ≥ 3 cumulant into k − 1 curves over `tau_grid`
+(`C_tau_slices`; `C_tau` is slice 1). Slice j sweeps leg j
+(τ_j = t_j − t₀), and the other non-anchor legs stay at their
+`kpoint_base_lags` (default 0, evaluated at −1e−6 like the k = 2 grid's
+τ = 0 point). Before 0.2.0 every non-anchor leg with |t| ≤ 1e−12 was moved
+to −1e−6, so at τ = 0 the swept leg landed on the same time as the other
+non-anchor legs at a base lag of 0. The value of that point was then set by
+the pre-0.2.0 Θ(0) handling of the coincident legs, not by the curve, and
+where the curve jumps at τ = 0 (legs of different fields in a model with
+instantaneous parts) it was neither of the curve's one-sided limits. The
+tie order of the previous section alone would not make it the left limit:
+it takes the limit in which the later-listed leg approaches from below,
+which is the curve's left limit only on a slice whose swept leg is the
+last-listed of the coincident legs.
+
+In 0.2.0 every point of a slice is a point of its own curve:
+
+- Where the swept leg meets another leg (within 1e−12: the anchor at τ = 0,
+  or a non-swept leg at τ equal to its base lag or to its evaluation time;
+  for a base lag of 0 that is τ = 0 or τ = −1e−6), it is placed 1e−6
+  (`api.compute._ITO_EPS`) below the earliest leg it meets, again if that
+  lands on another leg (where 1e−6 is below the float spacing of the time,
+  |τ| ≥ 2³⁴ ≈ 1.7e10, the next float below). The point is then the left
+  limit τ → τ₀⁻ of that slice, as the k = 2 grid's τ = 0 point is. With the
+  default base lags, the τ = 0 point of a slice has the swept leg at −2e−6
+  and the other non-anchor legs at −1e−6; a grid point at τ = −1e−6 gets
+  the same times, and the same value, as the τ = 0 point.
+- Every other point is evaluated at exactly the same times as before, and
+  its value is unchanged (bit-for-bit, in process).
+- The point is evaluated 1e−6 below the leg it meets, not in the limit, so
+  it equals the left limit at τ₀ only up to the curve's change over that
+  offset: 2e−6 at τ = 0 with the default base lags (1e−6 for the k = 2
+  grid's τ = 0 point). For rates of order 1 that is of order 1e−6
+  relative. It does not matter where the curve jumps by much more
+  (`single_population_spike_reset_test` and
+  `single_population_linear_delta_spikes_test` below), but it does where
+  the jump is itself that small: the τ = 0 points of `multipopulation_test`
+  are 1.8e−6 and 2.4e−6 relative from the left limits at τ = 0 (slices 1
+  and 2), while its jumps there are 4.6e−6 and 5.6e−7. On a slice whose
+  swept leg is the last-listed of the legs it meets (slice 2 at k = 3,
+  slice 3 at k = 4), the tie order alone, at the old point
+  (0, −1e−6, …, −1e−6), would already give the left branch, 1e−6 left of
+  τ = 0; the new point, 2e−6 left of τ = 0, is about twice as far from the
+  left limit at τ = 0: 6.0e−5 relative instead of 3.0e−5
+  (`single_population_spike_reset_test` k = 4 slice 3) and 2.0e−7 instead
+  of 9.8e−8 (`single_population_linear_delta_spikes_test` k = 3 slice 2).
+- τ-grid points closer than about 2e−6 to 0 or to a base lag are below the
+  resolution of this placement. A τ strictly between a non-swept leg's
+  evaluation time and its base lag (for a base lag of 0: −1e−6 < τ < 0) is
+  evaluated as given, with the swept leg between that leg and the anchor,
+  while τ = −1e−6 and τ = 0 are left limits. Base lags within a few 1e−6
+  of 0 or of each other are below the resolution too.
+- The non-swept legs are never moved. Where they coincide with each other
+  (k ≥ 4 with the default base lags, where they all sit at −1e−6), the tie
+  order of the previous section decides, the same way at every point of
+  the slice, so it adds no jump to the curve. But then every point of the
+  slice is evaluated at a tie, and only as accurately as the tie is (known
+  issue after the k = 3 table below). For
+  `single_population_spike_reset_test` k = 4 (tree level, parameters of the
+  tables below) the tie sends regions with three integration times to the
+  poset integrator, where the known lower-bound inheritance error applies:
+  at τ = 0.5 the points of slices 1, 2 and 3 are 2.1%, 1.0% and 8.5%
+  relative (9.9e−4, 4.9e−4 and 9.9e−4 absolute) off the tie-order limit.
+  The τ = 0 points and right limits tabulated below are not affected: the
+  τ = 0 points of slices 1, 2 and 3 equal the tie-order limit to ≤ 2.3e−11
+  relative, and the points at τ = 2e−5 (slices 1 and 3) to 5.7e−11 and
+  1.8e−10. Distinct, nonzero `kpoint_base_lags` keep the non-swept legs
+  apart.
+- `result['_kpoint_slice_times']` lists the external times of every slice
+  point.
+- Unchanged: k = 2 results, the full grid (`kpoint_full_grid`,
+  `C_tau_grid`: each leg is mapped on its own, and legs with equal values
+  stay coincident on its diagonals), and the callables `total_C` and
+  `total_C_by_ell`. So the full grid keeps the tie order at its coincident
+  points (its origin and diagonals), and there it can differ from the
+  slices: for `single_population_linear_delta_spikes_test` k = 3 (tree,
+  parameters of the k = 3 table below), `C_tau_grid` at the origin is
+  +6.80526e−4, the τ = 0 point of slice 2 (to 9.8e−8 relative), while the
+  τ = 0 point of slice 1 is +6.60665e−4.
+- `DAEDALUS_PHASE_J_LEGACY=1` restores the Phase J rules, not the slice
+  times. With it set, the pre-0.2.0 τ = 0 point is
+  `result['total_C'](0, -1e-6, ..., -1e-6)`.
+- The k ≥ 3 moment outputs (`Config.output = 'moment'` or
+  `'central_moment'`) follow slice 1. They are the curve
+  ⟨φ(0) φ(τ) φ(0) … φ(0)⟩ over `tau_grid` (leg 1 swept, the other legs at
+  0; `kpoint_base_lags` is not used, as before). Their cumulant blocks of
+  3 or more legs used to be evaluated with every leg but the swept one at
+  exactly 0, the anchor's time; they are now evaluated at the times of
+  slice 1 with the default base lags. So the k = 3 central moment equals
+  `C_tau` bit-for-bit, and its τ = 0 point is the left limit too: for
+  `single_population_linear_delta_spikes_test` ⟨n₁ n₂ n₁⟩ (tree,
+  parameters of the k = 3 table below) it moves from +6.80526e−4, the
+  tie-order value at (0, 0, 0), to +6.60665e−4, 2.9% lower (the raw moment
+  by 1.7e−5 relative). Its other points move by the curve's change over
+  the 1e−6 offset of the non-swept leg: by ≤ 1.2e−7 relative at τ = ±0.5
+  and for 3e−6 ≤ |τ| ≤ 1e−4. For models without instantaneous parts the
+  shift is of the same kind: `ou_quartic_double_well` k = 3 (`mu = -1`,
+  `eps = 0.1`, `D = 0.1`, tree) by 7.7e−7 relative at τ = ±0.5 and
+  ≤ 4.1e−10 for |τ| ≤ 1e−4, and at its default parameters k = 4 (tree plus
+  one loop) by 1.2e−7 at τ = ±0.5 and ≤ 6.6e−12 for |τ| ≤ 1e−4. At k ≥ 4
+  the non-swept legs coincide with each other, as on the slices, so every
+  point of a k ≥ 4 moment output is evaluated at a tie (known issue after
+  the k = 3 table below). Blocks of 2 legs read the k = 2 grid as before.
+
+τ = 0 point of every slice, default base lags, tree level. The legs
+alternate between two fields: ⟨n₁ n₂ n₁⟩ and ⟨n₁ n₂ n₁ n₂⟩
+(`multipopulation_test`: n_E₁, n_E₂; `dendritic_quad_soma_sigmoid`: n_S₁,
+n_S₂), with the parameters of the tables below (`dendritic_quad_soma_sigmoid`:
+its default parameters). "0.1.0" is the old point (0, −1e−6, …, −1e−6) under the 0.1.0 rules,
+"0.2.0" the new point. The new point lies on the left branch of its slice:
+it equals the Lagrange extrapolation of the slice from τ = −1e−4, −1e−5,
+−3e−6 to the swept leg's time (−2e−6) to ≤ 1.3e−13 relative (≤ 2.1e−11 for
+`single_population_spike_reset_test`, whose k ≥ 3 tree level is partly
+evaluated by `scipy.nquad`); the left limit at τ = 0 itself differs from it
+by the offset described above. "right limit" is the limit τ → 0⁺ of the
+same slice (from τ = 1e−4, 1e−5, 3e−6).
+
+| model | k | slice | 0.1.0 | 0.2.0 | right limit |
+|---|---|---|---|---|---|
+| `single_population_spike_reset_test` | 3 | 1 | +1.01360e−1 | −3.32555e−1 | −2.34321e−1 |
+| | 3 | 2 | +1.01360e−1 | +4.96369e−2 | −3.32555e−1 |
+| | 4 | 1 | −1.85754e−2 | +5.96347e−2 | −7.58513e−2 |
+| | 4 | 2 | −1.85754e−2 | −5.29033e−2 | +5.96348e−2 |
+| | 4 | 3 | −1.85754e−2 | +2.12106e−3 | +2.48028e−2 |
+| `single_population_linear_delta_spikes_test` | 3 | 1 | +2.64260e−5 | +6.60665e−4 | +1.55065e−4 |
+| | 3 | 2 | +2.64260e−5 | +6.80526e−4 | +6.60666e−4 |
+| | 4 | 1 | +1.23614e−6 | +7.25644e−6 | +3.15438e−5 |
+| | 4 | 2 | +1.23614e−6 | +2.99907e−5 | +7.25644e−6 |
+| | 4 | 3 | +1.23614e−6 | +3.27274e−5 | +3.12428e−5 |
+| `multipopulation_test` | 3 | 1 | +9.6992059e−7 | +9.6992026e−7 | +9.6992289e−7 |
+| | 3 | 2 | +9.6992059e−7 | +9.6992218e−7 | +9.6991930e−7 |
+| `dendritic_quad_soma_sigmoid` | 3 | 1 | +3.18218e−6 | +1.31101e−5 | +1.87098e−5 |
+| | 3 | 2 | +3.18218e−6 | +1.58915e−5 | +1.31101e−5 |
+
+- Where the two one-sided limits of a slice differ (legs of different
+  fields meeting in a model with instantaneous parts), the τ = 0 point is
+  now the left one. Before 0.2.0 it was neither.
+- Where the curve is continuous, the point moves only because the swept
+  leg moves by 1e−6: `linear_hawkes` (parameters `P_LINH` of
+  `tests/tools/phase_j_zoo_baseline.py`) by 4.4e−7 and 4.8e−7 relative at
+  k = 3 (slices 1 and 2; its one-loop term is 0 there) and by ≤ 5.5e−7 at
+  k = 4; `single_population_quad_exp_test` (`P_SP`) by 5.5e−7 and 1.1e−6
+  at k = 3. `quadratic_hawkes_alpha` (default parameters, ⟨n₁ n₂ n₁⟩) has
+  instantaneous parts, but its k = 3 slices are continuous at τ = 0 to
+  within their evaluation accuracy (the one-sided limits are 2.3e−9 and
+  3.0e−10 relative apart): its points move by 1.3e−8 and 5.6e−9 relative
+  and equal the left branch to 2.1e−10 and 1.1e−10. For the models without
+  instantaneous parts that were
+  measured, the curves are flat to first order at the default τ = 0 point
+  and the shift is O(1e−12): `ou_quartic` (`mu = 1`, `eps = 0.02`, `D = 1`)
+  k = 4 by 2.5e−12 (tree) and 1.1e−12 (one loop) relative (its k = 3
+  cumulant is identically 0, before and after); `ou_quartic_double_well`
+  at `mu = -1`, `eps = 0.1`, `D = 0.1` (a nonzero saddle, so k = 3 is not
+  0) k = 3 by 8.0e−12 (tree), and at its default parameters (`mu = 1`, a
+  symmetric saddle) k = 4 by 2.5e−12. The other public models without
+  instantaneous parts, at their default parameters, tree level, every
+  slice: `ou_quartic_colored` k = 4 by 5.3e−11, `ou_quartic_two_dim_color_corr`
+  (⟨x y x y⟩) k = 4 by 4.9e−11, and `ou_sextic` and
+  `toy_quartic_double_well` k = 4 by 2.5e−12. Their k = 3 cumulants
+  (⟨x y x⟩ for `ou_quartic_two_dim_color_corr`) are 0, before and after
+  (below 1e−300 in absolute value).
+- With nonzero base lags the crossing points are left limits too. For
+  example, for `single_population_linear_delta_spikes_test` k = 3 with
+  `kpoint_base_lags=[0.5, -1.0]`, the point of slice 1 at τ = −1 (the swept
+  n₂ leg meets the n₁ leg at −1) is +6.12238e−4, the left limit; the
+  coincident point (0, −1, −1) itself gives +6.28418e−4 with the tie order.
+  On slice 2 the swept leg was already the earlier one at its crossing
+  (τ = 0.5), which moves by 1.1e−7 relative. A crossing point of a model
+  without instantaneous parts moves by O(1e−6) relative (`ou_quartic` k = 4
+  with `kpoint_base_lags=[0.5, 0.5, 0]`: ≤ 5.0e−7 per loop order, and
+  6.5e−7 for the total, tree plus one loop).
+- Not measured (each over its time budget): `multipopulation_test` and
+  `single_population_quad_exp_test` at k = 4 (builds not finished within
+  90 and 45 minutes); `dendritic_quad_soma_sigmoid` and
+  `quadratic_hawkes_alpha` at k = 4 (builds not finished within 30
+  minutes); `ou_quartic_double_well` at `mu = -1`, `eps = 0.1`, `D = 0.1`
+  at k = 4 (one tree evaluation not finished within 30 minutes). The first
+  four have instantaneous parts, so the τ = 0 points of their k = 4 slices
+  can jump as those of `single_population_spike_reset_test` do; the last
+  has none, so its points move by O(1e−6) relative or less.
+- No tracked notebook evaluates a k ≥ 3 `dd.run` slice or moment output.
 
 ### Moved (measured)
 
@@ -172,29 +370,50 @@ spike-reset parameters as above. The
 "limit" column is the one-sided limit in which the later-listed of the
 coincident legs approaches from below; "other limit" is the other one-sided
 limit, given where it differs (Richardson extrapolation from
-h = 1e−4, 1e−5, 1e−6; at (0, −1e−6, −1e−6) from h = 1e−7, 1e−8, 1e−9, so that
-the samples stay below t₀ = 0). (0, −1e−6, −1e−6) is the τ = 0 point of the
-`dd.run` k = 3 curve.
+h = 1e−4, 1e−5, 1e−6). At (0, 0, 0) the three legs have three distinct
+limits: n₂ between the two n₁ legs (the tie order), n₂ first and n₂ last.
+The rows marked `dd.run` are the τ = 0 points of the k = 3 slices (see
+"Changed: `dd.run` k ≥ 3 slices …" above): "before" is the old point
+(0, −1e−6, −1e−6), where the
+swept leg coincided with the other one; "after" is the new point, with the
+swept leg at −2e−6; "limit" is the left branch of that slice at the swept
+leg's time −2e−6 (Lagrange extrapolation from τ = −1e−4, −1e−5, −3e−6),
+and "other limit" is the right limit of the slice at τ = 0 (from τ = 1e−4,
+1e−5, 3e−6). The left limit at τ = 0 itself differs from "limit" by the
+curve's change over 2e−6 (next bullets).
 
 | model | (t₀, t₁, t₂) | before | after | limit | other limit |
 |---|---|---|---|---|---|
 | `single_population_spike_reset_test` | (0, 0.7, 0.7) | −4.58858e−4 | −9.89874e−2 | −9.89874e−2 | +4.12483e−2 |
 | | (0.3, 0.3, 0.7) | +1.02854e−1 | −2.13653e−1 | −2.13653e−1 | +4.09230e−2 |
-| | (0, −1e−6, −1e−6) | +1.01360e−1 | +4.96369e−2 | +4.96369e−2 | −3.32555e−1 |
+| | `dd.run` slice 1, τ = 0: (0, −2e−6, −1e−6) | +1.01360e−1 | −3.32555e−1 | −3.32555e−1 | −2.34321e−1 |
+| | `dd.run` slice 2, τ = 0: (0, −1e−6, −2e−6) | +1.01360e−1 | +4.96369e−2 | +4.96369e−2 | −3.32555e−1 |
 | | (0, 0.4, 0) | +2.25093e−2 | −1.43972e−1 | −1.43972e−1 | (same) |
 | `single_population_linear_delta_spikes_test`, `Em = [0.8, 0.78]`, `tau = [10, 9]`, `w = [[0, 0.25], [0.2, 0]]` | (0, 0.7, 0.7) | +8.07043e−5 | +1.56695e−4 | +1.56695e−4 | +6.34919e−4 |
 | | (0.3, 0.3, 0.7) | +2.56166e−5 | +6.40873e−4 | +6.40873e−4 | +6.59190e−4 |
-| | (0, −1e−6, −1e−6) | +2.64260e−5 | +6.80526e−4 | +6.80526e−4 | +6.60666e−4 |
+| | `dd.run` slice 1, τ = 0: (0, −2e−6, −1e−6) | +2.64260e−5 | +6.60665e−4 | +6.60665e−4 | +1.55065e−4 |
+| | `dd.run` slice 2, τ = 0: (0, −1e−6, −2e−6) | +2.64260e−5 | +6.80526e−4 | +6.80526e−4 | +6.60666e−4 |
 | | (0, 0.4, 0) | +1.48826e−4 | +1.48826e−4 | +1.48826e−4 | (same) |
-| | (0, 0, 0) | +1.06073e−5 | +6.80526e−4 | +6.80526e−4 (t₂ < t₁ < t₀) | |
+| | (0, 0, 0) | +1.06073e−5 | +6.80526e−4 | +6.80526e−4 (n₂ between) | +6.60666e−4 (n₂ first), +1.55065e−4 (n₂ last) |
 | `multipopulation_test` (parameters of `tests/tools/phase_j_zoo_baseline.py`, `P_MP`), ⟨n_E₁ n_E₂ n_E₁⟩ | (0, 0.7, 0.7) | +2.4548779e−6 | +2.4548792e−6 | +2.4548792e−6 | +2.4548736e−6 |
 | | (0.3, 0.3, 0.7) | +1.3250094e−6 | +1.3250003e−6 | +1.3250003e−6 | +1.3250139e−6 |
-| | (0, −1e−6, −1e−6) | +9.6992059e−7 | +9.6992101e−7 | +9.6992101e−7 | +9.6991936e−7 |
-| | (0, 0, 0) | +9.7179215e−7 | +9.6992006e−7 | | |
+| | `dd.run` slice 1, τ = 0: (0, −2e−6, −1e−6) | +9.6992059e−7 | +9.6992026e−7 | +9.6992026e−7 | +9.6992289e−7 |
+| | `dd.run` slice 2, τ = 0: (0, −1e−6, −2e−6) | +9.6992059e−7 | +9.6992218e−7 | +9.6992218e−7 | +9.6991930e−7 |
+| | (0, 0, 0) | +9.7179215e−7 | +9.6992006e−7 | +9.6992006e−7 (n_E₂ between) | +9.6991841e−7 (n_E₂ first), +9.6992172e−7 (n_E₂ last) |
 
 - The new values equal the limit to ≤ 1e−15 relative (linear delta spikes),
   ≤ 6e−14 (multipopulation) and ≤ 7e−11 (spike reset, whose k = 3 tree
-  level is partly evaluated by `scipy.nquad`).
+  level is partly evaluated by `scipy.nquad`). The `dd.run` rows equal
+  their "limit" (the left branch at −2e−6) to ≤ 1.2e−15, ≤ 1.3e−13 and
+  ≤ 5.6e−13, and differ from the left limit at τ = 0 itself by 3.8e−7 and
+  2.0e−7 (linear delta spikes, slices 1 and 2), 1.8e−6 and 2.4e−6
+  (multipopulation) and 2.6e−6 and 9.4e−7 (spike reset) relative.
+- The one-sided limits of `multipopulation_test` at the `dd.run` τ = 0
+  points differ by only 4.6e−6 (slice 1) and 5.6e−7 (slice 2) relative,
+  while its curves change by about 1e−6 relative per 1e−6 of τ. Its
+  `dd.run` points, 2e−6 left of τ = 0, are therefore left limits only to
+  that level: slice 2's point is further from its left limit at τ = 0 than
+  the jump itself.
 - The same k = 3 evaluations at distinct times, including times 1 ulp,
   1e−13, 1e−12 and 3e−12 apart and times shifted by 10⁶, are unchanged
   (bit-for-bit, in process). So is the k = 4 point (0, 0.3, 0.3 + 1e−12, 0.9)
@@ -202,13 +421,70 @@ the samples stay below t₀ = 0). (0, −1e−6, −1e−6) is the τ = 0 point 
 - At coincident times, `linear_hawkes` k = 3 (ℓ ≤ 1) values change by
   ≤ 3.1e−14 relative and `single_population_quad_exp_test` k = 3 tree values
   by ≤ 1.7e−14.
+- **Known issue: a value at exactly coincident times is the one-sided limit
+  only as accurately as it is evaluated.** An exact tie can send an
+  integration region to another integrator than the points around it, and
+  two of those routes have known errors:
+  - Two-time regions can go to the `scipy.nquad` fallback and carry its
+    error. For `multipopulation_test` ⟨n_E₁ n_E₂ n_E₁⟩ at tree level
+    (parameters as above), (0, 0.4, 0.4) sends 16 such regions there (none
+    at (0, 0.4, 0.4 − 1e−7) or at (0, 0.7, 0.7)). Its value, +1.68597e−6,
+    is 2.9e−5 relative from the limit, +1.68592e−6: twelve times the jump
+    between the two one-sided limits there (2.4e−6), so it is neither
+    limit. The ties (0, t, t) of the same model at t = −2, −1, −0.5, 0.2,
+    0.5, 0.7, 1 and 2 reach no fallback and equal the limit to ≤ 1.4e−14.
+  - At an exact tie, a region with three or more integration times can be
+    accepted by the analytic poset integrator, which rejects it (and sends
+    it to the fallback) when the tied times differ by more than 1e−9.
+    Accepted, it carries the poset lower-bound inheritance error (the
+    known issue under the k = 2 table above): two tied external lower
+    bounds count as consistent, and a time variable that has no lower
+    bound of its own inherits theirs. The error is large. For
+    `single_population_spike_reset_test` ⟨n₁ n₂ n₁ n₂⟩ at tree level
+    (parameters as above), every point of the default k = 4 `dd.run`
+    slices has its two non-swept legs tied at −1e−6. At τ = 0.5 the values
+    are −4.82409e−2, +4.73977e−2 and +1.07140e−2 (slices 1, 2 and 3),
+    while the tie-order limits are −4.72516e−2, +4.78860e−2 and
+    +1.17033e−2: 2.1%, 1.0% and 8.5% relative, 9.9e−4, 4.9e−4 and 9.9e−4
+    absolute. (The limits are extrapolated from the tie-order leg moved
+    2e−7, 1e−7 and 5e−8 lower. Those points send the regions to the
+    fallback instead: 1768 fallback entries per point, against 1544 to
+    1568 at the tie.) Slice 2's tied legs belong to the same field, so
+    both orientations give the same limit, and the tie value is off it
+    too. The τ = 0 points of the slice table above are not affected (they
+    equal their limit to ≤ 2.3e−11 relative), and neither are the right
+    limits there (at τ = 2e−5, 5.7e−11 and 1.8e−10 for slices 1 and 3).
+    On a hand-built region with this structure the value is too small by
+    a factor of about 5e5 at an exact tie, and also when the two times
+    differ by 1e−10.
+  - The ties of the k = 4 slices of
+    `single_population_linear_delta_spikes_test` (τ = 0 and 0.5) and of
+    `linear_hawkes` (τ = 0.5) reach no fallback and equal the tie-order
+    limit to ≤ 7.4e−15.
+
+  Such points come from `total_C` at coincident times and, in `dd.run`,
+  from the diagonals of the full grid, the coincident non-swept legs of
+  k ≥ 4 slices (with the default base lags, every point of a k ≥ 4 slice)
+  and every point of a k ≥ 4 moment output (`Config.output = 'moment'` or
+  `'central_moment'`, whose cumulant blocks of 3 or more legs are
+  evaluated at the times of slice 1). Fixes are planned in a later release: the hardening of the fallback and
+  the poset lower-bound fix.
 
 k = 4, tree level, ⟨n₁(t₀) n₂(t₁) n₁(t₂) n₂(t₃)⟩ of
 `single_population_linear_delta_spikes_test` (parameters as above), at the
 points of the default `dd.run` k = 4 slices: the swept leg at τ, the other
 non-anchor legs at −1e−6. "limit" is the one-sided limit in which the
 later-listed of the coincident legs approaches from below, "other limit"
-the other one (Richardson extrapolation from h = 1e−7, 1e−8, 1e−9).
+the other one (Richardson extrapolation from h = 1e−7, 1e−8, 1e−9). The
+τ = 0 rows are the points of the slices at τ = 0, where the swept leg is
+now at −2e−6 (see "Changed: `dd.run` k ≥ 3 slices …" above): "before" is
+the old point
+(0, −1e−6, −1e−6, −1e−6), "limit" is the slice's left branch at the swept
+leg's time −2e−6 (Lagrange extrapolation from τ = −1e−4, −1e−5, −3e−6),
+and "other limit" is its right limit at τ = 0 (from τ = 1e−4, 1e−5,
+3e−6). The last row is that old point itself, which
+`total_C` still evaluates with the tie order (leg 2 between legs 3 and 1);
+its other limits are those with leg 2 first and last.
 
 | swept leg | (t₀, t₁, t₂, t₃) | before | after | limit | other limit |
 |---|---|---|---|---|---|
@@ -217,14 +493,20 @@ the other one (Richardson extrapolation from h = 1e−7, 1e−8, 1e−9).
 | 1 | (0, 2, −1e−6, −1e−6) | +1.55813e−6 | +2.59229e−5 | +2.59229e−5 | +2.57873e−5 |
 | 3 | (0, −1e−6, −1e−6, 0.5) | +1.79275e−6 | +2.97737e−5 | +2.97737e−5 | +3.00275e−5 |
 | 2 | (0, −1e−6, 0.5, −1e−6) | +6.96331e−6 | +6.96331e−6 (≤ 1.5e−15 relative change) | (same) | (same) |
-| any, τ = 0 | (0, −1e−6, −1e−6, −1e−6) | +1.23614e−6 | +3.27274e−5 | +3.27274e−5 | |
+| 1, τ = 0 | (0, −2e−6, −1e−6, −1e−6) | +1.23614e−6 | +7.25644e−6 | +7.25644e−6 | +3.15438e−5 |
+| 2, τ = 0 | (0, −1e−6, −2e−6, −1e−6) | +1.23614e−6 | +2.99907e−5 | +2.99907e−5 | +7.25644e−6 |
+| 3, τ = 0 | (0, −1e−6, −1e−6, −2e−6) | +1.23614e−6 | +3.27274e−5 | +3.27274e−5 | +3.12428e−5 |
+| (`total_C` only) | (0, −1e−6, −1e−6, −1e−6) | +1.23614e−6 | +3.27274e−5 | +3.27274e−5 | +2.99907e−5 (leg 2 first), +7.25644e−6 (leg 2 last) |
 
 - Every point of the slices whose non-swept legs belong to different fields
   (swept leg 1 or 3) moves, by a factor of about 17. Slices 1 and 3, equal
   before, now take the two different one-sided limits. Slice 2, whose
   non-swept legs belong to the same field, changes only by rounding
   (≤ 1.5e−15 relative) away from τ = 0.
-- The new values equal the limit to ≤ 7e−16 relative.
+- The new values equal the limit to ≤ 7e−16 relative. The τ = 0 rows equal
+  their "limit" (the left branch at −2e−6) to ≤ 3e−15, and differ from the
+  left limit at τ = 0 itself by 4.0e−9, 4.1e−7 and 2.7e−7 relative
+  (slices 1, 2 and 3).
 
 ### Unchanged (measured)
 
@@ -269,8 +551,12 @@ they have no before/after comparison yet. Recompute any saved results for them.
   move, but they were not re-run.
 
 Any k ≥ 3 result of a model with instantaneous parts, evaluated at exactly
-coincident external times, moves as described above. Models outside the
-public model set are not listed.
+coincident external times, moves as described above, and so does every
+point of its `dd.run` k ≥ 3 slices where the swept leg meets another leg
+(τ = 0, a base-lag crossing, or τ = −1e−6 with a base lag of 0). The
+k ≥ 3 moment outputs of every model move as described in "Changed:
+`dd.run` k ≥ 3 slices …" above.
+Models outside the public model set are not listed.
 
 ### Added
 
@@ -289,10 +575,15 @@ public model set are not listed.
     bound at definition time, so changing the attribute had no effect.
 - **`DAEDALUS_PHASE_J_LEGACY=1`.** This umbrella switch sets every Phase J
   flag to its pre-0.2.0 behaviour: currently the Θ(0) rule. It reproduces the
-  pre-change numbers bit-for-bit within one process, at the bounding box in
-  force (so a pre-change run at another `POLYGON_BBOX_CAP` is reproduced by
-  setting the attribute). Set it in the environment before `daedalus` (or
-  `api`) is imported. It overrides the per-flag variables.
+  pre-change Phase J numbers bit-for-bit within one process, at the same
+  external times and at the bounding box in force (so a pre-change run at
+  another `POLYGON_BBOX_CAP` is reproduced by setting the attribute). It
+  restores the Phase J rules only, not the times at which `dd.run` evaluates
+  the points of its k ≥ 3 slices (see "Changed: `dd.run` k ≥ 3 slices …"
+  above): with it set, the pre-0.2.0 τ = 0 slice point is
+  `result['total_C'](0, -1e-6, ..., -1e-6)`. Set it in the environment
+  before `daedalus` (or `api`) is imported. It overrides the per-flag
+  variables.
 - **Result provenance stamp.** `compute_cumulants` records the Phase J
   convention it computed with in `result['config']['phase_j_convention']`,
   and `api.save.save_npz` and `save_csv` write it together with

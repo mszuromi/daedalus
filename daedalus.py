@@ -28,6 +28,7 @@ Design choices
 """
 from __future__ import annotations
 
+import math
 import os
 import importlib.util
 from dataclasses import dataclass, field
@@ -415,7 +416,12 @@ class Config:
     # κ(x₁…x_k); 'moment'/'central_moment' assemble the full k-point moment
     # ⟨φ(x₁)…φ(x_k)⟩ (resp. of the centred field) via the set-partition
     # formula M = Σ_π ∏_B κ(B) — see _assemble_moment.  Costs k−1 extra
-    # backend runs (one per order 2..k).
+    # backend runs (one per order 2..k).  Temporal k≥3: the moment is the
+    # curve ⟨φ(0) φ(τ) φ(0) … φ(0)⟩ over the τ grid (leg 1 swept, the other
+    # legs at 0; ``kpoint_base_lags`` is not used), and its cumulant blocks
+    # of 3 or more legs are evaluated at the times of slice 1 with the
+    # default base lags (``_kpoint_slice_times``), so its τ = 0 point is the
+    # left limit, like that of ``C_tau``.
     output: str = 'cumulant'                # 'cumulant'|'moment'|'central_moment'
 
     # ── temporal grid (the τ axis; also the τ axis of spatial C(χ,τ)) ──
@@ -436,7 +442,17 @@ class Config:
     # ── temporal k≥3 cumulant slicing ──
     # The connected k-point cumulant depends on k−1 time differences
     # τ_j = t_j − t_0.  By default run() returns the k−1 axis-parallel slices
-    # through the origin (sweep leg j, others at 0).
+    # through the origin (sweep leg j, others at 0).  A lag of 0 is evaluated
+    # at the Itô left limit 0⁻ = −_ITO_EPS, and a slice point where the swept
+    # leg meets another leg (τ = 0, τ = a base lag, or τ = −_ITO_EPS for a
+    # base lag of 0) is the left limit of that slice, evaluated with the
+    # swept leg _ITO_EPS below the leg it meets.  With the default base lags
+    # the τ = 0 point is thus 2·_ITO_EPS left of τ = 0 and carries the curve's
+    # change over that offset; τ-grid points within ~2·_ITO_EPS of 0 or of a
+    # base lag are below this resolution (see ``_kpoint_slice_times``; times
+    # in ``result['_kpoint_slice_times']``).  The full grid keeps exact ties
+    # on its diagonals (the engine's tie order), so its origin can differ
+    # from a slice's τ = 0 point.
     kpoint_base_lags: Optional[list] = None  # length k−1: the fixed τ for the
                                              # non-swept legs (the base point the
                                              # slices pass through); default 0
@@ -614,7 +630,7 @@ def config_options(spatial=None):
         ('tau_grid',         'τ (lag) grid: (lo,hi,n) TUPLE→linspace, or an array of points — the primary τ knob'),
         ('tau_max',          'under-the-hood: τ extent (symmetric −tau_max…tau_max) if no tau_grid'),
         ('tau_step',         'under-the-hood: τ spacing (paired with tau_max)'),
-        ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here)'),
+        ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here; where the swept leg meets a leg, the point is the left limit)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
@@ -806,12 +822,28 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 
     parts = list(_set_partitions(list(range(k))))
 
+    # The k external times of every point: those of ``run``'s slice 1 with
+    # the default base lags (leg 1 swept, the other legs at 0), from
+    # ``_kpoint_slice_times``.  A block of 3 or more legs is evaluated at its
+    # legs' entries, so at τ = 0 (where leg 1 meets the other legs) it is the
+    # left limit of the slice, as ``C_tau`` is, and the k = 3 central moment
+    # is evaluated at the same times as slice 1 of κ₃.  The pinned legs sit
+    # at 0⁻ = −_ITO_EPS, so they do not coincide with the anchor; for k ≥ 4
+    # they coincide with each other, as on the slices.  A block of 2 legs
+    # reads the k = 2 grid at its nominal lag (τ or 0), whose τ = 0 point is
+    # the k = 2 Itô left limit.
+    slice_times = None
+    if k >= 3:
+        from api.compute import _ITO_EPS
+        slice_times = [_kpoint_slice_times([0.0] * (k - 1), 1, float(t),
+                                           _ITO_EPS) for t in tau]
+
     def _kappa(block, ell, ti):
         """ℓ-loop piece of the |block|-point cumulant at the slice times."""
         b = sorted(block)
         if len(b) == 2:                       # leg 1 swept (τ); rest pinned (0)
             return k2[ell](float(tau[ti]) if 1 in b else 0.0)
-        times = [float(tau[ti]) if idx == 1 else 0.0 for idx in b]
+        times = [slice_times[ti][idx] for idx in b]
         return complex(kj[len(b)][ell](*times))
 
     M = np.empty(tau.size, dtype=complex)
@@ -839,6 +871,126 @@ def _assemble_moment_temporal(model, res, kw, k, central):
                 tot += prod
         M[ti] = tot
     return M
+
+
+# ── Temporal k≥3 slices: the external times of each slice point ─────────────
+#
+# ``run`` turns a temporal k≥3 cumulant (a function of the k external times;
+# leg 0 is the anchor, t₀ = 0) into k−1 curves over ``tau_grid``: slice j
+# sweeps leg j, and the other non-anchor legs (the PINNED legs) sit at
+# ``Config.kpoint_base_lags`` (default 0).  Every point of a slice is the value
+# of that curve itself, never a value decided by a tie between the swept leg
+# and another leg.  At a coincident point that is the curve's LEFT limit, the
+# same convention as the k=2 grid, whose τ = 0 point is sampled at
+# τ = −``api.compute._ITO_EPS`` (the Itô left limit):
+#
+# * A pinned leg sits at its base lag, or at 0⁻ = −_ITO_EPS when that lag is 0
+#   (|b| ≤ 1e−12), as the k=2 grid's τ = 0 point does.
+# * The swept leg sits at τ, except where τ coincides (|τ − x| ≤ 1e−12) with
+#   the anchor (x = 0) or with a pinned leg's base lag or evaluation time.
+#   There it is placed one more _ITO_EPS below the earliest leg it coincides
+#   with: the swept leg is infinitesimally EARLIER than every leg it meets,
+#   and the point is the left limit τ → τ₀⁻ of its own curve.  With the
+#   default base lags, the τ = 0 point of every slice has the swept leg at
+#   −2·_ITO_EPS and the pinned legs at −_ITO_EPS; a ``tau_grid`` point at
+#   τ = −_ITO_EPS meets the pinned legs' evaluation time and gets the same
+#   times.  If the new time lands on yet another leg, the step is repeated;
+#   where t − _ITO_EPS rounds back to t (|t| ≥ 2³⁴ ≈ 1.7e10), the step is
+#   the next float below t instead.  So the swept leg never ties.
+#
+# Resolution.  The point is evaluated a finite _ITO_EPS below the leg it
+# meets, so it equals the curve's left limit at τ₀ only up to the curve's
+# change over that offset: 2·_ITO_EPS at τ = 0 with the default base lags
+# (_ITO_EPS for the k=2 grid's τ = 0 point), i.e. O(1e−6) relative for rates
+# of order 1.  That matters only where the jump at τ₀ is itself that small
+# (``multipopulation_test`` in CHANGELOG 0.2.0).  τ-grid points closer than
+# about 2·_ITO_EPS to 0 or to a base lag, and base lags within a few _ITO_EPS
+# of 0 or of each other, are below the resolution of the nudge: e.g. a τ
+# strictly between a pinned leg's evaluation time −_ITO_EPS and its lag 0 is
+# evaluated as given, with the swept leg between that leg and the anchor.
+#
+# Pinned legs that coincide among themselves (for k ≥ 4 with the default base
+# lags, all of them at −_ITO_EPS) stay tied.  The engine then resolves the tie
+# by its external-time tie order (the later-listed leg counts as
+# infinitesimally earlier; ``_tie_order_sign`` in
+# ``engine/integration/time_domain/final_integral.py``).  The pinned legs do
+# not move along a slice, so that order is the same at every point of the
+# curve and adds no jump to it.  But every point of such a slice is then a
+# tie, and the value at a tie is that one-sided limit only as accurately as
+# the engine evaluates the tie: a tie can send a two-time region to the
+# scipy.nquad fallback, or a region with three or more integration times to
+# the poset integrator, whose known lower-bound inheritance error then
+# applies.  For single_population_spike_reset_test k = 4 (tree) the default
+# slices are 1.0-8.5% (about 1e-3 absolute) off the tie-order limit at
+# τ = 0.5 (CHANGELOG 0.2.0, known issue).  Distinct, nonzero
+# ``kpoint_base_lags`` keep the pinned legs apart.
+#
+# The full grid (``Config.kpoint_full_grid``) is not a set of curves: each axis
+# value is mapped on its own (0 → −_ITO_EPS, ``_kpoint_pinned_time``), and
+# legs with equal values stay tied: the engine's tie order decides on the
+# grid's diagonals.  So at the origin ``C_tau_grid`` holds the tie-order
+# value, which differs from a slice's τ = 0 point where that slice's swept
+# leg is not the highest-indexed of the tied legs (slice 1 at k = 3).
+#
+# The temporal k≥3 moment outputs (``Config.output`` = 'moment' or
+# 'central_moment', ``_assemble_moment_temporal``) evaluate their cumulant
+# blocks of 3 or more legs at the times of slice 1 with the default base
+# lags, so all of the above applies to them too (including the tied pinned
+# legs for k ≥ 4).
+_KPOINT_TIE_ATOL = 1e-12
+
+
+def _kpoint_pinned_time(b, eps):
+    """Evaluation time of a non-swept leg of a k≥3 slice at base lag ``b``:
+    ``b`` itself, or the Itô left limit ``-eps`` when ``b`` is 0
+    (``|b| <= 1e-12``)."""
+    b = float(b)
+    return b if abs(b) > _KPOINT_TIE_ATOL else -eps
+
+
+def _kpoint_below(x, eps):
+    """``x - eps``, or the next float below ``x`` where ``x - eps`` rounds
+    back to ``x`` (``|x| >= 2**34`` for ``eps = 1e-6``): a time strictly
+    earlier than ``x``."""
+    y = x - eps
+    return y if y < x else math.nextafter(x, -math.inf)
+
+
+def _kpoint_slice_times(base, j, tau, eps):
+    """The k external times ``[t_0, …, t_{k−1}]`` (``t_0 = 0``) at which
+    :func:`run` evaluates point ``tau`` of the k≥3 slice ``j``.
+
+    Leg ``j`` is swept; every other non-anchor leg sits at its entry of
+    ``base`` (length k−1, entry ``i − 1`` for leg ``i``), via
+    :func:`_kpoint_pinned_time`.  Leg ``j`` is at ``tau``, unless ``tau`` is
+    within 1e−12 of the anchor or of a pinned leg's base lag or evaluation
+    time.  Then it goes ``eps`` below the earliest of the legs it meets (the
+    next float below where ``eps`` is under the float spacing, see
+    :func:`_kpoint_below`), so the value is the left limit of the slice at
+    ``tau`` (repeated if that time meets another leg; the swept leg never
+    ties).  See the comment above for the convention and its resolution."""
+    k = len(base) + 1
+    if not 1 <= j < k:
+        raise ValueError(f'slice index j={j} must be in 1..{k - 1}')
+    times = [0.0] * k
+    pinned = [leg for leg in range(1, k) if leg != j]
+    for leg in pinned:
+        times[leg] = _kpoint_pinned_time(base[leg - 1], eps)
+    # (nominal time, evaluation time) of the anchor and of each pinned leg
+    others = [(0.0, 0.0)] + [(float(base[leg - 1]), times[leg])
+                             for leg in pinned]
+    t = float(tau)
+    met = [e for b, e in others
+           if abs(t - b) <= _KPOINT_TIE_ATOL or abs(t - e) <= _KPOINT_TIE_ATOL]
+    if met:
+        t = _kpoint_below(min(met), eps)
+        for _ in range(k):              # never land on another leg
+            met = [e for _b, e in others if abs(t - e) <= _KPOINT_TIE_ATOL]
+            if not met:
+                break
+            t = _kpoint_below(min(met), eps)
+    times[j] = t
+    return times
 
 
 def run(model: dict, cfg: Config, module=None) -> dict:
@@ -1022,9 +1174,12 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # C_k(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩_c — sweep leg 1, pin the others at
     # τ=0 — and store it as ``C_tau`` / ``C_tau_by_ell`` so k≥3 plots and
     # compares exactly like k=2 (a curve over ``tau_grid``).  The simulator
-    # estimates the matching slice with ``lag_bins=[0, None, 0, …]``.
+    # estimates the matching slice with ``lag_bins=[0, None, 0, …]``.  The
+    # times of each slice point (the Itô nudges at coincident legs) are set by
+    # ``_kpoint_slice_times``; see the comment above it.
     if (not is_spatial(model) and k >= 3 and res.get('C_tau') is None
             and callable(res.get('total_C'))):
+        from api.compute import _ITO_EPS
         tau = np.asarray(res.get('tau_grid'))
         if tau is None or tau.size == 0:
             tau = np.array([0.0])
@@ -1046,26 +1201,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         else:
             base = [0.0] * (k - 1)
 
-        def _args(vals):                # vals: τ for legs 1..k−1 (leg 0 = 0)
-            a = [0.0] * k
-            for leg in range(1, k):
-                t = float(vals[leg - 1])
-                # Itô LEFT-limit (Itô ⇒ left-continuous): a leg coinciding with
-                # the anchor (t=0) is nudged to 0⁻ so a coincident causal ordering
-                # survives and the equal-time step discontinuity isn't sampled —
-                # same convention as the k=2 path (pipeline.compute._ITO_EPS).
-                a[leg] = t if abs(t) > 1e-12 else -1e-6
-            return a
+        def _args(vals):                # full grid: vals = τ of legs 1..k−1
+            # Every leg on its own: a leg at the anchor time (τ = 0) is
+            # evaluated at its Itô left limit 0⁻ = −_ITO_EPS, like the k=2
+            # grid; legs with equal values stay tied (see _kpoint_slice_times).
+            return [0.0] + [_kpoint_pinned_time(v, _ITO_EPS) for v in vals]
 
         def _slice(fn, j):              # sweep leg j over tau, others at base
             out = np.empty(tau.size, dtype=complex)
-            for i in range(tau.size):
-                v = list(base)
-                v[j - 1] = float(tau[i])
-                out[i] = complex(fn(*_args(v)))
+            for i, times in enumerate(slice_times[j]):
+                out[i] = complex(fn(*times))
             return out
 
         try:
+            # The external times of every slice point, computed once: slice j
+            # sweeps leg j, the other non-anchor legs sit at ``base``, and a
+            # point where leg j meets another leg is the LEFT limit of the
+            # slice (``_kpoint_slice_times``).  Kept in the result.
+            slice_times = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
+                               for t in tau] for j in range(1, k)}
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
             # The k−1 axis-parallel slices through ``base``.
@@ -1077,9 +1231,13 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             res['C_tau'] = slices[1]                    # canonical single slice
             res['C_tau_by_ell'] = slices_by_ell[1]
             res['_kpoint_base'] = base
+            res['_kpoint_slice_times'] = {
+                j: np.array(v, dtype=float) for j, v in slice_times.items()}
             res['_kpoint_slice'] = (
                 f'{k-1} slices: leg j swept over tau_grid (τ_j = t_j − t_0), '
-                f'legs ≠ j fixed at base={base}, for j = 1..{k-1}')
+                f'legs ≠ j fixed at base={base}, for j = 1..{k-1}; a point '
+                f'where leg j meets another leg is the left limit of its '
+                f'slice (times in _kpoint_slice_times)')
 
             # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).  Downsample
             # the axis so the total n^{k−1} evaluations stay bounded.
@@ -1368,8 +1526,12 @@ def plot_temporal(result, cfg, model, sim=None, residual=False):
 def plot_temporal_kpoint_slices(result, cfg, model, sim=None):
     """k≥3: the connected k-point cumulant has k−1 independent time differences
     τ_j = t_j − t_0.  Draw one panel per difference — slice j sweeps leg j over
-    the τ-grid with the other legs pinned at τ=0 — each with the per-loop-order
-    overlay and (optionally) the matching simulator slice.
+    the τ-grid with the other legs pinned at their base lags (default τ=0) —
+    each with the per-loop-order overlay and (optionally) the matching
+    simulator slice.  A point where the swept leg meets another leg (τ = 0,
+    τ = a base lag, or τ = −_ITO_EPS for a base lag of 0) is the left limit
+    of its curve, evaluated with the swept leg _ITO_EPS below that leg
+    (``run``, ``_kpoint_slice_times``).
 
     For a single symmetric field the k−1 slices coincide (a visible check of the
     cumulant's permutation symmetry); when the external legs are different

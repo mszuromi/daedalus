@@ -56,9 +56,11 @@ def _ito_nudge_callable(fn, k):
     measure-zero τ=0 step discontinuity and disagree with ``C_tau`` at τ=0.
 
     Only the k=2 single-axis slice has a well-defined "anchor leg" (leg 0); for
-    other k the callable is returned unchanged (the k≥3 caller applies its own
-    nudge in ``daedalus._args``).  Mirrors the grid nudge: a second-leg time
-    within 1e-12 of the anchor leg's time is moved to ``anchor − _ITO_EPS``.
+    other k the callable is returned unchanged (``daedalus.run`` places the
+    k≥3 times itself: ``_kpoint_slice_times`` for the slices,
+    ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid
+    nudge: a second-leg time within 1e-12 of the anchor leg's time is moved
+    to ``anchor − _ITO_EPS``.
     """
     if k != 2:
         return fn

@@ -21,8 +21,9 @@ This file adds:
    grouped Phase J path, with non-unit mu and D so the (D/mu)^{k/2} scaling
    is checked too:
    - fully tied times (t0=...=t_{k-1}) against the Boltzmann equal-time
-     cumulant, per loop order, both at the exact tie and at the API's Itô
-     nudge (0, -eps, ..., -eps) that ``daedalus._args`` produces;
+     cumulant, per loop order, both at the exact tie and at the Itô nudge
+     (0, -eps, ..., -eps) (the free legs tied at -eps, as the non-swept legs
+     of a default ``dd.run`` k>=4 slice are);
    - partial ties (a leg tied with the anchor leg 0, two free legs tied,
      triples, two pairs) against the one-sided limit approaching the tie.
      The limit is a quadratic Richardson extrapolation from nudges
@@ -30,9 +31,12 @@ This file adds:
      in the times (with kinks at ties), so the value at the exact tie must
      equal the Itô LEFT limit, and the right limit too.
 2. ``dd.run`` k>=3 slices, so the tie policy is exercised through the API's
-   k>=3 time nudge: legs coinciding with the anchor go to -_ITO_EPS (all of
-   them, still tied among themselves), while ties between non-anchor legs
-   reach the engine as EXACT ties.
+   k>=3 time nudge (``daedalus._kpoint_slice_times``): non-swept legs at a
+   base lag of 0 go to -_ITO_EPS (all of them, still tied among themselves),
+   ties among the non-swept legs reach the engine as EXACT ties, and the
+   swept leg is placed one more _ITO_EPS below every leg it meets (so it
+   never ties; the left-limit property of those points is checked on models
+   with delta parts in ``test_kpoint_tau0_left_limit.py``).
 3. kappa_3 == 0 for the symmetric ``ou_quartic`` (x -> -x parity), at every
    tie configuration.  (The plan's §4.2 wording "OU + eps x^3 has a nonzero
    stationary third cumulant at O(eps)" does not hold at the symmetric saddle
@@ -378,7 +382,7 @@ def test_symmetric_ou_quartic_kappa3_vanishes_at_ties():
 
 
 # ---------------------------------------------------------------------------
-# 3. Through the API: dd.run k>=3 slices and the ``daedalus._args`` nudge
+# 3. Through the API: dd.run k>=3 slices and the ``daedalus`` time nudge
 # ---------------------------------------------------------------------------
 
 def _dd_run(monkeypatch, model, module, cfg):
@@ -391,11 +395,26 @@ def _dd_run(monkeypatch, model, module, cfg):
 
 
 def _slice_args(k, base, j, tau):
-    """What ``daedalus._args`` passes for slice j at tau: legs within 1e-12 of
-    the anchor go to -_ITO_EPS; everything else is passed as given."""
-    v = list(base)
-    v[j - 1] = float(tau)
-    return tuple([0.0] + [t if abs(t) > 1e-12 else -_ITO_EPS for t in v])
+    """What ``dd.run`` passes for slice j at tau (``daedalus.
+    _kpoint_slice_times``): the non-swept legs at their base lag, or at
+    -_ITO_EPS when it is within 1e-12 of 0; the swept leg at tau, unless tau
+    is within 1e-12 of the anchor or of a non-swept leg's lag or time -- then
+    one more _ITO_EPS below the earliest leg it meets (the left limit of the
+    slice).  The bases used here never need the repeated step."""
+    a = [0.0] * k
+    pinned = [i for i in range(1, k) if i != j]
+    for i in pinned:
+        b = float(base[i - 1])
+        a[i] = b if abs(b) > 1e-12 else -_ITO_EPS
+    t = float(tau)
+    met = ([0.0] if abs(t) <= 1e-12 else []) + [
+        a[i] for i in pinned
+        if abs(t - float(base[i - 1])) <= 1e-12 or abs(t - a[i]) <= 1e-12]
+    if met:
+        t = min(met) - _ITO_EPS
+    a[j] = t
+    assert all(abs(t - a[i]) > 1e-12 for i in range(k) if i != j)
+    return tuple(a)
 
 
 def _check_api_equal_time(res, k, oracle):
@@ -413,8 +432,9 @@ def _check_api_equal_time(res, k, oracle):
 
 
 def _check_api_ties(res, k, base, tie_count_min):
-    """Every slice point is the callable at the ``_args``-nudged times; where
-    those times contain an exact tie between legs it must equal the Itô
+    """Every slice point is the callable at the ``_slice_args`` times (also
+    recorded in ``res['_kpoint_slice_times']``); where those times contain
+    an exact tie between legs (non-swept legs only) it must equal the Itô
     left limit of the callable."""
     fns = res['total_C_by_ell']
     tau = np.asarray(res['tau_grid'])
@@ -422,6 +442,7 @@ def _check_api_ties(res, k, base, tie_count_min):
     for j in range(1, k):
         for i, t in enumerate(tau):
             args = _slice_args(k, base, j, t)
+            assert args == tuple(res['_kpoint_slice_times'][j][i]), (j, t)
             has_tie = len(set(args)) < len(args)
             n_ties += has_tie
             for ell in (0, 1):
@@ -439,37 +460,47 @@ def _check_api_ties(res, k, base, tie_count_min):
 def test_api_k4_slices_at_ties(monkeypatch):
     model, module = dd.load_model('ou_quartic')
     _reset_nquad()
-    # (a) default base: at tau=0 all three free legs sit at -_ITO_EPS (tied
-    #     among themselves) -> the equal-time Boltzmann kappa_4.
+    # (a) default base: the two non-swept legs sit at -_ITO_EPS (tied), the
+    #     swept leg at tau (at tau=0: -2 _ITO_EPS) -> at tau=0 the equal-time
+    #     Boltzmann kappa_4 (the cumulant is continuous there).
     res = _dd_run(monkeypatch, model, module, dd.Config(
         k=4, max_ell=1, parameters=_P4, external_fields=[('dx', 1)] * 4,
         tau_grid=np.array([0.0, 0.3])))
+    assert _slice_args(4, [0.0] * 3, 1, 0.0) == (
+        0.0, -2 * _ITO_EPS, -_ITO_EPS, -_ITO_EPS)
     _check_api_equal_time(res, 4, _oracle4)
     _check_api_ties(res, 4, [0.0, 0.0, 0.0], tie_count_min=6)
-    # (b) base lags with free-leg ties: these reach the engine UN-nudged
-    #     (e.g. (0, .3, .3, .7), (0, .3, .3, .3), (0, .7, .3, .7)).
+    # (b) base lags with free-leg ties: ties among the non-swept legs reach
+    #     the engine UN-nudged (e.g. (0, .3, .3, .7) on slice 3); a swept leg
+    #     meeting a base lag goes one _ITO_EPS below it.
     base = [0.3, 0.3, 0.7]
     res = _dd_run(monkeypatch, model, module, dd.Config(
         k=4, max_ell=1, parameters=_P4, external_fields=[('dx', 1)] * 4,
         tau_grid=np.array([0.0, 0.3, 0.7]), kpoint_base_lags=base))
-    assert _slice_args(4, base, 3, 0.3) == (0.0, 0.3, 0.3, 0.3)
-    _check_api_ties(res, 4, base, tie_count_min=7)
+    assert _slice_args(4, base, 3, 0.7) == (0.0, 0.3, 0.3, 0.7)
+    assert _slice_args(4, base, 3, 0.3) == (0.0, 0.3, 0.3, 0.3 - _ITO_EPS)
+    assert _slice_args(4, base, 1, 0.7) == (0.0, 0.7 - _ITO_EPS, 0.3, 0.7)
+    _check_api_ties(res, 4, base, tie_count_min=3)
     _assert_no_nquad()
 
 
 def test_api_k3_slices_at_ties(monkeypatch):
+    """k=3 has one non-swept leg, so no dd.run k=3 point is a tie any more
+    (the swept leg goes below the leg it meets); the points must still be
+    the callable at those times, and tau=0 the equal-time Boltzmann value."""
     model = _asym_model()
     _reset_nquad()
     res = _dd_run(monkeypatch, model, None, dd.Config(
         k=3, max_ell=1, parameters=_P3, external_fields=[('dx', 1)] * 3,
         tau_grid=np.array([0.0, 0.5])))
     _check_api_equal_time(res, 3, _oracle3)
-    _check_api_ties(res, 3, [0.0, 0.0], tie_count_min=2)
+    _check_api_ties(res, 3, [0.0, 0.0], tie_count_min=0)
     base = [0.5, 0.5]
     res = _dd_run(monkeypatch, model, None, dd.Config(
         k=3, max_ell=1, parameters=_P3, external_fields=[('dx', 1)] * 3,
         tau_grid=np.array([0.0, 0.5]), kpoint_base_lags=base))
-    _check_api_ties(res, 3, base, tie_count_min=2)
+    assert _slice_args(3, base, 1, 0.5) == (0.0, 0.5 - _ITO_EPS, 0.5)
+    _check_api_ties(res, 3, base, tie_count_min=0)
     _assert_no_nquad()
 
 

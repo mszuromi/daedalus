@@ -65,10 +65,17 @@ import numpy as np
 # * a row that compares two external times that coincide exactly is decided
 #   by the external-time tie order (exactly one orientation holds), so a
 #   k ≥ 3 cumulant at coincident external times is a one-sided limit.  This
-#   moves such points, including those of ``dd.run``'s k ≥ 3 slices.  (The
+#   moves such points, e.g. the diagonals of ``dd.run``'s full k-point grid
+#   and the coincident non-swept legs of its k ≥ 4 slices.  (The
 #   later-listed leg counts as infinitesimally earlier, so at coincident
 #   times of legs of different fields the value depends on the order of
 #   ``external_fields``, as the k = 2 τ = 0 point has since 0.1.0.)
+# * a point of a ``dd.run`` k ≥ 3 slice where the swept leg meets another
+#   leg (e.g. τ = 0) is now the left limit of its slice: the swept leg is
+#   placed one ``_ITO_EPS`` below the leg it meets
+#   (``daedalus._kpoint_slice_times``), so those points moved too, and so
+#   did the k ≥ 3 moment outputs (``Config.output = 'moment'`` or
+#   ``'central_moment'``), now evaluated at the times of slice 1.
 #
 # Saved results of models with δ / instantaneous propagator parts may
 # therefore differ from a fresh computation.  Every saved file carries the
@@ -237,8 +244,10 @@ def _warn_if_stale(version: str | None, convention: str | None,
         f'weighted Θ(0) = 0 (Itô) in every integrator (earlier versions '
         f'used Θ(0) = 1 in the two-time polygon integrator), and a row '
         f'comparing two coincident external times follows the external-time '
-        f'tie order, so k ≥ 3 values at coincident times (e.g. the points '
-        f'of dd.run\'s k ≥ 3 slices) are one-sided limits.  Results for '
+        f'tie order, so k ≥ 3 values at coincident times are one-sided '
+        f'limits; the points of dd.run\'s k ≥ 3 slices where the swept leg '
+        f'meets another leg (e.g. τ = 0) are now the left limit of their '
+        f'slice, and the k ≥ 3 moment outputs follow slice 1.  Results for '
         f'models with δ (instantaneous) propagator parts may be stale and '
         f'should be recomputed; see CHANGELOG.md (0.2.0).',
         StaleResultWarning, stacklevel=stacklevel)
