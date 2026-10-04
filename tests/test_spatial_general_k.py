@@ -91,6 +91,15 @@ def recs3():
     return _build_records(3)
 
 
+def _pick_rec(recs, ell, pred=None):
+    """The ``(td, descriptor, value, ell)`` record of loop order ``ell``
+    that ``pred`` singles out, chosen by structure (never by list position:
+    the record order depends on the prediagram source)."""
+    from tests._diagram_order import _pick_live
+    td, _ = _pick_live([(r[0], r[2]) for r in recs if r[3] == ell], pred)
+    return next(r for r in recs if r[0] is td)
+
+
 def test_k2_reduction_general_driver(recs2):
     """General mapping-sum driver == production k=2 path, every diagram."""
     from engine.diagrams.symmetry import external_wick_compensation
@@ -117,7 +126,7 @@ def test_symanzik_matrix_per_sample_identity(recs3):
     from engine.integration.spatial.full_integrator import (
         _symanzik_kernel_batch, _momentum_factor_batch)
     rng = np.random.default_rng(0)
-    for td, d, pv, ell in [recs3[0], recs3[1], recs3[-1]]:
+    for td, d, pv, ell in recs3:                     # every live diagram
         E = len(d.edges)
         a = np.array([e.a for e in d.edges], float).reshape(E, -1)
         bm = np.array([e.b for e in d.edges], float).reshape(E, -1)
@@ -159,8 +168,7 @@ def test_multivariate_ift_vs_quadrature():
 def test_k3_route_equivalence_tree(recs3):
     """Analytic xs-IFT == numerical FT of the q-path (k=3 tree)."""
     from engine.integration.spatial.full_integrator import diagram_kinematic
-    td, d, pv, ell = recs3[0]
-    assert ell == 0
+    td, d, pv, ell = _pick_rec(recs3, 0)          # the single tree diagram
     legs = list(d.external_legs)
     et = {legs[j]: t for j, t in enumerate((0.0, 0.3, -0.2))}
     X = np.array([[0.5, -0.4]])
@@ -184,8 +192,11 @@ def test_k3_route_equivalence_1loop(recs3):
     Coarse chamber quadrature on BOTH routes (shared w-grid) so the only
     difference is the q-FT discretization."""
     from engine.integration.spatial.full_integrator import diagram_kinematic
-    td, d, pv, ell = recs3[1]
-    assert ell == 1
+    from tests._diagram_order import has_structure
+    # the loop of a correlation line and an R-C pair, legs (C, R, R): picked
+    # by structure, the class this test has always exercised
+    td, d, pv, ell = _pick_rec(recs3, 1, has_structure(
+        [('C',), ('C', 'R')], (), ('C', 'R', 'R')))
     legs = list(d.external_legs)
     et = {legs[j]: t for j, t in enumerate((0.0, 0.3, -0.2))}
     X = np.array([[0.5, -0.4]])
@@ -716,6 +727,7 @@ def test_k3_nongaussian_noise_source_tree():
             SR.var('S3'): S3, SR.var('pstar1'): 0.}
     be = build_pipeline_records(ft, b, prop, ext3, max_ell=0, k=3,
                                 verbose=False)
+    assert len(be[0]) == 1, 'the S3 source is the only k=3 tree diagram'
     td, p = be[0][0]
     pv = float(SR(p).subs(base))
     assert abs(pv - 6 * S3) < 1e-12          # kappa^(3) = 3! S3, S(Gamma)=3!

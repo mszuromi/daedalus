@@ -514,7 +514,11 @@ def compute_correction_td(
         -------
         vals : list of list of complex
             ``vals[tau_idx][diag_idx]`` is the diagram-level contribution
-            at ``tau_points[tau_idx]``.  Skipped diagrams get 0+0j.
+            at ``tau_points[tau_idx]``.  The columns are the EVALUATED
+            diagrams in input order: a skipped diagram has no column, so
+            column ``j`` is the ``j``-th entry of ``'groups'`` that carries
+            a ``'contribution'`` (its ``'kernel_id'`` is the index into
+            ``typed_diagrams``), not ``typed_diagrams[j]`` in general.
         diag_loop_numbers : list of int
             ``loop_number`` per diagram, same order as the inner lists.
         """

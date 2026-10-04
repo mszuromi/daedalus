@@ -13,6 +13,13 @@ generate_report() produces:
       - vertex assignments table
       - edge propagator labels
       - per-diagram contribution C_Γ(τ) line plot
+
+The diagram pages come in a canonical order (loop order, then the
+diagram's isomorphism class) and show canonical vertex numbers, so a page
+depends only on the diagram's class: not on the order of
+``result['diagrams']`` nor on which labelled member of the class the
+prediagram source (cache file, in-memory streaming, eager enumerator)
+happened to provide.
 """
 from __future__ import annotations
 
@@ -73,13 +80,108 @@ def _install_pdf_repr_sage_fallback():
 _install_pdf_repr_sage_fallback()
 
 
-def _draw_prediagram(td, ax):
-    """Render a single typed prediagram on the provided matplotlib axis.
+def _canonical_view(td):
+    """``(class_key, display_id)`` of a typed diagram, both functions of its
+    isomorphism class alone.
 
-    Uses networkx for layout: leaves at the top (external phys), source
-    / interaction vertices at the bottom.  Edge labels show the edge's
-    (resp_leg, phys_leg) propagator pair.
+    ``class_key`` is ``str(diagram_signature(td))`` (a complete invariant:
+    the canonical form of the coloured incidence digraph, leaves coloured
+    by field).  ``display_id`` maps every vertex to the number the report
+    prints: leaves first, then internal vertices, each in the order of the
+    same canonical labelling.  Two labelled representatives of one class
+    therefore get the same page.
     """
+    from engine.diagrams.symmetry import _colored_incidence_digraph
+    D, _, _, color_groups = _colored_incidence_digraph(td, fix_external=False)
+    # Same partition and canonical labelling as ``diagram_signature``.
+    keys = sorted(color_groups.keys(), key=str)
+    partition = [color_groups[key] for key in keys]
+    C, cert = D.canonical_label(partition=partition, certificate=True)
+    cells = tuple(tuple(sorted(cert[v] for v in color_groups[key]))
+                  for key in keys)
+    signature = (tuple(str(key) for key in keys), cells,
+                 tuple(sorted(C.edges(labels=False))))
+    leaves = set(td.external_legs)
+    order = sorted(td.prediagram[0].vertices(),
+                   key=lambda v: (v not in leaves, cert[('V', v)]))
+    return str(signature), {v: i for i, v in enumerate(order)}
+
+
+def _prediagram_layout(td, display_id=None):
+    """What :func:`_draw_prediagram` draws, as plain data.
+
+    Returns ``{'nodes': [(id, (x, y), colour), ...], 'edges': [(u, v), ...],
+    'edge_labels': {(u, v): text}}`` with Python ints and floats only (Sage
+    Integers leak into matplotlib's PDF state otherwise; see
+    :func:`_draw_prediagram`).  Leaves sit at the top (y=1), internal
+    vertices at the bottom (y=0); colours are green (leaf), red
+    (interaction), blue (source).  An edge label is the edge's
+    (resp_leg, phys_leg) propagator pair, or the distinct pairs, sorted,
+    when several edges join the same two vertices.
+
+    ``display_id`` (vertex -> printed number, from :func:`_canonical_view`)
+    fixes the vertex numbers and every order; without it the diagram's own
+    labels are used.
+    """
+    D = td.prediagram[0]
+    if display_id is None:
+        _vmap = {v: int(v) for v in D.vertices()}
+    else:
+        _vmap = {v: int(display_id[v]) for v in D.vertices()}
+    leaves = [_vmap[v] for v in td.prediagram[2]]
+    if display_id is not None:
+        leaves = sorted(leaves)
+    leaf_set = set(leaves)
+    verts = sorted(D.vertices(), key=lambda v: _vmap[v])
+
+    def _edge_text(u, v, lbl):
+        et = td.edge_types.get((u, v, lbl))
+        if et is None:
+            return None
+        resp_leg, phys_leg = et
+        return (rf'${resp_leg[0]}_{int(resp_leg[1])}\!\to\!'
+                rf'\,{phys_leg[0]}_{int(phys_leg[1])}$')
+    edges = sorted(((_vmap[u], _vmap[v], _edge_text(u, v, lbl))
+                    for u, v, lbl in D.edges()),
+                   key=lambda e: (e[0], e[1], e[2] or ''))
+
+    pos = {}
+    leaf_xs = np.linspace(0.0, 1.0, max(len(leaves), 2))
+    for j, lf in enumerate(leaves):
+        pos[lf] = (float(leaf_xs[j]), 1.0)
+    internal = [_vmap[v] for v in verts if _vmap[v] not in leaf_set]
+    int_xs = np.linspace(0.2, 0.8, max(len(internal), 1))
+    for j, v in enumerate(internal):
+        pos[v] = (float(int_xs[j]), 0.0)
+
+    nodes = []
+    for v_sage in verts:
+        v = _vmap[v_sage]
+        if v in leaf_set:
+            colour = '#2ECC71'                   # green = leaf
+        else:
+            vt = td.vertex_assignments.get(v_sage)
+            if vt is None:
+                colour = '#999999'
+            elif hasattr(vt, 'physical_legs'):
+                colour = '#E74C3C'               # red = interaction
+            else:
+                colour = '#3498DB'               # blue = source
+        nodes.append((v, pos[v], colour))
+
+    texts = {}
+    for u, v, txt in edges:
+        if txt is not None:
+            texts.setdefault((u, v), set()).add(txt)
+    return {'nodes': nodes,
+            'edges': [(u, v) for u, v, _txt in edges],
+            'edge_labels': {uv: ', '.join(sorted(t))
+                            for uv, t in sorted(texts.items())}}
+
+
+def _draw_prediagram(td, ax, display_id=None):
+    """Render a single typed prediagram on the provided matplotlib axis,
+    as laid out by :func:`_prediagram_layout` (networkx draws it)."""
     try:
         import networkx as nx
     except ImportError:
@@ -88,79 +190,38 @@ def _draw_prediagram(td, ax):
         ax.set_axis_off()
         return
 
-    # prediagram tuple is (D, G, leaves, internal)
     # IMPORTANT: D is a Sage DiGraph and its vertex IDs are Sage
     # Integer types.  Passing those through to networkx → matplotlib
     # eventually leaks Sage RealLiteral into matplotlib's PDF
     # graphics-state dict, which the PDF backend can't serialize
     # ("TypeError: Don't know a PDF representation for
-    # <class 'sage.rings.real_mpfr.RealLiteral'> objects").  Cast every
-    # vertex / edge endpoint to plain Python int up front so the
-    # downstream matplotlib pipeline only ever sees pure Python types.
-    D = td.prediagram[0]
-    leaves_sage = list(td.prediagram[2])
-    leaves      = [int(v) for v in leaves_sage]
-    leaf_set    = set(leaves)
-    # vertex-id mapping (sage → int) used everywhere below
-    _vmap       = {v: int(v) for v in D.vertices()}
-
+    # <class 'sage.rings.real_mpfr.RealLiteral'> objects").  The layout
+    # holds plain Python ints / floats only, so the downstream
+    # matplotlib pipeline only ever sees pure Python types.
+    lay = _prediagram_layout(td, display_id)
     G_nx = nx.MultiDiGraph()
-    for v in D.vertices():
-        G_nx.add_node(_vmap[v])
-    for u, v, lbl in D.edges():
-        G_nx.add_edge(_vmap[u], _vmap[v], key=str(lbl))
-
-    # Layout: leaves at top (y=1), internal vertices at bottom (y=0)
-    pos = {}
-    leaf_xs = np.linspace(0.0, 1.0, max(len(leaves), 2))
-    for j, lf in enumerate(leaves):
-        pos[lf] = (float(leaf_xs[j]), 1.0)
-    internal = [int(v) for v in D.vertices() if int(v) not in leaf_set]
-    int_xs = np.linspace(0.2, 0.8, max(len(internal), 1))
-    for j, v in enumerate(internal):
-        pos[v] = (float(int_xs[j]), 0.0)
-
-    # Node colors: leaves green, source vertex blue, interaction red
-    node_colors = []
-    for v_sage in D.vertices():
-        v = _vmap[v_sage]
-        if v in leaf_set:
-            node_colors.append('#2ECC71')        # green = leaf
-        else:
-            vt = td.vertex_assignments.get(v_sage)
-            if vt is None:
-                node_colors.append('#999999')
-            elif hasattr(vt, 'physical_legs'):
-                node_colors.append('#E74C3C')    # red = interaction
-            else:
-                node_colors.append('#3498DB')    # blue = source
+    for v, _xy, _colour in lay['nodes']:
+        G_nx.add_node(v)
+    for i, (u, v) in enumerate(lay['edges']):
+        G_nx.add_edge(u, v, key=str(i))
+    pos = {v: xy for v, xy, _colour in lay['nodes']}
 
     nx.draw_networkx_nodes(
-        G_nx, pos, ax=ax, node_color=node_colors,
+        G_nx, pos, ax=ax, node_color=[c for _v, _xy, c in lay['nodes']],
         node_size=900, edgecolors='black', linewidths=1.0,
     )
     nx.draw_networkx_labels(
         G_nx, pos, ax=ax, font_size=10, font_color='white',
         font_weight='bold',
     )
-    # Draw edges with labels — keys are Python (int, int) tuples
-    edge_labels = {}
-    for u, v, lbl in D.edges():
-        et = td.edge_types.get((u, v, lbl))
-        if et is not None:
-            resp_leg, phys_leg = et
-            edge_labels[(_vmap[u], _vmap[v])] = (
-                rf'${resp_leg[0]}_{int(resp_leg[1])}\!\to\!'
-                rf'\,{phys_leg[0]}_{int(phys_leg[1])}$'
-            )
     nx.draw_networkx_edges(
         G_nx, pos, ax=ax, edge_color='#444444',
         arrows=True, arrowsize=15,
         connectionstyle='arc3,rad=0.1',
     )
-    if edge_labels:
+    if lay['edge_labels']:
         nx.draw_networkx_edge_labels(
-            G_nx, pos, edge_labels=edge_labels, ax=ax, font_size=8,
+            G_nx, pos, edge_labels=lay['edge_labels'], ax=ax, font_size=8,
             bbox={'boxstyle': 'round,pad=0.15',
                   'facecolor': 'white', 'edgecolor': 'none', 'alpha': 0.8},
         )
@@ -218,8 +279,14 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     ax_mf.set_title('Mean-field solution', fontsize=11, loc='left')
     mf = result['mf_values']
     mf_lines = []
-    for label, vals in [('n*', mf['nstar']), ('v*', mf['vstar']),
-                        ('m*', mf.get('mstar'))]:
+    # Classic n/v/m saddles first (their historical order), then any other
+    # saddle the model declares (e.g. ``xstar``); a model need not have
+    # ``nstar``/``vstar`` at all.
+    legacy = ('nstar', 'vstar', 'mstar')
+    names = [n for n in legacy if n in mf] + [n for n in mf if n not in legacy]
+    for name in names:
+        vals = mf.get(name)
+        label = name[:-4] + '*' if name.endswith('star') else name
         if vals is None:
             continue
         for i, v in enumerate(vals, 1):
@@ -262,11 +329,82 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     plt.close(fig)
 
 
-def _draw_diagram_page(pdf, idx, total, td_record, result, k):
-    """One page per diagram: graph, vertex assignments, contribution."""
+def _per_diagram_contributions(result):
+    """Per-diagram Phase J callables, keyed by ``id(typed_diagram)``.
+
+    Matched by object identity, never by page position.  ``compute_cumulants``
+    hands each ``ell``'s typed diagrams to ``compute_correction_td`` in
+    ``result['diagrams']`` order, and a per-diagram group's ``kernel_id`` is
+    the index into THAT per-``ell`` list; rebuilding the list here from the
+    same records maps every callable back to its own diagram whatever order
+    the enumeration produced.  The grouped path (``use_grouped_phase_j``)
+    has no per-diagram callables (its groups carry no ``'contribution'``),
+    so its pages show none.
+    """
+    out = {}
+    for ell, pj in (result.get('phase_j_by_ell') or {}).items():
+        if not pj:
+            continue
+        tds = [r['typed_diagram'] for r in result.get('diagrams') or []
+               if r.get('ell') == ell]
+        for g in pj.get('groups') or []:
+            fn, kid = g.get('contribution'), g.get('kernel_id')
+            if fn is None or not isinstance(kid, int) or not 0 <= kid < len(tds):
+                continue
+            out[id(tds[kid])] = fn
+    return out
+
+
+def _pages_in_canonical_order(records):
+    """``[(sort_key, display_id, record), ...]`` in page order: by loop order,
+    then by isomorphism class (:func:`_canonical_view`), so "Diagram i / N"
+    names the same class whatever order ``records`` came in."""
+    pages = []
+    for rec in records:
+        key, display_id = _canonical_view(rec['typed_diagram'])
+        pages.append(((int(rec.get('ell', 0)), key), display_id, rec))
+    pages.sort(key=lambda page: page[0])
+    return pages
+
+
+def _diagram_contribution_curve(contrib, tau_grid, k):
+    """One diagram's k=2 slice C_Γ(0, τ) on ``tau_grid``, sampled like the
+    total (``C_tau``): Itô left limit at τ=0."""
+    from api.compute import _ito_nudge_callable
+    fn = _ito_nudge_callable(contrib, k)
+    return np.array([complex(fn(0.0, float(t))) for t in tau_grid],
+                    dtype=complex)
+
+
+def _assignment_lines(td, display_id):
+    """The page's "Vertex assignments" block, vertices in display order."""
+    lines = ['Vertex assignments:']
+    for v, vt in sorted(td.vertex_assignments.items(),
+                        key=lambda item: display_id[item[0]]):
+        cls = type(vt).__name__
+        rl = getattr(vt, 'response_legs', [])
+        pl = getattr(vt, 'physical_legs', None)
+        line = f'  v{display_id[v]} ({cls}): resp={rl}'
+        if pl is not None:
+            line += f', phys={pl}'
+        lines.append(line)
+    return lines
+
+
+def _draw_diagram_page(pdf, idx, total, td_record, result, k, contrib=None,
+                       display_id=None):
+    """One page per diagram: graph, vertex assignments, contribution.
+
+    ``contrib`` is this diagram's own Phase J callable (from
+    :func:`_per_diagram_contributions`), or None when there is none.
+    ``display_id`` maps vertices to the numbers printed on the page
+    (:func:`_canonical_view`); by default the canonical numbering is
+    computed here."""
     td = td_record['typed_diagram']
     info = td_record['classify']
     pf = td_record['combined_prefactor']
+    if display_id is None:
+        display_id = _canonical_view(td)[1]
 
     fig = plt.figure(figsize=(11, 8.5))
     gs = fig.add_gridspec(3, 2, height_ratios=[1.5, 1.0, 2.0])
@@ -287,37 +425,21 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k):
     # Vertex / source assignments
     ax_assign = fig.add_subplot(gs[0, 1])
     ax_assign.set_axis_off()
-    assign_lines = ['Vertex assignments:']
-    for v, vt in sorted(td.vertex_assignments.items()):
-        cls = type(vt).__name__
-        rl = getattr(vt, 'response_legs', [])
-        pl = getattr(vt, 'physical_legs', None)
-        line = f'  v{v} ({cls}): resp={rl}'
-        if pl is not None:
-            line += f', phys={pl}'
-        assign_lines.append(line)
-    ax_assign.text(0.0, 1.0, '\n'.join(assign_lines), fontsize=8,
-                   va='top', family='monospace')
+    ax_assign.text(0.0, 1.0, '\n'.join(_assignment_lines(td, display_id)),
+                   fontsize=8, va='top', family='monospace')
 
     # Diagram graph
     ax_graph = fig.add_subplot(gs[1:, 0])
-    _draw_prediagram(td, ax_graph)
+    _draw_prediagram(td, ax_graph, display_id)
     ax_graph.set_title('Prediagram + edge typings', fontsize=10)
 
     # Per-diagram contribution slice (k=2)
     ax_contrib = fig.add_subplot(gs[1:, 1])
     if k == 2:
         try:
-            phase_j = result['phase_j_result']
-            # The compute_correction_td result has per-diagram callables
-            # in 'tree_callables' (list, indexed by kernel-group order)
-            tree_callables = phase_j.get('tree_callables', [])
-            if idx - 1 < len(tree_callables):
-                contrib = tree_callables[idx - 1]
+            if contrib is not None:
                 tau_grid = np.asarray(result['tau_grid'], dtype=float)
-                C_diag = np.array([
-                    complex(contrib(0.0, float(t))) for t in tau_grid
-                ], dtype=complex)
+                C_diag = _diagram_contribution_curve(contrib, tau_grid, k)
                 ax_contrib.plot(tau_grid, C_diag.real.astype(float),
                                 color='#0066CC', linewidth=1.4)
                 ax_contrib.axhline(0, color='gray', linewidth=0.5)
@@ -443,9 +565,13 @@ def generate_report(
             _draw_cover_page(pdf, model, k, max_ell, fundamental,
                              external_fields, result)
             n_diag = len(result['diagrams'])
-            for idx, td_record in enumerate(result['diagrams'], 1):
-                _draw_diagram_page(pdf, idx, n_diag, td_record,
-                                   result, k)
+            contribs = _per_diagram_contributions(result)
+            for idx, (_key, display_id, td_record) in enumerate(
+                    _pages_in_canonical_order(result['diagrams']), 1):
+                _draw_diagram_page(
+                    pdf, idx, n_diag, td_record, result, k,
+                    contribs.get(id(td_record['typed_diagram'])),
+                    display_id)
     plt.close('all')
 
     if verbose:

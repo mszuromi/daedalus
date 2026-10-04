@@ -1025,6 +1025,38 @@ def test_same_order_sources_of_different_fields_are_distinguishable():
     assert 'x' in m['-D_1'] and 'y' in m['-D_2']
 
 
+def test_symbol_numbering_depends_only_on_the_set_of_factors():
+    """The same diagram set arrives in another list order, with other vertex
+    labels, depending on where its prediagrams came from (a cache file, the
+    eager or the streaming enumerator).  Numbered by first appearance,
+    ``v_1`` named a different factor in each; the numbering must follow the
+    sorted factor expressions instead, for interactions and for the
+    superscripts of colliding sources alike."""
+    import itertools
+    import random
+
+    from engine.diagrams.tikz_export import vertex_symbol_map
+    SourceType, VertexType = _real_types()
+    s1 = SourceType('-D_1', [('xt', 1)] * 2, (2, 0))
+    s2 = SourceType('-D_2', [('xt', 1)] * 2, (2, 0))
+    g = VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3))
+    h = VertexType('h', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
+    a = VertexType('a', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
+    panels = [(h, s2), (g, s1, a), (a, h)]
+    want = {'a': r'v_{1}', 'g': r'v_{2}', 'h': r'v_{3}',
+            '-D_1': r'\kappa_{2}^{(1)}', '-D_2': r'\kappa_{2}^{(2)}'}
+    rng = random.Random(0)
+    for order in itertools.permutations(panels):
+        for relabel in (False, True):
+            dias = []
+            for types in order:
+                types = list(types)
+                if relabel:                      # another representative
+                    rng.shuffle(types)
+                dias.append(_fig(*types))
+            assert vertex_symbol_map(dias) == want, (order, relabel)
+
+
 def test_a_lone_source_keeps_the_plain_symbol():
     """The disambiguating superscript must fire only on a real collision."""
     from engine.diagrams.tikz_export import vertex_symbol_map

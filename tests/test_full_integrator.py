@@ -37,6 +37,9 @@ from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
 from engine.diagrams.type_assignment import build_field_index_map
+from tests._diagram_order import (
+    CC_BUBBLE, RC_BUBBLE_C_LEG, RC_BUBBLE_CHAIN, _pick_live,
+)
 
 
 def _allen_cahn():
@@ -67,19 +70,26 @@ def ac_records():
     return by_ell, base, SR
 
 
+def _is_keldysh_sunset(td):
+    d = diagram_to_cstack(td)
+    if len(d.internal_vertices) != 2 or d.n_loops != 2:
+        return False
+    loop = d.loop_edges()
+    ext = [e for e in d.edges if e.external]
+    return (len(loop) == 3 and all(e.kind == 'C' and e.u != e.v for e in loop)
+            and len(ext) == 2 and all(e.kind == 'R' for e in ext))
+
+
 def _find_keldysh_sunset(by_ell):
     """A 2-loop diagram with 2 internal vertices joined by 3 correlation lines
-    (each carrying loop momentum) and two external retarded legs."""
-    for td, _pre in by_ell.get(2, []):
-        d = diagram_to_cstack(td)
-        if len(d.internal_vertices) != 2 or d.n_loops != 2:
-            continue
-        loop = d.loop_edges()
-        ext = [e for e in d.edges if e.external]
-        if (len(loop) == 3 and all(e.kind == 'C' and e.u != e.v for e in loop)
-                and len(ext) == 2 and all(e.kind == 'R' for e in ext)):
-            return d
-    raise AssertionError('no Keldysh sunset found in the ell=2 set')
+    (each carrying loop momentum) and two external retarded legs.  Exactly
+    one class has this structure (checked), so the pick does not depend on
+    the record order."""
+    try:
+        td, _ = _pick_live(by_ell.get(2, []), _is_keldysh_sunset)
+    except LookupError:
+        raise AssertionError('no Keldysh sunset found in the ell=2 set')
+    return diagram_to_cstack(td)
 
 
 def _sunset_brute(descr, q, mu, D, d, L_cut, n):
@@ -113,6 +123,7 @@ def _sunset_brute(descr, q, mu, D, d, L_cut, n):
 def test_tree_is_C0(ac_records):
     by_ell, base, SR = ac_records
     mu, D, T = 1.0, 1.0, 1.0
+    assert len(by_ell[0]) == 1, 'k=2 tree level is the single C0 line'
     d0 = diagram_to_cstack(by_ell[0][0][0])
     pre = float(SR(by_ell[0][0][1]).subs(base))
     for q in (0.0, 0.7, 1.5):
@@ -257,15 +268,12 @@ def test_diagram_form_factor_ell2_momentum():
     be = build_pipeline_records(ft, b, prop, ext, max_ell=2, verbose=False)
     base = {SR.var('mu'): 1.0, SR.var('D'): 2.0, SR.var('g'): 0.3,
             SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
-    td = descr = None
-    for t, p in be.get(2, []):
-        if abs(float(SR(p).subs(base))) <= 1e-14:
-            continue
-        d = diagram_to_cstack(t)
-        if d.n_loops == 2:
-            td, descr = t, d
-            break
-    assert td is not None, 'no live L=2 conserved-vertex diagram found'
+    # Picked by structure, not list position: the two-loop chain of two R-C
+    # bubbles joined by a correlation line (the class this test has always
+    # exercised; the record order depends on the prediagram source).
+    td, _ = _pick_live(be.get(2, []), RC_BUBBLE_CHAIN, base)
+    descr = diagram_to_cstack(td)
+    assert descr.n_loops == 2, 'no live L=2 conserved-vertex diagram found'
     ff = _formfactor_callable(td, op)
     a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
     bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
@@ -327,15 +335,11 @@ def test_perleg_and_complex_form_factor():
     be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
     base = {SR.var('mu'): 1.0, SR.var('D'): 2.0, SR.var('g'): 0.3,
             SR.var('T'): 1.0, SR.var('phistar1'): 0.0}
-    td = descr = None
-    for t, p in be.get(1, []):
-        if abs(float(SR(p).subs(base))) <= 1e-14:
-            continue
-        d = diagram_to_cstack(t)
-        if d.n_loops == 1:
-            td, descr = t, d
-            break
-    assert td is not None
+    # The R-C bubble with a correlation line on an external leg, picked by
+    # structure (not list position).
+    td, _ = _pick_live(be.get(1, []), RC_BUBBLE_C_LEG, base)
+    descr = diagram_to_cstack(td)
+    assert descr.n_loops == 1
     a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
     bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
     E = a.shape[0]
@@ -411,14 +415,11 @@ def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
            'chain': t['chain'], 'mode': t['mode']}
           for t in ft._ns._operator_ir_vertex_terms]
     be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
-    td = descr = None
-    for t, p in be.get(1, []):
-        if abs(float(SR(p).subs(base))) <= 1e-14:
-            continue
-        dd = diagram_to_cstack(t)
-        if dd.n_loops == 1:
-            td, descr = t, dd; break
-    assert td is not None, f'no live L=1 {kind} bubble at d={d}'
+    # The R-C bubble with a correlation line on an external leg, picked by
+    # structure (not list position).
+    td, _ = _pick_live(be.get(1, []), RC_BUBBLE_C_LEG, base)
+    descr = diagram_to_cstack(td)
+    assert descr.n_loops == 1, f'no live L=1 {kind} bubble at d={d}'
     ff = _formfactor_callable(td, vt, d=d)
     a = np.array([e.a for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
     bb = np.array([e.b for e in descr.edges], dtype=float).reshape(len(descr.edges), -1)
@@ -634,9 +635,10 @@ def test_mc_integrator_matches_grid_plain():
     base = {SR.var('mu'): 1.0, SR.var('D'): 1.0, SR.var('c'): 0.3,
             SR.var('T'): 1.0, SR.var('hstar1'): 0.0}
     be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
-    raw = [td for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
-    assert raw, 'no live 1-loop diagram'
-    dd = diagram_to_cstack(raw[0])
+    # The R-C bubble with a correlation line on an external leg, picked by
+    # structure (not list position).
+    td, _ = _pick_live(be.get(1, []), RC_BUBBLE_C_LEG, base)
+    dd = diagram_to_cstack(td)
     et = {0: 0.0, 1: 0.0}
     grid = diagram_kinematic(dd, [0.7], et, 1.0, 1.0, spatial_dim=1,
                              n_t=24, n_s=26, formfactor=None)
@@ -650,22 +652,123 @@ def test_mc_integrator_matches_grid_plain():
     assert rel < 0.02, f'MC {mc:.6e} vs grid {grid:.6e} (rel {rel:.2e})'
 
 
-def test_bessel_integrator_matches_grid():
-    """The Bessel-K backend (method='bessel') — radial λ analytically (a modified
-    Bessel function), only the angular simplex sampled — reproduces the grid for the
-    analytic-IFT δC(x) at x>0, for BOTH plain vertices (≈exact) AND derivative
-    vertices (KPZ, where pure MC is biased by the det M→0 singularity).  x>0 only:
-    x=0 equal-point is UV-sensitive (see docs/spatial_loop_integral_analytic_mc.md §3)."""
-    import numpy as np
+@pytest.mark.filterwarnings(
+    'ignore::engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
+@pytest.mark.parametrize('backend', ['mc', 'bessel'])
+def test_sampling_backends_do_not_depend_on_the_diagram_order(backend,
+                                                              monkeypatch):
+    """Under ``SPATIAL_INTEGRATOR=mc`` / ``bessel`` each diagram's Monte-Carlo
+    seed comes from its isomorphism class, not its position in the diagram
+    list, so serving the same diagrams in another order (prediagram records
+    and typed diagrams both shuffled) leaves C(x, τ) unchanged up to the
+    reordered sum over diagrams.  (A position-derived
+    seed moved it by MC noise, ~4e-4 at N=2e4.)  This checks the order
+    independence only: at τ = 0.5 the ``bessel`` values themselves are
+    biased (see ``test_bessel_matches_grid_at_unequal_external_times``)."""
+    from api.compute import compute_cumulants
+    from tests._diagram_order import apply_diagram_order
+
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', backend)
+    monkeypatch.setenv('SPATIAL_MC_N', '20000')
+    model = _allen_cahn()
+    kw = dict(k=2, max_ell=2, external_fields=[('phi', 1), ('phi', 1)],
+              tau_grid=np.array([0.0, 0.5]), chi_grid=np.array([0.5, 2.0]),
+              use_cache=False, verbose=False, spatial_parallel=False)
+    plain = np.asarray(compute_cumulants(model, **kw)['C_tau_x'])
+    for seed in (0, 1):
+        with monkeypatch.context() as mp:
+            apply_diagram_order(mp, 'shuffle', seed)
+            shuf = np.asarray(compute_cumulants(model, **kw)['C_tau_x'])
+        assert np.all(np.isfinite(shuf)) and np.any(shuf != 0)
+        np.testing.assert_allclose(shuf, plain, rtol=1e-13, atol=0)
+
+
+def _ac_tadpole(ac_records):
+    """The single live one-loop Allen-Cahn class (one internal vertex)."""
+    by_ell, base, _ = ac_records
+    td, _ = _pick_live(
+        by_ell[1], lambda t: len(diagram_to_cstack(t).internal_vertices) == 1,
+        base)
+    return diagram_to_cstack(td)
+
+
+def test_bessel_warns_only_at_unequal_external_times(ac_records):
+    """``method='bessel'`` is exact only at equal external times: a loop
+    diagram at τ != 0 gets a ``BesselUnequalTimesWarning``; τ = 0, and a
+    tree at any τ, do not."""
+    import warnings
+
+    from engine.integration.spatial.full_integrator import (
+        BesselUnequalTimesWarning,
+    )
+    dd = _ac_tadpole(ac_records)
+    legs = dd.external_legs
+    xs = np.array([1.0])
+
+    def run(descr, tau):
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter('always')
+            diagram_kinematic(descr, [0.0], {legs[0]: 0.0, legs[1]: tau},
+                              1.0, 1.0, spatial_dim=1, xs=xs, formfactor=None,
+                              method='bessel', mc_n=1000, mc_seed=0)
+        return [w for w in rec
+                if issubclass(w.category, BesselUnequalTimesWarning)]
+
+    assert run(dd, 0.0) == []
+    hits = run(dd, 0.5)
+    assert len(hits) == 1 and 'tau=0' in str(hits[0].message)
+    by_ell, _, _ = ac_records
+    tree = diagram_to_cstack(by_ell[0][0][0])
+    assert run(tree, 0.5) == []
+
+
+class _BesselUnequalTimesBias(Exception):
+    """Raised only by the tolerance check of the strict xfail below."""
+
+
+@pytest.mark.filterwarnings(
+    'ignore::engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
+@pytest.mark.xfail(strict=True, raises=_BesselUnequalTimesBias, reason=(
+    'bessel is exact only at equal external times: on the one-loop '
+    'Allen-Cahn tadpole at x=1, tau=0.5 it is 65% (leaf at tau on the R '
+    'leg) and 24% (on the C leg) below grid, which mc reproduces to 1.1% '
+    'and 0.2% (N=1e6, measured 2026-10-04).  At tau=0 it agrees to 3e-4.'))
+def test_bessel_matches_grid_at_unequal_external_times(ac_records):
+    """Kept as a strict xfail so the bias stays measured: it passes the
+    moment the Bessel backend integrates the unequal-time region correctly.
+    Both leaf orientations are checked, since the bias depends on which leaf
+    a diagram's labelling puts at τ."""
+    import warnings
+
+    dd = _ac_tadpole(ac_records)
+    legs = dd.external_legs
+    xs = np.array([1.0])
+    worst = 0.0
+    for times in ((0.0, 0.0), (0.0, 0.5), (0.5, 0.0)):
+        et = dict(zip(legs, times))
+        g = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, n_t=24,
+                              n_s=26, xs=xs, formfactor=None)[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            b = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1,
+                                  xs=xs, formfactor=None, method='bessel',
+                                  mc_n=200_000, mc_seed=0)[0]
+        assert g > 0.0
+        rel = abs(b / g - 1.0)
+        if times == (0.0, 0.0):
+            assert rel < 0.01, f'tau=0: bessel {b:.6e} vs grid {g:.6e}'
+        worst = max(worst, rel)
+    if not worst < 0.02:
+        raise _BesselUnequalTimesBias(f'worst rel {worst:.3f}')
+
+
+def _kpz_one_loop_records():
+    """KPZ ``(c/2)(∂_x h)²`` in d=1 at ``max_ell=1``: the ell=1 records, the
+    parameter point and the operator-IR vertex table the form factors need."""
     from sage.all import SR
     from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
-        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import diagram_kinematic
-    from engine.diagrams.type_assignment import build_field_index_map
 
     tb = (ModelBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -686,10 +789,39 @@ def test_bessel_integrator_matches_grid():
            'chain': t['chain'], 'mode': t['mode']}
           for t in ft._ns._operator_ir_vertex_terms]
     be = build_pipeline_records(ft, b, prop, ext, max_ell=1, verbose=False)
-    raw = [td for td, p in be.get(1, []) if abs(float(SR(p).subs(base))) > 1e-14]
-    assert raw, 'no live 1-loop diagram'
-    dd = diagram_to_cstack(raw[0]); ff = _formfactor_callable(raw[0], vt, d=1)
+    return be.get(1, []), base, vt
+
+
+def _kpz_bessel_vs_grid(td, vt, mc_n=4_000_000):
+    """(bessel, grid) KPZ derivative-vertex δC(x=2) of one diagram."""
+    from engine.integration.spatial.pipeline_bridge import _formfactor_callable
+    dd = diagram_to_cstack(td); ff = _formfactor_callable(td, vt, d=1)
     assert getattr(ff, 'moment_bessel', None) is not None, 'no moment_bessel built'
+    et = {0: 0.0, 1: 0.0}
+    xs = np.array([2.0])
+    gd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, n_t=24, n_s=26,
+                           xs=xs, formfactor=ff)[0]
+    bd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, xs=xs,
+                           formfactor=ff, method='bessel', mc_n=mc_n, mc_seed=0)[0]
+    return bd, gd
+
+
+def test_bessel_integrator_matches_grid(shuffle_diagram_order):
+    """The Bessel-K backend (method='bessel') — radial λ analytically (a modified
+    Bessel function), only the angular simplex sampled — reproduces the grid for the
+    analytic-IFT δC(x) at x>0, for BOTH plain vertices (≈exact) AND derivative
+    vertices (KPZ, where pure MC is biased by the det M→0 singularity).  x>0 only:
+    x=0 equal-point is UV-sensitive (see docs/spatial_loop_integral_analytic_mc.md §3).
+
+    The diagram is the R-C bubble with a correlation line on an external leg,
+    selected by structure; the records are served in a shuffled order
+    (``shuffle_diagram_order``) to keep the selection honest.  The two-C-line
+    bubble is the separate strict xfail below."""
+    import numpy as np
+
+    records, base, vt = _kpz_one_loop_records()
+    td, _ = _pick_live(records, RC_BUBBLE_C_LEG, base)
+    dd = diagram_to_cstack(td)
     et = {0: 0.0, 1: 0.0}
     xs = np.array([2.0])                                 # one clean x>0 point
     # PLAIN: the radial reduction is a single Bessel-K → ≈exact
@@ -700,10 +832,7 @@ def test_bessel_integrator_matches_grid():
     assert gp != 0.0
     assert abs(bp - gp) / abs(gp) < 0.01, f'plain bessel {bp:.6e} vs grid {gp:.6e}'
     # DERIVATIVE (KPZ): radial sum of Bessel-K's via the λ-graded moment
-    gd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, n_t=24, n_s=26,
-                           xs=xs, formfactor=ff)[0]
-    bd = diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=1, xs=xs,
-                           formfactor=ff, method='bessel', mc_n=4_000_000, mc_seed=0)[0]
+    bd, gd = _kpz_bessel_vs_grid(td, vt)
     assert gd != 0.0
     assert abs(bd - gd) / abs(gd) < 0.06, f'KPZ bessel {bd:.6e} vs grid {gd:.6e}'
     # d-robustness: the radial Bessel-K + isotropic heat kernel work at d≥2 (plain)
@@ -722,3 +851,35 @@ def test_bessel_integrator_matches_grid():
     with pytest.raises(NotImplementedError):
         diagram_kinematic(dd, [0.0], et, 1.0, 1.0, spatial_dim=2, xs=xs,
                           formfactor=_FFNoMoment(), method='bessel', mc_n=10_000)
+
+
+class _BesselGridGap(Exception):
+    """Raised only by the tolerance check of the strict xfail below, so any
+    other failure of that test (a pick that no longer singles out one class,
+    a missing ``moment_bessel``, a zero grid value) is a real failure."""
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, raises=_BesselGridGap, reason=(
+    'Bessel backend vs grid on the KPZ two-C-line bubble at x=2: '
+    'bessel(4M samples, seed 0)=6.392e-3 vs grid(n_t=24, n_s=26)=7.176e-3, '
+    'rel. 0.109 > tol 0.06.  Measured (2026-10-04): the grid itself moves '
+    'with resolution (6.967e-3 at (40,44), 6.903e-3 at (64,70), 6.880e-3 '
+    'at (96,104)); over seeds 0-5 at 4M samples bessel gives 6.349e-3 '
+    '(sd 2.8%), about 7.7% below the finest grid, while the one-C-line '
+    'bubble agrees with it to 0.8%.  The cause of the remaining gap is not '
+    'established.'))
+def test_bessel_two_c_line_bubble_matches_grid():
+    """Same KPZ derivative-vertex check as above, on the bubble of two
+    correlation lines between the same vertices (both external legs
+    retarded).  Kept as a strict xfail so the gap stays measured: it passes
+    the moment the Bessel backend matches the grid on this diagram.  Only
+    the final tolerance check may fail as expected."""
+    records, base, vt = _kpz_one_loop_records()
+    td, _ = _pick_live(records, CC_BUBBLE, base)    # exactly one class
+    bd, gd = _kpz_bessel_vs_grid(td, vt)
+    assert gd != 0.0
+    rel = abs(bd - gd) / abs(gd)
+    if not rel < 0.06:
+        raise _BesselGridGap(
+            f'KPZ bessel {bd:.6e} vs grid {gd:.6e} (rel {rel:.3f})')

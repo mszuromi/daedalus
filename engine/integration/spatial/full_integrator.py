@@ -37,10 +37,29 @@ and are layered on separately.
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 
 from engine.integration.spatial.causal_chambers import causal_chambers
+
+
+class BesselUnequalTimesWarning(RuntimeWarning):
+    """``method='bessel'`` was asked for a loop diagram whose external times
+    differ (``k=2``: ``τ != 0``), where its estimate is biased; see
+    :func:`_diagram_bessel_xs`."""
+
+
+_BESSEL_UNEQUAL_TIMES_MSG = (
+    "method='bessel' (SPATIAL_INTEGRATOR=bessel) is exact only when every "
+    "external time is equal (k=2: tau=0).  Its radial Bessel-K reduction "
+    "scales every edge weight with the radial variable, which fails for the "
+    "external-leg edges when the external times differ, and it never places "
+    "an internal vertex later than the earliest external time.  At tau != 0 "
+    "its loop terms are biased (one-loop diagrams of "
+    "allen_cahn_1d_subcritical_infinite at tau=0.25-1: 17% to 78% low, "
+    "depending on which leaf the diagram's labelling puts at tau).  Use "
+    "SPATIAL_INTEGRATOR=grid (the default) or mc at tau != 0.")
 
 
 # ── Notation (code ↔ paper App. B) ───────────────────────────────────
@@ -375,7 +394,20 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     Plain (`formfactor=None` / no `moment_bessel`): a single Bessel-K.  Derivative
     (`ff.moment_bessel`): the form-factor moment is `M_F(λ)=Σ_m λ^{−m}EF_m`, so the
     radial sum is `Σ_m EF_m·K(P−m)`.  Returns `(n_x,)` real.  `x=0` (equal point) is
-    UV-sensitive (divergent term-by-term); only the convergent part is kept."""
+    UV-sensitive (divergent term-by-term); only the convergent part is kept.
+
+    **Exact only when every external time is equal** (`k=2`: `τ=0`).  The
+    homogeneity above needs every edge weight to scale with `λ`.  An edge to
+    an external leaf at time `τ_j` has weight `τ_j + λŝ_v` (R) or
+    `|τ_j + λŝ_v| + λŝ_σ` (C), which scales only when `τ_j = 0`; the code
+    keeps the leaf times fixed while it sums the radial direction as if they
+    scaled.  It also places every internal vertex at `t_v ≤ 0`, so a vertex
+    that only has to precede a leaf at `τ > 0` never reaches `(0, τ)`.  At
+    unequal times the estimate is therefore biased, and the bias depends on
+    which leaf the diagram's labelling puts at `τ` (measured: 17% to 78% low
+    on single one-loop diagrams at `τ = 0.25..1`); a
+    :class:`BesselUnequalTimesWarning` is issued.  ``method='grid'`` and
+    ``'mc'`` integrate the actual region and are unaffected."""
     from math import factorial as _fact
     from scipy.special import kv as _kv, gamma as _gamma
     n_V = len(internal)
@@ -386,6 +418,8 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     total = np.zeros(xs.size)
     if n == 0 or L == 0:
         return total                                        # tree / no loop scale
+    if len({float(t) for t in external_times.values()}) > 1:
+        warnings.warn(_BESSEL_UNEQUAL_TIMES_MSG, BesselUnequalTimesWarning)
     rng = np.random.default_rng(seed)
     Es = rng.standard_exponential((int(N), n))
     s = Es / Es.sum(1, keepdims=True)                       # Dirichlet(1..1) on the simplex

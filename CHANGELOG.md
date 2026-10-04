@@ -558,6 +558,181 @@ k ≥ 3 moment outputs of every model move as described in "Changed:
 `dd.run` k ≥ 3 slices …" above.
 Models outside the public model set are not listed.
 
+### Performance: spatial runs use the compiled enumerator
+
+The diagram stage of every spatial run, which never uses the prediagram
+cache, now takes its prediagrams from the compiled streaming enumerator,
+rebuilt in memory, instead of the pure-Python eager enumerator. No file is
+read or written. The certificates of each (k, ℓ) are kept in memory for the
+rest of the process; the records are rebuilt on every call.
+
+Temporal `compute_cumulants(use_cache=False)` runs keep the eager
+enumerator and its exact records, so their numbers and their
+`result['diagrams']` do not change (see "Why temporal runs keep the eager
+records" below). `DAEDALUS_PREDIAGRAM_EAGER` sets the source for every
+caller: `0` (or `false`, `no`, `off`) streams temporal runs too, `1` (or
+`true`, `yes`, `on`) puts spatial runs back on the eager enumerator, and any
+other non-empty value is an error.
+
+With the defaults, no run is measurably faster yet: temporal runs keep the
+eager enumerator, and the spatial integrators stop at ℓ ≤ 2, where the
+enumeration is a small part of the run (measured:
+`allen_cahn_1d_subcritical_infinite` at ℓ ≤ 2 takes 5.4 s with either
+enumerator, of which loading the prediagrams takes 0.10 to 0.13 s). The
+temporal gain below needs `DAEDALUS_PREDIAGRAM_EAGER=0`.
+
+- Speed (measured). Enumerating the 14,928 prediagrams of k = 2, ℓ = 3 takes
+  1.4 s instead of 9.0 s (k = 3, ℓ = 2: 0.4 to 0.5 s instead of 1.2 to
+  1.3 s). With `DAEDALUS_PREDIAGRAM_EAGER=0`, `ou_quartic` at k = 2 up to
+  ℓ = 3 on 7 τ points takes 6.6 to 6.9 s instead of 14.4 to 15.0 s. The
+  first call at a small cell is slower than before: for k ≤ 3 at ℓ ≤ 1,
+  k ≤ 5 at ℓ = 0 and k = 1 at ℓ = 2 it takes about 5 to 90 ms instead of
+  0.1 to 20 ms, because the compiled enumerator starts one tree-generator
+  process per tree order, and later calls for the same cell take 0.1 to
+  10 ms. From k = 4, ℓ = 1 and k = 6, ℓ = 0 up, the first call is already
+  faster than the eager enumerator (k = 5, ℓ = 1: 0.8 s instead of 1.5 s),
+  and rebuilding the records dominates later calls. End-to-end runs do not
+  show the difference. Without the compiled extension (`DAEDALUS_FASTENUM=0`), a first call is
+  1.1 to 1.5 times slower than the eager enumerator at ℓ ≤ 2, because it
+  rebuilds the records from certificates (k = 4, ℓ = 1: 0.31 s instead of
+  0.26 s). It is about as fast at k = 3, ℓ = 2 and at k = 1, ℓ = 3.
+- Same diagrams, other representatives. The diagram set is unchanged, but
+  each isomorphism class is represented by another labelled diagram, with
+  other vertex numbers, in another order: sorted by certificate bytes, which
+  depend on the certificate backend.
+- Diagram order and vertex numbers of a temporal result. As before this
+  change, the order of `result['diagrams']`, and the vertex numbers in each
+  record's `typed_diagram` and in the keys of its `classify` entry
+  (`vertex_time_factors`, `source_time_info`), depend on where the
+  prediagrams came from. A cache-on and a cache-off run differ, and
+  `DAEDALUS_PREDIAGRAM_EAGER=0` changes them again. `dd.export_tikz(result,
+  index=i)` and the panel order of its array follow `result['diagrams']`, so
+  the same index can draw another diagram in another run.
+- `dd.export_tikz(..., symbolic_factors=True)` numbers the interaction
+  factors v₁, v₂, … and the superscripts of same-order noise sources in
+  sorted order of their LaTeX expressions. Before, it numbered them in order
+  of first appearance in the diagram list, so the same model printed v₁ for
+  different factors in a cache-on and a cache-off run: on
+  `ou_quartic_two_dim_color_corr` (k = 2, ℓ ≤ 1), 3ε₁x*₁ was v₁ cache off
+  and v₃ cache on. A figure exported earlier can carry other numbers.
+- Spatial results with the default `grid` integrator move by rounding only.
+  Measured on τ ∈ {0, 0.25, 0.75, 1.5} and χ ∈ {0.3, 0.9, 1.7, 3.0}, the
+  eager and the streamed records differ by at most 2.4e−16 relative for
+  `allen_cahn_1d_subcritical_infinite` (ℓ ≤ 2) and 2.6e−16 for
+  `reaction_diffusion_2d` (ℓ ≤ 1), and not at all for
+  `coupled_rd_2species_1d` (ℓ ≤ 1).
+- Spatial sampling integrators (`SPATIAL_INTEGRATOR=mc` or `bessel`). Each
+  diagram's Monte-Carlo seed now comes from its isomorphism class instead of
+  its position in the diagram list (it was `1234 + index`). Reordering the
+  list therefore no longer changes the estimate. Before (measured on the
+  code before this change, which used the eager records), two shuffles of
+  the list moved `allen_cahn_1d_subcritical_infinite` (ℓ ≤ 2, N = 2e4,
+  τ ∈ {0, 0.5}, χ ∈ {0.5, 2}) by up to 1.5e−3 relative with `mc` and
+  9.6e−4 with `bessel`: Monte-Carlo noise. The new seeds and the new
+  representatives still move these estimates.
+  - With `mc`, the move is Monte-Carlo noise. At ℓ ≤ 2 with N = 1e6,
+    C(x, τ) moves by 1.4e−3 relative between the eager and the streamed
+    records, inside the 4e−4 to 3.9e−3 spread between seeds.
+  - With `bessel`, see "Fixed: `SPATIAL_INTEGRATOR=bessel` warns at τ ≠ 0"
+    below: at τ = 0 the move is Monte-Carlo noise (both record sets are
+    within 2.5e−3 of the `grid` value); at τ ≠ 0 the estimate is biased,
+    and the bias depends on the representative. At τ = 0.5, the ℓ = 2 term
+    is 25 % to 38 % below the `grid` value with the streamed records and
+    5 % to 10 % below with the eager records, at N = 1e6 and 4e6 alike.
+- Why temporal runs keep the eager records. On models whose integration
+  regions fall back to `scipy.nquad`, another representative can send other
+  regions there, so results would move by the fallback's error, far above
+  rounding. Measured with `DAEDALUS_PREDIAGRAM_EAGER=0` against the default,
+  with the `scipy.nquad` fallback at its default tolerance as it stands at
+  this change (commit 16b5564). The call counts and the moves below are
+  that fallback's, and any change to the fallback changes them:
+  - `single_population_spike_reset_test` (parameters of the k = 2 table in
+    "Moved (measured)"), k = 2, ℓ = 1, makes 20 fallback calls instead of 40.
+    Its one-loop term moves by up to 1.0e−10 absolute (2.1e−6 relative, at
+    τ = 10), and `C_tau` by up to 3.6e−7 relative. At every τ of that table
+    the streamed value is within 1.4e−12 of the value computed with a tight
+    fallback tolerance; the eager value is within 1.0e−10. With the tight
+    tolerance, the two representatives agree to 1.7e−15 absolute.
+  - `single_population_quad_exp_test` (`P_SP`), k = 2, ℓ = 1, makes 36
+    fallback calls instead of 48. Its one-loop term moves by up to 1.1e−9
+    absolute (5.3e−6 relative), and `C_tau` by up to 2.9e−7 relative. With
+    a tight fallback tolerance, the two representatives agree to 4.4e−14
+    absolute.
+  - Where every region is analytic the move is rounding only: at most
+    4.6e−16 relative for `ou_quartic` (k = 2, ℓ ≤ 3), and none for
+    `linear_hawkes`, `multipopulation_test` and
+    `single_population_linear_delta_spikes_test` (k = 2, ℓ ≤ 1, parameters
+    `P_LINH`, `P_MP`, `P_LD` of `tests/tools/phase_j_zoo_baseline.py`;
+    their one-loop terms are 0 there).
+
+  `TEMPORAL_CACHE_OFF_STREAMS` in `engine/enumeration/prediagram_cache.py`
+  switches the temporal default once the fallback agrees across
+  representatives on every model that reaches it. The slow test
+  `test_temporal_streamed_totals_match_eager_on_a_fallback_model` is the
+  gate. It has one strict expected failure per case:
+  `single_population_spike_reset_test` per-diagram and grouped, and
+  `single_population_quad_exp_test`. A case fails as an unexpected pass
+  once its two totals agree to 1e−13 relative, and the flag flips only when
+  every case does: the tight-tolerance agreement quoted above is rounding
+  for `single_population_spike_reset_test` but about 1e−11 relative for
+  `single_population_quad_exp_test`. Run the gate (`sage -python -m pytest
+  -m slow tests/test_prediagram_cache.py -k fallback_model`, about 7 min)
+  after any change to the Phase J fallback.
+- Cache-on and cache-off runs can use different representatives, as before.
+  The shipped prediagram files hold Sage-backend certificates, written on a
+  Sage install with the optional bliss package. A temporal cache-off run
+  uses the eager records. With the fallback of commit 16b5564 (as above),
+  they differ from a fresh clone's cache-on records by 4.5e−15 relative in
+  `C_tau` for `single_population_spike_reset_test` and 8.0e−11 for `single_population_quad_exp_test` (k = 2, ℓ = 1; the
+  shipped and the eager representatives take different quadrature routes
+  there, 24 and 48 fallback calls). With `DAEDALUS_PREDIAGRAM_EAGER=0` the
+  cache-off records are the streamed ones: they differ from the shipped
+  ones by 3.6e−7 and 2.9e−7 where the compiled extension builds, and are
+  identical to them with the Sage backend (`DAEDALUS_FASTENUM=0` or
+  `DAEDALUS_CERT_BACKEND=sage`) on a Sage install with bliss.
+
+### Fixed: `SPATIAL_INTEGRATOR=bessel` warns at τ ≠ 0
+
+The `bessel` integrator is exact only when the external times are equal
+(k = 2: τ = 0). Its radial Bessel-K reduction treats every edge weight as
+proportional to the radial variable, which fails for the edges to the
+external legs when the external times differ, and it never places an
+internal vertex later than the earliest external time. At τ ≠ 0 its loop
+terms are therefore biased, by an amount that depends on which leaf the
+diagram's labelling puts at τ. Measured on the one-loop diagram of
+`allen_cahn_1d_subcritical_infinite` at x = 1 (N = 1e6): within 3e−4 of the
+`grid` value at τ = 0; 17 % to 78 % below it at τ = 0.25 to 1, where `mc`
+agrees with `grid` to 1.4 % or better. On the full model (ℓ ≤ 2) at
+τ = 0.5, C(x, τ) is 4.5 % to 8.8 % below the `grid` value, depending on the
+prediagram source. This predates 0.2.0.
+
+The integrator now issues a `BesselUnequalTimesWarning` (a `RuntimeWarning`)
+for a loop diagram at unequal external times; the value is unchanged. Use
+`SPATIAL_INTEGRATOR=grid` (the default) or `mc` at τ ≠ 0. The strict
+expected failure `test_bessel_matches_grid_at_unequal_external_times` keeps
+the bias measured.
+
+### Fixed: `dd.generate_report`
+
+- The cover page raised `KeyError: 'nstar'` for every model without `n`/`v`
+  saddles, for example `ou_quartic`. It now lists the `n`, `v` and `m`
+  saddles a model has, then every other saddle it declares.
+- Every per-diagram page showed "(plot error: 'phase_j_result')" instead of
+  a curve: the panel read a result key that `compute_cumulants` never
+  returns. Each k = 2 page now plots the diagram's own contribution, matched
+  to the diagram by identity, never by page number. Like `C_tau`, it is
+  sampled with the Itô left limit at τ = 0. The grouped Phase J path has no
+  per-diagram contributions, so its pages show none.
+- Diagram pages come in a fixed order: by loop order, then by isomorphism
+  class. They number the vertices canonically, so "Diagram i / N", the
+  vertex list and the drawing depend only on the diagram's class, not on the
+  prediagram source or the list order. Measured on `ou_quartic` (k = 2,
+  ℓ ≤ 2, 71 diagram pages): eager, streamed and shuffled records give the
+  same text on every page and the same raster image at 40 dpi; the curves
+  agree to 5.9e−16.
+- When several edges join the same two vertices, the edge label lists their
+  distinct propagator pairs. Before, it showed whichever edge was drawn last.
+
 ### Changed: Phase J skips identically-zero work (numbers unchanged)
 
 Phase J no longer builds or integrates two kinds of work whose result is
@@ -740,3 +915,30 @@ Developer-facing changes (values do not change):
   reach `scipy.nquad` are compared at 1e−8 relative and without their
   route counters, because other diagram representatives take other
   quadrature routes.
+- Tests no longer pick a diagram by its position in a list.
+  `tests/_diagram_order.py` selects by structure (`_pick_live`) and breaks
+  ties by `diagram_signature`. The `shuffle_diagram_order` fixture serves one
+  test's diagram lists in a shuffled order: the prediagram records and, for
+  each loop order, the typed diagrams with their multiplicities, so the
+  diagrams of one prediagram are reordered among themselves too.
+  `DAEDALUS_TEST_DIAGRAM_ORDER=shuffle` does so for a whole run (`reverse`
+  reverses each loop order's typed diagrams). This is a probe, not a proof:
+  one permutation can leave a positional pick in place.
+  `tests/test_prediagram_cache.py`, which pins the exact record order, opts
+  out.
+- `test_bessel_two_c_line_bubble_matches_grid` (slow) is a strict expected
+  failure: the `bessel` integrator misses the `grid` value on the KPZ
+  two-correlation-line bubble. The test records the measured values.
+- `test_bessel_matches_grid_at_unequal_external_times` is a strict expected
+  failure that records the `bessel` bias at τ ≠ 0.
+- `test_temporal_streamed_totals_match_eager_on_a_fallback_model` (slow)
+  records the gap between streamed and eager records on each model that
+  reaches `scipy.nquad` (`single_population_spike_reset_test` per-diagram
+  and grouped, `single_population_quad_exp_test`; measured with the
+  fallback of commit 16b5564), as one strict expected failure per case; a
+  gap above 1e−6 relative fails a case outright. It gates
+  `TEMPORAL_CACHE_OFF_STREAMS`: run it after any change to the Phase J
+  fallback, and flip the flag only when every case passes.
+- The tests that need the Sage backend to re-derive the shipped
+  certificates byte for byte skip on an installation whose canonical
+  labelling does not (for example, Sage without bliss).
