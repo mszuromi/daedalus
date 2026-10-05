@@ -681,6 +681,11 @@ def vertex_symbol_map(diagrams, symbol_map=None, keyed=False):
     such canonical name, so it keeps ``v_1, v_2, ...``, numbered over the
     distinct interaction factors only (sources do not consume a ``v``).
 
+    The numbering is a function of the SET of factors only: interactions are
+    numbered, and colliding sources superscripted, in sorted order of their
+    expressions, so the order of ``diagrams`` and the labelling of each
+    diagram do not matter.
+
     ``keyed=True`` keys the result by ``_factor_key`` instead of by the
     expression, which keeps a source and an interaction apart even if their
     coefficients print identically.  The default expression-keyed form is
@@ -704,6 +709,14 @@ def vertex_symbol_map(diagrams, symbol_map=None, keyed=False):
             if key not in seen:
                 seen.add(key)
                 entries.append((key, tex, vtype))
+    # Number the factors in a canonical order -- by kind, then (sources) by
+    # leg count, then by expression -- not in order of first appearance.
+    # The same diagram set arrives in different list orders, with different
+    # labelled representatives, depending on where its prediagrams came from
+    # (a cache file, the eager or the streaming enumerator); numbered by
+    # first appearance, ``v_1`` named a different factor in each.  The keys
+    # are distinct, and the kind comes first, so an int never meets a str.
+    entries.sort(key=lambda e: e[0])
 
     # A source's name is fixed by its leg count, so two DIFFERENT source
     # factors of the same order would both want the same name.  Only then --

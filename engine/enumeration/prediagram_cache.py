@@ -41,6 +41,25 @@ shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl
     backends, which moves totals by the same last bit that the v1/v2 switch
     does (below).
 
+streamed (``load_prediagrams(..., use_cache=False)``, the default there)
+    No file at all: the certs are streamed in memory and rebuilt exactly as a
+    v2 load would rebuild them, so the records, their labels and their order
+    are those of a v2 file written by the same certificate backend.  The
+    spatial path (``build_pipeline_records``, which never uses the cache)
+    gets these records.  The TEMPORAL compute path does not, yet: with
+    ``use_cache=False`` it still gets the eager enumerator's records verbatim
+    (``stream=False``, see :data:`TEMPORAL_CACHE_OFF_STREAMS` for why).
+    ``DAEDALUS_PREDIAGRAM_EAGER`` overrides both defaults (:data:`_EAGER_ENV`).
+
+    The shipped files hold Sage-backend certs written on a Sage install with
+    the optional bliss package.  Where the compiled 'fast' backend is active
+    (the default whenever the extension builds), streamed records and a fresh
+    clone's cache-on records are therefore different representatives of the
+    same classes, in a different order.  With the Sage backend
+    (``DAEDALUS_FASTENUM=0`` or ``DAEDALUS_CERT_BACKEND=sage``) on a Sage
+    install that has bliss, they are identical; without bliss they differ
+    again (the portability caveat above).
+
 Why the record rebuild is not a verbatim replay of v1
 -----------------------------------------------------
 A certificate is an isomorphism-class representative: it stores nauty's
@@ -94,6 +113,23 @@ So switching a cell from v1 to v2 is equivalent to relabelling its leaves, and
 costs the same last bit that relabelling costs.  Exact bit-identity with a v1
 file is not attainable from a certificate --- the labelling a certificate
 forgets is precisely the labelling that fixes the rounding.
+
+That bound holds where every integration region is evaluated analytically.
+A region that falls back to ``scipy.nquad`` is integrated only to the
+fallback's tolerance, and another representative can send other regions
+there, so such a total moves by the fallback's error instead.  Measured with
+the ``scipy.nquad`` fallback at its default tolerance as it stood at commit
+16b5564 (any change to the fallback changes these numbers), on
+``single_population_spike_reset_test``, k=2, ell=1: fast-backend streamed
+records vs the eager records, or vs the (Sage-backend) shipped records, move
+the one-loop term by up to 1.0e-10 absolute and ``C_tau`` by up to 3.6e-7
+relative; with a tight fallback tolerance the representatives agree to
+1.7e-15 absolute.  The same mechanism separates cache-on and cache-off runs
+whenever their records come from different sources (the eager enumerator
+and the shipped files already took different routes for
+``single_population_quad_exp_test``: 8.0e-11 relative in ``C_tau``).  This
+is why the temporal path keeps the eager records for ``use_cache=False``
+(:data:`TEMPORAL_CACHE_OFF_STREAMS`).
 
 Not addressed here: ``load_prediagrams`` still materialises every record, so
 the v2 win is disk and the ability to STORE a cell like (6,2) at all; making
@@ -183,6 +219,47 @@ V2_STAGE = 'prediagrams_v2'
 _FORMAT_ENV = 'DAEDALUS_PREDIAGRAM_FORMAT'
 _PROCS_ENV = 'DAEDALUS_PREDIAGRAM_PROCS'
 
+#: Source of ``load_prediagrams(use_cache=False)`` for every caller:
+#:   unset or empty   -- each caller's ``stream`` argument decides (the
+#:                       spatial path streams; the temporal path passes
+#:                       :data:`TEMPORAL_CACHE_OFF_STREAMS`);
+#:   1/true/yes/on    -- the EAGER enumerator's records verbatim (source
+#:                       ``'eager'``): rollback and A/B;
+#:   0/false/no/off   -- the streamed records (source ``'streamed'``), the
+#:                       temporal path included.
+#: Any other value raises ``ValueError``.
+_EAGER_ENV = 'DAEDALUS_PREDIAGRAM_EAGER'
+
+#: Whether the TEMPORAL compute path (``api.compute.compute_cumulants``)
+#: streams its ``use_cache=False`` prediagrams.  False: it keeps the eager
+#: enumerator's records, as before streaming existed, so its numbers do not
+#: move.  Streamed records are other labelled representatives of the same
+#: classes, and Phase J's ``scipy.nquad`` fallback is not
+#: representative-independent: on models whose regions reach it, another
+#: representative sends other regions there and the total moves by the
+#: fallback's error.  Measured in process with the fallback of commit
+#: 16b5564 (default ``scipy.nquad`` tolerance; a change to the fallback
+#: changes these numbers), ``single_population_spike_reset_test`` k=2,
+#: ell=1: 20 fallback calls instead of 40, ``C_tau`` 3.6e-7 relative (one-loop term 2.1e-6); with a
+#: tight fallback tolerance the two agree to 1.7e-15 absolute.  Where every
+#: region is analytic the switch moves totals by rounding only (``ou_quartic``
+#: k=2, ell<=3: 4.6e-16).  Flip this once the fallback agrees across
+#: representatives to rtol 1e-13 on every model that reaches it.  The gate
+#: is the slow parametrized strict xfail
+#: ``tests/test_prediagram_cache.py::test_temporal_streamed_totals_match_eager_on_a_fallback_model``
+#: (``single_population_spike_reset_test`` per-diagram and grouped,
+#: ``single_population_quad_exp_test``; about 7 min): run it
+#: (``pytest -m slow ... -k fallback_model``) after any change to the
+#: Phase J fallback, and flip only when EVERY case fails as an unexpected
+#: pass.  The cases do not move together: a tighter fallback tolerance
+#: brings the spike-reset totals to rounding while the quad-exp ones still
+#: differ (the ``quad_exp`` agreement quoted in CHANGELOG is 4.4e-14
+#: absolute, about 1e-11 relative).
+TEMPORAL_CACHE_OFF_STREAMS = False
+
+_TRUE = ('1', 'true', 'yes', 'on')
+_FALSE = ('0', 'false', 'no', 'off')
+
 
 def cache_format():
     """Resolve the on-disk format preference; see :data:`_FORMAT_ENV`."""
@@ -195,6 +272,61 @@ def cache_format():
 
 def _enum_procs():
     return max(1, int(os.environ.get(_PROCS_ENV, '1')))
+
+
+def _cache_off_source(stream):
+    """``'streamed'`` or ``'eager'``: the source of a ``use_cache=False``
+    load whose caller asked for ``stream``, after :data:`_EAGER_ENV`."""
+    raw = os.environ.get(_EAGER_ENV, '')
+    val = raw.strip().lower()
+    if val in _TRUE:
+        return 'eager'
+    if val in _FALSE:
+        return 'streamed'
+    if val:
+        raise ValueError(
+            f'{_EAGER_ENV}={raw!r}: expected one of '
+            f'{", ".join(_TRUE + _FALSE)}, or unset')
+    return 'streamed' if stream else 'eager'
+
+
+# ── In-process memo of streamed cert sets ───────────────────────────────────
+#: ``use_cache=False`` cert sets already streamed in this process, keyed by
+#: the cell and every enumeration setting that can change the cert BYTES.
+#: A streamed call pays a fixed ~5-90 ms at small cells (one external tree
+#: generator process per tree order), which callers that enumerate the same
+#: cell many times per process would otherwise pay each time.  Certs are
+#: immutable bytes; the records are rebuilt on every call, so no caller ever
+#: shares a mutable graph.  Memory only, never disk; bounded below.
+_STREAMED_MEMO = {}
+_STREAMED_MEMO_MAX_CELLS = 32
+_STREAMED_MEMO_MAX_CERTS = 200_000          # cells larger than this are not kept
+
+
+def _streamed_memo_key(k, ell):
+    import engine.enumeration.loop_diagram_enumeration as _L
+    return (int(k), int(ell), _L.CERT_BACKEND, _L.ORIENTATION_CHECKER,
+            _L.EDGE_GENERATOR)
+
+
+def clear_streamed_memo():
+    """Forget every memoised ``use_cache=False`` cert set."""
+    _STREAMED_MEMO.clear()
+
+
+def _streamed_certs(k, ell, verbose=False):
+    """The packed-cert set of ``(k, ell)`` from :func:`stream_prediagram_certs`,
+    memoised in process (see :data:`_STREAMED_MEMO`)."""
+    key = _streamed_memo_key(k, ell)
+    certs = _STREAMED_MEMO.get(key)
+    if certs is None:
+        certs = frozenset(stream_prediagram_certs(
+            k, ell, n_procs=_enum_procs(), verbose=verbose))
+        if len(certs) <= _STREAMED_MEMO_MAX_CERTS:
+            while len(_STREAMED_MEMO) >= _STREAMED_MEMO_MAX_CELLS:
+                _STREAMED_MEMO.pop(next(iter(_STREAMED_MEMO)))
+            _STREAMED_MEMO[key] = certs
+    return certs
 
 
 # ── Paths ───────────────────────────────────────────────────────────────────
@@ -293,7 +425,8 @@ def save_v2_certs(root, k, ell, certs):
     return path
 
 
-def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False):
+def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
+                     stream=True):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
 
     Lookup order is local v2, then local v1, then the shipped v2 file, then
@@ -311,23 +444,49 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False):
     (it is what the A/B tests use); ``DAEDALUS_PREDIAGRAM_PROCS`` sets the
     worker count for a compute miss (default 1).
 
-    ``use_cache=False`` means "do not involve the cache at all", and the cert
-    round trip is a cache-format concern: that path therefore runs the EAGER
-    enumerator and returns its records verbatim, exactly as before this module
-    existed.  It matters -- ``build_pipeline_records`` (the spatial entry
-    point) always passes ``use_cache=False``, and downstream code indexes the
-    resulting diagram list positionally, so handing it canonically-relabelled
-    records in a different order picks out a different diagram.
+    ``use_cache=False`` means "do not involve the cache at all": nothing is
+    read from or written to disk (no local file, no shipped file).  With
+    ``stream=True`` (the default) the records are computed by
+    :func:`stream_prediagram_certs` (the compiled streaming enumerator when
+    it is available, with ``DAEDALUS_PREDIAGRAM_PROCS`` workers; the fork
+    guard in ``_map_unordered`` keeps a Jupyter kernel on macOS serial) and
+    rebuilt in memory by :func:`records_from_certs`, source ``'streamed'``.
+    The cert set is memoised in process (:func:`_streamed_certs`; certs
+    only, the records are rebuilt on every call).  The records are exactly
+    those a v2 file written by the same certificate backend would give: same
+    representatives, same labels, same order (sorted by packed cert).  With
+    ``stream=False`` they are the eager enumerator's records verbatim, in
+    generation order, source ``'eager'``: what this path returned before
+    streaming existed, and what the temporal compute path still asks for
+    (:data:`TEMPORAL_CACHE_OFF_STREAMS`).  ``DAEDALUS_PREDIAGRAM_EAGER``
+    overrides ``stream`` either way (:data:`_EAGER_ENV`).  ``stream`` is
+    ignored when ``use_cache`` is true.
+
+    Streamed records are NOT in general the records a cache-on run or the
+    eager enumerator uses.  The eager enumerator, the shipped files
+    (Sage-backend certs) and local files written under another backend hold
+    other representatives of the same classes, in another order.  Where
+    every integration region is analytic the totals then differ by rounding;
+    where regions fall back to ``scipy.nquad`` they differ by the fallback's
+    error (module docstring: 3.6e-7 relative in ``C_tau`` for
+    ``single_population_spike_reset_test``, k=2, ell=1, streamed vs eager,
+    with the fallback of commit 16b5564).
+    The order also depends on the source and the certificate backend, so no
+    consumer may rely on list position (pick diagrams by structure, e.g.
+    ``diagram_signature``).
 
     Returns
     -------
     records : list of (D, G, leaves, internal)
-    source : {'v2', 'v1', 'shipped', 'computed', 'eager'}
+    source : {'v2', 'v1', 'shipped', 'computed', 'streamed', 'eager'}
     """
     from sage.all import load as sage_load
 
     if not use_cache:
-        return list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]), 'eager'
+        if _cache_off_source(stream) == 'eager':
+            return (list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]),
+                    'eager')
+        return records_from_certs(_streamed_certs(k, ell, verbose)), 'streamed'
 
     fmt = cache_format()
 

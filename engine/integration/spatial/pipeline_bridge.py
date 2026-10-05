@@ -218,6 +218,11 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     ``header`` is the top verbose line's prefix (``None`` suppresses it so a
     caller can print its own staged ``[N/7]`` header); the per-``ell`` detail
     lines always print when ``verbose``.
+
+    The prediagrams come from the in-memory streaming enumerator
+    (``stream_prediagrams=True``; ``DAEDALUS_PREDIAGRAM_EAGER=1`` restores
+    the eager one), never from a cache file.  The record order and labelling
+    are that source's, so consumers pick records by structure, not position.
     """
     from engine.core.vertices import extract_vertex_types, extract_source_types
     from engine.diagrams.type_assignment import build_field_index_map
@@ -239,7 +244,8 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     unique_by_ell, _, _ = enumerate_unique_diagrams(
         ft, model, k=k, max_ell=max_ell, external_fields=external_fields,
         G_ft=prop['G_ft'], resp_idx=resp_idx, phys_idx=phys_idx,
-        vtypes=vtypes, stypes=stypes, use_cache=False, verbose=False)
+        vtypes=vtypes, stypes=stypes, use_cache=False,
+        stream_prediagrams=True, verbose=False)
     by_ell = {}
     for ell in unique_by_ell:
         recs = []
@@ -1071,6 +1077,20 @@ def _prefactor_is_live(pre, num_params, tol=1e-12):
     except Exception:
         return True
 
+def _mc_class_seed(td, base=1234):
+    """Monte-Carlo seed of one diagram for the ``mc`` / ``bessel`` backends.
+
+    A function of the diagram's isomorphism class alone (its
+    ``diagram_signature``, a complete invariant), never of its position in
+    the diagram list: the list order depends on where the prediagrams came
+    from (cache file, in-memory streaming, eager enumerator), and a
+    position-derived seed made the estimate depend on it.  ``crc32`` keeps
+    the seed the same in every process (Python's ``hash`` is salted)."""
+    import zlib
+    from engine.diagrams.symmetry import diagram_signature
+    return base + zlib.crc32(repr(diagram_signature(td)).encode())
+
+
 def _live_bubbles(records, num_params):
     """The records that are LIVE momentum-dependent bubbles."""
     return [r for r in records
@@ -1625,7 +1645,7 @@ def compute_spatial_correlator_generic(
             # exact symbolic is_zero test (matching the drift-guard pattern)
             # instead of an absolute float threshold that would drop a
             # legitimately tiny coupling as "zero".
-            descrs.append((diagram_to_cstack(td), pv, ff, ell, pre_num))
+            descrs.append((diagram_to_cstack(td), pv, ff, ell, pre_num, td))
     if not descrs:
         raise SpatialPropagatorError(
             f'no loop diagrams were enumerated at max_ell={max_ell}.  This is the '
@@ -1634,8 +1654,9 @@ def compute_spatial_correlator_generic(
             f'IS the tree level — request max_ell=0.  (If this model does have '
             f'interaction vertices, an empty enumeration would instead point to a '
             f'bug worth reporting.)')
-    live = [(dd, pv, ff, el) for dd, pv, ff, el, pn in descrs
-            if not SR(pn).is_zero()]
+    live_td = [(dd, pv, ff, el, td) for dd, pv, ff, el, pn, td in descrs
+               if not SR(pn).is_zero()]
+    live = [rec[:4] for rec in live_td]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
     if verbose:
@@ -1686,12 +1707,14 @@ def compute_spatial_correlator_generic(
     if _integrator == 'mc' and verbose:
         _msg = ('plain vertices' if all(rec[2] is None for rec in live_g)
                 else 'WARNING — DERIVATIVE vertices are BIASED under MC (det M→0 '
-                      'singularity → infinite variance); use SPATIAL_INTEGRATOR=bessel')
+                      'singularity → infinite variance); use SPATIAL_INTEGRATOR=bessel '
+                      'at τ=0')
         print(f'        [MC] Monte-Carlo integrator, N={_mc_n:.0e} ({_msg})')
     if _integrator == 'bessel' and verbose:
         print(f'        [BESSEL] radial-Bessel-K × angular-MC integrator, N={_mc_n:.0e} '
               '(memory-safe; regularizes the det M→0 singularity → handles DERIVATIVE '
-              'vertices at ℓ≥2; x=0 equal-point is UV-sensitive)')
+              'vertices at ℓ≥2; x=0 equal-point is UV-sensitive; exact at τ=0 '
+              'ONLY — biased at τ≠0, see BesselUnequalTimesWarning)')
 
     # ── MEMORY GUARD ──────────────────────────────────────────────────────────
     # A chamber's causal-time × Schwinger quadrature is P = n_t^{n_V}·n_s^{n_C}
@@ -1755,12 +1778,17 @@ def compute_spatial_correlator_generic(
                      else 'plain + d=1 derivative vertices')
             print(f'        analytic heat-kernel IFT ({_kind}) — '
                   'no q-grid / no FT (exact)')
+        # mc / bessel: each diagram's seed comes from its isomorphism class
+        # (``_mc_class_seed``), so the estimate does not depend on the list
+        # order (grid ignores the seed and never pays for the signature).
+        _seeds = ([_mc_class_seed(rec[4]) for rec in live_td]
+                  if _integrator in ('mc', 'bessel') else [0] * len(live_g))
         for _di, (dd, pv, ff, el, nt, ns) in enumerate(live_g):
             for it, tau in enumerate(taus):
                 dCx_by_ell[el][it, :] += diagram_correlator_x(
                     dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
                     n_t=nt, n_s=ns, formfactor=ff,
-                    method=_integrator, mc_n=_mc_n, mc_seed=1234 + _di)
+                    method=_integrator, mc_n=_mc_n, mc_seed=_seeds[_di])
     else:
         # ── NUMERICAL q→x FT (derivative-vertex form factors; Phase 2 will do
         #    these analytically via the joint (ℓ,q) Gaussian) ──

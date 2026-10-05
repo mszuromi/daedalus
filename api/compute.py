@@ -34,6 +34,7 @@ from api._mean_field_dae import (
     linear_stability,
 )
 from api._diagrams  import enumerate_unique_diagrams
+from engine.enumeration import prediagram_cache as _pd_cache
 from api.save       import _phase_j_convention
 from api.access     import (
     MeanField, Parameters, normalize_external_fields,
@@ -245,7 +246,17 @@ def compute_cumulants(
         and unique typed diagrams (per ``(model, taylor, k, ell, ext_fields)``).
         Both caches live as sibling files under ``saved_models/<model>/``
         (e.g. ``saved_models/<model>/expand_taylor<N>.sobj``), one per
-        Taylor order.
+        Taylor order.  With ``False`` no cache file is read or written, and
+        a temporal run takes its prediagrams from the eager enumerator, as
+        before the streaming enumerator existed (``DAEDALUS_PREDIAGRAM_EAGER=0``
+        selects the faster streaming one; see
+        ``engine.enumeration.prediagram_cache.TEMPORAL_CACHE_OFF_STREAMS``).
+        Cache on and cache off can use different labelled representatives of
+        the same diagrams (in a different ``result['diagrams']`` order):
+        totals then agree to rounding, or to the ``scipy.nquad`` fallback's
+        tolerance on models whose regions fall back to it.  A spatial run
+        never uses the prediagram cache; it streams its prediagrams in
+        memory whatever this says.
     parallel : bool, default True
         Enable fork-based multiprocessing for the two heavy stages
         that support it: per-prediagram type assignment in step [5]
@@ -754,6 +765,9 @@ def compute_cumulants(
         vtypes          = vtypes,
         stypes          = stypes,
         use_cache       = use_cache,
+        # Cache off: the eager records, not the streamed ones, until Phase
+        # J's nquad fallback is representative-independent (see the flag).
+        stream_prediagrams = _pd_cache.TEMPORAL_CACHE_OFF_STREAMS,
         parallel        = parallel,
         n_workers       = n_workers,
         verbose         = verbose,

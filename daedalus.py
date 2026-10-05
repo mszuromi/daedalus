@@ -2153,7 +2153,13 @@ def export_tikz(result, *, index=None, path=None, standalone=None,
         prediagram.
     index : int or None
         ``None`` (default) draws every diagram as a panel array; an integer
-        draws just that one.
+        draws just that one.  It is a position in the records' own order
+        (after the ``ell`` filter), and so are the panels of the array.  For
+        a result, that is the order of ``result['diagrams']``, which depends
+        on where the prediagrams came from (a cache file, the eager
+        enumerator of ``use_cache=False``, or the in-memory streaming one
+        under ``DAEDALUS_PREDIAGRAM_EAGER=0``), so the same index can name
+        another diagram in another run.
     path : str or None
         Write the source here as well as returning it.  A ``.tex`` path
         defaults ``standalone=True`` so the file compiles on its own.

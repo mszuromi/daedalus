@@ -35,6 +35,24 @@ from engine.enumeration import prediagram_cache as pdc           # noqa: E402
 CACHE = 'saved_prediagrams'
 
 
+@pytest.fixture(autouse=True, scope='module')
+def _exact_record_order():
+    """This module pins ``load_prediagrams``' exact record order and labels,
+    so it always runs against the real loader and typed enumeration: a
+    whole-run reordering with ``DAEDALUS_TEST_DIAGRAM_ORDER``
+    (``tests/conftest.py``) is undone here for the module's duration."""
+    from tests._diagram_order import unwrapped_order_patches
+    undo = unwrapped_order_patches()
+    saved = [(mod, name, getattr(mod, name)) for mod, name, _ in undo]
+    for mod, name, value in undo:
+        setattr(mod, name, value)
+    try:
+        yield
+    finally:
+        for mod, name, value in saved:
+            setattr(mod, name, value)
+
+
 def _v1_root(k, ell, tmp_dir):
     """A cache root holding a v1 file for ``(k, ell)``: the local one when it
     exists, else one built into ``tmp_dir`` from the eager enumerator (the
@@ -136,26 +154,414 @@ def test_lookup_order_is_v2_then_v1_then_shipped_then_compute(tmp_path, fmt_auto
     assert pdc.load_prediagrams(root, 2, 1)[1] == 'shipped'
 
 
-def test_use_cache_false_uses_the_eager_path_and_touches_no_disk(tmp_path,
-                                                                 fmt_auto):
-    """Opting out of the cache must opt out of the cert round trip too.
+def _record_key(rec):
+    """Everything a record carries, label-exact: the labelled edges of D, the
+    undirected multigraph G, and the leaf / internal vertex lists."""
+    D, G, leaves, internal = rec
+    return (sorted(D.vertices()), sorted(D.edges()),
+            sorted(G.edges(labels=False)), list(leaves), list(internal))
 
-    ``build_pipeline_records`` (spatial) calls with ``use_cache=False`` and
-    then indexes the diagram list positionally, so re-ordering or
-    canonically relabelling these records changes WHICH diagram it picks --
-    it broke ``test_full_integrator`` when this path streamed instead.
-    """
+
+@pytest.fixture
+def no_eager_knob(monkeypatch):
+    monkeypatch.delenv(pdc._EAGER_ENV, raising=False)
+
+
+def test_use_cache_false_streams_in_memory_and_touches_no_disk(
+        tmp_path, fmt_auto, no_eager_knob, monkeypatch):
+    """Opting out of the cache opts out of every file: the records are
+    streamed and rebuilt in memory (source 'streamed'), exactly as a v2 file
+    of the same cert backend would rebuild them, and nothing is read or
+    written -- not the local cache, not the shipped files."""
+    def _no_disk(*a, **kw):
+        raise AssertionError('use_cache=False touched a prediagram file')
+    for name in ('save_v2_certs', 'load_v2_certs', 'load_shipped_certs'):
+        monkeypatch.setattr(pdc, name, _no_disk)
+
     root = str(tmp_path)
     records, source = pdc.load_prediagrams(root, 2, 1, use_cache=False)
-    assert source == 'eager'
-    assert not pdc.v2_exists(root, 2, 1)
+    assert source == 'streamed'
     assert len(records) == 9
-    # Verbatim eager output: same objects, same order, same labels.
+    assert not pdc.v2_exists(root, 2, 1) and not pdc.v1_exists(root, 2, 1)
+    assert os.listdir(root) == []
+    want = pdc.records_from_certs(L.stream_prediagram_certs(2, 1, n_procs=1))
+    assert [_record_key(r) for r in records] == [_record_key(r) for r in want]
+
+
+def test_use_cache_false_eager_knob_is_verbatim(tmp_path, fmt_auto,
+                                               monkeypatch):
+    """``stream=False``, or ``DAEDALUS_PREDIAGRAM_EAGER=1`` (the rollback
+    knob) whatever ``stream`` says, gives the eager enumerator's records
+    verbatim: same order, same labels, no disk."""
     from engine.enumeration.loop_diagram_enumeration import enumerate_all
-    eager = enumerate_all(k=2, ell=1, verbose=False)[2]
-    assert [sorted(r[0].edges()) for r in records] == \
-           [sorted(r[0].edges()) for r in eager]
-    assert [list(r[2]) for r in records] == [list(r[2]) for r in eager]
+    eager = [_record_key(r) for r in enumerate_all(k=2, ell=1,
+                                                   verbose=False)[2]]
+    root = str(tmp_path)
+    monkeypatch.delenv(pdc._EAGER_ENV, raising=False)
+    for stream, env in ((False, None), (True, '1'), (False, 'yes')):
+        if env is not None:
+            monkeypatch.setenv(pdc._EAGER_ENV, env)
+        records, source = pdc.load_prediagrams(root, 2, 1, use_cache=False,
+                                               stream=stream)
+        assert source == 'eager', (stream, env)
+        assert [_record_key(r) for r in records] == eager
+    assert not pdc.v2_exists(root, 2, 1) and os.listdir(root) == []
+    # the knob leaves the cache-on lookup alone ...
+    assert pdc.load_prediagrams(root, 2, 1)[1] == 'shipped'
+    assert pdc.load_prediagrams(str(tmp_path / 'b'), 2, 1,
+                                stream=False)[1] == 'shipped'
+
+
+@pytest.mark.parametrize('env,stream,want', [
+    (None, True, 'streamed'), (None, False, 'eager'),
+    ('1', True, 'eager'), ('on', False, 'eager'),
+    ('0', False, 'streamed'), (' No ', False, 'streamed'),
+    ('', False, 'eager'), ('off', True, 'streamed'),
+])
+def test_cache_off_source_resolution(env, stream, want, monkeypatch):
+    """``DAEDALUS_PREDIAGRAM_EAGER``: unset or empty defers to the caller's
+    ``stream``; a true value forces eager and a false one forces streaming
+    for every caller."""
+    if env is None:
+        monkeypatch.delenv(pdc._EAGER_ENV, raising=False)
+    else:
+        monkeypatch.setenv(pdc._EAGER_ENV, env)
+    assert pdc._cache_off_source(stream) == want
+
+
+def test_cache_off_source_rejects_an_unknown_value(tmp_path, monkeypatch,
+                                                    fmt_auto):
+    monkeypatch.setenv(pdc._EAGER_ENV, 'sometimes')
+    with pytest.raises(ValueError, match='DAEDALUS_PREDIAGRAM_EAGER'):
+        pdc.load_prediagrams(str(tmp_path), 2, 1, use_cache=False)
+    # a cache-on load never reads the knob
+    assert pdc.load_prediagrams(str(tmp_path), 2, 1)[1] == 'shipped'
+
+
+def test_use_cache_false_never_forks_inside_a_notebook_kernel(
+        tmp_path, monkeypatch, no_eager_knob):
+    """With ``DAEDALUS_PREDIAGRAM_PROCS`` > 1 the streamed path asks for
+    workers; inside a macOS Jupyter kernel the existing fork guard must turn
+    that into a warning and a serial run (forking there has crashed the
+    machine).  The kernel is simulated; any process pool is a failure."""
+    import concurrent.futures
+
+    import engine.fork_safety as fs
+
+    def _no_pool(*a, **kw):
+        raise AssertionError('a process pool was started in a notebook kernel')
+    monkeypatch.setattr(fs, 'fork_unsafe_in_notebook', lambda *a, **kw: True)
+    monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _no_pool)
+    monkeypatch.setenv(pdc._PROCS_ENV, '4')
+    monkeypatch.setattr(pdc, '_STREAMED_MEMO', {})      # force a real stream
+    with pytest.warns(UserWarning, match='fork'):
+        records, source = pdc.load_prediagrams(str(tmp_path), 2, 1,
+                                               use_cache=False)
+    assert source == 'streamed' and len(records) == 9
+    want = pdc.records_from_certs(L.stream_prediagram_certs(2, 1, n_procs=1))
+    assert [_record_key(r) for r in records] == [_record_key(r) for r in want]
+
+
+def test_use_cache_false_memoises_the_certs_not_the_records(
+        tmp_path, monkeypatch, no_eager_knob):
+    """A cell is streamed once per process and enumeration setting; every
+    call still gets freshly rebuilt records (no shared mutable graphs), and
+    another enumeration setting is another memo entry.  The setting varied
+    is the orientation checker, which every installation can run; the
+    certificate backend is varied too where the compiled extension exists
+    (without it only the 'sage' backend runs)."""
+    from engine.enumeration import fastenum
+    calls = []
+    real = pdc.stream_prediagram_certs
+
+    def counting(k, ell, **kw):
+        calls.append((k, ell, L.CERT_BACKEND, L.ORIENTATION_CHECKER))
+        return real(k, ell, **kw)
+    monkeypatch.setattr(pdc, 'stream_prediagram_certs', counting)
+    monkeypatch.setattr(pdc, '_STREAMED_MEMO', {})
+    root = str(tmp_path)
+    a, _ = pdc.load_prediagrams(root, 2, 1, use_cache=False)
+    b, _ = pdc.load_prediagrams(root, 2, 1, use_cache=False)
+    assert len(calls) == 1
+    assert [_record_key(r) for r in a] == [_record_key(r) for r in b]
+    assert all(ra[0] is not rb[0] for ra, rb in zip(a, b))
+    monkeypatch.setattr(L, 'ORIENTATION_CHECKER',
+                        'sage' if L.ORIENTATION_CHECKER == 'integer'
+                        else 'integer')
+    c, _ = pdc.load_prediagrams(root, 2, 1, use_cache=False)
+    assert len(calls) == 2
+    assert [_record_key(r) for r in c] == [_record_key(r) for r in a]
+    pdc.load_prediagrams(root, 2, 1, use_cache=False)
+    assert len(calls) == 2
+    if fastenum.available:
+        monkeypatch.setattr(L, 'CERT_BACKEND',
+                            'sage' if L.CERT_BACKEND == 'fast' else 'fast')
+        pdc.load_prediagrams(root, 2, 1, use_cache=False)
+        assert len(calls) == 3
+    assert len(pdc._STREAMED_MEMO) == len(calls)
+    pdc.clear_streamed_memo()
+    assert pdc._STREAMED_MEMO == {}
+
+
+def _sage_certs_match_the_shipped_writer(k, ell):
+    """True when THIS installation's Sage canonical labelling re-derives the
+    shipped certs byte for byte.  The shipped files were written by the Sage
+    backend on an install with the optional bliss package; without bliss
+    (or with any other labelling algorithm) Sage canonicalises simple graphs
+    to other bytes for the same class."""
+    shipped = pdc.load_shipped_certs(k, ell)
+    return pdc.recanonicalize(shipped) == set(shipped)
+
+
+@pytest.mark.parametrize('k,ell', [(2, 1), (3, 1)])
+def test_sage_backend_streams_exactly_the_shipped_records(
+        k, ell, tmp_path, monkeypatch, no_eager_knob):
+    """The shipped files hold Sage-backend certs written with bliss.  Under
+    that backend (``DAEDALUS_FASTENUM=0``, or ``DAEDALUS_CERT_BACKEND=sage``)
+    on a Sage install with bliss, the streamed records are therefore exactly
+    the records a fresh clone's cache-on run loads; under the compiled
+    'fast' backend, or without bliss, they are other representatives of the
+    same classes (``test_shipped_prediagrams`` checks the classes).  Skipped
+    when this install's Sage labelling does not re-derive the shipped
+    bytes."""
+    monkeypatch.setattr(L, 'CERT_BACKEND', 'sage')
+    monkeypatch.setattr(pdc, '_STREAMED_MEMO', {})
+    if not _sage_certs_match_the_shipped_writer(k, ell):
+        pytest.skip('this Sage canonical labelling is not the one that wrote '
+                    'the shipped files (no bliss?)')
+    streamed, src = pdc.load_prediagrams(str(tmp_path), k, ell,
+                                         use_cache=False)
+    shipped = pdc.records_from_certs(pdc.load_shipped_certs(k, ell))
+    assert src == 'streamed'
+    assert [_record_key(r) for r in streamed] == \
+           [_record_key(r) for r in shipped]
+
+
+@pytest.mark.parametrize('k,ell', [
+    (2, 0), (2, 1), (2, 2), (3, 1), (4, 0), (4, 1), (1, 2),
+    pytest.param(2, 3, marks=pytest.mark.slow),
+    pytest.param(3, 2, marks=pytest.mark.slow),
+    pytest.param(1, 3, marks=pytest.mark.slow),
+])
+def test_streamed_records_equal_the_canonicalised_eager_records(
+        k, ell, tmp_path, no_eager_knob):
+    """The streamed records ARE the eager records sent through the cert round
+    trip -- same set, same representatives, same labels, same order -- so the
+    switch changes only which labelled member of each class is used."""
+    records, source = pdc.load_prediagrams(str(tmp_path), k, ell,
+                                           use_cache=False)
+    assert source == 'streamed'
+    eager = list(pdc._enumerate_eager(k=k, ell=ell, verbose=False)[2])
+    canon = pdc.records_from_certs(pdc.certs_from_records(eager))
+    assert len(records) == len(eager) == len(canon)
+    assert [_record_key(r) for r in records] == [_record_key(r) for r in canon]
+
+
+@pytest.mark.parametrize('k,ell', [(2, 1), (2, 2), (3, 1)])
+def test_streamed_records_equal_a_computed_v2_load(k, ell, tmp_path,
+                                                   monkeypatch, no_eager_knob):
+    """Cache off (streamed) and a cold cache-on v2 compute hand the pipeline
+    the SAME records: same certs, same rebuild, same order.  (The shipped
+    files are hidden so the cell is computed; they hold certs written by a
+    different canonical-labelling backend, see the module docstring.)"""
+    streamed, s1 = pdc.load_prediagrams(str(tmp_path / 'a'), k, ell,
+                                        use_cache=False)
+    monkeypatch.setenv('DAEDALUS_PREDIAGRAM_FORMAT', 'v2')
+    monkeypatch.setattr(pdc, 'shipped_exists', lambda kk, ll: False)
+    computed, s2 = pdc.load_prediagrams(str(tmp_path / 'b'), k, ell)
+    assert (s1, s2) == ('streamed', 'computed')
+    assert [_record_key(r) for r in streamed] == \
+           [_record_key(r) for r in computed]
+
+
+def _ou_quartic_curves(monkeypatch, max_ell, taus, eager):
+    """compute_cumulants for OU quartic k=2 with every cache bypassed, the
+    prediagrams served eagerly or streamed; also returns the sources seen."""
+    import importlib.util
+
+    import numpy as np
+
+    from api.compute import compute_cumulants
+
+    spec = importlib.util.spec_from_file_location(
+        'ou_quartic_model', 'models/ou_quartic.model.py')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    model = mod.build()
+    sources = set()
+    orig_load = pdc.load_prediagrams
+
+    def spy(root, k, ell, **kw):
+        recs, src = orig_load(root, k, ell, **kw)
+        sources.add(src)
+        return recs, src
+
+    with monkeypatch.context() as mp:
+        mp.setattr(pdc, 'load_prediagrams', spy)
+        # the temporal path defaults to eager (TEMPORAL_CACHE_OFF_STREAMS);
+        # set the knob both ways so the test does not depend on that default
+        mp.setenv(pdc._EAGER_ENV, '1' if eager else '0')
+        res = compute_cumulants(model, k=2, max_ell=max_ell,
+                                external_fields=[('dx', 1)] * 2,
+                                tau_grid=np.asarray(taus), use_cache=False,
+                                parallel=False, verbose=False)
+    return {ell: np.asarray(c) for ell, c in res['C_tau_by_ell'].items()}, \
+        sources
+
+
+@pytest.mark.parametrize('max_ell', [2, pytest.param(3, marks=pytest.mark.slow)])
+def test_streamed_totals_match_eager_through_compute_cumulants(max_ell,
+                                                               monkeypatch):
+    """Where every region is analytic, streaming moves totals only by
+    rounding: streamed vs eager records through the real wiring
+    (``compute_cumulants(use_cache=False)``).  Measured max relative gap at
+    max_ell=3: 4.6e-16."""
+    import numpy as np
+
+    taus = [0.0, 0.5, 1.0, 3.0]
+    s, src_s = _ou_quartic_curves(monkeypatch, max_ell, taus, eager=False)
+    e, src_e = _ou_quartic_curves(monkeypatch, max_ell, taus, eager=True)
+    assert (src_s, src_e) == ({'streamed'}, {'eager'})
+    assert sorted(s) == sorted(e) == list(range(max_ell + 1))
+    for ell in s:
+        assert np.all(np.isfinite(s[ell])) and np.any(s[ell] != 0)
+        np.testing.assert_allclose(s[ell], e[ell], rtol=1e-13, atol=1e-15)
+
+
+def _sources_seen(monkeypatch, run):
+    """The ``load_prediagrams`` sources that ``run()`` hit."""
+    seen = set()
+    orig = pdc.load_prediagrams
+
+    def spy(root, k, ell, **kw):
+        recs, src = orig(root, k, ell, **kw)
+        seen.add(src)
+        return recs, src
+    with monkeypatch.context() as mp:
+        mp.setattr(pdc, 'load_prediagrams', spy)
+        run()
+    return seen
+
+
+def _temporal_run():
+    import numpy as np
+
+    from api.compute import compute_cumulants
+    import daedalus as dd
+    model, _ = dd.load_model('ou_quartic')
+    compute_cumulants(model, k=2, max_ell=1, external_fields=[('dx', 1)] * 2,
+                      tau_grid=np.asarray([0.0, 1.0]), use_cache=False,
+                      parallel=False, verbose=False)
+
+
+def _spatial_run():
+    import numpy as np
+
+    from api.compute import compute_cumulants
+    import daedalus as dd
+    model, _ = dd.load_model('reaction_diffusion_2d')
+    compute_cumulants(model, k=2, max_ell=1,
+                      external_fields=[('dphi', 1)] * 2,
+                      parameters={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0},
+                      tau_grid=np.asarray([0.0]),
+                      chi_grid=np.asarray([0.4, 1.0]), use_cache=False,
+                      verbose=False, spatial_parallel=False)
+
+
+def test_cache_off_sources_of_the_temporal_and_spatial_paths(monkeypatch):
+    """Cache off, the temporal compute path keeps the eager records
+    (``TEMPORAL_CACHE_OFF_STREAMS`` is False: its nquad fallback is not
+    representative-independent) and the spatial path streams.
+    ``DAEDALUS_PREDIAGRAM_EAGER`` overrides both, either way."""
+    assert pdc.TEMPORAL_CACHE_OFF_STREAMS is False
+    monkeypatch.delenv(pdc._EAGER_ENV, raising=False)
+    assert _sources_seen(monkeypatch, _temporal_run) == {'eager'}
+    assert _sources_seen(monkeypatch, _spatial_run) == {'streamed'}
+    monkeypatch.setattr(pdc, 'TEMPORAL_CACHE_OFF_STREAMS', True)
+    assert _sources_seen(monkeypatch, _temporal_run) == {'streamed'}
+    monkeypatch.setattr(pdc, 'TEMPORAL_CACHE_OFF_STREAMS', False)
+    monkeypatch.setenv(pdc._EAGER_ENV, '0')
+    assert _sources_seen(monkeypatch, _temporal_run) == {'streamed'}
+    monkeypatch.setenv(pdc._EAGER_ENV, '1')
+    assert _sources_seen(monkeypatch, _spatial_run) == {'eager'}
+
+
+class _FallbackRepresentativeGap(Exception):
+    """Raised only by the gap check of the strict xfails below, so any other
+    failure of that test (a crash, a gap above the documented bound) is a
+    real failure."""
+
+
+def _representative_gap(measured):
+    return pytest.mark.xfail(
+        strict=True, raises=_FallbackRepresentativeGap, reason=(
+            'Phase J nquad fallback is representative-dependent (streamed vs '
+            'eager records, default-tolerance fallback of commit 16b5564, '
+            'measured 2026-10-04; a change to the fallback changes these '
+            f'numbers): {measured}  Flip prediagram_cache.'
+            'TEMPORAL_CACHE_OFF_STREAMS only when every case of this test '
+            'XPASSes.'))
+
+
+#: The models whose regions reach the ``scipy.nquad`` fallback, with what
+#: was measured on 2026-10-04 with the default-tolerance fallback of commit
+#: 16b5564 (a change to the fallback changes these numbers).  Every case
+#: must pass, not just one, before ``TEMPORAL_CACHE_OFF_STREAMS`` flips.
+_FALLBACK_GATE_CASES = [
+    pytest.param(
+        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), False,
+        id='spike_reset-perdiag', marks=_representative_gap(
+            'single_population_spike_reset_test k=2 ell<=1 (P_SPIKE), '
+            'tau=(0, 10): 16 vs 8 fallback calls (eager vs streamed), C_tau '
+            '3.64e-7 relative, one-loop term 2.13e-6.')),
+    pytest.param(
+        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), True,
+        id='spike_reset-grouped', marks=_representative_gap(
+            'grouped Phase J, same cell: 4 vs 2 fallback calls, C_tau '
+            '3.70e-7 relative, one-loop term 2.16e-6.')),
+    pytest.param(
+        'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0), False,
+        id='quad_exp-perdiag', marks=_representative_gap(
+            'single_population_quad_exp_test k=2 ell<=1 (P_SP), '
+            'tau=(0, 1, 5): 48 vs 36 fallback calls, C_tau 2.90e-7 '
+            'relative, one-loop term 5.29e-6 (about 400 s).')),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('model_name, params, taus, grouped',
+                         _FALLBACK_GATE_CASES)
+def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
+        model_name, params, taus, grouped, monkeypatch):
+    """The gate of ``TEMPORAL_CACHE_OFF_STREAMS``: streamed and eager records
+    give the same totals to rtol 1e-13 on the models whose regions reach the
+    ``scipy.nquad`` fallback.  Today they differ by the fallback's error
+    (strict xfails); a gap above the documented 1e-6 is a real failure.
+    Flip the flag only when every case passes unexpectedly: the cases do
+    not move together (a tighter fallback can close one gap and not
+    another)."""
+    import numpy as np
+
+    import daedalus as dd
+    from api.compute import compute_cumulants
+    from tests.tools import phase_j_zoo_baseline as zoo
+
+    model, _ = dd.load_model(model_name)
+    curves = {}
+    for env in ('1', '0'):
+        monkeypatch.setenv(pdc._EAGER_ENV, env)
+        res = compute_cumulants(
+            model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
+            parameters=getattr(zoo, params), tau_grid=np.asarray(taus),
+            use_cache=False, parallel=False, verbose=False,
+            use_grouped_phase_j=grouped)
+        curves[env] = np.asarray(res['C_tau'])
+    e, s = curves['1'], curves['0']
+    assert np.all(np.isfinite(e)) and np.all(e != 0)
+    rel = float(np.max(np.abs(s - e) / np.abs(e)))
+    assert rel <= 1e-6, f'C_tau gap {rel:.3e} above the documented bound'
+    if rel > 1e-13:
+        raise _FallbackRepresentativeGap(f'C_tau gap {rel:.3e}')
 
 
 def test_format_override_is_validated(monkeypatch):

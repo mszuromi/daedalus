@@ -454,7 +454,10 @@ def test_operator_ir_multivertex_table_and_formfactor():
     _, pidx = build_field_index_map(rvn, ft._n_tilde)
     ext = _legs_to_phys_idx([('phi', 1), ('phi', 1)], pidx)
     be = build_pipeline_records(ft, m, prop, ext, max_ell=1, verbose=False)
-    td = be[1][0][0]                             # an ell=1 diagram (bubble)
+    # an ell=1 bubble, picked by structure (not list position): the R-C
+    # bubble with a correlation line on an external leg
+    from tests._diagram_order import RC_BUBBLE_C_LEG, _pick_live
+    td, _ = _pick_live(be[1], RC_BUBBLE_C_LEG)
     comp = [{'weight': 1.0, 'n_phys': 2, 'chain': (('Lap',),), 'mode': 'composite'}]
     perl = [{'weight': 1.0, 'n_phys': 2, 'chain': (('Dx', 0),), 'mode': 'perleg'}]
     comp0 = [comp[0], {'weight': 0.0, 'n_phys': 2, 'chain': (('Dx', 0),),

@@ -87,6 +87,7 @@ def enumerate_unique_diagrams(
     cache_dir_root: str = 'saved_models',
     prediagram_cache_root: str | None = None,
     use_cache: bool = True,
+    stream_prediagrams: bool = False,
     parallel: bool = False,
     n_workers: int | None = None,
     verbose: bool = True,
@@ -120,7 +121,19 @@ def enumerate_unique_diagrams(
         (rather than at import time, so the module constant stays
         overridable).
     use_cache : bool
-        If False, always recompute and never write.
+        If False, always recompute and never write.  The prediagrams then
+        come from ``prediagram_cache.load_prediagrams(use_cache=False,
+        stream=stream_prediagrams)``.
+    stream_prediagrams : bool, default False
+        Only with ``use_cache=False``.  True: the in-memory streaming
+        enumerator (source ``'streamed'``; the spatial path asks for it);
+        False: the eager enumerator's records verbatim (source ``'eager'``,
+        what this path always returned before; the temporal compute path
+        passes ``prediagram_cache.TEMPORAL_CACHE_OFF_STREAMS``, which is
+        False).  ``DAEDALUS_PREDIAGRAM_EAGER`` overrides it.  The two
+        sources hold other labelled representatives of the same classes in
+        another order: nothing downstream may pick a diagram by its position
+        in the returned lists.
     parallel : bool, default False
         If True, fan the per-prediagram type-assignment stage across a
         fork-based ``multiprocessing.Pool`` (see
@@ -206,13 +219,14 @@ def enumerate_unique_diagrams(
         # ── Build the four stages ────────────────────────────────
         prediagrams, _pd_source = pd_format.load_prediagrams(
             prediagram_cache_root, k, ell,
-            use_cache=use_cache, verbose=False,
+            use_cache=use_cache, verbose=False, stream=stream_prediagrams,
         )
         if verbose:
             _how = {'computed': f'computed and written to '
                                 f'{prediagram_cache_root} as v2',
                     'shipped': 'loaded from the files shipped with the package',
-                    'eager': 'enumerated (cache bypassed)'}.get(
+                    'streamed': 'enumerated in memory (cache bypassed)',
+                    'eager': 'enumerated eagerly (cache bypassed)'}.get(
                 _pd_source, f'loaded from {_pd_source} in '
                             f'{prediagram_cache_root}')
             print(f'      ell={ell}: {len(prediagrams)} prediagrams {_how}')
