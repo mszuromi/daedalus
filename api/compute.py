@@ -67,6 +67,25 @@ def _ito_nudge_callable(fn, k):
     return lambda t0, t1: fn(t0, t1 if abs(t1 - t0) > 1e-12 else t0 - _ITO_EPS)
 
 
+def _phase_j_warning_scope():
+    """The scope that aggregates the Phase J hardened quadrature fallback's
+    warnings over one evaluation (``final_integral.nquad_warning_scope``:
+    one warning per model, source and loop order, with counts), or a null
+    context for an engine without it."""
+    import contextlib
+    from engine.integration.time_domain import final_integral as _fi
+    scope = getattr(_fi, 'nquad_warning_scope', None)
+    return scope() if scope is not None else contextlib.nullcontext()
+
+
+def _phase_j_scoped(fn):
+    """``fn`` with every call inside ``_phase_j_warning_scope``."""
+    def scoped(*args):
+        with _phase_j_warning_scope():
+            return fn(*args)
+    return scoped
+
+
 def _trunc(s, maxlen=200):
     s = str(s)
     return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
@@ -811,6 +830,9 @@ def compute_cumulants(
         'nf':      prop['nf'],
         'pole_vals': prop['pole_vals'],
         'C_mats':    prop['C_mats'],
+        # Identifies the model in Phase J's warnings (the hardened
+        # quadrature fallback warns once per model, source and loop order).
+        'model_name': model.get('name'),
     }
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
@@ -881,21 +903,24 @@ def compute_cumulants(
                 num_params       = num_params,
                 origin_leaf_idx  = origin_leaf_idx,
             )
-        total_C_by_ell[ell] = _ito_nudge_callable(td_result_ell['total_C'], k)
+        total_C_by_ell[ell] = _phase_j_scoped(
+            _ito_nudge_callable(td_result_ell['total_C'], k))
         phase_j_by_ell[ell] = td_result_ell
 
         if tau_points is not None:
-            C_tau_by_ell[ell] = np.array(
-                td_result_ell['total_C_batch'](
-                    tau_points, parallel=parallel, n_workers=n_workers),
-                dtype=complex,
-            )
+            with _phase_j_warning_scope():
+                C_tau_by_ell[ell] = np.array(
+                    td_result_ell['total_C_batch'](
+                        tau_points, parallel=parallel, n_workers=n_workers),
+                    dtype=complex,
+                )
         else:
             C_tau_by_ell[ell] = None
 
     _phase_time('phase_j', _t_phase)
 
     # Master total_C: sum across ell (for caller convenience)
+    @_phase_j_scoped
     def total_C(*ext_time_values):
         return sum(complex(fn(*ext_time_values))
                    for fn in total_C_by_ell.values())

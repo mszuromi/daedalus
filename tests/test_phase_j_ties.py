@@ -538,8 +538,11 @@ def test_k4_two_loop_full_tie_matches_boltzmann():
     '<= 3e-15.  Expected to XPASS once the semi-infinite chain (L4/F6, M7) '
     'lands -- then drop this marker.'))
 def test_k4_two_loop_no_nquad_fallback_above_mu_1p2(monkeypatch):
-    """Same full-tie oracle at mu=1.25, with scipy.nquad stubbed so the
-    fallback is COUNTED instead of run (an unstubbed run takes > 15 min)."""
+    """Same full-tie oracle at mu=1.25, with the scipy quadrature fallback
+    stubbed so it is COUNTED instead of run (an unstubbed run takes > 15
+    min): ``scipy.integrate.nquad`` (the pre-M2b fallback) and the hardened
+    fallback of M2b (``final_integral._integrate_polytope_hardened``, which
+    uses ``scipy.integrate.quad``)."""
     import scipy.integrate
     calls = []
 
@@ -547,7 +550,12 @@ def test_k4_two_loop_no_nquad_fallback_above_mu_1p2(monkeypatch):
         calls.append(len(ranges))
         return 0.0, 0.0
 
+    def _stub_hardened(integrand, s_constraints, free_ext_vals, m, **_kw):
+        calls.append(m)
+        return 0.0 + 0.0j
+
     monkeypatch.setattr(scipy.integrate, 'nquad', _stub_nquad)
+    monkeypatch.setattr(FI, '_integrate_polytope_hardened', _stub_hardened)
     fns = _compute(4, False, 2, tuple(sorted(_P4_L2_CLIFF.items())))[
         'total_C_by_ell']
     got = _val(fns[2], (0.0,) * 4)

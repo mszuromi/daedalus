@@ -47,9 +47,10 @@ grouped Phase J path:
     integrator), and the value at coincident times was neither one-sided
     limit. The value at a tie is that limit only as accurately as the tie
     is evaluated: an exact tie can send an integration region to another
-    integrator than the points around it, and two of those routes have
-    known errors, the `scipy.nquad` fallback (default tolerance) and, for
-    regions with three or more integration times, the poset lower-bound
+    integrator than the points around it, and two of those routes had
+    known errors, the `scipy.nquad` fallback (default tolerance; hardened
+    by "Changed: hardened quadrature fallback" below) and, for regions
+    with three or more integration times, the poset lower-bound
     inheritance error (see the known issue under the k = 2 table below).
     A value at a tie can then be much less accurate than the values around
     it: on the default k = 4 `dd.run` slices of
@@ -322,6 +323,15 @@ same slice (from τ = 1e−4, 1e−5, 3e−6).
 `single_population_spike_reset_test`, parameters `Em = [3.5, 3.5]`,
 `tau = [10, 9]`, `a = [2.5, 2.5]`, `w = [[0.55, 0.65], [0.7, 0.8]]`.
 
+These are the package's current values, not validated results: the model
+has no exact solution, and it serves in the tests to exercise the code
+paths this release changes (instantaneous propagator parts, the
+fallback integrator, coincident times), each region being checked against
+an independent high-precision value of the same integral. The reliable
+public accuracy references are the Ornstein–Uhlenbeck family (exact
+stationary densities) and the linear point-process models, whose loop
+corrections vanish exactly.
+
 k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ). The tree level (ℓ = 0) is unchanged.
 
 | τ | one-loop term, before | one-loop term, after | total, before | total, after |
@@ -424,15 +434,21 @@ curve's change over 2e−6 (next bullets).
 - **Known issue: a value at exactly coincident times is the one-sided limit
   only as accurately as it is evaluated.** An exact tie can send an
   integration region to another integrator than the points around it, and
-  two of those routes have known errors:
-  - Two-time regions can go to the `scipy.nquad` fallback and carry its
+  two of those routes had known errors:
+  - Two-time regions can go to the `scipy.nquad` fallback and carried its
     error. For `multipopulation_test` ⟨n_E₁ n_E₂ n_E₁⟩ at tree level
-    (parameters as above), (0, 0.4, 0.4) sends 16 such regions there (none
-    at (0, 0.4, 0.4 − 1e−7) or at (0, 0.7, 0.7)). Its value, +1.68597e−6,
-    is 2.9e−5 relative from the limit, +1.68592e−6: twelve times the jump
-    between the two one-sided limits there (2.4e−6), so it is neither
-    limit. The ties (0, t, t) of the same model at t = −2, −1, −0.5, 0.2,
-    0.5, 0.7, 1 and 2 reach no fallback and equal the limit to ≤ 1.4e−14.
+    (parameters as above), with a fresh diagram cache, (0, 0.4, 0.4) sends
+    16 such regions there (none at (0, 0.4, 0.4 − 1e−7) or at
+    (0, 0.7, 0.7); with other diagram representatives all of these points
+    can reach it, see "Changed: hardened quadrature fallback" below). With
+    the default-tolerance
+    fallback its value, +1.68597e−6, was 2.9e−5 relative from the limit,
+    +1.68592e−6: twelve times the jump between the two one-sided limits
+    there (2.4e−6), so it was neither limit. With the hardened fallback
+    ("Changed: hardened quadrature fallback" below) it is
+    +1.68592416791e−6, the limit to 5.9e−15 relative. The ties (0, t, t)
+    of the same model at t = −2, −1, −0.5, 0.2, 0.5, 0.7, 1 and 2 reach no
+    fallback and equal the limit to ≤ 1.4e−14.
   - At an exact tie, a region with three or more integration times can be
     accepted by the analytic poset integrator, which rejects it (and sends
     it to the fallback) when the tied times differ by more than 1e−9.
@@ -467,8 +483,10 @@ curve's change over 2e−6 (next bullets).
   k ≥ 4 slices (with the default base lags, every point of a k ≥ 4 slice)
   and every point of a k ≥ 4 moment output (`Config.output = 'moment'` or
   `'central_moment'`, whose cumulant blocks of 3 or more legs are
-  evaluated at the times of slice 1). Fixes are planned in a later release: the hardening of the fallback and
-  the poset lower-bound fix.
+  evaluated at the times of slice 1). The fallback is hardened by
+  "Changed: hardened quadrature fallback" below; the poset lower-bound
+  fix is planned for a later release (the hardening moves the k = 4
+  slice-1 value at τ = 0.5 above by 1.2e−8 relative).
 
 k = 4, tree level, ⟨n₁(t₀) n₂(t₁) n₁(t₂) n₂(t₃)⟩ of
 `single_population_linear_delta_spikes_test` (parameters as above), at the
@@ -664,6 +682,375 @@ Developer-facing changes (values do not change):
   recorded before this change) lists the two massless spatial probes as
   `IndexError`; a re-run now reports `PoleFreePropagatorError` for them.
 
+### Changed: hardened quadrature fallback (numbers move at the quadrature tolerance)
+
+When no analytic Phase J integrator answers an integration region (for
+example a two-time region whose analytic formula would overflow), Phase J
+integrates it with scipy quadrature. Before this change that fallback was
+`scipy.nquad` with scipy's default tolerances (absolute 1.49e−8), no
+breakpoints, and a ±200 box for every integration time whose bounds depend
+on other integration times. A narrow peak could fall between all the nodes
+of the first quadrature panel: both quadrature rules then return about 0,
+the error estimate is about 0, and the whole region is lost. On wider peaks
+the fallback was accurate only to about 1e−5 relative. An empty inner
+interval was still sampled, at points outside the region, where fast decay
+rates overflow.
+
+The fallback now:
+
+- integrates every time over the region's own bounds, widened by one unit
+  in the last place: the exact projection of the region onto that time
+  given the outer ones. For ordering rows (rows of the form
+  ±(s_i − s_j) + c > 0 or ±s_i + c > 0) this is their closure by shortest
+  paths in exact rational arithmetic. If any other row is present, every
+  row enters an exact Fourier–Motzkin elimination (rational arithmetic),
+  which gives the projection whatever the rows; above 4096 rows the
+  elimination stops (counted) and such rows bound only the time where they
+  involve no inner time. Every row is also checked pointwise. A region
+  whose rows cannot all hold is 0 without quadrature;
+- returns 0 for an empty interval without evaluating the integrand, and
+  never evaluates the integrand where a row is ≤ 0 (Θ(0) = 0);
+- integrates the innermost time in closed form when the integrand's
+  exponential modes are known, so the quadrature runs over one time fewer.
+  The per-diagram and grouped evaluators supply the modes; regions without
+  them (the evaluator for non-rational noise kernels, a grouped subset
+  without pole data, direct callers) are counted and treated as described
+  below. The integrand's expansion in that time (per diagram, one term per
+  combination of modes of the edges that contain it; grouped, one per pole
+  tuple) is built once per region and evaluated with numpy when it has
+  many terms. Above 65536 such per-diagram terms that time is integrated
+  by quadrature instead (counted);
+- truncates a direction that the rows leave open at K/κ (K = 40) beyond
+  the farthest point on that side where the integrand can change shape:
+  the interval's finite end, a kink of the inner integral or an external
+  time. κ is a decay rate certified along that direction. Every mode must
+  decay (Re λ < 0); then the integrand is bounded by S·e^{−Σ κ_e Δt_e},
+  with κ_e the slowest rate of edge e and S a constant.
+  - When every row is an ordering row with coefficients ±1 and is an
+    edge, and every edge is a row (every Phase J region measured), κ is
+    the slowest decay rate of the modes. In that case the tail beyond the
+    outermost cut, at the distance d from the finite end, is at most
+    S·κ^{−m}·e^{−K}·Σ_{j<m} K^j/j! with K = κd, for m integration times
+    and whatever the shape of the inner slices. At the first cut that is
+    1.7e−16·S/κ^m at m = 2, 3.6e−15 at m = 3 and 2.8e−11 at m = 7. (Use
+    the values of a spanning tree of rows as coordinates. Its path from
+    that time to its finite end adds up to d, and every tree value decays
+    at least at the rate κ.)
+  - With any other rows (other coefficients, rows that are not edges),
+    linear programs give the rate at which the minimum of Σ κ_e Δt_e over
+    a slice grows along each open side of each time. κ is the smallest of
+    these rates, and it is no larger than the slowest mode's rate times
+    the smallest coefficient. The rate therefore depends on how the rows
+    combine, not on how a row is scaled. Before this, a region whose rows
+    allow e^{s/4} along s, written with an integer row (s − 4s' > 0), was
+    cut at 40 instead of 160 and came out 5e−5 low, with no flag; with
+    (s − 8s' > 0) it was 7e−3 low. The outermost tail is then bounded
+    from the slices' widths, which are measured beyond the cut. A slice
+    that is unbounded in an inner time is bounded through the region's
+    box fibration. Before this, the bound assumed chain-shaped slices:
+    1024-times-wider slices of a cancelling integrand left it 9e−10 low.
+    If an edge can be negative on the region, a side does not decay,
+    or the slices cannot be bounded, the region has no certificate.
+
+  These bounds are relative to S, not to the integral, which can be far
+  smaller: an integral whose mass sits 60 time units from the finite end
+  is about e^{−40}·S. So after integrating, the outermost cut's tail bound
+  is compared with 1e−11 times the result. If it is larger, the cut moves
+  out, and the strip between the two cuts is integrated and added
+  (counted).
+  - With rows of the second kind the inner times' cuts are checked as
+    well. Every point that a cut drops, at any time, lies K/κ beyond the
+    farthest vertex of its slice, so Σ κ_e Δt_e there exceeds its minimum
+    over the region by at least K. Linear programs bound the integral of
+    S·e^{−Σ κ_e Δt_e} over all such points: the region's widths where
+    that sum stays below a level, which grow at most linearly with the
+    level. If the bound exceeds 1e−11 times the result, the inner times'
+    K moves out (the outermost cut at least as far) and the region is
+    integrated again (counted). Before, the inner cuts were not checked.
+    With slices that widen with the distance (rows that are not edges)
+    and modes that cancel, the dropped part could exceed the tolerance by
+    far: a model-free region with m = 4 integration times whose modes
+    cancel to 2^−21 of their parts was 1.5e−8 low, and to 2^−25, 2.5e−7
+    low (exact values from Mathematica). Those regions are now
+    1.3e−10 and 4.4e−9 off; the rest is the rounding of their cancelling
+    inner values, which QUADPACK's roundoff warning reports (counted and
+    warned about). The cuts stay unchecked where an inner time's
+    vertices were not all enumerated or linear programming gives no
+    bound; that is counted (`nquad_hardened_inner_unchecked`) but not
+    warned about, so such a region can be off by the amounts above with
+    at most QUADPACK's roundoff warning, which comes from the rounding,
+    not from the cut.
+  - With ±1 ordering rows that are edges, as in every Phase J region
+    measured, the same check runs, with the linear-programming bound
+    built only when an inner time was actually cut. Without it, a
+    model-free region of this kind (an open inner time holding a chain of
+    edges, inner widths 2^−22 to 2^−24) lost up to 6e−8 of its value at
+    K = 40 with nothing counted; with it, those regions are within 1e−8.
+    On the public models measured, Phase J values are unchanged by this
+    check.
+
+  If some mode does not decay, the modes are not known, or the
+  certificate fails, the old distance 200 is used, counted and reported
+  in the warning;
+- uses a relative tolerance of 1e−10 and an absolute tolerance of 1e−13
+  times a scale. The first scale is the smaller of a bound of the
+  integrand derived from the modes (each edge bounded separately over a
+  box around the region) and the largest value of the integrand at 64
+  points spread over the region (computed from the modes when they are
+  known), but with known modes never below 1e−3 times the bound. Both can
+  exceed the integral by many orders of magnitude: close poles (residues
+  ±1/ε that cancel), oscillation, decay across the region. QUADPACK then
+  stops at its first estimates. So if the absolute tolerance used is more
+  than 10 times 1e−13 times the result, the region is integrated again
+  with 1e−13 times the result (floored at 1e−22 times the sampled largest
+  value, so that regions whose value lies far below rounding, such as
+  near-coincident time points, are not chased; counted). For a thin
+  region that floor can allow more than 1e−8 relative error; such a
+  region is then counted (`nquad_hardened_floor_limited`) and named in the
+  aggregated warning, so it is never accepted silently. Resolving thin
+  regions exactly is left to the planned box-free integration. The sample alone can also sit many orders below the
+  integrand when the integrand peaks at a finite end or a kink and the
+  points are spread over a long truncated side. A model-free region with
+  m = 3 times had a sampled largest value of 1.7e−12, where the integrand
+  is about 0.4 and its bound is 4. That gave an absolute tolerance of
+  1.7e−25, below the rounding noise of the imaginary parts of the level
+  values computed from pole tuples. Its grouped evaluation did not finish
+  in 25 minutes (per diagram: 0.3 s); it now takes 0.3 s and is exact to
+  1.2e−15. The floor and the ordered real and imaginary passes of the
+  next item each fix it on their own: with both, floors of 1e−3, 1e−6,
+  1e−9 and 0 all take 0.3 s; with the floor alone, 1e−6 and below chased
+  the noise again. A variant with ±1 ordering rows that are edges, as in
+  Phase J, and the outer edge decaying at 1/16 ran past five million
+  integrand evaluations grouped (35 s, then stopped); it now takes 0.4 s
+  and is exact to 3.6e−15. In the public spike-reset
+  k = 2 regions the sample sat at a median 4.5e−11 of the bound, while
+  the integrals are about 1e−2 of it; they ran fast before. With the
+  floor, the values of the captured public regions move by at most
+  3.5e−15 relative, and some regions take a second pass (spike-reset
+  k = 4: 288 of 1792 instead of 192);
+- integrates the real and the imaginary part of each level separately,
+  over one cache of complex values. The part that is larger at the first
+  quadrature node goes first; the other is integrated with its absolute
+  tolerance raised to 1e−10 times the first part's value; a call that ends
+  with a QUADPACK warning is accepted when its error estimate is within
+  1e−10 times |re + i·im| (or the absolute tolerance). A part that is only
+  the rounding noise of the other, such as the imaginary part of a real
+  integrand computed from pole tuples (or the real part of an imaginary
+  one), then does not drive the subdivision. Judging the parts against
+  the complex value was not enough on its own: with the floor removed,
+  the grouped model-free region above, times 1 or times i, ran past three
+  million integrand evaluations; it now takes 0.3 s and is exact to
+  1.2e−15. A multi-peak oscillating region with general rows takes 5.8 s
+  grouped and is exact to 1.2e−13 (before these two changes: past five
+  million integrand evaluations in 240 s, then stopped). A real
+  part does not depend on how the imaginary parts are integrated, so
+  this ordering moves only the imaginary rounding noise of the public
+  configurations (measured: real parts bit-for-bit unchanged);
+- starts each quadrature call with a limit of 200 subintervals (at least
+  twice its breakpoints). When the modes oscillate, the limit is 200 plus
+  the number of half-periods over the interval, if that number exceeds
+  100. A call that reaches its limit is repeated once with a limit of
+  12800. A call that still ends with a QUADPACK warning is counted and
+  reported by a `PhaseJNquadFallbackWarning` when its error estimate is
+  above its own tolerance and also, multiplied by the widths of the
+  enclosing levels' intervals, above 1e−10 times the region's scale (the
+  result, in a second pass). An inner call of a second pass asks for
+  1e−13 times the result in absolute terms, which the rounding of its own
+  values can prevent with no loss at the region's tolerance. A call that
+  stops at the limit 12800 is always counted;
+- places breakpoints at the external times, at every kink of the inner
+  integral, and geometrically spaced towards the ends of wide panels
+  (with known modes). A narrow peak sits at, or close to, an interval end
+  or a kink; a kink that is not a breakpoint can leave the whole peak
+  inside a wide panel, unseen by every node. The kinks at a time are the
+  coordinates of the vertices of the region's slice over the inner times.
+  With ordering rows only they come from the closure (the alternating
+  sums of its entries along paths through the inner times); with any
+  other row the vertices are enumerated at each step (above 20000 row
+  subsets at a step, that step keeps the closure's kinks, counted).
+
+The old fallback is still available, bit-for-bit, with the flag
+`NQUAD_HARDENED = False` (see Added).
+
+**Moved (measured).** Values move only where the fallback is used, by the
+error of the old fallback. Per region, the comparison is with the exact
+integral of the same region (a 50-digit closed-form evaluation; tolerance
+max(1e−8 relative, 1e−14 absolute)):
+
+| model, configuration | regions served by the fallback | old fallback: outside the tolerance, largest error | new fallback: largest error |
+|---|---|---|---|
+| `single_population_spike_reset_test`, k = 2, ℓ = 1, τ = 0, 1, 3, 5, 10 | 40 per diagram (grouped: 10) | 18 of 40, up to 6.8e−5 relative, 1.5e−10 absolute | 1.1e−14 relative (grouped 1.9e−14) |
+| same model and configuration, τ = 15, 25, 40, 60 | 32 (grouped: 8) | 8 of 32, some regions lost entirely (relative error 1.0, up to 4.0e−8 absolute; grouped 2 of 8) | 4.0e−15 relative (grouped 3.0e−15) |
+| same model, k = 3 tree, ⟨n₁ n₂ n₁⟩ at the 9 points listed below | 360 (grouped: 162) | 70 of 360, up to 2.1e−6 relative, 1.4e−10 absolute (grouped 33 of 162) | 6.0e−15 relative (grouped 1.2e−15) |
+| `single_population_quad_exp_test`, k = 2, ℓ = 1, τ = 0, 2.5, 10 | 48 (grouped: 12) | 34 of 48, up to 1.7e−4 relative, 2.7e−10 absolute (grouped 10 of 12, 1.8e−5) | 1.2e−15 relative (grouped 4.6e−16; reference boxes 400, 1500 and 3000 agree) |
+
+(Parameters as in the tables above; `single_population_quad_exp_test`:
+`Em = [0.8, 0.78]`, `tau = [10, 9]`, `a = [0.44, 0.44]`, the remaining
+parameters at their defaults, as in `tests/tools/phase_j_zoo_baseline.py`.
+The number of regions that reach the fallback depends on the diagram
+cache, which selects the diagram representatives, and so does the old
+fallback's error; the new values do not (measured with both caches: to
+≤ 1.6e−14 relative for the `multipopulation_test` and spike-reset k = 3
+and k = 4 values below). The counts and the old values in this section are from a
+developer cache unless stated otherwise. A fresh cache sent 24 per-diagram
+`single_population_quad_exp_test` regions instead of 48, and 216 (grouped:
+72) spike-reset k = 3 tree regions instead of 360 (162).)
+
+Effect on the results:
+
+- `single_population_spike_reset_test`, k = 2, ℓ = 1, ⟨n₁ n₂⟩: the one-loop
+  term moves by at most 1.0e−10 absolute. Relative to it that is
+  ≤ 9.4e−9 at τ = 0, 1, 3 and 5, and 2.2e−6 at τ = 10 (+4.65705e−5 →
+  +4.65706e−5); the total moves by ≤ 3.7e−7 relative (τ = 10:
+  −2.720795e−4 → −2.720794e−4). The tree level is unchanged. Per-diagram
+  and grouped Phase J now agree to 5e−15 relative (before: 1.4e−8 on the
+  one-loop term). Farther out the old fallback's absolute tolerance
+  (1.49e−8) was comparable to the values: at τ = 15, 25, 40 and 60 the
+  one-loop term moves by 0.97 %, 1.9 %, 1.3 % and 0.84 % per diagram
+  (τ = 60: +1.045104e−18 → +1.053871e−18; grouped the same except
+  τ = 15, 1.6e−8), and the total, a cancellation of the tree and the
+  one-loop terms there, by up to 16 % (τ = 60: −5.578e−20 → −4.702e−20).
+- The same model, k = 3 tree level, ⟨n₁ n₂ n₁⟩ at (0, 0.4, 1),
+  (0, 0.7, 0.7), (0, 0, 0.7), (0, 0, 0), (0.3, 0.3, 0.7), (0, −1e−6, −1e−6),
+  (0, −2e−6, −1e−6), (0, 0.4, 0) and (0, 0.7, 0.7 + 1e−12): moves by
+  ≤ 2.6e−10 absolute and ≤ 4.0e−9 relative per diagram (≤ 1.2e−10 and
+  2.8e−9 grouped). Per-diagram and grouped Phase J now agree to 1.5e−15
+  relative (before: 3.5e−9). The values of the k = 3 table above are
+  unchanged at the digits shown.
+- `single_population_quad_exp_test`, k = 2, ℓ = 1, ⟨n₁ n₂⟩: the one-loop
+  term moves by ≤ 1.1e−9 absolute, ≤ 5.3e−6 relative per diagram (τ = 0:
+  +2.016428e−4 → +2.016417e−4) and ≤ 2.2e−10, 1.1e−6 grouped; the total
+  by ≤ 2.9e−7 relative. The tree level is unchanged. Per-diagram and
+  grouped Phase J now agree to 1e−15 relative (before: 4.2e−6).
+- `multipopulation_test`, k = 3 tree, ⟨n_E₁ n_E₂ n_E₁⟩, at the exact tie
+  (0, 0.4, 0.4), the points around it (0, 0.4, 0.4 − h) for h = 1e−5,
+  1e−6, 1e−7, and the tie (0, 0.7, 0.7). This configuration depends on the
+  diagram cache:
+  - with a fresh cache, only (0, 0.4, 0.4) reaches the fallback (16
+    regions): +1.6859737e−6 → +1.6859242e−6, which is the tie-order limit
+    to 5.9e−15 relative (before: 2.9e−5; see the known issue after the
+    k = 3 table above). The other four points reach no fallback and are
+    unchanged;
+  - with the developer cache (other diagram representatives), every one
+    of the five points sends 64 regions to the fallback, and every value
+    moves: by 1.72e−4 relative at the tie and the three points around it
+    (for example (0, 0.4, 0.4 − 1e−5): +1.6862178e−6 → +1.6859277e−6) and
+    by 1.79e−4 at (0, 0.7, 0.7) (+2.4553191e−6 → +2.4548792e−6). The tie
+    is the limit to 6.9e−15.
+
+  The new values agree between the two caches to ≤ 1.6e−14 relative at
+  all five points. With the developer cache, grouped Phase J moves by up
+  to 2.7e−5 at these points, and the k = 3 ℓ = 1 value at (0, 0.4, 1) by
+  1.1e−4 (64 fallback regions).
+- `single_population_spike_reset_test`, k = 4 tree, ⟨n₁ n₂ n₁ n₂⟩ at the
+  slice-1 point (0, 0.5, −1e−6, −1e−6): with the developer cache
+  −4.82408912e−2 → −4.82408918e−2 (1.2e−8 relative; 1592 regions served
+  by the fallback, 992 of them with three or more integration times, in
+  the state the cache had then); with a fresh cache (1668 regions, 1088
+  of them with three or more times) −4.8240891838e−2 → −4.8240891841e−2
+  (7.6e−11 relative). The new values agree between a developer cache and
+  a fresh one to 8.3e−15. At the nearby point (0, 0.5, −1e−6, −1.2e−6)
+  (fresh cache; the total moves by 1.8e−9) the 192 regions that took a
+  second pass (32 with two times, 160 with three) were compared one by
+  one with 60-digit exact references: all within 3.9e−9 relative (thin
+  regions; see the known limit below).
+
+**Unchanged (measured, with a fresh diagram cache).** Models that make no
+fallback call are bit-for-bit identical, compared with the old code in
+one process with the new default: `ou_quartic` (k = 2 up to ℓ = 3, k = 4
+ℓ = 1), `ou_quartic_colored`, `ou_quartic_two_dim_color_corr`,
+`linear_hawkes`, `multipopulation_test` (k = 2; for k = 3 see above),
+`single_population_linear_delta_spikes_test` (k = 2 and k = 3), and the
+spatial models of the "Unchanged" list above. With other diagram
+representatives a configuration can reach the fallback where a fresh
+cache does not (as `multipopulation_test` k = 3 above); it then moves by
+the old fallback's error.
+With `NQUAD_HARDENED = False`, and under `DAEDALUS_PHASE_J_LEGACY=1`, the
+fallback-served models above are bit-for-bit identical to the code before
+this change.
+
+**Cost.** Where the fallback is a small part of a run, the run takes about
+as long as before. Where the fallback dominates, the cost depends on the
+modes. With a few modes per edge the closed-form innermost time makes it
+faster. With many modes per edge a per-diagram evaluation can be slower
+than the old fallback, because the closed form expands the integrand
+into one exponential per combination of modes of the edges that contain
+that time: 16³ = 4096 terms per region for the `multipopulation_test`
+k = 3 tree. Wall times, old and new code in one process, on a loaded
+machine:
+
+- the spike-reset model, k = 2 ℓ = 1 at 5 τ per diagram, build and
+  evaluation: 6.2 s → 6.1 s (old and new passes interleaved, four each
+  on a lightly loaded machine: 6.2–6.3 s and 5.9–6.4 s). The fallback's
+  own time drops from 0.32 s to 0.07 s; the diagram build dominates;
+- its k = 3 tree at the 9 points: 3.9 s → 1.6 s;
+- its k = 4 tree at the slice-1 points (0, 0.5, −1e−6, −1e−6) and
+  (0, 0.5, −1e−6, −1.2e−6), fresh cache (3336 regions, 2176 of them with
+  three times), evaluation: 414 s → 259 s, measured before the last two
+  changes below;
+- `single_population_quad_exp_test` k = 2 ℓ = 1: 94 s → 94 s (the
+  diagram build dominates);
+- the `multipopulation_test` k = 3 tree at the five points above, with
+  the developer cache (64 fallback regions per point), evaluation: per
+  diagram 8.7 s → 11.1 s (1.27x), grouped 180 s → 12.2 s (pole tuples:
+  65536 per region);
+- its k = 3 ℓ = 1 point (0, 0.4, 1): 1.9 s → 2.8 s, measured before the
+  last two changes below.
+
+Two changes leave the values bit-for-bit identical, or move them only
+where a cut moves, and cut the fallback's own time. First, the closed
+form's per-call exponentials are combined by outer products with an
+in-place series. Second, when only the outermost cut has to move, the
+strip between the two cuts is integrated and added, instead of the whole
+region again. On the regions captured from these runs, replayed in one
+process, the time went from 11.6 s to 8.0 s for the 320
+`multipopulation_test` regions, and from 46 s to 33 s for the 1792
+spike-reset k = 4 regions. The values are bit-for-bit identical except
+for the regions whose cut moved: 35 and 191 of them, by at most 2.1e−16
+and 3.5e−15 relative. The totals of the public configurations are
+unchanged at the digits shown above.
+
+**Known limit.** Regions with many integration times stay expensive: the
+quadrature still nests one adaptive rule per time beyond the innermost,
+so its cost grows like (nodes per time)^(m − 1), now at the tighter
+tolerance. For example `ou_quartic` k = 4 ℓ = 2 at μ = 1.25 sends 936
+regions with up to 8 times to the fallback; one evaluation did not finish
+in 15 min before this change, and none was attempted after it. (At
+μ ≤ 1.1 no region reaches the fallback.) The tolerances and the
+truncation follow the result, but each region's accuracy still rests on
+QUADPACK's error estimates at every level, on the breakpoints and on the
+decay certificate. Integrands that cancel heavily can end with QUADPACK's
+roundoff warning (counted and warned about): a model-free region whose
+modes oscillate with angular frequency 300 (e^{(−1 ± 300i)u}) ended
+7.9e−10 relative off the exact value. A grouped integrand expands the products of modes into pole
+tuples, so close poles cancel in the integrand itself: a model-free region
+with residues ±2048 is accurate to 2.4e−10 grouped and 2.6e−13 per
+diagram. Without known modes every time is integrated by quadrature, and
+an oscillating region is slow: a model-free one with modes
+e^{(−0.2 ± 25i)u} took 100 s on a loaded machine and was accurate to
+9e−12, with QUADPACK roundoff warnings in its inner integrals (counted and
+warned about). A thin region is limited by the rounding of its own
+bounds and row values, to roughly (rounding unit of its coordinates) /
+(its width): regions 2e−7 wide at the spike-reset k = 4 point
+(0, 0.5, −1e−6, −1.2e−6) are accurate to 4e−9 (before: 1.9e−3), with
+QUADPACK's roundoff warning on some of them; a model-free wedge with row
+coefficients 1e−12 (not a Phase J shape), a few thousand rounding units
+wide, to about 1e−5. Where the inner times' cuts move (rows other than ±1
+ordering rows that are edges; no public model has them), the region is
+integrated a second time. On regions whose accuracy is limited by such
+rounding the nested quadrature chases the noise, and its cost then varies
+erratically with the cut. A model-free region with m = 4 times, slices
+8192 times wider than their distance to the end and modes that cancel to
+2^−25 took 22–24 s in one pass with the cut at K = 40 or 52, but more than
+5 minutes at K = 48 or 59. Its checked evaluation (inner K = 59) did not
+finish in 15 minutes; before, it took 23 s and came out 2.4e−7 low, with
+QUADPACK's roundoff warning. The ordered real and imaginary passes keep a
+part that is only the other part's noise from driving the subdivision,
+but a part limited by its own rounding is still refined to its
+subinterval limit. The first pass's absolute tolerance rests on a
+64-point sample of the integrand, floored at 1e−3 times its bound; a
+sample that misses a peak can sit many orders below the integrand.
+
 ### Added
 
 - **Call-time Phase J flags.** The flags are module attributes of
@@ -687,9 +1074,23 @@ Developer-facing changes (values do not change):
     diagram is built, that is by the value in force when `compute_cumulants`
     runs (the skipped subsets are exactly 0, so this does not change
     values); the cycle test reads it at every call.
+  - `NQUAD_HARDENED`: `True` (default) or `False` (the default-tolerance
+    `scipy.nquad` fallback of the code before "Changed: hardened quadrature
+    fallback" above, bit-for-bit). Set it with the environment variable
+    `DAEDALUS_PHASE_J_NQUAD_HARDENED=1|0` (also `true`/`false`,
+    `yes`/`no`, `on`/`off`). An unknown value raises. Read at every call.
+    The fallback's settings are module attributes too: `NQUAD_EPSREL`
+    (1e−10), `NQUAD_EPSABS_FACTOR` (1e−13), `NQUAD_LIMIT` (200),
+    `NQUAD_LIMIT_MAX` (12800), `NQUAD_TAIL_K` (40) and
+    `NQUAD_UNCERTIFIED_CAP` (200).
+    `final_integral.nquad_warning_scope()` (a context manager) aggregates
+    the fallback's warnings over everything evaluated inside it (see
+    `PhaseJNquadFallbackWarning` below); the callables that
+    `compute_cumulants` returns open one per call.
 - **`DAEDALUS_PHASE_J_LEGACY=1`.** This umbrella switch sets every Phase J
   flag to its pre-0.2.0 behaviour: the Θ(0) rule (`THETA0_CONST_ROW_MODE =
-  'legacy_clip'`) and `STRUCTURAL_ZEROS = False`. It reproduces the
+  'legacy_clip'`), `STRUCTURAL_ZEROS = False` and `NQUAD_HARDENED =
+  False`. It reproduces the
   pre-change Phase J numbers bit-for-bit within one process, at the same
   external times and at the bounding box in force (so a pre-change run at
   another `POLYGON_BBOX_CAP` is reproduced by setting the attribute). It
@@ -724,7 +1125,64 @@ Developer-facing changes (values do not change):
     - empty regions: `polygon_zero_area`, `poset_empty_const`,
       `poset_empty_cycle`;
     - skipped identically-zero work: `forced_delta_pruned` (δ-subsets not
-      built) and `polytope_empty_cycle` (cycles answered at the fallback).
+      built) and `polytope_empty_cycle` (cycles answered at the fallback);
+    - the hardened quadrature fallback: `nquad_hardened_calls` (regions it
+      served; also counted in `nquad_calls`), `nquad_hardened_empty`
+      (regions found empty without quadrature),
+      `nquad_hardened_empty_intervals` (intervals answered 0 without
+      evaluating the integrand), `nquad_hardened_capped` (regions with an
+      open direction truncated at 40/κ), `nquad_hardened_cap_span_max` (the
+      largest such distance), `nquad_hardened_uncertified` (regions whose
+      open direction had no decay certificate, from the modes or, for rows
+      other than ±1 ordering rows that are edges, from linear programming,
+      and used the old distance 200), `nquad_hardened_no_modes` (regions
+      without known modes),
+      `nquad_hardened_general_rows` (regions with a row that is not an
+      ordering row: Fourier–Motzkin bounds and enumerated vertices),
+      `nquad_hardened_fm_capped` (of those, regions whose elimination
+      exceeded 4096 rows), `nquad_hardened_kinks_incomplete` (steps whose
+      vertices were not enumerated: more than 20000 row subsets),
+      `nquad_hardened_quad_flags` (quadrature calls of a region's final
+      pass that still ended with a nonzero `ier` and an error estimate
+      above their tolerance and, multiplied by the widths of the enclosing
+      levels, above 1e−10 times the region's scale, or at the limit 12800;
+      the value is still used), `nquad_hardened_quad_retries` (calls that
+      reached their subinterval limit and were repeated with 12800),
+      `nquad_hardened_reruns` (regions integrated again with the absolute
+      tolerance from the result), `nquad_hardened_tail_widened` (regions
+      whose outermost open direction was cut farther out, the strip
+      between the cuts integrated and added, or whose inner times' cuts
+      moved out),
+      `nquad_hardened_inner_unchecked` (regions whose inner cuts could not
+      be checked),
+      `nquad_hardened_innermost_overflow` (closed-form innermost integrals
+      that overflowed and were integrated numerically instead) and
+      `nquad_hardened_innermost_capped` (regions whose closed-form
+      innermost expansion would exceed 65536 terms).
+  - `PhaseJNquadFallbackWarning` (a `UserWarning`, in
+    `engine.integration.time_domain.final_integral`). It is issued once per
+    model, source (per-diagram or grouped Phase J) and loop order, per
+    process, when the hardened fallback integrates regions there. The
+    regions of one evaluation are aggregated: everything inside one call of
+    a callable that `compute_cumulants` returns, or inside its own τ-grid
+    evaluation. The warning gives the number of regions and of diagrams
+    served, the regions without known modes and those without a decay
+    certificate (with the weaker settings used there), and names the first
+    diagram (loop order, external legs, edges, δ-subset). A second warning,
+    with the same key and rule, gives the number of regions whose
+    quadrature did not reach its tolerance (`nquad_hardened_quad_flags`)
+    and the first QUADPACK message. Before, one warning was issued per
+    typed diagram: a single `single_population_spike_reset_test` k = 4
+    evaluation printed 396. The key uses the model's name, so building the
+    same model again (another `compute_cumulants` call, other parameter
+    values) does not repeat it, while another model does.
+    (`compute_cumulants` passes the model's `name` to Phase J in
+    `propagator_data['model_name']`; a model without a name, or a direct
+    caller, is keyed by its `propagator_data` dict.) Outside an evaluation
+    scope (direct calls of the integrators), and in forked workers of a
+    parallel batch, the warning is issued at the first region. With the
+    `logging` level at DEBUG, the module's logger names every diagram the
+    fallback serves, once.
 
 ### Tests
 
@@ -739,4 +1197,12 @@ Developer-facing changes (values do not change):
   recorded with local diagram caches; from a fresh clone, zoo entries that
   reach `scipy.nquad` are compared at 1e−8 relative and without their
   route counters, because other diagram representatives take other
-  quadrature routes.
+  quadrature routes. With the current defaults, in a zoo entry served by
+  the hardened quadrature fallback (`single_population_quad_exp_test`,
+  k = 2, ℓ = 1) the loop orders ≥ 1 are compared at 2e−5 relative and the
+  total at 1e−6 (the old fallback's errors moved them by 5.3e−6 and
+  2.9e−7); its tree level keeps the strict tolerance. Under the legacy
+  flags the comparison is unchanged.
+- The exact-tie test of `multipopulation_test` (k = 3 tree at
+  (0, 0.4, 0.4)), a strict expected failure since the tie order was
+  introduced, passes with the hardened fallback.

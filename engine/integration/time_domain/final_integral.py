@@ -524,8 +524,9 @@ POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 #
 # ``DAEDALUS_PHASE_J_LEGACY=1`` (the umbrella) sets EVERY Phase J flag to its
 # legacy value, reproducing the pre-M1 numbers bit-for-bit within one
-# process.  That is ``THETA0_CONST_ROW_MODE = 'legacy_clip'`` and
-# ``STRUCTURAL_ZEROS = False`` (M2a; see ``_initial_phase_j_flags``).  The
+# process.  That is ``THETA0_CONST_ROW_MODE = 'legacy_clip'``,
+# ``STRUCTURAL_ZEROS = False`` (M2a) and ``NQUAD_HARDENED = False`` (M2b;
+# see ``_initial_phase_j_flags``).  The
 # bounding box is not a flag: the umbrella also reads ``POLYGON_BBOX_CAP`` at
 # call time (so it reproduces a pre-M1 run at any cap, e.g. the cap-12 trap).
 import os as _os
@@ -668,17 +669,41 @@ _THETA0_MODES = ('ito', 'legacy_clip')
 _STRUCTURAL_ZEROS_ON = ('', '1', 'true', 'yes', 'on')
 _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 
+# ── Hardened scipy quadrature fallback (M2b; plan §3.1 L1b) ──
+# NQUAD_HARDENED (bool, read at call time):
+#   True   (default) every ``_integrate_polytope`` region that reaches scipy
+#          quadrature (m >= 1, after the constant-row verdicts and the
+#          structural-zero test) is integrated by
+#          ``_integrate_polytope_hardened``: nested ``scipy.integrate.quad``
+#          over the region's OWN bounds (a difference-bound-matrix closure
+#          of its rows, not the ±200 / ±50 box), the innermost variable in
+#          closed form when the integrand's modes are known, with an empty
+#          interval answered 0 without sampling, the integrand
+#          Heaviside-filtered, breakpoints at the external times, at the
+#          kinks of the inner bounds and geometrically towards the ends of
+#          wide panels, epsabs =
+#          ``NQUAD_EPSABS_FACTOR`` × a rigorous bound of |integrand| from
+#          the modes and epsrel = ``NQUAD_EPSREL``.  A direction that the
+#          rows leave open is truncated at ``NQUAD_TAIL_K`` / κ_min from
+#          its finite end (κ_min: the slowest decay rate of the modes), or,
+#          without a decay certificate, at the legacy ±200.  See that
+#          function for the details and the counters.
+#   False  the pre-M2b default-tolerance scipy.nquad routines, bit-for-bit.
+# Environment: DAEDALUS_PHASE_J_NQUAD_HARDENED = 1 | 0 (also true/false,
+# yes/no, on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
+
 
 def _initial_phase_j_flags(environ=None):
     """The import-time values of the Phase J flags from ``environ``
     (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...,
-    'STRUCTURAL_ZEROS': ...}``.  The umbrella wins over the per-flag
-    variables.  An unknown value raises (a silent fallback to the default
-    would hide a requested rollback)."""
+    'STRUCTURAL_ZEROS': ..., 'NQUAD_HARDENED': ...}``.  The umbrella wins
+    over the per-flag variables.  An unknown value raises (a silent fallback
+    to the default would hide a requested rollback)."""
     env = _os.environ if environ is None else environ
     if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
         return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
-                'STRUCTURAL_ZEROS': False}
+                'STRUCTURAL_ZEROS': False,
+                'NQUAD_HARDENED': False}
     mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
             .strip().lower() or 'ito')
     if mode not in _THETA0_MODES:
@@ -689,13 +714,28 @@ def _initial_phase_j_flags(environ=None):
     if sz not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
         raise ValueError(
             f'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS={sz!r}: expected 1 or 0')
+    nh = env.get('DAEDALUS_PHASE_J_NQUAD_HARDENED', '').strip().lower()
+    if nh not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_NQUAD_HARDENED={nh!r}: expected 1 or 0')
     return {'THETA0_CONST_ROW_MODE': mode,
-            'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON}
+            'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON,
+            'NQUAD_HARDENED': nh in _STRUCTURAL_ZEROS_ON}
 
 
 _PHASE_J_FLAGS_AT_IMPORT = _initial_phase_j_flags()
 THETA0_CONST_ROW_MODE = _PHASE_J_FLAGS_AT_IMPORT['THETA0_CONST_ROW_MODE']
 STRUCTURAL_ZEROS = _PHASE_J_FLAGS_AT_IMPORT['STRUCTURAL_ZEROS']
+NQUAD_HARDENED = _PHASE_J_FLAGS_AT_IMPORT['NQUAD_HARDENED']
+
+
+def _nquad_hardened_on():
+    """True when the hardened quadrature fallback is enabled (call time)."""
+    flag = NQUAD_HARDENED
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.NQUAD_HARDENED={flag!r}: expected '
+                     f'True or False')
 
 
 def _structural_zeros_on():
@@ -843,6 +883,78 @@ _RUNTIME_COUNTERS = {
     # no ω; for a pole-free propagator: the ``G_ft`` test alone).  Counted
     # once per subset per build, not per call.
     'forced_delta_pruned': 0,
+    # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
+    # ``_integrate_polytope`` entries (m >= 1) handed to
+    # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
+    'nquad_hardened_calls': 0,
+    # ... of which answered 0 without quadrature because the closure of
+    # their difference rows is infeasible (an exact test; a constant row
+    # <= 0 counts here too when the entry did not decide it):
+    'nquad_hardened_empty': 0,
+    # nested-quadrature intervals found empty (lower >= upper) and answered
+    # 0 WITHOUT evaluating the integrand (one count per such interval):
+    'nquad_hardened_empty_intervals': 0,
+    # entries in which an open direction was truncated at NQUAD_TAIL_K / κ
+    # beyond its farthest breakpoint (decay-certified truncation; κ the
+    # certified decay rate along it):
+    'nquad_hardened_capped': 0,
+    # entries in which an open direction had no decay certificate (no mode
+    # data, a mode with Re λ >= 0, or, for rows that are not unit
+    # difference rows that are edges, a failed linear-programming
+    # certificate) and the legacy ±200 cap was used:
+    'nquad_hardened_uncertified': 0,
+    # entries without mode data (epsabs from a pre-sample of the integrand,
+    # open sides at the legacy cap, no geometric breakpoints):
+    'nquad_hardened_no_modes': 0,
+    # entries with a row that is not a difference row (exact level bounds
+    # by Fourier-Motzkin elimination, breakpoints at vertex projections):
+    'nquad_hardened_general_rows': 0,
+    # ... of which the elimination exceeded _NQUAD_FM_MAX_ROWS rows (level
+    # bounds: the difference-row closure and the rows filed by innermost
+    # variable, a superset of the region's projection):
+    'nquad_hardened_fm_capped': 0,
+    # levels at which the vertex projections were not enumerated (more
+    # than _NQUAD_VERTEX_MAX_COMBOS subsets of rows): kinks incomplete:
+    'nquad_hardened_kinks_incomplete': 0,
+    # scipy.integrate.quad calls of a region's final pass that still
+    # returned a nonzero ``ier`` (roundoff detected, ..., or the limit
+    # NQUAD_LIMIT_MAX reached) after the retries, and whose error estimate,
+    # times the widths of the enclosing levels' intervals, exceeds
+    # NQUAD_EPSREL × the region's scale (|result| in a second pass) and the
+    # requested tolerance (or the limit reached); the value is still used
+    # and a PhaseJNquadFallbackWarning reports them (once per model, source
+    # and loop order):
+    'nquad_hardened_quad_flags': 0,
+    # quad calls that reached their subinterval limit and were repeated
+    # with a larger one (every pass):
+    'nquad_hardened_quad_retries': 0,
+    # entries integrated a second time with epsabs from the first result
+    # (its magnitude times NQUAD_EPSABS_FACTOR), the first pass's epsabs
+    # (from the bound / sample of |integrand|) having been larger:
+    'nquad_hardened_reruns': 0,
+    # entries whose outermost open side was cut farther out (the added strip
+    # integrated and added): the bound of the tail dropped by the first cut
+    # (K = NQUAD_TAIL_K) was above _NQUAD_TAIL_REL × |result|; or whose
+    # inner levels' cuts moved out (``region_tail``; the region integrated
+    # again):
+    'nquad_hardened_tail_widened': 0,
+    # entries whose inner levels were cut but whose cuts could not be
+    # checked (a vertex enumeration incomplete, no bound from linear
+    # programming, or ``_NQUAD_TAIL_ANCHOR`` off):
+    'nquad_hardened_inner_unchecked': 0,
+    # entries whose second-pass absolute tolerance was set by the rounding
+    # floor (1e-9 × sampled max) rather than by the result,
+    # with an implied relative tolerance above 1e-8: reported in the
+    # aggregated warning, never silently accepted
+    'nquad_hardened_floor_limited': 0,
+    # closed-form innermost integrals (``_NquadModes.integrate_innermost``)
+    # whose exponentials overflowed and were integrated by quad instead:
+    'nquad_hardened_innermost_overflow': 0,
+    # entries whose closed-form innermost expansion would exceed
+    # _NQUAD_INNERMOST_MAX_TERMS terms (s_0 integrated by quad):
+    'nquad_hardened_innermost_capped': 0,
+    # largest truncation distance K / κ used (0.0: none):
+    'nquad_hardened_cap_span_max': 0.0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -3890,6 +4002,8 @@ def integrate_diagram(
     loop_number = _loop_number_from_graph(typed_diagram)
     # Identity of this build for the ``_SUBSET_HOOK`` payload (M0.1).
     _diag_serial = _next_diagram_serial()
+    # The model, for the hardened fallback's one-time warnings (M2b).
+    _model_id = _model_identity(propagator_data)
 
     D = typed_diagram.prediagram[0]
     leaves = list(typed_diagram.prediagram[2])
@@ -5228,7 +5342,8 @@ def integrate_diagram(
                 _val = _integrate_polytope(fc, resolved, free_vals, m_val,
                                            raw_rows=cdata,
                                            row_kinds=row_kinds,
-                                           tie_ctx=_tie_ctx)
+                                           tie_ctx=_tie_ctx,
+                                           diag_meta=hook_meta)
                 if _hook is not None:
                     if m_val < 1:
                         _reason = None
@@ -5263,6 +5378,7 @@ def integrate_diagram(
                 hook_meta={
                     'source': 'per_diagram',
                     'diagram_serial': _diag_serial,
+                    'model': _model_id,
                     'diagram': typed_diagram,
                     'loop_number': loop_number,
                     'subset_id': branch_bits,
@@ -5872,6 +5988,9 @@ def _build_fast_subset_evaluator(
             result *= edge_val
         return result
 
+    # Mode data for the hardened quadrature fallback (M2b): what this
+    # closure evaluates, P · Π_e Σ_k r_k exp(λ_k Δt_e) with λ_k = i p_k.
+    evaluator._nquad_modes = _NquadModes.from_edge_data(pref_c, edge_data_t)
     return evaluator
 
 
@@ -5949,6 +6068,12 @@ def _build_fast_subset_evaluator_from_modes(
             result *= edge_val
         return result
 
+    # Mode data for the hardened quadrature fallback (M2b).  The fallback
+    # never calls this closure outside the closed region: an empty interval
+    # is answered 0 without sampling and its integrand is Heaviside-filtered
+    # (``_integrate_polytope_hardened``), so ``_cexp(1j*p*dt)`` is never
+    # evaluated at the far-outside points where fast poles overflow.
+    evaluator._nquad_modes = _NquadModes.from_edge_data(pref_c, edge_data_t)
     return evaluator
 
 
@@ -5957,7 +6082,8 @@ def _build_fast_subset_evaluator_from_modes(
 # ───────────────────────────────────────────────────────────────────────
 
 def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
-                        raw_rows=None, row_kinds=None, tie_ctx=None):
+                        raw_rows=None, row_kinds=None, tie_ctx=None,
+                        mode_info=None, diag_meta=None):
     """
     Integrate `integrand_callable(s_1, ..., s_m, *free_ext_vals)` over
     the polytope `{s : a_int · s + c_eff > 0 for all constraints}`.
@@ -5987,6 +6113,15 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
     This covers every caller: an m=2 guard bail, a poset extraction that
     bailed before its own cycle test, grouped m2/m≥3, the SR path of a
     non-analytic subset, and direct callers.
+
+    Hardened quadrature (M2b, ``NQUAD_HARDENED``, call time): every m >= 1
+    region left after those exact tests is integrated by
+    ``_integrate_polytope_hardened`` instead of the default-tolerance
+    scipy.nquad routines below.  ``mode_info`` (an ``_NquadModes``; default:
+    the ``_nquad_modes`` attribute of the fast evaluators) supplies the
+    integrand's modes for its tolerance and truncation; ``diag_meta`` (the
+    dispatch's hook metadata) names the diagram in its one-time warning.
+    Neither changes anything with the flag off.
     """
     # M0.1 observational counters: m=0 is a direct evaluation, m>=1 is
     # real scipy.nquad quadrature.
@@ -6022,6 +6157,13 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
             and _region_structurally_empty(s_constraints, m) == 'cycle'):
         _RUNTIME_COUNTERS['polytope_empty_cycle'] += 1
         return 0.0 + 0.0j
+    if m >= 1 and _nquad_hardened_on():
+        val = _integrate_polytope_hardened(
+            integrand_callable, s_constraints, free_ext_vals, m,
+            mode_info=mode_info, diag_meta=diag_meta)
+        if val is not None:
+            return val
+        # ``None``: a non-finite row shift; the legacy routines below.
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or
@@ -6708,6 +6850,2609 @@ def _outer_bounds(s_constraints, k_var):
         # No pure constraints — let inner bounds clip via callables.
         return -math.inf, math.inf
     return L, U
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Hardened quadrature fallback (M2b; plan §3.1 L1b; flag NQUAD_HARDENED)
+# ───────────────────────────────────────────────────────────────────────
+# The default-tolerance scipy.nquad routines above integrate a region over
+# a ±200 (m = 2 outer axis, m >= 3) box with the integrand Heaviside-
+# filtered, scipy's default epsabs (1.49e-8) and no breakpoints.  A narrow
+# peak (fast poles: width ~1/12 against a box of 400) can then fall between
+# every Gauss-Kronrod node of the first panel: both rules give ~0, the error
+# estimate is ~0 and the panel is accepted -- the whole region is lost
+# (tests/test_phase_j_nquad_hardening.py, section B).  An empty
+# inner interval (bounds (0, 0)) is still sampled, at s = 0 outside the
+# region, where fast poles overflow.  ``_integrate_polytope_hardened``
+# replaces them (flag on):
+#
+# * Bounds: the rows' own.  Every level of the nested quadrature integrates
+#   its variable over the exact projection of the region onto it given the
+#   outer variables (rounded outward by one ulp).  The difference rows (one
+#   nonzero coefficient, or two exactly opposite ones) are closed exactly
+#   (``_dbm_closure``: Floyd-Warshall on rational bounds), which gives that
+#   projection when they are the only rows; with any other row, every row
+#   enters an exact Fourier-Motzkin elimination (``_fm_level_rows``,
+#   rationals), whose rows at each level bound it exactly (counter
+#   ``nquad_hardened_general_rows``; beyond _NQUAD_FM_MAX_ROWS rows the
+#   other rows only bound the level of their innermost variable, a superset,
+#   counted in ``nquad_hardened_fm_capped``).  The Heaviside filter enforces
+#   every row pointwise.  An infeasible closure or elimination -> 0 without
+#   quadrature.
+# * An empty interval returns 0 without evaluating anything, and the
+#   integrand is never evaluated where a row is <= 0 (Θ(0) = 0).
+# * A side that the rows leave open is truncated at K / κ (K =
+#   NQUAD_TAIL_K) beyond the farthest of the interval's finite end and its
+#   breakpoints on that side (kinks of the inner integral, external times;
+#   beyond them the slices change only affinely), κ a certified decay rate
+#   along it.  Decay certificate: every mode with a nonzero coefficient has
+#   Re λ < 0 (κ_min > 0, the slowest rate −Re λ), so |integrand| <=
+#   S·exp(−Σ_e κ_e·Δt_e) where every Δt_e >= 0, and
+#   - when every row is a unit difference row and an edge, and every edge
+#     is a row (``_unit_edge_rows``; every Phase J region measured), κ =
+#     κ_min: the rows are totally unimodular, so along an open direction Σ_e
+#     κ_e·Δt_e grows at least at the rate κ_min (or not at all, and the
+#     integral would diverge).  The tail beyond the outermost cut, at the
+#     distance d from the finite end, is at most (S/κ_min^m)·Γ(m, κ_min·d)/
+#     Γ(m) (= S·κ_min^{-m}·e^{-K}·Σ_{j<m} K^j/j!, K = κ_min·d: for d = K/κ,
+#     1.7e-16·S/κ^m at m = 2, 3.6e-15 at m = 3, 2.8e-11 at m = 7): in the
+#     values of a spanning tree of rows that contains the closure's
+#     shortest path from that variable to its finite end (|Jacobian| = 1),
+#     the path's values add up to d, every tree value decays at least at
+#     the rate κ_min and the other rows' factors are <= 1, whatever the
+#     shape of the slices (S: the modes' bound on the box of the region's
+#     level intervals, at most |pref|·Π_e Σ_k |C_ek|);
+#   - otherwise (other coefficients, rows that are not edges)
+#     ``_GeneralDecayCertificate``: linear programs give the decay rate of
+#     min φ (φ = Σ_e κ_e·Δt_e) along every open side of every level, κ =
+#     min(κ_min·a, those rates) (a <= 1: the smallest |coefficient|; the
+#     rate depends on how the rows combine, not on how a row is scaled),
+#     and bound the outermost tail by S·e^{-v}·∫ e^{-ρy}·Π_k w_k(y) dy from
+#     the minimum v of φ and the widths w_k of the slices beyond the cut
+#     (the slice's volume, not a chain's).  Edges that can be negative on
+#     the region, a side without decay, slices of the outermost level that
+#     are unbounded in an inner variable, or an incomplete vertex
+#     enumeration of that level: no certificate.
+#   These bounds are relative to S, not to the integral, which is far
+#   smaller when the mass sits far from the finite end (an integral of s_1
+#   peaked at a kink 60 from it: ~S·e^{-κ·60}).  The cut beyond the
+#   farthest breakpoint reaches such mass (the inner integral is a sum of
+#   exponentials times polynomials between breakpoints); and after a pass
+#   the outermost cut's tail bound is compared with _NQUAD_TAIL_REL ×
+#   |result|: above it, the cut moves out and the strip between the two
+#   cuts is integrated and added (``nquad_hardened_tail_widened``).  With
+#   the LP certificate the inner levels' cuts are checked too, by a bound of
+#   everything the cuts drop (``region_tail``): above _NQUAD_TAIL_REL ×
+#   |result| their K moves out and the region is integrated again; with
+#   unit difference rows that are edges the same certificate is built on
+#   first need for this check (``tail_in``, ``_inner_certificate``).
+#   Without a certificate the legacy cap ±200 is used and counted
+#   (``nquad_hardened_uncertified``).
+# * Tolerance: epsrel = NQUAD_EPSREL and epsabs = NQUAD_EPSABS_FACTOR × a
+#   scale, at every level.  First pass: the scale is the smaller of B, a
+#   rigorous bound of |integrand| on the region from the modes
+#   (``_NquadModes.bound``), and the largest |integrand| at
+#   _NQUAD_PRESAMPLES points of the region (from the modes when known; a
+#   lower bound of the supremum), but not below _NQUAD_SCALE_FLOOR × B (a
+#   sample spread over long truncated sides can miss the integrand's peak
+#   by many orders).  Without mode data only the sample (0 -> epsabs 0, a
+#   pure relative tolerance).  B takes each edge separately
+#   over a box and sums |C| over the modes, so it can exceed the integral
+#   by many orders (close poles: residues ±1/ε; decay across the region;
+#   oscillation), and so can the sample (oscillation, cancellation); with
+#   epsabs above epsrel·|I| QUADPACK stops at its first estimates.  So if
+#   the first pass's epsabs exceeds _NQUAD_RERUN_RATIO ×
+#   NQUAD_EPSABS_FACTOR × |result|, the region is integrated again with
+#   epsabs = NQUAD_EPSABS_FACTOR × |result| (floored at 1e-9 × the sampled
+#   maximum, warned when that floor allows more than 1e-8 relative error;
+#   up to _NQUAD_RERUN_MAX passes; counter
+#   ``nquad_hardened_reruns``).
+# * Subinterval limit: NQUAD_LIMIT (at least twice the breakpoints), raised
+#   to NQUAD_LIMIT + ω·(U − L)/π when the modes oscillate (ω from
+#   ``_NquadModes.osc_bound``) and that count exceeds _NQUAD_OSC_MIN.  A
+#   quad call that reaches its limit is repeated once with the limit
+#   NQUAD_LIMIT_MAX (``nquad_hardened_quad_retries``; QUADPACK's bisections
+#   do not depend on the limit until half of it is used, so the larger
+#   limit costs only the subintervals needed); a call of the final pass
+#   that still ends with a nonzero ier (roundoff detected, ..., or that
+#   limit reached) is counted (``nquad_hardened_quad_flags``) and reported
+#   by a PhaseJNquadFallbackWarning (aggregated per model, source and loop
+#   order: ``_nquad_note_region``), unless its error
+#   estimate meets the requested tolerance or, integrated over the
+#   enclosing levels' intervals, stays within NQUAD_EPSREL × the region's
+#   scale (an inner call of a second pass asks for 1e-13·|result|
+#   absolute, which the rounding of its own values can prevent).
+# * Breakpoints: the external times (0 and the free external times), every
+#   kink of the inner integral as a function of the variable, and, in every
+#   panel wider than _NQUAD_GEOM_MIN_WIDTH/κ_fast (κ_fast: the fastest decay
+#   rate), 4^j/κ_fast (j >= 0) from each of its ends that is not a
+#   truncation, so no panel next to a peak is much wider than the peak.
+#   The kinks at level k (given the outer values) are the s_k-coordinates of
+#   the vertices of the region's slice over (s_0, ..., s_k).  Between them
+#   the inner integral is smooth (exponentials times polynomials); the
+#   narrow peaks that the geometric breakpoints must reach sit at, or a few
+#   1/κ_fast from, an interval end or such a kink (for one exponential term
+#   the inner integral is log-concave, and its log has corners only there).
+#   A kink missing from the breakpoints can leave a whole peak inside a wide
+#   panel, unseen by every node.  With difference rows only, a vertex
+#   coordinate is an anchor (0 or an outer variable) plus an alternating sum
+#   of closure entries along a simple path through inner variables (a run of
+#   tight rows in one direction is tight as one closure entry), so these are
+#   enumerated from the closure (``_dbm_path_kinks``; the one-intermediate
+#   paths are the direct switches of an inner bound).  With other rows the
+#   vertices are enumerated at every level call (``_VertexKinks``: every
+#   (k+1)-subset of the rows, solved once per region; beyond
+#   _NQUAD_VERTEX_MAX_COMBOS subsets that level keeps only the closure's
+#   kinks, counted in ``nquad_hardened_kinks_incomplete``).
+# * Real and imaginary parts are integrated by separate adaptive passes
+#   over one cache of complex values per level, so the inner integrals are
+#   computed once per node.  The part that is larger at the centre of the
+#   first panel goes first; the other is integrated with epsabs raised to
+#   epsrel × |the first part| (the complex value's tolerance), so a part
+#   that is only rounding noise (the imaginary part of a real integrand
+#   evaluated from pole tuples, or the real part of an imaginary one) does
+#   not drive the subdivision.  A part that ends with a QUADPACK message is
+#   accepted once its error estimate meets max(epsabs, epsrel × |the
+#   level's complex value|).
+# * With mode data the innermost variable s_0 is integrated in closed form
+#   (``_NquadModes.integrate_innermost``): every row that involves s_0 bounds
+#   it in ``_level_interval`` (s_0 has no inner variable), so on that
+#   interval the integrand is a sum of exponentials in s_0, and the filter
+#   reduces to the rows without s_0.  Quadrature then runs on m − 1 levels
+#   (none for m = 1); without mode data, or if an exponential overflows, s_0
+#   is integrated by quad like the other levels.  The expansion (per
+#   diagram: Π_e (modes of e) terms over the edges with s_0; grouped: one
+#   term per pole tuple) is built once per mode object and evaluated with
+#   numpy; beyond _NQUAD_INNERMOST_MAX_TERMS product terms s_0 is integrated
+#   by quad (``nquad_hardened_innermost_capped``).
+
+#: epsabs = NQUAD_EPSABS_FACTOR × (scale): first the smaller of a rigorous
+#: bound of |integrand| and its largest sampled value, then, if that was
+#: larger, the first result's magnitude (a second pass).
+NQUAD_EPSABS_FACTOR = 1e-13
+#: epsrel of every quad call of the hardened fallback.
+NQUAD_EPSREL = 1e-10
+#: Base subinterval limit of every quad call (raised with the breakpoints,
+#: and from the modes' oscillation count).
+NQUAD_LIMIT = 200
+#: A quad call that reaches its subinterval limit is repeated once with
+#: this limit.
+NQUAD_LIMIT_MAX = 12800
+#: An open side is truncated at NQUAD_TAIL_K / κ beyond its farthest
+#: breakpoint (κ: the certified decay rate along it, κ_min for unit
+#: difference rows that are edges).
+NQUAD_TAIL_K = 40.0
+#: Cap of an open side without a decay certificate (the legacy ±200).
+NQUAD_UNCERTIFIED_CAP = 200.0
+# Geometric breakpoints at RATIO^j / κ_fast (j = 0, 1, ...) from both ends of
+# every panel (between the interval's ends and its other breakpoints) wider
+# than _NQUAD_GEOM_MIN_WIDTH / κ_fast.  Below that width the adaptive rule
+# sees a peak at a panel end: its outermost Gauss-Kronrod node lies 0.0022
+# panel widths from the end, where an exp(−κ·x) peak still has e^(−0.56) of
+# its height (a panel is accepted unseen only beyond ~1e4 / κ).
+_NQUAD_GEOM_RATIO = 4.0
+_NQUAD_GEOM_J0 = 0
+_NQUAD_GEOM_MAX = 40
+_NQUAD_GEOM_MIN_WIDTH = 256.0
+# With mode data, the innermost variable is integrated in closed form
+# (``_NquadModes.integrate_innermost``) over its exact interval instead of by
+# a quad call; False forces quadrature on every level (tests compare both).
+_NQUAD_ANALYTIC_INNERMOST = True
+# Regions with a row that is not a difference row: the Fourier-Motzkin
+# elimination stops beyond this many rows (``_fm_level_rows``), and a level's
+# vertex enumeration beyond this many (k+1)-subsets of rows
+# (``_VertexKinks``); both are counted.
+_NQUAD_FM_MAX_ROWS = 4096
+_NQUAD_VERTEX_MAX_COMBOS = 20000
+# Points of the region at which |integrand| is sampled for the absolute
+# tolerance (from the modes when they are known, else the integrand).
+_NQUAD_PRESAMPLES = 64
+# With mode data the first pass's scale (the smaller of the bound and the
+# sampled maximum) is never below this fraction of the bound.
+_NQUAD_SCALE_FLOOR = 1e-3
+# Second pass: when the first pass's epsabs exceeds _NQUAD_RERUN_RATIO ×
+# NQUAD_EPSABS_FACTOR × |result|, the region is integrated again with
+# epsabs = NQUAD_EPSABS_FACTOR × |result| (at most _NQUAD_RERUN_MAX more
+# passes, each with the latest result).
+_NQUAD_RERUN_RATIO = 10.0
+# After a pass that cut the outermost open side: the rigorous bound of the
+# dropped tail must be at most _NQUAD_TAIL_REL × |result| (an order below
+# NQUAD_EPSREL), else the cut moves out (``tail_k``) and the strip between
+# the two cuts is integrated and added; _NQUAD_TAIL_K_MAX caps the widened
+# constant (e^{-700} is near the smallest double).
+_NQUAD_TAIL_REL = 1e-11
+_NQUAD_TAIL_K_MAX = 700.0
+# An open side is cut K/κ beyond its farthest breakpoint (kink or external
+# time), not beyond its finite end; False measures from the finite end
+# (tests compare both).
+_NQUAD_TAIL_ANCHOR = True
+_NQUAD_RERUN_MAX = 2
+# The closed-form innermost integral expands a per-diagram integrand into
+# Π_e (modes of edge e) terms over the edges that involve s_0; beyond this
+# many terms s_0 is integrated by quad instead (counted).
+_NQUAD_INNERMOST_MAX_TERMS = 1 << 16
+# The closed form is evaluated by a scalar loop below this many terms per
+# edge with s_0 (per diagram) or half as many terms (grouped): numpy loses
+# to it there (measured crossovers: 2 edges x 8 modes, 3 x 4 vs 3 x 8; 16 vs
+# 64 pole tuples).
+_NQUAD_INNERMOST_NUMPY_MIN = 64
+# The starting subinterval limit of a quad call is raised to NQUAD_LIMIT +
+# the oscillation count ω·(U − L)/π when that count exceeds this.
+_NQUAD_OSC_MIN = 100
+
+
+class PhaseJNquadFallbackWarning(UserWarning):
+    """Phase J integrated regions with scipy quadrature (the hardened
+    fallback of ``_integrate_polytope``) because no analytic path answered
+    them.  Issued once per model, source (per-diagram or grouped) and loop
+    order per process (``_nquad_note_region``): the model is its name
+    (``_model_identity``), so another ``compute_cumulants`` call or other
+    parameter values do not repeat it, while another model does.  Within
+    one evaluation (``nquad_warning_scope``, opened by the callables that
+    ``compute_cumulants`` returns and around its own grid evaluation) the
+    regions are aggregated, and the warning gives their counts: regions and
+    diagrams served, regions without mode data, without a decay
+    certificate, and (a second warning, also once per model, source and
+    loop order) regions whose quadrature did not reach its tolerance
+    (``nquad_hardened_quad_flags``).  Every region is counted in
+    ``_RUNTIME_COUNTERS['nquad_hardened_calls']``; with logging at DEBUG
+    the module's logger names each diagram once.
+    """
+
+
+_NQUAD_WARNED = set()
+_NQUAD_WARNED_LOCK = _threading.Lock()
+_NQUAD_MODEL_SERIAL = _itertools_hook.count(1)
+
+
+def _diagram_identity(diag_meta):
+    """An identity of the diagram behind ``diag_meta`` that does not change
+    when the same model is built again (the warnings count distinct
+    diagrams by it): the model (``diag_meta['model']``, see
+    ``_model_identity``), the source, the loop order and, per typed
+    diagram, its vertex count, its edges (endpoints, label and the two
+    field legs), its external legs and the legs and bigrade of every vertex
+    type (not the coefficients, which carry parameter values).  Without a
+    typed diagram, the build's ``diagram_serial``."""
+    model = diag_meta.get('model')
+    td = diag_meta.get('diagram')
+    tds = td if isinstance(td, (list, tuple)) else (td,)
+    sig = []
+    try:
+        for x in tds:
+            if x is None:
+                continue
+            verts = []
+            for v, a in x.vertex_assignments.items():
+                verts.append(repr((v, type(a).__name__,
+                                   tuple(getattr(a, 'response_legs', ())),
+                                   tuple(getattr(a, 'physical_legs', ())),
+                                   tuple(getattr(a, 'bigrade', ())))))
+            sig.append((len(x.prediagram[0].vertices()),
+                        tuple(sorted(repr(e) for e in x.edge_types.items())),
+                        tuple(sorted(repr(e)
+                                     for e in x.external_legs.items())),
+                        tuple(sorted(verts))))
+    except Exception:                                   # noqa: BLE001
+        sig = []
+    if not sig:
+        return (model, diag_meta.get('source'), 'serial',
+                diag_meta.get('diagram_serial'))
+    return (model, diag_meta.get('source'), diag_meta.get('loop_number'),
+            tuple(sig))
+
+
+def _model_identity(propagator_data):
+    """The model part of the warnings' key (``_nquad_group_key``) for a
+    build with this ``propagator_data``: its ``'model_name'`` (set by
+    ``compute_cumulants`` from the model's ``name``), so that rebuilding the
+    same model with other parameter values does not repeat a warning; for
+    an unnamed model or a direct caller, a serial stamped into that
+    ``propagator_data`` dict on first use (each call of ``compute_cumulants``
+    builds a new one, so it warns again)."""
+    try:
+        name = propagator_data.get('model_name')
+    except AttributeError:
+        return ('unnamed', None)
+    if isinstance(name, str) and name:
+        return ('model', name)
+    try:
+        s = propagator_data.get('_nquad_warn_serial')
+        if s is None:
+            s = next(_NQUAD_MODEL_SERIAL)
+            propagator_data['_nquad_warn_serial'] = s
+    except (AttributeError, TypeError):
+        s = None
+    return ('unnamed', s)
+
+
+def _describe_diagram(diag_meta, m):
+    """A short human-readable name of the diagram behind ``diag_meta`` (the
+    dispatch's hook metadata), for warnings."""
+    if not diag_meta:
+        return f'an integration region with m = {m} (no diagram information)'
+    src = diag_meta.get('source', '?')
+    loop = diag_meta.get('loop_number', '?')
+    sid = diag_meta.get('subset_id')
+    td = diag_meta.get('diagram')
+    desc = ''
+    try:
+        if isinstance(td, (list, tuple)):
+            desc = f'; a group of {len(td)} typed diagrams'
+            td = td[0] if td else None
+        if td is not None:
+            D = td.prediagram[0]
+            legs = sorted(f'{f}{p}' for (f, p) in td.external_legs.values())
+            edges = sorted(f'{r[0]}{r[1]}<-{q[0]}{q[1]}'
+                           for (r, q) in td.edge_types.values())
+            desc += (f'; {len(D.vertices())} vertices, external legs '
+                     f'{legs}, edges {edges}')
+    except Exception:                                   # noqa: BLE001
+        pass
+    sid_s = bin(sid) if isinstance(sid, int) else str(sid)
+    return (f'δ-subset {sid_s} (m = {m}) of a {src} diagram '
+            f'(loop order {loop}{desc})')
+
+
+# Aggregation of the fallback's warnings.  ``_nquad_note_region`` records
+# every region served (after its quadrature) under the key (model, source,
+# loop order); at the end of the outermost ``nquad_warning_scope`` (or at
+# once, outside any scope or in another process than the scope's, e.g. a
+# forked worker) ``_nquad_flush`` issues one PhaseJNquadFallbackWarning
+# per key not yet warned in this process, and one more for its flagged
+# regions.
+_NQUAD_PENDING = {}
+_NQUAD_SCOPE = {'depth': 0, 'pid': None}
+_NQUAD_LOGGED = set()
+_NQUAD_LOG = None
+
+
+def _nquad_logger():
+    global _NQUAD_LOG
+    if _NQUAD_LOG is None:
+        import logging
+        _NQUAD_LOG = logging.getLogger(__name__)
+    return _NQUAD_LOG
+
+
+class nquad_warning_scope:
+    """Context manager: the hardened fallback's warnings for every region
+    served inside it are aggregated and issued when the outermost scope of
+    this process ends (``_nquad_flush``).  Reentrant; a forked child that
+    inherits an open scope warns at once."""
+
+    def __enter__(self):
+        pid = _os.getpid()
+        with _NQUAD_WARNED_LOCK:
+            if _NQUAD_SCOPE['pid'] != pid:
+                _NQUAD_SCOPE['pid'] = pid
+                _NQUAD_SCOPE['depth'] = 0
+            _NQUAD_SCOPE['depth'] += 1
+        return self
+
+    def __exit__(self, *exc):
+        with _NQUAD_WARNED_LOCK:
+            if _NQUAD_SCOPE['pid'] == _os.getpid():
+                _NQUAD_SCOPE['depth'] = max(0, _NQUAD_SCOPE['depth'] - 1)
+            done = _NQUAD_SCOPE['depth'] == 0
+        if done:
+            _nquad_flush()
+        return False
+
+
+def _nquad_group_key(diag_meta):
+    if not diag_meta:
+        return (None, 'direct', None)
+    return (diag_meta.get('model'), diag_meta.get('source'),
+            diag_meta.get('loop_number'))
+
+
+def _nquad_note_region(diag_meta, m, *, no_modes=False, uncertified=False,
+                       flag_msgs=()):
+    """Record one region served by the hardened fallback (see
+    ``nquad_warning_scope``)."""
+    key = _nquad_group_key(diag_meta)
+    ident = (_diagram_identity(diag_meta) if diag_meta
+             else ('direct', m))
+    with _NQUAD_WARNED_LOCK:
+        st = _NQUAD_PENDING.get(key)
+        if st is None:
+            st = {'diagrams': set(), 'regions': 0, 'no_modes': 0,
+                  'uncertified': 0, 'flagged': 0, 'flag_calls': 0,
+                  'first': (diag_meta, m), 'first_flag': None}
+            _NQUAD_PENDING[key] = st
+        st['diagrams'].add(ident)
+        st['regions'] += 1
+        st['no_modes'] += bool(no_modes)
+        st['uncertified'] += bool(uncertified)
+        if flag_msgs:
+            st['flagged'] += 1
+            st['flag_calls'] += len(flag_msgs)
+            if st['first_flag'] is None:
+                st['first_flag'] = (diag_meta, m, flag_msgs[0])
+        new_ident = ident not in _NQUAD_LOGGED
+        if new_ident:
+            _NQUAD_LOGGED.add(ident)
+        now = (_NQUAD_SCOPE['depth'] == 0
+               or _NQUAD_SCOPE['pid'] != _os.getpid())
+    if new_ident:
+        log = _nquad_logger()
+        if log.isEnabledFor(10):                        # logging.DEBUG
+            log.debug('Phase J hardened quadrature fallback: %s',
+                      _describe_diagram(diag_meta, m))
+    if now:
+        _nquad_flush()
+
+
+def _nquad_whose(key):
+    model, src, loop = key
+    if isinstance(model, tuple) and model[:1] == ('model',):
+        who = f"model '{model[1]}'"
+    elif isinstance(model, tuple) and model[:1] == ('unnamed',):
+        who = 'an unnamed model'
+    elif src == 'direct':
+        return 'a direct call (no diagram information)'
+    else:
+        who = 'an unidentified model'
+    if src == 'direct':
+        return who
+    return f'{who} ({src}, loop order {loop})'
+
+
+def _nquad_flush():
+    """Issue the aggregated warnings of ``_NQUAD_PENDING`` (once per key and
+    process) and clear it."""
+    import warnings
+    with _NQUAD_WARNED_LOCK:
+        items = list(_NQUAD_PENDING.items())
+        _NQUAD_PENDING.clear()
+        todo = []
+        for key, st in items:
+            kf = ('fallback',) + key
+            if kf not in _NQUAD_WARNED:
+                _NQUAD_WARNED.add(kf)
+                todo.append(('fallback', key, st))
+            kq = ('flags',) + key
+            if st['flagged'] and kq not in _NQUAD_WARNED:
+                _NQUAD_WARNED.add(kq)
+                todo.append(('flags', key, st))
+    for kind, key, st in todo:
+        who = _nquad_whose(key)
+        if kind == 'fallback':
+            extra = ''
+            if st['no_modes']:
+                extra += (f'; {st["no_modes"]} without the integrand\'s '
+                          'exponential modes (epsabs from a sample of the '
+                          'integrand, open directions capped at the legacy '
+                          f'{NQUAD_UNCERTIFIED_CAP:g}, no geometric '
+                          'breakpoints)')
+            if st['uncertified']:
+                extra += (f'; {st["uncertified"]} with an open direction '
+                          'without a decay certificate (capped at the '
+                          f'legacy {NQUAD_UNCERTIFIED_CAP:g})')
+            dm, m = st['first']
+            msg = (
+                f'Phase J: no analytic path answered {st["regions"]} '
+                f'integration region(s) of {len(st["diagrams"])} '
+                f'diagram(s) of {who} in this evaluation; they were '
+                'integrated by the hardened scipy quadrature fallback '
+                f'(exact region bounds, epsrel {NQUAD_EPSREL:g}, open '
+                f'directions truncated at {NQUAD_TAIL_K:g}/κ beyond their '
+                f'farthest breakpoint{extra}).  First: '
+                f'{_describe_diagram(dm, m)}.  Issued once per model, '
+                'source and loop order and process; every region is '
+                "counted in final_integral._RUNTIME_COUNTERS"
+                "['nquad_hardened_calls'] (logging at DEBUG names each "
+                'diagram).')
+        else:
+            dm, m, first = st['first_flag']
+            msg = (
+                'Phase J: the hardened quadrature fallback did not reach '
+                f'its tolerance on {st["flagged"]} of {st["regions"]} '
+                f'region(s) of {who} in this evaluation: '
+                f'{st["flag_calls"]} scipy.integrate.quad call(s) of their '
+                'final passes ended with a QUADPACK warning (first, on '
+                f'{_describe_diagram(dm, m)}: "{first}"); the values are '
+                'used as computed and may be inaccurate.  Issued once per '
+                'model, source and loop order and process; every such '
+                "call is counted in final_integral._RUNTIME_COUNTERS"
+                "['nquad_hardened_quad_flags'].")
+        warnings.warn(msg, PhaseJNquadFallbackWarning, stacklevel=2)
+
+
+import cmath
+
+
+def _exp_over_interval(o, al, L, U):
+    """∫_L^U exp(o + al·s) ds for complex o, al (the scalar path of
+    ``_NquadModes.integrate_innermost``)."""
+    h = U - L
+    z = al * h
+    if abs(z) < 0.25:
+        phi = 1.0 + 0.0j
+        term = 1.0 + 0.0j
+        for n in range(2, 20):
+            term *= z / n
+            phi += term
+        return cmath.exp(o + al * L) * h * phi
+    return (cmath.exp(o + al * U) - cmath.exp(o + al * L)) / al
+
+
+def _sum_exp_over_interval(K, EU, EL, AL, L, U):
+    r"""Σ_j K_j ∫_L^U exp(o_j + α_j s) ds from EU_j = exp(o_j + α_j U),
+    EL_j = exp(o_j + α_j L) and AL_j = α_j (complex arrays): each integral
+    is (EU_j − EL_j)/α_j, or EL_j·(U − L)·φ1(α_j (U − L)) with
+    φ1(z) = (e^z − 1)/z by its series where |α_j (U − L)| < 1/4."""
+    h = U - L
+    z = AL * h
+    small = np.abs(z) < 0.25
+    if small.all():
+        out = EL * h * _phi1_series(z)
+    elif small.any():
+        out = np.empty(EU.shape, complex)
+        big = ~small
+        out[big] = (EU[big] - EL[big]) / AL[big]
+        out[small] = EL[small] * h * _phi1_series(z[small])
+    else:
+        out = (EU - EL) / AL
+    return complex(np.dot(K, out))
+
+
+def _phi1_series(zs):
+    """φ1(z) = (e^z − 1)/z = Σ_{n>=0} z^n/(n+1)! for |z| < 1/4 (an array;
+    in place, the same operations as the scalar series)."""
+    phi = np.ones(zs.shape, complex)
+    term = np.ones(zs.shape, complex)
+    for n in range(2, 20):
+        np.multiply(term, zs, out=term)
+        np.divide(term, n, out=term)
+        np.add(phi, term, out=phi)
+    return phi
+
+
+class _NquadModes:
+    r"""The modes of a Phase J subset integrand, for the hardened fallback.
+
+    ``kind='product'`` (per-diagram fast evaluators): the integrand is
+    ``pref · Π_e Σ_k C_ek exp(λ_ek Δt_e)``; ``cterms[e]`` is the tuple of
+    ``(C_ek, λ_ek)``.  ``kind='sum'`` (grouped merged pole tuples): the
+    integrand is ``pref · Σ_α B_α Π_e exp(λ_αe Δt_e)``; ``cterms`` is the
+    tuple of ``(B_α, (λ_αe for each edge e))``.  ``edges[e]`` is the edge's
+    row ``Δt_e = c0 + Σ a_int·s + Σ a_ext·t`` in the sparse form
+    ``(int_pairs, ext_pairs, c0)``.  ``terms`` keeps the magnitudes and real
+    parts (|C|, Re λ) that the tolerance and the truncation need.  The
+    expansion of the integrand in the innermost variable s_0 (arrays for
+    ``integrate_innermost``) is built once per object, on first use
+    (``_expansion0``), and so are the oscillation rate (``osc_bound``) and
+    the decay rates (``decay_rates``).
+    """
+    __slots__ = ('kind', 'pref', 'pref_abs', 'edges', 'cterms', 'terms',
+                 '_x0', '_osc', '_rates')
+
+    def __init__(self, kind, pref, edges, cterms):
+        self.kind = kind
+        self.pref = complex(pref)
+        self.pref_abs = abs(self.pref)
+        self.edges = edges
+        self.cterms = cterms
+        self._x0 = None
+        self._osc = None
+        self._rates = None
+        if kind == 'product':
+            self.terms = tuple(tuple((abs(C), lam.real) for (C, lam) in per)
+                               for per in cterms)
+        else:
+            self.terms = tuple((abs(B), tuple(lam.real for lam in lams))
+                               for (B, lams) in cterms)
+
+    @classmethod
+    def from_edge_data(cls, pref_c, edge_data):
+        """From a fast evaluator's ``(poles, residues, c0, int_pairs,
+        ext_pairs)`` tuples (``G_e(t) = Σ r exp(i p t)``: λ = i p).  ``None``
+        if the data are not numeric."""
+        try:
+            edges, cterms = [], []
+            for (poles, residues, c0, int_pairs, ext_pairs) in edge_data:
+                edges.append((tuple(int_pairs), tuple(ext_pairs), float(c0)))
+                cterms.append(tuple((complex(r), 1j * complex(p))
+                                    for p, r in zip(poles, residues)))
+            return cls('product', pref_c, tuple(edges), tuple(cterms))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @classmethod
+    def from_pole_tuples(cls, rows, pole_tuples, pref=1.0):
+        """Grouped: ``pole_tuples`` = ``[(B_α, (λ per smooth edge))]``, the
+        smooth edges being the first rows of ``rows`` (``(a_int, a_ext,
+        c0)``, the subset's constraint data).  ``None`` if unusable."""
+        try:
+            pt = list(pole_tuples or ())
+            if not pt:
+                return None
+            n = len(pt[0][1])
+            if n > len(rows):
+                return None
+            edges = []
+            for (a_int, a_ext, c0) in list(rows)[:n]:
+                ip = tuple((i, float(a)) for i, a in enumerate(a_int)
+                           if abs(float(a)) > 1e-15)
+                ep = tuple((i, float(a)) for i, a in enumerate(a_ext)
+                           if abs(float(a)) > 1e-15)
+                edges.append((ip, ep, float(c0)))
+            cterms = tuple((complex(B), tuple(complex(lam) for lam in lams))
+                           for (B, lams) in pt)
+            if any(len(lams) != n for (_b, lams) in cterms):
+                return None
+            return cls('sum', pref, tuple(edges), cterms)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+
+    def _expansion0(self):
+        r"""The integrand as a sum of exponentials in s_0, built once.
+
+        Per edge: ``(a0, c0, ext_pairs, outer_pairs)`` with
+        Δt_e = a0·s_0 + c_e, c_e = c0 + Σ a·free + Σ a·s_{i} (i >= 1;
+        ``outer_pairs`` index ``outer`` = (s_1, ...)).
+
+        * ``'product'``: the edges with a0 != 0 expand into
+          n = Π_e (number of modes of e) terms: K = ⊗_e (C_ek)_k (Kronecker
+          product) and AL = the matching sums Σ_e a0_e·λ_ek; per call the
+          exponentials are formed per edge and combined by Kronecker
+          products.  ``('capped', n)`` if n > _NQUAD_INNERMOST_MAX_TERMS
+          (the caller then integrates s_0 by quad).
+        * ``'sum'``: B (one entry per pole tuple), LAM (tuples × edges) and
+          AL = LAM @ a0.
+        """
+        x = self._x0
+        if x is not None:
+            return x
+        edges_c = []
+        for (ip, ep, c0) in self.edges:
+            a0 = 0.0
+            op = []
+            for (i, a) in ip:
+                if i == 0:
+                    a0 = a
+                else:
+                    op.append((i - 1, a))
+            edges_c.append((a0, c0, tuple(ep), tuple(op)))
+        edges_c = tuple(edges_c)
+        if self.kind == 'product':
+            s0 = tuple(e for e, ec in enumerate(edges_c) if ec[0] != 0.0)
+            rest = tuple(e for e, ec in enumerate(edges_c) if ec[0] == 0.0)
+            n = 1
+            for e in s0:
+                n *= len(self.cterms[e])
+            if n > _NQUAD_INNERMOST_MAX_TERMS:
+                x = ('capped', n)
+            else:
+                K = np.ones(1, complex)
+                AL = np.zeros(1, complex)
+                lams = []
+                for e in s0:
+                    Ce = np.array([C for (C, _l) in self.cterms[e]], complex)
+                    Le = np.array([lam for (_C, lam) in self.cterms[e]],
+                                  complex)
+                    K = np.kron(K, Ce)
+                    AL = (AL[:, None] + (Le * edges_c[e][0])[None, :]).ravel()
+                    lams.append(Le)
+                x = ('product', n, edges_c, s0, rest, K, AL, tuple(lams))
+        else:
+            ne = len(edges_c)
+            a0v = np.array([ec[0] for ec in edges_c], float)
+            B = np.array([b for (b, _l) in self.cterms], complex)
+            LAM = np.array([list(lams) for (_b, lams) in self.cterms],
+                           complex).reshape(len(B), ne)
+            x = ('sum', len(B), edges_c, B, LAM, LAM @ a0v)
+        self._x0 = x
+        return x
+
+    def innermost_terms(self):
+        """The number of exponential terms of the closed-form innermost
+        integral (``integrate_innermost`` is available only when it is at
+        most _NQUAD_INNERMOST_MAX_TERMS, i.e. not ``'capped'``)."""
+        x = self._expansion0()
+        return x[1]
+
+    def innermost_available(self):
+        return self._expansion0()[0] != 'capped'
+
+    @staticmethod
+    def _cval(ec, outer, free):
+        _a0, c, ep, op = ec
+        for (i, a) in ep:
+            c += a * free[i]
+        for (i, a) in op:
+            c += a * outer[i]
+        return c
+
+    def integrate_innermost(self, L, U, outer, free):
+        r"""∫_L^U integrand(s_0, *outer, *free) ds_0 in closed form (s_0 the
+        innermost variable, ``outer`` = (s_1, ..., s_{m-1})), with NO
+        Heaviside factor: the caller passes the exact interval of s_0 and
+        checks the other rows.  Each product of modes is an exponential
+        exp(o + α s_0); its integral is exp(o + α L)·(U − L)·φ1(α(U − L)),
+        φ1(z) = (e^z − 1)/z (series for |z| < 1/4, else the difference of
+        the two exponentials over α).  The expansion is built once per
+        object (``_expansion0``) and evaluated with numpy; per call the
+        exponentials are formed per edge (product kind: Kronecker products
+        of the per-edge factors exp(λ_ek Δt_e) at s_0 = L and U) or per
+        pole tuple (sum kind).  Below _NQUAD_INNERMOST_NUMPY_MIN terms per
+        edge with s_0 (product kind) or _NQUAD_INNERMOST_NUMPY_MIN / 2 terms
+        (sum kind) the scalar loop is faster (numpy's per-call and per-edge
+        overhead) and is used instead (``_integrate_innermost_scalar``).
+        Raises OverflowError if
+        an exponential overflows (the caller then integrates
+        numerically)."""
+        x = self._expansion0()
+        kind = x[0]
+        if (kind == 'product' and x[1] < _NQUAD_INNERMOST_NUMPY_MIN
+                * max(1, len(x[3]))) or (
+                    kind == 'sum' and 2 * x[1] < _NQUAD_INNERMOST_NUMPY_MIN):
+            return self._integrate_innermost_scalar(L, U, outer, free)
+        cval = self._cval
+        try:
+            with np.errstate(over='raise', invalid='raise'):
+                if kind == 'product':
+                    (_k, _n, edges_c, s0, rest, K, AL, lams) = x
+                    val = self.pref
+                    for e in rest:
+                        c = cval(edges_c[e], outer, free)
+                        g = 0.0j
+                        for (C, lam) in self.cterms[e]:
+                            g += C * cmath.exp(lam * c)
+                        val *= g
+                    if not s0:
+                        return val * (U - L)
+                    EU = EL = None
+                    for e, Le in zip(s0, lams):
+                        ec = edges_c[e]
+                        c = cval(ec, outer, free)
+                        eu = np.exp(Le * (ec[0] * U + c))
+                        el = np.exp(Le * (ec[0] * L + c))
+                        if EU is None:
+                            EU, EL = eu, el
+                        else:
+                            # == np.kron for 1-D arrays, bit for bit, without
+                            # its reshaping overhead
+                            EU = np.multiply.outer(EU, eu).ravel()
+                            EL = np.multiply.outer(EL, el).ravel()
+                    return val * _sum_exp_over_interval(K, EU, EL, AL, L, U)
+                if kind == 'sum':
+                    (_k, _n, edges_c, B, LAM, AL) = x
+                    a0v = np.array([ec[0] for ec in edges_c], float)
+                    cv = np.array([cval(ec, outer, free) for ec in edges_c],
+                                  float)
+                    EU = np.exp(LAM @ (a0v * U + cv))
+                    EL = np.exp(LAM @ (a0v * L + cv))
+                    return self.pref * _sum_exp_over_interval(B, EU, EL, AL,
+                                                              L, U)
+        except FloatingPointError as exc:
+            raise OverflowError(str(exc)) from exc
+        raise ValueError('closed-form innermost integral not available '
+                         f'({x[1]} terms)')
+
+    def _integrate_innermost_scalar(self, L, U, outer, free):
+        """``integrate_innermost`` by a scalar loop over the expanded terms
+        (cmath; for few terms)."""
+        if self.kind == 'product':
+            val = self.pref
+            terms = [(1.0 + 0.0j, 0.0j, 0.0j)]
+            for (ip, ep, c0), per in zip(self.edges, self.cterms):
+                c = c0
+                for (i, a) in ep:
+                    c += a * free[i]
+                a0 = 0.0
+                for (i, a) in ip:
+                    if i == 0:
+                        a0 = a
+                    else:
+                        c += a * outer[i - 1]
+                if a0 == 0.0:
+                    g = 0.0j
+                    for (C, lam) in per:
+                        g += C * cmath.exp(lam * c)
+                    val *= g
+                else:
+                    terms = [(k * C, o + lam * c, al + lam * a0)
+                             for (k, o, al) in terms for (C, lam) in per]
+            tot = 0.0j
+            for (k, o, al) in terms:
+                tot += k * _exp_over_interval(o, al, L, U)
+            return val * tot
+        cs, a0s = [], []
+        for (ip, ep, c0) in self.edges:
+            c = c0
+            for (i, a) in ep:
+                c += a * free[i]
+            a0 = 0.0
+            for (i, a) in ip:
+                if i == 0:
+                    a0 = a
+                else:
+                    c += a * outer[i - 1]
+            cs.append(c)
+            a0s.append(a0)
+        tot = 0.0j
+        for (B, lams) in self.cterms:
+            o = al = 0.0j
+            for lam, c, a0 in zip(lams, cs, a0s):
+                o += lam * c
+                al += lam * a0
+            tot += B * _exp_over_interval(o, al, L, U)
+        return self.pref * tot
+
+    def value(self, s, free):
+        """The integrand at ``s`` = (s_0, ..., s_{m-1}) from the modes (no
+        Heaviside factor; used for the tolerance's sample of |integrand|).
+        May raise OverflowError."""
+        if self.kind == 'product':
+            val = self.pref
+            for (ip, ep, c0), per in zip(self.edges, self.cterms):
+                dt = c0
+                for (i, a) in ip:
+                    dt += a * s[i]
+                for (i, a) in ep:
+                    dt += a * free[i]
+                g = 0.0j
+                for (C, lam) in per:
+                    g += C * cmath.exp(lam * dt)
+                val *= g
+            return val
+        x = self._expansion0()
+        (_k, _n, edges_c, B, LAM, _AL) = x
+        dts = []
+        for (ip, ep, c0) in self.edges:
+            dt = c0
+            for (i, a) in ip:
+                dt += a * s[i]
+            for (i, a) in ep:
+                dt += a * free[i]
+            dts.append(dt)
+        try:
+            with np.errstate(over='raise', invalid='raise'):
+                return self.pref * complex(np.dot(
+                    B, np.exp(LAM @ np.array(dts, float))))
+        except FloatingPointError as exc:
+            raise OverflowError(str(exc)) from exc
+
+    def osc_bound(self):
+        """An estimate (upper bound for unit-coefficient rows) of the
+        angular frequency of the integrand, and of every nested inner
+        integral, in any integration variable: max over the products of
+        modes of Σ_e ‖a_e‖₁·|Im λ_e| (‖a_e‖₁: the sum of |coefficients| of
+        the integration variables in edge e's row; an inner bound that
+        depends on s_k carries the inner variables' frequencies into the
+        function of s_k).  0.0 when nothing oscillates.  Used for the
+        starting subinterval limit of the quad calls."""
+        w = self._osc
+        if w is not None:
+            return w
+        norms = [sum(abs(a) for (_i, a) in ip) for (ip, _ep, _c0)
+                 in self.edges]
+        if self.kind == 'product':
+            w = 0.0
+            for nrm, per in zip(norms, self.cterms):
+                if nrm and per:
+                    w += nrm * max(abs(lam.imag) for (_C, lam) in per)
+        else:
+            LAM = self._expansion0()[4]
+            w = (float(np.max(np.abs(LAM.imag) @ np.array(norms, float)))
+                 if LAM.size else 0.0)
+        if not math.isfinite(w):
+            w = 0.0
+        self._osc = w
+        return w
+
+    def sup_bound(self):
+        """|pref|·Π_e Σ_k |C_ek| (product) or |pref|·Σ_α |B_α| (sum): a
+        bound of |integrand| wherever every Δt_e >= 0, when no mode grows
+        (the decay certificate); the S of the truncation's tail bound."""
+        if self.kind == 'product':
+            s = self.pref_abs
+            for per in self.terms:
+                s *= sum(c for (c, _re) in per)
+            return s
+        return self.pref_abs * sum(b for (b, _res) in self.terms)
+
+    def min_coefficient(self):
+        """The smallest |coefficient| of an integration variable in the
+        edges' rows (1.0 if none)."""
+        a = [abs(x) for (ip, _ep, _c0) in self.edges for (_i, x) in ip
+             if x != 0.0]
+        return min(a) if a else 1.0
+
+    def _modes(self):
+        if self.kind == 'product':
+            for per_edge in self.terms:
+                for (c, re) in per_edge:
+                    yield c, re
+        else:
+            for (b, res) in self.terms:
+                for re in res:
+                    yield b, re
+
+    def decay_rates(self):
+        """``(κ_min, κ_fast)``: the smallest and the largest decay rate
+        −Re λ over the modes with a nonzero coefficient (κ_min <= 0 when
+        some such mode does not decay); ``(None, None)`` without any such
+        mode or with a non-finite one.  Computed once per object."""
+        r = self._rates
+        if r is not None:
+            return r
+        kmin = kfast = None
+        for c, re in self._modes():
+            if c == 0.0:
+                continue
+            if not (math.isfinite(c) and math.isfinite(re)):
+                kmin = kfast = None
+                break
+            k = -re
+            if kmin is None or k < kmin:
+                kmin = k
+            if kfast is None or abs(re) > kfast:
+                kfast = abs(re)
+        self._rates = (kmin, kfast)
+        return self._rates
+
+    def edge_decay(self, free):
+        """For the linear-programming decay certificate
+        (``_GeneralDecayCertificate``): ``(S, edges)`` with ``edges`` =
+        ``[(a, c, κ_e)]`` for every edge that involves an integration
+        variable -- its coefficients ``a`` (a tuple of ``(j, a_j)``), its
+        shift ``c`` at the free times and its slowest decay rate κ_e (the
+        smallest −Re λ over its modes with a nonzero coefficient, per
+        diagram; over the pole tuples with a nonzero B, grouped) -- and S
+        with |integrand| <= S·exp(−Σ_e κ_e·Δt_e) wherever every such
+        Δt_e >= 0: |pref|·Π_e Σ_k |C_ek| over those edges times the
+        constant edges' bounds (per diagram), or |pref|·Σ_α |B_α|·exp(the
+        constant edges' Re λ_αe·Δt_e) (grouped).  ``None`` if a rate or a
+        coefficient is not finite."""
+        ints, consts = [], []
+        for e, (ip, ep, c0) in enumerate(self.edges):
+            c = c0 + sum(a * free[i] for i, a in ep)
+            prs = tuple(sorted((i, a) for (i, a) in ip if abs(a) > 1e-15))
+            (ints if prs else consts).append((e, prs, c))
+        try:
+            if self.kind == 'product':
+                S = self.pref_abs
+                out = []
+                for (e, prs, c) in ints:
+                    per = [(cc, re) for (cc, re) in self.terms[e]
+                           if cc != 0.0]
+                    if not per:
+                        return 0.0, []
+                    out.append((prs, c, min(-re for (_cc, re) in per)))
+                    S *= sum(cc for (cc, _re) in per)
+                for (e, _prs, c) in consts:
+                    S *= sum(cc * math.exp(re * c)
+                             for (cc, re) in self.terms[e] if cc != 0.0)
+            else:
+                rows = [(b, res) for (b, res) in self.terms if b != 0.0]
+                if not rows:
+                    return 0.0, []
+                out = [(prs, c, min(-res[e] for (_b, res) in rows))
+                       for (e, prs, c) in ints]
+                S = self.pref_abs * sum(
+                    b * math.exp(sum(res[e] * c for (e, _p, c) in consts))
+                    for (b, res) in rows)
+        except OverflowError:
+            return None
+        if not (math.isfinite(S) and all(math.isfinite(k)
+                                         for (_a, _c, k) in out)):
+            return None
+        return S, out
+
+    def bound(self, lo, hi, free):
+        r"""A rigorous upper bound of |integrand| on the region, which lies
+        in the box [lo, hi].  Per edge, Δt_e takes values in
+        [max(0, min_box Δt_e), max_box Δt_e] (its row is a constraint of the
+        region: Δt_e > 0), and each exp(Re λ Δt) is bounded at the end of
+        that range that maximises it (Re λ < 0: the lower end, so the
+        factor is <= 1).  An edge whose Δt_e is <= 0 on the whole box is not
+        a constraint there -- a constant row at an exact tie that the
+        external-time order kept (``_const_row_verdict``: DROP, e.g.
+        Δt_e ≡ 0, where the edge contributes G(0)) -- and keeps its box
+        range unclipped.  0.0 only for an identically zero integrand."""
+        ranges = []
+        for (ip, ep, c0) in self.edges:
+            c = c0 + sum(a * free[i] for i, a in ep)
+            dmin = dmax = c
+            for (i, a) in ip:
+                if a > 0.0:
+                    dmin += a * lo[i]
+                    dmax += a * hi[i]
+                else:
+                    dmin += a * hi[i]
+                    dmax += a * lo[i]
+            ranges.append((max(dmin, 0.0) if dmax > 0.0 else dmin, dmax))
+
+        def ex(x):
+            try:
+                return math.exp(x)
+            except OverflowError:
+                return math.inf
+
+        if self.pref_abs == 0.0:
+            return 0.0
+        if self.kind == 'product':
+            B = self.pref_abs
+            for (dmin, dmax), per_edge in zip(ranges, self.terms):
+                s = 0.0
+                for (c, re) in per_edge:
+                    if c == 0.0:
+                        continue
+                    if re < 0.0:
+                        s += c * ex(re * dmin)
+                    elif re > 0.0:
+                        s += c * ex(re * dmax)
+                    else:
+                        s += c
+                if s == 0.0:
+                    return 0.0
+                B *= s
+            return B
+        B = 0.0
+        for (b, res) in self.terms:
+            if b == 0.0:
+                continue
+            e = 0.0
+            for (dmin, dmax), re in zip(ranges, res):
+                if re < 0.0:
+                    e += re * dmin
+                elif re > 0.0:
+                    e += re * dmax
+            B += b * ex(e)
+        return self.pref_abs * B
+
+
+def _frac_up(fr):
+    """The smallest float >= the rational ``fr`` (``inf`` beyond range)."""
+    try:
+        f = float(fr)
+    except OverflowError:
+        return math.inf if fr > 0 else -math.nextafter(math.inf, 0.0)
+    if _Fraction(f) < fr:
+        f = math.nextafter(f, math.inf)
+    return f
+
+
+def _dbm_closure(s_constraints, m):
+    r"""Exact difference-bound-matrix closure of the resolved rows
+    ``(a_int, shift)`` (each ``a_int·s + shift > 0``, as
+    ``_integrate_polytope`` receives them).
+
+    Returns ``(D, general, verdict)``:
+
+    * ``D``: (m+1)×(m+1) nested lists, ``D[u][v]`` an exact ``Fraction``
+      with ``x_u − x_v < D[u][v]`` on the region of the difference rows, or
+      ``None`` (no bound); node ``m`` is the constant 0 (``x_m ≡ 0``), so
+      ``D[k][m]`` / ``−D[m][k]`` are the upper / lower bound of ``s_k``.
+      After the Floyd-Warshall closure every entry is the shortest path,
+      i.e. the exact supremum of x_u − x_v over that region.
+    * ``general``: every other non-constant row, ``(shift, ((j, a_j), ...))``
+      with floats; they are NOT in ``D``.
+    * ``verdict``: ``'EMPTY'`` when the region is empty (a constant row with
+      shift <= 0 under Θ(0) = 0, or a cycle of total weight <= 0: strict
+      inequalities that cannot all hold), ``'NONFINITE'`` for a shift or
+      coefficient that is not a finite float, else ``None``.
+
+    Difference rows: one coefficient |a_j| > 1e-15 (``a·s_j + c > 0``), or two
+    with ``a_i == −a_j`` exactly (``a_i·(s_i − s_j) + c > 0``); each gives
+    the bound ``c/|a|`` as an exact rational (no rounding anywhere).
+    Coefficients with |a| <= 1e-15 count as 0, as in the Heaviside filter.
+    """
+    n = m + 1
+    z = m
+    D = [[None] * n for _ in range(n)]
+    general = []
+    try:
+        for (a_int, shift) in s_constraints:
+            c = float(shift)
+            coefs = [float(a) for a in a_int]
+            if not math.isfinite(c) or not all(math.isfinite(a)
+                                               for a in coefs):
+                return None, None, 'NONFINITE'
+            prs = tuple((j, a) for j, a in enumerate(coefs)
+                        if abs(a) > 1e-15)
+            if not prs:
+                if c <= 0.0:
+                    return None, None, 'EMPTY'
+                continue
+            if len(prs) == 1:
+                (j, a), = prs
+                w = _Fraction(c) / _Fraction(abs(a))
+                u, v = (z, j) if a > 0.0 else (j, z)
+            elif len(prs) == 2 and prs[0][1] == -prs[1][1]:
+                (i, ai), (j, _aj) = prs
+                w = _Fraction(c) / _Fraction(abs(ai))
+                # ai·(s_i − s_j) + c > 0
+                u, v = (j, i) if ai > 0.0 else (i, j)
+            else:
+                general.append((c, prs))
+                continue
+            if D[u][v] is None or w < D[u][v]:
+                D[u][v] = w
+    except (TypeError, ValueError, OverflowError):
+        return None, None, 'NONFINITE'
+    for k in range(n):
+        Dk = D[k]
+        for i in range(n):
+            dik = D[i][k]
+            if dik is None:
+                continue
+            Di = D[i]
+            for j in range(n):
+                dkj = Dk[j]
+                if dkj is None:
+                    continue
+                s = dik + dkj
+                if Di[j] is None or s < Di[j]:
+                    Di[j] = s
+    for v in range(n):
+        if D[v][v] is not None and D[v][v] <= 0:
+            return D, general, 'EMPTY'
+    return D, general, None
+
+
+def _dbm_level_tables(D, m):
+    """Per variable k: ``(L0, U0, lo_outer, up_outer)`` -- the closure's
+    constant bounds of s_k (floats rounded outward, ±inf if none) and its
+    bounds relative to the OUTER variables s_j, j > k: ``lo_outer`` =
+    ``((j − k − 1, d), ...)`` for ``s_k > s_j − d``, ``up_outer`` =
+    ``((j − k − 1, d), ...)`` for ``s_k < s_j + d`` (d rounded up)."""
+    z = m
+    tabs = []
+    for k in range(m):
+        U0 = math.inf if D[k][z] is None else _frac_up(D[k][z])
+        L0 = -math.inf if D[z][k] is None else -_frac_up(D[z][k])
+        up_o = tuple((j - k - 1, _frac_up(D[k][j]))
+                     for j in range(k + 1, m) if D[k][j] is not None)
+        lo_o = tuple((j - k - 1, _frac_up(D[j][k]))
+                     for j in range(k + 1, m) if D[j][k] is not None)
+        tabs.append((L0, U0, lo_o, up_o))
+    return tabs
+
+
+def _dbm_interval(tab, outer):
+    """``(L, U)`` of the difference rows' projection onto s_k given the
+    outer values ``outer = (s_{k+1}, ..., s_{m-1})`` (``tab`` from
+    ``_dbm_level_tables``); exact up to the outward rounding of the
+    bounds and of the one addition per candidate."""
+    L, U, lo_o, up_o = tab
+    for (oi, d) in up_o:
+        v = outer[oi] + d
+        if v < U:
+            U = v
+    for (oi, d) in lo_o:
+        v = outer[oi] - d
+        if v > L:
+            L = v
+    return L, U
+
+
+def _general_rows_by_level(general, m):
+    """The non-difference rows of ``_dbm_closure``, filed under the level of
+    their innermost variable k as ``(a_k, shift, ((j − k − 1, a_j), ...))``
+    over the outer variables j > k: at that level they involve no inner
+    variable, so they bound s_k exactly given the outer values."""
+    gen = [[] for _ in range(m)]
+    for (c, prs) in general:
+        k = min(j for j, _a in prs)
+        a_k = [a for j, a in prs if j == k][0]
+        gen[k].append((a_k, c, tuple((j - k - 1, a) for j, a in prs
+                                      if j != k)))
+    return gen
+
+
+def _level_interval(tab, gen_k, outer):
+    """``(L, U)`` of s_k given the outer values: the difference rows'
+    projection (``_dbm_interval``) intersected with the rows of ``gen_k``
+    (``_general_rows_by_level``).  Never narrower than the region's slice,
+    up to the rounding of one addition / division per candidate (the
+    caller widens by one ulp)."""
+    L, U = _dbm_interval(tab, outer)
+    for (a_k, c, prs) in gen_k:
+        tot = c
+        for (oi, a) in prs:
+            tot += a * outer[oi]
+        b = -tot / a_k
+        if a_k > 0.0:
+            if b > L:
+                L = b
+        elif b < U:
+            U = b
+    return L, U
+
+
+class _FMEmpty(Exception):
+    """``_fm_level_rows``: a positive combination of the rows is a constant
+    row <= 0, so the region is empty."""
+
+
+def _fm_level_rows(s_constraints, m, max_rows=None):
+    r"""Exact per-level bounds of the region ``{s : a_int·s + shift > 0}``
+    by Fourier-Motzkin elimination of s_0, s_1, ... in rational arithmetic.
+
+    The rows of the system after eliminating s_0..s_{k-1} whose innermost
+    variable is s_k bound s_k exactly given the outer variables: the
+    interval ``_level_interval`` builds from them is the projection of the
+    region onto s_k given s_{k+1}, ..., s_{m-1} (each elimination step is
+    exact: s_v exists iff every lower bound lies below every upper bound).
+    Returns per level a list of ``(a_k, shift, ((j − k − 1, a_j), ...))``
+    in the format of ``_general_rows_by_level``, with a_k = ±1 (each row is
+    scaled by its innermost |coefficient|; per direction only the tightest
+    row is kept).  ``'EMPTY'`` if a positive combination of the rows is a
+    constant <= 0 (strict inequalities: the region is empty); ``None`` if
+    the system grows beyond ``max_rows`` (default _NQUAD_FM_MAX_ROWS).
+    Coefficients with |a| <= 1e-15 count as 0, as in the Heaviside filter.
+    The rows are exact; their float form (rounded to nearest) can make an
+    interval narrower than the projection by a few ulps, a sliver the
+    caller's one-ulp widening may not cover (negligible next to the
+    quadrature tolerance).
+    """
+    if max_rows is None:
+        max_rows = _NQUAD_FM_MAX_ROWS
+    zero = _Fraction(0)
+    sys_ = {}
+
+    def add(a, c):
+        for j, x in enumerate(a):
+            if x != 0:
+                break
+        else:
+            if c <= 0:
+                raise _FMEmpty
+            return
+        sc = abs(a[j])
+        if sc != 1:
+            a = tuple(x / sc for x in a)
+            c = c / sc
+        old = sys_.get(a)
+        if old is None or c < old:
+            sys_[a] = c
+
+    levels = [[] for _ in range(m)]
+    try:
+        for (a_int, shift) in s_constraints:
+            a = tuple(_Fraction(float(x)) if abs(float(x)) > 1e-15 else zero
+                      for x in a_int)
+            add(a, _Fraction(float(shift)))
+        for v in range(m):
+            pos, neg, rest = [], [], {}
+            for a, c in sys_.items():
+                if a[v] > 0:
+                    pos.append((a, c))
+                elif a[v] < 0:
+                    neg.append((a, c))
+                else:
+                    rest[a] = c
+            for (a, c) in pos + neg:
+                levels[v].append((float(a[v]), float(c), tuple(
+                    (j - v - 1, float(a[j])) for j in range(v + 1, m)
+                    if a[j] != 0)))
+            if len(rest) + len(pos) * len(neg) > max_rows:
+                return None
+            sys_ = rest
+            for (ap, cp) in pos:          # ap[v] = +1, an[v] = −1
+                for (an, cn) in neg:
+                    add(tuple(x + y for x, y in zip(ap, an)), cp + cn)
+    except _FMEmpty:
+        return 'EMPTY'
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return levels
+
+
+def _dbm_path_kinks(D, m):
+    r"""Kinks of the inner integral at levels k >= 2 from the closed
+    difference-bound matrix ``D`` (``_dbm_closure``), beyond the direct
+    switches of one inner bound.
+
+    At level k, with the outer variables fixed, every vertex of the slice
+    over (s_0, ..., s_k) is cut out by tight rows that connect each of
+    these variables to an anchor (the constant node, value 0, or an outer
+    variable).  Along the path from s_k to its anchor, two consecutive
+    tight rows in the same direction (s_u − s_v = D[u][v] and
+    s_v − s_w = D[v][w]) make s_u − s_w = D[u][v] + D[v][w], which the
+    closure bounds by D[u][w]: the path is also tight as the single entry
+    D[u][w].  So s_k = anchor + an alternating sum of closure entries along
+    a simple path through inner variables.  The paths through one inner
+    variable are the kinks the caller already has; this returns, per level,
+    ``(consts, offsets)`` for the paths through two or more: constants
+    (anchor 0) and ``(j − k − 1, offset)`` pairs (anchor s_j, j > k).  A
+    superset of the vertex coordinates (not every such path is a vertex);
+    floats, deduplicated.
+    """
+    z = m
+    Df = [[None if x is None else float(x) for x in row] for row in D]
+    out = [((), ()) for _ in range(m)]
+    for k in range(2, m):
+        consts, offs = set(), set()
+        outer_nodes = tuple(range(k + 1, m))
+
+        def walk(u, val, d, seen, nseg):
+            # one step from u in direction d: d = +1 a tight upper bound of
+            # s_u above the next node (s_u = s_v + D[u][v]), d = −1 a tight
+            # upper bound of the next node above s_u (s_u = s_v − D[v][u]).
+            if nseg >= 2:                     # this step ends at an anchor
+                w = Df[u][z] if d > 0 else Df[z][u]
+                if w is not None:
+                    consts.add(val + w if d > 0 else val - w)
+                for j in outer_nodes:
+                    w = Df[u][j] if d > 0 else Df[j][u]
+                    if w is not None:
+                        offs.add((j - k - 1, val + w if d > 0 else val - w))
+            for v in range(k):
+                if v in seen:
+                    continue
+                w = Df[u][v] if d > 0 else Df[v][u]
+                if w is None:
+                    continue
+                nv = val + w if d > 0 else val - w
+                seen.add(v)
+                walk(v, nv, -d, seen, nseg + 1)
+                seen.discard(v)
+
+        walk(k, 0.0, 1, set(), 0)
+        walk(k, 0.0, -1, set(), 0)
+        out[k] = (tuple(sorted(consts)), tuple(sorted(offs)))
+    return out
+
+
+def _dbm_kinks(D, m):
+    """``(kinks_c, kinks_o)``: per level k, the candidate kinks of the inner
+    integral as a function of s_k from the closure ``D`` of the difference
+    rows -- constants, and ``(j − k − 1, offset)`` pairs for s_j + offset
+    (j > k).  First the direct switches (a vertex coordinate through one
+    inner variable): where a bound of an inner variable s_i (i < k) that
+    moves with s_k meets one that does not (a constant, or one relative to
+    an outer variable); then, for k >= 2, the paths through two or more
+    (``_dbm_path_kinks``).  With difference rows only, every vertex
+    coordinate of the slice over (s_0, ..., s_k) is among them or is an end
+    of s_k's own interval."""
+    z = m
+    kinks_c = [[] for _ in range(m)]
+    kinks_o = [[] for _ in range(m)]
+    for k in range(m):
+        for i in range(k):
+            if D[i][k] is not None:            # s_i < s_k + D[i][k]
+                if D[i][z] is not None:
+                    kinks_c[k].append(float(D[i][z] - D[i][k]))
+                for j in range(k + 1, m):
+                    if D[i][j] is not None:
+                        kinks_o[k].append((j - k - 1,
+                                           float(D[i][j] - D[i][k])))
+            if D[k][i] is not None:            # s_i > s_k − D[k][i]
+                if D[z][i] is not None:
+                    kinks_c[k].append(float(D[k][i] - D[z][i]))
+                for j in range(k + 1, m):
+                    if D[j][i] is not None:
+                        kinks_o[k].append((j - k - 1,
+                                           float(D[k][i] - D[j][i])))
+    if m >= 3:
+        for k, (pc, po) in enumerate(_dbm_path_kinks(D, m)):
+            kinks_c[k].extend(pc)
+            kinks_o[k].extend(po)
+    return kinks_c, kinks_o
+
+
+class _VertexKinks:
+    r"""The s_k-coordinates of the vertices of the slice
+    ``{(s_0, ..., s_k) : every row > 0}`` of a region given the outer values
+    s_{k+1}, ..., s_{m-1} (levels k >= 1), for regions with rows that are
+    not difference rows.  Every (k+1)-subset of the rows that involve
+    s_0..s_k and are linearly independent there is solved once per region
+    (affinely in the outer values); ``at(k, outer)`` returns the coordinates
+    of the solutions that satisfy every row (to a relative 1e-9: a superset
+    of the vertices).  ``complete[k]`` is False where more than
+    _NQUAD_VERTEX_MAX_COMBOS subsets would be needed (no kinks there).
+    """
+
+    def __init__(self, rows_t, m):
+        import itertools
+        n = len(rows_t)
+        A = np.zeros((n, m))
+        C = np.zeros(n)
+        for r, (c, prs) in enumerate(rows_t):
+            C[r] = c
+            for (j, a) in prs:
+                A[r, j] = a
+        self.A, self.C, self.m = A, C, m
+        self.data = [None] * m
+        self.complete = [True] * m
+        for k in range(1, m):
+            d = k + 1
+            Ain = A[:, :d]
+            idx = np.nonzero(np.any(Ain != 0.0, axis=1))[0]
+            if len(idx) < d:
+                continue
+            if math.comb(len(idx), d) > _NQUAD_VERTEX_MAX_COMBOS:
+                self.complete[k] = False
+                continue
+            combos = np.array(list(itertools.combinations(idx, d)))
+            Mx = Ain[combos]                                 # (nc, d, d)
+            scale = np.prod(np.linalg.norm(Mx, axis=2), axis=1)
+            good = np.abs(np.linalg.det(Mx)) > 1e-12 * scale
+            if not np.any(good):
+                continue
+            combos = combos[good]
+            P = np.linalg.inv(Mx[good])
+            G = -np.einsum('nij,nj->ni', P, C[combos])
+            H = -np.einsum('nij,njo->nio', P, A[:, d:][combos])
+            self.data[k] = (G, H, Ain, A[:, d:])
+
+    def at(self, k, outer):
+        dat = self.data[k]
+        if dat is None:
+            return ()
+        G, H, Ain, Aout = dat
+        if Aout.shape[1]:
+            o = np.asarray(outer, float)
+            X = G + H @ o
+            Cv = self.C + Aout @ o
+        else:
+            X = G
+            Cv = self.C
+        slack = X @ Ain.T + Cv
+        feas = np.all(slack >= -1e-9 * (1.0 + np.abs(Cv)), axis=1)
+        return X[feas, k]
+
+
+def _edge_rows_at(mode_info, free):
+    """``[(a, c)]`` for every edge of ``mode_info`` that involves an
+    integration variable: its coefficients ``a`` (sorted ``(j, a_j)``
+    pairs) and its shift ``c`` at the free times; ``None`` without edge
+    data."""
+    edges = getattr(mode_info, 'edges', None)
+    if edges is None:
+        return None
+    out = []
+    try:
+        for (ip, ep, c0) in edges:
+            prs = tuple(sorted((i, a) for (i, a) in ip if abs(a) > 1e-15))
+            if prs:
+                out.append((prs, c0 + sum(a * free[i] for i, a in ep)))
+    except (TypeError, ValueError, IndexError):
+        return None
+    return out
+
+
+def _unit_edge_rows(rows_t, edge_rows):
+    r"""True when the decay certificate and the tail bound of the
+    hardened fallback hold as stated (``_integrate_polytope_hardened``):
+
+    (i) every row with an integration variable is a unit difference row
+    (one coefficient ±1, or +1 and −1), so the rows form a totally
+    unimodular system;  (ii) every such row has the coefficients of an
+    edge (its value is that edge's Δt, which decays);  (iii) every edge
+    with an integration variable has a row with its coefficients and a
+    shift at most its own, so Δt_e >= that row's value > 0 on the region.
+
+    Then every vertex of a cone section of the region is integral, so the
+    decay rate along any open direction is 0 or at least κ_min; and the
+    change of variables to the values of a spanning tree of rows that
+    contains the closure's shortest path from the open variable to its
+    finite end (|Jacobian| = 1) bounds the tail beyond a cut at distance
+    d from that end by (S/κ_min^m)·Γ(m, κ_min·d)/Γ(m) (``tail_k``).  Every
+    region of the public Phase J models measured satisfies (i)-(iii)."""
+    if edge_rows is None:
+        return False
+    rowmin = {}
+    for (c, prs) in rows_t:
+        if len(prs) == 1:
+            if abs(prs[0][1]) != 1.0:
+                return False
+        elif len(prs) == 2:
+            if abs(prs[0][1]) != 1.0 or prs[0][1] != -prs[1][1]:
+                return False
+        else:
+            return False
+        old = rowmin.get(prs)
+        if old is None or c < old:
+            rowmin[prs] = c
+    evecs = set()
+    for (prs, c) in edge_rows:
+        r = rowmin.get(prs)
+        if r is None or r > c + 1e-12 * (1.0 + abs(c)):
+            return False
+        evecs.add(prs)
+    return all(p in evecs for p in rowmin)
+
+
+class _GeneralDecayCertificate:
+    r"""The decay certificate of an open direction, and the bound of the
+    tail an outermost cut drops, by linear programming -- for regions whose
+    rows are not all unit difference rows that are edges
+    (``_unit_edge_rows`` False: other coefficients, rows that are not
+    edges).  ``|integrand| <= S·exp(−φ(s))``, φ = Σ_e κ_e·Δt_e over the
+    edges with an integration variable (``_NquadModes.edge_decay``), where
+    every such Δt_e >= 0.
+
+    * Every such edge must be >= 0 on the region (a row with its
+      coefficients and a shift at most its own, or an LP minimum >= 0).
+    * Rates: for each level k and side σ, the cone section
+      {r : A r >= 0 (every row), r_k = σ, r_j = 0 for j > k} -- the
+      directions in which the slice of s_0..s_k given the outer values is
+      unbounded -- and ρ = min φ'(r) over it (an LP; φ' the linear part of
+      φ).  Beyond the farthest vertex of a slice the minimum of φ over it
+      grows exactly at the rate ρ along that side, whatever the rows'
+      scaling.  ``rate`` = the smallest ρ (``inf`` if no side is open); a
+      ρ <= 0 (no decay) or an unbounded LP fails.
+    * Tail of the outermost cut (``tail_bound``, outermost side ``side``
+      open; the vertex enumeration of the outermost level must be
+      complete): beyond the farthest vertex coordinate (the anchor of the
+      cut) v(x) = min φ over the slice at s_{m-1} = x and the slice's range
+      [lo_k(x), hi_k(x)] in every inner variable are affine in the
+      distance; they are measured by LPs at the first cut and one decay
+      length beyond it.  Bounded slices: the tail beyond a cut at distance D
+      past the first one is at most S·exp(−v₁ − ρD)·∫_0^∞ e^{−ρy}·Π_k
+      (w_k + β_k·(D + y)) dy (the slice's volume is at most the product of
+      its widths w_k).  A slice unbounded in s_k (on one side only, along
+      which e^{−φ} decays: φ's coefficient g_k of the right sign; else no
+      certificate): the region lies in the box fibration
+      {s_k in [lo_k(x), hi_k(x)]}, on which ∫ e^{−φ} factorises: per
+      variable at most e^{−g_k·(the end where g_k·s_k is smallest)}/|g_k|
+      (g_k != 0) or e^{0}·w_k (g_k = 0), then the affine exponent is
+      integrated over x in closed form (``math.inf`` if it does not
+      decay).
+
+    * Everything the cuts drop (``region_tail``, for the inner levels'
+      cuts, which ``tail_bound`` does not see): a point that a cut of level
+      k drops lies K/κ (κ <= ρ) beyond the farthest vertex coordinate of
+      its slice over (s_0..s_k), so φ there is at least φ_min + K (φ_min =
+      min φ over the region): the point is a vertex combination v (φ(v) >=
+      φ_min) plus a direction r of the slice's recession cone with |r_k| >=
+      K/κ, along which φ grows at least at ρ·|r_k|.  The integral of
+      S·e^{−φ} over {φ >= φ_min + K} is at most S·e^{−φ_min}·∫_K^∞ e^{−τ}
+      V(τ) dτ, V(τ) the volume of {φ <= φ_min + τ} on the region, which
+      is at most the product of its widths W_j(τ) in every variable; each
+      W_j is concave in τ (a parametric LP), so beyond τ = K it is at most
+      W_j(K) + (W_j(K) − W_j(K − 1))·(τ − K) (LPs at both).
+
+    ``ok`` False (``why`` says why) -> the caller treats the region as
+    uncertified.  LP values carry a relative 1e-7 margin (1e-6 for the
+    widths of ``region_tail``).
+    """
+
+    _MARGIN = 1e-7
+
+    def __init__(self, rows_t, m, edge_decay, side, kinks_complete):
+        self.m = m
+        self.ok = False
+        self.rate = None
+        self.why = ''
+        self.side = side
+        self._tail = None
+        self._rtail = None
+        if edge_decay is None:
+            self.why = 'edge data not finite'
+            return
+        self.S, edges = edge_decay
+        n = len(rows_t)
+        A = np.zeros((n, m))
+        C = np.zeros(n)
+        for r, (c, prs) in enumerate(rows_t):
+            C[r] = c
+            for (j, a) in prs:
+                A[r, j] = a
+        self.A, self.C = A, C
+        g = np.zeros(m)
+        phi0 = 0.0
+        self._edges = edges
+        for (prs, c, kap) in edges:
+            for (j, a) in prs:
+                g[j] += kap * a
+            phi0 += kap * c
+        self.g, self.phi0 = g, phi0
+        try:
+            self._certify(rows_t, kinks_complete)
+        except Exception as exc:                         # noqa: BLE001
+            self.ok = False
+            self.why = f'linear programming failed ({exc!r})'
+
+    @staticmethod
+    def _lp(c, A_ub, b_ub, bounds):
+        from scipy.optimize import linprog
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds,
+                      method='highs')
+        return res.status, (res.fun if res.status == 0 else None), res.x
+
+    def _certify(self, rows_t, kinks_complete):
+        m, A, C, g = self.m, self.A, self.C, self.g
+        free = [(None, None)] * m
+        rowmin = {}
+        for (c, prs) in rows_t:
+            old = rowmin.get(prs)
+            if old is None or c < old:
+                rowmin[prs] = c
+        # every edge with an integration variable is >= 0 on the region
+        for (prs, c, _k) in self._edges:
+            r = rowmin.get(prs)
+            if r is not None and r <= c + 1e-12 * (1.0 + abs(c)):
+                continue
+            a = np.zeros(m)
+            for (j, x) in prs:
+                a[j] = x
+            st, val, _x = self._lp(a, -A, C, free)
+            if st == 2:
+                continue                              # empty region
+            if st != 0 or val + c < -1e-9 * (1.0 + abs(c)):
+                self.why = 'an edge is not >= 0 on the region'
+                return
+        # decay rate along every open side of every level
+        rates = []
+        for k in range(m):
+            for sg in (-1.0, 1.0):
+                keep = np.any(A[:, :k + 1] != 0.0, axis=1)
+                Ak = A[keep]
+                if k == 0:
+                    if np.all(sg * Ak[:, 0] >= 0.0):
+                        rates.append(sg * g[0])
+                    else:
+                        continue
+                else:
+                    st, val, _x = self._lp(g[:k], -Ak[:, :k], sg * Ak[:, k],
+                                           [(None, None)] * k)
+                    if st == 2:
+                        continue                      # that side is bounded
+                    if st != 0:
+                        self.why = f'decay LP status {st} (level {k})'
+                        return
+                    rates.append(val + sg * g[k])
+                if not rates[-1] > 1e-12 * (1.0 + float(np.abs(g).sum())):
+                    self.why = f'no decay along a side of level {k}'
+                    return
+        self.rate = (float(min(rates)) * (1.0 - self._MARGIN) if rates
+                     else math.inf)
+        self.slice_open = [(False, False)] * max(0, m - 1)
+        if self.side is not None and m >= 2:
+            if not kinks_complete:
+                self.why = ('vertex enumeration of the outermost level '
+                            'incomplete')
+                return
+            Ai = A[:, :m - 1]
+            keep = np.any(Ai != 0.0, axis=1)
+            Ai = Ai[keep]
+            for k in range(m - 1):
+                unb = []
+                for sg in (-1.0, 1.0):
+                    b = [(None, None)] * (m - 1)
+                    b[k] = (sg, sg)
+                    st, _v, _x = self._lp(np.zeros(m - 1), -Ai,
+                                          np.zeros(len(Ai)), b)
+                    if st not in (0, 2):
+                        self.why = f'slice LP status {st}'
+                        return
+                    unb.append(st == 0)
+                lo_u, hi_u = unb
+                # the box fibration needs e^{-g_k s_k} to decay on the open
+                # side of s_k
+                if (lo_u and hi_u) or (lo_u and not g[k] < 0.0) or (
+                        hi_u and not g[k] > 0.0):
+                    self.why = ('the slice of the outermost level is '
+                                f'unbounded in s_{k} without decay')
+                    return
+                self.slice_open[k] = (lo_u, hi_u)
+        self.ok = True
+
+    def _slice(self, x):
+        """``(v, lo, hi)`` of the slice at s_{m-1} = x: v = min φ over it
+        and the range of every inner variable (±inf on an open side);
+        ``None`` if it is empty."""
+        m, A, C, g = self.m, self.A, self.C, self.g
+        if m == 1:
+            return g[0] * x + self.phi0, [], []
+        A_ub = -A[:, :m - 1]
+        b_ub = C + A[:, m - 1] * x
+        bounds = [(None, None)] * (m - 1)
+        st, val, _x = self._lp(g[:m - 1], A_ub, b_ub, bounds)
+        if st == 2:
+            return None
+        if st != 0:
+            raise ValueError(f'slice LP status {st}')
+        v = val + g[m - 1] * x + self.phi0
+        lo, hi = [], []
+        for k in range(m - 1):
+            e = np.zeros(m - 1)
+            e[k] = 1.0
+            lo_u, hi_u = self.slice_open[k]
+            if lo_u:
+                lo.append(-math.inf)
+            else:
+                s1, val, _x = self._lp(e, A_ub, b_ub, bounds)
+                if s1 != 0:
+                    raise ValueError(f'range LP status {s1}')
+                lo.append(val)
+            if hi_u:
+                hi.append(math.inf)
+            else:
+                s2, val, _x = self._lp(-e, A_ub, b_ub, bounds)
+                if s2 != 0:
+                    raise ValueError(f'range LP status {s2}')
+                hi.append(-val)
+        return v, lo, hi
+
+    def tail_bound(self, x1, x):
+        """Bound of the integral beyond the cut x of the outermost variable
+        (on the side ``side``), from the slices at the first cut x1 and one
+        decay length beyond it; ``math.inf`` if it cannot be bounded."""
+        if not self.ok or self.side is None:
+            return math.inf
+        sgn = -1.0 if self.side == 'lo' else 1.0
+        mg = self._MARGIN
+        try:
+            if self._tail is None or self._tail[0] != x1:
+                dl = 1.0 / self.rate if math.isfinite(self.rate) else 1.0
+                s1 = self._slice(x1)
+                s2 = self._slice(x1 + sgn * dl)
+                if s1 is None or s2 is None:
+                    self._tail = (x1, None)
+                elif not any(lu or hu for (lu, hu) in self.slice_open):
+                    # bounded slices: min φ and the widths
+                    w1 = [h - l for l, h in zip(s1[1], s1[2])]
+                    w2 = [h - l for l, h in zip(s2[1], s2[2])]
+                    expo = (-(s1[0] - mg * (1.0 + abs(s1[0]))),
+                            (s2[0] - s1[0]) / dl * (1.0 - mg))
+                    ws = [max(0.0, w) * (1.0 + mg) + mg for w in w1]
+                    bs = [max(0.0, (b - a) / dl) * (1.0 + mg) + mg
+                          for a, b in zip(w1, w2)]
+                    self._tail = (x1, (expo, 1.0, ws, bs))
+                else:
+                    # the box fibration: per inner variable e^{-g_k·E_k}/|g_k|
+                    # (E_k the end where g_k·s_k is smallest) or the width
+                    g = self.g
+
+                    def ex(sl, xx):
+                        e = g[self.m - 1] * xx + self.phi0
+                        for k in range(self.m - 1):
+                            if g[k] > 0.0:
+                                e += g[k] * sl[1][k]
+                            elif g[k] < 0.0:
+                                e += g[k] * sl[2][k]
+                        return e
+                    e1, e2 = ex(s1, x1), ex(s2, x1 + sgn * dl)
+                    if not (math.isfinite(e1) and math.isfinite(e2)):
+                        raise ValueError('box fibration not finite')
+                    fac = 1.0
+                    ws, bs = [], []
+                    for k in range(self.m - 1):
+                        if g[k] != 0.0:
+                            fac /= abs(g[k])
+                        else:
+                            a = s1[2][k] - s1[1][k]
+                            b = s2[2][k] - s2[1][k]
+                            ws.append(max(0.0, a) * (1.0 + mg) + mg)
+                            bs.append(max(0.0, (b - a) / dl) * (1.0 + mg)
+                                      + mg)
+                    expo = (-(e1 - mg * (1.0 + abs(e1))),
+                            (e2 - e1) / dl * (1.0 - mg))
+                    self._tail = (x1, (expo, fac * (1.0 + mg), ws, bs))
+        except (ValueError, OverflowError):
+            return math.inf
+        data = self._tail[1]
+        if data is None:
+            return 0.0                    # nothing beyond the first cut
+        (e0, rho), fac, ws, bs = data
+        if not rho > 0.0:
+            return math.inf
+        D = max(0.0, sgn * (x - x1))
+        poly = [1.0]
+        for w, b in zip(ws, bs):
+            c0 = w + b * D
+            new = [0.0] * (len(poly) + 1)
+            for j, p in enumerate(poly):
+                new[j] += p * c0
+                new[j + 1] += p * b
+            poly = new
+        tot = 0.0
+        for j, p in enumerate(poly):
+            tot += p * math.exp(math.lgamma(j + 1) - (j + 1) * math.log(rho))
+        try:
+            return self.S * fac * math.exp(e0 - rho * D) * tot
+        except OverflowError:
+            return math.inf
+
+    def _region_tail_data(self, K0):
+        """``(K0, φ_min, w, β)``: the widths W_j(K0) of {φ <= φ_min + K0}
+        on the region, rounded up, and their slopes from W_j(K0 − 1) (or
+        W_j(0) if K0 < 1), rounded up; ``None`` if an LP fails."""
+        m, A, C, g = self.m, self.A, self.C, self.g
+        free = [(None, None)] * m
+        st, val, _x = self._lp(g, -A, C, free)
+        if st != 0:
+            return None
+        phimin = val + self.phi0
+        A_ub = np.vstack([-A, g[None, :]])
+
+        def widths(tau):
+            b_ub = np.concatenate([C, [phimin + tau - self.phi0]])
+            out = []
+            for j in range(m):
+                e = np.zeros(m)
+                e[j] = 1.0
+                s1, lo, _x = self._lp(e, A_ub, b_ub, free)
+                s2, hi, _x = self._lp(-e, A_ub, b_ub, free)
+                if s1 != 0 or s2 != 0:
+                    return None
+                hi = -hi
+                out.append((max(0.0, hi - lo),
+                            1e-6 * (1.0 + abs(lo) + abs(hi))))
+            return out
+        t1 = max(0.0, K0 - 1.0)
+        w1, w2 = widths(t1), widths(K0)
+        if w1 is None or w2 is None:
+            return None
+        ws = [w + e for (w, e) in w2]
+        bs = [max(0.0, (w + e) - max(0.0, w1_ - e1)) / (K0 - t1)
+              for ((w, e), (w1_, e1)) in zip(w2, w1)]
+        return (K0, phimin, ws, bs)
+
+    def region_tail(self, K):
+        """A bound of S·∫ e^{−φ} over the points of the region where φ >=
+        φ_min + K -- every point that a cut at K/κ (κ <= the certified
+        rate) beyond the farthest vertex coordinate of its slice drops, at
+        any level (see the class docstring); ``math.inf`` if it cannot be
+        bounded.  The LPs run at the first K asked for (and again only for
+        a smaller K)."""
+        if not self.ok or not self.rate > 0.0:
+            return math.inf
+        if self._rtail is None or (self._rtail and K < self._rtail[0]):
+            try:
+                self._rtail = self._region_tail_data(K) or False
+            except (ValueError, OverflowError):
+                self._rtail = False
+        if not self._rtail:
+            return math.inf
+        K0, phimin, ws, bs = self._rtail
+        D = max(0.0, K - K0)
+        poly = [1.0]
+        for w, b in zip(ws, bs):
+            c0 = w + b * D
+            new = [0.0] * (len(poly) + 1)
+            for j, p in enumerate(poly):
+                new[j] += p * c0
+                new[j + 1] += p * b
+            poly = new
+        tot = 0.0
+        for j, p in enumerate(poly):
+            tot += p * math.factorial(j)
+        lo_phi = phimin - self._MARGIN * (1.0 + abs(phimin))
+        try:
+            return self.S * math.exp(-lo_phi - K) * tot
+        except OverflowError:
+            return math.inf
+
+
+def _integrate_polytope_hardened(integrand_callable, s_constraints,
+                                 free_ext_vals, m, mode_info=None,
+                                 diag_meta=None):
+    r"""The hardened scipy quadrature of ``integrand_callable(s_0..s_{m-1},
+    *free_ext_vals)`` over ``{s : a_int·s + shift > 0 for every row}``
+    (``NQUAD_HARDENED``; the design is in the comment block above).  s_0 is
+    the innermost variable, s_{m-1} the outermost.
+
+    ``mode_info``: an ``_NquadModes`` (default: the integrand's
+    ``_nquad_modes`` attribute, set by the fast evaluators); with it the
+    innermost variable is integrated in closed form, the first pass's
+    epsabs comes from the smaller of a rigorous bound and a sample of
+    |integrand| (evaluated from the modes), floored at _NQUAD_SCALE_FLOOR ×
+    the bound, open sides are truncated by the
+    decay certificate (``_unit_edge_rows``, else
+    ``_GeneralDecayCertificate``) and oscillating modes raise the starting
+    subinterval limit.  ``None`` -> every level by quad, epsabs from the largest
+    |integrand| at _NQUAD_PRESAMPLES points of the region (0 if all of them
+    are 0), no geometric breakpoints, open sides capped at the legacy ±200
+    (counters ``nquad_hardened_no_modes``, ``nquad_hardened_uncertified``).
+    Either way a second pass uses epsabs = NQUAD_EPSABS_FACTOR × |first
+    result| when the first epsabs was more than _NQUAD_RERUN_RATIO times
+    that, and when only the outermost cut has to move (``tail_k``) the
+    strip between the cuts is integrated and added; when the inner levels'
+    cuts have to move (``tail_in``; the LP certificate, built on first need
+    for unit difference rows that are edges), the region is integrated
+    again.  Every region served
+    is recorded for the aggregated warnings (``_nquad_note_region``).
+    Returns ``None`` (the caller then uses the legacy routines) only
+    for a row with a non-finite shift or coefficient, or a time without a
+    float value.
+    """
+    from scipy.integrate import quad
+    D, general, verdict = _dbm_closure(s_constraints, m)
+    if verdict == 'NONFINITE':
+        return None
+    try:
+        free_f = [float(x) for x in free_ext_vals]
+    except (TypeError, ValueError):
+        return None                    # e.g. a symbolic time: legacy route
+    ctr = _RUNTIME_COUNTERS
+    ctr['nquad_hardened_calls'] += 1
+    if verdict == 'EMPTY':
+        ctr['nquad_hardened_empty'] += 1
+        return 0.0 + 0.0j
+    if mode_info is None:
+        mode_info = getattr(integrand_callable, '_nquad_modes', None)
+    tabs = _dbm_level_tables(D, m)
+    rows_t = tuple([(c, prs) for (c, prs) in
+                    ((float(sh), tuple((j, float(a))
+                                       for j, a in enumerate(a_int)
+                                       if abs(float(a)) > 1e-15))
+                     for (a_int, sh) in s_constraints) if prs])
+
+    vkinks = None
+    if general:
+        # Rows that are not difference rows: exact level bounds from a
+        # Fourier-Motzkin elimination of every row, and the kinks from the
+        # vertices of the slices (the closure does not see these rows).
+        ctr['nquad_hardened_general_rows'] += 1
+        gen = _fm_level_rows(s_constraints, m)
+        if gen == 'EMPTY':
+            ctr['nquad_hardened_empty'] += 1
+            return 0.0 + 0.0j
+        if gen is None:
+            ctr['nquad_hardened_fm_capped'] += 1
+            # a superset of the projection: each such row bounds the level
+            # of its innermost variable (it involves no inner one there)
+            gen = _general_rows_by_level(general, m)
+        if m >= 2:
+            vkinks = _VertexKinks(rows_t, m)
+            ctr['nquad_hardened_kinks_incomplete'] += sum(
+                1 for k in range(1, m) if not vkinks.complete[k])
+    else:
+        gen = [()] * m
+    kinks_c, kinks_o = _dbm_kinks(D, m)
+    ext_pts = tuple(sorted(set([0.0] + [t for t in free_f
+                                         if math.isfinite(t)])))
+
+    kmin = kfast = None
+    if mode_info is not None:
+        kmin, kfast = mode_info.decay_rates()
+    else:
+        ctr['nquad_hardened_no_modes'] += 1
+    certified = (kmin is not None and kmin > 0.0 and math.isfinite(kmin))
+    span = None
+    unit = False
+    gcert = None
+    if certified:
+        # Along an open direction |integrand| <= S·exp(−κ·d) beyond its
+        # farthest breakpoint.  Unit difference rows that are edges
+        # (``_unit_edge_rows``, every Phase J region measured): κ = κ_min.
+        # Otherwise the smallest |coefficient| a <= 1 of an integration
+        # variable in the rows and the edges gives κ_min·a, lowered to the
+        # rate that linear programming finds along every open side
+        # (``_GeneralDecayCertificate``; the rate depends on how the rows
+        # combine, not on their scaling) -- or no certificate.
+        a_min = 1.0
+        mc = getattr(mode_info, 'min_coefficient', None)
+        if mc is not None:
+            a_min = min(a_min, mc())
+        for (_c, prs) in rows_t:
+            for (_j, a) in prs:
+                if abs(a) < a_min:
+                    a_min = abs(a)
+        if a_min >= 1.0 - 1e-12:
+            kap = kmin
+            span = NQUAD_TAIL_K / kmin
+        else:
+            kap = kmin * a_min
+            span = NQUAD_TAIL_K / kap
+        unit = _unit_edge_rows(rows_t, _edge_rows_at(mode_info, free_f))
+        if not unit:
+            Lo, Uo = _level_interval(tabs[m - 1], gen[m - 1], ())
+            side = (('lo' if Lo == -math.inf else 'hi')
+                    if (Lo == -math.inf) != (Uo == math.inf) else None)
+            ed = getattr(mode_info, 'edge_decay', None)
+            gcert = _GeneralDecayCertificate(
+                rows_t, m, ed(free_f) if ed is not None else None, side,
+                vkinks is None or vkinks.complete[m - 1])
+            if not gcert.ok:
+                certified = False
+                span = None
+            elif gcert.rate < kap * (1.0 - 1e-6):
+                kap = gcert.rate
+                span = NQUAD_TAIL_K / kap
+        # S of the tail bound: |integrand| on the box of the region's level
+        # intervals (open sides infinite), which credits each edge with its
+        # smallest Δt on the region (e.g. an edge to a free time 60 away);
+        # at most |pref|·Π_e Σ_k |C_ek| (``sup_bound``).
+        try:
+            s_tail = mode_info.bound([tabs[k][0] for k in range(m)],
+                                     [tabs[k][1] for k in range(m)], free_f)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            s_tail = math.inf
+        sb = getattr(mode_info, 'sup_bound', None)
+        if sb is not None and not s_tail <= sb():
+            s_tail = sb()
+    geo = ()
+    geo_min_width = math.inf
+    if kfast is not None and kfast > 0.0 and math.isfinite(kfast):
+        geo = tuple(_NQUAD_GEOM_RATIO ** j / kfast for j in range(
+            _NQUAD_GEOM_J0, _NQUAD_GEOM_J0 + _NQUAD_GEOM_MAX))
+        geo_min_width = _NQUAD_GEOM_MIN_WIDTH / kfast
+    wosc = 0.0
+    if mode_info is not None and hasattr(mode_info, 'osc_bound'):
+        wosc = mode_info.osc_bound()
+
+    # First-pass tolerance scale: a rigorous bound of |integrand| on a box
+    # that contains every interval the nested quadrature can visit (an open
+    # side of s_k is reached within m truncation distances of its finite
+    # bound), lowered to the largest |integrand| sampled in the region
+    # (below).
+    if mode_info is not None:
+        lo, hi = [], []
+        for k in range(m):
+            L0, U0 = tabs[k][0], tabs[k][1]
+            if L0 == -math.inf and certified and U0 < math.inf:
+                L0 = U0 - m * span
+            if U0 == math.inf and certified and L0 > -math.inf:
+                U0 = L0 + m * span
+            lo.append(L0)
+            hi.append(U0)
+        B = mode_info.bound(lo, hi, free_f)
+        if B == 0.0:                   # identically zero integrand
+            return 0.0 + 0.0j
+        scale = B if math.isfinite(B) else math.inf
+    else:
+        scale = math.inf
+    epsrel = NQUAD_EPSREL
+    # Closed-form innermost level: the rows that involve s_0 are exactly
+    # those that bound it in ``_level_interval`` (difference rows through the
+    # closure, other rows through ``gen[0]``: the elimination's level-0 rows
+    # are every row with s_0, or, past its cap, the rows filed under level
+    # 0), so on that interval the filter only has to check the rows WITHOUT
+    # s_0 (outer variables only).
+    analytic0 = (_NQUAD_ANALYTIC_INNERMOST and mode_info is not None
+                 and getattr(mode_info, 'cterms', None) is not None)
+    if analytic0:
+        avail = getattr(mode_info, 'innermost_available', None)
+        if avail is not None and not avail():
+            analytic0 = False          # too many terms: s_0 by quad
+            ctr['nquad_hardened_innermost_capped'] += 1
+    rows_no0 = tuple((c, tuple((j - 1, a) for (j, a) in prs))
+                     for (c, prs) in rows_t if all(j != 0 for j, _a in prs))
+    free_list = list(free_ext_vals)
+    f = integrand_callable
+    # [empty intervals, capped (0/1), uncertified (0/1), (unused),
+    #  closed-form innermost integrals that overflowed (done by quad),
+    #  quad calls retried with a larger limit, pass with epsabs from the
+    #  result (0/1), pass with a wider truncation (0/1), inner cuts that
+    #  could not be checked (0/1)]
+    stats = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    pflags = []                        # QUADPACK messages of this pass
+    eps = [0.0]                        # epsabs of the current pass
+    kmin_eff = [math.inf]              # κ·(finite end -> outermost cut)
+    # The outermost level's truncation: its span (moved out by ``tail_k``)
+    # and, after a pass, (side, anchor, cut) of its cut (None: not cut).
+    # The inner levels' span (moved out by ``tail_in``) and
+    # whether a pass cut an inner level.
+    span_out = [span]
+    span_in = [span]
+    cutinfo = [None]
+    inner_cut = [False]
+    inf = math.inf
+
+    def g0(*s):
+        # The Heaviside filter: Θ(0) = 0, nothing is evaluated outside.
+        for (c, prs) in rows_t:
+            dt = c
+            for (j, a) in prs:
+                dt += a * s[j]
+            if dt <= 0.0:
+                return 0.0 + 0.0j
+        return complex(f(*(list(s) + free_list)))
+
+    def gm(*s):
+        # The same from the modes (the tolerance's sample: no integrand
+        # call when the modes are known).
+        for (c, prs) in rows_t:
+            dt = c
+            for (j, a) in prs:
+                dt += a * s[j]
+            if dt <= 0.0:
+                return 0.0 + 0.0j
+        return mode_info.value(s, free_f)
+
+    def truncate(L, U, lo_open, hi_open, count=True, anchor=None,
+                 outermost=False):
+        # An open side: cut at span = K / κ beyond the farthest of the
+        # finite end and ``anchor`` (the farthest breakpoint on that side: a
+        # kink of the inner integral or an external time, where its mass
+        # can sit far from the finite end), by the decay certificate; else
+        # the legacy cap.  For the outermost level (``span_out``), records
+        # the effective κ·(distance from the finite end to the cut) in
+        # kmin_eff and the cut in cutinfo (for ``tail_k`` and the strip);
+        # for an inner level (``span_in``), that it was cut (``tail_in``).
+        if not (lo_open or hi_open):
+            return L, U
+        if certified and not (lo_open and hi_open):
+            sp = span_out[0] if outermost else span_in[0]
+            if lo_open:
+                a = U if anchor is None or not anchor < U else anchor
+                lo, hi = a - sp, U
+                d = U - lo
+                cut = ('lo', a, lo)
+            else:
+                a = L if anchor is None or not anchor > L else anchor
+                lo, hi = L, a + sp
+                d = hi - L
+                cut = ('hi', a, hi)
+            if count:
+                stats[1] = 1
+                if outermost:
+                    ke = kap * d
+                    if ke < kmin_eff[0]:
+                        kmin_eff[0] = ke
+                    cutinfo[0] = cut
+                else:
+                    inner_cut[0] = True
+            return lo, hi
+        if count:
+            stats[2] = 1
+        cap = NQUAD_UNCERTIFIED_CAP
+        if lo_open and hi_open:
+            return -cap, cap
+        if lo_open:
+            return min(-cap, U - cap), U
+        return L, max(cap, L + cap)
+
+    # The largest |integrand| at points spread over the region (each
+    # coordinate uniform in its level's interval given the outer ones;
+    # Kronecker sequence): a lower bound of its supremum, so never a looser
+    # tolerance than the rigorous bound; without mode data it is the only
+    # scale.
+    alphas = [math.sqrt(p) % 1.0 for p in (2, 3, 5, 7, 11, 13, 17, 19,
+                                           23, 29, 31, 37)]
+    sample_f = gm if mode_info is not None and hasattr(mode_info,
+                                                       'value') else g0
+    Ms = 0.0
+    for i in range(1, _NQUAD_PRESAMPLES + 1):
+        outer = ()
+        for k in range(m - 1, -1, -1):
+            L, U = _level_interval(tabs[k], gen[k], outer)
+            if not L < U:
+                break
+            L, U = truncate(L, U, L == -inf, U == inf, count=False)
+            u = (i * alphas[k % len(alphas)] + 0.5 * (k // len(alphas))
+                 ) % 1.0
+            outer = (L + u * (U - L),) + outer
+        else:
+            try:
+                v = abs(sample_f(*outer))
+            except (OverflowError, ZeroDivisionError, ValueError):
+                continue
+            if math.isfinite(v) and v > Ms:
+                Ms = v
+    if 0.0 < Ms < scale:
+        scale = Ms
+        # ... but never below _NQUAD_SCALE_FLOOR × the bound: a sample that
+        # misses the integrand's peak (at a finite end or a kink, the
+        # samples spread over a long truncated side) can sit many orders
+        # below it and below the integral, and an epsabs below the rounding
+        # noise of the level values ran calls to NQUAD_LIMIT_MAX
+        # subintervals.  Between the bound and that floor, the second pass
+        # tightens epsabs from the result.
+        if (mode_info is not None and math.isfinite(B)
+                and scale < _NQUAD_SCALE_FLOOR * B):
+            scale = _NQUAD_SCALE_FLOOR * B
+    eps[0] = NQUAD_EPSABS_FACTOR * scale if math.isfinite(scale) else 0.0
+
+    def qcall(fun, L, U, p, lim, wprod, other=None, defer=False,
+              first=None, ea_min=0.0):
+        # One adaptive quad call of the real or the imaginary part of a
+        # level (``other``: the other part's value, when known), with
+        # epsabs = max(the pass's epsabs, ``ea_min``); returns (value,
+        # None), or with ``defer`` (value, (result, limit)) for a call that
+        # ended with a QUADPACK message its own tolerances do not excuse:
+        # the caller repeats the judgement with ``first`` = that result once
+        # the other part is known.
+        # * A call whose error estimate meets the level's complex value's
+        #   tolerance, max(epsabs, epsrel·|re + i·im|), is accepted: a part
+        #   that is only the rounding noise of the other (the imaginary
+        #   part of a real integrand) is not refined to an epsabs below its
+        #   noise, which runs each such call to its subinterval limit.
+        # * Otherwise a call that reaches its subinterval limit is repeated
+        #   once with the limit NQUAD_LIMIT_MAX (QUADPACK's bisections do
+        #   not depend on the limit until half of it is used, so a larger
+        #   limit costs only the subintervals actually needed; the level's
+        #   cache keeps the values already computed).  Any other nonzero
+        #   ier, or the limit NQUAD_LIMIT_MAX reached, is recorded (counter
+        #   + warning) -- unless the call's own error estimate, integrated
+        #   over the enclosing levels' intervals (``wprod``, their widths'
+        #   product; 1 at the outermost level), stays within the region's
+        #   relative tolerance, NQUAD_EPSREL × the pass's scale (eps /
+        #   NQUAD_EPSABS_FACTOR: |result| in a second pass), or meets the
+        #   requested tolerance itself.  (Inner calls of a second pass ask
+        #   for 1e-13·|result| absolute, which rounding of their own values
+        #   can prevent: QUADPACK's roundoff ier = 2 there is no loss at the
+        #   region's tolerance.)
+        ea = max(eps[0], ea_min)
+        r = first
+        while True:
+            if r is None:
+                r = quad(fun, L, U, epsabs=ea, epsrel=epsrel, limit=lim,
+                         points=p, full_output=1)
+            if len(r) <= 3:
+                return r[0], None
+            if other is not None and r[1] <= max(
+                    ea, epsrel * abs(complex(r[0], other))):
+                return r[0], None
+            info = r[2] if isinstance(r[2], dict) else {}
+            hit = info.get('last', 0) >= lim
+            if not hit and (
+                    r[1] <= max(ea, epsrel * abs(r[0]))
+                    or r[1] * wprod <= NQUAD_EPSREL * eps[0]
+                    / NQUAD_EPSABS_FACTOR):
+                return r[0], None
+            if defer:
+                return r[0], (r, lim)
+            if hit and lim < NQUAD_LIMIT_MAX:
+                lim = NQUAD_LIMIT_MAX
+                stats[5] += 1
+                r = None
+                continue
+            pflags.append(str(r[3]).split('\n')[0].strip())
+            return r[0], None
+
+    def level(k, outer, wprod=1.0, window=None):
+        # ``window``: integrate the outermost level over this sub-interval
+        # (a strip between two cuts, ``tail_k``) instead of its truncated
+        # interval; the breakpoints inside it are kept.
+        L, U = _level_interval(tabs[k], gen[k], outer)
+        if not L < U:
+            stats[0] += 1              # empty: no sampling at all
+            return 0.0 + 0.0j
+        lo_open, hi_open = L == -inf, U == inf
+        if k == 0 and analytic0:
+            for (c, prs) in rows_no0:
+                dt = c
+                for (oi, a) in prs:
+                    dt += a * outer[oi]
+                if dt <= 0.0:
+                    return 0.0 + 0.0j       # Θ(0) = 0, as the filter
+            La, Ua = (window if window is not None else
+                      truncate(L, U, lo_open, hi_open, outermost=(m == 1)))
+            try:
+                return mode_info.integrate_innermost(La, Ua, outer, free_f)
+            except (OverflowError, ZeroDivisionError):
+                stats[4] += 1               # numerically, below
+        # One ulp outward: never cut the slice; the filter removes the rest.
+        if not lo_open:
+            L = math.nextafter(L, -inf)
+        if not hi_open:
+            U = math.nextafter(U, inf)
+        # Breakpoints in the (possibly open) interval: the external times and
+        # every kink of the inner integral (vertex coordinates of the slice).
+        pts = [p for p in ext_pts if L < p < U]
+        for v in kinks_c[k]:
+            if L < v < U:
+                pts.append(v)
+        for (oi, off) in kinks_o[k]:
+            v = outer[oi] + off
+            if L < v < U:
+                pts.append(v)
+        if vkinks is not None and k >= 1:
+            for v in vkinks.at(k, outer):
+                v = float(v)
+                if L < v < U:
+                    pts.append(v)
+        anchor = None
+        if pts and (lo_open or hi_open) and _NQUAD_TAIL_ANCHOR:
+            fin = [p for p in pts if math.isfinite(p)]
+            if fin:
+                anchor = min(fin) if lo_open else max(fin)
+        if window is None:
+            L, U = truncate(L, U, lo_open, hi_open, anchor=anchor,
+                            outermost=(k == m - 1))
+            lo_t, hi_t = lo_open, hi_open
+        else:
+            (L, U), lo_t, hi_t = window, True, True
+        pts = [p for p in pts if L < p < U]
+        if geo and U - L > geo_min_width:
+            # A peak sits at a finite end or at a breakpoint (the integrand
+            # is a sum of exponentials between kinks).  Every panel wider
+            # than geo_min_width gets geometric points towards each of its
+            # ends that can carry one (not a truncated side or a strip's
+            # end), up to its middle, so no panel next to a peak is much
+            # wider than the peak's scale.
+            anchors = sorted(set(pts))
+            anchors = [L] + anchors + [U]
+            extra = []
+            last = len(anchors) - 2
+            for i in range(len(anchors) - 1):
+                a, b = anchors[i], anchors[i + 1]
+                if not b - a > geo_min_width:
+                    continue
+                mid = 0.5 * (a + b)
+                if not (i == 0 and lo_t):
+                    for g in geo:
+                        v = a + g
+                        if not v < mid:
+                            break
+                        extra.append(v)
+                if not (i == last and hi_t):
+                    for g in geo:
+                        v = b - g
+                        if not v > mid:
+                            break
+                        extra.append(v)
+            pts.extend(extra)
+        if pts:
+            # Drop breakpoints within a relative 1e-12 of an end or of each
+            # other (e.g. an external time equal to an end that the
+            # one-ulp widening moved): a sliver panel makes QUADPACK stop
+            # with ier = 3 before it converges.
+            sep = 1e-12 * max(1.0, abs(L), abs(U))
+            kept = []
+            for v in sorted(pts):
+                if v - L > sep and U - v > sep and (
+                        not kept or v - kept[-1] > sep):
+                    kept.append(v)
+            pts = kept
+        lim = max(NQUAD_LIMIT, 2 * (len(pts) + 2))
+        if wosc > 0.0:
+            # Oscillating modes: start with the limit their oscillation
+            # count over the interval needs.
+            n_osc = wosc * (U - L) / math.pi
+            if n_osc > _NQUAD_OSC_MIN:
+                lim = max(lim, min(NQUAD_LIMIT_MAX,
+                                   NQUAD_LIMIT + int(math.ceil(n_osc))))
+        cache = {}
+        if k == 0:
+            def F(x):
+                v = cache.get(x)
+                if v is None:
+                    v = g0(x, *outer)
+                    cache[x] = v
+                return v
+        else:
+            km1 = k - 1
+            wk = wprod * (U - L)
+
+            def F(x):
+                v = cache.get(x)
+                if v is None:
+                    v = level(km1, (x,) + outer, wk)
+                    cache[x] = v
+                return v
+        p = pts if pts else None
+        # The part (real or imaginary) that is larger at the centre of the
+        # first panel (a node of quad's first rule, so no extra evaluation)
+        # first, its judgement deferred if QUADPACK reported a problem; then
+        # the other part, with epsabs raised to epsrel·|first part| (the
+        # complex value's tolerance) unless the first was deferred, and
+        # judged against the complex value; then the first part again, so
+        # judged, if it was deferred.  A part that is only the rounding
+        # noise of the other then does not drive the subdivision (measured:
+        # a grouped model-free m = 3 region ran past three million
+        # evaluations when only the judging was relative to the complex
+        # value, and takes 0.3 s with this order and epsabs).
+        v0 = F(0.5 * (L + (pts[0] if pts else U)))
+        swap = abs(v0.imag) > abs(v0.real)
+        if swap:
+            pa, pb = (lambda x: F(x).imag), (lambda x: F(x).real)
+        else:
+            pa, pb = (lambda x: F(x).real), (lambda x: F(x).imag)
+        a_, held = qcall(pa, L, U, p, lim, wprod, defer=True)
+        b_, _h = qcall(pb, L, U, p, lim, wprod, other=a_,
+                       ea_min=epsrel * abs(a_) if held is None else 0.0)
+        if held is not None:
+            a_, _h = qcall(pa, L, U, p, held[1], wprod, other=b_,
+                           first=held[0])
+        return complex(b_, a_) if swap else complex(a_, b_)
+
+    def strip(lo_, hi_):
+        # The outermost level over [lo_, hi_], the strip between two cuts,
+        # at the current pass's tolerance (the inner levels keep their cut).
+        return level(m - 1, (), 1.0, window=(lo_, hi_))
+
+    gx1 = [None]                       # the first pass's outermost cut
+
+    def tail_k(a, K):
+        # The bound of the tail dropped by the outermost cut (at K/κ past
+        # its anchor) must be at most _NQUAD_TAIL_REL·|result|; returns K
+        # if it is, else the smallest K + j (j = 1, 2, ...; capped at
+        # _NQUAD_TAIL_K_MAX) at which it is.
+        # * Unit difference rows that are edges (``unit``): the tail is at
+        #   most (S/κ^m)·Q(m, K_eff), Q(m, K) = e^{-K}·Σ_{j<m} K^j/j! and
+        #   K_eff = κ·(distance from the finite end to the cut) >= K: with
+        #   the values of a spanning tree of rows that contains the
+        #   closure's shortest path from the variable to its finite end as
+        #   coordinates (|Jacobian| = 1; the path's values add up to that
+        #   distance, every tree value decays at least at the rate κ, the
+        #   other rows' factors are <= 1), whatever the shape of the inner
+        #   slices.  S credits each edge with its smallest Δt on the box of
+        #   the region (0 on the path).
+        # * Other rows: ``_GeneralDecayCertificate.tail_bound`` (the minimum
+        #   of φ and the widths of the slices, by linear programming).
+        # Relative to S that says nothing against the integral, which can be
+        # far below S.  (The inner levels' cuts: ``tail_in``.)
+        need = _NQUAD_TAIL_REL * a
+        ci = cutinfo[0]
+        if ci is None or not need > 0.0:
+            return K
+        if unit:
+            K_eff = kmin_eff[0]
+            if not (math.isfinite(s_tail) and math.isfinite(K_eff)):
+                return K
+            lscale = math.log(s_tail) - m * math.log(kap) - math.log(need)
+
+            def ok(Kp):
+                Ke = Kp + (K_eff - K)
+                q = sum(math.exp(j * math.log(Ke) - math.lgamma(j + 1) - Ke)
+                        for j in range(m))
+                return q <= 0.0 or math.log(q) + lscale <= 0.0
+        elif gcert is not None:
+            side, anc, cut = ci
+            if gx1[0] is None:
+                gx1[0] = cut
+
+            def ok(Kp):
+                x = anc - Kp / kap if side == 'lo' else anc + Kp / kap
+                return gcert.tail_bound(gx1[0], x) <= need
+        else:
+            return K
+        if ok(K):
+            return K
+        Kp = K
+        while Kp < _NQUAD_TAIL_K_MAX and not ok(Kp):
+            Kp += 1.0
+        return Kp
+
+    # Every inner level's cut (given the outer values, at K/κ beyond the
+    # farthest vertex coordinate of its slice) is checked with rows that are
+    # not unit difference rows that are edges (``gcert``): the bound of
+    # everything the cuts of a pass drop,
+    # ``_GeneralDecayCertificate.region_tail`` (φ >= φ_min + K on every
+    # dropped point; K·min(1, rate/κ) if κ is a hair above the certified
+    # rate), must be at most _NQUAD_TAIL_REL·|result|, else the inner K
+    # moves out (the outermost cut at least as far) and the region is
+    # integrated again.  Measured before: slices widening with the distance
+    # (rows that are not edges: volume ~ distance^j) with modes that cancel
+    # to 2^-24 of their parts lost up to 2.4e-7 of the integral at the inner
+    # cuts.  The bound needs a complete vertex enumeration at every inner
+    # level (else the cut's anchor may not be the farthest vertex) and the
+    # anchored cuts; without them the cuts stay unchecked, counted in
+    # ``nquad_hardened_inner_unchecked``.  Unit difference rows that are
+    # edges are checked the same way, with the general certificate built
+    # on first need (``_inner_certificate``).
+    inner_checkable = _NQUAD_TAIL_ANCHOR and (
+        vkinks is None or all(vkinks.complete[k] for k in range(1, m)))
+
+    gcert_in = [gcert]
+
+    def _inner_certificate():
+        # The unit path has no certificate of its own (its outermost cut is
+        # bounded by Q(m, K)); the inner levels' cuts are checked with the
+        # general one, built on first need.  Measured before: on unit rows an
+        # open inner slice holding a chain of edges lost up to 4e-8 of the
+        # integral at K = 40 with nothing counted.
+        if gcert_in[0] is None and unit:
+            try:
+                ed = getattr(mode_info, 'edge_decay', None)
+                # side=None: ``region_tail`` uses neither the outermost
+                # side nor its slices; with the outermost side open, a slice
+                # unbounded in an inner variable would otherwise fail the
+                # certificate and leave the inner cuts unchecked.
+                gc = _GeneralDecayCertificate(
+                    rows_t, m, ed(free_f) if ed is not None else None, None,
+                    vkinks is None or vkinks.complete[m - 1])
+                gcert_in[0] = gc if gc.ok else False
+            except (ValueError, ArithmeticError, np.linalg.LinAlgError):
+                gcert_in[0] = False
+        return gcert_in[0] or None
+
+    def tail_in(a, K):
+        if not inner_cut[0]:
+            return K
+        gc = _inner_certificate()
+        if gc is None:
+            stats[8] = 1               # counted: nquad_hardened_inner_unchecked
+            return K
+        need = _NQUAD_TAIL_REL * a
+        fac = min(1.0, gc.rate / kap)
+        if not (inner_checkable
+                and math.isfinite(gc.region_tail(K * fac))):
+            stats[8] = 1               # counted: nquad_hardened_inner_unchecked
+            return K
+
+        def ok(Kp):
+            return gc.region_tail(Kp * fac) <= need
+        if ok(K):
+            return K
+        Kp = K
+        while Kp < _NQUAD_TAIL_K_MAX and not ok(Kp):
+            Kp += 1.0
+        return Kp
+
+    try:
+        floor_limited = [0.0]
+        val = level(m - 1, ())
+        # Further passes, the tolerances relative to the result:
+        # * epsabs: the first pass's scale (bound or sample of |integrand|)
+        #   can exceed the integral by orders of magnitude (close poles,
+        #   oscillation, decay across the region); QUADPACK then stops at
+        #   its first estimates.  The target is NQUAD_EPSABS_FACTOR·|result|,
+        #   floored at NQUAD_EPSABS_FACTOR·1e-9·(sampled max) so that regions
+        #   whose integral sits far below rounding (e.g. 1e-50 on a near-tie
+        #   sliver) are not chased; where that floor allows more than 1e-8
+        #   relative error (thin regions) the region is counted
+        #   (``nquad_hardened_floor_limited``) and warned about.  The region
+        #   is integrated again (with the outermost cut of ``tail_k``).
+        # * the inner levels' cuts (``tail_in``): when they
+        #   move, the region is integrated again (the outermost cut at least
+        #   as far out).
+        # * the outermost cut (``tail_k``), when only it moves: the strip
+        #   between the old and the new cut is integrated and added.
+        used = eps[0]
+        K_used = NQUAD_TAIL_K
+        K_in = NQUAD_TAIL_K
+        for _ in range(_NQUAD_RERUN_MAX):
+            a = abs(val)
+            if not (a > 0.0 and math.isfinite(a)):
+                break
+            target = NQUAD_EPSABS_FACTOR * max(a, 1e-9 * Ms)
+            # The floor keeps regions whose value lies far below the
+            # integrand's size (near-coincident times: values ~1e-50) from
+            # being chased into rounding noise, but for a thin region it can
+            # allow more than the 1e-8 relative contract.  Never accept that
+            # silently: count it and warn (resolving such regions exactly is
+            # the box-free integration's job).
+            floor_rel = (NQUAD_EPSABS_FACTOR * 1e-9 * Ms / a
+                         if a > 0.0 else 0.0)
+            if 1e-9 * Ms > a and floor_rel > 1e-8:
+                floor_limited[0] = floor_rel
+            K_new = tail_k(a, K_used) if stats[1] else K_used
+            K_in_new = tail_in(a, K_in) if stats[1] else K_in
+            if K_new > K_used or K_in_new > K_in:
+                stats[7] = 1
+            if used > _NQUAD_RERUN_RATIO * target or K_in_new > K_in:
+                if used > _NQUAD_RERUN_RATIO * target:
+                    stats[6] = 1
+                    eps[0] = used = target
+                if K_in_new > K_in:
+                    K_in = K_in_new
+                    span_in[0] = K_in / kap
+                    K_new = max(K_new, K_in)
+                if K_new > K_used:
+                    K_used = K_new
+                    span_out[0] = K_new / kap
+                del pflags[:]
+                kmin_eff[0] = math.inf
+                cutinfo[0] = None
+                inner_cut[0] = False
+                val = level(m - 1, ())
+            elif K_new > K_used:
+                side, anc, cut = cutinfo[0]
+                new = anc - K_new / kap if side == 'lo' else anc + K_new / kap
+                val = val + (strip(new, cut) if side == 'lo'
+                             else strip(cut, new))
+                kmin_eff[0] += K_new - K_used
+                cutinfo[0] = (side, anc, new)
+                K_used = K_new
+                span_out[0] = K_new / kap
+            else:
+                break
+    finally:
+        ctr['nquad_hardened_empty_intervals'] += stats[0]
+        ctr['nquad_hardened_capped'] += stats[1]
+        ctr['nquad_hardened_uncertified'] += stats[2]
+        ctr['nquad_hardened_quad_flags'] += len(pflags)
+        ctr['nquad_hardened_innermost_overflow'] += stats[4]
+        ctr['nquad_hardened_quad_retries'] += stats[5]
+        ctr['nquad_hardened_reruns'] += stats[6]
+        ctr['nquad_hardened_tail_widened'] += stats[7]
+        ctr['nquad_hardened_inner_unchecked'] += stats[8]
+        if stats[1]:
+            sp_max = max(span, span_out[0], span_in[0])
+            if sp_max > ctr['nquad_hardened_cap_span_max']:
+                ctr['nquad_hardened_cap_span_max'] = sp_max
+    if floor_limited[0] > 0.0:
+        ctr['nquad_hardened_floor_limited'] += 1
+        pflags.append('absolute tolerance limited by the rounding floor of '
+                      'the region: requested relative accuracy only '
+                      f'{floor_limited[0]:.1e}')
+    _nquad_note_region(diag_meta, m, no_modes=mode_info is None,
+                       uncertified=bool(stats[2]), flag_msgs=pflags)
+    return val
 
 
 # ───────────────────────────────────────────────────────────────────────

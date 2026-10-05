@@ -962,7 +962,12 @@ def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
     if key not in _E2E:
         from api import compute_cumulants
         saved = FI.THETA0_CONST_ROW_MODE
+        saved_nh = FI.NQUAD_HARDENED
         FI.THETA0_CONST_ROW_MODE = mode
+        # 'legacy_clip' reaches the scipy quadrature fallback here: the
+        # pre-M1 captures were made with the pre-M2b (default-tolerance)
+        # fallback, so it is used too (M2b, NQUAD_HARDENED).
+        FI.NQUAD_HARDENED = saved_nh if mode == 'ito' else False
         FI._reset_runtime_counters()
         try:
             res = compute_cumulants(
@@ -972,6 +977,7 @@ def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
                 verbose=False, use_grouped_phase_j=grouped)
         finally:
             FI.THETA0_CONST_ROW_MODE = saved
+            FI.NQUAD_HARDENED = saved_nh
         counters = {k_: (dict(v) if isinstance(v, dict) else v)
                     for k_, v in FI._RUNTIME_COUNTERS.items()}
         _E2E[key] = (res, counters)

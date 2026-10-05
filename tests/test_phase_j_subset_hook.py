@@ -217,16 +217,23 @@ _WARM = set()
 
 @contextlib.contextmanager
 def _theta0_mode(mode):
-    """Run with ``THETA0_CONST_ROW_MODE = mode`` (``None``: unchanged)."""
+    """Run with ``THETA0_CONST_ROW_MODE = mode`` (``None``: unchanged).
+    'legacy_clip' reaches the scipy quadrature fallback on the δ models, and
+    the pre-M1 captures were made with the pre-M2b (default-tolerance)
+    fallback, so ``NQUAD_HARDENED`` is False with it (M2b)."""
     if mode is None:
         yield
         return
     saved = FI.THETA0_CONST_ROW_MODE
+    saved_nh = FI.NQUAD_HARDENED
     FI.THETA0_CONST_ROW_MODE = mode
+    if mode == 'legacy_clip':
+        FI.NQUAD_HARDENED = False
     try:
         yield
     finally:
         FI.THETA0_CONST_ROW_MODE = saved
+        FI.NQUAD_HARDENED = saved_nh
 
 
 def _model(spec):

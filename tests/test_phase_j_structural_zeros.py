@@ -99,6 +99,16 @@ def sz_off(monkeypatch):
 
 
 @pytest.fixture
+def pre_m2b_nquad(monkeypatch):
+    """The pre-M2b scipy.nquad fallback (``NQUAD_HARDENED = False``): the
+    route these tests pin as "the pre-M2a fallback".  The hardened fallback
+    (M2b, tests/test_phase_j_nquad_hardening.py) never evaluates the
+    integrand outside the region, so the OverflowError below cannot occur
+    there."""
+    monkeypatch.setattr(FI, 'NQUAD_HARDENED', False)
+
+
+@pytest.fixture
 def no_quadrature(monkeypatch):
     """Fail if any scipy quadrature routine behind ``_integrate_polytope``
     is reached."""
@@ -134,7 +144,8 @@ def test_flag_initialisation_from_the_environment():
     # the umbrella wins over the per-flag variable
     assert f({'DAEDALUS_PHASE_J_LEGACY': '1',
               'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS': '1'}) == {
-        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False}
+        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
+        'NQUAD_HARDENED': False}
     assert f({'DAEDALUS_PHASE_J_LEGACY': '0',
               'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS': '0'})[
         'STRUCTURAL_ZEROS'] is False
@@ -259,15 +270,17 @@ def test_cycle_region_is_zero_without_quadrature(no_quadrature):
 
 def test_positive_shift_cycle_reaches_quadrature(monkeypatch):
     calls = []
-    monkeypatch.setattr(FI, '_integrate_2d_polytope',
-                        lambda *a: calls.append(a) or 0.25 + 0j)
+    # the pre-M2b quadrature routine, or the hardened one (M2b, default)
+    for name in ('_integrate_2d_polytope', '_integrate_polytope_hardened'):
+        monkeypatch.setattr(FI, name,
+                            lambda *a, **k: calls.append(a) or 0.25 + 0j)
     rows = [((1.0, -1.0), 1e-9), ((-1.0, 1.0), 0.0)]
     FI._reset_runtime_counters()
     assert FI._integrate_polytope(_never_called, rows, [], 2) == 0.25
     assert len(calls) == 1 and _counter('polytope_empty_cycle') == 0
 
 
-def test_flag_off_restores_the_pre_m2a_fallback(sz_off):
+def test_flag_off_restores_the_pre_m2a_fallback(sz_off, pre_m2b_nquad):
     """Flag off: the 2-cycle goes to scipy.nquad, which overflows evaluating
     the fast-pole integrand outside the region (plan Appendix C.2) -- the
     crash the flag fixes; with slow poles it returns exactly 0 either way."""
@@ -283,7 +296,7 @@ def test_flag_off_restores_the_pre_m2a_fallback(sz_off):
     assert off == 0 and _counter('polytope_empty_cycle') == 0
 
 
-def test_flag_is_read_at_call_time(monkeypatch):
+def test_flag_is_read_at_call_time(monkeypatch, pre_m2b_nquad):
     fe = _fast_eval([FAST] * 4, TWO_CYCLE, 2)
     args = (fe, _resolved(TWO_CYCLE, [0.2]), [0.2], 2)
     assert FI._integrate_polytope(*args, raw_rows=TWO_CYCLE) == 0
@@ -530,7 +543,8 @@ def _perdiag(edges, rate=1.0, symbolic=False, t=(0.0, 0.7)):
     return r['contribution'](*t), dict(FI._RUNTIME_COUNTERS), r
 
 
-def test_perdiag_cycle_through_the_fallback_fixes_the_overflow(monkeypatch):
+def test_perdiag_cycle_through_the_fallback_fixes_the_overflow(
+        monkeypatch, pre_m2b_nquad):
     """With the m=2 polygon integrator off, the cycle subset reaches the
     scipy.nquad fallback; fast poles overflowed there before M2a."""
     monkeypatch.setattr(FI, 'USE_POLYGON_M2_INTEGRATOR', False)
@@ -1190,7 +1204,8 @@ _CHILD = textwrap.dedent(r'''
     ROOT, REV, CWD = sys.argv[1], sys.argv[2], sys.argv[3]
     sys.path.insert(0, ROOT)
     for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_THETA0_CONST_ROW',
-              'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS'):
+              'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
+              'DAEDALUS_PHASE_J_NQUAD_HARDENED'):
         os.environ.pop(v, None)
     import daedalus as dd
     import engine.integration.time_domain as TD
@@ -1208,8 +1223,13 @@ _CHILD = textwrap.dedent(r'''
     loaded = {'final_integral': [FI0], 'grouped_integral': [GI0]}
 
     def load(which, env=None):
-        for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS'):
+        for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
+                  'DAEDALUS_PHASE_J_NQUAD_HARDENED'):
             os.environ.pop(v, None)
+        # M2b's NQUAD_HARDENED at its legacy value in every 'new' pass (none
+        # of these configurations reaches the fallback anyway)
+        if which == 'new':
+            os.environ['DAEDALUS_PHASE_J_NQUAD_HARDENED'] = '0'
         os.environ.update(env or {})
         mods = {}
         for n in ('final_integral', 'grouped_integral'):
@@ -1222,7 +1242,8 @@ _CHILD = textwrap.dedent(r'''
             exec(compile((src if which == 'old' else new)[n], m.__file__,
                          'exec'), m.__dict__)
             mods[n] = m
-        for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS'):
+        for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
+                  'DAEDALUS_PHASE_J_NQUAD_HARDENED'):
             os.environ.pop(v, None)
         fi, gi = mods['final_integral'], mods['grouped_integral']
         for mod in list(sys.modules.values()):

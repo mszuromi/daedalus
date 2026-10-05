@@ -36,7 +36,12 @@ Neither is ever refrozen.  This file checks that:
    * ``default`` -- the current defaults, only for entries whose numbers did
      not move at M1 (``m1_expected != 'moves'``).  The M1 zoo re-run measured
      every such tracked entry unchanged to rtol 1e-13 (plan §7, M1 delta
-     table).
+     table).  Since M2b, in an entry that reaches the scipy quadrature
+     fallback (``nquad_hardened_calls`` > 0: quad_exp) the loop orders >= 1
+     are compared at rtol 2e-5 and the totals at 1e-6 in this mode (the
+     hardened fallback moves them by the error of the baseline's
+     default-tolerance quadrature: 5.3e-6 and 2.9e-7 measured); its tree
+     level keeps the strict tolerance.
 
    The heavier entries of both modes are ``slow`` (``pytest -m slow``).
    (Both kernel backends at M9.)
@@ -121,6 +126,29 @@ _REPRODUCE_SLOW = [
     ('spatial-coupled_rd_2species_1d-l1', 'default'),
 ]
 _MODES = ('default', 'legacy')
+# Default mode, an entry served by the M2b hardened quadrature fallback: the
+# baseline's default-tolerance scipy.nquad values were off by up to 6.8e-5
+# relative per region (spike reset, plan §10), so the arrays that the
+# fallback moves are compared at these tolerances instead of the strict (or
+# other-representatives) one: the loop orders >= 1 (quad_exp-k2-l1 'ell1':
+# measured 5.3e-6) and the totals ('total': 2.9e-7).  The tree level (and
+# every other array) does not reach the fallback and keeps the strict
+# tolerance.
+_M2B_NQUAD_RTOL = {'loop': 2e-5, 'total': 1e-6}
+
+
+def _m2b_rtol(array_name, rtol):
+    """The tolerance of one array of an entry served by the hardened
+    fallback (default mode): ``ell<n>`` with n >= 1 -> 'loop', ``total``
+    and the cumulative orders >= 1 -> 'total', everything else unchanged."""
+    import re
+    m = re.match(r'ell(\d+)', array_name)
+    if m:
+        return max(rtol, _M2B_NQUAD_RTOL['loop']) if int(m.group(1)) else rtol
+    m = re.match(r'order(\d+)_cumulative', array_name)
+    if array_name.startswith('total') or (m and int(m.group(1))):
+        return max(rtol, _M2B_NQUAD_RTOL['total'])
+    return rtol
 
 _COUNTER_KEYS = ('nquad_calls', 'polytope_m0_direct', 'scipy_nquad_called_m1',
                  'scipy_nquad_called_m2', 'scipy_nquad_called_mge3',
@@ -299,9 +327,23 @@ def _reproduce(baseline, name, mode, monkeypatch):
     # The MODEL must be the one baselined (its file may change elsewhere).
     assert rec['model_spec_signature'] == s['model_spec_signature'], (
         f'{name}: model definition changed since the baseline')
-    cmp = Z.compare_values(arrays[name], Z.result_arrays(rec),
-                           rtol=1e-13 if strict
-                           else _OTHER_REPRESENTATIVES_RTOL)
+    rtol = 1e-13 if strict else _OTHER_REPRESENTATIVES_RTOL
+    ref, cur = arrays[name], Z.result_arrays(rec)
+    if rec['counters'].get('nquad_hardened_calls'):
+        # M2b: in the default mode the regions that reach the quadrature
+        # fallback are integrated by the hardened fallback, which moves them
+        # by the error of the baseline's default-tolerance scipy.nquad
+        # (measured: quad_exp k=2 l=1 by <= 5.3e-6 relative on the one-loop
+        # term, 2.9e-7 on the total, tree level unchanged); the routes
+        # (counters below) do not change.
+        assert mode == 'default', name
+        cmp = {}
+        for a in sorted(set(ref) | set(cur)):
+            cmp.update(Z.compare_values(
+                {a: ref[a]} if a in ref else {},
+                {a: cur[a]} if a in cur else {}, rtol=_m2b_rtol(a, rtol)))
+    else:
+        cmp = Z.compare_values(ref, cur, rtol=rtol)
     bad = {k: v for k, v in cmp.items() if not v[2]}
     how = 'strict' if strict else 'other representatives'
     assert not bad, (f'{name} [{mode}, {how}]: (max_abs, max_rel, ok) per '
@@ -428,19 +470,20 @@ def test_fixture_report_flag_context_restores():
     import engine.integration.time_domain.final_integral as FI
     from tests.tools import phase_j_subset_diff as H
     before = (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-              FI.POLYGON_BBOX_CAP)
+              FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP)
     with pytest.raises(RuntimeError):
         with H.phase_j_flags('legacy') as flags:
             assert FI.THETA0_CONST_ROW_MODE == 'legacy_clip'
             assert FI.STRUCTURAL_ZEROS is False
+            assert FI.NQUAD_HARDENED is False
             assert set(flags) == {'THETA0_CONST_ROW_MODE',
-                                  'STRUCTURAL_ZEROS'}
+                                  'STRUCTURAL_ZEROS', 'NQUAD_HARDENED'}
             raise RuntimeError('restored even on error')
     assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-            FI.POLYGON_BBOX_CAP) == before
+            FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP) == before
     with H.phase_j_flags('default'):
         assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-                FI.POLYGON_BBOX_CAP) == before
+                FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP) == before
     with pytest.raises(ValueError):
         with H.phase_j_flags('nope'):
             pass

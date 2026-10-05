@@ -548,6 +548,8 @@ def integrate_grouped_diagram(
     # Identity of this grouped build for ``final_integral._SUBSET_HOOK``
     # (M0.1); shares the per-diagram serial counter so ids are unique.
     _diag_serial = _fi_mod._next_diagram_serial()
+    # The model, for the hardened fallback's one-time warnings (M2b).
+    _model_id = _fi_mod._model_identity(propagator_data)
 
     D = td0.prediagram[0]
     leaves = list(td0.prediagram[2])
@@ -1217,6 +1219,7 @@ def integrate_grouped_diagram(
             # ``_TieContext`` of this Wick permutation) go to every
             # integrator, and the flags are read through ``_fi_mod`` at
             # call time.
+            _mode_info_cache = []
             def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
                 _hook = _fi_mod._SUBSET_HOOK
                 _attempted = None
@@ -1294,10 +1297,24 @@ def integrate_grouped_diagram(
                     c_eff = c0 + sum(a_ext[i] * free_vals[i]
                                      for i in range(len(a_ext)))
                     resolved.append((list(a_int), c_eff))
+                # M2b: the hardened fallback (``NQUAD_HARDENED``) takes the
+                # merged pole tuples as the integrand's mode data (the
+                # smooth edges are the first rows of ``cdata``); built only
+                # when it is on, and once per subset.
+                _mi = None
+                if (m_val >= 1 and pole_tuples is not None
+                        and _fi_mod._nquad_hardened_on()):
+                    if not _mode_info_cache:
+                        _mode_info_cache.append(
+                            _fi_mod._NquadModes.from_pole_tuples(
+                                cdata, pole_tuples))
+                    _mi = _mode_info_cache[0]
                 _val = _integrate_polytope(fc, resolved, free_vals, m_val,
                                            raw_rows=cdata,
                                            row_kinds=row_kinds,
-                                           tie_ctx=_tie_ctx)
+                                           tie_ctx=_tie_ctx,
+                                           mode_info=_mi,
+                                           diag_meta=hook_meta)
                 if _hook is not None:
                     if m_val < 1:
                         _reason = _bail_reason
@@ -1329,6 +1346,7 @@ def integrate_grouped_diagram(
                 hook_meta={
                     'source': 'grouped',
                     'diagram_serial': _diag_serial,
+                    'model': _model_id,
                     'diagram': typed_diagrams,
                     'loop_number': loop_number,
                     'subset_id': subset_bits,

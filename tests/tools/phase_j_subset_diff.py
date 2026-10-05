@@ -93,9 +93,10 @@ What it does
             m), and the report labels the counter line accordingly.
    ``quadrature`` keeps the real entry -- its constant-row verdicts and the
             M2a structural-zero test (``polytope_empty_cycle``) run and are
-            counted -- and replaces only the three quadrature routines it
+            counted -- and replaces only the quadrature routines it
             dispatches to (``_integrate_1d_polytope``, ``_integrate_2d_polytope``,
-            ``_integrate_nd_polytope``).  ``stub_calls`` (by m) then counts
+            ``_integrate_nd_polytope`` and, with ``NQUAD_HARDENED`` on,
+            ``_integrate_polytope_hardened``).  ``stub_calls`` (by m) then counts
             the entries that would have reached scipy quadrature (some of them
             still return early inside those routines, e.g. on crossed scalar
             bounds), and ``nquad_calls`` counts every m>=1 entry as usual.
@@ -341,10 +342,12 @@ def installed_hook(hook):
 
 
 STUB_LEVELS = ('entry', 'quadrature')
-# final_integral's quadrature routines behind ``_integrate_polytope`` (m >= 1).
+# final_integral's quadrature routines behind ``_integrate_polytope`` (m >= 1):
+# the pre-M2b ones and, with ``NQUAD_HARDENED`` (M2b), the hardened one.
 _QUADRATURE_ROUTINES = {'_integrate_1d_polytope': 1,
                         '_integrate_2d_polytope': 2,
-                        '_integrate_nd_polytope': None}
+                        '_integrate_nd_polytope': None,
+                        '_integrate_polytope_hardened': None}
 
 
 class NquadStub:
@@ -375,7 +378,8 @@ class NquadStub:
     def _routine_stub(self, name):
         fixed_m = _QUADRATURE_ROUTINES[name]
 
-        def stub(integrand_callable, s_constraints, free_ext_vals, *m):
+        def stub(integrand_callable, s_constraints, free_ext_vals, *m,
+                 **_kw):
             self.calls[fixed_m if fixed_m is not None else m[0]] += 1
             return 0.0 + 0.0j
         return stub

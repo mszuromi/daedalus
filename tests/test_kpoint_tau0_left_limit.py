@@ -46,11 +46,12 @@ What is checked
    0 (symmetric saddle), before and after.  (A crossing of a nonzero base
    lag moves by O(_ITO_EPS): <= 5.0e-7 per loop order, 6.5e-7 for the
    total, for base lags [0.5, 0.5, 0].)
-5. (slow, strict xfail) A known issue of the engine, not of the slices: an
-   exact tie (the full grid's diagonals, the coincident non-swept legs of
-   k >= 4 slices) is the tie-order limit only as accurately as it is
-   evaluated; multipopulation_test at (0, 0.4, 0.4) sends 16 regions to the
-   default-tolerance scipy.nquad fallback and is 2.9e-5 relative off.  (The
+5. (slow) An exact tie (the full grid's diagonals, the coincident
+   non-swept legs of k >= 4 slices) is the tie-order limit only as
+   accurately as it is evaluated: multipopulation_test at (0, 0.4, 0.4)
+   sends 16 regions to the scipy quadrature fallback and was 2.9e-5
+   relative off with its default tolerance (a strict expected failure
+   until the fallback was hardened, M2b; now the limit to 6.3e-15).  (The
    other route, the poset lower-bound inheritance error at a tie, makes the
    default k = 4 slices of single_population_spike_reset_test 1.0-8.5 %
    off at tau = 0.5; CHANGELOG 0.2.0, known issue.  Not tested here: the
@@ -77,7 +78,7 @@ time, 22 s wall, cold (29-38 s wall on a heavily loaded machine); the two
 moment tests of item 6 add about 3 s.  The slow
 part (spike reset and multipopulation k = 3, linear delta spikes k = 4, the
 grouped Phase J path) took ~7.5 min under heavy load, 6.4 min of it
-multipopulation_test; the strict xfail of item 5 adds 35 s when it follows
+multipopulation_test; the tie test of item 5 adds 35 s when it follows
 the multipopulation slice test (it reuses that build) and ~6 min alone.
 
 Run:  sage -python -m pytest tests/test_kpoint_tau0_left_limit.py -q
@@ -493,24 +494,23 @@ def test_k3_tau0_is_the_left_limit_of_both_slices(private_cwd, which, rtol):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    'known issue: at this exact tie 16 two-time regions go to the '
-    'default-tolerance scipy.nquad fallback (polygon triangle guard), so the '
-    'tie value is neither one-sided limit; flips when that fallback is '
-    'hardened (plan P2b)'))
 def test_k3_exact_tie_on_the_full_grid_diagonal_is_the_limit(private_cwd):
     """The full grid's diagonals (and the coincident non-swept legs of the
     k >= 4 slices) keep the engine's tie order: at an exact tie the value is
     the one-sided limit in which the later-listed leg approaches from below
-    -- but only as accurately as the tie is evaluated.
+    -- as accurately as the tie is evaluated.
     multipopulation_test <nE1 nE2 nE1>, tree, at (0, 0.4, 0.4) (a point of
-    the full grid's diagonal whenever 0.4 is on its axis): measured
-    +1.6859737e-6 against the limit +1.6859242e-6 (2.9e-5 relative, twelve
-    times the jump between the two one-sided limits, 2.4e-6), with 16
-    scipy.nquad fallback calls at the tie and none at (0, 0.4, 0.4 - 1e-7).
-    At (0, 0.7, 0.7) nothing reaches the fallback and the tie equals the
-    limit to 8.6e-16.  Reuses the multipopulation build of the slice test
-    above when both run (~4 evaluations, ~9-13 s each)."""
+    the full grid's diagonal whenever 0.4 is on its axis) sends 16 two-time
+    regions to the scipy quadrature fallback (polygon triangle guard; none
+    at (0, 0.4, 0.4 - 1e-7)).  Before the hardened fallback (M2b) the tie
+    was +1.6859737e-6 against the limit +1.6859242e-6 (2.9e-5 relative,
+    twelve times the jump between the two one-sided limits, 2.4e-6; this
+    test was a strict expected failure); with it, +1.68592416791e-6, the
+    limit (Lagrange from 0.4 - 1e-5, 1e-6, 1e-7) to 6.3e-15 relative
+    (measured in process against the pre-M2b engine).  At
+    (0, 0.7, 0.7) nothing reaches the fallback and the tie equals the limit
+    to 8.6e-16.  Reuses the multipopulation build of the slice test above
+    when both run (~4 evaluations, ~9-13 s each)."""
     res = _run('mp', 3, _limit_grid(0.0, right=False))
     fn = res['total_C']
 

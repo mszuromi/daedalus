@@ -543,7 +543,11 @@ def _numeric_flags():
              # M1 call-time flag ('<absent>' in pre-M1 records)
              'THETA0_CONST_ROW_MODE',
              # M2a call-time flag ('<absent>' in pre-M2a records)
-             'STRUCTURAL_ZEROS')
+             'STRUCTURAL_ZEROS',
+             # M2b call-time flag and the hardened fallback's tolerances
+             # ('<absent>' in pre-M2b records)
+             'NQUAD_HARDENED', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
+             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')
@@ -1293,6 +1297,12 @@ M2A_VALUE_KEYS = ('polytope_empty_cycle', 'forced_delta_pruned')
 #: evaluated, so its analytic / nquad attempts disappear (a cycle answered
 #: at the entry of ``_integrate_polytope`` is still counted there).
 M2A_ROUTE_KEYS = ('forced_delta_pruned',)
+#: The M2b hardened quadrature fallback (``final_integral.NQUAD_HARDENED``):
+#: every region served by it may move at the accuracy of the pre-M2b
+#: default-tolerance scipy.nquad (measured up to 6.8e-5 relative per region),
+#: so a value may move wherever this counter is nonzero; routes do not
+#: change (the same regions reach the fallback).
+M2B_VALUE_KEYS = ('nquad_hardened_calls',)
 
 
 def load_merged(paths):
@@ -1331,9 +1341,9 @@ def delta_table(base, new, *, rtol=1e-13):
     * ``unchanged`` -- every array within ``rtol``;
     * ``MOVES``     -- some array outside it;
     * ``VIOLATION`` -- moved although the baseline saw no zero-normal row
-      (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS`` and
-      ``M2A_VALUE_KEYS`` counter of the new run is 0 or absent: such an
-      entry must not move at M1 / M2a;
+      (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS``,
+      ``M2A_VALUE_KEYS`` and ``M2B_VALUE_KEYS`` counter of the new run is 0
+      or absent: such an entry must not move at M1 / M2a / M2b;
     * ``status``    -- the status changed (e.g. TIMEOUT -> ok);
     * ``census``    -- nquad-stubbed on both sides (counts only);
     * ``n/a``       -- no values on either side (TIMEOUT / ERR both times).
@@ -1359,7 +1369,8 @@ def delta_table(base, new, *, rtol=1e-13):
                'stub_calls_before': sb.get('stub_calls'),
                'stub_calls_after': sn.get('stub_calls'),
                'theta0': {k: _ctr(sn, k) for k in DELTA_THETA0_KEYS},
-               'm2a': {k: _ctr(sn, k) for k in M2A_VALUE_KEYS}}
+               'm2a': {k: _ctr(sn, k) for k in M2A_VALUE_KEYS},
+               'm2b': {k: _ctr(sn, k) for k in M2B_VALUE_KEYS}}
         if name in barr and name in narr:
             cmp = compare_values(barr[name], narr[name], rtol=rtol)
             row['max_abs'] = max(v[0] for v in cmp.values())
@@ -1372,8 +1383,8 @@ def delta_table(base, new, *, rtol=1e-13):
                 row['verdict'] = 'unchanged'
             elif (sb.get('counters')
                   and _ctr(sb, 'zero_normal_rows_seen') == 0
-                  and not any(_ctr(sn, k)
-                              for k in M1_VALUE_KEYS + M2A_VALUE_KEYS)):
+                  and not any(_ctr(sn, k) for k in M1_VALUE_KEYS
+                              + M2A_VALUE_KEYS + M2B_VALUE_KEYS)):
                 row['verdict'] = 'VIOLATION'
             else:
                 row['verdict'] = 'MOVES'
@@ -1397,13 +1408,15 @@ def format_delta_table(rows):
            f"{'max_abs':>9s} {'max_rel':>9s} {'nquad b->a':>12s} "
            f"{'zero-normal b->a':>17s}  theta0 (empty/drop/tie/ordered/"
            f"pruned/zero_area/poset_const/poset_cycle)  m2a (polytope_cycle/"
-           f"forced_delta_pruned)")
+           f"forced_delta_pruned)  m2b (nquad_hardened_calls)")
     out = [hdr]
     for r in rows:
         th = r['theta0']
         th_s = '/'.join(cnt(th[k]) for k in DELTA_THETA0_KEYS)
         m2a = r.get('m2a') or {}
         m2a_s = '/'.join(cnt(m2a.get(k)) for k in M2A_VALUE_KEYS)
+        m2b = r.get('m2b') or {}
+        m2a_s += '  ' + '/'.join(cnt(m2b.get(k)) for k in M2B_VALUE_KEYS)
         st = f"{r['status_before'][:15]} -> {r['status_after'][:15]}"
         out.append(
             f"{r['name']:48s} {st:34s} {r['verdict']:9s} "
