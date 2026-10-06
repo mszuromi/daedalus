@@ -422,27 +422,31 @@ def test_spike_reset_exact_tie_is_the_left_limit(spike_k2, monkeypatch):
     """At the exact tie (0, 0) the tie order makes leg 1 infinitesimally
     earlier: the one-loop is the left limit τ → 0⁻ (quadratic Richardson
     extrapolation from τ = -1e-4, -1e-5, -1e-6), with P3 regions answered
-    by the DBM route at the tie (cf. ``tests/test_phase_j_ties.py``).
-    Every one of them is exactly 0 there (measured: all EMPTY), and the
-    Itô rule alone would give the same, so the comparison cannot see a tie
-    context lost on the way to the DBM: a spy checks that every DBM call
-    receives one."""
-    fn = spike_k2[False]
-    real, ctxs = FI._integrate_subset_dbm, []
+    by the DBM route at the tie (cf. ``tests/test_phase_j_ties.py``), and
+    grouped equals per-diagram there.  Every DBM region is exactly 0 at the
+    tie (measured: all EMPTY), and the Itô rule alone gives the same, so the
+    values cannot see a tie context lost on the way to the DBM: a spy
+    checks that every DBM call, per-diagram and grouped, receives one."""
+    real = FI._integrate_subset_dbm
+    v_tie = {}
+    for grouped in (False, True):
+        ctxs = []
 
-    def spy(*a, **k):
-        ctxs.append(k.get('tie_ctx'))
-        return real(*a, **k)
-    monkeypatch.setattr(FI, '_integrate_subset_dbm', spy)
-    v_tie, c_tie = _eval(fn, (0.0, 0.0), True)
-    monkeypatch.setattr(FI, '_integrate_subset_dbm', real)
-    assert c_tie['poset_lower_not_inherited'] > 0
-    assert c_tie['dbm_answered_p3'] == c_tie['poset_lower_not_inherited']
-    assert len(ctxs) == c_tie['dbm_attempted'] > 0
-    assert all(isinstance(t, FI._TieContext) for t in ctxs)
+        def spy(*a, **k):
+            ctxs.append(k.get('tie_ctx'))
+            return real(*a, **k)
+        monkeypatch.setattr(FI, '_integrate_subset_dbm', spy)
+        v_tie[grouped], c_tie = _eval(spike_k2[grouped], (0.0, 0.0), True)
+        monkeypatch.setattr(FI, '_integrate_subset_dbm', real)
+        assert c_tie['poset_lower_not_inherited'] > 0
+        assert c_tie['dbm_answered_p3'] == c_tie['poset_lower_not_inherited']
+        assert len(ctxs) == c_tie['dbm_attempted'] > 0
+        assert all(isinstance(t, FI._TieContext)
+                   and len(set(t.times)) < len(t.times) for t in ctxs)
+    assert abs(v_tie[True] - v_tie[False]) <= 1e-12 * abs(v_tie[False])
     hs = (1e-4, 1e-5, 1e-6)
-    vals = [_eval(fn, (0.0, -h), True)[0] for h in hs]
+    vals = [_eval(spike_k2[False], (0.0, -h), True)[0] for h in hs]
     # f(h) = f0 + a h + b h^2 through the three nudges
     A = np.array([[1.0, -h, h * h] for h in hs])
     f0 = np.linalg.solve(A, np.array(vals))[0]
-    assert abs(v_tie - f0) <= 1e-9 * abs(f0), (v_tie, f0)
+    assert abs(v_tie[False] - f0) <= 1e-9 * abs(f0), (v_tie[False], f0)
