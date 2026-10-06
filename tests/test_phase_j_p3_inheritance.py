@@ -48,8 +48,10 @@ import engine.integration.time_domain.grouped_integral as GI  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _ito_mode(monkeypatch):
-    """The default Θ(0) mode, whatever the environment says
-    (``DAEDALUS_PHASE_J_LEGACY``); a test that needs another sets it."""
+    """The default Θ(0) mode, whatever ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``
+    says; a test that needs another sets it.  (Only this flag: the umbrella
+    ``DAEDALUS_PHASE_J_LEGACY`` also turns other flags off, which this
+    fixture does not reset.)"""
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
 
 # ═══════════════════════════════════════════════════════════════════════

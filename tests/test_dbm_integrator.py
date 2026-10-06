@@ -16,6 +16,8 @@ Phase J milestone M3) and its ``final_integral`` wrapper
   whose product with the outer variable's factor is O(1) is kept; a
   genuinely astronomical integral is reported as an overflow (never a
   silent inf / NaN);
+* the conditioning guard: β near 0 on the ±200 box, a thin region and a
+  closed form that cancels to exactly 0 are exact or declined;
 * the box closes open directions only, at the wrapper's default
   ``_nquad_outer_cap()``;
 * rows outside the DBM's scope (a 3-term row) are declined.
@@ -38,8 +40,9 @@ from engine.integration.time_domain import dbm_integral as DBM  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _ito_mode(monkeypatch):
-    """The default Θ(0) mode, whatever the environment says
-    (``DAEDALUS_PHASE_J_LEGACY``)."""
+    """The default Θ(0) mode, whatever ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``
+    says.  (Only this flag: the umbrella ``DAEDALUS_PHASE_J_LEGACY`` also
+    turns other flags off, which this fixture does not reset.)"""
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
 
 
@@ -398,6 +401,59 @@ def test_small_beta_is_exact_or_declined(d):
         assert res.error_ratio <= 1.0
     else:
         assert res.error_ratio > 1.0
+
+
+def _chain(m, L, U):
+    rows = [(tuple(1.0 if i == 0 else 0.0 for i in range(m)), -L)]
+    for v in range(1, m):
+        a = [0.0] * m
+        a[v], a[v - 1] = 1.0, -1.0
+        rows.append((tuple(a), 0.0))
+    rows.append((tuple(-1.0 if i == m - 1 else 0.0 for i in range(m)), U))
+    return rows
+
+
+@pytest.mark.parametrize('m', [3, 4])
+@pytest.mark.parametrize('d', [1e-12, 2e-9, 1e-7, 1e-6])
+def test_fully_cancelled_closed_form_is_not_a_zero(m, d):
+    """-200 < s_0 < ... < s_{m-1} < 200 with equal β = (d, ..., d): the
+    integrand is symmetric, so the exact value is (2 sinh(200 d)/d)^m / m!.
+    The closed form can cancel to exactly 0.0; the magnitude of a cancelled
+    term must still count (M3 fix verification: the zero leaf was skipped,
+    giving 'ok', value 0 and error ratio 0 against 1.07e7 for m = 3, d =
+    2e-9).  An 'ok' value is accurate to 1e-9."""
+    res = _expsum(_chain(m, -200.0, 200.0), m, (d,) * m)
+    exact = (2.0 * math.sinh(200.0 * d) / d) ** m / math.factorial(m)
+    assert res.status in (DBM.STATUS_OK, DBM.STATUS_ILL_CONDITIONED)
+    if res.status == DBM.STATUS_OK:
+        assert abs(res.value - exact) <= 1e-9 * exact, (d, res)
+    else:
+        assert res.error_ratio > 1.0
+
+
+def test_cancelled_wrapper_subset_is_declined_not_zero():
+    """Through ``_integrate_subset_dbm``: an m = 4 P3-shaped chain
+    (0 < s_0 < t, s_3 < s_2 < s_1 < s_0, open below) whose order edges have
+    the near-equal poles λ, λ + d, λ + 2d (d = 1.07e-10).  The closed form
+    cancels completely; before the fix the wrapper returned 0j as answered
+    (the 60-digit value is 3.7804272274669133).  It must decline to the
+    hardened fallback (or be accurate)."""
+    lam, d, t = -0.9258204955213709 + 0j, 1.0731084599565576e-10, 3.0
+    rows = [((1.0, 0.0, 0.0, 0.0), (0.0,), 0.0),
+            ((-1.0, 0.0, 0.0, 0.0), (1.0,), 0.0),
+            ((1.0, -1.0, 0.0, 0.0), (0.0,), 0.0),
+            ((0.0, 1.0, -1.0, 0.0), (0.0,), 0.0),
+            ((0.0, 0.0, 1.0, -1.0), (0.0,), 0.0)]
+    poles = [0j, 0j, lam, lam + d, lam + 2 * d]
+    modes = [FI.EdgeModeSum(ri=-1, pi=-1, delta_coeff=0j,
+                            modes=((1.0 + 0j, p),)) for p in poles]
+    FI._reset_runtime_counters()
+    v = FI._integrate_subset_dbm(modes, 1.0, rows, [t], 4)
+    if v is None:
+        assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
+        assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
+    else:
+        assert abs(v - 3.7804272274669133) <= 1e-9 * 3.78, v
 
 
 def test_thin_region_is_declined_to_the_fallback():

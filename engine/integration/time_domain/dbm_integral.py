@@ -16,9 +16,13 @@ A direction that the rows leave open is closed at the box: ``s_v >= -cap``
 where the rows give ``s_v`` no lower bound (directly or through other
 variables), ``s_v <= cap`` where they give it no upper bound.  A finite bound
 from the rows is never clipped, as in the scipy fallback's legacy routines
-(``_integrate_nd_polytope``), so a region far from the origin (external
-times beyond ±cap) keeps its full extent.  A zero node ``Z`` (``s_Z ≡ 0``,
-index ``m``) turns the scalar bounds into differences too.  ``D[u][v]`` is the tightest known upper bound
+(``_integrate_nd_polytope``).  The box itself is absolute (±cap from the
+time origin), not relative to the region, as in those routines: a region
+with an open direction whose finite bound on the other side lies near or
+beyond the box (e.g. bounded above by an external time near or below -cap,
+with a time open below) is truncated by it, or emptied (exactly 0,
+``STATUS_EMPTY``).  A zero node ``Z`` (``s_Z ≡ 0``, index ``m``) turns the
+scalar bounds into differences too.  ``D[u][v]`` is the tightest known upper bound
 on ``s_v - s_u`` (``math.inf``: none).  Strict and non-strict inequalities
 differ by a set of measure zero, which the integral does not see.
 
@@ -244,18 +248,36 @@ def _binom_shift(p, c):
     return [math.comb(p, q) * (c ** (p - q)) for q in range(p + 1)]
 
 
+def _rescaled(A, d):
+    """``A·exp(d)`` for a magnitude ``A`` >= 0, ``inf`` past the float
+    range (a magnitude may only overstate the rounding error)."""
+    if A == 0:
+        return 0.0
+    if d > LOG_OVERFLOW:
+        return INF
+    return A * math.exp(d)
+
+
 def _add_term(acc, key, C, E, A):
     """Merge ``C·exp(E)`` into ``acc[key] = (C0, E0, A0)`` in the log domain
     (the larger real exponent is kept as the base, so no factor overflows).
     ``A`` (>= |C|, on the same scale ``exp(Re E)``) accumulates the absolute
     values of everything merged into the term, so that the cancellation of
-    the full expansion stays measurable (``DBMResult.magnitude``)."""
+    the full expansion stays measurable (``DBMResult.magnitude``).  A term
+    whose coefficient has cancelled to exactly 0 still carries its ``A``;
+    merging it never moves the base of a nonzero term (that could change
+    or underflow the coefficient), and a nonzero term replaces a zero one
+    on its own base."""
     old = acc.get(key)
     if old is None:
         acc[key] = (C, E, A)
         return
     C0, E0, A0 = old
-    if E == E0:
+    if C == 0 and C0 != 0:
+        acc[key] = (C0, E0, A0 + _rescaled(A, E.real - E0.real))
+    elif C0 == 0 and C != 0:
+        acc[key] = (C, E, A + _rescaled(A0, E0.real - E.real))
+    elif E == E0:
         acc[key] = (C0 + C, E0, A0 + A)
     elif E.real > E0.real:
         f = cmath.exp(E0 - E)
@@ -299,7 +321,7 @@ def _integrate_var(terms, k, lo, hi, Z, eps):
                     x = pc * (c ** p)           # s_Z ≡ 0: only q = 0
                     tot += x
                     mag += abs(x)
-                if tot != 0:
+                if mag != 0:            # tot == 0 keeps its magnitude
                     _add_term(out, key, sign * C * tot, Enew, A * mag)
                 continue
             nb = list(base_beta)
@@ -431,6 +453,9 @@ def _sum_leaves(leaves):
     mag = 0.0
     lg_max = -INF
     for (C, E, A) in leaves:
+        # every leaf's magnitude counts, a cancelled (C == 0) one included:
+        # its rounding error is that of the terms that cancelled
+        mag += A * math.exp(E.real) if E.real <= LOG_OVERFLOW else INF
         if C == 0:
             continue
         lg = E.real + math.log(abs(C))
@@ -444,7 +469,6 @@ def _sum_leaves(leaves):
             x = C * cmath.exp(E)
         re_parts.append(x.real)
         im_parts.append(x.imag)
-        mag += A * math.exp(E.real) if E.real <= LOG_OVERFLOW else INF
     if lg_max > LOG_OVERFLOW:
         return None, lg_max
     return complex(math.fsum(re_parts), math.fsum(im_parts)), mag

@@ -1381,7 +1381,8 @@ def delta_table(base, new, *, rtol=1e-13):
                'stub_calls_after': sn.get('stub_calls'),
                'theta0': {k: _ctr(sn, k) for k in DELTA_THETA0_KEYS},
                'm2a': {k: _ctr(sn, k) for k in M2A_VALUE_KEYS},
-               'm2b': {k: _ctr(sn, k) for k in M2B_VALUE_KEYS}}
+               'm2b': {k: _ctr(sn, k) for k in M2B_VALUE_KEYS},
+               'm3': {k: _ctr(sn, k) for k in M3_VALUE_KEYS}}
         if name in barr and name in narr:
             cmp = compare_values(barr[name], narr[name], rtol=rtol)
             row['max_abs'] = max(v[0] for v in cmp.values())
@@ -1420,7 +1421,8 @@ def format_delta_table(rows):
            f"{'max_abs':>9s} {'max_rel':>9s} {'nquad b->a':>12s} "
            f"{'zero-normal b->a':>17s}  theta0 (empty/drop/tie/ordered/"
            f"pruned/zero_area/poset_const/poset_cycle)  m2a (polytope_cycle/"
-           f"forced_delta_pruned)  m2b (nquad_hardened_calls)")
+           f"forced_delta_pruned)  m2b (nquad_hardened_calls)  m3 "
+           f"(poset_lower_not_inherited/dbm_answered)")
     out = [hdr]
     for r in rows:
         th = r['theta0']
@@ -1429,6 +1431,8 @@ def format_delta_table(rows):
         m2a_s = '/'.join(cnt(m2a.get(k)) for k in M2A_VALUE_KEYS)
         m2b = r.get('m2b') or {}
         m2a_s += '  ' + '/'.join(cnt(m2b.get(k)) for k in M2B_VALUE_KEYS)
+        m3 = r.get('m3') or {}
+        m2a_s += '  ' + '/'.join(cnt(m3.get(k)) for k in M3_VALUE_KEYS)
         st = f"{r['status_before'][:15]} -> {r['status_after'][:15]}"
         out.append(
             f"{r['name']:48s} {st:34s} {r['verdict']:9s} "

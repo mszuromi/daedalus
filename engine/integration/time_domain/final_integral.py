@@ -716,7 +716,10 @@ _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 #            at ±OUTER_CAP (``_nquad_outer_cap``, ±200: the box of the
 #            legacy default-tolerance scipy.nquad routines; the M3 brief
 #            fixes this domain); a finite bound is kept as it is, even
-#            beyond the box.  The default hardened fallback
+#            beyond the box.  The box is absolute (from the time origin), so
+#            a region bounded above near or below -OUTER_CAP with a time open
+#            below is truncated or emptied (answered 0) by it, as by the
+#            legacy routine.  The default hardened fallback
 #            (``NQUAD_HARDENED``) truncates a direction with a decay
 #            certificate at K/κ beyond its breakpoints instead, which is
 #            nearly box-free: for modes slower than κ ≈ 0.15 a non-P3 bail
@@ -3651,7 +3654,9 @@ def _integrate_subset_dbm(
     ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  A direction the
     rows leave open is closed at ±``cap``, ``_nquad_outer_cap()`` (the
     scipy fallback's ``OUTER_CAP``) unless given; a finite bound is kept as
-    it is, even beyond the box.
+    it is, even beyond the box.  The box is absolute (from the time
+    origin), as in the legacy scipy routine: a region bounded above near or
+    below -cap with a time open below is truncated or emptied by it.
 
     Rows: a constant row (zero normal) is decided by the Θ(0) = 0 rule with
     the external-time tie order (``_const_row_decision`` with ``tie_ctx``):

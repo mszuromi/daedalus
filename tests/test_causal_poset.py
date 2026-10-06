@@ -217,6 +217,7 @@ def test_consistent_scalar_lower_not_inherited(monkeypatch):
         m=3, edges=(), scalar_lowers=((0, 1.0), (1, 1.0)),
         scalar_uppers=(),
     )
+    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')   # M3 needs it
     monkeypatch.setattr(FI, 'USE_DBM_FALLBACK', True)
     assert _causal_poset_consistent_scalar_lower(poset) == (None, False)
     monkeypatch.setattr(FI, 'USE_DBM_FALLBACK', False)
