@@ -1275,16 +1275,38 @@ issues above.
   rounding error (1e−15 times the summed magnitudes of all its terms)
   exceeds 1e−10 of the value or 1e−14 of the integrand's scale. Close poles
   (pole sums that nearly cancel) and thin regions do that; the closed form
-  is then not trusted. None of the regions measured below is declined.
-- **Known limits.** The hardened fallback truncates a direction with a decay
-  certificate at 40/κ beyond its last breakpoint, which is nearly box-free;
-  the new integrator uses the ±200 box. For modes slower than κ ≈ 0.15, a
-  region that went to the fallback before (any refusal other than the
-  inheritance rule) can therefore move by the box truncation; no measured
-  public configuration has such a region (none of them sent a region with
-  three or more times to the fallback, before or after). The provenance
-  stamp of saved results (`phase_j_convention`) does not record
-  `USE_DBM_FALLBACK`.
+  is then not trusted. A term whose coefficient cancels to exactly 0 keeps
+  its magnitude in that estimate. Before giving up, an ill-conditioned closed
+  form is computed once more with every interval between two constant bounds
+  that is thin for its exponent (|β| · width ≤ 1) integrated by 16-point
+  Gauss–Legendre instead of an antiderivative difference that cancels; that
+  value is kept only if it passes the same test, so every value accepted the
+  first time is unchanged. This matters at τ = 0 of every k = 2 grid (the
+  external time is moved to −1e−6, so some regions are 1e−6 thin): on
+  `single_population_quad_exp_test` k = 2, ℓ = 1 the 16 such regions at
+  τ = −1e−6 and 4 at τ = 2.5 are answered this way (the first closed form
+  of the thin ones was 100 % off and was declined; the hardened fallback
+  then did not finish the τ = −1e−6 point in 55 minutes, against 27 s with
+  the flag off).
+- **Known limits.** The ±200 box is absolute (measured from the time origin),
+  as in the old routines, not relative to the region. Two consequences:
+  - The hardened fallback truncates a direction with a decay certificate at
+    40/κ beyond its last breakpoint, which is nearly box-free. For modes
+    slower than κ ≈ 0.15, a region that went to the fallback before (any
+    refusal other than the inheritance rule) can therefore move by the box
+    truncation; no measured public configuration has such a region (none of
+    them sent a region with three or more times to the fallback, before or
+    after).
+  - A region bounded above by an external time near or below −200, with a
+    time open below, is truncated by the box or emptied (answered as exactly
+    0), whatever the decay rate. On `single_population_spike_reset_test`
+    k = 2, ℓ = 1 this moves the one-loop term at τ = −199 by 2.7 % and at
+    τ = −250 by 1.6 % (terms of order 1e−59 and 1e−74), against the same
+    regions with the box widened to ±10⁴; at τ = ±10 and ±150 no region
+    moved by more than 1e−8 relative. The default τ grids stay inside ±50.
+
+  The provenance stamp of saved results (`phase_j_convention`) does not
+  record `USE_DBM_FALLBACK`.
 - **Flag.** `USE_DBM_FALLBACK` (default `True`), environment variable
   `DAEDALUS_PHASE_J_DBM=1|0`; `False` restores the code before this change
   bit-for-bit (see "Added" below). Both changes apply only with the Itô
@@ -1312,15 +1334,24 @@ k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ):
   relative (48 of them are empty there and exactly 0 on both sides); the new
   one-loop terms are the estimates of the known issue above (−3.866e−3 and
   −1.026e−3).
-- Per-diagram and grouped Phase J agree to ≤ 3.8e−15 relative.
+- Per-diagram and grouped Phase J agree to ≤ 8.5e−15 relative (one-loop
+  term; 7.7e−15 with the flag off: rounding).
 - `scipy.nquad` fallback calls are unchanged (40 per diagram set, 10
   grouped, all two-time regions).
-- Evaluation time (the five τ, flag off vs on in one process): 2.51 s and
-  2.61 s; the whole `compute_cumulants` run, 16.6 s either way.
+- Evaluation time (the five τ, flag off vs on in one process, median of
+  three alternating passes): 2.40 s and 2.64 s; the whole
+  `compute_cumulants` run (warm cache), 15.4 s and 15.5 to 15.9 s.
 
 `single_population_quad_exp_test` (parameters `P_SP` of
 `tests/tools/phase_j_zoo_baseline.py`), k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ):
-96 regions are refused by the inheritance rule and answered exactly.
+96 region evaluations (over the three τ) are refused by the inheritance rule
+and answered exactly (20 of them by the thin-interval retry above). Its
+`scipy.nquad` fallback calls are unchanged (24, all two-time regions), and so
+is its evaluation time (the three τ in one process: 75.8 s off, 75.5 s on).
+Its regions with no scalar lower bound at all still use the margin of 50
+(unchanged, the separate known limit above): with the margin at 200, the box
+of the new integrator, the one-loop term at τ = 2.5 would be +3.89211e−4,
+3 % higher.
 
 | τ | one-loop term, before | one-loop term, after | total, before | total, after |
 |---|---|---|---|---|
@@ -1458,7 +1489,8 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
       refused by the inheritance rule), `dbm_attempted`, `dbm_answered`,
       `dbm_empty` (answered 0: an empty or zero-measure region),
       `dbm_answered_p3` (answered after a refusal by the inheritance
-      rule), `dbm_declined_rows` (a row that is not a difference row),
+      rule), `dbm_answered_thin_retry` (answered by the thin-interval
+      retry), `dbm_declined_rows` (a row that is not a difference row),
       `dbm_declined_overflow`, `dbm_declined_ill_conditioned` (a closed
       form whose estimated rounding error exceeds its tolerance),
       `dbm_declined_other` and `dbm_error_ratio_max` (the largest ratio of
@@ -1503,7 +1535,12 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   ordering cycle, a pair of rows with Δt ≡ 0 and a constant row with value
   0 give exactly 0; terms that would underflow or overflow on their own are
   kept in logarithmic form, and a genuinely astronomical value is reported
-  as an overflow (the region goes to the fallback).
+  as an overflow (the region goes to the fallback). Regions that need the
+  case split (a hexagon, a three-time band region) agree with quadrature;
+  near-zero exponents on the ±200 box, a thin region and a closed form that
+  cancels to exactly 0 are exact or declined; a thin constant-bound interval
+  is answered by the retry; the box closes open directions only, at the
+  default `_nquad_outer_cap()`.
   `tests/test_phase_j_p3_inheritance.py` checks the inheritance rule on
   hand-built orderings, a model-free region with three times taken from the
   spike-reset model (its exact value 2.60362113647539e−7; the poset
@@ -1511,9 +1548,11 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   coincident external times (the tie order), and, end to end on
   `single_population_spike_reset_test` (k = 2, ℓ = 1), that every refused
   region is answered by the new integrator, that the one-loop term at
-  (0, 1) moves from −6.36836e−3 to −3.86596e−3, that grouped and
-  per-diagram Phase J agree to 1e−12, and that the value at the exact tie
-  (0, 0) is the left limit.
+  (0, 1) moves from −6.36836e−3 to −3.86596e−3 (at (0, 3) from −1.29531e−3
+  to −1.02615e−3), that grouped and per-diagram Phase J agree to 1e−12, that
+  every region with three or more times forced through the new integrator
+  gives the same total, and that the value at the exact tie (0, 0) is the
+  left limit, with the tie order reaching the new integrator.
 - `test_causal_poset.py::test_consistent_scalar_lower_missing_var` asserted
   the inheritance error itself (a time with no ordering edge inheriting the
   shared lower bound); it now gives that time a lower-bounded predecessor,
