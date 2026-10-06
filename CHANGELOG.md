@@ -51,12 +51,13 @@ grouped Phase J path:
     known errors, the `scipy.nquad` fallback (default tolerance; hardened
     by "Changed: hardened quadrature fallback" below) and, for regions
     with three or more integration times, the poset lower-bound
-    inheritance error (see the known issue under the k = 2 table below).
+    inheritance error (see the known issue under the k = 2 table below;
+    fixed by "Fixed: poset lower-bound inheritance …" below).
     A value at a tie can then be much less accurate than the values around
     it: on the default k = 4 `dd.run` slices of
     `single_population_spike_reset_test`, 1.0% to 8.5% relative (about
-    1e−3 absolute) at τ = 0.5. See the known issue after the k = 3 table
-    below.
+    1e−3 absolute) at τ = 0.5, before that fix. See the known issue after
+    the k = 3 table below.
   - **So at coincident times of legs of different fields the value depends
     on the order in which `external_fields` lists them.** Where the
     cumulant jumps, listing the same (field, time) pairs in another order
@@ -344,19 +345,21 @@ k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ). The tree level (ℓ = 0) is unchanged
 
 - The largest change in the total is 3.75e−2 absolute, at τ = 0. The largest
   relative change is 285%, at τ = 10.
-- **Known issue: these one-loop values are not converged yet.** They still
-  contain a separate, known error of the multi-time integrator (three or
-  more integration times), scheduled to be fixed in a later release: in a
-  causal ordering, a time variable can inherit a lower integration bound
-  it should not have (poset lower-bound inheritance). At these parameters
-  the error is large away from τ = 0. Measured against tight quadrature on
-  every affected integration region (96 of the 520 multi-time regions),
-  the one-loop term should be −3.866e−3 at τ = 1 (not −6.368e−3, an error
-  of +2.50e−3) and −1.026e−3 at τ = 3 (not −1.295e−3, +2.69e−4; the total
-  there is then about +1.48e−3, so the sign flip stands). At the τ = 0
-  grid point the error is below 1e−8 absolute; τ = 5 and 10 were not
-  measured. Expect these values to move again; the frozen fixture stays a
-  strict expected failure until then.
+- **Known issue (fixed by "Fixed: poset lower-bound inheritance …"
+  below): the "after" one-loop values of this table were not converged.**
+  They contained a separate error of the multi-time integrator (three or
+  more integration times): in a causal ordering, a time variable could
+  inherit a lower integration bound it should not have (poset lower-bound
+  inheritance). At these parameters the error is large away from τ = 0.
+  Measured against tight quadrature on every affected integration region
+  (96 of the 520 multi-time regions), the one-loop term should be
+  −3.866e−3 at τ = 1 (not −6.368e−3, an error of +2.50e−3) and −1.026e−3
+  at τ = 3 (not −1.295e−3, +2.69e−4; the total there is then about
+  +1.48e−3, so the sign flip stands). At the τ = 0 grid point the error is
+  below 1e−8 absolute. That fix moves the one-loop term to these values
+  (−3.86596e−3 and −1.02615e−3) and also at τ = 5 and 10; its table below
+  gives them. The frozen fixture stays a strict expected failure until it
+  is refrozen.
 - Per-diagram and grouped Phase J give the same new values, to a relative
   2e−11 to 7e−9.
 - `scipy.nquad` fallback calls drop from 360 to 40 (per-diagram) and, for
@@ -452,10 +455,13 @@ curve's change over 2e−6 (next bullets).
   - At an exact tie, a region with three or more integration times can be
     accepted by the analytic poset integrator, which rejects it (and sends
     it to the fallback) when the tied times differ by more than 1e−9.
-    Accepted, it carries the poset lower-bound inheritance error (the
+    Accepted, it carried the poset lower-bound inheritance error (the
     known issue under the k = 2 table above): two tied external lower
     bounds count as consistent, and a time variable that has no lower
-    bound of its own inherits theirs. The error is large. For
+    bound of its own inherited theirs. The error is large. "Fixed: poset
+    lower-bound inheritance …" below refuses such a region and integrates
+    it exactly; the k = 4 values in this item were measured before that
+    fix and have not been re-measured after it. For
     `single_population_spike_reset_test` ⟨n₁ n₂ n₁ n₂⟩ at tree level
     (parameters as above), every point of the default k = 4 `dd.run`
     slices has its two non-swept legs tied at −1e−6. At τ = 0.5 the values
@@ -484,9 +490,10 @@ curve's change over 2e−6 (next bullets).
   and every point of a k ≥ 4 moment output (`Config.output = 'moment'` or
   `'central_moment'`, whose cumulant blocks of 3 or more legs are
   evaluated at the times of slice 1). The fallback is hardened by
-  "Changed: hardened quadrature fallback" below; the poset lower-bound
-  fix is planned for a later release (the hardening moves the k = 4
-  slice-1 value at τ = 0.5 above by 1.2e−8 relative).
+  "Changed: hardened quadrature fallback" below, and the poset
+  lower-bound error by "Fixed: poset lower-bound inheritance …" below
+  (the hardening moves the k = 4 slice-1 value at τ = 0.5 above by
+  1.2e−8 relative; the inheritance fix was not re-measured there).
 
 k = 4, tree level, ⟨n₁(t₀) n₂(t₁) n₁(t₂) n₂(t₃)⟩ of
 `single_population_linear_delta_spikes_test` (parameters as above), at the
@@ -1225,6 +1232,114 @@ subinterval limit. The first pass's absolute tolerance rests on a
 64-point sample of the integrand, floored at 1e−3 times its bound; a
 sample that misses a peak can sit many orders below the integrand.
 
+### Fixed: poset lower-bound inheritance; an exact integrator for regions with three or more times (numbers move)
+
+The analytic integrator for regions with three or more integration times
+(the poset integrator) splits a region into causal orderings and integrates
+every time of an ordering from one shared lower bound L, the scalar lower
+bound that some of the times have. A time without a lower bound of its own
+is bounded below by L only if a time it must follow has one: s_v > s_u > L.
+Before this change every time inherited L. A time with no such predecessor
+extends below L, down to the integration box, and that part of the region
+was cut off. This is the "poset lower-bound inheritance" error of the known
+issues above.
+
+- **The inheritance rule.** The poset integrator now accepts a shared L only
+  when every time has a scalar lower bound of its own or a predecessor with
+  one, in the transitive closure of the causal ordering. Otherwise it passes
+  the region on. A region with no scalar lower bound at all is unchanged
+  (it still uses the earliest external time − 50, a separate known limit).
+- **An exact integrator for what the poset integrator passes on.** Every
+  region with three or more times that the poset integrator passes on, for
+  any reason (the rule above, unequal scalar lower bounds, ordering rows
+  shifted by more than 1e−9, an ordering cycle of positive total shift, an
+  overflowing or degenerate closed form), now goes to a new exact
+  integrator, `engine/integration/time_domain/dbm_integral.py`, before the
+  `scipy.nquad` fallback. It treats the region as a system of difference
+  constraints (s_j − s_i < c and s_i ≷ c, the form every ordering and
+  scalar row has), eliminates one time after another in closed form,
+  splitting the region into the cases that decide which bound is the
+  tightest, and keeps every exponential in logarithmic form until the end,
+  so no intermediate factor overflows or underflows on its own. A direction
+  that the rows leave open is closed at ±200, the box of the old
+  default-tolerance `scipy.nquad` routines; a finite bound is never clipped.
+  A cycle of total weight ≤ 0 (exact, no tolerance) makes the region empty
+  or of zero measure: 0. A constant row follows the Θ(0) rule and the tie
+  order of "Changed: Itô equal-time rule" above; every other row enters as
+  it is (the value is continuous in its shift). The per-diagram and the
+  grouped Phase J path use it alike.
+- **What it does not take.** A region stays with the hardened `scipy.nquad`
+  fallback, as before, and is counted, when a row is not a difference row
+  (for example a ConvVertex kernel row with three times), when a term would
+  overflow, or when the closed form is ill-conditioned: its estimated
+  rounding error (1e−15 times the summed magnitudes of all its terms)
+  exceeds 1e−10 of the value or 1e−14 of the integrand's scale. Close poles
+  (pole sums that nearly cancel) and thin regions do that; the closed form
+  is then not trusted. None of the regions measured below is declined.
+- **Known limits.** The hardened fallback truncates a direction with a decay
+  certificate at 40/κ beyond its last breakpoint, which is nearly box-free;
+  the new integrator uses the ±200 box. For modes slower than κ ≈ 0.15, a
+  region that went to the fallback before (any refusal other than the
+  inheritance rule) can therefore move by the box truncation; no measured
+  public configuration has such a region (none of them sent a region with
+  three or more times to the fallback, before or after). The provenance
+  stamp of saved results (`phase_j_convention`) does not record
+  `USE_DBM_FALLBACK`.
+- **Flag.** `USE_DBM_FALLBACK` (default `True`), environment variable
+  `DAEDALUS_PHASE_J_DBM=1|0`; `False` restores the code before this change
+  bit-for-bit (see "Added" below). Both changes apply only with the Itô
+  rule: under `THETA0_CONST_ROW_MODE = 'legacy_clip'` the code before this
+  change runs, so that mode keeps reproducing the pre-0.2.0 numbers.
+
+**Moved (measured; current values, not validated results).** "Before" is
+the code immediately before this change (it includes the hardened fallback,
+which moved the spike-reset τ = 10 one-loop term in its sixth digit since
+the table above was measured). Tree levels are unchanged.
+
+`single_population_spike_reset_test`, parameters as in the tables above,
+k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ):
+
+| τ | one-loop term, before | one-loop term, after | total, before | total, after |
+|---|---|---|---|---|
+| 0 | −5.06015e−3 | −5.06015e−3 (+5.6e−9) | +5.25929e−1 | +5.25929e−1 |
+| 1 | −6.36836e−3 | −3.86596e−3 | +1.66995e−1 | +1.69498e−1 |
+| 3 | −1.29531e−3 | −1.02615e−3 | +1.20710e−3 | +1.47626e−3 |
+| 5 | +1.19179e−4 | +3.82909e−5 | −4.65523e−3 | −4.73611e−3 |
+| 10 | +4.65706e−5 | +3.88692e−5 | −2.72079e−4 | −2.79781e−4 |
+
+- At τ = 1 and 3, each of the 96 affected regions (of 520 with three or more
+  times) agrees with tight quadrature on the same box to ≤ 3.7e−13
+  relative (48 of them are empty there and exactly 0 on both sides); the new
+  one-loop terms are the estimates of the known issue above (−3.866e−3 and
+  −1.026e−3).
+- Per-diagram and grouped Phase J agree to ≤ 3.8e−15 relative.
+- `scipy.nquad` fallback calls are unchanged (40 per diagram set, 10
+  grouped, all two-time regions).
+- Evaluation time (the five τ, flag off vs on in one process): 2.51 s and
+  2.61 s; the whole `compute_cumulants` run, 16.6 s either way.
+
+`single_population_quad_exp_test` (parameters `P_SP` of
+`tests/tools/phase_j_zoo_baseline.py`), k = 2, `max_ell = 1`, ⟨n₁ n₂⟩(τ):
+96 regions are refused by the inheritance rule and answered exactly.
+
+| τ | one-loop term, before | one-loop term, after | total, before | total, after |
+|---|---|---|---|---|
+| 0 | +2.01642e−4 | +2.01642e−4 (unchanged) | +3.67409e−3 | +3.67409e−3 |
+| 2.5 | +3.77432e−4 | +3.77782e−4 | +1.07405e−2 | +1.07409e−2 |
+| 10 | +2.92006e−4 | +2.95594e−4 | +7.46875e−3 | +7.47234e−3 |
+
+**Unchanged (measured, bit-for-bit in one process, flag on vs off):**
+`ou_quartic` k = 2 with ℓ = 3, k = 3 and k = 4 with ℓ = 2;
+`ou_quartic_colored` and `ou_quartic_two_dim_color_corr` (k = 2, ℓ = 1);
+`linear_hawkes`, `multipopulation_test` and
+`single_population_linear_delta_spikes_test` (k = 2, ℓ = 1);
+`single_population_spike_reset_test` k = 1 with ℓ = 1 and ℓ = 2 (two-loop
+−8.89854e−4). None of them has a region refused by the inheritance rule or
+a region with three or more times at the fallback. Spatial models do not
+use this integrator. `dendritic_quad_soma_sigmoid` and
+`quadratic_hawkes_alpha` were not re-measured (over the time budget, see
+"May move" above).
+
 ### Added
 
 - **Call-time Phase J flags.** The flags are module attributes of
@@ -1261,10 +1376,15 @@ sample that misses a peak can sit many orders below the integrand.
     the fallback's warnings over everything evaluated inside it (see
     `PhaseJNquadFallbackWarning` below); the callables that
     `compute_cumulants` returns open one per call.
+  - `USE_DBM_FALLBACK`: `True` (default) or `False` (the code before "Fixed:
+    poset lower-bound inheritance …" above, bit-for-bit). Set it with the
+    environment variable `DAEDALUS_PHASE_J_DBM=1|0` (also `true`/`false`,
+    `yes`/`no`, `on`/`off`). An unknown value raises. Read at every call.
+    It acts only while `THETA0_CONST_ROW_MODE` is `'ito'`.
 - **`DAEDALUS_PHASE_J_LEGACY=1`.** This umbrella switch sets every Phase J
   flag to its pre-0.2.0 behaviour: the Θ(0) rule (`THETA0_CONST_ROW_MODE =
-  'legacy_clip'`), `STRUCTURAL_ZEROS = False` and `NQUAD_HARDENED =
-  False`. It reproduces the
+  'legacy_clip'`), `STRUCTURAL_ZEROS = False`, `NQUAD_HARDENED = False`
+  and `USE_DBM_FALLBACK = False`. It reproduces the
   pre-change Phase J numbers bit-for-bit within one process, at the same
   external times and at the bounding box in force (so a pre-change run at
   another `POLYGON_BBOX_CAP` is reproduced by setting the attribute). It
@@ -1332,7 +1452,19 @@ sample that misses a peak can sit many orders below the integrand.
       `nquad_hardened_innermost_overflow` (closed-form innermost integrals
       that overflowed and were integrated numerically instead) and
       `nquad_hardened_innermost_capped` (regions whose closed-form
-      innermost expansion would exceed 65536 terms).
+      innermost expansion would exceed 65536 terms);
+    - the poset inheritance rule and the exact difference-constraint
+      route: `poset_lower_not_inherited` (regions the poset integrator
+      refused by the inheritance rule), `dbm_attempted`, `dbm_answered`,
+      `dbm_empty` (answered 0: an empty or zero-measure region),
+      `dbm_answered_p3` (answered after a refusal by the inheritance
+      rule), `dbm_declined_rows` (a row that is not a difference row),
+      `dbm_declined_overflow`, `dbm_declined_ill_conditioned` (a closed
+      form whose estimated rounding error exceeds its tolerance),
+      `dbm_declined_other` and `dbm_error_ratio_max` (the largest ratio of
+      an answered region's estimated rounding error to its tolerance, ≤ 1).
+      A region answered by that route is reported to `_SUBSET_HOOK` with
+      `path = 'dbm'`.
   - `PhaseJNquadFallbackWarning` (a `UserWarning`, in
     `engine.integration.time_domain.final_integral`). It is issued once per
     model, source (per-diagram or grouped Phase J) and loop order, per
@@ -1361,8 +1493,31 @@ sample that misses a peak can sit many orders below the integrand.
 ### Tests
 
 - The frozen Phase J fixture `spike_reset_k2_ell1` moves with this release, as
-  tabulated above. Its regression test is a strict expected failure until the
-  fixture is refrozen.
+  tabulated above (twice: the Θ(0) rule and the poset lower-bound fix). Its
+  regression test is a strict expected failure until the fixture is
+  refrozen.
+- `tests/test_dbm_integrator.py` checks the exact difference-constraint
+  integrator: it equals the closed-form chain simplex on a plain ordering;
+  shifted orderings, unequal lower bounds, a time bounded only by the
+  integration box and a thin strip agree with tight nested quadrature; an
+  ordering cycle, a pair of rows with Δt ≡ 0 and a constant row with value
+  0 give exactly 0; terms that would underflow or overflow on their own are
+  kept in logarithmic form, and a genuinely astronomical value is reported
+  as an overflow (the region goes to the fallback).
+  `tests/test_phase_j_p3_inheritance.py` checks the inheritance rule on
+  hand-built orderings, a model-free region with three times taken from the
+  spike-reset model (its exact value 2.60362113647539e−7; the poset
+  integrator gave 2.7212e−9 before the fix), a constant row at exactly
+  coincident external times (the tie order), and, end to end on
+  `single_population_spike_reset_test` (k = 2, ℓ = 1), that every refused
+  region is answered by the new integrator, that the one-loop term at
+  (0, 1) moves from −6.36836e−3 to −3.86596e−3, that grouped and
+  per-diagram Phase J agree to 1e−12, and that the value at the exact tie
+  (0, 0) is the left limit.
+- `test_causal_poset.py::test_consistent_scalar_lower_missing_var` asserted
+  the inheritance error itself (a time with no ordering edge inheriting the
+  shared lower bound); it now gives that time a lower-bounded predecessor,
+  and `test_consistent_scalar_lower_not_inherited` checks the refusal.
 - The pre-change fixtures and the zoo baseline are kept unchanged under
   `tests/phase_j_refactor_fixtures/legacy/` and
   `tests/fixtures/phase_j_legacy_baseline.*`. The legacy-flag tests check
@@ -1375,8 +1530,10 @@ sample that misses a peak can sit many orders below the integrand.
   the hardened quadrature fallback (`single_population_quad_exp_test`,
   k = 2, ℓ = 1) the loop orders ≥ 1 are compared at 2e−5 relative and the
   total at 1e−6 (the old fallback's errors moved them by 5.3e−6 and
-  2.9e−7); its tree level keeps the strict tolerance. Under the legacy
-  flags the comparison is unchanged.
+  2.9e−7); its tree level keeps the strict tolerance. That entry moves
+  with "Fixed: poset lower-bound inheritance …" above, so its default-mode
+  comparison runs with `USE_DBM_FALLBACK = False` (the other defaults
+  unchanged). Under the legacy flags the comparison is unchanged.
 - The exact-tie test of `multipopulation_test` (k = 3 tree at
   (0, 0.4, 0.4)), a strict expected failure since the tie order was
   introduced, passes with the hardened fallback.
