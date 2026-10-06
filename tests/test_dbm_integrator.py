@@ -480,6 +480,55 @@ def test_thin_region_is_declined_to_the_fallback():
     assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
 
 
+_I907_ROWS = [((-1.0, 0.0, 0.0), (1.0,), 0.0),     # s_0 < t
+              ((1.0, -1.0, 0.0), (0.0,), 0.0),     # s_1 < s_0
+              ((0.0, 1.0, -1.0), (0.0,), 0.0),     # s_2 < s_1
+              ((0.0, 1.0, -1.0), (0.0,), 0.0),
+              ((1.0, 0.0, 0.0), (0.0,), 0.0)]      # s_0 > 0
+_LA, _LB = -0.16642039481632437 + 0j, -0.19513338438151706 + 0j
+_I907_EM = [((0.011914296190551303, _LA), (0.0436412593650042, _LB)),
+            ((0.011914296190551303, _LA), (0.0436412593650042, _LB)),
+            ((-0.0034500477044512893, _LA), (-0.05774784777981831, _LB)),
+            ((-0.0034500477044512893, _LA), (-0.05774784777981831, _LB)),
+            ((1.0, 0j),)]
+
+
+@pytest.mark.parametrize('t', [1e-4, 1e-6, 1e-8])
+def test_thin_constant_interval_is_answered_by_the_retry(t):
+    """The i907 shape (modes of the spike-reset model) at a small external
+    time t: 0 < s_0 < t, s_2 < s_1 < s_0 open below.  The s_0 interval is
+    thin, so the antiderivative difference F(t) - F(0) cancels and the
+    first closed form fails the conditioning test (here for t <= 1e-4; its
+    error ratio grows like 1/t).  (An external-time nudge
+    -1e-6 makes such regions at every k = 2 τ = 0 point; the hardened
+    fallback then took minutes on quad_exp.)  The retry integrates that
+    interval by Gauss-Legendre and is accurate (vs the hardened
+    fallback)."""
+    modes = [FI.EdgeModeSum(ri=-1, pi=-1, delta_coeff=0j, modes=md)
+             for md in _I907_EM]
+    FI._reset_runtime_counters()
+    v = FI._integrate_subset_dbm(modes, 1.0, _I907_ROWS, [t], 3)
+    assert v is not None, FI._pop_bail_reason()
+    assert FI._RUNTIME_COUNTERS['dbm_answered_thin_retry'] == 1
+    fe = FI._build_fast_subset_evaluator_from_modes(1.0 + 0j, modes,
+                                                    _I907_ROWS, 3)
+    resolved = [(list(a), c0 + e[0] * t) for (a, e, c0) in _I907_ROWS]
+    ref = FI._integrate_polytope(fe, resolved, [t], 3, raw_rows=_I907_ROWS)
+    assert abs(v - ref) <= 1e-12 * abs(ref), (v, ref)
+
+
+def test_first_pass_answers_are_not_retried():
+    """Where the first closed form passes the test (the same shape at t =
+    0.01 and 1), the retry is not taken: the value is the first pass's."""
+    modes = [FI.EdgeModeSum(ri=-1, pi=-1, delta_coeff=0j, modes=md)
+             for md in _I907_EM]
+    for t in (0.01, 1.0):
+        FI._reset_runtime_counters()
+        v = FI._integrate_subset_dbm(modes, 1.0, _I907_ROWS, [t], 3)
+        assert v is not None
+        assert FI._RUNTIME_COUNTERS['dbm_answered_thin_retry'] == 0
+
+
 def test_magnitude_sees_cancellation_through_merges():
     """The expansion's Σ|term| survives the merging of terms that share a
     monomial (every term merges into one per case after the last

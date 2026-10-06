@@ -86,6 +86,8 @@ drop every bound), and the final sum is compensated (``math.fsum``).
 import cmath
 import math
 
+import numpy as _np
+
 INF = math.inf
 #: A closed-DBM cycle of weight <= this is empty / measure zero (integral 0).
 DEGENERATE_TOL = 0.0
@@ -102,6 +104,15 @@ LOG_OVERFLOW = 700.0
 _COEF_ATOL = 1e-12
 #: More elimination cases than this: give up (the caller falls back).
 MAX_CASES = 200000
+#: Retry of an ill-conditioned closed form: an interval with two constant
+#: bounds whose width w has ``|β| · w <=`` this is integrated by Gauss-Legendre
+#: (no antiderivative difference F(b) - F(a) to cancel).
+THIN_SPAN = 1.0
+#: Nodes and weights of the 16-point Gauss-Legendre rule on [-1, 1]: exact for
+#: polynomials of degree <= 31; for x^n exp(β x) with |β| w <= 1 the error is
+#: far below rounding.
+_GL_X, _GL_W = (tuple(float(v) for v in a)
+                for a in _np.polynomial.legendre.leggauss(16))
 
 STATUS_OK = 'ok'
 STATUS_EMPTY = 'empty'                 # measure-zero / empty region: 0
@@ -129,22 +140,27 @@ class DBMResult:
     ``n_cases``   leaf cases of the elimination (0 for an empty region);
     ``error_ratio`` the rounding error estimate over the accepted error
                   (``> 1``: ``STATUS_ILL_CONDITIONED``; 0.0 when not
-                  computed).
+                  computed);
+    ``thin_retry`` True when the value comes from the thin-interval retry
+                  (see ``integrate_exp_sum``).
     """
-    __slots__ = ('value', 'status', 'magnitude', 'n_cases', 'error_ratio')
+    __slots__ = ('value', 'status', 'magnitude', 'n_cases', 'error_ratio',
+                 'thin_retry')
 
     def __init__(self, value, status, magnitude=0.0, n_cases=0,
-                 error_ratio=0.0):
+                 error_ratio=0.0, thin_retry=False):
         self.value = value
         self.status = status
         self.magnitude = magnitude
         self.n_cases = n_cases
         self.error_ratio = error_ratio
+        self.thin_retry = thin_retry
 
     def __repr__(self):
         return (f'DBMResult(value={self.value!r}, status={self.status!r}, '
                 f'magnitude={self.magnitude!r}, n_cases={self.n_cases}, '
-                f'error_ratio={self.error_ratio!r})')
+                f'error_ratio={self.error_ratio!r}, '
+                f'thin_retry={self.thin_retry})')
 
 
 # ───────────────────────────────────────────────────────────── the region
@@ -287,12 +303,44 @@ def _add_term(acc, key, C, E, A):
         acc[key] = (C0 + C * f, E0, A0 + A * abs(f))
 
 
-def _integrate_var(terms, k, lo, hi, Z, eps):
+def _integrate_var(terms, k, lo, hi, Z, eps, thin=False):
     """Integrate every term of ``terms`` (a dict ``(beta, mono) -> (C, E,
     A)``, see ``_add_term``) over ``s_k ∈ [s_lo_node + lo_c, s_hi_node +
     hi_c]``; ``lo`` / ``hi`` are ``(node, c)``.  Returns the new dict
-    (``s_k`` eliminated)."""
+    (``s_k`` eliminated).  ``thin``: a term on an interval with two constant
+    bounds and ``|β_k| · width <= THIN_SPAN`` is integrated by Gauss-Legendre
+    (the retry of ``integrate_exp_sum``)."""
     out = {}
+    if thin and lo[0] == Z and hi[0] == Z:
+        a_, b_ = lo[1], hi[1]
+        w = b_ - a_
+        rest = {}
+        for (beta, mono), (C, E, A) in terms.items():
+            bk = beta[k]
+            if abs(bk) * w > THIN_SPAN:
+                rest[(beta, mono)] = (C, E, A)
+                continue
+            nk = mono[k]
+            # ∫_a^b x^n e^{β x} dx = e^{β b} Σ_i w_i x_i^n e^{β (x_i - b)}
+            J = 0j
+            mag = 0.0
+            for xg, wg in zip(_GL_X, _GL_W):
+                x = 0.5 * (a_ + b_) + 0.5 * w * xg
+                v = 0.5 * w * wg * (x ** nk) * cmath.exp(bk * (x - b_))
+                J += v
+                mag += abs(v)
+            nb = list(beta)
+            nb[k] = 0j
+            nm = list(mono)
+            nm[k] = 0
+            _add_term(out, (tuple(nb), tuple(nm)), C * J, E + bk * b_,
+                      A * mag)
+        if not rest:
+            return out
+        for key, (C, E, A) in _integrate_var(rest, k, lo, hi, Z,
+                                             eps).items():
+            _add_term(out, key, C, E, A)
+        return out
     for (beta, mono), (C, E, A) in terms.items():
         bk = beta[k]
         nk = mono[k]
@@ -387,7 +435,7 @@ def _bounds_of(D, k, active, Z):
     return _prune_lows(lows), _prune_ups(ups)
 
 
-def _eliminate(terms, D, active, Z, eps, leaves, stats):
+def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False):
     """Recursive case-split elimination of the variables ``active`` from
     ``terms`` over the closed, non-degenerate DBM ``D``.  Fully integrated
     terms are appended to ``leaves`` as ``(C, E)``."""
@@ -440,8 +488,9 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats):
             for i in range(n):
                 Dc[k][i] = INF
                 Dc[i][k] = INF
-            new_terms = _integrate_var(terms, k, (a, lo_c), (b, hi_c), Z, eps)
-            _eliminate(new_terms, Dc, rest, Z, eps, leaves, stats)
+            new_terms = _integrate_var(terms, k, (a, lo_c), (b, hi_c), Z, eps,
+                                       thin)
+            _eliminate(new_terms, Dc, rest, Z, eps, leaves, stats, thin)
 
 
 def _sum_leaves(leaves):
@@ -489,6 +538,12 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
     ``eps``   ``|β|`` below which β is treated as 0 (default
               ``BETA_ZERO_SPAN / cap``).
 
+    A closed form that fails the conditioning test is retried once with every
+    interval between two constant bounds that is thin for its exponent
+    (``|β| · width <= THIN_SPAN``) integrated by Gauss-Legendre; the retry is
+    returned only if it passes the same test (``thin_retry`` set), else the
+    first verdict.
+
     Returns a ``DBMResult``.
     """
     D = difference_bounds(rows, m, cap)
@@ -513,10 +568,27 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
         _add_term(terms, key, C, E, abs(C))
     if scale is None:
         scale = seed_scale
+    res = _run(terms, D, m, Z, eps, scale, thin=False)
+    if res.status != STATUS_ILL_CONDITIONED:
+        return res
+    # Retry once with thin constant-bound intervals integrated by
+    # Gauss-Legendre: a thin region (an external-time nudge, a tie) makes
+    # F(b) - F(a) cancel there.  Taken only if it passes the same test, so
+    # every value accepted on the first pass is unchanged.
+    res2 = _run(terms, D, m, Z, eps, scale, thin=True)
+    if res2.status == STATUS_OK:
+        res2.thin_retry = True
+        return res2
+    return res
+
+
+def _run(terms, D, m, Z, eps, scale, thin):
+    """One elimination pass of ``integrate_exp_sum`` and its conditioning
+    verdict."""
     leaves = []
     stats = {'cases': 0, 'visits': 0}
     try:
-        _eliminate(terms, D, list(range(m)), Z, eps, leaves, stats)
+        _eliminate(terms, D, list(range(m)), Z, eps, leaves, stats, thin)
     except _TooManyCases:
         return DBMResult(None, STATUS_TOO_MANY_CASES, 0.0, stats['cases'])
     total, mag = _sum_leaves(leaves)

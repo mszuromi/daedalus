@@ -1046,6 +1046,9 @@ _RUNTIME_COUNTERS = {
     'dbm_empty': 0,
     # ... of which the poset path had bailed on the inheritance rule (P3):
     'dbm_answered_p3': 0,
+    # ... of which the first closed form failed the conditioning test and the
+    # thin-interval retry passed it (``dbm_integral.integrate_exp_sum``):
+    'dbm_answered_thin_retry': 0,
     # calls declined (the subset goes on to ``_integrate_polytope``): a row
     # that is not a difference row (e.g. a ConvVertex 3-term row):
     'dbm_declined_rows': 0,
@@ -1053,8 +1056,8 @@ _RUNTIME_COUNTERS = {
     'dbm_declined_overflow': 0,
     # ... a closed form whose estimated rounding error (1e-15 × the summed
     # magnitudes of its expansion's terms) exceeds max(1e-10 |value|,
-    # 1e-14 × the integrand's scale): close poles or a thin region
-    # (``dbm_integral.STATUS_ILL_CONDITIONED``):
+    # 1e-14 × the integrand's scale), also after the thin-interval retry:
+    # close poles or a thin region (``dbm_integral.STATUS_ILL_CONDITIONED``):
     'dbm_declined_ill_conditioned': 0,
     # ... anything else (rows and modes that do not match, a non-finite
     # shift or exponent, more than dbm_integral.MAX_CASES elimination
@@ -3781,6 +3784,8 @@ def _integrate_subset_dbm(
         _RUNTIME_COUNTERS['dbm_empty'] += 1
     elif res.error_ratio > _RUNTIME_COUNTERS['dbm_error_ratio_max']:
         _RUNTIME_COUNTERS['dbm_error_ratio_max'] = res.error_ratio
+    if res.thin_retry:
+        _RUNTIME_COUNTERS['dbm_answered_thin_retry'] += 1
     if poset_bail_reason == 'poset_lower_not_inherited':
         _RUNTIME_COUNTERS['dbm_answered_p3'] += 1
     return res.value
