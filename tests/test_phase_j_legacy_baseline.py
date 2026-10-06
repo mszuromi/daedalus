@@ -126,6 +126,15 @@ _REPRODUCE_SLOW = [
     ('spatial-coupled_rd_2species_1d-l1', 'default'),
 ]
 _MODES = ('default', 'legacy')
+# Entries whose numbers moved at M3 (P3: the poset lower-bound inheritance
+# rule and the exact DBM route, ``final_integral.USE_DBM_FALLBACK``).  In the
+# default mode they are compared with that one flag off, so this test keeps
+# guarding everything else about the current defaults; the M3 move itself is
+# checked region by region against tight quadrature (M3 report) and by
+# tests/test_phase_j_p3_inheritance.py.  quad_exp-k2-l1: 96 P3-refused region
+# evaluations, all answered by the DBM route; the one-loop term moves by up to
+# 1.2e-2 relative (τ = 10; 9.3e-4 at τ = 2.5, 0 at τ = 0), the tree level not.
+_M3_MOVERS = ('quad_exp-k2-l1',)
 # Default mode, an entry served by the M2b hardened quadrature fallback: the
 # baseline's default-tolerance scipy.nquad values were off by up to 6.8e-5
 # relative per region (spike reset, plan §10), so the arrays that the
@@ -314,6 +323,8 @@ def _reproduce(baseline, name, mode, monkeypatch):
     else:
         assert s.get('m1_expected') != 'moves', name
         default = FI._initial_phase_j_flags({})
+        if name in _M3_MOVERS:
+            default['USE_DBM_FALLBACK'] = False
         for flag, value in default.items():
             monkeypatch.setattr(FI, flag, value)
     entry = Z.entry_by_name(name, include_local=False)
@@ -363,7 +374,8 @@ def _reproduce(baseline, name, mode, monkeypatch):
     if mode == 'legacy' or not (
             s['counters'].get('zero_normal_rows_seen')
             or any(rec['counters'].get(k)
-                   for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS)):
+                   for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS
+                   + Z.M3_ROUTE_KEYS)):
         for key in _COUNTER_KEYS:
             assert rec['counters'][key] == s['counters'][key], (name, key)
     else:

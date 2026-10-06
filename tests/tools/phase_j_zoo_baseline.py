@@ -1303,6 +1303,14 @@ M2A_ROUTE_KEYS = ('forced_delta_pruned',)
 #: so a value may move wherever this counter is nonzero; routes do not
 #: change (the same regions reach the fallback).
 M2B_VALUE_KEYS = ('nquad_hardened_calls',)
+#: M3 (``final_integral.USE_DBM_FALLBACK``): an m>=3 region refused by the
+#: poset lower-bound inheritance rule moves (it was integrated over too small
+#: a region), and every region the exact DBM route answers may move at the
+#: accuracy of the fallback that served it before (or by the ±200 box, see
+#: the flag's comment); the answered regions no longer reach the fallback,
+#: so routes change where ``dbm_answered`` is nonzero.
+M3_VALUE_KEYS = ('poset_lower_not_inherited', 'dbm_answered')
+M3_ROUTE_KEYS = ('dbm_answered',)
 
 
 def load_merged(paths):
@@ -1342,8 +1350,9 @@ def delta_table(base, new, *, rtol=1e-13):
     * ``MOVES``     -- some array outside it;
     * ``VIOLATION`` -- moved although the baseline saw no zero-normal row
       (``zero_normal_rows_seen == 0``) and every ``M1_VALUE_KEYS``,
-      ``M2A_VALUE_KEYS`` and ``M2B_VALUE_KEYS`` counter of the new run is 0
-      or absent: such an entry must not move at M1 / M2a / M2b;
+      ``M2A_VALUE_KEYS``, ``M2B_VALUE_KEYS`` and ``M3_VALUE_KEYS`` counter
+      of the new run is 0 or absent: such an entry must not move at M1 /
+      M2a / M2b / M3;
     * ``status``    -- the status changed (e.g. TIMEOUT -> ok);
     * ``census``    -- nquad-stubbed on both sides (counts only);
     * ``n/a``       -- no values on either side (TIMEOUT / ERR both times).
@@ -1384,7 +1393,8 @@ def delta_table(base, new, *, rtol=1e-13):
             elif (sb.get('counters')
                   and _ctr(sb, 'zero_normal_rows_seen') == 0
                   and not any(_ctr(sn, k) for k in M1_VALUE_KEYS
-                              + M2A_VALUE_KEYS + M2B_VALUE_KEYS)):
+                              + M2A_VALUE_KEYS + M2B_VALUE_KEYS
+                              + M3_VALUE_KEYS)):
                 row['verdict'] = 'VIOLATION'
             else:
                 row['verdict'] = 'MOVES'

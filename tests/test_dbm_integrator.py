@@ -282,6 +282,70 @@ def test_astronomical_integral_is_an_overflow_not_inf():
     assert FI._RUNTIME_COUNTERS['dbm_declined_overflow'] == 1
 
 
+# ── conditioning (M3 review, lens a) ─────────────────────────────────
+
+_CHAIN200 = [((1.0, 0.0, 0.0), 200.0), ((-1.0, 1.0, 0.0), 0.0),
+             ((0.0, -1.0, 1.0), 0.0), ((0.0, 0.0, -1.0), 200.0)]
+
+
+@pytest.mark.parametrize('d', [1e-16, 1e-14, 1e-13, 5e-13, 1e-12, 5e-10,
+                               9.9e-10, 1.01e-9, 3e-9, 1e-7, 1e-6, 1e-5,
+                               1e-4, 1e-3, 1e-2, 0.1, -0.05])
+def test_small_beta_is_exact_or_declined(d):
+    """-200 < s_0 < s_1 < s_2 < 200 with β = (d, 0, 0): exact value
+    ∫ e^{d x} (200 - x)^2 / 2 dx.  Near β = 0 the 1/β factors of the
+    exponential antiderivative cancel catastrophically over the ±200 box;
+    the DBM must never return such a value as 'ok' (it was 5e3 off at
+    d = 1.01e-9 before the guard).  An 'ok' value is accurate to 1e-9."""
+    import mpmath as mp
+    mp.mp.dps = 40
+    exact = complex(mp.quad(lambda x: mp.e ** (d * x) * (200 - x) ** 2 / 2,
+                            [-200, 0, 200]))
+    res = _expsum(_CHAIN200, 3, (d, 0.0, 0.0))
+    assert res.status in (DBM.STATUS_OK, DBM.STATUS_ILL_CONDITIONED)
+    if res.status == DBM.STATUS_OK:
+        assert abs(res.value - exact) <= 1e-9 * abs(exact), (d, res)
+        assert res.error_ratio <= 1.0
+    else:
+        assert res.error_ratio > 1.0
+
+
+def test_thin_region_is_declined_to_the_fallback():
+    """A thin strip 0.10905 < s_1 < s_0 < 0.11243 (s_2 free, a scaled order
+    row so the poset path bails): the closed form cancels to ~1e-8 there
+    while the hardened fallback is exact, so the DBM declines it
+    ('dbm_ill_conditioned') and the dispatch goes on to the fallback."""
+    rows = [((0.5, -0.5, 0.0), (0.0,), 0.0),
+            ((0.0, 1.0, 0.0), (0.0,), -0.10904983793486256),
+            ((-1.0, 0.0, 0.0), (0.0,), 0.1124287566679194)]
+    p1 = -0.9352767868561097 - 0.025966244242294323j
+    p2 = -0.3888285338315657 + 0.007073664958575643j
+    em = [((-0.8566978763738722 - 0.6448443321044184j, p1),
+           (0.7338333603523322 + 0.6919377656806194j, p2)),
+          ((-0.5773412952934973 + 0.6493554909296644j, p2),
+           (-0.00031999704719143374 - 0.14479662750119915j, p1)),
+          ((-0.7104272578772295 - 0.28604260260817216j, p1),
+           (-0.08074131063229162 + 0.8431961305157281j, p2))]
+    modes = [FI.EdgeModeSum(ri=-1, pi=-1, delta_coeff=0j, modes=md)
+             for md in em]
+    FI._reset_runtime_counters()
+    assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
+    assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
+    assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
+
+
+def test_magnitude_sees_cancellation_through_merges():
+    """The expansion's Σ|term| survives the merging of terms that share a
+    monomial (every term merges into one per case after the last
+    elimination): on the strip the magnitude is far above |value|."""
+    rows = [((-1.0, 1.0), -0.3), ((1.0, -1.0), 0.5),
+            ((1.0, 0.0), 1.0), ((-1.0, 0.0), 1.0)]
+    res = _expsum(rows, 2, (0.4 + 0.1j, -0.2 + 0.3j))
+    assert res.status == DBM.STATUS_OK
+    assert res.magnitude > 2.0 * abs(res.value)
+    assert 0.0 < res.error_ratio <= 1.0
+
+
 # ── scope ────────────────────────────────────────────────────────────
 
 def test_three_term_row_is_declined():

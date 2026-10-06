@@ -712,8 +712,15 @@ _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 #            overflow or degenerate chain) is integrated exactly by
 #            ``_integrate_subset_dbm`` (``dbm_integral.py``: case-split
 #            Fourier-Motzkin elimination of the difference constraints,
-#            log-domain terms) on the region ∩ [-OUTER_CAP, OUTER_CAP]^m,
-#            the domain of the scipy fallback (``_nquad_outer_cap``).
+#            log-domain terms) on the region ∩ [-OUTER_CAP, OUTER_CAP]^m
+#            (``_nquad_outer_cap``, ±200: the box of the legacy
+#            default-tolerance scipy.nquad routines; the M3 brief fixes this
+#            domain).  The default hardened fallback (``NQUAD_HARDENED``)
+#            truncates a direction with a decay certificate at K/κ beyond its
+#            breakpoints instead, which is nearly box-free: for modes slower
+#            than κ ≈ 0.15 a non-P3 bail that M3 moves from it to the DBM can
+#            change by the box truncation (none in the measured public zoo:
+#            no m≥3 region reached the fallback there).
 #            Constant rows are decided by ``_const_row_decision`` (Θ(0) = 0
 #            and the external-time tie order; the side-effect-free form, as
 #            the poset path has already counted them); every other row
@@ -721,8 +728,10 @@ _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 #            non-constant row's shift, so it needs no tie rule.  A subset
 #            the DBM cannot take (a row that is not a difference row, e.g.
 #            a ConvVertex 3-term row; rows and modes that do not match; an
-#            overflowing term) goes on to ``_integrate_polytope`` as before
-#            (counters ``dbm_declined_*``).
+#            overflowing term; a closed form whose rounding error estimate
+#            exceeds max(1e-10 |value|, 1e-14 × the integrand's scale), as
+#            close poles or a thin region can give) goes on to
+#            ``_integrate_polytope`` as before (counters ``dbm_declined_*``).
 #   False  the pre-M3 behaviour, bit-for-bit (the shared L is inherited by
 #          every variable, and a poset bail goes to ``_integrate_polytope``).
 # Under THETA0_CONST_ROW_MODE 'legacy_clip' neither change applies (that
@@ -1037,14 +1046,18 @@ _RUNTIME_COUNTERS = {
     'dbm_declined_rows': 0,
     # ... a final term beyond the log-overflow limit:
     'dbm_declined_overflow': 0,
+    # ... a closed form whose estimated rounding error (1e-15 × the summed
+    # magnitudes of its expansion's terms) exceeds max(1e-10 |value|,
+    # 1e-14 × the integrand's scale): close poles or a thin region
+    # (``dbm_integral.STATUS_ILL_CONDITIONED``):
+    'dbm_declined_ill_conditioned': 0,
     # ... anything else (rows and modes that do not match, a non-finite
     # shift or exponent, more than dbm_integral.MAX_CASES elimination
     # cases):
     'dbm_declined_other': 0,
-    # largest Σ|final term| / |value| of an answered nonzero DBM value (the
-    # cancellation of its closed form; its rounding error is about
-    # 1e-16 times this, relative; 0.0: none):
-    'dbm_cancellation_max': 0.0,
+    # largest (estimated rounding error) / (accepted error) of an answered
+    # DBM value (<= 1 by construction; 0.0: none):
+    'dbm_error_ratio_max': 0.0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -3299,9 +3312,12 @@ USE_POSET_CAP_MATCH_SCIPY = False
 
 
 def _nquad_outer_cap():
-    """Half-width of the box on which the scipy.nquad fallback
-    (``_integrate_nd_polytope``) closes an open direction: ``OUTER_CAP``
-    (read at call time).  The DBM route integrates over the same box."""
+    """Half-width of the box on which the legacy default-tolerance
+    scipy.nquad routine (``_integrate_nd_polytope``) closes an open
+    direction: ``OUTER_CAP`` (read at call time).  The DBM route integrates
+    the region intersected with this box in every variable.  (The hardened
+    fallback truncates certified directions at K/κ instead; see the
+    ``USE_DBM_FALLBACK`` comment.)"""
     return POSET_PHYSICAL_MARGIN if USE_POSET_CAP_MATCH_SCIPY else 200.0
 
 # ─── Experimental: mpmath accumulation in the m≥3 poset evaluator ─────
@@ -3646,8 +3662,10 @@ def _integrate_subset_dbm(
     (``'dbm_not_difference_rows'``, e.g. a ConvVertex 3-term row), rows
     that do not match the modes (``'dbm_rows_mismatch'``), a non-finite
     shift or exponent (``'dbm_nonfinite'``), an overflowing final term
-    (``'dbm_overflow'``) or more than ``dbm_integral.MAX_CASES`` elimination
-    cases (``'dbm_too_many_cases'``).  The caller then goes on to
+    (``'dbm_overflow'``), more than ``dbm_integral.MAX_CASES`` elimination
+    cases (``'dbm_too_many_cases'``) or a closed form whose rounding error
+    estimate exceeds max(1e-10 |value|, 1e-14 × Σ|pole-tuple coefficient|)
+    (``'dbm_ill_conditioned'``: close poles, a thin region).  The caller then goes on to
     ``_integrate_polytope``.  ``poset_bail_reason`` (why the poset path
     bailed) is only counted (``dbm_answered_p3``).
     """
@@ -3723,8 +3741,13 @@ def _integrate_subset_dbm(
             _RUNTIME_COUNTERS['dbm_declined_other'] += 1
             return _bail('dbm_nonfinite')
 
+    # The integrand's scale for the conditioning test's absolute floor:
+    # Σ |pole-tuple coefficient| (prefactor included), the bound of the
+    # integrand where every Δt >= 0 and Re λ <= 0.
+    scale = sum(abs(C) for (C, _E, _b) in seeds)
     res = _dbm.integrate_exp_sum(
-        rows, m, seeds, _nquad_outer_cap() if cap is None else cap)
+        rows, m, seeds, _nquad_outer_cap() if cap is None else cap,
+        scale=scale)
     if res.status == _dbm.STATUS_NOT_DBM:
         _RUNTIME_COUNTERS['dbm_declined_rows'] += 1
         return _bail('dbm_not_difference_rows')
@@ -3734,13 +3757,14 @@ def _integrate_subset_dbm(
     if res.status == _dbm.STATUS_TOO_MANY_CASES:
         _RUNTIME_COUNTERS['dbm_declined_other'] += 1
         return _bail('dbm_too_many_cases')
+    if res.status == _dbm.STATUS_ILL_CONDITIONED:
+        _RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] += 1
+        return _bail('dbm_ill_conditioned')
     _RUNTIME_COUNTERS['dbm_answered'] += 1
     if res.status == _dbm.STATUS_EMPTY:
         _RUNTIME_COUNTERS['dbm_empty'] += 1
-    elif res.value != 0:
-        ratio = res.magnitude / abs(res.value)
-        if ratio > _RUNTIME_COUNTERS['dbm_cancellation_max']:
-            _RUNTIME_COUNTERS['dbm_cancellation_max'] = ratio
+    elif res.error_ratio > _RUNTIME_COUNTERS['dbm_error_ratio_max']:
+        _RUNTIME_COUNTERS['dbm_error_ratio_max'] = res.error_ratio
     if poset_bail_reason == 'poset_lower_not_inherited':
         _RUNTIME_COUNTERS['dbm_answered_p3'] += 1
     return res.value

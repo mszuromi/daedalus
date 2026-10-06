@@ -53,8 +53,20 @@ final term of magnitude ``> exp(LOG_OVERFLOW)`` is reported as an overflow
 (the integral of a bounded integrand over the box is never that large, so
 such a term could only cancel catastrophically).
 
-A coefficient ``|β_k| < BETA_EPS`` is treated as 0 (the polynomial
-antiderivative), the convention of ``final_integral``'s chain simplex.
+A coefficient with ``|β_k| · cap <= BETA_ZERO_SPAN`` is treated as 0 (the
+polynomial antiderivative): dropping ``exp(β_k s_k)`` on ``|s_k| <= cap``
+changes the term by at most ``BETA_ZERO_SPAN`` relative (rounding residues of
+sums of poles are ~1e-16).  Any larger ``β_k`` takes the exponential
+antiderivative, whose ``1/β_k`` factors cancel when ``|β_k|`` times the width
+of the interval is small (close poles, thin regions).
+
+Conditioning.  Every term carries the absolute values of everything merged
+into it, so ``magnitude`` is the Σ|term| of the full expansion and the
+rounding error of the value is about ``COND_ERR_FACTOR · magnitude``.  When
+that exceeds ``max(COND_RTOL · |value|, COND_ATOL · scale)`` (``scale``: the
+integrand's scale, given by the caller, e.g. Σ|pole-tuple coefficient|) the
+result is ``STATUS_ILL_CONDITIONED``: the value is returned for information
+only, and the caller integrates the region another way.
 
 The prototype this is ported from is ``poset_dbm_integrator.py`` (M3 brief).
 Differences: all pole tuples are integrated in one pass through one case
@@ -69,8 +81,13 @@ import math
 INF = math.inf
 #: A closed-DBM cycle of weight <= this is empty / measure zero (integral 0).
 DEGENERATE_TOL = 0.0
-#: ``|β| <`` this is integrated as a polynomial (β treated as 0).
-BETA_EPS = 1e-9
+#: ``|β| · cap <=`` this is integrated as a polynomial (β treated as 0).
+BETA_ZERO_SPAN = 1e-10
+#: Rounding error estimate = COND_ERR_FACTOR × magnitude (≈ 4.5 ulp).
+COND_ERR_FACTOR = 1e-15
+#: Accepted error: max(COND_RTOL × |value|, COND_ATOL × scale).
+COND_RTOL = 1e-10
+COND_ATOL = 1e-14
 #: A final term with ``Re E + log|C|`` above this is an overflow.
 LOG_OVERFLOW = 700.0
 #: A coefficient within this of 0 is a zero coefficient of a row normal.
@@ -83,6 +100,7 @@ STATUS_EMPTY = 'empty'                 # measure-zero / empty region: 0
 STATUS_NOT_DBM = 'not_difference_rows'  # a row is not a difference row
 STATUS_OVERFLOW = 'overflow'           # a final term beyond LOG_OVERFLOW
 STATUS_TOO_MANY_CASES = 'too_many_cases'  # more than MAX_CASES cases
+STATUS_ILL_CONDITIONED = 'ill_conditioned'  # rounding error above tolerance
 
 
 class _TooManyCases(Exception):
@@ -92,24 +110,33 @@ class _TooManyCases(Exception):
 class DBMResult:
     """Outcome of ``integrate_exp_sum``.
 
-    ``value``     complex integral (``None`` unless ``status`` is ``'ok'``
-                  or ``'empty'``);
+    ``value``     complex integral (``None`` unless ``status`` is ``'ok'``,
+                  ``'empty'`` or ``'ill_conditioned'``; for the last it is
+                  for information only);
     ``status``    one of ``STATUS_*``;
-    ``magnitude`` Σ |final term| (the sum's cancellation scale; 0.0 for an
-                  empty region);
-    ``n_cases``   leaf cases of the elimination (0 for an empty region).
+    ``magnitude`` Σ of the absolute values of every term of the full
+                  expansion (merges included): the cancellation scale; the
+                  value's rounding error is about 1e-16 times it (0.0 for
+                  an empty region);
+    ``n_cases``   leaf cases of the elimination (0 for an empty region);
+    ``error_ratio`` the rounding error estimate over the accepted error
+                  (``> 1``: ``STATUS_ILL_CONDITIONED``; 0.0 when not
+                  computed).
     """
-    __slots__ = ('value', 'status', 'magnitude', 'n_cases')
+    __slots__ = ('value', 'status', 'magnitude', 'n_cases', 'error_ratio')
 
-    def __init__(self, value, status, magnitude=0.0, n_cases=0):
+    def __init__(self, value, status, magnitude=0.0, n_cases=0,
+                 error_ratio=0.0):
         self.value = value
         self.status = status
         self.magnitude = magnitude
         self.n_cases = n_cases
+        self.error_ratio = error_ratio
 
     def __repr__(self):
         return (f'DBMResult(value={self.value!r}, status={self.status!r}, '
-                f'magnitude={self.magnitude!r}, n_cases={self.n_cases})')
+                f'magnitude={self.magnitude!r}, n_cases={self.n_cases}, '
+                f'error_ratio={self.error_ratio!r})')
 
 
 # ───────────────────────────────────────────────────────────── the region
@@ -201,28 +228,34 @@ def _binom_shift(p, c):
     return [math.comb(p, q) * (c ** (p - q)) for q in range(p + 1)]
 
 
-def _add_term(acc, key, C, E):
-    """Merge ``C·exp(E)`` into ``acc[key] = (C0, E0)`` in the log domain
-    (the larger real exponent is kept as the base, so no factor overflows)."""
+def _add_term(acc, key, C, E, A):
+    """Merge ``C·exp(E)`` into ``acc[key] = (C0, E0, A0)`` in the log domain
+    (the larger real exponent is kept as the base, so no factor overflows).
+    ``A`` (>= |C|, on the same scale ``exp(Re E)``) accumulates the absolute
+    values of everything merged into the term, so that the cancellation of
+    the full expansion stays measurable (``DBMResult.magnitude``)."""
     old = acc.get(key)
     if old is None:
-        acc[key] = (C, E)
+        acc[key] = (C, E, A)
         return
-    C0, E0 = old
+    C0, E0, A0 = old
     if E == E0:
-        acc[key] = (C0 + C, E0)
+        acc[key] = (C0 + C, E0, A0 + A)
     elif E.real > E0.real:
-        acc[key] = (C + C0 * cmath.exp(E0 - E), E)
+        f = cmath.exp(E0 - E)
+        acc[key] = (C + C0 * f, E, A + A0 * abs(f))
     else:
-        acc[key] = (C0 + C * cmath.exp(E - E0), E0)
+        f = cmath.exp(E - E0)
+        acc[key] = (C0 + C * f, E0, A0 + A * abs(f))
 
 
 def _integrate_var(terms, k, lo, hi, Z, eps):
-    """Integrate every term of ``terms`` (a dict ``(beta, mono) -> (C, E)``)
-    over ``s_k ∈ [s_lo_node + lo_c, s_hi_node + hi_c]``; ``lo`` / ``hi`` are
-    ``(node, c)``.  Returns the new dict (``s_k`` eliminated)."""
+    """Integrate every term of ``terms`` (a dict ``(beta, mono) -> (C, E,
+    A)``, see ``_add_term``) over ``s_k ∈ [s_lo_node + lo_c, s_hi_node +
+    hi_c]``; ``lo`` / ``hi`` are ``(node, c)``.  Returns the new dict
+    (``s_k`` eliminated)."""
     out = {}
-    for (beta, mono), (C, E) in terms.items():
+    for (beta, mono), (C, E, A) in terms.items():
         bk = beta[k]
         nk = mono[k]
         base_beta = list(beta)
@@ -245,10 +278,13 @@ def _integrate_var(terms, k, lo, hi, Z, eps):
                 nm = tuple(base_mono)
                 key = (nb, nm)
                 tot = 0j
+                mag = 0.0
                 for (pc, p) in pieces:
-                    tot += pc * (c ** p)        # s_Z ≡ 0: only q = 0
+                    x = pc * (c ** p)           # s_Z ≡ 0: only q = 0
+                    tot += x
+                    mag += abs(x)
                 if tot != 0:
-                    _add_term(out, key, sign * C * tot, Enew)
+                    _add_term(out, key, sign * C * tot, Enew, A * mag)
                 continue
             nb = list(base_beta)
             if carries:
@@ -261,7 +297,9 @@ def _integrate_var(terms, k, lo, hi, Z, eps):
                         continue
                     nm = list(base_mono)
                     nm[node] += q
-                    _add_term(out, (nb, tuple(nm)), sign * C * pc * sc, Enew)
+                    kappa = pc * sc
+                    _add_term(out, (nb, tuple(nm)), sign * C * kappa, Enew,
+                              A * abs(kappa))
     return out
 
 
@@ -319,8 +357,8 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats):
         return
     if not active:
         stats['cases'] += 1
-        for (_beta, _mono), (C, E) in terms.items():
-            leaves.append((C, E))
+        for (_beta, _mono), (C, E, A) in terms.items():
+            leaves.append((C, E, A))
         return
     n = len(D)
     best = None
@@ -369,13 +407,14 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats):
 
 
 def _sum_leaves(leaves):
-    """``(Σ C·exp(E), Σ |C·exp(E)|)`` with compensated summation, or
+    """``(Σ C·exp(E), Σ A·exp(Re E))`` with compensated summation (``A``:
+    the absolute magnitude a leaf has accumulated, see ``_add_term``), or
     ``(None, max log-magnitude)`` when a term exceeds ``LOG_OVERFLOW``."""
     re_parts = []
     im_parts = []
     mag = 0.0
     lg_max = -INF
-    for (C, E) in leaves:
+    for (C, E, A) in leaves:
         if C == 0:
             continue
         lg = E.real + math.log(abs(C))
@@ -389,7 +428,7 @@ def _sum_leaves(leaves):
             x = C * cmath.exp(E)
         re_parts.append(x.real)
         im_parts.append(x.imag)
-        mag += abs(x)
+        mag += A * math.exp(E.real) if E.real <= LOG_OVERFLOW else INF
     if lg_max > LOG_OVERFLOW:
         return None, lg_max
     return complex(math.fsum(re_parts), math.fsum(im_parts)), mag
@@ -397,14 +436,18 @@ def _sum_leaves(leaves):
 
 # ───────────────────────────────────────────────────────────── driver
 
-def integrate_exp_sum(rows, m, seeds, cap, *, eps=BETA_EPS):
+def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
     r"""``Σ_t C_t ∫_{region} exp(E_t + Σ_v β_tv s_v) ds``.
 
     ``rows``  ``(a, c)`` pairs, ``a·s + c > 0`` (see ``difference_bounds``);
     ``m``     the number of integration variables (>= 1);
     ``seeds`` iterable of ``(C, E, beta)`` with ``beta`` a length-``m``
               sequence of complex exponent coefficients;
-    ``cap``   the box half-width (every variable in ``[-cap, cap]``).
+    ``cap``   the box half-width (every variable in ``[-cap, cap]``);
+    ``scale`` the integrand's scale for the conditioning test's absolute
+              floor (default: Σ_t |C_t| exp(Re E_t));
+    ``eps``   ``|β|`` below which β is treated as 0 (default
+              ``BETA_ZERO_SPAN / cap``).
 
     Returns a ``DBMResult``.
     """
@@ -418,14 +461,21 @@ def integrate_exp_sum(rows, m, seeds, cap, *, eps=BETA_EPS):
     D = close(D)
     if is_degenerate(D):
         return DBMResult(0j, STATUS_EMPTY)
+    if eps is None:
+        eps = BETA_ZERO_SPAN / max(float(cap), 1.0)
     terms = {}
     zero_mono = (0,) * n
+    seed_scale = 0.0
     for (C, E, beta) in seeds:
         C = complex(C)
         if C == 0:
             continue
+        E = complex(E)
+        seed_scale += abs(C) * math.exp(min(E.real, LOG_OVERFLOW))
         key = (tuple(complex(b) for b in beta) + (0j,), zero_mono)
-        _add_term(terms, key, C, complex(E))
+        _add_term(terms, key, C, E, abs(C))
+    if scale is None:
+        scale = seed_scale
     leaves = []
     stats = {'cases': 0, 'visits': 0}
     try:
@@ -435,4 +485,10 @@ def integrate_exp_sum(rows, m, seeds, cap, *, eps=BETA_EPS):
     total, mag = _sum_leaves(leaves)
     if total is None:
         return DBMResult(None, STATUS_OVERFLOW, mag, stats['cases'])
-    return DBMResult(total, STATUS_OK, mag, stats['cases'])
+    accepted = max(COND_RTOL * abs(total), COND_ATOL * float(scale))
+    err = COND_ERR_FACTOR * mag
+    ratio = err / accepted if accepted > 0 else (0.0 if err == 0 else INF)
+    if ratio > 1.0:
+        return DBMResult(total, STATUS_ILL_CONDITIONED, mag, stats['cases'],
+                         ratio)
+    return DBMResult(total, STATUS_OK, mag, stats['cases'], ratio)
