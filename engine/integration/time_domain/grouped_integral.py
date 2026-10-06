@@ -1290,6 +1290,34 @@ def integrate_grouped_diagram(
                         return val
                     if _attempted is not None:
                         _bail_reason = _fi_mod._pop_bail_reason()
+                    # M3: the exact DBM route (``USE_DBM_FALLBACK``) on the
+                    # merged pole tuples, as the poset path above.
+                    if _attempted == 'poset' and _fi_mod._dbm_route_on():
+                        val = _fi_mod._integrate_subset_dbm(
+                            smooth_edge_modes=list(dummy_modes),
+                            prefactor_complex=1.0 + 0.0j,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                            m=m_val,
+                            pole_tuples=pole_tuples,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
+                            poset_bail_reason=_bail_reason,
+                        )
+                        if val is not None:
+                            if _hook is not None:
+                                _fi_mod._emit_subset_hook(
+                                    _hook, hook_meta, _hook_ctx, free_vals,
+                                    m_val, cdata, path='dbm',
+                                    evaluator='_integrate_subset_dbm',
+                                    branch='noplan', value=val,
+                                    bail_reason=None, attempted=_attempted,
+                                    modes=dummy_modes,
+                                    prefactor=1.0 + 0.0j, plan=None,
+                                    pole_tuples=pole_tuples, integrand=fc,
+                                    row_kinds=row_kinds, tie_ctx=_tie_ctx)
+                            return val
+                        _fi_mod._pop_bail_reason()
                 # scipy.nquad fallback on the SR-summed integrand.
                 _fi_mod._count_nquad_fallback(_bail_reason, m_val)
                 resolved = []

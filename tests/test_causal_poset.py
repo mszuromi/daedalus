@@ -193,16 +193,35 @@ def test_consistent_scalar_lower_all_equal():
 
 def test_consistent_scalar_lower_missing_var():
     """Some variables have a scalar lower, others don't.  As long
-    as the set ones agree, the missing ones can inherit L via the
-    chain ordering — accept and return that common L.
+    as the set ones agree, a missing one inherits L through a
+    lower-bounded predecessor in the strict order (here s_2 > s_0 > L)
+    — accept and return that common L.  (M3: without such a
+    predecessor it does not inherit L, see the next test.)
     """
     poset = _CausalPoset(
-        m=3, edges=(), scalar_lowers=((0, 1.0), (1, 1.0)),
+        m=3, edges=((0, 2),), scalar_lowers=((0, 1.0), (1, 1.0)),
         scalar_uppers=(),
     )
     L, ok = _causal_poset_consistent_scalar_lower(poset)
     assert ok is True
     assert abs(L - 1.0) < 1e-12
+
+
+def test_consistent_scalar_lower_not_inherited(monkeypatch):
+    """M3 (P3): s_2 has no scalar lower and no predecessor at all, so it
+    is not bounded below by L: not a single-L poset.  (Before M3 this
+    poset was accepted with L for every variable, cutting off the region
+    s_2 < L; ``USE_DBM_FALLBACK = False`` restores that.)"""
+    import engine.integration.time_domain.final_integral as FI
+    poset = _CausalPoset(
+        m=3, edges=(), scalar_lowers=((0, 1.0), (1, 1.0)),
+        scalar_uppers=(),
+    )
+    monkeypatch.setattr(FI, 'USE_DBM_FALLBACK', True)
+    assert _causal_poset_consistent_scalar_lower(poset) == (None, False)
+    monkeypatch.setattr(FI, 'USE_DBM_FALLBACK', False)
+    L, ok = _causal_poset_consistent_scalar_lower(poset)
+    assert ok is True and abs(L - 1.0) < 1e-12
 
 
 def test_consistent_scalar_lower_differing_values():

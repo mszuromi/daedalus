@@ -171,7 +171,7 @@ def test_flag_initialisation_from_the_environment():
     assert f({'DAEDALUS_PHASE_J_LEGACY': '1',
               'DAEDALUS_PHASE_J_NQUAD_HARDENED': '1'}) == {
         'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
-        'NQUAD_HARDENED': False}
+        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False}
     with pytest.raises(ValueError):
         f({'DAEDALUS_PHASE_J_NQUAD_HARDENED': 'maybe'})
     # the module default (this process sets none of the variables)

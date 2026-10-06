@@ -145,7 +145,7 @@ def test_flag_initialisation_from_the_environment():
     assert f({'DAEDALUS_PHASE_J_LEGACY': '1',
               'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS': '1'}) == {
         'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
-        'NQUAD_HARDENED': False}
+        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False}
     assert f({'DAEDALUS_PHASE_J_LEGACY': '0',
               'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS': '0'})[
         'STRUCTURAL_ZEROS'] is False

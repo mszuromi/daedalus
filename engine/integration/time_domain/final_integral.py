@@ -525,8 +525,8 @@ POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 # ``DAEDALUS_PHASE_J_LEGACY=1`` (the umbrella) sets EVERY Phase J flag to its
 # legacy value, reproducing the pre-M1 numbers bit-for-bit within one
 # process.  That is ``THETA0_CONST_ROW_MODE = 'legacy_clip'``,
-# ``STRUCTURAL_ZEROS = False`` (M2a) and ``NQUAD_HARDENED = False`` (M2b;
-# see ``_initial_phase_j_flags``).  The
+# ``STRUCTURAL_ZEROS = False`` (M2a), ``NQUAD_HARDENED = False`` (M2b) and
+# ``USE_DBM_FALLBACK = False`` (M3; see ``_initial_phase_j_flags``).  The
 # bounding box is not a flag: the umbrella also reads ``POLYGON_BBOX_CAP`` at
 # call time (so it reproduces a pre-M1 run at any cap, e.g. the cap-12 trap).
 import os as _os
@@ -692,18 +692,59 @@ _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 # Environment: DAEDALUS_PHASE_J_NQUAD_HARDENED = 1 | 0 (also true/false,
 # yes/no, on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
 
+# ── Poset lower-bound inheritance and the exact DBM route (M3; plan §3.1
+# L7, problem P3) ──
+# USE_DBM_FALLBACK (bool, read at call time; acts only while
+# THETA0_CONST_ROW_MODE is 'ito', see ``_dbm_route_on``):
+#   True   (default) two changes to the m≥3 subsets:
+#          * P3, the inheritance rule.  The poset path integrates every
+#            variable from ONE shared scalar lower bound L.  A variable
+#            without a scalar lower of its own may inherit L only through a
+#            predecessor in the transitive closure of the strict order that
+#            has one (s_v > s_u > L).  A poset with a variable that has
+#            neither extends below L, down to the domain cap; the poset path
+#            now bails on it (``'poset_lower_not_inherited'``; counter
+#            ``poset_lower_not_inherited``) instead of cutting that region
+#            off at L.
+#          * The DBM route.  Every m≥3 subset whose poset path bails (for
+#            any reason: the P3 rule above, unequal scalar lowers, shifted
+#            order rows, an order cycle with a positive total shift, an
+#            overflow or degenerate chain) is integrated exactly by
+#            ``_integrate_subset_dbm`` (``dbm_integral.py``: case-split
+#            Fourier-Motzkin elimination of the difference constraints,
+#            log-domain terms) on the region ∩ [-OUTER_CAP, OUTER_CAP]^m,
+#            the domain of the scipy fallback (``_nquad_outer_cap``).
+#            Constant rows are decided by ``_const_row_decision`` (Θ(0) = 0
+#            and the external-time tie order; the side-effect-free form, as
+#            the poset path has already counted them); every other row
+#            enters the region as it is: the integral is continuous in a
+#            non-constant row's shift, so it needs no tie rule.  A subset
+#            the DBM cannot take (a row that is not a difference row, e.g.
+#            a ConvVertex 3-term row; rows and modes that do not match; an
+#            overflowing term) goes on to ``_integrate_polytope`` as before
+#            (counters ``dbm_declined_*``).
+#   False  the pre-M3 behaviour, bit-for-bit (the shared L is inherited by
+#          every variable, and a poset bail goes to ``_integrate_polytope``).
+# Under THETA0_CONST_ROW_MODE 'legacy_clip' neither change applies (that
+# mode reproduces the pre-M1 numbers bit-for-bit, and the DBM decides
+# constant rows by the Itô rule).
+# Environment: DAEDALUS_PHASE_J_DBM = 1 | 0 (also true/false, yes/no,
+# on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
+
 
 def _initial_phase_j_flags(environ=None):
     """The import-time values of the Phase J flags from ``environ``
     (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...,
-    'STRUCTURAL_ZEROS': ..., 'NQUAD_HARDENED': ...}``.  The umbrella wins
-    over the per-flag variables.  An unknown value raises (a silent fallback
-    to the default would hide a requested rollback)."""
+    'STRUCTURAL_ZEROS': ..., 'NQUAD_HARDENED': ...,
+    'USE_DBM_FALLBACK': ...}``.  The umbrella wins over the per-flag
+    variables.  An unknown value raises (a silent fallback to the default
+    would hide a requested rollback)."""
     env = _os.environ if environ is None else environ
     if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
         return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
                 'STRUCTURAL_ZEROS': False,
-                'NQUAD_HARDENED': False}
+                'NQUAD_HARDENED': False,
+                'USE_DBM_FALLBACK': False}
     mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
             .strip().lower() or 'ito')
     if mode not in _THETA0_MODES:
@@ -718,15 +759,36 @@ def _initial_phase_j_flags(environ=None):
     if nh not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
         raise ValueError(
             f'DAEDALUS_PHASE_J_NQUAD_HARDENED={nh!r}: expected 1 or 0')
+    db = env.get('DAEDALUS_PHASE_J_DBM', '').strip().lower()
+    if db not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_DBM={db!r}: expected 1 or 0')
     return {'THETA0_CONST_ROW_MODE': mode,
             'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON,
-            'NQUAD_HARDENED': nh in _STRUCTURAL_ZEROS_ON}
+            'NQUAD_HARDENED': nh in _STRUCTURAL_ZEROS_ON,
+            'USE_DBM_FALLBACK': db in _STRUCTURAL_ZEROS_ON}
 
 
 _PHASE_J_FLAGS_AT_IMPORT = _initial_phase_j_flags()
 THETA0_CONST_ROW_MODE = _PHASE_J_FLAGS_AT_IMPORT['THETA0_CONST_ROW_MODE']
 STRUCTURAL_ZEROS = _PHASE_J_FLAGS_AT_IMPORT['STRUCTURAL_ZEROS']
 NQUAD_HARDENED = _PHASE_J_FLAGS_AT_IMPORT['NQUAD_HARDENED']
+USE_DBM_FALLBACK = _PHASE_J_FLAGS_AT_IMPORT['USE_DBM_FALLBACK']
+
+
+def _dbm_fallback_on():
+    """``USE_DBM_FALLBACK`` (call time), validated."""
+    flag = USE_DBM_FALLBACK
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.USE_DBM_FALLBACK={flag!r}: expected '
+                     f'True or False')
+
+
+def _dbm_route_on():
+    """True when the M3 changes apply (call time): ``USE_DBM_FALLBACK`` on
+    AND ``THETA0_CONST_ROW_MODE`` 'ito' (see the flag's comment)."""
+    return _dbm_fallback_on() and not _theta0_legacy()
 
 
 def _nquad_hardened_on():
@@ -955,6 +1017,34 @@ _RUNTIME_COUNTERS = {
     'nquad_hardened_innermost_capped': 0,
     # largest truncation distance K / κ used (0.0: none):
     'nquad_hardened_cap_span_max': 0.0,
+    # ── M3 counters (``USE_DBM_FALLBACK``) ──
+    # m≥3 posets refused by the inheritance rule (P3): a variable without a
+    # scalar lower and without a lower-bounded predecessor in the transitive
+    # closure of the strict order; the poset path bails
+    # ('poset_lower_not_inherited'):
+    'poset_lower_not_inherited': 0,
+    # ``_integrate_subset_dbm`` calls (m≥3 subsets whose poset path bailed):
+    'dbm_attempted': 0,
+    # ... answered by the DBM route (a value, counted once):
+    'dbm_answered': 0,
+    # ... of which the region is empty or of measure zero (a constant EMPTY
+    # row, or a closed-DBM cycle of weight <= 0, exact): exactly 0:
+    'dbm_empty': 0,
+    # ... of which the poset path had bailed on the inheritance rule (P3):
+    'dbm_answered_p3': 0,
+    # calls declined (the subset goes on to ``_integrate_polytope``): a row
+    # that is not a difference row (e.g. a ConvVertex 3-term row):
+    'dbm_declined_rows': 0,
+    # ... a final term beyond the log-overflow limit:
+    'dbm_declined_overflow': 0,
+    # ... anything else (rows and modes that do not match, a non-finite
+    # shift or exponent, more than dbm_integral.MAX_CASES elimination
+    # cases):
+    'dbm_declined_other': 0,
+    # largest Σ|final term| / |value| of an answered nonzero DBM value (the
+    # cancellation of its closed form; its rounding error is about
+    # 1e-16 times this, relative; 0.0: none):
+    'dbm_cancellation_max': 0.0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -1372,7 +1462,9 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
       ``modes`` / ``plan`` / ``pole_tuples`` / ``integrand`` (the closure
       scipy.nquad integrates) / ``prefactor``.  The live references are
       NOT picklable; copy what you need.
-    * outcome: ``path`` ('m0' | 'm1' | 'polygon' | 'poset' | 'nquad'),
+    * outcome: ``path`` ('m0' | 'm1' | 'polygon' | 'poset' | 'dbm' |
+      'nquad'; 'dbm': the M3 DBM route answered after the poset path
+      bailed),
       ``evaluator`` (function-level name), ``branch`` ('plan' | 'noplan' |
       'grouped' | None), ``attempted`` (analytic path tried, or ``None``),
       ``bail_reason`` (fine-grained reason the analytic path returned
@@ -2250,20 +2342,71 @@ def _causal_poset_consistent_scalar_lower(poset, tol=1e-9):
     variables with DIFFERENT values — in that case the chain
     simplex over a single L would over- or under-include regions
     and the caller should fall back to scipy.nquad.
+
+    M3 (P3, ``USE_DBM_FALLBACK``; ``_dbm_route_on`` at call time): also
+    ``(None, False)`` when some variable has neither a scalar lower of its
+    own nor a predecessor with one in the transitive closure of the strict
+    order (``_poset_lower_not_inherited``).  Such a variable is not bounded
+    below by L (only by the domain cap), so the single-L chain simplex
+    would cut off the region below L.  With the flag off every variable
+    inherits L, as before.
     """
+    return _poset_scalar_lower_verdict(poset, tol)[:2]
+
+
+def _poset_lower_not_inherited(poset, lower_vars):
+    r"""True if some variable of ``poset`` has no scalar lower (it is not in
+    ``lower_vars``) and no predecessor in ``lower_vars`` in the transitive
+    closure of the strict order.
+
+    An edge ``(u, v)`` means ``s_v > s_u``, so a variable inherits a lower
+    bound L exactly from its ancestors: ``s_v > s_u > L``.  Order shifts
+    play no role (the extractor accepts only unshifted order rows)."""
+    m = poset.m
+    preds = [[] for _ in range(m)]
+    for (u, v) in poset.edges:
+        preds[v].append(u)
+    bounded = set(lower_vars)
+    for v in range(m):
+        if v in bounded:
+            continue
+        seen = {v}
+        stack = list(preds[v])
+        found = False
+        while stack:
+            u = stack.pop()
+            if u in seen:
+                continue
+            if u in lower_vars:
+                found = True
+                break
+            seen.add(u)
+            stack.extend(preds[u])
+        if not found:
+            return True
+    return False
+
+
+def _poset_scalar_lower_verdict(poset, tol=1e-9):
+    """``(L, ok, reason)``: ``_causal_poset_consistent_scalar_lower``'s
+    ``(L, ok)`` plus why it failed (``None``, ``'inconsistent'``: unequal
+    scalar lowers, ``'not_inherited'``: the M3 inheritance rule)."""
     per_var_max = {}
     for (var, c) in poset.scalar_lowers:
         cur = per_var_max.get(var)
         per_var_max[var] = c if cur is None else max(cur, c)
     if not per_var_max:
-        return (None, True)
+        return (None, True, None)
     vals = list(per_var_max.values())
     Lmin, Lmax = min(vals), max(vals)
     if Lmax - Lmin > tol:
-        return (None, False)
+        return (None, False, 'inconsistent')
     # All variables that have a scalar lower agree on value Lmax.
-    # Variables without one inherit via the chain ordering.
-    return (Lmax, True)
+    # Variables without one inherit it via the chain ordering -- M3: only
+    # from a lower-bounded ancestor.
+    if _dbm_route_on() and _poset_lower_not_inherited(poset, per_var_max):
+        return (None, False, 'not_inherited')
+    return (Lmax, True, None)
 
 
 def _causal_poset_consistent_scalar_upper(poset, tol=1e-9):
@@ -3154,6 +3297,13 @@ USE_POSET_INTEGRATOR = True
 # ``docs/m_ge3_precision_bug_audit.md``.
 USE_POSET_CAP_MATCH_SCIPY = False
 
+
+def _nquad_outer_cap():
+    """Half-width of the box on which the scipy.nquad fallback
+    (``_integrate_nd_polytope``) closes an open direction: ``OUTER_CAP``
+    (read at call time).  The DBM route integrates over the same box."""
+    return POSET_PHYSICAL_MARGIN if USE_POSET_CAP_MATCH_SCIPY else 200.0
+
 # ─── Experimental: mpmath accumulation in the m≥3 poset evaluator ─────
 #
 # Hypothesis (2026-05-16): the per-diag analytic 1-loop at spike-reset
@@ -3209,7 +3359,10 @@ def _integrate_nd_polytope_poset_modesum(
       2. Resolve the COMMON scalar lower bound ``L`` for all
          integration variables.  Fail if scalar lowers differ across
          variables (the simple chain simplex form would over- or
-         under-include regions).  Fall back to ``-bbox_cap`` when no
+         under-include regions), and (M3, ``USE_DBM_FALLBACK``) if a
+         variable has neither a scalar lower nor a lower-bounded
+         predecessor (``'poset_lower_not_inherited'``; the dispatch then
+         takes the exact DBM route).  Fall back to ``-bbox_cap`` when no
          scalar lower is present.
       3. Enumerate every linear extension σ of the poset.  Each is a
          disjoint chain simplex
@@ -3248,10 +3401,15 @@ def _integrate_nd_polytope_poset_modesum(
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
         return _bail('poset_extract_none')
 
-    L_value, lower_ok = _causal_poset_consistent_scalar_lower(poset)
+    L_value, lower_ok, lower_why = _poset_scalar_lower_verdict(poset)
     if not lower_ok:
         _RUNTIME_COUNTERS['poset_consistent_lower_failed'] += 1
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
+        if lower_why == 'not_inherited':
+            # M3 (P3): a variable is not bounded below by L; the DBM route
+            # (``_integrate_subset_dbm``) takes the subset.
+            _RUNTIME_COUNTERS['poset_lower_not_inherited'] += 1
+            return _bail('poset_lower_not_inherited')
         return _bail('poset_lower_inconsistent')
     # ── Lower bound: tight physical fallback (Stage 3b-bounds) ──────
     # When ``_causal_poset_consistent_scalar_lower`` returns no scalar
@@ -3444,6 +3602,148 @@ def _integrate_nd_polytope_poset_modesum(
         _mp.dps = _saved_dps
         return _result
     return total
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Exact DBM route for m≥3 subsets (M3; ``USE_DBM_FALLBACK``)
+# ───────────────────────────────────────────────────────────────────────
+from engine.integration.time_domain import dbm_integral as _dbm
+
+
+def _integrate_subset_dbm(
+    smooth_edge_modes,
+    prefactor_complex,
+    subset_constraint_data,
+    free_ext_vals,
+    m,
+    pole_tuples=None,
+    plan=None,
+    row_kinds=None,
+    tie_ctx=None,
+    cap=None,
+    poset_bail_reason=None,
+):
+    r"""Exact ``∫_{region ∩ box} pref · Π_e [Σ_α C_α exp(λ_α · Δt_e)] ds``
+    for an m ≥ 3 subset whose poset path bailed: the DBM route
+    (``dbm_integral.integrate_exp_sum``).
+
+    The integrand and its arguments are those of
+    ``_integrate_nd_polytope_poset_modesum`` (one row of
+    ``subset_constraint_data`` per smooth edge; the pole tuples from
+    ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  The box is
+    ``[-cap, cap]^m`` with ``cap`` = ``_nquad_outer_cap()`` (the scipy
+    fallback's ``OUTER_CAP``) unless given.
+
+    Rows: a constant row (zero normal) is decided by the Θ(0) = 0 rule with
+    the external-time tie order (``_const_row_decision`` with ``tie_ctx``):
+    EMPTY returns 0j, DROP leaves the geometry (its edge still contributes
+    ``exp(λ·c_eff)``).  Every other row enters the region with its resolved
+    shift ``c_eff``; a tie needs no rule there (the integral is continuous
+    in such a shift).
+
+    Returns ``complex``, or ``None`` (through ``_bail``) when the DBM cannot
+    take the subset: a row that is not a difference row
+    (``'dbm_not_difference_rows'``, e.g. a ConvVertex 3-term row), rows
+    that do not match the modes (``'dbm_rows_mismatch'``), a non-finite
+    shift or exponent (``'dbm_nonfinite'``), an overflowing final term
+    (``'dbm_overflow'``) or more than ``dbm_integral.MAX_CASES`` elimination
+    cases (``'dbm_too_many_cases'``).  The caller then goes on to
+    ``_integrate_polytope``.  ``poset_bail_reason`` (why the poset path
+    bailed) is only counted (``dbm_answered_p3``).
+    """
+    import cmath
+    _RUNTIME_COUNTERS['dbm_attempted'] += 1
+    n_rows = len(subset_constraint_data)
+    if smooth_edge_modes is not None and len(smooth_edge_modes) != n_rows:
+        _RUNTIME_COUNTERS['dbm_declined_other'] += 1
+        return _bail('dbm_rows_mismatch')
+    n_ext = len(free_ext_vals)
+    rows = []
+    c_eff_per_edge = []
+    a_int_per_edge = []
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+        c_eff = float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        a_f = tuple(float(a_int[i]) for i in range(m))
+        c_eff_per_edge.append(c_eff)
+        a_int_per_edge.append(a_f)
+        verdict, _basis = _const_row_decision(
+            a_int, a_ext, c0, free_ext_vals, _row_kind(row_kinds, idx),
+            tie_ctx)
+        if verdict == 'EMPTY':
+            _RUNTIME_COUNTERS['dbm_answered'] += 1
+            _RUNTIME_COUNTERS['dbm_empty'] += 1
+            if poset_bail_reason == 'poset_lower_not_inherited':
+                _RUNTIME_COUNTERS['dbm_answered_p3'] += 1
+            return 0.0 + 0.0j
+        if verdict == 'DROP':
+            continue
+        if not math.isfinite(c_eff):
+            _RUNTIME_COUNTERS['dbm_declined_other'] += 1
+            return _bail('dbm_nonfinite')
+        rows.append((a_f, c_eff))
+
+    # Seeds (C, E, β): one per pole tuple, E = γ kept in the log domain
+    # (``integrate_exp_sum`` merges the tuples that share β).
+    pref = complex(prefactor_complex)
+    seeds = []
+    if plan is not None:
+        pt = plan['pole_tuples']
+        g_const = plan['gamma_const_per_tuple']
+        g_slope = plan['gamma_slope_per_tuple_per_ext']
+        for alphas_orig, t_idxs in plan['tuple_groups']:
+            for t_idx in t_idxs:
+                gamma = g_const[t_idx]
+                slope_row = g_slope[t_idx]
+                for j in range(n_ext):
+                    gamma = gamma + slope_row[j] * free_ext_vals[j]
+                seeds.append((pref * pt[t_idx][0], gamma, alphas_orig))
+    else:
+        pole_iter = (
+            pole_tuples if pole_tuples is not None
+            else _enumerate_pole_tuples(smooth_edge_modes)
+        )
+        for C_prod, lambdas in pole_iter:
+            if len(lambdas) != n_rows:
+                _RUNTIME_COUNTERS['dbm_declined_other'] += 1
+                return _bail('dbm_rows_mismatch')
+            alphas_orig = [0.0 + 0.0j] * m
+            gamma = 0.0 + 0.0j
+            for e in range(n_rows):
+                lam = lambdas[e]
+                a_e = a_int_per_edge[e]
+                for v in range(m):
+                    alphas_orig[v] += lam * a_e[v]
+                gamma += lam * c_eff_per_edge[e]
+            seeds.append((pref * C_prod, gamma, alphas_orig))
+    for (C, E, _b) in seeds:
+        if not (cmath.isfinite(C) and cmath.isfinite(E)):
+            _RUNTIME_COUNTERS['dbm_declined_other'] += 1
+            return _bail('dbm_nonfinite')
+
+    res = _dbm.integrate_exp_sum(
+        rows, m, seeds, _nquad_outer_cap() if cap is None else cap)
+    if res.status == _dbm.STATUS_NOT_DBM:
+        _RUNTIME_COUNTERS['dbm_declined_rows'] += 1
+        return _bail('dbm_not_difference_rows')
+    if res.status == _dbm.STATUS_OVERFLOW:
+        _RUNTIME_COUNTERS['dbm_declined_overflow'] += 1
+        return _bail('dbm_overflow')
+    if res.status == _dbm.STATUS_TOO_MANY_CASES:
+        _RUNTIME_COUNTERS['dbm_declined_other'] += 1
+        return _bail('dbm_too_many_cases')
+    _RUNTIME_COUNTERS['dbm_answered'] += 1
+    if res.status == _dbm.STATUS_EMPTY:
+        _RUNTIME_COUNTERS['dbm_empty'] += 1
+    elif res.value != 0:
+        ratio = res.magnitude / abs(res.value)
+        if ratio > _RUNTIME_COUNTERS['dbm_cancellation_max']:
+            _RUNTIME_COUNTERS['dbm_cancellation_max'] = ratio
+    if poset_bail_reason == 'poset_lower_not_inherited':
+        _RUNTIME_COUNTERS['dbm_answered_p3'] += 1
+    return res.value
 
 
 def _integrate_1d_polytope_modesum(
@@ -5332,6 +5632,37 @@ def integrate_diagram(
                         return poset_val
                     _attempted = 'poset'
                     _bail_reason = _pop_bail_reason()
+                    # M3: the exact DBM route (``USE_DBM_FALLBACK``).
+                    if _dbm_route_on():
+                        dbm_val = _integrate_subset_dbm(
+                            smooth_edge_modes=modes,
+                            prefactor_complex=pref_c,
+                            subset_constraint_data=cdata,
+                            free_ext_vals=free_vals,
+                            m=m_val,
+                            pole_tuples=pole_tuples,
+                            plan=plan,
+                            row_kinds=row_kinds,
+                            tie_ctx=_tie_ctx,
+                            poset_bail_reason=_bail_reason,
+                        )
+                        if dbm_val is not None:
+                            if _hook is not None:
+                                _emit_subset_hook(
+                                    _hook, hook_meta, _hook_ctx, free_vals,
+                                    m_val, cdata, path='dbm',
+                                    evaluator='_integrate_subset_dbm',
+                                    branch='plan' if plan is not None
+                                    else 'noplan',
+                                    value=dbm_val, bail_reason=None,
+                                    attempted='poset', modes=modes,
+                                    prefactor=pref_c, plan=plan,
+                                    pole_tuples=pole_tuples, integrand=fc,
+                                    row_kinds=row_kinds, tie_ctx=_tie_ctx)
+                            return dbm_val
+                        # Declined (its reason is in the dbm_declined_*
+                        # counters); the poset's reason labels the fallback.
+                        _pop_bail_reason()
                 # Closure-only fallback via scipy.nquad.
                 _count_nquad_fallback(_bail_reason, m_val)
                 resolved = []
@@ -6763,10 +7094,7 @@ def _integrate_nd_polytope(integrand_callable, s_constraints, free_ext_vals, m):
     # paths must agree on the cap or the grouped/per-diag comparison
     # disagrees.  For strongly-decaying models the integrand is
     # negligible at |s| > 50 anyway, so this is harmless.
-    if USE_POSET_CAP_MATCH_SCIPY:
-        OUTER_CAP = POSET_PHYSICAL_MARGIN
-    else:
-        OUTER_CAP = 200.0
+    OUTER_CAP = _nquad_outer_cap()
 
     # Outermost variable s_{m-1}: bounds computed from constraints with
     # zero coefficient on all inner variables (pure-s_{m-1}).  If no
