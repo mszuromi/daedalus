@@ -52,11 +52,11 @@ What is checked
    sends 16 regions to the scipy quadrature fallback and was 2.9e-5
    relative off with its default tolerance (a strict expected failure
    until the fallback was hardened, M2b; now the limit to 6.3e-15).  (The
-   other route, the poset lower-bound inheritance error at a tie, makes the
+   other route, the poset lower-bound inheritance error at a tie, made the
    default k = 4 slices of single_population_spike_reset_test 1.0-8.5 %
-   off at tau = 0.5; CHANGELOG 0.2.0, known issue.  Not tested here: the
-   build plus one such point takes 4 to 5 minutes, its limit about 15
-   more.)
+   off at tau = 0.5 until that error was fixed (M3, CHANGELOG 0.2.0); not
+   re-measured since.  Not tested here: the build plus one such point
+   takes 4 to 5 minutes, its limit about 15 more.)
 6. Moment outputs (``Config.output = 'central_moment'``): the cumulant
    blocks of 3 or more legs are evaluated at the times of slice 1 with the
    default base lags.  The k = 3 central moment equals slice 1

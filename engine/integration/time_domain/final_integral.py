@@ -712,15 +712,17 @@ _STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
 #            overflow or degenerate chain) is integrated exactly by
 #            ``_integrate_subset_dbm`` (``dbm_integral.py``: case-split
 #            Fourier-Motzkin elimination of the difference constraints,
-#            log-domain terms) on the region ∩ [-OUTER_CAP, OUTER_CAP]^m
-#            (``_nquad_outer_cap``, ±200: the box of the legacy
-#            default-tolerance scipy.nquad routines; the M3 brief fixes this
-#            domain).  The default hardened fallback (``NQUAD_HARDENED``)
-#            truncates a direction with a decay certificate at K/κ beyond its
-#            breakpoints instead, which is nearly box-free: for modes slower
-#            than κ ≈ 0.15 a non-P3 bail that M3 moves from it to the DBM can
-#            change by the box truncation (none in the measured public zoo:
-#            no m≥3 region reached the fallback there).
+#            log-domain terms).  A direction the rows leave open is closed
+#            at ±OUTER_CAP (``_nquad_outer_cap``, ±200: the box of the
+#            legacy default-tolerance scipy.nquad routines; the M3 brief
+#            fixes this domain); a finite bound is kept as it is, even
+#            beyond the box.  The default hardened fallback
+#            (``NQUAD_HARDENED``) truncates a direction with a decay
+#            certificate at K/κ beyond its breakpoints instead, which is
+#            nearly box-free: for modes slower than κ ≈ 0.15 a non-P3 bail
+#            that M3 moves from it to the DBM can change by the box
+#            truncation (none in the measured public zoo: no m≥3 region
+#            reached the fallback there).
 #            Constant rows are decided by ``_const_row_decision`` (Θ(0) = 0
 #            and the external-time tie order; the side-effect-free form, as
 #            the poset path has already counted them); every other row
@@ -3314,8 +3316,8 @@ USE_POSET_CAP_MATCH_SCIPY = False
 def _nquad_outer_cap():
     """Half-width of the box on which the legacy default-tolerance
     scipy.nquad routine (``_integrate_nd_polytope``) closes an open
-    direction: ``OUTER_CAP`` (read at call time).  The DBM route integrates
-    the region intersected with this box in every variable.  (The hardened
+    direction: ``OUTER_CAP`` (read at call time).  The DBM route closes the
+    directions its rows leave open at the same ±cap.  (The hardened
     fallback truncates certified directions at K/κ instead; see the
     ``USE_DBM_FALLBACK`` comment.)"""
     return POSET_PHYSICAL_MARGIN if USE_POSET_CAP_MATCH_SCIPY else 200.0
@@ -3646,9 +3648,10 @@ def _integrate_subset_dbm(
     The integrand and its arguments are those of
     ``_integrate_nd_polytope_poset_modesum`` (one row of
     ``subset_constraint_data`` per smooth edge; the pole tuples from
-    ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  The box is
-    ``[-cap, cap]^m`` with ``cap`` = ``_nquad_outer_cap()`` (the scipy
-    fallback's ``OUTER_CAP``) unless given.
+    ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  A direction the
+    rows leave open is closed at ±``cap``, ``_nquad_outer_cap()`` (the
+    scipy fallback's ``OUTER_CAP``) unless given; a finite bound is kept as
+    it is, even beyond the box.
 
     Rows: a constant row (zero normal) is decided by the Θ(0) = 0 rule with
     the external-time tie order (``_const_row_decision`` with ``tie_ctx``):

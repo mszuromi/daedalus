@@ -65,7 +65,8 @@ from tests.phase_j_refactor_fixtures._runner import (
 # rounding, well inside the fixture tolerance).  P3/P4 are still pending,
 # hence no refreeze before M9.
 _MOVED = {
-    'spike_reset_k2_ell1': 'Theta(0)=0 fix (M1); refrozen once at M9',
+    'spike_reset_k2_ell1': ('Theta(0)=0 fix (M1) and the poset lower-bound '
+                            'inheritance fix (M3); refrozen once at M9'),
 }
 
 

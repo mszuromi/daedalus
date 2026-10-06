@@ -324,7 +324,9 @@ def _analytic(variant, modes, rows, free, m):
 
 def _dispatch(variant, modes, rows, free, m):
     """What the per-diagram / grouped ``_contrib`` closures do: the analytic
-    path first, the scipy.nquad fallback on a bail."""
+    path first, the scipy.nquad fallback on a bail.  (Since M3 an m≥3 poset
+    bail tries the exact DBM route in between, ``USE_DBM_FALLBACK``; it is
+    left out here, as these tests pin the bail reasons and the fallback.)"""
     v = _analytic(variant, modes, rows, free, m)
     if v is not None:
         return 'analytic', v, None

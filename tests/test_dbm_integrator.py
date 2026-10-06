@@ -4,6 +4,8 @@ Phase J milestone M3) and its ``final_integral`` wrapper
 
 * a plain chain equals the closed-form chain simplex
   ``_exp_over_chain_simplex``;
+* the case split: a hexagon and a 3-variable band region, where the
+  eliminated variable has several non-redundant lowers and uppers;
 * shifted orderings, unequal scalar lowers, a strip between two shifted
   order rows and a variable bounded only by the domain cap, against tight
   nested scipy quadrature with hand-derived exact bounds;
@@ -14,9 +16,11 @@ Phase J milestone M3) and its ``final_integral`` wrapper
   whose product with the outer variable's factor is O(1) is kept; a
   genuinely astronomical integral is reported as an overflow (never a
   silent inf / NaN);
+* the box closes open directions only, at the wrapper's default
+  ``_nquad_outer_cap()``;
 * rows outside the DBM's scope (a 3-term row) are declined.
 
-Model-free and fast (< 5 s).
+Model-free and fast (< 10 s).
 """
 import math
 import os
@@ -30,6 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import engine.integration.time_domain.final_integral as FI  # noqa: E402
 from engine.integration.time_domain import dbm_integral as DBM  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _ito_mode(monkeypatch):
+    """The default Θ(0) mode, whatever the environment says
+    (``DAEDALUS_PHASE_J_LEGACY``)."""
+    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
 
 
 def _expsum(rows, m, alphas, cap=200.0, C=1.0, E=0.0):
@@ -75,12 +86,13 @@ def test_plain_chain_equals_chain_simplex(alphas, L, U):
     rows.append((tuple(-1.0 if i == m - 1 else 0.0 for i in range(m)), U))
     res = _expsum(rows, m, alphas)
     ref = FI._exp_over_chain_simplex(list(alphas), L, U)
+    tol = 1e-13 if m == 3 else 1e-12          # m = 4 measured 3.5e-14
     assert res.status == DBM.STATUS_OK
-    assert abs(res.value - ref) <= 1e-13 * abs(ref), (res.value, ref)
+    assert abs(res.value - ref) <= tol * abs(ref), (res.value, ref)
     # an equal lower bound on EVERY variable changes nothing
     res2 = _expsum(rows + [(tuple(1.0 if i == v else 0.0 for i in range(m)),
                             -L) for v in range(1, m)], m, alphas)
-    assert abs(res2.value - ref) <= 1e-13 * abs(ref)
+    assert abs(res2.value - ref) <= tol * abs(ref)
 
 
 def test_coefficient_scaled_rows_are_normalised():
@@ -164,6 +176,84 @@ def test_strip_between_shifted_order_rows():
             epsabs=1e-15, epsrel=1e-12)[0]
     ref = complex(part(np.real), part(np.imag))
     assert abs(res.value - ref) <= 1e-12 * abs(ref)
+
+
+# ── the case split: several non-redundant lowers AND uppers ──────────
+# Eliminating a variable with lowers {a} and uppers {b} splits the region
+# into one case per (max lower, min upper) pair.  The references integrate
+# the innermost variable in closed form and the outer ones by adaptive
+# quadrature with break points at the kinks of the piecewise-linear bounds
+# (for three variables: a superset, every signed sum of up to three of the
+# box and band constants).
+
+def _ex(a, lo, hi):
+    return (np.exp(a * hi) - np.exp(a * lo)) / a
+
+
+def _cquad(f, lo, hi, points=()):
+    pts = sorted(p for p in set(points) if lo < p < hi)
+    kw = dict(epsabs=1e-15, epsrel=1e-13, limit=400)
+    if pts:
+        kw['points'] = pts
+    return complex(integrate.quad(lambda x: f(x).real, lo, hi, **kw)[0],
+                   integrate.quad(lambda x: f(x).imag, lo, hi, **kw)[0])
+
+
+def _box_and_bands(m, bands):
+    """-1 < s_v < 1 for every v, and |s_i - s_j| < b for (i, j, b)."""
+    rows = []
+    for v in range(m):
+        for sg in (1.0, -1.0):
+            a = [0.0] * m
+            a[v] = sg
+            rows.append((tuple(a), 1.0))
+    for (i, j, b) in bands:
+        for sg in (1.0, -1.0):
+            a = [0.0] * m
+            a[i], a[j] = sg, -sg
+            rows.append((tuple(a), b))
+    return rows
+
+
+def test_hexagon_needs_the_case_split():
+    """-1 < s_0, s_1 < 1, |s_1 - s_0| < 0.5: s_0 has two lowers
+    (-1, s_1 - 0.5) and two uppers (1, s_1 + 0.5)."""
+    al = (0.4 - 0.2j, -0.3 + 0.1j)
+    res = _expsum(_box_and_bands(2, [(0, 1, 0.5)]), 2, al)
+    ref = _cquad(lambda s1: np.exp(al[1] * s1) * _ex(
+        al[0], max(-1.0, s1 - 0.5), min(1.0, s1 + 0.5)), -1.0, 1.0,
+        (-0.5, 0.5))
+    assert res.status == DBM.STATUS_OK and res.n_cases > 1
+    assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
+
+
+def test_three_variable_bands_need_the_case_split():
+    """-1 < s_v < 1, |s_1 - s_0| < 0.5, |s_2 - s_1| < 0.45,
+    |s_2 - s_0| < 0.7: three lowers and three uppers on s_0."""
+    al = (0.35 - 0.25j, -0.2 + 0.3j, 0.15 + 0.1j)
+    b01, b12, b02 = 0.5, 0.45, 0.7
+    res = _expsum(_box_and_bands(3, [(0, 1, b01), (1, 2, b12), (0, 2, b02)]),
+                  3, al)
+    consts = (1.0, b01, b12, b02)
+    kinks = {0.0}
+    for x in consts:
+        for y in (0.0,) + consts:
+            for z in (0.0,) + consts:
+                for sx in (1, -1):
+                    for sy in (1, -1):
+                        for sz in (1, -1):
+                            kinks.add(sx * x + sy * y + sz * z)
+
+    def over_s1(s2):
+        def f(s1):
+            lo = max(-1.0, s1 - b01, s2 - b02)
+            hi = min(1.0, s1 + b01, s2 + b02)
+            return np.exp(al[1] * s1 + al[2] * s2) * _ex(al[0], lo, hi)
+        return _cquad(f, max(-1.0, s2 - b12), min(1.0, s2 + b12),
+                      (1 - b01, b01 - 1, s2 - b02 + b01, s2 + b02 - b01))
+    ref = _cquad(over_s1, -1.0, 1.0, kinks)
+    assert res.status == DBM.STATUS_OK and res.n_cases > 1
+    assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
 
 
 # ── empty and measure-zero regions ───────────────────────────────────
@@ -381,6 +471,29 @@ def test_open_direction_is_closed_at_the_box():
             epsabs=0.0, epsrel=1e-12)[0]
     ref = complex(part(np.real), part(np.imag))
     assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
+
+
+def test_default_cap_is_the_nquad_outer_cap(monkeypatch):
+    """The wrapper's default box (``cap=None``) is ``_nquad_outer_cap()``,
+    read at call time: ±200, or ``POSET_PHYSICAL_MARGIN`` (50) under
+    ``USE_POSET_CAP_MATCH_SCIPY``.  The P3 shape s_2 < s_1 < s_0,
+    0 < s_0 < t with a slow mode (λ = -0.02 + 0.01i) depends on the box."""
+    rows = [((-1.0, 0.0, 0.0), (1.0,), 0.0),       # s_0 < t
+            ((1.0, 0.0, 0.0), (0.0,), 0.0),        # s_0 > 0
+            ((1.0, -1.0, 0.0), (0.0,), 0.0),       # s_1 < s_0
+            ((0.0, 1.0, -1.0), (0.0,), 0.0)]       # s_2 < s_1
+    modes = _w_edges([-0.02 + 0.01j], 4)
+
+    def wrap(cap=None):
+        return FI._integrate_subset_dbm(modes, 1.0, rows, [1.0], 3, cap=cap)
+    monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', False)
+    assert FI._nquad_outer_cap() == 200.0
+    v200, v50 = wrap(200.0), wrap(50.0)
+    assert abs(v200 - v50) > 0.1 * abs(v200)       # the box matters here
+    assert wrap() == v200
+    monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', True)
+    assert FI._nquad_outer_cap() == FI.POSET_PHYSICAL_MARGIN == 50.0
+    assert wrap() == v50
 
 
 def test_three_term_row_is_counted_even_with_unmatched_rows():

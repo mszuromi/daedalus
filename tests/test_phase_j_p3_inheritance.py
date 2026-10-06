@@ -23,12 +23,15 @@ route (``_integrate_subset_dbm``) integrates it on the scipy fallback's box.
 * end to end (``single_population_spike_reset_test``, the fixture
   ``spike_reset_k2_ell1``): every P3 subset of the one-loop at (0, 1) is
   answered by the DBM route (none reaches the scipy fallback), the
-  one-loop moves to the corrected value (flag on vs off in one process),
-  grouped equals per-diagram, and the value at the exact tie (0, 0) is the
-  left limit.
+  one-loop moves to the corrected value at τ = 1 and 3 (flag on vs off in
+  one process), grouped equals per-diagram, every m≥3 region forced
+  through the DBM gives the same total (non-P3 bails take the route too),
+  and the value at the exact tie (0, 0) is the left limit, with the tie
+  context reaching the DBM.
 
 Values of the end-to-end checks are current values, not validated
-(CHANGELOG 0.2.0).  Runtime: ~5 s model-free, ~1 min end to end.
+(CHANGELOG 0.2.0).  Runtime: ~5 s model-free, ~1 min end to end (the
+model is built in a private cwd, so its caches start empty).
 """
 import math
 import os
@@ -40,6 +43,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import engine.integration.time_domain.final_integral as FI  # noqa: E402
+import engine.integration.time_domain.grouped_integral as GI  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _ito_mode(monkeypatch):
+    """The default Θ(0) mode, whatever the environment says
+    (``DAEDALUS_PHASE_J_LEGACY``); a test that needs another sets it."""
+    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
 
 # ═══════════════════════════════════════════════════════════════════════
 # The i907 subset (model-free numbers from the public spike-reset model)
@@ -305,29 +316,37 @@ _SPIKE = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
 # has no exact solution; it equals the pre-M3 value plus the sum over the 96
 # P3-affected regions of (tight quadrature - pre-M3 value), measured
 # independently (M3 brief: -3.8660e-3 to 5 digits).
-_ONE_LOOP_PRE_M3 = -6.3683627449738905e-03
-_ONE_LOOP_M3 = -3.865960659466003e-03
-_ONE_LOOP_INDEPENDENT = -3.8660e-03
+# τ: (pre-M3, M3, independent).
+_ONE_LOOP = {
+    1.0: (-6.3683627449738905e-03, -3.865960659466003e-03, -3.8660e-03),
+    3.0: (-1.2953050283558442e-03, -1.0261461422474269e-03, -1.0261e-03),
+}
 
 
 @pytest.fixture(scope='module')
-def spike_k2():
-    """{grouped: raw one-loop callable}, built once per path.  The raw
-    Phase J callable (``phase_j_by_ell[1]['total_C']``, as
+def spike_k2(tmp_path_factory):
+    """{grouped: raw one-loop callable}, built once per path in a private
+    cwd (every cache root is cwd-relative, so the caches start empty).  The
+    raw Phase J callable (``phase_j_by_ell[1]['total_C']``, as
     ``tests/tools/phase_j_subset_diff.py`` uses it) evaluates exactly the
     times it is given; the API's ``total_C_by_ell`` moves a k = 2 tie to
     τ = -1e-6."""
     import daedalus as dd
     from api import compute_cumulants
-    model = dd.load_model('single_population_spike_reset_test')[0]
-    out = {}
-    for grouped in (False, True):
-        res = compute_cumulants(
-            model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
-            parameters=_SPIKE, tau_grid=np.array([1.0]), use_cache=True,
-            parallel=False, verbose=False, use_grouped_phase_j=grouped)
-        out[grouped] = res['phase_j_by_ell'][1]['total_C']
-    return out
+    prev = os.getcwd()
+    os.chdir(tmp_path_factory.mktemp('phase_j_p3_cache'))
+    try:
+        model = dd.load_model('single_population_spike_reset_test')[0]
+        out = {}
+        for grouped in (False, True):
+            res = compute_cumulants(
+                model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
+                parameters=_SPIKE, tau_grid=np.array([1.0]), use_cache=True,
+                parallel=False, verbose=False, use_grouped_phase_j=grouped)
+            out[grouped] = res['phase_j_by_ell'][1]['total_C']
+        yield out
+    finally:
+        os.chdir(prev)
 
 
 def _eval(fn, pt, flag):
@@ -343,45 +362,84 @@ def _eval(fn, pt, flag):
     return v, c
 
 
-def test_spike_reset_p3_regions_take_the_dbm_route(spike_k2):
-    """Every P3 refusal of the one-loop at (0, 1) is answered by the DBM
+@pytest.mark.parametrize('tau', sorted(_ONE_LOOP))
+def test_spike_reset_p3_regions_take_the_dbm_route(spike_k2, tau):
+    """Every P3 refusal of the one-loop at (0, τ) is answered by the DBM
     route (none reaches the scipy fallback; no m≥3 region does), and the
     one-loop moves from the pre-M3 value to the corrected one.  The flag is
     read at call time: the same callable gives the pre-M3 value with it
     off."""
+    pre_m3, m3, independent = _ONE_LOOP[tau]
     fn = spike_k2[False]
-    v_on, c_on = _eval(fn, (0.0, 1.0), True)
+    v_on, c_on = _eval(fn, (0.0, tau), True)
     assert c_on['poset_lower_not_inherited'] > 0
     assert c_on['dbm_answered_p3'] == c_on['poset_lower_not_inherited']
     assert c_on['scipy_nquad_called_mge3'] == 0
-    assert abs(v_on.real - _ONE_LOOP_M3) <= 1e-9 * abs(_ONE_LOOP_M3)
-    assert abs(v_on.real - _ONE_LOOP_INDEPENDENT) <= 1e-7
-    v_off, c_off = _eval(fn, (0.0, 1.0), False)
+    assert abs(v_on.real - m3) <= 1e-9 * abs(m3)
+    assert abs(v_on.real - independent) <= 1e-7
+    v_off, c_off = _eval(fn, (0.0, tau), False)
     assert c_off['poset_lower_not_inherited'] == 0
     assert c_off['dbm_attempted'] == 0
-    assert abs(v_off.real - _ONE_LOOP_PRE_M3) <= 1e-12 * abs(_ONE_LOOP_PRE_M3)
+    assert abs(v_off.real - pre_m3) <= 1e-12 * abs(pre_m3)
 
 
-def test_spike_reset_grouped_equals_per_diagram(spike_k2):
+@pytest.mark.parametrize('tau', sorted(_ONE_LOOP))
+def test_spike_reset_grouped_equals_per_diagram(spike_k2, tau):
     """Grouped Phase J shares the inheritance rule and the DBM route: the
     two paths agree to 1e-12 relative, and the grouped one refuses and
     re-routes its P3 regions too."""
-    v_pd, _c = _eval(spike_k2[False], (0.0, 1.0), True)
-    v_gr, c_gr = _eval(spike_k2[True], (0.0, 1.0), True)
+    v_pd, _c = _eval(spike_k2[False], (0.0, tau), True)
+    v_gr, c_gr = _eval(spike_k2[True], (0.0, tau), True)
     assert c_gr['poset_lower_not_inherited'] > 0
     assert c_gr['dbm_answered_p3'] == c_gr['poset_lower_not_inherited']
     assert abs(v_gr - v_pd) <= 1e-12 * abs(v_pd), (v_gr, v_pd)
 
 
-def test_spike_reset_exact_tie_is_the_left_limit(spike_k2):
+@pytest.mark.parametrize('grouped', [False, True])
+def test_spike_reset_every_m3_region_through_the_dbm(spike_k2, grouped,
+                                                     monkeypatch):
+    """The poset path forced to bail on every m≥3 region with a non-P3
+    reason (``'poset_no_extension'``): the DBM route takes all of them
+    (per-diagram at (0, 1): 520 regions, m = 3 and 4, 32 of them split
+    into two elimination cases, against at most one case on every P3
+    region), none is declined or reaches the scipy fallback, none is
+    counted as P3, and the total equals the normal one (poset where valid,
+    DBM on P3) to 1e-12 relative (measured ~1e-16)."""
+    fn = spike_k2[grouped]
+    v_ref, c_ref = _eval(fn, (0.0, 1.0), True)
+    forced = (lambda *a, **k: FI._bail('poset_no_extension'))
+    monkeypatch.setattr(FI, '_integrate_nd_polytope_poset_modesum', forced)
+    monkeypatch.setattr(GI, '_integrate_nd_polytope_poset_modesum', forced)
+    v, c = _eval(fn, (0.0, 1.0), True)
+    assert c['dbm_attempted'] == c['dbm_answered'] > c_ref['dbm_answered']
+    assert c['dbm_answered_p3'] == 0 and c['poset_lower_not_inherited'] == 0
+    assert c['scipy_nquad_called_mge3'] == 0
+    assert c['nquad_calls'] == c_ref['nquad_calls']        # m ≤ 2 only
+    assert abs(v - v_ref) <= 1e-12 * abs(v_ref), (v, v_ref)
+
+
+def test_spike_reset_exact_tie_is_the_left_limit(spike_k2, monkeypatch):
     """At the exact tie (0, 0) the tie order makes leg 1 infinitesimally
     earlier: the one-loop is the left limit τ → 0⁻ (quadratic Richardson
     extrapolation from τ = -1e-4, -1e-5, -1e-6), with P3 regions answered
-    by the DBM route at the tie (cf. ``tests/test_phase_j_ties.py``)."""
+    by the DBM route at the tie (cf. ``tests/test_phase_j_ties.py``).
+    Every one of them is exactly 0 there (measured: all EMPTY), and the
+    Itô rule alone would give the same, so the comparison cannot see a tie
+    context lost on the way to the DBM: a spy checks that every DBM call
+    receives one."""
     fn = spike_k2[False]
+    real, ctxs = FI._integrate_subset_dbm, []
+
+    def spy(*a, **k):
+        ctxs.append(k.get('tie_ctx'))
+        return real(*a, **k)
+    monkeypatch.setattr(FI, '_integrate_subset_dbm', spy)
     v_tie, c_tie = _eval(fn, (0.0, 0.0), True)
+    monkeypatch.setattr(FI, '_integrate_subset_dbm', real)
     assert c_tie['poset_lower_not_inherited'] > 0
     assert c_tie['dbm_answered_p3'] == c_tie['poset_lower_not_inherited']
+    assert len(ctxs) == c_tie['dbm_attempted'] > 0
+    assert all(isinstance(t, FI._TieContext) for t in ctxs)
     hs = (1e-4, 1e-5, 1e-6)
     vals = [_eval(fn, (0.0, -h), True)[0] for h in hs]
     # f(h) = f0 + a h + b h^2 through the three nudges
