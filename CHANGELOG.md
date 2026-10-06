@@ -687,13 +687,12 @@ temporal gain below needs `DAEDALUS_PREDIAGRAM_EAGER=0`.
   switches the temporal default once the fallback agrees across
   representatives on every model that reaches it. The slow test
   `test_temporal_streamed_totals_match_eager_on_a_fallback_model` is the
-  gate. It has one strict expected failure per case:
-  `single_population_spike_reset_test` per-diagram and grouped, and
-  `single_population_quad_exp_test`. A case fails as an unexpected pass
-  once its two totals agree to 1e−13 relative, and the flag flips only when
-  every case does: the tight-tolerance agreement quoted above is rounding
-  for `single_population_spike_reset_test` but about 1e−11 relative for
-  `single_population_quad_exp_test`. Run the gate (`sage -python -m pytest
+  gate. With the fallback of commit d68e383 (measured 2026-10-06), the two
+  `single_population_spike_reset_test` cases (per-diagram and grouped) pass:
+  their totals agree to 1e−13 relative. `single_population_quad_exp_test`
+  still differs, by 1.21e−11 relative, and stays a strict expected failure.
+  The flag flips only when every case passes, so it stays False for now.
+  Run the gate (`sage -python -m pytest
   -m slow tests/test_prediagram_cache.py -k fallback_model`, about 7 min)
   after any change to the Phase J fallback.
 - Cache-on and cache-off runs can use different representatives, as before.
@@ -1398,11 +1397,12 @@ sample that misses a peak can sit many orders below the integrand.
 - `test_bessel_matches_grid_at_unequal_external_times` is a strict expected
   failure that records the `bessel` bias at τ ≠ 0.
 - `test_temporal_streamed_totals_match_eager_on_a_fallback_model` (slow)
-  records the gap between streamed and eager records on each model that
-  reaches `scipy.nquad` (`single_population_spike_reset_test` per-diagram
-  and grouped, `single_population_quad_exp_test`; measured with the
-  fallback of commit 16b5564), as one strict expected failure per case; a
-  gap above 1e−6 relative fails a case outright. It gates
+  checks streamed against eager records on each model that reaches
+  `scipy.nquad` (`single_population_spike_reset_test` per-diagram and
+  grouped, `single_population_quad_exp_test`). With the fallback of commit
+  d68e383 the spike-reset cases pass (rtol 1e-13) and `quad_exp` is a strict
+  expected failure (1.21e−11 relative, measured 2026-10-06); a gap above
+  1e−6 relative fails a case outright. It gates
   `TEMPORAL_CACHE_OFF_STREAMS`: run it after any change to the Phase J
   fallback, and flip the flag only when every case passes.
 - The tests that need the Sage backend to re-derive the shipped

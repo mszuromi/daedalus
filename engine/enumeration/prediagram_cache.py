@@ -237,24 +237,21 @@ _EAGER_ENV = 'DAEDALUS_PREDIAGRAM_EAGER'
 #: classes, and Phase J's ``scipy.nquad`` fallback is not
 #: representative-independent: on models whose regions reach it, another
 #: representative sends other regions there and the total moves by the
-#: fallback's error.  Measured in process with the fallback of commit
-#: 16b5564 (default ``scipy.nquad`` tolerance; a change to the fallback
-#: changes these numbers), ``single_population_spike_reset_test`` k=2,
-#: ell=1: 20 fallback calls instead of 40, ``C_tau`` 3.6e-7 relative (one-loop term 2.1e-6); with a
-#: tight fallback tolerance the two agree to 1.7e-15 absolute.  Where every
-#: region is analytic the switch moves totals by rounding only (``ou_quartic``
-#: k=2, ell<=3: 4.6e-16).  Flip this once the fallback agrees across
-#: representatives to rtol 1e-13 on every model that reaches it.  The gate
-#: is the slow parametrized strict xfail
+#: fallback's error.  Where every region is analytic the switch moves
+#: totals by rounding only (``ou_quartic`` k=2, ell<=3: 4.6e-16).  Measured
+#: 2026-10-06 with the fallback of commit d68e383 (a change to the fallback
+#: changes these numbers): ``single_population_spike_reset_test`` k=2,
+#: ell=1, per-diagram and grouped, now agrees to rtol 1e-13, but
+#: ``single_population_quad_exp_test`` (k=2, ell<=1) still differs by 1.21e-11
+#: relative.  Flip this once the fallback agrees across representatives to
+#: rtol 1e-13 on every model that reaches it.  The gate is the slow
+#: parametrized test
 #: ``tests/test_prediagram_cache.py::test_temporal_streamed_totals_match_eager_on_a_fallback_model``
-#: (``single_population_spike_reset_test`` per-diagram and grouped,
-#: ``single_population_quad_exp_test``; about 7 min): run it
-#: (``pytest -m slow ... -k fallback_model``) after any change to the
-#: Phase J fallback, and flip only when EVERY case fails as an unexpected
-#: pass.  The cases do not move together: a tighter fallback tolerance
-#: brings the spike-reset totals to rounding while the quad-exp ones still
-#: differ (the ``quad_exp`` agreement quoted in CHANGELOG is 4.4e-14
-#: absolute, about 1e-11 relative).
+#: (``single_population_spike_reset_test`` per-diagram and grouped, plus
+#: ``single_population_quad_exp_test`` as a strict xfail; about 7 min): run
+#: it (``pytest -m slow ... -k fallback_model``) after any change to the
+#: Phase J fallback, and flip only when the ``quad_exp`` case also fails as
+#: an unexpected pass.
 TEMPORAL_CACHE_OFF_STREAMS = False
 
 _TRUE = ('1', 'true', 'yes', 'on')

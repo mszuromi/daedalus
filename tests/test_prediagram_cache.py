@@ -496,35 +496,31 @@ def _representative_gap(measured):
     return pytest.mark.xfail(
         strict=True, raises=_FallbackRepresentativeGap, reason=(
             'Phase J nquad fallback is representative-dependent (streamed vs '
-            'eager records, default-tolerance fallback of commit 16b5564, '
-            'measured 2026-10-04; a change to the fallback changes these '
+            'eager records, fallback of commit d68e383, measured 2026-10-06; '
+            'a change to the fallback changes these '
             f'numbers): {measured}  Flip prediagram_cache.'
             'TEMPORAL_CACHE_OFF_STREAMS only when every case of this test '
             'XPASSes.'))
 
 
-#: The models whose regions reach the ``scipy.nquad`` fallback, with what
-#: was measured on 2026-10-04 with the default-tolerance fallback of commit
-#: 16b5564 (a change to the fallback changes these numbers).  Every case
-#: must pass, not just one, before ``TEMPORAL_CACHE_OFF_STREAMS`` flips.
+#: The models whose regions reach the ``scipy.nquad`` fallback.  Measured
+#: 2026-10-06 with the fallback of commit d68e383 (a change to the fallback
+#: changes these numbers): the two spike-reset cases agree to rtol 1e-13
+#: (they pass); ``quad_exp`` still differs, by 1.21e-11 relative.  Every
+#: case must pass, not just some, before ``TEMPORAL_CACHE_OFF_STREAMS``
+#: flips.
 _FALLBACK_GATE_CASES = [
     pytest.param(
         'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), False,
-        id='spike_reset-perdiag', marks=_representative_gap(
-            'single_population_spike_reset_test k=2 ell<=1 (P_SPIKE), '
-            'tau=(0, 10): 16 vs 8 fallback calls (eager vs streamed), C_tau '
-            '3.64e-7 relative, one-loop term 2.13e-6.')),
+        id='spike_reset-perdiag'),
     pytest.param(
         'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), True,
-        id='spike_reset-grouped', marks=_representative_gap(
-            'grouped Phase J, same cell: 4 vs 2 fallback calls, C_tau '
-            '3.70e-7 relative, one-loop term 2.16e-6.')),
+        id='spike_reset-grouped'),
     pytest.param(
         'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0), False,
         id='quad_exp-perdiag', marks=_representative_gap(
             'single_population_quad_exp_test k=2 ell<=1 (P_SP), '
-            'tau=(0, 1, 5): 48 vs 36 fallback calls, C_tau 2.90e-7 '
-            'relative, one-loop term 5.29e-6 (about 400 s).')),
+            'tau=(0, 1, 5): C_tau 1.21e-11 relative (about 400 s).')),
 ]
 
 
