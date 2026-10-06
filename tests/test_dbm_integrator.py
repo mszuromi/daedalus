@@ -346,6 +346,55 @@ def test_magnitude_sees_cancellation_through_merges():
     assert 0.0 < res.error_ratio <= 1.0
 
 
+# ── the box closes open directions only (M3 review, lens b) ──────────
+
+def test_finite_bounds_beyond_the_box_are_not_clipped():
+    """240 < s_0 < 250, s_0 - 3 < s_1 < s_0: every bound is finite and
+    beyond the ±200 box; the region is kept whole (the scipy fallback never
+    clips a finite bound).  Before the fix the box made it empty."""
+    rows = [((1.0, 0.0), -240.0), ((-1.0, 0.0), 250.0),
+            ((1.0, -1.0), 0.0), ((-1.0, 1.0), 3.0)]
+    al = (-0.1 + 0.02j, 0.2 - 0.01j)
+    res = _expsum(rows, 2, al, cap=200.0)
+
+    def part(fn):
+        return integrate.dblquad(
+            lambda s1, s0: fn(np.exp(al[0] * s0 + al[1] * s1)),
+            240.0, 250.0, lambda s0: s0 - 3.0, lambda s0: s0,
+            epsabs=0.0, epsrel=1e-12)[0]
+    ref = complex(part(np.real), part(np.imag))
+    assert res.status == DBM.STATUS_OK
+    assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
+
+
+def test_open_direction_is_closed_at_the_box():
+    """240 < s_0 < 250 and s_1 < s_0 with nothing below s_1: s_1 is closed
+    at -200 (the open direction), s_0 keeps its bounds beyond the box."""
+    rows = [((1.0, 0.0), -240.0), ((-1.0, 0.0), 250.0), ((1.0, -1.0), 0.0)]
+    al = (-0.05 + 0.01j, 0.08 + 0.03j)
+    res = _expsum(rows, 2, al, cap=200.0)
+
+    def part(fn):
+        return integrate.dblquad(
+            lambda s1, s0: fn(np.exp(al[0] * s0 + al[1] * s1)),
+            240.0, 250.0, lambda s0: -200.0, lambda s0: s0,
+            epsabs=0.0, epsrel=1e-12)[0]
+    ref = complex(part(np.real), part(np.imag))
+    assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
+
+
+def test_three_term_row_is_counted_even_with_unmatched_rows():
+    """A ConvVertex-like subset: a 3-term row AND one row more than modes
+    (its τ box row has no mode).  It is declined as outside the DBM's scope
+    (``dbm_declined_rows``), not as a rows/modes mismatch."""
+    rows = BASE3 + [((1.0, 1.0, -1.0), (0.0,), 0.5)]
+    FI._reset_runtime_counters()
+    v = FI._integrate_subset_dbm(_w_edges([-0.5], 4), 1.0, rows, [1.0], 3)
+    assert v is None and FI._pop_bail_reason() == 'dbm_not_difference_rows'
+    assert FI._RUNTIME_COUNTERS['dbm_declined_rows'] == 1
+    assert FI._RUNTIME_COUNTERS['dbm_declined_other'] == 0
+
+
 # ── scope ────────────────────────────────────────────────────────────
 
 def test_three_term_row_is_declined():

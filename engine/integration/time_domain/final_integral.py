@@ -3672,6 +3672,14 @@ def _integrate_subset_dbm(
     import cmath
     _RUNTIME_COUNTERS['dbm_attempted'] += 1
     n_rows = len(subset_constraint_data)
+    # Row shapes first, so that a region outside the DBM's scope (e.g. a
+    # ConvVertex 3-term row) is counted as such even when its rows and
+    # modes do not match either (a ConvVertex τ box row has no mode).
+    for (a_int, _a_ext, _c0) in subset_constraint_data:
+        nz = [float(a) for a in a_int if abs(float(a)) > _ROW_COEF_ATOL]
+        if len(nz) > 2 or (len(nz) == 2 and nz[0] != -nz[1]):
+            _RUNTIME_COUNTERS['dbm_declined_rows'] += 1
+            return _bail('dbm_not_difference_rows')
     if smooth_edge_modes is not None and len(smooth_edge_modes) != n_rows:
         _RUNTIME_COUNTERS['dbm_declined_other'] += 1
         return _bail('dbm_rows_mismatch')

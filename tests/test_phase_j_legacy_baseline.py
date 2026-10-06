@@ -482,20 +482,24 @@ def test_fixture_report_flag_context_restores():
     import engine.integration.time_domain.final_integral as FI
     from tests.tools import phase_j_subset_diff as H
     before = (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-              FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP)
+              FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK, FI.POLYGON_BBOX_CAP)
     with pytest.raises(RuntimeError):
         with H.phase_j_flags('legacy') as flags:
             assert FI.THETA0_CONST_ROW_MODE == 'legacy_clip'
             assert FI.STRUCTURAL_ZEROS is False
             assert FI.NQUAD_HARDENED is False
+            assert FI.USE_DBM_FALLBACK is False
             assert set(flags) == {'THETA0_CONST_ROW_MODE',
-                                  'STRUCTURAL_ZEROS', 'NQUAD_HARDENED'}
+                                  'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
+                                  'USE_DBM_FALLBACK'}
             raise RuntimeError('restored even on error')
     assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-            FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP) == before
+            FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK,
+            FI.POLYGON_BBOX_CAP) == before
     with H.phase_j_flags('default'):
         assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-                FI.NQUAD_HARDENED, FI.POLYGON_BBOX_CAP) == before
+                FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK,
+                FI.POLYGON_BBOX_CAP) == before
     with pytest.raises(ValueError):
         with H.phase_j_flags('nope'):
             pass

@@ -12,9 +12,13 @@ difference-bound row:
 * two nonzero coefficients ``a_i = -a_j`` -- a shifted order row
   ``s_j - s_i < c / a_i`` (``a_i > 0``).
 
-The region is intersected with the box ``-cap <= s_v <= cap`` on every
-variable.  A zero node ``Z`` (``s_Z ≡ 0``, index ``m``) turns the scalar
-bounds into differences too.  ``D[u][v]`` is the tightest known upper bound
+A direction that the rows leave open is closed at the box: ``s_v >= -cap``
+where the rows give ``s_v`` no lower bound (directly or through other
+variables), ``s_v <= cap`` where they give it no upper bound.  A finite bound
+from the rows is never clipped, as in the scipy fallback's legacy routines
+(``_integrate_nd_polytope``), so a region far from the origin (external
+times beyond ±cap) keeps its full extent.  A zero node ``Z`` (``s_Z ≡ 0``,
+index ``m``) turns the scalar bounds into differences too.  ``D[u][v]`` is the tightest known upper bound
 on ``s_v - s_u`` (``math.inf``: none).  Strict and non-strict inequalities
 differ by a set of measure zero, which the integral does not see.
 
@@ -141,13 +145,17 @@ class DBMResult:
 
 # ───────────────────────────────────────────────────────────── the region
 
-def difference_bounds(rows, m, cap):
-    r"""The (unclosed) DBM of ``{s : a·s + c > 0 ∀ rows} ∩ [-cap, cap]^m``.
+def difference_bounds(rows, m, cap=None):
+    r"""The DBM of ``{s : a·s + c > 0 ∀ rows}``.
 
     ``rows``: iterable of ``(a, c)`` with ``a`` a length-``m`` sequence of
     floats.  Returns an ``(m+1) × (m+1)`` list of lists (node ``m`` is the
     zero node), or ``None`` when a row is not a difference row (a zero
     normal, a non-opposite pair, or three or more nonzero coefficients).
+    Without ``cap`` the matrix holds the rows only and is not closed (its
+    diagonal is ``INF``).  With ``cap`` it is the CLOSED matrix of the region
+    whose open directions are closed at ±cap (module docstring); a
+    degenerate rows-only closure is returned as it is.
     """
     n = m + 1
     Z = m
@@ -181,13 +189,21 @@ def difference_bounds(rows, m, cap):
                 D[up][lo] = w
             continue
         return None
+    if cap is None:
+        return D
     cap = float(cap)
+    D = close(D)
+    if is_degenerate(D):
+        return D
+    open_dir = False
     for v in range(m):
-        if cap < D[v][Z]:
-            D[v][Z] = cap           # s_v >= -cap
-        if cap < D[Z][v]:
-            D[Z][v] = cap           # s_v <= cap
-    return D
+        if D[v][Z] == INF:
+            D[v][Z] = cap           # s_v >= -cap (no lower bound from rows)
+            open_dir = True
+        if D[Z][v] == INF:
+            D[Z][v] = cap           # s_v <= cap (no upper bound from rows)
+            open_dir = True
+    return close(D) if open_dir else D
 
 
 def close(D):
@@ -443,7 +459,7 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
     ``m``     the number of integration variables (>= 1);
     ``seeds`` iterable of ``(C, E, beta)`` with ``beta`` a length-``m``
               sequence of complex exponent coefficients;
-    ``cap``   the box half-width (every variable in ``[-cap, cap]``);
+    ``cap``   the box half-width (open directions closed at ±cap);
     ``scale`` the integrand's scale for the conditioning test's absolute
               floor (default: Σ_t |C_t| exp(Re E_t));
     ``eps``   ``|β|`` below which β is treated as 0 (default
@@ -456,9 +472,6 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
         return DBMResult(None, STATUS_NOT_DBM)
     n = m + 1
     Z = m
-    for i in range(n):
-        D[i][i] = INF
-    D = close(D)
     if is_degenerate(D):
         return DBMResult(0j, STATUS_EMPTY)
     if eps is None:

@@ -547,7 +547,9 @@ def _numeric_flags():
              # M2b call-time flag and the hardened fallback's tolerances
              # ('<absent>' in pre-M2b records)
              'NQUAD_HARDENED', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
-             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
+             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP',
+             # M3 call-time flag ('<absent>' in pre-M3 records)
+             'USE_DBM_FALLBACK')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')

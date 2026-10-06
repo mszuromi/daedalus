@@ -14,7 +14,8 @@ What it does
    (``integrate_diagram``) and of the grouped dispatch
    (``integrate_grouped_diagram``) becomes one record: m, constraint rows,
    free_ext_vals, which path answered (``m0``/``m1``/``polygon``/``poset``/
-   ``nquad``; ``plan``/``noplan``/``grouped`` branch; ``per_diagram``/
+   ``dbm`` (M3: the exact route after a poset bail)/``nquad``;
+   ``plan``/``noplan``/``grouped`` branch; ``per_diagram``/
    ``grouped`` source), the fine-grained bail reason when an analytic path
    returned ``None``, the value, prefactor, pole/residue summary, and the Wick
    context (external times, perm index, compensation).
@@ -48,8 +49,11 @@ What it does
             max-exponent vertex, adaptive extra precision in the
             divided difference) on box(150) -> ``c150`` and box(400) ->
             ``c400``.  Needs pole data.
-   ``d``    DBM exact route at L = -3000 -- **NOT AVAILABLE until M3**:
-            ``dbm_reference`` raises ``NotImplementedError``.
+   ``d``    DBM exact route at L = -3000 -- **not implemented**: since M3
+            the DBM route is a production path (``final_integral.
+            _integrate_subset_dbm``), so a copy of it would not be an
+            independent reference; ``dbm_reference`` raises
+            ``NotImplementedError``.
    ``e``    ``certify_box`` a-priori truncation bound S·Q(m, T) for the box
             actually used -- **NOT AVAILABLE until M8**:
             ``certify_box_reference`` raises ``NotImplementedError``.
@@ -187,7 +191,7 @@ REFERENCE_KINDS = {
     'b': 'tight iterated quadrature on the ±12 box',
     'c': 'm=2: 50-digit mpmath fan formula on box(150) [c150] and '
          'box(400) [c400]',
-    'd': 'DBM exact route at L=-3000 (NOT AVAILABLE until M3)',
+    'd': 'DBM exact route at L=-3000 (not implemented: production since M3)',
     'e': 'certify_box truncation bound (NOT AVAILABLE until M8)',
 }
 
@@ -939,10 +943,13 @@ def mp_fan_reference(terms, constraints, free_vals, *, box, dps=50,
 
 
 def dbm_reference(*_args, **_kwargs):
-    """Extension point (d): exact DBM route at L = -3000.  Lands with M3
-    (plan §3.1 L7, ``poset_dbm_integrator.py`` promotion)."""
+    """Extension point (d): exact DBM route at L = -3000.  Not implemented:
+    M3 made the DBM route a production path (``final_integral.
+    _integrate_subset_dbm``), so a copy of it would not be an independent
+    reference (plan §3.1 L7)."""
     raise NotImplementedError(
-        'reference (d) DBM at L=-3000 is not available before milestone M3 '
+        'reference (d) DBM at L=-3000 is not implemented: the DBM route is '
+        'production code since milestone M3, not an independent reference '
         '(docs/integration_speedup_plan.md §3.1 L7).')
 
 
