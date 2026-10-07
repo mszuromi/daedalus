@@ -87,7 +87,13 @@ def test_memo_on_vs_off_array_equal_on_captured_calls():
     on_cold = _run()
     on_warm = _run()
     for (a, L, u, U, ref), o, c, w in zip(CALLS, off, on_cold, on_warm):
-        assert _same(o, ref), 'memo-off run must reproduce the capture'
+        # the fixture was captured on Linux; libm rounds differently on other
+        # platforms (last-ulp), so the capture is a sanity check only. The
+        # bit-for-bit claim is memo on vs off in this process.
+        assert (o is None) == (ref is None)
+        if ref is not None:
+            assert abs(o - ref) <= 1e-12 * max(1.0, abs(ref)), \
+                'memo-off run must reproduce the capture'
         assert _same(o, c) and _same(o, w)
     n = len(CALLS)
     assert FI._RUNTIME_COUNTERS['chain_uppers_memo_misses'] <= n
