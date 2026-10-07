@@ -715,6 +715,51 @@ temporal gain below needs `DAEDALUS_PREDIAGRAM_EAGER=0`.
   identical to them with the Sage backend (`DAEDALUS_FASTENUM=0` or
   `DAEDALUS_CERT_BACKEND=sage`) on a Sage install with bliss.
 
+### Performance: memo for the chain integral with intermediate uppers (numbers unchanged)
+
+`_chain_with_intermediate_uppers`, the chain-simplex integral of the m ≥ 3
+poset path, is a pure function of its arguments and the Phase J poset walk
+calls it many times with identical ones (the m ≥ 3 chain path at higher loop
+order; models with repeated poles). It is now memoised. A hit returns the
+object the first call computed, so every result is bit-identical to the memo
+off (`np.array_equal`, checked on the models below).
+
+- Flag `USE_CHAIN_UPPERS_MEMO` (default on, read at call time); environment
+  `DAEDALUS_CHAIN_UPPERS_MEMO=1|0`, any other value is an error. It is a pure
+  speed switch: `DAEDALUS_PHASE_J_LEGACY` does not touch it.
+- The key is the chain's alphas (exact complex values), `L`, the uppers
+  (sorted, so dict order does not matter), the chain-top upper and the module
+  state the result depends on, read at call time: `USE_NUMBA_CHAIN_SIMPLEX`,
+  `USE_CHAIN_SIMPLEX_PRECISION_FIX` (and its threshold),
+  `USE_POSET_MPMATH_ACCUMULATION`, `USE_POSET_CAP_MATCH_SCIPY`. Toggling any
+  of them misses the memo.
+- The existing per-simplex tables (`_chain_simplex_memo_fast/_poly`) keyed on
+  the arguments only, so a toggle of `USE_NUMBA_CHAIN_SIMPLEX` or
+  `USE_CHAIN_SIMPLEX_PRECISION_FIX` could be answered from a stale entry. The
+  fast table now keys on that state. `_chain_simplex_memo_clear()` also clears
+  the new table.
+- Thread safe (the spatial path runs Phase J in a thread pool): lookup and
+  insert hold a lock, the value is computed outside it. At 200,000 entries the
+  table is cleared in one locked step, so memory stays bounded.
+- Counters `chain_uppers_memo_hits`, `chain_uppers_memo_misses` and
+  `chain_uppers_memo_evictions` in `_RUNTIME_COUNTERS`. With the memo on the
+  inner counters `chain_simplex_memo_hits` and `chain_simplex_*_returned_none`
+  count fewer calls, because most calls never reach the inner tables.
+- The poset plan loop builds the (L, uppers, chain-top) key part once per
+  linear extension instead of once per pole-tuple group.
+
+Measured on a 4-vCPU Linux VM with other jobs running on it, memo off → on, whole
+run including diagram setup (the memo does not touch the setup, which is most
+of what remains; the two OU runs give two samples each):
+
+| run | off | on | hits / misses |
+|---|---|---|---|
+| `ou_quartic_two_dim`, k = 2, ℓ = 2, 7 τ | 46.3–49.4 s | 28.1–29.2 s | 2,613,114 / 54,726 |
+| `ou_quartic`, k = 4, ℓ = 2, 1 point | 36.8–38.4 s | 19.4–20.1 s | 473,592 / 40,248 |
+| `single_population_quad_exp_test`, k = 2, ℓ = 1 | 89.2 s | 42.0 s | 7,988,455 / 584,321 (cap reached) |
+| `single_population_spike_reset_test`, k = 2, ℓ = 1 | 14.7 s | 12.3 s | 173,278 / 3,922 |
+| same, grouped | 6.3 s | 4.6 s | 2,958 / 3,922 |
+
 ### Fixed: `SPATIAL_INTEGRATOR=bessel` warns at τ ≠ 0
 
 The `bessel` integrator is exact only when the external times are equal
