@@ -4880,14 +4880,13 @@ def integrate_diagram(
         else frozenset())
 
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints
-    # for debugging / display, matching the pre-fix return shape.
+    # for debugging / display, matching the pre-fix return shape.  Kept as
+    # the unexpanded product: nothing reads it numerically, and expanding it
+    # blows up combinatorially for multi-mode kernels (alpha-function
+    # synapses: >10 min per diagram on quadratic_hawkes_alpha at ell=1).
     display_stripped = cp
     for ei in edge_info:
         display_stripped = display_stripped * ei['smooth_factor']
-    try:
-        display_stripped = display_stripped.expand()
-    except Exception:
-        pass
     display_constraints = [ei['dt_sym'] for ei in edge_info]
 
     # Accumulators
