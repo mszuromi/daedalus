@@ -878,6 +878,12 @@ _RUNTIME_COUNTERS = {
     # memoisation (see the wrappers below)
     'chain_simplex_memo_hits': 0,
     'chain_simplex_memo_misses': 0,
+    # M4: the ``_chain_with_intermediate_uppers`` memo
+    # (``USE_CHAIN_UPPERS_MEMO``); ``evictions`` counts the table clears at
+    # the size cap:
+    'chain_uppers_memo_hits': 0,
+    'chain_uppers_memo_misses': 0,
+    'chain_uppers_memo_evictions': 0,
     'poset_returned_none_total': 0,
     # m=1 interval path
     'interval_attempted': 0,
@@ -3047,21 +3053,110 @@ _CHAIN_SIMPLEX_MEMO_MAX = 200_000
 _chain_simplex_memo_fast = {}
 _chain_simplex_memo_poly = {}
 
+# ── M4 (P5): memo for ``_chain_with_intermediate_uppers`` ──────────────
+# That function is pure and deterministic of (alphas, L, uppers, U) and the
+# kernel flags below, and the poset walk calls it many times with identical
+# arguments (the m >= 3 chain path at higher loop order; models with repeated
+# poles).  The memo changes NO number: a hit returns the very object the
+# first call computed, so every result is bit-identical to the memo off.
+#
+# ``USE_CHAIN_UPPERS_MEMO`` (bool, read at call time); environment
+# ``DAEDALUS_CHAIN_UPPERS_MEMO`` = 1 | 0 (also true/false, yes/no, on/off;
+# default 1).  It is a pure speed switch, so the umbrella
+# ``DAEDALUS_PHASE_J_LEGACY`` (which reproduces pre-M1 NUMBERS) does not
+# touch it.
+#
+# Thread safety: the spatial path runs Phase J under a ThreadPoolExecutor.
+# Lookup (with its counter) and miss-insert (with eviction) hold
+# ``_CHAIN_UPPERS_LOCK``; the value is computed OUTSIDE the lock, so two
+# threads racing on one key both compute it (harmless: equal values).  At the
+# size cap the table is cleared in one locked ``clear()``.
+_CHAIN_UPPERS_MEMO_MAX = 200_000
+_chain_uppers_memo = {}
+_CHAIN_UPPERS_LOCK = _threading.Lock()
+_CHAIN_UPPERS_MISS = object()
+
+
+def _initial_chain_uppers_memo_flag(environ=None):
+    """The import-time value of ``USE_CHAIN_UPPERS_MEMO`` from ``environ``
+    (default ``os.environ``).  An unknown value raises."""
+    env = _os.environ if environ is None else environ
+    v = env.get('DAEDALUS_CHAIN_UPPERS_MEMO', '').strip().lower()
+    if v in ('', '1', 'true', 'yes', 'on'):
+        return True
+    if v in ('0', 'false', 'no', 'off'):
+        return False
+    raise ValueError(
+        f'DAEDALUS_CHAIN_UPPERS_MEMO={v!r}: expected 1 or 0')
+
+
+USE_CHAIN_UPPERS_MEMO = _initial_chain_uppers_memo_flag()
+
+
+def _chain_uppers_memo_on():
+    """``USE_CHAIN_UPPERS_MEMO`` (call time), validated."""
+    flag = USE_CHAIN_UPPERS_MEMO
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.USE_CHAIN_UPPERS_MEMO={flag!r}: '
+                     f'expected True or False')
+
+
+def _chain_uppers_kernel_tag():
+    """The module state that can change ``_chain_with_intermediate_uppers``,
+    read at call time (part of every memo key, so toggling any of it misses).
+
+    On the function's call path (``_exp_over_chain_simplex_fast`` ->
+    ``_exp_over_chain_simplex_fast_uncached``, and the polynomial routine):
+      * ``USE_NUMBA_CHAIN_SIMPLEX`` / ``_HAVE_NUMBA``: numba core vs the
+        Python reference (they agree to rounding, not bit-for-bit);
+      * ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` and
+        ``_CHAIN_SIMPLEX_CANCEL_THRESHOLD``: the mpmath dispatch for
+        close-pole chains and its threshold.
+    Included defensively although they sit in the CALLER
+    (``_integrate_nd_polytope_poset_modesum``), not on this function's path,
+    so no result of this function depends on them today:
+      * ``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY``.
+    ``CHAIN_UPPERS_KERNEL`` (the M6 transfer-kernel selector) does not exist
+    yet: ADD IT HERE when it lands, or the memo would serve one kernel's
+    values to the other."""
+    return (USE_NUMBA_CHAIN_SIMPLEX, _HAVE_NUMBA,
+            USE_CHAIN_SIMPLEX_PRECISION_FIX, _CHAIN_SIMPLEX_CANCEL_THRESHOLD,
+            USE_POSET_MPMATH_ACCUMULATION, USE_POSET_CAP_MATCH_SCIPY,
+            # CHAIN_UPPERS_KERNEL goes here (M6)
+            )
+
 
 def _chain_simplex_memo_clear():
-    """Drop both chain-simplex memo tables (call when poles change)."""
+    """Drop every chain-simplex memo table (call when poles change): the
+    fast and polynomial tables and the M4 ``_chain_with_intermediate_uppers``
+    table."""
     _chain_simplex_memo_fast.clear()
     _chain_simplex_memo_poly.clear()
+    with _CHAIN_UPPERS_LOCK:
+        _chain_uppers_memo.clear()
 
 
-def _chain_simplex_key(alphas, lower, upper, eps):
-    return (tuple(alphas), lower, upper, eps)
+def _chain_simplex_fast_tag():
+    """The module state ``_exp_over_chain_simplex_fast_uncached`` reads, at
+    call time: the numba switch (and whether numba imported), the
+    close-pole precision gate and its threshold.  Part of the fast table's
+    key, so a toggle can never be answered from a stale entry (M4; before it
+    the key held only the arguments).  The polynomial routine reads no
+    module flag, so its key carries no tag."""
+    return (USE_NUMBA_CHAIN_SIMPLEX, _HAVE_NUMBA,
+            USE_CHAIN_SIMPLEX_PRECISION_FIX, _CHAIN_SIMPLEX_CANCEL_THRESHOLD)
+
+
+def _chain_simplex_key(alphas, lower, upper, eps, tag=()):
+    return (tuple(alphas), lower, upper, eps, tag)
 
 
 def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
     """Memoised wrapper -- see ``_exp_over_chain_simplex_fast_uncached``."""
     try:
-        key = _chain_simplex_key(alphas, lower, upper, eps)
+        key = _chain_simplex_key(alphas, lower, upper, eps,
+                                 _chain_simplex_fast_tag())
     except TypeError:            # unhashable argument: skip the cache
         return _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps)
     memo = _chain_simplex_memo_fast
@@ -3105,7 +3200,65 @@ def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
     return val
 
 
+def _chain_uppers_key_suffix(L, upper_per_position, U_chain_top):
+    """The (L, uppers, U) part of a ``_chain_with_intermediate_uppers`` memo
+    key.  Independent of the alphas, so the poset plan loop builds it once
+    per linear extension instead of once per pole-tuple group (M4 "A2").
+    ``uppers`` is sorted (dict-order invariant) and keeps a ``None``-valued
+    entry as ``None``: the uncached function treats a key mapped to ``None``
+    as absent when forming effective uppers but as a direct constraint when
+    placing cuts, so dropping it could alias two different results.
+    Raises ``TypeError`` on an input that cannot be keyed."""
+    if upper_per_position:
+        uppers = tuple(sorted(
+            (int(k), None if v is None else float(v))
+            for k, v in upper_per_position.items()))
+    else:
+        uppers = ()
+    return (float(L), uppers, float(U_chain_top))
+
+
 def _chain_with_intermediate_uppers(
+    alphas_chain,
+    L,
+    upper_per_position,
+    U_chain_top,
+    _key_suffix=None,
+):
+    """Memoised wrapper (M4; ``USE_CHAIN_UPPERS_MEMO``) -- see
+    ``_chain_with_intermediate_uppers_uncached``.  ``_key_suffix`` is an
+    optional precomputed ``_chain_uppers_key_suffix(L, upper_per_position,
+    U_chain_top)`` (the plan loop hoists it)."""
+    if not _chain_uppers_memo_on():
+        return _chain_with_intermediate_uppers_uncached(
+            alphas_chain, L, upper_per_position, U_chain_top)
+    try:
+        if _key_suffix is None:
+            _key_suffix = _chain_uppers_key_suffix(
+                L, upper_per_position, U_chain_top)
+        key = (tuple(alphas_chain), _key_suffix, _chain_uppers_kernel_tag())
+        with _CHAIN_UPPERS_LOCK:
+            # hashing the key (a ``TypeError`` for an unhashable alpha)
+            # happens in this first lookup, before any counter moves
+            val = _chain_uppers_memo.get(key, _CHAIN_UPPERS_MISS)
+            if val is not _CHAIN_UPPERS_MISS:
+                _RUNTIME_COUNTERS['chain_uppers_memo_hits'] += 1
+                return val
+            _RUNTIME_COUNTERS['chain_uppers_memo_misses'] += 1
+    except TypeError:                # unhashable / unkeyable: skip the cache
+        return _chain_with_intermediate_uppers_uncached(
+            alphas_chain, L, upper_per_position, U_chain_top)
+    val = _chain_with_intermediate_uppers_uncached(
+        alphas_chain, L, upper_per_position, U_chain_top)
+    with _CHAIN_UPPERS_LOCK:
+        if len(_chain_uppers_memo) >= _CHAIN_UPPERS_MEMO_MAX:
+            _chain_uppers_memo.clear()
+            _RUNTIME_COUNTERS['chain_uppers_memo_evictions'] += 1
+        _chain_uppers_memo[key] = val
+    return val
+
+
+def _chain_with_intermediate_uppers_uncached(
     alphas_chain,
     L,
     upper_per_position,
@@ -3520,6 +3673,18 @@ def _integrate_nd_polytope_poset_modesum(
             'gamma_slope_per_tuple_per_ext'
         ]
         n_ext = len(free_ext_vals)
+        # M4 (A2): the (L, uppers, U) memo-key suffix depends on the
+        # extension only, so build it once here, not per tuple group.
+        # ``None`` (memo off, or an unkeyable input) = the callee decides.
+        chain_key_suffixes = [None] * len(extensions)
+        if _chain_uppers_memo_on():
+            for i_ext, (U_ext, upp_per_pos) in enumerate(
+                    zip(upper_for_ext, upper_per_position_per_ext)):
+                try:
+                    chain_key_suffixes[i_ext] = _chain_uppers_key_suffix(
+                        L, upp_per_pos, float(U_ext))
+                except TypeError:
+                    pass
         # Iterate GROUPS of pole tuples sharing an alpha vector: the chain
         # integral is evaluated once per group with the group's summed
         # prefactor, instead of once per tuple.  See ``_build_modesum_plan``.
@@ -3539,12 +3704,13 @@ def _integrate_nd_polytope_poset_modesum(
                     return _bail('poset_exp_overflow')
             if term_const == 0:
                 continue
-            for sigma, U_ext, upp_per_pos in zip(
+            for sigma, U_ext, upp_per_pos, key_suffix in zip(
                     extensions, upper_for_ext,
-                    upper_per_position_per_ext):
+                    upper_per_position_per_ext, chain_key_suffixes):
                 alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
                 chain_val = _chain_with_intermediate_uppers(
                     alphas_chain, L, upp_per_pos, float(U_ext),
+                    _key_suffix=key_suffix,
                 )
                 if chain_val is None:
                     _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
