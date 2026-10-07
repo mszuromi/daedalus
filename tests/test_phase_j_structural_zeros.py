@@ -1185,9 +1185,9 @@ def test_public_spike1_unchanged(private_cwd, grouped):
     off, c_off = _run(model, False, **kw)
     _assert_bit_identical(on, off)
 
-    def routes(c):          # the chain-simplex memo warms up across runs
+    def routes(c):          # the chain-simplex memos warm up across runs
         return {k: v for k, v in c.items()
-                if not k.startswith('chain_simplex_memo')}
+                if not k.startswith(('chain_simplex', 'chain_uppers'))}
     assert routes(c_on) == routes(c_off)
 
 

@@ -3208,11 +3208,16 @@ def _chain_uppers_key_suffix(L, upper_per_position, U_chain_top):
     entry as ``None``: the uncached function treats a key mapped to ``None``
     as absent when forming effective uppers but as a direct constraint when
     placing cuts, so dropping it could alias two different results.
-    Raises ``TypeError`` on an input that cannot be keyed."""
+    Raises ``TypeError`` on an input that cannot be keyed, among them a
+    position that is not an integer (``2.5`` must not share the key of
+    ``2``: the callee treats them differently)."""
     if upper_per_position:
-        uppers = tuple(sorted(
-            (int(k), None if v is None else float(v))
-            for k, v in upper_per_position.items()))
+        items = []
+        for k, v in upper_per_position.items():
+            if k != int(k):
+                raise TypeError(f'non-integer upper position {k!r}')
+            items.append((int(k), None if v is None else float(v)))
+        uppers = tuple(sorted(items))
     else:
         uppers = ()
     return (float(L), uppers, float(U_chain_top))
@@ -3236,7 +3241,8 @@ def _chain_with_intermediate_uppers(
         if _key_suffix is None:
             _key_suffix = _chain_uppers_key_suffix(
                 L, upper_per_position, U_chain_top)
-        key = (tuple(alphas_chain), _key_suffix, _chain_uppers_kernel_tag())
+        tag = _chain_uppers_kernel_tag()
+        key = (tuple(alphas_chain), _key_suffix, tag)
         with _CHAIN_UPPERS_LOCK:
             # hashing the key (a ``TypeError`` for an unhashable alpha)
             # happens in this first lookup, before any counter moves
@@ -3245,11 +3251,18 @@ def _chain_with_intermediate_uppers(
                 _RUNTIME_COUNTERS['chain_uppers_memo_hits'] += 1
                 return val
             _RUNTIME_COUNTERS['chain_uppers_memo_misses'] += 1
-    except TypeError:                # unhashable / unkeyable: skip the cache
+    except (TypeError, ValueError, OverflowError):
+        # unhashable / unkeyable (the callee's own handling of the input
+        # applies): skip the cache
         return _chain_with_intermediate_uppers_uncached(
             alphas_chain, L, upper_per_position, U_chain_top)
     val = _chain_with_intermediate_uppers_uncached(
         alphas_chain, L, upper_per_position, U_chain_top)
+    if _chain_uppers_kernel_tag() != tag:
+        # a kernel flag moved while this call was computing (another thread
+        # toggling it): the value may belong to either state, so do not
+        # store it under the tag read before the compute
+        return val
     with _CHAIN_UPPERS_LOCK:
         if len(_chain_uppers_memo) >= _CHAIN_UPPERS_MEMO_MAX:
             _chain_uppers_memo.clear()
@@ -3683,7 +3696,7 @@ def _integrate_nd_polytope_poset_modesum(
                 try:
                     chain_key_suffixes[i_ext] = _chain_uppers_key_suffix(
                         L, upp_per_pos, float(U_ext))
-                except TypeError:
+                except (TypeError, ValueError, OverflowError):
                     pass
         # Iterate GROUPS of pole tuples sharing an alpha vector: the chain
         # integral is evaluated once per group with the group's summed

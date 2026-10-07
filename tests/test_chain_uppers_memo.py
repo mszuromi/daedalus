@@ -353,31 +353,37 @@ def test_threaded_eviction_matches_the_serial_run(monkeypatch):
 
 
 def test_threaded_flag_toggle_mid_run_never_returns_a_stale_value():
-    """One thread flips the precision gate while others call: whenever the
-    flag state did not move during a call, the memoised result equals what
-    the uncached function gives (the numba and mpmath states agree to
-    rounding only, so a stale entry would show up as a bit difference)."""
+    """One thread flips the precision gate while others call.  Whenever no
+    flip happened during a call (a monotonic flip counter, so an A-B-A
+    sequence cannot hide), the memoised result equals the uncached one (the
+    numba and mpmath states agree to rounding only, so a stale entry would
+    show up as a bit difference).  Afterwards no table entry may hold a value
+    that its own key's flag state does not give.  (At the default switch
+    interval; the exact mid-compute flip is the deterministic test below.)"""
     calls = CALLS[:60]
     stop = threading.Event()
     errors = []
+    flips = [0]
     saved = FI.USE_CHAIN_SIMPLEX_PRECISION_FIX
 
     def flipper():
         v = False
         while not stop.is_set():
             v = not v
-            FI.USE_CHAIN_SIMPLEX_PRECISION_FIX = v
+            flips[0] += 1               # bumped before AND after the write,
+            FI.USE_CHAIN_SIMPLEX_PRECISION_FIX = v      # so a call that saw
+            flips[0] += 1               # an unchanged counter saw no write
 
     def caller(seed):
         order = np.random.RandomState(seed).permutation(len(calls))
         for i in order:
             a, L, u, U = calls[i][:4]
-            tag = FI._chain_uppers_kernel_tag()
+            n0 = flips[0]
             got = FI._chain_with_intermediate_uppers(list(a), L, dict(u), U)
             ref = FI._chain_with_intermediate_uppers_uncached(
                 list(a), L, dict(u), U)
-            if tag == FI._chain_uppers_kernel_tag() and not _same(got, ref):
-                errors.append((int(i), tag))
+            if flips[0] == n0 and not _same(got, ref):
+                errors.append(int(i))
 
     t = threading.Thread(target=flipper)
     t.start()
@@ -389,6 +395,51 @@ def test_threaded_flag_toggle_mid_run_never_returns_a_stale_value():
         t.join()
         FI.USE_CHAIN_SIMPLEX_PRECISION_FIX = saved
     assert not errors
+    # audit: every stored value is what its key's own flag state computes
+    for key, val in list(FI._chain_uppers_memo.items()):
+        alphas, (L, uppers, U), tag = key
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(FI, 'USE_NUMBA_CHAIN_SIMPLEX', tag[0])
+            mp.setattr(FI, 'USE_CHAIN_SIMPLEX_PRECISION_FIX', tag[2])
+            ref = FI._chain_with_intermediate_uppers_uncached(
+                list(alphas), L, dict(uppers), U)
+        assert _same(val, ref)
+
+
+def test_a_flag_that_moves_during_the_compute_is_not_stored(monkeypatch):
+    """Deterministic version of the race: the kernel flag changes while a
+    miss is computing (another thread toggling it).  The value may belong to
+    either state, so it must not be stored under the tag read before the
+    compute; the next call recomputes under the new state."""
+    a = [-0.3 + 0.1j, -0.5 + 0.0j, -0.7 - 0.2j]
+    args = (a, -5.0, {0: -1.0}, 0.0)
+    real = FI._chain_with_intermediate_uppers_uncached
+
+    def flip_then_compute(*x):
+        monkeypatch.setattr(FI, 'USE_NUMBA_CHAIN_SIMPLEX', False)
+        return real(*x)
+
+    monkeypatch.setattr(FI, '_chain_with_intermediate_uppers_uncached',
+                        flip_then_compute)
+    FI._chain_with_intermediate_uppers(*args)
+    assert not FI._chain_uppers_memo                    # not stored
+    monkeypatch.setattr(FI, '_chain_with_intermediate_uppers_uncached', real)
+    v = FI._chain_with_intermediate_uppers(*args)       # miss, stored, new state
+    assert len(FI._chain_uppers_memo) == 1
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_hits'] == 0
+    assert _same(v, real(*args))
+
+
+def test_a_non_integer_upper_position_is_not_keyed_as_its_floor():
+    """``{2.5: v}`` and ``{2: v}`` differ for the callee, so they must not
+    share a memo entry (the former is not memoised at all)."""
+    a = [-0.3 + 0.1j, -0.5 + 0.0j, -0.7 - 0.2j]
+    with pytest.raises(TypeError):
+        FI._chain_uppers_key_suffix(-5.0, {2.5: -1.0}, 0.5)
+    got = FI._chain_with_intermediate_uppers(a, -5.0, {2.5: -1.0}, 0.5)
+    ref = FI._chain_with_intermediate_uppers_uncached(a, -5.0, {2.5: -1.0}, 0.5)
+    assert _same(got, ref)
+    assert not FI._chain_uppers_memo
 
 
 # ─── the plan-loop key hoist ───────────────────────────────────────
