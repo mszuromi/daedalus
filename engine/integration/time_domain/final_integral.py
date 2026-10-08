@@ -83,6 +83,9 @@ from dataclasses import dataclass
 from fractions import Fraction as _Fraction
 
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
+from sage.all import QQ as _QQ, ZZ as _ZZ
+from sage.symbolic.operators import (
+    add_vararg as _sr_add_op, mul_vararg as _sr_mul_op)
 from sage.rings.complex_double import (
     ComplexDoubleElement as _ComplexDoubleElement)
 
@@ -1014,6 +1017,14 @@ _RUNTIME_COUNTERS = {
     'setup_aut_memo_misses': 0,
     'setup_aut_memo_evictions': 0,
     'setup_aut_wick_skipped': 0,
+    # M10 (L4a, ``USE_SETUP_DELTA_SOLVE``): δ-edge eliminations solved by
+    # exact rational linear algebra / handed to ``sage_solve`` because the
+    # equation is not an exactly-rational linear form in the eliminated
+    # variable; and, under ``VALIDATE_DELTA``, eliminations checked against
+    # ``sage_solve`` (substitution and constraint rows exactly equal).
+    'setup_delta_solve_fast': 0,
+    'setup_delta_solve_fallback': 0,
+    'setup_delta_validated': 0,
     # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
@@ -4585,6 +4596,9 @@ DEBUG_HEAVISIDE_GUARD = False
 #   USE_SETUP_LAZY_SR     DAEDALUS_SETUP_LAZY_SR     L3: the SR objects only
 #       the shot-noise / SR-integrand branches need are built on demand.
 #   USE_AUT_MEMO (engine.diagrams.symmetry)  DAEDALUS_SETUP_AUT_MEMO   L5.
+#   USE_SETUP_DELTA_SOLVE DAEDALUS_SETUP_DELTA_SOLVE M10 (L4a): the δ-edge
+#       eliminations by exact rational linear algebra instead of Maxima
+#       (``sage_solve``) and SR ``==`` tests (see ``_delta_solve_exact``).
 #
 # ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` (read at call time) forces every one of
 # them off.  It is NOT ``DAEDALUS_PHASE_J_LEGACY``: that one reproduces older
@@ -4610,6 +4624,16 @@ def _initial_setup_flag(env_name, environ=None):
 USE_SETUP_ZERO_EXIT = _initial_setup_flag('DAEDALUS_SETUP_ZERO_EXIT')
 USE_SETUP_PROP_TD = _initial_setup_flag('DAEDALUS_SETUP_PROP_TD')
 USE_SETUP_LAZY_SR = _initial_setup_flag('DAEDALUS_SETUP_LAZY_SR')
+USE_SETUP_DELTA_SOLVE = _initial_setup_flag('DAEDALUS_SETUP_DELTA_SOLVE')
+
+# M10 validation mode (default OFF): with ``USE_SETUP_DELTA_SOLVE`` on, every
+# δ-subset is also solved the legacy way (``sage_solve``) and the two must
+# agree EXACTLY: same eliminated variables, every substitution RHS equal as a
+# polynomial and the same SR tree, the same residual external-time verdicts, and every constraint
+# row (``a_int``, ``a_ext``, ``c0``) built from them equal with ``==``.  A
+# mismatch raises ``DeltaSolveValidationError``.  On when the module bool is
+# True or ``DAEDALUS_PHASE_J_VALIDATE_DELTA`` is truthy at CALL time.
+VALIDATE_DELTA = _env_truthy('DAEDALUS_PHASE_J_VALIDATE_DELTA')
 
 
 def _setup_lever_on(flag_name):
@@ -4920,6 +4944,385 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
         {'stripped_integrand': lambda: _full()['stripped_integrand'],
          'constraints': lambda: _full()['constraints'],
          'edge_info': lambda: _full()['edge_info']})
+
+
+# ── M10 (L4a): exact δ-edge elimination (``USE_SETUP_DELTA_SOLVE``) ──
+# Every δ edge of a subset sets ``dt_e = 0``; ``integrate_diagram`` solves it
+# for the first remaining integration variable that occurs.  On every model
+# in the repo ``dt_e`` is (after the previous substitutions) a linear form in
+# the vertex times with exactly rational coefficients, so the solution is
+# ``x = -rest/a`` computed in QQ: the same polynomial ``sage_solve`` (Maxima)
+# returns, rebuilt as an SR sum of ``Rational * symbol`` terms, which Pynac
+# stores in its canonical form -- so every later ``.subs`` / ``.coefficient``
+# / ``float`` sees the same expression and every row and number is
+# unchanged.  Variables are matched by NAME (``str``), never by SR ``==``
+# (whose ``bool`` may run randomized zero proofs).  Anything that is not an
+# exactly-rational linear form in ``x`` (a float, complex or symbolic
+# coefficient, a nonlinear term, a zero coefficient, an exception) goes to
+# ``sage_solve`` unchanged (counter ``setup_delta_solve_fallback``).  No
+# floating point is used in the elimination: a coefficient that is exactly 0
+# stays exactly 0 (the exact-zero contract of ``_const_row_verdict`` and the
+# Θ(0) rule).
+
+
+class DeltaSolveValidationError(AssertionError):
+    """``VALIDATE_DELTA``: the exact δ-elimination and ``sage_solve``
+    disagree on a substitution, a residual verdict or a constraint row."""
+
+
+def _validate_delta_on():
+    """True when the M10 validation mode is on (call time)."""
+    flag = VALIDATE_DELTA
+    if flag is not True and flag is not False:
+        raise ValueError(f'final_integral.VALIDATE_DELTA={flag!r}: expected '
+                         f'True or False')
+    return flag or _env_truthy('DAEDALUS_PHASE_J_VALIDATE_DELTA')
+
+
+def _exact_rational(x):
+    """The value of the numeric SR ``x`` as an element of QQ when it is an
+    exact integer or rational number, else None (float, complex, ...)."""
+    try:
+        v = x.pyobject()
+    except Exception:
+        return None
+    if isinstance(v, bool) or isinstance(v, float) or isinstance(v, complex):
+        return None
+    if isinstance(v, int):
+        return _QQ(v)
+    try:
+        parent = v.parent()
+    except AttributeError:
+        return None
+    if parent is _QQ or parent is _ZZ:
+        return _QQ(v)
+    return None
+
+
+def _exact_linear_form(expr):
+    """``(terms, const)`` when the SR expression ``expr`` is a linear form
+    sum_i c_i * s_i + c whose coefficients and constant are all exact
+    rationals: ``terms`` maps each symbol NAME to ``[symbol, c_i]`` (QQ;
+    repeated symbols accumulate, a coefficient may come out 0) and ``const``
+    is in QQ.  None for anything else (a float / complex / symbolic
+    coefficient, a product of symbols, a power, a function, a constant such
+    as ``pi``).  Structural only: no SR comparison, no simplification."""
+    terms = {}
+    const = _QQ(0)
+    stack = [(expr, _QQ(1))]
+    while stack:
+        e, k = stack.pop()
+        if e.is_numeric():
+            q = _exact_rational(e)
+            if q is None:
+                return None
+            const += k * q
+            continue
+        if e.is_symbol():
+            ent = terms.get(str(e))
+            if ent is None:
+                terms[str(e)] = [e, k]
+            else:
+                ent[1] += k
+            continue
+        op = e.operator()
+        if op is _sr_add_op:
+            stack.extend((o, k) for o in e.operands())
+            continue
+        if op is _sr_mul_op:
+            coef = k
+            factor = None
+            for o in e.operands():
+                if o.is_numeric():
+                    q = _exact_rational(o)
+                    if q is None:
+                        return None
+                    coef *= q
+                elif factor is None:
+                    factor = o
+                else:
+                    return None             # product of two non-numbers
+            if factor is None:
+                const += coef
+            else:
+                stack.append((factor, coef))
+            continue
+        return None
+    return terms, const
+
+
+def _delta_eliminate_exact(eq_expr, var):
+    """The SR RHS of ``var = RHS`` solving ``eq_expr == 0`` by exact
+    rational linear algebra, or None when ``eq_expr`` is not an exactly
+    rational linear form with a nonzero coefficient on ``var`` (by name)."""
+    lf = _exact_linear_form(eq_expr)
+    if lf is None:
+        return None
+    terms, const = lf
+    name = str(var)
+    ent = terms.get(name)
+    if ent is None or ent[1] == 0:
+        return None
+    a = ent[1]
+    rhs = SR(-const / a)
+    for nm, (sym, c) in terms.items():
+        if nm == name or c == 0:
+            continue
+        rhs = rhs + SR(-c / a) * sym
+    return rhs
+
+
+def _residual_is_zero_exact(eq):
+    """True / False when the residual external-time equality ``eq`` is an
+    exactly rational linear form that is / is not identically zero; None
+    when it is not such a form (the caller then keeps the SR test)."""
+    try:
+        lf = _exact_linear_form(SR(eq))
+    except Exception:
+        return None
+    if lf is None:
+        return None
+    terms, const = lf
+    return const == 0 and all(c == 0 for _, c in terms.values())
+
+
+def _delta_solve_legacy(edge_info, delta_edges, integration_vars):
+    """The pre-M10 δ-edge elimination of ``integrate_diagram`` for one subset
+    (``sage_solve`` + SR ``==``), factored out verbatim.  Returns
+    ``(substitutions, remaining_int_vars, ext_time_equalities)``, or None
+    when a solve fails (the subset is infeasible and skipped)."""
+    substitutions = {}
+    remaining_int_vars = list(integration_vars)
+    ext_time_equalities = []  # residual constraints on ext times
+
+    for ei_idx in delta_edges:
+        eq_expr = edge_info[ei_idx]['dt_sym'].subs(substitutions)
+        eq_expr = SR(eq_expr)
+        # Find an integration variable to solve for
+        int_var_to_eliminate = None
+        try:
+            eq_vars = set(eq_expr.variables())
+        except AttributeError:
+            eq_vars = set()
+        for iv in remaining_int_vars:
+            if iv in eq_vars:
+                int_var_to_eliminate = iv
+                break
+        if int_var_to_eliminate is not None:
+            try:
+                sol = sage_solve(
+                    eq_expr == 0, int_var_to_eliminate,
+                    solution_dict=True,
+                )
+            except Exception:
+                sol = []
+            if not sol:
+                return None
+            new_rhs = sol[0][int_var_to_eliminate]
+            substitutions[int_var_to_eliminate] = new_rhs
+            remaining_int_vars.remove(int_var_to_eliminate)
+            # Resolve transitively: apply the new substitution to
+            # the RHS of every existing entry so a chain like
+            # ``{a: f(b), b: g(c)}`` collapses to ``{a: f(g(c)), b: g(c)}``.
+            # Sage's ``.subs(dict)`` is a parallel one-pass operation
+            # and does NOT chain substitutions — without this fixup
+            # ``cp.subs(substitutions)`` would leave ``b`` exposed in
+            # the result, breaking the integrator's free-symbol
+            # audit downstream.  Pre-existing concern that becomes
+            # load-bearing with multi-τ ConvVertexType diagrams.
+            # Cheap early-skip: only chain-resolve if some EXISTING
+            # RHS actually mentions the variable we just eliminated.
+            # For typical non-ConvVertex diagrams the chain almost
+            # never forms (the per-edge ``eq_expr.subs(substitutions)``
+            # above already applies prior subs before solving), so
+            # the inner SR.subs() loop is pure overhead.  Walk
+            # variables once per existing entry — much cheaper than
+            # blindly calling SR.subs.
+            affected_keys = []
+            for _k, _rhs in substitutions.items():
+                if _k == int_var_to_eliminate:
+                    continue
+                try:
+                    _rhs_vars = SR(_rhs).variables()
+                except (AttributeError, TypeError):
+                    continue
+                if int_var_to_eliminate in _rhs_vars:
+                    affected_keys.append(_k)
+            if affected_keys:
+                _chain_subs = {int_var_to_eliminate: new_rhs}
+                for _k in affected_keys:
+                    substitutions[_k] = SR(
+                        substitutions[_k]
+                    ).subs(_chain_subs)
+        else:
+            # No integration variable to eliminate → this is a
+            # constraint on external times alone. If it's
+            # identically zero, the δ is satisfied trivially; if
+            # not, it's a shot-noise δ(τ)-style contribution.
+            ext_time_equalities.append(eq_expr)
+    return substitutions, remaining_int_vars, ext_time_equalities
+
+
+def _delta_solve_exact(edge_info, delta_edges, integration_vars):
+    """``_delta_solve_legacy`` with the M10 lever: the same elimination
+    order and the same substitutions, solved by ``_delta_eliminate_exact``
+    (``sage_solve`` only as the fallback) with every variable test by name.
+    Same return value."""
+    substitutions = {}
+    remaining_int_vars = list(integration_vars)
+    ext_time_equalities = []
+
+    for ei_idx in delta_edges:
+        eq_expr = SR(edge_info[ei_idx]['dt_sym'].subs(substitutions))
+        try:
+            eq_names = {str(v) for v in eq_expr.variables()}
+        except AttributeError:
+            eq_names = set()
+        int_var_to_eliminate = None
+        for iv in remaining_int_vars:
+            if str(iv) in eq_names:
+                int_var_to_eliminate = iv
+                break
+        if int_var_to_eliminate is None:
+            ext_time_equalities.append(eq_expr)
+            continue
+        try:
+            new_rhs = _delta_eliminate_exact(eq_expr, int_var_to_eliminate)
+        except Exception:
+            new_rhs = None
+        if new_rhs is not None:
+            _RUNTIME_COUNTERS['setup_delta_solve_fast'] += 1
+        else:
+            _RUNTIME_COUNTERS['setup_delta_solve_fallback'] += 1
+            try:
+                sol = sage_solve(
+                    eq_expr == 0, int_var_to_eliminate,
+                    solution_dict=True,
+                )
+            except Exception:
+                sol = []
+            if not sol:
+                return None
+            new_rhs = sol[0][int_var_to_eliminate]
+        x_name = str(int_var_to_eliminate)
+        substitutions[int_var_to_eliminate] = new_rhs
+        # first match only, as the legacy ``list.remove``
+        del remaining_int_vars[next(
+            i for i, iv in enumerate(remaining_int_vars)
+            if str(iv) == x_name)]
+        # Chain-resolve exactly as the legacy path (same SR ``.subs``), with
+        # the "does this RHS mention x" test by name.
+        affected_keys = []
+        for _k, _rhs in substitutions.items():
+            if str(_k) == x_name:
+                continue
+            try:
+                _rhs_vars = SR(_rhs).variables()
+            except (AttributeError, TypeError):
+                continue
+            if any(str(v) == x_name for v in _rhs_vars):
+                affected_keys.append(_k)
+        if affected_keys:
+            _chain_subs = {int_var_to_eliminate: new_rhs}
+            for _k in affected_keys:
+                substitutions[_k] = SR(substitutions[_k]).subs(_chain_subs)
+    return substitutions, remaining_int_vars, ext_time_equalities
+
+
+def _delta_constraint_rows(edge_info, smooth_edges, substitutions,
+                           remaining_int_vars, free_ext_syms):
+    """The ``(a_int, a_ext, c0)`` float rows ``integrate_diagram`` extracts
+    from the smooth edges of a subset (same expressions), or an
+    ``('error', name)`` marker where that extraction raises."""
+    rows = []
+    for ei_idx in smooth_edges:
+        c_sr = SR(SR(edge_info[ei_idx]['dt_sym']).subs(substitutions))
+        try:
+            a_int = [float(c_sr.coefficient(v)) for v in remaining_int_vars]
+            a_ext = [float(c_sr.coefficient(s)) for s in free_ext_syms]
+            zero_subs = {v: 0 for v in list(remaining_int_vars)
+                         + list(free_ext_syms)}
+            c0 = float(c_sr.subs(zero_subs))
+        except (TypeError, ValueError) as exc:
+            rows.append(('error', type(exc).__name__))
+            continue
+        rows.append((a_int, a_ext, c0))
+    return rows
+
+
+def _residual_rows(eqs, free_ext_syms):
+    """The shot-noise ``(equality_a, equality_c)`` extraction of each
+    residual equality, or an ``('error', name)`` marker."""
+    rows = []
+    for eq in eqs:
+        eq = SR(eq)
+        try:
+            rows.append(([float(eq.coefficient(s)) for s in free_ext_syms],
+                         float(eq.subs({s: 0 for s in free_ext_syms}))))
+        except (TypeError, ValueError) as exc:
+            rows.append(('error', type(exc).__name__))
+    return rows
+
+
+def _legacy_residual_is_zero(eq):
+    try:
+        return bool(eq.is_zero())
+    except Exception:
+        return False
+
+
+def _validate_delta_subset(fast, legacy, edge_info, smooth_edges,
+                           free_ext_syms, where):
+    """``VALIDATE_DELTA``: raise ``DeltaSolveValidationError`` unless the
+    exact solve ``fast`` and the ``sage_solve`` one ``legacy`` (both as
+    returned by ``_delta_solve_*``) agree exactly; count the validated
+    eliminations in ``setup_delta_validated``."""
+    def fail(msg):
+        raise DeltaSolveValidationError(f'M10 δ-solve mismatch ({where}): '
+                                        f'{msg}')
+
+    if (fast is None) != (legacy is None):
+        fail(f'feasibility differs: exact {fast is not None}, '
+             f'sage_solve {legacy is not None}')
+    if fast is None:
+        return
+    f_subs, f_rem, f_ext = fast
+    l_subs, l_rem, l_ext = legacy
+    if [str(v) for v in f_rem] != [str(v) for v in l_rem]:
+        fail(f'remaining variables differ: {f_rem} vs {l_rem}')
+    f_by = {str(k): v for k, v in f_subs.items()}
+    l_by = {str(k): v for k, v in l_subs.items()}
+    if list(f_by) != list(l_by):
+        fail(f'eliminated variables differ: {list(f_by)} vs {list(l_by)}')
+    for name in f_by:
+        diff = (SR(f_by[name]) - SR(l_by[name])).expand()
+        if not diff.is_trivial_zero():
+            fail(f'{name} = {f_by[name]} (exact) vs {l_by[name]} '
+                 f'(sage_solve): difference {diff}')
+        # the same SR tree too: the RHS reaches ``.subs`` / ``fast_callable``
+        if not SR(f_by[name]).is_trivially_equal(SR(l_by[name])):
+            fail(f'{name} = {f_by[name]} (exact) is the same polynomial as '
+                 f'{l_by[name]} (sage_solve) but not the same SR tree')
+    if len(f_ext) != len(l_ext):
+        fail(f'{len(f_ext)} vs {len(l_ext)} residual equalities')
+    for fe, le in zip(f_ext, l_ext):
+        diff = (SR(fe) - SR(le)).expand()
+        if not diff.is_trivial_zero():
+            fail(f'residual equality {fe} vs {le}')
+        verdict = _residual_is_zero_exact(fe)
+        if verdict is not None and verdict != _legacy_residual_is_zero(le):
+            fail(f'residual {fe}: exact zero-test {verdict}, SR is_zero '
+                 f'{not verdict}')
+    if (_residual_rows(f_ext, free_ext_syms)
+            != _residual_rows(l_ext, free_ext_syms)):
+        fail('residual equality rows differ')
+    f_rows = _delta_constraint_rows(edge_info, smooth_edges, f_subs, f_rem,
+                                    free_ext_syms)
+    l_rows = _delta_constraint_rows(edge_info, smooth_edges, l_subs, l_rem,
+                                    free_ext_syms)
+    if f_rows != l_rows:
+        fail(f'constraint rows differ: {f_rows} vs {l_rows}')
+    _RUNTIME_COUNTERS['setup_delta_validated'] += len(f_by)
 
 
 def integrate_diagram(
@@ -5647,6 +6050,9 @@ def integrate_diagram(
         _display_stripped_value()
     display_constraints = [ei['dt_sym'] for ei in edge_info]
 
+    # M10 lever, read once per call (``_setup_lever_on``).
+    _delta_exact = _setup_lever_on('USE_SETUP_DELTA_SOLVE')
+
     # Accumulators
     subset_contributions = []   # continuous smooth contributions (callable)
     delta_contributions = []    # shot-noise δ spikes (structured dicts)
@@ -5683,80 +6089,26 @@ def integrate_diagram(
         # an integration variable appearing in the equation; if no
         # integration variable is available, the equation becomes a
         # constraint among external times (shot-noise δ, skip).
-        substitutions = {}
-        remaining_int_vars = list(integration_vars)
-        ext_time_equalities = []  # residual constraints on ext times
-
-        subset_infeasible = False
-        for ei_idx in delta_edges:
-            eq_expr = edge_info[ei_idx]['dt_sym'].subs(substitutions)
-            eq_expr = SR(eq_expr)
-            # Find an integration variable to solve for
-            int_var_to_eliminate = None
-            try:
-                eq_vars = set(eq_expr.variables())
-            except AttributeError:
-                eq_vars = set()
-            for iv in remaining_int_vars:
-                if iv in eq_vars:
-                    int_var_to_eliminate = iv
-                    break
-            if int_var_to_eliminate is not None:
-                try:
-                    sol = sage_solve(
-                        eq_expr == 0, int_var_to_eliminate,
-                        solution_dict=True,
-                    )
-                except Exception:
-                    sol = []
-                if not sol:
-                    subset_infeasible = True
-                    break
-                new_rhs = sol[0][int_var_to_eliminate]
-                substitutions[int_var_to_eliminate] = new_rhs
-                remaining_int_vars.remove(int_var_to_eliminate)
-                # Resolve transitively: apply the new substitution to
-                # the RHS of every existing entry so a chain like
-                # ``{a: f(b), b: g(c)}`` collapses to ``{a: f(g(c)), b: g(c)}``.
-                # Sage's ``.subs(dict)`` is a parallel one-pass operation
-                # and does NOT chain substitutions — without this fixup
-                # ``cp.subs(substitutions)`` would leave ``b`` exposed in
-                # the result, breaking the integrator's free-symbol
-                # audit downstream.  Pre-existing concern that becomes
-                # load-bearing with multi-τ ConvVertexType diagrams.
-                # Cheap early-skip: only chain-resolve if some EXISTING
-                # RHS actually mentions the variable we just eliminated.
-                # For typical non-ConvVertex diagrams the chain almost
-                # never forms (the per-edge ``eq_expr.subs(substitutions)``
-                # above already applies prior subs before solving), so
-                # the inner SR.subs() loop is pure overhead.  Walk
-                # variables once per existing entry — much cheaper than
-                # blindly calling SR.subs.
-                affected_keys = []
-                for _k, _rhs in substitutions.items():
-                    if _k == int_var_to_eliminate:
-                        continue
-                    try:
-                        _rhs_vars = SR(_rhs).variables()
-                    except (AttributeError, TypeError):
-                        continue
-                    if int_var_to_eliminate in _rhs_vars:
-                        affected_keys.append(_k)
-                if affected_keys:
-                    _chain_subs = {int_var_to_eliminate: new_rhs}
-                    for _k in affected_keys:
-                        substitutions[_k] = SR(
-                            substitutions[_k]
-                        ).subs(_chain_subs)
-            else:
-                # No integration variable to eliminate → this is a
-                # constraint on external times alone. If it's
-                # identically zero, the δ is satisfied trivially; if
-                # not, it's a shot-noise δ(τ)-style contribution.
-                ext_time_equalities.append(eq_expr)
-
-        if subset_infeasible:
+        # M10 (``USE_SETUP_DELTA_SOLVE``): exact rational elimination, the
+        # same substitutions as ``sage_solve`` (``_delta_solve_exact``);
+        # ``VALIDATE_DELTA`` also runs the legacy solve and compares.
+        if _delta_exact:
+            _solved = _delta_solve_exact(edge_info, delta_edges,
+                                         integration_vars)
+            if _validate_delta_on():
+                _validate_delta_subset(
+                    _solved,
+                    _delta_solve_legacy(edge_info, delta_edges,
+                                        integration_vars),
+                    edge_info, smooth_edges, free_ext_syms,
+                    f'diagram serial {_diag_serial}, subset '
+                    f'{bin(branch_bits)}, δ edges {delta_edges}')
+        else:
+            _solved = _delta_solve_legacy(edge_info, delta_edges,
+                                          integration_vars)
+        if _solved is None:
             continue
+        substitutions, remaining_int_vars, ext_time_equalities = _solved
 
         # Shot-noise check: any nontrivial residual equality among
         # external times means this subset contributes a δ(τ) spike
@@ -5768,11 +6120,17 @@ def integrate_diagram(
         has_shotnoise = False
         nontrivial_equalities = []
         for eq in ext_time_equalities:
-            try:
-                if bool(eq.is_zero()):
-                    continue
-            except Exception:
-                pass
+            # M10: an exactly rational linear form is zero iff all its
+            # coefficients are; anything else keeps the SR test.
+            _eq_zero = _residual_is_zero_exact(eq) if _delta_exact else None
+            if _eq_zero is None:
+                try:
+                    if bool(eq.is_zero()):
+                        continue
+                except Exception:
+                    pass
+            elif _eq_zero:
+                continue
             # Nontrivial equation → shot-noise
             has_shotnoise = True
             nontrivial_equalities.append(SR(eq))

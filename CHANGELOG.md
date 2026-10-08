@@ -839,6 +839,68 @@ and L5 each save about a second or less there, and more on models where few diag
 have a zero prefactor. Models with no zero-prefactor diagram (the spike models) gain
 only a few percent.
 
+### Performance: δ-edge elimination without Maxima (numbers unchanged)
+
+For each δ-subset, `integrate_diagram` sets `dt_e = 0` for every δ edge and solves it
+for an integration variable. It did this with Sage `solve` (Maxima), and it tested
+variables and residual equalities with SR `==` and `is_zero()`, whose `bool` can run
+randomized zero proofs (`random_element`). On every model in the repo these equations
+are linear forms in the vertex times with exactly rational coefficients. The new
+lever solves them by exact linear algebra in QQ: for `a·x + rest = 0` it returns
+`x = -rest/a`, rebuilt as an SR sum of `Rational · symbol` terms. Pynac stores that
+sum in the same canonical form as the `solve` result, so the substitution is the same
+polynomial and the same SR tree. Every later `.subs`, `.coefficient` and `float` then
+sees the same expression.
+
+- **The lever** (`final_integral.USE_SETUP_DELTA_SOLVE`, `DAEDALUS_SETUP_DELTA_SOLVE`,
+  default on; counters `setup_delta_solve_fast` / `setup_delta_solve_fallback`).
+  Variables are matched by name and never with SR `==`. Anything that is not an
+  exactly rational linear form in the eliminated variable goes to `sage_solve` exactly
+  as before. That covers a float, complex or symbolic coefficient, a nonlinear term, a
+  constant such as π, a zero coefficient, and an exception. The chain resolution of
+  earlier substitutions is unchanged. The residual external-time zero test is now
+  exact on the coefficients, and keeps the SR test for anything else. No floating
+  point enters the elimination, so a coefficient or pair shift that is exactly 0 comes
+  out as exactly `0.0`, never a 1e-17 residue. The `_const_row_verdict` / Θ(0)
+  decisions depend on that. It follows the M5 lever conventions: module boolean read
+  at call time, environment variable read at import, and
+  `DAEDALUS_PHASE_J_LEGACY_SETUP=1` forces it off.
+- **Validation mode** (`final_integral.VALIDATE_DELTA`, or
+  `DAEDALUS_PHASE_J_VALIDATE_DELTA=1` at call time; default off; counter
+  `setup_delta_validated`). It also solves every subset the legacy way and requires
+  exact agreement: the same eliminated and remaining variables, and every substitution
+  equal as a polynomial and as an SR tree. It also requires the same residual
+  equalities and verdicts, and `==`-equal constraint rows (`a_int`, `a_ext`, `c0`)
+  for every smooth edge. Any difference raises `DeltaSolveValidationError`, naming the
+  diagram serial, the subset and its δ edges.
+- Not covered: the grouped path (`integrate_grouped_diagram`) has its own δ-solve
+  (`grouped_integral._grouped_delta_solve`), which still uses `sage_solve`.
+
+Checked on a 4-vCPU Linux VM with the validation mode and with the lever off vs on in
+one process (warm disk cache). Every total, per-ℓ value and per-diagram value was
+`np.array_equal`:
+
+| run | eliminations validated (fast / fallback) | mismatches |
+|---|---|---|
+| `single_population_spike_reset_test`, k = 2, ℓ = 1 | 622 (622 / 0) | 0 |
+| `single_population_spike_reset_test`, k = 1, ℓ = 2 | 942 (942 / 0) | 0 |
+| `single_population_quad_exp_test`, k = 2, ℓ = 1 | 188 (188 / 0) | 0 |
+| `linear_hawkes`, `multipopulation_test`, `single_population_linear_delta_spikes_test`, `single_population_spike_reset_test` k = 1 (k = 2 where not stated, ℓ = 1) | 2 each (2 / 0) | 0 |
+
+`ou_quartic` (k = 2, ℓ = 2), `ou_quartic_colored` and `ou_quartic_two_dim_color_corr`
+reach no δ-solve and are unchanged. Whole `compute_cumulants` run, lever off → on
+(other jobs running on the VM):
+
+| run | wall off → on | `sage_solve` share of `integrate_diagram` (off) | `random_element` calls off → on |
+|---|---|---|---|
+| `single_population_spike_reset_test`, k = 2, ℓ = 1 | 14.0 → 3.4 s | 82 % | 3392 → 160 |
+| `single_population_quad_exp_test`, k = 2, ℓ = 1 | 457 → 444 s (heavy contention; `integrate_diagram` is 24 s of it) | 12 % | 1488 → 480 |
+| `multipopulation_test`, k = 2, ℓ = 1 | 3.7 → 4.2 s (noise) | 33 % | 1600 → 1600 |
+
+Under `cProfile`, the cumulative time of `integrate_diagram` on the first row drops
+from 9.0 s to 1.4 s. On the other two rows the δ-solve was already a small part of
+the run. The remaining `random_element` calls come from outside the δ-solve.
+
 ### Fixed: `SPATIAL_INTEGRATOR=bessel` warns at τ ≠ 0
 
 The `bessel` integrator is exact only when the external times are equal
