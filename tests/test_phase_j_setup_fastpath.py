@@ -37,7 +37,10 @@ _TAUS = np.linspace(0.0, 3.0, 7)
 _P2 = [(0.0, 0.7), (0.0, 1.9), (0.0, -1.1)]
 _P4 = [(0.0, 0.3, 0.6, 0.9), (0.0, 0.5, 0.4, 0.7)]
 _ALL_FLAGS = ('USE_SETUP_ZERO_EXIT', 'USE_SETUP_PROP_TD',
-              'USE_SETUP_LAZY_SR')   # grows with every lever
+              'USE_SETUP_LAZY_SR')
+import engine.diagrams.symmetry as SYM
+_LH_PARAMS = {'E': [0.78, 0.81], 'w': [[0.30, 0.25], [0.30, 0.35]],
+              'tau': 10.0, 'a': 1.0, 'tau_g': 2.5}
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -84,8 +87,11 @@ def _flags(monkeypatch):
     monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP', raising=False)
     for name in _ALL_FLAGS:
         monkeypatch.setattr(FI, name, True)
+    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
+    SYM._aut_memo_clear()
     FI._reset_runtime_counters()
     yield
+    SYM._aut_memo_clear()
     FI._reset_runtime_counters()
 
 
@@ -707,3 +713,206 @@ def test_l3_threads_resolve_the_same_values(monkeypatch, captured_ou):
         outs = list(ex.map(work, range(8)))
     for o in outs:
         assert o[:-1] == ref and o == outs[0]
+
+
+# ── L5: shared automorphism work ───────────────────────────────────────────
+@pytest.fixture(scope='module')
+def captured_lh():
+    """Typed diagrams of ``linear_hawkes`` k=2 ell=1 with DISTINCT external
+    fields (n1, n2): one Wick mapping per diagram."""
+    calls = []
+    orig = PL.integrate_diagram
+
+    def spy(**kw):
+        calls.append({k: v for k, v in kw.items() if k != 'prop_td'})
+        return orig(**kw)
+
+    PL.integrate_diagram = spy
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            AC.compute_cumulants(
+                _model('linear_hawkes'), k=2, max_ell=1,
+                tau_grid=np.array([0.0, 2.5, 10.0]), use_cache=True,
+                parallel=False, verbose=False, parameters=_LH_PARAMS,
+                external_fields=[('n', 1), ('n', 2)])
+    finally:
+        PL.integrate_diagram = orig
+    assert calls
+    return calls
+
+
+def test_l5_memo_value_equals_the_uncached_order(captured_ou, captured_lh):
+    for c in captured_ou[:25] + captured_lh:
+        td = c['typed_diagram']
+        for fe in (True, False):
+            want = SYM._automorphism_order_uncached(td, fe)
+            assert SYM._automorphism_order(td, fe) == want       # miss
+            assert SYM._automorphism_order(td, fe) == want       # hit
+            assert type(SYM._automorphism_order(td, fe)) is int
+
+
+def test_l5_counters_hits_and_misses(captured_ou):
+    td = captured_ou[0]['typed_diagram']
+    FI._reset_runtime_counters()
+    SYM._automorphism_order(td, True)
+    SYM._automorphism_order(td, True)
+    SYM._automorphism_order(td, False)
+    SYM._automorphism_order(td, True)
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_misses'] == 2
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_hits'] == 2
+    # combinatorial_factor + external_wick_compensation share the fixed order
+    SYM._aut_memo_clear()
+    FI._reset_runtime_counters()
+    SYM.combinatorial_factor(td)
+    SYM.external_wick_compensation(td)
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_misses'] == 2
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_hits'] == 1
+
+
+def test_l5_off_does_not_touch_the_table(monkeypatch, captured_ou):
+    td = captured_ou[0]['typed_diagram']
+    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
+    SYM._automorphism_order(td, True)
+    assert not SYM._aut_memo
+    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
+    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
+    SYM._automorphism_order(td, True)
+    assert not SYM._aut_memo
+    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
+    SYM._automorphism_order(td, True)
+    assert len(SYM._aut_memo) == 1
+    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', 'on')
+    with pytest.raises(ValueError):
+        SYM._automorphism_order(td, True)
+
+
+def test_l5_env_flag():
+    f = SYM._initial_aut_memo_flag
+    assert f({}) is True and f({'DAEDALUS_SETUP_AUT_MEMO': '0'}) is False
+    assert f({'DAEDALUS_SETUP_AUT_MEMO': 'Off'}) is False
+    with pytest.raises(ValueError):
+        f({'DAEDALUS_SETUP_AUT_MEMO': '2'})
+
+
+def test_l5_the_table_is_bounded_and_holds_its_diagrams(monkeypatch,
+                                                        captured_ou):
+    monkeypatch.setattr(SYM, '_AUT_MEMO_MAX', 5)
+    tds = [c['typed_diagram'] for c in captured_ou[:12]]
+    FI._reset_runtime_counters()
+    for td in tds:
+        SYM._automorphism_order(td, True)
+    assert len(SYM._aut_memo) <= 5
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_evictions'] >= 1
+    # every entry keeps its diagram alive, so its id cannot be reused
+    assert all(v[0] is not None for v in SYM._aut_memo.values())
+    for (i, _fe), (td, _fp, _o) in SYM._aut_memo.items():
+        assert i == id(td)
+
+
+def test_l5_a_changed_diagram_is_recomputed(captured_ou):
+    import copy as _copy
+    td = captured_ou[0]['typed_diagram']
+    base = SYM._automorphism_order(td, False)
+    td2 = _copy.copy(td)                              # distinct object, same data
+    assert SYM._automorphism_order(td2, False) == base
+    # swap a container of the memoised diagram: the fingerprint no longer
+    # matches, the memo entry is not served
+    td3 = _copy.copy(td)
+    SYM._automorphism_order(td3, True)
+    td3.external_legs = dict(td3.external_legs)
+    FI._reset_runtime_counters()
+    SYM._automorphism_order(td3, True)
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_misses'] == 1
+    assert FI._RUNTIME_COUNTERS['setup_aut_memo_hits'] == 0
+
+
+def test_l5_single_mapping_compensation_is_exactly_one(captured_lh):
+    """The shortcut's premise: with one Wick mapping the compensation index
+    |Aut(leaves free)| / |Aut(leaves fixed)| is 1 -- checked against the
+    real computation on every diagram of a model with distinct externals."""
+    n = 0
+    for c in captured_lh:
+        td = c['typed_diagram']
+        free = SYM._automorphism_order_uncached(td, False)
+        fixed = SYM._automorphism_order_uncached(td, True)
+        assert free == fixed
+        n += 1
+    assert n >= 2
+
+
+def test_l5_the_shortcut_fires_only_for_a_single_mapping(monkeypatch,
+                                                         captured_ou,
+                                                         captured_lh):
+    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
+    FI._reset_runtime_counters()
+    for c in captured_lh:
+        FI.integrate_diagram(**c)
+    assert FI._RUNTIME_COUNTERS['setup_aut_wick_skipped'] == len(captured_lh)
+    # identical external fields: two mappings, the compensation is computed
+    FI._reset_runtime_counters()
+    for c in _nonzero_diagrams(captured_ou)[:8]:
+        FI.integrate_diagram(**c)
+    assert FI._RUNTIME_COUNTERS['setup_aut_wick_skipped'] == 0
+    # flag off / umbrella: never skipped
+    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
+    for c in captured_lh:
+        FI.integrate_diagram(**c)
+    assert FI._RUNTIME_COUNTERS['setup_aut_wick_skipped'] == 0
+
+
+def test_l5_on_vs_off_array_equal(monkeypatch):
+    cases = [('ou_quartic', 2, 2, {}), ('ou_quartic', 4, 1, {}),
+             ('linear_hawkes', 2, 1, {'parameters': _LH_PARAMS})]
+    for key, k, ell, extra in cases:
+        field = 'n' if key == 'linear_hawkes' else 'dx'
+        ext = ([('n', 1), ('n', 2)] if key == 'linear_hawkes'
+               else [(field, 1)] * k)
+
+        def run():
+            FI._reset_runtime_counters()
+            with contextlib.redirect_stdout(io.StringIO()):
+                res = AC.compute_cumulants(
+                    _model(key), k=k, max_ell=ell,
+                    tau_grid=np.array([0.0, 2.5, 10.0]) if key == 'linear_hawkes' else _TAUS,
+                    use_cache=True, parallel=False, verbose=False,
+                    external_fields=ext, **extra)
+            pts = _P4 if k == 4 else ([(0.0, 2.5), (0.0, 7.0)] if key == 'linear_hawkes' else _P2)
+            arrs = {}
+            for e, v in res['phase_j_by_ell'].items():
+                if not v:
+                    continue
+                arrs[f'pd{e}'] = np.array(
+                    [[g['contribution'](*p) for p in pts] for g in v['groups']], complex)
+            if k == 2:
+                arrs['C'] = np.asarray(res['C_tau'])
+            return arrs, dict(FI._RUNTIME_COUNTERS), res
+
+        monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
+        SYM._aut_memo_clear()
+        run()
+        off, c_off, _ = run()
+        assert not SYM._aut_memo
+        monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
+        SYM._aut_memo_clear()
+        on, c_on, _ = run()
+        assert _same(off, on), key
+        assert c_off['setup_aut_memo_misses'] == 0
+        assert c_on['setup_aut_memo_misses'] > 0
+        if key == 'linear_hawkes':
+            assert c_on['setup_aut_wick_skipped'] > 0
+
+
+def test_l5_threads_agree_with_serial(captured_ou):
+    tds = [c['typed_diagram'] for c in captured_ou[:30]]
+    serial = [(SYM._automorphism_order_uncached(t, True),
+               SYM._automorphism_order_uncached(t, False)) for t in tds]
+
+    def work(i):
+        order = tds[i * 5:] + tds[:i * 5]
+        return {id(t): (SYM._automorphism_order(t, True),
+                        SYM._automorphism_order(t, False)) for t in order}
+
+    with ThreadPoolExecutor(4) as ex:
+        results = list(ex.map(work, range(4)))
+    for r in results:
+        assert all(r[id(t)] == v for t, v in zip(tds, serial))

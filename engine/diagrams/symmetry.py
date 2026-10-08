@@ -38,6 +38,9 @@ expansion of the action.
 Build Phase G.
 """
 
+import os as _os
+import sys as _sys
+import threading as _threading
 from collections import Counter
 from functools import reduce
 from math import factorial
@@ -325,6 +328,78 @@ def vertex_role_signature(vertex, typed_diagram):
     )
 
 
+# ── M5 (P6) L5: memo for ``_automorphism_order`` ───────────────────────────
+# ``combinatorial_factor`` (classification) and ``external_wick_compensation``
+# (Phase J) ask for the same ``(typed diagram, fix_external)`` order, and the
+# group is built from scratch each time.  The memo returns the value the first
+# call computed, so nothing changes: a hit is bit-identical by construction.
+#
+# ``USE_AUT_MEMO`` (bool, read at call time); environment
+# ``DAEDALUS_SETUP_AUT_MEMO`` = 1 | 0 (default 1); the umbrella
+# ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` forces it off.  Key: the diagram's
+# ``id`` and ``fix_external``; the VALUE holds the diagram object itself, so
+# its ``id`` cannot be reused while the entry lives (a hit also checks
+# ``entry diagram is diagram`` and a fingerprint of the diagram's containers,
+# which catches a diagram whose containers were swapped or resized after the
+# entry was made).  Bounded: at ``_AUT_MEMO_MAX`` entries the table is cleared
+# in one locked step.  Thread safe as the M4 memo: lookup and insert hold
+# ``_AUT_LOCK``, the order is computed outside it (two racing threads compute
+# the same integer).
+_AUT_MEMO_MAX = 8192
+_aut_memo = {}
+_AUT_LOCK = _threading.Lock()
+_AUT_MISS = object()
+
+
+def _initial_aut_memo_flag(environ=None):
+    """The import-time value of ``USE_AUT_MEMO`` from ``environ`` (default
+    ``os.environ``).  An unknown value raises."""
+    env = _os.environ if environ is None else environ
+    v = env.get('DAEDALUS_SETUP_AUT_MEMO', '').strip().lower()
+    if v in ('', '1', 'true', 'yes', 'on'):
+        return True
+    if v in ('0', 'false', 'no', 'off'):
+        return False
+    raise ValueError(f'DAEDALUS_SETUP_AUT_MEMO={v!r}: expected 1 or 0')
+
+
+USE_AUT_MEMO = _initial_aut_memo_flag()
+
+
+def _aut_memo_on():
+    """``USE_AUT_MEMO`` (call time, validated) unless the umbrella
+    ``DAEDALUS_PHASE_J_LEGACY_SETUP`` is set."""
+    if (_os.environ.get('DAEDALUS_PHASE_J_LEGACY_SETUP', '').strip().lower()
+            not in ('', '0', 'false', 'no', 'off')):
+        return False
+    flag = USE_AUT_MEMO
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'symmetry.USE_AUT_MEMO={flag!r}: '
+                     f'expected True or False')
+
+
+def _aut_count(name):
+    """Bump a ``final_integral._RUNTIME_COUNTERS`` counter (when that module
+    is loaded; observational only)."""
+    fi = _sys.modules.get('engine.integration.time_domain.final_integral')
+    if fi is not None:
+        c = fi._RUNTIME_COUNTERS
+        c[name] = c.get(name, 0) + 1
+
+
+def _aut_fingerprint(td):
+    return (id(td.prediagram), id(td.vertex_assignments), id(td.edge_types),
+            id(td.external_legs), id(td.propagator_indices),
+            len(td.vertex_assignments), len(td.edge_types),
+            len(td.external_legs))
+
+
+def _aut_memo_clear():
+    with _AUT_LOCK:
+        _aut_memo.clear()
+
+
 def _automorphism_order(typed_diagram, fix_external=True):
     """Order of the colour-preserving automorphism group of the
     coloured incidence digraph (see ``_colored_incidence_digraph``).
@@ -332,7 +407,33 @@ def _automorphism_order(typed_diagram, fix_external=True):
     Treats external leaves as fixed when ``fix_external=True`` (the
     convention used by Phase J, where the external Wick permutations
     are handled separately by the per-prediagram enumeration loop).
+
+    Memoised per ``(diagram, fix_external)`` (``USE_AUT_MEMO``, see above).
     """
+    if not _aut_memo_on():
+        return _automorphism_order_uncached(typed_diagram, fix_external)
+    try:
+        key = (id(typed_diagram), bool(fix_external))
+        fp = _aut_fingerprint(typed_diagram)
+    except (AttributeError, TypeError):
+        return _automorphism_order_uncached(typed_diagram, fix_external)
+    with _AUT_LOCK:
+        hit = _aut_memo.get(key, _AUT_MISS)
+        if (hit is not _AUT_MISS and hit[0] is typed_diagram
+                and hit[1] == fp):
+            _aut_count('setup_aut_memo_hits')
+            return hit[2]
+        _aut_count('setup_aut_memo_misses')
+    order = _automorphism_order_uncached(typed_diagram, fix_external)
+    with _AUT_LOCK:
+        if len(_aut_memo) >= _AUT_MEMO_MAX:
+            _aut_memo.clear()
+            _aut_count('setup_aut_memo_evictions')
+        _aut_memo[key] = (typed_diagram, fp, order)
+    return order
+
+
+def _automorphism_order_uncached(typed_diagram, fix_external=True):
     D, partition, _, _ = _colored_incidence_digraph(
         typed_diagram, fix_external=fix_external
     )

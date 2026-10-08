@@ -1007,6 +1007,13 @@ _RUNTIME_COUNTERS = {
     'setup_lazy_sr_built': 0,
     'setup_lazy_display_deferred': 0,
     'setup_lazy_display_built': 0,
+    # L5 (``engine.diagrams.symmetry.USE_AUT_MEMO``): automorphism-order memo
+    # hits / misses / table clears, and the ``external_wick_compensation``
+    # calls skipped because the diagram has a single Wick mapping.
+    'setup_aut_memo_hits': 0,
+    'setup_aut_memo_misses': 0,
+    'setup_aut_memo_evictions': 0,
+    'setup_aut_wick_skipped': 0,
     # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
@@ -5031,8 +5038,18 @@ def integrate_diagram(
             # even here, silently shrinking the single-mapping sum.)
             _compensation = 1
         else:
-            from engine.diagrams.symmetry import external_wick_compensation
-            _compensation = external_wick_compensation(typed_diagram)
+            from engine.diagrams import symmetry as _symmetry
+            if len(_all_mappings) == 1 and _symmetry._aut_memo_on():
+                # M5 L5: one mapping means every external field occurs once,
+                # so the leaves are pairwise distinguished by their field in
+                # ``_colored_incidence_digraph`` whether or not they are
+                # fixed: Aut(leaves free) = Aut(leaves fixed) and the
+                # compensation |Aut_free| / |Aut_fixed| is exactly 1.
+                _compensation = 1
+                _RUNTIME_COUNTERS['setup_aut_wick_skipped'] += 1
+            else:
+                _compensation = _symmetry.external_wick_compensation(
+                    typed_diagram)
     else:
         # SAFETY WARNING: falling back to identity leaf→position
         # mapping.  For diagrams whose leaves have MIXED field types
