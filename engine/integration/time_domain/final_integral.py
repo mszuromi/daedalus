@@ -965,6 +965,10 @@ _RUNTIME_COUNTERS = {
     # no ω; for a pole-free propagator: the ``G_ft`` test alone).  Counted
     # once per subset per build, not per call.
     'forced_delta_pruned': 0,
+    # M5 (P6): the per-diagram setup levers (see the section before
+    # ``integrate_diagram``).  ``setup_zero_exit``: diagrams whose
+    # numerically-zero prefactor returned before any setup (L1).
+    'setup_zero_exit': 0,
     # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
@@ -4422,6 +4426,137 @@ TAU_KERNEL_CAP = 50.0
 DEBUG_HEAVISIDE_GUARD = False
 
 
+# ── M5 (P6): per-diagram setup levers (pure speed-ups, no number moves) ──
+# Four independent levers cut the setup that ``integrate_diagram`` pays per
+# diagram.  Each has a module flag (bool, read at CALL time, so
+# ``monkeypatch.setattr`` works) and an environment variable read at import
+# (1 | 0, also true/false, yes/no, on/off; default ON; anything else raises):
+#
+#   USE_SETUP_ZERO_EXIT   DAEDALUS_SETUP_ZERO_EXIT   L1: a diagram whose
+#       prefactor is numerically exactly 0 returns a zero contribution before
+#       any setup.
+#   USE_SETUP_PROP_TD     DAEDALUS_SETUP_PROP_TD     L2: model-level data
+#       built once per ``compute_correction_td`` call.
+#   USE_SETUP_LAZY_SR     DAEDALUS_SETUP_LAZY_SR     L3: the SR objects only
+#       the shot-noise / SR-integrand branches need are built on demand.
+#   USE_AUT_MEMO (engine.diagrams.symmetry)  DAEDALUS_SETUP_AUT_MEMO   L5.
+#
+# ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` (read at call time) forces every one of
+# them off.  It is NOT ``DAEDALUS_PHASE_J_LEGACY``: that one reproduces older
+# NUMBERS, this one only restores the old setup path, which gives the same
+# numbers.  Neither umbrella touches the other.  A lever on is ``np.array_equal``
+# to the lever off on every result.
+_SETUP_TRUE = ('', '1', 'true', 'yes', 'on')
+_SETUP_FALSE = ('0', 'false', 'no', 'off')
+
+
+def _initial_setup_flag(env_name, environ=None):
+    """The import-time value of a setup-lever flag from ``environ`` (default
+    ``os.environ``).  An unknown value raises."""
+    env = _os.environ if environ is None else environ
+    v = env.get(env_name, '').strip().lower()
+    if v in _SETUP_TRUE:
+        return True
+    if v in _SETUP_FALSE:
+        return False
+    raise ValueError(f'{env_name}={v!r}: expected 1 or 0')
+
+
+USE_SETUP_ZERO_EXIT = _initial_setup_flag('DAEDALUS_SETUP_ZERO_EXIT')
+
+
+def _setup_lever_on(flag_name):
+    """The module flag ``flag_name`` (call time, validated), unless the
+    umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP`` is set."""
+    if _env_truthy('DAEDALUS_PHASE_J_LEGACY_SETUP'):
+        return False
+    flag = globals()[flag_name]
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.{flag_name}={flag!r}: '
+                     f'expected True or False')
+
+
+class _LazyDict(dict):
+    """A dict some of whose keys hold a DEFERRED value: the key is present
+    (``in``, ``len``, ``keys()`` and the insertion order are those of the
+    eager dict) and its value is computed on the first read, then stored.
+    Every read path resolves (``[]``, ``get``, ``items``, ``values``,
+    ``copy``, ``pop``, iteration through ``dict(...)``); a pickle or deep
+    copy resolves everything first and is a plain dict.  Thread safe in the
+    way the memos are: two readers racing on one key both compute it and
+    store equal values."""
+
+    __slots__ = ('_thunks',)
+
+    def __init__(self, items, thunks):
+        dict.__init__(self, items)
+        self._thunks = dict(thunks)
+
+    def _force(self, key):
+        th = self._thunks.get(key)
+        if th is not None:
+            dict.__setitem__(self, key, th())
+            self._thunks.pop(key, None)
+
+    def _force_all(self):
+        for k in list(self._thunks):
+            self._force(k)
+
+    def __getitem__(self, key):
+        self._force(key)
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        self._force(key)
+        return dict.get(self, key, default)
+
+    def pop(self, key, *default):
+        self._force(key)
+        return dict.pop(self, key, *default)
+
+    def setdefault(self, key, default=None):
+        self._force(key)
+        return dict.setdefault(self, key, default)
+
+    def __setitem__(self, key, value):
+        self._thunks.pop(key, None)
+        dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key):
+        self._thunks.pop(key, None)
+        dict.__delitem__(self, key)
+
+    def __iter__(self):
+        return dict.__iter__(self)      # a Python-level iter: no C fast copy
+
+    def items(self):
+        self._force_all()
+        return dict.items(self)
+
+    def values(self):
+        self._force_all()
+        return dict.values(self)
+
+    def copy(self):
+        self._force_all()
+        return dict(dict.items(self))
+
+    def __repr__(self):
+        self._force_all()
+        return dict.__repr__(self)
+
+    def __eq__(self, other):
+        self._force_all()
+        return dict.__eq__(self, other)
+
+    __hash__ = None
+
+    def __reduce__(self):
+        self._force_all()
+        return (dict, (dict(dict.items(self)),))
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Tree-level vertex-time integration
 # ───────────────────────────────────────────────────────────────────────
@@ -4436,6 +4571,91 @@ def _loop_number_from_graph(typed_diagram):
     return D.num_edges() - D.num_verts() + 1
 
 
+def _zero_exit_applies(typed_diagram, propagator_data, cp, external_fields,
+                       leaves):
+    """True iff ``integrate_diagram`` may return the zero result at once
+    (M5 L1).  ``cp`` is the numeric prefactor (``num_params`` substituted).
+    All of these must hold, else the full path runs unchanged:
+
+    * no noise-source (``cumulant_specs``) and no ``ConvVertexType`` vertex:
+      their kernels are substituted into the prefactor, so the plain
+      prefactor decides nothing for them;
+    * ``external_fields`` is given and matches the leaves (the full path
+      warns about an unmapped mixed-field diagram; that stays);
+    * the propagator has at least one pole (a pole-free propagator raises
+      ``PoleFreePropagatorError`` / warns in the full path; that stays);
+    * ``complex(CDF(cp))`` evaluates and is exactly 0 -- the very test the
+      subset loop applies to ``cp`` times the delta coefficients (an
+      exception or leftover symbols: no early exit).
+    """
+    if external_fields is None or len(external_fields) != len(leaves):
+        return False
+    for vtype in (getattr(typed_diagram, 'vertex_assignments', None)
+                  or {}).values():
+        if isinstance(vtype, ConvVertexType):
+            return False
+        if isinstance(vtype, NoiseSourceType) and vtype.cumulant_specs:
+            return False
+    try:
+        if not len(propagator_data.get('pole_vals') or ()):
+            return False
+    except (AttributeError, TypeError):
+        return False
+    try:
+        zero = complex(CDF(SR(cp))) == 0
+    except Exception:
+        return False
+    return bool(zero)
+
+
+def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
+    """The result ``integrate_diagram`` returns for a diagram whose every
+    subset was skipped, built without the setup (M5 L1).  The keys the
+    pipeline reads are eager; ``stripped_integrand``, ``constraints`` and
+    ``edge_info`` (display data that need the propagator) are filled on first
+    read by re-running the full path (``rerun``)."""
+    _RUNTIME_COUNTERS['setup_zero_exit'] += 1
+    leaf_set = set(leaves)
+    integration_vars = [
+        SR.var(f's_v{v}_td_', latex_name=rf's_{{v_{{{v}}}}}')
+        for v in D.vertices() if v not in leaf_set]
+    n_ext = len(ext_time_vars)
+
+    def contribution(*ext_time_values):
+        if len(ext_time_values) != n_ext:
+            raise ValueError(
+                f"contribution() expects {n_ext} positional "
+                f"arguments (one per ext_time_var); got "
+                f"{len(ext_time_values)}."
+            )
+        return 0.0 + 0.0j
+
+    full = []
+
+    def _full():
+        if not full:
+            full.append(rerun(diag_serial))
+        return full[0]
+
+    return _LazyDict(
+        [('status', 'ok'),
+         ('contribution', contribution),
+         ('delta_contributions', []),
+         ('integration_vars', integration_vars),
+         ('stripped_integrand', None),
+         ('constraints', None),
+         ('edge_info', None),
+         ('n_subsets_evaluated', 0),
+         ('n_delta_contributions', 0),
+         ('n_shotnoise_skipped', 0),
+         ('subset_diagnostics', []),
+         ('cumulant_prefactor', None),
+         ('has_cumulant_kernel', False)],
+        {'stripped_integrand': lambda: _full()['stripped_integrand'],
+         'constraints': lambda: _full()['constraints'],
+         'edge_info': lambda: _full()['edge_info']})
+
+
 def integrate_diagram(
     typed_diagram,
     propagator_data,
@@ -4446,6 +4666,7 @@ def integrate_diagram(
     external_fields=None,
     representative_ir=None,  # deprecated, kept for backward compat
     edge_mode_sums_builder=None,
+    _setup_full=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -4525,7 +4746,8 @@ def integrate_diagram(
     """
     loop_number = _loop_number_from_graph(typed_diagram)
     # Identity of this build for the ``_SUBSET_HOOK`` payload (M0.1).
-    _diag_serial = _next_diagram_serial()
+    _diag_serial = (_next_diagram_serial() if _setup_full is None
+                    else _setup_full)
     # The model, for the hardened fallback's one-time warnings (M2b).
     _model_id = _model_identity(propagator_data)
 
@@ -4538,6 +4760,33 @@ def integrate_diagram(
             f"ext_time_vars has length {len(ext_time_vars)} but "
             f"the diagram has {len(leaves)} leaves."
         )
+
+    # ── 0. Zero-prefactor early exit (M5 L1, ``USE_SETUP_ZERO_EXIT``) ──
+    # A diagram whose prefactor is numerically exactly 0 contributes 0 at
+    # every point: every subset is skipped at the "numerical zero-skip"
+    # below.  Return that result before ``build_G_t_matrix`` and the
+    # per-edge setup (most of this function's time on a model with many
+    # structurally-zero diagrams).  ``_setup_full`` is set by the lazy keys
+    # of the early result: they re-run the full path to build themselves.
+    _cp_pre = None
+    if (_setup_full is None and _SUBSET_HOOK is None
+            and _setup_lever_on('USE_SETUP_ZERO_EXIT')):
+        _cp_pre = SR(combined_prefactor) if combined_prefactor is not None \
+            else SR(1)
+        if num_params:
+            _cp_pre = _cp_pre.subs(num_params)
+        if _zero_exit_applies(typed_diagram, propagator_data, _cp_pre,
+                              external_fields, leaves):
+            return _zero_exit_result(
+                D, leaves, ext_time_vars, _diag_serial,
+                lambda serial: integrate_diagram(
+                    typed_diagram, propagator_data, combined_prefactor,
+                    ext_time_vars, num_params=num_params,
+                    origin_leaf_idx=origin_leaf_idx,
+                    external_fields=external_fields,
+                    representative_ir=representative_ir,
+                    edge_mode_sums_builder=edge_mode_sums_builder,
+                    _setup_full=serial))
 
     # ── 1. Numerical G(t) matrix (smooth + delta parts) ──────────
     t_sym = SR.var('_t_td_')
@@ -4893,9 +5142,13 @@ def integrate_diagram(
         edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data)
 
     # Combined prefactor (numerical)
-    cp = SR(combined_prefactor) if combined_prefactor is not None else SR(1)
-    if num_params:
-        cp = cp.subs(num_params)
+    if _cp_pre is not None:
+        cp = _cp_pre            # the very expression the early-exit test built
+    else:
+        cp = SR(combined_prefactor) if combined_prefactor is not None \
+            else SR(1)
+        if num_params:
+            cp = cp.subs(num_params)
 
     # ── 3b. Non-local cumulant kernel substitution ────────────────
     # For each NoiseSourceType vertex, replace each placeholder
