@@ -916,3 +916,27 @@ def test_l5_threads_agree_with_serial(captured_ou):
         results = list(ex.map(work, range(4)))
     for r in results:
         assert all(r[id(t)] == v for t, v in zip(tds, serial))
+
+
+# ── findings of the independent verification ───────────────────────────────
+def test_l1_declines_for_incomplete_residues_and_symbolic_zero(captured_ou):
+    c = _zero_diagram(captured_ou)
+    td, pd, ef = c['typed_diagram'], c['propagator_data'], c['external_fields']
+    leaves = list(td.prediagram[2])
+    zero = FI.SR(0)
+    assert FI._zero_exit_applies(td, pd, zero, ef, leaves)
+    assert not FI._zero_exit_applies(td, dict(pd, C_mats=None), zero, ef, leaves)
+    assert not FI._zero_exit_applies(td, dict(pd, C_mats=[]), zero, ef, leaves)
+    # a symbolic expression that evaluates to 0.0 may still be a nonzero
+    # number once multiplied by a delta coefficient in the full path
+    sym0 = FI.SR(7).sqrt() * FI.SR(5).sqrt() - FI.SR(35).sqrt()
+    assert complex(FI.CDF(sym0)) == 0 and not sym0.is_numeric()
+    assert not FI._zero_exit_applies(td, pd, sym0, ef, leaves)
+
+
+def test_compute_correction_td_with_no_diagrams_needs_no_propagator(monkeypatch):
+    for on in (False, True):
+        monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', on)
+        res = PL.compute_correction_td(typed_diagrams=[], prefactors=[],
+                                       propagator_data=None, k=2)
+        assert res['total_C'](0.0, 1.0) == 0

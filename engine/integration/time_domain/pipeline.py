@@ -287,7 +287,8 @@ def compute_correction_td(
     # G(t) matrix, the poles and residues); it dies with the call, so the
     # spatial bridge's per-q re-solve of the poles cannot be served stale.
     prop_td = (PropagatorTD(propagator_data, num_params)
-               if _setup_lever_on('USE_SETUP_PROP_TD') else None)
+               if (typed_diagrams and hasattr(propagator_data, 'get')
+                   and _setup_lever_on('USE_SETUP_PROP_TD')) else None)
 
     tree_callables = []
     groups_out = []

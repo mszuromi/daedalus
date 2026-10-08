@@ -4737,9 +4737,10 @@ def _zero_exit_applies(typed_diagram, propagator_data, cp, external_fields,
       warns about an unmapped mixed-field diagram; that stays);
     * the propagator has at least one pole (a pole-free propagator raises
       ``PoleFreePropagatorError`` / warns in the full path; that stays);
-    * ``complex(CDF(cp))`` evaluates and is exactly 0 -- the very test the
-      subset loop applies to ``cp`` times the delta coefficients (an
-      exception or leftover symbols: no early exit).
+    * ``cp`` is a plain number (``is_numeric()``) and ``complex(CDF(cp))``
+      is exactly 0 -- the test the subset loop applies to ``cp`` times the
+      delta coefficients, which for a plain 0 is the same (an exception or
+      a symbolic expression: no early exit).
     """
     if external_fields is None or len(external_fields) != len(leaves):
         return False
@@ -4750,11 +4751,23 @@ def _zero_exit_applies(typed_diagram, propagator_data, cp, external_fields,
         if isinstance(vtype, NoiseSourceType) and vtype.cumulant_specs:
             return False
     try:
-        if not len(propagator_data.get('pole_vals') or ()):
+        pole_vals = propagator_data.get('pole_vals')
+        C_mats = propagator_data.get('C_mats')
+        if not len(pole_vals or ()):
+            return False
+        # incomplete residue data: the full path fails (or falls back) in
+        # its setup; keep it
+        if C_mats is None or len(C_mats) < len(pole_vals):
             return False
     except (AttributeError, TypeError):
         return False
     try:
+        # a plain number only (what ``.subs(num_params)`` leaves of a
+        # numeric prefactor): a symbolic expression that merely evaluates to
+        # 0.0 could still multiply a delta coefficient into a nonzero value
+        # in the subset loop
+        if not SR(cp).is_numeric():
+            return False
         zero = complex(CDF(SR(cp))) == 0
     except Exception:
         return False
