@@ -39,7 +39,9 @@ import warnings
 
 from engine.integration.time_domain.final_integral import (
     integrate_diagram,
+    PropagatorTD,
     _loop_number_from_graph,
+    _setup_lever_on,
 )
 
 
@@ -281,6 +283,12 @@ def compute_correction_td(
             for j in range(k)
         ]
 
+    # M5 L2: the model-level data every diagram of THIS call shares (the
+    # G(t) matrix, the poles and residues); it dies with the call, so the
+    # spatial bridge's per-q re-solve of the poles cannot be served stale.
+    prop_td = (PropagatorTD(propagator_data, num_params)
+               if _setup_lever_on('USE_SETUP_PROP_TD') else None)
+
     tree_callables = []
     groups_out = []
     skipped = []
@@ -309,6 +317,7 @@ def compute_correction_td(
             edge_mode_sums_builder=(
                 edge_mode_sums_builder_fn(td)
                 if edge_mode_sums_builder_fn is not None else None),
+            prop_td=prop_td,
         )
         if result['status'] == 'ok':
             contribution = result['contribution']

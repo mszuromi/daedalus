@@ -151,7 +151,7 @@ class EdgeModeSum:
     dt_ext_pairs: tuple = ()     # tuple[tuple[int, float], ...]
 
 
-def _build_edge_mode_sums(edge_info, propagator_data):
+def _build_edge_mode_sums(edge_info, propagator_data, prop_td=None):
     """Build one EdgeModeSum per entry of ``edge_info`` by extracting
     the per-pole residue from ``propagator_data['C_mats']`` ONCE per
     edge.
@@ -160,6 +160,11 @@ def _build_edge_mode_sums(edge_info, propagator_data):
     which integration variables survive δ-elimination in each subset
     and are filled in at the subset level (see
     ``_attach_subset_dt`` below).
+
+    ``prop_td`` (M5 L2, a :class:`PropagatorTD` of THIS propagator data):
+    the poles and each ``(pi, ri)`` entry's ``(residue, λ)`` tuple come from
+    its tables, built once per ``compute_correction_td`` call with the very
+    same conversions below, instead of once per diagram.
 
     Returns a list parallel to ``edge_info`` (same length, same
     order).  If the propagator data is incomplete (missing ``pole_vals``
@@ -170,6 +175,24 @@ def _build_edge_mode_sums(edge_info, propagator_data):
     C_mats = propagator_data.get('C_mats')
     if pole_vals is None or C_mats is None:
         return None
+
+    if prop_td is not None:
+        edge_mode_sums = []
+        for ei in edge_info:
+            ri, pi = ei['ri'], ei['pi']
+            modes = prop_td.entry_modes(pi, ri)
+            if modes is None:
+                return None
+            try:
+                d_c = complex(ei['delta_coeff'])
+            except Exception:
+                try:
+                    d_c = complex(CDF(SR(ei['delta_coeff'])))
+                except Exception:
+                    return None
+            edge_mode_sums.append(EdgeModeSum(
+                ri=ri, pi=pi, delta_coeff=d_c, modes=modes))
+        return edge_mode_sums
 
     # Convert poles to complex once.
     try:
@@ -969,6 +992,14 @@ _RUNTIME_COUNTERS = {
     # ``integrate_diagram``).  ``setup_zero_exit``: diagrams whose
     # numerically-zero prefactor returned before any setup (L1).
     'setup_zero_exit': 0,
+    # L2 (``USE_SETUP_PROP_TD``): ``integrate_diagram`` calls served from the
+    # per-call ``PropagatorTD``; calls handed a ``PropagatorTD`` that no
+    # longer matched their propagator data / ``num_params`` (built locally);
+    # lazy ``build_G_t_matrix`` builds and per-entry residue-table builds.
+    'setup_prop_td_used': 0,
+    'setup_prop_td_stale': 0,
+    'setup_prop_td_g_t_builds': 0,
+    'setup_prop_td_entry_builds': 0,
     # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
@@ -4463,6 +4494,7 @@ def _initial_setup_flag(env_name, environ=None):
 
 
 USE_SETUP_ZERO_EXIT = _initial_setup_flag('DAEDALUS_SETUP_ZERO_EXIT')
+USE_SETUP_PROP_TD = _initial_setup_flag('DAEDALUS_SETUP_PROP_TD')
 
 
 def _setup_lever_on(flag_name):
@@ -4571,6 +4603,103 @@ def _loop_number_from_graph(typed_diagram):
     return D.num_edges() - D.num_verts() + 1
 
 
+_UNSET = object()
+
+
+class PropagatorTD:
+    """Model-level data of one ``(propagator_data, num_params)``, built once
+    per ``compute_correction_td`` call and shared by every
+    ``integrate_diagram`` of that call (M5 L2, ``USE_SETUP_PROP_TD``).
+
+    Holds, each built lazily and with the very conversions the per-diagram
+    code uses (so every value is bit-identical to a per-diagram build):
+
+    * ``G_t_obj()``   the ``build_G_t_matrix`` result (smooth SR matrix and
+      the delta matrix);
+    * ``poles()``     ``tuple(complex(CDF(SR(p))) * 1j)``, the mode λ's;
+    * ``entry_modes(pi, ri)``  the tuple of ``(residue, λ)`` pairs of entry
+      ``(pi, ri)``, residues ``complex(CDF(SR(C_mats[k][pi, ri])))``.  A
+      conversion that fails is cached as ``None`` (the caller then returns
+      ``None`` exactly as the per-diagram build does);
+    * ``delta_coeff(pi, ri)``  ``G_t_delta_coeff(G_t_obj, pi, ri)``.
+
+    SCOPE: one call.  ``matches`` recognises the data it was built from by
+    identity (the propagator-data dict, ``num_params`` and the pole / residue
+    lists); ``integrate_diagram`` builds locally, as without the object, when
+    handed one that does not match (counter ``setup_prop_td_stale``).  Never
+    keep one across calls and never key it by ``id()`` in a global: the
+    spatial bridge re-solves the poles for each q sample, so an object that
+    outlived its call would serve stale data.  Thread safe: builds hold the
+    lock, the finished tables are read-only.
+    """
+
+    def __init__(self, propagator_data, num_params=None):
+        self.propagator_data = propagator_data
+        self.num_params = num_params
+        self._pole_vals = propagator_data.get('pole_vals')
+        self._C_mats = propagator_data.get('C_mats')
+        self._lock = _threading.RLock()
+        self._g_t_obj = _UNSET
+        self._lam = _UNSET
+        self._entries = {}
+        self._deltas = {}
+
+    def matches(self, propagator_data, num_params):
+        pd = self.propagator_data
+        return (propagator_data is pd and num_params is self.num_params
+                and pd.get('pole_vals') is self._pole_vals
+                and pd.get('C_mats') is self._C_mats)
+
+    def G_t_obj(self):
+        with self._lock:
+            if self._g_t_obj is _UNSET:
+                self._g_t_obj = build_G_t_matrix(
+                    self.propagator_data, SR.var('_t_td_'),
+                    num_params=self.num_params)
+                _RUNTIME_COUNTERS['setup_prop_td_g_t_builds'] += 1
+            return self._g_t_obj
+
+    def poles(self):
+        with self._lock:
+            if self._lam is _UNSET:
+                try:
+                    self._lam = tuple(complex(CDF(SR(p))) * 1j
+                                      for p in self._pole_vals)
+                except Exception:
+                    self._lam = None
+            return self._lam
+
+    def entry_modes(self, pi, ri):
+        key = (pi, ri)
+        with self._lock:
+            hit = self._entries.get(key, _UNSET)
+            if hit is not _UNSET:
+                return hit
+            lam = self.poles()
+            if lam is None:
+                modes = None
+            else:
+                try:
+                    residues = tuple(
+                        complex(CDF(SR(self._C_mats[k][pi, ri])))
+                        for k in range(len(lam)))
+                    modes = tuple(zip(residues, lam))
+                except Exception:
+                    modes = None
+            self._entries[key] = modes
+            _RUNTIME_COUNTERS['setup_prop_td_entry_builds'] += 1
+            return modes
+
+    def delta_coeff(self, pi, ri):
+        key = (pi, ri)
+        with self._lock:
+            hit = self._deltas.get(key, _UNSET)
+            if hit is _UNSET:
+                hit = G_t_delta_coeff(self.G_t_obj(), pi, ri)
+                self._deltas[key] = hit
+            return hit
+
+
 def _zero_exit_applies(typed_diagram, propagator_data, cp, external_fields,
                        leaves):
     """True iff ``integrate_diagram`` may return the zero result at once
@@ -4666,6 +4795,7 @@ def integrate_diagram(
     external_fields=None,
     representative_ir=None,  # deprecated, kept for backward compat
     edge_mode_sums_builder=None,
+    prop_td=None,
     _setup_full=None,
 ):
     r"""
@@ -4726,6 +4856,12 @@ def integrate_diagram(
         ``external_fields[i]``, regardless of the diagram's internal
         leaf ordering.  If None, falls back to position-based mapping
         (leaf j → ext_time_vars[j]).
+    prop_td : PropagatorTD or None
+        Model-level data shared by the diagrams of one
+        ``compute_correction_td`` call (M5 L2).  ``None`` (the default):
+        everything is built here, per diagram, as before.  Used only when
+        ``USE_SETUP_PROP_TD`` is on and it matches ``propagator_data`` /
+        ``num_params``.
 
     Returns
     -------
@@ -4786,11 +4922,26 @@ def integrate_diagram(
                     external_fields=external_fields,
                     representative_ir=representative_ir,
                     edge_mode_sums_builder=edge_mode_sums_builder,
+                    prop_td=prop_td,
                     _setup_full=serial))
 
     # ── 1. Numerical G(t) matrix (smooth + delta parts) ──────────
+    # M5 L2: the matrix, the poles and the per-entry residues come from the
+    # call-scoped ``PropagatorTD`` when one that matches this propagator data
+    # was handed in.
+    _ptd = None
+    if prop_td is not None and _setup_lever_on('USE_SETUP_PROP_TD'):
+        if prop_td.matches(propagator_data, num_params):
+            _ptd = prop_td
+            _RUNTIME_COUNTERS['setup_prop_td_used'] += 1
+        else:
+            _RUNTIME_COUNTERS['setup_prop_td_stale'] += 1
     t_sym = SR.var('_t_td_')
-    G_t_obj = build_G_t_matrix(propagator_data, t_sym, num_params=num_params)
+    if _ptd is not None:
+        G_t_obj = _ptd.G_t_obj()
+    else:
+        G_t_obj = build_G_t_matrix(propagator_data, t_sym,
+                                   num_params=num_params)
 
     # ── 2. Enumerate inter-vertex Wick contractions ───────────────
     # For correlators with repeated external field types (e.g. two
@@ -5114,7 +5265,8 @@ def integrate_diagram(
         t_u = _resolve_leg_time(u, edge_key, vertex_time[u])
         t_v = _resolve_leg_time(v, edge_key, vertex_time[v])
         dt = SR(t_v - t_u)
-        delta_c = G_t_delta_coeff(G_t_obj, pi, ri)
+        delta_c = (_ptd.delta_coeff(pi, ri) if _ptd is not None
+                   else G_t_delta_coeff(G_t_obj, pi, ri))
         smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
         edge_info.append({
             'u': u, 'v': v, 'lbl': lbl,
@@ -5139,7 +5291,8 @@ def integrate_diagram(
     if edge_mode_sums_builder is not None:
         edge_mode_sums = edge_mode_sums_builder(edge_info, propagator_data)
     else:
-        edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data)
+        edge_mode_sums = _build_edge_mode_sums(edge_info, propagator_data,
+                                               prop_td=_ptd)
 
     # Combined prefactor (numerical)
     if _cp_pre is not None:
