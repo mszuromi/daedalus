@@ -3151,6 +3151,75 @@ def _chain_uppers_memo_on():
                      f'expected True or False')
 
 
+# ── M6: divided-difference kernels (``expdd``), opt-in only ─────────────
+# ``CHAIN_UPPERS_KERNEL`` (str, read at call time) selects the evaluator of
+# ``_chain_with_intermediate_uppers_uncached``: ``'legacy'`` (default) is
+# the cut-tuple enumeration over the fast / polynomial chain-simplex
+# routines, unchanged; ``'transfer'`` is ``expdd.chain_with_uppers`` (a
+# transfer matrix with projections, log domain).  The two agree to rounding,
+# not bit for bit, so the selector is part of ``_chain_uppers_kernel_tag``.
+# Environment ``DAEDALUS_CHAIN_UPPERS_KERNEL`` = legacy | transfer (default
+# legacy); any other value raises.
+#
+# ``USE_PHASE_J_DD_KERNELS`` (bool, read at call time through
+# ``_phase_j_dd_kernels_on``); environment ``DAEDALUS_PHASE_J_DD_KERNELS`` =
+# 1 | 0 (also true/false, yes/no, on/off; default 0).  Reserved for routing
+# the triangle, chain and grouped paths to ``expdd`` (M7): nothing reads it
+# yet, so it moves no number.  Neither is touched by the umbrella
+# ``DAEDALUS_PHASE_J_LEGACY``.
+_CHAIN_UPPERS_KERNELS = ('legacy', 'transfer')
+
+
+def _initial_chain_uppers_kernel(environ=None):
+    """The import-time value of ``CHAIN_UPPERS_KERNEL`` from ``environ``
+    (default ``os.environ``).  An unknown value raises."""
+    env = _os.environ if environ is None else environ
+    v = env.get('DAEDALUS_CHAIN_UPPERS_KERNEL', '').strip().lower()
+    if v == '':
+        return 'legacy'
+    if v in _CHAIN_UPPERS_KERNELS:
+        return v
+    raise ValueError(
+        f'DAEDALUS_CHAIN_UPPERS_KERNEL={v!r}: expected legacy or transfer')
+
+
+CHAIN_UPPERS_KERNEL = _initial_chain_uppers_kernel()
+
+
+def _chain_uppers_kernel():
+    """``CHAIN_UPPERS_KERNEL`` (call time), validated."""
+    kernel = CHAIN_UPPERS_KERNEL
+    if isinstance(kernel, str) and kernel in _CHAIN_UPPERS_KERNELS:
+        return kernel
+    raise ValueError(f'final_integral.CHAIN_UPPERS_KERNEL={kernel!r}: '
+                     f"expected 'legacy' or 'transfer'")
+
+
+def _initial_phase_j_dd_kernels_flag(environ=None):
+    """The import-time value of ``USE_PHASE_J_DD_KERNELS`` from ``environ``
+    (default ``os.environ``).  An unknown value raises."""
+    env = _os.environ if environ is None else environ
+    v = env.get('DAEDALUS_PHASE_J_DD_KERNELS', '').strip().lower()
+    if v in ('', '0', 'false', 'no', 'off'):
+        return False
+    if v in ('1', 'true', 'yes', 'on'):
+        return True
+    raise ValueError(
+        f'DAEDALUS_PHASE_J_DD_KERNELS={v!r}: expected 1 or 0')
+
+
+USE_PHASE_J_DD_KERNELS = _initial_phase_j_dd_kernels_flag()
+
+
+def _phase_j_dd_kernels_on():
+    """``USE_PHASE_J_DD_KERNELS`` (call time), validated."""
+    flag = USE_PHASE_J_DD_KERNELS
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.USE_PHASE_J_DD_KERNELS={flag!r}: '
+                     f'expected True or False')
+
+
 def _chain_uppers_kernel_tag():
     """The module state that can change ``_chain_with_intermediate_uppers``,
     read at call time (part of every memo key, so toggling any of it misses).
@@ -3166,13 +3235,16 @@ def _chain_uppers_kernel_tag():
     (``_integrate_nd_polytope_poset_modesum``), not on this function's path,
     so no result of this function depends on them today:
       * ``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY``.
-    ``CHAIN_UPPERS_KERNEL`` (the M6 transfer-kernel selector) does not exist
-    yet: ADD IT HERE when it lands, or the memo would serve one kernel's
-    values to the other."""
+    And the evaluator itself (M6):
+      * ``CHAIN_UPPERS_KERNEL``: ``'legacy'`` vs the ``expdd`` transfer
+        kernel (they agree to rounding, not bit for bit).  Kept raw here; an
+        invalid value is rejected by ``_chain_uppers_kernel`` in the
+        uncached function (an unhashable one makes the key unhashable, which
+        skips the memo and reaches the same check)."""
     return (USE_NUMBA_CHAIN_SIMPLEX, _HAVE_NUMBA,
             USE_CHAIN_SIMPLEX_PRECISION_FIX, _CHAIN_SIMPLEX_CANCEL_THRESHOLD,
             USE_POSET_MPMATH_ACCUMULATION, USE_POSET_CAP_MATCH_SCIPY,
-            # CHAIN_UPPERS_KERNEL goes here (M6)
+            CHAIN_UPPERS_KERNEL,
             )
 
 
@@ -3369,7 +3441,14 @@ def _chain_with_intermediate_uppers_uncached(
     Returns ``None`` if every case produces ``None`` from the
     underlying chain simplex (genuine overflow); otherwise returns
     the analytic closed-form sum.
+
+    With ``CHAIN_UPPERS_KERNEL = 'transfer'`` (M6, opt-in) the value comes
+    from ``_chain_with_uppers_transfer`` instead; everything below is the
+    ``'legacy'`` evaluator.
     """
+    if _chain_uppers_kernel() == 'transfer':
+        return _chain_with_uppers_transfer(
+            alphas_chain, L, upper_per_position, U_chain_top)
     m = len(alphas_chain)
     if m == 0:
         return 1.0 + 0.0j
@@ -3490,6 +3569,27 @@ def _chain_with_intermediate_uppers_uncached(
             any_returned = True
 
     return total if any_returned else None
+
+
+def _chain_with_uppers_transfer(
+    alphas_chain,
+    L,
+    upper_per_position,
+    U_chain_top,
+):
+    """``CHAIN_UPPERS_KERNEL = 'transfer'``: the same integral as
+    ``_chain_with_intermediate_uppers_uncached`` by
+    ``expdd.chain_with_uppers`` (transfer matrix with projections, log
+    domain), with the same contract: a complex, or ``None`` when there is
+    no finite value: a true overflow, a divergent ``L = -inf`` chain (no
+    Phase J caller passes one today) or a chain state that underflowed below
+    double range (``FloatingPointError``; far outside Phase J's regime)."""
+    from engine.integration.time_domain import expdd
+    try:
+        return expdd.chain_with_uppers(
+            alphas_chain, L, upper_per_position, U_chain_top)
+    except (expdd.DivergentIntegralError, FloatingPointError):
+        return None
 
 
 USE_POSET_INTEGRATOR = True

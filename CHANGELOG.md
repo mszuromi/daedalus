@@ -1562,6 +1562,64 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   loader issues a `StaleResultWarning`, once per file and process: results for
   models with instantaneous propagator parts may be stale and should be
   recomputed.
+- **Divided-difference kernels for the Phase J exponential integrals (off by
+  default; numbers unchanged).** New module
+  `engine.integration.time_domain.expdd`. Every closed form Phase J
+  evaluates is an integral of an exponential over a simplex, which is a
+  divided difference of `exp` (Hermite–Genocchi): a triangle is
+  |det| · exp[a₀, a₁, a₂] and a chain L < s₁ < … < s_m < U is
+  T^m · exp[v₀, …, v_m]. Degenerate poles are repeated nodes, so no
+  polynomial special case is needed. The kernels work in log domain
+  (`log_dd_exp` returns (c, mantissa) with c = max Re zᵢ), so the only
+  failure left is a result above e^700. It is reported as a status (`None`
+  from the value functions), never as `inf` or `nan`. They do not bail on
+  large exponents the way the legacy triangle guard (|Re| > 600) does.
+  - Functions: `log_dd_exp`, `dd_exp`, `unit_triangle`, `triangle`,
+    `chain_simplex` (also L = −∞, from the dominant eigenvector; a chain
+    with a prefix sum Re Pⱼ ≤ 0 diverges and raises
+    `DivergentIntegralError`), `chain_with_uppers` (the integral of
+    `_chain_with_intermediate_uppers` by a transfer matrix with projections,
+    without cut-tuple enumeration), each with a `*_log` variant returning
+    (status, log scale, mantissa).
+  - One source runs compiled by numba or as plain Python (numba missing, or
+    `NUMBA_DISABLE_JIT=1`). The two agree to rounding, not bit for bit.
+  - Nothing in Phase J calls the module by default. The only opt-in is
+    `final_integral.CHAIN_UPPERS_KERNEL` (`'legacy'` by default, or
+    `'transfer'`; environment `DAEDALUS_CHAIN_UPPERS_KERNEL=legacy|transfer`,
+    any other value is an error; read at call time), which routes
+    `_chain_with_intermediate_uppers` to `expdd.chain_with_uppers`. The
+    selector is part of the chain-uppers memo key, so a toggle misses the
+    memo. With `'legacy'` every result is bit-identical to before.
+  - Flag `USE_PHASE_J_DD_KERNELS` (environment
+    `DAEDALUS_PHASE_J_DD_KERNELS=1|0`, default 0, any other value is an
+    error). It is reserved for routing the triangle, chain and grouped paths
+    to `expdd` in a later change; nothing reads it yet.
+    `DAEDALUS_PHASE_J_LEGACY` touches neither.
+  - Measured against mpmath at 80 digits (`tests/test_expdd.py`). The rule:
+    an error is accepted if it is ≤ 1e−11 of the value, or ≤ 1e−14 of the
+    integral of the absolute value when the value itself cancels. Every
+    case passes. Worst error relative to the value (and to the integral of
+    the absolute value where that is the one that passes):
+
+    | family | cases | worst |
+    |---|---|---|
+    | exp[z₀..z_n], n = 1..7, generic/repeated/clustered/fast/oscillatory | 184 | 8.1e−14 |
+    | unit triangle J(p, q) | 400 | 5.0e−16 |
+    | triangles on boxes up to 2000 wide (exponents to ~7e4) | 243 | 4.9e−12 |
+    | chains, m = 2..7: generic, OU-degenerate, close pairs, fast poles, random | 247 | 8.3e−14 |
+    | chains with a block sum δ = 0..0.1; 200 captured degenerate calls | 240 | 2.2e−14 |
+    | chains with intermediate uppers | 60 | 1.3e−14 |
+    | L = −∞ vs a far L | 60 | 1.3e−14 |
+    | oscillatory nodes (Re ∈ [−1, 0], \|Im\| ∈ [10, 1000]), n ≤ 16, and chains | 104 | 6.9e−10 of the value (which cancels), 7.4e−17 of the absolute integral |
+    | long exp[z₀..z_n], n = 8..30, clustered/spread; chains m = 8..16 | 66 | 9.0e−15 |
+    | mixed magnitudes 1e−6..1e3, n ≤ 12 | 120 | 8.4e−13 |
+
+    `_chain_with_intermediate_uppers` with `'transfer'` vs `'legacy'`: 2.4e−14
+    on the 320 captured calls, ≤ 7.1e−15 on the end-to-end values of
+    `ou_quartic` (k = 2, ℓ ≤ 2; k = 4, ℓ = 2) and
+    `single_population_spike_reset_test` (k = 2, ℓ = 1, per-diagram and
+    grouped), with the same memo hits and misses and about the same wall
+    time.
 - **Developer-facing.**
   - `final_integral._SUBSET_HOOK`, a per-subset observation hook. Its
     payload includes each constraint row's kind and the external legs behind
