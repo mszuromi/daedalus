@@ -1000,6 +1000,13 @@ _RUNTIME_COUNTERS = {
     'setup_prop_td_stale': 0,
     'setup_prop_td_g_t_builds': 0,
     'setup_prop_td_entry_builds': 0,
+    # L3 (``USE_SETUP_LAZY_SR``): edge ``smooth_factor`` SR objects whose
+    # build was deferred / built on demand, and the same for the display-only
+    # ``stripped_integrand``.
+    'setup_lazy_sr_deferred': 0,
+    'setup_lazy_sr_built': 0,
+    'setup_lazy_display_deferred': 0,
+    'setup_lazy_display_built': 0,
     # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
@@ -4495,6 +4502,7 @@ def _initial_setup_flag(env_name, environ=None):
 
 USE_SETUP_ZERO_EXIT = _initial_setup_flag('DAEDALUS_SETUP_ZERO_EXIT')
 USE_SETUP_PROP_TD = _initial_setup_flag('DAEDALUS_SETUP_PROP_TD')
+USE_SETUP_LAZY_SR = _initial_setup_flag('DAEDALUS_SETUP_LAZY_SR')
 
 
 def _setup_lever_on(flag_name):
@@ -4698,6 +4706,15 @@ class PropagatorTD:
                 hit = G_t_delta_coeff(self.G_t_obj(), pi, ri)
                 self._deltas[key] = hit
             return hit
+
+
+def _lazy_smooth_thunk(G_t_obj, pi, ri, dt):
+    """The deferred ``edge_info[i]['smooth_factor']`` (M5 L3): the very call
+    the eager path makes, made on the first read."""
+    def thunk():
+        _RUNTIME_COUNTERS['setup_lazy_sr_built'] += 1
+        return G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
+    return thunk
 
 
 def _zero_exit_applies(typed_diagram, propagator_data, cp, external_fields,
@@ -5253,6 +5270,10 @@ def integrate_diagram(
         pop_idx = leg[1] - 1  # 0-based
         return vertex_leg_time[vert].get(pop_idx, default_time)
 
+    # M5 L3: ``smooth_factor`` (an SR object from ``G_t_entry``) is read only
+    # by the shot-noise branch and the SR-integrand branch below; build it on
+    # first read.  The key stays present in every ``edge_info`` record.
+    _lazy_sr = _setup_lever_on('USE_SETUP_LAZY_SR')
     edges = list(D.edges())
     edge_info = []
     for (u, v, lbl) in edges:
@@ -5267,6 +5288,14 @@ def integrate_diagram(
         dt = SR(t_v - t_u)
         delta_c = (_ptd.delta_coeff(pi, ri) if _ptd is not None
                    else G_t_delta_coeff(G_t_obj, pi, ri))
+        if _lazy_sr:
+            _RUNTIME_COUNTERS['setup_lazy_sr_deferred'] += 1
+            edge_info.append(_LazyDict(
+                [('u', u), ('v', v), ('lbl', lbl), ('ri', ri), ('pi', pi),
+                 ('dt_sym', dt), ('delta_coeff', delta_c),
+                 ('smooth_factor', None)],
+                {'smooth_factor': _lazy_smooth_thunk(G_t_obj, pi, ri, dt)}))
+            continue
         smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
         edge_info.append({
             'u': u, 'v': v, 'lbl': lbl,
@@ -5469,9 +5498,23 @@ def integrate_diagram(
     # the unexpanded product: nothing reads it numerically, and expanding it
     # blows up combinatorially for multi-mode kernels (alpha-function
     # synapses: >10 min per diagram on quadratic_hawkes_alpha at ell=1).
-    display_stripped = cp
-    for ei in edge_info:
-        display_stripped = display_stripped * ei['smooth_factor']
+    # (M5 L3: display only -- nothing in the package reads it -- so with
+    # ``USE_SETUP_LAZY_SR`` it is built on first read of the result's
+    # ``stripped_integrand``.)
+    _ds_cell = []
+
+    def _display_stripped_value():
+        if not _ds_cell:
+            _ds = cp
+            for ei in edge_info:
+                _ds = _ds * ei['smooth_factor']
+            _ds_cell.append(_ds)
+            if _lazy_sr:
+                _RUNTIME_COUNTERS['setup_lazy_display_built'] += 1
+        return _ds_cell[0]
+
+    if not _lazy_sr:
+        _display_stripped_value()
     display_constraints = [ei['dt_sym'] for ei in edge_info]
 
     # Accumulators
@@ -5859,7 +5902,7 @@ def integrate_diagram(
                     'status': 'failed',
                     'contribution': None,
                     'integration_vars': integration_vars,
-                    'stripped_integrand': display_stripped,
+                    'stripped_integrand': _display_stripped_value(),
                     'constraints': display_constraints,
                     'reason': (
                         f"[subset {bin(branch_bits)}] stripped integrand "
@@ -5877,7 +5920,7 @@ def integrate_diagram(
                     'status': 'failed',
                     'contribution': None,
                     'integration_vars': integration_vars,
-                    'stripped_integrand': display_stripped,
+                    'stripped_integrand': _display_stripped_value(),
                     'constraints': display_constraints,
                     'reason': (
                         f"[subset {bin(branch_bits)}] fast_callable "
@@ -5963,7 +6006,7 @@ def integrate_diagram(
                 'status': 'failed',
                 'contribution': None,
                 'integration_vars': integration_vars,
-                'stripped_integrand': display_stripped,
+                'stripped_integrand': _display_stripped_value(),
                 'constraints': display_constraints,
                 'reason': (
                     f"[subset {bin(branch_bits)}] constraint not "
@@ -6471,21 +6514,27 @@ def integrate_diagram(
     # combined_prefactor.subs(num_params)) and the display layer
     # treats it as a τ-independent prefactor outside the integral.
     has_cumulant_kernel = bool(noise_source_specs)
-    return {
-        'status': 'ok',
-        'contribution': contribution,
-        'delta_contributions': delta_contributions,
-        'integration_vars': integration_vars,
-        'stripped_integrand': display_stripped,
-        'constraints': display_constraints,
-        'edge_info': edge_info,
-        'n_subsets_evaluated': len(subset_contributions),
-        'n_delta_contributions': len(delta_contributions),
-        'n_shotnoise_skipped': n_shotnoise_skipped,
-        'subset_diagnostics': subset_diagnostics,
-        'cumulant_prefactor':       cp if has_cumulant_kernel else None,
-        'has_cumulant_kernel':      has_cumulant_kernel,
-    }
+    _ok_items = [
+        ('status', 'ok'),
+        ('contribution', contribution),
+        ('delta_contributions', delta_contributions),
+        ('integration_vars', integration_vars),
+        ('stripped_integrand',
+         None if _lazy_sr else _display_stripped_value()),
+        ('constraints', display_constraints),
+        ('edge_info', edge_info),
+        ('n_subsets_evaluated', len(subset_contributions)),
+        ('n_delta_contributions', len(delta_contributions)),
+        ('n_shotnoise_skipped', n_shotnoise_skipped),
+        ('subset_diagnostics', subset_diagnostics),
+        ('cumulant_prefactor', cp if has_cumulant_kernel else None),
+        ('has_cumulant_kernel', has_cumulant_kernel),
+    ]
+    if _lazy_sr:
+        _RUNTIME_COUNTERS['setup_lazy_display_deferred'] += 1
+        return _LazyDict(_ok_items,
+                         {'stripped_integrand': _display_stripped_value})
+    return dict(_ok_items)
 
 
 def eval_delta_contributions_on_tau_grid(

@@ -36,7 +36,8 @@ import engine.integration.time_domain.pipeline as PL
 _TAUS = np.linspace(0.0, 3.0, 7)
 _P2 = [(0.0, 0.7), (0.0, 1.9), (0.0, -1.1)]
 _P4 = [(0.0, 0.3, 0.6, 0.9), (0.0, 0.5, 0.4, 0.7)]
-_ALL_FLAGS = ('USE_SETUP_ZERO_EXIT', 'USE_SETUP_PROP_TD')   # grows with every lever
+_ALL_FLAGS = ('USE_SETUP_ZERO_EXIT', 'USE_SETUP_PROP_TD',
+              'USE_SETUP_LAZY_SR')   # grows with every lever
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -523,3 +524,186 @@ def test_umbrella_forces_every_lever_off(monkeypatch):
     out2, c2 = _run('ou_quartic', 2, 2)
     assert c2['setup_zero_exit'] > 0 and c2['setup_prop_td_used'] > 0
     assert _same(out, out2)
+
+
+# ── L3: lazy SR ────────────────────────────────────────────────────────────
+def _pair_tree(n_legs=3):
+    """A star tree (one source, ``n_legs`` edges to the leaves) on the 2x2
+    instantaneous fixture of ``test_time_domain``: entry (0, 0) has a delta
+    part AND a smooth part, so the delta-subset enumeration, the shot-noise
+    branch (with smooth edges left over) and the continuous branch all run."""
+    from sage.all import DiGraph
+    from engine.core.vertices import SourceType
+    from engine.diagrams.type_assignment import TypedDiagram
+    from tests.test_time_domain import _propagator_data_instantaneous_pair
+    pd = _propagator_data_instantaneous_pair()
+    st = SourceType(FI.SR(1), [('nt', 1)] * n_legs, (n_legs, 0))
+    D = DiGraph()
+    D.add_edges([(0, i) for i in range(1, n_legs + 1)])
+    td = TypedDiagram(
+        prediagram=(D, D.to_undirected(), list(range(1, n_legs + 1)), [0]),
+        vertex_assignments={0: st},
+        edge_types={(0, i, None): (('nt', 1), ('dn', 1))
+                    for i in range(1, n_legs + 1)},
+        external_legs={i: ('dn', 1) for i in range(1, n_legs + 1)},
+        propagator_indices={(0, i, None): (0, 0)
+                            for i in range(1, n_legs + 1)})
+    ts = [FI.SR.var(f't_{i}') for i in range(1, n_legs + 1)]
+    return dict(typed_diagram=td, propagator_data=pd,
+                combined_prefactor=FI.SR(-2), ext_time_vars=ts,
+                num_params=None, origin_leaf_idx=0,
+                external_fields=[('dn', 1)] * n_legs)
+
+
+def _delta_values(res, pts):
+    """Everything numeric a result exposes: the callable at ``pts`` and each
+    delta contribution (equality, coefficient at a few points, retardation)."""
+    out = [complex(res['contribution'](*p)) for p in pts]
+    for dc in res['delta_contributions']:
+        out.extend(dc['equality_a'])
+        out.append(dc['equality_c'])
+        out.extend(complex(dc['coeff_fc'](*p[1:])) for p in pts)
+        out.extend(x for ad in dc['retardation_data'] for x in (*ad[0], ad[1]))
+    return np.array(out, complex)
+
+
+def test_l3_shotnoise_branch_with_smooth_edges_array_equal(monkeypatch):
+    """The shot-noise branch multiplies the leftover smooth edges'
+    ``smooth_factor`` in; with the lever on they are built there, on demand."""
+    kw = _pair_tree(3)
+    pts = [(0.0, 0.5, 1.5), (0.0, 1.0, 1.0), (0.0, 0.7, 2.3)]
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
+    FI._reset_runtime_counters()
+    off = FI.integrate_diagram(**kw)
+    off_vals = _delta_values(off, pts)
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] == 0
+    assert off['n_shotnoise_skipped'] > 0 and len(off['delta_contributions']) > 0
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
+    FI._reset_runtime_counters()
+    on = FI.integrate_diagram(**kw)
+    on_vals = _delta_values(on, pts)
+    assert np.array_equal(off_vals, on_vals)
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] == 3
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0      # it was needed
+    assert on['n_shotnoise_skipped'] == off['n_shotnoise_skipped']
+    assert on['subset_diagnostics'] == off['subset_diagnostics']
+
+
+def test_l3_sr_integrand_branch_array_equal(monkeypatch):
+    """No mode-sum cache (the builder answers ``None``): every subset takes
+    the SR integrand + scipy path, which multiplies the ``smooth_factor``s."""
+    kw = dict(_pair_tree(2), edge_mode_sums_builder=lambda ei, pd: None)
+    pts = [(0.0, 0.5), (0.0, 1.5), (0.0, 0.2)]
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
+    off = FI.integrate_diagram(**kw)
+    off_vals = _delta_values(off, pts)
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
+    FI._reset_runtime_counters()
+    on = FI.integrate_diagram(**kw)
+    on_vals = _delta_values(on, pts)
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0
+    assert np.array_equal(off_vals, on_vals)
+    assert on['status'] == off['status'] == 'ok'
+
+
+def test_l3_analytic_path_never_builds_the_smooth_factor(monkeypatch,
+                                                         captured_ou):
+    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
+    monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', True)
+    FI._reset_runtime_counters()
+    for c in _nonzero_diagrams(captured_ou)[:20]:
+        FI.integrate_diagram(**c)
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] > 20
+    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] == 0
+    assert FI._RUNTIME_COUNTERS['setup_lazy_display_built'] == 0
+
+
+def test_l3_keys_stay_present_and_resolve_to_the_eager_values(monkeypatch,
+                                                              captured_ou):
+    c = _nonzero_diagrams(captured_ou)[0]
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
+    eager = FI.integrate_diagram(**c)
+    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
+    lazy = FI.integrate_diagram(**c)
+    assert list(lazy) == list(eager)
+    assert type(eager) is dict
+    assert 'stripped_integrand' in lazy and 'edge_info' in lazy
+    for ea, eb in zip(eager['edge_info'], lazy['edge_info']):
+        assert list(ea) == list(eb) and 'smooth_factor' in eb
+    # the display product, expression for expression
+    assert bool(eager['stripped_integrand'] == lazy['stripped_integrand'])
+    for ea, eb in zip(eager['edge_info'], lazy['edge_info']):
+        assert bool(ea['smooth_factor'] == eb['smooth_factor'])
+        assert dict(ea) == dict(eb) or all(
+            bool(ea[k] == eb[k]) for k in ea)
+    # copies and plain-dict views resolve everything
+    assert all(v is not None for v in dict(lazy['edge_info'][0]).values())
+    import copy
+    import pickle
+    assert isinstance(copy.deepcopy(lazy['edge_info'][0]), dict)
+    assert pickle.loads(pickle.dumps(dict(lazy['edge_info'][0]))) is not None
+
+
+def test_l3_failed_results_carry_the_eager_display_value(monkeypatch):
+    """A failure return (an unexpected free symbol in the SR integrand) keeps
+    a real ``stripped_integrand``, not a placeholder."""
+    kw = dict(_pair_tree(2), edge_mode_sums_builder=lambda ei, pd: None,
+              combined_prefactor=FI.SR.var('stray_symbol'))
+    for on in (False, True):
+        monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', on)
+        res = FI.integrate_diagram(**kw)
+        assert res['status'] == 'failed'
+        assert res['stripped_integrand'] is not None
+        assert 'stray_symbol' in str(res['stripped_integrand'])
+        assert type(res['stripped_integrand']).__name__ == 'Expression'
+
+
+def test_l3_on_vs_off_array_equal_on_models(monkeypatch):
+    for key, k, ell in [('ou_quartic', 2, 2), ('ou_quartic', 4, 1),
+                        ('ou_quartic_colored', 2, 1)]:
+        _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
+        _run(key, k, ell)
+        off, c_off = _run(key, k, ell)
+        _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
+        on, c_on = _run(key, k, ell)
+        assert _same(off, on), (key, k, ell)
+        assert c_off['setup_lazy_sr_deferred'] == 0
+        assert c_on['setup_lazy_sr_deferred'] > 0
+
+
+def test_l3_lazy_dict_basics():
+    calls = []
+    d = FI._LazyDict([('a', 1), ('b', None), ('c', 3)],
+                     {'b': lambda: calls.append(1) or 2})
+    assert list(d) == ['a', 'b', 'c'] and len(d) == 3 and 'b' in d
+    assert not calls
+    assert d['b'] == 2 and d['b'] == 2 and calls == [1]
+    d2 = FI._LazyDict([('a', 1), ('b', None)], {'b': lambda: 5})
+    assert d2.get('b') == 5
+    d3 = FI._LazyDict([('a', 1), ('b', None)], {'b': lambda: 6})
+    assert dict(d3) == {'a': 1, 'b': 6}
+    d4 = FI._LazyDict([('a', 1), ('b', None)], {'b': lambda: 7})
+    assert list(d4.items()) == [('a', 1), ('b', 7)]
+    d5 = FI._LazyDict([('a', 1), ('b', None)], {'b': lambda: 8})
+    d5['b'] = 9                                    # an explicit set wins
+    assert d5['b'] == 9
+    d6 = FI._LazyDict([('a', 1), ('b', None)], {'b': lambda: 10})
+    assert {**d6} == {'a': 1, 'b': 10} and d6.copy() == {'a': 1, 'b': 10}
+
+
+def test_l3_threads_resolve_the_same_values(monkeypatch, captured_ou):
+    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
+    monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', True)
+    c = _nonzero_diagrams(captured_ou)[0]
+    res = FI.integrate_diagram(**c)
+    ref = [str(e['smooth_factor']) for e in
+           FI.integrate_diagram(**c)['edge_info']]
+
+    def work(_):
+        return [str(e['smooth_factor']) for e in res['edge_info']] + \
+               [str(res['stripped_integrand'])]
+
+    with ThreadPoolExecutor(4) as ex:
+        outs = list(ex.map(work, range(8)))
+    for o in outs:
+        assert o[:-1] == ref and o == outs[0]
