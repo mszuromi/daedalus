@@ -760,6 +760,85 @@ of what remains; the two OU runs give two samples each):
 | `single_population_spike_reset_test`, k = 2, ℓ = 1 | 14.7 s | 12.3 s | 173,278 / 3,922 |
 | same, grouped | 6.3 s | 4.6 s | 2,958 / 3,922 |
 
+### Performance: per-diagram setup levers (numbers unchanged)
+
+After the chain memo, most of the time of a run with many diagrams went into the
+per-diagram setup of `integrate_diagram`: on `ou_quartic_two_dim` (k = 2, ℓ = 2)
+5217 of the 5347 diagrams have a prefactor that is numerically zero and still paid
+the full setup, and the model-level data (`build_G_t_matrix`, the pole and residue
+arrays) was rebuilt for every diagram. Four independent levers cut that cost. None
+moves a number: with a lever on, every total, per-ℓ value and per-diagram value is
+bit-identical (`np.array_equal`) to the lever off, in one process (checked on the
+models below and in `tests/test_phase_j_setup_fastpath.py`).
+
+- **L1 zero-prefactor exit** (`final_integral.USE_SETUP_ZERO_EXIT`,
+  `DAEDALUS_SETUP_ZERO_EXIT`, counter `setup_zero_exit`). A diagram with no
+  noise-source (`cumulant_specs`) vertex and no `ConvVertexType` vertex whose numeric
+  prefactor is a plain number equal to exactly 0 returns a zero contribution before
+  the G(t) matrix and the per-edge setup are built. It stays in the list at its
+  position (a zero entry), and its result has the keys and types of the full path;
+  `stripped_integrand`, `constraints` and `edge_info` are filled on first read by
+  running the full path. It declines (full path as before) when `external_fields` is
+  missing or does not match the leaves, when the propagator has no pole or incomplete
+  residue data, when the prefactor does not evaluate to a number, or while the
+  `_SUBSET_HOOK` debugging hook is set. Two observational differences remain for a
+  diagram with a zero prefactor: the full path also emits zero-coefficient
+  `delta_contributions` entries (and `shotnoise` / `forced_delta_pruned` diagnostics)
+  for its shot-noise subsets, which the early exit does not; no value computed from
+  them changes, and nothing in `api/` or `engine/` reads them.
+- **L2 model-level data once per call** (`USE_SETUP_PROP_TD`,
+  `DAEDALUS_SETUP_PROP_TD`, counters `setup_prop_td_used`, `_stale`, `_g_t_builds`,
+  `_entry_builds`). `compute_correction_td` builds one `PropagatorTD` (the G(t)
+  matrix, the poles, the `(residue, λ)` tuples per propagator entry and the delta
+  coefficients, each lazily and with the same conversions as before) and passes it
+  to `integrate_diagram(prop_td=...)`, a new optional argument; `None` builds
+  everything per diagram as before. The object lives for one call and is recognised
+  by the identity of the propagator data, `num_params` and the pole / residue lists
+  it was built from; a mismatch builds locally. There is no `id()`-keyed global, so
+  the spatial bridge, which re-solves the poles for each q, cannot be served stale
+  data. Do not mutate those objects in place while a call runs.
+- **L3 lazy SR** (`USE_SETUP_LAZY_SR`, `DAEDALUS_SETUP_LAZY_SR`, counters
+  `setup_lazy_sr_deferred` / `_built`, `setup_lazy_display_deferred` / `_built`).
+  `edge_info[i]['smooth_factor']` is read only by the shot-noise and SR-integrand
+  branches, and the display-only `stripped_integrand` by nothing; both are built on
+  first read. The keys stay present in every record (the records are a dict
+  subclass whose listed keys resolve on read); a failed result carries the eager
+  value.
+- **L5 shared automorphism work** (`engine.diagrams.symmetry.USE_AUT_MEMO`,
+  `DAEDALUS_SETUP_AUT_MEMO`, counters `setup_aut_memo_hits` / `_misses` /
+  `_evictions`, `setup_aut_wick_skipped`). `_automorphism_order` is memoised per
+  (diagram, `fix_external`): the entry holds the diagram (its `id` cannot be reused),
+  a hit checks identity and the sizes of its containers, the table is cleared at
+  8192 entries and is thread safe. `external_wick_compensation` is skipped when the
+  diagram has a single Wick mapping, where the index |Aut_free| / |Aut_fixed| is
+  exactly 1 (every external field occurs once, so the leaves are distinguished by
+  field with or without fixing them; checked against the real group computation on
+  10,892 diagrams). Do not mutate a typed diagram after it was classified.
+- Each flag is a module boolean read at call time; the environment variable is read
+  at import (1 or 0, also true/false, yes/no, on/off; anything else is an error).
+  `DAEDALUS_PHASE_J_LEGACY_SETUP=1`, read at call time, forces all four off. It is a
+  different switch from `DAEDALUS_PHASE_J_LEGACY`, which reproduces older numbers;
+  neither touches the other, and the setup levers do not change any number.
+
+Measured on a 4-vCPU Linux VM (other jobs running; off and on alternated in one
+process, warm disk cache, whole `compute_cumulants` run including enumeration and the
+τ evaluation; each pair is two samples):
+
+| run | all off | all on |
+|---|---|---|
+| `ou_quartic_two_dim`, k = 2, ℓ = 2, 7 τ | 35.0 / 35.2 s | 10.8 / 11.2 s |
+| `ou_quartic`, k = 2, ℓ = 3, 7 τ | 6.7 / 6.9 s | 1.9 / 1.9 s |
+| `ou_quartic`, k = 4, ℓ = 2, 2 points | 29.4 / 29.5 s | 16.2 / 16.4 s |
+| `ou_quartic`, k = 4, ℓ = 1 | 0.61 / 0.60 s | 0.36 / 0.39 s |
+| `single_population_spike_reset_test`, k = 2, ℓ = 1 | 14.0 / 13.7 s | 10.2 / 10.6 s |
+
+Under `cProfile` the cumulative time of `integrate_diagram` for the first row (the
+per-diagram setup; the evaluation happens later) drops from 31.1 s to 1.6 s of a
+45.8 s → 16.1 s run. L1 carries almost all of it on this model; with L1 on, L2, L3
+and L5 each save about a second or less there, and more on models where few diagrams
+have a zero prefactor. Models with no zero-prefactor diagram (the spike models) gain
+only a few percent.
+
 ### Fixed: `SPATIAL_INTEGRATOR=bessel` warns at τ ≠ 0
 
 The `bessel` integrator is exact only when the external times are equal
