@@ -342,8 +342,15 @@ class SDE:
         assumed = [v > 0 for v in rest.variables() if str(v) != 't']
         for a in assumed:
             assume(a)
+        # A retarded kernel carries heaviside(t): Sage/Maxima does not always evaluate the integral over (-oo, oo)
+        # with it (the result can be an unevaluated ``cases``), so integrate its t > 0 part over (0, oo) instead.
+        from sage.all import heaviside
+        lower = -oo
+        if rest.has(heaviside(t)):
+            rest = rest.subs({heaviside(t): SR(1)})
+            lower = SR(0)
         try:
-            val = integrate(rest, t, -oo, oo) if not rest.is_zero() else SR(0)
+            val = integrate(rest, t, lower, oo) if not rest.is_zero() else SR(0)
         finally:
             for a in assumed:
                 forget(a)
