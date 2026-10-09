@@ -570,9 +570,9 @@ def test_shipped_v2_file_is_picked_up():
     """The (1,4) cell ships with the package and must be found by name."""
     path = pdc.shipped_path(1, 4)
     assert os.path.isfile(path), path
-    with open(path, 'rb') as f:
-        certs = pickle.load(f)
+    certs, stamp = pdc.read_cert_file(path, 1, 4)
     assert isinstance(certs, set) and len(certs) == 22332
+    assert stamp['convention'] == pdc.CONVENTION
     # Spot-check the rebuild rather than materialising all 22k Sage graphs.
     # Compared up to isomorphism: the bytes depend on the canonical-labelling
     # backend of the machine that wrote the file (module docstring).

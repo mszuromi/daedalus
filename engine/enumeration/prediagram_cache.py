@@ -17,6 +17,11 @@ v2 (``saved_prediagrams/streaming_v2/prediagrams_v2_k{k}_l{ell}.pkl``)
     computed by the streaming path drop straight in.  Records are rebuilt on
     load by :func:`record_from_cert`.
 
+    Every v2 file is STAMPED (:data:`V2_FORMAT`, :data:`CONVENTION`,
+    :data:`EDGE_PACK`, certificate backend, Sage version, cell, class count):
+    a file whose convention stamp differs from this code's is refused with a
+    message naming both; a legacy bare-set file is accepted.
+
 shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl``)
     The v2 files for the cells in :data:`SHIPPED_CELLS` (every cell with
     k <= 4 and ell <= 2, plus (1,3), (1,4), (2,3), (5,0), (5,1), (6,0);
@@ -136,6 +141,7 @@ the v2 win is disk and the ability to STORE a cell like (6,2) at all; making
 the typed-assignment stage itself streaming is separate work.
 """
 
+import logging
 import os
 import pickle
 
@@ -167,6 +173,113 @@ SHIPPED_CELLS = ((1, 1), (1, 2), (1, 3), (1, 4),
                  (5, 0), (5, 1), (6, 0))
 
 
+# ── Version stamp ───────────────────────────────────────────────────────────
+#: A v2 file is ``{'stamp': {...}, 'certs': [packed certs, sorted]}``.  The
+#: stamp records what the loader must know to use the certs safely:
+#:
+#: * ``format``      layout of the file itself (:data:`V2_FORMAT`);
+#: * ``convention``  the prediagram convention (:data:`CONVENTION`, the
+#:                   equivalent of the ``prediagrams_v1`` stage name): which
+#:                   objects a cert stands for (dedup up to plain isomorphism,
+#:                   leaves = degree-1 vertices, ...).  A MISMATCH IS REFUSED;
+#: * ``edge_pack``   byte layout of ``pack_cert`` (:data:`EDGE_PACK`), also
+#:                   refused on mismatch;
+#: * ``cert_backend`` canonical-labelling backend that produced the bytes
+#:                   ('sage', 'fast'); informational, because loading never
+#:                   canonicalises (compare sets through ``recanonicalize``);
+#: * ``sage_version`` informational;
+#: * ``k``, ``ell``, ``count`` the cell and its class count (checked on load).
+#:
+#: A file that is a bare ``set`` of certs (written before the stamp existed) is
+#: a LEGACY file: accepted as the current convention, noted once at debug level.
+V2_FORMAT = 1
+CONVENTION = 'prediagrams_v1'
+EDGE_PACK = 1
+
+_log = logging.getLogger(__name__)
+_LEGACY_NOTED = False
+
+
+def _sage_version():
+    try:
+        import sage.version
+        return str(sage.version.version)
+    except Exception:                                   # pragma: no cover
+        return 'unknown'
+
+
+def make_stamp(k, ell, certs, cert_backend=None):
+    """The stamp for a cert set at ``(k, ell)``; *cert_backend* defaults to
+    the backend active in this process."""
+    if cert_backend is None:
+        import engine.enumeration.loop_diagram_enumeration as _L
+        cert_backend = _L.CERT_BACKEND
+    return {'format': V2_FORMAT, 'convention': CONVENTION,
+            'edge_pack': EDGE_PACK, 'cert_backend': str(cert_backend),
+            'sage_version': _sage_version(), 'k': int(k), 'ell': int(ell),
+            'count': len(certs)}
+
+
+def check_stamp(stamp, where, k=None, ell=None):
+    """Refuse a stamp this code cannot safely use; return it unchanged."""
+    if not isinstance(stamp, dict):
+        raise ValueError(f'{where}: malformed stamp {stamp!r}')
+    if stamp.get('convention') != CONVENTION:
+        raise ValueError(
+            f"{where}: prediagram convention stamp {stamp.get('convention')!r} "
+            f'does not match this code ({CONVENTION!r}); the cells were built '
+            f'under another convention.  Delete the file (or the cache '
+            f'directory) so it is recomputed, or use the code version that '
+            f'wrote it.')
+    if stamp.get('edge_pack') != EDGE_PACK or stamp.get('format') != V2_FORMAT:
+        raise ValueError(
+            f"{where}: file format {stamp.get('format')!r}/edge pack "
+            f"{stamp.get('edge_pack')!r} does not match this code "
+            f'({V2_FORMAT!r}/{EDGE_PACK!r}); regenerate the file.')
+    if k is not None and (stamp.get('k'), stamp.get('ell')) != (int(k), int(ell)):
+        raise ValueError(
+            f"{where}: stamped for cell {(stamp.get('k'), stamp.get('ell'))}, "
+            f'requested {(int(k), int(ell))}')
+    return stamp
+
+
+def read_cert_file(path, k=None, ell=None):
+    """``(certs, stamp)`` of a v2 file.  A legacy bare-set file returns
+    ``stamp=None`` (accepted); a stamped file is checked by
+    :func:`check_stamp` and its class count is verified."""
+    global _LEGACY_NOTED
+    with open(path, 'rb') as f:
+        obj = pickle.load(f)
+    if isinstance(obj, dict):
+        stamp = check_stamp(obj.get('stamp'), path, k, ell)
+        certs = set(obj['certs'])
+        if len(certs) != stamp.get('count'):
+            raise ValueError(f"{path}: stamp says {stamp.get('count')} "
+                             f'classes, file holds {len(certs)}')
+        return certs, stamp
+    if isinstance(obj, (set, frozenset, list, tuple)):
+        if not _LEGACY_NOTED:
+            _LEGACY_NOTED = True
+            _log.debug('unstamped (legacy) v2 cert file %s accepted as '
+                       'convention %s', path, CONVENTION)
+        return set(obj), None
+    raise ValueError(f'{path}: expected a stamped cert file or a set of '
+                     f'packed certs, got {type(obj).__name__}')
+
+
+def write_cert_file(path, k, ell, certs, cert_backend=None):
+    """Atomically write a stamped v2 file; returns the stamp."""
+    certs = set(certs)
+    stamp = make_stamp(k, ell, certs, cert_backend)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                    protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)
+    return stamp
+
+
 def shipped_path(k, ell):
     """Path of the shipped v2 cert file for ``(k, ell)``."""
     return os.path.join(SHIPPED_DIR, f'{V2_STAGE}_k{int(k)}_l{int(ell)}.pkl')
@@ -177,12 +290,13 @@ def shipped_exists(k, ell):
 
 
 def load_shipped_certs(k, ell):
-    """The shipped packed-cert set for ``(k, ell)``."""
-    with open(shipped_path(k, ell), 'rb') as f:
-        certs = pickle.load(f)
-    if not isinstance(certs, (set, frozenset)):
-        raise ValueError(f'{shipped_path(k, ell)}: expected a set of packed certs')
-    return certs
+    """The shipped packed-cert set for ``(k, ell)`` (stamp checked)."""
+    return read_cert_file(shipped_path(k, ell), k, ell)[0]
+
+
+def shipped_stamp(k, ell):
+    """The stamp of the shipped file for ``(k, ell)`` (None if legacy)."""
+    return read_cert_file(shipped_path(k, ell), k, ell)[1]
 
 
 def recanonicalize(certs):
@@ -199,11 +313,8 @@ def recanonicalize(certs):
 def write_shipped_cell(k, ell, n_procs=1, verbose=False):
     """(Re)build the shipped file for one cell from a fresh enumeration."""
     certs = set(stream_prediagram_certs(k, ell, n_procs=n_procs, verbose=verbose))
-    os.makedirs(SHIPPED_DIR, exist_ok=True)
     path = shipped_path(k, ell)
-    with open(path + '.tmp', 'wb') as f:
-        pickle.dump(certs, f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(path + '.tmp', path)
+    write_cert_file(path, k, ell, certs)
     return path, len(certs)
 
 #: Filename stems.  Both match what :class:`~engine.core.cache.PipelineCache`
@@ -401,24 +512,16 @@ def certs_from_records(records):
 # ── Load / save ─────────────────────────────────────────────────────────────
 
 def load_v2_certs(root, k, ell):
-    """Read the packed-cert set for ``(k, ell)``."""
-    with open(v2_path(root, k, ell), 'rb') as f:
-        certs = pickle.load(f)
-    if not isinstance(certs, (set, frozenset, list, tuple)):
-        raise ValueError(
-            f'{v2_path(root, k, ell)}: expected a set of packed certs, '
-            f'got {type(certs).__name__}')
-    return certs
+    """Read the packed-cert set for ``(k, ell)`` (stamp checked)."""
+    return read_cert_file(v2_path(root, k, ell), k, ell)[0]
 
 
-def save_v2_certs(root, k, ell, certs):
-    """Write the packed-cert set for ``(k, ell)``, creating the subdir."""
+def save_v2_certs(root, k, ell, certs, cert_backend=None):
+    """Write the stamped packed-cert set for ``(k, ell)``, creating the
+    subdir.  *cert_backend* names the backend that produced *certs* (default:
+    the one active in this process)."""
     path = v2_path(root, k, ell)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    with open(tmp, 'wb') as f:
-        pickle.dump(set(certs), f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, path)
+    write_cert_file(path, k, ell, certs, cert_backend)
     return path
 
 
@@ -494,8 +597,9 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
         return list(sage_load(v1_path(root, k, ell))), 'v1'
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
-        certs = load_shipped_certs(k, ell)
-        save_v2_certs(root, k, ell, certs)
+        certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
+        save_v2_certs(root, k, ell, certs,
+                      (stamp or {}).get('cert_backend', 'sage'))
         return records_from_certs(certs), 'shipped'
 
     certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
