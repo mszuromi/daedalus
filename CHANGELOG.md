@@ -1571,6 +1571,18 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
 
 ### Added
 
+- **Noise-source library (`api/noise.py`).** Every noise source is given by
+  its per-unit-time cumulant generating function `K(theta; x)`,
+  `E[exp(theta d eta) | past] = exp(K dt)`, and enters the MSR action as
+  `-K(sum_i c_i psi_i)` (so `Gaussian(var='2*D')` gives `-D*xt^2` and
+  `Poisson(rate='phi')` gives `-(exp(xt)-1)*phi`). Sources: `Gaussian(var,
+  mean)`, `Poisson(rate, size)`, `CompoundPoisson(rate, jump)` with the jump
+  laws `Dirac`, `Exponential`, `Gamma`, `GaussianJump`, `Laplace`, `Uniform`,
+  `Bernoulli`, `Binomial`, `FinitePMF`, `GammaProcess`,
+  `InverseGaussianProcess`, and the escape hatches `Cumulants([...])` and
+  `CGF(expr)`. Parameters may depend on the fields; each source checks
+  `K(0) = 0`, rejects an explicit time `t` and validates its symbols. New
+  module only; no engine or model changes.
 - **Call-time Phase J flags.** The flags are module attributes of
   `engine.integration.time_domain.final_integral`. Their environment variables
   are read once, at import. After that, the attribute is read at call time, so
