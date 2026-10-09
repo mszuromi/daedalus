@@ -1583,6 +1583,23 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   `CGF(expr)`. Parameters may depend on the fields; each source checks
   `K(0) = 0`, rejects an explicit time `t` and validates its symbols. New
   module only; no engine or model changes.
+- **SDE front-end (`api/sde.py`).** `SDE(name)` declares fields, their
+  equations in the operator form of `.equation` (`.equation('v',
+  lhs='(tau*Dt + 1)*v', rhs='Em + w*g*n')`, or `.drift('x', f)` for
+  `lhs='Dt*x'`) and noise sources from `api/noise.py`
+  (`.noise('xi', Gaussian(var='2*D'), couples={'x': 1})`). It derives the
+  MSR action `sum_x xt*(lhs - rhs) - sum_a K_a(sum_x c_xa*xt)` (wrapped in
+  `sum(... for i in <population>)`) and the mean-field equations
+  `lhs|_{Dt=0} = rhs + sum_a c_xa*K_a'(0)` (kernels replaced by their
+  integral), and emits them through `TemporalModelBuilder`
+  (`set_action_text` + `.equation`); `.to_builder()` returns that builder for
+  further hand edits, `.show()` prints the derived calls. A source can be
+  exposed as a field (`expose='n'`: the point-process form
+  `nt*n - K(nt)` of the Hawkes models). Ito by default;
+  `.interpretation('stratonovich')` adds the Gaussian drift correction and
+  raises for jump or exposed sources. Populations, indexed parameters,
+  functions and kernels pass through unchanged. New module only; no engine or
+  model changes.
 - **Call-time Phase J flags.** The flags are module attributes of
   `engine.integration.time_domain.final_integral`. Their environment variables
   are read once, at import. After that, the attribute is read at call time, so
