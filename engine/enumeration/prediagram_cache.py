@@ -23,16 +23,34 @@ v2 (``saved_prediagrams/streaming_v2/prediagrams_v2_k{k}_l{ell}.pkl``)
     message naming both; a legacy bare-set file is accepted.
 
 shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl``)
-    The v2 files for the cells in :data:`SHIPPED_CELLS` (every cell with
-    k <= 4 and ell <= 2, plus (1,3), (1,4), (2,3), (5,0), (5,1), (6,0);
-    3.4 MB in total), tracked in git and found relative to this module, so a
-    fresh clone never recomputes them and does not depend on the working
-    directory.  Nothing under ``saved_prediagrams/`` is tracked: that directory
-    is the per-machine cache, and the four large cells that live there on the
-    development machine ((6,2), (4,3), (2,4), (8,1)) are 790 MB.  Rebuild the
+    The stamped v2 files for the cells in :data:`SHIPPED_CELLS`, EXACTLY these
+    21 cells (class counts in parentheses; 5.7 MB beyond the original
+    3.4 MB):
+
+    ====  =======================================================
+    k     ell
+    ====  =======================================================
+    1     1 (1), 2 (15), 3 (434), 4 (22,332)
+    2     0 (1), 1 (9), 2 (283), 3 (14,928), 4 (1,152,032)
+    3     0 (3), 1 (80), 2 (4,496), 3 (358,983)
+    4     0 (13), 1 (755), 2 (65,956)
+    5     0 (69), 1 (7,412), 2 (922,728)
+    6     0 (448), 1 (75,253)
+    ====  =======================================================
+
+    The four largest ((2,4), (3,3), (5,2), (6,1)) are ``.pkl.xz`` (the same
+    stamped pickle, xz-compressed, read with ``lzma``); the rest are plain
+    ``.pkl``.  ``MANIFEST.json`` in that directory lists every file with its
+    cell, class count, size and SHA-256 (:func:`build_manifest`).  They are
+    tracked in git and found relative to this module, so a fresh clone never
+    recomputes them and does not depend on the working directory.  Nothing
+    under ``saved_prediagrams/`` is tracked: that directory is the per-machine
+    cache, and the large cells that live there on the development machine
+    ((6,2), (4,3)) are NOT shipped (see :func:`fetch_cache`).  Rebuild the
     shipped files with ``sage -python -m engine.enumeration.prediagram_cache
-    --rebuild-shipped --procs N``; ``tests/test_shipped_prediagrams.py`` checks
-    them against a fresh enumeration.
+    --rebuild-shipped --procs N`` and the manifest with ``--rebuild-manifest``;
+    ``tests/test_shipped_prediagrams.py`` checks the manifest and compares
+    the small cells with a fresh enumeration.
 
     One portability caveat.  A certificate is ``canonical_label()`` of the
     graph, and Sage picks the backend by graph, not by machine: bliss when it
@@ -142,6 +160,7 @@ the typed-assignment stage itself streaming is separate work.
 """
 
 import logging
+import lzma
 import os
 import pickle
 
@@ -167,10 +186,11 @@ SHIPPED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 #: The cells shipped with the package (see the module docstring).
 SHIPPED_CELLS = ((1, 1), (1, 2), (1, 3), (1, 4),
-                 (2, 0), (2, 1), (2, 2), (2, 3),
-                 (3, 0), (3, 1), (3, 2),
+                 (2, 0), (2, 1), (2, 2), (2, 3), (2, 4),
+                 (3, 0), (3, 1), (3, 2), (3, 3),
                  (4, 0), (4, 1), (4, 2),
-                 (5, 0), (5, 1), (6, 0))
+                 (5, 0), (5, 1), (5, 2),
+                 (6, 0), (6, 1))
 
 
 # ── Version stamp ───────────────────────────────────────────────────────────
@@ -248,7 +268,8 @@ def read_cert_file(path, k=None, ell=None):
     ``stamp=None`` (accepted); a stamped file is checked by
     :func:`check_stamp` and its class count is verified."""
     global _LEGACY_NOTED
-    with open(path, 'rb') as f:
+    opener = lzma.open if str(path).endswith('.xz') else open
+    with opener(path, 'rb') as f:
         obj = pickle.load(f)
     if isinstance(obj, dict):
         stamp = check_stamp(obj.get('stamp'), path, k, ell)
@@ -273,16 +294,26 @@ def write_cert_file(path, k, ell, certs, cert_backend=None):
     stamp = make_stamp(k, ell, certs, cert_backend)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
-    with open(tmp, 'wb') as f:
-        pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
-                    protocol=pickle.HIGHEST_PROTOCOL)
+    if str(path).endswith('.xz'):
+        with lzma.open(tmp, 'wb', preset=9 | lzma.PRESET_EXTREME) as f:
+            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        with open(tmp, 'wb') as f:
+            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                        protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(tmp, path)
     return stamp
 
 
 def shipped_path(k, ell):
-    """Path of the shipped v2 cert file for ``(k, ell)``."""
-    return os.path.join(SHIPPED_DIR, f'{V2_STAGE}_k{int(k)}_l{int(ell)}.pkl')
+    """Path of the shipped v2 cert file for ``(k, ell)``: the plain ``.pkl``
+    or, when only that exists, the xz-compressed ``.pkl.xz`` variant (a
+    stamped pickle read with ``lzma``); the ``.pkl`` name when neither does."""
+    base = os.path.join(SHIPPED_DIR, f'{V2_STAGE}_k{int(k)}_l{int(ell)}.pkl')
+    if not os.path.isfile(base) and os.path.isfile(base + '.xz'):
+        return base + '.xz'
+    return base
 
 
 def shipped_exists(k, ell):
@@ -316,6 +347,67 @@ def write_shipped_cell(k, ell, n_procs=1, verbose=False):
     path = shipped_path(k, ell)
     write_cert_file(path, k, ell, certs)
     return path, len(certs)
+
+
+# ── Shipped manifest ────────────────────────────────────────────────────────
+#: Tracked next to the shipped files: for every file its name, cell, class
+#: count, size and SHA-256.  ``tests/test_shipped_prediagrams.py`` checks it.
+MANIFEST_NAME = 'MANIFEST.json'
+
+
+def manifest_path():
+    return os.path.join(SHIPPED_DIR, MANIFEST_NAME)
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_manifest(directory=None):
+    """The manifest entries of every ``prediagrams_v2_k*_l*.pkl[.xz]`` in
+    *directory* (default :data:`SHIPPED_DIR`), sorted by cell.  Reads each
+    file's stamp for the class count."""
+    import re
+    directory = directory or SHIPPED_DIR
+    rx = re.compile(rf'^{V2_STAGE}_k(\d+)_l(\d+)\.pkl(\.xz)?$')
+    entries = []
+    for name in os.listdir(directory):
+        m = rx.match(name)
+        if not m:
+            continue
+        k, ell = int(m.group(1)), int(m.group(2))
+        path = os.path.join(directory, name)
+        certs, stamp = read_cert_file(path, k, ell)
+        entries.append({'name': name, 'k': k, 'ell': ell,
+                        'count': len(certs), 'size': os.path.getsize(path),
+                        'sha256': _sha256(path),
+                        'convention': (stamp or {}).get('convention'),
+                        'cert_backend': (stamp or {}).get('cert_backend')})
+    entries.sort(key=lambda e: (e['k'], e['ell']))
+    return entries
+
+
+def write_manifest(directory=None):
+    """(Re)write ``MANIFEST.json`` in *directory*; returns the entries."""
+    import json
+    directory = directory or SHIPPED_DIR
+    entries = build_manifest(directory)
+    with open(os.path.join(directory, MANIFEST_NAME), 'w') as f:
+        json.dump({'convention': CONVENTION, 'files': entries}, f, indent=1)
+        f.write('\n')
+    return entries
+
+
+def load_manifest(directory=None):
+    import json
+    with open(os.path.join(directory or SHIPPED_DIR, MANIFEST_NAME)) as f:
+        return json.load(f)
+
 
 #: Filename stems.  Both match what :class:`~engine.core.cache.PipelineCache`
 #: would produce for these stages at ``(k, ell)``, so the shipped v1 ``.sobj``
@@ -613,11 +705,16 @@ if __name__ == '__main__':                      # sage -python -m engine.enumera
     import argparse
     ap = argparse.ArgumentParser(description='Rebuild the shipped prediagram cert files.')
     ap.add_argument('--rebuild-shipped', action='store_true')
+    ap.add_argument('--rebuild-manifest', action='store_true',
+                    help='rewrite shipped_prediagrams/MANIFEST.json')
     ap.add_argument('--procs', type=int, default=1)
     ns = ap.parse_args()
     if ns.rebuild_shipped:
         for _k, _l in SHIPPED_CELLS:
             _p, _n = write_shipped_cell(_k, _l, n_procs=ns.procs)
             print(f'({_k},{_l}) {_n:7d} certs -> {_p}')
+    elif ns.rebuild_manifest:
+        for _e in write_manifest():
+            print(f"({_e['k']},{_e['ell']}) {_e['count']:8d} classes {_e['size']:9d} B  {_e['name']}")
     else:
         ap.print_help()
