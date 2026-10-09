@@ -522,8 +522,18 @@ def _residue_at_pole(expr, var, pole):
             return SR(0)
 
 
+class PoleSearchError(NotImplementedError):
+    """The poles of an integrand could not be found as explicit values."""
+
+
 def _find_poles(expr, var):
-    """Find poles of a rational expression in var."""
+    """Find poles of a rational expression in var.
+
+    Returns ``[]`` only when the denominator genuinely has no root in
+    ``var``.  If the root search fails or returns anything other than an
+    explicit value for ``var``, raises :class:`PoleSearchError` rather than
+    letting a failed search look like "no poles".
+    """
     from sage.all import solve as sage_solve
     try:
         expr_s = expr.simplify_rational()
@@ -532,9 +542,17 @@ def _find_poles(expr, var):
     try:
         _, denom = expr_s.numerator_denominator()
         sols = sage_solve(denom == 0, var, solution_dict=True)
-        return [s[var] for s in sols]
-    except Exception:
-        return []
+        poles = [s[var] for s in sols]
+    except Exception as exc:
+        raise PoleSearchError(
+            f"could not find explicit poles in {var} of the integrand "
+            f"{str(expr_s)[:200]}: {type(exc).__name__}: {str(exc)[:100]}"
+        ) from exc
+    if any(SR(p).has(var) for p in poles):
+        raise PoleSearchError(
+            f"could not find explicit poles in {var} of the integrand "
+            f"{str(expr_s)[:200]}: solve returned an implicit solution")
+    return poles
 
 
 def _integrate_by_residues(expr, var, close_upper=True):
@@ -630,6 +648,8 @@ def integrate_to_time_domain(integrand_result):
                 current_expr, omega_ext, close_upper=True)
             result_lower = _integrate_by_residues(
                 current_expr, omega_ext, close_upper=False)
+        except PoleSearchError:
+            raise
         except Exception:
             status = 'partial'
             break
