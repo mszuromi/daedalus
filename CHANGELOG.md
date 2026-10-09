@@ -873,8 +873,20 @@ sees the same expression.
   equalities and verdicts, and `==`-equal constraint rows (`a_int`, `a_ext`, `c0`)
   for every smooth edge. Any difference raises `DeltaSolveValidationError`, naming the
   diagram serial, the subset and its δ edges.
-- Not covered: the grouped path (`integrate_grouped_diagram`) has its own δ-solve
-  (`grouped_integral._grouped_delta_solve`), which still uses `sage_solve`.
+- **Grouped path.** `integrate_grouped_diagram` has its own δ-solve
+  (`grouped_integral._grouped_delta_solve`); it now reads the same lever and umbrella
+  and calls the same `_delta_eliminate_exact` (same elimination order, by-name variable
+  matching, `sage_solve` fallback, counters). Like the legacy grouped solve it does not
+  chain-resolve earlier substitutions. The residual shot-noise test
+  (`_has_nontrivial_equality`) uses the exact zero test with the SR `is_zero()` as the
+  fallback. The same validation mode compares the grouped solve to the legacy one
+  (feasibility, substitutions as polynomials and SR trees, residual equalities and
+  their zero verdicts) and raises `DeltaSolveValidationError` naming the subset. The
+  M2a token replay `_delta_solve_leaves_residual` is unchanged and still agrees with
+  the solve (`tests/test_grouped_delta_solve.py`). On the grouped
+  `single_population_spike_reset_test` (k = 2, ℓ = 1) the lever removes the roughly
+  1.5 s of `sage_solve` from a 6.3 s run. Totals, per-ℓ values and per-group values
+  are `np.array_equal` lever off / on / validate.
 
 Checked on a 4-vCPU Linux VM with the validation mode and with the lever off vs on in
 one process (warm disk cache). Every total, per-ℓ value and per-diagram value was

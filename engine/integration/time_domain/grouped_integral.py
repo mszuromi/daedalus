@@ -135,7 +135,7 @@ USE_GROUPED_ANALYTIC_MODESUM = True
 _GROUPED_EXP_REAL_LIMIT = 600.0
 
 
-def _grouped_delta_solve(dt_syms, delta_edges, integration_vars):
+def _grouped_delta_solve_legacy(dt_syms, delta_edges, integration_vars):
     """The δ-edge elimination of ``integrate_grouped_diagram`` for one
     subset (factored out verbatim, M2a): for each δ edge in order, apply the
     solutions found so far (Sage ``.subs``, one parallel pass), solve for
@@ -178,9 +178,62 @@ def _grouped_delta_solve(dt_syms, delta_edges, integration_vars):
     return substitutions, remaining_int_vars, ext_time_equalities
 
 
-def _has_nontrivial_equality(ext_time_equalities):
+def _grouped_delta_solve_exact(dt_syms, delta_edges, integration_vars):
+    """``_grouped_delta_solve_legacy`` with the M10 lever
+    (``final_integral.USE_SETUP_DELTA_SOLVE``): the same elimination order,
+    no chain resolution (as the legacy grouped solve), each solution found by
+    ``final_integral._delta_eliminate_exact`` (``sage_solve`` only as the
+    fallback) with every variable test by name.  Same return value."""
+    counters = _fi_mod._RUNTIME_COUNTERS
+    substitutions = {}
+    remaining_int_vars = list(integration_vars)
+    ext_time_equalities = []
+    for ei_idx in delta_edges:
+        eq_expr = SR(dt_syms[ei_idx]).subs(substitutions)
+        try:
+            eq_names = {str(v) for v in eq_expr.variables()}
+        except AttributeError:
+            eq_names = set()
+        int_var_to_eliminate = None
+        for iv in remaining_int_vars:
+            if str(iv) in eq_names:
+                int_var_to_eliminate = iv
+                break
+        if int_var_to_eliminate is None:
+            ext_time_equalities.append(eq_expr)
+            continue
+        try:
+            new_rhs = _fi_mod._delta_eliminate_exact(
+                eq_expr, int_var_to_eliminate)
+        except Exception:
+            new_rhs = None
+        if new_rhs is not None:
+            counters['setup_delta_solve_fast'] += 1
+        else:
+            counters['setup_delta_solve_fallback'] += 1
+            try:
+                sol = sage_solve(
+                    eq_expr == 0, int_var_to_eliminate,
+                    solution_dict=True,
+                )
+            except Exception:
+                sol = []
+            if not sol:
+                return None
+            new_rhs = sol[0][int_var_to_eliminate]
+        substitutions[int_var_to_eliminate] = new_rhs
+        x_name = str(int_var_to_eliminate)
+        # first match only, as the legacy ``list.remove``
+        del remaining_int_vars[next(
+            i for i, iv in enumerate(remaining_int_vars)
+            if str(iv) == x_name)]
+    return substitutions, remaining_int_vars, ext_time_equalities
+
+
+def _has_nontrivial_equality_legacy(ext_time_equalities):
     """True if some residual equality is not identically zero (a shot-noise
-    δ(τ) subset, which the grouped prototype skips)."""
+    δ(τ) subset, which the grouped prototype skips); the SR ``is_zero``
+    test."""
     for eq in ext_time_equalities:
         try:
             if bool(eq.is_zero()):
@@ -189,6 +242,99 @@ def _has_nontrivial_equality(ext_time_equalities):
             pass
         return True
     return False
+
+
+def _has_nontrivial_equality_exact(ext_time_equalities):
+    """``_has_nontrivial_equality_legacy`` with the exact zero test of an
+    exactly rational linear form (all coefficients zero); the SR test for
+    anything else."""
+    for eq in ext_time_equalities:
+        verdict = _fi_mod._residual_is_zero_exact(eq)
+        if verdict is None:
+            try:
+                verdict = bool(eq.is_zero())
+            except Exception:
+                verdict = False
+        if not verdict:
+            return True
+    return False
+
+
+def _validate_grouped_delta(fast, legacy, where):
+    """``VALIDATE_DELTA``: raise ``DeltaSolveValidationError`` unless the
+    exact grouped solve ``fast`` and the ``sage_solve`` one ``legacy`` agree
+    exactly (feasibility, eliminated / remaining variables, substitutions as
+    polynomials and as SR trees, residual equalities and their zero
+    verdicts); count the validated eliminations."""
+    Err = _fi_mod.DeltaSolveValidationError
+
+    def fail(msg):
+        raise Err(f'M10 grouped δ-solve mismatch ({where}): {msg}')
+
+    if (fast is None) != (legacy is None):
+        fail(f'feasibility differs: exact {fast is not None}, '
+             f'sage_solve {legacy is not None}')
+    if fast is None:
+        return
+    f_subs, f_rem, f_ext = fast
+    l_subs, l_rem, l_ext = legacy
+    if [str(v) for v in f_rem] != [str(v) for v in l_rem]:
+        fail(f'remaining variables differ: {f_rem} vs {l_rem}')
+    f_by = {str(k): v for k, v in f_subs.items()}
+    l_by = {str(k): v for k, v in l_subs.items()}
+    if list(f_by) != list(l_by):
+        fail(f'eliminated variables differ: {list(f_by)} vs {list(l_by)}')
+    for name in f_by:
+        diff = (SR(f_by[name]) - SR(l_by[name])).expand()
+        if not diff.is_trivial_zero():
+            fail(f'{name} = {f_by[name]} (exact) vs {l_by[name]} '
+                 f'(sage_solve): difference {diff}')
+        if not SR(f_by[name]).is_trivially_equal(SR(l_by[name])):
+            fail(f'{name} = {f_by[name]} (exact) is the same polynomial as '
+                 f'{l_by[name]} (sage_solve) but not the same SR tree')
+    if len(f_ext) != len(l_ext):
+        fail(f'{len(f_ext)} vs {len(l_ext)} residual equalities')
+    for fe, le in zip(f_ext, l_ext):
+        diff = (SR(fe) - SR(le)).expand()
+        if not diff.is_trivial_zero():
+            fail(f'residual equality {fe} vs {le}')
+        verdict = _fi_mod._residual_is_zero_exact(fe)
+        if verdict is not None and verdict != _fi_mod._legacy_residual_is_zero(le):
+            fail(f'residual {fe}: exact zero-test {verdict}, SR is_zero '
+                 f'{not verdict}')
+    if _has_nontrivial_equality_exact(f_ext) != \
+            _has_nontrivial_equality_legacy(l_ext):
+        fail('shot-noise verdict (nontrivial residual) differs')
+    _fi_mod._RUNTIME_COUNTERS['setup_delta_validated'] += len(f_by)
+
+
+def _grouped_delta_solve(dt_syms, delta_edges, integration_vars, where=''):
+    """The δ-edge elimination of ``integrate_grouped_diagram`` for one
+    subset: ``_grouped_delta_solve_exact`` under the M10 lever
+    (``final_integral.USE_SETUP_DELTA_SOLVE`` / umbrella, read at call time;
+    ``VALIDATE_DELTA`` also runs the legacy solve and compares), else
+    ``_grouped_delta_solve_legacy``.  Same return value as the latter."""
+    if not _fi_mod._setup_lever_on('USE_SETUP_DELTA_SOLVE'):
+        return _grouped_delta_solve_legacy(dt_syms, delta_edges,
+                                           integration_vars)
+    solved = _grouped_delta_solve_exact(dt_syms, delta_edges,
+                                        integration_vars)
+    if _fi_mod._validate_delta_on():
+        _validate_grouped_delta(
+            solved,
+            _grouped_delta_solve_legacy(dt_syms, delta_edges,
+                                        integration_vars),
+            where or f'δ edges {list(delta_edges)}')
+    return solved
+
+
+def _has_nontrivial_equality(ext_time_equalities):
+    """True if some residual equality is not identically zero (a shot-noise
+    δ(τ) subset, which the grouped prototype skips): the exact zero test
+    under the M10 lever, the SR ``is_zero`` otherwise."""
+    if _fi_mod._setup_lever_on('USE_SETUP_DELTA_SOLVE'):
+        return _has_nontrivial_equality_exact(ext_time_equalities)
+    return _has_nontrivial_equality_legacy(ext_time_equalities)
 
 
 def _delta_solve_leaves_residual(delta_edges, edge_ends, vtok, int_order):
@@ -968,7 +1114,9 @@ def integrate_grouped_diagram(
 
         solved = _grouped_delta_solve(
             [ei['dt_sym'] for ei in ref_ei], delta_edges,
-            integration_vars_grouped)
+            integration_vars_grouped,
+            where=f'subset δ edges {delta_edges}, smooth edges '
+                  f'{smooth_edges}')
         if solved is None:              # a δ equation had no solution
             continue
         substitutions, remaining_int_vars, ext_time_equalities = solved
