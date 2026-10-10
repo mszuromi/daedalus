@@ -76,22 +76,24 @@ def ou_k2_run(tmp_path_factory):
     """One k=2, ell<=1 run through the config, with the outputs (also used by C)."""
     d = tmp_path_factory.mktemp('ou_k2')
     path = _write(d, OU_K2)
-    # discarded warm-up: a cold run and a warm run differ at ~1e-16
-    _direct('ou_quartic', 2, 1, [('x', 1), ('x', 1)], np.linspace(-4, 4, 9),
-            {'mu': 1.0, 'eps': 1e-2})
     other = tmp_path_factory.mktemp('elsewhere')
     old = os.getcwd()
     os.chdir(other)                 # relative paths must NOT follow the cwd
     try:
+        # discarded warm-up IN THE SAME DIRECTORY: the engine caches are cwd-relative, and a cold run and a warm run (or a run
+        # that finds a different cache: local v1 in the repository root, only the shipped cells elsewhere) differ at ~1e-16
+        _direct('ou_quartic', 2, 1, [('x', 1), ('x', 1)], np.linspace(-4, 4, 9),
+                {'mu': 1.0, 'eps': 1e-2})
         result, resolved = run_config(path)
     finally:
         os.chdir(old)
     return d, other, result, resolved
 
 
-def test_a_ou_quartic_k2_ell1_matches_direct(ou_k2_run):
-    _, _, result, resolved = ou_k2_run
+def test_a_ou_quartic_k2_ell1_matches_direct(ou_k2_run, monkeypatch):
+    _, other, result, resolved = ou_k2_run
     assert resolved['question']['external_fields'] == [['x', 1], ['x', 1]]
+    monkeypatch.chdir(other)        # same engine cache as the config run (caches are cwd-relative)
     direct = _direct('ou_quartic', 2, 1, [('x', 1), ('x', 1)],
                      np.linspace(-4, 4, 9), {'mu': 1.0, 'eps': 1e-2})
     _equal_totals(result, direct)

@@ -119,6 +119,8 @@ sage -python -m daedalus run config.yaml --dry-run   # validate, print the resol
 sage -python -m daedalus run config.yaml             # compute and write the outputs
 ```
 
+Run these from the repository root, or from anywhere after `sage -pip install -e .` (see *Get the code*); otherwise Python cannot find the `daedalus` module.
+
 ```yaml
 # config.yaml: the connected 2-point function of the OU quartic model, tree + 1 loop
 model: ou_quartic                  # a models/<name>.model.py, or a path to a *.model.py
