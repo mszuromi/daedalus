@@ -1820,6 +1820,28 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
     parallel batch, the warning is issued at the first region. With the
     `logging` level at DEBUG, the module's logger names every diagram the
     fallback serves, once.
+- **Model analyzer (`api/analyze.py`).** `analyze(model, question=None,
+  policy=None)` reads a model dict from any builder (`TemporalModelBuilder`,
+  `SpatialModelBuilder`, `api.sde.SDE`) and returns a `ModelReport`: frozen
+  `ModelTraits` (field counts, polynomial or not, vertex species,
+  state-dependent noise, undriven fields, time homogeneity, every saddle with
+  its linear stability and marginal modes, the propagator class with its
+  poles, repeated and close poles, fast/slow ratio, delta part and
+  causality, and the noise class: white, colored rational, Markov-embedded,
+  non-Gaussian, cross-correlated), typed `Finding`s (`code`, level
+  `error|warning|info`, `message`, `remedy`) from gates G0-G4, and an
+  assumptions ledger of the consents, conventions and assertions a result
+  would depend on (Taylor truncation, Ito reading of state-dependent noise,
+  Markov embedding, loop truncation, the chosen saddle among several stable
+  ones, asserted positivity at the saddle). The user declares the question
+  (`k`, external fields, `max_ell`, parameter point, `fixed_point_index`)
+  and the policy (`strict` promotes warnings to errors; consents such as
+  `allow_taylor_truncation`). It never raises for a bad model, leaves the
+  model dict unchanged, runs no diagram enumeration or Phase J, reads the
+  expand cache when one fits and never writes it, and is not wired into
+  `compute_cumulants`. K(omega) is formed directly from the (1,1) sector
+  (`Dt -> I*omega`) and inverted exactly over QQ[i][omega]; the symbolic
+  inverse of `build_propagator` is not used. New module only.
 
 ### Tests
 
@@ -1827,6 +1849,14 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   tabulated above (twice: the Θ(0) rule and the poset lower-bound fix). Its
   regression test is a strict expected failure until the fixture is
   refrozen.
+- `tests/test_analyze.py` checks the analyzer: a golden traits table for every
+  tracked model and three SDE-front-end references; a gallery of unsupported
+  models (an undriven field, an unstable saddle, explicit time dependence, a
+  delay and a square-root kernel, a missing external field, a marginal mode,
+  two stable saddles), each giving its finding code without an exception;
+  and, per model, under 10 s with the model dict unchanged (the two models
+  whose cold expansion exceeds that are timed when their expand cache is
+  warm; the cold run of the heaviest is a slow test).
 - `tests/test_dbm_integrator.py` checks the exact difference-constraint
   integrator: it equals the closed-form chain simplex on a plain ordering;
   shifted orderings, unequal lower bounds, a time bounded only by the
