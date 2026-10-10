@@ -91,20 +91,17 @@ def _canonical_view(td):
     same canonical labelling.  Two labelled representatives of one class
     therefore get the same page.
     """
-    from engine.diagrams.symmetry import _colored_incidence_digraph
+    from engine.diagrams.symmetry import _colored_incidence_digraph, diagram_signature
     D, _, _, color_groups = _colored_incidence_digraph(td, fix_external=False)
-    # Same partition and canonical labelling as ``diagram_signature``.
+    # The class key IS ``diagram_signature`` (whatever backend it uses); the page order comes from the canonical labelling of
+    # the same coloured digraph, a function of the isomorphism class alone.
     keys = sorted(color_groups.keys(), key=str)
     partition = [color_groups[key] for key in keys]
-    C, cert = D.canonical_label(partition=partition, certificate=True)
-    cells = tuple(tuple(sorted(cert[v] for v in color_groups[key]))
-                  for key in keys)
-    signature = (tuple(str(key) for key in keys), cells,
-                 tuple(sorted(C.edges(labels=False))))
+    _, cert = D.canonical_label(partition=partition, certificate=True)
     leaves = set(td.external_legs)
     order = sorted(td.prediagram[0].vertices(),
                    key=lambda v: (v not in leaves, cert[('V', v)]))
-    return str(signature), {v: i for i, v in enumerate(order)}
+    return str(diagram_signature(td)), {v: i for i, v in enumerate(order)}
 
 
 def _prediagram_layout(td, display_id=None):
