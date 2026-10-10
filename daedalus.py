@@ -2234,3 +2234,16 @@ def export_tikz(result, *, index=None, path=None, standalone=None,
         with open(path, 'w') as fh:
             fh.write(tex)
     return tex
+
+
+def main(argv=None):
+    """Command line: ``sage -python -m daedalus run config.yaml [--dry-run]``
+    (logic in ``api/config_run.py``)."""
+    from api.config_run import main as _cli
+    status = _cli(argv)
+    if status:
+        raise SystemExit(status)
+
+
+if __name__ == "__main__":
+    main()

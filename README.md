@@ -110,6 +110,45 @@ res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 
 For lower-level access the API layer is importable directly, e.g. `from api import compute_cumulants`.
 
+## Running from a config file
+
+`dd run` takes a YAML file instead of a script (needs PyYAML, which the conda environment has):
+
+```bash
+sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config, compute nothing
+sage -python -m daedalus run config.yaml             # compute and write the outputs
+```
+
+```yaml
+# config.yaml: the connected 2-point function of the OU quartic model, tree + 1 loop
+model: ou_quartic                  # a models/<name>.model.py, or a path to a *.model.py
+parameters:                        # numbers, or lists of numbers for indexed parameters
+  mu: 1.0
+  eps: 0.02
+question:
+  k: 2
+  max_ell: 1
+  external_fields: [[x, 1], [x, 1]]          # [field, population index], k of them
+  tau_grid: {start: -6, stop: 6, num: 25}    # or an explicit increasing list
+  taylor_order: 4                            # optional; default is chosen from k and max_ell
+policy:
+  use_cache: true
+  parallel: false
+  verbose: false
+outputs:                           # relative paths are relative to this file
+  npz: results/ou.npz
+  csv: results/ou.csv
+  plot: results/ou.png
+  # report_pdf: results/ou.pdf     # temporal models only
+```
+
+Every section but `model` is optional; an omitted `k`, `max_ell`, `external_fields` or `tau_grid` takes
+the model's own default, exactly as `dd.run` does. `points` (spatial models with k >= 3) is the
+`(n_points, k-1, 2)` list of `(x_j, tau_j)` events. Unknown keys and bad values stop the run with the
+line number, e.g. `config.yaml: line 7: unknown key 'taylor' in 'question'`. A run also writes
+`config_resolved.yaml` (every default filled in; itself a valid config) and `run_info.json` (package
+version, git commit, resolved options, wall time) next to the first output.
+
 ## Verify the install
 
 From the repository root:

@@ -1585,6 +1585,20 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   verified before the file is moved into place; never called implicitly).
   Numbers do not change.
 
+- **Config-file entry point (`api/config_run.py`, `dd run config.yaml`).**
+  `sage -python -m daedalus run config.yaml [--dry-run]` runs a YAML config:
+  `model`, `parameters`, `question` (`k`, `max_ell`, `external_fields`,
+  `tau_grid` as a list or `{start, stop, num}`, `points` for spatial k >= 3,
+  `taylor_order`), `policy` (`use_cache`, `parallel`, `n_workers`, `verbose`)
+  and `outputs` (`npz`, `csv`, `plot`, `report_pdf`). Validation is strict and
+  every error names its config line; unknown keys are errors. `--dry-run`
+  loads the model, checks the external fields against its physical fields and
+  prints the resolved config without computing. A run calls `dd.run`, writes
+  the outputs with the existing writers and saves `config_resolved.yaml` and
+  `run_info.json` (version, git commit, resolved options, wall time) next to
+  them. Relative paths resolve against the config file's directory. Numbers
+  are unchanged: the totals equal a direct `compute_cumulants` call. The only
+  edit to an existing file is a guarded `main()` at the end of `daedalus.py`.
 - **Noise-source library (`api/noise.py`).** Every noise source is given by
   its per-unit-time cumulant generating function `K(theta; x)`,
   `E[exp(theta d eta) | past] = exp(K dt)`, and enters the MSR action as
