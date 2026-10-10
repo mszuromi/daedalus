@@ -1571,6 +1571,20 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
 
 ### Added
 
+- **Prediagram cache: version stamp, four more shipped cells, manifest, explicit
+  fetch.** The v2 prediagram cert files are now stamped (format, convention
+  `prediagrams_v1`, edge-pack version, certificate backend, Sage version, cell,
+  class count). A stamp from another convention is refused with a message
+  naming both; unstamped legacy files are still accepted. The cells (2,4),
+  (3,3), (5,2) and (6,1) now ship in git as xz-compressed stamped files
+  (5.7 MB; class counts equal the v1 records and the independent recount
+  logs), next to a `MANIFEST.json` (name, cell, class count, size, SHA-256 of
+  every shipped file, checked by tests). The cells too big for git, (4,3) and
+  (6,2), are downloaded by the explicit `dd.fetch_cache(cells, dest, base_url)`
+  (base URL from `DAEDALUS_CACHE_URL`; SHA-256, size, stamp and class count are
+  verified before the file is moved into place; never called implicitly).
+  Numbers do not change.
+
 - **Noise-source library (`api/noise.py`).** Every noise source is given by
   its per-unit-time cumulant generating function `K(theta; x)`,
   `E[exp(theta d eta) | past] = exp(K dt)`, and enters the MSR action as

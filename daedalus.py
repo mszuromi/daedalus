@@ -590,6 +590,15 @@ def fundamental_from_model(model: dict) -> dict:
 parameters_from_model = fundamental_from_model
 
 
+def fetch_cache(cells='core', dest=None, base_url=None, **kw):
+    """Download the prediagram cells that are too big for git (see
+    ``engine.enumeration.prediagram_cache.fetch_cache``).  Explicit only:
+    nothing is fetched unless you call this; the base URL comes from
+    ``base_url=`` or the environment variable ``DAEDALUS_CACHE_URL``."""
+    from engine.enumeration import prediagram_cache as _pc
+    return _pc.fetch_cache(cells, dest=dest, base_url=base_url, **kw)
+
+
 def config_options(spatial=None):
     """Print every ``dd.Config`` argument — grouped, with its live default and a
     one-line description — so the full set of knobs is discoverable from any

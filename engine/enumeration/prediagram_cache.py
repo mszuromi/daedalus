@@ -268,7 +268,9 @@ def read_cert_file(path, k=None, ell=None):
     ``stamp=None`` (accepted); a stamped file is checked by
     :func:`check_stamp` and its class count is verified."""
     global _LEGACY_NOTED
-    opener = lzma.open if str(path).endswith('.xz') else open
+    with open(path, 'rb') as f:
+        xz = f.read(6) == b'\xfd7zXZ\x00'          # by content, not extension
+    opener = lzma.open if xz else open
     with opener(path, 'rb') as f:
         obj = pickle.load(f)
     if isinstance(obj, dict):
@@ -347,6 +349,112 @@ def write_shipped_cell(k, ell, n_procs=1, verbose=False):
     path = shipped_path(k, ell)
     write_cert_file(path, k, ell, certs)
     return path, len(certs)
+
+
+# ── Explicit fetch tier ─────────────────────────────────────────────────────
+#: Environment variable holding the base URL (``https://...`` or
+#: ``file:///...``) the cells in ``fetch_manifest.json`` are downloaded from.
+#: There is no built-in default URL, and nothing is ever fetched implicitly.
+FETCH_URL_ENV = 'DAEDALUS_CACHE_URL'
+FETCH_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'fetch_manifest.json')
+
+
+def load_fetch_manifest(path=None):
+    import json
+    with open(path or FETCH_MANIFEST) as f:
+        return json.load(f)
+
+
+def fetch_cache(cells='core', dest=None, base_url=None, *, manifest=None,
+                force=False, verbose=True):
+    """Download prediagram cells that are NOT tracked in git.
+
+    ``cells`` is ``'core'`` (the cells ``fetch_manifest.json`` marks core),
+    ``'all'`` (every cell it lists) or a list of ``(k, ell)``.  Only MISSING
+    cells are downloaded (not in the shipped directory, not already under
+    *dest*) unless ``force``.  *dest* is a cache root (default
+    ``saved_prediagrams``); files land in ``<dest>/streaming_v2/`` where
+    :func:`load_prediagrams` finds them as local v2 files.
+
+    *base_url* defaults to the environment variable :data:`FETCH_URL_ENV`; a
+    file is fetched from ``<base_url>/<name>`` (or from the entry's own
+    ``url`` when set).  Every download is verified against the manifest's
+    size and SHA-256 and then parsed (stamp, convention, class count) BEFORE
+    it is moved into place atomically; any mismatch removes the partial file
+    and raises ``ValueError``.  Returns ``{(k, ell): 'fetched' | 'present' |
+    'shipped'}`` and prints what it did.  Never called implicitly.
+    """
+    import hashlib
+    import urllib.request
+
+    man = manifest if manifest is not None else load_fetch_manifest()
+    entries = {(e['k'], e['ell']): e for e in man['files']}
+    if cells == 'core':
+        want = [c for c, e in entries.items() if e.get('core')]
+    elif cells == 'all':
+        want = list(entries)
+    else:
+        want = [(int(k), int(l)) for k, l in cells]
+        unknown = [c for c in want if c not in entries]
+        if unknown:
+            raise ValueError(f'fetch_cache: no manifest entry for cells {unknown}; '
+                             f'known: {sorted(entries)}')
+    base_url = base_url or os.environ.get(FETCH_URL_ENV)
+    dest = dest or 'saved_prediagrams'
+    outdir = os.path.join(os.path.expanduser(dest), V2_SUBDIR)
+    report = {}
+    for cell in sorted(want):
+        e = entries[cell]
+        k, ell = cell
+        if not force and shipped_exists(k, ell):
+            report[cell] = 'shipped'
+            continue
+        if not force and v2_exists(dest, k, ell):
+            report[cell] = 'present'
+            continue
+        if not e.get('sha256'):
+            raise ValueError(f'fetch_cache: manifest entry {e["name"]} has no sha256')
+        url = e.get('url') or (base_url.rstrip('/') + '/' + e['name'] if base_url else None)
+        if not url:
+            raise ValueError(f'fetch_cache: no base URL; pass base_url= or set '
+                             f'{FETCH_URL_ENV} (file {e["name"]} is not in git)')
+        os.makedirs(outdir, exist_ok=True)
+        final = os.path.join(outdir, e['name'])
+        tmp = final + '.part'
+        h = hashlib.sha256()
+        size = 0
+        try:
+            with urllib.request.urlopen(url) as r, open(tmp, 'wb') as f:
+                for chunk in iter(lambda: r.read(1 << 20), b''):
+                    h.update(chunk)
+                    size += len(chunk)
+                    f.write(chunk)
+            if e.get('size') is not None and size != e['size']:
+                raise ValueError(f'fetch_cache: {e["name"]}: got {size} bytes, '
+                                 f'manifest says {e["size"]}')
+            if h.hexdigest() != e['sha256']:
+                raise ValueError(f'fetch_cache: {e["name"]}: SHA-256 mismatch '
+                                 f'(got {h.hexdigest()[:16]}..., manifest '
+                                 f'{e["sha256"][:16]}...); file refused')
+            certs, _ = read_cert_file(tmp, k, ell)       # stamp + count checked
+            if e.get('count') is not None and len(certs) != e['count']:
+                raise ValueError(f'fetch_cache: {e["name"]}: {len(certs)} classes, '
+                                 f'manifest says {e["count"]}')
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+        os.replace(tmp, final)
+        report[cell] = 'fetched'
+        if verbose:
+            print(f'fetch_cache: ({k},{ell}) {len(certs)} classes, {size} bytes '
+                  f'-> {final}')
+    if verbose:
+        for cell, what in sorted(report.items()):
+            if what != 'fetched':
+                print(f'fetch_cache: ({cell[0]},{cell[1]}) {what}, nothing to do')
+    return report
 
 
 # ── Shipped manifest ────────────────────────────────────────────────────────
@@ -532,9 +640,13 @@ def _streamed_certs(k, ell, verbose=False):
 # ── Paths ───────────────────────────────────────────────────────────────────
 
 def v2_path(root, k, ell):
-    """Path of the v2 cert file for ``(k, ell)`` under cache *root*."""
-    return os.path.join(os.path.expanduser(root), V2_SUBDIR,
+    """Path of the v2 cert file for ``(k, ell)`` under cache *root*: the plain
+    ``.pkl`` or, when only that exists, a fetched ``.pkl.xz``."""
+    base = os.path.join(os.path.expanduser(root), V2_SUBDIR,
                         f'{V2_STAGE}_k{int(k)}_l{int(ell)}.pkl')
+    if not os.path.isfile(base) and os.path.isfile(base + '.xz'):
+        return base + '.xz'
+    return base
 
 
 def v1_path(root, k, ell):

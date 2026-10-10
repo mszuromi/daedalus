@@ -1,0 +1,28 @@
+{
+ "convention": "prediagrams_v1",
+ "note": "Cells too big for git. Upload the files from the release asset directory, then set DAEDALUS_CACHE_URL (or pass base_url=) to its URL; url is a per-file override, empty = base_url/name.",
+ "files": [
+  {
+   "name": "prediagrams_v2_k4_l3.pkl.xz",
+   "k": 4,
+   "ell": 3,
+   "count": 7257435,
+   "size": 15062572,
+   "sha256": "aca3b310c4feade5124efeac7a8cb44673b8559675b9b6bad5af6edcee5c8b7a",
+   "core": true,
+   "url": "",
+   "cert_backend": "sage"
+  },
+  {
+   "name": "prediagrams_v2_k6_l2.pkl.xz",
+   "k": 6,
+   "ell": 2,
+   "count": 12512917,
+   "size": 28965140,
+   "sha256": "0c7139748f5388a8cc269beb72bd577dcefb01f76269b139953ea004cd88b3fd",
+   "core": false,
+   "url": "",
+   "cert_backend": "sage"
+  }
+ ]
+}
