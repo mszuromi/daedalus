@@ -1842,6 +1842,27 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
   `compute_cumulants`. K(omega) is formed directly from the (1,1) sector
   (`Dt -> I*omega`) and inverted exactly over QQ[i][omega]; the symbolic
   inverse of `build_propagator` is not used. New module only.
+- **Symbolic tree-level covariance in the Fourier domain
+  (`api/symbolic_out.py`).** `tree_covariance(model)` builds the propagator
+  as `compute_cumulants` stage 2 does (no diagram enumeration), reads the
+  noise matrix `D` from the (2,0) sector of the action (`S` contains
+  `-(1/2) xt D xt`; `Gaussian(var='2*D')` gives `D = 2 D`, Poisson gives
+  `D = phi(v*)`) and returns `C0(omega) = G D G^dagger` as a matrix of Sage
+  expressions, fully cancelled, in the symbolic parameters. Convention:
+  `G(t) = (1/2 pi) int exp(i omega t) G(omega)` and
+  `C_ab(tau) = <x_a(0) x_b(tau)> = (1/2 pi) int C0_ab(omega) exp(-i omega tau)`,
+  the order of `compute_cumulants(external_fields=[a, b])`. Colored noise
+  works through the pipeline's own Markov embedding (extra physical fields,
+  white noise on them) and cross-correlated noise gives an off-diagonal `D`.
+  Exports per entry: sympy, LaTeX, a numpy callable with named parameters,
+  and a JSON string with the parameter list. `pair_with_kernel` returns
+  `int d omega/(2 pi) conj(L~) C0` by residues (exact, when every irreducible
+  factor of the denominator has degree <= 2 in omega; the half plane of each
+  pole is checked over a parameter neighbourhood) with a quadrature fallback
+  whose tolerance it reports; `inverse_transform` gives the exact `C(tau)`
+  and the weight of the `delta(tau)` contact term. Spatial models,
+  non-rational propagators and non-local (not Markov-embedded) noise raise
+  specific errors. New module and tests only; no engine or model changes.
 
 ### Tests
 
