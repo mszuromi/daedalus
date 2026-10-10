@@ -534,3 +534,26 @@ def test_noise_extraction_non_local_kernel_is_refused():
                     return_value=fake):
         with pytest.raises(so.UnsupportedModelError, match='non-local'):
             so.noise_matrix_from_theory(ft, m)
+
+
+def test_inverse_transform_is_independent_of_symbol_domains():
+    """A positive domain left on a parameter symbol by an earlier model builder must not change the closed form
+    (it did: the underdamped oscillator spectrum gave a wrong answer in a full-suite run). Private names keep this test
+    from leaking a domain into other tests; the domain is reset afterwards."""
+    from sage.all import var
+    names = ('g_dom_t', 'w0_dom_t')
+    var(names[0], domain='positive')
+    var(names[1], domain='positive')
+    try:
+        w, g, w0, tau = var('omega'), var(names[0]), var(names[1]), var('tau')
+        C0 = 1 / ((w ** 2 - w0 ** 2) ** 2 + g ** 2 * w ** 2)
+        ref = {names[0]: 0.2, names[1]: 1.0}
+        r = so.inverse_transform(C0, w, reference=ref)
+        f = so.to_callable(r['even'], tau, params=list(names))
+        c = so.to_callable(C0, w, params=list(names))
+        for t in (0.3, 1.7, 6.0):
+            q = so.numeric_inverse_transform(lambda x: c(x, **ref), t)
+            assert abs(q.value - complex(f(t, **ref)[()])) < 1e-6
+    finally:
+        var(names[0], domain='complex')
+        var(names[1], domain='complex')

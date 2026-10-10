@@ -1261,8 +1261,43 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
                          reason=reason)
 
 
+def _private_symbols(exprs, keep=()):
+    """Map every free symbol of ``exprs`` (except those in ``keep``) to a private, domain-free symbol.
+
+    A Sage symbol is global: a ``positive``/``real`` domain declared for ``g`` by an earlier model builder or test stays attached to
+    every later use of ``g``, and the residue/factorisation steps below returned a wrong closed form for an underdamped spectrum
+    when ``g`` and ``w0`` carried one (full-suite ordering failure). The computation therefore runs on fresh symbols that nothing
+    else has touched; ``fwd`` maps originals to fresh symbols, ``back`` the other way."""
+    fwd, back = {}, {}
+    keep_names = {str(k) for k in keep}
+    for e in exprs:
+        for v in SR(e).variables():
+            nm = str(v)
+            if nm in keep_names or v in fwd:
+                continue
+            fresh = SR.var(nm + '__c1p')
+            fwd[v], back[fresh] = fresh, v
+    return fwd, back
+
+
 def inverse_transform(C0_entry, omega=None, tau=None, *,
                       reference: Optional[dict] = None, simplify: bool = True):
+    """Exact inverse transform by residues; see ``_inverse_transform_impl``. Runs on private, domain-free symbols."""
+    om = SR('omega') if omega is None else SR(omega)
+    fwd, back = _private_symbols([C0_entry], keep=[om])
+    fresh_ref = None
+    if reference is not None:
+        by_name = {str(v): fresh for v, fresh in fwd.items()}
+        fresh_ref = {(str(by_name[k]) if k in by_name else k): val for k, val in reference.items()}
+    out = _inverse_transform_impl(SR(C0_entry).subs(fwd), om, tau, reference=fresh_ref, simplify=simplify)
+    for key, val in list(out.items()):
+        if hasattr(val, 'subs') and key != 'tau':
+            out[key] = SR(val).subs(back)
+    return out
+
+
+def _inverse_transform_impl(C0_entry, omega=None, tau=None, *,
+                            reference: Optional[dict] = None, simplify: bool = True):
     r"""Exact inverse transform  ``C(tau) = (1/2 pi) int d omega C0(omega)
     exp(-i omega tau)`` by residues.
 
