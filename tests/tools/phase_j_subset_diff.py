@@ -1062,7 +1062,8 @@ def disagreement_table(run_):
     worst = []
     for key, refs in run_['refs'].items():
         r = by_key[key]
-        reason = r['bail_reason'] or r['path']
+        reason = (f"dbm<-{r['bail_reason']}" if r['path'] == 'dbm'
+                  and r['bail_reason'] else (r['bail_reason'] or r['path']))
         for name, ref in refs.items():
             g = (name, r['m'], reason, row_kind_tag(r))
             row = table.setdefault(g, {'n': 0, 'n_disagree': 0,

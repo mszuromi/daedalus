@@ -14,7 +14,15 @@ difference-bound row:
 
 A direction that the rows leave open is closed at the box: ``s_v >= -cap``
 where the rows give ``s_v`` no lower bound (directly or through other
-variables), ``s_v <= cap`` where they give it no upper bound.  A finite bound
+variables), ``s_v <= cap`` where they give it no upper bound.  With
+``cap = inf`` (the box-free mode, M7) no box is added: a variable left
+without a lower (upper) bound is integrated from ``-inf`` (to ``+inf``) in
+closed form, which needs ``Re β_k > beta_tol`` (``< -beta_tol``) for every
+term at that step; otherwise the result is ``STATUS_DIVERGENT`` (never a
+truncated number).  ``beta_tol`` keeps a rounding residue of an exponent
+that is exactly 0 (a direction in which the integrand is constant, e.g. a
+translation of variables tied only to each other) from passing as decay.  Every such step is an integral along a recession ray of the
+(projected) region, so the test is the ray condition of the region itself.  A finite bound
 from the rows is never clipped, as in the scipy fallback's legacy routines
 (``_integrate_nd_polytope``).  The box itself is absolute (±cap from the
 time origin), not relative to the region, as in those routines: a region
@@ -120,9 +128,14 @@ STATUS_NOT_DBM = 'not_difference_rows'  # a row is not a difference row
 STATUS_OVERFLOW = 'overflow'           # a final term beyond LOG_OVERFLOW
 STATUS_TOO_MANY_CASES = 'too_many_cases'  # more than MAX_CASES cases
 STATUS_ILL_CONDITIONED = 'ill_conditioned'  # rounding error above tolerance
+STATUS_DIVERGENT = 'divergent'         # box-free: an open direction grows
 
 
 class _TooManyCases(Exception):
+    pass
+
+
+class _Divergent(Exception):
     pass
 
 
@@ -213,7 +226,7 @@ def difference_bounds(rows, m, cap=None):
         return D
     cap = float(cap)
     D = close(D)
-    if is_degenerate(D):
+    if is_degenerate(D) or cap == INF:
         return D
     open_dir = False
     for v in range(m):
@@ -303,7 +316,7 @@ def _add_term(acc, key, C, E, A):
         acc[key] = (C0 + C * f, E0, A0 + A * abs(f))
 
 
-def _integrate_var(terms, k, lo, hi, Z, eps, thin=False):
+def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
     """Integrate every term of ``terms`` (a dict ``(beta, mono) -> (C, E,
     A)``, see ``_add_term``) over ``s_k ∈ [s_lo_node + lo_c, s_hi_node +
     hi_c]``; ``lo`` / ``hi`` are ``(node, c)``.  Returns the new dict
@@ -337,8 +350,8 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False):
                       A * mag)
         if not rest:
             return out
-        for key, (C, E, A) in _integrate_var(rest, k, lo, hi, Z,
-                                             eps).items():
+        for key, (C, E, A) in _integrate_var(rest, k, lo, hi, Z, eps,
+                                             beta_tol=beta_tol).items():
             _add_term(out, key, C, E, A)
         return out
     for (beta, mono), (C, E, A) in terms.items():
@@ -358,6 +371,16 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False):
             pieces = [(1.0 / (nk + 1), nk + 1)]
             carries = False
         for sign, (node, c) in ((1.0, hi), (-1.0, lo)):
+            if node is None:
+                # box-free: an open side; its boundary term vanishes iff the
+                # term decays there (Re β_k < -beta_tol at +inf, > beta_tol
+                # at -inf).  A term that has cancelled to exactly 0 carries
+                # nothing to that side.
+                if C == 0:
+                    continue
+                if not carries or not (sign * bk.real < -beta_tol):
+                    raise _Divergent()
+                continue
             Enew = E + bk * c if carries else E
             if node == Z:
                 nb = tuple(base_beta)
@@ -435,10 +458,15 @@ def _bounds_of(D, k, active, Z):
     return _prune_lows(lows), _prune_ups(ups)
 
 
-def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False):
+def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False,
+               open_ok=False, beta_tol=0.0):
     """Recursive case-split elimination of the variables ``active`` from
     ``terms`` over the closed, non-degenerate DBM ``D``.  Fully integrated
-    terms are appended to ``leaves`` as ``(C, E)``."""
+    terms are appended to ``leaves`` as ``(C, E)``.  ``open_ok`` (the
+    box-free mode): a variable without a lower or upper bound is integrated
+    to infinity (``_Divergent`` when a term does not decay there), and such
+    a variable is preferred when the costs tie (it is integrated before a
+    near-cancelling exponent can be trapped between two variable bounds)."""
     if not terms:
         return
     if not active:
@@ -451,37 +479,47 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False):
     for k in active:
         lows, ups = _bounds_of(D, k, active, Z)
         if not lows or not ups:
-            # The box gives every variable a finite bound to Z: unreachable.
-            raise ValueError(f'DBM variable {k} is unbounded')
+            if not open_ok:
+                # The box gives every variable a finite bound to Z:
+                # unreachable.
+                raise ValueError(f'DBM variable {k} is unbounded')
+            # box-free: an open side (node None), integrated to infinity
+            lows = lows or [None]
+            ups = ups or [None]
         cost = len(lows) * len(ups)
+        if open_ok and (lows == [None] or ups == [None]):
+            cost -= 0.5
         if best is None or cost < best[0]:
             best = (cost, k, lows, ups)
     _, k, lows, ups = best
     rest = [a for a in active if a != k]
     for a in lows:
-        lo_c = -D[k][a]
+        lo_c = -INF if a is None else -D[k][a]
         for b in ups:
             stats['visits'] += 1
             if stats['visits'] > MAX_CASES:
                 raise _TooManyCases()
-            hi_c = D[b][k]
+            hi_c = INF if b is None else D[b][k]
             Dc = [row[:] for row in D]
-            for a2 in lows:
-                if a2 != a:
-                    # s_a + lo_c >= s_a2 + lo_c2:  s_a2 - s_a <= lo_c - lo_c2
-                    w = lo_c + D[k][a2]
-                    if w < Dc[a][a2]:
-                        Dc[a][a2] = w
-            for b2 in ups:
-                if b2 != b:
-                    # s_b + hi_c <= s_b2 + hi_c2:  s_b - s_b2 <= hi_c2 - hi_c
-                    w = D[b2][k] - hi_c
-                    if w < Dc[b2][b]:
-                        Dc[b2][b] = w
-            # a nonempty interval: s_a + lo_c <= s_b + hi_c
-            w = hi_c - lo_c
-            if w < Dc[b][a]:
-                Dc[b][a] = w
+            if a is not None:
+                for a2 in lows:
+                    if a2 != a:
+                        # s_a + lo_c >= s_a2 + lo_c2:  s_a2 - s_a <= lo_c - lo_c2
+                        w = lo_c + D[k][a2]
+                        if w < Dc[a][a2]:
+                            Dc[a][a2] = w
+            if b is not None:
+                for b2 in ups:
+                    if b2 != b:
+                        # s_b + hi_c <= s_b2 + hi_c2:  s_b - s_b2 <= hi_c2 - hi_c
+                        w = D[b2][k] - hi_c
+                        if w < Dc[b2][b]:
+                            Dc[b2][b] = w
+            if a is not None and b is not None:
+                # a nonempty interval: s_a + lo_c <= s_b + hi_c
+                w = hi_c - lo_c
+                if w < Dc[b][a]:
+                    Dc[b][a] = w
             Dc = close(Dc)
             if is_degenerate(Dc):
                 continue
@@ -489,8 +527,9 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False):
                 Dc[k][i] = INF
                 Dc[i][k] = INF
             new_terms = _integrate_var(terms, k, (a, lo_c), (b, hi_c), Z, eps,
-                                       thin)
-            _eliminate(new_terms, Dc, rest, Z, eps, leaves, stats, thin)
+                                       thin, beta_tol)
+            _eliminate(new_terms, Dc, rest, Z, eps, leaves, stats, thin,
+                       open_ok, beta_tol)
 
 
 def _sum_leaves(leaves):
@@ -525,7 +564,8 @@ def _sum_leaves(leaves):
 
 # ───────────────────────────────────────────────────────────── driver
 
-def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
+def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
+                      beta_tol=None):
     r"""``Σ_t C_t ∫_{region} exp(E_t + Σ_v β_tv s_v) ds``.
 
     ``rows``  ``(a, c)`` pairs, ``a·s + c > 0`` (see ``difference_bounds``);
@@ -533,10 +573,17 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
     ``seeds`` iterable of ``(C, E, beta)`` with ``beta`` a length-``m``
               sequence of complex exponent coefficients;
     ``cap``   the box half-width (open directions closed at ±cap);
+              ``math.inf``: no box (open directions integrated to infinity,
+              ``STATUS_DIVERGENT`` when a term does not decay there);
     ``scale`` the integrand's scale for the conditioning test's absolute
               floor (default: Σ_t |C_t| exp(Re E_t));
     ``eps``   ``|β|`` below which β is treated as 0 (default
-              ``BETA_ZERO_SPAN / cap``).
+              ``BETA_ZERO_SPAN / cap``; with ``cap = inf`` it is
+              ``BETA_ZERO_SPAN / 200``, which suits decay rates down to about
+              1/200: a box-free caller with slower modes passes its own);
+    ``beta_tol`` (``cap = inf`` only) the margin by which an open side's
+              exponent must decay (default ``64 ε max_t Σ_v |β_tv|``, the
+              rounding scale of the seeds' exponents).
 
     A closed form that fails the conditioning test is retried once with every
     interval between two constant bounds that is thin for its exponent
@@ -546,6 +593,7 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
 
     Returns a ``DBMResult``.
     """
+    seeds = list(seeds)              # walked twice below
     D = difference_bounds(rows, m, cap)
     if D is None:
         return DBMResult(None, STATUS_NOT_DBM)
@@ -553,8 +601,9 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
     Z = m
     if is_degenerate(D):
         return DBMResult(0j, STATUS_EMPTY)
+    open_ok = float(cap) == INF
     if eps is None:
-        eps = BETA_ZERO_SPAN / max(float(cap), 1.0)
+        eps = BETA_ZERO_SPAN / (200.0 if open_ok else max(float(cap), 1.0))
     terms = {}
     zero_mono = (0,) * n
     seed_scale = 0.0
@@ -568,29 +617,38 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None):
         _add_term(terms, key, C, E, abs(C))
     if scale is None:
         scale = seed_scale
-    res = _run(terms, D, m, Z, eps, scale, thin=False)
+    if beta_tol is None:
+        beta_tol = 64.0 * 2.220446049250313e-16 * max(
+            (sum(abs(complex(b)) for b in beta) for (_C, _E, beta) in seeds),
+            default=0.0)
+    res = _run(terms, D, m, Z, eps, scale, thin=False, open_ok=open_ok,
+               beta_tol=beta_tol)
     if res.status != STATUS_ILL_CONDITIONED:
         return res
     # Retry once with thin constant-bound intervals integrated by
     # Gauss-Legendre: a thin region (an external-time nudge, a tie) makes
     # F(b) - F(a) cancel there.  Taken only if it passes the same test, so
     # every value accepted on the first pass is unchanged.
-    res2 = _run(terms, D, m, Z, eps, scale, thin=True)
+    res2 = _run(terms, D, m, Z, eps, scale, thin=True, open_ok=open_ok,
+                beta_tol=beta_tol)
     if res2.status == STATUS_OK:
         res2.thin_retry = True
         return res2
     return res
 
 
-def _run(terms, D, m, Z, eps, scale, thin):
+def _run(terms, D, m, Z, eps, scale, thin, open_ok=False, beta_tol=0.0):
     """One elimination pass of ``integrate_exp_sum`` and its conditioning
     verdict."""
     leaves = []
     stats = {'cases': 0, 'visits': 0}
     try:
-        _eliminate(terms, D, list(range(m)), Z, eps, leaves, stats, thin)
+        _eliminate(terms, D, list(range(m)), Z, eps, leaves, stats, thin,
+                   open_ok, beta_tol)
     except _TooManyCases:
         return DBMResult(None, STATUS_TOO_MANY_CASES, 0.0, stats['cases'])
+    except _Divergent:
+        return DBMResult(None, STATUS_DIVERGENT, 0.0, stats['cases'])
     total, mag = _sum_leaves(leaves)
     if total is None:
         return DBMResult(None, STATUS_OVERFLOW, mag, stats['cases'])

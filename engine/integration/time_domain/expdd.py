@@ -75,9 +75,11 @@ Python otherwise (also under ``NUMBA_DISABLE_JIT=1``).  ``BACKEND`` says which
 one is active.  The two agree to rounding (FMA contraction and libm
 differences), not bit for bit.
 
-Nothing in Phase J calls this module by default (M6).  The only opt-in is
-``final_integral.CHAIN_UPPERS_KERNEL = 'transfer'``, which routes
-``_chain_with_intermediate_uppers`` to ``chain_with_uppers``.
+Nothing in Phase J calls this module by default.  The opt-ins are
+``final_integral.CHAIN_UPPERS_KERNEL = 'transfer'`` (M6), which routes
+``_chain_with_intermediate_uppers`` to ``chain_with_uppers``, and
+``final_integral.USE_PHASE_J_DD_KERNELS`` with its box-free companions (M7),
+which route the Phase J closed forms here through ``boxfree``.
 """
 import cmath
 import math

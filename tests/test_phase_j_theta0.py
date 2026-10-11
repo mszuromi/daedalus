@@ -874,6 +874,9 @@ _ALLOWED_CONST_ROW_CHECKS = {
         '_polygon_from_2d_constraints': 1,
         '_extract_causal_poset': 1,
         '_integrate_1d_polytope_modesum': 1,
+        # M7: the 'legacy_clip' branch of the exact (box-free) polygon,
+        # the same rule as ``_polygon_from_2d_constraints``'s
+        '_polygon_region_dd': 1,
         # the scipy.nquad fallback: downstream of the helper in
         # ``_integrate_polytope`` (which returns 0 for an EMPTY row and
         # removes a tie ordered as holding), so for 'ito' these only ever

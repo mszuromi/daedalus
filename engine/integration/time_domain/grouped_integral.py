@@ -428,16 +428,29 @@ def _evaluate_grouped_m0_modesum(
         for (_a_int, a_ext, c0) in subset_constraint_data
     ]
     total = 0.0 + 0.0j
+    # M7 (``final_integral.USE_PHASE_J_DD_KERNELS``): the one-sided test on
+    # the final exponent instead of the bilateral guard.
+    dd = _fi_mod._phase_j_dd_kernels_on()
     for (B_alpha, lambdas) in pole_tuples:
         gamma = 0.0 + 0.0j
         for e in range(len(lambdas)):
             gamma += lambdas[e] * dt_per_edge[e]
+        if dd:
+            st, v = _fi_mod._bf().exp_times(gamma, B_alpha)
+            if st != _fi_mod._bf().OK:
+                return _fi_mod._dd_status_bail(st, 'grouped_m0')
+            total += v
+            continue
         if abs(gamma.real) > _GROUPED_EXP_REAL_LIMIT:
             return _fi_mod._bail('grouped_m0_gamma_guard')
         try:
             total += B_alpha * cmath.exp(gamma)
         except (OverflowError, ValueError):
             return _fi_mod._bail('grouped_m0_exp_overflow')
+    if dd:
+        total = _fi_mod._finite_or_overflow(total, 'grouped_m0')
+        if total is not None:
+            _fi_mod._RUNTIME_COUNTERS['dd_grouped_m0'] += 1
     return total
 
 
@@ -479,6 +492,7 @@ def _integrate_grouped_m1_modesum(
     import cmath
     import math
     bbox_cap = _fi_mod._resolve_bbox_cap(bbox_cap)      # (unused)
+    _fi_mod._t_min()            # M7: a finite PHASE_J_T_MIN is never ignored
     legacy = _fi_mod._theta0_legacy()
     # Resolve the feasible interval — track unbounded sides exactly.
     L = -math.inf
@@ -512,6 +526,30 @@ def _integrate_grouped_m1_modesum(
         return 0.0 + 0.0j
     L_inf = math.isinf(L)
     U_inf = math.isinf(U)
+
+    # M7 (``final_integral.USE_PHASE_J_DD_KERNELS``): the first divided
+    # difference, γ folded, the one-sided final-exponent test.
+    if _fi_mod._phase_j_dd_kernels_on():
+        def _terms():
+            for (B_alpha, lambdas) in pole_tuples:
+                alpha_s = 0.0 + 0.0j
+                gamma = 0.0 + 0.0j
+                for e, (a_int, a_ext, c0) in enumerate(
+                        subset_constraint_data):
+                    lam = lambdas[e]
+                    a_int_v = float(a_int[0]) if a_int else 0.0
+                    c_ext = float(c0) + sum(
+                        float(a_ext[i]) * float(free_ext_vals[i])
+                        for i in range(len(a_ext))
+                    )
+                    alpha_s += lam * a_int_v
+                    gamma += lam * c_ext
+                yield B_alpha, (alpha_s,), gamma
+        return _fi_mod._interval_dd_total(
+            _terms(), 1.0 + 0.0j, L, U, 'grouped_m1',
+            _fi_mod._decay_tol(None, pole_tuples, None,
+                               subset_constraint_data),
+            _fi_mod._t_min_frame(free_ext_vals, tie_ctx))
 
     # Sum the analytic 1D exponential integral term-by-term.
     total = 0.0 + 0.0j
@@ -1459,7 +1497,8 @@ def integrate_grouped_diagram(
                                     m_val, cdata, path='dbm',
                                     evaluator='_integrate_subset_dbm',
                                     branch='noplan', value=val,
-                                    bail_reason=None, attempted=_attempted,
+                                    bail_reason=_bail_reason,
+                                    attempted=_attempted,
                                     modes=dummy_modes,
                                     prefactor=1.0 + 0.0j, plan=None,
                                     pole_tuples=pole_tuples, integrand=fc,

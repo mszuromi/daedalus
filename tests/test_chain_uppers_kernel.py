@@ -226,11 +226,16 @@ def test_the_dd_flag_validation(monkeypatch):
         FI._phase_j_dd_kernels_on()
 
 
-def test_the_umbrella_touches_neither():
-    assert FI._initial_chain_uppers_kernel(
-        {'DAEDALUS_PHASE_J_LEGACY': '1'}) == 'legacy'
-    assert FI._initial_phase_j_dd_kernels_flag(
-        {'DAEDALUS_PHASE_J_LEGACY': '1'}) is False
+def test_the_umbrella_resets_both():
+    """M7 decision: ``DAEDALUS_PHASE_J_LEGACY`` (the pre-M1 numbers) wins
+    over both M6 variables; neither 'transfer' nor the DD kernels reproduce
+    the legacy numbers bit for bit.  (The flags keep their own initialisers,
+    outside ``_initial_phase_j_flags``.)"""
+    env = {'DAEDALUS_PHASE_J_LEGACY': '1',
+           'DAEDALUS_CHAIN_UPPERS_KERNEL': 'transfer',
+           'DAEDALUS_PHASE_J_DD_KERNELS': '1'}
+    assert FI._initial_chain_uppers_kernel(env) == 'legacy'
+    assert FI._initial_phase_j_dd_kernels_flag(env) is False
     flags = FI._initial_phase_j_flags({})
     assert 'CHAIN_UPPERS_KERNEL' not in flags
     assert 'USE_PHASE_J_DD_KERNELS' not in flags

@@ -383,6 +383,10 @@ def _check_records(recs):
         if r['path'] == 'nquad':
             assert r['bail_category'] in FI._NQUAD_FALLBACK_REASONS
             assert r['bail_reason'] in known, r['bail_reason']
+        elif r['path'] == 'dbm':
+            # the DBM route answered: the reason the poset path bailed
+            assert r['bail_category'] is None
+            assert r['bail_reason'] in known, r['bail_reason']
         else:
             assert r['bail_category'] is None and r['bail_reason'] is None
         assert r['m'] == (len(r['constraints'][0][0])

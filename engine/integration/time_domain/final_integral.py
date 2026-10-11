@@ -1132,6 +1132,33 @@ _RUNTIME_COUNTERS = {
     # largest (estimated rounding error) / (accepted error) of an answered
     # DBM value (<= 1 by construction; 0.0: none):
     'dbm_error_ratio_max': 0.0,
+    # ── M7 counters (box-free routing; all 0 with the M7 flags off) ──
+    # subset evaluations answered on the DD kernels, per path:
+    'dd_polygon': 0, 'dd_interval': 0, 'dd_poset': 0, 'dd_grouped_m0': 0,
+    # ... of which the region was unbounded and integrated exactly (m=2
+    # ideal-vertex fan / m≥3 chain with L = -inf or U = +inf):
+    'polygon_exact_unbounded': 0,
+    'poset_semiinf_chains': 0,
+    # DD-path bails: the integral itself overflows (log|value| > 700, the
+    # one-sided final-exponent test); a shape the box-free kernels do not
+    # take (an open-top chain with intermediate uppers, a chain state that
+    # underflowed); an open direction that does not decay (the divergence
+    # policy is M8's):
+    'dd_overflow': 0,
+    'dd_unsupported': 0,
+    'divergent_subsets': 0,
+    # DBM calls without a box (``SEMIINF_CHAIN``), with the slow-mode box
+    # ±max(200, 40/κ_min) wider than ±200 (DD kernels only), and declined as
+    # divergent (box-free):
+    'dbm_box_free': 0,
+    'dbm_slow_mode_box': 0,
+    'dbm_declined_divergent': 0,
+    # legacy ``_chain_with_intermediate_uppers`` evaluations (M6 F7) in which
+    # at least one cut case returned None while others did not (the sum of
+    # the others is returned: a silently partial value), and those returning
+    # a finite value beyond e^700 (the true integral overflows):
+    'chain_uppers_legacy_partial': 0,
+    'chain_uppers_legacy_huge': 0,
 }
 
 _NQUAD_FALLBACK_REASONS = (
@@ -1555,7 +1582,8 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
       ``evaluator`` (function-level name), ``branch`` ('plan' | 'noplan' |
       'grouped' | None), ``attempted`` (analytic path tried, or ``None``),
       ``bail_reason`` (fine-grained reason the analytic path returned
-      ``None``; 'not_eligible' when none was attempted for an m≥1 call),
+      ``None``; 'not_eligible' when none was attempted for an m≥1 call;
+      for 'dbm', the reason the poset path passed the subset on),
       ``bail_category`` (the ``nquad_fallback_by_reason`` key, or ``None``
       when an analytic path answered), ``value`` (complex, exactly what
       the dispatch returns).
@@ -3174,24 +3202,26 @@ def _chain_uppers_memo_on():
 #
 # ``USE_PHASE_J_DD_KERNELS`` (bool, read at call time through
 # ``_phase_j_dd_kernels_on``); environment ``DAEDALUS_PHASE_J_DD_KERNELS`` =
-# 1 | 0 (also true/false, yes/no, on/off; default 0).  Reserved for routing
-# the triangle, chain and grouped paths to ``expdd`` (M7): nothing reads it
-# yet, so it moves no number.  Neither is touched by the umbrella
-# ``DAEDALUS_PHASE_J_LEGACY``.
+# 1 | 0 (also true/false, yes/no, on/off; default 0).  It routes the Phase J
+# closed forms to ``expdd`` (M7; see "M7: box-free exact routing" below).
+# The umbrella ``DAEDALUS_PHASE_J_LEGACY`` sets both to their legacy values
+# (M7 decision: the umbrella reproduces the pre-M1 numbers, and neither
+# 'transfer' nor the DD kernels do that bit for bit).
 _CHAIN_UPPERS_KERNELS = ('legacy', 'transfer')
 
 
 def _initial_chain_uppers_kernel(environ=None):
     """The import-time value of ``CHAIN_UPPERS_KERNEL`` from ``environ``
-    (default ``os.environ``).  An unknown value raises."""
+    (default ``os.environ``).  An unknown value raises; the umbrella
+    ``DAEDALUS_PHASE_J_LEGACY`` wins ('legacy', M7)."""
     env = _os.environ if environ is None else environ
     v = env.get('DAEDALUS_CHAIN_UPPERS_KERNEL', '').strip().lower()
-    if v == '':
+    if v not in ('',) + _CHAIN_UPPERS_KERNELS:
+        raise ValueError(
+            f'DAEDALUS_CHAIN_UPPERS_KERNEL={v!r}: expected legacy or transfer')
+    if v == '' or _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
         return 'legacy'
-    if v in _CHAIN_UPPERS_KERNELS:
-        return v
-    raise ValueError(
-        f'DAEDALUS_CHAIN_UPPERS_KERNEL={v!r}: expected legacy or transfer')
+    return v
 
 
 CHAIN_UPPERS_KERNEL = _initial_chain_uppers_kernel()
@@ -3208,13 +3238,14 @@ def _chain_uppers_kernel():
 
 def _initial_phase_j_dd_kernels_flag(environ=None):
     """The import-time value of ``USE_PHASE_J_DD_KERNELS`` from ``environ``
-    (default ``os.environ``).  An unknown value raises."""
+    (default ``os.environ``).  An unknown value raises; the umbrella
+    ``DAEDALUS_PHASE_J_LEGACY`` wins (False, M7)."""
     env = _os.environ if environ is None else environ
     v = env.get('DAEDALUS_PHASE_J_DD_KERNELS', '').strip().lower()
     if v in ('', '0', 'false', 'no', 'off'):
         return False
     if v in ('1', 'true', 'yes', 'on'):
-        return True
+        return not _env_truthy('DAEDALUS_PHASE_J_LEGACY', env)
     raise ValueError(
         f'DAEDALUS_PHASE_J_DD_KERNELS={v!r}: expected 1 or 0')
 
@@ -3229,6 +3260,256 @@ def _phase_j_dd_kernels_on():
         return flag
     raise ValueError(f'final_integral.USE_PHASE_J_DD_KERNELS={flag!r}: '
                      f'expected True or False')
+
+
+# ── M7: box-free exact routing (opt-in; M9 flips the defaults) ─────────
+# docs/integration_speedup_plan.md §3.1 (layers L3, L4) and §14.  Every flag
+# is a module attribute read at call time; the environment initialises it.
+#
+# ``USE_PHASE_J_DD_KERNELS`` (M6, above), when True, routes
+#   * the m=2 polygon (plan and no-plan branch, so grouped too) to the
+#     ``expdd`` triangle kernel anchored at the vertex with the largest real
+#     exponent, the pole tuple's γ folded into the exponent;
+#   * the m=1 interval (per-diagram and grouped) to a first divided
+#     difference (no 1/α cancellation for a small α);
+#   * the m≥3 chain, intermediate uppers included, to ``expdd`` (transfer
+#     matrix; ``CHAIN_UPPERS_KERNEL`` is then not read), γ folded into the
+#     chain's log scale;
+#   * the grouped m=0 evaluation;
+#   * the DBM route's box from the absolute ±200 to ±max(200, 40/κ_min),
+#     κ_min the slowest decay rate (−Re λ) of the subset's modes (±200 when a
+#     mode does not decay).
+#   On those paths the bilateral |Re| > 600 guards are replaced by ONE
+#   one-sided test on the FINAL exponent: log|value| > 700 means the integral
+#   itself overflows; the path then bails with a ``*_dd_overflow`` reason
+#   (counter ``dd_overflow``) to the next route.  Never a silent inf/nan.
+# ``SEMIINF_CHAIN`` (bool; env ``DAEDALUS_PHASE_J_SEMIINF_CHAIN`` = 1 | 0,
+#   default 0; needs the DD kernels): the m≥3 poset path integrates a chain
+#   without a scalar lower from ``PHASE_J_T_MIN`` (default −inf: the
+#   semi-infinite chain, started from the dominant eigenvector) instead of
+#   ``earliest_ext − POSET_PHYSICAL_MARGIN``, and a chain top without a scalar
+#   upper to +inf (mirror form) instead of ``bbox_cap``; the DBM route then
+#   has no box at all (open directions integrated to infinity).
+# ``UNBOUNDED_2D`` ('box' default | 'exact'; env
+#   ``DAEDALUS_PHASE_J_UNBOUNDED_2D``; 'exact' needs the DD kernels): the m=2
+#   polygon is built exactly -- finite vertices and the recession rays, no
+#   ±bbox_cap -- and integrated by the ideal-vertex fan (triangles,
+#   half-strips, wedges; ``boxfree.region_2d``).
+# ``PHASE_J_T_MIN`` (float, default −inf; no environment variable): the lower
+#   bound of every integration time on the box-free routes.  The finite-
+#   lower-bound closed forms are kept for it (switch-on transients, feature
+#   plan S6): a finite value is honoured by the m=1 interval, the exact
+#   polygon, the semi-infinite chain and the DBM route, and needs all three
+#   switches above (a ``ValueError`` otherwise: no route ignores it).
+# An open direction that does not decay (Re(α·r) >= 0 on a recession ray, a
+# line in the region, a chain prefix sum with Re <= 0) is reported -- bail
+# ``*_divergent``, counter ``divergent_subsets`` -- and the subset goes on to
+# the next route (DBM, then the scipy fallback).  The divergence POLICY is
+# M8's.
+#
+# The umbrella ``DAEDALUS_PHASE_J_LEGACY=1`` sets all of these to their
+# legacy values, as it does ``USE_PHASE_J_DD_KERNELS`` and
+# ``CHAIN_UPPERS_KERNEL``.
+_UNBOUNDED_2D_MODES = ('box', 'exact')
+
+
+def _initial_m7_flags(environ=None):
+    """The import-time values of ``SEMIINF_CHAIN`` and ``UNBOUNDED_2D`` from
+    ``environ`` (default ``os.environ``).  An unknown value raises; so does a
+    box-free switch without ``DAEDALUS_PHASE_J_DD_KERNELS`` (the box-free
+    closed forms are the DD kernels').  The umbrella wins."""
+    env = _os.environ if environ is None else environ
+    si = env.get('DAEDALUS_PHASE_J_SEMIINF_CHAIN', '').strip().lower()
+    if si not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_SEMIINF_CHAIN={si!r}: expected 1 or 0')
+    u2 = (env.get('DAEDALUS_PHASE_J_UNBOUNDED_2D', '').strip().lower()
+          or 'box')
+    if u2 not in _UNBOUNDED_2D_MODES:
+        raise ValueError(
+            f'DAEDALUS_PHASE_J_UNBOUNDED_2D={u2!r}: expected box or exact')
+    semiinf = si not in ('',) + _STRUCTURAL_ZEROS_OFF
+    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
+        return {'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'}
+    if (semiinf or u2 == 'exact') and not _initial_phase_j_dd_kernels_flag(
+            env):
+        raise ValueError(
+            'DAEDALUS_PHASE_J_SEMIINF_CHAIN / DAEDALUS_PHASE_J_UNBOUNDED_2D='
+            'exact need DAEDALUS_PHASE_J_DD_KERNELS=1')
+    return {'SEMIINF_CHAIN': semiinf, 'UNBOUNDED_2D': u2}
+
+
+_M7_FLAGS_AT_IMPORT = _initial_m7_flags()
+SEMIINF_CHAIN = _M7_FLAGS_AT_IMPORT['SEMIINF_CHAIN']
+UNBOUNDED_2D = _M7_FLAGS_AT_IMPORT['UNBOUNDED_2D']
+PHASE_J_T_MIN = float('-inf')
+
+
+def _semiinf_chain_on():
+    """``SEMIINF_CHAIN`` (call time), validated: a bool, and on only with
+    the DD kernels on."""
+    flag = SEMIINF_CHAIN
+    if flag is not True and flag is not False:
+        raise ValueError(f'final_integral.SEMIINF_CHAIN={flag!r}: expected '
+                         f'True or False')
+    if flag and not _phase_j_dd_kernels_on():
+        raise ValueError('final_integral.SEMIINF_CHAIN needs '
+                         'USE_PHASE_J_DD_KERNELS')
+    return flag
+
+
+def _unbounded_2d_exact():
+    """True when ``UNBOUNDED_2D`` is 'exact' (call time), validated."""
+    mode = UNBOUNDED_2D
+    if not (isinstance(mode, str) and mode in _UNBOUNDED_2D_MODES):
+        raise ValueError(f'final_integral.UNBOUNDED_2D={mode!r}: expected '
+                         f"'box' or 'exact'")
+    if mode == 'exact' and not _phase_j_dd_kernels_on():
+        raise ValueError("final_integral.UNBOUNDED_2D='exact' needs "
+                         'USE_PHASE_J_DD_KERNELS')
+    return mode == 'exact'
+
+
+def _t_min():
+    """``PHASE_J_T_MIN`` (call time): ``-inf`` or a finite float.  A
+    finite value needs every box-free route on (``ValueError``)."""
+    t = PHASE_J_T_MIN
+    try:
+        t = float(t)
+    except (TypeError, ValueError):
+        raise ValueError(f'final_integral.PHASE_J_T_MIN={PHASE_J_T_MIN!r}: '
+                         f'expected a float') from None
+    if t == float('-inf'):
+        return t
+    if not math.isfinite(t):
+        raise ValueError(f'final_integral.PHASE_J_T_MIN={t!r}: expected '
+                         f'-inf or a finite float')
+    if not (_semiinf_chain_on() and _unbounded_2d_exact()):
+        raise ValueError(
+            'a finite final_integral.PHASE_J_T_MIN needs the box-free routes '
+            "(USE_PHASE_J_DD_KERNELS, SEMIINF_CHAIN, UNBOUNDED_2D='exact')")
+    return t
+
+
+def _t_min_frame(free_ext_vals, tie_ctx=None):
+    """``PHASE_J_T_MIN`` in the time frame of one evaluation (validated by
+    ``_t_min``).  ``contribution()`` translates each Wick permutation so that
+    its origin leg sits at 0, so an absolute bound T is ``T - t_origin``
+    there, ``t_origin`` the origin leg's raw time from the tie context (0
+    without one: a direct call is in absolute time).  -inf stays -inf.  A
+    finite bound after an external time raises: the cumulant would be
+    asked for before the switch-on."""
+    t = _t_min()
+    if t == float('-inf'):
+        return t
+    t0 = 0.0
+    if tie_ctx is not None and tie_ctx.origin_leg is not None:
+        try:
+            t0 = float(tie_ctx.times[tie_ctx.origin_leg])
+        except (TypeError, ValueError):
+            raise ValueError(
+                'a finite final_integral.PHASE_J_T_MIN needs numeric external '
+                f'times, got {tie_ctx.times[tie_ctx.origin_leg]!r}') from None
+    t_rel = t - t0
+    if t_rel > min([0.0] + [float(x) for x in free_ext_vals]):
+        raise ValueError(
+            f'final_integral.PHASE_J_T_MIN={t!r} is after an external time '
+            f'(the cumulant is asked for before the switch-on)')
+    return t_rel
+
+
+def _m7_t_min_is_finite():
+    """True when ``PHASE_J_T_MIN`` is not ``-inf`` (no validation)."""
+    try:
+        return float(PHASE_J_T_MIN) != float('-inf')
+    except (TypeError, ValueError):
+        return True
+
+
+_BOXFREE = []
+
+
+def _bf():
+    """The ``boxfree`` module (imported on first use, so the default
+    routes never import it)."""
+    if not _BOXFREE:
+        from engine.integration.time_domain import boxfree
+        _BOXFREE.append(boxfree)
+    return _BOXFREE[0]
+
+
+# The DD routes' bail reasons, written out (overflow, divergent,
+# unsupported) so that every reason string is a literal ``_bail`` argument.
+_DD_BAILS = {
+    'polygon': (lambda: _bail('polygon_dd_overflow'),
+                lambda: _bail('polygon_divergent'),
+                lambda: _bail('polygon_dd_unsupported')),
+    'interval': (lambda: _bail('interval_dd_overflow'),
+                 lambda: _bail('interval_divergent'),
+                 lambda: _bail('interval_dd_unsupported')),
+    'poset': (lambda: _bail('poset_dd_overflow'),
+              lambda: _bail('poset_divergent'),
+              lambda: _bail('poset_dd_unsupported')),
+    'grouped_m0': (lambda: _bail('grouped_m0_dd_overflow'),
+                   lambda: _bail('grouped_m0_divergent'),
+                   lambda: _bail('grouped_m0_dd_unsupported')),
+    'grouped_m1': (lambda: _bail('grouped_m1_dd_overflow'),
+                   lambda: _bail('grouped_m1_divergent'),
+                   lambda: _bail('grouped_m1_dd_unsupported')),
+}
+
+
+def _decay_tol(smooth_edge_modes=None, pole_tuples=None, plan=None,
+               subset_constraint_data=None):
+    """The margin by which an open direction's exponent must decay on the
+    box-free routes: ``64 ε · Σ_e max|λ_e| · max_row Σ|a|``, the rounding
+    scale of the exponents formed from the modes, so that the residue of an
+    exponent that is exactly 0 (the integrand constant along the direction)
+    never passes as decay.  From the per-edge modes, else from the pole
+    tuples (cached in the plan)."""
+    if plan is not None:
+        tol = plan.get('_m7_decay_tol')
+        if tol is not None:
+            return tol
+    per_edge = None
+    if smooth_edge_modes is not None:
+        try:
+            per_edge = [max((abs(complex(lam)) for (_c, lam) in ems.modes),
+                            default=0.0) for ems in smooth_edge_modes]
+        except (AttributeError, TypeError):
+            per_edge = None
+    if per_edge is None:
+        tuples = (plan['pole_tuples'] if plan is not None else pole_tuples)
+        per_edge = []
+        for (_C, lams) in (tuples or ()):
+            for e, lam in enumerate(lams):
+                a = abs(complex(lam))
+                if e >= len(per_edge):
+                    per_edge.append(a)
+                elif a > per_edge[e]:
+                    per_edge[e] = a
+    amax = 1.0
+    for (a_int, _a_ext, _c0) in (subset_constraint_data or ()):
+        amax = max(amax, sum(abs(float(x)) for x in a_int))
+    tol = 64.0 * 2.220446049250313e-16 * sum(per_edge) * amax
+    if plan is not None:
+        plan['_m7_decay_tol'] = tol
+    return tol
+
+
+def _dd_status_bail(status, prefix):
+    """Count a non-OK ``boxfree`` status and bail with
+    ``<prefix>_dd_overflow`` / ``<prefix>_divergent`` /
+    ``<prefix>_dd_unsupported``."""
+    bf = _bf()
+    if status == bf.OVERFLOW:
+        _RUNTIME_COUNTERS['dd_overflow'] += 1
+        return _DD_BAILS[prefix][0]()
+    if status == bf.DIVERGENT:
+        _RUNTIME_COUNTERS['divergent_subsets'] += 1
+        return _DD_BAILS[prefix][1]()
+    _RUNTIME_COUNTERS['dd_unsupported'] += 1
+    return _DD_BAILS[prefix][2]()
 
 
 def _chain_uppers_kernel_tag():
@@ -3519,6 +3800,7 @@ def _chain_with_intermediate_uppers_uncached(
 
     total = 0.0 + 0.0j
     any_returned = False
+    any_failed = False
 
     # Enumerate cut tuples (c_0, c_1, …, c_{q-1}) with each
     # c_i ∈ [cut_min_per_level[i], m-1] and c_0 ≤ c_1 ≤ … ≤ c_{q-1}.
@@ -3578,8 +3860,19 @@ def _chain_with_intermediate_uppers_uncached(
         if case_ok:
             total += case_value
             any_returned = True
+        else:
+            any_failed = True
 
+    if any_returned and any_failed:
+        _RUNTIME_COUNTERS['chain_uppers_legacy_partial'] += 1
+    if any_returned and abs(total) > _LEGACY_HUGE:
+        _RUNTIME_COUNTERS['chain_uppers_legacy_huge'] += 1
     return total if any_returned else None
+
+
+# |value| above which a legacy uppers result is counted as beyond the range
+# a true Phase J integral can have (e^700, the DD kernels' overflow limit).
+_LEGACY_HUGE = 1.0142320547350045e+304
 
 
 def _chain_with_uppers_transfer(
@@ -3733,6 +4026,7 @@ def _integrate_nd_polytope_poset_modesum(
     import cmath
     if m < 3:
         return _bail('poset_m_lt_3')  # m=2 has its own dedicated path
+    _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     _RUNTIME_COUNTERS['poset_attempted'] += 1
     bbox_cap = _resolve_bbox_cap(bbox_cap)
     n_smooth = len(smooth_edge_modes)
@@ -3771,13 +4065,29 @@ def _integrate_nd_polytope_poset_modesum(
     # past the 600 real-exponent threshold and the path bails to
     # scipy.  A physical bound — earliest external time minus a few
     # correlation times — is more than adequate.
-    if L_value is not None:
+    # M7 (``SEMIINF_CHAIN``): no margin; the chain starts at PHASE_J_T_MIN
+    # (default -inf: semi-infinite) unless a scalar lower bounds it.
+    semiinf = _semiinf_chain_on()
+    if semiinf:
+        t_min = _t_min_frame(free_ext_vals, tie_ctx)
+        L = float(L_value) if L_value is not None else t_min
+        if t_min > L:
+            L = t_min
+    elif L_value is not None:
         L = float(L_value)
     else:
         earliest_ext = min(list(free_ext_vals) + [0.0])
         L = earliest_ext - POSET_PHYSICAL_MARGIN
 
     upper_per_var = _causal_poset_consistent_scalar_upper(poset)
+
+    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``), both branches.
+    if _phase_j_dd_kernels_on():
+        return _poset_modesum_dd(
+            poset, L, upper_per_var, m,
+            float('inf') if semiinf else float(bbox_cap),
+            smooth_edge_modes, prefactor_complex, subset_constraint_data,
+            free_ext_vals, pole_tuples, plan)
 
     # Pre-extract per-edge linear data (constant in pole tuple).
     c_ext_per_edge = [
@@ -3967,6 +4277,144 @@ def _integrate_nd_polytope_poset_modesum(
     return total
 
 
+def _chain_dd_log(alphas_chain, L, upper_per_position, U_chain_top,
+                  _key_suffix=None, tol=0.0):
+    """``boxfree.chain_log`` (``(status, log_scale, mant)``), memoised in the
+    M4 table (``USE_CHAIN_UPPERS_MEMO``) under a key that carries the
+    ``'dd'`` tag, the kernel backend and the decay margin ``tol``, so it never
+    meets a legacy entry; an infinite ``L`` / ``U`` is part of the key as
+    such."""
+    bf = _bf()
+    if not _chain_uppers_memo_on():
+        return bf.chain_log(alphas_chain, L, upper_per_position, U_chain_top,
+                            tol)
+    try:
+        if _key_suffix is None:
+            _key_suffix = _chain_uppers_key_suffix(
+                L, upper_per_position, U_chain_top)
+        key = (tuple(alphas_chain), _key_suffix,
+               ('dd', bf.expdd.BACKEND, float(tol)))
+        with _CHAIN_UPPERS_LOCK:
+            val = _chain_uppers_memo.get(key, _CHAIN_UPPERS_MISS)
+            if val is not _CHAIN_UPPERS_MISS:
+                _RUNTIME_COUNTERS['chain_uppers_memo_hits'] += 1
+                return val
+            _RUNTIME_COUNTERS['chain_uppers_memo_misses'] += 1
+    except (TypeError, ValueError, OverflowError):
+        return bf.chain_log(alphas_chain, L, upper_per_position, U_chain_top,
+                            tol)
+    val = bf.chain_log(alphas_chain, L, upper_per_position, U_chain_top, tol)
+    with _CHAIN_UPPERS_LOCK:
+        if len(_chain_uppers_memo) >= _CHAIN_UPPERS_MEMO_MAX:
+            _chain_uppers_memo.clear()
+            _RUNTIME_COUNTERS['chain_uppers_memo_evictions'] += 1
+        _chain_uppers_memo[key] = val
+    return val
+
+
+def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
+                      smooth_edge_modes, prefactor_complex,
+                      subset_constraint_data, free_ext_vals, pole_tuples,
+                      plan):
+    """The chain sum of ``_integrate_nd_polytope_poset_modesum`` on the DD
+    kernels (M7): per linear extension the chain integral in the log domain
+    (``_chain_dd_log``; ``L`` and the chain top may be infinite), folded with
+    the pole tuples' γ before any exp: a group of tuples sharing alphas
+    contributes ``e^{g + ls} · Σ_t pref C_t e^{γ_t - g} · mant`` with ``g``
+    the group's largest Re γ.  A non-OK status bails ('poset_dd_overflow',
+    'poset_divergent', 'poset_dd_unsupported')."""
+    import cmath
+    bf = _bf()
+    OK = bf.OK
+    OVERFLOW = bf.OVERFLOW
+    LOG_OVERFLOW = bf.LOG_OVERFLOW
+    extensions = list(_enumerate_linear_extensions(poset))
+    if not extensions:
+        return _bail('poset_no_extension')
+    upper_for_ext = [
+        float(upper_per_var.get(sigma[m - 1], U_default))
+        for sigma in extensions
+    ]
+    upper_per_position_per_ext = []
+    for sigma in extensions:
+        upp = {}
+        for k in range(m):
+            v = sigma[k]
+            if v in upper_per_var:
+                upp[k] = float(upper_per_var[v])
+        upper_per_position_per_ext.append(upp)
+    key_suffixes = [None] * len(extensions)
+    if _chain_uppers_memo_on():
+        for i_ext, (U_ext, upp) in enumerate(
+                zip(upper_for_ext, upper_per_position_per_ext)):
+            try:
+                key_suffixes[i_ext] = _chain_uppers_key_suffix(L, upp, U_ext)
+            except (TypeError, ValueError, OverflowError):
+                pass
+    pref = complex(prefactor_complex)
+    if plan is not None:
+        terms = list(_modesum_tuples(None, subset_constraint_data,
+                                     free_ext_vals, m, None, plan))
+        groups = [(alphas, [(pref * terms[t][0], terms[t][2])
+                            for t in t_idxs])
+                  for alphas, t_idxs in plan['tuple_groups']]
+    else:
+        groups = ((alphas, [(pref * C_prod, gamma)])
+                  for C_prod, alphas, gamma in _modesum_tuples(
+                      smooth_edge_modes, subset_constraint_data,
+                      free_ext_vals, m, pole_tuples, None))
+    tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                     subset_constraint_data)
+    use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
+    if use_mp_accum:
+        from mpmath import mp as _mp, mpc as _mpc
+        with _mp.workdps(50):
+            total_mp = _mpc(0, 0)
+    total = 0.0 + 0.0j
+    for alphas_orig, members in groups:
+        members = [(c, g) for (c, g) in members if c != 0]
+        if not members:
+            continue
+        g_max = max(g.real for (_c, g) in members)
+        tc = 0.0 + 0.0j
+        for (c, g) in members:
+            tc += c * cmath.exp(g - g_max)
+        if tc == 0:
+            continue
+        for sigma, U_ext, upp, key in zip(
+                extensions, upper_for_ext, upper_per_position_per_ext,
+                key_suffixes):
+            alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
+            st, ls, mant = _chain_dd_log(alphas_chain, L, upp, U_ext,
+                                         _key_suffix=key, tol=tol)
+            # OVERFLOW is the chain's own verdict, before γ: its (ls, mant)
+            # are valid, and the test that counts is the folded one below
+            if st != OK and st != OVERFLOW:
+                return _dd_status_bail(st, 'poset')
+            zr = g_max + ls
+            if (-LOG_OVERFLOW <= zr <= LOG_OVERFLOW and abs(mant) < 1e150
+                    and abs(tc) < 1e150):
+                v = (tc * mant) * math.exp(zr)
+            else:
+                st, v = bf.exp_times(complex(zr, 0.0) + cmath.log(tc), mant)
+                if st != OK:
+                    return _dd_status_bail(st, 'poset')
+            if use_mp_accum:
+                with _mp.workdps(50):
+                    total_mp = total_mp + _mpc(v.real, v.imag)
+            else:
+                total += v
+    if use_mp_accum:
+        total = complex(float(total_mp.real), float(total_mp.imag))
+    total = _finite_or_overflow(total, 'poset')
+    if total is not None:
+        _RUNTIME_COUNTERS['dd_poset'] += 1
+        if L == float('-inf') or any(u == float('inf')
+                                     for u in upper_for_ext):
+            _RUNTIME_COUNTERS['poset_semiinf_chains'] += 1
+    return total
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Exact DBM route for m≥3 subsets (M3; ``USE_DBM_FALLBACK``)
 # ───────────────────────────────────────────────────────────────────────
@@ -4103,9 +4551,59 @@ def _integrate_subset_dbm(
     # Σ |pole-tuple coefficient| (prefactor included), the bound of the
     # integrand where every Δt >= 0 and Re λ <= 0.
     scale = sum(abs(C) for (C, _E, _b) in seeds)
-    res = _dbm.integrate_exp_sum(
-        rows, m, seeds, _nquad_outer_cap() if cap is None else cap,
-        scale=scale)
+    # M7: the box.  Default: ±_nquad_outer_cap(), absolute (as before).  DD
+    # kernels: ±max(that, 40/κ_min + max|free time|), κ_min the slowest
+    # decay rate of the decaying modes, so that the truncation e^{-κ·(cap -
+    # |t|)} stays below e^{-40} wherever the region sits.  SEMIINF_CHAIN: no
+    # box (open directions integrated to infinity, DIVERGENT when one does
+    # not decay by more than the rounding margin of ``_decay_tol``), with
+    # the β-zero threshold of that box.  A finite PHASE_J_T_MIN (box-free
+    # routes only, ``_t_min``) adds the rows s_v > PHASE_J_T_MIN whatever the
+    # box.
+    eps = None
+    beta_tol = None
+    t_min = _t_min_frame(free_ext_vals, tie_ctx)
+    if t_min != -math.inf:
+        for v in range(m):
+            e_v = tuple(1.0 if i == v else 0.0 for i in range(m))
+            rows.append((e_v, -t_min))
+    if cap is None:
+        base = _nquad_outer_cap()
+        if _semiinf_chain_on() or _phase_j_dd_kernels_on():
+            if plan is not None:
+                lam_iter = plan['pole_tuples']
+            else:
+                lam_iter = (pole_tuples if pole_tuples is not None
+                            else _enumerate_pole_tuples(smooth_edge_modes))
+            # decay rates above the rounding margin only (a slower one
+            # cannot count as decay; it would also overflow 40/κ)
+            k_floor = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                                 subset_constraint_data)
+            kmin = min((-complex(lam).real for (_C, lams) in lam_iter
+                        for lam in lams if -complex(lam).real > k_floor),
+                       default=math.inf)
+            t_far = max((abs(float(t)) for t in free_ext_vals), default=0.0)
+            slow_cap = (max(base, 40.0 / kmin + t_far) if kmin < math.inf
+                        else base)
+            if _semiinf_chain_on():
+                cap = math.inf
+                eps = _dbm.BETA_ZERO_SPAN / max(slow_cap, 1.0)
+                beta_tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                                      subset_constraint_data)
+                _RUNTIME_COUNTERS['dbm_box_free'] += 1
+            else:
+                cap = slow_cap
+                if cap > base:
+                    _RUNTIME_COUNTERS['dbm_slow_mode_box'] += 1
+        else:
+            cap = base
+    res = _dbm.integrate_exp_sum(rows, m, seeds, cap, scale=scale, eps=eps,
+                                 beta_tol=beta_tol)
+    if res.status == _dbm.STATUS_DIVERGENT:
+        _RUNTIME_COUNTERS['dbm_declined_divergent'] += 1
+        if poset_bail_reason != 'poset_divergent':
+            _RUNTIME_COUNTERS['divergent_subsets'] += 1
+        return _bail('dbm_divergent')
     if res.status == _dbm.STATUS_NOT_DBM:
         _RUNTIME_COUNTERS['dbm_declined_rows'] += 1
         return _bail('dbm_not_difference_rows')
@@ -4128,6 +4626,97 @@ def _integrate_subset_dbm(
     if poset_bail_reason == 'poset_lower_not_inherited':
         _RUNTIME_COUNTERS['dbm_answered_p3'] += 1
     return res.value
+
+
+# ───────────────────────────────────────────────────────────────────────
+# M7: the DD-kernel / box-free evaluation of the analytic routes
+# ───────────────────────────────────────────────────────────────────────
+def _modesum_tuples(smooth_edge_modes, subset_constraint_data, free_ext_vals,
+                    m, pole_tuples=None, plan=None):
+    """Yield ``(C_prod, alphas, gamma)`` per pole tuple: the coefficient,
+    the ``m`` exponent coefficients of the integration variables and the
+    constant part of the exponent at ``free_ext_vals`` -- the quantities the
+    legacy routes form inline, from the plan when there is one."""
+    if plan is not None:
+        alphas_per_tuple = plan['alphas_per_tuple']
+        gamma_const_per_tuple = plan['gamma_const_per_tuple']
+        gamma_slope_per_tuple_per_ext = plan['gamma_slope_per_tuple_per_ext']
+        n_ext = len(free_ext_vals)
+        for t_idx, (C_prod, _lambdas) in enumerate(plan['pole_tuples']):
+            gamma = gamma_const_per_tuple[t_idx]
+            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
+            for j in range(n_ext):
+                gamma = gamma + slope_row[j] * free_ext_vals[j]
+            yield C_prod, alphas_per_tuple[t_idx], gamma
+        return
+    c_ext_per_edge = [
+        float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        for (_a_int, a_ext, c0) in subset_constraint_data
+    ]
+    a_int_per_edge = [
+        tuple(float(a_int[v]) if v < len(a_int) else 0.0 for v in range(m))
+        for (a_int, _a_ext, _c0) in subset_constraint_data
+    ]
+    n_rows = len(subset_constraint_data)
+    pole_iter = (
+        pole_tuples if pole_tuples is not None
+        else _enumerate_pole_tuples(smooth_edge_modes)
+    )
+    for C_prod, lambdas in pole_iter:
+        alphas = [0.0 + 0.0j] * m
+        gamma = 0.0 + 0.0j
+        for e in range(n_rows):
+            lam = lambdas[e]
+            a_e = a_int_per_edge[e]
+            for v in range(m):
+                alphas[v] += lam * a_e[v]
+            gamma += lam * c_ext_per_edge[e]
+        yield C_prod, tuple(alphas), gamma
+
+
+def _finite_or_overflow(total, prefix):
+    """``total`` if finite, else the explicit overflow bail."""
+    if math.isfinite(total.real) and math.isfinite(total.imag):
+        return total
+    _RUNTIME_COUNTERS['dd_overflow'] += 1
+    return _DD_BAILS[prefix][0]()
+
+
+def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
+                       t_min=float('-inf')):
+    """``Σ pref·C ∫_L^U exp(α s + γ) ds`` over ``terms`` (``(C, (α,), γ)``)
+    on the DD kernels (``boxfree.interval``): ``L``, ``U`` may be infinite
+    (``tol``: see ``_decay_tol``); ``t_min`` (``PHASE_J_T_MIN`` in the
+    call's frame, ``_t_min_frame``) raises ``L``.  A non-OK status bails
+    (``prefix``)."""
+    bf = _bf()
+    if t_min > L:
+        L = t_min
+    if not L < U:
+        return 0.0 + 0.0j
+    total = 0.0 + 0.0j
+    for C_prod, alphas, gamma in terms:
+        coef = pref * C_prod
+        if coef == 0:
+            continue
+        st, v = bf.interval(alphas[0], gamma, L, U, tol)
+        if st == bf.OVERFLOW:
+            # the integral alone overflows: decide on the whole term
+            st, v = bf.interval(alphas[0], gamma + cmath.log(coef), L, U,
+                                tol)
+            if st == bf.OK:
+                total += v
+                continue
+        if st != bf.OK:
+            return _dd_status_bail(st, prefix)
+        total += coef * v
+    total = _finite_or_overflow(total, prefix)
+    if total is not None:
+        _RUNTIME_COUNTERS['dd_interval'] += 1
+    return total
 
 
 def _integrate_1d_polytope_modesum(
@@ -4176,6 +4765,7 @@ def _integrate_1d_polytope_modesum(
     """
     import cmath
     import math
+    _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['interval_attempted'] += 1
     bbox_cap = _resolve_bbox_cap(bbox_cap)          # (unused; see docstring)
@@ -4218,6 +4808,16 @@ def _integrate_1d_polytope_modesum(
 
     pref = complex(prefactor_complex)
     total = 0.0 + 0.0j
+
+    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``), both branches.
+    if _phase_j_dd_kernels_on():
+        return _interval_dd_total(
+            _modesum_tuples(smooth_edge_modes, subset_constraint_data,
+                            free_ext_vals, 1, pole_tuples, plan),
+            pref, L, U, 'interval',
+            _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                       subset_constraint_data),
+            _t_min_frame(free_ext_vals, tie_ctx))
 
     # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
     # When the caller threads a pre-built plan through, the per-tuple
@@ -4395,6 +4995,7 @@ def _integrate_2d_polygon_modesum(
     ``tie_ctx``: see ``_tie_order_sign``.
     """
     import cmath
+    _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['polygon_attempted'] += 1
     bbox_cap = _resolve_bbox_cap(bbox_cap)
@@ -4404,6 +5005,13 @@ def _integrate_2d_polygon_modesum(
         # to scipy.nquad fallback.
         _RUNTIME_COUNTERS['polygon_returned_none'] += 1
         return _bail('polygon_rows_mismatch')
+
+    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``; with ``UNBOUNDED_2D``
+    # 'exact' the region is box-free), both branches.
+    if _phase_j_dd_kernels_on():
+        return _polygon_modesum_dd(
+            smooth_edge_modes, prefactor_complex, subset_constraint_data,
+            free_ext_vals, bbox_cap, pole_tuples, plan, row_kinds, tie_ctx)
 
     # Polygon is shared across all pole tuples.
     polygon = _polygon_from_2d_constraints(
@@ -4515,6 +5123,102 @@ def _integrate_2d_polygon_modesum(
                 return _bail('polygon_triangle_guard')
             tri_sum += tri_contrib
         total += term_const * tri_sum
+    return total
+
+
+def _polygon_region_dd(subset_constraint_data, free_ext_vals, bbox_cap,
+                       row_kinds=None, tie_ctx=None):
+    """The ``boxfree.Region2D`` of an m=2 subset on the DD route.
+
+    ``UNBOUNDED_2D`` 'box': the legacy clipped polygon
+    (``_polygon_from_2d_constraints``, ±``bbox_cap``), fanned from its first
+    vertex as before.  'exact': the exact region (``boxfree.region_2d``) of
+    the rows, constant rows decided as in ``_polygon_from_2d_constraints``
+    (THETA0_CONST_ROW_MODE; DROP skips the row, which stays in γ), plus
+    ``s_i > PHASE_J_T_MIN`` when that is finite."""
+    bf = _bf()
+    if not _unbounded_2d_exact():
+        polygon = _polygon_from_2d_constraints(
+            subset_constraint_data, free_ext_vals, bbox_cap,
+            row_kinds=row_kinds, tie_ctx=tie_ctx)
+        if len(polygon) < 3:
+            return bf.Region2D('empty')
+        return bf.region_from_polygon(polygon)
+    legacy = _theta0_legacy()
+    rows = []
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+        c_eff = float(c0) + sum(
+            float(a_ext[j]) * float(free_ext_vals[j])
+            for j in range(len(a_ext))
+        )
+        a0 = float(a_int[0])
+        a1 = float(a_int[1])
+        if abs(a0) <= _ROW_COEF_ATOL and abs(a1) <= _ROW_COEF_ATOL:
+            _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
+            if not legacy:
+                verdict = _const_row_verdict(
+                    (a0, a1), a_ext, c0, free_ext_vals,
+                    _row_kind(row_kinds, idx), tie_ctx)
+                if verdict == 'EMPTY':
+                    return bf.Region2D('empty')
+                continue            # DROP: no geometry; γ keeps exp(λ·c_eff)
+            if a0 == 0.0 and a1 == 0.0:
+                if not (c_eff >= 0.0):
+                    return bf.Region2D('empty')
+                continue
+        rows.append((a0, a1, c_eff))
+    t_min = _t_min_frame(free_ext_vals, tie_ctx)
+    if t_min != float('-inf'):
+        rows.append((1.0, 0.0, -t_min))
+        rows.append((0.0, 1.0, -t_min))
+    region = bf.region_2d(rows)
+    if region.kind == 'empty' and not legacy and region.reason in (
+            'opposite', 'measure_zero'):
+        # the exact emptiness tests of _polygon_from_2d_constraints
+        _RUNTIME_COUNTERS['polygon_zero_area'] += 1
+    return region
+
+
+def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
+                        subset_constraint_data, free_ext_vals, bbox_cap,
+                        pole_tuples, plan, row_kinds, tie_ctx):
+    """``_integrate_2d_polygon_modesum`` on the DD kernels (M7): the region
+    once per call, then ``Σ pref·C ∫ exp(α s_0 + β s_1 + γ)`` with γ folded
+    into each piece's exponent (``boxfree.region_integral``); a non-OK status
+    bails ('polygon_dd_overflow' / 'polygon_divergent')."""
+    bf = _bf()
+    region = _polygon_region_dd(subset_constraint_data, free_ext_vals,
+                                bbox_cap, row_kinds, tie_ctx)
+    if region.kind == 'empty':
+        return 0.0 + 0.0j
+    if region.kind == 'lineality':
+        return _dd_status_bail(bf.DIVERGENT, 'polygon')
+    pref = complex(prefactor_complex)
+    tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                     subset_constraint_data)
+    total = 0.0 + 0.0j
+    for C_prod, alphas, gamma in _modesum_tuples(
+            smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
+            pole_tuples, plan):
+        coef = pref * C_prod
+        if coef == 0:
+            continue
+        st, v = bf.region_integral(region, alphas[0], alphas[1], gamma, tol)
+        if st == bf.OVERFLOW:
+            # the integral alone overflows: decide on the whole term
+            st, v = bf.region_integral(region, alphas[0], alphas[1],
+                                       gamma + cmath.log(coef), tol)
+            if st == bf.OK:
+                total += v
+                continue
+        if st != bf.OK:
+            return _dd_status_bail(st, 'polygon')
+        total += coef * v
+    total = _finite_or_overflow(total, 'polygon')
+    if total is not None:
+        _RUNTIME_COUNTERS['dd_polygon'] += 1
+        if region.kind == 'unbounded':
+            _RUNTIME_COUNTERS['polygon_exact_unbounded'] += 1
     return total
 
 
@@ -6814,7 +7518,7 @@ def integrate_diagram(
                                     evaluator='_integrate_subset_dbm',
                                     branch='plan' if plan is not None
                                     else 'noplan',
-                                    value=dbm_val, bail_reason=None,
+                                    value=dbm_val, bail_reason=_bail_reason,
                                     attempted='poset', modes=modes,
                                     prefactor=pref_c, plan=plan,
                                     pole_tuples=pole_tuples, integrand=fc,
@@ -7626,6 +8330,13 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
         _RUNTIME_COUNTERS['polytope_m0_direct'] += 1
     else:
         _RUNTIME_COUNTERS['nquad_calls'] += 1
+        if _m7_t_min_is_finite():
+            # M7: a finite PHASE_J_T_MIN is honoured by the box-free routes
+            # only; the scipy routines' box would silently ignore it.
+            raise ValueError(
+                'a finite final_integral.PHASE_J_T_MIN reached the scipy '
+                'fallback, which cannot honour it (an m>=1 subset no '
+                'box-free route answered)')
     if m == 1:
         _RUNTIME_COUNTERS['scipy_nquad_called_m1'] += 1
     elif m == 2:
