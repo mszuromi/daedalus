@@ -46,8 +46,13 @@ def test_coupled_cubic_one_loop_against_moment_hierarchy():
     out = im.solve(sde, [(xx, (0,)), (xx, (1,))], [T_STATIONARY])
     tree, one_loop = out[(xx, (0,))][0], out[(xx, (1,))][0] * eps   # <x> = 0 by x -> -x symmetry: moment = cumulant
     got = _cov_ell(_coupled_cubic_model(), 1, {'mu1': mu1, 'mu2': mu2, 'J1': J1, 'J2': J2, 'D1': D1, 'D2': D2, 'eps': eps})
-    assert got[0] == pytest.approx(tree, rel=2e-6, abs=0.0)       # includes the deliberate Ito tau = 0 nudge
-    assert got[1] == pytest.approx(one_loop, rel=2e-6, abs=0.0)
+    # The k = 2 tau = 0 point is the Ito LEFT limit, evaluated at tau = -1e-6
+    # (api.compute._ITO_EPS), the oracle the equal-time moment: x is driven by
+    # its own noise, so C_xx has a cusp at 0 and the tree moves by
+    # 1e-6 x |C'(0-)| / C, measured 9.1e-7 relative -> rel 2e-6.  The
+    # one-loop is smooth there (measured 4.2e-13 relative) -> rel 1e-11.
+    assert got[0] == pytest.approx(tree, rel=2e-6, abs=0.0)
+    assert got[1] == pytest.approx(one_loop, rel=1e-11, abs=0.0)
 
 
 def _quadratic_drift_model(nst, q):
@@ -77,5 +82,8 @@ def test_quadratic_drift_connected_one_loop_against_moment_hierarchy():
     mean1, tree, m2 = out[(x1, (1,))][0], out[(xx, (0,))][0], out[(xx, (2,))][0]
     connected_one_loop = m2 - mean1 ** 2
     got = _cov_ell(_quadratic_drift_model(nst, q), 1)
-    assert got[0] == pytest.approx(tree, rel=2e-6, abs=0.0)
-    assert got[1] == pytest.approx(connected_one_loop, rel=2e-6, abs=0.0)
+    # x has no noise of its own (it is driven through y), so C_xx is smooth
+    # at tau = 0 and the Ito nudge to tau = -1e-6 is second order: measured
+    # 2.6e-13 (tree) and 5.2e-14 (one-loop) relative -> rel 1e-11.
+    assert got[0] == pytest.approx(tree, rel=1e-11, abs=0.0)
+    assert got[1] == pytest.approx(connected_one_loop, rel=1e-11, abs=0.0)
