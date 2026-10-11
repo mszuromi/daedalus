@@ -71,7 +71,7 @@ def shuffle_diagram_order(monkeypatch):
 # test (only once Sage is loaded) the assumptions are compared with those
 # before it:
 #   * an assumption that was held before is gone        -> the test FAILS;
-#   * a NEW symbol carries two different domains         -> the test FAILS;
+#   * a NEW symbol is declared complex AND real/signed    -> the test FAILS;
 #   * a symbol that had assumptions gains or loses one   -> reported in the
 #     terminal summary only: model builders declare parameter domains
 #     globally, so two models sharing a parameter name with different
@@ -116,7 +116,10 @@ def _sage_assumption_guard(request):
         return
     b, a = _assumptions_by_symbol(before), _assumptions_by_symbol(after)
     gone = sorted(before - after)
+    # 'is complex' next to a real or signed declaration contradicts it;
+    # '> 0' with 'is real' (or 'is integer') is compatible
     conflict = sorted(s for s in a if s not in b
+                      and 'complex' in _domain_kinds(a[s])
                       and len(_domain_kinds(a[s])) > 1)
     changed = sorted(s for s in b if s in a and a[s] != b[s])
     if changed:
