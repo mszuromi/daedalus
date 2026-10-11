@@ -388,10 +388,15 @@ def test_chain_batch_memo_keys_are_exact(FI, monkeypatch):
     assert FI._chain_dd_batch(*_batch_args(FI, modes)) is not a
 
 
-def test_poset_batch_is_off_with_the_chain_memo(FI, monkeypatch):
+def test_poset_batch_runs_without_its_memo_when_the_chain_memo_is_off(
+        FI, monkeypatch):
+    """The chain memo changes no number (M4): with it off the batch still
+    runs (bit-identical values) but keeps nothing."""
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    v_on, _c = _run(FI, _poset_plan, _CHAIN_ROWS, _CHAIN_MODES[:3], (0.7,))
     monkeypatch.setattr(FI, 'USE_CHAIN_UPPERS_MEMO', False)
     calls = _spy(monkeypatch, FI, '_poset_dd_batch')
-    v, c = _run(FI, _poset_plan, _CHAIN_ROWS, _CHAIN_MODES[:3], (0.7,))
-    assert calls == [] and c['dd_poset'] == 1
+    v_off, c = _run(FI, _poset_plan, _CHAIN_ROWS, _CHAIN_MODES[:3], (0.7,))
+    assert len(calls) == 1 and calls[0] is not None and c['dd_poset'] == 1
+    assert v_off == v_on
     assert not FI._chain_dd_batch_memo

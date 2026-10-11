@@ -4528,19 +4528,22 @@ def _m7b_gammas(arrs, free_ext_vals):
     return gamma
 
 
-def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol):
+def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol,
+                    memo=True):
     """``(status, log_scale, mant)`` arrays of the chain of extension
     ``sigma`` for every group of ``plan`` (``_chain_dd_log`` per group, so
     the very values of the per-chain memo), memoised per (group alphas,
     ``sigma``, suffix, tag).  ``None`` when a chain cannot be evaluated (the
-    scalar loop then meets the same input and decides)."""
+    scalar loop then meets the same input and decides).  ``memo=False``
+    (the chain memo is off): computed, not kept."""
     bf = _bf()
-    key = (arrs['group_alpha_bytes'], m, tuple(sigma), key_suffix,
-           ('dd', bf.expdd.BACKEND, float(tol)))
-    with _CHAIN_UPPERS_LOCK:
-        val = _chain_dd_batch_memo.get(key)
-    if val is not None:
-        return val
+    if memo:
+        key = (arrs['group_alpha_bytes'], m, tuple(sigma), key_suffix,
+               ('dd', bf.expdd.BACKEND, float(tol)))
+        with _CHAIN_UPPERS_LOCK:
+            val = _chain_dd_batch_memo.get(key)
+        if val is not None:
+            return val
     G = arrs['n_groups']
     ST = np.empty(G, dtype=np.int64)
     LS = np.empty(G, dtype=np.float64)
@@ -4553,6 +4556,8 @@ def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol):
     except (TypeError, ValueError, ArithmeticError):
         return None
     val = (ST, LS, MANT)
+    if not memo:
+        return val
     with _CHAIN_UPPERS_LOCK:
         if _chain_dd_batch_size[0] + G > _CHAIN_DD_BATCH_MAX:
             _chain_dd_batch_memo.clear()
@@ -4570,8 +4575,11 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     extension for all groups at once (``_chain_dd_batch``) and their fold
     (``boxfree.chain_fold``), in the scalar loop's order.  ``None`` when any
     term leaves the plain case (the scalar loop then runs and decides)."""
+    # with the chain memo off the batch still runs (so the memo changes no
+    # number, as M4 promises) but keeps nothing
+    memo = _chain_uppers_memo_on()
     if (len(plan['tuple_groups']) < _DD_BATCH_MIN
-            or any(k is None for k in key_suffixes)):
+            or (memo and any(k is None for k in key_suffixes))):
         return None
     arrs = _m7b_plan_arrays(plan)
     if arrs is None:
@@ -4587,7 +4595,8 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     for sigma, U_ext, upp, key in zip(extensions, upper_for_ext,
                                       upper_per_position_per_ext,
                                       key_suffixes):
-        b = _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key, tol)
+        b = _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key, tol,
+                            memo)
         if b is None:
             return None
         rows.append(b)
@@ -4647,7 +4656,7 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                      subset_constraint_data)
     use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
     # M7b: all groups of the plan at once; None = the scalar loop below
-    if plan is not None and not use_mp_accum and _chain_uppers_memo_on():
+    if plan is not None and not use_mp_accum:
         total = _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
                                 upper_per_position_per_ext, key_suffixes,
                                 pref, free_ext_vals, tol)
