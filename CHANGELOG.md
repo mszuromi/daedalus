@@ -1705,12 +1705,60 @@ on a coupled two-field model at k = 4 (260), where the totals still agreed
 with the exact oracle to 3e−15; where it matters, the switches move the
 number to the correct one.
 
-Speed: with the switches on the kernels run per pole tuple in Python.
-Unchanged within noise on most of the above; slower on `quad_exp` (37 s →
-53 s; about 600,000 distinct chains) and on models with many poles per
-region (`multipopulation_test` k = 3 ℓ = 1: 37 s → 84 s; a coupled two-field
-model k = 4 ℓ = 1: 155 s → 262 s). Vectorising the kernels over the pole
-tuples is left for before the switches become the default.
+Speed: with the switches on the kernels first ran per pole tuple in Python,
+up to 2.3x slower than with the switches off on models with many poles per
+region. The batched kernels (next section) make the switches-on runs faster
+than the switches-off ones on every model measured.
+
+### Performance: batched box-free kernels (switches on; numbers unchanged to rounding)
+
+With the box-free switches on, the two-time regions and the chain folds of
+three or more times now take all pole tuples of a region at once on the
+compiled backend of `expdd` (plain Python without numba):
+
+- `boxfree.region_integral_batch` / `region_modesum` integrate a two-time
+  region for every pole tuple in one compiled loop (`multipopulation_test`
+  k = 3 has about 67,000 tuples per region);
+- the chain route keeps the chains of one ordering of the times for EVERY
+  pole-tuple group of a region in one memo entry, keyed exactly on the bytes
+  of the groups' exponent coefficients, the ordering, the bounds and the
+  decay margin (filled from the per-chain memo, so the chain values are the
+  same objects; bounded by 2,000,000 chains, cleared with the chain memo),
+  and `boxfree.group_fold` / `chain_fold` fold the prefactors and sum the
+  terms in one compiled loop. Before, a run made up to 160 million Python
+  calls into the per-chain memo (`quad_exp`: 9.3 million calls for 586,000
+  distinct chains);
+- both take a region only when every term is plain (status OK, the
+  in-range branch); anything else (a divergence, an overflow, a non-finite
+  input) reruns the scalar loop, so statuses, bail reasons and errors are
+  those of the scalar routines. Regions with fewer than 8 pole tuples (or
+  pole-tuple groups) stay on the scalar loop, where the batch's fixed cost
+  per call and per ordering would dominate (`ou_quartic` k = 4 ℓ = 2, one
+  group and about 500 orderings per region, ran 1.4x slower batched).
+
+Values agree with the scalar loops to rounding, not bit for bit (compiled
+complex products may be contracted to fused multiply-adds): in one process,
+switches on, the totals of the configurations below agree with the previous
+code to ≤ 5.2e-16 relative, with the same counters (the chain-memo hit and
+miss counts aside) and the same route and status for every region. Single
+regions move by up to 2.8e-9 relative, all of them sums that cancel by a
+factor of 1e7 to 9e14 (sum of |terms| over |sum|); there both codes are
+within 1.5e-15 times that factor of the exactly rounded sum. With the
+switches off every result is bit-identical.
+
+Wall time, whole run, minimum of 3 (Mac, in one process per model, the
+three variants interleaved):
+
+| model (configuration) | switches off | on, before | on, now |
+|---|---|---|---|
+| `single_population_quad_exp_test` k = 2 ℓ = 1 | 25.3 s | 33.1 s | 18.8 s |
+| `multipopulation_test` k = 3 ℓ = 1 (6 points) | 27.2 s | 99.6 s | 18.7 s |
+| a coupled two-field model k = 4 ℓ = 1 (6 points) | 131.5 s | 253.1 s | 54.2 s |
+| `single_population_spike_reset_test` k = 2 ℓ = 1 | 1.5 s | 1.3 s | 1.1 s |
+| same, grouped | 2.6 s | 2.6 s | 2.5 s |
+| `ou_quartic` k = 4 ℓ = 2 | 7.2 s | 6.5 s | 6.5 s |
+| `ou_quartic` k = 2 ℓ = 3 | 0.8 s | 0.8 s | 0.8 s |
+| `multipopulation_test` k = 2 ℓ = 1 | 1.8 s | 1.8 s | 1.8 s |
 
 ### Added
 

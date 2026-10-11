@@ -197,7 +197,7 @@ class Region2D:
     ``('strip', x0, u, r, det)``, ``('wedge', x0, r1, r2, det)`` with
     ``det`` the (positive) Jacobian."""
 
-    __slots__ = ('kind', 'vertices', 'rays', 'pieces', 'reason')
+    __slots__ = ('kind', 'vertices', 'rays', 'pieces', 'reason', '_packed')
 
     def __init__(self, kind, vertices=(), rays=(), pieces=(), reason=None):
         self.kind = kind
@@ -205,6 +205,7 @@ class Region2D:
         self.rays = tuple(rays)
         self.pieces = tuple(pieces)
         self.reason = reason
+        self._packed = None
 
     def __repr__(self):
         return (f'Region2D({self.kind!r}, vertices={self.vertices!r}, '
@@ -531,3 +532,283 @@ def chain_log(alphas, L, upper_per_position, U, tol=0.0):
         return expdd.chain_simplex_log(mirrored, -_INF, -L)
     except FloatingPointError:
         return UNDERFLOW, 0.0, 0j
+
+
+# ─────────────────────────────────────────────────────── batched (M7b)
+# The routes above take one pole tuple per call; ``final_integral`` runs
+# them over every tuple of a subset (up to ~10^5 per region), which costs
+# Python-level work per tuple.  The kernels below take all tuples of one
+# region (one chain-fold) at once on the compiled backend of ``expdd``
+# (plain Python without numba).  They compute what the scalar routines
+# compute, in the same order, and they only ever answer the plain case:
+# every term OK and in range.  Anything else (a non-OK status, an overflow
+# branch, a non-finite input that the scalar routine would raise on) is
+# reported as "not taken" and the caller reruns the scalar loop, so
+# statuses, bail reasons and exceptions are those of the scalar routines.
+# The values agree with the scalar loop to rounding, not bit for bit
+# (compiled complex products may be contracted to FMAs).
+
+#: ``_region_value`` status: the scalar routine would raise ``ValueError``
+#: (a non-finite input or exponent)
+_RAISES = -1
+
+_jit = expdd._jit
+_log_dd_core = expdd._log_dd_core
+
+
+def _pack_region(region):
+    """``(codes, P, rays)`` of a ``Region2D`` for the compiled kernels
+    (cached on the region): ``codes[i]`` 0/1/2 for a triangle / half-strip
+    / wedge, ``P[i] = (x0, a, b, log det)`` flattened (``a, b`` = ``u, w``,
+    ``u, r`` or ``r1, r2``), ``rays`` the unit rays."""
+    packed = region._packed
+    if packed is None:
+        n = len(region.pieces)
+        codes = np.empty(n, dtype=np.int64)
+        P = np.empty((n, 7), dtype=np.float64)
+        for i, (tag, x0, a, b, det) in enumerate(region.pieces):
+            codes[i] = {'tri': 0, 'strip': 1, 'wedge': 2}[tag]
+            P[i] = (x0[0], x0[1], a[0], a[1], b[0], b[1], math.log(det))
+        rays = np.array([tuple(r) for r in region.rays],
+                        dtype=np.float64).reshape(-1, 2)
+        packed = (codes, P, rays)
+        region._packed = packed
+    return packed
+
+
+@_jit
+def _piece_log_c(code, p, alpha, beta, gamma):
+    """``_piece_log`` on a packed piece."""
+    x0x = p[0]
+    x0y = p[1]
+    if code == 2:
+        f0 = alpha * x0x + beta * x0y + gamma
+        l1 = cmath.log(-(alpha * p[2] + beta * p[3]))
+        l2 = cmath.log(-(alpha * p[4] + beta * p[5]))
+        return (f0.real + p[6] - l1.real - l2.real,
+                cmath.exp(1j * (f0.imag - l1.imag - l2.imag)))
+    npts = 3 if code == 0 else 2
+    px = np.empty(npts, dtype=np.float64)
+    py = np.empty(npts, dtype=np.float64)
+    px[0] = x0x
+    py[0] = x0y
+    px[1] = p[2]
+    py[1] = p[3]
+    if code == 0:
+        px[2] = p[4]
+        py[2] = p[5]
+    # _anchored_nodes: the first point with the largest real exponent
+    k = 0
+    best = 0.0
+    for i in range(npts):
+        rel = alpha * (px[i] - px[0]) + beta * (py[i] - py[0])
+        if i == 0 or rel.real > best:
+            best = rel.real
+            k = i
+    nodes = np.empty(npts, dtype=np.complex128)
+    for i in range(npts):
+        nodes[i] = alpha * (px[i] - px[k]) + beta * (py[i] - py[k])
+    nodes[k] = 0j
+    anchor = alpha * px[k] + beta * py[k] + gamma
+    c, mant = _log_dd_core(nodes)
+    if code == 0:
+        return (anchor.real + c + p[6], mant * cmath.exp(1j * anchor.imag))
+    ar = alpha * p[4] + beta * p[5]
+    lg = cmath.log(-ar)
+    return (anchor.real + c + p[6] - lg.real,
+            mant * cmath.exp(1j * (anchor.imag - lg.imag)))
+
+
+@_jit
+def _finite_c(z):
+    return math.isfinite(z.real) and math.isfinite(z.imag)
+
+
+@_jit
+def _region_value(codes, P, rays, alpha, beta, gamma, tol):
+    """``region_integral`` of a packed nonempty region: ``(status,
+    value)``, status ``_RAISES`` where the scalar routine raises."""
+    if not (_finite_c(alpha) and _finite_c(beta) and _finite_c(gamma)):
+        return _RAISES, 0j
+    for i in range(rays.shape[0]):
+        ar = alpha * rays[i, 0] + beta * rays[i, 1]
+        if not ar.real < -tol or abs(ar) < ALPHA_ZERO:
+            return DIVERGENT, 0j
+    n = codes.shape[0]
+    ls = np.empty(n, dtype=np.float64)
+    ms = np.empty(n, dtype=np.complex128)
+    for i in range(n):
+        ls[i], ms[i] = _piece_log_c(codes[i], P[i], alpha, beta, gamma)
+    for i in range(n):
+        if not math.isfinite(ls[i]):
+            return _RAISES, 0j
+        if ms[i] == 0 and ls[i] > LOG_OVERFLOW:
+            return OVERFLOW, 0j
+    top = 0.0
+    found = False
+    for i in range(n):
+        if ms[i] != 0 and (not found or ls[i] > top):
+            top = ls[i]
+            found = True
+    if not found:
+        return OK, 0j
+    acc = 0j
+    for i in range(n):
+        if ms[i] != 0:
+            acc += ms[i] * math.exp(ls[i] - top)
+    if acc == 0:
+        return OK, 0j
+    # exp_times(complex(top, 0.0), acc)
+    if not _finite_c(acc):
+        return _RAISES, 0j
+    lv = top + math.log(abs(acc))
+    if lv > LOG_OVERFLOW:
+        return OVERFLOW, 0j
+    if -LOG_OVERFLOW <= top <= LOG_OVERFLOW:
+        return OK, acc * cmath.exp(complex(top, 0.0))
+    if lv < -2.0 * LOG_OVERFLOW:
+        return OK, 0j
+    return OK, (acc / abs(acc)) * cmath.exp(complex(lv, 0.0))
+
+
+@_jit
+def _region_batch_core(codes, P, rays, alphas, betas, gammas, tol):
+    n = alphas.shape[0]
+    st = np.empty(n, dtype=np.int64)
+    val = np.empty(n, dtype=np.complex128)
+    for t in range(n):
+        st[t], val[t] = _region_value(codes, P, rays, alphas[t], betas[t],
+                                      gammas[t], tol)
+    return st, val
+
+
+@_jit
+def _region_modesum_core(codes, P, rays, coef, alphas, betas, gammas, tol):
+    total = 0j
+    for t in range(coef.shape[0]):
+        c = coef[t]
+        if c == 0:
+            continue
+        st, v = _region_value(codes, P, rays, alphas[t], betas[t],
+                              gammas[t], tol)
+        if st != OK:
+            return False, 0j
+        total += c * v
+    return True, total
+
+
+def _as_c128(x):
+    return np.ascontiguousarray(np.asarray(x, dtype=np.complex128).ravel())
+
+
+def region_integral_batch(region, alphas, betas, gammas, tol=0.0):
+    """``region_integral`` for many ``(alpha, beta, gamma)`` at once:
+    ``(status, value)`` arrays.  ``status`` is that of ``region_integral``,
+    or ``-1`` where it raises ``ValueError``; ``value`` is 0 where the
+    status is not ``OK``."""
+    tol = _check_tol(tol)
+    alphas, betas, gammas = (_as_c128(alphas), _as_c128(betas),
+                             _as_c128(gammas))
+    n = alphas.shape[0]
+    if not betas.shape[0] == gammas.shape[0] == n:
+        raise ValueError('boxfree.region_integral_batch: length mismatch')
+    if region.kind == 'empty':
+        return np.full(n, OK, dtype=np.int64), np.zeros(n, np.complex128)
+    if region.kind == 'lineality':
+        return (np.full(n, DIVERGENT, dtype=np.int64),
+                np.zeros(n, np.complex128))
+    codes, P, rays = _pack_region(region)
+    return _region_batch_core(codes, P, rays, alphas, betas, gammas, tol)
+
+
+def region_modesum(region, coefs, alphas, betas, gammas, tol=0.0):
+    """``Σ_t coefs[t] · region_integral(region, alphas[t], betas[t],
+    gammas[t])`` over the tuples with ``coefs[t] != 0``, summed in order,
+    when every such term is ``OK``; ``None`` otherwise (the caller runs its
+    scalar loop, which yields the status, bail or exception).  ``region``
+    must be nonempty (not 'empty' or 'lineality')."""
+    tol = _check_tol(tol)
+    if region.kind not in ('bounded', 'unbounded'):
+        raise ValueError(f'boxfree.region_modesum: region kind '
+                         f'{region.kind!r}')
+    codes, P, rays = _pack_region(region)
+    ok, total = _region_modesum_core(codes, P, rays, _as_c128(coefs),
+                                     _as_c128(alphas), _as_c128(betas),
+                                     _as_c128(gammas), tol)
+    return complex(total) if ok else None
+
+
+@_jit
+def _group_fold_core(coef, gamma, member_idx, member_off):
+    """Per group ``g`` (members ``member_idx[member_off[g]:member_off[g+1]]``
+    in tuple order): ``g_max`` = the largest ``Re γ`` over the members with
+    ``coef != 0`` and ``tc = Σ coef e^{γ - g_max}``; ``tc = 0`` marks a group
+    with no such member."""
+    G = member_off.shape[0] - 1
+    tc = np.zeros(G, dtype=np.complex128)
+    gmax = np.zeros(G, dtype=np.float64)
+    for g in range(G):
+        found = False
+        best = 0.0
+        for i in range(member_off[g], member_off[g + 1]):
+            t = member_idx[i]
+            if coef[t] != 0 and (not found or gamma[t].real > best):
+                best = gamma[t].real
+                found = True
+        if not found:
+            continue
+        acc = 0j
+        for i in range(member_off[g], member_off[g + 1]):
+            t = member_idx[i]
+            if coef[t] != 0:
+                acc += coef[t] * cmath.exp(gamma[t] - best)
+        tc[g] = acc
+        gmax[g] = best
+    return tc, gmax
+
+
+def group_fold(coefs, gammas, member_idx, member_off):
+    """``(tc, g_max)`` per group of pole tuples, as the poset DD route folds
+    them (see ``_group_fold_core``); ``coefs``, ``gammas`` per tuple."""
+    return _group_fold_core(_as_c128(coefs), _as_c128(gammas),
+                            np.ascontiguousarray(member_idx, dtype=np.int64),
+                            np.ascontiguousarray(member_off, dtype=np.int64))
+
+
+@_jit
+def _chain_fold_core(tc, gmax, ST, LS, MANT):
+    total = 0j
+    G = tc.shape[0]
+    E = ST.shape[0]
+    for g in range(G):
+        c = tc[g]
+        if c == 0:
+            continue
+        zg = gmax[g]
+        for e in range(E):
+            st = ST[e, g]
+            if st != OK and st != OVERFLOW:
+                return False, 0j
+            zr = zg + LS[e, g]
+            mant = MANT[e, g]
+            if (-LOG_OVERFLOW <= zr <= LOG_OVERFLOW and abs(mant) < 1e150
+                    and abs(c) < 1e150):
+                total += (c * mant) * math.exp(zr)
+            else:
+                return False, 0j
+    return True, total
+
+
+def chain_fold(tc, gmax, ST, LS, MANT):
+    """``Σ_g Σ_e tc[g] · MANT[e, g] · e^{g_max[g] + LS[e, g]}`` over the
+    groups with ``tc != 0`` (groups outer, extensions inner, summed in that
+    order) when every chain status is ``OK`` or ``OVERFLOW`` and every term
+    takes the in-range branch of the poset DD route; ``None`` otherwise.
+    ``ST``, ``LS``, ``MANT``: ``(E, G)`` chain results ``(status,
+    log_scale, mant)`` per extension and group."""
+    ok, total = _chain_fold_core(
+        _as_c128(tc), np.ascontiguousarray(gmax, dtype=np.float64),
+        np.ascontiguousarray(ST, dtype=np.int64),
+        np.ascontiguousarray(LS, dtype=np.float64),
+        np.ascontiguousarray(MANT, dtype=np.complex128))
+    return complex(total) if ok else None

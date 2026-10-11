@@ -3163,6 +3163,21 @@ _CHAIN_UPPERS_MEMO_MAX = 200_000
 _chain_uppers_memo = {}
 _CHAIN_UPPERS_LOCK = _threading.Lock()
 _CHAIN_UPPERS_MISS = object()
+# M7b: the DD route's chains of one linear extension for EVERY pole-tuple
+# group of a plan, ``(status, log_scale, mant)`` arrays, filled from the
+# per-chain memo above (so the same values) and keyed EXACTLY on the bytes
+# of the plan's group alphas, the extension, the (L, uppers, U) suffix and
+# the DD tag.  Same lock; cleared with it; bounded by the number of chains
+# held (``_CHAIN_DD_BATCH_MAX``).
+_CHAIN_DD_BATCH_MAX = 2_000_000
+_chain_dd_batch_memo = {}
+_chain_dd_batch_size = [0]
+# The batched DD branches take a plan with at least this many pole-tuple
+# groups (poset) or pole tuples (polygon); below it their fixed cost per
+# call and per linear extension exceeds the scalar loop's (measured: one
+# group and ~500 extensions per region, ``ou_quartic`` k = 4 ℓ = 2, ran
+# 1.4x slower batched).
+_DD_BATCH_MIN = 8
 
 
 def _initial_chain_uppers_memo_flag(environ=None):
@@ -3543,11 +3558,13 @@ def _chain_uppers_kernel_tag():
 def _chain_simplex_memo_clear():
     """Drop every chain-simplex memo table (call when poles change): the
     fast and polynomial tables and the M4 ``_chain_with_intermediate_uppers``
-    table."""
+    table (with the M7b batch table of the DD route)."""
     _chain_simplex_memo_fast.clear()
     _chain_simplex_memo_poly.clear()
     with _CHAIN_UPPERS_LOCK:
         _chain_uppers_memo.clear()
+        _chain_dd_batch_memo.clear()
+        _chain_dd_batch_size[0] = 0
 
 
 def _chain_simplex_fast_tag():
@@ -4312,6 +4329,132 @@ def _chain_dd_log(alphas_chain, L, upper_per_position, U_chain_top,
     return val
 
 
+def _m7b_plan_arrays(plan):
+    """The plan's per-tuple and per-group data as numpy arrays for the
+    batched DD kernels (M7b), built once and kept in the plan: ``C`` (the
+    tuple coefficients), ``gc``/``S`` (γ constant and slopes), ``A`` (the
+    alphas, ``(T, m)``), the groups' members (``member_idx`` in tuple order,
+    ``member_off``) and the exact bytes of the group alphas (the batch memo
+    key).  ``None`` when the plan does not convert (the scalar loops run)."""
+    arrs = plan.get('_m7b_arrays')
+    if arrs is not None:
+        return arrs or None
+    try:
+        T = len(plan['pole_tuples'])
+        C = np.array([complex(c) for (c, _l) in plan['pole_tuples']],
+                      dtype=np.complex128)
+        gc = np.array([complex(g) for g in plan['gamma_const_per_tuple']],
+                       dtype=np.complex128)
+        slopes = plan['gamma_slope_per_tuple_per_ext']
+        n_ext = len(slopes[0]) if T else 0
+        S = np.array([[complex(x) for x in row] for row in slopes],
+                      dtype=np.complex128).reshape(T, n_ext)
+        A = np.array([[complex(x) for x in a]
+                       for a in plan['alphas_per_tuple']],
+                      dtype=np.complex128)
+        groups = plan['tuple_groups']
+        GA = np.array([[complex(x) for x in a] for (a, _i) in groups],
+                       dtype=np.complex128)
+        member_idx = np.array([t for (_a, idxs) in groups for t in idxs],
+                               dtype=np.int64)
+        member_off = np.zeros(len(groups) + 1, dtype=np.int64)
+        member_off[1:] = np.cumsum([len(idxs) for (_a, idxs) in groups])
+        arrs = {'C': C, 'gc': gc, 'S': S, 'A': A.reshape(T, -1) if T else A,
+                'member_idx': member_idx, 'member_off': member_off,
+                'group_alpha_bytes': GA.tobytes(), 'n_groups': len(groups)}
+        if not (np.all(np.isfinite(gc)) and np.all(np.isfinite(S))):
+            arrs = {}
+    except (TypeError, ValueError, IndexError, KeyError):
+        arrs = {}
+    plan['_m7b_arrays'] = arrs
+    return arrs or None
+
+
+def _m7b_gammas(arrs, free_ext_vals):
+    """γ per tuple at ``free_ext_vals`` (as ``_modesum_tuples``: the
+    constant plus each slope times its external time, in order)."""
+    gamma = arrs['gc']
+    S = arrs['S']
+    for j in range(S.shape[1]):
+        gamma = gamma + S[:, j] * float(free_ext_vals[j])
+    return gamma
+
+
+def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol):
+    """``(status, log_scale, mant)`` arrays of the chain of extension
+    ``sigma`` for every group of ``plan`` (``_chain_dd_log`` per group, so
+    the very values of the per-chain memo), memoised per (group alphas,
+    ``sigma``, suffix, tag).  ``None`` when a chain cannot be evaluated (the
+    scalar loop then meets the same input and decides)."""
+    bf = _bf()
+    key = (arrs['group_alpha_bytes'], m, tuple(sigma), key_suffix,
+           ('dd', bf.expdd.BACKEND, float(tol)))
+    with _CHAIN_UPPERS_LOCK:
+        val = _chain_dd_batch_memo.get(key)
+    if val is not None:
+        return val
+    G = arrs['n_groups']
+    ST = np.empty(G, dtype=np.int64)
+    LS = np.empty(G, dtype=np.float64)
+    MANT = np.empty(G, dtype=np.complex128)
+    try:
+        for g, (alphas_orig, _idxs) in enumerate(plan['tuple_groups']):
+            alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
+            ST[g], LS[g], MANT[g] = _chain_dd_log(
+                alphas_chain, L, upp, U_ext, _key_suffix=key_suffix, tol=tol)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    val = (ST, LS, MANT)
+    with _CHAIN_UPPERS_LOCK:
+        if _chain_dd_batch_size[0] + G > _CHAIN_DD_BATCH_MAX:
+            _chain_dd_batch_memo.clear()
+            _chain_dd_batch_size[0] = 0
+        _chain_dd_batch_memo[key] = val
+        _chain_dd_batch_size[0] += G
+    return val
+
+
+def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
+                    upper_per_position_per_ext, key_suffixes, pref,
+                    free_ext_vals, tol):
+    """The plan branch of ``_poset_modesum_dd`` on the batched kernels: the
+    groups' folded prefactors (``boxfree.group_fold``), the chains per
+    extension for all groups at once (``_chain_dd_batch``) and their fold
+    (``boxfree.chain_fold``), in the scalar loop's order.  ``None`` when any
+    term leaves the plain case (the scalar loop then runs and decides)."""
+    if (len(plan['tuple_groups']) < _DD_BATCH_MIN
+            or any(k is None for k in key_suffixes)):
+        return None
+    arrs = _m7b_plan_arrays(plan)
+    if arrs is None:
+        return None
+    bf = _bf()
+    gamma = _m7b_gammas(arrs, free_ext_vals)
+    coef = pref * arrs['C']
+    tc, gmax = bf.group_fold(coef, gamma, arrs['member_idx'],
+                             arrs['member_off'])
+    if not np.any(tc != 0):
+        return 0.0 + 0.0j
+    rows = []
+    for sigma, U_ext, upp, key in zip(extensions, upper_for_ext,
+                                      upper_per_position_per_ext,
+                                      key_suffixes):
+        b = _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key, tol)
+        if b is None:
+            return None
+        rows.append(b)
+    E = len(rows)
+    G = arrs['n_groups']
+    ST = np.empty((E, G), dtype=np.int64)
+    LS = np.empty((E, G), dtype=np.float64)
+    MANT = np.empty((E, G), dtype=np.complex128)
+    for e, (st, ls, mant) in enumerate(rows):
+        ST[e] = st
+        LS[e] = ls
+        MANT[e] = mant
+    return bf.chain_fold(tc, gmax, ST, LS, MANT)
+
+
 def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                       smooth_edge_modes, prefactor_complex,
                       subset_constraint_data, free_ext_vals, pole_tuples,
@@ -4352,6 +4495,16 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
             except (TypeError, ValueError, OverflowError):
                 pass
     pref = complex(prefactor_complex)
+    tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                     subset_constraint_data)
+    use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
+    # M7b: all groups of the plan at once; None = the scalar loop below
+    if plan is not None and not use_mp_accum and _chain_uppers_memo_on():
+        total = _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
+                                upper_per_position_per_ext, key_suffixes,
+                                pref, free_ext_vals, tol)
+        if total is not None:
+            return _poset_dd_finish(total, L, upper_for_ext)
     if plan is not None:
         terms = list(_modesum_tuples(None, subset_constraint_data,
                                      free_ext_vals, m, None, plan))
@@ -4363,9 +4516,6 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                   for C_prod, alphas, gamma in _modesum_tuples(
                       smooth_edge_modes, subset_constraint_data,
                       free_ext_vals, m, pole_tuples, None))
-    tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
-                     subset_constraint_data)
-    use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
     if use_mp_accum:
         from mpmath import mp as _mp, mpc as _mpc
         with _mp.workdps(50):
@@ -4406,6 +4556,12 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 total += v
     if use_mp_accum:
         total = complex(float(total_mp.real), float(total_mp.imag))
+    return _poset_dd_finish(total, L, upper_for_ext)
+
+
+def _poset_dd_finish(total, L, upper_for_ext):
+    """The tail of ``_poset_modesum_dd``: the overflow test on the total
+    and the DD counters."""
     total = _finite_or_overflow(total, 'poset')
     if total is not None:
         _RUNTIME_COUNTERS['dd_poset'] += 1
@@ -5196,24 +5352,36 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
     pref = complex(prefactor_complex)
     tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
                      subset_constraint_data)
-    total = 0.0 + 0.0j
-    for C_prod, alphas, gamma in _modesum_tuples(
-            smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
-            pole_tuples, plan):
-        coef = pref * C_prod
-        if coef == 0:
-            continue
-        st, v = bf.region_integral(region, alphas[0], alphas[1], gamma, tol)
-        if st == bf.OVERFLOW:
-            # the integral alone overflows: decide on the whole term
-            st, v = bf.region_integral(region, alphas[0], alphas[1],
-                                       gamma + cmath.log(coef), tol)
-            if st == bf.OK:
-                total += v
+    total = None
+    if plan is not None and len(plan['pole_tuples']) >= _DD_BATCH_MIN:
+        # M7b: every tuple at once when each term is plain (all OK);
+        # None = the scalar loop below
+        arrs = _m7b_plan_arrays(plan)
+        A = None if arrs is None else arrs['A']
+        if A is not None and A.ndim == 2 and A.shape[1] == 2:
+            total = bf.region_modesum(region, pref * arrs['C'], A[:, 0],
+                                      A[:, 1],
+                                      _m7b_gammas(arrs, free_ext_vals), tol)
+    if total is None:
+        total = 0.0 + 0.0j
+        for C_prod, alphas, gamma in _modesum_tuples(
+                smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
+                pole_tuples, plan):
+            coef = pref * C_prod
+            if coef == 0:
                 continue
-        if st != bf.OK:
-            return _dd_status_bail(st, 'polygon')
-        total += coef * v
+            st, v = bf.region_integral(region, alphas[0], alphas[1], gamma,
+                                       tol)
+            if st == bf.OVERFLOW:
+                # the integral alone overflows: decide on the whole term
+                st, v = bf.region_integral(region, alphas[0], alphas[1],
+                                           gamma + cmath.log(coef), tol)
+                if st == bf.OK:
+                    total += v
+                    continue
+            if st != bf.OK:
+                return _dd_status_bail(st, 'polygon')
+            total += coef * v
     total = _finite_or_overflow(total, 'polygon')
     if total is not None:
         _RUNTIME_COUNTERS['dd_polygon'] += 1
