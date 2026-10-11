@@ -1564,13 +1564,15 @@ def _divergence_policy(on_divergence=None):
                      f'{_DIVERGENCE_POLICIES}')
 
 
-def _ensure_warning_shown(category, action='default'):
+def _ensure_warning_shown(category, action='always'):
     """Show ``category`` also where the ENVIRONMENT ignores warnings (the
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning
     in ``sage -python`` and the Sage Jupyter kernel).  Only that case is
     overridden: a filter for this category, and every filter set in code or
     by an ``error`` option, is left alone (as
-    ``api._grouped_phase_j._ensure_shown``)."""
+    ``api._grouped_phase_j._ensure_shown``).  The action is 'always': every
+    caller deduplicates its own warnings (a 'default' filter would also
+    swallow repeats that a caller's own 'always' filter asked for)."""
     import sys as _sys
     import warnings as _warnings
     if any(f[2] is category for f in _warnings.filters):

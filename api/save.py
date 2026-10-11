@@ -106,13 +106,14 @@ _FI_MODULE = 'engine.integration.time_domain.final_integral'
 _FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
 
-def _ensure_warning_shown(category, action='default'):
+def _ensure_warning_shown(category, action='always'):
     """Show ``category`` also where the ENVIRONMENT ignores warnings: the
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
     ``sage -python`` and the Sage Jupyter kernel.  Only that case is
     overridden: a filter for this category, and every filter set in code or
-    by an ``error`` option (e.g. ``-W error``), is left alone.  (The engine
-    keeps the same rule in ``final_integral._ensure_warning_shown``.)"""
+    by an ``error`` option (e.g. ``-W error``), is left alone.  The action is
+    'always': callers deduplicate their own warnings.  (The engine keeps the
+    same rule in ``final_integral._ensure_warning_shown``.)"""
     if any(f[2] is category for f in warnings.filters):
         return
     opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
