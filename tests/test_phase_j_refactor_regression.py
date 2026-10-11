@@ -64,10 +64,13 @@ from tests.phase_j_refactor_fixtures._runner import (
 # every such comparison agrees to ~1e-14 relative or better (cross-process
 # rounding, well inside the fixture tolerance).  P3/P4 are still pending,
 # hence no refreeze before M9.
-_MOVED = {
-    'spike_reset_k2_ell1': ('Theta(0)=0 fix (M1) and the poset lower-bound '
-                            'inheritance fix (M3); refrozen once at M9'),
-}
+#
+# M9 (0.2.0): spike_reset_k2_ell1 was refrozen ONCE, on the new defaults (M1
+# Θ(0) rule, M3 inheritance fix, the box-free routes), after its one-loop
+# matched the ħ-extrapolated simulation's loop coefficient (per-bin χ² 5.8
+# over 10 bins, p = 0.83).  The other three fixtures did not move (≤ 1.5e-15).
+# Its pre-change values stay in ``legacy/`` (the rollback guard).
+_MOVED = {}
 
 
 def _fixture_params():
