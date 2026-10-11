@@ -1166,3 +1166,33 @@ def test_t_min_at_the_fallback_explains_itself(FI, monkeypatch):
                              r'.*m = 1.*external times \(0\.5,\).*'
                              r'ill-conditioned 0 time.*further back'):
         FI._integrate_polytope(lambda s, t: 1.0, [([1.0], 0.0)], [0.5], 1)
+
+
+def test_dd_error_accounting(FI, monkeypatch):
+    """M7 report: stiff mode ratios lose accuracy with an OK status.  The
+    box-free subset sums now carry the DBM's conditioning test as
+    bookkeeping (counters ``dd_ill_conditioned`` / ``dd_err_ratio_max``),
+    the value unchanged.  Half line s < t: slow modes (rate 1e-7) with
+    nearly opposite residues make two ~1e7 terms cancel to O(1e-2) next to a
+    fast mode (rate 100): flagged; the fast mode alone: not."""
+    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    half_line = [((-1.0,), (1.0,), 0.0)]
+
+    def run(modes):
+        FI._reset_runtime_counters()
+        ems = [_ems(FI, modes)]
+        v = FI._integrate_1d_polytope_modesum(ems, 1.0, half_line, [0.4])
+        c = FI._RUNTIME_COUNTERS
+        return v, c['dd_ill_conditioned'], c['dd_err_ratio_max']
+
+    v, n, r = run([(1.0, -100.0)])
+    assert v is not None and n == 0 and r < 1e-3
+    v, n, r = run([(1.0, -1e-7), (-1.0, -1e-7 * (1 + 1e-9)), (1.0, -100.0)])
+    assert v is not None and n == 1 and r > 1e3
+    # the rule itself: COND_ERR_FACTOR·mag vs max(COND_RTOL·|v|, COND_ATOL·scale)
+    FI._reset_runtime_counters()
+    FI._dd_accuracy(1.0, 1e4, 1.0)                  # 1e-11 vs 1e-10: fine
+    assert FI._RUNTIME_COUNTERS['dd_ill_conditioned'] == 0
+    assert abs(FI._RUNTIME_COUNTERS['dd_err_ratio_max'] - 0.1) < 1e-12
+    FI._dd_accuracy(1.0, 1e6, 1.0)                  # 1e-9 vs 1e-10: flagged
+    assert FI._RUNTIME_COUNTERS['dd_ill_conditioned'] == 1

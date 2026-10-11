@@ -1153,6 +1153,10 @@ _RUNTIME_COUNTERS = {
     # M8: pole-tuple groups that fail the convergence certificate but whose
     # merged coefficient is exactly 0 (dropped, not divergent):
     'divergent_cancelled': 0,
+    # Error accounting of the box-free subset sums (``_dd_accuracy``): the
+    # worst estimated-error / accepted-error ratio, and the subsets above 1.
+    'dd_err_ratio_max': 0.0,
+    'dd_ill_conditioned': 0,
     # DBM calls without a box (``SEMIINF_CHAIN``), with the slow-mode box
     # ±max(200, 40/κ_min) wider than ±200 (DD kernels only), and declined as
     # divergent (box-free):
@@ -4594,8 +4598,9 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     """The plan branch of ``_poset_modesum_dd`` on the batched kernels: the
     groups' folded prefactors (``boxfree.group_fold``), the chains per
     extension for all groups at once (``_chain_dd_batch``) and their fold
-    (``boxfree.chain_fold``), in the scalar loop's order.  ``None`` when any
-    term leaves the plain case (the scalar loop then runs and decides)."""
+    (``boxfree.chain_fold``), in the scalar loop's order: ``(value,
+    Σ|term|, scale)`` (``_dd_accuracy``).  ``None`` when any term leaves the
+    plain case (the scalar loop then runs and decides)."""
     # with the chain memo off the batch still runs (so the memo changes no
     # number, as M4 promises) but keeps nothing
     memo = _chain_uppers_memo_on()
@@ -4611,7 +4616,7 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     tc, gmax = bf.group_fold(coef, gamma, arrs['member_idx'],
                              arrs['member_off'])
     if not np.any(tc != 0):
-        return 0.0 + 0.0j
+        return 0.0 + 0.0j, 0.0, 0.0
     rows = []
     for sigma, U_ext, upp, key in zip(extensions, upper_for_ext,
                                       upper_per_position_per_ext,
@@ -4630,7 +4635,10 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
         ST[e] = st
         LS[e] = ls
         MANT[e] = mant
-    return bf.chain_fold(tc, gmax, ST, LS, MANT)
+    r = bf.chain_fold_mag(tc, gmax, ST, LS, MANT)
+    if r is None:
+        return None
+    return r[0], r[1], _dd_scale_np(coef, gamma)
 
 
 def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
@@ -4678,11 +4686,12 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
     use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
     # M7b: all groups of the plan at once; None = the scalar loop below
     if plan is not None and not use_mp_accum:
-        total = _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
-                                upper_per_position_per_ext, key_suffixes,
-                                pref, free_ext_vals, tol)
-        if total is not None:
-            return _poset_dd_finish(total, L, upper_for_ext)
+        res = _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
+                              upper_per_position_per_ext, key_suffixes,
+                              pref, free_ext_vals, tol)
+        if res is not None:
+            return _poset_dd_finish(res[0], L, upper_for_ext, res[1],
+                                    res[2])
     if plan is not None:
         terms = list(_modesum_tuples(None, subset_constraint_data,
                                      free_ext_vals, m, None, plan))
@@ -4704,10 +4713,12 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
         with _mp.workdps(50):
             total_mp = _mpc(0, 0)
     total = 0.0 + 0.0j
+    mag = scale = 0.0
     for alphas_orig, members in groups:
         members = [(c, g) for (c, g) in members if c != 0]
         if not members:
             continue
+        scale += sum(_dd_scale_term(c, g) for (c, g) in members)
         g_max = max(g.real for (_c, g) in members)
         tc = 0.0 + 0.0j
         for (c, g) in members:
@@ -4732,6 +4743,7 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 st, v = bf.exp_times(complex(zr, 0.0) + cmath.log(tc), mant)
                 if st != OK:
                     return _dd_status_bail(st, 'poset')
+            mag += abs(v)
             if use_mp_accum:
                 with _mp.workdps(50):
                     total_mp = total_mp + _mpc(v.real, v.imag)
@@ -4739,14 +4751,15 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 total += v
     if use_mp_accum:
         total = complex(float(total_mp.real), float(total_mp.imag))
-    return _poset_dd_finish(total, L, upper_for_ext)
+    return _poset_dd_finish(total, L, upper_for_ext, mag, scale)
 
 
-def _poset_dd_finish(total, L, upper_for_ext):
-    """The tail of ``_poset_modesum_dd``: the overflow test on the total
-    and the DD counters."""
+def _poset_dd_finish(total, L, upper_for_ext, mag=0.0, scale=0.0):
+    """The tail of ``_poset_modesum_dd``: the overflow test on the total,
+    the error accounting (``_dd_accuracy``) and the DD counters."""
     total = _finite_or_overflow(total, 'poset')
     if total is not None:
+        _dd_accuracy(total, mag, scale)
         _RUNTIME_COUNTERS['dd_poset'] += 1
         if L == float('-inf') or any(u == float('inf')
                                      for u in upper_for_ext):
@@ -5064,6 +5077,40 @@ def _divergent_group_cancels(terms, alphas, pref):
     return w == 0
 
 
+def _dd_scale_term(coef, gamma):
+    """``|coef| e^{Re γ}``: one pole tuple's share of the integrand scale
+    of a DD route (the DBM's ``scale``, capped at e^LOG_OVERFLOW)."""
+    return abs(coef) * math.exp(min(gamma.real, 700.0))
+
+
+def _dd_scale_np(coefs, gammas):
+    """``Σ |coef| e^{Re γ}`` over arrays (``_dd_scale_term``)."""
+    return float(np.sum(np.abs(coefs)
+                        * np.exp(np.minimum(np.real(gammas), 700.0))))
+
+
+def _dd_accuracy(total, mag, scale):
+    """Error accounting of a box-free subset sum (M7 report: stiff mode
+    ratios and cancelling sums lose accuracy with an OK status): the DBM's
+    own test -- rounding error ``COND_ERR_FACTOR · Σ|term|`` against
+    ``max(COND_RTOL · |value|, COND_ATOL · scale)`` -- recorded in the
+    counters ``dd_err_ratio_max`` (the worst ratio) and ``dd_ill_conditioned``
+    (subsets above 1).  Bookkeeping only: the value is used as computed (the
+    DD kernels are the most accurate route there is).  The test is relative
+    to the SUBSET, so a flagged subset may be negligible for the cumulant
+    (quad_exp: 8 regions near a cancellation, ~1e-21 absolute against a
+    one-loop of 2e-4); hence counters, not a warning."""
+    accepted = max(_dbm.COND_RTOL * abs(total), _dbm.COND_ATOL * scale)
+    err = _dbm.COND_ERR_FACTOR * mag
+    if err == 0:
+        return
+    ratio = err / accepted if accepted > 0 else math.inf
+    if ratio > _RUNTIME_COUNTERS['dd_err_ratio_max']:
+        _RUNTIME_COUNTERS['dd_err_ratio_max'] = ratio
+    if ratio > 1.0:
+        _RUNTIME_COUNTERS['dd_ill_conditioned'] += 1
+
+
 def _finite_or_overflow(total, prefix):
     """``total`` if finite, else the explicit overflow bail."""
     if math.isfinite(total.real) and math.isfinite(total.imag):
@@ -5087,10 +5134,12 @@ def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
     terms = list(terms)
     dropped = set()
     total = 0.0 + 0.0j
+    mag = scale = 0.0
     for C_prod, alphas, gamma in terms:
         coef = pref * C_prod
         if coef == 0 or alphas in dropped:
             continue
+        scale += _dd_scale_term(coef, gamma)
         st, v = bf.interval(alphas[0], gamma, L, U, tol)
         if st == bf.DIVERGENT and _divergent_group_cancels(terms, alphas,
                                                            pref):
@@ -5103,12 +5152,15 @@ def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
                                 tol)
             if st == bf.OK:
                 total += v
+                mag += abs(v)
                 continue
         if st != bf.OK:
             return _dd_status_bail(st, prefix)
         total += coef * v
+        mag += abs(coef * v)
     total = _finite_or_overflow(total, prefix)
     if total is not None:
+        _dd_accuracy(total, mag, scale)
         _RUNTIME_COUNTERS['dd_interval'] += 1
     return total
 
@@ -5597,19 +5649,25 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
         arrs = _m7b_plan_arrays(plan)
         A = None if arrs is None else arrs['A']
         if A is not None and A.ndim == 2 and A.shape[1] == 2:
-            total = bf.region_modesum(region, pref * arrs['C'], A[:, 0],
-                                      A[:, 1],
-                                      _m7b_gammas(arrs, free_ext_vals), tol)
+            coefs = pref * arrs['C']
+            gammas = _m7b_gammas(arrs, free_ext_vals)
+            r = bf.region_modesum_mag(region, coefs, A[:, 0], A[:, 1],
+                                      gammas, tol)
+            if r is not None:
+                total, mag = r
+                scale = _dd_scale_np(coefs, gammas)
     if total is None:
         terms = list(_modesum_tuples(
             smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
             pole_tuples, plan))
         dropped = set()
         total = 0.0 + 0.0j
+        mag = scale = 0.0
         for C_prod, alphas, gamma in terms:
             coef = pref * C_prod
             if coef == 0 or alphas in dropped:
                 continue
+            scale += _dd_scale_term(coef, gamma)
             st, v = bf.region_integral(region, alphas[0], alphas[1], gamma,
                                        tol)
             if st == bf.DIVERGENT and _divergent_group_cancels(
@@ -5623,12 +5681,15 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
                                            gamma + cmath.log(coef), tol)
                 if st == bf.OK:
                     total += v
+                    mag += abs(v)
                     continue
             if st != bf.OK:
                 return _dd_status_bail(st, 'polygon')
             total += coef * v
+            mag += abs(coef * v)
     total = _finite_or_overflow(total, 'polygon')
     if total is not None:
+        _dd_accuracy(total, mag, scale)
         _RUNTIME_COUNTERS['dd_polygon'] += 1
         if region.kind == 'unbounded':
             _RUNTIME_COUNTERS['polygon_exact_unbounded'] += 1

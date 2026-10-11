@@ -685,6 +685,7 @@ def _region_batch_core(codes, P, rays, alphas, betas, gammas, tol):
 @_jit
 def _region_modesum_core(codes, P, rays, coef, alphas, betas, gammas, tol):
     total = 0j
+    mag = 0.0
     for t in range(coef.shape[0]):
         c = coef[t]
         if c == 0:
@@ -692,9 +693,10 @@ def _region_modesum_core(codes, P, rays, coef, alphas, betas, gammas, tol):
         st, v = _region_value(codes, P, rays, alphas[t], betas[t],
                               gammas[t], tol)
         if st != OK:
-            return False, 0j
+            return False, 0j, 0.0
         total += c * v
-    return True, total
+        mag += abs(c * v)
+    return True, total, mag
 
 
 def _as_c128(x):
@@ -731,11 +733,22 @@ def region_modesum(region, coefs, alphas, betas, gammas, tol=0.0):
     if region.kind not in ('bounded', 'unbounded'):
         raise ValueError(f'boxfree.region_modesum: region kind '
                          f'{region.kind!r}')
+    r = region_modesum_mag(region, coefs, alphas, betas, gammas, tol)
+    return None if r is None else r[0]
+
+
+def region_modesum_mag(region, coefs, alphas, betas, gammas, tol=0.0):
+    """``region_modesum`` and the sum of the terms' absolute values:
+    ``(value, Σ|term|)``, or ``None`` (see there)."""
+    tol = _check_tol(tol)
+    if region.kind not in ('bounded', 'unbounded'):
+        raise ValueError(f'boxfree.region_modesum: region kind '
+                         f'{region.kind!r}')
     codes, P, rays = _pack_region(region)
-    ok, total = _region_modesum_core(codes, P, rays, _as_c128(coefs),
-                                     _as_c128(alphas), _as_c128(betas),
-                                     _as_c128(gammas), tol)
-    return complex(total) if ok else None
+    ok, total, mag = _region_modesum_core(
+        codes, P, rays, _as_c128(coefs), _as_c128(alphas), _as_c128(betas),
+        _as_c128(gammas), tol)
+    return (complex(total), float(mag)) if ok else None
 
 
 @_jit
@@ -778,6 +791,7 @@ def group_fold(coefs, gammas, member_idx, member_off):
 @_jit
 def _chain_fold_core(tc, gmax, ST, LS, MANT):
     total = 0j
+    mag = 0.0
     G = tc.shape[0]
     E = ST.shape[0]
     for g in range(G):
@@ -788,15 +802,17 @@ def _chain_fold_core(tc, gmax, ST, LS, MANT):
         for e in range(E):
             st = ST[e, g]
             if st != OK and st != OVERFLOW:
-                return False, 0j
+                return False, 0j, 0.0
             zr = zg + LS[e, g]
             mant = MANT[e, g]
             if (-LOG_OVERFLOW <= zr <= LOG_OVERFLOW and abs(mant) < 1e150
                     and abs(c) < 1e150):
-                total += (c * mant) * math.exp(zr)
+                v = (c * mant) * math.exp(zr)
+                total += v
+                mag += abs(v)
             else:
-                return False, 0j
-    return True, total
+                return False, 0j, 0.0
+    return True, total, mag
 
 
 def chain_fold(tc, gmax, ST, LS, MANT):
@@ -806,9 +822,16 @@ def chain_fold(tc, gmax, ST, LS, MANT):
     takes the in-range branch of the poset DD route; ``None`` otherwise.
     ``ST``, ``LS``, ``MANT``: ``(E, G)`` chain results ``(status,
     log_scale, mant)`` per extension and group."""
-    ok, total = _chain_fold_core(
+    r = chain_fold_mag(tc, gmax, ST, LS, MANT)
+    return None if r is None else r[0]
+
+
+def chain_fold_mag(tc, gmax, ST, LS, MANT):
+    """``chain_fold`` and the sum of the terms' absolute values:
+    ``(value, Σ|term|)``, or ``None`` (see there)."""
+    ok, total, mag = _chain_fold_core(
         _as_c128(tc), np.ascontiguousarray(gmax, dtype=np.float64),
         np.ascontiguousarray(ST, dtype=np.int64),
         np.ascontiguousarray(LS, dtype=np.float64),
         np.ascontiguousarray(MANT, dtype=np.complex128))
-    return complex(total) if ok else None
+    return (complex(total), float(mag)) if ok else None

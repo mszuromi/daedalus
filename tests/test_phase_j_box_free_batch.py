@@ -286,10 +286,10 @@ _WEDGE_MANY = [[(1.0, -1.3 + 0.4j), (0.5, -2.0), (0.2, -1.7)],
 
 def test_polygon_batch_agrees_with_the_scalar_loop(FI, monkeypatch):
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
-    calls = _spy(monkeypatch, bf, 'region_modesum')
+    calls = _spy(monkeypatch, bf, 'region_modesum_mag')
     v, c = _run(FI, _poly_plan, _WEDGE_ROWS, _WEDGE_MANY, (0.7,))
     assert len(calls) == 1 and calls[0] is not None
-    monkeypatch.setattr(bf, 'region_modesum', lambda *a, **k: None)
+    monkeypatch.setattr(bf, 'region_modesum_mag', lambda *a, **k: None)
     v0, c0 = _run(FI, _poly_plan, _WEDGE_ROWS, _WEDGE_MANY, (0.7,))
     assert c == c0 and c['polygon_exact_unbounded'] == 1
     assert abs(v - v0) <= 1e-14 * abs(v0)
@@ -299,7 +299,7 @@ def test_polygon_batch_hands_a_divergent_subset_to_the_scalar_loop(
         FI, monkeypatch):
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     growing = [[(1.0, 2.0)] + _WEDGE_MANY[0][1:]] + _WEDGE_MANY[1:]
-    calls = _spy(monkeypatch, bf, 'region_modesum')
+    calls = _spy(monkeypatch, bf, 'region_modesum_mag')
     v, c = _run(FI, _poly_plan, _WEDGE_ROWS, growing, (0.7,))
     assert calls == [None]
     assert v is None and c['divergent_subsets'] == 1
@@ -344,7 +344,7 @@ def test_poset_batch_hands_a_divergent_chain_to_the_scalar_loop(
 def test_small_plans_stay_on_the_scalar_loops(FI, monkeypatch):
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     assert FI._DD_BATCH_MIN == 8
-    poly = _spy(monkeypatch, bf, 'region_modesum')
+    poly = _spy(monkeypatch, bf, 'region_modesum_mag')
     batches = _spy(monkeypatch, FI, '_chain_dd_batch')
     _run(FI, _poly_plan, _WEDGE_ROWS, _WEDGE_FAST, (0.7,))     # 2 tuples
     _run(FI, _poset_plan, _CHAIN_ROWS,
