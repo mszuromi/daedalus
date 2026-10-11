@@ -336,3 +336,57 @@ def test_a_divergence_found_by_the_dbm_reaches_the_policy(FI, monkeypatch,
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'raise')
     with pytest.raises(FI.PhaseJDivergenceError, match='dbm_divergent'):
         _ou_k2(FI, use_grouped_phase_j=grouped)
+
+
+def test_the_legacy_interval_divergences_reach_the_policy(FI, monkeypatch):
+    """With the boxed routes (DAEDALUS_PHASE_J_DD_KERNELS=0) the legacy
+    interval route reports its own divergence reasons; they are divergence
+    verdicts for the policy too, while their fallback category stays the
+    pre-0.2.0 'other' (review finding)."""
+    _set_flags(monkeypatch, FI)                       # every route legacy
+    v, r, _c = _call(FI, _interval, [[(1.0, 0.0)]], False)
+    assert v is None and r.startswith('interval_divergent_')
+    assert FI._is_divergence_verdict(r)
+    assert FI._bail_category(r) == 'other'
+    for reason in ('grouped_m1_divergent_flat', 'polygon_divergent',
+                   'dbm_divergent'):
+        assert FI._is_divergence_verdict(reason)
+    assert not FI._is_divergence_verdict('polygon_triangle_guard')
+
+
+# |s0 - s1| < 1: a strip, i.e. a region containing a line
+_STRIP_ROWS = [((1.0, -1.0), (0.0,), 1.0), ((-1.0, 1.0), (0.0,), 1.0)]
+
+
+def _strip(fi, modes):
+    ems = [_ems(fi, md) for md in modes]
+    return fi._integrate_2d_polygon_modesum(ems, 1.0, _STRIP_ROWS, [0.0])
+
+
+def test_a_region_with_a_line_cancels_or_diverges(FI, monkeypatch):
+    """Every exponent diverges along a line: the integral is 0 when every
+    pole-tuple group cancels exactly, otherwise a divergence (review)."""
+    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    v, r, c = _call(FI, _strip, [[(0.5, -1.0), (-0.5, -1.0)],
+                                 [(1.0, -2.0)]])
+    assert v == 0 and r is None
+    assert c == {'divergent_subsets': 0, 'divergent_cancelled': 1}
+    v, r, c = _call(FI, _strip, [[(0.5, -1.0), (-0.25, -1.0)],
+                                 [(1.0, -2.0)]])
+    assert v is None and r == 'polygon_divergent'
+    assert c['divergent_subsets'] == 1
+
+
+def test_the_policy_is_validated_at_every_entry_point(FI):
+    from engine.integration.time_domain.pipeline import compute_correction_td
+    from engine.integration.time_domain.grouped_integral import (
+        integrate_grouped_diagram)
+    from api._grouped_phase_j import compute_correction_td_grouped
+    with pytest.raises(ValueError, match='on_divergence'):
+        compute_correction_td(on_divergence='drop')
+    with pytest.raises(ValueError, match='on_divergence'):
+        integrate_grouped_diagram(None, None, None, None,
+                                  on_divergence='drop')
+    with pytest.raises(ValueError, match='on_divergence'):
+        compute_correction_td_grouped(None, None, None, 2,
+                                      on_divergence='drop')
