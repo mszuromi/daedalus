@@ -9990,6 +9990,8 @@ def _nquad_flush():
                 'model, source and loop order and process; every such '
                 "call is counted in final_integral._RUNTIME_COUNTERS"
                 "['nquad_hardened_quad_flags'].")
+        # shown also under the Sage launcher's PYTHONWARNINGS=ignore
+        _ensure_warning_shown(PhaseJNquadFallbackWarning)
         warnings.warn(msg, PhaseJNquadFallbackWarning, stacklevel=2)
 
 

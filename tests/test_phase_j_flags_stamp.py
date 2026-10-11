@@ -147,3 +147,48 @@ def test_dropped_record_warning_counts_every_ell_and_beats_ignore(
         warnings.simplefilter('error')
         with pytest.raises(GroupedDeltaRecordsDroppedWarning):
             warn_dropped_delta_records(pj)
+
+
+@pytest.mark.parametrize('which', ['stale', 'nquad'])
+def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
+                                                             which):
+    """The Sage launcher exports PYTHONWARNINGS=ignore; StaleResultWarning
+    and PhaseJNquadFallbackWarning are shown anyway (as the grouped δ-record
+    warning), while a filter for the category itself is respected."""
+    import sys
+    import warnings
+    if which == 'stale':
+        import api.save as S
+        category = S.StaleResultWarning
+        monkeypatch.setattr(S, '_STALE_WARNED', set())
+
+        def emit():
+            S._STALE_WARNED.clear()
+            S._warn_if_stale('0.1.0', None, 'x.npz')
+    else:
+        pytest.importorskip('sage.all')
+        import engine.integration.time_domain.final_integral as FI
+        category = FI.PhaseJNquadFallbackWarning
+        import inspect
+        src = inspect.getsource(FI)
+        assert ('_ensure_warning_shown(PhaseJNquadFallbackWarning)\n'
+                '        warnings.warn(msg, PhaseJNquadFallbackWarning') in src
+
+        def emit():
+            FI._ensure_warning_shown(category)
+            warnings.warn('probe', category)
+    monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('ignore')
+        emit()
+    assert any(issubclass(x.category, category) for x in w)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('ignore')
+        warnings.filterwarnings('ignore', category=category)
+        emit()
+    assert not any(issubclass(x.category, category) for x in w)
+    monkeypatch.setattr(sys, 'warnoptions', [])
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('ignore')
+        emit()
+    assert not any(issubclass(x.category, category) for x in w)

@@ -29,7 +29,6 @@ Prototype.  Not wired into ``compute_cumulants`` by default — use
 ``compute.py`` for the dispatch.
 """
 
-import sys
 import warnings
 from collections import defaultdict
 
@@ -66,13 +65,8 @@ def _ensure_shown():
     and the Sage Jupyter kernel.  Only that case is overridden: a filter for
     this category, and every filter set in code or by an ``error`` option
     (e.g. ``-W error``), is left alone."""
-    if any(f[2] is GroupedDeltaRecordsDroppedWarning
-           for f in warnings.filters):
-        return
-    opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
-    if opts and opts[-1] in ('ignore', 'i'):
-        warnings.filterwarnings('always',
-                                category=GroupedDeltaRecordsDroppedWarning)
+    from api.save import _ensure_warning_shown
+    _ensure_warning_shown(GroupedDeltaRecordsDroppedWarning, 'always')
 
 
 def warn_dropped_delta_records(phase_j_by_ell):

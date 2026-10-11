@@ -106,6 +106,20 @@ _FI_MODULE = 'engine.integration.time_domain.final_integral'
 _FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
 
+def _ensure_warning_shown(category, action='default'):
+    """Show ``category`` also where the ENVIRONMENT ignores warnings: the
+    Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
+    ``sage -python`` and the Sage Jupyter kernel.  Only that case is
+    overridden: a filter for this category, and every filter set in code or
+    by an ``error`` option (e.g. ``-W error``), is left alone.  (The engine
+    keeps the same rule in ``final_integral._ensure_warning_shown``.)"""
+    if any(f[2] is category for f in warnings.filters):
+        return
+    opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
+    if opts and opts[-1] in ('ignore', 'i'):
+        warnings.filterwarnings(action, category=category)
+
+
 class StaleResultWarning(UserWarning):
     """A loaded result file predates (or opted out of) the 0.2.0 Phase J
     equal-time convention and may need to be recomputed."""
@@ -288,6 +302,7 @@ def _warn_if_stale(version: str | None, convention: str | None,
     if key in _STALE_WARNED:
         return True
     _STALE_WARNED.add(key)
+    _ensure_warning_shown(StaleResultWarning, 'always')   # once per key above
     warnings.warn(
         f'{source}: {reason}.  Daedalus 0.2.0 changed how Phase J decides '
         f'the constant constraint rows left by δ-elimination: a row whose '
@@ -298,8 +313,10 @@ def _warn_if_stale(version: str | None, convention: str | None,
         f'tie order, so k ≥ 3 values at coincident times are one-sided '
         f'limits; the points of dd.run\'s k ≥ 3 slices where the swept leg '
         f'meets another leg (e.g. τ = 0) are now the left limit of their '
-        f'slice, and the k ≥ 3 moment outputs follow slice 1.  Results for '
-        f'models with δ (instantaneous) propagator parts may be stale and '
+        f'slice, and the k ≥ 3 moment outputs follow slice 1.  It also '
+        f'integrates every Phase J region exactly, without an integration '
+        f'box, which moves models with slow modes.  Results for models with '
+        f'δ (instantaneous) propagator parts or slow modes may be stale and '
         f'should be recomputed; see CHANGELOG.md (0.2.0).',
         StaleResultWarning, stacklevel=stacklevel)
     return True
