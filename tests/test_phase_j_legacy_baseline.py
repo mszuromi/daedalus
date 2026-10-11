@@ -337,6 +337,13 @@ def _reproduce(baseline, name, mode, monkeypatch):
         default = FI._initial_phase_j_flags({})
         if name in _M3_MOVERS:
             default['USE_DBM_FALLBACK'] = False
+        # The baseline was computed on the boxed routes: 'default' mode
+        # checks that the 0.2.0 rules (Θ(0), inheritance, hardened
+        # fallback) leave the non-movers unchanged THERE.  The box-free
+        # routes, the default since M9, move quad_exp by +6 % (slow modes
+        # the box truncated); that move is recorded in the CHANGELOG.
+        default.update({'USE_PHASE_J_DD_KERNELS': False,
+                        'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'})
         for flag, value in default.items():
             monkeypatch.setattr(FI, flag, value)
     entry = Z.entry_by_name(name, include_local=False)
