@@ -670,3 +670,21 @@ def test_wrapper_matches_the_poset_path_where_that_is_valid():
         dbm = FI._integrate_subset_dbm(modes, 0.8 + 0.1j, BASE3, free, 3,
                                        **kw)
         assert abs(dbm - poset) <= 1e-13 * abs(poset), (kw, dbm, poset)
+
+
+def test_a_dropped_beta_counts_in_the_conditioning_test():
+    """M7 report: a β with |β| · cap <= BETA_ZERO_SPAN is integrated as 0,
+    an error the conditioning test ignored.  ∫_0^200 (e^{β s} - 1 + e^{-s})
+    with β = 4e-13 (< eps = 5e-13 at cap 200) is 1 + 8e-9; dropping β gave
+    1 - e^{-200} (8e-9 relative off) with status OK.  Now the first pass is
+    flagged and the thin retry (Gauss-Legendre, no β dropped) answers it
+    accurately; a smaller β (1e-16: 2e-12 off) passes on the first pass."""
+    rows = [((1.0,), 0.0), ((-1.0,), 200.0)]
+    for beta, retried in ((4e-13, True), (1e-16, False)):
+        seeds = [(1.0, 0.0, (beta,)), (-1.0, 0.0, (0.0,)),
+                 (1.0, 0.0, (-1.0,))]
+        res = DBM.integrate_exp_sum(rows, 1, seeds, 200.0)
+        exact = math.expm1(200 * beta) / beta - 200.0 - math.expm1(-200.0)
+        assert res.status == DBM.STATUS_OK, (beta, res.status)
+        assert res.thin_retry is retried, beta
+        assert abs(res.value - exact) <= 1e-10 * abs(exact), (beta, res.value)

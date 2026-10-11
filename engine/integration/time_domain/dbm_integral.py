@@ -78,7 +78,10 @@ of the interval is small (close poles, thin regions).
 
 Conditioning.  Every term carries the absolute values of everything merged
 into it, so ``magnitude`` is the Σ|term| of the full expansion and the
-rounding error of the value is about ``COND_ERR_FACTOR · magnitude``.  When
+rounding error of the value is about ``COND_ERR_FACTOR · magnitude``.  A term
+whose nonzero ``β_k`` was dropped (above) also books its truncation error,
+``|β_k|/eps · BETA_ZERO_SPAN`` relative, into its magnitude (scaled by
+``1/COND_ERR_FACTOR``), so the same test accounts for it.  When
 that exceeds ``max(COND_RTOL · |value|, COND_ATOL · scale)`` (``scale``: the
 integrand's scale, given by the caller, e.g. Σ|pole-tuple coefficient|) the
 result is ``STATUS_ILL_CONDITIONED``: the value is returned for information
@@ -370,6 +373,14 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
         else:
             pieces = [(1.0 / (nk + 1), nk + 1)]
             carries = False
+            if bk != 0:
+                # dropping exp(β_k s_k) moves this term by at most
+                # |β_k| · span <= BETA_ZERO_SPAN relative (span =
+                # BETA_ZERO_SPAN / eps: the cap, or 200 without one); that
+                # error is booked into the magnitude, which the conditioning
+                # test scales by COND_ERR_FACTOR (M7 report: it was missing)
+                A = A * (1.0 + (abs(bk) / eps) * (BETA_ZERO_SPAN
+                                                  / COND_ERR_FACTOR))
         for sign, (node, c) in ((1.0, hi), (-1.0, lo)):
             if node is None:
                 # box-free: an open side; its boundary term vanishes iff the
