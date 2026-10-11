@@ -1569,6 +1569,149 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
 `quadratic_hawkes_alpha` were not re-measured (over the time budget, see
 "May move" above).
 
+### Added (opt-in): box-free exact Phase J on the divided-difference kernels (default numbers unchanged)
+
+Three switches route the Phase J closed forms to the divided-difference
+kernels of `expdd` and remove the integration box from directions in which
+the integrand decays. All three are off by default; with them off every
+result is bit-identical to before (in-process comparison, same cache, on 38
+model configurations, every public one listed under "With the switches on"
+below among them).
+
+- **`USE_PHASE_J_DD_KERNELS`** (environment `DAEDALUS_PHASE_J_DD_KERNELS=1|0`)
+  routes the two-time polygon (triangles anchored at the vertex with the
+  largest real exponent), the one-time interval (a first divided
+  difference, so a nearly cancelling exponent costs no accuracy), the chains
+  of three or more times with their intermediate upper bounds (transfer
+  matrix; `CHAIN_UPPERS_KERNEL` is then not read) and the grouped
+  zero-time evaluation to `expdd`, on the per-diagram and the grouped path
+  alike. The constant part γ of each exponent is folded into the kernel's
+  logarithmic scale before any exponential is taken. The two-sided
+  |Re| > 600 guards of those paths are replaced by one test on the final
+  exponent: an integral beyond e^700 is an overflow, and it is reported (the
+  region goes on to the next route), never returned as `inf` or `nan`. (On
+  the two-time and one-time routes the test is made on the whole region's
+  sum, on the chains per ordering of the times.) The exact
+  difference-constraint integrator closes open directions at
+  ±max(200, 40/κ + the largest |external time|) instead of ±200, κ the
+  slowest decay rate of the region's decaying modes.
+- **`SEMIINF_CHAIN`** (`DAEDALUS_PHASE_J_SEMIINF_CHAIN=1|0`; needs the first
+  switch) integrates a chain without a scalar lower bound from −∞ (the
+  semi-infinite chain, started from the dominant eigenvector) instead of
+  from the earliest external time − 50, and a chain whose top has no upper
+  bound to +∞ (its mirror image) instead of to 200. The difference-
+  constraint integrator then has no box at all: an open direction is
+  integrated in closed form to infinity.
+- **`UNBOUNDED_2D`** (`DAEDALUS_PHASE_J_UNBOUNDED_2D=box|exact`; `exact` needs
+  the first switch) builds a two-time region exactly, from its finite
+  vertices and the rays of its recession cone, with no ±200 box, and
+  integrates it as a fan of triangles, half-strips and wedges
+  (`engine/integration/time_domain/boxfree.py`).
+- The two-time region is built in exact rational arithmetic, as every other
+  emptiness test of Phase J: a region of measure zero is empty, a genuinely
+  thin one is integrated (or found divergent), whatever its width.
+- An open direction in which the integrand does not decay (a recession ray
+  with Re(α·r) ≥ 0, a line in the region, a chain prefix sum with Re ≤ 0, with
+  a margin of 64 rounding units of the exponents so that the rounding residue
+  of an exactly constant direction never passes as decay) is never integrated
+  over a box on these routes: it is reported (counter `divergent_subsets`)
+  and the region goes on to the next route. The policy for such regions is a
+  later change.
+- **The finite lower bound stays a parameter.** `final_integral.PHASE_J_T_MIN`
+  (default −∞) is the lower bound of every integration time on the box-free
+  routes, in absolute time (each Wick permutation's time frame is taken
+  into account), for later switch-on transients: with T = −3 the tree of
+  `ou_quartic` at τ = 2 is e^−2 (1 − e^−6), the process started at 0 at
+  T. A finite value needs all three switches, raises if an external time is
+  before it, and raises if a region would reach the `scipy` fallback, which
+  could not honour it.
+- **`DAEDALUS_PHASE_J_LEGACY=1`** now also resets `USE_PHASE_J_DD_KERNELS`,
+  `CHAIN_UPPERS_KERNEL` (to `'legacy'`), `SEMIINF_CHAIN` and `UNBOUNDED_2D`:
+  the umbrella reproduces the pre-0.2.0 numbers, and the divided-difference
+  kernels agree with the legacy closed forms only to rounding.
+- **Grouped path and δ(τ) records.** `use_grouped_phase_j=True` does not carry
+  the equal-time spike records that the per-diagram path returns in
+  `phase_j_by_ell[ell]['delta_contributions']`. It now says so: one
+  `GroupedDeltaRecordsDroppedWarning` per `compute_cumulants` run that
+  dropped any (shown also where the environment ignores warnings, as the
+  Sage launcher does with `PYTHONWARNINGS=ignore`; filters set in code, a
+  filter for this category and `-W error` are respected), and
+  `n_delta_records_dropped` in the grouped
+  result. No number changes (neither path adds the records to `C_tau`).
+- **Saved results** carry a third stamp, `phase_j_flags`: the switches and
+  tolerances of `final_integral` and `grouped_integral` that can move a
+  Phase J number, and `use_grouped_phase_j` (also in `result['config']`)
+  (provenance only; `load_npz` does not check it).
+- New counters: `dd_polygon`, `dd_interval`, `dd_poset`, `dd_grouped_m0`,
+  `polygon_exact_unbounded`, `poset_semiinf_chains`, `dd_overflow`,
+  `dd_unsupported`, `divergent_subsets`, `dbm_box_free`, `dbm_slow_mode_box`,
+  `dbm_declined_divergent`, and for the legacy chain evaluator
+  `chain_uppers_legacy_partial` (a value assembled from only some of its
+  cut cases) and `chain_uppers_legacy_huge` (a finite value beyond e^700).
+
+**With the switches on (all three), measured.** Every region of the
+configurations below is answered by a closed form: the `scipy.nquad`
+fallback is never called (before: 48 calls for `quad_exp` k = 2 ℓ = 1, 40 and
+10 for spike reset per-diagram and grouped), and the legacy polynomial chain
+routine is never called (before: 246,515 calls for `ou_quartic` k = 4 ℓ = 2).
+No region was reported as divergent and none overflowed. For `quad_exp` and
+spike reset (per-diagram and grouped), every region was also compared with
+independent references (tight quadrature, a 50-digit fan formula and the
+box-free difference-constraint integrator): all agree to the harness
+tolerance max(1e−8·|ref|, 1e−14), except where a reference's own box
+truncates a slow mode (see `quad_exp`); the others are compared as whole
+results.
+
+| model (configuration of the zoo) | change |
+|---|---|
+| `single_population_quad_exp_test`, k = 2, ℓ = 1 | one-loop at τ = 0 (−1e−6) +2.016417e−4 → +2.142877e−4 (+6.3 %), τ = 2.5 +3.777821e−4 → +3.892182e−4 (+3.0 %), τ = 10 +2.955943e−4 → +3.035783e−4 (+2.7 %); tree unchanged. The old values truncated the chains of three and four times at the earliest external time − 50, which is not enough for this model's slow modes (decay rate 0.1). The new values equal, region by region, the box-free difference-constraint integrator (sum within 8.4e−16) and the 50-digit fan on a ±400 box; the ±150 and ±200 references are themselves truncated. The grouped path moves by up to 5.9 % to the same values |
+| `single_population_spike_reset_test`, k = 2, ℓ = 1, per-diagram and grouped | ≤ 5.8e−13 relative (the regions the hardened `scipy.nquad` fallback served) |
+| `ou_quartic` (k = 2 ℓ ≤ 3, k = 3 ℓ = 2, k = 4 ℓ = 2), `ou_quartic_colored`, `ou_quartic_two_dim_color_corr` | ≤ 1.1e−13 relative |
+| `linear_hawkes`, `multipopulation_test`, `single_population_linear_delta_spikes_test`, spike reset k = 1 | ≤ 3.2e−16 relative |
+| spatial (`allen_cahn_1d_subcritical_infinite` ℓ = 2, `reaction_diffusion_2d` ℓ = 1, `coupled_rd_2species_1d` ℓ = 1, `reaction_diffusion_conserved_1d` ℓ = 1, `edwards_wilkinson_1d`) | identical |
+
+The test model with quadratic drift of `tests/test_phase_j_moment_oracle.py`
+moves by 7.7e−9 relative at one loop for the same reason as `quad_exp`
+(slowest decay rate 0.42, margin 50); the switches give the value of the
+legacy path with the margin pushed to 150, to 1e−12.
+
+The same truncations make the default path wrong, and the switches right,
+whenever modes are slow or times are long (an adversarial review against an
+exact multi-time oracle built from the generator, and per-region references;
+the default-path error first): `ou_quartic_colored` at its defaults 1.2e−3;
+`ou_quartic_two_dim_color_corr` at its defaults 2.5e−4; `ou_quartic` with
+μ = 0.1, k = 2 ℓ ≤ 2, 4.3e−3; `ou_quartic` k = 2 at τ = 250, ℓ = 2 almost
+entirely (ℓ = 1: 2e−3), and at τ ≥ 600 every loop order; spike reset with slow
+rates 8e−4; `linear_hawkes` k = 3 tree 2e−6 to 7e−6. With the switches on
+each of these agrees with its exact reference to ≤ 7e−14 (to ≤ 3.3e−15 on the
+colored models), except the `linear_hawkes` k = 3 tree, which has no exact
+reference and agrees with per-region quadrature references to 2e−12 to
+7e−12. The default path also does not finish (killed after 6 minutes, in
+the `scipy.nquad` fallback) on `ou_quartic` k = 4 ℓ = 2 at (0, 20, 20, 50),
+which the switches answer in 4 s, exact to 4.6e−15. And the default two-time and
+chain routes return 0 when exp(γ) underflows although the region's own
+exponent compensates (fast rates, external times beyond about 70); the
+switches do not.
+
+The legacy evaluator of chains with intermediate upper bounds can be wrong
+on adversarial inputs that the transfer matrix gets right. On the zoo
+configurations (the public ones above, about 645,000 distinct calls), every
+call was evaluated both ways: the largest disagreement is 2.9e−11 relative
+(`quad_exp`), no call assembled a value from only some of its cut cases
+(counter `chain_uppers_legacy_partial`), and none returned a value beyond
+e^700. So those inputs do not occur there. They do elsewhere: the counter
+fired at wide and very large τ (`ou_quartic` k = 2, ℓ = 2 and 3: 1 to 18 calls) and
+on a coupled two-field model at k = 4 (260), where the totals still agreed
+with the exact oracle to 3e−15; where it matters, the switches move the
+number to the correct one.
+
+Speed: with the switches on the kernels run per pole tuple in Python.
+Unchanged within noise on most of the above; slower on `quad_exp` (37 s →
+53 s; about 600,000 distinct chains) and on models with many poles per
+region (`multipopulation_test` k = 3 ℓ = 1: 37 s → 84 s; a coupled two-field
+model k = 4 ℓ = 1: 155 s → 262 s). Vectorising the kernels over the pole
+tuples is left for before the switches become the default.
+
 ### Added
 
 - **Prediagram cache: version stamp, four more shipped cells, manifest, explicit
@@ -1670,7 +1813,10 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
 - **`DAEDALUS_PHASE_J_LEGACY=1`.** This umbrella switch sets every Phase J
   flag to its pre-0.2.0 behaviour: the Θ(0) rule (`THETA0_CONST_ROW_MODE =
   'legacy_clip'`), `STRUCTURAL_ZEROS = False`, `NQUAD_HARDENED = False`
-  and `USE_DBM_FALLBACK = False`. It reproduces the
+  and `USE_DBM_FALLBACK = False`, and also `USE_PHASE_J_DD_KERNELS = False`,
+  `CHAIN_UPPERS_KERNEL = 'legacy'`, `SEMIINF_CHAIN = False` and
+  `UNBOUNDED_2D = 'box'` (see "Added (opt-in): box-free exact Phase J"). It
+  reproduces the
   pre-change Phase J numbers bit-for-bit within one process, at the same
   external times and at the bounding box in force (so a pre-change run at
   another `POLYGON_BBOX_CAP` is reproduced by setting the attribute). It
@@ -1714,7 +1860,7 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
     (status, log scale, mantissa).
   - One source runs compiled by numba or as plain Python (numba missing, or
     `NUMBA_DISABLE_JIT=1`). The two agree to rounding, not bit for bit.
-  - Nothing in Phase J calls the module by default. The only opt-in is
+  - Nothing in Phase J calls the module by default. The first opt-in was
     `final_integral.CHAIN_UPPERS_KERNEL` (`'legacy'` by default, or
     `'transfer'`; environment `DAEDALUS_CHAIN_UPPERS_KERNEL=legacy|transfer`,
     any other value is an error; read at call time), which routes
@@ -1723,9 +1869,9 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
     memo. With `'legacy'` every result is bit-identical to before.
   - Flag `USE_PHASE_J_DD_KERNELS` (environment
     `DAEDALUS_PHASE_J_DD_KERNELS=1|0`, default 0, any other value is an
-    error). It is reserved for routing the triangle, chain and grouped paths
-    to `expdd` in a later change; nothing reads it yet.
-    `DAEDALUS_PHASE_J_LEGACY` touches neither.
+    error). It routes the Phase J closed forms to `expdd`: see "Added
+    (opt-in): box-free exact Phase J" above, which also lets
+    `DAEDALUS_PHASE_J_LEGACY` reset both switches.
   - Measured against mpmath at 80 digits (`tests/test_expdd.py`). The rule:
     an error is accepted if it is ≤ 1e−11 of the value, or ≤ 1e−14 of the
     integral of the absolute value when the value itself cancels. Every
