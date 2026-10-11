@@ -66,6 +66,37 @@ Other effects of the new default:
   route.
 
 
+### Fixed: accuracy accounting and global state (numbers unchanged on the models measured)
+
+- The exact difference-constraint route (DBM) counts the error of a
+  coefficient β it integrates as 0 (|β| below its threshold) in its
+  conditioning test: such an error could pass with status OK (8e−9
+  relative on a constructed case); only the part of β beyond the rounding
+  margin of the exponents is counted.
+- The box-free routes apply the same conditioning test to every subset sum
+  as bookkeeping: counters `dd_err_ratio_max` (worst estimated-to-accepted
+  error ratio) and `dd_ill_conditioned` (subsets above 1). The values are
+  used as computed. The test is relative to the subset: on the models
+  measured only `quad_exp` flags any (8 regions near a cancellation, about
+  1e−21 against a one-loop of 2e−4).
+- `StaleResultWarning` and `PhaseJNquadFallbackWarning` are shown under the
+  Sage launcher's `PYTHONWARNINGS=ignore` (as the grouped δ-record warning);
+  filters set in code (`-W error`, `simplefilter('error')`, a targeted
+  `ignore`) are respected.
+- The SDE front end's mean-field kernel integral no longer forgets a
+  positivity assumption that was held before it (a model builder's
+  parameter domain), and skips one implied by a stronger held assumption.
+- The divergence policy also applies to the divergences the boxed interval
+  routes report (`DAEDALUS_PHASE_J_DD_KERNELS=0`); a two-time region
+  containing a line is 0 when every pole-tuple group cancels exactly.
+- The batched box-free kernels are compiled without numba's on-disk cache
+  (a cached kernel kept stale code after an edit to `expdd.py`): one
+  compilation, about 4 s, per process that uses them.
+- Tests: a guard (`tests/conftest.py`) fails a test that removes a Sage
+  assumption other code holds or leaves a symbol with contradictory
+  domains; three tolerance lines that passed only through pytest's absolute
+  floor now check what they state.
+
 ### Changed: Itô equal-time rule for constant constraint rows (numbers move)
 
 δ-elimination can leave a smooth (non-instantaneous) propagator whose time
