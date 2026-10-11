@@ -109,8 +109,15 @@ def test_simplex_oracle_complex(t, nus):
     come in conjugate pairs, so this path is load-bearing."""
     got = phi_n(t, nus)
     want = _simplex_oracle(t, nus)
-    assert got.real == pytest.approx(want.real, rel=1e-8, abs=1e-10)
-    assert got.imag == pytest.approx(want.imag, rel=1e-8, abs=1e-10)
+    # As a complex number: the oracle nests up to three quads at 1e-11
+    # (_QUAD_KW), measured agreement <= 4.3e-16.  (Per part with abs=1e-10
+    # the imaginary check was vacuous for the conjugate pairs, whose exact
+    # imaginary part is 0 -- S3 tolerance audit.)
+    assert abs(got - want) <= 1e-9 * abs(want)
+    if sorted(map(complex, nus), key=lambda z: (z.real, z.imag)) == sorted(
+            (complex(z).conjugate() for z in nus),
+            key=lambda z: (z.real, z.imag)):
+        assert abs(got.imag) <= 1e-14 * abs(got)     # real by symmetry
 
 
 @pytest.mark.parametrize('t,nu,n', [

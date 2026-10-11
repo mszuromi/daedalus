@@ -646,7 +646,12 @@ def test_thin_strip_without_constant_rows_equals_legacy(variant, w,
     assert ctrs == {'zero_normal_rows_seen': 0, 'polygon_zero_area': 0,
                     'nquad_calls': 0}
     wt = free[1] - free[0]
-    assert new.real == pytest.approx(wt * math.exp(-wt), rel=0.5)
+    # The divided-difference triangle (the default route since M9) gives
+    # the strip w·e^{-w} to <= 4.1e-15 at every width here (measured).  The
+    # legacy triangle cancels (2.9e-5 at w = 1e-9 up to x19 at 1e-15), which
+    # is why this line used to read rel=0.5 -- vacuous below w ~ 1e-12 under
+    # pytest's 1e-12 absolute floor (S3 tolerance audit).
+    assert new.real == pytest.approx(wt * math.exp(-wt), rel=1e-13, abs=0)
 
 
 @pytest.mark.parametrize('variant', VARIANTS)

@@ -318,7 +318,15 @@ def test_thin_strip_is_integrated_not_dropped():
     res = DBM.integrate_exp_sum(rows, 1, [(1.0, 0.0, (0.5,))], 200.0)
     width = (t + 1e-12) - t                     # the float width
     assert res.status == DBM.STATUS_OK
-    assert res.value.real == pytest.approx(width * math.exp(t / 2), rel=1e-3)
+    # Exact on the float limits: 2 e^{t/2} expm1(w/2).  The closed form
+    # e^{U/2} - e^{L/2} cancels on a 1e-12 strip (1.1e-4 relative, 1.3e-16
+    # absolute, measured); the DBM's acceptance bound is ABSOLUTE,
+    # 1e-14 x the sum of |pole-tuple coefficients| (= 1 here), which this
+    # asserts.  The old check (width e^{t/2}, rel=1e-3) passed only through
+    # pytest's 1e-12 absolute floor, i.e. it accepted ±86 % (S3 audit).
+    exact = 2.0 * math.exp(t / 2) * math.expm1(width / 2)
+    assert abs(res.value.real - exact) <= 1e-14
+    assert abs(res.value.imag) <= 1e-14
 
 
 def test_too_many_cases_is_declined(monkeypatch):
