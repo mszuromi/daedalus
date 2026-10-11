@@ -52,7 +52,7 @@ import re
 from collections import OrderedDict
 from typing import Optional
 
-from sage.all import SR, integrate, oo, assume, forget, function
+from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
 from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
                        expr_to_text, expr_names, _MATH_FUNCS)
@@ -339,7 +339,12 @@ class SDE:
         e = e.subs({dirac_delta(t): dd})
         delta_part = e.coefficient(dd, 1)
         rest = (e - delta_part * dd).simplify_full()
-        assumed = [v > 0 for v in rest.variables() if str(v) != 't']
+        # assume only what is not assumed already, and forget only that: a
+        # parameter that a model builder declared positive keeps its global
+        # assumption (forgetting it leaked into every later computation)
+        held = {str(a) for a in assumptions()}
+        assumed = [a for a in (v > 0 for v in rest.variables()
+                               if str(v) != 't') if str(a) not in held]
         for a in assumed:
             assume(a)
         # A retarded kernel carries heaviside(t): Sage/Maxima does not always evaluate the integral over (-oo, oo)

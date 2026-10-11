@@ -520,3 +520,21 @@ def _base():
 def test_rule_errors(make, match):
     with pytest.raises((SDEError, NoiseError), match=match):
         make()
+
+
+def test_a_kernel_integral_keeps_assumptions_held_before():
+    """The mean-field kernel integral assumes its parameters positive for
+    Maxima and forgets them afterwards; it used to forget an assumption that
+    was already held (a model builder's parameter domain), which leaked into
+    every later computation (found by the Sage-assumption guard)."""
+    from sage.all import assume, assumptions, forget
+    taug = SR.var('taug')
+    held_before = 'taug > 0' in {str(a) for a in assumptions()}
+    if not held_before:
+        assume(taug > 0)
+    try:
+        sde_exp_hawkes().equations()                 # integrates the kernel
+        assert 'taug > 0' in {str(a) for a in assumptions()}
+    finally:
+        if not held_before:
+            forget(taug > 0)
