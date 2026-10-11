@@ -17,9 +17,13 @@ The schema is k-/ell-/model-adaptive:
   ``parameter_keys`` for cross-reference.
 
 * **Provenance stamp** (since 0.2.0): ``daedalus_version`` (the package
-  version that wrote the file) and ``phase_j_convention`` (the Phase J
+  version that wrote the file), ``phase_j_convention`` (the Phase J
   equal-time rule the numbers were computed with; ``PHASE_J_CONVENTION``
-  for the default rules).  ``compute_cumulants`` records that rule in
+  for the default rules) and ``phase_j_flags`` (M7: the value of every
+  ``final_integral`` / ``grouped_integral`` switch that can move a Phase J
+  number, and ``use_grouped_phase_j``, as ``NAME=value`` pairs joined by
+  ``;``; recorded for provenance only, :func:`load_npz` does not check
+  it).  ``compute_cumulants`` records that rule in
   ``result['config']['phase_j_convention']`` when it computes the numbers,
   and the stamp copies it, so changing the Phase J flags between computing
   and saving does not mislabel a file; only a result dict without that
@@ -159,22 +163,69 @@ def _phase_j_convention() -> str:
     return _PHASE_J_CONVENTION_BY_MODE.get(str(mode), f'theta0_{mode}')
 
 
-def _result_stamp(result: dict | None = None) -> dict[str, str]:
-    """``{'daedalus_version': ..., 'phase_j_convention': ...}``.
+#: The ``final_integral`` switches and tolerances that can move a Phase J
+#: number, in stamp order (M7; the memo flags are pure speed switches and
+#: are not listed), and the ``grouped_integral`` one.
+_PHASE_J_STAMP_FLAGS = (
+    'THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
+    'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
+    'SEMIINF_CHAIN', 'UNBOUNDED_2D', 'PHASE_J_T_MIN', 'POLYGON_BBOX_CAP',
+    'POSET_PHYSICAL_MARGIN', 'USE_POSET_CAP_MATCH_SCIPY',
+    'USE_POSET_MPMATH_ACCUMULATION', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
+    'USE_NUMBA_CHAIN_SIMPLEX', 'USE_POLYGON_M2_INTEGRATOR',
+    'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
+    'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
+    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
+_GI_MODULE = 'engine.integration.time_domain.grouped_integral'
+_GI_STAMP_FLAGS = ('USE_GROUPED_ANALYTIC_MODESUM',)
 
-    The convention is the one ``compute_cumulants`` recorded in
-    ``result['config']['phase_j_convention']`` when it computed the numbers;
-    for a result without that entry, the convention in force now (call
-    time).  The version is the running package's (the writer's)."""
+
+def _phase_j_flags(use_grouped_phase_j=None) -> str:
+    """The Phase J flags in force (call time) as ``NAME=value;...``
+    (``_PHASE_J_STAMP_FLAGS``, ``_GI_STAMP_FLAGS`` when ``grouped_integral``
+    is loaded, and ``use_grouped_phase_j`` when given), read from
+    ``final_integral`` when it is loaded; ``'final_integral not loaded'``
+    otherwise (the stamp then only says that no Phase J ran in this
+    process)."""
+    fi = sys.modules.get(_FI_MODULE)
+    if fi is None:
+        return 'final_integral not loaded'
+    parts = []
+    gi = sys.modules.get(_GI_MODULE)
+    for mod, names in ((fi, _PHASE_J_STAMP_FLAGS), (gi, _GI_STAMP_FLAGS)):
+        for name in names:
+            v = (getattr(mod, name, '<absent>') if mod is not None
+                 else '<not loaded>')
+            if isinstance(v, bool):
+                v = int(v)
+            parts.append(f'{name}={v}')
+    if use_grouped_phase_j is not None:
+        parts.append(f'use_grouped_phase_j={int(bool(use_grouped_phase_j))}')
+    return ';'.join(parts)
+
+
+def _result_stamp(result: dict | None = None) -> dict[str, str]:
+    """``{'daedalus_version': ..., 'phase_j_convention': ...,
+    'phase_j_flags': ...}``.
+
+    The convention and the flags are the ones ``compute_cumulants`` recorded
+    in ``result['config']`` when it computed the numbers; for a result
+    without those entries, the ones in force now (call time).  The version
+    is the running package's (the writer's)."""
     conv = None
+    flags = None
     if isinstance(result, dict):
         cfg = result.get('config')
         if isinstance(cfg, dict):
             conv = cfg.get('phase_j_convention')
+            flags = cfg.get('phase_j_flags')
     if not conv:
         conv = _phase_j_convention()
+    if not flags:
+        flags = _phase_j_flags()
     return {'daedalus_version': _daedalus_version(),
-            'phase_j_convention': str(conv)}
+            'phase_j_convention': str(conv),
+            'phase_j_flags': str(flags)}
 
 
 _VERSION_RE = re.compile(r'^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?')
@@ -423,7 +474,8 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
         ``rates_sim_mean``) in the same file.  Pipeline keys are not
         protected — passing ``'C_total'`` in ``extra`` will overwrite
         the theoretical curve.  The provenance stamp
-        (``daedalus_version``, ``phase_j_convention``) is written last
+        (``daedalus_version``, ``phase_j_convention``, ``phase_j_flags``)
+        is written last
         and cannot be overridden through ``extra``.
 
     Returns
@@ -550,6 +602,7 @@ def save_csv(result: dict, path: str) -> str:
         # k=2, max_ell=1, model='Quadratic Hawkes ...'
         # daedalus_version: 0.2.0
         # phase_j_convention: theta0_ito_const_rows
+        # phase_j_flags: THETA0_CONST_ROW_MODE=ito;STRUCTURAL_ZEROS=1;...
         # parameters:
         #   E: [0.78, 0.81]
         #   ...

@@ -35,7 +35,7 @@ from api._mean_field_dae import (
 )
 from api._diagrams  import enumerate_unique_diagrams
 from engine.enumeration import prediagram_cache as _pd_cache
-from api.save       import _phase_j_convention
+from api.save       import _phase_j_convention, _phase_j_flags
 from api.access     import (
     MeanField, Parameters, normalize_external_fields,
 )
@@ -716,6 +716,7 @@ def compute_cumulants(
                 'spatial':         True,
                 'model_name':      model.get('name', '<unnamed>'),
                 'phase_j_convention': _phase_j_convention(),
+                'phase_j_flags':      _phase_j_flags(),
             },
         }
 
@@ -933,6 +934,12 @@ def compute_cumulants(
 
     _phase_time('phase_j', _t_phase)
 
+    if use_grouped_phase_j:
+        # M7: the grouped path does not carry the shot-noise δ(τ) records
+        # (Feature B will); say so once per run when it dropped any.
+        from api._grouped_phase_j import warn_dropped_delta_records
+        warn_dropped_delta_records(phase_j_by_ell)
+
     # Master total_C: sum across ell (for caller convenience)
     @_phase_j_scoped
     def total_C(*ext_time_values):
@@ -1044,6 +1051,8 @@ def compute_cumulants(
             # Read after the τ-grid evaluation above: the rule these numbers
             # were computed with (the Phase J flags are read at call time).
             'phase_j_convention': _phase_j_convention(),
+            'phase_j_flags':      _phase_j_flags(use_grouped_phase_j),
+            'use_grouped_phase_j': bool(use_grouped_phase_j),
         },
     }
 

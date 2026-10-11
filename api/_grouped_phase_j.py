@@ -29,6 +29,8 @@ Prototype.  Not wired into ``compute_cumulants`` by default — use
 ``compute.py`` for the dispatch.
 """
 
+import sys
+import warnings
 from collections import defaultdict
 
 from sage.all import SR
@@ -50,6 +52,55 @@ _SUBSET_SKIP_STATUSES = frozenset({
     'shotnoise_skipped_in_prototype',
     'dt_sym_mismatch_skipped',
 })
+
+
+class GroupedDeltaRecordsDroppedWarning(UserWarning):
+    """``use_grouped_phase_j=True`` dropped shot-noise δ(τ) records that
+    the per-diagram path returns in ``delta_contributions``."""
+
+
+def _ensure_shown():
+    """Show ``GroupedDeltaRecordsDroppedWarning`` (once per run) also where
+    the ENVIRONMENT ignores warnings: the Sage launcher exports
+    PYTHONWARNINGS=ignore, which would otherwise hide it in `sage -python`
+    and the Sage Jupyter kernel.  Only that case is overridden: a filter for
+    this category, and every filter set in code or by an ``error`` option
+    (e.g. ``-W error``), is left alone."""
+    if any(f[2] is GroupedDeltaRecordsDroppedWarning
+           for f in warnings.filters):
+        return
+    opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
+    if opts and opts[-1] in ('ignore', 'i'):
+        warnings.filterwarnings('always',
+                                category=GroupedDeltaRecordsDroppedWarning)
+
+
+def warn_dropped_delta_records(phase_j_by_ell):
+    """Warn ONCE (one ``GroupedDeltaRecordsDroppedWarning`` per call, i.e.
+    per ``compute_cumulants`` run) when the grouped results in
+    ``phase_j_by_ell`` (``{ell: result or None}``) dropped any δ record;
+    return the number dropped.  No number changes: the per-diagram path does
+    not add the records to ``C_tau`` either (audit B0)."""
+    by_ell = {}
+    for ell, res in (phase_j_by_ell or {}).items():
+        n = (res or {}).get('n_delta_records_dropped', 0) if isinstance(
+            res, dict) else 0
+        if n:
+            by_ell[ell] = n
+    total = sum(by_ell.values())
+    if total:
+        detail = ', '.join(f'ell={ell}: {n}' for ell, n in sorted(
+            by_ell.items()))
+        _ensure_shown()
+        warnings.warn(
+            f'use_grouped_phase_j=True dropped {total} shot-noise δ(τ) '
+            f'record(s) ({detail}): the equal-time spike terms that the '
+            f'per-diagram path returns in '
+            f"phase_j_by_ell[ell]['delta_contributions'].  C_tau is the "
+            f'same either way (neither path adds them to it); run with '
+            f'use_grouped_phase_j=False to get the records.',
+            GroupedDeltaRecordsDroppedWarning, stacklevel=3)
+    return total
 
 
 def compute_correction_td_grouped(
@@ -103,6 +154,9 @@ def compute_correction_td_grouped(
     groups_out = []
     skipped = []
     fallback_to_perdiag = []   # groups where we fell back to per-diag
+    # δ records of the per-diagram fallback, not carried (Feature B): only
+    # counted, for the warning (``warn_dropped_delta_records``).
+    n_delta_dropped = [0]
 
     def _perdiag_fallback(tds, cps):
         """Compute this group via the per-diag path (compute_correction_td).
@@ -120,6 +174,7 @@ def compute_correction_td_grouped(
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
         )
+        n_delta_dropped[0] += len(pd_result.get('delta_contributions') or [])
         return pd_result['total_C'], len(tds)
 
     for group_idx, (key, payload) in enumerate(groups.items()):
@@ -245,6 +300,9 @@ def compute_correction_td_grouped(
         'total_C_batch':      total_C_batch,
         'eval_per_diagram_batch': None,    # not supported in prototype
         'delta_contributions': [],          # not supported in prototype
+        # δ records the per-diagram fallback produced and this path dropped
+        # (``warn_dropped_delta_records`` warns once per run):
+        'n_delta_records_dropped': n_delta_dropped[0],
         'groups':             groups_out,
         'skipped_kernel_ids': skipped,
         'fallback_to_perdiag': fallback_to_perdiag,
