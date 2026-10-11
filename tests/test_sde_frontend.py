@@ -538,3 +538,21 @@ def test_a_kernel_integral_keeps_assumptions_held_before():
     finally:
         if not held_before:
             forget(taug > 0)
+
+
+def test_a_kernel_integral_with_a_stronger_held_assumption():
+    """With taug > 1 held, assume(taug > 0) is 'redundant' to Sage (it
+    raised before); the kernel integral now skips it and leaves the held
+    assumption alone (review finding)."""
+    from sage.all import assume, assumptions, forget
+    taug = SR.var('taug')
+    held = {str(a) for a in assumptions()}
+    if 'taug > 0' in held:
+        pytest.skip('taug > 0 already held in this process')
+    assume(taug > 1)
+    try:
+        sde_exp_hawkes().equations()
+        now = {str(a) for a in assumptions()}
+        assert 'taug > 1' in now and 'taug > 0' not in now
+    finally:
+        forget(taug > 1)

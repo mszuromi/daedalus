@@ -342,11 +342,11 @@ class SDE:
         # assume only what is not assumed already, and forget only that: a
         # parameter that a model builder declared positive keeps its global
         # assumption (forgetting it leaked into every later computation)
+        # (a positivity already implied by a stronger held assumption, e.g.
+        # taug > 1, is 'redundant' to Sage: skipped too; every assume sits in
+        # the try, so a failure part-way still forgets what was added)
         held = {str(a) for a in assumptions()}
-        assumed = [a for a in (v > 0 for v in rest.variables()
-                               if str(v) != 't') if str(a) not in held]
-        for a in assumed:
-            assume(a)
+        assumed = []
         # A retarded kernel carries heaviside(t): Sage/Maxima does not always evaluate the integral over (-oo, oo)
         # with it (the result can be an unevaluated ``cases``), so integrate its t > 0 part over (0, oo) instead.
         from sage.all import heaviside
@@ -355,6 +355,14 @@ class SDE:
             rest = rest.subs({heaviside(t): SR(1)})
             lower = SR(0)
         try:
+            for v in rest.variables():
+                if str(v) == 't' or str(v > 0) in held:
+                    continue
+                try:
+                    assume(v > 0)
+                except ValueError:                 # redundant
+                    continue
+                assumed.append(v > 0)
             val = integrate(rest, t, lower, oo) if not rest.is_zero() else SR(0)
         finally:
             for a in assumed:
