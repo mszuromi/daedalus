@@ -555,5 +555,11 @@ def test_inverse_transform_is_independent_of_symbol_domains():
             q = so.numeric_inverse_transform(lambda x: c(x, **ref), t)
             assert abs(q.value - complex(f(t, **ref)[()])) < 1e-6
     finally:
-        var(names[0], domain='complex')
-        var(names[1], domain='complex')
+        # forget the assumptions, then redeclare plainly: var(..,
+        # domain='complex') would ADD 'is complex' on top of '> 0'
+        from sage.all import assumptions, forget
+        for a in list(assumptions()):
+            if str(a).split(' ')[0] in names:
+                forget(a)
+        var(names[0])
+        var(names[1])
