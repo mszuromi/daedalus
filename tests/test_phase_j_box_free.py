@@ -1152,3 +1152,17 @@ def test_dbm_default_margin_with_generator_seeds():
     as_list = DBM.integrate_exp_sum(rows, 2, seeds, math.inf)
     as_gen = DBM.integrate_exp_sum(rows, 2, (x for x in seeds), math.inf)
     assert as_list.status == as_gen.status == DBM.STATUS_DIVERGENT
+
+
+def test_t_min_at_the_fallback_explains_itself(FI, monkeypatch):
+    """A finite PHASE_J_T_MIN that reaches the scipy fallback (which cannot
+    honour it) raises with the region, the external times, the DBM's
+    ill-conditioned declines and the remedy (M7 report: spike reset with T
+    within ~2 of the earliest external time)."""
+    _set_flags(monkeypatch, FI, **_ROUTES['box_free'], t_min=-1.0)
+    FI._reset_runtime_counters()
+    with pytest.raises(ValueError,
+                       match=r'PHASE_J_T_MIN \(= -1\.0\).*cannot honour it'
+                             r'.*m = 1.*external times \(0\.5,\).*'
+                             r'ill-conditioned 0 time.*further back'):
+        FI._integrate_polytope(lambda s, t: 1.0, [([1.0], 0.0)], [0.5], 1)

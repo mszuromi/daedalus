@@ -1679,7 +1679,11 @@ below among them).
   `ou_quartic` at τ = 2 is e^−2 (1 − e^−6), the process started at 0 at
   T. A finite value needs all three switches, raises if an external time is
   before it, and raises if a region would reach the `scipy` fallback, which
-  could not honour it.
+  could not honour it. That happens when T is within a few decay lengths of
+  the external times: the exact difference-constraint route can then
+  decline a region next to T as ill-conditioned (spike reset: T = −1 and −2
+  near external times 0 and −2 raise, T = −5 works); the error names the
+  region, the external times and the remedy (move T further back).
 - **`DAEDALUS_PHASE_J_LEGACY=1`** now also resets `USE_PHASE_J_DD_KERNELS`,
   `CHAIN_UPPERS_KERNEL` (to `'legacy'`), `SEMIINF_CHAIN` and `UNBOUNDED_2D`:
   the umbrella reproduces the pre-0.2.0 numbers, and the divided-difference

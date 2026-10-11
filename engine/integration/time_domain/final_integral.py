@@ -8760,11 +8760,21 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
         _RUNTIME_COUNTERS['nquad_calls'] += 1
         if _m7_t_min_is_finite():
             # M7: a finite PHASE_J_T_MIN is honoured by the box-free routes
-            # only; the scipy routines' box would silently ignore it.
+            # only; the scipy routines' box would silently ignore it.  Known
+            # case (M7 report): a region next to PHASE_J_T_MIN that the exact
+            # DBM route declines as ill-conditioned (spike reset with T within
+            # ~2 of the earliest external time; T = -5 works there).
             raise ValueError(
-                'a finite final_integral.PHASE_J_T_MIN reached the scipy '
-                'fallback, which cannot honour it (an m>=1 subset no '
-                'box-free route answered)')
+                f'a finite final_integral.PHASE_J_T_MIN '
+                f'(= {PHASE_J_T_MIN!r}) reached the scipy fallback, which '
+                f'cannot honour it (an m>=1 subset no box-free route '
+                f'answered: {_describe_diagram(diag_meta, m)}, external '
+                f'times {tuple(float(x) for x in free_ext_vals)}; declined '
+                f'by the exact DBM route as ill-conditioned '
+                f'{_RUNTIME_COUNTERS["dbm_declined_ill_conditioned"]} '
+                f'time(s) so far).  This happens when PHASE_J_T_MIN is close '
+                f'to the external times (a few decay lengths); move it '
+                f'further back, or leave it at -inf (the stationary state).')
     if m == 1:
         _RUNTIME_COUNTERS['scipy_nquad_called_m1'] += 1
     elif m == 2:
