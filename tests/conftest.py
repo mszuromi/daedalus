@@ -62,3 +62,78 @@ def _diagram_order_from_env():
 def shuffle_diagram_order(monkeypatch):
     """Serve every diagram list in a fixed-seed shuffled order (seed 1)."""
     apply_diagram_order(monkeypatch, 'shuffle', seed=1)
+
+
+# ── Sage assumption guard ────────────────────────────────────────────────
+# Sage symbols and their assumptions are GLOBAL: a test that removes an
+# assumption others hold, or leaves a symbol with conflicting domains, makes
+# later tests order-dependent (two such failures in Oct 2026).  After every
+# test (only once Sage is loaded) the assumptions are compared with those
+# before it:
+#   * an assumption that was held before is gone        -> the test FAILS;
+#   * a NEW symbol carries two different domains         -> the test FAILS;
+#   * a symbol that had assumptions gains or loses one   -> reported in the
+#     terminal summary only: model builders declare parameter domains
+#     globally, so two models sharing a parameter name with different
+#     domains accumulate both (engine design, not a test bug).
+# First-time parameter domains of a model build are expected and ignored.
+# DAEDALUS_TEST_SAGE_GUARD=off disables the guard.
+import re as _re
+import sys as _sys
+
+_SAGE_GUARD_REPORT = []
+
+
+def _assumptions_by_symbol(strs):
+    out = {}
+    for a in strs:
+        m = _re.match(r'^([A-Za-z_][A-Za-z0-9_]*) (?:is |[<>]=? )', a)
+        out.setdefault(m.group(1) if m else a, set()).add(a)
+    return out
+
+
+def _domain_kinds(strs):
+    kinds = set()
+    for a in strs:
+        if ' is ' in a:
+            kinds.add(a.split(' is ', 1)[1])
+        elif _re.search(r' [<>]=? 0$', a):
+            kinds.add('signed')
+    return kinds
+
+
+@pytest.fixture(autouse=True)
+def _sage_assumption_guard(request):
+    if (os.environ.get('DAEDALUS_TEST_SAGE_GUARD', '').strip().lower()
+            == 'off' or 'sage.all' not in _sys.modules):
+        yield
+        return
+    from sage.all import assumptions
+    before = {str(a) for a in assumptions()}
+    yield
+    after = {str(a) for a in assumptions()}
+    if after == before:
+        return
+    b, a = _assumptions_by_symbol(before), _assumptions_by_symbol(after)
+    gone = sorted(before - after)
+    conflict = sorted(s for s in a if s not in b
+                      and len(_domain_kinds(a[s])) > 1)
+    changed = sorted(s for s in b if s in a and a[s] != b[s])
+    if changed:
+        _SAGE_GUARD_REPORT.append(
+            (request.node.nodeid,
+             [(s, sorted(b[s]), sorted(a[s])) for s in changed]))
+    if gone or conflict:
+        pytest.fail(
+            f'Sage assumption leak: removed {gone} (held before this '
+            f'test); conflicting domains left on new symbols '
+            f'{[(s, sorted(a[s])) for s in conflict]}.  Use private symbol '
+            f'names and forget() what the test assumed.', pytrace=False)
+
+
+def pytest_terminal_summary(terminalreporter):
+    if _SAGE_GUARD_REPORT:
+        terminalreporter.section('Sage assumptions accumulated on shared '
+                                 'symbols (report only)')
+        for nodeid, items in _SAGE_GUARD_REPORT:
+            terminalreporter.write_line(f'{nodeid}: {items}')
