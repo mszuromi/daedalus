@@ -373,14 +373,18 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
         else:
             pieces = [(1.0 / (nk + 1), nk + 1)]
             carries = False
-            if bk != 0:
+            excess = abs(bk) - beta_tol
+            if excess > 0:
                 # dropping exp(β_k s_k) moves this term by at most
                 # |β_k| · span <= BETA_ZERO_SPAN relative (span =
                 # BETA_ZERO_SPAN / eps: the cap, or 200 without one); that
                 # error is booked into the magnitude, which the conditioning
-                # test scales by COND_ERR_FACTOR (M7 report: it was missing)
-                A = A * (1.0 + (abs(bk) / eps) * (BETA_ZERO_SPAN
-                                                  / COND_ERR_FACTOR))
+                # test scales by COND_ERR_FACTOR (M7 report: it was missing).
+                # A β within the rounding scale of the exponents (beta_tol)
+                # is a residue of an exact 0: dropping it is the better
+                # answer, and it books nothing.
+                A = A * (1.0 + (excess / eps) * (BETA_ZERO_SPAN
+                                                 / COND_ERR_FACTOR))
         for sign, (node, c) in ((1.0, hi), (-1.0, lo)):
             if node is None:
                 # box-free: an open side; its boundary term vanishes iff the
