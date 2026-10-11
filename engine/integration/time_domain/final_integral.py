@@ -1519,13 +1519,29 @@ def _count_nquad_fallback(reason, m):
 # ``DAEDALUS_PHASE_J_ON_DIVERGENCE`` = fallback | warn | raise, default
 # fallback).  The spatial certification (``pipeline_bridge``) passes
 # 'fallback' explicitly, so a later change of the temporal default does not
-# reach it.  With the box-free routes off (the default until M9) no route
-# reports a divergence, so the policy is never consulted.
+# reach it.  The legacy (boxed) interval routes report their own divergences
+# (``interval_divergent_flat`` / ``_upper`` / ``_lower`` and the grouped m=1
+# ones); the policy applies to them too (``_is_divergence_verdict``).
 _DIVERGENCE_POLICIES = ('fallback', 'warn', 'raise')
 #: the bail reasons that are divergence verdicts (``_DD_BAILS`` and the DBM)
 _DIVERGENT_BAIL_REASONS = frozenset((
     'polygon_divergent', 'interval_divergent', 'poset_divergent',
     'grouped_m0_divergent', 'grouped_m1_divergent', 'dbm_divergent'))
+#: the legacy (boxed) interval routes' own divergence bails, which the
+#: policy applies to as well (their fallback category stays 'other', so the
+#: pre-0.2.0 counters reproduce under the legacy umbrella)
+_LEGACY_DIVERGENT_BAIL_REASONS = frozenset((
+    'interval_divergent_flat', 'interval_divergent_upper',
+    'interval_divergent_lower', 'grouped_m1_divergent_flat',
+    'grouped_m1_divergent_upper', 'grouped_m1_divergent_lower'))
+
+
+def _is_divergence_verdict(reason):
+    """True for a bail reason that says the subset integral diverges, on
+    the box-free routes (``_DIVERGENT_BAIL_REASONS``) or the legacy interval
+    routes (``_LEGACY_DIVERGENT_BAIL_REASONS``)."""
+    return (reason in _DIVERGENT_BAIL_REASONS
+            or reason in _LEGACY_DIVERGENT_BAIL_REASONS)
 
 
 class PhaseJDivergenceError(ArithmeticError):
@@ -1569,17 +1585,34 @@ def _ensure_warning_shown(category, action='always'):
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning
     in ``sage -python`` and the Sage Jupyter kernel).  Only that case is
     overridden: a filter for this category, and every filter set in code or
-    by an ``error`` option, is left alone (as
-    ``api._grouped_phase_j._ensure_shown``).  The action is 'always': every
-    caller deduplicates its own warnings (a 'default' filter would also
-    swallow repeats that a caller's own 'always' filter asked for)."""
-    import sys as _sys
-    import warnings as _warnings
-    if any(f[2] is category for f in _warnings.filters):
+    by an ``error`` option, is left alone: only when the first filter that
+    applies to the category is the environment's own ignore-all is a filter
+    for the category added.  The action is 'always': every caller
+    deduplicates its own warnings (a 'default' filter would also swallow
+    repeats that a caller's own 'always' filter asked for)."""
+    import sys as _SYS
+    import warnings as _WARNINGS
+    opts = [o.split(':')[0].strip().lower() for o in _SYS.warnoptions]
+    if not (opts and opts[-1] in ('ignore', 'i')):
         return
-    opts = [o.split(':')[0].strip().lower() for o in _sys.warnoptions]
-    if opts and opts[-1] in ('ignore', 'i'):
-        _warnings.filterwarnings(action, category=category)
+    filters = _WARNINGS.filters
+    # the environment's ignore-all is the LAST unconditional ignore (startup
+    # puts it behind every filter set later in code).  A plain
+    # simplefilter('ignore') set in code IS that same filter (Python merges
+    # identical filters), so it cannot be told apart and is overridden.
+    env = [i for i, f in enumerate(filters)
+           if f[0] == 'ignore' and f[1] is None and f[2] is Warning
+           and f[3] is None and not f[4]]
+    if not env:
+        return
+    for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
+        if not issubclass(category, cat):
+            continue
+        if msg is not None or mod is not None or lineno:
+            return          # a targeted filter set in code: respect it
+        if i == env[-1]:
+            _WARNINGS.filterwarnings(action, category=category)
+        return              # the first applicable filter decides
 
 
 _DIVERGENCE_FALLBACK_WARNED = [False]
@@ -4615,8 +4648,8 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     bf = _bf()
     gamma = _m7b_gammas(arrs, free_ext_vals)
     coef = pref * arrs['C']
-    tc, gmax = bf.group_fold(coef, gamma, arrs['member_idx'],
-                             arrs['member_off'])
+    tc, gmax, tcabs = bf.group_fold_mag(coef, gamma, arrs['member_idx'],
+                                        arrs['member_off'])
     if not np.any(tc != 0):
         return 0.0 + 0.0j, 0.0, 0.0
     rows = []
@@ -4637,7 +4670,7 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
         ST[e] = st
         LS[e] = ls
         MANT[e] = mant
-    r = bf.chain_fold_mag(tc, gmax, ST, LS, MANT)
+    r = bf.chain_fold_mag(tc, gmax, ST, LS, MANT, tcabs)
     if r is None:
         return None
     return r[0], r[1], _dd_scale_np(coef, gamma)
@@ -4723,8 +4756,11 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
         scale += sum(_dd_scale_term(c, g) for (c, g) in members)
         g_max = max(g.real for (_c, g) in members)
         tc = 0.0 + 0.0j
+        tcabs = 0.0
         for (c, g) in members:
-            tc += c * cmath.exp(g - g_max)
+            x = c * cmath.exp(g - g_max)
+            tc += x
+            tcabs += abs(x)
         if tc == 0:
             continue
         for sigma, U_ext, upp, key in zip(
@@ -4745,7 +4781,7 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 st, v = bf.exp_times(complex(zr, 0.0) + cmath.log(tc), mant)
                 if st != OK:
                     return _dd_status_bail(st, 'poset')
-            mag += abs(v)
+            mag += abs(v) * (tcabs / abs(tc))
             if use_mp_accum:
                 with _mp.workdps(50):
                     total_mp = total_mp + _mpc(v.real, v.imag)
@@ -5087,8 +5123,9 @@ def _dd_scale_term(coef, gamma):
 
 def _dd_scale_np(coefs, gammas):
     """``Σ |coef| e^{Re γ}`` over arrays (``_dd_scale_term``)."""
-    return float(np.sum(np.abs(coefs)
-                        * np.exp(np.minimum(np.real(gammas), 700.0))))
+    with np.errstate(over='ignore'):     # inf, as the scalar sum gives
+        return float(np.sum(np.abs(coefs)
+                            * np.exp(np.minimum(np.real(gammas), 700.0))))
 
 
 def _dd_accuracy(total, mag, scale):
@@ -5640,6 +5677,16 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
     if region.kind == 'empty':
         return 0.0 + 0.0j
     if region.kind == 'lineality':
+        # every exponent diverges along a line, so the integral is finite
+        # only when every pole-tuple group cancels exactly (M8)
+        pref = complex(prefactor_complex)
+        terms = list(_modesum_tuples(
+            smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
+            pole_tuples, plan))
+        live = {a for (C, a, _g) in terms if pref * C != 0}
+        if live <= _cancelling_alphas(terms, pref):
+            _RUNTIME_COUNTERS['divergent_cancelled'] += len(live)
+            return 0.0 + 0.0j
         return _dd_status_bail(bf.DIVERGENT, 'polygon')
     pref = complex(prefactor_complex)
     tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
@@ -8013,7 +8060,7 @@ def integrate_diagram(
                         # counters); the poset's reason labels the fallback.
                         _dbm_reason = _pop_bail_reason()
                 # Closure-only fallback via scipy.nquad.
-                if _bail_reason in _DIVERGENT_BAIL_REASONS:
+                if _is_divergence_verdict(_bail_reason):
                     _divergence_verdict(on_divergence, _bail_reason, m_val,
                                         hook_meta, free_vals)
                 elif _dbm_reason == 'dbm_divergent':

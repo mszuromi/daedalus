@@ -192,3 +192,43 @@ def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
         warnings.simplefilter('ignore')
         emit()
     assert not any(issubclass(x.category, category) for x in w)
+
+
+@pytest.mark.parametrize('which', ['stale', 'nquad'])
+def test_the_visibility_helpers_respect_filters_set_in_code(monkeypatch,
+                                                           which):
+    """Under the environment's ignore (the LAST unconditional ignore filter)
+    a filter set later in code -- 'error', or a targeted 'ignore' -- decides,
+    not the helper (review finding)."""
+    import sys
+    import warnings
+    if which == 'stale':
+        import api.save as S
+        helper, category = S._ensure_warning_shown, S.StaleResultWarning
+    else:
+        pytest.importorskip('sage.all')
+        import engine.integration.time_domain.final_integral as FI
+        helper = FI._ensure_warning_shown
+        category = FI.PhaseJNquadFallbackWarning
+    monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
+
+    def emit():
+        helper(category)
+        warnings.warn('probe', category)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')          # the environment's
+        warnings.simplefilter('error')           # set in code: wins
+        with pytest.raises(category):
+            emit()
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('ignore')          # the environment's
+        warnings.filterwarnings('ignore', category=UserWarning)   # in code
+        emit()
+    assert not any(issubclass(x.category, category) for x in w)
+    # (A plain simplefilter('ignore') set in code is the SAME filter as the
+    # environment's; Python merges the two, so it cannot be told apart and
+    # the warning is shown -- a documented limit of the helpers.)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('ignore')          # the environment's only
+        emit()
+    assert any(issubclass(x.category, category) for x in w)

@@ -267,6 +267,10 @@ def compute_correction_td(
             Diagrams not evaluated (loop_number > 0).
         'ext_time_vars' : list of SR
     """
+    if on_divergence is not None:
+        from engine.integration.time_domain.final_integral import (
+            _divergence_policy)
+        _divergence_policy(on_divergence)               # validate early
     # ── Legacy support: unpack kernel_groups format ──
     if typed_diagrams is None and kernel_groups is not None:
         typed_diagrams = []

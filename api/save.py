@@ -111,14 +111,32 @@ def _ensure_warning_shown(category, action='always'):
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
     ``sage -python`` and the Sage Jupyter kernel.  Only that case is
     overridden: a filter for this category, and every filter set in code or
-    by an ``error`` option (e.g. ``-W error``), is left alone.  The action is
-    'always': callers deduplicate their own warnings.  (The engine keeps the
+    by an ``error`` option (e.g. ``-W error``), is left alone -- a filter is
+    added only when the first filter that applies to the category is the
+    environment's own ignore-all.  The action is 'always': callers
+    deduplicate their own warnings.  (The engine keeps the
     same rule in ``final_integral._ensure_warning_shown``.)"""
-    if any(f[2] is category for f in warnings.filters):
-        return
     opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
-    if opts and opts[-1] in ('ignore', 'i'):
-        warnings.filterwarnings(action, category=category)
+    if not (opts and opts[-1] in ('ignore', 'i')):
+        return
+    filters = warnings.filters
+    # the environment's ignore-all is the LAST unconditional ignore (startup
+    # puts it behind every filter set later in code).  A plain
+    # simplefilter('ignore') set in code IS that same filter (Python merges
+    # identical filters), so it cannot be told apart and is overridden.
+    env = [i for i, f in enumerate(filters)
+           if f[0] == 'ignore' and f[1] is None and f[2] is Warning
+           and f[3] is None and not f[4]]
+    if not env:
+        return
+    for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
+        if not issubclass(category, cat):
+            continue
+        if msg is not None or mod is not None or lineno:
+            return          # a targeted filter set in code: respect it
+        if i == env[-1]:
+            warnings.filterwarnings(action, category=category)
+        return              # the first applicable filter decides
 
 
 class StaleResultWarning(UserWarning):

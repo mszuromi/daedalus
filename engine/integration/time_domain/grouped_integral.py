@@ -648,6 +648,8 @@ def integrate_grouped_diagram(
     ``integrate_diagram``'s, so a wrapper can swap between per-diagram
     and grouped paths without touching downstream code.
     """
+    if on_divergence is not None:
+        _fi_mod._divergence_policy(on_divergence)       # validate early
     import itertools as _itertools
 
     if not typed_diagrams:
@@ -1508,7 +1510,7 @@ def integrate_grouped_diagram(
                             return val
                         _dbm_reason = _fi_mod._pop_bail_reason()
                 # scipy.nquad fallback on the SR-summed integrand.
-                if _bail_reason in _fi_mod._DIVERGENT_BAIL_REASONS:
+                if _fi_mod._is_divergence_verdict(_bail_reason):
                     _fi_mod._divergence_verdict(on_divergence, _bail_reason,
                                                 m_val, hook_meta, free_vals)
                 elif _dbm_reason == 'dbm_divergent':

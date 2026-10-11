@@ -552,7 +552,17 @@ def chain_log(alphas, L, upper_per_position, U, tol=0.0):
 #: (a non-finite input or exponent)
 _RAISES = -1
 
-_jit = expdd._jit
+# Compiled WITHOUT numba's on-disk cache: these kernels call
+# ``expdd._log_dd_core`` and freeze expdd's constants, and numba's cache only
+# re-checks the file that defines a function -- after an edit to expdd.py a
+# cached kernel here would keep running the old compiled code (found in
+# review; the scalar route would pick up the edit).  The cost is one
+# compilation per process.
+if getattr(expdd, '_numba', None) is not None and expdd.BACKEND == 'numba':
+    _jit = expdd._numba.njit(cache=False)
+else:                                     # pragma: no cover - plain Python
+    def _jit(f):
+        return f
 _log_dd_core = expdd._log_dd_core
 
 
@@ -760,6 +770,7 @@ def _group_fold_core(coef, gamma, member_idx, member_off):
     G = member_off.shape[0] - 1
     tc = np.zeros(G, dtype=np.complex128)
     gmax = np.zeros(G, dtype=np.float64)
+    tcabs = np.zeros(G, dtype=np.float64)
     for g in range(G):
         found = False
         best = 0.0
@@ -771,25 +782,35 @@ def _group_fold_core(coef, gamma, member_idx, member_off):
         if not found:
             continue
         acc = 0j
+        aabs = 0.0
         for i in range(member_off[g], member_off[g + 1]):
             t = member_idx[i]
             if coef[t] != 0:
-                acc += coef[t] * cmath.exp(gamma[t] - best)
+                x = coef[t] * cmath.exp(gamma[t] - best)
+                acc += x
+                aabs += abs(x)
         tc[g] = acc
         gmax[g] = best
-    return tc, gmax
+        tcabs[g] = aabs
+    return tc, gmax, tcabs
 
 
 def group_fold(coefs, gammas, member_idx, member_off):
     """``(tc, g_max)`` per group of pole tuples, as the poset DD route folds
     them (see ``_group_fold_core``); ``coefs``, ``gammas`` per tuple."""
+    return group_fold_mag(coefs, gammas, member_idx, member_off)[:2]
+
+
+def group_fold_mag(coefs, gammas, member_idx, member_off):
+    """``group_fold`` and, per group, ``Σ |coef e^{γ - g_max}|`` over its
+    members (the magnitude the fold cancels)."""
     return _group_fold_core(_as_c128(coefs), _as_c128(gammas),
                             np.ascontiguousarray(member_idx, dtype=np.int64),
                             np.ascontiguousarray(member_off, dtype=np.int64))
 
 
 @_jit
-def _chain_fold_core(tc, gmax, ST, LS, MANT):
+def _chain_fold_core(tc, gmax, ST, LS, MANT, tcabs):
     total = 0j
     mag = 0.0
     G = tc.shape[0]
@@ -809,7 +830,7 @@ def _chain_fold_core(tc, gmax, ST, LS, MANT):
                     and abs(c) < 1e150):
                 v = (c * mant) * math.exp(zr)
                 total += v
-                mag += abs(v)
+                mag += tcabs[g] * abs(mant) * math.exp(zr)
             else:
                 return False, 0j, 0.0
     return True, total, mag
@@ -826,12 +847,17 @@ def chain_fold(tc, gmax, ST, LS, MANT):
     return None if r is None else r[0]
 
 
-def chain_fold_mag(tc, gmax, ST, LS, MANT):
+def chain_fold_mag(tc, gmax, ST, LS, MANT, tcabs=None):
     """``chain_fold`` and the sum of the terms' absolute values:
-    ``(value, Σ|term|)``, or ``None`` (see there)."""
+    ``(value, Σ|term|)``, or ``None`` (see there).  ``tcabs`` (per group,
+    ``Σ |member|`` of its fold, ``group_fold_mag``; default ``|tc|``) makes
+    the magnitude count the cancellation inside each group's fold too."""
+    tc = _as_c128(tc)
+    tcabs = (np.abs(tc) if tcabs is None
+             else np.ascontiguousarray(tcabs, dtype=np.float64))
     ok, total, mag = _chain_fold_core(
-        _as_c128(tc), np.ascontiguousarray(gmax, dtype=np.float64),
+        tc, np.ascontiguousarray(gmax, dtype=np.float64),
         np.ascontiguousarray(ST, dtype=np.int64),
         np.ascontiguousarray(LS, dtype=np.float64),
-        np.ascontiguousarray(MANT, dtype=np.complex128))
+        np.ascontiguousarray(MANT, dtype=np.complex128), tcabs)
     return (complex(total), float(mag)) if ok else None

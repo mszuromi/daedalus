@@ -400,3 +400,26 @@ def test_poset_batch_runs_without_its_memo_when_the_chain_memo_is_off(
     assert len(calls) == 1 and calls[0] is not None and c['dd_poset'] == 1
     assert v_off == v_on
     assert not FI._chain_dd_batch_memo
+
+
+def test_batch_and_scalar_book_the_same_error_accounting(FI, monkeypatch):
+    """The error accounting (``_dd_accuracy``) of the chain route counts the
+    cancellation inside each group's fold the same way batched and scalar
+    (review finding: the batched path counted only after the fold)."""
+    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    # 12 groups, two pairs nearly cancelling inside their group's fold
+    modes = [[(1.0, -2.0 + 1j), (-0.999999, -2.0 + 1j), (0.3, -1.1)],
+             [(0.8, -1.5), (0.4, -0.7 - 0.3j)],
+             [(1.0, -3.0), (0.5, -2.0)]]
+
+    def ratio(batched):
+        if not batched:
+            monkeypatch.setattr(FI, '_poset_dd_batch', lambda *a, **k: None)
+        FI._reset_runtime_counters()
+        FI._chain_simplex_memo_clear()
+        v = _poset_plan(FI, _CHAIN_ROWS, modes, (0.7,))
+        return v, FI._RUNTIME_COUNTERS['dd_err_ratio_max']
+    v1, r1 = ratio(True)
+    v0, r0 = ratio(False)
+    assert abs(v1 - v0) <= 1e-12 * abs(v0)
+    assert r0 > 0 and abs(r1 - r0) <= 1e-9 * r0

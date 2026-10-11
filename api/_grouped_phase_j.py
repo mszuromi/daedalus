@@ -116,6 +116,10 @@ def compute_correction_td_grouped(
     the per-diagram inner loop replaced by a per-prediagram inner loop
     that hands each group to ``integrate_grouped_diagram``.
     """
+    if on_divergence is not None:
+        from engine.integration.time_domain.final_integral import (
+            _divergence_policy)
+        _divergence_policy(on_divergence)               # validate early
     if ext_time_vars is None:
         ext_time_vars = [
             SR.var(f't_{j+1}', latex_name=rf't_{{{j+1}}}')
