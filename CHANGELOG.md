@@ -11,6 +11,61 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ## 0.2.0 (unreleased)
 
+### Changed: Phase J integrates exactly, without an integration box, by default (numbers move)
+
+The box-free exact routes (see "Added: box-free exact Phase J" below) are
+now the default: `USE_PHASE_J_DD_KERNELS`, `SEMIINF_CHAIN` and
+`UNBOUNDED_2D = 'exact'` are on unless the environment says otherwise. Every
+Phase J region is then integrated in closed form on the divided-difference
+kernels, with no ±200 box, no margin-50 lower limit for chains and no
+`scipy.nquad` fallback on any model measured. Unset, the two box-free
+switches follow `DAEDALUS_PHASE_J_DD_KERNELS`.
+
+How to get the previous behaviour:
+
+- `DAEDALUS_PHASE_J_DD_KERNELS=0`: the boxed routes of 0.2.0 before this
+  change (the Θ(0) = 0 rule, the inheritance fix and the hardened fallback
+  stay);
+- `DAEDALUS_PHASE_J_LEGACY=1`: the pre-0.2.0 routes and numbers (it resets
+  every Phase J switch, the box-free ones included);
+- in a running process, `final_integral._legacy_umbrella_flags()` lists every
+  flag the umbrella sets and its value.
+
+What moved (the public models of the zoo, new code, in one process, boxed
+routes → box-free; more detail under "With the switches on" below):
+
+| model (configuration of the zoo) | change |
+|---|---|
+| `single_population_quad_exp_test`, k = 2, ℓ = 1 | one-loop +6.3 % at τ = 0, +3.0 % at τ = 2.5, +2.7 % at τ = 10 (total up to 3.4 %); the boxed chains truncated its slow modes. 48 `scipy.nquad` regions → 0 |
+| `single_population_spike_reset_test`, k = 2, ℓ = 1, per-diagram and grouped | ≤ 5.8e−13 relative; 40 and 10 `scipy.nquad` regions → 0 |
+| `ou_quartic` family, `ou_quartic_colored`, `ou_quartic_two_dim_color_corr` | ≤ 1.1e−13 relative |
+| `linear_hawkes`, `multipopulation_test`, `single_population_linear_delta_spikes_test`, spike reset k = 1 | ≤ 3.2e−16 relative |
+| spatial models (`allen_cahn_1d_subcritical_infinite`, `reaction_diffusion_2d`, `coupled_rd_2species_1d`, `reaction_diffusion_conserved_1d`, `edwards_wilkinson_1d`) | identical; spatial certification unchanged |
+
+The frozen regression fixture `spike_reset_k2_ell1` was refrozen once on the
+new defaults (its strict xfail is lifted): its one-loop now agrees with the
+ħ-extrapolated simulation's loop coefficient (per-bin χ² 5.8 over 10 bins,
+p = 0.83). The other three fixtures did not move (≤ 1.5e−15).
+
+Other effects of the new default:
+
+- Speed: with the batched kernels (see "Performance: batched box-free
+  kernels") the default runs are as fast as or faster than the boxed ones on
+  every model measured (public zoo models, Mac): `quad_exp` 25.2 s → 18.8 s,
+  the rest unchanged within noise.
+- A non-finite residue or exponent now raises `ValueError` on the default
+  routes ("never a silent number"); the boxed routes return NaN, as before.
+- A region whose open direction does not decay is reported and handled by
+  the divergence policy (see "Added: convergence certificate verdicts and a
+  divergence policy"); none occurs on the models above.
+- `CHAIN_UPPERS_KERNEL` stays `'legacy'`: the box-free chain route evaluates
+  its chains with `expdd` and never reads it.
+- Fixed with it: with the box-free routes on and `USE_CHAIN_UPPERS_MEMO`
+  off, the chain sums went through a different summation than with the memo
+  on and differed in the last bits; the memo now changes no number on any
+  route.
+
+
 ### Changed: Itô equal-time rule for constant constraint rows (numbers move)
 
 δ-elimination can leave a smooth (non-instantaneous) propagator whose time
@@ -1569,7 +1624,7 @@ use this integrator. `dendritic_quad_soma_sigmoid` and
 `quadratic_hawkes_alpha` were not re-measured (over the time budget, see
 "May move" above).
 
-### Added (opt-in): box-free exact Phase J on the divided-difference kernels (default numbers unchanged)
+### Added: box-free exact Phase J on the divided-difference kernels (opt-in when added; the default since the change above)
 
 Three switches route the Phase J closed forms to the divided-difference
 kernels of `expdd` and remove the integration box from directions in which
@@ -1762,7 +1817,7 @@ three variants interleaved):
 
 ### Added: convergence certificate verdicts and a divergence policy for the box-free routes (default numbers unchanged)
 
-The box-free routes (see "Added (opt-in): box-free exact Phase J") certify
+The box-free routes (see "Added: box-free exact Phase J") certify
 convergence before they integrate: every open direction of the region must
 decay (an infinite side of an interval, a recession ray or a line of a
 two-time region, the prefix or suffix sums of a chain). What happens when a
@@ -1910,7 +1965,7 @@ their results are bit-identical too. The spatial certification is unchanged
   'legacy_clip'`), `STRUCTURAL_ZEROS = False`, `NQUAD_HARDENED = False`
   and `USE_DBM_FALLBACK = False`, and also `USE_PHASE_J_DD_KERNELS = False`,
   `CHAIN_UPPERS_KERNEL = 'legacy'`, `SEMIINF_CHAIN = False` and
-  `UNBOUNDED_2D = 'box'` (see "Added (opt-in): box-free exact Phase J"). It
+  `UNBOUNDED_2D = 'box'` (see "Added: box-free exact Phase J"). It
   reproduces the
   pre-change Phase J numbers bit-for-bit within one process, at the same
   external times and at the bounding box in force (so a pre-change run at

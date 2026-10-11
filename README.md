@@ -216,8 +216,12 @@ sage -python -m pytest tests/ -q
 ## Changes between versions
 
 See [`CHANGELOG.md`](CHANGELOG.md). Version 0.2.0 changes the numbers of some models with
-instantaneous (δ) propagator parts. Files saved with `dd.save_npz` record the version that wrote
-them, and `dd.load_npz` warns when a file predates the change.
+instantaneous (δ) propagator parts, and integrates every Phase J region exactly, without an
+integration box, which moves models with slow modes (for example the one-loop of
+`single_population_quad_exp_test` by up to 6 %). `DAEDALUS_PHASE_J_DD_KERNELS=0` restores the
+boxed integration and `DAEDALUS_PHASE_J_LEGACY=1` the pre-0.2.0 numbers. Files saved with
+`dd.save_npz` record the version that wrote them, and `dd.load_npz` warns when a file predates
+the change.
 
 ## Citing
 
