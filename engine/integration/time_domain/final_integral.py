@@ -3365,8 +3365,11 @@ def _chain_uppers_memo_on():
 #
 # ``USE_PHASE_J_DD_KERNELS`` (bool, read at call time through
 # ``_phase_j_dd_kernels_on``); environment ``DAEDALUS_PHASE_J_DD_KERNELS`` =
-# 1 | 0 (also true/false, yes/no, on/off; default 0).  It routes the Phase J
-# closed forms to ``expdd`` (M7; see "M7: box-free exact routing" below).
+# 1 | 0 (also true/false, yes/no, on/off; default 1 since M9, 0.2.0).  It
+# routes the Phase J closed forms to ``expdd`` (M7; see "M7: box-free exact
+# routing" below).  ``CHAIN_UPPERS_KERNEL`` stays 'legacy' by default: the
+# DD route evaluates its chains with ``expdd`` and never reads it, so it
+# selects the evaluator of the legacy route only (``=0`` or the umbrella).
 # The umbrella ``DAEDALUS_PHASE_J_LEGACY`` sets both to their legacy values
 # (M7 decision: the umbrella reproduces the pre-M1 numbers, and neither
 # 'transfer' nor the DD kernels do that bit for bit).
@@ -3401,13 +3404,13 @@ def _chain_uppers_kernel():
 
 def _initial_phase_j_dd_kernels_flag(environ=None):
     """The import-time value of ``USE_PHASE_J_DD_KERNELS`` from ``environ``
-    (default ``os.environ``).  An unknown value raises; the umbrella
-    ``DAEDALUS_PHASE_J_LEGACY`` wins (False, M7)."""
+    (default ``os.environ``): on unless set to 0 (M9).  An unknown value
+    raises; the umbrella ``DAEDALUS_PHASE_J_LEGACY`` wins (False, M7)."""
     env = _os.environ if environ is None else environ
     v = env.get('DAEDALUS_PHASE_J_DD_KERNELS', '').strip().lower()
-    if v in ('', '0', 'false', 'no', 'off'):
+    if v in ('0', 'false', 'no', 'off'):
         return False
-    if v in ('1', 'true', 'yes', 'on'):
+    if v in ('', '1', 'true', 'yes', 'on'):
         return not _env_truthy('DAEDALUS_PHASE_J_LEGACY', env)
     raise ValueError(
         f'DAEDALUS_PHASE_J_DD_KERNELS={v!r}: expected 1 or 0')
@@ -3446,15 +3449,17 @@ def _phase_j_dd_kernels_on():
 #   one-sided test on the FINAL exponent: log|value| > 700 means the integral
 #   itself overflows; the path then bails with a ``*_dd_overflow`` reason
 #   (counter ``dd_overflow``) to the next route.  Never a silent inf/nan.
-# ``SEMIINF_CHAIN`` (bool; env ``DAEDALUS_PHASE_J_SEMIINF_CHAIN`` = 1 | 0,
-#   default 0; needs the DD kernels): the m≥3 poset path integrates a chain
+# ``SEMIINF_CHAIN`` (bool; env ``DAEDALUS_PHASE_J_SEMIINF_CHAIN`` = 1 | 0;
+#   default since M9: on when the DD kernels are, else off; needs the DD
+#   kernels): the m≥3 poset path integrates a chain
 #   without a scalar lower from ``PHASE_J_T_MIN`` (default −inf: the
 #   semi-infinite chain, started from the dominant eigenvector) instead of
 #   ``earliest_ext − POSET_PHYSICAL_MARGIN``, and a chain top without a scalar
 #   upper to +inf (mirror form) instead of ``bbox_cap``; the DBM route then
 #   has no box at all (open directions integrated to infinity).
-# ``UNBOUNDED_2D`` ('box' default | 'exact'; env
-#   ``DAEDALUS_PHASE_J_UNBOUNDED_2D``; 'exact' needs the DD kernels): the m=2
+# ``UNBOUNDED_2D`` ('box' | 'exact'; env ``DAEDALUS_PHASE_J_UNBOUNDED_2D``;
+#   default since M9: 'exact' when the DD kernels are on, else 'box'; 'exact'
+#   needs the DD kernels): the m=2
 #   polygon is built exactly -- finite vertices and the recession rays, no
 #   ±bbox_cap -- and integrated by the ideal-vertex fan (triangles,
 #   half-strips, wedges; ``boxfree.region_2d``).
@@ -3478,24 +3483,26 @@ _UNBOUNDED_2D_MODES = ('box', 'exact')
 
 def _initial_m7_flags(environ=None):
     """The import-time values of ``SEMIINF_CHAIN`` and ``UNBOUNDED_2D`` from
-    ``environ`` (default ``os.environ``).  An unknown value raises; so does a
-    box-free switch without ``DAEDALUS_PHASE_J_DD_KERNELS`` (the box-free
+    ``environ`` (default ``os.environ``).  Unset, each follows the DD kernels
+    (on / 'exact' when they are on, M9).  An unknown value raises; so does a
+    box-free switch set explicitly without the DD kernels (the box-free
     closed forms are the DD kernels').  The umbrella wins."""
     env = _os.environ if environ is None else environ
     si = env.get('DAEDALUS_PHASE_J_SEMIINF_CHAIN', '').strip().lower()
     if si not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
         raise ValueError(
             f'DAEDALUS_PHASE_J_SEMIINF_CHAIN={si!r}: expected 1 or 0')
-    u2 = (env.get('DAEDALUS_PHASE_J_UNBOUNDED_2D', '').strip().lower()
-          or 'box')
-    if u2 not in _UNBOUNDED_2D_MODES:
+    u2 = env.get('DAEDALUS_PHASE_J_UNBOUNDED_2D', '').strip().lower()
+    if u2 not in ('',) + _UNBOUNDED_2D_MODES:
         raise ValueError(
             f'DAEDALUS_PHASE_J_UNBOUNDED_2D={u2!r}: expected box or exact')
-    semiinf = si not in ('',) + _STRUCTURAL_ZEROS_OFF
     if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
         return {'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'}
-    if (semiinf or u2 == 'exact') and not _initial_phase_j_dd_kernels_flag(
-            env):
+    dd = _initial_phase_j_dd_kernels_flag(env)
+    semiinf = dd if si == '' else si not in _STRUCTURAL_ZEROS_OFF
+    if u2 == '':
+        u2 = 'exact' if dd else 'box'
+    if (semiinf or u2 == 'exact') and not dd:
         raise ValueError(
             'DAEDALUS_PHASE_J_SEMIINF_CHAIN / DAEDALUS_PHASE_J_UNBOUNDED_2D='
             'exact need DAEDALUS_PHASE_J_DD_KERNELS=1')
@@ -3505,6 +3512,20 @@ def _initial_m7_flags(environ=None):
 _M7_FLAGS_AT_IMPORT = _initial_m7_flags()
 SEMIINF_CHAIN = _M7_FLAGS_AT_IMPORT['SEMIINF_CHAIN']
 UNBOUNDED_2D = _M7_FLAGS_AT_IMPORT['UNBOUNDED_2D']
+
+
+def _legacy_umbrella_flags():
+    """``{flag: value}`` for every module flag that the umbrella
+    ``DAEDALUS_PHASE_J_LEGACY=1`` sets at import (the Phase J flags, the M6
+    DD kernels and chain evaluator, the M7 box-free switches), from the same
+    initialisers: what a test or a caller sets to reproduce the pre-0.2.0
+    routes in a running process."""
+    env = {'DAEDALUS_PHASE_J_LEGACY': '1'}
+    flags = dict(_initial_phase_j_flags(env))
+    flags['USE_PHASE_J_DD_KERNELS'] = _initial_phase_j_dd_kernels_flag(env)
+    flags['CHAIN_UPPERS_KERNEL'] = _initial_chain_uppers_kernel(env)
+    flags.update(_initial_m7_flags(env))
+    return flags
 PHASE_J_T_MIN = float('-inf')
 
 

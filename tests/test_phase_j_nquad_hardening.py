@@ -1919,6 +1919,15 @@ def _check_spike(taus, grouped, monkeypatch):
     return n
 
 
+def _legacy_routes(monkeypatch):
+    """The regions these tests check are the ones the fallback serves on the
+    legacy routes; since M9 the box-free routes (the default) serve them in
+    closed form (0 fallback regions), so the legacy routes are pinned."""
+    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
+                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
+        monkeypatch.setattr(FI, flag, value)
+
+
 @pytest.mark.parametrize('grouped', (False, True), ids=('perdiag',
                                                         'grouped'))
 def test_spike_reset_fallback_regions_match_the_exact_fan(grouped, hardened,
@@ -1929,6 +1938,7 @@ def test_spike_reset_fallback_regions_match_the_exact_fan(grouped, hardened,
     formula (box 150 and box 400), per diagram and grouped.  Before M2b the
     same regions were off by up to 6.8e-5 relative / 1.5e-10 absolute (18
     of 40 over the five-point grid; measured with the harness, plan §10)."""
+    _legacy_routes(monkeypatch)
     _check_spike([0.0, 10.0], grouped=grouped, monkeypatch=monkeypatch)
 
 
@@ -1958,7 +1968,8 @@ def test_compute_cumulants_scopes_its_callables(hardened, private_cwd,
 
 
 def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
-                                                   fresh_warning_state):
+                                                   fresh_warning_state,
+                                                   monkeypatch):
     """``compute_cumulants``' own τ-grid evaluation is one evaluation (an
     ``nquad_warning_scope`` around ``total_C_batch``): the grouped
     spike-reset k = 2, ℓ = 1 build at τ = 0 and 10 serves 4 regions of 2
@@ -1969,6 +1980,7 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
     from tests.tools import phase_j_zoo_baseline as Z
     import daedalus as dd
     model, _ = dd.load_model('single_population_spike_reset_test')
+    _legacy_routes(monkeypatch)
     FI._reset_runtime_counters()
     msgs = _warnings_of([lambda: compute_cumulants(
         model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],

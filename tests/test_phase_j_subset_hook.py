@@ -220,20 +220,25 @@ def _theta0_mode(mode):
     """Run with ``THETA0_CONST_ROW_MODE = mode`` (``None``: unchanged).
     'legacy_clip' reaches the scipy quadrature fallback on the δ models, and
     the pre-M1 captures were made with the pre-M2b (default-tolerance)
-    fallback, so ``NQUAD_HARDENED`` is False with it (M2b)."""
+    fallback, so ``NQUAD_HARDENED`` is False with it (M2b), and on the
+    legacy routes, so the box-free switches are off with it (M9)."""
     if mode is None:
         yield
         return
-    saved = FI.THETA0_CONST_ROW_MODE
-    saved_nh = FI.NQUAD_HARDENED
+    names = ('THETA0_CONST_ROW_MODE', 'NQUAD_HARDENED',
+             'USE_PHASE_J_DD_KERNELS', 'SEMIINF_CHAIN', 'UNBOUNDED_2D')
+    saved = {n: getattr(FI, n) for n in names}
     FI.THETA0_CONST_ROW_MODE = mode
     if mode == 'legacy_clip':
         FI.NQUAD_HARDENED = False
+        FI.USE_PHASE_J_DD_KERNELS = False
+        FI.SEMIINF_CHAIN = False
+        FI.UNBOUNDED_2D = 'box'
     try:
         yield
     finally:
-        FI.THETA0_CONST_ROW_MODE = saved
-        FI.NQUAD_HARDENED = saved_nh
+        for n, v in saved.items():
+            setattr(FI, n, v)
 
 
 def _model(spec):

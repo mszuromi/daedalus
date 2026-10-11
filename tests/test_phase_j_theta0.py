@@ -105,10 +105,18 @@ def _counter(name):
     return FI._RUNTIME_COUNTERS[name]
 
 
+_LEGACY_ROUTES = (('USE_PHASE_J_DD_KERNELS', False), ('SEMIINF_CHAIN', False),
+                  ('UNBOUNDED_2D', 'box'))
+
+
 @pytest.fixture
 def legacy(monkeypatch):
-    """Switch to the pre-M1 behaviour for one test (call-time flag)."""
+    """Switch to the pre-M1 behaviour for one test (call-time flags): the
+    legacy Θ(0) rule on the legacy (boxed) routes, which are not the default
+    since M9."""
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
+    for flag, value in _LEGACY_ROUTES:
+        monkeypatch.setattr(FI, flag, value)
 
 
 def _never_called(*_a, **_k):
@@ -822,8 +830,11 @@ UPPER_OPEN = [((-1.0, 1.0, 0.0), (0.0,), 0.0), ((0.0, -1.0, 1.0), (0.0,), 0.0),
 def test_bbox_cap_is_read_at_call_time(variant, mode, monkeypatch):
     """In both modes: the legacy umbrella also reads the cap at call time,
     so it reproduces a pre-M1 run at any cap (plan §3.1: the cap-12 trap
-    through the call-time cap)."""
+    through the call-time cap).  The cap is the boxed routes' (M9: not the
+    default ones)."""
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', mode)
+    for flag, value in _LEGACY_ROUTES:
+        monkeypatch.setattr(FI, flag, value)
 
     def values():
         return (_m2(variant, [SLOW, SLOW], BASE2, (0.0,)),
@@ -964,13 +975,19 @@ def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
     key = (k, max_ell, grouped, tuple(tau_grid), mode)
     if key not in _E2E:
         from api import compute_cumulants
-        saved = FI.THETA0_CONST_ROW_MODE
+        saved = {n: getattr(FI, n) for n in (
+            'THETA0_CONST_ROW_MODE', 'NQUAD_HARDENED') + tuple(
+                n for n, _v in _LEGACY_ROUTES)}
         saved_nh = FI.NQUAD_HARDENED
         FI.THETA0_CONST_ROW_MODE = mode
         # 'legacy_clip' reaches the scipy quadrature fallback here: the
         # pre-M1 captures were made with the pre-M2b (default-tolerance)
-        # fallback, so it is used too (M2b, NQUAD_HARDENED).
+        # fallback, so it is used too (M2b, NQUAD_HARDENED), on the legacy
+        # routes (M9: not the default ones).
         FI.NQUAD_HARDENED = saved_nh if mode == 'ito' else False
+        if mode != 'ito':
+            for flag, value in _LEGACY_ROUTES:
+                setattr(FI, flag, value)
         FI._reset_runtime_counters()
         try:
             res = compute_cumulants(
@@ -979,8 +996,8 @@ def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
                 tau_grid=np.array(tau_grid), use_cache=True, parallel=False,
                 verbose=False, use_grouped_phase_j=grouped)
         finally:
-            FI.THETA0_CONST_ROW_MODE = saved
-            FI.NQUAD_HARDENED = saved_nh
+            for n, v in saved.items():
+                setattr(FI, n, v)
         counters = {k_: (dict(v) if isinstance(v, dict) else v)
                     for k_, v in FI._RUNTIME_COUNTERS.items()}
         _E2E[key] = (res, counters)

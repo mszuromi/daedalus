@@ -340,8 +340,12 @@ def _dispatch(variant, modes, rows, free, m):
 def test_m2_guard_bail_route(variant, monkeypatch, no_quadrature):
     """'legacy_clip' keeps the zero-area segment of the 2-cycle, its fan
     trips the triangle guard, and the subset falls back: answered 0 by the
-    structural test in every call shape."""
+    structural test in every call shape.  (The legacy polygon route: the
+    exact route of M7, the default since M9, has no triangle guard.)"""
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
+    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
+                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
+        monkeypatch.setattr(FI, flag, value)
     FI._reset_runtime_counters()
     path, v, reason = _dispatch(variant, [FAST] * 4, TWO_CYCLE, [0.2], 2)
     assert (path, v, reason) == ('nquad', 0, 'polygon_triangle_guard')
@@ -654,8 +658,17 @@ def test_a_nan_residue_is_never_pruned(monkeypatch, residue):
     """A NaN residue must stay visible: it is not an exact zero, so no
     δ-subset is pruned and the value is NaN with the flag on, as with it
     off (per diagram and grouped).  A CDF zero in the same place is pruned
-    and changes nothing (control)."""
+    and changes nothing (control).  The value is that of the legacy routes;
+    the box-free routes (the default since M9) refuse the non-finite
+    exponent instead (``ValueError``, never a silent number), also visible."""
     from sage.all import CDF
+    pd = _prop_cdf(residue)
+    r = FI.integrate_diagram(_td(FD_TREE, (3, 4), (0, 1, 2)), pd, 1.0, _t2())
+    with pytest.raises(ValueError, match='finite'):
+        r['contribution'](0.0, 0.7)
+    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
+                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
+        monkeypatch.setattr(FI, flag, value)
     for bad, expect_nan in ((residue, True), (0.0, False)):
         vals, pruned = {}, {}
         for sz in (True, False):

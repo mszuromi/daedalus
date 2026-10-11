@@ -355,9 +355,12 @@ def test_large_log_scale_seed_is_safe():
     assert res.value.real == pytest.approx(ref, rel=1e-12)
 
 
-def test_astronomical_integral_is_an_overflow_not_inf():
+def test_astronomical_integral_is_an_overflow_not_inf(monkeypatch):
     """exp(-5 s_0) on s_0 > -200 is ~exp(1000): reported as an overflow,
-    and the wrapper declines (the caller goes on to the fallback)."""
+    and the wrapper declines (the caller goes on to the fallback).  The ±200
+    box is the boxed route's (``SEMIINF_CHAIN`` off); without a box the
+    integrand grows without bound toward the past, a divergence."""
+    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
     rows = [((-1.0, 1.0, 0.0), 0.0), ((0.0, -1.0, 1.0), 0.0),
             ((0.0, 0.0, -1.0), 0.0)]
     res = _expsum(rows, 3, (-5.0, 0.0, 0.0))
@@ -373,6 +376,12 @@ def test_astronomical_integral_is_an_overflow_not_inf():
     assert FI._integrate_subset_dbm(edges, 1.0, cdata, [0.0], 3) is None
     assert FI._pop_bail_reason() == 'dbm_overflow'
     assert FI._RUNTIME_COUNTERS['dbm_declined_overflow'] == 1
+    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
+    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
+    FI._reset_runtime_counters()
+    assert FI._integrate_subset_dbm(edges, 1.0, cdata, [0.0], 3) is None
+    assert FI._pop_bail_reason() == 'dbm_divergent'
+    assert FI._RUNTIME_COUNTERS['dbm_declined_divergent'] == 1
 
 
 # ── conditioning (M3 review, lens a) ─────────────────────────────────
@@ -456,11 +465,14 @@ def test_cancelled_wrapper_subset_is_declined_not_zero():
         assert abs(v - 3.7804272274669133) <= 1e-9 * 3.78, v
 
 
-def test_thin_region_is_declined_to_the_fallback():
+def test_thin_region_is_declined_to_the_fallback(monkeypatch):
     """A thin strip 0.10905 < s_1 < s_0 < 0.11243 (s_2 free, a scaled order
     row so the poset path bails): the closed form cancels to ~1e-8 there
     while the hardened fallback is exact, so the DBM declines it
-    ('dbm_ill_conditioned') and the dispatch goes on to the fallback."""
+    ('dbm_ill_conditioned') and the dispatch goes on to the fallback.  That
+    is the boxed route (``SEMIINF_CHAIN`` off, s_2 in ±200); without a box
+    the free s_2 makes the region divergent."""
+    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
     rows = [((0.5, -0.5, 0.0), (0.0,), 0.0),
             ((0.0, 1.0, 0.0), (0.0,), -0.10904983793486256),
             ((-1.0, 0.0, 0.0), (0.0,), 0.1124287566679194)]
@@ -478,6 +490,11 @@ def test_thin_region_is_declined_to_the_fallback():
     assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
     assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
     assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
+    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
+    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
+    FI._reset_runtime_counters()
+    assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
+    assert FI._pop_bail_reason() == 'dbm_divergent'
 
 
 _I907_ROWS = [((-1.0, 0.0, 0.0), (1.0,), 0.0),     # s_0 < t
@@ -591,6 +608,10 @@ def test_default_cap_is_the_nquad_outer_cap(monkeypatch):
 
     def wrap(cap=None):
         return FI._integrate_subset_dbm(modes, 1.0, rows, [1.0], 3, cap=cap)
+    # the ±200 box belongs to the legacy route (M9: the DD kernels widen it
+    # for slow modes, the semi-infinite chain removes it)
+    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
+    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', False)
     monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', False)
     assert FI._nquad_outer_cap() == 200.0
     v200, v50 = wrap(200.0), wrap(50.0)

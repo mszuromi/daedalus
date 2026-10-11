@@ -43,9 +43,11 @@ def _uncached(kernel, monkeypatch):
 
 
 # ─── defaults ──────────────────────────────────────────────────────
-def test_defaults_are_legacy_and_off():
+def test_defaults_are_legacy_and_on():
+    """The legacy chain evaluator stays the default of the legacy route;
+    the DD kernels are the default route since M9 (0.2.0)."""
     assert FI._initial_chain_uppers_kernel({}) == 'legacy'
-    assert FI._initial_phase_j_dd_kernels_flag({}) is False
+    assert FI._initial_phase_j_dd_kernels_flag({}) is True
 
 
 def test_the_legacy_kernel_does_not_import_expdd():
@@ -207,7 +209,7 @@ def test_the_kernel_env_variable_rejects_garbage():
 
 
 @pytest.mark.parametrize('text, expected', [
-    ('', False), ('0', False), ('off', False), ('No', False),
+    ('', True), ('0', False), ('off', False), ('No', False),
     ('1', True), ('on', True), ('TRUE', True), ('yes', True)])
 def test_the_dd_flag_env_variable(text, expected):
     env = {} if text == '' else {'DAEDALUS_PHASE_J_DD_KERNELS': text}
@@ -218,6 +220,7 @@ def test_the_dd_flag_validation(monkeypatch):
     with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_DD_KERNELS'):
         FI._initial_phase_j_dd_kernels_flag(
             {'DAEDALUS_PHASE_J_DD_KERNELS': 'maybe'})
+    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', False)
     assert FI._phase_j_dd_kernels_on() is False
     monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
     assert FI._phase_j_dd_kernels_on() is True
@@ -245,8 +248,12 @@ def test_the_umbrella_resets_both():
 def test_two_tau_end_to_end_transfer_vs_legacy(monkeypatch):
     """ou_quartic k=2 ell=2 at two taus, memo on: legacy before and after a
     transfer run is bit-identical; transfer agrees to 1e-11 and actually
-    runs (the chain-uppers memo misses under it)."""
+    runs (the chain-uppers memo misses under it).  The selector belongs to
+    the legacy route, so the DD route is switched off here (M9)."""
     import tests.tools.phase_j_zoo_baseline as Z
+    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
+                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
+        monkeypatch.setattr(FI, flag, value)
     entry = Z._E('t-m6-ou', model='ou_quartic', k=2, max_ell=2,
                  ext=[('dx', 1), ('dx', 1)], params=Z.P_OU,
                  tau_grid=[0.0, 1.5])

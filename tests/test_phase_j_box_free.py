@@ -782,15 +782,24 @@ def test_dbm_box_free_divergence_is_reported(FI, monkeypatch):
 
 # ── flags ─────────────────────────────────────────────────────────────
 def test_m7_flags_from_the_environment(FI):
-    assert FI._initial_m7_flags({}) == {'SEMIINF_CHAIN': False,
-                                        'UNBOUNDED_2D': 'box'}
+    # M9: unset, the box-free switches follow the DD kernels (on by default)
+    assert FI._initial_m7_flags({}) == {'SEMIINF_CHAIN': True,
+                                        'UNBOUNDED_2D': 'exact'}
+    off = {'DAEDALUS_PHASE_J_DD_KERNELS': '0'}
+    assert FI._initial_m7_flags(off) == {'SEMIINF_CHAIN': False,
+                                         'UNBOUNDED_2D': 'box'}
     on = {'DAEDALUS_PHASE_J_DD_KERNELS': '1',
           'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1',
           'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact'}
     assert FI._initial_m7_flags(on) == {'SEMIINF_CHAIN': True,
                                         'UNBOUNDED_2D': 'exact'}
-    for bad in ({'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1'},
-                {'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact'},
+    mixed = {'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '0'}
+    assert FI._initial_m7_flags(mixed) == {'SEMIINF_CHAIN': False,
+                                           'UNBOUNDED_2D': 'exact'}
+    for bad in ({'DAEDALUS_PHASE_J_DD_KERNELS': '0',
+                 'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1'},
+                {'DAEDALUS_PHASE_J_DD_KERNELS': '0',
+                 'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact'},
                 {'DAEDALUS_PHASE_J_SEMIINF_CHAIN': 'maybe'},
                 {'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'tight'}):
         with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_'):
@@ -826,12 +835,19 @@ def test_box_free_switches_need_the_dd_kernels_at_call_time(FI, monkeypatch):
         FI._unbounded_2d_exact()
 
 
-def test_defaults_are_off(FI):
-    # (the suite runs without the M7 environment variables)
-    assert FI.USE_PHASE_J_DD_KERNELS is False
-    assert FI.SEMIINF_CHAIN is False
-    assert FI.UNBOUNDED_2D == 'box'
+def test_defaults_are_on(FI):
+    # (the suite runs without the M7 environment variables; M9 flipped them)
+    assert FI.USE_PHASE_J_DD_KERNELS is True
+    assert FI.SEMIINF_CHAIN is True
+    assert FI.UNBOUNDED_2D == 'exact'
     assert FI.PHASE_J_T_MIN == -math.inf
+    assert FI.CHAIN_UPPERS_KERNEL == 'legacy'     # read by the legacy route
+    # every flag the umbrella sets, and its legacy value
+    assert FI._legacy_umbrella_flags() == {
+        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
+        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False,
+        'USE_PHASE_J_DD_KERNELS': False, 'CHAIN_UPPERS_KERNEL': 'legacy',
+        'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'}
 
 
 # ── end to end ────────────────────────────────────────────────────────

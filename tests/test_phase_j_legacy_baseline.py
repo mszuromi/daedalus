@@ -326,7 +326,9 @@ def _reproduce(baseline, name, mode, monkeypatch):
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')
     if mode == 'legacy':
-        flags = FI._initial_phase_j_flags({'DAEDALUS_PHASE_J_LEGACY': '1'})
+        # every flag the umbrella sets (since M9 the box-free routes are the
+        # default, so the M6/M7 switches must be reset too)
+        flags = FI._legacy_umbrella_flags()
         assert flags['THETA0_CONST_ROW_MODE'] == 'legacy_clip'
         for flag, value in flags.items():
             monkeypatch.setattr(FI, flag, value)
