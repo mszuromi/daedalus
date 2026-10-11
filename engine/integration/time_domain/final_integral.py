@@ -1,79 +1,55 @@
 """
 engine.integration.time_domain.final_integral
 =============================================
-Vertex-time integration on a tree-level diagram via explicit numerical
-quadrature, with proper handling of the δ(t) component of any
-"instantaneous" propagator entry.
+Phase J: the vertex-time integration of a typed Feynman diagram, at any loop
+order, with the δ(t) component of instantaneous propagator entries.
 
-MVP scope
+Integrand
 ---------
-Only tree-level (loop_number == 0) typed diagrams are handled. Tree-level
-is the right proving ground for the Phase J evaluation layer because it
-exercises:
+Every retarded propagator edge ``(u -> v)`` with matrix index
+``(phys=p, resp=r)`` is
 
-- time-domain retarded propagator lookup per edge,
-- polytope extraction from explicit Heaviside factors,
-- **δ-edge subset enumeration** (δ(t) components of instantaneous
-  couplings like `ñ × δn` in MSR-JD),
-- vertex-time integration over the retarded polytope,
-- global translation invariance / origin pinning,
-- numerical dispatch,
+    G_R[p, r](Δt) = delta_coeff · δ(Δt) + Θ(Δt) · Σ_α C_α exp(λ_α Δt)
 
-**without** needing the kernel reduction / caching / contraction
-machinery. Loop cases are deferred to Extension 1.
+(``EdgeModeSum``: residues ``C_α`` and rates ``λ_α`` on numeric poles).
+Expanding the product over the edges gives ``2^|E|`` subsets ``S``: the
+edges of ``S`` take their δ form, which eliminates integration times (or
+pins them to external times; the shot-noise δ(τ) terms are returned
+separately, never added to ``C_tau``), and the others their smooth form,
+whose Heaviside factors make each remaining region a polytope of difference
+rows ``a · s + c > 0``.  After the pole expansion every subset integrand is
+a sum of single exponentials ``C · exp(α · s + γ)``.
 
-Integration strategy
---------------------
-The retarded propagator for an edge `(u -> v)` with matrix index
-`(phys=p, resp=r)` decomposes into two pieces:
+Integration routes (closed forms on numeric poles; no symbolic integral)
+------------------------------------------------------------------------
+* m = 1: the interval; m = 2: the polygon; m >= 3: the chain sum over the
+  linear extensions of the causal poset (``_integrate_1d_polytope_
+  modesum``, ``_integrate_2d_polygon_modesum``, ``_integrate_nd_polytope_
+  poset_modesum``), with a per-subset plan and memoised chain integrals.
+* By default (0.2.0) these run box-free on the divided-difference kernels
+  of ``expdd`` (``boxfree.py``): the exact unbounded region (finite
+  vertices and recession rays), the semi-infinite chain, γ folded into the
+  logarithmic scale before any exp, and one overflow test on the final
+  exponent; many-tuple regions take the batched compiled kernels.  An open
+  direction must decay (the convergence certificate); a failure is dropped
+  when its pole-tuple group cancels exactly, and otherwise handled by the
+  divergence policy (``on_divergence``: 'fallback' / 'warn' / 'raise').
+* A subset no closed form takes goes to the exact difference-constraint
+  route (``dbm_integral``, ``USE_DBM_FALLBACK``) and only then to the
+  hardened ``scipy`` quadrature fallback (``_integrate_polytope``), which
+  warns.  On the model zoo no region reaches it.
+* Θ(0) = 0 (Itô) for constant rows left by δ-elimination; an exact tie of
+  external times follows their tie order (``_const_row_verdict``).
 
-    G_R[p, r](t_v - t_u)
-      =  delta_coeff[p, r] · δ(t_v - t_u)
-       + Θ(t_v - t_u) · smooth[p, r](t_v - t_u)
-
-The δ piece encodes an instantaneous response (nonzero whenever the
-frequency-domain entry has a nonzero `ω → ∞` limit, which is the case
-for any instantaneous coupling in the MSR-JD action). The smooth piece
-is the usual pole-residue sum.
-
-For a tree diagram with `|E|` edges, the full integrand is a product
-of `|E|` such factors. Expanding the product yields `2^|E|` terms; we
-enumerate them by picking a subset `S ⊆ edges` to take in its δ form
-and the complement in its smooth form:
-
-  Σ_{S ⊆ edges}  ∫ ds_1 … ds_m
-                 · (∏_{e ∈ S} delta_coeff[e] · δ(t_{v_e} - t_{u_e}))
-                 · (∏_{e ∉ S} Θ(t_{v_e} - t_{u_e}) · smooth[e](t_{v_e} - t_{u_e}))
-                 · combined_prefactor
-
-For each subset:
-
-1. **Delta-edge equations** `t_{v_e} − t_{u_e} = 0` for `e ∈ S` are
-   solved to eliminate integration variables by substitution. In the
-   MVP star-tree case (single source vertex, all edges connecting source
-   to leaves), one δ-edge pins the source time to a specific leaf time;
-   two or more δ-edges force equality among several leaf times, which
-   is a shot-noise δ(τ=0) contribution and is **skipped** for the
-   continuous-callable return type.
-
-2. **Smooth edges** contribute both a `fast_callable`-compiled factor
-   (JIT'd over `CDF`) and a linear retardation constraint `t_v > t_u`
-   that's added to the polytope.
-
-3. The per-subset contribution is then a numerical quadrature over the
-   reduced set of integration variables with the reduced polytope.
-
-4. All subset contributions are summed into the final callable.
-
-The public entry point `integrate_tree_diagram` returns a Python
-callable `contribution(*ext_time_values) -> complex`.
-
-Numerical overflow mitigation
------------------------------
-Each per-subset smooth product is `.expand()`'d into a sum of
-single-exponential terms before JIT-compilation, so
-`scipy.integrate.quad` cannot overflow IEEE doubles when sampling at
-large negative `s`. (See the 2026-04-08 overflow fix in the CHANGELOG.)
+Switches (module attributes, read at call time; environment variables at
+import): ``USE_PHASE_J_DD_KERNELS``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``
+(box-free routes, on), ``USE_DBM_FALLBACK``, ``NQUAD_HARDENED``,
+``THETA0_CONST_ROW_MODE``, ``STRUCTURAL_ZEROS``, ``PHASE_J_T_MIN`` (a finite
+lower bound of every time, for switch-on transients), and the legacy
+umbrella ``DAEDALUS_PHASE_J_LEGACY=1``, which restores the pre-0.2.0 routes
+and numbers (``_legacy_umbrella_flags``).  The public entry point is
+``integrate_diagram``; its ``contribution(*ext_time_values) -> complex``
+callable evaluates the diagram.
 """
 
 import math
@@ -6568,7 +6544,9 @@ def integrate_diagram(
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
-    order, evaluated via explicit numerical quadrature.
+    order: closed forms on numeric poles per δ-subset (box-free by
+    default), the exact difference-constraint route and, last, a hardened
+    quadrature fallback (see the module docstring).
 
     Previously this function was named ``integrate_tree_diagram`` and
     asserted tree-level.  The core algorithm -- assign a time to each

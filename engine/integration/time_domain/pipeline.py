@@ -218,8 +218,9 @@ def compute_correction_td(
     on_divergence=None,
 ):
     r"""
-    Time-domain entry point: evaluate typed diagrams via explicit
-    numerical quadrature of vertex-time integrals.
+    Time-domain entry point: evaluate typed diagrams by Phase J vertex-time
+    integration (closed forms on numeric poles; see
+    ``final_integral.integrate_diagram``).
 
     Accepts EITHER:
     - ``typed_diagrams`` + ``prefactors``: direct diagram list (preferred)
