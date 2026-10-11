@@ -777,14 +777,9 @@ def _initial_phase_j_flags(environ=None):
     (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...,
     'STRUCTURAL_ZEROS': ..., 'NQUAD_HARDENED': ...,
     'USE_DBM_FALLBACK': ...}``.  The umbrella wins over the per-flag
-    variables.  An unknown value raises (a silent fallback to the default
-    would hide a requested rollback)."""
+    variables, but an unknown value raises in any case (a silent fallback
+    to the default would hide a requested rollback)."""
     env = _os.environ if environ is None else environ
-    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
-        return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
-                'STRUCTURAL_ZEROS': False,
-                'NQUAD_HARDENED': False,
-                'USE_DBM_FALLBACK': False}
     mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
             .strip().lower() or 'ito')
     if mode not in _THETA0_MODES:
@@ -803,6 +798,13 @@ def _initial_phase_j_flags(environ=None):
     if db not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
         raise ValueError(
             f'DAEDALUS_PHASE_J_DBM={db!r}: expected 1 or 0')
+    # every value is validated first, so a garbage value raises under the
+    # umbrella too (M8)
+    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
+        return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
+                'STRUCTURAL_ZEROS': False,
+                'NQUAD_HARDENED': False,
+                'USE_DBM_FALLBACK': False}
     return {'THETA0_CONST_ROW_MODE': mode,
             'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON,
             'NQUAD_HARDENED': nh in _STRUCTURAL_ZEROS_ON,
@@ -941,6 +943,7 @@ _RUNTIME_COUNTERS = {
         'polygon_guard': 0, 'polygon_other': 0,
         'poset_extract_none': 0, 'poset_no_extension': 0,
         'poset_chain_none': 0, 'other': 0,
+        'divergent': 0, 'dd_overflow': 0, 'dd_unsupported': 0,
     },
     # Constraint rows with every |a_int| <= 1e-12 (a smooth edge whose Δt is
     # constant after δ-elimination) processed by ``_polygon_from_2d_
@@ -1147,6 +1150,9 @@ _RUNTIME_COUNTERS = {
     'dd_overflow': 0,
     'dd_unsupported': 0,
     'divergent_subsets': 0,
+    # M8: pole-tuple groups that fail the convergence certificate but whose
+    # merged coefficient is exactly 0 (dropped, not divergent):
+    'divergent_cancelled': 0,
     # DBM calls without a box (``SEMIINF_CHAIN``), with the slow-mode box
     # ±max(200, 40/κ_min) wider than ±200 (DD kernels only), and declined as
     # divergent (box-free):
@@ -1165,6 +1171,8 @@ _NQUAD_FALLBACK_REASONS = (
     'polygon_guard', 'polygon_other',
     'poset_extract_none', 'poset_no_extension', 'poset_chain_none',
     'other',
+    # M8: the box-free (DD) routes' bails, from any route (``_DD_BAILS``)
+    'divergent', 'dd_overflow', 'dd_unsupported',
 )
 
 
@@ -1455,6 +1463,14 @@ def _bail_category(reason):
     cat = _BAIL_REASON_CATEGORY.get(reason)
     if cat is not None:
         return cat
+    if reason is not None:
+        # M8: the DD routes' bails (``_DD_BAILS``: <route>_divergent,
+        # <route>_dd_overflow, <route>_dd_unsupported)
+        for suffix, key in (('_divergent', 'divergent'),
+                            ('_dd_overflow', 'dd_overflow'),
+                            ('_dd_unsupported', 'dd_unsupported')):
+            if reason.endswith(suffix):
+                return key
     if reason is not None and reason.startswith('polygon_'):
         return 'polygon_other'
     return 'other'
@@ -1467,6 +1483,138 @@ def _count_nquad_fallback(reason, m):
     if m >= 1:
         _RUNTIME_COUNTERS['nquad_fallback_by_reason'][
             _bail_category(reason)] += 1
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Divergence policy (M8; plan §3.1 L5)
+# ───────────────────────────────────────────────────────────────────────
+# The box-free routes certify convergence before they integrate: every open
+# direction must decay (m = 1: the sign of Re α on an infinite side; m = 2:
+# Re(α·r) < -tol on every recession ray, and no line in the region; m >= 3:
+# every prefix sum (L = -inf) or suffix sum (open top) with Re beyond tol;
+# the DBM checks its own eliminations).  A pole-tuple group that fails it but
+# whose merged coefficient is EXACTLY zero (Σ C e^{γ - γ_max} == 0 in floating
+# point, e.g. a zero-rate mode with opposite residues) has an identically
+# zero integrand and is dropped (counter ``divergent_cancelled``; the m >= 3
+# chain fold and the grouped path merge such groups before any chain is
+# evaluated).  Any other failure is a divergent subset (counter
+# ``divergent_subsets``, bail ``<route>_divergent``), and what happens next
+# is the caller's divergence policy:
+#
+# * 'fallback' (default): the subset goes on to the next route, as every
+#   other bail does (the DBM for m >= 3, then the boxed ``scipy.nquad``
+#   fallback), and ONE ``PhaseJDivergenceWarning`` per process says that a
+#   box-truncated value was used;
+# * 'warn': the same, with one warning per divergent subset naming the
+#   diagram, the subset, the external times and the reason;
+# * 'raise': ``PhaseJDivergenceError`` with the same details.
+#
+# The policy is a keyword (``on_divergence``) of ``integrate_diagram``,
+# ``compute_correction_td`` and ``grouped_integral.integrate_grouped_diagram``;
+# ``None`` takes ``PHASE_J_ON_DIVERGENCE`` (read at call time; environment
+# ``DAEDALUS_PHASE_J_ON_DIVERGENCE`` = fallback | warn | raise, default
+# fallback).  The spatial certification (``pipeline_bridge``) passes
+# 'fallback' explicitly, so a later change of the temporal default does not
+# reach it.  With the box-free routes off (the default until M9) no route
+# reports a divergence, so the policy is never consulted.
+_DIVERGENCE_POLICIES = ('fallback', 'warn', 'raise')
+#: the bail reasons that are divergence verdicts (``_DD_BAILS`` and the DBM)
+_DIVERGENT_BAIL_REASONS = frozenset((
+    'polygon_divergent', 'interval_divergent', 'poset_divergent',
+    'grouped_m0_divergent', 'grouped_m1_divergent', 'dbm_divergent'))
+
+
+class PhaseJDivergenceError(ArithmeticError):
+    """A Phase J subset integral diverges (an open direction in which the
+    integrand does not decay) and the divergence policy is 'raise'."""
+
+
+class PhaseJDivergenceWarning(UserWarning):
+    """A Phase J subset integral diverges and was replaced by the boxed
+    fallback (divergence policy 'fallback' or 'warn')."""
+
+
+def _initial_on_divergence(environ=None):
+    """The import-time value of ``PHASE_J_ON_DIVERGENCE`` from ``environ``
+    (default ``os.environ``); an unknown value raises.  It changes no
+    number, so the umbrella ``DAEDALUS_PHASE_J_LEGACY`` does not touch it."""
+    env = _os.environ if environ is None else environ
+    v = (env.get('DAEDALUS_PHASE_J_ON_DIVERGENCE', '').strip().lower()
+         or 'fallback')
+    if v not in _DIVERGENCE_POLICIES:
+        raise ValueError(f'DAEDALUS_PHASE_J_ON_DIVERGENCE={v!r}: expected '
+                         f'one of {_DIVERGENCE_POLICIES}')
+    return v
+
+
+PHASE_J_ON_DIVERGENCE = _initial_on_divergence()
+
+
+def _divergence_policy(on_divergence=None):
+    """The effective policy: ``on_divergence``, or ``PHASE_J_ON_DIVERGENCE``
+    (call time) when ``None``; validated."""
+    policy = PHASE_J_ON_DIVERGENCE if on_divergence is None else on_divergence
+    if isinstance(policy, str) and policy in _DIVERGENCE_POLICIES:
+        return policy
+    raise ValueError(f'on_divergence={policy!r}: expected None or one of '
+                     f'{_DIVERGENCE_POLICIES}')
+
+
+def _ensure_warning_shown(category, action='default'):
+    """Show ``category`` also where the ENVIRONMENT ignores warnings (the
+    Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning
+    in ``sage -python`` and the Sage Jupyter kernel).  Only that case is
+    overridden: a filter for this category, and every filter set in code or
+    by an ``error`` option, is left alone (as
+    ``api._grouped_phase_j._ensure_shown``)."""
+    import sys as _sys
+    import warnings as _warnings
+    if any(f[2] is category for f in _warnings.filters):
+        return
+    opts = [o.split(':')[0].strip().lower() for o in _sys.warnoptions]
+    if opts and opts[-1] in ('ignore', 'i'):
+        _warnings.filterwarnings(action, category=category)
+
+
+_DIVERGENCE_FALLBACK_WARNED = [False]
+
+
+def _divergence_verdict(on_divergence, reason, m, meta, free_vals):
+    """Apply the divergence policy to a subset that bailed with the
+    divergence verdict ``reason`` (``_DIVERGENT_BAIL_REASONS``) and is about
+    to take the boxed fallback.  Returns nothing; raises
+    ``PhaseJDivergenceError`` under 'raise'."""
+    import warnings as _warnings
+    policy = _divergence_policy(on_divergence)
+    meta = meta or {}
+    diagram = str(meta.get('diagram'))
+    if len(diagram) > 200:              # the grouped path passes a list
+        diagram = diagram[:197] + '...'
+    where = (f"diagram {diagram} ({meta.get('source')}, "
+             f"loop {meta.get('loop_number')}), subset "
+             f"{meta.get('subset_id')!s} (m={m}), external times "
+             f"{tuple(float(x) for x in free_vals)}")
+    if policy == 'raise':
+        raise PhaseJDivergenceError(
+            f'Phase J: divergent subset integral ({reason}): {where}.  An '
+            f'open direction of the integration region does not decay (a '
+            f'pole with Re >= 0, or a non-edge row).')
+    if policy == 'warn':
+        _ensure_warning_shown(PhaseJDivergenceWarning)
+        _warnings.warn(
+            f'Phase J: divergent subset integral ({reason}) replaced by the '
+            f'boxed fallback: {where}.', PhaseJDivergenceWarning,
+            stacklevel=3)
+        return
+    if not _DIVERGENCE_FALLBACK_WARNED[0]:
+        _DIVERGENCE_FALLBACK_WARNED[0] = True
+        _ensure_warning_shown(PhaseJDivergenceWarning)
+        _warnings.warn(
+            'Phase J: a subset integral diverges (an open direction does not '
+            'decay); its boxed fallback value is used (divergence policy '
+            "'fallback'; counter divergent_subsets; on_divergence='warn' "
+            "names every subset, 'raise' stops).", PhaseJDivergenceWarning,
+            stacklevel=3)
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -4512,10 +4660,15 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                             for t in t_idxs])
                   for alphas, t_idxs in plan['tuple_groups']]
     else:
+        terms = list(_modesum_tuples(smooth_edge_modes,
+                                     subset_constraint_data, free_ext_vals,
+                                     m, pole_tuples, None))
+        # M8: an α shared by several tuples whose merged coefficient is
+        # exactly 0 is dropped, as the plan branch's fold drops it
+        cancelling = _cancelling_alphas(terms, pref)
         groups = ((alphas, [(pref * C_prod, gamma)])
-                  for C_prod, alphas, gamma in _modesum_tuples(
-                      smooth_edge_modes, subset_constraint_data,
-                      free_ext_vals, m, pole_tuples, None))
+                  for C_prod, alphas, gamma in terms
+                  if alphas not in cancelling)
     if use_mp_accum:
         from mpmath import mp as _mp, mpc as _mpc
         with _mp.workdps(50):
@@ -4833,6 +4986,54 @@ def _modesum_tuples(smooth_edge_modes, subset_constraint_data, free_ext_vals,
         yield C_prod, tuple(alphas), gamma
 
 
+def _cancelling_alphas(terms, pref):
+    """The alphas shared by two or more of ``terms`` (``(C, alphas, γ)``)
+    whose merged coefficient ``Σ pref·C e^{γ - γ_max}`` is exactly 0 (one
+    pass; ``_divergent_group_cancels`` for one alpha)."""
+    seen = {}
+    dup = set()
+    for (C, a, g) in terms:
+        if a in seen:
+            dup.add(a)
+        else:
+            seen[a] = True
+    if not dup:
+        return frozenset()
+    members = {a: [] for a in dup}
+    for (C, a, g) in terms:
+        if a in members and pref * C != 0:
+            members[a].append((pref * C, g))
+    out = set()
+    for a, mem in members.items():
+        if mem:
+            g_max = max(g.real for (_c, g) in mem)
+            w = 0.0 + 0.0j
+            for (c, g) in mem:
+                w += c * cmath.exp(g - g_max)
+            if w != 0:
+                continue
+        out.add(a)
+    return out
+
+
+def _divergent_group_cancels(terms, alphas, pref):
+    """True when the pole tuples of ``terms`` (``(C, alphas, γ)``) with
+    exactly these ``alphas`` have the merged coefficient
+    ``Σ pref·C e^{γ - γ_max}`` exactly 0: their integrand is identically
+    zero, so a convergence-certificate failure of that group is not a
+    divergence (M8; the m >= 3 chain fold merges the same way before it
+    evaluates a chain)."""
+    members = [(pref * C, g) for (C, a, g) in terms
+               if a == alphas and pref * C != 0]
+    if not members:
+        return True
+    g_max = max(g.real for (_c, g) in members)
+    w = 0.0 + 0.0j
+    for (c, g) in members:
+        w += c * cmath.exp(g - g_max)
+    return w == 0
+
+
 def _finite_or_overflow(total, prefix):
     """``total`` if finite, else the explicit overflow bail."""
     if math.isfinite(total.real) and math.isfinite(total.imag):
@@ -4853,12 +5054,19 @@ def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
         L = t_min
     if not L < U:
         return 0.0 + 0.0j
+    terms = list(terms)
+    dropped = set()
     total = 0.0 + 0.0j
     for C_prod, alphas, gamma in terms:
         coef = pref * C_prod
-        if coef == 0:
+        if coef == 0 or alphas in dropped:
             continue
         st, v = bf.interval(alphas[0], gamma, L, U, tol)
+        if st == bf.DIVERGENT and _divergent_group_cancels(terms, alphas,
+                                                           pref):
+            dropped.add(alphas)
+            _RUNTIME_COUNTERS['divergent_cancelled'] += 1
+            continue
         if st == bf.OVERFLOW:
             # the integral alone overflows: decide on the whole term
             st, v = bf.interval(alphas[0], gamma + cmath.log(coef), L, U,
@@ -5363,15 +5571,22 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
                                       A[:, 1],
                                       _m7b_gammas(arrs, free_ext_vals), tol)
     if total is None:
+        terms = list(_modesum_tuples(
+            smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
+            pole_tuples, plan))
+        dropped = set()
         total = 0.0 + 0.0j
-        for C_prod, alphas, gamma in _modesum_tuples(
-                smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
-                pole_tuples, plan):
+        for C_prod, alphas, gamma in terms:
             coef = pref * C_prod
-            if coef == 0:
+            if coef == 0 or alphas in dropped:
                 continue
             st, v = bf.region_integral(region, alphas[0], alphas[1], gamma,
                                        tol)
+            if st == bf.DIVERGENT and _divergent_group_cancels(
+                    terms, alphas, pref):
+                dropped.add(alphas)
+                _RUNTIME_COUNTERS['divergent_cancelled'] += 1
+                continue
             if st == bf.OVERFLOW:
                 # the integral alone overflows: decide on the whole term
                 st, v = bf.region_integral(region, alphas[0], alphas[1],
@@ -6209,6 +6424,7 @@ def integrate_diagram(
     edge_mode_sums_builder=None,
     prop_td=None,
     _setup_full=None,
+    on_divergence=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -6274,6 +6490,10 @@ def integrate_diagram(
         everything is built here, per diagram, as before.  Used only when
         ``USE_SETUP_PROP_TD`` is on and it matches ``propagator_data`` /
         ``num_params``.
+    on_divergence : None or 'fallback' | 'warn' | 'raise'
+        The divergence policy of the box-free routes (M8; see the
+        "Divergence policy" block).  ``None``: ``PHASE_J_ON_DIVERGENCE``
+        at evaluation time.
 
     Returns
     -------
@@ -6292,6 +6512,8 @@ def integrate_diagram(
             linear combination `t_head - t_tail` that must be positive
             for the integrand to be nonzero.
     """
+    if on_divergence is not None:
+        _divergence_policy(on_divergence)          # validate early
     loop_number = _loop_number_from_graph(typed_diagram)
     # Identity of this build for the ``_SUBSET_HOOK`` payload (M0.1).
     _diag_serial = (_next_diagram_serial() if _setup_full is None
@@ -6335,7 +6557,8 @@ def integrate_diagram(
                     representative_ir=representative_ir,
                     edge_mode_sums_builder=edge_mode_sums_builder,
                     prop_td=prop_td,
-                    _setup_full=serial))
+                    _setup_full=serial,
+                    on_divergence=on_divergence))
 
     # ── 1. Numerical G(t) matrix (smooth + delta parts) ──────────
     # M5 L2: the matrix, the poles and the per-entry residues come from the
@@ -7575,6 +7798,7 @@ def integrate_diagram(
                 _hook = _SUBSET_HOOK
                 _attempted = None
                 _bail_reason = None
+                _dbm_reason = None
                 # m=1 analytic 1D interval (Stage 4a-perdiag).
                 if (modes is not None and pref_c is not None
                         and m_val == 1):
@@ -7694,8 +7918,14 @@ def integrate_diagram(
                             return dbm_val
                         # Declined (its reason is in the dbm_declined_*
                         # counters); the poset's reason labels the fallback.
-                        _pop_bail_reason()
+                        _dbm_reason = _pop_bail_reason()
                 # Closure-only fallback via scipy.nquad.
+                if _bail_reason in _DIVERGENT_BAIL_REASONS:
+                    _divergence_verdict(on_divergence, _bail_reason, m_val,
+                                        hook_meta, free_vals)
+                elif _dbm_reason == 'dbm_divergent':
+                    _divergence_verdict(on_divergence, _dbm_reason, m_val,
+                                        hook_meta, free_vals)
                 _count_nquad_fallback(_bail_reason, m_val)
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:

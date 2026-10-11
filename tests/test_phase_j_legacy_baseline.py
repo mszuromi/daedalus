@@ -165,6 +165,16 @@ _COUNTER_KEYS = ('nquad_calls', 'polytope_m0_direct', 'scipy_nquad_called_m1',
                  'polygon_attempted', 'poset_attempted')
 
 
+def _counter_matches(key, got, want):
+    """A counter of a run equals its baseline value.  M8 added the DD
+    categories ('divergent', 'dd_overflow', 'dd_unsupported') to
+    ``nquad_fallback_by_reason``; a baseline that predates them has no such
+    key, and they must be 0 on its routes."""
+    if key == 'nquad_fallback_by_reason':
+        got = {k: v for k, v in got.items() if k in want or v}
+    return got == want
+
+
 @pytest.fixture(scope='module')
 def baseline():
     if not os.path.exists(Z.TRACKED_NPZ):
@@ -377,7 +387,8 @@ def _reproduce(baseline, name, mode, monkeypatch):
                    for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS
                    + Z.M3_ROUTE_KEYS)):
         for key in _COUNTER_KEYS:
-            assert rec['counters'][key] == s['counters'][key], (name, key)
+            assert _counter_matches(key, rec['counters'][key],
+                                    s['counters'][key]), (name, key)
     else:
         assert (rec['counters']['nquad_calls']
                 <= s['counters']['nquad_calls']), name

@@ -612,6 +612,7 @@ def integrate_grouped_diagram(
     num_params=None,
     origin_leaf_idx=0,
     external_fields=None,
+    on_divergence=None,
 ):
     """
     Sum-then-integrate over a group of typed diagrams sharing one prediagram.
@@ -1410,6 +1411,7 @@ def integrate_grouped_diagram(
                 _hook = _fi_mod._SUBSET_HOOK
                 _attempted = None
                 _bail_reason = None
+                _dbm_reason = None
                 _path = None
                 _evaluator = None
                 # Analytic merged-residue path first.
@@ -1504,8 +1506,14 @@ def integrate_grouped_diagram(
                                     pole_tuples=pole_tuples, integrand=fc,
                                     row_kinds=row_kinds, tie_ctx=_tie_ctx)
                             return val
-                        _fi_mod._pop_bail_reason()
+                        _dbm_reason = _fi_mod._pop_bail_reason()
                 # scipy.nquad fallback on the SR-summed integrand.
+                if _bail_reason in _fi_mod._DIVERGENT_BAIL_REASONS:
+                    _fi_mod._divergence_verdict(on_divergence, _bail_reason,
+                                                m_val, hook_meta, free_vals)
+                elif _dbm_reason == 'dbm_divergent':
+                    _fi_mod._divergence_verdict(on_divergence, _dbm_reason,
+                                                m_val, hook_meta, free_vals)
                 _fi_mod._count_nquad_fallback(_bail_reason, m_val)
                 resolved = []
                 for (a_int, a_ext, c0) in cdata:

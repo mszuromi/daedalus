@@ -1760,6 +1760,53 @@ three variants interleaved):
 | `ou_quartic` k = 2 ℓ = 3 | 0.8 s | 0.8 s | 0.8 s |
 | `multipopulation_test` k = 2 ℓ = 1 | 1.8 s | 1.8 s | 1.8 s |
 
+### Added: convergence certificate verdicts and a divergence policy for the box-free routes (default numbers unchanged)
+
+The box-free routes (see "Added (opt-in): box-free exact Phase J") certify
+convergence before they integrate: every open direction of the region must
+decay (an infinite side of an interval, a recession ray or a line of a
+two-time region, the prefix or suffix sums of a chain). What happens when a
+region fails it is now decided explicitly.
+
+- **Exactly cancelling groups are dropped.** Pole tuples that share their
+  exponent coefficients form a group; when the group's merged coefficient
+  Σ C e^{γ − γ_max} is exactly 0 in floating point (for example a zero-rate
+  mode with opposite residues), its integrand is identically zero and a
+  failed certificate is not a divergence. The interval and two-time routes
+  drop such a group (new counter `divergent_cancelled`); the chain route
+  merges the groups before it evaluates a chain, now also on the grouped
+  path's no-plan branch (before, a cancelling pair of zero-rate tuples
+  there was reported as divergent).
+- **Divergence policy.** Any other failure is a divergent region (counter
+  `divergent_subsets`, bail `<route>_divergent`). The caller's policy then
+  applies: `'fallback'` (default) takes the next route (the exact
+  difference-constraint integrator for three or more times, then the boxed
+  `scipy.nquad` fallback) and warns once per process with a
+  `PhaseJDivergenceWarning`; `'warn'` does the same with one warning per
+  region naming the diagram, the region, the external times and the route;
+  `'raise'` raises `PhaseJDivergenceError` with the same details. The policy
+  is a keyword `on_divergence` of `integrate_diagram`,
+  `compute_correction_td`, `integrate_grouped_diagram` and
+  `compute_correction_td_grouped`; `None` takes
+  `final_integral.PHASE_J_ON_DIVERGENCE`, read at call time (environment
+  `DAEDALUS_PHASE_J_ON_DIVERGENCE=fallback|warn|raise`; it changes no number,
+  so `DAEDALUS_PHASE_J_LEGACY` does not touch it). The spatial certification
+  passes `'fallback'` explicitly. The warning is shown also under the Sage
+  launcher's `PYTHONWARNINGS=ignore`.
+- `nquad_fallback_by_reason` has three new categories, `divergent`,
+  `dd_overflow` and `dd_unsupported`, for the box-free routes' bails (they
+  were counted under `other` / `polygon_other`).
+- An unknown value of `DAEDALUS_PHASE_J_THETA0_CONST_ROW`,
+  `DAEDALUS_PHASE_J_STRUCTURAL_ZEROS`, `DAEDALUS_PHASE_J_NQUAD_HARDENED` or
+  `DAEDALUS_PHASE_J_DBM` now raises also when `DAEDALUS_PHASE_J_LEGACY=1` is
+  set (it was ignored).
+
+With the switches off (the default) no route reports a divergence, and every
+result is bit-identical to before (in-process comparison); with the switches
+on, the zoo configurations have no divergent and no cancelling region, and
+their results are bit-identical too. The spatial certification is unchanged
+(the massless probes fail as before, with the same error, in both).
+
 ### Added
 
 - **Prediagram cache: version stamp, four more shipped cells, manifest, explicit

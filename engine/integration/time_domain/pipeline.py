@@ -214,6 +214,8 @@ def compute_correction_td(
     edge_mode_sums_builder_fn=None,
     # Legacy support: accept kernel_groups as first arg
     kernel_groups=None,
+    # M8: divergence policy of the box-free routes (``integrate_diagram``)
+    on_divergence=None,
 ):
     r"""
     Time-domain entry point: evaluate typed diagrams via explicit
@@ -319,6 +321,7 @@ def compute_correction_td(
                 edge_mode_sums_builder_fn(td)
                 if edge_mode_sums_builder_fn is not None else None),
             prop_td=prop_td,
+            on_divergence=on_divergence,
         )
         if result['status'] == 'ok':
             contribution = result['contribution']

@@ -284,7 +284,11 @@ def pipeline_C_q_tau(prop, records, external_fields, base_np_sr, qval, taus,
         typed_diagrams=[r[0] for r in records],
         prefactors=[r[1] for r in records],
         k=k, propagator_data=pdata, external_fields=external_fields,
-        num_params=nps, origin_leaf_idx=0)
+        num_params=nps, origin_leaf_idx=0,
+        # M8: the spatial certification keeps the boxed fallback for a
+        # divergent subset (a massless q = 0 mode), whatever the temporal
+        # default (plan §3.1 L5)
+        on_divergence='fallback')
     tC = res['total_C']
     return np.array([complex(tC(0.0, float(t))) for t in taus])
 

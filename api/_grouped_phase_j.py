@@ -112,11 +112,13 @@ def compute_correction_td_grouped(
     ext_time_vars=None,
     origin_leaf_idx=0,
     external_fields=None,
+    on_divergence=None,
 ):
     """Group typed diagrams by parent prediagram, then sum-and-integrate.
 
     Same call signature and return shape as
-    ``engine.integration.time_domain.compute_correction_td``, but with
+    ``engine.integration.time_domain.compute_correction_td`` (including the
+    M8 divergence policy ``on_divergence``), but with
     the per-diagram inner loop replaced by a per-prediagram inner loop
     that hands each group to ``integrate_grouped_diagram``.
     """
@@ -173,6 +175,7 @@ def compute_correction_td_grouped(
             external_fields=external_fields,
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
+            on_divergence=on_divergence,
         )
         n_delta_dropped[0] += len(pd_result.get('delta_contributions') or [])
         return pd_result['total_C'], len(tds)
@@ -194,6 +197,7 @@ def compute_correction_td_grouped(
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
             external_fields=external_fields,
+            on_divergence=on_divergence,
         )
 
         # Detect the silent-skip case: any subset whose status is one
