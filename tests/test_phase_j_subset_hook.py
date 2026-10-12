@@ -135,8 +135,11 @@ _CONFIGS = {
 # Configurations whose DEFAULT-mode runs reach the scipy.nquad fallback
 # (m>=1).  Before M1 ``spike1`` did too (poset_extract_none /
 # poset_no_extension on constant rows and order cycles); with the Θ(0) rule
-# it answers every subset analytically.
-_NQUAD_CONFIGS = {'spike'}
+# it answers every subset analytically.  ``spike`` did until M9: on the
+# box-free default routes it reaches no fallback either, so none does; the
+# hook's nquad-path records are exercised by the legacy-route runs
+# (``_PRE_M1_MODE``).
+_NQUAD_CONFIGS = set()
 # The mode that reproduces the pre-M1 captures in ``_BEFORE`` (``None``: the
 # default mode; the model has no constant constraint rows).
 _PRE_M1_MODE = {'ou': None, 'spike1': 'legacy_clip', 'spike': 'legacy_clip'}

@@ -326,7 +326,9 @@ def compute_correction_td(
                 edge_mode_sums_builder_fn(td)
                 if edge_mode_sums_builder_fn is not None else None),
             prop_td=prop_td,
-            on_divergence=on_divergence,
+            # only when set: an A/B harness may run an older integrate_diagram
+            **({} if on_divergence is None
+               else {'on_divergence': on_divergence}),
         )
         if result['status'] == 'ok':
             contribution = result['contribution']

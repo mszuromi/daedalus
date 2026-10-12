@@ -1257,6 +1257,27 @@ _CHILD = textwrap.dedent(r'''
             exec(compile((src if which == 'old' else new)[n], m.__file__,
                          'exec'), m.__dict__)
             mods[n] = m
+        # (M9) the old engine predates prop_td (M5, a speed-only argument)
+        # and on_divergence (M8): drop what it does not take.  The new one
+        # runs on the boxed routes the old one had (the box-free routes are
+        # the default since M9).
+        if which == 'old':
+            import inspect as _insp
+            _f = mods['final_integral'].integrate_diagram
+            _ok = set(_insp.signature(_f).parameters)
+
+            def _compat(*a, _f=_f, _ok=_ok, **k):
+                return _f(*a, **{x: y for x, y in k.items() if x in _ok})
+            # owned by the module, so the re-binding below recognises it
+            _compat.__module__ = mods['final_integral'].__name__
+            mods['final_integral'].integrate_diagram = _compat
+        else:
+            mods['final_integral'].USE_PHASE_J_DD_KERNELS = False
+            mods['final_integral'].SEMIINF_CHAIN = False
+            mods['final_integral'].UNBOUNDED_2D = 'box'
+            # and without M3's DBM route / inheritance fix, which moved the
+            # spike-reset numbers on purpose after this test was written
+            mods['final_integral'].USE_DBM_FALLBACK = False
         for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
                   'DAEDALUS_PHASE_J_NQUAD_HARDENED'):
             os.environ.pop(v, None)

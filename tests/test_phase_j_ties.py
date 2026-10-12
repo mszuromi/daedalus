@@ -524,19 +524,11 @@ def test_k4_two_loop_full_tie_matches_boltzmann():
     _assert_no_nquad()
 
 
+# Plan P4 (margin-50 chain lower bound): at mu = 1.25 every m >= 3 subset
+# used to bail (|Re beta * L| = 625 > 600 at L = earliest_ext - 50) into an
+# 8-D scipy.nquad (1872 calls per evaluation).  A strict xfail until the
+# semi-infinite chain (M7) became the default route (M9): it passes now.
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason=(
-    'Plan P4 (margin-50 chain lower bound): for ou_quartic k=4 ell=2 at '
-    'mu=1.25 EVERY one of the 936 m>=3 poset subsets bails with '
-    'poset_chain_none -- _exp_over_chain_simplex_polynomial returns None '
-    'because the chain alphas (+-2mu) reach a cumulative Re beta of 5*2.5 = '
-    '12.5 and |Re beta * L| = 625 > EXP_REAL_LIMIT=600 at L = earliest_ext '
-    '- POSET_PHYSICAL_MARGIN = -50 (exp(-625) is a harmless underflow).  '
-    'Each subset then goes to an 8-D scipy.nquad (1872 calls per '
-    'evaluation); one unstubbed evaluation did not finish in 15 min.  '
-    'mu = 0.9, 1.0, 1.01, 1.1 have 0 fallbacks and match Boltzmann to '
-    '<= 3e-15.  Expected to XPASS once the semi-infinite chain (L4/F6, M7) '
-    'lands -- then drop this marker.'))
 def test_k4_two_loop_no_nquad_fallback_above_mu_1p2(monkeypatch):
     """Same full-tie oracle at mu=1.25, with the scipy quadrature fallback
     stubbed so it is COUNTED instead of run (an unstubbed run takes > 15

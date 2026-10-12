@@ -1264,9 +1264,10 @@ def phase_j_flags(mode='default'):
     """Set the Phase J flags in-process for the duration of the block.
 
     ``'default'`` leaves the module attributes as they are; ``'legacy'``
-    applies what ``DAEDALUS_PHASE_J_LEGACY=1`` selects
-    (``final_integral._initial_phase_j_flags``).  The flags are read at call
-    time, so this takes effect at once; restored on exit.
+    applies what ``DAEDALUS_PHASE_J_LEGACY=1`` selects -- every flag the
+    umbrella sets, the box-free switches included since they became the
+    default (``final_integral._legacy_umbrella_flags``).  The flags are read
+    at call time, so this takes effect at once; restored on exit.
     """
     if mode == 'default':
         yield {}
@@ -1274,7 +1275,7 @@ def phase_j_flags(mode='default'):
     if mode != 'legacy':
         raise ValueError(f"mode must be 'default' or 'legacy', got {mode!r}")
     FI = _fi()
-    flags = FI._initial_phase_j_flags({'DAEDALUS_PHASE_J_LEGACY': '1'})
+    flags = FI._legacy_umbrella_flags()
     saved = {k: getattr(FI, k) for k in flags}
     try:
         for k, v in flags.items():

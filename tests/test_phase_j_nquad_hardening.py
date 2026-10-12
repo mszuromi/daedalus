@@ -1995,7 +1995,8 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
 
 @pytest.mark.slow
 def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
-                                                 fresh_warning_state):
+                                                 fresh_warning_state,
+                                                 monkeypatch):
     """One call of a callable that ``compute_cumulants`` returns is one
     evaluation: the spike-reset k = 3 tree at (0, 0.4, 1) has a few hundred
     fallback regions over dozens of typed diagrams (before: one warning per
@@ -2005,6 +2006,7 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
     from tests.tools import phase_j_zoo_baseline as Z
     import daedalus as dd
     model, _ = dd.load_model('single_population_spike_reset_test')
+    _legacy_routes(monkeypatch)
     res = compute_cumulants(model, k=3, max_ell=0,
                             external_fields=[('n', 1), ('n', 2), ('n', 1)],
                             parameters=Z.P_SPIKE, use_cache=True,
@@ -2027,6 +2029,7 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
                                                         'grouped'))
 def test_spike_reset_fallback_regions_full_grid(grouped, hardened,
                                                 private_cwd, monkeypatch):
+    _legacy_routes(monkeypatch)
     _check_spike([0.0, 1.0, 3.0, 5.0, 10.0], grouped=grouped,
                  monkeypatch=monkeypatch)
 
@@ -2135,6 +2138,27 @@ _CHILD = textwrap.dedent(r'''
             exec(compile((src if which == 'old' else new)[n], m.__file__,
                          'exec'), m.__dict__)
             mods[n] = m
+        # (M9) the old engine predates prop_td (M5, a speed-only argument)
+        # and on_divergence (M8): drop what it does not take.  The new one
+        # runs on the boxed routes the old one had (the box-free routes are
+        # the default since M9).
+        if which == 'old':
+            import inspect as _insp
+            _f = mods['final_integral'].integrate_diagram
+            _ok = set(_insp.signature(_f).parameters)
+
+            def _compat(*a, _f=_f, _ok=_ok, **k):
+                return _f(*a, **{x: y for x, y in k.items() if x in _ok})
+            # owned by the module, so the re-binding below recognises it
+            _compat.__module__ = mods['final_integral'].__name__
+            mods['final_integral'].integrate_diagram = _compat
+        else:
+            mods['final_integral'].USE_PHASE_J_DD_KERNELS = False
+            mods['final_integral'].SEMIINF_CHAIN = False
+            mods['final_integral'].UNBOUNDED_2D = 'box'
+            # and without M3's DBM route / inheritance fix, which moved the
+            # spike-reset numbers on purpose after this test was written
+            mods['final_integral'].USE_DBM_FALLBACK = False
         for v in ENVV:
             os.environ.pop(v, None)
         fi, gi = mods['final_integral'], mods['grouped_integral']

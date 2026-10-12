@@ -173,7 +173,8 @@ def compute_correction_td_grouped(
             external_fields=external_fields,
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
-            on_divergence=on_divergence,
+            **({} if on_divergence is None
+               else {'on_divergence': on_divergence}),
         )
         n_delta_dropped[0] += len(pd_result.get('delta_contributions') or [])
         return pd_result['total_C'], len(tds)
@@ -195,7 +196,8 @@ def compute_correction_td_grouped(
             num_params=num_params,
             origin_leaf_idx=origin_leaf_idx,
             external_fields=external_fields,
-            on_divergence=on_divergence,
+            **({} if on_divergence is None
+               else {'on_divergence': on_divergence}),
         )
 
         # Detect the silent-skip case: any subset whose status is one
