@@ -9,7 +9,7 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
-## Unreleased
+**Unreleased (after 0.2.0; the version entries below are numbered releases)**
 
 ### Changed: first use of a shipped prediagram cell is about 3.5 times faster (no numbers move)
 
