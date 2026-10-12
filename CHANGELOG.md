@@ -64,6 +64,14 @@ Other effects of the new default:
   off, the chain sums went through a different summation than with the memo
   on and differed in the last bits; the memo now changes no number on any
   route.
+- The streamed-vs-eager gate of `TEMPORAL_CACHE_OFF_STREAMS`
+  (`test_temporal_streamed_totals_match_eager_on_a_fallback_model`):
+  `single_population_quad_exp_test` now agrees to 1e−13 relative too (it
+  was a strict expected failure at 1.21e−11). The flag stays False: fewer
+  regions reach the fallback, not none (`single_population_quad_exp_test`
+  sends 8 three-time regions there at τ = 0.5 and 1, whose lower bound the
+  box-free chain cannot inherit and the exact DBM declines as
+  ill-conditioned; `quadratic_hawkes_alpha`, k = 2, ℓ = 1, one).
 
 
 ### Fixed: accuracy accounting and global state (numbers unchanged on the models measured)
@@ -94,7 +102,7 @@ Other effects of the new default:
   compilation, about 4 s, per process that uses them.
 - Tests: a guard (`tests/conftest.py`) fails a test that removes a Sage
   assumption other code holds or leaves a symbol with contradictory
-  domains; three tolerance lines that passed only through pytest's absolute
+  domains; four tolerance lines that passed only through pytest's absolute
   floor now check what they state.
 
 ### Changed: Itô equal-time rule for constant constraint rows (numbers move)

@@ -550,19 +550,20 @@ _EAGER_ENV = 'DAEDALUS_PREDIAGRAM_EAGER'
 #: representative sends other regions there and the total moves by the
 #: fallback's error.  Where every region is analytic the switch moves
 #: totals by rounding only (``ou_quartic`` k=2, ell<=3: 4.6e-16).  Measured
-#: 2026-10-06 with the fallback of commit d68e383 (a change to the fallback
-#: changes these numbers): ``single_population_spike_reset_test`` k=2,
-#: ell=1, per-diagram and grouped, now agrees to rtol 1e-13, but
-#: ``single_population_quad_exp_test`` (k=2, ell<=1) still differs by 1.21e-11
-#: relative.  Flip this once the fallback agrees across representatives to
-#: rtol 1e-13 on every model that reaches it.  The gate is the slow
-#: parametrized test
+#: 2026-10-06 with the fallback of commit d68e383:
+#: ``single_population_spike_reset_test`` k=2, ell=1 agreed to rtol 1e-13 and
+#: ``single_population_quad_exp_test`` (k=2, ell<=1) differed by 1.21e-11
+#: relative.  Since 0.2.0 (box-free Phase J by default) all three agree to
+#: rtol 1e-13 (measured 2026-10-11), but fewer regions reach the fallback,
+#: not none: ``quad_exp`` still sends 8 m=3 regions there at tau=0.5 and 1
+#: (a variable without an inherited lower bound, declined by the exact DBM
+#: as ill-conditioned), ``quadratic_hawkes_alpha`` k=2, ell=1 one.  Flip
+#: this once no tracked model reaches the fallback, or the fallback agrees
+#: across representatives to rtol 1e-13.  The gate is the
+#: slow parametrized test
 #: ``tests/test_prediagram_cache.py::test_temporal_streamed_totals_match_eager_on_a_fallback_model``
-#: (``single_population_spike_reset_test`` per-diagram and grouped, plus
-#: ``single_population_quad_exp_test`` as a strict xfail; about 7 min): run
-#: it (``pytest -m slow ... -k fallback_model``) after any change to the
-#: Phase J fallback, and flip only when the ``quad_exp`` case also fails as
-#: an unexpected pass.
+#: (about 7 min): run it (``pytest -m slow ... -k fallback_model``) after any
+#: change to Phase J routing or its fallback.
 TEMPORAL_CACHE_OFF_STREAMS = False
 
 _TRUE = ('1', 'true', 'yes', 'on')

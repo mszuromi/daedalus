@@ -486,29 +486,15 @@ def test_cache_off_sources_of_the_temporal_and_spatial_paths(monkeypatch):
     assert _sources_seen(monkeypatch, _spatial_run) == {'eager'}
 
 
-class _FallbackRepresentativeGap(Exception):
-    """Raised only by the gap check of the strict xfails below, so any other
-    failure of that test (a crash, a gap above the documented bound) is a
-    real failure."""
-
-
-def _representative_gap(measured):
-    return pytest.mark.xfail(
-        strict=True, raises=_FallbackRepresentativeGap, reason=(
-            'Phase J nquad fallback is representative-dependent (streamed vs '
-            'eager records, fallback of commit d68e383, measured 2026-10-06; '
-            'a change to the fallback changes these '
-            f'numbers): {measured}  Flip prediagram_cache.'
-            'TEMPORAL_CACHE_OFF_STREAMS only when every case of this test '
-            'XPASSes.'))
-
-
-#: The models whose regions reach the ``scipy.nquad`` fallback.  Measured
-#: 2026-10-06 with the fallback of commit d68e383 (a change to the fallback
-#: changes these numbers): the two spike-reset cases agree to rtol 1e-13
-#: (they pass); ``quad_exp`` still differs, by 1.21e-11 relative.  Every
-#: case must pass, not just some, before ``TEMPORAL_CACHE_OFF_STREAMS``
-#: flips.
+#: The models whose regions reached the ``scipy.nquad`` fallback before
+#: 0.2.0.  Measured 2026-10-06 with the fallback of commit d68e383: the two
+#: spike-reset cases agreed to rtol 1e-13 and ``quad_exp`` differed by
+#: 1.21e-11 relative (then a strict xfail).  On the 0.2.0 defaults (box-free
+#: Phase J) all three agree to rtol 1e-13 (measured 2026-10-11); the
+#: spike-reset cases reach no fallback, ``quad_exp`` still sends 8 m=3
+#: regions to it at tau=1 (none at tau=0, 5).  The flag stays False: the
+#: fallback is still representative-dependent where it is reached; see
+#: ``TEMPORAL_CACHE_OFF_STREAMS``.
 _FALLBACK_GATE_CASES = [
     pytest.param(
         'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), False,
@@ -518,9 +504,7 @@ _FALLBACK_GATE_CASES = [
         id='spike_reset-grouped'),
     pytest.param(
         'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0), False,
-        id='quad_exp-perdiag', marks=_representative_gap(
-            'single_population_quad_exp_test k=2 ell<=1 (P_SP), '
-            'tau=(0, 1, 5): C_tau 1.21e-11 relative (about 400 s).')),
+        id='quad_exp-perdiag'),
 ]
 
 
@@ -530,12 +514,8 @@ _FALLBACK_GATE_CASES = [
 def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
         model_name, params, taus, grouped, monkeypatch):
     """The gate of ``TEMPORAL_CACHE_OFF_STREAMS``: streamed and eager records
-    give the same totals to rtol 1e-13 on the models whose regions reach the
-    ``scipy.nquad`` fallback.  Today they differ by the fallback's error
-    (strict xfails); a gap above the documented 1e-6 is a real failure.
-    Flip the flag only when every case passes unexpectedly: the cases do
-    not move together (a tighter fallback can close one gap and not
-    another)."""
+    give the same totals to rtol 1e-13 on the models whose regions reached
+    the ``scipy.nquad`` fallback before 0.2.0."""
     import numpy as np
 
     import daedalus as dd
@@ -555,9 +535,7 @@ def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
     e, s = curves['1'], curves['0']
     assert np.all(np.isfinite(e)) and np.all(e != 0)
     rel = float(np.max(np.abs(s - e) / np.abs(e)))
-    assert rel <= 1e-6, f'C_tau gap {rel:.3e} above the documented bound'
-    if rel > 1e-13:
-        raise _FallbackRepresentativeGap(f'C_tau gap {rel:.3e}')
+    assert rel <= 1e-13, f'C_tau gap {rel:.3e}'
 
 
 def test_format_override_is_validated(monkeypatch):
@@ -848,7 +826,7 @@ def test_v1_and_v2_agree_at_k4(tmp_path, monkeypatch):
         assert a['factors'] == b['factors']
         ta = _total(ctx, a['unique'], [0.0])[0]
         tb = _total(ctx, b['unique'], [0.0])[0]
-        assert ta == pytest.approx(tb, rel=1e-13)
+        assert ta == pytest.approx(tb, rel=1e-13, abs=0)
         assert ta == pytest.approx(exact[ell], abs=1e-12)
         assert tb == pytest.approx(exact[ell], abs=1e-12)
 
