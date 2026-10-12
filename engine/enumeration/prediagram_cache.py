@@ -907,6 +907,212 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     return records_from_certs(certs), 'computed'
 
 
+# ── Building cells: cost estimate, then build ───────────────────────────────
+#: Cost model of a cold build of one cell, measured on 2026-10-12 with the
+#: compiled enumerator, one process (``DAEDALUS_PREDIAGRAM_PROCS`` unset):
+#: 25-40 microseconds per class from (2,3) to (6,1), 69 at (2,4) (80 s for its
+#: 1.15M classes) and 82 at (1,4), plus a fixed ~30 ms for the tree-generator
+#: processes.  The rate is set between the two groups, so every measured
+#: cell is within a factor 2; :func:`build_cache` rescales it by timing the
+#: small calibration cell on the machine it runs on.  The cert set costs
+#: ~90 bytes per class in a Python ``set`` at the small cells and 183 at
+#: (2,4) (table growth); the records :func:`load_prediagrams` later rebuilds
+#: from it cost ~11 kB per class (two Sage graphs), which is what limits the
+#: cells one can USE.
+_BUILD_OVERHEAD_S = 0.03
+_BUILD_US_PER_CLASS = 50.0
+_BUILD_BYTES_PER_CLASS = 200
+_LOAD_BYTES_PER_CLASS = 11_200
+_CALIBRATION_CELL = (3, 2)
+_CALIBRATION_S = 0.145          # that cell's cold build on the reference machine
+
+
+def known_class_counts():
+    """``{(k, ell): class count}`` of every cell the package has a manifest
+    entry for: the shipped files and the fetchable ones."""
+    counts = {}
+    for e in load_manifest()['files']:
+        counts[(e['k'], e['ell'])] = e['count']
+    try:
+        for e in load_fetch_manifest()['files']:
+            if e.get('count') is not None:
+                counts[(e['k'], e['ell'])] = e['count']
+    except OSError:
+        pass
+    return counts
+
+
+def estimate_class_count(k, ell, counts=None):
+    """``(n, how)``: the class count of ``(k, ell)``, from the manifests when
+    known (``how='known'``), otherwise extrapolated from the cells of the same
+    ``k`` below it (``'extrapolated'``; ``None`` when there are fewer than two
+    to go on).
+
+    The ratio of consecutive cells grows about linearly in ``ell`` (for k = 2
+    it is 9, 31, 53, 77), so the last ratio is advanced by the last increment
+    for each step.  With two cells only the ratio is repeated.  Checked by
+    hiding a known cell: (2,3) 15.2k vs 14,928; (3,3) 385k vs 358,983; (4,3)
+    7.70M vs 7.26M.  Treat it as good to a factor of two or so.
+    """
+    counts = known_class_counts() if counts is None else counts
+    if (k, ell) in counts:
+        return counts[(k, ell)], 'known'
+    below = sorted(e for (kk, e) in counts if kk == k and e < ell)
+    # the unbroken run of cells ending at the largest known ell below the target
+    run = []
+    for e in reversed(below):
+        if run and e != run[-1] - 1:
+            break
+        run.append(e)
+    run.reverse()
+    if len(run) < 2:
+        return None, None
+    n = float(counts[(k, run[-1])])
+    ratio = n / counts[(k, run[-2])]
+    step = ratio - counts[(k, run[-2])] / counts[(k, run[-3])] if len(run) >= 3 else 0.0
+    for _ in range(ell - run[-1]):
+        ratio = max(ratio + step, 1.0)
+        n *= ratio
+    return int(round(n)), 'extrapolated'
+
+
+def _speed_factor():
+    """How much slower than the reference machine a cold build is here: the
+    small calibration cell is enumerated once, in memory, nothing written."""
+    import time
+    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+    t0 = time.perf_counter()
+    stream_prediagram_certs(*_CALIBRATION_CELL, n_procs=1, verbose=False)
+    return (time.perf_counter() - t0) / _CALIBRATION_S
+
+
+def _physical_memory():
+    try:
+        return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _fmt_seconds(s):
+    if s < 120:
+        return f'{s:.1f} s'
+    if s < 7200:
+        return f'{s / 60:.0f} min'
+    return f'{s / 3600:.1f} h'
+
+
+def _fmt_bytes(b):
+    for unit, size in (('GB', 1e9), ('MB', 1e6), ('kB', 1e3)):
+        if b >= size:
+            return f'{b / size:.1f} {unit}'
+    return f'{b:.0f} B'
+
+
+def build_cache(cells, dest=None, dry_run=False, *, force=False,
+                calibrate=True, verbose=True):
+    """Say what building prediagram cells costs, then (unless *dry_run*) build
+    the missing ones.
+
+    ``cells`` is a list of ``(k, ell)`` (or one pair).  For each cell the
+    report gives its status (``'shipped'``: in the package; ``'local'``: a v2
+    or v1 file already under *dest*, default ``saved_prediagrams``;
+    ``'missing'``), the class count (from the manifests when known,
+    otherwise extrapolated), and for a missing cell the estimated time and
+    memory of the build and the memory of the records that using the cell
+    will materialise (:data:`_LOAD_BYTES_PER_CLASS` per class).  The time is
+    for one process; the rate comes from :data:`_BUILD_US_PER_CLASS` scaled by
+    a one-off timing of the calibration cell on this machine
+    (``calibrate=False`` skips that and assumes the reference machine).
+
+    The estimate is printed BEFORE any work.  With ``dry_run=True`` that is
+    all that happens: nothing is written, not even *dest*.  Otherwise each
+    missing cell is built by :func:`stream_prediagram_certs` (the path
+    :func:`load_prediagrams` takes on a miss, ``DAEDALUS_PREDIAGRAM_PROCS``
+    workers) and written to *dest* as a stamped v2 file.  A build whose
+    estimated memory exceeds the machine's is refused unless ``force=True``;
+    shipped and local cells are left alone unless ``force=True``.
+
+    Returns ``{(k, ell): {...}}`` with ``status``, ``n_classes``,
+    ``n_classes_how``, ``est_seconds``, ``est_build_bytes``,
+    ``est_load_bytes`` and, for a built cell, ``action='built'`` with the
+    measured ``seconds`` and ``n_built``.
+    """
+    import time
+    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+
+    if (isinstance(cells, (tuple, list)) and len(cells) == 2
+            and all(isinstance(c, int) for c in cells)):
+        cells = [tuple(cells)]
+    want = sorted({(int(k), int(l)) for k, l in cells})
+    dest = dest or 'saved_prediagrams'
+    counts = known_class_counts()
+
+    report = {}
+    for k, ell in want:
+        if shipped_exists(k, ell):
+            status = 'shipped'
+        elif v2_exists(dest, k, ell) or v1_exists(dest, k, ell):
+            status = 'local'
+        else:
+            status = 'missing'
+        n, how = estimate_class_count(k, ell, counts)
+        report[(k, ell)] = dict(status=status, n_classes=n, n_classes_how=how,
+                                est_seconds=None, est_build_bytes=None,
+                                est_load_bytes=None, action=None)
+    todo = [c for c, r in report.items() if r['status'] == 'missing' or force]
+
+    speed = 1.0
+    if calibrate and any(report[c]['n_classes'] for c in todo):
+        speed = _speed_factor()
+    for c in todo:
+        r = report[c]
+        if r['n_classes']:
+            r['est_seconds'] = (_BUILD_OVERHEAD_S * speed
+                                + r['n_classes'] * _BUILD_US_PER_CLASS * 1e-6 * speed)
+            r['est_build_bytes'] = r['n_classes'] * _BUILD_BYTES_PER_CLASS
+            r['est_load_bytes'] = r['n_classes'] * _LOAD_BYTES_PER_CLASS
+
+    ram = _physical_memory()
+    if verbose:
+        print(f'build_cache: dest={dest!r}, {len(want)} cell(s), '
+              f'{"dry run" if dry_run else "build"}, '
+              f'machine factor {speed:.2f} x reference')
+        for (k, ell), r in report.items():
+            n = r['n_classes']
+            ncl = ('unknown class count' if n is None else
+                   f'{"~" if r["n_classes_how"] != "known" else ""}{n:,} classes')
+            line = f'  ({k},{ell}) {r["status"]:8s} {ncl}'
+            if r['est_seconds'] is not None:
+                line += (f' | build ~{_fmt_seconds(r["est_seconds"])}, '
+                         f'~{_fmt_bytes(r["est_build_bytes"])}'
+                         f' | using it later ~{_fmt_bytes(r["est_load_bytes"])}')
+            elif r['status'] != 'missing':
+                line += ' | nothing to build'
+            print(line)
+        if ram:
+            print(f'  machine memory {_fmt_bytes(ram)}')
+
+    if not dry_run:
+        if ram:
+            too_big = [c for c in todo if (report[c]['est_build_bytes'] or 0) > 0.8 * ram]
+            if too_big and not force:
+                raise ValueError(
+                    f'build_cache: the estimated memory of {too_big} exceeds 80 % '
+                    f'of this machine ({_fmt_bytes(ram)}); pass force=True to try anyway')
+        for c in todo:
+            k, ell = c
+            t0 = time.perf_counter()
+            certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
+                                            verbose=False)
+            path = save_v2_certs(dest, k, ell, certs)
+            report[c].update(action='built', seconds=time.perf_counter() - t0,
+                             n_built=len(certs), path=path)
+            if verbose:
+                print(f'build_cache: ({k},{ell}) {len(certs):,} classes in '
+                      f'{_fmt_seconds(report[c]["seconds"])} -> {path}')
+    return report
+
+
 if __name__ == '__main__':                      # sage -python -m engine.enumeration.prediagram_cache
     import argparse
     ap = argparse.ArgumentParser(description='Rebuild the shipped prediagram cert files.')
