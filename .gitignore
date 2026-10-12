@@ -58,9 +58,24 @@ docs/figures/test_runs/
 # Reference papers (local only — copyrighted, not redistributed in the repo)
 Literature/
 
-# Public repo = pipeline code + tests + new-user docs (the README files) + the
-# curated notebooks. Everything below stays local but is not tracked / shipped.
-docs/
+# Public repo = pipeline code + tests + new-user docs (the README files) + a
+# curated set of design/reference docs + the curated notebooks. Everything else
+# below stays local but is not tracked / shipped. docs/ is allow-listed file by
+# file: add a doc here only after the privacy grep.
+docs/*
+!docs/phase_j_unbounded_exact.md
+!docs/backend_C_design.md
+!docs/backend_C_math.md
+!docs/conductance_vertex_kernels_design.md
+!docs/correlated_noise_capabilities.md
+!docs/dyson_duhamel_integration_plan.md
+!docs/m_ge3_precision_bug_audit.md
+!docs/spatial_kpz_burgers_plan.md
+!docs/spatial_loop_integral_analytic_mc.md
+!docs/spatial_pipeline.md
+!docs/spatial_v2_architecture.md
+!docs/spatiotemporal_convolutions.md
+!docs/kpz_burgers_sim_validation.py
 scratch/
 legacy/
 # ...except the pre-M1 Phase J fixture copies, which ARE tracked test data.
