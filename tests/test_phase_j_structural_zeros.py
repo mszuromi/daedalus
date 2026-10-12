@@ -73,6 +73,12 @@ import textwrap
 import numpy as np
 import pytest
 
+import scipy as _scipy
+
+_OLD_NQUAD = pytest.mark.skipif(
+    tuple(int(p) for p in _scipy.__version__.split('.')[:2]) >= (1, 17),
+    reason='scipy >= 1.17 no longer samples/evaluates the integrand on empty inner intervals (scipy.nquad, changed in 1.17.0), so the pre-M2b failure mode this test pins cannot occur; the hardened/structural-zero routes are covered by the other tests')
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
@@ -280,6 +286,7 @@ def test_positive_shift_cycle_reaches_quadrature(monkeypatch):
     assert len(calls) == 1 and _counter('polytope_empty_cycle') == 0
 
 
+@_OLD_NQUAD
 def test_flag_off_restores_the_pre_m2a_fallback(sz_off, pre_m2b_nquad):
     """Flag off: the 2-cycle goes to scipy.nquad, which overflows evaluating
     the fast-pole integrand outside the region (plan Appendix C.2) -- the
@@ -296,6 +303,7 @@ def test_flag_off_restores_the_pre_m2a_fallback(sz_off, pre_m2b_nquad):
     assert off == 0 and _counter('polytope_empty_cycle') == 0
 
 
+@_OLD_NQUAD
 def test_flag_is_read_at_call_time(monkeypatch, pre_m2b_nquad):
     fe = _fast_eval([FAST] * 4, TWO_CYCLE, 2)
     args = (fe, _resolved(TWO_CYCLE, [0.2]), [0.2], 2)
@@ -549,6 +557,7 @@ def _perdiag(edges, rate=1.0, symbolic=False, t=(0.0, 0.7)):
     return r['contribution'](*t), dict(FI._RUNTIME_COUNTERS), r
 
 
+@_OLD_NQUAD
 def test_perdiag_cycle_through_the_fallback_fixes_the_overflow(
         monkeypatch, pre_m2b_nquad):
     """With the m=2 polygon integrator off, the cycle subset reaches the

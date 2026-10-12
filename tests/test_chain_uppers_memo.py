@@ -465,6 +465,10 @@ def test_the_hoisted_suffix_is_the_unhoisted_key():
 def test_two_tau_end_to_end_array_equal(monkeypatch):
     """ou_quartic_two_dim k=2 ell=2 at two taus: memo on == memo off, bit
     for bit (totals and per-ell), and the memo is actually used."""
+    path = os.path.join(os.path.dirname(__file__), '..', 'models',
+                        'ou_quartic_two_dim.model.py')
+    if not os.path.exists(path):
+        pytest.skip('models/ou_quartic_two_dim.model.py is not in this checkout')
     import tests.tools.phase_j_zoo_baseline as Z
     entry = Z._E('t-m4-ou2', model='ou_quartic_two_dim', k=2, max_ell=2,
                  ext=[('x', 1), ('x', 1)], params=None,

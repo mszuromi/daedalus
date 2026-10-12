@@ -89,6 +89,12 @@ import warnings
 import numpy as np
 import pytest
 
+import scipy as _scipy
+
+_OLD_NQUAD = pytest.mark.skipif(
+    tuple(int(p) for p in _scipy.__version__.split('.')[:2]) >= (1, 17),
+    reason='scipy >= 1.17 no longer samples/evaluates the integrand on empty inner intervals (scipy.nquad, changed in 1.17.0), so the pre-M2b failure mode this test pins cannot occur; the hardened/structural-zero routes are covered by the other tests')
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
@@ -442,6 +448,7 @@ def test_empty_inner_intervals_are_not_sampled(hardened, monkeypatch):
     assert _counter('nquad_hardened_empty_intervals') > 0
 
 
+@_OLD_NQUAD
 def test_old_routine_samples_empty_inner_intervals(legacy_nquad):
     """The pre-M2b behaviour the hardened path removes: the inner bounds
     (0, 0) are handed to quad, which evaluates the integrand there."""
@@ -540,6 +547,7 @@ TWO_CYCLE = [((0.0, -1.0), (0.0,), 0.0), ((-1.0, 0.0), (1.0,), 0.0),
 FAST = _ems((1.0, -12.0))
 
 
+@_OLD_NQUAD
 def test_two_cycle_reaches_no_evaluation_without_structural_zeros(
         hardened, monkeypatch):
     monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', False)
