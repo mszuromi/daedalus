@@ -9,7 +9,7 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-12)
 
 ### Changed: Phase J integrates exactly, without an integration box, by default (numbers move)
 
