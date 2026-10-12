@@ -1,7 +1,7 @@
 """
 tests/tools/phase_j_subset_diff.py
 ==================================
-Per-subset differential harness for Phase J (``docs/integration_speedup_plan.md``
+Per-subset differential harness for Phase J (the internal Phase J plan (not distributed)
 §4.1, milestone M0.1).  Importable API + CLI.  Built on the official,
 call-time ``final_integral._SUBSET_HOOK`` (no exec'd module copy).
 
@@ -950,7 +950,7 @@ def dbm_reference(*_args, **_kwargs):
     raise NotImplementedError(
         'reference (d) DBM at L=-3000 is not implemented: the DBM route is '
         'production code since milestone M3, not an independent reference '
-        '(docs/integration_speedup_plan.md §3.1 L7).')
+        '(the internal Phase J plan (not distributed) §3.1 L7).')
 
 
 def certify_box_reference(*_args, **_kwargs):
@@ -958,7 +958,7 @@ def certify_box_reference(*_args, **_kwargs):
     actually used.  Lands with M8 (plan §3.1 L5)."""
     raise NotImplementedError(
         'reference (e) certify_box is not available before milestone M8 '
-        '(docs/integration_speedup_plan.md §3.1 L5).')
+        '(the internal Phase J plan (not distributed) §3.1 L5).')
 
 
 def compute_references(run_, kinds=('a', 'b', 'c'), *, ref_max_m=2,

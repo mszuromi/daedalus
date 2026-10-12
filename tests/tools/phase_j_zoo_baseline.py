@@ -1,7 +1,7 @@
 """
 tests/tools/phase_j_zoo_baseline.py
 ===================================
-Model-zoo baseline for Phase J (``docs/integration_speedup_plan.md`` §4.3,
+Model-zoo baseline for Phase J (the internal Phase J plan (not distributed) §4.3,
 milestone M0.3).  It records the pre-change reference data that the legacy
 rollback umbrella test (``DAEDALUS_PHASE_J_LEGACY=1``, M1 onward) compares
 against forever.

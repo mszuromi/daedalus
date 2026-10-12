@@ -1,7 +1,7 @@
 """
 tests/test_phase_j_legacy_baseline.py
 =====================================
-Pre-change (M0.3) Phase J baseline guard (``docs/integration_speedup_plan.md``
+Pre-change (M0.3) Phase J baseline guard (the internal Phase J plan (not distributed)
 §3.1 "Rollback and flag hygiene", §4.3, §4.4).
 
 The data files:

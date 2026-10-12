@@ -1,6 +1,6 @@
 """Tests for ``api/symbolic_out.py``: symbolic tree-level covariance
 ``C0(omega) = G D G^dagger`` in the Fourier domain, its exports, the kernel
-pairing and the error paths.  Stage C1 of docs/feature_plan_sde_and_delta.md.
+pairing and the error paths.  Stage C1 of the internal SDE/δ feature plan (not distributed).
 
 Fourier convention tested here (pipeline-wide):
     G(t) = (1/2 pi) int d omega exp(i omega t) G(omega)

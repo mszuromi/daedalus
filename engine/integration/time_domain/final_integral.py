@@ -516,7 +516,7 @@ POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
 # ───────────────────────────────────────────────────────────────────────
 # Phase J flags (read at CALL TIME) and the legacy umbrella
 # ───────────────────────────────────────────────────────────────────────
-# docs/integration_speedup_plan.md §3.1 "Rollback and flag hygiene".  Every
+# the internal Phase J plan (not distributed) §3.1 "Rollback and flag hygiene".  Every
 # Phase J flag is a module attribute; its environment variable is read ONCE,
 # at import, only to initialise it.  Call sites read the attribute at call
 # time (never through a default argument or a closure capture), so
@@ -896,7 +896,7 @@ _RUNTIME_COUNTERS = {
     'scipy_nquad_called_m1': 0,
     'scipy_nquad_called_m2': 0,
     'scipy_nquad_called_mge3': 0,
-    # ── M0.1 observational counters (docs/integration_speedup_plan.md
+    # ── M0.1 observational counters (the internal Phase J plan (not distributed)
     # §2.4 item 8, §4.1).  Purely observational: nothing reads them to
     # decide control flow.
     #
@@ -1633,7 +1633,7 @@ def _divergence_verdict(on_divergence, reason, m, meta, free_vals):
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Per-subset observation hook (M0.1; docs/integration_speedup_plan.md §4.1)
+# Per-subset observation hook (M0.1; the internal Phase J plan (not distributed) §4.1)
 # ───────────────────────────────────────────────────────────────────────
 # ``_SUBSET_HOOK`` is ``None`` in production.  When set to a callable, the
 # per-diagram dispatch (``integrate_diagram``'s ``_contrib``) and the grouped
@@ -3444,7 +3444,7 @@ def _phase_j_dd_kernels_on():
 
 
 # ── M7: box-free exact routing (opt-in; M9 flips the defaults) ─────────
-# docs/integration_speedup_plan.md §3.1 (layers L3, L4) and §14.  Every flag
+# the internal Phase J plan (not distributed) §3.1 (layers L3, L4) and §14.  Every flag
 # is a module attribute read at call time; the environment initialises it.
 #
 # ``USE_PHASE_J_DD_KERNELS`` (M6, above), when True, routes

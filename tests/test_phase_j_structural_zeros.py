@@ -1,4 +1,4 @@
-"""M2a (docs/integration_speedup_plan.md §3.1 L1): structural zeros.
+"""M2a (the internal Phase J plan (not distributed) §3.1 L1): structural zeros.
 
 Two kinds of Phase J work that is identically zero are skipped while
 ``final_integral.STRUCTURAL_ZEROS`` is True (the default;

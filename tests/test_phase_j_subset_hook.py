@@ -1,4 +1,4 @@
-"""M0.1 (docs/integration_speedup_plan.md §4.1): ``final_integral._SUBSET_HOOK``,
+"""M0.1 (the internal Phase J plan (not distributed) §4.1): ``final_integral._SUBSET_HOOK``,
 the new observational runtime counters / bail reasons, and the per-subset
 differential harness ``tests/tools/phase_j_subset_diff.py``.
 

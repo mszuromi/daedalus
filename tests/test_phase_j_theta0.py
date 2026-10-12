@@ -1,4 +1,4 @@
-"""M1 (docs/integration_speedup_plan.md §2.4, §3.1 L0): the Θ(0) = 0 (Itô)
+"""M1 (the internal Phase J plan (not distributed) §2.4, §3.1 L0): the Θ(0) = 0 (Itô)
 convention for constant constraint rows, row provenance, and call-time flags.
 
 After δ-elimination a smooth edge can have Δt ≡ const: a constraint row with

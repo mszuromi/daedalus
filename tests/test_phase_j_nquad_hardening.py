@@ -1,4 +1,4 @@
-"""M2b (docs/integration_speedup_plan.md §3.1 L1b): the hardened scipy
+"""M2b (the internal Phase J plan (not distributed) §3.1 L1b): the hardened scipy
 quadrature fallback of Phase J.
 
 ``final_integral._integrate_polytope`` hands every region that no analytic

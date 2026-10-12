@@ -1,5 +1,5 @@
 """Tied external times at k=3 / k=4: exact ties, the Itô left limit, and the
-equal-time Boltzmann oracle (M0.2b of docs/integration_speedup_plan.md, §4.2).
+equal-time Boltzmann oracle (M0.2b of the internal Phase J plan (not distributed), §4.2).
 
 What is new here, relative to the existing suite
 ------------------------------------------------

@@ -1,7 +1,7 @@
 r"""
 Symbolic tree-level covariance in the Fourier domain, with exports.
 
-Stage C1 of ``docs/feature_plan_sde_and_delta.md``.  The pipeline builds the
+Stage C1 of the internal SDE/δ feature plan (not distributed).  The pipeline builds the
 symbolic frequency-domain propagator ``G(omega)`` (``api/_propagator.py``) before
 any number is substituted.  This module turns it, together with the noise
 matrix read off the second-order response-field sector of the action, into the

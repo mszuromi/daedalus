@@ -45,7 +45,7 @@ from tests.phase_j_refactor_fixtures._runner import (
 
 
 # Fixtures whose values moved at a number-moving milestone of the Phase J
-# integration plan (docs/integration_speedup_plan.md §5, "Fixture refreeze
+# integration plan (the internal Phase J plan (not distributed) §5, "Fixture refreeze
 # policy"): strict xfail until the SINGLE refreeze at M9, so that later
 # milestones' moves stay attributable.  The pre-change values are kept in
 # ``phase_j_refactor_fixtures/legacy/`` (never refrozen); every probe of them
