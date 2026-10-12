@@ -53,6 +53,12 @@ conda activate daedalus
 extras from conda-forge (validated to resolve on macOS/Linux). For the optional GUI clipboard,
 also `pip install pyperclip`.
 
+In the activated environment plain `python` is Sage's interpreter, and the conda-forge `sage`
+launcher has no `-python` flag. Wherever this README or CONTRIBUTING says `sage -python`, run
+`python` instead (for example `python -m pytest tests/ -q`, `python -m daedalus run config.yaml`).
+The conda environment registers a Jupyter kernel named `sagemath`; if a notebook asks for
+`sagemath-10.8`, pick it from the kernel menu.
+
 ### Option B — native SageMath + extras
 
 1. Install **SageMath 10.8** from the official downloads:

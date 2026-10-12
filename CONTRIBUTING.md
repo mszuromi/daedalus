@@ -5,7 +5,9 @@
 See the [README](README.md): install **SageMath 10.8** (conda `environment.yml`, or native),
 then optionally `sage -pip install -e .` so `import daedalus` works from anywhere.
 
-All Python runs under Sage's interpreter — use `sage -python ...`, never plain `python`.
+All Python runs under Sage's interpreter: `sage -python ...` with a native Sage install, or plain
+`python ...` inside the activated conda environment (the conda-forge `sage` launcher has no `-python`
+flag). Never use a Python that is not Sage's.
 
 ## Running the tests
 
@@ -14,8 +16,9 @@ sage -python -m pytest tests/ -q       # default suite (the slow tests are desel
 sage -python -m pytest -m slow         # the minutes-long ones (coupled-Dyson loops, k>=3 spatial)
 ```
 
-`pytest.ini` sets `addopts = -m "not slow"`, so a bare run finishes in a few minutes and stays
-green. Mark any new test that takes minutes `@pytest.mark.slow`.
+`pytest.ini` sets `addopts = -m "not slow"`, so the slow tests stay out of a bare run, which takes
+about 25 minutes on a 12-core laptop with cold caches. Mark any new test that takes minutes
+`@pytest.mark.slow`.
 
 Diagram lists have no fixed order: it depends on where the prediagrams came from (a cache file,
 the in-memory streaming enumerator that spatial runs use, or the eager enumerator that temporal
