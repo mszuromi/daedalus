@@ -599,6 +599,15 @@ def fetch_cache(cells='core', dest=None, base_url=None, **kw):
     return _pc.fetch_cache(cells, dest=dest, base_url=base_url, **kw)
 
 
+def build_cache(cells, dest=None, dry_run=False, **kw):
+    """Estimate, then build, prediagram cells that are neither shipped nor
+    already under *dest* (see ``engine.enumeration.prediagram_cache.build_cache``).
+    The report (status, class count, estimated time and memory) is printed
+    first; ``dry_run=True`` stops there and writes nothing."""
+    from engine.enumeration import prediagram_cache as _pc
+    return _pc.build_cache(cells, dest=dest, dry_run=dry_run, **kw)
+
+
 def config_options(spatial=None):
     """Print every ``dd.Config`` argument — grouped, with its live default and a
     one-line description — so the full set of knobs is discoverable from any
