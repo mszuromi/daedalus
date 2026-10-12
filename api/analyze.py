@@ -45,9 +45,17 @@ to errors.
   covariance at the saddle.
 
 The assumptions ledger lists every consent, convention, assertion and
-approximation a result for this question would depend on.  ``route`` is
-a placeholder until the backend registry exists.  Not wired into
-``compute_cumulants``.
+approximation a result for this question would depend on.
+
+**Wired into** ``compute_cumulants`` (D2): :class:`Preflight` runs the same
+gates at the pipeline's stage boundaries on the pipeline's own objects
+(see the section "wired mode" below), stops with :class:`AnalyzerError` on
+any ``error`` (``Policy.downgrade`` accepts chosen ones), records the
+backend the router chose (``api.routing``; a standalone ``analyze`` report
+says ``unrouted``) and adds the G6 run diagnostics after the run (the M8
+certificate verdicts, the error-accounting counters and a total-relative
+accuracy estimate).  ``compute_cumulants(..., preflight=False)`` or
+``DAEDALUS_PREFLIGHT=0`` turns it off; the numbers are the same either way.
 """
 from __future__ import annotations
 
@@ -103,7 +111,7 @@ FINDING_CODES = {
     'G2_MF_FAILED':              ('G2', 'error'),
     'G2_UNSTABLE_SADDLE':        ('G2', 'error'),
     'G2_MARGINAL_MODE':          ('G2', 'error'),
-    'G2_FIXED_POINT_INDEX':      ('G2', 'error'),
+    'G2_FIXED_POINT_INDEX':      ('G2', 'warning'),   # the pipeline clamps it
     'G2_MULTISTABLE':            ('G2', 'warning'),
     'G2_SINGLE_SADDLE_SOLVER':   ('G2', 'info'),
     'G2_STABILITY_UNAVAILABLE':  ('G2', 'warning'),
@@ -125,12 +133,39 @@ FINDING_CODES = {
     'G4_NON_GAUSSIAN':           ('G4', 'info'),
     'G4_CROSS_CORRELATED':       ('G4', 'info'),
     'G4_COLORED_RATIONAL':       ('G4', 'info'),
-    'G4_NONRATIONAL_NOISE':      ('G4', 'error'),
+    'G4_NONRATIONAL_NOISE':      ('G4', 'warning'),
     'G4_MARKOV_CONSENT_MISSING': ('G4', 'warning'),
     'G4_NEGATIVE_VARIANCE':      ('G4', 'error'),
-    # a bug in a gate (caught, never raised)
+    # G3 for spatial models (D2): K(omega, q) = i omega + M + V q + D q^2
+    'G3_SPATIAL_FORM':           ('G3', 'info'),
+    'G3_MASSLESS':               ('G3', 'warning'),
+    'G3_SPATIAL_UNSTABLE':       ('G3', 'error'),
+    # G6 after the run (D2; recorded, never raised)
+    'G6_ACCURACY':               ('G6', 'info'),
+    'G6_ACCURACY_LOW':           ('G6', 'warning'),
+    'G6_DIVERGENT_SUBSETS':      ('G6', 'warning'),
+    'G6_DIVERGENT_CANCELLED':    ('G6', 'info'),
+    'G6_ILL_CONDITIONED':        ('G6', 'info'),
+    'G6_NQUAD_FALLBACK':         ('G6', 'info'),
+    'G6_COUNTERS_INCOMPLETE':    ('G6', 'info'),
+    'G6_NOT_EVALUATED':          ('G6', 'info'),
+    # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
+
+#: Codes ``Policy.downgrade`` cannot turn into warnings: the run cannot go
+#: on past them (the pipeline itself would fail, or produce no number).
+_NEVER_DOWNGRADE = frozenset({
+    'INTERNAL_ERROR', 'G0_MODEL_INVALID', 'G0_NAMESPACE', 'G0_POLICY_INVALID',
+    'G0_PARAMETERS_MISSING', 'G1_ACTION_EVAL', 'G1_EXPAND_FAILED',
+    'G2_MF_FAILED', 'G2_NO_SADDLE'})
+
+#: The total-relative accuracy threshold of G6 (see ``_g6_accuracy``): the
+#: acceptance tolerance every Phase J route applies to ONE subset
+#: (``dbm_integral.COND_RTOL`` for the DBM / DD closed forms, the same value
+#: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
+#: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
+_G6_DEFAULT_RTOL = 1e-10
 
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
@@ -174,6 +209,10 @@ class Policy:
     dependent.  ``assertions``: facts the user vouches for, e.g.
     ``{'saddle_confirmed': True, 'positive_at_saddle': ['nstar']}``;
     the checkable ones are checked, the rest are echoed in the ledger.
+    ``downgrade``: error codes the user accepts as warnings (e.g.
+    ``('G4_NEGATIVE_VARIANCE',)``); applied after ``strict``, recorded in
+    the ledger as consents.  ``INTERNAL_ERROR`` and the codes of
+    ``_NEVER_DOWNGRADE`` cannot be downgraded.
     """
     mode: str = 'permissive'
     allow_taylor_truncation: bool = False
@@ -181,6 +220,13 @@ class Policy:
     allow_numeric_fallback: bool = False
     interpretation: Optional[str] = None
     assertions: dict = field(default_factory=dict)
+    downgrade: tuple = ()
+
+    def __post_init__(self):
+        dg = self.downgrade
+        if isinstance(dg, str):
+            dg = (dg,)
+        object.__setattr__(self, 'downgrade', tuple(dg or ()))
 
 
 # ── outputs ───────────────────────────────────────────────────────────
@@ -212,7 +258,22 @@ class LedgerEntry:
 @dataclass(frozen=True)
 class ModelTraits:
     """What ``analyze`` detected.  ``None`` means "not determined" (the
-    gate was skipped or failed; a finding says why)."""
+    gate was skipped or failed; a finding says why).
+
+    **The** ``n_poles`` **convention.**  ``n_poles`` is the degree of
+    ``Q(omega)``, the least common multiple of the reduced denominators of
+    the entries of ``G(omega) = K(omega)^-1`` at the parameter point (exact
+    arithmetic in ``QQ[i][omega]``), so a repeated root counts with its
+    multiplicity and a pole shared by several entries counts once.  It is
+    the number of time-domain modes the residue machinery sums over, which
+    is also ``len(prop['pole_vals'])`` for a stable model whose ``Q`` is
+    squarefree (``prop['pole_vals']`` keeps only the retarded roots).  It is
+    NOT the degree of ``det K`` (pole-zero cancellations are removed) nor the
+    sum of the entries' degrees.  ``poles`` lists the distinct roots of
+    ``Q`` (all half planes), sorted by ``(Im, Re)``; ``pole_source`` says
+    where they came from: ``'exact'`` (``analyze``'s own inverse) or
+    ``'pipeline'`` (``compute_cumulants``' tier-1 residue path, the same
+    arithmetic; ``prop['pole_analysis']``)."""
     name: str = '<unnamed>'
     # declarations / structure (G0, G1)
     physical_fields: tuple = ()           # declared base names
@@ -250,6 +311,11 @@ class ModelTraits:
     fast_slow_ratio: Optional[float] = None
     delta_component: Optional[bool] = None
     causal: Optional[bool] = None
+    pole_source: Optional[str] = None     # 'exact' | 'pipeline'
+    # G3, spatial models: lambda(q) = eig(M + V q + D q^2) (decay rates)
+    spatial_mass_min: Optional[float] = None    # min Re eig(M) (q = 0)
+    spatial_rate_min: Optional[float] = None    # min over the q probes
+    spatial_diffusion_min: Optional[float] = None  # min Re eig(D)
     # G4
     noise_class: Optional[str] = None     # 'none' | 'white' | 'colored-rational' |
     #                                       'colored-markov-embedded' | 'colored-nonrational'
@@ -268,9 +334,27 @@ class ModelReport:
     traits: ModelTraits
     findings: tuple = ()
     ledger: tuple = ()
-    route: str = 'unrouted: backend registry not implemented yet'
+    route: str = ('unrouted: standalone analysis (compute_cumulants '
+                  'records the route; api.routing)')
     question: Optional[Question] = None
     policy: Optional[Policy] = None
+    #: compute_cumulants only: the routing record (``api.routing.Route.
+    #: as_dict``), the stages the gates ran at, and the G6 run diagnostics
+    #: (M8 certificate verdicts, error-accounting counters, accuracy estimate).
+    route_detail: dict = field(default_factory=dict)
+    stages: tuple = ()
+    diagnostics: dict = field(default_factory=dict)
+
+    def ledger_dicts(self) -> list:
+        """The ledger as JSON-able dicts (saved with each result)."""
+        return [{'kind': e.kind, 'name': e.name, 'detail': e.detail,
+                 'declared': e.declared, 'satisfied': e.satisfied}
+                for e in self.ledger]
+
+    def findings_dicts(self) -> list:
+        return [{'code': f.code, 'level': f.level, 'gate': f.gate,
+                 'message': f.message, 'remedy': f.remedy}
+                for f in self.findings]
 
     def by_level(self, level: str) -> tuple:
         return tuple(f for f in self.findings if f.level == level)
@@ -311,6 +395,13 @@ class ModelReport:
             lines.append(f'  {e.kind:13s} {e.name}: {e.detail} '
                          f'(declared={e.declared}, satisfied={e.satisfied})')
         lines.append(f'Route: {self.route}')
+        for rej in (self.route_detail or {}).get('rejected', []):
+            lines.append(f'  rejected {rej["backend"]}: '
+                         + '; '.join(rej['reasons']))
+        if self.diagnostics:
+            lines.append('Run diagnostics (G6):')
+            for k, v in self.diagnostics.items():
+                lines.append(f'  {k:26s} {v!r}')
         return '\n'.join(lines)
 
 
@@ -340,6 +431,10 @@ class _Ctx:
         self.stability_known = False
         self.sectors = None               # {(n_resp, n_phys): {exponent: coeff}}
         self.use_cache = True
+        self.K_coeff = None               # (1,1)-sector coefficient matrix
+        self.poly_fns = ()
+        self.wired = False                # True inside compute_cumulants
+        self.pipeline_ns = None           # the pipeline's namespace (read only)
 
     def add(self, code, message, remedy=''):
         gate, level = FINDING_CODES[code]
@@ -381,6 +476,33 @@ def _exc_text(exc) -> str:
     return s if len(s) <= 400 else s[:397] + '...'
 
 
+def _apply_policy(findings, policy, ctx=None):
+    """Final levels: ``strict`` promotes warnings to errors, then
+    ``policy.downgrade`` turns the named errors into warnings (each one a
+    ledger consent).  Returns a new list."""
+    out = []
+    for f in findings:
+        if policy.mode == 'strict' and f.level == 'warning':
+            f = replace(f, level='error',
+                        remedy=(f.remedy + ' ' if f.remedy else '')
+                        + '[strict policy: warning promoted to error]')
+        if (f.level == 'error' and f.code in policy.downgrade
+                and f.code not in _NEVER_DOWNGRADE):
+            f = replace(f, level='warning',
+                        remedy=(f.remedy + ' ' if f.remedy else '')
+                        + '[policy.downgrade: error accepted as a warning]')
+            if ctx is not None:
+                ctx.ledger_add('consent', f'downgrade:{f.code}', f.message,
+                               declared=True, satisfied=None)
+        out.append(f)
+    return out
+
+
+def _sorted_findings(findings):
+    order = {lvl: i for i, lvl in enumerate(LEVELS)}
+    return sorted(findings, key=lambda f: (order.get(f.level, 9), f.gate))
+
+
 # ── public entry point ────────────────────────────────────────────────
 
 
@@ -418,14 +540,8 @@ def analyze(model: dict, question=None, policy=None, *,
                     'report this model to the maintainers')
             ctx.stop_numeric = True
 
-    findings = ctx.findings
-    if policy.mode == 'strict':
-        findings = [replace(f, level='error',
-                            remedy=(f.remedy + ' ' if f.remedy else '')
-                            + '[strict policy: warning promoted to error]')
-                    if f.level == 'warning' else f for f in findings]
-    order = {lvl: i for i, lvl in enumerate(LEVELS)}
-    findings = sorted(findings, key=lambda f: (order.get(f.level, 9), f.gate))
+    findings = _apply_policy(ctx.findings, policy, ctx)
+    findings = _sorted_findings(findings)
     ctx.t['analysis_time_s'] = time.perf_counter() - t_start
     known = {f.name for f in fields(ModelTraits)}
     traits = ModelTraits(**{k: v for k, v in ctx.t.items() if k in known})
@@ -473,6 +589,8 @@ def _resolve_parameters(ctx):
 
 
 def _flat_values(v):
+    if isinstance(v, np.ndarray):
+        v = v.tolist()
     if isinstance(v, (list, tuple)):
         out = []
         for x in v:
@@ -533,6 +651,15 @@ def _g0_declarations(ctx):
         ctx.add('G0_POLICY_INVALID',
                 f"policy.interpretation must be 'ito' or 'stratonovich'; got "
                 f'{p.interpretation!r}.', "declare 'ito' or 'stratonovich'")
+    bad_dg = [c for c in p.downgrade
+              if FINDING_CODES.get(c, ('', ''))[1] != 'error'
+              or c in _NEVER_DOWNGRADE]
+    if bad_dg:
+        ctx.add('G0_POLICY_INVALID',
+                f'policy.downgrade names {bad_dg}: only error codes of '
+                'FINDING_CODES can be downgraded, and not '
+                f'{sorted(_NEVER_DOWNGRADE)}.',
+                'name error codes (e.g. G4_NEGATIVE_VARIANCE)')
 
     name = model.get('name')
     ctx.t['name'] = str(name) if name else '<unnamed>'
@@ -643,13 +770,18 @@ def _g0_declarations(ctx):
                     "give (field, population) pairs, e.g. [('x', 1), ('x', 1)]")
             return
         _, phys_idx = build_field_index_map(ctx.ring_names, n_tilde)
+        # spatial models: the second entry labels the leg (a slot), not a
+        # population (the spatial drivers read the field name only)
+        spatial = bool(model.get('spatial'))
+        names = {k_[0] for k_ in phys_idx}
         for f in dict.fromkeys(ext_int):
-            if f not in phys_idx:
-                ctx.add('G0_EXTERNAL_FIELD',
-                        f'external field {f} not in phys_idx '
-                        f'{sorted(phys_idx.keys())}',
-                        'use a physical field of the model (fluctuation name '
-                        'or declared natural name) and a 1-based population')
+            if (f[0] in names) if spatial else (f in phys_idx):
+                continue
+            ctx.add('G0_EXTERNAL_FIELD',
+                    f'external field {f} not in phys_idx '
+                    f'{sorted(phys_idx.keys())}',
+                    'use a physical field of the model (fluctuation name '
+                    'or declared natural name) and a 1-based population')
 
 
 # ── G1: structure ─────────────────────────────────────────────────────
@@ -848,8 +980,17 @@ def _g1_expand(ctx):
         ctx.stop_numeric = True
         return
     ctx.sectors = {k: d for k, d in sectors.items() if d}
-    sectors = ctx.sectors
-    species = sorted(k for k in sectors if k[0] + k[1] >= 3 and k[1] >= 1)
+    _species_findings(ctx, ctx.sectors)
+
+    # the linear operator K(omega)
+    _build_k_ft(ctx)
+
+
+def _species_findings(ctx, sector_keys):
+    """Vertex species, state-dependent noise and the interpretation
+    convention, from the keys of the non-zero sectors."""
+    model = ctx.model
+    species = sorted(k for k in sector_keys if k[0] + k[1] >= 3 and k[1] >= 1)
     ctx.t['vertex_species'] = tuple(species)
     ctx.t['max_vertex_degree'] = max((a + b for a, b in species), default=0)
     sdn = [k for k in species if k[0] >= 2]
@@ -879,17 +1020,15 @@ def _g1_expand(ctx):
                     'no Ito drift correction; the pipeline reads it as Ito.',
                     "build the model with SDE(...).interpretation('stratonovich')")
 
-    # the linear operator K(omega)
-    _build_k_ft(ctx)
-
 
 def _read_expand_cache(ctx, N):
     """The pipeline's expand-cache bundle for ``N`` in dict form
     ``{(n_resp, n_phys): {exponent: coefficient}}``, or ``None``.
 
-    Runs the validity checks of ``api._expand_cache.load_expand`` (ring
-    variables, ``n_tilde``, model-text fingerprint, operator-IR signature)
-    but skips its coercion back into the polynomial ring, which is the
+    Runs the validity check of ``api._expand_cache.load_expand`` (the
+    shared ``bundle_stale_reason``: ring variables, ``n_tilde``, model-text
+    fingerprint, operator-IR signature) but skips its coercion back into the
+    polynomial ring, which is the
     slow part (about 140 s for dendritic_quad_soma_sigmoid): the gates
     only read the coefficients.  Never writes."""
     import os
@@ -907,14 +1046,7 @@ def _read_expand_cache(ctx, N):
     except Exception:
         return None
     _ec.prepare_for_load(ft)
-    if list(bundle.get('ring_var_names', [])) != _ec._get_ring_var_names(ft):
-        return None
-    if int(bundle.get('n_tilde', -1)) != int(ft._n_tilde):
-        return None
-    spec = model.get('spec_signature')
-    if spec is not None and bundle.get('spec_signature') != spec:
-        return None
-    if _ec.vertex_form_factor_signature(ft._ns) != bundle.get('vertex_signature'):
+    if _ec.bundle_stale_reason(model, ft, bundle) is not None:
         return None
     by_tp = bundle['by_tp']
     if order > N:
@@ -932,42 +1064,10 @@ def _build_k_ft(ctx):
     from api._propagator import _to_kernel
     ft, model = ctx.ft, ctx.model
     ns = ft._ns
-    S_free = ctx.sectors.get((1, 1), {})
-    names = list(ctx.ring_names)
-    nf = ft._n_tilde
-    resp, phys = names[:nf], names[nf:]
-    pos_row = {names.index(nm): i for i, nm in enumerate(resp)}
-    pos_col = {names.index(nm): j for j, nm in enumerate(phys)}
-    K = [[SR(0)] * len(phys) for _ in range(nf)]
-    for ev, coeff in S_free.items():
-        row = col = None
-        for idx in range(len(names)):
-            if ev[idx] > 0:
-                row = pos_row.get(idx, row)
-                col = pos_col.get(idx, col)
-        if row is not None and col is not None:
-            K[row][col] += SR(coeff)
-    zero_cols = [phys[j] for j in range(len(phys))
-                 if all(SR(K[i][j]).is_zero() for i in range(nf))]
-    zero_rows = [resp[i] for i in range(nf)
-                 if all(SR(K[i][j]).is_zero() for j in range(len(phys)))]
-    if len(phys) != nf or zero_cols or zero_rows:
-        parts = []
-        if len(phys) != nf:
-            parts.append(f'{nf} response vs {len(phys)} physical components')
-        if zero_cols:
-            parts.append(f'physical component(s) {zero_cols} have no linear '
-                         'operator (zero column of K)')
-        if zero_rows:
-            parts.append(f'response component(s) {zero_rows} pair with no '
-                         'field (zero row of K)')
-        ctx.add('G1_UNPAIRED_FIELD',
-                'unpaired field(s): ' + '; '.join(parts) + '. The propagator '
-                'K(omega)^-1 is singular.',
-                'give every physical field a linear dynamics term '
-                '(xt*(Dt + ...)*x) in the action')
-        ctx.stop_numeric = True
+    K = _k_coeff_matrix(ctx)
+    if K is None:
         return
+    nf = ft._n_tilde
     Dt, dD, dDp = ns.Dt, ns.delta_D, ns.delta_Dp
     t_var = SR.var('t')
     omega = SR.var('omega')
@@ -992,6 +1092,53 @@ def _build_k_ft(ctx):
         kft = hook(ns, omega)
         K_ft = K_ft.apply_map(lambda e: SR(e).subs(kft))
     ctx.K_ft, ctx.omega = K_ft, omega
+
+
+def _k_coeff_matrix(ctx):
+    """``K[i][j]``: the (1,1)-sector coefficient of ``r_i x_j`` (response
+    row, physical column, in ``ctx.ring_names`` order), or ``None`` after a
+    ``G1_UNPAIRED_FIELD`` finding.  Kept on ``ctx.K_coeff``."""
+    from sage.all import SR
+    S_free = ctx.sectors.get((1, 1), {})
+    names = list(ctx.ring_names)
+    nf = ctx.n_tilde
+    resp, phys = names[:nf], names[nf:]
+    pos_row = {names.index(nm): i for i, nm in enumerate(resp)}
+    pos_col = {names.index(nm): j for j, nm in enumerate(phys)}
+    K = [[SR(0)] * len(phys) for _ in range(nf)]
+    for ev, coeff in S_free.items():
+        row = col = None
+        for idx in range(len(names)):
+            if ev[idx] > 0:
+                row = pos_row.get(idx, row)
+                col = pos_col.get(idx, col)
+        if row is not None and col is not None:
+            K[row][col] += SR(coeff)
+    # structural zeros (``is_trivial_zero``: no simplifier call; the
+    # coefficients come out of the expansion in canonical form)
+    zero_cols = [phys[j] for j in range(len(phys))
+                 if all(SR(K[i][j]).is_trivial_zero() for i in range(nf))]
+    zero_rows = [resp[i] for i in range(nf)
+                 if all(SR(K[i][j]).is_trivial_zero() for j in range(len(phys)))]
+    if len(phys) != nf or zero_cols or zero_rows:
+        parts = []
+        if len(phys) != nf:
+            parts.append(f'{nf} response vs {len(phys)} physical components')
+        if zero_cols:
+            parts.append(f'physical component(s) {zero_cols} have no linear '
+                         'operator (zero column of K)')
+        if zero_rows:
+            parts.append(f'response component(s) {zero_rows} pair with no '
+                         'field (zero row of K)')
+        ctx.add('G1_UNPAIRED_FIELD',
+                'unpaired field(s): ' + '; '.join(parts) + '. The propagator '
+                'K(omega)^-1 is singular.',
+                'give every physical field a linear dynamics term '
+                '(xt*(Dt + ...)*x) in the action')
+        ctx.stop_numeric = True
+        return None
+    ctx.K_coeff = K
+    return K
 
 
 def _numeric_K(ctx):
@@ -1025,6 +1172,9 @@ def _noise_matrix(ctx):
     """The (2,0) noise matrix at the saddle (``-2 * coefficient`` of
     ``r_a r_b``, symmetrized) and the response components that carry any
     noise cumulant (any (n >= 2, 0) sector)."""
+    memo = getattr(ctx, '_noise_memo', None)
+    if memo is not None and memo[0] is ctx.num_params:
+        return memo[1]
     from sage.all import SR
     nf = ctx.n_tilde
     names = ctx.ring_names
@@ -1052,7 +1202,9 @@ def _noise_matrix(ctx):
                     a, b = idx
                     Nmat[a, b] += -cv.real
                     Nmat[b, a] += -cv.real
-    return Nmat, sorted(sources), unresolved
+    out = (Nmat, sorted(sources), unresolved)
+    ctx._noise_memo = (ctx.num_params, out)
+    return out
 
 
 def _g1_driven(ctx):
@@ -1091,6 +1243,10 @@ def _g1_driven(ctx):
                     for G in Gs)
         if reach <= 1e-12 * scale:
             undriven.append(nm)
+    _undriven_finding(ctx, undriven, sources)
+
+
+def _undriven_finding(ctx, undriven, sources):
     ctx.t['undriven_fields'] = tuple(undriven)
     if undriven and sources:
         ctx.add('G1_UNDRIVEN_FIELD',
@@ -1132,7 +1288,7 @@ def _g2_ready(ctx):
 
 def _g2_dae_gate(ctx):
     """Every saddle of the ``.equation(...)`` rows and its stability."""
-    if not ctx.model.get('equations') or not _g2_ready(ctx):
+    if not _g2_ready(ctx) or not ctx.model.get('equations'):
         return
     fpi = ctx.q.fixed_point_index
     _g2_dae(ctx, fpi, 0 if fpi is None else int(fpi))
@@ -1142,7 +1298,7 @@ def _g2_dae_gate(ctx):
 def _g2_iteration_gate(ctx):
     """The single saddle of the mean-field iteration rows (legacy models)."""
     model, fund = ctx.model, ctx.fundamental
-    if model.get('equations') or not _g2_ready(ctx):
+    if not _g2_ready(ctx) or model.get('equations'):
         return
     fpi = ctx.q.fixed_point_index
     ctx.t['mf_solver'] = 'iteration'
@@ -1155,6 +1311,13 @@ def _g2_iteration_gate(ctx):
                 'check the mean-field equations and the parameter point')
         ctx.stop_numeric = True
         return
+    _g2_iteration_record(ctx, mf, fpi)
+    _check_positivity(ctx)
+
+
+def _g2_iteration_record(ctx, mf, fpi):
+    """The iteration solver's single saddle (``mf``: its result)."""
+    ctx.t['mf_solver'] = 'iteration'
     ctx.num_params = mf['num_params']
     ctx.t['n_saddles'] = 1
     ctx.t['saddle_index'] = 0
@@ -1173,7 +1336,6 @@ def _g2_iteration_gate(ctx):
         ctx.add('G2_FIXED_POINT_INDEX',
                 f'fixed_point_index={fpi} is ignored by the iteration '
                 'solver (one saddle).', 'drop fixed_point_index')
-    _check_positivity(ctx)
 
 
 def _saddle_tuple(values):
@@ -1183,8 +1345,7 @@ def _saddle_tuple(values):
 
 
 def _g2_dae(ctx, fpi, fpi_eff):
-    from api._mean_field_dae import (solve_mean_field_dae_compat,
-                                     linear_stability)
+    from api._mean_field_dae import solve_mean_field_dae_compat
     model, fund = ctx.model, ctx.fundamental
     ctx.t['mf_solver'] = 'dae'
     m_all = dict(model)
@@ -1206,33 +1367,73 @@ def _g2_dae(ctx, fpi, fpi_eff):
         ctx.stop_numeric = True
         return
     roots = [r['values'] for r in mf['mf_all_roots']]
+    recs, any_dynamic = _g2_dae_records(ctx, roots)
+    stab_on = bool(model.get('stability_analysis', False))
+    sel = _g2_dae_classify(ctx, recs, any_dynamic, stab_on, fpi, fpi_eff)
+    if sel is None:
+        return
+    rec = recs[sel]
+    # num_params for the selected root (compat built root 0)
+    num_params = dict(mf['num_params'])
+    for sname, vals in rec['values'].items():
+        arr = getattr(ctx.ft._ns, sname, None)
+        if arr is None:
+            continue
+        for i, v in enumerate(vals):
+            num_params[arr[i]] = float(v)
+    ctx.num_params = num_params
+
+
+def _g2_dae_records(ctx, roots, pipeline_records=None):
+    """``(records, any_dynamic)``: each root with its finite linearization
+    eigenvalues and class.  ``pipeline_records``: the pipeline's
+    ``mf_all_roots`` (wired mode); their eigenvalues are used when the
+    pipeline classified the roots (``stability_analysis`` on)."""
+    from api._mean_field_dae import linear_stability
+    model, fund = ctx.model, ctx.fundamental
     ctx.t['n_saddles'] = len(roots)
     recs = []
     any_dynamic = False
-    for r in roots:
+    for i, r in enumerate(roots):
+        pr = pipeline_records[i] if pipeline_records is not None else None
         try:
-            with _quiet():
-                st = linear_stability(model, fund, r)
-            eigs = np.asarray(st['eigenvalues_finite'], dtype=complex)
+            if pr is not None and pr.get('stable') is not None:
+                eigs = np.asarray(pr.get('eigenvalues_finite', []), dtype=complex)
+            else:
+                with _quiet():
+                    st = linear_stability(model, fund, r)
+                eigs = np.asarray(st['eigenvalues_finite'], dtype=complex)
             cls, n_marg = _classify_eigs(eigs)
             any_dynamic = any_dynamic or eigs.size > 0
             recs.append({'values': r, 'eigs': eigs, 'class': cls, 'n_marg': n_marg})
         except Exception as exc:
             recs.append({'values': r, 'eigs': np.array([], dtype=complex),
                          'class': None, 'n_marg': 0, 'error': _exc_text(exc)})
-    stab_on = bool(model.get('stability_analysis', False))
+    return recs, any_dynamic
+
+
+def _g2_dae_classify(ctx, recs, any_dynamic, stab_on, fpi, fpi_eff,
+                     selected=None, selectable=None):
+    """Saddle selection and stability findings; returns the selected
+    record's index, or ``None`` (no selectable saddle).  ``selected`` /
+    ``selectable`` (wired mode): the pipeline's choice and its selectable
+    set, used instead of re-deriving them."""
     if not any_dynamic:
         ctx.add('G2_STABILITY_UNAVAILABLE',
                 'the linearization has no finite eigenvalue (algebraic '
                 'equations, or the stability evaluation failed'
                 + (f': {recs[0]["error"]}' if recs and recs[0].get('error') else '')
-                + '); stability is read from the propagator poles (G3).', '')
-        selectable = list(range(len(recs)))
+                + '); stability is read from the propagator poles (G3).',
+                'add the Dt terms to the .equation(...) rows (lhs) for a '
+                'linear stability analysis of every saddle')
+        if selectable is None:
+            selectable = list(range(len(recs)))
     else:
         ctx.stability_known = True
         stable_idx = [i for i, r in enumerate(recs) if r['class'] == 'stable']
         ctx.t['n_stable_saddles'] = len(stable_idx)
-        selectable = stable_idx if stab_on else list(range(len(recs)))
+        if selectable is None:
+            selectable = stable_idx if stab_on else list(range(len(recs)))
         if len(stable_idx) > 1:
             confirmed = bool(ctx.p.assertions.get('saddle_confirmed'))
             msg = (f'{len(stable_idx)} stable saddles: '
@@ -1250,17 +1451,22 @@ def _g2_dae(ctx, fpi, fpi_eff):
                            'saddles (metastable; tunnelling neglected)',
                            declared=confirmed)
     if not selectable:
+        all_marg = bool(recs) and all(r['class'] == 'marginal' for r in recs)
         ctx.add('G2_UNSTABLE_SADDLE',
                 f'no stable saddle among {len(recs)}: '
                 + '; '.join(f'{_fmt_root(r["values"])} eig {_fmt_eigs(r["eigs"])}'
-                            for r in recs)
+                            for r in recs[:4])
+                + (f'; ... ({len(recs) - 4} more)' if len(recs) > 4 else '')
+                + ('. Every root is marginal (a zero eigenvalue: a continuum of '
+                   'homogeneous saddles, e.g. a massless field)' if all_marg else '')
                 + '. The pipeline raises (stability_analysis on) and the '
                 'diagrammatic expansion is undefined.',
-                'change the parameters to a stable regime')
+                'change the parameters to a stable regime'
+                + (' (give the field a mass)' if all_marg else ''))
         ctx.t['stable'] = False
         ctx.t['stability_source'] = 'linearization'
         ctx.stop_numeric = True
-        return
+        return None
     if fpi is not None and not (0 <= fpi < len(selectable)):
         ctx.add('G2_FIXED_POINT_INDEX',
                 f'fixed_point_index={fpi} is out of range: '
@@ -1268,19 +1474,12 @@ def _g2_dae(ctx, fpi, fpi_eff):
                 f' saddle(s) to choose from (the pipeline clamps it with a '
                 'warning).', f'use 0..{len(selectable) - 1}')
         fpi_eff = max(0, min(fpi_eff, len(selectable) - 1))
-    sel = selectable[min(fpi_eff, len(selectable) - 1)]
-    ctx.t['saddle_index'] = selectable.index(sel)
+    sel = (selected if selected is not None
+           else selectable[min(fpi_eff, len(selectable) - 1)])
+    ctx.t['saddle_index'] = (selectable.index(sel) if sel in selectable
+                             else None)
     rec = recs[sel]
     ctx.t['saddle'] = _saddle_tuple(rec['values'])
-    # num_params for the selected root (compat built root 0)
-    num_params = dict(mf['num_params'])
-    for sname, vals in rec['values'].items():
-        arr = getattr(ctx.ft._ns, sname, None)
-        if arr is None:
-            continue
-        for i, v in enumerate(vals):
-            num_params[arr[i]] = float(v)
-    ctx.num_params = num_params
     if any_dynamic:
         ctx.t['eigenvalues'] = tuple(complex(z) for z in rec['eigs'])
         ctx.t['n_marginal_modes'] = rec['n_marg']
@@ -1294,6 +1493,8 @@ def _g2_dae(ctx, fpi, fpi_eff):
                     'select a stable saddle (fixed_point_index), turn on '
                     'stability_analysis, or change the parameters')
             ctx.stop_numeric = True
+        elif rec['class'] == 'marginal' and ctx.t.get('spatial'):
+            _spatial_massless(ctx, rec['eigs'])
         elif rec['class'] == 'marginal':
             ctx.add('G2_MARGINAL_MODE',
                     f'the selected saddle {_fmt_root(rec["values"])} has '
@@ -1304,6 +1505,7 @@ def _g2_dae(ctx, fpi, fpi_eff):
                     'move away from the bifurcation point, or add a '
                     'restoring term')
             ctx.stop_numeric = True
+    return sel
 
 
 def _fmt_root(values):
@@ -1352,8 +1554,43 @@ def _g3_propagator(ctx):
         return
     if ctx.t.get('spatial'):
         ctx.t['propagator_class'] = 'spatial'
+        _g3_spatial(ctx)
         return
-    from sage.all import SR
+    if not _g3_rational(ctx):
+        return
+    if ctx.stop_numeric or ctx.num_params is None:
+        ctx.add('G3_SKIPPED', 'pole analysis skipped (no usable saddle).', '')
+        return
+    K_at, free, K_num = _numeric_K(ctx)
+    if free:
+        ctx.add('G3_UNRESOLVED_SYMBOLS',
+                f'K(omega) still contains {free} after the parameters and the '
+                'saddle are substituted (a kernel without a frequency image, '
+                'or an unsolved saddle).',
+                'declare the kernel with freq_image= or time_expr=')
+        return
+    try:
+        res = _exact_poles(K_num, ctx.omega, ctx.n_tilde)
+    except Exception as exc:
+        res = None
+        reason = _exc_text(exc)
+    else:
+        reason = 'exact inverse exceeded its budget' if res is None else ''
+    if res is None:
+        ctx.add('G3_POLES_UNAVAILABLE',
+                f'exact pole analysis unavailable ({reason}); the pipeline '
+                'falls back to its numerical cofactor tier.', '')
+        ctx.ledger_add('consent', 'numeric_fallback',
+                       'poles and residues from the numerical cofactor tier',
+                       declared=ctx.p.allow_numeric_fallback)
+        return
+    ctx.t['pole_source'] = 'exact'
+    _g3_pole_findings(ctx, res)
+
+
+def _g3_rational(ctx):
+    """The propagator class: ``False`` (stop G3) when ``K(omega)`` is not
+    rational in omega."""
     omega = ctx.omega
     bad = []
     for e in ctx.K_ft.list():
@@ -1368,34 +1605,16 @@ def _g3_propagator(ctx):
                 '(and Phase J) needs a rational propagator.',
                 'replace the kernel by a rational (Pade or sum-of-exponentials) '
                 'approximation, or embed it with auxiliary fields')
-        return
+        return False
     ctx.t['propagator_class'] = 'rational'
-    if ctx.stop_numeric or ctx.num_params is None:
-        ctx.add('G3_SKIPPED', 'pole analysis skipped (no usable saddle).', '')
-        return
-    K_at, free, K_num = _numeric_K(ctx)
-    if free:
-        ctx.add('G3_UNRESOLVED_SYMBOLS',
-                f'K(omega) still contains {free} after the parameters and the '
-                'saddle are substituted (a kernel without a frequency image, '
-                'or an unsolved saddle).',
-                'declare the kernel with freq_image= or time_expr=')
-        return
-    try:
-        res = _exact_poles(K_num, omega, ctx.n_tilde)
-    except Exception as exc:
-        res = None
-        reason = _exc_text(exc)
-    else:
-        reason = 'exact inverse exceeded its budget' if res is None else ''
-    if res is None:
-        ctx.add('G3_POLES_UNAVAILABLE',
-                f'exact pole analysis unavailable ({reason}); the pipeline '
-                'falls back to its numerical cofactor tier.', '')
-        ctx.ledger_add('consent', 'numeric_fallback',
-                       'poles and residues from the numerical cofactor tier',
-                       declared=ctx.p.allow_numeric_fallback)
-        return
+    return True
+
+
+def _g3_pole_findings(ctx, res):
+    """Pole statistics, causality and (legacy / algebraic models) the
+    stability from ``res = (deg Q, distinct poles, squarefree, delta
+    entries, improper entries)`` (``_exact_poles`` or the pipeline's
+    ``prop['pole_analysis']``)."""
     Q_deg, poles, squarefree, delta, improper = res
     ctx.t['n_poles'] = Q_deg
     ctx.t['poles'] = tuple(poles)
@@ -1466,6 +1685,94 @@ def _g3_propagator(ctx):
                 'move away from the bifurcation point, or add a restoring term')
 
 
+#: Wavenumbers at which the spatial decay rates are probed (G3, spatial).
+_SPATIAL_Q_PROBES = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+
+
+def _spatial_massless(ctx, eigs=()):
+    """A spatial model whose homogeneous (q = 0) mode is marginal: a
+    massless field (a warning, not G2_MARGINAL_MODE: q > 0 modes decay)."""
+    if 'G3_MASSLESS' in [f.code for f in ctx.findings]:
+        return
+    ctx.add('G3_MASSLESS',
+            'the q = 0 mode is massless (zero decay rate'
+            + (f', eigenvalues {_fmt_eigs(eigs)}' if len(eigs) else '')
+            + '): the correlation length is infinite; loop integrals are '
+            'infrared sensitive (d <= 2) and the spatial loop drivers may '
+            'fail on it.',
+            'give the field a mass (restoring term) for loop orders >= 1')
+
+
+def _g3_spatial(ctx):
+    """G3 for spatial models (D2).  ``K(omega, q) = i omega + M + V q +
+    D q^2`` (``reaction_diffusion_matrices``) at the saddle: the decay rates
+    are ``Re eig(M + V q + D q^2)``; a negative one at some probed q (or a
+    negative diffusion eigenvalue, which makes every large-q mode grow) means
+    no stationary state; zero at q = 0 is a massless field."""
+    if ctx.stop_numeric or ctx.num_params is None:
+        return
+    from sage.all import SR
+    ns = ctx.ft._ns
+    lap = getattr(ns, 'Laplacian', None)
+    if lap is None:
+        return
+    try:
+        from engine.integration.spatial.heat_kernel import (
+            reaction_diffusion_matrices)
+        q = SR.var('_analyze_q')
+        with _quiet():
+            Ms, Ds, Vs = reaction_diffusion_matrices(
+                ctx.K_ft, ctx.omega, q, lap, getattr(ns, 'GradX', None))
+        sub = ctx.num_params
+        num = [np.array([[complex(SR(m[i, j]).subs(sub))
+                          for j in range(m.ncols())] for i in range(m.nrows())])
+               for m in (Ms, Ds, Vs)]
+    except Exception as exc:
+        ctx.add('G3_SPATIAL_FORM',
+                'K(omega, q) is not of the reaction-diffusion form i*omega + '
+                f'M + V q + D q^2 at the saddle ({_exc_text(exc)}); the '
+                'spatial rate checks are skipped.', '')
+        return
+    M, D, V = num
+    scale = max(1.0, float(np.max(np.abs(M))), float(np.max(np.abs(D))))
+    tol = _MARGINAL_RTOL * scale
+    mass = float(np.min(np.linalg.eigvals(M).real))
+    diff = float(np.min(np.linalg.eigvals(D).real))
+    rates = [(qq, float(np.min(np.linalg.eigvals(M + V * qq + D * qq * qq).real)))
+             for qq in _SPATIAL_Q_PROBES]
+    q_min, r_min = min(rates, key=lambda t: t[1])
+    ctx.t['spatial_mass_min'] = mass
+    ctx.t['spatial_diffusion_min'] = diff
+    ctx.t['spatial_rate_min'] = r_min
+    if diff < -tol:
+        ctx.add('G3_SPATIAL_UNSTABLE',
+                f'the diffusion matrix has a negative eigenvalue ({diff:.4g}): '
+                'anti-diffusive, every mode of large wavenumber grows '
+                '(ill-posed, no stationary state).',
+                'check the sign of the Laplacian term (+D*Laplacian on the '
+                'right-hand side is diffusive)')
+    elif any(r < -tol for qq, r in rates if qq > 0):
+        ctx.add('G3_SPATIAL_UNSTABLE',
+                f'the mode at wavenumber q = {q_min:g} grows (decay rate '
+                f'{r_min:.4g} < 0) although the homogeneous mode is stable: a '
+                'finite-wavelength (Turing-type) instability; no stationary '
+                'state around this saddle.',
+                'change the parameters to a regime where every mode decays')
+    if abs(mass) <= tol:
+        _spatial_massless(ctx)
+
+
+def _to_qq(x):
+    """``QQ(x)``; a float that ``QQ`` refuses through ``SR`` (seen for
+    Maxima-produced values such as ``2.00000000000000``) by its exact binary
+    value."""
+    from sage.all import QQ, RR
+    try:
+        return QQ(x)
+    except (TypeError, ValueError):
+        return QQ(RR(x))
+
+
 def _exact_poles(K_num, omega, nf):
     """Exact inverse of K(omega) in Frac(QQ[i][omega]) (the pipeline's
     tier-1 arithmetic).  Returns ``(deg Q, distinct poles, squarefree,
@@ -1480,7 +1787,7 @@ def _exact_poles(K_num, omega, nf):
 
     def to_cf(c):
         c = SR(c)
-        return CF(QQ(c.real_part())) + CF(QQ(c.imag_part())) * iC
+        return CF(_to_qq(c.real_part())) + CF(_to_qq(c.imag_part())) * iC
 
     def to_F(e):
         e = SR(e)
@@ -1566,26 +1873,39 @@ def _g4_noise(ctx):
     # colored: Markov-embedded rows, or cumulant kernels (z_kappa symbols)
     cn = model.get('correlated_noises') or {}
     embedded = sorted(k for k in cn if str(k).endswith('_markov_aux'))
-    if not hasattr(ns, '_cumulant_kernels'):   # an expand-cache load skips it
+    src_ns = ns
+    pns = getattr(ctx, 'pipeline_ns', None)
+    if pns is not None and hasattr(pns, '_cumulant_kernels'):
+        src_ns = pns                          # wired: read, never written
+    if not hasattr(src_ns, '_cumulant_kernels'):   # an expand-cache load skips it
         from engine.core.field_theory import _build_cumulant_action
         with _quiet():
-            _build_cumulant_action(ns, model)
-    kernels = getattr(ns, '_cumulant_kernels', {}) or {}
+            _build_cumulant_action(ns, model)   # the analyzer's own namespace
+        src_ns = ns
+    kernels = getattr(src_ns, '_cumulant_kernels', {}) or {}
     noise_class = 'white'
     if kernels:
-        bad = _cumulant_kernel_nonrational(kernels)
+        bad = _cumulant_kernel_nonrational(kernels, ns)
         if bad:
             noise_class = 'colored-nonrational'
             ctx.add('G4_NONRATIONAL_NOISE',
                     f'colored noise kernel(s) with a non-rational spectrum: '
-                    f'{bad[:3]}.',
+                    f'{bad[:3]}.  Phase J integrates the diagrams that carry '
+                    'a smooth noise kernel by its quadrature fallback (no '
+                    'closed form; per-subset tolerance NQUAD_EPSREL).',
                     'use an exponential (Lorentzian) kernel, which is embedded '
-                    'exactly by an auxiliary OU field')
+                    'exactly by an auxiliary OU field (Markov embedding)')
         else:
             noise_class = 'colored-rational'
             ctx.add('G4_COLORED_RATIONAL',
                     f'colored noise with a rational spectrum '
-                    f'({len(kernels)} kernel entr{"y" if len(kernels) == 1 else "ies"}).', '')
+                    f'({len(kernels)} kernel entr{"y" if len(kernels) == 1 else "ies"}); '
+                    'Phase J integrates the diagrams that carry a smooth noise '
+                    'kernel by its quadrature fallback.', '')
+        ctx.ledger_add('consent', 'numeric_fallback',
+                       'diagrams with a smooth (colored) noise kernel are '
+                       'integrated by the quadrature fallback',
+                       declared=ctx.p.allow_numeric_fallback)
     elif embedded:
         noise_class = 'colored-markov-embedded'
         aux = sorted({nm for row in embedded
@@ -1617,24 +1937,101 @@ def _g4_noise(ctx):
                     'check the sign of the noise term (-D*xt^2) and the saddle')
 
 
-def _cumulant_kernel_nonrational(kernels):
-    """Fourier image of each registered smooth cumulant kernel K(tau);
-    returns the entries whose image is not rational in omega."""
-    from sage.all import SR
-    from engine.core.field_theory import fourier_transform
+def _cumulant_kernel_nonrational(kernels, ns=None):
+    """The registered smooth cumulant kernels (``ns._cumulant_kernels``:
+    ``{key: {'kernel_fn', 'legs', ...}}``) whose spectrum is not rational
+    in omega.  The smooth part of ``K(tau)`` (the kernel minus its
+    ``dirac_delta(tau)`` part) has a rational Fourier image exactly when it
+    is a finite sum of ``poly(tau, |tau|) * exp(linear in tau, |tau|) *
+    sin/cos/heaviside(linear in tau)`` terms (:func:`_exp_poly_form`); the
+    symbolic transform itself is not used (it needs sign assumptions on
+    omega for ``exp(-|tau|/c)``).  Returns the offending entries."""
+    from sage.all import SR, dirac_delta
     tau = SR.var('tau')
-    omega = SR.var('omega')
     bad = []
-    for key, fn in kernels.items():
+    for key, entry in kernels.items():
         try:
-            K = SR(fn(tau)) if callable(fn) else SR(fn)
-            img = fourier_transform(K, tau, omega)
-            if img.has(SR.var('tau')) or _offending_factors(
-                    img, [omega], allow_negative_powers=True):
+            if isinstance(entry, dict):
+                fn, legs = entry['kernel_fn'], tuple(entry.get('legs') or ())
+                try:
+                    K = SR(fn(ns, *legs, tau))
+                except TypeError:
+                    K = SR(fn(ns, legs[0], legs[1], tau))
+            elif callable(entry):
+                K = SR(entry(tau))
+            else:
+                K = SR(entry)
+            K = K.expand()
+            c_loc = K.coefficient(dirac_delta(tau))
+            smooth = (K - c_loc * dirac_delta(tau)).expand()
+            if not _exp_poly_form(smooth, tau):
                 bad.append(str(key))
         except Exception:
-            bad.append(f'{key} (Fourier image unavailable)')
+            bad.append(f'{key} (kernel not evaluable)')
     return bad
+
+
+def _exp_poly_form(e, tau):
+    """``e`` is a finite sum of ``tau^n |tau|^m exp(a tau + b |tau|)
+    trig(c tau)^k heaviside(+-tau)`` terms (coefficients free of tau; trig
+    in sin, cos, sinh, cosh), each with an ``exp(... |tau| ...)`` or a
+    one-sided (heaviside) factor.  The decay itself (the sign of ``b``) is
+    not decided for symbolic coefficients."""
+    from sage.all import SR
+    from sage.symbolic.operators import add_vararg, mul_vararg
+    A = SR.var('_analyze_abs_tau')
+    e = SR(e).subs({abs(tau): A})
+    if not (e.has(tau) or e.has(A)):
+        return True
+
+    def linear(arg):
+        try:
+            arg = SR(arg).expand()
+            return all(arg.degree(v) <= 1 for v in (tau, A)) and \
+                arg.is_polynomial(tau) and arg.is_polynomial(A)
+        except Exception:
+            return False
+
+    trig = ('exp', 'sin', 'cos', 'sinh', 'cosh', 'heaviside', 'unit_step')
+    damped = []                       # per term: has an exp(... |tau| ...)
+
+    def factor_ok(f):
+        f = SR(f)
+        if not (f.has(tau) or f.has(A)):
+            return True
+        if f.is_symbol():
+            return True
+        op = f.operator()
+        if op is operator.pow:
+            base, ex = f.operands()
+            if base.is_symbol() and SR(ex).is_integer() and SR(ex) >= 0:
+                return True
+            if _op_name(base.operator()) in trig and SR(ex).is_integer() \
+                    and SR(ex) > 0:
+                if _op_name(base.operator()) == 'exp' and base.has(A):
+                    damped[-1] = True
+                return linear(base.operands()[0])
+            return False
+        name = _op_name(op)
+        if name in trig:
+            if name == 'exp' and f.has(A) or name in ('heaviside', 'unit_step'):
+                damped[-1] = True
+            return linear(f.operands()[0])
+        return False
+
+    terms = e.operands() if e.operator() in (add_vararg, operator.add) else [e]
+    for t in terms:
+        t = SR(t)
+        facs = t.operands() if t.operator() in (mul_vararg, operator.mul) else [t]
+        damped.append(False)
+        if not all(factor_ok(f) for f in facs):
+            return False
+        # a term with no exp(|tau|) / one-sided factor does not decay in both
+        # directions: its spectrum has delta functions (constant, cos(w tau))
+        # or does not exist (tau^2), so it is not a rational function
+        if not damped[-1]:
+            return False
+    return True
 
 
 # ── ledger entries common to every question ───────────────────────────
@@ -1664,3 +2061,466 @@ def _ledger_common(ctx):
         if k not in known:
             ctx.ledger_add('assertion', str(k), f'declared {v!r} (not checked)',
                            declared=True, satisfied=None)
+
+
+# ══ wired mode: the gates inside compute_cumulants (D2) ═══════════════
+#
+# ``compute_cumulants`` builds a :class:`Preflight` and calls one method
+# per pipeline stage boundary.  The gates are the ones ``analyze`` runs,
+# fed with the PIPELINE's own objects (the expanded sectors, the
+# propagator, the mean-field roots, the tier-1 pole record), so they cost
+# no second expansion, solve or inverse; they only read those objects.
+# A stage whose new findings include an ``error`` raises
+# :class:`AnalyzerError`; ``Policy.downgrade`` accepts chosen errors as
+# warnings, and a bug inside a gate (``INTERNAL_ERROR``) is recorded as a
+# warning, never a stop.  Stage boundaries (cheapest first):
+#
+#   declarations  before the expansion: G0, G1 structure (own namespace;
+#                 the action evaluated symbolically, time dependence)
+#   expanded      after the expansion: vertex species, state-dependent
+#                 noise, unpaired fields (the (1,1) sector)
+#   propagator    after build_propagator: G3 propagator class (rational?)
+#   mean_field    after the mean-field solve: G2 (every root, stability,
+#                 fixed_point_index), G3 spatial rates, G4 noise, G1
+#                 undriven fields (structural reachability in K), ledger
+#   poles         after compute_poles_and_residues (Phase J backends):
+#                 G3 pole statistics, causality, stability from poles
+#   (run)         after the backend: G6 run diagnostics, never raises
+
+
+class AnalyzerError(ValueError):
+    """``compute_cumulants`` stopped at an analyzer gate.  ``report``: the
+    :class:`ModelReport` so far; ``findings``: the error findings;
+    ``stage``: the gate boundary (a ``ValueError``, so callers that caught
+    the pipeline's own ``ValueError`` for these cases still do)."""
+
+    def __init__(self, message, report=None, findings=(), stage=''):
+        super().__init__(message)
+        self.report = report
+        self.findings = tuple(findings)
+        self.codes = tuple(f.code for f in self.findings)
+        self.stage = stage
+
+
+def _format_stop(errors, stage, original=None):
+    lines = [f'compute_cumulants stopped by the model analyzer at the '
+             f'{stage!r} stage (before the diagram enumeration):']
+    for f in errors:
+        lines.append(f'  [{f.code}] {f.message}')
+        if f.remedy:
+            lines.append(f'      remedy: {f.remedy}')
+    lines.append("  (policy={'downgrade': ['<CODE>']} accepts a chosen error "
+                 'as a warning; preflight=False turns the analyzer off.)')
+    if original is not None:
+        lines.append(f'  pipeline error: {_exc_text(original)}')
+    return '\n'.join(lines)
+
+
+class Preflight:
+    """The analyzer wired into ``compute_cumulants`` (see the section
+    comment above).  ``taylor_order``: the order the pipeline expands at."""
+
+    def __init__(self, model, question=None, policy=None, *,
+                 taylor_order=None):
+        self.question = _coerce(question, Question, 'question')
+        self.policy = _coerce(policy, Policy, 'policy')
+        ctx = _Ctx(model, self.question, self.policy)
+        ctx.wired = True
+        ctx.use_cache = False
+        self.ctx = ctx
+        self._seen = 0
+        self._taylor = taylor_order
+        self.findings: list[Finding] = []
+        self.stages: list[str] = []
+        self.route = None
+        self.diagnostics: dict = {}
+        self.time_s = 0.0
+
+    # ── bookkeeping ──
+    def _stage(self, name, fns):
+        t0 = time.perf_counter()
+        ctx = self.ctx
+        for fn in fns:
+            try:
+                fn()
+            except Exception as exc:
+                ctx.add('INTERNAL_ERROR',
+                        f'internal error in the {name!r} gate '
+                        f'({getattr(fn, "__name__", "?")}): {_exc_text(exc)}',
+                        'report this model to the maintainers; '
+                        'preflight=False skips the analyzer')
+                ctx.stop_numeric = True
+        new = ctx.findings[self._seen:]
+        self._seen = len(ctx.findings)
+        new = _apply_policy(new, self.policy, ctx)
+        # a gate bug never stops a run (not even under strict)
+        new = [replace(f, level='warning') if f.code == 'INTERNAL_ERROR'
+               else f for f in new]
+        self.findings.extend(new)
+        self.stages.append(name)
+        self.time_s += time.perf_counter() - t0
+        return [f for f in new if f.level == 'error']
+
+    def _check(self, name, fns, original=None):
+        errs = self._stage(name, fns)
+        if errs:
+            raise AnalyzerError(_format_stop(errs, name, original),
+                                self.report(), errs, name)
+
+    def report(self) -> ModelReport:
+        ctx = self.ctx
+        known = {f.name for f in fields(ModelTraits)}
+        t = dict(ctx.t)
+        t['analysis_time_s'] = self.time_s
+        traits = ModelTraits(**{k: v for k, v in t.items() if k in known})
+        route = self.route
+        return ModelReport(
+            traits=traits, findings=tuple(_sorted_findings(self.findings)),
+            ledger=tuple(ctx.ledger),
+            route=route.name if route is not None else 'unrouted',
+            question=self.question, policy=self.policy,
+            route_detail=route.as_dict() if route is not None else {},
+            stages=tuple(self.stages), diagnostics=dict(self.diagnostics))
+
+    def traits_dict(self) -> dict:
+        return dict(self.ctx.t)
+
+    # ── stage boundaries ──
+    def declarations(self):
+        ctx = self.ctx
+
+        def g0():
+            _g0_declarations(ctx)
+            if self._taylor is not None:
+                ctx.t['taylor_order'] = int(self._taylor)
+
+        def g1():
+            _g1_structure(ctx)
+
+        self._check('declarations', [g0, g1])
+
+    def expanded(self, ft):
+        ctx = self.ctx
+
+        def g1():
+            if ctx.ns is None or ctx.action is None or ctx.stop_numeric:
+                return
+            ctx.pipeline_ns = ft._ns
+            ctx.ring_names = list(ft._ns._ring_var_names)
+            ctx.n_tilde = int(ft._n_tilde)
+            keep = {}
+            for key, poly in ft.sectors().items():
+                # dict form only where a gate reads coefficients
+                keep[key] = (dict(poly.dict())
+                             if key == (1, 1) or (key[0] >= 2 and key[1] == 0)
+                             else True)
+            ctx.sectors = keep
+            ctx.t['expand_source'] = 'pipeline'
+            _species_findings(ctx, keep)
+            _k_coeff_matrix(ctx)
+
+        self._check('expanded', [g1])
+
+    def propagator(self, prop):
+        ctx = self.ctx
+
+        def g3():
+            if ctx.stop_numeric or ctx.K_coeff is None:
+                return
+            ctx.K_ft, ctx.omega = prop['K_ft'], prop['omega']
+            if ctx.t.get('spatial'):
+                ctx.t['propagator_class'] = 'spatial'
+                return
+            _g3_rational(ctx)
+
+        self._check('propagator', [g3])
+
+    def mean_field(self, mf):
+        ctx = self.ctx
+
+        def g2():
+            if ctx.stop_numeric or ctx.fundamental is None:
+                return
+            if ctx.model.get('equations'):
+                _w_g2_dae(ctx, mf)
+            else:
+                _g2_iteration_record(ctx, mf, ctx.q.fixed_point_index)
+            _check_positivity(ctx)
+
+        def g3s():
+            if ctx.t.get('spatial') and ctx.K_ft is not None:
+                _g3_spatial(ctx)
+
+        def g4():
+            _g4_noise(ctx)
+
+        def g1_driven():
+            _w_g1_driven(ctx)
+
+        def ledger():
+            _ledger_common(ctx)
+
+        self._check('mean_field', [g2, g3s, g4, g1_driven, ledger])
+
+    def failed(self, stage, exc):
+        """A pipeline stage (``'expanded'``: the expansion and its saddle
+        sanity check; ``'mean_field'``: the solve) raised ``exc``: diagnose
+        it with the analyzer's own mean-field solve (DAE models; it needs no
+        expansion) and raise ``AnalyzerError`` (from ``exc``) when a gate
+        names the cause; otherwise return (the caller re-raises ``exc``
+        unchanged)."""
+        ctx = self.ctx
+
+        def g2():
+            if (ctx.stop_numeric or 'G2' in {f.gate for f in ctx.findings}
+                    or not ctx.model.get('equations')):
+                return
+            _g2_dae_gate(ctx)
+
+        errs = self._stage(stage, [g2])
+        if errs:
+            raise AnalyzerError(_format_stop(errs, stage, exc),
+                                self.report(), errs, stage) from exc
+
+    def mean_field_failed(self, exc):
+        self.failed('mean_field', exc)
+
+    def poles(self, prop):
+        ctx = self.ctx
+
+        def g3():
+            if (ctx.stop_numeric or ctx.num_params is None
+                    or ctx.t.get('propagator_class') != 'rational'):
+                return
+            pa = prop.get('pole_analysis')
+            if pa:
+                ctx.t['pole_source'] = 'pipeline'
+                res = (pa['degree'], list(pa['poles']), pa['squarefree'],
+                       list(pa['delta']), list(pa['improper']))
+            else:
+                # the pipeline's exact tier failed before Q(omega) (it then
+                # used the numerical cofactor tier): the analyzer's own
+                # exact inverse (budget _EXACT_POLE_BUDGET_SEC)
+                ctx.ledger_add('consent', 'numeric_fallback',
+                               'poles and residues from the numerical '
+                               'cofactor tier (the exact tier failed)',
+                               declared=ctx.p.allow_numeric_fallback)
+                res, reason = None, 'the exact inverse failed'
+                K_at, free, K_num = _numeric_K(ctx)
+                if not free:
+                    try:
+                        res = _exact_poles(K_num, ctx.omega, ctx.n_tilde)
+                    except Exception as exc:
+                        reason = _exc_text(exc)
+                if res is None:
+                    ctx.add('G3_POLES_UNAVAILABLE',
+                            'the pipeline did not take its exact (tier-1) pole '
+                            f'path and the analyzer\'s exact inverse failed '
+                            f'({reason}): the pole statistics (repeated / close '
+                            '/ acausal poles) are not available.', '')
+                    return
+                ctx.t['pole_source'] = 'exact'
+            _g3_pole_findings(ctx, res)
+
+        self._check('poles', [g3])
+
+    def after_run(self, result, counters, *, complete, evaluated):
+        """G6 (never raises): ``counters``: the Phase J counter deltas of
+        the run; ``complete``: no evaluation ran in worker processes;
+        ``evaluated``: the run evaluated Phase J on a tau grid."""
+        ctx = self.ctx
+        self._stage('run', [lambda: _g6(ctx, self, result, counters,
+                                         complete, evaluated)])
+
+
+def _w_g2_dae(ctx, mf):
+    """G2 from the pipeline's DAE result: every root it found (with its
+    stability annotation when ``stability_analysis`` is on), its choice
+    and its selectable set."""
+    ctx.t['mf_solver'] = 'dae'
+    prs = list(mf.get('mf_all_roots') or [])
+    roots = [r['values'] for r in prs]
+    recs, any_dynamic = _g2_dae_records(ctx, roots, pipeline_records=prs)
+    stab_on = bool(ctx.model.get('stability_analysis', False))
+    selectable = ([i for i, r in enumerate(prs) if r.get('stable')]
+                  if stab_on else list(range(len(prs))))
+    chosen = mf.get('mf_values')
+    selected = next((i for i, r in enumerate(roots) if r == chosen), None)
+    fpi = ctx.q.fixed_point_index
+    _g2_dae_classify(ctx, recs, any_dynamic, stab_on, fpi,
+                     0 if fpi is None else int(fpi),
+                     selected=selected, selectable=selectable)
+    ctx.num_params = mf['num_params']
+
+
+def _w_g1_driven(ctx):
+    """Undriven fields by structural reachability: ``x_j`` is driven when a
+    chain ``j -> c -> ... -> a`` of non-zero ``K[i][c]`` (the equation of
+    ``x_i`` contains ``x_c``) reaches a noisy response ``a``; with every
+    diagonal entry non-zero this is the non-zero pattern of ``G = K^-1``
+    (Neumann series of ``D^-1 N``).  It never flags a driven field; an
+    exact numerical cancellation inside ``G`` (a structurally reachable
+    field the numbers leave undriven) is not detected.  Without a non-zero
+    diagonal the numerical probe of ``analyze`` runs instead."""
+    if (ctx.stop_numeric or ctx.K_coeff is None or ctx.num_params is None
+            or ctx.t.get('spatial')):
+        return
+    from sage.all import SR
+    K, nf = ctx.K_coeff, ctx.n_tilde
+    nz = [[not SR(K[i][j]).is_trivial_zero() for j in range(nf)]
+          for i in range(nf)]
+    if not all(nz[i][i] for i in range(nf)):
+        if ctx.K_ft is not None:
+            _g1_driven(ctx)
+        return
+    _, sources, _ = _noise_matrix(ctx)
+    reach = set(sources)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(nf):
+            if i not in reach and any(nz[i][c] and c in reach
+                                      for c in range(nf)):
+                reach.add(i)
+                changed = True
+    phys = ctx.ring_names[nf:]
+    _undriven_finding(ctx, [phys[j] for j in range(nf) if j not in reach],
+                      sources)
+
+
+# ── G6: after the run ─────────────────────────────────────────────────
+
+#: Phase J counters reported by G6 (``final_integral._RUNTIME_COUNTERS``).
+G6_COUNTERS = (
+    'divergent_subsets', 'divergent_cancelled', 'dd_ill_conditioned',
+    'dd_err_ratio_max', 'dbm_error_ratio_max', 'dbm_declined_ill_conditioned',
+    'dd_overflow', 'dd_unsupported', 'nquad_calls',
+    'nquad_hardened_quad_flags', 'nquad_hardened_uncertified',
+    'dd_polygon', 'dd_interval', 'dd_poset', 'dd_grouped_m0', 'dbm_answered',
+    'dd_err_abs_sum', 'dbm_err_abs_sum')
+
+
+def _g6(ctx, pf, result, c, complete, evaluated):
+    """M8 certificate verdicts, error accounting and the total-relative
+    accuracy estimate.
+
+    The estimate.  Every closed-form subset integral (the DD kernels and the
+    DBM route) carries a rounding-error estimate ``1e-15 * sum|term|``
+    (``dbm_integral.COND_ERR_FACTOR`` times the magnitude of its expansion,
+    the routes' own convention); the counters ``dd_err_abs_sum`` /
+    ``dbm_err_abs_sum`` add them up over every subset evaluation of the
+    run.  Their sum ``E`` estimates ``sum_tau |delta C(tau)|`` over the tau
+    grid (triangle inequality; the Wick-permutation compensation only
+    divides), so ``R = E / sum_tau |C(tau)|`` estimates the grid-L1
+    relative error of the cumulant from these routes.  It is an ESTIMATE,
+    not a rigorous bound: the 1e-15 factor is the usual order of the
+    rounding of a sum, not its worst case for long sums, and errors already
+    in the poles and residues are not in it.  No estimated subset
+    (``n_estimated_subsets == 0``) gives ``R = None`` (nothing checked); a
+    non-finite cumulant gives ``R = inf``.  Threshold: ``Question.accuracy`` when
+    declared, else ``_G6_DEFAULT_RTOL = 1e-10``, the tolerance each route
+    accepts ONE subset at (``COND_RTOL``; ``NQUAD_EPSREL`` is the same
+    value): above it, cancellation between subsets has amplified their
+    rounding beyond what any single subset is allowed.  Subsets answered by
+    the quadrature fallback (``nquad_calls``) or as exact zeros carry no
+    estimate and are reported, not bounded."""
+    d = pf.diagnostics
+    d['evaluated'] = bool(evaluated)
+    d['counters_complete'] = bool(complete)
+    d['accuracy_estimate'] = None
+    if not evaluated:
+        ctx.add('G6_NOT_EVALUATED',
+                'no Phase J tau-grid evaluation ran inside compute_cumulants '
+                '(spatial backend, or k >= 3 where the integrals run when the '
+                'returned callables are evaluated): no run diagnostics.', '')
+        return
+    for k in G6_COUNTERS:
+        d[k] = c.get(k, 0)
+    if not complete:
+        ctx.add('G6_COUNTERS_INCOMPLETE',
+                'the tau grid was evaluated in worker processes '
+                '(parallel=True), whose Phase J counters do not reach this '
+                'process: the run diagnostics cover the parent process only.',
+                'pass parallel=False for complete run diagnostics')
+    n_div = int(c.get('divergent_subsets', 0))
+    if n_div:
+        ctx.add('G6_DIVERGENT_SUBSETS',
+                f'{n_div} subset integral(s) fail the convergence certificate '
+                '(an open direction that does not decay); their boxed fallback '
+                'values are in the cumulant (divergence policy).',
+                "rerun with DAEDALUS_PHASE_J_ON_DIVERGENCE=warn to name them, "
+                "or 'raise' to stop; a divergent subset usually means a "
+                'marginal or unstable mode')
+    if c.get('divergent_cancelled', 0):
+        ctx.add('G6_DIVERGENT_CANCELLED',
+                f'{c["divergent_cancelled"]} pole-tuple group(s) fail the '
+                'certificate with an exactly cancelling coefficient (dropped, '
+                'not divergent).', '')
+    n_ill = int(c.get('dd_ill_conditioned', 0)) + int(
+        c.get('dbm_declined_ill_conditioned', 0))
+    if n_ill:
+        ctx.add('G6_ILL_CONDITIONED',
+                f'{c.get("dd_ill_conditioned", 0)} closed-form subset sum(s) '
+                f'above their own acceptance (worst ratio '
+                f'{float(c.get("dd_err_ratio_max", 0.0)):.3g}) and '
+                f'{c.get("dbm_declined_ill_conditioned", 0)} DBM call(s) '
+                'declined as ill-conditioned; whether they matter for the '
+                'cumulant is the accuracy estimate (G6_ACCURACY).', '')
+    n_q = int(c.get('nquad_calls', 0))
+    if n_q:
+        ctx.add('G6_NQUAD_FALLBACK',
+                f'{n_q} subset evaluation(s) went to the quadrature fallback '
+                f'(per-subset tolerance NQUAD_EPSREL; '
+                f'{c.get("nquad_hardened_quad_flags", 0)} flagged quad '
+                'call(s)); they are not in the accuracy estimate.', '')
+    C = result.get('C_tau')
+    E = float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
+    n_est = sum(int(c.get(k, 0)) for k in ('dd_polygon', 'dd_interval',
+                                           'dd_poset', 'dbm_answered'))
+    Ca = np.asarray(C, dtype=complex) if C is not None else np.zeros(0, complex)
+    S = float(np.sum(np.abs(Ca)))
+    if not complete:
+        R = None                              # the estimates stayed in the workers
+    elif Ca.size and not np.all(np.isfinite(Ca)):
+        R = float('inf')                      # a NaN / inf cumulant
+    elif n_est == 0 and E == 0:
+        R = None                              # nothing was estimated
+    elif S > 0:
+        R = E / S
+    else:
+        R = 0.0 if E == 0 else float('inf')
+    thr = ctx.q.accuracy if ctx.q.accuracy is not None else _G6_DEFAULT_RTOL
+    d.update(error_estimate_sum=E, cumulant_l1=S, accuracy_estimate=R,
+             accuracy_threshold=float(thr), n_estimated_subsets=n_est)
+    src = 'question.accuracy' if ctx.q.accuracy is not None else \
+        'per-subset acceptance COND_RTOL'
+    Rs = 'n/a' if R is None else f'{R:.3g}'
+    if R is not None:
+        why = ''
+    elif not complete:
+        why = '; the grid was evaluated in worker processes, nothing was checked'
+    else:
+        why = '; no subset carried an estimate, nothing was checked'
+    ctx.add('G6_ACCURACY',
+            f'accuracy estimate R = {Rs}: summed error estimates {E:.3g} of '
+            f'{n_est} closed-form subset evaluation(s) against '
+            f'sum_tau |C(tau)| = {S:.6g} over the tau grid (threshold '
+            f'{thr:g}, {src}){why}.',
+            'pass parallel=False for the accuracy estimate'
+            if (R is None and not complete) else '')
+    if R is not None and R > thr:
+        ctx.add('G6_ACCURACY_LOW',
+                f'the accuracy estimate R = {Rs} exceeds the threshold {thr:g} '
+                f'({src}): cancellation between subsets has amplified their '
+                'rounding errors (or the cumulant is not finite); the '
+                'cumulant may have fewer correct digits.',
+                'check G6_ILL_CONDITIONED and G3_CLOSE_POLES (close or '
+                'near-degenerate poles); a looser question.accuracy accepts '
+                'the result')
+    complete_note = '' if complete else ' (parent process only)'
+    ctx.ledger_add('approximation', 'phase_j_accuracy',
+                   f'grid-L1 relative error estimate R = {Rs}{complete_note} '
+                   f'against threshold {thr:g}',
+                   declared=ctx.q.accuracy is not None,
+                   satisfied=(R <= thr) if (complete and R is not None)
+                   else None)

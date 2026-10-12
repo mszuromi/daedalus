@@ -51,7 +51,7 @@ Shipped capabilities:
 """
 from api.compute     import compute_cumulants
 from api.report      import generate_report
-from api.save        import save_npz, save_csv, load_npz, params_slug
+from api.save        import save_npz, save_csv, load_npz, params_slug, load_provenance
 from api.access      import MeanField, Parameters, normalize_external_fields
 from api._precompute import precompute
 
@@ -64,7 +64,7 @@ __version__ = '0.2.0'
 __all__ = [
     '__version__',
     'compute_cumulants', 'generate_report',
-    'save_npz', 'save_csv', 'load_npz', 'params_slug',
+    'save_npz', 'save_csv', 'load_npz', 'params_slug', 'load_provenance',
     'MeanField', 'Parameters', 'normalize_external_fields',
     'precompute',
 ]

@@ -1133,6 +1133,13 @@ _RUNTIME_COUNTERS = {
     # worst estimated-error / accepted-error ratio, and the subsets above 1.
     'dd_err_ratio_max': 0.0,
     'dd_ill_conditioned': 0,
+    # D2 (G6 of ``api.analyze``): the summed absolute rounding-error
+    # estimates (``COND_ERR_FACTOR`` x the expansion's magnitude) of the
+    # box-free subset sums and of the answered DBM closed forms, for the
+    # total-relative accuracy bound at the ``compute_cumulants`` level.
+    # Bookkeeping only.
+    'dd_err_abs_sum': 0.0,
+    'dbm_err_abs_sum': 0.0,
     # DBM calls without a box (``SEMIINF_CHAIN``), with the slow-mode box
     # ±max(200, 40/κ_min) wider than ±200 (DD kernels only), and declined as
     # divergent (box-free):
@@ -4983,6 +4990,7 @@ def _integrate_subset_dbm(
         _RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] += 1
         return _bail('dbm_ill_conditioned')
     _RUNTIME_COUNTERS['dbm_answered'] += 1
+    _RUNTIME_COUNTERS['dbm_err_abs_sum'] += _dbm.COND_ERR_FACTOR * res.magnitude
     if res.status == _dbm.STATUS_EMPTY:
         _RUNTIME_COUNTERS['dbm_empty'] += 1
     elif res.error_ratio > _RUNTIME_COUNTERS['dbm_error_ratio_max']:
@@ -5119,6 +5127,7 @@ def _dd_accuracy(total, mag, scale):
     err = _dbm.COND_ERR_FACTOR * mag
     if err == 0:
         return
+    _RUNTIME_COUNTERS['dd_err_abs_sum'] += err
     ratio = err / accepted if accepted > 0 else math.inf
     if ratio > _RUNTIME_COUNTERS['dd_err_ratio_max']:
         _RUNTIME_COUNTERS['dd_err_ratio_max'] = ratio

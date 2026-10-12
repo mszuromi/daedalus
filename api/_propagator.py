@@ -78,8 +78,59 @@ def _run_with_timeout(fn, timeout_sec, *args, **kwargs):
         _signal.signal(_signal.SIGALRM, old_handler)
 
 
+def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
+                          squarefree=None):
+    """Fill ``out`` (the ``prop['pole_analysis']`` record read by the
+    analyzer's G3 gate, ``api.analyze``) from the exact inverse: ``degree``
+    of ``Q = lcm(entry denominators)``, its distinct roots in every half
+    plane sorted by ``(Im, Re)``, ``squarefree``, and the entries whose
+    reduced form is constant at large omega (``delta``) or grows
+    (``improper``).  Bookkeeping only: nothing in the pipeline reads it."""
+    from sage.all import CDF, PolynomialRing
+    delta, improper = [], []
+    for i in range(nf):
+        for j in range(nf):
+            e = G_ft_F[i, j]
+            if e == 0:
+                continue
+            dn, dd = e.numerator().degree(), e.denominator().degree()
+            if dn > dd:
+                improper.append((i, j))
+            elif dn == dd:
+                delta.append((i, j))
+    if Q_poly is None:
+        out.update(degree=0, poles=(), squarefree=True, delta=tuple(delta),
+                   improper=tuple(improper))
+        return
+    if roots is None and Q_poly.degree() > 0:
+        Qc = PolynomialRing(CDF, 'om_c')(
+            [complex(c) for c in Q_poly.coefficients(sparse=False)])
+        roots = Qc.roots(CDF)
+    poles = (sorted((complex(r) for r, _ in roots),
+                    key=lambda p: (p.imag, p.real))
+             if Q_poly.degree() > 0 else [])
+    if squarefree is None:
+        try:
+            squarefree = bool(Q_poly.is_squarefree())
+        except (AttributeError, TypeError):
+            squarefree = None
+    out.update(degree=int(Q_poly.degree()), poles=tuple(poles),
+               squarefree=squarefree, delta=tuple(delta),
+               improper=tuple(improper))
+
+
+def _record_pole_analysis_safe(out, *args, **kw):
+    """:func:`_record_pole_analysis` that can never raise: a failure leaves
+    ``out`` empty, so it never changes which tier computes the residues."""
+    try:
+        _record_pole_analysis(out, *args, **kw)
+    except Exception:
+        out.clear()
+
+
 def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
-                                                verbose=False):
+                                                verbose=False,
+                                                analysis_out=None):
     """Compute (pole_vals, C_mats) via EXACT polynomial fraction-field
     arithmetic in CyclotomicField(4)[ω] = QQ[i][ω].
 
@@ -180,6 +231,8 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 else:
                     Q_poly = Q_poly.lcm(d_ij)
         if Q_poly is None:
+            if analysis_out is not None:
+                _record_pole_analysis_safe(analysis_out, G_ft_F, None, nf)
             return None, None, None
 
         # Higher-multiplicity (Jordan-block) poles need the
@@ -195,6 +248,9 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
         # should learn how to absorb ``τ^k · exp(-pt)`` modes.
         try:
             if not Q_poly.is_squarefree():
+                if analysis_out is not None:
+                    _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly,
+                                               nf, squarefree=False)
                 if verbose:
                     print(
                         '[propagator] polynomial-fracfield: Q(ω) is '
@@ -212,6 +268,9 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
         Q_prime_cdf = Q_cdf.derivative()
 
         roots = Q_cdf.roots(CDF)
+        if analysis_out is not None:
+            _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly, nf,
+                                       roots=roots)
         pole_vals = [complex(r) for r, _ in roots
                      if complex(r).imag > 1e-9]
         pole_vals.sort(key=lambda p: (p.imag, p.real))
@@ -921,9 +980,14 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
     omega  = prop['omega']
 
     # ── Tier 1: exact polynomial fraction-field path ──────────────
+    pole_analysis = {}
     pole_vals_tier1, C_mats_tier1, D_delta_tier1 = (
         _compute_residues_via_polynomial_fracfield(
-            K_ft, omega, num_params, nf, verbose=verbose))
+            K_ft, omega, num_params, nf, verbose=verbose,
+            analysis_out=pole_analysis))
+    # the exact pole record for the analyzer's G3 gate (empty when the
+    # exact path failed before Q(omega); bookkeeping only)
+    prop['pole_analysis'] = pole_analysis or None
     if pole_vals_tier1 is not None:
         prop['pole_vals'] = pole_vals_tier1
         prop['C_mats']    = C_mats_tier1
