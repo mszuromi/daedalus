@@ -501,25 +501,31 @@ def test_assemble_refuses_to_overwrite_the_baseline(monkeypatch):
 def test_fixture_report_flag_context_restores():
     import engine.integration.time_domain.final_integral as FI
     from tests.tools import phase_j_subset_diff as H
-    before = (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-              FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK, FI.POLYGON_BBOX_CAP)
+    names = ('THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
+             'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'SEMIINF_CHAIN',
+             'UNBOUNDED_2D', 'CHAIN_UPPERS_KERNEL', 'POLYGON_BBOX_CAP')
+    before = tuple(getattr(FI, n) for n in names)
     with pytest.raises(RuntimeError):
         with H.phase_j_flags('legacy') as flags:
             assert FI.THETA0_CONST_ROW_MODE == 'legacy_clip'
             assert FI.STRUCTURAL_ZEROS is False
             assert FI.NQUAD_HARDENED is False
             assert FI.USE_DBM_FALLBACK is False
+            # the box-free switches too, since 0.2.0 made them the default
+            assert FI.USE_PHASE_J_DD_KERNELS is False
+            assert FI.SEMIINF_CHAIN is False
+            assert FI.UNBOUNDED_2D == 'box'
+            assert flags == FI._legacy_umbrella_flags()
             assert set(flags) == {'THETA0_CONST_ROW_MODE',
                                   'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
-                                  'USE_DBM_FALLBACK'}
+                                  'USE_DBM_FALLBACK',
+                                  'USE_PHASE_J_DD_KERNELS',
+                                  'CHAIN_UPPERS_KERNEL', 'SEMIINF_CHAIN',
+                                  'UNBOUNDED_2D'}
             raise RuntimeError('restored even on error')
-    assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-            FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK,
-            FI.POLYGON_BBOX_CAP) == before
+    assert tuple(getattr(FI, n) for n in names) == before
     with H.phase_j_flags('default'):
-        assert (FI.THETA0_CONST_ROW_MODE, FI.STRUCTURAL_ZEROS,
-                FI.NQUAD_HARDENED, FI.USE_DBM_FALLBACK,
-                FI.POLYGON_BBOX_CAP) == before
+        assert tuple(getattr(FI, n) for n in names) == before
     with pytest.raises(ValueError):
         with H.phase_j_flags('nope'):
             pass
