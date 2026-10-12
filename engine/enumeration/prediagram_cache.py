@@ -666,8 +666,12 @@ def v1_exists(root, k, ell):
 
 # ── Cert <-> record ─────────────────────────────────────────────────────────
 
-def record_from_cert(blob):
-    """Rebuild one ``(D, G, leaves, internal)`` record from a packed cert.
+def _record_from_cert_reference(blob):
+    """Reference implementation of :func:`record_from_cert` (the test oracle).
+
+    Rebuilds one ``(D, G, leaves, internal)`` record from a packed cert through
+    three intermediate Sage graphs.  Kept verbatim: ``record_from_cert`` must
+    return exactly what this returns.
 
     ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
     the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
@@ -696,6 +700,95 @@ def record_from_cert(blob):
     leaves = [v for v in D.vertices() if D.degree(v) == 1]
     internal = [v for v in D.vertices() if D.degree(v) != 1]
     return (D, G, leaves, internal)
+
+
+_VERTEX_ORDER_MEMO = {}
+
+
+def _canon_vertex_order(order):
+    """``vertices()`` of the graph ``cert_to_graph`` starts from, as Sage's
+    sparse backend iterates it.
+
+    Not ``range(order)`` once ``order`` exceeds the backend's initial capacity
+    (10): the label 10 then gets an explicit slot and comes out FIRST.  The
+    reference's final vertex list inherits that order (it relabels this graph
+    and adds the result's ``vertices()`` to the new ones), and its ``leaves`` /
+    ``internal`` lists follow it, so it is asked of Sage itself, once per
+    ``order``, instead of being assumed.
+    """
+    got = _VERTEX_ORDER_MEMO.get(order)
+    if got is None:
+        H = Graph(multiedges=True, loops=False)
+        H.add_vertices(range(order))
+        got = _VERTEX_ORDER_MEMO[order] = tuple(H.vertices())
+    return got
+
+
+def record_from_cert(blob):
+    """Rebuild one ``(D, G, leaves, internal)`` record from a packed cert.
+
+    ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
+    the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
+    ``k..|V|-1``) that v1 records carry and that ``type_assignment`` relies on
+    when it walks ``leaves`` positionally.
+
+    Edge labels are re-issued as ``0..|E|-1`` so that parallel edges stay
+    distinguishable as ``(u, v, label)`` dict keys.
+
+    Bit-for-bit the record of :func:`_record_from_cert_reference` (same vertex
+    lists and orders, same edge multiset, labels and iteration order, same
+    ``leaves``/``internal``).  The degrees, the leaves-first relabelling and
+    the sorted edge list are computed in plain Python from the packed bytes,
+    so each of ``D`` and ``G`` is built once instead of the reference's three
+    Sage graphs plus a per-vertex ``D.degree`` call.  Two details are
+    deliberate copies of the reference rather than tidier choices:
+
+    * Vertices go in as ``[perm[v] for v in canonical_order]``, the order the
+      reference's relabelled graph hands over, because that order fixes the
+      backend's slot assignment and hence the iteration order of
+      ``vertices()`` and ``edges()`` (see :func:`_canon_vertex_order`).
+    * Edges go in through ``add_edges`` in sorted order; the ``data=``
+      constructors are faster still but iterate the edges in a different
+      order.
+    """
+    n = len(blob)
+    order = blob[0] if n else 0
+    us = blob[1:n:2]
+    vs = blob[2:n:2]
+    if (n - 1) % 2 or any(u >= order or v >= order or u == v
+                          for u, v in zip(us, vs)):
+        # Malformed cert: let the reference produce its own behaviour.
+        return _record_from_cert_reference(blob)
+    deg = [0] * order
+    for u in us:
+        deg[u] += 1
+    for v in vs:
+        deg[v] += 1
+    n_leaves = deg.count(1)
+    perm = [0] * order
+    next_leaf, next_internal = 0, n_leaves
+    for x in range(order):
+        if deg[x] == 1:
+            perm[x] = next_leaf
+            next_leaf += 1
+        else:
+            perm[x] = next_internal
+            next_internal += 1
+    edges = sorted([(perm[u], perm[v]) for u, v in zip(us, vs)])
+    verts = [perm[v] for v in _canon_vertex_order(order)]
+
+    G = Graph(multiedges=True, loops=False)
+    G.add_vertices(verts)
+    G.add_edges(edges)
+
+    D = DiGraph(multiedges=True, loops=False)
+    D.add_vertices(verts)
+    D.add_edges([(u, v, i) for i, (u, v) in enumerate(edges)])
+
+    vertices = D.vertices()
+    return (D, G,
+            [v for v in vertices if v < n_leaves],
+            [v for v in vertices if v >= n_leaves])
 
 
 def records_from_certs(certs):
