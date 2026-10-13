@@ -23,7 +23,7 @@ question (:class:`Question`: ``k``, ``external_fields``, ``max_ell``,
 the policy (:class:`Policy`: ``strict``/``permissive``, consents,
 the stochastic interpretation, assertions).
 
-**Detected** by gates G0-G4, cheapest first.  Each returns
+**Detected** by gates G0-G5, cheapest first.  Each returns
 :class:`Finding` objects (``code``, ``level`` ``error|warning|info``,
 ``message``, ``remedy``) instead of raising; ``strict`` promotes warnings
 to errors.
@@ -43,6 +43,19 @@ to errors.
 - G4 the noise class: white, colored (rational spectrum or not, Markov
   embedded), cumulants of order >= 3, cross-correlations, a non-negative
   covariance at the saddle.
+
+- G5 numerical regime advisories (D3): the loop-parameter estimate ``g_eff``
+  (the one-loop/tree size from the couplings, the tree variance and the
+  noise amplitude; definition in ``_g_eff``) with a warning when it is
+  not small, and for a non-polynomial action a check that the Taylor series
+  of the response about the saddle still shrinks at 3 tree standard
+  deviations.  The pole statistics (rate range, fast/slow ratio, close and
+  repeated poles) are traits and G3 findings with remedies.  Read-only:
+  they never change a number and never raise (``strict`` promotes the two
+  warnings like any other).
+
+``report.table()`` (``str(report)``) is the one-table summary of at most 100
+columns; ``report.summary()`` is the long form.
 
 The assumptions ledger lists every consent, convention, assertion and
 approximation a result for this question would depend on.
@@ -142,6 +155,10 @@ FINDING_CODES = {
     'G3_SPATIAL_FORM':           ('G3', 'info'),
     'G3_MASSLESS':               ('G3', 'warning'),
     'G3_SPATIAL_UNSTABLE':       ('G3', 'error'),
+    # G5 numerical regime advisories (D3)
+    'G5_LOOP_PARAMETER':         ('G5', 'warning'),
+    'G5_TAYLOR_RADIUS':          ('G5', 'warning'),
+    'G5_ADVISORY_SKIPPED':       ('G5', 'info'),
     # G6 after the run (D2; recorded, never raised)
     'G6_ACCURACY':               ('G6', 'info'),
     'G6_ACCURACY_LOW':           ('G6', 'warning'),
@@ -318,6 +335,15 @@ class ModelTraits:
     pole_cluster_status: Optional[str] = None
     pole_cluster_kappa: Optional[float] = None   # largest cancellation factor
     fast_slow_ratio: Optional[float] = None
+    pole_rate_min: Optional[float] = None   # min decay rate Im(pole) > 0
+    pole_rate_max: Optional[float] = None
+    # G5 (D3): tree std of the physical components, the loop-parameter
+    # estimate g_eff (definition: ``_g_eff``) with its largest contributions,
+    # and the largest ratio of successive Taylor terms at 3 tree std
+    tree_std: tuple = ()
+    loop_parameter_estimate: Optional[float] = None
+    loop_parameter_detail: str = ''
+    taylor_radius_ratio: Optional[float] = None
     delta_component: Optional[bool] = None
     causal: Optional[bool] = None
     pole_source: Optional[str] = None     # 'exact' | 'pipeline'
@@ -388,6 +414,16 @@ class ModelReport:
     def has(self, code: str) -> bool:
         return code in self.codes
 
+    def table(self) -> str:
+        """The compact report: one plain-text table (at most 100 columns)
+        with the traits that matter, the route, the regime advisories
+        (``g_eff``), the pole statistics, the cost when known and the
+        findings by level (one line each, message truncated; ``summary()``
+        has everything).  ``str(report)`` is the same text."""
+        return _report_table(self)
+
+    __str__ = table
+
     def summary(self) -> str:
         t = self.traits
         lines = [f'Model {t.name!r}: '
@@ -412,6 +448,119 @@ class ModelReport:
             for k, v in self.diagnostics.items():
                 lines.append(f'  {k:26s} {v!r}')
         return '\n'.join(lines)
+
+
+#: Width of ``ModelReport.table()`` (plain text, fits a 100-column terminal).
+TABLE_WIDTH = 100
+
+
+def _num(x, nd=3) -> str:
+    """Compact number for the report table (``-`` for ``None``)."""
+    if x is None:
+        return '-'
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if x == 0:
+        return '0'
+    if not math.isfinite(x):
+        return str(x)
+    return f'{x:.{nd}g}'
+
+
+def _yn(x) -> str:
+    return '-' if x is None else ('yes' if x else 'no')
+
+
+def _wrap_rows(label: str, text: str, width: int = TABLE_WIDTH) -> list:
+    """``label`` column (10 wide) + ``text`` wrapped to ``width``."""
+    import textwrap
+    pad = ' ' * 11
+    lines = textwrap.wrap(text, width=width - 11,
+                          break_on_hyphens=False) or ['']
+    return [f'{label:<10} {lines[0]}'] + [pad + ln for ln in lines[1:]]
+
+
+def _report_table(rep) -> str:
+    """The compact plain-text report (see ``ModelReport.table``)."""
+    t = rep.traits
+    n_e, n_w = len(rep.errors), len(rep.warnings)
+    n_i = len(rep.by_level('info'))
+    status = 'OK' if not n_e else f'{n_e} ERROR(S)'
+    rule = '-' * TABLE_WIDTH
+    head = f'Model report: {t.name}'
+    stat = f'[{status}; {n_w} warning(s), {n_i} info]'
+    out = [head + stat.rjust(max(1, TABLE_WIDTH - len(head))), rule]
+    q = rep.question
+    if q is not None and (q.k is not None or q.max_ell is not None):
+        out += _wrap_rows('question', f'k={q.k if q.k is not None else "-"}  '
+                          f'max_ell={q.max_ell if q.max_ell is not None else "-"}'
+                          + (f'  external={list(q.external_fields)}'
+                             if q.external_fields else ''))
+    route = rep.route
+    out += _wrap_rows('route', route.split(':')[0] if route.startswith('unrouted')
+                      else route)
+    kind = 'spatial (d=%d)' % t.spatial_dim if t.spatial else 'temporal'
+    out += _wrap_rows(
+        'model', f'{kind}; {t.n_physical} physical / {t.n_response} response '
+        f'component(s); {t.n_parameters} parameter(s); Taylor order '
+        f'{t.taylor_order}; time-homogeneous {_yn(t.time_homogeneous)}')
+    out += _wrap_rows(
+        'vertices', f'polynomial {_yn(t.polynomial)}; species '
+        f'{list(t.vertex_species) or "none"}; max degree {t.max_vertex_degree}; '
+        f'state-dependent noise {_yn(t.state_dependent_noise)}')
+    out += _wrap_rows(
+        'noise', f'{t.noise_class or "-"}; Gaussian {_yn(t.noise_gaussian)}; '
+        f'cross-correlated {_yn(t.noise_cross_correlated)}')
+    out += _wrap_rows(
+        'saddle', f'{_num(t.n_saddles)} found, {_num(t.n_stable_saddles)} stable; '
+        f'selected #{_num(t.saddle_index)} stable {_yn(t.stable)}; marginal '
+        f'modes {_num(t.n_marginal_modes)}')
+    if t.spatial:
+        out += _wrap_rows(
+            'spectrum', f'min decay rate over q {_num(t.spatial_rate_min)}; '
+            f'min mass {_num(t.spatial_mass_min)}; min diffusion '
+            f'{_num(t.spatial_diffusion_min)}')
+    else:
+        out += _wrap_rows(
+            'poles', f'n={_num(t.n_poles)}; rate min/max {_num(t.pole_rate_min)} / '
+            f'{_num(t.pole_rate_max)}; fast/slow {_num(t.fast_slow_ratio)}; '
+            f'repeated {_yn(t.repeated_poles)}; close pairs '
+            f'{_num(t.n_close_pole_pairs)}'
+            + (f' ({t.pole_cluster_status}, kappa {_num(t.pole_cluster_kappa)})'
+               if t.pole_cluster_status else '')
+            + f'; delta part {_yn(t.delta_component)}')
+    ge = t.loop_parameter_estimate
+    reg = f'g_eff {_num(ge)}'
+    if ge is not None:
+        reg += ' (' + ('LARGE' if ge > _GEFF_WARN else 'small') + ', warn > '
+        reg += f'{_GEFF_WARN:g})'
+    if t.taylor_radius_ratio is not None:
+        reg += f'; Taylor term ratio at 3 std {_num(t.taylor_radius_ratio)}'
+    out += _wrap_rows('regime', reg)
+    d = rep.diagnostics or {}
+    cost = f'analysis {1e3 * t.analysis_time_s:.1f} ms'
+    if d.get('n_diagrams') is not None:
+        cost += f'; {d["n_diagrams"]} diagrams'
+    if d.get('accuracy_estimate') is not None:
+        cost += f'; accuracy estimate {_num(d["accuracy_estimate"])}'
+    if d.get('nquad_calls'):
+        cost += f'; {d["nquad_calls"]} quadrature fallback call(s)'
+    out += _wrap_rows('cost', cost)
+    out.append(rule)
+    if not rep.findings:
+        out += _wrap_rows('findings', 'none')
+    else:
+        counts = ' / '.join(f'{lv} {len(rep.by_level(lv))}'
+                            for lv in LEVELS)
+        out += _wrap_rows('findings', counts)
+        for f in rep.findings:
+            line = f'{f.code}: ' + ' '.join(f.message.split())
+            if len(line) > TABLE_WIDTH - 11:
+                line = line[:TABLE_WIDTH - 14].rstrip() + '...'
+            out.append(f'  {f.level[0].upper():<8} {line}')
+    return '\n'.join(out)
 
 
 # ── internal state ────────────────────────────────────────────────────
@@ -540,7 +689,7 @@ def analyze(model: dict, question=None, policy=None, *,
     # iteration solver needs the expanded theory and runs after it.
     for gate in (_g0_declarations, _g1_structure, _g2_dae_gate, _g1_expand,
                  _g2_iteration_gate, _g1_driven, _g3_propagator, _g4_noise,
-                 _ledger_common):
+                 _g5_regime, _ledger_common):
         try:
             gate(ctx)
         except Exception as exc:        # a gate bug must not escape analyze
@@ -1652,7 +1801,8 @@ def _g3_pole_findings(ctx, res):
                 + ('compute_cumulants averages deformed propagators instead '
                    '(api._pole_clusters).' if status == 'resolved' else
                    'it cannot be resolved here (G3_POLE_CLUSTER_UNRESOLVED).'),
-                '')
+                'none needed when resolved; otherwise perturb the '
+                'parameters off the degeneracy')
     close = []
     for i in range(len(poles)):
         for j in range(i + 1, len(poles)):
@@ -1674,7 +1824,10 @@ def _g3_pole_findings(ctx, res):
         ctx.add('G3_CLOSE_POLES',
                 f'{len(close)} pole pair(s) closer than {_CLOSE_POLE_RTOL:g} '
                 f'relative: {[(complex(a), complex(b)) for a, b in close[:3]]}; '
-                f'{how}.', '')
+                f'{how}.',
+                'none needed when resolved (see result["pole_clusters"]); '
+                'otherwise move the parameters off the degeneracy or '
+                'check G6 accuracy')
     if status in ('unresolved', 'disabled'):
         from api._pole_clusters import lost_digits, LOST_DIGITS_WARN
         ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
@@ -1697,9 +1850,15 @@ def _g3_pole_findings(ctx, res):
     if rates:
         ratio = max(rates) / min(rates)
         ctx.t['fast_slow_ratio'] = float(ratio)
+        ctx.t['pole_rate_min'] = float(min(rates))
+        ctx.t['pole_rate_max'] = float(max(rates))
         if ratio > _STIFF_RATIO:
             ctx.add('G3_STIFF', f'fast/slow decay-rate ratio {ratio:.3g} > '
-                    f'{_STIFF_RATIO:g}: the tau grid must resolve both scales.', '')
+                    f'{_STIFF_RATIO:g}: the tau grid must resolve both scales.',
+                    'space the tau grid to resolve 1/rate_max and extend it '
+                    'to several 1/rate_min; the pole-sum integrators are '
+                    'exact for any ratio, only a grid or a quadrature '
+                    'fallback sees the stiffness')
     if delta:
         ctx.add('G3_DELTA_COMPONENT',
                 f'G(omega) has an instantaneous (delta) part in entries {delta}.', '')
@@ -2096,6 +2255,341 @@ def _exp_poly_form(e, tau):
     return True
 
 
+# ── G5: numerical regime advisories (D3) ──────────────────────────────
+
+#: ``g_eff`` above this is flagged (``G5_LOOP_PARAMETER``).  From the
+#: validation table in ``scratch/handoffs/reports/24_report.md`` (measured
+#: |one-loop / tree| at tau = 0 on zoo models across regimes): every model
+#: whose measured ratio is >= 0.2 has g_eff >= 0.2, and no validated model
+#: below 0.2 has a measured ratio above 0.07.
+_GEFF_WARN = 0.2
+#: fluctuation amplitude (in tree standard deviations) at which the Taylor
+#: series of a non-polynomial response is judged, and the largest ratio of
+#: successive terms accepted there (``G5_TAYLOR_RADIUS``; see
+#: ``_taylor_ratio`` and the validation in reports/24_report.md).
+_TAYLOR_NSIGMA = 3.0
+_TAYLOR_RATIO_WARN = 0.3
+#: most terms of the vertex sectors read for ``g_eff`` (each needs one
+#: symbolic substitution); more are skipped with ``G5_ADVISORY_SKIPPED``.
+_G5_MAX_TERMS = 240
+
+
+def _g5_wants(key, poly):
+    """Wired mode keeps the coefficient dict of a vertex / state-dependent
+    noise sector only when it is small enough for ``g_eff`` to read."""
+    nr, npy = key
+    if npy < 1 or nr < 1 or (nr == 1 and npy < 2):
+        return False
+    try:
+        return poly.number_of_terms() <= _G5_MAX_TERMS
+    except (AttributeError, TypeError):
+        return False
+
+
+def _tree_sigmas(ctx, K_eval, poles):
+    """Tree-level equal-time standard deviations of the physical
+    components, ``sigma_j^2 = int d omega/2pi [G N G^H]_jj`` with
+    ``G = K(omega)^-1`` and ``N`` the Gaussian noise matrix at the saddle,
+    by a trapezoid rule in ``ln omega`` over ``[r_min/100, 100 |p|_max]``
+    (``r`` the decay rates ``Im p``, ``p`` the poles) plus the flat piece
+    below and the ``omega^-2`` tail above (white noise through a first-order
+    response; exact there to the trapezoid error, ~1e-4).  An underdamped
+    pole (``Re p`` > ``Im p`` > 0, a resonance of width ``Im p`` at ``Re p``)
+    adds nodes ``Re p + Im p sinh(t)`` (``t`` spaced 0.3: the peak and its
+    Lorentzian tails, for the four sharpest) so the peak is resolved.  ``None``
+    when ``G`` is singular on the grid."""
+    nf = ctx.n_tilde
+    Nmat = _noise_matrix(ctx)[0]
+    rates = [p.imag for p in poles if p.imag > 0]
+    lo = min(rates) / 100.0
+    hi = max(abs(p) for p in poles) * 100.0
+    n = max(24, int(6 * math.log10(hi / lo)) + 1)
+    nodes = [np.logspace(math.log10(lo), math.log10(hi), n)]
+    res = sorted({(round(p.real, 9), round(p.imag, 9)) for p in poles
+                  if p.imag > 0 and p.real > p.imag},
+                 key=lambda t: -t[0] / t[1])[:4]
+    for re_p, gam in res:
+        t_lo = math.asinh((re_p - lo) / gam)
+        t_hi = math.asinh((hi - re_p) / gam)
+        nodes.append(re_p + gam * np.sinh(np.linspace(
+            -t_lo, t_hi, max(9, int((t_lo + t_hi) / 0.3)))))
+    w = np.unique(np.concatenate(nodes))
+    w = w[(w >= lo * (1 - 1e-12)) & (w <= hi * (1 + 1e-12))]
+    lo, hi = float(w[0]), float(w[-1])
+    Kp, Km = K_eval(w), K_eval(-w)
+    var = np.zeros(nf)
+    for Ks in (Kp, Km):
+        if not np.all(np.isfinite(Ks)):
+            return None
+        try:
+            G = np.linalg.inv(Ks)
+        except np.linalg.LinAlgError:
+            return None
+        S = np.einsum('wij,jk,wlk->wil', G, Nmat, G.conj())
+        d = np.real(np.einsum('wjj->wj', S))
+        integrand = d * w[:, None]
+        # + the segment [0, lo] (flat) and the omega^-2 tail beyond hi
+        var += np.trapz(integrand, np.log(w), axis=0) + d[0] * lo + d[-1] * hi
+    var = var / (2.0 * math.pi)
+    if not np.all(np.isfinite(var)) or np.any(var < 0):
+        return None
+    return np.sqrt(var)
+
+
+def _fast_K(ctx):
+    """``omega-array -> (n_w, nf, nf) complex K`` with the parameters and
+    the saddle substituted (``fast_callable`` per entry), or ``None`` when
+    symbols remain."""
+    from sage.all import SR, CDF, fast_callable
+    nf = ctx.K_ft.nrows()
+    fns = []
+    for i in range(nf):
+        row = []
+        for j in range(nf):
+            e = SR(ctx.K_ft[i, j])
+            if e.is_trivial_zero():          # no simplifier (is_zero can call Maxima)
+                row.append(None)
+                continue
+            e = e.subs(ctx.num_params)
+            if set(e.variables()) - {ctx.omega}:
+                return None
+            row.append(None if e.is_trivial_zero() else
+                       fast_callable(e, vars=[ctx.omega], domain=CDF))
+        fns.append(row)
+
+    def K_eval(ws):
+        ws = np.atleast_1d(np.asarray(ws, float))
+        out = np.zeros((len(ws), nf, nf), dtype=complex)
+        for i in range(nf):
+            for j in range(nf):
+                f = fns[i][j]
+                if f is not None:
+                    out[:, i, j] = [complex(f(float(x))) for x in ws]
+        return out
+    return K_eval
+
+
+def _vertex_terms(ctx):
+    """``[(sector, response index, {physical index: power}, |c|)]`` for
+    every term of the vertex sectors (response degree >= 1, physical degree
+    >= 2, plus the state-dependent noise sectors) with the parameters and
+    the saddle substituted, or ``None`` when a sector is too large (or was
+    not kept)."""
+    from sage.all import SR
+    names, nf = ctx.ring_names, ctx.n_tilde
+    terms, n_seen = [], 0
+    for key in sorted(ctx.sectors):
+        nr, npy = key
+        sec = ctx.sectors[key]
+        if nr < 1 or npy < 1 or (nr == 1 and npy < 2):
+            continue
+        if not isinstance(sec, dict):
+            return None
+        n_seen += len(sec)
+        if n_seen > _G5_MAX_TERMS:
+            return None
+        for ev, coeff in sec.items():
+            try:
+                c = complex(SR(coeff).subs(ctx.num_params))
+            except (TypeError, ValueError):
+                continue
+            if c == 0:
+                continue
+            resp = [i for i in range(nf) if ev[i] > 0]
+            phys = {i - nf: int(ev[i]) for i in range(nf, len(names))
+                    if ev[i] > 0}
+            terms.append((key, resp[0], phys, abs(c)))
+    return terms
+
+
+def _g_eff(ctx, K_eval, sig):
+    """The loop-parameter estimate ``g_eff`` and its largest contributions.
+
+    **Definition.**  ``g_eff`` estimates the size of the one-loop
+    correction relative to the tree-level value of a low-order cumulant,
+    without running a loop.  Let ``sigma_j`` be the tree standard deviation
+    of physical component ``j`` (``_tree_sigmas``).  For a vertex term
+    ``c * r_a * prod_j phi_j^(e_j)`` (response ``a``, ``m = sum e_j``
+    physical legs) let ``V = |c| prod_j sigma_j^(e_j)`` be its size at the
+    fluctuation scale and ``s_a = sum_j |K_aj(0)| sigma_j``
+    (omega = 0, or the slowest pole rate where ``K(0)`` vanishes) the size of
+    the linear term of equation ``a`` (``K`` is the linear operator, ``(1,1)`` sector).  Then
+
+    - ``m >= 3``: the term renormalises the linear operator by contracting
+      one pair of legs (``C(m,2)`` ways): contribution ``C(m,2) V / s_a``;
+    - ``m = 2`` (quadratic vertex): the first correction is second order in
+      the vertex, contribution ``(2 V / s_a)^2``;
+    - state-dependent noise ``c r^n prod phi^e`` (``n >= 2``): the same
+      with ``V`` compared to the noise strength ``N_aa`` (``m = 1`` is
+      second order, ``(V/N_aa)^2``).
+
+    ``g_eff`` is the SUM of the contributions of all terms.  It is an
+    order-of-magnitude estimate (monotone in every coupling and in the
+    noise amplitude), not a bound: it reads only the tree variance and the
+    couplings at the saddle.  Validated against the measured
+    ``|C_1(0)| / |C_0(0)|`` in ``reports/24_report.md``.  For
+    ``eps x^3`` with OU noise it is ``3 eps D / mu^2``."""
+    names, nf = ctx.ring_names, ctx.n_tilde
+    terms = _vertex_terms(ctx)
+    if terms is None:
+        return None, 'a vertex sector is too large to read cheaply'
+    if not terms:
+        return 0.0, ''
+    rates = [p.imag for p in ctx.t['poles'] if p.imag > 0]
+    K0 = K_eval(np.array([0.0, min(rates)]))
+    s0 = (np.abs(K0[0]) * sig[None, :]).sum(axis=1)       # omega = 0
+    s1 = (np.abs(K0[1]) * sig[None, :]).sum(axis=1)       # omega = slowest rate
+    s_lin = np.where(s0 > 1e-9 * np.maximum(s1, 1e-300), s0, s1)
+    Nmat = _noise_matrix(ctx)[0]
+    n_ref = float(np.max(np.abs(np.diag(Nmat)))) if nf else 0.0
+    contrib = []
+    for (nr, _npy), a, phys, c in terms:
+        V = c * float(np.prod([sig[j] ** e for j, e in phys.items()]))
+        m = sum(phys.values())
+        if nr == 1:
+            ref = float(s_lin[a])
+        else:
+            na = abs(Nmat[a, a])
+            ref = float(na if na > 0 else n_ref)
+        if not ref > 0 or not math.isfinite(V):
+            continue
+        r = V / ref
+        if nr == 1 and m == 2:
+            g = (2.0 * r) ** 2
+        elif m == 1:
+            g = r * r
+        else:
+            g = r * m * (m - 1) / 2.0
+        lab = ('r_' + names[a] + ' ' if nr == 1 else
+               f'r_{names[a]}^{nr} ') + ' '.join(
+                   f'{names[nf + j]}^{e}' if e > 1 else names[nf + j]
+                   for j, e in sorted(phys.items()))
+        contrib.append((g, lab))
+    contrib.sort(key=lambda t: -t[0])
+    total = float(sum(g for g, _ in contrib))
+    detail = '; '.join(f'{lab}: {g:.3g}' for g, lab in contrib[:3])
+    return total, detail
+
+
+def _taylor_ratio(ctx, sig):
+    """Decay of the Taylor series of the response about the saddle at the
+    fluctuation amplitude, per physical component.
+
+    The expansion keeps the terms ``a_m r_a phi_j^m`` (``m`` up to the
+    Taylor order minus one).  At amplitude ``s = _TAYLOR_NSIGMA * sigma_j``
+    the term sizes are ``t_m = |a_m| s^m``; with ``m0`` the lowest non-linear
+    order present, ``q = max_(m > m0) (t_m / t_m0)^(1 / (m - m0))`` is the
+    geometric-mean ratio of successive terms (scale free, no normalisation
+    by the linear term).  ``q`` estimates ``s / R`` for ``R`` the distance
+    from the saddle to the nearest singularity of the response (radius of
+    convergence), and truncation at order ``M`` leaves a relative error of
+    about ``q^(M - m0 + 1)``.  It UNDERESTIMATES ``s / R`` for a response
+    whose nearest singularities are a complex-conjugate pair (a sigmoid:
+    by up to 2), which is why the threshold is ``_TAYLOR_RATIO_WARN = 0.3``.
+    Returns ``[(component, q, s)]``, largest ``q`` first; components with a
+    single non-linear order (nothing to compare) are skipped."""
+    from sage.all import SR
+    names, nf = ctx.ring_names, ctx.n_tilde
+    coef = {}                                    # (a, j) -> {m: |a_m|}
+    for (nr, npy), sec in ctx.sectors.items():
+        if nr != 1 or npy < 2 or not isinstance(sec, dict):
+            continue
+        for ev, c in sec.items():
+            phys = [i for i in range(nf, len(names)) if ev[i] > 0]
+            resp = [i for i in range(nf) if ev[i] > 0]
+            if len(phys) != 1 or len(resp) != 1:
+                continue
+            try:
+                v = abs(complex(SR(c).subs(ctx.num_params)))
+            except (TypeError, ValueError):
+                continue
+            d = coef.setdefault((resp[0], phys[0] - nf), {})
+            m = int(ev[phys[0]])
+            d[m] = d.get(m, 0.0) + v
+    best = {}
+    for (a, j), d in coef.items():
+        ms = sorted(m for m, v in d.items() if v > 0 and m >= 2)
+        if len(ms) < 2:
+            continue
+        sj = _TAYLOR_NSIGMA * float(sig[j])
+        t = {m: d[m] * sj ** m for m in ms}
+        m0 = ms[0]
+        q = max((t[m] / t[m0]) ** (1.0 / (m - m0)) for m in ms[1:])
+        if math.isfinite(q) and (j not in best or q > best[j][0]):
+            best[j] = (q, sj)
+    return sorted(((names[nf + j], q, sj) for j, (q, sj) in best.items()),
+                  key=lambda t: -t[1])
+
+
+def _g5_regime(ctx):
+    """G5, the regime advisories that need the tree variance: the loop
+    parameter estimate ``g_eff`` (``_g_eff``) and, for a non-polynomial
+    action, the Taylor-series check (``_taylor_ratio``).  Skipped quietly
+    for spatial models, non-rational propagators and colored noise that is
+    not Markov-embedded (the noise spectrum is not the constant matrix this
+    estimate reads)."""
+    if (ctx.stop_numeric or ctx.num_params is None or ctx.K_ft is None
+            or ctx.sectors is None or ctx.t.get('spatial')
+            or ctx.t.get('propagator_class') != 'rational'
+            or not ctx.t.get('poles')):
+        return
+    if ctx.t.get('noise_class') in ('colored-rational', 'colored-nonrational'):
+        ctx.add('G5_ADVISORY_SKIPPED',
+                'g_eff and the Taylor-radius check read the white-noise '
+                'matrix; the noise here is colored with a kernel.', '')
+        return
+    if not any(p.imag > 0 for p in ctx.t['poles']):
+        return
+    K_eval = _fast_K(ctx)
+    if K_eval is None:
+        return
+    sig = _tree_sigmas(ctx, K_eval, ctx.t['poles'])
+    if sig is None:
+        ctx.add('G5_ADVISORY_SKIPPED',
+                'the tree variance could not be evaluated (G(omega) singular '
+                'or non-finite on the frequency grid).', '')
+        return
+    ctx.t['tree_std'] = tuple(float(s) for s in sig)
+    g, detail = _g_eff(ctx, K_eval, sig)
+    if g is None:
+        ctx.add('G5_ADVISORY_SKIPPED', f'g_eff not estimated: {detail}.', '')
+    else:
+        ctx.t['loop_parameter_estimate'] = float(g)
+        ctx.t['loop_parameter_detail'] = detail
+        ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
+        if g > _GEFF_WARN and ml >= 1:
+            ctx.add('G5_LOOP_PARAMETER',
+                    f'loop parameter estimate g_eff = {g:.3g} > '
+                    f'{_GEFF_WARN:g} (largest: {detail}): the loop series '
+                    f'in the couplings is not rapidly convergent, so the '
+                    f'one-loop correction can be comparable to the tree.',
+                    'compare max_ell = 0, 1, 2 for convergence, reduce the '
+                    'nonlinearity or the noise amplitude, or treat the '
+                    'result as qualitative')
+    if ctx.t.get('polynomial') is False:
+        rad = _taylor_ratio(ctx, sig)
+        if rad:
+            comp, q, amp = rad[0]
+            ctx.t['taylor_radius_ratio'] = float(q)
+            if q > _TAYLOR_RATIO_WARN:
+                ctx.add('G5_TAYLOR_RADIUS',
+                        f'Taylor truncation (order {ctx.t.get("taylor_order")}) '
+                        f'of the response in {comp!r} is unreliable at the '
+                        f'fluctuation scale: at {_TAYLOR_NSIGMA:g} tree '
+                        f'standard deviations ({amp:.3g}) successive terms '
+                        f'shrink only by {q:.2g} per order (> '
+                        f'{_TAYLOR_RATIO_WARN:g}); the saddle is within about '
+                        f'{amp / q:.3g} of a singularity or domain edge of '
+                        'the response function.',
+                        'raise the Taylor order (larger k or max_ell), choose '
+                        'a regime with weaker fluctuations (smaller noise), '
+                        'or replace the response by a polynomial')
+        else:
+            ctx.add('G5_ADVISORY_SKIPPED',
+                    'Taylor check not made: fewer than two non-linear orders '
+                    'of the response in the expansion.', '')
+
+
 # ── ledger entries common to every question ───────────────────────────
 
 
@@ -2274,7 +2768,8 @@ class Preflight:
             for key, poly in ft.sectors().items():
                 # dict form only where a gate reads coefficients
                 keep[key] = (dict(poly.dict())
-                             if key == (1, 1) or (key[0] >= 2 and key[1] == 0)
+                             if (key == (1, 1) or (key[0] >= 2 and key[1] == 0)
+                                 or _g5_wants(key, poly))
                              else True)
             ctx.sectors = keep
             ctx.t['expand_source'] = 'pipeline'
@@ -2393,7 +2888,10 @@ class Preflight:
                 res = tuple(res[:5]) + (pcr,)
             _g3_pole_findings(ctx, res)
 
-        self._check('poles', [g3])
+        def g5():
+            _g5_regime(ctx)
+
+        self._check('poles', [g3, g5])
 
     def after_run(self, result, counters, *, complete, evaluated):
         """G6 (never raises): ``counters``: the Phase J counter deltas of
@@ -2497,6 +2995,10 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     estimate and are reported, not bounded."""
     d = pf.diagnostics
     d['evaluated'] = bool(evaluated)
+    try:
+        d['n_diagrams'] = len(result.get('diagrams') or ()) or None
+    except TypeError:
+        d['n_diagrams'] = None
     d['counters_complete'] = bool(complete)
     d['accuracy_estimate'] = None
     if not evaluated:

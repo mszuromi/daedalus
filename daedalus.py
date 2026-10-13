@@ -1338,6 +1338,11 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 model, res, kw, k, central)
         res['output_kind'] = out_kind
 
+    # D4: the analyzer's one-table report (``result['analysis'].table()``)
+    if cfg.verbose and isinstance(res, dict):
+        _rep = res.get('analysis')
+        if hasattr(_rep, 'table'):
+            print(_rep.table())
     res['_cfg'] = cfg
     res['_model'] = model
     res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,
