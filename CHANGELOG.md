@@ -21,7 +21,10 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   irreducible denominator factor in K[x]/(p) (K = the parameters' rational
   functions), so any degree works: roots of degree <= 2 are written out,
   higher ones are `RootOf` symbols (`ModeSum.roots`). `evaluate(tau, values)`
-  and `numeric_terms(values)` work at 256-bit precision.
+  and `numeric_terms(values)` work at 256-bit precision (`evaluate` also sums
+  the modes at that precision, so nearly coincident poles do not lose digits).
+  A value for a name that entered the construction (substituted with
+  `values=`, or used by the mean-field solve) must match it, else an error.
 - Stated assumptions replace the sampled half-plane decision: each result
   carries `assumptions`, sign conditions from the Routh array (a Sturm chain
   for even factors) that fix the split of the poles between the two half

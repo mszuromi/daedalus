@@ -620,8 +620,10 @@ def tree_covariance_from_result(result: dict, *, model: dict,
                        parameters=(result.get('config') or {}).get(
                            'parameters'))
     if mf == 'result':
-        cov = cov.fix_mean_field(
-            {str(k): v for k, v in result['num_params'].items()})
+        npar = {str(k): v for k, v in result['num_params'].items()}
+        cov = cov.fix_mean_field(npar)
+        cov._mf_inputs = {k: v for k, v in npar.items()
+                          if not _is_saddle_symbol(k, model)}
     cov._num_params = {str(k): float(v) for k, v in
                        (result.get('num_params') or {}).items()}
     return cov
@@ -655,6 +657,9 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
     cov._model = model
     cov._ft = ft
     cov._parameters = parameters
+    if mean_field == 'solve':
+        cov._mf_inputs = _expand_param_names(
+            _model_fundamental(model, parameters))
     return cov
 
 
@@ -666,6 +671,23 @@ def _restrict(vals: dict, prop, D, omega) -> dict:
         occurring |= {str(v) for e in prop['G_ft'].list()
                       for v in SR(e).variables()}
     return {k: v for k, v in vals.items() if k in occurring}
+
+
+def _expand_param_names(d: Optional[dict]) -> dict:
+    """``{'E': [a, b], 'w': [[..]]}`` -> ``{'E1': a, 'E2': b, 'w11': ..}``
+    (the pipeline's symbol names); scalars pass through."""
+    out = {}
+    for k, v in (d or {}).items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            for i, row in enumerate(v):
+                if isinstance(row, (list, tuple, np.ndarray)):
+                    for j, x in enumerate(row):
+                        out[f'{k}{i + 1}{j + 1}'] = x
+                else:
+                    out[f'{k}{i + 1}'] = row
+        else:
+            out[str(k)] = v
+    return out
 
 
 def _saddle_bases(model: Optional[dict]) -> Optional[list]:
@@ -851,6 +873,9 @@ class TreeCovariance:
     _ft: Any = field(default=None, repr=False)
     _parameters: Any = field(default=None, repr=False)
     _cache: dict = field(default_factory=dict, repr=False)
+    # parameters a mean-field solve was run at (they are baked into the
+    # saddle values); ModeSum refuses different values for them
+    _mf_inputs: Optional[dict] = field(default=None, repr=False)
 
     # ── matrices ────────────────────────────────────────────────────────
     def _sr_matrix(self, key, f):
@@ -982,8 +1007,11 @@ class TreeCovariance:
         defaults with the mean-field solve)."""
         if reference is None:
             reference = self.reference or self.default_values()
-        return tree_modes(self.entry(a, b), self.omega, values=values,
-                          reference=reference, cross_check=cross_check)
+        ms = tree_modes(self.entry(a, b), self.omega, values=values,
+                        reference=reference, cross_check=cross_check)
+        ms._fixed = dict(self._mf_inputs or {})
+        ms._fixed.update(_expand_param_names(self.values))
+        return ms
 
     def integrate_against(self, a, b, kernel: 'Kernel', *,
                           values: Optional[dict] = None,
@@ -1009,6 +1037,7 @@ def _resubstitute(cov: TreeCovariance, vals: dict) -> TreeCovariance:
     new.values = dict(cov.values)
     new._model, new._ft, new._parameters = cov._model, cov._ft, cov._parameters
     new._num_params = cov._num_params
+    new._mf_inputs = cov._mf_inputs
     return new
 
 
@@ -2102,8 +2131,10 @@ class _ModeData:
         self.assumptions = _dedupe_assumptions(items, ctx)
         for a in self.assumptions:
             if not _holds_pt(a, ref_pt):
+                shown = (f'{SR(a.expression).subs(ctx.back)} {a.relation} 0'
+                         f'   [{a.kind}: {a.origin}]')
                 raise AssumptionViolation(
-                    f'at the reference point {a} fails: poles coincide or a '
+                    f'at the reference point {shown} fails: poles coincide or a '
                     f'denominator vanishes there.  Substitute those values '
                     f'with values= so the repeated pole is treated exactly, '
                     f'or choose another reference.')
@@ -2121,7 +2152,8 @@ class _ModeData:
     def _present_roots(self):
         """SR expression for every root (explicit for degree <= 2)."""
         ctx = self.ctx
-        used = set(self.bridge.sym_of)
+        used = set(self.bridge.sym_of) | set(ctx.name_map.values()) | {
+            str(v) for v in ctx.back.values()}
         for fam in self.families:
             d = fam.deg
             a = fam.p.list()
@@ -2285,6 +2317,7 @@ class ModeSum:
     _source: Any = field(default=None, repr=False)
     _contact_K: Any = field(default=None, repr=False)
     _explicit: frozenset = field(default=frozenset(), repr=False)
+    _fixed: dict = field(default_factory=dict, repr=False)
 
     # ── symbolic views ──────────────────────────────────────────────────
     def expression(self, side: str = 'positive'):
@@ -2318,20 +2351,48 @@ class ModeSum:
         region of validity."""
         _check_assumptions(self.assumptions, self._full(values), 'ModeSum')
 
-    def _full(self, values):
+    def _full(self, values, extra_names=()):
         """``values`` over the explicitly given reference values (symbols
-        that were only defaulted to 1 must be given)."""
+        that were only defaulted to 1 must be given).  A name that was
+        substituted when the modes were built must carry the same value (it
+        is not a parameter of the result any more); an unknown name is an
+        error -- never silently ignored."""
         if values is None:
             return dict(self.reference)
-        v = {k: x for k, x in self.reference.items() if k in self._explicit}
-        v.update(_as_name_dict(values))
-        return v
+        vals = _as_name_dict(values)
+        fixed = dict(self._fixed)
+        fixed.update((self._source[2] if self._source else {}) or {})
+        out = {k: x for k, x in self.reference.items() if k in self._explicit}
+        for k, x in vals.items():
+            if k in self.reference or k in extra_names:
+                out[k] = x
+                continue
+            if k in fixed:
+                try:
+                    same = complex(SR(x).n()) == complex(SR(fixed[k]).n())
+                except (TypeError, ValueError):
+                    same = False
+                if not same:
+                    raise SymbolicOutError(
+                        f'{k!r} entered the construction of these modes '
+                        f'({k} = {fixed[k]}: substituted, or used for the '
+                        f'mean-field solve); rebuild them to use {k} = {x}')
+            # any other name does not occur in C: it cannot change it
+        return out
 
     def numeric_terms(self, values: Optional[dict] = None,
                       check: bool = True) -> list:
         """The modes at ``values`` (default: the reference point) as
         :class:`Mode` with complex ``coeff``/``rate``; roots are found
-        numerically (256-bit) and assigned to sides by the stated split."""
+        numerically (256-bit) and assigned to sides by the stated split.
+
+        Near-coincident poles give large mode coefficients that cancel; sum
+        such modes with :meth:`evaluate` (256-bit), not in double
+        precision."""
+        return [Mode(complex(c), complex(r), j, sd)
+                for c, r, j, sd in self._numeric_hp(values, check)]
+
+    def _numeric_hp(self, values, check: bool = True) -> list:
         vals = self._full(values)
         if check:
             _check_assumptions(self.assumptions, vals, 'ModeSum')
@@ -2355,7 +2416,7 @@ class ModeSum:
                         continue
                     cv = sum((c * z ** i for i, c in
                               enumerate(ctx.eval_U(cj, pt))), _cc()(0))
-                    out.append(Mode(complex(sg * cv), complex(-z), j, side))
+                    out.append((sg * cv, -z, j, side))
         return out
 
     def contact_value(self, values: Optional[dict] = None) -> complex:
@@ -2377,16 +2438,21 @@ class ModeSum:
         'negative' is the pipeline's Ito left limit."""
         if at_zero not in SIDES:
             raise SymbolicOutError(f'at_zero must be one of {SIDES}')
-        terms = self.numeric_terms(values)
+        terms = self._numeric_hp(values)
+        CC = _cc()
         t = np.asarray(tau, dtype=float)
         out = np.zeros(t.shape, dtype=complex)
-        pos = (t > 0) | ((t == 0) & (at_zero == 'positive'))
-        for m in terms:
-            mask = pos if m.side == 'positive' else ~pos
-            if not np.any(mask):
-                continue
-            tt = t[mask]
-            out[mask] += m.coeff * tt ** m.power * np.exp(m.rate * tt)
+        for idx in np.ndindex(t.shape):
+            tv = float(t[idx])
+            side = 'positive' if (tv > 0 or (tv == 0 and
+                                             at_zero == 'positive')) \
+                else 'negative'
+            T = CC(tv)
+            acc = CC(0)
+            for c, r, j, sd in terms:
+                if sd == side:
+                    acc += c * T ** j * (r * T).exp()
+            out[idx] = complex(acc)
         return out
 
     # ── kernel integrals ────────────────────────────────────────────────
@@ -2622,8 +2688,18 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
             "contact must be None, 'exclude', 'positive', 'negative' or "
             "'mid'")
     src, om, src_vals = ms._source
-    ref_in = {k: v for k, v in ms.reference.items() if k in ms._explicit}
-    ref_in.update(_as_name_dict(values))
+    k_names = {str(v) for e in kernel.expressions() for v in SR(e).variables()}
+    vals_in = _as_name_dict(values)
+    k_vals = {k: v for k, v in vals_in.items() if k in k_names}
+    # the C part of values must lie in the region of the ModeSum (same rule
+    # as ModeSum.evaluate); the split is decided at the ModeSum's reference
+    c_vals = None
+    if values is not None:
+        c_vals = ms._full({k: v for k, v in vals_in.items()
+                           if k not in k_names}, extra_names=k_names)
+        _check_assumptions(ms.assumptions, c_vals, 'integrate_against')
+    ref_in = dict(ms.reference)
+    ref_in.update(k_vals)
     _, pexpr, pextra, bridge, ctx, ref, ref_pt, back = _prepare(
         src, om, extra=kernel.expressions(), values=src_vals,
         reference=ref_in)
@@ -2645,12 +2721,30 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
     K = ctx.K
     total_K = K(0)
     split_sr = SR(0)
-    numeric_parts = []          # (fam, G, traced, idx)
+    numeric_parts = []          # ('trace', fam, G) | ('roots', fam, ...)
     for fam in md.families:
         p, x = fam.p, ctx.x
         for t, a_K, al_K in kterms:
             idx = [k for k in range(fam.deg) if fam.side_of(k) == t.side]
             if not idx:
+                continue
+            q = int(t.power)
+            if len(idx) < fam.deg:
+                # split factor: per root, -R_j(rho) a (q+j)! / (rho-alpha)^n.
+                # (An inverse of x - alpha in K[x]/(p) would put p(alpha) in
+                # the denominator, which vanishes when alpha is a root on the
+                # OTHER side.)
+                terms_j = [(j, _coeff_poly(fam, j)) for j in range(fam.mult)]
+                terms_j = [(j, c) for j, c in terms_j if c != 0]
+                a_sr, al_sr = ctx.K_to_sr(a_K), ctx.K_to_sr(al_K)
+                for k in idx:
+                    rho = md.root_sr(fam, k)
+                    for j, cj in terms_j:
+                        split_sr += (-md.element_sr(fam, k, cj) * a_sr
+                                     * factorial(q + j)
+                                     / (rho - al_sr) ** (q + j + 1))
+                numeric_parts.append(('roots', fam, terms_j, a_K, al_K, q,
+                                      idx))
                 continue
             lin = (x - al_K) % p
             try:
@@ -2659,7 +2753,6 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
                 raise SymbolicOutError(
                     f'a pole of C coincides with the kernel rate {t.rate}: '
                     f'the integral diverges') from None
-            q = int(t.power)
             G = ctx.U(0)
             for j in range(fam.mult):
                 cj = _coeff_poly(fam, j)
@@ -2673,13 +2766,8 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
             G = G % p
             if G == 0:
                 continue
-            if len(idx) == fam.deg:
-                total_K += _trace(G, p)
-                numeric_parts.append((fam, G, True, idx))
-            else:
-                for k in idx:
-                    split_sr += md.element_sr(fam, k, G)
-                numeric_parts.append((fam, G, False, idx))
+            total_K += _trace(G, p)
+            numeric_parts.append(('trace', fam, G))
     # contact: c * L(0)
     l0 = {s: sum((a_K for t, a_K, _ in kterms
                   if t.side == s and t.power == 0), K(0)) for s in SIDES}
@@ -2703,27 +2791,35 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
     roots = [RootOf(r.symbol, SR(r.polynomial).subs(back), r.index, r.side)
              for r in md.roots if SR(split_sr).has(r.symbol)]
     value = None
-    vals = dict(ref_in)
     names_needed = {ctx.name_map.get(n, n) for n in bridge.sym_of}
+    if values is not None:
+        vals = dict(c_vals)
+        vals.update(k_vals)
+    else:
+        vals = {k: v for k, v in ms.reference.items() if k in ms._explicit}
     if values is not None or names_needed <= set(vals):
-        if names_needed <= set(vals):
-            _check_assumptions(assumptions, vals, 'integrate_against')
-            pt = ctx.point(vals)
-            tot = ctx.eval_K(contact_K, pt)
-            for fam, G, traced, idx in numeric_parts:
-                if traced:
-                    tot += ctx.eval_K(_trace(G, fam.p), pt)
-                    continue
-                rts = ctx.numeric_roots(fam.p, pt)
-                cs = ctx.eval_U(G, pt)
-                for k in idx:
-                    z = rts[k]
-                    tot += sum((c * z ** i for i, c in enumerate(cs)),
-                               _cc()(0))
-            value = complex(tot)
-        else:
+        if not names_needed <= set(vals):
             raise SymbolicOutError(
                 f'values= is missing {sorted(names_needed - set(vals))}')
+        _check_assumptions(assumptions, vals, 'integrate_against')
+        pt = ctx.point(vals)
+        CC = _cc()
+        tot = ctx.eval_K(contact_K, pt)
+        for part in numeric_parts:
+            if part[0] == 'trace':
+                tot += ctx.eval_K(_trace(part[2], part[1].p), pt)
+                continue
+            _, fam, terms_j, a_K, al_K, q, idx = part
+            rts = ctx.numeric_roots(fam.p, pt)
+            a_v, al_v = ctx.eval_K(a_K, pt), ctx.eval_K(al_K, pt)
+            for k in idx:
+                z = rts[k]
+                for j, cj in terms_j:
+                    cv = sum((c * z ** i for i, c in
+                              enumerate(ctx.eval_U(cj, pt))), CC(0))
+                    tot += (-cv * a_v * CC(factorial(q + j))
+                            / (z - al_v) ** (q + j + 1))
+        value = complex(tot)
     return KernelIntegral(expression=smooth + contact_sr, smooth=smooth,
                           contact=contact_sr, value=value,
                           assumptions=[Assumption(SR(a.expression).subs(back),
@@ -2800,7 +2896,7 @@ def _pair_any_degree(C0_entry, L_tilde, omega, *, values, reference):
     expr_out = (ctx.K_to_sr(total_K) + split_sr).subs(back)
     value = None
     names_needed = {ctx.name_map.get(n, n) for n in bridge.sym_of}
-    if names_needed <= set(ref_in):
+    if values is not None and names_needed <= set(ref_in):
         pt = ctx.point(ref_in)
         tot = _cc()(0)
         for fam, G, traced in parts:

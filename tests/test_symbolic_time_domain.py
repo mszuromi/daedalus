@@ -94,6 +94,9 @@ def domain_state(names, mode):
             assert not any(SR.symbol(n).is_positive() for n in names)
         yield
     finally:
+        # forget everything, set the domains back (a positive domain adds
+        # its own 'n > 0'), then re-assume what is missing: forgetting
+        # 'n > 0' AFTER the redeclaration would drop the domain again
         for a in list(assumptions()):
             forget(a)
         for n in names:
@@ -101,10 +104,10 @@ def domain_state(names, mode):
                 SR.var(n, domain='positive')
             else:
                 _clear_domain(n)
-        for a in list(assumptions()):
-            forget(a)
+        present = {str(a) for a in assumptions()}
         for a in before:
-            a.assume() if hasattr(a, 'assume') else assume(a)
+            if str(a) not in present:
+                a.assume() if hasattr(a, 'assume') else assume(a)
 
 
 # ── models ──────────────────────────────────────────────────────────────────
@@ -401,7 +404,7 @@ def test_oracle_linear_hawkes_1pop_closed_form(hawkes1_ref, domains):
         assert abs(ms.contact_value(par) - npar['nstar1']) < 1e-12
         assert _max_rel(ms.evaluate(TAUS, par), ref) < RTOL
         conds = {str(x.expression) + ' ' + x.relation for x in ms.assumptions}
-        assert '-a*w + 1 >' in conds or 'a*w - 1 <' in conds
+        assert '-a*w + 1 >' in conds
 
 
 @pytest.fixture(scope='module')
@@ -532,7 +535,13 @@ def test_kernel_contact_rules_hawkes(hawkes1_ref):
     L = so.Kernel.stdp(Ap, tp, Am, tm)
     with pytest.raises(so.SymbolicOutError, match='jumps'):
         ms.integrate_against(L)
-    vals = dict(par, A_p=1.0, tau_p=0.7, A_m=0.6, tau_m=1.3)
+    p3 = {k: par[k] for k in ('tau', 'a', 'w')}     # Em left with vstar1
+    # Em is baked into the solved saddle: the same value is fine, another
+    # one is refused (it would silently change nothing otherwise)
+    ms.evaluate(TAUS, par)
+    with pytest.raises(so.SymbolicOutError, match='mean-field solve'):
+        ms.evaluate(TAUS, dict(par, Em=0.9))
+    vals = dict(p3, A_p=1.0, tau_p=0.7, A_m=0.6, tau_m=1.3)
     ex = ms.integrate_against(L, values=vals, contact='exclude')
     mid = ms.integrate_against(L, values=vals, contact='mid')
     pos = ms.integrate_against(L, values=vals, contact='positive')
@@ -548,13 +557,13 @@ def test_kernel_contact_rules_hawkes(hawkes1_ref):
     # a kernel continuous at 0 includes the contact without asking
     sym = so.Kernel.exponential(1, -1, 'positive') + \
         so.Kernel.exponential(1, 1, 'negative')
-    k2 = ms.integrate_against(sym, values=par)
-    k2x = ms.integrate_against(sym, values=par, contact='exclude')
+    k2 = ms.integrate_against(sym, values=p3)
+    k2x = ms.integrate_against(sym, values=p3, contact='exclude')
     assert abs(k2.value - k2x.value - lam) < 1e-12
     # a growing kernel is refused
     with pytest.raises(so.SymbolicOutError, match='grows'):
         ms.integrate_against(so.Kernel.exponential(1, 1, 'positive'),
-                             values=par)
+                             values=p3)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -607,7 +616,8 @@ def test_even_factor_sturm_and_any_degree_pairing():
     identically singular): Sturm split 3/3, exact pairing = quadrature."""
     w = var('omega')
     C0 = 1 / (w ** 6 + 5 * w ** 2 + 3)
-    p = so.pair_with_kernel(C0, SR(1), w, any_degree=True, fallback=False)
+    p = so.pair_with_kernel(C0, SR(1), w, any_degree=True, fallback=False,
+                            values={})
     from scipy.integrate import quad
     ref6 = quad(lambda x: 1 / (x ** 6 + 5 * x ** 2 + 3), -np.inf, np.inf,
                 epsabs=1e-14)[0] / (2 * np.pi)
@@ -764,3 +774,143 @@ def test_split_cubic_and_repeated_cubic_vs_quadrature():
         q = so.numeric_inverse_transform(lambda x: cal2(x, a=1.0), t)
         assert abs(q.value - complex(ms2.evaluate(np.array([t]),
                                                   {'a': 1.0})[0])) < 1e-9
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Second-order oscillator vs the pipeline, tau = 0, review regressions
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _oscillator():
+    """x'' + g x' + w0^2 x = xi, <xi xi> = 2 D delta: C0_xx is the C1
+    spectrum 2D/((w^2 - w0^2)^2 + g^2 w^2) (the 2.39-not-2.06 case at
+    g = 0.2, w0 = 1, 2D = 1, tau = 0.3)."""
+    from api.model import TemporalModelBuilder
+    return (TemporalModelBuilder('damped oscillator', n_populations=1)
+            .physical_field('x').physical_field('v')
+            .parameter('w0', default=1.0).parameter('g', default=0.2)
+            .parameter('D', default=0.5)
+            .set_action_text('sum(xt[i]*(Dt*x[i] - v[i]) + vt[i]*((Dt + g)'
+                             '*v[i] + w0^2*x[i]) - D*vt[i]^2 for i in pop)')
+            .set_mf_equation('xstar', '0').set_mf_equation('vstar', '0')
+            .build())
+
+
+@pytest.fixture(scope='module')
+def oscillator_ref():
+    m = _oscillator()
+    par = {'w0': 1.0, 'g': 0.2, 'D': 0.5}
+    taus = np.append(TAUS, 0.0)
+    refs = {ab: _pipeline(m, [(ab[0], 1), (ab[1], 1)], par, taus)[0]
+            for ab in (('x', 'x'), ('x', 'v'))}
+    return m, par, taus, refs
+
+
+@pytest.mark.parametrize('domains', DOMAINS)
+def test_oracle_second_order_oscillator_2p39_vs_pipeline(oscillator_ref,
+                                                         domains):
+    m, par, taus, refs = oscillator_ref
+    with domain_state(['g', 'w0', 'D'], domains):
+        cov = so.tree_covariance(m, use_cache=False,
+                                 mean_field={'xstar1': 0, 'vstar1': 0})
+        for (a, b), ref in refs.items():
+            ms = cov.modes(f'd{a}1', f'd{b}1', reference=par)
+            got = ms.evaluate(taus, par)
+            # tau != 0 to 1e-12; tau = 0: the pipeline evaluates the Ito
+            # left limit at tau = -1e-6, so O(1e-6) relative there
+            assert _max_rel(got[:-1], ref[:-1]) < RTOL
+            assert abs(got[-1] - ref[-1]) < 1e-5 * np.max(np.abs(ref))
+            if a == b:
+                assert abs(got[0].real - 2.3905379) < 1e-6   # tau = 0.3
+                assert abs(got[-1].real - 2.5) < 1e-12       # 1/(2 g w0^2)
+
+
+def test_review_near_coincident_poles_keep_precision():
+    """Mode coefficients ~1/gap cancel; evaluate sums at 256 bits.
+    Reference: the C1 explicit closed form at 50 digits."""
+    from sage.all import QQ
+    w, a = var('omega'), var('a')
+    C0 = 1 / ((w ** 2 + 1) * (w ** 2 + 1 + a))
+    ms = so.tree_modes(C0, w)
+    r = so.inverse_transform(C0, w, reference={'a': 1.0})
+    for eps in (1e-12, 1e-16):
+        got = ms.evaluate(np.array([-2.0, 0.5]), {'a': eps})
+        for t, g in zip((-2.0, 0.5), got):
+            br = r['positive'] if t > 0 else r['negative']
+            ref = complex(br.subs({a: QQ(eps), r['tau']: QQ(t)}).n(
+                digits=50))
+            assert abs(g - ref) < 1e-13 * abs(ref)
+
+
+def test_review_values_for_substituted_or_unknown_names_raise():
+    w, mu, D = var('omega'), var('mu'), var('D')
+    ms = so.tree_modes(2 * D / (w ** 2 + mu ** 2), w, values={'mu': 1})
+    with pytest.raises(so.SymbolicOutError, match='entered the construction'):
+        ms.evaluate([0.5], {'mu': 2.0, 'D': 1.0})
+    # a name that does not occur in C cannot change it: ignored
+    assert ms.evaluate([0.5], {'D': 1.0, 'zzz': 3})[0] == \
+        ms.evaluate([0.5], {'D': 1.0})[0]
+    same = ms.evaluate([0.5], {'mu': 1.0, 'D': 1.0})[0]
+    assert abs(same - np.exp(-0.5)) < 1e-15
+
+
+def test_review_kernel_rate_equal_to_a_root_on_the_other_side():
+    """Split quadratic s^2 + b s - c (roots 1 and -2 at b=1, c=2) and a
+    kernel rate -r on s > 0 with r = 2: the other-side root equals -r; the
+    value must not be NaN (it was) and must match the Fourier route."""
+    w, b, c, r = var('omega'), var('b'), var('c'), var('r')
+    s = I * w
+    C0 = 1 / ((s ** 2 + b * s - c) * (s ** 2 - b * s - c))
+    ref = {'b': 1.0, 'c': 2.0}
+    ms = so.tree_modes(C0, w, reference=ref)
+    L = so.Kernel.exponential(1, -r, 'positive')
+    for rv in (2.0, 2.0 + 1e-9, 0.7):
+        v = dict(ref, r=rv)
+        ki = ms.integrate_against(L, values=v)
+        pf = so.pair_with_kernel(C0, L.fourier(w).subs({w: -w}), w,
+                                 values=v, any_degree=True)
+        assert np.isfinite(ki.value) and abs(ki.value - pf.value) < 1e-12
+
+
+def test_review_user_names_only_and_root_names_do_not_collide():
+    w, a, b = var('omega'), var('a'), var('b')
+    with pytest.raises(so.AssumptionViolation) as ei:
+        so.tree_modes(1 / ((w ** 2 + a ** 2) * (w ** 2 + b ** 2)), w,
+                      reference={'a': 1.0, 'b': 1.0})
+    assert '__c1p' not in str(ei.value) and 'a - b' in str(ei.value)
+    rho, k = var('rho0_0'), var('k')
+    s = I * w
+    C0 = rho / (((s + 1) ** 3 + k) * ((1 - s) ** 3 + k))
+    ms = so.tree_modes(C0, w, reference={'k': 2.0, 'rho0_0': 1.5})
+    assert all(str(r.symbol) != 'rho0_0' for r in ms.roots)
+    assert '__c1p' not in str(ms.to_dicts())
+
+
+def test_review_integrate_against_refuses_outside_the_region():
+    w, mu, D = var('omega'), var('mu'), var('D')
+    ms = so.tree_modes(2 * D / (w ** 2 + mu ** 2), w, reference={'mu': 1.0})
+    L = so.Kernel.exponential(1, -1, 'positive')
+    with pytest.raises(so.AssumptionViolation, match='mu > 0'):
+        ms.integrate_against(L, values={'mu': -1.0, 'D': 1.0})
+    ok = ms.integrate_against(L, values={'mu': 2.0, 'D': 1.0})
+    assert abs(ok.value - 0.5 / 3.0) < 1e-15        # (D/mu)/(mu + 1)
+
+
+def test_review_domain_state_restores_domains():
+    from sage.all import sqrt as ssqrt
+    nm = 'g_restore_probe'
+    SR.var(nm, domain='positive')
+    try:
+        for mode in DOMAINS:
+            with domain_state([nm], mode):
+                pass
+            x = SR.symbol(nm)
+            assert x.is_positive() and ssqrt(x ** 2) == x
+        nm2 = 'h_restore_probe'
+        with domain_state([nm2], 'positive'):
+            assert SR.symbol(nm2).is_positive()
+        assert not SR.symbol(nm2).is_positive()
+    finally:
+        for a in list(assumptions()):
+            if str(a).split(' ')[0] == nm:
+                forget(a)
+        _clear_domain(nm)
