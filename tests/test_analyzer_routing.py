@@ -556,19 +556,31 @@ def test_g6_stiff_without_cancellation_is_quiet():
     assert not rep.has('G6_ACCURACY_LOW')
 
 
-def test_g6_flags_the_digits_lost_to_near_degenerate_poles():
-    """Two poles 1e-4 apart (colored OU with tauc = 1/(mu (1 + 1e-4))): the residues ~ 1/gap cancel and the
-    one-loop value at tau = 0 is rounding noise of order 1 (it differs between processes) instead of about
-    -0.0902 (its value at gap 1e-2 is -0.09075, at 3e-3 -0.09022).  Phase J reports no failure; the G6 estimate
-    does (R of order 10), while the default gap 1 (tauc = 0.5) stays at rounding level."""
+def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
+    """Two poles 1e-4 apart (colored OU with tauc = 1/(mu (1 + 1e-4))): the residues ~ 1/gap cancel in the
+    pole-residue sums.  Since item 21 compute_cumulants averages deformed propagators (api._pole_clusters):
+    the one-loop value at tau = 0 is the exact 3 eps C0(0) dC0/dmu = -0.0900074997 and G6 stays quiet.  With
+    the deformation switched off the old rounding noise of order 1 comes back, and G3_POLE_CLUSTER_UNRESOLVED
+    and G6_ACCURACY_LOW say so (R of order 10); the default gap 1 (tauc = 0.5) stays at rounding level."""
     model = _load('ou_quartic_colored')[0]
     kw = dict(max_ell=1, policy={'allow_markov_embedding': True}, tau_grid=np.array([0.0, 0.5, 2.0]))
-    bad = _run(model, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1 / (1 + 1e-4)}, **kw)
-    loop0 = complex(bad['C_tau_by_ell'][1][0]).real
-    assert abs(loop0 - (-0.0902)) > 0.01                # the lost digits (pre-existing; open item of report 16)
+    near = {'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1 / (1 + 1e-4)}
+    res = _run(model, parameters=near, **kw)
+    assert abs(complex(res['C_tau_by_ell'][1][0]).real - (-0.0900074997)) < 1e-9
+    rep = res['analysis']
+    assert res['pole_clusters']['status'] == 'resolved' and rep.has('G3_CLOSE_POLES')
+    assert not rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] < 1e-10
+    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    with pytest.warns(UserWarning, match='digits lost'):
+        bad = _run(model, parameters=near, **kw)
+    assert abs(complex(bad['C_tau_by_ell'][1][0]).real - (-0.0900074997)) > 1e-3        # the lost digits
     rep = bad['analysis']
-    assert rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] > 1e-2
-    good = _run(model, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 0.5}, **kw)['analysis']
+    assert rep.has('G3_POLE_CLUSTER_UNRESOLVED') and rep.has('G6_ACCURACY_LOW')
+    assert rep.diagnostics['accuracy_estimate'] > 1e-2
+    monkeypatch.delenv('DAEDALUS_POLE_CLUSTERS')
+    good = _run(model, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 0.5}, **kw)
+    assert good['pole_clusters'] is None
+    good = good['analysis']
     assert not good.has('G6_ACCURACY_LOW') and good.diagnostics['accuracy_estimate'] < 1e-12
 
 

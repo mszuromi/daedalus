@@ -11,6 +11,76 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 **Unreleased (after 0.2.0; the version entries below are numbered releases)**
 
+### Fixed: near-degenerate and repeated poles of the propagator (numbers move only where a pole cluster was ill-conditioned)
+
+Phase J writes each propagator entry as a sum of pole terms. When poles come
+close, the residues grow like 1/gap and the sums cancel: about
+E log10(1/gap) digits were lost (E: the propagator lines that see the
+cluster), and nothing said so. At gap 0 (a repeated pole, a Jordan block) the
+pole-residue form cannot represent the propagator at all. The exact tier also
+took the poles from double-precision roots of Q(omega), off by about eps/gap
+next to a cluster, which moved the residues by eps/gap^2. Example,
+`ou_quartic_colored` (mu = 1, eps = 0.02, D = 1, tauc = 1/(1 + gap)), C(0):
+
+| gap | tree before → after | one-loop before → after (exact) |
+|---|---|---|
+| 1e-2 | 1.004975124 → 1.004975124 | -0.0907470 → -0.0907470075 (-0.0907470075) |
+| 1e-4 | 1.000049949 → 1.000049998 | -1.5 → -0.0900074997 (-0.0900074997) |
+| 1e-7 | 1.40625 → 1.000000050 | 0 → -0.0900000075 (-0.0900000075) |
+| 0 (tauc = 1/mu) | -2.1e15 → 1.0 | -1.2e29 → -0.09 (-0.09) |
+
+`compute_cumulants` now finds pole clusters (poles within 5 % relative,
+single linkage) whose residues cancel by more than a factor 10 (scaled by the
+distance to the other poles and to the stability boundary), or repeated
+poles, and averages Phase J over a deformation of the propagator that splits
+each such cluster on a circle. The result is an analytic function of the
+deformation parameter, so its Cauchy mean over the unit circle is the exact
+value; the trapezoid rule converges geometrically (12 to 16 nodes, N/2 + 1
+Phase J runs for a real system). The integrators are unchanged. The
+residues are computed to 50 digits on this path. `result['pole_clusters']`
+reports the clusters, the node count and an accuracy estimate (the Fourier
+tail of the node values); `DAEDALUS_POLE_CLUSTERS=0` switches the
+deformation off. Measured against exact references for gaps 1e-2 to 1e-10
+and 0: the colored OU within 1e-14 (tree) and 5e-13 (one loop); three
+clustered poles, including a triple root, within 2e-14 and 1e-11.
+
+Never silent: a cluster that cannot be resolved (the exact tier failed, the
+cluster sits too close to the stability boundary to be split, or the switch is
+off) is reported in `result['pole_clusters']` with a lost-digit estimate,
+which enters the G6 accuracy estimate; above 10 digits (an error above 1e-6)
+it also issues a `PoleClusterWarning` and the analyzer warning
+`G3_POLE_CLUSTER_UNRESOLVED` (an error under `policy={'mode': 'strict'}`). Phase J
+refuses the nominal residues of a repeated pole if they are passed to it
+directly. `G3_CLOSE_POLES` uses the 5 % linkage and is `info`, like
+`G3_REPEATED_POLE` (both are resolved), so strict mode now refuses only the
+clusters the pipeline cannot resolve (before: every pair within 1e-3 and every
+repeated pole).
+
+Numbers moved (public models): `multipopulation_test` (k = 2, ell <= 1,
+nE1-nE2, the zoo parameters): tree at tau = 0, 2.5, 10 from 2.17769902883e-4,
+1.53898833295e-3, 1.43719729879e-3 to 2.17800651238e-4, 1.53902329574e-3,
+1.43721885568e-3 (1.4e-4, 2.3e-5, 1.5e-5 relative). Its degree-16 Q(omega) has
+two clusters; the old double-precision roots there were 4.5e-5 off. The new
+value equals the old pole sums fed with 50-digit residues to 6e-16. At their
+default parameters (k = 2, tree level, tau = 0, 2.5, 10 and 0, 2.5):
+`quadratic_hawkes_alpha` (n1-n2; a pair, kappa 42) moves by up to 6e-12
+relative (8.54678667117e-3 → 8.54678667122e-3 at tau = 2.5), and
+`dendritic_quad_soma_sigmoid` (nS1-nS2; four poles within 5 %, kappa 2.7e4)
+by 1e-9 (3.60326581144e-4 → 3.60326581512e-4 at tau = 0, 3.24664431617e-5 →
+3.24664431924e-5 at tau = 2.5); both equal the 50-digit pole sums to 1e-15.
+`ou_quartic_colored` moves only near tauc = 1/mu (table above). Every other
+model of the zoo is bit-identical (in-process A/B against the previous
+sources).
+
+Cost: N/2 + 1 Phase J runs where a cluster is resolved (multipopulation_test
+1.9 s → 3.6 s; ou_quartic_colored near tauc = 1/mu 0.2 s → 0.3 s; k >= 3
+callables are evaluated once per node), none elsewhere.
+
+Also fixed: the exact tier refused floats that Sage keeps as complex doubles
+with a zero imaginary part (for example 2.0 from a product of imaginary floats
+in a kernel image) and silently used the numerical tier. No zoo model was
+affected.
+
 ### Changed: first use of a shipped prediagram cell is about 3.5 times faster (no numbers move)
 
 The first use of a shipped cell on a fresh clone rebuilds every class from its

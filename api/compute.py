@@ -87,6 +87,168 @@ def _phase_j_scoped(fn):
     return scoped
 
 
+def _tau_extent(tau_grid, tau_max):
+    """The largest |time difference| the run evaluates: the tau grid's
+    extent, else ``tau_max`` (bounds the pole-cluster deformation radius)."""
+    try:
+        if tau_grid is not None and len(tau_grid):
+            return float(np.max(np.abs(np.asarray(tau_grid, dtype=float))))
+    except (TypeError, ValueError):
+        pass
+    return float(tau_max) if tau_max else None
+
+
+def _pole_cluster_preamble(prop, max_ell):
+    """The run's pole-cluster report (``None`` when no two poles are close)
+    and the warning for a cluster the pipeline cannot resolve."""
+    from api import _pole_clusters as _pc
+    pc = prop.get('pole_clusters')
+    if not pc:
+        return None
+    pc = dict(pc)
+    if pc['status'] in ('unresolved', 'disabled'):
+        digits = _pc.lost_digits(pc['kappa_max'], max_ell)
+        pc['lost_digits'] = digits
+        if digits <= _pc.LOST_DIGITS_WARN:
+            return pc                     # recorded; the loss stays below 1e-6
+        what = ('a repeated pole, which the pole-residue form cannot '
+                'represent' if pc.get('repeated_pole') else
+                f'near-degenerate poles (cancellation factor '
+                f'{pc["kappa_max"]:.3g}, about {digits:.0f} digits lost at '
+                f'max_ell={max_ell})')
+        _pc.warn(f'the propagator has {what}; the pole-cluster deformation '
+                 f'is {pc["status"]}: {pc["reason"]}.  The cumulant may be '
+                 f'inaccurate (see result["pole_clusters"]).')
+    return pc
+
+
+def _real_inputs(num_params, diagram_records):
+    """Real parameters and diagram prefactors: with a real propagator the
+    Phase J result at conj(w) is conj of the one at w."""
+    from sage.all import CDF
+    try:
+        for v in (num_params or {}).values():
+            if complex(CDF(SR(v))).imag != 0:
+                return False
+        for r in diagram_records:
+            pref = SR(r['combined_prefactor']).subs(num_params or {})
+            if complex(CDF(pref)).imag != 0:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _combine_phase_j(results, nodes):
+    """One ell's Phase J results of the deformation nodes, combined: the
+    callables, the per-diagram contributions and the delta records are the
+    node-weighted sums; ``pole_deformation_nodes`` lists the nodes."""
+    from api import _pole_clusters as _pc
+    if all(r is None for r in results):
+        return None
+    out = dict(results[0])
+    out['total_C'] = _pc.combine_callables(
+        [r['total_C'] for r in results], nodes)
+    fns = [r.get('total_C_batch') for r in results]
+    if all(f is not None for f in fns):
+        def total_C_batch(tau_points, *a, **kw):
+            vals = [np.asarray(f(tau_points, *a, **kw), dtype=complex)
+                    for f in fns]
+            return list(_pc.combine_values(vals, nodes))
+        out['total_C_batch'] = total_C_batch
+    epd = [r.get('eval_per_diagram_batch') for r in results]
+    if all(f is not None for f in epd):
+        def eval_per_diagram_batch(tau_points, *a, **kw):
+            outs = [f(tau_points, *a, **kw) for f in epd]
+            vals = [np.asarray(o[0], dtype=complex) for o in outs]
+            return _pc.combine_values(vals, nodes).tolist(), outs[0][1]
+        out['eval_per_diagram_batch'] = eval_per_diagram_batch
+    groups = []
+    for gs in zip(*[r.get('groups') or [] for r in results]):
+        g = dict(gs[0])
+        if all(x.get('contribution') is not None for x in gs):
+            g['contribution'] = _pc.combine_callables(
+                [x['contribution'] for x in gs], nodes)
+        groups.append(g)
+    out['groups'] = groups
+    dcs = []
+    for r, (w, wt, paired) in zip(results, nodes):
+        for rec in r.get('delta_contributions') or []:
+            rec = dict(rec)
+            f = rec.get('coeff_fc')
+            if callable(f):
+                rec['coeff_fc'] = _pc.combine_callables([f], [(w, wt, paired)])
+            rec['pole_deformation_node'] = w
+            dcs.append(rec)
+    out['delta_contributions'] = dcs
+    out['pole_deformation_nodes'] = [dict(w=w, weight=wt, paired=paired)
+                                     for w, wt, paired in nodes]
+    return out
+
+
+def _phase_j_deformed(phase_j_pass, propagator_data, deform, diagram_records,
+                      num_params, tau_points, report):
+    """Phase J for a propagator with resolved pole clusters: one pass per
+    deformation node (``api._pole_clusters.PoleDeformation``), combined by
+    the trapezoid rule on the unit circle; ``report`` gets the node count
+    and the accuracy estimate (discrete Fourier tail, relative to the
+    largest |C| on the grid), and a warning is issued above
+    ``ACCURACY_WARN``."""
+    from api import _pole_clusters as _pc
+    symmetric = deform.real_system and _real_inputs(num_params,
+                                                    diagram_records)
+    nodes = deform.nodes(symmetric)
+    runs = []
+    for w, _, _ in nodes:
+        pv, cm = deform.propagator_at(w)
+        runs.append(phase_j_pass(dict(propagator_data, pole_vals=pv,
+                                      C_mats=cm)))
+    phase_j_by_ell, total_C_by_ell, C_tau_by_ell = {}, {}, {}
+    acc_ell, err_tot, node_tot = {}, None, None
+    for ell in runs[0][1]:
+        total_C_by_ell[ell] = _pc.combine_callables(
+            [r[1][ell] for r in runs], nodes)
+        phase_j_by_ell[ell] = _combine_phase_j([r[0][ell] for r in runs],
+                                               nodes)
+        if tau_points is None:
+            C_tau_by_ell[ell] = None
+            continue
+        vals = [np.asarray(r[2][ell], dtype=complex) for r in runs]
+        C_tau_by_ell[ell] = _pc.combine_values(vals, nodes)
+        err = _pc.tail_estimate(vals, nodes, deform.n_nodes)
+        scale = float(np.max(np.abs(C_tau_by_ell[ell]))) if vals[0].size else 0
+        acc_ell[ell] = (float(np.max(err)) / scale if scale > 0
+                        else float(np.max(err)) if err is not None else None)
+        node_tot = vals if node_tot is None else [a + b for a, b in
+                                                  zip(node_tot, vals)]
+    report.update(n_nodes=deform.n_nodes, node_runs=len(nodes),
+                  symmetric=bool(symmetric))
+    if tau_points is None or node_tot is None:
+        report.update(accuracy=deform.a_priori_error, accuracy_source='a priori',
+                      accuracy_by_ell=None, accuracy_by_tau=None,
+                      accuracy_l1=deform.a_priori_error)
+    else:
+        err = _pc.tail_estimate(node_tot, nodes, deform.n_nodes)
+        C = _pc.combine_values(node_tot, nodes)
+        absC = np.abs(C)
+        scale = float(np.max(absC)) if absC.size else 0.0
+        acc = float(np.max(err)) / scale if scale > 0 else float(np.max(err))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            by_tau = np.where(absC > 0, err / np.where(absC > 0, absC, 1),
+                              np.where(err > 0, np.inf, 0.0))
+        l1 = float(np.sum(err)) / float(np.sum(absC)) if np.sum(absC) > 0 \
+            else float(np.sum(err))
+        report.update(accuracy=acc, accuracy_source='fourier tail',
+                      accuracy_by_ell=acc_ell,
+                      accuracy_by_tau=[float(x) for x in by_tau],
+                      accuracy_l1=l1)
+    if report['accuracy'] is not None and report['accuracy'] > _pc.ACCURACY_WARN:
+        _pc.warn(f'pole-cluster deformation: estimated relative error '
+                 f'{report["accuracy"]:.3g} (above {_pc.ACCURACY_WARN:g}) '
+                 f'with {deform.n_nodes} nodes; see result["pole_clusters"].')
+    return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
+
+
 def _trunc(s, maxlen=200):
     s = str(s)
     return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
@@ -936,7 +1098,9 @@ def _run_phase_j(state, grouped):
     if verbose:
         print('[4/7] Compute numerical poles + residue matrices...')
     _t_phase = time.perf_counter()
-    compute_poles_and_residues(prop, num_params, verbose=verbose)
+    compute_poles_and_residues(prop, num_params, verbose=verbose,
+                               tau_max=_tau_extent(tau_grid, tau_max),
+                               resolve_clusters=True)
     _phase_time('poles', _t_phase)
     if state.preflight is not None:
         state.preflight.poles(prop)       # G3 pole statistics (api.analyze)
@@ -1071,66 +1235,80 @@ def _run_phase_j(state, grouped):
     # Run Phase J once per ell so we get the per-loop-order
     # decomposition the saver / notebook plots need.  Diagrams within
     # an ell are summed in that ell's total_C; the master total_C is
-    # the sum across ells.
-    phase_j_by_ell  = {}
-    total_C_by_ell  = {}
-    C_tau_by_ell    = {}
-    for ell in sorted(unique_by_ell.keys()):
-        records_ell = [r for r in diagram_records if r['ell'] == ell]
-        if not records_ell:
-            # No diagrams at this ell (e.g. tree-level for some
-            # subset configs).  Contribute zero.
-            total_C_by_ell[ell] = (lambda *t: 0.0 + 0.0j)
-            phase_j_by_ell[ell] = None
+    # the sum across ells.  One pass runs every ell on ``pdata``;
+    # near-degenerate or repeated poles (``prop['pole_deformation']``)
+    # average passes over a deformation of the propagator
+    # (``api._pole_clusters``).
+    def _phase_j_pass(pdata):
+        phase_j_by_ell  = {}
+        total_C_by_ell  = {}
+        C_tau_by_ell    = {}
+        for ell in sorted(unique_by_ell.keys()):
+            records_ell = [r for r in diagram_records if r['ell'] == ell]
+            if not records_ell:
+                # No diagrams at this ell (e.g. tree-level for some
+                # subset configs).  Contribute zero.
+                total_C_by_ell[ell] = (lambda *t: 0.0 + 0.0j)
+                phase_j_by_ell[ell] = None
+                if tau_points is not None:
+                    C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+                else:
+                    C_tau_by_ell[ell] = None
+                continue
+
+            if use_grouped_phase_j:
+                # Prototype: group typed diagrams by parent prediagram and
+                # sum integrands before fast_callable + quadrature.  See
+                # ``api/_grouped_phase_j.py`` for the math + caveats.
+                from api._grouped_phase_j import (
+                    compute_correction_td_grouped,
+                )
+                td_result_ell = compute_correction_td_grouped(
+                    typed_diagrams   = [r['typed_diagram']
+                                        for r in records_ell],
+                    prefactors       = [r['combined_prefactor']
+                                        for r in records_ell],
+                    k                = k,
+                    propagator_data  = pdata,
+                    external_fields  = external_fields,
+                    num_params       = num_params,
+                    origin_leaf_idx  = origin_leaf_idx,
+                )
+            else:
+                td_result_ell = compute_correction_td(
+                    typed_diagrams   = [r['typed_diagram']
+                                        for r in records_ell],
+                    prefactors       = [r['combined_prefactor']
+                                        for r in records_ell],
+                    k                = k,
+                    propagator_data  = pdata,
+                    external_fields  = external_fields,
+                    num_params       = num_params,
+                    origin_leaf_idx  = origin_leaf_idx,
+                )
+            total_C_by_ell[ell] = _phase_j_scoped(
+                _ito_nudge_callable(td_result_ell['total_C'], k))
+            phase_j_by_ell[ell] = td_result_ell
+
             if tau_points is not None:
-                C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+                with _phase_j_warning_scope():
+                    C_tau_by_ell[ell] = np.array(
+                        td_result_ell['total_C_batch'](
+                            tau_points, parallel=parallel, n_workers=n_workers),
+                        dtype=complex,
+                    )
             else:
                 C_tau_by_ell[ell] = None
-            continue
+        return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
 
-        if use_grouped_phase_j:
-            # Prototype: group typed diagrams by parent prediagram and
-            # sum integrands before fast_callable + quadrature.  See
-            # ``api/_grouped_phase_j.py`` for the math + caveats.
-            from api._grouped_phase_j import (
-                compute_correction_td_grouped,
-            )
-            td_result_ell = compute_correction_td_grouped(
-                typed_diagrams   = [r['typed_diagram']
-                                    for r in records_ell],
-                prefactors       = [r['combined_prefactor']
-                                    for r in records_ell],
-                k                = k,
-                propagator_data  = propagator_data,
-                external_fields  = external_fields,
-                num_params       = num_params,
-                origin_leaf_idx  = origin_leaf_idx,
-            )
-        else:
-            td_result_ell = compute_correction_td(
-                typed_diagrams   = [r['typed_diagram']
-                                    for r in records_ell],
-                prefactors       = [r['combined_prefactor']
-                                    for r in records_ell],
-                k                = k,
-                propagator_data  = propagator_data,
-                external_fields  = external_fields,
-                num_params       = num_params,
-                origin_leaf_idx  = origin_leaf_idx,
-            )
-        total_C_by_ell[ell] = _phase_j_scoped(
-            _ito_nudge_callable(td_result_ell['total_C'], k))
-        phase_j_by_ell[ell] = td_result_ell
-
-        if tau_points is not None:
-            with _phase_j_warning_scope():
-                C_tau_by_ell[ell] = np.array(
-                    td_result_ell['total_C_batch'](
-                        tau_points, parallel=parallel, n_workers=n_workers),
-                    dtype=complex,
-                )
-        else:
-            C_tau_by_ell[ell] = None
+    pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+    if prop.get('pole_deformation') is None:
+        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_pass(
+            propagator_data)
+    else:
+        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
+            _phase_j_pass, propagator_data, prop['pole_deformation'],
+            diagram_records, num_params, tau_points, pole_cluster_report)
 
     _phase_time('phase_j', _t_phase)
 
@@ -1237,6 +1415,9 @@ def _run_phase_j(state, grouped):
         'kernel_groups':   kernel_groups,
         'phase_j_by_ell':  phase_j_by_ell,
         'phase_walls':     phase_walls,  # dict[label → seconds], None if not verbose
+        # near-degenerate / repeated poles (api._pole_clusters): None when no
+        # two poles are close, else the cluster report (status, accuracy)
+        'pole_clusters':   pole_cluster_report,
         'config': {
             'k':                  k,
             'max_ell':            max_ell,

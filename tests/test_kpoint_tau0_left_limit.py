@@ -382,10 +382,24 @@ def _run(which, k, grid, base=None, grouped=False, monkeypatch=None):
             monkeypatch.setattr(
                 api, 'compute_cumulants',
                 lambda **kw: orig(**{**kw, 'use_grouped_phase_j': True}))
-        _RUNS[key] = dd.run(model, dd.Config(
-            k=k, max_ell=0, external_fields=_ext(which, k), parameters=params,
-            tau_grid=np.asarray(grid, dtype=float),
-            kpoint_base_lags=base), mod)
+        # multipopulation_test has two pole clusters, which compute_cumulants
+        # resolves by averaging node runs (api._pole_clusters; ~9 times the
+        # cost per k >= 3 evaluation, and the tree moves by up to 1.4e-4).
+        # These tests are about the slice / tie machinery, with values
+        # tabulated before item 21: the old pole sums.
+        saved = os.environ.get('DAEDALUS_POLE_CLUSTERS')
+        if which == 'mp':
+            os.environ['DAEDALUS_POLE_CLUSTERS'] = '0'
+        try:
+            _RUNS[key] = dd.run(model, dd.Config(
+                k=k, max_ell=0, external_fields=_ext(which, k),
+                parameters=params, tau_grid=np.asarray(grid, dtype=float),
+                kpoint_base_lags=base), mod)
+        finally:
+            if saved is None:
+                os.environ.pop('DAEDALUS_POLE_CLUSTERS', None)
+            else:
+                os.environ['DAEDALUS_POLE_CLUSTERS'] = saved
     return _RUNS[key]
 
 

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import math
 import operator
 import re
 import time
@@ -121,8 +122,9 @@ FINDING_CODES = {
     'G3_UNRESOLVED_SYMBOLS':     ('G3', 'error'),
     'G3_NONRATIONAL_KERNEL':     ('G3', 'error'),
     'G3_POLES_UNAVAILABLE':      ('G3', 'warning'),
-    'G3_REPEATED_POLE':          ('G3', 'warning'),
-    'G3_CLOSE_POLES':            ('G3', 'warning'),
+    'G3_REPEATED_POLE':          ('G3', 'info'),      # resolved (api._pole_clusters)
+    'G3_CLOSE_POLES':            ('G3', 'info'),
+    'G3_POLE_CLUSTER_UNRESOLVED': ('G3', 'warning'),
     'G3_STIFF':                  ('G3', 'info'),
     'G3_DELTA_COMPONENT':        ('G3', 'info'),
     'G3_IMPROPER':               ('G3', 'error'),
@@ -169,7 +171,10 @@ _G6_DEFAULT_RTOL = 1e-10
 
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
-_CLOSE_POLE_RTOL = 1e-3    # |p_i - p_j| / max(|p_i|, |p_j|)
+# |p_i - p_j| / max(|p_i|, |p_j|): the pipeline's pole-cluster linkage
+# (api._pole_clusters.CLUSTER_RTOL; a cluster is deformed when its
+# cancellation factor exceeds KAPPA_MAX, see _g3_pole_findings)
+from api._pole_clusters import CLUSTER_RTOL as _CLOSE_POLE_RTOL  # noqa: E402
 _STIFF_RATIO = 1e3         # fast/slow decay-rate ratio flagged as stiff
 _EXACT_POLE_BUDGET_SEC = 5  # SIGALRM budget for the exact CF[omega] inverse
 _SUPPORTED_DOMAINS = ('positive', 'real', 'integer', 'complex')
@@ -308,6 +313,10 @@ class ModelTraits:
     poles: tuple = ()                     # distinct roots of Q(omega)
     repeated_poles: Optional[bool] = None
     n_close_pole_pairs: Optional[int] = None
+    # near-degenerate / repeated poles (api._pole_clusters): 'harmless',
+    # 'resolved', 'unresolved' or 'disabled'; None without close poles
+    pole_cluster_status: Optional[str] = None
+    pole_cluster_kappa: Optional[float] = None   # largest cancellation factor
     fast_slow_ratio: Optional[float] = None
     delta_component: Optional[bool] = None
     causal: Optional[bool] = None
@@ -1588,6 +1597,11 @@ def _g3_propagator(ctx):
     _g3_pole_findings(ctx, res)
 
 
+def _pc_kappa_max():
+    from api._pole_clusters import KAPPA_MAX
+    return KAPPA_MAX
+
+
 def _g3_rational(ctx):
     """The propagator class: ``False`` (stop G3) when ``K(omega)`` is not
     rational in omega."""
@@ -1615,7 +1629,8 @@ def _g3_pole_findings(ctx, res):
     stability from ``res = (deg Q, distinct poles, squarefree, delta
     entries, improper entries)`` (``_exact_poles`` or the pipeline's
     ``prop['pole_analysis']``)."""
-    Q_deg, poles, squarefree, delta, improper = res
+    Q_deg, poles, squarefree, delta, improper = res[:5]
+    pcr = res[5] if len(res) > 5 else None
     ctx.t['n_poles'] = Q_deg
     ctx.t['poles'] = tuple(poles)
     ctx.t['repeated_poles'] = not squarefree
@@ -1625,12 +1640,19 @@ def _g3_pole_findings(ctx, res):
                 f'improper propagator entries {improper} (deg P > deg Q): '
                 'G(omega) grows at large omega; K is not causal/proper.',
                 'check the Dt terms (one Dt per field, on its own response)')
+    status = (pcr or {}).get('status')
+    if pcr:
+        ctx.t['pole_cluster_status'] = status
+        ctx.t['pole_cluster_kappa'] = float(pcr.get('kappa_max') or 0.0)
     if not squarefree:
         ctx.add('G3_REPEATED_POLE',
-                'Q(omega) has a repeated root (Jordan block): the single-pole '
-                'residue formula does not apply; the pipeline falls back to '
-                'its numerical tier.',
-                'perturb the parameters off the degeneracy (e.g. mu != 1/tauc)')
+                'Q(omega) has a repeated root (Jordan block): the pole-residue '
+                'form Phase J sums cannot represent it (no t exp(lambda t) '
+                'term); '
+                + ('compute_cumulants averages deformed propagators instead '
+                   '(api._pole_clusters).' if status == 'resolved' else
+                   'it cannot be resolved here (G3_POLE_CLUSTER_UNRESOLVED).'),
+                '')
     close = []
     for i in range(len(poles)):
         for j in range(i + 1, len(poles)):
@@ -1638,12 +1660,39 @@ def _g3_pole_findings(ctx, res):
             if abs(a - b) <= _CLOSE_POLE_RTOL * max(abs(a), abs(b), 1e-300):
                 close.append((a, b))
     ctx.t['n_close_pole_pairs'] = len(close)
+    kap = float((pcr or {}).get('kappa_max') or 0.0)
     if close:
+        how = {'harmless': f'cancellation factor {kap:.3g} <= '
+                           f'{_pc_kappa_max():g}: the pole-residue sums keep '
+                           'their digits',
+               'resolved': f'cancellation factor {kap:.3g}: compute_cumulants '
+                           'averages deformed propagators (api._pole_clusters)',
+               }.get(status, 'not resolved by the pole-cluster deformation ('
+                     + str((pcr or {}).get('reason', '')) + ')'
+                     if status in ('unresolved', 'disabled') else
+                     'residues ~ 1/gap; not analysed')
         ctx.add('G3_CLOSE_POLES',
                 f'{len(close)} pole pair(s) closer than {_CLOSE_POLE_RTOL:g} '
                 f'relative: {[(complex(a), complex(b)) for a, b in close[:3]]}; '
-                'residues ~ 1/gap lose precision.',
-                'perturb the parameters, or treat the pair as a double pole')
+                f'{how}.', '')
+    if status in ('unresolved', 'disabled'):
+        from api._pole_clusters import lost_digits, LOST_DIGITS_WARN
+        ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
+        digits = lost_digits(kap if squarefree else float('inf'), ml)
+    if status in ('unresolved', 'disabled') and digits > LOST_DIGITS_WARN:
+        lost = ('the pole-residue form cannot represent a repeated pole'
+                if not math.isfinite(digits) else
+                f'about {digits:.0f} digits lost at max_ell={ml} '
+                f'(cancellation factor {kap:.3g})')
+        ctx.add('G3_POLE_CLUSTER_UNRESOLVED',
+                f'a cluster of {"repeated" if not squarefree else "near-degenerate"} '
+                f'poles needs the pole-cluster deformation, which is {status}: '
+                f'{(pcr or {}).get("reason", "")}; {lost}.',
+                'give the exact tier rational parameters / kernel images (it '
+                'needs an exact rational propagator), unset '
+                'DAEDALUS_POLE_CLUSTERS=0, or (a cluster too close to the '
+                'stability boundary) perturb the parameters off the '
+                'degeneracy')
     rates = [p.imag for p in poles if p.imag > 0]
     if rates:
         ratio = max(rates) / min(rates)
@@ -1776,7 +1825,8 @@ def _to_qq(x):
 def _exact_poles(K_num, omega, nf):
     """Exact inverse of K(omega) in Frac(QQ[i][omega]) (the pipeline's
     tier-1 arithmetic).  Returns ``(deg Q, distinct poles, squarefree,
-    delta entries, improper entries)`` or ``None`` on budget expiry."""
+    delta entries, improper entries, pole-cluster report or None)`` or
+    ``None`` on budget expiry."""
     from sage.all import (SR, QQ, CDF, PolynomialRing, CyclotomicField,
                           matrix)
     from api._propagator import _run_with_timeout, _PolynomialPathTimeout
@@ -1816,12 +1866,24 @@ def _exact_poles(K_num, omega, nf):
             elif n.degree() == d.degree():
                 delta.append((i, j))
     if Q is None:
-        return 0, [], True, delta, improper
+        return 0, [], True, delta, improper, None
     PRc = PolynomialRing(CDF, 'om_c')
     Qc = PRc([complex(c) for c in Q.coefficients(sparse=False)])
     poles = sorted((complex(r) for r, _ in Qc.roots(CDF)),
                    key=lambda p: (p.imag, p.real)) if Q.degree() > 0 else []
-    return int(Q.degree()), poles, bool(Q.is_squarefree()), delta, improper
+    squarefree = bool(Q.is_squarefree())
+    clusters = None
+    from api import _pole_clusters as _pc
+    if not squarefree or _pc.has_close_pair(poles):
+        # what compute_cumulants' exact tier will do with them
+        try:
+            clusters = _pc.analyze(G, Q, nf).report()
+        except Exception as exc:
+            clusters = dict(status='unresolved', clusters=[],
+                            kappa_max=float('inf'),
+                            repeated_pole=not squarefree,
+                            reason=f'cluster analysis failed ({_exc_text(exc)})')
+    return int(Q.degree()), poles, squarefree, delta, improper, clusters
 
 
 # ── G4: noise ─────────────────────────────────────────────────────────
@@ -2296,7 +2358,8 @@ class Preflight:
             if pa:
                 ctx.t['pole_source'] = 'pipeline'
                 res = (pa['degree'], list(pa['poles']), pa['squarefree'],
-                       list(pa['delta']), list(pa['improper']))
+                       list(pa['delta']), list(pa['improper']),
+                       prop.get('pole_clusters'))
             else:
                 # the pipeline's exact tier failed before Q(omega) (it then
                 # used the numerical cofactor tier): the analyzer's own
@@ -2320,6 +2383,14 @@ class Preflight:
                             '/ acausal poles) are not available.', '')
                     return
                 ctx.t['pole_source'] = 'exact'
+                pcr = prop.get('pole_clusters') or res[5]
+                if pcr and pcr.get('status') == 'resolved' and not prop.get(
+                        'pole_deformation'):
+                    # the pipeline used its numerical tier: nothing deformed
+                    pcr = dict(pcr, status='unresolved',
+                               reason='the pipeline\'s exact tier failed, so '
+                                      'no deformation was built')
+                res = tuple(res[:5]) + (pcr,)
             _g3_pole_findings(ctx, res)
 
         self._check('poles', [g3])
@@ -2475,6 +2546,11 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 'call(s)); they are not in the accuracy estimate.', '')
     C = result.get('C_tau')
     E = float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
+    pc = result.get('pole_clusters') if isinstance(result, dict) else None
+    if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
+        # the counters add up every node run of the pole-cluster deformation
+        # while C is their weighted mean (weights summing to 1)
+        E /= float(pc['node_runs'])
     n_est = sum(int(c.get(k, 0)) for k in ('dd_polygon', 'dd_interval',
                                            'dd_poset', 'dbm_answered'))
     Ca = np.asarray(C, dtype=complex) if C is not None else np.zeros(0, complex)
@@ -2489,6 +2565,18 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = E / S
     else:
         R = 0.0 if E == 0 else float('inf')
+    # Near-degenerate / repeated poles (api._pole_clusters): a resolved
+    # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
+    # the node values); an unresolved one its lost-digit estimate.
+    if pc and complete:
+        if pc.get('status') == 'resolved' and pc.get('accuracy_l1') is not None:
+            R = (R or 0.0) + float(pc['accuracy_l1'])
+        elif pc.get('status') in ('unresolved', 'disabled'):
+            lost = pc.get('lost_digits')
+            if lost is not None:
+                R = max(R or 0.0, float('inf') if not math.isfinite(lost)
+                        else 10.0 ** (lost - 16))
+        d['pole_cluster_accuracy'] = pc.get('accuracy')
     thr = ctx.q.accuracy if ctx.q.accuracy is not None else _G6_DEFAULT_RTOL
     d.update(error_estimate_sum=E, cumulant_l1=S, accuracy_estimate=R,
              accuracy_threshold=float(thr), n_estimated_subsets=n_est)
