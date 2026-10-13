@@ -9,7 +9,14 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
-**Unreleased (after 0.2.0; the version entries below are numbered releases)**
+## 0.2.1 (2026-10-13)
+
+A patch release on top of 0.2.0. Its reason: near-degenerate and repeated
+poles of the propagator gave silent garbage in 0.2.0 (and before); they are now
+resolved or flagged. It also carries the first-use speed-up of the shipped
+prediagram cells, `dd.build_cache`, and the model analyzer wired into
+`compute_cumulants`. No Phase J number moves except where a pole cluster was
+ill-conditioned (listed in the first entry).
 
 ### Fixed: near-degenerate and repeated poles of the propagator (numbers move only where a pole cluster was ill-conditioned)
 
