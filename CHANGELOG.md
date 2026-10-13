@@ -11,6 +11,68 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: symbolic tree-level covariance in the time domain, any denominator degree (`api/symbolic_out.py`, stage C2)
+
+- `tree_modes(C0, omega)` / `TreeCovariance.modes(a, b)` return `C(tau)` as a
+  `ModeSum`: terms `Mode(coeff, rate, power, side)`, each
+  `coeff * tau**power * exp(rate * tau)` on `side` 'positive' (tau > 0) or
+  'negative', plus the `contact` weight of delta(tau). Repeated poles give
+  `power >= 1` terms (confluent residues). Residues are computed once per
+  irreducible denominator factor in K[x]/(p) (K = the parameters' rational
+  functions), so any degree works: roots of degree <= 2 are written out,
+  higher ones are `RootOf` symbols (`ModeSum.roots`). `evaluate(tau, values)`
+  and `numeric_terms(values)` work at 256-bit precision (`evaluate` also sums
+  the modes at that precision, so nearly coincident poles do not lose digits).
+  A value for a name that entered the construction (substituted with
+  `values=`, or used by the mean-field solve) must match it, else an error.
+- Stated assumptions replace the sampled half-plane decision: each result
+  carries `assumptions`, sign conditions from the Routh array (a Sturm chain
+  for even factors) that fix the split of the poles between the two half
+  planes, and distinctness conditions (discriminants, resultants). They are
+  checked whenever the modes are evaluated; outside them `AssumptionViolation`
+  is raised. Parameter sampling is kept only as a cross-check of the Routh
+  count against numeric roots.
+- `integrate_against(C0, Kernel)` / `ModeSum.integrate_against` /
+  `TreeCovariance.integrate_against`: `int L(s) C(s) ds` in closed form for
+  exponential and polynomial-times-exponential kernels, including
+  `Kernel.two_sided_exponential(a_pos, tau_pos, a_neg, tau_neg)`. Sums over the roots of
+  a one-sided factor are traces, so the result is an exact rational function
+  of the parameters at any degree. The delta(tau) term is included when the
+  kernel is continuous at 0; otherwise `contact=` must say which value of
+  L(0) to use.
+- `pair_with_kernel(..., any_degree=True)`: the Fourier-route pairing without
+  the degree limit (default unchanged).
+- `mean_field='solve'` and `fix_mean_field` substitute the model's
+  `mean_field=True` parameters (with population indices) instead of every
+  name containing "star".
+- Checked against the pipeline's tree level (`C_tau`, max_ell=0) to 1e-12
+  relative on OU, an underdamped OU, a feedback filter chain with an
+  irreducible cubic denominator, an equal-rate chain (double pole), and the
+  linear Hawkes models (contact = mean rate), each also after positive
+  domains were put on the same symbol names. No pipeline number changes.
+
+#### Added: regime advisories and a one-table report in the model analyzer (D3, D4)
+
+- New gate G5 in `api/analyze.py`, read-only (no number moves; added preflight time is a few ms). `ModelTraits`
+  gains `pole_rate_min`/`pole_rate_max` (decay-rate range of the poles), `tree_std` (tree-level standard
+  deviations), `loop_parameter_estimate` (`g_eff`, with `loop_parameter_detail` naming the dominant vertices) and
+  `taylor_radius_ratio`. `g_eff` estimates the size of the one-loop correction relative to the tree from the vertex
+  couplings, the propagator and the noise amplitude, without running a loop (definition in the docstring of
+  `api.analyze._g_eff`; for `eps x^3` with OU noise it is `3 eps D / mu^2`, which equals the measured
+  |one-loop / tree| at tau = 0). New codes: `G5_LOOP_PARAMETER` (warning, `g_eff > 0.2` and loops requested),
+  `G5_TAYLOR_RADIUS` (warning: the Taylor series of a non-polynomial response about the saddle does not shrink fast
+  enough at 3 tree standard deviations), `G5_ADVISORY_SKIPPED` (info). `G3_STIFF`, `G3_CLOSE_POLES` and
+  `G3_REPEATED_POLE` now carry remedies. `mode: strict` never promotes the two G5 warnings to errors (advisories about the answer, not model defects).
+  Tracked models whose default regime is flagged: the two quartic double wells (`g_eff` 0.30) and
+  `ou_quartic_colored` (`g_eff` about 10).
+- `ModelReport.table()` / `str(report)`: one plain-text table of at most 100 columns (traits that matter, route,
+  pole statistics, `g_eff`, cost when known, findings by level); `dd.run(..., verbose=True)` prints it.
+- `dd run config.yaml --dry-run` prints the resolved config and the report table (as YAML comments); new config
+  keys `question.chi_grid` (alias `spatial_grid`) and `output` (directory or file stem); list-valued parameters
+  are checked against the model's population sizes; a 3-element `tau_grid`/`chi_grid` list that looks like a range
+  is an error (as in `dd.Config`); console script `daedalus` (`[project.scripts] daedalus = "daedalus:main"`); an inline
+  `sde:` block can replace `model:` (single scalar populations; noise types of `api.noise`).
+
 #### Added: the δ components of a cumulant (no `C_tau` number moves)
 
 A shot-noise model (a point process: Hawkes, spike reset, δ spikes) has

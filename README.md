@@ -121,8 +121,9 @@ For lower-level access the API layer is importable directly, e.g. `from api impo
 `dd run` takes a YAML file instead of a script (needs PyYAML, which the conda environment has):
 
 ```bash
-sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config, compute nothing
+sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config and the analyzer report, compute nothing
 sage -python -m daedalus run config.yaml             # compute and write the outputs
+daedalus run config.yaml                             # the same, after `sage -pip install -e .` (console script `daedalus`)
 ```
 
 Run these from the repository root, or from anywhere after `sage -pip install -e .` (see *Get the code*); otherwise Python cannot find the `daedalus` module.
@@ -156,6 +157,51 @@ the model's own default, exactly as `dd.run` does. `points` (spatial models with
 line number, e.g. `config.yaml: line 7: unknown key 'taylor' in 'question'`. A run also writes
 `config_resolved.yaml` (every default filled in; itself a valid config) and `run_info.json` (package
 version, git commit, resolved options, wall time) next to the first output.
+
+More keys. `question.chi_grid` (alias `spatial_grid`) is the spatial-difference grid of a spatial model,
+written like `tau_grid`: a `{start, stop, num}` mapping is a range, a list is literal points, and a
+3-element list that looks like a range (`[-5, 5, 51]`) is an error, as in `dd.Config`. `output: results/`
+(a directory) or `output: results/ou1` (a file stem) writes `.npz`, `.csv` and `.png` there, with
+`config_resolved.yaml` and `run_info.json` beside them (prefixed with the stem when it is one); an explicit
+`outputs:` entry wins for its kind. A list-valued parameter must have the shape the model declares (the sizes of
+its populations), otherwise the run stops with the line number.
+
+An inline SDE can replace `model:` (built with `api.sde.SDE`, which derives the action and the mean-field
+equations; the noise `type` is a class of `api.noise`, the other keys are its arguments):
+
+```yaml
+sde:
+  name: OU quartic
+  parameters: {mu: {default: 1.0, domain: positive}, eps: 0.02, D: {default: 1.0, domain: positive}}
+  fields: [x]
+  drift: {x: "-mu*x - eps*x^3"}
+  noise:
+    xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
+  stability_analysis: true
+```
+
+`--dry-run` also prints the model analyzer's report table for the question (gates G0-G5: structure, mean
+field, poles, noise class, the loop-parameter estimate `g_eff` and the Taylor check; no diagram
+enumeration, no integrals) as YAML comments, so the output is still a valid config. The same table is
+`api.analyze.analyze(model).table()` (or `result['analysis'].table()` after a run) and `dd.run` prints it when
+`verbose=True`:
+
+```text
+Model report: OU Quartic (white noise)                                    [OK; 0 warning(s), 0 info]
+----------------------------------------------------------------------------------------------------
+question   k=2  max_ell=1  external=[('x', 1), ('x', 1)]
+route      phase_j_per_diagram (predicted)
+model      temporal; 1 physical / 1 response component(s); 4 parameter(s); Taylor order 4;
+           time-homogeneous yes
+vertices   polynomial yes; species [(1, 2), (1, 3)]; max degree 4; state-dependent noise no
+noise      white; Gaussian yes; cross-correlated no
+saddle     1 found, 1 stable; selected #0 stable yes; marginal modes 0
+poles      n=1; rate min/max 1 / 1; fast/slow 1; repeated no; close pairs 0; delta part no
+regime     g_eff 0.06 (small, warn > 0.2)
+cost       analysis 12.3 ms
+----------------------------------------------------------------------------------------------------
+findings   none
+```
 
 ## Verify the install
 

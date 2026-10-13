@@ -10,6 +10,7 @@ writers (``save_npz`` / ``save_csv`` / ``plot_cumulant`` / ``generate_report``).
 Schema (all sections but ``model`` are optional; unknown keys are errors)::
 
     model: ou_quartic                 # name of models/<name>.model.py, or a path
+                                      # (or an inline ``sde:`` block instead, below)
     parameters: {mu: 1.0, eps: 0.02}  # numbers, or (nested) lists of numbers
     question:
       k: 2
@@ -24,6 +25,23 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
              downgrade: [G4_NEGATIVE_VARIANCE],  # errors accepted as warnings
              preflight: true}                    # false: analyzer gates off
     outputs: {npz: out/c.npz, csv: out/c.csv, plot: out/c.png, report_pdf: out/r.pdf}
+    output: results/                  # a directory or a file stem: .npz/.csv/.png
+
+An inline SDE (instead of ``model:``; built with ``api.sde.SDE``, so the
+noise and the action are derived exactly as for a Python-built model)::
+
+    sde:
+      name: OU quartic
+      parameters:                     # default, or {default, domain, ...}
+        mu: {default: 1.0, domain: positive}
+        eps: 0.02
+        D: {default: 1.0, domain: positive}
+      fields: [x]
+      drift: {x: "-mu*x - eps*x^3"}   # or equations: {x: {lhs: ..., rhs: ...}}
+      noise:                          # type = a class of api.noise, the rest are its arguments
+        xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
+      interpretation: ito             # or stratonovich
+      stability_analysis: true
 
 Every error names the config line it comes from.  Relative paths (model file,
 outputs) resolve against the directory of the config file.  The YAML is
@@ -45,9 +63,18 @@ import time
 
 import numpy as np
 
-TOP_KEYS = ('model', 'parameters', 'question', 'policy', 'outputs')
-QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'points',
-                 'taylor_order')
+TOP_KEYS = ('model', 'sde', 'parameters', 'question', 'policy', 'output',
+            'outputs')
+SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
+            'interpretation', 'stability_analysis')
+SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
+#: the ``type:`` of an inline noise source (classes of api.noise); a jump law
+#: inside one is any ``api.noise.JumpDistribution`` subclass
+SDE_NOISE_TYPES = ('Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
+                   'InverseGaussianProcess', 'Cumulants', 'CGF')
+
+QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
+                 'spatial_grid', 'points', 'taylor_order')
 POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
                'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
                'allow_numeric_fallback', 'interpretation', 'downgrade')
@@ -56,6 +83,9 @@ ANALYZER_POLICY_KEYS = ('mode', 'allow_taylor_truncation',
                         'allow_markov_embedding', 'allow_numeric_fallback',
                         'interpretation', 'downgrade')
 OUTPUT_KEYS = ('npz', 'csv', 'plot', 'report_pdf')
+#: files ``output:`` (a directory or a file stem) expands to
+OUTPUT_STEM_KINDS = (('npz', '.npz'), ('csv', '.csv'), ('plot', '.png'))
+OUTPUT_STEM_DEFAULT = 'cumulants'
 TAU_GRID_KEYS = ('start', 'stop', 'num')
 
 _DECIMAL = re.compile(r'^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$')
@@ -147,6 +177,17 @@ class _Parser:
             self.fail(node, f'{what} must be a non-empty string')
         return v
 
+    def expression(self, node, what):
+        """An expression of the SDE block: a string, or a plain number
+        (``drift: {x: 0}`` is the text ``0``)."""
+        v = self.py(node)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return repr(v)
+        if not isinstance(v, str) or not v.strip():
+            self.fail(node, f'{what} must be an expression (a quoted string '
+                            'or a number)')
+        return v
+
     def number(self, node, what):
         if not isinstance(node, self.yaml.ScalarNode):
             self.fail(node, f'{what} must be a number')
@@ -170,11 +211,21 @@ class _Parser:
     # -- sections --
     def parse(self):
         top = self.mapping(self.root, TOP_KEYS, 'the config')
-        if 'model' not in top:
-            self.fail(self.root, "missing required key 'model'")
-        raw = {'_lines': {}}
-        raw['model'] = self.string(top['model'][1], "'model'")
-        raw['_lines']['model'] = top['model'][1].start_mark.line + 1
+        if 'model' not in top and 'sde' not in top:
+            self.fail(self.root, "missing required key 'model' (or an inline "
+                                 "'sde' block)")
+        if 'model' in top and 'sde' in top:
+            self.fail(top['sde'][0], "give either 'model' or 'sde', not both "
+                                     f"('model' is on line "
+                                     f"{top['model'][0].start_mark.line + 1})")
+        raw = {'_lines': {}, 'sde': None}
+        if 'sde' in top:
+            raw['model'] = None
+            raw['sde'] = self.sde_block(top['sde'][1])
+            raw['_lines']['model'] = top['sde'][0].start_mark.line + 1
+        else:
+            raw['model'] = self.string(top['model'][1], "'model'")
+            raw['_lines']['model'] = top['model'][1].start_mark.line + 1
 
         raw['parameters'] = {}
         node = self.section(top, 'parameters')
@@ -185,6 +236,10 @@ class _Parser:
                 for name, (knode, vnode) in
                 self._free_mapping(node, 'parameters').items()}
 
+        raw['output'] = None
+        if 'output' in top:
+            raw['output'] = (self.string(top['output'][1], "'output'"),
+                             top['output'][1].start_mark.line + 1)
         raw['question'], raw['policy'], raw['outputs'] = {}, {}, {}
         node = self.section(top, 'question')
         if node:
@@ -198,6 +253,87 @@ class _Parser:
             raw['outputs'] = {k: self.string(v[1], f'outputs.{k}')
                               for k, v in items.items()}
         return raw
+
+    def sde_block(self, node):
+        """The inline ``sde:`` block -> ``{'spec': plain dict, 'lines': {...}}``.
+        Structure is checked here; the SDE builder checks the content when
+        the model is built (its errors are reported at the line of the
+        entry they name)."""
+        items = self.mapping(node, SDE_KEYS, "'sde'")
+        lines = {k: v[0].start_mark.line + 1 for k, v in items.items()}
+        for need in ('fields', 'noise'):
+            if need not in items:
+                self.fail(node, f"'sde' needs '{need}'")
+        if 'drift' not in items and 'equations' not in items:
+            self.fail(node, "'sde' needs 'drift' (or 'equations')")
+        spec = {}
+        if 'name' in items:
+            spec['name'] = self.string(items['name'][1], 'sde.name')
+        fnode = items['fields'][1]
+        if not isinstance(fnode, self.yaml.SequenceNode) or not fnode.value:
+            self.fail(fnode, 'sde.fields must be a non-empty list of names, '
+                             'e.g. [x]')
+        spec['fields'] = [self.string(n, 'sde field name') for n in fnode.value]
+        if 'parameters' in items:
+            spec['parameters'] = {}
+            for name, (knode, vnode) in self._free_mapping(
+                    items['parameters'][1], 'sde.parameters').items():
+                line = knode.start_mark.line + 1
+                if isinstance(vnode, self.yaml.MappingNode):
+                    sub = self.mapping(vnode, SDE_PARAMETER_KEYS,
+                                       f'sde.parameters.{name}')
+                    entry = {k: self.py(v[1]) for k, v in sub.items()}
+                    if 'default' in sub:
+                        entry['default'] = self.numeric_tree(
+                            sub['default'][1], f'parameter {name!r} default')
+                else:
+                    entry = {'default': self.numeric_tree(
+                        vnode, f'parameter {name!r}')}
+                spec['parameters'][name] = (entry, line)
+        for key in ('drift', 'equations'):
+            if key in items:
+                spec[key] = {}
+                for fname, (knode, vnode) in self._free_mapping(
+                        items[key][1], f'sde.{key}').items():
+                    line = knode.start_mark.line + 1
+                    if key == 'drift':
+                        spec[key][fname] = (self.expression(
+                            vnode, f'sde.drift.{fname}'), line)
+                    else:
+                        sub = self.mapping(vnode, ('lhs', 'rhs'),
+                                           f'sde.equations.{fname}')
+                        if 'lhs' not in sub:
+                            self.fail(vnode, f'sde.equations.{fname} needs lhs')
+                        spec[key][fname] = ({
+                            k: self.expression(v[1], f'sde.equations.{fname}.{k}')
+                            for k, v in sub.items()}, line)
+        nnode = items['noise'][1]
+        spec['noise'] = {}
+        for nname, (knode, vnode) in self._free_mapping(
+                nnode, 'sde.noise').items():
+            if not isinstance(vnode, self.yaml.MappingNode):
+                self.fail(vnode, f'sde.noise.{nname} must be a mapping with a '
+                                 "'type' and the source's arguments")
+            d = self.py(vnode)
+            if d.get('type') not in SDE_NOISE_TYPES:
+                self.fail(vnode, f"sde.noise.{nname}: 'type' must be one of "
+                                 f'{", ".join(SDE_NOISE_TYPES)}; got '
+                                 f'{d.get("type")!r}')
+            if not isinstance(d.get('couples'), dict) or not d['couples']:
+                self.fail(vnode, f"sde.noise.{nname}: 'couples' must be a "
+                                 'mapping {field: coefficient}')
+            spec['noise'][nname] = (d, knode.start_mark.line + 1)
+        if 'interpretation' in items:
+            v = self.string(items['interpretation'][1], 'sde.interpretation')
+            if v not in ('ito', 'stratonovich'):
+                self.fail(items['interpretation'][1],
+                          'sde.interpretation must be ito or stratonovich; '
+                          f'got {v!r}')
+            spec['interpretation'] = v
+        if 'stability_analysis' in items:
+            spec['stability_analysis'] = self.boolean(
+                items['stability_analysis'][1], 'sde.stability_analysis')
+        return {'spec': spec, 'lines': lines}
 
     def _free_mapping(self, node, what):
         """Mapping with arbitrary (parameter) names; duplicates are errors."""
@@ -231,6 +367,15 @@ class _Parser:
                 items['external_fields'][1])
         if 'tau_grid' in items:
             q['tau_grid'] = self.tau_grid(items['tau_grid'][1])
+        if 'chi_grid' in items and 'spatial_grid' in items:
+            self.fail(items['spatial_grid'][0],
+                      "give one of 'chi_grid' and 'spatial_grid' (the alias), "
+                      f"not both (chi_grid is on line {lines['chi_grid']})")
+        for key in ('chi_grid', 'spatial_grid'):
+            if key in items:
+                # stored under the canonical name; the alias is spelling only
+                q['chi_grid'] = self.chi_grid(items[key][1], f'question.{key}')
+                lines['chi_grid'] = lines[key]
         if 'points' in items:
             q['points'] = (self.numeric_tree(items['points'][1],
                                              'question.points'),
@@ -253,32 +398,79 @@ class _Parser:
             out.append((name, idx, entry.start_mark.line + 1))
         return out
 
-    def tau_grid(self, node):
-        """-> list of floats (an explicit list or a {start, stop, num} range)."""
+    def _range_trap(self, node, name):
+        """The ``dd.Config`` rule: a 3-element LIST whose last entry is an
+        integer >= 2 is the classic "I meant a range" slip (``[-5, 5, 51]``
+        is 3 literal points); raise and point at the mapping form."""
+        if len(node.value) != 3:
+            return
+        try:
+            last = self.py(node.value[2])
+        except Exception:
+            return
+        if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                and last >= 2 and float(last) == int(last)):
+            lo, hi = (self.py(n) for n in node.value[:2])
+            self.fail(node, f'{name} is a 3-element LIST, so it is read as 3 '
+                            f'literal grid points {{{lo}, {hi}, {last}}} (note '
+                            f'the {int(last)}!). For a RANGE of {int(last)} '
+                            f'points from {lo} to {hi} write {{start: {lo}, '
+                            f'stop: {hi}, num: {int(last)}}}; for exactly '
+                            f'these 3 literal points write '
+                            f'{{values: [{lo}, {hi}, {last}]}}.')
+
+    def _grid(self, node, name, increasing):
+        """A grid: ``{start, stop, num}`` (a range, the tuple form of
+        ``dd.Config``), ``{values: [...]}`` or a list (literal points; a
+        3-element list that looks like a range raises, see ``_range_trap``)."""
+        short = name.split('.')[-1]
         if isinstance(node, self.yaml.MappingNode):
-            items = self.mapping(node, TAU_GRID_KEYS, 'question.tau_grid')
+            items = self.mapping(node, TAU_GRID_KEYS + ('values',), name)
+            if 'values' in items:
+                extra = [k for k in items if k != 'values']
+                if extra:
+                    self.fail(node, f"{name}: 'values' cannot be combined "
+                                    f"with {', '.join(extra)}")
+                vnode = items['values'][1]
+                if not isinstance(vnode, self.yaml.SequenceNode) or not vnode.value:
+                    self.fail(vnode, f'{name}.values must be a non-empty list '
+                                     'of numbers')
+                return self._values(vnode, short, increasing)
             missing = [k for k in TAU_GRID_KEYS if k not in items]
             if missing:
-                self.fail(node, 'question.tau_grid needs start, stop and num; '
+                self.fail(node, f'{name} needs start, stop and num; '
                                 f'missing: {", ".join(missing)}')
-            start = self.number(items['start'][1], 'tau_grid.start')
-            stop = self.number(items['stop'][1], 'tau_grid.stop')
-            num = self.integer(items['num'][1], 'tau_grid.num', 2)
+            start = self.number(items['start'][1], f'{short}.start')
+            stop = self.number(items['stop'][1], f'{short}.stop')
+            num = self.integer(items['num'][1], f'{short}.num', 2)
             if not start < stop:
-                self.fail(node, 'tau_grid is inconsistent: need start < stop; '
+                self.fail(node, f'{short} is inconsistent: need start < stop; '
                                 f'got start={start}, stop={stop}')
-            return [float(t) for t in np.linspace(start, stop, num)]
+            return [float(x) for x in np.linspace(start, stop, num)]
         if isinstance(node, self.yaml.SequenceNode) and node.value:
-            vals = [float(self.number(n, 'tau_grid entry')) for n in node.value]
+            self._range_trap(node, name)
+            return self._values(node, short, increasing)
+        self.fail(node, f'{name} must be a non-empty list of numbers or a '
+                        'mapping {start, stop, num} (or {values: [...]})')
+
+    def _values(self, node, short, increasing):
+        vals = [float(self.number(n, f'{short} entry')) for n in node.value]
+        if increasing:
             for i in range(1, len(vals)):
                 if not vals[i] > vals[i - 1]:
                     self.fail(node.value[i],
-                              'tau_grid is inconsistent: the list must be '
+                              f'{short} is inconsistent: the list must be '
                               f'strictly increasing, but {vals[i]} follows '
                               f'{vals[i - 1]}')
-            return vals
-        self.fail(node, 'question.tau_grid must be a non-empty list of '
-                        'numbers or a mapping {start, stop, num}')
+        return vals
+
+    def chi_grid(self, node, name):
+        """The spatial-difference grid chi = x_j - x_k, as ``dd.Config``."""
+        return self._grid(node, name, increasing=False)
+
+    def tau_grid(self, node):
+        """-> list of floats (an explicit increasing list or a range)."""
+        return self._grid(node, 'question.tau_grid', increasing=True)
 
     def policy(self, node):
         items = self.mapping(node, POLICY_KEYS, "'policy'")
@@ -343,9 +535,93 @@ def parse_config(path):
 
 # ── model loading and the checks that need the model ──────────────────────────
 
+def _sde_plain(block):
+    """The inline ``sde`` block as plain YAML-able data (no line numbers):
+    what the resolved config holds, and what ``_build_sde`` reads."""
+    spec = block['spec']
+    out = {}
+    if 'name' in spec:
+        out['name'] = spec['name']
+    if 'parameters' in spec:
+        out['parameters'] = {n: _plain(e) for n, (e, _) in
+                             spec['parameters'].items()}
+    out['fields'] = list(spec['fields'])
+    for key in ('drift', 'equations'):
+        if key in spec:
+            out[key] = {f: _plain(v) for f, (v, _) in spec[key].items()}
+    out['noise'] = {n: _plain(d) for n, (d, _) in spec['noise'].items()}
+    for key in ('interpretation', 'stability_analysis'):
+        if key in spec:
+            out[key] = spec[key]
+    return out
+
+
+def _noise_object(desc):
+    """``{type: Gaussian, var: ...}`` -> an ``api.noise`` object; mappings
+    with a ``type`` inside it are jump laws."""
+    from api import noise as N
+    args = {}
+    for key, value in desc.items():
+        if key in ('type', 'couples'):
+            continue
+        if isinstance(value, dict) and 'type' in value:
+            law = getattr(N, str(value['type']), None)
+            if not (isinstance(law, type)
+                    and issubclass(law, N.JumpDistribution)):
+                laws = sorted(n for n in N.__all__
+                              if isinstance(getattr(N, n), type)
+                              and issubclass(getattr(N, n), N.JumpDistribution)
+                              and n != 'JumpDistribution')
+                raise ValueError(f"jump law type must be one of "
+                                 f"{', '.join(laws)}; got {value['type']!r}")
+            value = law(**{
+                k: v for k, v in value.items() if k != 'type'})
+        args[key] = value
+    return getattr(N, desc['type'])(**args)
+
+
+def _build_sde(raw):
+    """The model dict of an inline ``sde:`` block (``api.sde.SDE``).
+    Builder errors become ``ConfigError`` at the line of the entry they
+    name."""
+    from api.sde import SDE
+    src, block = raw['_source'], raw['sde']
+    spec, lines = block['spec'], block['lines']
+    s = SDE(spec.get('name', 'config SDE'))
+
+    def at(line, fn):
+        try:
+            return fn()
+        except ConfigError:
+            raise
+        except Exception as e:
+            raise ConfigError(src, line, f'{type(e).__name__}: {e}') from None
+
+    for name, (entry, line) in (spec.get('parameters') or {}).items():
+        at(line, lambda name=name, entry=entry: s.parameter(name, **entry))
+    for f in spec['fields']:
+        at(lines['fields'], lambda f=f: s.field(f))
+    for f, (expr, line) in (spec.get('drift') or {}).items():
+        at(line, lambda f=f, expr=expr: s.drift(f, expr))
+    for f, (eq, line) in (spec.get('equations') or {}).items():
+        at(line, lambda f=f, eq=eq: s.equation(f, **eq))
+    for name, (desc, line) in spec['noise'].items():
+        def add(name=name, desc=desc):
+            s.noise(name, _noise_object(desc), couples=desc['couples'])
+        at(line, add)
+    if 'interpretation' in spec:
+        s.interpretation(spec['interpretation'])
+    if 'stability_analysis' in spec:
+        s.stability_analysis(spec['stability_analysis'])
+    return at(lines.get('drift') or lines.get('equations'), s.build)
+
+
 def _load_model(raw):
-    """(model, module) exactly as ``dd.load_model`` loads a model file."""
+    """(model, module) exactly as ``dd.load_model`` loads a model file;
+    ``(model, None)`` for an inline ``sde:`` block."""
     import daedalus as dd
+    if raw.get('sde'):
+        return _build_sde(raw), None
     spec, src, line = raw['model'], raw['_source'], raw['_lines']['model']
     looks_like_path = (spec.endswith('.py') or '/' in spec or os.sep in spec)
     try:
@@ -404,6 +680,73 @@ def _plain(v):
         return str(v)
 
 
+def _expected_shape(model, spec):
+    """The shape a parameter's value must have: ``()`` for a scalar
+    parameter, the population sizes of ``indexed_by`` for an indexed one,
+    ``None`` when a size cannot be read off the model."""
+    if not spec.get('indexed'):
+        return ()
+    sizes = {p.get('name'): int(p.get('size') or 1)
+             for p in (model.get('populations') or [])}
+    for nm, idx in (model.get('index_sets') or {}).items():
+        sizes.setdefault(nm, len(idx))
+    shape = []
+    for nm in spec.get('indexed_by') or ():
+        if nm not in sizes:
+            return None
+        shape.append(sizes[nm])
+    return tuple(shape) if shape else None
+
+
+def _check_parameter_shapes(src, model, parameters):
+    """Each written parameter value must be rectangular and, for a list,
+    have the shape the model declares (population sizes); a list for a
+    scalar parameter is an error.  Line-numbered like every other check."""
+    specs = {p.get('name'): p for p in (model.get('parameters') or [])}
+    for name, (value, line) in parameters.items():
+        spec = specs.get(name)
+        if spec is None:
+            continue
+        try:
+            shape = np.asarray(value, dtype=float).shape
+        except ValueError:
+            raise ConfigError(src, line, f'parameter {name!r}: nested lists '
+                                         'must be rectangular') from None
+        want = _expected_shape(model, spec)
+        if want == () and shape != ():
+            raise ConfigError(
+                src, line, f'parameter {name!r} is a scalar parameter; got a '
+                           f'list of shape {shape}')
+        if want and shape != want:
+            by = ', '.join(spec.get('indexed_by') or ())
+            got = 'a scalar' if shape == () else f'shape {shape}'
+            raise ConfigError(
+                src, line, f'parameter {name!r} has shape {want} '
+                           f'(indexed by {by}); got {got}')
+
+
+def _output_plan(spec, base):
+    """``output:`` -> ({kind: path}, prefix).  A directory (trailing
+    separator, or an existing directory) gets ``<dir>/cumulants.*`` and
+    ``prefix`` ''; a file stem ``dir/run1`` gets ``dir/run1.*`` and
+    ``prefix`` ``'run1.'`` (so two runs sharing a directory keep their own
+    ``config_resolved.yaml`` / ``run_info.json``)."""
+    path, line = spec
+    path = os.path.expanduser(path)
+    ab = os.path.normpath(path if os.path.isabs(path)
+                          else os.path.join(base, path))
+    if os.path.splitext(path.rstrip('/' + os.sep))[1].lower() in (
+            '.npz', '.csv', '.png', '.pdf', '.yaml', '.json'):
+        raise ValueError(f"'output' is a directory or a file stem without an "
+                         f"extension; got {path!r} (use 'outputs' for "
+                         'explicit files)')
+    if path.endswith(('/', os.sep)) or os.path.isdir(ab):
+        stem, prefix = os.path.join(ab, OUTPUT_STEM_DEFAULT), ''
+    else:
+        stem, prefix = ab, os.path.basename(ab) + '.'
+    return {kind: stem + ext for kind, ext in OUTPUT_STEM_KINDS}, prefix
+
+
 def resolve(raw, model, mod):
     """Validate the model-dependent parts and fill in every default.
 
@@ -425,6 +768,8 @@ def resolve(raw, model, mod):
                                          f'declared: {sorted(valid)}')
         overrides[name] = value
 
+    _check_parameter_shapes(src, model, raw['parameters'])
+
     # external fields: real physical field, population index in range
     ext = None
     if 'external_fields' in q:
@@ -438,7 +783,9 @@ def resolve(raw, model, mod):
                                f'{dd.field_names(model)}')
             npop = dd._field_pop_size(model, f.get('natural_name')
                                       or f.get('name'))
-            if idx > npop:
+            # spatial callers label the legs (phi, 1), (phi, 2): the second
+            # entry is a slot, not a population (as in api.analyze G0)
+            if idx > npop and not spatial:
                 raise ConfigError(
                     src, line, f'external field {name!r} has {npop} '
                                f'population(s); index {idx} is out of range')
@@ -469,6 +816,12 @@ def resolve(raw, model, mod):
         tstep = dd._meta(mod, 'tau_step', 0.5)
         tau = [float(t) for t in np.arange(-tmax, tmax + tstep * 0.5, tstep)]
 
+    chi = q.get('chi_grid')
+    if chi is not None and not spatial:
+        raise ConfigError(src, qlines['chi_grid'],
+                          'question.chi_grid applies only to a spatial model '
+                          '(this one is temporal)')
+
     # points: spatial k >= 3 only, shape (n_pts, k-1, 2)
     points = None
     if 'points' in q:
@@ -490,6 +843,35 @@ def resolve(raw, model, mod):
                                          '(x_j, tau_j) per non-anchor leg')
         points = arr.tolist()
 
+    if spatial:
+        # what dd.run does with the grids, so no key is silently ignored
+        def unused(key, why):
+            raise ConfigError(src, qlines[key], f'question.{key} is ignored '
+                                                f'({why}); remove it')
+        if k == 1:
+            for key in ('tau_grid', 'chi_grid'):
+                if key in q:
+                    unused(key, 'a spatial k=1 run is the mean-field value, '
+                                'without a grid')
+        elif k >= 3 and points is not None:
+            for key in ('tau_grid', 'chi_grid'):
+                if key in q:
+                    unused(key, 'the events come from question.points')
+        elif k >= 3:
+            at = qlines.get('k', raw['_lines']['model'])
+            if chi is None:
+                raise ConfigError(
+                    src, at, 'a spatial model with k >= 3 needs question.points '
+                             '(the (n_points, k-1, 2) events) or question.chi_grid '
+                             '(+ optional tau_grid) to sweep the full grid')
+            n_ev = (len(chi) * len(tau or [0.0])) ** (k - 1)
+            if n_ev > 20000:
+                raise ConfigError(
+                    src, qlines['chi_grid'],
+                    f'k={k} grid would be {n_ev} events = (len(chi_grid) * '
+                    f'len(tau_grid))^(k-1); more than 20000 (dd.run refuses); '
+                    'shrink the grids or give question.points')
+
     layered = dd.fundamental_from_model(model)
     layered.update(getattr(mod, 'DEFAULT_FUNDAMENTAL', {}) or {})
     layered.update(overrides)
@@ -500,22 +882,36 @@ def resolve(raw, model, mod):
     policy.update(raw['policy'])             # n_workers only when given
 
     def _abs(p):
+        p = os.path.expanduser(p)
         return os.path.normpath(p if os.path.isabs(p) else os.path.join(base, p))
 
     question = {'k': int(k), 'max_ell': int(max_ell),
                 'external_fields': [[n, int(i)] for n, i in ext]}
     if tau is not None:
         question['tau_grid'] = tau
+    if chi is not None:
+        question['chi_grid'] = chi
     if points is not None:
         question['points'] = points
     if 'taylor_order' in q:
         question['taylor_order'] = q['taylor_order']
-    model_ref = raw['model']
-    if model_ref.endswith('.py') or '/' in model_ref or os.sep in model_ref:
-        model_ref = _abs(model_ref)
-    return {'model': model_ref, 'parameters': params, 'question': question,
-            'policy': policy,
-            'outputs': {k_: _abs(v) for k_, v in raw['outputs'].items()}}
+    outputs = {}
+    if raw.get('output'):
+        try:
+            outputs.update(_output_plan(raw['output'], base)[0])
+        except ValueError as e:
+            raise ConfigError(src, raw['output'][1], str(e)) from None
+    outputs.update({k_: _abs(v) for k_, v in raw['outputs'].items()})
+    head = {}
+    if raw.get('sde'):
+        head['sde'] = _sde_plain(raw['sde'])
+    else:
+        model_ref = raw['model']
+        if model_ref.endswith('.py') or '/' in model_ref or os.sep in model_ref:
+            model_ref = _abs(model_ref)
+        head['model'] = model_ref
+    return {**head, 'parameters': params, 'question': question,
+            'policy': policy, 'outputs': outputs}
 
 
 # ── running ───────────────────────────────────────────────────────────────────
@@ -548,8 +944,22 @@ def _git_commit(root):
         return None
 
 
+def _grid_out(vals):
+    """A grid for the resolved YAML: a 3-element list that ends in an integer
+    >= 2 would be read back as the "range slip" (``dd.Config`` rule), so it is
+    written as ``{values: [...]}``."""
+    if (len(vals) == 3 and float(vals[2]) >= 2
+            and float(vals[2]) == int(vals[2])):
+        return {'values': list(vals)}
+    return list(vals)
+
+
 def _dump_yaml(obj):
     import yaml
+    if isinstance(obj.get('question'), dict):
+        obj = {**obj, 'question': {
+            k: (_grid_out(v) if k in ('tau_grid', 'chi_grid') else v)
+            for k, v in obj['question'].items()}}
     return yaml.safe_dump(obj, sort_keys=False, default_flow_style=None,
                           width=100)
 
@@ -565,15 +975,67 @@ def load_config(path):
     return resolved, model, mod, resolved_overrides
 
 
+def dry_run_report(resolved, model):
+    """The analyzer report (gates G0-G5, no diagram enumeration, no Phase
+    J) for a resolved config, with the route the router would pick, or
+    ``None`` when the config turns the analyzer off (``preflight: false``)."""
+    from dataclasses import asdict, replace
+    from api import routing
+    from api.analyze import Policy, Question, analyze
+    pol = resolved['policy']
+    if pol.get('preflight') is False:
+        return None
+    q = resolved['question']
+    question = Question(
+        k=q['k'], max_ell=q['max_ell'],
+        external_fields=tuple(tuple(e) for e in q['external_fields']),
+        parameters=dict(resolved['parameters']),
+        taylor_order=q.get('taylor_order'))
+    policy = Policy(**{key: pol[key] for key in ANALYZER_POLICY_KEYS
+                       if key in pol})
+    rep = analyze(model, question, policy, use_cache=pol.get('use_cache', True))
+    try:
+        route = routing.select(routing.RouteRequest(
+            model_name=rep.traits.name, spatial=bool(rep.traits.spatial),
+            k=q['k'], max_ell=q['max_ell'],
+            # dd.run supplies the default chi grid for spatial k = 2 and
+            # builds the event points for the other spatial k
+            has_spatial_grid=bool(rep.traits.spatial) and (
+                q.get('chi_grid') is not None or q['k'] == 2),
+            has_spatial_points=bool(rep.traits.spatial) and q['k'] != 2,
+            traits=asdict(rep.traits)))
+        rep = replace(rep, route=f'{route.name} (predicted)')
+    except routing.NoBackendError as e:
+        rep = replace(rep, route='none applies: '
+                      + str(e).strip().splitlines()[0])
+    except Exception:                       # the report is advice, not a gate
+        pass
+    return rep
+
+
 def run_config(path, dry_run=False, out=None):
     """Run the config at ``path``.  Returns the resolved config (dry run) or
-    ``(result, resolved)``.  A dry run loads and validates the model and prints
-    the resolved config; it computes nothing and writes nothing."""
+    ``(result, resolved)``.  A dry run loads and validates the model, prints
+    the resolved config and the analyzer report table (gates G0-G5: the
+    action is expanded and the mean field solved, but no diagram is
+    enumerated and no integral is done); it writes nothing."""
     out = out if out is not None else sys.stdout
     t0 = time.perf_counter()
     resolved, model, mod, overrides = load_config(path)
+    # the output plan is fixed now, before any output exists (a directory
+    # that the run itself creates must not change the stem/dir decision)
+    out_spec = parse_config(path).get('output')
+    prefix = (_output_plan(out_spec, os.path.dirname(os.path.abspath(path)))[1]
+              if out_spec else '')
     if dry_run:
         out.write(_dump_yaml(resolved))
+        rep = dry_run_report(resolved, model)
+        # every report line is a YAML comment, so the whole output stays a
+        # valid config (scripts that parse the dry run keep working)
+        out.write('\n# analyzer report (gates G0-G5; no cumulant is computed)\n')
+        body = ('no analyzer (policy.preflight is false)' if rep is None
+                else rep.table())
+        out.write(''.join(f'# {ln}\n' for ln in body.splitlines()))
         return resolved
 
     import daedalus as dd
@@ -581,11 +1043,13 @@ def run_config(path, dry_run=False, out=None):
     q, pol, outs = resolved['question'], resolved['policy'], resolved['outputs']
 
     tau = q.get('tau_grid')
+    chi = q.get('chi_grid')
     cfg = dd.Config(
         k=q['k'], max_ell=q['max_ell'],
         external_fields=[tuple(e) for e in q['external_fields']],
         parameters=overrides or None,
         tau_grid=None if tau is None else np.asarray(tau, dtype=float),
+        chi_grid=None if chi is None else np.asarray(chi, dtype=float),
         spatial_points=q.get('points'),
         parallel=pol['parallel'], n_workers=pol.get('n_workers'),
         verbose=pol['verbose'],
@@ -628,7 +1092,7 @@ def run_config(path, dry_run=False, out=None):
     run_dir = os.path.dirname(first) if first else os.path.dirname(
         os.path.abspath(path))
     os.makedirs(run_dir, exist_ok=True)
-    with open(os.path.join(run_dir, 'config_resolved.yaml'), 'w',
+    with open(os.path.join(run_dir, prefix + 'config_resolved.yaml'), 'w',
               encoding='utf-8') as fh:
         fh.write(_dump_yaml(resolved))
     info = {
@@ -643,7 +1107,7 @@ def run_config(path, dry_run=False, out=None):
         'route': (result.get('route') or {}).get('backend'),
         'assumptions': (result.get('config') or {}).get('assumptions'),
     }
-    with open(os.path.join(run_dir, 'run_info.json'), 'w',
+    with open(os.path.join(run_dir, prefix + 'run_info.json'), 'w',
               encoding='utf-8') as fh:
         json.dump(info, fh, indent=2)
         fh.write('\n')
@@ -660,8 +1124,9 @@ def main(argv=None):
     rp = sub.add_parser('run', help='run a YAML config file')
     rp.add_argument('config', help='path to the config YAML')
     rp.add_argument('--dry-run', action='store_true',
-                    help='validate and print the resolved config; compute '
-                         'nothing')
+                    help='validate and print the resolved config and the '
+                         'analyzer report (G0-G5); computes no cumulant and '
+                         'writes nothing')
     args = ap.parse_args(argv)
     try:
         run_config(args.config, dry_run=args.dry_run)
