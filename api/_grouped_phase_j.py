@@ -55,7 +55,9 @@ _SUBSET_SKIP_STATUSES = frozenset({
 
 class GroupedDeltaRecordsDroppedWarning(UserWarning):
     """``use_grouped_phase_j=True`` dropped shot-noise δ(τ) records that
-    the per-diagram path returns in ``delta_contributions``."""
+    the per-diagram path returns in ``delta_contributions``.  Since
+    Feature B the grouped path carries them (``n_delta_records_dropped`` is
+    0), so this is only raised for a result that reports a drop."""
 
 
 def _ensure_shown():
@@ -154,21 +156,27 @@ def compute_correction_td_grouped(
             (lf, fld) for lf, fld in td.external_legs.items()
         ))
 
-    groups = defaultdict(lambda: {'tds': [], 'cps': []})
-    for td, pf in zip(typed_diagrams, prefactors):
+    groups = defaultdict(lambda: {'tds': [], 'cps': [], 'idx': []})
+    for i_td, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         key = (id(td.prediagram), _ext_legs_key(td))
         groups[key]['tds'].append(td)
         groups[key]['cps'].append(pf)
+        groups[key]['idx'].append(i_td)
 
     group_callables = []
     groups_out = []
     skipped = []
     fallback_to_perdiag = []   # groups where we fell back to per-diag
-    # δ records of the per-diagram fallback, not carried (Feature B): only
-    # counted, for the warning (``warn_dropped_delta_records``).
-    n_delta_dropped = [0]
+    # δ records: a group with a shot-noise subset is never accepted by the
+    # grouped evaluator (``shotnoise_skipped_in_prototype``), so it is
+    # computed by the per-diagram fallback, whose records are the exact
+    # per-diagram ones; they are carried (Feature B), with
+    # ``diagram_index`` mapped back to this call's ``typed_diagrams``.
+    delta_records = []
+    delta_records_multi = []
+    n_delta_subsets_dropped = [0]
 
-    def _perdiag_fallback(tds, cps):
+    def _perdiag_fallback(tds, cps, idx=None):
         """Compute this group via the per-diag path (compute_correction_td).
         Returns ``(contribution_callable, n_diagrams)``.  Wrapping it here
         keeps the fallback isolated from the grouped path's bookkeeping —
@@ -186,7 +194,14 @@ def compute_correction_td_grouped(
             **({} if on_divergence is None
                else {'on_divergence': on_divergence}),
         )
-        n_delta_dropped[0] += len(pd_result.get('delta_contributions') or [])
+        n_delta_subsets_dropped[0] += pd_result.get(
+            'n_delta_subsets_dropped', 0)
+        for key, dest in (('delta_contributions', delta_records),
+                          ('delta_contributions_multi', delta_records_multi)):
+            for rec in pd_result.get(key) or []:
+                if idx is not None and 'diagram_index' in rec:
+                    rec['diagram_index'] = idx[rec['diagram_index']]
+                dest.append(rec)
         return pd_result['total_C'], len(tds)
 
     for group_idx, (key, payload) in enumerate(groups.items()):
@@ -238,7 +253,7 @@ def compute_correction_td_grouped(
             # speedup on this group for correctness; it's the same
             # behaviour the caller would get with use_grouped_phase_j=False
             # on this group only.
-            fb_fn, n_tds = _perdiag_fallback(tds, cps)
+            fb_fn, n_tds = _perdiag_fallback(tds, cps, payload['idx'])
             group_callables.append(fb_fn)
             skip_reasons = sorted({
                 diag.get('status')
@@ -263,7 +278,7 @@ def compute_correction_td_grouped(
             # skip — e.g. early validation).  Fall back to per-diag too
             # rather than silently dropping the whole group.
             try:
-                fb_fn, n_tds = _perdiag_fallback(tds, cps)
+                fb_fn, n_tds = _perdiag_fallback(tds, cps, payload['idx'])
                 group_callables.append(fb_fn)
                 groups_out.append({
                     'kernel_id':   group_idx,
@@ -313,10 +328,12 @@ def compute_correction_td_grouped(
         'total_C':            total_C,
         'total_C_batch':      total_C_batch,
         'eval_per_diagram_batch': None,    # not supported in prototype
-        'delta_contributions': [],          # not supported in prototype
-        # δ records the per-diagram fallback produced and this path dropped
-        # (``warn_dropped_delta_records`` warns once per run):
-        'n_delta_records_dropped': n_delta_dropped[0],
+        'delta_contributions': delta_records,
+        # δ records this path dropped (``warn_dropped_delta_records`` warns
+        # once per run); 0 since Feature B carries them
+        'n_delta_records_dropped': 0,
+        'n_delta_subsets_dropped': n_delta_subsets_dropped[0],
+        'delta_contributions_multi': delta_records_multi,
         'groups':             groups_out,
         'skipped_kernel_ids': skipped,
         'fallback_to_perdiag': fallback_to_perdiag,

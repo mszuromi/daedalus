@@ -311,6 +311,8 @@ def compute_correction_td(
     groups_out = []
     skipped = []
     all_delta_contributions = []
+    all_delta_contributions_multi = []
+    n_delta_subsets_dropped = 0
 
     for idx, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         loop_number = _loop_number_from_graph(td)
@@ -343,9 +345,15 @@ def compute_correction_td(
         if result['status'] == 'ok':
             contribution = result['contribution']
             tree_callables.append(contribution)
-            all_delta_contributions.extend(
-                result.get('delta_contributions', [])
-            )
+            n_delta_subsets_dropped += result.get(
+                'n_delta_subsets_dropped', 0)
+            for _dc in result.get('delta_contributions', []):
+                # Feature B provenance: index into ``typed_diagrams``
+                _dc['diagram_index'] = idx
+                all_delta_contributions.append(_dc)
+            for _dc in result.get('delta_contributions_multi', []):
+                _dc['diagram_index'] = idx
+                all_delta_contributions_multi.append(_dc)
             # Per-subset evaluator labels (e.g.
             # 'polygon_modesum', 'fast_numpy', 'fast_callable') —
             # bubble these up so the caller can see at a glance
@@ -601,6 +609,11 @@ def compute_correction_td(
         'total_C_batch': total_C_batch,
         'eval_per_diagram_batch': eval_per_diagram_batch,
         'delta_contributions': all_delta_contributions,
+        # Feature B: shot-noise subsets that gave no record (see
+        # ``integrate_diagram``); a failed diagram is in ``skipped_kernel_ids``
+        'n_delta_subsets_dropped': n_delta_subsets_dropped,
+        # δ spikes of codimension > 1 (several external-time equalities)
+        'delta_contributions_multi': all_delta_contributions_multi,
         'groups': groups_out,
         'skipped_kernel_ids': skipped,
         'ext_time_vars': ext_time_vars,

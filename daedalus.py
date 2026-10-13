@@ -108,6 +108,10 @@ _PIPELINE_EXPORTS = {
     'MeanField':                 'api',
     'Parameters':                'api',
     'normalize_external_fields': 'api',
+    # δ components of a cumulant (Feature B): dd.cumulant(result)
+    'cumulant':                  'api.cumulant',
+    'Cumulant':                  'api.cumulant',
+    'DeltaComponent':            'api.cumulant',
 }
 
 
@@ -1375,7 +1379,8 @@ def cumulative_curves(by_ell: dict) -> dict:
 # ── Plotting (adaptable, auto-dispatched) ────────────────────────────────────
 
 def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
-                  sim: dict = None, residual: bool = False):
+                  sim: dict = None, residual: bool = False,
+                  show_delta: bool = False, delta_style: str = 'arrow'):
     """Plot the cumulant in the form natural to the model's group.
 
     Dispatch:
@@ -1394,10 +1399,22 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     contributions (1-loop, 1+2-loop, …) against the simulated residual
     sim − tree, so a loop that is a tiny fraction of the tree becomes the whole
     signal.  Ignored where it does not apply.
+    ``show_delta=True`` (temporal cumulants, k = 2 or 3) draws, instead of
+    the plot above, the cumulant with its shot-noise δ components
+    (:func:`api.cumulant_plot.plot_cumulant_delta`; ``delta_style`` 'arrow'
+    or 'bin'); not with ``residual`` or a moment output.
     Returns the Matplotlib ``Figure``.
     """
     cfg = cfg or result.get('_cfg') or Config()
     model = model or result.get('_model') or {}
+    if show_delta:
+        if residual or result.get('output_kind') in ('moment',
+                                                     'central_moment'):
+            raise ValueError('show_delta draws the cumulant with its δ '
+                             'components: not with residual=True or a '
+                             'moment output')
+        from api.cumulant_plot import plot_cumulant_delta
+        return plot_cumulant_delta(result, cfg, model, sim, delta_style)
     if result.get('output_kind') in ('moment', 'central_moment') \
             and result.get('moment') is not None:
         return _plot_moment(result, cfg, model, sim)
