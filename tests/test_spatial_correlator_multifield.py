@@ -279,13 +279,19 @@ def test_negative_diffusion_raises_anti_diffusive_error():
         .set_action_text('phit*((Dt + mu + D*Laplacian)*phi) - T*phit^2')
         .equation(lhs='(Dt + mu + D*Laplacian)*phi', rhs='0')
         .boundary('infinite').initial('stationary').build())
+    from api.analyze import AnalyzerError
+    kw = dict(model=model, k=2, max_ell=0,
+              fundamental={'mu': 1.0, 'D': 1.0, 'T': 1.0},
+              external_fields=[('phi', 1), ('phi', 2)],
+              tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
+              parallel=False, verbose=False, use_cache=False)
+    # the model analyzer stops it first (G3 for spatial models) ...
+    with pytest.raises(AnalyzerError, match='anti-diffusive') as ei:
+        compute_cumulants(**kw)
+    assert ei.value.codes == ('G3_SPATIAL_UNSTABLE',)
+    # ... and without the analyzer the spatial integrator still names it
     with pytest.raises(SpatialPropagatorError, match='anti-diffusive'):
-        compute_cumulants(
-            model=model, k=2, max_ell=0,
-            fundamental={'mu': 1.0, 'D': 1.0, 'T': 1.0},
-            external_fields=[('phi', 1), ('phi', 2)],
-            tau_max=1.0, tau_step=1.0, spatial_grid=np.array([0.0, 1.0]),
-            parallel=False, verbose=False, use_cache=False)
+        compute_cumulants(preflight=False, **kw)
 
 
 @pytest.mark.parametrize('lam', [0.0, 0.3, 1.0])

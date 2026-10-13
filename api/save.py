@@ -33,6 +33,15 @@ The schema is k-/ell-/model-adaptive:
   (:class:`StaleResultWarning`, once per file and process) when the stamp
   is missing, older than 0.2.0, or names the pre-0.2.0 convention.
 
+* **Route and assumptions** (D2, written when ``compute_cumulants`` recorded
+  them, i.e. with the model analyzer on): ``route`` (the integrator backend
+  that computed the numbers, ``api.routing``), ``assumptions`` (the
+  analyzer's assumptions ledger: every consent, convention, assertion and
+  approximation the numbers depend on) and ``analyzer_findings`` (the
+  findings' codes and levels), the last two as JSON text.  Files written
+  by 0.2.0, or with the analyzer off, lack them and load unchanged;
+  :func:`load_provenance` reads them from any file (``None`` when absent).
+
 NPZ shape conventions
 ---------------------
 For ``k ∈ {1, 2}``: each ``C_*`` is a 1D complex array whose shape
@@ -237,9 +246,54 @@ def _phase_j_flags(use_grouped_phase_j=None) -> str:
     return ';'.join(parts)
 
 
+def _analysis_stamp(result: dict | None) -> dict[str, str]:
+    """``{'route': ..., 'assumptions': <json>, 'analyzer_findings':
+    <json>}`` from a ``compute_cumulants`` result, each entry only when the
+    result recorded it (``config['route']`` / ``config['assumptions']`` /
+    ``result['analysis']``)."""
+    import json
+    out: dict[str, str] = {}
+    if not isinstance(result, dict):
+        return out
+    cfg = result.get('config') if isinstance(result.get('config'), dict) else {}
+    route = cfg.get('route') or (result.get('route') or {}).get('backend')
+    if route:
+        out['route'] = str(route)
+    led = cfg.get('assumptions')
+    if led is not None:
+        out['assumptions'] = json.dumps(led, sort_keys=True, default=str)
+    rep = result.get('analysis')
+    if rep is not None and hasattr(rep, 'findings'):
+        out['analyzer_findings'] = json.dumps(
+            [{'code': f.code, 'level': f.level} for f in rep.findings],
+            sort_keys=True)
+    return out
+
+
+def load_provenance(data: dict) -> dict:
+    """The provenance of a loaded file (``load_npz``'s dict): the stamp
+    entries as strings, ``assumptions`` and ``analyzer_findings`` parsed
+    from JSON; ``None`` for every entry the file does not carry (files
+    written by 0.2.0 have no route or assumptions)."""
+    import json
+    out = {}
+    for key in ('daedalus_version', 'phase_j_convention', 'phase_j_flags',
+                'route'):
+        out[key] = _stamp_value(data, key)
+    for key in ('assumptions', 'analyzer_findings'):
+        raw = _stamp_value(data, key)
+        try:
+            out[key] = json.loads(raw) if raw else None
+        except ValueError:
+            out[key] = None
+    return out
+
+
 def _result_stamp(result: dict | None = None) -> dict[str, str]:
     """``{'daedalus_version': ..., 'phase_j_convention': ...,
-    'phase_j_flags': ...}``.
+    'phase_j_flags': ...}``, plus ``route`` / ``assumptions`` /
+    ``analyzer_findings`` when the result recorded them
+    (:func:`_analysis_stamp`).
 
     The convention and the flags are the ones ``compute_cumulants`` recorded
     in ``result['config']`` when it computed the numbers; for a result
@@ -256,9 +310,11 @@ def _result_stamp(result: dict | None = None) -> dict[str, str]:
         conv = _phase_j_convention()
     if not flags:
         flags = _phase_j_flags()
-    return {'daedalus_version': _daedalus_version(),
-            'phase_j_convention': str(conv),
-            'phase_j_flags': str(flags)}
+    stamp = {'daedalus_version': _daedalus_version(),
+             'phase_j_convention': str(conv),
+             'phase_j_flags': str(flags)}
+    stamp.update(_analysis_stamp(result))
+    return stamp
 
 
 _VERSION_RE = re.compile(r'^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?')

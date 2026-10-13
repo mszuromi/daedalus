@@ -43,6 +43,48 @@ machine's is refused unless `force=True`. For the record, a cold build of
 enumerator and about 0.2 GB for the certificates; using it afterwards needs
 about 13 GB for the records.
 
+### Added: the model analyzer runs inside `compute_cumulants`; backend registry (no number moves)
+
+- `compute_cumulants` (and `dd.run`, `dd run config.yaml`) runs the analyzer
+  gates of `api.analyze` at its stage boundaries, all before the diagram
+  enumeration: declarations and structure before the expansion, unpaired
+  fields after it, the propagator class after the propagator, the mean field,
+  noise and undriven fields after the saddle solve, the pole statistics after
+  the residues. A finding of level `error` stops the run with
+  `api.analyze.AnalyzerError` (a `ValueError`) naming its code and a remedy.
+  The gates read the pipeline's own objects and change no number:
+  results are bit-identical with the analyzer on or off on the whole model
+  zoo. New keywords: `policy` (an `api.analyze.Policy` or dict: `mode`
+  `'strict'`/`'permissive'`, consents, and `downgrade`, the error codes
+  accepted as warnings), `preflight` (`False`, or `DAEDALUS_PREFLIGHT=0`,
+  turns the gates off), `backend` and `accuracy`. A bug inside a gate is
+  recorded as a warning and never stops a run.
+- Backend registry (`api.routing`): each integrator backend (spatial
+  integrator, grouped and per-diagram Phase J, the symbolic Phase H library)
+  declares `applies(request) -> (bool, reasons)` and a priority; the router
+  takes the first that applies. The built-in table reproduces the 0.2.0
+  dispatch exactly, including its error messages and exception types; a new
+  backend is one `routing.register(...)` call. When none applies, the error
+  names the first failing trait and lists every rejected backend.
+- Provenance: the result carries `result['route']` and `result['analysis']`
+  (the analyzer report); `save_npz` / `save_csv` stamp `route`,
+  `assumptions` (the assumptions ledger) and `analyzer_findings`;
+  `api.load_provenance` reads them and returns `None` for files written
+  without them.
+- After the run (G6), the report carries the Phase J convergence-certificate
+  verdicts, the error-accounting counters and a total-relative accuracy estimate
+  (the summed rounding-error estimates of the closed-form subset integrals
+  against the cumulant over the τ grid; a warning above the per-subset
+  acceptance tolerance 1e-10, or above `accuracy` when given). Two
+  bookkeeping counters (`dd_err_abs_sum`, `dbm_err_abs_sum`) and the record
+  `prop['pole_analysis']` feed it.
+- Analyzer fixes: smooth colored-noise kernels are evaluated with their
+  registered signature (they were all reported as non-rational) and a
+  non-rational one is a warning, since Phase J computes it by its quadrature
+  fallback; G3 for spatial models (growing finite-wavenumber modes, negative
+  diffusion, massless fields); the expand-cache validity check is one
+  function shared by `load_expand` and the analyzer.
+
 ## 0.2.0 (2026-10-12)
 
 ### Changed: Phase J integrates exactly, without an integration box, by default (numbers move)

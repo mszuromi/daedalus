@@ -97,6 +97,13 @@ _PIPELINE_EXPORTS = {
     'save_npz':                  'api',
     'save_csv':                  'api',
     'load_npz':                  'api',
+    'load_provenance':           'api',
+    # model analyzer (Feature D) and the backend registry
+    'analyze':                   'api.analyze',
+    'Question':                  'api.analyze',
+    'Policy':                    'api.analyze',
+    'AnalyzerError':             'api.analyze',
+    'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',
     'Parameters':                'api',
@@ -485,6 +492,13 @@ class Config:
     n_workers: Optional[int] = None
     verbose: bool = False
 
+    # ── model analyzer (api.analyze) ──
+    # ``policy``: an ``api.analyze.Policy`` or dict (mode 'strict' /
+    # 'permissive', consents, ``downgrade`` codes); ``preflight``: None = the
+    # gates run (unless DAEDALUS_PREFLIGHT=0), False = off.
+    policy: Any = None
+    preflight: Optional[bool] = None
+
     # ── plotting options (adaptable) ──
     show_orders: str = 'cumulative'         # 'cumulative' | 'incremental' | 'total'
     logy: bool = False
@@ -672,6 +686,10 @@ def config_options(spatial=None):
             ('parallel',  'enable the parallel backend (temporal fork-parallelism is force-serialized in a macOS Jupyter kernel)'),
             ('n_workers', 'worker count (spatial threads; temporal batch outside Jupyter)'),
             ('verbose',   'print backend progress'),
+        ]),
+        ('model analyzer (api.analyze)', [
+            ('policy',    "Policy / dict: mode 'strict'|'permissive', consents, downgrade=[codes]; None → permissive"),
+            ('preflight', 'None/True → analyzer gates before the enumeration; False → off'),
         ]),
         ('plotting', [
             ('show_orders', "'cumulative' | 'incremental' | 'total'"),
@@ -1098,6 +1116,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['mf_dae_n_starts'] = int(cfg.mf_dae_n_starts)
     if cfg.mf_dae_seed_box is not None:
         kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
+    if cfg.policy is not None:
+        kw['policy'] = cfg.policy
+    if cfg.preflight is not None:
+        kw['preflight'] = bool(cfg.preflight)
 
     _kpoint_grid = None            # set below if a k≥3 spatial grid is built
     if is_spatial(model):

@@ -18,7 +18,11 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
       tau_grid: {start: -4, stop: 4, num: 17}    # or an explicit list
       points: [...]                              # spatial k >= 3 only
       taylor_order: 4
-    policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false}
+    policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false,
+             mode: permissive,                   # model analyzer: or strict
+             allow_taylor_truncation: true,      # consents (api.analyze.Policy)
+             downgrade: [G4_NEGATIVE_VARIANCE],  # errors accepted as warnings
+             preflight: true}                    # false: analyzer gates off
     outputs: {npz: out/c.npz, csv: out/c.csv, plot: out/c.png, report_pdf: out/r.pdf}
 
 Every error names the config line it comes from.  Relative paths (model file,
@@ -44,7 +48,13 @@ import numpy as np
 TOP_KEYS = ('model', 'parameters', 'question', 'policy', 'outputs')
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'points',
                  'taylor_order')
-POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose')
+POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
+               'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
+               'allow_numeric_fallback', 'interpretation', 'downgrade')
+#: the policy keys that go to the model analyzer (``api.analyze.Policy``)
+ANALYZER_POLICY_KEYS = ('mode', 'allow_taylor_truncation',
+                        'allow_markov_embedding', 'allow_numeric_fallback',
+                        'interpretation', 'downgrade')
 OUTPUT_KEYS = ('npz', 'csv', 'plot', 'report_pdf')
 TAU_GRID_KEYS = ('start', 'stop', 'num')
 
@@ -273,12 +283,40 @@ class _Parser:
     def policy(self, node):
         items = self.mapping(node, POLICY_KEYS, "'policy'")
         out = {}
-        for key in ('use_cache', 'parallel', 'verbose'):
+        for key in ('use_cache', 'parallel', 'verbose', 'preflight',
+                    'allow_taylor_truncation', 'allow_markov_embedding',
+                    'allow_numeric_fallback'):
             if key in items:
                 out[key] = self.boolean(items[key][1], f'policy.{key}')
         if 'n_workers' in items:
             out['n_workers'] = self.integer(items['n_workers'][1],
                                             'policy.n_workers', 1)
+        choices = {'mode': ('strict', 'permissive'),
+                   'interpretation': ('ito', 'stratonovich')}
+        for key, allowed in choices.items():
+            if key in items:
+                v = self.string(items[key][1], f'policy.{key}')
+                if v not in allowed:
+                    self.fail(items[key][1], f'policy.{key} must be one of '
+                                             f'{", ".join(allowed)}; got {v!r}')
+                out[key] = v
+        if 'downgrade' in items:
+            node = items['downgrade'][1]
+            if not isinstance(node, self.yaml.SequenceNode):
+                self.fail(node, 'policy.downgrade must be a list of finding '
+                                'codes, e.g. [G4_NEGATIVE_VARIANCE]')
+            from api.analyze import FINDING_CODES, _NEVER_DOWNGRADE
+            codes = []
+            for n in node.value:
+                c = self.string(n, 'policy.downgrade entry')
+                if FINDING_CODES.get(c, ('', ''))[1] != 'error':
+                    self.fail(n, f'policy.downgrade: {c!r} is not an error '
+                                 'code of api.analyze.FINDING_CODES')
+                if c in _NEVER_DOWNGRADE:
+                    self.fail(n, f'policy.downgrade: {c!r} cannot be '
+                                 'downgraded (the run cannot go past it)')
+                codes.append(c)
+            out['downgrade'] = codes
         return out
 
 
@@ -550,7 +588,10 @@ def run_config(path, dry_run=False, out=None):
         tau_grid=None if tau is None else np.asarray(tau, dtype=float),
         spatial_points=q.get('points'),
         parallel=pol['parallel'], n_workers=pol.get('n_workers'),
-        verbose=pol['verbose'])
+        verbose=pol['verbose'],
+        policy={key: pol[key] for key in ANALYZER_POLICY_KEYS if key in pol}
+        or None,
+        preflight=pol.get('preflight'))
     extra = {}
     if q.get('taylor_order') is not None:
         extra['taylor_order'] = q['taylor_order']
@@ -597,6 +638,10 @@ def run_config(path, dry_run=False, out=None):
         'resolved': resolved,
         'outputs': written,
         'wall_time_s': time.perf_counter() - t0,
+        # D2: the backend that computed the numbers and the assumptions
+        # ledger of the model analyzer (None with preflight: false)
+        'route': (result.get('route') or {}).get('backend'),
+        'assumptions': (result.get('config') or {}).get('assumptions'),
     }
     with open(os.path.join(run_dir, 'run_info.json'), 'w',
               encoding='utf-8') as fh:
