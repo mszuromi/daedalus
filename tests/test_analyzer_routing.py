@@ -323,6 +323,10 @@ def _arrays(res):
 def test_wiring_on_off_bit_identical(name, ext, kw):
     model, mod = _load(name)
     par = getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None
+    # discarded warm-up: a cold on-disk cache and a warm one pick different (isomorphic) diagram
+    # representatives and differ at ~1e-16 relative (spike reset, grouped: 2.6e-16), which is not
+    # what this test compares; on a fresh clone the first run below would otherwise be the cold one
+    _run(model, ext=ext, parameters=par, preflight=False, **kw)
     on = _run(model, ext=ext, parameters=par, preflight=True, **kw)
     off = _run(model, ext=ext, parameters=par, preflight=False, **kw)
     a, b = _arrays(on), _arrays(off)
