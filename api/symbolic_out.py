@@ -76,9 +76,26 @@ Not covered (clear errors, never a silently wrong result)
   ...): ``NonRationalPropagatorError`` naming the offending sub-expression.
 * Non-local noise left as a cumulant kernel (not Markov-embedded):
   ``UnsupportedModelError``.
-* Closed-form residues need every irreducible factor of the denominator to
-  have degree <= 2 in omega; higher degrees raise ``ClosedFormUnavailable``
-  and the numeric quadrature fallback is used instead.
+* The explicit closed forms of ``inverse_transform`` and ``pair_with_kernel``
+  need every irreducible factor of the denominator to have degree <= 2 in
+  omega; higher degrees raise ``ClosedFormUnavailable`` there (and the
+  numeric quadrature fallback is used).  The stage-C2 routes below have no
+  degree limit.
+
+Stage C2: time domain, any degree
+---------------------------------
+``tree_modes`` / ``TreeCovariance.modes`` give C(tau) as a ``ModeSum`` of
+``Mode(coeff, rate, power, side)`` terms, ``coeff * tau**power *
+exp(rate*tau)`` on ``side`` 'positive' (tau > 0) or 'negative', plus the
+``contact`` weight of delta(tau).  Poles of irreducible factors of degree >= 3
+are ``RootOf`` symbols (root ``index`` of a polynomial, roots ordered by real
+part); coefficients are polynomials in them with coefficients rational in the
+parameters.  Each result lists the ``assumptions`` it needs (Routh/Sturm sign
+conditions, distinct poles) and refuses (``AssumptionViolation``) at values
+that violate them.  ``integrate_against`` with a ``Kernel`` (exponential,
+polynomial x exponential, ``Kernel.stdp``) gives ``int L(s) C(s) ds`` exactly;
+it equals the Fourier route ``pair_with_kernel(C0, L~(-omega),
+any_degree=True)`` on the smooth part.
 """
 from __future__ import annotations
 
@@ -105,6 +122,9 @@ __all__ = [
     'noise_matrix_from_theory', 'pair_with_kernel', 'inverse_transform',
     'numeric_pair_with_kernel', 'numeric_inverse_transform', 'to_sympy',
     'from_sympy', 'to_latex', 'to_callable', 'to_json', 'from_json',
+    # stage C2
+    'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
+    'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
 ]
 
 FORMAT_TAG = 'daedalus.symbolic_out/1'
@@ -618,7 +638,7 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
     if mean_field == 'solve':
         fund = _model_fundamental(model, parameters)
         npar = _solve_mean_field(ft, model, fund)
-        mf_vals = _mf_symbols_only(prop, D, npar)
+        mf_vals = _mf_symbols_only(model, npar)
     elif isinstance(mean_field, dict):
         mf_vals = _as_name_dict(mean_field)
     elif mean_field is not None:
@@ -648,15 +668,40 @@ def _restrict(vals: dict, prop, D, omega) -> dict:
     return {k: v for k, v in vals.items() if k in occurring}
 
 
-def _mf_symbols_only(prop, D, num_params) -> dict:
-    """Entries of the MF ``num_params`` that are saddle values: the symbols of
-    K and D that are not model parameters.  The solver returns parameters,
-    saddles and Taylor-coefficient symbols together; we keep the star values
-    and let the caller's ``values=`` handle ordinary parameters."""
+def _saddle_bases(model: Optional[dict]) -> Optional[list]:
+    """Names of the model's mean-field (saddle) parameters, the ones
+    declared with ``mean_field=True`` (``xstar``, ``nEstar`` ...); ``None``
+    if the model declares none (then the ``<base>star`` naming rule
+    applies)."""
+    if not model:
+        return None
+    bases = [str(p.get('name')) for p in (model.get('parameters') or [])
+             if p.get('mean_field')]
+    return bases or None
+
+
+def _is_saddle_symbol(name: str, model: Optional[dict]) -> bool:
+    """Whether the symbol ``name`` is a mean-field value: a declared saddle
+    parameter, plain or with a population index (``xstar`` / ``xstar1`` /
+    ``nEstar2``), or, for models that declare none, a name ending in
+    ``star`` plus an optional index -- the convention of
+    ``describe_model``."""
+    import re
+    bases = _saddle_bases(model)
+    if bases is None:
+        return re.fullmatch(r'.*star\d*', name) is not None
+    return any(re.fullmatch(re.escape(b) + r'\d*', name) for b in bases)
+
+
+def _mf_symbols_only(model: Optional[dict], num_params) -> dict:
+    """Entries of the MF ``num_params`` that are saddle values.  The solver
+    returns parameters, saddles and Taylor-coefficient symbols together; we
+    keep the saddle values (:func:`_is_saddle_symbol`) and let the caller's
+    ``values=`` handle ordinary parameters."""
     out = {}
     for k, v in num_params.items():
         name = str(k)
-        if 'star' in name:
+        if _is_saddle_symbol(name, model):
             out[name] = _clean_float(v)
     return out
 
@@ -910,9 +955,11 @@ class TreeCovariance:
         return to_json(self.entry(a, b), self.omega)
 
     def fix_mean_field(self, mf_values: dict) -> 'TreeCovariance':
-        """New TreeCovariance with the saddle symbols replaced."""
+        """New TreeCovariance with the saddle symbols replaced (the model's
+        ``mean_field=True`` parameters, see :func:`_is_saddle_symbol`)."""
         vals = {k: v for k, v in mf_values.items()
-                if k in self.bridge.sym_of and 'star' in k}
+                if k in self.bridge.sym_of and _is_saddle_symbol(k,
+                                                                 self._model)}
         return _resubstitute(self, vals)
 
     # ── analysis ────────────────────────────────────────────────────────
@@ -925,6 +972,27 @@ class TreeCovariance:
         """See :func:`pair_with_kernel`."""
         kw.setdefault('reference', self.reference or self.default_values())
         return pair_with_kernel(self.entry(a, b), L_tilde, self.omega, **kw)
+
+    def modes(self, a, b, *, values: Optional[dict] = None,
+              reference: Optional[dict] = None,
+              cross_check: bool = True) -> 'ModeSum':
+        """``C_{ab}(tau)`` as a mode sum (any denominator degree); see
+        :func:`tree_modes`.  The half-plane split is decided at
+        ``reference`` (default: the result's ``num_params`` or the model
+        defaults with the mean-field solve)."""
+        if reference is None:
+            reference = self.reference or self.default_values()
+        return tree_modes(self.entry(a, b), self.omega, values=values,
+                          reference=reference, cross_check=cross_check)
+
+    def integrate_against(self, a, b, kernel: 'Kernel', *,
+                          values: Optional[dict] = None,
+                          reference: Optional[dict] = None,
+                          contact: Optional[str] = None) -> 'KernelIntegral':
+        """``int L(s) C_{ab}(s) ds`` in closed form; see
+        :func:`integrate_against`."""
+        return self.modes(a, b, reference=reference).integrate_against(
+            kernel, values=values, contact=contact)
 
 
 def _resubstitute(cov: TreeCovariance, vals: dict) -> TreeCovariance:
@@ -1081,9 +1149,11 @@ def _poles_of_denominator(den, bridge: _Bridge, reference, free_syms):
         if d > 2:
             raise ClosedFormUnavailable(
                 f'irreducible factor of degree {d} in omega ({g}): its '
-                f'roots have no closed form here; use the numeric fallback '
-                f'(numeric_inverse_transform / numeric_pair_with_kernel) '
-                f'with parameter values')
+                f'roots have no explicit closed form; use tree_modes / '
+                f'TreeCovariance.modes (RootOf modes, any degree), '
+                f'pair_with_kernel(..., any_degree=True), or the numeric '
+                f'fallback (numeric_inverse_transform / '
+                f'numeric_pair_with_kernel) with parameter values')
         coeffs = [bridge.R(g.coefficient({bridge.s_gen: k}))
                   for k in range(d + 1)]
         csr = [bridge.poly_to_sr(c, in_omega=False) for c in coeffs]
@@ -1182,6 +1252,7 @@ class KernelPairing:
     abs_error: Optional[float] = None
     tolerance: Optional[tuple] = None
     reason: Optional[str] = None
+    assumptions: list = field(default_factory=list)
 
     def __float__(self):
         return float(np.real(self.value))
@@ -1199,8 +1270,8 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
                      values: Optional[dict] = None,
                      reference: Optional[dict] = None,
                      simplify: bool = True, fallback: bool = True,
-                     epsabs: float = 1e-12, epsrel: float = 1e-10
-                     ) -> KernelPairing:
+                     epsabs: float = 1e-12, epsrel: float = 1e-10,
+                     any_degree: bool = False) -> KernelPairing:
     r"""``int d omega / (2 pi)  conj(L_tilde(omega)) * C0_entry(omega)``.
 
     This is ``int dt L(t) C(-t)`` for a real kernel ``L`` with
@@ -1217,8 +1288,26 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
     Fallback (``fallback=True``, needs a numeric value for every symbol in
     ``values``): adaptive quadrature of the same integrand
     (:func:`numeric_pair_with_kernel`) with tolerances ``epsabs``/``epsrel``.
+
+    ``any_degree=True`` (stage C2) removes the degree limit: residues are
+    taken in K[x]/(p) for every irreducible factor p, summed by traces, and
+    the half-plane split is stated as conditions on the parameters
+    (``assumptions`` of the result) instead of being sampled.
     """
     omega = SR('omega') if omega is None else SR(omega)
+    if any_degree:
+        try:
+            return _pair_any_degree(C0_entry, L_tilde, omega, values=values,
+                                    reference=reference)
+        except (NonRationalPropagatorError, ClosedFormUnavailable) as exc:
+            if not fallback:
+                raise
+            q = numeric_pair_with_kernel(C0_entry, L_tilde, omega,
+                                         values=values, epsabs=epsabs,
+                                         epsrel=epsrel)
+            return KernelPairing(expression=None, value=q.value, exact=False,
+                                 abs_error=q.error,
+                                 tolerance=(epsabs, epsrel), reason=str(exc))
     expr = SR(C0_entry)
     vals = _as_name_dict(values)
     sub = {}
@@ -1476,3 +1565,1256 @@ def numeric_pair_with_kernel(C0_entry, L_tilde, omega=None, *,
                       epsrel=epsrel, limit=limit)
     return Quadrature(complex(re, im) / (2 * np.pi), (e1 + e2) / (2 * np.pi),
                       epsabs, epsrel, 0.0, False, not caught)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage C2: time-domain mode sums for any denominator degree
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The smooth part of C(tau) = (1/2 pi) int C0(omega) exp(-i omega tau) d omega
+# is, with s = i*omega,
+#
+#     C(tau) = (1/2 pi i) int_{-i oo}^{i oo} C0(s) exp(-s tau) ds
+#            = + sum_{Re rho < 0} Res_{s=rho} C0(s) exp(-s tau)      (tau < 0)
+#            = - sum_{Re rho > 0} Res_{s=rho} C0(s) exp(-s tau)      (tau > 0)
+#
+# so every pole rho (a root of an irreducible factor p of the denominator, with
+# multiplicity m) gives the terms  coeff * tau^j * exp(-rho tau), j < m, on the
+# side its half-plane selects.  The residue is computed ONCE per factor in the
+# field L = K[x]/(p(x)), K = QQ(parameters): it is a polynomial c(x) of degree
+# < deg p with coefficients rational in the parameters, valid at every root of
+# p (Galois conjugates share it).  Degree 1 and 2 roots are written out;
+# degree >= 3 roots are ``RootOf`` symbols.  A sum over all roots of p that lie
+# on one side is the trace Tr_{L/K} c, a rational function of the parameters:
+# kernel integrals are exact rational functions whenever each factor is
+# one-sided, which is always the case for C0 = G D G^dagger of a stable model.
+#
+# The half-plane split of each factor is decided by the Routh array (or a
+# Sturm chain for even factors) at a reference point, and the signs it needs
+# are returned as explicit conditions on the parameters (``Assumption``):
+# within the region where they hold the split -- hence the mode list -- is
+# the same (Routh-Hurwitz theorem).  Distinct-root conditions (discriminants,
+# resultants) are stated too.  Parameter sampling remains only as a
+# cross-check of the Routh count against numeric roots.
+
+SIDES = ('positive', 'negative')
+_CC = None
+
+
+def _cc():
+    global _CC
+    if _CC is None:
+        from sage.all import ComplexField
+        _CC = ComplexField(256)
+    return _CC
+
+
+class AssumptionViolation(SymbolicOutError):
+    """The parameter values lie outside the region in which a symbolic
+    mode sum (or kernel integral) was derived."""
+
+
+@dataclass(frozen=True)
+class Mode:
+    """One term ``coeff * tau**power * exp(rate * tau)`` of a covariance,
+    valid for ``tau > 0`` (``side='positive'``) or ``tau < 0``
+    (``'negative'``).  ``coeff`` and ``rate`` are Sage expressions (symbolic
+    modes) or complex numbers (numeric modes)."""
+    coeff: Any
+    rate: Any
+    power: int
+    side: str
+
+
+@dataclass(frozen=True)
+class RootOf:
+    """``symbol`` stands for the root number ``index`` (0-based, roots sorted
+    by increasing real part, then imaginary part) of ``polynomial``, a Sage
+    polynomial in ``symbol`` whose coefficients are the parameters.  The
+    root is a pole location in ``s = i*omega``; a mode built on it has rate
+    ``-symbol``."""
+    symbol: Any
+    polynomial: Any
+    index: int
+    side: str
+
+    def __str__(self):
+        return f'{self.symbol} = RootOf({self.polynomial}, {self.index})'
+
+
+@dataclass(frozen=True)
+class Assumption:
+    """``expression relation 0`` with ``relation`` in ``'>'``, ``'!='``.
+
+    ``kind``: ``'stability'`` (Routh/Sturm sign that fixes the half-plane
+    split of a factor), ``'distinct'`` (discriminant or resultant: no
+    coincident poles), ``'nonzero'`` (a parameter-only denominator factor),
+    ``'kernel'`` (decay of a kernel term).  ``origin`` names the factor."""
+    expression: Any
+    relation: str
+    kind: str
+    origin: str
+    _poly: Any = field(default=None, repr=False, compare=False)
+    _ctx: Any = field(default=None, repr=False, compare=False)
+
+    def __str__(self):
+        return f'{self.expression} {self.relation} 0   [{self.kind}: {self.origin}]'
+
+    def value(self, values: dict) -> complex:
+        """The expression at ``values`` (names -> numbers)."""
+        return complex(self._ctx.eval_P(self._poly, self._ctx.point(values)))
+
+    def holds(self, values: dict) -> bool:
+        v = self._ctx.eval_P(self._poly, self._ctx.point(values))
+        if self.relation == '>':
+            return bool(v.real() > 0)
+        return bool(v != 0)
+
+
+class _AlgCtx:
+    """Coefficient field ``K = QQ(params)`` and ``U = K[x]`` built from a
+    bridge (same symbol order; the s-generator becomes ``x``), plus exact
+    conversions to SR and high-precision evaluation."""
+
+    def __init__(self, bridge: '_Bridge', name_map: Optional[dict] = None,
+                 back: Optional[dict] = None):
+        self.bridge = bridge
+        self.back = dict(back or {})        # private symbol -> user symbol
+        self.pnames = list(bridge._names[1:])
+        # explicit n: multivariate even with no parameters (only the pad)
+        self.P = PolynomialRing(QQ, len(self.pnames), self.pnames)
+        self.K = self.P.fraction_field()
+        self.U = PolynomialRing(self.K, 'x__')
+        self.x = self.U.gen()
+        # private ring name -> user-facing name (values are given by these)
+        self.name_map = dict(name_map or {})
+
+    # ── conversions ─────────────────────────────────────────────────────
+    def from_R(self, f):
+        by_s: dict = {}
+        for exps, c in f.dict().items():
+            e = tuple(exps)
+            by_s.setdefault(int(e[0]), {})[e[1:]] = c
+        return self.U({k: self.K(self.P(d)) for k, d in by_s.items()})
+
+    def F_to_K(self, f):
+        """A bridge field element that does not depend on s, as a K element."""
+        n, d = self.from_R(f.numerator()), self.from_R(f.denominator())
+        if n.degree() > 0 or d.degree() > 0:
+            raise SymbolicOutError('expected an omega-independent quantity')
+        return n[0] / d[0]
+
+    def P_to_sr(self, poly):
+        poly = self.P(poly)
+        if poly.is_constant():
+            return SR(poly.constant_coefficient())
+        if not hasattr(self, '_sr_gens'):
+            self._sr_gens = [SR(0) if n == _PAD else self.bridge._gen_sr(n)
+                             for n in self.pnames]
+        return SR(poly(*self._sr_gens))
+
+    def K_to_sr(self, c):
+        c = self.K(c)
+        n, d = self.P_to_sr(c.numerator()), self.P_to_sr(c.denominator())
+        return n if d == 1 else n / d
+
+    def L_to_sr(self, g, root_sr):
+        """SR of the element g(x) of K[x]/(p) at the root ``root_sr``."""
+        total = SR(0)
+        for i, c in enumerate(g.list()):
+            if c != 0:
+                total += self.K_to_sr(c) * root_sr ** i
+        return total
+
+    # ── evaluation ──────────────────────────────────────────────────────
+    def point(self, values: dict) -> list:
+        """CC(256) value per ring generator from ``values`` keyed by the
+        user-facing names."""
+        CC = _cc()
+        out = []
+        missing = []
+        for name in self.pnames:
+            if name == _PAD:
+                out.append(CC(0))
+                continue
+            if name in self.bridge.sym_of:
+                user = self.name_map.get(name, name)
+                if user not in values:
+                    missing.append(user)
+                    out.append(CC(0))
+                    continue
+                out.append(CC(SR(values[user])) if not isinstance(
+                    values[user], (int, float, complex, np.number))
+                    else CC(complex(values[user])))
+            else:                                   # fractional power
+                base, q = self.bridge.pow_of[name]
+                user = self.name_map.get(str(base), str(base))
+                if user not in values:
+                    missing.append(user)
+                    out.append(CC(0))
+                    continue
+                out.append(CC(complex(values[user])) ** CC(q))
+        if missing:
+            raise SymbolicOutError(
+                f'values= is missing {sorted(set(missing))}')
+        return out
+
+    def eval_P(self, poly, pt):
+        return self.P(poly)(*pt) if poly != 0 else _cc()(0)
+
+    def eval_K(self, c, pt):
+        c = self.K(c)
+        return self.eval_P(c.numerator(), pt) / self.eval_P(c.denominator(),
+                                                            pt)
+
+    def eval_U(self, g, pt) -> list:
+        """Coefficient list (CC) of g at the point."""
+        return [self.eval_K(c, pt) for c in g.list()]
+
+    def numeric_roots(self, p, pt) -> list:
+        """Roots of p at the point, sorted by (real, imag)."""
+        from sage.all import PolynomialRing as _PR
+        CC = _cc()
+        coeffs = self.eval_U(p, pt)
+        poly = _PR(CC, 'z')(coeffs)
+        rts = poly.roots(multiplicities=False)
+        if len(rts) != p.degree():
+            raise SymbolicOutError(
+                f'numeric root finding returned {len(rts)} roots for a '
+                f'degree-{p.degree()} factor (leading coefficient zero at '
+                f'these values?)')
+        return sorted(rts, key=lambda z: (float(z.real()), float(z.imag())))
+
+
+def _hasse(g, k: int):
+    """k-th Hasse derivative g^(k)/k! of a U polynomial."""
+    if k == 0:
+        return g
+    return g.derivative(k) * (~g.parent().base_ring()(factorial(k)))
+
+
+def _inv_mod(a, p):
+    a = a % p
+    if a == 0:
+        raise ZeroDivisionError('not invertible modulo the factor')
+    g, u, _ = a.xgcd(p)
+    if g.degree() != 0:
+        raise ZeroDivisionError('not invertible modulo the factor')
+    return (u * (~g[0])) % p
+
+
+def _series_mul(A, B, p, m):
+    out = [p.parent()(0)] * m
+    for i in range(m):
+        if A[i] == 0:
+            continue
+        for j in range(m - i):
+            if B[j] != 0:
+                out[i + j] += A[i] * B[j]
+    return [o % p for o in out]
+
+
+def _laurent(N, Q, p, m: int) -> list:
+    """Taylor coefficients h_0..h_{m-1} (elements of K[x]/(p)) of
+    ``h(eps) = N(rho+eps) / (Q(rho+eps) * (p(rho+eps)/eps)^m)`` at a root rho
+    of the irreducible factor p; ``N/(p^m Q)`` near rho is h(eps)/eps^m."""
+    num = [_hasse(N, k) % p for k in range(m)]
+    q = [_hasse(Q, k) % p for k in range(m)]
+    p1 = [_hasse(p, k + 1) % p for k in range(m)]
+    S = q
+    for _ in range(m):
+        S = _series_mul(S, p1, p, m)
+    inv0 = _inv_mod(S[0], p)
+    invs = [inv0]
+    for k in range(1, m):
+        acc = p.parent()(0)
+        for i in range(1, k + 1):
+            acc += S[i] * invs[k - i]
+        invs.append((-inv0 * acc) % p)
+    return _series_mul(num, invs, p, m)
+
+
+def _trace(g, p):
+    """Tr_{L/K} of g(x) mod p: sum of g over all roots of p (power sums by
+    Newton's identities)."""
+    K = p.parent().base_ring()
+    d = p.degree()
+    lc = p.leading_coefficient()
+    b = [c / lc for c in p.list()]               # monic coefficients b_0..b_d
+    ps = [K(d)]
+    for k in range(1, d):
+        acc = k * b[d - k]
+        for i in range(1, k):
+            acc += b[d - i] * ps[k - i]
+        ps.append(-acc)
+    g = g % p
+    return sum((c * ps[i] for i, c in enumerate(g.list())), K(0))
+
+
+def _sign_of(v) -> int:
+    r = float(v.real())
+    return 0 if r == 0 else (1 if r > 0 else -1)
+
+
+@dataclass
+class _Family:
+    """An irreducible denominator factor and its residue data."""
+    index: int
+    p: Any                 # U polynomial
+    p_R: Any               # the same factor in the bridge ring
+    mult: int
+    laurent: list          # h_0..h_{m-1} in K[x]/(p)
+    n_neg: int = 0         # roots with Re < 0 (left half plane)
+    method: str = ''
+
+    @property
+    def deg(self):
+        return int(self.p.degree())
+
+    def side_of(self, k: int) -> str:
+        return 'negative' if k < self.n_neg else 'positive'
+
+
+def _routh_first_column(p):
+    """First column of the Routh array of p (K coefficients), or ``None`` if
+    some entry is identically zero."""
+    d = p.degree()
+    a = p.list()
+    K = p.parent().base_ring()
+    row0 = [a[d - 2 * i] for i in range(d // 2 + 1)]
+    row1 = [a[d - 1 - 2 * i] for i in range((d - 1) // 2 + 1)]
+    rows = [row0, row1]
+    first = [row0[0], row1[0]]
+    if row1[0] == 0:
+        return None
+    for _ in range(d - 1):
+        A, B = rows[-2], rows[-1]
+        new = []
+        for i in range(len(A) - 1):
+            bn = B[i + 1] if i + 1 < len(B) else K(0)
+            new.append((B[0] * A[i + 1] - A[0] * bn) / B[0])
+        if not new or new[0] == 0:
+            return None
+        rows.append(new)
+        first.append(new[0])
+    return first
+
+
+def _sturm_conditions_even(p):
+    """For an even factor p(x) = r(x^2): the Sturm chain of r and the K
+    elements whose signs fix the number of roots of r in (-oo, 0]."""
+    K = p.parent().base_ring()
+    U = p.parent()
+    coeffs = p.list()
+    r = U([coeffs[2 * i] for i in range(len(coeffs) // 2 + 1)
+           if 2 * i < len(coeffs)])
+    chain = [r, r.derivative()]
+    while chain[-1].degree() > 0:
+        rem = -(chain[-2] % chain[-1])
+        if rem == 0:
+            break
+        chain.append(rem)
+    return r, chain
+
+
+def _condition_items(r, sigma: int, ctx: _AlgCtx, ref_pt, kind, origin):
+    """``sigma * r > 0`` for a K element r, split into factor sign
+    conditions that hold at the reference point (sufficient conditions;
+    squared factors become ``!= 0``)."""
+    r = ctx.K(r)
+    poly = ctx.P(r.numerator() * r.denominator()) * sigma
+    if poly == 0:
+        raise SymbolicOutError('internal: sign condition on zero')
+    out = []
+    fac = poly.factor()
+    for f, e in fac:
+        f = ctx.P(f)
+        if f.is_constant():
+            continue
+        if e % 2 == 0:
+            out.append(('!=', f, kind, origin))
+            continue
+        sg = _sign_of(ctx.eval_P(f, ref_pt))
+        if sg == 0:
+            raise ClosedFormUnavailable(
+                f'{ctx.P_to_sr(f).subs(ctx.back)} vanishes at the reference '
+                f'point: it is on '
+                f'the boundary of the region where the half-plane split of '
+                f'{origin} is fixed')
+        out.append(('>', sg * f, kind, origin))
+    return out
+
+
+def _nonzero_items(poly, ctx: _AlgCtx, kind, origin):
+    poly = ctx.P(poly)
+    if poly == 0:
+        raise SymbolicOutError(f'internal: {origin} is identically zero')
+    if poly.is_constant():
+        return []
+    return [('!=', ctx.P(f), kind, origin) for f, _ in poly.factor()
+            if not ctx.P(f).is_constant()]
+
+
+def _split_factor(fam: _Family, ctx: _AlgCtx, ref_pt, origin: str):
+    """Decide the half-plane split of a family at the reference point and
+    return the condition items that keep it."""
+    p = fam.p
+    d = fam.deg
+    items = []
+    first = _routh_first_column(p)
+    if first is not None:
+        signs = []
+        for k, c in enumerate(first):
+            sg = _sign_of(ctx.eval_K(c, ref_pt))
+            if sg == 0:
+                raise ClosedFormUnavailable(
+                    f'Routh entry {k} of {origin} vanishes at the reference '
+                    f'point: a pole on the real omega axis or a boundary of '
+                    f'the stability region; no closed form there')
+            signs.append(sg)
+            if not ctx.K(c).numerator().is_constant() or \
+                    not ctx.K(c).denominator().is_constant():
+                items += _condition_items(c, sg, ctx, ref_pt, 'stability',
+                                          f'{origin}, Routh entry {k}')
+        n_pos = sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+        fam.n_neg = d - n_pos
+        fam.method = 'routh'
+        return items
+    U = p.parent()
+    pm = U([c * (-1) ** i for i, c in enumerate(p.list())])
+    if pm == p or pm == -p:
+        r, chain = _sturm_conditions_even(p)
+        v_minf, v_zero = [], []
+        for g in chain:
+            lc = g.leading_coefficient()
+            sg = _sign_of(ctx.eval_K(lc, ref_pt))
+            if sg == 0:
+                raise ClosedFormUnavailable(
+                    f'Sturm chain of {origin} degenerates at the reference '
+                    f'point')
+            if not (ctx.K(lc).numerator().is_constant()
+                    and ctx.K(lc).denominator().is_constant()):
+                items += _condition_items(lc, sg, ctx, ref_pt, 'stability',
+                                          f'{origin}, Sturm leading coeff')
+            v_minf.append(sg * (-1) ** int(g.degree()))
+            c0 = g[0]
+            if c0 != 0:
+                s0 = _sign_of(ctx.eval_K(c0, ref_pt))
+                if s0 == 0:
+                    raise ClosedFormUnavailable(
+                        f'{origin} has a pole at omega = 0 at the reference '
+                        f'point')
+                if not (ctx.K(c0).numerator().is_constant()
+                        and ctx.K(c0).denominator().is_constant()):
+                    items += _condition_items(c0, s0, ctx, ref_pt,
+                                              'stability',
+                                              f'{origin}, Sturm value at 0')
+                v_zero.append(s0)
+        if r[0] == 0:
+            raise ClosedFormUnavailable(f'{origin} has a pole at omega = 0')
+
+        def changes(seq):
+            return sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+        if changes(v_minf) - changes(v_zero) != 0:
+            raise ClosedFormUnavailable(
+                f'{origin} has poles on the real omega axis at the reference '
+                f'point; the transform needs a principal-value prescription')
+        fam.n_neg = d // 2
+        fam.method = 'sturm-even'
+        return items
+    # Singular, not even: the Routh array of p(s)*prod(s + c_i), c_i > 0,
+    # adds known left-half-plane roots and is regular for generic c_i.
+    K = p.parent().base_ring()
+    shifts = [(c,) for c in (1, 2, 3, QQ(1) / 2, 5, QQ(1) / 3)] + \
+        [(1, 2), (1, 3), (2, 5), (QQ(1) / 2, 3), (1, 2, 3), (1, 3, 7),
+         (QQ(1) / 2, 2, 5), (QQ(1) / 3, 1, 4)]
+    for cs_ in shifts:
+        q = p
+        for c in cs_:
+            q = q * (ctx.x + K(c))
+        c = ', '.join(str(x) for x in cs_)
+        first = _routh_first_column(q)
+        if first is None:
+            continue
+        vals = [ctx.eval_K(e, ref_pt) for e in first]
+        if any(_sign_of(v) == 0 for v in vals):
+            continue
+        signs = [_sign_of(v) for v in vals]
+        for k, e in enumerate(first):
+            if not (ctx.K(e).numerator().is_constant()
+                    and ctx.K(e).denominator().is_constant()):
+                items += _condition_items(
+                    e, signs[k], ctx, ref_pt, 'stability',
+                    f'{origin} times prod(s + c) for c in ({c}), Routh '
+                    f'entry {k}')
+        n_pos = sum(1 for a_, b_ in zip(signs, signs[1:]) if a_ != b_)
+        fam.n_neg = (d + len(cs_) - n_pos) - len(cs_)
+        fam.method = f'routh-shifted({c})'
+        return items
+    raise ClosedFormUnavailable(
+        f'the Routh array of {origin} is singular at the reference point '
+        f'(a pole on the real omega axis?); its half-plane split cannot be '
+        f'stated as sign conditions here.  Use the numeric route '
+        f'(numeric_inverse_transform) at parameter values')
+
+
+class _ModeData:
+    """Families, assumptions and root presentation of a rational function
+    of s (a bridge field element) at a reference point."""
+
+    def __init__(self, f, bridge: _Bridge, ctx: _AlgCtx, ref_pt,
+                 laurent_order: Optional[int] = None):
+        self.bridge, self.ctx = bridge, ctx
+        num, den = f.numerator(), f.denominator()
+        N, Dn = ctx.from_R(num), ctx.from_R(den)
+        self.families: list = []
+        items: list = []
+        param_factors = []
+        for g, m in den.factor():
+            if bridge.deg_s(g) == 0:
+                param_factors.append(g)
+                continue
+            p = ctx.from_R(g)
+            Q, rem = Dn.quo_rem(p ** int(m))
+            if rem != 0:
+                raise SymbolicOutError('internal: factor does not divide')
+            lau = _laurent(N, Q, p, int(m))
+            self.families.append(_Family(len(self.families), p, g, int(m),
+                                         lau))
+        for g in param_factors:
+            items += _nonzero_items(ctx.F_to_K(bridge.F(g)).numerator(), ctx,
+                                    'nonzero', 'denominator factor')
+        for fam in self.families:
+            origin = f'factor {self._factor_label(fam)}'
+            items += _split_factor(fam, ctx, ref_pt, origin)
+            if fam.deg >= 2:
+                disc = ctx.F_to_K(bridge.F(fam.p_R.discriminant(
+                    bridge.s_gen)))
+                items += _nonzero_items(disc.numerator(), ctx, 'distinct',
+                                        f'discriminant of {origin}')
+        for i, fa in enumerate(self.families):
+            for fb in self.families[i + 1:]:
+                res = ctx.F_to_K(bridge.F(fa.p_R.resultant(fb.p_R,
+                                                           bridge.s_gen)))
+                items += _nonzero_items(
+                    res.numerator(), ctx, 'distinct',
+                    f'resultant of factors {fa.index} and {fb.index}')
+        self.assumptions = _dedupe_assumptions(items, ctx)
+        for a in self.assumptions:
+            if not _holds_pt(a, ref_pt):
+                raise AssumptionViolation(
+                    f'at the reference point {a} fails: poles coincide or a '
+                    f'denominator vanishes there.  Substitute those values '
+                    f'with values= so the repeated pole is treated exactly, '
+                    f'or choose another reference.')
+        self._root_sr: dict = {}
+        self.roots: list = []
+        self._ref_pt = ref_pt
+        self._present_roots()
+
+    def _factor_label(self, fam):
+        x = SR.var('s')
+        return str(SR(sum(self.ctx.K_to_sr(c) * x ** i
+                          for i, c in enumerate(fam.p.list()))).subs(
+                              self.ctx.back))
+
+    def _present_roots(self):
+        """SR expression for every root (explicit for degree <= 2)."""
+        ctx = self.ctx
+        used = set(self.bridge.sym_of)
+        for fam in self.families:
+            d = fam.deg
+            a = fam.p.list()
+            if d == 1:
+                self._root_sr[(fam.index, 0)] = ctx.K_to_sr(-a[0] / a[1])
+                continue
+            if d == 2:
+                c, b, a2 = a
+                disc = b * b - 4 * a2 * c
+                dval = ctx.eval_K(disc, self._ref_pt)
+                dsr = ctx.K_to_sr(disc)
+                if float(dval.real()) < 0:
+                    rd = _I * _sqrt(ctx.K_to_sr(-disc))
+                else:
+                    rd = _sqrt(dsr)
+                plus = (ctx.K_to_sr(-b) + rd) / ctx.K_to_sr(2 * a2)
+                minus = (ctx.K_to_sr(-b) - rd) / ctx.K_to_sr(2 * a2)
+                if _sign_of(ctx.eval_K(a2, self._ref_pt)) > 0:
+                    order = [minus, plus]
+                else:
+                    order = [plus, minus]
+                for k in range(2):
+                    self._root_sr[(fam.index, k)] = order[k]
+                continue
+            for k in range(d):
+                base = f'rho{fam.index}_{k}'
+                nm = base
+                while nm in used:
+                    nm += '_'
+                used.add(nm)
+                sym = SR.var(nm)
+                poly = sum(ctx.K_to_sr(cf) * sym ** i
+                           for i, cf in enumerate(a))
+                self._root_sr[(fam.index, k)] = sym
+                self.roots.append(RootOf(sym, poly, k, fam.side_of(k)))
+
+    # ── per-root SR of an L element ──────────────────────────────────────
+    def root_sr(self, fam, k):
+        return self._root_sr[(fam.index, k)]
+
+    def element_sr(self, fam, k, g):
+        g = g % fam.p
+        if fam.deg == 1:
+            return self.ctx.K_to_sr(g[0])
+        return self.ctx.L_to_sr(g, self.root_sr(fam, k))
+
+
+def _holds_pt(a: Assumption, pt) -> bool:
+    v = a._ctx.eval_P(a._poly, pt)
+    if a.relation == '>':
+        return bool(v.real() > 0)
+    return bool(v != 0)
+
+
+def _dedupe_assumptions(items, ctx: _AlgCtx) -> list:
+    seen = {}
+    for rel, poly, kind, origin in items:
+        poly = ctx.P(poly)
+        key_poly = poly
+        if rel == '!=':
+            lc = poly.lc()
+            key_poly = poly * (~lc)
+        key = (rel, key_poly)
+        if key in seen:
+            continue
+        seen[key] = Assumption(ctx.P_to_sr(poly), rel, kind, origin,
+                               _poly=poly, _ctx=ctx)
+    # a '!=' condition implied by a '>' on the same polynomial is dropped
+    gt = {k[1] for k in seen if k[0] == '>'}
+    gt |= {(-p) for p in gt}
+    out = []
+    for (rel, kp), a in seen.items():
+        if rel == '!=' and any(kp == g * (~g.lc()) for g in gt):
+            continue
+        out.append(a)
+    return out
+
+
+def _check_assumptions(assumptions, values: dict, what: str):
+    bad = [a for a in assumptions if not a.holds(values)]
+    if bad:
+        lines = '\n  '.join(str(a) for a in bad)
+        raise AssumptionViolation(
+            f'{what}: the parameter values violate the stated assumptions\n'
+            f'  {lines}\nThe symbolic result does not apply there (the '
+            f'half-plane split of the poles, or their distinctness, '
+            f'changes).  Rebuild it with reference= set to these values, or '
+            f'substitute coinciding values with values=.')
+
+
+def _name_maps(fwd: dict):
+    """private name -> user name, from a _private_symbols forward map."""
+    return {str(fresh): str(orig) for orig, fresh in fwd.items()}
+
+
+def _reference_point(names: Sequence[str], reference: Optional[dict]) -> dict:
+    """The reference values by user name; a symbol without one is 1.0
+    (assumed positive), as in the sampling cross-check."""
+    ref = {}
+    for k in names:
+        if reference and k in reference:
+            v = reference[k]
+            ref[k] = v if not isinstance(v, (np.floating,)) else float(v)
+        else:
+            ref[k] = 1.0
+    return ref
+
+
+def _cross_check(md: _ModeData, ctx: _AlgCtx, ref: dict, names,
+                 n_samples: int = 12):
+    """Sampling cross-check: at sample points inside the stated region the
+    numeric root count per half plane must equal the Routh/Sturm count."""
+    real_ref = {}
+    for k in names:
+        try:
+            real_ref[k] = float(complex(ref[k]).real)
+        except (TypeError, ValueError):
+            real_ref[k] = 1.0
+    for pt_d in _sample_points(list(names), real_ref, n_samples=n_samples):
+        pt = ctx.point(pt_d)
+        if not all(_holds_pt(a, pt) for a in md.assumptions):
+            continue
+        for fam in md.families:
+            rts = ctx.numeric_roots(fam.p, pt)
+            n_neg = sum(1 for z in rts if float(z.real()) < 0)
+            if n_neg != fam.n_neg:
+                raise SymbolicOutError(
+                    f'internal error: the stated assumptions hold at {pt_d} '
+                    f'but factor {fam.index} has {n_neg} left-half-plane '
+                    f'roots there, not {fam.n_neg} (please report)')
+
+
+def _side_sign(side: str) -> int:
+    return -1 if side == 'positive' else 1
+
+
+@dataclass
+class ModeSum:
+    """Time-domain covariance as a sum of exponential modes plus a contact
+    term:
+
+        C(tau) = sum_{terms on side(tau)} coeff * tau**power * exp(rate*tau)
+                 + contact * delta(tau)
+
+    ``terms``: list of :class:`Mode` (Sage expressions in the parameters and,
+    for poles of irreducible factors of degree >= 3, the ``RootOf`` symbols
+    listed in ``roots``); ``assumptions``: :class:`Assumption` list under
+    which the list is valid; ``reference``: the parameter point at which the
+    half-plane split was decided; ``tau``: the lag symbol used by
+    :meth:`expression`.  Built by :func:`tree_modes` /
+    :meth:`TreeCovariance.modes`."""
+    terms: list
+    contact: Any
+    roots: list
+    assumptions: list
+    reference: dict
+    tau: Any
+    omega: Any
+    _md: Any = field(default=None, repr=False)
+    _back: dict = field(default_factory=dict, repr=False)
+    _source: Any = field(default=None, repr=False)
+    _contact_K: Any = field(default=None, repr=False)
+    _explicit: frozenset = field(default=frozenset(), repr=False)
+
+    # ── symbolic views ──────────────────────────────────────────────────
+    def expression(self, side: str = 'positive'):
+        """Sum of the terms of one side as a Sage expression in ``tau``."""
+        if side not in SIDES:
+            raise SymbolicOutError(f'side must be one of {SIDES}')
+        t = self.tau
+        return sum((m.coeff * t ** m.power * _exp(m.rate * t)
+                    for m in self.terms if m.side == side), SR(0))
+
+    def to_dicts(self) -> dict:
+        """JSON-ready dict (strings for the expressions)."""
+        return {
+            'format': FORMAT_TAG + '/modes',
+            'terms': [{'coeff': str(m.coeff), 'rate': str(m.rate),
+                       'power': int(m.power), 'side': m.side}
+                      for m in self.terms],
+            'contact': str(self.contact),
+            'roots': [{'symbol': str(r.symbol), 'polynomial': str(r.polynomial),
+                       'index': r.index, 'side': r.side} for r in self.roots],
+            'assumptions': [{'expression': str(a.expression),
+                             'relation': a.relation, 'kind': a.kind,
+                             'origin': a.origin} for a in self.assumptions],
+            'reference': {k: complex(v).real if np.isreal(complex(v)) else
+                          str(v) for k, v in self.reference.items()},
+        }
+
+    # ── numeric views ───────────────────────────────────────────────────
+    def check(self, values: dict) -> None:
+        """Raise :class:`AssumptionViolation` if ``values`` lie outside the
+        region of validity."""
+        _check_assumptions(self.assumptions, self._full(values), 'ModeSum')
+
+    def _full(self, values):
+        """``values`` over the explicitly given reference values (symbols
+        that were only defaulted to 1 must be given)."""
+        if values is None:
+            return dict(self.reference)
+        v = {k: x for k, x in self.reference.items() if k in self._explicit}
+        v.update(_as_name_dict(values))
+        return v
+
+    def numeric_terms(self, values: Optional[dict] = None,
+                      check: bool = True) -> list:
+        """The modes at ``values`` (default: the reference point) as
+        :class:`Mode` with complex ``coeff``/``rate``; roots are found
+        numerically (256-bit) and assigned to sides by the stated split."""
+        vals = self._full(values)
+        if check:
+            _check_assumptions(self.assumptions, vals, 'ModeSum')
+        md = self._md
+        ctx = md.ctx
+        pt = ctx.point(vals)
+        out = []
+        for fam in md.families:
+            rts = ctx.numeric_roots(fam.p, pt)
+            m = fam.mult
+            for k, z in enumerate(rts):
+                side = fam.side_of(k)
+                if (float(z.real()) < 0) != (side == 'negative'):
+                    raise SymbolicOutError(
+                        f'internal error: root {z} of factor {fam.index} is '
+                        f'on the wrong side although the assumptions hold')
+                sg = _side_sign(side)
+                for j in range(m):
+                    cj = _coeff_poly(fam, j)
+                    if cj == 0:
+                        continue
+                    cv = sum((c * z ** i for i, c in
+                              enumerate(ctx.eval_U(cj, pt))), _cc()(0))
+                    out.append(Mode(complex(sg * cv), complex(-z), j, side))
+        return out
+
+    def contact_value(self, values: Optional[dict] = None) -> complex:
+        vals = self._full(values)
+        if self._contact_K is None:
+            return 0j
+        return complex(self._md.ctx.eval_K(self._contact_K,
+                                           self._md.ctx.point(vals)))
+
+    def __call__(self, tau, values: Optional[dict] = None,
+                 at_zero: str = 'negative'):
+        return self.evaluate(tau, values, at_zero=at_zero)
+
+    def evaluate(self, tau, values: Optional[dict] = None,
+                 at_zero: str = 'negative'):
+        """Smooth part C(tau) at ``values`` (complex ndarray, shape of tau).
+
+        ``at_zero``: which side's limit is used at tau = 0; the default
+        'negative' is the pipeline's Ito left limit."""
+        if at_zero not in SIDES:
+            raise SymbolicOutError(f'at_zero must be one of {SIDES}')
+        terms = self.numeric_terms(values)
+        t = np.asarray(tau, dtype=float)
+        out = np.zeros(t.shape, dtype=complex)
+        pos = (t > 0) | ((t == 0) & (at_zero == 'positive'))
+        for m in terms:
+            mask = pos if m.side == 'positive' else ~pos
+            if not np.any(mask):
+                continue
+            tt = t[mask]
+            out[mask] += m.coeff * tt ** m.power * np.exp(m.rate * tt)
+        return out
+
+    # ── kernel integrals ────────────────────────────────────────────────
+    def integrate_against(self, kernel: 'Kernel', values: Optional[dict]
+                          = None, contact: Optional[str] = None
+                          ) -> 'KernelIntegral':
+        """``int L(s) C(s) ds`` in closed form from the modes; see
+        :func:`integrate_against`."""
+        return _integrate_modes(self, kernel, values, contact)
+
+
+def _coeff_poly(fam: _Family, j: int):
+    """R_j(x): residue of C0 e^{-s tau} at a root, coefficient of tau^j
+    (before the side sign)."""
+    m = fam.mult
+    h = fam.laurent[m - 1 - j]
+    if h == 0:
+        return h
+    K = fam.p.parent().base_ring()
+    return (h * K((-1) ** j) * (~K(factorial(j)))) % fam.p
+
+
+def _exact_value(v):
+    """A substituted value as an exact SR number: a float becomes the
+    rational it represents exactly (not a nearby 'simplest' one), so that
+    cancellations between terms survive the substitution."""
+    if isinstance(v, (float, np.floating)):
+        return SR(QQ(float(v)))
+    return SR(v)
+
+
+def _prepare(expr, omega, extra=(), values=None, reference=None):
+    """Private-symbol bridge, context and reference point for ``expr``."""
+    om = SR('omega') if omega is None else SR(omega)
+    expr = SR(expr)
+    vals = _as_name_dict(values)
+    if vals:
+        free = {str(v): v for v in expr.variables()}
+        for e in extra:
+            free.update({str(v): v for v in SR(e).variables()})
+        unknown = sorted(k for k in vals if k not in free)
+        if unknown:
+            raise SymbolicOutError(
+                f'values= names {unknown} do not occur; known symbols: '
+                f'{sorted(k for k in free if k != str(om))}')
+        sub = {free[k]: _exact_value(v) for k, v in vals.items()}
+        expr = expr.subs(sub)
+        extra = [SR(e).subs(sub) for e in extra]
+    fwd, back = _private_symbols([expr] + list(extra), keep=[om])
+    pexpr = expr.subs(fwd)
+    pextra = [SR(e).subs(fwd) for e in extra]
+    bridge = _Bridge([pexpr] + pextra, om)
+    ctx = _AlgCtx(bridge, _name_maps(fwd), back)
+    user_names = sorted(ctx.name_map.get(n, n) for n in bridge.sym_of)
+    ref = _reference_point(user_names, reference)
+    ref_pt = ctx.point(ref)
+    return om, pexpr, pextra, bridge, ctx, ref, ref_pt, back
+
+
+def _lag_symbol(names):
+    return SR.var('tau') if 'tau' not in names else SR.var('tau_lag')
+
+
+def tree_modes(C0_entry, omega=None, *, values: Optional[dict] = None,
+               reference: Optional[dict] = None, cross_check: bool = True
+               ) -> ModeSum:
+    r"""Time-domain mode sum of ``C(tau) = (1/2 pi) int C0(omega)
+    exp(-i omega tau) d omega`` for a rational ``C0`` of any denominator
+    degree (stage C2).
+
+    Every pole ``rho`` (in ``s = i*omega``) of multiplicity ``m`` gives the
+    terms ``coeff * tau^j * exp(-rho tau)``, ``j < m``, on ``side``
+    'positive' (``Re rho > 0``) or 'negative' (``Re rho < 0``); a constant
+    tail is the ``contact`` weight of ``delta(tau)`` (not in the terms).
+    Roots of irreducible factors of degree <= 2 are explicit, higher ones are
+    :class:`RootOf` symbols and the coefficients are polynomials in them with
+    coefficients rational in the parameters.
+
+    ``values``: symbols substituted before factoring (so coinciding values
+    make a repeated pole exact).  ``reference``: the point at which the
+    half-plane split is decided (default: every remaining symbol = 1, i.e.
+    assumed positive); the result's ``assumptions`` are the sign and
+    distinctness conditions that keep it valid, checked again whenever the
+    modes are evaluated.  ``cross_check`` compares the stated split with
+    numeric roots at sampled points (an internal consistency check, not the
+    decision)."""
+    om, pexpr, _, bridge, ctx, ref, ref_pt, back = _prepare(
+        C0_entry, omega, values=values, reference=reference)
+    f = bridge.to_field(pexpr)
+    c_inf, gap = _contact_of(bridge, f)
+    contact_K = None
+    if gap == 0:
+        cf = _field_const(bridge, f)
+        contact_K = ctx.F_to_K(cf)
+        fp = f - cf
+    else:
+        fp = f
+    if fp.numerator() != 0:
+        _check_real_axis_free_decay(bridge, fp, 1, 'tree_modes')
+        md = _ModeData(fp, bridge, ctx, ref_pt)
+    else:
+        md = _ModeData(bridge.F(1), bridge, ctx, ref_pt)
+    if cross_check:
+        _cross_check(md, ctx, ref, ref.keys())
+    terms = []
+    for fam in md.families:
+        for k in range(fam.deg):
+            side = fam.side_of(k)
+            sg = _side_sign(side)
+            rho = md.root_sr(fam, k)
+            for j in range(fam.mult):
+                cj = _coeff_poly(fam, j)
+                if cj == 0:
+                    continue
+                coeff = sg * md.element_sr(fam, k, cj)
+                terms.append(Mode(SR(coeff).subs(back), SR(-rho).subs(back),
+                                  j, side))
+    roots = [RootOf(r.symbol, SR(r.polynomial).subs(back), r.index, r.side)
+             for r in md.roots]
+    assumptions = [Assumption(SR(a.expression).subs(back), a.relation,
+                              a.kind, a.origin, _poly=a._poly, _ctx=a._ctx)
+                   for a in md.assumptions]
+    return ModeSum(terms=terms, contact=SR(c_inf).subs(back), roots=roots,
+                   assumptions=assumptions, reference=ref,
+                   tau=_lag_symbol(set(ref)), omega=om, _md=md, _back=back,
+                   _source=(SR(C0_entry), om, dict(_as_name_dict(values))),
+                   _contact_K=contact_K,
+                   _explicit=frozenset(k for k in ref
+                                       if k in _as_name_dict(reference)))
+
+
+# ── kernels and time-domain kernel integrals ────────────────────────────────
+
+@dataclass(frozen=True)
+class Kernel:
+    """A kernel ``L(s) = sum coeff * s**power * exp(rate * s)`` over its
+    terms, each on ``side`` 'positive' (s > 0) or 'negative' (s < 0).
+    Terms are :class:`Mode` objects; coefficients and rates are real Sage
+    expressions or numbers.  ``rate`` must make the term non-growing on its
+    side (``rate < 0`` for s > 0, ``rate > 0`` for s < 0, or exactly 0)."""
+    terms: tuple
+    name: str = ''
+
+    def __post_init__(self):
+        for t in self.terms:
+            if t.side not in SIDES or int(t.power) < 0:
+                raise SymbolicOutError(f'bad kernel term {t}')
+
+    @classmethod
+    def exponential(cls, amplitude, rate, side: str = 'positive',
+                    power: int = 0) -> 'Kernel':
+        """``amplitude * s**power * exp(rate * s)`` on one side."""
+        return cls((Mode(SR(amplitude), SR(rate), int(power), side),),
+                   'exponential')
+
+    @classmethod
+    def stdp(cls, A_plus, tau_plus, A_minus, tau_minus) -> 'Kernel':
+        """The pair-based STDP window
+        ``L(s) = A_plus e^{-s/tau_plus}`` (s > 0),
+        ``-A_minus e^{s/tau_minus}`` (s < 0)."""
+        return cls((Mode(SR(A_plus), -1 / SR(tau_plus), 0, 'positive'),
+                    Mode(-SR(A_minus), 1 / SR(tau_minus), 0, 'negative')),
+                   'stdp')
+
+    def __add__(self, other: 'Kernel') -> 'Kernel':
+        return Kernel(tuple(self.terms) + tuple(other.terms),
+                      self.name or other.name)
+
+    def at_zero(self, side: str):
+        """``L(0+)`` (side 'positive') or ``L(0-)``."""
+        return sum((SR(t.coeff) for t in self.terms
+                    if t.side == side and t.power == 0), SR(0))
+
+    def fourier(self, omega):
+        """``L~(omega) = int L(s) exp(-i omega s) ds`` (pipeline
+        convention)."""
+        w = SR(omega)
+        out = SR(0)
+        for t in self.terms:
+            q = int(t.power)
+            if t.side == 'positive':
+                out += SR(t.coeff) * factorial(q) / (_I * w - t.rate) ** (q + 1)
+            else:
+                out += (SR(t.coeff) * (-1) ** q * factorial(q)
+                        / (t.rate - _I * w) ** (q + 1))
+        return out
+
+    def expressions(self) -> list:
+        return [SR(x) for t in self.terms for x in (t.coeff, t.rate)]
+
+
+@dataclass
+class KernelIntegral:
+    """``int L(s) C(s) ds``: ``smooth`` (the modes), ``contact`` (the
+    delta(tau) weight times the chosen L(0)), ``expression`` = their sum,
+    ``value`` at the given values (or ``None``), ``assumptions`` (modes and
+    kernel decay) and the ``roots`` any split factor leaves in the result."""
+    expression: Any
+    smooth: Any
+    contact: Any
+    value: Optional[complex]
+    assumptions: list
+    roots: list
+    exact: bool = True
+
+    def __float__(self):
+        return float(np.real(self.value))
+
+
+def _kernel_assumption_items(kterms, ctx, ref_pt):
+    items = []
+    for t, a_K, al_K in kterms:
+        if al_K == 0:
+            continue
+        need = -1 if t.side == 'positive' else 1
+        v = ctx.eval_K(al_K, ref_pt)
+        if _sign_of(v) != need:
+            raise SymbolicOutError(
+                f'kernel term {t} grows on its side at the reference point '
+                f'(rate {t.rate}): the integral diverges')
+        items += _condition_items(al_K, need, ctx, ref_pt, 'kernel',
+                                  f'decay of kernel term on the {t.side} '
+                                  f'side')
+    return items
+
+
+def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
+    if not isinstance(kernel, Kernel):
+        raise SymbolicOutError('kernel must be a Kernel (Kernel.stdp, '
+                               'Kernel.exponential, ...)')
+    if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
+        raise SymbolicOutError(
+            "contact must be None, 'exclude', 'positive', 'negative' or "
+            "'mid'")
+    src, om, src_vals = ms._source
+    ref_in = {k: v for k, v in ms.reference.items() if k in ms._explicit}
+    ref_in.update(_as_name_dict(values))
+    _, pexpr, pextra, bridge, ctx, ref, ref_pt, back = _prepare(
+        src, om, extra=kernel.expressions(), values=src_vals,
+        reference=ref_in)
+    f = bridge.to_field(pexpr)
+    _, gap = _contact_of(bridge, f)
+    c_K = ctx.K(0)
+    if gap == 0:
+        cf = _field_const(bridge, f)
+        c_K = ctx.F_to_K(cf)
+        f = f - cf
+    md = _ModeData(f if f.numerator() != 0 else bridge.F(1), bridge, ctx,
+                   ref_pt)
+    kterms = []
+    for t, (pc, pr) in zip(kernel.terms, zip(pextra[0::2], pextra[1::2])):
+        kterms.append((t, ctx.F_to_K(bridge.to_field(pc)),
+                       ctx.F_to_K(bridge.to_field(pr))))
+    k_items = _kernel_assumption_items(kterms, ctx, ref_pt)
+    assumptions = list(md.assumptions) + _dedupe_assumptions(k_items, ctx)
+    K = ctx.K
+    total_K = K(0)
+    split_sr = SR(0)
+    numeric_parts = []          # (fam, G, traced, idx)
+    for fam in md.families:
+        p, x = fam.p, ctx.x
+        for t, a_K, al_K in kterms:
+            idx = [k for k in range(fam.deg) if fam.side_of(k) == t.side]
+            if not idx:
+                continue
+            lin = (x - al_K) % p
+            try:
+                inv1 = _inv_mod(lin, p)
+            except ZeroDivisionError:
+                raise SymbolicOutError(
+                    f'a pole of C coincides with the kernel rate {t.rate}: '
+                    f'the integral diverges') from None
+            q = int(t.power)
+            G = ctx.U(0)
+            for j in range(fam.mult):
+                cj = _coeff_poly(fam, j)
+                if cj == 0:
+                    continue
+                n = q + j + 1
+                w = inv1
+                for _ in range(n - 1):
+                    w = (w * inv1) % p
+                G += -cj * a_K * K(factorial(q + j)) * w
+            G = G % p
+            if G == 0:
+                continue
+            if len(idx) == fam.deg:
+                total_K += _trace(G, p)
+                numeric_parts.append((fam, G, True, idx))
+            else:
+                for k in idx:
+                    split_sr += md.element_sr(fam, k, G)
+                numeric_parts.append((fam, G, False, idx))
+    # contact: c * L(0)
+    l0 = {s: sum((a_K for t, a_K, _ in kterms
+                  if t.side == s and t.power == 0), K(0)) for s in SIDES}
+    if c_K == 0 or contact == 'exclude':
+        contact_K = K(0)
+    elif contact is None:
+        if l0['positive'] != l0['negative']:
+            raise SymbolicOutError(
+                f'C has a contact term {ctx.K_to_sr(c_K).subs(back)} * '
+                f'delta(tau) and the kernel jumps at s = 0 (L(0+) = '
+                f'{ctx.K_to_sr(l0["positive"]).subs(back)}, L(0-) = '
+                f'{ctx.K_to_sr(l0["negative"]).subs(back)}): choose '
+                f"contact='exclude', 'positive', 'negative' or 'mid'")
+        contact_K = c_K * l0['positive']
+    elif contact == 'mid':
+        contact_K = c_K * (l0['positive'] + l0['negative']) / 2
+    else:
+        contact_K = c_K * l0[contact]
+    smooth = (ctx.K_to_sr(total_K) + split_sr).subs(back)
+    contact_sr = ctx.K_to_sr(contact_K).subs(back)
+    roots = [RootOf(r.symbol, SR(r.polynomial).subs(back), r.index, r.side)
+             for r in md.roots if SR(split_sr).has(r.symbol)]
+    value = None
+    vals = dict(ref_in)
+    names_needed = {ctx.name_map.get(n, n) for n in bridge.sym_of}
+    if values is not None or names_needed <= set(vals):
+        if names_needed <= set(vals):
+            _check_assumptions(assumptions, vals, 'integrate_against')
+            pt = ctx.point(vals)
+            tot = ctx.eval_K(contact_K, pt)
+            for fam, G, traced, idx in numeric_parts:
+                if traced:
+                    tot += ctx.eval_K(_trace(G, fam.p), pt)
+                    continue
+                rts = ctx.numeric_roots(fam.p, pt)
+                cs = ctx.eval_U(G, pt)
+                for k in idx:
+                    z = rts[k]
+                    tot += sum((c * z ** i for i, c in enumerate(cs)),
+                               _cc()(0))
+            value = complex(tot)
+        else:
+            raise SymbolicOutError(
+                f'values= is missing {sorted(names_needed - set(vals))}')
+    return KernelIntegral(expression=smooth + contact_sr, smooth=smooth,
+                          contact=contact_sr, value=value,
+                          assumptions=[Assumption(SR(a.expression).subs(back),
+                                                  a.relation, a.kind,
+                                                  a.origin, _poly=a._poly,
+                                                  _ctx=a._ctx)
+                                       for a in assumptions],
+                          roots=roots)
+
+
+def integrate_against(C0_entry, kernel: Kernel, omega=None, *,
+                      values: Optional[dict] = None,
+                      reference: Optional[dict] = None,
+                      contact: Optional[str] = None) -> KernelIntegral:
+    r"""``int L(s) C(s) ds`` for the covariance ``C(tau)`` of ``C0_entry``
+    (convention of :func:`tree_modes`) and a :class:`Kernel` ``L``, in
+    closed form from the modes:
+
+        int_0^oo  a s^q e^{alpha s} * c s^j e^{-rho s} ds
+            = a c (q+j)! / (rho - alpha)^{q+j+1}
+
+    and its mirror for s < 0.  Summed over all roots of an irreducible factor
+    that lie on the kernel's side, the result is a trace in K[x]/(p): an exact
+    rational function of the parameters (any degree).  ``contact`` decides
+    the delta(tau) term: ``None`` includes ``c * L(0)`` when the kernel is
+    continuous at 0 and refuses otherwise; ``'exclude'`` / ``'positive'`` /
+    ``'negative'`` / ``'mid'`` use 0 / L(0+) / L(0-) / their mean.
+
+    Equals ``pair_with_kernel(C0_smooth, L.fourier(omega)(-omega))`` (the
+    Fourier route) for the smooth part."""
+    ms = tree_modes(C0_entry, omega, values=values, reference=reference)
+    return ms.integrate_against(kernel, contact=contact)
+
+
+def _pair_any_degree(C0_entry, L_tilde, omega, *, values, reference):
+    """Fourier-route pairing ``int d omega/(2 pi) conj(L~) C0`` by residues
+    for any denominator degree: ``sum_{Re rho < 0} Res_s`` (closing to the
+    left in s = i*omega), traces for one-sided factors."""
+    om = SR('omega') if omega is None else SR(omega)
+    vals = _as_name_dict(values)
+    expr = SR(C0_entry)
+    L = SR(L_tilde)
+    if vals:
+        free = {str(v): v for v in expr.variables()}
+        free.update({str(v): v for v in L.variables()})
+        sub = {free[k]: _exact_value(v) for k, v in vals.items()
+               if k in free}
+        expr, L = expr.subs(sub), L.subs(sub)
+    integrand = _conjugate_real(L, om) * expr
+    ref_in = dict(reference or {})
+    ref_in.update(vals)
+    _, pexpr, _, bridge, ctx, ref, ref_pt, back = _prepare(
+        integrand, om, reference=ref_in)
+    f = bridge.to_field(pexpr)
+    _check_real_axis_free_decay(bridge, f, 2, 'pair_with_kernel')
+    if f.numerator() == 0:
+        return KernelPairing(expression=SR(0), value=0j, exact=True)
+    md = _ModeData(f, bridge, ctx, ref_pt)
+    _cross_check(md, ctx, ref, ref.keys())
+    total_K = ctx.K(0)
+    split_sr = SR(0)
+    parts = []
+    for fam in md.families:
+        G = fam.laurent[fam.mult - 1]
+        if G == 0 or fam.n_neg == 0:
+            continue
+        if fam.n_neg == fam.deg:
+            total_K += _trace(G, fam.p)
+            parts.append((fam, G, True))
+        else:
+            for k in range(fam.n_neg):
+                split_sr += md.element_sr(fam, k, G)
+            parts.append((fam, G, False))
+    expr_out = (ctx.K_to_sr(total_K) + split_sr).subs(back)
+    value = None
+    names_needed = {ctx.name_map.get(n, n) for n in bridge.sym_of}
+    if names_needed <= set(ref_in):
+        pt = ctx.point(ref_in)
+        tot = _cc()(0)
+        for fam, G, traced in parts:
+            if traced:
+                tot += ctx.eval_K(_trace(G, fam.p), pt)
+            else:
+                rts = ctx.numeric_roots(fam.p, pt)
+                cs = ctx.eval_U(G, pt)
+                for k in range(fam.n_neg):
+                    tot += sum((c * rts[k] ** i for i, c in enumerate(cs)),
+                               _cc()(0))
+        value = complex(tot)
+    out = KernelPairing(expression=expr_out, value=value, exact=True)
+    out.assumptions = [Assumption(SR(a.expression).subs(back), a.relation,
+                                  a.kind, a.origin, _poly=a._poly,
+                                  _ctx=a._ctx) for a in md.assumptions]
+    return out
