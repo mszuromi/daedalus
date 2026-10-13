@@ -262,7 +262,7 @@ def _taylor(family, D, max_ell=1):
 def test_taylor_estimator_against_a_known_radius_of_convergence():
     """a/(1 + x/L): singularity at x = -L, so R = x* + L; the estimate q must be s/R with s = 3 sigma.  The
     successive-term ratio is exact for a pole (geometric series): within 10 %."""
-    r = _taylor(RATIONAL, 0.1)
+    r = _taylor(RATIONAL, 0.5)
     t = r.traits
     xstar = dict(t.saddle)['xstar'][0]
     R = xstar + RATIONAL[1]['L']
@@ -287,8 +287,18 @@ def test_taylor_ratio_is_monotone_in_the_noise_and_warns_where_unreliable(family
         r = _taylor(family, D)
         ratios.append(r.traits.taylor_radius_ratio)
         assert r.has('G5_TAYLOR_RADIUS') == (r.traits.taylor_radius_ratio > A._TAYLOR_RATIO_WARN)
-    assert ratios == sorted(ratios) and len(set(ratios)) == 4
+    nonzero = [q for q in ratios if q > 0]
+    # 0: the nonlinearity is below 1 % of the linear term at 3 sigma (no statement needed)
+    assert ratios == sorted(ratios) and len(set(nonzero)) == len(nonzero) >= 2 and ratios[0] == 0.0
     assert ratios[0] < A._TAYLOR_RATIO_WARN < ratios[-1]
+
+
+def test_taylor_check_has_no_false_alarm_where_an_even_coefficient_nearly_vanishes():
+    """Logistic response around its inflection point (x* ~ 0.01): a_2 ~ x* is accidentally tiny, so t_3 / t_2 is
+    large although the radius (pi) is 200 sigma away.  Found on a zoo dendrite model (sigma 0.015)."""
+    drift = '-mu*x + a/(1+exp(-(x-c))) - a/2'
+    r = analyze(_nl_ou(drift, dict(mu=1.0, a=2.0, c=1e-3), 1e-4), question={'k': 2, 'max_ell': 1}, policy=_TAYLOR_POLICY)
+    assert not r.has('G5_TAYLOR_RADIUS') and (r.traits.taylor_radius_ratio or 0.0) == 0.0
 
 
 def test_taylor_warning_has_level_remedy_and_names_the_scale():

@@ -2517,7 +2517,7 @@ def _g_eff(ctx, K_eval, sig):
     return total, detail, skipped
 
 
-def _taylor_ratio(ctx, sig):
+def _taylor_ratio(ctx, sig, lin):
     """Decay of the Taylor series of the response about the saddle at the
     fluctuation amplitude, per physical component.
 
@@ -2534,7 +2534,14 @@ def _taylor_ratio(ctx, sig):
     by up to 2), which is why the threshold is ``_TAYLOR_RATIO_WARN = 0.3``.
     Returns ``[(component, q, s)]``, largest ``q`` first; components with a
     single non-linear order (nothing to compare) are skipped; ``None`` when a
-    sector was not kept (too many terms)."""
+    sector was not kept (too many terms).
+
+    ``lin[a, j] = |K_aj(0)|`` is the linear response.  A component whose
+    highest kept term ``t_M`` is below 1 % of the linear term ``|K_aj(0)| s``
+    reports ``q = 0``: the ratio of two small terms is not a convergence
+    statement (near an inflection point of a sigmoid the even coefficients
+    vanish and ``t_3 / t_2`` is large for a harmless series; found on a
+    zoo dendrite model with ``sigma = 0.015`` against a radius of about 3)."""
     from sage.all import SR
     names, nf = ctx.ring_names, ctx.n_tilde
     coef = {}                                    # (a, j) -> {m: |a_m|}
@@ -2566,6 +2573,8 @@ def _taylor_ratio(ctx, sig):
         t = {m: d[m] * sj ** m for m in ms}
         m0 = ms[0]
         q = max((t[m] / t[m0]) ** (1.0 / (m - m0)) for m in ms[1:])
+        if t[ms[-1]] < 0.01 * float(lin[a, j]) * sj:
+            q = 0.0                              # the nonlinearity is negligible
         if math.isfinite(q) and (j not in best or q > best[j][0]):
             best[j] = (q, sj)
     return sorted(((names[nf + j], q, sj) for j, (q, sj) in best.items()),
@@ -2630,7 +2639,13 @@ def _g5_regime(ctx):
                     'nonlinearity or the noise amplitude, or treat the '
                     'result as qualitative')
     if ctx.t.get('polynomial') is False:
-        rad = _taylor_ratio(ctx, sig)
+        K0 = K_eval(np.array([0.0, min(p.imag for p in ctx.t['poles']
+                                       if p.imag > 0)]))
+        k0 = np.abs(K0[0])
+        k1 = np.abs(K0[1])
+        lin = np.where(np.isfinite(k0) & (k0 > 1e-9 * np.maximum(k1, 1e-300)),
+                       k0, k1)
+        rad = _taylor_ratio(ctx, sig, lin)
         if rad is None:
             ctx.add('G5_ADVISORY_SKIPPED',
                     'Taylor check not made: a vertex sector is too large to '
