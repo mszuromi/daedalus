@@ -123,7 +123,7 @@ For lower-level access the API layer is importable directly, e.g. `from api impo
 ```bash
 sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config and the analyzer report, compute nothing
 sage -python -m daedalus run config.yaml             # compute and write the outputs
-dd run config.yaml                                   # the same, after `sage -pip install -e .` (console script `dd`)
+daedalus run config.yaml                             # the same, after `sage -pip install -e .` (console script `daedalus`)
 ```
 
 Run these from the repository root, or from anywhere after `sage -pip install -e .` (see *Get the code*); otherwise Python cannot find the `daedalus` module.

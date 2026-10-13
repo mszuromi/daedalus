@@ -3,8 +3,8 @@
 A  pole statistics: decay-rate range, fast/slow ratio, close and repeated poles, with their remedies, on synthetic
    models (two decoupled OU fields; a Jordan block).
 B  ``g_eff`` (definition: ``api.analyze._g_eff``): the closed form ``3 eps D / mu^2`` on the OU quartic model, monotone
-   in the coupling and in the noise, zero for a linear model, a warning only when loops are requested, ``strict``
-   semantics unchanged.
+   in the coupling and in the noise, zero for a linear model, a warning only when loops are requested, never promoted by
+   ``strict``.
 C  the Taylor-series check for non-polynomial responses: the estimator against a response with a known radius of
    convergence, monotone in the noise, a warning where the truncation is unreliable, nothing for polynomial models.
 D  the numbers do not move: a run with the analyzer on equals a run with it off, bit for bit.
@@ -65,6 +65,20 @@ def _jordan():
     return (s.field('x').field('y').drift('x', '-a*x + y').drift('y', '-a*y')
             .noise('Wx', Gaussian(var='2'), couples={'x': 1}).noise('Wy', Gaussian(var='2'), couples={'y': 1})
             .stability_analysis(True).build())
+
+
+def _spike_driven(vertex):
+    """x' = -mu x + w n + noise + <vertex>, with n an exposed Poisson spike train (delta-correlated: G has a delta
+    part, so n has no finite tree variance)."""
+    from api.noise import Poisson
+    s = SDE('G5 spike-driven')
+    for n, v in (('mu', 1.0), ('lam', 3.0), ('w', 0.5), ('c', 0.2), ('eps', 0.1)):
+        s.parameter(n, default=v, domain='positive')
+    s.field('x')
+    s.noise('xi', Gaussian(var='0.5'), couples={'x': 1})
+    s.noise('spk', Poisson(rate='lam'), expose='n')
+    s.drift('x', '-mu*x + w*n' + vertex)
+    return s.stability_analysis(True).build()
 
 
 def _nl_ou(drift, pars, D):
@@ -164,13 +178,23 @@ def test_geff_warning_only_when_loops_are_requested_and_g_is_large():
     assert big.ok                                                   # a warning, never an error
 
 
-def test_strict_semantics_are_unchanged_by_the_new_warnings():
-    """strict promotes warnings to errors (D1 semantics): the large-g warning then stops the analysis."""
+def test_strict_never_promotes_the_g5_advisories():
+    """strict promotes warnings to errors (D1 semantics) except the regime advisories: they say how good the answer
+    is, not that the model is defective (decision of Oct 13 2026)."""
+    assert {'G5_LOOP_PARAMETER', 'G5_TAYLOR_RADIUS'} <= A._NEVER_PROMOTE
     r = _geff(0.5, policy={'mode': 'strict'})
-    assert not r.ok and 'G5_LOOP_PARAMETER' in [f.code for f in r.errors]
-    assert _geff(0.02, policy={'mode': 'strict'}).ok
-    # and Policy.downgrade-free permissive mode leaves the finding a warning
-    assert 'G5_LOOP_PARAMETER' in [f.code for f in _geff(0.5).warnings]
+    assert r.ok and 'G5_LOOP_PARAMETER' in [f.code for f in r.warnings]
+    r = _taylor(SIGMOID, 2.0)
+    assert r.has('G5_TAYLOR_RADIUS')
+    r = analyze(_nl_ou(*SIGMOID, 2.0), question={'k': 2, 'max_ell': 1},
+                policy={'mode': 'strict', 'allow_taylor_truncation': True})
+    assert r.ok and 'G5_TAYLOR_RADIUS' in [f.code for f in r.warnings]
+    # other warnings are still promoted: ou_quartic_colored (default regime g_eff ~ 10) without the Markov consent
+    model, mod = _load('ou_quartic_colored')
+    r = analyze(model, policy={'mode': 'strict'})
+    assert [f.code for f in r.errors] == ['G4_MARKOV_CONSENT_MISSING'] and 'G5_LOOP_PARAMETER' in [f.code for f in r.warnings]
+    r = analyze(model, policy={'mode': 'strict', 'allow_markov_embedding': True})
+    assert r.ok and 'G5_LOOP_PARAMETER' in [f.code for f in r.warnings] and not r.errors
 
 
 def test_geff_detail_names_the_dominant_vertex():
@@ -202,10 +226,16 @@ def test_fields_with_a_delta_part_have_no_tree_variance_and_g_eff_is_a_lower_bou
     std = np.asarray(r.traits.tree_std)
     assert r.has('G3_DELTA_COMPONENT') and np.isnan(std).sum() == 2 and np.isfinite(std).sum() == 2
     assert r.traits.loop_parameter_complete is True                  # nothing it could estimate was left out
-    model, mod = _load('dendritic_linear_gate')
-    r = analyze(model, question={'k': 2, 'max_ell': 1, 'parameters': getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None})
-    assert r.traits.loop_parameter_complete is False and not r.has('G5_LOOP_PARAMETER')
-    assert 'g_eff >= ' in r.table() and any('lower bound' in f.message for f in r.findings if f.code == 'G5_ADVISORY_SKIPPED')
+    # a vertex that touches the exposed spike-count field n cannot be estimated: g_eff is a lower bound
+    r = analyze(_spike_driven(' - eps*x^3 + c*n^2'), question={'k': 2, 'max_ell': 1})
+    assert r.has('G3_DELTA_COMPONENT') and np.isnan(r.traits.tree_std[1]) and np.isfinite(r.traits.tree_std[0])
+    assert r.traits.loop_parameter_complete is False and r.traits.loop_parameter_estimate > 0
+    assert any('lower bound' in f.message for f in r.findings if f.code == 'G5_ADVISORY_SKIPPED')
+    assert 'g_eff >= ' in r.table() and 'at least' not in r.table()
+    f = [f for f in r.findings if f.code == 'G5_LOOP_PARAMETER'][0]
+    assert 'g_eff >= ' in f.message                                  # the warning says "at least"
+    # the x^3 vertex alone is complete (its linear reference ignores the n coupling)
+    assert analyze(_spike_driven(' - eps*x^3'), question={'k': 2, 'max_ell': 1}).traits.loop_parameter_complete is True
 
 
 def test_noiseless_nonpolynomial_model_has_no_internal_error():
@@ -393,9 +423,8 @@ def test_table_golden_text_flags_the_advisories():
     assert txt == GOLDEN_SIGMOID
 
 
-@pytest.mark.parametrize('name', ['ou_quartic', 'ou_quartic_two_dim', 'multipopulation_test',
-                                  'allen_cahn_1d_subcritical_infinite', 'reaction_diffusion_2d', 'linear_hawkes',
-                                  'dendritic_linear_gate'])
+@pytest.mark.parametrize('name', ['ou_quartic', 'ou_quartic_colored', 'multipopulation_test',
+                                  'allen_cahn_1d_subcritical_infinite', 'reaction_diffusion_2d', 'linear_hawkes'])
 def test_table_fits_100_columns_on_tracked_models(name):
     model, mod = _load(name)
     rep = analyze(model, question={'parameters': getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None})

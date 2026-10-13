@@ -1,6 +1,6 @@
 """Follow-ups of the YAML entry point (``api/config_run.py``), on top of ``test_config_run.py``.
 
-A  the ``dd`` console script (``[project.scripts] dd = "daedalus:main"``) and ``--dry-run`` printing the analyzer
+A  the ``daedalus`` console script (``[project.scripts] daedalus = "daedalus:main"``) and ``--dry-run`` printing the analyzer
    report table next to the resolved config (as YAML comments, so the output is still a valid config).
 B  keys: spatial ``chi_grid`` (alias ``spatial_grid``; a mapping is a range, a list is literal points, a 3-element
    list that looks like a range raises, as in ``dd.Config``), ``output`` (directory or file stem), and the parameter
@@ -45,12 +45,13 @@ def _bad(tmp_path, text, line, fragment):
 # ── A: the dd script and the dry-run report ───────────────────────────────────────────────────
 
 def test_a_console_script_entry_point_is_declared_and_importable():
-    """``pip install -e .`` would create ``dd`` from this entry; installing into a throw-away environment is not
+    """``pip install -e .`` would create ``daedalus`` from this entry; installing into a throw-away environment is not
     cheap on Sage, so the declaration is parsed and the target is checked to be the callable ``main(argv)``."""
     import tomllib
     with open(os.path.join(ROOT, 'pyproject.toml'), 'rb') as fh:
         meta = tomllib.load(fh)
-    target = meta['project']['scripts']['dd']
+    assert 'dd' not in meta['project']['scripts']                   # renamed: dd shadows coreutils dd
+    target = meta['project']['scripts']['daedalus']
     assert target == 'daedalus:main'
     module, func = target.split(':')
     fn = getattr(__import__(module), func)
@@ -100,11 +101,11 @@ def test_a_dry_run_without_the_analyzer_says_so(tmp_path, capsys):
 
 
 def test_a_dry_run_report_follows_the_policy(tmp_path, capsys):
-    """strict promotes the large-g warning to an error in the report; the dry run still exits 0 (it only reports)."""
+    """strict never promotes the G5 advisories: the report keeps the large-g warning a warning."""
     path = _write(tmp_path, "model: ou_quartic\nparameters: {eps: 0.5}\nquestion: {k: 2, max_ell: 1}\npolicy: {mode: strict}\n")
     dd.main(['run', path, '--dry-run'])
     out = capsys.readouterr().out
-    assert '[1 ERROR(S)' in out and 'G5_LOOP_PARAMETER' in out
+    assert '[OK; 1 warning(s)' in out and 'G5_LOOP_PARAMETER' in out and 'ERROR' not in out
 
 
 # ── B: keys ───────────────────────────────────────────────────────────────────────────────────

@@ -51,8 +51,8 @@ to errors.
   of the response about the saddle still shrinks at 3 tree standard
   deviations.  The pole statistics (rate range, fast/slow ratio, close and
   repeated poles) are traits and G3 findings with remedies.  Read-only:
-  they never change a number and never raise (``strict`` promotes the two
-  warnings like any other).
+  they never change a number and never raise (``strict`` does not promote
+  the two warnings: ``_NEVER_PROMOTE``).
 
 ``report.table()`` (``str(report)``) is the one-table summary of at most 100
 columns; ``report.summary()`` is the long form.
@@ -227,7 +227,7 @@ class Policy:
     """How permissive the user is (declared, never inferred).
 
     ``mode``: ``'permissive'`` (default) or ``'strict'`` (warnings become
-    errors).  Consents: ``allow_taylor_truncation``,
+    errors, except the G5 regime advisories).  Consents: ``allow_taylor_truncation``,
     ``allow_markov_embedding``, ``allow_numeric_fallback``.
     ``interpretation``: the stochastic convention the action is written in
     (``'ito'`` or ``'stratonovich'``); needed when the noise is state
@@ -646,13 +646,21 @@ def _exc_text(exc) -> str:
     return s if len(s) <= 400 else s[:397] + '...'
 
 
+#: Warnings that ``mode: strict`` never promotes: the regime advisories (G5)
+#: are estimates about the quality of the answer, not defects of the model,
+#: and must not stop a run (decision of Oct 13 2026).
+_NEVER_PROMOTE = frozenset({'G5_LOOP_PARAMETER', 'G5_TAYLOR_RADIUS'})
+
+
 def _apply_policy(findings, policy, ctx=None):
-    """Final levels: ``strict`` promotes warnings to errors, then
+    """Final levels: ``strict`` promotes warnings to errors (except the G5
+    advisories, ``_NEVER_PROMOTE``), then
     ``policy.downgrade`` turns the named errors into warnings (each one a
     ledger consent).  Returns a new list."""
     out = []
     for f in findings:
-        if policy.mode == 'strict' and f.level == 'warning':
+        if (policy.mode == 'strict' and f.level == 'warning'
+                and f.code not in _NEVER_PROMOTE):
             f = replace(f, level='error',
                         remedy=(f.remedy + ' ' if f.remedy else '')
                         + '[strict policy: warning promoted to error]')
@@ -2479,8 +2487,10 @@ def _g_eff(ctx, K_eval, sig):
         return 0.0, '', 0
     rates = [p.imag for p in ctx.t['poles'] if p.imag > 0]
     K0 = K_eval(np.array([0.0, min(rates)]))
-    s0 = (np.abs(K0[0]) * sig[None, :]).sum(axis=1)       # omega = 0
-    s1 = (np.abs(K0[1]) * sig[None, :]).sum(axis=1)       # omega = slowest rate
+    # fields without a finite variance (sigma NaN) add nothing to the linear
+    # reference: a smaller reference only makes g_eff larger (conservative)
+    s0 = np.nansum(np.abs(K0[0]) * sig[None, :], axis=1)  # omega = 0
+    s1 = np.nansum(np.abs(K0[1]) * sig[None, :], axis=1)  # omega = slowest rate
     s0 = np.where(np.isfinite(s0), s0, 0.0)               # K(0) may be infinite
     s_lin = np.where(s0 > 1e-9 * np.maximum(s1, 1e-300), s0, s1)
     Nmat = _noise_matrix(ctx)[0]
