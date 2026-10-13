@@ -28,6 +28,11 @@ dependencies = []
 [project.optional-dependencies]
 extras = ["numba>=0.61,<0.66", "pydot>=4,<5"]
 
+[project.scripts]
+# `dd run config.yaml [--dry-run]` (api/config_run.py); the interpreter must be Sage's
+# (sage -pip install -e .), `sage -python -m daedalus run ...` works without installing.
+dd = "daedalus:main"
+
 [project.urls]
 Homepage = "https://github.com/mszuromi/daedalus"
 Repository = "https://github.com/mszuromi/daedalus"

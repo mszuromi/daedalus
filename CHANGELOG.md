@@ -9,6 +9,30 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
+### Unreleased
+
+#### Added: regime advisories and a one-table report in the model analyzer (D3, D4)
+
+- New gate G5 in `api/analyze.py`, read-only (no number moves; added preflight time is a few ms). `ModelTraits`
+  gains `pole_rate_min`/`pole_rate_max` (decay-rate range of the poles), `tree_std` (tree-level standard
+  deviations), `loop_parameter_estimate` (`g_eff`, with `loop_parameter_detail` naming the dominant vertices) and
+  `taylor_radius_ratio`. `g_eff` estimates the size of the one-loop correction relative to the tree from the vertex
+  couplings, the propagator and the noise amplitude, without running a loop (definition in the docstring of
+  `api.analyze._g_eff`; for `eps x^3` with OU noise it is `3 eps D / mu^2`, which equals the measured
+  |one-loop / tree| at tau = 0). New codes: `G5_LOOP_PARAMETER` (warning, `g_eff > 0.2` and loops requested),
+  `G5_TAYLOR_RADIUS` (warning: the Taylor series of a non-polynomial response about the saddle does not shrink fast
+  enough at 3 tree standard deviations), `G5_ADVISORY_SKIPPED` (info). `G3_STIFF`, `G3_CLOSE_POLES` and
+  `G3_REPEATED_POLE` now carry remedies. Under `mode: strict` the new warnings are errors, as for every warning.
+  Tracked models whose default regime is flagged: the two quartic double wells (`g_eff` 0.30) and
+  `ou_quartic_colored` (`g_eff` about 10).
+- `ModelReport.table()` / `str(report)`: one plain-text table of at most 100 columns (traits that matter, route,
+  pole statistics, `g_eff`, cost when known, findings by level); `dd.run(..., verbose=True)` prints it.
+- `dd run config.yaml --dry-run` prints the resolved config and the report table (as YAML comments); new config
+  keys `question.chi_grid` (alias `spatial_grid`) and `output` (directory or file stem); list-valued parameters
+  are checked against the model's population sizes; a 3-element `tau_grid`/`chi_grid` list that looks like a range
+  is an error (as in `dd.Config`); console script `dd` (`[project.scripts] dd = "daedalus:main"`); an inline
+  `sde:` block can replace `model:` (single scalar populations; noise types of `api.noise`).
+
 ## 0.2.1 (2026-10-13)
 
 A patch release on top of 0.2.0. Its reason: near-degenerate and repeated
