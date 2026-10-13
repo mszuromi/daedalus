@@ -217,6 +217,9 @@ class Question:
     budget: Optional[float] = None
     parameters: Optional[dict] = None
     fixed_point_index: Optional[int] = None
+    #: the expansion order, when it is not the default ``max(k + 2*max_ell, 2)``
+    #: (``compute_cumulants(taylor_order=...)``)
+    taylor_order: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -343,6 +346,9 @@ class ModelTraits:
     tree_std: tuple = ()
     loop_parameter_estimate: Optional[float] = None
     loop_parameter_detail: str = ''
+    #: False: ``g_eff`` is a lower bound (terms on fields with no finite tree
+    #: variance, e.g. a delta part of G, were left out)
+    loop_parameter_complete: Optional[bool] = None
     taylor_radius_ratio: Optional[float] = None
     delta_component: Optional[bool] = None
     causal: Optional[bool] = None
@@ -489,8 +495,12 @@ def _report_table(rep) -> str:
     n_i = len(rep.by_level('info'))
     status = 'OK' if not n_e else f'{n_e} ERROR(S)'
     rule = '-' * TABLE_WIDTH
-    head = f'Model report: {t.name}'
     stat = f'[{status}; {n_w} warning(s), {n_i} info]'
+    name = str(t.name)
+    room = TABLE_WIDTH - len(stat) - len('Model report: ') - 1
+    if len(name) > room:
+        name = name[:max(room - 3, 1)] + '...'
+    head = f'Model report: {name}'
     out = [head + stat.rjust(max(1, TABLE_WIDTH - len(head))), rule]
     q = rep.question
     if q is not None and (q.k is not None or q.max_ell is not None):
@@ -532,10 +542,12 @@ def _report_table(rep) -> str:
                if t.pole_cluster_status else '')
             + f'; delta part {_yn(t.delta_component)}')
     ge = t.loop_parameter_estimate
-    reg = f'g_eff {_num(ge)}'
+    reg = f'g_eff {"" if t.loop_parameter_complete is not False else ">= "}{_num(ge)}'
     if ge is not None:
-        reg += ' (' + ('LARGE' if ge > _GEFF_WARN else 'small') + ', warn > '
-        reg += f'{_GEFF_WARN:g})'
+        reg += ' (' + ('small' if ge <= _GEFF_WARN else 'LARGE')
+        reg += f', warn > {_GEFF_WARN:g})'
+    elif not t.spatial and t.taylor_order and t.taylor_order < 4:
+        reg += ' (tree level: the vertices are not expanded)'
     if t.taylor_radius_ratio is not None:
         reg += f'; Taylor term ratio at 3 std {_num(t.taylor_radius_ratio)}'
     out += _wrap_rows('regime', reg)
@@ -896,6 +908,8 @@ def _g0_declarations(ctx):
     k_eff = k if (k is not None and k >= 1) else (len(ext) if ext else 2)
     ell_eff = ell if (ell is not None and ell >= 0) else 1
     ctx.t['taylor_order'] = max(k_eff + 2 * ell_eff, 2)
+    if getattr(q, 'taylor_order', None):
+        ctx.t['taylor_order'] = int(q.taylor_order)
 
     if ctx.stop_numeric and not phys:
         return
@@ -2286,6 +2300,12 @@ def _g5_wants(key, poly):
         return False
 
 
+def _trapezoid(y, x, axis=-1):
+    """``np.trapezoid`` (NumPy >= 2) or ``np.trapz``."""
+    fn = getattr(np, 'trapezoid', None) or np.trapz
+    return fn(y, x, axis=axis)
+
+
 def _tree_sigmas(ctx, K_eval, poles):
     """Tree-level equal-time standard deviations of the physical
     components, ``sigma_j^2 = int d omega/2pi [G N G^H]_jj`` with
@@ -2297,7 +2317,9 @@ def _tree_sigmas(ctx, K_eval, poles):
     pole (``Re p`` > ``Im p`` > 0, a resonance of width ``Im p`` at ``Re p``)
     adds nodes ``Re p + Im p sinh(t)`` (``t`` spaced 0.3: the peak and its
     Lorentzian tails, for the four sharpest) so the peak is resolved.  ``None``
-    when ``G`` is singular on the grid."""
+    when ``G`` is singular on the grid; ``NaN`` for a component without a
+    finite variance (``G N G^H`` decays slower than ``omega^-1.3``: a delta
+    part of ``G``)."""
     nf = ctx.n_tilde
     Nmat = _noise_matrix(ctx)[0]
     rates = [p.imag for p in poles if p.imag > 0]
@@ -2318,6 +2340,8 @@ def _tree_sigmas(ctx, K_eval, poles):
     lo, hi = float(w[0]), float(w[-1])
     Kp, Km = K_eval(w), K_eval(-w)
     var = np.zeros(nf)
+    no_variance = np.zeros(nf, dtype=bool)
+    i_s = int(np.searchsorted(w, hi / 30.0))
     for Ks in (Kp, Km):
         if not np.all(np.isfinite(Ks)):
             return None
@@ -2329,11 +2353,22 @@ def _tree_sigmas(ctx, K_eval, poles):
         d = np.real(np.einsum('wjj->wj', S))
         integrand = d * w[:, None]
         # + the segment [0, lo] (flat) and the omega^-2 tail beyond hi
-        var += np.trapz(integrand, np.log(w), axis=0) + d[0] * lo + d[-1] * hi
+        var += _trapezoid(integrand, np.log(w), axis=0) + d[0] * lo + d[-1] * hi
+        # a component whose spectrum does not fall off faster than omega^-1.3
+        # (a delta part of G: the spike-count fields) has no finite variance;
+        # the cutoff would set the number, so it is reported as NaN
+        if 0 < i_s < len(w) - 1:
+            a, b = d[i_s], d[-1]
+            slope = np.where((a > 0) & (b > 0), np.log(np.maximum(a, 1e-300)
+                             / np.maximum(b, 1e-300)) / math.log(w[-1] / w[i_s]),
+                             np.inf)
+            no_variance |= slope < 1.3
     var = var / (2.0 * math.pi)
     if not np.all(np.isfinite(var)) or np.any(var < 0):
         return None
-    return np.sqrt(var)
+    std = np.sqrt(var)
+    std[no_variance] = np.nan
+    return std
 
 
 def _fast_K(ctx):
@@ -2428,21 +2463,29 @@ def _g_eff(ctx, K_eval, sig):
     noise amplitude), not a bound: it reads only the tree variance and the
     couplings at the saddle.  Validated against the measured
     ``|C_1(0)| / |C_0(0)|`` in ``reports/24_report.md``.  For
-    ``eps x^3`` with OU noise it is ``3 eps D / mu^2``."""
+    ``eps x^3`` with OU noise it is ``3 eps D / mu^2``.  It needs the
+    vertices of degree 3-4 in the expansion, so it is not estimated at tree
+    level (Taylor order < 4, ``max_ell = 0``).
+
+    A term that touches a field with no finite tree variance (a delta part of
+    ``G``, e.g. spike-count fields; ``sigma`` is NaN) cannot be estimated and
+    is left out: ``g_eff`` is then a LOWER bound (the third return value counts
+    the omitted terms)."""
     names, nf = ctx.ring_names, ctx.n_tilde
     terms = _vertex_terms(ctx)
     if terms is None:
-        return None, 'a vertex sector is too large to read cheaply'
+        return None, 'a vertex sector is too large to read cheaply', 0
     if not terms:
-        return 0.0, ''
+        return 0.0, '', 0
     rates = [p.imag for p in ctx.t['poles'] if p.imag > 0]
     K0 = K_eval(np.array([0.0, min(rates)]))
     s0 = (np.abs(K0[0]) * sig[None, :]).sum(axis=1)       # omega = 0
     s1 = (np.abs(K0[1]) * sig[None, :]).sum(axis=1)       # omega = slowest rate
+    s0 = np.where(np.isfinite(s0), s0, 0.0)               # K(0) may be infinite
     s_lin = np.where(s0 > 1e-9 * np.maximum(s1, 1e-300), s0, s1)
     Nmat = _noise_matrix(ctx)[0]
     n_ref = float(np.max(np.abs(np.diag(Nmat)))) if nf else 0.0
-    contrib = []
+    contrib, skipped = [], 0
     for (nr, _npy), a, phys, c in terms:
         V = c * float(np.prod([sig[j] ** e for j, e in phys.items()]))
         m = sum(phys.values())
@@ -2451,7 +2494,10 @@ def _g_eff(ctx, K_eval, sig):
         else:
             na = abs(Nmat[a, a])
             ref = float(na if na > 0 else n_ref)
-        if not ref > 0 or not math.isfinite(V):
+        if not (math.isfinite(V) and math.isfinite(ref)):
+            skipped += 1             # touches a field without a finite variance
+            continue
+        if not ref > 0:
             continue
         r = V / ref
         if nr == 1 and m == 2:
@@ -2468,7 +2514,7 @@ def _g_eff(ctx, K_eval, sig):
     contrib.sort(key=lambda t: -t[0])
     total = float(sum(g for g, _ in contrib))
     detail = '; '.join(f'{lab}: {g:.3g}' for g, lab in contrib[:3])
-    return total, detail
+    return total, detail, skipped
 
 
 def _taylor_ratio(ctx, sig):
@@ -2487,13 +2533,16 @@ def _taylor_ratio(ctx, sig):
     whose nearest singularities are a complex-conjugate pair (a sigmoid:
     by up to 2), which is why the threshold is ``_TAYLOR_RATIO_WARN = 0.3``.
     Returns ``[(component, q, s)]``, largest ``q`` first; components with a
-    single non-linear order (nothing to compare) are skipped."""
+    single non-linear order (nothing to compare) are skipped; ``None`` when a
+    sector was not kept (too many terms)."""
     from sage.all import SR
     names, nf = ctx.ring_names, ctx.n_tilde
     coef = {}                                    # (a, j) -> {m: |a_m|}
     for (nr, npy), sec in ctx.sectors.items():
-        if nr != 1 or npy < 2 or not isinstance(sec, dict):
+        if nr != 1 or npy < 2:
             continue
+        if not isinstance(sec, dict):
+            return None                          # not kept (too large)
         for ev, c in sec.items():
             phys = [i for i in range(nf, len(names)) if ev[i] > 0]
             resp = [i for i in range(nf) if ev[i] > 0]
@@ -2512,6 +2561,8 @@ def _taylor_ratio(ctx, sig):
         if len(ms) < 2:
             continue
         sj = _TAYLOR_NSIGMA * float(sig[j])
+        if not (math.isfinite(sj) and sj > 0):
+            continue                             # no finite variance / no noise
         t = {m: d[m] * sj ** m for m in ms}
         m0 = ms[0]
         q = max((t[m] / t[m0]) ** (1.0 / (m - m0)) for m in ms[1:])
@@ -2540,6 +2591,8 @@ def _g5_regime(ctx):
         return
     if not any(p.imag > 0 for p in ctx.t['poles']):
         return
+    if (ctx.t.get('taylor_order') or 0) < 4:
+        return          # tree level (max_ell = 0): the vertices of degree 3-4 are not expanded
     K_eval = _fast_K(ctx)
     if K_eval is None:
         return
@@ -2549,17 +2602,27 @@ def _g5_regime(ctx):
                 'the tree variance could not be evaluated (G(omega) singular '
                 'or non-finite on the frequency grid).', '')
         return
+    if not np.any(sig > 0):
+        return                          # no noise reaches the fields (G4_NO_NOISE)
     ctx.t['tree_std'] = tuple(float(s) for s in sig)
-    g, detail = _g_eff(ctx, K_eval, sig)
+    g, detail, skipped = _g_eff(ctx, K_eval, sig)
     if g is None:
         ctx.add('G5_ADVISORY_SKIPPED', f'g_eff not estimated: {detail}.', '')
     else:
         ctx.t['loop_parameter_estimate'] = float(g)
         ctx.t['loop_parameter_detail'] = detail
+        ctx.t['loop_parameter_complete'] = not skipped
+        if skipped:
+            ctx.add('G5_ADVISORY_SKIPPED',
+                    f'g_eff is a lower bound: {skipped} vertex term(s) touch '
+                    'a field with no finite tree variance (a delta part of '
+                    'G(omega), e.g. a spike-count field) and are left out.',
+                    '')
         ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
         if g > _GEFF_WARN and ml >= 1:
             ctx.add('G5_LOOP_PARAMETER',
-                    f'loop parameter estimate g_eff = {g:.3g} > '
+                    f'loop parameter estimate g_eff {">= " if skipped else "= "}'
+                    f'{g:.3g} > '
                     f'{_GEFF_WARN:g} (largest: {detail}): the loop series '
                     f'in the couplings is not rapidly convergent, so the '
                     f'one-loop correction can be comparable to the tree.',
@@ -2568,7 +2631,11 @@ def _g5_regime(ctx):
                     'result as qualitative')
     if ctx.t.get('polynomial') is False:
         rad = _taylor_ratio(ctx, sig)
-        if rad:
+        if rad is None:
+            ctx.add('G5_ADVISORY_SKIPPED',
+                    'Taylor check not made: a vertex sector is too large to '
+                    'read cheaply.', '')
+        elif rad:
             comp, q, amp = rad[0]
             ctx.t['taylor_radius_ratio'] = float(q)
             if q > _TAYLOR_RATIO_WARN:

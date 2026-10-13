@@ -194,6 +194,57 @@ def test_geff_state_dependent_noise_and_quadratic_vertices_contribute():
     assert analyze(quad2, question={'k': 2, 'max_ell': 1}).traits.loop_parameter_estimate > q.loop_parameter_estimate
 
 
+def test_fields_with_a_delta_part_have_no_tree_variance_and_g_eff_is_a_lower_bound():
+    """A delta part of G (spike-count fields) makes the equal-time variance infinite: the cutoff would set the number,
+    so tree_std is NaN there and the vertices touching those fields are left out (g_eff is a lower bound)."""
+    model, mod = _load('linear_hawkes')
+    r = analyze(model, question={'k': 2, 'max_ell': 1})
+    std = np.asarray(r.traits.tree_std)
+    assert r.has('G3_DELTA_COMPONENT') and np.isnan(std).sum() == 2 and np.isfinite(std).sum() == 2
+    assert r.traits.loop_parameter_complete is True                  # nothing it could estimate was left out
+    model, mod = _load('dendritic_linear_gate')
+    r = analyze(model, question={'k': 2, 'max_ell': 1, 'parameters': getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None})
+    assert r.traits.loop_parameter_complete is False and not r.has('G5_LOOP_PARAMETER')
+    assert 'g_eff >= ' in r.table() and any('lower bound' in f.message for f in r.findings if f.code == 'G5_ADVISORY_SKIPPED')
+
+
+def test_noiseless_nonpolynomial_model_has_no_internal_error():
+    s = SDE('G5 noiseless')
+    s.parameter('a', default=1.0, domain='positive')
+    m = s.field('x').drift('x', '-a*x - x**3 + 1/(1+exp(-x))').build()
+    r = analyze(m, question={'k': 2, 'max_ell': 1})
+    assert 'INTERNAL_ERROR' not in r.codes and r.has('G4_NO_NOISE') and r.ok
+    assert r.traits.loop_parameter_estimate is None and r.traits.taylor_radius_ratio is None
+
+
+def test_table_header_is_truncated_to_100_columns():
+    s = SDE('G5 ' + 'a very long model name ' * 6)
+    for n, v in (('mu', 1.0), ('eps', 0.5), ('D', 1.0)):
+        s.parameter(n, default=v, domain='positive')
+    m = s.field('x').drift('x', '-mu*x - eps*x^3').noise('W', Gaussian(var='2*D'), couples={'x': 1}) \
+        .stability_analysis(True).build()
+    txt = analyze(m, question={'k': 2, 'max_ell': 1}).table()
+    _lines_ok(txt)
+    assert txt.splitlines()[0].count('...') == 1 and txt.splitlines()[0].endswith(']')
+
+
+def test_g_eff_is_not_estimated_at_tree_level_and_the_table_says_why():
+    """max_ell = 0 expands to order 2: the vertices are not in the expansion, so g_eff would read 0 and look
+    harmless; it is left out (and no warning) unless the Taylor order is raised."""
+    r = _geff(0.5, max_ell=0)
+    assert r.traits.loop_parameter_estimate is None and not r.has('G5_LOOP_PARAMETER')
+    assert 'tree level: the vertices are not expanded' in ' '.join(r.table().split())
+    model, par = _ou_quartic(eps=0.5)
+    r = analyze(model, question={'k': 2, 'max_ell': 0, 'parameters': par, 'taylor_order': 4})
+    assert r.traits.loop_parameter_estimate == pytest.approx(1.5, rel=2e-3)
+
+
+def test_taylor_order_in_the_question_reaches_the_report():
+    drift, pars = SIGMOID
+    r = analyze(_nl_ou(drift, pars, 0.1), question={'k': 2, 'max_ell': 1, 'taylor_order': 8}, policy=_TAYLOR_POLICY)
+    assert r.traits.taylor_order == 8
+
+
 def test_no_g5_findings_without_a_usable_tree():
     """Spatial models and colored noise are skipped quietly (spatial) or with an info (colored kernel)."""
     sp, mod = _load('edwards_wilkinson_1d')
@@ -333,7 +384,8 @@ def test_table_golden_text_flags_the_advisories():
 
 
 @pytest.mark.parametrize('name', ['ou_quartic', 'ou_quartic_two_dim', 'multipopulation_test',
-                                  'allen_cahn_1d_subcritical_infinite', 'reaction_diffusion_2d', 'linear_hawkes'])
+                                  'allen_cahn_1d_subcritical_infinite', 'reaction_diffusion_2d', 'linear_hawkes',
+                                  'dendritic_linear_gate'])
 def test_table_fits_100_columns_on_tracked_models(name):
     model, mod = _load(name)
     rep = analyze(model, question={'parameters': getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None})
