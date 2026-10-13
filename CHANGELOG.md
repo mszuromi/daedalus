@@ -9,6 +9,57 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
+### Unreleased
+
+#### Added: the δ components of a cumulant (no `C_tau` number moves)
+
+A shot-noise model (a point process: Hawkes, spike reset, δ spikes) has
+spikes `w δ(...)` in its cumulants, on hyperplanes of the external times (for
+k = 2 the point τ = 0 of an autocorrelation, weight = the mean rate). They stay
+OUT of `C_tau` (unchanged: `C(0)` is the continuous part) and are now exposed:
+
+- `dd.cumulant(result)` (`api.cumulant.Cumulant`): the smooth part per loop
+  order (`smooth_by_ell`, the `C_tau_by_ell` arrays) and `deltas`, a list of
+  `DeltaComponent` (`weight`, `location`, `equality`, `loop_order`,
+  `diagram`, `provenance`; `weight_at(times)` for a k >= 3 hyperplane, whose
+  weight depends on the other times); `total_on_grid(tau, mode='bin')` adds
+  each spike as `weight / Δτ` to the grid bin holding it (what a binned
+  simulation estimator sees; a spike on a bin edge is split half / half),
+  `mode='exclude'` is `C_tau`; `compare_to_sim(sim)`; `spectrum(omega)`
+  = Fourier transform of the smooth part (QAWF quadrature of the Phase J
+  callables) + `Σ w` (the flat floor); `to_frame()` / `deltas_frame()`.
+  `modes` is the documented slot for the exponential-mode representation
+  (`ModeTerm(coeff, rate, power, side)`), not filled yet. Nothing is
+  recomputed.
+- `dd.plot_cumulant(result, show_delta=True, delta_style='arrow'|'bin')`
+  (draws this plot instead of the default one): k = 2 arrows with the weight per loop order, or the bin convention (compare a
+  binned simulation with 'bin'); k = 3 hyperplanes as lines in
+  (t_2 − t_1, t_3 − t_1) with their weight density.
+- `output_npz` / `output_csv`: a `delta_components` table (`delta_weight`,
+  `delta_location`, `delta_ell`, `delta_diagram`, `delta_equality`,
+  `delta_provenance`, `delta_complete`; CSV: one JSON line per component in the
+  header). Files without it still load (`Cumulant.from_saved` then reports
+  `complete=False`). The flag stamp gains `USE_SHOTNOISE_INTEGRATED`.
+
+#### Fixed: δ records that were dropped (records only; `C_tau` is bit-identical)
+
+- Loop corrections to a δ weight were skipped: a shot-noise subset that keeps
+  internal times after the δ elimination (e.g. the one-loop mean rate under
+  the spike) is now integrated by the smooth-subset evaluator and returned as a
+  record (`integrated=True`). Spike reset (zoo parameters), ℓ = 1:
+  Σ weights = −0.0379870525 = the k = 1, ℓ = 1 mean (1e-15 relative; same
+  for the quadratic-rate Hawkes `single_population_quad_exp_test`); a
+  simulation confirms the corrected weight (rate 4.1696 ± 0.0018
+  against 4.1709 through ℓ = 1 and 4.2089 at tree level). The same route recovers k = 3 tree-level δ(t_i − t_j) records.
+  `DAEDALUS_SHOTNOISE_INTEGRATED=0` restores the old records.
+- δ of codimension > 1 (t_1 = t_2 = t_3 at k = 3, weight = the rate) were
+  dropped; they are in the new `delta_contributions_multi`.
+- `use_grouped_phase_j=True` dropped every δ record (with a
+  `GroupedDeltaRecordsDroppedWarning` since 0.2.0); it now carries the
+  per-diagram fallback's records (equal to the per-diagram path's).
+- Each Phase J result reports `n_delta_subsets_dropped` (shot-noise subsets
+  that still give no record); `Cumulant.complete` is False when any did.
+
 ## 0.2.1 (2026-10-13)
 
 A patch release on top of 0.2.0. Its reason: near-degenerate and repeated

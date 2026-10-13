@@ -217,7 +217,7 @@ _PHASE_J_STAMP_FLAGS = (
     'USE_NUMBA_CHAIN_SIMPLEX', 'USE_POLYGON_M2_INTEGRATOR',
     'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
     'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
-    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
+    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP', 'USE_SHOTNOISE_INTEGRATED')
 _GI_MODULE = 'engine.integration.time_domain.grouped_integral'
 _GI_STAMP_FLAGS = ('USE_GROUPED_ANALYTIC_MODESUM',)
 
@@ -546,6 +546,39 @@ def _format_value(v: Any) -> str:
         return repr(v)
 
 
+def _delta_table(result: dict) -> dict | None:
+    """The ``delta_components`` table of a ``compute_cumulants`` result
+    (Feature B, :func:`api.cumulant.delta_table`), or ``None`` when the
+    result carries no Phase J records (spatial, k = 1 without records, a
+    hand-made dict)."""
+    if not isinstance(result, dict) or 'phase_j_by_ell' not in result:
+        return None
+    from api.cumulant import delta_table
+    try:
+        return delta_table(result)
+    except Exception as exc:                      # noqa: BLE001
+        # the curves are still worth saving; say why the table is missing
+        warnings.warn(f'delta_components table not written: '
+                      f'{type(exc).__name__}: {exc}', stacklevel=3)
+        return None
+
+
+def _delta_payload(tab: dict) -> dict[str, np.ndarray]:
+    """NPZ arrays of a δ table: ``delta_weight`` (complex; NaN when the
+    weight depends on other times), ``delta_location`` (k = 2 τ, else NaN),
+    ``delta_ell``, ``delta_diagram``, ``delta_equality``,
+    ``delta_provenance`` (JSON) and ``delta_complete``."""
+    return {
+        'delta_weight': np.asarray(tab['weight'], dtype=complex),
+        'delta_location': np.asarray(tab['location'], dtype=float),
+        'delta_ell': np.asarray(tab['ell'], dtype=int),
+        'delta_diagram': np.asarray(tab['diagram'], dtype=str),
+        'delta_equality': np.asarray(tab['equality'], dtype=str),
+        'delta_provenance': np.asarray(tab['provenance'], dtype=str),
+        'delta_complete': np.asarray([bool(tab['complete'])]),
+    }
+
+
 # ── NPZ ───────────────────────────────────────────────────────────────
 
 def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
@@ -625,6 +658,12 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     payload['ext_field_pops']  = np.asarray(
         [int(ef[1]) for ef in cfg.get('external_fields', []) or []],
         dtype=int)
+
+    # Feature B: the shot-noise δ components (not in C_total; see
+    # api.cumulant).  Absent for results without Phase J records.
+    tab = _delta_table(result)
+    if tab is not None:
+        payload.update(_delta_payload(tab))
 
     # Merge user-supplied extras (sim sidecars etc.) — last writer wins
     if extra:
@@ -753,6 +792,26 @@ def save_csv(result: dict, path: str) -> str:
             if vals is None:
                 continue
             f.write(f'#   {name}: {_format_value(vals)}\n')
+
+        # Feature B: the δ components, one JSON object per line
+        tab = _delta_table(result)
+        if tab is not None:
+            import json
+            n = len(tab['weight'])
+            f.write(f'# delta_components: {n} (complete: '
+                    f'{bool(tab["complete"])}; not in the C columns)\n')
+            for i in range(n):
+                w = complex(tab['weight'][i])
+                loc = tab['location'][i]
+
+                def _num(v):                    # strict JSON: NaN -> null
+                    return None if v != v else v
+                f.write('#   ' + json.dumps({
+                    'weight': [_num(w.real), _num(w.imag)],
+                    'location': _num(loc),
+                    'ell': tab['ell'][i], 'diagram': tab['diagram'][i],
+                    'equality': tab['equality'][i],
+                    'provenance': json.loads(tab['provenance'][i])}) + '\n')
 
         f.write(f'# tau_grid: {len(tau_grid)} points '
                 f'in [{tau_grid.min():.4g}, {tau_grid.max():.4g}]\n')

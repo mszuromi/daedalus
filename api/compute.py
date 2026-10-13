@@ -171,16 +171,20 @@ def _combine_phase_j(results, nodes):
                 [x['contribution'] for x in gs], nodes)
         groups.append(g)
     out['groups'] = groups
-    dcs = []
-    for r, (w, wt, paired) in zip(results, nodes):
-        for rec in r.get('delta_contributions') or []:
-            rec = dict(rec)
-            f = rec.get('coeff_fc')
-            if callable(f):
-                rec['coeff_fc'] = _pc.combine_callables([f], [(w, wt, paired)])
-            rec['pole_deformation_node'] = w
-            dcs.append(rec)
-    out['delta_contributions'] = dcs
+    for key in ('delta_contributions', 'delta_contributions_multi'):
+        if key not in out:
+            continue
+        dcs = []
+        for r, (w, wt, paired) in zip(results, nodes):
+            for rec in r.get(key) or []:
+                rec = dict(rec)
+                f = rec.get('coeff_fc')
+                if callable(f):
+                    rec['coeff_fc'] = _pc.combine_callables([f],
+                                                            [(w, wt, paired)])
+                rec['pole_deformation_node'] = w
+                dcs.append(rec)
+        out[key] = dcs
     out['pole_deformation_nodes'] = [dict(w=w, weight=wt, paired=paired)
                                      for w, wt, paired in nodes]
     return out
@@ -1313,8 +1317,8 @@ def _run_phase_j(state, grouped):
     _phase_time('phase_j', _t_phase)
 
     if use_grouped_phase_j:
-        # M7: the grouped path does not carry the shot-noise δ(τ) records
-        # (Feature B will); say so once per run when it dropped any.
+        # M7: say so once per run if the grouped path dropped shot-noise
+        # δ(τ) records (since Feature B it carries them: never fires).
         from api._grouped_phase_j import warn_dropped_delta_records
         warn_dropped_delta_records(phase_j_by_ell)
 

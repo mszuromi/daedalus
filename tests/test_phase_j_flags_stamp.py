@@ -26,9 +26,10 @@ def _set_flags(monkeypatch, fi, dd=False, semiinf=False, u2='box',
 _ALL_ON = dict(dd=True, semiinf=True, u2='exact')
 
 
-def test_grouped_path_warns_once_when_it_drops_delta_records():
+def test_grouped_path_carries_delta_records_without_warning():
     """Linear Hawkes autocorrelation at tree level: the per-diagram path
-    returns one δ(τ) record; the grouped path drops it, WARNS once, and
+    returns one δ(τ) record; since Feature B the grouped path carries the
+    same record (its per-diagram fallback builds it), does not warn, and
     C_tau is identical."""
     pytest.importorskip('sage.all')
     import warnings
@@ -49,10 +50,13 @@ def test_grouped_path_warns_once_when_it_drops_delta_records():
         out[grouped] = (res, dropped)
     res_pd, w_pd = out[False]
     res_gr, w_gr = out[True]
-    assert len(res_pd['phase_j_by_ell'][0]['delta_contributions']) == 1
-    assert w_pd == []
-    assert len(w_gr) == 1
-    assert res_gr['phase_j_by_ell'][0]['n_delta_records_dropped'] == 1
+    rec_pd = res_pd['phase_j_by_ell'][0]['delta_contributions']
+    rec_gr = res_gr['phase_j_by_ell'][0]['delta_contributions']
+    assert len(rec_pd) == len(rec_gr) == 1
+    assert complex(rec_pd[0]['coeff_fc'](0.0)) == complex(
+        rec_gr[0]['coeff_fc'](0.0))
+    assert w_pd == [] and w_gr == []
+    assert res_gr['phase_j_by_ell'][0]['n_delta_records_dropped'] == 0
     assert np.array_equal(res_pd['C_tau'], res_gr['C_tau'])
 
 

@@ -6150,6 +6150,8 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
          ('n_subsets_evaluated', 0),
          ('n_delta_contributions', 0),
          ('n_shotnoise_skipped', 0),
+         ('n_delta_subsets_dropped', 0),
+         ('delta_contributions_multi', []),
          ('subset_diagnostics', []),
          ('cumulant_prefactor', None),
          ('has_cumulant_kernel', False)],
@@ -6282,6 +6284,109 @@ def _delta_eliminate_exact(eq_expr, var):
             continue
         rhs = rhs + SR(-c / a) * sym
     return rhs
+
+
+# ── Feature B: integrated shot-noise δ records ─────────────────────────
+# USE_SHOTNOISE_INTEGRATED (bool, read at call time; env
+# DAEDALUS_SHOTNOISE_INTEGRATED, default on): a shot-noise subset (one
+# residual external-time equality) that keeps integration variables after
+# the δ elimination becomes a ``delta_contributions`` record whose
+# ``coeff_fc`` is the subset's polytope integral, instead of being skipped.
+# It never enters ``contribution`` / ``C_tau``: off, only the records change.
+USE_SHOTNOISE_INTEGRATED = _initial_setup_flag(
+    'DAEDALUS_SHOTNOISE_INTEGRATED')
+
+
+def _shotnoise_integrated_on():
+    """``USE_SHOTNOISE_INTEGRATED`` (call time), validated."""
+    flag = USE_SHOTNOISE_INTEGRATED
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.USE_SHOTNOISE_INTEGRATED={flag!r}: '
+                     f'expected True or False')
+
+
+def _shot_equality(eqs, free_ext_syms):
+    """``(head, why)`` for the residual equalities ``eqs`` (each
+    ``a·x + c = 0`` in ``free_ext_syms``).  One equality: ``head`` is
+    ``{'equality_a', 'equality_c', 'equality_symbolic'}``, built exactly as
+    for a tree-level record.  Several (a δ of codimension > 1, e.g. the
+    t_1 = t_2 = t_3 spike of a third cumulant): ``{'equalities': [(a, c),
+    ...], 'equalities_symbolic': [...]}``, a record of
+    ``delta_contributions_multi``.  ``head`` is None with ``why`` =
+    'not_linear' (no float coefficients: dropped), 'empty' (an equality
+    with no external time: the subset never fires, a legitimate zero) or
+    'dependent' (linearly dependent equalities: a δ of a δ, dropped)."""
+    rows = []
+    for eq in eqs:
+        try:
+            eq_a = [float(eq.coefficient(s)) for s in free_ext_syms]
+            eq_c = float(eq.subs({s: 0 for s in free_ext_syms}))
+        except (TypeError, ValueError):
+            return None, 'not_linear'
+        if all(abs(a) < 1e-15 for a in eq_a):
+            return None, 'empty'
+        rows.append((eq_a, eq_c))
+    if len(rows) == 1:
+        return {'equality_a': rows[0][0], 'equality_c': rows[0][1],
+                'equality_symbolic': eqs[0]}, None
+    import numpy as _np
+    if _np.linalg.matrix_rank(_np.array([r[0] for r in rows])) < len(rows):
+        return None, 'dependent'
+    return {'equalities': rows, 'equalities_symbolic': list(eqs)}, None
+
+
+def _shot_skip(subset_diagnostics, delta_edges, smooth_edges, reason):
+    """Diagnostic for an integrated shot-noise subset that could not be
+    built (skipped, as every such subset was before Feature B)."""
+    subset_diagnostics.append({
+        'delta_edges': delta_edges,
+        'smooth_edges': smooth_edges,
+        'status': 'shotnoise_with_remaining_int_vars',
+        'reason': reason,
+    })
+
+
+def _rows_zero_on_surface(head, cdata):
+    """Number of constraint rows of an integrated δ subset that involve no
+    integration variable and vanish IDENTICALLY on the δ surface (the row is
+    a combination of the surface's equalities).  ``_SurfaceCoeff`` weighs
+    each such row Θ(0) = 0 (Itô: the coincidence is imposed by a δ, like a
+    constant row left by the δ elimination), so the weight leaves out the
+    term whose edge would need an equal-time retarded propagator; a nonzero
+    count says the weight relies on that convention."""
+    import numpy as _np
+    rows = (head['equalities'] if 'equalities' in head
+            else [(head['equality_a'], head['equality_c'])])
+    E = _np.array([list(a) + [c] for a, c in rows], dtype=float)
+    r0 = _np.linalg.matrix_rank(E)
+    n = 0
+    for a_int, a_ext, c0 in cdata:
+        if any(abs(a) > 0 for a in a_int):
+            continue
+        if not any(abs(a) > 0 for a in a_ext):
+            continue
+        R = _np.vstack([E, list(a_ext) + [c0]])
+        if _np.linalg.matrix_rank(R) == r0:
+            n += 1
+    return n
+
+
+class _SurfaceCoeff:
+    """``coeff_fc`` of an integrated δ record: ``coeff_fc(*x)`` is the
+    subset integral at the free external times ``x`` (taken on the δ
+    surface by the caller), with Θ(0) = 0 for a constant row that is exactly
+    0 there (no tie context: the record is not one Wick permutation of a
+    caller's times, and the coincidence is imposed by the δ itself, the
+    0.2.0 Itô rule for rows left by the δ elimination; the record's
+    ``theta0_rows_on_surface`` counts such rows)."""
+    __slots__ = ('_cfn',)
+
+    def __init__(self, cfn):
+        self._cfn = cfn
+
+    def __call__(self, *free_vals):
+        return complex(self._cfn([float(v) for v in free_vals], None, None))
 
 
 def _residual_is_zero_exact(eq):
@@ -7278,7 +7383,14 @@ def integrate_diagram(
     # Accumulators
     subset_contributions = []   # continuous smooth contributions (callable)
     delta_contributions = []    # shot-noise δ spikes (structured dicts)
+    # Feature B: δ spikes of codimension > 1 (several equalities)
+    delta_contributions_multi = []
     n_shotnoise_skipped = 0
+    # Feature B: shot-noise subsets that produced NO record although their
+    # weight may be nonzero (several equalities, a coefficient that could
+    # not be built, ...); ``api.cumulant`` reports a result with any as
+    # incomplete.
+    n_delta_dropped = 0
     subset_diagnostics = []
 
     for branch_bits in range(n_subsets_total):
@@ -7356,7 +7468,21 @@ def integrate_diagram(
             # Nontrivial equation → shot-noise
             has_shotnoise = True
             nontrivial_equalities.append(SR(eq))
-        if has_shotnoise:
+        # Feature B (``USE_SHOTNOISE_INTEGRATED``): a single-equality
+        # shot-noise subset that keeps integration variables (a loop
+        # correction to a δ weight, e.g. the one-loop mean rate under the
+        # spike) used to be skipped.  Its weight is the subset's polytope
+        # integral at the δ surface, so it goes through the smooth-subset
+        # evaluator below and becomes a ``delta_contributions`` record
+        # (``integrated=True``) instead of a ``subset_contributions`` term.
+        _shot_pending = None
+        if (has_shotnoise and remaining_int_vars
+                and _shotnoise_integrated_on()):
+            _shot_pending = _shot_equality(nontrivial_equalities,
+                                           free_ext_syms)[0]
+            if _shot_pending is not None:
+                n_shotnoise_skipped += 1
+        if has_shotnoise and _shot_pending is None:
             n_shotnoise_skipped += 1
             subset_diagnostics.append({
                 'delta_edges': delta_edges,
@@ -7370,7 +7496,12 @@ def integrate_diagram(
             # would correspond to δ(τ_a − τ_b) · δ(τ_c − τ_d) style
             # "double-delta" spikes which are rare at tree level and
             # deferred to Extension 1.
-            if len(nontrivial_equalities) != 1:
+            # (Feature B, ``USE_SHOTNOISE_INTEGRATED``: several
+            # independent equalities give a ``delta_contributions_multi``
+            # record instead.)
+            if (len(nontrivial_equalities) != 1
+                    and not _shotnoise_integrated_on()):
+                n_delta_dropped += 1
                 continue
 
             # Build the numeric coefficient: combined_pf × ∏ δ-coeffs
@@ -7413,22 +7544,21 @@ def integrate_diagram(
                     'delta_edges': delta_edges,
                     'remaining': list(remaining_int_vars),
                 })
+                if _shot_equality(nontrivial_equalities,
+                                  free_ext_syms)[1] != 'empty':
+                    n_delta_dropped += 1
                 continue
 
             # Extract the linear form of the equality in terms of
-            # free_ext_syms: a · x + c = 0.
-            eq = nontrivial_equalities[0]
-            try:
-                eq_a = [float(eq.coefficient(s)) for s in free_ext_syms]
-                eq_c = float(eq.subs({s: 0 for s in free_ext_syms}))
-            except (TypeError, ValueError):
-                continue
-
-            # Check the equality is actually nontrivial (not all zero)
-            if all(abs(a) < 1e-15 for a in eq_a):
-                # Pure numeric residual: if nonzero, no contribution;
-                # if zero, it's trivially satisfied (shouldn't happen
-                # because we already filtered `is_zero()` above).
+            # free_ext_syms: a · x + c = 0 (several: ``_shot_equality``).
+            # An equality without external times ('empty': a pure numeric
+            # residual, nonzero because `is_zero()` filtered above) never
+            # fires: no contribution.
+            _head, _why = _shot_equality(nontrivial_equalities,
+                                         free_ext_syms)
+            if _head is None:
+                if _why != 'empty':
+                    n_delta_dropped += 1
                 continue
 
             # The symbolic factor evaluated at the δ surface is just
@@ -7444,6 +7574,7 @@ def integrate_diagram(
             unexpected_in_coeff = coeff_free_vars - set(free_ext_syms)
             if unexpected_in_coeff:
                 # Can't build a callable coefficient with free params left
+                n_delta_dropped += 1
                 continue
 
             try:
@@ -7453,6 +7584,7 @@ def integrate_diagram(
                     domain=CDF,
                 )
             except Exception:
+                n_delta_dropped += 1
                 continue
 
             # Retardation constraints at the δ point: for the MVP's
@@ -7476,15 +7608,15 @@ def integrate_diagram(
                     continue
                 retard_data_delta.append((a_ext, c0))
 
-            delta_contributions.append({
-                'coeff_fc': coeff_fc,
-                'equality_a': eq_a,
-                'equality_c': eq_c,
-                'equality_symbolic': eq,
+            _rec = {'coeff_fc': coeff_fc}
+            _rec.update(_head)
+            _rec.update({
                 'retardation_data': retard_data_delta,
                 'delta_edges': list(delta_edges),
                 'free_ext_idx': list(free_ext_idx),
             })
+            (delta_contributions_multi if 'equalities' in _head
+             else delta_contributions).append(_rec)
             continue
 
         # ── Stage 4a optim (2026-05-15): early prefactor build +
@@ -7607,6 +7739,13 @@ def integrate_diagram(
             except AttributeError:
                 subset_free_vars = set()
             unexpected = subset_free_vars - set(fc_vars_sub)
+            if unexpected and _shot_pending is not None:
+                # an integrated δ subset never fails the diagram: before
+                # Feature B it was skipped, so it is skipped (and said so)
+                _shot_skip(subset_diagnostics, delta_edges, smooth_edges,
+                           f'unexpected free symbols {unexpected}')
+                n_delta_dropped += 1
+                continue
             if unexpected:
                 return {
                     'status': 'failed',
@@ -7626,6 +7765,11 @@ def integrate_diagram(
                     subset_factor, vars=fc_vars_sub, domain=CDF,
                 )
             except Exception as exc:
+                if _shot_pending is not None:
+                    _shot_skip(subset_diagnostics, delta_edges,
+                               smooth_edges, f'fast_callable failed: {exc}')
+                    n_delta_dropped += 1
+                    continue
                 return {
                     'status': 'failed',
                     'contribution': None,
@@ -7711,6 +7855,11 @@ def integrate_diagram(
                 )
                 _box_kind = 'conv_tau' if is_conv_tau else 'noise_box'
                 subset_row_kinds.extend((_box_kind, _box_kind))
+        if constraint_err is not None and _shot_pending is not None:
+            _shot_skip(subset_diagnostics, delta_edges, smooth_edges,
+                       f'constraint not linear: {constraint_err}')
+            n_delta_dropped += 1
+            continue
         if constraint_err is not None:
             return {
                 'status': 'failed',
@@ -8086,7 +8235,7 @@ def integrate_diagram(
                 return _val
             return _contrib
 
-        subset_contributions.append(
+        _subset_cfn = (
             _make_subset_contrib(
                 integrand_for_quad, subset_constraint_data, m_sub,
                 modes=_smooth_edge_modes,
@@ -8105,9 +8254,36 @@ def integrate_diagram(
                     'subset_index': len(subset_contributions),
                     'delta_edges': tuple(delta_edges),
                     'smooth_edges': tuple(smooth_edges),
+                    # Feature B: an integrated δ record, not a smooth term
+                    **({'delta_record': True}
+                       if _shot_pending is not None else {}),
                 },
             )
         )
+        if _shot_pending is not None:
+            # Feature B: the subset's integral is the δ weight (evaluated
+            # on the δ surface by the caller), not a smooth term.
+            (delta_contributions_multi if 'equalities' in _shot_pending
+             else delta_contributions).append(dict(
+                _shot_pending,
+                coeff_fc=_SurfaceCoeff(_subset_cfn),
+                retardation_data=[],
+                delta_edges=list(delta_edges),
+                free_ext_idx=list(free_ext_idx),
+                integrated=True,
+                m_after_delta=m_sub,
+                theta0_rows_on_surface=_rows_zero_on_surface(
+                    _shot_pending, subset_constraint_data),
+            ))
+            subset_diagnostics.append({
+                'delta_edges': delta_edges,
+                'smooth_edges': smooth_edges,
+                'status': 'shotnoise_integrated',
+                'm_after_delta': m_sub,
+                'theta0_always_empty': _theta0_always_empty,
+            })
+            continue
+        subset_contributions.append(_subset_cfn)
         # ``_evaluator_label`` tags the INTENDED analytic path for
         # this subset.  At runtime the closure may still fall back
         # to scipy.nquad if the analytic path returns None (mixed
@@ -8154,6 +8330,17 @@ def integrate_diagram(
         _perms.append(tuple(_perm))
 
     _comp = _compensation
+
+    # Feature B: what a δ record needs to be put in the caller's frame
+    # (``api.cumulant``): the record is written in the FIRST mapping's free
+    # times, exactly like one ``subset_contributions`` term, so the physical
+    # spike is Σ_perm (record in that permutation's free times) / _comp.
+    for _dc in delta_contributions + delta_contributions_multi:
+        _dc['wick_perms'] = [tuple(p) for p in _perms]
+        _dc['wick_compensation'] = _comp
+        _dc['origin_leaf_idx'] = origin_leaf_idx
+        _dc['n_ext'] = _k
+        _dc['loop_number'] = loop_number
 
     def contribution(*ext_time_values):
         if len(ext_time_values) != len(ext_time_vars):
@@ -8243,6 +8430,8 @@ def integrate_diagram(
         ('n_subsets_evaluated', len(subset_contributions)),
         ('n_delta_contributions', len(delta_contributions)),
         ('n_shotnoise_skipped', n_shotnoise_skipped),
+        ('n_delta_subsets_dropped', n_delta_dropped),
+        ('delta_contributions_multi', delta_contributions_multi),
         ('subset_diagnostics', subset_diagnostics),
         ('cumulant_prefactor', cp if has_cumulant_kernel else None),
         ('has_cumulant_kernel', has_cumulant_kernel),
@@ -8318,6 +8507,12 @@ def eval_delta_contributions_on_tau_grid(
     full 2D grid evaluator or by adding an explicit continuous
     contribution to the smooth total. Callers can inspect
     `delta_contributions` directly to detect this case.
+
+    The records are in the FIRST Wick mapping's free times; this helper
+    does not sum the mappings (``wick_perms`` / ``wick_compensation`` in
+    each record), which matters for loop records of identical external
+    fields.  ``api.cumulant.Cumulant`` puts the records in the caller's
+    frame and is the user-facing accessor (Feature B).
     """
     import numpy as np
 
