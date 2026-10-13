@@ -26,7 +26,13 @@ too (`sage -pip install -e .`, or put the repo root on `sys.path`).
 The orchestration layer `dd` drives:
 
 - `compute.py` — `compute_cumulants`: the full chain (FT expand → propagator → mean field →
-  enumerate diagrams → integrate → cumulant).
+  enumerate diagrams → integrate → cumulant), with the model analyzer's gates at the stage
+  boundaries and the integrator chosen by the backend registry.
+- `analyze.py` — the model analyzer: traits, findings (`error` / `warning` / `info`, each with
+  a code and a remedy) and the assumptions ledger; standalone (`analyze(model)`) or wired into
+  `compute_cumulants` (`Preflight`: gates G0–G4 before the enumeration, G6 after the run).
+- `routing.py` — the backend registry: each integrator backend declares
+  `applies(request) -> (bool, reasons)` and a priority; the router takes the first that applies.
 - `model.py` (+ `model_compiler.py`, `model_serialize.py`, `model_templates.py`) — the
   declarative `ModelBuilder` authoring system that emits a model dict.
 - `_mean_field*.py`, `_propagator.py`, `_grouped_phase_j.py`, `_diagrams.py` — pipeline helpers.
@@ -59,6 +65,7 @@ analytic pipeline.
 `dd.load_model(name)` → `(model, module)`. `dd.run(model, cfg, module)` layers `cfg` over the
 model's `DEFAULT_FUNDAMENTAL` / `METADATA` and calls `api.compute_cumulants`, which drives the
 `engine` and returns a result dict (`C_tau`, `tau_grid` / `chi_grid`, the mean field, the
-per-loop-order breakdown, the diagram records). `dd.plot_cumulant` renders it; `dd.save_npz`
-persists it with a version / Phase J convention stamp, and `dd.load_npz` reads it back (warning
-when the stamp predates 0.2.0).
+per-loop-order breakdown, the diagram records, the route and the analyzer report).
+`dd.plot_cumulant` renders it; `dd.save_npz` persists it with a version / Phase J convention /
+route / assumptions-ledger stamp, and `dd.load_npz` reads it back (warning when the stamp
+predates 0.2.0; `dd.load_provenance` returns the stamp).

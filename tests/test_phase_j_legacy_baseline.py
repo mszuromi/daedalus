@@ -135,6 +135,14 @@ _MODES = ('default', 'legacy')
 # evaluations, all answered by the DBM route; the one-loop term moves by up to
 # 1.2e-2 relative (τ = 10; 9.3e-4 at τ = 2.5, 0 at τ = 0), the tree level not.
 _M3_MOVERS = ('quad_exp-k2-l1',)
+# Entries whose numbers moved with the pole-cluster deformation (item 21,
+# api._pole_clusters): compared with it switched off (DAEDALUS_POLE_CLUSTERS=0,
+# the old pole-residue sums).  multipopulation_test-k2-l1 has two pole clusters
+# (kappa 136 and 330); its tree level moves by up to 1.4e-4 relative: the old tier-1
+# double-precision roots of its degree-16 Q were 4.5e-5 off next to the
+# clusters.  The new value equals the direct sums on 50-digit residues to
+# 6e-16 (item 21 report).
+_POLE_CLUSTER_MOVERS = ('multipopulation_test-k2-l1',)
 # Default mode, an entry served by the M2b hardened quadrature fallback: the
 # baseline's default-tolerance scipy.nquad values were off by up to 6.8e-5
 # relative per region (spike reset, plan §10), so the arrays that the
@@ -322,6 +330,8 @@ def test_reproduce_lists_respect_the_m1_movers(baseline):
 def _reproduce(baseline, name, mode, monkeypatch):
     import engine.integration.time_domain.final_integral as FI
     meta, arrays = baseline
+    if name in _POLE_CLUSTER_MOVERS:
+        monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
     s = meta['entries'].get(name)
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')

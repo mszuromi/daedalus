@@ -173,6 +173,15 @@ PY
 
 Expected output: `OK — model : 'OU Quartic (white noise)'`.
 
+## Prediagram cache
+
+The package ships the diagram skeletons for 21 `(k, ell)` cells (up to `k = 6, ell = 1` and `k = 2, ell = 4`); the first use of a cell rebuilds its records from the stored classes, under a second for the small ones and growing with the class count. For any other cell, `dd.build_cache(cells, dest=None, dry_run=False)` first prints what exists (shipped / local / missing), the class count (known or extrapolated), and the estimated build time and memory, and then builds the missing cells into `dest` (default `saved_prediagrams`). `dry_run=True` stops after the report and writes nothing. Note that using a cell later needs about 11 kB of memory per class.
+
+```python
+import daedalus as dd
+dd.build_cache([(3, 4), (4, 3)], dry_run=True)   # what would it cost?
+```
+
 ## Run the notebooks
 
 ```bash

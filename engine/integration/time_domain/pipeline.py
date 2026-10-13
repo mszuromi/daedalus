@@ -268,6 +268,16 @@ def compute_correction_td(
             Diagrams not evaluated (loop_number > 0).
         'ext_time_vars' : list of SR
     """
+    if hasattr(propagator_data, 'get') and propagator_data.get(
+            'jordan_incomplete'):
+        # a repeated pole: the stored residues miss the t exp(lambda t)
+        # terms; compute_cumulants averages deformed propagators instead
+        # (api._pole_clusters)
+        raise ValueError(
+            'propagator_data has a repeated pole (a Jordan block): its '
+            'pole_vals / C_mats do not represent the propagator.  Use '
+            'compute_cumulants, which resolves it (api._pole_clusters), or '
+            'pass the propagator of a deformation node.')
     if on_divergence is not None:
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)

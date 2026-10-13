@@ -95,7 +95,13 @@ recovered.  Two consequences, both handled here:
    which puts the sorted leaves on ``0..k-1`` and the sorted internal vertices
    on ``k..|V|-1``.  ``type_assignment`` assigns external fields to
    ``leaves[i]`` POSITIONALLY, so the convention is re-applied here: every
-   rebuilt record satisfies ``leaves == list(range(k))`` exactly as v1's does.
+   rebuilt record has ``sorted(leaves) == list(range(k))`` as v1's does.  The
+   LIST order is the backend's vertex iteration order, which for graphs with
+   more than 10 vertices is not ascending (a fraction of a percent of the
+   records of the large cells, e.g. 176 of 65,956 at (4,2)), so
+   ``leaves == list(range(k))`` does not hold for every record.  The rebuilt
+   records have always had this order and :func:`record_from_cert` reproduces
+   it exactly; it is kept on purpose.
    (The canonical labelling on its own does not: nauty is free to number the
    degree-1 vertices anywhere.)
 
@@ -666,13 +672,19 @@ def v1_exists(root, k, ell):
 
 # ── Cert <-> record ─────────────────────────────────────────────────────────
 
-def record_from_cert(blob):
-    """Rebuild one ``(D, G, leaves, internal)`` record from a packed cert.
+def _record_from_cert_reference(blob):
+    """Reference implementation of :func:`record_from_cert` (the test oracle).
+
+    Rebuilds one ``(D, G, leaves, internal)`` record from a packed cert through
+    three intermediate Sage graphs.  Kept verbatim: ``record_from_cert`` must
+    return exactly what this returns.
 
     ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
     the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
     ``k..|V|-1``) that v1 records carry and that ``type_assignment`` relies on
-    when it walks ``leaves`` positionally.
+    when it walks ``leaves`` positionally.  ``sorted(leaves)`` is always
+    ``list(range(k))``; the list itself follows the backend's vertex iteration
+    order, which is not ascending for some graphs with more than 10 vertices.
 
     Edge labels are re-issued as ``0..|E|-1`` so that parallel edges stay
     distinguishable as ``(u, v, label)`` dict keys.
@@ -696,6 +708,97 @@ def record_from_cert(blob):
     leaves = [v for v in D.vertices() if D.degree(v) == 1]
     internal = [v for v in D.vertices() if D.degree(v) != 1]
     return (D, G, leaves, internal)
+
+
+_VERTEX_ORDER_MEMO = {}
+
+
+def _canon_vertex_order(order):
+    """``vertices()`` of the graph ``cert_to_graph`` starts from, as Sage's
+    sparse backend iterates it.
+
+    Not ``range(order)`` once ``order`` exceeds the backend's initial capacity
+    (10): the label 10 then gets an explicit slot and comes out FIRST.  The
+    reference's final vertex list inherits that order (it relabels this graph
+    and adds the result's ``vertices()`` to the new ones), and its ``leaves`` /
+    ``internal`` lists follow it, so it is asked of Sage itself, once per
+    ``order``, instead of being assumed.
+    """
+    got = _VERTEX_ORDER_MEMO.get(order)
+    if got is None:
+        H = Graph(multiedges=True, loops=False)
+        H.add_vertices(range(order))
+        got = _VERTEX_ORDER_MEMO[order] = tuple(H.vertices())
+    return got
+
+
+def record_from_cert(blob):
+    """Rebuild one ``(D, G, leaves, internal)`` record from a packed cert.
+
+    ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
+    the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
+    ``k..|V|-1``) that v1 records carry and that ``type_assignment`` relies on
+    when it walks ``leaves`` positionally.  ``sorted(leaves)`` is always
+    ``list(range(k))``; the list itself follows the backend's vertex iteration
+    order, which is not ascending for some graphs with more than 10 vertices.
+
+    Edge labels are re-issued as ``0..|E|-1`` so that parallel edges stay
+    distinguishable as ``(u, v, label)`` dict keys.
+
+    Bit-for-bit the record of :func:`_record_from_cert_reference` (same vertex
+    lists and orders, same edge multiset, labels and iteration order, same
+    ``leaves``/``internal``).  The degrees, the leaves-first relabelling and
+    the sorted edge list are computed in plain Python from the packed bytes,
+    so each of ``D`` and ``G`` is built once instead of the reference's three
+    Sage graphs plus a per-vertex ``D.degree`` call.  Two details are
+    deliberate copies of the reference rather than tidier choices:
+
+    * Vertices go in as ``[perm[v] for v in canonical_order]``, the order the
+      reference's relabelled graph hands over, because that order fixes the
+      backend's slot assignment and hence the iteration order of
+      ``vertices()`` and ``edges()`` (see :func:`_canon_vertex_order`).
+    * Edges go in through ``add_edges`` in sorted order; the ``data=``
+      constructors are faster still but iterate the edges in a different
+      order.
+    """
+    n = len(blob)
+    order = blob[0] if n else 0
+    us = blob[1:n:2]
+    vs = blob[2:n:2]
+    if (n - 1) % 2 or any(u >= order or v >= order or u == v
+                          for u, v in zip(us, vs)):
+        # Malformed cert: let the reference produce its own behaviour.
+        return _record_from_cert_reference(blob)
+    deg = [0] * order
+    for u in us:
+        deg[u] += 1
+    for v in vs:
+        deg[v] += 1
+    n_leaves = deg.count(1)
+    perm = [0] * order
+    next_leaf, next_internal = 0, n_leaves
+    for x in range(order):
+        if deg[x] == 1:
+            perm[x] = next_leaf
+            next_leaf += 1
+        else:
+            perm[x] = next_internal
+            next_internal += 1
+    edges = sorted([(perm[u], perm[v]) for u, v in zip(us, vs)])
+    verts = [perm[v] for v in _canon_vertex_order(order)]
+
+    G = Graph(multiedges=True, loops=False)
+    G.add_vertices(verts)
+    G.add_edges(edges)
+
+    D = DiGraph(multiedges=True, loops=False)
+    D.add_vertices(verts)
+    D.add_edges([(u, v, i) for i, (u, v) in enumerate(edges)])
+
+    vertices = D.vertices()
+    return (D, G,
+            [v for v in vertices if v < n_leaves],
+            [v for v in vertices if v >= n_leaves])
 
 
 def records_from_certs(certs):
@@ -812,6 +915,212 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     if fmt in ('auto', 'v2'):
         save_v2_certs(root, k, ell, certs)
     return records_from_certs(certs), 'computed'
+
+
+# ── Building cells: cost estimate, then build ───────────────────────────────
+#: Cost model of a cold build of one cell, measured on 2026-10-12 with the
+#: compiled enumerator, one process (``DAEDALUS_PREDIAGRAM_PROCS`` unset):
+#: 25-40 microseconds per class from (2,3) to (6,1), 69 at (2,4) (80 s for its
+#: 1.15M classes) and 82 at (1,4), plus a fixed ~30 ms for the tree-generator
+#: processes.  The rate is set between the two groups, so every measured
+#: cell is within a factor 2; :func:`build_cache` rescales it by timing the
+#: small calibration cell on the machine it runs on.  The cert set costs
+#: ~90 bytes per class in a Python ``set`` at the small cells and 183 at
+#: (2,4) (table growth); the records :func:`load_prediagrams` later rebuilds
+#: from it cost ~11 kB per class (two Sage graphs), which is what limits the
+#: cells one can USE.
+_BUILD_OVERHEAD_S = 0.03
+_BUILD_US_PER_CLASS = 50.0
+_BUILD_BYTES_PER_CLASS = 200
+_LOAD_BYTES_PER_CLASS = 11_200
+_CALIBRATION_CELL = (3, 2)
+_CALIBRATION_S = 0.145          # that cell's cold build on the reference machine
+
+
+def known_class_counts():
+    """``{(k, ell): class count}`` of every cell the package has a manifest
+    entry for: the shipped files and the fetchable ones."""
+    counts = {}
+    for e in load_manifest()['files']:
+        counts[(e['k'], e['ell'])] = e['count']
+    try:
+        for e in load_fetch_manifest()['files']:
+            if e.get('count') is not None:
+                counts[(e['k'], e['ell'])] = e['count']
+    except OSError:
+        pass
+    return counts
+
+
+def estimate_class_count(k, ell, counts=None):
+    """``(n, how)``: the class count of ``(k, ell)``, from the manifests when
+    known (``how='known'``), otherwise extrapolated from the cells of the same
+    ``k`` below it (``'extrapolated'``; ``None`` when there are fewer than two
+    to go on).
+
+    The ratio of consecutive cells grows about linearly in ``ell`` (for k = 2
+    it is 9, 31, 53, 77), so the last ratio is advanced by the last increment
+    for each step.  With two cells only the ratio is repeated.  Checked by
+    hiding a known cell: (2,3) 15.2k vs 14,928; (3,3) 385k vs 358,983; (4,3)
+    7.70M vs 7.26M.  Treat it as good to a factor of two or so.
+    """
+    counts = known_class_counts() if counts is None else counts
+    if (k, ell) in counts:
+        return counts[(k, ell)], 'known'
+    below = sorted(e for (kk, e) in counts if kk == k and e < ell)
+    # the unbroken run of cells ending at the largest known ell below the target
+    run = []
+    for e in reversed(below):
+        if run and e != run[-1] - 1:
+            break
+        run.append(e)
+    run.reverse()
+    if len(run) < 2:
+        return None, None
+    n = float(counts[(k, run[-1])])
+    ratio = n / counts[(k, run[-2])]
+    step = ratio - counts[(k, run[-2])] / counts[(k, run[-3])] if len(run) >= 3 else 0.0
+    for _ in range(ell - run[-1]):
+        ratio = max(ratio + step, 1.0)
+        n *= ratio
+    return int(round(n)), 'extrapolated'
+
+
+def _speed_factor():
+    """How much slower than the reference machine a cold build is here: the
+    small calibration cell is enumerated once, in memory, nothing written."""
+    import time
+    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+    t0 = time.perf_counter()
+    stream_prediagram_certs(*_CALIBRATION_CELL, n_procs=1, verbose=False)
+    return (time.perf_counter() - t0) / _CALIBRATION_S
+
+
+def _physical_memory():
+    try:
+        return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _fmt_seconds(s):
+    if s < 120:
+        return f'{s:.1f} s'
+    if s < 7200:
+        return f'{s / 60:.0f} min'
+    return f'{s / 3600:.1f} h'
+
+
+def _fmt_bytes(b):
+    for unit, size in (('GB', 1e9), ('MB', 1e6), ('kB', 1e3)):
+        if b >= size:
+            return f'{b / size:.1f} {unit}'
+    return f'{b:.0f} B'
+
+
+def build_cache(cells, dest=None, dry_run=False, *, force=False,
+                calibrate=True, verbose=True):
+    """Say what building prediagram cells costs, then (unless *dry_run*) build
+    the missing ones.
+
+    ``cells`` is a list of ``(k, ell)`` (or one pair).  For each cell the
+    report gives its status (``'shipped'``: in the package; ``'local'``: a v2
+    or v1 file already under *dest*, default ``saved_prediagrams``;
+    ``'missing'``), the class count (from the manifests when known,
+    otherwise extrapolated), and for a missing cell the estimated time and
+    memory of the build and the memory of the records that using the cell
+    will materialise (:data:`_LOAD_BYTES_PER_CLASS` per class).  The time is
+    for one process; the rate comes from :data:`_BUILD_US_PER_CLASS` scaled by
+    a one-off timing of the calibration cell on this machine
+    (``calibrate=False`` skips that and assumes the reference machine).
+
+    The estimate is printed BEFORE any work.  With ``dry_run=True`` that is
+    all that happens: nothing is written, not even *dest*.  Otherwise each
+    missing cell is built by :func:`stream_prediagram_certs` (the path
+    :func:`load_prediagrams` takes on a miss, ``DAEDALUS_PREDIAGRAM_PROCS``
+    workers) and written to *dest* as a stamped v2 file.  A build whose
+    estimated memory exceeds the machine's is refused unless ``force=True``;
+    shipped and local cells are left alone unless ``force=True``.
+
+    Returns ``{(k, ell): {...}}`` with ``status``, ``n_classes``,
+    ``n_classes_how``, ``est_seconds``, ``est_build_bytes``,
+    ``est_load_bytes`` and, for a built cell, ``action='built'`` with the
+    measured ``seconds`` and ``n_built``.
+    """
+    import time
+    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+
+    if (isinstance(cells, (tuple, list)) and len(cells) == 2
+            and all(isinstance(c, int) for c in cells)):
+        cells = [tuple(cells)]
+    want = sorted({(int(k), int(l)) for k, l in cells})
+    dest = dest or 'saved_prediagrams'
+    counts = known_class_counts()
+
+    report = {}
+    for k, ell in want:
+        if shipped_exists(k, ell):
+            status = 'shipped'
+        elif v2_exists(dest, k, ell) or v1_exists(dest, k, ell):
+            status = 'local'
+        else:
+            status = 'missing'
+        n, how = estimate_class_count(k, ell, counts)
+        report[(k, ell)] = dict(status=status, n_classes=n, n_classes_how=how,
+                                est_seconds=None, est_build_bytes=None,
+                                est_load_bytes=None, action=None)
+    todo = [c for c, r in report.items() if r['status'] == 'missing' or force]
+
+    speed = 1.0
+    if calibrate and any(report[c]['n_classes'] for c in todo):
+        speed = _speed_factor()
+    for c in todo:
+        r = report[c]
+        if r['n_classes']:
+            r['est_seconds'] = (_BUILD_OVERHEAD_S * speed
+                                + r['n_classes'] * _BUILD_US_PER_CLASS * 1e-6 * speed)
+            r['est_build_bytes'] = r['n_classes'] * _BUILD_BYTES_PER_CLASS
+            r['est_load_bytes'] = r['n_classes'] * _LOAD_BYTES_PER_CLASS
+
+    ram = _physical_memory()
+    if verbose:
+        print(f'build_cache: dest={dest!r}, {len(want)} cell(s), '
+              f'{"dry run" if dry_run else "build"}, '
+              f'machine factor {speed:.2f} x reference')
+        for (k, ell), r in report.items():
+            n = r['n_classes']
+            ncl = ('unknown class count' if n is None else
+                   f'{"~" if r["n_classes_how"] != "known" else ""}{n:,} classes')
+            line = f'  ({k},{ell}) {r["status"]:8s} {ncl}'
+            if r['est_seconds'] is not None:
+                line += (f' | build ~{_fmt_seconds(r["est_seconds"])}, '
+                         f'~{_fmt_bytes(r["est_build_bytes"])}'
+                         f' | using it later ~{_fmt_bytes(r["est_load_bytes"])}')
+            elif r['status'] != 'missing':
+                line += ' | nothing to build'
+            print(line)
+        if ram:
+            print(f'  machine memory {_fmt_bytes(ram)}')
+
+    if not dry_run:
+        if ram:
+            too_big = [c for c in todo if (report[c]['est_build_bytes'] or 0) > 0.8 * ram]
+            if too_big and not force:
+                raise ValueError(
+                    f'build_cache: the estimated memory of {too_big} exceeds 80 % '
+                    f'of this machine ({_fmt_bytes(ram)}); pass force=True to try anyway')
+        for c in todo:
+            k, ell = c
+            t0 = time.perf_counter()
+            certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
+                                            verbose=False)
+            path = save_v2_certs(dest, k, ell, certs)
+            report[c].update(action='built', seconds=time.perf_counter() - t0,
+                             n_built=len(certs), path=path)
+            if verbose:
+                print(f'build_cache: ({k},{ell}) {len(certs):,} classes in '
+                      f'{_fmt_seconds(report[c]["seconds"])} -> {path}')
+    return report
 
 
 if __name__ == '__main__':                      # sage -python -m engine.enumeration.prediagram_cache

@@ -100,8 +100,8 @@ GOLDEN = {
     'single_population_spike_reset_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1, True,
                                            _HAWKES),
     'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 1, True, _HAWKES),
-    'multipopulation_test':    (8, False, _W, False, 'rational', 16, True, 'poles', True, 1, True,
-                                _HAWKES | {'G3_CLOSE_POLES'}),
+    # two pole clusters (kappa ~ 1e2): G3_CLOSE_POLES is info since they are resolved (api._pole_clusters)
+    'multipopulation_test':    (8, False, _W, False, 'rational', 16, True, 'poles', True, 1, True, _HAWKES),
     'dendritic_quad_soma_sigmoid': (8, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
     # spatial: G3 skipped; stability is the k = 0 (homogeneous) linearization
     'allen_cahn_1d_subcritical_infinite': (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),

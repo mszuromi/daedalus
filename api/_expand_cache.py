@@ -362,6 +362,58 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
     return path
 
 
+def bundle_stale_reason(model: dict, ft, bundle: dict):
+    """Why the expand-cache ``bundle`` does not fit ``model`` / ``ft``
+    (a message), or ``None`` when it does.  The ONE validity check shared
+    by :func:`load_expand` and the model analyzer's read-only reader
+    (``api.analyze._read_expand_cache``), so the two cannot diverge
+    (``tests/test_analyzer_routing.py`` pins it).  May rebuild the
+    operator-IR table on ``ft`` (``_reconstruct_operator_ir_table``, a no-op
+    when ``prepare_for_load`` already did)."""
+    # Structural sanity: the freshly-rebuilt ring must agree on
+    # variable names + order (otherwise a model edit invalidated this).
+    expect_names = _get_ring_var_names(ft)
+    cached_names = list(bundle.get('ring_var_names', []))
+    if expect_names != cached_names:
+        return (f'[expand-cache] ring mismatch — stale cache.  '
+                f'expect {expect_names!r}, cached {cached_names!r}')
+
+    if int(bundle.get('n_tilde', -1)) != int(ft._n_tilde):
+        return f'[expand-cache] n_tilde mismatch — stale cache.'
+
+    # Model-text fingerprint.  The on-disk slug is the model NAME + order
+    # only, so an edit to the action or the mean-field rows under the same
+    # name would otherwise be served the previous expansion — whose MF
+    # sector carries the previous saddle substitution.  A bundle written
+    # before fingerprinting (``None``) is treated as stale too: re-expanding
+    # once is cheap, silently reusing a wrong sector is not.
+    expect_spec = model.get('spec_signature')
+    cached_spec = bundle.get('spec_signature')
+    if expect_spec is not None and cached_spec != expect_spec:
+        return (f'[expand-cache] model-text fingerprint mismatch — stale '
+                f'cache (the action or mean-field declarations changed '
+                f'since this bundle was written; re-expanding).  '
+                f'expect {expect_spec!r}, cached {cached_spec!r}')
+
+    # Operator-IR form-factor signature.  The on-disk slug is only the
+    # model name + taylor order; it does NOT capture the per-vertex
+    # form-factor / mode table, which lives on the namespace as an
+    # action-eval side effect (NOT in ``_by_tp``).  Reconstruct the live
+    # table (cheap; no-op if ``prepare_for_load`` already did it) and
+    # reject the bundle if its recorded signature differs — this catches
+    # both a genuinely changed model that re-used the same slug AND any
+    # pre-signature bundle for a derivative-vertex model (cached_sig is
+    # ``None`` there, but the live operator-IR model signs non-``None``),
+    # which would otherwise load with the form factors silently dropped.
+    _reconstruct_operator_ir_table(ft)
+    expect_sig = vertex_form_factor_signature(ft._ns)
+    cached_sig = bundle.get('vertex_signature')
+    if expect_sig != cached_sig:
+        return (f'[expand-cache] form-factor signature mismatch — stale '
+                f'cache.  expect {expect_sig!r}, cached {cached_sig!r}')
+    return None
+
+
 def load_expand(model: dict, ft, target_order: int,
                 cached_order: int | None = None,
                 cache_dir_root: str = 'saved_models',
@@ -397,54 +449,10 @@ def load_expand(model: dict, ft, target_order: int,
             print(f'[expand-cache] load failed for {path}: {e!r}')
         return False
 
-    # Structural sanity: the freshly-rebuilt ring must agree on
-    # variable names + order (otherwise a model edit invalidated this).
-    expect_names = _get_ring_var_names(ft)
-    cached_names = list(bundle.get('ring_var_names', []))
-    if expect_names != cached_names:
+    reason = bundle_stale_reason(model, ft, bundle)
+    if reason is not None:
         if verbose:
-            print(f'[expand-cache] ring mismatch — stale cache.  '
-                  f'expect {expect_names!r}, cached {cached_names!r}')
-        return False
-
-    if int(bundle.get('n_tilde', -1)) != int(ft._n_tilde):
-        if verbose:
-            print(f'[expand-cache] n_tilde mismatch — stale cache.')
-        return False
-
-    # Model-text fingerprint.  The on-disk slug is the model NAME + order
-    # only, so an edit to the action or the mean-field rows under the same
-    # name would otherwise be served the previous expansion — whose MF
-    # sector carries the previous saddle substitution.  A bundle written
-    # before fingerprinting (``None``) is treated as stale too: re-expanding
-    # once is cheap, silently reusing a wrong sector is not.
-    expect_spec = model.get('spec_signature')
-    cached_spec = bundle.get('spec_signature')
-    if expect_spec is not None and cached_spec != expect_spec:
-        if verbose:
-            print(f'[expand-cache] model-text fingerprint mismatch — stale '
-                  f'cache (the action or mean-field declarations changed '
-                  f'since this bundle was written; re-expanding).  '
-                  f'expect {expect_spec!r}, cached {cached_spec!r}')
-        return False
-
-    # Operator-IR form-factor signature.  The on-disk slug is only the
-    # model name + taylor order; it does NOT capture the per-vertex
-    # form-factor / mode table, which lives on the namespace as an
-    # action-eval side effect (NOT in ``_by_tp``).  Reconstruct the live
-    # table (cheap; no-op if ``prepare_for_load`` already did it) and
-    # reject the bundle if its recorded signature differs — this catches
-    # both a genuinely changed model that re-used the same slug AND any
-    # pre-signature bundle for a derivative-vertex model (cached_sig is
-    # ``None`` there, but the live operator-IR model signs non-``None``),
-    # which would otherwise load with the form factors silently dropped.
-    _reconstruct_operator_ir_table(ft)
-    expect_sig = vertex_form_factor_signature(ft._ns)
-    cached_sig = bundle.get('vertex_signature')
-    if expect_sig != cached_sig:
-        if verbose:
-            print(f'[expand-cache] form-factor signature mismatch — stale '
-                  f'cache.  expect {expect_sig!r}, cached {cached_sig!r}')
+            print(reason)
         return False
 
     # Filter to target_order if we loaded a higher one.

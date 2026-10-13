@@ -87,6 +87,168 @@ def _phase_j_scoped(fn):
     return scoped
 
 
+def _tau_extent(tau_grid, tau_max):
+    """The largest |time difference| the run evaluates: the tau grid's
+    extent, else ``tau_max`` (bounds the pole-cluster deformation radius)."""
+    try:
+        if tau_grid is not None and len(tau_grid):
+            return float(np.max(np.abs(np.asarray(tau_grid, dtype=float))))
+    except (TypeError, ValueError):
+        pass
+    return float(tau_max) if tau_max else None
+
+
+def _pole_cluster_preamble(prop, max_ell):
+    """The run's pole-cluster report (``None`` when no two poles are close)
+    and the warning for a cluster the pipeline cannot resolve."""
+    from api import _pole_clusters as _pc
+    pc = prop.get('pole_clusters')
+    if not pc:
+        return None
+    pc = dict(pc)
+    if pc['status'] in ('unresolved', 'disabled'):
+        digits = _pc.lost_digits(pc['kappa_max'], max_ell)
+        pc['lost_digits'] = digits
+        if digits <= _pc.LOST_DIGITS_WARN:
+            return pc                     # recorded; the loss stays below 1e-6
+        what = ('a repeated pole, which the pole-residue form cannot '
+                'represent' if pc.get('repeated_pole') else
+                f'near-degenerate poles (cancellation factor '
+                f'{pc["kappa_max"]:.3g}, about {digits:.0f} digits lost at '
+                f'max_ell={max_ell})')
+        _pc.warn(f'the propagator has {what}; the pole-cluster deformation '
+                 f'is {pc["status"]}: {pc["reason"]}.  The cumulant may be '
+                 f'inaccurate (see result["pole_clusters"]).')
+    return pc
+
+
+def _real_inputs(num_params, diagram_records):
+    """Real parameters and diagram prefactors: with a real propagator the
+    Phase J result at conj(w) is conj of the one at w."""
+    from sage.all import CDF
+    try:
+        for v in (num_params or {}).values():
+            if complex(CDF(SR(v))).imag != 0:
+                return False
+        for r in diagram_records:
+            pref = SR(r['combined_prefactor']).subs(num_params or {})
+            if complex(CDF(pref)).imag != 0:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _combine_phase_j(results, nodes):
+    """One ell's Phase J results of the deformation nodes, combined: the
+    callables, the per-diagram contributions and the delta records are the
+    node-weighted sums; ``pole_deformation_nodes`` lists the nodes."""
+    from api import _pole_clusters as _pc
+    if all(r is None for r in results):
+        return None
+    out = dict(results[0])
+    out['total_C'] = _pc.combine_callables(
+        [r['total_C'] for r in results], nodes)
+    fns = [r.get('total_C_batch') for r in results]
+    if all(f is not None for f in fns):
+        def total_C_batch(tau_points, *a, **kw):
+            vals = [np.asarray(f(tau_points, *a, **kw), dtype=complex)
+                    for f in fns]
+            return list(_pc.combine_values(vals, nodes))
+        out['total_C_batch'] = total_C_batch
+    epd = [r.get('eval_per_diagram_batch') for r in results]
+    if all(f is not None for f in epd):
+        def eval_per_diagram_batch(tau_points, *a, **kw):
+            outs = [f(tau_points, *a, **kw) for f in epd]
+            vals = [np.asarray(o[0], dtype=complex) for o in outs]
+            return _pc.combine_values(vals, nodes).tolist(), outs[0][1]
+        out['eval_per_diagram_batch'] = eval_per_diagram_batch
+    groups = []
+    for gs in zip(*[r.get('groups') or [] for r in results]):
+        g = dict(gs[0])
+        if all(x.get('contribution') is not None for x in gs):
+            g['contribution'] = _pc.combine_callables(
+                [x['contribution'] for x in gs], nodes)
+        groups.append(g)
+    out['groups'] = groups
+    dcs = []
+    for r, (w, wt, paired) in zip(results, nodes):
+        for rec in r.get('delta_contributions') or []:
+            rec = dict(rec)
+            f = rec.get('coeff_fc')
+            if callable(f):
+                rec['coeff_fc'] = _pc.combine_callables([f], [(w, wt, paired)])
+            rec['pole_deformation_node'] = w
+            dcs.append(rec)
+    out['delta_contributions'] = dcs
+    out['pole_deformation_nodes'] = [dict(w=w, weight=wt, paired=paired)
+                                     for w, wt, paired in nodes]
+    return out
+
+
+def _phase_j_deformed(phase_j_pass, propagator_data, deform, diagram_records,
+                      num_params, tau_points, report):
+    """Phase J for a propagator with resolved pole clusters: one pass per
+    deformation node (``api._pole_clusters.PoleDeformation``), combined by
+    the trapezoid rule on the unit circle; ``report`` gets the node count
+    and the accuracy estimate (discrete Fourier tail, relative to the
+    largest |C| on the grid), and a warning is issued above
+    ``ACCURACY_WARN``."""
+    from api import _pole_clusters as _pc
+    symmetric = deform.real_system and _real_inputs(num_params,
+                                                    diagram_records)
+    nodes = deform.nodes(symmetric)
+    runs = []
+    for w, _, _ in nodes:
+        pv, cm = deform.propagator_at(w)
+        runs.append(phase_j_pass(dict(propagator_data, pole_vals=pv,
+                                      C_mats=cm)))
+    phase_j_by_ell, total_C_by_ell, C_tau_by_ell = {}, {}, {}
+    acc_ell, err_tot, node_tot = {}, None, None
+    for ell in runs[0][1]:
+        total_C_by_ell[ell] = _pc.combine_callables(
+            [r[1][ell] for r in runs], nodes)
+        phase_j_by_ell[ell] = _combine_phase_j([r[0][ell] for r in runs],
+                                               nodes)
+        if tau_points is None:
+            C_tau_by_ell[ell] = None
+            continue
+        vals = [np.asarray(r[2][ell], dtype=complex) for r in runs]
+        C_tau_by_ell[ell] = _pc.combine_values(vals, nodes)
+        err = _pc.tail_estimate(vals, nodes, deform.n_nodes)
+        scale = float(np.max(np.abs(C_tau_by_ell[ell]))) if vals[0].size else 0
+        acc_ell[ell] = (float(np.max(err)) / scale if scale > 0
+                        else float(np.max(err)) if err is not None else None)
+        node_tot = vals if node_tot is None else [a + b for a, b in
+                                                  zip(node_tot, vals)]
+    report.update(n_nodes=deform.n_nodes, node_runs=len(nodes),
+                  symmetric=bool(symmetric))
+    if tau_points is None or node_tot is None:
+        report.update(accuracy=deform.a_priori_error, accuracy_source='a priori',
+                      accuracy_by_ell=None, accuracy_by_tau=None,
+                      accuracy_l1=deform.a_priori_error)
+    else:
+        err = _pc.tail_estimate(node_tot, nodes, deform.n_nodes)
+        C = _pc.combine_values(node_tot, nodes)
+        absC = np.abs(C)
+        scale = float(np.max(absC)) if absC.size else 0.0
+        acc = float(np.max(err)) / scale if scale > 0 else float(np.max(err))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            by_tau = np.where(absC > 0, err / np.where(absC > 0, absC, 1),
+                              np.where(err > 0, np.inf, 0.0))
+        l1 = float(np.sum(err)) / float(np.sum(absC)) if np.sum(absC) > 0 \
+            else float(np.sum(err))
+        report.update(accuracy=acc, accuracy_source='fourier tail',
+                      accuracy_by_ell=acc_ell,
+                      accuracy_by_tau=[float(x) for x in by_tau],
+                      accuracy_l1=l1)
+    if report['accuracy'] is not None and report['accuracy'] > _pc.ACCURACY_WARN:
+        _pc.warn(f'pole-cluster deformation: estimated relative error '
+                 f'{report["accuracy"]:.3g} (above {_pc.ACCURACY_WARN:g}) '
+                 f'with {deform.n_nodes} nodes; see result["pole_clusters"].')
+    return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
+
+
 def _trunc(s, maxlen=200):
     s = str(s)
     return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
@@ -150,6 +312,93 @@ def _print_action_sectors(ft):
     print()
 
 
+class _PipelineState:
+    """The pipeline objects after the mean-field stage, handed to the
+    chosen backend's ``run`` (``api.routing``).  Plain attributes."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _preflight_default() -> bool:
+    """``DAEDALUS_PREFLIGHT`` (read at call time): ``0``/``off``/``false``
+    turns the analyzer gates off; default on."""
+    v = os.environ.get('DAEDALUS_PREFLIGHT', '').strip().lower()
+    return v not in ('0', 'off', 'false', 'no')
+
+
+def _make_preflight(preflight, model, k, max_ell, external_fields_user,
+                    fundamental, fixed_point_index, policy, accuracy,
+                    taylor_order):
+    """The analyzer for this call, or ``None`` when it is off."""
+    if preflight is None:
+        preflight = _preflight_default()
+    if not preflight:
+        return None
+    from api.analyze import Preflight, Question
+    q = Question(k=k, max_ell=max_ell,
+                 external_fields=tuple(tuple(e) for e in external_fields_user),
+                 parameters=dict(fundamental) if fundamental else None,
+                 fixed_point_index=fixed_point_index, accuracy=accuracy)
+    return Preflight(model, q, policy, taylor_order=taylor_order)
+
+
+#: Phase J counters that are maxima (G6 resets them around a run and
+#: restores ``max(before, run)``, so a caller that reads them after the
+#: call sees the same value as without the analyzer).
+_MAX_COUNTERS = ('dd_err_ratio_max', 'dbm_error_ratio_max',
+                 'nquad_hardened_cap_span_max')
+
+
+def _counter_snapshot():
+    """The Phase J counters and worker-state identities before a run."""
+    from engine.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import pipeline as _pl
+    c = _fi._RUNTIME_COUNTERS
+    snap = {k_: v for k_, v in c.items() if not isinstance(v, dict)}
+    maxes = {k_: c[k_] for k_ in _MAX_COUNTERS if k_ in c}
+    for k_ in maxes:
+        c[k_] = 0.0
+    workers = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
+    return snap, maxes, workers
+
+
+def _counter_delta(token):
+    """``(counters of the run, complete)``: additive counters as
+    differences, maxima as the run's maximum (the global value restored to
+    ``max(before, run)``); ``complete`` is False when ``total_C_batch``
+    handed work to forked workers (their counters stay in the children)."""
+    from engine.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import pipeline as _pl
+    snap, maxes, workers = token
+    c = _fi._RUNTIME_COUNTERS
+    out = {}
+    for k_, v in c.items():
+        if isinstance(v, dict):
+            continue
+        if k_ in maxes:
+            out[k_] = v
+            c[k_] = max(maxes[k_], v)
+        else:
+            out[k_] = v - snap.get(k_, 0)
+    now = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
+    complete = now == workers
+    return out, complete
+
+
+def _attach_provenance(result, route, pf):
+    """The route and the analyzer report on the result (``result['route']``,
+    ``result['analysis']``; ``config['route']`` / ``config['assumptions']``
+    for ``api.save``)."""
+    rep = pf.report() if pf is not None else None
+    result['route'] = route.as_dict()
+    result['analysis'] = rep
+    cfg = result.get('config')
+    if isinstance(cfg, dict):
+        cfg['route'] = route.name
+        cfg['assumptions'] = rep.ledger_dicts() if rep is not None else None
+
+
 def compute_cumulants(
     model: dict,
     k: int,
@@ -179,6 +428,10 @@ def compute_cumulants(
     mf_dae_n_starts: int = 64,
     mf_dae_seed_box: dict | None = None,
     verbose: bool = True,
+    policy=None,                     # api.analyze.Policy (or dict): strict / consents / downgrade
+    preflight: bool = None,          # the analyzer gates (default on; DAEDALUS_PREFLIGHT=0 turns them off)
+    backend: str = None,             # an explicit backend name (api.routing); None = the router picks
+    accuracy: float = None,          # target relative accuracy (G6 threshold; default 1e-10)
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -268,6 +521,28 @@ def compute_cumulants(
         n_tasks)``).
     verbose : bool
         Print progress messages.
+    policy : api.analyze.Policy, dict or None
+        What the model analyzer may accept without asking: ``mode``
+        (``'permissive'`` default, ``'strict'`` makes warnings errors),
+        consents (``allow_taylor_truncation``, ``allow_markov_embedding``,
+        ``allow_numeric_fallback``), ``interpretation``, ``assertions`` and
+        ``downgrade`` (error codes accepted as warnings).
+    preflight : bool or None
+        Run the analyzer gates (``api.analyze.Preflight``) at the stage
+        boundaries: G0/G1 before the expansion, G1 after it, G3 (class)
+        after the propagator, G2/G4 after the mean field, G3 (poles) after
+        the residues, all before the diagram enumeration; any ``error``
+        finding raises :class:`api.analyze.AnalyzerError` (a
+        ``ValueError``) with its code and remedy.  ``None``: on, unless the
+        environment sets ``DAEDALUS_PREFLIGHT=0``.  The gates read the
+        pipeline's own objects and change no number.
+    backend : str or None
+        Force one registered backend (``api.routing.backends()``); it must
+        still apply.  ``None``: the first applicable one.
+    accuracy : float or None
+        Target relative accuracy for the G6 total-relative accuracy check
+        (``Question.accuracy``; default ``1e-10``, the per-subset acceptance
+        of the Phase J routes).
 
     Returns
     -------
@@ -295,6 +570,12 @@ def compute_cumulants(
                              'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
+        'route'           : the routing record (``api.routing.Route.
+                             as_dict``: backend, rejected backends)
+        'analysis'        : the :class:`api.analyze.ModelReport` of the
+                             gates (traits, findings, assumptions ledger,
+                             G6 run diagnostics); ``None`` with
+                             ``preflight=False``
         'config'          : input args echoed back; in addition to the
                              obvious keys, ``external_fields_in`` echoes
                              the user-passed form (e.g. ``[('n', 1)]``)
@@ -303,7 +584,8 @@ def compute_cumulants(
                              ``phase_j_convention`` records the Phase J
                              equal-time rule the numbers were computed
                              with (``api.save`` stamps saved files with
-                             it).
+                             it), ``route`` the backend name and
+                             ``assumptions`` the ledger (saved too).
 
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
@@ -358,6 +640,12 @@ def compute_cumulants(
         raise ValueError(f'k must be >= 1; got {k}')
     if max_ell < 0:
         raise ValueError(f'max_ell must be >= 0; got {max_ell}')
+    if backend is not None:
+        from api import routing as _routing_check
+        if backend not in {b.name for b in _routing_check.backends()}:
+            raise ValueError(
+                f'backend={backend!r} is not registered; known: '
+                f'{[b.name for b in _routing_check.backends()]}')
     if tau_grid is None and not (tau_step > 0 and tau_max >= 0):
         raise ValueError(
             f'need tau_step > 0 and tau_max >= 0 (got tau_step={tau_step}, '
@@ -406,6 +694,13 @@ def compute_cumulants(
         phase_walls[label] = dt
         print(f'      [{label}] done in {dt:.2f}s')
 
+    # ── 0. Model analyzer gates (api.analyze; G0/G1 before the expansion) ──
+    _pf = _make_preflight(preflight, model, k, max_ell, external_fields_user,
+                          fundamental, fixed_point_index, policy, accuracy,
+                          taylor_order)
+    if _pf is not None:
+        _pf.declarations()
+
     # ── 1. FieldTheory expansion (cache-aware) ────────────────────
     # Try the on-disk expand cache before paying the full
     # multivariate-taylor cost.  The cache stores ft._by_tp (the
@@ -416,34 +711,40 @@ def compute_cumulants(
         print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})...')
     _t_phase = time.perf_counter()
     ft = FieldTheory(model, taylor_order=taylor_order)
-
-    from api import _expand_cache as _ec
-    cache_hit = False
-    if use_cache:
-        cached_order = _ec.find_best_cached_order(model, taylor_order)
-        if cached_order is not None:
-            _ec.prepare_for_load(ft)
-            cache_hit = _ec.load_expand(
-                model, ft,
-                target_order=taylor_order,
-                cached_order=cached_order,
-                verbose=verbose,
-            )
-    if not cache_hit:
-        ft.expand()
+    try:
+        from api import _expand_cache as _ec
+        cache_hit = False
         if use_cache:
-            try:
-                _ec.save_expand(model, ft, verbose=verbose)
-            except Exception as e:
-                if verbose:
-                    print(f'      [expand-cache] save failed ({e!r}); '
-                          f'continuing without persistence.')
+            cached_order = _ec.find_best_cached_order(model, taylor_order)
+            if cached_order is not None:
+                _ec.prepare_for_load(ft)
+                cache_hit = _ec.load_expand(
+                    model, ft,
+                    target_order=taylor_order,
+                    cached_order=cached_order,
+                    verbose=verbose,
+                )
+        if not cache_hit:
+            ft.expand()
+            if use_cache:
+                try:
+                    _ec.save_expand(model, ft, verbose=verbose)
+                except Exception as e:
+                    if verbose:
+                        print(f'      [expand-cache] save failed ({e!r}); '
+                              f'continuing without persistence.')
 
-    sanity_ok = ft.sanity_check(verbose=verbose)
-    if not sanity_ok:
-        raise RuntimeError(
-            'FieldTheory.sanity_check() failed — see printout above.'
-        )
+        sanity_ok = ft.sanity_check(verbose=verbose)
+        if not sanity_ok:
+            raise RuntimeError(
+                'FieldTheory.sanity_check() failed — see printout above.'
+            )
+    except Exception as _exp_exc:
+        if _pf is not None:               # e.g. no real saddle: name it
+            _pf.failed('expanded', _exp_exc)
+        raise
+    if _pf is not None:
+        _pf.expanded(ft)                  # G1: species, unpaired fields
 
     vtypes = extract_vertex_types(ft)
     stypes = extract_source_types(ft)
@@ -460,28 +761,37 @@ def compute_cumulants(
     _t_phase = time.perf_counter()
     prop = build_propagator(ft, model, use_cache=use_cache, verbose=verbose)
     _phase_time('propagator', _t_phase)
+    if _pf is not None:
+        _pf.propagator(prop)              # G3: propagator class
 
     # ── 3. Mean-field solve + num_params assembly ─────────────────
     if verbose:
         print('[3/7] Solve MF self-consistency...')
     _t_phase = time.perf_counter()
-    if model.get('equations'):
-        # Route to the DAE-based multi-root solver when the model
-        # declares ``.equation(lhs=..., rhs=..., population=...)``.
-        # Returns the same legacy-shape keys plus DAE-specific extras
-        # (mf_all_roots, mf_index_used, ...) that we surface on the
-        # final th dict below.
-        mf = solve_mean_field_dae_compat(
-            ft, model, fundamental,
-            fixed_point_index=fixed_point_index,
-            n_starts=mf_dae_n_starts,
-            seed_box=mf_dae_seed_box,
-            verbose=verbose,
-        )
-    else:
-        mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
+    try:
+        if model.get('equations'):
+            # Route to the DAE-based multi-root solver when the model
+            # declares ``.equation(lhs=..., rhs=..., population=...)``.
+            # Returns the same legacy-shape keys plus DAE-specific extras
+            # (mf_all_roots, mf_index_used, ...) that we surface on the
+            # final th dict below.
+            mf = solve_mean_field_dae_compat(
+                ft, model, fundamental,
+                fixed_point_index=fixed_point_index,
+                n_starts=mf_dae_n_starts,
+                seed_box=mf_dae_seed_box,
+                verbose=verbose,
+            )
+        else:
+            mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
+    except Exception as _mf_exc:
+        if _pf is not None:               # name the cause when a gate can
+            _pf.failed('mean_field', _mf_exc)
+        raise
     num_params = mf['num_params']
     _phase_time('mean_field', _t_phase)
+    if _pf is not None:
+        _pf.mean_field(mf)                # G2 / G3 spatial / G4 / undriven
 
     # ── 3.5 Spatial short-circuit ─────────────────────────────────
     # A spatial model's propagator carries the inert ``Laplacian``
@@ -496,250 +806,304 @@ def compute_cumulants(
             'spatial_grid was provided but the model is not spatial (no field '
             'declares spatial_dim>=1); it is ignored and the temporal C(τ) is '
             'returned.', stacklevel=2)
-    if model.get('spatial') and (spatial_grid is not None
-                                 or spatial_points is not None):
-        import numpy as _np
+
+    # ── Routing (api.routing): the first registered backend that applies.
+    # The built-in table reproduces the dispatch of 0.2.0 exactly (spatial
+    # short-circuit, grouped / per-diagram Phase J) and raises the same
+    # errors when nothing applies.
+    from api import routing as _routing
+    _request = _routing.RouteRequest(
+        model_name=model.get('name', '<unnamed>'),
+        spatial=bool(model.get('spatial')),
+        k=k, max_ell=max_ell,
+        has_spatial_grid=spatial_grid is not None,
+        has_spatial_points=spatial_points is not None,
+        grouped=bool(use_grouped_phase_j),
+        initial_mode=(model.get('initial') or {}).get('mode', 'stationary'),
+        requested=backend,
+        traits=_pf.traits_dict() if _pf is not None else {})
+    route = _routing.select(_request)
+    if _pf is not None:
+        _pf.route = route
+    state = _PipelineState(
+        model=model, k=k, max_ell=max_ell, ft=ft, prop=prop,
+        num_params=num_params, mf=mf, external_fields=external_fields,
+        external_fields_user=external_fields_user, fundamental=fundamental,
+        spatial_points=spatial_points, spatial_grid=spatial_grid,
+        tau_grid=tau_grid, tau_max=tau_max, tau_step=tau_step,
+        taylor_order=taylor_order, origin_leaf_idx=origin_leaf_idx,
+        use_cache=use_cache, parallel=parallel,
+        spatial_parallel=spatial_parallel, spatial_n_q=spatial_n_q,
+        n_workers=n_workers, use_grouped_phase_j=use_grouped_phase_j,
+        verbose=verbose, naming_convention=naming_convention,
+        vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
+        phase_time=_phase_time, t_phase=_t_phase, preflight=_pf,
+        route=route, evaluated_grid=False)
+    _snap = _counter_snapshot()
+    try:
+        result = route.backend.run(state)
+    finally:                              # restores the maxima on a raise too
+        _counters, _complete = _counter_delta(_snap)
+    if _pf is not None:
+        _pf.after_run(result, _counters, complete=_complete,
+                      evaluated=state.evaluated_grid)
+    _attach_provenance(result, route, _pf)
+    if route.backend.standard_tail:
+        _standard_tail(state, result, output_npz, output_csv)
+    return result
+
+
+def _run_spatial(state):
+    """Backend ``spatial_integrator`` (``api.routing``): the full-diagram
+    momentum integrator.  ``state``: the pipeline objects after the
+    mean-field stage (``_PipelineState``); the applicability checks
+    (k = 2 needs ``spatial_grid``, k != 2 ``spatial_points``, ``max_ell <=
+    2``, stationary initial state) are the backend's ``applies``."""
+    (model, k, max_ell, ft, prop, num_params, mf, external_fields,
+     spatial_points, spatial_grid, tau_grid, tau_max, tau_step, verbose,
+     parallel, spatial_parallel, n_workers, spatial_n_q, fundamental,
+     naming_convention, _phase_time, _t_phase) = (
+        state.model, state.k, state.max_ell, state.ft, state.prop,
+        state.num_params, state.mf, state.external_fields,
+        state.spatial_points, state.spatial_grid, state.tau_grid,
+        state.tau_max, state.tau_step, state.verbose, state.parallel,
+        state.spatial_parallel, state.n_workers, state.spatial_n_q,
+        state.fundamental, state.naming_convention, state.phase_time,
+        state.t_phase)
+    import numpy as _np
+    from engine.integration.spatial.pipeline_bridge import (
+        compute_spatial_correlator_via_pipeline,
+    )
+    from engine.integration.spatial.spatial_correlator import (
+        free_two_point,
+    )
+    if k != 2:
+        # ── general-k spatial path: explicit evaluation events ──
         from engine.integration.spatial.pipeline_bridge import (
-            compute_spatial_correlator_via_pipeline,
+            compute_spatial_kpoint,
         )
-        from engine.integration.spatial.spatial_correlator import (
-            free_two_point,
-        )
-        if k != 2 and spatial_points is None:
-            raise NotImplementedError(
-                f'spatial k={k}: pass spatial_points (an (n_pts, {k-1}, 2) '
-                'array of (x_j, tau_j) offsets per non-anchor external '
-                'slot) to evaluate the k-point cumulant at explicit '
-                'events.  Grid output (spatial_grid/tau_max) is k=2 only.')
-        if k == 2 and spatial_grid is None:
-            # spatial_points is the k>=3 event API; the k=2 path is the
-            # grid path and needs spatial_grid.  (Without this guard the
-            # k=2 grid code below would reach np.asarray(None) → nan.)
-            raise ValueError(
-                'spatial k=2 returns C(x,τ) on a grid — pass spatial_grid '
-                '(spatial_points is the k>=3 event API).')
-        if k != 2:
-            # ── general-k spatial path: explicit evaluation events ──
-            from engine.integration.spatial.pipeline_bridge import (
-                compute_spatial_kpoint,
-            )
-            try:
-                vals, kp_info = compute_spatial_kpoint(
-                    ft, model, prop, num_params, external_fields,
-                    spatial_points, max_ell=max_ell, verbose=verbose)
-            except NotImplementedError as _e:
-                if 'single-field' not in str(_e):
-                    raise
-                # ── COUPLED multi-field theory at k>=3: the spectral-
-                # assignment driver (scalar diffusion, plain vertices).
-                from engine.integration.spatial.heat_kernel import (
-                    reaction_diffusion_matrices)
-                from engine.integration.spatial.pipeline_bridge import (
-                    compute_coupled_kpoint, _norm_sr)
-                from engine.integration.spatial.spectral_propagator import (
-                    split_reference_diffusion)
-                _ns = ft._ns
-                _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
-                    prop['K_ft'], prop['omega'], SR.var('k'),
-                    _ns.Laplacian, getattr(_ns, 'GradX', None))
-                _nf = int(_Msr.nrows())
-                _sub = _norm_sr(num_params)
-
-                def _numm(sm):
-                    return _np.array(
-                        [[complex(SR(sm[a_, b_]).subs(_sub)).real
-                          for b_ in range(_nf)] for a_ in range(_nf)],
-                        dtype=float)
-                _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
-                if not _np.allclose(_Vn, 0.0, atol=1e-9):
-                    raise NotImplementedError(
-                        'coupled k>=3: drift (V != 0) not supported.')
-                _D0, _Dhat = split_reference_diffusion(_Dn)
-                tree_info_k = {
-                    'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),
-                    'bc_mode': (model.get('boundary')
-                                or {}).get('mode', 'infinite')}
-                vals, kp_info = compute_coupled_kpoint(
-                    ft, model, prop, num_params, external_fields,
-                    spatial_points, tree_info_k, max_ell=max_ell,
-                    verbose=verbose)
-            _phase_time('spatial-kpoint', _t_phase)
-            return {
-                'C_kpoint':        vals,
-                'C_kpoint_by_ell': kp_info['per_ell'],
-                'points':          _np.asarray(spatial_points, dtype=float),
-                'spatial_info':    kp_info,
-                'k': k, 'max_ell': max_ell,
-                'mf':              mf,
-            }
-        if max_ell > 2:
-            raise NotImplementedError(
-                f'spatial v1 implements tree (max_ell=0), 1-loop (max_ell=1) and '
-                f'2-loop (max_ell=2) via the full-diagram integrator; got '
-                f'max_ell={max_ell}.  Higher loops work by construction but are '
-                f'increasingly expensive (more diagrams, higher-dim integrals).')
-        # Initial-condition compatibility (Phase 4): v1 supports the
-        # stationary IC, for which two-time correlators are well-posed.
-        ic_mode = (model.get('initial') or {}).get('mode', 'stationary')
-        if ic_mode != 'stationary':
-            raise NotImplementedError(
-                f"spatial v1 supports the 'stationary' initial condition "
-                f"only; got {ic_mode!r}.")
-
-        tau_grid = (_np.asarray(tau_grid, dtype=float) if tau_grid is not None
-                    else _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step))
-        spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
-        if verbose:
-            print('[4/7] (spatial) Momentum stays symbolic (Laplacian) — skip the '
-                  'ω pole-finder + time-domain Phase J; route to the full-diagram '
-                  'integrator.')
-            print(f'[spatial] {"loop" if max_ell >= 1 else "tree-level"} '
-                  f'C(x, τ): max_ell={max_ell}, {len(tau_grid)} τ × '
-                  f'{len(spatial_grid_arr)} x points...')
-        # Route through the SHARED pipeline (Stage B/C): the bridge runs the
-        # real diagram pipeline at sample momenta to CERTIFY the per-mode
-        # (A,B,N) structure, then does the q→x FT.  At max_ell≥1 the FULL-DIAGRAM
-        # integrator sums EVERY enumerated diagram up to max_ell loops through one
-        # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
-        # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
-        # dropped (docs/spatial_generic_pipeline_plan.md).
-        if max_ell >= 1:
-            from engine.integration.spatial.pipeline_bridge import (
-                compute_spatial_correlator_generic,
-            )
-            # Spatial parallelism is THREAD-based (no fork → safe in Jupyter/macOS;
-            # numpy releases the GIL for the per-diagram linalg/quadrature).  On by
-            # default; disable with spatial_parallel=False.  (Fork is forbidden here.)
-            C_tau_x, sp_info = compute_spatial_correlator_generic(
+        try:
+            vals, kp_info = compute_spatial_kpoint(
                 ft, model, prop, num_params, external_fields,
-                tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
-                parallel=(parallel and spatial_parallel), n_workers=n_workers,
-                n_q=int(spatial_n_q),
-            )
+                spatial_points, max_ell=max_ell, verbose=verbose)
+        except NotImplementedError as _e:
+            if 'single-field' not in str(_e):
+                raise
+            # ── COUPLED multi-field theory at k>=3: the spectral-
+            # assignment driver (scalar diffusion, plain vertices).
+            from engine.integration.spatial.heat_kernel import (
+                reaction_diffusion_matrices)
+            from engine.integration.spatial.pipeline_bridge import (
+                compute_coupled_kpoint, _norm_sr)
+            from engine.integration.spatial.spectral_propagator import (
+                split_reference_diffusion)
+            _ns = ft._ns
+            _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
+                prop['K_ft'], prop['omega'], SR.var('k'),
+                _ns.Laplacian, getattr(_ns, 'GradX', None))
+            _nf = int(_Msr.nrows())
+            _sub = _norm_sr(num_params)
+
+            def _numm(sm):
+                return _np.array(
+                    [[complex(SR(sm[a_, b_]).subs(_sub)).real
+                      for b_ in range(_nf)] for a_ in range(_nf)],
+                    dtype=float)
+            _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
+            if not _np.allclose(_Vn, 0.0, atol=1e-9):
+                raise NotImplementedError(
+                    'coupled k>=3: drift (V != 0) not supported.')
+            _D0, _Dhat = split_reference_diffusion(_Dn)
+            tree_info_k = {
+                'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),
+                'bc_mode': (model.get('boundary')
+                            or {}).get('mode', 'infinite')}
+            vals, kp_info = compute_coupled_kpoint(
+                ft, model, prop, num_params, external_fields,
+                spatial_points, tree_info_k, max_ell=max_ell,
+                verbose=verbose)
+        _phase_time('spatial-kpoint', _t_phase)
+        return {
+            'C_kpoint':        vals,
+            'C_kpoint_by_ell': kp_info['per_ell'],
+            'points':          _np.asarray(spatial_points, dtype=float),
+            'spatial_info':    kp_info,
+            'k': k, 'max_ell': max_ell,
+            'mf':              mf,
+        }
+    tau_grid = (_np.asarray(tau_grid, dtype=float) if tau_grid is not None
+                else _np.arange(-tau_max, tau_max + tau_step * 0.5, tau_step))
+    spatial_grid_arr = _np.asarray(spatial_grid, dtype=float)
+    if verbose:
+        print('[4/7] (spatial) Momentum stays symbolic (Laplacian) — skip the '
+              'ω pole-finder + time-domain Phase J; route to the full-diagram '
+              'integrator.')
+        print(f'[spatial] {"loop" if max_ell >= 1 else "tree-level"} '
+              f'C(x, τ): max_ell={max_ell}, {len(tau_grid)} τ × '
+              f'{len(spatial_grid_arr)} x points...')
+    # Route through the SHARED pipeline (Stage B/C): the bridge runs the
+    # real diagram pipeline at sample momenta to CERTIFY the per-mode
+    # (A,B,N) structure, then does the q→x FT.  At max_ell≥1 the FULL-DIAGRAM
+    # integrator sums EVERY enumerated diagram up to max_ell loops through one
+    # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
+    # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
+    # dropped (docs/spatial_generic_pipeline_plan.md).
+    if max_ell >= 1:
+        from engine.integration.spatial.pipeline_bridge import (
+            compute_spatial_correlator_generic,
+        )
+        # Spatial parallelism is THREAD-based (no fork → safe in Jupyter/macOS;
+        # numpy releases the GIL for the per-diagram linalg/quadrature).  On by
+        # default; disable with spatial_parallel=False.  (Fork is forbidden here.)
+        C_tau_x, sp_info = compute_spatial_correlator_generic(
+            ft, model, prop, num_params, external_fields,
+            tau_grid, spatial_grid_arr, verbose=verbose, max_ell=max_ell,
+            parallel=(parallel and spatial_parallel), n_workers=n_workers,
+            n_q=int(spatial_n_q),
+        )
+    else:
+        C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
+            ft, model, prop, num_params, external_fields,
+            tau_grid, spatial_grid_arr, verbose=verbose, stage_headers=True,
+        )
+    if verbose:
+        _cmr = sp_info.get("certify_max_rel")
+        _cmr_s = f'{_cmr:.1e}' if _cmr is not None else 'n/a (coupled driver)'
+        print(f'[spatial] done — C(x,τ) ready; tree-mode certified='
+              f'{sp_info.get("pipeline_certified")} '
+              f'(max rel {_cmr_s})')
+    # x=0 slice as the conventional C_tau (matches the time-only
+    # API's C_tau shape).
+    x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
+    C_tau = C_tau_x[:, x0_idx].copy()
+
+    sp_d = int(sp_info.get('spatial_dim', 1))
+
+    def total_C(*tau_then_x):
+        """C(τ) at x=0 (1 arg) or C(x, τ) (2 args: τ, x)."""
+        if len(tau_then_x) == 1:
+            tau = float(tau_then_x[0])
+            xq = 0.0
         else:
-            C_tau_x, sp_info = compute_spatial_correlator_via_pipeline(
-                ft, model, prop, num_params, external_fields,
-                tau_grid, spatial_grid_arr, verbose=verbose, stage_headers=True,
-            )
-        if verbose:
-            _cmr = sp_info.get("certify_max_rel")
-            _cmr_s = f'{_cmr:.1e}' if _cmr is not None else 'n/a (coupled driver)'
-            print(f'[spatial] done — C(x,τ) ready; tree-mode certified='
-                  f'{sp_info.get("pipeline_certified")} '
-                  f'(max rel {_cmr_s})')
-        # x=0 slice as the conventional C_tau (matches the time-only
-        # API's C_tau shape).
-        x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
-        C_tau = C_tau_x[:, x0_idx].copy()
-
-        sp_d = int(sp_info.get('spatial_dim', 1))
-
-        def total_C(*tau_then_x):
-            """C(τ) at x=0 (1 arg) or C(x, τ) (2 args: τ, x)."""
-            if len(tau_then_x) == 1:
-                tau = float(tau_then_x[0])
-                xq = 0.0
-            else:
-                tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
-            if sp_d == 1:
-                val = 0j
-                for (A, B, N) in sp_info['modes']:
-                    val += free_two_point(A, B, N, xq, tau,
-                                          bc_mode=sp_info['bc_mode'],
-                                          L=sp_info['L'])
-                # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
-                if sp_info.get('Sigma'):
-                    A0, B0, N0 = sp_info['modes'][0]
-                    A0 = float(_np.real(A0))
-                    h = 1e-4 * max(1.0, abs(A0))
-                    fp = free_two_point(A0 + h, B0, N0, xq, tau,
-                                        bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                    fm = free_two_point(A0 - h, B0, N0, xq, tau,
-                                        bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                    val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
-                return val
-            # d≥2: radial q→x transform of the momentum-space correlator
-            # (+ optional tadpole mass-shift via a finite difference in A).
-            from engine.integration.spatial.spatial_correlator import (
-                radial_inverse_ft,
-            )
-            qg = _np.linspace(40.0 / 8000.0, 40.0, 2000)
-            at = abs(tau)
-            Cq = _np.zeros_like(qg)
+            tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
+        if sp_d == 1:
+            val = 0j
             for (A, B, N) in sp_info['modes']:
-                A = float(_np.real(A)); B = float(_np.real(B)); N = float(_np.real(N))
-                m = A + B * qg * qg
-                Cq += (N / m) * _np.exp(-m * at)
+                val += free_two_point(A, B, N, xq, tau,
+                                      bc_mode=sp_info['bc_mode'],
+                                      L=sp_info['L'])
+            # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
             if sp_info.get('Sigma'):
                 A0, B0, N0 = sp_info['modes'][0]
-                A0 = float(_np.real(A0)); B0 = float(_np.real(B0)); N0 = float(_np.real(N0))
+                A0 = float(_np.real(A0))
                 h = 1e-4 * max(1.0, abs(A0))
-                mp = (A0 + h) + B0 * qg * qg
-                mm = (A0 - h) + B0 * qg * qg
-                Cq += sp_info['Sigma'] * (
-                    (N0 / mp) * _np.exp(-mp * at) - (N0 / mm) * _np.exp(-mm * at)
-                ) / (2.0 * h)
-            return complex(radial_inverse_ft(qg, Cq, abs(xq), sp_d))
+                fp = free_two_point(A0 + h, B0, N0, xq, tau,
+                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                fm = free_two_point(A0 - h, B0, N0, xq, tau,
+                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
+                val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
+            return val
+        # d≥2: radial q→x transform of the momentum-space correlator
+        # (+ optional tadpole mass-shift via a finite difference in A).
+        from engine.integration.spatial.spatial_correlator import (
+            radial_inverse_ft,
+        )
+        qg = _np.linspace(40.0 / 8000.0, 40.0, 2000)
+        at = abs(tau)
+        Cq = _np.zeros_like(qg)
+        for (A, B, N) in sp_info['modes']:
+            A = float(_np.real(A)); B = float(_np.real(B)); N = float(_np.real(N))
+            m = A + B * qg * qg
+            Cq += (N / m) * _np.exp(-m * at)
+        if sp_info.get('Sigma'):
+            A0, B0, N0 = sp_info['modes'][0]
+            A0 = float(_np.real(A0)); B0 = float(_np.real(B0)); N0 = float(_np.real(N0))
+            h = 1e-4 * max(1.0, abs(A0))
+            mp = (A0 + h) + B0 * qg * qg
+            mm = (A0 - h) + B0 * qg * qg
+            Cq += sp_info['Sigma'] * (
+                (N0 / mp) * _np.exp(-mp * at) - (N0 / mm) * _np.exp(-mm * at)
+            ) / (2.0 * h)
+        return complex(radial_inverse_ft(qg, Cq, abs(xq), sp_d))
 
-        # MF values (for the result dict) — reuse the saddle solve.
-        mf_values_sp = {}
-        for pname, vals in (mf.get('mf_values') or {}).items():
-            mf_values_sp[pname] = vals
+    # MF values (for the result dict) — reuse the saddle solve.
+    mf_values_sp = {}
+    for pname, vals in (mf.get('mf_values') or {}).items():
+        mf_values_sp[pname] = vals
 
-        return {
-            'total_C':        total_C,
-            'total_C_by_ell': {0: total_C},
-            'C_tau':          C_tau,
-            'C_tau_x':        C_tau_x,
-            # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …, max_ell}
-            # — the WHOLE progression from ONE call (the highest-ℓ run already
-            # contains every lower order; no need to re-run per order).
-            'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
-            'tau_grid':       tau_grid,
-            'spatial_grid':   spatial_grid_arr,
-            'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
-            'spatial_info':   sp_info,
-            'mf_values':      mf_values_sp,
-            'mf':             MeanField(mf_values_sp,
-                                        naming_convention=naming_convention),
-            'params':         Parameters(fundamental),
-            'num_params':     num_params,
-            'propagator':     prop,
-            'config': {
-                'k':               k,
-                'max_ell':         max_ell,
-                'fundamental':     fundamental,
-                'parameters':      fundamental,
-                'external_fields': external_fields,
-                'tau_max':         tau_max,
-                'tau_step':        tau_step,
-                'spatial':         True,
-                'model_name':      model.get('name', '<unnamed>'),
-                'phase_j_convention': _phase_j_convention(),
-                'phase_j_flags':      _phase_j_flags(),
-            },
-        }
+    return {
+        'total_C':        total_C,
+        'total_C_by_ell': {0: total_C},
+        'C_tau':          C_tau,
+        'C_tau_x':        C_tau_x,
+        # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …, max_ell}
+        # — the WHOLE progression from ONE call (the highest-ℓ run already
+        # contains every lower order; no need to re-run per order).
+        'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
+        'tau_grid':       tau_grid,
+        'spatial_grid':   spatial_grid_arr,
+        'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
+        'spatial_info':   sp_info,
+        'mf_values':      mf_values_sp,
+        'mf':             MeanField(mf_values_sp,
+                                    naming_convention=naming_convention),
+        'params':         Parameters(fundamental),
+        'num_params':     num_params,
+        'propagator':     prop,
+        'config': {
+            'k':               k,
+            'max_ell':         max_ell,
+            'fundamental':     fundamental,
+            'parameters':      fundamental,
+            'external_fields': external_fields,
+            'tau_max':         tau_max,
+            'tau_step':        tau_step,
+            'spatial':         True,
+            'model_name':      model.get('name', '<unnamed>'),
+            'phase_j_convention': _phase_j_convention(),
+            'phase_j_flags':      _phase_j_flags(),
+        },
+    }
 
-    # A spatial model reaching this point means spatial_grid was NOT provided
-    # (the spatial branch above returns whenever model.spatial AND spatial_grid).
-    # The temporal ω-pole-finder / Phase-J path below cannot consume the inert
-    # Laplacian symbol carried in G_ft — it would die with a cryptic Sage
-    # TypeError deep in compute_poles_and_residues.  Fail clearly instead.
-    if model.get('spatial'):
-        raise ValueError(
-            f"model {model.get('name', '<unnamed>')!r} is spatial (a field "
-            f"declares spatial_dim>=1): compute_cumulants requires spatial_grid="
-            f"... to route to the spatial integrator.  The temporal pole-finder/"
-            f"Phase-J path cannot consume the Laplacian operator.  Pass "
-            f"spatial_grid (e.g. the model's METADATA['spatial_grid'], or a "
-            f"numpy array like np.linspace(0.0, 6.0, 25)).")
 
+def _run_phase_j_per_diagram(state):
+    """Backend ``phase_j_per_diagram`` (``api.routing``)."""
+    return _run_phase_j(state, grouped=False)
+
+
+def _run_phase_j_grouped(state):
+    """Backend ``phase_j_grouped`` (``api.routing``)."""
+    return _run_phase_j(state, grouped=True)
+
+
+def _run_phase_j(state, grouped):
+    """The temporal Phase J stages [4/7]-[7/7]: poles and residues, the
+    diagram enumeration, the prefactor classification and the time-domain
+    integration (``grouped``: the grouped integrator), and the result dict.
+    ``state``: the pipeline objects after the mean-field stage."""
+    (model, k, max_ell, ft, prop, num_params, mf, external_fields,
+     external_fields_user, fundamental, tau_grid, tau_max, tau_step,
+     taylor_order, origin_leaf_idx, use_cache, parallel, n_workers,
+     verbose, naming_convention, vtypes, stypes, phase_walls,
+     _phase_time) = (
+        state.model, state.k, state.max_ell, state.ft, state.prop,
+        state.num_params, state.mf, state.external_fields,
+        state.external_fields_user, state.fundamental, state.tau_grid,
+        state.tau_max, state.tau_step, state.taylor_order,
+        state.origin_leaf_idx, state.use_cache, state.parallel,
+        state.n_workers, state.verbose, state.naming_convention,
+        state.vtypes, state.stypes, state.phase_walls, state.phase_time)
+    use_grouped_phase_j = bool(grouped)
     # ── 4. Numerical poles + residues (fills prop in place) ───────
     if verbose:
         print('[4/7] Compute numerical poles + residue matrices...')
     _t_phase = time.perf_counter()
-    compute_poles_and_residues(prop, num_params, verbose=verbose)
+    compute_poles_and_residues(prop, num_params, verbose=verbose,
+                               tau_max=_tau_extent(tau_grid, tau_max),
+                               resolve_clusters=True)
     _phase_time('poles', _t_phase)
+    if state.preflight is not None:
+        state.preflight.poles(prop)       # G3 pole statistics (api.analyze)
 
     # ── 5. Field-index maps + prediagram + typed diagram pipeline ─
     if verbose:
@@ -871,66 +1235,80 @@ def compute_cumulants(
     # Run Phase J once per ell so we get the per-loop-order
     # decomposition the saver / notebook plots need.  Diagrams within
     # an ell are summed in that ell's total_C; the master total_C is
-    # the sum across ells.
-    phase_j_by_ell  = {}
-    total_C_by_ell  = {}
-    C_tau_by_ell    = {}
-    for ell in sorted(unique_by_ell.keys()):
-        records_ell = [r for r in diagram_records if r['ell'] == ell]
-        if not records_ell:
-            # No diagrams at this ell (e.g. tree-level for some
-            # subset configs).  Contribute zero.
-            total_C_by_ell[ell] = (lambda *t: 0.0 + 0.0j)
-            phase_j_by_ell[ell] = None
+    # the sum across ells.  One pass runs every ell on ``pdata``;
+    # near-degenerate or repeated poles (``prop['pole_deformation']``)
+    # average passes over a deformation of the propagator
+    # (``api._pole_clusters``).
+    def _phase_j_pass(pdata):
+        phase_j_by_ell  = {}
+        total_C_by_ell  = {}
+        C_tau_by_ell    = {}
+        for ell in sorted(unique_by_ell.keys()):
+            records_ell = [r for r in diagram_records if r['ell'] == ell]
+            if not records_ell:
+                # No diagrams at this ell (e.g. tree-level for some
+                # subset configs).  Contribute zero.
+                total_C_by_ell[ell] = (lambda *t: 0.0 + 0.0j)
+                phase_j_by_ell[ell] = None
+                if tau_points is not None:
+                    C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+                else:
+                    C_tau_by_ell[ell] = None
+                continue
+
+            if use_grouped_phase_j:
+                # Prototype: group typed diagrams by parent prediagram and
+                # sum integrands before fast_callable + quadrature.  See
+                # ``api/_grouped_phase_j.py`` for the math + caveats.
+                from api._grouped_phase_j import (
+                    compute_correction_td_grouped,
+                )
+                td_result_ell = compute_correction_td_grouped(
+                    typed_diagrams   = [r['typed_diagram']
+                                        for r in records_ell],
+                    prefactors       = [r['combined_prefactor']
+                                        for r in records_ell],
+                    k                = k,
+                    propagator_data  = pdata,
+                    external_fields  = external_fields,
+                    num_params       = num_params,
+                    origin_leaf_idx  = origin_leaf_idx,
+                )
+            else:
+                td_result_ell = compute_correction_td(
+                    typed_diagrams   = [r['typed_diagram']
+                                        for r in records_ell],
+                    prefactors       = [r['combined_prefactor']
+                                        for r in records_ell],
+                    k                = k,
+                    propagator_data  = pdata,
+                    external_fields  = external_fields,
+                    num_params       = num_params,
+                    origin_leaf_idx  = origin_leaf_idx,
+                )
+            total_C_by_ell[ell] = _phase_j_scoped(
+                _ito_nudge_callable(td_result_ell['total_C'], k))
+            phase_j_by_ell[ell] = td_result_ell
+
             if tau_points is not None:
-                C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+                with _phase_j_warning_scope():
+                    C_tau_by_ell[ell] = np.array(
+                        td_result_ell['total_C_batch'](
+                            tau_points, parallel=parallel, n_workers=n_workers),
+                        dtype=complex,
+                    )
             else:
                 C_tau_by_ell[ell] = None
-            continue
+        return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
 
-        if use_grouped_phase_j:
-            # Prototype: group typed diagrams by parent prediagram and
-            # sum integrands before fast_callable + quadrature.  See
-            # ``api/_grouped_phase_j.py`` for the math + caveats.
-            from api._grouped_phase_j import (
-                compute_correction_td_grouped,
-            )
-            td_result_ell = compute_correction_td_grouped(
-                typed_diagrams   = [r['typed_diagram']
-                                    for r in records_ell],
-                prefactors       = [r['combined_prefactor']
-                                    for r in records_ell],
-                k                = k,
-                propagator_data  = propagator_data,
-                external_fields  = external_fields,
-                num_params       = num_params,
-                origin_leaf_idx  = origin_leaf_idx,
-            )
-        else:
-            td_result_ell = compute_correction_td(
-                typed_diagrams   = [r['typed_diagram']
-                                    for r in records_ell],
-                prefactors       = [r['combined_prefactor']
-                                    for r in records_ell],
-                k                = k,
-                propagator_data  = propagator_data,
-                external_fields  = external_fields,
-                num_params       = num_params,
-                origin_leaf_idx  = origin_leaf_idx,
-            )
-        total_C_by_ell[ell] = _phase_j_scoped(
-            _ito_nudge_callable(td_result_ell['total_C'], k))
-        phase_j_by_ell[ell] = td_result_ell
-
-        if tau_points is not None:
-            with _phase_j_warning_scope():
-                C_tau_by_ell[ell] = np.array(
-                    td_result_ell['total_C_batch'](
-                        tau_points, parallel=parallel, n_workers=n_workers),
-                    dtype=complex,
-                )
-        else:
-            C_tau_by_ell[ell] = None
+    pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+    if prop.get('pole_deformation') is None:
+        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_pass(
+            propagator_data)
+    else:
+        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
+            _phase_j_pass, propagator_data, prop['pole_deformation'],
+            diagram_records, num_params, tau_points, pole_cluster_report)
 
     _phase_time('phase_j', _t_phase)
 
@@ -1037,6 +1415,9 @@ def compute_cumulants(
         'kernel_groups':   kernel_groups,
         'phase_j_by_ell':  phase_j_by_ell,
         'phase_walls':     phase_walls,  # dict[label → seconds], None if not verbose
+        # near-degenerate / repeated poles (api._pole_clusters): None when no
+        # two poles are close, else the cluster report (status, accuracy)
+        'pole_clusters':   pole_cluster_report,
         'config': {
             'k':                  k,
             'max_ell':            max_ell,
@@ -1079,7 +1460,18 @@ def compute_cumulants(
             if verbose:
                 print(f'  [stability] skipped: {type(e).__name__}: {e}')
             result['mf_stability'] = None
+    state.all_unique = all_unique
+    state.tau_grid_eval = tau_grid
+    state.evaluated_grid = tau_points is not None
+    return result
 
+
+def _standard_tail(state, result, output_npz, output_csv):
+    """Save ``output_npz`` / ``output_csv`` and print the summary (the
+    backends with ``standard_tail``: the temporal Phase J ones)."""
+    verbose, phase_walls = state.verbose, state.phase_walls
+    k, max_ell = state.k, state.max_ell
+    all_unique, tau_grid = state.all_unique, state.tau_grid_eval
     # ── Optional NPZ / CSV save (api.save handles the schema) ─
     if output_npz or output_csv:
         from api.save import save_npz, save_csv
@@ -1102,5 +1494,3 @@ def compute_cumulants(
             for label, dt in phase_walls.items():
                 pct = 100.0 * dt / total if total > 0 else 0.0
                 print(f'    {label:12s}  {dt:6.2f}s  ({pct:4.1f}%)')
-
-    return result
