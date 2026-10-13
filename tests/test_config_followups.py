@@ -120,8 +120,31 @@ def test_b_chi_grid_range_literal_and_alias(tmp_path):
     r = load_config(_write(tmp_path, SP + "  chi_grid: [0.0, 0.5, 1.0, 3.0]\n"))[0]
     assert r['question']['chi_grid'] == [0.0, 0.5, 1.0, 3.0]
     # the resolved config is itself a valid config
-    again = _write(tmp_path, yaml.safe_dump(r), 'again.yaml')
+    again = _write(tmp_path, config_run._dump_yaml(r), 'again.yaml')
     assert load_config(again)[0]['question']['chi_grid'] == [0.0, 0.5, 1.0, 3.0]
+
+
+def test_b_three_point_grids_round_trip_through_values(tmp_path):
+    """A 3-point range resolves to [0.0, 1.0, 2.0], which the range-slip rule would reject if it were written
+    back as a list: the resolved config writes {values: [...]}, and a user can write an uneven 3-point grid so."""
+    text = SP + "  tau_grid: {start: 0, stop: 2, num: 3}\n  chi_grid: {values: [0.0, 1.0, 4.0]}\n"
+    r = load_config(_write(tmp_path, text))[0]
+    assert r['question']['tau_grid'] == [0.0, 1.0, 2.0] and r['question']['chi_grid'] == [0.0, 1.0, 4.0]
+    dumped = config_run._dump_yaml(r)
+    assert 'values' in dumped
+    again = load_config(_write(tmp_path, dumped, 'again.yaml'))[0]
+    assert again['question']['tau_grid'] == [0.0, 1.0, 2.0] and again['question']['chi_grid'] == [0.0, 1.0, 4.0]
+    _bad(tmp_path, SP + "  tau_grid: {values: [0, 1], start: 0}\n", 5, "'values' cannot be combined")
+    _bad(tmp_path, SP + "  chi_grid: [0.0, 1.0, 4.0]\n", 5, 'values: [0.0, 1.0, 4.0]')
+
+
+def test_b_resolved_config_of_spatial_models_with_one_population_is_valid(tmp_path):
+    """Spatial legs are slots, not populations: the model's recommended [[phi, 1], [phi, 2]] must be accepted
+    on its way back in."""
+    for name in ('edwards_wilkinson_1d', 'allen_cahn_1d_subcritical_infinite', 'linear_diffusion_test'):
+        r = load_config(_write(tmp_path, f"model: {name}\n"))[0]
+        again = load_config(_write(tmp_path, config_run._dump_yaml(r), 'again.yaml'))[0]
+        assert again['question'] == r['question'], name
 
 
 def test_b_chi_grid_three_element_list_raises_like_dd_config(tmp_path):
@@ -132,6 +155,36 @@ def test_b_chi_grid_three_element_list_raises_like_dd_config(tmp_path):
     _bad(tmp_path, "model: ou_quartic\nquestion:\n  tau_grid: [-5, 5, 51]\n", 3, '3-element LIST')
     r = load_config(_write(tmp_path, SP + "  chi_grid: [0.0, 1.5, 0.5]\n"))[0]      # last entry < 2: literal points
     assert r['question']['chi_grid'] == [0.0, 1.5, 0.5]
+
+
+def test_b_spatial_grids_are_never_silently_ignored(tmp_path):
+    ac = "model: allen_cahn_1d_subcritical_infinite\nquestion:\n"
+    k3 = "  k: 3\n  external_fields: [[phi, 1], [phi, 1], [phi, 1]]\n"
+    _bad(tmp_path, ac + k3, 3, 'needs question.points')
+    _bad(tmp_path, ac + k3 + "  chi_grid: {start: 0, stop: 10, num: 200}\n  tau_grid: {start: 0, stop: 5, num: 200}\n",
+         5, 'more than 20000')
+    _bad(tmp_path, ac + k3 + "  points: [[[0.5, 0.2], [1.0, 0.4]]]\n  chi_grid: [0.0, 1.0]\n", 6,
+         'question.chi_grid is ignored')
+    _bad(tmp_path, ac + k3 + "  points: [[[0.5, 0.2], [1.0, 0.4]]]\n  tau_grid: [0.0, 1.0]\n", 6,
+         'question.tau_grid is ignored')
+    _bad(tmp_path, ac + "  k: 1\n  chi_grid: [0.0, 1.0]\n", 4, 'question.chi_grid is ignored')
+    ok = load_config(_write(tmp_path, ac + k3 + "  chi_grid: [0.0, 1.0]\n  tau_grid: [0.0, 0.5]\n"))[0]
+    assert ok['question']['chi_grid'] == [0.0, 1.0]
+
+
+def test_b_dry_run_report_uses_the_requested_taylor_order(tmp_path, capsys):
+    dd.main(['run', _write(tmp_path, "model: ou_quartic\nquestion: {k: 2, max_ell: 1, taylor_order: 6}\n"), '--dry-run'])
+    assert 'Taylor order 6' in capsys.readouterr().out
+
+
+def test_b_output_decision_is_fixed_before_the_run_creates_directories(tmp_path):
+    """output: results (a stem, the directory does not exist yet) with outputs.npz inside results/: the run creates
+    results/, which must not turn the stem into a directory half way (provenance files are prefixed throughout)."""
+    path = _write(tmp_path, "model: ou_quartic\nquestion: {k: 2, max_ell: 0, tau_grid: [0.0, 1.0]}\n"
+                  "output: results\noutputs: {npz: results/x.npz}\n")
+    result, resolved = run_config(path)
+    assert resolved['outputs']['csv'] == str(tmp_path / 'results.csv')
+    assert sorted(os.listdir(tmp_path / 'results')) == ['results.config_resolved.yaml', 'results.run_info.json', 'x.npz']
 
 
 def test_b_chi_grid_errors_have_lines(tmp_path):
@@ -168,8 +221,9 @@ def test_b_parameter_list_shapes_are_validated_with_lines(tmp_path):
     _bad(tmp_path, mp + "  wEE: [[0.25, 0.22], [0.21]]\n", 3, 'nested lists must be rectangular')
     _bad(tmp_path, "model: ou_quartic\nparameters:\n  mu: [1.0, 2.0]\n", 3,
          "parameter 'mu' is a scalar parameter; got a list of shape (2,)")
-    # a scalar for an indexed parameter is still accepted (the pipeline broadcasts it, as before)
-    assert load_config(_write(tmp_path, mp + "  tauE: 10\n"))[0]['parameters']['tauE'] == 10
+    # a scalar for an indexed parameter fails deep in the run (a float is not subscriptable): stop it here
+    _bad(tmp_path, mp + "  tauE: 10\n", 3, "parameter 'tauE' has shape (2,) (indexed by E); got a scalar")
+    _bad(tmp_path, "model: toy_quartic_double_well\nparameters:\n  mu: -1.0\n", 3, 'got a scalar')
 
 
 # ── C: end to end, equal to the direct call ───────────────────────────────────────────────────
@@ -311,6 +365,17 @@ def test_d_inline_sde_matches_the_python_built_model(tmp_path):
     # the resolved config is itself a valid config (same model, same numbers)
     again = load_config(_write(tmp_path, yaml.safe_dump(resolved), 'again.yaml'))[0]
     assert again['sde'] == resolved['sde'] and again['parameters'] == resolved['parameters']
+
+
+def test_d_inline_sde_expressions_may_be_numbers_and_unsupported_keys_are_errors(tmp_path):
+    eq = SDE_CFG.replace('  drift: {x: "-mu*x - eps*x^3"}\n',
+                         '  equations: {x: {lhs: "(Dt+mu)*x", rhs: "-eps*x^3 + 0"}}\n')
+    r = load_config(_write(tmp_path, eq))[0]
+    assert r['sde']['equations']['x'] == {'lhs': '(Dt+mu)*x', 'rhs': '-eps*x^3 + 0'}
+    num = load_config(_write(tmp_path, eq.replace('"-eps*x^3 + 0"', '0'), 'n.yaml'))[0]
+    assert num['sde']['equations']['x']['rhs'] == '0'
+    _bad(tmp_path, SDE_CFG.replace('eps: {default: 0.02, domain: positive}',
+                                   'eps: {default: 0.02, indexed: true}'), 5, "unknown key 'indexed'")
 
 
 def test_d_inline_sde_dry_run_and_other_noise_types(tmp_path, capsys):

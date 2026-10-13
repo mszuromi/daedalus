@@ -67,8 +67,7 @@ TOP_KEYS = ('model', 'sde', 'parameters', 'question', 'policy', 'output',
             'outputs')
 SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
             'interpretation', 'stability_analysis')
-SDE_PARAMETER_KEYS = ('default', 'domain', 'indexed', 'indexed_by',
-                      'description')
+SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
 SDE_NOISE_TYPES = ('Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
@@ -176,6 +175,17 @@ class _Parser:
         v = self.py(node)
         if not isinstance(v, str) or not v.strip():
             self.fail(node, f'{what} must be a non-empty string')
+        return v
+
+    def expression(self, node, what):
+        """An expression of the SDE block: a string, or a plain number
+        (``drift: {x: 0}`` is the text ``0``)."""
+        v = self.py(node)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return repr(v)
+        if not isinstance(v, str) or not v.strip():
+            self.fail(node, f'{what} must be an expression (a quoted string '
+                            'or a number)')
         return v
 
     def number(self, node, what):
@@ -287,15 +297,16 @@ class _Parser:
                         items[key][1], f'sde.{key}').items():
                     line = knode.start_mark.line + 1
                     if key == 'drift':
-                        spec[key][fname] = (self.string(
+                        spec[key][fname] = (self.expression(
                             vnode, f'sde.drift.{fname}'), line)
                     else:
                         sub = self.mapping(vnode, ('lhs', 'rhs'),
                                            f'sde.equations.{fname}')
                         if 'lhs' not in sub:
                             self.fail(vnode, f'sde.equations.{fname} needs lhs')
-                        spec[key][fname] = ({k: self.string(v[1], f'{k}')
-                                             for k, v in sub.items()}, line)
+                        spec[key][fname] = ({
+                            k: self.expression(v[1], f'sde.equations.{fname}.{k}')
+                            for k, v in sub.items()}, line)
         nnode = items['noise'][1]
         spec['noise'] = {}
         for nname, (knode, vnode) in self._free_mapping(
@@ -404,62 +415,62 @@ class _Parser:
                             f'literal grid points {{{lo}, {hi}, {last}}} (note '
                             f'the {int(last)}!). For a RANGE of {int(last)} '
                             f'points from {lo} to {hi} write {{start: {lo}, '
-                            f'stop: {hi}, num: {int(last)}}}; to mean 3 '
-                            'literal points write them as a range '
-                            '{start, stop, num: 3} (evenly spaced) or add a '
-                            'fourth point.')
+                            f'stop: {hi}, num: {int(last)}}}; for exactly '
+                            f'these 3 literal points write '
+                            f'{{values: [{lo}, {hi}, {last}]}}.')
 
-    def chi_grid(self, node, name):
-        """The spatial-difference grid chi = x_j - x_k, as ``dd.Config``:
-        a {start, stop, num} mapping is a range (the tuple form), a list is
-        literal points (a 3-element list that looks like a range raises)."""
+    def _grid(self, node, name, increasing):
+        """A grid: ``{start, stop, num}`` (a range, the tuple form of
+        ``dd.Config``), ``{values: [...]}`` or a list (literal points; a
+        3-element list that looks like a range raises, see ``_range_trap``)."""
+        short = name.split('.')[-1]
         if isinstance(node, self.yaml.MappingNode):
-            items = self.mapping(node, TAU_GRID_KEYS, name)
+            items = self.mapping(node, TAU_GRID_KEYS + ('values',), name)
+            if 'values' in items:
+                extra = [k for k in items if k != 'values']
+                if extra:
+                    self.fail(node, f"{name}: 'values' cannot be combined "
+                                    f"with {', '.join(extra)}")
+                vnode = items['values'][1]
+                if not isinstance(vnode, self.yaml.SequenceNode) or not vnode.value:
+                    self.fail(vnode, f'{name}.values must be a non-empty list '
+                                     'of numbers')
+                return self._values(vnode, short, increasing)
             missing = [k for k in TAU_GRID_KEYS if k not in items]
             if missing:
                 self.fail(node, f'{name} needs start, stop and num; '
                                 f'missing: {", ".join(missing)}')
-            start = self.number(items['start'][1], f'{name}.start')
-            stop = self.number(items['stop'][1], f'{name}.stop')
-            num = self.integer(items['num'][1], f'{name}.num', 2)
+            start = self.number(items['start'][1], f'{short}.start')
+            stop = self.number(items['stop'][1], f'{short}.stop')
+            num = self.integer(items['num'][1], f'{short}.num', 2)
             if not start < stop:
-                self.fail(node, f'{name} is inconsistent: need start < stop; '
+                self.fail(node, f'{short} is inconsistent: need start < stop; '
                                 f'got start={start}, stop={stop}')
             return [float(x) for x in np.linspace(start, stop, num)]
         if isinstance(node, self.yaml.SequenceNode) and node.value:
             self._range_trap(node, name)
-            return [float(self.number(n, f'{name} entry')) for n in node.value]
+            return self._values(node, short, increasing)
         self.fail(node, f'{name} must be a non-empty list of numbers or a '
-                        'mapping {start, stop, num}')
+                        'mapping {start, stop, num} (or {values: [...]})')
 
-    def tau_grid(self, node):
-        """-> list of floats (an explicit list or a {start, stop, num} range)."""
-        if isinstance(node, self.yaml.SequenceNode) and node.value:
-            self._range_trap(node, 'question.tau_grid')
-        if isinstance(node, self.yaml.MappingNode):
-            items = self.mapping(node, TAU_GRID_KEYS, 'question.tau_grid')
-            missing = [k for k in TAU_GRID_KEYS if k not in items]
-            if missing:
-                self.fail(node, 'question.tau_grid needs start, stop and num; '
-                                f'missing: {", ".join(missing)}')
-            start = self.number(items['start'][1], 'tau_grid.start')
-            stop = self.number(items['stop'][1], 'tau_grid.stop')
-            num = self.integer(items['num'][1], 'tau_grid.num', 2)
-            if not start < stop:
-                self.fail(node, 'tau_grid is inconsistent: need start < stop; '
-                                f'got start={start}, stop={stop}')
-            return [float(t) for t in np.linspace(start, stop, num)]
-        if isinstance(node, self.yaml.SequenceNode) and node.value:
-            vals = [float(self.number(n, 'tau_grid entry')) for n in node.value]
+    def _values(self, node, short, increasing):
+        vals = [float(self.number(n, f'{short} entry')) for n in node.value]
+        if increasing:
             for i in range(1, len(vals)):
                 if not vals[i] > vals[i - 1]:
                     self.fail(node.value[i],
-                              'tau_grid is inconsistent: the list must be '
+                              f'{short} is inconsistent: the list must be '
                               f'strictly increasing, but {vals[i]} follows '
                               f'{vals[i - 1]}')
-            return vals
-        self.fail(node, 'question.tau_grid must be a non-empty list of '
-                        'numbers or a mapping {start, stop, num}')
+        return vals
+
+    def chi_grid(self, node, name):
+        """The spatial-difference grid chi = x_j - x_k, as ``dd.Config``."""
+        return self._grid(node, name, increasing=False)
+
+    def tau_grid(self, node):
+        """-> list of floats (an explicit increasing list or a range)."""
+        return self._grid(node, 'question.tau_grid', increasing=True)
 
     def policy(self, node):
         items = self.mapping(node, POLICY_KEYS, "'policy'")
@@ -706,11 +717,12 @@ def _check_parameter_shapes(src, model, parameters):
             raise ConfigError(
                 src, line, f'parameter {name!r} is a scalar parameter; got a '
                            f'list of shape {shape}')
-        if want and shape != () and shape != want:
+        if want and shape != want:
             by = ', '.join(spec.get('indexed_by') or ())
+            got = 'a scalar' if shape == () else f'shape {shape}'
             raise ConfigError(
                 src, line, f'parameter {name!r} has shape {want} '
-                           f'(indexed by {by}); got shape {shape}')
+                           f'(indexed by {by}); got {got}')
 
 
 def _output_plan(spec, base):
@@ -720,6 +732,7 @@ def _output_plan(spec, base):
     ``prefix`` ``'run1.'`` (so two runs sharing a directory keep their own
     ``config_resolved.yaml`` / ``run_info.json``)."""
     path, line = spec
+    path = os.path.expanduser(path)
     ab = os.path.normpath(path if os.path.isabs(path)
                           else os.path.join(base, path))
     if os.path.splitext(path.rstrip('/' + os.sep))[1].lower() in (
@@ -770,7 +783,9 @@ def resolve(raw, model, mod):
                                f'{dd.field_names(model)}')
             npop = dd._field_pop_size(model, f.get('natural_name')
                                       or f.get('name'))
-            if idx > npop:
+            # spatial callers label the legs (phi, 1), (phi, 2): the second
+            # entry is a slot, not a population (as in api.analyze G0)
+            if idx > npop and not spatial:
                 raise ConfigError(
                     src, line, f'external field {name!r} has {npop} '
                                f'population(s); index {idx} is out of range')
@@ -828,6 +843,35 @@ def resolve(raw, model, mod):
                                          '(x_j, tau_j) per non-anchor leg')
         points = arr.tolist()
 
+    if spatial:
+        # what dd.run does with the grids, so no key is silently ignored
+        def unused(key, why):
+            raise ConfigError(src, qlines[key], f'question.{key} is ignored '
+                                                f'({why}); remove it')
+        if k == 1:
+            for key in ('tau_grid', 'chi_grid'):
+                if key in q:
+                    unused(key, 'a spatial k=1 run is the mean-field value, '
+                                'without a grid')
+        elif k >= 3 and points is not None:
+            for key in ('tau_grid', 'chi_grid'):
+                if key in q:
+                    unused(key, 'the events come from question.points')
+        elif k >= 3:
+            at = qlines.get('k', raw['_lines']['model'])
+            if chi is None:
+                raise ConfigError(
+                    src, at, 'a spatial model with k >= 3 needs question.points '
+                             '(the (n_points, k-1, 2) events) or question.chi_grid '
+                             '(+ optional tau_grid) to sweep the full grid')
+            n_ev = (len(chi) * len(tau or [0.0])) ** (k - 1)
+            if n_ev > 20000:
+                raise ConfigError(
+                    src, qlines['chi_grid'],
+                    f'k={k} grid would be {n_ev} events = (len(chi_grid) * '
+                    f'len(tau_grid))^(k-1); more than 20000 (dd.run refuses); '
+                    'shrink the grids or give question.points')
+
     layered = dd.fundamental_from_model(model)
     layered.update(getattr(mod, 'DEFAULT_FUNDAMENTAL', {}) or {})
     layered.update(overrides)
@@ -838,6 +882,7 @@ def resolve(raw, model, mod):
     policy.update(raw['policy'])             # n_workers only when given
 
     def _abs(p):
+        p = os.path.expanduser(p)
         return os.path.normpath(p if os.path.isabs(p) else os.path.join(base, p))
 
     question = {'k': int(k), 'max_ell': int(max_ell),
@@ -899,8 +944,22 @@ def _git_commit(root):
         return None
 
 
+def _grid_out(vals):
+    """A grid for the resolved YAML: a 3-element list that ends in an integer
+    >= 2 would be read back as the "range slip" (``dd.Config`` rule), so it is
+    written as ``{values: [...]}``."""
+    if (len(vals) == 3 and float(vals[2]) >= 2
+            and float(vals[2]) == int(vals[2])):
+        return {'values': list(vals)}
+    return list(vals)
+
+
 def _dump_yaml(obj):
     import yaml
+    if isinstance(obj.get('question'), dict):
+        obj = {**obj, 'question': {
+            k: (_grid_out(v) if k in ('tau_grid', 'chi_grid') else v)
+            for k, v in obj['question'].items()}}
     return yaml.safe_dump(obj, sort_keys=False, default_flow_style=None,
                           width=100)
 
@@ -930,7 +989,8 @@ def dry_run_report(resolved, model):
     question = Question(
         k=q['k'], max_ell=q['max_ell'],
         external_fields=tuple(tuple(e) for e in q['external_fields']),
-        parameters=dict(resolved['parameters']))
+        parameters=dict(resolved['parameters']),
+        taylor_order=q.get('taylor_order'))
     policy = Policy(**{key: pol[key] for key in ANALYZER_POLICY_KEYS
                        if key in pol})
     rep = analyze(model, question, policy, use_cache=pol.get('use_cache', True))
@@ -956,17 +1016,23 @@ def dry_run_report(resolved, model):
 def run_config(path, dry_run=False, out=None):
     """Run the config at ``path``.  Returns the resolved config (dry run) or
     ``(result, resolved)``.  A dry run loads and validates the model, prints
-    the resolved config and the analyzer report table (gates G0-G5; no
-    enumeration, no integrals); it writes nothing."""
+    the resolved config and the analyzer report table (gates G0-G5: the
+    action is expanded and the mean field solved, but no diagram is
+    enumerated and no integral is done); it writes nothing."""
     out = out if out is not None else sys.stdout
     t0 = time.perf_counter()
     resolved, model, mod, overrides = load_config(path)
+    # the output plan is fixed now, before any output exists (a directory
+    # that the run itself creates must not change the stem/dir decision)
+    out_spec = parse_config(path).get('output')
+    prefix = (_output_plan(out_spec, os.path.dirname(os.path.abspath(path)))[1]
+              if out_spec else '')
     if dry_run:
         out.write(_dump_yaml(resolved))
         rep = dry_run_report(resolved, model)
         # every report line is a YAML comment, so the whole output stays a
         # valid config (scripts that parse the dry run keep working)
-        out.write('\n# analyzer report (gates G0-G5; nothing computed)\n')
+        out.write('\n# analyzer report (gates G0-G5; no cumulant is computed)\n')
         body = ('no analyzer (policy.preflight is false)' if rep is None
                 else rep.table())
         out.write(''.join(f'# {ln}\n' for ln in body.splitlines()))
@@ -1025,10 +1091,6 @@ def run_config(path, dry_run=False, out=None):
     first = next((written[k_] for k_ in OUTPUT_KEYS if k_ in written), None)
     run_dir = os.path.dirname(first) if first else os.path.dirname(
         os.path.abspath(path))
-    prefix = ''
-    out_spec = parse_config(path).get('output')
-    if out_spec:
-        prefix = _output_plan(out_spec, os.path.dirname(os.path.abspath(path)))[1]
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, prefix + 'config_resolved.yaml'), 'w',
               encoding='utf-8') as fh:
@@ -1063,7 +1125,8 @@ def main(argv=None):
     rp.add_argument('config', help='path to the config YAML')
     rp.add_argument('--dry-run', action='store_true',
                     help='validate and print the resolved config and the '
-                         'analyzer report (G0-G5); compute nothing')
+                         'analyzer report (G0-G5); computes no cumulant and '
+                         'writes nothing')
     args = ap.parse_args(argv)
     try:
         run_config(args.config, dry_run=args.dry_run)
