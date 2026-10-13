@@ -9,9 +9,41 @@ values before and after. "Before" is the code immediately before the change,
 which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 "After" is the new default.
 
-### Unreleased (on `main` after 0.2.0; the next release gets its own `##` heading)
+**Unreleased (after 0.2.0; the version entries below are numbered releases)**
 
-#### Added: the model analyzer runs inside `compute_cumulants`; backend registry (no number moves)
+### Changed: first use of a shipped prediagram cell is about 3.5 times faster (no numbers move)
+
+The first use of a shipped cell on a fresh clone rebuilds every class from its
+certificate, and that rebuild was almost all of the time. `record_from_cert`
+now works out the degrees, the leaves-first relabelling and the sorted edge
+list in plain Python and builds each of the two graphs once (it used three
+Sage graphs and a `degree` call per vertex). The record is the same, bit for
+bit: same vertex lists and order, same labelled edges in the same iteration
+order, same `leaves` and `internal`. The old code stays as
+`_record_from_cert_reference`, the oracle of `tests/test_record_from_cert.py`.
+Rebuild of a whole cell from an empty directory, minimum of 3 runs (cell, old
+→ new): (2,3) 0.93 s → 0.27 s; (3,2) 0.29 s → 0.095 s; (4,2) 4.75 s → 1.37 s.
+Peak memory is unchanged (the record list itself dominates: about 11 kB per
+class).
+
+### Added: `dd.build_cache`, a cost report and a build for prediagram cells
+
+`dd.build_cache(cells, dest=None, dry_run=False)` says, before doing any
+work, which of the requested `(k, ell)` cells are shipped, already under
+`dest`, or missing; the class count (from the manifests, else extrapolated
+from the smaller cells of the same `k`); and for each missing cell the
+estimated build time and memory, plus the memory the records of that cell take
+once used (about 11 kB per class). The time comes from a measured rate
+(25-70 microseconds per class, one process) scaled by a 0.15 s timing of a
+small cell on the machine. `dry_run=True` stops there and writes nothing;
+otherwise the missing cells are built by the existing streaming enumerator and
+written as stamped v2 files. A build whose estimated memory exceeds the
+machine's is refused unless `force=True`. For the record, a cold build of
+(2,4) (1,152,032 classes) takes 80 s with one process on the compiled
+enumerator and about 0.2 GB for the certificates; using it afterwards needs
+about 13 GB for the records.
+
+### Added: the model analyzer runs inside `compute_cumulants`; backend registry (no number moves)
 
 - `compute_cumulants` (and `dd.run`, `dd run config.yaml`) runs the analyzer
   gates of `api.analyze` at its stage boundaries, all before the diagram
