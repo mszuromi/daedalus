@@ -126,11 +126,19 @@ through the preprocessor.
 auxiliary's eigenvalue `1/τc` to the system's pole spectrum.  If your
 deterministic system already has an eigenvalue at `1/τc` (e.g. a
 linear field with rate `μ = 1/τc`), the joint propagator has a
-multiplicity-2 pole.  The current single-pole residue + mode-sum
-infrastructure can't represent the `τ · exp(-pt)` modes a
-multiplicity-2 pole requires, so the numerical computation becomes
-unstable in this exactly-degenerate case.  Workaround: perturb `τc`
-or `μ` slightly so the poles are distinct.
+multiplicity-2 pole, and near it two poles a small gap apart whose
+residues grow like 1/gap.  Phase J's single-pole residue sums cannot
+represent the `τ · exp(-pt)` mode of the exact case and lose about
+`E log10(1/gap)` digits near it.  `compute_cumulants` handles both:
+it averages Phase J over a deformation that splits such a pole cluster
+on a circle (`api._pole_clusters`; Cauchy mean value, trapezoid rule,
+`result['pole_clusters']` reports the clusters and an accuracy
+estimate), so `τc = 1/μ` and any nearby value give the exact result to
+about 1e-12.  A cluster it cannot resolve (no exact rational
+propagator, a cluster too close to the stability boundary, or
+`DAEDALUS_POLE_CLUSTERS=0`) is reported in `result['pole_clusters']`
+with a lost-digit estimate, and a `PoleClusterWarning` is issued when
+more than 10 digits may be lost.
 
 ### 2. Cross-field cumulants (κ², any kernel)
 

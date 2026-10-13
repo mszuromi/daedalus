@@ -22,7 +22,7 @@ import re
 
 from sage.all import (
     SR, matrix, dirac_delta, diff, oo, limit as _sage_limit,
-    QQ, CDF, PolynomialRing, CyclotomicField,
+    QQ, RR, CDF, PolynomialRing, CyclotomicField,
 )
 
 from engine.core.cache import PipelineCache
@@ -128,9 +128,79 @@ def _record_pole_analysis_safe(out, *args, **kw):
         out.clear()
 
 
+def _qq(x):
+    """``QQ(x)``; a float that ``QQ`` refuses through ``SR`` -- e.g. a
+    ``2.0 + 0i`` backed by a ``ComplexDoubleElement``, produced by a product
+    of imaginary floats -- by its exact binary value."""
+    try:
+        return QQ(x)
+    except (TypeError, ValueError):
+        return QQ(RR(x))
+
+
+def _d_delta_exact(G_ft_F, nf):
+    """``D_delta = lim_{omega -> oo} G_ft`` entrywise from the exact reduced
+    entries (the same values as the tier-1 per-entry computation)."""
+    data = [[0j] * nf for _ in range(nf)]
+    for i in range(nf):
+        for j in range(nf):
+            e = G_ft_F[i, j]
+            if e == 0:
+                continue
+            P, Q = e.numerator(), e.denominator()
+            assert P.degree() <= Q.degree(), (
+                f'D_delta: improper propagator entry ({i},{j}): '
+                f'deg(P)={P.degree()} > deg(Q)={Q.degree()} -- K_ft is not '
+                f'causal/proper.')
+            if P.degree() == Q.degree():
+                data[i][j] = (complex(P.leading_coefficient())
+                              / complex(Q.leading_coefficient()))
+    return matrix(SR, data)
+
+
+def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
+    """Near-degenerate / repeated poles (``api._pole_clusters``): run the
+    exact cluster analysis, record it in ``cluster_out['analysis']`` and
+    return the tier-1 triple ``(pole_vals, C_mats, D_delta)`` with the
+    residues to 50 digits (exact root membership per entry; the tier-1 loop
+    below decides it with an absolute tolerance, which fails for close
+    roots), else ``None`` (the caller keeps its old path): when the
+    deformation is switched off, when the analysis failed, and for an
+    unresolved repeated root.  Never raises."""
+    from api import _pole_clusters as _pc
+    try:
+        an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
+    except Exception as exc:
+        # unknown cancellation factor: assume the worst (never silent)
+        try:
+            sqf = bool(Q_poly.is_squarefree())
+        except Exception:
+            sqf = False
+        an = _pc.ClusterAnalysis(
+            status='unresolved', kappa_max=float('inf'), jordan=not sqf,
+            reason=f'cluster analysis failed ({type(exc).__name__}: '
+                   f'{exc!s:.120})')
+    if cluster_out is not None:
+        cluster_out['analysis'] = an
+    if an.nominal is None or an.status == 'disabled' or (
+            an.status == 'unresolved' and an.jordan):
+        return None
+    pole_vals, C_mats = an.nominal
+    D_delta = _d_delta_exact(G_ft_F, nf)
+    if verbose:
+        print(f'[propagator] polynomial-fracfield: {len(an.clusters)} pole '
+              f'cluster(s) ({an.status}), kappa {an.kappa_max:.3g}: residues '
+              f'to 50 digits'
+              + (f'; Phase J averages {an.deformation.n_nodes} deformed '
+                 f'node(s).' if an.deformation is not None else '.'))
+    return pole_vals, C_mats, D_delta
+
+
 def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                                                 verbose=False,
-                                                analysis_out=None):
+                                                analysis_out=None,
+                                                cluster_out=None,
+                                                tau_max=None):
     """Compute (pole_vals, C_mats) via EXACT polynomial fraction-field
     arithmetic in CyclotomicField(4)[ω] = QQ[i][ω].
 
@@ -159,6 +229,12 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
 
     Returns ``(pole_vals, C_mats)`` on success, ``(None, None)`` on
     failure (caller falls back to numpy cofactor).
+
+    ``cluster_out`` (a dict): a repeated root of ``Q`` or a pair of roots
+    closer than ``api._pole_clusters.CLUSTER_RTOL`` runs the exact cluster
+    analysis (``cluster_out['analysis']``); clusters it resolves return 50
+    digit residues and a deformation for Phase J (``tau_max``: the largest
+    time difference to be evaluated).  Nothing else changes.
     """
     try:
         import numpy as np
@@ -172,8 +248,8 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
 
         def _sr_complex_to_CF(c):
             c = SR(c)
-            re = QQ(c.real_part())
-            im = QQ(c.imag_part())
+            re = _qq(c.real_part())
+            im = _qq(c.imag_part())
             return CF(re) + CF(im) * i_CF
 
         def _sr_to_F_exact(e):
@@ -251,6 +327,13 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 if analysis_out is not None:
                     _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly,
                                                nf, squarefree=False)
+                if cluster_out is not None:
+                    # a repeated root: resolved by the pole-cluster
+                    # deformation when possible (api._pole_clusters)
+                    res = _cluster_path(G_ft_F, Q_poly, nf, tau_max,
+                                        cluster_out, verbose)
+                    if res is not None:
+                        return res
                 if verbose:
                     print(
                         '[propagator] polynomial-fracfield: Q(ω) is '
@@ -271,6 +354,13 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
         if analysis_out is not None:
             _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly, nf,
                                        roots=roots)
+        if cluster_out is not None:
+            from api._pole_clusters import has_close_pair
+            if has_close_pair([complex(r) for r, _ in roots]):
+                res = _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out,
+                                    verbose)
+                if res is not None:
+                    return res
         pole_vals = [complex(r) for r, _ in roots
                      if complex(r).imag > 1e-9]
         pole_vals.sort(key=lambda p: (p.imag, p.real))
@@ -942,7 +1032,8 @@ def _horner(coeffs, x):
     return v
 
 
-def compute_poles_and_residues(prop, num_params, verbose=True):
+def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
+                               resolve_clusters=False):
     """
     Given a propagator dict (from build_propagator) and a num_params
     substitution dict (SR.var → float), find the retarded poles of
@@ -969,6 +1060,14 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
     computation: characteristic polynomial extracted as the highest-
     degree denominator across G_ft entries, residue at each pole
     computed as ``i · adj(ω_k) / det'(ω_k)``.
+
+    Near-degenerate or repeated poles (``api._pole_clusters``), with
+    ``resolve_clusters`` (``compute_cumulants`` sets it; other callers get
+    the old behaviour): ``prop['pole_clusters']`` (a report dict, or ``None``
+    when no two poles are close) and ``prop['pole_deformation']`` (the
+    deformation Phase J averages over, or ``None``).  ``tau_max``: the
+    largest time difference the caller will evaluate (it bounds the
+    deformation radius).
     """
     from sage.all import CDF, PolynomialRing, matrix as _matrix
     import time as _time
@@ -981,13 +1080,27 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
 
     # ── Tier 1: exact polynomial fraction-field path ──────────────
     pole_analysis = {}
+    cluster_out = {} if resolve_clusters else None
+    prop['pole_clusters'] = None
+    prop['pole_deformation'] = None
+    prop.pop('jordan_incomplete', None)
     pole_vals_tier1, C_mats_tier1, D_delta_tier1 = (
         _compute_residues_via_polynomial_fracfield(
             K_ft, omega, num_params, nf, verbose=verbose,
-            analysis_out=pole_analysis))
+            analysis_out=pole_analysis, cluster_out=cluster_out,
+            tau_max=tau_max))
     # the exact pole record for the analyzer's G3 gate (empty when the
     # exact path failed before Q(omega); bookkeeping only)
     prop['pole_analysis'] = pole_analysis or None
+    _an = cluster_out.get('analysis') if cluster_out else None
+    if _an is not None:
+        prop['pole_clusters'] = _an.report()
+        prop['pole_deformation'] = _an.deformation
+        if _an.deformation is not None and _an.jordan:
+            # the nominal residues of a repeated pole do not represent the
+            # propagator (no t exp(lambda t) term): Phase J must never be
+            # handed them directly (final_integral / pipeline guard)
+            prop['jordan_incomplete'] = True
     if pole_vals_tier1 is not None:
         prop['pole_vals'] = pole_vals_tier1
         prop['C_mats']    = C_mats_tier1
@@ -1676,6 +1789,16 @@ def compute_poles_and_residues(prop, num_params, verbose=True):
 
     prop['pole_vals'] = pole_vals
     prop['C_mats']    = C_mats
+    if resolve_clusters and prop.get('pole_clusters') is None:
+        # the numerical tiers: close poles with a large cancellation factor
+        # cannot be deformed (no exact rational propagator) -- say so
+        from api._pole_clusters import numeric_screen
+        try:
+            _an = numeric_screen(pole_vals, C_mats)
+        except Exception:
+            _an = None
+        if _an is not None:
+            prop['pole_clusters'] = _an.report()
     if verbose:
         print(f'[propagator] {len(pole_vals)} retarded poles (Im(ω) > 0):')
         for k, p in enumerate(pole_vals):
