@@ -146,6 +146,11 @@ def test_linear_hawkes_tree_weight_is_the_rate():
 
 @pytest.fixture(scope='module')
 def spike_reset_runs():
+    # discarded warm-up: a cold on-disk cache and a warm one pick different
+    # (isomorphic) diagram representatives, ~1e-16 apart, and the tests below
+    # compare runs bit for bit
+    _run('single_population_spike_reset_test', 2, 1, [('n', 1), ('n', 1)],
+         P_SPIKE)
     out = {}
     for g in (False, True):
         out[g] = _run('single_population_spike_reset_test', 2, 1,
