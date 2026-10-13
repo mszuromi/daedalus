@@ -95,7 +95,13 @@ recovered.  Two consequences, both handled here:
    which puts the sorted leaves on ``0..k-1`` and the sorted internal vertices
    on ``k..|V|-1``.  ``type_assignment`` assigns external fields to
    ``leaves[i]`` POSITIONALLY, so the convention is re-applied here: every
-   rebuilt record satisfies ``leaves == list(range(k))`` exactly as v1's does.
+   rebuilt record has ``sorted(leaves) == list(range(k))`` as v1's does.  The
+   LIST order is the backend's vertex iteration order, which for graphs with
+   more than 10 vertices is not ascending (a fraction of a percent of the
+   records of the large cells, e.g. 176 of 65,956 at (4,2)), so
+   ``leaves == list(range(k))`` does not hold for every record.  The rebuilt
+   records have always had this order and :func:`record_from_cert` reproduces
+   it exactly; it is kept on purpose.
    (The canonical labelling on its own does not: nauty is free to number the
    degree-1 vertices anywhere.)
 
@@ -676,7 +682,9 @@ def _record_from_cert_reference(blob):
     ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
     the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
     ``k..|V|-1``) that v1 records carry and that ``type_assignment`` relies on
-    when it walks ``leaves`` positionally.
+    when it walks ``leaves`` positionally.  ``sorted(leaves)`` is always
+    ``list(range(k))``; the list itself follows the backend's vertex iteration
+    order, which is not ascending for some graphs with more than 10 vertices.
 
     Edge labels are re-issued as ``0..|E|-1`` so that parallel edges stay
     distinguishable as ``(u, v, label)`` dict keys.
@@ -730,7 +738,9 @@ def record_from_cert(blob):
     ``leaves`` are the degree-1 vertices and ``internal`` the rest, both under
     the ``relabel_leaves_first`` convention (leaves ``0..k-1``, internal
     ``k..|V|-1``) that v1 records carry and that ``type_assignment`` relies on
-    when it walks ``leaves`` positionally.
+    when it walks ``leaves`` positionally.  ``sorted(leaves)`` is always
+    ``list(range(k))``; the list itself follows the backend's vertex iteration
+    order, which is not ascending for some graphs with more than 10 vertices.
 
     Edge labels are re-issued as ``0..|E|-1`` so that parallel edges stay
     distinguishable as ``(u, v, label)`` dict keys.
