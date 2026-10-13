@@ -93,7 +93,7 @@ part); coefficients are polynomials in them with coefficients rational in the
 parameters.  Each result lists the ``assumptions`` it needs (Routh/Sturm sign
 conditions, distinct poles) and refuses (``AssumptionViolation``) at values
 that violate them.  ``integrate_against`` with a ``Kernel`` (exponential,
-polynomial x exponential, ``Kernel.stdp``) gives ``int L(s) C(s) ds`` exactly;
+polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exactly;
 it equals the Fourier route ``pair_with_kernel(C0, L~(-omega),
 any_degree=True)`` on the smooth part.
 """
@@ -2609,13 +2609,12 @@ class Kernel:
                    'exponential')
 
     @classmethod
-    def stdp(cls, A_plus, tau_plus, A_minus, tau_minus) -> 'Kernel':
-        """The pair-based STDP window
-        ``L(s) = A_plus e^{-s/tau_plus}`` (s > 0),
-        ``-A_minus e^{s/tau_minus}`` (s < 0)."""
-        return cls((Mode(SR(A_plus), -1 / SR(tau_plus), 0, 'positive'),
-                    Mode(-SR(A_minus), 1 / SR(tau_minus), 0, 'negative')),
-                   'stdp')
+    def two_sided_exponential(cls, a_pos, tau_pos, a_neg, tau_neg) -> 'Kernel':
+        """``L(s) = a_pos e^{-s/tau_pos}`` (s > 0),
+        ``a_neg e^{s/tau_neg}`` (s < 0)."""
+        return cls((Mode(SR(a_pos), -1 / SR(tau_pos), 0, 'positive'),
+                    Mode(SR(a_neg), 1 / SR(tau_neg), 0, 'negative')),
+                   'two_sided_exponential')
 
     def __add__(self, other: 'Kernel') -> 'Kernel':
         return Kernel(tuple(self.terms) + tuple(other.terms),
@@ -2681,7 +2680,7 @@ def _kernel_assumption_items(kterms, ctx, ref_pt):
 
 def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
     if not isinstance(kernel, Kernel):
-        raise SymbolicOutError('kernel must be a Kernel (Kernel.stdp, '
+        raise SymbolicOutError('kernel must be a Kernel (Kernel.two_sided_exponential, '
                                'Kernel.exponential, ...)')
     if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
         raise SymbolicOutError(

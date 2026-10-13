@@ -35,7 +35,7 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 - `integrate_against(C0, Kernel)` / `ModeSum.integrate_against` /
   `TreeCovariance.integrate_against`: `int L(s) C(s) ds` in closed form for
   exponential and polynomial-times-exponential kernels, including
-  `Kernel.stdp(A_plus, tau_plus, A_minus, tau_minus)`. Sums over the roots of
+  `Kernel.two_sided_exponential(a_pos, tau_pos, a_neg, tau_neg)`. Sums over the roots of
   a one-sided factor are traces, so the result is an exact rational function
   of the parameters at any degree. The delta(tau) term is included when the
   kernel is continuous at 0; otherwise `contact=` must say which value of

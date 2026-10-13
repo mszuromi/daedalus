@@ -445,11 +445,11 @@ def _rand_points(names, n, seed, lo=0.3, hi=2.0):
     return [{k: float(rng.uniform(lo, hi)) for k in names} for _ in range(n)]
 
 
-def test_kernel_ou_stdp_closed_form_equals_fourier():
+def test_kernel_ou_two_sided_closed_form_equals_fourier():
     w, mu, D = var('omega'), var('mu'), var('D')
     Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
     C0 = 2 * D / (w ** 2 + mu ** 2)
-    L = so.Kernel.stdp(Ap, tp, Am, tm)
+    L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
     ki = so.integrate_against(C0, L, w)
     expect = D / mu * (Ap * tp / (1 + mu * tp) - Am * tm / (1 + mu * tm))
     assert _zero(ki.smooth - expect) and ki.contact == 0
@@ -464,14 +464,14 @@ def test_kernel_ou_stdp_closed_form_equals_fourier():
 
 
 @pytest.mark.parametrize('domains', DOMAINS)
-def test_kernel_cubic_stdp_time_equals_fourier(chain_ref, domains):
+def test_kernel_cubic_two_sided_time_equals_fourier(chain_ref, domains):
     m, par, _ = chain_ref
     with domain_state(['a', 'k', 'D', 'A_p', 'tau_p', 'A_m', 'tau_m'],
                       domains):
         cov = so.tree_covariance(m, use_cache=False, mean_field={
             'xstar1': 0, 'ystar1': 0, 'zstar1': 0})
         Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
-        L = so.Kernel.stdp(Ap, tp, Am, tm)
+        L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
         w = cov.omega
         for a, b in (('dz1', 'dz1'), ('dx1', 'dz1')):
             ms = cov.modes(a, b, reference=par)
@@ -532,7 +532,7 @@ def test_kernel_contact_rules_hawkes(hawkes1_ref):
                              parameters=par)
     ms = cov.modes('dn1', 'dn1', reference=par)
     Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
-    L = so.Kernel.stdp(Ap, tp, Am, tm)
+    L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
     with pytest.raises(so.SymbolicOutError, match='jumps'):
         ms.integrate_against(L)
     p3 = {k: par[k] for k in ('tau', 'a', 'w')}     # Em left with vstar1
