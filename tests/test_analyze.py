@@ -86,10 +86,14 @@ GOLDEN = {
     # name: (n_phys, poly, noise, gauss, prop, n_poles, stable, source, homog, n_saddles, sdn, codes)
     'ou_quartic':              (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False, frozenset()),
     'ou_sextic':               (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False, frozenset()),
-    'ou_quartic_double_well':  (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False, frozenset()),
-    'toy_quartic_double_well': (1, True, _W, True, 'rational', 1, True, 'poles', True, 1, False, frozenset()),
+    # the double wells' default regime has g_eff ~ 0.30 (measured one-loop/tree 0.30): the D3 advisory
+    'ou_quartic_double_well':  (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False,
+                                frozenset({'G5_LOOP_PARAMETER'})),
+    'toy_quartic_double_well': (1, True, _W, True, 'rational', 1, True, 'poles', True, 1, False,
+                                frozenset({'G5_LOOP_PARAMETER'})),
+    # its defaults (mu = 0.1, eps = 0.1, D = 1) are far from perturbative: sigma ~ 4, g_eff ~ 10
     'ou_quartic_colored':      (2, True, _CM, True, 'rational', 2, True, _LIN, True, 1, False,
-                                frozenset({'G4_MARKOV_CONSENT_MISSING'})),
+                                frozenset({'G4_MARKOV_CONSENT_MISSING', 'G5_LOOP_PARAMETER'})),
     'ou_quartic_two_dim_color_corr': (4, True, _CM, True, 'rational', 3, True, _LIN, True, 1, False,
                                       frozenset({'G4_MARKOV_CONSENT_MISSING'})),
     'linear_hawkes':           (4, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),

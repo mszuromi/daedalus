@@ -660,9 +660,11 @@ def test_rational_spectrum_classification():
 
 
 def test_finding_codes_all_have_a_test():
-    """Every warning/error code is exercised somewhere in the analyzer tests (this file or test_analyze.py)."""
+    """Every warning/error code is exercised somewhere in the analyzer tests (this file, test_analyze.py or
+    test_analyzer_regime.py)."""
     here = Path(__file__).read_text()
-    d1 = (Path(__file__).parent / 'test_analyze.py').read_text()
+    d1 = ((Path(__file__).parent / 'test_analyze.py').read_text()
+          + (Path(__file__).parent / 'test_analyzer_regime.py').read_text())
     missing = [c for c, (_, lvl) in FINDING_CODES.items()
                if lvl != 'info' and c not in here and c not in d1 and c not in (
                    'G0_NAME_MISSING', 'G0_NAMESPACE', 'G1_EXPAND_FAILED', 'G1_SINGULAR_PROPAGATOR', 'G2_MF_FAILED',
