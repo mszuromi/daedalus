@@ -8,9 +8,6 @@ name: notebooks
 # Same cached conda environment as tests.yml (the cache key is environment.yml, which this
 # workflow does not change).
 on:
-  push:                      # TEMPORARY: one validation run from this branch; removed in the next commit
-    branches: [chore/docs-small-fixes]
-    paths: ['.github/workflows/notebooks.yml']
   workflow_dispatch:
   schedule:
     - cron: '17 5 * * 1'     # Mondays 05:17 UTC
