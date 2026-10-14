@@ -156,6 +156,13 @@ OP_DENSE_MAX = 2000
 #: stiff: the action's error grows like (steps) x eps (measured: a 1e4 rate
 #: over tau = 50, 4.9e-12); stiff segments use the triangular route
 TAYLOR_S_MAX = 50
+#: ... when a unitary (complex Schur) basis of an entry with n >= 3 states is
+#: involved: S1 measured that a Schur basis of a graded realization (Schwarz
+#: / companion blocks of rational kernels) costs accuracy (Pade-24: 3e-13
+#: through this route vs 5e-14 by the Taylor action at a few hundred steps),
+#: so the triangular route is taken only when the Taylor action would need
+#: far more steps (a 2 x 2 Schur form is one rotation of a balanced block)
+TAYLOR_S_MAX_SCHUR = 1000
 #: the triangular route (dense upper-triangular generator in the per-edge
 #: Schur basis, reset-diagonal Pade) up to this many states
 TRI_DENSE_MAX = 600
@@ -454,7 +461,8 @@ class _EntryOps:
         A, mu, dn = self._tay
         t = float(t)
         m_, s_ = _taylor_params(dn, t)
-        if s_ > TAYLOR_S_MAX:
+        if s_ > (TAYLOR_S_MAX_SCHUR if (self.kind == 'schur' and self.n > 2)
+                 else TAYLOR_S_MAX):
             # stiff (|a| t large): the reset-diagonal triangular Pade in the
             # triangular basis (exact e^{lambda t} on the diagonal)
             from api._realization import expm_upper_triangular
@@ -915,9 +923,10 @@ class _Segment:
         """``exp(G L) v``: the trace-shifted truncated-Taylor action (dense
         ``G`` up to ``OP_DENSE_MAX``, matrix-free beyond; no squaring: scipy's
         ``expm`` loses up to ~1e-13 relative on decaying blocks).  A stiff
-        segment (more than ``TAYLOR_S_MAX`` scaling steps) takes the
-        triangular route up to ``TRI_DENSE_MAX`` states; beyond it, more
-        than ``TAYLOR_S_HARD`` steps raise."""
+        segment (more than ``TAYLOR_S_MAX`` scaling steps with exact
+        triangular bases, ``TAYLOR_S_MAX_SCHUR`` with a unitary Schur basis)
+        takes the triangular route up to ``TRI_DENSE_MAX`` states; beyond it,
+        more than ``TAYLOR_S_HARD`` steps raise."""
         if self.D <= OP_DENSE_MAX:
             G, A, mu, dn = self.dense(dtype)
             apply_A = (lambda y: A @ y)
@@ -926,7 +935,10 @@ class _Segment:
             apply_A = ((lambda y: self.apply(y) - mu * y) if mu != 0
                        else self.apply)
         _m, s_ = _taylor_params(dn, L)
-        if s_ > TAYLOR_S_MAX and self.D <= TRI_DENSE_MAX:
+        unitary = any(e.kind == 'schur' and e.n > 2
+                      for en in self.ents for e in en)
+        if s_ > (TAYLOR_S_MAX_SCHUR if unitary else TAYLOR_S_MAX) and (
+                self.D <= TRI_DENSE_MAX):
             return self._action_tri(v, L, dtype)
         if s_ > TAYLOR_S_HARD:
             raise RuntimeError(
