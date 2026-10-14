@@ -1308,7 +1308,9 @@ class _BaseModelBuilder:
             # whole system jointly (``solve_mean_field_dae`` checks that it
             # determines the saddle).  An RHS without any field cannot be
             # satisfied by choosing a saddle: refuse it here.
+            pure_eq = None
             if self._lhs_vanishes_at_dt0(lhs_text):
+                pure_eq = (lhs_text, rhs_text)
                 if not any(re.search(rf'\b{re.escape(v)}\b', rhs_text)
                            for v in state_var_names):
                     raise ValueError(
@@ -1405,6 +1407,19 @@ class _BaseModelBuilder:
             # off the LHS symbolically and correct both cases.
             split = self._lhs_dt0_split(lhs_text, primary, scalar_form,
                                         state_var_names)
+            if pure_eq is not None and (split is None or split[2]):
+                # the constraint 0 = RHS is not linear with a constant
+                # coefficient in any field: no saddle text to derive
+                raise ValueError(
+                    f'ModelBuilder.build(): the equation lhs={pure_eq[0]!r}, '
+                    f'rhs={pure_eq[1]!r} is a pure integrator (its LHS '
+                    f'vanishes at Dt=0), and its stationarity condition '
+                    f'0 = {pure_eq[1]} is not linear, with a constant '
+                    f'coefficient, in any field, so it defines no saddle '
+                    f'value by itself.  Write the drift with a linear part '
+                    f"on the LHS (e.g. lhs='(Dt + k)*x', rhs='a - x^3 + "
+                    f"k*x'), or declare the saddle with "
+                    f'set_mf_equation(...).')
             if split is not None:
                 c_text, rest_text, c_is_zero, _c_state = split
                 if c_is_zero:

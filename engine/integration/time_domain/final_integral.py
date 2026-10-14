@@ -746,6 +746,16 @@ def _plan_guard(n_tuples, n_full, where=None):
             _PLAN_MEM['tuples'] += n_tuples
             _PLAN_MEM['plans'] += 1
 
+
+def _plan_refund(n_tuples):
+    """Take back a ``_plan_guard`` charge for a plan that was not kept (a
+    pruned plan abandoned for the unpruned one)."""
+    with _PLAN_MEM_LOCK:
+        if _PLAN_MEM['active'] > 0:
+            _PLAN_MEM['used'] -= n_tuples * PLAN_BYTES_PER_TUPLE
+            _PLAN_MEM['tuples'] -= n_tuples
+            _PLAN_MEM['plans'] -= 1
+
 #: Relative gap below which a kernel rate counts as equal to a propagator
 #: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,
 #: unless the line's residue there is below ``DRESS_ZERO_RTOL`` of its
@@ -2828,11 +2838,14 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     ``term_const == 0`` in the interval / polygon / legacy poset loops,
     ``coefs != 0`` in the batched kernels).  Where the zeros come from: the
     residues are those of ``PropagatorTD.entry_modes`` (``complex(CDF(SR(
-    C_mats[k][pi, ri])))``); an entry of ``G`` that misses a pole has its
-    residue there decided zero by the propagator builder's exact (tier-1
-    rational) membership test, stored as the SR integer 0, so the test here
-    is a plain ``== 0`` on that stored value.  A residue that only rounds to
-    0.0 is also left out; its terms were exactly 0 too.
+    C_mats[k][pi, ri])))``), and the propagator builder (``api/_propagator``)
+    stores an exact 0 where an entry of ``G`` has no denominator, where a
+    pole is not a root of the entry's own denominator (the exact tier-1
+    membership test over QQ[i], item 31: a driven filter that does not feed
+    back makes ``K`` block triangular, and the entries below it miss its
+    poles), and where a residue is below its relative 1e-12 noise clip.  The
+    test here is a plain ``== 0`` on the stored value: whatever is left out
+    contributed exactly 0 before.
 
     Bit-identity with the unpruned plan: tuples keep their order (a
     subsequence of the full product), each group keeps its nonzero members
@@ -2856,7 +2869,8 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     if not dropped:
         return None
     n_full = math.prod(len(ems.modes) for ems in smooth_edge_modes)
-    _plan_guard(math.prod(len(kk.modes) for kk in kept), n_full, where)
+    n_keep = math.prod(len(kk.modes) for kk in kept)
+    _plan_guard(n_keep, n_full, where)
     plan = _plan_from_tuples(tuple(_enumerate_pole_tuples(kept)),
                              len(kept), subset_constraint_data, m, n_ext)
     groups = plan['tuple_groups']
@@ -2868,6 +2882,7 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
             a_int_per_edge, m, [a for (a, _i) in groups])
         if replay is None:
             _RUNTIME_COUNTERS['zero_mode_order_mismatch'] += 1
+            _plan_refund(n_keep)
             return None
         first, n_groups_full = replay
         order = sorted(range(len(groups)), key=first.__getitem__)
@@ -13357,21 +13372,39 @@ def format_td_integral_latex(
     return r' \\ '.join(lines)
 
 
+def _prefactor_exact_zero(cp, num_params):
+    """True iff the prefactor with ``num_params`` substituted is a plain
+    number exactly 0 (the zero-prefactor exit's test, ``CDF`` value == 0);
+    anything symbolic or failing counts as nonzero."""
+    try:
+        cp = SR(cp)
+        if num_params:
+            cp = cp.subs(num_params)
+        return bool(cp.is_numeric() and complex(CDF(cp)) == 0)
+    except Exception:
+        return False
+
+
 def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
-                           prune=None):
-    r"""Upper bound of the pole tuples the modesum plans of
-    ``typed_diagrams`` will hold (item 35's memory pre-pass), without
-    integrating anything.
+                           prune=None, prefactors=None):
+    r"""Estimate of the pole tuples the modesum plans of ``typed_diagrams``
+    will hold (item 35's memory pre-pass), without integrating anything: an
+    upper bound on the per-diagram route for propagator edges (not for
+    conductance-kernel placements, dressed lines or the residues of a
+    pole-deformed propagator, which the running guard covers).
 
     Per diagram, each propagator edge ``(pi, ri)`` has ``n_e`` modes: its
     NONZERO residues when the exact-zero modes are pruned (``prune``,
-    default ``PRUNE_ZERO_MODES``; an entry with none keeps all), else all
-    poles.  An edge with a δ part (``|delta_coeff| >= 1e-15``) is smooth in
+    default ``PRUNE_ZERO_MODES``), else all poles; an entry without any
+    nonzero residue has no smooth part to keep (``n_e = 0``: the
+    structural-zero rule never builds a subset that keeps it smooth).  An edge with a δ part (``|delta_coeff| >= 1e-15``) is smooth in
     some δ-subsets and δ in the others, so the sum over the subsets of the
     product over their smooth edges is ``∏_δ (1 + n_e) · ∏_smooth n_e``
     (dropping edges only removes tuples; conductance-kernel and dressed
     lines are not counted: the running guard ``_plan_guard`` catches what
-    this misses).  Returns a dict: ``tuples``, ``tuples_unpruned``,
+    this misses).  A diagram whose prefactor (``prefactors``, with
+    ``num_params`` substituted) is exactly 0 builds no plan (the
+    zero-prefactor exit and the subsets' zero-skip).  Returns a dict: ``tuples``, ``tuples_unpruned``,
     ``bytes`` (x ``PLAN_BYTES_PER_TUPLE``), ``n_diagrams`` and ``worst``
     (the diagram index with its per-edge ``(n_e, n_all, has_delta)``), or
     ``None`` when the propagator has no usable pole data."""
@@ -13398,13 +13431,17 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
                 has_delta = abs(complex(ptd.delta_coeff(pi, ri))) >= 1e-15
             except Exception:
                 has_delta = True
-            hit = ((n_nz if (prune and n_nz) else n_all), n_all, has_delta)
+            hit = ((n_nz if prune else n_all) if n_nz else 0,
+                   n_all if n_nz else 0, has_delta)
             entries[key] = hit
         return hit
 
     total = total_full = 0
     worst = None
     for i, td in enumerate(typed_diagrams):
+        if prefactors is not None and _prefactor_exact_zero(prefactors[i],
+                                                            num_params):
+            continue
         per = []
         for (u, v, lbl) in td.prediagram[0].edges():
             ri, pi = _lookup_prop_indices(td, (u, v, lbl))

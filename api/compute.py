@@ -296,11 +296,18 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     from engine.integration.time_domain import final_integral as _fi
     est = _fi.estimate_modesum_plans(
         [r['typed_diagram'] for r in diagram_records], propagator_data,
-        num_params)
+        num_params, prefactors=[r['combined_prefactor']
+                                for r in diagram_records])
     if est is None:
         return None
     deform = prop.get('pole_deformation')
-    runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None else 1
+    runs = 1
+    if deform is not None:          # the node runs ``_phase_j_deformed`` makes
+        try:
+            runs = len(deform.nodes(deform.real_system and _real_inputs(
+                num_params, diagram_records)))
+        except Exception:
+            runs = int(getattr(deform, 'n_nodes', 1) or 1)
     budget = _fi.phase_j_mem_budget_bytes()
     w = est['worst']
     worst_rec = diagram_records[w['index']] if w else None

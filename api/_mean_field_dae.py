@@ -696,12 +696,29 @@ def _check_saddle_determined(R, x, rows, expanded):
         h = 1e-6 * max(1.0, abs(x[j]))
         e = np.zeros(n)
         e[j] = h
-        J[:, j] = (R(x + e) - R(x - e)) / (2.0 * h)
-    if not np.all(np.isfinite(J)):
+        rp, rm = R(x + e), R(x - e)
+        # inconclusive: a non-finite value or a penalised point (R returns
+        # 1e10 where an equation fails) in the stencil
+        if not (np.all(np.isfinite(rp)) and np.all(np.isfinite(rm))
+                and np.max(np.abs(rp)) < 1e10 and np.max(np.abs(rm)) < 1e10):
+            return
+        J[:, j] = (rp - rm) / (2.0 * h)
+    # rank on the equilibrated Jacobian (rows, then columns, scaled to unit
+    # norm), so that the units of a field or an equation do not decide it;
+    # a zero row or column (the integrated field enters no equation) is
+    # singular outright
+    rn = np.linalg.norm(J, axis=1)
+    sing = bool(np.any(rn == 0))
+    if not sing:
+        Js = J / rn[:, None]
+        cn = np.linalg.norm(Js, axis=0)
+        sing = bool(np.any(cn == 0))
+        if not sing:
+            sv = np.linalg.svd(Js / cn[None, :], compute_uv=False)
+            sing = not sv[-1] > 1e-10 * sv[0]
+    if not sing:
         return
     sv = np.linalg.svd(J, compute_uv=False)
-    if sv[0] > 0 and sv[-1] > 1e-9 * sv[0]:
-        return
     eqs = '; '.join(sorted({f'{expanded[k][0]} = {expanded[k][1]}'
                             for k in rows}))
     raise ValueError(

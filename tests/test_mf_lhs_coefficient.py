@@ -83,17 +83,40 @@ def test_algebraic_remainder_moves_to_rhs():
     assert np.isclose(np.ravel(mf['ustar'])[0], r * m_exact)
 
 
-def test_pure_time_derivative_is_refused_with_guidance():
-    b = (TemporalModelBuilder('pure').population('pop', size=1)
-         .physical_field('u', population='pop').physical_field('m', population='pop')
-         .parameter('a', default=0.5).parameter('r', default=0.4)
-         .set_action_text('sum(ut[i]*u[i] - (exp(ut[i])-1)*r*m[i] + mt[i]*(Dt*m[i] + u[i]) - (exp(mt[i])-1)*a for i in pop)')
-         .equation(lhs='u[i]', rhs='r*m[i]', population='pop')
-         .equation(lhs='Dt*m[i]', rhs='a - u[i]', population='pop'))
+def _pure_builder(m_eq):
+    return (TemporalModelBuilder('pure').population('pop', size=1)
+            .physical_field('u', population='pop').physical_field('m', population='pop')
+            .parameter('a', default=0.5).parameter('r', default=0.4)
+            .set_action_text('sum(ut[i]*u[i] - (exp(ut[i])-1)*r*m[i] + mt[i]*(Dt*m[i] + u[i]) - (exp(mt[i])-1)*a for i in pop)')
+            .equation(lhs='u[i]', rhs='r*m[i]', population='pop')
+            .equation(lhs=m_eq[0], rhs=m_eq[1], population='pop'))
+
+
+def test_pure_time_derivative_is_accepted_like_the_moved_form():
+    """A pure integrator (item 35): ``Dt*m = a - u`` fixes u* = a through
+    0 = a - u, and m* = u*/r through the other equation (DAE solve)."""
+    import numpy as np
+    from api._mean_field_dae import solve_mean_field_dae
+    b = _pure_builder(('Dt*m[i]', 'a - u[i]'))
+    assert _derived(b) == _derived(_pure_builder(('Dt*m[i] - (a - u[i])',
+                                                  '0')))
+    moved = _pure_builder(('Dt*m[i] + u[i]', 'a'))
+    fund = {'a': 0.5, 'r': 0.4}
+    x = solve_mean_field_dae(b.build(), fund)['mf_values']
+    y = solve_mean_field_dae(moved.build(), fund)['mf_values']
+    assert x == y
+    assert np.isclose(x['mstar'][0], 0.5 / 0.4) and np.isclose(x['ustar'][0], 0.5)
+
+
+def test_pure_integrator_without_a_linear_field_is_refused_with_guidance():
+    b = (TemporalModelBuilder('pure-cubic').physical_field('x')
+         .parameter('a', default=0.5).parameter('D', default=0.1)
+         .set_action_text('xt*(Dt*x - a + x^3) - D*xt^2')
+         .equation(lhs='Dt*x', rhs='a - x^3'))
     with pytest.raises(ValueError) as ei:
         b.build()
     msg = str(ei.value)
-    assert 'vanishes at Dt=0' in msg and 'set_mf_equation' in msg and "lhs='Dt*m + u'" in msg
+    assert 'pure integrator' in msg and 'set_mf_equation' in msg
 
 
 def test_scalar_form_without_population():

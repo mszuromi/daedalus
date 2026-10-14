@@ -274,6 +274,27 @@ def test_estimate_is_recorded_and_default_budget_passes(model):
                    for e in an.ledger)
 
 
+def test_estimate_skips_zero_prefactor_diagrams(monkeypatch, model):
+    """The estimate counts only diagrams that build plans: a prefactor that
+    is exactly 0 at the parameter point never does (the zoo's two-field
+    quartic at ell = 2: 10,598 diagrams, 242 plans)."""
+    seen = []
+    orig = FI.estimate_modesum_plans
+
+    def spy(tds, pdata, num_params=None, prune=None, prefactors=None):
+        seen.append((tds, pdata, num_params, prefactors))
+        return orig(tds, pdata, num_params, prune, prefactors)
+    monkeypatch.setattr(FI, 'estimate_modesum_plans', spy)
+    _cumulants(model, k=2)
+    tds, pdata, num_params, prefactors = seen[-1]
+    assert len(prefactors) == len(tds)
+    full = orig(tds, pdata, num_params, prefactors=prefactors)
+    zero = orig(tds, pdata, num_params, prefactors=[0] * len(tds))
+    half = orig(tds, pdata, num_params,
+                prefactors=[0] + list(prefactors[1:]))
+    assert full['tuples'] > half['tuples'] > zero['tuples'] == 0
+
+
 def test_over_budget_refuses_before_phase_j(monkeypatch, model):
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.001')
     built = []
@@ -372,3 +393,43 @@ def test_unpinned_pure_integrator_is_refused_by_the_saddle_solve():
         compute_cumulants(m, k=2, max_ell=0, external_fields=[('dT', 1)] * 2,
                           tau_grid=np.array([0.0]), parallel=False,
                           verbose=False)
+
+
+def test_abandoned_pruned_plan_is_refunded(monkeypatch):
+    """A pruned plan whose group order cannot be replayed falls back to the
+    unpruned plan; the running total then holds the unpruned plan only."""
+    monkeypatch.setattr(FI, '_full_product_first_occurrence',
+                        lambda *a, **k: None)
+    ems = [_ems(md) for md in _modes(4)]
+    with FI.phase_j_memory_scope(use_env=False) as sc:
+        p = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=True)
+    assert len(p['pole_tuples']) == 4 * 4 * 2 * 1
+    assert sc.tuples == 32 and sc.plans == 1
+
+
+def test_grouped_fallback_does_not_swallow_the_budget_error(monkeypatch,
+                                                            model):
+    """Over budget inside the grouped route's per-diagram fallback: the
+    refusal propagates (it is not recorded as a skipped group)."""
+    import api._grouped_phase_j as GP
+    import api.compute as CO
+    monkeypatch.setattr(CO, '_phase_j_memory_preflight',
+                        lambda *a, **k: None)
+    monkeypatch.setattr(GP, 'integrate_grouped_diagram',
+                        lambda *a, **k: {'status': 'failed',
+                                         'reason': 'forced'})
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1e-7')
+    with pytest.raises(FI.PhaseJResourceError):
+        _cumulants(model, grouped=True)
+
+
+def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
+    seen = []
+    orig = FI._decay_tol
+
+    def spy(modes=None, tuples=None, plan=None, cdata=None):
+        seen.append(modes)
+        return orig(modes, tuples, plan, cdata)
+    monkeypatch.setattr(FI, '_decay_tol', spy)
+    _cumulants(model, k=1, field='dh', grouped=True)
+    assert seen and all(m is not None for m in seen)

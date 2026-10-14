@@ -462,8 +462,11 @@ def _integrate_grouped_m1_modesum(
     bbox_cap=None,
     row_kinds=None,
     tie_ctx=None,
+    edge_modes=None,
 ):
-    r"""Analytic merged-residue 1D integral.
+    r"""Analytic merged-residue 1D integral.  ``edge_modes`` (item 35): the
+    per-edge modes with EVERY pole (the decay margin is taken from them, as
+    from the unpruned tuples; ``pole_tuples`` may lack exact-zero poles).
 
     Computes ``∫_L^U Σ_α B_α · exp(α_s · s + γ_α) ds`` where
         α_s = Σ_e λ_α_e · a_int_e[0]
@@ -548,7 +551,7 @@ def _integrate_grouped_m1_modesum(
                 yield B_alpha, (alpha_s,), gamma
         return _fi_mod._interval_dd_total(
             _terms(), 1.0 + 0.0j, L, U, 'grouped_m1',
-            _fi_mod._decay_tol(None, pole_tuples, None,
+            _fi_mod._decay_tol(edge_modes, pole_tuples, None,
                                subset_constraint_data),
             _fi_mod._t_min_frame(free_ext_vals, tie_ctx))
 
@@ -1473,6 +1476,7 @@ def integrate_grouped_diagram(
                             free_ext_vals=free_vals,
                             row_kinds=row_kinds,
                             tie_ctx=_tie_ctx,
+                            edge_modes=dummy_modes,
                         )
                     elif m_val == 2 and dummy_modes is not None:
                         _attempted, _path = 'polygon', 'polygon'
