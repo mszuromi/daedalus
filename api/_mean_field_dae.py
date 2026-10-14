@@ -267,9 +267,7 @@ def _build_residual(model: dict, params_np: dict,
     # via numpy broadcasting; this matches the symbolic stability
     # path that wraps these in ``_FieldScalar``).  Multi-position
     # state vars stay as arrays — ``[i]`` indexing required.
-    def R(x: np.ndarray, _lhs_only: bool = False) -> np.ndarray:
-        # ``_lhs_only`` (item 35): the LHS values alone, NaN where one
-        # fails (``_pure_integrator_rows``).
+    def R(x: np.ndarray) -> np.ndarray:
         # Pack state variables as numpy arrays keyed by their declared
         # name (so n[i], v[i] etc. work under Python's eval).
         state = {var: np.asarray(x[start:end], dtype=float)
@@ -300,13 +298,6 @@ def _build_residual(model: dict, params_np: dict,
         out = np.empty(len(expanded), dtype=float)
         for k, (lhs_text, rhs_text, i, pop) in enumerate(expanded):
             ns['i'] = i
-            if _lhs_only:
-                try:
-                    out[k] = float(np.asarray(eval(lhs_text, ns),
-                                              dtype=float).reshape(-1)[0])
-                except Exception:
-                    out[k] = np.nan
-                continue
             try:
                 lhs = eval(lhs_text, ns)
                 rhs = eval(rhs_text, ns)
@@ -642,7 +633,7 @@ def solve_mean_field_dae(
         fixed_point_index = clamped
 
     selected = selectable_records[fixed_point_index]['values']
-    pure = _pure_integrator_rows(R, expanded, total)
+    pure = _pure_integrator_rows(model, expanded)
     if pure:
         x_sel = np.concatenate([np.asarray(selected[f'{v}star'], dtype=float)
                                 for v, _, _ in state_vars])
@@ -669,19 +660,22 @@ def solve_mean_field_dae(
     }
 
 
-def _pure_integrator_rows(R, expanded, total) -> list:
-    """The residual rows whose LHS is a pure time derivative (item 35): the
-    text contains ``Dt`` and the LHS is exactly 0 at Dt = 0 at two random
-    states (a separate RNG: the seeds of the solve are untouched)."""
-    import re
-    cand = [k for k, (lhs, _r, _i, _p) in enumerate(expanded)
-            if re.search(r'\bDt\b', lhs)]
-    if not cand:
-        return []
-    rng = np.random.default_rng(35)
-    vals = [R(rng.uniform(0.3, 1.7, total) * rng.choice([-1.0, 1.0], total),
-              _lhs_only=True) for _ in range(2)]
-    return [k for k in cand if all(v[k] == 0.0 for v in vals)]
+def _pure_integrator_rows(model, expanded) -> list:
+    """The residual rows of the equations whose LHS is a pure time
+    derivative (item 35): the LHS at Dt = 0 is identically zero as a
+    symbolic expression, the parameters kept as symbols (the builder's
+    test, ``ModelBuilder._lhs_vanishes_at_dt0``; an LHS such as
+    ``(Dt + mu)*x`` is not one even where mu = 0).  Rows follow
+    ``expanded`` (each equation once per population index)."""
+    from api.model import ModelBuilder
+    rows, k = [], 0
+    for eq in model.get('equations', []):
+        pop = eq['population']
+        n = _pop_size(model, pop) if pop is not None else 1
+        if ModelBuilder._lhs_vanishes_at_dt0(eq['lhs_text']):
+            rows.extend(range(k, k + n))
+        k += n
+    return rows if k == len(expanded) else []
 
 
 def _check_saddle_determined(R, x, rows, expanded):

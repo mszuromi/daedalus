@@ -13386,7 +13386,7 @@ def _prefactor_exact_zero(cp, num_params):
 
 
 def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
-                           prune=None, prefactors=None):
+                           prune=None, prefactors=None, budget_bytes=None):
     r"""Estimate of the pole tuples the modesum plans of ``typed_diagrams``
     will hold (item 35's memory pre-pass), without integrating anything: an
     upper bound on the per-diagram route for propagator edges (not for
@@ -13404,7 +13404,10 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     lines are not counted: the running guard ``_plan_guard`` catches what
     this misses).  A diagram whose prefactor (``prefactors``, with
     ``num_params`` substituted) is exactly 0 builds no plan (the
-    zero-prefactor exit and the subsets' zero-skip).  Returns a dict: ``tuples``, ``tuples_unpruned``,
+    zero-prefactor exit and the subsets' zero-skip); that test costs a
+    substitution per diagram, so it runs only when the count without it is
+    over ``budget_bytes`` (or when no budget is given), and
+    ``prefactors_tested`` says whether it ran.  Returns a dict: ``tuples``, ``tuples_unpruned``,
     ``bytes`` (x ``PLAN_BYTES_PER_TUPLE``), ``n_diagrams`` and ``worst``
     (the diagram index with its per-edge ``(n_e, n_all, has_delta)``), or
     ``None`` when the propagator has no usable pole data."""
@@ -13417,6 +13420,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
         return None
     if not lam:
         return None
+    D_delta = propagator_data.get('D_delta')
     entries = {}
 
     def counts(pi, ri):
@@ -13428,7 +13432,17 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
             n_nz = (sum(1 for (C, _l) in modes if not _mode_is_zero(C))
                     if modes is not None else n_all)
             try:
-                has_delta = abs(complex(ptd.delta_coeff(pi, ri))) >= 1e-15
+                # the δ coefficient as ``build_G_t_matrix`` takes it
+                # (``D_delta`` with num_params substituted), without
+                # building G(t)
+                if D_delta is not None:
+                    e = SR(D_delta[pi, ri])
+                    dc = (0j if e.is_zero() else
+                          complex(CDF(e.subs(num_params) if num_params
+                                      else e)))
+                else:
+                    dc = complex(ptd.delta_coeff(pi, ri))
+                has_delta = abs(dc) >= 1e-15
             except Exception:
                 has_delta = True
             hit = ((n_nz if prune else n_all) if n_nz else 0,
@@ -13436,18 +13450,39 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
             entries[key] = hit
         return hit
 
-    total = total_full = 0
-    worst = None
-    for i, td in enumerate(typed_diagrams):
-        if prefactors is not None and _prefactor_exact_zero(prefactors[i],
-                                                            num_params):
-            continue
+    per_diagram = []
+    for td in typed_diagrams:
         per = []
         for (u, v, lbl) in td.prediagram[0].edges():
             ri, pi = _lookup_prop_indices(td, (u, v, lbl))
             per.append(counts(pi, ri))
-        t = math.prod((1 + n) if dl else n for (n, _a, dl) in per)
-        tf = math.prod((1 + a) if dl else a for (_n, a, dl) in per)
+        per_diagram.append((
+            math.prod((1 + n) if dl else n for (n, _a, dl) in per),
+            math.prod((1 + a) if dl else a for (_n, a, dl) in per), per))
+    tested = False
+    if prefactors is not None and (
+            budget_bytes is None
+            or sum(t for (t, _f, _p) in per_diagram) * PLAN_BYTES_PER_TUPLE
+            > budget_bytes):
+        tested = True
+        memo = {}
+        for i, cp in enumerate(prefactors):
+            if per_diagram[i][0] == 0 and per_diagram[i][1] == 0:
+                continue
+            try:
+                key = SR(cp)
+                zero = memo.get(key)
+            except TypeError:
+                key, zero = None, None
+            if zero is None:
+                zero = _prefactor_exact_zero(cp, num_params)
+                if key is not None:
+                    memo[key] = zero
+            if zero:
+                per_diagram[i] = (0, 0, per_diagram[i][2])
+    total = total_full = 0
+    worst = None
+    for i, (t, tf, per) in enumerate(per_diagram):
         total += t
         total_full += tf
         if worst is None or t > worst['tuples']:
@@ -13456,7 +13491,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     return {'tuples': total, 'tuples_unpruned': total_full,
             'bytes': total * PLAN_BYTES_PER_TUPLE,
             'n_diagrams': len(typed_diagrams), 'worst': worst,
-            'pruned': bool(prune)}
+            'pruned': bool(prune), 'prefactors_tested': tested}
 
 
 def _lookup_prop_indices(typed_diagram, edge_key):

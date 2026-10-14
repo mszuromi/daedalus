@@ -281,9 +281,10 @@ def test_estimate_skips_zero_prefactor_diagrams(monkeypatch, model):
     seen = []
     orig = FI.estimate_modesum_plans
 
-    def spy(tds, pdata, num_params=None, prune=None, prefactors=None):
+    def spy(tds, pdata, num_params=None, prune=None, prefactors=None,
+            budget_bytes=None):
         seen.append((tds, pdata, num_params, prefactors))
-        return orig(tds, pdata, num_params, prune, prefactors)
+        return orig(tds, pdata, num_params, prune, prefactors, budget_bytes)
     monkeypatch.setattr(FI, 'estimate_modesum_plans', spy)
     _cumulants(model, k=2)
     tds, pdata, num_params, prefactors = seen[-1]
@@ -293,6 +294,15 @@ def test_estimate_skips_zero_prefactor_diagrams(monkeypatch, model):
     half = orig(tds, pdata, num_params,
                 prefactors=[0] + list(prefactors[1:]))
     assert full['tuples'] > half['tuples'] > zero['tuples'] == 0
+    assert zero['prefactors_tested']
+    # under a budget the prefactors are tested only when the count without
+    # them is over it
+    roomy = orig(tds, pdata, num_params, prefactors=[0] * len(tds),
+                 budget_bytes=1e12)
+    assert not roomy['prefactors_tested'] and roomy['tuples'] == full['tuples']
+    tight = orig(tds, pdata, num_params, prefactors=[0] * len(tds),
+                 budget_bytes=1.0)
+    assert tight['prefactors_tested'] and tight['tuples'] == 0
 
 
 def test_over_budget_refuses_before_phase_j(monkeypatch, model):

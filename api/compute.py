@@ -294,21 +294,27 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     budget ``PHASE_J_MEM_BUDGET_GB`` it raises ``PhaseJResourceError``
     before any plan is built, under every policy."""
     from engine.integration.time_domain import final_integral as _fi
+    deform = prop.get('pole_deformation')
+    # the node runs ``_phase_j_deformed`` makes: at most ``n_nodes`` (fewer
+    # for a real system, which costs a scan of every prefactor to decide;
+    # done only when the bound is over budget)
+    runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
+        else 1
+    budget = _fi.phase_j_mem_budget_bytes()
     est = _fi.estimate_modesum_plans(
         [r['typed_diagram'] for r in diagram_records], propagator_data,
         num_params, prefactors=[r['combined_prefactor']
-                                for r in diagram_records])
+                                for r in diagram_records],
+        budget_bytes=None if budget is None else budget / runs)
     if est is None:
         return None
-    deform = prop.get('pole_deformation')
-    runs = 1
-    if deform is not None:          # the node runs ``_phase_j_deformed`` makes
+    if (deform is not None and budget is not None
+            and est['bytes'] * runs > budget):
         try:
             runs = len(deform.nodes(deform.real_system and _real_inputs(
                 num_params, diagram_records)))
         except Exception:
-            runs = int(getattr(deform, 'n_nodes', 1) or 1)
-    budget = _fi.phase_j_mem_budget_bytes()
+            pass
     w = est['worst']
     worst_rec = diagram_records[w['index']] if w else None
     est.update(node_runs=runs, bytes=est['bytes'] * runs,
