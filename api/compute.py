@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from typing import Any
 
 import numpy as np
@@ -122,6 +123,75 @@ def _pole_cluster_preamble(prop, max_ell):
     return pc
 
 
+class PhaseJIncompleteWarning(UserWarning):
+    """``compute_cumulants`` left diagrams out: Phase J could not evaluate
+    them, so the cumulant misses their contributions
+    (``result['phase_j_incomplete']`` names them and the reason)."""
+
+
+class PhaseJIncompleteError(RuntimeError):
+    """Raised instead of :class:`PhaseJIncompleteWarning` under
+    ``policy={'mode': 'strict'}``.  ``result``: the (incomplete) result
+    dict; ``failures``: ``{ell: [failure record, ...]}``."""
+
+    def __init__(self, message, result=None, failures=None):
+        super().__init__(message)
+        self.result = result
+        self.failures = failures or {}
+
+
+def _phase_j_failures(phase_j_by_ell):
+    """``{ell: [{'diagram', 'n_diagrams', 'reason'}, ...]}`` for every
+    diagram (per-diagram route) or group (grouped route) that Phase J could
+    not evaluate and therefore left out of ``C_tau``; ``{}`` when none.
+    Reads the ``skipped_kernel_ids`` of each loop order (ints with the
+    reason in ``groups`` on the per-diagram route, dicts on the grouped
+    one), so every route reports through the same field."""
+    out = {}
+    for ell, pj in sorted((phase_j_by_ell or {}).items()):
+        if not isinstance(pj, dict):
+            continue
+        reasons = {g.get('kernel_id'): g.get('reason')
+                   for g in (pj.get('groups') or [])
+                   if g.get('handled_by') == 'skipped'}
+        recs = []
+        for sk in pj.get('skipped_kernel_ids') or []:
+            if isinstance(sk, dict):
+                recs.append({
+                    'diagram': sk.get('kernel_id', sk.get('group_idx')),
+                    'n_diagrams': sk.get('n_diagrams', 1),
+                    'reason': str(sk.get('reason', '')),
+                })
+            else:
+                recs.append({'diagram': sk, 'n_diagrams': 1,
+                             'reason': str(reasons.get(sk, ''))})
+        if recs:
+            out[ell] = recs
+    return out
+
+
+def _policy_is_strict(policy):
+    mode = (policy.get('mode') if isinstance(policy, dict)
+            else getattr(policy, 'mode', None))
+    return mode == 'strict'
+
+
+def _phase_j_failure_message(failures, model_name):
+    n = sum(r['n_diagrams'] for recs in failures.values() for r in recs)
+    lines = [f'compute_cumulants({model_name!r}): Phase J could not evaluate '
+             f'{n} diagram(s); they are NOT in C_tau (result["status"] = '
+             f'"incomplete", details in result["phase_j_incomplete"]):']
+    for ell, recs in failures.items():
+        by_reason = {}
+        for r in recs:
+            by_reason.setdefault(r['reason'], []).append(r['diagram'])
+        for reason, ids in by_reason.items():
+            shown = ', '.join(map(str, ids[:12])) + (
+                ', ...' if len(ids) > 12 else '')
+            lines.append(f'  ell={ell}: diagram(s) {shown}: {reason[:300]}')
+    return '\n'.join(lines)
+
+
 def _real_inputs(num_params, diagram_records):
     """Real parameters and diagram prefactors: with a real propagator the
     Phase J result at conj(w) is conj of the one at w."""
@@ -171,6 +241,22 @@ def _combine_phase_j(results, nodes):
                 [x['contribution'] for x in gs], nodes)
         groups.append(g)
     out['groups'] = groups
+    # A diagram that failed at ANY node is missing from that node's total:
+    # report the union (the per-node records are in node order).
+    sk_all, seen = [], set()
+    for r in results:
+        for sk in (r or {}).get('skipped_kernel_ids') or []:
+            key = repr(sorted(sk.items())) if isinstance(sk, dict) else sk
+            if key not in seen:
+                seen.add(key)
+                sk_all.append(sk)
+    out['skipped_kernel_ids'] = sk_all
+    for g, gs in zip(groups, zip(*[r.get('groups') or [] for r in results])):
+        bad = [x for x in gs if x.get('handled_by') == 'skipped']
+        if bad and g.get('handled_by') != 'skipped':
+            g['handled_by'] = 'skipped'
+            g['reason'] = bad[0].get('reason')
+            g['contribution'] = None
     for key in ('delta_contributions', 'delta_contributions_multi'):
         if key not in out:
             continue
@@ -574,6 +660,13 @@ def compute_cumulants(
                              'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
+        'status'          : ``'ok'``, or ``'incomplete'`` when Phase J could
+                             not evaluate some diagram(s): they are left out
+                             of ``C_tau``, a :class:`PhaseJIncompleteWarning`
+                             names them (``policy={'mode': 'strict'}``
+                             raises :class:`PhaseJIncompleteError`)
+        'phase_j_incomplete' : {ell: [{'diagram', 'n_diagrams', 'reason'}]}
+                             of those diagrams (``{}`` when complete)
         'route'           : the routing record (``api.routing.Route.
                              as_dict``: backend, rejected backends)
         'analysis'        : the :class:`api.analyze.ModelReport` of the
@@ -848,10 +941,24 @@ def compute_cumulants(
         result = route.backend.run(state)
     finally:                              # restores the maxima on a raise too
         _counters, _complete = _counter_delta(_snap)
+    # Never silent: a diagram Phase J could not evaluate is named (status,
+    # warning; strict policy raises after the report is attached).
+    _failures = None
+    if isinstance(result, dict) and 'phase_j_by_ell' in result:
+        _failures = _phase_j_failures(result['phase_j_by_ell'])
+        result['phase_j_incomplete'] = _failures
+        result['status'] = 'incomplete' if _failures else 'ok'
     if _pf is not None:
         _pf.after_run(result, _counters, complete=_complete,
                       evaluated=state.evaluated_grid)
     _attach_provenance(result, route, _pf)
+    if _failures:
+        _msg = _phase_j_failure_message(_failures,
+                                        model.get('name', '<unnamed>'))
+        if _policy_is_strict(policy):
+            raise PhaseJIncompleteError(_msg, result=result,
+                                        failures=_failures)
+        warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)
     return result

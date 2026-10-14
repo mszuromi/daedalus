@@ -369,12 +369,33 @@ def _conv_vertex_td():
     return td, g
 
 
+def test_conv_vertex_kernel_row_is_a_difference_row(monkeypatch):
+    """A ConvVertex kernel is an edge (item 27): its attached leg has its
+    own time ``s`` and the kernel row ``anchor − s > 0`` is a difference row
+    labelled 'conv_pseudo'; there is no τ box row ('conv_tau') any more, so
+    every subset can take a box-free route."""
+    from sage.all import SR
+    seen = []
+    monkeypatch.setattr(FI, '_SUBSET_HOOK', seen.append)
+    td, sym = _conv_vertex_td()
+    res = FI.integrate_diagram(td, _hand_built_prop(), SR(0.3) * sym,
+                               [SR.var('t_1'), SR.var('t_2')],
+                               external_fields=[('x', 1), ('x', 1)])
+    assert res['status'] == 'ok', res.get('reason')
+    res['contribution'](0.0, 0.5)
+    assert seen
+    for p in seen:
+        kinds = list(p['row_kinds'])
+        assert 'conv_tau' not in kinds and kinds.count('conv_pseudo') == 1
+        assert len(kinds) == len(p['constraints'])
+        a_int = p['constraints'][kinds.index('conv_pseudo')][0]
+        nz = sorted(x for x in a_int if abs(x) > 0)
+        assert nz in ([-1.0, 1.0], [1.0])      # anchor − s (or s δ-fixed)
+
+
 @pytest.mark.parametrize('build, expected', [
     (_colored_noise_td, ('edge', 'edge', 'noise_box', 'noise_box')),
-    # the conv τ keeps its upper cap (τ < 50); its lower cap τ > 0 is
-    # replaced by the kernel pseudo-edge's row Δt = +τ > 0
-    (_conv_vertex_td, ('edge', 'edge', 'edge', 'conv_tau', 'conv_pseudo')),
-], ids=['noise_source', 'conv_vertex'])
+], ids=['noise_source'])
 def test_integrate_diagram_labels_every_row(build, expected, monkeypatch):
     """The provenance ``integrate_diagram`` builds for its τ box rows and
     conv pseudo-edges reaches the hook payload, one kind per constraint
@@ -399,7 +420,7 @@ def test_integrate_diagram_labels_every_row(build, expected, monkeypatch):
         assert tuple(kinds) == expected
         assert len(kinds) == len(p['constraints'])
         for (a_int, _e, _c), kind in zip(p['constraints'], kinds):
-            if kind in ('noise_box', 'conv_tau', 'conv_pseudo'):
+            if kind in ('noise_box', 'conv_tau'):
                 # a τ row: exactly one nonzero coefficient, on τ (last)
                 assert [abs(x) for x in a_int[:-1]] == [0.0] * (
                     len(a_int) - 1) and abs(a_int[-1]) == 1.0

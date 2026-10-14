@@ -503,6 +503,22 @@ def _g6_report(counters, C_tau, complete=True, accuracy=None):
     return pf.report()
 
 
+def test_g6_names_diagrams_phase_j_could_not_evaluate():
+    """G6_DIAGRAMS_SKIPPED (warning): diagrams left out of the cumulant
+    (``result['phase_j_incomplete']``, see test_phase_j_never_silent.py for
+    the routes); a complete run has no such finding."""
+    pf = A.Preflight(_load('ou_quartic')[0], Question(k=2, max_ell=1))
+    pf.after_run({'C_tau': np.array([0.5, 0.4]), 'phase_j_incomplete': {
+        1: [{'diagram': 3, 'n_diagrams': 1, 'reason': 'evaluator status=failed (x)'},
+            {'diagram': 5, 'n_diagrams': 2, 'reason': 'evaluator status=failed (x)'}]}},
+        {'dd_poset': 1}, complete=True, evaluated=True)
+    rep = pf.report()
+    f = [f for f in rep.findings if f.code == 'G6_DIAGRAMS_SKIPPED'][0]
+    assert f.level == 'warning' and f.gate == 'G6' and f.remedy
+    assert '3 diagram(s)' in f.message and rep.diagnostics['n_diagrams_skipped'] == 3
+    assert not _g6_report({'dd_poset': 1}, [0.5, 0.4]).has('G6_DIAGRAMS_SKIPPED')
+
+
 def test_g6_bound_and_verdicts_on_synthetic_counters():
     rep = _g6_report({'divergent_subsets': 2, 'dd_ill_conditioned': 3, 'dd_err_ratio_max': 7.0,
                       'dd_err_abs_sum': 4e-7, 'dbm_err_abs_sum': 1e-7, 'dd_poset': 5, 'nquad_calls': 1},

@@ -95,6 +95,7 @@ tolerance (an exactly tied pair keeps its smaller index, so pruning can never
 drop every bound), and the final sum is compensated (``math.fsum``).
 """
 import cmath
+import threading
 import math
 
 import numpy as _np
@@ -270,6 +271,28 @@ def is_degenerate(D, tol=DEGENERATE_TOL):
 
 # ───────────────────────────────────────────────────────────── elimination
 
+class _DoubleArith:
+    """The arithmetic of the elimination: double precision (the default;
+    these are the very functions the code called before the backend was
+    swappable, so its results are unchanged)."""
+    exp = staticmethod(cmath.exp)
+    log = staticmethod(cmath.log)
+    rexp = staticmethod(math.exp)
+    rlog = staticmethod(math.log)
+    fsum = staticmethod(math.fsum)
+    cplx = complex
+    err_factor = COND_ERR_FACTOR
+    thin_retry = True
+
+
+#: The backend in use (swapped only inside :func:`integrate_exp_sum_mp`,
+#: under ``_MP_LOCK``).
+_A = _DoubleArith
+_MP_LOCK = threading.Lock()
+#: Working precision of the high-precision tier (decimal digits).
+MP_DPS = 40
+
+
 _FACT = [1]
 for _i in range(1, 64):
     _FACT.append(_FACT[-1] * _i)
@@ -287,7 +310,7 @@ def _rescaled(A, d):
         return 0.0
     if d > LOG_OVERFLOW:
         return INF
-    return A * math.exp(d)
+    return A * _A.rexp(d)
 
 
 def _add_term(acc, key, C, E, A):
@@ -312,10 +335,10 @@ def _add_term(acc, key, C, E, A):
     elif E == E0:
         acc[key] = (C0 + C, E0, A0 + A)
     elif E.real > E0.real:
-        f = cmath.exp(E0 - E)
+        f = _A.exp(E0 - E)
         acc[key] = (C + C0 * f, E, A + A0 * abs(f))
     else:
-        f = cmath.exp(E - E0)
+        f = _A.exp(E - E0)
         acc[key] = (C0 + C * f, E0, A0 + A * abs(f))
 
 
@@ -558,23 +581,23 @@ def _sum_leaves(leaves):
     for (C, E, A) in leaves:
         # every leaf's magnitude counts, a cancelled (C == 0) one included:
         # its rounding error is that of the terms that cancelled
-        mag += A * math.exp(E.real) if E.real <= LOG_OVERFLOW else INF
+        mag += A * _A.rexp(E.real) if E.real <= LOG_OVERFLOW else INF
         if C == 0:
             continue
-        lg = E.real + math.log(abs(C))
+        lg = E.real + _A.rlog(abs(C))
         if lg > lg_max:
             lg_max = lg
         if lg > LOG_OVERFLOW:
             continue
         if E.real > LOG_OVERFLOW:
-            x = cmath.exp(E + cmath.log(C))
+            x = _A.exp(E + _A.log(C))
         else:
-            x = C * cmath.exp(E)
+            x = C * _A.exp(E)
         re_parts.append(x.real)
         im_parts.append(x.imag)
     if lg_max > LOG_OVERFLOW:
         return None, lg_max
-    return complex(math.fsum(re_parts), math.fsum(im_parts)), mag
+    return _A.cplx(_A.fsum(re_parts), _A.fsum(im_parts)), mag
 
 
 # ───────────────────────────────────────────────────────────── driver
@@ -623,12 +646,12 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
     zero_mono = (0,) * n
     seed_scale = 0.0
     for (C, E, beta) in seeds:
-        C = complex(C)
+        C = _A.cplx(C)
         if C == 0:
             continue
-        E = complex(E)
-        seed_scale += abs(C) * math.exp(min(E.real, LOG_OVERFLOW))
-        key = (tuple(complex(b) for b in beta) + (0j,), zero_mono)
+        E = _A.cplx(E)
+        seed_scale += abs(C) * _A.rexp(min(E.real, LOG_OVERFLOW))
+        key = (tuple(_A.cplx(b) for b in beta) + (_A.cplx(0),), zero_mono)
         _add_term(terms, key, C, E, abs(C))
     if scale is None:
         scale = seed_scale
@@ -638,7 +661,7 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
             default=0.0)
     res = _run(terms, D, m, Z, eps, scale, thin=False, open_ok=open_ok,
                beta_tol=beta_tol)
-    if res.status != STATUS_ILL_CONDITIONED:
+    if res.status != STATUS_ILL_CONDITIONED or not _A.thin_retry:
         return res
     # Retry once with thin constant-bound intervals integrated by
     # Gauss-Legendre: a thin region (an external-time nudge, a tie) makes
@@ -649,6 +672,46 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
     if res2.status == STATUS_OK:
         res2.thin_retry = True
         return res2
+    return res
+
+
+def integrate_exp_sum_mp(rows, m, seeds, cap, *, scale=None, eps=None,
+                         beta_tol=None, dps=None):
+    """:func:`integrate_exp_sum` with the elimination carried out in
+    ``dps``-digit arithmetic (``MP_DPS`` by default; mpmath).  For a subset
+    whose double-precision closed form fails the conditioning test because
+    its expansion cancels (near-equal decay rates make partial fractions
+    ``1/(λ_a − λ_b)`` large; the integral itself is well conditioned in the
+    λ): the same exact elimination of the same double-precision inputs,
+    with rounding ``10^(2 − dps)`` instead of ``COND_ERR_FACTOR``, judged by
+    the same test.  No Gauss-Legendre thin retry.  Returns a ``DBMResult``
+    with ``value`` as a Python complex and ``magnitude`` as a float."""
+    import mpmath as mp
+    global _A
+    dps = int(dps or MP_DPS)
+
+    class _MpArith:
+        exp = staticmethod(mp.exp)
+        log = staticmethod(mp.log)
+        rexp = staticmethod(mp.exp)
+        rlog = staticmethod(mp.log)
+        fsum = staticmethod(mp.fsum)
+        cplx = staticmethod(mp.mpc)
+        err_factor = mp.mpf(10) ** (2 - dps)
+        thin_retry = False
+
+    with _MP_LOCK, mp.workdps(dps):
+        saved = _A
+        _A = _MpArith
+        try:
+            res = integrate_exp_sum(rows, m, seeds, cap, scale=scale, eps=eps,
+                                    beta_tol=beta_tol)
+        finally:
+            _A = saved
+        if res.value is not None:
+            res.value = complex(res.value)
+        res.magnitude = float(res.magnitude)
+        res.error_ratio = float(res.error_ratio)
     return res
 
 
@@ -668,7 +731,7 @@ def _run(terms, D, m, Z, eps, scale, thin, open_ok=False, beta_tol=0.0):
     if total is None:
         return DBMResult(None, STATUS_OVERFLOW, mag, stats['cases'])
     accepted = max(COND_RTOL * abs(total), COND_ATOL * float(scale))
-    err = COND_ERR_FACTOR * mag
+    err = _A.err_factor * mag
     ratio = err / accepted if accepted > 0 else (0.0 if err == 0 else INF)
     if ratio > 1.0:
         return DBMResult(total, STATUS_ILL_CONDITIONED, mag, stats['cases'],

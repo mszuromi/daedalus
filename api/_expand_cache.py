@@ -82,7 +82,7 @@ import re
 # Sage's pickle helpers — these handle complex SR / polynomial-ring
 # state better than plain ``pickle.dump`` for the small subset we
 # round-trip here.
-from sage.all import save as sage_save, load as sage_load
+from sage.all import save as sage_save, load as sage_load, SR
 
 
 __all__ = [
@@ -354,6 +354,10 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
         # Text fingerprint from ModelBuilder.build() (None for models
         # built without it); checked on load, see load_expand.
         'spec_signature':  model.get('spec_signature'),
+        # Conductance vertices: kernel symbol -> attached fluctuation
+        # fields, a namespace side effect of ``expand()`` that
+        # ``extract_vertex_types`` needs (restored by load_expand).
+        'kernel_attachments': _kernel_attachments_to_names(ft._ns),
         'cache_version':   2,
     }
     sage_save(bundle, path.removesuffix('.sobj'))
@@ -411,6 +415,62 @@ def bundle_stale_reason(model: dict, ft, bundle: dict):
     if expect_sig != cached_sig:
         return (f'[expand-cache] form-factor signature mismatch — stale '
                 f'cache.  expect {expect_sig!r}, cached {cached_sig!r}')
+
+    # Conductance vertices.  A bundle written before the kernel
+    # attachments were stored cannot rebuild ``ns._kernel_attachments``;
+    # without it a vertex coefficient that carries a kernel symbol stays a
+    # plain vertex and its diagrams fail in Phase J.  Stale only when some
+    # interaction-sector coefficient contains a kernel symbol (a kernel in
+    # the bilinear sector alone, ``Conv(g, n)`` in a linear drift, needs
+    # no attachment), so every other model's bundle stays valid.
+    if 'kernel_attachments' not in bundle:
+        hit = _vertex_kernel_symbol(model, ft, bundle.get('by_tp') or {})
+        if hit is not None:
+            return (f'[expand-cache] the bundle predates stored kernel '
+                    f'attachments and the vertex sector carries the kernel '
+                    f'symbol {hit} — stale cache (re-expanding).')
+    return None
+
+
+def _kernel_attachments_to_names(ns) -> dict:
+    """``ns._kernel_attachments`` ({kernel SR symbol: set of attached
+    fluctuation SR variables}) as ``{name: sorted names}`` for the bundle."""
+    att = getattr(ns, '_kernel_attachments', None) or {}
+    out = {}
+    for ksym, fvs in att.items():
+        if not isinstance(fvs, (set, frozenset, list, tuple)):
+            fvs = {fvs}
+        out[str(ksym)] = sorted(str(f) for f in fvs)
+    return out
+
+
+def _kernel_attachments_from_names(names: dict) -> dict:
+    """Inverse of :func:`_kernel_attachments_to_names` (SR symbols are
+    identified by name)."""
+    return {SR.var(k): {SR.var(f) for f in fvs} for k, fvs in names.items()}
+
+
+def _vertex_kernel_symbol(model, ft, by_tp_dict):
+    """The first kernel symbol found in an interaction-sector (total degree
+    >= 3) coefficient of ``by_tp_dict`` (dict form), or ``None``."""
+    from engine.core.vertices import _flatten_kernel_symbols
+    try:
+        names = {str(k) for k in _flatten_kernel_symbols(ft._ns, model)}
+    except Exception:
+        names = set()
+    if not names:
+        return None
+    for key, poly in by_tp_dict.items():
+        if sum(key) < 3:
+            continue
+        for coeff in poly.values():
+            try:
+                vs = SR(coeff).variables()
+            except Exception:
+                continue
+            for v in vs:
+                if str(v) in names:
+                    return str(v)
     return None
 
 
@@ -508,6 +568,15 @@ def load_expand(model: dict, ft, target_order: int,
                   f'({e!r}); noise-source models may silently produce 0. '
                   f'Falling back to a fresh expand() is the safe path.')
         return False
+
+    # Conductance vertices: restore ``ns._kernel_attachments`` (written by
+    # ``reduce_conv_in_action`` during ``expand()``), which
+    # ``extract_vertex_types`` reads to build ``ConvVertexType`` records.
+    # Before item 27 it was not restored: every warm run built plain
+    # vertices with the kernel symbol left in the coefficient.
+    _att = bundle.get('kernel_attachments')
+    if _att:
+        ft._ns._kernel_attachments = _kernel_attachments_from_names(_att)
 
     # A cache-load skips ``FieldTheory.expand()`` and therefore skips the
     # first-order-in-Dt guard that lives at its tail.  Re-run it on the

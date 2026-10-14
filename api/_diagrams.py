@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 
 from engine.core.cache import PipelineCache
+from engine.core.vertices import ConvVertexType
 from engine.diagrams.causality import filter_causal
 from engine.diagrams.symmetry import deduplicate_with_multiplicities
 from engine.diagrams.type_assignment import enumerate_all as enumerate_all_typed
@@ -192,6 +193,12 @@ def enumerate_unique_diagrams(
     # classes at k=3 for OU+ax^2+bx^3), silently dropping their
     # integrals.  Loading a v2 cache would resurrect that bug.
     stage_name = f'unique_typed_mult_v3_{ext_tag}_taylor{ft.taylor_order}'
+    # Conductance vertices (item 27): before it a warm expand cache built
+    # plain vertices for them and the typed-diagram cache stored those, so
+    # a file under the plain name is not trusted for a model whose vertex
+    # list has a ``ConvVertexType``.  Every other model keeps its name.
+    if any(isinstance(vt, ConvVertexType) for vt in vtypes):
+        stage_name += '_convleg'
 
     unique_by_ell: dict[int, list] = {}
     multiplicity_by_ell: dict[int, list] = {}

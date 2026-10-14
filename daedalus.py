@@ -103,6 +103,9 @@ _PIPELINE_EXPORTS = {
     'Question':                  'api.analyze',
     'Policy':                    'api.analyze',
     'AnalyzerError':             'api.analyze',
+    # a run that left diagrams out (result['status'] == 'incomplete')
+    'PhaseJIncompleteWarning':   'api.compute',
+    'PhaseJIncompleteError':     'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',

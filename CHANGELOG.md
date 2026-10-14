@@ -11,6 +11,55 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
+
+Such a vertex (a "conductance" synapse `v·(g∗n)`, any `x·(g∗y)` coupling) puts its `y` leg at its own time `s`,
+joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which one a run met depended on the cache:
+
+- **Warm cache: diagrams dropped.** The expand cache did not restore the kernel attachments that
+  `extract_vertex_types` needs, so every run after the first built a plain vertex with the kernel placeholder left in
+  its coefficient; Phase J failed those diagrams ("stripped integrand contains unexpected free symbols {z_g_...}")
+  and left them out of `C_tau` without a word. On a one-population spiking model with a `v·(g∗n)` term, 21 of the
+  29 one-loop k = 2 diagrams were missing. The bundle now stores the attachments; an older bundle is re-expanded only
+  when a kernel symbol sits in an interaction coefficient (models whose `Conv` is linear keep their cache). The
+  typed-diagram cache could not store these vertices at all (a closure in the vertex, and `VertexType.__getstate__`
+  saved only the subclass's own slots); both fixed, and the typed-diagram stage name gets a `_convleg` suffix only
+  for a model with such a vertex.
+- **Wrong routing.** The kernel delay was applied to every edge at the vertex whose physical leg had the attached
+  leg's population (and at both ends of an edge), which in a one-population model is every edge: the kernel
+  collapsed to an instantaneous coupling. Now only the edge whose head is the vertex at the attached leg (field
+  and population) is delayed. A kernel on a leg that occurs twice among the vertex's legs (`x·Conv(g, x)`) is
+  refused with a named reason (see the next entry), instead of guessing.
+- **Days of quadrature.** The delay `τ` was the integration variable, so every edge into the attached leg had a
+  three-term constraint row, which the exact box-free routes do not take: the subsets went to nested scipy
+  quadrature (m up to 6), days per τ point (a zoo run was killed after 5.5 days). The leg time `s` is now the
+  variable (Jacobian 1) and the kernel is one more smooth edge `s → t` (Δt = t − s, factor g(Δt), one mode for a
+  single exponential), so every row is a difference row; the `τ < TAU_KERNEL_CAP` box (a 4.5e-5 truncation for
+  τ_g = 5) is gone. `_extract_exp_mode` now checks that the kernel really is one exponential.
+- Checked: the same models with the kernel written as an auxiliary linear field (`τ_g z' = y − z`, a local `x·z`
+  vertex, none of this code) agree at tree level exactly and at one loop to 1e-12 (k = 2, auto- and
+  cross-cumulants); the one-loop δ weight equals the k = 1 one-loop mean to 2e-16; a long simulation of the
+  spiking model agrees with tree + one loop (the loop is 13 % of the tree there; the residual is the size of a
+  two-loop term). Spiking model above: one-loop `C(tau)` at τ = 2.5 was 1.71e-6 (8/29 diagrams, warm) or did not
+  finish (cold); now 4.17e-6, 3.6 s.
+- No tracked model has such a vertex; no tracked number moves.
+
+#### Fixed: a diagram Phase J cannot evaluate is no longer dropped silently (`api/compute.py`, `api/_grouped_phase_j.py`, `api/analyze.py`)
+
+- Before, such a diagram was listed in `phase_j_by_ell[ell]['skipped_kernel_ids']` and left out of `C_tau`, and
+  `compute_cumulants` said nothing (on the grouped route, a diagram that failed inside the per-diagram fallback was
+  not even listed). Now every route (per-diagram, grouped, the pole-cluster deformation) sets
+  `result['status'] = 'incomplete'`, names the diagrams and the reason in `result['phase_j_incomplete']`, warns with
+  `PhaseJIncompleteWarning`, and the analyzer adds `G6_DIAGRAMS_SKIPPED`; `policy={'mode': 'strict'}` raises
+  `PhaseJIncompleteError` (with the result attached). A complete run has `status == 'ok'`.
+
+#### Added: high-precision exact route for ill-conditioned subsets (`dbm_integral.integrate_exp_sum_mp`)
+
+- A DBM closed form that fails its conditioning test (its expansion cancels: near-equal decay rates) is evaluated
+  once more by the same elimination in 40-digit arithmetic before the subset may go to quadrature
+  (`USE_DBM_HIGH_PRECISION`, env `DAEDALUS_PHASE_J_DBM_MP=0` to switch off; counters `dbm_mp_attempted` /
+  `dbm_mp_answered`). On the spiking model above it answers the 9 subsets that needed 411 s of quadrature.
+
 #### Fixed: the SDE front end refuses drifts with no syntactic linear term (`api/sde.py`; no number moves for a model that built before)
 
 - `SDE.drift('x', '-x/(1+eps*x^2)')`, `'-x*exp(-eps*x^2)'`, an SGD logistic-loss gradient, or any drift

@@ -103,9 +103,13 @@ class VertexType:
         self.physical_legs = list(physical_legs)
         self.bigrade       = tuple(bigrade)
 
-    # Pickle support for __slots__
+    # Pickle support for __slots__ (every class's slots: ``self.__slots__``
+    # alone is only the subclass's own, which made a pickled ConvVertexType
+    # lose its legs)
     def __getstate__(self):
-        return {s: getattr(self, s) for s in self.__slots__}
+        return {s: getattr(self, s)
+                for cls in reversed(type(self).__mro__)
+                for s in cls.__dict__.get('__slots__', ())}
 
     def __setstate__(self, state):
         for s, v in state.items():
@@ -189,18 +193,11 @@ class ConvVertexType(VertexType):
         super().__init__(coefficient, response_legs, physical_legs, bigrade)
         self.kernel_attachments = list(kernel_attachments)
 
-    # Pickle support — extend VertexType's via __slots__ chain
-    def __getstate__(self):
-        state = super().__getstate__()
-        state['kernel_attachments'] = self.kernel_attachments
-        return state
-
+    # Pickle support: VertexType's covers every slot in the MRO
     def __setstate__(self, state):
-        super().__setstate__(
-            {s: state[s] for s in VertexType.__slots__ if s in state}
-        )
-        object.__setattr__(self, 'kernel_attachments',
-                           state.get('kernel_attachments', []))
+        super().__setstate__(state)
+        if 'kernel_attachments' not in state:
+            object.__setattr__(self, 'kernel_attachments', [])
 
     def __repr__(self):
         att_summary = [
@@ -211,6 +208,31 @@ class ConvVertexType(VertexType):
                 f'resp={self.response_legs}, phys={self.physical_legs}, '
                 f'attach=[{", ".join(att_summary)}], '
                 f'coeff={self.coefficient})')
+
+
+class KernelTimeImage:
+    """``tau -> g(tau)``: a kernel's time-domain image ``expr`` with its
+    placeholder variable replaced by ``tau``.  The ``kernel_td_fn`` of a
+    :class:`ConvVertexType` attachment; picklable (two SR objects)."""
+
+    __slots__ = ('expr', 'placeholder')
+
+    def __init__(self, expr, placeholder):
+        self.expr = SR(expr)
+        self.placeholder = placeholder
+
+    def __call__(self, tau):
+        return self.expr.subs({self.placeholder: tau})
+
+    def __getstate__(self):
+        return {'expr': self.expr, 'placeholder': self.placeholder}
+
+    def __setstate__(self, state):
+        self.expr = state['expr']
+        self.placeholder = state['placeholder']
+
+    def __repr__(self):
+        return f'KernelTimeImage({self.expr} in {self.placeholder})'
 
 
 class SourceType:
@@ -606,12 +628,12 @@ def extract_vertex_types(ft):
                     continue
                 leg, leg_idx = resolved
                 if _tau_placeholder is not None and ksym in kernel_td_map:
-                    # Bind the placeholder τ to a per-call closure so
-                    # callers can re-substitute their own τ symbol.
-                    td_expr = kernel_td_map[ksym]
-                    def _td_fn(tau, _td_expr=td_expr,
-                               _placeholder=_tau_placeholder):
-                        return SR(_td_expr).subs({_placeholder: tau})
+                    # Bind the placeholder τ so callers can re-substitute
+                    # their own τ symbol.  A module-level callable, not a
+                    # closure: typed diagrams carrying this vertex are
+                    # pickled into the diagram cache.
+                    _td_fn = KernelTimeImage(kernel_td_map[ksym],
+                                             _tau_placeholder)
                 else:
                     # No time-domain image available (kernel declared
                     # via freq_image only).  Caller will see this as

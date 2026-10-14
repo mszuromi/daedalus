@@ -134,13 +134,29 @@ Modify `extract_vertex_types` ([msrjd/core/vertices.py:252](../msrjd/core/vertic
    - Strip the kernel symbol from the coefficient and attach the
      kernel-leg pair as metadata.
 
-### Phase 3 — wire into the integrator (next session)
+### Phase 3 — wire into the integrator
 
 For Phase J time-domain integration: each `ConvVertexType` adds an
 effective convolution on its kernel-attached leg's propagator. In
 Fourier-image form this is simply `G_leg(ω) → ĝ(ω) · G_leg(ω)`,
 equivalent to convolving the time-domain propagator with `g(t)` once
 before composing.
+
+As implemented (`integrate_diagram`, sections 2c / 3a' / 3c): the
+attached leg gets its own integration variable, the leg time `s`, and
+the kernel becomes one more smooth edge `s → t` (the vertex time) with
+`Δt = t − s`, no δ part and smooth factor `g(Δt)`; a single-exponential
+kernel `C e^{λ Δt}` also contributes its mode, so the diagram stays on
+the exact mode-sum routes (every constraint row is a difference row).
+Only the edge whose head is the vertex at the attached physical leg
+(field and population) is routed through `s`; the response leg and the
+other physical legs stay at `t`.  The kernel symbol in the vertex
+coefficient is set to 1 (its weight lives in the edge); a `c·δ(t)`
+kernel has no edge and its symbol becomes `c`.  A kernel attached to a
+leg that occurs twice among the vertex's physical legs (`n·Conv(g, n)`)
+is refused with a named reason.  The kernel attachments are stored in
+the expand cache (`kernel_attachments`) so a warm run builds the same
+vertices as a cold one.
 
 For the equivalent frequency-domain integrator
 (`msrjd/integration/symbolic.py`), the modification is direct: insert
