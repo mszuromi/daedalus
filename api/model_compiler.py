@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from sage.all import (
     SR, sage_eval, exp, log, sin, cos, tan, sqrt,
-    heaviside, dirac_delta, I, pi, function as sr_function, diff,
+    heaviside, dirac_delta, I, pi, function as sr_function, diff, ZZ,
 )
 
 
@@ -97,11 +97,34 @@ class _IndexedFormalFunction:
     derivative ``∂^α f / ∂x_1^{α_1} ... ∂x_n^{α_n}`` at the saddle
     expansion point gets renamed to ``f<α_1>...<α_n>_<i+1>`` by the
     framework's auto-Taylor pass.
+    Formal calls the expansion cannot rename are inlined.  The saddle-
+    point Taylor renames (:func:`_augment_saddle_renames`) and the
+    ``specializations`` exist only for ``f_<i+1>`` expanded at the
+    saddles of its formal arguments, ``(arg_1star[i], ...)``.  A call
+    whose argument is anything else at zero fluctuation
+    (``phi[i](Em[i] + sum(w[i,j]*Conv(r[i,j], n[j]) for j in E))``,
+    ``g(a*x)``), or a function whose formal arguments name no field
+    with a saddle, would leave an opaque ``f_<i+1>(...)`` in the action.
+    When ``fallback`` (the concrete :class:`_IndexableCallable`) is
+    given, such calls return the function body evaluated at the
+    arguments instead, the same SR expression as writing the body out
+    by hand.  ``saddles`` holds one saddle array per formal argument
+    (``None`` when some argument has none) and ``zero_subs`` sends every
+    field variable to 0.  Tuple-indexed calls (``f[i, j]``) are never
+    inlined.
     """
-    __slots__ = ('_name',)
+    __slots__ = ('_name', '_fallback', '_saddles', '_zero_subs')
 
-    def __init__(self, name: str):
-        self._name = name
+    def __init__(self, name: str, fallback=None, saddles=None,
+                 zero_subs=None):
+        self._name      = name
+        self._fallback  = fallback
+        self._saddles   = saddles
+        self._zero_subs = zero_subs
+
+    def _formal_site(self, i, args) -> bool:
+        """True iff ``f_<i+1>(*args)`` has a Taylor rename target."""
+        return _has_rename_target(self._saddles, i, args, self._zero_subs)
 
     def __getitem__(self, idx):
         if isinstance(idx, tuple):
@@ -109,8 +132,15 @@ class _IndexedFormalFunction:
         else:
             sfx = str(int(idx) + 1)
         full_name = f'{self._name}_{sfx}'
-        def _call(*args, _n=full_name):
-            return sr_function(_n)(*args)
+        if self._fallback is None or isinstance(idx, tuple):
+            def _call(*args, _n=full_name):
+                return sr_function(_n)(*args)
+            return _call
+        i = int(idx)
+        def _call(*args, _n=full_name, _i=i):
+            if self._formal_site(_i, args):
+                return sr_function(_n)(*args)
+            return _inline(self._fallback, self._saddles, _i, args)
         return _call
 
     def __call__(self, *args):
@@ -124,8 +154,102 @@ class _IndexedFormalFunction:
         # used by the action namespace to expose saddle+fluct splits)
         # before passing to Sage's ``BuiltinFunction.__call__`` — it
         # does not honor ``_sage_()`` and would reject the wrapper.
+        if self._fallback is not None and not self._formal_site(0, args):
+            return _inline(self._fallback, self._saddles, None, args)
         return sr_function(f'{self._name}_1')(
             *(_unwrap_field_arg(a) for a in args))
+
+
+def _scalar_arg(a):
+    """A call argument as one SR value: size-1 field wrappers and
+    size-1 lists (a bare saddle ``vstar`` in a scalar model) unwrapped."""
+    a = _unwrap_field_arg(a)
+    if isinstance(a, (list, tuple)) and len(a) == 1:
+        a = a[0]
+    return a
+
+
+def _has_rename_target(saddles, i, args, zero_subs=None) -> bool:
+    """True iff the formal call ``f_<i+1>(*args)`` is one the Taylor
+    renames cover: with the field variables in ``zero_subs`` set to 0,
+    every argument is 0 (FieldTheory's all-zero expansion point, e.g.
+    ``phi[i](dv[i])``), or every argument is structurally the saddle
+    ``saddles[j][i]`` of its formal argument (the saddle-point renames
+    and ``specializations``; ``phi[i](v[i])``).  ``saddles`` is ``None``
+    when a formal argument has no saddle.  An argument that cannot be
+    read as SR keeps the formal call (the behaviour before inlining)."""
+    try:
+        pts = []
+        for a in args:
+            pt = SR(_scalar_arg(a))
+            pts.append(pt.subs(zero_subs) if zero_subs else pt)
+    except Exception:
+        return True
+    if pts and all(pt.is_trivial_zero() for pt in pts):
+        return True
+    if saddles is None or len(pts) != len(saddles):
+        return False
+    for pt, arr in zip(pts, saddles):
+        if not 0 <= i < len(arr):
+            return False
+        if not (pt - arr[i]).expand().is_trivial_zero():
+            return False
+    return True
+
+
+def _inline(fallback, saddles, idx, args):
+    """The concrete body at ``args``: ``fallback[idx]`` for an indexed
+    call; for a bare call ``fallback[0]`` when the function's population
+    has one element, else the unindexed body (a body that reads ``i``
+    raises instead of silently using element 0)."""
+    args = tuple(_scalar_arg(a) for a in args)
+    if idx is None:
+        if saddles is not None and all(len(arr) == 1 for arr in saddles):
+            return fallback[0](*args)
+        import re
+        if re.search(r'\b[ij]\b', fallback._expr_text):
+            raise ValueError(
+                f'{fallback._name}(...) is called without a population '
+                f'index on an argument that is not its saddle, and its '
+                f'body {fallback._expr_text!r} reads one; write '
+                f'{fallback._name}[i](...).')
+        return fallback(*args)
+    return fallback[idx](*args)
+
+
+def _flat_sr(val):
+    """The SR symbols in a field attribute (a symbol, a list, or nested
+    lists of them); anything else yields nothing."""
+    if isinstance(val, (list, tuple)):
+        for v in val:
+            yield from _flat_sr(v)
+    elif val is not None:
+        try:
+            if SR(val).is_symbol():
+                yield SR(val)
+        except Exception:
+            return
+
+
+def _formal_arg_saddles(fn_spec, ns, saddle_map=None):
+    """One saddle array per formal argument of ``fn_spec`` (looked up as
+    in :func:`_augment_saddle_renames`), or ``None`` when some argument
+    names no field with a saddle on ``ns``."""
+    arg_names = fn_spec.get('args') or []
+    if not arg_names:
+        return None
+    out = []
+    for arg in arg_names:
+        sname = (saddle_map or {}).get(arg, f'{arg}star')
+        if not hasattr(ns, sname):
+            return None
+        arr = getattr(ns, sname)
+        try:
+            len(arr)
+        except TypeError:
+            return None
+        out.append(arr)
+    return out
 
 
 class _IndexedSaddleRename:
@@ -155,12 +279,26 @@ class _IndexedSaddleRename:
     Multi-arg calls that don't match ``n_args`` exactly fall back
     to whatever ``len(args)`` is at call time, since that's the
     authoritative count from the user's mf_eq syntax.
-    """
-    __slots__ = ('_name', '_n_args')
 
-    def __init__(self, name: str, n_args: int = 1):
+    With ``fallback`` (the concrete :class:`_IndexableCallable`) and
+    ``saddles`` given, a call whose arguments are not the saddles of
+    the function's formal arguments (``phi[i](Em[i] + sum(w[i,j]*
+    nstar[j] for j in E))``) has no rename target; it returns the
+    concrete value instead, mirroring the inlining in
+    :class:`_IndexedFormalFunction`.
+    """
+    __slots__ = ('_name', '_n_args', '_fallback', '_saddles')
+
+    def __init__(self, name: str, n_args: int = 1, fallback=None,
+                 saddles=None):
         self._name = name
         self._n_args = max(int(n_args), 1)
+        self._fallback = fallback
+        self._saddles = saddles
+
+    def _no_target(self, i, args) -> bool:
+        return (self._fallback is not None
+                and not _has_rename_target(self._saddles, i, args))
 
     def _build_target(self, n_args: int, i: int) -> 'SR':
         suffix = '0' * max(n_args, 1)
@@ -184,6 +322,8 @@ class _IndexedSaddleRename:
                     i = 0
             except Exception:
                 i = 0
+        if self._no_target(i, args):
+            return _inline(self._fallback, self._saddles, None, args)
         return self._build_target(n_args, i)
 
     def __getitem__(self, idx):
@@ -197,6 +337,8 @@ class _IndexedSaddleRename:
         name      = self._name
         default_n = self._n_args
         def _call(*args, _name=name, _pop=sfx_pop, _default_n=default_n):
+            if not isinstance(idx, tuple) and self._no_target(int(idx), args):
+                return _inline(self._fallback, self._saddles, int(idx), args)
             n_args = len(args) if args else _default_n
             suffix = '0' * max(n_args, 1)
             return SR.var(f'{_name}{suffix}_{_pop}')
@@ -493,7 +635,8 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
 def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
                               functions, n_pop, transfer_function=None,
                               transfer_function_mode='formal', i=None,
-                              naming_convention=None, extra=None):
+                              naming_convention=None, extra=None,
+                              saddle_map=None):
     """Full namespace dict to feed ``sage_eval`` as ``locals=...``.
 
     Includes built-ins, ns-derived symbols, compiled functions, and
@@ -545,10 +688,26 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # which makes ``f(arg)`` evaluate to ``SR.var(f'{name}0_<i+1>')``
     # (the formal Taylor-coefficient symbol that mf_bg's saddle-EOM
     # closure substitutes into the action).
+    #
+    # Formal calls with no rename target (an argument that is not the
+    # saddle of its formal argument, or a function whose formal
+    # arguments name no field with a saddle) fall back to the concrete
+    # body in both formal modes; see :class:`_IndexedFormalFunction`.
+    if saddle_map is None:
+        saddle_map = (naming_convention or {}).get('mean_field_saddles')
+    zero_subs = None
+    if transfer_function_mode == 'action' and functions:
+        zero_subs = {}
+        for fname in field_names:
+            for v in _flat_sr(getattr(ns, fname, None)):
+                zero_subs[v] = 0
     for fn in functions:
         fname = fn['name']
         if transfer_function_mode == 'action':
-            nsdict[fname] = _IndexedFormalFunction(fname)
+            nsdict[fname] = _IndexedFormalFunction(
+                fname, fallback=_make_function_callable(fn, nsdict),
+                saddles=_formal_arg_saddles(fn, ns, saddle_map),
+                zero_subs=zero_subs)
         elif transfer_function_mode == 'mf_formal_rename':
             # Thread the function's declared arity through so the
             # rename emits the right suffix length (``f0_<i+1>`` for
@@ -557,7 +716,9 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
             # which makes the rename robust to either bare or indexed
             # call syntax in the user's mf_eq.
             nsdict[fname] = _IndexedSaddleRename(
-                fname, n_args=len(fn.get('args') or []) or 1)
+                fname, n_args=len(fn.get('args') or []) or 1,
+                fallback=_make_function_callable(fn, nsdict),
+                saddles=_formal_arg_saddles(fn, ns, saddle_map))
         else:    # 'concrete' (default for MF eq evaluation)
             nsdict[fname] = _make_function_callable(fn, nsdict)
 
@@ -1227,7 +1388,81 @@ def _is_single_function_call(rhs_text: str) -> bool:
     return depth == 0
 
 
-def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle) -> dict:
+def _split_call(text: str):
+    """``'f[i](a, b)'`` → ``('f', 'i', ['a', 'b'])`` (index text or
+    ``None``) when the whole text is one call (its first ``(`` closes at
+    the end), else ``None``."""
+    import re
+    m = re.match(r'^\s*(\w+)\s*(?:\[([^\]]+)\]\s*)?\(', text or '')
+    if not m:
+        return None
+    depth, args, cur = 0, [], ''
+    body_start = m.end()
+    for k in range(body_start - 1, len(text)):
+        ch = text[k]
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+            if depth == 0:
+                if text[k + 1:].strip():
+                    return None
+                args.append(cur)
+                idx = m.group(2)
+                return (m.group(1), idx and ''.join(idx.split()),
+                        [a.strip() for a in args])
+        if depth == 1 and ch == ',':
+            args.append(cur)
+            cur = ''
+        elif k >= body_start:
+            cur += ch
+    return None
+
+
+def _call_has_rename_target(rhs_text, functions, saddle_names,
+                            saddle_map=None) -> bool:
+    """Text-level form of :func:`_has_rename_target` for mf_eq RHSs.
+
+    ``True`` unless the RHS is a single call of a declared function
+    whose formal arguments do not all have saddles in ``saddle_names``,
+    or whose actual arguments are not bare references (``vstar[i]``,
+    ``vstar``, the natural name ``v[i]``) to those saddles at the call's
+    own index (``phi[i](vstar[j])`` is not).  Calls of anything else
+    (``exp(...)``), tuple-indexed calls (``f[i, j](...)``, never
+    inlined) and ``functions=None`` keep the single-call rule."""
+    import re
+    if functions is None:
+        return True
+    call = _split_call(rhs_text)
+    if call is None:
+        return True
+    name, c_idx, actuals = call
+    fn = next((f for f in functions if f['name'] == name), None)
+    if fn is None or (c_idx and ',' in c_idx):
+        return True
+    formal = fn.get('args') or []
+    if not formal or len(formal) != len(actuals):
+        return False
+    for arg, actual in zip(formal, actuals):
+        sname = (saddle_map or {}).get(arg, f'{arg}star')
+        if sname not in (saddle_names or ()):
+            return False
+        a = actual
+        while a.startswith('(') and a.endswith(')') and \
+                _split_call('f' + a) is not None:
+            a = a[1:-1].strip()
+        m = re.match(r'^(\w+)\s*(?:\[([^\]]*)\])?$', a)
+        if not m or m.group(1) not in (sname, arg):
+            return False
+        a_idx = m.group(2) and ''.join(m.group(2).split())
+        if a_idx and a_idx != (c_idx or 'i'):
+            return False
+    return True
+
+
+def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle, *,
+                     functions=None, saddle_names=None,
+                     saddle_map=None) -> dict:
     """Split mf_eqs into (closure_saddles, compound_saddles).
 
     * **closure saddles**: their RHS expresses the saddle in terms of
@@ -1248,10 +1483,19 @@ def _classify_mf_eqs(mf_eqs: dict[str, str], iteration_saddle) -> dict:
         function call is treated as a closure saddle (the rest are
         compound).  Recommended for models with more than one
         iteration saddle.
+
+    With ``functions`` given, an ``'AUTO'`` single call to a DECLARED
+    function is a closure only when the call has a rename target
+    (:func:`_call_has_rename_target`); otherwise the action inlines the
+    function there and the saddle is compound, as it would be with the
+    body written out.  ``saddle_names`` are the declared saddle symbols,
+    ``saddle_map`` the natural-name → saddle map.
     """
     if iteration_saddle == 'AUTO':
         iter_set = {name for name, rhs in mf_eqs.items()
-                    if _is_single_function_call(rhs or '')}
+                    if _is_single_function_call(rhs or '')
+                    and _call_has_rename_target(rhs, functions,
+                                                saddle_names, saddle_map)}
     elif isinstance(iteration_saddle, (set, list, tuple)):
         iter_set = set(iteration_saddle)
     else:
@@ -1271,7 +1515,8 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                                  *,
                                  field_names, param_names, kernel_names,
                                  functions, n_pop,
-                                 iteration_saddle: str = 'nstar'):
+                                 iteration_saddle: str = 'nstar',
+                                 saddle_map: dict | None = None):
     """Build the **action-side** ``mf_bg_conditions`` lambda.
 
     Two-pass design that handles both simple Hawkes-style closures
@@ -1297,7 +1542,10 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
     The companion :func:`make_mf_bg_solver_lambda` builds the
     SOLVER-friendly version (raw concrete, no closure).
     """
-    classification = _classify_mf_eqs(mf_eqs, iteration_saddle)
+    classification = _classify_mf_eqs(
+        mf_eqs, iteration_saddle, functions=functions,
+        saddle_names=set(mf_eqs) | set(param_names),
+        saddle_map=saddle_map)
     closure_eqs  = classification['closure']
     compound_eqs = classification['compound']
 
@@ -1330,6 +1578,7 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                     transfer_function = phi_fn_spec,
                     transfer_function_mode = 'mf_formal_rename',
                     i           = i,
+                    saddle_map  = saddle_map,
                 )
                 rhs = _safe_eval(
                     rhs_text, {**ns_i, 'i': i},
@@ -1490,7 +1739,116 @@ def make_mf_equations_lambda(mf_eqs: dict[str, str],
     return _eqs
 
 
-def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
+def _exp_factors(e):
+    """Every ``exp(...)`` sub-expression of ``e``."""
+    if e.operator() == exp:
+        yield e
+    for o in e.operands():
+        yield from _exp_factors(o)
+
+
+def _unsigned_rate_symbols(f, t, positive):
+    """Symbols in the ``t``-coefficients of ``f``'s exponentials that are
+    not in ``positive`` (names of the symbols declared positive)."""
+    out = set()
+    for x in _exp_factors(SR(f)):
+        L = x.operands()[0]
+        if L.has(t):
+            for v in L.coefficient(t, 1).variables():
+                if str(v) not in positive and str(v) != str(t):
+                    out.add(v)
+    return out
+
+
+def _positive_by_declaration(e, positive) -> bool:
+    """True iff ``e`` expands to a sum of terms, each a positive real
+    number times powers (real exponents) of symbols named in
+    ``positive``: positive whatever those symbols' values.  Decided from
+    the names alone, so a symbol that another model declared positive
+    (Sage symbols and their domains are global) does not count."""
+    import operator as _op
+    from sage.symbolic.operators import add_vararg, mul_vararg
+    e = SR(e).expand()
+    for term in (e.operands() if e.operator() is add_vararg else [e]):
+        for fac in (term.operands() if term.operator() is mul_vararg
+                    else [term]):
+            if fac.is_numeric():
+                if not (fac.is_real() and bool(fac > 0)):
+                    return False
+            elif fac.is_symbol():
+                if str(fac) not in positive:
+                    return False
+            elif fac.operator() is _op.pow:
+                base, ex = fac.operands()
+                if not (base.is_symbol() and str(base) in positive
+                        and ex.is_numeric() and ex.is_real()):
+                    return False
+            else:
+                return False
+    return True
+
+
+def causal_exponential_ft(f, t, omega, positive=None):
+    r"""Fourier image ``\int_0^\infty f(t) e^{-i\omega t} dt`` of a causal
+    sum of exponentials, by the closed form term by term:
+
+        c t^n e^{-a t} \Theta(t)  ->  c n! / (a + i\omega)^{n+1}
+
+    Each term must carry the factor ``heaviside(t)`` once, otherwise be
+    ``t``-free factors times ``t^n`` times exponentials linear in ``t``,
+    and have a decay rate ``a`` that is positive for every value of the
+    symbols named in ``positive`` (a sum of positive numbers times
+    powers of them, e.g. ``1/tau + 1/taug``); with ``positive=None``
+    Sage's own sign of ``a`` decides.  No assumption is made.  The sum is returned
+    factored, which is the canonical form of a hand-written
+    ``1/((1 + I*omega*tau)*(1 + I*omega*taug))`` and cancels a
+    removable singularity such as the ``1/(tau - taug)`` of a
+    difference of exponentials.  Raises ``ValueError`` with the reason
+    otherwise."""
+    import operator as _op
+    from sage.all import factorial
+    from sage.symbolic.operators import add_vararg, mul_vararg
+    f = SR(f)
+    H = heaviside(t)
+    g = f.expand()
+    terms = g.operands() if g.operator() is add_vararg else [g]
+    out = SR(0)
+    for term in terms:
+        facs = term.operands() if term.operator() is mul_vararg else [term]
+        coeff, n, rate, causal = SR(1), 0, SR(0), 0
+        for fac in facs:
+            if (fac - H).is_trivial_zero():
+                causal += 1
+            elif not fac.has(t):
+                coeff *= fac
+            elif (fac - t).is_trivial_zero():
+                n += 1
+            elif (fac.operator() is _op.pow
+                  and (fac.operands()[0] - t).is_trivial_zero()
+                  and fac.operands()[1] in ZZ and fac.operands()[1] > 0):
+                n += int(fac.operands()[1])
+            elif fac.operator() == exp:
+                L = fac.operands()[0]
+                if not (L.is_polynomial(t) and L.degree(t) <= 1):
+                    raise ValueError(f'exponent {L} is not linear in {t}')
+                rate -= L.coefficient(t, 1)
+                coeff *= exp(L.coefficient(t, 0))
+            else:
+                raise ValueError(
+                    f'factor {fac} is not t^n or an exponential in {t}')
+        if causal != 1:
+            raise ValueError(f'term {term} does not carry heaviside({t}) '
+                             f'exactly once')
+        if not (rate.is_positive() if positive is None
+                else _positive_by_declaration(rate, positive)):
+            raise ValueError(f'decay rate {rate} of term {term} is not '
+                             f'known to be positive')
+        out += coeff * factorial(n) / (rate + I * omega) ** (n + 1)
+    return out.factor()
+
+
+def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names,
+                                positive_params=()):
     """Build ``model['kernel_ft_image']`` from the kernel declarations.
 
     Each kernel spec may carry either:
@@ -1509,7 +1867,7 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
     """
     from engine.core.field_theory import fourier_transform as _ft
 
-    def _compute_image(spec, eval_ns, omega, t_var, where):
+    def _compute_image(spec, eval_ns, omega, t_var, where, signs):
         """Either evaluate the user-supplied freq_image text or
         Fourier-transform the time_expr.  Returns an SR expression
         in omega."""
@@ -1524,22 +1882,46 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
         time_eval_ns = {**eval_ns, 't': t_var}
         time_val = _safe_eval(time_text, time_eval_ns,
                               f'{where} (time_expr)')
-        # Best-effort FT — Sage's ``integrate`` handles
-        # heaviside(t)*exp(-t/tau) etc. without explicit positivity
-        # assumptions for typical neural-kernel forms.
+        # Sage's ``integrate`` handles heaviside(t)*exp(-t/tau) etc.
+        # when the time constants carry domain='positive'; a sum of
+        # exponentials whose rates it cannot order (exp(-t/tau) -
+        # exp(-t/taug)) comes back unevaluated, so those go to the
+        # structural transform below.
         try:
-            img = _ft(time_val, t_var, omega)
+            img = SR(_ft(time_val, t_var, omega))
         except Exception as exc:
-            raise ValueError(
-                f'{where}: Fourier transform of time_expr failed.  '
-                f'Either supply freq_image explicitly or simplify '
-                f'time_expr to an analytically-tractable form.  '
-                f'Original error: {exc}')
-        return SR(img)
+            img, ft_exc = None, exc
+        else:
+            ft_exc = None
+            if 'integrate' not in str(img):
+                return img
+        sym_param, positive = signs
+        try:
+            return causal_exponential_ft(time_val, t_var, omega,
+                                         positive=positive)
+        except Exception as exc:
+            reason = str(exc)
+        params = sorted({sym_param.get(str(v), str(v))
+                         for v in _unsigned_rate_symbols(time_val, t_var,
+                                                         positive)})
+        hint = (f"; declare domain='positive' on parameter(s) "
+                f"{', '.join(repr(p) for p in params)}" if params else '')
+        raise ValueError(
+            f'{where}: cannot Fourier-transform time_expr '
+            f'{time_text!r} ({reason}){hint}, or give the kernel its '
+            f'frequency image with freq_image=...'
+            + (f'  (Sage: {ft_exc})' if ft_exc is not None else ''))
 
     def _ft_image(ns, omega):
         out: dict = {}
         param_ns = _ns_var_namespace(ns, [], param_names, [])
+        sym_param, positive = {}, set()
+        for pname in param_names:
+            for v in _flat_sr(getattr(ns, pname, None)):
+                sym_param[str(v)] = pname
+                if pname in positive_params:
+                    positive.add(str(v))
+        signs = (sym_param, positive)
         builtins = _builtin_namespace()
         base_ns  = {**builtins, **param_ns, 'omega': omega}
         t_var = SR.var('t')
@@ -1577,7 +1959,7 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
                         eval_ns = {**base_ns, 'i': i, 'j': j}
                         where = (f"kernel {kname} at ({i+1}, {j+1})")
                         img = _compute_image(spec, eval_ns, omega,
-                                             t_var, where)
+                                             t_var, where, signs)
                         if img is not None:
                             out[row[j]] = img
             elif is_vector:
@@ -1585,13 +1967,14 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names):
                     eval_ns = {**base_ns, 'i': i}
                     where = f'kernel {kname} at {i+1}'
                     img = _compute_image(spec, eval_ns, omega,
-                                         t_var, where)
+                                         t_var, where, signs)
                     if img is not None:
                         out[ksym_obj[i]] = img
             else:
                 # Scalar kernel — one substitution.
                 where = f"kernel {kname}"
-                img = _compute_image(spec, base_ns, omega, t_var, where)
+                img = _compute_image(spec, base_ns, omega, t_var, where,
+                                     signs)
                 if img is not None:
                     out[ksym_obj] = img
 

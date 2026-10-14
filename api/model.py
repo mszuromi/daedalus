@@ -1697,6 +1697,7 @@ class _BaseModelBuilder:
                 functions    = self._function_specs,
                 n_pop        = n_pop,
                 iteration_saddle = iter_sentinel,
+                saddle_map   = _saddle_map,
             )
             self._mf_bg_solver = make_mf_bg_solver_lambda(
                 self._mf_eqs_text, primary_fn_spec,
@@ -1721,6 +1722,8 @@ class _BaseModelBuilder:
             self._kernel_ft_image = make_kernel_ft_image_lambda(
                 self._kernel_specs,
                 param_names = param_names,
+                positive_params = {p.name for p in self.parameters
+                                   if p.domain == 'positive'},
             )
             # Time-domain images — same kernel specs, but evaluated
             # in ``t`` rather than ``omega``.  Used by the Phase J
@@ -1957,7 +1960,13 @@ class _BaseModelBuilder:
                 _classify_mf_eqs as _classify,
             )
             iter_sentinel = ('AUTO' if self.populations else 'nstar')
-            classification = _classify(self._mf_eqs_text, iter_sentinel)
+            classification = _classify(
+                self._mf_eqs_text, iter_sentinel,
+                functions=self._function_specs,
+                saddle_names=(set(self._mf_eqs_text)
+                              | {p.name for p in self.parameters}),
+                saddle_map={p.natural_name: p.name for p in self.parameters
+                            if p.mean_field and p.natural_name})
             iter_saddle_names = list(classification['closure'].keys())
 
         # ── Spatial-extension resolution (v1) ──────────────────────
