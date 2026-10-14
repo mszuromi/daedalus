@@ -1,0 +1,86 @@
+name: notebooks
+
+# Executes every notebook in notebooks/examples/ end to end under SageMath and reports pass /
+# fail / wall time per notebook. They take a long time (simulations plus loop integrals), so this
+# runs only on demand and weekly, never on a push or pull request. The notebooks shipped in the
+# repository are not modified: the executed copies go to a temporary directory and are uploaded
+# as a build artifact. A failing notebook fails the job, after all of them have been tried.
+# Same cached conda environment as tests.yml (the cache key is environment.yml, which this
+# workflow does not change).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'     # Mondays 05:17 UTC
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300                 # whole job
+    defaults:
+      run:
+        shell: bash -el {0}              # login shell so the conda env is active
+    env:
+      NB_TIMEOUT_MINUTES: 45             # per notebook
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SageMath 10.8 + extras (conda)
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Make sure nbconvert and a Sage kernel are available
+        run: |
+          # environment.yml does not list the Jupyter tools; the Sage package normally brings
+          # them. If one is missing, install it into the running environment only (the cached
+          # environment and environment.yml stay unchanged).
+          python - <<'PY' || missing=1
+          import nbconvert, nbformat, ipykernel
+          PY
+          if [ -n "${missing:-}" ]; then
+            micromamba install -y -n daedalus -c conda-forge "nbconvert" "ipykernel" || \
+              python -m pip install nbconvert ipykernel
+          fi
+          # The notebooks declare the kernel 'SageMath-10.8' (one of them in lower case; Jupyter
+          # matches kernel names case-insensitively). Register it with the environment's python.
+          kdir="$(jupyter --data-dir)/kernels/sagemath-10.8"
+          mkdir -p "$kdir"
+          cat > "$kdir/kernel.json" <<'JSON'
+          {"argv": ["python", "-m", "sage.repl.ipython_kernel", "-f", "{connection_file}"],
+           "display_name": "SageMath 10.8", "language": "sage"}
+          JSON
+          jupyter kernelspec list
+          jupyter nbconvert --version
+
+      - name: Execute notebooks/examples (outputs to a temporary directory)
+        run: |
+          out="$RUNNER_TEMP/executed"; mkdir -p "$out"
+          status=0
+          echo '| notebook | result | seconds |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r nb; do
+            name="$(echo "${nb#notebooks/examples/}" | tr '/' '_')"
+            start=$(date +%s)
+            if timeout "${NB_TIMEOUT_MINUTES}m" jupyter nbconvert --to notebook --execute \
+                 --ExecutePreprocessor.kernel_name=sagemath-10.8 \
+                 --ExecutePreprocessor.timeout=$((NB_TIMEOUT_MINUTES * 60)) \
+                 --output-dir "$out" --output "$name" "$nb" > "$out/$name.log" 2>&1; then
+              res=PASS
+            else
+              res=FAIL; status=1
+              tail -n 40 "$out/$name.log"
+            fi
+            secs=$(( $(date +%s) - start ))
+            echo "$res  $nb  ${secs}s"
+            echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort)
+          exit $status
+
+      - name: Upload the executed copies and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-notebooks
+          path: ${{ runner.temp }}/executed
+          if-no-files-found: ignore

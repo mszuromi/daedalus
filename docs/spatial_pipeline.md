@@ -237,7 +237,6 @@ Foundational check (local prototype script): plain integrand = a single Bessel-K
   `pipeline_linear_field_2d_sim_compare.ipynb`,
   `pipeline_reaction_diffusion_2d_loop_sim_compare.ipynb` — earlier spatial validations.
 
-Theory files: `theories/allen_cahn_1d_subcritical_infinite.theory.py`,
-`theories/allen_cahn_quintic_1d_subcritical_infinite.theory.py`. Simulators:
-`models/spatial_field_1d_sim.py`, `models/spatial_field_phi6_1d_sim.py`,
-`models/spatial_field_2d_sim.py`.
+Model files: `models/allen_cahn_1d_subcritical_infinite.model.py` (and a local quintic
+variant of it). Simulators: `simulations/spatial_field_1d_sim.py`,
+`simulations/spatial_field_2d_sim.py` (and a local φ⁶ variant of the 1-D one).
