@@ -49,6 +49,7 @@ need no special case. The module docstring has the method and a proof sketch.
   0.16673618, unchanged); 4-field oscillator with two filters: 30 s at 1.0 GB peak footprint (Phase J with zero-mode
   pruning: about 18 min per point). OU with an Erlang-4 kernel, two loops: 1.5 s (Phase J: over 15 min); its
   tree + one loop on a 201-point grid: 0.76 s batched, 1.4 s per point (Phase J 16 s).
+
 #### Fixed: front-end small bugs: SDE `time_expr` kernels, `Conv` on a bare field, `_is_single_function_call` (`api/sde.py`, `api/model_compiler.py`; no number moves)
 
 - **SDE `time_expr` kernel integral.** `SDE._kernel_dc` (the kernel's integral for the mean-field equations) asked
