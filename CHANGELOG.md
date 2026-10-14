@@ -20,18 +20,20 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   coefficients of ~120 kB for a 2-field action with four sigmoids, 18 MB in all at order 4).
 - `PolynomialRing(SR)` zero-tests every coefficient on construction and after each `+`, and asks Maxima
   whenever the coefficient holds a symbol with an assumption (`domain='positive'`). The zero test now first
-  checks the coefficient at one point that satisfies every assumption (128-bit intervals); only when that point
-  cannot show it nonzero is Sage's own test used, so the verdicts are Sage's. Sectors and `S_raw` are built once
+  evaluates the coefficient at one point that satisfies every assumption (128-bit intervals; only for
+  coefficients made of exact constants and operators with rigorous interval arithmetic); only when that cannot
+  show it nonzero is Sage's own test used, so the verdicts are Sage's. Sectors and `S_raw` are built once
   from dicts, in the same dict order as before. The expand-cache loader uses the same test (format and keys
   unchanged).
 - Timings, `[1/7]` (2-field action with four sigmoids in drift and state-dependent noise): taylor_order 2:
-  108 s to 0.6 s; 3 and 4: not finished in 10 min, now 0.6 s and 0.9 s. Loading its cached order-4 expansion:
-  100 s to 0.1 s. `dendritic_quad_soma_sigmoid`: 75 s / 335 s (orders 2 / 4) to 0.3 s.
+  108 s to 0.7 s; 3 and 4: not finished in 10 min, now 0.8 s and 1.2 s; the whole k = 2, max_ell = 1 run takes
+  12 s. Loading its cached order-4 expansion: 100 s to 0.1 s. `dendritic_quad_soma_sigmoid`: 76 s / 344 s
+  (orders 2 / 4) to 0.4 s. No zoo model got slower (worst new/old ratio 0.59).
 - Output: on every polynomial or `exp` / formal-function model of the zoo the expanded action is the same ring
-  element as before (coefficients trivially equal, same dict order), so their results do not move. On the
-  sigmoid models (`dendritic_quad_soma_sigmoid` among the public ones) the coefficients are the same functions
-  in a shorter form (equal to 1e-58 at random points); their cumulants move by at most a few units in the last
-  place (numbers below).
+  element as before (coefficients trivially equal, same dict order), so their results do not move (checked bit
+  for bit on ten zoo entries). On the sigmoid models (`dendritic_quad_soma_sigmoid` among the public ones) the
+  coefficients are the same functions in a shorter form (equal to 1e-59 at random points) with another monomial
+  order; `dendritic_quad_soma_sigmoid` k = 2, max_ell = 1 moves by 7.5e-16 relative.
 - `DAEDALUS_EXPAND_LEGACY=1` restores the previous expansion and zero tests. The verbose action printout no
   longer prints each ring element to test it for emptiness (`str()` of a ring element over SR compares every
   coefficient with 1 and could take 10 s; `api/compute.py`).
