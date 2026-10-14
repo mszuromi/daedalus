@@ -11,6 +11,26 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: state-space realization of propagators (internal, not yet used by Phase J) (`api/_realization.py`)
+
+`realize(prop, num_params)` writes the propagator `G(s) = K(s)^{-1}` (s = iω) as `C (sI − A)^{-1} B + D`,
+`G(t) = Θ(t) C e^{At} B + D δ(t)`, without an eigenvalue or a numerical root. The algebra is exact over QQ at
+the parameter point (each double taken at its exact binary value) and is rounded once at the end:
+
+- Kernel denominators are factored exactly, so a kernel's own rates come back even from an expanded image.
+  Each rate becomes a unit-gain chain block (Erlang kernels are the Erlang chain). An irreducible factor becomes
+  a tridiagonal Schwarz block built from its Routh table, not a companion matrix.
+- A singular `K1` (algebraic fields, δ parts) is reduced by an exact index-1 Schur complement, and `D` is
+  compared exactly with `D_delta`.
+- An exact Kalman reduction gives a minimal realization, globally and per entry of `G`.
+- A power-of-two balancing follows, then an exact Routh–Hurwitz report and a Lyapunov margin.
+
+Models without a realization are refused by name: non-rational kernel, descriptor of index > 1, polynomial
+part of degree ≥ 2, unbound or spatial symbol, singular pencil. `impulse(t)` uses a structured matrix
+exponential: triangular Padé with the exact diagonal and superdiagonal reset after each squaring, and no dense
+Schur step. `stationary_covariance(Q)` uses a Lyapunov solve with residual refinement. Nothing in the pipeline
+calls the module yet; no number changes. Tests: `tests/test_realization.py`.
+
 #### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
 
 Such a vertex (a "conductance" synapse `v·(g∗n)`, any `x·(g∗y)` coupling) puts its `y` leg at its own time `s`,
