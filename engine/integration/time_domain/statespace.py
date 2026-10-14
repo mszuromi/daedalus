@@ -109,12 +109,25 @@ Numerics
   of eigenvalues of Hurwitz factors only: no eigenvalue gap enters.
 * **Segments and impulses** ``exp(G L) x`` / ``c e^{a t} b`` by the
   Al-Mohy-Higham (2011) truncated-Taylor action with the trace shift: no
-  squaring, so neither the ``eps/gap`` loss on near-repeated eigenvalues nor
-  the loss of scaling-and-squaring ``expm`` on decaying matrices (measured
-  here: scipy's ``expm`` of a 2 x 2 propagator block is 2e-14 / 9e-14 off
-  relative to its norm at ``t = 3 / 30``; the action 4e-16 / 1.5e-15).  The
-  generator is dense up to ``OP_DENSE_MAX`` and matrix-free (per-block axis
-  products and einsum firings) beyond.
+  squaring (measured here: scipy's ``expm`` of a 2 x 2 propagator block is
+  2e-14 / 9e-14 off relative to its norm at ``t = 3 / 30``; the action
+  4e-16 / 1.5e-15).  The generator is dense up to ``OP_DENSE_MAX`` and
+  matrix-free beyond (per-block axis products and einsum firings; the
+  ``||A^p||^{1/p}`` of the step selection from ``onenormest`` with the
+  adjoint map).  The action's error grows like (steps) x eps, so a STIFF
+  segment (fast rates over a long gap) is exponentiated instead in the
+  per-edge triangular basis with the blocks in reverse order, where the
+  generator is upper triangular, by the reset-diagonal triangular Padé
+  (``api._realization.expm_upper_triangular``: exact ``e^{lambda L}`` on the
+  diagonal); with an exact basis (scalar / triangular entries, 2 x 2 Schur
+  forms) from ``TAYLOR_S_MAX`` steps, with a Schur basis of a larger
+  (graded) entry only from ``TAYLOR_S_MAX_SCHUR``, since such a basis costs
+  accuracy itself (S1).  Beyond ``TRI_DENSE_MAX`` states a segment needing
+  more than ``TAYLOR_S_HARD`` steps raises.
+* **Per-entry balancing** (``_balance_siso``): of the entry as given, ``a``
+  balanced alone, and ``[[a, b], [c, 0]]`` balanced, each followed by an
+  exact ``b``/``c`` equalisation, the one with the smallest
+  ``max(|a|_1, |b|_1 |c|_inf)``.
 * **τ batches** (``SubsetSS.evaluate_many``, ``tau_grid_prefetch``): points
   that share the order of the external times reuse the stationary state and
   the first event; the last segment is stepped from one length to the next.
