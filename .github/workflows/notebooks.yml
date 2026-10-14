@@ -90,8 +90,9 @@ jobs:
             echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
           done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort | grep -F -- "$NB_ONLY")
           echo "notebooks failed: $status (0 = none)"
-          echo "DIAG before exit"
-          exit $status
+          echo "DIAG before final test"
+          # not 'exit': an explicit exit in this login shell came back as 1 with status 0
+          test "$status" -eq 0
 
       - name: Upload the executed copies and logs
         if: always()
