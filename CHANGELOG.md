@@ -47,15 +47,17 @@ need no special case. The module docstring has the method and a proof sketch.
 - **Accuracy** (50-digit oracles: Lyapunov plus the exact first-order Hartree shift, or a 50-digit sweep on the
   exact realization): OU with cubic drift 2e-16; OU driven by a colour field at gaps 0.1 / 1e-4 / 1e-8 / 0 (an
   exact double pole) <= 6e-16 where Phase J has 1.1e-10 / 4e-13 / 4e-13 / 4e-13; Erlang-8 / Erlang-16 kernel
-  2e-15 / 1e-14; Padé-8 / Padé-16 kernel 4.5e-15 / 1.05e-14; alpha-kernel conductance through its Markov
-  embedding 3.5e-16, also at equal rates, where the kernel form is refused. Model zoo, every subset the route
+  3.1e-15 / 5.2e-15; Padé-8 / 16 / 24 kernel 5.5e-15 / 9.2e-15 / 3.7e-14; alpha-kernel conductance through its
+  Markov embedding 3.5e-16, also at equal kernel rates, where the kernel form is refused. Stiff segments (rates
+  1e2..1e5 over gaps up to 50, a colour field at τc = 1e-4) <= 3.4e-15. Model zoo, every subset the route
   takes: within 1e-13 relative (or 1e-15 of the residue scale) of Phase J, and where not, the 50-digit sweep
   sides with the state-space value in every case (Phase J off by up to 1.8e-13 of the scale on m = 2 polygons
   with heavy cancellation).
-- **Speed**: 3-field oscillator with red noise, k = 3 one loop at tau = 0, `dd.run`: 1.8 s end to end (value
-  0.16673618, unchanged); 4-field oscillator with two filters: 30 s at 1.0 GB peak footprint (Phase J with zero-mode
-  pruning: about 18 min per point). OU with an Erlang-4 kernel, two loops: 1.5 s (Phase J: over 15 min); its
-  tree + one loop on a 201-point grid: 0.76 s batched, 1.4 s per point (Phase J 16 s).
+- **Speed**: 3-field oscillator with red noise, k = 3 one loop at tau = 0, `dd.run`: 1.6 s end to end (value
+  0.16673618, unchanged); 4-field oscillator with two filters: 28 s at 0.95 GB peak footprint (Phase J with zero-mode
+  pruning: about 18 min per point). OU with an Erlang-4 kernel, two loops: 1.5 s at 0.7 GB (Phase J: 576 s at
+  3.2 GB, values equal to 1.2e-14); its tree + one loop on a 201-point grid: 0.77 s batched, 1.45 s per point
+  (Phase J 16 s).
 
 #### Fixed: front-end small bugs: SDE `time_expr` kernels, `Conv` on a bare field, `_is_single_function_call` (`api/sde.py`, `api/model_compiler.py`; no number moves)
 
