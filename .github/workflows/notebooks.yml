@@ -65,9 +65,9 @@ jobs:
           while IFS= read -r nb; do
             name="$(echo "${nb#notebooks/examples/}" | tr '/' '_')"
             limit="$NB_TIMEOUT_MINUTES"
-            while IFS='=' read -r key mins; do
-              [ "$key" = "${nb#notebooks/examples/}" ] && limit="$mins"
-            done <<< "$NB_TIMEOUT_OVERRIDES"
+            override="$(printf '%s\n' "$NB_TIMEOUT_OVERRIDES" \
+                        | awk -F= -v k="${nb#notebooks/examples/}" '$1 == k {print $2}')"
+            if [ -n "$override" ]; then limit="$override"; fi
             start=$(date +%s)
             if timeout "${limit}m" jupyter nbconvert --to notebook --execute \
                  --ExecutePreprocessor.kernel_name=sagemath-10.8 \
@@ -82,6 +82,7 @@ jobs:
             echo "$res  $nb  ${secs}s"
             echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
           done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort)
+          echo "notebooks failed: $status (0 = none)"
           exit $status
 
       - name: Upload the executed copies and logs
