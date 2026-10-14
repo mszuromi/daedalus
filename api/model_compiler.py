@@ -736,7 +736,13 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # reducer, propagator FT, simulator) registers its own reduction.
     # Available in every eval mode so equations, MF eqs, and the
     # action text can all reference it uniformly.
-    from engine.core.convolution import Conv
+    # A bare field (scalar model, ``Conv(r, n)``) is a size-1 wrapper that
+    # Sage's strict argument coercion would reject: unwrap it, exactly as
+    # for user functions; indexed arguments (``n[j]``) are SR already.
+    from engine.core.convolution import Conv as _Conv
+
+    def Conv(kernel, field):
+        return _Conv(_unwrap_field_arg(kernel), _unwrap_field_arg(field))
     nsdict['Conv'] = Conv
 
     # Spatial v2 operator IR: in the ACTION context, when the model opted in
@@ -1375,17 +1381,24 @@ def _is_single_function_call(rhs_text: str) -> bool:
     m = _SINGLE_CALL_RE.match(text)
     if not m:
         return False
-    # Confirm parens are balanced AT THE TOP level — else 'a*f(x) + b'
-    # could be matched due to outer parens of the whole expression.
-    depth = 0
-    for ch in text:
-        if ch == '(':
+    # The argument parenthesis opened right after the name (and optional
+    # ``[i]``) must close at the very end of the text: 'f(a) + g(b)' and
+    # 'f(a)*g(b)' close it earlier, so they are compound.  Parentheses
+    # inside string literals do not count.
+    depth, quote = 0, None
+    for k in range(m.start(2) - 1, len(text)):
+        ch = text[k]
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in '\'"':
+            quote = ch
+        elif ch == '(':
             depth += 1
         elif ch == ')':
             depth -= 1
-        if depth < 0:
-            return False
-    return depth == 0
+            if depth == 0:
+                return k == len(text) - 1
+    return False
 
 
 def _split_call(text: str):
