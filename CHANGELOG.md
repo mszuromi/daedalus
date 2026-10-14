@@ -11,6 +11,28 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: state-space realization of propagators (internal, not yet used by Phase J) (`api/_realization.py`)
+
+`realize(prop, num_params)` writes the propagator `G(s) = K(s)^{-1}` (s = iω) as `C (sI − A)^{-1} B + D`,
+`G(t) = Θ(t) C e^{At} B + D δ(t)`, without an eigenvalue or a numerical root. The algebra is exact over QQ at
+the parameter point (each double taken at its exact binary value) and is rounded once at the end:
+
+- Kernel denominators are factored exactly, so a kernel's own rates come back even from an expanded image.
+  Each rate becomes a unit-gain chain block (Erlang kernels are the Erlang chain). An irreducible factor becomes
+  a tridiagonal Schwarz block built from its Routh table. If a Routh pivot vanishes, an exact integer shift is
+  tried; the companion matrix is used only as a last resort.
+- A singular `K1` (algebraic fields, δ parts) is reduced by an exact index-1 Schur complement. `compare_D`
+  checks `D` exactly against the pipeline's `D_delta`.
+- An exact Kalman reduction gives a minimal realization, globally and per entry of `G`.
+- A power-of-two balancing follows, then an exact Routh–Hurwitz report and a Lyapunov margin.
+
+Models without a realization are refused by name: non-rational kernel, descriptor of index > 1, polynomial
+part of degree ≥ 2, unbound or spatial symbol, singular pencil. `impulse(t)` exponentiates `A` without a dense Schur step: a
+triangular `A` gets a triangular Padé that resets the diagonal and superdiagonal exactly after each squaring,
+and any other `A` gets scipy's `expm`. `stationary_covariance(Q)` uses a Lyapunov solve with residual
+refinement and refuses when `A` is not Hurwitz. Nothing in the pipeline
+calls the module yet; no number changes. Tests: `tests/test_realization.py`.
+
 #### Fixed: high-degree rational kernels and propagators gave C = 0 or a wrong C without a warning (`api/_propagator.py`, `api/analyze.py`)
 
 The exact propagator tier decided that a pole `p_k` of `Q(ω)` (the common denominator) is not a pole of entry
