@@ -578,6 +578,25 @@ def extract_vertex_types(ft):
     else:
         _tau_placeholder = None
         kernel_td_map = {}
+    # The frequency image too: a kernel declared only by ``freq_image`` has
+    # no time-domain image; the integrator reads its modes from this one.
+    # Built on first need only (for a ``time_expr`` kernel the hook runs a
+    # symbolic Fourier transform).
+    kernel_ft_image_lambda = model.get('kernel_ft_image')
+    _ft_cell = []
+
+    def _ft_image_of(ksym):
+        if kernel_ft_image_lambda is None:
+            return None, None
+        if not _ft_cell:
+            from sage.all import SR as _SR
+            om = _SR.var('_conv_omega_placeholder')
+            try:
+                _ft_cell.append((kernel_ft_image_lambda(ns, om) or {}, om))
+            except Exception:
+                _ft_cell.append(({}, om))
+        ft_map, om = _ft_cell[0]
+        return ft_map.get(ksym), om
 
     vtypes = []
     for (n_t, n_p), poly in ft.vertices().items():
@@ -639,12 +658,18 @@ def extract_vertex_types(ft):
                     # via freq_image only).  Caller will see this as
                     # None and either invert-FT or error out.
                     _td_fn = None
-                kernel_attachments_for_vertex.append({
+                att_rec = {
                     'symbol':       ksym,
                     'leg':          leg,
                     'leg_index':    leg_idx,
                     'kernel_td_fn': _td_fn,
-                })
+                }
+                if _td_fn is None:
+                    ft_expr, om = _ft_image_of(ksym)
+                    if ft_expr is not None:
+                        # ``omega -> ĝ(omega)`` (same picklable callable)
+                        att_rec['kernel_ft_fn'] = KernelTimeImage(ft_expr, om)
+                kernel_attachments_for_vertex.append(att_rec)
 
             if kernel_attachments_for_vertex:
                 vtypes.append(ConvVertexType(

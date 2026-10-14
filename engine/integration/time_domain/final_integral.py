@@ -511,14 +511,57 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     return modes
 
 
+def _modes_from_freq_image(ft_fn, num_params=None):
+    """The exponential modes ``[(C, λ)]`` of a causal kernel given by its
+    rational frequency image ``ĝ(ω)`` (``ft_fn(omega)``; the codebase's
+    convention ``ĝ(ω) = ∫ g(t) e^{-iωt} dt``, retarded poles in Im ω > 0):
+    each simple pole ω_α gives ``λ_α = i ω_α`` and ``C_α = i Res ĝ(ω_α)``.
+    ``None`` when the image is not a proper rational function of ω with
+    simple poles in the upper half plane (a δ part, a repeated or an
+    acausal pole, a non-rational image)."""
+    from sage.all import CDF as _CDF, PolynomialRing as _PR
+    w = SR.var('convkernelomegatd')
+    try:
+        g = SR(ft_fn(w))
+        if num_params:
+            g = g.subs(num_params)
+        g = g.rational_simplify()
+        if set(g.variables()) - {w}:
+            return None
+        R = _PR(_CDF, 'w_')
+        num = R(SR(g.numerator()).polynomial(_CDF).list())
+        den = R(SR(g.denominator()).polynomial(_CDF).list())
+    except Exception:
+        return None
+    if den.degree() < 1 or num.degree() >= den.degree():
+        return None                         # δ part or not a pole sum
+    roots = den.roots(multiplicities=True)
+    if sum(mult for (_r, mult) in roots) != den.degree() or any(
+            mult != 1 for (_r, mult) in roots):
+        return None
+    dden = den.derivative()
+    modes = []
+    for (om, _m) in roots:
+        om = complex(om)
+        if not om.imag > 0:
+            return None                     # not a causal (retarded) kernel
+        res = complex(num(om)) / complex(dden(om))
+        modes.append((1j * res, 1j * om))
+    return modes or None
+
+
 def _kernel_modes(att, num_params=None):
     """The exponential modes of a conductance kernel attachment's
     time-domain image (Heaviside stripped, ``num_params`` substituted),
-    or ``None`` (no time-domain image, or not a finite exponential sum)."""
+    or ``None`` (no time-domain image, or not a finite exponential sum).
+    A kernel declared only by its frequency image (``kernel_ft_fn``) is
+    read from the poles of that image (``_modes_from_freq_image``)."""
     from sage.all import heaviside as _sage_heaviside
     td_fn = att.get('kernel_td_fn')
     if td_fn is None:
-        return None
+        ft_fn = att.get('kernel_ft_fn')
+        return (_modes_from_freq_image(ft_fn, num_params)
+                if ft_fn is not None else None)
     tau = SR.var('_conv_kernel_modes_tau_td_')
     try:
         g = SR(td_fn(tau)).substitute_function(_sage_heaviside,
@@ -7644,16 +7687,27 @@ def integrate_diagram(
         for (v, att, s_sym) in kernel_edge_specs:
             td_fn = att.get('kernel_td_fn')
             if td_fn is None:
-                return {
-                    'status': 'failed',
-                    'contribution': None,
-                    'integration_vars': integration_vars,
-                    'reason': (f'conductance vertex {v}: the kernel '
-                               f'{att["symbol"]} has no time-domain image '
-                               f'(declare it with time_expr)'),
-                }
-            g_tau = SR(td_fn(_tau_ph)).substitute_function(
-                _sage_heaviside, lambda _x: SR(1))
+                fmodes = (_kernel_modes(att, num_params)
+                          if att.get('kernel_ft_fn') is not None else None)
+                if fmodes is None:
+                    return {
+                        'status': 'failed',
+                        'contribution': None,
+                        'integration_vars': integration_vars,
+                        'reason': (f'conductance vertex {v}: the kernel '
+                                   f'{att["symbol"]} has no time-domain '
+                                   f'image and its frequency image is not '
+                                   f'a proper rational function with simple '
+                                   f'retarded poles (declare it with '
+                                   f'time_expr)'),
+                    }
+                g_tau = SR(0)
+                for (C, lam) in fmodes:
+                    g_tau = g_tau + _sr_complex(C) * (
+                        _sr_complex(lam) * _tau_ph).exp()
+            else:
+                g_tau = SR(td_fn(_tau_ph)).substitute_function(
+                    _sage_heaviside, lambda _x: SR(1))
             if num_params:
                 g_tau = g_tau.subs(num_params)
             dt = SR(vertex_time[v] - s_sym)

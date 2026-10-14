@@ -46,6 +46,11 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   average over the distinct placements of the lines in the slots; a single placement was 34 % off on
   `x·(g ∗ x)`. A δ kernel (`Conv(c·δ, n) = c·n`) is a weight, no delay. A delayed step `heaviside(t − d)` or a δ
   mixed with a smooth part is refused with a named reason (its delay would have been lost).
+- **Kernels declared by `freq_image` only.** Such a vertex had no time-domain kernel: its one loop came out exactly 0
+  (or, on a warm cache, crashed with `'ConvVertexType' object has no attribute 'response_legs'`). The modes now come
+  from the poles of the rational image (`λ = iω_α`, `C = i Res ĝ(ω_α)`, retarded poles); an image with a δ part, a
+  repeated or an acausal pole is refused by name. Spike-only Hawkes with `freq_image`, `time_expr`, or either through
+  `define_function`: one loop equal to the voltage form to 1.3e-14.
 - Checked: the same models with the kernel written as an auxiliary linear field (`τ_g z' = y − z`, a local `x·z`
   vertex, none of this code) agree at tree level exactly and at one loop to 1e-12 (k = 2, auto- and
   cross-cumulants; also the mixed `x·(g ∗ x)` vertex); the one-loop δ weight equals the k = 1 one-loop mean to

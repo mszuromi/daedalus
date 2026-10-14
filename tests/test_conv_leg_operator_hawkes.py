@@ -73,14 +73,19 @@ def voltage_form(n_pop, p=ASYM):
     return b.build()
 
 
-def spike_only_form(n_pop, p=ASYM):
-    b = _params(TemporalModelBuilder(f'Exp Hawkes spike-only test {n_pop}'),
-                n_pop, p)
-    b.define_kernel('r', time_expr='(exp(-t/tau[i]) - exp(-t/taug[i,j]))'
-                                   '/(tau[i] - taug[i,j])*heaviside(t)',
-                    freq_image='1/((1 + I*omega*tau[i])'
-                               '*(1 + I*omega*taug[i,j]))',
-                    latex_name='r', indexed_by=['E', 'E'])
+def spike_only_form(n_pop, p=ASYM, image='both'):
+    """``image``: how the kernel r is declared, 'both' (time_expr and
+    freq_image), 'time' or 'freq' (its modes then come from the poles of
+    the rational frequency image)."""
+    b = _params(TemporalModelBuilder(f'Exp Hawkes spike-only test {n_pop} '
+                                     f'{image}'), n_pop, p)
+    kw = {}
+    if image in ('both', 'time'):
+        kw['time_expr'] = ('(exp(-t/tau[i]) - exp(-t/taug[i,j]))'
+                           '/(tau[i] - taug[i,j])*heaviside(t)')
+    if image in ('both', 'freq'):
+        kw['freq_image'] = '1/((1 + I*omega*tau[i])*(1 + I*omega*taug[i,j]))'
+    b.define_kernel('r', latex_name='r', indexed_by=['E', 'E'], **kw)
     b.set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*a[i]*exp(Em[i] '
                       '+ sum(w[i,j]*Conv(r[i,j], n[j]) for j in E)) '
                       'for i in E)')
@@ -128,6 +133,36 @@ def test_one_neuron_one_loop_agrees_and_folds_the_kernel():
     # quadrature
     assert cs['conv_lines_dressed'] > 0 and cs['conv_kernel_leg_edges'] == 0
     assert cs['nquad_calls'] == 0
+
+
+@pytest.mark.parametrize('image', ['time', 'freq'])
+def test_one_neuron_one_loop_with_one_kernel_image(image):
+    """The kernel declared by its time-domain image only, or by its
+    frequency image only (modes from the poles of r-hat; before, that form
+    gave a one loop of exactly 0, the other crashed on a warm cache)."""
+    v = compute_cumulants(voltage_form(1), k=2, max_ell=1,
+                          external_fields=[('n', 1), ('n', 1)], tau_grid=TAU,
+                          parallel=False, verbose=False, use_cache=False)
+    s = compute_cumulants(spike_only_form(1, image=image), k=2, max_ell=1,
+                          external_fields=[('n', 1), ('n', 1)], tau_grid=TAU,
+                          parallel=False, verbose=False, use_cache=False)
+    assert s['status'] == 'ok'
+    _agree(v, s, 1, 1e-11)
+
+
+def test_modes_from_a_rational_frequency_image():
+    """ĝ(ω) = 1/((1 + iωτ)(1 + iωτ_g)) is g(t) = (e^{-t/τ} - e^{-t/τ_g})
+    /(τ - τ_g); an image with a δ part or an acausal pole has no modes."""
+    from sage.all import I
+    modes = FI._modes_from_freq_image(
+        lambda w: 1 / ((1 + I * w * 2.0) * (1 + I * w * 0.5)))
+    got = sorted((round(lam.real, 12), C.real) for (C, lam) in modes)
+    want = sorted([(-0.5, 1 / 1.5), (-2.0, -1 / 1.5)])
+    assert all(abs(a[0] - b[0]) < 1e-12 and abs(a[1] - b[1]) < 1e-12
+               for a, b in zip(got, want))
+    assert FI._modes_from_freq_image(lambda w: (1 + I * w) / (1 + 2 * I * w)) \
+        is None                                            # δ part
+    assert FI._modes_from_freq_image(lambda w: 1 / (1 - I * w)) is None
 
 
 def test_one_neuron_rate_correction_agrees():
