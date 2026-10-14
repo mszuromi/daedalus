@@ -631,6 +631,14 @@ PRUNE_ORDER_MAX_TUPLES = 1 << 26
 #: (item 34).  Plans live as long as the result's callables.
 PLAN_BYTES_PER_TUPLE = 1100
 
+#: The pre-pass (``estimate_modesum_plans``) is an upper bound that can be
+#: several times the plans actually built (δ-subsets that never build one:
+#: 5x on a spike-only two-neuron Hawkes model, 9.3 M estimated vs 1.8 M
+#: built).  It refuses outright only above this multiple of the budget (a
+#: hopeless run, e.g. 108 GB of unpruned plans); below it the running guard
+#: (``_plan_guard``, exact at each allocation) decides.
+PHASE_J_PREPASS_REFUSE_FACTOR = 8
+
 
 class PhaseJResourceError(MemoryError):
     r"""Phase J would hold more modesum-plan memory than the budget

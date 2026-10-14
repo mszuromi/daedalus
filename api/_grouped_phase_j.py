@@ -308,7 +308,7 @@ def compute_correction_td_grouped(
                     'n_diagrams': n_tds,
                     'subset_skip_reasons': ['group_level_failure'],
                 })
-            except _fi.PhaseJResourceError:
+            except getattr(_fi, 'PhaseJResourceError', ()):
                 raise                   # over the memory budget: never a skip
             except Exception as exc:
                 # Even per-diag failed.  Now we genuinely have to skip,

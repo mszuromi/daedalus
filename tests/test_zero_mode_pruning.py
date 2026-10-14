@@ -357,8 +357,22 @@ def test_estimate_skips_zero_prefactor_diagrams(monkeypatch, model):
     assert tight['prefactors_tested'] and tight['tuples'] == 0
 
 
-def test_over_budget_refuses_before_phase_j(monkeypatch, model):
+def test_slightly_over_budget_leaves_it_to_the_running_guard(monkeypatch,
+                                                             model):
+    """Estimate 4.8 MB, budget 1 MB: within PHASE_J_PREPASS_REFUSE_FACTOR of
+    it, so the pre-pass lets Phase J start and the running guard refuses the
+    plan that would cross the budget, before allocating it."""
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.001')
+    with pytest.raises(FI.PhaseJResourceError) as ei:
+        _cumulants(model, k=3)
+    msg = str(ei.value)
+    assert 'budget exceeded' in msg and 'PHASE_J_MEM_BUDGET_GB' in msg
+    assert ei.value.estimate['bytes_so_far'] + ei.value.estimate['bytes'] > 1e6
+    assert ei.value.estimate['bytes_so_far'] <= 1e6
+
+
+def test_over_budget_refuses_before_phase_j(monkeypatch, model):
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.0001')
     built = []
     orig = FI._plan_from_tuples
     monkeypatch.setattr(FI, '_plan_from_tuples',
@@ -375,7 +389,7 @@ def test_over_budget_refuses_before_phase_j(monkeypatch, model):
 
 
 def test_strict_policy_refuses_the_same_way(monkeypatch, model):
-    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.001')
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.0001')
     with pytest.raises(FI.PhaseJResourceError):
         compute_cumulants(model, k=3, max_ell=1,
                           external_fields=[('dT', 1)] * 3, parallel=False,
