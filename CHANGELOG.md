@@ -11,6 +11,45 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: state-space subset integrator (opt-in, DAEDALUS_PHASE_J_ENGINE=statespace) (`engine/integration/time_domain/statespace.py`, one dispatch point in `final_integral.py`; no number moves with the flag unset)
+
+A Phase J subset integral evaluated without poles, residues or pole tuples, on the realization layer
+`api/_realization.py` (`G(t) = C e^{At} B + D δ(t)`). Each smooth edge carries the minimal realization of ITS
+propagator entry, so its tensor axis has that entry's state count (1 for a driven filter that does not feed
+back), never the model's. The integral is a sweep over the downsets of the subset's causal poset: before the
+first external time the states are resolvents of Kronecker sums (per-edge Schur basis, vectorised back
+substitution, refinement on the residual), computed once per subset; between external times one truncated-Taylor
+action (Al-Mohy & Higham 2011, trace shifted, no squaring) of a block-triangular generator; at an external time
+the edges that end or start there are contracted or opened. Every vertex order of the poset is integrated at
+once (the block exponential's Dyson series is the sum over linear extensions), and equal or near-equal poles
+need no special case. The module docstring has the method and a proof sketch.
+
+- **Opt in** with `DAEDALUS_PHASE_J_ENGINE=statespace` (read when a diagram is integrated; `poles`/`default`/unset:
+  off). A subset is taken only when every row is a plain propagator edge of a model the realization layer
+  accepts with a Hurwitz `A`; noise-kernel boxes, conductance kernel edges and dressed lines, spatial models and
+  grouped Phase J stay on the pole routes. The route is recorded in the per-subset hook (`path='ss'`), in
+  `subset_diagnostics` (`evaluator='statespace'`) and in `ss_*` counters (`ss_declined_by_reason` says why a
+  subset was not taken). δ-subset enumeration, exact δ elimination and Feature B records are unchanged; the
+  integrated δ weights use the new closure.
+- **Θ(0) and ties**: constant rows follow Phase J's Itô rule and tie order (`_const_row_verdict`); equal
+  external times form one event. A finite `final_integral.PHASE_J_T_MIN` is a first finite segment.
+- **Batching**: `SubsetSS.evaluate_many` and the `tau_grid_prefetch(points)` context evaluate a whole τ grid per
+  subset (stationary state shared, the last segment stepped); not yet wired into `total_C_batch`.
+- **Memory**: the cached stationary states are charged against `PHASE_J_MEM_BUDGET_GB` (item 35's running
+  total) before they are allocated; a segment system whose working set alone is over budget is refused.
+- **Accuracy** (50-digit oracles: Lyapunov plus the exact first-order Hartree shift, or a 50-digit sweep on the
+  exact realization): OU with cubic drift 2e-16; OU driven by a colour field at gaps 0.1 / 1e-4 / 1e-8 / 0 (an
+  exact double pole) <= 6e-16 where Phase J has 1.1e-10 / 4e-13 / 4e-13 / 4e-13; Erlang-8 / Erlang-16 kernel
+  2e-15 / 1e-14; Padé-8 / Padé-16 kernel 4.5e-15 / 1.05e-14; alpha-kernel conductance through its Markov
+  embedding 3.5e-16, also at equal rates, where the kernel form is refused. Model zoo, every subset the route
+  takes: within 1e-13 relative (or 1e-15 of the residue scale) of Phase J, and where not, the 50-digit sweep
+  sides with the state-space value in every case (Phase J off by up to 1.8e-13 of the scale on m = 2 polygons
+  with heavy cancellation).
+- **Speed**: 3-field oscillator with red noise, k = 3 one loop at tau = 0, `dd.run`: 1.8 s end to end (value
+  0.16673618, unchanged); 4-field oscillator with two filters: 30 s at 1.0 GB peak footprint (Phase J with zero-mode
+  pruning: about 18 min per point). OU with an Erlang-4 kernel, two loops: 1.5 s (Phase J: over 15 min); its
+  tree + one loop on a 201-point grid: 0.76 s batched, 1.4 s per point (Phase J 16 s).
+
 #### Changed: Phase J leaves exact-zero residue modes out of its pole-tuple plans; k >= 3 one loop from tens of minutes (or out of memory) to seconds (`final_integral.py`, `grouped_integral.py`, `daedalus.py`; no number moves)
 
 Every propagator edge carried one mode per pole, including poles whose residue in that entry is exactly 0. A
