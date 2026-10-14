@@ -282,6 +282,31 @@ def _mode(x, M, ax):
     return np.moveaxis(np.tensordot(M, x, axes=(1, ax)), 0, ax)
 
 
+def _balance_siso(a, b, c):
+    """Exact power-of-two similarity balancing of the augmented matrix
+    ``[[a, b], [c, 0]]`` (``scipy.linalg.matrix_balance``, no permutation):
+    ``a -> S^{-1} a S``, ``b -> S^{-1} b s``, ``c -> c S / s``, so
+    ``c e^{a t} b`` is unchanged bit for bit in exact arithmetic and the
+    rounding of ``a`` is untouched (powers of two).  S1 balances ``a`` alone;
+    rational kernels then leave ``b`` and ``c`` graded in opposite directions
+    (|b| ~ 1e20, |c| ~ 1e-20 on a Pade-16 entry), which inflates the norms of
+    the firing maps and with them the number of Taylor steps.  A diagonal
+    similarity keeps a triangular ``a`` triangular."""
+    n = a.shape[0]
+    aug = np.zeros((n + 1, n + 1), dtype=a.dtype)
+    aug[:n, :n] = a
+    aug[:n, n] = b
+    aug[n, :n] = c
+    if not np.all(np.isfinite(aug)):
+        return a, b, c
+    _bal, (s, _p) = sl.matrix_balance(aug, permute=False, separate=True)
+    s = np.asarray(s, dtype=float)
+    if np.all(s == 1.0):
+        return a, b, c
+    S, sn = s[:n], s[n]
+    return a * (S[None, :] / S[:, None]), b * (sn / S), c * (S / sn)
+
+
 class _EntryOps:
     """One propagator entry ``g(t) = c e^{a t} b``: the realization and its
     triangular (Schur) basis.  ``kind``: 'zero' (no smooth part), 'scalar'
@@ -296,6 +321,8 @@ class _EntryOps:
         self.a = np.asarray(ent.a, dtype=dtype)
         self.b = np.asarray(ent.b, dtype=dtype).reshape(n)
         self.c = np.asarray(ent.c, dtype=dtype).reshape(n)
+        if n:
+            self.a, self.b, self.c = _balance_siso(self.a, self.b, self.c)
         self.trace = complex(np.trace(self.a)) if n else 0j
         self.norm1 = float(np.abs(self.a).sum(axis=0).max()) if n else 0.0
         self.cnorm = float(np.abs(self.c).max()) if n else 0.0
@@ -768,8 +795,9 @@ class SubsetSS:
                 slot_list.append(key)
             return k_
 
+        atol = _FI()._ROW_COEF_ATOL
         for idx, ((a_int, a_ext, c0), ent) in enumerate(zip(cdata, ents)):
-            a_int = [float(x) for x in a_int]
+            a_int = [0.0 if abs(float(x)) <= atol else float(x) for x in a_int]
             a_ext = [float(x) for x in a_ext]
             c0 = float(c0)
             if len(a_int) != self.m or len(a_ext) != self.n_free:
@@ -1030,6 +1058,7 @@ class SubsetSS:
 
     def _segment(self, blocks, passed, placeable, key):
         acts = [self._act(I, passed) for I in blocks]
+        _check_transient(self, acts)
         index = {I: k for k, I in enumerate(blocks)}
         trans = []
         pl = set(placeable)
@@ -1361,6 +1390,31 @@ def _t_min_frame(free_vals, tie_ctx):
             f'final_integral.PHASE_J_T_MIN={t!r} is after an external time '
             f'(the cumulant is asked for before the switch-on)')
     return t_rel
+
+
+def _check_transient(sub, acts):
+    """Refuse (``PhaseJResourceError``) a segment system whose working set
+    (the Taylor action's vectors, and the dense generator when it is formed)
+    alone would exceed ``PHASE_J_MEM_BUDGET_GB``, before it is built."""
+    FI = _FI()
+    budget = FI.phase_j_mem_budget_bytes()
+    if budget is None:
+        return
+    item = 8 if sub.model.is_real else 16
+    D = 0
+    for act in acts:
+        sz = 1
+        for e in act:
+            sz *= sub.edge_ops[e].n
+        D += sz
+    nbytes = 6 * D * item + (2 * D * D * item if D <= OP_DENSE_MAX else 0)
+    if nbytes > budget:
+        raise FI.PhaseJResourceError(
+            f'Phase J memory budget exceeded: one state-space segment system '
+            f'has {D:,} states ({len(acts)} downsets), a working set of '
+            f'{FI._fmt_gb(nbytes)} over the budget of {FI._fmt_gb(budget)}.  '
+            f'Nothing was allocated for it.  Options: {FI._BUDGET_HOW}.',
+            {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
 
 
 def _charge(sub):
