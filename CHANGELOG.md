@@ -11,6 +11,28 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: a declared function applied to an expression, and `time_expr` kernels with symbolic time constants (`api/model_compiler.py`, `api/model.py`)
+
+- `define_function('phi', ['v'], 'a[i]*exp(v)')` called as `phi[i](Em[i] + sum(w[i,j]*Conv(r[i,j], n[j]) for j in E))`,
+  or `g(a*x)` in an SDE drift, or any function whose formal argument names no field (`define_function('g', ['v'],
+  ...)` with field `x`), stopped at the mean-field sanity check with an unresolved `phi_1(...)`. The expansion only
+  has Taylor renames for `phi_<i+1>` expanded at the saddles of its formal arguments (or at 0). A call whose
+  arguments at zero fluctuation are neither is now inlined (the function body evaluated at the arguments) in the
+  action and in the mean-field closure, and such a single-call mean-field equation is a compound saddle, as it is
+  with the body written out. A bare call `phi(...)` inlined in a population of more than one element whose body
+  reads `i` is refused with a message asking for `phi[i](...)`. Result: the `define_function` form and the hand-written form give the same action,
+  saddle, propagator and cumulants, bit for bit (TemporalModelBuilder and SDE front ends). Calls of a function on
+  its own field (`phi[i](v[i])`, `g(x)`) keep the formal path: every zoo model is unchanged (action, saddle,
+  cumulants; in-process A/B against the previous compiler).
+- A kernel given only by `time_expr`, a causal sum of `t^n exp(-a t) heaviside(t)` terms whose rates Sage cannot
+  order (`(exp(-t/tau) - exp(-t/taug))/(tau - taug)*heaviside(t)`), came back as an unevaluated `integrate(...)`
+  and the analyzer stopped with `G3_NONRATIONAL_KERNEL`. When Sage's integral does not evaluate, the transform is
+  now taken term by term in closed form, `c t^n e^{-a t} -> c n!/(a + i omega)^(n+1)`, with `a` required to be
+  positive from the parameter domains (`domain='positive'`), then factored: the image is the same expression as
+  the hand-written `freq_image` (and regular at `tau = taug`), cumulants bit-identical. No assumption is made or
+  left behind. Where the rule does not apply, the error names the parameter(s) without `domain='positive'` and
+  points to `freq_image=`. Kernels Sage already transformed keep Sage's image.
+
 #### Changed: documentation (no code path changes)
 
 - README: the config-file section now says `daedalus run config.yaml` (the console script of `[project.scripts]`), not `dd run`, which is the name of the Python alias, not a command; `sage -python -m daedalus run ...` is unchanged. The same fix is in the module docstring and the missing-PyYAML message of `api/config_run.py` and in a test docstring.
