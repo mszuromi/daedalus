@@ -172,8 +172,21 @@ def _poly_to_dict_form(poly) -> dict:
 
 def _dict_form_to_poly(R, exp_to_coeff: dict):
     """Inverse of :func:`_poly_to_dict_form`: build a polynomial in
-    ring ``R`` from its exponent-tuple → coefficient dict."""
-    return R(exp_to_coeff) if exp_to_coeff else R.zero()
+    ring ``R`` from its exponent-tuple → coefficient dict.
+
+    Same element as ``R(exp_to_coeff)``; the zero test of each coefficient
+    goes through ``field_theory._sr_nonzero`` (same verdict as Sage's, fast
+    for the usual nonzero coefficient), since ``R(...)`` asks Maxima for every
+    coefficient holding a symbol with an assumption (minutes on large
+    non-polynomial actions)."""
+    if not exp_to_coeff:
+        return R.zero()
+    from engine.core.field_theory import (
+        _expand_legacy_requested, _ring_from_nonzero_dict, _sr_nonzero)
+    if _expand_legacy_requested():
+        return R(exp_to_coeff)
+    return _ring_from_nonzero_dict(
+        R, {k: c for k, c in exp_to_coeff.items() if _sr_nonzero(c)})
 
 
 def _by_tp_to_dict_form(by_tp: dict) -> dict:
@@ -524,9 +537,14 @@ def load_expand(model: dict, ft, target_order: int,
     # Rebuild S_raw from the (potentially-filtered) by_tp so it stays
     # consistent with the requested target_order rather than carrying
     # the loaded higher-order surplus.
-    S_raw = ft._R.zero()
-    for poly in ft._by_tp.values():
-        S_raw = S_raw + poly
+    from engine.core.field_theory import _expand_legacy_requested, _sum_of_polys
+    if _expand_legacy_requested():
+        S_raw = ft._R.zero()
+        for poly in ft._by_tp.values():
+            S_raw = S_raw + poly
+    else:
+        # the sectors partition the monomials (no re-test of coefficients)
+        S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
     ft._S_raw = S_raw
 
     ft._mf_sector_raw = _by_tp_from_dict_form(

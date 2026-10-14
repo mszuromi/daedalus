@@ -370,7 +370,7 @@ def _print_action_sectors(ft):
     any_mf = False
     for key in [(0, 0), (1, 0), (0, 1)]:
         poly = mf_raw.get(key)
-        if poly is None or str(poly) == '0':
+        if poly is None or not poly.dict():
             continue
         any_mf = True
         print(f'      bigrade {key}:')
@@ -382,7 +382,7 @@ def _print_action_sectors(ft):
     print()
     print('      ── Free action (1,1) bilinear sector ──')
     S_free = ft.free_action()
-    if str(S_free) == '0':
+    if not S_free.dict():
         print('        (empty)')
     else:
         for line in _fmt_poly(S_free):
@@ -395,7 +395,7 @@ def _print_action_sectors(ft):
     for (n_t, n_p), poly in sorted(sectors.items()):
         if (n_t, n_p) == (1, 1) or n_t + n_p < 2:
             continue
-        if str(poly) == '0':
+        if not poly.dict():
             continue
         any_int = True
         print(f'      bigrade ({n_t},{n_p}):')
