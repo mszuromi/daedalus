@@ -36,6 +36,27 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   longer prints each ring element to test it for emptiness (`str()` of a ring element over SR compares every
   coefficient with 1 and could take 10 s; `api/compute.py`).
 
+#### Fixed: the SDE front end refuses drifts with no syntactic linear term (`api/sde.py`; no number moves for a model that built before)
+
+- `SDE.drift('x', '-x/(1+eps*x^2)')`, `'-x*exp(-eps*x^2)'`, an SGD logistic-loss gradient, or any drift
+  whose linear coefficient contains a field, raised `SDEError: ... rhs has no linear term ... field-independent
+  coefficient`. The mean-field equation needs `lhs|_{Dt=0} != 0`, and the front end only knew how to move a
+  syntactic linear term onto the lhs. Where there is none it now adds `c*x` to both sides of the mean-field
+  equation (lhs `Dt*x + c*x`, rhs `drift + c*x`, c = 1). The residual is unchanged and so are the saddle
+  solve (a root solve on the residual, in which `c*x` cancels) and the linear stability (`d(lhs - rhs)/dx`); the
+  action is not touched. A note in `SDE.notes` records the step.
+- Measured on seven models (rational, exponential, shifted rational, two coupled fields, Stratonovich
+  multiplicative noise, and an SGD logistic-loss gradient without and with an L2 term): the six that take the new
+  branch give the saddle, the propagator and the k = 2 tree + one-loop `C(tau)` bit for bit equal to the
+  hand-written `(Dt + 1)*x` model, and a second c (5/2) moves nothing beyond 1e-12 relative. The L2 case keeps its
+  old branch (c = the L2 rate) and agrees to 1e-12.
+- A model that was refused at build time now builds and is judged by the analyzer: `drift('x', '-x^3')`
+  (zero slope at its saddle) gives `G2_MARGINAL_MODE`, `x/(1+x^2)` with `stability_analysis(True)` gives
+  `G2_UNSTABLE_SADDLE`, both from the true slope of the drift and not from c.
+- Models that built before take the old branch: their equations, action and notes are unchanged.
+- Still refused, with the workaround spelled out: a lhs or rhs that cannot be read symbolically (e.g. a
+  population sum in the rhs), and a drift that does not depend on the field at all.
+
 #### Added: symbolic tree-level covariance in the time domain, any denominator degree (`api/symbolic_out.py`, stage C2)
 
 - `tree_modes(C0, omega)` / `TreeCovariance.modes(a, b)` return `C(tau)` as a
