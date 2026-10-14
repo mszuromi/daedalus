@@ -675,6 +675,38 @@ def test_rational_spectrum_classification():
     assert not any(_exp_poly_form(k, tau) for k in other), [k for k in other if _exp_poly_form(k, tau)]
 
 
+def test_g3_residues_numerical_tier(monkeypatch):
+    """The exact propagator tier cannot compute the residues (its root
+    labelling undecided, its 50-digit route failing): the numerical tier
+    runs, with a PoleResidueWarning and G3_RESIDUES_NUMERICAL_TIER."""
+    import warnings
+    from api import _propagator as PR
+    from api.noise import Gaussian
+    from api.sde import SDE
+    monkeypatch.setattr(PR, '_entry_pole_membership', lambda *a, **k: (None, 'undecided'))
+
+    def boom(*a, **k):
+        raise ArithmeticError('forced failure')
+    monkeypatch.setattr(PR, '_exact_route', boom)
+    monkeypatch.setattr(PR, '_cluster_path', lambda *a, **k: None)
+    m = (SDE('ou_driven_g3').parameter('a', default=1.0).parameter('b', default=0.7).parameter('D', default=0.1)
+         .field('x').field('z').drift('x', '-a*x + z').drift('z', '-b*z')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).noise('zeta', Gaussian(var='2*D'), couples={'z': 1})
+         .build())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        r = compute_cumulants(m, k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], parallel=False,
+                              verbose=False, use_cache=False, tau_grid=np.array([0.5]))
+    assert any(issubclass(w.category, PR.PoleResidueWarning) for w in caught)
+    f = [f for f in r['analysis'].findings if f.code == 'G3_RESIDUES_NUMERICAL_TIER'][0]
+    assert f.level == 'warning' and f.remedy and 'forced failure' in f.message
+    assert r['analysis'].traits.residue_route == 'failed'
+    # exact: the OU part plus x filtering the OU z
+    a, b, D, t = 1.0, 0.7, 0.1, 0.5
+    cxx = D / a * np.exp(-a * t) + D / b * (a * np.exp(-b * t) - b * np.exp(-a * t)) / (a * (a ** 2 - b ** 2))
+    assert abs(complex(r['C_tau'][0]).real - cxx) <= 1e-8 * abs(cxx)
+
+
 def test_finding_codes_all_have_a_test():
     """Every warning/error code is exercised somewhere in the analyzer tests (this file, test_analyze.py or
     test_analyzer_regime.py)."""
