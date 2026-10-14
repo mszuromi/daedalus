@@ -1,4 +1,4 @@
-"""Tests for the YAML entry point (``api/config_run.py``, ``dd run config.yaml``).
+"""Tests for the YAML entry point (``api/config_run.py``, ``daedalus run config.yaml``).
 
 A: a run through the config reproduces ``compute_cumulants`` called directly
    (``np.array_equal``) for k = 2 (OU quartic, ell <= 1), k = 1, and a

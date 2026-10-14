@@ -33,6 +33,24 @@ The orchestration layer `dd` drives:
   `compute_cumulants` (`Preflight`: gates G0–G4 before the enumeration, G6 after the run).
 - `routing.py` — the backend registry: each integrator backend declares
   `applies(request) -> (bool, reasons)` and a priority; the router takes the first that applies.
+- `config_run.py` — the YAML entry point behind `daedalus run config.yaml`: strict validation of a
+  config, then the same pipeline as `dd.run`, with the requested outputs written (`--dry-run`
+  prints the resolved config and the analyzer report instead of computing).
+- `sde.py` + `noise.py` — the SDE front-end: declare fields, a drift and noise sources; derive the
+  MSR action and the mean-field equations and emit the same model dict as `ModelBuilder`.
+  `noise.py` is the noise-source library, each source given by its conditional cumulant generating
+  function (Gaussian, Poisson, compound Poisson, gamma and inverse-Gaussian processes, or a user-given CGF).
+- `cumulant.py` — `Cumulant`: a computed cumulant as its smooth part per loop order plus the
+  shot-noise δ components (the spikes on a hyperplane of the external times), read off the result
+  without recomputing. `cumulant_plot.py` draws it (`dd.plot_cumulant(..., show_delta=True)`).
+- `symbolic_out.py` — the tree-level covariance as symbolic expressions in the Fourier domain,
+  with exports (sympy, LaTeX, a numpy callable, JSON) and its time-domain inverse.
+- `_pole_clusters.py` — near-degenerate and repeated propagator poles: replaces a nearly
+  cancelling pole sum by a contour average around the cluster, so close poles keep their precision.
+- `_expand_cache.py` — a disk cache for `FieldTheory.expand()` results (the dominant cost for
+  large models), reused across Taylor orders.
+- `colored_to_markovian.py` — rewrites a colored-noise model as a linear filter driven by white
+  noise, so the temporal integrator can handle it.
 - `model.py` (+ `model_compiler.py`, `model_serialize.py`, `model_templates.py`) — the
   declarative `ModelBuilder` authoring system that emits a model dict.
 - `_mean_field*.py`, `_propagator.py`, `_grouped_phase_j.py`, `_diagrams.py` — pipeline helpers.
@@ -48,6 +66,14 @@ The model-agnostic physics core:
 - `diagrams/` — typed-diagram bookkeeping, symmetry factors, prediagram plotting.
 - `integration/{time_domain,spatial}/` — the loop-integral evaluators: the temporal Phase J
   integrator, and the spatial Symanzik / causal-chamber / heat-kernel integrator.
+  Within `time_domain/`, besides the main Phase J chain (`pipeline.py`, `grouped_integral.py`,
+  `final_integral.py`):
+  - `expdd.py` — divided-difference kernels: every closed-form Phase J integral of an
+    exponential over a simplex written as a divided difference of `exp`, evaluated stably.
+  - `boxfree.py` — the exact integrals built on those kernels, evaluated in the log domain, with
+    an explicit overflow status instead of a silent `inf`.
+  - `dbm_integral.py` — the exact integral of an exponential-polynomial over a polytope whose
+    rows are difference bounds (scalar bounds and shifted order rows).
 
 ## `simulations/`
 

@@ -33,6 +33,16 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   left behind. Where the rule does not apply, the error names the parameter(s) without `domain='positive'` and
   points to `freq_image=`. Kernels Sage already transformed keep Sage's image.
 
+#### Changed: documentation (no code path changes)
+
+- README: the config-file section now says `daedalus run config.yaml` (the console script of `[project.scripts]`), not `dd run`, which is the name of the Python alias, not a command; `sage -python -m daedalus run ...` is unchanged. The same fix is in the module docstring and the missing-PyYAML message of `api/config_run.py` and in a test docstring.
+- ARCHITECTURE.md lists the modules added since 0.2.0 (`api/{config_run,sde,noise,cumulant,cumulant_plot,symbolic_out,_pole_clusters,_expand_cache,colored_to_markovian}.py`, `engine/integration/time_domain/{expdd,boxfree,dbm_integral}.py`) with one line each.
+- Tracked text no longer names models that are not in the public repository: the two perf tables and one sentence below that named a local two-field OU quartic model now describe it structurally, and `docs/spatial_pipeline.md` points at the public model and simulator paths (it still said `theories/...` and `models/...sim.py`).
+
+#### Added: notebook CI workflow (`.github/workflows/notebooks.yml`)
+
+- A separate workflow that executes every `notebooks/examples/**/*.ipynb` with `jupyter nbconvert --execute` (per-notebook and whole-job timeouts) in the same conda environment as `tests.yml`. It runs only on `workflow_dispatch` and a weekly schedule, writes the executed copies to a temporary directory (the shipped outputs are not touched) and uploads them as a build artifact.
+
 #### Changed: `FieldTheory.expand` on non-polynomial actions, minutes to about a second (`engine/core/field_theory.py`)
 
 - The action is now Taylor-expanded node by node: sums add, products and positive integer powers multiply with
@@ -1184,7 +1194,7 @@ of what remains; the two OU runs give two samples each):
 
 | run | off | on | hits / misses |
 |---|---|---|---|
-| `ou_quartic_two_dim`, k = 2, ℓ = 2, 7 τ | 46.3–49.4 s | 28.1–29.2 s | 2,613,114 / 54,726 |
+| a two-field OU quartic model (local), k = 2, ℓ = 2, 7 τ | 46.3–49.4 s | 28.1–29.2 s | 2,613,114 / 54,726 |
 | `ou_quartic`, k = 4, ℓ = 2, 1 point | 36.8–38.4 s | 19.4–20.1 s | 473,592 / 40,248 |
 | `single_population_quad_exp_test`, k = 2, ℓ = 1 | 89.2 s | 42.0 s | 7,988,455 / 584,321 (cap reached) |
 | `single_population_spike_reset_test`, k = 2, ℓ = 1 | 14.7 s | 12.3 s | 173,278 / 3,922 |
@@ -1193,7 +1203,7 @@ of what remains; the two OU runs give two samples each):
 ### Performance: per-diagram setup levers (numbers unchanged)
 
 After the chain memo, most of the time of a run with many diagrams went into the
-per-diagram setup of `integrate_diagram`: on `ou_quartic_two_dim` (k = 2, ℓ = 2)
+per-diagram setup of `integrate_diagram`: on a two-field OU quartic model (local; k = 2, ℓ = 2)
 5217 of the 5347 diagrams have a prefactor that is numerically zero and still paid
 the full setup, and the model-level data (`build_G_t_matrix`, the pole and residue
 arrays) was rebuilt for every diagram. Four independent levers cut that cost. None
@@ -1256,7 +1266,7 @@ process, warm disk cache, whole `compute_cumulants` run including enumeration an
 
 | run | all off | all on |
 |---|---|---|
-| `ou_quartic_two_dim`, k = 2, ℓ = 2, 7 τ | 35.0 / 35.2 s | 10.8 / 11.2 s |
+| a two-field OU quartic model (local), k = 2, ℓ = 2, 7 τ | 35.0 / 35.2 s | 10.8 / 11.2 s |
 | `ou_quartic`, k = 2, ℓ = 3, 7 τ | 6.7 / 6.9 s | 1.9 / 1.9 s |
 | `ou_quartic`, k = 4, ℓ = 2, 2 points | 29.4 / 29.5 s | 16.2 / 16.4 s |
 | `ou_quartic`, k = 4, ℓ = 1 | 0.61 / 0.60 s | 0.36 / 0.39 s |

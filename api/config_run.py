@@ -1,4 +1,4 @@
-"""api/config_run.py — run Daedalus from a YAML config file (``dd run config.yaml``).
+"""api/config_run.py — run Daedalus from a YAML config file (``daedalus run config.yaml``).
 
 A thin entry point over ``daedalus.run`` / ``api.compute_cumulants``: it parses
 and strictly validates a config, loads the model, resolves every default, calls
@@ -524,7 +524,7 @@ def parse_config(path):
     try:
         import yaml                                         # noqa: F401
     except ImportError:
-        raise RuntimeError('dd run needs PyYAML (import yaml); it ships with '
+        raise RuntimeError('daedalus run needs PyYAML (import yaml); it ships with '
                            'the Daedalus conda environment') from None
     raw = _Parser(text, os.path.basename(path)).parse()
     raw['_source'] = os.path.basename(path)
@@ -1117,7 +1117,7 @@ def run_config(path, dry_run=False, out=None):
 # ── command line ──────────────────────────────────────────────────────────────
 
 def main(argv=None):
-    """``dd run config.yaml [--dry-run]``; returns the exit status."""
+    """``daedalus run config.yaml [--dry-run]``; returns the exit status."""
     import argparse
     ap = argparse.ArgumentParser(prog='daedalus')
     sub = ap.add_subparsers(dest='command', required=True)
