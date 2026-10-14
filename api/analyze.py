@@ -168,6 +168,7 @@ FINDING_CODES = {
     'G6_NQUAD_FALLBACK':         ('G6', 'info'),
     'G6_COUNTERS_INCOMPLETE':    ('G6', 'info'),
     'G6_NOT_EVALUATED':          ('G6', 'info'),
+    'G6_DIAGRAMS_SKIPPED':       ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -3093,6 +3094,19 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         d['n_diagrams'] = None
     d['counters_complete'] = bool(complete)
     d['accuracy_estimate'] = None
+    failed = (result.get('phase_j_incomplete') or {}) \
+        if isinstance(result, dict) else {}
+    d['n_diagrams_skipped'] = sum(r.get('n_diagrams', 1)
+                                  for recs in failed.values() for r in recs)
+    if failed:
+        first = next(iter(failed.values()))[0]
+        ctx.add('G6_DIAGRAMS_SKIPPED',
+                f'Phase J could not evaluate {d["n_diagrams_skipped"]} '
+                f'diagram(s) (loop orders {sorted(failed)}); they are left '
+                f'out of the cumulant (result["status"] = "incomplete"). '
+                f'First reason: {str(first.get("reason"))[:200]}',
+                'see result["phase_j_incomplete"]; the numbers are '
+                'incomplete until every diagram evaluates')
     if not evaluated:
         ctx.add('G6_NOT_EVALUATED',
                 'no Phase J tau-grid evaluation ran inside compute_cumulants '

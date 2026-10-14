@@ -270,6 +270,25 @@ def is_degenerate(D, tol=DEGENERATE_TOL):
 
 # ───────────────────────────────────────────────────────────── elimination
 
+class _DoubleArith:
+    """The arithmetic of the elimination: double precision (the default;
+    these are the very functions the code called before the backend was
+    swappable, so its results are unchanged)."""
+    exp = staticmethod(cmath.exp)
+    log = staticmethod(cmath.log)
+    rexp = staticmethod(math.exp)
+    rlog = staticmethod(math.log)
+    fsum = staticmethod(math.fsum)
+    cplx = complex
+    real = staticmethod(lambda x: x)
+    err_factor = COND_ERR_FACTOR
+    thin_retry = True
+
+
+#: Working precision of the high-precision tier (decimal digits).
+MP_DPS = 40
+
+
 _FACT = [1]
 for _i in range(1, 64):
     _FACT.append(_FACT[-1] * _i)
@@ -280,17 +299,17 @@ def _binom_shift(p, c):
     return [math.comb(p, q) * (c ** (p - q)) for q in range(p + 1)]
 
 
-def _rescaled(A, d):
+def _rescaled(A, d, ar=_DoubleArith):
     """``A·exp(d)`` for a magnitude ``A`` >= 0, ``inf`` past the float
     range (a magnitude may only overstate the rounding error)."""
     if A == 0:
         return 0.0
     if d > LOG_OVERFLOW:
         return INF
-    return A * math.exp(d)
+    return A * ar.rexp(d)
 
 
-def _add_term(acc, key, C, E, A):
+def _add_term(acc, key, C, E, A, ar=_DoubleArith):
     """Merge ``C·exp(E)`` into ``acc[key] = (C0, E0, A0)`` in the log domain
     (the larger real exponent is kept as the base, so no factor overflows).
     ``A`` (>= |C|, on the same scale ``exp(Re E)``) accumulates the absolute
@@ -306,20 +325,21 @@ def _add_term(acc, key, C, E, A):
         return
     C0, E0, A0 = old
     if C == 0 and C0 != 0:
-        acc[key] = (C0, E0, A0 + _rescaled(A, E.real - E0.real))
+        acc[key] = (C0, E0, A0 + _rescaled(A, E.real - E0.real, ar))
     elif C0 == 0 and C != 0:
-        acc[key] = (C, E, A + _rescaled(A0, E0.real - E.real))
+        acc[key] = (C, E, A + _rescaled(A0, E0.real - E.real, ar))
     elif E == E0:
         acc[key] = (C0 + C, E0, A0 + A)
     elif E.real > E0.real:
-        f = cmath.exp(E0 - E)
+        f = ar.exp(E0 - E)
         acc[key] = (C + C0 * f, E, A + A0 * abs(f))
     else:
-        f = cmath.exp(E - E0)
+        f = ar.exp(E - E0)
         acc[key] = (C0 + C * f, E0, A0 + A * abs(f))
 
 
-def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
+def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0,
+                   ar=_DoubleArith):
     """Integrate every term of ``terms`` (a dict ``(beta, mono) -> (C, E,
     A)``, see ``_add_term``) over ``s_k ∈ [s_lo_node + lo_c, s_hi_node +
     hi_c]``; ``lo`` / ``hi`` are ``(node, c)``.  Returns the new dict
@@ -350,12 +370,13 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
             nm = list(mono)
             nm[k] = 0
             _add_term(out, (tuple(nb), tuple(nm)), C * J, E + bk * b_,
-                      A * mag)
+                      A * mag, ar)
         if not rest:
             return out
         for key, (C, E, A) in _integrate_var(rest, k, lo, hi, Z, eps,
-                                             beta_tol=beta_tol).items():
-            _add_term(out, key, C, E, A)
+                                             beta_tol=beta_tol,
+                                             ar=ar).items():
+            _add_term(out, key, C, E, A, ar)
         return out
     for (beta, mono), (C, E, A) in terms.items():
         bk = beta[k]
@@ -371,7 +392,7 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
                        nk - j) for j in range(nk + 1)]
             carries = True
         else:
-            pieces = [(1.0 / (nk + 1), nk + 1)]
+            pieces = [(ar.real(1.0) / (nk + 1), nk + 1)]
             carries = False
             excess = abs(bk) - beta_tol
             if excess > 0:
@@ -384,8 +405,9 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
                 # is a residue of an exact 0: dropping it is the better
                 # answer, and it books nothing.
                 A = A * (1.0 + (excess / eps) * (BETA_ZERO_SPAN
-                                                 / COND_ERR_FACTOR))
+                                                 / ar.err_factor))
         for sign, (node, c) in ((1.0, hi), (-1.0, lo)):
+            c = ar.real(c)       # exact in the high-precision backend
             if node is None:
                 # box-free: an open side; its boundary term vanishes iff the
                 # term decays there (Re β_k < -beta_tol at +inf, > beta_tol
@@ -408,7 +430,7 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
                     tot += x
                     mag += abs(x)
                 if mag != 0:            # tot == 0 keeps its magnitude
-                    _add_term(out, key, sign * C * tot, Enew, A * mag)
+                    _add_term(out, key, sign * C * tot, Enew, A * mag, ar)
                 continue
             nb = list(base_beta)
             if carries:
@@ -423,7 +445,7 @@ def _integrate_var(terms, k, lo, hi, Z, eps, thin=False, beta_tol=0.0):
                     nm[node] += q
                     kappa = pc * sc
                     _add_term(out, (nb, tuple(nm)), sign * C * kappa, Enew,
-                              A * abs(kappa))
+                              A * abs(kappa), ar)
     return out
 
 
@@ -474,7 +496,7 @@ def _bounds_of(D, k, active, Z):
 
 
 def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False,
-               open_ok=False, beta_tol=0.0):
+               open_ok=False, beta_tol=0.0, ar=_DoubleArith):
     """Recursive case-split elimination of the variables ``active`` from
     ``terms`` over the closed, non-degenerate DBM ``D``.  Fully integrated
     terms are appended to ``leaves`` as ``(C, E)``.  ``open_ok`` (the
@@ -542,12 +564,12 @@ def _eliminate(terms, D, active, Z, eps, leaves, stats, thin=False,
                 Dc[k][i] = INF
                 Dc[i][k] = INF
             new_terms = _integrate_var(terms, k, (a, lo_c), (b, hi_c), Z, eps,
-                                       thin, beta_tol)
+                                       thin, beta_tol, ar)
             _eliminate(new_terms, Dc, rest, Z, eps, leaves, stats, thin,
-                       open_ok, beta_tol)
+                       open_ok, beta_tol, ar)
 
 
-def _sum_leaves(leaves):
+def _sum_leaves(leaves, ar=_DoubleArith):
     """``(Σ C·exp(E), Σ A·exp(Re E))`` with compensated summation (``A``:
     the absolute magnitude a leaf has accumulated, see ``_add_term``), or
     ``(None, max log-magnitude)`` when a term exceeds ``LOG_OVERFLOW``."""
@@ -558,29 +580,29 @@ def _sum_leaves(leaves):
     for (C, E, A) in leaves:
         # every leaf's magnitude counts, a cancelled (C == 0) one included:
         # its rounding error is that of the terms that cancelled
-        mag += A * math.exp(E.real) if E.real <= LOG_OVERFLOW else INF
+        mag += A * ar.rexp(E.real) if E.real <= LOG_OVERFLOW else INF
         if C == 0:
             continue
-        lg = E.real + math.log(abs(C))
+        lg = E.real + ar.rlog(abs(C))
         if lg > lg_max:
             lg_max = lg
         if lg > LOG_OVERFLOW:
             continue
         if E.real > LOG_OVERFLOW:
-            x = cmath.exp(E + cmath.log(C))
+            x = ar.exp(E + ar.log(C))
         else:
-            x = C * cmath.exp(E)
+            x = C * ar.exp(E)
         re_parts.append(x.real)
         im_parts.append(x.imag)
     if lg_max > LOG_OVERFLOW:
         return None, lg_max
-    return complex(math.fsum(re_parts), math.fsum(im_parts)), mag
+    return ar.cplx(ar.fsum(re_parts), ar.fsum(im_parts)), mag
 
 
 # ───────────────────────────────────────────────────────────── driver
 
 def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
-                      beta_tol=None):
+                      beta_tol=None, ar=_DoubleArith):
     r"""``Σ_t C_t ∫_{region} exp(E_t + Σ_v β_tv s_v) ds``.
 
     ``rows``  ``(a, c)`` pairs, ``a·s + c > 0`` (see ``difference_bounds``);
@@ -623,13 +645,13 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
     zero_mono = (0,) * n
     seed_scale = 0.0
     for (C, E, beta) in seeds:
-        C = complex(C)
+        C = ar.cplx(C)
         if C == 0:
             continue
-        E = complex(E)
-        seed_scale += abs(C) * math.exp(min(E.real, LOG_OVERFLOW))
-        key = (tuple(complex(b) for b in beta) + (0j,), zero_mono)
-        _add_term(terms, key, C, E, abs(C))
+        E = ar.cplx(E)
+        seed_scale += abs(C) * ar.rexp(min(E.real, LOG_OVERFLOW))
+        key = (tuple(ar.cplx(b) for b in beta) + (ar.cplx(0),), zero_mono)
+        _add_term(terms, key, C, E, abs(C), ar)
     if scale is None:
         scale = seed_scale
     if beta_tol is None:
@@ -637,38 +659,75 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
             (sum(abs(complex(b)) for b in beta) for (_C, _E, beta) in seeds),
             default=0.0)
     res = _run(terms, D, m, Z, eps, scale, thin=False, open_ok=open_ok,
-               beta_tol=beta_tol)
-    if res.status != STATUS_ILL_CONDITIONED:
+               beta_tol=beta_tol, ar=ar)
+    if res.status != STATUS_ILL_CONDITIONED or not ar.thin_retry:
         return res
     # Retry once with thin constant-bound intervals integrated by
     # Gauss-Legendre: a thin region (an external-time nudge, a tie) makes
     # F(b) - F(a) cancel there.  Taken only if it passes the same test, so
     # every value accepted on the first pass is unchanged.
     res2 = _run(terms, D, m, Z, eps, scale, thin=True, open_ok=open_ok,
-                beta_tol=beta_tol)
+                beta_tol=beta_tol, ar=ar)
     if res2.status == STATUS_OK:
         res2.thin_retry = True
         return res2
     return res
 
 
-def _run(terms, D, m, Z, eps, scale, thin, open_ok=False, beta_tol=0.0):
+def integrate_exp_sum_mp(rows, m, seeds, cap, *, scale=None, eps=None,
+                         beta_tol=None, dps=None):
+    """:func:`integrate_exp_sum` with the elimination carried out in
+    ``dps``-digit arithmetic (``MP_DPS`` by default; mpmath).  For a subset
+    whose double-precision closed form fails the conditioning test because
+    its expansion cancels (near-equal decay rates make partial fractions
+    ``1/(λ_a − λ_b)`` large; the integral itself is well conditioned in the
+    λ): the same exact elimination of the same double-precision inputs,
+    with rounding ``10^(2 − dps)`` instead of ``COND_ERR_FACTOR``, judged by
+    the same test.  No Gauss-Legendre thin retry.  Returns a ``DBMResult``
+    with ``value`` as a Python complex and ``magnitude`` as a float."""
+    import mpmath as mp
+    dps = int(dps or MP_DPS)
+    ctx = mp.MPContext()          # private precision: thread safe
+    ctx.dps = dps
+
+    class _MpArith:
+        exp = staticmethod(ctx.exp)
+        log = staticmethod(ctx.log)
+        rexp = staticmethod(ctx.exp)
+        rlog = staticmethod(ctx.log)
+        fsum = staticmethod(ctx.fsum)
+        cplx = staticmethod(ctx.mpc)
+        real = staticmethod(ctx.mpf)
+        err_factor = ctx.mpf(10) ** (2 - dps)
+        thin_retry = False
+
+    res = integrate_exp_sum(rows, m, seeds, cap, scale=scale, eps=eps,
+                            beta_tol=beta_tol, ar=_MpArith)
+    if res.value is not None:
+        res.value = complex(res.value)
+    res.magnitude = float(res.magnitude)
+    res.error_ratio = float(res.error_ratio)
+    return res
+
+
+def _run(terms, D, m, Z, eps, scale, thin, open_ok=False, beta_tol=0.0,
+         ar=_DoubleArith):
     """One elimination pass of ``integrate_exp_sum`` and its conditioning
     verdict."""
     leaves = []
     stats = {'cases': 0, 'visits': 0}
     try:
         _eliminate(terms, D, list(range(m)), Z, eps, leaves, stats, thin,
-                   open_ok, beta_tol)
+                   open_ok, beta_tol, ar)
     except _TooManyCases:
         return DBMResult(None, STATUS_TOO_MANY_CASES, 0.0, stats['cases'])
     except _Divergent:
         return DBMResult(None, STATUS_DIVERGENT, 0.0, stats['cases'])
-    total, mag = _sum_leaves(leaves)
+    total, mag = _sum_leaves(leaves, ar)
     if total is None:
         return DBMResult(None, STATUS_OVERFLOW, mag, stats['cases'])
     accepted = max(COND_RTOL * abs(total), COND_ATOL * float(scale))
-    err = COND_ERR_FACTOR * mag
+    err = ar.err_factor * mag
     ratio = err / accepted if accepted > 0 else (0.0 if err == 0 else INF)
     if ratio > 1.0:
         return DBMResult(total, STATUS_ILL_CONDITIONED, mag, stats['cases'],

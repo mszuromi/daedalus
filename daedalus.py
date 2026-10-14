@@ -103,6 +103,9 @@ _PIPELINE_EXPORTS = {
     'Question':                  'api.analyze',
     'Policy':                    'api.analyze',
     'AnalyzerError':             'api.analyze',
+    # a run that left diagrams out (result['status'] == 'incomplete')
+    'PhaseJIncompleteWarning':   'api.compute',
+    'PhaseJIncompleteError':     'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',
@@ -820,7 +823,17 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     ``compute_cumulants`` run per order 2..k, each delivering every loop order
     at once (the order-k run is reused)."""
     import itertools
-    from api import compute_cumulants
+    from api import compute_cumulants as _compute
+
+    def compute_cumulants(**kw_):
+        # an extra run that left diagrams out makes the moment incomplete too
+        r = _compute(**kw_)
+        if isinstance(r, dict) and r.get('status') == 'incomplete':
+            res['status'] = 'incomplete'
+            res.setdefault('phase_j_incomplete_moment_runs', []).append(
+                {'k': kw_.get('k'), 'phase_j_incomplete':
+                 r.get('phase_j_incomplete')})
+        return r
     tau = np.asarray(res['tau_grid'], dtype=float)
     f0 = kw['external_fields'][0]
     L = int(kw.get('max_ell', 0) or 0)

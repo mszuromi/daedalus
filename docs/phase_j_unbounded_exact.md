@@ -21,9 +21,10 @@ at ±200 (`POLYGON_BBOX_CAP`), the DBM at ±200.
 
 **Scope.** Every row is a difference row of an edge, `s_v − s_u + c > 0` (or `s_v + c > 0`
 against an external time), with unit coefficients; every mode of an edge decays (`Re λ < 0`).
-Rows that are not edges (a ConvVertex kernel pseudo-edge whose mode decays counts as an edge;
-the NoiseSource `τ_v` box rows and the ConvVertex `τ` rows do not) keep their box
-(`TAU_KERNEL_CAP`), and such subsets go to the DBM / the hardened fallback.
+A ConvVertex kernel is an edge (its attached leg has its own time `s`, the kernel edge
+`s → anchor` has the row `anchor − s > 0` and one decaying mode). Rows that are not edges
+(the NoiseSource `τ_v` box rows) keep their box (`TAU_KERNEL_CAP`), and such subsets go to
+the DBM / the hardened fallback.
 
 **Statement.** On such a region the integral of each exponential converges iff the exponent
 decays along every open direction of `R`:

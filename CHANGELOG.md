@@ -11,6 +11,90 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
+
+Such a vertex (a "conductance" synapse `v·(g∗n)`, any `x·(g∗y)` coupling) puts its `y` leg at its own time `s`,
+joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which one a run met depended on the cache:
+
+- **Warm cache: diagrams dropped.** The expand cache did not restore the kernel attachments that
+  `extract_vertex_types` needs, so every run after the first built a plain vertex with the kernel placeholder left in
+  its coefficient; Phase J failed those diagrams ("stripped integrand contains unexpected free symbols {z_g_...}")
+  and left them out of `C_tau` without a word. On a one-population spiking model with a `v·(g∗n)` term, 21 of the
+  29 one-loop k = 2 diagrams were missing. The bundle now stores the attachments; an older bundle is re-expanded only
+  when a kernel symbol sits in an interaction coefficient (models whose `Conv` is linear keep their cache). The
+  typed-diagram cache could not store these vertices at all (a closure in the vertex, and `VertexType.__getstate__`
+  saved only the subclass's own slots); both fixed, and the typed-diagram stage name gets a `_convleg` suffix only
+  for a model with such a vertex.
+- **Wrong routing.** The kernel delay was applied to every edge at the vertex whose physical leg had the attached
+  leg's population (and at both ends of an edge), which in a one-population model is every edge: the kernel
+  collapsed to an instantaneous coupling. Now only the line whose head is the vertex at the attached leg (field
+  and population) carries the kernel.
+- **Days of quadrature.** The delay `τ` was the integration variable, so every edge into the attached leg had a
+  three-term constraint row, which the exact box-free routes do not take: the subsets went to nested scipy
+  quadrature (m up to 6), days per τ point (a zoo run was killed after 5.5 days). Now a kernel that is a finite
+  exponential sum (single exponential, difference of exponentials, ...) is folded into the propagator of its line,
+  `(g ∗ G)`, again a pole sum without δ part: no extra time variable, no extra row, no `TAU_KERNEL_CAP` box (that
+  box truncated the kernel, 4.5e-5 for τ_g = 5). The propagator's rounding-level residues at the kernel's own
+  rates (a pole of the kernel's image is a zero of `G`) are dropped as exact zeros; they multiplied the
+  pole-tuple count for nothing. Any other kernel (alpha function, a kernel rate equal to a propagator pole) gives
+  the attached leg its own time `s` and becomes one more smooth edge `s → t`, every row a difference row.
+  `DRESS_CONV_KERNELS` (env `DAEDALUS_PHASE_J_DRESS_KERNELS=0`) forces that path.
+- **Duplicated legs.** A vertex whose kernel sits on a leg that occurs several times (`exp(Σ_j w_ij (r_ij ∗ n_j))`
+  Taylor-expanded: every `n` leg carries `r`; `x·(g ∗ x)`: one plain and one kernel copy) now has one kernel slot
+  per copy, read from the power of the kernel symbol in the coefficient. When the copies differ, the diagram's
+  weight (which counts them as identical: the automorphism colouring does not mark kernel legs) multiplies the
+  average over the distinct placements of the lines in the slots; a single placement was 34 % off on
+  `x·(g ∗ x)`. A δ kernel (`Conv(c·δ, n) = c·n`) is a weight, no delay. A delayed step `heaviside(t − d)` or a δ
+  mixed with a smooth part is refused with a named reason (its delay would have been lost).
+- **Kernels declared by `freq_image` only.** Such a vertex had no time-domain kernel: its one loop came out exactly 0
+  (or, on a warm cache, crashed with `'ConvVertexType' object has no attribute 'response_legs'`). The modes now come
+  from the poles of the rational image (`λ = iω_α`, `C = i Res ĝ(ω_α)`, retarded poles); an image with a δ part, a
+  repeated or an acausal pole is refused by name. Spike-only Hawkes with `freq_image`, `time_expr`, or either through
+  `define_function`: one loop equal to the voltage form to 1.3e-14.
+- **Repeated kernel rates are refused, not mis-summed.** A kernel with a repeated or near-repeated rate (the alpha
+  kernel `t e^{-t/τ}/τ²`, `ĝ = 1/((1+iωτ)(1+iωτ₂))` with τ₂ near τ) has `t e^{μt}` terms no mode sum holds; a
+  numerically split double root gave a one loop 7x too large with status 'ok'. Rates closer than 10 % (relative) or a
+  kernel that is not a finite exponential sum are refused by name (write the filter as auxiliary linear fields);
+  between separated rates the result equals the Markov embedding to 1.6e-13 at an 11 % gap.
+
+#### Fixed: the propagator and typed-diagram caches served another model with the same name (`api/_propagator.py`, `api/_diagrams.py`; pre-existing)
+
+- Both caches are keyed by the model name; a model that differs only in a kernel's image (or any other text) got the
+  other model's propagator: e.g. an alpha-kernel model returned an exponential-kernel model's numbers exactly. Both
+  now store the model's `spec_signature` (action, equations, functions, kernel images) and rebuild on a mismatch. A
+  cache file written before this change has no signature and is still accepted (clear `saved_models/` to be sure).
+- Checked: the same models with the kernel written as an auxiliary linear field (`τ_g z' = y − z`, a local `x·z`
+  vertex, none of this code) agree at tree level exactly and at one loop to 1e-12 (k = 2, auto- and
+  cross-cumulants; also the mixed `x·(g ∗ x)` vertex); the one-loop δ weight equals the k = 1 one-loop mean to
+  2e-16; a long simulation of the spiking model agrees with tree + one loop (the loop is 13 % of the tree there;
+  the residual is the size of a two-loop term). Spiking model above: one-loop `C(tau)` at τ = 2.5 was 1.71e-6
+  (8/29 diagrams, warm) or did not finish (cold); now 4.17e-6, 2.9 s. An exponential Hawkes network written
+  spike-only (every leg carries the two-exponential kernel `H_i ∗ g_ij`) equals its voltage form: one loop to
+  4e-14 relative (k = 2, 1446 diagrams in 35 s, where it did not finish in 12 minutes before), the k = 1 rate
+  correction to 7e-15, k = 3 at tree level to 5e-14.
+- No tracked model has such a vertex; no tracked number moves.
+
+#### Fixed: a diagram Phase J cannot evaluate is no longer dropped silently (`api/compute.py`, `api/_grouped_phase_j.py`, `api/analyze.py`)
+
+- Before, such a diagram was listed in `phase_j_by_ell[ell]['skipped_kernel_ids']` and left out of `C_tau`, and
+  `compute_cumulants` said nothing (on the grouped route, a diagram that failed inside the per-diagram fallback was
+  not even listed). Now every route (per-diagram, grouped, the pole-cluster deformation) sets
+  `result['status'] = 'incomplete'`, names the diagrams and the reason in `result['phase_j_incomplete']`, warns with
+  `PhaseJIncompleteWarning`, and the analyzer adds `G6_DIAGRAMS_SKIPPED`; `policy={'mode': 'strict'}` raises
+  `PhaseJIncompleteError` (with the result attached). A complete Phase J run has `status == 'ok'`. The warning is
+  shown under `sage -python` too (whose launcher ignores warnings), a saved file of an incomplete run carries a
+  `phase_j_status` stamp (`load_provenance`), and `dd.run`'s moment assembly marks its result incomplete when one
+  of its extra runs is.
+
+#### Added: high-precision exact route for ill-conditioned subsets (`dbm_integral.integrate_exp_sum_mp`)
+
+- A DBM closed form that fails its conditioning test (its expansion cancels: near-equal decay rates) is evaluated
+  once more by the same elimination in 40-digit arithmetic before the subset may go to quadrature
+  (`USE_DBM_HIGH_PRECISION`, env `DAEDALUS_PHASE_J_DBM_MP=0` to switch off; counters `dbm_mp_attempted` /
+  `dbm_mp_answered`). The elimination is the same code with its arithmetic passed in (a private mpmath context;
+  the double path is unchanged and thread safe). It answered the 9 subsets of the spiking model that needed 411 s
+  of quadrature before the kernels were folded into lines (they now need neither).
+
 #### Fixed: a declared function applied to an expression, and `time_expr` kernels with symbolic time constants (`api/model_compiler.py`, `api/model.py`)
 
 - `define_function('phi', ['v'], 'a[i]*exp(v)')` called as `phi[i](Em[i] + sum(w[i,j]*Conv(r[i,j], n[j]) for j in E))`,

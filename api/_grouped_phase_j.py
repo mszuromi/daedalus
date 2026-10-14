@@ -196,6 +196,19 @@ def compute_correction_td_grouped(
         )
         n_delta_subsets_dropped[0] += pd_result.get(
             'n_delta_subsets_dropped', 0)
+        # A diagram the per-diagram path could not evaluate either is left
+        # out of this group's total: record it (by its index into this
+        # call's ``typed_diagrams``) so the run reports it.
+        inner_reasons = {g.get('kernel_id'): g.get('reason')
+                         for g in (pd_result.get('groups') or [])
+                         if g.get('handled_by') == 'skipped'}
+        for j in pd_result.get('skipped_kernel_ids') or []:
+            skipped.append({
+                'kernel_id':  idx[j] if idx is not None else j,
+                'n_diagrams': 1,
+                'reason':     (f'per-diagram fallback of a grouped group: '
+                               f'{inner_reasons.get(j, "")}'),
+            })
         for key, dest in (('delta_contributions', delta_records),
                           ('delta_contributions_multi', delta_records_multi)):
             for rec in pd_result.get(key) or []:

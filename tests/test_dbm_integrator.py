@@ -479,7 +479,9 @@ def test_thin_region_is_declined_to_the_fallback(monkeypatch):
     while the hardened fallback is exact, so the DBM declines it
     ('dbm_ill_conditioned') and the dispatch goes on to the fallback.  That
     is the boxed route (``SEMIINF_CHAIN`` off, s_2 in ±200); without a box
-    the free s_2 makes the region divergent."""
+    the free s_2 makes the region divergent.  With the high-precision tier
+    on (the default) the subset is answered by the same elimination at
+    ``MP_DPS`` digits instead."""
     monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
     rows = [((0.5, -0.5, 0.0), (0.0,), 0.0),
             ((0.0, 1.0, 0.0), (0.0,), -0.10904983793486256),
@@ -494,10 +496,21 @@ def test_thin_region_is_declined_to_the_fallback(monkeypatch):
            (-0.08074131063229162 + 0.8431961305157281j, p2))]
     modes = [FI.EdgeModeSum(ri=-1, pi=-1, delta_coeff=0j, modes=md)
              for md in em]
+    monkeypatch.setattr(FI, 'USE_DBM_HIGH_PRECISION', False)
     FI._reset_runtime_counters()
     assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
     assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
     assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
+    # the high-precision tier (item 27, on by default): the same closed form
+    # at MP_DPS digits answers it, equal to the hardened fallback's value
+    monkeypatch.setattr(FI, 'USE_DBM_HIGH_PRECISION', True)
+    FI._reset_runtime_counters()
+    v = FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3)
+    assert FI._RUNTIME_COUNTERS['dbm_mp_answered'] == 1
+    fe = FI._build_fast_subset_evaluator_from_modes(1.0, modes, rows, 3)
+    ref = FI._integrate_polytope(fe, [(list(a), c0) for (a, _e, c0) in rows],
+                                 [0.0], 3, raw_rows=rows)
+    assert abs(v - ref) <= 1e-12 * abs(ref)
     monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
     monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
     FI._reset_runtime_counters()

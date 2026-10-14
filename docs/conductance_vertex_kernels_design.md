@@ -134,13 +134,31 @@ Modify `extract_vertex_types` ([msrjd/core/vertices.py:252](../msrjd/core/vertic
    - Strip the kernel symbol from the coefficient and attach the
      kernel-leg pair as metadata.
 
-### Phase 3 — wire into the integrator (next session)
+### Phase 3 — wire into the integrator
 
 For Phase J time-domain integration: each `ConvVertexType` adds an
 effective convolution on its kernel-attached leg's propagator. In
 Fourier-image form this is simply `G_leg(ω) → ĝ(ω) · G_leg(ω)`,
 equivalent to convolving the time-domain propagator with `g(t)` once
 before composing.
+
+As implemented (`integrate_diagram`, sections 2c / 3a' / 3c): every
+copy of a leg tuple is a slot; the k-th kernel symbol's power in the vertex
+coefficient is the number of copies it occupies.  The lines whose head is the
+vertex at that leg tuple are placed in the slots; when the copies differ
+(`x·(g ∗ x)`) the diagram is the average over the distinct placements (its
+weight counts the copies as identical).  A line in a kernel slot whose kernel
+is a finite exponential sum is dressed: its propagator becomes `(g ∗ G)`,
+`D g(Δ) + Σ C_α c_k (e^{λ_α Δ} − e^{μ_k Δ})/(λ_α − μ_k)`, a pole sum with no δ
+part at the same times (residues of rounding size are dropped as exact
+zeros: a pole of `ĝ` is a zero of `G`).  Otherwise the attached leg gets its
+own integration time `s` and the kernel becomes one more smooth edge `s → t`
+(`Δt = t − s`, smooth factor `g(Δt)`, its modes when it has them).  The
+kernel symbol in the coefficient is set to 1 (its weight lives in the line);
+a `c·δ(t)` kernel has no edge and its symbol becomes `c`.  A delayed step or
+a mixed δ + smooth kernel is refused with a named reason.  The kernel
+attachments are stored in the expand cache (`kernel_attachments`) so a warm
+run builds the same vertices as a cold one.
 
 For the equivalent frequency-domain integrator
 (`msrjd/integration/symbolic.py`), the modification is direct: insert

@@ -103,9 +103,13 @@ class VertexType:
         self.physical_legs = list(physical_legs)
         self.bigrade       = tuple(bigrade)
 
-    # Pickle support for __slots__
+    # Pickle support for __slots__ (every class's slots: ``self.__slots__``
+    # alone is only the subclass's own, which made a pickled ConvVertexType
+    # lose its legs)
     def __getstate__(self):
-        return {s: getattr(self, s) for s in self.__slots__}
+        return {s: getattr(self, s)
+                for cls in reversed(type(self).__mro__)
+                for s in cls.__dict__.get('__slots__', ())}
 
     def __setstate__(self, state):
         for s, v in state.items():
@@ -189,18 +193,11 @@ class ConvVertexType(VertexType):
         super().__init__(coefficient, response_legs, physical_legs, bigrade)
         self.kernel_attachments = list(kernel_attachments)
 
-    # Pickle support — extend VertexType's via __slots__ chain
-    def __getstate__(self):
-        state = super().__getstate__()
-        state['kernel_attachments'] = self.kernel_attachments
-        return state
-
+    # Pickle support: VertexType's covers every slot in the MRO
     def __setstate__(self, state):
-        super().__setstate__(
-            {s: state[s] for s in VertexType.__slots__ if s in state}
-        )
-        object.__setattr__(self, 'kernel_attachments',
-                           state.get('kernel_attachments', []))
+        super().__setstate__(state)
+        if 'kernel_attachments' not in state:
+            object.__setattr__(self, 'kernel_attachments', [])
 
     def __repr__(self):
         att_summary = [
@@ -211,6 +208,31 @@ class ConvVertexType(VertexType):
                 f'resp={self.response_legs}, phys={self.physical_legs}, '
                 f'attach=[{", ".join(att_summary)}], '
                 f'coeff={self.coefficient})')
+
+
+class KernelTimeImage:
+    """``tau -> g(tau)``: a kernel's time-domain image ``expr`` with its
+    placeholder variable replaced by ``tau``.  The ``kernel_td_fn`` of a
+    :class:`ConvVertexType` attachment; picklable (two SR objects)."""
+
+    __slots__ = ('expr', 'placeholder')
+
+    def __init__(self, expr, placeholder):
+        self.expr = SR(expr)
+        self.placeholder = placeholder
+
+    def __call__(self, tau):
+        return self.expr.subs({self.placeholder: tau})
+
+    def __getstate__(self):
+        return {'expr': self.expr, 'placeholder': self.placeholder}
+
+    def __setstate__(self, state):
+        self.expr = state['expr']
+        self.placeholder = state['placeholder']
+
+    def __repr__(self):
+        return f'KernelTimeImage({self.expr} in {self.placeholder})'
 
 
 class SourceType:
@@ -549,13 +571,41 @@ def extract_vertex_types(ft):
     # rather than re-evaluating the lambda per attachment.  The τ
     # symbol used here is a placeholder; the integrator substitutes
     # its actual per-vertex τ at integration time.
-    if kernel_td_image_lambda is not None and attachments:
-        from sage.all import SR as _SR
-        _tau_placeholder = _SR.var('_conv_tau_placeholder')
-        kernel_td_map = kernel_td_image_lambda(ns, _tau_placeholder)
-    else:
-        _tau_placeholder = None
-        kernel_td_map = {}
+    # Evaluated on first need only: a model whose kernels sit only in the
+    # bilinear sector (no vertex carries a kernel symbol) never evaluates
+    # the kernel images here (their evaluation is not free of Sage-side
+    # effects), exactly as before the attachments were restored from the
+    # expand cache.
+    _td_cell = []
+
+    def _td_image_of(ksym):
+        if kernel_td_image_lambda is None:
+            return None, None
+        if not _td_cell:
+            from sage.all import SR as _SR
+            ph = _SR.var('_conv_tau_placeholder')
+            _td_cell.append((kernel_td_image_lambda(ns, ph), ph))
+        td_map, ph = _td_cell[0]
+        return (td_map.get(ksym) if ksym in td_map else None), ph
+    # The frequency image too: a kernel declared only by ``freq_image`` has
+    # no time-domain image; the integrator reads its modes from this one.
+    # Built on first need only (for a ``time_expr`` kernel the hook runs a
+    # symbolic Fourier transform).
+    kernel_ft_image_lambda = model.get('kernel_ft_image')
+    _ft_cell = []
+
+    def _ft_image_of(ksym):
+        if kernel_ft_image_lambda is None:
+            return None, None
+        if not _ft_cell:
+            from sage.all import SR as _SR
+            om = _SR.var('_conv_omega_placeholder')
+            try:
+                _ft_cell.append((kernel_ft_image_lambda(ns, om) or {}, om))
+            except Exception:
+                _ft_cell.append(({}, om))
+        ft_map, om = _ft_cell[0]
+        return ft_map.get(ksym), om
 
     vtypes = []
     for (n_t, n_p), poly in ft.vertices().items():
@@ -605,24 +655,30 @@ def extract_vertex_types(ft):
                     # treating it as zero.
                     continue
                 leg, leg_idx = resolved
-                if _tau_placeholder is not None and ksym in kernel_td_map:
-                    # Bind the placeholder τ to a per-call closure so
-                    # callers can re-substitute their own τ symbol.
-                    td_expr = kernel_td_map[ksym]
-                    def _td_fn(tau, _td_expr=td_expr,
-                               _placeholder=_tau_placeholder):
-                        return SR(_td_expr).subs({_placeholder: tau})
+                td_expr, _tau_placeholder = _td_image_of(ksym)
+                if td_expr is not None:
+                    # Bind the placeholder τ so callers can re-substitute
+                    # their own τ symbol.  A module-level callable, not a
+                    # closure: typed diagrams carrying this vertex are
+                    # pickled into the diagram cache.
+                    _td_fn = KernelTimeImage(td_expr, _tau_placeholder)
                 else:
                     # No time-domain image available (kernel declared
                     # via freq_image only).  Caller will see this as
                     # None and either invert-FT or error out.
                     _td_fn = None
-                kernel_attachments_for_vertex.append({
+                att_rec = {
                     'symbol':       ksym,
                     'leg':          leg,
                     'leg_index':    leg_idx,
                     'kernel_td_fn': _td_fn,
-                })
+                }
+                if _td_fn is None:
+                    ft_expr, om = _ft_image_of(ksym)
+                    if ft_expr is not None:
+                        # ``omega -> ĝ(omega)`` (same picklable callable)
+                        att_rec['kernel_ft_fn'] = KernelTimeImage(ft_expr, om)
+                kernel_attachments_for_vertex.append(att_rec)
 
             if kernel_attachments_for_vertex:
                 vtypes.append(ConvVertexType(
