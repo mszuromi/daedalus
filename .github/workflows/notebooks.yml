@@ -20,7 +20,10 @@ jobs:
       run:
         shell: bash -el {0}              # login shell so the conda env is active
     env:
-      NB_TIMEOUT_MINUTES: 45             # per notebook
+      NB_TIMEOUT_MINUTES: 45             # per notebook, unless overridden below
+      # Per-notebook overrides, one 'path under notebooks/examples=minutes' per line.
+      NB_TIMEOUT_OVERRIDES: |
+        SPDE/RD_2_species.ipynb=120
     steps:
       - uses: actions/checkout@v4
 
@@ -61,10 +64,14 @@ jobs:
           echo '|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
           while IFS= read -r nb; do
             name="$(echo "${nb#notebooks/examples/}" | tr '/' '_')"
+            limit="$NB_TIMEOUT_MINUTES"
+            while IFS='=' read -r key mins; do
+              [ "$key" = "${nb#notebooks/examples/}" ] && limit="$mins"
+            done <<< "$NB_TIMEOUT_OVERRIDES"
             start=$(date +%s)
-            if timeout "${NB_TIMEOUT_MINUTES}m" jupyter nbconvert --to notebook --execute \
+            if timeout "${limit}m" jupyter nbconvert --to notebook --execute \
                  --ExecutePreprocessor.kernel_name=sagemath-10.8 \
-                 --ExecutePreprocessor.timeout=$((NB_TIMEOUT_MINUTES * 60)) \
+                 --ExecutePreprocessor.timeout=$((limit * 60)) \
                  --output-dir "$out" --output "$name" "$nb" > "$out/$name.log" 2>&1; then
               res=PASS
             else

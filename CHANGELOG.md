@@ -49,6 +49,23 @@ need no special case. The module docstring has the method and a proof sketch.
   0.16673618, unchanged); 4-field oscillator with two filters: 30 s at 1.0 GB peak footprint (Phase J with zero-mode
   pruning: about 18 min per point). OU with an Erlang-4 kernel, two loops: 1.5 s (Phase J: over 15 min); its
   tree + one loop on a 201-point grid: 0.76 s batched, 1.4 s per point (Phase J 16 s).
+#### Fixed: front-end small bugs: SDE `time_expr` kernels, `Conv` on a bare field, `_is_single_function_call` (`api/sde.py`, `api/model_compiler.py`; no number moves)
+
+- **SDE `time_expr` kernel integral.** `SDE._kernel_dc` (the kernel's integral for the mean-field equations) asked
+  Maxima for the integral and failed on a difference of exponentials,
+  `(exp(-t/tau) - exp(-t/taug))/(tau - taug)*heaviside(t)` ("requested additional constraints"). It now falls back
+  to the closed form `n!/a^(n+1)` of `causal_exponential_ft` at omega = 0, with the rates positive by declaration
+  (`domain='positive'`, indexed parameters included); no Maxima assumption is made, so `assumptions()` is
+  unchanged. A kernel the closed form cannot read (rates not declared positive, no `heaviside`) raises an
+  `SDEError` naming the cause. Kernels Maxima already integrated take the same path as before.
+- **Scalar models, `Conv(r, n)` on a bare field** raised "no canonical coercion from `_FullPhysicalField`"; `Conv`
+  now unwraps the size-1 field wrapper as the declared functions do. The model equals its one-element-population
+  twin bit for bit.
+- **`_is_single_function_call('f(a) + g(b)')`** returned True (it checked only that the parentheses balance, not
+  that the first one closes at the end); also `f(a)*g(b)`, `f(a)(b)`. No model in `models/` has an equation text
+  on which the old and new answers differ.
+- `SDE.notes` is rebuilt on every derivation (it already was; a test now pins that `equations()`, `build()` and
+  `show()` do not duplicate entries).
 
 #### Changed: Phase J leaves exact-zero residue modes out of its pole-tuple plans; k >= 3 one loop from tens of minutes (or out of memory) to seconds (`final_integral.py`, `grouped_integral.py`, `daedalus.py`; no number moves)
 
