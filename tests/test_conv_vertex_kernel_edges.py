@@ -126,31 +126,50 @@ def test_warm_cache_keeps_the_kernel_vertex(tmp_path, monkeypatch):
                                        rtol=1e-13, atol=0)
 
 
-def test_kernel_on_a_duplicated_leg_is_refused_loudly():
-    """``x·(g ∗ x)``: the kernel attaches to one of two identical legs, so
-    no unique leg can carry the delay; the diagrams are refused with a named
-    reason, never dropped silently."""
-    b = TemporalModelBuilder('Kernel on a duplicated leg')
+def _mixed_leg_model(embedded):
+    """x' = -mu x + hx - eps x (g ∗ x) + noise: the vertex has two copies
+    of the leg x, one plain and one under the kernel.  ``embedded``: the
+    same model with z = g ∗ x as a field (taug z' = x - z), vertex x·z."""
+    b = TemporalModelBuilder('Mixed kernel leg' + (' (embedded)' if embedded
+                                                   else ''))
     b.population('P', size=1)
     b.physical_field('x', population='P')
+    if embedded:
+        b.physical_field('z', population='P')
     for p, d in (('mu', 1.0), ('eps', 0.1), ('hx', 0.5), ('D', 0.5),
                  ('taug', 2.0)):
         b.parameter(p, default=d, domain='positive')
-    b.define_kernel('g', time_expr='(1/taug)*exp(-t/taug)*heaviside(t)',
-                    latex_name='g')
-    b.set_action_text('sum(xt[i]*((Dt+mu)*x[i] - hx + eps*x[i]*Conv(g,x[i])) '
-                      '- D*xt[i]^2 for i in P)')
-    b.set_mf_equation('xstar', '(sqrt(mu^2 + 4*eps*hx) - mu)/(2*eps)')
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter('always')
-        res = compute_cumulants(b.build(), k=2, max_ell=1,
-                                external_fields=[('x', 1), ('x', 1)],
-                                tau_grid=TAU, parallel=False, verbose=False,
-                                use_cache=False)
-    assert res['status'] == 'incomplete'
-    reasons = [r['reason'] for recs in res['phase_j_incomplete'].values()
-               for r in recs]
-    assert reasons and all('unique attached leg' in r for r in reasons)
+    xstar = '(sqrt(mu^2 + 4*eps*hx) - mu)/(2*eps)'
+    b.set_mf_equation('xstar', xstar)
+    if embedded:
+        b.set_mf_equation('zstar', xstar)
+        b.set_action_text('sum(xt[i]*((Dt+mu)*x[i] - hx + eps*x[i]*z[i]) '
+                          '+ zt[i]*((taug*Dt+1)*z[i] - x[i]) - D*xt[i]^2 '
+                          'for i in P)')
+    else:
+        b.define_kernel('g', time_expr='(1/taug)*exp(-t/taug)*heaviside(t)',
+                        latex_name='g')
+        b.set_action_text('sum(xt[i]*((Dt+mu)*x[i] - hx '
+                          '+ eps*x[i]*Conv(g,x[i])) - D*xt[i]^2 for i in P)')
+    return b.build()
+
+
+def test_mixed_kernel_leg_equals_its_markov_embedding():
+    """A vertex with a plain and a kernel copy of the same leg: the typed
+    diagram's weight counts the copies as identical (the automorphism
+    colouring does not mark kernel legs), so the integrand is the average
+    over the distinct placements of the lines in the two slots.  Checked
+    against the embedded model, whose legs are distinct fields."""
+    ext = [('x', 1), ('x', 1)]
+    res = _run(_mixed_leg_model(False), ext)
+    ref = _run(_mixed_leg_model(True), ext)
+    assert res['status'] == 'ok' and ref['status'] == 'ok'
+    assert any(g.get('handled_by') != 'skipped'
+               for g in res['phase_j_by_ell'][1]['groups'])
+    for ell in (0, 1):
+        np.testing.assert_allclose(res['C_tau_by_ell'][ell],
+                                   ref['C_tau_by_ell'][ell],
+                                   rtol=1e-10, atol=0)
 
 
 def test_exp_mode_extraction_rejects_a_sum_of_exponentials():
@@ -179,5 +198,6 @@ def test_high_precision_dbm_answers_a_cancelling_closed_form():
     with mp.workdps(50):
         exact = float(1 / -mp.mpf(a1) - 1 / -mp.mpf(a2))
     assert abs(hi.value - exact) <= 1e-15 * exact
-    # the double backend is restored
-    assert DBM._A is DBM._DoubleArith
+    # the double path is untouched by the high-precision call
+    again = DBM.integrate_exp_sum(rows, 1, seeds, float('inf'))
+    assert again.status == lo.status and again.value == lo.value

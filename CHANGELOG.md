@@ -27,21 +27,34 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   for a model with such a vertex.
 - **Wrong routing.** The kernel delay was applied to every edge at the vertex whose physical leg had the attached
   leg's population (and at both ends of an edge), which in a one-population model is every edge: the kernel
-  collapsed to an instantaneous coupling. Now only the edge whose head is the vertex at the attached leg (field
-  and population) is delayed. A kernel on a leg that occurs twice among the vertex's legs (`x·Conv(g, x)`) is
-  refused with a named reason (see the next entry), instead of guessing.
+  collapsed to an instantaneous coupling. Now only the line whose head is the vertex at the attached leg (field
+  and population) carries the kernel.
 - **Days of quadrature.** The delay `τ` was the integration variable, so every edge into the attached leg had a
   three-term constraint row, which the exact box-free routes do not take: the subsets went to nested scipy
-  quadrature (m up to 6), days per τ point (a zoo run was killed after 5.5 days). The leg time `s` is now the
-  variable (Jacobian 1) and the kernel is one more smooth edge `s → t` (Δt = t − s, factor g(Δt), one mode for a
-  single exponential), so every row is a difference row; the `τ < TAU_KERNEL_CAP` box (a 4.5e-5 truncation for
-  τ_g = 5) is gone. `_extract_exp_mode` now checks that the kernel really is one exponential.
+  quadrature (m up to 6), days per τ point (a zoo run was killed after 5.5 days). Now a kernel that is a finite
+  exponential sum (single exponential, difference of exponentials, ...) is folded into the propagator of its line,
+  `(g ∗ G)`, again a pole sum without δ part: no extra time variable, no extra row, no `TAU_KERNEL_CAP` box (that
+  box truncated the kernel, 4.5e-5 for τ_g = 5). The propagator's rounding-level residues at the kernel's own
+  rates (a pole of the kernel's image is a zero of `G`) are dropped as exact zeros; they multiplied the
+  pole-tuple count for nothing. Any other kernel (alpha function, a kernel rate equal to a propagator pole) gives
+  the attached leg its own time `s` and becomes one more smooth edge `s → t`, every row a difference row.
+  `DRESS_CONV_KERNELS` (env `DAEDALUS_PHASE_J_DRESS_KERNELS=0`) forces that path.
+- **Duplicated legs.** A vertex whose kernel sits on a leg that occurs several times (`exp(Σ_j w_ij (r_ij ∗ n_j))`
+  Taylor-expanded: every `n` leg carries `r`; `x·(g ∗ x)`: one plain and one kernel copy) now has one kernel slot
+  per copy, read from the power of the kernel symbol in the coefficient. When the copies differ, the diagram's
+  weight (which counts them as identical: the automorphism colouring does not mark kernel legs) multiplies the
+  average over the distinct placements of the lines in the slots; a single placement was 34 % off on
+  `x·(g ∗ x)`. A δ kernel (`Conv(c·δ, n) = c·n`) is a weight, no delay. A delayed step `heaviside(t − d)` or a δ
+  mixed with a smooth part is refused with a named reason (its delay would have been lost).
 - Checked: the same models with the kernel written as an auxiliary linear field (`τ_g z' = y − z`, a local `x·z`
   vertex, none of this code) agree at tree level exactly and at one loop to 1e-12 (k = 2, auto- and
-  cross-cumulants); the one-loop δ weight equals the k = 1 one-loop mean to 2e-16; a long simulation of the
-  spiking model agrees with tree + one loop (the loop is 13 % of the tree there; the residual is the size of a
-  two-loop term). Spiking model above: one-loop `C(tau)` at τ = 2.5 was 1.71e-6 (8/29 diagrams, warm) or did not
-  finish (cold); now 4.17e-6, 3.6 s.
+  cross-cumulants; also the mixed `x·(g ∗ x)` vertex); the one-loop δ weight equals the k = 1 one-loop mean to
+  2e-16; a long simulation of the spiking model agrees with tree + one loop (the loop is 13 % of the tree there;
+  the residual is the size of a two-loop term). Spiking model above: one-loop `C(tau)` at τ = 2.5 was 1.71e-6
+  (8/29 diagrams, warm) or did not finish (cold); now 4.17e-6, 2.9 s. An exponential Hawkes network written
+  spike-only (every leg carries the two-exponential kernel `H_i ∗ g_ij`) equals its voltage form: one loop to
+  4e-14 relative (k = 2, 1446 diagrams in 35 s, where it did not finish in 12 minutes before), the k = 1 rate
+  correction to 7e-15, k = 3 at tree level to 5e-14.
 - No tracked model has such a vertex; no tracked number moves.
 
 #### Fixed: a diagram Phase J cannot evaluate is no longer dropped silently (`api/compute.py`, `api/_grouped_phase_j.py`, `api/analyze.py`)
@@ -51,14 +64,19 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   not even listed). Now every route (per-diagram, grouped, the pole-cluster deformation) sets
   `result['status'] = 'incomplete'`, names the diagrams and the reason in `result['phase_j_incomplete']`, warns with
   `PhaseJIncompleteWarning`, and the analyzer adds `G6_DIAGRAMS_SKIPPED`; `policy={'mode': 'strict'}` raises
-  `PhaseJIncompleteError` (with the result attached). A complete run has `status == 'ok'`.
+  `PhaseJIncompleteError` (with the result attached). A complete Phase J run has `status == 'ok'`. The warning is
+  shown under `sage -python` too (whose launcher ignores warnings), a saved file of an incomplete run carries a
+  `phase_j_status` stamp (`load_provenance`), and `dd.run`'s moment assembly marks its result incomplete when one
+  of its extra runs is.
 
 #### Added: high-precision exact route for ill-conditioned subsets (`dbm_integral.integrate_exp_sum_mp`)
 
 - A DBM closed form that fails its conditioning test (its expansion cancels: near-equal decay rates) is evaluated
   once more by the same elimination in 40-digit arithmetic before the subset may go to quadrature
   (`USE_DBM_HIGH_PRECISION`, env `DAEDALUS_PHASE_J_DBM_MP=0` to switch off; counters `dbm_mp_attempted` /
-  `dbm_mp_answered`). On the spiking model above it answers the 9 subsets that needed 411 s of quadrature.
+  `dbm_mp_answered`). The elimination is the same code with its arithmetic passed in (a private mpmath context;
+  the double path is unchanged and thread safe). It answered the 9 subsets of the spiking model that needed 411 s
+  of quadrature before the kernels were folded into lines (they now need neither).
 
 #### Fixed: the SDE front end refuses drifts with no syntactic linear term (`api/sde.py`; no number moves for a model that built before)
 

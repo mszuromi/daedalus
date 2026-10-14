@@ -267,6 +267,14 @@ def _analysis_stamp(result: dict | None) -> dict[str, str]:
         out['analyzer_findings'] = json.dumps(
             [{'code': f.code, 'level': f.level} for f in rep.findings],
             sort_keys=True)
+    if result.get('status') == 'incomplete':
+        # diagrams Phase J could not evaluate are missing from the numbers
+        # (``result['phase_j_incomplete']``); written only then, so a
+        # complete result's file is unchanged
+        out['phase_j_status'] = json.dumps(
+            {str(ell): [r.get('diagram') for r in recs] for ell, recs in
+             sorted((result.get('phase_j_incomplete') or {}).items())},
+            sort_keys=True, default=str)
     return out
 
 
@@ -280,7 +288,7 @@ def load_provenance(data: dict) -> dict:
     for key in ('daedalus_version', 'phase_j_convention', 'phase_j_flags',
                 'route'):
         out[key] = _stamp_value(data, key)
-    for key in ('assumptions', 'analyzer_findings'):
+    for key in ('assumptions', 'analyzer_findings', 'phase_j_status'):
         raw = _stamp_value(data, key)
         try:
             out[key] = json.loads(raw) if raw else None

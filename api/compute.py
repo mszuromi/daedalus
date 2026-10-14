@@ -179,8 +179,10 @@ def _policy_is_strict(policy):
 def _phase_j_failure_message(failures, model_name):
     n = sum(r['n_diagrams'] for recs in failures.values() for r in recs)
     lines = [f'compute_cumulants({model_name!r}): Phase J could not evaluate '
-             f'{n} diagram(s); they are NOT in C_tau (result["status"] = '
-             f'"incomplete", details in result["phase_j_incomplete"]):']
+             f'{n} diagram(s); C_tau is missing them (all of a diagram, or '
+             f'its part at the pole-deformation nodes where it failed; '
+             f'result["status"] = "incomplete", details in '
+             f'result["phase_j_incomplete"]):']
     for ell, recs in failures.items():
         by_reason = {}
         for r in recs:
@@ -246,7 +248,9 @@ def _combine_phase_j(results, nodes):
     sk_all, seen = [], set()
     for r in results:
         for sk in (r or {}).get('skipped_kernel_ids') or []:
-            key = repr(sorted(sk.items())) if isinstance(sk, dict) else sk
+            # by diagram / group id: the reason text may differ by node
+            key = ((sk.get('kernel_id'), sk.get('group_idx'))
+                   if isinstance(sk, dict) else sk)
             if key not in seen:
                 seen.add(key)
                 sk_all.append(sk)
@@ -660,7 +664,8 @@ def compute_cumulants(
                              'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
-        'status'          : ``'ok'``, or ``'incomplete'`` when Phase J could
+        'status'          : (Phase J backends) ``'ok'``, or ``'incomplete'``
+                             when Phase J could
                              not evaluate some diagram(s): they are left out
                              of ``C_tau``, a :class:`PhaseJIncompleteWarning`
                              names them (``policy={'mode': 'strict'}``
@@ -958,6 +963,10 @@ def compute_cumulants(
         if _policy_is_strict(policy):
             raise PhaseJIncompleteError(_msg, result=result,
                                         failures=_failures)
+        # visible under ``sage -python`` / the Sage kernel too, whose
+        # launcher sets PYTHONWARNINGS=ignore
+        from api.save import _ensure_warning_shown
+        _ensure_warning_shown(PhaseJIncompleteWarning, 'always')
         warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)

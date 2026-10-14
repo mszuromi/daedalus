@@ -369,12 +369,15 @@ def _conv_vertex_td():
     return td, g
 
 
-def test_conv_vertex_kernel_row_is_a_difference_row(monkeypatch):
-    """A ConvVertex kernel is an edge (item 27): its attached leg has its
-    own time ``s`` and the kernel row ``anchor − s > 0`` is a difference row
-    labelled 'conv_pseudo'; there is no τ box row ('conv_tau') any more, so
-    every subset can take a box-free route."""
+@pytest.mark.parametrize('dress', [True, False], ids=['dressed', 'leg_time'])
+def test_conv_vertex_kernel_rows(dress, monkeypatch):
+    """A ConvVertex kernel (item 27).  Dressed (default, a single-exponential
+    kernel): folded into the propagator of its line, so no kernel row and no
+    τ box row at all.  Leg-time path (``DRESS_CONV_KERNELS`` off): the
+    attached leg has its own time ``s`` and the kernel row ``anchor − s > 0``
+    is a difference row labelled 'conv_pseudo'.  Never a 'conv_tau' row."""
     from sage.all import SR
+    monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', dress)
     seen = []
     monkeypatch.setattr(FI, '_SUBSET_HOOK', seen.append)
     td, sym = _conv_vertex_td()
@@ -386,8 +389,12 @@ def test_conv_vertex_kernel_row_is_a_difference_row(monkeypatch):
     assert seen
     for p in seen:
         kinds = list(p['row_kinds'])
-        assert 'conv_tau' not in kinds and kinds.count('conv_pseudo') == 1
+        assert 'conv_tau' not in kinds
         assert len(kinds) == len(p['constraints'])
+        if dress:
+            assert 'conv_pseudo' not in kinds
+            continue
+        assert kinds.count('conv_pseudo') == 1
         a_int = p['constraints'][kinds.index('conv_pseudo')][0]
         nz = sorted(x for x in a_int if abs(x) > 0)
         assert nz in ([-1.0, 1.0], [1.0])      # anchor − s (or s δ-fixed)

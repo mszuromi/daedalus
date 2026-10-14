@@ -142,21 +142,23 @@ Fourier-image form this is simply `G_leg(ω) → ĝ(ω) · G_leg(ω)`,
 equivalent to convolving the time-domain propagator with `g(t)` once
 before composing.
 
-As implemented (`integrate_diagram`, sections 2c / 3a' / 3c): the
-attached leg gets its own integration variable, the leg time `s`, and
-the kernel becomes one more smooth edge `s → t` (the vertex time) with
-`Δt = t − s`, no δ part and smooth factor `g(Δt)`; a single-exponential
-kernel `C e^{λ Δt}` also contributes its mode, so the diagram stays on
-the exact mode-sum routes (every constraint row is a difference row).
-Only the edge whose head is the vertex at the attached physical leg
-(field and population) is routed through `s`; the response leg and the
-other physical legs stay at `t`.  The kernel symbol in the vertex
-coefficient is set to 1 (its weight lives in the edge); a `c·δ(t)`
-kernel has no edge and its symbol becomes `c`.  A kernel attached to a
-leg that occurs twice among the vertex's physical legs (`n·Conv(g, n)`)
-is refused with a named reason.  The kernel attachments are stored in
-the expand cache (`kernel_attachments`) so a warm run builds the same
-vertices as a cold one.
+As implemented (`integrate_diagram`, sections 2c / 3a' / 3c): every
+copy of a leg tuple is a slot; the k-th kernel symbol's power in the vertex
+coefficient is the number of copies it occupies.  The lines whose head is the
+vertex at that leg tuple are placed in the slots; when the copies differ
+(`x·(g ∗ x)`) the diagram is the average over the distinct placements (its
+weight counts the copies as identical).  A line in a kernel slot whose kernel
+is a finite exponential sum is dressed: its propagator becomes `(g ∗ G)`,
+`D g(Δ) + Σ C_α c_k (e^{λ_α Δ} − e^{μ_k Δ})/(λ_α − μ_k)`, a pole sum with no δ
+part at the same times (residues of rounding size are dropped as exact
+zeros: a pole of `ĝ` is a zero of `G`).  Otherwise the attached leg gets its
+own integration time `s` and the kernel becomes one more smooth edge `s → t`
+(`Δt = t − s`, smooth factor `g(Δt)`, its modes when it has them).  The
+kernel symbol in the coefficient is set to 1 (its weight lives in the line);
+a `c·δ(t)` kernel has no edge and its symbol becomes `c`.  A delayed step or
+a mixed δ + smooth kernel is refused with a named reason.  The kernel
+attachments are stored in the expand cache (`kernel_attachments`) so a warm
+run builds the same vertices as a cold one.
 
 For the equivalent frequency-domain integrator
 (`msrjd/integration/symbolic.py`), the modification is direct: insert

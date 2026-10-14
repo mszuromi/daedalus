@@ -53,6 +53,8 @@ callable evaluates the diagram.
 """
 
 import math
+import os as _os
+import itertools
 import functools as _functools
 from collections import namedtuple
 from dataclasses import dataclass
@@ -454,13 +456,244 @@ def _extract_exp_mode(sr_expr, tau_sym):
     import cmath
     try:
         for t in (0.37, 1.9, 4.3):
-            g_t = complex(CDF(SR(sr_expr.subs({tau_sym: t}))))
             fit = C * cmath.exp(lam * t)
-            if abs(g_t - fit) > 1e-12 * max(abs(g_t), abs(fit), 1e-300):
+            if abs(fit) < 1e-250 * abs(C):
+                continue                    # underflow: nothing to compare
+            g_t = complex(CDF(SR(sr_expr.subs({tau_sym: t}))))
+            if abs(g_t - fit) > 1e-12 * max(abs(g_t), abs(fit)):
                 return None
     except Exception:
         return None
     return (C, lam)
+
+
+def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
+    """``[(C_k, λ_k), ...]`` with ``sr_expr == Σ_k C_k exp(λ_k tau_sym)``
+    (distinct λ_k, numeric), or ``None`` when the expression is not a
+    finite exponential sum (a polynomial prefactor ``τ e^{-τ}``, a Gaussian,
+    ...).  Each additive term is fitted by ``_extract_exp_mode`` (which
+    checks the fit), equal rates are merged, and the sum is checked again
+    at three points."""
+    import cmath
+    try:
+        expr = SR(sr_expr).expand()
+    except Exception:
+        return None
+    try:
+        from sage.symbolic.operators import add_vararg
+        terms = (list(expr.operands()) if expr.operator() is add_vararg
+                 else [expr])
+    except Exception:
+        terms = [expr]
+    if len(terms) > max_modes:
+        return None
+    acc = {}
+    for term in terms:
+        mode = _extract_exp_mode(term, tau_sym)
+        if mode is None:
+            return None
+        C, lam = mode
+        key = (round(lam.real, 14), round(lam.imag, 14))
+        C0, lam0 = acc.get(key, (0j, lam))
+        acc[key] = (C0 + C, lam0)
+    modes = [(C, lam) for (C, lam) in acc.values() if C != 0]
+    if not modes:
+        return None
+    try:
+        for t in (0.37, 1.9, 4.3):
+            g_t = complex(CDF(SR(SR(sr_expr).subs({tau_sym: t}))))
+            fit = sum(C * cmath.exp(lam * t) for C, lam in modes)
+            scale = sum(abs(C * cmath.exp(lam * t)) for C, lam in modes)
+            if abs(g_t - fit) > 1e-12 * max(scale, 1e-300):
+                return None
+    except Exception:
+        return None
+    return modes
+
+
+def _kernel_modes(att, num_params=None):
+    """The exponential modes of a conductance kernel attachment's
+    time-domain image (Heaviside stripped, ``num_params`` substituted),
+    or ``None`` (no time-domain image, or not a finite exponential sum)."""
+    from sage.all import heaviside as _sage_heaviside
+    td_fn = att.get('kernel_td_fn')
+    if td_fn is None:
+        return None
+    tau = SR.var('_conv_kernel_modes_tau_td_')
+    try:
+        g = SR(td_fn(tau)).substitute_function(_sage_heaviside,
+                                                lambda _x: SR(1))
+        if num_params:
+            g = g.subs(num_params)
+    except Exception:
+        return None
+    return _extract_exp_modes(g, tau)
+
+
+#: Item 27: fold a conductance kernel that is a finite exponential sum into
+#: the propagator of the line it sits on (``(g ∗ G)``, a pole sum: no extra
+#: time variable).  Off: every kernel takes the leg-time path.  Read at call
+#: time; env ``DAEDALUS_PHASE_J_DRESS_KERNELS=0`` switches it off at import.
+DRESS_CONV_KERNELS = (
+    _os.environ.get('DAEDALUS_PHASE_J_DRESS_KERNELS', '1').strip().lower()
+    not in ('0', 'off', 'false', 'no'))
+
+#: Relative gap below which a kernel rate counts as equal to a propagator
+#: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,
+#: unless the line's residue there is below ``DRESS_ZERO_RTOL`` of its
+#: total.  In a diagram with a dressed line, every line's modes below
+#: ``DRESS_ZERO_RTOL`` of its total are dropped (rounding-level residues of
+#: poles the propagator inherits from a kernel image with residue 0; they
+#: multiply the pole-tuple count for nothing).
+DRESS_RATE_RTOL = 1e-6
+DRESS_ZERO_RTOL = 1e-12
+
+
+def _dress_kernels_on():
+    flag = DRESS_CONV_KERNELS
+    if flag is True or flag is False:
+        return flag
+    raise ValueError(f'final_integral.DRESS_CONV_KERNELS={flag!r}: expected '
+                     f'True or False')
+
+
+def _dress_edge_modes(ems, kernel_modes):
+    """The ``EdgeModeSum`` of ``(g ∗ G)(Δ) = ∫_0^Δ g(Δ − x) G(x) dx`` for
+    ``G = D δ + Θ Σ_α C_α e^{λ_α x}`` (``ems``) and ``g = Θ Σ_k c_k
+    e^{μ_k x}``:  ``D g(Δ) + Σ_{α,k} C_α c_k (e^{λ_α Δ} − e^{μ_k Δ}) /
+    (λ_α − μ_k)``, no δ part.  Rates are merged when equal.  A λ_α equal
+    to a μ_k (``DRESS_RATE_RTOL``) with a rounding-level residue is dropped
+    as an exact zero; with a real residue the result is ``None`` (the line
+    then takes the leg-time path)."""
+    acc = {}
+
+    def add(C, lam):
+        key = (lam.real, lam.imag)
+        C0, lam0 = acc.get(key, (0j, lam))
+        acc[key] = (C0 + C, lam0)
+
+    D_ = complex(ems.delta_coeff)
+    scale = sum(abs(complex(C)) for (C, _l) in ems.modes) + abs(D_)
+    for (c, mu) in kernel_modes:
+        c, mu = complex(c), complex(mu)
+        if D_ != 0:
+            add(D_ * c, mu)
+        for (C, lam) in ems.modes:
+            C, lam = complex(C), complex(lam)
+            if abs(C) <= DRESS_ZERO_RTOL * scale:
+                # a rounding-level residue: an exact zero of the line (e.g. a
+                # pole of the kernel's image that the propagator inherits
+                # with residue 0)
+                continue
+            if abs(lam - mu) <= DRESS_RATE_RTOL * max(abs(lam), abs(mu),
+                                                      1e-300):
+                return None                 # a real coincidence: Δt e^{λΔt}
+            f = C * c / (lam - mu)
+            add(f, lam)
+            add(-f, mu)
+    # A kernel rate where G has a zero (a pole of the kernel's image is a
+    # zero of G = (1 - c ĝ)^{-1}-type propagators) cancels exactly: its
+    # coefficient is rounding.  Drop it, as the voltage form never has it.
+    out_scale = sum(abs(C) for (C, _l) in acc.values())
+    modes = []
+    for (C, lam) in acc.values():
+        if abs(C) <= DRESS_ZERO_RTOL * out_scale:
+            _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
+            continue
+        modes.append((C, lam))
+    return EdgeModeSum(ri=ems.ri, pi=ems.pi, delta_coeff=0j,
+                       modes=tuple(modes))
+
+
+def _sr_complex(z):
+    """A Python/numpy complex as an SR number (``SR(complex)`` does not
+    combine with symbolic expressions)."""
+    from sage.all import I as _I
+    z = complex(z)
+    return SR(z.real) + SR(z.imag) * _I if z.imag else SR(z.real)
+
+
+class _ScaledCoeff:
+    """``coeff_fc`` scaled by a constant (an averaged δ record)."""
+    __slots__ = ('_f', '_w')
+
+    def __init__(self, f, w):
+        self._f = f
+        self._w = w
+
+    def __call__(self, *args):
+        return self._w * complex(self._f(*args))
+
+
+def _average_conv_placements(choices, kw):
+    """``integrate_diagram`` for a diagram with a conductance vertex whose
+    kernel slots can be filled in several distinct ways (a mixed leg tuple,
+    see section 2c): build every placement and average them.  The diagram
+    weight M counts the copies of a leg as identical, so M times this
+    average is the sum over the Wick contractions."""
+    combos = list(itertools.product(*[pl for (_key, pl) in choices]))
+    keys = [key for (key, _pl) in choices]
+    if len(combos) > 256:
+        return {'status': 'failed', 'contribution': None,
+                'reason': (f'conductance vertices: {len(combos)} distinct '
+                           f'kernel-slot placements (more than 256)')}
+    results = []
+    for combo in combos:
+        r = integrate_diagram(_conv_assign=dict(zip(keys, combo)), **kw)
+        if r.get('status') != 'ok':
+            return r
+        results.append(r)
+    w = 1.0 / len(results)
+    fns = [r['contribution'] for r in results]
+
+    def contribution(*ext_time_values):
+        return w * sum(complex(f(*ext_time_values)) for f in fns)
+
+    first = results[0]
+    out = {k: (None if k == 'stripped_integrand' else first[k])
+           for k in first.keys()}            # no lazy display build
+    out['contribution'] = contribution
+    for key in ('delta_contributions', 'delta_contributions_multi'):
+        recs = []
+        for r in results:
+            for rec in r.get(key) or []:
+                rec = dict(rec)
+                rec['coeff_fc'] = _ScaledCoeff(rec['coeff_fc'], w)
+                recs.append(rec)
+        out[key] = recs
+    for key in ('n_subsets_evaluated', 'n_delta_contributions',
+                'n_shotnoise_skipped', 'n_delta_subsets_dropped'):
+        out[key] = sum(int(r.get(key) or 0) for r in results)
+    out['subset_diagnostics'] = [d for r in results
+                                 for d in (r.get('subset_diagnostics') or [])]
+    out['conv_placements'] = len(results)
+    return out
+
+
+def _conv_kernel_unsupported(att):
+    """Why a conductance kernel's time-domain image cannot be integrated as
+    a causal kernel (a message), or ``None``.  The Heaviside factor is
+    stripped and replaced by the Δt > 0 row, so only ``heaviside(t)`` itself
+    is allowed (a delay ``heaviside(t − d)`` would be lost); a δ part is
+    allowed only as the whole kernel (``c·δ(t)``)."""
+    from sage.all import heaviside, dirac_delta
+    td_fn = att.get('kernel_td_fn')
+    if td_fn is None:
+        return None
+    t = SR.var('_conv_shape_t_td_')
+    w = SR.wild(0)
+    try:
+        g = SR(td_fn(t))
+        for h in g.find(heaviside(w)):
+            if not bool((h.operands()[0] - t).is_zero()):
+                return (f'the kernel {att["symbol"]} has a delayed step '
+                        f'{h}; only heaviside(t) is supported')
+        if g.has(dirac_delta(w)) and _conv_kernel_local_weight(att) is None:
+            return (f'the kernel {att["symbol"]} mixes a δ part with a '
+                    f'smooth part; not supported')
+    except Exception:
+        return None
+    return None
 
 
 def _conv_kernel_local_weight(att, num_params=None):
@@ -1152,6 +1385,10 @@ _RUNTIME_COUNTERS = {
     # item 27: ill-conditioned closed forms re-evaluated at MP_DPS digits
     'dbm_mp_attempted': 0,
     'dbm_mp_answered': 0,
+    # item 27: conductance kernels folded into lines / exact-zero modes
+    'conv_lines_dressed': 0,
+    'conv_dress_zero_modes_dropped': 0,
+    'conv_kernel_leg_edges': 0,
     # ... a final term beyond the log-overflow limit:
     'dbm_declined_overflow': 0,
     # ... a closed form whose estimated rounding error (1e-15 × the summed
@@ -6726,6 +6963,8 @@ def integrate_diagram(
     prop_td=None,
     _setup_full=None,
     on_divergence=None,
+    _conv_assign=None,
+    _conv_force_leg=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -7117,30 +7356,36 @@ def integrate_diagram(
 
     # ── 2c. Conductance-style interaction vertices ────────────────
     # ConvVertexType is the interaction-vertex analogue of
-    # NoiseSourceType: the PHYSICAL leg a kernel attaches to sits at its
-    # own time ``s`` and is linked to the vertex time (the anchor, where
-    # the response leg and every other physical leg sit) by the synaptic
-    # kernel ``g(anchor − s)``.  See
-    # ``docs/conductance_vertex_kernels_design.md`` for the math.
+    # NoiseSourceType: a PHYSICAL leg ``y`` that a kernel attaches to
+    # (``x·(g ∗ y)``) sees ``∫ ds g(t − s) y(s)``, ``t`` the vertex time
+    # (the anchor, where the response leg and every other physical leg sit).
+    # See ``docs/conductance_vertex_kernels_design.md``.
     #
-    # The integration variable is the leg time ``s``, not the delay
-    # ``τ = anchor − s`` (Jacobian 1): an edge into the attached leg then
-    # has the difference row ``s − t_tail`` and the kernel becomes one more
-    # smooth edge ``s → anchor`` (section 3, ``kernel_edge_specs``), so
-    # every retardation row is a difference row and the box-free exact
-    # routes (polygon / poset / DBM) take the subset.  (With τ as the
-    # variable each such edge had a 3-term row, the exact routes declined
-    # and the subsets went to nested quadrature for days.)
+    # Each copy of a leg tuple is a SLOT: the k-th kernel symbol's power in
+    # the vertex coefficient is the number of copies it occupies, the rest
+    # are plain.  The edges whose HEAD is this vertex at that leg tuple are
+    # the lines to place in the slots.  When all slots of a leg tuple are
+    # alike the placement is unique; otherwise (``x·(g ∗ x)``: one plain
+    # and one kernel copy of the same leg) the diagram's weight M (which
+    # counts the copies as identical) multiplies the AVERAGE over the
+    # distinct placements, which this function computes by building each
+    # placement (``_conv_assign``) and averaging.
     #
-    # Only the edge whose HEAD is this vertex and whose physical leg is
-    # the attached leg tuple (field AND population) is routed through
-    # ``s``; an edge leaving the vertex starts at its response leg, at the
-    # anchor.  A kernel attached to a leg tuple that occurs more than once
-    # among the vertex's physical legs (``n·Conv(g, n)``) has no unique
-    # leg to shift; such a diagram is refused below (status 'failed').
-    conv_leg_time = {}          # {(v, edge_key): s symbol}
-    kernel_edge_specs = []      # [(v, att, s_sym)] in creation order
+    # A line placed in a kernel slot is integrated one of two ways:
+    # * 'dress' (the default): a kernel that is a finite exponential sum
+    #   (``_extract_exp_modes``) is folded into that line's propagator,
+    #   ``(g ∗ G)(Δt)`` with Δt = t − t_tail, again a finite pole sum
+    #   (``_dress_edge_modes``) with no δ part: no extra time, no extra row;
+    # * 'leg': otherwise (a kernel that is not an exponential sum, a kernel
+    #   rate equal to a propagator pole, no mode data) the attached leg gets
+    #   its own integration time ``s`` and the kernel becomes one more
+    #   smooth edge ``s → t`` (section 3a'), every row a difference row.
+    conv_leg_time = {}          # {(v, edge_key): s symbol}   ('leg')
+    kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
+    conv_dress = {}             # {edge_key: kernel modes}      ('dress')
     conv_refusal = None
+    _conv_choices = []          # [((v, leg), [placement, ...])]
+    _conv_slots = {}            # {(v, leg): (in_edges, base placement)}
     for v, vtype in vertex_assignments.items():
         if not isinstance(vtype, ConvVertexType):
             continue
@@ -7156,41 +7401,36 @@ def integrate_diagram(
                 f"vertex {v} appears both as NoiseSourceType and "
                 f"ConvVertexType — these are mutually exclusive."
             )
-        # Track this vertex's s↔attachment pairs locally — DON'T mutate
-        # the attachment dict.  The same ConvVertexType instance can be
-        # bound to multiple graph vertices in the typing engine.
-        att_pairs = []
         phys_legs = [tuple(lg) for lg in vtype.physical_legs]
-        in_edges = sorted(ek for ek in D.edges() if ek[1] == v)
+        coeff_sr = SR(vtype.coefficient)
+        by_leg = {}
         for att_idx, att in enumerate(vtype.kernel_attachments):
-            leg_tuple = tuple(att['leg'])
-            if phys_legs.count(leg_tuple) != 1:
+            try:
+                q = int(coeff_sr.degree(SR(att['symbol'])))
+            except Exception:
+                q = 1
+            by_leg.setdefault(tuple(att['leg']), []).extend(
+                [att_idx] * max(q, 1))
+        for leg, slots in by_leg.items():
+            n_copies = phys_legs.count(leg)
+            hits = sorted(ek for ek in D.edges() if ek[1] == v
+                          and tuple(typed_diagram.edge_types[ek][1]) == leg)
+            if len(slots) > n_copies or len(hits) != n_copies:
                 conv_refusal = (
-                    f'conductance vertex {v}: the kernel {att["symbol"]} '
-                    f'attaches to the leg {leg_tuple}, which occurs '
-                    f'{phys_legs.count(leg_tuple)} times among the '
-                    f'vertex\'s physical legs {phys_legs}; the per-leg '
-                    f'kernel routing needs a unique attached leg')
+                    f'conductance vertex {v}: {len(slots)} kernel slot(s) on '
+                    f'the leg {leg}, which occurs {n_copies} times among the '
+                    f'vertex\'s physical legs {phys_legs} and is met by '
+                    f'{len(hits)} edge(s)')
                 break
-            if _conv_kernel_local_weight(att, num_params) is not None:
-                # ``Conv(δ, n) = n``: no delay, the leg stays at the anchor
-                # (the kernel symbol becomes its weight in section 3c).
-                att_pairs.append((None, att))
-                continue
-            s_sym = SR.var(
-                f's_v{v}_gleg{att_idx}_td_',
-                latex_name=rf's^{{g}}_{{v_{{{v}}},{att_idx}}}'
-            )
-            integration_vars.append(s_sym)
-            hits = [ek for ek in in_edges
-                    if tuple(typed_diagram.edge_types[ek][1]) == leg_tuple]
-            for ek in hits:
-                conv_leg_time[(v, ek)] = s_sym
-            att_pairs.append((s_sym, att))
-            kernel_edge_specs.append((v, att, s_sym))
+            slots = tuple(slots) + (None,) * (n_copies - len(slots))
+            placements = sorted(set(itertools.permutations(slots)),
+                                key=lambda pl: tuple(-1 if x is None else x
+                                                     for x in pl))
+            _conv_slots[(v, leg)] = (hits, placements[0])
+            if len(placements) > 1:
+                _conv_choices.append(((v, leg), placements))
         if conv_refusal is not None:
             break
-        conv_vertex_specs[v] = att_pairs
     if conv_refusal is not None:
         return {
             'status': 'failed',
@@ -7198,6 +7438,57 @@ def integrate_diagram(
             'integration_vars': integration_vars,
             'reason': conv_refusal,
         }
+    if _conv_choices and _conv_assign is None:
+        return _average_conv_placements(
+            _conv_choices,
+            dict(typed_diagram=typed_diagram, propagator_data=propagator_data,
+                 combined_prefactor=combined_prefactor,
+                 ext_time_vars=ext_time_vars, num_params=num_params,
+                 origin_leaf_idx=origin_leaf_idx,
+                 external_fields=external_fields,
+                 edge_mode_sums_builder=edge_mode_sums_builder,
+                 prop_td=prop_td, on_divergence=on_divergence,
+                 _conv_force_leg=_conv_force_leg))
+    _assign = dict(_conv_assign or {})
+    _can_dress = (edge_mode_sums_builder is None
+                  and propagator_data.get('C_mats') is not None
+                  and _dress_kernels_on())
+    for (v, leg), (hits, base) in _conv_slots.items():
+        placement = _assign.get((v, leg), base)
+        vtype = vertex_assignments[v]
+        att_pairs = conv_vertex_specs.setdefault(v, [])
+        for ek, att_idx in zip(hits, placement):
+            if att_idx is None:
+                continue
+            att = vtype.kernel_attachments[att_idx]
+            why = _conv_kernel_unsupported(att)
+            if why is not None:
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': f'conductance vertex {v}: {why}',
+                }
+            if _conv_kernel_local_weight(att, num_params) is not None:
+                # ``Conv(c·δ, n) = c·n``: no delay, the line stays as it is
+                # (the kernel symbol becomes its weight in section 3c).
+                att_pairs.append((None, att))
+                continue
+            kmodes = _kernel_modes(att, num_params)
+            if (_can_dress and kmodes is not None
+                    and ek not in (_conv_force_leg or ())):
+                conv_dress[ek] = kmodes
+                att_pairs.append(('dress', att))
+                continue
+            s_sym = SR.var(
+                f's_v{v}_gleg{len(kernel_edge_specs)}_td_',
+                latex_name=rf's^{{g}}_{{v_{{{v}}},{len(kernel_edge_specs)}}}'
+            )
+            integration_vars.append(s_sym)
+            conv_leg_time[(v, ek)] = s_sym
+            att_pairs.append((s_sym, att))
+            kernel_edge_specs.append((v, att, s_sym))
+            _RUNTIME_COUNTERS['conv_kernel_leg_edges'] += 1
 
     # ── 3. Gather per-edge info: ri, pi, dt, delta_coeff, smooth factor
     def _resolve_leg_time(vert, edge_key, default_time):
@@ -7292,6 +7583,61 @@ def integrate_diagram(
     # the mode-sum routes; any other kernel (alpha function, ...) sets
     # ``edge_mode_sums`` to None and the diagram takes the SR path.
     n_prop_edges = len(edge_info)
+    # Dressed lines (section 2c 'dress'): the line's propagator G becomes
+    # (g ∗ G), a pole sum without δ part, at the same times.
+    dressed_idx = set()
+    if conv_dress:
+        if edge_mode_sums is None:
+            return {
+                'status': 'failed',
+                'contribution': None,
+                'integration_vars': integration_vars,
+                'reason': ('conductance kernel: the propagator has no '
+                           'mode data to dress a line with'),
+            }
+        for i, ei in enumerate(edge_info):
+            kmodes = conv_dress.get((ei['u'], ei['v'], ei['lbl']))
+            if kmodes is None:
+                continue
+            dressed = _dress_edge_modes(edge_mode_sums[i], kmodes)
+            if dressed is None:
+                return integrate_diagram(
+                    typed_diagram, propagator_data, combined_prefactor,
+                    ext_time_vars, num_params=num_params,
+                    origin_leaf_idx=origin_leaf_idx,
+                    external_fields=external_fields,
+                    edge_mode_sums_builder=edge_mode_sums_builder,
+                    prop_td=prop_td, on_divergence=on_divergence,
+                    _conv_assign=_conv_assign,
+                    _conv_force_leg=(set(_conv_force_leg or ())
+                                     | {(ei['u'], ei['v'], ei['lbl'])}))
+            _RUNTIME_COUNTERS['conv_lines_dressed'] += 1
+            edge_mode_sums[i] = dressed
+            dt = ei['dt_sym']
+            sf = SR(0)
+            for (C, lam) in dressed.modes:
+                sf = sf + _sr_complex(C) * (_sr_complex(lam) * dt).exp()
+            edge_info[i] = {
+                'u': ei['u'], 'v': ei['v'], 'lbl': ei['lbl'],
+                'ri': ei['ri'], 'pi': ei['pi'],
+                'dt_sym': dt,
+                'delta_coeff': 0.0,
+                'smooth_factor': sf,
+            }
+            dressed_idx.add(i)
+        for i in range(n_prop_edges):
+            if i in dressed_idx:
+                continue
+            ems_i = edge_mode_sums[i]
+            sc = sum(abs(complex(C)) for (C, _l) in ems_i.modes)
+            keep = tuple((C, lam) for (C, lam) in ems_i.modes
+                         if abs(complex(C)) > DRESS_ZERO_RTOL * sc)
+            if len(keep) < len(ems_i.modes):
+                _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += (
+                    len(ems_i.modes) - len(keep))
+                edge_mode_sums[i] = EdgeModeSum(
+                    ri=ems_i.ri, pi=ems_i.pi,
+                    delta_coeff=ems_i.delta_coeff, modes=keep)
     if kernel_edge_specs:
         from sage.all import heaviside as _sage_heaviside
         _tau_ph = SR.var('_conv_kernel_tau_td_')
@@ -7318,13 +7664,14 @@ def integrate_diagram(
                 'delta_coeff': 0.0,
                 'smooth_factor': g_tau.subs({_tau_ph: dt}),
             })
-            mode = _extract_exp_mode(g_tau, _tau_ph)
-            if mode is None or edge_mode_sums is None:
+            kmodes = _extract_exp_modes(g_tau, _tau_ph)
+            if kmodes is None or edge_mode_sums is None:
                 edge_mode_sums = None
             else:
                 edge_mode_sums.append(EdgeModeSum(
                     ri=-1, pi=-1, delta_coeff=complex(0.0),
-                    modes=((complex(mode[0]), complex(mode[1])),)))
+                    modes=tuple((complex(C), complex(lam))
+                                for (C, lam) in kmodes)))
 
     # Combined prefactor (numerical)
     if _cp_pre is not None:
@@ -7436,6 +7783,9 @@ def integrate_diagram(
                             num_params=num_params)
         if edge_mode_sums_builder is None and _structural_zeros_on()
         else frozenset())
+    if dressed_idx and _forced_delta:
+        # a dressed line has no δ part whatever its propagator entry
+        _forced_delta = frozenset(_forced_delta) - dressed_idx
 
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints
     # for debugging / display, matching the pre-fix return shape.  Kept as
