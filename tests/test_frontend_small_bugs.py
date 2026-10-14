@@ -64,7 +64,8 @@ def _compare(build_a, build_b, ext, ell=1):
 # bit-identical.  A hand-written image of the other two cannot reproduce the algebraic form of the
 # compiled one (alpha: Sage's own unfactored transform, which never needed the fallback; three
 # exponentials: one common denominator), so they agree to rounding (rtol 1e-12) and exactly in
-# the kernel integral and the mean-field text.
+# the kernel integral and the mean-field text.  Maxima integrates alpha and three_exp itself (they
+# are regression guards that pass on main); only FALLBACK_KERNELS reach the new code.
 KERNELS = {
     'alpha': ('t*exp(-t/tau)/tau^2*heaviside(t)', '1/(1 + I*omega*tau)^2'),
     'diff_exp': ('(exp(-t/tau) - exp(-t/taug))/(tau - taug)*heaviside(t)',
@@ -101,6 +102,32 @@ def test_sde_time_expr_kernel_dc_equals_freq_image_at_omega_0(name):
     expected = {'alpha': SR(1), 'diff_exp': SR(1),
                 'three_exp': 2 * tau - 3 * taug + 2 * (tau + taug)}[name]
     assert (dc - expected).simplify_full().is_zero()
+
+
+# kernels Maxima cannot integrate: expected integral
+FALLBACK_KERNELS = {
+    'diff_exp': ('(exp(-t/tau) - exp(-t/taug))/(tau - taug)*heaviside(t)', 1),
+    # mixed signs, a double pole, the same rate twice
+    'diff_minus_alpha': ('((exp(-t/tau) - exp(-t/taug))/(tau - taug) - 0.5*t*exp(-t/taug)/taug^2)'
+                         '*heaviside(t)', 0.5),
+    # a delta part beside the retarded part
+    'delta_plus_diff': ('0.3*dirac_delta(t) + (exp(-t/tau) - exp(-t/taug))/(tau - taug)*heaviside(t)',
+                        1.3),
+}
+
+
+@pytest.mark.parametrize('name', sorted(FALLBACK_KERNELS))
+def test_sde_kernel_dc_fallback_is_taken_and_exact(name, monkeypatch):
+    te, expected = FALLBACK_KERNELS[name]
+    calls = []
+    orig = SDE._kernel_dc_causal
+    monkeypatch.setattr(SDE, '_kernel_dc_causal',
+                        lambda self, *a: calls.append(1) or orig(self, *a))
+    before = list(assumptions())
+    dc = _sde_kernel(time_expr=te)._kernel_dc('g')
+    assert calls                                               # Maxima could not do it
+    assert (dc - SR(expected)).simplify_full().is_zero()
+    assert list(assumptions()) == before
 
 
 @pytest.mark.parametrize('name', sorted(KERNELS))
@@ -198,7 +225,7 @@ def test_scalar_conv_still_validates_arity():
     m = TemporalTheoryBuilder('bad').physical_field('n').parameter('a', default=1.0) \
         .define_kernel('g', freq_image='1/(1 + I*omega)') \
         .set_action_text('nt*n - (exp(nt) - 1)*a*Conv(n)').equation(lhs='n', rhs='a').build()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='Conv'):               # an arity error, not a coercion error
         FieldTheory(m, taylor_order=2).expand()
 
 
@@ -226,6 +253,8 @@ def test_scalar_conv_still_validates_arity():
     ('f(a', False),
     ('f(a))', False),
     ('', False),
+    ('f(")") + g(x)', False),                                   # a quoted parenthesis
+    ('f("(")', True),
 ])
 def test_is_single_function_call(text, expected):
     assert _is_single_function_call(text) is expected

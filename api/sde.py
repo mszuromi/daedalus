@@ -400,7 +400,8 @@ class SDE:
             return SR(causal_exponential_ft(causal, t, SR(0), positive=positive))
         except ValueError as exc:
             raise SDEError(f'kernel {name}: cannot integrate time_expr symbolically '
-                           f'for the mean-field equations ({exc}); give freq_image=.') from exc
+                           f'for the mean-field equations ({exc}); declare '
+                           f"domain='positive' on its time constants, or give freq_image=.") from exc
 
     def _collapse_kernels(self, text: str) -> str:
         """Replace kernel symbols by their integral (stationary mean field)."""
