@@ -13453,8 +13453,11 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     per_diagram = []
     for td in typed_diagrams:
         per = []
-        for (u, v, lbl) in td.prediagram[0].edges():
-            ri, pi = _lookup_prop_indices(td, (u, v, lbl))
+        pidx = td.propagator_indices
+        for ek in td.prediagram[0].edges():
+            hit = pidx.get(ek)          # the exact key: _lookup's first rule
+            ri, pi = (hit if hit is not None
+                      else _lookup_prop_indices(td, ek))
             per.append(counts(pi, ri))
         per_diagram.append((
             math.prod((1 + n) if dl else n for (n, _a, dl) in per),
