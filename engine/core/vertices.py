@@ -571,13 +571,22 @@ def extract_vertex_types(ft):
     # rather than re-evaluating the lambda per attachment.  The τ
     # symbol used here is a placeholder; the integrator substitutes
     # its actual per-vertex τ at integration time.
-    if kernel_td_image_lambda is not None and attachments:
-        from sage.all import SR as _SR
-        _tau_placeholder = _SR.var('_conv_tau_placeholder')
-        kernel_td_map = kernel_td_image_lambda(ns, _tau_placeholder)
-    else:
-        _tau_placeholder = None
-        kernel_td_map = {}
+    # Evaluated on first need only: a model whose kernels sit only in the
+    # bilinear sector (no vertex carries a kernel symbol) never evaluates
+    # the kernel images here (their evaluation is not free of Sage-side
+    # effects), exactly as before the attachments were restored from the
+    # expand cache.
+    _td_cell = []
+
+    def _td_image_of(ksym):
+        if kernel_td_image_lambda is None:
+            return None, None
+        if not _td_cell:
+            from sage.all import SR as _SR
+            ph = _SR.var('_conv_tau_placeholder')
+            _td_cell.append((kernel_td_image_lambda(ns, ph), ph))
+        td_map, ph = _td_cell[0]
+        return (td_map.get(ksym) if ksym in td_map else None), ph
     # The frequency image too: a kernel declared only by ``freq_image`` has
     # no time-domain image; the integrator reads its modes from this one.
     # Built on first need only (for a ``time_expr`` kernel the hook runs a
@@ -646,13 +655,13 @@ def extract_vertex_types(ft):
                     # treating it as zero.
                     continue
                 leg, leg_idx = resolved
-                if _tau_placeholder is not None and ksym in kernel_td_map:
+                td_expr, _tau_placeholder = _td_image_of(ksym)
+                if td_expr is not None:
                     # Bind the placeholder τ so callers can re-substitute
                     # their own τ symbol.  A module-level callable, not a
                     # closure: typed diagrams carrying this vertex are
                     # pickled into the diagram cache.
-                    _td_fn = KernelTimeImage(kernel_td_map[ksym],
-                                             _tau_placeholder)
+                    _td_fn = KernelTimeImage(td_expr, _tau_placeholder)
                 else:
                     # No time-domain image available (kernel declared
                     # via freq_image only).  Caller will see this as
