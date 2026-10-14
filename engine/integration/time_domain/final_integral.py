@@ -8865,6 +8865,27 @@ def integrate_diagram(
         # ``None`` means the closure-only fallback path applies for
         # both (the constraints either can't be extracted or have
         # a non-numerical prefactor still).
+        # S2 (opt-in, ``DAEDALUS_PHASE_J_ENGINE=statespace``): the
+        # state-space subset integrator takes an eligible subset (all rows
+        # plain propagator edges of a realizable model); no pole-tuple plan
+        # is built for it.  Unset, nothing below changes.
+        _ss_make = None
+        if _os.environ.get('DAEDALUS_PHASE_J_ENGINE'):
+            from engine.integration.time_domain import statespace as _ss
+            _ss_make = _ss.subset_maker(
+                propagator_data=propagator_data, num_params=num_params,
+                pi_ri=[(edge_info[_i]['pi'], edge_info[_i]['ri'])
+                       for _i in smooth_edges],
+                plain_edges=(not vertex_leg_time
+                             and edge_mode_sums_builder is None
+                             and all(_i < n_prop_edges
+                                     and _i not in dressed_idx
+                                     for _i in smooth_edges)),
+                prefactor=_prefactor_c if _prefactor_is_numerical else None,
+                cdata=subset_constraint_data, m=m_sub,
+                row_kinds=subset_row_kinds, n_free=len(free_ext_syms),
+                modes=(None if edge_mode_sums is None else
+                       [edge_mode_sums[_i] for _i in smooth_edges]))
         _smooth_edge_modes = None
         _modesum_prefactor_c = None
         _modesum_enabled = (
@@ -8876,7 +8897,7 @@ def integrate_diagram(
         # 2026-05-15); reuse it instead of re-converting through SR.
         _pole_tuples_cache = None
         _modesum_plan = None
-        if (_modesum_enabled
+        if (_ss_make is None and _modesum_enabled
                 and not vertex_leg_time
                 and edge_mode_sums is not None
                 and _prefactor_is_numerical):
@@ -9092,7 +9113,7 @@ def integrate_diagram(
             return _contrib
 
         _subset_cfn = (
-            _make_subset_contrib(
+            (_ss_make or _make_subset_contrib)(
                 integrand_for_quad, subset_constraint_data, m_sub,
                 modes=_smooth_edge_modes,
                 pref_c=_modesum_prefactor_c,
@@ -9146,7 +9167,9 @@ def integrate_diagram(
         # constraint, non-uniform bounds, degenerate β).  The label
         # records the design intent; runtime falls through to
         # 'fast_numpy' silently.
-        if _smooth_edge_modes is not None and m_sub == 1:
+        if _ss_make is not None:
+            _evaluator_label = 'statespace'
+        elif _smooth_edge_modes is not None and m_sub == 1:
             _evaluator_label = 'interval_modesum'
         elif _smooth_edge_modes is not None and m_sub == 2:
             _evaluator_label = 'polygon_modesum'
