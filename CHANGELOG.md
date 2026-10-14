@@ -11,6 +11,31 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: `FieldTheory.expand` on non-polynomial actions, minutes to about a second (`engine/core/field_theory.py`)
+
+- The action is now Taylor-expanded node by node: sums add, products and positive integer powers multiply with
+  truncation at total degree `taylor_order` at every step, and each distinct non-polynomial atom (`exp`, `log`,
+  a negative or fractional power, a function call) gets one `taylor()` of its own, memoised. Before, one
+  `taylor()` of the whole action put every coefficient over the common denominator of all atoms (single
+  coefficients of ~120 kB for a 2-field action with four sigmoids, 18 MB in all at order 4).
+- `PolynomialRing(SR)` zero-tests every coefficient on construction and after each `+`, and asks Maxima
+  whenever the coefficient holds a symbol with an assumption (`domain='positive'`). The zero test now first
+  checks the coefficient at one point that satisfies every assumption (128-bit intervals); only when that point
+  cannot show it nonzero is Sage's own test used, so the verdicts are Sage's. Sectors and `S_raw` are built once
+  from dicts, in the same dict order as before. The expand-cache loader uses the same test (format and keys
+  unchanged).
+- Timings, `[1/7]` (2-field action with four sigmoids in drift and state-dependent noise): taylor_order 2:
+  108 s to 0.6 s; 3 and 4: not finished in 10 min, now 0.6 s and 0.9 s. Loading its cached order-4 expansion:
+  100 s to 0.1 s. `dendritic_quad_soma_sigmoid`: 75 s / 335 s (orders 2 / 4) to 0.3 s.
+- Output: on every polynomial or `exp` / formal-function model of the zoo the expanded action is the same ring
+  element as before (coefficients trivially equal, same dict order), so their results do not move. On the
+  sigmoid models (`dendritic_quad_soma_sigmoid` among the public ones) the coefficients are the same functions
+  in a shorter form (equal to 1e-58 at random points); their cumulants move by at most a few units in the last
+  place (numbers below).
+- `DAEDALUS_EXPAND_LEGACY=1` restores the previous expansion and zero tests. The verbose action printout no
+  longer prints each ring element to test it for emptiness (`str()` of a ring element over SR compares every
+  coefficient with 1 and could take 10 s; `api/compute.py`).
+
 #### Added: symbolic tree-level covariance in the time domain, any denominator degree (`api/symbolic_out.py`, stage C2)
 
 - `tree_modes(C0, omega)` / `TreeCovariance.modes(a, b)` return `C(tau)` as a
