@@ -13,7 +13,8 @@ State-space subset integrator for Phase J (S2, opt-in with
 * OU with an Erlang-8 kernel in its linear drift (rational kernel, class C
   realization, per-entry minimal state counts): 50-digit oracle;
 * conductance coupling with an alpha kernel (two rates) against its Markov
-  embedding, and the embedding at equal rates (an exact double pole);
+  embedding (the kernel form's conductance edges are declined end to end),
+  and the embedding at equal kernel rates, where the kernel form is refused;
 * a damped oscillator driven by red noise through a multiplicative coupling,
   k = 3 one loop, against Phase J at a generic and at a tied point;
 * unit tests of the sweep on hand-made subsets (chain, antichain, constant
@@ -247,7 +248,12 @@ def test_ou_cubic_closed_form_and_route(monkeypatch):
 def test_colour_noise_double_pole_vs_oracle(monkeypatch, gap):
     tc = 1.0 / (1.0 + gap)
     monkeypatch.setenv(ENV, 'statespace')
+    FI._reset_runtime_counters()
     res = _cc(ou_colour(tc), 2, 1, [('x', 1), ('x', 1)], TAUS)
+    c = _ss_counters()
+    assert c['ss_evals'] > 0 and c['ss_subsets_declined'] == 0
+    if gap == 0.0:                     # a repeated pole: deformation runs
+        assert (res.get('pole_clusters') or {}).get('status') == 'resolved'
     with mp.workdps(50):
         mu, eps, D, t = (mp.mpf(1), mp.mpf('0.02'), mp.mpf(1), mp.mpf(tc))
         A = mp.matrix([[-mu, 1], [0, -1 / t]])
@@ -283,9 +289,18 @@ def test_erlang8_kernel_vs_oracle(monkeypatch):
 def test_alpha_conductance_vs_markov_embedding(monkeypatch):
     ext = [('dx', 1), ('dx', 1)]
     # kernel form (rates 1/0.7, 1/0.4): conductance pseudo-edges / dressed
-    # lines are not plain propagator rows -> the pole routes take them
+    # lines are not plain propagator rows -> declined, the pole routes take
+    # them; the subsets without one may take the state-space route
     kern = _cc(alpha_kernel_model(0.4), 2, 1, ext, TAUS)
     monkeypatch.setenv(ENV, 'statespace')
+    FI._reset_runtime_counters()
+    kern_on = _cc(alpha_kernel_model(0.4), 2, 1, ext, TAUS)
+    c = _ss_counters()
+    assert c['ss_declined_by_reason'].get('non_propagator_rows', 0) > 0
+    for ell in (0, 1):
+        k_, o_ = np.asarray(kern['C_tau_by_ell'][ell]), np.asarray(
+            kern_on['C_tau_by_ell'][ell])
+        assert np.max(np.abs(k_ - o_)) <= 1e-14 * np.max(np.abs(k_))
     FI._reset_runtime_counters()
     emb = _cc(alpha_markov_model(0.4), 2, 1, ext, TAUS)
     c = _ss_counters()
@@ -294,12 +309,13 @@ def test_alpha_conductance_vs_markov_embedding(monkeypatch):
         k_, e_ = np.asarray(kern['C_tau_by_ell'][ell]), np.asarray(
             emb['C_tau_by_ell'][ell])
         assert np.max(np.abs(k_ - e_)) <= 1e-13 * np.max(np.abs(e_))
-    # equal rates: the embedding's propagator has an exact double pole; the
-    # state-space route needs no deformation and is continuous through it
+    # equal kernel rates: main refuses the kernel form (a repeated kernel
+    # rate); the embedding (whose poles the feedback through x* splits) runs
+    # on the state-space route and is continuous through tau2 = tau
     eq = _cc(alpha_markov_model(0.7), 2, 1, ext, TAUS)
     near = _cc(alpha_markov_model(0.7 * (1 + 1e-9)), 2, 1, ext, TAUS)
     monkeypatch.delenv(ENV)
-    pj = _cc(alpha_markov_model(0.7), 2, 1, ext, TAUS)   # pole-cluster route
+    pj = _cc(alpha_markov_model(0.7), 2, 1, ext, TAUS)   # pole routes
     for ell in (0, 1):
         a_ = np.asarray(eq['C_tau_by_ell'][ell])
         assert np.max(np.abs(a_ - np.asarray(near['C_tau_by_ell'][ell]))) <= (
@@ -319,9 +335,15 @@ def test_oscillator_red_noise_k3_one_loop_vs_phase_j(monkeypatch):
     ref = values()
     monkeypatch.setenv(ENV, 'statespace')
     FI._reset_runtime_counters()
-    seen = []
-    monkeypatch.setattr(FI, '_SUBSET_HOOK', lambda p: seen.append(p['plan']))
+    seen, payloads = [], []
+
+    def hook(p):
+        payloads.append((p['path'], p['plan'], p['integrand']))
+        seen.append(p['ss_subset'])
+    monkeypatch.setattr(FI, '_SUBSET_HOOK', hook)
     got = values()
+    assert all(pa == 'ss' and pl is None and it is not None
+               for pa, pl, it in payloads)
     c = _ss_counters()
     assert c['ss_subsets_built'] > 0 and c['ss_subsets_declined'] == 0
     # per-entry minimal realizations: each edge axis has its own entry's
@@ -372,7 +394,9 @@ def test_finite_t_min_tree_closed_form_and_phase_j(monkeypatch):
                      for ell, pj in res['phase_j_by_ell'].items()}
     pts, ref = run()
     monkeypatch.setenv(ENV, 'statespace')
+    FI._reset_runtime_counters()
     _pts, got = run()
+    assert _ss_counters()['ss_evals'] > 0
     mu, D = 1.0, 1.0
     for (t1, t2), v in zip(pts, got[0]):
         exact = D / mu * (np.exp(-mu * abs(t1 - t2))
@@ -457,3 +481,61 @@ def test_memory_guard_raises_before_allocating():
     with FI.phase_j_memory_scope(budget=1e6, what='test') as scope:
         SS._charge(sub)
     assert scope.used == sub.state_bytes() > 0
+
+
+def test_realization_cache_key_and_per_momentum_calls():
+    from sage.all import RR
+    a = RR(0.3)
+    b = a + RR(2) ** -54 * 3                    # same 15-digit repr
+    assert repr(a) == repr(b)
+    assert SS._np_key({'x': a}) != SS._np_key({'x': b})
+    # the spatial certification's per-momentum temporal propagators (the
+    # Laplacian bound to -q^2) stay on the pole routes
+    ops, why = SS.realization_for({'K_ft': object(), 'omega': None},
+                                  {'Laplacian': -0.49})
+    assert ops is None and why == 'realization_spatial_per_q'
+
+
+def test_stiff_segment_takes_the_triangular_route():
+    # one vertex v in (0, tau): 0 -> v through a stiff 2-state entry (rates
+    # near -1e4 and -1e-2), v -> tau through e^{-t}; the Taylor action would
+    # need ~1e4 steps (error ~ steps x eps), the triangular route is exact on
+    # the diagonal
+    a = np.array([[-1e4, 5.0], [0.7, -1e-2]])
+    b, c = np.array([1.0, 1.0]), np.array([1.0, 2.0])
+    ents = {(0, 0): RZ.EntryRealization(a=a, b=b, c=c, d=0.0, n_states=2),
+            (1, 1): RZ.EntryRealization(a=np.array([[-1.0]]),
+                                        b=np.array([1.0]), c=np.array([1.0]),
+                                        d=0.0, n_states=1)}
+    model = SS._ModelOps(types.SimpleNamespace(A=np.zeros((1, 1)),
+                                               entries=ents))
+    rows = [([1.0], [0.0], 0.0), ([-1.0], [1.0], 0.0)]
+    sub = SS.SubsetSS(model, [model.entry(0, 0), model.entry(1, 1)], rows, 1, 1)
+    FI._reset_runtime_counters()
+    for tau in (1.0, 50.0):
+        val = sub.evaluate([tau])
+        with mp.workdps(50):
+            A = mp.matrix(a.tolist())
+            E, ER = mp.eig(A)
+            EL = mp.inverse(ER)
+            ref = mp.mpf(0)
+            for k_ in range(2):
+                r = (mp.matrix([c.tolist()]) * ER[:, k_])[0] * (
+                    EL[k_, :] * mp.matrix(b.tolist()))[0]
+                lam = E[k_]
+                ref += r * mp.exp(-tau) * (mp.exp((lam + 1) * tau) - 1) / (lam + 1)
+        assert abs(val - complex(ref).real) <= 1e-14 * abs(complex(ref))
+    assert SS._counters()['ss_segments_triangular'] >= 2
+
+
+def test_batch_rejects_non_finite_times():
+    model = _fake_model([1.0, 2.0, 3.0])
+    ents = [model.entry(0, 0), model.entry(1, 1), model.entry(2, 2)]
+    rows = [([-1.0, 1.0], [0.0], 0.0), ([0.0, -1.0], [0.0], 0.0),
+            ([-1.0, 0.0], [1.0], 0.0)]
+    sub = SS.SubsetSS(model, ents, rows, 2, 1)
+    with pytest.raises(ValueError, match='finite'):
+        sub.evaluate_many([([3.0], None), ([float('nan')], None),
+                           ([1.0], None)])
+    with pytest.raises(ValueError, match='finite'):
+        sub.evaluate([float('inf')])

@@ -18,9 +18,13 @@ an internal vertex are scalar factors ``g_e(c_eff)`` decided by Phase J's own
 Θ(0) / tie rule (``final_integral._const_row_verdict``).  ``P`` is the
 subset prefactor.
 
-Opt in with ``DAEDALUS_PHASE_J_ENGINE=statespace`` (read when a diagram is
-integrated).  Unset (or ``poles`` / ``default``) nothing here runs and every
-number is the pole engine's.  A subset is taken here only when every row is a
+Opt in with ``DAEDALUS_PHASE_J_ENGINE=statespace`` (read for each subset
+when a diagram is integrated).  Unset, this module is not even imported and
+every number is the pole engine's; ``poles`` / ``default`` import it and
+decline every subset; any other value raises (at the first subset).  The
+route applies to every ``integrate_diagram`` call: the per-diagram path, and
+also grouped Phase J's per-diagram fallback; the spatial certification's
+per-momentum calls are declined (``realization_spatial_per_q``).  A subset is taken here only when every row is a
 propagator edge of the model's realization (``subset_maker``: no noise-kernel
 boxes, no conductance pseudo-edges, no dressed lines, a numeric prefactor, a
 Hurwitz realization, rows of the shape above, every vertex followed by an
@@ -98,9 +102,10 @@ Numerics
   Schur otherwise): the Kronecker sum of upper-triangular factors is upper
   triangular, solved by a vectorised back substitution (Jacobi sweeps on the
   nilpotent strictly-upper part: exact after ``1 + Σ(n_e - 1)`` sweeps and
-  operation-for-operation the back substitution), then mapped back and
-  refined once on the residual in the original basis (S1: a plain Schur-basis
-  solve loses up to ~3e-13 on graded realizations).  Divisions are by sums
+  operation-for-operation the back substitution), then mapped back and,
+  when a unitary (complex Schur) factor was used, refined on the residual in
+  the original basis, up to ``REFINE_STEPS`` times, keeping the best (S1: a
+  plain Schur-basis solve loses up to ~3e-13 on graded realizations).  Divisions are by sums
   of eigenvalues of Hurwitz factors only: no eigenvalue gap enters.
 * **Segments and impulses** ``exp(G L) x`` / ``c e^{a t} b`` by the
   Al-Mohy-Higham (2011) truncated-Taylor action with the trace shift: no
@@ -118,7 +123,11 @@ Memory: before a subset's stationary states are allocated their size (the
 product of the per-edge dimensions over each downset's active edges, summed)
 is charged against ``PHASE_J_MEM_BUDGET_GB`` through item 35's running total
 (``final_integral.phase_j_memory_scope``); over budget raises
-``PhaseJResourceError`` before anything is allocated.
+``PhaseJResourceError`` before anything is allocated.  A segment system is
+checked the same way (its working set alone) when it is first built, at the
+first evaluation that needs it.  Not charged: the module's caches that
+outlive a run (dense segment generators, an LRU capped at
+``DENSE_CACHE_BYTES``; the last ``_REAL_CACHE_MAX`` realizations).
 """
 from __future__ import annotations
 
@@ -143,6 +152,16 @@ _ENGINE_OFF = ('', 'poles', 'default')
 #: dense generator (Taylor action with dense mat-vecs) up to this dimension;
 #: matrix-free beyond
 OP_DENSE_MAX = 2000
+#: Taylor scaling steps above which a segment (or an impulse) counts as
+#: stiff: the action's error grows like (steps) x eps (measured: a 1e4 rate
+#: over tau = 50, 4.9e-12); stiff segments use the triangular route
+TAYLOR_S_MAX = 50
+#: the triangular route (dense upper-triangular generator in the per-edge
+#: Schur basis, reset-diagonal Pade) up to this many states
+TRI_DENSE_MAX = 600
+#: beyond the triangular route's size, a segment needing more Taylor steps
+#: than this is refused with an error rather than computed inaccurately
+TAYLOR_S_HARD = 2000
 #: refinement steps of a resolvent solve done in a unitary Schur basis
 REFINE_STEPS = 2
 #: a subset with more stationary downsets than this is declined
@@ -185,7 +204,7 @@ def _FI():
 _COUNTER_KEYS = (
     'ss_subsets_built', 'ss_subsets_declined', 'ss_evals',
     'ss_stationary_builds', 'ss_resolvent_solves', 'ss_refinements',
-    'ss_segments_taylor', 'ss_taylor_matvecs',
+    'ss_segments_taylor', 'ss_taylor_matvecs', 'ss_segments_triangular',
     'ss_batch_points', 'ss_prefetch_hits',
     'ss_realizations_built', 'ss_realization_refused',
 )
@@ -220,11 +239,22 @@ _REAL_CACHE = OrderedDict()
 _REAL_CACHE_MAX = 8
 
 
+def _exact_key(v):
+    """A key that separates any two different numeric values (the exact
+    binary value; Sage ``RealNumber`` reprs print only ~15 digits)."""
+    try:
+        z = complex(v)
+        return (z.real.hex(), z.imag.hex())
+    except (TypeError, ValueError, OverflowError):
+        return ('repr', repr(v))
+
+
 def _np_key(num_params):
     if not num_params:
         return ()
     try:
-        return tuple(sorted((str(k), repr(v)) for k, v in num_params.items()))
+        return tuple(sorted((str(k), _exact_key(v))
+                            for k, v in num_params.items()))
     except Exception:
         return ('id', id(num_params))
 
@@ -243,21 +273,28 @@ def realization_for(propagator_data, num_params):
             _REAL_CACHE.move_to_end(key)
             return hit[1], hit[2]
     from api._realization import try_realize
-    try:
-        real, exc = try_realize(propagator_data, num_params or {})
-    except Exception as e:                      # never let S1 break a run
-        real, exc = None, e
-    if real is None:
-        reason = getattr(exc, 'reason', None) or 'realization_error'
-        ops, why = None, f'realization_{reason}'
-        _count('ss_realization_refused')
-    elif not (real.hurwitz is True or (real.hurwitz is None and
-                                       (real.lyapunov_margin or 0) > 0)):
-        ops, why = None, 'not_hurwitz'
+    if any(str(k_).startswith('Laplacian') for k_ in (num_params or {})):
+        # the spatial certification's per-momentum temporal calls
+        # (``pipeline_bridge.pipeline_C_q_tau``): the spatial engine's
+        # reference stays on the pole routes
+        ops, why = None, 'realization_spatial_per_q'
         _count('ss_realization_refused')
     else:
-        ops, why = _ModelOps(real), None
-        _count('ss_realizations_built')
+        try:
+            real, exc = try_realize(propagator_data, num_params or {})
+        except Exception as e:                  # never let S1 break a run
+            real, exc = None, e
+        if real is None:
+            reason = getattr(exc, 'reason', None) or 'realization_error'
+            ops, why = None, f'realization_{reason}'
+            _count('ss_realization_refused')
+        elif not (real.hurwitz is True or (real.hurwitz is None and
+                                           (real.lyapunov_margin or 0) > 0)):
+            ops, why = None, 'not_hurwitz'
+            _count('ss_realization_refused')
+        else:
+            ops, why = _ModelOps(real), None
+            _count('ss_realizations_built')
     with _REAL_LOCK:
         _REAL_CACHE[key] = (K, ops, why)
         _REAL_CACHE.move_to_end(key)
@@ -290,8 +327,11 @@ def _balance_siso(a, b, c):
     rounding of ``a`` is untouched (powers of two).  S1 balances ``a`` alone;
     rational kernels then leave ``b`` and ``c`` graded in opposite directions
     (|b| ~ 1e20, |c| ~ 1e-20 on a Pade-16 entry), which inflates the norms of
-    the firing maps and with them the number of Taylor steps.  A diagonal
-    similarity keeps a triangular ``a`` triangular."""
+    the firing maps and with them the number of Taylor steps.  Candidates:
+    the entry as given, ``a`` balanced alone, and the augmented balancing,
+    each followed by a power-of-two ``b``/``c`` equalisation; the one with the
+    smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept.  A diagonal similarity
+    keeps a triangular ``a`` triangular."""
     n = a.shape[0]
     aug = np.zeros((n + 1, n + 1), dtype=a.dtype)
     aug[:n, :n] = a
@@ -299,12 +339,37 @@ def _balance_siso(a, b, c):
     aug[n, :n] = c
     if not np.all(np.isfinite(aug)):
         return a, b, c
+    cands = [_equalize_bc(a, b, c)]
+    _ba, (sa, _pa) = sl.matrix_balance(a, permute=False, separate=True)
+    sa = np.asarray(sa, dtype=float)
+    if not np.all(sa == 1.0):                  # a alone (S1's choice)
+        cands.append(_equalize_bc(a * (sa[None, :] / sa[:, None]), b / sa,
+                                  c * sa))
     _bal, (s, _p) = sl.matrix_balance(aug, permute=False, separate=True)
     s = np.asarray(s, dtype=float)
-    if np.all(s == 1.0):
+    if not np.all(s == 1.0):
+        S, sn = s[:n], s[n]
+        cands.append(_equalize_bc(a * (S[None, :] / S[:, None]),
+                                  b * (sn / S), c * (S / sn)))
+
+    # the augmented balancing can inflate ||a|| on a graded entry (3.9e3 vs
+    # 4.9 measured): keep the candidate whose generator / firing norms are
+    # smaller (both enter ||G|| and the Taylor step count)
+    def cost(abc):
+        a_, b_, c_ = abc
+        return max(float(np.abs(a_).sum(axis=0).max()),
+                   float(np.abs(b_).sum()) * float(np.abs(c_).max()))
+    return min(cands, key=cost)
+
+
+def _equalize_bc(a, b, c):
+    """``b -> b σ``, ``c -> c / σ`` with ``σ`` the power of two closest to
+    ``sqrt(|c|_inf / |b|_1)`` (exact, ``c e^{at} b`` unchanged)."""
+    nb, nc = float(np.abs(b).sum()), float(np.abs(c).max())
+    if not (nb > 0 and nc > 0):
         return a, b, c
-    S, sn = s[:n], s[n]
-    return a * (S[None, :] / S[:, None]), b * (sn / S), c * (S / sn)
+    sig = 2.0 ** round(0.5 * math.log2(nc / nb))
+    return a, b * sig, c / sig
 
 
 class _EntryOps:
@@ -314,7 +379,8 @@ class _EntryOps:
     identity / the index reversal, exact), 'schur' (complex Schur, unitary).
     """
     __slots__ = ('n', 'a', 'b', 'c', 'kind', 'T', 'U', 'Uh', 'dT', 'Nup',
-                 'trace', 'norm1', 'cnorm', 'bnorm', 'lam', '_tay')
+                 'trace', 'norm1', 'cnorm', 'bnorm', 'lam', '_tay', 'bt',
+                 'ct')
 
     def __init__(self, ent, dtype):
         self.n = n = int(ent.n_states)
@@ -332,7 +398,7 @@ class _EntryOps:
         self._tay = None
         if n == 0:
             self.kind = 'zero'
-            self.T = self.dT = self.Nup = None
+            self.T = self.dT = self.Nup = self.bt = self.ct = None
             return
         if n == 1:
             self.kind = 'scalar'
@@ -340,6 +406,7 @@ class _EntryOps:
             self.T = self.a
             self.dT = self.a.diagonal().copy()
             self.Nup = None
+            self.bt, self.ct = self.b, self.c
             return
         a = self.a
         if not np.any(np.tril(a, -1)):
@@ -353,6 +420,10 @@ class _EntryOps:
         self.T = T
         self.dT = T.diagonal().copy()
         self.Nup = np.triu(T, 1)
+        # b, c in the triangular basis (opening / contracting there)
+        self.bt = self.to_basis(self.b, 0)
+        self.ct = (self.c @ self.U if self.kind == 'schur'
+                   else self.c[::-1] if self.kind == 'lower' else self.c)
 
     def to_basis(self, x, ax):
         if self.kind == 'lower':
@@ -381,8 +452,16 @@ class _EntryOps:
             A = self.a - mu * np.eye(self.n, dtype=self.a.dtype)
             self._tay = (A, mu, _onenorm_powers(A))
         A, mu, dn = self._tay
+        t = float(t)
+        m_, s_ = _taylor_params(dn, t)
+        if s_ > TAYLOR_S_MAX:
+            # stiff (|a| t large): the reset-diagonal triangular Pade in the
+            # triangular basis (exact e^{lambda t} on the diagonal)
+            from api._realization import expm_upper_triangular
+            v = self.ct @ (expm_upper_triangular(self.T, t) @ self.bt)
+            return v.real if not np.iscomplexobj(self.a) else v
         return (self.c @ _taylor_action(lambda y: A @ y, mu, dn, self.b,
-                                        float(t))).item()
+                                        t)).item()
 
 
 class _ModelOps:
@@ -496,7 +575,7 @@ def _dense_get(key):
 
 def _dense_put(key, val, nbytes):
     with _DENSE_LOCK:
-        if nbytes > DENSE_CACHE_BYTES:
+        if nbytes > DENSE_CACHE_BYTES or key in _DENSE_CACHE:
             return
         _DENSE_CACHE[key] = (val, nbytes)
         _DENSE_BYTES[0] += nbytes
@@ -546,12 +625,18 @@ def _taylor_params(dnorms, t):
     return best
 
 
-def _taylor_action(apply_A, mu, dnorms, x, t):
+def _taylor_action(apply_A, mu, dnorms, x, t, min_terms=0):
     """``exp(t (A + mu I)) x`` by the truncated Taylor series of ``t A`` in
-    ``s`` steps (``A`` already trace shifted)."""
+    ``s`` steps (``A`` already trace shifted).  ``min_terms``: never stop a
+    step's series before this many terms (the nilpotent firing part: a block
+    reached after k firings starts at order t^k, and the norm-wise stopping
+    test alone would cut a deep, tiny block to 0)."""
     m, s = _taylor_params(dnorms, t)
     if m == 0:
         return x * np.exp(t * mu) if mu != 0 else x.copy()
+    if s > 1:                      # only a short segment can hide a block
+        min_terms = 0
+    m = max(m, min_terms)
     _count('ss_segments_taylor')
     F = x
     b = x
@@ -564,7 +649,7 @@ def _taylor_action(apply_A, mu, dnorms, x, t):
             nmv += 1
             c2 = float(np.abs(b).max())
             F = F + b
-            if c1 + c2 <= _TOL * float(np.abs(F).max()):
+            if j >= min_terms and c1 + c2 <= _TOL * float(np.abs(F).max()):
                 break
             c1 = c2
         F = eta * F
@@ -608,7 +693,7 @@ class _Segment:
     """The block system of one finite segment: blocks = downsets reachable
     in it, each with its active edges; firings between them."""
 
-    def __init__(self, sub, blocks, acts, trans, key):
+    def __init__(self, sub, blocks, acts, trans, key, depth=0):
         self.sub = sub
         self.blocks = blocks
         self.index = {I: k for k, I in enumerate(blocks)}
@@ -626,6 +711,10 @@ class _Segment:
         self.key = key
         self._sd = [sub.model.solve_data(en) for en in self.ents]
         self._dnorms_free = None
+        self._adj = None
+        # ``depth``: firings to the deepest block plus the orders at which the
+        # impulses of the edges born and completed in the segment start
+        self.min_terms = min(_M_MAX, depth)
 
     # stacking
     def stack(self, xd, dtype):
@@ -684,9 +773,34 @@ class _Segment:
         _dense_put(key, val, 2 * G.nbytes)
         return val
 
+    def apply_adj(self, v):
+        """Matrix-free ``G^H v``."""
+        out = np.zeros_like(v)
+        for k in range(len(self.blocks)):
+            o, sz = self.offs[k], self.sizes[k]
+            x = v[o:o + sz].reshape(self.shapes[k])
+            y = np.zeros_like(x)
+            for ax, e in enumerate(self.ents[k]):
+                y = y + _mode(x, e.a.conj().T, ax)
+            out[o:o + sz] += np.ravel(y)
+        if self._adj is None:
+            self._adj = [(kI, kJ, f.variant('adj'))
+                         for (kI, kJ, f) in self.trans]
+        for (kI, kJ, fire) in self._adj:
+            oJ, szJ = self.offs[kJ], self.sizes[kJ]
+            x = v[oJ:oJ + szJ].reshape(self.shapes[kJ])
+            o, sz = self.offs[kI], self.sizes[kI]
+            out[o:o + sz] += np.ravel(fire(x))
+        return out
+
     def free_norms(self):
-        """1-norm bounds for the matrix-free operator (trace shifted)."""
+        """``mu`` and ``||(G - mu I)^p||_1^{1/p}`` for the matrix-free
+        operator: the exact 1-norm bound for p = 1, scipy ``onenormest`` on
+        the operator powers (with the adjoint) for p >= 2, as scipy's
+        ``expm_multiply`` does; a crude bound for every p would cost ~60x
+        more steps on a graded realization."""
         if self._dnorms_free is None:
+            from scipy.sparse.linalg import LinearOperator, onenormest
             mu = self.trace() / self.D if self.D else 0.0
             if self.sub.model.is_real:
                 mu = float(np.real(mu))
@@ -696,8 +810,98 @@ class _Segment:
             for (kI, kJ, fire) in self.trans:
                 col[kI] += fire.norm1
             nrm = max(col) if col else 0.0
-            self._dnorms_free = (mu, {p: nrm for p in range(1, _P_MAX + 2)})
+            dn = {1: nrm}
+            n = self.D
+            dt = complex if not self.sub.model.is_real else float
+            A = lambda y: self.apply(y) - mu * y
+            AH = lambda y: self.apply_adj(y) - np.conj(mu) * y
+            for p in range(2, _P_MAX + 2):
+                def mv(v, p=p):
+                    v = np.asarray(v).reshape(n, -1)
+                    out = np.empty_like(v, dtype=np.result_type(v, dt))
+                    for j in range(v.shape[1]):
+                        y = v[:, j]
+                        for _ in range(p):
+                            y = A(y)
+                        out[:, j] = y
+                    return out
+
+                def rmv(v, p=p):
+                    v = np.asarray(v).reshape(n, -1)
+                    out = np.empty_like(v, dtype=np.result_type(v, dt))
+                    for j in range(v.shape[1]):
+                        y = v[:, j]
+                        for _ in range(p):
+                            y = AH(y)
+                        out[:, j] = y
+                    return out
+                op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
+                                    matmat=mv, rmatmat=rmv, dtype=dt)
+                try:
+                    dn[p] = min(nrm, float(onenormest(op)) ** (1.0 / p))
+                except Exception:
+                    dn[p] = nrm
+            self._dnorms_free = (mu, dn)
         return self._dnorms_free
+
+    def tri(self):
+        """The generator in the per-edge triangular basis with the blocks in
+        reverse order (larger downsets first): upper triangular (diagonal
+        blocks Kronecker sums of the triangular ``T_e``, firings above the
+        diagonal).  Cached (LRU)."""
+        key = ('T', self.key)
+        hit = _dense_get(key)
+        if hit is not None:
+            return hit[0]
+        cplx = (not self.sub.model.is_real) or any(
+            e.kind == 'schur' for en in self.ents for e in en)
+        dt = complex if cplx else float
+        nb = len(self.blocks)
+        roffs, o = [0] * nb, 0
+        for k in reversed(range(nb)):
+            roffs[k] = o
+            o += self.sizes[k]
+        G = np.zeros((self.D, self.D), dtype=dt)
+        for k in range(nb):
+            r, sz = roffs[k], self.sizes[k]
+            G[r:r + sz, r:r + sz] = _kron_sum_dense(self.ents[k], dt,
+                                                    attr='T')
+        for (kI, kJ, fire) in self.trans:
+            rI, szI = roffs[kI], self.sizes[kI]
+            rJ, szJ = roffs[kJ], self.sizes[kJ]
+            basis = np.eye(szI, dtype=dt).reshape(self.shapes[kI] + (szI,))
+            G[rJ:rJ + szJ, rI:rI + szI] = fire.variant('tri')(
+                basis, batch=True).reshape(szJ, szI)
+        val = (G, roffs)
+        _dense_put(key, val, G.nbytes)
+        return val
+
+    def _action_tri(self, v, L, dtype):
+        """``exp(G L) v`` through the upper-triangular form (``tri``) and
+        the reset-diagonal triangular Pade (``api._realization.
+        expm_upper_triangular``): exact ``e^{lambda L}`` on the diagonal, so
+        a stiff decay costs no accuracy."""
+        from api._realization import expm_upper_triangular
+        G, roffs = self.tri()
+        _count('ss_segments_triangular')
+        xt = np.zeros(self.D, dtype=G.dtype)
+        for k in range(len(self.blocks)):
+            x = v[self.offs[k]:self.offs[k] + self.sizes[k]].reshape(
+                self.shapes[k])
+            for ax, e in enumerate(self.ents[k]):
+                x = e.to_basis(x, ax)
+            xt[roffs[k]:roffs[k] + self.sizes[k]] = np.ravel(x)
+        yt = expm_upper_triangular(G, L) @ xt
+        out = np.zeros(self.D, dtype=np.result_type(v, G.dtype))
+        for k in range(len(self.blocks)):
+            y = yt[roffs[k]:roffs[k] + self.sizes[k]].reshape(self.shapes[k])
+            for ax, e in enumerate(self.ents[k]):
+                y = e.from_basis(y, ax)
+            out[self.offs[k]:self.offs[k] + self.sizes[k]] = np.ravel(y)
+        if np.iscomplexobj(out) and not np.iscomplexobj(v) and (
+                self.sub.model.is_real):
+            out = out.real
+        return out
 
     def propagate(self, xd, L, dtype):
         """``exp(G L)`` applied to the state dict ``xd`` (missing blocks: 0)."""
@@ -709,26 +913,37 @@ class _Segment:
 
     def action(self, v, L, dtype):
         """``exp(G L) v``: the trace-shifted truncated-Taylor action (dense
-        ``G`` up to ``OP_DENSE_MAX``, matrix-free beyond).  No squaring:
-        scipy's ``expm`` loses up to ~1e-13 relative on decaying blocks."""
+        ``G`` up to ``OP_DENSE_MAX``, matrix-free beyond; no squaring: scipy's
+        ``expm`` loses up to ~1e-13 relative on decaying blocks).  A stiff
+        segment (more than ``TAYLOR_S_MAX`` scaling steps) takes the
+        triangular route up to ``TRI_DENSE_MAX`` states; beyond it, more
+        than ``TAYLOR_S_HARD`` steps raise."""
         if self.D <= OP_DENSE_MAX:
             G, A, mu, dn = self.dense(dtype)
-            return _taylor_action(lambda y: A @ y, mu, dn, v, L)
-        mu, dn = self.free_norms()
-        if mu != 0:
-            return _taylor_action(lambda y: self.apply(y) - mu * y, mu, dn,
-                                  v, L)
-        return _taylor_action(self.apply, 0.0, dn, v, L)
+            apply_A = (lambda y: A @ y)
+        else:
+            mu, dn = self.free_norms()
+            apply_A = ((lambda y: self.apply(y) - mu * y) if mu != 0
+                       else self.apply)
+        _m, s_ = _taylor_params(dn, L)
+        if s_ > TAYLOR_S_MAX and self.D <= TRI_DENSE_MAX:
+            return self._action_tri(v, L, dtype)
+        if s_ > TAYLOR_S_HARD:
+            raise RuntimeError(
+                f'state-space route: a stiff segment ({self.D:,} states, '
+                f'{s_:,} Taylor steps for length {L:g}) is beyond its accurate '
+                f'range; unset {ENGINE_ENV} to use the pole routes')
+        return _taylor_action(apply_A, mu, dn, v, L, self.min_terms)
 
 
-def _kron_sum_dense(ents, dtype):
+def _kron_sum_dense(ents, dtype, attr='a'):
     shape = tuple(e.n for e in ents)
     D = int(np.prod(shape, dtype=np.int64))
     M = np.zeros((D, D), dtype=dtype)
     for ax, e in enumerate(ents):
         left = int(np.prod(shape[:ax], dtype=np.int64))
         right = int(np.prod(shape[ax + 1:], dtype=np.int64))
-        M = M + np.kron(np.kron(np.eye(left, dtype=dtype), e.a),
+        M = M + np.kron(np.kron(np.eye(left, dtype=dtype), getattr(e, attr)),
                         np.eye(right, dtype=dtype))
     return M
 
@@ -737,15 +952,25 @@ class _Fire:
     """Contract the edges ``ends`` (by ``c_e``) and open the edges
     ``starts`` (by ``b_e``) of a tensor whose axes are ``act_in``; the result
     has axes ``act_out`` (all lists of edge ids, increasing)."""
-    __slots__ = ('args', 'out', 'act_in', 'norm1')
+    __slots__ = ('args', 'out', 'act_in', 'norm1', 'sub', 'ends', 'starts')
 
-    def __init__(self, sub, act_in, ends, starts, act_out):
+    def __init__(self, sub, act_in, ends, starts, act_out, basis='orig'):
+        """``basis``: 'orig' (``c_e``, ``b_e``), 'tri' (the triangular-basis
+        ``ct``, ``bt``) or 'adj' (the adjoint map: ``act_in``/``act_out`` are
+        then the adjoint's, the edges ``ends`` are contracted by conj(b) and
+        ``starts`` opened by conj(c))."""
         args = []
+        ops = sub.edge_ops
         for e in ends:
-            args += [sub.edge_ops[e].c, [e]]
+            v = (ops[e].c if basis == 'orig' else ops[e].ct if basis == 'tri'
+                 else ops[e].b.conj())
+            args += [v, [e]]
         for e in starts:
-            args += [sub.edge_ops[e].b, [e]]
+            v = (ops[e].b if basis == 'orig' else ops[e].bt if basis == 'tri'
+                 else ops[e].c.conj())
+            args += [v, [e]]
         self.args = args
+        self.sub, self.ends, self.starts = sub, list(ends), list(starts)
         self.act_in = list(act_in)
         self.out = list(act_out)
         n1 = 1.0
@@ -754,6 +979,15 @@ class _Fire:
         for e in starts:
             n1 *= sub.edge_ops[e].bnorm
         self.norm1 = n1
+
+    def variant(self, basis):
+        """The same firing with the triangular-basis vectors ('tri') or its
+        adjoint ('adj', from ``out`` back to ``act_in``)."""
+        if basis == 'adj':
+            return _Fire(self.sub, self.out, self.starts, self.ends,
+                         self.act_in, basis='adj')
+        return _Fire(self.sub, self.act_in, self.ends, self.starts, self.out,
+                     basis=basis)
 
     def __call__(self, x, batch=False):
         if batch:
@@ -1073,7 +1307,11 @@ class SubsetSS:
                 f = _Fire(self, acts[kI], sorted(self.in_edges[v]),
                           sorted(self.out_edges[v]), acts[kJ])
                 trans.append((kI, kJ, f))
-        return _Segment(self, blocks, acts, trans, key)
+        depth = len(pl) + sum(
+            self.edge_ops[k_].n - 1
+            for k_, (t, h, _e, _i) in enumerate(self.edges)
+            if (t[0] == 'v' and t[1] in pl) or (h[0] == 'v' and h[1] in pl))
+        return _Segment(self, blocks, acts, trans, key, depth)
 
     # ── evaluation ────────────────────────────────────────────────────
     def _slot_values(self, free_vals):
@@ -1124,13 +1362,22 @@ class SubsetSS:
         if self.m == 0:
             return scal
         vals = self._slot_values(free_vals)
-        if any(v != v for v in vals):
-            raise ValueError('state-space route: NaN external time')
+        if not all(math.isfinite(v) for v in vals):
+            raise ValueError('state-space route: external times must be '
+                             f'finite, got {list(free_vals)}')
         pattern, gv = self._pattern(vals)
         finite = t_min != float('-inf')
-        prog = self._program(pattern, finite)
+        prog = self._checked_program(pattern, finite)
         x = self._run(prog, gv, finite, t_min)
         return scal * x
+
+    def _checked_program(self, pattern, finite):
+        try:
+            return self._program(pattern, finite)
+        except SSIneligible as exc:
+            raise RuntimeError(
+                f'state-space route: a segment of this subset is too large '
+                f'({exc}); unset {ENGINE_ENV} to use the pole routes') from exc
 
     def _run(self, prog, gv, finite, t_min, upto=None):
         """Run a program; ``gv``: the event times.  With ``upto``: return
@@ -1177,16 +1424,19 @@ class SubsetSS:
                     r[4].kind == 'zero' for r in self.const_rows):
                 out[i] = 0.0
                 continue
+            vals = self._slot_values(fv)
+            if not all(math.isfinite(v) for v in vals):
+                raise ValueError('state-space route: external times must be '
+                                 f'finite, got {list(fv)}')
             scal = self.scalar_factor(fv, tc)
             if scal == 0 or self.m == 0:
                 out[i] = scal if self.m == 0 else 0.0
                 continue
-            vals = self._slot_values(fv)
             pattern, gv = self._pattern(vals)
             groups.setdefault(pattern, []).append((i, gv, scal))
         dt = self.model.dtype
         for pattern, items in groups.items():
-            prog = self._program(pattern, finite)
+            prog = self._checked_program(pattern, finite)
             _count('ss_batch_points', len(items))
             segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
             if (finite or not segs or prog[-1][0] != 'event'
@@ -1209,7 +1459,10 @@ class SubsetSS:
                 its = sorted(its, key=lambda it: it[3])
                 v = seg.stack(x0, dt)
                 cur = 0.0
+                v0 = v
                 for (i, gv, scal, L_last) in its:
+                    if L_last < cur:            # never expected (sorted)
+                        v, cur = v0, 0.0
                     if L_last > cur:
                         v = seg.action(v, L_last - cur, dt)
                         cur = L_last
@@ -1352,12 +1605,16 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
             _count('ss_evals')
             hook = FI._SUBSET_HOOK
             if hook is not None:
+                # the documented payload (``plan`` / ``pole_tuples``: none;
+                # ``integrand``: the closure the pole routes would hand to
+                # quadrature, for references) plus ``ss_subset``
                 FI._emit_subset_hook(
-                    hook, hook_meta, _hook_ctx, free_vals, m_val, cdata_,
+                    lambda p: hook(dict(p, ss_subset=sub)), hook_meta,
+                    _hook_ctx, free_vals, m_val, cdata_,
                     path='ss', evaluator='statespace.SubsetSS', branch='ss',
                     value=val, bail_reason=None, attempted='ss',
-                    modes=edge_modes, prefactor=pref, plan=sub,
-                    pole_tuples=None, integrand=None,
+                    modes=edge_modes, prefactor=pref, plan=None,
+                    pole_tuples=None, integrand=fc,
                     row_kinds=row_kinds, tie_ctx=_tie_ctx)
             return val
         _contrib.ss_subset = sub
@@ -1397,7 +1654,10 @@ def _check_transient(sub, acts):
     (the Taylor action's vectors, and the dense generator when it is formed)
     alone would exceed ``PHASE_J_MEM_BUDGET_GB``, before it is built."""
     FI = _FI()
-    budget = FI.phase_j_mem_budget_bytes()
+    with FI._PLAN_MEM_LOCK:
+        scoped = FI._PLAN_MEM['active'] > 0
+        budget = (FI._PLAN_MEM['budget'] if scoped
+                  else FI.phase_j_mem_budget_bytes())
     if budget is None:
         return
     item = 8 if sub.model.is_real else 16
