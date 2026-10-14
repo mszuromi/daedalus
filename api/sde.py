@@ -360,9 +360,11 @@ class SDE:
         # with it (the result can be an unevaluated ``cases``), so integrate its t > 0 part over (0, oo) instead.
         from sage.all import heaviside
         lower = -oo
+        causal = e - delta_part * dd            # unsimplified: simplify_full mangles sums of exponentials
         if rest.has(heaviside(t)):
             rest = rest.subs({heaviside(t): SR(1)})
             lower = SR(0)
+        val = None
         try:
             for v in rest.variables():
                 if str(v) == 't' or str(v > 0) in held:
@@ -372,14 +374,34 @@ class SDE:
                 except ValueError:                 # redundant
                     continue
                 assumed.append(v > 0)
-            val = integrate(rest, t, lower, oo) if not rest.is_zero() else SR(0)
+            try:
+                val = integrate(rest, t, lower, oo) if not rest.is_zero() else SR(0)
+            except (ValueError, TypeError):
+                # Maxima cannot order the rates of e.g. a difference of exponentials
+                # ('requested additional constraints'): the structural closed form below
+                val = None
         finally:
             for a in assumed:
                 forget(a)
-        if 'integrate' in str(val):
-            raise SDEError(f'kernel {name}: cannot integrate time_expr symbolically '
-                           f'for the mean-field equations; give freq_image=.')
+        if val is None or 'integrate' in str(val):
+            val = self._kernel_dc_causal(name, causal, t)
         return (val + delta_part).simplify_full()
+
+    def _kernel_dc_causal(self, name, causal, t):
+        """The integral of a causal sum of ``t^n exp(-a t)`` terms by the closed form
+        ``n!/a^(n+1)`` (``model_compiler.causal_exponential_ft`` at omega = 0), the
+        decay rates being positive by declaration (``domain='positive'``); no
+        assumption is made on any symbol."""
+        from api.model_compiler import causal_exponential_ft
+        declared = {p[0][0] for p in self._params if p[1].get('domain') == 'positive'}
+        positive = {str(v) for v in causal.variables()
+                    if str(v).split('__')[0] in declared}
+        try:
+            return SR(causal_exponential_ft(causal, t, SR(0), positive=positive))
+        except ValueError as exc:
+            raise SDEError(f'kernel {name}: cannot integrate time_expr symbolically '
+                           f'for the mean-field equations ({exc}); declare '
+                           f"domain='positive' on its time constants, or give freq_image=.") from exc
 
     def _collapse_kernels(self, text: str) -> str:
         """Replace kernel symbols by their integral (stationary mean field)."""
