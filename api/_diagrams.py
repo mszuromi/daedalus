@@ -209,6 +209,13 @@ def enumerate_unique_diagrams(
         if use_cache and cache.exists(stage_name, k=k, loop_order=ell):
             try:
                 cached = cache.load(stage_name, k=k, loop_order=ell)
+                sig = cached.get('spec_signature')
+                if (sig is not None and model.get('spec_signature') is not None
+                        and sig != model.get('spec_signature')):
+                    # another model text under the same name (e.g. a
+                    # different kernel image): rebuild
+                    raise ValueError('typed-diagram cache: spec_signature '
+                                     'mismatch')
                 unique = cached['unique']
                 multiplicities = cached['multiplicities']
                 if verbose:
@@ -256,7 +263,8 @@ def enumerate_unique_diagrams(
             try:
                 cache.save(stage_name,
                            {'unique': unique,
-                            'multiplicities': multiplicities},
+                            'multiplicities': multiplicities,
+                            'spec_signature': model.get('spec_signature')},
                            k=k, loop_order=ell)
                 if verbose:
                     print(f'             cached to '

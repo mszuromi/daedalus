@@ -51,6 +51,18 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   from the poles of the rational image (`λ = iω_α`, `C = i Res ĝ(ω_α)`, retarded poles); an image with a δ part, a
   repeated or an acausal pole is refused by name. Spike-only Hawkes with `freq_image`, `time_expr`, or either through
   `define_function`: one loop equal to the voltage form to 1.3e-14.
+- **Repeated kernel rates are refused, not mis-summed.** A kernel with a repeated or near-repeated rate (the alpha
+  kernel `t e^{-t/τ}/τ²`, `ĝ = 1/((1+iωτ)(1+iωτ₂))` with τ₂ near τ) has `t e^{μt}` terms no mode sum holds; a
+  numerically split double root gave a one loop 7x too large with status 'ok'. Rates closer than 10 % (relative) or a
+  kernel that is not a finite exponential sum are refused by name (write the filter as auxiliary linear fields);
+  between separated rates the result equals the Markov embedding to 1.6e-13 at an 11 % gap.
+
+#### Fixed: the propagator and typed-diagram caches served another model with the same name (`api/_propagator.py`, `api/_diagrams.py`; pre-existing)
+
+- Both caches are keyed by the model name; a model that differs only in a kernel's image (or any other text) got the
+  other model's propagator: e.g. an alpha-kernel model returned an exponential-kernel model's numbers exactly. Both
+  now store the model's `spec_signature` (action, equations, functions, kernel images) and rebuild on a mismatch. A
+  cache file written before this change has no signature and is still accepted (clear `saved_models/` to be sure).
 - Checked: the same models with the kernel written as an auxiliary linear field (`τ_g z' = y − z`, a local `x·z`
   vertex, none of this code) agree at tree level exactly and at one loop to 1e-12 (k = 2, auto- and
   cross-cumulants; also the mixed `x·(g ∗ x)` vertex); the one-loop δ weight equals the k = 1 one-loop mean to

@@ -201,3 +201,79 @@ def test_high_precision_dbm_answers_a_cancelling_closed_form():
     # the double path is untouched by the high-precision call
     again = DBM.integrate_exp_sum(rows, 1, seeds, float('inf'))
     assert again.status == lo.status and again.value == lo.value
+
+
+def _chain_kernel_model(tau2, embedded, name='Two-stage kernel'):
+    """x' = h - a x - b x (g * x) + noise with ĝ = 1/((1+iωτ)(1+iωτ2)) (a
+    two-stage filter; τ2 = τ is the alpha kernel t e^{-t/τ}/τ²).
+    ``embedded``: the same model with the filter as a chain of fields
+    (τ u' = x - u, τ2 s' = u - s) and the local vertex b x s."""
+    b = TemporalModelBuilder(name)
+    b.population('P', size=1)
+    b.physical_field('x', population='P')
+    if embedded:
+        b.physical_field('u', population='P')
+        b.physical_field('s', population='P')
+    for p, d in (('a', 1.0), ('bb', 0.3), ('h', 0.5), ('D', 0.15),
+                 ('tau', 0.7), ('tau2', tau2)):
+        b.parameter(p, default=d, domain='positive')
+    xstar = '(sqrt(a^2 + 4*bb*h) - a)/(2*bb)'
+    b.set_mf_equation('xstar', xstar)
+    if embedded:
+        b.set_mf_equation('ustar', xstar)
+        b.set_mf_equation('sstar', xstar)
+        b.set_action_text('sum(xt[i]*((Dt+a)*x[i] - h + bb*x[i]*s[i]) '
+                          '+ ut[i]*((tau*Dt+1)*u[i] - x[i]) '
+                          '+ st[i]*((tau2*Dt+1)*s[i] - u[i]) '
+                          '- D*xt[i]^2 for i in P)')
+    else:
+        b.define_kernel('g', freq_image='1/((1 + I*omega*tau)'
+                                        '*(1 + I*omega*tau2))')
+        b.set_action_text('sum(xt[i]*((Dt+a)*x[i] - h '
+                          '+ bb*x[i]*Conv(g,x[i])) - D*xt[i]^2 for i in P)')
+    return b.build()
+
+
+@pytest.mark.parametrize('tau2, ok', [(0.4, True), (0.62, True),
+                                      (0.69, False), (0.7, False)])
+def test_kernel_rates_separated_or_refused(tau2, ok):
+    """Distinct kernel rates: equal to the embedding to 1e-12.  A repeated
+    rate (τ2 = τ: the alpha kernel, a t e^{-t/τ} term no mode sum holds)
+    or a near-repeated one (the ±1/gap coefficients cancel, ~1e-15/gap²)
+    is refused by name -- before, a numerically split double root gave a
+    one loop 7x too large with status 'ok'."""
+    ext = [('x', 1), ('x', 1)]
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter('always')
+        res = _run(_chain_kernel_model(tau2, False), ext)
+    ref = _run(_chain_kernel_model(tau2, True), ext)
+    np.testing.assert_allclose(res['C_tau_by_ell'][0], ref['C_tau_by_ell'][0],
+                               rtol=1e-12, atol=0)
+    if ok:
+        assert res['status'] == 'ok'
+        np.testing.assert_allclose(res['C_tau_by_ell'][1],
+                                   ref['C_tau_by_ell'][1], rtol=1e-12, atol=0)
+    else:
+        assert res['status'] == 'incomplete'
+        assert all('separated rates' in r['reason']
+                   for recs in res['phase_j_incomplete'].values()
+                   for r in recs)
+
+
+def test_same_model_name_other_kernel_is_not_served_from_cache(tmp_path,
+                                                              monkeypatch):
+    """The propagator and typed-diagram caches are keyed by the model NAME;
+    a model that differs only in its kernel image must not get the other
+    model's propagator (it did before: identical numbers)."""
+    monkeypatch.chdir(tmp_path)
+    ext = [('x', 1), ('x', 1)]
+    a = _run(_chain_kernel_model(0.4, False, name='Same name'), ext,
+             use_cache=True)
+    b = _run(_chain_kernel_model(0.62, False, name='Same name'), ext,
+             use_cache=True)
+    fresh = _run(_chain_kernel_model(0.62, False, name='Same name'), ext)
+    assert not np.allclose(a['C_tau_by_ell'][0], b['C_tau_by_ell'][0])
+    for ell in (0, 1):
+        np.testing.assert_allclose(b['C_tau_by_ell'][ell],
+                                   fresh['C_tau_by_ell'][ell],
+                                   rtol=1e-13, atol=0)

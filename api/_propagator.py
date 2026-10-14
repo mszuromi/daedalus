@@ -741,7 +741,19 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             # — otherwise the heat-kernel propagator is silently absent.
             stale_spatial = (bool(model.get('spatial'))
                              and prop.get('G_tx_sym') is None)
-            if cached_nf is not None and cached_nf != ft._n_tilde:
+            # Model-text fingerprint (action, equations, KERNEL images ...):
+            # the cache directory is keyed by the model name only, so two
+            # models that differ only in a kernel's image would share it.  A
+            # file written before the fingerprint was stored is accepted.
+            cached_sig = prop.get('spec_signature')
+            stale_spec = (cached_sig is not None
+                          and model.get('spec_signature') is not None
+                          and cached_sig != model.get('spec_signature'))
+            if stale_spec:
+                if verbose:
+                    print('[propagator] Cached propagator belongs to another '
+                          'model text (spec_signature); rebuilding.')
+            elif cached_nf is not None and cached_nf != ft._n_tilde:
                 if verbose:
                     print(f'[propagator] Cached nf={cached_nf} but model '
                           f'has n_tilde={ft._n_tilde}; rebuilding.')
@@ -1003,6 +1015,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             # ``prop`` is picklable here — the spatial block stores only
             # SR exprs + plain data; the G_tx callables are attached
             # AFTER the save (closures don't pickle).
+            prop['spec_signature'] = model.get('spec_signature')
             cache.save('propagator', prop)
             if verbose:
                 print(f'[propagator] Cached to: '

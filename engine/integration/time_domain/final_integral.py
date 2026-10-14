@@ -497,7 +497,7 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
         C0, lam0 = acc.get(key, (0j, lam))
         acc[key] = (C0 + C, lam0)
     modes = [(C, lam) for (C, lam) in acc.values() if C != 0]
-    if not modes:
+    if not modes or _kernel_rates_clustered(modes):
         return None
     try:
         for t in (0.37, 1.9, 4.3):
@@ -509,6 +509,28 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     except Exception:
         return None
     return modes
+
+
+#: Kernel rates closer than this (relative) count as one repeated rate:
+#: ``t e^{μt}`` terms, which a mode sum cannot hold (a numerically split
+#: double root gives residues ~1/gap of rounding size); such a kernel is
+#: refused by name.  Between separated rates the ±1/gap coefficients cancel
+#: in double precision with an error ~1e-15/gap² (measured against the
+#: Markov embedding: 1.6e-13 at an 11 % gap, 1.6e-12 at 6 %, 4e-12 at 1.4 %,
+#: 4e-10 at 0.14 %), so 10 % keeps
+#: an accepted kernel at the 1e-12 level.
+KERNEL_RATE_CLUSTER_RTOL = 1e-1
+
+
+def _kernel_rates_clustered(modes):
+    """True when two kernel rates are within ``KERNEL_RATE_CLUSTER_RTOL``."""
+    lams = [complex(lam) for (_c, lam) in modes]
+    for i in range(len(lams)):
+        for j in range(i):
+            if abs(lams[i] - lams[j]) <= KERNEL_RATE_CLUSTER_RTOL * max(
+                    abs(lams[i]), abs(lams[j]), 1e-300):
+                return True
+    return False
 
 
 def _modes_from_freq_image(ft_fn, num_params=None):
@@ -547,7 +569,9 @@ def _modes_from_freq_image(ft_fn, num_params=None):
             return None                     # not a causal (retarded) kernel
         res = complex(num(om)) / complex(dden(om))
         modes.append((1j * res, 1j * om))
-    return modes or None
+    if not modes or _kernel_rates_clustered(modes):
+        return None                         # repeated / near-repeated pole
+    return modes
 
 
 def _kernel_modes(att, num_params=None):
@@ -7518,8 +7542,20 @@ def integrate_diagram(
                 att_pairs.append((None, att))
                 continue
             kmodes = _kernel_modes(att, num_params)
-            if (_can_dress and kmodes is not None
-                    and ek not in (_conv_force_leg or ())):
+            if kmodes is None:
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': (f'conductance vertex {v}: the kernel '
+                               f'{att["symbol"]} is not a finite sum of '
+                               f'exponentials with separated rates (a '
+                               f'repeated or near-repeated rate, a '
+                               f'polynomial factor such as t e^{{-t/tau}}, '
+                               f'or no usable image); write it as an '
+                               f'auxiliary linear field (Markov embedding)'),
+                }
+            if (_can_dress and ek not in (_conv_force_leg or ())):
                 conv_dress[ek] = kmodes
                 att_pairs.append(('dress', att))
                 continue
