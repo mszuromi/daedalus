@@ -45,6 +45,15 @@ converts Gaussian noise to Ito with the drift correction
 ``b_ia = c_ia / a_i`` with ``a_i`` the ``Dt`` coefficient of ``lhs_i``
 and ``V_a`` the variance rate; it raises for jump and exposed sources).
 Time-independent sources only.
+
+Mean-field equation: ``lhs|_{Dt=0} = rhs`` must define ``x*``, so a lhs such
+as ``Dt*x`` is completed.  The linear term of ``rhs`` (field-independent
+coefficient) moves onto the lhs; where there is none (``-x/(1 + eps*x^2)``,
+``-x*exp(-eps*x^2)``, a linear coefficient that holds a field) ``c*x`` with
+``c = 1`` is added to both sides.  The residual, the saddle and the linear
+stability do not depend on ``c`` and the action is untouched; ``SDE.notes``
+records the step.  Writing ``lhs='(Dt + c)*x'``, ``rhs='drift + c*x'`` by hand
+gives the same model.
 """
 from __future__ import annotations
 
@@ -543,10 +552,25 @@ class SDE:
         return {'action': action, 'equations': mf_eqs}
 
     def _normalise_lhs(self, f, lhs, rhs):
-        """If ``lhs`` vanishes at Dt = 0 (``Dt*x``), move the linear restoring
-        term of ``rhs`` (field-independent coefficient) onto the lhs so the
-        mean-field equation defines ``x*``; the residual is unchanged."""
-        L = parse_expr(lhs, what=f'lhs of {f}')
+        """If ``lhs`` vanishes at Dt = 0 (``Dt*x``), make the mean-field
+        equation define ``x*``; the residual ``lhs - rhs`` is unchanged.
+
+        Preferred: move the linear restoring term of ``rhs`` (field-independent
+        coefficient) onto the lhs.  Fallback, where ``rhs`` has no such term
+        (a rational or exponential drift, or a linear coefficient that contains
+        a field): add ``c*x`` to both sides, ``lhs -> lhs + c*x`` and
+        ``rhs -> rhs + c*x``, with ``c = 1``.  The mean-field solve is a root
+        solve on ``lhs|_{Dt=0} - rhs`` in which ``c*x`` cancels, and linear
+        stability reads ``d(lhs - rhs)/dx`` (also ``c``-free), so ``c`` only
+        names the saddle text ``x* = (rhs + c*x*)/c``; 1 keeps it unscaled."""
+        workaround = (f"write the restoring term on the lhs, e.g. lhs='(Dt + 1)*{f}' "
+                      f"with rhs = <drift> + {f}")
+        try:
+            L = parse_expr(lhs, what=f'lhs of {f}')
+        except NoiseError as exc:
+            raise SDEError(
+                f'equation({f!r}): lhs={lhs!r} cannot be read symbolically ({exc}); '
+                f'if it vanishes at Dt=0, {workaround}.') from exc
         if not L.subs({_DT: 0}).simplify_full().is_zero():
             return lhs, rhs
         try:
@@ -554,23 +578,31 @@ class SDE:
         except NoiseError as exc:
             raise SDEError(
                 f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs cannot be '
-                f'split symbolically ({exc}); write the restoring term on the lhs, '
-                f"e.g. lhs='(Dt + mu)*{f}'.") from exc
+                f'split symbolically ({exc}); {workaround}.') from exc
         x = self._sym(f)
         Re = R.expand()
         c1 = Re.coefficient(x, 1)
         fieldsyms = {g + '__i' for g in self._fields}
-        if c1.is_zero() or set(map(str, c1.variables())) & fieldsyms:
+        if not (c1.is_zero() or set(map(str, c1.variables())) & fieldsyms):
+            new_lhs = expr_to_text((L - c1 * x).expand())
+            new_rhs = expr_to_text((Re - c1 * x).expand())
+            self.notes.append(f'mean-field equation of {f!r}: linear term '
+                              f'{expr_to_text(c1 * x)} moved to the lhs.')
+            return new_lhs, (new_rhs if new_rhs.strip() else '0')
+        if str(x) not in set(map(str, R.variables())):
             raise SDEError(
-                f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs has no linear '
-                f'term in {f} with a field-independent coefficient, so the mean-field '
-                f'equation cannot define {f}*; write the equation with a restoring '
-                f'term on the lhs.')
-        new_lhs = expr_to_text((L - c1 * x).expand())
-        new_rhs = expr_to_text((Re - c1 * x).expand())
-        self.notes.append(f'mean-field equation of {f!r}: linear term '
-                          f'{expr_to_text(c1 * x)} moved to the lhs.')
-        return new_lhs, (new_rhs if new_rhs.strip() else '0')
+                f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
+                f'depend on {f}, so the mean-field equation cannot define {f}*; '
+                f'{workaround}.')
+        # No syntactic field-independent linear term: add and subtract c*x.
+        cx = expr_to_text(x)
+        new_lhs = expr_to_text((L + x).expand())
+        new_rhs = f'{_wrap(rhs)} + {cx}'
+        self.notes.append(
+            f'mean-field equation of {f!r}: rhs has no field-independent linear '
+            f'term in {f}; added {cx} to both sides (lhs {new_lhs!r}, c = 1; the '
+            f'residual and the linear stability are unchanged).')
+        return new_lhs, new_rhs
 
     # ── outputs ───────────────────────────────────────────────────────
     def action_text(self) -> str:
