@@ -11,6 +11,44 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: high-degree rational kernels and propagators gave C = 0 or a wrong C without a warning (`api/_propagator.py`, `api/analyze.py`)
+
+The exact propagator tier decided that a pole `p_k` of `Q(ω)` (the common denominator) is not a pole of entry
+`(i, j)` by an absolute test, `|Q_ij(p_k)| > 1e-9`, on the entry's monic denominator. At high degree its rounding
+alone exceeds that, so every pole was skipped and the residues were zero. A scalar OU with an Erlang-n kernel,
+`dx = (−x − 2 (g∗x)) dt + sqrt(0.2) dW`, `g(s) = (1 + s/n)^−n`, had tree `C(0)` = 0.1354441967 exact and
+0.0000000000 computed at n = 8. n = 16 and 32, all-pass kernels `B_n(−s)/B_n(s)` of degree 8 to 24 (`B_n` the reverse
+Bessel polynomial) and two-population Hawkes models with Erlang-8/16 kernels also gave 0; the degree-4 all-pass
+kernel was 4 % off. Low degrees (n ≤ 4 here) were right.
+
+- **Membership is exact.** The entries' denominators split `Q` into pairwise coprime factors (gcd over `QQ[i]`), so
+  which poles belong to which entry is exact. When every entry has `Q` itself as denominator, nothing is decided
+  numerically. Otherwise each computed root is matched to its factor by Newton distance, and every factor must
+  receive exactly its degree in roots. A match that is not clear-cut takes the exact route below.
+- **The double-precision residues are certified.** Poles are Newton-refined on the exact `Q` and residues
+  recomputed at 30 digits. If they differ by more than 1e-11 relative, the propagator takes the exact 50-digit route
+  of `api._pole_clusters` (roots of each exact factor). Monomial-basis roots of a degree-17 or higher denominator
+  lose 9 or more digits in double precision (Erlang-16: C 2.6e-11 off; Erlang-32: 10 % off).
+- **Never silent.** `prop['pole_analysis']` records `membership` (`'shared'` or `'labelled'`) and `residue_route`
+  (`'double'`, `'exact'` or `'failed'`; absent when the pole-cluster path computed the residues). The analyzer reports
+  `G3_RESIDUES_HIGH_PRECISION` (info) or `G3_RESIDUES_NUMERICAL_TIER` (warning: the exact route failed and the
+  numerical tier was used), and has the trait `residue_route`. That last case also issues an
+  `api._propagator.PoleResidueWarning`.
+- **The numerical tier** (used when the exact tier fails) had sibling defects, fixed the same way. Leading
+  coefficients of `num(det K)` below 1e-12 of the largest were trimmed as noise, but at high degree they are
+  genuine: Erlang-16 kept 4 of 17 poles and was 25 % off. Roots of the untrimmed polynomial where `det K` vanishes
+  are now restored. Refined poles were rejected by an absolute `|det| > 1e-6`; they are now also accepted when
+  `det K` vanishes relative to a small circle around them (the polynomial-fit fallback, used when symbolic root
+  finding fails, uses that relative test alone). An entry of the `D_delta` probe below 1e-12 is zeroed only when it
+  is also noise relative to the matrix. A vanishing `det'` and the fixed-degree polynomial-fit fallback now warn
+  instead of giving silent zeros.
+
+Every zoo model is bit-identical (in-process A/B, warm caches), and the overhead is below 1 % of the wall time.
+OU trees with Erlang-n (n ≤ 32) and all-pass (degree ≤ 24) kernels, and the one-loop εx³ term at n = 8, now match
+exact state-space references at 80 digits; `tests/test_residue_membership.py` checks them to 1e-11 (measured:
+≤ 3.3e-13). Two-population linear Hawkes models with Erlang-8 and Erlang-16 kernels match too (measured ≤ 2.2e-14;
+not in the test suite, about 2 minutes each).
+
 #### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
 
 Such a vertex (a "conductance" synapse `v·(g∗n)`, any `x·(g∗y)` coupling) puts its `y` leg at its own time `s`,
