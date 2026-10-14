@@ -10,7 +10,8 @@ fields, symbolic in ``omega``) into a state-space quadruple
     G(t) = Theta(t) C e^{A t} B + D delta(t),
 
 without computing an eigenvalue or a numerical polynomial root.  Internal
-(not yet used by Phase J); it is stage S1 of the state-space Phase J plan.
+(not yet used by Phase J): the realization layer for a planned state-space
+evaluation of the time integrals.
 
 Construction (all exact, then rounded once)
 -------------------------------------------
@@ -31,8 +32,9 @@ Construction (all exact, then rounded once)
    one per factor (with multiplicity), each with unit DC gain
    (``z_k = f_k(0)/f_k(s) z_{k-1}``): a first-order block per rate, a
    tridiagonal Schwarz block per irreducible factor (from its Routh table,
-   exactly similar to the companion matrix, which is used only when a Routh
-   pivot vanishes), with output coefficients from a Newton-type division
+   exactly similar to the companion matrix; a vanishing Routh pivot is
+   avoided by an exact integer shift, the companion matrix is the last
+   resort), with output coefficients from a Newton-type division
    ``r = c_N + f_N (c_{N-1} + f_{N-1}(...))`` -- the divided-difference
    basis, which, unlike partial fractions (residues), stays bounded when
    rates coincide or nearly coincide.  Erlang kernels become the Erlang
@@ -95,19 +97,28 @@ Interface contract (consumed by the state-space subset integrator, S2)
   pencil was singular too).  ``provenance``: one line per decision.
 * ``hurwitz`` (True / False / None), ``lyapunov_margin`` and
   ``conditioning`` (norms of A before/after balancing, range of T, ...).
-* ``exact``: the exact matrices over ``F`` before rounding (Sage), for
-  references and later symbolic work; excluded from comparisons.
+* ``exact``: the exact matrices over ``F`` (Sage) before rounding AND before
+  balancing (``A_bal = T^{-1} A_exact T``, ``B_bal = T^{-1} B_exact``,
+  ``C_bal = C_exact T``), for references and later symbolic work; excluded
+  from comparisons.  The per-entry realizations carry their own balancing,
+  not exposed.
+* ``phys_names`` / ``resp_names`` come from ``ring_gen_names`` (response
+  fields first, then physical fields, ``nf`` each); the state basis after the
+  Kalman reduction is not tied to fields.
 * methods: ``transfer(s)``, ``transfer_omega(omega)``, ``impulse(t)``,
   ``transfer_entry``, ``impulse_entry``, ``stationary_covariance(Q)``,
   ``schur()`` (complex Schur basis ``A = U T U^H``: ``T, B U, C U``).
 
-Numerical notes for consumers (measured on the oracle set, see S2): do not
+Numerical notes for consumers (measured on rational test models): do not
 exponentiate through a dense Schur form of a graded realization (5e-13 on
 the balanced Pade-24 loop) and do not trust scipy's ``expm`` on
 near-repeated eigenvalues of a triangular matrix (1.4e-9 at a gap of 1e-8);
-``expm_structured`` handles both.  A plain Bartels-Stewart Lyapunov solve
-loses up to 3e-13 on graded realizations; ``lyapunov_refined`` restores
-~1e-15 by residual refinement.
+``expm_structured`` uses the reset-diagonal triangular Pade on a triangular
+``A`` and scipy's ``expm`` (no Schur step) otherwise; its accuracy on a
+non-triangular ``A`` depends on the basis, which is why irreducible factors
+get Schwarz rather than companion blocks.  A plain Bartels-Stewart Lyapunov
+solve loses up to 3e-13 on graded realizations; ``lyapunov_refined``
+restores ~1e-15 by residual refinement.
 
 A model without a realization raises ``RealizationRefused`` with a
 machine-readable ``reason`` (``'non_rational'``, ``'unbound_symbol'``,
@@ -242,18 +253,29 @@ def expm_structured(A, t=1.0):
 
 def lyapunov_refined(A, Qm, max_steps=4):
     """``X`` with ``A X + X A^H + Qm = 0``: Bartels-Stewart (scipy) followed by
-    iterative refinement on the double-precision residual.  The plain solve
-    loses 8e-14 / 3e-13 on the balanced Pade-8 / Pade-16 loops (the Schur
-    step's dense backward error on a graded matrix); refinement restores
-    ~1e-15."""
+    iterative refinement on the double-precision residual, keeping the
+    iterate with the smallest residual (refinement in working precision can
+    drift once the residual is at rounding level).  The plain solve loses
+    8e-14 / 3e-13 on the balanced Pade-8 / Pade-16 loops (the Schur step's
+    dense backward error on a graded matrix); refinement restores ~1e-15.
+    Assumes a stable ``A`` (callers check ``hurwitz``)."""
+    A = np.asarray(A)
+    if A.shape[0] == 0:
+        return np.zeros((0, 0), dtype=A.dtype)
     X = sl.solve_continuous_lyapunov(A, -Qm)
+
+    def resid(X):
+        return A @ X + X @ A.conj().T + Qm
+    R = resid(X)
+    best, rbest = X, float(np.abs(R).max())
     for _ in range(max_steps):
-        R = A @ X + X @ A.conj().T + Qm
-        dX = sl.solve_continuous_lyapunov(A, -R)
-        X = X + dX
-        if np.abs(dX).max() <= 1e-17 * max(np.abs(X).max(), 1e-300):
+        X = X + sl.solve_continuous_lyapunov(A, -R)
+        R = resid(X)
+        r = float(np.abs(R).max())
+        if not r < rbest:
             break
-    return X
+        best, rbest = X, r
+    return best
 
 
 @dataclass(frozen=True)
@@ -262,8 +284,12 @@ class EntryRealization:
     a: np.ndarray
     b: np.ndarray
     c: np.ndarray
-    d: complex
+    d: Any                      # float for real models, complex otherwise
     n_states: int
+
+    def __post_init__(self):
+        for nm in ('a', 'b', 'c'):
+            getattr(self, nm).setflags(write=False)
 
     def transfer(self, s):
         if self.n_states == 0:
@@ -343,6 +369,9 @@ class Realization:
         refinement (``lyapunov_refined``)."""
         if self.n_states == 0:
             return np.zeros(self.D.shape)
+        if self.hurwitz is False or (self.hurwitz is None and not (self.lyapunov_margin or 0) > 0):
+            raise ValueError('no stationary covariance: A is not Hurwitz (an '
+                             'unstable or marginal saddle)')
         BQB = self.B @ np.asarray(Q) @ self.B.conj().T
         return self.C @ lyapunov_refined(self.A, BQB) @ self.C.conj().T
 
@@ -391,6 +420,24 @@ def _exact_number(v, allow_complex=True):
     if not allow_complex:
         raise ValueError(f'complex parameter value {v!r}')
     return S.SR(q(c.real)) + S.I * S.SR(q(c.imag))
+
+
+def _sr_exact_number(v):
+    """An exact SR number (rational, or Gaussian rational) as a field element;
+    raises for anything else (a transcendental constant, a float)."""
+    S = _sage()
+    v = S.SR(v)
+    if not v.is_numeric():
+        raise ValueError('not an exact number')
+    po = v.pyobject()
+    par = getattr(po, 'parent', None)
+    if par is None or not par().is_exact():
+        raise ValueError('inexact number')
+    try:
+        return S.QQ(po)
+    except (TypeError, ValueError):
+        G = _gauss_field()
+        return G(S.QQ(v.real_part())) + G(S.QQ(v.imag_part())) * G.gen()
 
 
 def _exact_subs(num_params):
@@ -451,8 +498,9 @@ def _exactify(e):
 
 
 def _spatial_symbol(name):
-    return name == 'Laplacian' or name.startswith('Laplacian') or name in ('q', 'k') \
-        or name.startswith('k_')
+    """The inert spatial operator of ``build_propagator`` (a spatial model is
+    also caught from its propagator data in ``realize``)."""
+    return name.startswith('Laplacian')
 
 
 def _entries_to_field(K_ft, omega, subs):
@@ -466,7 +514,13 @@ def _entries_to_field(K_ft, omega, subs):
             e = S.SR(K_ft[i, j])
             if e.is_zero():
                 continue
-            e = _exactify(e.subs(subs)).subs({S.SR(omega): -S.I * s})
+            try:
+                e = _exactify(e.subs(subs)).subs({S.SR(omega): -S.I * s})
+            except Exception as exc:                      # e.g. an unevaluated integral
+                raise RealizationRefused(
+                    'non_rational', f'K[{i},{j}] = {str(K_ft[i, j])[:120]} cannot be '
+                    f'evaluated as a rational function of omega ({type(exc).__name__}: '
+                    f'{str(exc)[:120]})') from exc
             free = [str(v) for v in e.variables() if str(v) != str(s)]
             if free:
                 if any(_spatial_symbol(f) for f in free):
@@ -548,19 +602,14 @@ def _routh_column(f):
     return None if any(c == 0 for c in col) else col
 
 
-def _schwarz_block(f, F):
-    """Root-free tridiagonal (Schwarz) form similar to the companion matrix of
-    the monic ``f``: ``S = T^{-1} Comp T`` with ``T`` exact (Krylov), from the
-    Routh column (``b_1 = c_2`` on the last diagonal entry, ``b_k = c_{k+1} /
-    c_{k-1}`` on the subdiagonal, ones above).  Returns (S, T) or None.
-    Much closer to normal than the companion matrix: the balanced Pade-24
-    closed loop loses 3e-13 in a double-precision expm with companion
-    blocks."""
+def _schwarz_matrix(g, F):
+    """Tridiagonal Schwarz matrix with characteristic polynomial ``g`` (monic),
+    from its Routh column: ``b_1 = c_2`` on the last diagonal entry,
+    ``b_k = c_{k+1} / c_{k-1}`` on the subdiagonal, ones above.  Pure field
+    arithmetic (valid over QQ[I] too); None when a Routh pivot vanishes."""
     S_ = _sage()
-    m = f.degree()
-    if F is not S_.QQ:
-        return None
-    col = _routh_column(f)
+    m = g.degree()
+    col = _routh_column(g)
     if col is None:
         return None
     c = [F(1)] + list(col)
@@ -570,6 +619,33 @@ def _schwarz_block(f, F):
     for i in range(1, m):
         S[i, i - 1] = -c[m - i + 2] / c[m - i]
     S[m - 1, m - 1] = -c[2]
+    return S
+
+
+_SCHWARZ_SHIFTS = (0, 1, -1, 2, -2, 3, -3)
+
+
+def _schwarz_block(f, F):
+    """Root-free tridiagonal (Schwarz) form similar to the companion matrix of
+    the monic ``f``: ``S = T^{-1} Comp T`` with ``T`` exact (Krylov).  When a
+    Routh pivot of ``f`` vanishes, the Schwarz matrix of ``g(x) = f(x + sigma)``
+    for a small integer shift is used, ``S = S_g + sigma I`` (same
+    characteristic polynomial, exactly).  Returns (S, T, sigma) or None
+    (companion fallback).  Much closer to normal than the companion matrix:
+    the balanced Pade-24 closed loop loses 3e-13 in a double-precision expm
+    with companion blocks (2e-9 with complex coefficients)."""
+    S_ = _sage()
+    m = f.degree()
+    x = f.parent().gen()
+    S = None
+    for sigma in _SCHWARZ_SHIFTS:
+        g = f(x + sigma) if sigma else f
+        Sg = _schwarz_matrix(g, F)
+        if Sg is not None:
+            S = Sg + sigma * S_.identity_matrix(F, m)
+            break
+    if S is None:
+        return None
     a = f.list()
     Comp = S_.matrix(F, m, m)
     for i in range(m - 1):
@@ -584,9 +660,12 @@ def _schwarz_block(f, F):
     for _ in range(m - 1):
         vc, vs = Comp * vc, S * vs
         Kc, Ks = Kc.augment(vc), Ks.augment(vs)
+    if Ks.det() == 0:                                     # (S, e_m) not controllable
+        return None
     T = Kc * Ks.inverse()
-    assert Comp * T == T * S
-    return S, T
+    if Comp * T != T * S:                                 # never seen; stay safe
+        return None
+    return S, T, sigma
 
 
 def _realize_proper(r, d, F):
@@ -641,7 +720,7 @@ def _realize_proper(r, d, F):
                 Ab[m - 1, i] = -a[i]
             Tb = S.identity_matrix(F, m)
         else:
-            Ab, Tb = sch
+            Ab, Tb, _sigma = sch
             schwarz_blocks.append(m)
         Tbi = Tb.inverse()
         A[off:off + m, off:off + m] = Ab
@@ -692,6 +771,10 @@ def _index1_reduce(E, Ap, Bp, Cp, F):
         if (s0 * E - Ap).det() != 0:
             regular = True
             break
+    if not regular:                                       # decide exactly: det over F[x]
+        Px = S.PolynomialRing(F, 'xpencil')
+        xg = Px.gen()
+        regular = (xg * E.change_ring(Px) - Ap.change_ring(Px)).det() != 0
     if not regular:
         raise RealizationRefused(
             'singular_pencil', 'det K(s) vanishes identically: some field is '
@@ -804,11 +887,7 @@ def _routh_hurwitz(A, F):
         for k in range(len(row0) - 1):
             nxt = row1[k + 1] if k + 1 < len(row1) else 0
             new.append(row0[k + 1] - row0[0] * nxt / row1[0])
-        while new and new[-1] == 0 and len(new) > 1:
-            new.pop()
         row0, row1 = row1, new
-        if len(row1) == 1 and row1[0] == 0:
-            return False
     return True
 
 
@@ -1002,8 +1081,12 @@ def compare_D(real, D_delta, num_params):
                 return {'exact_equal': None, 'max_rel': None,
                         'note': f'D_delta[{i},{j}] not numeric: {str(v)[:80]}'}
             if exact_equal is not None and De is not None:
+                # exact only when D_delta is exact at the exact parameters
+                # (a transcendental constant is rounded at a different stage
+                # in the realization: numeric comparison only)
                 try:
-                    exact_equal = exact_equal and bool(S.SR(De[i, j]) - v == 0)
+                    q = De.base_ring()(_sr_exact_number(v))
+                    exact_equal = exact_equal and bool(De[i, j] == q)
                 except Exception:
                     exact_equal = None
     scale = max(np.abs(ref).max(), 1e-300)
@@ -1080,7 +1163,9 @@ def verify_against_K(real, K_ft, omega, num_params, n_points=20, seed=0,
                     erre[k, i, j] = float(abs(CF(complex(v).real, complex(v).imag) - g))
     scale = absref.max(axis=0)
     gmax = max(absref.max(), 1e-300)
-    scale = np.where(scale > 0, scale, gmax)
+    # an entry of G that vanishes identically comes back from the pivoted
+    # high-precision inverse as rounding noise (~2^-prec); scale it by max|G|
+    scale = np.where(scale > gmax * 2.0 ** (20 - prec), scale, gmax)
     per = errf.max(axis=0) / scale
     out = {'max_err': float(per.max()), 'per_entry': per, 'points': pts}
     if ex is not None:

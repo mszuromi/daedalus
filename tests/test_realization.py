@@ -8,8 +8,9 @@ eigenvalue or a numerical root.  Inline public models only:
 * first-order two-field system (class A), incl. an exact double pole;
 * descriptor with a delta part (class B, index 1): ``D`` exact;
 * Erlang-8 kernel (class C, chain from the given rate) and a balanced
-  Pade-8 kernel (class C, companion block), both end to end from the SDE
-  front end through ``build_propagator``;
+  Pade-8 kernel (class C, Schwarz block), both end to end from the SDE
+  front end through ``build_propagator``; a two-field model for the
+  orientation of ``G`` (physical rows, response columns);
 * refusals by name: index 2, non-rational kernel, unbound symbol, spatial;
 * the triangular ``expm`` used by ``impulse`` at a near-double eigenvalue.
 """
@@ -152,7 +153,7 @@ def test_erlang8_kernel_chain_from_given_rate():
     assert R.hurwitz is True
 
 
-def test_pade8_kernel_balanced_companion():
+def test_pade8_kernel_balanced_schwarz_block():
     prop, params = _kernel_prop(_pade_str(8), 'pade8_realization_test')
     R = RZ.realize(prop, params)
     assert R.cls == 'C' and R.n_states == 9
@@ -238,6 +239,105 @@ def test_improper_entry_refused():
     K = matrix(SR, [[-W ** 2 + I * W + 1]])                 # x'' + x' + x
     _, exc = RZ.try_realize({'K_ft': K, 'omega': W, 'nf': 1}, {})
     assert exc.reason == 'improper_entry'
+
+
+# ── regressions found in review ─────────────────────────────────────────────
+
+def test_routh_verdict_unstable_quintic():
+    # s^5 + s^4 + 3 s^3 + s^2 + s + 1 has roots 0.25 +- 0.72i (a1*a4 == a5)
+    s = I * W
+    K = matrix(SR, [[(s ** 5 + s ** 4 + 3 * s ** 3 + s ** 2 + s + 1) / (s + 1) ** 4]])
+    R = RZ.realize_K(K, W, {})
+    assert R.hurwitz is False
+    assert np.max(np.linalg.eigvals(np.asarray(R.A)).real) > 0     # check only
+
+
+def test_regular_pencil_vanishing_at_probe_points():
+    s = I * W
+    p4 = (s - SR(7) / 3) * (s + SR(11) / 5) * (s - SR(13) / 2) * (s - SR(3) / 17)
+    K = matrix(SR, [[1, 1], [1, 1 + p4 / (s + 1) ** 4]])
+    R = RZ.realize_K(K, W, {})
+    v = RZ.verify_against_K(R, K, W, {}, n_points=20, seed=6)
+    assert v['max_err'] <= 1e-13 and v['max_err_exact'] <= 1e-40
+
+
+def test_verify_handles_identically_zero_entries():
+    s = I * W
+    K = matrix(SR, [[s, 0], [2 * s, s + 1]])               # G[0, 1] == 0
+    R = RZ.realize_K(K, W, {})
+    v = RZ.verify_against_K(R, K, W, {}, n_points=20, seed=7)
+    assert v['max_err'] <= 1e-13 and v['max_err_exact'] <= 1e-40
+
+
+def test_unbound_k_is_not_spatial():
+    k = var('k')
+    _, exc = RZ.try_realize({'K_ft': matrix(SR, [[I * W + k]]), 'omega': W, 'nf': 1}, {})
+    assert exc.reason == 'unbound_symbol'
+
+
+def test_two_field_orientation_end_to_end():
+    """G[p, r] = (K_ft^{-1})[p, r]: physical rows, response columns, names
+    from ring_gen_names (responses first)."""
+    from api.sde import SDE
+    from api.noise import Gaussian
+    from api._propagator import build_propagator
+    from engine.core.field_theory import FieldTheory
+    m = (SDE('orient_realization_test').parameter('a', default=1.0).parameter('b', default=0.3)
+         .parameter('D', default=0.5).field('x').field('y')
+         .drift('x', '-a*x + b*y').drift('y', '-2*a*y - 0.1*y^3')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1, 'y': 1}).build())
+    ft = FieldTheory(m, taylor_order=2)
+    ft.expand()
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    vals = {'a': 1.0, 'b': 0.3, 'D': 0.5}
+    params = {s: vals.get(str(s), 0.0) for e in prop['K_ft'].list() for s in SR(e).variables()
+              if str(s) != 'omega'}
+    R = RZ.realize(prop, params)
+    names = [str(n) for n in prop['ring_gen_names']]
+    assert list(R.resp_names) == names[:2] and list(R.phys_names) == names[2:4]
+    Kn = prop['K_ft'].subs({k: v for k, v in params.items()})
+    for w0 in (0.3, -1.7):
+        Gref = np.array(Kn.subs({W: w0}).change_ring(SR).n().inverse(), dtype=complex)
+        assert np.abs(R.transfer_omega(w0) - Gref).max() <= 1e-14
+    assert abs(R.transfer_omega(0.3)[0, 1]) > 0.05 and abs(R.transfer_omega(0.3)[1, 0]) < 1e-15
+
+
+def test_zero_routh_pivot_uses_shifted_schwarz_block():
+    s = I * W
+    K = matrix(SR, [[s + 1 + 1 / (s ** 4 + 4 * s ** 2 + 3 * s + 5)]])
+    R = RZ.realize_K(K, W, {})
+    assert any('Schwarz form: 1' in p for p in R.provenance)
+    v = RZ.verify_against_K(R, K, W, {}, n_points=20, seed=8)
+    assert v['max_err'] <= 1e-13 and v['max_err_exact'] <= 1e-40
+
+
+def test_complex_pade8_schwarz_block_and_impulse():
+    s = I * W
+    c = [factorial(16 - k) * factorial(8) / (factorial(16) * factorial(k) * factorial(8 - k))
+         for k in range(9)]
+    pade = sum(SR(ck) * (-s) ** k for k, ck in enumerate(c)) / sum(SR(ck) * s ** k for k, ck in enumerate(c))
+    K = matrix(SR, [[s + 1 + (2 + I / 2) * pade]])
+    R = RZ.realize_K(K, W, {})
+    assert R.field_name == 'QQ[I]' and any('Schwarz form: 1' in p for p in R.provenance)
+    v = RZ.verify_against_K(R, K, W, {}, n_points=20, seed=9)
+    assert v['max_err'] <= 1e-13
+    with mp.workdps(40):
+        def cv(M):
+            return mp.matrix([[mp.mpc(*[mp.mpf(int(q.numerator())) / int(q.denominator())
+                                        for q in (M[i, j].real(), M[i, j].imag())])
+                               for j in range(M.ncols())] for i in range(M.nrows())])
+        ex = R.exact
+        for t in (0.5, 3.0):
+            ref = complex((cv(ex['C']) * mp.expm(cv(ex['A']) * t) * cv(ex['B']))[0, 0])
+            assert abs(R.impulse(t)[0, 0] - ref) <= 1e-13 * max(1.0, abs(ref))
+
+
+def test_stationary_covariance_refuses_unstable():
+    K = matrix(SR, [[I * W - 1]])
+    R = RZ.realize_K(K, W, {})
+    assert R.hurwitz is False
+    with pytest.raises(ValueError, match='not Hurwitz'):
+        R.stationary_covariance(np.array([[1.0]]))
 
 
 # ── the triangular expm behind impulse() ───────────────────────────────────

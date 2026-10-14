@@ -19,16 +19,18 @@ the parameter point (each double taken at its exact binary value) and is rounded
 
 - Kernel denominators are factored exactly, so a kernel's own rates come back even from an expanded image.
   Each rate becomes a unit-gain chain block (Erlang kernels are the Erlang chain). An irreducible factor becomes
-  a tridiagonal Schwarz block built from its Routh table, not a companion matrix.
-- A singular `K1` (algebraic fields, δ parts) is reduced by an exact index-1 Schur complement, and `D` is
-  compared exactly with `D_delta`.
+  a tridiagonal Schwarz block built from its Routh table. If a Routh pivot vanishes, an exact integer shift is
+  tried; the companion matrix is used only as a last resort.
+- A singular `K1` (algebraic fields, δ parts) is reduced by an exact index-1 Schur complement. `compare_D`
+  checks `D` exactly against the pipeline's `D_delta`.
 - An exact Kalman reduction gives a minimal realization, globally and per entry of `G`.
 - A power-of-two balancing follows, then an exact Routh–Hurwitz report and a Lyapunov margin.
 
 Models without a realization are refused by name: non-rational kernel, descriptor of index > 1, polynomial
-part of degree ≥ 2, unbound or spatial symbol, singular pencil. `impulse(t)` uses a structured matrix
-exponential: triangular Padé with the exact diagonal and superdiagonal reset after each squaring, and no dense
-Schur step. `stationary_covariance(Q)` uses a Lyapunov solve with residual refinement. Nothing in the pipeline
+part of degree ≥ 2, unbound or spatial symbol, singular pencil. `impulse(t)` exponentiates `A` without a dense Schur step: a
+triangular `A` gets a triangular Padé that resets the diagonal and superdiagonal exactly after each squaring,
+and any other `A` gets scipy's `expm`. `stationary_covariance(Q)` uses a Lyapunov solve with residual
+refinement and refuses when `A` is not Hurwitz. Nothing in the pipeline
 calls the module yet; no number changes. Tests: `tests/test_realization.py`.
 
 #### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
