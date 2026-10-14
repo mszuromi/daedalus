@@ -235,6 +235,319 @@ def _multi_index_suffix(multi_idx):
 
 
 # ---------------------------------------------------------------------------
+# Truncated Taylor expansion of the action (polynomial structure + atoms)
+# ---------------------------------------------------------------------------
+#
+# The legacy route is ONE multivariate ``taylor()`` of the whole SR action in
+# every field variable, then ``.expand()``.  ``taylor()`` itself is quick, but
+# Maxima returns every coefficient over the common denominator of ALL the
+# non-polynomial atoms of the action: for a few sigmoids ``1/(1+exp(L))`` of
+# linear combinations L of two fields with a symbolic saddle, the expanded
+# order-2 action is ~0.5 MB (order 4: ~18 MB), single coefficients ~120 kB
+# (even the free-propagator entry ``Dt*tau + 1`` comes out as a sum over that
+# denominator).  ``PolynomialRing(SR)`` then zero-tests each of them, which
+# goes to Maxima when a coefficient holds a symbol with an assumption (a
+# ``domain='positive'`` parameter): ~100 s at order 2, never done at order 3.
+#
+# The truncated route walks the expression tree once.  Every field-dependent
+# node becomes its Taylor polynomial ``{exponent tuple: SR coefficient}``,
+# truncated at total degree ``order``: sums add, products and positive
+# integer powers multiply with truncation at every step (response fields,
+# which enter polynomially, cost nothing), and each distinct non-polynomial
+# ATOM (``exp``, ``log``, a negative or fractional power, a function call,
+# ...) gets one ``taylor()`` of its own, in the field variables it depends on,
+# memoised.  The polynomial is the same as the legacy one; each atom keeps
+# the form ``taylor()`` gives it alone (its double-precision rounding is as
+# good as the legacy form's), and atoms are never put over a common
+# denominator with each other.
+
+_EXPAND_LEGACY_ENV = 'DAEDALUS_EXPAND_LEGACY'
+
+
+def _expand_legacy_requested() -> bool:
+    """``DAEDALUS_EXPAND_LEGACY=1`` restores the 0.2.1 expansion: one
+    multivariate ``taylor()`` of the whole action and Sage's own zero test
+    on every polynomial-ring coefficient (kept for A/B checks)."""
+    import os
+    v = os.environ.get(_EXPAND_LEGACY_ENV, '').strip().lower()
+    return v not in ('', '0', 'false', 'no', 'off')
+
+
+class _TruncatedTaylorUnsupported(Exception):
+    """An atom whose ``taylor()`` is not a polynomial in the field variables
+    (Laurent / Puiseux terms, or field variables left in a coefficient).
+    The caller falls back to the legacy ``taylor()`` of the whole action, so
+    such an action behaves exactly as before."""
+
+
+def _sr_op_name(op) -> str:
+    return (getattr(op, '__name__', None)
+            or (op.name() if hasattr(op, 'name') else type(op).__name__))
+
+
+def _truncated_taylor(expr, field_vars, order: int) -> dict:
+    """Taylor polynomial of ``expr`` around ``field_vars = 0``, truncated at
+    total degree ``order``, as ``{exponent tuple: SR coefficient}``.
+
+    Same polynomial as ``taylor(expr, *[(v, 0) for v in field_vars], order)``;
+    the coefficients are left unexpanded.  Raises
+    :class:`_TruncatedTaylorUnsupported` for an atom whose expansion is not
+    polynomial.
+    """
+    # SR objects are keyed by ``repr``: ``==`` between expressions builds a
+    # relation whose truth test can go to Maxima (assumption symbols).
+    fvars = list(field_vars)
+    n = len(fvars)
+    pos = {repr(v): i for i, v in enumerate(fvars)}
+    zero = (0,) * n
+    one = SR(1)
+    memo: dict = {}
+
+    def _add(acc, e, c):
+        acc[e] = (acc[e] + c) if e in acc else c
+
+    def _mul(A, B):
+        out: dict = {}
+        for ea, ca in A.items():
+            da = sum(ea)
+            for eb, cb in B.items():
+                if da + sum(eb) <= order:
+                    _add(out, tuple(x + y for x, y in zip(ea, eb)), ca * cb)
+        return out
+
+    def _depends(e):
+        return any(repr(v) in pos for v in e.variables())
+
+    def _atom(e):
+        """One ``taylor()`` of a non-polynomial atom, in the field variables
+        it depends on, read into an exponent dict."""
+        names = {repr(u) for u in e.variables()}
+        vs = [v for v in fvars if repr(v) in names]
+        T = SR(taylor(e, *[(v, 0) for v in vs], order)).expand()
+        opT = T.operator()
+        terms = (T.operands() if opT is not None
+                 and _sr_op_name(opT) == 'add_vararg' else [T])
+        out: dict = {}
+        for term in terms:
+            ex = [0] * n
+            c = term
+            for v in vs:
+                d = c.degree(v)
+                if d != int(d) or d < 0:
+                    raise _TruncatedTaylorUnsupported(
+                        f'non-polynomial expansion of {e}')
+                if d:
+                    ex[pos[repr(v)]] = int(d)
+                    c = c.coefficient(v, d)
+            if _depends(c):
+                raise _TruncatedTaylorUnsupported(
+                    f'field variables left in a coefficient of {e}')
+            if sum(ex) <= order:
+                _add(out, tuple(ex), c)
+        return out
+
+    def _go(e):
+        e = SR(e)
+        if not _depends(e):
+            return {zero: e}
+        key = repr(e)
+        if key in memo:
+            return memo[key]
+        op = e.operator()
+        name = _sr_op_name(op) if op is not None else None
+        if op is None:                                   # a field variable
+            ex = [0] * n
+            ex[pos[key]] = 1
+            r = {tuple(ex): one}
+        elif name == 'add_vararg':
+            r = {}
+            for o in e.operands():
+                for ee, c in _go(o).items():
+                    _add(r, ee, c)
+        elif name == 'mul_vararg':
+            r = {zero: one}
+            for o in e.operands():
+                r = _mul(r, _go(o))
+        elif (name == 'pow' and e.operands()[1].is_integer()
+              and e.operands()[1] > 0):
+            B = _go(e.operands()[0])
+            r = {zero: one}
+            for _ in range(int(e.operands()[1])):
+                r = _mul(r, B)
+        else:
+            r = _atom(e)
+        memo[key] = r
+        return r
+
+    return _go(expr)
+
+
+def _taylor_action(S_sr, field_vars, order: int):
+    """Truncated multivariate Taylor of the action in ``field_vars`` around
+    0 (total degree <= ``order``), as an SR expression.
+
+    Uses :func:`_truncated_taylor` unless ``DAEDALUS_EXPAND_LEGACY`` is set
+    or an atom has no polynomial expansion at 0; then one ``taylor()`` of the
+    whole action (the legacy route, which then succeeds or fails as before).
+    """
+    if not _expand_legacy_requested():
+        try:
+            poly = _truncated_taylor(S_sr, field_vars, order)
+        except (_TruncatedTaylorUnsupported, ArithmeticError, ValueError,
+                RuntimeError, TypeError):
+            poly = None
+        if poly is not None:
+            out = SR(0)
+            for ex, c in poly.items():
+                mono = SR(1)
+                for v, k in zip(field_vars, ex):
+                    if k:
+                        mono = mono * v ** k
+                out = out + c * mono
+            return out
+    return taylor(S_sr, *[(v, 0) for v in field_vars], order)
+
+
+# ---------------------------------------------------------------------------
+# Zero test and construction of PolynomialRing(SR) elements
+# ---------------------------------------------------------------------------
+#
+# ``R(d)`` on ``R = PolynomialRing(SR, ...)`` zero-tests every coefficient
+# (``PolyDict.remove_zeros`` -> ``bool(c)``), and every ring operation does it
+# again for every coefficient of the result.  ``bool(c)`` on an expression
+# containing a symbol with an assumption (``domain='positive'``) skips Sage's
+# random-point test and asks Maxima, which takes seconds on a large
+# coefficient.  :func:`_sr_nonzero` reaches the same verdict as ``bool(c)``
+# but settles the common case -- a coefficient that is visibly nonzero at one
+# point that satisfies every assumption -- by interval arithmetic, and
+# :func:`_ring_from_nonzero_dict` then builds the ring element without a
+# second test.
+
+_NONZERO_PROBE_DOMAINS = frozenset({'real', 'positive', 'complex'})
+
+# Operators whose interval extension in MPFI is rigorous; a coefficient with
+# anything else (erf, Bessel, formal functions, ...) goes to ``bool(c)``.
+_NONZERO_PROBE_OPERATORS = frozenset({
+    'add_vararg', 'mul_vararg', 'pow', 'exp', 'log', 'sin', 'cos', 'tan',
+    'sinh', 'cosh', 'tanh', 'arctan',
+})
+
+
+def _interval_safe(c) -> bool:
+    """Only rigorous operators and exact constants.  A float literal is
+    excluded: Sage compares floats approximately (``0.1*q - q/10`` is zero
+    for ``bool``), exact interval arithmetic would not."""
+    op = c.operator()
+    if op is None:
+        if c.is_numeric():
+            try:
+                return bool(c.pyobject().parent().is_exact())
+            except (AttributeError, TypeError, ValueError):
+                return False
+        return True
+    if _sr_op_name(op) not in _NONZERO_PROBE_OPERATORS:
+        return False
+    return all(_interval_safe(o) for o in c.operands())
+
+
+def _probe_value(k: int):
+    """Deterministic probe values in (0.2, 0.8): low-discrepancy (golden
+    ratio) sequence, so distinct variables get unrelated values."""
+    x = (0.5 + 0.6180339887498949 * (k + 1)) % 1.0
+    return 0.2 + 0.6 * x
+
+
+def _sr_nonzero(c) -> bool:
+    """``bool(c)`` for an SR coefficient (True unless Sage can show it is
+    zero), with a fast exact certificate for the nonzero case.
+
+    If ``c`` is built from operators with a rigorous interval extension and
+    evaluates, in 128-bit interval arithmetic, to an interval excluding 0 at
+    a real point inside (0.2, 0.8)^n that satisfies every assumption on its
+    variables, then ``c`` is not zero (as a function on the assumption
+    domain), which is what ``bool(c)`` would conclude after asking Maxima.
+    Otherwise the decision is Sage's own ``bool(c)``.
+    """
+    c = SR(c)
+    if c.is_trivial_zero():
+        return False
+    try:
+        from sage.ext.fast_callable import fast_callable
+        from sage.rings.real_mpfi import RealIntervalField
+        from sage.symbolic.assumptions import assumptions, GenericDeclaration
+        if not _interval_safe(c):
+            return bool(c)
+        RIF128 = RealIntervalField(128)
+        # Variables are keyed by name: ``==`` between SR variables builds
+        # a relation whose truth test may itself go to Maxima.
+        vs = sorted(c.variables(), key=repr)
+        val_of = {repr(v): _probe_value(k) for k, v in enumerate(vs)}
+        ok = True
+        for a in assumptions():
+            if isinstance(a, GenericDeclaration):
+                if (repr(a._var) in val_of
+                        and a._assumption not in _NONZERO_PROBE_DOMAINS):
+                    ok = False
+                    break
+                continue
+            av = {repr(v): v for v in a.variables()}
+            if any(k in val_of for k in av):
+                if (not all(k in val_of for k in av)
+                        or not bool(a.subs({v: val_of[k]
+                                            for k, v in av.items()}))):
+                    ok = False
+                    break
+        if ok:
+            f = fast_callable(c, vars=vs, domain=RIF128)
+            val = f(*[RIF128(val_of[repr(v)]) for v in vs])
+            if not val.contains_zero():
+                return True
+    except Exception:
+        pass
+    return bool(c)
+
+
+def _ring_from_nonzero_dict(R, d: dict):
+    """``R(d)`` for a dict whose coefficients are all known to be nonzero
+    (already zero-tested), without Sage testing each of them again.  The
+    element is the one ``R(d)`` builds (same class, same ``PolyDict``)."""
+    if not d:
+        return R.zero()
+    try:
+        from sage.rings.polynomial.multi_polynomial_element import (
+            MPolynomial_polydict, MPolynomial_element)
+        from sage.rings.polynomial.polydict import PolyDict
+        if type(R.gen(0)) is not MPolynomial_polydict:
+            return R(d)
+        K = R.base_ring()
+        el = MPolynomial_polydict.__new__(MPolynomial_polydict)
+        MPolynomial_element.__init__(
+            el, R, PolyDict({k: K(a) for k, a in d.items()}))
+        return el
+    except ImportError:
+        return R(d)
+
+
+def _sum_of_polys(R, polys):
+    """``R.zero() + p_1 + p_2 + ...`` for ring elements with pairwise
+    disjoint monomials (the bigrade sectors), without re-testing every
+    coefficient at each ``+``.  The dict order is the one the running sum
+    gives (``PolyDict.__add__`` copies the larger operand and appends the
+    other's keys)."""
+    acc: dict = {}
+    for p in polys:
+        d = p.dict()
+        big, small = (d, acc) if len(acc) < len(d) else (acc, d)
+        merged = dict(big)
+        for e, c in small.items():
+            if e in merged:                     # not disjoint: plain ring sum
+                return sum(polys, R.zero())
+            merged[e] = c
+        acc = merged
+    return _ring_from_nonzero_dict(R, acc)
+
+
+# ---------------------------------------------------------------------------
 # SR → PolynomialRing conversion
 # ---------------------------------------------------------------------------
 
@@ -255,7 +568,12 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
     result = R.zero()
 
     expanded = SR(sr_expr).expand()
-    if expanded.is_zero():
+    if _expand_legacy_requested():
+        if expanded.is_zero():
+            return result
+    elif not _sr_nonzero(expanded):
+        # same verdict as ``is_zero()``; the fast path avoids one Maxima
+        # call on the whole action
         return result
 
     # Collect summands.  For a sum, .operands() gives the addends correctly.
@@ -288,7 +606,13 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
                 coeff = coeff.coefficient(v_sr, deg)
         key = tuple(exponents)
         acc[key] = (acc[key] + SR(coeff)) if key in acc else SR(coeff)
-    return R(acc) if acc else result
+    if not acc:
+        return result
+    if _expand_legacy_requested():
+        return R(acc)
+    # Same zero decisions as ``R(acc)``, one (fast-path) test per coefficient.
+    return _ring_from_nonzero_dict(
+        R, {k: c for k, c in acc.items() if _sr_nonzero(c)})
 
 
 # ---------------------------------------------------------------------------
@@ -584,11 +908,23 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     """
     R = poly.parent()
     sectors: dict = {}
+    if _expand_legacy_requested():
+        for exp_vec, coeff in poly.dict().items():
+            n_t = int(sum(exp_vec[:n_tilde]))
+            n_p = int(sum(exp_vec[n_tilde:]))
+            key = (n_t, n_p)
+            sectors[key] = (sectors.get(key, R.zero())
+                            + SR(coeff) * R.monomial(*exp_vec))
+        return sectors
+    # The coefficients of a ring element are nonzero already: split the
+    # dict and build each sector once (the incremental ``+`` re-tested every
+    # coefficient of the growing sector at each step).
+    parts: dict = {}
     for exp_vec, coeff in poly.dict().items():
-        n_t = int(sum(exp_vec[:n_tilde]))
-        n_p = int(sum(exp_vec[n_tilde:]))
-        key = (n_t, n_p)
-        sectors[key] = sectors.get(key, R.zero()) + SR(coeff) * R.monomial(*exp_vec)
+        key = (int(sum(exp_vec[:n_tilde])), int(sum(exp_vec[n_tilde:])))
+        parts.setdefault(key, {})[exp_vec] = SR(coeff)
+    for key, d in parts.items():
+        sectors[key] = _ring_from_nonzero_dict(R, d)
     return sectors
 
 
@@ -908,12 +1244,13 @@ class FieldTheory:
         # loop (since each formal call only depends on one fluctuation
         # variable, multivariate Taylor at total order N produces the
         # same monomials as per-variable order N).
+        #
+        # ``_taylor_action`` builds that polynomial atom by atom with
+        # truncation at every product (see ``_truncated_taylor``);
+        # ``DAEDALUS_EXPAND_LEGACY=1`` restores the single ``taylor()``.
         if ns._all_field_sr_vars:
-            S_sr = taylor(
-                S_sr,
-                *[(v, 0) for v in ns._all_field_sr_vars],
-                self.taylor_order,
-            )
+            S_sr = _taylor_action(
+                S_sr, ns._all_field_sr_vars, self.taylor_order)
 
         # Rename formal function derivative symbols to clean SR names
         # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
@@ -974,9 +1311,14 @@ class FieldTheory:
         # Rebuild S_poly from by_tp (MF sector now zeroed) so
         # downstream consumers that read self._S_raw see a consistent
         # action whose (≤1, ≤1) sectors are exactly zero.
-        S_raw = R.zero()
-        for poly in by_tp.values():
-            S_raw = S_raw + poly
+        if _expand_legacy_requested():
+            S_raw = R.zero()
+            for poly in by_tp.values():
+                S_raw = S_raw + poly
+        else:
+            # The sectors partition the monomials (the running ``+``
+            # re-tested every coefficient at each step).
+            S_raw = _sum_of_polys(R, list(by_tp.values()))
 
         self._S_raw = S_raw
         self._by_tp = by_tp
