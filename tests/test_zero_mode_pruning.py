@@ -151,13 +151,65 @@ def _modes(n):
             [(1.0, -0.5)]]
 
 
+def _same_counts(pruned, full):
+    assert pruned['n_tuples_full'] == len(full['pole_tuples'])
+    g, gf = pruned['n_groups_full'], len(full['tuple_groups'])
+    if gf < FI._DD_BATCH_MIN:
+        assert g == gf
+    else:
+        assert FI._DD_BATCH_MIN <= g <= gf
+
+
+def _live_groups(full):
+    pt = full['pole_tuples']
+    live = [(a, [pt[t] for t in idx if pt[t][0] != 0])
+            for a, idx in full['tuple_groups']]
+    return [(a, m) for a, m in live if m]
+
+
+@pytest.mark.parametrize('block', [1, 3, 1 << 18])
+def test_group_order_replay_on_random_plans(monkeypatch, block):
+    """Random plans: 1-5 edges, 1-4 modes, m = 1-4, rows with repeated
+    internal parts (alpha collisions), about a third of the residues exactly
+    0; the replay split into blocks of ``block`` rows."""
+    import random
+    monkeypatch.setattr(FI, '_PRUNE_ORDER_BLOCK', block)
+    rng = random.Random(35 + block)
+    lams = [-1.3 + 0.4j, -0.7, -2.1 - 0.3j, -0.9 + 1.1j, -0.7 - 0.2j]
+    checked = 0
+    for _ in range(150):
+        m = rng.randint(1, 4)
+        E = rng.randint(1, 5)
+        base_rows = [tuple(float(rng.choice((-1, 0, 1))) for _ in range(m))
+                     for _ in range(2)]
+        rows = [(rng.choice(base_rows), (float(rng.choice((0, 1))),), 0.0)
+                for _ in range(E)]
+        modes = []
+        for _e in range(E):
+            n = rng.randint(1, 4)
+            modes.append([(0j if rng.random() < 0.35 else
+                           complex(rng.uniform(-1, 1), rng.uniform(-1, 1)),
+                           rng.choice(lams)) for _ in range(n)])
+        ems = [_ems(md) for md in modes]
+        full = FI._build_modesum_plan(ems, rows, m, 1, prune=False)
+        pruned = FI._build_modesum_plan(ems, rows, m, 1, prune=True)
+        if 'n_tuples_full' not in pruned or len(pruned['pole_tuples']) == len(
+                full['pole_tuples']):
+            continue
+        _same_counts(pruned, full)
+        qt = pruned['pole_tuples']
+        got = [(a, [qt[t] for t in idx]) for a, idx in pruned['tuple_groups']]
+        assert got == _live_groups(full)
+        checked += 1
+    assert checked > 40
+
+
 @pytest.mark.parametrize('n', [3, 4])
 def test_pruned_plan_keeps_the_unpruned_group_order(n):
     ems = [_ems(md) for md in _modes(n)]
     full = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=False)
     pruned = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=True)
-    assert pruned['n_tuples_full'] == len(full['pole_tuples'])
-    assert pruned['n_groups_full'] == len(full['tuple_groups'])
+    _same_counts(pruned, full)
     pt = full['pole_tuples']
     live = [(a, tuple(t for t in idx if pt[t][0] != 0))
             for a, idx in full['tuple_groups']]

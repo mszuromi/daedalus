@@ -11,6 +11,61 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: Phase J leaves exact-zero residue modes out of its pole-tuple plans; k >= 3 one loop from tens of minutes (or out of memory) to seconds (`final_integral.py`, `grouped_integral.py`, `daedalus.py`; no number moves)
+
+Every propagator edge carried one mode per pole, including poles whose residue in that entry is exactly 0. A
+driven filter that does not feed back (red noise on an oscillator) makes `K` block triangular, and the entries
+below it miss its poles. The modesum plan is the Cartesian product of the edges' modes, `n_poles^E` tuples of
+~1.1 KB each, and the zero tuples were only discarded when the sums were folded. At k = 3 one loop (E = 9 edges)
+this was 394k tuples instead of 4.4k for a 3-field oscillator with one red-noise filter, and 100.5 M (~108 GB)
+instead of 0.97 M for a 4-field one with two.
+
+- **Pruning** (`PRUNE_ZERO_MODES`, env `DAEDALUS_PRUNE_ZERO_MODES=0` turns it off): every plan, per diagram and
+  grouped, enumerates only the tuples whose residues are all nonzero. The test is `== 0` on the stored residue,
+  with no tolerance. The propagator stores an exact 0 only where an entry has no denominator, where a pole is
+  outside the entry's exact membership, or below its 1e-12 noise clip; those terms were exactly 0 before.
+  The pruned plan is bit-identical to the unpruned one: the groups keep the order of their first occurrence in
+  the full product (replayed on numpy, never materialised), and the decay margin and the batched-kernel
+  thresholds use the unpruned data. One exception: on the legacy (non-DD) routes, a zero-coefficient tuple can
+  no longer trigger an overflow bail to quadrature.
+- **Zero-coefficient groups** (`DD_BATCH_SKIP_ZERO_GROUPS`): the batched poset kernels compute chains only for
+  groups whose folded coefficient is nonzero.
+- **k >= 3 `dd.run` slices**: the total is the sum of the per-loop-order slices, in `total_C`'s order. Before,
+  every diagram was evaluated a second time, which halves the evaluations.
+- Results: 3-field oscillator, k = 3 one loop at tau = 0, `dd.run`: 2,224 s -> 4.9 s (0.47 s warm). The value is
+  unchanged: 0.1667361824735574, equal to the pre-change value. 4-field oscillator with two filters, same run:
+  out of memory (~108 GB of plans) -> 1,946 s at 1.83 GB peak footprint (machine shared with other runs). Zoo
+  in-process A/B against main, warm-up discarded: 40 of 42 entries bit-identical, the other 2 raise the same
+  error on both sides, total wall 0.99x.
+
+#### Added: Phase J memory budget `PHASE_J_MEM_BUDGET_GB` (default 6) (`final_integral.py`, `api/compute.py`, `api/_grouped_phase_j.py`)
+
+Phase J refuses rather than exhausting memory. A pre-pass at the start of Phase J estimates the tuples every
+plan will hold (`estimate_modesum_plans`: per diagram, the nonzero modes of each propagator edge, the δ-subset
+sum; diagrams whose prefactor is exactly 0 are left out when the count without that test is over budget)
+times 1,100 bytes; it costs milliseconds (about 8 µs per diagram). A running guard before each plan is allocated
+keeps the total of the run (`phase_j_memory_scope`). Over budget, either raises `PhaseJResourceError`
+(`dd.PhaseJResourceError`, a `MemoryError`) under every analyzer policy, before anything is allocated. The
+message gives the estimate, the largest diagram or subset, and how to raise the budget (`PHASE_J_MEM_BUDGET_GB`
+in GB, or `off`). The estimate is in `result['phase_j_memory']`, in the analyzer report
+(`diagnostics['phase_j_memory']`) and in the assumptions ledger (`phase_j_memory_budget`). No zoo entry is near
+the default budget.
+
+#### Changed: pure-integrator mean-field equations are accepted (`api/model.py`, `api/_mean_field_dae.py`)
+
+`.equation(lhs='Dt*h[i]', rhs='-om*T[i]')`, whose LHS vanishes at Dt = 0, used to be refused with a request to
+move the algebraic part to the LHS. It now builds: the saddle text is derived as for the moved form
+`lhs='Dt*h[i] - (-om*T[i])', rhs='0'`, and results are bit-identical to that form. The equation itself is kept
+as written for the joint DAE solve. Three cases are refused with a clear message:
+
+- an RHS without any field (a random walk: nothing pins it), at build time;
+- a constraint that is not linear in any field with a constant coefficient (use `set_mf_equation`), at build time;
+- a system whose equilibrated Jacobian is singular at the root (the integrated field does not feed back
+  anywhere), in the saddle solve.
+
+Models without a pure-integrator equation are untouched. Tests: `tests/test_zero_mode_pruning.py`,
+`tests/test_mf_lhs_coefficient.py`.
+
 #### Added: state-space realization of propagators (internal, not yet used by Phase J) (`api/_realization.py`)
 
 `realize(prop, num_params)` writes the propagator `G(s) = K(s)^{-1}` (s = iω) as `C (sI − A)^{-1} B + D`,

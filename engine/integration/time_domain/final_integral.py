@@ -2683,8 +2683,9 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
     that takes a mode whose residue is exactly zero (item 35, see
     ``_build_pruned_modesum_plan``); the plan's numbers are bit-identical
     to the unpruned plan's.  ``n_tuples_full`` / ``n_groups_full``: the
-    tuple and group counts of the UNPRUNED plan, which pick the batched or
-    scalar kernels exactly as before.  Before any tuple is allocated the
+    tuple and group counts of the UNPRUNED plan (the group count exact below
+    ``_DD_BATCH_MIN``, else a lower bound at or above it), which pick the
+    batched or scalar kernels exactly as before.  Before any tuple is allocated the
     running memory guard (``_plan_guard``; ``where`` names the subset in
     its message) may raise ``PhaseJResourceError``.
 
@@ -2912,16 +2913,19 @@ def _full_product_first_occurrence(lams_per_edge, a_int_per_edge, m,
                                    alphas_list):
     r"""For each alpha vector of ``alphas_list``: the index, in the full
     product over ``lams_per_edge`` (``_enumerate_pole_tuples`` order, edge 0
-    fastest), of the first pole tuple with exactly that alpha, and the
-    number of distinct alphas of the product (exact when it fits one block
-    of ``_PRUNE_ORDER_BLOCK`` rows, else a lower bound >= 64 or exact below
-    it; it only decides ``_DD_BATCH_MIN``).  ``None`` when a value is not
-    finite or an alpha is not found (the arithmetic did not reproduce).
+    fastest), of the first pole tuple with exactly that alpha; and the
+    number of distinct alphas of the product as far as ``_DD_BATCH_MIN``
+    needs it (exact below it, else a lower bound >= it).  ``None`` when a
+    value is not finite or an alpha is not found (the arithmetic did not
+    reproduce).
 
     The alphas are formed as ``_plan_from_tuples`` forms them: ``λ · a``
     (a complex times a real: both parts rounded once, as CPython does) summed
     edge by edge from the left, so the keys are equal as Python complex
-    tuples are (signed zeros normalised by ``+ 0.0``, as ``-0.0 == 0.0``)."""
+    tuples are (signed zeros normalised by ``+ 0.0``, as ``-0.0 == 0.0``).
+    Rows are matched through a complex projection (elementwise, so a row's
+    value does not depend on its position) and confirmed byte for byte on
+    the candidates only; the scan stops once every alpha is found."""
     if m == 0 or not alphas_list:
         return [0] * len(alphas_list), (1 if alphas_list else 0)
     try:
@@ -2935,7 +2939,21 @@ def _full_product_first_occurrence(lams_per_edge, a_int_per_edge, m,
             and np.all(np.isfinite(targ))):
         return None
     vd = np.dtype((np.void, 16 * m))
-    targ = np.ascontiguousarray(targ + 0.0).view(vd).ravel()
+    w = [complex(0.7548776662466927 + 0.1093 * v, 0.5698402909980532
+                 - 0.0721 * v) for v in range(m)]
+
+    def proj(rows):
+        sp = rows[:, 0] * w[0]
+        for v in range(1, m):
+            sp = sp + rows[:, v] * w[v]
+        return sp
+
+    targ = np.ascontiguousarray(targ + 0.0)
+    t_proj = proj(targ)
+    t_keys = targ.view(vd).ravel()
+    # the distinct count only matters below _DD_BATCH_MIN
+    need = _DD_BATCH_MIN if len(alphas_list) < _DD_BATCH_MIN else 0
+    seen = set()
     E = len(terms)
     k, P = 1, len(terms[0])
     inner = terms[0]
@@ -2944,31 +2962,41 @@ def _full_product_first_occurrence(lams_per_edge, a_int_per_edge, m,
         P *= len(terms[k])
         k += 1
     first = np.full(len(targ), -1, dtype=np.int64)
-    small, big = set(), 0
     base = 0
     outer = [range(len(terms[e])) for e in range(E - 1, k - 1, -1)]
     for combo in itertools.product(*outer):
         block = inner
         for j, i in enumerate(reversed(combo)):
             block = block + terms[k + j][i]
-        keys = np.ascontiguousarray(block + 0.0).view(vd).ravel()
-        u, fi = np.unique(keys, return_index=True)
-        if len(u) >= 64:
-            big = max(big, len(u))
-        elif not big:
-            small.update(x.tobytes() for x in u)
+        block = np.ascontiguousarray(block + 0.0)
+        sp = proj(block)
+        if need and len(seen) < need:
+            # distinct projections are distinct rows: enough of them settle
+            # it; otherwise count the rows themselves
+            if len(np.unique(sp)) >= need:
+                seen.update(range(-need, 0))
+            else:
+                seen.update(x.tobytes()
+                            for x in np.unique(block.view(vd).ravel()))
         miss = np.flatnonzero(first < 0)
         if len(miss):
-            pos = np.minimum(np.searchsorted(u, targ[miss]), len(u) - 1)
-            hit = u[pos] == targ[miss]
-            first[miss[hit]] = base + fi[pos[hit]]
+            ts = np.sort(t_proj[miss])
+            at = np.minimum(np.searchsorted(ts, sp), len(ts) - 1)
+            cand = np.flatnonzero(ts[at] == sp)
+            if len(cand):
+                u, fi = np.unique(block[cand].view(vd).ravel(),
+                                  return_index=True)
+                pos = np.minimum(np.searchsorted(u, t_keys[miss]),
+                                 len(u) - 1)
+                hit = u[pos] == t_keys[miss]
+                first[miss[hit]] = base + cand[fi[pos[hit]]]
         base += P
+        if not np.any(first < 0) and not (need and len(seen) < need):
+            break
     if np.any(first < 0):
         return None
-    n_unique = big if big else len(small)
-    if base == P:
-        n_unique = len(u)
-    return first.tolist(), n_unique
+    return first.tolist(), (min(len(seen), need) if need and len(seen) >= need
+                            else len(seen) if need else len(alphas_list))
 
 
 # ───────────────────────────────────────────────────────────────────────
