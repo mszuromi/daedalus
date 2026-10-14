@@ -163,10 +163,10 @@ def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
     exact cluster analysis, record it in ``cluster_out['analysis']`` and
     return the tier-1 triple ``(pole_vals, C_mats, D_delta)`` with the
     residues to 50 digits (exact root membership per entry; the tier-1 loop
-    below decides it with an absolute tolerance, which fails for close
-    roots), else ``None`` (the caller keeps its old path): when the
-    deformation is switched off, when the analysis failed, and for an
-    unresolved repeated root.  Never raises."""
+    below attributes double-precision roots to the exact factors, which
+    cannot separate close roots), else ``None`` (the caller keeps its old
+    path): when the deformation is switched off, when the analysis failed,
+    and for an unresolved repeated root.  Never raises."""
     from api import _pole_clusters as _pc
     try:
         an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
@@ -194,6 +194,206 @@ def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
               + (f'; Phase J averages {an.deformation.n_nodes} deformed '
                  f'node(s).' if an.deformation is not None else '.'))
     return pole_vals, C_mats, D_delta
+
+
+#: Root attribution in the exact tier (``_entry_pole_membership``): a
+#: computed root of Q is attributed to the coprime factor with the smallest
+#: Newton distance |b(p)/b'(p)| only when that distance is below this
+#: fraction of every other factor's.  The owning factor's distance is the
+#: root finder's error; any other factor's is at least (distance to its
+#: nearest root) / (its degree), so the gap is the root separation over the
+#: root error, many orders of magnitude for any root the exact tier keeps
+#: (close roots of different factors go to ``api._pole_clusters``).
+_MEMBERSHIP_GAP = 1e-3
+
+#: Accuracy certificate of the exact tier's double-precision poles and
+#: residues (``_residue_error``): the poles Newton-refined on the exact Q and
+#: the residues recomputed at ``_CERT_DPS`` digits; a root that moves, or a
+#: residue that differs, by more than ``_RESIDUE_RTOL`` relative (per entry,
+#: to its largest residue) sends the whole propagator to the exact 50-digit
+#: route.  High-degree denominators (long rational kernels) lose digits in
+#: double precision: monomial-basis roots and Horner sums of huge
+#: coefficients.  The bound is conservative: C(tau) errors measured 10 to
+#: 100 times below it (Erlang / Pade kernels up to degree 24), so the
+#: certified double route stays within ~1e-12 of the exact one.
+_RESIDUE_RTOL = 1e-11
+_CERT_DPS = 30
+_CERT_NEWTON = 3
+
+
+class PoleResidueWarning(UserWarning):
+    """A pole or residue could not be computed reliably: the exact tier
+    failed (its root labelling and its high-precision route) and the
+    numerical tier was used, or the numerical tier met a vanishing
+    det'(omega_k) or fell back to its fixed-degree polynomial fit."""
+
+
+def _entry_pole_membership(Q_poly, dens, roots, to_cdf):
+    """Which roots of ``Q_poly`` are poles of which propagator entry.
+
+    ``Q_poly``: the squarefree lcm of the entry denominators; ``dens``:
+    ``{(i, j): denominator}`` (monic, ``Frac(CF[omega])`` canonical form);
+    ``roots``: every computed root of ``Q_poly`` (complex); ``to_cdf``: the
+    CF -> CDF polynomial conversion.
+
+    Returns ``(member, how)``.  ``member[(i, j)]`` is the set of indices
+    into ``roots`` that are poles of entry (i, j), or ``None`` for all of
+    them; ``member`` itself is ``None`` when undecided.  ``how``:
+
+    * ``'shared'``: every entry's denominator is ``Q_poly``, so every root
+      is a pole of every entry (no numerical decision at all);
+    * ``'labelled'``: the entry denominators split ``Q`` into pairwise
+      coprime factors (gcd refinement over QQ[i]); which factors divide
+      which entry is exact.  Each computed root is attributed to one factor
+      by the Newton distance (``_MEMBERSHIP_GAP``), and every factor must
+      receive exactly its degree in roots;
+    * ``'undecided'``: the attribution was not clear-cut (``member is
+      None``); the caller uses the exact high-precision route.
+
+    Never decided by the magnitude of ``|Q_ij(p)|``: at high degree its
+    rounding alone exceeds any fixed threshold."""
+    import math
+    if all(d == Q_poly for d in dens.values()):
+        return {key: None for key in dens}, 'shared'
+    from api._pole_clusters import _coprime_base
+    distinct = []
+    for d in dens.values():
+        if d != Q_poly and d not in distinct:
+            distinct.append(d)
+    base = _coprime_base(Q_poly, distinct)
+    if sum(b.degree() for b in base) != Q_poly.degree() or (
+            len(roots) != Q_poly.degree()):
+        return None, 'undecided'
+    divides = {key: frozenset(k for k, b in enumerate(base) if d % b == 0)
+               for key, d in dens.items()}
+    for key, d in dens.items():
+        if sum(base[k].degree() for k in divides[key]) != d.degree():
+            return None, 'undecided'
+    base_cdf = [to_cdf(b) for b in base]
+    base_der = [b.derivative() for b in base_cdf]
+    owner, count = [], [0] * len(base)
+    for p in roots:
+        nu = []
+        for b, db in zip(base_cdf, base_der):
+            v, dv = complex(b(p)), complex(db(p))
+            if dv == 0 or not (math.isfinite(abs(v)) and math.isfinite(abs(dv))):
+                nu.append(math.inf if v != 0 else 0.0)
+            else:
+                nu.append(abs(v) / abs(dv))
+        k = min(range(len(base)), key=nu.__getitem__)
+        others = [x for m, x in enumerate(nu) if m != k]
+        if not math.isfinite(nu[k]) or (
+                others and not nu[k] <= _MEMBERSHIP_GAP * min(others)):
+            return None, 'undecided'
+        owner.append(k)
+        count[k] += 1
+    if any(count[k] != b.degree() for k, b in enumerate(base)):
+        return None, 'undecided'
+    member = {key: frozenset(r for r, k in enumerate(owner)
+                             if k in divides[key])
+              for key in dens}
+    return member, 'labelled'
+
+
+def _exact_route(G_ft_F, Q_poly, nf, tau_max, verbose):
+    """The exact tier's residues by the high-precision route of
+    ``api._pole_clusters`` (the roots of each exact coprime factor of Q,
+    membership exact, 50 digits): ``(pole_vals, C_mats, D_delta)``.
+    Raises on failure."""
+    from api import _pole_clusters as _pc
+    an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
+    if an.nominal is None:
+        raise ArithmeticError('the exact route returned no residues')
+    pole_vals, C_mats = an.nominal
+    if verbose:
+        print(f'[propagator] polynomial-fracfield: residues by the exact '
+              f'route ({len(pole_vals)} retarded poles, 50 digits).')
+    return pole_vals, C_mats, _d_delta_exact(G_ft_F, nf)
+
+
+def _exact_route_fallback(G_ft_F, Q_poly, nf, tau_max, analysis_out,
+                          verbose, reason, cluster_out=None):
+    """The tier-1 double-precision residues are not usable (``reason``: the
+    poles could not be attributed to the entries, or the residues failed
+    their accuracy certificate): the exact high-precision route, else (it
+    failed too) a ``PoleResidueWarning`` and ``(None, None, None)`` so
+    the caller uses the numerical tier.  Recorded in
+    ``analysis_out['residue_route']`` (``'exact'`` / ``'failed'``) and
+    ``['residue_route_reason']`` for the analyzer's G3 gate; never
+    silent."""
+    import warnings
+    try:
+        res = None
+        if cluster_out is not None:
+            # the exact roots may form a cluster the double roots hid:
+            # record its analysis (and deformation) as _cluster_path does
+            res = _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out,
+                                verbose)
+        if res is None:
+            res = _exact_route(G_ft_F, Q_poly, nf, tau_max, verbose)
+        route = 'exact'
+    except Exception as exc:
+        res, route = (None, None, None), 'failed'
+        reason = (f'{reason}; the exact route failed too '
+                  f'({type(exc).__name__}: {exc!s:.120})')
+        warnings.warn(
+            f'the exact propagator tier could not compute the residues of '
+            f'Q(omega) (degree {Q_poly.degree()}): {reason}.  They come from '
+            f'the numerical cofactor tier.', PoleResidueWarning,
+            stacklevel=4)
+    if analysis_out:
+        analysis_out['residue_route'] = route
+        analysis_out['residue_route_reason'] = reason
+    return res
+
+
+def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
+    """A posteriori relative error of the tier-1 double-precision residues
+    ``C_mats`` (before the 1e-12 noise clip, which stays as it was):
+    each pole Newton-refined on the exact Q at ``_CERT_DPS`` digits, each
+    nonzero residue ``i P_ij(p) / Q_ij'(p)`` recomputed there, compared
+    with the double value; per entry relative to its largest residue.
+    ``inf`` when the refinement fails (no certificate)."""
+    import mpmath as mp
+    from api._pole_clusters import _mpc
+    with mp.workdps(_CERT_DPS):
+        co = lambda poly: [_mpc(c) for c in poly.list()]
+        q = co(Q_poly)
+        dq = [k * q[k] for k in range(1, len(q))]
+        ev = lambda c, x: mp.polyval(c[::-1], x)
+        dd = {key: co(d.derivative()) for key, d in dens.items()}
+        pp = {key: co(P) for key, P in nums.items()}
+        exact = []
+        for pk, r_idx in pole_idx:
+            p = mp.mpc(pk)
+            for _ in range(_CERT_NEWTON):
+                dv = ev(dq, p)
+                if dv == 0:
+                    return float('inf')
+                p -= ev(q, p) / dv
+            if abs(p - pk) > _RESIDUE_RTOL * abs(p):
+                return float('inf')        # a root error this large: refine
+            row = {}
+            for key in dens:
+                own = member[key]
+                if own is not None and r_idx not in own:
+                    continue
+                dv = ev(dd[key], p)
+                if dv == 0:
+                    return float('inf')
+                row[key] = 1j * ev(pp[key], p) / dv
+            exact.append(row)
+        err = 0.0
+        for key in dens:
+            vals = [row.get(key, 0) for row in exact]
+            scale = max((abs(v) for v in vals), default=0)
+            if scale == 0:
+                continue
+            for k, v in enumerate(vals):
+                i, j = key
+                err = max(err, float(abs(complex(C_mats[k][i, j]) - v)
+                                     / scale))
+    return err
 
 
 def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
@@ -361,9 +561,12 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                                     verbose)
                 if res is not None:
                     return res
-        pole_vals = [complex(r) for r, _ in roots
-                     if complex(r).imag > 1e-9]
-        pole_vals.sort(key=lambda p: (p.imag, p.real))
+        all_roots = [complex(r) for r, _ in roots]
+        # (pole, index into all_roots), retarded, in the (Im, Re) order
+        pole_idx = sorted(((p, r) for r, p in enumerate(all_roots)
+                           if p.imag > 1e-9),
+                          key=lambda t: (t[0].imag, t[0].real))
+        pole_vals = [p for p, _ in pole_idx]
 
         # Cache numerator polynomials per entry (CDF[om]) for evaluation.
         P_cdf = [[PR_cdf(0)] * nf for _ in range(nf)]
@@ -392,35 +595,66 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                     Q_entry_cdf[i][j] = q_cdf
                     Q_entry_prime_cdf[i][j] = q_cdf.derivative()
 
+        # Which poles belong to which entry: decided exactly (the entry
+        # denominators split Q into exact coprime factors), never by the
+        # size of |Q_ij(pk)| -- whose rounding alone exceeds any fixed
+        # threshold at high degree (every pole dropped, C = 0).
+        dens = {(i, j): Q_per_entry[i][j] for i in range(nf)
+                for j in range(nf) if Q_per_entry[i][j] is not None}
+        member, how = _entry_pole_membership(Q_poly, dens, all_roots,
+                                             _cf_poly_to_cdf)
+        if member is None:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'the poles of Q could not be attributed to the entries',
+                cluster_out)
+        if analysis_out:
+            analysis_out['membership'] = how
+
         C_mats = []
-        for pk in pole_vals:
+        C_raw = []      # before the noise clip: what the certificate checks
+        for pk, r_idx in pole_idx:
             C_entries = [[0j] * nf for _ in range(nf)]
             for i in range(nf):
                 for j in range(nf):
                     if Q_per_entry[i][j] is None:
                         continue
-                    # Skip entries where pk isn't a pole of THIS
-                    # entry's canonical denominator — the residue
-                    # vanishes there.  We detect this via the
-                    # magnitude of the entry's Q evaluated at pk.
-                    qij_at = complex(Q_entry_cdf[i][j](pk))
-                    if abs(qij_at) > 1e-9:
-                        continue
+                    own = member[(i, j)]
+                    if own is not None and r_idx not in own:
+                        continue        # pk is not a pole of this entry
                     qijp = complex(Q_entry_prime_cdf[i][j](pk))
-                    if abs(qijp) < 1e-30:
-                        # Higher-multiplicity pole (Q_per_entry has pk
-                        # with order ≥ 2).  The single-pole residue
-                        # formula doesn't apply; leave 0 and rely on
-                        # the polynomial fall-back to flag the issue.
-                        continue
+                    if qijp == 0 or not np.isfinite(qijp):
+                        # a simple root of a squarefree Q: Q_ij'(pk) != 0
+                        # exactly, so only a numerical breakdown gets here
+                        return _exact_route_fallback(
+                            G_ft_F, Q_poly, nf, tau_max, analysis_out,
+                            verbose, 'a residue denominator vanished '
+                            'numerically', cluster_out)
                     P_at = complex(P_cdf[i][j](pk))
                     C_entries[i][j] = 1j * P_at / qijp
             C_np = np.array(C_entries)
+            C_raw.append(C_np)
             mx = float(np.max(np.abs(C_np))) if C_np.size else 0.0
             if mx > 0:
                 atol = 1e-12 * mx
                 C_np = np.where(np.abs(C_np) > atol, C_np, 0)
             C_mats.append(matrix(CDF, C_np.tolist()))
+
+        # accuracy certificate of the double-precision poles and residues
+        nums = {key: G_ft_F[key].numerator() for key in dens}
+        try:
+            err = _residue_error(Q_poly, dens, nums, member, pole_idx,
+                                 C_raw, nf)
+        except Exception:
+            err = float('inf')
+        if not err <= _RESIDUE_RTOL:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'the double-precision poles / residues failed their '
+                f'accuracy certificate (relative error {err:.2g} > '
+                f'{_RESIDUE_RTOL:g})', cluster_out)
+        if analysis_out:
+            analysis_out['residue_route'] = 'double'
 
         # D_delta = lim_{ω→∞} G_ft(ω), computed entrywise as the limit of
         # the entry's OWN reduced rational form P_ij / Q_ij:
@@ -1045,6 +1279,91 @@ def _horner(coeffs, x):
     return v
 
 
+def _warn_zero_residue(pk):
+    import warnings
+    warnings.warn(
+        f'the numerical propagator tier found det\'(omega) = 0 at the pole '
+        f'{complex(pk):.6g} (a repeated pole?): its residue is set to zero.',
+        PoleResidueWarning, stacklevel=3)
+
+
+def _singular_at(det_at, om):
+    """Scale-free test that ``det K`` vanishes at ``om``: ``|det K(om)|`` at
+    most 1e-6 of its largest value on a small circle around ``om`` (radius
+    1e-3 (1 + |om|)).  An absolute ``|det| < tol`` misfires both ways: a
+    high-degree det is huge everywhere (rounding at a true root exceeds any
+    fixed tol), a small-scale one is tiny everywhere.  Away from a zero the
+    ratio is O(1); at a Newton-refined zero it is the evaluation noise over
+    |det'| rho, below 1e-6 unless the root itself is ill-conditioned beyond
+    double precision (cond ~ 1e7 / rho)."""
+    import numpy as np
+    try:
+        d0 = abs(det_at(om))
+        rho = 1e-3 * (1 + abs(om))
+        ring = max(abs(det_at(om + rho * np.exp(2j * np.pi * k / 8)))
+                   for k in range(8))
+    except Exception:
+        return False
+    return bool(np.isfinite(d0) and np.isfinite(ring) and ring > 0
+                and d0 <= 1e-6 * ring)
+
+
+def _newton_det(det_at, om, max_iter=30):
+    """Newton on ``det K`` from ``om`` (relative step tolerance); ``None`` on
+    a vanishing or non-finite derivative."""
+    import numpy as np
+    om = complex(om)
+    for _ in range(max_iter):
+        d = det_at(om)
+        if not np.isfinite(d):
+            return None
+        h = 1e-7 * (1 + abs(om))
+        dp = (det_at(om + h) - det_at(om - h)) / (2 * h)
+        if dp == 0 or not np.isfinite(dp):
+            return None
+        step = d / dp
+        om -= step
+        if abs(step) <= 1e-14 * (1 + abs(om)):
+            break
+    return om
+
+
+def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
+    """The numerical tiers trim leading coefficients of num(det K) below
+    1e-12 of the largest as noise.  For a high-degree det (a long rational
+    kernel: coefficients ~ (d/n)^n) they are genuine, and the trim drops
+    poles (Erlang-16: degree 17 -> 13, most poles lost).  The retarded roots
+    of the untrimmed polynomial are Newton-refined on det K(omega) and
+    returned when K is singular there (``_singular_at``) and the trimmed
+    candidates have nothing within 1e-7 (1 + |omega|); a noise coefficient's
+    roots are not zeros of det K, so a true noise trim is unchanged."""
+    import numpy as np
+    from sage.all import PolynomialRing, CDF
+    try:
+        full = [complex(r) for r, _ in
+                PolynomialRing(CDF, 'w_full')(coeffs_full).roots(CDF)]
+    except Exception:
+        return []
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
+    extra = []
+    for r0 in full:
+        if r0.imag <= 1e-9:
+            continue
+        r = _newton_det(det_at, r0)
+        if r is None or r.imag <= 1e-9 or not _singular_at(det_at, r):
+            continue
+        if any(abs(r - q) <= 1e-7 * (1 + abs(r))
+               for q in list(roots_trim) + extra):
+            continue
+        extra.append(r)
+    if verbose and extra:
+        print(f'      the leading-coefficient trim dropped {len(extra)} '
+              f'genuine pole(s); restored')
+    return extra
+
+
 def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                                resolve_clusters=False):
     """
@@ -1161,6 +1480,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     from sage.all import matrix as _matrix
     import numpy as np
 
+    trimmed_full = None     # num(det K) before a leading-coefficient trim
     if adj_ft is None or G_ft is None:
         # ── Heterogeneous / rich path ────────────────────────────
         # Architecture (determinant-first, global poles, entrywise
@@ -1233,6 +1553,8 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             while len(coeffs_asc_trim) > 1 and \
                   abs(coeffs_asc_trim[-1]) < tol_lead:
                 coeffs_asc_trim.pop()
+        if len(coeffs_asc_trim) < len(coeffs_asc):
+            trimmed_full = list(coeffs_asc)     # checked below
         char_poly = PR(coeffs_asc_trim)
         # Use Sage's polynomial root finder (MPS / PARI under the
         # hood) rather than numpy.roots — empirically more accurate
@@ -1307,6 +1629,12 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             if verbose:
                 print('      symbolic root-finding produced 0 roots — '
                       'falling back to numerical polyfit + Newton refine')
+            import warnings
+            warnings.warn(
+                'symbolic pole finding produced no roots: the poles come from '
+                f'a degree-{4 * nf} polynomial fit of det K(omega), which '
+                'misses any beyond that degree.', PoleResidueWarning,
+                stacklevel=2)
 
             def _det_at(om):
                 return complex(np.linalg.det(_K_at(om)))
@@ -1342,7 +1670,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                     d_plus  = _det_at(om + h)
                     d_minus = _det_at(om - h)
                     d_prime = (d_plus - d_minus) / (2 * h)
-                    if abs(d_prime) < 1e-30:
+                    if d_prime == 0 or not np.isfinite(d_prime):
                         return None
                     step = d / d_prime
                     om -= step
@@ -1356,7 +1684,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                 if r is None:
                     continue
                 try:
-                    if abs(_det_at(r)) < 1e-6 and r.imag > 1e-9:
+                    if r.imag > 1e-9 and _singular_at(_det_at, r):
                         if not any(abs(r - q) < 1e-7 for q in refined):
                             refined.append(r)
                 except Exception:
@@ -1376,12 +1704,16 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
         G_big  = _G_at(1e8 * (1 + 0j))
         G_huge = _G_at(1e10 * (1 + 0j))
         D_delta_data = []
+        # an entry below 1e-12 is noise only when it is noise relative to
+        # the matrix (rounding of the inverse); a model whose G is small
+        # everywhere keeps its delta part
+        g_noise = 1e-12 * float(np.max(np.abs(G_big))) if G_big.size else 0.0
         for i in range(nf):
             row = []
             for j in range(nf):
                 a, b = G_big[i, j], G_huge[i, j]
                 ma = abs(a)
-                if ma < 1e-12:
+                if ma == 0 or (ma < 1e-12 and ma <= g_noise):
                     row.append(SR(0))
                 elif abs(a - b) / ma < 1e-3:
                     row.append(SR(complex(b)))
@@ -1416,10 +1748,13 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
         # Trim trailing near-zero leading coefficients (polynomial-degree
         # noise from symbolic simplification).
         if coeffs_asc:
+            coeffs_untrimmed = list(coeffs_asc)
             tol_lead = 1e-12 * max(abs(c) for c in coeffs_asc)
             while len(coeffs_asc) > 1 and \
                   abs(coeffs_asc[-1]) < tol_lead:
                 coeffs_asc.pop()
+            if len(coeffs_asc) < len(coeffs_untrimmed):
+                trimmed_full = coeffs_untrimmed     # checked below
         if coeffs_asc and len(coeffs_asc) > 1:
             char_poly = PR(coeffs_asc)
         else:
@@ -1483,6 +1818,11 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                     K_at[i, j] = n / d if d != 0 else 0j
             return K_at
 
+    # a leading-coefficient trim may have dropped genuine poles
+    if trimmed_full is not None:
+        roots_all = list(roots_all) + _restore_trimmed_roots(
+            trimmed_full, roots_all, _K_at, verbose)
+
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
     # → causal closure of the inverse-FT contour).  Pre-dedup at the
@@ -1537,7 +1877,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                 except Exception:
                     return None
                 d_prime = (d_plus - d_minus) / (2 * h)
-                if abs(d_prime) < 1e-30:
+                if d_prime == 0 or not np.isfinite(d_prime):
                     return None
                 step = d / d_prime
                 om -= step
@@ -1625,7 +1965,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
                 d_plus = complex(np.linalg.det(_K_at(om + h)))
                 d_minus = complex(np.linalg.det(_K_at(om - h)))
                 d_prime = (d_plus - d_minus) / (2 * h)
-                if abs(d_prime) < 1e-30:
+                if d_prime == 0 or not np.isfinite(d_prime):
                     return None
                 step = d / d_prime
                 om -= step
@@ -1654,7 +1994,11 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             # typical det magnitude) AND must remain in the upper
             # half plane after refinement (Newton sometimes drifts
             # to the conjugate root, which is not retarded).
-            if abs(det_at) > 1e-6:
+            # (an absolute |det| bound alone rejects true poles of a
+            # high-degree det, whose rounding exceeds it: also accept a
+            # root where det K vanishes relative to its neighbourhood)
+            if abs(det_at) > 1e-6 and not _singular_at(
+                    lambda om: complex(np.linalg.det(_K_at(om))), r_ref):
                 rejected.append((r, det_at))
                 continue
             if r_ref.imag <= 1e-9:
@@ -1712,9 +2056,10 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             # region for det(K).
             h = 1e-6 * (1 + abs(pk))
             d_prime = (_det_at(pk + h) - _det_at(pk - h)) / (2 * h)
-            if abs(d_prime) < 1e-30:
-                # Shouldn't happen for non-degenerate poles, but
-                # bail safely by emitting a zero residue matrix.
+            if d_prime == 0 or not np.isfinite(d_prime):
+                # Shouldn't happen for non-degenerate poles: a zero
+                # residue matrix, never silently
+                _warn_zero_residue(pk)
                 C_mats.append(_matrix(CDF,
                     [[0j] * nf for _ in range(nf)]))
                 continue
@@ -1789,7 +2134,8 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             # det'(pk) via central difference, scaled to pk magnitude
             h = 1e-6 * (1 + abs(pk))
             d_prime = (_det_at_lean(pk + h) - _det_at_lean(pk - h)) / (2 * h)
-            if abs(d_prime) < 1e-30:
+            if d_prime == 0 or not np.isfinite(d_prime):
+                _warn_zero_residue(pk)
                 C_mats.append(_matrix(CDF,
                     [[0j] * nf for _ in range(nf)]))
                 continue

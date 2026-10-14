@@ -138,6 +138,8 @@ FINDING_CODES = {
     'G3_REPEATED_POLE':          ('G3', 'info'),      # resolved (api._pole_clusters)
     'G3_CLOSE_POLES':            ('G3', 'info'),
     'G3_POLE_CLUSTER_UNRESOLVED': ('G3', 'warning'),
+    'G3_RESIDUES_HIGH_PRECISION': ('G3', 'info'),
+    'G3_RESIDUES_NUMERICAL_TIER': ('G3', 'warning'),
     'G3_STIFF':                  ('G3', 'info'),
     'G3_DELTA_COMPONENT':        ('G3', 'info'),
     'G3_IMPROPER':               ('G3', 'error'),
@@ -354,6 +356,9 @@ class ModelTraits:
     delta_component: Optional[bool] = None
     causal: Optional[bool] = None
     pole_source: Optional[str] = None     # 'exact' | 'pipeline'
+    #: how the pipeline's exact tier computed the residues: 'double'
+    #: (certified), 'exact' (50 digits) or 'failed' (numerical tier)
+    residue_route: Optional[str] = None
     # G3, spatial models: lambda(q) = eig(M + V q + D q^2) (decay rates)
     spatial_mass_min: Optional[float] = None    # min Re eig(M) (q = 0)
     spatial_rate_min: Optional[float] = None    # min over the q probes
@@ -1796,6 +1801,30 @@ def _g3_rational(ctx):
     return True
 
 
+def _g3_residue_route(ctx, pa):
+    """How the pipeline's exact tier computed the residues
+    (``prop['pole_analysis']['residue_route']``, ``api._propagator``):
+    ``'double'`` (certified), ``'exact'`` (the 50-digit route, with the
+    reason) or ``'failed'`` (the numerical cofactor tier)."""
+    route = pa.get('residue_route')
+    ctx.t['residue_route'] = route
+    why = pa.get('residue_route_reason') or ''
+    if route == 'exact':
+        ctx.add('G3_RESIDUES_HIGH_PRECISION',
+                f'poles and residues by the exact 50-digit route: {why}.',
+                'none needed')
+    elif route == 'failed':
+        ctx.ledger_add('consent', 'numeric_fallback',
+                       'poles and residues from the numerical cofactor tier '
+                       '(the exact tier could not compute them)',
+                       declared=ctx.p.allow_numeric_fallback)
+        ctx.add('G3_RESIDUES_NUMERICAL_TIER',
+                f'the exact tier could not compute the residues ({why}); the '
+                'numerical cofactor tier did, without an accuracy guarantee.',
+                'check G6 accuracy; rational parameter values help the exact '
+                'tier')
+
+
 def _g3_pole_findings(ctx, res):
     """Pole statistics, causality and (legacy / algebraic models) the
     stability from ``res = (deg Q, distinct poles, squarefree, delta
@@ -2948,6 +2977,7 @@ class Preflight:
                 res = (pa['degree'], list(pa['poles']), pa['squarefree'],
                        list(pa['delta']), list(pa['improper']),
                        prop.get('pole_clusters'))
+                _g3_residue_route(ctx, pa)
             else:
                 # the pipeline's exact tier failed before Q(omega) (it then
                 # used the numerical cofactor tier): the analyzer's own
