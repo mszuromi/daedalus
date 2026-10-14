@@ -44,10 +44,13 @@ Phase J refuses rather than exhausting memory. A pre-pass at the start of Phase 
 plan will hold (`estimate_modesum_plans`: per diagram, the nonzero modes of each propagator edge, the δ-subset
 sum; diagrams whose prefactor is exactly 0 are left out when the count without that test is over budget)
 times 1,100 bytes; it costs milliseconds (about 8 µs per diagram). A running guard before each plan is allocated
-keeps the total of the run (`phase_j_memory_scope`). Over budget, either raises `PhaseJResourceError`
-(`dd.PhaseJResourceError`, a `MemoryError`) under every analyzer policy, before anything is allocated. The
-message gives the estimate, the largest diagram or subset, and how to raise the budget (`PHASE_J_MEM_BUDGET_GB`
-in GB, or `off`). The estimate is in `result['phase_j_memory']`, in the analyzer report
+keeps the exact total of the run (`phase_j_memory_scope`). The estimate is an upper bound: δ-subsets that
+build no plan are counted. On a spike-only two-neuron Hawkes model it is 9.3 M tuples where 1.8 M are built.
+So the pre-pass refuses outright only above 8x the budget (`PHASE_J_PREPASS_REFUSE_FACTOR`; the unpruned
+108 GB case above); between 1x and 8x the running guard decides at each plan. Either raises
+`PhaseJResourceError` (`dd.PhaseJResourceError`, a `MemoryError`) under every analyzer policy, before the
+offending plan is allocated. The message gives the numbers, the largest diagram or subset, and how to raise the
+budget (`PHASE_J_MEM_BUDGET_GB` in GB, or `off`). The estimate is in `result['phase_j_memory']`, in the analyzer report
 (`diagnostics['phase_j_memory']`) and in the assumptions ledger (`phase_j_memory_budget`). No zoo entry is near
 the default budget.
 
