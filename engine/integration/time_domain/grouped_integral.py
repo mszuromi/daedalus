@@ -98,6 +98,7 @@ is exercised, this prototype should be carefully cross-checked against
 they MUST match to floating-point round-off).
 """
 
+import math
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
 
 from engine.integration.time_domain.propagator_td import (
@@ -1352,11 +1353,45 @@ def integrate_grouped_diagram(
                     for td_idx in contributing_td
                 ]
                 n_smooth = len(smooth_edges)
-                # Enumerate multi-indices over per-edge poles and sum
-                # residues across td's.
+                # Item 35 (F1): per smooth edge, the poles whose residue is
+                # nonzero for SOME member td; a pole whose residue is exactly
+                # 0 for every member gives B_alpha = 0 in every tuple that
+                # takes it, and the evaluators skip zero coefficients (no
+                # plan here: they sum the tuples in order, so leaving those
+                # tuples out changes no number).  An edge with no such pole
+                # (the whole sum is zero) keeps every pole, as before.
+                poles_per_edge = [range(n_poles)] * n_smooth
+                if _fi_mod.PRUNE_ZERO_MODES and n_smooth:
+                    live = [
+                        [p for p in range(n_poles)
+                         if any(not _fi_mod._mode_is_zero(
+                             smooth_residues_per_j[j][ee][p])
+                             for j in range(len(smooth_residues_per_j)))]
+                        for ee in range(n_smooth)]
+                    if (all(live)
+                            and any(len(lv) < n_poles for lv in live)):
+                        _fi_mod._RUNTIME_COUNTERS['zero_modes_pruned'] += (
+                            sum(n_poles - len(lv) for lv in live))
+                        _fi_mod._RUNTIME_COUNTERS[
+                            'zero_mode_tuples_pruned'] += (
+                            n_poles ** n_smooth
+                            - math.prod(len(lv) for lv in live))
+                        _fi_mod._RUNTIME_COUNTERS[
+                            'zero_mode_plans_pruned'] += 1
+                        poles_per_edge = live
+                # Enumerate multi-indices over per-edge poles (edge 0
+                # fastest) and sum residues across td's.
                 grouped_pole_tuples = []
-                idx_alpha = [0] * n_smooth
+                n_per_edge = [len(pp) for pp in poles_per_edge]
+                # item 35: the running memory guard, before allocating
+                _fi_mod._plan_guard(
+                    math.prod(n_per_edge), n_poles ** n_smooth,
+                    f'grouped diagrams, m = {m_sub}, {n_smooth} smooth '
+                    f'edges with {n_per_edge} poles')
+                pos_alpha = [0] * n_smooth
                 while True:
+                    idx_alpha = [poles_per_edge[ee][pos_alpha[ee]]
+                                 for ee in range(n_smooth)]
                     B_alpha = 0.0 + 0.0j
                     for j in range(len(merged_pf_per_j)):
                         prod = merged_pf_per_j[j]
@@ -1371,10 +1406,10 @@ def integrate_grouped_diagram(
                     # Advance multi-index.
                     ee = 0
                     while ee < n_smooth:
-                        idx_alpha[ee] += 1
-                        if idx_alpha[ee] < n_poles:
+                        pos_alpha[ee] += 1
+                        if pos_alpha[ee] < n_per_edge[ee]:
                             break
-                        idx_alpha[ee] = 0
+                        pos_alpha[ee] = 0
                         ee += 1
                     else:
                         break

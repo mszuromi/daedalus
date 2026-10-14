@@ -1298,6 +1298,32 @@ class _BaseModelBuilder:
             lhs_text   = eq['lhs_text']
             rhs_text   = eq['rhs_text']
 
+            # A pure integrator (item 35): the LHS vanishes at Dt = 0
+            # (``Dt*h[i]``), so the saddle condition is the constraint
+            # 0 = RHS on the OTHER fields.  The saddle text is derived as
+            # for the equivalent form with the RHS moved to the LHS
+            # (``lhs='Dt*h[i] - (RHS)', rhs='0'``; bit-identical results),
+            # while ``model['equations']`` keeps the declaration as
+            # written: the DAE solver reads it with Dt -> 0 and solves the
+            # whole system jointly (``solve_mean_field_dae`` checks that it
+            # determines the saddle).  An RHS without any field cannot be
+            # satisfied by choosing a saddle: refuse it here.
+            if self._lhs_vanishes_at_dt0(lhs_text):
+                if not any(re.search(rf'\b{re.escape(v)}\b', rhs_text)
+                           for v in state_var_names):
+                    raise ValueError(
+                        f'ModelBuilder.build(): the equation '
+                        f'lhs={lhs_text!r}, rhs={rhs_text!r} is a pure '
+                        f'integrator (its LHS vanishes at Dt=0) whose RHS '
+                        f'contains no field, so its stationarity condition '
+                        f'0 = {rhs_text} involves no field: nothing pins '
+                        f'the integrated variable (a random walk has no '
+                        f'stationary state).  Add a restoring term (e.g. '
+                        f"lhs='(Dt + eps)*h[i]') or a feedback of the "
+                        f'integrated field into the other equations.')
+                lhs_text = f'{lhs_text} - ({rhs_text})'
+                rhs_text = '0'
+
             # Substitute ``Dt → 0`` in the LHS text.  The result should
             # textually contain exactly one state-variable reference.
             lhs_at_dt0 = re.sub(r'\bDt\b', '0', lhs_text)
@@ -1417,6 +1443,36 @@ class _BaseModelBuilder:
 
             saddle_name = f'{primary}star'
             self._mf_eqs_text[saddle_name] = rewritten_rhs
+
+    @staticmethod
+    def _lhs_vanishes_at_dt0(lhs_text):
+        """True iff ``LHS|_{Dt=0}`` is identically zero (a pure time
+        derivative such as ``Dt*h[i]`` or ``Dt*(a*h[i])``), decided
+        symbolically; ``False`` when the text does not parse."""
+        import re
+        if not re.search(r'\bDt\b', lhs_text):
+            return False
+        try:
+            from sage.all import SR, sage_eval, var
+        except ImportError:                        # pragma: no cover
+            return False
+        txt = re.sub(r'\bDt\b', '0', lhs_text)
+        txt = re.sub(r'\bLaplacian\b', '0', txt)
+        if 'Conv(' in txt:
+            return False
+        txt = re.sub(
+            r'\b(\w+)\s*\[\s*([A-Za-z]\w*)\s*(?:,\s*([A-Za-z]\w*)\s*)?\]',
+            lambda m: m.group(1) + '__' + m.group(2)
+            + ('__' + m.group(3) if m.group(3) else ''), txt)
+        reserved = {'sum', 'for', 'in', 'exp', 'log', 'sqrt', 'sin', 'cos',
+                    'tanh', 'heaviside'}
+        names = {n for n in re.findall(r'\b[A-Za-z_]\w*\b', txt)
+                 if n not in reserved and not n[0].isdigit()}
+        try:
+            expr = SR(sage_eval(txt, locals={n: var(n) for n in names}))
+            return bool(expr.expand().is_zero())
+        except Exception:
+            return False
 
     @staticmethod
     def _lhs_dt0_split(lhs_text, primary, scalar_form, state_var_names):

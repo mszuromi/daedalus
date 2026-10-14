@@ -267,7 +267,9 @@ def _build_residual(model: dict, params_np: dict,
     # via numpy broadcasting; this matches the symbolic stability
     # path that wraps these in ``_FieldScalar``).  Multi-position
     # state vars stay as arrays — ``[i]`` indexing required.
-    def R(x: np.ndarray) -> np.ndarray:
+    def R(x: np.ndarray, _lhs_only: bool = False) -> np.ndarray:
+        # ``_lhs_only`` (item 35): the LHS values alone, NaN where one
+        # fails (``_pure_integrator_rows``).
         # Pack state variables as numpy arrays keyed by their declared
         # name (so n[i], v[i] etc. work under Python's eval).
         state = {var: np.asarray(x[start:end], dtype=float)
@@ -298,6 +300,13 @@ def _build_residual(model: dict, params_np: dict,
         out = np.empty(len(expanded), dtype=float)
         for k, (lhs_text, rhs_text, i, pop) in enumerate(expanded):
             ns['i'] = i
+            if _lhs_only:
+                try:
+                    out[k] = float(np.asarray(eval(lhs_text, ns),
+                                              dtype=float).reshape(-1)[0])
+                except Exception:
+                    out[k] = np.nan
+                continue
             try:
                 lhs = eval(lhs_text, ns)
                 rhs = eval(rhs_text, ns)
@@ -633,6 +642,11 @@ def solve_mean_field_dae(
         fixed_point_index = clamped
 
     selected = selectable_records[fixed_point_index]['values']
+    pure = _pure_integrator_rows(R, expanded, total)
+    if pure:
+        x_sel = np.concatenate([np.asarray(selected[f'{v}star'], dtype=float)
+                                for v, _, _ in state_vars])
+        _check_saddle_determined(R, x_sel, pure, expanded)
 
     return {
         'mf_values':           selected,
@@ -653,6 +667,53 @@ def solve_mean_field_dae(
         # Diagnostic: was stability classification actually run?
         'stability_analysis':  stab_on,
     }
+
+
+def _pure_integrator_rows(R, expanded, total) -> list:
+    """The residual rows whose LHS is a pure time derivative (item 35): the
+    text contains ``Dt`` and the LHS is exactly 0 at Dt = 0 at two random
+    states (a separate RNG: the seeds of the solve are untouched)."""
+    import re
+    cand = [k for k, (lhs, _r, _i, _p) in enumerate(expanded)
+            if re.search(r'\bDt\b', lhs)]
+    if not cand:
+        return []
+    rng = np.random.default_rng(35)
+    vals = [R(rng.uniform(0.3, 1.7, total) * rng.choice([-1.0, 1.0], total),
+              _lhs_only=True) for _ in range(2)]
+    return [k for k in cand if all(v[k] == 0.0 for v in vals)]
+
+
+def _check_saddle_determined(R, x, rows, expanded):
+    """Raise when the equations do not determine the saddle at ``x``: the
+    Jacobian of the residual (central differences) is singular.  Run only
+    for models with a pure-integrator equation (``rows``), whose saddle
+    condition 0 = RHS constrains the OTHER fields: when nothing pins the
+    integrated field, every value of it is a root."""
+    n = len(x)
+    J = np.empty((n, n))
+    for j in range(n):
+        h = 1e-6 * max(1.0, abs(x[j]))
+        e = np.zeros(n)
+        e[j] = h
+        J[:, j] = (R(x + e) - R(x - e)) / (2.0 * h)
+    if not np.all(np.isfinite(J)):
+        return
+    sv = np.linalg.svd(J, compute_uv=False)
+    if sv[0] > 0 and sv[-1] > 1e-9 * sv[0]:
+        return
+    eqs = '; '.join(sorted({f'{expanded[k][0]} = {expanded[k][1]}'
+                            for k in rows}))
+    raise ValueError(
+        f'solve_mean_field_dae: the mean-field equations do not determine '
+        f'the saddle: their Jacobian at the root is singular (smallest '
+        f'singular value {sv[-1]:.1e}, largest {sv[0]:.1e}).  The model has '
+        f'pure-integrator equation(s) [{eqs}] (the LHS is a time derivative '
+        f'only), whose stationarity condition 0 = RHS fixes the OTHER '
+        f'fields, so the integrated field itself must be pinned by the rest '
+        f'of the system (fed back into another equation).  Here nothing '
+        f'pins it: every value is a fixed point.  Add a restoring term '
+        f"(e.g. lhs='(Dt + eps)*h[i]') or the missing feedback.")
 
 
 # ── Linear stability via generalized eigenvalue problem ──────────────

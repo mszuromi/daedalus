@@ -605,6 +605,147 @@ DRESS_CONV_KERNELS = (
     _os.environ.get('DAEDALUS_PHASE_J_DRESS_KERNELS', '1').strip().lower()
     not in ('0', 'off', 'false', 'no'))
 
+#: Item 35 (F1): every modesum plan leaves out the pole tuples that take a
+#: mode whose residue is EXACTLY zero (no tolerance; ``_build_pruned_modesum_
+#: plan``).  Driven filters that do not feed back (block-triangular K) give
+#: such entries; at k = 3 one loop the full product n_poles^E was 1e2-1e3
+#: times larger than the nonzero one.  The values are bit-identical to the
+#: unpruned plan's.  Read at call time; env ``DAEDALUS_PRUNE_ZERO_MODES=0``
+#: switches it off at import.
+PRUNE_ZERO_MODES = (
+    _os.environ.get('DAEDALUS_PRUNE_ZERO_MODES', '1').strip().lower()
+    not in ('0', 'off', 'false', 'no'))
+
+#: Item 35: a pruned plan replays the group order of the full product (so
+#: that the group sums run in the unpruned order, bit for bit) when that
+#: product has at most this many pole tuples; beyond it (an unpruned plan of
+#: ~70 GB that could never be built) the groups keep the order of their
+#: first NONZERO tuple (counter ``zero_mode_order_unreplayed``).
+PRUNE_ORDER_MAX_TUPLES = 1 << 26
+
+
+# ── Item 35: the Phase J memory budget ──────────────────────────────────
+#: Bytes one pole tuple of a modesum plan holds: its plan entries (the
+#: (C, lambdas) pair, alphas, gamma constant and slopes as Python complex:
+#: ~800 B) plus the batched kernels' numpy rows (~270 B), measured at m = 6
+#: (item 34).  Plans live as long as the result's callables.
+PLAN_BYTES_PER_TUPLE = 1100
+
+
+class PhaseJResourceError(MemoryError):
+    r"""Phase J would hold more modesum-plan memory than the budget
+    ``PHASE_J_MEM_BUDGET_GB`` (default 6 GB) allows: raised BEFORE the plan
+    that crosses it is allocated (and, from ``compute_cumulants``, before
+    Phase J starts when its estimate already crosses it), under every
+    analyzer policy.  ``estimate``: the numbers (tuples, bytes, budget, the
+    offending diagram / subset)."""
+
+    def __init__(self, message, estimate=None):
+        super().__init__(message)
+        self.estimate = estimate
+
+
+def phase_j_mem_budget_bytes(environ=None):
+    """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB`` (default 6); ``None``
+    (no limit) for ``0``, a negative value, ``off``, ``none`` or ``inf``."""
+    env = _os.environ if environ is None else environ
+    raw = str(env.get('PHASE_J_MEM_BUDGET_GB', '6')).strip().lower()
+    if raw in ('off', 'none', 'inf', 'infinity', ''):
+        return None
+    try:
+        gb = float(raw)
+    except ValueError:
+        raise ValueError(
+            f'PHASE_J_MEM_BUDGET_GB={raw!r} is not a number (GB), or off')
+    if not gb > 0 or gb == float('inf'):
+        return None
+    return gb * 1e9
+
+
+_BUDGET_HOW = ('raise the budget with the environment variable '
+               'PHASE_J_MEM_BUDGET_GB (in GB; e.g. '
+               "os.environ['PHASE_J_MEM_BUDGET_GB'] = '24' before the run, or "
+               "'off' for no limit) if the machine has that much free memory, "
+               'or lower k / max_ell')
+
+
+def _fmt_gb(nbytes):
+    return f'{nbytes / 1e9:.2f} GB'
+
+
+import threading as _threading_budget
+
+#: The running total of one Phase J run (``phase_j_memory_scope``): bytes of
+#: the plans built so far, the budget, and what the run is.
+_PLAN_MEM = {'active': 0, 'used': 0, 'tuples': 0, 'plans': 0,
+             'budget': None, 'what': ''}
+_PLAN_MEM_LOCK = _threading_budget.Lock()
+
+
+class phase_j_memory_scope:
+    """Context for one Phase J run: plans built inside count against one
+    running total (``budget``: bytes, default ``phase_j_mem_budget_bytes()``;
+    ``what``: names the run in the message).  Outside any scope every plan is
+    checked on its own against the budget.  Nested scopes share the outer
+    total."""
+
+    def __init__(self, budget=None, what='', use_env=True):
+        # ``use_env=False`` with ``budget=None``: no limit
+        self.budget = (phase_j_mem_budget_bytes()
+                       if budget is None and use_env else budget)
+        self.what = what
+        self._outer = False
+
+    def __enter__(self):
+        with _PLAN_MEM_LOCK:
+            if _PLAN_MEM['active'] == 0:
+                _PLAN_MEM.update(used=0, tuples=0, plans=0,
+                                 budget=self.budget, what=self.what)
+                self._outer = True
+            _PLAN_MEM['active'] += 1
+        return self
+
+    def __exit__(self, *exc):
+        with _PLAN_MEM_LOCK:
+            _PLAN_MEM['active'] -= 1
+            self.used = _PLAN_MEM['used']
+            self.tuples = _PLAN_MEM['tuples']
+            self.plans = _PLAN_MEM['plans']
+        return False
+
+
+def _plan_guard(n_tuples, n_full, where=None):
+    """The running guard (item 35): account ``n_tuples`` pole tuples of the
+    plan about to be built (``n_full``: before pruning) and raise
+    ``PhaseJResourceError`` BEFORE it is allocated when the run's total (or,
+    outside a ``phase_j_memory_scope``, the plan alone) would exceed the
+    budget."""
+    nbytes = n_tuples * PLAN_BYTES_PER_TUPLE
+    with _PLAN_MEM_LOCK:
+        scoped = _PLAN_MEM['active'] > 0
+        budget = (_PLAN_MEM['budget'] if scoped
+                  else phase_j_mem_budget_bytes())
+        used = _PLAN_MEM['used'] if scoped else 0
+        if budget is not None and used + nbytes > budget:
+            est = {'tuples': n_tuples, 'tuples_unpruned': n_full,
+                   'bytes': nbytes, 'bytes_so_far': used,
+                   'plans_so_far': _PLAN_MEM['plans'] if scoped else 0,
+                   'budget_bytes': budget, 'where': where,
+                   'run': _PLAN_MEM['what'] if scoped else ''}
+            run = f' of {est["run"]}' if est['run'] else ''
+            raise PhaseJResourceError(
+                f'Phase J memory budget exceeded{run}: the next modesum '
+                f'plan ({where or "diagram subset"}) holds {n_tuples:,} pole '
+                f'tuples (~{_fmt_gb(nbytes)}; {n_full:,} before the '
+                f'exact-zero modes were left out) on top of '
+                f'{_fmt_gb(used)} in {est["plans_so_far"]} plans built so '
+                f'far, over the budget of {_fmt_gb(budget)}.  Nothing was '
+                f'allocated for it.  Options: {_BUDGET_HOW}.', est)
+        if scoped:
+            _PLAN_MEM['used'] += nbytes
+            _PLAN_MEM['tuples'] += n_tuples
+            _PLAN_MEM['plans'] += 1
+
 #: Relative gap below which a kernel rate counts as equal to a propagator
 #: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,
 #: unless the line's residue there is below ``DRESS_ZERO_RTOL`` of its
@@ -1456,6 +1597,18 @@ _RUNTIME_COUNTERS = {
     'conv_lines_dressed': 0,
     'conv_dress_zero_modes_dropped': 0,
     'conv_kernel_leg_edges': 0,
+    # item 35: exact-zero residue modes left out of the modesum plans
+    # (modes, and the pole tuples of the full product that took one), the
+    # plans built pruned, and pruned plans whose group order could not be
+    # replayed from the full product (beyond ``PRUNE_ORDER_MAX_TUPLES``)
+    'zero_modes_pruned': 0,
+    'zero_mode_tuples_pruned': 0,
+    'zero_mode_plans_pruned': 0,
+    'zero_mode_order_unreplayed': 0,
+    'zero_mode_order_mismatch': 0,
+    # item 35 F2: pole-tuple groups whose folded coefficient is 0, skipped
+    # by the batched poset kernels before any chain is computed
+    'dd_batch_zero_groups_skipped': 0,
     # ... a final term beyond the log-overflow limit:
     'dbm_declined_overflow': 0,
     # ... a closed form whose estimated rounding error (1e-15 × the summed
@@ -2512,9 +2665,18 @@ def _enumerate_pole_tuples(edge_mode_sums):
 # cache.  Scales with (N_τ − 1) — biggest win on τ-dense sweeps
 # (k=1 max_ell=2 with 10+ probes, etc.).
 def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
-                        m, n_ext):
+                        m, n_ext, prune=None, where=None):
     """Pre-compute the τ-invariant per-pole-tuple data used by the
     analytic modesum integrators.
+
+    ``prune`` (default ``PRUNE_ZERO_MODES``): leave out every pole tuple
+    that takes a mode whose residue is exactly zero (item 35, see
+    ``_build_pruned_modesum_plan``); the plan's numbers are bit-identical
+    to the unpruned plan's.  ``n_tuples_full`` / ``n_groups_full``: the
+    tuple and group counts of the UNPRUNED plan, which pick the batched or
+    scalar kernels exactly as before.  Before any tuple is allocated the
+    running memory guard (``_plan_guard``; ``where`` names the subset in
+    its message) may raise ``PhaseJResourceError``.
 
     Returns a dict with the following keys; all values are tuples
     (immutable, cheap to share across closures):
@@ -2540,30 +2702,53 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
         time index j.  γ at general free_vals is then
         ``γ_const[t] + Σ_j slope[t][j] · free_vals[j]``.
     """
-    pole_tuples = tuple(_enumerate_pole_tuples(smooth_edge_modes))
-    # Pre-extract per-edge linear coefficients in floats.  The arity
-    # of ``a_int_e`` is ``m`` and ``a_ext_e`` is ``n_ext``.  We tolerate
-    # short ``a_int`` lists (degenerate constraints with no internal
-    # coefficients) by padding with 0.0.
+    if prune is None:
+        prune = PRUNE_ZERO_MODES
+    if prune and smooth_edge_modes:
+        pruned = _build_pruned_modesum_plan(
+            smooth_edge_modes, subset_constraint_data, m, n_ext, where)
+        if pruned is not None:
+            return pruned
+    n_full = math.prod(len(ems.modes) for ems in smooth_edge_modes)
+    _plan_guard(n_full, n_full, where)
+    plan = _plan_from_tuples(
+        tuple(_enumerate_pole_tuples(smooth_edge_modes)),
+        len(smooth_edge_modes), subset_constraint_data, m, n_ext)
+    plan['n_tuples_full'] = len(plan['pole_tuples'])
+    plan['n_groups_full'] = len(plan['tuple_groups'])
+    return plan
+
+
+def _plan_coefficients(subset_constraint_data, m, n_ext):
+    """Per-edge ``(a_int, a_ext, c0)`` of the subset rows as floats, the
+    internal row padded to ``m`` and the external one to ``n_ext``."""
     a_int_per_edge = []
     a_ext_per_edge = []
     c0_per_edge = []
     for (a_int, a_ext, c0) in subset_constraint_data:
-        a_int_pad = tuple(
-            float(a_int[v]) if v < len(a_int) else 0.0 for v in range(m)
-        )
-        a_ext_pad = tuple(
+        a_int_per_edge.append(tuple(
+            float(a_int[v]) if v < len(a_int) else 0.0 for v in range(m)))
+        a_ext_per_edge.append(tuple(
             float(a_ext[j]) if j < len(a_ext) else 0.0
-            for j in range(n_ext)
-        )
-        a_int_per_edge.append(a_int_pad)
-        a_ext_per_edge.append(a_ext_pad)
+            for j in range(n_ext)))
         c0_per_edge.append(float(c0))
+    return a_int_per_edge, a_ext_per_edge, c0_per_edge
+
+
+def _plan_from_tuples(pole_tuples, n_smooth, subset_constraint_data, m,
+                      n_ext):
+    """The plan dict of ``_build_modesum_plan`` for the given pole tuples,
+    groups in order of first occurrence."""
+    # Pre-extract per-edge linear coefficients in floats.  The arity
+    # of ``a_int_e`` is ``m`` and ``a_ext_e`` is ``n_ext``.  We tolerate
+    # short ``a_int`` lists (degenerate constraints with no internal
+    # coefficients) by padding with 0.0.
+    a_int_per_edge, a_ext_per_edge, c0_per_edge = _plan_coefficients(
+        subset_constraint_data, m, n_ext)
 
     alphas_per_tuple = []
     gamma_const_per_tuple = []
     gamma_slope_per_tuple_per_ext = []
-    n_smooth = len(smooth_edge_modes)
     for (C_prod, lambdas) in pole_tuples:
         alphas = [0.0 + 0.0j] * m
         gamma_const = 0.0 + 0.0j
@@ -2608,6 +2793,167 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
         'gamma_slope_per_tuple_per_ext': tuple(gamma_slope_per_tuple_per_ext),
         'tuple_groups':                 tuple_groups,
     }
+
+
+def _mode_is_zero(C):
+    """True iff the stored residue ``C`` is exactly zero: ``complex(C) ==
+    0``, no tolerance (a residue that is merely tiny is kept; NaN is not
+    zero; a value that does not convert is kept)."""
+    try:
+        return complex(C) == 0
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+class _KeptModes:
+    """The ``modes`` of an edge with its exact-zero modes left out (all
+    ``_enumerate_pole_tuples`` reads of an ``EdgeModeSum``)."""
+    __slots__ = ('modes',)
+
+    def __init__(self, modes):
+        self.modes = modes
+
+
+def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
+                               m, n_ext, where=None):
+    r"""The modesum plan of ``smooth_edge_modes`` over the pole tuples whose
+    residues are all nonzero (item 35, F1), or ``None`` when no edge has an
+    exact-zero mode, when an edge has no nonzero mode at all (the whole
+    product is zero; the unpruned plan keeps the old behaviour), or when the
+    group order cannot be replayed (the caller then builds the unpruned plan).
+
+    Why it is exact: a tuple's coefficient is ``∏_e C_e``, so a tuple that
+    takes an exact-zero residue has coefficient exactly 0, and every consumer
+    of a plan already skips zero coefficients (``c != 0`` in the folds,
+    ``term_const == 0`` in the interval / polygon / legacy poset loops,
+    ``coefs != 0`` in the batched kernels).  Where the zeros come from: the
+    residues are those of ``PropagatorTD.entry_modes`` (``complex(CDF(SR(
+    C_mats[k][pi, ri])))``); an entry of ``G`` that misses a pole has its
+    residue there decided zero by the propagator builder's exact (tier-1
+    rational) membership test, stored as the SR integer 0, so the test here
+    is a plain ``== 0`` on that stored value.  A residue that only rounds to
+    0.0 is also left out; its terms were exactly 0 too.
+
+    Bit-identity with the unpruned plan: tuples keep their order (a
+    subsequence of the full product), each group keeps its nonzero members
+    in that order, and the groups are put in the order of their FIRST
+    OCCURRENCE IN THE FULL PRODUCT, which a zero tuple may define (the group
+    sums of the poset routes run over groups, so this order fixes the
+    rounding).  That order is replayed on numpy from the full product's
+    alphas (``_full_product_first_occurrence``), ~100x cheaper per tuple
+    than the plan entries and never materialised as Python objects; beyond
+    ``PRUNE_ORDER_MAX_TUPLES`` the groups keep their pruned order.
+    """
+    kept = []
+    dropped = False
+    for ems in smooth_edge_modes:
+        k = tuple((C, lam) for (C, lam) in ems.modes if not _mode_is_zero(C))
+        if not k:
+            return None
+        if len(k) < len(ems.modes):
+            dropped = True
+        kept.append(_KeptModes(k))
+    if not dropped:
+        return None
+    n_full = math.prod(len(ems.modes) for ems in smooth_edge_modes)
+    _plan_guard(math.prod(len(kk.modes) for kk in kept), n_full, where)
+    plan = _plan_from_tuples(tuple(_enumerate_pole_tuples(kept)),
+                             len(kept), subset_constraint_data, m, n_ext)
+    groups = plan['tuple_groups']
+    n_groups_full = None
+    if n_full <= PRUNE_ORDER_MAX_TUPLES:
+        a_int_per_edge = _plan_coefficients(subset_constraint_data, m, 0)[0]
+        replay = _full_product_first_occurrence(
+            [[lam for (_C, lam) in ems.modes] for ems in smooth_edge_modes],
+            a_int_per_edge, m, [a for (a, _i) in groups])
+        if replay is None:
+            _RUNTIME_COUNTERS['zero_mode_order_mismatch'] += 1
+            return None
+        first, n_groups_full = replay
+        order = sorted(range(len(groups)), key=first.__getitem__)
+        plan['tuple_groups'] = tuple(groups[i] for i in order)
+    else:
+        _RUNTIME_COUNTERS['zero_mode_order_unreplayed'] += 1
+        n_groups_full = n_full
+    # the decay margin from ALL modes, as the unpruned plan has it
+    _decay_tol(smooth_edge_modes, None, plan, subset_constraint_data)
+    n_kept = len(plan['pole_tuples'])
+    plan['n_tuples_full'] = n_full
+    plan['n_groups_full'] = n_groups_full
+    _RUNTIME_COUNTERS['zero_mode_plans_pruned'] += 1
+    _RUNTIME_COUNTERS['zero_modes_pruned'] += sum(
+        len(ems.modes) - len(kk.modes)
+        for ems, kk in zip(smooth_edge_modes, kept))
+    _RUNTIME_COUNTERS['zero_mode_tuples_pruned'] += n_full - n_kept
+    return plan
+
+
+#: Rows of the full product per numpy block in the order replay
+#: (``_full_product_first_occurrence``): 2^18 rows x m x 16 bytes.
+_PRUNE_ORDER_BLOCK = 1 << 18
+
+
+def _full_product_first_occurrence(lams_per_edge, a_int_per_edge, m,
+                                   alphas_list):
+    r"""For each alpha vector of ``alphas_list``: the index, in the full
+    product over ``lams_per_edge`` (``_enumerate_pole_tuples`` order, edge 0
+    fastest), of the first pole tuple with exactly that alpha, and the
+    number of distinct alphas of the product (exact when it fits one block
+    of ``_PRUNE_ORDER_BLOCK`` rows, else a lower bound >= 64 or exact below
+    it; it only decides ``_DD_BATCH_MIN``).  ``None`` when a value is not
+    finite or an alpha is not found (the arithmetic did not reproduce).
+
+    The alphas are formed as ``_plan_from_tuples`` forms them: ``λ · a``
+    (a complex times a real: both parts rounded once, as CPython does) summed
+    edge by edge from the left, so the keys are equal as Python complex
+    tuples are (signed zeros normalised by ``+ 0.0``, as ``-0.0 == 0.0``)."""
+    if m == 0 or not alphas_list:
+        return [0] * len(alphas_list), (1 if alphas_list else 0)
+    try:
+        terms = [np.asarray(lams, dtype=np.complex128)[:, None]
+                 * np.asarray(a, dtype=np.float64)[None, :]
+                 for lams, a in zip(lams_per_edge, a_int_per_edge)]
+        targ = np.asarray(alphas_list, dtype=np.complex128).reshape(-1, m)
+    except (TypeError, ValueError):
+        return None
+    if not (all(np.all(np.isfinite(t)) for t in terms)
+            and np.all(np.isfinite(targ))):
+        return None
+    vd = np.dtype((np.void, 16 * m))
+    targ = np.ascontiguousarray(targ + 0.0).view(vd).ravel()
+    E = len(terms)
+    k, P = 1, len(terms[0])
+    inner = terms[0]
+    while k < E and P * len(terms[k]) <= _PRUNE_ORDER_BLOCK:
+        inner = (inner[None, :, :] + terms[k][:, None, :]).reshape(-1, m)
+        P *= len(terms[k])
+        k += 1
+    first = np.full(len(targ), -1, dtype=np.int64)
+    small, big = set(), 0
+    base = 0
+    outer = [range(len(terms[e])) for e in range(E - 1, k - 1, -1)]
+    for combo in itertools.product(*outer):
+        block = inner
+        for j, i in enumerate(reversed(combo)):
+            block = block + terms[k + j][i]
+        keys = np.ascontiguousarray(block + 0.0).view(vd).ravel()
+        u, fi = np.unique(keys, return_index=True)
+        if len(u) >= 64:
+            big = max(big, len(u))
+        elif not big:
+            small.update(x.tobytes() for x in u)
+        miss = np.flatnonzero(first < 0)
+        if len(miss):
+            pos = np.minimum(np.searchsorted(u, targ[miss]), len(u) - 1)
+            hit = u[pos] == targ[miss]
+            first[miss[hit]] = base + fi[pos[hit]]
+        base += P
+    if np.any(first < 0):
+        return None
+    n_unique = big if big else len(small)
+    if base == P:
+        n_unique = len(u)
+    return first.tolist(), n_unique
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -3708,6 +4054,9 @@ _chain_dd_batch_size = [0]
 # group and ~500 extensions per region, ``ou_quartic`` k = 4 ℓ = 2, ran
 # 1.4x slower batched).
 _DD_BATCH_MIN = 8
+#: Item 35 (F2): the batched poset kernels compute chains only for the
+#: groups whose folded coefficient is nonzero (the fold skips the others).
+DD_BATCH_SKIP_ZERO_GROUPS = True
 
 
 def _initial_chain_uppers_memo_flag(environ=None):
@@ -4906,13 +5255,16 @@ def _m7b_plan_arrays(plan):
         groups = plan['tuple_groups']
         GA = np.array([[complex(x) for x in a] for (a, _i) in groups],
                        dtype=np.complex128)
+        if GA.ndim != 2:
+            GA = GA.reshape(len(groups), -1)
         member_idx = np.array([t for (_a, idxs) in groups for t in idxs],
                                dtype=np.int64)
         member_off = np.zeros(len(groups) + 1, dtype=np.int64)
         member_off[1:] = np.cumsum([len(idxs) for (_a, idxs) in groups])
         arrs = {'C': C, 'gc': gc, 'S': S, 'A': A.reshape(T, -1) if T else A,
                 'member_idx': member_idx, 'member_off': member_off,
-                'group_alpha_bytes': GA.tobytes(), 'n_groups': len(groups)}
+                'group_alpha_bytes': GA.tobytes(), 'n_groups': len(groups),
+                'GA': GA}
         if not (np.all(np.isfinite(gc)) and np.all(np.isfinite(S))):
             arrs = {}
     except (TypeError, ValueError, IndexError, KeyError):
@@ -4932,27 +5284,34 @@ def _m7b_gammas(arrs, free_ext_vals):
 
 
 def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol,
-                    memo=True):
+                    memo=True, live=None):
     """``(status, log_scale, mant)`` arrays of the chain of extension
     ``sigma`` for every group of ``plan`` (``_chain_dd_log`` per group, so
     the very values of the per-chain memo), memoised per (group alphas,
     ``sigma``, suffix, tag).  ``None`` when a chain cannot be evaluated (the
     scalar loop then meets the same input and decides).  ``memo=False``
-    (the chain memo is off): computed, not kept."""
+    (the chain memo is off): computed, not kept.  ``live`` (item 35, F2):
+    the indices of the groups to compute, in order (``None``: all); the
+    arrays then hold those groups only, keyed on their alphas."""
     bf = _bf()
+    groups = plan['tuple_groups']
+    if live is not None:
+        groups = [groups[g] for g in live]
     if memo:
-        key = (arrs['group_alpha_bytes'], m, tuple(sigma), key_suffix,
+        ga_bytes = (arrs['group_alpha_bytes'] if live is None
+                    else arrs['GA'][live].tobytes())
+        key = (ga_bytes, m, tuple(sigma), key_suffix,
                ('dd', bf.expdd.BACKEND, float(tol)))
         with _CHAIN_UPPERS_LOCK:
             val = _chain_dd_batch_memo.get(key)
         if val is not None:
             return val
-    G = arrs['n_groups']
+    G = len(groups)
     ST = np.empty(G, dtype=np.int64)
     LS = np.empty(G, dtype=np.float64)
     MANT = np.empty(G, dtype=np.complex128)
     try:
-        for g, (alphas_orig, _idxs) in enumerate(plan['tuple_groups']):
+        for g, (alphas_orig, _idxs) in enumerate(groups):
             alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
             ST[g], LS[g], MANT[g] = _chain_dd_log(
                 alphas_chain, L, upp, U_ext, _key_suffix=key_suffix, tol=tol)
@@ -4982,7 +5341,8 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     # with the chain memo off the batch still runs (so the memo changes no
     # number, as M4 promises) but keeps nothing
     memo = _chain_uppers_memo_on()
-    if (len(plan['tuple_groups']) < _DD_BATCH_MIN
+    # the UNPRUNED group count decides (item 35), as before the pruning
+    if (plan.get('n_groups_full', len(plan['tuple_groups'])) < _DD_BATCH_MIN
             or (memo and any(k is None for k in key_suffixes))):
         return None
     arrs = _m7b_plan_arrays(plan)
@@ -4995,17 +5355,26 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
                                         arrs['member_off'])
     if not np.any(tc != 0):
         return 0.0 + 0.0j, 0.0, 0.0
+    # F2 (item 35): chains only for the groups whose folded coefficient is
+    # nonzero; ``chain_fold`` skips the others, so the sum is the same
+    live = np.flatnonzero(tc != 0)
+    if len(live) == len(tc) or not DD_BATCH_SKIP_ZERO_GROUPS:
+        live = None
+    else:
+        _RUNTIME_COUNTERS['dd_batch_zero_groups_skipped'] += (
+            len(tc) - len(live))
+        tc, gmax, tcabs = tc[live], gmax[live], tcabs[live]
     rows = []
     for sigma, U_ext, upp, key in zip(extensions, upper_for_ext,
                                       upper_per_position_per_ext,
                                       key_suffixes):
         b = _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key, tol,
-                            memo)
+                            memo, live)
         if b is None:
             return None
         rows.append(b)
     E = len(rows)
-    G = arrs['n_groups']
+    G = len(tc)
     ST = np.empty((E, G), dtype=np.int64)
     LS = np.empty((E, G), dtype=np.float64)
     MANT = np.empty((E, G), dtype=np.complex128)
@@ -5303,17 +5672,22 @@ def _integrate_subset_dbm(
     if cap is None:
         base = _nquad_outer_cap()
         if _semiinf_chain_on() or _phase_j_dd_kernels_on():
-            if plan is not None:
-                lam_iter = plan['pole_tuples']
+            # every mode of every edge (item 35: from the edges when they
+            # are given, since a pruned plan or grouped tuple list lacks the
+            # exact-zero modes; the same set as the full product's)
+            if smooth_edge_modes is not None:
+                lam_all = [lam for ems in smooth_edge_modes
+                           for (_C, lam) in ems.modes]
             else:
-                lam_iter = (pole_tuples if pole_tuples is not None
-                            else _enumerate_pole_tuples(smooth_edge_modes))
+                lam_all = [lam for (_C, lams) in (
+                    plan['pole_tuples'] if plan is not None
+                    else pole_tuples) for lam in lams]
             # decay rates above the rounding margin only (a slower one
             # cannot count as decay; it would also overflow 40/κ)
             k_floor = _decay_tol(smooth_edge_modes, pole_tuples, plan,
                                  subset_constraint_data)
-            kmin = min((-complex(lam).real for (_C, lams) in lam_iter
-                        for lam in lams if -complex(lam).real > k_floor),
+            kmin = min((-complex(lam).real for lam in lam_all
+                        if -complex(lam).real > k_floor),
                        default=math.inf)
             t_far = max((abs(float(t)) for t in free_ext_vals), default=0.0)
             slow_cap = (max(base, 40.0 / kmin + t_far) if kmin < math.inf
@@ -6052,7 +6426,8 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
     tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
                      subset_constraint_data)
     total = None
-    if plan is not None and len(plan['pole_tuples']) >= _DD_BATCH_MIN:
+    if plan is not None and plan.get(
+            'n_tuples_full', len(plan['pole_tuples'])) >= _DD_BATCH_MIN:
         # M7b: every tuple at once when each term is plain (all OK);
         # None = the scalar loop below
         arrs = _m7b_plan_arrays(plan)
@@ -8470,6 +8845,11 @@ def integrate_diagram(
                 subset_constraint_data,
                 m_sub,
                 len(free_ext_syms),
+                where=(f'diagram #{_diag_serial}, delta-subset '
+                       f'{branch_bits}, m = {m_sub}, '
+                       f'{len(_smooth_edge_modes)} smooth edges with '
+                       f'{[len(e.modes) for e in _smooth_edge_modes]} '
+                       f'modes'),
             )
             # Keep the legacy cache populated so any caller still
             # passing ``pole_tuples=`` keeps working unchanged.
@@ -12975,6 +13355,71 @@ def format_td_integral_latex(
         )
 
     return r' \\ '.join(lines)
+
+
+def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
+                           prune=None):
+    r"""Upper bound of the pole tuples the modesum plans of
+    ``typed_diagrams`` will hold (item 35's memory pre-pass), without
+    integrating anything.
+
+    Per diagram, each propagator edge ``(pi, ri)`` has ``n_e`` modes: its
+    NONZERO residues when the exact-zero modes are pruned (``prune``,
+    default ``PRUNE_ZERO_MODES``; an entry with none keeps all), else all
+    poles.  An edge with a δ part (``|delta_coeff| >= 1e-15``) is smooth in
+    some δ-subsets and δ in the others, so the sum over the subsets of the
+    product over their smooth edges is ``∏_δ (1 + n_e) · ∏_smooth n_e``
+    (dropping edges only removes tuples; conductance-kernel and dressed
+    lines are not counted: the running guard ``_plan_guard`` catches what
+    this misses).  Returns a dict: ``tuples``, ``tuples_unpruned``,
+    ``bytes`` (x ``PLAN_BYTES_PER_TUPLE``), ``n_diagrams`` and ``worst``
+    (the diagram index with its per-edge ``(n_e, n_all, has_delta)``), or
+    ``None`` when the propagator has no usable pole data."""
+    if prune is None:
+        prune = PRUNE_ZERO_MODES
+    try:
+        ptd = PropagatorTD(propagator_data, num_params)
+        lam = ptd.poles()
+    except Exception:
+        return None
+    if not lam:
+        return None
+    entries = {}
+
+    def counts(pi, ri):
+        key = (pi, ri)
+        hit = entries.get(key)
+        if hit is None:
+            modes = ptd.entry_modes(pi, ri)
+            n_all = len(modes) if modes is not None else len(lam)
+            n_nz = (sum(1 for (C, _l) in modes if not _mode_is_zero(C))
+                    if modes is not None else n_all)
+            try:
+                has_delta = abs(complex(ptd.delta_coeff(pi, ri))) >= 1e-15
+            except Exception:
+                has_delta = True
+            hit = ((n_nz if (prune and n_nz) else n_all), n_all, has_delta)
+            entries[key] = hit
+        return hit
+
+    total = total_full = 0
+    worst = None
+    for i, td in enumerate(typed_diagrams):
+        per = []
+        for (u, v, lbl) in td.prediagram[0].edges():
+            ri, pi = _lookup_prop_indices(td, (u, v, lbl))
+            per.append(counts(pi, ri))
+        t = math.prod((1 + n) if dl else n for (n, _a, dl) in per)
+        tf = math.prod((1 + a) if dl else a for (_n, a, dl) in per)
+        total += t
+        total_full += tf
+        if worst is None or t > worst['tuples']:
+            worst = {'index': i, 'tuples': t, 'tuples_unpruned': tf,
+                     'edges': per}
+    return {'tuples': total, 'tuples_unpruned': total_full,
+            'bytes': total * PLAN_BYTES_PER_TUPLE,
+            'n_diagrams': len(typed_diagrams), 'worst': worst,
+            'pruned': bool(prune)}
 
 
 def _lookup_prop_indices(typed_diagram, edge_key):
