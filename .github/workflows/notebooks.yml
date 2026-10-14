@@ -82,7 +82,7 @@ jobs:
             echo "$res  $nb  ${secs}s"
             echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
           done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort)
-          exit $status
+          test "$status" -eq 0   # not `exit`: in a login shell (bash -el) `exit` runs ~/.bash_logout, whose last command returns 1 on the Ubuntu runners
 
       - name: Upload the executed copies and logs
         if: always()
