@@ -118,7 +118,7 @@ For lower-level access the API layer is importable directly, e.g. `from api impo
 
 ## Running from a config file
 
-`dd run` takes a YAML file instead of a script (needs PyYAML, which the conda environment has):
+The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, which the conda environment has):
 
 ```bash
 sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config and the analyzer report, compute nothing
