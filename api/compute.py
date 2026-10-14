@@ -129,6 +129,10 @@ class PhaseJIncompleteWarning(UserWarning):
     (``result['phase_j_incomplete']`` names them and the reason)."""
 
 
+from engine.integration.time_domain.final_integral import (  # noqa: E402
+    PhaseJResourceError)
+
+
 class PhaseJIncompleteError(RuntimeError):
     """Raised instead of :class:`PhaseJIncompleteWarning` under
     ``policy={'mode': 'strict'}``.  ``result``: the (incomplete) result
@@ -278,6 +282,88 @@ def _combine_phase_j(results, nodes):
     out['pole_deformation_nodes'] = [dict(w=w, weight=wt, paired=paired)
                                      for w, wt, paired in nodes]
     return out
+
+
+def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
+                              prop, model, k, max_ell, verbose, preflight):
+    """Item 35: the estimate of the modesum-plan memory of the whole Phase J
+    run (``final_integral.estimate_modesum_plans`` over every diagram of
+    every ell, times the pole-deformation node runs), recorded in the
+    analyzer report (``diagnostics['phase_j_memory']`` and an assertion in
+    the ledger) and returned for ``result['phase_j_memory']``.  The estimate
+    is an upper bound (δ-subsets that build no plan are counted).  More
+    than ``PHASE_J_PREPASS_REFUSE_FACTOR`` times over the budget
+    ``PHASE_J_MEM_BUDGET_GB`` it raises ``PhaseJResourceError`` before any
+    plan is built, under every policy; between 1x and that factor the
+    running guard decides at each allocation."""
+    from engine.integration.time_domain import final_integral as _fi
+    if not hasattr(_fi, 'estimate_modesum_plans'):
+        return None             # an A/B harness running an older engine
+    deform = prop.get('pole_deformation')
+    # the node runs ``_phase_j_deformed`` makes: at most ``n_nodes`` (fewer
+    # for a real system, which costs a scan of every prefactor to decide;
+    # done only when the bound is over budget)
+    runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
+        else 1
+    budget = _fi.phase_j_mem_budget_bytes()
+    est = _fi.estimate_modesum_plans(
+        [r['typed_diagram'] for r in diagram_records], propagator_data,
+        num_params, prefactors=[r['combined_prefactor']
+                                for r in diagram_records],
+        budget_bytes=None if budget is None else budget / runs)
+    if est is None:
+        return None
+    if (deform is not None and budget is not None
+            and est['bytes'] * runs > budget):
+        try:
+            runs = len(deform.nodes(deform.real_system and _real_inputs(
+                num_params, diagram_records)))
+        except Exception:
+            pass
+    w = est['worst']
+    worst_rec = diagram_records[w['index']] if w else None
+    est.update(node_runs=runs, bytes=est['bytes'] * runs,
+               tuples=est['tuples'] * runs,
+               tuples_unpruned=est['tuples_unpruned'] * runs,
+               budget_bytes=budget,
+               worst_ell=worst_rec['ell'] if worst_rec else None,
+               worst_index_in_ell=(
+                   sum(1 for r in diagram_records[:w['index']]
+                       if r['ell'] == worst_rec['ell'])
+                   if worst_rec else None))
+    factor = _fi.PHASE_J_PREPASS_REFUSE_FACTOR
+    above = budget is not None and est['bytes'] > budget
+    over = budget is not None and est['bytes'] > factor * budget
+    est['above_budget'] = above
+    detail = (f"modesum plans: <= {est['tuples']:,} pole tuples "
+              f"(~{est['bytes'] / 1e9:.2f} GB; "
+              f"{est['tuples_unpruned']:,} without the exact-zero pruning) "
+              f"in {est['n_diagrams']} diagrams"
+              + (f" x {runs} deformation runs" if runs > 1 else '')
+              + (f"; budget {budget / 1e9:.3g} GB (PHASE_J_MEM_BUDGET_GB)"
+                 if budget is not None else '; no budget')
+              + ('; above the budget: the plans are checked as they are '
+                 'built' if above and not over else ''))
+    if preflight is not None:
+        preflight.diagnostics['phase_j_memory'] = dict(est)
+        preflight.ctx.ledger_add('assertion', 'phase_j_memory_budget',
+                                 detail, satisfied=not over)
+    if verbose:
+        print(f'  [memory] {detail}')
+    if over:
+        edges = ', '.join(
+            f"{n}{'' if n == a else f'/{a}'}{'+delta' if dl else ''}"
+            for (n, a, dl) in w['edges'])
+        raise _fi.PhaseJResourceError(
+            f"Phase J memory estimate more than {factor}x over budget for "
+            f"{model.get('name', '<unnamed>')} at k={k}, max_ell={max_ell}: "
+            f"{detail}.  Largest diagram: loop order {est['worst_ell']}, "
+            f"#{est['worst_index_in_ell']} of that order, {w['tuples']:,} "
+            f"tuples ({w['tuples_unpruned']:,} unpruned) over "
+            f"{len(w['edges'])} propagator edges with [{edges}] modes "
+            f"(nonzero/all).  Nothing was built.  Options: "
+            f"{_fi._BUDGET_HOW}.", est)
+    return est
 
 
 def _phase_j_deformed(phase_j_pass, propagator_data, deform, diagram_records,
@@ -1334,6 +1420,11 @@ def _run_phase_j(state, grouped):
         'model_name': model.get('name'),
     }
 
+    # Item 35: the memory pre-pass, before any modesum plan is built.
+    mem_estimate = _phase_j_memory_preflight(
+        diagram_records, propagator_data, num_params, prop, model, k,
+        max_ell, verbose, state.preflight)
+
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
         tau_points = [(float(t),) for t in tau_grid]
@@ -1422,13 +1513,25 @@ def _run_phase_j(state, grouped):
         return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
 
     pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
-    if prop.get('pole_deformation') is None:
-        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_pass(
-            propagator_data)
-    else:
-        phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
-            _phase_j_pass, propagator_data, prop['pole_deformation'],
-            diagram_records, num_params, tau_points, pole_cluster_report)
+    # the running guard: every plan of this run counts against one budget
+    from engine.integration.time_domain import final_integral as _fi_mem
+    import contextlib as _ctx
+    _scope = (_fi_mem.phase_j_memory_scope(
+        what=f"{model.get('name', '<unnamed>')} k={k} max_ell={max_ell}")
+        if hasattr(_fi_mem, 'phase_j_memory_scope')       # older engine: A/B
+        else _ctx.nullcontext())
+    with _scope as _mem_scope:
+        if prop.get('pole_deformation') is None:
+            phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_pass(
+                propagator_data)
+        else:
+            phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
+                _phase_j_pass, propagator_data, prop['pole_deformation'],
+                diagram_records, num_params, tau_points, pole_cluster_report)
+    if mem_estimate is not None and _mem_scope is not None:
+        mem_estimate['built_tuples'] = _mem_scope.tuples
+        mem_estimate['built_bytes'] = _mem_scope.used
+        mem_estimate['built_plans'] = _mem_scope.plans
 
     _phase_time('phase_j', _t_phase)
 
@@ -1443,6 +1546,9 @@ def _run_phase_j(state, grouped):
     def total_C(*ext_time_values):
         return sum(complex(fn(*ext_time_values))
                    for fn in total_C_by_ell.values())
+    # item 35 (F3): ``dd.run`` may form total_C's values from the per-ell
+    # values it evaluates anyway (the same sum, in this order)
+    total_C.sum_of_by_ell = total_C_by_ell
 
     # Aggregate τ-grid C(τ) = Σ_ell C_ell(τ)
     if tau_points is not None:
@@ -1520,6 +1626,7 @@ def _run_phase_j(state, grouped):
             mf_values[pname] = vals
 
     result = {
+        'phase_j_memory':  mem_estimate,
         'total_C':         total_C,
         'total_C_by_ell':  total_C_by_ell,
         'C_tau':           C_tau,

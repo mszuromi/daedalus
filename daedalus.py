@@ -106,6 +106,8 @@ _PIPELINE_EXPORTS = {
     # a run that left diagrams out (result['status'] == 'incomplete')
     'PhaseJIncompleteWarning':   'api.compute',
     'PhaseJIncompleteError':     'api.compute',
+    # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
+    'PhaseJResourceError':       'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',
@@ -1279,10 +1281,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                                for t in tau] for j in range(1, k)}
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
-            # The k−1 axis-parallel slices through ``base``.
-            slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
+            # The k−1 axis-parallel slices through ``base``.  When total_C is
+            # the plain sum of the per-ell callables (``api.compute``), its
+            # slice is that sum of their slices, in total_C's order, instead
+            # of a second evaluation of every diagram (item 35, F3: half the
+            # Phase J evaluations of a k≥3 run).
             slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
                              for j in range(1, k)}
+            parts = getattr(res['total_C'], 'sum_of_by_ell', None)
+            if (parts is not None and list(parts) == list(tcb)
+                    and all(parts[e] is tcb[e] for e in tcb)):
+                slices = {}
+                for j in range(1, k):
+                    out = np.empty(tau.size, dtype=complex)
+                    for i in range(tau.size):
+                        out[i] = sum(complex(slices_by_ell[j][e][i])
+                                     for e in tcb)
+                    slices[j] = out
+            else:
+                slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
             res['C_tau_slices'] = slices
             res['C_tau_slices_by_ell'] = slices_by_ell
             res['C_tau'] = slices[1]                    # canonical single slice

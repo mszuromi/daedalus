@@ -633,6 +633,11 @@ def solve_mean_field_dae(
         fixed_point_index = clamped
 
     selected = selectable_records[fixed_point_index]['values']
+    pure = _pure_integrator_rows(model, expanded)
+    if pure:
+        x_sel = np.concatenate([np.asarray(selected[f'{v}star'], dtype=float)
+                                for v, _, _ in state_vars])
+        _check_saddle_determined(R, x_sel, pure, expanded)
 
     return {
         'mf_values':           selected,
@@ -653,6 +658,73 @@ def solve_mean_field_dae(
         # Diagnostic: was stability classification actually run?
         'stability_analysis':  stab_on,
     }
+
+
+def _pure_integrator_rows(model, expanded) -> list:
+    """The residual rows of the equations whose LHS is a pure time
+    derivative (item 35): the LHS at Dt = 0 is identically zero as a
+    symbolic expression, the parameters kept as symbols (the builder's
+    test, ``ModelBuilder._lhs_vanishes_at_dt0``; an LHS such as
+    ``(Dt + mu)*x`` is not one even where mu = 0).  Rows follow
+    ``expanded`` (each equation once per population index)."""
+    from api.model import ModelBuilder
+    rows, k = [], 0
+    for eq in model.get('equations', []):
+        pop = eq['population']
+        n = _pop_size(model, pop) if pop is not None else 1
+        if ModelBuilder._lhs_vanishes_at_dt0(eq['lhs_text']):
+            rows.extend(range(k, k + n))
+        k += n
+    return rows if k == len(expanded) else []
+
+
+def _check_saddle_determined(R, x, rows, expanded):
+    """Raise when the equations do not determine the saddle at ``x``: the
+    Jacobian of the residual (central differences) is singular.  Run only
+    for models with a pure-integrator equation (``rows``), whose saddle
+    condition 0 = RHS constrains the OTHER fields: when nothing pins the
+    integrated field, every value of it is a root."""
+    n = len(x)
+    J = np.empty((n, n))
+    for j in range(n):
+        h = 1e-6 * max(1.0, abs(x[j]))
+        e = np.zeros(n)
+        e[j] = h
+        rp, rm = R(x + e), R(x - e)
+        # inconclusive: a non-finite value or a penalised point (R returns
+        # 1e10 where an equation fails) in the stencil
+        if not (np.all(np.isfinite(rp)) and np.all(np.isfinite(rm))
+                and np.max(np.abs(rp)) < 1e10 and np.max(np.abs(rm)) < 1e10):
+            return
+        J[:, j] = (rp - rm) / (2.0 * h)
+    # rank on the equilibrated Jacobian (rows, then columns, scaled to unit
+    # norm), so that the units of a field or an equation do not decide it;
+    # a zero row or column (the integrated field enters no equation) is
+    # singular outright
+    rn = np.linalg.norm(J, axis=1)
+    sing = bool(np.any(rn == 0))
+    if not sing:
+        Js = J / rn[:, None]
+        cn = np.linalg.norm(Js, axis=0)
+        sing = bool(np.any(cn == 0))
+        if not sing:
+            sv = np.linalg.svd(Js / cn[None, :], compute_uv=False)
+            sing = not sv[-1] > 1e-10 * sv[0]
+    if not sing:
+        return
+    sv = np.linalg.svd(J, compute_uv=False)
+    eqs = '; '.join(sorted({f'{expanded[k][0]} = {expanded[k][1]}'
+                            for k in rows}))
+    raise ValueError(
+        f'solve_mean_field_dae: the mean-field equations do not determine '
+        f'the saddle: their Jacobian at the root is singular (smallest '
+        f'singular value {sv[-1]:.1e}, largest {sv[0]:.1e}).  The model has '
+        f'pure-integrator equation(s) [{eqs}] (the LHS is a time derivative '
+        f'only), whose stationarity condition 0 = RHS fixes the OTHER '
+        f'fields, so the integrated field itself must be pinned by the rest '
+        f'of the system (fed back into another equation).  Here nothing '
+        f'pins it: every value is a fixed point.  Add a restoring term '
+        f"(e.g. lhs='(Dt + eps)*h[i]') or the missing feedback.")
 
 
 # ── Linear stability via generalized eigenvalue problem ──────────────

@@ -38,6 +38,7 @@ from engine.integration.time_domain.grouped_integral import (
     integrate_grouped_diagram,
 )
 from engine.integration.time_domain.pipeline import compute_correction_td
+from engine.integration.time_domain import final_integral as _fi
 
 
 # Subset-level statuses inside ``integrate_grouped_diagram``'s
@@ -307,6 +308,8 @@ def compute_correction_td_grouped(
                     'n_diagrams': n_tds,
                     'subset_skip_reasons': ['group_level_failure'],
                 })
+            except getattr(_fi, 'PhaseJResourceError', ()):
+                raise                   # over the memory budget: never a skip
             except Exception as exc:
                 # Even per-diag failed.  Now we genuinely have to skip,
                 # but record it loudly.
