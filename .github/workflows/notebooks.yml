@@ -9,6 +9,11 @@ name: notebooks
 # workflow does not change).
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only the notebooks whose path contains this text (empty: all)'
+        required: false
+        default: ''
   schedule:
     - cron: '17 5 * * 1'     # Mondays 05:17 UTC
 
@@ -20,6 +25,7 @@ jobs:
       run:
         shell: bash -el {0}              # login shell so the conda env is active
     env:
+      NB_ONLY: ${{ inputs.only }}        # manual runs: notebook path filter
       NB_TIMEOUT_MINUTES: 45             # per notebook, unless overridden below
       # Per-notebook overrides, one 'path under notebooks/examples=minutes' per line.
       NB_TIMEOUT_OVERRIDES: |
@@ -59,6 +65,7 @@ jobs:
       - name: Execute notebooks/examples (outputs to a temporary directory)
         run: |
           out="$RUNNER_TEMP/executed"; mkdir -p "$out"
+          echo "DIAG traps: $(trap -p)"; echo "DIAG options: $-"; echo "DIAG PROMPT_COMMAND: ${PROMPT_COMMAND:-}"
           status=0
           echo '| notebook | result | seconds |' >> "$GITHUB_STEP_SUMMARY"
           echo '|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
@@ -81,8 +88,9 @@ jobs:
             secs=$(( $(date +%s) - start ))
             echo "$res  $nb  ${secs}s"
             echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
-          done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort)
+          done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort | grep -F -- "$NB_ONLY")
           echo "notebooks failed: $status (0 = none)"
+          echo "DIAG before exit"
           exit $status
 
       - name: Upload the executed copies and logs
