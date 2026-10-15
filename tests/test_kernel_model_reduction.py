@@ -197,9 +197,9 @@ def test_conductance_kernel_realization_truncates():
 
 
 def test_tolerance_default_environment_and_scope(monkeypatch):
-    assert RZ.truncation_tol() == RZ.TRUNCATION_TOL_DEFAULT == 1e-10
+    assert RZ.truncation_tol() == RZ.TRUNCATION_TOL_DEFAULT == 1e-12
     for v, want in (('0', 0.0), ('off', 0.0), ('exact', 0.0), ('1e-7', 1e-7),
-                    ('default', 1e-10), ('', 1e-10)):
+                    ('default', 1e-12), ('', 1e-12)):
         monkeypatch.setenv(ENV, v)
         assert RZ.truncation_tol() == want, v
     # a malformed value warns (once) and the default applies (a ValueError
@@ -276,11 +276,11 @@ def test_delayed_ou_one_loop_truncated_vs_exact():
     r0 = _cc(m, 1, delay={'order': 8, 'truncation': 0})
     r1 = _cc(m, 1, delay={'order': 8})
     i0, i1 = r0['delay'], r1['delay']
-    assert i0['truncation_tol'] == 0 and i1['truncation_tol'] == 1e-10
+    assert i0['truncation_tol'] == 0 and i1['truncation_tol'] == 1e-12
     loop0, loop1 = (np.real(r['C_tau_by_ell'][1]) for r in (r0, r1))
     tot0 = np.real(r0['C_tau'])
-    # the per-entry bound (relative 1e-10) carries to the observable
-    assert np.max(np.abs(loop1 - loop0)) <= 1e-9 * np.max(np.abs(tot0))
+    # the per-entry bound (relative 1e-12) carries to the observable
+    assert np.max(np.abs(loop1 - loop0)) <= 1e-11 * np.max(np.abs(tot0))
     assert np.array_equal(np.real(r0['C_tau_by_ell'][0]), np.real(r1['C_tau_by_ell'][0]))
     assert i1['stop_reason'] == 'fixed order n = 8'
     led = [e for e in r1['analysis'].ledger if e.name.startswith('delay:')]
@@ -307,9 +307,9 @@ def test_order_controller_record_and_prediction():
     # the first order at the base tolerance, the second adaptive: 1 % of the
     # loop error predicted for it, between the base and TRUNCATION_MAX
     tb = info['truncation_by_order']
-    assert tb[4] == 1e-10 and info['truncation_tol'] == tb[8]
+    assert tb[4] == 1e-12 and info['truncation_tol'] == tb[8]
     e8 = info['loop_error_pred_by_order'][8]
-    assert tb[8] == pytest.approx(max(1e-10, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
+    assert tb[8] == pytest.approx(max(1e-12, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
     # what matters: the truncation moved the n = 8 observable by far less
     # than the Pade error the controller estimates (exact realizations here)
     r0 = _cc(m, 1, delay={'order': 8, 'truncation': 0})

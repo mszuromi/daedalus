@@ -14,7 +14,8 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 #### Changed: balanced truncation of the state-space realizations; the delay order controller measures its cost (item 45)
 
 Every per-entry realization of the propagator and every conductance kernel (`api/_realization.py`) is now
-**balanced-truncated** to a relative H-infinity tolerance (default `1e-10`): states are discarded only while
+**balanced-truncated** to a relative H-infinity tolerance (default `1e-12`, 1 % of the pipeline's default accuracy
+target): states are discarded only while
 `2 * sum(discarded Hankel singular values) <= tol * sigma_1` (`sigma_1 <= ||G_pr||_inf`), so each entry stays within
 `tol` of the exact one.  Exact Kalman minimality (S1) removes only exactly uncontrollable / unobservable states; the
 Padé blocks of a delay inside a feedback loop leave many that are numerically negligible, and those are where the

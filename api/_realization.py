@@ -66,7 +66,8 @@ Construction (all exact, then rounded once)
    bound ``2 sum(discarded Hankel singular values)`` is at most ``tol``
    times the largest Hankel singular value (itself at most the entry's
    H-infinity norm), ``tol = truncation_tol()``: ``TRUNCATION_TOL_DEFAULT``
-   (``1e-10``), ``DAEDALUS_REALIZATION_TRUNCATION`` (``0`` / ``off`` /
+   (``1e-12``, 1 % of the pipeline's default accuracy target ``1e-10``),
+   ``DAEDALUS_REALIZATION_TRUNCATION`` (``0`` / ``off`` /
    ``exact``: none), or ``truncation_scope(tol)``; ``realize_K(...,
    truncation=)`` / ``realize_kernel(..., truncation=)`` override it.  An
    entry with nothing to discard is returned as it was (the same object:
@@ -431,8 +432,12 @@ class Realization:
 
 #: Default relative H-infinity tolerance of the balanced truncation of every
 #: per-entry realization and conductance kernel: states are discarded only
-#: while ``2 * sum(discarded Hankel singular values) <= tol * sigma_1``.
-TRUNCATION_TOL_DEFAULT = 1e-10
+#: while ``2 * sum(discarded Hankel singular values) <= tol * sigma_1``.  1 %
+#: of the pipeline's default accuracy target (``accuracy``, G6: 1e-10), so the
+#: truncation never takes a visible share of it (the observable moved by
+#: 0.01 .. 0.8 of the per-entry tolerance on the benchmarks: a
+#: multi-population model at 1e-10 moved by 8e-11).
+TRUNCATION_TOL_DEFAULT = 1e-12
 #: ``DAEDALUS_REALIZATION_TRUNCATION``: a tolerance, or ``0`` / ``off`` /
 #: ``exact`` for none (the exact minimal realizations, as before item 45).
 TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
@@ -455,7 +460,7 @@ def _env_truncation_tol(environ=None):
     try:
         tol = float(v)
     except ValueError:
-        raise ValueError(f'{TRUNCATION_ENV}={v!r}: expected a tolerance (e.g. 1e-10), '
+        raise ValueError(f'{TRUNCATION_ENV}={v!r}: expected a tolerance (e.g. 1e-12), '
                          "or 0 / 'off' / 'exact' for none") from None
     if not (tol >= 0.0 and np.isfinite(tol)):
         raise ValueError(f'{TRUNCATION_ENV}={v!r}: the tolerance must be finite and >= 0')

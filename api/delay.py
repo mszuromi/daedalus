@@ -40,7 +40,7 @@ realization cannot take it as it is.  This module
   (``api._realization.truncation_scope``; option ``truncation``): the Pade
   blocks' fast, weakly coupled modes are where the state-space route's
   cost goes.  The first order uses ``min(truncation_tol(), tol / 100)``
-  (``1e-10`` by default); every later order ``1 %`` of the relative loop
+  (``1e-12`` by default); every later order ``1 %`` of the relative loop
   error it is predicted to carry anyway (``_next_truncation``: from the
   exact-vs-Pade tree and the doubling estimate of the order before, at
   most ``1e-4``), so the per-entry error bound ``2 sum(discarded Hankel
