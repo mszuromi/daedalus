@@ -49,6 +49,12 @@ The orchestration layer `dd` drives:
   cancelling pole sum by a contour average around the cluster, so close poles keep their precision.
 - `_expand_cache.py` — a disk cache for `FieldTheory.expand()` results (the dominant cost for
   large models), reused across Taylor orders.
+- `_realization.py` — the state-space form of the propagator and of the kernels: turns the Fourier
+  kernel `K_ft` into exact matrices (A, B, C, D) with `G(t) = C e^{At} B` for t > 0 (plus an
+  instantaneous part D), without computing a root, a pole or a residue. Rates that coincide or
+  nearly coincide are an ordinary case for it. Each propagator entry and each conductance kernel
+  gets its own minimal realization; an entry that is not rational in the frequency, or a model with
+  space, is refused by name and left to the pole engine.
 - `colored_to_markovian.py` — rewrites a colored-noise model as a linear filter driven by white
   noise, so the temporal integrator can handle it.
 - `model.py` (+ `model_compiler.py`, `model_serialize.py`, `model_templates.py`) — the
@@ -72,6 +78,19 @@ The model-agnostic physics core:
     exponential over a simplex written as a divided difference of `exp`, evaluated stably.
   - `boxfree.py` — the exact integrals built on those kernels, evaluated in the log domain, with
     an explicit overflow status instead of a silent `inf`.
+  - `statespace.py` — the state-space route for a Phase J integral: an integral of a product of
+    propagator and kernel lines over a region of internal times is evaluated as a matrix
+    computation on the realizations of `api/_realization.py` (a sweep over the sub-orders of the
+    diagram, with no poles, residues or pole tuples), which stays accurate where poles come close.
+    **Which engine runs.** It is the default engine: every subset it can take goes through it, and
+    a subset it cannot take (a noise-kernel box, a spatial model, a symbolic prefactor) or that it
+    refuses at call time (a stiff or oversized system, a non-finite value) is evaluated by the pole
+    engine instead, never silently: the reason is counted and reported in
+    `result['phase_j_engine']`. `DAEDALUS_PHASE_J_ENGINE=poles` switches back to the pole engine
+    everywhere (the numbers of the release before the change); `default` or `statespace` name the
+    default; any other value raises. `PHASE_J_MEM_BUDGET_GB` (environment variable, default 6, or
+    `off`) caps the memory of Phase J as a whole: the stationary states of this route are charged
+    against it, and a run over it raises `PhaseJResourceError` before allocating.
   - `dbm_integral.py` — the exact integral of an exponential-polynomial over a polytope whose
     rows are difference bounds (scalar bounds and shifted order rows).
 

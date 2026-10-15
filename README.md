@@ -219,6 +219,18 @@ PY
 
 Expected output: `OK — model : 'OU Quartic (white noise)'`.
 
+## Choosing the Phase J engine
+
+The time integrals of the loop diagrams are evaluated, by default, as matrix computations on the
+state-space form of the propagator (no poles or residues), which keeps its accuracy where the
+decay rates of a model are equal or close. A case that route cannot take (a noise-kernel box, a
+spatial model) uses the pole engine automatically, and the result records which engine served
+each part (`result['phase_j_engine']`). To use the pole engine everywhere, set
+`DAEDALUS_PHASE_J_ENGINE=poles` before the run (for example `DAEDALUS_PHASE_J_ENGINE=poles python
+script.py`); this gives the numbers of the release before the change. Phase J refuses to exhaust
+memory: `PHASE_J_MEM_BUDGET_GB` (default 6, or `off`) sets the cap, and a run over it stops with
+`PhaseJResourceError` and the numbers to raise it. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ## Prediagram cache
 
 The package ships the diagram skeletons for 21 `(k, ell)` cells (up to `k = 6, ell = 1` and `k = 2, ell = 4`); the first use of a cell rebuilds its records from the stored classes, under a second for the small ones and growing with the class count. For any other cell, `dd.build_cache(cells, dest=None, dry_run=False)` first prints what exists (shipped / local / missing), the class count (known or extrapolated), and the estimated build time and memory, and then builds the missing cells into `dest` (default `saved_prediagrams`). `dry_run=True` stops after the report and writes nothing. Note that using a cell later needs about 11 kB of memory per class.
