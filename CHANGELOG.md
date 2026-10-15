@@ -11,6 +11,53 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: cumulants as matrix-exponential triples (C0, state-space stage S4)
+
+`dd.cumulant(result)` of a k = 2 result computed on the state-space route now also holds its smooth part as
+matrix-exponential triples, one per loop order and side: `C(τ) = c e^{G|τ|} x0` (`api/me_output.py`). Each block is
+one subset of one diagram in one Wick permutation: the last segment of the state-space sweep (`G`, block lower
+triangular over the downsets of the subset's poset), the state that enters it (`x0`) and the contraction of the last
+external time (`c`), with the same prefactors and Wick compensation as `C_tau`. No number of an existing output
+moves (only attributes are added to the Phase J closures).
+
+- **`c.me`** (`CumulantME`): `c.me(tau)` at any τ (exact τ = 0⁻ by default; `C_tau` samples τ = −1e-6), the dense
+  `c.me.sides[ell]['+'].triple()`, and `c.me_reasons` when a loop order has no triples (a subset on the pole route,
+  a pole-cluster deformation run, grouped Phase J, a finite `PHASE_J_T_MIN`, a loaded file).
+- **`c.modes`**: `{ell: [ModeTerm(coeff, rate, power, side)]}` derived on request from the eigenvalue clusters of the
+  final generators (taken in the per-edge triangular basis, where the eigenvalue sums are exact): `τ^n` terms for
+  repeated eigenvalues; `MEConditioningWarning` when clusters nearly coincide or the modes cancel (the triples are
+  unaffected).
+- **`c.integrate_against(kernel, contact=...)`**: `∫ L(τ) C(τ) dτ` for `Kernel` terms (exponential, polynomial ×
+  exponential, two-sided) by one triangular resolvent solve per block, `q! c (zI − G)^{−q−1} x0`, and for a
+  `RationalKernel(num, den, side)` (rational Laplace transform) by one Sylvester solve per block; the δ components
+  with item 23's contact rule (a kernel that jumps at 0 needs `contact='exclude' | 'positive' | 'negative' | 'mid'`).
+  `method='quad'` integrates the Phase J callables instead.
+- **`c.spectrum(omega)`**: now `c (iω − G_+)^{−1} x0 + c (−iω − G_−)^{−1} x0` + the δ floor by default (`method='auto'`):
+  spike reset one loop 46 s -> 7 ms per ω, linear Hawkes 2.8 s -> 0.1 ms per ω, values equal to the quadrature
+  within its tolerance. `method='quad'` (Feature B's QAWF) and `'grid'` remain; without triples `'auto'` falls back on
+  the quadrature with an `MEFallbackWarning`.
+- **k >= 3**: `api.me_output.slice_me(result, j)` gives the triples of `dd.run`'s slice `j` on the chambers where
+  the swept leg is first or last (one moving segment); a chamber where it lies between two legs is refused by name
+  (`several_lags`).
+- **Validation**: tree level equal to item 23's symbolic modes at numbers within 1e-13 (OU, underdamped OU, the
+  cubic-denominator chain, an Erlang-8 kernel), mode lists included; loop level equal to `C_tau_by_ell` within 1e-13
+  on 201 points (OU quartic to two loops, colour noise at the exact double pole, an oscillator driven by red noise,
+  spike reset one loop); pairings equal to quadrature within 1e-10; the linear-Hawkes spectrum equal to its closed
+  form within 1e-12 (`tests/test_c0_output.py`).
+
+#### Changed: `inverse_transform` / `pair_with_kernel` run on the stage-C2 engine
+
+`symbolic_out.inverse_transform` and `pair_with_kernel` (and the `TreeCovariance` methods) now use item 23's engine
+by default: any denominator degree (roots of factors of degree >= 3 are `RootOf` symbols), the half-plane split
+stated as assumptions (`'assumptions'`, `'roots'`, `'modes'` in the `inverse_transform` dict) instead of sampled
+around `reference`. Behaviour that changes: a factor of degree >= 3 no longer raises `ClosedFormUnavailable` (nor
+falls back on quadrature in `pair_with_kernel`); a split that flips near the reference is stated as a condition
+instead of refused; a reference point where poles coincide is moved to a nearby generic point. The pre-C2 routes
+remain behind `inverse_transform(..., legacy=True)` and `pair_with_kernel(..., any_degree=False)`.
+`dd.` now exports `tree_covariance`, `tree_covariance_from_result`, `TreeCovariance`, `tree_modes`, `ModeSum`,
+`Kernel`, `KernelIntegral`, `integrate_against`, `inverse_transform`, `pair_with_kernel`, `AssumptionViolation`,
+`ModeTerm`, `CumulantME`, `RationalKernel` and `MEUnavailable`.
+
 #### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
 
 The state-space subset integrator below is now used for every subset it can take; `DAEDALUS_PHASE_J_ENGINE=poles`

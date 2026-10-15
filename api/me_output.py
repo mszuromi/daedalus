@@ -475,16 +475,20 @@ def _check_conditioning(side, terms, cond):
         return
     if not terms:
         return
-    u = np.array([0.0, 0.5, 1.0, 2.0, 5.0])
+    # Σ|terms| against the size of C over a grid of u (relative to the
+    # largest |C|, so a zero crossing of a cross-correlation is no alarm)
+    lam_min = min((abs(t[1].real) for t in terms if t[1].real < 0),
+                  default=1.0)
+    u = np.linspace(0.0, 5.0 / max(lam_min, 1e-12), 41)
     mag = np.zeros(u.shape)
     val = np.zeros(u.shape, dtype=complex)
     for c, lam, j in terms:
         t = c * u ** j * np.exp(lam * u)
         mag += np.abs(t)
         val += t
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ratio = np.where(np.abs(val) > 0, mag / np.abs(val), np.inf)
-    r = float(np.max(ratio[mag > 1e-300], initial=0.0))
+    top = float(np.max(np.abs(val)))
+    r = float(np.max(mag)) / top if top > 0 else (
+        np.inf if np.max(mag) > 0 else 0.0)
     if r > COND_WARN:
         warnings.warn(f'ell={side.ell} side {side.side!r}: the modes cancel '
                       f'(Σ|terms| / |C| up to {r:.3g}): summing them in '
