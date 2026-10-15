@@ -408,7 +408,9 @@ def test_l2_stale_propagator_data_is_not_served(monkeypatch, captured_ou):
     """A ``PropagatorTD`` is recognised by the identity of the data it was
     built from.  Handed a changed propagator (new pole list) or other
     ``num_params`` it is ignored, the diagram is built locally and the
-    result is that of an independent call."""
+    result is that of an independent call (the pole engine's poles: the
+    state-space route reads K_ft, not the pole list)."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
     c = _nonzero_diagrams(captured_ou)[-1]
     pdata, nps = c['propagator_data'], c['num_params']

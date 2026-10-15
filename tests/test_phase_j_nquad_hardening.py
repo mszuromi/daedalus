@@ -2539,3 +2539,14 @@ def test_counters_reset():
         FI._RUNTIME_COUNTERS[k] = i + 1.5 if k.endswith('_max') else i + 1
     FI._reset_runtime_counters()
     assert all(_counter(k) == 0 for k in _HARDENED_COUNTERS)
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

@@ -13,6 +13,7 @@ import time
 import warnings
 from typing import Any
 
+import math
 import numpy as np
 from sage.all import SR
 
@@ -99,14 +100,41 @@ def _tau_extent(tau_grid, tau_max):
     return float(tau_max) if tau_max else None
 
 
-def _pole_cluster_preamble(prop, max_ell):
+def _ss_route_prediction(prop, num_params, vertex_types):
+    """S3: the run-level route prediction (``statespace.run_route``) plus
+    ``bypass_deformation``: the run is covered by the state-space route and
+    the propagator has a pole-cluster deformation, which then is not run
+    (the route uses no poles or residues)."""
+    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
+    if raw is not None and raw.strip().lower() == 'poles':
+        return {'engine': 'poles', 'covers_run': False,
+                'reason': 'engine_poles', 'bypass_deformation': False}
+    from engine.integration.time_domain import statespace as _ssm
+    pred = _ssm.run_route(prop, num_params, vertex_types)
+    pred['bypass_deformation'] = bool(
+        pred['covers_run'] and prop.get('pole_deformation') is not None)
+    return pred
+
+
+def _pole_cluster_preamble(prop, max_ell, ss_route=None):
     """The run's pole-cluster report (``None`` when no two poles are close)
-    and the warning for a cluster the pipeline cannot resolve."""
+    and the warning for a cluster the pipeline cannot resolve.  S3: when
+    the state-space route covers the run (``ss_route['covers_run']``) the
+    poles are not used: status ``'bypassed'`` (the pole engine's status in
+    ``status_poles``), no warning."""
     from api import _pole_clusters as _pc
     pc = prop.get('pole_clusters')
     if not pc:
         return None
     pc = dict(pc)
+    if ss_route is not None and ss_route.get('covers_run'):
+        pc['status_poles'] = pc['status']
+        pc['reason_poles'] = pc.get('reason')
+        pc['status'] = 'bypassed'
+        pc['reason'] = ('the state-space Phase J route takes every subset of '
+                        'the run; it uses no poles or residues')
+        pc['accuracy'] = None
+        return pc
     if pc['status'] in ('unresolved', 'disabled'):
         digits = _pc.lost_digits(pc['kappa_max'], max_ell)
         pc['lost_digits'] = digits
@@ -285,7 +313,8 @@ def _combine_phase_j(results, nodes):
 
 
 def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
-                              prop, model, k, max_ell, verbose, preflight):
+                              prop, model, k, max_ell, verbose, preflight,
+                              ss_route=None, n_tau=1):
     """Item 35: the estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
@@ -295,11 +324,28 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     than ``PHASE_J_PREPASS_REFUSE_FACTOR`` times over the budget
     ``PHASE_J_MEM_BUDGET_GB`` it raises ``PhaseJResourceError`` before any
     plan is built, under every policy; between 1x and that factor the
-    running guard decides at each allocation."""
+    running guard decides at each allocation.
+
+    S3 (``ss_route``: the run's route prediction, ``_ss_route_prediction``):
+    the diagrams the state-space route takes are charged its estimate
+    (``statespace.diagram_estimate``: stationary states x the τ batch, and
+    the largest segment working set) instead of pole tuples, and a run the
+    route covers makes one Phase J pass (no deformation runs)."""
     from engine.integration.time_domain import final_integral as _fi
     if not hasattr(_fi, 'estimate_modesum_plans'):
         return None             # an A/B harness running an older engine
     deform = prop.get('pole_deformation')
+    if ss_route is not None and ss_route.get('bypass_deformation'):
+        deform = None
+    ss_est = None
+    if ss_route is not None and ss_route.get('covers_run'):
+        from engine.integration.time_domain import statespace as _ssm
+        n_perm = math.factorial(max(1, int(k)))
+
+        def ss_est(td, has_delta):
+            return _ssm.diagram_estimate(td, propagator_data, num_params,
+                                         has_delta, n_tau=n_tau,
+                                         n_perm=n_perm)
     # the node runs ``_phase_j_deformed`` makes: at most ``n_nodes`` (fewer
     # for a real system, which costs a scan of every prefactor to decide;
     # done only when the bound is over budget)
@@ -310,7 +356,8 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
         [r['typed_diagram'] for r in diagram_records], propagator_data,
         num_params, prefactors=[r['combined_prefactor']
                                 for r in diagram_records],
-        budget_bytes=None if budget is None else budget / runs)
+        budget_bytes=None if budget is None else budget / runs,
+        **({} if ss_est is None else {'ss_estimate': ss_est}))
     if est is None:
         return None
     if (deform is not None and budget is not None
@@ -340,6 +387,10 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
               f"{est['tuples_unpruned']:,} without the exact-zero pruning) "
               f"in {est['n_diagrams']} diagrams"
               + (f" x {runs} deformation runs" if runs > 1 else '')
+              + (f"; state-space route: {est['ss_diagrams']} diagrams, "
+                 f"<= {est['ss_bytes'] / 1e9:.3g} GB of stationary states "
+                 f"+ {est['ss_transient_bytes'] / 1e9:.3g} GB of segment "
+                 f"working set" if est.get('ss_diagrams') else '')
               + (f"; budget {budget / 1e9:.3g} GB (PHASE_J_MEM_BUDGET_GB)"
                  if budget is not None else '; no budget')
               + ('; above the budget: the plans are checked as they are '
@@ -354,6 +405,12 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
         edges = ', '.join(
             f"{n}{'' if n == a else f'/{a}'}{'+delta' if dl else ''}"
             for (n, a, dl) in w['edges'])
+        if not w or not w['edges']:
+            raise _fi.PhaseJResourceError(
+                f"Phase J memory estimate more than {factor}x over budget "
+                f"for {model.get('name', '<unnamed>')} at k={k}, "
+                f"max_ell={max_ell}: {detail}.  Nothing was built.  "
+                f"Options: {_fi._BUDGET_HOW}.", est)
         raise _fi.PhaseJResourceError(
             f"Phase J memory estimate more than {factor}x over budget for "
             f"{model.get('name', '<unnamed>')} at k={k}, max_ell={max_ell}: "
@@ -364,6 +421,47 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
             f"(nonzero/all).  Nothing was built.  Options: "
             f"{_fi._BUDGET_HOW}.", est)
     return est
+
+
+def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
+    """S3: one Phase J pass without the pole-cluster deformation, for a run
+    the state-space route is predicted to cover.  Every subset must then
+    take the route: a subset that declines it (its rows) or falls back on
+    the pole route (which would use the undeformed poles and residues)
+    makes this return ``None`` (the caller runs the deformation instead;
+    the memory charged by this pass is taken back).  The pass's propagator
+    data carry ``ss_no_pole_fallback``, so a fallback raises: in this pass
+    (caught here) and when the returned callables are evaluated later."""
+    from engine.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import statespace as _ssm
+    C = _ssm._counters()
+    before = (C.get('ss_subsets_declined', 0), C.get('ss_fallback_evals', 0))
+    with _fi._PLAN_MEM_LOCK:
+        mem0 = {k_: _fi._PLAN_MEM[k_] for k_ in ('used', 'tuples', 'plans')}
+    why = None
+    try:
+        out = phase_j_pass(dict(
+            propagator_data, ss_no_pole_fallback=(
+                'the run skipped the pole-cluster deformation (the '
+                'state-space route covers it), so the undeformed poles of '
+                'this propagator cannot serve a pole-route fallback; set '
+                'DAEDALUS_PHASE_J_ENGINE=poles for this model')))
+    except _fi.PhaseJResourceError:
+        raise
+    except Exception as exc:                 # a fallback refused in the pass
+        out, why = None, f'{type(exc).__name__}: {str(exc)[:200]}'
+    after = (C.get('ss_subsets_declined', 0), C.get('ss_fallback_evals', 0))
+    if out is not None and after != before:
+        out, why = None, (f'{after[0] - before[0]} subset(s) declined the '
+                          f'state-space route, {after[1] - before[1]} '
+                          f'fallback evaluation(s)')
+    if out is None:
+        with _fi._PLAN_MEM_LOCK:
+            if _fi._PLAN_MEM['active'] > 0:
+                _fi._PLAN_MEM.update(mem0)
+        engine_report['pole_deformation'] = 'used'
+        engine_report['bypass_failed'] = why
+    return out
 
 
 def _phase_j_deformed(phase_j_pass, propagator_data, deform, diagram_records,
@@ -536,11 +634,18 @@ def _counter_snapshot():
     from engine.integration.time_domain import pipeline as _pl
     c = _fi._RUNTIME_COUNTERS
     snap = {k_: v for k_, v in c.items() if not isinstance(v, dict)}
+    # S3: the state-space route's counters by reason (dicts)
+    for k_ in _SS_DICT_COUNTERS:
+        if isinstance(c.get(k_), dict):
+            snap[k_] = dict(c[k_])
     maxes = {k_: c[k_] for k_ in _MAX_COUNTERS if k_ in c}
     for k_ in maxes:
         c[k_] = 0.0
     workers = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
     return snap, maxes, workers
+
+
+_SS_DICT_COUNTERS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
 
 def _counter_delta(token):
@@ -555,6 +660,11 @@ def _counter_delta(token):
     out = {}
     for k_, v in c.items():
         if isinstance(v, dict):
+            if k_ in _SS_DICT_COUNTERS:
+                b = snap.get(k_) if isinstance(snap.get(k_), dict) else {}
+                d = {r: n - b.get(r, 0) for r, n in v.items()
+                     if n - b.get(r, 0)}
+                out[k_] = d
             continue
         if k_ in maxes:
             out[k_] = v
@@ -564,6 +674,52 @@ def _counter_delta(token):
     now = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
     complete = now == workers
     return out, complete
+
+
+class PhaseJEngineFallbackWarning(UserWarning):
+    """``compute_cumulants``: the state-space route fell back on the pole
+    route at call time for some subsets (``result['phase_j_engine']``
+    counts them by reason; the values are the pole route's there)."""
+
+
+def _engine_census(result, counters):
+    """``result['phase_j_engine']`` (S3): the run's prediction (set by the
+    Phase J backend) plus the census of the counters: subsets built on the
+    state-space route, declined by reason, fallbacks by reason, and
+    ``statespace_share`` (routed / all subsets evaluated).  A fallback warns
+    once (``PhaseJEngineFallbackWarning``: never silent).  When subsets
+    declined the route although the run was predicted covered, a pole
+    cluster report marked 'bypassed' gets its pole status back (those
+    subsets used the poles)."""
+    rep = result.get('phase_j_engine')
+    if rep is None:
+        return
+    c = counters or {}
+    n_ss = int(c.get('ss_subsets_built', 0))
+    n_dec = int(c.get('ss_subsets_declined', 0))
+    rep.update(
+        ss_subsets=n_ss, ss_declined=n_dec,
+        ss_declined_by_reason=dict(c.get('ss_declined_by_reason') or {}),
+        ss_evals=int(c.get('ss_evals', 0)),
+        fallback_subsets=int(c.get('ss_fallback_subsets', 0)),
+        fallback_evals=int(c.get('ss_fallback_evals', 0)),
+        fallback_by_reason=dict(c.get('ss_fallback_by_reason') or {}),
+        statespace_share=(n_ss / (n_ss + n_dec)) if n_ss + n_dec else None)
+    pc = result.get('pole_clusters')
+    if (isinstance(pc, dict) and pc.get('status') == 'bypassed'
+            and rep.get('pole_deformation') != 'bypassed'
+            and (n_dec or rep['fallback_evals'])):
+        pc['status'] = pc.get('status_poles', pc['status'])
+        pc['reason'] = pc.get('reason_poles', pc.get('reason'))
+    if rep['fallback_evals']:
+        from api.save import _ensure_warning_shown
+        _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always')
+        warnings.warn(
+            f'Phase J: the state-space route fell back on the pole route for '
+            f'{rep["fallback_subsets"]} subset(s) ({rep["fallback_evals"]} '
+            f'evaluation(s); reasons {rep["fallback_by_reason"]}); see '
+            f'result["phase_j_engine"]', PhaseJEngineFallbackWarning,
+            stacklevel=3)
 
 
 def _attach_provenance(result, route, pf):
@@ -1032,6 +1188,10 @@ def compute_cumulants(
         result = route.backend.run(state)
     finally:                              # restores the maxima on a raise too
         _counters, _complete = _counter_delta(_snap)
+    # S3: the Phase J engine census of the run (subsets on the state-space
+    # route, declined by reason, call-time fallbacks by reason)
+    if isinstance(result, dict) and 'phase_j_by_ell' in result:
+        _engine_census(result, _counters)
     # Never silent: a diagram Phase J could not evaluate is named (status,
     # warning; strict policy raises after the report is attached).
     _failures = None
@@ -1043,6 +1203,9 @@ def compute_cumulants(
         _pf.after_run(result, _counters, complete=_complete,
                       evaluated=state.evaluated_grid)
     _attach_provenance(result, route, _pf)
+    if isinstance(result, dict) and isinstance(result.get('route'), dict) \
+            and result.get('phase_j_engine') is not None:
+        result['route']['phase_j_engine'] = result['phase_j_engine']
     if _failures:
         _msg = _phase_j_failure_message(_failures,
                                         model.get('name', '<unnamed>'))
@@ -1308,8 +1471,14 @@ def _run_phase_j(state, grouped):
                                tau_max=_tau_extent(tau_grid, tau_max),
                                resolve_clusters=True)
     _phase_time('poles', _t_phase)
+    # S3: whether the state-space route takes the whole run (no noise-kernel
+    # sources, every conductance kernel realizable, a Hurwitz realization)
+    ss_route = _ss_route_prediction(
+        prop, num_params, list(vtypes or ()) + list(stypes or ()))
     if state.preflight is not None:
-        state.preflight.poles(prop)       # G3 pole statistics (api.analyze)
+        # G3 pole statistics (api.analyze); informational when the
+        # state-space route covers the run
+        state.preflight.poles(prop, ss_route=ss_route)
 
     # ── 5. Field-index maps + prediagram + typed diagram pipeline ─
     if verbose:
@@ -1423,7 +1592,8 @@ def _run_phase_j(state, grouped):
     # Item 35: the memory pre-pass, before any modesum plan is built.
     mem_estimate = _phase_j_memory_preflight(
         diagram_records, propagator_data, num_params, prop, model, k,
-        max_ell, verbose, state.preflight)
+        max_ell, verbose, state.preflight, ss_route=ss_route,
+        n_tau=len(tau_grid) if k <= 2 else 1)
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
@@ -1512,7 +1682,10 @@ def _run_phase_j(state, grouped):
                 C_tau_by_ell[ell] = None
         return phase_j_by_ell, total_C_by_ell, C_tau_by_ell
 
-    pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+    pole_cluster_report = _pole_cluster_preamble(prop, max_ell, ss_route)
+    engine_report = dict(ss_route, pole_deformation=(
+        None if prop.get('pole_deformation') is None
+        else 'bypassed' if ss_route['bypass_deformation'] else 'used'))
     # the running guard: every plan of this run counts against one budget
     from engine.integration.time_domain import final_integral as _fi_mem
     import contextlib as _ctx
@@ -1521,10 +1694,22 @@ def _run_phase_j(state, grouped):
         if hasattr(_fi_mem, 'phase_j_memory_scope')       # older engine: A/B
         else _ctx.nullcontext())
     with _scope as _mem_scope:
-        if prop.get('pole_deformation') is None:
+        _bypassed = None
+        if prop.get('pole_deformation') is not None and ss_route[
+                'bypass_deformation']:
+            _bypassed = _phase_j_ss_bypass(_phase_j_pass, propagator_data,
+                                           engine_report)
+        if _bypassed is not None:
+            phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _bypassed
+        elif prop.get('pole_deformation') is None:
             phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_pass(
                 propagator_data)
         else:
+            if pole_cluster_report is not None and pole_cluster_report.get(
+                    'status') == 'bypassed':
+                # the bypass did not hold (a subset needed the pole route):
+                # the deformation runs after all
+                pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
             phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
                 _phase_j_pass, propagator_data, prop['pole_deformation'],
                 diagram_records, num_params, tau_points, pole_cluster_report)
@@ -1626,6 +1811,9 @@ def _run_phase_j(state, grouped):
             mf_values[pname] = vals
 
     result = {
+        # S3: the Phase J engine of the run (prediction, deformation; the
+        # per-subset census is added by compute_cumulants)
+        'phase_j_engine':  engine_report,
         'phase_j_memory':  mem_estimate,
         'total_C':         total_C,
         'total_C_by_ell':  total_C_by_ell,

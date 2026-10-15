@@ -2288,6 +2288,9 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
       ``bail_category`` (the ``nquad_fallback_by_reason`` key, or ``None``
       when an analytic path answered), ``value`` (complex, exactly what
       the dispatch returns).
+    * engine (S3): ``engine`` ('statespace' for ``path == 'ss'``, else
+      'poles'); ``ss_fallback``: the reason when this pole-route evaluation
+      is the state-space route's call-time fallback, else ``None``.
     """
     summ = meta.get('_modes_summary')
     if summ is None:
@@ -2334,6 +2337,8 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
                               None if bail_reason == 'not_eligible'
                               else bail_reason)),
         'value': value,
+        'engine': 'statespace' if path == 'ss' else 'poles',
+        'ss_fallback': meta.get('ss_fallback'),
     }
     hook(payload)
 
@@ -7443,6 +7448,26 @@ def _validate_delta_subset(fast, legacy, edge_info, smooth_edges,
     _RUNTIME_COUNTERS['setup_delta_validated'] += len(f_by)
 
 
+class _LazyIntegrand:
+    """S3: the pole routes' closure of a subset the state-space route takes,
+    built on its first call (the hook payload's reference ``integrand``)."""
+    __slots__ = ('_mk', '_sr', '_fc', '_fn')
+
+    def __init__(self, mk_fast, sr_build, fc):
+        self._mk, self._sr, self._fc, self._fn = mk_fast, sr_build, fc, None
+
+    def __call__(self, *args):
+        if self._fn is None:
+            fn = self._mk()
+            if fn is None:
+                fn = self._fc
+            if fn is None:
+                kind, val = self._sr()
+                fn = val if kind == 'ok' else (lambda *_a: 0j)
+            self._fn = fn
+        return self._fn(*args)
+
+
 def integrate_diagram(
     typed_diagram,
     propagator_data,
@@ -7876,6 +7901,27 @@ def integrate_diagram(
     conv_leg_time = {}          # {(v, edge_key): s symbol}   ('leg')
     kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
     conv_dress = {}             # {edge_key: kernel modes}      ('dress')
+    conv_dress_att = {}         # {edge_key: the attachment}    ('dress', S3)
+    # S3: the state-space route realizes a kernel exactly (equal or close
+    # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
+    # kernel without separated modes is no longer refused when that route is
+    # on: it takes the 'leg' path and the subsets without a pole route go to
+    # the state-space route (``_ss_only_kernels``: kernels with no image the
+    # pole routes can use at all).
+    _engine_env = _os.environ.get('DAEDALUS_PHASE_J_ENGINE')
+    _engine_poles = (_engine_env is not None
+                     and _engine_env.strip().lower() == 'poles')
+    _ss_only_kernels = []
+
+    def _ss_realizes_kernel(att):
+        if _engine_poles:
+            return False
+        from engine.integration.time_domain import statespace as _ssk
+        if not _ssk.engine_requested():
+            return False
+        _model, _why = _ssk.realization_for(propagator_data, num_params)
+        return _model is not None and not isinstance(
+            _model.kernel_entry(att), str)
     conv_refusal = None
     _conv_choices = []          # [((v, leg), [placement, ...])]
     _conv_slots = {}            # {(v, leg): (in_edges, base placement)}
@@ -7968,7 +8014,13 @@ def integrate_diagram(
                 att_pairs.append((None, att))
                 continue
             kmodes = _kernel_modes(att, num_params)
-            if kmodes is None:
+            if kmodes is None and _ss_realizes_kernel(att):
+                # S3: no separated modes (a repeated / close rate, a
+                # polynomial factor), but the state-space route realizes the
+                # kernel: a kernel edge ('leg'), no mode sum
+                _RUNTIME_COUNTERS['conv_kernel_ss_lifted'] = (
+                    _RUNTIME_COUNTERS.get('conv_kernel_ss_lifted', 0) + 1)
+            elif kmodes is None:
                 return {
                     'status': 'failed',
                     'contribution': None,
@@ -7981,8 +8033,10 @@ def integrate_diagram(
                                f'or no usable image); write it as an '
                                f'auxiliary linear field (Markov embedding)'),
                 }
-            if (_can_dress and ek not in (_conv_force_leg or ())):
+            if (kmodes is not None and _can_dress
+                    and ek not in (_conv_force_leg or ())):
                 conv_dress[ek] = kmodes
+                conv_dress_att[ek] = att
                 att_pairs.append(('dress', att))
                 continue
             s_sym = SR.var(
@@ -8148,10 +8202,16 @@ def integrate_diagram(
         _tau_ph = SR.var('_conv_kernel_tau_td_')
         for (v, att, s_sym) in kernel_edge_specs:
             td_fn = att.get('kernel_td_fn')
+            g_tau = None
             if td_fn is None:
                 fmodes = (_kernel_modes(att, num_params)
                           if att.get('kernel_ft_fn') is not None else None)
-                if fmodes is None:
+                if fmodes is None and _ss_realizes_kernel(att):
+                    # S3: a frequency image without separated modes: only
+                    # the state-space route has this kernel (no time-domain
+                    # expression for the pole routes' SR integrand)
+                    _ss_only_kernels.append(str(att['symbol']))
+                elif fmodes is None:
                     return {
                         'status': 'failed',
                         'contribution': None,
@@ -8163,14 +8223,15 @@ def integrate_diagram(
                                    f'retarded poles (declare it with '
                                    f'time_expr)'),
                     }
-                g_tau = SR(0)
-                for (C, lam) in fmodes:
-                    g_tau = g_tau + _sr_complex(C) * (
-                        _sr_complex(lam) * _tau_ph).exp()
+                else:
+                    g_tau = SR(0)
+                    for (C, lam) in fmodes:
+                        g_tau = g_tau + _sr_complex(C) * (
+                            _sr_complex(lam) * _tau_ph).exp()
             else:
                 g_tau = SR(td_fn(_tau_ph)).substitute_function(
                     _sage_heaviside, lambda _x: SR(1))
-            if num_params:
+            if num_params and g_tau is not None:
                 g_tau = g_tau.subs(num_params)
             dt = SR(vertex_time[v] - s_sym)
             edge_info.append({
@@ -8178,9 +8239,11 @@ def integrate_diagram(
                 'ri': None, 'pi': None,
                 'dt_sym': dt,
                 'delta_coeff': 0.0,
-                'smooth_factor': g_tau.subs({_tau_ph: dt}),
+                'smooth_factor': (None if g_tau is None
+                                  else g_tau.subs({_tau_ph: dt})),
             })
-            kmodes = _extract_exp_modes(g_tau, _tau_ph)
+            kmodes = (None if g_tau is None
+                      else _extract_exp_modes(g_tau, _tau_ph))
             if kmodes is None or edge_mode_sums is None:
                 edge_mode_sums = None
             else:
@@ -8643,25 +8706,31 @@ def integrate_diagram(
             and _prefactor_is_numerical
         )
 
-        if _analytic_eligible:
-            subset_factor = None
-            integrand_fc_sub = None
-        else:
+        def _sr_build(_cp=cp, _delta_edges=delta_edges,
+                      _smooth_edges=smooth_edges, _subs=substitutions,
+                      _fc_vars=fc_vars_sub, _bits=branch_bits,
+                      _shot=_shot_pending):
+            """The SR integrand of this subset for the residual quadrature:
+            ``('ok', fast_callable)``, ``('zero', None)`` (structurally
+            zero), ``('skip', reason)`` (an integrated δ subset that cannot
+            be built: skipped, as before Feature B) or ``('fail', result
+            dict)``.  Bound to this subset (S3: also called lazily, by the
+            state-space route's fallback)."""
             # NoiseSourceType kernel diagrams, or non-numerical
             # prefactor, or missing edge_mode_sums cache — build the
             # full SR + fast_callable path for the residual scipy
             # integrand.  NOTE: ``.subs(num_params)`` removed
             # 2026-04-21 (audit Fix #A); see commit notes.
-            subset_factor = cp
-            for ei_idx in delta_edges:
+            subset_factor = _cp
+            for ei_idx in _delta_edges:
                 subset_factor = subset_factor * SR(
                     edge_info[ei_idx]['delta_coeff']
                 )
-            for ei_idx in smooth_edges:
+            for ei_idx in _smooth_edges:
                 subset_factor = (
                     subset_factor * edge_info[ei_idx]['smooth_factor']
                 )
-            subset_factor = subset_factor.subs(substitutions)
+            subset_factor = subset_factor.subs(_subs)
             try:
                 subset_factor = subset_factor.expand()
             except Exception:
@@ -8671,59 +8740,78 @@ def integrate_diagram(
             # which can hang or blow up for complex Hawkes integrands).
             try:
                 if subset_factor.is_trivial_zero():
-                    continue
+                    return ('zero', None)
             except AttributeError:
                 if str(subset_factor) == '0':
-                    continue
+                    return ('zero', None)
 
             # Free-symbol audit — catches num_params pass-through bugs.
             try:
                 subset_free_vars = set(subset_factor.variables())
             except AttributeError:
                 subset_free_vars = set()
-            unexpected = subset_free_vars - set(fc_vars_sub)
-            if unexpected and _shot_pending is not None:
+            unexpected = subset_free_vars - set(_fc_vars)
+            if unexpected and _shot is not None:
                 # an integrated δ subset never fails the diagram: before
                 # Feature B it was skipped, so it is skipped (and said so)
-                _shot_skip(subset_diagnostics, delta_edges, smooth_edges,
-                           f'unexpected free symbols {unexpected}')
-                n_delta_dropped += 1
-                continue
+                return ('skip', f'unexpected free symbols {unexpected}')
             if unexpected:
-                return {
+                return ('fail', {
                     'status': 'failed',
                     'contribution': None,
                     'integration_vars': integration_vars,
                     'stripped_integrand': _display_stripped_value(),
                     'constraints': display_constraints,
                     'reason': (
-                        f"[subset {bin(branch_bits)}] stripped integrand "
+                        f"[subset {bin(_bits)}] stripped integrand "
                         f"contains unexpected free symbols {unexpected}; "
                         f"pass them via num_params."
                     ),
-                }
+                })
 
             try:
-                integrand_fc_sub = fast_callable(
-                    subset_factor, vars=fc_vars_sub, domain=CDF,
-                )
+                return ('ok', fast_callable(
+                    subset_factor, vars=_fc_vars, domain=CDF,
+                ))
             except Exception as exc:
-                if _shot_pending is not None:
-                    _shot_skip(subset_diagnostics, delta_edges,
-                               smooth_edges, f'fast_callable failed: {exc}')
-                    n_delta_dropped += 1
-                    continue
-                return {
+                if _shot is not None:
+                    return ('skip', f'fast_callable failed: {exc}')
+                return ('fail', {
                     'status': 'failed',
                     'contribution': None,
                     'integration_vars': integration_vars,
                     'stripped_integrand': _display_stripped_value(),
                     'constraints': display_constraints,
                     'reason': (
-                        f"[subset {bin(branch_bits)}] fast_callable "
+                        f"[subset {bin(_bits)}] fast_callable "
                         f"failed: {exc}"
                     ),
-                }
+                })
+
+        # S3: a subset the state-space route may take defers the SR build
+        # (needed by the pole routes' quadrature only): built after the
+        # dispatch when the route declines it, or by its fallback.
+        _sr_deferred = False
+        if _analytic_eligible:
+            subset_factor = None
+            integrand_fc_sub = None
+        elif (not _engine_poles and not vertex_leg_time
+              and edge_mode_sums_builder is None
+              and _prefactor_is_numerical):
+            integrand_fc_sub = None
+            _sr_deferred = True
+        else:
+            _sr_kind, _sr_val = _sr_build()
+            if _sr_kind == 'zero':
+                continue
+            if _sr_kind == 'skip':
+                _shot_skip(subset_diagnostics, delta_edges, smooth_edges,
+                           _sr_val)
+                n_delta_dropped += 1
+                continue
+            if _sr_kind == 'fail':
+                return _sr_val
+            integrand_fc_sub = _sr_val
 
         # Extract linear coefficients for the polytope
         subset_constraint_data = []
@@ -8818,44 +8906,59 @@ def integrate_diagram(
             (edge_info[_ei_idx]['ri'], edge_info[_ei_idx]['pi'])
             for _ei_idx in smooth_edges
         ]
-        if vertex_leg_time or (kernel_edge_specs
-                               and edge_mode_sums is None):
-            # NoiseSourceType vertex with non-rational (Gaussian, etc.)
-            # kernel — the fast pole/residue evaluator assumes
-            # P · Π_e Σ_k C_e^{(k)} exp(i p_k Δt_e), which the
-            # cumulant κ-factor breaks.  Fall through to the generic
-            # fast_callable path.  Likewise a conductance kernel edge
-            # without a mode (it has no propagator entry to read).
-            _fast_eval = None
-        else:
-            # Stage 2: prefer the pre-built ``edge_mode_sums`` cache
-            # (residues + λ_α extracted once per edge at the top of
-            # integrate_diagram).  Falls back to the legacy in-call
-            # extraction path if the cache wasn't built (incomplete
-            # propagator_data).  For ConvVertex-only diagrams we
-            # extend the smooth-edge list with the per-attachment
-            # kernel pseudo-edges + their dt constraints.
-            if edge_mode_sums is not None:
-                smooth_edge_modes = [
-                    edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
-                ]
-                _fast_eval = _build_fast_subset_evaluator_from_modes(
-                    prefactor_num,
-                    smooth_edge_modes,
-                    subset_constraint_data,
-                    m_sub,
-                )
+        def _mk_fast_eval(_cdata=subset_constraint_data, _m=m_sub,
+                          _smooth=smooth_edges, _pn=prefactor_num,
+                          _ripi=smooth_edges_ri_pi):
+            """The pole routes' per-edge evaluator of this subset (or
+            ``None``); bound to it (S3: built lazily for a subset the
+            state-space route takes, by its fallback)."""
+            if vertex_leg_time or (kernel_edge_specs
+                                   and edge_mode_sums is None):
+                # NoiseSourceType vertex with non-rational (Gaussian, etc.)
+                # kernel — the fast pole/residue evaluator assumes
+                # P · Π_e Σ_k C_e^{(k)} exp(i p_k Δt_e), which the
+                # cumulant κ-factor breaks.  Fall through to the generic
+                # fast_callable path.  Likewise a conductance kernel edge
+                # without a mode (it has no propagator entry to read).
+                return None
             else:
-                _fast_eval = _build_fast_subset_evaluator(
-                    propagator_data,
-                    prefactor_num,
-                    smooth_edges_ri_pi,
-                    subset_constraint_data,
-                    m_sub,
-                )
+                # Stage 2: prefer the pre-built ``edge_mode_sums`` cache
+                # (residues + λ_α extracted once per edge at the top of
+                # integrate_diagram).  Falls back to the legacy in-call
+                # extraction path if the cache wasn't built (incomplete
+                # propagator_data).  For ConvVertex-only diagrams we
+                # extend the smooth-edge list with the per-attachment
+                # kernel pseudo-edges + their dt constraints.
+                if edge_mode_sums is not None:
+                    smooth_edge_modes = [
+                        edge_mode_sums[_ei_idx] for _ei_idx in _smooth
+                    ]
+                    return _build_fast_subset_evaluator_from_modes(
+                        _pn,
+                        smooth_edge_modes,
+                        _cdata,
+                        _m,
+                    )
+                else:
+                    return _build_fast_subset_evaluator(
+                        propagator_data,
+                        _pn,
+                        _ripi,
+                        _cdata,
+                        _m,
+                    )
+
+        # S3: a subset the state-space route may take builds the pole
+        # routes' evaluator only if it is needed (the route declined it, or
+        # its fallback); with ``poles`` it is built here, as before
+        _fast_eval = None if not _engine_poles else _mk_fast_eval()
         integrand_for_quad = (
             _fast_eval if _fast_eval is not None else integrand_fc_sub
         )
+        if not _engine_poles:
+            # the hook's reference closure, built on its first call
+            integrand_for_quad = _LazyIntegrand(_mk_fast_eval, _sr_build,
+                                                integrand_fc_sub)
 
         # Capture the smooth-edge EdgeModeSum subset + complex
         # prefactor for the analytic mode-sum paths:
@@ -8865,46 +8968,94 @@ def integrate_diagram(
         # ``None`` means the closure-only fallback path applies for
         # both (the constraints either can't be extracted or have
         # a non-numerical prefactor still).
-        # S2 (opt-in, ``DAEDALUS_PHASE_J_ENGINE=statespace``): the
-        # state-space subset integrator takes an eligible subset (all rows
-        # plain propagator edges of a realizable model); no pole-tuple plan
-        # is built for it.  Unset, nothing below changes.
+        # The state-space subset integrator (S2; the default since S3,
+        # ``DAEDALUS_PHASE_J_ENGINE=poles`` switches it off) takes an
+        # eligible subset (every row an edge with a realization: a
+        # propagator entry, a conductance kernel, a dressed line); no
+        # pole-tuple plan is built for it unless its call-time fallback
+        # needs one (``_pole_route_builder``).  With ``poles``, nothing
+        # below changes.
         _ss_make = None
-        if _os.environ.get('DAEDALUS_PHASE_J_ENGINE'):
+        if not _engine_poles:
             from engine.integration.time_domain import statespace as _ss
+            _ss_specs = []
+            for _i in smooth_edges:
+                if _i >= n_prop_edges:
+                    _ss_specs.append(
+                        ('kernel', kernel_edge_specs[_i - n_prop_edges][1]))
+                elif _i in dressed_idx:
+                    _ei = edge_info[_i]
+                    _att = conv_dress_att.get((_ei['u'], _ei['v'], _ei['lbl']))
+                    _ss_specs.append(
+                        ('dress', _ei['pi'], _ei['ri'], _att) if _att is not None
+                        else ('unsupported', 'dressed_line_without_kernel'))
+                else:
+                    _ss_specs.append(None)
             _ss_make = _ss.subset_maker(
                 propagator_data=propagator_data, num_params=num_params,
                 pi_ri=[(edge_info[_i]['pi'], edge_info[_i]['ri'])
                        for _i in smooth_edges],
                 plain_edges=(not vertex_leg_time
-                             and edge_mode_sums_builder is None
-                             and all(_i < n_prop_edges
-                                     and _i not in dressed_idx
-                                     for _i in smooth_edges)),
+                             and edge_mode_sums_builder is None),
                 prefactor=_prefactor_c if _prefactor_is_numerical else None,
                 cdata=subset_constraint_data, m=m_sub,
                 row_kinds=subset_row_kinds, n_free=len(free_ext_syms),
                 modes=(None if edge_mode_sums is None else
-                       [edge_mode_sums[_i] for _i in smooth_edges]))
-        _smooth_edge_modes = None
-        _modesum_prefactor_c = None
+                       [edge_mode_sums[_i] for _i in smooth_edges]),
+                edge_specs=_ss_specs)
+        if _ss_make is None and _ss_only_kernels:
+            return {
+                'status': 'failed',
+                'contribution': None,
+                'integration_vars': integration_vars,
+                'reason': (
+                    f'[subset {bin(branch_bits)}] the conductance kernel(s) '
+                    f'{sorted(set(_ss_only_kernels))} have no exponential '
+                    f'modes (a repeated or near-repeated rate) and only the '
+                    f'state-space route realizes them, but it declined this '
+                    f'subset (see the ss_declined_by_reason counters); '
+                    f'write the kernel as an auxiliary linear field (Markov '
+                    f'embedding) or give it a time-domain image'),
+            }
+        if _ss_make is None and not _engine_poles:
+            _fast_eval = _mk_fast_eval()
+            integrand_for_quad = (
+                _fast_eval if _fast_eval is not None else integrand_fc_sub
+            )
+        if _ss_make is None and _sr_deferred:
+            _sr_kind, _sr_val = _sr_build()
+            if _sr_kind == 'zero':
+                continue
+            if _sr_kind == 'skip':
+                _shot_skip(subset_diagnostics, delta_edges, smooth_edges,
+                           _sr_val)
+                n_delta_dropped += 1
+                continue
+            if _sr_kind == 'fail':
+                return _sr_val
+            integrand_fc_sub = _sr_val
+            integrand_for_quad = (
+                _fast_eval if _fast_eval is not None else integrand_fc_sub
+            )
         _modesum_enabled = (
             (USE_1D_INTEGRATOR and m_sub == 1)
             or (USE_POLYGON_M2_INTEGRATOR and m_sub == 2)
             or (USE_POSET_INTEGRATOR and m_sub >= 3)
         )
-        # ``_prefactor_c`` was already computed early (Stage 4a optim
-        # 2026-05-15); reuse it instead of re-converting through SR.
-        _pole_tuples_cache = None
-        _modesum_plan = None
-        if (_ss_make is None and _modesum_enabled
-                and not vertex_leg_time
-                and edge_mode_sums is not None
-                and _prefactor_is_numerical):
-            _modesum_prefactor_c = _prefactor_c
-            _smooth_edge_modes = [
-                edge_mode_sums[_ei_idx] for _ei_idx in smooth_edges
-            ]
+
+        def _pole_plan(_cdata=subset_constraint_data, _m=m_sub,
+                       _smooth_edges=smooth_edges, _bits=branch_bits,
+                       _n_free=len(free_ext_syms),
+                       _pref_ok=_prefactor_is_numerical,
+                       _pref_c=_prefactor_c, _enabled=_modesum_enabled):
+            """``(modes, prefactor, pole_tuples, plan)`` of the analytic
+            mode-sum routes for this subset (all ``None`` when they do not
+            apply).  Bound to this subset (S3: also called lazily, by the
+            state-space route's fallback)."""
+            if not (_enabled and not vertex_leg_time
+                    and edge_mode_sums is not None and _pref_ok):
+                return None, None, None, None
+            _modes = [edge_mode_sums[_ei_idx] for _ei_idx in _smooth_edges]
             # Stage 4a-plan (2026-05-15): pre-compute the τ-invariant
             # per-pole-tuple data (alphas, γ_const, γ_slope) for the
             # entire τ grid.  Each analytic integrator threads this
@@ -8912,20 +9063,29 @@ def integrate_diagram(
             # edge-loop that would otherwise rebuild α_s / γ on every
             # ``_contrib(free_vals)`` invocation.  Trades a single
             # subset-setup cost for (N_τ − 1) call-time recomputations.
-            _modesum_plan = _build_modesum_plan(
-                _smooth_edge_modes,
-                subset_constraint_data,
-                m_sub,
-                len(free_ext_syms),
+            _plan = _build_modesum_plan(
+                _modes,
+                _cdata,
+                _m,
+                _n_free,
                 where=(f'diagram #{_diag_serial}, delta-subset '
-                       f'{branch_bits}, m = {m_sub}, '
-                       f'{len(_smooth_edge_modes)} smooth edges with '
-                       f'{[len(e.modes) for e in _smooth_edge_modes]} '
+                       f'{_bits}, m = {_m}, '
+                       f'{len(_modes)} smooth edges with '
+                       f'{[len(e.modes) for e in _modes]} '
                        f'modes'),
             )
             # Keep the legacy cache populated so any caller still
             # passing ``pole_tuples=`` keeps working unchanged.
-            _pole_tuples_cache = _modesum_plan['pole_tuples']
+            return _modes, _pref_c, _plan['pole_tuples'], _plan
+
+        # ``_prefactor_c`` was already computed early (Stage 4a optim
+        # 2026-05-15); reuse it instead of re-converting through SR.
+        if _ss_make is None:
+            (_smooth_edge_modes, _modesum_prefactor_c, _pole_tuples_cache,
+             _modesum_plan) = _pole_plan()
+        else:
+            _smooth_edge_modes = _modesum_prefactor_c = None
+            _pole_tuples_cache = _modesum_plan = None
 
         # Build this subset's contribution callable
         def _make_subset_contrib(fc, cdata, m_val,
@@ -9112,8 +9272,22 @@ def integrate_diagram(
                 return _val
             return _contrib
 
-        _subset_cfn = (
-            (_ss_make or _make_subset_contrib)(
+        _hook_meta = {
+            'source': 'per_diagram',
+            'diagram_serial': _diag_serial,
+            'model': _model_id,
+            'diagram': typed_diagram,
+            'loop_number': loop_number,
+            'subset_id': branch_bits,
+            'subset_index': len(subset_contributions),
+            'delta_edges': tuple(delta_edges),
+            'smooth_edges': tuple(smooth_edges),
+            # Feature B: an integrated δ record, not a smooth term
+            **({'delta_record': True}
+               if _shot_pending is not None else {}),
+        }
+        if _ss_make is None:
+            _subset_cfn = _make_subset_contrib(
                 integrand_for_quad, subset_constraint_data, m_sub,
                 modes=_smooth_edge_modes,
                 pref_c=_modesum_prefactor_c,
@@ -9121,22 +9295,44 @@ def integrate_diagram(
                 plan=_modesum_plan,
                 row_kinds=tuple(subset_row_kinds),
                 theta0_empty=_theta0_always_empty,
-                hook_meta={
-                    'source': 'per_diagram',
-                    'diagram_serial': _diag_serial,
-                    'model': _model_id,
-                    'diagram': typed_diagram,
-                    'loop_number': loop_number,
-                    'subset_id': branch_bits,
-                    'subset_index': len(subset_contributions),
-                    'delta_edges': tuple(delta_edges),
-                    'smooth_edges': tuple(smooth_edges),
-                    # Feature B: an integrated δ record, not a smooth term
-                    **({'delta_record': True}
-                       if _shot_pending is not None else {}),
-                },
+                hook_meta=_hook_meta,
             )
-        )
+        else:
+            def _pole_route_builder(meta, _mk=_make_subset_contrib,
+                                    _fc=integrand_fc_sub,
+                                    _mk_fast=_mk_fast_eval,
+                                    _cdata=subset_constraint_data, _m=m_sub,
+                                    _rk=tuple(subset_row_kinds),
+                                    _t0=_theta0_always_empty,
+                                    _plan_fn=_pole_plan, _sr_fn=_sr_build,
+                                    _deferred=_sr_deferred,
+                                    _ss_only=bool(_ss_only_kernels)):
+                """S3: the pole-route closure of this subset, built when
+                the state-space route falls back on it (its modesum plan,
+                and the SR integrand if it was deferred); ``None`` when the
+                subset has no pole route."""
+                if _ss_only:
+                    return None
+                fast = _mk_fast()
+                fc = fast if fast is not None else _fc
+                if _deferred and fast is None:
+                    kind, val = _sr_fn()
+                    if kind == 'zero':
+                        return lambda *_a, **_k: 0.0 + 0.0j
+                    if kind != 'ok':
+                        return None
+                    fc = val
+                modes_, pref_, tuples_, plan_ = _plan_fn()
+                return _mk(fc, _cdata, _m, modes=modes_, pref_c=pref_,
+                           pole_tuples=tuples_, plan=plan_, hook_meta=meta,
+                           row_kinds=_rk, theta0_empty=_t0)
+            _subset_cfn = _ss_make(
+                integrand_for_quad, subset_constraint_data, m_sub,
+                row_kinds=tuple(subset_row_kinds),
+                theta0_empty=_theta0_always_empty,
+                hook_meta=_hook_meta,
+                fallback=_pole_route_builder,
+            )
         if _shot_pending is not None:
             # Feature B: the subset's integral is the δ weight (evaluated
             # on the δ surface by the caller), not a smooth term.
@@ -13445,7 +13641,8 @@ def _prefactor_exact_zero(cp, num_params):
 
 
 def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
-                           prune=None, prefactors=None, budget_bytes=None):
+                           prune=None, prefactors=None, budget_bytes=None,
+                           ss_estimate=None):
     r"""Estimate of the pole tuples the modesum plans of ``typed_diagrams``
     will hold (item 35's memory pre-pass), without integrating anything: an
     upper bound on the per-diagram route for propagator edges (not for
@@ -13469,7 +13666,14 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     ``prefactors_tested`` says whether it ran.  Returns a dict: ``tuples``, ``tuples_unpruned``,
     ``bytes`` (x ``PLAN_BYTES_PER_TUPLE``), ``n_diagrams`` and ``worst``
     (the diagram index with its per-edge ``(n_e, n_all, has_delta)``), or
-    ``None`` when the propagator has no usable pole data."""
+    ``None`` when the propagator has no usable pole data.
+
+    S3: ``ss_estimate(td, has_delta)`` -> ``(stationary, transient)`` bytes
+    or ``None`` (``statespace.diagram_estimate``): a diagram the
+    state-space route takes is charged that estimate instead of its pole
+    tuples (``ss_diagrams``, ``ss_bytes``: the stationary states summed,
+    ``ss_transient_bytes``: the largest segment working set, both in
+    ``bytes``); ``tuples`` then counts the other diagrams only."""
     if prune is None:
         prune = PRUNE_ZERO_MODES
     try:
@@ -13510,7 +13714,16 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
         return hit
 
     per_diagram = []
+    ss_n = ss_stat = ss_trans = 0
     for td in typed_diagrams:
+        if ss_estimate is not None:
+            est_ss = ss_estimate(td, lambda pi_, ri_: counts(pi_, ri_)[2])
+            if est_ss is not None:
+                ss_n += 1
+                ss_stat += est_ss[0]
+                ss_trans = max(ss_trans, est_ss[1])
+                per_diagram.append((0, 0, []))
+                continue
         per = []
         pidx = td.propagator_indices
         for ek in td.prediagram[0].edges():
@@ -13550,10 +13763,15 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
         if worst is None or t > worst['tuples']:
             worst = {'index': i, 'tuples': t, 'tuples_unpruned': tf,
                      'edges': per}
-    return {'tuples': total, 'tuples_unpruned': total_full,
-            'bytes': total * PLAN_BYTES_PER_TUPLE,
-            'n_diagrams': len(typed_diagrams), 'worst': worst,
-            'pruned': bool(prune), 'prefactors_tested': tested}
+    out = {'tuples': total, 'tuples_unpruned': total_full,
+           'bytes': total * PLAN_BYTES_PER_TUPLE,
+           'n_diagrams': len(typed_diagrams), 'worst': worst,
+           'pruned': bool(prune), 'prefactors_tested': tested}
+    if ss_estimate is not None:
+        out.update(ss_diagrams=ss_n, ss_bytes=ss_stat,
+                   ss_transient_bytes=ss_trans,
+                   bytes=out['bytes'] + ss_stat + ss_trans)
+    return out
 
 
 def _lookup_prop_indices(typed_diagram, edge_key):

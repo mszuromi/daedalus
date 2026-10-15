@@ -452,3 +452,14 @@ def test_spike_reset_exact_tie_is_the_left_limit(spike_k2, monkeypatch):
     A = np.array([[1.0, -h, h * h] for h in hs])
     f0 = np.linalg.solve(A, np.array(vals))[0]
     assert abs(v_tie[False] - f0) <= 1e-9 * abs(f0), (v_tie[False], f0)
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

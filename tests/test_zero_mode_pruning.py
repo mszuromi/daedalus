@@ -509,3 +509,14 @@ def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
     monkeypatch.setattr(FI, '_decay_tol', spy)
     _cumulants(model, k=1, field='dh', grouped=True)
     assert seen and all(m is not None for m in seen)
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

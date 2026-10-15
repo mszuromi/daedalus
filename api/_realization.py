@@ -1058,6 +1058,99 @@ def try_realize(prop, num_params, **kw):
         return None, exc
 
 
+def realize_kernel(att, num_params=None, *, balance=True):
+    """Minimal SISO realization of a causal conductance kernel
+    ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
+    edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
+
+    ``att``: a ``ConvVertexType`` kernel attachment (``engine/core/
+    vertices.py``) with ``kernel_ft_fn`` (``omega -> g^(omega)``, the
+    codebase's ``g^(omega) = int g(t) e^{-i omega t} dt``) or ``kernel_td_fn``
+    (``tau -> g(tau)``, Heaviside stripped; its Laplace transform is taken
+    exactly).  Exactly as for the propagator (module docstring): the
+    parameters at their exact binary values, ``omega -> -i s``, the image
+    an element of ``F(s)``, realized by the root-free chain of
+    ``_realize_proper`` (exact factorization: EQUAL or nearly equal rates
+    give a Jordan-type chain, no residues, no rate gap enters), reduced by
+    the exact Kalman decomposition, rounded once and balanced.  Refused
+    (``RealizationRefused``): no image (``no_kernel_image``), a symbol
+    without a value (``unbound_symbol``), not rational in ``s``
+    (``non_rational``: e.g. a Gaussian kernel), a delta or polynomial part
+    (``kernel_not_strictly_proper``), a non-Hurwitz chain
+    (``kernel_not_hurwitz``).  Returns ``(EntryRealization, field_name)``."""
+    S = _sage()
+    subs = _exact_subs(num_params)
+    s = S.SR.var('ssreal')
+    ft_fn = att.get('kernel_ft_fn') if hasattr(att, 'get') else None
+    td_fn = att.get('kernel_td_fn') if hasattr(att, 'get') else None
+    try:
+        if ft_fn is not None:
+            w = S.SR.var('wkernelreal')
+            e = _exactify(S.SR(ft_fn(w)).subs(subs)).subs({w: -S.I * s})
+        elif td_fn is not None:
+            t = S.SR.var('tkernelreal', domain='positive')
+            g = S.SR(td_fn(t)).substitute_function(S.heaviside,
+                                                    lambda _x: S.SR(1))
+            g = _exactify(g.subs(subs))
+            e = g.laplace(t, s)
+        else:
+            raise RealizationRefused('no_kernel_image',
+                                     'the kernel has neither a time nor a '
+                                     'frequency image')
+    except RealizationRefused:
+        raise
+    except Exception as exc:
+        raise RealizationRefused(
+            'non_rational', f'kernel {att.get("symbol")}: its image cannot be '
+            f'formed at the parameter point ({type(exc).__name__}: '
+            f'{str(exc)[:120]})') from exc
+    free = [str(v) for v in S.SR(e).variables() if str(v) != str(s)]
+    if free:
+        raise RealizationRefused(
+            'unbound_symbol', f'kernel {att.get("symbol")}: symbols '
+            f'{sorted(free)} without a value')
+    x = F = P = fname = None
+    last = None
+    for fname in ('QQ', 'QQ[I]'):
+        F = S.QQ if fname == 'QQ' else _gauss_field()
+        P = S.PolynomialRing(F, str(s))
+        try:
+            x = _sr_to_frac(S.SR(e), s, P.fraction_field(), F)
+            break
+        except Exception as exc:
+            last, x = exc, None
+    if x is None:
+        raise RealizationRefused(
+            'non_rational', f'kernel {att.get("symbol")}: {str(e)[:120]} is '
+            f'not a rational function of s ({type(last).__name__})')
+    q, r, d = _split_entry(x, P)
+    if q != 0:
+        raise RealizationRefused(
+            'kernel_not_strictly_proper', f'kernel {att.get("symbol")} has a '
+            'delta or polynomial part')
+    cplx = fname != 'QQ'
+    if r == 0:
+        z = np.zeros((0, 0), dtype=complex if cplx else float)
+        return EntryRealization(a=z, b=np.zeros(0, z.dtype),
+                                c=np.zeros(0, z.dtype), d=0.0,
+                                n_states=0), fname
+    A, b, c, _blocks = _realize_proper(r, d, F)
+    A, b, c = _kalman_minimal(A, b, c, F)
+    hur = _routh_hurwitz(A, F)
+    an, bn, cn = (_to_numpy(M, cplx) for M in (A, b, c))
+    if hur is None:
+        hur = bool(np.all(np.linalg.eigvals(an).real < 0)) if an.size else True
+    if not hur:
+        raise RealizationRefused(
+            'kernel_not_hurwitz', f'kernel {att.get("symbol")} grows or does '
+            'not decay (a rate with non-negative real part)')
+    if balance and an.shape[0]:
+        an, bn, cn, _s = _balance(an, bn, cn)
+    k = an.shape[0]
+    return EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=0.0,
+                            n_states=k), fname
+
+
 # ─── checks (tests, census) ───────────────────────────────────────────────
 
 def compare_D(real, D_delta, num_params):

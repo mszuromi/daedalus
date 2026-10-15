@@ -1096,7 +1096,9 @@ def test_public_pure_delta_propagator_without_poles(ld_model, fields):
                         max_ell=0, params=_LD_DECOUPLED, fields=fields)
         assert np.array_equal(on[0], np.zeros(len(tau), dtype=complex))
         assert c_on['forced_delta_pruned'] > 0
-    with pytest.raises(IndexError):
+    with pytest.raises(IndexError), pytest.MonkeyPatch.context() as mp_:
+        # the pole engine's legacy path (S3: the default route takes it)
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
         _run(ld_model, False, k=2, grouped=False, tau=tau, max_ell=0,
              params=_LD_DECOUPLED, fields=fields)
 

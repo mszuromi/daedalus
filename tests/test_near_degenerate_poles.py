@@ -316,3 +316,14 @@ def test_trapezoid_combination_and_tail_estimate():
         assert abs(F0 - 1) == pytest.approx(4.0 ** -N / (1 - 4.0 ** -N), rel=1e-6)
         assert err >= abs(F0 - 1)
     assert len(dummy.nodes(True)) == N // 2 + 1 and len(dummy.nodes(False)) == N
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

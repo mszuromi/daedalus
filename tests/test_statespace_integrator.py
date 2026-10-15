@@ -1,8 +1,8 @@
 """
 tests/test_statespace_integrator.py
 ===================================
-State-space subset integrator for Phase J (S2, opt-in with
-``DAEDALUS_PHASE_J_ENGINE=statespace``): the downset sweep of
+State-space subset integrator for Phase J (S2; the default since S3,
+``DAEDALUS_PHASE_J_ENGINE=poles`` switches it off): the downset sweep of
 ``engine/integration/time_domain/statespace.py`` on S1's realization
 (``api/_realization.py``).  Inline public models only:
 
@@ -217,7 +217,9 @@ _TAU_PTS = [-1e-6, 0.5, 2.0]          # compute_cumulants' τ = 0 is the Itô le
 # ── end to end ────────────────────────────────────────────────────────────
 
 def test_engine_flag_values():
-    assert SS.engine_requested({}) is False
+    # S3: the state-space route is the default; ``poles`` switches it off
+    assert SS.engine_requested({}) is True
+    assert SS.engine_requested({ENV: 'default'}) is True
     assert SS.engine_requested({ENV: 'poles'}) is False
     assert SS.engine_requested({ENV: ' StateSpace '}) is True
     with pytest.raises(ValueError, match='statespace'):
@@ -252,8 +254,12 @@ def test_colour_noise_double_pole_vs_oracle(monkeypatch, gap):
     res = _cc(ou_colour(tc), 2, 1, [('x', 1), ('x', 1)], TAUS)
     c = _ss_counters()
     assert c['ss_evals'] > 0 and c['ss_subsets_declined'] == 0
-    if gap == 0.0:                     # a repeated pole: deformation runs
-        assert (res.get('pole_clusters') or {}).get('status') == 'resolved'
+    if gap == 0.0:
+        # a repeated pole: the pole engine would average 7 deformed
+        # propagators; the route covers the run, so the deformation is
+        # bypassed (S3)
+        assert (res.get('pole_clusters') or {}).get('status') == 'bypassed'
+        assert res['phase_j_engine']['pole_deformation'] == 'bypassed'
     with mp.workdps(50):
         mu, eps, D, t = (mp.mpf(1), mp.mpf('0.02'), mp.mpf(1), mp.mpf(tc))
         A = mp.matrix([[-mu, 1], [0, -1 / t]])
@@ -288,15 +294,17 @@ def test_erlang8_kernel_vs_oracle(monkeypatch):
 
 def test_alpha_conductance_vs_markov_embedding(monkeypatch):
     ext = [('dx', 1), ('dx', 1)]
-    # kernel form (rates 1/0.7, 1/0.4): conductance pseudo-edges / dressed
-    # lines are not plain propagator rows -> declined, the pole routes take
-    # them; the subsets without one may take the state-space route
+    # kernel form (rates 1/0.7, 1/0.4): since S3 the conductance kernel
+    # edges and dressed lines are routed too (the kernel's own realization,
+    # cascaded with G for a dressed line); the pole engine is the reference
+    monkeypatch.setenv(ENV, 'poles')
     kern = _cc(alpha_kernel_model(0.4), 2, 1, ext, TAUS)
     monkeypatch.setenv(ENV, 'statespace')
     FI._reset_runtime_counters()
     kern_on = _cc(alpha_kernel_model(0.4), 2, 1, ext, TAUS)
     c = _ss_counters()
-    assert c['ss_declined_by_reason'].get('non_propagator_rows', 0) > 0
+    assert c['ss_subsets_declined'] == 0 and c['ss_subsets_built'] > 0
+    assert c['ss_kernel_entries'] + c['ss_dressed_entries'] > 0
     for ell in (0, 1):
         # real parts: the pole routes carry ~2e-17 of imaginary rounding on
         # values ~1e-3 here, the state-space route returns real values
@@ -316,7 +324,7 @@ def test_alpha_conductance_vs_markov_embedding(monkeypatch):
     # on the state-space route and is continuous through tau2 = tau
     eq = _cc(alpha_markov_model(0.7), 2, 1, ext, TAUS)
     near = _cc(alpha_markov_model(0.7 * (1 + 1e-9)), 2, 1, ext, TAUS)
-    monkeypatch.delenv(ENV)
+    monkeypatch.setenv(ENV, 'poles')
     pj = _cc(alpha_markov_model(0.7), 2, 1, ext, TAUS)   # pole routes
     for ell in (0, 1):
         a_ = np.asarray(eq['C_tau_by_ell'][ell])
@@ -374,8 +382,13 @@ def test_tau_grid_prefetch_matches_per_point(monkeypatch):
 
 
 def test_flag_off_is_the_pole_engine_bit_for_bit(monkeypatch):
+    # S3: ``poles`` is the pole engine; a state-space run in between does
+    # not change its numbers
+    monkeypatch.setenv(ENV, 'poles')
     _cc(ou_cubic(), 2, 1, [('x', 1), ('x', 1)], TAUS)        # warm-up
     a_ = _cc(ou_cubic(), 2, 1, [('x', 1), ('x', 1)], TAUS)
+    monkeypatch.delenv(ENV)
+    _cc(ou_cubic(), 2, 1, [('x', 1), ('x', 1)], TAUS)        # the default
     monkeypatch.setenv(ENV, 'poles')
     FI._reset_runtime_counters()
     b_ = _cc(ou_cubic(), 2, 1, [('x', 1), ('x', 1)], TAUS)

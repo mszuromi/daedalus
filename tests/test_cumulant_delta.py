@@ -206,9 +206,12 @@ def test_integrated_records_never_touch_C_tau(monkeypatch, spike_reset_runs):
         c.total_on_grid(mode='bin')
 
 
-def test_records_survive_the_pole_cluster_deformation():
+def test_records_survive_the_pole_cluster_deformation(monkeypatch):
     """τ = τ_g with weak diagonal coupling: near-degenerate poles resolved
-    by the deformation (records combined over the nodes)."""
+    by the deformation (records combined over the nodes).  S3: the pole
+    engine's deformation (the state-space route, the default, bypasses
+    it)."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     fund = {'tau': 2.5, 'tau_g': 2.5, 'w': [[1e-4, 0.0], [0.0, 2e-4]]}
     F, lam = _lam_linear_hawkes(fund)
     r = _run('linear_hawkes', 2, 0, [('n', 2), ('n', 2)], fund)

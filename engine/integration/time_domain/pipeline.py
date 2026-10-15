@@ -201,6 +201,23 @@ def _worker_eval_one_diagram(task):
     return (tau_idx, diagram_idx, complex(fn(*tau_tuple)))
 
 
+def _ss_grid(points):
+    """S3: the state-space route's τ batch over ``points`` (the raw tuples
+    passed to ``total_C``): ``statespace.tau_grid_prefetch``, or a no-op
+    context with ``DAEDALUS_PHASE_J_ENGINE=poles`` (the module is then not
+    imported).  Only the serial evaluation paths use it (a forked worker
+    would evaluate the whole grid for its share of it)."""
+    import contextlib
+    import os
+    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
+    if raw is not None and raw.strip().lower() == 'poles':
+        return contextlib.nullcontext()
+    from engine.integration.time_domain import statespace as _ss
+    if not _ss.engine_requested():
+        return contextlib.nullcontext()
+    return _ss.tau_grid_prefetch(points)
+
+
 def compute_correction_td(
     typed_diagrams=None,
     prefactors=None,
@@ -474,7 +491,8 @@ def compute_correction_td(
             _warn_fork_guard_once()
             parallel = False
         if not parallel or len(tau_list) == 0:
-            return [total_C(*pt) for pt in tau_list]
+            with _ss_grid(tau_list):
+                return [total_C(*pt) for pt in tau_list]
 
         import multiprocessing as mp
         import os
@@ -497,7 +515,8 @@ def compute_correction_td(
         # A fork+join costs ~50-200 ms on macOS/Linux; require at least
         # a handful of tasks per worker before it pays off.
         if total_tasks < max(4, 2 * n_w_cap):
-            return [total_C(*pt) for pt in tau_list]
+            with _ss_grid(tau_list):
+                return [total_C(*pt) for pt in tau_list]
 
         ctx = mp.get_context(start_method)
 
@@ -579,11 +598,12 @@ def compute_correction_td(
         if (not parallel) or total_tasks < max(4, 2 * n_w_cap):
             # Serial path.  Still honours original diagram order.
             vals = []
-            for pt in tau_list:
-                row = []
-                for fn in tree_callables:
-                    row.append(complex(fn(*pt)))
-                vals.append(row)
+            with _ss_grid(tau_list):
+                for pt in tau_list:
+                    row = []
+                    for fn in tree_callables:
+                        row.append(complex(fn(*pt)))
+                    vals.append(row)
             return vals, loop_nums
 
         import multiprocessing as mp

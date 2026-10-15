@@ -171,6 +171,9 @@ FINDING_CODES = {
     'G6_COUNTERS_INCOMPLETE':    ('G6', 'info'),
     'G6_NOT_EVALUATED':          ('G6', 'info'),
     'G6_DIAGRAMS_SKIPPED':       ('G6', 'warning'),
+    # S3: the Phase J engine census and the state-space route's fallbacks
+    'G6_PHASE_J_ENGINE':         ('G6', 'info'),
+    'G6_SS_FALLBACK':            ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -612,10 +615,14 @@ class _Ctx:
         self.wired = False                # True inside compute_cumulants
         self.pipeline_ns = None           # the pipeline's namespace (read only)
 
-    def add(self, code, message, remedy=''):
-        gate, level = FINDING_CODES[code]
-        self.findings.append(Finding(code=code, level=level, message=message,
-                                     remedy=remedy, gate=gate))
+    def add(self, code, message, remedy='', level=None):
+        """``level``: overrides the code's registered level (S3: pole
+        findings are informational when the state-space route takes the
+        run)."""
+        gate, lvl = FINDING_CODES[code]
+        self.findings.append(Finding(code=code, level=level or lvl,
+                                     message=message, remedy=remedy,
+                                     gate=gate))
 
     def ledger_add(self, kind, name, detail, declared=False, satisfied=None):
         self.ledger.append(LedgerEntry(kind=kind, name=name, detail=detail,
@@ -1845,6 +1852,13 @@ def _g3_pole_findings(ctx, res):
     if pcr:
         ctx.t['pole_cluster_status'] = status
         ctx.t['pole_cluster_kappa'] = float(pcr.get('kappa_max') or 0.0)
+    # S3: the state-space route takes the whole run -> the pole findings
+    # below are informational (the route uses no poles or residues; the
+    # run's census in G6 says whether any subset used the pole route)
+    ss_all = bool(ctx.t.get('statespace_covers_run'))
+    ss_note = (' [informational: the state-space Phase J route (the default) '
+               'takes every subset of this run and uses no poles or '
+               'residues; G6_PHASE_J_ENGINE has the census]' if ss_all else '')
     if not squarefree:
         ctx.add('G3_REPEATED_POLE',
                 'Q(omega) has a repeated root (Jordan block): the pole-residue '
@@ -1852,7 +1866,8 @@ def _g3_pole_findings(ctx, res):
                 'term); '
                 + ('compute_cumulants averages deformed propagators instead '
                    '(api._pole_clusters).' if status == 'resolved' else
-                   'it cannot be resolved here (G3_POLE_CLUSTER_UNRESOLVED).'),
+                   'it cannot be resolved here (G3_POLE_CLUSTER_UNRESOLVED).')
+                + ss_note,
                 'none needed when resolved; otherwise perturb the '
                 'parameters off the degeneracy')
     close = []
@@ -1876,7 +1891,7 @@ def _g3_pole_findings(ctx, res):
         ctx.add('G3_CLOSE_POLES',
                 f'{len(close)} pole pair(s) closer than {_CLOSE_POLE_RTOL:g} '
                 f'relative: {[(complex(a), complex(b)) for a, b in close[:3]]}; '
-                f'{how}.',
+                f'{how}.' + ss_note,
                 'none needed when resolved (see result["pole_clusters"]); '
                 'otherwise move the parameters off the degeneracy or '
                 'check G6 accuracy')
@@ -1892,12 +1907,12 @@ def _g3_pole_findings(ctx, res):
         ctx.add('G3_POLE_CLUSTER_UNRESOLVED',
                 f'a cluster of {"repeated" if not squarefree else "near-degenerate"} '
                 f'poles needs the pole-cluster deformation, which is {status}: '
-                f'{(pcr or {}).get("reason", "")}; {lost}.',
+                f'{(pcr or {}).get("reason", "")}; {lost}.' + ss_note,
                 'give the exact tier rational parameters / kernel images (it '
                 'needs an exact rational propagator), unset '
                 'DAEDALUS_POLE_CLUSTERS=0, or (a cluster too close to the '
                 'stability boundary) perturb the parameters off the '
-                'degeneracy')
+                'degeneracy', level='info' if ss_all else None)
     rates = [p.imag for p in poles if p.imag > 0]
     if rates:
         ratio = max(rates) / min(rates)
@@ -2964,8 +2979,15 @@ class Preflight:
     def mean_field_failed(self, exc):
         self.failed('mean_field', exc)
 
-    def poles(self, prop):
+    def poles(self, prop, ss_route=None):
+        """G3 + G5 on the propagator.  ``ss_route`` (S3, ``compute.
+        _ss_route_prediction``): when the state-space Phase J route covers
+        the run, the pole findings (repeated, close, unresolved clusters)
+        are informational: the route uses no poles or residues."""
         ctx = self.ctx
+        if ss_route is not None:
+            ctx.t['phase_j_engine'] = ss_route.get('engine')
+            ctx.t['statespace_covers_run'] = bool(ss_route.get('covers_run'))
 
         def g3():
             if (ctx.stop_numeric or ctx.num_params is None
@@ -3089,7 +3111,46 @@ G6_COUNTERS = (
     'dd_overflow', 'dd_unsupported', 'nquad_calls',
     'nquad_hardened_quad_flags', 'nquad_hardened_uncertified',
     'dd_polygon', 'dd_interval', 'dd_poset', 'dd_grouped_m0', 'dbm_answered',
-    'dd_err_abs_sum', 'dbm_err_abs_sum')
+    'dd_err_abs_sum', 'dbm_err_abs_sum',
+    # S3: the state-space route
+    'ss_evals', 'ss_estimated', 'ss_err_abs_sum', 'ss_subsets_built',
+    'ss_subsets_declined', 'ss_fallback_subsets', 'ss_fallback_evals')
+
+
+def _g6_engine(ctx, result, c):
+    """S3: the Phase J engine census (``result['phase_j_engine']``) as a G6
+    finding and a ledger entry; a call-time fallback on the pole route is a
+    warning (recorded, never raised)."""
+    rep = result.get('phase_j_engine') if isinstance(result, dict) else None
+    if not rep or rep.get('engine') != 'statespace':
+        return              # DAEDALUS_PHASE_J_ENGINE=poles: the report of main
+    n_ss = int(rep.get('ss_subsets') or 0)
+    n_dec = int(rep.get('ss_declined') or 0)
+    share = rep.get('statespace_share')
+    d = ctx.t
+    d['phase_j_engine'] = rep.get('engine')
+    d['statespace_share'] = share
+    pdef = rep.get('pole_deformation')
+    detail = (f"engine {rep.get('engine')}: {n_ss} subset(s) on the "
+              f"state-space route, {n_dec} on the pole routes"
+              + (f" (declined: {rep.get('ss_declined_by_reason')})"
+                 if n_dec else '')
+              + (f"; pole-cluster deformation {pdef}" if pdef else '')
+              + (f" (bypass failed: {rep['bypass_failed']})"
+                 if rep.get('bypass_failed') else ''))
+    ctx.add('G6_PHASE_J_ENGINE', detail + '.', '')
+    nf = int(rep.get('fallback_evals') or 0)
+    if nf:
+        ctx.add('G6_SS_FALLBACK',
+                f"{rep.get('fallback_subsets')} routed subset(s) fell back on "
+                f"the pole route at call time ({nf} evaluation(s); reasons "
+                f"{rep.get('fallback_by_reason')}); those values are the pole "
+                "route's.",
+                'see result["phase_j_engine"]; a stiff segment beyond the '
+                "state-space route's range or a segment over the memory "
+                'budget (PHASE_J_MEM_BUDGET_GB) are the usual causes')
+    ctx.ledger_add('assertion', 'phase_j_engine', detail,
+                   satisfied=(nf == 0))
 
 
 def _g6(ctx, pf, result, c, complete, evaluated):
@@ -3124,6 +3185,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         d['n_diagrams'] = None
     d['counters_complete'] = bool(complete)
     d['accuracy_estimate'] = None
+    _g6_engine(ctx, result, c)
     failed = (result.get('phase_j_incomplete') or {}) \
         if isinstance(result, dict) else {}
     d['n_diagrams_skipped'] = sum(r.get('n_diagrams', 1)
@@ -3183,14 +3245,20 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'{c.get("nquad_hardened_quad_flags", 0)} flagged quad '
                 'call(s)); they are not in the accuracy estimate.', '')
     C = result.get('C_tau')
-    E = float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
+    # S3: the state-space route's a-posteriori estimates (``statespace``
+    # module docstring: refinement residuals + the Taylor tolerance per
+    # step, on the final contraction's magnitude) join the closed-form
+    # routes' sums
+    E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
+         + float(c.get('ss_err_abs_sum', 0.0)))
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
         # while C is their weighted mean (weights summing to 1)
         E /= float(pc['node_runs'])
     n_est = sum(int(c.get(k, 0)) for k in ('dd_polygon', 'dd_interval',
-                                           'dd_poset', 'dbm_answered'))
+                                           'dd_poset', 'dbm_answered',
+                                           'ss_estimated'))
     Ca = np.asarray(C, dtype=complex) if C is not None else np.zeros(0, complex)
     S = float(np.sum(np.abs(Ca)))
     if not complete:
