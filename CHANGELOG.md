@@ -11,6 +11,68 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: delay kernels (Padé loops with an automatic order, exact tree, kernel-aware stability, delay simulator)
+
+A kernel image with a factor `exp(-I*omega*d)` (`d > 0`) is a delay kernel. Before, the analyzer stopped such a
+model (`G3_NONRATIONAL_KERNEL`); now `compute_cumulants` computes it (`api/delay.py`). No number of a model
+without a delay changes.
+
+- **Front end.** `define_kernel('g', delay='d')` (the hard delay `delta(t - d)`; with `freq_image=` / `time_expr=`
+  a delayed filter), `define_kernel('g', kernel=Kernel.delay('d') * Kernel.exponential('tau'))`
+  (`api.delay.Kernel`: `delay`, `exponential`, `gamma`, `image`, products), a `time_expr` shifted by a delay
+  (`dirac_delta(t - d)`, `heaviside(t - d)*exp(-(t - d)/tau)/tau`), a hand-written `exp(-I*omega*d)` image, and in
+  the SDE front end a delayed field `x(t - d)` in a drift (rewritten as `Conv(delay_d, x)`). Mean field: the
+  delay leaves `g_hat(0)` unchanged (exact).
+- **Loops: Padé (n, n).** Each delay factor is replaced by its diagonal Padé approximant `P_n(-z)/P_n(z)`,
+  `z = i omega d` (all-pass, exact rational coefficients), and the approximated model runs on the ordinary
+  pipeline (state-space route). `delay={'order': 'auto'}` (default) doubles `n` from 4 until the estimated
+  relative error of the observable, `max_tau |C_n - C_2n| / max_tau |C_2n|` (conservative), meets `tol`
+  (default `1e-8`), or `n_max` (16), or the predicted wall time of the next order exceeds `wall_max` (900 s); an
+  order the engine cannot finish, or whose difference grows, ends the search at the previous order.
+  An order whose Padé tree is more than 100 % of max|C| from the exact tree is skipped (a long delay needs a higher
+  order). A hard delay inside a nonlinear term (`x*x(t - d)`) is not computed: its all-pass image has a direct term,
+  which the conductance-kernel routes need to be zero; the run is `incomplete`, the record says so and a
+  `DelayOrderWarning` names the remedy (a delayed filter, `Kernel.delay(d) * Kernel.exponential(tau)`).
+  `output_npz` / `output_csv` are written from the final result. `delay={'order': n}` fixes the order. The result carries `result['delay']` (orders run, walls, the estimate, whether
+  the target was met), the finding `G3_DELAY_APPROXIMATED` (a warning when the target is missed, with a
+  `DelayOrderWarning`) and the ledger entry `approximation delay:<kernel>`.
+- **Tree: exact.** For `k = 2` the tree is the exact stationary covariance of the linear delayed system
+  (`api/_delay_exact.py`: `K = K0 + K1 e^{-s d}` realized exactly, a boundary-value problem on `[0, d]` plus the
+  method of steps as one matrix exponential; delayed noise included, and the smooth part of the response of a
+  field with an instantaneous (delta) response; the `delta(tau)` part itself stays the pipeline's delta record), not
+  its Padé approximation. `delay={'tree': 'pade'}` or `DAEDALUS_DELAY_EXACT_TREE=0` switches it off. One delay
+  value; several delays, a boundary-value problem whose error estimate exceeds 1e-8 (a delay long against the
+  decay rates: `d max|Re eig A|` above about 17) or a method-of-steps stack above 1,500 states (short delays on long
+  tau grids) use the Padé tree (recorded in
+  `result['delay']['tree_note']`).
+- **Stability: G2-K.** The saddle's stability is decided from `det K(s)` with the TRUE kernel images
+  (`api/_kernel_stability.py`): Lambert W for one field with one delay, otherwise the argument principle on a
+  half disc whose radius is certified against the leading term. An unstable delayed saddle is refused by name
+  (`G2_UNSTABLE_SADDLE`, with the roots), a marginal one by `G2_MARGINAL_MODE`, a neutral system by the new
+  `G2_NEUTRAL_DELAY`, an advance (`exp(+i omega d)`) by `G3_ACAUSAL_POLE`. G2-K also runs for every model with a
+  rational kernel (the mean-field linearization replaces each kernel by its integral): `G2_KERNEL_STABILITY`
+  (info) when stable; `G2_KERNEL_UNSTABLE` (a warning; an error only under the strict policy) when not; a
+  propagator pole below the axis that G3 used to call `G3_ACAUSAL_POLE` is then named `G2_UNSTABLE_SADDLE` (both
+  errors; a `policy.downgrade` that accepted such a model must now name `G2_UNSTABLE_SADDLE`).
+  New traits: `delays`, `kernel_stability`, `n_unstable_roots`; `propagator_class` gains `'delay'`
+  (`'delay-rational'` in a result).
+- **Simulator.** `simulations/delay_sde_sim.py`: Euler-Maruyama with a ring-buffer history for delayed SDEs
+  (numpy, vectorised over paths, no processes), an autocovariance estimator with batch-means errors, and the exact
+  stationary autocovariance of the scheme itself for linear scalar models (to separate statistics from the
+  `O(dt)` bias).
+
+#### Fixed: the state-space route returned wrong numbers for some high-order rational kernels
+
+`api._realization.realize_K` now checks a strongly graded realization a posteriori (balancing range above 1e6, or a
+Lyapunov margin <= 0 although the exact Routh test says Hurwitz): the rounded matrices' stationary output
+covariance must be positive semidefinite and agree with the frequency-domain integral of the realization's own
+transfer function. A realization that fails is refused (`RealizationRefused('ill_conditioned')`), and the
+state-space Phase J route falls back to the pole route; the run's census counts it
+(`ss_declined_by_reason['realization_ill_conditioned']`) and the analyzer adds the warning `G6_SS_ILL_CONDITIONED`.
+Seen on a 4-field model with a Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e24 .. 1e35): C came out ~1e13 with
+`G6_ACCURACY` reporting no problem; it now equals the pole engine's value. Ordinary models (balancing range within
+[0.125, 8]) are not checked and unchanged; the scalar Padé-24/32 realizations pass the check and stay on the route.
+
 #### Added: cumulants as matrix-exponential triples (C0, state-space stage S4)
 
 `dd.cumulant(result)` of a k = 2 result computed on the state-space route now also holds its smooth part as

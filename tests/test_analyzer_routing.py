@@ -137,8 +137,9 @@ STOPS = {
     'unpaired field':       (lambda: _ou('D2 gallery unpaired', 'xt*((Dt+mu)*x) - D*xt^2 - D*yt^2',
                                          eqs=(('(Dt+mu)*x', '0'), ('mu*y', '0')), fields=('x', 'y'), stab=False),
                              {}, 'G1_UNPAIRED_FIELD', 'expanded'),
-    'delay kernel':         (lambda: _kernel('D2 gallery delay', 'exp(-I*omega*d)/(1 + I*omega*tg)'), {},
-                             'G3_NONRATIONAL_KERNEL', 'propagator'),
+    # an advance exp(+i omega d) is acausal (a delay exp(-i omega d) is routed: api.delay)
+    'advance kernel':       (lambda: _kernel('D2 gallery advance', 'exp(I*omega*d)/(1 + I*omega*tg)'), {},
+                             'G3_ACAUSAL_POLE', 'delay'),
     'sqrt kernel':          (lambda: _kernel('D2 gallery sqrt', '1/sqrt(1 + I*omega*tg)'), {},
                              'G3_NONRATIONAL_KERNEL', 'propagator'),
     'unstable (stab off)':  (lambda: _ou('D2 gallery unstable', 'xt*((Dt - mu)*x) - D*xt^2',
@@ -449,7 +450,7 @@ def test_toy_backend_is_picked_without_editing_old_ones():
 
 
 def test_honest_failure_names_the_failing_trait(no_enumeration):
-    model = _kernel('D2 gallery delay (downgraded)', 'exp(-I*omega*d)/(1 + I*omega*tg)')
+    model = _kernel('D2 gallery sqrt (downgraded)', '1/sqrt(1 + I*omega*tg)')
     with pytest.raises(routing.NoBackendError) as ei:
         _run(model, policy={'downgrade': ['G3_NONRATIONAL_KERNEL']})
     msg = str(ei.value)
@@ -851,3 +852,20 @@ def test_config_policy_reaches_the_analyzer(tmp_path):
                    'question: {k: 2, max_ell: 0, external_fields: [[x, 1], [x, 1]], tau_grid: [0.0]}\n')
     res, _ = run_config(str(cfg))
     assert res['analysis'] is None
+
+
+def test_g6_names_an_ill_conditioned_realization():
+    """A realization refused as 'ill_conditioned' (api._realization: exactly
+    Hurwitz, unusable once rounded) is a counted, named fallback: G6 warning
+    G6_SS_ILL_CONDITIONED and a ledger assertion (end to end: the slow test in
+    tests/test_delay_kernels.py, a Pade-24 kernel on a 4-field cycle)."""
+    from api.analyze import _Ctx, _g6_engine, Question, Policy
+    ctx = _Ctx({}, Question(), Policy())
+    census = {'engine': 'statespace', 'covers_run': False, 'reason': 'realization_ill_conditioned',
+              'ss_subsets': 0, 'ss_declined': 2,
+              'ss_declined_by_reason': {'realization_ill_conditioned': 2}, 'fallback_evals': 0}
+    _g6_engine(ctx, {}, {'phase_j_engine': census}, None)
+    hit = [f for f in ctx.findings if f.code == 'G6_SS_ILL_CONDITIONED']
+    assert hit and hit[0].level == 'warning' and '2 subset(s)' in hit[0].message
+    led = [e for e in ctx.ledger if e.name == 'realization_conditioning']
+    assert led and led[0].satisfied is False
