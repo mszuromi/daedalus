@@ -34,8 +34,9 @@ Example (OU quartic)::
          .build())
 
 Expressions may use bare field names (``x``) or indexed ones
-(``x[i]``); bare field names and bare calls of declared functions are
-indexed by the population index ``i`` automatically.  Population sums
+(``x[i]``); bare field names, bare parameters indexed by one population
+and bare calls of declared functions are indexed by the population index
+``i`` automatically.  Population sums
 (``sum(w[i,j]*g*n[j] for j in E)``) are written as in the tracked
 models.
 
@@ -227,6 +228,7 @@ class SDE:
         if re.search(r'\bDt\b', rhs):
             raise SDEError(f'equation({field!r}): Dt found in rhs; it belongs on the lhs.')
         rhs = self._delayed_fields(rhs, field)
+        rhs = self._compose_kernels(rhs, f'equation({field!r})')
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
             raise SDEError(f'equation({field!r}): explicit time t is not supported '
                            f'(time-independent dynamics only; a delayed field is '
@@ -309,6 +311,40 @@ class SDE:
                                     'latex': '', 'exposed': name}
         self._sources[name] = {'source': source, 'couples': couples,
                                'expose': expose, 'population': population}
+        return self
+
+    def point_process(self, name: str, rate: str, *, population: Optional[str] = None,
+                      size='1', domain: Optional[str] = None, description: str = ''):
+        """Declare the spike train (counting process) ``name`` with
+        conditional intensity ``rate``: ``P(spike of name[i] in dt) =
+        rate_i dt``.  The field ``name`` (and its response ``<name>t``) is
+        declared, the action gains ``nt*n - (exp(size*nt) - 1)*rate`` and the
+        mean field ``n* = size*rate*`` (kernels at omega = 0).  ``rate`` is an
+        expression like a drift: fields, parameters, declared functions
+        (``phi[i](v[i])``), population sums (``sum(w[i,j]*Conv(g[i,j], n[j])
+        for j in E)``) and convolutions ``Conv(K, x)`` of ANY field, the spike
+        train ``name`` itself included (a spike-only Hawkes process); a
+        product of declared kernels inside ``Conv`` (``Conv(h[i]*g[i,j],
+        n[j])``) is their convolution.  ``size`` is the jump of ``name`` at a
+        spike (a deterministic mark, default 1).  A spike train enters a rate
+        only through ``Conv`` (its instantaneous value is a delta)."""
+        self._check_new_name(name)
+        _check_declarable(name, 'point process')
+        if name in self._sources:
+            raise SDEError(f'point_process({name!r}): a source with this name exists.')
+        rate = ' '.join(str(rate).split())
+        if not rate:
+            raise SDEError(f'point_process({name!r}): empty rate.')
+        if re.search(r'\bDt\b', rate) or re.search(r'\bt\b', rate):
+            raise SDEError(f'point_process({name!r}): the rate may not contain Dt or '
+                           f'the time t (a delayed field is Conv(K, x) with '
+                           f"define_kernel('K', delay='d')).")
+        self._fields[name] = {'population': population, 'description':
+                              description or f'point process {name}',
+                              'domain': domain, 'latex': '', 'exposed': name}
+        self._sources[name] = {'source': None, 'couples': {}, 'expose': name,
+                               'population': population,
+                               'pp': {'rate': rate, 'size': str(size).strip() or '1'}}
         return self
 
     def interpretation(self, mode: str):
@@ -399,14 +435,26 @@ class SDE:
                            f'be a declared field, parameter, function, kernel or index.')
 
     def _index(self, text) -> str:
-        """Bare field names -> ``x[i]``; bare function calls -> ``phi[i](``."""
+        """Bare field names -> ``x[i]``; bare function calls -> ``phi[i](``;
+        bare vector parameters -> ``p[i]``."""
         text = expr_to_text(text) if not isinstance(text, str) else text
         text = self._rename_pop(text)
         for f in self._fields:
             text = re.sub(rf'\b{re.escape(f)}\b(?!\s*[\[\(])', f'{f}[i]', text)
         for fn in self._function_names:
             text = re.sub(rf'\b{re.escape(fn)}\s*\(', f'{fn}[i](', text)
+        for pn in self._vector_params():
+            text = re.sub(rf'\b{re.escape(pn)}\b(?!\s*[\[\(])', f'{pn}[i]', text)
         return text
+
+    def _vector_params(self):
+        """Parameters indexed by one population (a bare name means ``p[i]``)."""
+        out = []
+        for (name,), kw in self._params:
+            ib = kw.get('indexed_by')
+            if (ib is not None and len(ib) == 1) or (ib is None and kw.get('indexed') in (True, 'vector')):
+                out.append(name)
+        return out
 
     def _parse(self, text, what):
         return parse_expr(self._index(text), what=what)
@@ -522,6 +570,121 @@ class SDE:
             text = re.sub(rf'\b{re.escape(name)}\b(?:\s*\[([^\]]*)\])?', rep, text)
         return text
 
+    def _check_pp(self, name, pp):
+        what = f'point_process({name!r}) rate'
+        rate = self._compose_kernels(pp['rate'], f'point_process({name!r})')
+        self._check_text(rate, what)
+        self._check_text(pp['size'], f'point_process({name!r}) size')
+        spikes = {f for f, info in self._fields.items() if info['exposed'] is not None}
+        if re.search(r'\b(' + '|'.join(map(re.escape, sorted(spikes))) + r')\b',
+                     pp['size']):
+            raise SDEError(f'point_process({name!r}): size may not depend on a spike train.')
+        bare = set(re.findall(r'\b([A-Za-z_]\w*)\b', self._strip_conv(rate))) & spikes
+        if bare:
+            raise SDEError(
+                f'{what}: the spike train(s) {sorted(bare)} appear outside Conv(...); a '
+                f'spike train enters a rate only filtered, Conv(K, {sorted(bare)[0]}).')
+
+    @staticmethod
+    def _conv_spans(text):
+        """``(start, open_paren_end, close_end)`` of each top-level ``Conv(``."""
+        out, pos = [], 0
+        while True:
+            m = re.compile(r'\bConv\s*\(').search(text, pos)
+            if not m:
+                return out
+            depth, k = 1, m.end()
+            while depth and k < len(text):
+                depth += {'(': 1, ')': -1}.get(text[k], 0)
+                k += 1
+            if depth:
+                raise SDEError(f'unbalanced parentheses in {text!r}.')
+            out.append((m.start(), m.end(), k))
+            pos = k
+
+    def _strip_conv(self, text):
+        out, pos = '', 0
+        for a, _, c in self._conv_spans(text):
+            out += text[pos:a] + ' 0 '
+            pos = c
+        return out + text[pos:]
+
+    def _compose_kernels(self, text: str, where: str) -> str:
+        """``Conv(h[i]*g[i,j], x)`` (a product of declared kernels) ->
+        ``Conv(h_g[i,j], x)`` with the convolution ``h_g`` (product of the
+        frequency images, sum of the delays) declared on the fly."""
+        out, pos = '', 0
+        for a, b, c in self._conv_spans(text):
+            args = _split_top_level(text[b:c - 1])
+            if len(args) != 2:
+                raise SDEError(f'{where}: cannot read {text[a:c]!r} (Conv(kernel, field)).')
+            facs = [f.strip() for f in _split_top_level(args[0], '*')]
+            if len(facs) == 1:
+                out += text[pos:c]
+                pos = c
+                continue
+            refs = []
+            for f in facs:
+                m = re.fullmatch(r'([A-Za-z_]\w*)\s*(?:\[([^\]]*)\])?', f)
+                if not m or m.group(1) not in self._kernels:
+                    raise SDEError(f'{where}: {args[0].strip()!r} in Conv(...) must be a '
+                                   f'declared kernel or a product of declared kernels '
+                                   f'({f!r} is not one).')
+                idx = [q.strip() for q in m.group(2).split(',')] if m.group(2) else []
+                refs.append((m.group(1), idx))
+            sites = []
+            for _, idx in refs:
+                for q in idx:
+                    if q not in sites:
+                        sites.append(q)
+            if len(sites) > 2:
+                raise SDEError(f'{where}: a kernel product carries at most two indices '
+                               f'(got {sites}).')
+            local = dict(zip(sites, ('i', 'j')))
+            images, delays, pops = [], [], [None] * len(sites)
+            for kname, idx in refs:
+                k = self._kernels[kname]
+                if k['freq_image'] is None:
+                    raise SDEError(f'{where}: kernel {kname!r} has only a time_expr; a '
+                                   f'kernel product needs frequency images (give '
+                                   f'freq_image= or kernel=).')
+                kidx = list(k.get('indexed_by') or [])
+                if len(idx) != len(kidx):
+                    raise SDEError(f'{where}: kernel {kname!r} takes {len(kidx)} '
+                                   f'index(es), got {idx}.')
+                mp = {old: local[new] for old, new in zip(('i', 'j'), idx)}
+                for new, popn in zip(idx, kidx):
+                    pops[sites.index(new)] = popn
+
+                def remap(t, _mp=mp):
+                    def sub(mm):
+                        inner = re.sub(r'\b([ij])\b',
+                                       lambda q: '\0' + _mp.get(q.group(1), q.group(1)),
+                                       mm.group(1))
+                        return '[' + inner + ']'
+                    return re.sub(r'\[([^\]]*)\]', sub, t).replace('\0', '')
+                if k['freq_image'] != '1':
+                    images.append(f'({remap(k["freq_image"])})')
+                if k['delay']:
+                    delays.append(f'({remap(k["delay"])})')
+            cname = '_'.join(r[0] for r in refs)
+            spec = dict(time_expr=None, freq_image='*'.join(images) or '1', latex_name='',
+                        indexed=False, indexed_by=pops if sites else None,
+                        delay=' + '.join(delays) if delays else None)
+            have = self._kernels.get(cname)
+            if have is None:
+                if cname in self._allowed_names():
+                    raise SDEError(f'{where}: the composite kernel name {cname!r} is taken.')
+                self._kernels[cname] = spec
+            elif any(have.get(q) != spec[q] for q in ('freq_image', 'delay', 'indexed_by')):
+                raise SDEError(f'{where}: kernel {cname!r} exists and is not the convolution '
+                               f'{args[0].strip()!r} (index the factors the same way at '
+                               f'every use, or declare the product with define_kernel).')
+            ref = cname + (f'[{",".join(sites)}]' if sites else '')
+            out += text[pos:a] + f'Conv({ref}, {args[1].strip()})'
+            pos = c
+        return out + text[pos:]
+
     # ── derivation ────────────────────────────────────────────────────
     def _derive(self) -> dict:
         """Derive the action terms and the mean-field equations."""
@@ -532,6 +695,9 @@ class SDE:
         allowed_src = (set(self._fields) | set(self._param_names)
                        | set(self._function_names) | {'i', 'j'})
         for name, s in self._sources.items():
+            if s.get('pp'):
+                self._check_pp(name, s['pp'])
+                continue
             s['source'].validate(allowed_src)
             for f, c in s['couples'].items():
                 if f not in self._fields:
@@ -544,7 +710,7 @@ class SDE:
             self._check_text(eq['rhs'], f'equation({f!r}) rhs')
         if self._interp == 'stratonovich':
             for name, s in self._sources.items():
-                if not s['source'].is_gaussian:
+                if s.get('pp') or not s['source'].is_gaussian:
                     raise SDEError(
                         f"interpretation('stratonovich'): source {name!r} is a jump/"
                         f"non-Gaussian source; the Stratonovich rule is defined here "
@@ -562,6 +728,14 @@ class SDE:
         for name, s in self._sources.items():
             src = s['source']
             pop = self._pop_of_source(name)
+            if s.get('pp'):
+                n, size = s['expose'], s['pp']['size']
+                rate = self._index(self._compose_kernels(s['pp']['rate'], f'point_process({n!r})'))
+                jump = f'{n}t[i]' if size == '1' else f'{_wrap(size)}*{n}t[i]'
+                source_terms.setdefault(pop, []).append(
+                    f'{n}t[i]*{n}[i] - (exp({jump}) - 1)*{_wrap(rate)}')
+                exposed_eqs.append((n, rate if size == '1' else f'{_wrap(size)}*{_wrap(rate)}'))
+                continue
             coup = {f: self._parse(str(c), f'coefficient of {name} in {f}')
                     for f, c in s['couples'].items()}
             for f in coup:
@@ -761,11 +935,45 @@ class SDE:
             kw = {kk: v for kk, v in k.items() if v not in (None, '', False)}
             b.define_kernel(name, **kw)
         b.set_action_text(d['action'])
-        for e in d['equations']:
-            b.equation(lhs=e['lhs'], rhs=e['rhs'], population=e['population'])
+        star = self._star_equations(d['equations'])
+        if star is not None:
+            for sname, rhs in star:
+                b.set_mf_equation(sname, rhs)
+        else:
+            for e in d['equations']:
+                b.equation(lhs=e['lhs'], rhs=e['rhs'], population=e['population'])
         if self._stability is not None:
             b.stability_analysis(self._stability)
         return b
+
+    def _star_equations(self, eqs):
+        """For a model with a point process whose every mean-field equation
+        reads ``x = rhs`` at Dt = 0: the saddle equations ``xstar = rhs*``
+        (``set_mf_equation``), the form hand-written point-process models use
+        (the same saddle, solved by the same route, bit for bit).  ``None``
+        otherwise (the residual ``.equation`` form)."""
+        if not any(s.get('pp') for s in self._sources.values()):
+            return None
+        names = sorted(self._fields, key=len, reverse=True)
+        pat = re.compile(r'\b(' + '|'.join(map(re.escape, names)) + r')\s*\[')
+        out = []
+        for e in eqs:
+            f = e['field']
+            try:
+                L = parse_expr(e['lhs'], what=f'lhs of {f}').subs({_DT: 0})
+            except NoiseError:
+                return None
+            if not (L - self._sym(f)).simplify_full().is_zero():
+                return None
+            out.append((f'{f}star', pat.sub(lambda m: m.group(1) + 'star[', e['rhs'])))
+        return out
+
+    def simulate(self, **kw):
+        """Simulate the model's point processes, drifts and Gaussian sources
+        (:func:`api.pp_simulate.simulate`; keywords ``T``, ``dt``, ``n_paths``,
+        ``burn_in``, ``bin``, ``params``, ``seed``)."""
+        from api.pp_simulate import simulate
+        return simulate(self, **kw)
 
     def build(self) -> dict:
         return self.to_builder().build()
