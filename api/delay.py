@@ -877,7 +877,8 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
         if r.get('status') == 'incomplete':
             # diagrams Phase J could not evaluate (a hard delay inside a
             # nonlinear term: its all-pass image is not strictly proper, which
-            # the conductance-kernel routes need); no order fixes it
+            # the conductance-kernel routes need); no order fixes it, the
+            # caller (compute_delayed) retries with the [n-1/n] approximant
             runs[n], n_used, incomplete = r, n, r.get('phase_j_incomplete')
             cap = ('Phase J skipped diagrams (see result["phase_j_incomplete"]; a delay '
                    'kernel at a vertex leg, e.g. x*x(t - d), needs a strictly proper image)')

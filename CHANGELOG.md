@@ -11,6 +11,41 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: delay kernels inside nonlinear terms (round 2, item 47)
+
+A hard delay inside a nonlinear term (`x*x(t - d)`) used to return `status='incomplete'` with a warning. It now runs.
+No number that was computed before moves: only runs that came back incomplete take the new path.
+
+- **What was refused, and why.** A delay kernel at a vertex leg is a conductance kernel on the Padé-approximated model.
+  - A delayed strictly proper kernel was already routed like any other kernel (dressed lines / kernel edges, exact
+    tree). Examples: a delayed leg operator `Kernel.delay(d) * membrane * alpha` inside a rate nonlinearity, or
+    `x*Conv(g, x)` with a delayed filter.
+  - A bare hard delay has the all-pass (n, n) image `(-1)^n + (strictly proper)`. Neither kernel route takes that
+    direct term (`kernel_not_strictly_proper`), so Phase J skipped those diagrams.
+- **Strictly proper retry.** When a run comes back incomplete and the model has a bare delay kernel
+  (`bare_delay_kernels`), `compute_delayed` reruns the orders with the strictly proper `[n-1/n]` Padé approximant of
+  every delay factor (`pade_model(..., proper=True)`, `pade_mn_coefficients`).
+  - That approximant also converges to `exp(-s d)`, and its denominator is Hurwitz. The tree stays exact.
+  - The record says `approximant='pade_proper'`, and `G3_DELAY_APPROXIMATED` and the ledger name `Pade (n-1, n)`.
+  - The first attempt's warnings are dropped when the retry completes, and re-emitted otherwise.
+- **Refused by name.** A bare hard delay at a vertex leg in a model whose propagator has a δ part (point-process
+  fields) is refused, for example `exp(w n(t - d))` with `n` a spike train. The nonlinear term multiplies δ
+  functions, so no approximant is run. The result is `incomplete` with `cap` starting `refused`, plus the
+  `DelayOrderWarning`. The remedy is to give the delay a filter.
+- **Validation** (`tests/test_delay_nonlinear.py`; `test_delay_kernels.py`'s never-silent test now expects the
+  completed run):
+  - **Spike-only exponential Hawkes with a delayed alpha × membrane leg operator inside `exp`, against its voltage
+    form** (the delay in the linear voltage equation), Padé 4.
+    - 1 neuron: tree to 3e-16, one loop to 3.5e-16.
+    - 2 neurons: tree to 2.8e-15 on 49 lags.
+  - **`x' = -a x + b - c x x(t - d) + noise`.**
+    - The `[n-1/n]` run equals the same rational kernel declared without a delay (tree 7e-18, one loop 3.8e-16).
+    - The loops at n = 4 and 8 agree to 1.1e-5 of max |C|.
+    - Exact tree + one loop is within 0.6 SE of the Euler–Maruyama simulation (Richardson in dt) at every lag. The
+      tree alone is 5–7 SE off.
+- **Limit.** The 2-neuron spike-only one loop exceeds the Phase J memory guard (estimate about 122 GB over 1,446
+  diagrams: every leg is a dressed line). Its voltage form runs.
+
 #### Added: matrix-exponential triples for conductance-kernel and delay-kernel models (S4b)
 
 Models with field × Conv (conductance) vertices now have triples, so `integrate_against` and `spectrum` are exact
