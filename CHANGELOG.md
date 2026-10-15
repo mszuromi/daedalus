@@ -38,6 +38,63 @@ Three input-handling bugs; no number that was computed before moves (the zoo is 
   which refuses it.  `dd.Config` rejects non-finite `tau_grid`, `chi_grid`, `times`, `tau_max`, `tau_step` and
   `kpoint_base_lags`.
 
+#### Changed: balanced truncation of the state-space realizations; the delay order controller measures its cost (item 45)
+
+Every per-entry realization of the propagator and every conductance kernel (`api/_realization.py`) is now
+**balanced-truncated** to a relative H-infinity tolerance (default `1e-12`, 1 % of the pipeline's default accuracy
+target): states are discarded only while
+`2 * sum(discarded Hankel singular values) <= tol * sigma_1` (`sigma_1 <= ||G_pr||_inf`), so each entry stays within
+`tol` of the exact one.  Exact Kalman minimality (S1) removes only exactly uncontrollable / unobservable states; the
+Padé blocks of a delay inside a feedback loop leave many that are numerically negligible, and those are where the
+state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delays, Erlang chains, alpha kernels,
+`freq_image`) and any closed loop.
+
+- **Where numbers move.**  Only where a state is discarded, and then within the tolerance.  A realization with nothing
+  to discard is returned as it was (the same object), so minimal, well-conditioned models keep every number bit for bit.
+  Zoo A/B (35 entries, caches off, each in its own process): 29 bit-identical, 5 within 1e-19 .. 1e-16 with no entry
+  truncated (main's own cross-process scatter), walls equal.  The one public model that moves is
+  `multipopulation_test` (k = 2, tree): 64 of its entries hold states below the tolerance (per-entry states
+  1024 -> 664 in total), C(tau_0) 2.1780065123783054e-4 -> 2.178006512350135e-4, largest change 2.8e-15
+  (1.8e-12 of max |C|), wall 3.6 -> 3.3 s.  Erlang-16 OU (one loop): 17 -> 13 states at 1e-10, total moved by 1.8e-12
+  (bound 1.2e-11), 1.8 -> 1.0 s.  Unchanged (bit-identical): colour-noise OU at its double pole, an alpha-kernel
+  conductance and its Markov embedding, Erlang-8 OU, Padé-16 / Padé-24 OU.
+- **Method.**  Square-root balanced truncation on directly computed Gramian factors (Hammarling on the complex Schur
+  form, then a real factor from `[Re Z, Im Z]`): an eigendecomposition of a computed Gramian loses the Hankel singular
+  values below ~1e-8 of the largest, and on the graded Padé-16 entries of a two-neuron loop (`|b| ~ 1e12`) the
+  truncation then missed its tolerance by 1e-7.  Every truncation is checked a posteriori (`|G - G_r|` on a frequency
+  grid against `tol * sigma_1`), retried with one more state, and refused after three retries; a non-Hurwitz result is
+  never returned.  The global `A, B, C` (Hurwitz test, exact delay tree, stationary covariance) are not truncated.
+- **Control.**  `DAEDALUS_REALIZATION_TRUNCATION=<tol>` (`0` / `off` / `exact`: none, the realizations of before),
+  `api._realization.truncation_scope(tol)` (process-wide, nested scopes restore; clears the state-space route's
+  realization cache when the tolerance changes), `realize_K(..., truncation=)` / `realize_kernel(..., truncation=)`.
+  `Realization.truncation` records the tolerance and, per entry, the states before / after, the Hankel singular
+  values, the bound, the sampled error.
+- **Delays** (`api/delay.py`).  Every Padé order runs with its own truncation (`delay={'truncation': 'auto'}`,
+  default): the first at `min(tolerance in effect, delay tol / 100)`, every later one at 1 % of the relative loop
+  error predicted for it (from the exact-vs-Padé tree times the loops' share of max |C|, and from the doubling
+  estimate, both carried by the loops' n^-3 decay; capped at 1e-4).  The predictions overestimate the loops' Padé
+  error ~10x on the benchmarks, so the per-entry bound is ~10 % of it and the observable moves by far less
+  (`delay={'truncation': x}` pins one tolerance, `0` exact).  Delayed-alpha two-neuron demo (k = 2 one loop, 49 lags):
+  Padé-8 took 653 s with exact realizations and 109 s at the automatic 1.1e-6 (mean per-entry states 22 -> 12.5),
+  the loop within 1.5e-8 of max |C| of the exact one (Padé error estimate 1.6e-4).  The automatic order now runs
+  n = 4 (72 s) -> 8 (107 s, predicted 113 s) -> 16 (1172 s at 2.4e-8, 20 states per entry instead of 38; predicted
+  822 s), estimate 1.7e-5 at n_max; before, it stopped at n = 4 (n = 8 predicted at 16x).  Padé-16 with exact
+  realizations is not measured (the proxy puts it at 3-4 h).
+- **Order controller.**  The next order's wall is the measured wall of the last order times the ratio of a cost proxy,
+  mean per-entry states^2 x (1 + mean Taylor stiffness `min_p ||(a - mu)^p||^(1/p)`), of the two orders' truncated
+  realizations (the next one is built from the true kernel matrix and truncated as that run will be, a few seconds),
+  times the proxy's error on the step before.  On the demo the walls follow states^2.2 x stiffness^0.95 within 10 %
+  over five runs (71 .. 654 s); the old `(n_next / n)^4` floor predicted 16x where the run took 10.6x and stopped the
+  demo at n = 4.  The old rule stays as the fallback: no realization, a last run not entirely on the state-space
+  route, or a proxy that does not grow (a delay only inside a nonlinear term).  `r['delay']` adds `stop_reason`,
+  `cost_by_order`, `predicted_walls_s`, `cost_correction`, `truncation_tol`, `truncation_by_order`,
+  `loop_error_pred_by_order`.
+- **`api/symbolic_loop.py`.**  The reference run of `symbolic_cumulant` / `symbolic_triple` uses exact realizations
+  (its checks are at 1e-12); a `result=` computed with truncated entries is refused by name (`truncated_reference`).
+- **Tests.**  `tests/test_kernel_model_reduction.py` (22 tests, ~15 s).  The default suite passed with the tolerance
+  at 1e-10 except one test that compares an Erlang-32 OU tree pointwise to 1e-11 (a lag where |C| is 0.003 moved by
+  5e-12); at the 1e-12 default it passes -- one reason for the default.
+
 #### Added: symbolic loop corrections as rational functions (C3)
 
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time
