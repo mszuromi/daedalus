@@ -67,7 +67,10 @@ def _ito_nudge_callable(fn, k):
     """
     if k != 2:
         return fn
-    return lambda t0, t1: fn(t0, t1 if abs(t1 - t0) > 1e-12 else t0 - _ITO_EPS)
+    # ``not (<=)`` rather than ``>``: a NaN second time compares False both
+    # ways and must reach the engine as NaN (which refuses it), never be
+    # moved to the equal-time left limit.
+    return lambda t0, t1: fn(t0, t0 - _ITO_EPS if abs(t1 - t0) <= 1e-12 else t1)
 
 
 def _phase_j_warning_scope():
@@ -1308,16 +1311,19 @@ def compute_cumulants(
         raise ValueError(
             f'need finite tau_step > 0 and tau_max >= 0 (got tau_step='
             f'{tau_step}, tau_max={tau_max}), or pass an explicit tau_grid.')
-    if tau_grid is not None:
-        # A NaN lag is not "no lag": the Ito equal-time nudge turns a
-        # comparison against it into a plain evaluation at tau = 0 and the
-        # result looks like a valid number.  Refuse before any work.
-        _tg = np.asarray(tau_grid, dtype=float)
-        _bad = ~np.isfinite(_tg)
+    # A NaN lag is not "no lag": the Ito equal-time nudge turns a comparison
+    # against it into a plain evaluation at tau = 0 and the result looks like
+    # a valid number.  Refuse every grid / event array before any work.
+    for _name, _arr in (('tau_grid', tau_grid), ('spatial_grid', spatial_grid),
+                        ('spatial_points', spatial_points)):
+        if _arr is None:
+            continue
+        _a = np.asarray(_arr, dtype=float)
+        _bad = ~np.isfinite(_a)
         if _bad.any():
             _where = np.flatnonzero(_bad.ravel())[:5].tolist()
             raise ValueError(
-                f'tau_grid must be finite: {int(_bad.sum())} of {_tg.size} '
+                f'{_name} must be finite: {int(_bad.sum())} of {_a.size} '
                 f'entries are NaN or infinite (flat positions {_where}'
                 f'{"..." if _bad.sum() > 5 else ""}).')
     switch_on = _switch_on_request(

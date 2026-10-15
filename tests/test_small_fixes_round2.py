@@ -10,7 +10,10 @@
    (bare ``NameError``).  Omitted parameters now come from the model's declared defaults; one with
    no default raises a ``ValueError`` naming it.
 3. A NaN in ``tau_grid`` was evaluated as tau = 0 (the Ito equal-time nudge made the comparison
-   pass silently).  NaN / inf in ``tau_grid`` / ``times`` / ``tau_max`` now raise up front.
+   pass silently).  NaN / inf in ``tau_grid`` / ``spatial_grid`` / ``spatial_points`` / ``tau_max`` /
+   ``tau_step`` now raise up front in ``compute_cumulants`` (and ``dd.Config`` rejects them), and the
+   same nudge in the k = 2 ``total_C`` callable and the k >= 3 base lags no longer swallows a NaN.
+   (``times`` was already refused on main; its test pins that.)
 
 Every bit-for-bit comparison runs the first form once and discards it (cold and warm caches differ
 by ~1e-16)."""
@@ -223,3 +226,47 @@ def test_config_rejects_non_finite_grids():
     with pytest.raises(ValueError, match='chi_grid must be finite'):
         dd.Config(chi_grid=np.array([np.nan]))
     assert dd.Config(tau_grid=(0.0, 1.0, 5)).resolved_tau_grid().size == 5
+
+
+def test_k2_total_c_callable_does_not_read_nan_as_equal_time(engine):
+    """The result callable used the same nudge (``abs(t1 - t0) > 1e-12`` is False for NaN), so
+    ``total_C(0, nan)`` returned ``total_C(0, 0)``."""
+    r = _run(_ou(), XX, ell=0, tau_grid=np.array([0.0, 0.5]))
+    assert np.real(r['total_C'](0.0, 0.0)) == pytest.approx(0.2, rel=1e-5)
+    assert np.real(r['total_C'](0.0, 1e-13)) == np.real(r['total_C'](0.0, 0.0))   # the nudge stays
+    for bad in (np.nan, np.inf):
+        with pytest.raises(Exception, match='(?i)finite|bad limits|nan'):
+            r['total_C'](0.0, bad)
+        with pytest.raises(Exception, match='(?i)finite|bad limits|nan'):
+            r['total_C_by_ell'][0](0.0, bad)
+
+
+def test_kpoint_base_lags_nan_is_refused():
+    import daedalus as dd
+    cfg = dd.Config(k=3, max_ell=0, external_fields=[('x', 1)] * 3, tau_grid=np.array([0.0, 0.5]),
+                    kpoint_base_lags=[np.nan, 0.0])
+    with pytest.raises(ValueError, match='kpoint_base_lags must be finite'):
+        dd.run(_ou(), cfg)
+    assert dd._kpoint_pinned_time(0.0, 1e-6) == -1e-6            # the left-limit rule is unchanged
+    assert dd._kpoint_pinned_time(0.4, 1e-6) == 0.4
+    assert np.isnan(dd._kpoint_pinned_time(np.nan, 1e-6))
+
+
+@pytest.mark.parametrize('bad', [np.nan, np.inf])
+def test_spatial_points_and_chi_grid_must_be_finite(bad):
+    """Checked before the model is even looked at, so any model will do."""
+    m = _ou()
+    pts = np.array([[[0.5, bad], [0.0, 0.0]]])
+    with pytest.raises(ValueError, match='spatial_points must be finite'):
+        AC.compute_cumulants(m, k=3, max_ell=0, external_fields=[('x', 1)] * 3, spatial_points=pts,
+                             parallel=False, verbose=False)
+    with pytest.raises(ValueError, match='spatial_grid must be finite'):
+        AC.compute_cumulants(m, k=2, max_ell=0, external_fields=XX, chi_grid=np.array([0.0, bad]),
+                             tau_grid=np.array([0.0]), parallel=False, verbose=False)
+
+
+@pytest.mark.parametrize('kw', [dict(tau_max=np.nan), dict(tau_step=np.inf)])
+def test_config_rejects_non_finite_tau_extent(kw):
+    import daedalus as dd
+    with pytest.raises(ValueError, match='must be finite'):
+        dd.Config(**kw)

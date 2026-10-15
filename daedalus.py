@@ -586,6 +586,10 @@ class Config:
         # at Config construction, not deep inside run().
         self.resolved_tau_grid()
         self.resolved_grid()
+        for _n in ('tau_max', 'tau_step'):
+            _v = getattr(self, _n)
+            if _v is not None and not np.isfinite(float(_v)):
+                raise ValueError(f"Config.{_n} must be finite; got {_v!r}.")
         self._check_switch_on()
 
     def _check_switch_on(self):
@@ -1077,7 +1081,9 @@ def _kpoint_pinned_time(b, eps):
     ``b`` itself, or the Itô left limit ``-eps`` when ``b`` is 0
     (``|b| <= 1e-12``)."""
     b = float(b)
-    return b if abs(b) > _KPOINT_TIE_ATOL else -eps
+    # ``not (<=)``: a NaN base lag stays NaN (the engine refuses it) instead
+    # of being read as the anchor time.
+    return -eps if abs(b) <= _KPOINT_TIE_ATOL else b
 
 
 def _kpoint_below(x, eps):
@@ -1347,6 +1353,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         base = cfg.kpoint_base_lags
         if base is not None:
             base = [float(b) for b in base]
+            if not all(math.isfinite(b) for b in base):
+                raise ValueError(
+                    f"kpoint_base_lags must be finite; got {base!r}.")
             if len(base) != k - 1:
                 raise ValueError(
                     f"kpoint_base_lags must have k−1 = {k-1} entries (one per "
