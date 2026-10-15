@@ -235,3 +235,75 @@ def test_spike_only_two_neuron_bit_identical_to_builder():
     mp = pp_spike_only(2, p=SYM).build()
     _run(mb, 2, 1, ext, TAU)                                    # warm-up
     _identical(_run(mp, 2, 1, ext, TAU), _run(mb, 2, 1, ext, TAU), 1)
+
+
+# ── B: delayed alpha synapses ─────────────────────────────────────────
+
+def _delay_builder():
+    """Hand-written voltage form: n_i ~ PP(a exp(v_i)), tau v_i' = -(v_i - Em)
+    + sum_j w_ij (g * n_j), g the alpha function delayed by d."""
+    from api.model import TemporalModelBuilder
+    b = (TemporalModelBuilder('Hawkes delayed alpha')
+         .population('E', size=2).physical_field('n', population='E')
+         .physical_field('v', population='E')
+         .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])
+         .parameter('tau', default=[2.0, 2.0], indexed_by=['E'], domain='positive')
+         .parameter('taug', default=[[1.0, 1.0], [1.0, 1.0]], indexed_by=['E', 'E'],
+                    domain='positive')
+         .parameter('a', default=[1.0, 1.0], indexed_by=['E'], domain='positive')
+         .parameter('w', default=[[0.0, 0.5], [0.5, 0.0]], indexed_by=['E', 'E'])
+         .parameter('d', default=1.5, domain='positive'))
+    return (b.define_function('phi', args=['v'], expression='a[i]*exp(v)', population='E')
+            .define_kernel('g', freq_image='1/(1 + I*omega*taug[i,j])^2', indexed_by=['E', 'E'],
+                           delay='d')
+            .set_action_text('sum( nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)'
+                             '*v[i] - Em[i] - sum(w[i,j]*g[i,j]*n[j] for j in E)) for i in E)')
+            .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*g[i,j]*nstar[j] for j in E))')
+            .set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+
+
+def _delay_pp(form, n_pop=2, w=((0.0, 0.5), (0.5, 0.0))):
+    s = (SDE('Hawkes delayed alpha' + ('' if form == 'voltage' else f' spike-only {n_pop}'))
+         .population('E', size=n_pop)
+         .parameter('Em', default=[-1.5] * n_pop, indexed_by=['E'])
+         .parameter('tau', default=[2.0] * n_pop, indexed_by=['E'], domain='positive')
+         .parameter('taug', default=[[1.0] * n_pop] * n_pop, indexed_by=['E', 'E'],
+                    domain='positive')
+         .parameter('a', default=[1.0] * n_pop, indexed_by=['E'], domain='positive')
+         .parameter('w', default=[list(r[:n_pop]) for r in w[:n_pop]], indexed_by=['E', 'E'])
+         .parameter('d', default=1.5, domain='positive')
+         .define_kernel('g', kernel=Kernel.delay('d') * Kernel.alpha('taug[i,j]'),
+                        indexed_by=['E', 'E']))
+    if form == 'voltage':
+        return (s.point_process('n', 'phi(v)', population='E').field('v', population='E')
+                .define_function('phi', args=['v'], expression='a[i]*exp(v)', population='E')
+                .equation('v', lhs='(tau*Dt + 1)*v',
+                          rhs='Em + sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)'))
+    return (s.define_kernel('h', kernel=Kernel.exponential('tau[i]'), indexed_by=['E'])
+            .point_process('n', 'a*exp(Em + sum(w[i,j]*Conv(h[i]*g[i,j], n[j]) for j in E))',
+                           population='E'))
+
+
+@pytest.mark.slow
+def test_delayed_alpha_network_voltage_form_bit_identical_to_builder():
+    """~45 min on a loaded machine: the 2-neuron delayed network's one loop (Pade loops), twice."""
+    ext, tau = [('n', 1), ('n', 2)], np.array([-3.0, 0.5, 3.0])
+    _run(_delay_builder(), 2, 0, ext, tau)                      # warm-up
+    _identical(_run(_delay_pp('voltage').build(), 2, 1, ext, tau),
+               _run(_delay_builder(), 2, 1, ext, tau), 1)
+
+
+@pytest.mark.slow
+def test_delayed_spike_only_never_silent():
+    """A delayed kernel inside the rate's exponential (spike-only form): with
+    delays inside nonlinear terms supported the run completes; otherwise it
+    is reported 'incomplete' with a warning, never a silent number."""
+    import warnings
+    s = _delay_pp('spike', n_pop=1, w=((0.5,),))
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        r = _run(s.build(), 2, 1, [('n', 1), ('n', 1)], np.array([0.5, 3.0]))
+    if r['status'] != 'ok':
+        assert r['status'] == 'incomplete'
+        assert any('incomplete' in str(w.message).lower() or 'delay' in str(w.message).lower()
+                   for w in W)
