@@ -586,6 +586,10 @@ class Config:
         # at Config construction, not deep inside run().
         self.resolved_tau_grid()
         self.resolved_grid()
+        for _n in ('tau_max', 'tau_step'):
+            _v = getattr(self, _n)
+            if _v is not None and not np.isfinite(float(_v)):
+                raise ValueError(f"Config.{_n} must be finite; got {_v!r}.")
         self._check_switch_on()
 
     def _check_switch_on(self):
@@ -604,7 +608,9 @@ class Config:
             return None
         if isinstance(self.times, tuple):
             return self._resolve_grid(self.times, 'times')
-        return np.asarray(self.times, dtype=float)
+        arr = np.asarray(self.times, dtype=float)
+        self._require_finite(arr, 'times')
+        return arr
 
     def resolved_grid(self):
         """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
@@ -631,7 +637,9 @@ class Config:
                 raise ValueError(
                     f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
                     f"{g!r}. For an arbitrary grid pass a list/array instead.")
-            return np.linspace(g[0], g[1], int(g[2]))
+            arr = np.linspace(g[0], g[1], int(g[2]))
+            Config._require_finite(arr, name)
+            return arr
         if (isinstance(g, list) and len(g) == 3
                 and isinstance(g[2], (int, float))
                 and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
@@ -647,7 +655,16 @@ class Config:
             raise ValueError(
                 f"{name} is empty — pass a non-empty grid, or omit it (None) to use "
                 f"the default.")
+        Config._require_finite(arr, name)
         return arr
+
+    @staticmethod
+    def _require_finite(arr, name):
+        bad = ~np.isfinite(arr)
+        if bad.any():
+            raise ValueError(
+                f"{name} must be finite: {int(bad.sum())} of {arr.size} "
+                f"entries are NaN or infinite.")
 
 
 def _meta(mod, key, default=None):
@@ -1064,7 +1081,9 @@ def _kpoint_pinned_time(b, eps):
     ``b`` itself, or the Itô left limit ``-eps`` when ``b`` is 0
     (``|b| <= 1e-12``)."""
     b = float(b)
-    return b if abs(b) > _KPOINT_TIE_ATOL else -eps
+    # ``not (<=)``: a NaN base lag stays NaN (the engine refuses it) instead
+    # of being read as the anchor time.
+    return -eps if abs(b) <= _KPOINT_TIE_ATOL else b
 
 
 def _kpoint_below(x, eps):
@@ -1334,6 +1353,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         base = cfg.kpoint_base_lags
         if base is not None:
             base = [float(b) for b in base]
+            if not all(math.isfinite(b) for b in base):
+                raise ValueError(
+                    f"kpoint_base_lags must be finite; got {base!r}.")
             if len(base) != k - 1:
                 raise ValueError(
                     f"kpoint_base_lags must have k−1 = {k-1} entries (one per "
