@@ -52,7 +52,8 @@ by default: any denominator degree (roots of factors of degree >= 3 are `RootOf`
 stated as assumptions (`'assumptions'`, `'roots'`, `'modes'` in the `inverse_transform` dict) instead of sampled
 around `reference`. Behaviour that changes: a factor of degree >= 3 no longer raises `ClosedFormUnavailable` (nor
 falls back on quadrature in `pair_with_kernel`); a split that flips near the reference is stated as a condition
-instead of refused; a reference point where poles coincide is moved to a nearby generic point. The pre-C2 routes
+instead of refused; a reference point where poles coincide is moved to a nearby generic point; the lag symbol is `tau_lag` when `tau`
+is a parameter of the entry (it was `tau`, the parameter itself). The pre-C2 routes
 remain behind `inverse_transform(..., legacy=True)` and `pair_with_kernel(..., any_degree=False)`.
 `dd.` now exports `tree_covariance`, `tree_covariance_from_result`, `TreeCovariance`, `tree_modes`, `ModeSum`,
 `Kernel`, `KernelIntegral`, `integrate_against`, `inverse_transform`, `pair_with_kernel`, `AssumptionViolation`,

@@ -150,6 +150,16 @@ Numerics
   that share the order of the external times reuse the stationary state and
   the first event; the last segment is stepped from one length to the next.
 
+C0 output (S4).  On a line of the external times (k = 2: the lag on one
+side of 0; a k >= 3 slice whose swept leg is first or last) the order of the
+external times is fixed and exactly one segment moves, so a subset is one
+matrix exponential ``c e^{G s} x0`` there: ``SubsetSS.me_line`` returns the
+moving segment, the state entering it and the functional of everything after
+it.  ``api.me_output`` sums these over subsets, Wick permutations and
+diagrams with the closures' own weights (``_contrib.ss_prefactor``; the
+contribution's ``phase_j_parts``) into ``Cumulant.me``; nothing here changes
+a value.
+
 Error estimate (analyzer G6; S3).  Every evaluation adds to the counter
 ``ss_err_abs_sum`` the estimate ``|P s| M (1e-15 (1 + n_steps) + rho)``:
 ``M`` = the final contraction taken in absolute values (``|c| . |X|``: the
