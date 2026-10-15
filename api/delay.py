@@ -129,13 +129,30 @@ def pade_coefficients(n: int) -> list:
             for k in range(n + 1)]
 
 
-def pade_image(z, n: int):
-    """``P_n(-z)/P_n(z)`` as a Sage expression in ``z`` (exact coefficients)."""
+def pade_mn_coefficients(m: int, n: int):
+    """Exact coefficients of the Pade ``[m/n]`` approximant of ``exp(-z)``:
+    ``(a, b)`` with ``exp(-z) ~ sum_k a_k (-z)^k / sum_k b_k z^k``,
+    ``a_k = (m+n-k)! m! / ((m+n)! k! (m-k)!)``, ``b_k = (m+n-k)! n! /
+    ((m+n)! k! (n-k)!)``; ``m = n`` gives ``pade_coefficients(n)`` twice.
+    For ``n - 2 <= m <= n`` the denominator is Hurwitz (Ehle / Birkhoff-Varga)."""
+    m, n = int(m), int(n)
+    if n < 1 or not 0 <= m <= n:
+        raise ValueError(f'Pade [m/n] needs n >= 1 and 0 <= m <= n, got [{m}/{n}]')
+    f = math.factorial
+    a = [Fraction(f(m + n - k) * f(m), f(m + n) * f(k) * f(m - k)) for k in range(m + 1)]
+    b = [Fraction(f(m + n - k) * f(n), f(m + n) * f(k) * f(n - k)) for k in range(n + 1)]
+    return a, b
+
+
+def pade_image(z, n: int, m: Optional[int] = None):
+    """``P_n(-z)/P_n(z)`` as a Sage expression in ``z`` (exact coefficients);
+    with ``m`` (``< n``) the ``[m/n]`` approximant instead, strictly proper
+    for ``m < n`` (``proper``: a hard delay at a vertex leg)."""
     from sage.all import SR, QQ
-    c = [QQ(x) for x in pade_coefficients(n)]
+    a, b = pade_mn_coefficients(n if m is None else m, n)
     z = SR(z)
-    num = sum(SR(ck) * (-z) ** k for k, ck in enumerate(c))
-    den = sum(SR(ck) * z ** k for k, ck in enumerate(c))
+    num = sum(SR(QQ(ck)) * (-z) ** k for k, ck in enumerate(a))
+    den = sum(SR(QQ(ck)) * z ** k for k, ck in enumerate(b))
     return num / den
 
 
@@ -195,9 +212,10 @@ def delay_factors(expr, omega) -> list:
     return out
 
 
-def pade_substitute(expr, omega, n: int):
+def pade_substitute(expr, omega, n: int, m: Optional[int] = None):
     """``expr`` with every ``exp(alpha - I*omega*X)`` replaced by
-    ``exp(alpha) * P_n(-z)/P_n(z)``, ``z = I*omega*X``."""
+    ``exp(alpha) * P_n(-z)/P_n(z)``, ``z = I*omega*X`` (with ``m``: the
+    ``[m/n]`` approximant, ``pade_image``)."""
     from sage.all import SR, I, exp
 
     def rebuild(e):
@@ -205,7 +223,7 @@ def pade_substitute(expr, omega, n: int):
         hit = _exp_delay(e, omega)
         if hit is not None:
             alpha, X = hit
-            img = pade_image(I * omega * X, n)
+            img = pade_image(I * omega * X, n, m)
             return img if alpha.is_zero() else exp(alpha) * img
         ops = e.operands()
         if not ops:
@@ -250,9 +268,11 @@ def specs_may_delay(specs) -> bool:
     return False
 
 
-def pade_model(model: dict, n: int) -> dict:
+def pade_model(model: dict, n: int, proper: bool = False) -> dict:
     """A copy of ``model`` whose kernel images carry the Pade (n, n)
-    approximant of every delay factor (its own name and fingerprint, so its
+    approximant of every delay factor (``proper``: the strictly proper
+    ``[n-1/n]`` instead, for a hard delay at a vertex leg; see
+    ``compute_delayed``) (its own name and fingerprint, so its
     caches never mix with the true model's or another order's).  The copy
     asks the propagator builder to skip the symbolic inverse (the numbers are
     substituted before inverting; the symbolic inverse of a Pade-n kernel
@@ -260,9 +280,11 @@ def pade_model(model: dict, n: int) -> dict:
     from sage.all import SR
     hook = model['kernel_ft_image']
 
-    def hook_n(ns, omega, _hook=hook, _n=int(n)):
+    m_ = int(n) - 1 if proper else None
+
+    def hook_n(ns, omega, _hook=hook, _n=int(n), _m=m_):
         out = _hook(ns, omega) or {}
-        return {k: pade_substitute(SR(v), omega, _n) for k, v in out.items()}
+        return {k: pade_substitute(SR(v), omega, _n, _m) for k, v in out.items()}
 
     m = dict(model)
     m['kernel_ft_image'] = hook_n
@@ -279,9 +301,11 @@ def pade_model(model: dict, n: int) -> dict:
             return {k: v for k, v in out.items() if k not in delayed}
         m['kernel_td_image'] = td_n
     base = model.get('name', 'model')
-    m['name'] = f'{base} [delay Pade {int(n)}]'
-    m['spec_signature'] = f"{model.get('spec_signature', '')}-pade{int(n)}"
-    m['_delay_pade'] = {'n': int(n), 'model': base}
+    tag = f'Pade [{int(n) - 1}/{int(n)}]' if proper else f'Pade {int(n)}'
+    m['name'] = f'{base} [delay {tag}]'
+    m['spec_signature'] = (f"{model.get('spec_signature', '')}-pade{int(n)}"
+                           + ('sp' if proper else ''))
+    m['_delay_pade'] = {'n': int(n), 'model': base, 'proper': bool(proper)}
     m['_numeric_first_propagator'] = True
     return m
 
@@ -685,9 +709,47 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     incomplete = None
     # every order runs with its per-entry realizations balanced-truncated
     # (api._realization; the tolerance of each order: _next_truncation)
-    out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
-                      runs, walls, skipped, failed, ests, verbose, call)
+    with warnings.catch_warnings(record=True) as w_first:
+        warnings.simplefilter('always')
+        out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                          runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
+    approximant = 'pade'
+    if incomplete:
+        # Phase J skipped diagrams: a hard delay at a vertex leg (x*x(t - d),
+        # a bare delay inside a rate nonlinearity): its (n, n) image is
+        # all-pass, (-1)^n + strictly proper, and the conductance-kernel
+        # routes take strictly proper kernels only.  Run the strictly proper
+        # [n-1/n] approximant instead (it also converges to exp(-s d), the
+        # tree stays exact); the first attempt's warnings are dropped when it
+        # completes, re-emitted otherwise.
+        if verbose:
+            print('[delay] diagrams skipped with the (n, n) approximant: '
+                  'running the strictly proper [n-1/n] approximant')
+        first = (dict(runs), dict(walls), dict(skipped), dict(failed), dict(ests), out)
+        for dct in (runs, walls, skipped, failed, ests):
+            dct.clear()
+        try:
+            out2 = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                               runs, walls, skipped, failed, ests, verbose, call,
+                               proper=True)
+        except Exception as exc:          # the first attempt's record stands
+            out2 = None
+            proper_error = f'{type(exc).__name__}: {str(exc)[:300]}'
+        if out2 is not None and out2[2] is not None and not out2[3]:
+            est, cap, n_used, incomplete, ctrl = out2
+            approximant = 'pade_proper'
+            w_first = []
+        else:
+            for dct, old in zip((runs, walls, skipped, failed, ests), first[:5]):
+                dct.clear()
+                dct.update(old)
+            if out2 is None:
+                cap = f'{cap}; the strictly proper [n-1/n] approximant failed ({proper_error})'
+            else:
+                cap = f'{cap}; the strictly proper [n-1/n] approximant left diagrams skipped too'
+    for w in w_first:
+        warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
     if n_used is None:
         raise RuntimeError(f'delay: no Pade order of {seq} gave a usable '
                            f'approximant (unstable: {skipped}; failed: {failed})')
@@ -703,12 +765,12 @@ def compute_delayed(model: dict, call: dict, delays: dict):
             ctrl['stop'] = cap
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, ctrl)
+            t_all, ctrl, approximant)
     return r
 
 
 def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, walls,
-                skipped, failed, ests, verbose, call):
+                skipped, failed, ests, verbose, call, proper=False):
     """The order loop of ``compute_delayed``; returns ``(est, cap, n_used,
     incomplete, ctrl)`` (``ctrl``: the controller's record: state counts,
     predictions, cost exponent, why it stopped)."""
@@ -725,13 +787,14 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
         t_cur = t_base if last is None else _next_truncation(opts, t_base, *_lastargs(last, k, n),
                                                               ctrl)
         if verbose:
-            print(f'[delay] Pade ({n}, {n}) of exp(-i omega d): running the pipeline'
+            print(f'[delay] Pade ({n - 1 if proper else n}, {n}) of exp(-i omega d): '
+                  'running the pipeline'
                   + (f' (realizations truncated to {t_cur:.2g})' if t_cur else ''))
         ctrl['truncation_by_order'][n] = t_cur
         t0 = time.perf_counter()
         try:
             with truncation_scope(t_cur):
-                r = compute_cumulants(pade_model(model, n), **sub_call)
+                r = compute_cumulants(pade_model(model, n, proper), **sub_call)
         except _an.AnalyzerError as exc:
             codes = set(getattr(exc, 'codes', ()))
             if codes & set(_INSTABILITY_CODES) and i + 1 < len(seq):
@@ -756,9 +819,8 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             # nonlinear term: its all-pass image is not strictly proper, which
             # the conductance-kernel routes need); no order fixes it
             runs[n], n_used, incomplete = r, n, r.get('phase_j_incomplete')
-            cap = ('Phase J skipped diagrams (a delay kernel inside a nonlinear term, '
-                   'e.g. x*x(t - d), needs a strictly proper image: write the delay with a '
-                   'filter, Kernel.delay(d) * Kernel.exponential(tau))')
+            cap = ('Phase J skipped diagrams (see result["phase_j_incomplete"]; a delay '
+                   'kernel at a vertex leg, e.g. x*x(t - d), needs a strictly proper image)')
             est = None
             break
         bad_tree = (loops_need_n and exact is not None
@@ -881,7 +943,7 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None, r_last=N
 
 def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, ctrl):
+            t_all, ctrl, approximant='pade'):
     """The record of ``compute_delayed`` (``r['delay']``, the report, the files,
     the warning)."""
     # 4. the record
@@ -890,7 +952,9 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         tree_vs_pade = r['delay_tree_vs_pade'] if 'delay_tree_vs_pade' in r else None
     info = {
         'delays': {kname: [str(x) for x in ds] for kname, ds in delays.items()},
-        'approximant': 'pade',
+        # 'pade': (n, n); 'pade_proper': the strictly proper [n-1/n] (a hard
+        # delay at a vertex leg: the (n, n) image is not strictly proper)
+        'approximant': approximant,
         'n': n_used,
         'orders_run': sorted(runs),
         'orders_skipped_unstable': skipped,
