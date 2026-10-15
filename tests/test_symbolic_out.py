@@ -491,15 +491,27 @@ def test_D_inconsistent_inputs_are_refused():
 
 def test_D_residue_refusals():
     w, mu = var('omega'), var('mu')
-    # irreducible cubic: no closed form -> ClosedFormUnavailable, numeric ok
+    # irreducible cubic (in w^2): since item 40 the default routes run on the
+    # stage-C2 engine (C2 decision (a)): RootOf modes and an exact trace
+    # instead of ClosedFormUnavailable + quadrature; the pre-C2 refusal is
+    # kept behind legacy=True / any_degree=False
     C0 = 1 / (w ** 6 + w ** 2 + 7)
     with pytest.raises(so.ClosedFormUnavailable, match='degree'):
-        so.inverse_transform(C0, w)
-    p = so.pair_with_kernel(1 / (w ** 6 + 5 * w ** 2 + 3), SR(1), w,
-                            fallback=True)
+        so.inverse_transform(C0, w, legacy=True)
+    r = so.inverse_transform(C0, w)
+    assert r['roots'] and r['contact'] == 0
+    c6 = so.to_callable(C0, w, params=[])
+    for t in (0.4, 2.5):
+        q = so.numeric_inverse_transform(lambda x: c6(x), t)
+        assert abs(q.value - complex(r['modes'].evaluate([t])[0])) < 1e-9
     from scipy.integrate import quad
     ref6 = quad(lambda x: 1 / (x ** 6 + 5 * x ** 2 + 3), -np.inf, np.inf,
                 epsabs=1e-13)[0] / (2 * np.pi)
+    p = so.pair_with_kernel(1 / (w ** 6 + 5 * w ** 2 + 3), SR(1), w,
+                            fallback=True)
+    assert p.exact and abs(p.value - ref6) < 1e-12
+    p = so.pair_with_kernel(1 / (w ** 6 + 5 * w ** 2 + 3), SR(1), w,
+                            fallback=True, any_degree=False)
     assert not p.exact and p.reason and abs(p.value - ref6) < 1e-9
     # a pole on the real axis
     with pytest.raises(so.ClosedFormUnavailable, match='real'):
@@ -512,10 +524,19 @@ def test_D_residue_refusals():
     # contact (constant) tail without a decaying kernel
     with pytest.raises(so.SymbolicOutError, match='decays only'):
         so.pair_with_kernel(SR(3) + 1 / (w ** 2 + 1), SR(1), w)
-    # undecidable half plane: a pole whose side flips inside the sample
+    # a pole whose side flips near the reference: the pre-C2 route refuses
+    # (its sample crosses mu = 1); the default (C2) route states mu > 1
     with pytest.raises(so.ClosedFormUnavailable, match='half-plane|sign'):
         so.pair_with_kernel(1 / ((I * w + mu - 1) * (w ** 2 + 4)), SR(1), w,
+                            reference={'mu': 1.2}, fallback=False,
+                            any_degree=False)
+    p = so.pair_with_kernel(1 / ((I * w + mu - 1) * (w ** 2 + 4)), SR(1), w,
                             reference={'mu': 1.2}, fallback=False)
+    assert p.exact
+    assert any(a.holds({'mu': 1.2}) and not a.holds({'mu': 0.8})
+               for a in p.assumptions)
+    # int dw/2pi 1/((i w + mu - 1)(w^2 + 4)) = 1/(4 (mu + 1)) for mu > 1
+    assert _zero(p.expression - 1 / (4 * (mu + 1)))
     # a non-real kernel parameter is refused downstream by values
     with pytest.raises(so.SymbolicOutError, match='missing'):
         so.numeric_pair_with_kernel(1 / (w ** 2 + mu ** 2), SR(1), w,

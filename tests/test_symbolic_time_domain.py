@@ -481,13 +481,17 @@ def test_kernel_cubic_two_sided_time_equals_fourier(chain_ref, domains):
             pf = so.pair_with_kernel(C0, L.fourier(w).subs({w: -w}), w,
                                      any_degree=True, reference=par)
             assert pf.exact and _zero(pf.expression - ki.smooth)
-            # legacy route declines the cubic, its quadrature agrees
+            # the pre-C2 route declines the cubic, its quadrature agrees;
+            # the default route (item 40, C2 decision (a)) is exact
             vals = dict(par, A_p=1.0, tau_p=0.7, A_m=0.6, tau_m=1.3)
             q = so.pair_with_kernel(C0, L.fourier(w).subs({w: -w}), w,
-                                    values=vals)
+                                    values=vals, any_degree=False)
             assert not q.exact and 'degree' in q.reason
             kv = ms.integrate_against(L, values=vals).value
             assert abs(q.value - kv) < 1e-9
+            qd = so.pair_with_kernel(C0, L.fourier(w).subs({w: -w}), w,
+                                     values=vals)
+            assert qd.exact and abs(qd.value - kv) < 1e-12
             # random points inside the region: both expressions, 1e-12
             free = sorted({str(v) for v in SR(ki.smooth).variables()})
             for pt in _rand_points(free, 4, seed=7):
