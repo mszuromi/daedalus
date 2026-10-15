@@ -462,20 +462,20 @@ def test_delayed_kernel_in_a_nonlinear_term_keeps_its_delay():
 
 
 def test_hard_delay_in_a_nonlinear_term_is_never_silent():
-    """x * x(t - d): the all-pass image is not strictly proper, Phase J skips
-    those diagrams; the record says so (target not met) and warns."""
+    """x * x(t - d): the all-pass (n, n) image is not strictly proper, Phase J
+    skips those diagrams; the driver reruns with the strictly proper [n-1/n]
+    approximant (item 47) and the run completes, the record says so."""
     m = (SDE('delay hard nonlinear').parameter('a', default=1.0).parameter('b', default=1.0)
          .parameter('c', default=0.3).parameter('d', default=0.5, domain='positive')
          .parameter('D', default=0.05).field('x').drift('x', '-a*x + b - c*x*x(t - d)')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
-    from api.delay import DelayOrderWarning
-    with warnings.catch_warnings(record=True) as ws:
-        warnings.simplefilter('always')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
         r = compute_cumulants(m, k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 1.0]),
-                              parallel=False, verbose=False, use_cache=False)
-    assert r['status'] == 'incomplete' and r['delay']['incomplete']
-    assert r['delay']['target_met'] is False and 'strictly proper' in r['delay']['cap']
-    assert any(issubclass(w.category, DelayOrderWarning) for w in ws)
+                              parallel=False, verbose=False, use_cache=False, delay={'order': 4})
+    assert r['status'] == 'ok' and r['delay']['incomplete'] is None
+    assert r['delay']['approximant'] == 'pade_proper'
+    assert np.max(np.abs(r['C_tau_by_ell'][1])) > 0
 
 
 def test_long_delay_steps_up_the_order():
