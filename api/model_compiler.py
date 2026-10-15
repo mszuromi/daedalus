@@ -1820,25 +1820,37 @@ def _delta_term_image(term, facs, deltas, t):
     ``api.sde.SDE._kernel_dc``; a factor depending on ``t`` is evaluated
     at the delta (``t = 0``), the step counting as 1.  A delta at another
     time is a delay, not a local term."""
+    import operator as _op
     if len(deltas) != 1:
         raise ValueError(f'term {term} has more than one dirac_delta factor')
     arg = deltas[0].operands()[0]
     if not (arg - t).is_trivial_zero():
-        raise ValueError(
-            f'{deltas[0]} is not a delta at {t} = 0; a delayed term '
-            f'(dirac_delta({t} - d) with d != 0) is a delay: declare it '
-            f'through Kernel.delay instead of in time_expr')
+        if arg.has(t) and not arg.subs({t: SR(0)}).is_trivial_zero():
+            raise ValueError(
+                f'{deltas[0]} is not a delta at {t} = 0; a delayed term '
+                f'(dirac_delta({t} - d) with d != 0) is a delay: declare it '
+                f'through Kernel.delay instead of in time_expr')
+        raise ValueError(f'only dirac_delta({t}) is supported, not {deltas[0]}')
     img = SR(1)
     for fac in facs:
         if _is_dirac_delta(fac):
             continue
-        if (fac - heaviside(t)).is_trivial_zero():
+        base = fac.operands()[0] if (fac.operator() is _op.pow
+                                     and fac.operands()[1] in ZZ
+                                     and fac.operands()[1] > 0) else fac
+        if base.operator() is heaviside:       # the step counts as 1 at the delta
+            if not (base.operands()[0] - t).is_trivial_zero():
+                raise ValueError(f'factor {fac} of term {term}: only '
+                                 f'heaviside({t}) is supported next to a delta')
             continue
         try:
-            img *= fac.subs({t: SR(0)}) if fac.has(t) else fac
-        except ZeroDivisionError:
+            val = fac.subs({t: SR(0)}) if fac.has(t) else fac
+        except (ZeroDivisionError, ValueError):
+            val = None
+        if val is None or any(w in str(val) for w in ('Infinity', 'NaN', 'nan')):
             raise ValueError(f'factor {fac} of term {term} is singular at '
-                             f'{t} = 0') from None
+                             f'{t} = 0')
+        img *= val
     return img
 
 
@@ -1893,8 +1905,10 @@ def causal_exponential_ft(f, t, omega, positive=None):
                 rate -= L.coefficient(t, 1)
                 coeff *= exp(L.coefficient(t, 0))
             else:
+                hint = ('; dirac_delta must be a plain factor'
+                        if 'dirac_delta' in str(fac) else '')
                 raise ValueError(
-                    f'factor {fac} is not t^n or an exponential in {t}')
+                    f'factor {fac} is not t^n or an exponential in {t}{hint}')
         if causal != 1:
             raise ValueError(f'term {term} does not carry heaviside({t}) '
                              f'exactly once')

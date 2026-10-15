@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip('sage.all')
-from sage.all import SR, assumptions, dirac_delta, exp, heaviside, I, var   # noqa: E402
+from sage.all import SR, assumptions, dirac_delta, exp, heaviside, I, log, var   # noqa: E402
 
 import api.compute as AC                                            # noqa: E402
 from api.model_compiler import causal_exponential_ft                # noqa: E402
@@ -58,6 +58,19 @@ def test_delta_at_another_time_is_refused_pointing_to_the_delay_api():
             causal_exponential_ft(f, t, w)
     with pytest.raises(ValueError, match='more than one'):
         causal_exponential_ft(dirac_delta(t)*dirac_delta(t - 1), t, w)
+
+
+def test_delta_term_edge_cases_are_refused_by_name():
+    t, w = var('t omega')
+    tau, c = SR.var('tauD', domain='positive'), SR.var('cD')
+    assert (causal_exponential_ft(c*dirac_delta(t)*heaviside(t)**2, t, w) - c).is_zero()
+    for f, msg in ((dirac_delta(t)*log(t), 'singular'), (dirac_delta(t)/t, 'singular'),
+                   (dirac_delta(t)*heaviside(-t), 'heaviside'),
+                   (dirac_delta(t)*heaviside(t - 1), 'heaviside'),
+                   (dirac_delta(2*t), 'only dirac_delta'), (dirac_delta(-t), 'only dirac_delta'),
+                   (dirac_delta(t)**2, 'plain factor'), (dirac_delta(t).diff(t), 'plain factor')):
+        with pytest.raises(ValueError, match=msg):
+            causal_exponential_ft(f, t, w)
 
 
 def test_no_change_without_delta_terms_and_no_assumption_leaks():
