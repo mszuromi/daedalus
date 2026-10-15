@@ -863,7 +863,10 @@ def _zoo_run(entry):
 
 def test_ou_quartic_unchanged_with_every_route_on(FI, monkeypatch):
     """Pure-pole model: the box-free routes reproduce the legacy numbers to
-    1e-12 (ell <= 2, k = 2) with 0 scipy calls and no legacy chain call."""
+    1e-12 (ell <= 2, k = 2) with 0 scipy calls and no legacy chain call
+    (the pole engine's routes: S3 makes the state-space route the
+    default)."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     import tests.tools.phase_j_zoo_baseline as Z
     entry = Z._E('t-m7-ou', model='ou_quartic', k=2, max_ell=2,
                  ext=[('dx', 1), ('dx', 1)], params=Z.P_OU,

@@ -1096,7 +1096,9 @@ def test_public_pure_delta_propagator_without_poles(ld_model, fields):
                         max_ell=0, params=_LD_DECOUPLED, fields=fields)
         assert np.array_equal(on[0], np.zeros(len(tau), dtype=complex))
         assert c_on['forced_delta_pruned'] > 0
-    with pytest.raises(IndexError):
+    with pytest.raises(IndexError), pytest.MonkeyPatch.context() as mp_:
+        # the pole engine's legacy path (S3: the default route takes it)
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
         _run(ld_model, False, k=2, grouped=False, tau=tau, max_ell=0,
              params=_LD_DECOUPLED, fields=fields)
 
@@ -1196,9 +1198,11 @@ def test_public_spike_reset_mixed_groups(spike_dir, cfg):
 
 @pytest.mark.slow
 @pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
-def test_public_spike1_unchanged(private_cwd, grouped):
+def test_public_spike1_unchanged(private_cwd, grouped, monkeypatch):
     """A δ-model without forced-δ edges: the flag changes nothing, not even
-    the route counters."""
+    the route counters (the pole engine's routes: S3's default route
+    differs)."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     from tests.test_phase_j_subset_hook import _spike_reset_one_population
     model = _spike_reset_one_population()
     kw = dict(k=2, grouped=grouped, tau=[0.0, 1.0, 3.0],
@@ -1371,13 +1375,15 @@ _CHILD = textwrap.dedent(r'''
 
 
 @pytest.mark.slow
-def test_bit_identical_to_the_pre_m2a_engine(tmp_path):
+def test_bit_identical_to_the_pre_m2a_engine(tmp_path, monkeypatch):
     """The flag on, the flag off, and the legacy umbrella against the engine
     files of ``_PRE_M2A_REV`` (and its umbrella), bit for bit, IN ONE
     PROCESS (plan §4.4: cross-process comparisons jitter at ~1e-16): the
     old and new ``final_integral`` / ``grouped_integral`` sources are exec'd
     into fresh module objects side by side, in a child process so this one
-    stays untouched.  Skips without git or the revision."""
+    stays untouched.  Skips without git or the revision.  The pole engine
+    (S3: the child inherits ``DAEDALUS_PHASE_J_ENGINE=poles``)."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     try:
         subprocess.run(['git', '-C', _REPO, 'cat-file', '-e',
                         f'{_PRE_M2A_REV}^{{commit}}'], check=True,

@@ -218,9 +218,37 @@ def compute_correction_td_grouped(
                 dest.append(rec)
         return pd_result['total_C'], len(tds)
 
+    # S3: grouped Phase J exists to share pole-tuple work between the
+    # diagrams of one prediagram; the state-space route (the default) has
+    # no pole tuples, so a group whose diagrams it covers is integrated per
+    # diagram on it (``handled_by='statespace_perdiag'``).  With
+    # ``DAEDALUS_PHASE_J_ENGINE=poles`` the grouped evaluator runs as
+    # before.
+    _ss_cover = None
+    _raw = __import__('os').environ.get('DAEDALUS_PHASE_J_ENGINE')
+    if _raw is None or _raw.strip().lower() != 'poles':
+        from engine.integration.time_domain import statespace as _ssm
+        if _ssm.model_route(propagator_data, num_params)[0]:
+            def _ss_cover(tds_):
+                return all(_ssm.diagram_route(td_, propagator_data,
+                                              num_params)[0] for td_ in tds_)
+
     for group_idx, (key, payload) in enumerate(groups.items()):
         tds = payload['tds']
         cps = payload['cps']
+
+        if _ss_cover is not None and _ss_cover(tds):
+            fb_fn, n_tds = _perdiag_fallback(tds, cps, payload['idx'])
+            group_callables.append(fb_fn)
+            groups_out.append({
+                'kernel_id':   group_idx,
+                'loop_number': _fi._loop_number_from_graph(tds[0]),
+                'n_diagrams':  n_tds,
+                'handled_by':  'statespace_perdiag',
+                'reason':      'the state-space route covers the group',
+                'representation': None,
+            })
+            continue
 
         # Tier 1: try the grouped evaluator.  Even on ``status='ok'``,
         # inspect subset_diagnostics for the prototype-skip statuses —
@@ -337,8 +365,12 @@ def compute_correction_td_grouped(
     def total_C_batch(tau_points, parallel=False, n_workers=None):
         # Match compute_correction_td's API.  For the prototype, just
         # serially evaluate (parallelism can be plumbed in once the
-        # baseline correctness is confirmed).
-        return [complex(total_C(*pt)) for pt in tau_points]
+        # baseline correctness is confirmed); S3: the state-space route's
+        # per-diagram groups batch the grid.
+        from engine.integration.time_domain.pipeline import _ss_grid
+        pts = [tuple(pt) for pt in tau_points]
+        with _ss_grid(pts):
+            return [complex(total_C(*pt)) for pt in pts]
 
     return {
         'total_C':            total_C,

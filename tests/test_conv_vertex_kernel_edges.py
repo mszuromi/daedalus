@@ -234,14 +234,19 @@ def _chain_kernel_model(tau2, embedded, name='Two-stage kernel'):
     return b.build()
 
 
+@pytest.mark.parametrize('engine', ['poles', 'statespace'])
 @pytest.mark.parametrize('tau2, ok', [(0.4, True), (0.62, True),
                                       (0.69, False), (0.7, False)])
-def test_kernel_rates_separated_or_refused(tau2, ok):
-    """Distinct kernel rates: equal to the embedding to 1e-12.  A repeated
-    rate (τ2 = τ: the alpha kernel, a t e^{-t/τ} term no mode sum holds)
-    or a near-repeated one (the ±1/gap coefficients cancel, ~1e-15/gap²)
-    is refused by name -- before, a numerically split double root gave a
-    one loop 7x too large with status 'ok'."""
+def test_kernel_rates_separated_or_refused(tau2, ok, engine, monkeypatch):
+    """Distinct kernel rates: equal to the embedding to 1e-12.  On the pole
+    engine a repeated rate (τ2 = τ: the alpha kernel, a t e^{-t/τ} term no
+    mode sum holds) or a near-repeated one (the ±1/gap coefficients cancel,
+    ~1e-15/gap²) is refused by name -- before, a numerically split double
+    root gave a one loop 7x too large with status 'ok'.  S3: the
+    state-space route (the default) realizes the kernel exactly (a Jordan
+    chain at equal rates), so it takes every rate ratio."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', engine)
+    ok = ok or engine == 'statespace'
     ext = [('x', 1), ('x', 1)]
     with warnings.catch_warnings(record=True):
         warnings.simplefilter('always')

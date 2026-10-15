@@ -1005,7 +1005,9 @@ def spike1_model(private_cwd):
 
 
 def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
-    key = (k, max_ell, grouped, tuple(tau_grid), mode)
+    # the engine is part of the key (S3: some tests pin the pole engine)
+    key = (k, max_ell, grouped, tuple(tau_grid), mode,
+           os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''))
     if key not in _E2E:
         from api import compute_cumulants
         saved = {n: getattr(FI, n) for n in (
@@ -1056,9 +1058,13 @@ def test_spike1_legacy_reproduces_pre_m1_values(spike1_model, grouped):
 
 @pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
 def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
-        spike1_model, grouped):
+        spike1_model, grouped, monkeypatch):
     """M1 moves the one-loop (Θ(0) rows in the polygon path), not the tree;
     with the Itô rule every subset is answered analytically."""
+    if grouped:
+        # the grouped evaluator's counters (S3: on the default state-space
+        # route the groups are integrated per diagram)
+        monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     res_i, c_i = _spike1(spike1_model, 2, 1, grouped)
     res_l, c_l = _spike1(spike1_model, 2, 1, grouped, mode='legacy_clip')
     ito, leg = _arrays(res_i), _arrays(res_l)
@@ -1233,10 +1239,14 @@ def test_k3_translation_invariance(k3_tree):
         assert abs(f(*shifted) - f(*pt)) <= rtol * abs(f(*pt)), pt
 
 
-def test_ou_quartic_near_ties_do_not_depend_on_the_mode(private_cwd):
+def test_ou_quartic_near_ties_do_not_depend_on_the_mode(private_cwd,
+                                                       monkeypatch):
     """A model without δ parts has no constant rows, so the Θ(0) mode and
     the tie handling can never change its numbers: bit-identical in-process
-    at exact ties and rounding-level near-ties (no time is ever altered)."""
+    at exact ties and rounding-level near-ties (no time is ever altered).
+    On the pole engine: S3's default route hands a 'legacy_clip' call to
+    the pole route, which differs from its own Itô value by rounding."""
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     import daedalus as dd
     from api import compute_cumulants
     model, _ = dd.load_model('ou_quartic')

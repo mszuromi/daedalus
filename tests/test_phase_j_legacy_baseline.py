@@ -566,3 +566,14 @@ def test_fixture_report_flag_context_restores():
     with pytest.raises(ValueError):
         with H.phase_j_flags('nope'):
             pass
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

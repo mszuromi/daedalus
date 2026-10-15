@@ -270,3 +270,14 @@ def test_two_tau_end_to_end_transfer_vs_legacy(monkeypatch):
         assert np.array_equal(leg[k], leg2[k]), k
         scale = np.max(np.abs(leg[k]))
         assert np.max(np.abs(tra[k] - leg[k])) <= 1e-11 * scale, k
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

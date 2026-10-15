@@ -129,7 +129,10 @@ def test_grouped_route_reports_a_broken_diagram(broken_loops):
                for r in res['phase_j_incomplete'][1])
 
 
-def test_pole_cluster_route_reports_a_broken_diagram(broken_loops):
+def test_pole_cluster_route_reports_a_broken_diagram(broken_loops,
+                                                    monkeypatch):
+    # the pole engine's deformation (S3: bypassed on the default route)
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     res, warns = _run(_chain(1e-6), policy={'allow_markov_embedding': True})
     assert (res.get('pole_clusters') or {}).get('status') == 'resolved'
     _assert_reported(res, warns)

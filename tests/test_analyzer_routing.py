@@ -16,6 +16,7 @@ D1 follow-ups: tests for the finding codes that had none, G3 for spatial models,
 import importlib.util
 import json
 import os
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -578,6 +579,9 @@ def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     the one-loop value at tau = 0 is the exact 3 eps C0(0) dC0/dmu = -0.0900074997 and G6 stays quiet.  With
     the deformation switched off the old rounding noise of order 1 comes back, and G3_POLE_CLUSTER_UNRESOLVED
     and G6_ACCURACY_LOW say so (R of order 10); the default gap 1 (tauc = 0.5) stays at rounding level."""
+    # the pole engine's deformation and lost digits (S3: the default
+    # state-space route uses no poles; tests/test_statespace_default.py)
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     model = _load('ou_quartic_colored')[0]
     kw = dict(max_ell=1, policy={'allow_markov_embedding': True}, tau_grid=np.array([0.0, 0.5, 2.0]))
     near = {'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1 / (1 + 1e-4)}
@@ -705,6 +709,35 @@ def test_g3_residues_numerical_tier(monkeypatch):
     a, b, D, t = 1.0, 0.7, 0.1, 0.5
     cxx = D / a * np.exp(-a * t) + D / b * (a * np.exp(-b * t) - b * np.exp(-a * t)) / (a * (a ** 2 - b ** 2))
     assert abs(complex(r['C_tau'][0]).real - cxx) <= 1e-8 * abs(cxx)
+
+
+def test_g6_reports_the_state_space_route_and_its_fallbacks(monkeypatch):
+    """S3: on the default (state-space) route G6 records the engine census (G6_PHASE_J_ENGINE, the ledger) and its
+    own accuracy estimate; a call-time fallback on the pole route (here forced: every segment refused as stiff) is
+    G6_SS_FALLBACK, recorded and never raised (also under the strict policy)."""
+    import engine.integration.time_domain.statespace as SS
+    monkeypatch.delenv('DAEDALUS_PHASE_J_ENGINE', raising=False)
+    model = _load('ou_quartic')[0]
+    kw = dict(ext=[('dx', 1), ('dx', 1)], parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0})
+    rep = _run(model, **kw)['analysis']
+    assert rep.has('G6_PHASE_J_ENGINE') and not rep.has('G6_SS_FALLBACK')
+    assert 0 < rep.diagnostics['accuracy_estimate'] < 1e-12
+    monkeypatch.setattr(SS, 'TRI_DENSE_MAX', -1)
+    monkeypatch.setattr(SS, 'TAYLOR_S_HARD', 0)
+    for policy, level in ((None, 'warning'), ({'mode': 'strict'}, 'error')):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = _run(model, policy=policy, **kw)            # never raised
+        f = {x.code: x for x in res['analysis'].findings}
+        # strict promotes it in the report, as every G6 warning
+        assert f['G6_SS_FALLBACK'].level == level and 'stiff_segment' in f['G6_SS_FALLBACK'].message
+        assert res['phase_j_engine']['fallback_evals'] > 0
+    # a run predicted covered whose subsets decline the route: G6_SS_PARTIAL
+    monkeypatch.setattr(SS, 'TRI_DENSE_MAX', 600)
+    monkeypatch.setattr(SS, 'TAYLOR_S_HARD', 2000)
+    monkeypatch.setattr(SS, 'MAX_DOWNSETS', 0)
+    rep = _run(model, **kw)['analysis']
+    assert rep.has('G6_SS_PARTIAL') and not rep.has('G6_SS_FALLBACK')
 
 
 def test_finding_codes_all_have_a_test():

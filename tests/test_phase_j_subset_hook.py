@@ -552,7 +552,9 @@ def test_reset_runtime_counters_resets_new_entries():
     assert nested == {r: 0 for r in FI._NQUAD_FALLBACK_REASONS}
     for k, v in FI._RUNTIME_COUNTERS.items():
         if k != 'nquad_fallback_by_reason':
-            assert v == 0, k
+            # the other dict counters (S3: the state-space route's
+            # ``ss_*_by_reason``) are cleared in place
+            assert v == ({} if isinstance(v, dict) else 0), k
 
 
 @pytest.mark.parametrize('name', ['ou'] + _DELTA_MODELS)
@@ -768,3 +770,14 @@ def test_harness_references_every_tie_orientation():
     from sage.all import SR
     assert PSD.tie_ctx_key(((SR.var('t'), 0.5), (1,), 0)) == (
         ('t', 0.5), (1,), 0)
+
+
+# S3: the state-space route is the default; these tests pin the pole
+# engine's own routes / counters / plans, so the module runs with
+# ``DAEDALUS_PHASE_J_ENGINE=poles`` (module scope: the module's fixtures that
+# compute results run on the pole engine too).
+@pytest.fixture(autouse=True, scope='module')
+def _pole_engine_s3():
+    with pytest.MonkeyPatch.context() as mp_:
+        mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        yield

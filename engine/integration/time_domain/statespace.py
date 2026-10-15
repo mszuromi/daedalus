@@ -1,6 +1,6 @@
 r"""
-State-space subset integrator for Phase J (stage S2, opt-in)
-============================================================
+State-space subset integrator for Phase J (S2; the default since S3)
+====================================================================
 
 Evaluates one Phase J subset integral
 
@@ -18,17 +18,35 @@ an internal vertex are scalar factors ``g_e(c_eff)`` decided by Phase J's own
 Θ(0) / tie rule (``final_integral._const_row_verdict``).  ``P`` is the
 subset prefactor.
 
-Opt in with ``DAEDALUS_PHASE_J_ENGINE=statespace`` (read for each subset
-when a diagram is integrated).  Unset, this module is not even imported and
-every number is the pole engine's; ``poles`` / ``default`` import it and
-decline every subset; any other value raises (at the first subset).  The
-route applies to every ``integrate_diagram`` call: the per-diagram path, and
-also grouped Phase J's per-diagram fallback; the spatial certification's
-per-momentum calls are declined (``realization_spatial_per_q``).  A subset is taken here only when every row is a
-propagator edge of the model's realization (``subset_maker``: no noise-kernel
-boxes, no conductance pseudo-edges, no dressed lines, a numeric prefactor, a
-Hurwitz realization, rows of the shape above, every vertex followed by an
-external time); everything else stays on the pole routes.
+The engine is chosen by ``DAEDALUS_PHASE_J_ENGINE`` (read for each subset
+when a diagram is integrated): unset, ``default`` or ``statespace`` take this
+route for every eligible subset (the default since S3); ``poles`` restores
+the pole engine everywhere (every number as before S3, bit for bit: this
+module is then not even imported by the dispatch); any other value raises
+(at the first subset).  The route applies to every ``integrate_diagram``
+call: the per-diagram path and grouped Phase J's per-diagram groups
+(``api._grouped_phase_j``: a group the route covers is integrated per
+diagram); the spatial certification's per-momentum calls are declined
+(``realization_spatial_per_q``).  A subset is taken here when every row is
+an edge with a realization (``subset_maker``): a propagator entry of the
+model's realization, a conductance kernel (``api._realization.
+realize_kernel``: its exact chain, equal rates included), or a dressed line
+(the kernel cascaded with its propagator entry); no noise-kernel boxes, a
+numeric prefactor, a Hurwitz realization, rows of the shape above, every
+vertex followed by an external time.  Everything else stays on the pole
+routes (counted by reason in ``ss_declined_by_reason``).
+
+**Call-time fallback** (S3).  A routed subset whose evaluation is refused
+late -- a stiff segment beyond the triangular route's size
+(``TRI_DENSE_MAX`` states, ``TAYLOR_S_HARD`` steps), a segment system over
+the memory budget or too large to build, a non-finite value -- is evaluated
+by the pole route instead, for that call: the pole-route closure (and its
+modesum plan) is built the first time it is needed (``fallback``, a lazy
+builder passed by the dispatch), counted (``ss_fallback_evals``,
+``ss_fallback_subsets``, ``ss_fallback_by_reason``) and reported
+(``compute_cumulants``: ``result['phase_j_engine']``, analyzer G6).
+``DAEDALUS_PHASE_J_SS_FALLBACK=0`` raises the refusal instead (S2).  A
+subset with no pole route (a kernel only this route realizes) raises.
 
 The downset sweep
 -----------------
@@ -132,6 +150,16 @@ Numerics
   that share the order of the external times reuse the stationary state and
   the first event; the last segment is stepped from one length to the next.
 
+Error estimate (analyzer G6; S3).  Every evaluation adds to the counter
+``ss_err_abs_sum`` the estimate ``|P s| M (1e-15 (1 + n_steps) + rho)``:
+``M`` = the final contraction taken in absolute values (``|c| . |X|``: the
+magnitude the last sum cancels from), ``n_steps`` = the Taylor scaling steps
+of the evaluation (the action's tolerance is ``2^-53`` per step, norm-wise),
+``rho`` = the largest relative residual of the subset's stationary
+resolvent solves after refinement, ``s`` = the constant rows' factors, ``P``
+the prefactor; ``ss_estimated`` counts the evaluations.  Like the closed-form
+routes' ``1e-15 * sum|term|`` it is an estimate, not a bound.
+
 Memory: before a subset's stationary states are allocated their size (the
 product of the per-edge dimensions over each downset's active edges, summed)
 is charged against ``PHASE_J_MEM_BUDGET_GB`` through item 35's running total
@@ -139,8 +167,9 @@ is charged against ``PHASE_J_MEM_BUDGET_GB`` through item 35's running total
 ``PhaseJResourceError`` before anything is allocated.  A segment system is
 checked the same way (its working set alone) when it is first built, at the
 first evaluation that needs it.  Not charged: the module's caches that
-outlive a run (dense segment generators, an LRU capped at
-``DENSE_CACHE_BYTES``; the last ``_REAL_CACHE_MAX`` realizations).
+outlive a run (dense segment generators and the small resolvent blocks'
+dense operators, one LRU capped at ``DENSE_CACHE_BYTES``; the last
+``_REAL_CACHE_MAX`` realizations).
 """
 from __future__ import annotations
 
@@ -154,13 +183,17 @@ import numpy as np
 import scipy.linalg as sl
 
 __all__ = [
-    'ENGINE_ENV', 'engine_requested', 'subset_maker', 'SubsetSS',
-    'realization_for', 'tau_grid_prefetch', 'SSIneligible',
+    'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
+    'subset_maker', 'SubsetSS', 'realization_for', 'tau_grid_prefetch',
+    'SSIneligible', 'SSLateRefusal', 'SSNoPoleFallback', 'model_route',
+    'diagram_route',
+    'census',
 ]
 
 ENGINE_ENV = 'DAEDALUS_PHASE_J_ENGINE'
-_ENGINE_ON = ('statespace',)
-_ENGINE_OFF = ('', 'poles', 'default')
+FALLBACK_ENV = 'DAEDALUS_PHASE_J_SS_FALLBACK'
+_ENGINE_ON = ('', 'default', 'statespace')
+_ENGINE_OFF = ('poles',)
 
 #: dense generator (Taylor action with dense mat-vecs) up to this dimension;
 #: matrix-free beyond
@@ -176,6 +209,20 @@ TAYLOR_S_MAX = 50
 #: so the triangular route is taken only when the Taylor action would need
 #: far more steps (a 2 x 2 Schur form is one rotation of a balanced block)
 TAYLOR_S_MAX_SCHUR = 1000
+#: an impulse ``c e^{a t} b`` of an entry with an exact triangular basis
+#: (triangular ``a``, a 2 x 2 Schur form; n >= 2) takes the triangular route
+#: beyond this many Taylor steps: a graded entry (a fast line cascaded with
+#: a slow kernel: a dressed line) loses up to ~1e-14 in the trace-shifted
+#: action well before ``TAYLOR_S_MAX`` (S3 review: 4e-15 already at 2
+#: steps), the triangular Pade ~3e-16, at a negligible cost for these small
+#: entries
+TAYLOR_S_MAX_IMPULSE = 0
+#: a segment with exact triangular bases whose slowest diagonal rate is below
+#: ``GRADED_RATIO`` of the mean (graded: the trace shift leaves the slow modes
+#: growing fast) takes the triangular route beyond ``TAYLOR_S_MAX_GRADED``
+#: steps (S3 review)
+GRADED_RATIO = 0.1
+TAYLOR_S_MAX_GRADED = 2
 #: the triangular route (dense upper-triangular generator in the per-edge
 #: Schur basis, reset-diagonal Pade) up to this many states
 TRI_DENSE_MAX = 600
@@ -184,6 +231,12 @@ TRI_DENSE_MAX = 600
 TAYLOR_S_HARD = 2000
 #: refinement steps of a resolvent solve done in a unitary Schur basis
 REFINE_STEPS = 2
+#: a resolvent block up to this many entries is solved by one dense
+#: back substitution (``scipy.linalg.solve_triangular`` on the cached
+#: upper-triangular Kronecker sum in the per-edge triangular basis: the
+#: same back substitution the Jacobi sweeps perform, in one call); larger
+#: blocks keep the matrix-free sweeps (S3, walls)
+DENSE_SOLVE_MAX = 256
 #: a subset with more stationary downsets than this is declined
 MAX_DOWNSETS = 50000
 #: bytes of dense segment generators kept across calls (LRU)
@@ -201,24 +254,71 @@ class SSIneligible(Exception):
         super().__init__(f'{reason}: {detail}' if detail else reason)
 
 
+class SSLateRefusal(RuntimeError):
+    """A routed subset's evaluation refused at call time (``reason``: the
+    ``ss_fallback_by_reason`` key); the dispatch falls back to the pole
+    route for that call (``FALLBACK_ENV``)."""
+
+    def __init__(self, reason, detail=''):
+        self.reason = reason
+        super().__init__(f'state-space route: {detail or reason}; set '
+                         f'{ENGINE_ENV}=poles to use the pole routes')
+
+
+class SSNoPoleFallback(RuntimeError):
+    """A routed subset was refused at call time and the pole route cannot
+    take it: the subset has none (a kernel only this route realizes), or
+    ``compute_cumulants`` skipped the pole-cluster deformation for the run
+    (``ss_no_pole_fallback``).  Never silent: it raises."""
+
+
+class _Refused:
+    """A prefetched grid point the route refused (``reason``, ``detail``)."""
+    __slots__ = ('reason', 'detail')
+
+    def __init__(self, reason, detail=''):
+        self.reason = reason
+        self.detail = detail
+
+
 def engine_requested(environ=None):
-    """True when ``DAEDALUS_PHASE_J_ENGINE`` selects the state-space route.
-    Unset / ``poles`` / ``default``: False.  Any other value raises."""
+    """True when ``DAEDALUS_PHASE_J_ENGINE`` selects the state-space route:
+    unset, ``default`` or ``statespace`` (the default since S3); ``poles``:
+    False (the pole engine everywhere).  Any other value raises."""
     env = os.environ if environ is None else environ
     raw = str(env.get(ENGINE_ENV, '')).strip().lower()
     if raw in _ENGINE_ON:
         return True
     if raw in _ENGINE_OFF:
         return False
-    raise ValueError(f'{ENGINE_ENV}={raw!r}: expected one of '
-                     f'{_ENGINE_ON + _ENGINE_OFF[1:]} (or unset)')
+    raise ValueError(f'{ENGINE_ENV}={raw!r}: expected statespace (the '
+                     f'default), default or poles (or unset)')
+
+
+def engine_name(environ=None):
+    """'statespace' or 'poles' (``engine_requested``)."""
+    return 'statespace' if engine_requested(environ) else 'poles'
+
+
+def fallback_enabled(environ=None):
+    """``DAEDALUS_PHASE_J_SS_FALLBACK``: unset / anything but ``0`` /
+    ``off`` / ``false`` / ``no``: a late refusal falls back to the pole
+    route; off: it raises (S2's behaviour)."""
+    env = os.environ if environ is None else environ
+    return str(env.get(FALLBACK_ENV, '1')).strip().lower() not in (
+        '0', 'off', 'false', 'no')
 
 
 # ─── counters (in final_integral._RUNTIME_COUNTERS, created on import) ────
 
+_FI_MOD = []
+
+
 def _FI():
-    from engine.integration.time_domain import final_integral as FI
-    return FI
+    if not _FI_MOD:
+        from engine.integration.time_domain import final_integral as FI
+        _FI_MOD.append(FI)
+    return _FI_MOD[0]
 
 
 _COUNTER_KEYS = (
@@ -227,21 +327,48 @@ _COUNTER_KEYS = (
     'ss_segments_taylor', 'ss_taylor_matvecs', 'ss_segments_triangular',
     'ss_batch_points', 'ss_prefetch_hits',
     'ss_realizations_built', 'ss_realization_refused',
+    'ss_fallback_evals', 'ss_fallback_subsets', 'ss_kernel_entries',
+    'ss_dressed_entries', 'ss_estimated', 'ss_err_abs_sum',
 )
+_COUNTER_DICTS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
 
 def _counters():
     C = _FI()._RUNTIME_COUNTERS
-    if 'ss_evals' not in C:
+    if 'ss_fallback_evals' not in C:
         for k_ in _COUNTER_KEYS:
             C.setdefault(k_, 0)
-        C.setdefault('ss_declined_by_reason', {})
+        for k_ in _COUNTER_DICTS:
+            C.setdefault(k_, {})
     return C
 
 
+def census(counters=None):
+    """The engine census of the counters (``final_integral.
+    _RUNTIME_COUNTERS`` or a run's delta): subsets built on the route,
+    declined (by reason), fallbacks (subsets / evaluations, by reason)."""
+    C = _counters() if counters is None else counters
+    return {
+        'engine': engine_name(),
+        'ss_subsets': int(C.get('ss_subsets_built', 0)),
+        'ss_declined': int(C.get('ss_subsets_declined', 0)),
+        'ss_declined_by_reason': dict(C.get('ss_declined_by_reason') or {}),
+        'ss_evals': int(C.get('ss_evals', 0)),
+        'fallback_subsets': int(C.get('ss_fallback_subsets', 0)),
+        'fallback_evals': int(C.get('ss_fallback_evals', 0)),
+        'fallback_by_reason': dict(C.get('ss_fallback_by_reason') or {}),
+    }
+
+
 def _count(key, n=1):
-    C = _counters()
-    C[key] = C.get(key, 0) + n
+    # (``_reset_runtime_counters`` clears the dict in place: its identity
+    # is stable)
+    C = _FI()._RUNTIME_COUNTERS
+    try:
+        C[key] += n
+    except KeyError:
+        C = _counters()
+        C[key] = C.get(key, 0) + n
 
 
 def _decline(reason):
@@ -256,7 +383,8 @@ def _decline(reason):
 
 _REAL_LOCK = threading.RLock()
 _REAL_CACHE = OrderedDict()
-_REAL_CACHE_MAX = 8
+_REAL_LAST = [None]
+_REAL_CACHE_MAX = 16
 
 
 def _exact_key(v):
@@ -285,13 +413,41 @@ def realization_for(propagator_data, num_params):
     pole-cluster deformation copies) and the parameter values; the cache
     holds strong references, so an id cannot be recycled while cached."""
     K = propagator_data.get('K_ft') if hasattr(propagator_data, 'get') else None
-    key = (id(K), id(propagator_data.get('omega')) if K is not None else None,
-           _np_key(num_params))
+    om = propagator_data.get('omega') if K is not None else None
+    # identity fast path (S3, walls: one lookup per subset): the same K_ft,
+    # omega, num_params dict and value objects as the last call (strong
+    # references are held, so no id can be recycled while cached)
+    vals = tuple(num_params.values()) if isinstance(num_params, dict) else None
+    last = _REAL_LAST[0]
+    if (last is not None and vals is not None and last[0] is K
+            and last[1] is om and last[2] is num_params
+            and len(last[3]) == len(vals)
+            and all(a is b for a, b in zip(last[3], vals))):
+        return last[4], last[5]
+    npk = _np_key(num_params)
+    key = (id(K), id(om) if K is not None else None, npk)
+    # content key (S3, walls): every compute_cumulants call builds a new
+    # K_ft; the same propagator text, omega and exact parameter values are
+    # the same realization (S1 is a function of exactly these)
+    ckey = None
     with _REAL_LOCK:
         hit = _REAL_CACHE.get(key)
         if hit is not None and hit[0] is K:
             _REAL_CACHE.move_to_end(key)
+            if vals is not None:
+                _REAL_LAST[0] = (K, om, num_params, vals, hit[1], hit[2])
             return hit[1], hit[2]
+    ck = _content_key(K, om)
+    if ck is not None:
+        ckey = ('content', ck, npk)
+        with _REAL_LOCK:
+            hit = _REAL_CACHE.get(ckey)
+            if hit is not None:
+                _REAL_CACHE.move_to_end(ckey)
+                _REAL_CACHE[key] = (K, hit[1], hit[2])
+                if vals is not None:
+                    _REAL_LAST[0] = (K, om, num_params, vals, hit[1], hit[2])
+                return hit[1], hit[2]
     from api._realization import try_realize
     if any(str(k_).startswith('Laplacian') for k_ in (num_params or {})):
         # the spatial certification's per-momentum temporal calls
@@ -313,20 +469,55 @@ def realization_for(propagator_data, num_params):
             ops, why = None, 'not_hurwitz'
             _count('ss_realization_refused')
         else:
-            ops, why = _ModelOps(real), None
+            ops, why = _ModelOps(real, num_params), None
             _count('ss_realizations_built')
     with _REAL_LOCK:
         _REAL_CACHE[key] = (K, ops, why)
         _REAL_CACHE.move_to_end(key)
+        if ckey is not None:
+            _REAL_CACHE[ckey] = (None, ops, why)
+        if vals is not None:
+            _REAL_LAST[0] = (K, om, num_params, vals, ops, why)
         while len(_REAL_CACHE) > _REAL_CACHE_MAX:
             _REAL_CACHE.popitem(last=False)
     return ops, why
+
+
+_CONTENT = OrderedDict()
+
+
+def _content_key(K, om):
+    """The text of ``K_ft`` (every entry) and of ``omega``, memoized by the
+    identity of ``K`` (strong reference held); ``None`` when it cannot be
+    formed."""
+    if K is None:
+        return None
+    with _REAL_LOCK:
+        hit = _CONTENT.get(id(K))
+        if hit is not None and hit[0] is K:
+            return hit[1]
+    try:
+        # the exact values of float literals (a RealNumber prints ~15
+        # digits): S1's exactification, then the text
+        from api._realization import _exactify
+        from sage.all import SR as _SR
+        ck = (str(om), int(K.nrows()), int(K.ncols()),
+              tuple(str(_exactify(_SR(x))) for x in K.list()))
+    except Exception:
+        ck = None
+    with _REAL_LOCK:
+        _CONTENT[id(K)] = (K, ck)
+        while len(_CONTENT) > 2 * _REAL_CACHE_MAX:
+            _CONTENT.popitem(last=False)
+    return ck
 
 
 def _clear_caches():
     """Drop the realization and dense-generator caches (tests)."""
     with _REAL_LOCK:
         _REAL_CACHE.clear()
+        _CONTENT.clear()
+        _REAL_LAST[0] = None
     with _DENSE_LOCK:
         _DENSE_CACHE.clear()
         _DENSE_BYTES[0] = 0
@@ -474,8 +665,9 @@ class _EntryOps:
         A, mu, dn = self._tay
         t = float(t)
         m_, s_ = _taylor_params(dn, t)
+        _est_steps(s_)
         if s_ > (TAYLOR_S_MAX_SCHUR if (self.kind == 'schur' and self.n > 2)
-                 else TAYLOR_S_MAX):
+                 else TAYLOR_S_MAX_IMPULSE):
             # stiff (|a| t large): the reset-diagonal triangular Pade in the
             # triangular basis (exact e^{lambda t} on the diagonal)
             from api._realization import expm_upper_triangular
@@ -485,23 +677,123 @@ class _EntryOps:
                                         t)).item()
 
 
+def _att_key(att):
+    """A key of a conductance kernel attachment's image (its symbol and its
+    time / frequency expression)."""
+    out = [str(att.get('symbol'))]
+    for nm in ('kernel_td_fn', 'kernel_ft_fn'):
+        f = att.get(nm)
+        if f is not None:
+            out.append((nm, str(getattr(f, 'expr', f)),
+                        str(getattr(f, 'placeholder', ''))))
+    return tuple(out)
+
+
 class _ModelOps:
     """The realization of one model at one parameter point, as per-entry
     operators, plus the resolvent data per active-edge pattern (shared by
-    every subset of the model)."""
+    every subset of the model); also the conductance kernels' realizations
+    and the dressed lines' cascades (S3), built on first use."""
 
-    def __init__(self, real):
+    def __init__(self, real, num_params=None):
         self.real = real
+        self.num_params = num_params
         self.is_real = not np.iscomplexobj(real.A)
         self.dtype = float if self.is_real else complex
         self.entries = {}
         for key, ent in real.entries.items():
             self.entries[key] = _EntryOps(ent, self.dtype)
         self._solve_data = {}
+        self._extra = {}
         self._lock = threading.RLock()
 
     def entry(self, pi, ri):
         return self.entries.get((int(pi), int(ri)))
+
+    def _kernel_real(self, att):
+        """``(EntryRealization, None)`` or ``(None, reason)``."""
+        key = ('kernel_real', _att_key(att))
+        with self._lock:
+            hit = self._extra.get(key)
+        if hit is not None:
+            return hit
+        from api._realization import realize_kernel, RealizationRefused
+        try:
+            ent, fname = realize_kernel(att, self.num_params)
+            out = ((None, 'kernel_complex') if fname != 'QQ' and self.is_real
+                   else (ent, None))
+        except RealizationRefused as exc:
+            out = (None, exc.reason if exc.reason.startswith('kernel_')
+                   else f'kernel_{exc.reason}')
+        except Exception as exc:                # never let a kernel break a run
+            out = (None, f'kernel_error_{type(exc).__name__}')
+        with self._lock:
+            self._extra[key] = out
+        return out
+
+    def kernel_entry(self, att):
+        """The ``_EntryOps`` of a conductance kernel ``g`` (a kernel edge
+        ``s -> anchor``), or a decline reason (str)."""
+        key = ('kernel', _att_key(att))
+        with self._lock:
+            hit = self._extra.get(key)
+        if hit is not None:
+            return hit
+        ent, why = self._kernel_real(att)
+        out = why if ent is None else _EntryOps(ent, self.dtype)
+        if ent is not None:
+            _count('ss_kernel_entries')
+        with self._lock:
+            self._extra[key] = out
+        return out
+
+    def dressed_entry(self, pi, ri, att):
+        """The ``_EntryOps`` of a dressed line ``(g * G)(t) = int_0^t
+        g(t - x) G(x) dx``: the series connection of the propagator entry
+        ``G[pi, ri]`` (``a1, b1, c1``, delta part ``d1``) and the kernel
+        (``a2, b2, c2``), ``A = [[a1, 0], [b2 c1, a2]]``,
+        ``B = [b1; b2 d1]``, ``C = [0, c2]`` (impulse response ``d1 g(t) +
+        (g * G_smooth)(t)``); not reduced (a kernel rate the propagator
+        cancels stays as a stable, unobservable state).  Or a reason."""
+        key = ('dress', int(pi), int(ri), _att_key(att))
+        with self._lock:
+            hit = self._extra.get(key)
+        if hit is not None:
+            return hit
+        ent_g = self.real.entries.get((int(pi), int(ri)))
+        kre, why = self._kernel_real(att)
+        if ent_g is None:
+            out = 'entry_missing'
+        elif kre is None:
+            out = why
+        else:
+            dt = self.dtype
+            a1 = np.asarray(ent_g.a, dtype=dt)
+            b1 = np.asarray(ent_g.b, dtype=dt).reshape(-1)
+            c1 = np.asarray(ent_g.c, dtype=dt).reshape(-1)
+            d1 = complex(ent_g.d) if not self.is_real else float(
+                np.real(ent_g.d))
+            a2 = np.asarray(kre.a, dtype=dt)
+            b2 = np.asarray(kre.b, dtype=dt).reshape(-1)
+            c2 = np.asarray(kre.c, dtype=dt).reshape(-1)
+            n1, n2 = a1.shape[0], a2.shape[0]
+            if n2 == 0 or (n1 == 0 and d1 == 0):
+                A = np.zeros((0, 0), dtype=dt)
+                B = C = np.zeros(0, dtype=dt)
+            else:
+                A = np.zeros((n1 + n2, n1 + n2), dtype=dt)
+                A[:n1, :n1] = a1
+                A[n1:, :n1] = np.outer(b2, c1)
+                A[n1:, n1:] = a2
+                B = np.concatenate([b1, b2 * d1])
+                C = np.concatenate([np.zeros(n1, dtype=dt), c2])
+            import types as _types
+            out = _EntryOps(_types.SimpleNamespace(
+                a=A, b=B, c=C, n_states=A.shape[0]), dt)
+            _count('ss_dressed_entries')
+        with self._lock:
+            self._extra[key] = out
+        return out
 
     def solve_data(self, ents):
         """Resolvent data for a tensor whose axes carry the entries ``ents``
@@ -513,6 +805,9 @@ class _ModelOps:
                 sd = _SolveData(ents, self.is_real)
                 self._solve_data[key] = sd
             return sd
+
+
+_SD_SERIAL = itertools.count()
 
 
 class _SolveData:
@@ -534,15 +829,68 @@ class _SolveData:
         self.sweeps = 1 + sum(e.n - 1 for e in ents)
         self.unitary = any(e.kind == 'schur' for e in ents)
         self.scalar = sum(e.lam for e in ents if e.n == 1)
+        self.size = int(np.prod(self.shape, dtype=np.int64)) if ents else 1
+        self.serial = next(_SD_SERIAL)
+
+    def kron_sum(self, dtype, attr='a'):
+        """The dense Kronecker sum ``⊕ a_e`` (``attr='a'``) or ``⊕ T_e``
+        (``'T'``: the per-edge triangular basis, upper triangular) of this
+        pattern, cached (shared by every subset and segment of the model)."""
+        key = ('kron', self.serial, attr, np.dtype(dtype).str)
+        hit = _dense_get(key)
+        if hit is not None:
+            return hit[0]
+        M = _kron_sum_dense(self.ents, dtype, attr=attr)
+        M.setflags(write=False)
+        _dense_put(key, M, M.nbytes)
+        return M
+
+    def _dense_ops(self):
+        """For a block of at most ``DENSE_SOLVE_MAX`` entries: ``(U, U^H,
+        T, M)``, the Kronecker product of the per-edge basis changes
+        (identity, the index reversal, the unitary Schur factor), the
+        upper-triangular ``⊕ T_e`` and the original ``⊕ a_e``, all dense and
+        cached: a solve is then two matvecs and one back substitution."""
+        hit = _dense_get(('sdops', self.serial))
+        if hit is not None:
+            return hit[0]
+        cplx = np.iscomplexobj(self.lam) or self.unitary
+        dt = complex if cplx else float
+        U = np.ones((1, 1), dtype=dt)
+        for e in self.ents:
+            if e.kind == 'schur':
+                f = np.asarray(e.U, dtype=dt)
+            elif e.kind == 'lower':
+                f = np.eye(e.n, dtype=dt)[::-1]
+            else:
+                f = np.eye(e.n, dtype=dt)
+            U = np.kron(U, f)
+        ops = (U, U.conj().T.copy(), self.kron_sum(dt, 'T'),
+               self.kron_sum(self.ents[0].a.dtype if self.ents else float))
+        _dense_put(('sdops', self.serial), ops,
+                   sum(int(x.nbytes) for x in ops))
+        return ops
 
     def apply_M(self, y):
         """``(⊕ a_e) y`` in the original basis."""
+        if self.nontriv and self.size <= DENSE_SOLVE_MAX:
+            M = self._dense_ops()[3]
+            return (M @ np.ravel(y)).reshape(self.shape)
         out = self.scalar * y if self.scalar != 0 else np.zeros_like(y)
         for ax, e in self.nontriv:
             out = out + _mode(y, e.a, ax)
         return out
 
     def _solve_once(self, r):
+        if self.nontriv and self.size <= DENSE_SOLVE_MAX:
+            U, Uh, T, _M = self._dense_ops()
+            rt = Uh @ np.ravel(r)
+            y = U @ sl.solve_triangular(T, -rt, lower=False,
+                                        check_finite=False)
+            y = y.reshape(self.shape)
+            if self.is_real and np.iscomplexobj(y):
+                y = y.real
+            return y
         rt = r
         for ax, e in self.nontriv:
             rt = e.to_basis(rt, ax)
@@ -558,12 +906,17 @@ class _SolveData:
             y = y.real
         return y
 
-    def solve_neg(self, r):
-        """``y`` with ``(⊕ a_e) y = -r``, i.e. ``y = (-M)^{-1} r``."""
+    def solve_neg(self, r, want_residual=False):
+        """``y`` with ``(⊕ a_e) y = -r``, i.e. ``y = (-M)^{-1} r``.  With
+        ``want_residual``: ``(y, rho)``, ``rho`` the relative residual
+        ``|r + M y|_inf / |r|_inf`` of the returned ``y`` (G6's estimate)."""
         _count('ss_resolvent_solves')
         y = self._solve_once(r)
         if not self.unitary or REFINE_STEPS <= 0:
-            return y
+            if not want_residual:
+                return y
+            rn = float(np.abs(-r - self.apply_M(y)).max()) if y.size else 0.0
+            return y, _rel_res(rn, r)
         res = -r - self.apply_M(y)
         best, rbest = y, float(np.abs(res).max())
         for _ in range(REFINE_STEPS):
@@ -576,7 +929,26 @@ class _SolveData:
             if not rn < rbest:
                 break
             best, rbest = y, rn
-        return best
+        return (best, _rel_res(rbest, r)) if want_residual else best
+
+
+def _rel_res(rn, r):
+    rm = float(np.abs(r).max()) if np.size(r) else 0.0
+    return rn / rm if rm > 0 else (0.0 if rn == 0 else math.inf)
+
+
+# ─── the error estimate's per-evaluation accumulators (G6) ────────────────
+
+_EST = threading.local()
+#: the per-step unit of the error estimate (the closed-form routes'
+#: ``COND_ERR_FACTOR`` convention)
+EST_UNIT = 1e-15
+
+
+def _est_steps(n):
+    st = getattr(_EST, 'steps', None)
+    if st is not None:
+        _EST.steps = st + n
 
 
 # ─── dense segment generators (LRU, byte capped) ──────────────────────────
@@ -659,6 +1031,7 @@ def _taylor_action(apply_A, mu, dnorms, x, t, min_terms=0):
         min_terms = 0
     m = max(m, min_terms)
     _count('ss_segments_taylor')
+    _est_steps(s)
     F = x
     b = x
     eta = np.exp(t * mu / s)
@@ -733,6 +1106,7 @@ class _Segment:
         self._sd = [sub.model.solve_data(en) for en in self.ents]
         self._dnorms_free = None
         self._adj = None
+        self._graded = None
         # ``depth``: firings to the deepest block plus the orders at which the
         # impulses of the edges born and completed in the segment start
         self.min_terms = min(_M_MAX, depth)
@@ -763,6 +1137,26 @@ class _Segment:
             out[oJ:oJ + szJ] += np.ravel(fire(x))
         return out
 
+    def graded(self):
+        """Exact triangular bases and the slowest diagonal rate below
+        ``GRADED_RATIO`` of the mean one (``action``)."""
+        g = self._graded
+        if g is None:
+            if any(e.kind == 'schur' and e.n > 2
+                   for en in self.ents for e in en) or not self.D:
+                g = False
+            else:
+                mu = (self.trace() / self.D).real
+                # blocks with an active edge (a block without one is
+                # constant, not a slow mode)
+                slow = max([float(np.max(np.real(sd.lam)))
+                            for sd in self._sd if sd.ents and np.size(sd.lam)]
+                           or [-math.inf])
+                g = bool(mu < 0 and slow > -math.inf
+                         and slow > GRADED_RATIO * mu)
+            self._graded = g
+        return g
+
     def trace(self):
         tr = 0j
         for k, en in enumerate(self.ents):
@@ -779,7 +1173,7 @@ class _Segment:
         G = np.zeros((D, D), dtype=dtype)
         for k in range(len(self.blocks)):
             o, sz = self.offs[k], self.sizes[k]
-            G[o:o + sz, o:o + sz] = _kron_sum_dense(self.ents[k], dtype)
+            G[o:o + sz, o:o + sz] = self._sd[k].kron_sum(dtype)
         for (kI, kJ, fire) in self.trans:
             o, sz = self.offs[kI], self.sizes[kI]
             oJ, szJ = self.offs[kJ], self.sizes[kJ]
@@ -885,8 +1279,7 @@ class _Segment:
         G = np.zeros((self.D, self.D), dtype=dt)
         for k in range(nb):
             r, sz = roffs[k], self.sizes[k]
-            G[r:r + sz, r:r + sz] = _kron_sum_dense(self.ents[k], dt,
-                                                    attr='T')
+            G[r:r + sz, r:r + sz] = self._sd[k].kron_sum(dt, 'T')
         for (kI, kJ, fire) in self.trans:
             rI, szI = roffs[kI], self.sizes[kI]
             rJ, szJ = roffs[kJ], self.sizes[kJ]
@@ -905,6 +1298,7 @@ class _Segment:
         from api._realization import expm_upper_triangular
         G, roffs = self.tri()
         _count('ss_segments_triangular')
+        _est_steps(1)
         xt = np.zeros(self.D, dtype=G.dtype)
         for k in range(len(self.blocks)):
             x = v[self.offs[k]:self.offs[k] + self.sizes[k]].reshape(
@@ -950,14 +1344,15 @@ class _Segment:
         _m, s_ = _taylor_params(dn, L)
         unitary = any(e.kind == 'schur' and e.n > 2
                       for en in self.ents for e in en)
-        if s_ > (TAYLOR_S_MAX_SCHUR if unitary else TAYLOR_S_MAX) and (
-                self.D <= TRI_DENSE_MAX):
+        lim = (TAYLOR_S_MAX_SCHUR if unitary else
+               TAYLOR_S_MAX_GRADED if self.graded() else TAYLOR_S_MAX)
+        if s_ > lim and self.D <= TRI_DENSE_MAX:
             return self._action_tri(v, L, dtype)
         if s_ > TAYLOR_S_HARD:
-            raise RuntimeError(
-                f'state-space route: a stiff segment ({self.D:,} states, '
+            raise SSLateRefusal(
+                'stiff_segment', f'a stiff segment ({self.D:,} states, '
                 f'{s_:,} Taylor steps for length {L:g}) is beyond its accurate '
-                f'range; unset {ENGINE_ENV} to use the pole routes')
+                f'range')
         return _taylor_action(apply_A, mu, dn, v, L, self.min_terms)
 
 
@@ -1020,6 +1415,14 @@ class _Fire:
             return np.einsum(x, self.act_in + [z], *self.args,
                              self.out + [z])
         return np.einsum(x, self.act_in, *self.args, self.out)
+
+    def absval(self, x):
+        """The firing in absolute values, ``|c| . |x|`` (a scalar for the
+        last contraction): the magnitude of the error estimate."""
+        aa = [np.abs(a_) if i % 2 == 0 else a_
+              for i, a_ in enumerate(self.args)]
+        return float(np.abs(np.einsum(np.abs(x), self.act_in, *aa,
+                                      self.out)).max(initial=0.0))
 
 
 _SUBSET_SERIAL = itertools.count()
@@ -1112,6 +1515,7 @@ class SubsetSS:
                 self.hi_slots[t[1]].add(h[1])
         self.full = frozenset(range(m_))
         self.serial = next(_SUBSET_SERIAL)
+        self.rho = 0.0                  # stationary solves' residual (G6)
         self._stat = None
         self._patterns = {}
         self._lock = threading.RLock()
@@ -1253,7 +1657,9 @@ class SubsetSS:
                     continue
                 sd = self.model.solve_data(tuple(self.edge_ops[e]
                                                  for e in actJ))
-                x[J] = sd.solve_neg(r)
+                x[J], rho = sd.solve_neg(r, want_residual=True)
+                if rho > self.rho:
+                    self.rho = rho
             self._stat = x
             return x
 
@@ -1263,8 +1669,15 @@ class SubsetSS:
         with self._lock:
             prog = self._patterns.get(key)
             if prog is not None:
+                if isinstance(prog, BaseException):
+                    raise prog          # a refusal: not rebuilt per call
                 return prog
-        prog = self._build_program(pattern, finite_start)
+        try:
+            prog = self._build_program(pattern, finite_start)
+        except SSIneligible as exc:
+            with self._lock:
+                self._patterns[key] = exc
+            raise
         with self._lock:
             self._patterns[key] = prog
         return prog
@@ -1377,14 +1790,23 @@ class SubsetSS:
         return scal
 
     def evaluate(self, free_vals, tie_ctx=None, t_min=float('-inf')):
-        """The subset integral (WITHOUT prefactor) at ``free_vals``."""
+        """The subset integral (WITHOUT prefactor) at ``free_vals``.  Sets
+        ``_EST.err`` (thread-local) to this evaluation's error estimate
+        (module docstring, without the prefactor)."""
+        _EST.err = 0.0
         if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
                 r[4].kind == 'zero' for r in self.const_rows):
             return 0.0
-        scal = self.scalar_factor(free_vals, tie_ctx)
+        _EST.steps = 0              # the constant rows' impulses count too
+        try:
+            scal = self.scalar_factor(free_vals, tie_ctx)
+            imp = len(self.const_rows) + _EST.steps
+        finally:
+            _EST.steps = None
         if scal == 0:
             return 0.0
         if self.m == 0:
+            _EST.err = EST_UNIT * abs(scal) * (1 + imp)
             return scal
         vals = self._slot_values(free_vals)
         if not all(math.isfinite(v) for v in vals):
@@ -1393,16 +1815,22 @@ class SubsetSS:
         pattern, gv = self._pattern(vals)
         finite = t_min != float('-inf')
         prog = self._checked_program(pattern, finite)
-        x = self._run(prog, gv, finite, t_min)
+        _EST.steps, _EST.mag = imp, 0.0
+        try:
+            x = self._run(prog, gv, finite, t_min)
+            _EST.err = abs(scal) * _EST.mag * (
+                EST_UNIT * (1 + _EST.steps) + (0.0 if finite else self.rho))
+        finally:
+            _EST.steps = None
         return scal * x
 
     def _checked_program(self, pattern, finite):
         try:
             return self._program(pattern, finite)
         except SSIneligible as exc:
-            raise RuntimeError(
-                f'state-space route: a segment of this subset is too large '
-                f'({exc}); unset {ENGINE_ENV} to use the pole routes') from exc
+            raise SSLateRefusal(
+                'segment_too_large',
+                f'a segment of this subset is too large ({exc})') from exc
 
     def _run(self, prog, gv, finite, t_min, upto=None):
         """Run a program; ``gv``: the event times.  With ``upto``: return
@@ -1423,10 +1851,13 @@ class SubsetSS:
                 x = data.propagate(x, L, dt)
             elif kind == 'event':
                 nx = {}
+                last = i == len(prog) - 1
                 for I, f in data:
                     xI = x.get(I)
                     if xI is not None:
                         nx[I] = f(xI)
+                        if last and I == self.full:
+                            _EST.mag = f.absval(xI)
                 x = nx
                 prev = gv[j]
                 j += 1
@@ -1435,13 +1866,26 @@ class SubsetSS:
         v = x.get(self.full)
         return 0.0 if v is None else v.item()
 
-    def evaluate_many(self, points, t_min=float('-inf')):
+    def evaluate_many(self, points, t_min=float('-inf'), errors=None):
         """Values (without prefactor) at many ``(free_vals, tie_ctx)``
         points.  Points sharing the order of the external times share the
         stationary state and every step before the last segment; along the
         last segment they are stepped from one length to the next (sorted).
-        """
+        A point the route refuses late (``SSLateRefusal``, a segment over
+        the memory budget) gets a ``_Refused`` value (the caller falls back
+        for it).  ``errors``: a list filled with each point's error
+        estimate (``evaluate``)."""
+        try:
+            return self._evaluate_many(points, t_min, errors)
+        finally:
+            _EST.steps = None
+
+    def _evaluate_many(self, points, t_min, errors):
+        late = _late_errors()
         out = [None] * len(points)
+        err = [0.0] * len(points)
+        if errors is not None:
+            errors[:] = err
         groups = {}
         finite = t_min != float('-inf')
         for i, (fv, tc) in enumerate(points):
@@ -1453,52 +1897,94 @@ class SubsetSS:
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError('state-space route: external times must be '
                                  f'finite, got {list(fv)}')
+            _EST.steps = 0
             scal = self.scalar_factor(fv, tc)
+            imp = len(self.const_rows) + _EST.steps
+            _EST.steps = None
             if scal == 0 or self.m == 0:
                 out[i] = scal if self.m == 0 else 0.0
+                err[i] = EST_UNIT * abs(scal) * (1 + imp) if self.m == 0 \
+                    else 0.0
                 continue
             pattern, gv = self._pattern(vals)
-            groups.setdefault(pattern, []).append((i, gv, scal))
+            groups.setdefault(pattern, []).append((i, gv, scal, imp))
         dt = self.model.dtype
+        rho = 0.0 if finite else None
         for pattern, items in groups.items():
-            prog = self._checked_program(pattern, finite)
+            try:
+                prog = self._checked_program(pattern, finite)
+            except late as exc:
+                for (i, _gv, _scal, _imp) in items:
+                    out[i] = _Refused(_late_reason(exc), _late_detail(exc))
+                continue
             _count('ss_batch_points', len(items))
             segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
             if (finite or not segs or prog[-1][0] != 'event'
                     or segs[-1] != len(prog) - 2 or len(items) < 2):
-                for (i, gv, scal) in items:
-                    out[i] = scal * self._run(prog, gv, finite, t_min)
+                for (i, gv, scal, imp) in items:
+                    _EST.steps, _EST.mag = imp, 0.0
+                    try:
+                        out[i] = scal * self._run(prog, gv, finite, t_min)
+                    except late as exc:
+                        out[i] = _Refused(_late_reason(exc), _late_detail(exc))
+                        continue
+                    err[i] = abs(scal) * _EST.mag * (
+                        EST_UNIT * (1 + _EST.steps)
+                        + (self.rho if rho is None else rho))
                 continue
             last = segs[-1]
             # the state before the last segment depends only on the lengths
             # of the earlier segments (translation invariance): group by them
             pre = {}
-            for (i, gv, scal) in items:
+            for (i, gv, scal, imp) in items:
                 lens = tuple(gv[q + 1] - gv[q] for q in range(len(gv) - 1))
-                pre.setdefault(lens[:-1], []).append((i, gv, scal, lens[-1]))
+                pre.setdefault(lens[:-1], []).append((i, gv, scal, lens[-1],
+                                                      imp))
             seg = prog[last][1]
             ev_last = [(I, f) for I, f in prog[last + 1][1]
                        if I == self.full]
             for _k, its in pre.items():
-                x0 = self._run(prog, its[0][1], False, t_min, upto=last)
+                _EST.steps, _EST.mag = 0, 0.0
+                try:
+                    x0 = self._run(prog, its[0][1], False, t_min, upto=last)
+                except late as exc:
+                    for it in its:
+                        out[it[0]] = _Refused(_late_reason(exc), _late_detail(exc))
+                    continue
                 its = sorted(its, key=lambda it: it[3])
                 v = seg.stack(x0, dt)
                 cur = 0.0
                 v0 = v
-                for (i, gv, scal, L_last) in its:
+                refused = None
+                for (i, gv, scal, L_last, imp) in its:
+                    if refused is not None:
+                        out[i] = refused
+                        continue
                     if L_last < cur:            # never expected (sorted)
                         v, cur = v0, 0.0
                     if L_last > cur:
-                        v = seg.action(v, L_last - cur, dt)
+                        try:
+                            v = seg.action(v, L_last - cur, dt)
+                        except late as exc:
+                            # longer segments are refused too (sorted)
+                            refused = out[i] = _Refused(_late_reason(exc), _late_detail(exc))
+                            continue
                         cur = L_last
                     nx = 0.0
+                    mag = 0.0
                     if ev_last:
                         I, f = ev_last[0]
                         k = seg.index.get(I)
                         if k is not None:
                             xI = v[seg.offs[k]:seg.offs[k] + seg.sizes[k]]
-                            nx = f(xI.reshape(seg.shapes[k])).item()
+                            xI = xI.reshape(seg.shapes[k])
+                            nx = f(xI).item()
+                            mag = f.absval(xI)
                     out[i] = scal * nx
+                    err[i] = abs(scal) * mag * (
+                        EST_UNIT * (1 + _EST.steps + imp) + self.rho)
+        if errors is not None:
+            errors[:] = err
         return out
 
 
@@ -1518,38 +2004,54 @@ class tau_grid_prefetch:
     from that memo.  ``points``: the k-tuples of raw external times exactly
     as they will be passed to ``contribution(*times)``.  The values differ
     from per-point evaluation only by rounding (the last segment is
-    stepped from one length to the next).  Per thread; nests."""
+    stepped from one length to the next).  Per thread; nests.  The memos
+    (two arrays per subset and leg mapping: 24 B per point) are released
+    when the context exits (S3)."""
 
     def __init__(self, points):
         self.points = [tuple(float(x) for x in p) for p in points]
+        self.index = {}
+        for i, p in enumerate(self.points):
+            self.index.setdefault(p, i)
+        self.subsets = []
 
     def __enter__(self):
         self._prev = getattr(_PREFETCH, 'grid', None)
-        _PREFETCH.grid = (self.points, next(_PREFETCH_TOKENS))
+        self.token = next(_PREFETCH_TOKENS)
+        _PREFETCH.grid = self
         return self
 
     def __exit__(self, *exc):
         _PREFETCH.grid = self._prev
+        for sub in self.subsets:
+            with sub._lock:
+                sub._prefetch.pop(self.token, None)
+        self.subsets = []
         return False
 
 
 def _prefetched(sub, free_vals, tie_ctx, t_min):
+    """``(value, error estimate)`` of a registered grid point (the value a
+    ``_Refused`` for a point the route refused), or ``None``."""
     grid = getattr(_PREFETCH, 'grid', None)
     if grid is None or tie_ctx is None or t_min != float('-inf'):
         return None
-    points, token = grid
     try:
         times = tuple(float(x) for x in tie_ctx.times)
     except (TypeError, ValueError):
         return None
+    i = grid.index.get(times)
+    if i is None:
+        return None
     mapping = (tuple(tie_ctx.free_legs), tie_ctx.origin_leg)
     with sub._lock:
-        memos = sub._prefetch.get(token)
+        memos = sub._prefetch.get(grid.token)
         if memos is None:
-            memos = {}
-            sub._prefetch = {token: memos}          # one grid at a time
+            memos = sub._prefetch[grid.token] = {}
+            grid.subsets.append(sub)
         memo = memos.get(mapping)
     if memo is None:
+        points = grid.points
         pts = []
         for T in points:
             if len(T) != len(times):
@@ -1558,28 +2060,110 @@ def _prefetched(sub, free_vals, tie_ctx, t_min):
             fv = [T[leg] - o for leg in tie_ctx.free_legs]
             pts.append((fv, type(tie_ctx)(T, tie_ctx.free_legs,
                                           tie_ctx.origin_leg)))
-        vals = sub.evaluate_many(pts)
-        memo = {}
-        for T, (fv, _tc), v in zip(points, pts, vals):
-            memo[(T, tuple(fv))] = v
+        errs = []
+        vals = sub.evaluate_many(pts, errors=errs)
+        refused = {j: v for j, v in enumerate(vals) if isinstance(v, _Refused)}
+        arr = np.array([0.0 if isinstance(v, _Refused) else v for v in vals],
+                       dtype=complex)
+        memo = (arr, np.asarray(errs, dtype=float), refused)
         with sub._lock:
             memos[mapping] = memo
-    v = memo.get((times, tuple(float(x) for x in free_vals)))
-    if v is not None:
-        _count('ss_prefetch_hits')
-    return v
+    arr, errs, refused = memo
+    _count('ss_prefetch_hits')
+    r = refused.get(i)
+    if r is not None:
+        return r, 0.0
+    v = arr[i]
+    return (v.real if v.imag == 0 else complex(v)), float(errs[i])
+
+
+def _late_errors():
+    """The exceptions a routed evaluation may fall back on: the route's own
+    late refusals, a segment over the memory budget, a numerical failure.
+    (A ``ValueError`` -- non-finite times, ``PHASE_J_T_MIN`` after an
+    external time -- is the caller's and is raised.)"""
+    return (SSLateRefusal, _FI().PhaseJResourceError, np.linalg.LinAlgError,
+            ArithmeticError)
+
+
+def _late_reason(exc):
+    if isinstance(exc, SSLateRefusal):
+        return exc.reason
+    if isinstance(exc, _FI().PhaseJResourceError):
+        return 'segment_memory'
+    return 'numerical_' + type(exc).__name__
+
+
+_WARNED_OUTSIDE = set()
+
+
+def _warn_outside_run(reason):
+    """A fallback outside a ``compute_cumulants`` run (a returned callable
+    evaluated later, e.g. ``dd.run``'s k >= 3 slices) is not in a run's
+    census: warn once per process and reason (never silent)."""
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        inside = FI._PLAN_MEM['active'] > 0
+    if inside or reason in _WARNED_OUTSIDE:
+        return
+    _WARNED_OUTSIDE.add(reason)
+    import warnings
+    from api.compute import PhaseJEngineFallbackWarning
+    from api.save import _ensure_warning_shown
+    _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always')
+    warnings.warn(
+        f'Phase J: the state-space route fell back on the pole route '
+        f'({reason}) while a returned callable was evaluated; the counters '
+        f'ss_fallback_* have the details (warned once per reason)',
+        PhaseJEngineFallbackWarning, stacklevel=4)
+
+
+def _late_detail(exc):
+    d = str(exc)
+    pre = 'state-space route: '
+    if d.startswith(pre):
+        d = d[len(pre):]
+    return d.split(f'; set {ENGINE_ENV}=poles')[0]
+
+
+def _count_fallback(reason, first):
+    C = _counters()
+    C['ss_fallback_evals'] = C.get('ss_fallback_evals', 0) + 1
+    d = C.setdefault('ss_fallback_by_reason', {})
+    d[reason] = d.get(reason, 0) + 1
+    if first:
+        C['ss_fallback_subsets'] = C.get('ss_fallback_subsets', 0) + 1
 
 
 # ─── the dispatch point's maker ───────────────────────────────────────────
 
+def _edge_entry(model, spec, pi_ri):
+    """The ``_EntryOps`` of one smooth row (``spec``: ``None`` = the plain
+    propagator entry ``pi_ri``; ``('kernel', att)``; ``('dress', pi, ri,
+    att)``; ``('unsupported', reason)``), or a decline reason (str)."""
+    if spec is None:
+        e = model.entry(*pi_ri)
+        return 'entry_missing' if e is None else e
+    kind = spec[0]
+    if kind == 'kernel':
+        return model.kernel_entry(spec[1])
+    if kind == 'dress':
+        return model.dressed_entry(spec[1], spec[2], spec[3])
+    return spec[1] if kind == 'unsupported' else 'non_propagator_rows'
+
+
 def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
-                 prefactor, cdata, m, row_kinds, n_free, modes=None):
-    """Called by ``integrate_diagram`` for each subset when
-    ``DAEDALUS_PHASE_J_ENGINE`` is set.  Returns ``None`` when the route is
+                 prefactor, cdata, m, row_kinds, n_free, modes=None,
+                 edge_specs=None):
+    """Called by ``integrate_diagram`` for each subset unless
+    ``DAEDALUS_PHASE_J_ENGINE=poles``.  Returns ``None`` when the route is
     off or the subset is not eligible (counted by reason in
     ``ss_declined_by_reason``); otherwise a function with the signature of
-    ``integrate_diagram``'s ``_make_subset_contrib`` that builds the subset
-    closure ``_contrib(free_vals, _hook_ctx=None, _tie_ctx=None)``."""
+    ``integrate_diagram``'s ``_make_subset_contrib`` (plus ``fallback``, the
+    lazy builder of the pole-route closure) that builds the subset closure
+    ``_contrib(free_vals, _hook_ctx=None, _tie_ctx=None)``.  ``edge_specs``
+    (parallel to ``pi_ri``; ``None``: all plain propagator rows): the
+    conductance kernel rows and dressed lines (``_edge_entry``)."""
     if not engine_requested():
         return None
     FI = _FI()
@@ -1589,45 +2173,107 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
         return _decline('non_propagator_rows')
     if prefactor is None:
         return _decline('symbolic_prefactor')
-    if row_kinds is not None and any(k_ != 'edge' for k_ in row_kinds):
+    if row_kinds is not None and any(k_ not in ('edge', 'conv_pseudo')
+                                     for k_ in row_kinds):
         return _decline('non_edge_rows')
     if len(cdata) != len(pi_ri):
+        return _decline('row_count')
+    if edge_specs is not None and len(edge_specs) != len(pi_ri):
         return _decline('row_count')
     model, why = realization_for(propagator_data, num_params)
     if model is None:
         return _decline(why)
     ents = []
-    for (pi, ri) in pi_ri:
-        e = model.entry(pi, ri)
-        if e is None:
-            return _decline('entry_missing')
+    for i_, pr in enumerate(pi_ri):
+        e = _edge_entry(model, None if edge_specs is None else edge_specs[i_],
+                        pr)
+        if isinstance(e, str):
+            return _decline(e)
         ents.append(e)
     try:
         sub = SubsetSS(model, ents, cdata, m, n_free)
     except SSIneligible as exc:
         return _decline(exc.reason)
-    _charge(sub)
+    try:
+        _charge(sub)
+    except FI.PhaseJResourceError:
+        # the stationary states do not fit: the pole route takes the subset
+        # when ITS plan would (the running guard then charges it), else the
+        # state-space message is the one to read
+        if modes is None or not _pole_plan_fits(modes):
+            raise
+        return _decline('stationary_over_budget')
     _count('ss_subsets_built')
     pref = complex(prefactor)
     edge_modes = modes            # the dispatch passes its own (None) modes
+    # ``compute_cumulants`` skipped the pole-cluster deformation for this
+    # run (the route covers it): the undeformed poles cannot serve a
+    # fallback, which then raises with this text
+    no_fallback = (propagator_data.get('ss_no_pole_fallback')
+                   if hasattr(propagator_data, 'get') else None)
 
     def make(fc, cdata_, m_val, modes=None, pref_c=None, pole_tuples=None,
-             plan=None, hook_meta=None, row_kinds=None, theta0_empty=False):
+             plan=None, hook_meta=None, row_kinds=None, theta0_empty=False,
+             fallback=None):
+        pole = []
+        pole_lock = threading.Lock()
+
+        def _pole_route(exc):
+            reason = _late_reason(exc)
+            with pole_lock:
+                first = not pole
+                if first:
+                    if not fallback_enabled():
+                        raise exc
+                    if no_fallback:
+                        raise SSNoPoleFallback(
+                            f'state-space route refused this subset '
+                            f'({reason}: {exc}) and {no_fallback}') from exc
+                    built = None if fallback is None else fallback(
+                        dict(hook_meta or {}, ss_fallback=reason))
+                    if built is None:
+                        raise SSNoPoleFallback(
+                            f'state-space route refused this subset '
+                            f'({reason}: {exc}) and it has no pole route '
+                            f'(a kernel only the state-space route '
+                            f'realizes); nothing to fall back on') from exc
+                    pole.append(built)
+                    _warn_outside_run(reason)
+                _count_fallback(reason, first)
+                return pole[0]
+
         def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
             if theta0_empty and not FI._theta0_legacy():
                 FI._RUNTIME_COUNTERS['theta0_subsets_pruned'] += 1
                 return 0.0 + 0.0j
             if FI._theta0_legacy():
-                raise ValueError(
-                    'the state-space Phase J route implements the Itô '
-                    'Θ(0) rule only; unset DAEDALUS_PHASE_J_ENGINE to use '
-                    "THETA0_CONST_ROW_MODE='legacy_clip'")
+                # the mode was flipped after the build (a 'legacy_clip'
+                # build declines the route): the route implements the Itô
+                # rule only; the pole route has both (its legacy rule also
+                # clips zero-normal rows, not only constant ones)
+                return _pole_route(SSLateRefusal(
+                    'theta0_legacy', "THETA0_CONST_ROW_MODE='legacy_clip' "
+                    '(the route implements the Itô Θ(0) rule only)'))(
+                        free_vals, _hook_ctx, _tie_ctx)
             t_min = _t_min_frame(free_vals, _tie_ctx)
-            val = _prefetched(sub, free_vals, _tie_ctx, t_min)
-            if val is None:
-                val = sub.evaluate(free_vals, _tie_ctx, t_min)
-            val = complex(pref * val)
-            _count('ss_evals')
+            try:
+                hit = _prefetched(sub, free_vals, _tie_ctx, t_min)
+                if hit is None:
+                    val = sub.evaluate(free_vals, _tie_ctx, t_min)
+                    err = _EST.err
+                else:
+                    val, err = hit
+                    if isinstance(val, _Refused):
+                        raise SSLateRefusal(val.reason, val.detail)
+                val = complex(pref * val)
+                if not (math.isfinite(val.real) and math.isfinite(val.imag)):
+                    raise SSLateRefusal('non_finite', 'a non-finite value')
+            except _late_errors() as exc:
+                return _pole_route(exc)(free_vals, _hook_ctx, _tie_ctx)
+            C = _counters()
+            C['ss_evals'] = C.get('ss_evals', 0) + 1
+            C['ss_estimated'] = C.get('ss_estimated', 0) + 1
+            C['ss_err_abs_sum'] = C.get('ss_err_abs_sum', 0) + abs(pref) * err
             hook = FI._SUBSET_HOOK
             if hook is not None:
                 # the documented payload (``plan`` / ``pole_tuples``: none;
@@ -1645,6 +2291,25 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
         _contrib.ss_subset = sub
         return _contrib
     return make
+
+
+def _pole_plan_fits(modes):
+    """Whether the pole route's modesum plan for a subset with these edge
+    mode sums would fit the running budget (``_plan_guard``'s test)."""
+    FI = _FI()
+    try:
+        n = 1
+        for ms in modes:
+            n *= max(1, len(ms.modes))
+    except Exception:
+        return False
+    nbytes = n * FI.PLAN_BYTES_PER_TUPLE
+    with FI._PLAN_MEM_LOCK:
+        scoped = FI._PLAN_MEM['active'] > 0
+        budget = (FI._PLAN_MEM['budget'] if scoped
+                  else FI.phase_j_mem_budget_bytes())
+        used = FI._PLAN_MEM['used'] if scoped else 0
+    return budget is None or used + nbytes <= budget
 
 
 def _t_min_frame(free_vals, tie_ctx):
@@ -1728,3 +2393,224 @@ def _charge(sub):
                  'budget_bytes': budget, 'width': w, 'block': b})
         if scoped:
             FI._PLAN_MEM['used'] += nbytes
+
+
+# ─── route prediction and the memory pre-pass (S3) ────────────────────────
+
+def model_route(propagator_data, num_params):
+    """``(True, None)`` when the state-space route can take this model's
+    subsets (the engine is on, the Itô Θ(0) rule, a realization accepted
+    and Hurwitz), else ``(False, reason)``.  Builds (and caches) the
+    realization; a diagram can still decline (``diagram_route``) and a
+    subset (its row shapes, ``subset_maker``)."""
+    if not engine_requested():
+        return False, 'engine_poles'
+    if _FI()._theta0_legacy():
+        return False, 'theta0_legacy'
+    # (the realization never reads the poles and residues, so a repeated
+    # pole, ``jordan_incomplete``, does not matter here)
+    ops, why = realization_for(propagator_data, num_params)
+    return (True, None) if ops is not None else (False, why)
+
+
+def diagram_route(typed_diagram, propagator_data, num_params):
+    """``(True, None)`` when every vertex of the diagram is one the route
+    takes (no noise-kernel source, every conductance kernel realizable),
+    else ``(False, reason)``; ``model_route`` must hold too."""
+    from engine.core.vertices import NoiseSourceType, ConvVertexType
+    model, why = realization_for(propagator_data, num_params)
+    if model is None:
+        return False, why
+    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
+    for _v, vt in va.items():
+        if isinstance(vt, NoiseSourceType) and vt.cumulant_specs:
+            return False, 'noise_kernel_box'
+        if isinstance(vt, ConvVertexType):
+            for att in vt.kernel_attachments or ():
+                if _FI()._conv_kernel_local_weight(att, num_params) is not None:
+                    continue
+                e = model.kernel_entry(att)
+                if isinstance(e, str):
+                    return False, e
+    return True, None
+
+
+def run_route(propagator_data, num_params, vertex_types=()):
+    """The run-level prediction of ``compute_cumulants`` (S3): whether the
+    route takes every subset of a run whose diagrams are built from
+    ``vertex_types`` (the model's vertex and source types): the model is
+    routable (``model_route``) and no vertex type is one the route declines
+    (a noise-kernel source; a conductance kernel it cannot realize).  A
+    subset can still decline on its rows (offset rows, a vertex after the
+    last external time, a symbolic prefactor): the caller checks the run's
+    census.  Returns ``{'engine', 'covers_run', 'reason'}``."""
+    from engine.core.vertices import NoiseSourceType, ConvVertexType
+    eng = engine_name()
+    ok, why = model_route(propagator_data, num_params)
+    if ok:
+        model, _w = realization_for(propagator_data, num_params)
+        for vt in vertex_types or ():
+            if isinstance(vt, NoiseSourceType) and vt.cumulant_specs:
+                ok, why = False, 'noise_kernel_box'
+                break
+            if isinstance(vt, ConvVertexType):
+                for att in vt.kernel_attachments or ():
+                    if _FI()._conv_kernel_local_weight(
+                            att, num_params) is not None:
+                        continue
+                    e = model.kernel_entry(att)
+                    if isinstance(e, str):
+                        ok, why = False, e
+                        break
+                if not ok:
+                    break
+    return {'engine': eng, 'covers_run': bool(ok), 'reason': why}
+
+
+#: downsets enumerated per diagram by the pre-pass estimate before it falls
+#: back to the 2^|V| bound
+PREPASS_MAX_DOWNSETS = 20000
+#: the pre-pass takes the closed bound ``2^(internal vertices) x prod n_e``
+#: of a diagram's stationary states when it is at most this many bytes,
+#: else it enumerates the downsets
+PREPASS_CHEAP_BYTES = 1 << 16
+#: bytes one τ-batch memo holds per subset, grid point and Wick leg mapping
+#: (a complex value and a float estimate; released after the batch)
+PREFETCH_BYTES_PER_POINT = 24
+
+
+def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
+                     n_tau=1, n_perm=1):
+    """Upper bound (bytes) of what the route holds for one diagram (item
+    35's pre-pass, S3): ``(stationary, transient)``.
+
+    The diagram DAG (prediagram edges ``u -> v``: ``Δt = t_v - t_u``; the
+    leaves, the external times, are its sinks) bounds every subset's sweep:
+    a δ-subset contracts its δ edges (a downset of the contracted DAG is one
+    of the original containing both ends or neither, and the contracted
+    edge never crosses it) and keeps a subset of the smooth edges.  A state
+    block is indexed by a downset ``I`` of the DAG, its size ``b(I)`` the
+    product of the per-edge state counts ``n_e`` over the edges crossing it
+    (an edge into a conductance vertex counts its largest kernel's states
+    too: a dressed line cascades them; a kernel edge adds a vertex, at most
+    doubling the downsets: a factor 2 per kernel attachment).  The
+    stationary states of one δ-subset are at most ``sum b(I)`` over the
+    downsets without a leaf, held for the run, with the τ batch's
+    ``n_tau x n_perm`` values; the δ-subsets number
+    ``2^(edges with a δ part)``.  Before enumerating, the closed bound
+    ``2^(vertices) x prod n_e`` is taken when small
+    (``PREPASS_CHEAP_BYTES``).  ``transient``: one segment system at a
+    time, at most ``D = sum b(I)`` over all downsets (``6 D`` vectors plus
+    the dense ``2 D^2`` generator, ``D`` capped at ``OP_DENSE_MAX``).
+    ``has_delta(pi, ri)``: whether the entry has a δ part (the pre-pass's
+    own test).  ``None`` when the diagram is not covered."""
+    from engine.core.vertices import ConvVertexType
+    model, _why = realization_for(propagator_data, num_params)
+    if model is None:
+        return None
+    FI = _FI()
+    D_ = typed_diagram.prediagram[0]
+    verts = list(D_.vertices())
+    index = {v: i for i, v in enumerate(verts)}
+    leaves = set(typed_diagram.prediagram[2])
+    leaf_mask = 0
+    for v in leaves:
+        if v in index:
+            leaf_mask |= 1 << index[v]
+    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
+    extra = {}
+    n_att = 0
+    for v, vt in va.items():
+        if isinstance(vt, ConvVertexType):
+            mx = 0
+            for att in vt.kernel_attachments or ():
+                e = model.kernel_entry(att)
+                if not isinstance(e, str):
+                    mx = max(mx, e.n)
+                    n_att += 1
+            extra[v] = mx
+    edges = []
+    n_delta = 0
+    pidx = typed_diagram.propagator_indices
+    for ek in D_.edges():
+        hit = pidx.get(ek)
+        ri, pi = hit if hit is not None else FI._lookup_prop_indices(
+            typed_diagram, ek)
+        e = model.entry(pi, ri)
+        n = (e.n if e is not None else 0) + extra.get(ek[1], 0)
+        if has_delta(pi, ri) and n:
+            n_delta += 1
+        edges.append((index[ek[0]], index[ek[1]], max(n, 1)))
+    nv = len(verts)
+    item = 8 if model.is_real else 16
+    # the closed bound first: sum b(I) <= (number of downsets) x max b(I)
+    # <= 2^(vertices) x prod n_e; the downsets are enumerated only when it
+    # is large (scalar-entry models: a few hundred bytes per diagram)
+    prod_n = 1
+    for (_u, _v, n) in edges:
+        prod_n *= n
+    n_int = nv - bin(leaf_mask).count('1')
+    cheap_stat, cheap_full = (2 ** n_int) * prod_n, (2 ** nv) * prod_n
+    if cheap_stat * item <= PREPASS_CHEAP_BYTES:
+        stat_sum, full_sum = cheap_stat, cheap_full
+    else:
+        ckey = (nv, leaf_mask, tuple(edges))
+        hit = _EST_CACHE.get(ckey)
+        if hit is None:
+            hit = _downset_sums(nv, leaf_mask, edges)
+            if len(_EST_CACHE) > 4096:
+                _EST_CACHE.clear()
+            _EST_CACHE[ckey] = hit
+        stat_sum, full_sum = hit
+    n_sub = 2 ** n_delta
+    stat = n_sub * ((2 ** n_att) * stat_sum * item
+                    + PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm))
+    # one segment system at a time: its vectors, and the dense generator of
+    # a system of at most OP_DENSE_MAX states (any system within the bound)
+    D = (2 ** n_att) * full_sum
+    Dd = min(D, OP_DENSE_MAX)
+    trans = 6 * D * item + 2 * Dd * Dd * item
+    return stat, trans
+
+
+def _downset_sums(nv, leaf_mask, edges):
+    """``(sum b(I) over the downsets without a leaf, sum b(I) over all
+    downsets)`` of the DAG (``edges``: ``(u, v, n_e)``), enumerated up to
+    ``PREPASS_MAX_DOWNSETS`` (beyond: ``2^nv x prod n_e``)."""
+    preds = [0] * nv
+    for (u, v, _n) in edges:
+        preds[v] |= 1 << u
+    seen = {0}
+    frontier = [0]
+    while frontier:
+        nxt = []
+        for I in frontier:
+            for v in range(nv):
+                b = 1 << v
+                if I & b or (preds[v] & ~I):
+                    continue
+                J = I | b
+                if J not in seen:
+                    seen.add(J)
+                    nxt.append(J)
+                    if len(seen) > PREPASS_MAX_DOWNSETS:
+                        blk = 1
+                        for (_u, _v, n) in edges:
+                            blk *= n
+                        return (2 ** nv) * blk, (2 ** nv) * blk
+        frontier = nxt
+    stat = full = 0
+    for I in seen:
+        sz = 1
+        for (u, v, n) in edges:
+            if (I >> u) & 1 and not (I >> v) & 1:
+                sz *= n
+        full += sz
+        if not I & leaf_mask:
+            stat += sz
+    return stat, full
+
+
+_EST_CACHE = {}
+
+
