@@ -177,6 +177,7 @@ import itertools
 import math
 import os
 import threading
+import weakref
 from collections import OrderedDict
 
 import numpy as np
@@ -311,9 +312,14 @@ def fallback_enabled(environ=None):
 
 # ─── counters (in final_integral._RUNTIME_COUNTERS, created on import) ────
 
+_FI_MOD = []
+
+
 def _FI():
-    from engine.integration.time_domain import final_integral as FI
-    return FI
+    if not _FI_MOD:
+        from engine.integration.time_domain import final_integral as FI
+        _FI_MOD.append(FI)
+    return _FI_MOD[0]
 
 
 _COUNTER_KEYS = (
@@ -324,13 +330,16 @@ _COUNTER_KEYS = (
     'ss_realizations_built', 'ss_realization_refused',
     'ss_fallback_evals', 'ss_fallback_subsets', 'ss_kernel_entries',
     'ss_dressed_entries', 'ss_estimated', 'ss_err_abs_sum',
+    'ss_subsets_shared',
 )
 _COUNTER_DICTS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
 
 def _counters():
+    # (``_reset_runtime_counters`` clears the dict in place: its identity
+    # is stable)
     C = _FI()._RUNTIME_COUNTERS
-    if 'ss_fallback_evals' not in C:
+    if 'ss_subsets_shared' not in C:
         for k_ in _COUNTER_KEYS:
             C.setdefault(k_, 0)
         for k_ in _COUNTER_DICTS:
@@ -356,8 +365,12 @@ def census(counters=None):
 
 
 def _count(key, n=1):
-    C = _counters()
-    C[key] = C.get(key, 0) + n
+    C = _FI()._RUNTIME_COUNTERS
+    try:
+        C[key] += n
+    except KeyError:
+        C = _counters()
+        C[key] = C.get(key, 0) + n
 
 
 def _decline(reason):
@@ -694,10 +707,26 @@ class _ModelOps:
             self.entries[key] = _EntryOps(ent, self.dtype)
         self._solve_data = {}
         self._extra = {}
+        # weak: a subset is shared only while some closure holds it (the
+        # realization outlives runs in the caches; its subsets must not)
+        self._shared = weakref.WeakValueDictionary()
         self._lock = threading.RLock()
 
     def entry(self, pi, ri):
         return self.entries.get((int(pi), int(ri)))
+
+    #: structurally identical subsets shared per model (``subset_maker``),
+    #: at most this many keys
+    SHARED_MAX = 100000
+
+    def shared_subset(self, key):
+        with self._lock:
+            return self._shared.get(key)
+
+    def share_subset(self, key, sub):
+        with self._lock:
+            if len(self._shared) < self.SHARED_MAX:
+                self._shared.setdefault(key, sub)
 
     def _kernel_real(self, att):
         """``(EntryRealization, None)`` or ``(None, reason)``."""
@@ -2179,12 +2208,27 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
         if isinstance(e, str):
             return _decline(e)
         ents.append(e)
+    # structurally identical subsets (the same entries and rows; only the
+    # prefactor, applied outside, differs: delta subsets of different
+    # diagrams) share one SubsetSS: its stationary states, programs and tau
+    # batches are computed once (S3, walls)
+    skey = (tuple(id(e) for e in ents), int(m), int(n_free),
+            MAX_DOWNSETS, MAX_EDGES,          # the construction's limits
+            tuple((tuple(float(x) for x in a_), tuple(float(x) for x in b_),
+                   float(c_)) for (a_, b_, c_) in cdata))
+    sub = model.shared_subset(skey)
+    if sub is not None:
+        _count('ss_subsets_shared')
+    else:
+        try:
+            sub = SubsetSS(model, ents, cdata, m, n_free)
+        except SSIneligible as exc:
+            return _decline(exc.reason)
     try:
-        sub = SubsetSS(model, ents, cdata, m, n_free)
-    except SSIneligible as exc:
-        return _decline(exc.reason)
-    try:
-        _charge(sub)
+        if not getattr(sub, '_charged', False):
+            _charge(sub)
+            sub._charged = True
+            model.share_subset(skey, sub)
     except FI.PhaseJResourceError:
         # the stationary states do not fit: the pole route takes the subset
         # when ITS plan would (the running guard then charges it), else the

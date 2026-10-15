@@ -49,12 +49,26 @@ restores the pole engine everywhere (the dispatch then never imports the module,
   run; G6's accuracy estimate includes the route's a-posteriori estimate (refinement residuals and the Taylor
   tolerance per step on the final contraction's magnitude), so it is no longer 0 or missing on routed runs.
 
+- **Walls** (zoo, warm, default vs `poles`): small models at parity (0.9-1.07x; timed next to other runs);
+  `single_population_quad_exp_test` 11.3 s -> 1.1 s, `multipopulation_test` 3.0 s -> 1.2 s (no deformation runs),
+  `ou_quartic` k = 4 two loops 6.0 s -> 4.0 s, grouped spike reset 1.8 s -> 1.0 s; a 3-field oscillator with red
+  noise, k = 3 one loop, 5.6 s -> 2.4 s. Runs the pole pre-pass refuses now finish at the default budget:
+  `quadratic_hawkes_alpha` in 9.2 s and `dendritic_quad_soma_sigmoid` in 24 s (pole estimates 185 / 113 GB; a
+  25-evaluation 50-digit sample within 6.9e-15 / 7.8e-16), and an alpha-kernel embedding at two loops under
+  0.5 GB (pole estimate 20 GB) in 10 s.
+- **Accuracy** (default engine, 80-digit oracles): Erlang-n kernels n <= 32 within 5.1e-15 (pole engine up to
+  3.2e-13), all-pass n <= 24 within 1.1e-14 (pole engine up to 6.5e-14), their one loops within 2.5e-15 (pole
+  engine up to 6.1e-13); a two-population linear Hawkes model with Erlang-16 kernels 5.3e-15 (2.1e-14).
+
 Movers (default vs `poles`, the model zoo in process; relative to max |C_ℓ| over the grid; every other entry
 within 1e-13). In each case the value that moves is the pole engine's, checked against an independent reference:
 
 | model | ℓ | max |Δ| / max |C_ℓ| | reference | state space vs reference | pole engine vs reference |
 |---|---|---|---|---|---|
 | `ou_quartic_two_dim_color_corr` (k = 2, x–y) | 1 | 3.4e-13 | 50-digit sweep of every subset on the exact realization | 1.8e-16 | 3.4e-13 |
+
+(A local zoo model whose one-loop cumulant is exactly 0 reads 0 on the route and ~1e-21 of rounding on the pole
+engine.)
 
 #### Added: state-space subset integrator (opt-in, DAEDALUS_PHASE_J_ENGINE=statespace) (`engine/integration/time_domain/statespace.py`, one dispatch point in `final_integral.py`; no number moves with the flag unset)
 

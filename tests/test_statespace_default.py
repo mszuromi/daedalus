@@ -487,3 +487,26 @@ def test_pure_delta_propagator_on_the_route(monkeypatch):
                     'w': [[0.0, 0.0], [0.0, 0.0]]},
         tau_grid=np.array([0.0, 2.5, -2.5]), parallel=False, verbose=False)
     assert np.array_equal(_arr(res, 0), np.zeros(3, dtype=complex))
+
+
+def test_identical_subsets_are_shared_bit_for_bit(monkeypatch):
+    # delta subsets of different diagrams with the same entries and rows
+    # share one SubsetSS within a run (weakly: nothing is kept after it)
+    import gc
+    import daedalus as dd
+    from tests.tools import phase_j_zoo_baseline as Z
+    model, _mod = dd.load_model('single_population_linear_delta_spikes_test')
+    kw = dict(k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
+              parameters=dict(Z.P_LD), tau_grid=np.array([0.0, 2.5]),
+              parallel=False, verbose=False)
+    FI._reset_runtime_counters()
+    shared = compute_cumulants(model, **kw)
+    assert SS._counters()['ss_subsets_shared'] > 0
+    monkeypatch.setattr(SS._ModelOps, 'SHARED_MAX', 0)
+    alone = compute_cumulants(model, **kw)
+    for ell in (0, 1):
+        assert np.array_equal(_arr(shared, ell), _arr(alone, ell))
+    shared = alone = None
+    gc.collect()
+    assert not any(len(h[1]._shared) for h in SS._REAL_CACHE.values()
+                   if h[1] is not None)
