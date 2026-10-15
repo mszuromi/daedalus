@@ -135,14 +135,41 @@ _MODES = ('default', 'legacy')
 # evaluations, all answered by the DBM route; the one-loop term moves by up to
 # 1.2e-2 relative (τ = 10; 9.3e-4 at τ = 2.5, 0 at τ = 0), the tree level not.
 _M3_MOVERS = ('quad_exp-k2-l1',)
-# Entries whose numbers moved with the pole-cluster deformation (item 21,
-# api._pole_clusters): compared with it switched off (DAEDALUS_POLE_CLUSTERS=0,
-# the old pole-residue sums).  multipopulation_test-k2-l1 has two pole clusters
-# (kappa 136 and 330); its tree level moves by up to 1.4e-4 relative: the old tier-1
-# double-precision roots of its degree-16 Q were 4.5e-5 off next to the
-# clusters.  The new value equals the direct sums on 50-digit residues to
-# 6e-16 (item 21 report).
-_POLE_CLUSTER_MOVERS = ('multipopulation_test-k2-l1',)
+# Entries whose tree level moved when near-degenerate poles were resolved
+# (item 21's cluster deformation; item 31 then made the exact per-entry pole
+# membership unconditional, so ``DAEDALUS_POLE_CLUSTERS=0`` no longer restores
+# the old numbers on this model).  multipopulation_test-k2-l1 has two pole
+# clusters (kappa 136 and 330); its tree level moved by up to 1.5e-4 relative:
+# the old tier-1 double-precision roots of its degree-16 Q were 4.5e-5 off next
+# to the clusters.  The new value equals the direct sums on 50-digit residues
+# to 6e-16 (item 21 report) and is reproduced by two independent code paths
+# (item 21's deformation, ad94dee, and the current exact membership) to 4.5e-15.
+# The original baseline file is never rewritten: the arrays that moved are
+# REFROZEN in a separate file, ``phase_j_legacy_baseline_refrozen_item21.npz``
+# (keys ``<entry>/<array>``), and used in place of the baseline's.
+_REFROZEN_NPZ = os.path.join(os.path.dirname(__file__), 'fixtures',
+                             'phase_j_legacy_baseline_refrozen_item21.npz')
+
+
+# The one route counter that the cluster route changes on that entry: the
+# cluster-resolved sums are evaluated as 42 direct polytope integrals where the
+# baseline's old residue sums made 6 (measured at ad94dee: 42 with the
+# deformation on, 6 with DAEDALUS_POLE_CLUSTERS=0; the current code gives the
+# same 42 / 6).  The default keeps the deformation on.
+_REFROZEN_COUNTERS = {'multipopulation_test-k2-l1': {'polytope_m0_direct': 42}}
+
+
+def _refrozen_arrays(name):
+    """The refrozen arrays of an entry whose baseline values moved for a
+    reviewed reason, ``{array: values}`` (empty for every other entry)."""
+    if not os.path.exists(_REFROZEN_NPZ):
+        return {}
+    with np.load(_REFROZEN_NPZ) as z:
+        prefix = name + '/'
+        return {k[len(prefix):]: np.array(z[k]) for k in z.files
+                if k.startswith(prefix)}
+
+
 # Default mode, an entry served by the M2b hardened quadrature fallback: the
 # baseline's default-tolerance scipy.nquad values were off by up to 6.8e-5
 # relative per region (spike reset, plan §10), so the arrays that the
@@ -330,8 +357,6 @@ def test_reproduce_lists_respect_the_m1_movers(baseline):
 def _reproduce(baseline, name, mode, monkeypatch):
     import engine.integration.time_domain.final_integral as FI
     meta, arrays = baseline
-    if name in _POLE_CLUSTER_MOVERS:
-        monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
     s = meta['entries'].get(name)
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')
@@ -368,7 +393,8 @@ def _reproduce(baseline, name, mode, monkeypatch):
     assert rec['model_spec_signature'] == s['model_spec_signature'], (
         f'{name}: model definition changed since the baseline')
     rtol = 1e-13 if strict else _OTHER_REPRESENTATIVES_RTOL
-    ref, cur = arrays[name], Z.result_arrays(rec)
+    ref, cur = dict(arrays[name]), Z.result_arrays(rec)
+    ref.update(_refrozen_arrays(name))
     if rec['counters'].get('nquad_hardened_calls'):
         # M2b: in the default mode the regions that reach the quadrature
         # fallback are integrated by the hardened fallback, which moves them
@@ -406,8 +432,9 @@ def _reproduce(baseline, name, mode, monkeypatch):
                    for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS
                    + Z.M3_ROUTE_KEYS)):
         for key in _COUNTER_KEYS:
+            want = _REFROZEN_COUNTERS.get(name, {}).get(key, s['counters'][key])
             assert _counter_matches(key, rec['counters'][key],
-                                    s['counters'][key]), (name, key)
+                                    want), (name, key)
     else:
         assert (rec['counters']['nquad_calls']
                 <= s['counters']['nquad_calls']), name
