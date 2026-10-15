@@ -41,8 +41,9 @@ without a delay changes.
   method of steps as one matrix exponential; delayed noise included, and the smooth part of the response of a
   field with an instantaneous (delta) response; the `delta(tau)` part itself stays the pipeline's delta record), not
   its Padé approximation. `delay={'tree': 'pade'}` or `DAEDALUS_DELAY_EXACT_TREE=0` switches it off. One delay
-  value; several delays, a boundary-value problem whose condition estimate exceeds 1e8 (a delay long against the
-  rates) or a method-of-steps stack above 4,000 states use the Padé tree (recorded in
+  value; several delays, a boundary-value problem whose error estimate exceeds 1e-8 (a delay long against the
+  decay rates: `d max|Re eig A|` above about 17) or a method-of-steps stack above 1,500 states (short delays on long
+  tau grids) use the Padé tree (recorded in
   `result['delay']['tree_note']`).
 - **Stability: G2-K.** The saddle's stability is decided from `det K(s)` with the TRUE kernel images
   (`api/_kernel_stability.py`): Lambert W for one field with one delay, otherwise the argument principle on a

@@ -356,23 +356,27 @@ class ExactTree:
             raise ExactTreeUnavailable('the covariance boundary-value problem is singular '
                                        '(a marginal mode, or a delay too long for it: '
                                        f'|A| d = {np.linalg.norm(A, 2) * d:.3g})')
-        # the shooting over [0, d] amplifies rounding like the condition of
-        # the linear conditions (~ e^{|A| d}); above 1e-8 the "exact" tree is
-        # not trustworthy and the Pade tree is used instead
+        # the shooting over [0, d] runs the decaying modes backwards (V' = -V A^T
+        # ...): rounding grows like eps e^{d max|Re eig A|} (measured: 6e-7 at
+        # a d = 20 for the scalar OU, against 1.1e-6 from this bound), or like
+        # the condition of the linear conditions; above 1e-8 the "exact" tree
+        # is not trustworthy and the Pade tree is used instead
         self.cond = float(sv[0] / sv[-1])
-        self.err_est = 2.2e-16 * self.cond
+        lam = np.linalg.eigvals(A) if A.size else np.zeros(1)
+        grow = math.exp(min(700.0, d * float(np.max(np.abs(lam.real)))))
+        self.err_est = 2.2e-16 * max(self.cond, 10.0 * grow)
         if self.err_est > 1e-8:
             raise ExactTreeUnavailable(
-                f'the covariance boundary-value problem is ill-conditioned (condition '
-                f'{self.cond:.2g}, |A| d = {np.linalg.norm(A, 2) * d:.3g}): estimated error '
-                f'{self.err_est:.1e} > 1e-8')
+                f'the covariance boundary-value problem is ill-conditioned (d max|Re eig A| '
+                f'= {d * float(np.max(np.abs(lam.real))):.3g}, condition {self.cond:.2g}): '
+                f'estimated error {self.err_est:.1e} > 1e-8')
         U0 = x[:n * n].reshape(n, n)
         V0 = x[n * n:].reshape(n, n)
         self.residual = float(res)
         return np.concatenate([U0.ravel(), V0.ravel(), W1_0.ravel(), W2_0.ravel()])
 
     #: largest method-of-steps stack (states) the exact tree builds
-    MAX_STACK = 4000
+    MAX_STACK = 1500
 
     def _ensure(self, tau_max):
         K = max(0, int(math.floor(abs(tau_max) / self.ss.d)))
