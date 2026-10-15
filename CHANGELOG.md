@@ -49,7 +49,10 @@ state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delay
   error ~10x on the benchmarks, so the per-entry bound is ~10 % of it and the observable moves by far less
   (`delay={'truncation': x}` pins one tolerance, `0` exact).  Delayed-alpha two-neuron demo (k = 2 one loop, 49 lags):
   Padé-8 took 653 s with exact realizations and 109 s at the automatic 1.1e-6 (mean per-entry states 22 -> 12.5),
-  the loop within 1.5e-8 of max |C| of the exact one (Padé error estimate 1.6e-4).  DEMO_PLACEHOLDER
+  the loop within 1.5e-8 of max |C| of the exact one (Padé error estimate 1.6e-4).  The automatic order now runs
+  n = 4 (72 s) -> 8 (107 s, predicted 113 s) -> 16 (1172 s at 2.4e-8, 20 states per entry instead of 38; predicted
+  822 s), estimate 1.7e-5 at n_max; before, it stopped at n = 4 (n = 8 predicted at 16x).  Padé-16 with exact
+  realizations is not measured (the proxy puts it at 3-4 h).
 - **Order controller.**  The next order's wall is the measured wall of the last order times the ratio of a cost proxy,
   mean per-entry states^2 x (1 + mean Taylor stiffness `min_p ||(a - mu)^p||^(1/p)`), of the two orders' truncated
   realizations (the next one is built from the true kernel matrix and truncated as that run will be, a few seconds),
