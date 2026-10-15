@@ -1806,13 +1806,50 @@ def _positive_by_declaration(e, positive) -> bool:
     return True
 
 
+def _is_dirac_delta(fac):
+    """``dirac_delta(...)``: Sage's own, or the symbolic function of that name
+    that the SDE text parser makes."""
+    op = fac.operator()
+    return op is dirac_delta or (op is not None and str(op) == 'dirac_delta')
+
+
+def _delta_term_image(term, facs, deltas, t):
+    """Image of a term ``c * dirac_delta(t)`` (with or without a
+    ``heaviside(t)`` factor): the constant ``c``.  The delta of a causal
+    kernel sits on the boundary and keeps its full weight, as in
+    ``api.sde.SDE._kernel_dc``; a factor depending on ``t`` is evaluated
+    at the delta (``t = 0``), the step counting as 1.  A delta at another
+    time is a delay, not a local term."""
+    if len(deltas) != 1:
+        raise ValueError(f'term {term} has more than one dirac_delta factor')
+    arg = deltas[0].operands()[0]
+    if not (arg - t).is_trivial_zero():
+        raise ValueError(
+            f'{deltas[0]} is not a delta at {t} = 0; a delayed term '
+            f'(dirac_delta({t} - d) with d != 0) is a delay: declare it '
+            f'through Kernel.delay instead of in time_expr')
+    img = SR(1)
+    for fac in facs:
+        if _is_dirac_delta(fac):
+            continue
+        if (fac - heaviside(t)).is_trivial_zero():
+            continue
+        try:
+            img *= fac.subs({t: SR(0)}) if fac.has(t) else fac
+        except ZeroDivisionError:
+            raise ValueError(f'factor {fac} of term {term} is singular at '
+                             f'{t} = 0') from None
+    return img
+
+
 def causal_exponential_ft(f, t, omega, positive=None):
     r"""Fourier image ``\int_0^\infty f(t) e^{-i\omega t} dt`` of a causal
     sum of exponentials, by the closed form term by term:
 
         c t^n e^{-a t} \Theta(t)  ->  c n! / (a + i\omega)^{n+1}
 
-    Each term must carry the factor ``heaviside(t)`` once, otherwise be
+    A term ``c * dirac_delta(t)`` (``heaviside(t)`` optional) is the
+    constant ``c``: the delta keeps its full weight.  Each other term must carry the factor ``heaviside(t)`` once, otherwise be
     ``t``-free factors times ``t^n`` times exponentials linear in ``t``,
     and have a decay rate ``a`` that is positive for every value of the
     symbols named in ``positive`` (a sum of positive numbers times
@@ -1830,9 +1867,13 @@ def causal_exponential_ft(f, t, omega, positive=None):
     H = heaviside(t)
     g = f.expand()
     terms = g.operands() if g.operator() is add_vararg else [g]
-    out = SR(0)
+    out, const = SR(0), SR(0)
     for term in terms:
         facs = term.operands() if term.operator() is mul_vararg else [term]
+        deltas = [fac for fac in facs if _is_dirac_delta(fac)]
+        if deltas:
+            const += _delta_term_image(term, facs, deltas, t)
+            continue
         coeff, n, rate, causal = SR(1), 0, SR(0), 0
         for fac in facs:
             if (fac - H).is_trivial_zero():
@@ -1862,7 +1903,9 @@ def causal_exponential_ft(f, t, omega, positive=None):
             raise ValueError(f'decay rate {rate} of term {term} is not '
                              f'known to be positive')
         out += coeff * factorial(n) / (rate + I * omega) ** (n + 1)
-    return out.factor()
+    # the delta constants stay apart from the factored exponential part, the
+    # form of a hand-written ``c + 1/(1 + I*omega*tau)``
+    return out.factor() if const.is_trivial_zero() else const + out.factor()
 
 
 def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names,
