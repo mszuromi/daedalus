@@ -11,6 +11,39 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: balanced truncation of the state-space realizations; the delay order controller measures its cost (item 45)
+
+Every per-entry realization of the propagator and every conductance kernel (`api/_realization.py`) is now
+**balanced-truncated** to a relative H-infinity tolerance (default `1e-10`): states are discarded only while
+`2 * sum(discarded Hankel singular values) <= tol * sigma_1` (`sigma_1 <= ||G_pr||_inf`), so each entry stays within
+`tol` of the exact one.  Exact Kalman minimality (S1) removes only exactly uncontrollable / unobservable states; the
+Padé blocks of a delay inside a feedback loop leave many that are numerically negligible, and those are where the
+state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delays, Erlang chains, alpha kernels,
+`freq_image`) and any closed loop.
+
+- **Where numbers move.**  Only where a state is discarded, and then within the tolerance.  A realization with nothing
+  to discard is returned as it was (the same object), so minimal, well-conditioned models keep every number bit for bit
+  (ZOO_PLACEHOLDER).
+- **Method.**  Square-root balanced truncation on directly computed Gramian factors (Hammarling on the complex Schur
+  form, then a real factor from `[Re Z, Im Z]`): an eigendecomposition of a computed Gramian loses the Hankel singular
+  values below ~1e-8 of the largest, and on the graded Padé-16 entries of a two-neuron loop (`|b| ~ 1e12`) the
+  truncation then missed its tolerance by 1e-7.  Every truncation is checked a posteriori (`|G - G_r|` on a frequency
+  grid against `tol * sigma_1`), retried with one more state, and refused after three retries; a non-Hurwitz result is
+  never returned.  The global `A, B, C` (Hurwitz test, exact delay tree, stationary covariance) are not truncated.
+- **Control.**  `DAEDALUS_REALIZATION_TRUNCATION=<tol>` (`0` / `off` / `exact`: none, the realizations of before),
+  `api._realization.truncation_scope(tol)` (thread-local; clears the state-space route's realization cache when the
+  tolerance changes), `realize_K(..., truncation=)` / `realize_kernel(..., truncation=)`.
+  `Realization.truncation` records the tolerance and, per entry, the states before / after, the Hankel singular
+  values, the bound, the sampled error.
+- **Delays.**  The delay route runs every Padé order with `truncation = min(tol in effect, delay tol / 100)`
+  (`delay={'truncation': ...}`; ledger: "realizations balanced-truncated").  DEMO_PLACEHOLDER
+- **Order controller.**  The next order's wall is predicted from the measured wall of the last order times the growth
+  of the realizations' mean per-entry state count (the next order's realization is built and truncated, about a
+  second) to the power `COST_EXPONENT = 5` (measured on the demo), refitted from the last two orders once there are
+  two; the `(n_next / n)^4` floor is gone (it predicted 16x where the run took 10.6x and stopped the demo at n = 4).
+  `r['delay']` reports `states_mean_by_order`, `predicted_walls_s`, `cost_exponent`, `stop_reason`, `truncation_tol`.
+- **Tests.**  `tests/test_kernel_model_reduction.py` (17 tests, ~15 s).
+
 #### Added: symbolic loop corrections as rational functions (C3)
 
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time

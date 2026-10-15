@@ -38,12 +38,15 @@ realization cannot take it as it is.  This module
   a cost exponent (``COST_EXPONENT``, refitted from the last two orders
   once there are two);
 * runs every order with its per-entry realizations balanced-truncated
-  (``api._realization.truncation_scope``) to a relative H-infinity
-  tolerance tied to the target, ``min(TRUNCATION_TOL_DEFAULT, tol / 100)``
-  (option ``truncation``): the Pade blocks' fast, weakly coupled modes are
-  where the state-space route's cost goes, and the per-entry error bound
-  ``2 sum(discarded Hankel singular values)`` keeps their removal far below
-  the approximation error being estimated;
+  (``api._realization.truncation_scope``; option ``truncation``): the Pade
+  blocks' fast, weakly coupled modes are where the state-space route's
+  cost goes.  The first order uses ``min(truncation_tol(), tol / 100)``
+  (``1e-10`` by default); every later order ``1 %`` of the relative loop
+  error it is predicted to carry anyway (``_next_truncation``: from the
+  exact-vs-Pade tree and the doubling estimate of the order before, at
+  most ``1e-4``), so the per-entry error bound ``2 sum(discarded Hankel
+  singular values)`` keeps the truncation far below the approximation
+  error being estimated, while the high orders get the speed;
 * takes the TREE (``k = 2``) from the exact covariance of the linear delayed
   system (``api._delay_exact``: a boundary-value problem on ``[0, d]`` plus
   the method of steps, exact up to rounding) instead of its Pade
@@ -66,9 +69,10 @@ Options (``compute_cumulants(..., delay={...})``):
              n = 16 and more than 30 min at n = 20);
 ``wall_max`` cap (s) on the predicted wall time of the next order (default 900);
 ``tree``     ``'exact'`` (default) or ``'pade'``;
-``truncation`` ``'auto'`` (default: ``min(truncation_tol(), tol / 100)``, the
-             tolerance in effect capped by the target), a relative H-infinity
-             tolerance, or ``0`` (exact realizations).
+``truncation`` ``'auto'`` (default: the first order at ``min(truncation_tol(),
+             tol / 100)``, later orders adaptive, above), a fixed relative
+             H-infinity tolerance for every order, or ``0`` (exact
+             realizations).
 
 The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
@@ -460,8 +464,9 @@ def resolve_options(opts) -> dict:
 
 def _truncation_tol(opts) -> float:
     """The relative H-infinity tolerance of the per-entry balanced truncation
-    for the Pade runs: ``'auto'`` = the tolerance in effect (environment /
-    default, ``api._realization.truncation_tol``) capped at ``tol / 100``."""
+    of the first Pade order (and the floor of the later ones): ``'auto'`` =
+    the tolerance in effect (environment / default, ``api._realization.
+    truncation_tol``) capped at ``tol / 100``; ``0`` when that is exact."""
     from api._realization import truncation_tol
     if opts['truncation'] == 'auto':
         t = truncation_tol()
@@ -469,14 +474,15 @@ def _truncation_tol(opts) -> float:
     return float(opts['truncation'])
 
 
-def _order_states(ctx, m, cache):
+def _order_states(ctx, m, cache, tol):
     """Per-entry state counts (nonzero entries) of the Pade-``m`` realization
-    of the TRUE model's kernel matrix at its saddle, balanced-truncated with
-    the tolerance in effect (as the run of that order will be), or ``None``
-    when it cannot be built (the controller then falls back to the measured
-    growth).  Cached per order."""
-    if m in cache:
-        return cache[m]
+    of the TRUE model's kernel matrix at its saddle, balanced-truncated to
+    ``tol`` (as the run of that order is), or ``None`` when it cannot be
+    built (the controller then falls back to the measured growth).  Cached
+    per (order, tolerance)."""
+    key = (int(m), float(tol))
+    if key in cache:
+        return cache[key]
     out = None
     try:
         from sage.all import SR
@@ -484,13 +490,56 @@ def _order_states(ctx, m, cache):
         if ctx is not None and ctx.K_ft is not None and ctx.num_params is not None:
             om = ctx.omega
             Km = ctx.K_ft.apply_map(lambda e: pade_substitute(SR(e), om, m))
-            real = realize_K(Km, om, ctx.num_params)
+            real = realize_K(Km, om, ctx.num_params, truncation=tol)
             out = [int(x) for x in np.asarray(real.entry_states).ravel() if x > 0]
             out = out or None
     except Exception:
         out = None
-    cache[m] = out
+    cache[key] = out
     return out
+
+
+#: The delay route's adaptive truncation (``delay={'truncation': 'auto'}``):
+#: after the first order, each order's realizations are truncated to
+#: ``TRUNCATION_KAPPA`` times the relative error its Pade loops are predicted
+#: to carry (``_next_truncation``), at most ``TRUNCATION_MAX``.
+TRUNCATION_KAPPA = 1e-2
+TRUNCATION_MAX = 1e-4
+
+
+def _next_truncation(opts, t_base, r, k, n, m, est, ctrl):
+    """The truncation tolerance of order ``m`` after order ``n`` ran (result
+    ``r``).  A fixed ``delay={'truncation': t}`` (or the exact setting,
+    ``t_base = 0``) is kept.  Otherwise ``max(t_base, min(TRUNCATION_MAX,
+    TRUNCATION_KAPPA * e_m))`` with ``e_m`` the smaller of two conservative
+    predictions of the relative loop error of order ``m`` (in units of
+    ``max |C|``, as the order estimate): the exact-vs-Pade tree of order
+    ``n`` times the loops' share of ``max |C|``, and the doubling estimate of
+    order ``n`` (which measures order ``n / 2``), each scaled by the loops'
+    ``n^-3`` decay (item 29; the faster the assumed decay, the tighter the
+    tolerance).  The truncation then moves each loop entry by at most
+    ``TRUNCATION_KAPPA`` of the approximation error the run carries anyway
+    (measured: the observable moves by at most ~0.2 of the per-entry
+    bound).  ``None`` predictions (no exact tree, one order): ``t_base``."""
+    if opts['truncation'] != 'auto' or not t_base > 0:
+        return t_base
+    preds = []
+    tvp = r.get('delay_tree_vs_pade')
+    if tvp is not None and np.isfinite(tvp) and tvp > 0:
+        try:
+            tot, loop = _observable(r, k)
+            share = float(np.max(np.abs(loop))) / max(float(np.max(np.abs(tot))), 1e-300)
+        except Exception:
+            share = 1.0
+        preds.append(float(tvp) * min(share, 1.0) * (n / m) ** 3)
+    if est is not None and np.isfinite(est) and est > 0:
+        preds.append(float(est) * (0.5 * n / m) ** 3)
+    preds = [p for p in preds if p > 0]
+    if not preds:
+        return t_base
+    e_m = min(preds)
+    ctrl['loop_error_pred'][m] = e_m
+    return max(t_base, min(TRUNCATION_MAX, TRUNCATION_KAPPA * e_m))
 
 
 def _mean_states(states):
@@ -606,17 +655,10 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     for key in ('model', 'delay', 'output_npz', 'output_csv'):
         sub_call.pop(key, None)            # the files are written once, from the result
     incomplete = None
-    # every order runs (and its state counts are taken) with the per-entry
-    # realizations balanced-truncated to t_red (api._realization)
-    from api._realization import truncation_scope
-    t_red = _truncation_tol(opts)
-    scope = truncation_scope(t_red)
-    scope.__enter__()
-    try:
-        out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
-                          runs, walls, skipped, failed, ests, verbose, call)
-    finally:
-        scope.__exit__(None, None, None)
+    # every order runs with its per-entry realizations balanced-truncated
+    # (api._realization; the tolerance of each order: _next_truncation)
+    out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                      runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
     if n_used is None:
         raise RuntimeError(f'delay: no Pade order of {seq} gave a usable '
@@ -631,7 +673,7 @@ def compute_delayed(model: dict, call: dict, delays: dict):
         cap = cap or 'a single order was run (no doubling estimate)'
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, t_red, ctrl)
+            t_all, ctrl)
     return r
 
 
@@ -642,16 +684,22 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     predictions, cost exponent, why it stopped)."""
     from api.compute import compute_cumulants
     from api import analyze as _an
+    from api._realization import truncation_scope
     est, cap, n_used, incomplete, prev = None, None, None, None, None
     states_cache = {}
+    t_base = _truncation_tol(opts)
     ctrl = {'states_mean': {}, 'predicted_walls_s': {}, 'cost_exponent': COST_EXPONENT,
-            'stop': None}
+            'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {}}
+    t_cur = t_base
     for i, n in enumerate(seq):
         if verbose:
-            print(f'[delay] Pade ({n}, {n}) of exp(-i omega d): running the pipeline')
+            print(f'[delay] Pade ({n}, {n}) of exp(-i omega d): running the pipeline'
+                  + (f' (realizations truncated to {t_cur:.2g})' if t_cur else ''))
+        ctrl['truncation_by_order'][n] = t_cur
         t0 = time.perf_counter()
         try:
-            r = compute_cumulants(pade_model(model, n), **sub_call)
+            with truncation_scope(t_cur):
+                r = compute_cumulants(pade_model(model, n), **sub_call)
         except _an.AnalyzerError as exc:
             codes = set(getattr(exc, 'codes', ()))
             if codes & set(_INSTABILITY_CODES) and i + 1 < len(seq):
@@ -722,7 +770,9 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             break
         if i + 1 < len(seq):
             nxt = seq[i + 1]
-            grow, how = _predicted_growth(ctx, n, nxt, prev, walls, states_cache, ctrl)
+            t_cur = _next_truncation(opts, t_base, r, k, n, nxt, est, ctrl)
+            grow, how = _predicted_growth(ctx, n, nxt, prev, walls, states_cache, ctrl,
+                                          tols=ctrl['truncation_by_order'] | {nxt: t_cur})
             pred = walls[n] * grow
             ctrl['predicted_walls_s'][nxt] = round(pred, 1)
             if verbose:
@@ -738,22 +788,27 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     return est, cap, n_used, incomplete, ctrl
 
 
-def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl):
+def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None):
     """``(growth, how)``: the predicted wall of order ``nxt`` over the
     measured wall of order ``n``.  From the realizations' mean per-entry state
     counts (after truncation): ``(S_nxt / S_n)^p`` with ``p = COST_EXPONENT``,
     or refitted from the measured walls of ``prev`` and ``n``
     (``log(w_n / w_prev) / log(S_n / S_prev)``, clamped to [2, 8]).  Without
     state counts: the measured growth of the last pair, else ``(nxt / n)^4``
-    (the rule before item 45)."""
-    s_n = _mean_states(_order_states(ctx, n, cache))
-    s_x = _mean_states(_order_states(ctx, nxt, cache))
+    (the rule before item 45).  ``tols``: {order: truncation tolerance} (the
+    state counts are those of the truncated realizations; default: the
+    tolerance in effect)."""
+    from api._realization import truncation_tol
+    tols = dict(tols or {})
+    tol_of = lambda m: tols.get(m, truncation_tol())         # noqa: E731
+    s_n = _mean_states(_order_states(ctx, n, cache, tol_of(n)))
+    s_x = _mean_states(_order_states(ctx, nxt, cache, tol_of(nxt)))
     for m, sm in ((n, s_n), (nxt, s_x)):
         if sm is not None:
             ctrl['states_mean'][m] = round(sm, 2)
     p = COST_EXPONENT
     if prev is not None and walls.get(prev, 0) > 0 and s_n is not None:
-        s_p = _mean_states(_order_states(ctx, prev, cache))
+        s_p = _mean_states(_order_states(ctx, prev, cache, tol_of(prev)))
         if s_p is not None and s_n > s_p * 1.05 and walls[n] > walls[prev]:
             p = min(8.0, max(2.0, math.log(walls[n] / walls[prev]) / math.log(s_n / s_p)))
     ctrl['cost_exponent'] = round(p, 3)
@@ -768,7 +823,7 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl):
 
 def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, t_red, ctrl):
+            t_all, ctrl):
     """The record of ``compute_delayed`` (``r['delay']``, the report, the files,
     the warning)."""
     # 4. the record
@@ -800,7 +855,9 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'options': opts,
         # item 45: the per-entry balanced truncation of every order's
         # realization and the order controller's record
-        'truncation_tol': t_red,
+        'truncation_tol': ctrl['truncation_by_order'].get(n_used),
+        'truncation_by_order': ctrl['truncation_by_order'],
+        'loop_error_pred_by_order': ctrl['loop_error_pred'],
         'states_mean_by_order': ctrl['states_mean'],
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_exponent': ctrl['cost_exponent'],
@@ -889,7 +946,7 @@ def _record_in_report(r, report_true, info, policy=None):
                 + (f'; est. rel. error {est:.2g}' if est is not None else '')
                 + ('; tree exact' if info['tree'] == 'exact' else '; tree Pade')
                 + (f'; realizations balanced-truncated (relative H-inf tolerance '
-                   f'{info["truncation_tol"]:.2g} per entry)'
+                   f'{info["truncation_tol"]:.2g} per entry at n = {n})'
                    if info.get('truncation_tol') else '')),
         declared=True, satisfied=info['target_met'])
     if rep is None:

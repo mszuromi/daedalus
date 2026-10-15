@@ -295,6 +295,14 @@ def test_order_controller_record_and_prediction():
     assert set(sm) == {4, 8} and sm[8] > sm[4] > 0
     assert set(info['predicted_walls_s']) == {8}
     assert info['cost_exponent'] == DL.COST_EXPONENT
+    # the first order at the base tolerance, the second adaptive: 1 % of the
+    # loop error predicted for it, between the base and TRUNCATION_MAX
+    tb = info['truncation_by_order']
+    assert tb[4] == 1e-10 and info['truncation_tol'] == tb[8]
+    e8 = info['loop_error_pred_by_order'][8]
+    assert tb[8] == pytest.approx(max(1e-10, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
+    # the prediction is conservative: below the measured difference of n = 4 and 8
+    assert e8 < info['est_by_order'][8]
     want = info['walls_s'][4] * (sm[8] / sm[4]) ** DL.COST_EXPONENT
     assert info['predicted_walls_s'][8] == pytest.approx(want, rel=0.02, abs=0.2)
 
@@ -308,13 +316,14 @@ def test_prediction_refits_the_exponent_and_falls_back():
     cache, ctrl = {}, {'states_mean': {}, 'predicted_walls_s': {}, 'cost_exponent': None,
                        'stop': None}
     g, how = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl)
-    s4, s8 = DL._mean_states(cache[4]), DL._mean_states(cache[8])
+    t = RZ.truncation_tol()
+    s4, s8 = DL._mean_states(cache[(4, t)]), DL._mean_states(cache[(8, t)])
     assert s8 > s4 and g == pytest.approx((s8 / s4) ** DL.COST_EXPONENT)
     assert 'states' in how and ctrl['cost_exponent'] == DL.COST_EXPONENT
     # two measured orders: the exponent is refitted from their walls
     walls = {4: 10.0, 8: 10.0 * (s8 / s4) ** 3.0}
     g2, _ = DL._predicted_growth(ctx, 8, 16, 4, walls, cache, ctrl)
-    s16 = DL._mean_states(cache[16])
+    s16 = DL._mean_states(cache[(16, t)])
     assert ctrl['cost_exponent'] == pytest.approx(3.0, rel=1e-9)
     assert g2 == pytest.approx((s16 / s8) ** 3.0)
     # no state counts (a context without the operator): the old rules
@@ -347,3 +356,24 @@ def test_identical_kernels_and_zero_weights_leave_no_redundant_states():
     es = real.entry_states
     assert es[0, 2] == es[1, 2] == 4 and es[0, 0] == es[1, 1] == 1 and es[2, 2] == 1
     assert real.truncation['n_truncated'] == 0
+
+
+def test_next_truncation_rules():
+    o = DL.resolve_options({})
+    ctrl = {'loop_error_pred': {}}
+    tot = np.array([1.0, 0.5, 0.2])
+    r = {'C_tau': tot, 'C_tau_by_ell': {0: tot - np.array([0.1, 0.05, 0.0]), 1: np.array([0.1, 0.05, 0.0])},
+         'delay_tree_vs_pade': 1e-2}
+    # from the tree: 1e-2 * share 0.1 * (4/8)^3; from the estimate: 1e-3 * (2/8)^3
+    t = DL._next_truncation(o, 1e-10, r, 2, 4, 8, 1e-3, ctrl)
+    e = min(1e-2 * 0.1 / 8, 1e-3 / 64)
+    assert ctrl['loop_error_pred'][8] == pytest.approx(e) and t == pytest.approx(1e-2 * e)
+    # capped above, floored at the base, untouched when pinned or exact
+    assert DL._next_truncation(o, 1e-10, dict(r, delay_tree_vs_pade=10.0), 2, 4, 8, None,
+                               ctrl) == DL.TRUNCATION_MAX
+    assert DL._next_truncation(o, 1e-10, dict(r, delay_tree_vs_pade=1e-14), 2, 4, 8, None,
+                               ctrl) == 1e-10
+    assert DL._next_truncation(o, 1e-10, {'C_tau': tot}, 2, 4, 8, None, ctrl) == 1e-10
+    assert DL._next_truncation(DL.resolve_options({'truncation': 1e-9}), 1e-9, r, 2, 4, 8,
+                               1e-3, ctrl) == 1e-9
+    assert DL._next_truncation(o, 0.0, r, 2, 4, 8, 1e-3, ctrl) == 0.0
