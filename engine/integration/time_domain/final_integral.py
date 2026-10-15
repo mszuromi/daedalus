@@ -7463,7 +7463,15 @@ class _LazyIntegrand:
                 fn = self._fc
             if fn is None:
                 kind, val = self._sr()
-                fn = val if kind == 'ok' else (lambda *_a: 0j)
+                if kind == 'zero':
+                    fn = (lambda *_a: 0j)
+                elif kind != 'ok':
+                    raise RuntimeError(
+                        f'the pole routes\' integrand of this subset cannot '
+                        f'be built ({kind}: '
+                        f'{val if isinstance(val, str) else val.get("reason")})')
+                else:
+                    fn = val
             self._fn = fn
         return self._fn(*args)
 

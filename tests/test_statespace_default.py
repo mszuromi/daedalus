@@ -364,3 +364,59 @@ def test_total_c_batch_batches_the_grid():
                           for t in taus])
     b_ = _arr(res, 1)
     assert np.max(np.abs(per_point - b_)) <= 1e-14 * np.max(np.abs(b_))
+
+
+# ── kernel realizations (S3 review) ─────────────────────────────────────
+
+def test_kernel_refusals_are_named():
+    from sage.all import SR, I, exp, heaviside, dirac_delta
+    from api._realization import RealizationRefused, realize_kernel
+    from engine.core.vertices import KernelTimeImage
+    w, t = SR.var('s3om'), SR.var('s3tt')
+    cases = [
+        ({'kernel_ft_fn': KernelTimeImage((1 + I * w / 2) / (1 + I * w), w)},
+         'kernel_not_strictly_proper'),
+        ({'kernel_td_fn': KernelTimeImage(dirac_delta(t) + exp(-t), t)},
+         'kernel_not_strictly_proper'),
+        ({'kernel_ft_fn': KernelTimeImage(1 / (1 - I * w), w)},
+         'kernel_not_hurwitz'),
+        ({'kernel_td_fn': KernelTimeImage(heaviside(t - 2) * exp(-t), t)},
+         'kernel_shifted_step'),
+        ({}, 'no_kernel_image'),
+    ]
+    for att, reason in cases:
+        with pytest.raises(RealizationRefused) as ei:
+            realize_kernel(dict(att, symbol='g'), {})
+        assert ei.value.reason == reason
+    # the time image's variable leaves no global assumption behind
+    from sage.all import assumptions
+    assert not [a for a in assumptions() if 'tkernelreal' in str(a)]
+
+
+def test_graded_dressed_line_impulse():
+    # a fast line (rate 500) dressed by a slow alpha kernel (rate 1/0.7): a
+    # graded cascade; the impulse takes the triangular route (S3 review:
+    # the trace-shifted Taylor action lost ~1.8e-14 of max|g| here)
+    import types
+    import mpmath as mp
+    from sage.all import SR, I
+    from api import _realization as RZ
+    from engine.core.vertices import KernelTimeImage
+    w = SR.var('s3om2')
+    att = {'symbol': 'g', 'kernel_ft_fn': KernelTimeImage(
+        1 / (1 + I * w * SR(7) / 10) ** 2, w)}
+    r = 500.0
+    ent = RZ.EntryRealization(a=np.array([[-r]]), b=np.array([1.0]),
+                              c=np.array([1.0]), d=0.0, n_states=1)
+    model = SS._ModelOps(types.SimpleNamespace(A=np.zeros((1, 1)),
+                                               entries={(0, 0): ent}), {})
+    e = model.dressed_entry(0, 0, att)
+    tau = mp.mpf(7) / 10
+    errs, top = [], 0.0
+    with mp.workdps(30):
+        for t in (0.05, 0.2, 0.54, 1.29, 3.0, 8.0):
+            ref = mp.quad(lambda x: (t - x) * mp.e ** (-(t - x) / tau) / tau ** 2
+                          * mp.e ** (-r * x), [0, mp.mpf(1) / 100, t])
+            errs.append(abs(e.impulse(t) - float(ref)))
+            top = max(top, abs(float(ref)))
+    assert max(errs) <= 2e-15 * top

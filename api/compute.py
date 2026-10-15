@@ -446,9 +446,9 @@ def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
                 'state-space route covers it), so the undeformed poles of '
                 'this propagator cannot serve a pole-route fallback; set '
                 'DAEDALUS_PHASE_J_ENGINE=poles for this model')))
-    except _fi.PhaseJResourceError:
-        raise
-    except Exception as exc:                 # a fallback refused in the pass
+    except (_ssm.SSNoPoleFallback, _ssm.SSLateRefusal) as exc:
+        # a fallback refused in the pass (SSLateRefusal: with
+        # DAEDALUS_PHASE_J_SS_FALLBACK=0); anything else propagates
         out, why = None, f'{type(exc).__name__}: {str(exc)[:200]}'
     after = (C.get('ss_subsets_declined', 0), C.get('ss_fallback_evals', 0))
     if out is not None and after != before:

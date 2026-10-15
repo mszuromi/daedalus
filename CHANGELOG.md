@@ -11,6 +11,51 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
+
+The state-space subset integrator below is now used for every subset it can take; `DAEDALUS_PHASE_J_ENGINE=poles`
+restores the pole engine everywhere (the dispatch then never imports the module, and its numbers are those of
+0.2.0 + the items above, bit for bit). `default` and `statespace` name the new default.
+
+- **Coverage.** Plain propagator rows (S2) and now also conductance kernels: a kernel edge uses the kernel's own
+  realization (`api._realization.realize_kernel`: the exact chain of its frequency image, or of the Laplace
+  transform of its time image), a dressed line the kernel cascaded with its propagator entry. A kernel whose rates
+  are equal or within 10 % of each other, which the pole engine refuses by name, is taken by the route
+  (alpha-kernel conductance in kernel form at τ2 = τ, 0.999 τ, 0.9 τ, 0.62 τ: within 5.5e-16 of its Markov
+  embedding at one loop). Noise-kernel boxes, spatial models, symbolic prefactors and the legacy Θ(0) mode stay
+  on the pole routes (`ss_declined_by_reason` counts them).
+- **Fallback, never silent.** A routed subset whose evaluation is refused at call time (a stiff segment beyond the
+  triangular route's size, a segment system over the memory budget or too large, a non-finite value, a
+  `THETA0_CONST_ROW_MODE='legacy_clip'` set after the build) is evaluated by the pole route for that call; its
+  modesum plan is built only then. Counted by reason (`ss_fallback_*`), reported in `result['phase_j_engine']`
+  and as the G6 warning `G6_SS_FALLBACK`, and warned once per run (`PhaseJEngineFallbackWarning`).
+  `DAEDALUS_PHASE_J_SS_FALLBACK=0` raises instead. Strict policy semantics are unchanged (G6 is recorded, never
+  raised).
+- **Engine census.** `result['phase_j_engine']` (also `result['route']['phase_j_engine']`): the run's prediction,
+  subsets on the route and on the pole routes (by reason), fallbacks, and what happened to the pole-cluster
+  deformation; the hook payload has `engine` and `ss_fallback`; the analyzer adds `G6_PHASE_J_ENGINE` and an
+  assumptions-ledger entry `phase_j_engine`.
+- **Pole-cluster deformation** is not run when the route covers the run (it uses no poles): one Phase J pass
+  instead of one per node (7 on an exact double pole), `pole_clusters['status'] == 'bypassed'`. If a subset
+  declines the route after all, the run is repeated with the deformation.
+- **Memory pre-pass** (item 35): a diagram the route takes is charged the route's own bound (stationary states x
+  the τ batch, plus one segment system) instead of its pole tuples. Runs the pre-pass refused although the route
+  finishes them now run (an OU with an Erlang-4 kernel at two loops: pole estimate 2.15 GB, route bound 77 MB,
+  0.75 MB held).
+- **τ batching** inside `total_C_batch`, `eval_per_diagram_batch` and the grouped `total_C_batch` (serial paths).
+- **Grouped Phase J**: a group the route covers is integrated per diagram on it (`handled_by='statespace_perdiag'`;
+  the grouped evaluator shares pole-tuple work, which the route does not have).
+- **Analyzer**: G3's repeated / close / unresolved-cluster findings are informational when the route covers the
+  run; G6's accuracy estimate includes the route's a-posteriori estimate (refinement residuals and the Taylor
+  tolerance per step on the final contraction's magnitude), so it is no longer 0 or missing on routed runs.
+
+Movers (default vs `poles`, the model zoo in process; relative to max |C_ℓ| over the grid; every other entry
+within 1e-13). In each case the value that moves is the pole engine's, checked against an independent reference:
+
+| model | ℓ | max |Δ| / max |C_ℓ| | reference | state space vs reference | pole engine vs reference |
+|---|---|---|---|---|---|
+| `ou_quartic_two_dim_color_corr` (k = 2, x–y) | 1 | 3.4e-13 | 50-digit sweep of every subset on the exact realization | 1.8e-16 | 3.4e-13 |
+
 #### Added: state-space subset integrator (opt-in, DAEDALUS_PHASE_J_ENGINE=statespace) (`engine/integration/time_domain/statespace.py`, one dispatch point in `final_integral.py`; no number moves with the flag unset)
 
 A Phase J subset integral evaluated without poles, residues or pole tuples, on the realization layer

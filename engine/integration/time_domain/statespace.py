@@ -167,8 +167,9 @@ is charged against ``PHASE_J_MEM_BUDGET_GB`` through item 35's running total
 ``PhaseJResourceError`` before anything is allocated.  A segment system is
 checked the same way (its working set alone) when it is first built, at the
 first evaluation that needs it.  Not charged: the module's caches that
-outlive a run (dense segment generators, an LRU capped at
-``DENSE_CACHE_BYTES``; the last ``_REAL_CACHE_MAX`` realizations).
+outlive a run (dense segment generators and the small resolvent blocks'
+dense operators, one LRU capped at ``DENSE_CACHE_BYTES``; the last
+``_REAL_CACHE_MAX`` realizations).
 """
 from __future__ import annotations
 
@@ -184,7 +185,8 @@ import scipy.linalg as sl
 __all__ = [
     'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
     'subset_maker', 'SubsetSS', 'realization_for', 'tau_grid_prefetch',
-    'SSIneligible', 'SSLateRefusal', 'model_route', 'diagram_route',
+    'SSIneligible', 'SSLateRefusal', 'SSNoPoleFallback', 'model_route',
+    'diagram_route',
     'census',
 ]
 
@@ -207,6 +209,20 @@ TAYLOR_S_MAX = 50
 #: so the triangular route is taken only when the Taylor action would need
 #: far more steps (a 2 x 2 Schur form is one rotation of a balanced block)
 TAYLOR_S_MAX_SCHUR = 1000
+#: an impulse ``c e^{a t} b`` of an entry with an exact triangular basis
+#: (triangular ``a``, a 2 x 2 Schur form; n >= 2) takes the triangular route
+#: beyond this many Taylor steps: a graded entry (a fast line cascaded with
+#: a slow kernel: a dressed line) loses up to ~1e-14 in the trace-shifted
+#: action well before ``TAYLOR_S_MAX`` (S3 review: 4e-15 already at 2
+#: steps), the triangular Pade ~3e-16, at a negligible cost for these small
+#: entries
+TAYLOR_S_MAX_IMPULSE = 0
+#: a segment with exact triangular bases whose slowest diagonal rate is below
+#: ``GRADED_RATIO`` of the mean (graded: the trace shift leaves the slow modes
+#: growing fast) takes the triangular route beyond ``TAYLOR_S_MAX_GRADED``
+#: steps (S3 review)
+GRADED_RATIO = 0.1
+TAYLOR_S_MAX_GRADED = 2
 #: the triangular route (dense upper-triangular generator in the per-edge
 #: Schur basis, reset-diagonal Pade) up to this many states
 TRI_DENSE_MAX = 600
@@ -247,6 +263,13 @@ class SSLateRefusal(RuntimeError):
         self.reason = reason
         super().__init__(f'state-space route: {detail or reason}; set '
                          f'{ENGINE_ENV}=poles to use the pole routes')
+
+
+class SSNoPoleFallback(RuntimeError):
+    """A routed subset was refused at call time and the pole route cannot
+    take it: the subset has none (a kernel only this route realizes), or
+    ``compute_cumulants`` skipped the pole-cluster deformation for the run
+    (``ss_no_pole_fallback``).  Never silent: it raises."""
 
 
 class _Refused:
@@ -463,8 +486,12 @@ def _content_key(K, om):
         if hit is not None and hit[0] is K:
             return hit[1]
     try:
+        # the exact values of float literals (a RealNumber prints ~15
+        # digits): S1's exactification, then the text
+        from api._realization import _exactify
+        from sage.all import SR as _SR
         ck = (str(om), int(K.nrows()), int(K.ncols()),
-              tuple(str(x) for x in K.list()))
+              tuple(str(_exactify(_SR(x))) for x in K.list()))
     except Exception:
         ck = None
     with _REAL_LOCK:
@@ -627,8 +654,9 @@ class _EntryOps:
         A, mu, dn = self._tay
         t = float(t)
         m_, s_ = _taylor_params(dn, t)
+        _est_steps(s_)
         if s_ > (TAYLOR_S_MAX_SCHUR if (self.kind == 'schur' and self.n > 2)
-                 else TAYLOR_S_MAX):
+                 else TAYLOR_S_MAX_IMPULSE):
             # stiff (|a| t large): the reset-diagonal triangular Pade in the
             # triangular basis (exact e^{lambda t} on the diagonal)
             from api._realization import expm_upper_triangular
@@ -684,9 +712,10 @@ class _ModelOps:
             out = ((None, 'kernel_complex') if fname != 'QQ' and self.is_real
                    else (ent, None))
         except RealizationRefused as exc:
-            out = (None, f'kernel_{exc.reason}')
-        except Exception:                       # never let a kernel break a run
-            out = (None, 'kernel_error')
+            out = (None, exc.reason if exc.reason.startswith('kernel_')
+                   else f'kernel_{exc.reason}')
+        except Exception as exc:                # never let a kernel break a run
+            out = (None, f'kernel_error_{type(exc).__name__}')
         with self._lock:
             self._extra[key] = out
         return out
@@ -767,6 +796,9 @@ class _ModelOps:
             return sd
 
 
+_SD_SERIAL = itertools.count()
+
+
 class _SolveData:
     """``(⊕ a_e) y = -r`` for one active-edge pattern."""
 
@@ -787,21 +819,19 @@ class _SolveData:
         self.unitary = any(e.kind == 'schur' for e in ents)
         self.scalar = sum(e.lam for e in ents if e.n == 1)
         self.size = int(np.prod(self.shape, dtype=np.int64)) if ents else 1
-        self._dense = {}
-        self._lock = threading.Lock()
+        self.serial = next(_SD_SERIAL)
 
     def kron_sum(self, dtype, attr='a'):
         """The dense Kronecker sum ``⊕ a_e`` (``attr='a'``) or ``⊕ T_e``
         (``'T'``: the per-edge triangular basis, upper triangular) of this
         pattern, cached (shared by every subset and segment of the model)."""
-        key = (attr, np.dtype(dtype).str)
-        with self._lock:
-            M = self._dense.get(key)
-        if M is None:
-            M = _kron_sum_dense(self.ents, dtype, attr=attr)
-            M.setflags(write=False)
-            with self._lock:
-                self._dense[key] = M
+        key = ('kron', self.serial, attr, np.dtype(dtype).str)
+        hit = _dense_get(key)
+        if hit is not None:
+            return hit[0]
+        M = _kron_sum_dense(self.ents, dtype, attr=attr)
+        M.setflags(write=False)
+        _dense_put(key, M, M.nbytes)
         return M
 
     def _dense_ops(self):
@@ -810,9 +840,9 @@ class _SolveData:
         (identity, the index reversal, the unitary Schur factor), the
         upper-triangular ``⊕ T_e`` and the original ``⊕ a_e``, all dense and
         cached: a solve is then two matvecs and one back substitution."""
-        hit = self._dense.get('ops')
+        hit = _dense_get(('sdops', self.serial))
         if hit is not None:
-            return hit
+            return hit[0]
         cplx = np.iscomplexobj(self.lam) or self.unitary
         dt = complex if cplx else float
         U = np.ones((1, 1), dtype=dt)
@@ -826,8 +856,8 @@ class _SolveData:
             U = np.kron(U, f)
         ops = (U, U.conj().T.copy(), self.kron_sum(dt, 'T'),
                self.kron_sum(self.ents[0].a.dtype if self.ents else float))
-        with self._lock:
-            self._dense['ops'] = ops
+        _dense_put(('sdops', self.serial), ops,
+                   sum(int(x.nbytes) for x in ops))
         return ops
 
     def apply_M(self, y):
@@ -1065,6 +1095,7 @@ class _Segment:
         self._sd = [sub.model.solve_data(en) for en in self.ents]
         self._dnorms_free = None
         self._adj = None
+        self._graded = None
         # ``depth``: firings to the deepest block plus the orders at which the
         # impulses of the edges born and completed in the segment start
         self.min_terms = min(_M_MAX, depth)
@@ -1094,6 +1125,26 @@ class _Segment:
             oJ, szJ = self.offs[kJ], self.sizes[kJ]
             out[oJ:oJ + szJ] += np.ravel(fire(x))
         return out
+
+    def graded(self):
+        """Exact triangular bases and the slowest diagonal rate below
+        ``GRADED_RATIO`` of the mean one (``action``)."""
+        g = self._graded
+        if g is None:
+            if any(e.kind == 'schur' and e.n > 2
+                   for en in self.ents for e in en) or not self.D:
+                g = False
+            else:
+                mu = (self.trace() / self.D).real
+                # blocks with an active edge (a block without one is
+                # constant, not a slow mode)
+                slow = max([float(np.max(np.real(sd.lam)))
+                            for sd in self._sd if sd.ents and np.size(sd.lam)]
+                           or [-math.inf])
+                g = bool(mu < 0 and slow > -math.inf
+                         and slow > GRADED_RATIO * mu)
+            self._graded = g
+        return g
 
     def trace(self):
         tr = 0j
@@ -1282,8 +1333,9 @@ class _Segment:
         _m, s_ = _taylor_params(dn, L)
         unitary = any(e.kind == 'schur' and e.n > 2
                       for en in self.ents for e in en)
-        if s_ > (TAYLOR_S_MAX_SCHUR if unitary else TAYLOR_S_MAX) and (
-                self.D <= TRI_DENSE_MAX):
+        lim = (TAYLOR_S_MAX_SCHUR if unitary else
+               TAYLOR_S_MAX_GRADED if self.graded() else TAYLOR_S_MAX)
+        if s_ > lim and self.D <= TRI_DENSE_MAX:
             return self._action_tri(v, L, dtype)
         if s_ > TAYLOR_S_HARD:
             raise SSLateRefusal(
@@ -1734,11 +1786,16 @@ class SubsetSS:
         if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
                 r[4].kind == 'zero' for r in self.const_rows):
             return 0.0
-        scal = self.scalar_factor(free_vals, tie_ctx)
+        _EST.steps = 0              # the constant rows' impulses count too
+        try:
+            scal = self.scalar_factor(free_vals, tie_ctx)
+            imp = len(self.const_rows) + _EST.steps
+        finally:
+            _EST.steps = None
         if scal == 0:
             return 0.0
         if self.m == 0:
-            _EST.err = EST_UNIT * abs(scal)
+            _EST.err = EST_UNIT * abs(scal) * (1 + imp)
             return scal
         vals = self._slot_values(free_vals)
         if not all(math.isfinite(v) for v in vals):
@@ -1747,7 +1804,7 @@ class SubsetSS:
         pattern, gv = self._pattern(vals)
         finite = t_min != float('-inf')
         prog = self._checked_program(pattern, finite)
-        _EST.steps, _EST.mag = 0, 0.0
+        _EST.steps, _EST.mag = imp, 0.0
         try:
             x = self._run(prog, gv, finite, t_min)
             _EST.err = abs(scal) * _EST.mag * (
@@ -1829,28 +1886,32 @@ class SubsetSS:
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError('state-space route: external times must be '
                                  f'finite, got {list(fv)}')
+            _EST.steps = 0
             scal = self.scalar_factor(fv, tc)
+            imp = len(self.const_rows) + _EST.steps
+            _EST.steps = None
             if scal == 0 or self.m == 0:
                 out[i] = scal if self.m == 0 else 0.0
-                err[i] = EST_UNIT * abs(scal) if self.m == 0 else 0.0
+                err[i] = EST_UNIT * abs(scal) * (1 + imp) if self.m == 0 \
+                    else 0.0
                 continue
             pattern, gv = self._pattern(vals)
-            groups.setdefault(pattern, []).append((i, gv, scal))
+            groups.setdefault(pattern, []).append((i, gv, scal, imp))
         dt = self.model.dtype
         rho = 0.0 if finite else None
         for pattern, items in groups.items():
             try:
                 prog = self._checked_program(pattern, finite)
             except late as exc:
-                for (i, _gv, _scal) in items:
+                for (i, _gv, _scal, _imp) in items:
                     out[i] = _Refused(_late_reason(exc), _late_detail(exc))
                 continue
             _count('ss_batch_points', len(items))
             segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
             if (finite or not segs or prog[-1][0] != 'event'
                     or segs[-1] != len(prog) - 2 or len(items) < 2):
-                for (i, gv, scal) in items:
-                    _EST.steps, _EST.mag = 0, 0.0
+                for (i, gv, scal, imp) in items:
+                    _EST.steps, _EST.mag = imp, 0.0
                     try:
                         out[i] = scal * self._run(prog, gv, finite, t_min)
                     except late as exc:
@@ -1864,9 +1925,10 @@ class SubsetSS:
             # the state before the last segment depends only on the lengths
             # of the earlier segments (translation invariance): group by them
             pre = {}
-            for (i, gv, scal) in items:
+            for (i, gv, scal, imp) in items:
                 lens = tuple(gv[q + 1] - gv[q] for q in range(len(gv) - 1))
-                pre.setdefault(lens[:-1], []).append((i, gv, scal, lens[-1]))
+                pre.setdefault(lens[:-1], []).append((i, gv, scal, lens[-1],
+                                                      imp))
             seg = prog[last][1]
             ev_last = [(I, f) for I, f in prog[last + 1][1]
                        if I == self.full]
@@ -1883,7 +1945,7 @@ class SubsetSS:
                 cur = 0.0
                 v0 = v
                 refused = None
-                for (i, gv, scal, L_last) in its:
+                for (i, gv, scal, L_last, imp) in its:
                     if refused is not None:
                         out[i] = refused
                         continue
@@ -1908,8 +1970,8 @@ class SubsetSS:
                             nx = f(xI).item()
                             mag = f.absval(xI)
                     out[i] = scal * nx
-                    err[i] = abs(scal) * mag * (EST_UNIT * (1 + _EST.steps)
-                                                + self.rho)
+                    err[i] = abs(scal) * mag * (
+                        EST_UNIT * (1 + _EST.steps + imp) + self.rho)
         if errors is not None:
             errors[:] = err
         return out
@@ -2111,13 +2173,13 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                     if not fallback_enabled():
                         raise exc
                     if no_fallback:
-                        raise RuntimeError(
+                        raise SSNoPoleFallback(
                             f'state-space route refused this subset '
                             f'({reason}: {exc}) and {no_fallback}') from exc
                     built = None if fallback is None else fallback(
                         dict(hook_meta or {}, ss_fallback=reason))
                     if built is None:
-                        raise RuntimeError(
+                        raise SSNoPoleFallback(
                             f'state-space route refused this subset '
                             f'({reason}: {exc}) and it has no pole route '
                             f'(a kernel only the state-space route '
@@ -2358,6 +2420,9 @@ PREPASS_MAX_DOWNSETS = 20000
 #: of a diagram's stationary states when it is at most this many bytes,
 #: else it enumerates the downsets
 PREPASS_CHEAP_BYTES = 1 << 16
+#: bytes one τ-batch memo entry holds per subset, grid point and Wick leg
+#: mapping (a dict entry keyed by two tuples, value and estimate)
+PREFETCH_BYTES_PER_POINT = 400
 
 
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
@@ -2445,7 +2510,7 @@ def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
         stat_sum, full_sum = hit
     n_sub = 2 ** n_delta
     stat = n_sub * ((2 ** n_att) * stat_sum * item
-                    + 16 * max(1, n_tau) * max(1, n_perm))
+                    + PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm))
     # one segment system at a time: its vectors, and the dense generator of
     # a system of at most OP_DENSE_MAX states (any system within the bound)
     D = (2 ** n_att) * full_sum

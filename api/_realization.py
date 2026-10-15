@@ -147,14 +147,20 @@ __all__ = [
 ]
 
 _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
-            'singular_pencil', 'index_gt_1', 'no_kernel')
+            'singular_pencil', 'index_gt_1', 'no_kernel',
+            # realize_kernel (S3)
+            'no_kernel_image', 'kernel_not_strictly_proper',
+            'kernel_not_hurwitz', 'kernel_shifted_step')
 
 
 class RealizationRefused(ValueError):
     """The propagator has no (supported) finite state-space realization.
 
     ``reason`` is one of ``non_rational``, ``unbound_symbol``, ``spatial``,
-    ``improper_entry``, ``singular_pencil``, ``index_gt_1``, ``no_kernel``.
+    ``improper_entry``, ``singular_pencil``, ``index_gt_1``, ``no_kernel``;
+    for a conductance kernel (``realize_kernel``) also ``no_kernel_image``,
+    ``kernel_not_strictly_proper``, ``kernel_not_hurwitz``,
+    ``kernel_shifted_step``.
     """
 
     def __init__(self, reason, message):
@@ -1077,7 +1083,9 @@ def realize_kernel(att, num_params=None, *, balance=True):
     without a value (``unbound_symbol``), not rational in ``s``
     (``non_rational``: e.g. a Gaussian kernel), a delta or polynomial part
     (``kernel_not_strictly_proper``), a non-Hurwitz chain
-    (``kernel_not_hurwitz``).  Returns ``(EntryRealization, field_name)``."""
+    (``kernel_not_hurwitz``), a step other than ``heaviside(t)`` in a time
+    image (``kernel_shifted_step``: only the causal step at 0 is stripped).
+    Returns ``(EntryRealization, field_name)``."""
     S = _sage()
     subs = _exact_subs(num_params)
     s = S.SR.var('ssreal')
@@ -1088,9 +1096,17 @@ def realize_kernel(att, num_params=None, *, balance=True):
             w = S.SR.var('wkernelreal')
             e = _exactify(S.SR(ft_fn(w)).subs(subs)).subs({w: -S.I * s})
         elif td_fn is not None:
-            t = S.SR.var('tkernelreal', domain='positive')
-            g = S.SR(td_fn(t)).substitute_function(S.heaviside,
-                                                    lambda _x: S.SR(1))
+            # a plain variable: a domain would leave a global Maxima
+            # assumption behind (the Laplace transform integrates t > 0)
+            t = S.SR.var('tkernelreal')
+            g0 = S.SR(td_fn(t))
+            w_ = S.SR.wild(0)
+            for h in g0.find(S.heaviside(w_)):
+                if not bool((h.operands()[0] - t).is_zero()):
+                    raise RealizationRefused(
+                        'kernel_shifted_step', f'kernel {att.get("symbol")}: '
+                        f'{h} is not the causal step heaviside(t)')
+            g = g0.substitute_function(S.heaviside, lambda _x: S.SR(1))
             g = _exactify(g.subs(subs))
             e = g.laplace(t, s)
         else:
