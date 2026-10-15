@@ -54,6 +54,16 @@ realization cannot take it as it is.  This module
   smaller).  ``delay={'tree': 'pade'}`` (or ``DAEDALUS_DELAY_EXACT_TREE=0``)
   switches the exact tree off.
 
+A delay kernel at a vertex leg (a nonlinear term: ``x*x(t - d)``, a
+delayed leg operator inside a rate nonlinearity) is routed like any other
+conductance kernel when its approximated image is strictly proper (a delayed
+filter, ``Kernel.delay(d) * Kernel.exponential(tau)``).  A bare hard delay
+there has the all-pass (n, n) image ``(-1)^n + (strictly proper)``, whose
+direct term the kernel routes do not take: Phase J skips those diagrams, and
+``compute_delayed`` then reruns the orders with the strictly proper
+``[n-1/n]`` approximant of every delay factor (``pade_model(proper=True)``;
+the record says ``approximant='pade_proper'``).  The tree stays exact.
+
 Stability is decided with the TRUE exponential (``api._kernel_stability``,
 the analyzer's G2-K gate), never from the approximant: an unstable delayed
 saddle is refused by name before any approximation runs.
@@ -93,6 +103,7 @@ import numpy as np
 __all__ = ['Kernel', 'pade_coefficients', 'pade_image', 'delay_factors',
            'pade_substitute', 'kernel_delays', 'pade_model',
            'split_shifted_time_expr', 'compute_delayed', 'DelayOrderWarning',
+           'pade_mn_coefficients', 'bare_delay_kernels',
            'DEFAULTS']
 
 DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
@@ -633,9 +644,43 @@ def _rel(a, b, scale):
     return float(np.max(np.abs(a - b))) / s
 
 
-def compute_delayed(model: dict, call: dict, delays: dict):
+def bare_delay_kernels(model: dict, ns) -> list:
+    """The delayed kernels whose image without its delay factor is not
+    strictly proper (a bare hard delay ``delta(t - d)``, or a delta part next to
+    the delay), as sorted names; a kernel whose degree cannot be decided counts
+    as bare (conservative)."""
+    from sage.all import SR, exp
+    hook = model.get('kernel_ft_image')
+    if hook is None or ns is None:
+        return []
+    omega = SR.var('omega')
+
+    def strip(e):
+        e = SR(e)
+        hit = _exp_delay(e, omega)
+        if hit is not None:
+            return exp(hit[0])
+        ops = e.operands()
+        return e if not ops else e.operator()(*[strip(o) for o in ops])
+
+    out = []
+    for key, val in (hook(ns, omega) or {}).items():
+        if not delay_factors(SR(val), omega):
+            continue
+        try:
+            e = SR(strip(SR(val))).rational_simplify()
+            proper = SR(e.numerator()).degree(omega) < SR(e.denominator()).degree(omega)
+        except Exception:
+            proper = False
+        if not proper:
+            out.append(str(key))
+    return sorted(out)
+
+
+def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     """Run ``compute_cumulants`` for a model with delay kernels (``delays``:
-    ``kernel_delays``); ``call``: the arguments of the original call."""
+    ``kernel_delays``); ``call``: the arguments of the original call; ``ns``:
+    the expanded theory's namespace (``bare_delay_kernels``)."""
     from api.compute import compute_cumulants
     from api import analyze as _an
     from api import _delay_exact as _dx
@@ -715,7 +760,22 @@ def compute_delayed(model: dict, call: dict, delays: dict):
                           runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
     approximant = 'pade'
-    if incomplete:
+    bare = bare_delay_kernels(model, ns) if incomplete else []
+    # the delta part is read off the (rational) approximated model's analysis
+    # (the true model's G3 does not see poles through a delay factor)
+    _an_first = (runs.get(n_used) or {}).get('analysis') if n_used is not None else None
+    delta_lines = any(getattr(rep_, 'has', lambda c: False)('G3_DELTA_COMPONENT')
+                      for rep_ in (report_true, _an_first) if rep_ is not None)
+    if incomplete and bare and delta_lines:
+        # a hard delay at a vertex leg in a model with point-process (delta)
+        # lines: the vertex multiplies delta functions (exp of a delayed spike
+        # train), which is not defined; every strictly proper approximant has
+        # a finite value that diverges as n grows, so none is run
+        cap = (f'refused: the hard delay kernel(s) {bare} at a vertex leg in a model whose '
+               'propagator has a delta part (point-process fields): the nonlinear term '
+               'multiplies delta functions and is not defined; give the delay a filter, '
+               'e.g. Kernel.delay(d) * Kernel.exponential(tau)')
+    elif incomplete and bare:
         # Phase J skipped diagrams: a hard delay at a vertex leg (x*x(t - d),
         # a bare delay inside a rate nonlinearity): its (n, n) image is
         # all-pass, (-1)^n + strictly proper, and the conductance-kernel
@@ -1046,7 +1106,9 @@ def _record_in_report(r, report_true, info, policy=None):
     n = info['n']
     names = ', '.join(f'{kn} (d = {", ".join(ds)})' for kn, ds in info['delays'].items())
     est = info['est_rel_error']
-    loop_txt = ('the loops by Pade (%d, %d) of exp(-i omega d)' % (n, n)
+    m_ = n - 1 if info.get('approximant') == 'pade_proper' else n
+    loop_txt = ('the loops by Pade (%d, %d) of exp(-i omega d)' % (m_, n)
+                + (' (strictly proper: a delay at a vertex leg)' if m_ != n else '')
                 + (f', est. rel. error {est:.2g} (|C_n - C_2n|)' if est is not None else ''))
     tree_txt = ('the tree exact (linear delayed covariance, %s)' % info['tree_method']
                 if info['tree'] == 'exact' else
@@ -1064,7 +1126,7 @@ def _record_in_report(r, report_true, info, policy=None):
                 "raise delay={'wall_max': ...} / {'n_max': ...}, or accept the estimate"))
     entry = _an.LedgerEntry(
         kind='approximation', name='delay:' + ','.join(info['delays']),
-        detail=(f'Pade({n},{n}) of exp(-i omega d) in the loops'
+        detail=(f'Pade({m_},{n}) of exp(-i omega d) in the loops'
                 + (f'; est. rel. error {est:.2g}' if est is not None else '')
                 + ('; tree exact' if info['tree'] == 'exact' else '; tree Pade')
                 + (f'; realizations balanced-truncated (relative H-inf tolerance '

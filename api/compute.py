@@ -1442,7 +1442,7 @@ def compute_cumulants(
                 'delay_kernels', 'models with delay kernels (api.delay) are '
                 'computed for the stationary state only')
         if _delays:
-            return _delay.compute_delayed(model, _delay_call, _delays)
+            return _delay.compute_delayed(model, _delay_call, _delays, ns=ft._ns)
 
     vtypes = extract_vertex_types(ft)
     stypes = extract_source_types(ft)
