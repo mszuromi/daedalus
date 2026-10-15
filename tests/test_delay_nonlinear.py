@@ -192,3 +192,6 @@ def test_bare_delay_inside_exp_of_a_spike_field_is_refused_by_name():
     assert r['delay']['approximant'] == 'pade' and r['delay']['target_met'] is False
     assert r['delay']['cap'].startswith('refused') and 'delta' in r['delay']['cap']
     assert any(issubclass(w.category, DelayOrderWarning) for w in ws)
+    # the (n, n) pass's own warning is held back, then re-emitted (once)
+    inc = [w for w in ws if type(w.message).__name__ == 'PhaseJIncompleteWarning']
+    assert len(inc) == 1

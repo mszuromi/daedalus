@@ -644,6 +644,23 @@ def _rel(a, b, scale):
     return float(np.max(np.abs(a - b))) / s
 
 
+def _reemit(recorded):
+    """Re-emit warnings held back by ``catch_warnings(record=True)``: each
+    distinct one once, the package's own (``api.*`` / ``engine.*``) also where
+    the environment ignores warnings (the filters the pipeline set with
+    ``_ensure_warning_shown`` were rolled back with the context)."""
+    from api.save import _ensure_warning_shown
+    seen = set()
+    for w in recorded:
+        key = (w.category, str(w.message), w.filename, w.lineno)
+        if key in seen:
+            continue
+        seen.add(key)
+        if str(getattr(w.category, '__module__', '')).split('.')[0] in ('api', 'engine'):
+            _ensure_warning_shown(w.category, 'always')
+        warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+
+
 def bare_delay_kernels(model: dict, ns) -> list:
     """The delayed kernels whose image without its delay factor is not
     strictly proper (a bare hard delay ``delta(t - d)``, or a delta part next to
@@ -754,13 +771,21 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     incomplete = None
     # every order runs with its per-entry realizations balanced-truncated
     # (api._realization; the tolerance of each order: _next_truncation)
-    with warnings.catch_warnings(record=True) as w_first:
-        warnings.simplefilter('always')
+    # a bare hard delay kernel can make the (n, n) pass incomplete (below):
+    # only then are its warnings held back (a retry that completes replaces
+    # them); every other model runs exactly as before
+    bare = bare_delay_kernels(model, ns)
+    w_first = []
+    if bare:
+        with warnings.catch_warnings(record=True) as w_first:
+            warnings.simplefilter('always')
+            out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                              runs, walls, skipped, failed, ests, verbose, call)
+    else:
         out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                           runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
     approximant = 'pade'
-    bare = bare_delay_kernels(model, ns) if incomplete else []
     # the delta part is read off the (rational) approximated model's analysis
     # (the true model's G3 does not see poles through a delay factor)
     _an_first = (runs.get(n_used) or {}).get('analysis') if n_used is not None else None
@@ -808,8 +833,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
                 cap = f'{cap}; the strictly proper [n-1/n] approximant failed ({proper_error})'
             else:
                 cap = f'{cap}; the strictly proper [n-1/n] approximant left diagrams skipped too'
-    for w in w_first:
-        warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+    _reemit(w_first)
     if n_used is None:
         raise RuntimeError(f'delay: no Pade order of {seq} gave a usable '
                            f'approximant (unstable: {skipped}; failed: {failed})')
