@@ -132,6 +132,10 @@ def test_recognition_and_substitution():
         ('d', str(SR('heaviside(t)*exp(-t/tau)/tau').expand()))
     assert split_shifted_time_expr('dirac_delta(t - d)')[0] == 'd'
     assert split_shifted_time_expr('exp(-t/tau)*heaviside(t)') is None
+    # an instantaneous part next to a delayed one is not one delayed kernel
+    assert split_shifted_time_expr('dirac_delta(t) + 0.5*dirac_delta(t - d)') is None
+    assert split_shifted_time_expr('dirac_delta(t - d1) + dirac_delta(t - d2)') is None
+    assert split_shifted_time_expr('0.3*dirac_delta(t - d) + heaviside(t - d)*exp(-(t - d)/tau)/tau')[0] == 'd'
 
 
 def test_kernel_composition():

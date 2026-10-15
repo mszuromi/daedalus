@@ -64,6 +64,24 @@ Seen on a 4-field model with a Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e
 `G6_ACCURACY` reporting no problem; it now equals the pole engine's value. Ordinary models (balancing range within
 [0.125, 8]) are not checked and unchanged; the scalar Padé-24/32 realizations pass the check and stay on the route.
 
+#### Fixed: compiled kernels accept `c*dirac_delta(t)` terms (`api/model_compiler.py`: `causal_exponential_ft`)
+
+A kernel given by `time_expr='(0.3*dirac_delta(t) + exp(-t/tau)/tau)*heaviside(t)'` was refused by the compiled
+transform ("factor dirac_delta(t) is not t^n or an exponential"). A `c*dirac_delta(t)` term, with or without a
+`heaviside(t)` factor, now contributes the constant `c` to the frequency image: the delta of a causal kernel keeps
+its full weight, as in the mean-field integral of the SDE front end, and a factor depending on `t` is evaluated at
+the delta (`exp(-t/tau)*dirac_delta(t)` gives 1, `t*dirac_delta(t)` gives 0). The image has the form of the
+hand-written `c + 1/(1 + I*omega*tau)`, and the k = 2 tree and one-loop cumulants of a model using it are bit-identical
+to those of the same kernel given by `freq_image` (builder and SDE front end alike). A `dirac_delta(t - d)` with
+d != 0 is a delay, not a local term: it is refused with a message pointing to `Kernel.delay`. Kernels without delta
+terms are unchanged (same image string). No number of an existing model moves.
+
+#### Documentation: the state-space route and the engine choice
+
+`ARCHITECTURE.md` describes `api/_realization.py` and `engine/integration/time_domain/statespace.py` (what each
+does, how the engine is chosen, `DAEDALUS_PHASE_J_ENGINE=poles`, `PHASE_J_MEM_BUDGET_GB`); the README has a short
+section on the engine choice.
+
 #### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
 
 The state-space subset integrator below is now used for every subset it can take; `DAEDALUS_PHASE_J_ENGINE=poles`

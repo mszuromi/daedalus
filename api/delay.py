@@ -265,18 +265,20 @@ def split_shifted_time_expr(text: str):
         op = x.operator()
         if op in (dirac_delta, heaviside) and x.operands():
             a = SR(x.operands()[0])
-            if a.has(t) and SR(a.diff(t)).is_one():
+            if a.has(t):
                 X = SR(-a.subs({t: 0}))
-                if not X.is_zero() and not X.has(t):
-                    shifts.append(X)
+                # every step / delta factor counts, the unshifted ones too: a
+                # kernel mixing an instantaneous and a delayed part is not ONE
+                # delayed kernel (left to the compiler, which names it)
+                shifts.append(X if SR(a.diff(t)).is_one() and not X.has(t) else None)
         for o in x.operands():
             walk(o)
 
     walk(e)
-    if not shifts:
+    if not shifts or any(x is None for x in shifts):
         return None
     X = shifts[0]
-    if any(not SR(X - y).is_zero() for y in shifts):
+    if X.is_zero() or any(not SR(X - y).is_zero() for y in shifts):
         return None
     un = SR(e.subs({t: t + X})).expand()
     return str(X), str(un)
