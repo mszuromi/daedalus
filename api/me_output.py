@@ -55,14 +55,15 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import numpy as np
 import scipy.linalg as sl
 
 __all__ = ['MEBlock', 'SideME', 'CumulantME', 'MEUnavailable',
-           'MEConditioningWarning', 'RationalKernel', 'from_result',
-           'slice_me']
+           'MEConditioningWarning', 'MEFallbackWarning', 'RationalKernel',
+           'Pairing', 'from_result', 'slice_me', 'kernel_value',
+           'kernel_at_zero', 'quad_pairing']
 
 #: eigenvalues of one block closer than this (relative to the largest
 #: |eigenvalue|) form one cluster (a Jordan chain: τ^n terms)
@@ -80,6 +81,12 @@ MAX_BLOCK = 2000
 class MEUnavailable(ValueError):
     """The matrix-exponential triple of this result is not available (the
     message lists the reasons)."""
+
+
+class MEFallbackWarning(UserWarning):
+    """``Cumulant.spectrum`` / ``integrate_against`` with ``method='auto'``
+    had no matrix-exponential triples for the requested loop orders and
+    integrated the Phase J callables numerically instead."""
 
 
 class MEConditioningWarning(UserWarning):
@@ -530,6 +537,77 @@ class RationalKernel:
                 f'den={self.den.tolist()}, side={self.side!r})')
 
 
+class Pairing(NamedTuple):
+    """``∫ L(τ) C(τ) dτ``: ``value`` = ``smooth`` + ``contact`` (the δ
+    components), ``method`` ('exact' / 'quad'), ``abs_error`` (the
+    quadrature's estimate; ``None`` for exact)."""
+    value: complex
+    smooth: complex
+    contact: complex
+    method: str
+    abs_error: Optional[float] = None
+
+    def __complex__(self):
+        return complex(self.value)
+
+    def __float__(self):
+        return float(np.real(self.value))
+
+
+def _as_list(kernel):
+    return list(kernel) if isinstance(kernel, (list, tuple)) else [kernel]
+
+
+def kernel_value(kernel, s, values=None):
+    """``L(s)`` of a ``symbolic_out.Kernel``, a :class:`RationalKernel` or
+    a list of them (s != 0)."""
+    s = float(s)
+    tot = 0j
+    for k_ in _as_list(kernel):
+        if isinstance(k_, RationalKernel):
+            tot += k_(s)
+            continue
+        for a, r, q, side in _kernel_terms(k_, values):
+            if (side == '+') == (s > 0):
+                tot += a * s ** q * np.exp(r * s)
+    return tot
+
+
+def kernel_at_zero(kernel, values=None):
+    """``(L(0+), L(0-))``."""
+    lp = lm = 0j
+    for k_ in _as_list(kernel):
+        if isinstance(k_, RationalKernel):
+            if k_.side == '+':
+                lp += k_.at_zero()
+            else:
+                lm += k_.at_zero()
+            continue
+        for a, _r, q, side in _kernel_terms(k_, values):
+            if q == 0:
+                if side == '+':
+                    lp += a
+                else:
+                    lm += a
+    return lp, lm
+
+
+def quad_pairing(C, kernel, values, epsabs=1e-12, epsrel=1e-10, limit=400):
+    """``∫ L(τ) C(τ) dτ`` by adaptive quadrature of ``C`` (a callable of
+    the signed τ) on (−∞, 0) and (0, ∞): ``(value, abs_error)``."""
+    from scipy.integrate import quad
+    tot, err = 0j, 0.0
+    for sg in (1.0, -1.0):
+        def f(u, sg=sg):
+            return kernel_value(kernel, sg * u, values) * C(sg * u)
+        kw = dict(epsabs=epsabs, epsrel=epsrel, limit=limit)
+        re, e1 = quad(lambda u: f(u).real, 0.0, np.inf, **kw)
+        im, e2 = quad(lambda u: f(u).imag, 0.0, np.inf, **kw)
+        tot += re + 1j * im
+        err += e1 + e2
+    return tot, err
+
+
 def _kernel_terms(kernel, values):
     """``[(a, rate, power, side)]`` numeric terms of a ``symbolic_out.Kernel``
     (``side`` '+' / '-')."""
@@ -643,7 +721,7 @@ class CumulantME:
                 if a == 0:
                     continue
                 if side == '+':
-                    if r.real > 0 or (r.real == 0 and r.imag == 0 and False):
+                    if r.real > 0:
                         raise ValueError(f'kernel term rate {r} grows for s > 0')
                     # ∫_0^∞ a u^q e^{r u} C_+(u) du = a q! c (−r − G)^{−q−1} x0
                     tot += a * self.sides[e]['+'].laplace(-r, q)
