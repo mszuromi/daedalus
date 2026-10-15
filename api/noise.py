@@ -36,6 +36,7 @@ from math import factorial
 from typing import Iterable, Optional, Sequence
 
 from sage.all import SR, Integer, exp, log, sqrt, function, sage_eval
+from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
 
 __all__ = [
     'NoiseError', 'NoiseSource',
@@ -43,7 +44,12 @@ __all__ = [
     'InverseGaussianProcess', 'Cumulants', 'CGF',
     'JumpDistribution', 'Dirac', 'Exponential', 'Gamma', 'GaussianJump',
     'Laplace', 'Uniform', 'Bernoulli', 'Binomial', 'FinitePMF',
-    'THETA', 'parse_expr', 'expr_to_text', 'expr_names',
+    'VarianceGamma', 'NormalInverseGaussian', 'CGMY', 'TemperedStableSubordinator',
+    'Meixner', 'BilateralGamma', 'Skellam', 'NegativeBinomialProcess', 'SumSource',
+    'Geometric', 'PoissonJump', 'NegativeBinomial', 'Logarithmic', 'DoubleExponential',
+    'AsymmetricLaplace', 'Hyperexponential', 'PhaseType', 'ChiSquared', 'LogNormal',
+    'Weibull', 'merton_jump_diffusion', 'kou_jump_diffusion', 'levy_driven_ou',
+    'SOURCE_TYPES', 'THETA', 'parse_expr', 'expr_to_text', 'expr_names',
 ]
 
 
@@ -126,6 +132,25 @@ def parse_expr(value, *, what: str = 'expression'):
     except Exception as exc:                           # noqa: BLE001
         raise NoiseError(f'{what}: cannot convert {value!r} to an '
                          f'expression ({exc})') from exc
+
+
+def _numeric(v):
+    """``float(v)`` for a real numeric expression, else ``None`` (symbolic)."""
+    try:
+        v = SR(v)
+        if v.is_numeric() and not v.variables():
+            return float(v)
+    except Exception:                                  # noqa: BLE001
+        pass
+    return None
+
+
+def _require(who, value, name, ok, why):
+    """Raise :class:`NoiseError` when a NUMERIC parameter violates ``ok``
+    (symbolic parameters are not checked)."""
+    x = _numeric(value)
+    if x is not None and not ok(x):
+        raise NoiseError(f'{who}: parameter {name}={x:g} is invalid; {why}.')
 
 
 def expr_names(expr) -> set[str]:
@@ -257,7 +282,23 @@ class NoiseSource:
     def __init__(self, **params):
         self.params = {k: parse_expr(v, what=f'{type(self).__name__}({k}=...)')
                        for k, v in params.items()}
+        self._check_domain()
         self._check_common()
+
+    def _check_domain(self):
+        """Parameter-domain checks (numeric values only); default none."""
+
+    def _require(self, name, ok, why):
+        _require(type(self).__name__, self.params[name], name, ok, why)
+
+    # -- sampling (api.noise_samplers) -------------------------------------
+    def sample(self, dt, size, rng, values=None):
+        """``size`` i.i.d. increments of the process over a step ``dt``
+        (exact where a closed-form representation is known; see
+        :mod:`api.noise_samplers`).  ``values`` binds field-dependent
+        parameters (name -> float or array of length ``size``)."""
+        from api.noise_samplers import sample_source
+        return sample_source(self, dt, size, rng, values)
 
     # -- the primitive -----------------------------------------------------
     def _cgf(self):                                    # pragma: no cover
@@ -308,6 +349,9 @@ class NoiseSource:
                     f'{type(self).__name__}: parameter {k} may not contain '
                     f'theta (reserved for the CGF variable).')
         K0 = self._value_at_zero()
+        k0 = _numeric(K0)
+        if k0 is not None and abs(k0) < 1e-10:         # float round-off at K(0)
+            return
         if not SR(K0).simplify_full().is_zero():
             raise NoiseError(
                 f'{type(self).__name__}: K(0) = {K0} != 0; a per-unit-time '
@@ -462,9 +506,24 @@ class JumpDistribution:
     """A jump-size law with a closed-form moment generating function."""
     regular = True
 
+    #: True for laws whose MGF is a truncated moment series (no analytic MGF)
+    truncated = False
+
     def __init__(self, **params):
         self.params = {k: parse_expr(v, what=f'{type(self).__name__}({k}=...)')
                        for k, v in params.items()}
+        self._check_domain()
+
+    def _check_domain(self):
+        """Parameter-domain checks (numeric values only); default none."""
+
+    def _require(self, name, ok, why):
+        _require(type(self).__name__, self.params[name], name, ok, why)
+
+    def sample(self, rng, size, values=None):
+        """``size`` i.i.d. draws of the jump size (:mod:`api.noise_samplers`)."""
+        from api.noise_samplers import sample_jump
+        return sample_jump(self, rng, size, values)
 
     def mgf(self, theta=None):
         M = self._mgf()
@@ -594,12 +653,27 @@ class CompoundPoisson(NoiseSource):
     def __init__(self, rate, jump: JumpDistribution):
         if not isinstance(jump, JumpDistribution):
             raise NoiseError(
-                f'CompoundPoisson: jump must be a jump distribution (Dirac, '
-                f'Exponential, Gamma, GaussianJump, Laplace, Uniform, '
-                f'Bernoulli, Binomial, FinitePMF), got {type(jump).__name__}.')
+                f'CompoundPoisson: jump must be a jump distribution (an '
+                f'api.noise.JumpDistribution such as Dirac, Exponential, Gamma, '
+                f'Geometric, PhaseType, ...), got {type(jump).__name__}.')
         self.jump = jump
         self.regular = jump.regular
         super().__init__(rate=rate)
+
+    def cumulant(self, m: int):
+        if self.jump.truncated and int(m) > self.jump.order:
+            raise NoiseError(
+                f'{type(self.jump).__name__} was given to cumulant order '
+                f'{self.jump.order} (its CGF is a truncated series); cumulant '
+                f'order {int(m)} needs a larger order=.')
+        return super().cumulant(m)
+
+    def cgf_series(self, order: int):
+        if self.jump.truncated and int(order) > self.jump.order:
+            raise NoiseError(
+                f'{type(self.jump).__name__}: the CGF is a series truncated at '
+                f'order {self.jump.order}; {int(order)} was requested (raise order=).')
+        return super().cgf_series(order)
 
     def _cgf(self):
         return self.params['rate'] * (self.jump.mgf() - 1)
@@ -620,3 +694,510 @@ class CompoundPoisson(NoiseSource):
 
     def __repr__(self):
         return f'CompoundPoisson(rate={expr_to_text(self.params["rate"])!r}, jump={self.jump!r})'
+
+
+# ═══ Round 2 (item 48): finite-moment Levy sources, jump laws, composites ═══
+#
+# Every class below is a per-unit-time CGF like the rest of the module and
+# has an exact (or documented-approximate) sampler in api.noise_samplers.
+
+def _pos(x):
+    return x > 0
+
+
+def _nonneg(x):
+    return x >= 0
+
+
+class VarianceGamma(NoiseSource):
+    """Variance-gamma process (Brownian motion with drift ``mu`` and volatility
+    ``sigma`` run on a gamma clock of mean rate 1 and variance rate ``nu``),
+    plus an optional linear ``drift``:
+    ``K = drift*theta - log(1 - nu*mu*theta - nu*sigma^2*theta^2/2)/nu``.
+    Cumulant rates: ``kappa_1 = drift + mu``, ``kappa_2 = sigma^2 + nu*mu^2``."""
+
+    def __init__(self, mu, sigma, nu, drift=0):
+        super().__init__(mu=mu, sigma=sigma, nu=nu, drift=drift)
+
+    def _check_domain(self):
+        self._require('sigma', _pos, 'need sigma > 0')
+        self._require('nu', _pos, 'need nu > 0 (variance rate of the gamma clock)')
+
+    def _cgf(self):
+        P = self.params
+        return (P['drift'] * THETA
+                - log(1 - P['nu'] * P['mu'] * THETA
+                      - P['nu'] * P['sigma'] ** 2 * THETA ** 2 / 2) / P['nu'])
+
+
+class NormalInverseGaussian(NoiseSource):
+    """Normal-inverse-Gaussian process ``NIG(alpha, beta, delta, mu)`` per unit
+    time: ``K = mu*theta + delta*(sqrt(alpha^2 - beta^2) -
+    sqrt(alpha^2 - (beta + theta)^2))`` (need ``alpha > |beta|``, ``delta > 0``)."""
+
+    def __init__(self, alpha, beta, delta, mu=0):
+        super().__init__(alpha=alpha, beta=beta, delta=delta, mu=mu)
+
+    def _check_domain(self):
+        self._require('alpha', _pos, 'need alpha > 0')
+        self._require('delta', _pos, 'need delta > 0')
+        a, b = _numeric(self.params['alpha']), _numeric(self.params['beta'])
+        if a is not None and b is not None and not abs(b) < a:
+            raise NoiseError(f'NormalInverseGaussian: need |beta| < alpha '
+                             f'(alpha={a:g}, beta={b:g}).')
+
+    def _cgf(self):
+        P = self.params
+        a, b = P['alpha'], P['beta']
+        return P['mu'] * THETA + P['delta'] * (
+            sqrt(a ** 2 - b ** 2) - sqrt(a ** 2 - (b + THETA) ** 2))
+
+
+class CGMY(NoiseSource):
+    """CGMY (tempered-stable, Koponen-Boyarchenko-Levendorskii) process with
+    Levy density ``C*exp(-M x)/x^(1+Y)`` for ``x > 0`` and
+    ``C*exp(-G|x|)/|x|^(1+Y)`` for ``x < 0``:
+    ``K = C*Gamma(-Y)*((M - theta)^Y - M^Y + (G + theta)^Y - G^Y)``.
+    For ``1 < Y < 2`` this is the compensated process (mean
+    ``C*Gamma(1-Y)*(M^(Y-1) - G^(Y-1))``).  ``Y`` may not be 0 (variance
+    gamma / bilateral gamma) or 1 (the limit has a different form); need
+    ``C, G, M > 0`` and ``Y < 2``.  Cumulant rates
+    ``kappa_m = C*Gamma(m - Y)*(M^(Y-m) + (-1)^m G^(Y-m))``."""
+
+    def __init__(self, C, G, M, Y):
+        super().__init__(C=C, G=G, M=M, Y=Y)
+
+    def _check_domain(self):
+        for n in ('C', 'G', 'M'):
+            self._require(n, _pos, f'need {n} > 0')
+        y = _numeric(self.params['Y'])
+        if y is not None and (y >= 2 or y in (0.0, 1.0)):
+            raise NoiseError(
+                f'CGMY: need Y < 2 and Y not in {{0, 1}} (got Y={y:g}); Y=0 is the '
+                f'variance-gamma / BilateralGamma limit.')
+
+    def _cgf(self):
+        P = self.params
+        C, G, M, Y = P['C'], P['G'], P['M'], P['Y']
+        return C * _gamma(-Y) * ((M - THETA) ** Y - M ** Y + (G + THETA) ** Y - G ** Y)
+
+
+class TemperedStableSubordinator(NoiseSource):
+    """Tempered-stable subordinator (one-sided CGMY, ``0 < alpha < 1``): Levy
+    density ``c*exp(-lam x)/x^(1+alpha)``,
+    ``K = c*Gamma(-alpha)*((lam - theta)^alpha - lam^alpha)``;
+    ``kappa_m = c*Gamma(m - alpha)*lam^(alpha - m)``."""
+
+    def __init__(self, alpha, c, lam):
+        super().__init__(alpha=alpha, c=c, lam=lam)
+
+    def _check_domain(self):
+        self._require('alpha', lambda x: 0 < x < 1, 'need 0 < alpha < 1')
+        self._require('c', _pos, 'need c > 0')
+        self._require('lam', _pos, 'need lam > 0')
+
+    def _cgf(self):
+        P = self.params
+        al, c, lam = P['alpha'], P['c'], P['lam']
+        return c * _gamma(-al) * ((lam - THETA) ** al - lam ** al)
+
+
+class Meixner(NoiseSource):
+    """Meixner process ``Meixner(alpha, beta, delta, mu)`` per unit time:
+    ``K = mu*theta + 2*delta*(log cos(beta/2) - log cos((alpha*theta + beta)/2))``
+    (``alpha > 0``, ``|beta| < pi``, ``delta > 0``); ``kappa_1 = mu +
+    alpha*delta*tan(beta/2)``, ``kappa_2 = alpha^2*delta/(2*cos^2(beta/2))``."""
+
+    def __init__(self, alpha, beta, delta, mu=0):
+        super().__init__(alpha=alpha, beta=beta, delta=delta, mu=mu)
+
+    def _check_domain(self):
+        from math import pi
+        self._require('alpha', _pos, 'need alpha > 0')
+        self._require('delta', _pos, 'need delta > 0')
+        self._require('beta', lambda x: abs(x) < pi, 'need |beta| < pi')
+
+    def _cgf(self):
+        P = self.params
+        a, b, d = P['alpha'], P['beta'], P['delta']
+        return P['mu'] * THETA + 2 * d * (log(_cos(b / 2)) - log(_cos((a * THETA + b) / 2)))
+
+
+class BilateralGamma(NoiseSource):
+    """Bilateral gamma process (a gamma process minus an independent one):
+    ``K = -alpha_p*log(1 - theta/lam_p) - alpha_m*log(1 + theta/lam_m)``;
+    ``kappa_m = (m-1)!*(alpha_p/lam_p^m + (-1)^m alpha_m/lam_m^m)``."""
+
+    def __init__(self, alpha_p, lam_p, alpha_m, lam_m):
+        super().__init__(alpha_p=alpha_p, lam_p=lam_p, alpha_m=alpha_m, lam_m=lam_m)
+
+    def _check_domain(self):
+        for n in self.params:
+            self._require(n, _pos, f'need {n} > 0')
+
+    def _cgf(self):
+        P = self.params
+        return (-P['alpha_p'] * log(1 - THETA / P['lam_p'])
+                - P['alpha_m'] * log(1 + THETA / P['lam_m']))
+
+
+class Skellam(NoiseSource):
+    """Skellam process (difference of two independent Poisson processes):
+    ``K = rate_plus*(exp(theta) - 1) + rate_minus*(exp(-theta) - 1)``."""
+
+    def __init__(self, rate_plus, rate_minus):
+        super().__init__(rate_plus=rate_plus, rate_minus=rate_minus)
+
+    def _check_domain(self):
+        self._require('rate_plus', _nonneg, 'need rate_plus >= 0')
+        self._require('rate_minus', _nonneg, 'need rate_minus >= 0')
+
+    def _cgf(self):
+        P = self.params
+        return (P['rate_plus'] * (exp(THETA) - 1)
+                + P['rate_minus'] * (exp(-THETA) - 1))
+
+
+class NegativeBinomialProcess(NoiseSource):
+    """Negative-binomial (Polya) process: ``N_t ~ NB(shape_rate*t, p)`` counting
+    failures, ``K = shape_rate*(log(1 - p) - log(1 - p*exp(theta)))`` (a
+    compound Poisson process with logarithmic jumps); mean
+    ``shape_rate*p/(1 - p)``."""
+
+    def __init__(self, shape_rate, p):
+        super().__init__(shape_rate=shape_rate, p=p)
+
+    def _check_domain(self):
+        self._require('shape_rate', _pos, 'need shape_rate > 0')
+        self._require('p', lambda x: 0 < x < 1, 'need 0 < p < 1')
+
+    def _cgf(self):
+        P = self.params
+        return P['shape_rate'] * (log(1 - P['p']) - log(1 - P['p'] * exp(THETA)))
+
+
+class SumSource(NoiseSource):
+    """Independent sum of sources: ``K = sum_a K_a`` (``a + b`` on sources
+    builds one).  Used for jump-diffusions: ``Gaussian + CompoundPoisson``.
+    Always handled through the general CGF path of the SDE builder (a
+    Gaussian part is not moved into the Stratonovich conversion)."""
+
+    def __init__(self, *parts):
+        flat = []
+        for q in parts:
+            flat.extend(q.parts if isinstance(q, SumSource) else [q])
+        if len(flat) < 2 or not all(isinstance(q, NoiseSource) for q in flat):
+            raise NoiseError('SumSource: give at least two noise sources.')
+        self.parts = flat
+        self.regular = all(q.regular for q in flat)
+        super().__init__()
+
+    def _cgf(self):
+        return sum(q._cgf() for q in self.parts)
+
+    def free_names(self) -> set[str]:
+        out = set()
+        for q in self.parts:
+            out |= q.free_names()
+        return out
+
+    def __repr__(self):
+        return ' + '.join(repr(q) for q in self.parts)
+
+
+NoiseSource.__add__ = lambda self, other: SumSource(self, other)
+
+
+# ── more jump laws ─────────────────────────────────────────────────────
+
+class Geometric(JumpDistribution):
+    """Geometric jump on ``{1, 2, ...}`` (number of trials), success
+    probability ``p``: ``M = p*exp(theta)/(1 - (1-p)*exp(theta))``."""
+
+    def __init__(self, p):
+        super().__init__(p=p)
+
+    def _check_domain(self):
+        self._require('p', lambda x: 0 < x <= 1, 'need 0 < p <= 1')
+
+    def _mgf(self):
+        p = self.params['p']
+        return p * exp(THETA) / (1 - (1 - p) * exp(THETA))
+
+
+class PoissonJump(JumpDistribution):
+    """Poisson-distributed jump (a count) with mean ``mean``:
+    ``M = exp(mean*(exp(theta) - 1))``."""
+
+    def __init__(self, mean):
+        super().__init__(mean=mean)
+
+    def _check_domain(self):
+        self._require('mean', _nonneg, 'need mean >= 0')
+
+    def _mgf(self):
+        return exp(self.params['mean'] * (exp(THETA) - 1))
+
+
+class NegativeBinomial(JumpDistribution):
+    """Negative-binomial jump on ``{0, 1, ...}`` (failures before ``r``
+    successes; failure probability ``p``): ``M = ((1 - p)/(1 - p*exp(theta)))^r``."""
+
+    def __init__(self, r, p):
+        super().__init__(r=r, p=p)
+
+    def _check_domain(self):
+        self._require('r', _pos, 'need r > 0')
+        self._require('p', lambda x: 0 < x < 1, 'need 0 < p < 1')
+
+    def _mgf(self):
+        r, p = self.params['r'], self.params['p']
+        return ((1 - p) / (1 - p * exp(THETA))) ** r
+
+
+class Logarithmic(JumpDistribution):
+    """Logarithmic (log-series) jump on ``{1, 2, ...}``,
+    ``P(k) = -p^k/(k*log(1-p))``: ``M = log(1 - p*exp(theta))/log(1 - p)``."""
+
+    def __init__(self, p):
+        super().__init__(p=p)
+
+    def _check_domain(self):
+        self._require('p', lambda x: 0 < x < 1, 'need 0 < p < 1')
+
+    def _mgf(self):
+        p = self.params['p']
+        return log(1 - p * exp(THETA)) / log(1 - p)
+
+
+class DoubleExponential(JumpDistribution):
+    """Kou's double-exponential jump: ``+Exp(rate eta_up)`` with probability
+    ``p``, ``-Exp(rate eta_down)`` otherwise:
+    ``M = p*eta_up/(eta_up - theta) + (1-p)*eta_down/(eta_down + theta)``."""
+
+    def __init__(self, p, eta_up, eta_down):
+        super().__init__(p=p, eta_up=eta_up, eta_down=eta_down)
+
+    def _check_domain(self):
+        self._require('p', lambda x: 0 <= x <= 1, 'need 0 <= p <= 1')
+        self._require('eta_up', _pos, 'need eta_up > 0')
+        self._require('eta_down', _pos, 'need eta_down > 0')
+
+    def _mgf(self):
+        P = self.params
+        return (P['p'] * P['eta_up'] / (P['eta_up'] - THETA)
+                + (1 - P['p']) * P['eta_down'] / (P['eta_down'] + THETA))
+
+
+class AsymmetricLaplace(JumpDistribution):
+    """Asymmetric Laplace jump ``loc + scale_up*E1 - scale_down*E2`` (``E1``,
+    ``E2`` i.i.d. unit exponentials):
+    ``M = exp(loc*theta)/((1 - scale_up*theta)*(1 + scale_down*theta))``."""
+
+    def __init__(self, scale_up, scale_down, loc=0):
+        super().__init__(scale_up=scale_up, scale_down=scale_down, loc=loc)
+
+    def _check_domain(self):
+        self._require('scale_up', _pos, 'need scale_up > 0')
+        self._require('scale_down', _pos, 'need scale_down > 0')
+
+    def _mgf(self):
+        P = self.params
+        return exp(P['loc'] * THETA) / ((1 - P['scale_up'] * THETA)
+                                         * (1 + P['scale_down'] * THETA))
+
+
+class Hyperexponential(JumpDistribution):
+    """Mixture of exponentials: mean ``means[j]`` with probability
+    ``probs[j]``: ``M = sum_j probs[j]/(1 - means[j]*theta)``."""
+
+    def __init__(self, probs: Sequence, means: Sequence):
+        probs, means = list(probs), list(means)
+        if len(probs) != len(means) or not probs:
+            raise NoiseError('Hyperexponential: probs and means must be non-empty '
+                             'and of equal length.')
+        self._n = len(probs)
+        params = {}
+        for j, (q, m) in enumerate(zip(probs, means)):
+            params[f'p{j}'] = q
+            params[f'm{j}'] = m
+        super().__init__(**params)
+
+    def _check_domain(self):
+        tot = 0.0
+        numeric = True
+        for j in range(self._n):
+            self._require(f'p{j}', _nonneg, f'need probs[{j}] >= 0')
+            self._require(f'm{j}', _pos, f'need means[{j}] > 0')
+            x = _numeric(self.params[f'p{j}'])
+            if x is None:
+                numeric = False
+            else:
+                tot += x
+        if numeric and abs(tot - 1) > 1e-12:
+            raise NoiseError(f'Hyperexponential: probabilities sum to {tot:g}, not 1.')
+
+    def _mgf(self):
+        return sum(self.params[f'p{j}'] / (1 - self.params[f'm{j}'] * THETA)
+                   for j in range(self._n))
+
+
+class PhaseType(JumpDistribution):
+    """Phase-type jump ``PH(alpha, T)``: absorption time of a finite Markov
+    chain with sub-generator ``T`` (``n x n``) started in phase ``j`` with
+    probability ``alpha[j]`` (an atom ``1 - sum(alpha)`` at 0 if the sum is
+    below 1).  The MGF is rational,
+    ``M = 1 - sum(alpha) + alpha (-theta I - T)^(-1) t``, ``t = -T 1``;
+    it covers Erlang, hyperexponential and Coxian laws.  Moments
+    ``E[X^m] = m! alpha (-T)^(-m) 1``."""
+
+    def __init__(self, alpha: Sequence, T: Sequence):
+        alpha = list(alpha)
+        T = [list(r) for r in T]
+        n = len(alpha)
+        if n == 0 or len(T) != n or any(len(r) != n for r in T):
+            raise NoiseError('PhaseType: alpha must have length n and T must be n x n.')
+        self._n = n
+        params = {f'a{i}': alpha[i] for i in range(n)}
+        for i in range(n):
+            for j in range(n):
+                params[f'T{i}_{j}'] = T[i][j]
+        super().__init__(**params)
+
+    def _matrix(self):
+        n = self._n
+        return _matrix(SR, n, n, [self.params[f'T{i}_{j}']
+                                  for i in range(n) for j in range(n)])
+
+    def _check_domain(self):
+        n = self._n
+        a = [_numeric(self.params[f'a{i}']) for i in range(n)]
+        if any(x is not None and x < 0 for x in a):
+            raise NoiseError('PhaseType: alpha entries must be >= 0.')
+        if all(x is not None for x in a) and sum(a) > 1 + 1e-12:
+            raise NoiseError(f'PhaseType: sum(alpha) = {sum(a):g} exceeds 1.')
+        for i in range(n):
+            row = [_numeric(self.params[f'T{i}_{j}']) for j in range(n)]
+            if any(x is None for x in row):
+                continue
+            if row[i] >= 0:
+                raise NoiseError(f'PhaseType: T[{i}][{i}] must be negative.')
+            if any(row[j] < 0 for j in range(n) if j != i):
+                raise NoiseError(f'PhaseType: off-diagonal entries of T must be >= 0 (row {i}).')
+            if sum(row) > 1e-12:
+                raise NoiseError(f'PhaseType: row {i} of T sums to {sum(row):g} > 0 '
+                                 f'(rows of a sub-generator sum to <= 0).')
+
+    def _mgf(self):
+        n = self._n
+        T = self._matrix()
+        al = _matrix(SR, 1, n, [self.params[f'a{i}'] for i in range(n)])
+        t = -T * _matrix(SR, n, 1, [1] * n)
+        R = (-THETA * _matrix(SR, n, n, lambda i, j: 1 if i == j else 0) - T).inverse()
+        return SR(1 - sum(self.params[f'a{i}'] for i in range(n))
+                  + (al * R * t)[0, 0]).simplify_rational()
+
+
+class ChiSquared(Gamma):
+    """Chi-squared jump with ``df`` degrees of freedom; exactly
+    ``Gamma(shape=df/2, scale=2)`` (analytic MGF ``(1 - 2*theta)^(-df/2)``)."""
+
+    def __init__(self, df):
+        JumpDistribution.__init__(self, shape=SR(parse_expr(df)) / 2, scale=2)
+        self.df = parse_expr(df)
+
+    def _check_domain(self):
+        self._require('shape', _pos, 'need df > 0')
+
+
+class _SeriesJump(JumpDistribution):
+    """A jump law without an analytic MGF, carried by its raw moments to a
+    requested ``order``: ``M(theta) = sum_{m<=order} E[J^m] theta^m/m!`` is
+    a TRUNCATED SERIES, so a source built from it has exact cumulants only up
+    to ``order`` and refuses any use that needs more (cumulant, series
+    order of the action).  ``order`` must cover every cumulant order the
+    computation will use (``k`` plus loop corrections)."""
+    truncated = True
+
+    def __init__(self, order=8, **params):
+        order = int(order)
+        if order < 1:
+            raise NoiseError(f'{type(self).__name__}: order must be >= 1.')
+        self.order = order
+        super().__init__(**params)
+
+    def moment(self, m: int):                          # pragma: no cover
+        raise NotImplementedError
+
+    def _mgf(self):
+        return sum(self.moment(m) * THETA ** m / factorial(m)
+                   for m in range(self.order + 1))
+
+
+class LogNormal(_SeriesJump):
+    """Log-normal jump ``exp(N(mu, sigma^2))`` (no MGF): raw moments
+    ``exp(m*mu + m^2*sigma^2/2)`` to ``order`` (truncated series)."""
+
+    def __init__(self, mu, sigma, order=8):
+        super().__init__(order, mu=mu, sigma=sigma)
+
+    def _check_domain(self):
+        self._require('sigma', _pos, 'need sigma > 0')
+
+    def moment(self, m):
+        return exp(m * self.params['mu'] + m ** 2 * self.params['sigma'] ** 2 / 2)
+
+
+class Weibull(_SeriesJump):
+    """Weibull jump (``scale``, ``shape``; no MGF for ``shape < 1``): raw
+    moments ``scale^m*Gamma(1 + m/shape)`` to ``order`` (truncated series)."""
+
+    def __init__(self, scale, shape, order=8):
+        super().__init__(order, scale=scale, shape=shape)
+
+    def _check_domain(self):
+        self._require('scale', _pos, 'need scale > 0')
+        self._require('shape', _pos, 'need shape > 0')
+
+    def moment(self, m):
+        return self.params['scale'] ** m * _gamma(1 + SR(m) / self.params['shape'])
+
+
+#: every noise-source class (config files / SDE accept these by name)
+SOURCE_TYPES = (
+    'Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
+    'InverseGaussianProcess', 'Cumulants', 'CGF', 'VarianceGamma',
+    'NormalInverseGaussian', 'CGMY', 'TemperedStableSubordinator', 'Meixner',
+    'BilateralGamma', 'Skellam', 'NegativeBinomialProcess')
+
+
+# ── named composites (thin constructors over existing pieces) ──────────
+
+def merton_jump_diffusion(drift, sigma, rate, jump_mean, jump_sd):
+    """Merton jump-diffusion increments: a Brownian part (``drift``,
+    variance ``sigma^2``) plus compound Poisson with Gaussian jumps
+    ``N(jump_mean, jump_sd^2)``."""
+    return (Gaussian(var=f'({sigma})^2', mean=drift)
+            + CompoundPoisson(rate, GaussianJump(jump_mean, jump_sd)))
+
+
+def kou_jump_diffusion(drift, sigma, rate, p, eta_up, eta_down):
+    """Kou jump-diffusion increments: Brownian part plus compound Poisson
+    with double-exponential jumps."""
+    return (Gaussian(var=f'({sigma})^2', mean=drift)
+            + CompoundPoisson(rate, DoubleExponential(p, eta_up, eta_down)))
+
+
+def levy_driven_ou(source, rate='mu', *, field='x', name='Levy-driven OU',
+                   rate_default=1.0):
+    """Barndorff-Nielsen-Shephard Levy-driven OU, ``d x = -rate*x dt + d L``
+    with ``L`` the Levy process ``source`` (an unbuilt :class:`api.sde.SDE`;
+    add parameters of ``source`` with ``.parameter``).  Stationary
+    cumulants of ``x`` are ``kappa_n(source)/(n*rate)``."""
+    from api.sde import SDE
+    s = SDE(name)
+    s.parameter(rate, default=rate_default, domain='positive')
+    s.field(field)
+    s.drift(field, f'-{rate}*{field}')
+    s.noise('L', source, couples={field: 1})
+    return s
