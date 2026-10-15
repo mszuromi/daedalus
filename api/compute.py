@@ -912,6 +912,16 @@ def _initial_state_term(so, propagator_data, num_params, external_fields,
     return vals, term
 
 
+def _embedded_noise_states(model):
+    """Names of the auxiliary noise fields the model builder made from
+    declared Markov-embeddable noise kernels (``correlated_noises`` entries
+    ``*_markov_aux``).  Under a switch-on they start at zero like every
+    fluctuation: the noise is switched on with the system."""
+    cn = model.get('correlated_noises') or {} if isinstance(model, dict) \
+        else {}
+    return sorted(str(k) for k in cn if str(k).endswith('_markov_aux'))
+
+
 def _ledger_switch_on(preflight, so):
     """The analyzer ledger records the non-stationary question: the
     stationary-state line is replaced by the switch-on one (the gates
@@ -925,10 +935,14 @@ def _ledger_switch_on(preflight, so):
         else 'plus the tree-level initial-state term of '
         + ('initial_covariance' if so['initial_covariance'] is not None
            else 'initial_mean'))
+    emb = _embedded_noise_states(preflight.ctx.model)
     ctx.ledger_add('approximation', 'switch_on_state',
                    f'switch-on transient: fluctuations about the selected '
                    f'saddle start at t_min = {so["t_min"]!r} ({init}); every '
-                   f'vertex time is > t_min; state-space Phase J route only',
+                   f'vertex time is > t_min; state-space Phase J route only'
+                   + (f'; the Markov-embedded noise state(s) {emb} start at '
+                      f'zero too (the noise is switched on at t_min)'
+                      if emb else ''),
                    declared=True)
 
 
@@ -1109,7 +1123,10 @@ def compute_cumulants(
         first segment from the empty state); a model or subset it does not
         take, ``DAEDALUS_PHASE_J_ENGINE=poles``, spatial models, the grouped
         integrator and ``output_npz``/``output_csv`` raise.  As ``t_min ->
-        -inf`` the result tends to the stationary one.
+        -inf`` the result tends to the stationary one.  A noise kernel
+        the model builder Markov-embedded (an auxiliary field) starts at
+        zero too: the noise is switched on with the system
+        (``result['nonstationary']['embedded_noise_states']``).
     times : array or None
         Required with ``t_min``: the absolute external times to evaluate,
         shape ``(n, k)`` (row ``i`` = the times of the ``k`` legs, in the
@@ -2054,6 +2071,9 @@ def _run_phase_j(state, grouped):
         so_record = {
             'protocol': 'switch_on', 't_min': switch_on['t_min'],
             'engine': 'statespace',
+            # Markov-embedded noise kernels (auxiliary fields made when the
+            # model was built): their states start at zero as well
+            'embedded_noise_states': _embedded_noise_states(model),
             'initial_covariance': switch_on['initial_covariance'],
             'initial_mean': switch_on['initial_mean'],
             'initial_term': None}

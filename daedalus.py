@@ -497,6 +497,20 @@ class Config:
                                              # C(τ_1..τ_{k−1}) instead of slices
                                              # (cost ~n^{k−1}; k=3 → heatmap)
 
+    # ── switch-on transients (temporal; non-stationary stage 1) ──
+    # ``t_min`` (absolute time): the fluctuations about the mean-field saddle
+    # start at zero at t_min, and the cumulant is a function of the ABSOLUTE
+    # external times ``times``: shape (n, k) (one row per point, legs in the
+    # order of external_fields), or 1-D / an (lo, hi, n) TUPLE (every leg at
+    # t: the equal-time cumulant).  Values: result['C_times'] (by loop order:
+    # result['C_times_by_ell']).  None (default): the stationary state.
+    # ``initial_covariance`` (k=2) / ``initial_mean`` (k=1), tree level only:
+    # the deterministic initial-state term R C0 R^T / R m0 (compute_cumulants).
+    t_min: Optional[float] = None
+    times: Any = None
+    initial_covariance: Any = None
+    initial_mean: Any = None
+
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
@@ -565,6 +579,23 @@ class Config:
         # at Config construction, not deep inside run().
         self.resolved_tau_grid()
         self.resolved_grid()
+        if self.t_min is None and (self.times is not None
+                                   or self.initial_covariance is not None
+                                   or self.initial_mean is not None):
+            raise ValueError(
+                'Config: times / initial_covariance / initial_mean need t_min '
+                '(a switch-on transient); without t_min the run is stationary.')
+        self.resolved_times()
+
+    def resolved_times(self):
+        """Materialise ``times`` (an ``(lo, hi, n)`` tuple → ``linspace`` of
+        equal-time points; a list/array → literal, 1-D or ``(n, k)``), or
+        None."""
+        if self.times is None:
+            return None
+        if isinstance(self.times, tuple):
+            return self._resolve_grid(self.times, 'times')
+        return np.asarray(self.times, dtype=float)
 
     def resolved_grid(self):
         """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
@@ -694,6 +725,10 @@ def config_options(spatial=None):
         ('tau_step',         'under-the-hood: τ spacing (paired with tau_max)'),
         ('kpoint_base_lags', 'k≥3: [k−1 floats] fix the non-swept legs (slices cross here; where the swept leg meets a leg, the point is the left limit)'),
         ('kpoint_full_grid', 'k≥3: True → full (k−1)-D tensor C(τ₁…) instead of axis slices'),
+        ('t_min',            'switch-on transient: fluctuations start at 0 at this absolute time (None → stationary)'),
+        ('times',            'with t_min: absolute times, (n, k) array, or 1-D / (lo,hi,n) TUPLE (all legs at t) → result["C_times"]'),
+        ('initial_covariance', 'with t_min, k=2, tree: covariance C0 of the fluctuations at t_min (adds R C0 Rᵀ)'),
+        ('initial_mean',     'with t_min, k=1, tree: mean m0 of the fluctuations at t_min (adds R m0)'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
         ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ'),
@@ -1160,6 +1195,23 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['policy'] = cfg.policy
     if cfg.preflight is not None:
         kw['preflight'] = bool(cfg.preflight)
+    if cfg.t_min is not None:
+        # switch-on transient: absolute times, temporal cumulants only
+        if is_spatial(model):
+            raise NotImplementedError(
+                'Config.t_min (switch-on transients) is implemented for '
+                'temporal models only')
+        if (getattr(cfg, 'output', 'cumulant') or 'cumulant') != 'cumulant':
+            raise NotImplementedError(
+                f"Config.t_min with output={cfg.output!r}: only the cumulant "
+                f"is assembled for switch-on runs (assemble moments from "
+                f"result['C_times'] of the lower orders)")
+        kw['t_min'] = float(cfg.t_min)
+        kw['times'] = cfg.resolved_times()
+        if cfg.initial_covariance is not None:
+            kw['initial_covariance'] = cfg.initial_covariance
+        if cfg.initial_mean is not None:
+            kw['initial_mean'] = cfg.initial_mean
 
     _kpoint_grid = None            # set below if a k≥3 spatial grid is built
     if is_spatial(model):
@@ -1258,6 +1310,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # times of each slice point (the Itô nudges at coincident legs) are set by
     # ``_kpoint_slice_times``; see the comment above it.
     if (not is_spatial(model) and k >= 3 and res.get('C_tau') is None
+            and res.get('t_min') is None
             and callable(res.get('total_C'))):
         from api.compute import _ITO_EPS
         tau = np.asarray(res.get('tau_grid'))
@@ -1458,6 +1511,10 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     """
     cfg = cfg or result.get('_cfg') or Config()
     model = model or result.get('_model') or {}
+    if result.get('t_min') is not None:
+        raise NotImplementedError(
+            'plot_cumulant: switch-on results (t_min) are functions of the '
+            "absolute times; plot result['C_times'] against result['times']")
     if show_delta:
         if residual or result.get('output_kind') in ('moment',
                                                      'central_moment'):
