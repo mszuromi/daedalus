@@ -202,6 +202,9 @@ def _numpy_params(model: dict, fundamental: dict) -> dict:
     expressions like ``w[i,j]`` (2-D indexing) and ``Em[i]`` (1-D) work
     under plain Python ``eval``.
     """
+    from api._mean_field import complete_parameters
+    fundamental = complete_parameters(model, fundamental,
+                                     'mean-field DAE solve', strict=False)
     out = {}
     for pspec in model.get('parameters', []):
         name = pspec['name']
@@ -317,6 +320,15 @@ def _build_residual(model: dict, params_np: dict,
                         f'{rhs_text!r}, i={i}) is not a scalar: shape '
                         f'{np.shape(lhs - rhs)}.')
                 out[k] = float(diff[0])
+            except NameError as exc:
+                # (still a NameError: the multi-start loop swallows ValueErrors
+                # as "no fixed point from this seed")
+                raise NameError(
+                    f'mean-field DAE solve: {exc} in the equation '
+                    f'{lhs_text!r} = {rhs_text!r}.  If it is a model '
+                    f'parameter, it was not in the parameters given and '
+                    f'declares no default (pass parameters={{...}} or '
+                    f'declare default= on ModelBuilder.parameter).') from exc
             except (ValueError, ZeroDivisionError, OverflowError,
                     FloatingPointError):
                 # Penalize: send the solver away from this region.
