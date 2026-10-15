@@ -155,9 +155,20 @@ def _cgmy(C, G, M, Y, dt, size, rng):
     if Y < 1:                                   # exact: difference of subordinators
         return (_tempered_stable_subordinator(Y, C, M, dt, size, rng)
                 - _tempered_stable_subordinator(Y, C, G, dt, size, rng))
-    # 1 < Y < 2: truncated series with Gaussian small jumps
-    from scipy.special import gammainc
+    # 1 < Y < 2: truncated series with Gaussian small jumps, chunked over paths
+    # so that the jumps held at once stay below ~2e6
     eps = CGMY_EPS / max(M, G)
+    per_path = dt * C * (M ** Y * _upper_gamma(-Y, M * eps) + G ** Y * _upper_gamma(-Y, G * eps))
+    chunk = int(max(1, min(size, 2e6 / max(per_path, 1e-9))))
+    if chunk < size:
+        return np.concatenate([_cgmy_series(C, G, M, Y, dt, min(chunk, size - i), rng, eps)
+                               for i in range(0, size, chunk)])
+    return _cgmy_series(C, G, M, Y, dt, size, rng, eps)
+
+
+def _cgmy_series(C, G, M, Y, dt, size, rng, eps):
+    from math import gamma
+    from scipy.special import gammainc
     large_mean = 0.0
     out = np.zeros(size)
     var_small = 0.0
@@ -323,12 +334,16 @@ def _phase_type(alpha, T, size, rng):
     out = np.zeros(size)
     active = np.flatnonzero(state < n)
     cum = np.cumsum(probs, axis=1)
-    while active.size:
+    for _ in range(10 ** 6):
+        if not active.size:
+            break
         s = state[active]
         out[active] += rng.exponential(1.0 / exit_rate[s])
         u = rng.uniform(size=active.size)
         state[active] = (u[:, None] > cum[s]).sum(axis=1)
         active = active[state[active] < n]
+    else:
+        raise NoiseError('PhaseType sampler: the chain did not absorb (is T a proper sub-generator?).')
     return out
 
 

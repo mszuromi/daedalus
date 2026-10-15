@@ -33,9 +33,10 @@ No existing number moves (existing noise tests unchanged, zoo bit-identical).
 #### Fixed: a declared parameter named `e` was read as Euler's number (round 2, item 48)
 
 `SDE().parameter('e', ...)` with `Poisson(rate='e', size='e')` printed `exp(1)` in the action while the drift's `e` was
-the parameter, a silently wrong action and saddle. `SDE.parameter / field / define_function / define_kernel / population`
-now refuse the names `e`, `pi`, `I`, the keywords (`sum`, `for`, `in`, `if`, `else`, `range`, `Dt`, `Conv`, `t`, `theta`)
-and the elementary-function names with `SDEError`.
+the parameter, a silently wrong action and saddle. `SDE.parameter / field / define_function / define_kernel / noise(expose=)`
+now refuse the names `e`, `pi`, `I`, the keywords (`sum`, `for`, `in`, `if`, `else`, `range`, `Dt`, `Conv`, `t`, `theta`),
+Python keywords and the elementary-function names with `SDEError` (population labels only refuse `Dt`, `Conv`, `t`,
+`theta` and Python keywords: they are loop-set labels, never symbols; `I` stays a valid population name).
 
 #### Fixed: float-literal coupled drifts, partial `parameters=`, NaN lags (round 2, item 49)
 

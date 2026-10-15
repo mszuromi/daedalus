@@ -162,7 +162,7 @@ def test_jump_moments_match(name):
 def test_truncated_series_is_refused_beyond_its_order():
     cp = N.CompoundPoisson(1, N.LogNormal(0, 1, order=3))
     assert cp.cumulant(3) > 0
-    with pytest.raises(NoiseError, match='truncated series'):
+    with pytest.raises(NoiseError, match='truncated'):
         cp.cumulant(4)
     with pytest.raises(NoiseError, match='truncated'):
         cp.cgf_series(5)
@@ -260,7 +260,15 @@ def test_reserved_declared_names_are_refused(bad):
     with pytest.raises(SDEError, match='reserved'):
         SDE('r').field(bad)
     with pytest.raises(SDEError, match='reserved'):
-        SDE('r').population(bad)
+        SDE('r').noise('n', N.Poisson(1), expose=bad)
+
+
+def test_population_labels_are_not_symbols():
+    for ok in ('I', 'E', 'e', 'pop'):
+        SDE('r').population(ok)                            # loop-set labels, never Sage symbols
+    for bad in ('Dt', 'for', 'lambda'):
+        with pytest.raises(SDEError, match='reserved'):
+            SDE('r').population(bad)
 
 
 def test_parameter_named_like_euler_was_a_silent_wrong_action():
@@ -385,7 +393,7 @@ E2E = {
     'neg_binomial_process': lambda: N.NegativeBinomialProcess(2, '1/3'),
     'merton': lambda: N.merton_jump_diffusion(0.1, 0.3, 2, 0.2, 0.4),
     'cp_phase_type': lambda: N.CompoundPoisson(2, N.PhaseType(_PH_ALPHA, _PH_T)),
-    'cp_log_normal': lambda: N.CompoundPoisson(2, N.LogNormal(0.1, '1/2', order=6)),
+    'cp_log_normal': lambda: N.CompoundPoisson(2, N.LogNormal(0.1, '1/2', order=8)),
 }
 
 
@@ -448,3 +456,68 @@ def test_sum_operator_and_flattening():
 def test_config_accepts_new_source_types():
     from api.config_run import SDE_NOISE_TYPES
     assert {'VarianceGamma', 'CGMY', 'Meixner', 'NormalInverseGaussian'} <= set(SDE_NOISE_TYPES)
+
+
+def test_field_dependent_parameters_through_values():
+    """array-valued parameters: compound-Poisson jump scale per entry; scalar-only samplers loop per entry."""
+    rng = np.random.default_rng(3)
+    m = np.concatenate([np.full(20_000, 0.5), np.full(20_000, 2.0)])
+    x = N.CompoundPoisson(4, N.Exponential('m')).sample(1.0, 40_000, rng, values={'m': m})
+    assert x[:20_000].mean() == pytest.approx(4 * 0.5, rel=0.03)
+    assert x[20_000:].mean() == pytest.approx(4 * 2.0, rel=0.03)
+    mv = N.Meixner('a', 0.3, 1).sample(0.5, 3, rng, values={'a': np.array([0.5, 1.0, 2.0])})
+    assert mv.shape == (3,) and np.isfinite(mv).all()
+    ts = N.TemperedStableSubordinator('1/2', 'c', 2).sample(0.5, 3, rng, values={'c': np.array([0.5, 1.0, 2.0])})
+    assert (ts > 0).all()
+
+
+def test_names_that_merely_contain_reserved_words_are_fine():
+    s = (SDE('ok').parameter('e0', default=1.0, domain='positive').parameter('pie', default=1.0, domain='positive')
+         .parameter('Imu', default=1.0, domain='positive').field('x'))
+    s.drift('x', '-pie*x + e0').noise('xi', N.Poisson(rate='e0', size='Imu'), couples={'x': 1})
+    assert 'exp(1)' not in s.action_text()
+
+
+# ── review findings (independent reviewer, regression tests) ───────────────────────────────────
+
+def test_truncated_series_guard_covers_sums_and_the_action():
+    ln = N.CompoundPoisson(1, N.LogNormal(0, '1/2', order=3))
+    summed = N.Gaussian(var=1) + ln
+    with pytest.raises(NoiseError, match='truncated'):
+        summed.cumulant(5)
+    with pytest.raises(NoiseError, match='truncated'):
+        ln.action_cgf(8)
+    s = SDE('tr').parameter('mu', default=1.0, domain='positive').field('x').drift('x', '-mu*x')
+    s.noise('L', ln, couples={'x': 1})
+    with pytest.raises(NoiseError, match='truncated'):
+        s.action_text()                                    # the builder's default series order is 8 > 3
+    assert 'exp(' in s.series_order(3).action_text()
+
+
+def test_k0_tolerance_is_relative_to_the_rates():
+    big = N.CompoundPoisson(1e8, N.DoubleExponential(0.7, 3.3, 2.1))
+    assert _f(big, 1) == pytest.approx(1e8 * (0.7 / 3.3 - 0.3 / 2.1), rel=1e-9)
+    with pytest.raises(NoiseError, match='K\\(0\\)'):
+        N.CGF('lam*exp(a*theta)')
+
+
+def test_population_I_and_reserved_expose_names():
+    s = SDE('p').population('I', size=2).field('x', population='I').parameter('mu', default=1.0, domain='positive')
+    assert 'for i in I' in s.drift('x', '-mu*x').noise('L', N.Poisson('mu', 1), couples={'x': 1}).action_text()
+    with pytest.raises(SDEError, match='reserved'):
+        SDE('q').field('x').noise('n', N.Poisson(1), expose='e')
+    with pytest.raises(SDEError, match='reserved'):
+        SDE('q').parameter('lambda', default=1.0)
+
+
+def test_phase_type_requires_an_absorbing_chain():
+    with pytest.raises(NoiseError, match='singular'):
+        N.PhaseType([1, 0], [[-1, 1], [1, -1]])
+
+
+def test_cgmy_series_sampler_is_chunked():
+    src = N.CGMY(2, 100, 0.5, '3/2')
+    rng = np.random.default_rng(2)
+    x = src.sample(0.1, 6_000, rng)
+    assert x.shape == (6_000,)
+    assert x.mean() == pytest.approx(_f(src, 1) * 0.1, abs=5 * sqrt(_f(src, 2) * 0.1 / 6_000))

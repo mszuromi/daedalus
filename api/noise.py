@@ -311,11 +311,25 @@ class NoiseSource:
             K = K.subs({THETA: SR(theta)})
         return K
 
+    def _max_order(self):
+        """Highest exact cumulant order (``None``: unlimited).  Finite when
+        the CGF contains a truncated moment series (see :class:`_SeriesJump`)."""
+        return None
+
+    def _check_order(self, m, what):
+        top = self._max_order()
+        if top is not None and int(m) > top:
+            raise NoiseError(
+                f'{type(self).__name__}: its CGF is a series truncated at order '
+                f'{top} (a moment-series jump law); {what} needs order {int(m)}. '
+                f'Raise the law\'s order= (or lower SDE.series_order).')
+
     def cumulant(self, m: int):
         """``d^m K / d theta^m`` at 0: the ``m``-th cumulant per unit time."""
         m = int(m)
         if m < 1:
             raise NoiseError('cumulant order must be >= 1')
+        self._check_order(m, f'cumulant {m}')
         K = self._cgf()
         if self.regular:
             return (K.diff(THETA, m)).subs({THETA: 0}).simplify_full()
@@ -328,12 +342,15 @@ class NoiseSource:
 
     def cgf_series(self, order: int):
         """Taylor polynomial of ``K`` in theta up to ``order``."""
+        self._check_order(order, f'a series of order {int(order)}')
         return sum(self.cumulant(m) * THETA ** m / factorial(m)
                    for m in range(1, int(order) + 1))
 
     def action_cgf(self, order: int = 8):
         """The CGF as written into the action: the closed form when it is
-        regular at 0, else the Taylor polynomial to ``order``."""
+        regular at 0, else the Taylor polynomial to ``order``.  Refused when
+        a truncated moment series carries fewer than ``order`` terms."""
+        self._check_order(order, f'the action (series order {int(order)})')
         return self._cgf() if self.regular else self.cgf_series(order)
 
     # -- validation --------------------------------------------------------
@@ -350,8 +367,10 @@ class NoiseSource:
                     f'theta (reserved for the CGF variable).')
         K0 = self._value_at_zero()
         k0 = _numeric(K0)
-        if k0 is not None and abs(k0) < 1e-10:         # float round-off at K(0)
-            return
+        if k0 is not None:                              # float round-off at K(0), relative to the largest parameter
+            scale = max([1.0] + [abs(x) for x in map(_numeric, self.params.values()) if x is not None]) ** 2
+            if abs(k0) <= 1e-12 * scale:
+                return
         if not SR(K0).simplify_full().is_zero():
             raise NoiseError(
                 f'{type(self).__name__}: K(0) = {K0} != 0; a per-unit-time '
@@ -660,20 +679,8 @@ class CompoundPoisson(NoiseSource):
         self.regular = jump.regular
         super().__init__(rate=rate)
 
-    def cumulant(self, m: int):
-        if self.jump.truncated and int(m) > self.jump.order:
-            raise NoiseError(
-                f'{type(self.jump).__name__} was given to cumulant order '
-                f'{self.jump.order} (its CGF is a truncated series); cumulant '
-                f'order {int(m)} needs a larger order=.')
-        return super().cumulant(m)
-
-    def cgf_series(self, order: int):
-        if self.jump.truncated and int(order) > self.jump.order:
-            raise NoiseError(
-                f'{type(self.jump).__name__}: the CGF is a series truncated at '
-                f'order {self.jump.order}; {int(order)} was requested (raise order=).')
-        return super().cgf_series(order)
+    def _max_order(self):
+        return self.jump.order if self.jump.truncated else None
 
     def _cgf(self):
         return self.params['rate'] * (self.jump.mgf() - 1)
@@ -895,6 +902,10 @@ class SumSource(NoiseSource):
     def _cgf(self):
         return sum(q._cgf() for q in self.parts)
 
+    def _max_order(self):
+        tops = [t for t in (q._max_order() for q in self.parts) if t is not None]
+        return min(tops) if tops else None
+
     def free_names(self) -> set[str]:
         out = set()
         for q in self.parts:
@@ -1087,6 +1098,13 @@ class PhaseType(JumpDistribution):
             if sum(row) > 1e-12:
                 raise NoiseError(f'PhaseType: row {i} of T sums to {sum(row):g} > 0 '
                                  f'(rows of a sub-generator sum to <= 0).')
+        Tn = [[_numeric(self.params[f'T{i}_{j}']) for j in range(n)] for i in range(n)]
+        if all(x is not None for r in Tn for x in r):
+            import numpy as _np
+            Tm = _np.array(Tn)
+            if abs(_np.linalg.det(Tm)) <= 1e-12 * max(1.0, float(_np.abs(Tm).max())) ** n:
+                raise NoiseError('PhaseType: T is singular, so the chain never absorbs '
+                                 '(a sub-generator must be invertible).')
 
     def _mgf(self):
         n = self._n

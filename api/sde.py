@@ -57,6 +57,7 @@ gives the same model.
 """
 from __future__ import annotations
 
+import keyword
 import re
 from collections import OrderedDict
 from typing import Optional
@@ -77,6 +78,7 @@ _KEYWORDS = {'sum', 'for', 'in', 'Dt', 'Conv', 'I', 'pi', 'e',
              'if', 'else', 'range'} | set(_MATH_FUNCS)
 _DT = SR.var('Dt')
 _NO_DECLARE = _KEYWORDS | {'theta', 't'}
+_NO_POPULATION = {'Dt', 'Conv', 'theta', 't'}
 
 
 def _check_declarable(name, kind):
@@ -84,7 +86,9 @@ def _check_declarable(name, kind):
     function.  ``e``, ``pi`` and ``I`` are the Sage constants inside noise
     parameters, so a declared ``e`` was read as Euler's number there but as
     the parameter elsewhere (a silently wrong action and saddle)."""
-    if name in _NO_DECLARE:
+    bad = (name in _NO_POPULATION or keyword.iskeyword(name)) if kind == 'population' \
+        else (name in _NO_DECLARE or keyword.iskeyword(name))
+    if bad:
         raise SDEError(
             f'{kind} name {name!r} is reserved (built-in constant, keyword or '
             f'function); choose another name (e.g. {name}0).')
@@ -299,6 +303,7 @@ class SDE:
                            f'or expose=<field name>.')
         if expose is not None:
             self._check_new_name(expose)
+            _check_declarable(expose, 'exposed field')
             self._fields[expose] = {'population': population, 'description':
                                     f'exposed noise source {name}', 'domain': domain,
                                     'latex': '', 'exposed': name}
