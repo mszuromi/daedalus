@@ -123,6 +123,9 @@ _PIPELINE_EXPORTS = {
     'CumulantME':                'api.me_output',
     'RationalKernel':            'api.me_output',
     'MEUnavailable':             'api.me_output',
+    'MEFallbackWarning':         'api.me_output',
+    'MEConditioningWarning':     'api.me_output',
+    'slice_me':                  'api.me_output',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
     'tree_covariance':           'api.symbolic_out',
     'tree_covariance_from_result': 'api.symbolic_out',

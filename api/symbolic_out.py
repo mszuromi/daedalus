@@ -1420,26 +1420,52 @@ def _generic_retry(fn, exprs, omega, reference):
     point (the pre-C2 routes accepted such a point: they sampled a
     neighbourhood), retry at a nearby generic point: symbols without a
     reference value (taken as 1, i.e. assumed positive) at ``1 + (j + 1)
-    sqrt(2) / 10``, and, if that is not enough, every reference value
+    sqrt(2) 1e-3``, and, if that is not enough, every reference value
     scaled by ``1 + (j + 1) sqrt(2) 1e-3``.  The half-plane split is then
-    decided where the poles are distinct; it is the split of the reference
-    point unless a pole sits on the imaginary axis there (refused either
-    way).  The stated assumptions keep the coincidence conditions: a value
+    decided where the poles are distinct, and every sign condition it states
+    must hold at the reference point itself (else ``ClosedFormUnavailable``:
+    the move would have changed the split).  The stated assumptions keep
+    the coincidence conditions: a value
     that violates them is refused at evaluation (substitute it with
     ``values=`` to make the repeated pole exact)."""
     try:
         return fn(reference)
-    except AssumptionViolation:
+    except AssumptionViolation as exc0:
         ref = dict(_as_name_dict(reference) or {})
         om = str(omega)
         names = sorted({str(v) for e in exprs for v in SR(e).variables()}
                        - {om})
+        orig = dict(ref)
+        orig.update({nm: 1.0 for nm in names if nm not in orig})
+
+        def checked(out):
+            # the split decided at the moved point must be the reference
+            # point's own: every sign condition (not the distinctness ones)
+            # must hold there too (review: a pole 1e-4 from coinciding
+            # could cross under the move)
+            ass = getattr(out, 'assumptions', None)
+            if ass is None and isinstance(out, dict):
+                ass = out.get('assumptions')
+            for a in ass or []:
+                if a.relation == '>' and a.kind != 'distinct':
+                    try:
+                        ok = a.holds(orig)
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        raise ClosedFormUnavailable(
+                            f'poles coincide at the reference point and no '
+                            f'nearby generic point keeps its half-plane '
+                            f'split ({a}); give a reference where the poles '
+                            f'are distinct, or substitute the values with '
+                            f'values=') from exc0
+            return out
         missing = [nm for nm in names if nm not in ref]
         if missing:
             for j, nm in enumerate(missing):
-                ref[nm] = 1.0 + (j + 1) * 2 ** 0.5 / 10
+                ref[nm] = 1.0 + (j + 1) * 2 ** 0.5 * 1e-3
             try:
-                return fn(ref)
+                return checked(fn(ref))
             except AssumptionViolation:
                 pass
         for j, nm in enumerate(sorted(ref)):
@@ -1447,7 +1473,7 @@ def _generic_retry(fn, exprs, omega, reference):
                 ref[nm] = float(ref[nm]) * (1.0 + (j + 1) * 2 ** 0.5 * 1e-3)
             except (TypeError, ValueError):
                 pass
-        return fn(ref)
+        return checked(fn(ref))
 
 
 def inverse_transform(C0_entry, omega=None, tau=None, *,

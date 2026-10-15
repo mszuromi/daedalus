@@ -2061,8 +2061,14 @@ class SubsetSS:
                     return None
                 continue
             rho0, rho1 = r0 + r1 * t_anchor, r1 * sigma
-            if r0 + r1 * t_ref < 0 or rho0 < 0:
+            if rho1 < 0 and rho0 <= 0:
                 return None             # retarded: 0 on the whole chamber
+            if rho0 < 0 or rho1 < 0:
+                # the row changes sign inside the chamber (only with a
+                # constant offset or between two other legs): not one
+                # matrix exponential
+                raise SSIneligible('row_crosses_zero',
+                                   f'rho0={rho0:g}, rho1={rho1:g}')
             rows.append((rho0, rho1, ent))
         out = {'const': const, 'rows': rows, 'seg': None, 'beta': 0.0,
                'x0': None, 'c': None}
@@ -2073,8 +2079,15 @@ class SubsetSS:
             return self._slot_values(f)
         v_ref = slot_vals(f_ref)
         v_base = slot_vals(fb)
-        v_dir = [vb2 - vb for vb, vb2 in zip(
-            v_base, slot_vals([b + d for b, d in zip(fb, fd)]))]
+        # slopes from the slot keys (exact for the integer directions of
+        # the callers; a difference of two slot values would carry rounding)
+        v_dir = []
+        for key in self.slots:
+            v = 0.0
+            for a_, d_ in zip(key[:-1], fd):
+                if a_ != 0.0 and d_ != 0.0:
+                    v = v + a_ * d_
+            v_dir.append(v)
         pattern, gv = self._pattern(v_ref)
         if any(v_dir[s_] != v_dir[g[0]] for g in pattern for s_ in g):
             raise SSIneligible('several_lags', 't_ref is on a chamber '

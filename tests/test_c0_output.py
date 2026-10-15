@@ -261,11 +261,15 @@ def _kernels():
         'rational': ME.RationalKernel([1.0, 0.5], [1.0, 3.0, 2.0], side='+'),
         'rational_neg': [ME.RationalKernel([2.0], [1.0, 1.5], side='-'),
                          K.exponential(0.2, -2.0, 'positive')],
+        # complex poles (an oscillating kernel), both sides (review: the
+        # Sylvester solve must not mix a real Schur form into ztrsyl)
+        'oscillatory': [ME.RationalKernel([1.0], [1.0, 0.4, 4.04], '+'),
+                        ME.RationalKernel([0.5, 1.0], [1.0, 0.4, 4.04], '-')],
     }
 
 
 @pytest.mark.parametrize('kname', ['two_sided', 'poly_exp', 'rational',
-                                   'rational_neg'])
+                                   'rational_neg', 'oscillatory'])
 def test_integrate_against_vs_quadrature(ouq, kname):
     _res, c = ouq
     kern = _kernels()[kname]
@@ -354,12 +358,15 @@ def test_nearly_coincident_poles_warn_but_the_triple_is_exact():
                          - c.spectrum(om, method='quad'))) <= 1e-8
 
 
-def test_k3_slices_equal_dd_run():
+@pytest.mark.parametrize('ext', [[('p', 1), ('q', 1), ('z', 1)],
+                                 [('p', 1)] * 3])
+def test_k3_slices_equal_dd_run(ext):
+    """Distinct and identical legs (identical: Wick permutations whose
+    origin is the swept leg, the case where slopes must be exact)."""
     model = SSM.oscillator_red_noise()
     for base in (None, [0.3, -0.4]):
         cfg = dd.Config(k=3, max_ell=1, tau_grid=(-3, 3, 21),
-                        external_fields=[('p', 1), ('q', 1), ('z', 1)],
-                        kpoint_base_lags=base)
+                        external_fields=ext, kpoint_base_lags=base)
         res = dd.run(model, cfg)
         for j in (1, 2):
             sm = ME.slice_me(res, j)
@@ -394,7 +401,8 @@ def test_pole_engine_is_never_silent(monkeypatch):
     with pytest.warns(ME.MEFallbackWarning):
         s = c.spectrum([0.5])
     assert np.isfinite(s).all()
-    assert c.modes == {}
+    with pytest.warns(ME.MEFallbackWarning):
+        assert c.modes is None
 
 
 def test_loaded_file_has_no_triples(tmp_path):
@@ -412,6 +420,28 @@ def test_dd_exports():
                  'tree_covariance', 'tree_covariance_from_result',
                  'TreeCovariance', 'ModeSum', 'KernelIntegral',
                  'inverse_transform', 'pair_with_kernel', 'ModeTerm',
-                 'CumulantME', 'RationalKernel', 'MEUnavailable'):
+                 'CumulantME', 'RationalKernel', 'MEUnavailable',
+                 'MEFallbackWarning', 'MEConditioningWarning', 'slice_me'):
         assert getattr(dd, name) is not None, name
     assert dd.Kernel is so.Kernel and dd.tree_modes is so.tree_modes
+
+
+def test_generic_reference_retry_never_flips_the_split():
+    """Poles coincide at the reference (a = b = 1); a pole 1e-4 from the
+    imaginary axis would cross under the move: refused by name."""
+    from sage.all import var, I
+    w, a, b = var('omega'), var('a'), var('b')
+    C0 = 1 / ((I * w + a - b + SRf(1e-4)) * (w ** 2 + a ** 2) * (w ** 2 + b ** 2))
+    with pytest.raises(so.ClosedFormUnavailable, match='half-plane'):
+        so.pair_with_kernel(C0, 1, w, fallback=False,
+                            reference={'a': 1.0, 'b': 1.0})
+    # a coincidence that the move cannot flip is accepted (item 23's C1 test)
+    mu, T = var('mu'), var('T')
+    p = so.pair_with_kernel(1 / (mu + I * w), 1 / (1 + I * w * T), w,
+                            reference={'mu': 1.0, 'T': 1.0})
+    assert bool((p.expression - 1 / (1 + mu * T)).simplify_full() == 0)
+
+
+def SRf(x):
+    from sage.all import QQ, SR
+    return SR(QQ(x))

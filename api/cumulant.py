@@ -49,8 +49,10 @@ One mode term is a :class:`ModeTerm` ``(coeff, rate, power, side)``:
 ``coeff · τ**power · exp(rate · τ)`` on ``side`` ('+' for τ > 0, '-' for
 τ < 0).  The tree-level symbolic output of item 23 (``ModeSum``) uses the
 same field names (its sides are spelled 'positive' / 'negative').  Where the
-triples are not available (a subset on the pole route, a loaded file, k ≠ 2)
-``c.me`` is ``None`` and ``c.me_reasons`` says why; ``spectrum`` and
+triples are not available ``c.me_reasons`` says why (``c.me`` is ``None`` for
+a loaded file or k ≠ 2, and lists per-loop-order ``reasons`` when, e.g., a
+subset is on the pole route; k >= 3 slices: ``api.me_output.slice_me``);
+``spectrum`` and
 ``integrate_against`` then integrate the Phase J callables numerically and
 say so (:class:`~api.me_output.MEFallbackWarning`).
 """
@@ -691,14 +693,25 @@ class Cumulant:
         part, derived from the triples on first use (eigenvalue clusters of
         the final generators; ``τ**n`` terms for repeated eigenvalues;
         :class:`api.me_output.MEConditioningWarning` when ill-conditioned).
-        Loop orders without triples are left out (:attr:`me_reasons`);
-        ``None`` when there are no triples at all."""
+        Loop orders without triples are left out, with an
+        :class:`api.me_output.MEFallbackWarning` naming them
+        (:attr:`me_reasons`); ``None`` when no loop order has triples."""
         if self._modes is None:
             me = self.me
             if me is None:
                 return None
             ells = [e for e in me.orders if not me.reasons.get(e)]
-            self._modes = me.modes(ells) if ells else {}
+            left = [e for e in me.orders if me.reasons.get(e)]
+            if left:
+                import warnings
+                from api.me_output import MEFallbackWarning
+                warnings.warn(f'modes: loop order(s) {left} have no '
+                              f'matrix-exponential triples and are left out ('
+                              + '; '.join(self.me_reasons) + ')',
+                              MEFallbackWarning, stacklevel=2)
+            if not ells:
+                return None
+            self._modes = me.modes(ells)
         return self._modes
 
     @modes.setter
@@ -727,8 +740,7 @@ class Cumulant:
         from api.me_output import kernel_value, kernel_at_zero
         tot = 0j
         deltas = self._deltas_of(ell)
-        if deltas:
-            self._warn_incomplete()
+        self._warn_incomplete()
         for d in deltas:
             loc = d.location
             if loc is None:

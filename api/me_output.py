@@ -76,6 +76,12 @@ MERGE_RTOL = 1e-12
 COND_WARN = 1e6
 #: largest block the triangular / dense forms are built for
 MAX_BLOCK = 2000
+#: warn when a cluster's truncated Jordan expansion is off by more than this
+TRUNC_WARN = 1e-12
+#: dense forms of blocks up to this many states are cached on the block
+CACHE_MAX = 512
+#: SideME.triple() forms the dense block-diagonal triple up to this size
+MAX_DENSE_TOTAL = 20000
 
 
 class MEUnavailable(ValueError):
@@ -157,7 +163,12 @@ class MEBlock:
             if self.seg is not None:
                 L = self.beta * ui
                 if L > cur:
-                    v = self.seg.action(v, L - cur, dt)
+                    try:
+                        v = self.seg.action(v, L - cur, dt)
+                    except _late() as exc:
+                        raise MEUnavailable(
+                            f'the state-space route refused the segment at '
+                            f'|tau| = {ui:g} ({exc})') from exc
                     cur = L
                 val = complex(self.c @ v)
             else:
@@ -186,7 +197,10 @@ class MEBlock:
                 G = _kron_sum(G, r1 * ent.a)
                 x = np.kron(x, _row_start(ent, r0, 'orig'))
                 c = np.kron(c, ent.c)
-            self._triple = (G, np.asarray(x), self.weight * np.asarray(c))
+            trip = (G, np.asarray(x), self.weight * np.asarray(c))
+            if self.n > CACHE_MAX:
+                return trip
+            self._triple = trip
         return self._triple
 
     def tri(self):
@@ -219,8 +233,10 @@ class MEBlock:
                 T = _kron_sum(T, r1 * np.asarray(ent.T))
                 xt = np.kron(xt, _row_start(ent, r0, 'tri'))
                 ct = np.kron(ct, ent.ct)
-            self._tri = (np.asarray(T, dtype=complex), xt,
-                         self.weight * ct)
+            tri = (np.asarray(T, dtype=complex), xt, self.weight * ct)
+            if self.n > CACHE_MAX:
+                return tri              # large: rebuilt on demand
+            self._tri = tri
         return self._tri
 
     # resolvents
@@ -240,9 +256,13 @@ class MEBlock:
         kernel realization: ``c Y c_L^T`` with ``T Y + Y A_L^T =
         −xt b_L^T``."""
         T, xt, ct = self.tri()
-        rhs = -np.outer(xt, b_L)
-        Y = sl.solve_sylvester(T, np.asarray(A_L).T, rhs)
-        return complex(ct @ Y @ np.asarray(c_L))
+        # all complex: with a real A_L scipy takes its REAL Schur form (2 x 2
+        # blocks for complex poles) and hands it to ztrsyl, which needs a
+        # triangular matrix (review: wrong values for oscillatory kernels)
+        A = np.asarray(A_L, dtype=complex)
+        rhs = -np.outer(xt, np.asarray(b_L, dtype=complex))
+        Y = sl.solve_sylvester(np.asarray(T, dtype=complex), A.T, rhs)
+        return complex(ct @ Y @ np.asarray(c_L, dtype=complex))
 
     def __repr__(self):
         return (f'MEBlock(diagram={self.diagram_index}, '
@@ -263,6 +283,11 @@ def _row_start(ent, r0, basis):
     from api._realization import expm_upper_triangular
     v = expm_upper_triangular(np.asarray(ent.T), r0) @ ent.bt
     return ent.from_basis(v, 0)
+
+
+def _late():
+    from engine.integration.time_domain import statespace as SS
+    return SS._late_errors()
 
 
 def _kron_sum(A, B):
@@ -310,6 +335,11 @@ class SideME:
         """The dense block-diagonal ``(G, x0, c)`` (weights in ``c``)."""
         if not self.blocks:
             return np.zeros((0, 0)), np.zeros(0), np.zeros(0)
+        if self.n_states > MAX_DENSE_TOTAL:
+            raise MEUnavailable(f'{self.n_states} states in all: the dense '
+                                f'block-diagonal triple is not formed '
+                                f'(MAX_DENSE_TOTAL={MAX_DENSE_TOTAL}); use '
+                                f'the blocks (.blocks[i].triple())')
         parts = [b.triple() for b in self.blocks]
         G = sl.block_diag(*[p[0] for p in parts])
         x = np.concatenate([p[1] for p in parts])
@@ -337,13 +367,21 @@ class SideME:
         :class:`MEConditioningWarning` when the decomposition is
         ill-conditioned."""
         terms = []
-        cond = 0.0
+        cond = trunc = 0.0
         for b in self.blocks:
-            t, cnd = _block_modes(b, cluster_rtol)
+            t, cnd, tr = _block_modes(b, cluster_rtol)
             terms.extend(t)
-            cond = max(cond, cnd)
+            cond, trunc = max(cond, cnd), max(trunc, tr)
         terms = _merge_terms(terms, merge_rtol)
         if warn:
+            if trunc > TRUNC_WARN:
+                warnings.warn(
+                    f'ell={self.ell} side {self.side!r}: an eigenvalue '
+                    f'cluster of spread delta was represented as one '
+                    f'Jordan chain; its truncated terms are off by about '
+                    f'{trunc:.2g} (relative) over five decay times: lower '
+                    f'cluster_rtol (now {cluster_rtol:g})',
+                    MEConditioningWarning, stacklevel=2)
             _check_conditioning(self, terms, cond)
         return terms
 
@@ -358,8 +396,7 @@ def _block_modes(b, rtol):
     T, xt, ct = b.tri()
     n = T.shape[0]
     d = np.diag(T).copy()
-    scale = max(1.0, float(np.max(np.abs(d)))) if n else 1.0
-    labels = _clusters(d, rtol * scale)
+    labels = _clusters(d, rtol)
     K = int(labels.max()) + 1 if n else 0
     centers = [d[labels == k].mean() for k in range(K)]
     T = np.array(T, dtype=complex, copy=True)
@@ -398,12 +435,15 @@ def _block_modes(b, rtol):
         X, scale_, info = ztrsyl(A, B, -C, trana='N', tranb='N', isgn=-1)
         if info < 0:
             raise MEUnavailable(f'Sylvester decoupling failed (info={info})')
+        if info == 1:                   # eigenvalues perturbed: near-equal
+            cond = math.inf
         X = X / scale_
         cond = max(cond, float(np.abs(X).sum(axis=1).max(initial=0.0)))
         x[r0:r1] = x[r0:r1] - X @ x[r1:]
         c[r1:] = c[r1:] + c[r0:r1] @ X
         T[r0:r1, r1:] = 0.0
     out = []
+    worst_trunc = 0.0
     for k in range(K):
         r0, r1 = starts[k], starts[k + 1]
         if r1 == r0:
@@ -411,6 +451,15 @@ def _block_modes(b, rtol):
         A = T[r0:r1, r0:r1]
         lam = complex(np.mean(np.diag(A)))
         N = A - lam * np.eye(r1 - r0)
+        # exp(N u) is truncated at u^(m-1): exact when the cluster's
+        # eigenvalues are equal; their spread delta costs ~ (delta h)^m / m!
+        # over the decay horizon h = 5 / |Re lam| (charged to ``cond``)
+        delta = float(np.max(np.abs(np.diag(A) - lam)))
+        if delta > 0:
+            h = 5.0 / max(abs(lam.real), 1e-300)
+            m_ = r1 - r0
+            trunc = (delta * h) ** m_ / math.factorial(m_)
+            worst_trunc = max(worst_trunc, trunc)
         y = x[r0:r1].copy()
         cc = c[r0:r1]
         for j in range(r1 - r0):
@@ -418,12 +467,13 @@ def _block_modes(b, rtol):
             if coeff != 0:
                 out.append((coeff, lam, j))
             y = N @ y
-    return out, cond
+    return out, cond, worst_trunc
 
 
-def _clusters(d, tol):
-    """Labels 0..K-1 of the connected components of ``|d_i - d_j| <= tol``,
-    numbered by first appearance."""
+def _clusters(d, rtol):
+    """Labels 0..K-1 of the connected components of ``|d_i - d_j| <= rtol
+    max(|d_i|, |d_j|)`` (pairwise relative: a slow pair in a stiff block is
+    judged on its own scale), numbered by first appearance."""
     n = len(d)
     parent = list(range(n))
 
@@ -433,7 +483,8 @@ def _clusters(d, tol):
             i = parent[i]
         return i
     if n:
-        D = np.abs(d[:, None] - d[None, :]) <= tol
+        mag = np.maximum(np.abs(d)[:, None], np.abs(d)[None, :])
+        D = np.abs(d[:, None] - d[None, :]) <= rtol * mag
         ii, jj = np.nonzero(np.triu(D, 1))
         for i, j in zip(ii, jj):
             ri, rj = find(i), find(j)
@@ -450,8 +501,7 @@ def _merge_terms(terms, rtol):
     if not terms:
         return []
     lams = np.array([t[1] for t in terms])
-    scale = max(1.0, float(np.max(np.abs(lams))))
-    lab = _clusters(lams, rtol * scale)
+    lab = _clusters(lams, rtol)
     acc = {}
     cen = {}
     for (c, lam, j), k in zip(terms, lab):
@@ -772,10 +822,33 @@ def _groups_of(pj):
     return [g for g in (pj.get('groups') or []) if isinstance(g, dict)]
 
 
+def _stamped_flags(cfg):
+    """``{name: value}`` of the run's ``config['phase_j_flags']`` stamp."""
+    out = {}
+    for part in str(cfg.get('phase_j_flags') or '').split(';'):
+        if '=' in part:
+            k_, v_ = part.split('=', 1)
+            out[k_.strip()] = v_.strip()
+    return out
+
+
 def _global_reasons(result, FI):
     """Reasons that hold for every loop order of a result."""
     cfg = result.get('config') or {}
     out = []
+    # the triples are built now, with the live Phase J flags: they must be
+    # the run's (``config['phase_j_flags']``)
+    st = _stamped_flags(cfg)
+    for name in ('PHASE_J_T_MIN', 'THETA0_CONST_ROW_MODE'):
+        if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
+            out.append(f'{name} changed since the run ({st[name]} -> '
+                       f'{getattr(FI, name, "<absent>")})')
+    if st.get('THETA0_CONST_ROW_MODE') == 'legacy_clip':
+        out.append("THETA0_CONST_ROW_MODE='legacy_clip'")
+    if int((result.get('phase_j_engine') or {}).get('fallback_evals') or 0):
+        out.append('the state-space route fell back on the pole route for '
+                   'some evaluations of the run (C_tau there is the pole '
+                   "route's; result['phase_j_engine'])")
     eng = result.get('phase_j_engine') or {}
     if eng.get('pole_deformation') == 'used':
         out.append('the pole-cluster deformation ran (the value is an average '
@@ -807,9 +880,6 @@ def from_result(result) -> CumulantME:
                             f'(got k = {k}); for k >= 3 use slice_me')
     if 'C_tau_x' in result or cfg.get('spatial'):
         raise MEUnavailable('spatial results have no state-space triples')
-    if cfg.get('output', 'cumulant') not in (None, 'cumulant'):
-        raise MEUnavailable(f"output={cfg.get('output')!r}: triples are "
-                            f"built for the connected cumulant")
     pjs = result.get('phase_j_by_ell')
     if not pjs:
         raise MEUnavailable('the result has no live Phase J closures (a '
@@ -877,10 +947,12 @@ def _line_blocks(parts, diagram_index, line, out, rs, counts, FI):
                 p_ = [t - o for t in p_]
             return [float(p_[j]) for j in fidx]
         return f
-    T1 = tuple(a + b for a, b in zip(T0, e))
     for pidx, perm in enumerate(perms):
         fb = free(T0)(perm)
-        fd = [b - a for a, b in zip(fb, free(T1)(perm))]
+        # the direction exactly (integers): a difference of two times would
+        # carry rounding into the slopes (spurious moving segments)
+        eo = 0.0 if org is None else float(e[perm[org]])
+        fd = [float(e[perm[j]]) - eo for j in fidx]
         tie = FI._TieContext(T_ref, tuple(perm[j] for j in fidx),
                              None if org is None else perm[org])
         for si, cfn in enumerate(parts['subsets']):
@@ -975,6 +1047,14 @@ class SliceME:
                     for m in range(n + 1):
                         cm = (c * sg ** n * math.comb(n, m) * (-a) ** (n - m)
                               * np.exp(-lam * sg * a))
+                        if not np.isfinite(cm):
+                            warnings.warn(
+                                f'slice {self.j}, chamber {lab}: a mode '
+                                f'coefficient overflows when re-expanded '
+                                f'about tau = 0 (anchor {a:g}, rate {lam:.3g});'
+                                f' use the triple or the chamber-local '
+                                f'modes (sides[ell].modes())',
+                                MEConditioningWarning, stacklevel=2)
                         if cm != 0:
                             terms.append(ModeTerm(cm, lam * sg, m, lab))
                 per[e] = terms
@@ -1020,9 +1100,6 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     pjs = result.get('phase_j_by_ell') or {}
     if not pjs:
         raise MEUnavailable('the result has no live Phase J closures')
-    if cfg.get('output', 'cumulant') not in (None, 'cumulant'):
-        raise MEUnavailable(f"output={cfg.get('output')!r}: triples are "
-                            f"built for the connected cumulant")
     g_rs = _global_reasons(result, FI)
     counts = {'blocks': 0, 'zero': 0, 'pole_route': 0, 'pruned': 0}
     chambers, reasons = [], {}
