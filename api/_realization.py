@@ -136,6 +136,8 @@ on and off the imaginary axis and reports the entrywise error of
 """
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any, Optional
@@ -147,6 +149,8 @@ __all__ = [
     'Realization', 'EntryRealization', 'RealizationRefused', 'realize',
     'realize_K', 'try_realize', 'verify_against_K', 'compare_D',
     'expm_upper_triangular', 'expm_structured', 'lyapunov_refined',
+    'balanced_truncation', 'hankel_singular_values', 'truncate_entry',
+    'truncation_tol', 'truncation_scope', 'TRUNCATION_TOL_DEFAULT',
 ]
 
 _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
@@ -335,6 +339,7 @@ class Realization:
     provenance: tuple
     field_name: str
     exact: Any = field(default=None, repr=False, compare=False)
+    truncation: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         for nm in ('A', 'B', 'C', 'D', 'entry_states', 'balance'):
@@ -390,6 +395,235 @@ class Realization:
         ``B_s = U^H B``, ``C_s = C U`` (``T`` upper triangular)."""
         T, U = sl.schur(np.asarray(self.A, dtype=complex), output='complex')
         return T, U.conj().T @ self.B, self.C @ U
+
+
+# ─── balanced truncation (model reduction) ────────────────────────────────
+
+#: Default relative H-infinity tolerance of the balanced truncation of every
+#: per-entry realization and conductance kernel: states are discarded only
+#: while ``2 * sum(discarded Hankel singular values) <= tol * sigma_1``.
+TRUNCATION_TOL_DEFAULT = 1e-10
+#: ``DAEDALUS_REALIZATION_TRUNCATION``: a tolerance, or ``0`` / ``off`` /
+#: ``exact`` for none (the exact minimal realizations, as before item 45).
+TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
+
+_TRUNC_TL = threading.local()
+
+
+def _env_truncation_tol(environ=None):
+    env = os.environ if environ is None else environ
+    v = str(env.get(TRUNCATION_ENV, '') or '').strip().lower()
+    if v in ('', 'default'):
+        return TRUNCATION_TOL_DEFAULT
+    if v in ('0', 'off', 'exact', 'none', 'false', 'no'):
+        return 0.0
+    try:
+        tol = float(v)
+    except ValueError:
+        raise ValueError(f'{TRUNCATION_ENV}={v!r}: expected a tolerance (e.g. 1e-10), '
+                         "or 0 / 'off' / 'exact' for none") from None
+    if not (tol >= 0.0 and np.isfinite(tol)):
+        raise ValueError(f'{TRUNCATION_ENV}={v!r}: the tolerance must be finite and >= 0')
+    return tol
+
+
+def truncation_tol():
+    """The relative H-infinity tolerance of the balanced truncation in effect:
+    the innermost ``truncation_scope``, else ``DAEDALUS_REALIZATION_TRUNCATION``,
+    else ``TRUNCATION_TOL_DEFAULT``; ``0`` means exact (no truncation)."""
+    v = getattr(_TRUNC_TL, 'tol', None)
+    return _env_truncation_tol() if v is None else v
+
+
+def _clear_consumer_caches():
+    """Drop the state-space route's realization cache (keyed by the model and
+    the parameters, not by the tolerance), if that module is loaded."""
+    import sys
+    ss = sys.modules.get('engine.integration.time_domain.statespace')
+    if ss is not None:
+        ss._clear_caches()
+
+
+class truncation_scope:
+    """``with truncation_scope(tol):`` -- realizations built inside use the
+    relative H-infinity tolerance ``tol`` (``0``: exact; ``None``: the
+    environment / default).  Thread-local.  The state-space route caches
+    realizations by model and parameters, so a change of the tolerance in
+    effect clears that cache (on entry and on exit)."""
+
+    def __init__(self, tol):
+        self.tol = None if tol is None else float(tol)
+        if self.tol is not None and not (self.tol >= 0.0 and np.isfinite(self.tol)):
+            raise ValueError(f'truncation tolerance must be finite and >= 0, got {tol!r}')
+        self._prev = None
+
+    def __enter__(self):
+        before = truncation_tol()
+        self._prev = getattr(_TRUNC_TL, 'tol', None)
+        _TRUNC_TL.tol = self.tol
+        if truncation_tol() != before:
+            _clear_consumer_caches()
+        return self
+
+    def __exit__(self, *exc):
+        before = truncation_tol()
+        _TRUNC_TL.tol = self._prev
+        if truncation_tol() != before:
+            _clear_consumer_caches()
+        return False
+
+
+def _gram_factor(M):
+    """``X`` with ``X X^H = M`` for a numerically Hermitian positive
+    semidefinite ``M`` (rounding-level negative eigenvalues set to zero)."""
+    w, U = np.linalg.eigh(0.5 * (M + M.conj().T))
+    return U * np.sqrt(np.clip(w, 0.0, None))
+
+
+def _equalize_bc(b, c):
+    """``b sigma, c / sigma`` with the power of two ``sigma`` closest to
+    ``sqrt(|c| / |b|)`` (exact; the transfer function is unchanged)."""
+    nb, nc = float(np.abs(b).sum()), float(np.abs(c).max())
+    if not (nb > 0 and nc > 0):
+        return b, c
+    sig = 2.0 ** round(0.5 * np.log2(nc / nb))
+    return b * sig, c / sig
+
+
+def hankel_singular_values(a, b, c):
+    """Hankel singular values of the stable SISO ``(a, b, c)``, descending:
+    ``sqrt(eig(P Q))`` from the controllability / observability Gramians
+    (``lyapunov_refined``), as the singular values of ``L^H R``
+    (``P = R R^H``, ``Q = L L^H``), after a power-of-two equalisation of
+    ``b`` and ``c``.  Returns ``(sigma, R, L, U, Vh, b_eq, c_eq)``
+    (``L^H R = U diag(sigma) Vh``; the factors belong to ``(a, b_eq,
+    c_eq)``)."""
+    b, c = _equalize_bc(np.asarray(b).reshape(-1), np.asarray(c).reshape(-1))
+    P = lyapunov_refined(a, np.outer(b, b.conj()))
+    Q = lyapunov_refined(a.conj().T, np.outer(c.conj(), c))
+    Rf, Lf = _gram_factor(P), _gram_factor(Q)
+    U, sv, Vh = np.linalg.svd(Lf.conj().T @ Rf)
+    return sv, Rf, Lf, U, Vh, b, c
+
+
+def _check_frequencies(lam):
+    """Frequencies ``w >= 0`` for the a posteriori check of a truncation:
+    log-spaced from (slowest decay rate) / 100 to 100 max|lambda|, plus nodes
+    around every underdamped eigenvalue and ``w = 0``."""
+    rates = np.abs(lam.real)
+    lo = max(float(rates.min()) / 100.0, 1e-300)
+    hi = 100.0 * float(np.max(np.abs(lam)))
+    dec = max(1.0, np.log10(hi / lo))
+    nodes = [np.zeros(1), np.geomspace(lo, hi, int(30 * dec) + 2)]
+    for z in lam:
+        if abs(z.imag) > 0.1 * abs(z.real):
+            nodes.append(np.abs(abs(z.imag) + abs(z.real) * np.linspace(-3, 3, 13)))
+    return np.unique(np.concatenate(nodes))
+
+
+def _siso_transfer(a, b, c, s):
+    """``c (s I - a)^{-1} b`` at the points ``s`` (vectorized)."""
+    n = a.shape[0]
+    M = s[:, None, None] * np.eye(n) - a
+    x = np.linalg.solve(M, np.broadcast_to(b.reshape(n, 1), (s.size, n, 1)).astype(M.dtype))
+    return (x[:, :, 0] @ c.reshape(n)).reshape(-1)
+
+
+def balanced_truncation(a, b, c, tol, *, check=True):
+    """Balanced truncation of the stable SISO realization ``g(s) = c (sI -
+    a)^{-1} b`` (square-root method; Moore 1981, Tombs & Postlethwaite 1987)
+    to the fewest states ``r`` with the H-infinity error bound
+
+        || g - g_r ||_inf <= 2 * sum_{i > r} sigma_i <= tol * sigma_1
+
+    (``sigma_i`` the Hankel singular values; ``sigma_1 <= ||g||_inf``, so the
+    bound is also relative to the entry's H-infinity norm).  The truncated
+    realization is balanced, stable, real for a real ``(a, b, c)``.  States
+    are kept (``r`` raised) where two Hankel singular values at the cut are
+    equal to ``1e-8`` (BT's stability needs a strict gap).  ``check``: the
+    error ``|g - g_r|`` is sampled on a frequency grid (``_check_frequencies``,
+    a lower bound of the true H-infinity error) and the truncation is
+    rejected when it exceeds the bound (a rounding failure; never seen on
+    the benchmarks).  Returns ``(a_r, b_r, c_r, info)``; ``(a, b, c, info)``
+    unchanged (the same arrays) when nothing can be discarded or the
+    truncation is rejected (``info['kept']`` says why)."""
+    a = np.asarray(a)
+    n = a.shape[0]
+    info = {'n': n, 'r': n, 'tol': float(tol), 'hsv': (), 'bound': 0.0,
+            'bound_rel': 0.0, 'sampled_err_rel': None, 'kept': None}
+    if n < 2 or not tol > 0:
+        info['kept'] = 'trivial' if n < 2 else 'tol_zero'
+        return a, b, c, info
+    lam = np.linalg.eigvals(a)
+    if not np.all(lam.real < 0):
+        info['kept'] = 'not_hurwitz'
+        return a, b, c, info
+    sv, Rf, Lf, U, Vh, be, ce = hankel_singular_values(a, b, c)
+    info['hsv'] = tuple(float(x) for x in sv)
+    s1 = float(sv[0])
+    if not (s1 > 0 and np.all(np.isfinite(sv))):
+        info['kept'] = 'gramians_failed'
+        return a, b, c, info
+    tail = 2.0 * np.concatenate([np.cumsum(sv[::-1])[::-1], [0.0]])
+    r = int(np.argmax(tail <= tol * s1))
+    while 0 < r < n and sv[r - 1] - sv[r] <= 1e-8 * sv[r - 1]:
+        r += 1
+    r = max(r, 1)
+    if r >= n:
+        info['kept'] = 'no_small_hsv'
+        return a, b, c, info
+    srt = np.sqrt(sv[:r])
+    T = (Rf @ Vh[:r].conj().T) / srt
+    W = (Lf @ U[:, :r]) / srt
+    ar = W.conj().T @ a @ T
+    br = W.conj().T @ be
+    cr = ce @ T
+    if not np.iscomplexobj(a) and not np.iscomplexobj(b) and not np.iscomplexobj(c):
+        ar, br, cr = ar.real, br.real, cr.real
+    bound = float(tail[r])
+    info.update(r=r, bound=bound, bound_rel=bound / s1)
+    lam_r = np.linalg.eigvals(ar)
+    if not (np.all(np.isfinite(ar)) and np.all(lam_r.real < 0)):
+        info.update(r=n, kept='truncated_not_hurwitz')
+        return a, b, c, info
+    if check:
+        w = _check_frequencies(lam)
+        s = 1j * np.concatenate([w, -w[w > 0]]) if np.iscomplexobj(a) or np.iscomplexobj(b) \
+            or np.iscomplexobj(c) else 1j * w
+        err = float(np.max(np.abs(_siso_transfer(a, be, ce, s) - _siso_transfer(ar, br, cr, s))))
+        info['sampled_err_rel'] = err / s1
+        # rounding allowance: the two transfer functions are evaluated in double
+        if not err <= bound * (1.0 + 1e-6) + 1e-13 * s1:
+            info.update(r=n, kept=f'check_failed (sampled {err / s1:.3g} > bound {bound / s1:.3g})')
+            return a, b, c, info
+    return ar, np.ascontiguousarray(br), np.ascontiguousarray(cr), info
+
+
+def truncate_entry(ent, tol, *, check=True):
+    """``(EntryRealization, info)``: ``ent`` balanced-truncated to the relative
+    H-infinity tolerance ``tol`` (``balanced_truncation``), or ``ent`` itself
+    (the same object) when no state can be discarded."""
+    a_r, b_r, c_r, info = balanced_truncation(ent.a, ent.b, ent.c, tol, check=check)
+    if info['r'] >= ent.n_states:
+        return ent, info
+    k = a_r.shape[0]
+    return EntryRealization(a=np.ascontiguousarray(a_r), b=b_r.reshape(k),
+                            c=c_r.reshape(k), d=ent.d, n_states=k), info
+
+
+def _truncation_summary(tol, recs):
+    """The record of a realization's truncation (``Realization.truncation``)."""
+    cut = {k: v for k, v in recs.items() if v['r'] < v['n']}
+    before = sum(v['n'] for v in recs.values())
+    after = sum(v['r'] for v in recs.values())
+    worst = max((v['bound_rel'] for v in cut.values()), default=0.0)
+    note = (f'balanced truncation (relative H-infinity tolerance {tol:g}): '
+            f'{len(cut)} entr{"y" if len(cut) == 1 else "ies"} truncated, '
+            f'states {before} -> {after} over the truncated-or-checked entries; '
+            f'largest bound 2*sum(discarded HSV)/sigma_1 = {worst:.3g}')
+    return {'tol': float(tol), 'entries': recs, 'n_truncated': len(cut),
+            'states_before': before, 'states_after': after,
+            'max_bound_rel': worst, 'note': note}
 
 
 # ─── exact helpers (Sage) ─────────────────────────────────────────────────
@@ -991,12 +1225,15 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
 # ─── main entry points ────────────────────────────────────────────────────
 
 def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
-              per_entry=True, minimal=True, balance=True):
+              per_entry=True, minimal=True, balance=True, truncation=None):
     """Realization of ``G = K_ft^{-1}`` at ``num_params`` (module docstring).
 
     ``K_ft``: Sage matrix (rows = response fields, columns = physical fields),
     symbolic in ``omega``; ``num_params``: {symbol: value} as built by the
-    mean-field stage.  Raises ``RealizationRefused``.
+    mean-field stage.  ``truncation``: the relative H-infinity tolerance of
+    the balanced truncation of the per-entry realizations (``None``: the
+    one in effect, ``truncation_tol()``; ``0``: exact, none).  Raises
+    ``RealizationRefused``.
     """
     S = _sage()
     nf = K_ft.nrows()
@@ -1089,7 +1326,10 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
 
     entries = {}
     est = np.zeros((nf, nf), dtype=int)
+    trunc = None
     if per_entry:
+        tol = truncation_tol() if truncation is None else float(truncation)
+        recs = {}
         for p in range(nf):
             for r_ in range(nf):
                 a_, b_, c_ = A, B[:, r_], C[p, :]
@@ -1101,11 +1341,17 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
                 dn = _round(D[p, r_])
                 dn = dn if cplx else dn.real
                 k = an.shape[0]
-                entries[(p, r_)] = EntryRealization(
-                    a=an, b=bn.reshape(k), c=cn.reshape(k), d=dn, n_states=k)
-                est[p, r_] = k
+                ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k),
+                                       d=dn, n_states=k)
+                if tol > 0 and k >= 2:
+                    ent, recs[(p, r_)] = truncate_entry(ent, tol)
+                entries[(p, r_)] = ent
+                est[p, r_] = ent.n_states
         prov.append(f'per-entry minimal state counts: max {int(est.max()) if nf else 0}, '
                     f'total {int(est.sum())}')
+        trunc = _truncation_summary(tol, recs)
+        if trunc['n_truncated']:
+            prov.append(trunc['note'])
     cond = {
         'norm_A_unbalanced': norm_A_raw,
         'norm_A': float(np.linalg.norm(An, 1)) if An.size else 0.0,
@@ -1124,7 +1370,8 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         balance=np.asarray(sca, dtype=float), hurwitz=hur,
         lyapunov_margin=margin, conditioning=cond, provenance=tuple(prov),
         field_name=fname,
-        exact={'A': A, 'B': B, 'C': C, 'D': D, 'field': F, 'K0': K0, 'K1': K1})
+        exact={'A': A, 'B': B, 'C': C, 'D': D, 'field': F, 'K0': K0, 'K1': K1},
+        truncation=trunc)
 
 
 def realize(prop, num_params, **kw):
@@ -1151,7 +1398,7 @@ def try_realize(prop, num_params, **kw):
         return None, exc
 
 
-def realize_kernel(att, num_params=None, *, balance=True):
+def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
     """Minimal SISO realization of a causal conductance kernel
     ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
@@ -1165,7 +1412,9 @@ def realize_kernel(att, num_params=None, *, balance=True):
     an element of ``F(s)``, realized by the root-free chain of
     ``_realize_proper`` (exact factorization: EQUAL or nearly equal rates
     give a Jordan-type chain, no residues, no rate gap enters), reduced by
-    the exact Kalman decomposition, rounded once and balanced.  Refused
+    the exact Kalman decomposition, rounded once and balanced, then
+    balanced-truncated to ``truncation`` (``truncate_entry``; ``None``: the
+    tolerance in effect, ``truncation_tol()``; ``0``: none).  Refused
     (``RealizationRefused``): no image (``no_kernel_image``), a symbol
     without a value (``unbound_symbol``), not rational in ``s``
     (``non_rational``: e.g. a Gaussian kernel), a delta or polynomial part
@@ -1250,8 +1499,12 @@ def realize_kernel(att, num_params=None, *, balance=True):
     if balance and an.shape[0]:
         an, bn, cn, _s = _balance(an, bn, cn)
     k = an.shape[0]
-    return EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=0.0,
-                            n_states=k), fname
+    ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=0.0,
+                           n_states=k)
+    tol = truncation_tol() if truncation is None else float(truncation)
+    if tol > 0 and k >= 2:
+        ent, _info = truncate_entry(ent, tol)
+    return ent, fname
 
 
 # ─── checks (tests, census) ───────────────────────────────────────────────
