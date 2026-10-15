@@ -157,8 +157,44 @@ def test_partial_parameters_reach_the_mean_field_dae_directly():
     part = solve_mean_field_dae(m, {'a': 2.0})['mf_values']
     full = solve_mean_field_dae(m, {'a': 2.0, 'b': 0.5})['mf_values']
     assert part == full
-    with pytest.raises(ValueError, match=r'declare no default: b\b'):
+    # below the front door a missing parameter the equations read is still named, not a bare NameError
+    with pytest.raises(NameError, match=r"name 'b' is not defined in the equation.*declares no default"):
         solve_mean_field_dae(_ou_quad(default_b=False), {'a': 2.0})
+
+
+def test_unused_parameter_without_a_default_does_not_stop_a_direct_solve():
+    """A noise strength with no default that the saddle equations never read: the solvers below
+    ``compute_cumulants`` (and ``precompute``) only fill, they do not require."""
+    from api._mean_field_dae import solve_mean_field_dae
+    m = (SDE('nd').parameter('a', default=1.0).parameter('D').field('x').drift('x', '-a*x + 0.1')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    assert solve_mean_field_dae(m, {'a': 1.0})['mf_values']['xstar'][0] == pytest.approx(0.1)
+
+
+def test_a_saddle_default_is_not_merged_into_explicit_parameters():
+    """A ``mean_field=True`` parameter with a default must not pin the saddle: the legacy iteration solver
+    takes every key it is given as a value.  (Hand-written models only; no shipped one declares it.)"""
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'models', 'linear_hawkes.model.py')
+    spec = importlib.util.spec_from_file_location('lh_fix49', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def run(pin):
+        m = mod.build()
+        for p in m['parameters']:
+            if p.get('mean_field') and p['name'] == 'nstar' and pin:
+                p['default'] = [5.0, 5.0]
+        return AC.compute_cumulants(m, k=2, max_ell=0, external_fields=[('n', 1), ('n', 1)],
+                                    parameters=dict(mod.DEFAULT_FUNDAMENTAL),
+                                    tau_grid=np.array([0.0, 1.0]), use_cache=False, parallel=False,
+                                    verbose=False)
+    base = run(False)
+    pinned = run(True)
+    assert pinned['mf_values'] == base['mf_values']
+    assert 'nstar' not in pinned['config']['fundamental']
 
 
 # ── 3. NaN / inf lags ────────────────────────────────────────────────────────────────────────

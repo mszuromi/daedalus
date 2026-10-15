@@ -11,11 +11,15 @@ from sage.all import SR, diff
 from scipy.optimize import fsolve
 
 
-def complete_parameters(model, fundamental, who='the mean-field solve'):
+def complete_parameters(model, fundamental, who='the mean-field solve',
+                        strict=True):
     """``fundamental`` with every omitted parameter filled from the model's
     declared ``default=``; a parameter that is omitted AND has no default
     raises a :class:`ValueError` naming it (a partial ``parameters=`` dict
     otherwise surfaced as a bare ``NameError`` from inside the solve).
+    ``strict=False`` only fills (the solvers use it: a no-default parameter
+    the saddle equations never read, e.g. a noise strength, must not stop a
+    direct solve; ``compute_cumulants`` is the strict front door).
     Mean-field parameters (``mean_field=True``) are solved, never supplied.
     The caller's dict is not modified; a complete dict comes back equal."""
     out = dict(fundamental or {})
@@ -28,7 +32,7 @@ def complete_parameters(model, fundamental, who='the mean-field solve'):
             out[name] = pspec['default']
         else:
             missing.append(name)
-    if missing:
+    if missing and strict:
         raise ValueError(
             f'{who}: these model parameters are not in the parameters '
             f'given and declare no default: {", ".join(sorted(missing))}. '
@@ -63,7 +67,8 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     field arrays.  Legacy single-pop models keep the original
     flat-pop code path below.
     """
-    fundamental = complete_parameters(model, fundamental, 'solve_mean_field')
+    fundamental = complete_parameters(model, fundamental, 'solve_mean_field',
+                                     strict=False)
     if model.get('populations'):
         return _solve_mean_field_hetero(ft, model, fundamental, verbose)
 

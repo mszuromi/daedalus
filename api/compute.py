@@ -1274,8 +1274,10 @@ def compute_cumulants(
     # supplied, so they are never required here.
     _pspecs = model.get('parameters', []) or []
     _given = dict(fundamental) if fundamental else {}
+    # (A saddle variable's default is never merged in: the legacy iteration
+    # solver would take it as a given value and pin the saddle there.)
     fundamental = {p['name']: p['default'] for p in _pspecs
-                   if p.get('default') is not None}
+                   if p.get('default') is not None and not p.get('mean_field')}
     fundamental.update(_given)
     _missing = sorted(p['name'] for p in _pspecs
                       if p['name'] not in fundamental
@@ -1284,7 +1286,7 @@ def compute_cumulants(
         raise ValueError(
             'compute_cumulants: ' +
             ('no ``parameters=`` given' if not _given else
-             'the ``parameters=`` given omit these') +
+             'the ``parameters=`` given do not include them') +
             ', and these model parameters declare no default: ' +
             ', '.join(_missing) + '. '
             'Pass parameters={...} or declare defaults via '
