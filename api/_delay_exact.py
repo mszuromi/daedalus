@@ -175,13 +175,17 @@ def delayed_state_space(K_ft, omega, num_params, N):
         if isinstance(exc, ExactTreeUnavailable):
             raise
         raise ExactTreeUnavailable(f'K1 (the delayed part): {exc}') from exc
-    cplx = any(np.iscomplexobj(M) for M in (A0, B0, C0, D0, A1, B1, C1, D1))
-    dt = complex if cplx else float
+    cplx = any(np.iscomplexobj(M) and np.any(np.imag(M) != 0)
+               for M in (A0, B0, C0, D0, A1, B1, C1, D1))
+    if cplx:
+        raise ExactTreeUnavailable('complex coefficients: the exact tree covers real systems')
+    dt = float
     DD = D0 @ D1
     if np.max(np.abs(DD), initial=0.0) > 1e-12 * max(1.0, np.max(np.abs(D0), initial=0.0)
                                                      * np.max(np.abs(D1), initial=0.0)):
-        raise ExactTreeUnavailable('an instantaneous path through the delay feeds back '
-                                   'into the fields (D0 D1 != 0)')
+        raise ExactTreeUnavailable('an instantaneous path through the delay (D0 D1 != 0, e.g. an '
+                                   'algebraic field read out with the delay): the exact tree '
+                                   'covers D0 D1 = 0')
     n0, n1, nf = A0.shape[0], A1.shape[0], D0.shape[0]
     A = np.zeros((n0 + n1, n0 + n1), dtype=dt)
     A[:n0, :n0] = A0
@@ -357,14 +361,15 @@ class ExactTree:
                                        '(a marginal mode, or a delay too long for it: '
                                        f'|A| d = {np.linalg.norm(A, 2) * d:.3g})')
         # the shooting over [0, d] runs the decaying modes backwards (V' = -V A^T
-        # ...): rounding grows like eps e^{d max|Re eig A|} (measured: 6e-7 at
-        # a d = 20 for the scalar OU, against 1.1e-6 from this bound), or like
-        # the condition of the linear conditions; above 1e-8 the "exact" tree
-        # is not trustworthy and the Pade tree is used instead
+        # ...): rounding grows with e^{d max|Re eig A|}.  Measured against a
+        # 25-digit reference (scalar OU, review): 1e-14 at a d = 1, <= 4.9e-11
+        # at a d = 16, <= 2.4e-10 at a d = 20, i.e. below 100 eps e^{a d / 2};
+        # above 1e-8 the "exact" tree is not trustworthy and the Pade tree is
+        # used instead
         self.cond = float(sv[0] / sv[-1])
         lam = np.linalg.eigvals(A) if A.size else np.zeros(1)
-        grow = math.exp(min(700.0, d * float(np.max(np.abs(lam.real)))))
-        self.err_est = 2.2e-16 * max(self.cond, 10.0 * grow)
+        grow = math.exp(min(700.0, 0.5 * d * float(np.max(np.abs(lam.real)))))
+        self.err_est = 2.2e-16 * max(self.cond, 100.0 * grow)
         if self.err_est > 1e-8:
             raise ExactTreeUnavailable(
                 f'the covariance boundary-value problem is ill-conditioned (d max|Re eig A| '
@@ -372,6 +377,11 @@ class ExactTree:
                 f'estimated error {self.err_est:.1e} > 1e-8')
         U0 = x[:n * n].reshape(n, n)
         V0 = x[n * n:].reshape(n, n)
+        ev = np.linalg.eigvalsh(0.5 * (U0 + U0.T))
+        if ev.size and ev[0] < -1e-10 * max(abs(ev[-1]), 1e-300):
+            raise ExactTreeUnavailable(
+                f'the equal-time state covariance is not positive (eigenvalue {ev[0]:.3g}): '
+                'an unstable saddle')
         self.residual = float(res)
         return np.concatenate([U0.ravel(), V0.ravel(), W1_0.ravel(), W2_0.ravel()])
 

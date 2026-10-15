@@ -526,3 +526,26 @@ def test_spatial_delay_is_refused_by_name():
     from api.delay import compute_delayed
     with pytest.raises(ValueError, match='spatial'):
         compute_delayed({'name': 'x', 'spatial': {'dim': 1}}, {'k': 2}, {'z_g': ['d']})
+
+
+def test_g2k_review_cases_real_roots_aliasing_long_delays():
+    """Numerics review: real right-half-plane roots (box edges on the real
+    axis), long delays (the contour grid resolves e^{-s d}: no aliasing), and
+    the Lambert W path at a d >> 1 (no overflow, enough branches)."""
+    om, d, c = SR.var('omega'), SR.var('d'), SR.var('c')
+    bp = matrix(SR, [[I * om + 1 - c * exp(-I * om * d) * (1 / (1 + I * om) - 1 / (1 + I * om) ** 2)]])
+    ks = kernel_stability(bp, om, {c: 9.5, d: 0.5})
+    assert ks.status == 'unstable' and ks.n_rhp == 2       # Pade-12/20 roots: 0.64119, 0.20259
+    assert sorted(round(z.real, 5) for z in ks.roots) == [0.20259, 0.64119]
+    assert kernel_stability(bp, om, {c: 1.0, d: 0.5}).status == 'stable'
+    al = matrix(SR, [[I * om + 1 + 2 * exp(-I * om * d), 0], [0, I * om + 3]])
+    assert kernel_stability(al, om, {d: 523.6}).n_rhp == 290
+    lw = matrix(SR, [[I * om + 10 + 5 * exp(-I * om * d)]])
+    assert kernel_stability(lw, om, {d: 80.0}).status == 'stable'
+    lw2 = matrix(SR, [[I * om + 1 + 2 * exp(-I * om * d)]])
+    assert kernel_stability(lw2, om, {d: 300.0}).n_rhp == 166
+    one = np.array([[1.0]])
+    from api._delay_exact import ExactTreeUnavailable
+    with pytest.raises(ExactTreeUnavailable, match='not positive'):
+        ExactTree(DelayedStateSpace(np.array([[-1.0]]), np.array([[-2.0]]), one, np.array([[0.0]]),
+                                    one, np.array([[0.0]]), 1.4, np.array([[0.2]])), 0, 0)

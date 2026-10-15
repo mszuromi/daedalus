@@ -151,17 +151,23 @@ def numeric_K(K_ft, omega, num_params):
 # ── Lambert W (scalar, one delay) ────────────────────────────────────────
 
 
-def lambert_roots(alpha, beta, gamma, X, branches=60):
-    """Roots of ``alpha s + beta + gamma e^{-s X} = 0`` on Lambert branches
-    ``-branches..branches``."""
-    from scipy.special import lambertw
+def lambert_roots(alpha, beta, gamma, X, branches=None):
+    """Roots of ``alpha s + beta + gamma e^{-s X} = 0`` on the Lambert branches
+    ``-K..K``.  ``K`` (default) covers every root with ``|Im s| <= R``,
+    ``R = |beta/alpha| + |gamma/alpha| + 1`` (the bound on right-half-plane
+    roots; ``Im W_k ~ 2 pi k``), at least 60.  ``z = -(gamma/alpha) X
+    e^{beta X/alpha}`` is formed in mpmath (no overflow for large ``beta X``)."""
+    import mpmath as mp
     alpha, beta, gamma, X = complex(alpha), complex(beta), complex(gamma), float(X)
     if gamma == 0:
         return [(-beta / alpha)]
-    z = -(gamma / alpha) * X * cmath.exp(beta * X / alpha)
-    out = []
-    for k in range(-branches, branches + 1):
-        out.append(complex(lambertw(z, k)) / X - beta / alpha)
+    R = abs(beta / alpha) + abs(gamma / alpha) + 1.0
+    K = int(branches) if branches is not None else max(60, int(R * X / (2 * math.pi)) + 10)
+    with mp.workdps(30):
+        z = -(mp.mpc(gamma) / mp.mpc(alpha)) * X * mp.exp(mp.mpc(beta) * X / mp.mpc(alpha))
+        out = []
+        for k in range(-K, K + 1):
+            out.append(complex(mp.lambertw(z, k) / X - mp.mpc(beta) / mp.mpc(alpha)))
     return out
 
 
@@ -179,6 +185,9 @@ def _refined_phase(chi, path, t0, t1, n0, budget):
         if not np.all(np.isfinite(v)):
             bad = ~np.isfinite(v)
             raise FloatingPointError(f'chi not finite at {path(t[bad][:3])}')
+        if np.any(v == 0):
+            i = int(np.argmin(np.abs(v)))
+            return float('nan'), 0.0, complex(path(np.array([t[i]]))[0]), n_eval
         dphi = np.angle(v[1:] / v[:-1])
         big = np.abs(dphi) > _PHASE_STEP
         if not big.any():
@@ -200,17 +209,21 @@ def _refined_phase(chi, path, t0, t1, n0, budget):
 
 
 def _leading(chi):
-    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s``."""
-    xs = np.array([1e5, 2e5, 4e5, 8e5])
-    v = chi(xs)
-    if not np.all(np.isfinite(v)) or np.any(v == 0):
-        return None
-    ms = np.log(np.abs(v[1:] / v[:-1])) / math.log(2.0)
-    m = int(round(float(ms[-1])))
-    if abs(ms[-1] - m) > 0.05:
-        return None
-    c = complex(v[-1]) / xs[-1] ** m
-    return c, m
+    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s``: the first scale
+    ``x0`` in 1e3 .. 1e13 where three successive doublings give the same
+    integer power (the rates of the model set where that regime starts)."""
+    for x0 in 10.0 ** np.arange(3, 14):
+        xs = x0 * np.array([1.0, 2.0, 4.0, 8.0])
+        with np.errstate(all='ignore'):
+            v = chi(xs)
+        if not np.all(np.isfinite(v)) or np.any(v == 0):
+            continue
+        ms = np.log(np.abs(v[1:] / v[:-1])) / math.log(2.0)
+        m = int(round(float(ms[-1])))
+        if np.max(np.abs(ms - m)) > 0.02:
+            continue
+        return complex(v[-1]) / xs[-1] ** m, m
+    return None
 
 
 def _ratio_ok(chi, c, m, R):
@@ -234,6 +247,8 @@ def _winding_box(chi, x0, x1, y0, y1, budget):
     vmin = np.inf
     for path, a, b in segs:
         ph, vm, _, ne = _refined_phase(chi, path, a, b, 64, budget)
+        if not math.isfinite(ph):
+            return 0, 0.0, n + ne
         total += ph
         n += ne
         vmin = min(vmin, vm)
@@ -271,11 +286,14 @@ def _locate(chi, R, n_expect, budget, max_roots=6):
         if w < 1e-9 * max(R, 1.0):
             roots.append(complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
             continue
-        xm, ym = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        # off-centre splits: a real root never sits on a box edge
+        xm, ym = x0 + 0.4973 * (x1 - x0), y0 + 0.5127 * (y1 - y0)
         for bx in ((x0, xm, y0, ym), (xm, x1, y0, ym), (x0, xm, ym, y1), (xm, x1, ym, y1)):
             try:
-                c, _, ne = _winding_box(chi, *bx, budget)
-            except (RuntimeError, FloatingPointError):
+                c, vmin, ne = _winding_box(chi, *bx, budget)
+            except (RuntimeError, FloatingPointError, ValueError):
+                continue
+            if vmin == 0.0:
                 continue
             used += ne
             if c > 0:
@@ -283,9 +301,11 @@ def _locate(chi, R, n_expect, budget, max_roots=6):
     return sorted(roots, key=lambda z: -z.real)
 
 
-def count_rhp_roots(chi, *, budget=_MAX_PTS):
+def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     """``KernelStability`` of ``chi`` by the argument principle (see the
-    module docstring)."""
+    module docstring).  ``d_max``: the longest delay; the initial contour grid
+    resolves ``e^{-s d_max}`` (a phase step of 0.3 rad), so the refinement
+    cannot alias over whole periods."""
     t0 = time.perf_counter()
     lead = _leading(chi)
     if lead is None:
@@ -304,28 +324,46 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS):
                        'the unstable roots cannot be bounded',
                 wall_s=time.perf_counter() - t0)
     R = 1.5 * R
-    ph_ax, vmin_ax, s_min, n1 = _refined_phase(chi, lambda t: 1j * t, R, -R, 4001, budget)
+    n_ax = max(4001, int(2 * R * max(float(d_max), 0.0) / _PHASE_STEP) + 1)
+    n_arc = max(2001, int(math.pi * R * max(float(d_max), 0.0) / _PHASE_STEP) + 1)
+    if n_ax + n_arc > budget:
+        return KernelStability(
+            'undetermined', method='argument_principle', radius=R,
+            detail=f'the contour needs {n_ax + n_arc} points to resolve the delay (R d = '
+                   f'{R * d_max:.3g}): beyond the budget {budget}', wall_s=time.perf_counter() - t0)
+    ph_ax, vmin_ax, s_min, n1 = _refined_phase(chi, lambda t: 1j * t, R, -R, n_ax, budget)
     ph_arc, _, _, n2 = _refined_phase(chi, lambda t: R * np.exp(1j * t),
-                                      -math.pi / 2, math.pi / 2, 2001, budget)
+                                      -math.pi / 2, math.pi / 2, n_arc, budget)
     scale = max(abs(complex(chi(np.array([0.0]))[0])), abs(c) * max(1.0, abs(s_min)) ** m)
     w = (ph_ax + ph_arc) / (2 * math.pi)
+    if not math.isfinite(w):
+        out = KernelStability('marginal', method='argument_principle', radius=R,
+                              roots=(s_min,), rightmost=s_min, n_points=n1 + n2,
+                              detail=f'det K(s) = 0 on the imaginary axis at s = {s_min:.6g}')
+        out.wall_s = time.perf_counter() - t0
+        return out
     nz = int(round(w))
     out = KernelStability('stable', n_rhp=nz, method='argument_principle', radius=R,
                           n_points=n1 + n2, detail=f'winding {w:.6f} on the half disc of '
                           f'radius {R:.4g} (leading term c s^{m})')
-    if vmin_ax <= _MARGINAL_REL * scale:
-        out.status = 'marginal'
-        out.roots = (s_min,)
-        out.rightmost = s_min
-        out.detail += f'; |det K| = {vmin_ax:.3g} on the axis at s = {s_min:.6g}'
-    elif abs(w - nz) > 0.05 or nz < 0:
+    if abs(w - nz) > 0.05 or nz < 0:
         out.status = 'undetermined'
         out.detail += ' (not an integer: the contour passes too close to a root)'
     elif nz > 0:
         out.status = 'unstable'
-        roots = _locate(chi, R, nz, budget)
+        try:
+            roots = _locate(chi, R, nz, budget)
+        except (RuntimeError, FloatingPointError, ValueError):
+            roots = []
         out.roots = tuple(roots)
         out.rightmost = roots[0] if roots else None
+        if vmin_ax <= _MARGINAL_REL * scale:
+            out.detail += f'; also |det K| = {vmin_ax:.3g} on the axis at s = {s_min:.6g}'
+    elif vmin_ax <= _MARGINAL_REL * scale:
+        out.status = 'marginal'
+        out.roots = (s_min,)
+        out.rightmost = s_min
+        out.detail += f'; |det K| = {vmin_ax:.3g} on the axis at s = {s_min:.6g}'
     out.wall_s = time.perf_counter() - t0
     return out
 
@@ -408,9 +446,10 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                 return KernelStability('undetermined', detail=f'delay {X} has no value')
             if not any(abs(xv - y) <= 1e-14 * max(1.0, abs(y)) for y in delays):
                 delays.append(xv)
-    if any(x <= 0 for x in delays):
+    delays = [x for x in delays if x != 0.0]             # exp(0) = 1: no delay
+    if any(x < 0 for x in delays):
         return KernelStability('acausal', delays=tuple(delays),
-                               detail=f'non-positive delay(s) {[x for x in delays if x <= 0]} '
+                               detail=f'negative delay(s) {[x for x in delays if x < 0]} '
                                       '(an advance, not a delay)',
                                wall_s=time.perf_counter() - t0)
     acausal = _acausal_images(K_ft, omega, num_params)
@@ -441,16 +480,17 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                         detail=f'Lambert W roots s_k = W_k(z)/d - beta/alpha, '
                                f'branches -60..60; rightmost {right:.8g}',
                         wall_s=time.perf_counter() - t0)
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
+            except (TypeError, ValueError, ZeroDivisionError, OverflowError, ArithmeticError):
+                pass                                # the argument principle below
     K_of_s, nf = numeric_K(K_ft, omega, num_params)
 
     def chi(s):
         return np.linalg.det(K_of_s(s))
 
     try:
-        out = count_rhp_roots(chi)
-    except (RuntimeError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        out = count_rhp_roots(chi, d_max=max(delays) if delays else 0.0)
+    except (RuntimeError, FloatingPointError, np.linalg.LinAlgError, ValueError,
+            OverflowError) as exc:
         out = KernelStability('undetermined', method='argument_principle',
                               detail=f'{type(exc).__name__}: {exc}')
     out.delays = tuple(delays)
