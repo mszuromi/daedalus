@@ -31,9 +31,11 @@ rational spectrum and, for small triples, `C(τ)` itself through C2's `tree_mode
   three-field k = 3 one loop with five symbolic parameters (7 s) equals the pipeline at two parameter points to
   1e-12; pairings equal S4's exact `integrate_against`; the triples equal `C_tau`.
 - **Symbols and saddle.** `symbols=` chooses the symbolic parameters (others enter as the simplest rational of their
-  double); `saddle='numeric'` (default; exact for the reference saddle), `'symbol'` (rational in parameters and
-  saddle) or `{name: closed form}` (checked against the reference).  Exports: Sage, sympy, LaTeX, JSON, a numpy
-  callable.
+  double); `saddle='auto'` (default: the saddle stays a number when a second mean-field solve shows it does not move
+  with the symbolic parameters, else it becomes a variable), `'numeric'` (exact for the reference saddle; warns when
+  evaluated elsewhere if the saddle moves), `'symbol'` or `{name: closed form}` (checked against the reference).
+  Exports: Sage, sympy, LaTeX, JSON, a numpy callable; `dd.` and `api.symbolic_out` re-export the entry points
+  (the latter through a module `__getattr__`).
 - **Limits.** Refused by name (`SymbolicLoopRefused.reason`): Kronecker blocks over `max_block` states (default 64;
   e.g. an Erlang-2 kernel at one loop needs 81 and takes ~2 min with five symbols), conductance kernels
   (`kernel_edge`), non-local noise kernels, subsets off the state-space route, spatial models, parameters entering

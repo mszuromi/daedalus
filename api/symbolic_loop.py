@@ -68,9 +68,14 @@ How
    coefficients equal ``D_delta`` and no symbolically nonzero entry vanishes
    at the reference (``degenerate_reference``: that run would have lost
    subsets); the total is compared with the pipeline at the reference
-   (:meth:`SymbolicCumulant.check`, ``CHECK_RTOL``): equal time against
-   ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``, a pairing against S4's
-   exact smooth ``Cumulant.integrate_against``.
+   per loop order (:meth:`SymbolicCumulant.check`: relative to the largest
+   |pipeline value| over the loop orders, ``CHECK_RTOL``, ``AssertionError``
+   beyond): equal time against ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``,
+   a pairing against S4's exact smooth ``Cumulant.integrate_against`` (no
+   such reference: ``no_reference``, unless ``reference_check=False``),
+   triples at ``C(0⁻)`` and ``C(±1)`` (:meth:`SymbolicTriple.check`).  A
+   ``result=`` must answer the same request (external fields, given
+   parameters, loop orders: ``ValueError`` otherwise).
 
 Symbols, numbers and the saddle
 -------------------------------
@@ -79,19 +84,28 @@ saddle); a list keeps those, and the others enter as the SIMPLEST rational
 that rounds to their double (``1/6`` for ``1/6.``; S1 takes the exact binary
 value instead, whose 53-bit denominators make expressions unreadable; the
 two differ by less than half an ulp).  Kernel coefficients and rates given
-as floats are converted the same way; a kernel's own symbols join ``F``
-(reference values in ``kernel_values=``).  The saddle (``xstar1`` ...):
+as floats, and variable-free irrational constants (``sqrt(7/10)`` when the
+parameters under a root are numeric), are converted the same way; a
+kernel's own symbols join ``F`` (reference values in ``kernel_values=``,
+which must not name model parameters); a kernel term that grows on its side
+is refused (``ValueError``: the resolvent would continue a divergent
+integral analytically).  The saddle (``xstar1`` ...):
 
-* ``saddle='numeric'`` (default): the reference saddle as a rational (a
-  value whose simplest form exceeds ``SADDLE_DIGITS`` digits is solver noise
-  around a short rational -- ``1e-300`` for 0 -- and is snapped within
-  ``SADDLE_ATOL``).  Exact for that saddle: the result is the symbolic
-  function of the parameters only where the saddle does not move with them
-  (``x* = 0``, or a saddle fixed by the model);
+* ``saddle='auto'`` (default): the mean-field stage is solved once more with
+  every symbolic parameter scaled by a distinct factor; if the saddle does
+  not move, 'numeric', else (or if that solve fails) 'symbol';
+* ``saddle='numeric'``: the reference saddle as a rational (a value whose
+  simplest form exceeds ``SADDLE_DIGITS`` digits is solver noise around a
+  short rational -- ``1e-300`` for 0 -- and is snapped within
+  ``SADDLE_ATOL``, with a note).  Exact for that saddle; if it moves with
+  the symbolic parameters a WARNING note is added and ``evaluate`` /
+  ``callable`` away from the reference warn (:class:`SaddleWarning`);
 * ``saddle='symbol'``: the saddle symbols join ``F``; the result is rational
-  in parameters and saddle and holds on the mean-field manifold;
+  in parameters and saddle and holds on the mean-field manifold (evaluate it
+  with the saddle of the point);
 * ``saddle={name: closed form}``: substituted, after a check against the
-  reference saddle (``saddle_mismatch``).  ``'solve'`` is refused
+  reference saddle (1e-9 relative, ``saddle_mismatch``); saddles not named
+  stay at their reference values.  ``'solve'`` is refused
   (``saddle_unsolved``): the pipeline's expanded action drops the stationary
   mean-field sector, so no symbolic equations are at hand here.
 
@@ -101,6 +115,8 @@ Conventions
   Phase J's own Θ(0) / tie rule (Itô).  For k = 2 this is the left limit
   ``C(0⁻)`` (``SymbolicTriple.at_zero(ell, '-')``; ``C_tau``'s τ = 0 sample
   is taken at ``τ = −_ITO_EPS`` instead).
+* Fluctuation cumulants of the pipeline: at k = 1 the saddle is not added
+  (the ℓ = 0 value is 0; add the saddle for the mean).
 * The SMOOTH part only: δ records of Feature B (shot-noise subsets on a δ
   surface) are not included, as in ``C_tau``; δ parts of the propagator
   inside a subset (its δ edges) are.
@@ -122,8 +138,9 @@ Limits and refusals (``SymbolicLoopRefused.reason``)
 ---------------------------------------------------
 ``too_large``: a Kronecker block over ``max_block`` states (default
 ``MAX_BLOCK``; the block of ``w`` active edges with ``n`` states each has
-``n^w``) or more than ``max_symbols`` variables; ``spatial``;
-``k_unsupported`` (a pairing or triple at k != 2, a switch-on result);
+``n^w``), a pairing segment over ``4 max_block`` states, or more than
+``max_symbols`` variables; ``spatial``; ``k_unsupported`` (a pairing at
+k != 2, a switch-on result; a ``result=`` of another k is a ``ValueError``);
 ``complex_coefficients``; ``non_rational``; ``improper_entry``;
 ``singular_pencil``; ``pole_route_subset`` (a subset the state-space route
 declined); ``kernel_edge`` (conductance kernels: kernel rows, dressed lines,
@@ -131,7 +148,11 @@ kernel symbols in a vertex) / ``dressed_line``; ``noise_kernel`` (a
 non-local noise cumulant); ``offset_row`` / ``offset_slot`` / ``ext_ext_row``
 (rows with constant time offsets or joining two external times on the lag
 axis); ``degenerate_reference``; ``saddle_mismatch`` / ``saddle_unsolved``;
-``prefactor_mismatch``; ``unbound_symbol``; ``failed_diagram``.
+``prefactor_mismatch``; ``unbound_symbol``; ``no_reference``;
+``failed_diagram``.  Bad arguments (unknown saddle mode or names, a
+``result=`` for another request, loop orders not computed, a growing kernel,
+unknown or numeric names in ``evaluate``) raise ``ValueError``; a failed
+reference comparison raises ``AssertionError``.
 """
 from __future__ import annotations
 
@@ -142,7 +163,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
-__all__ = ['SymbolicLoopRefused', 'SymbolicPropagator', 'SymbolicCumulant',
+__all__ = ['SymbolicLoopRefused', 'SaddleWarning', 'SymbolicPropagator',
+           'SymbolicCumulant',
            'SymbolicTriple', 'symbolic_triple',
            'symbolic_propagator', 'symbolic_cumulant', 'expression_size',
            'MAX_BLOCK', 'MAX_SYMBOLS']
@@ -162,6 +184,17 @@ class SymbolicLoopRefused(ValueError):
     def __init__(self, reason, message):
         super().__init__(f'{reason}: {message}')
         self.reason = reason
+        self._message = message
+
+    def __reduce__(self):
+        return (type(self), (self.reason, self._message))
+
+
+class SaddleWarning(UserWarning):
+    """A result computed with the saddle at its reference value
+    (``saddle='numeric'``) was evaluated where a symbolic parameter differs
+    from the reference although the saddle moves with it: the value is not
+    the cumulant there (use ``saddle='symbol'`` / ``'auto'``)."""
 
 
 def _sage():
@@ -299,8 +332,9 @@ def _non_integer_powers(e):
 
 
 def _exactify_simple(e):
-    """Every inexact number of an SR expression replaced by
-    :func:`_rational_value` (a kernel rate ``-0.5`` is ``-1/2``)."""
+    """Every inexact number of an SR expression, and every variable-free
+    irrational constant (``sqrt(7/10)``), replaced by :func:`_rational_value`
+    of its double (a kernel rate ``-0.5`` is ``-1/2``)."""
     S = _sage()
     if e.is_numeric():
         po = e.pyobject()
@@ -308,12 +342,14 @@ def _exactify_simple(e):
         if isinstance(po, int) or (par is not None and par().is_exact()):
             return e
         return S.SR(_rational_value(complex(po)))
-    if not e.variables() and not e.is_numeric():
+    if not e.variables():
+        # a constant that is not a plain number (sqrt(7/10), e^(-13/10)):
+        # its double, as the float pipeline sees it, as a simplest rational
         try:
-            if not e.operands():
-                return e
-        except Exception:
+            z = S.ComplexField(200)(e)
+        except (TypeError, ValueError):
             return e
+        return S.SR(_rational_value(complex(z)))
     ops = e.operands()
     if not ops:
         return e
@@ -1022,16 +1058,22 @@ class SymbolicCumulant:
             if missing or extra:
                 raise TypeError(f'parameters {names} expected; missing '
                                 f'{missing}, unknown {extra}')
+            _saddle_guard(self, kw)
             return fn(*[kw[n] for n in names])
         f.params = names
         return f
 
     def evaluate(self, point=None, ell=None):
-        """Value at ``point`` (default: the reference point), exact
-        rational arithmetic then rounded."""
-        pt = dict(self.reference)
-        pt.update(point or {})
+        """Value at ``point`` ({symbolic variable: number}; default: the
+        reference point), exact rational arithmetic then rounded.  Unknown
+        names and numeric (non-symbolic) parameters raise."""
+        pt = _point(self, point)
         return self.field.evaluate(self._x(ell), pt)
+
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        d['_ctx'] = None                # live closures of the reference run
+        return d
 
     def check(self, rtol=CHECK_RTOL):
         """``{ell: |symbolic − pipeline| / scale}`` at the reference point
@@ -1113,6 +1155,26 @@ class SymbolicTriple:
                        F(0))
         return _red(out)
 
+    def check(self, rtol=CHECK_RTOL):
+        """``{ell: max relative difference}`` of ``C(0⁻)`` (exact
+        :meth:`at_zero`) and ``C(±1)`` (:meth:`C`) to the pipeline's Phase J
+        callables at the reference point (scale: the largest |pipeline
+        value| of that loop order); raises ``AssertionError`` beyond
+        ``rtol``."""
+        out = {}
+        for ell, ref in self.pipeline.items():
+            sc = max([abs(v) for v in ref.values()] + [1e-300])
+            got = {0.0: self.field.evaluate(self.at_zero(ell, '-'),
+                                            self.reference),
+                   1.0: complex(self.C([1.0], ell)[0]),
+                   -1.0: complex(self.C([-1.0], ell)[0])}
+            d = max(abs(got[t] - ref[t]) for t in ref) / sc
+            out[ell] = d
+            if d > rtol:
+                raise AssertionError(f'triple ell={ell}: {got} vs pipeline '
+                                     f'{ref} ({d:.2e})')
+        return out
+
     def resolvent(self, ell, side, var='z'):
         """``Σ_blocks c (z − G)^{−1} x0`` as a rational function of a new
         variable ``z`` (an SR expression; ``z`` = ``var``): the one-sided
@@ -1149,6 +1211,9 @@ class SymbolicTriple:
         e^{−iωτ} dω``."""
         S = _sage()
         om = S.SR.var('omega') if omega is None else S.SR(omega)
+        if str(om) in self.names:
+            raise ValueError(f'{om} is a parameter name: pass another '
+                             f'omega=')
         z = S.SR.var('z_c3')
         lp = self.resolvent(ell, '+', 'z_c3').subs({z: -S.I * om})
         lm = self.resolvent(ell, '-', 'z_c3').subs({z: S.I * om})
@@ -1163,15 +1228,14 @@ class SymbolicTriple:
         cancellation)."""
         from api.symbolic_out import tree_modes
         S = _sage()
-        om = S.SR.var('omega')
+        om = S.SR.var('omega_c3' if 'omega' in self.names else 'omega')
         ref = dict(self.reference) if reference is None else dict(reference)
         return tree_modes(self.spectrum(ell, om), om, reference=ref, **kw)
 
     def C(self, tau, ell, point=None):
         """``C(τ)`` at numbers (array ``tau``; τ = 0 is the side '-' limit)."""
         import scipy.linalg as sl
-        pt = dict(self.reference)
-        pt.update(point or {})
+        pt = _point(self, point)
         tau = np.atleast_1d(np.asarray(tau, dtype=float))
         out = np.zeros(tau.shape, dtype=complex)
         ev = self.field.evaluate
@@ -1186,6 +1250,36 @@ class SymbolicTriple:
                 for i in np.nonzero(on)[0]:
                     out[i] += cn @ sl.expm(Gn * abs(tau[i])) @ xn
         return out
+
+
+def _point(res, point):
+    """The reference point updated by ``point`` (strict names; the saddle
+    guard of 'numeric' results)."""
+    point = dict(point or {})
+    unknown = [n for n in point if n not in res.field.names]
+    if unknown:
+        num = [n for n in unknown if n in getattr(res, 'numeric_params', [])]
+        raise ValueError(
+            f'{unknown} are not variables of this result {list(res.names)}'
+            + (f' ({num} entered as numbers: recompute with them in '
+               f'symbols=)' if num else ''))
+    _saddle_guard(res, point)
+    pt = dict(res.reference)
+    pt.update(point)
+    return pt
+
+
+def _saddle_guard(res, point):
+    import warnings
+    if not getattr(res, 'saddle_moves', False):
+        return
+    moved = [n for n, v in point.items()
+             if n in res.reference and float(v) != res.reference[n]]
+    if moved:
+        warnings.warn(f'the saddle was fixed at its reference value but moves '
+                      f'with {moved}: this is not the cumulant at that point '
+                      f"(use saddle='auto' or 'symbol')", SaddleWarning,
+                      stacklevel=3)
 
 
 def _solve_vec(M, y, F, times=1):
@@ -1243,6 +1337,8 @@ class _Setup:
                 model, k=k, max_ell=max_ell, external_fields=external_fields,
                 parameters=parameters, tau_grid=[0.0], parallel=False,
                 verbose=verbose, use_cache=False)
+        else:
+            _check_result_args(result, external_fields, parameters, max_ell)
         cfg = result.get('config') or {}
         if 'C_tau_x' in result or cfg.get('spatial'):
             raise SymbolicLoopRefused('spatial', 'spatial models are not '
@@ -1252,6 +1348,8 @@ class _Setup:
                                       '(t_min) is not stationary')
         if int(cfg.get('k', k)) != int(k):
             raise ValueError(f'result has k = {cfg.get("k")}, not {k}')
+        self.max_ell_run = int(cfg.get('max_ell', max(
+            [int(r['ell']) for r in result.get('diagrams') or []] + [0])))
         self.result = result
         self.t_ref = time.perf_counter() - t_start
         num_params = result['num_params']
@@ -1262,6 +1360,8 @@ class _Setup:
         if symbols is None:
             sym = list(params)
         else:
+            if isinstance(symbols, str):
+                symbols = [symbols]
             sym = [str(x) for x in symbols]
             bad = [x for x in sym if x not in params]
             if bad:
@@ -1283,12 +1383,35 @@ class _Setup:
                 "(its expanded action drops that sector); pass saddle="
                 "{name: closed form} (checked at the reference) or use "
                 "'numeric' / 'symbol'")
-        elif saddle not in ('numeric', 'symbol'):
-            raise ValueError("saddle must be 'numeric', 'symbol' or a dict "
-                             "{saddle name: closed form}")
+        elif saddle not in ('auto', 'numeric', 'symbol'):
+            raise ValueError("saddle must be 'auto', 'numeric', 'symbol' or a "
+                             "dict {saddle name: closed form}")
         notes = []
+        # does the saddle move with the symbolic parameters?  (one mean-field
+        # solve at a perturbed point; None: unknown)
+        self.saddle_moves = None
+        if sad and sym and saddle in ('auto', 'numeric'):
+            self.saddle_moves = _saddle_moves(model, result, sad, sym)
+        if saddle == 'auto':
+            if not sad or not sym or self.saddle_moves is False:
+                saddle = 'numeric'
+            else:
+                saddle = 'symbol'
+                notes.append('saddle: it moves with the symbolic parameters'
+                             if self.saddle_moves else
+                             'saddle: the perturbed mean-field solve failed')
+        elif saddle == 'numeric' and self.saddle_moves:
+            notes.append(f'WARNING: saddle {sad} moves with the symbolic '
+                         f'parameters; this result is the cumulant only at '
+                         f'the reference point (evaluate() / callable() '
+                         f'elsewhere warn; use saddle=\'auto\' or \'symbol\')')
+        self.saddle = saddle
         vars_ = list(sym) + (list(sad) if saddle == 'symbol' else [])
         kvals = {str(a): b for a, b in (kernel_values or {}).items()}
+        clash = sorted(set(kvals) & set(names_all))
+        if clash:
+            raise ValueError(f'kernel_values names {clash}, which are model '
+                             f'parameters (set them through parameters=)')
         if kernel is not None:
             kv = set()
             for t in kernel.terms:
@@ -1310,12 +1433,20 @@ class _Setup:
         reference, subs = {}, {}
         for key, v in num_params.items():
             n = str(key)
+            cv = complex(v)
+            if cv.imag != 0.0:
+                raise SymbolicLoopRefused('complex_coefficients',
+                                          f'{n} = {v} is complex')
             if n in vars_:
-                reference[n] = float(complex(v).real)
+                reference[n] = float(cv.real)
                 continue
             if saddle_map is not None and n in saddle_map:
                 continue
-            subs[S.SR(key)] = S.SR(_rational_value(v, n in sad))
+            q = _rational_value(v, n in sad)
+            if n in sad and float(q) != float(cv.real):
+                notes.append(f'saddle {n} = {cv.real!r} snapped to {q} '
+                             f'(solver noise)')
+            subs[S.SR(key)] = S.SR(q)
         for n in vars_:
             if n not in reference:
                 reference[n] = float(kvals[n])
@@ -1343,15 +1474,15 @@ class _Setup:
         if sad and saddle == 'numeric':
             notes.append(f'saddle {sad} at its reference value (simplest '
                          f'rational of its double; solver noise around a '
-                         f'short rational snapped within {SADDLE_ATOL:g}): '
-                         f'exact for that saddle, i.e. symbolic in the '
-                         f'parameters only where the saddle does not move '
-                         f'with them')
+                         f'short rational snapped within {SADDLE_ATOL:g})'
+                         + ('' if self.saddle_moves is False else
+                            ': exact for that saddle only'))
         elif sad and saddle == 'symbol':
             notes.append(f'saddle {sad} kept symbolic: rational in parameters '
                          f'and saddle, valid on the mean-field manifold')
         self.reference, self.subs, self.notes = reference, subs, notes
         self.sad, self.sym, self.kvals = sad, sym, kvals
+        self.numeric_params = [n for n in params if n not in sym]
         self.stats = _Stats(max_block)
         t0 = time.perf_counter()
         prop = result['propagator']
@@ -1411,7 +1542,7 @@ class _Setup:
 
 
 def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
-                      parameters=None, symbols=None, saddle='numeric',
+                      parameters=None, symbols=None, saddle='auto',
                       ells=None, result=None, kernel=None, kernel_values=None,
                       reference_check=True, max_block=None, max_symbols=None,
                       verbose=False) -> SymbolicCumulant:
@@ -1422,7 +1553,10 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
 
     ``parameters``: the reference values (model defaults otherwise);
     ``symbols``: the parameter names kept symbolic (``None``: all);
-    ``saddle``: 'numeric' (default) | 'symbol' | {saddle name: closed form};
+    ``saddle``: 'auto' (default: 'numeric' when a mean-field solve at a
+    perturbed point shows the saddle does not move with the symbolic
+    parameters, else 'symbol') | 'numeric' | 'symbol' | {saddle name: closed
+    form};
     ``ells``: the loop orders (default ``0..max_ell``); ``result``: a
     ``compute_cumulants`` result of the same request (its reference point);
     ``kernel_values``: reference values of the kernel's own symbols (they
@@ -1443,13 +1577,18 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
         S = _sage()
         kterms = []
         for t in kernel.terms:
+            rate = st.field.from_sr(S.SR(t.rate).subs(st.subs), 'kernel rate')
+            # the resolvent is the analytic continuation: a growing term
+            # would give a finite number for a divergent integral
+            rv = st.field.evaluate(rate, st.reference) if rate != 0 else 0j
+            if (t.side == 'positive' and rv.real > 0) or (
+                    t.side == 'negative' and rv.real < 0):
+                raise ValueError(f'kernel term {t}: rate {rv} grows on its '
+                                 f'side (the integral diverges)')
             kterms.append((t.side, int(t.power),
                            st.field.from_sr(S.SR(t.coeff).subs(st.subs),
-                                            'kernel coefficient'),
-                           st.field.from_sr(S.SR(t.rate).subs(st.subs),
-                                            'kernel rate')))
-    if ells is None:
-        ells = list(range(int(max_ell) + 1))
+                                            'kernel coefficient'), rate))
+    ells = _check_ells(ells, max_ell, st)
     by_ell, per_ell = {}, {}
     for ell in ells:
         te = time.perf_counter()
@@ -1467,22 +1606,25 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
         field=st.field, reference=st.reference, pipeline=pipeline, k=st.k,
         stats=st.stats_dict(per_ell), notes=st.notes)
     res._ctx = {'propagator': st.sp, 'result': st.result, 'subs': st.subs}
+    res.saddle_moves = st.saddle_moves if st.saddle == 'numeric' else False
+    res.numeric_params = list(st.numeric_params)
     if reference_check:
         res.check()
     return res
 
 
 def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
-                    symbols=None, saddle='numeric', ells=None, result=None,
-                    max_block=None, max_symbols=None,
+                    symbols=None, saddle='auto', ells=None, result=None,
+                    reference_check=True, max_block=None, max_symbols=None,
                     verbose=False) -> SymbolicTriple:
     """The rational matrix-exponential triples of a k = 2 result
-    (:class:`SymbolicTriple`; arguments as :func:`symbolic_cumulant`)."""
+    (:class:`SymbolicTriple`; arguments as :func:`symbolic_cumulant`).
+    ``reference_check``: :meth:`SymbolicTriple.check` (C(0⁻) and C(±1)
+    against the pipeline's Phase J callables at the reference point)."""
     from engine.integration.time_domain import final_integral as FI
     st = _Setup(model, 2, max_ell, external_fields, parameters, symbols,
                 saddle, result, None, None, verbose, max_block, max_symbols)
-    if ells is None:
-        ells = list(range(int(max_ell) + 1))
+    ells = _check_ells(ells, max_ell, st)
     blocks, per_ell = {}, {}
     for ell in ells:
         te = time.perf_counter()
@@ -1496,9 +1638,92 @@ def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
                              'subsets': n_sub,
                              'states': {s: sum(b[0].nrows() for b in v)
                                         for s, v in sink.items()}}
-    return SymbolicTriple(blocks=blocks, field=st.field,
-                          reference=st.reference,
-                          stats=st.stats_dict(per_ell), notes=st.notes)
+    tr = SymbolicTriple(blocks=blocks, field=st.field,
+                        reference=st.reference,
+                        stats=st.stats_dict(per_ell), notes=st.notes)
+    tr.saddle_moves = st.saddle_moves if st.saddle == 'numeric' else False
+    tr.numeric_params = list(st.numeric_params)
+    pjs = st.result.get('phase_j_by_ell') or {}
+    tr.pipeline = {}
+    for ell in ells:
+        pj = pjs.get(ell)
+        tr.pipeline[int(ell)] = {
+            t: (complex(pj['total_C'](0.0, t)) if pj else 0j)
+            for t in (0.0, 1.0, -1.0)}
+    if reference_check:
+        tr.check()
+    return tr
+
+
+def _check_result_args(result, external_fields, parameters, max_ell):
+    """A ``result=`` must answer the same request: the external fields, the
+    parameters given and the loop orders are compared with its config."""
+    cfg = result.get('config') or {}
+    if external_fields is not None:
+        have = [tuple(f) for f in (cfg.get('external_fields_in')
+                                   or cfg.get('external_fields') or [])]
+        want = [tuple(f) for f in external_fields]
+        internal = [tuple(f) for f in cfg.get('external_fields') or []]
+        if want != have and want != internal:
+            raise ValueError(f'external_fields={want} but the result was '
+                             f'computed for {have}')
+    if parameters:
+        fund = cfg.get('fundamental') or {}
+        for n, v in parameters.items():
+            if n not in fund or not np.allclose(np.asarray(fund[n], float),
+                                                np.asarray(v, float),
+                                                rtol=0, atol=0):
+                raise ValueError(f'parameters[{n!r}] = {v} but the result was '
+                                 f'computed at {fund.get(n)}')
+    if max_ell is not None and int(max_ell) > int(cfg.get('max_ell', 0)):
+        raise ValueError(f'max_ell={max_ell} but the result has max_ell = '
+                         f'{cfg.get("max_ell")}')
+
+
+def _check_ells(ells, max_ell, st):
+    top = min(int(max_ell), st.max_ell_run)
+    if ells is None:
+        return list(range(top + 1))
+    ells = [int(e) for e in ells]
+    bad = [e for e in ells if e < 0 or e > top]
+    if bad:
+        raise ValueError(f'ells {bad} outside the computed loop orders '
+                         f'0..{top}')
+    return ells
+
+
+def _saddle_moves(model, result, sad, sym):
+    """Whether the reference saddle moves when the symbolic parameters move:
+    the mean-field stage is solved again with every symbolic parameter
+    scaled by a distinct factor (``True`` / ``False``; ``None`` when that
+    solve fails).  A jump to another root counts as moving."""
+    import re
+    try:
+        from api.symbolic_out import _expanded_theory, _solve_mean_field
+        cfg = result.get('config') or {}
+        fund = dict(cfg.get('fundamental') or {})
+        if not fund:
+            return None
+        ft = _expanded_theory(model, cfg.get('taylor_order'), False, False)
+        pert = dict(fund)
+        for i, (n, v) in enumerate(sorted(fund.items())):
+            if not any(s == n or re.fullmatch(re.escape(n) + r'\d+', s)
+                       for s in sym):
+                continue
+            f = 1.0 + 0.0137 * (i + 1)
+            pert[n] = ([float(x) * f for x in v] if isinstance(v, (list, tuple))
+                       else float(v) * f)
+        np2 = _solve_mean_field(ft, model, pert)
+        ref = {str(k_): complex(v) for k_, v in result['num_params'].items()}
+        new = {str(k_): complex(v) for k_, v in np2.items()}
+        for n in sad:
+            if n not in new:
+                return None
+            if abs(new[n] - ref[n]) > 1e-9 * max(1.0, abs(ref[n])):
+                return True
+        return False
+    except Exception:
+        return None
 
 
 def _pipeline_values(st, ells, kernel):
@@ -1521,10 +1746,11 @@ def _pipeline_values(st, ells, kernel):
             out[int(ell)] = complex(c.integrate_against(
                 kernel, ell=ell, method='exact', contact='exclude',
                 values=vals or None).smooth)
-    except Exception as exc:                    # no triples: no reference
-        st.notes.append(f'no pipeline reference for the pairing '
-                        f'({type(exc).__name__}: {str(exc)[:120]})')
-        return {}
+    except Exception as exc:
+        raise SymbolicLoopRefused(
+            'no_reference', f'the pipeline has no exact pairing to check '
+            f'against ({type(exc).__name__}: {str(exc)[:160]}); pass '
+            f'reference_check=False to accept the unchecked result') from exc
     return out
 
 

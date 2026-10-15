@@ -145,6 +145,7 @@ _PIPELINE_EXPORTS = {
     'SymbolicCumulant':          'api.symbolic_loop',
     'SymbolicTriple':            'api.symbolic_loop',
     'SymbolicLoopRefused':       'api.symbolic_loop',
+    'SaddleWarning':             'api.symbolic_loop',
 }
 
 

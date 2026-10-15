@@ -322,17 +322,38 @@ def test_refusals_by_name():
 def test_exports():
     from api import symbolic_out as so
     for name in ('symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
-                 'SymbolicTriple', 'SymbolicLoopRefused'):
+                 'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning'):
         assert getattr(dd, name) is getattr(SL, name), name
         assert getattr(so, name) is getattr(SL, name), name
+        assert name in dir(so)
+
+
+def _two_field_correlated():
+    """x' = -mu1 x - eps1 x^3 + J1 y + xi, y' = -mu2 y - eps2 y^3 + J2 x +
+    eta, white noises with correlation rho (amplitude sqrt(D1 D2))."""
+    from api.model import TemporalModelBuilder
+    b = TemporalModelBuilder('c3 two coupled fields, correlated noise')
+    b.population('P', size=1)
+    b.physical_field('x', population='P').physical_field('y', population='P')
+    for p, d in (('mu1', 1.0), ('mu2', 1.3), ('eps1', 0.05), ('eps2', 0.04),
+                 ('J1', 0.5), ('J2', 0.3), ('D1', 1.0), ('D2', 0.7),
+                 ('rho', 0.4)):
+        b.parameter(p, default=d)
+    b.set_mf_equation('xstar', '0')
+    b.set_mf_equation('ystar', '0')
+    b.set_action_text('sum(xt[i]*((Dt+mu1)*x[i] + eps1*x[i]^3 - J1*y[i]) '
+                      '+ yt[i]*((Dt+mu2)*y[i] + eps2*y[i]^3 - J2*x[i]) '
+                      '- D1*xt[i]^2 - D2*yt[i]^2 '
+                      '- 2*rho*sqrt(D1*D2)*xt[i]*yt[i] for i in P)')
+    return b.build()
 
 
 def test_correlated_noise_two_fields_and_square_roots():
     """Two coupled fields with correlated noise: rational in the couplings
     and the correlation; the noise amplitude enters as sqrt(D1 D2), refused
     by name (with the parameters to keep numeric) when D1, D2 are symbolic."""
-    m = dd.load_model('ou_quartic_two_dim_corr')[0]
-    ext = [('dx', 1), ('dy', 1)]
+    m = _two_field_correlated()
+    ext = [('x', 1), ('y', 1)]
     res = _cc(m, 2, 1, ext)
     r = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res,
                              symbols=['J1', 'J2', 'rho'])
@@ -351,9 +372,10 @@ def test_loop_level_modes_through_c2(ouq_model):
     res = _cc(ouq_model, 2, 1, ext, taus=taus)
     tr = SL.symbolic_triple(ouq_model, 1, external_fields=ext, result=res)
     ms = tr.modes(1)
-    tau = var('tau_c3t')
-    want = {('positive', 0): '-3*D^2*eps/mu^3', ('positive', 1): '-3*D^2*eps/mu^2',
-            ('negative', 0): '-3*D^2*eps/mu^3', ('negative', 1): '3*D^2*eps/mu^2'}
+    want = {('positive', 0): '-3*D^2*eps/mu^3',
+            ('positive', 1): '-3*D^2*eps/mu^2',
+            ('negative', 0): '-3*D^2*eps/mu^3',
+            ('negative', 1): '3*D^2*eps/mu^2'}
     got = {(mt.side, mt.power): mt.coeff for mt in ms.terms}
     assert set(got) == set(want)
     for key, c in want.items():
@@ -370,3 +392,109 @@ def test_loop_level_modes_through_c2(ouq_model):
     l0 = tr.laplace(0, 1, '+') + tr.laplace(0, 1, '-')
     assert _sr_equal(s0, tr.field.to_sr(l0))
     assert _sr_equal(s0, SR('-12*eps*D^2/mu^4'))
+
+
+def test_mixed_fields_orient_the_lag_axis():
+    """C_xe(τ) = κ(x(0), e(τ)) is not even in τ: the triples, their τ = 0
+    limits and the modes must keep the orientation."""
+    m = SSM.ou_colour(2.0)
+    ext = [('x', 1), ('e', 1)]
+    taus = np.linspace(-4, 4, 17)
+    res = _cc(m, 2, 1, ext, taus=taus)
+    tr = SL.symbolic_triple(m, 1, external_fields=ext, result=res)
+    eq = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
+    tt = np.where(taus == 0, -_ITO_EPS, taus)
+    for ell in (0, 1):
+        ref = res['C_tau_by_ell'][ell]
+        assert abs(ref[2] - ref[-3]) > 1e-3 * np.max(np.abs(ref))   # odd part
+        sc = np.max(np.abs(ref))
+        assert np.max(np.abs(tr.C(tt, ell) - ref)) <= 1e-13 * sc
+        v = np.array([complex(x) for x in tr.modes(ell).evaluate(tt)])
+        assert np.max(np.abs(v - ref)) <= 1e-13 * sc
+        assert tr.at_zero(ell, '-') == eq.by_ell[ell]
+        # continuous at 0 (no shot noise): both limits are the equal-time value
+        assert tr.at_zero(ell, '+') == eq.by_ell[ell]
+    assert max(tr.check().values()) <= 1e-12
+
+
+def _driven_quartic():
+    from api.noise import Gaussian
+    return (SDE('c3 driven OU quartic').parameter('h', default=0.5)
+            .parameter('mu', default=1.0).parameter('eps', default=0.1)
+            .parameter('D', default=0.2).field('x')
+            .drift('x', 'h - mu*x - eps*x^3')
+            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+
+
+def test_saddle_auto_follows_a_moving_saddle():
+    """The saddle is a root of a cubic that moves with every parameter:
+    'auto' keeps it symbolic and the result holds at another point (with the
+    pipeline's saddle there); 'numeric' warns when evaluated off the
+    reference."""
+    m = _driven_quartic()
+    ext = [('x', 1)] * 2
+    res = _cc(m, 2, 1, ext)
+    r = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
+    assert 'xstar1' in r.names and r.saddle_moves is False
+    pt = {'h': 0.9, 'mu': 0.6, 'eps': 0.2, 'D': 0.3}
+    res2 = _cc(m, 2, 1, ext, params=pt)
+    pt['xstar1'] = float([v for k_, v in res2['num_params'].items()
+                          if str(k_) == 'xstar1'][0])
+    for ell in (0, 1):
+        ref = complex(res2['phase_j_by_ell'][ell]['total_C'](0.0, 0.0))
+        assert abs(r.evaluate(pt, ell=ell) - ref) <= 1e-12 * abs(ref)
+    num = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res,
+                               saddle='numeric')
+    assert num.saddle_moves is True and 'xstar1' not in num.names
+    assert any(n.startswith('WARNING') for n in num.notes)
+    with pytest.warns(SL.SaddleWarning):
+        num.evaluate({'h': 0.9}, ell=1)
+    with pytest.warns(SL.SaddleWarning):
+        num.callable(1)(h=0.9, mu=1.0, eps=0.1, D=0.2)
+    # OU quartic: x* = 0 for every parameter, 'auto' is 'numeric'
+    r0 = SL.symbolic_cumulant(dd.load_model('ou_quartic')[0], 2, 1,
+                              external_fields=[('dx', 1)] * 2)
+    assert r0.saddle_moves is False and 'xstar1' not in r0.names
+
+
+def test_arguments_are_never_silently_ignored(ouq_model):
+    import pickle
+    ext = [('dx', 1)] * 2
+    res = _cc(ouq_model, 2, 1, ext)
+    with pytest.raises(ValueError, match='outside'):
+        SL.symbolic_cumulant(ouq_model, 2, 1, external_fields=ext, result=res,
+                             ells=[3])
+    with pytest.raises(ValueError, match='max_ell'):
+        SL.symbolic_cumulant(ouq_model, 2, 2, external_fields=ext, result=res)
+    with pytest.raises(ValueError, match='external_fields'):
+        SL.symbolic_cumulant(SSM.ou_colour(1.0), 2, 0,
+                             external_fields=[('x', 1), ('e', 1)],
+                             result=_cc(SSM.ou_colour(1.0), 2, 0,
+                                        [('x', 1)] * 2))
+    with pytest.raises(ValueError, match='parameters'):
+        SL.symbolic_cumulant(ouq_model, 2, 1, external_fields=ext, result=res,
+                             parameters={'mu': 3.0})
+    # a growing kernel term: the integral diverges (S4 refuses it too)
+    with pytest.raises(ValueError, match='grows'):
+        SL.symbolic_cumulant(ouq_model, 2, 1, external_fields=ext, result=res,
+                             kernel=Kernel.exponential(1, 2.0))
+    with pytest.raises(ValueError, match='model parameters'):
+        SL.symbolic_cumulant(ouq_model, 2, 1, external_fields=ext, result=res,
+                             kernel=Kernel.exponential(1, -SR.var('mu')),
+                             kernel_values={'mu': 2.0})
+    r = SL.symbolic_cumulant(ouq_model, 2, 1, external_fields=ext, result=res,
+                             symbols='eps')
+    assert r.names == ('eps',)
+    with pytest.raises(ValueError, match='entered as numbers'):
+        r.evaluate({'mu': 5.0})
+    with pytest.raises(ValueError, match='not variables'):
+        r.evaluate({'Eps': 5.0})
+    # check() is a real check
+    r.pipeline[1] = r.pipeline[1] * (1 + 1e-9)
+    with pytest.raises(AssertionError):
+        r.check()
+    # pickling (the live reference closures are dropped)
+    exc = SL.SymbolicLoopRefused('too_large', 'x')
+    assert pickle.loads(pickle.dumps(exc)).reason == 'too_large'
+    r2 = pickle.loads(pickle.dumps(r))
+    assert r2.by_ell == r.by_ell and r2._ctx is None
