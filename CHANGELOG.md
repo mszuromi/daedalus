@@ -40,7 +40,7 @@ restores the pole engine everywhere (the dispatch then never imports the module,
   declines the route after all, the run is repeated with the deformation.
 - **Memory pre-pass** (item 35): a diagram the route takes is charged the route's own bound (stationary states x
   the τ batch, plus one segment system) instead of its pole tuples. Runs the pre-pass refused although the route
-  finishes them now run (an OU with an Erlang-4 kernel at two loops: pole estimate 2.15 GB, route bound 77 MB,
+  finishes them now run (an OU with an Erlang-4 kernel at two loops: pole estimate 2.15 GB, route bound 12 MB (+ one segment system, checked when built),
   0.75 MB held).
 - **τ batching** inside `total_C_batch`, `eval_per_diagram_batch` and the grouped `total_C_batch` (serial paths).
 - **Grouped Phase J**: a group the route covers is integrated per diagram on it (`handled_by='statespace_perdiag'`;

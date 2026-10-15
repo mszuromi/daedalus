@@ -292,7 +292,9 @@ def test_prepass_charges_the_route_estimate(monkeypatch):
     monkeypatch.delenv(ENV)
     res = _cc(ou_erlang(4), 2, 2, X2, taus=[0.0, 0.5])
     est = res['phase_j_memory']
-    assert est['ss_diagrams'] == est['n_diagrams'] and est['tuples'] == 0
+    # each diagram is charged the cheaper engine (a tree diagram's few pole
+    # tuples are below the route's bound)
+    assert est['ss_diagrams'] > est['n_diagrams'] // 2
     assert 0 < est['ss_bytes'] and est['bytes'] <= 1e8
     assert 0 < est['built_bytes'] <= est['ss_bytes']
     assert res['phase_j_engine']['ss_declined'] == 0
@@ -420,3 +422,68 @@ def test_graded_dressed_line_impulse():
             errs.append(abs(e.impulse(t) - float(ref)))
             top = max(top, abs(float(ref)))
     assert max(errs) <= 2e-15 * top
+
+
+# ── review round 2 ──────────────────────────────────────────────────────
+
+def test_lifted_kernel_with_the_legacy_setup_and_its_display(monkeypatch):
+    # a kernel only the route realizes (equal rates, frequency image): a
+    # formal function stands for it in the symbolic factors
+    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
+    res = _cc(alpha_kernel(0.7), 2, 1, DX2)
+    assert res['status'] == 'ok'
+    for g in res['phase_j_by_ell'][1]['groups']:
+        assert g['handled_by'] != 'skipped'
+    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
+    ref = _cc(alpha_kernel(0.7), 2, 1, DX2)
+    for ell in (0, 1):
+        assert np.max(np.abs(_arr(res, ell) - _arr(ref, ell))) <= (
+            1e-14 * np.max(np.abs(_arr(ref, ell))))
+
+
+def test_late_refusal_after_a_bypassed_deformation_raises(monkeypatch):
+    res = _cc(ou_colour(1.0), 2, 1, X2)
+    assert res['pole_clusters']['status'] == 'bypassed'
+    _refuse_every_segment(monkeypatch)
+    with pytest.raises(SS.SSNoPoleFallback, match='deformation'):
+        res['total_C_by_ell'][1](0.0, 1.7)     # a later call, a new point
+
+
+def test_fallback_outside_a_run_warns(monkeypatch):
+    res = _cc(ou_cubic(), 2, 1, X2)
+    _refuse_every_segment(monkeypatch)
+    monkeypatch.setattr(SS, '_WARNED_OUTSIDE', set())
+    with pytest.warns(PhaseJEngineFallbackWarning, match='returned callable'):
+        v = res['total_C_by_ell'][1](0.0, 1.3)
+    monkeypatch.setenv(ENV, 'poles')
+    ref = _cc(ou_cubic(), 2, 1, X2, taus=[1.3])
+    assert abs(v - _arr(ref, 1)[0]) <= 1e-14 * abs(v)
+
+
+def test_partial_coverage_is_reported_and_strict_keeps_g3(monkeypatch):
+    # every subset declines (too many downsets) on a run predicted covered
+    monkeypatch.setattr(SS, 'MAX_DOWNSETS', 0)
+    res = _cc(ou_cubic(), 2, 1, X2)
+    an = res['analysis']
+    assert an.has('G6_SS_PARTIAL')
+    assert res['phase_j_engine']['ss_subsets'] == 0
+    monkeypatch.setattr(SS, 'MAX_DOWNSETS', 50000)
+    # strict policy: an unresolved cluster stops the run before Phase J, as
+    # on the pole engine (the levels are not lowered under strict)
+    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    from api.analyze import AnalyzerError
+    with pytest.raises(AnalyzerError):
+        _cc(ou_colour(1 / (1 + 1e-4)), 2, 1, X2, policy={'mode': 'strict'})
+
+
+def test_pure_delta_propagator_on_the_route(monkeypatch):
+    # decoupled spike model with structural zeros off: exact zeros
+    import daedalus as dd
+    model, _mod = dd.load_model('single_population_linear_delta_spikes_test')
+    monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', False)
+    res = compute_cumulants(
+        model, k=2, max_ell=0, external_fields=[('n', 1), ('n', 2)],
+        parameters={'Em': [0.8, 0.78], 'tau': [10.0, 9.0],
+                    'w': [[0.0, 0.0], [0.0, 0.0]]},
+        tau_grid=np.array([0.0, 2.5, -2.5]), parallel=False, verbose=False)
+    assert np.array_equal(_arr(res, 0), np.zeros(3, dtype=complex))

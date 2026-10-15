@@ -1993,18 +1993,29 @@ class tau_grid_prefetch:
     from that memo.  ``points``: the k-tuples of raw external times exactly
     as they will be passed to ``contribution(*times)``.  The values differ
     from per-point evaluation only by rounding (the last segment is
-    stepped from one length to the next).  Per thread; nests."""
+    stepped from one length to the next).  Per thread; nests.  The memos
+    (two arrays per subset and leg mapping: 24 B per point) are released
+    when the context exits (S3)."""
 
     def __init__(self, points):
         self.points = [tuple(float(x) for x in p) for p in points]
+        self.index = {}
+        for i, p in enumerate(self.points):
+            self.index.setdefault(p, i)
+        self.subsets = []
 
     def __enter__(self):
         self._prev = getattr(_PREFETCH, 'grid', None)
-        _PREFETCH.grid = (self.points, next(_PREFETCH_TOKENS))
+        self.token = next(_PREFETCH_TOKENS)
+        _PREFETCH.grid = self
         return self
 
     def __exit__(self, *exc):
         _PREFETCH.grid = self._prev
+        for sub in self.subsets:
+            with sub._lock:
+                sub._prefetch.pop(self.token, None)
+        self.subsets = []
         return False
 
 
@@ -2014,19 +2025,22 @@ def _prefetched(sub, free_vals, tie_ctx, t_min):
     grid = getattr(_PREFETCH, 'grid', None)
     if grid is None or tie_ctx is None or t_min != float('-inf'):
         return None
-    points, token = grid
     try:
         times = tuple(float(x) for x in tie_ctx.times)
     except (TypeError, ValueError):
         return None
+    i = grid.index.get(times)
+    if i is None:
+        return None
     mapping = (tuple(tie_ctx.free_legs), tie_ctx.origin_leg)
     with sub._lock:
-        memos = sub._prefetch.get(token)
+        memos = sub._prefetch.get(grid.token)
         if memos is None:
-            memos = {}
-            sub._prefetch = {token: memos}          # one grid at a time
+            memos = sub._prefetch[grid.token] = {}
+            grid.subsets.append(sub)
         memo = memos.get(mapping)
     if memo is None:
+        points = grid.points
         pts = []
         for T in points:
             if len(T) != len(times):
@@ -2037,15 +2051,19 @@ def _prefetched(sub, free_vals, tie_ctx, t_min):
                                           tie_ctx.origin_leg)))
         errs = []
         vals = sub.evaluate_many(pts, errors=errs)
-        memo = {}
-        for T, (fv, _tc), v, e in zip(points, pts, vals, errs):
-            memo[(T, tuple(fv))] = (v, e)
+        refused = {j: v for j, v in enumerate(vals) if isinstance(v, _Refused)}
+        arr = np.array([0.0 if isinstance(v, _Refused) else v for v in vals],
+                       dtype=complex)
+        memo = (arr, np.asarray(errs, dtype=float), refused)
         with sub._lock:
             memos[mapping] = memo
-    v = memo.get((times, tuple(float(x) for x in free_vals)))
-    if v is not None:
-        _count('ss_prefetch_hits')
-    return v
+    arr, errs, refused = memo
+    _count('ss_prefetch_hits')
+    r = refused.get(i)
+    if r is not None:
+        return r, 0.0
+    v = arr[i]
+    return (v.real if v.imag == 0 else complex(v)), float(errs[i])
 
 
 def _late_errors():
@@ -2063,6 +2081,30 @@ def _late_reason(exc):
     if isinstance(exc, _FI().PhaseJResourceError):
         return 'segment_memory'
     return 'numerical_' + type(exc).__name__
+
+
+_WARNED_OUTSIDE = set()
+
+
+def _warn_outside_run(reason):
+    """A fallback outside a ``compute_cumulants`` run (a returned callable
+    evaluated later, e.g. ``dd.run``'s k >= 3 slices) is not in a run's
+    census: warn once per process and reason (never silent)."""
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        inside = FI._PLAN_MEM['active'] > 0
+    if inside or reason in _WARNED_OUTSIDE:
+        return
+    _WARNED_OUTSIDE.add(reason)
+    import warnings
+    from api.compute import PhaseJEngineFallbackWarning
+    from api.save import _ensure_warning_shown
+    _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always')
+    warnings.warn(
+        f'Phase J: the state-space route fell back on the pole route '
+        f'({reason}) while a returned callable was evaluated; the counters '
+        f'ss_fallback_* have the details (warned once per reason)',
+        PhaseJEngineFallbackWarning, stacklevel=4)
 
 
 def _late_detail(exc):
@@ -2185,6 +2227,7 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                             f'(a kernel only the state-space route '
                             f'realizes); nothing to fall back on') from exc
                     pole.append(built)
+                    _warn_outside_run(reason)
                 _count_fallback(reason, first)
                 return pole[0]
 
@@ -2420,9 +2463,9 @@ PREPASS_MAX_DOWNSETS = 20000
 #: of a diagram's stationary states when it is at most this many bytes,
 #: else it enumerates the downsets
 PREPASS_CHEAP_BYTES = 1 << 16
-#: bytes one τ-batch memo entry holds per subset, grid point and Wick leg
-#: mapping (a dict entry keyed by two tuples, value and estimate)
-PREFETCH_BYTES_PER_POINT = 400
+#: bytes one τ-batch memo holds per subset, grid point and Wick leg mapping
+#: (a complex value and a float estimate; released after the batch)
+PREFETCH_BYTES_PER_POINT = 24
 
 
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,

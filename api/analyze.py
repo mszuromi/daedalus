@@ -174,6 +174,7 @@ FINDING_CODES = {
     # S3: the Phase J engine census and the state-space route's fallbacks
     'G6_PHASE_J_ENGINE':         ('G6', 'info'),
     'G6_SS_FALLBACK':            ('G6', 'warning'),
+    'G6_SS_PARTIAL':             ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -1855,10 +1856,16 @@ def _g3_pole_findings(ctx, res):
     # S3: the state-space route takes the whole run -> the pole findings
     # below are informational (the route uses no poles or residues; the
     # run's census in G6 says whether any subset used the pole route)
+    # (strict policy: the levels stay as registered, the strict semantics of
+    # main; the prediction can miss subsets that decline on their rows,
+    # which G6_SS_PARTIAL reports after the run)
     ss_all = bool(ctx.t.get('statespace_covers_run'))
     ss_note = (' [informational: the state-space Phase J route (the default) '
-               'takes every subset of this run and uses no poles or '
-               'residues; G6_PHASE_J_ENGINE has the census]' if ss_all else '')
+               'is predicted to take every subset of this run and uses no '
+               'poles or residues; G6_PHASE_J_ENGINE has the census]'
+               if ss_all else '')
+    if ss_all and getattr(ctx.p, 'mode', None) == 'strict':
+        ss_all = False                  # the note stays, the level does not
     if not squarefree:
         ctx.add('G3_REPEATED_POLE',
                 'Q(omega) has a repeated root (Jordan block): the pole-residue '
@@ -3117,7 +3124,7 @@ G6_COUNTERS = (
     'ss_subsets_declined', 'ss_fallback_subsets', 'ss_fallback_evals')
 
 
-def _g6_engine(ctx, result, c):
+def _g6_engine(ctx, d, result, c):
     """S3: the Phase J engine census (``result['phase_j_engine']``) as a G6
     finding and a ledger entry; a call-time fallback on the pole route is a
     warning (recorded, never raised)."""
@@ -3127,7 +3134,6 @@ def _g6_engine(ctx, result, c):
     n_ss = int(rep.get('ss_subsets') or 0)
     n_dec = int(rep.get('ss_declined') or 0)
     share = rep.get('statespace_share')
-    d = ctx.t
     d['phase_j_engine'] = rep.get('engine')
     d['statespace_share'] = share
     pdef = rep.get('pole_deformation')
@@ -3140,6 +3146,19 @@ def _g6_engine(ctx, result, c):
                  if rep.get('bypass_failed') else ''))
     ctx.add('G6_PHASE_J_ENGINE', detail + '.', '')
     nf = int(rep.get('fallback_evals') or 0)
+    if rep.get('covers_run') and n_dec:
+        pc = result.get('pole_clusters') if isinstance(result, dict) else None
+        ctx.add('G6_SS_PARTIAL',
+                f'the state-space route was predicted to take every subset '
+                f'of this run, but {n_dec} subset(s) declined it '
+                f'({rep.get("ss_declined_by_reason")}) and used the pole '
+                f'routes: the pole findings of G3, reported as informational, '
+                f'apply to them'
+                + (f' (pole clusters: {pc.get("status")})' if pc else '')
+                + '.',
+                'see result["phase_j_engine"] and G6_ACCURACY; '
+                'DAEDALUS_PHASE_J_ENGINE=poles gives the pole engine\'s own '
+                'report')
     if nf:
         ctx.add('G6_SS_FALLBACK',
                 f"{rep.get('fallback_subsets')} routed subset(s) fell back on "
@@ -3185,7 +3204,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         d['n_diagrams'] = None
     d['counters_complete'] = bool(complete)
     d['accuracy_estimate'] = None
-    _g6_engine(ctx, result, c)
+    _g6_engine(ctx, d, result, c)
     failed = (result.get('phase_j_incomplete') or {}) \
         if isinstance(result, dict) else {}
     d['n_diagrams_skipped'] = sum(r.get('n_diagrams', 1)

@@ -1005,7 +1005,9 @@ def spike1_model(private_cwd):
 
 
 def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
-    key = (k, max_ell, grouped, tuple(tau_grid), mode)
+    # the engine is part of the key (S3: some tests pin the pole engine)
+    key = (k, max_ell, grouped, tuple(tau_grid), mode,
+           os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''))
     if key not in _E2E:
         from api import compute_cumulants
         saved = {n: getattr(FI, n) for n in (

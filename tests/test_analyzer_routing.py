@@ -732,6 +732,12 @@ def test_g6_reports_the_state_space_route_and_its_fallbacks(monkeypatch):
         # strict promotes it in the report, as every G6 warning
         assert f['G6_SS_FALLBACK'].level == level and 'stiff_segment' in f['G6_SS_FALLBACK'].message
         assert res['phase_j_engine']['fallback_evals'] > 0
+    # a run predicted covered whose subsets decline the route: G6_SS_PARTIAL
+    monkeypatch.setattr(SS, 'TRI_DENSE_MAX', 600)
+    monkeypatch.setattr(SS, 'TAYLOR_S_HARD', 2000)
+    monkeypatch.setattr(SS, 'MAX_DOWNSETS', 0)
+    rep = _run(model, **kw)['analysis']
+    assert rep.has('G6_SS_PARTIAL') and not rep.has('G6_SS_FALLBACK')
 
 
 def test_finding_codes_all_have_a_test():

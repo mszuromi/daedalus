@@ -402,15 +402,15 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     if verbose:
         print(f'  [memory] {detail}')
     if over:
-        edges = ', '.join(
-            f"{n}{'' if n == a else f'/{a}'}{'+delta' if dl else ''}"
-            for (n, a, dl) in w['edges'])
         if not w or not w['edges']:
             raise _fi.PhaseJResourceError(
                 f"Phase J memory estimate more than {factor}x over budget "
                 f"for {model.get('name', '<unnamed>')} at k={k}, "
                 f"max_ell={max_ell}: {detail}.  Nothing was built.  "
                 f"Options: {_fi._BUDGET_HOW}.", est)
+        edges = ', '.join(
+            f"{n}{'' if n == a else f'/{a}'}{'+delta' if dl else ''}"
+            for (n, a, dl) in w['edges'])
         raise _fi.PhaseJResourceError(
             f"Phase J memory estimate more than {factor}x over budget for "
             f"{model.get('name', '<unnamed>')} at k={k}, max_ell={max_ell}: "
@@ -436,6 +436,10 @@ def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
     from engine.integration.time_domain import statespace as _ssm
     C = _ssm._counters()
     before = (C.get('ss_subsets_declined', 0), C.get('ss_fallback_evals', 0))
+    # a failed bypass leaves no trace in the run's counters (its pass is
+    # discarded): restored below
+    snap = {k_: (dict(v) if isinstance(v, dict) else v)
+            for k_, v in C.items()}
     with _fi._PLAN_MEM_LOCK:
         mem0 = {k_: _fi._PLAN_MEM[k_] for k_ in ('used', 'tuples', 'plans')}
     why = None
@@ -455,10 +459,33 @@ def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
         out, why = None, (f'{after[0] - before[0]} subset(s) declined the '
                           f'state-space route, {after[1] - before[1]} '
                           f'fallback evaluation(s)')
+    if out is not None:
+        # δ records of m = 0 subsets with smooth rows take their factors from
+        # the pole-residue G(t) (not routed): with undeformed poles they
+        # would be the clustered ones
+        for res_ell in (out[0] or {}).values():
+            for key in ('delta_contributions', 'delta_contributions_multi'):
+                for rec in (res_ell or {}).get(key) or ():
+                    if not rec.get('integrated') and rec.get(
+                            'retardation_data'):
+                        out, why = None, ('a delta record with smooth rows '
+                                          'outside the state-space route')
+                        break
+                if out is None:
+                    break
+            if out is None:
+                break
     if out is None:
         with _fi._PLAN_MEM_LOCK:
             if _fi._PLAN_MEM['active'] > 0:
                 _fi._PLAN_MEM.update(mem0)
+        for k_ in list(C):
+            v = snap.get(k_)
+            if isinstance(C[k_], dict):      # in place: callers hold them
+                C[k_].clear()
+                C[k_].update(v or {})
+            else:
+                C[k_] = 0 if v is None else v
         engine_report['pole_deformation'] = 'used'
         engine_report['bypass_failed'] = why
     return out

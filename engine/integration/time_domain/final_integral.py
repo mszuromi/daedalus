@@ -7920,6 +7920,23 @@ def integrate_diagram(
     _engine_poles = (_engine_env is not None
                      and _engine_env.strip().lower() == 'poles')
     _ss_only_kernels = []
+    _ss_only_idx = set()        # their kernel edges (indices into edge_info)
+
+    def _ss_only_failure(bits):
+        return {
+            'status': 'failed',
+            'contribution': None,
+            'integration_vars': integration_vars,
+            'reason': (
+                f'[subset {bin(bits)}] the conductance kernel(s) '
+                f'{sorted(set(_ss_only_kernels))} have no exponential '
+                f'modes (a repeated or near-repeated rate) and only the '
+                f'state-space route realizes them, but this subset needs '
+                f'the pole routes (the state-space route declined it: see '
+                f'the ss_declined_by_reason counters); write the kernel as '
+                f'an auxiliary linear field (Markov embedding) or give it a '
+                f'time-domain image'),
+        }
 
     def _ss_realizes_kernel(att):
         if _engine_poles:
@@ -8242,13 +8259,22 @@ def integrate_diagram(
             if num_params and g_tau is not None:
                 g_tau = g_tau.subs(num_params)
             dt = SR(vertex_time[v] - s_sym)
+            if g_tau is None:
+                # S3: only the state-space route has this kernel; a formal
+                # function stands for it in the symbolic factors (display;
+                # an SR integrand of such a subset is refused by name)
+                from sage.all import function as _sage_function
+                _ss_only_idx.add(len(edge_info))
+                _sf = _sage_function(
+                    f'{att["symbol"]}_statespace_only')(dt)
+            else:
+                _sf = g_tau.subs({_tau_ph: dt})
             edge_info.append({
                 'u': None, 'v': v, 'lbl': ('kernel', str(att['symbol'])),
                 'ri': None, 'pi': None,
                 'dt_sym': dt,
                 'delta_coeff': 0.0,
-                'smooth_factor': (None if g_tau is None
-                                  else g_tau.subs({_tau_ph: dt})),
+                'smooth_factor': _sf,
             })
             kmodes = (None if g_tau is None
                       else _extract_exp_modes(g_tau, _tau_ph))
@@ -8525,6 +8551,10 @@ def integrate_diagram(
                 n_delta_dropped += 1
                 continue
 
+            if _ss_only_idx & set(smooth_edges):
+                # a kernel only the state-space route realizes (S3): this
+                # record's coefficient would need its symbolic image
+                return _ss_only_failure(branch_bits)
             # Build the numeric coefficient: combined_pf × ∏ δ-coeffs
             #                               × (smooth factors with δ subs applied)
             subset_factor_delta = cp
@@ -8724,6 +8754,8 @@ def integrate_diagram(
             be built: skipped, as before Feature B) or ``('fail', result
             dict)``.  Bound to this subset (S3: also called lazily, by the
             state-space route's fallback)."""
+            if _ss_only_idx & set(_smooth_edges):
+                return ('fail', _ss_only_failure(_bits))
             # NoiseSourceType kernel diagrams, or non-numerical
             # prefactor, or missing edge_mode_sums cache — build the
             # full SR + fast_callable path for the residual scipy
@@ -9011,20 +9043,8 @@ def integrate_diagram(
                 modes=(None if edge_mode_sums is None else
                        [edge_mode_sums[_i] for _i in smooth_edges]),
                 edge_specs=_ss_specs)
-        if _ss_make is None and _ss_only_kernels:
-            return {
-                'status': 'failed',
-                'contribution': None,
-                'integration_vars': integration_vars,
-                'reason': (
-                    f'[subset {bin(branch_bits)}] the conductance kernel(s) '
-                    f'{sorted(set(_ss_only_kernels))} have no exponential '
-                    f'modes (a repeated or near-repeated rate) and only the '
-                    f'state-space route realizes them, but it declined this '
-                    f'subset (see the ss_declined_by_reason counters); '
-                    f'write the kernel as an auxiliary linear field (Markov '
-                    f'embedding) or give it a time-domain image'),
-            }
+        if _ss_make is None and _ss_only_idx & set(smooth_edges):
+            return _ss_only_failure(branch_bits)
         if _ss_make is None and not _engine_poles:
             _fast_eval = _mk_fast_eval()
             integrand_for_quad = (
@@ -9314,7 +9334,8 @@ def integrate_diagram(
                                     _t0=_theta0_always_empty,
                                     _plan_fn=_pole_plan, _sr_fn=_sr_build,
                                     _deferred=_sr_deferred,
-                                    _ss_only=bool(_ss_only_kernels)):
+                                    _ss_only=bool(_ss_only_idx
+                                                  & set(smooth_edges))):
                 """S3: the pole-route closure of this subset, built when
                 the state-space route falls back on it (its modesum plan,
                 and the SR integrand if it was deferred); ``None`` when the
@@ -9328,7 +9349,11 @@ def integrate_diagram(
                     if kind == 'zero':
                         return lambda *_a, **_k: 0.0 + 0.0j
                     if kind != 'ok':
-                        return None
+                        raise RuntimeError(
+                            f'the state-space route refused this subset at '
+                            f'call time and its pole route cannot be built '
+                            f'({kind}: '
+                            f'{val if isinstance(val, str) else val.get("reason")})')
                     fc = val
                 modes_, pref_, tuples_, plan_ = _plan_fn()
                 return _mk(fc, _cdata, _m, modes=modes_, pref_c=pref_,
@@ -13679,9 +13704,11 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     S3: ``ss_estimate(td, has_delta)`` -> ``(stationary, transient)`` bytes
     or ``None`` (``statespace.diagram_estimate``): a diagram the
     state-space route takes is charged that estimate instead of its pole
-    tuples (``ss_diagrams``, ``ss_bytes``: the stationary states summed,
-    ``ss_transient_bytes``: the largest segment working set, both in
-    ``bytes``); ``tuples`` then counts the other diagrams only."""
+    tuples when it is the smaller of the two (``ss_diagrams``, ``ss_bytes``:
+    the stationary states summed, in ``bytes``; ``ss_transient_bytes``: the
+    largest segment working set, reported only: one segment at a time, each
+    checked before it is built); ``tuples`` counts the diagrams charged
+    their pole tuples."""
     if prune is None:
         prune = PRUNE_ZERO_MODES
     try:
@@ -13724,14 +13751,6 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     per_diagram = []
     ss_n = ss_stat = ss_trans = 0
     for td in typed_diagrams:
-        if ss_estimate is not None:
-            est_ss = ss_estimate(td, lambda pi_, ri_: counts(pi_, ri_)[2])
-            if est_ss is not None:
-                ss_n += 1
-                ss_stat += est_ss[0]
-                ss_trans = max(ss_trans, est_ss[1])
-                per_diagram.append((0, 0, []))
-                continue
         per = []
         pidx = td.propagator_indices
         for ek in td.prediagram[0].edges():
@@ -13739,9 +13758,21 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
             ri, pi = (hit if hit is not None
                       else _lookup_prop_indices(td, ek))
             per.append(counts(pi, ri))
-        per_diagram.append((
-            math.prod((1 + n) if dl else n for (n, _a, dl) in per),
-            math.prod((1 + a) if dl else a for (_n, a, dl) in per), per))
+        tup = (math.prod((1 + n) if dl else n for (n, _a, dl) in per),
+               math.prod((1 + a) if dl else a for (_n, a, dl) in per), per)
+        if ss_estimate is not None:
+            est_ss = ss_estimate(td, lambda pi_, ri_: counts(pi_, ri_)[2])
+            # the cheaper engine: a subset whose stationary states do not
+            # fit declines to the pole route when its plan does
+            # (``statespace._pole_plan_fits``)
+            if est_ss is not None and (
+                    est_ss[0] <= tup[0] * PLAN_BYTES_PER_TUPLE):
+                ss_n += 1
+                ss_stat += est_ss[0]
+                ss_trans = max(ss_trans, est_ss[1])
+                per_diagram.append((0, 0, []))
+                continue
+        per_diagram.append(tup)
     tested = False
     if prefactors is not None and (
             budget_bytes is None
@@ -13776,9 +13807,12 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
            'n_diagrams': len(typed_diagrams), 'worst': worst,
            'pruned': bool(prune), 'prefactors_tested': tested}
     if ss_estimate is not None:
+        # the transient term (one segment system at a time) is reported, not
+        # added: it is not held across subsets, and each segment is checked
+        # against the budget before it is built (``_check_transient``)
         out.update(ss_diagrams=ss_n, ss_bytes=ss_stat,
                    ss_transient_bytes=ss_trans,
-                   bytes=out['bytes'] + ss_stat + ss_trans)
+                   bytes=out['bytes'] + ss_stat)
     return out
 
 
