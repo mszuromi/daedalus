@@ -16,8 +16,9 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time
 cumulant** of every loop order as an exact rational function of the model parameters (and, on request, of the
 saddle); with `kernel=` (a `Kernel`, k = 2) the pairing `∫ L(τ) C(τ) dτ` of exponential and polynomial × exponential
-kernels; `dd.symbolic_triple` gives the matrix-exponential triples `(G, x0, c)` of S4 over the same field.  Nothing
-else changes: no existing output moves.
+kernels; `dd.symbolic_triple` gives the matrix-exponential triples `(G, x0, c)` of S4 over the same field, with the exact
+rational spectrum and, for small triples, `C(τ)` itself through C2's `tree_modes` (OU quartic one loop:
+`−3εD²/μ³ (1 + μ|τ|) e^{−μ|τ|}`).  Nothing else changes: no existing output moves.
 
 - **Method.** The state-space route's stationary sweep, replayed exactly over `QQ(params)`: `G(s) = K(s)^{-1}` is
   inverted symbolically and each entry realized by its companion form (no roots, no `RootOf`, no distinct-pole
@@ -35,8 +36,8 @@ else changes: no existing output moves.
   callable.
 - **Limits.** Refused by name (`SymbolicLoopRefused.reason`): Kronecker blocks over `max_block` states (default 64;
   e.g. an Erlang-2 kernel at one loop needs 81 and takes ~2 min with five symbols), conductance kernels
-  (`kernel_edge`), non-local noise kernels, subsets off the state-space route, spatial models, τ ≠ 0 values of `C(τ)`
-  (they need `e^{Gτ}` symbolically; the triple's `C()` evaluates at numbers).
+  (`kernel_edge`), non-local noise kernels, subsets off the state-space route, spatial models, parameters entering
+  through square roots (e.g. correlated-noise amplitudes `√(D1 D2)`: keep them numeric).
 
 #### Added: switch-on transients (non-stationary stage 1)
 

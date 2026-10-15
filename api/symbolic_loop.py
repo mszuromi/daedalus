@@ -108,10 +108,15 @@ Conventions
   C2 :class:`api.symbolic_out.Kernel` (terms ``coeff · s^q e^{rate s}`` on
   side 'positive' / 'negative'), no contact term (S4's
   ``contact='exclude'``).
-* τ != 0: ``C(τ)`` itself needs ``e^{G τ}`` symbolically -- eigen data
-  (``RootOf``, as C2) or the ``expm`` of an explicit rational matrix -- and
-  is not built: :class:`SymbolicTriple` holds the rational triple (its
-  ``laplace`` is rational, its ``C`` evaluates at numbers).
+* τ != 0: ``C(τ)`` itself needs ``e^{G τ}``, i.e. the eigen data of the
+  triple's generator.  :class:`SymbolicTriple` holds the rational triple;
+  its ``laplace`` / ``resolvent`` / ``spectrum`` are rational (the spectrum
+  ``C0(ω) = L₊(−iω) + L₋(iω)`` exactly), its ``modes`` hand the spectrum to
+  C2's ``tree_modes`` (poles of degree >= 3 as ``RootOf``, the half-plane
+  split and distinctness stated as assumptions) -- practical for small
+  triples (OU quartic, colour-noise OU at one loop) -- and its ``C``
+  evaluates at numbers.  The ``expm`` of the explicit rational matrix is not
+  built.
 
 Limits and refusals (``SymbolicLoopRefused.reason``)
 ---------------------------------------------------
@@ -1054,12 +1059,12 @@ class SymbolicTriple:
     ('+': τ > 0, '-': τ < 0) a list of rational blocks ``(G, x0, c)`` with
     ``C_side(u) = Σ_blocks c e^{G u} x0`` (``u = |τ|``; weights and the
     segment slope folded in), the matrix-exponential triple of S4 over
-    ``F``.  ``C(τ)`` itself needs ``e^{G u}``: :meth:`C` evaluates it at
-    numbers (``scipy.linalg.expm`` of the evaluated blocks); symbolically it
-    needs the eigen data of ``G`` (``RootOf`` as C2) or the ``expm`` of an
-    explicit rational matrix, not built here.  :meth:`laplace` gives the
-    rational ``Σ c (z − G)^{−(q+1)} x0`` (``z`` a number or a field
-    element)."""
+    ``F``.  Rational: :meth:`laplace` (``Σ c (z − G)^{−(q+1)} x0`` at a
+    number or field element ``z``), :meth:`resolvent` (in a new variable),
+    :meth:`spectrum` (``C0(ω)``), :meth:`at_zero`.  ``C(τ)`` itself needs
+    ``e^{G u}``: :meth:`modes` (C2's ``tree_modes`` on the spectrum,
+    ``RootOf`` beyond degree 2, stated assumptions; small triples) and
+    :meth:`C` (at numbers, ``scipy.linalg.expm`` of the evaluated blocks)."""
     blocks: dict
     field: Any
     reference: dict
@@ -1107,6 +1112,60 @@ class SymbolicTriple:
             out += sum((a * b for a, b in zip(c, y) if a != 0 and b != 0),
                        F(0))
         return _red(out)
+
+    def resolvent(self, ell, side, var='z'):
+        """``Σ_blocks c (z − G)^{−1} x0`` as a rational function of a new
+        variable ``z`` (an SR expression; ``z`` = ``var``): the one-sided
+        Laplace transform ``∫_0^∞ e^{−z u} C_side(u) du``."""
+        S = _sage()
+        names = list(self.field.names)
+        if var in names:
+            raise ValueError(f'{var!r} is a parameter name')
+        fz = _Field(names + [var])
+        Fz = fz.F
+        zf = Fz.gen(len(names))
+
+        def lift(x):
+            x = _red(x)
+            if not names:
+                return Fz(x)
+            return Fz(fz.R(x.numerator())) / Fz(fz.R(x.denominator()))
+        out = Fz(0)
+        for G, x0, c in self.blocks[ell][side]:
+            n = G.nrows()
+            M = S.matrix(Fz, n, n, [lift(G[i, j]) if G[i, j] != 0 else 0
+                                    for i in range(n) for j in range(n)])
+            M = zf * S.identity_matrix(Fz, n) - M
+            y = _solve_vec(M, [lift(v) if v != 0 else Fz(0) for v in x0],
+                           Fz, 1)
+            out = _red(out + sum((lift(a) * b for a, b in zip(c, y)
+                                  if a != 0 and b != 0), Fz(0)))
+        return fz.to_sr(out)
+
+    def spectrum(self, ell, omega=None):
+        """The smooth spectrum ``C0(ω) = ∫ C(τ) e^{iωτ} dτ = L₊(−iω) +
+        L₋(iω)`` (``L_side`` = :meth:`resolvent`), a rational function of
+        ``omega`` (SR), in C1/C2's convention ``C(τ) = (1/2π) ∫ C0(ω)
+        e^{−iωτ} dω``."""
+        S = _sage()
+        om = S.SR.var('omega') if omega is None else S.SR(omega)
+        z = S.SR.var('z_c3')
+        lp = self.resolvent(ell, '+', 'z_c3').subs({z: -S.I * om})
+        lm = self.resolvent(ell, '-', 'z_c3').subs({z: S.I * om})
+        return lp + lm
+
+    def modes(self, ell, reference=None, **kw):
+        """``C(τ)`` symbolically: C2's :func:`api.symbolic_out.tree_modes`
+        on :meth:`spectrum` (poles of degree >= 3 as ``RootOf``, the
+        half-plane split and distinctness stated as ``assumptions``, checked
+        at the reference point by default).  Practical for small triples
+        only (the denominator degree is the triple's state count before
+        cancellation)."""
+        from api.symbolic_out import tree_modes
+        S = _sage()
+        om = S.SR.var('omega')
+        ref = dict(self.reference) if reference is None else dict(reference)
+        return tree_modes(self.spectrum(ell, om), om, reference=ref, **kw)
 
     def C(self, tau, ell, point=None):
         """``C(τ)`` at numbers (array ``tau``; τ = 0 is the side '-' limit)."""

@@ -341,3 +341,32 @@ def test_correlated_noise_two_fields_and_square_roots():
         SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
     assert e.value.reason == 'non_rational'
     assert 'non-integer powers' in str(e.value) and 'D1' in str(e.value)
+
+
+def test_loop_level_modes_through_c2(ouq_model):
+    """τ != 0 symbolically: C2's tree_modes on the triple's rational
+    spectrum.  OU quartic one loop: -3 eps D^2/mu^3 (1 + mu|τ|) e^{-mu|τ|}."""
+    ext = [('dx', 1)] * 2
+    taus = np.linspace(-5, 5, 21)
+    res = _cc(ouq_model, 2, 1, ext, taus=taus)
+    tr = SL.symbolic_triple(ouq_model, 1, external_fields=ext, result=res)
+    ms = tr.modes(1)
+    tau = var('tau_c3t')
+    want = {('positive', 0): '-3*D^2*eps/mu^3', ('positive', 1): '-3*D^2*eps/mu^2',
+            ('negative', 0): '-3*D^2*eps/mu^3', ('negative', 1): '3*D^2*eps/mu^2'}
+    got = {(mt.side, mt.power): mt.coeff for mt in ms.terms}
+    assert set(got) == set(want)
+    for key, c in want.items():
+        assert _sr_equal(got[key], SR(c)), key
+    assert all(_sr_equal(abs(SR(mt.rate)), SR('mu')) for mt in ms.terms)
+    tt = np.where(taus == 0, -_ITO_EPS, taus)
+    for ell in (0, 1):
+        v = np.array([complex(x) for x in tr.modes(ell).evaluate(tt)])
+        ref = res['C_tau_by_ell'][ell]
+        assert np.max(np.abs(v - ref)) <= 1e-13 * np.max(np.abs(ref))
+    # the spectrum at ω = 0 is ∫ C = L₊(0) + L₋(0) (the triple's resolvents)
+    om = SR.var('omega')
+    s0 = tr.spectrum(1).subs({om: 0})
+    l0 = tr.laplace(0, 1, '+') + tr.laplace(0, 1, '-')
+    assert _sr_equal(s0, tr.field.to_sr(l0))
+    assert _sr_equal(s0, SR('-12*eps*D^2/mu^4'))
