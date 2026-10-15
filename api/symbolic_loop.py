@@ -5,101 +5,128 @@ Symbolic loop corrections as rational functions (stage C3)
 On the state-space route (``engine/integration/time_domain/statespace.py``)
 the stationary part of every Phase J subset integral is a composition of
 linear solves: the states of the downsets of the subset's causal poset solve
-``(-M_J) X_J = Σ_v F_v X_{J∖v}`` with ``M_J`` a Kronecker sum of the
-propagator realizations and ``F_v`` contractions / openings by their ``c``
-and ``b`` vectors.  With the parameters symbolic, therefore,
+``(-M_J) X_J = Σ_v F_v X_{J∖v}``, ``M_J`` a Kronecker sum of propagator
+realizations and ``F_v`` contractions / openings by their ``c`` and ``b``
+vectors.  With the parameters symbolic, therefore,
 
-* the EQUAL-TIME cumulants (all external times equal; k = 2 and k >= 3) and
-* the pairings ``∫ L(τ) C(τ) dτ`` (k = 2) with exponential and
-  polynomial × exponential kernels ``L`` (one more resolvent:
-  ``q! c (z − βG)^{−(q+1)} x0``)
+* the EQUAL-TIME cumulants (all external times equal; any k),
+* the k = 2 pairings ``∫ L(τ) C(τ) dτ`` with exponential and polynomial ×
+  exponential kernels (one more resolvent, ``q! c (z − βG)^{−(q+1)} x0``), and
+* the k = 2 matrix-exponential triples ``(G, x0, c)`` of S4
+  (``C(u) = c e^{G u} x0`` on each side of τ = 0)
 
 are RATIONAL functions of the parameters (and of the saddle), at every loop
 order: exact linear algebra over ``F = QQ(params)``, no polynomial roots, no
 ``RootOf``, no distinct-pole assumption (a double pole is an ordinary
-companion matrix here).  This module computes them.
+companion matrix here).  Tested: OU quartic at one and two loops equals the
+exact Boltzmann coefficients; colour-noise OU at the exact double pole; a
+k = 3 one loop with three fields and five symbolic parameters.
 
-How (``symbolic_cumulant``)
----------------------------
-1. ``compute_cumulants`` runs once at a numeric REFERENCE point (the
-   parameters given, or the model defaults): it supplies the diagrams, their
-   symbolic prefactors (``result['diagrams'][...]['combined_prefactor']``,
+Entry points: :func:`symbolic_cumulant` (equal time, or a pairing with
+``kernel=``) -> :class:`SymbolicCumulant`; :func:`symbolic_triple` ->
+:class:`SymbolicTriple`.  Also ``dd.symbolic_cumulant`` etc.
+
+How
+---
+1. ``compute_cumulants`` runs once at a numeric REFERENCE point (the given
+   parameters, completed by the model defaults): it supplies the diagrams,
+   their symbolic prefactors (``result['diagrams'][...]['combined_prefactor']``,
    Sage expressions in the parameters and the saddle), the propagator data
-   and the reference numbers the result is checked against.
-2. The propagator ``G(s) = K(s)^{-1}`` (``s = iω``, ``K`` the pipeline's
-   ``K_ft``) is inverted exactly over ``F(s)``; every entry is split
-   ``G_pr = D_pr + r(s)/d(s)`` (``deg r < deg d``; a polynomial part of
-   degree >= 1 is refused, ``improper_entry``) and realized by its
-   controllable companion form (``d`` made monic over ``F``): minimal,
-   because ``r/d`` is reduced, and exact through repeated roots of ``d``.
-   ``D`` is the δ(t) coefficient (the pipeline's ``D_delta``).  Floats in the
-   model (kernel literals, numeric parameters) enter as the exact rationals
-   of their binary values (as in ``api._realization``, S1).
+   and the numbers the result is checked against.
+2. ``G(s) = K(s)^{-1}`` (``s = iω``, ``K`` the pipeline's ``K_ft``) is
+   inverted exactly over ``F(s)``; every entry is split ``G_pr = D_pr +
+   r(s)/d(s)`` (``deg r < deg d``; a polynomial part of degree >= 1 is
+   refused, ``improper_entry``) and realized by its controllable companion
+   form (``d`` monic over ``F``): minimal, since ``r/d`` is reduced, and exact
+   through repeated roots of ``d``.  ``D`` is the δ(t) coefficient (the
+   pipeline's ``D_delta``).  This replaces S1's construction
+   (``api._realization``: exact factorization of ``d`` into a cascade of
+   rate / Schwarz blocks, Kalman reduction, balancing): those steps serve the
+   floating-point conditioning of S2, are irrelevant in exact arithmetic,
+   and factoring over ``QQ(params)`` is not needed; S1's exact conversion of
+   inexact model numbers is reused in spirit (below).
 3. Each diagram is integrated once more by ``integrate_diagram`` with a unit
-   prefactor, only to obtain its subsets: the state-space ``SubsetSS``
-   objects (poset, active edges, stationary downsets, the event program),
-   their δ edges and the edge -> propagator-entry map.  Nothing numeric of
-   them is used except the structure.  The subset prefactor is the
+   prefactor, only for its subsets: the state-space ``SubsetSS`` objects
+   (poset, active edges, stationary downsets, event programs), their δ edges
+   and the edge -> propagator-entry map.  The subset prefactor is the
    diagram's symbolic prefactor times the symbolic δ coefficients of its δ
-   edges; the Wick permutations and the compensation are the
-   contribution's own (``phase_j_parts``).
+   edges; the Wick permutations and the compensation are the contribution's
+   own (``phase_j_parts``).
 4. The stationary sweep and the event(s) are replayed with the symbolic
-   companion realizations (numpy object tensors of field elements; each
-   resolvent one exact ``solve_right`` of the dense Kronecker sum over
-   ``F``).  At equal times the program is one event; for a pairing it is
-   event, segment, event and the segment's generator ``G`` is built
-   explicitly (diagonal blocks ``M_I``, firings below them).
-5. Checks (never silent): every subset's symbolic prefactor, evaluated at
-   the reference point, equals the route's numeric one (1e-12 relative);
-   the symbolic zero pattern of ``G``'s smooth and δ parts equals the
-   reference's (a reference point where an entry vanishes accidentally
-   would lose subsets: ``degenerate_reference``); the total, evaluated at
-   the reference, is compared with the pipeline's own value
-   (``SymbolicCumulant.check``; the equal-time value against
-   ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``).
+   realizations (numpy object tensors of field elements).  Every resolvent
+   is one exact solve of a Kronecker-sum block by fraction-free (Bareiss)
+   elimination over ``QQ[params]`` (:class:`_FFLU`: exact polynomial
+   divisions, factored once per block and reused across downsets, subsets
+   and diagrams; the right-hand side is replayed on a common denominator and
+   divided once).  Sage's generic solve over the fraction field does not
+   cancel common factors and swells beyond use already at 27 states.  At
+   equal times the program is one event; on the k = 2 lag axis it is event,
+   segment, event, and the segment's generator is built explicitly
+   (diagonal blocks ``M_I``, firings below them).
+5. Checks (never silent): each subset's symbolic δ factor, evaluated at the
+   reference, equals the route's numeric prefactor; the symbolic δ
+   coefficients equal ``D_delta`` and no symbolically nonzero entry vanishes
+   at the reference (``degenerate_reference``: that run would have lost
+   subsets); the total is compared with the pipeline at the reference
+   (:meth:`SymbolicCumulant.check`, ``CHECK_RTOL``): equal time against
+   ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``, a pairing against S4's
+   exact smooth ``Cumulant.integrate_against``.
 
-Which symbols stay symbolic
----------------------------
-``symbols=None``: every model parameter in ``num_params`` (not the saddle);
-a list keeps only those, the others enter at their exact reference values.
-The saddle (``xstar1`` ...): ``saddle='numeric'`` (default) uses the exact
-binary value of the reference saddle -- the result is then exact for the
-REFERENCE saddle, i.e. it is the symbolic function of the remaining
-parameters only where the saddle does not depend on them (e.g. ``x* = 0``);
-``saddle='symbol'`` keeps the saddle symbols as variables of ``F`` (the
-result is rational in parameters and saddle and holds on the mean-field
-manifold, which ``mf_equations`` does not solve for you);
-``saddle='solve'`` substitutes an exact solution of the mean-field
-equations, refused (``saddle_unsolved``) unless every saddle value is a
-rational function of the symbolic parameters (checked at the reference).
+Symbols, numbers and the saddle
+-------------------------------
+``symbols=None`` keeps every model parameter of the run symbolic (not the
+saddle); a list keeps those, and the others enter as the SIMPLEST rational
+that rounds to their double (``1/6`` for ``1/6.``; S1 takes the exact binary
+value instead, whose 53-bit denominators make expressions unreadable; the
+two differ by less than half an ulp).  Kernel coefficients and rates given
+as floats are converted the same way; a kernel's own symbols join ``F``
+(reference values in ``kernel_values=``).  The saddle (``xstar1`` ...):
+
+* ``saddle='numeric'`` (default): the reference saddle as a rational (a
+  value whose simplest form exceeds ``SADDLE_DIGITS`` digits is solver noise
+  around a short rational -- ``1e-300`` for 0 -- and is snapped within
+  ``SADDLE_ATOL``).  Exact for that saddle: the result is the symbolic
+  function of the parameters only where the saddle does not move with them
+  (``x* = 0``, or a saddle fixed by the model);
+* ``saddle='symbol'``: the saddle symbols join ``F``; the result is rational
+  in parameters and saddle and holds on the mean-field manifold;
+* ``saddle={name: closed form}``: substituted, after a check against the
+  reference saddle (``saddle_mismatch``).  ``'solve'`` is refused
+  (``saddle_unsolved``): the pipeline's expanded action drops the stationary
+  mean-field sector, so no symbolic equations are at hand here.
 
 Conventions
 -----------
 * Equal time: the external times coincide; constant rows are decided by
-  Phase J's own Θ(0) / tie rule (Itô).  For k = 2 this is the Itô left
-  limit ``C(0⁻)`` of the pipeline (``C_tau``'s τ = 0 sample is taken at
-  ``τ = −_ITO_EPS`` instead, so it differs from it by O(1e-6) where C has a
-  slope), equal to ``api.me_output`` side '-' at u = 0.
-* Only the SMOOTH part: δ records of Feature B (shot-noise subsets on a δ
-  surface) are not included, as in ``C_tau``.
-* Pairing (k = 2): ``∫ L(s) C(s) ds`` with ``C(τ) = κ(x_1(0), x_2(τ))`` and
-  a C2 :class:`api.symbolic_out.Kernel` (terms ``coeff · s^q e^{rate s}`` on
-  side 'positive' / 'negative'); the smooth part of ``C``; the kernel's
-  coefficients and rates may carry their own symbols (they join ``F``).
-* τ != 0 (``C(τ)`` itself) needs ``e^{Gτ}`` symbolically: not built here
-  (see ``docs`` in the report: eigen data / ``RootOf`` as C2, or ``expm`` of
-  the explicit rational ``G``); ``SymbolicCumulant`` exposes the rational
-  triple ``(G, x0, c)`` per side for that purpose (:meth:`triple`).
+  Phase J's own Θ(0) / tie rule (Itô).  For k = 2 this is the left limit
+  ``C(0⁻)`` (``SymbolicTriple.at_zero(ell, '-')``; ``C_tau``'s τ = 0 sample
+  is taken at ``τ = −_ITO_EPS`` instead).
+* The SMOOTH part only: δ records of Feature B (shot-noise subsets on a δ
+  surface) are not included, as in ``C_tau``; δ parts of the propagator
+  inside a subset (its δ edges) are.
+* Pairing (k = 2): ``∫ L(s) C(s) ds`` with ``C(τ) = κ(x_1(0), x_2(τ))`` and a
+  C2 :class:`api.symbolic_out.Kernel` (terms ``coeff · s^q e^{rate s}`` on
+  side 'positive' / 'negative'), no contact term (S4's
+  ``contact='exclude'``).
+* τ != 0: ``C(τ)`` itself needs ``e^{G τ}`` symbolically -- eigen data
+  (``RootOf``, as C2) or the ``expm`` of an explicit rational matrix -- and
+  is not built: :class:`SymbolicTriple` holds the rational triple (its
+  ``laplace`` is rational, its ``C`` evaluates at numbers).
 
-Refusals (``SymbolicLoopRefused.reason``): ``spatial``, ``k_unsupported``,
-``complex_coefficients``, ``non_rational``, ``improper_entry``,
-``singular_pencil``, ``pole_route_subset`` (a subset the state-space route
-declined: conductance kernels, noise-kernel boxes, ...), ``kernel_edge`` /
-``dressed_line`` (rows the symbolic realization does not cover),
-``offset_row`` / ``offset_slot`` (rows with a constant time offset),
-``degenerate_reference``, ``saddle_unsolved``, ``prefactor_mismatch``,
-``too_large`` (a Kronecker block over ``MAX_BLOCK`` states or more
-symbolic parameters than ``MAX_SYMBOLS``), ``failed_diagram``.
+Limits and refusals (``SymbolicLoopRefused.reason``)
+---------------------------------------------------
+``too_large``: a Kronecker block over ``max_block`` states (default
+``MAX_BLOCK``; the block of ``w`` active edges with ``n`` states each has
+``n^w``) or more than ``max_symbols`` variables; ``spatial``;
+``k_unsupported`` (a pairing or triple at k != 2, a switch-on result);
+``complex_coefficients``; ``non_rational``; ``improper_entry``;
+``singular_pencil``; ``pole_route_subset`` (a subset the state-space route
+declined); ``kernel_edge`` (conductance kernels: kernel rows, dressed lines,
+kernel symbols in a vertex) / ``dressed_line``; ``noise_kernel`` (a
+non-local noise cumulant); ``offset_row`` / ``offset_slot`` / ``ext_ext_row``
+(rows with constant time offsets or joining two external times on the lag
+axis); ``degenerate_reference``; ``saddle_mismatch`` / ``saddle_unsolved``;
+``prefactor_mismatch``; ``unbound_symbol``; ``failed_diagram``.
 """
 from __future__ import annotations
 
@@ -111,6 +138,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 __all__ = ['SymbolicLoopRefused', 'SymbolicPropagator', 'SymbolicCumulant',
+           'SymbolicTriple', 'symbolic_triple',
            'symbolic_propagator', 'symbolic_cumulant', 'expression_size',
            'MAX_BLOCK', 'MAX_SYMBOLS']
 
@@ -146,7 +174,9 @@ class _Field:
         S = _sage()
         self.names = tuple(names)
         if self.names:
-            self.R = S.PolynomialRing(S.QQ, list(self.names))
+            # always multivariate (one name would give a univariate ring
+            # with a different API)
+            self.R = S.PolynomialRing(S.QQ, len(self.names), list(self.names))
             self.F = self.R.fraction_field()
         else:
             self.R = self.F = S.QQ
@@ -154,7 +184,7 @@ class _Field:
 
     def from_sr(self, e, what='expression'):
         S = _sage()
-        e = S.SR(e)
+        e = _exactify_simple(S.SR(e))
         free = sorted({str(v) for v in e.variables()} - set(self.names))
         if free:
             raise SymbolicLoopRefused(
@@ -237,6 +267,28 @@ def _rational_value(v, is_saddle=False):
     return q
 
 
+def _exactify_simple(e):
+    """Every inexact number of an SR expression replaced by
+    :func:`_rational_value` (a kernel rate ``-0.5`` is ``-1/2``)."""
+    S = _sage()
+    if e.is_numeric():
+        po = e.pyobject()
+        par = getattr(po, 'parent', None)
+        if isinstance(po, int) or (par is not None and par().is_exact()):
+            return e
+        return S.SR(_rational_value(complex(po)))
+    if not e.variables() and not e.is_numeric():
+        try:
+            if not e.operands():
+                return e
+        except Exception:
+            return e
+    ops = e.operands()
+    if not ops:
+        return e
+    return e.operator()(*[_exactify_simple(o) for o in ops])
+
+
 def _red(x):
     """``x`` in lowest terms with a monic denominator (Sage's fraction field
     of a multivariate ring neither cancels common factors nor normalises
@@ -308,6 +360,7 @@ def expression_size(x) -> dict:
             out['terms'] += 1
             n = max(abs(p.numerator()), abs(p.denominator()))
             out['digits'] = max(out['digits'], len(str(n)))
+    out = {k_: int(v) for k_, v in out.items()}
     return out
 
 
@@ -368,7 +421,7 @@ def symbolic_propagator(K_ft, omega, fld: _Field, subs: dict):
         raise SymbolicLoopRefused('singular_pencil', 'K_ft is not square')
     s = S.SR.var('s_c3')
     names = list(fld.names) + ['s_c3']
-    Rs = S.PolynomialRing(S.QQ, names)
+    Rs = S.PolynomialRing(S.QQ, len(names), names)
     Ls = Rs.fraction_field()
     s_gen = Rs.gen(len(names) - 1)
     fs = _Field(names)
@@ -413,7 +466,7 @@ def symbolic_propagator(K_ft, omega, fld: _Field, subs: dict):
                     'improper_entry', f'G[{p},{r}] has a polynomial part of '
                     f'degree {q.degree()} in s (a derivative of δ(t))')
             dcoef = q[0] if q != 0 else F(0)
-            n = den.degree() if rem != 0 else 0
+            n = int(den.degree()) if rem != 0 else 0
             if n == 0:
                 A = S.matrix(F, 0, 0)
                 b = c = S.vector(F, 0)
@@ -500,10 +553,12 @@ def _kron_sum(mats, F):
 
 
 class _Stats:
-    def __init__(self):
+    def __init__(self, cap=None):
+        self.cap = MAX_BLOCK if cap is None else int(cap)
         self.lu = {}
         self.kron = {}
         self.solves = 0
+        self.delta_subsets = 0
         self.max_block = 0
         self.t_solve = 0.0
 
@@ -625,9 +680,9 @@ def _solve(M, r, F, stats, key=None):
     ``stats.lu`` under ``key``)."""
     S = _sage()
     n = M.nrows()
-    if n > MAX_BLOCK:
+    if n > stats.cap:
         raise SymbolicLoopRefused('too_large', f'a Kronecker block of {n} '
-                                  f'states (MAX_BLOCK = {MAX_BLOCK})')
+                                  f'states (max_block = {stats.cap})')
     stats.solves += 1
     stats.max_block = max(stats.max_block, n)
     t0 = time.perf_counter()
@@ -806,8 +861,9 @@ class _SymSubset:
         dims = [int(np.prod(self._dims(a))) if a else 1 for a in acts]
         offs = np.cumsum([0] + dims)
         n = int(offs[-1])
-        if n > MAX_BLOCK * 4:
-            raise SymbolicLoopRefused('too_large', f'a segment of {n} states')
+        if n > 4 * self.stats.cap:
+            raise SymbolicLoopRefused('too_large', f'a segment of {n} states '
+                                      f'(4 max_block = {4 * self.stats.cap})')
         S = _sage()
         G = S.matrix(self.F, n, n)
         for k_, act in enumerate(acts):
@@ -849,18 +905,21 @@ class _SymSubset:
                 'c': S.vector(self.F, cvec), 'scal': scal}
 
 
-# ─── the driver ─────────────────────────────────────────────────────────────
+# ─── results ────────────────────────────────────────────────────────────────
 
 @dataclass
 class SymbolicCumulant:
     """Result of :func:`symbolic_cumulant`.
 
-    ``by_ell``: {ell: field element} (equal-time value per loop order);
-    ``total``: their sum; ``field``: the ``_Field`` (``names`` = the
-    symbolic variables); ``reference``: {name: value} of the reference
-    point; ``pipeline``: {ell: the pipeline's equal-time value there};
-    ``stats``: sizes and timings; ``notes``: the decisions taken
-    (saddle, numeric parameters)."""
+    ``kind``: 'equal_time' or 'pairing'; ``by_ell``: {ell: field element};
+    ``total``: their sum; ``field``: the field (``names`` = its variables);
+    ``reference``: {name: value} of the reference point; ``pipeline``:
+    {ell: the pipeline's value there} (equal time: ``phase_j_by_ell[ell]
+    ['total_C'](0, ..., 0)``; pairing: S4's exact smooth
+    ``Cumulant.integrate_against``; empty when unavailable); ``stats``:
+    sizes and timings; ``notes``: the decisions taken (saddle, numeric
+    parameters)."""
+    kind: str
     by_ell: dict
     field: Any
     reference: dict
@@ -881,13 +940,22 @@ class SymbolicCumulant:
             out += v
         return _red(out)
 
+    def _x(self, ell):
+        return self.total if ell is None else self.by_ell[ell]
+
     def expression(self, ell=None):
         """Sage ``SR`` expression (``ell=None``: the sum over loop orders)."""
-        x = self.total if ell is None else self.by_ell[ell]
-        return self.field.to_sr(x)
+        return self.field.to_sr(self._x(ell))
+
+    def numerator(self, ell=None):
+        return self._x(ell).numerator()
+
+    def denominator(self, ell=None):
+        return self._x(ell).denominator()
 
     def size(self, ell=None):
-        return expression_size(self.total if ell is None else self.by_ell[ell])
+        """``expression_size`` of the (reduced) rational function."""
+        return expression_size(self._x(ell))
 
     def sympy(self, ell=None):
         from api.symbolic_out import to_sympy
@@ -897,8 +965,18 @@ class SymbolicCumulant:
         from api.symbolic_out import to_latex
         return to_latex(self.expression(ell))
 
+    def to_json(self, ell=None):
+        """JSON string ``{"params": [...], "numerator": str, "denominator":
+        str}`` (Sage polynomial syntax)."""
+        import json
+        x = self._x(ell)
+        return json.dumps({'params': list(self.names),
+                           'numerator': str(x.numerator()),
+                           'denominator': str(x.denominator())})
+
     def callable(self, ell=None):
-        """numpy callable ``f(**params)`` (via sympy.lambdify)."""
+        """numpy callable ``f(**params)`` of the symbolic variables, through
+        Horner forms of numerator and denominator (``sympy.lambdify``)."""
         import sympy
         ex = self.sympy(ell)
         syms = [sympy.Symbol(n) for n in self.names]
@@ -909,36 +987,135 @@ class SymbolicCumulant:
 
         def f(**kw):
             missing = [n for n in names if n not in kw]
-            if missing:
-                raise TypeError(f'missing parameters {missing}')
+            extra = [n for n in kw if n not in names]
+            if missing or extra:
+                raise TypeError(f'parameters {names} expected; missing '
+                                f'{missing}, unknown {extra}')
             return fn(*[kw[n] for n in names])
         f.params = names
         return f
 
     def evaluate(self, point=None, ell=None):
-        """Value at ``point`` (default: the reference point)."""
+        """Value at ``point`` (default: the reference point), exact
+        rational arithmetic then rounded."""
         pt = dict(self.reference)
         pt.update(point or {})
-        x = self.total if ell is None else self.by_ell[ell]
-        return self.field.evaluate(x, pt)
+        return self.field.evaluate(self._x(ell), pt)
 
     def check(self, rtol=CHECK_RTOL):
-        """``{ell: relative difference}`` to the pipeline at the reference;
-        raises ``AssertionError`` beyond ``rtol``."""
+        """``{ell: |symbolic − pipeline| / scale}`` at the reference point
+        (scale: the largest |pipeline value|); raises ``AssertionError``
+        beyond ``rtol``."""
         out = {}
         scale = max([abs(v) for v in self.pipeline.values()] + [1e-300])
         for ell, ref in self.pipeline.items():
-            d = abs(self.evaluate(ell=ell) - ref) / scale
+            v = self.evaluate(ell=ell)
+            d = abs(v - ref) / scale
             out[ell] = d
             if d > rtol:
-                raise AssertionError(f'ell={ell}: symbolic {self.evaluate(ell=ell)} '
-                                     f'vs pipeline {ref} ({d:.2e})')
+                raise AssertionError(f'{self.kind} ell={ell}: symbolic {v} vs '
+                                     f'pipeline {ref} ({d:.2e})')
+        return out
+
+    def __repr__(self):
+        return (f'SymbolicCumulant({self.kind}, k={self.k}, ells='
+                f'{sorted(self.by_ell)}, variables={list(self.names)})')
+
+
+@dataclass
+class SymbolicTriple:
+    """Result of :func:`symbolic_triple` (k = 2): per loop order and side
+    ('+': τ > 0, '-': τ < 0) a list of rational blocks ``(G, x0, c)`` with
+    ``C_side(u) = Σ_blocks c e^{G u} x0`` (``u = |τ|``; weights and the
+    segment slope folded in), the matrix-exponential triple of S4 over
+    ``F``.  ``C(τ)`` itself needs ``e^{G u}``: :meth:`C` evaluates it at
+    numbers (``scipy.linalg.expm`` of the evaluated blocks); symbolically it
+    needs the eigen data of ``G`` (``RootOf`` as C2) or the ``expm`` of an
+    explicit rational matrix, not built here.  :meth:`laplace` gives the
+    rational ``Σ c (z − G)^{−(q+1)} x0`` (``z`` a number or a field
+    element)."""
+    blocks: dict
+    field: Any
+    reference: dict
+    stats: dict
+    notes: list
+
+    @property
+    def names(self):
+        return self.field.names
+
+    def n_states(self, ell, side):
+        return sum(G.nrows() for G, _x, _c in self.blocks[ell][side])
+
+    def dense(self, ell, side):
+        """The block-diagonal triple ``(G, x0, c)`` over ``F`` (Sage)."""
+        S = _sage()
+        F = self.field.F
+        bl = self.blocks[ell][side]
+        if not bl:
+            return S.matrix(F, 0, 0), S.vector(F, 0), S.vector(F, 0)
+        G = S.block_diagonal_matrix([b[0] for b in bl])
+        x0 = S.vector(F, [v for b in bl for v in b[1]])
+        c = S.vector(F, [v for b in bl for v in b[2]])
+        return G, x0, c
+
+    def at_zero(self, ell, side='-'):
+        """``Σ c x0``: ``C(0⁻)`` (side '-') or ``C(0⁺)``, a field element."""
+        F = self.field.F
+        out = F(0)
+        for _G, x0, c in self.blocks[ell][side]:
+            out += sum((a * b for a, b in zip(c, x0)), F(0))
+        return _red(out)
+
+    def laplace(self, z, ell, side, power=0):
+        """``Σ_blocks c (z − G)^{−(power+1)} x0`` over ``F`` (``z``: a
+        number, an SR expression in the variables, or a field element)."""
+        S = _sage()
+        F = self.field.F
+        zf = z if getattr(z, 'parent', None) is not None and \
+            z.parent() is F else self.field.from_sr(S.SR(z), 'z')
+        out = F(0)
+        for G, x0, c in self.blocks[ell][side]:
+            M = zf * S.identity_matrix(F, G.nrows()) - G
+            y = _solve_vec(M, list(x0), F, power + 1)
+            out += sum((a * b for a, b in zip(c, y) if a != 0 and b != 0),
+                       F(0))
+        return _red(out)
+
+    def C(self, tau, ell, point=None):
+        """``C(τ)`` at numbers (array ``tau``; τ = 0 is the side '-' limit)."""
+        import scipy.linalg as sl
+        pt = dict(self.reference)
+        pt.update(point or {})
+        tau = np.atleast_1d(np.asarray(tau, dtype=float))
+        out = np.zeros(tau.shape, dtype=complex)
+        ev = self.field.evaluate
+        for side in ('+', '-'):
+            on = (tau > 0) if side == '+' else (tau <= 0)
+            for G, x0, c in self.blocks[ell][side]:
+                n = G.nrows()
+                Gn = np.array([[ev(G[i, j], pt) if G[i, j] != 0 else 0j
+                                for j in range(n)] for i in range(n)])
+                xn = np.array([ev(v, pt) if v != 0 else 0j for v in x0])
+                cn = np.array([ev(v, pt) if v != 0 else 0j for v in c])
+                for i in np.nonzero(on)[0]:
+                    out[i] += cn @ sl.expm(Gn * abs(tau[i])) @ xn
         return out
 
 
-def _model_dict(model):
-    return model
+def _solve_vec(M, y, F, times=1):
+    S = _sage()
+    if F is S.QQ:
+        for _ in range(times):
+            y = list(M.solve_right(S.vector(F, y)))
+        return y
+    lu = _FFLU(M, F)
+    for _ in range(times):
+        y = lu.solve(y)
+    return y
 
+
+# ─── the driver ─────────────────────────────────────────────────────────────
 
 def _saddle_names(model, num_params):
     from api.symbolic_out import _is_saddle_symbol
@@ -956,201 +1133,362 @@ def _propagator_data(prop, model):
     }
 
 
-def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
-                      parameters=None, symbols=None, saddle='numeric',
-                      ells=None, result=None, kernel=None,
-                      reference_check=True, verbose=False):
-    """Equal-time cumulant (``kernel=None``) or the k = 2 kernel pairing
-    ``∫ L(s) C(s) ds`` (``kernel``: a C2 :class:`api.symbolic_out.Kernel`)
-    per loop order, as rational functions (module docstring).
+class _Setup:
+    """The field, the substitutions and the symbolic propagator of one
+    request (shared by the three entry points)."""
 
-    ``parameters``: the reference values (model defaults otherwise);
-    ``symbols``: the parameter names kept symbolic (``None``: all);
-    ``saddle``: 'numeric' | 'symbol' | 'solve'; ``ells``: the loop orders
-    (default ``range(max_ell + 1)``); ``result``: a ``compute_cumulants``
-    result of the same request to reuse (its reference point)."""
-    S = _sage()
-    from api import compute_cumulants
-    from engine.integration.time_domain import final_integral as FI
-    from engine.integration.time_domain import statespace as SS
-    from api._realization import _exact_number
-    t_start = time.perf_counter()
-    if kernel is not None and k != 2:
-        raise SymbolicLoopRefused('k_unsupported',
-                                  'kernel pairings are defined for k = 2')
-    if result is None:
-        result = compute_cumulants(
-            model, k=k, max_ell=max_ell, external_fields=external_fields,
-            parameters=parameters, tau_grid=[0.0], parallel=False,
-            verbose=verbose, use_cache=False)
-    if 'C_tau_x' in result or (result.get('config') or {}).get('spatial'):
-        raise SymbolicLoopRefused('spatial', 'spatial models are not covered')
-    t_ref = time.perf_counter() - t_start
-    num_params = result['num_params']
-    prop = result['propagator']
-    names_all = [str(p) for p in num_params]
-    sad = _saddle_names(model, num_params)
-    params = [n for n in names_all if n not in sad]
-    if symbols is None:
-        sym = list(params)
-    else:
-        sym = [str(x) for x in symbols]
-        bad = [x for x in sym if x not in params]
-        if bad:
+    def __init__(self, model, k, max_ell, external_fields, parameters,
+                 symbols, saddle, result, kernel, kernel_values, verbose,
+                 max_block=None, max_symbols=None):
+        S = _sage()
+        from api import compute_cumulants
+        t_start = time.perf_counter()
+        self.t_start = t_start
+        if result is None:
+            if parameters:
+                # the model defaults for the names not given
+                # (compute_cumulants takes a complete dict)
+                full = {p['name']: p['default']
+                        for p in (model.get('parameters') or [])
+                        if p.get('default') is not None
+                        and not p.get('mean_field')}
+                full.update(parameters)
+                parameters = full
+            result = compute_cumulants(
+                model, k=k, max_ell=max_ell, external_fields=external_fields,
+                parameters=parameters, tau_grid=[0.0], parallel=False,
+                verbose=verbose, use_cache=False)
+        cfg = result.get('config') or {}
+        if 'C_tau_x' in result or cfg.get('spatial'):
+            raise SymbolicLoopRefused('spatial', 'spatial models are not '
+                                      'covered (per-momentum realizations)')
+        if result.get('t_min') is not None:
+            raise SymbolicLoopRefused('k_unsupported', 'a switch-on result '
+                                      '(t_min) is not stationary')
+        if int(cfg.get('k', k)) != int(k):
+            raise ValueError(f'result has k = {cfg.get("k")}, not {k}')
+        self.result = result
+        self.t_ref = time.perf_counter() - t_start
+        num_params = result['num_params']
+        self.num_params = num_params
+        names_all = [str(p) for p in num_params]
+        sad = _saddle_names(model, num_params)
+        params = [n for n in names_all if n not in sad]
+        if symbols is None:
+            sym = list(params)
+        else:
+            sym = [str(x) for x in symbols]
+            bad = [x for x in sym if x not in params]
+            if bad:
+                raise SymbolicLoopRefused(
+                    'unbound_symbol', f'{bad} are not parameters of the run '
+                    f'(parameters: {params}; saddle: {sad})')
+        saddle_map = None
+        if isinstance(saddle, dict):
+            saddle_map = {str(a): b for a, b in saddle.items()}
+            unknown = sorted(set(saddle_map) - set(sad))
+            if unknown:
+                raise ValueError(f'saddle={{...}} names {unknown}; the saddle '
+                                 f'symbols of this run are {sad}')
+            saddle = 'given'
+        elif saddle == 'solve':
             raise SymbolicLoopRefused(
-                'unbound_symbol', f'{bad} are not parameters of the run '
-                f'(parameters: {params}; saddle: {sad})')
-    if saddle not in ('numeric', 'symbol', 'solve'):
-        raise ValueError("saddle must be 'numeric', 'symbol' or 'solve'")
-    notes = []
-    vars_ = list(sym) + (list(sad) if saddle == 'symbol' else [])
-    kern_terms = []
-    if kernel is not None:
-        kv = set()
-        for t in kernel.terms:
-            for ex in (t.coeff, t.rate):
-                kv |= {str(v) for v in S.SR(ex).variables()}
-        extra = sorted(kv - set(vars_) - set(names_all))
-        vars_ += extra
-    if len(vars_) > MAX_SYMBOLS:
-        raise SymbolicLoopRefused('too_large', f'{len(vars_)} symbols '
-                                  f'(MAX_SYMBOLS = {MAX_SYMBOLS})')
-    fld = _Field(vars_)
-    F = fld.F
-    reference = {}
-    subs = {}
-    for key, v in num_params.items():
-        n = str(key)
-        if n in vars_:
-            reference[n] = float(v)
-            continue
-        subs[S.SR(key)] = S.SR(_rational_value(v, n in sad))
-    numeric_params = [n for n in params if n not in sym]
-    if numeric_params:
-        notes.append(f'numeric parameters (exact binary values): '
-                     f'{numeric_params}')
-    if sad:
-        if saddle == 'numeric':
-            notes.append(f'saddle {sad} at its reference value (simplest rational '
-                         f'of its double): the result is exact for that saddle')
-        elif saddle == 'symbol':
+                'saddle_unsolved', "saddle='solve': the stationary mean-field "
+                'equations are not available symbolically from the pipeline '
+                "(its expanded action drops that sector); pass saddle="
+                "{name: closed form} (checked at the reference) or use "
+                "'numeric' / 'symbol'")
+        elif saddle not in ('numeric', 'symbol'):
+            raise ValueError("saddle must be 'numeric', 'symbol' or a dict "
+                             "{saddle name: closed form}")
+        notes = []
+        vars_ = list(sym) + (list(sad) if saddle == 'symbol' else [])
+        kvals = {str(a): b for a, b in (kernel_values or {}).items()}
+        if kernel is not None:
+            kv = set()
+            for t in kernel.terms:
+                for ex in (t.coeff, t.rate):
+                    kv |= {str(v) for v in S.SR(ex).variables()}
+            extra = sorted(kv - set(names_all))
+            missing = [v for v in extra if v not in kvals]
+            if missing:
+                raise SymbolicLoopRefused(
+                    'unbound_symbol', f'kernel symbols {missing} need '
+                    'reference values (kernel_values=)')
+            vars_ += [v for v in extra if v not in vars_]
+        cap_s = MAX_SYMBOLS if max_symbols is None else int(max_symbols)
+        if len(vars_) > cap_s:
+            raise SymbolicLoopRefused('too_large', f'{len(vars_)} symbols '
+                                      f'(max_symbols = {cap_s})')
+        fld = _Field(vars_)
+        self.field = fld
+        reference, subs = {}, {}
+        for key, v in num_params.items():
+            n = str(key)
+            if n in vars_:
+                reference[n] = float(complex(v).real)
+                continue
+            if saddle_map is not None and n in saddle_map:
+                continue
+            subs[S.SR(key)] = S.SR(_rational_value(v, n in sad))
+        for n in vars_:
+            if n not in reference:
+                reference[n] = float(kvals[n])
+        if saddle_map is not None:
+            for n, expr in saddle_map.items():
+                e = S.SR(expr).subs(subs)
+                x = fld.from_sr(e, f'saddle {n}')
+                vref = complex(num_params[S.SR(n)] if S.SR(n) in num_params
+                               else [v for kk, v in num_params.items()
+                                     if str(kk) == n][0])
+                got = fld.evaluate(x, reference)
+                if abs(got - vref) > 1e-9 * max(1.0, abs(vref)):
+                    raise SymbolicLoopRefused(
+                        'saddle_mismatch', f'saddle {n} = {expr} gives {got} '
+                        f'at the reference, the pipeline solved {vref}')
+                subs[S.SR(n)] = fld.to_sr(x)
+            rest = [n for n in sad if n not in saddle_map]
+            notes.append(f'saddle {sorted(saddle_map)} by the given closed '
+                         f'form(s) (checked at the reference)'
+                         + (f'; {rest} at the reference value' if rest else ''))
+        numeric_params = [n for n in params if n not in sym]
+        if numeric_params:
+            notes.append(f'numeric parameters (simplest rational of their '
+                         f'double): {numeric_params}')
+        if sad and saddle == 'numeric':
+            notes.append(f'saddle {sad} at its reference value (simplest '
+                         f'rational of its double; solver noise around a '
+                         f'short rational snapped within {SADDLE_ATOL:g}): '
+                         f'exact for that saddle, i.e. symbolic in the '
+                         f'parameters only where the saddle does not move '
+                         f'with them')
+        elif sad and saddle == 'symbol':
             notes.append(f'saddle {sad} kept symbolic: rational in parameters '
                          f'and saddle, valid on the mean-field manifold')
-        else:
-            subs.update(_solve_saddle(model, result, sad, sym, fld, subs))
-            notes.append(f'saddle {sad} substituted by an exact rational '
-                         f'solution of the mean-field equations')
-    if kernel is not None:
-        for t in kernel.terms:
-            for ex in (t.coeff, t.rate):
-                for v in S.SR(ex).variables():
-                    if str(v) in vars_ and str(v) not in reference:
-                        raise SymbolicLoopRefused(
-                            'unbound_symbol', f'kernel symbol {v} needs a '
-                            'reference value (pass it in parameters=)')
-    stats = _Stats()
-    t0 = time.perf_counter()
-    sp = symbolic_propagator(prop['K_ft'], prop['omega'], fld, subs)
-    t_prop = time.perf_counter() - t0
-    _check_zero_pattern(sp, prop, fld, reference)
-    cfg = result.get('config') or {}
-    ext = cfg.get('external_fields') or result.get('external_fields')
-    origin = cfg.get('origin_leaf_idx', 0)
-    pdata = _propagator_data(prop, model)
-    ext_vars = [S.SR.var(f't_{j + 1}') for j in range(k)]
-    if ells is None:
-        ells = list(range(int(max_ell) + 1))
-    by_ell, pipeline_ref = {}, {}
-    per_ell_stats = {}
-    for ell in ells:
-        recs = [r for r in result['diagrams'] if int(r['ell']) == int(ell)]
-        te = time.perf_counter()
-        total = F(0)
-        n_sub = 0
+        self.reference, self.subs, self.notes = reference, subs, notes
+        self.sad, self.sym, self.kvals = sad, sym, kvals
+        self.stats = _Stats(max_block)
+        t0 = time.perf_counter()
+        prop = result['propagator']
+        self.sp = symbolic_propagator(prop['K_ft'], prop['omega'], fld, subs)
+        self.t_prop = time.perf_counter() - t0
+        _check_zero_pattern(self.sp, prop, fld, reference)
+        self.ext = cfg.get('external_fields') or result.get('external_fields')
+        self.origin = cfg.get('origin_leaf_idx', 0)
+        self.pdata = _propagator_data(prop, model)
+        self.k = int(k)
+        self.ext_vars = [S.SR.var(f't_{j + 1}') for j in range(self.k)]
+
+    def diagrams(self, ell):
+        """``(index, field prefactor, integrate_diagram output)`` of the
+        diagrams of one loop order with a nonzero prefactor."""
+        S = _sage()
+        from engine.integration.time_domain import final_integral as FI
+        recs = [r for r in self.result['diagrams'] if int(r['ell']) == int(ell)]
         for di, rec in enumerate(recs):
-            cp = fld.from_sr(S.SR(rec['combined_prefactor']).subs(subs),
-                             'prefactor')
+            e = S.SR(rec['combined_prefactor']).subs(self.subs)
+            kern = sorted(str(v) for v in e.variables()
+                          if str(v).startswith('z_'))
+            if kern:
+                # a conductance vertex (``z_g_*``: its kernel is an edge or
+                # a dressed line) or a non-local noise cumulant
+                # (``z_kappa_*``): neither has a symbolic realization here
+                raise SymbolicLoopRefused(
+                    'noise_kernel' if any(x.startswith('z_kappa') for x in kern)
+                    else 'kernel_edge',
+                    f'ell={ell} diagram {di}: kernel symbol(s) {kern} in the '
+                    'vertex coefficient')
+            cp = self.field.from_sr(e, 'prefactor')
             if cp == 0:
                 continue
             out = FI.integrate_diagram(
-                typed_diagram=rec['typed_diagram'], propagator_data=pdata,
-                combined_prefactor=S.SR(1), ext_time_vars=ext_vars,
-                num_params=num_params, origin_leaf_idx=origin,
-                external_fields=ext)
+                typed_diagram=rec['typed_diagram'], propagator_data=self.pdata,
+                combined_prefactor=S.SR(1), ext_time_vars=self.ext_vars,
+                num_params=self.num_params, origin_leaf_idx=self.origin,
+                external_fields=self.ext)
             if out.get('status') != 'ok':
                 raise SymbolicLoopRefused(
                     'failed_diagram', f'ell={ell} diagram {di}: '
                     f'{out.get("status")} {out.get("reason", "")}')
-            val, ns = _diagram_value(out, sp, fld, FI, SS, k, stats, kernel,
-                                     reference)
+            yield di, cp, out
+
+    def stats_dict(self, per_ell):
+        st = self.stats
+        return {'reference_run_seconds': self.t_ref,
+                'propagator_seconds': self.t_prop,
+                'solves': st.solves, 'max_block': st.max_block,
+                'solve_seconds': st.t_solve, 'lu_factorizations': len(st.lu),
+                'delta_subsets': st.delta_subsets,
+                'by_ell': per_ell,
+                'total_seconds': time.perf_counter() - self.t_start,
+                'entry_states': {key: e.n for key, e in self.sp.entries.items()},
+                'variables': list(self.field.names)}
+
+
+def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
+                      parameters=None, symbols=None, saddle='numeric',
+                      ells=None, result=None, kernel=None, kernel_values=None,
+                      reference_check=True, max_block=None, max_symbols=None,
+                      verbose=False) -> SymbolicCumulant:
+    """Equal-time cumulant (``kernel=None``; any k) or the k = 2 kernel
+    pairing ``∫ L(s) C(s) ds`` (``kernel``: a C2
+    :class:`api.symbolic_out.Kernel`), per loop order, as rational
+    functions of the parameters (module docstring).
+
+    ``parameters``: the reference values (model defaults otherwise);
+    ``symbols``: the parameter names kept symbolic (``None``: all);
+    ``saddle``: 'numeric' (default) | 'symbol' | {saddle name: closed form};
+    ``ells``: the loop orders (default ``0..max_ell``); ``result``: a
+    ``compute_cumulants`` result of the same request (its reference point);
+    ``kernel_values``: reference values of the kernel's own symbols (they
+    stay symbolic); ``reference_check``: compare with the pipeline at the
+    reference point (``SymbolicCumulant.check``, raises beyond
+    ``CHECK_RTOL``); ``max_block`` / ``max_symbols``: the size limits
+    (defaults ``MAX_BLOCK`` / ``MAX_SYMBOLS``; beyond them ``too_large``)."""
+    from engine.integration.time_domain import final_integral as FI
+    if kernel is not None and int(k) != 2:
+        raise SymbolicLoopRefused('k_unsupported',
+                                  'kernel pairings are defined for k = 2')
+    st = _Setup(model, k, max_ell, external_fields, parameters, symbols,
+                saddle, result, kernel, kernel_values, verbose, max_block,
+                max_symbols)
+    F = st.field.F
+    kterms = None
+    if kernel is not None:
+        S = _sage()
+        kterms = []
+        for t in kernel.terms:
+            kterms.append((t.side, int(t.power),
+                           st.field.from_sr(S.SR(t.coeff).subs(st.subs),
+                                            'kernel coefficient'),
+                           st.field.from_sr(S.SR(t.rate).subs(st.subs),
+                                            'kernel rate')))
+    if ells is None:
+        ells = list(range(int(max_ell) + 1))
+    by_ell, per_ell = {}, {}
+    for ell in ells:
+        te = time.perf_counter()
+        total, n_sub = F(0), 0
+        for _di, cp, out in st.diagrams(ell):
+            val, ns = _diagram_value(out, st, FI, kterms=kterms)
             n_sub += ns
             total = _red(total + cp * val)
         by_ell[int(ell)] = total
-        per_ell_stats[int(ell)] = {'seconds': time.perf_counter() - te,
-                                   'subsets': n_sub,
-                                   'size': expression_size(total)}
-        if reference_check and kernel is None:
-            pj = (result.get('phase_j_by_ell') or {}).get(ell)
-            if pj:
-                pipeline_ref[int(ell)] = complex(pj['total_C'](*([0.0] * k)))
-            else:
-                pipeline_ref[int(ell)] = 0j
-    st = {'reference_run_seconds': t_ref, 'propagator_seconds': t_prop,
-          'solves': stats.solves, 'max_block': stats.max_block,
-          'solve_seconds': stats.t_solve, 'by_ell': per_ell_stats,
-          'total_seconds': time.perf_counter() - t_start,
-          'entry_states': {key: e.n for key, e in sp.entries.items()}}
-    out = SymbolicCumulant(by_ell=by_ell, field=fld, reference=reference,
-                           pipeline=pipeline_ref, k=k, stats=st, notes=notes)
-    out._ctx = {'propagator': sp, 'result': result, 'subs': subs}
-    if reference_check and kernel is None:
-        out.check()
+        per_ell[int(ell)] = {'seconds': time.perf_counter() - te,
+                             'subsets': n_sub, 'size': expression_size(total)}
+    pipeline = _pipeline_values(st, ells, kernel) if reference_check else {}
+    res = SymbolicCumulant(
+        kind='equal_time' if kernel is None else 'pairing', by_ell=by_ell,
+        field=st.field, reference=st.reference, pipeline=pipeline, k=st.k,
+        stats=st.stats_dict(per_ell), notes=st.notes)
+    res._ctx = {'propagator': st.sp, 'result': st.result, 'subs': st.subs}
+    if reference_check:
+        res.check()
+    return res
+
+
+def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
+                    symbols=None, saddle='numeric', ells=None, result=None,
+                    max_block=None, max_symbols=None,
+                    verbose=False) -> SymbolicTriple:
+    """The rational matrix-exponential triples of a k = 2 result
+    (:class:`SymbolicTriple`; arguments as :func:`symbolic_cumulant`)."""
+    from engine.integration.time_domain import final_integral as FI
+    st = _Setup(model, 2, max_ell, external_fields, parameters, symbols,
+                saddle, result, None, None, verbose, max_block, max_symbols)
+    if ells is None:
+        ells = list(range(int(max_ell) + 1))
+    blocks, per_ell = {}, {}
+    for ell in ells:
+        te = time.perf_counter()
+        sink = {'+': [], '-': []}
+        n_sub = 0
+        for _di, cp, out in st.diagrams(ell):
+            _v, ns = _diagram_value(out, st, FI, triple_sink=sink, weight=cp)
+            n_sub += ns
+        blocks[int(ell)] = sink
+        per_ell[int(ell)] = {'seconds': time.perf_counter() - te,
+                             'subsets': n_sub,
+                             'states': {s: sum(b[0].nrows() for b in v)
+                                        for s, v in sink.items()}}
+    return SymbolicTriple(blocks=blocks, field=st.field,
+                          reference=st.reference,
+                          stats=st.stats_dict(per_ell), notes=st.notes)
+
+
+def _pipeline_values(st, ells, kernel):
+    """The pipeline's own numbers at the reference point (module docstring,
+    step 5): equal time from the Phase J callables, pairings from S4's
+    exact smooth ``integrate_against`` (omitted when S4 has no triples)."""
+    out = {}
+    pjs = st.result.get('phase_j_by_ell') or {}
+    if kernel is None:
+        for ell in ells:
+            pj = pjs.get(ell)
+            out[int(ell)] = (complex(pj['total_C'](*([0.0] * st.k)))
+                             if pj else 0j)
+        return out
+    try:
+        from api.cumulant import Cumulant
+        c = Cumulant.from_result(st.result)
+        vals = {a: float(b) for a, b in st.kvals.items()}
+        for ell in ells:
+            out[int(ell)] = complex(c.integrate_against(
+                kernel, ell=ell, method='exact', contact='exclude',
+                values=vals or None).smooth)
+    except Exception as exc:                    # no triples: no reference
+        st.notes.append(f'no pipeline reference for the pairing '
+                        f'({type(exc).__name__}: {str(exc)[:120]})')
+        return {}
     return out
 
 
-def _solve_saddle(model, result, sad, sym, fld, subs):
-    raise SymbolicLoopRefused('saddle_unsolved', "saddle='solve' is not "
-                              'implemented yet')
-
-
 def _check_zero_pattern(sp, prop, fld, reference):
-    """Symbolic zero pattern of ``G`` (smooth part and δ part) == the
-    reference's (``degenerate_reference`` otherwise)."""
+    """The symbolic δ coefficients equal the pipeline's ``D_delta`` at the
+    reference, and no symbolically nonzero entry (smooth or δ part)
+    vanishes there (``degenerate_reference``: the reference run would have
+    dropped its subsets)."""
     S = _sage()
-    nf = sp.nf
     D_ref = prop.get('D_delta')
+    pt = {S.SR.var(n): v for n, v in reference.items()}
     for (p, r), e in sp.entries.items():
         if D_ref is not None:
             try:
-                dref = complex(S.CDF(S.SR(D_ref[p, r]).subs(
-                    {S.SR.var(n): v for n, v in reference.items()})))
+                dref = complex(S.CDF(S.SR(D_ref[p, r]).subs(pt)))
             except Exception:
                 dref = None
             dsym = fld.evaluate(e.d, reference) if e.d != 0 else 0j
             if dref is not None and (dref == 0) != (e.d == 0):
                 raise SymbolicLoopRefused(
                     'degenerate_reference', f'δ coefficient G[{p},{r}]: '
-                    f'symbolic {"zero" if e.d == 0 else "nonzero"} but '
+                    f'symbolic {"zero" if e.d == 0 else "nonzero"}, '
                     f'{dref} at the reference point')
-            if dref is not None and abs(dsym - dref) > 1e-12 * max(1.0, abs(dref)):
+            if dref is not None and abs(dsym - dref) > \
+                    CHECK_RTOL * max(1.0, abs(dref)):
                 raise SymbolicLoopRefused(
                     'prefactor_mismatch', f'δ coefficient G[{p},{r}]: '
                     f'{dsym} vs the pipeline {dref}')
-        if e.n and e.num is not None:
-            # the reference realization must not lose the entry
-            val = sp.transfer(p, r, 0.37 + 0.11j, reference) - (
-                fld.evaluate(e.d, reference) if e.d != 0 else 0)
-            if val == 0:
+        if e.n:
+            num = e.num
+            vals = {n: S.QQ(_exact(reference[n])) for n in fld.names}
+            zero = all(
+                (c if not fld.names else fld.F(c).numerator()(
+                    *[vals[n] for n in fld.names])) == 0
+                for c in num.list())
+            if zero:
                 raise SymbolicLoopRefused(
                     'degenerate_reference', f'G[{p},{r}] smooth part '
                     'vanishes at the reference point')
 
 
-def _diagram_value(out, sp, fld, FI, SS, k, stats, kernel, reference):
-    """Σ_perm Σ_subsets δ · scal · value / compensation of one diagram (unit
-    prefactor) over ``F``; and the number of subsets."""
-    F = fld.F
+def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):
+    """One diagram (unit prefactor): ``Σ_perm Σ_subsets δ · scal · value /
+    compensation`` over ``F`` (equal time or pairing), or its triple blocks
+    appended to ``triple_sink`` (weighted by ``weight``); and the number of
+    subsets."""
     S = _sage()
+    fld, sp = st.field, st.sp
+    F = fld.F
     contrib = out['contribution']
     parts = getattr(contrib, 'phase_j_parts', None)
     if parts is None:
@@ -1166,6 +1504,7 @@ def _diagram_value(out, sp, fld, FI, SS, k, stats, kernel, reference):
     org, fidx, kk = parts['origin_leaf_idx'], parts['free_ext_idx'], parts['k']
     total = F(0)
     n = 0
+    inv_comp = F(1) / F(S.QQ(comp))
     for si, (cfn, dg) in enumerate(zip(subs_, diags)):
         sub = getattr(cfn, 'ss_subset', None)
         if getattr(cfn, 'ss_theta0_empty', False):
@@ -1173,31 +1512,35 @@ def _diagram_value(out, sp, fld, FI, SS, k, stats, kernel, reference):
         if sub is None:
             raise SymbolicLoopRefused(
                 'pole_route_subset', 'a subset the state-space route '
-                'declined (conductance kernels, noise-kernel boxes, ...)')
+                'declined (noise-kernel boxes, unrealizable kernels, ...)')
         smooth = list(dg['smooth_edges'])
-        delta = list(dg['delta_edges'])
         dfac = F(1)
-        for e in delta:
+        for e in dg['delta_edges']:
             ei = edge_info[e]
             dfac *= sp.D(int(ei['pi']), int(ei['ri']))
-        # the route's numeric prefactor (unit diagram prefactor) == δ factor
+        # the route's numeric prefactor (unit diagram prefactor) is the δ
+        # factor: the symbolic one must agree at the reference
         pref = complex(cfn.ss_prefactor)
-        dnum = fld.evaluate(dfac, reference) if dfac != 0 else 0j
+        dnum = fld.evaluate(dfac, st.reference) if dfac != 0 else 0j
         if abs(dnum - pref) > CHECK_RTOL * max(1.0, abs(pref)):
             raise SymbolicLoopRefused(
                 'prefactor_mismatch', f'subset {si}: symbolic δ factor {dnum} '
                 f'vs the route\'s prefactor {pref}')
         if dfac == 0:
             continue
-        ents, cents = {}, {}
-        for eid, (_t, _h, _ent, row) in enumerate(sub.edges):
-            ents[eid] = _entry_of(sp, edge_info[smooth[row]])
-        for (row, *_rest) in sub.const_rows:
-            cents[row] = _entry_of(sp, edge_info[smooth[row]])
-        ss = _SymSubset(sub, ents, cents, F, stats)
+        if dg['delta_edges']:
+            st.stats.delta_subsets += 1
+        ents = {eid: _entry_of(sp, sub, edge_info, smooth[row], ent)
+                for eid, (_t, _h, ent, row) in enumerate(sub.edges)}
+        cents = {row: _entry_of(sp, sub, edge_info, smooth[row], ent)
+                 for (row, _a, _b, _c, ent) in sub.const_rows}
+        ss = _SymSubset(sub, ents, cents, F, st.stats)
         n += 1
         for perm in perms:
-            if kernel is None:
+            if triple_sink is not None:
+                _triple_subset(ss, perm, org, fidx, fld, FI, triple_sink,
+                               weight * dfac * inv_comp)
+            elif kterms is None:
                 T = tuple([0.0] * kk)
                 fv = [0.0 for _ in fidx]
                 tie = FI._TieContext(T, tuple(perm[j] for j in fidx),
@@ -1205,56 +1548,77 @@ def _diagram_value(out, sp, fld, FI, SS, k, stats, kernel, reference):
                 total = _red(total + dfac * ss.equal_time(fv, tie, FI))
             else:
                 total = _red(total + dfac * _pair_subset(
-                    ss, perm, org, fidx, kk, kernel, fld, FI))
-    return _red(total / F(S.QQ(comp))), n
+                    ss, perm, org, fidx, kterms, fld, FI))
+    return _red(total * inv_comp), n
 
 
-def _entry_of(sp, ei):
-    if ei.get('kernel') is not None or ei.get('is_kernel'):
-        raise SymbolicLoopRefused('kernel_edge', 'a conductance kernel row')
-    return sp.entries[(int(ei['pi']), int(ei['ri']))]
+def _entry_of(sp, sub, edge_info, idx, ent):
+    """The symbolic entry of one smooth row; a conductance-kernel row or a
+    dressed line (whose operator is not the plain propagator entry) is
+    refused by name."""
+    if idx >= len(edge_info):
+        raise SymbolicLoopRefused('kernel_edge', 'a conductance kernel row '
+                                  '(its kernel has no symbolic realization '
+                                  'here)')
+    ei = edge_info[idx]
+    pi, ri = int(ei['pi']), int(ei['ri'])
+    if ent is not sub.model.entry(pi, ri):
+        raise SymbolicLoopRefused('dressed_line', 'a dressed line (kernel * '
+                                  'propagator series connection)')
+    return sp.entries[(pi, ri)]
 
 
-def _pair_subset(ss, perm, org, fidx, kk, kernel, fld, FI):
-    """``Σ_terms ∫_side L C_subset`` for one Wick permutation."""
+def _ray_of(ss, perm, org, fidx, sg, FI):
+    """The ray of one subset and Wick permutation on side ``sg`` (+1: τ > 0,
+    −1: τ < 0) of the k = 2 lag axis, or ``None`` (zero)."""
+    e = (0, sg)
+    eo = 0.0 if org is None else float(e[perm[org]])
+    fb = [0.0 for _ in fidx]
+    fd = [float(e[perm[j]]) - eo for j in fidx]
+    tie = FI._TieContext((0.0, float(sg)), tuple(perm[j] for j in fidx),
+                         None if org is None else perm[org])
+    return ss.ray(fb, fd, tie, FI)
+
+
+def _pair_subset(ss, perm, org, fidx, kterms, fld, FI):
+    """``Σ_terms ∫_side L C_subset`` for one Wick permutation:
+    ``coeff · q! (±1)^q · c (−r_u − βG)^{−(q+1)} x0`` per kernel term
+    ``(side, q, coeff, rate)`` (``r_u``: the rate in ``u = |s|``)."""
     S = _sage()
     F = fld.F
     out = F(0)
     for side, sg in (('positive', 1), ('negative', -1)):
-        terms = [t for t in kernel.terms if t.side == side]
+        terms = [t for t in kterms if t[0] == side]
         if not terms:
             continue
-        e = (0, sg)
-        T0 = (0.0, 0.0)
-        eo = 0.0 if org is None else float(e[perm[org]])
-        fb = [0.0 for _ in fidx]
-        fd = [float(e[perm[j]]) - eo for j in fidx]
-        T_ref = (0.0, float(sg))
-        tie = FI._TieContext(T_ref, tuple(perm[j] for j in fidx),
-                             None if org is None else perm[org])
-        ray = ss.ray(fb, fd, tie, FI)
+        ray = _ray_of(ss, perm, org, fidx, sg, FI)
         if ray is None:
             continue
-        beta = ray['beta']
-        bq = S.QQ(beta)                    # an integer slope (0/±1 algebra)
-        G, x0, c = ray['G'], ray['x0'], ray['c']
+        bq = S.QQ(ray['beta'])
+        G, x0, c = ray['G'], list(ray['x0']), list(ray['c'])
         n = G.nrows()
-        for t in terms:
-            q = int(t.power)
-            coeff = fld.from_sr(S.SR(t.coeff), 'kernel coefficient')
-            rate = fld.from_sr(S.SR(t.rate), 'kernel rate')
-            # ∫_0^∞ u^q e^{rate_u u} c e^{β G u} x0 du, s = sg·u
+        for _side, q, coeff, rate in terms:
             ru = rate * sg
             M = (-ru) * S.identity_matrix(F, n) - bq * G
-            y = list(x0)
-            if F is S.QQ:
-                for _ in range(q + 1):
-                    y = list(M.solve_right(S.vector(F, y)))
-            else:
-                lu = _FFLU(M, F)
-                for _ in range(q + 1):
-                    y = lu.solve(y)
-            val = sum((ci * yi for ci, yi in zip(c, y) if ci != 0 and yi != 0),
-                      F(0)) * S.factorial(q) * (sg ** q)
-            out = _red(out + coeff * ray['scal'] * val)
+            y = _solve_vec(M, x0, F, q + 1)
+            val = sum((ci * yi for ci, yi in zip(c, y)
+                       if ci != 0 and yi != 0), F(0))
+            out = _red(out + coeff * ray['scal'] * val
+                       * S.factorial(q) * (sg ** q))
     return out
+
+
+def _triple_subset(ss, perm, org, fidx, fld, FI, sink, w):
+    """Append the rational blocks ``(βG, x0, w·scal·c)`` of one subset and
+    Wick permutation to ``sink['+' / '-']``."""
+    S = _sage()
+    F = fld.F
+    for side, sg in (('+', 1), ('-', -1)):
+        ray = _ray_of(ss, perm, org, fidx, sg, FI)
+        if ray is None:
+            continue
+        bq = S.QQ(ray['beta'])
+        sc = w * ray['scal']
+        sink[side].append((bq * ray['G'], list(ray['x0']),
+                           [_red(sc * v) if v != 0 else F(0)
+                            for v in ray['c']]))

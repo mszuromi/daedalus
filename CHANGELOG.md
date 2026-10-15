@@ -11,6 +11,33 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: symbolic loop corrections as rational functions (C3)
+
+`dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time
+cumulant** of every loop order as an exact rational function of the model parameters (and, on request, of the
+saddle); with `kernel=` (a `Kernel`, k = 2) the pairing `∫ L(τ) C(τ) dτ` of exponential and polynomial × exponential
+kernels; `dd.symbolic_triple` gives the matrix-exponential triples `(G, x0, c)` of S4 over the same field.  Nothing
+else changes: no existing output moves.
+
+- **Method.** The state-space route's stationary sweep, replayed exactly over `QQ(params)`: `G(s) = K(s)^{-1}` is
+  inverted symbolically and each entry realized by its companion form (no roots, no `RootOf`, no distinct-pole
+  assumption: double poles are ordinary); every resolvent of a Kronecker-sum block is one fraction-free (Bareiss)
+  solve over `QQ[params]`, factored once per block.  The diagrams, prefactors, Wick permutations, δ edges and subset
+  structure are the pipeline's own (a reference run at numeric parameters), and the result is checked against the
+  pipeline there (`check()`: relative 1e-12, raises otherwise).
+- **Validated.** OU quartic: one and two loops equal the exact Boltzmann O(ε), O(ε²) coefficients symbolically
+  (`−3εD²/μ³`, `24ε²D³/μ⁵`); colour-noise OU at the exact double pole: `−12εD²(1 + 2μτ_c)/(μ³(1 + μτ_c)³)`; a
+  three-field k = 3 one loop with five symbolic parameters (7 s) equals the pipeline at two parameter points to
+  1e-12; pairings equal S4's exact `integrate_against`; the triples equal `C_tau`.
+- **Symbols and saddle.** `symbols=` chooses the symbolic parameters (others enter as the simplest rational of their
+  double); `saddle='numeric'` (default; exact for the reference saddle), `'symbol'` (rational in parameters and
+  saddle) or `{name: closed form}` (checked against the reference).  Exports: Sage, sympy, LaTeX, JSON, a numpy
+  callable.
+- **Limits.** Refused by name (`SymbolicLoopRefused.reason`): Kronecker blocks over `max_block` states (default 64;
+  e.g. an Erlang-2 kernel at one loop needs 81 and takes ~2 min with five symbols), conductance kernels
+  (`kernel_edge`), non-local noise kernels, subsets off the state-space route, spatial models, τ ≠ 0 values of `C(τ)`
+  (they need `e^{Gτ}` symbolically; the triple's `C()` evaluates at numbers).
+
 #### Added: switch-on transients (non-stationary stage 1)
 
 `compute_cumulants(..., t_min=T, times=...)` (and `dd.Config(t_min=..., times=...)`) computes the cumulants of a
