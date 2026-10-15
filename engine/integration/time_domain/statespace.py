@@ -1987,6 +1987,99 @@ class SubsetSS:
             errors[:] = err
         return out
 
+    # ── C0 output (S4): the subset on a ray as one matrix exponential ────
+    def me_ray(self, free_unit, tie_ctx=None):
+        """The subset integral (WITHOUT prefactor) on the ray ``free_vals =
+        u * free_unit``, ``u > 0``, as a matrix-exponential triple (S4, item
+        C0)::
+
+            I(u) = const * prod_r g_r(beta_r u) * c . exp(G beta u) . x0
+
+        ``None`` when the integral vanishes on the whole ray (an empty
+        region, a zero entry, a constant row that is negative or EMPTY on
+        it); otherwise a dict with ``const`` (the constant rows that do not
+        move with ``u``, and a value without any segment), ``rows`` (``[(beta_r,
+        entry)]``: the constant rows ``g_r(t) = c_r e^{a_r t} b_r`` that move,
+        ``beta_r > 0``), ``seg`` (the last segment's ``_Segment``, or
+        ``None`` when no segment moves with ``u``), ``beta`` (its length per
+        unit ``u``), ``x0`` (the stacked state that enters it) and ``c`` (the
+        stacked contraction of the last external time: nonzero on the
+        full-downset block only).  ``G`` is ``seg.dense(dtype)[0]``.
+
+        On a ray every slot value is ``alpha_s u``, so the order of the
+        external times is fixed and every segment length is proportional to
+        ``u``; with two distinct slot values (a k = 2 lag, a k >= 3 slice
+        whose swept leg is first or last) exactly one segment moves.  Raises
+        ``SSIneligible`` (``offset_row`` / ``offset_slot``: a row with a
+        constant offset; ``several_lags``: more than one segment moves;
+        ``finite_t_min``) when the ray is not of this form; the route's late
+        refusals (``SSLateRefusal``) propagate."""
+        FI = _FI()
+        try:
+            t_min = float(FI.PHASE_J_T_MIN)
+        except (TypeError, ValueError):
+            t_min = None
+        if t_min != float('-inf'):
+            raise SSIneligible('finite_t_min', repr(FI.PHASE_J_T_MIN))
+        if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
+                r[4].kind == 'zero' for r in self.const_rows):
+            return None
+        fu = [float(x) for x in free_unit]
+        const = 1.0
+        rows = []
+        for (_idx, a_int, a_ext, c0, ent) in self.const_rows:
+            if float(c0) != 0.0:
+                raise SSIneligible('offset_row', f'c0={c0}')
+            if FI._const_row_verdict(a_int, a_ext, c0, fu, 'edge',
+                                     tie_ctx) == 'EMPTY':
+                return None
+            beta = sum(float(a) * f for a, f in zip(a_ext, fu))
+            if beta == 0.0:
+                const = const * ent.impulse(0.0)
+            elif beta > 0.0:
+                rows.append((beta, ent))
+            else:
+                return None
+        out = {'const': const, 'rows': rows, 'seg': None, 'beta': 0.0,
+               'x0': None, 'c': None}
+        if self.m == 0:
+            return out
+        vals = self._slot_values(fu)
+        if any(key[-1] != 0.0 for key in self.slots):
+            raise SSIneligible('offset_slot', 'a slot with a constant offset')
+        pattern, gv = self._pattern(vals)
+        prog = self._checked_program(pattern, False)
+        if prog and prog[-1][0] == 'empty':
+            return None
+        segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
+        if not segs:
+            v = self._run(prog, gv, False, float('-inf'))
+            out['const'] = const * v
+            return out
+        if len(segs) > 1:
+            raise SSIneligible('several_lags', f'{len(segs)} segments move')
+        i = segs[0]
+        if i != len(prog) - 2 or prog[-1][0] != 'event':
+            raise SSIneligible('several_lags', 'the moving segment is not the '
+                               'last one')
+        dt = self.model.dtype
+        x_before = self._run(prog, gv, False, float('-inf'), upto=i)
+        seg = prog[i][1]
+        k = seg.index.get(self.full)
+        last = [f for I, f in prog[-1][1] if I == self.full]
+        if k is None or not last:
+            return None
+        f = last[0]
+        if f.starts or f.out:
+            raise SSIneligible('several_lags', 'edges open at the last time')
+        cten = np.einsum(*f.args, list(f.act_in)) if f.args else np.ones(
+            (), dtype=dt)
+        c = np.zeros(seg.D, dtype=np.result_type(cten, dt))
+        c[seg.offs[k]:seg.offs[k] + seg.sizes[k]] = np.ravel(cten)
+        out.update(seg=seg, beta=float(gv[1] - gv[0]),
+                   x0=seg.stack(x_before, dt), c=c)
+        return out
+
 
 # ─── τ-grid prefetch (batching through the per-point API) ─────────────────
 
@@ -2289,6 +2382,10 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                     row_kinds=row_kinds, tie_ctx=_tie_ctx)
             return val
         _contrib.ss_subset = sub
+        # C0 output (S4, ``api.me_output``): what the closure multiplies the
+        # subset integral by, and whether it is pruned to 0
+        _contrib.ss_prefactor = pref
+        _contrib.ss_theta0_empty = bool(theta0_empty)
         return _contrib
     return make
 
