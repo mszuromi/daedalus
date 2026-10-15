@@ -350,3 +350,82 @@ def test_rational_kernel_model_unchanged_and_g2k_info():
     got = np.real(r['C_tau_by_ell'][0])
     assert np.allclose(got[1:], ref[1:], rtol=1e-8), (got, ref)
     assert got[0] == pytest.approx(ref[0], rel=2e-6)          # tau = 0 at -1e-6 (Ito)
+
+
+def test_k3_uses_the_pade_tree_and_converges():
+    """k = 3 (a quadratic drift makes it non-zero): no exact tree (k = 2 only),
+    the Pade tree converges in n and the record says so."""
+    m = (SDE('delay k3 quadratic').parameter('a', default=A_).parameter('c', default=C_)
+         .parameter('d', default=0.5, domain='positive').parameter('b', default=0.3)
+         .parameter('D', default=D_).field('x').drift('x', '-a*x + c*x(t - d) - b*x^2')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    pts = [(0.0, 0.3, 0.8), (0.0, 0.5, 0.5)]
+    vals = {}
+    for n in (2, 4, 8):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = compute_cumulants(m, k=3, max_ell=0, external_fields=[('x', 1)] * 3,
+                                  parallel=False, verbose=False, use_cache=False,
+                                  delay={'order': n})
+        assert r['delay']['tree'] == 'pade' and 'k = 3' in r['delay']['tree_note']
+        vals[n] = np.array([complex(r['total_C'](*p)) for p in pts])
+        assert np.all(np.isfinite(vals[n])) and np.max(np.abs(vals[n])) > 0
+    assert np.max(np.abs(vals[8] - vals[4])) < np.max(np.abs(vals[4] - vals[2]))
+
+
+# ── the state-space realization's a posteriori check (api._realization) ──
+
+
+def test_aposteriori_check_flags_a_broken_realization():
+    from api._realization import _aposteriori_check
+    A = np.array([[-1.0, 2.0], [0.0, -3.0]])
+    B = np.array([[1.0, 0.0], [0.5, 1.0]])
+    C = np.eye(2)
+    assert _aposteriori_check(A, B, C) is None
+    # a rounding that leaves the matrix non-Hurwitz: the Lyapunov covariance
+    # is not positive (and disagrees with the transfer function's integral)
+    assert _aposteriori_check(np.array([[1e-3, 2.0], [0.0, -3.0]]), B, C) is not None
+    # a wrong output map against the same transfer evaluation: still consistent
+    # (the check compares the realization with itself, so only a broken
+    # time-domain solve fails it)
+    assert _aposteriori_check(A, B, 2 * C) is None
+
+
+def _hawkes_linear(name, delay_kw):
+    return (TemporalModelBuilder(name).population('E', size=2)
+            .physical_field('n', population='E').physical_field('v', population='E')
+            .parameter('Em', default=[0.8, 0.78], indexed_by=['E'], domain='positive')
+            .parameter('tau', default=[10, 9], indexed_by=['E'], domain='positive')
+            .parameter('dg', default=2.0, domain='positive')
+            .parameter('a', default=[0.44, 0.44], indexed_by=['E'], domain='positive')
+            .parameter('w', default=[[0.25, 0.25], [0.2, 0.3]], indexed_by=['E', 'E'], domain='positive')
+            .define_function('phi', args=['v'], expression='a[i]*v', population='E')
+            .define_kernel('g', **delay_kw)
+            .set_action_text('''sum( nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i])
+                + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] - sum(w[i,j]*g*n[j] for j in E)) for i in E)''')
+            .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*g*nstar[j] for j in E))')
+            .set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+
+
+@pytest.mark.slow
+def test_graded_pade24_realization_falls_back_to_the_pole_route(monkeypatch):
+    """A 4-field model with a Pade-24 kernel on its cycle: the exact
+    realization is right but its rounded form is unusable (the state-space
+    route returned C ~ 1e13 before); it is refused ('ill_conditioned'), the
+    run takes the pole route (same value as the pole engine) and says so."""
+    from api.delay import pade_coefficients
+    c = [str(x) for x in pade_coefficients(24)]
+    z = '(I*omega*dg)'
+    img = ('(' + ' + '.join(f'({ck})*(-1)^{k}*{z}^{k}' for k, ck in enumerate(c)) + ')/('
+           + ' + '.join(f'({ck})*{z}^{k}' for k, ck in enumerate(c)) + ')')
+    m = _hawkes_linear('delay test graded pade24', dict(freq_image=img))
+    kw = dict(k=2, max_ell=0, external_fields=[('n', 1), ('n', 2)], tau_grid=np.array([0.5, 5.0]),
+              parallel=False, verbose=False, use_cache=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(m, **kw)
+        monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+        rp = compute_cumulants(m, **kw)
+    assert r['analysis'].has('G6_SS_ILL_CONDITIONED')
+    assert np.allclose(np.real(r['C_tau']), np.real(rp['C_tau']), rtol=1e-12)
+    assert np.max(np.abs(r['C_tau'])) < 1.0          # (1e13 before the check)

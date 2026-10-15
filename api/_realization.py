@@ -9,9 +9,10 @@ fields, symbolic in ``omega``) into a state-space quadruple
     G(s) = K(s)^{-1} = C (s I - A)^{-1} B + D,          s = i omega,
     G(t) = Theta(t) C e^{A t} B + D delta(t),
 
-without computing an eigenvalue or a numerical polynomial root.  Internal
-(not yet used by Phase J): the realization layer for a planned state-space
-evaluation of the time integrals.
+without computing an eigenvalue or a numerical polynomial root.  The
+state-space Phase J route (``engine/integration/time_domain/statespace.py``,
+the default engine) integrates with it; the pole engine
+(``DAEDALUS_PHASE_J_ENGINE=poles``) does not use it.
 
 Construction (all exact, then rounded once)
 -------------------------------------------
@@ -923,6 +924,70 @@ def _lyapunov_margin(A):
         return None
 
 
+#: Balancing range ``max T / min T`` above which ``realize_K`` checks the
+#: rounded realization a posteriori (high-order rational kernels: Pade-n,
+#: long Erlang chains); ordinary models stay within [0.125, 8] (S1 census).
+GRADED_BALANCE_RANGE = 1e6
+
+
+def _aposteriori_check(A, B, C, rtol=1e-2):
+    """``None`` when the rounded realization's stationary output covariance
+    (unit white inputs; Lyapunov, ``lyapunov_refined``) is positive
+    semidefinite and its diagonal agrees with the frequency-domain integral
+    of the realization's own transfer function ``C (i w - A)^-1 B`` (which
+    stays accurate when the time-domain operations do not) to ``rtol`` of its
+    largest entry; else the reason.  Trapezoid in ``ln w`` between the decay
+    rates / 100 and ``100 max|eig A|``, resonance nodes around underdamped
+    eigenvalues, flat below and ``w^-2`` tail above (about 1e-4 accurate: the
+    check catches a broken realization, not rounding)."""
+    n = A.shape[0]
+    if n == 0:
+        return None
+    try:
+        P = lyapunov_refined(A, B @ B.conj().T)
+    except Exception as exc:                              # pragma: no cover
+        return f'Lyapunov solve failed ({type(exc).__name__})'
+    Y = C @ P @ C.conj().T
+    Y = 0.5 * (Y + Y.conj().T)
+    if not np.all(np.isfinite(Y)):
+        return 'non-finite stationary covariance'
+    ev = np.linalg.eigvalsh(Y)
+    top = float(np.max(np.abs(ev))) if ev.size else 0.0
+    if top == 0.0:
+        return None
+    if ev[0] < -1e-6 * top:
+        return (f'the stationary output covariance is not positive (eigenvalue '
+                f'{ev[0]:.3g} against {top:.3g})')
+    lam = np.linalg.eigvals(A)
+    rates = np.abs(lam.real)
+    lo = max(float(rates.min()) / 100.0, 1e-300)
+    hi = 100.0 * float(np.max(np.abs(lam)))
+    dec = max(1.0, np.log10(hi / lo))
+    nodes = [np.geomspace(lo, hi, int(40 * dec) + 2)]
+    for z in lam:
+        if abs(z.imag) > abs(z.real) and z.imag >= 0:
+            nodes.append(abs(z.imag) + abs(z.real) * np.sinh(np.linspace(-8, 8, 81)))
+    w = np.unique(np.concatenate(nodes))
+    w = w[(w >= lo) & (w <= hi)]
+    I_ = np.eye(n)
+    S = np.zeros((w.size, C.shape[0]))
+    for sgn in (1.0, -1.0):
+        for i0 in range(0, w.size, 256):
+            ws = w[i0:i0 + 256]
+            M = 1j * sgn * ws[:, None, None] * I_ - A
+            G = C @ np.linalg.solve(M, np.broadcast_to(B, (ws.size,) + B.shape))
+            S[i0:i0 + 256] += np.real(np.einsum('wij,wij->wi', G, G.conj()))
+    fn = getattr(np, 'trapezoid', None) or np.trapz
+    yf = (fn(S * w[:, None], np.log(w), axis=0) + S[0] * lo + S[-1] * hi) / (2 * np.pi)
+    yd = np.real(np.diag(Y))
+    err = float(np.max(np.abs(yd - yf)))
+    if not np.isfinite(err) or err > rtol * float(np.max(np.abs(yd))):
+        return (f'the stationary output covariance disagrees with the frequency-'
+                f'domain integral of the transfer function by {err:.3g} '
+                f'(largest variance {float(np.max(np.abs(yd))):.3g})')
+    return None
+
+
 # ─── main entry points ────────────────────────────────────────────────────
 
 def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
@@ -1002,20 +1067,25 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
     else:
         sca = np.ones(An.shape[0])
     margin = _lyapunov_margin(An)
-    if hur is True and An.size and not (margin is not None and np.isfinite(margin)
-                                        and margin > 0):
-        # exactly Hurwitz, but the rounded (balanced) matrices are not
-        # numerically: the realization is graded beyond double precision
-        # (high-order rational kernels in a multi-field model, e.g. Pade-24 of
-        # a delay on a 4-field cycle: |B| ~ 1e24, |C| ~ 1e-24).  Its transfer
-        # function is still right, but exponentials and Lyapunov solves are
-        # not: refuse, so the state-space Phase J route falls back to the
-        # pole route instead of returning wrong numbers.
-        raise RealizationRefused(
-            'ill_conditioned',
-            f'the realization is exactly Hurwitz but its rounded form is not '
-            f'(Lyapunov margin {margin}; |B| {float(np.abs(Bn).max()):.3g}, '
-            f'|C| {float(np.abs(Cn).max()):.3g}, N = {An.shape[0]})')
+    graded = bool(sca.size) and float(sca.max()) > GRADED_BALANCE_RANGE * float(
+        max(sca.min(), np.finfo(float).tiny))
+    bad_margin = not (margin is not None and np.isfinite(margin) and margin > 0)
+    if hur is True and An.size and (bad_margin or graded):
+        # exactly Hurwitz, but the rounded matrices are strongly graded (high-
+        # order rational kernels: Pade-n, long chains) or not even numerically
+        # Hurwitz: the transfer function stays right while exponentials and
+        # Lyapunov solves may not.  Check the rounded realization a posteriori;
+        # refuse it when the check fails, so the state-space Phase J route
+        # falls back to the pole route instead of returning wrong numbers
+        # (seen: Pade-24 of a delay on a 4-field cycle, |B| ~ 1e24, C ~ 1e13).
+        why = _aposteriori_check(An, Bn, Cn)
+        if why is not None:
+            raise RealizationRefused(
+                'ill_conditioned',
+                f'the realization is exactly Hurwitz but its rounded form fails '
+                f'the a posteriori check (N = {An.shape[0]}, Lyapunov margin '
+                f'{margin}, balancing range {float(sca.max() / max(sca.min(), 1e-300)):.3g}, '
+                f'|B| {float(np.abs(Bn).max()):.3g}, |C| {float(np.abs(Cn).max()):.3g}): {why}')
 
     entries = {}
     est = np.zeros((nf, nf), dtype=int)

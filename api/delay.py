@@ -399,7 +399,9 @@ def _observable(r, k):
         tot = np.asarray(r['C_tau'], dtype=complex)
         tree = np.asarray(by.get(0), dtype=complex) if by.get(0) is not None else 0 * tot
         return tot, tot - tree
-    pts = [tuple([0.25 * (j + 1)] * (k - 1)) for j in range(4)]
+    # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times
+    pts = [tuple([0.0] + [0.3 * (j + 1) * (i + 1) for i in range(k - 1)])
+           for j in range(4)]
     tot = np.array([complex(r['total_C'](*p)) for p in pts])
     f0 = (r.get('total_C_by_ell') or {}).get(0)
     tree = np.array([complex(f0(*p)) for p in pts]) if f0 is not None else 0 * tot

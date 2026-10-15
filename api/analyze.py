@@ -182,6 +182,9 @@ FINDING_CODES = {
     'G6_PHASE_J_ENGINE':         ('G6', 'info'),
     'G6_SS_FALLBACK':            ('G6', 'warning'),
     'G6_SS_PARTIAL':             ('G6', 'warning'),
+    # the realization was exactly Hurwitz but numerically unusable (graded
+    # beyond double precision): the pole route took the run
+    'G6_SS_ILL_CONDITIONED':     ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -3319,6 +3322,16 @@ def _g6_engine(ctx, d, result, c):
                  if rep.get('bypass_failed') else ''))
     ctx.add('G6_PHASE_J_ENGINE', detail + '.', '')
     nf = int(rep.get('fallback_evals') or 0)
+    ill = sorted(k for k in (rep.get('ss_declined_by_reason') or {})
+                 if 'ill_conditioned' in str(k))
+    if ill or 'ill_conditioned' in str(rep.get('reason') or ''):
+        ctx.add('G6_SS_ILL_CONDITIONED',
+                'the state-space realization of the propagator is exactly '
+                'Hurwitz but not numerically once rounded (graded beyond double '
+                'precision, e.g. a high-order rational kernel in a multi-field '
+                f'model): {n_dec} subset(s) used the pole routes instead.',
+                'see result["phase_j_engine"]; the pole route\'s accuracy is '
+                'reported by G6_ACCURACY')
     if rep.get('covers_run') and n_dec:
         pc = result.get('pole_clusters') if isinstance(result, dict) else None
         ctx.add('G6_SS_PARTIAL',
