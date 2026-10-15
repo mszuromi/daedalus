@@ -31,8 +31,8 @@ state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delay
   grid against `tol * sigma_1`), retried with one more state, and refused after three retries; a non-Hurwitz result is
   never returned.  The global `A, B, C` (Hurwitz test, exact delay tree, stationary covariance) are not truncated.
 - **Control.**  `DAEDALUS_REALIZATION_TRUNCATION=<tol>` (`0` / `off` / `exact`: none, the realizations of before),
-  `api._realization.truncation_scope(tol)` (thread-local; clears the state-space route's realization cache when the
-  tolerance changes), `realize_K(..., truncation=)` / `realize_kernel(..., truncation=)`.
+  `api._realization.truncation_scope(tol)` (process-wide, nested scopes restore; clears the state-space route's
+  realization cache when the tolerance changes), `realize_K(..., truncation=)` / `realize_kernel(..., truncation=)`.
   `Realization.truncation` records the tolerance and, per entry, the states before / after, the Hankel singular
   values, the bound, the sampled error.
 - **Delays.**  The delay route runs every Padé order with `truncation = min(tol in effect, delay tol / 100)`
@@ -42,7 +42,7 @@ state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delay
   second) to the power `COST_EXPONENT = 5` (measured on the demo), refitted from the last two orders once there are
   two; the `(n_next / n)^4` floor is gone (it predicted 16x where the run took 10.6x and stopped the demo at n = 4).
   `r['delay']` reports `states_mean_by_order`, `predicted_walls_s`, `cost_exponent`, `stop_reason`, `truncation_tol`.
-- **Tests.**  `tests/test_kernel_model_reduction.py` (17 tests, ~15 s).
+- **Tests.**  `tests/test_kernel_model_reduction.py` (18 tests, ~15 s).
 
 #### Added: symbolic loop corrections as rational functions (C3)
 

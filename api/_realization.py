@@ -437,7 +437,11 @@ TRUNCATION_TOL_DEFAULT = 1e-10
 #: ``exact`` for none (the exact minimal realizations, as before item 45).
 TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
 
-_TRUNC_TL = threading.local()
+# the innermost truncation_scope (process-wide, not thread-local: the
+# state-space route builds conductance-kernel realizations lazily, possibly
+# in a worker thread of the same run)
+_TRUNC_LOCK = threading.RLock()
+_TRUNC_SCOPE = [None]
 
 
 def _env_truncation_tol(environ=None):
@@ -461,7 +465,7 @@ def truncation_tol():
     """The relative H-infinity tolerance of the balanced truncation in effect:
     the innermost ``truncation_scope``, else ``DAEDALUS_REALIZATION_TRUNCATION``,
     else ``TRUNCATION_TOL_DEFAULT``; ``0`` means exact (no truncation)."""
-    v = getattr(_TRUNC_TL, 'tol', None)
+    v = _TRUNC_SCOPE[0]
     return _env_truncation_tol() if v is None else v
 
 
@@ -477,9 +481,11 @@ def _clear_consumer_caches():
 class truncation_scope:
     """``with truncation_scope(tol):`` -- realizations built inside use the
     relative H-infinity tolerance ``tol`` (``0``: exact; ``None``: the
-    environment / default).  Thread-local.  The state-space route caches
-    realizations by model and parameters, so a change of the tolerance in
-    effect clears that cache (on entry and on exit)."""
+    environment / default).  Process-wide (the realizations of one run may
+    be built in its worker threads); nested scopes restore the outer value.
+    The state-space route caches realizations by model and parameters, so a
+    change of the tolerance in effect clears that cache (on entry and on
+    exit)."""
 
     def __init__(self, tol):
         self.tol = None if tol is None else float(tol)
@@ -488,17 +494,21 @@ class truncation_scope:
         self._prev = None
 
     def __enter__(self):
-        before = truncation_tol()
-        self._prev = getattr(_TRUNC_TL, 'tol', None)
-        _TRUNC_TL.tol = self.tol
-        if truncation_tol() != before:
+        with _TRUNC_LOCK:
+            before = truncation_tol()
+            self._prev = _TRUNC_SCOPE[0]
+            _TRUNC_SCOPE[0] = self.tol
+            changed = truncation_tol() != before
+        if changed:
             _clear_consumer_caches()
         return self
 
     def __exit__(self, *exc):
-        before = truncation_tol()
-        _TRUNC_TL.tol = self._prev
-        if truncation_tol() != before:
+        with _TRUNC_LOCK:
+            before = truncation_tol()
+            _TRUNC_SCOPE[0] = self._prev
+            changed = truncation_tol() != before
+        if changed:
             _clear_consumer_caches()
         return False
 
@@ -734,7 +744,7 @@ def _truncation_summary(tol, recs):
     worst = max((v['bound_rel'] for v in cut.values()), default=0.0)
     note = (f'balanced truncation (relative H-infinity tolerance {tol:g}): '
             f'{len(cut)} entr{"y" if len(cut) == 1 else "ies"} truncated, '
-            f'states {before} -> {after} over the truncated-or-checked entries; '
+            f'per-entry states {before} -> {after} in total; '
             f'largest bound 2*sum(discarded HSV)/sigma_1 = {worst:.3g}')
     return {'tol': float(tol), 'entries': recs, 'n_truncated': len(cut),
             'states_before': before, 'states_after': after,
@@ -1458,8 +1468,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
                 k = an.shape[0]
                 ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k),
                                        d=dn, n_states=k)
-                if tol > 0 and k >= 2:
-                    ent, recs[(p, r_)] = truncate_entry(ent, tol)
+                ent, recs[(p, r_)] = truncate_entry(ent, tol)   # (as is: n < 2, tol 0)
                 entries[(p, r_)] = ent
                 est[p, r_] = ent.n_states
         prov.append(f'per-entry minimal state counts: max {int(est.max()) if nf else 0}, '

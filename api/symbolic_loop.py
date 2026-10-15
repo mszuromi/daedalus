@@ -1357,10 +1357,14 @@ class _Setup:
                         and not p.get('mean_field')}
                 full.update(parameters)
                 parameters = full
-            result = compute_cumulants(
-                model, k=k, max_ell=max_ell, external_fields=external_fields,
-                parameters=parameters, tau_grid=[0.0], parallel=False,
-                verbose=verbose, use_cache=False)
+            # the exact realizations (no balanced truncation, item 45): the
+            # replay below is exact, and checks the reference to CHECK_RTOL
+            from api._realization import truncation_scope
+            with truncation_scope(0):
+                result = compute_cumulants(
+                    model, k=k, max_ell=max_ell, external_fields=external_fields,
+                    parameters=parameters, tau_grid=[0.0], parallel=False,
+                    verbose=verbose, use_cache=False)
         else:
             _check_result_args(result, external_fields, parameters, max_ell)
         cfg = result.get('config') or {}
