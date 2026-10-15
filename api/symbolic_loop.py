@@ -65,10 +65,16 @@ How
    (diagonal blocks ``M_I``, firings below them).
 5. Checks (never silent): each subset's symbolic δ factor, evaluated at the
    reference, equals the route's numeric prefactor; the symbolic δ
-   coefficients equal ``D_delta`` and no symbolically nonzero entry vanishes
-   at the reference (``degenerate_reference``: that run would have lost
-   subsets); the total is compared with the pipeline at the reference
-   per loop order (:meth:`SymbolicCumulant.check`: relative to the largest
+   coefficients equal ``D_delta`` of the reference run and no symbolically
+   nonzero entry or δ coefficient vanishes, or nearly vanishes
+   (``DEGENERATE_RTOL`` of its terms), at the reference
+   (``degenerate_reference``: that run would have lost subsets or
+   diagrams); at equal times every diagram (unit prefactor) is compared with
+   the route's own closures, relative to the larger of Σ|subset terms| and
+   the sweeps' internal magnitude (so diagrams with a vanishing prefactor at
+   the reference are checked too, and an exactly vanishing cumulant passes
+   against rounding residue); the total is compared with the pipeline at
+   the reference per loop order (:meth:`SymbolicCumulant.check`: relative to the largest
    |pipeline value| over the loop orders, ``CHECK_RTOL``, ``AssertionError``
    beyond): equal time against ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``,
    a pairing against S4's exact smooth ``Cumulant.integrate_against`` (no
@@ -1076,14 +1082,20 @@ class SymbolicCumulant:
         return d
 
     def check(self, rtol=CHECK_RTOL):
-        """``{ell: |symbolic − pipeline| / scale}`` at the reference point
-        (scale: the largest |pipeline value|); raises ``AssertionError``
-        beyond ``rtol``."""
+        """``{ell: |symbolic − pipeline| / scale}`` at the reference point;
+        raises ``AssertionError`` beyond ``rtol``.  Scale: equal time, the
+        larger of |pipeline value| and the loop order's sum of |subset
+        terms| (so an exactly vanishing cumulant is checked against its
+        terms, not against rounding noise; each diagram is also checked on
+        its own when the result is built); pairing, the largest |pipeline
+        value| over the loop orders."""
         out = {}
-        scale = max([abs(v) for v in self.pipeline.values()] + [1e-300])
+        gscale = max([abs(v) for v in self.pipeline.values()] + [1e-300])
         for ell, ref in self.pipeline.items():
             v = self.evaluate(ell=ell)
-            d = abs(v - ref) / scale
+            sc = (max(abs(ref), getattr(self, 'abs_scale', {}).get(ell, 0.0),
+                      1e-300) if self.kind == 'equal_time' else gscale)
+            d = abs(v - ref) / sc
             out[ell] = d
             if d > rtol:
                 raise AssertionError(f'{self.kind} ell={ell}: symbolic {v} vs '
@@ -1271,6 +1283,18 @@ def _point(res, point):
 
 def _saddle_guard(res, point):
     import warnings
+    ss = getattr(res, 'saddle_symbols', [])
+    if ss:
+        moved = [n for n, v in point.items() if n not in ss
+                 and n in res.reference and float(v) != res.reference[n]]
+        missing = [n for n in ss if n not in point]
+        if moved and missing:
+            warnings.warn(f'{moved} moved but the saddle {missing} was not '
+                          f'given: it stays at the reference value, off the '
+                          f'mean-field manifold of the new point (pass the '
+                          f'saddle of that point)', SaddleWarning,
+                          stacklevel=3)
+        return
     if not getattr(res, 'saddle_moves', False):
         return
     moved = [n for n, v in point.items()
@@ -1482,13 +1506,14 @@ class _Setup:
                          f'and saddle, valid on the mean-field manifold')
         self.reference, self.subs, self.notes = reference, subs, notes
         self.sad, self.sym, self.kvals = sad, sym, kvals
+        self.names_all = names_all
         self.numeric_params = [n for n in params if n not in sym]
         self.stats = _Stats(max_block)
         t0 = time.perf_counter()
         prop = result['propagator']
         self.sp = symbolic_propagator(prop['K_ft'], prop['omega'], fld, subs)
         self.t_prop = time.perf_counter() - t0
-        _check_zero_pattern(self.sp, prop, fld, reference)
+        _check_zero_pattern(self.sp, prop, fld, reference, num_params)
         self.ext = cfg.get('external_fields') or result.get('external_fields')
         self.origin = cfg.get('origin_leaf_idx', 0)
         self.pdata = _propagator_data(prop, model)
@@ -1504,7 +1529,8 @@ class _Setup:
         for di, rec in enumerate(recs):
             e = S.SR(rec['combined_prefactor']).subs(self.subs)
             kern = sorted(str(v) for v in e.variables()
-                          if str(v).startswith('z_'))
+                          if str(v).startswith('z_')
+                          and str(v) not in self.names_all)
             if kern:
                 # a conductance vertex (``z_g_*``: its kernel is an edge or
                 # a dressed line) or a non-local noise cumulant
@@ -1585,18 +1611,28 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
                     t.side == 'negative' and rv.real < 0):
                 raise ValueError(f'kernel term {t}: rate {rv} grows on its '
                                  f'side (the integral diverges)')
+            if _sage().SR(st.field.to_sr(rate)).variables():
+                st.notes.append(f'kernel rate {rate}: the pairing is the '
+                                f'analytic continuation; it is the integral '
+                                f'where the rate keeps the term decaying '
+                                f'faster than C grows (checked at the '
+                                f'reference only)')
             kterms.append((t.side, int(t.power),
                            st.field.from_sr(S.SR(t.coeff).subs(st.subs),
                                             'kernel coefficient'), rate))
     ells = _check_ells(ells, max_ell, st)
-    by_ell, per_ell = {}, {}
+    by_ell, per_ell, abs_scales = {}, {}, {}
     for ell in ells:
         te = time.perf_counter()
         total, n_sub = F(0), 0
-        for _di, cp, out in st.diagrams(ell):
+        abs_scale = 0.0
+        for di, cp, out in st.diagrams(ell):
             val, ns = _diagram_value(out, st, FI, kterms=kterms)
             n_sub += ns
             total = _red(total + cp * val)
+            if kterms is None and reference_check:
+                abs_scale += _check_diagram(out, val, cp, st, FI, ell, di)
+        abs_scales[int(ell)] = abs_scale
         by_ell[int(ell)] = total
         per_ell[int(ell)] = {'seconds': time.perf_counter() - te,
                              'subsets': n_sub, 'size': expression_size(total)}
@@ -1605,8 +1641,10 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
         kind='equal_time' if kernel is None else 'pairing', by_ell=by_ell,
         field=st.field, reference=st.reference, pipeline=pipeline, k=st.k,
         stats=st.stats_dict(per_ell), notes=st.notes)
+    res.abs_scale = abs_scales if kernel is None else {}
     res._ctx = {'propagator': st.sp, 'result': st.result, 'subs': st.subs}
     res.saddle_moves = st.saddle_moves if st.saddle == 'numeric' else False
+    res.saddle_symbols = list(st.sad) if st.saddle == 'symbol' else []
     res.numeric_params = list(st.numeric_params)
     if reference_check:
         res.check()
@@ -1642,6 +1680,7 @@ def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
                         reference=st.reference,
                         stats=st.stats_dict(per_ell), notes=st.notes)
     tr.saddle_moves = st.saddle_moves if st.saddle == 'numeric' else False
+    tr.saddle_symbols = list(st.sad) if st.saddle == 'symbol' else []
     tr.numeric_params = list(st.numeric_params)
     pjs = st.result.get('phase_j_by_ell') or {}
     tr.pipeline = {}
@@ -1653,6 +1692,56 @@ def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
     if reference_check:
         tr.check()
     return tr
+
+
+def _check_diagram(out, val, cp, st, FI, ell, di):
+    """One diagram at the reference (equal time, unit prefactor): the
+    symbolic value against the route's own closures, relative to the sum of
+    |subset terms| or of the sweeps' internal magnitudes
+    (:func:`_sweep_magnitude`), whichever is larger.
+    Returns that sum times |prefactor| (the loop order's absolute scale)."""
+    parts = out['contribution'].phase_j_parts
+    perms, comp = parts['perms'], parts['compensation']
+    org, fidx, kk = parts['origin_leaf_idx'], parts['free_ext_idx'], parts['k']
+    num, mag, err = 0j, 0.0, 0.0
+    for perm in perms:
+        tie = FI._TieContext(tuple([0.0] * kk), tuple(perm[j] for j in fidx),
+                             None if org is None else perm[org])
+        fv = [0.0 for _ in fidx]
+        for cfn in parts['subsets']:
+            v = complex(cfn(fv, None, tie))
+            num += v
+            mag += abs(v)
+            # the sweep's internal magnitude: a subset that cancels to
+            # rounding noise inside the sweep is checked against it, not
+            # against its own (noise) value
+            err += _sweep_magnitude(cfn)
+    num, mag = num / comp, max(mag, err) / abs(comp)
+    sym = st.field.evaluate(val, st.reference) if val != 0 else 0j
+    if abs(sym - num) > CHECK_RTOL * mag + (0.0 if mag else 1e-300):
+        raise AssertionError(f'ell={ell} diagram {di} (unit prefactor): '
+                             f'symbolic {sym} vs the route {num} (Σ|terms| '
+                             f'{mag:.3g})')
+    cpv = st.field.evaluate(cp, st.reference) if cp != 0 else 0j
+    return abs(cpv) * mag
+
+
+def _sweep_magnitude(cfn):
+    """|prefactor| × the largest stationary state entry of the route's sweep
+    × the largest |c| to the power of the edges contracted at external
+    times: the size of the numbers the subset's value is computed from."""
+    sub = getattr(cfn, 'ss_subset', None)
+    if sub is None or getattr(cfn, 'ss_theta0_empty', False) or sub.empty:
+        return 0.0
+    try:
+        xs = sub.stationary()
+        mx = max(float(np.max(np.abs(a))) if np.size(a) else 0.0
+                 for a in xs.values())
+        heads = sum(len(h) for h in sub.slot_heads)
+        cn = max([e.cnorm for e in sub.edge_ops] + [1.0])
+        return abs(complex(cfn.ss_prefactor)) * mx * cn ** heads
+    except Exception:
+        return 0.0
 
 
 def _check_result_args(result, external_fields, parameters, max_ell):
@@ -1754,42 +1843,66 @@ def _pipeline_values(st, ells, kernel):
     return out
 
 
-def _check_zero_pattern(sp, prop, fld, reference):
-    """The symbolic δ coefficients equal the pipeline's ``D_delta`` at the
-    reference, and no symbolically nonzero entry (smooth or δ part)
-    vanishes there (``degenerate_reference``: the reference run would have
-    dropped its subsets)."""
+#: an entry (or δ coefficient) whose value at the reference is below this
+#: fraction of the size of its terms there counts as vanishing
+DEGENERATE_RTOL = 1e-12
+
+
+def _near_zero(x, fld, reference):
+    """Whether the field element ``x`` (nonzero) vanishes, or nearly
+    vanishes, at the reference: |value| <= DEGENERATE_RTOL * Σ |terms| of
+    its numerator there (a float pipeline may have cancelled it exactly)."""
+    S = _sage()
+    if not fld.names:
+        return x == 0
+    vals = [S.QQ(_exact(reference[n])) for n in fld.names]
+    num = x.numerator()
+    v = abs(S.RealField(200)(num(*vals)))
+    mag = sum(abs(S.RealField(200)(c * m(*vals)))
+              for c, m in zip(num.coefficients(), num.monomials()))
+    return v <= DEGENERATE_RTOL * mag
+
+
+def _check_zero_pattern(sp, prop, fld, reference, num_params):
+    """The reference run must have seen every symbolically nonzero entry
+    (its δ edges come from the numeric ``D_delta``, its diagrams from the
+    propagator's zero pattern): the symbolic δ coefficients equal
+    ``D_delta`` at ``num_params`` and no symbolically nonzero entry or δ
+    coefficient (nearly) vanishes at the reference (``degenerate_reference``;
+    a coefficient the check cannot evaluate is refused too)."""
     S = _sage()
     D_ref = prop.get('D_delta')
-    pt = {S.SR.var(n): v for n, v in reference.items()}
+    pt = {S.SR(k_): S.SR(v) for k_, v in num_params.items()}
     for (p, r), e in sp.entries.items():
         if D_ref is not None:
             try:
                 dref = complex(S.CDF(S.SR(D_ref[p, r]).subs(pt)))
-            except Exception:
-                dref = None
-            dsym = fld.evaluate(e.d, reference) if e.d != 0 else 0j
-            if dref is not None and (dref == 0) != (e.d == 0):
+            except Exception as exc:
+                raise SymbolicLoopRefused(
+                    'degenerate_reference', f'D_delta[{p},{r}] of the '
+                    f'reference run cannot be evaluated ({exc})') from exc
+            if (dref == 0) != (e.d == 0):
                 raise SymbolicLoopRefused(
                     'degenerate_reference', f'δ coefficient G[{p},{r}]: '
                     f'symbolic {"zero" if e.d == 0 else "nonzero"}, '
-                    f'{dref} at the reference point')
-            if dref is not None and abs(dsym - dref) > \
-                    CHECK_RTOL * max(1.0, abs(dref)):
-                raise SymbolicLoopRefused(
-                    'prefactor_mismatch', f'δ coefficient G[{p},{r}]: '
-                    f'{dsym} vs the pipeline {dref}')
-        if e.n:
-            num = e.num
-            vals = {n: S.QQ(_exact(reference[n])) for n in fld.names}
-            zero = all(
-                (c if not fld.names else fld.F(c).numerator()(
-                    *[vals[n] for n in fld.names])) == 0
-                for c in num.list())
-            if zero:
-                raise SymbolicLoopRefused(
-                    'degenerate_reference', f'G[{p},{r}] smooth part '
-                    'vanishes at the reference point')
+                    f'{dref} in the reference run')
+            if e.d != 0:
+                if _near_zero(e.d, fld, reference):
+                    raise SymbolicLoopRefused(
+                        'degenerate_reference', f'δ coefficient G[{p},{r}] '
+                        f'nearly vanishes at the reference point: choose a '
+                        f'generic reference (parameters=)')
+                dsym = fld.evaluate(e.d, reference)
+                if abs(dsym - dref) > CHECK_RTOL * max(1.0, abs(dref)):
+                    raise SymbolicLoopRefused(
+                        'prefactor_mismatch', f'δ coefficient G[{p},{r}]: '
+                        f'{dsym} vs the pipeline {dref}')
+        if e.n and all(c == 0 or _near_zero(fld.F(c), fld, reference)
+                       for c in e.num.list()):
+            raise SymbolicLoopRefused(
+                'degenerate_reference', f'G[{p},{r}] (smooth part) nearly '
+                f'vanishes at the reference point: choose a generic reference '
+                f'(parameters=)')
 
 
 def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):

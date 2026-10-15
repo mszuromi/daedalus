@@ -498,3 +498,58 @@ def test_arguments_are_never_silently_ignored(ouq_model):
     assert pickle.loads(pickle.dumps(exc)).reason == 'too_large'
     r2 = pickle.loads(pickle.dumps(r))
     assert r2.by_ell == r.by_ell and r2._ctx is None
+
+
+def _hidden_field(g):
+    """z = x + (g - 1/10) w: at g = 1/10 the w part of z vanishes, and a
+    reference there would lose it."""
+    from api.model import TemporalModelBuilder
+    b = TemporalModelBuilder(f'c3 hidden field {g}')
+    b.population('P', size=1)
+    for f in ('x', 'w', 'z'):
+        b.physical_field(f, population='P')
+    for p, d in (('mu', 1.0), ('eps', 0.1), ('D', 1.0), ('g', g),
+                 ('nu', 2.0)):
+        b.parameter(p, default=d)
+    for f in ('x', 'w', 'z'):
+        b.set_mf_equation(f + 'star', '0')
+    b.set_action_text('sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 '
+                      '+ wt[i]*((Dt+nu)*w[i]) - wt[i]^2 '
+                      '+ zt[i]*(z[i] - x[i] - (g - 1/10)*w[i]) for i in P)')
+    return b.build()
+
+
+def test_reference_points_that_hide_terms_are_refused():
+    ext = [('z', 1)] * 2
+    r = SL.symbolic_cumulant(_hidden_field(0.3), 2, 1, external_fields=ext)
+    assert _sr_equal(r.expression(0), SR('D/mu + (g - 1/10)^2/nu'))
+    with pytest.raises(SL.SymbolicLoopRefused) as e:
+        SL.symbolic_cumulant(_hidden_field(0.1), 2, 1, external_fields=ext)
+    assert e.value.reason == 'degenerate_reference'
+
+
+def test_exact_zero_cumulant_and_the_diagram_check(monkeypatch):
+    """<p q> = 0 exactly (q' = -w p, stationarity): symbolic 0 against the
+    route's rounding residue passes; a 1e-9 error in one diagram does not."""
+    m = SSM.oscillator_red_noise()
+    ext = [('p', 1), ('q', 1)]
+    res = _cc(m, 2, 1, ext)
+    r = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
+    assert all(v == 0 for v in r.by_ell.values())
+    orig = SL._diagram_value
+
+    def off(*a, **kw):
+        val, n = orig(*a, **kw)
+        return val * (1 + QQ(1) / 10 ** 9) + QQ(1) / 10 ** 9, n
+    monkeypatch.setattr(SL, '_diagram_value', off)
+    with pytest.raises(AssertionError, match='diagram'):
+        SL.symbolic_cumulant(SSM.ou_colour(1.0), 2, 1,
+                             external_fields=[('x', 1)] * 2)
+
+
+def test_symbolic_saddle_needs_the_saddle_of_the_point():
+    m = _driven_quartic()
+    r = SL.symbolic_cumulant(m, 2, 1, external_fields=[('x', 1)] * 2)
+    assert 'xstar1' in r.names
+    with pytest.warns(SL.SaddleWarning, match='saddle'):
+        r.evaluate({'h': 0.9}, ell=1)
