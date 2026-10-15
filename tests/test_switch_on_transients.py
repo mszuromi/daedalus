@@ -353,6 +353,9 @@ def test_initial_covariance_tree_term():
     assert res['C_times'][0].real == pytest.approx(C0[0, 1], abs=1e-15)
     assert res['nonstationary']['initial_term'] is not None
     assert res['total_C'](0.3, 2.0) == pytest.approx(res['C_times'][2], rel=1e-15)
+    # the ell = 0 Phase J record's total carries the term too (review round 2)
+    assert res['phase_j_by_ell'][0]['total_C'](0.3, 2.0) == pytest.approx(res['C_times'][2], rel=1e-15)
+    assert res['phase_j_by_ell'][0]['total_C_batch']([(0.3, 2.0)]) == [res['phase_j_by_ell'][0]['total_C'](0.3, 2.0)]
 
 
 # ── B / C: the stationary limit and the stationary path ──────────────────────
@@ -442,12 +445,20 @@ def test_every_stored_callable_is_the_switch_on_one():
             assert sum(complex(g['contribution'](t1, t2)) for g in td['groups']) == pytest.approx(
                 res['C_times_by_ell'][ell][p], rel=1e-14, abs=1e-300)
         assert td['total_C_batch']([(1.0, 2.0)], parallel=True) == [res['C_times_by_ell'][ell][1]]
+        vals, _loops = td['eval_per_diagram_batch']([(1.0, 2.0)], parallel=True)
+        assert complex(sum(vals[0])) == pytest.approx(res['C_times_by_ell'][ell][1], rel=1e-14)
     with pytest.raises(me_output.MEUnavailable, match='switch-on'):
         me_output.from_result(res)
     with pytest.raises(me_output.MEUnavailable, match='switch-on'):
         me_output.slice_me(res)
     with pytest.raises(NotImplementedError, match='C_times'):
         save_npz(res, 'never_written.npz')
+    from api.report import generate_report
+    with pytest.raises(NotImplementedError, match='C_times'):
+        generate_report(_ou_cubic(), 2, output_pdf='never_written.pdf', result=res)
+    from api.symbolic_out import tree_covariance_from_result, SymbolicOutError
+    with pytest.raises(SymbolicOutError, match='switch-on'):
+        tree_covariance_from_result(res, model=_ou_cubic())
 
 
 # ── refusals: never silent, never the pole engine ─────────────────────────────

@@ -859,6 +859,13 @@ def _switch_on_wrap_td(td, t_min):
     for g in td.get('groups') or ():
         if isinstance(g, dict) and callable(g.get('contribution')):
             g['contribution'] = _switch_on_callable(g['contribution'], t_min)
+    if callable(td.get('eval_per_diagram_batch')):
+        # serial (no fork) and inside the scope
+        _pd = td['eval_per_diagram_batch']
+        _pd_scoped = _switch_on_callable(
+            lambda tau_points: _pd(tau_points, parallel=False), t_min)
+        td['eval_per_diagram_batch'] = (
+            lambda tau_points, *a, _f=_pd_scoped, **kw: _f(tau_points))
 
 
 def _switch_on_callable(fn, t_min):
@@ -1143,7 +1150,9 @@ def compute_cumulants(
         Required with ``t_min``: the absolute external times to evaluate,
         shape ``(n, k)`` (row ``i`` = the times of the ``k`` legs, in the
         order of ``external_fields``) or ``(n,)`` (every leg at ``t``: the
-        equal-time cumulant).  Every time must be ``>= t_min``; equal times
+        equal-time cumulant); taken literally (a tuple too: the ``(lo, hi,
+        n)`` range form is ``dd.Config``'s).  Every time must be ``>=
+        t_min``; equal times
         are exact ties (no Itô nudge: the state-space route applies the
         tie rule).  Values: ``result['C_times']``.  ``tau_grid`` (the
         stationary lag grid) must not be given with ``t_min``.
@@ -2103,6 +2112,17 @@ def _run_phase_j(state, grouped):
             _tree = total_C_by_ell.get(0, lambda *t: 0.0 + 0.0j)
             total_C_by_ell[0] = (lambda *t, _f=_tree, _g=init_fn:
                                  complex(_f(*t)) + _g(*t))
+            # the ell = 0 Phase J record's totals too (its per-diagram
+            # closures, ``groups`` / ``eval_per_diagram_batch``, are the
+            # diagrams alone: the term is not a diagram)
+            _td0 = phase_j_by_ell.get(0)
+            if isinstance(_td0, dict) and callable(_td0.get('total_C')):
+                _f0 = _td0['total_C']
+                _td0['total_C'] = (lambda *t, _f=_f0, _g=init_fn:
+                                   complex(_f(*t)) + _g(*t))
+                _td0['total_C_batch'] = (
+                    lambda tau_points, *a, _f=_td0['total_C'], **kw:
+                    [complex(_f(*p)) for p in tau_points])
         C_times = sum(C_times_by_ell[ell] for ell in C_times_by_ell)
 
     # ── Adaptive mean-field dict ──────────────────────────────────
