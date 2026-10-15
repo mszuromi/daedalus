@@ -60,7 +60,7 @@ from typing import Any, NamedTuple, Optional
 import numpy as np
 import scipy.linalg as sl
 
-__all__ = ['MEBlock', 'SideME', 'CumulantME', 'MEUnavailable',
+__all__ = ['MEBlock', 'SideME', 'CumulantME', 'SliceME', 'MEUnavailable',
            'MEConditioningWarning', 'MEFallbackWarning', 'RationalKernel',
            'Pairing', 'from_result', 'slice_me', 'kernel_value',
            'kernel_at_zero', 'quad_pairing']
@@ -129,7 +129,7 @@ class MEBlock:
     @property
     def n(self):
         n = self.seg.D if self.seg is not None else 1
-        for _b, ent in self.rows:
+        for _r0, _r1, ent in self.rows:
             n *= ent.n
         return n
 
@@ -162,8 +162,8 @@ class MEBlock:
                 val = complex(self.c @ v)
             else:
                 val = 1.0 + 0j
-            for b, ent in self.rows:
-                val *= ent.impulse(b * ui)
+            for r0, r1, ent in self.rows:
+                val *= ent.impulse(r0 + r1 * ui)
             out[i] = self.weight * val
         return out
 
@@ -182,9 +182,9 @@ class MEBlock:
             else:
                 G = np.zeros((1, 1))
                 x, c = np.ones(1), np.ones(1)
-            for b, ent in self.rows:
-                G = _kron_sum(G, b * ent.a)
-                x = np.kron(x, ent.b)
+            for r0, r1, ent in self.rows:
+                G = _kron_sum(G, r1 * ent.a)
+                x = np.kron(x, _row_start(ent, r0, 'orig'))
                 c = np.kron(c, ent.c)
             self._triple = (G, np.asarray(x), self.weight * np.asarray(c))
         return self._triple
@@ -215,9 +215,9 @@ class MEBlock:
             else:
                 T = np.zeros((1, 1))
                 xt, ct = np.ones(1, dtype=complex), np.ones(1, dtype=complex)
-            for b, ent in self.rows:
-                T = _kron_sum(T, b * np.asarray(ent.T))
-                xt = np.kron(xt, ent.bt)
+            for r0, r1, ent in self.rows:
+                T = _kron_sum(T, r1 * np.asarray(ent.T))
+                xt = np.kron(xt, _row_start(ent, r0, 'tri'))
                 ct = np.kron(ct, ent.ct)
             self._tri = (np.asarray(T, dtype=complex), xt,
                          self.weight * ct)
@@ -248,6 +248,21 @@ class MEBlock:
         return (f'MEBlock(diagram={self.diagram_index}, '
                 f'subset={self.subset_index}, perm={self.perm_index}, '
                 f'n={self.n}, weight={self.weight:.6g})')
+
+
+def _row_start(ent, r0, basis):
+    """``e^{a r0} b`` of a row entry, in its original or triangular basis
+    (``r0 >= 0``; the triangular basis by the reset-diagonal Pade)."""
+    if basis == 'tri':
+        if r0 == 0:
+            return np.asarray(ent.bt)
+        from api._realization import expm_upper_triangular
+        return expm_upper_triangular(np.asarray(ent.T), r0) @ ent.bt
+    if r0 == 0:
+        return np.asarray(ent.b)
+    from api._realization import expm_upper_triangular
+    v = expm_upper_triangular(np.asarray(ent.T), r0) @ ent.bt
+    return ent.from_basis(v, 0)
 
 
 def _kron_sum(A, B):
@@ -753,6 +768,26 @@ def _groups_of(pj):
     return [g for g in (pj.get('groups') or []) if isinstance(g, dict)]
 
 
+def _global_reasons(result, FI):
+    """Reasons that hold for every loop order of a result."""
+    cfg = result.get('config') or {}
+    out = []
+    eng = result.get('phase_j_engine') or {}
+    if eng.get('pole_deformation') == 'used':
+        out.append('the pole-cluster deformation ran (the value is an average '
+                   'over deformed propagators)')
+    if eng.get('engine') == 'poles':
+        out.append('DAEDALUS_PHASE_J_ENGINE=poles')
+    if cfg.get('use_grouped_phase_j'):
+        out.append('grouped Phase J')
+    try:
+        if float(FI.PHASE_J_T_MIN) != float('-inf'):
+            out.append('finite PHASE_J_T_MIN')
+    except (TypeError, ValueError):
+        out.append('PHASE_J_T_MIN not a float')
+    return out
+
+
 def from_result(result) -> CumulantME:
     """Build the triples of a k = 2 ``compute_cumulants`` / ``dd.run``
     result from its live Phase J closures (nothing is integrated again: the
@@ -775,20 +810,7 @@ def from_result(result) -> CumulantME:
     if not pjs:
         raise MEUnavailable('the result has no live Phase J closures (a '
                             'loaded file or a non-Phase-J result)')
-    global_reasons = []
-    eng = result.get('phase_j_engine') or {}
-    if eng.get('pole_deformation') == 'used':
-        global_reasons.append('the pole-cluster deformation ran (the value '
-                              'is an average over deformed propagators)')
-    if eng.get('engine') == 'poles':
-        global_reasons.append('DAEDALUS_PHASE_J_ENGINE=poles')
-    if cfg.get('use_grouped_phase_j'):
-        global_reasons.append('grouped Phase J')
-    try:
-        if float(FI.PHASE_J_T_MIN) != float('-inf'):
-            global_reasons.append('finite PHASE_J_T_MIN')
-    except (TypeError, ValueError):
-        global_reasons.append('PHASE_J_T_MIN not a float')
+    global_reasons = _global_reasons(result, FI)
     sides, reasons = {}, {}
     counts = {'blocks': 0, 'zero': 0, 'pole_route': 0, 'pruned': 0}
     for ell, pj in sorted(pjs.items()):
@@ -822,51 +844,205 @@ def from_result(result) -> CumulantME:
 
 
 def _blocks_of(parts, diagram_index, blocks, rs, counts, FI):
+    """The k = 2 blocks of one diagram's contribution, both sides."""
+    kk = parts['k']
+    for side, sg in (('+', 1.0), ('-', -1.0)):
+        line = ((0.0, 0.0), (0.0, sg), 0.0, 1.0)   # T(u) = T0 + u e, u > 0
+        _line_blocks(parts, diagram_index, line, blocks[side], rs, counts, FI)
+
+
+def _line_blocks(parts, diagram_index, line, out, rs, counts, FI):
+    """Append the :class:`MEBlock` of every subset and Wick permutation of
+    one contribution on the line of caller times ``T(t) = T0 + t * e``,
+    chamber containing ``t_ref``, anchored at ``t_anchor`` (``line = (T0, e,
+    t_anchor, t_ref)``)."""
+    from engine.integration.time_domain import statespace as SS
+    T0, e, t_anchor, t_ref = line
     perms = parts['perms']
     comp = parts['compensation']
     org = parts['origin_leaf_idx']
     fidx = parts['free_ext_idx']
     kk = parts['k']
-    for side, sg in (('+', 1.0), ('-', -1.0)):
-        times = (0.0, sg)
-        for pidx, perm in enumerate(perms):
-            permuted = [times[perm[j]] for j in range(kk)]
+    T_ref = tuple(a + t_ref * b for a, b in zip(T0, e))
+
+    def free(T):
+        def f(perm):
+            p_ = [T[perm[j]] for j in range(kk)]
             if org is not None:
-                t0 = permuted[org]
-                permuted = [t - t0 for t in permuted]
-            fu = [float(permuted[j]) for j in fidx]
-            tie = FI._TieContext(times, tuple(perm[j] for j in fidx),
-                                 None if org is None else perm[org])
-            for si, cfn in enumerate(parts['subsets']):
-                sub = getattr(cfn, 'ss_subset', None)
-                if sub is None:
-                    counts['pole_route'] += 1
-                    rs.append('a subset is on the pole route (the '
-                              'state-space route declined it)')
-                    continue
-                if getattr(cfn, 'ss_theta0_empty', False):
-                    counts['pruned'] += 1
-                    continue
-                from engine.integration.time_domain import statespace as SS
-                try:
-                    ray = sub.me_ray(fu, tie)
-                except SS.SSIneligible as exc:
-                    rs.append(f'a subset is not one matrix exponential on '
-                              f'the lag axis ({exc.reason})')
-                    continue
-                except SS._late_errors() as exc:
-                    rs.append(f'the state-space route refused a subset '
-                              f'({SS._late_reason(exc)})')
-                    continue
-                if ray is None:
-                    counts['zero'] += 1
-                    continue
-                w = complex(cfn.ss_prefactor) / comp
-                blocks[side].append(MEBlock(ray, w, sub.model.dtype,
-                                            diagram_index, si, pidx))
-                counts['blocks'] += 1
+                o = p_[org]
+                p_ = [t - o for t in p_]
+            return [float(p_[j]) for j in fidx]
+        return f
+    T1 = tuple(a + b for a, b in zip(T0, e))
+    for pidx, perm in enumerate(perms):
+        fb = free(T0)(perm)
+        fd = [b - a for a, b in zip(fb, free(T1)(perm))]
+        tie = FI._TieContext(T_ref, tuple(perm[j] for j in fidx),
+                             None if org is None else perm[org])
+        for si, cfn in enumerate(parts['subsets']):
+            sub = getattr(cfn, 'ss_subset', None)
+            if sub is None:
+                counts['pole_route'] += 1
+                rs.append('a subset is on the pole route (the state-space '
+                          'route declined it)')
+                continue
+            if getattr(cfn, 'ss_theta0_empty', False):
+                counts['pruned'] += 1
+                continue
+            try:
+                ray = sub.me_line(fb, fd, t_anchor, t_ref, tie)
+            except SS.SSIneligible as exc:
+                rs.append(f'a subset is not one matrix exponential on this '
+                          f'line ({exc.reason})')
+                continue
+            except SS._late_errors() as exc:
+                rs.append(f'the state-space route refused a subset '
+                          f'({SS._late_reason(exc)})')
+                continue
+            if ray is None:
+                counts['zero'] += 1
+                continue
+            w = complex(cfn.ss_prefactor) / comp
+            out.append(MEBlock(ray, w, sub.model.dtype, diagram_index, si,
+                               pidx))
+            counts['blocks'] += 1
 
 
-def slice_me(*_a, **_k):
-    """k >= 3 slices (placeholder; see the module docstring)."""
-    raise MEUnavailable('k >= 3 slices are not built yet')
+# ─── k >= 3: the slices of dd.run ───────────────────────────────────────────
+
+class SliceME:
+    """One k >= 3 slice of ``dd.run`` (leg ``j`` swept over τ, the other
+    non-anchor legs at their pinned times) as matrix-exponential triples,
+    one per CHAMBER of τ (an interval between the other legs' times, where
+    the order of the external times is fixed):
+    ``chambers = [(lo, hi, anchor, sigma, {ell: SideME})]``, ``C(τ) =
+    Σ_blocks c e^{G s} x0`` with ``s = sigma (τ − anchor) >= 0``.  The two
+    outer chambers (the swept leg first or last) have one moving segment and
+    are always built; a chamber where the swept leg lies between two legs
+    moves two segments and has no triple (``reasons``).  At a chamber
+    boundary the value is the left limit (``dd.run``'s convention)."""
+
+    def __init__(self, j, pinned, chambers, reasons, counts):
+        self.j = j
+        self.pinned = pinned
+        self.chambers = chambers
+        self.reasons = reasons           # {(lo, hi): {ell: [str]}}
+        self.counts = counts
+
+    def chamber_of(self, tau):
+        for ch in self.chambers:
+            lo, hi = ch[0], ch[1]
+            if lo < tau <= hi:
+                return ch
+        raise ValueError(f'tau={tau} is in no chamber')
+
+    def __call__(self, tau, ell=None):
+        """``C`` along the slice at the swept leg's times ``tau`` (array),
+        summed over ``ell``."""
+        tau = np.atleast_1d(np.asarray(tau, dtype=float))
+        out = np.zeros(tau.shape, dtype=complex)
+        for i, t in enumerate(tau):
+            lo, hi, a, sg, sides = self.chamber_of(float(t))
+            bad = {e: r for e, r in self.reasons[(lo, hi)].items() if r
+                   and (ell is None or e == ell)}
+            if bad:
+                raise MEUnavailable(f'chamber ({lo}, {hi}): ' + '; '.join(
+                    f'ell={e}: ' + '; '.join(r) for e, r in bad.items()))
+            ells = sorted(sides) if ell is None else [ell]
+            for e in ells:
+                out[i] += sides[e](np.array([sg * (t - a)]))[0]
+        return out
+
+    def modes(self, ell=None, **kw):
+        """``{(lo, hi): {ell: [ModeTerm]}}`` in the swept leg's time τ (the
+        side label is the chamber ``'(lo, hi)'``), for the chambers that
+        have triples."""
+        from api.cumulant import ModeTerm
+        out = {}
+        for lo, hi, a, sg, sides in self.chambers:
+            if any(self.reasons[(lo, hi)].values()):
+                continue
+            lab = f'({lo:g}, {hi:g})'
+            per = {}
+            for e in (sorted(sides) if ell is None else [ell]):
+                terms = []
+                for c, lam, n in sides[e].modes(**kw):
+                    # s = sg (τ − a): c s^n e^{λ s} expanded in τ
+                    for m in range(n + 1):
+                        cm = (c * sg ** n * math.comb(n, m) * (-a) ** (n - m)
+                              * np.exp(-lam * sg * a))
+                        if cm != 0:
+                            terms.append(ModeTerm(cm, lam * sg, m, lab))
+                per[e] = terms
+            out[(lo, hi)] = per
+        return out
+
+    def __repr__(self):
+        return (f'SliceME(j={self.j}, chambers='
+                f'{[(c[0], c[1]) for c in self.chambers]})')
+
+
+def slice_me(result, j=1, base=None, eps=None) -> SliceME:
+    """Triples of the k >= 3 slice ``j`` of a ``compute_cumulants`` /
+    ``dd.run`` result: leg ``j`` swept, the other non-anchor legs at
+    ``base`` (default: ``result['_kpoint_base']`` or 0; a base lag of 0 is
+    pinned at ``-eps``, the Itô left limit, as ``dd.run`` does)."""
+    from engine.integration.time_domain import final_integral as FI
+    cfg = result.get('config') or {}
+    k = int(cfg.get('k', 0))
+    if k < 3:
+        raise MEUnavailable('slice_me is for k >= 3 (k = 2: from_result)')
+    if not 1 <= j < k:
+        raise ValueError(f'slice index j={j} must be in 1..{k - 1}')
+    if eps is None:
+        from api.compute import _ITO_EPS as eps
+    if base is None:
+        base = result.get('_kpoint_base') or [0.0] * (k - 1)
+    base = [float(b) for b in base]
+    if len(base) != k - 1:
+        raise ValueError(f'base must have k-1 = {k - 1} entries')
+    pinned = {leg: (b if abs(b) > 1e-12 else -eps)
+              for leg, b in zip(range(1, k), base) if leg != j}
+    T0 = [0.0] * k
+    for leg, t in pinned.items():
+        T0[leg] = t
+    e = [0.0] * k
+    e[j] = 1.0
+    bounds = sorted(set([0.0] + list(pinned.values())))
+    cham = [(-math.inf, bounds[0], bounds[0], -1.0, bounds[0] - 1.0)]
+    for lo, hi in zip(bounds[:-1], bounds[1:]):
+        cham.append((lo, hi, lo, 1.0, 0.5 * (lo + hi)))
+    cham.append((bounds[-1], math.inf, bounds[-1], 1.0, bounds[-1] + 1.0))
+    pjs = result.get('phase_j_by_ell') or {}
+    if not pjs:
+        raise MEUnavailable('the result has no live Phase J closures')
+    if cfg.get('output', 'cumulant') not in (None, 'cumulant'):
+        raise MEUnavailable(f"output={cfg.get('output')!r}: triples are "
+                            f"built for the connected cumulant")
+    g_rs = _global_reasons(result, FI)
+    counts = {'blocks': 0, 'zero': 0, 'pole_route': 0, 'pruned': 0}
+    chambers, reasons = [], {}
+    for lo, hi, a, sg, t_ref in cham:
+        sides, rs_ch = {}, {}
+        for ell, pj in sorted(pjs.items()):
+            ell = int(ell)
+            rs, blocks = list(g_rs), []
+            for gi, g in enumerate(_groups_of(pj or {})):
+                fn = g.get('contribution')
+                if fn is None:
+                    continue
+                parts = getattr(fn, 'phase_j_parts', None)
+                if parts is None:
+                    rs.append('a contribution exposes no subset structure')
+                    continue
+                _line_blocks(parts, g.get('kernel_id', gi),
+                             (tuple(T0), tuple(e), a, t_ref), blocks, rs,
+                             counts, FI)
+            if pj and pj.get('skipped_kernel_ids'):
+                rs.append('diagrams failed in Phase J')
+            sides[ell] = SideME(f'({lo:g}, {hi:g})', blocks, ell)
+            rs_ch[ell] = sorted(set(rs))
+        chambers.append((lo, hi, a, sg, sides))
+        reasons[(lo, hi)] = rs_ch
+    return SliceME(j, pinned, chambers, reasons, counts)
+

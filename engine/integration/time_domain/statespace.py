@@ -1987,33 +1987,41 @@ class SubsetSS:
             errors[:] = err
         return out
 
-    # ── C0 output (S4): the subset on a ray as one matrix exponential ────
+    # ── C0 output (S4): the subset on a line as one matrix exponential ───
     def me_ray(self, free_unit, tie_ctx=None):
-        """The subset integral (WITHOUT prefactor) on the ray ``free_vals =
-        u * free_unit``, ``u > 0``, as a matrix-exponential triple (S4, item
-        C0)::
+        """:meth:`me_line` on the ray ``free_vals = u * free_unit``, ``u >
+        0`` (k = 2: the lag on one side of 0), anchored at ``u = 0``."""
+        n = len(free_unit)
+        return self.me_line([0.0] * n, free_unit, 0.0, 1.0, tie_ctx)
 
-            I(u) = const * prod_r g_r(beta_r u) * c . exp(G beta u) . x0
+    def me_line(self, free_base, free_dir, t_anchor, t_ref, tie_ctx=None):
+        """The subset integral (WITHOUT prefactor) on the line ``free_vals =
+        free_base + t * free_dir`` inside the chamber that contains
+        ``t_ref`` (an interval of ``t`` on which the order of the external
+        times does not change), as a matrix-exponential triple in ``s =
+        sigma (t - t_anchor) >= 0``, ``sigma = sign(t_ref - t_anchor)``
+        (S4, item C0)::
 
-        ``None`` when the integral vanishes on the whole ray (an empty
-        region, a zero entry, a constant row that is negative or EMPTY on
-        it); otherwise a dict with ``const`` (the constant rows that do not
-        move with ``u``, and a value without any segment), ``rows`` (``[(beta_r,
-        entry)]``: the constant rows ``g_r(t) = c_r e^{a_r t} b_r`` that move,
-        ``beta_r > 0``), ``seg`` (the last segment's ``_Segment``, or
-        ``None`` when no segment moves with ``u``), ``beta`` (its length per
-        unit ``u``), ``x0`` (the stacked state that enters it) and ``c`` (the
-        stacked contraction of the last external time: nonzero on the
-        full-downset block only).  ``G`` is ``seg.dense(dtype)[0]``.
+            I(s) = const * prod_r g_r(rho0_r + rho1_r s) * c . exp(G beta s) . x0
 
-        On a ray every slot value is ``alpha_s u``, so the order of the
-        external times is fixed and every segment length is proportional to
-        ``u``; with two distinct slot values (a k = 2 lag, a k >= 3 slice
-        whose swept leg is first or last) exactly one segment moves.  Raises
-        ``SSIneligible`` (``offset_row`` / ``offset_slot``: a row with a
-        constant offset; ``several_lags``: more than one segment moves;
-        ``finite_t_min``) when the ray is not of this form; the route's late
-        refusals (``SSLateRefusal``) propagate."""
+        ``None`` when the integral vanishes on the whole chamber (an empty
+        region, a zero entry, an EMPTY or negative constant row); otherwise a
+        dict with ``const`` (the constant rows that do not move, and the
+        value when nothing moves), ``rows`` (``[(rho0, rho1, entry)]``: the
+        constant rows ``g_r(t) = c_r e^{a_r t} b_r`` that move), ``seg``
+        (the moving segment's ``_Segment``, or ``None``), ``beta`` (its
+        length per unit ``s``), ``x0`` (the stacked state that enters it at
+        the anchor) and ``c`` (the stacked functional of everything after
+        it: the remaining events and fixed segments; for a last segment the
+        contraction of the last external time).  ``G`` is
+        ``seg.dense(dtype)[0]``.
+
+        Every slot value is affine in ``t``, the order of the external times
+        is fixed in the chamber, so every segment length is affine in
+        ``t``; exactly one may move (a k = 2 lag; a k >= 3 slice whose swept
+        leg is first or last).  Raises ``SSIneligible`` (``several_lags``:
+        more than one segment moves; ``finite_t_min``) otherwise; the
+        route's late refusals (``SSLateRefusal``) propagate."""
         FI = _FI()
         try:
             t_min = float(FI.PHASE_J_T_MIN)
@@ -2024,61 +2032,124 @@ class SubsetSS:
         if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
                 r[4].kind == 'zero' for r in self.const_rows):
             return None
-        fu = [float(x) for x in free_unit]
+        fb = [float(x) for x in free_base]
+        fd = [float(x) for x in free_dir]
+        t_anchor, t_ref = float(t_anchor), float(t_ref)
+        sigma = 1.0 if t_ref >= t_anchor else -1.0
+        f_ref = [b + t_ref * d for b, d in zip(fb, fd)]
         const = 1.0
         rows = []
         for (_idx, a_int, a_ext, c0, ent) in self.const_rows:
-            if float(c0) != 0.0:
-                raise SSIneligible('offset_row', f'c0={c0}')
-            if FI._const_row_verdict(a_int, a_ext, c0, fu, 'edge',
+            if FI._const_row_verdict(a_int, a_ext, c0, f_ref, 'edge',
                                      tie_ctx) == 'EMPTY':
                 return None
-            beta = sum(float(a) * f for a, f in zip(a_ext, fu))
-            if beta == 0.0:
-                const = const * ent.impulse(0.0)
-            elif beta > 0.0:
-                rows.append((beta, ent))
-            else:
-                return None
+            r0 = float(c0) + sum(float(a) * b for a, b in zip(a_ext, fb))
+            r1 = sum(float(a) * d for a, d in zip(a_ext, fd))
+            if r1 == 0.0:
+                const = const * ent.impulse(r0)
+                if const == 0:
+                    return None
+                continue
+            rho0, rho1 = r0 + r1 * t_anchor, r1 * sigma
+            if r0 + r1 * t_ref < 0 or rho0 < 0:
+                return None             # retarded: 0 on the whole chamber
+            rows.append((rho0, rho1, ent))
         out = {'const': const, 'rows': rows, 'seg': None, 'beta': 0.0,
                'x0': None, 'c': None}
         if self.m == 0:
             return out
-        vals = self._slot_values(fu)
-        if any(key[-1] != 0.0 for key in self.slots):
-            raise SSIneligible('offset_slot', 'a slot with a constant offset')
-        pattern, gv = self._pattern(vals)
+
+        def slot_vals(f):
+            return self._slot_values(f)
+        v_ref = slot_vals(f_ref)
+        v_base = slot_vals(fb)
+        v_dir = [vb2 - vb for vb, vb2 in zip(
+            v_base, slot_vals([b + d for b, d in zip(fb, fd)]))]
+        pattern, gv = self._pattern(v_ref)
+        if any(v_dir[s_] != v_dir[g[0]] for g in pattern for s_ in g):
+            raise SSIneligible('several_lags', 't_ref is on a chamber '
+                               'boundary (tied slots move apart)')
         prog = self._checked_program(pattern, False)
         if prog and prog[-1][0] == 'empty':
             return None
         segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
-        if not segs:
-            v = self._run(prog, gv, False, float('-inf'))
-            out['const'] = const * v
+        # slope of each segment's length (the groups' common slot values)
+        slope = []
+        for j in range(len(pattern) - 1):
+            slope.append(v_dir[pattern[j + 1][0]] - v_dir[pattern[j][0]])
+        moving = [q for q, sl_ in enumerate(slope) if sl_ != 0.0]
+        if not moving:
+            out['const'] = const * self._run(prog, gv, False, float('-inf'))
             return out
-        if len(segs) > 1:
-            raise SSIneligible('several_lags', f'{len(segs)} segments move')
-        i = segs[0]
-        if i != len(prog) - 2 or prog[-1][0] != 'event':
-            raise SSIneligible('several_lags', 'the moving segment is not the '
-                               'last one')
+        if len(moving) > 1:
+            raise SSIneligible('several_lags', f'{len(moving)} segments move')
+        q = moving[0]
+        i = segs[q]
         dt = self.model.dtype
-        x_before = self._run(prog, gv, False, float('-inf'), upto=i)
         seg = prog[i][1]
-        k = seg.index.get(self.full)
-        last = [f for I, f in prog[-1][1] if I == self.full]
-        if k is None or not last:
-            return None
-        f = last[0]
-        if f.starts or f.out:
-            raise SSIneligible('several_lags', 'edges open at the last time')
-        cten = np.einsum(*f.args, list(f.act_in)) if f.args else np.ones(
-            (), dtype=dt)
-        c = np.zeros(seg.D, dtype=np.result_type(cten, dt))
-        c[seg.offs[k]:seg.offs[k] + seg.sizes[k]] = np.ravel(cten)
-        out.update(seg=seg, beta=float(gv[1] - gv[0]),
-                   x0=seg.stack(x_before, dt), c=c)
+        # the moving segment's length at the anchor and its slope in s
+        L_anchor = (v_base[pattern[q + 1][0]] - v_base[pattern[q][0]]
+                    + slope[q] * t_anchor)
+        beta = slope[q] * sigma
+        if L_anchor < -1e-12 * max(1.0, abs(t_anchor)):
+            raise SSIneligible('several_lags', 'the chamber does not start '
+                               'at the anchor')
+        L_anchor = max(L_anchor, 0.0)
+        x_before = self._run(prog, gv, False, float('-inf'), upto=i)
+        x0 = seg.stack(x_before, dt)
+        if L_anchor > 0:
+            x0 = seg.action(x0, L_anchor, dt)
+        if i == len(prog) - 2 and prog[-1][0] == 'event':
+            k = seg.index.get(self.full)
+            last = [f for I, f in prog[-1][1] if I == self.full]
+            if k is None or not last:
+                return None
+            f = last[0]
+            if f.starts or f.out:
+                raise SSIneligible('several_lags', 'edges open at the last '
+                                   'time')
+            cten = (np.einsum(*f.args, list(f.act_in)) if f.args
+                    else np.ones((), dtype=dt))
+            c = np.zeros(seg.D, dtype=np.result_type(cten, dt))
+            c[seg.offs[k]:seg.offs[k] + seg.sizes[k]] = np.ravel(cten)
+        else:
+            c = self._downstream(prog, gv, i, seg, dt)
+        out.update(seg=seg, beta=float(beta), x0=x0, c=c)
         return out
+
+    def _downstream(self, prog, gv, i, seg, dt):
+        """The linear functional ``state after step i -> value`` of the rest
+        of a program (events and fixed segments), on ``seg``'s stacked
+        space: one run per basis vector."""
+        n_ev = sum(1 for k_, _d in prog[:i + 1] if k_ == 'event')
+        c = np.zeros(seg.D, dtype=complex)
+        for qb in range(seg.D):
+            e = np.zeros(seg.D, dtype=dt)
+            e[qb] = 1.0
+            x = seg.unstack(e)
+            j = n_ev
+            prev = gv[j - 1] if j else None
+            # the event closing the moving segment is at gv[j]
+            for kind, data in prog[i + 1:]:
+                if kind == 'seg':
+                    x = data.propagate(x, gv[j] - prev, dt)
+                elif kind == 'event':
+                    nx = {}
+                    for I, f in data:
+                        xI = x.get(I)
+                        if xI is not None:
+                            nx[I] = f(xI)
+                    x = nx
+                    prev = gv[j]
+                    j += 1
+                else:
+                    x = {}
+                    break
+            v = x.get(self.full)
+            c[qb] = 0.0 if v is None else v.item()
+        if np.isrealobj(np.zeros(0, dtype=dt)) and not np.any(c.imag):
+            c = c.real
+        return c
 
 
 # ─── τ-grid prefetch (batching through the per-point API) ─────────────────
