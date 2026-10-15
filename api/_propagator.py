@@ -1114,6 +1114,10 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             free_syms.update(SR(K_ft[i, j]).variables())
     free_syms.discard(omega)
     rich = nf >= 6 or len(free_syms) > 20
+    # api.delay's Pade copies: the numbers are substituted before inverting
+    # (the symbolic inverse of a Pade-n kernel matrix is the slow part and
+    # nothing downstream needs it)
+    rich = rich or bool(model.get('_numeric_first_propagator'))
 
     if not rich:
         # Wall-time budget for the entire symbolic SR matrix-inverse +

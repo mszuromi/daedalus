@@ -131,6 +131,10 @@ FINDING_CODES = {
     'G2_STABILITY_UNAVAILABLE':  ('G2', 'warning'),
     'G2_ASSERTION_VIOLATED':     ('G2', 'error'),
     'G2_SKIPPED':                ('G2', 'info'),
+    # G2-K (api._kernel_stability): stability with the true kernel images
+    'G2_KERNEL_STABILITY':       ('G2', 'info'),
+    'G2_KERNEL_UNSTABLE':        ('G2', 'warning'),   # rational-kernel models (never refused by it)
+    'G2_NEUTRAL_DELAY':          ('G2', 'error'),
     # G3 propagator
     'G3_UNRESOLVED_SYMBOLS':     ('G3', 'error'),
     'G3_NONRATIONAL_KERNEL':     ('G3', 'error'),
@@ -145,6 +149,9 @@ FINDING_CODES = {
     'G3_IMPROPER':               ('G3', 'error'),
     'G3_ACAUSAL_POLE':           ('G3', 'error'),
     'G3_SKIPPED':                ('G3', 'info'),
+    # delay kernels (api.delay): exp(-i omega d) factors, approximated by Pade
+    'G3_DELAY_KERNEL':           ('G3', 'info'),
+    'G3_DELAY_APPROXIMATED':     ('G3', 'info'),
     # G4 noise
     'G4_NO_NOISE':               ('G4', 'warning'),
     'G4_NON_GAUSSIAN':           ('G4', 'info'),
@@ -334,8 +341,14 @@ class ModelTraits:
     eigenvalues: tuple = ()               # finite linearization eigenvalues
     n_marginal_modes: Optional[int] = None
     # G3
-    propagator_class: Optional[str] = None  # 'rational' | 'non-rational' | 'spatial'
+    propagator_class: Optional[str] = None  # 'rational' | 'delay' | 'non-rational' | 'spatial'
     nonrational_factors: tuple = ()
+    #: the delays of the kernel images (exp(-i omega d) factors), by kernel
+    delays: tuple = ()
+    #: G2-K (stability with the true kernel images, ``api._kernel_stability``):
+    #: 'stable' | 'unstable' | 'marginal' | 'neutral' | 'acausal' | 'undetermined'
+    kernel_stability: Optional[str] = None
+    n_unstable_roots: Optional[int] = None
     n_poles: Optional[int] = None         # with multiplicity (degree of Q(omega))
     poles: tuple = ()                     # distinct roots of Q(omega)
     repeated_poles: Optional[bool] = None
@@ -711,6 +724,16 @@ def analyze(model: dict, question=None, policy=None, *,
     the action when one exists.  The cache is never written.  The
     expansion is the only expensive step (minutes for the heaviest tracked
     models when cold)."""
+    return analyze_with_context(model, question, policy, use_cache=use_cache)[0]
+
+
+def analyze_with_context(model: dict, question=None, policy=None, *,
+                         use_cache: bool = True):
+    """``analyze`` that also returns its internal state (``(report, ctx)``):
+    ``ctx.K_ft`` / ``ctx.omega`` (the linear operator with the true kernel
+    images), ``ctx.num_params`` (parameters and saddle), ``ctx.ring_names``
+    and the noise sectors.  Used by ``api.delay`` (the exact tree of a
+    delayed model)."""
     t_start = time.perf_counter()
     question = _coerce(question, Question, 'question')
     policy = _coerce(policy, Policy, 'policy')
@@ -739,7 +762,7 @@ def analyze(model: dict, question=None, policy=None, *,
     traits = ModelTraits(**{k: v for k, v in ctx.t.items() if k in known})
     return ModelReport(traits=traits, findings=tuple(findings),
                        ledger=tuple(ctx.ledger), question=question,
-                       policy=policy)
+                       policy=policy), ctx
 
 
 # ── G0: declarations ──────────────────────────────────────────────────
@@ -1743,6 +1766,101 @@ def _check_positivity(ctx):
 # ── G3: propagator ────────────────────────────────────────────────────
 
 
+def _has_kernel_dynamics(K_ft, omega):
+    """``True`` when an entry of ``K(omega)`` is more than ``c0 + c1 omega``
+    (a kernel image: a denominator in omega, or a delay factor)."""
+    from sage.all import SR
+    for e in K_ft.list():
+        e = SR(e)
+        if e.is_trivial_zero() or not e.has(omega):
+            continue
+        try:
+            if e.is_polynomial(omega) and e.degree(omega) <= 1:
+                continue
+        except Exception:
+            pass
+        return True
+    return False
+
+
+def _g2_kernel(ctx):
+    """G2-K: the saddle's stability from ``det K(s)`` with the true kernel
+    images (``api._kernel_stability``).  Runs for every model whose
+    ``K(omega)`` holds a kernel (G2's linearization collapses each kernel to
+    ``g_hat(0)``).  Delay models: an unstable / marginal / neutral saddle is an
+    error (``G2_UNSTABLE_SADDLE`` / ``G2_MARGINAL_MODE`` / ``G2_NEUTRAL_DELAY``).
+    Rational-kernel models: a warning (``G2_KERNEL_UNSTABLE``); their poles
+    are checked again by G3, which then names the instability
+    (``G2_UNSTABLE_SADDLE`` instead of ``G3_ACAUSAL_POLE``)."""
+    if (ctx.stop_numeric or ctx.K_ft is None or ctx.num_params is None
+            or ctx.t.get('spatial') or ctx.t.get('kernel_stability') is not None):
+        return
+    if ctx.t.get('propagator_class') not in ('rational', 'delay'):
+        return
+    if not _has_kernel_dynamics(ctx.K_ft, ctx.omega):
+        return
+    from api._kernel_stability import kernel_stability
+    try:
+        ks = kernel_stability(ctx.K_ft, ctx.omega, ctx.num_params)
+    except Exception as exc:
+        ks = None
+        why = _exc_text(exc)
+    delay = ctx.t.get('propagator_class') == 'delay'
+    if ks is None:
+        ctx.t['kernel_stability'] = 'undetermined'
+        ctx.add('G2_STABILITY_UNAVAILABLE',
+                f'kernel-aware stability (G2-K) not decided: {why}.',
+                'check the saddle by simulation')
+        return
+    ctx.t['kernel_stability'] = ks.status
+    ctx.t['kernel_stability_detail'] = ks.as_dict()
+    ctx.t['n_unstable_roots'] = ks.n_rhp
+    roots = ', '.join(f'{complex(r):.6g}' for r in ks.roots[:4])
+    what = ('the delay(s) ' + ', '.join(ctx.t.get('delays') or ())) if delay \
+        else 'the kernel(s)'
+    if ks.status == 'stable':
+        ctx.add('G2_KERNEL_STABILITY',
+                f'det K(s) with the true kernel images has no root with Re s >= 0 '
+                f'({ks.method}; {ks.detail}).', 'none needed')
+    elif ks.status in ('unstable', 'marginal'):
+        if delay:
+            ctx.t['stable'] = False
+            ctx.t['stability_source'] = 'characteristic_function'
+            code = 'G2_UNSTABLE_SADDLE' if ks.status == 'unstable' else 'G2_MARGINAL_MODE'
+            ctx.add(code,
+                    (f'the saddle is unstable through {what}: det K(s) has '
+                     f'{ks.n_rhp} root(s) with Re s > 0 ({ks.method}), at {roots}'
+                     if ks.status == 'unstable' else
+                     f'marginal mode through {what}: det K(s) has a root on the '
+                     f'imaginary axis at {roots} ({ks.method})')
+                    + ' (the mean-field linearization, which replaces each kernel by '
+                    'its integral, cannot see it).',
+                    'change the parameters to a stable regime (e.g. a shorter delay '
+                    'or a weaker delayed coupling)')
+        else:
+            ctx.add('G2_KERNEL_UNSTABLE',
+                    f'det K(s) with the true kernel images has {ks.n_rhp} root(s) '
+                    f'with Re s >= 0 at {roots} ({ks.method}): an instability '
+                    f'through {what} that the mean-field linearization (each kernel '
+                    'replaced by its integral) does not see.',
+                    'check the parameters; the G3 pole check names it as an '
+                    'instability if the propagator carries the mode')
+    elif ks.status == 'neutral':
+        if delay:
+            ctx.add('G2_NEUTRAL_DELAY',
+                    f'neutral delay system: {ks.detail}. Its stability cannot be '
+                    'decided from a bounded contour and the Pade route does not '
+                    'apply.', 'write the delayed term without a time derivative')
+        else:
+            ctx.add('G2_STABILITY_UNAVAILABLE',
+                    f'kernel-aware stability (G2-K) not decided: {ks.detail}.', '')
+    elif ks.status == 'undetermined':
+        ctx.add('G2_STABILITY_UNAVAILABLE',
+                f'kernel-aware stability (G2-K) not decided: {ks.detail}.',
+                'check the saddle by simulation')
+    # 'acausal': the G3 gate names it (G3_ACAUSAL_POLE)
+
+
 def _g3_propagator(ctx):
     if ctx.K_ft is None:
         return
@@ -1750,7 +1868,9 @@ def _g3_propagator(ctx):
         ctx.t['propagator_class'] = 'spatial'
         _g3_spatial(ctx)
         return
-    if not _g3_rational(ctx):
+    rational = _g3_rational(ctx)
+    _g2_kernel(ctx)
+    if not rational:
         return
     if ctx.stop_numeric or ctx.num_params is None:
         ctx.add('G3_SKIPPED', 'pole analysis skipped (no usable saddle).', '')
@@ -1789,12 +1909,39 @@ def _pc_kappa_max():
 
 def _g3_rational(ctx):
     """The propagator class: ``False`` (stop G3) when ``K(omega)`` is not
-    rational in omega."""
+    rational in omega.  Delay factors ``exp(-i omega d)`` (``api.delay``) are
+    recognised: the class is then ``'delay'`` (``compute_cumulants``
+    approximates them by Pade, the ledger records it; G2-K decides the
+    stability with the true exponential) and the pole analysis is skipped
+    (the poles of the exact propagator are infinitely many)."""
     omega = ctx.omega
     bad = []
     for e in ctx.K_ft.list():
         bad.extend(_offending_factors(e, [omega], allow_negative_powers=True))
     bad = list(dict.fromkeys(bad))
+    if bad:
+        from api.delay import delay_factors, pade_substitute
+        delays, rest = [], []
+        for e in ctx.K_ft.list():
+            delays.extend(delay_factors(e, omega))
+            rest.extend(_offending_factors(pade_substitute(e, omega, 1), [omega],
+                                           allow_negative_powers=True))
+        if delays and not rest:
+            ds = list(dict.fromkeys(str(x) for x in delays))
+            ctx.t['propagator_class'] = 'delay'
+            ctx.t['delays'] = tuple(ds)
+            ctx.add('G3_DELAY_KERNEL',
+                    f'delay kernel(s): K(omega) carries exp(-i omega d) for d in '
+                    f'{ds}. compute_cumulants approximates the delay by its Pade '
+                    '(n, n) approximant with an automatic order (loops) and takes '
+                    'the tree from the exact delayed covariance (k = 2); the '
+                    'stability is decided with the true exponential (G2-K).',
+                    "none needed (delay={'order': n} fixes the order)")
+            ctx.ledger_add('approximation', 'delay',
+                           f'Pade (n, n) of exp(-i omega d), d in {ds}, order chosen '
+                           'by doubling (result["delay"]); tree exact for k = 2',
+                           declared=True)
+            return False
     if bad:
         ctx.t['propagator_class'] = 'non-rational'
         ctx.t['nonrational_factors'] = tuple(bad[:6])
@@ -1942,6 +2089,17 @@ def _g3_pole_findings(ctx, res):
     marginal = [p for p in poles if abs(p.imag) <= tol]
     ctx.t['causal'] = not lower and not marginal
     if ctx.stability_known:
+        if (lower or marginal) and ctx.t.get('kernel_stability') in ('unstable', 'marginal'):
+            ctx.t['stable'] = False
+            ctx.t['stability_source'] = 'characteristic_function'
+            ctx.add('G2_UNSTABLE_SADDLE' if lower else 'G2_MARGINAL_MODE',
+                    f'the saddle is {"unstable" if lower else "marginal"} through '
+                    f'its kernel(s): propagator pole(s) {lower + marginal} '
+                    f'{"below" if lower else "on"} the real axis, the zeros of '
+                    'det K(s) found by G2-K (the mean-field linearization, which '
+                    'replaces each kernel by its integral, cannot see them).',
+                    'change the parameters to a stable regime')
+            return
         if lower or marginal:
             ctx.add('G3_ACAUSAL_POLE',
                     f'poles on or below the real axis {lower + marginal} '
@@ -2952,6 +3110,9 @@ class Preflight:
             if ctx.t.get('spatial') and ctx.K_ft is not None:
                 _g3_spatial(ctx)
 
+        def g2k():
+            _g2_kernel(ctx)
+
         def g4():
             _g4_noise(ctx)
 
@@ -2961,7 +3122,7 @@ class Preflight:
         def ledger():
             _ledger_common(ctx)
 
-        self._check('mean_field', [g2, g3s, g4, g1_driven, ledger])
+        self._check('mean_field', [g2, g3s, g2k, g4, g1_driven, ledger])
 
     def failed(self, stage, exc):
         """A pipeline stage (``'expanded'``: the expansion and its saddle

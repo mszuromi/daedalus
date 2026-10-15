@@ -795,6 +795,7 @@ def compute_cumulants(
     preflight: bool = None,          # the analyzer gates (default on; DAEDALUS_PREFLIGHT=0 turns them off)
     backend: str = None,             # an explicit backend name (api.routing); None = the router picks
     accuracy: float = None,          # target relative accuracy (G6 threshold; default 1e-10)
+    delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -906,6 +907,16 @@ def compute_cumulants(
         Target relative accuracy for the G6 total-relative accuracy check
         (``Question.accuracy``; default ``1e-10``, the per-subset acceptance
         of the Phase J routes).
+    delay : dict or None
+        Options for models with delay kernels (``exp(-i omega d)`` factors in
+        a kernel image; see :mod:`api.delay`): ``order`` (``'auto'`` or a
+        fixed Pade order ``n``), ``tol`` (target relative accuracy of the
+        observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
+        default 4 / 32), ``wall_max`` (cap in s on the predicted wall time of
+        the next order, default 900), ``tree`` (``'exact'``, default: the
+        k = 2 tree from the exact delayed covariance; ``'pade'``).  Ignored
+        for models without delays.  The result then carries
+        ``result['delay']``.
 
     Returns
     -------
@@ -969,6 +980,9 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
     """
+    # the call as given (a model with delay kernels is handed to api.delay,
+    # which re-enters compute_cumulants with Pade-approximated copies)
+    _delay_call = dict(locals())
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
@@ -1116,6 +1130,13 @@ def compute_cumulants(
         raise
     if _pf is not None:
         _pf.expanded(ft)                  # G1: species, unpaired fields
+
+    # ── 1b. Delay kernels: exp(-i omega d) in a kernel image (api.delay) ──
+    if not model.get('_delay_pade') and model.get('kernel_ft_image') is not None:
+        from api import delay as _delay
+        _delays = _delay.kernel_delays(model, ft._ns)
+        if _delays:
+            return _delay.compute_delayed(model, _delay_call, _delays)
 
     vtypes = extract_vertex_types(ft)
     stypes = extract_source_types(ft)
