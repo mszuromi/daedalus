@@ -610,6 +610,10 @@ def tree_covariance_from_result(result: dict, *, model: dict,
     ``result['num_params']``; ``'solve'`` and dicts behave as in
     :func:`tree_covariance`."""
     _reject_spatial(model)
+    if isinstance(result, dict) and result.get('t_min') is not None:
+        raise SymbolicOutError(
+            'a switch-on result (t_min) is not stationary: the symbolic tree '
+            'covariance describes the stationary state')
     prop = result.get('propagator') if isinstance(result, dict) else None
     if prop is None or prop.get('K_ft') is None:
         raise SymbolicOutError(

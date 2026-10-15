@@ -11,6 +11,49 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: switch-on transients (non-stationary stage 1)
+
+`compute_cumulants(..., t_min=T, times=...)` (and `dd.Config(t_min=..., times=...)`) computes the cumulants of a
+**switch-on transient**: the fluctuations about the selected mean-field saddle start at zero at the absolute time
+`T` and relax towards the stationary state.  Every vertex-time integral then has the lower bound `T`, and the
+cumulant is a function of the absolute external times.  Without `t_min` nothing changes: stationary runs are
+bit-identical to main on the tracked zoo (11 entries, k = 1, 2, 3, ℓ ≤ 2).
+
+- **Engine.** The state-space Phase J route starts its sweep at `T` from the empty state; its first segment, `T` to
+  the first external time, is a finite matrix exponential in place of the stationary resolvents.  Only this route is
+  used: `statespace.switch_on_scope(T)` (a thread-local bound read by the route; `final_integral.PHASE_J_T_MIN` is not
+  touched, so a stationary evaluation in another thread is unaffected) turns every subset the route declines, and
+  every call-time refusal that would fall back on the pole engine, into `SwitchOnUnsupported` (a `ValueError`).
+  `DAEDALUS_PHASE_J_ENGINE=poles`, a noise-kernel box (a kernel the model builder could not Markov-embed), a
+  pole-cluster deformation the route cannot bypass, delay kernels (`api.delay`), spatial models, the grouped
+  integrator, δ components, `tau_grid` and `output_npz`/`output_csv` are refused with a message, and so are
+  `save_npz`/`save_csv`, `dd.cumulant`, `me_output.from_result`/`slice_me`, `dd.plot_cumulant`,
+  `generate_report` and `tree_covariance_from_result` of a switch-on result.
+- **Times.** `times` is `(n, k)` (absolute times of the k legs) or 1-D (every leg at `t`: the equal-time cumulant;
+  `dd.Config` also takes an `(lo, hi, n)` tuple).  Every time must be `>= t_min`.  Equal times are exact ties on the
+  state-space route (no Itô nudge; the stationary `C_tau` keeps its τ = 0⁻ sample).  The result holds `times`,
+  `C_times`, `C_times_by_ell`, `t_min` and `nonstationary` (the record of the question); `C_tau`, `C_tau_by_ell`
+  and `tau_grid` are `None`; `total_C` / `total_C_by_ell` and the closures kept in `phase_j_by_ell` take absolute
+  times.
+- **Convention for embedded noise.** A noise kernel that the model builder Markov-embedded (an auxiliary field, e.g.
+  an exponential CGF kernel) starts at zero too, so the noise is switched on with the system
+  (`result['nonstationary']['embedded_noise_states']`; the same numbers as writing the embedding by hand).
+- **Initial-state term (tree level).** `initial_covariance=C0` (k = 2) adds `R(t1 - T) C0 R(t2 - T)^T`, with `R`
+  the response from the model's realization: `C0` enters like a noise vertex at `T`, so this is the whole k = 2 tree
+  term of a Gaussian initial state.  `max_ell >= 1` with it raises (loops need an initial-state vertex), and the
+  model's response at `0+` must be the identity (a first-order model whose response index r is the equation of
+  physical field r).  A deterministic initial offset of the mean is not offered: its tree is the full nonlinear
+  relaxation (a time-dependent saddle, stage 2).
+- **Analyzer.** The ledger's `stationary_state` line is replaced by `switch_on_state`; G6 sizes its accuracy estimate
+  on `C_times`.
+- **Validation** (`tests/test_switch_on_transients.py`, inline models): OU tree vs the closed-form time-dependent
+  Lyapunov solution, ≤ 1e-13 (measured ~3e-16); OU + εx³ one loop, quadratic drift (k = 1 mean, k = 2, k = 3 tree and
+  one loop), colored OU (Markov embedded, all leg pairs) and a non-reciprocal two-field model vs the exact multi-time
+  moment hierarchy of the Itô generator (`tests/_ito_moments.py` with frozen coordinates for the earlier times),
+  ≤ 1e-10 (measured ≤ 2e-15); the initial-covariance term vs the closed form; `t_min = -80` vs the stationary run
+  ≤ 1e-13; t1 = t2 = t_min gives exactly 0; thread safety (callables from 8 threads next to a stationary
+  evaluation).
+
 #### Added: delay kernels (Padé loops with an automatic order, exact tree, kernel-aware stability, delay simulator)
 
 A kernel image with a factor `exp(-I*omega*d)` (`d > 0`) is a delay kernel. Before, the analyzer stopped such a

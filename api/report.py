@@ -496,6 +496,10 @@ def generate_report(
         fundamental = parameters
     if output_pdf is None:
         raise ValueError('generate_report needs output_pdf=.')
+    if isinstance(result, dict) and result.get('t_min') is not None:
+        raise NotImplementedError(
+            'generate_report: a switch-on result (t_min) is a function of the '
+            "absolute times; plot result['C_times'] against result['times']")
     if result is None:
         if fundamental is None:
             raise ValueError(

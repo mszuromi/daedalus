@@ -865,6 +865,15 @@ def _global_reasons(result, FI):
     return out
 
 
+def _refuse_switch_on(result):
+    """A switch-on result (``t_min``) is a function of the absolute times,
+    not of a lag: no triples (its closures would give stationary ones)."""
+    if isinstance(result, dict) and result.get('t_min') is not None:
+        raise MEUnavailable(
+            "a switch-on result (t_min) has no lag-axis triples: use "
+            "result['C_times'] / result['total_C'] (absolute times)")
+
+
 def from_result(result) -> CumulantME:
     """Build the triples of a k = 2 ``compute_cumulants`` / ``dd.run``
     result from its live Phase J closures (nothing is integrated again: the
@@ -874,6 +883,7 @@ def from_result(result) -> CumulantME:
     ``reasons``."""
     from engine.integration.time_domain import final_integral as FI
     cfg = result.get('config') or {}
+    _refuse_switch_on(result)
     k = int(cfg.get('k', 0))
     if k != 2:
         raise MEUnavailable(f'triples on the lag axis are defined for k = 2 '
@@ -1073,6 +1083,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     pinned at ``-eps``, the Itô left limit, as ``dd.run`` does)."""
     from engine.integration.time_domain import final_integral as FI
     cfg = result.get('config') or {}
+    _refuse_switch_on(result)
     k = int(cfg.get('k', 0))
     if k < 3:
         raise MEUnavailable('slice_me is for k >= 3 (k = 2: from_result)')

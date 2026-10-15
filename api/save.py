@@ -616,6 +616,10 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     str
         The output path (echoed for convenience).
     """
+    if isinstance(result, dict) and result.get('t_min') is not None:
+        raise NotImplementedError(
+            'a switch-on result (t_min) is not saved yet: save '
+            "result['times'] and result['C_times'] instead")
     path = _sanitize_output_path(path)
 
     cfg     = result['config']
@@ -766,6 +770,10 @@ def save_csv(result: dict, path: str) -> str:
     str
         The output path.
     """
+    if isinstance(result, dict) and result.get('t_min') is not None:
+        raise NotImplementedError(
+            'a switch-on result (t_min) is not saved yet: save '
+            "result['times'] and result['C_times'] instead")
     path = _sanitize_output_path(path)
 
     cfg     = result['config']
