@@ -424,5 +424,7 @@ def test_graded_pade24_realization_falls_back_to_the_pole_route(monkeypatch):
         rp = compute_cumulants(m, **kw)
     assert r['analysis'].has('G6_SS_ILL_CONDITIONED')
     assert 'realization_ill_conditioned' in r['phase_j_engine']['ss_declined_by_reason']
+    led = [e for e in r['analysis'].ledger if e.name == 'realization_conditioning']
+    assert led and led[0].satisfied is False
     assert np.allclose(np.real(r['C_tau']), np.real(rp['C_tau']), rtol=1e-12)
     assert np.max(np.abs(r['C_tau'])) < 1.0          # (1e13 before the check)

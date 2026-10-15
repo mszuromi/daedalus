@@ -3332,6 +3332,10 @@ def _g6_engine(ctx, d, result, c):
                 f'model): {n_dec} subset(s) used the pole routes instead.',
                 'see result["phase_j_engine"]; the pole route\'s accuracy is '
                 'reported by G6_ACCURACY')
+        ctx.ledger_add('assertion', 'realization_conditioning',
+                       'the state-space realization failed its a posteriori check '
+                       '(api._realization: graded beyond double precision); the pole '
+                       f'routes took {n_dec} subset(s)', satisfied=False)
     if rep.get('covers_run') and n_dec:
         pc = result.get('pole_clusters') if isinstance(result, dict) else None
         ctx.add('G6_SS_PARTIAL',
