@@ -1019,6 +1019,7 @@ def compute_cumulants(
     t_min: float = None,             # switch-on transients: fluctuations start at 0 at this absolute time
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
+    delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1167,6 +1168,16 @@ def compute_cumulants(
         Needs a first-order model whose response at ``0+`` is the identity.
         (A deterministic initial offset of the mean is not offered: its tree
         is the full nonlinear relaxation, a time-dependent saddle.)
+    delay : dict or None
+        Options for models with delay kernels (``exp(-i omega d)`` factors in
+        a kernel image; see :mod:`api.delay`): ``order`` (``'auto'`` or a
+        fixed Pade order ``n``), ``tol`` (target relative accuracy of the
+        observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
+        default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
+        the next order, default 900), ``tree`` (``'exact'``, default: the
+        k = 2 tree from the exact delayed covariance; ``'pade'``).  Ignored
+        for models without delays.  The result then carries
+        ``result['delay']``.
 
     Returns
     -------
@@ -1241,6 +1252,9 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
     """
+    # the call as given (a model with delay kernels is handed to api.delay,
+    # which re-enters compute_cumulants with Pade-approximated copies)
+    _delay_call = dict(locals())
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
@@ -1394,6 +1408,20 @@ def compute_cumulants(
         raise
     if _pf is not None:
         _pf.expanded(ft)                  # G1: species, unpaired fields
+
+    # ── 1b. Delay kernels: exp(-i omega d) in a kernel image (api.delay) ──
+    if not model.get('_delay_pade') and model.get('kernel_ft_image') is not None:
+        from api import delay as _delay
+        _delays = _delay.kernel_delays(model, ft._ns)
+        if _delays and switch_on is not None:
+            # the delay driver's exact tree and its Pade-order search are
+            # stationary (item 44: not combined yet)
+            from engine.integration.time_domain import statespace as _ss_dl
+            raise _ss_dl.SwitchOnUnsupported(
+                'delay_kernels', 'models with delay kernels (api.delay) are '
+                'computed for the stationary state only')
+        if _delays:
+            return _delay.compute_delayed(model, _delay_call, _delays)
 
     vtypes = extract_vertex_types(ft)
     stypes = extract_source_types(ft)

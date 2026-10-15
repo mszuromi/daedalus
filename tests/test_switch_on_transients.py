@@ -506,6 +506,19 @@ def test_non_markov_noise_kernel_refuses_t_min():
     assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
 
 
+def test_delay_kernel_model_refuses_t_min():
+    """The delay driver (api.delay: exact stationary tree, Pade-order search) is stationary: refused."""
+    from api.noise import Gaussian
+    from api.sde import SDE
+    model = (SDE('delayed OU (switch-on)').parameter('a', default=1.0).parameter('c', default=-0.5)
+             .parameter('d', default=0.5, domain='positive').parameter('D', default=0.1).field('x')
+             .drift('x', '-a*x + c*x(t - d)')
+             .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    with pytest.raises(SS.SwitchOnUnsupported, match='delay'):
+        AC.compute_cumulants(model, k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], t_min=0.0,
+                             times=[[1.0, 1.0]], use_cache=False, parallel=False, verbose=False)
+
+
 @pytest.mark.parametrize('kw, exc, match', [
     (dict(t_min=0.0, times=[[1.0, -0.5]]), ValueError, 'after|>= t_min'),
     (dict(t_min=0.0), ValueError, 'needs times'),

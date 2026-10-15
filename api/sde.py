@@ -157,12 +157,31 @@ class SDE:
 
     def define_kernel(self, name: str, *, time_expr: Optional[str] = None,
                       freq_image: Optional[str] = None, latex_name: str = '',
-                      indexed=False, indexed_by: Optional[list] = None):
+                      indexed=False, indexed_by: Optional[list] = None,
+                      delay: Optional[str] = None, kernel=None):
+        """A convolution kernel ``Conv(name, x)`` (see
+        :meth:`api.model.TemporalModelBuilder.define_kernel`): ``time_expr`` or
+        ``freq_image``, optionally delayed by ``delay`` (``g(t - d)``; the hard
+        delay ``delta(t - d)`` alone), or ``kernel=Kernel.delay('d') *
+        Kernel.exponential('tau')`` (:class:`api.delay.Kernel`)."""
+        if kernel is not None:
+            if time_expr is not None or freq_image is not None or delay is not None:
+                raise SDEError(f'define_kernel({name!r}): give kernel= alone.')
+            freq_image, delay = kernel.freq_image, kernel.delay
+        if time_expr is not None and delay is None:
+            from api.delay import split_shifted_time_expr
+            sh = split_shifted_time_expr(str(time_expr))
+            if sh is not None:
+                delay, time_expr = sh
+        if delay is not None and time_expr is None and freq_image is None:
+            freq_image = '1'
         if time_expr is None and freq_image is None:
-            raise SDEError(f'define_kernel({name!r}): give time_expr= or freq_image=.')
+            raise SDEError(f'define_kernel({name!r}): give time_expr=, freq_image= '
+                           f'or delay=.')
         self._kernels[name] = dict(time_expr=time_expr, freq_image=freq_image,
                                    latex_name=latex_name, indexed=indexed,
-                                   indexed_by=indexed_by)
+                                   indexed_by=indexed_by,
+                                   delay=None if delay is None else str(delay))
         return self
 
     def stability_analysis(self, enabled: bool):
@@ -188,11 +207,58 @@ class SDE:
                            f'derivative Dt (a dynamical equation).')
         if re.search(r'\bDt\b', rhs):
             raise SDEError(f'equation({field!r}): Dt found in rhs; it belongs on the lhs.')
+        rhs = self._delayed_fields(rhs, field)
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
             raise SDEError(f'equation({field!r}): explicit time t is not supported '
-                           f'(time-independent dynamics only).')
+                           f'(time-independent dynamics only; a delayed field is '
+                           f'written x(t - d)).')
         self._eqs[field] = {'lhs': lhs, 'rhs': rhs}
         return self
+
+    def _delayed_fields(self, text: str, where: str) -> str:
+        """``x(t - d)`` (``x`` a declared field, ``d`` a parameter expression)
+        -> ``Conv(delay_<d>, x)`` with the hard-delay kernel ``delay_<d>``
+        declared on the fly (:mod:`api.delay`)."""
+        if not self._fields:
+            return text
+        names = '|'.join(re.escape(f) for f in sorted(self._fields, key=len, reverse=True))
+        ind = re.search(rf'\b({names})\s*\[[^\]]*\]\s*\(\s*t\b', text)
+        if ind:
+            raise SDEError(f'equation({where!r}): an indexed delayed field '
+                           f'{text[ind.start():ind.end()]}...) is not supported; write '
+                           f"Conv(K, {ind.group(1)}[...]) with define_kernel('K', delay='d').")
+        pat = re.compile(rf'\b({names})\s*\(\s*t\s*-\s*')
+        out, pos = '', 0
+        while True:
+            m = pat.search(text, pos)
+            if not m:
+                break
+            depth, k = 1, m.end()
+            while depth and k < len(text):
+                depth += {'(': 1, ')': -1}.get(text[k], 0)
+                k += 1
+            if depth:
+                raise SDEError(f'equation({where!r}): unbalanced parentheses in '
+                               f'{text[m.start():]!r}.')
+            dexpr = text[m.end():k - 1].strip()
+            if not dexpr or re.search(r'\bt\b', dexpr):
+                raise SDEError(f'equation({where!r}): cannot read the delay in '
+                               f'{text[m.start():k]!r} (write x(t - d), d free of t).')
+            self._check_text(dexpr, f'equation({where!r}) delay {dexpr!r}')
+            kname = 'delay_' + (re.sub(r'\W+', '_', dexpr).strip('_') or 'd')
+            have = self._kernels.get(kname)
+            if have is None:
+                if kname in self._allowed_names():
+                    raise SDEError(f'equation({where!r}): the delay kernel name '
+                                   f'{kname!r} is taken; declare the kernel with '
+                                   f"define_kernel(..., delay={dexpr!r}).")
+                self.define_kernel(kname, delay=dexpr)
+            elif have.get('delay') != dexpr or have.get('freq_image') != '1':
+                raise SDEError(f'equation({where!r}): kernel {kname!r} exists and is '
+                               f'not the delay {dexpr!r}.')
+            out += text[pos:m.start()] + f'Conv({kname}, {m.group(1)})'
+            pos = k
+        return out + text[pos:]
 
     def drift(self, field: str, f: str):
         """Shorthand for ``equation(field, lhs='Dt*field', rhs=f)``."""

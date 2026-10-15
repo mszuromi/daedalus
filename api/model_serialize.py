@@ -225,6 +225,7 @@ def _emit_kernel(k: dict) -> str:
         ('description', k.get('description')),
         ('indexed_by',  list(indexed_by) if indexed_by else None),
         ('indexed',     indexed_value),
+        ('delay',       k.get('delay')),
     )
     head = f'.define_kernel({_py_repr(k["name"])}'
     return head + (', ' + kwargs if kwargs else '') + ')'
@@ -736,7 +737,8 @@ def load_spec_from_file(path: str) -> dict:
         elif method == 'define_kernel':
             entry = {'name': args[0] if args else ''}
             for k in ('time_expr', 'freq_image', 'latex_name',
-                      'sage_name', 'description', 'indexed_by', 'indexed'):
+                      'sage_name', 'description', 'indexed_by', 'indexed',
+                      'delay'):
                 if k in kw:
                     entry[k] = kw[k]
             spec['kernels'].append(entry)

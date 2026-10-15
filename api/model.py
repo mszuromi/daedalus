@@ -347,7 +347,8 @@ class _TemporalMethods:
                       freq_image: str = None, latex_name: str = '',
                       sage_name: str = '', description: str = '',
                       indexed=False,
-                      indexed_by: Optional[list] = None):
+                      indexed_by: Optional[list] = None,
+                      delay: str = None, kernel=None):
         """Declare a convolution kernel via either its time-domain
         expression OR its frequency image (or both).
 
@@ -377,13 +378,42 @@ class _TemporalMethods:
             propagator builder substitutes each with its own
             frequency image evaluated at the corresponding ``i`` / ``j``.
 
+        delay : str, optional
+            A delay ``d`` (parameter name or expression, ``d > 0``): the kernel
+            is ``g(t - d)``, its image ``exp(-I*omega*d)`` times the image of
+            ``time_expr`` / ``freq_image`` (the hard delay ``delta(t - d)``
+            when neither is given).  ``compute_cumulants`` approximates the
+            delay by Pade (n, n) with an automatic order and records it
+            (:mod:`api.delay`).  A ``time_expr`` shifted by a delay
+            (``dirac_delta(t - d)``, ``heaviside(t - d)*exp(-(t - d)/tau)/tau``)
+            is recognised the same way.
+        kernel : api.delay.Kernel, optional
+            ``Kernel.delay('d')``, ``Kernel.exponential('tau')``,
+            ``Kernel.gamma(n, 'mean')``, ``Kernel.image('...')`` and their
+            products, instead of ``freq_image`` / ``delay``.
+
         The kernel is also registered as a regular ``kernel(...)``
         symbol for the MSR-JD framework's name resolution.
         """
+        if kernel is not None:
+            if freq_image is not None or time_expr is not None or delay is not None:
+                raise ValueError(f"define_kernel({name!r}): give kernel= alone (it "
+                                 f"carries the image and the delay)")
+            freq_image = kernel.freq_image
+            delay = kernel.delay
+        if time_expr is not None and delay is None:
+            from api.delay import split_shifted_time_expr
+            sh = split_shifted_time_expr(str(time_expr))
+            if sh is not None:
+                delay, time_expr = sh
+        if delay is not None:
+            delay = str(delay)
+            if time_expr is None and freq_image is None:
+                freq_image = '1'              # the hard delay delta(t - d)
         if time_expr is None and freq_image is None:
             raise ValueError(
                 f"define_kernel({name!r}): supply at least one of "
-                f"time_expr= or freq_image=")
+                f"time_expr= or freq_image= (or delay=)")
         # Register the kernel symbol with the regular .kernel() call.
         # ``indexed_by`` (when given) takes precedence over ``indexed=``.
         if not any(k.name == name for k in self.kernels):
@@ -399,6 +429,10 @@ class _TemporalMethods:
         }
         if indexed_by is not None:
             spec['indexed_by'] = list(indexed_by)
+        if delay is not None:
+            # the image above is the undelayed one; build() multiplies the
+            # kernel's frequency image by exp(-I*omega*delay)
+            spec['delay'] = delay
         self._kernel_specs.append(spec)
         return self
 
@@ -1562,6 +1596,7 @@ class _BaseModelBuilder:
                            tuple(f.get('args') or ()))
                           for f in (self._function_specs or [])],
             'kernels':   [(k.get('name'), k.get('time_expr'), k.get('freq_image'))
+                          + ((k['delay'],) if k.get('delay') else ())
                           for k in (self._kernel_specs or [])],
             'cgf':       [str(c) for c in (self._cgf_terms or [])],
             'fields':    [(f.name, getattr(f, 'population', None),
@@ -1796,6 +1831,15 @@ class _BaseModelBuilder:
                 positive_params = {p.name for p in self.parameters
                                    if p.domain == 'positive'},
             )
+            _hook_delays = {k['name']: k['delay'] for k in self._kernel_specs
+                            if k.get('delay')}
+            if _hook_delays:
+                from api.delay import wrap_hook_with_delays
+                self._kernel_ft_image = wrap_hook_with_delays(
+                    self._kernel_ft_image, _hook_delays, param_names)
+            # the declarations, for api.delay.kernel_delays (a cheap text check
+            # instead of evaluating the hook for models without a delay)
+            self._kernel_ft_image._kernel_specs = [dict(k) for k in self._kernel_specs]
             # Time-domain images — same kernel specs, but evaluated
             # in ``t`` rather than ``omega``.  Used by the Phase J
             # integrator to substitute conductance-vertex kernels at
