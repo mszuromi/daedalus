@@ -325,3 +325,19 @@ def test_exports():
                  'SymbolicTriple', 'SymbolicLoopRefused'):
         assert getattr(dd, name) is getattr(SL, name), name
         assert getattr(so, name) is getattr(SL, name), name
+
+
+def test_correlated_noise_two_fields_and_square_roots():
+    """Two coupled fields with correlated noise: rational in the couplings
+    and the correlation; the noise amplitude enters as sqrt(D1 D2), refused
+    by name (with the parameters to keep numeric) when D1, D2 are symbolic."""
+    m = dd.load_model('ou_quartic_two_dim_corr')[0]
+    ext = [('dx', 1), ('dy', 1)]
+    res = _cc(m, 2, 1, ext)
+    r = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res,
+                             symbols=['J1', 'J2', 'rho'])
+    assert max(r.check().values()) <= 1e-12
+    with pytest.raises(SL.SymbolicLoopRefused) as e:
+        SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
+    assert e.value.reason == 'non_rational'
+    assert 'non-integer powers' in str(e.value) and 'D1' in str(e.value)

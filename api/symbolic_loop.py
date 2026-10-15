@@ -207,10 +207,15 @@ class _Field:
             return self.F(self.R(num.polynomial(ring=self.R))) / \
                 self.F(self.R(den.polynomial(ring=self.R)))
         except Exception as exc:
+            roots = sorted({str(v) for p_ in _non_integer_powers(e)
+                            for v in p_.variables()})
+            hint = (f'; non-integer powers of {roots}: keep them numeric '
+                    f'(symbols=) or reparametrize the model (e.g. D = s^2)'
+                    if roots else '')
             raise SymbolicLoopRefused(
                 'non_rational', f'{what} {str(e)[:120]} is not a rational '
                 f'function of {list(self.names)} ({type(exc).__name__}: '
-                f'{str(exc)[:100]})') from exc
+                f'{str(exc)[:100]}){hint}') from exc
 
     def to_sr(self, x):
         S = _sage()
@@ -265,6 +270,27 @@ def _rational_value(v, is_saddle=False):
         tol = SADDLE_ATOL * max(1.0, abs(x))
         q = S.RIF(x - tol, x + tol).simplest_rational()
     return q
+
+
+def _non_integer_powers(e):
+    """The sub-expressions ``b^q`` of ``e`` with a non-integer exponent
+    (``sqrt(D1)``)."""
+    S = _sage()
+    out = []
+    try:
+        op = e.operator()
+    except Exception:
+        return out
+    if op is not None and getattr(op, '__name__', '') == 'pow':
+        b, q = e.operands()
+        try:
+            if not S.SR(q).is_integer():
+                out.append(b)
+        except Exception:
+            out.append(b)
+    for o in (e.operands() if op is not None else []):
+        out += _non_integer_powers(o)
+    return out
 
 
 def _exactify_simple(e):
