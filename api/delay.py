@@ -457,7 +457,10 @@ def resolve_options(opts) -> dict:
     o['tol'] = float(o['tol'])
     o['wall_max'] = float(o['wall_max'])
     if o['truncation'] != 'auto':
-        t = float(o['truncation'])
+        try:
+            t = float(o['truncation'])
+        except (TypeError, ValueError):
+            t = float('nan')
         if not (t >= 0.0 and np.isfinite(t)):
             raise ValueError(f"delay truncation must be 'auto' or a tolerance >= 0, "
                              f"got {o['truncation']!r}")
@@ -531,20 +534,25 @@ TRUNCATION_KAPPA = 1e-2
 TRUNCATION_MAX = 1e-4
 
 
-def _next_truncation(opts, t_base, r, k, n, m, est, ctrl):
-    """The truncation tolerance of order ``m`` after order ``n`` ran (result
-    ``r``).  A fixed ``delay={'truncation': t}`` (or the exact setting,
-    ``t_base = 0``) is kept.  Otherwise ``max(t_base, min(TRUNCATION_MAX,
-    TRUNCATION_KAPPA * e_m))`` with ``e_m`` the smaller of two conservative
-    predictions of the relative loop error of order ``m`` (in units of
-    ``max |C|``, as the order estimate): the exact-vs-Pade tree of order
-    ``n`` times the loops' share of ``max |C|``, and the doubling estimate of
-    order ``n`` (which measures order ``n / 2``), each scaled by the loops'
-    ``n^-3`` decay (item 29; the faster the assumed decay, the tighter the
-    tolerance).  The truncation then moves each loop entry by at most
-    ``TRUNCATION_KAPPA`` of the approximation error the run carries anyway
-    (measured: the observable moves by at most ~0.2 of the per-entry
-    bound).  ``None`` predictions (no exact tree, one order): ``t_base``."""
+def _next_truncation(opts, t_base, r, k, n, m, est, est_ref, ctrl):
+    """The truncation tolerance of order ``m``, the last successful order
+    being ``n`` (result ``r``; ``est``: its doubling estimate, which measures
+    order ``est_ref``, the successful order before it).  A fixed
+    ``delay={'truncation': t}`` (or the exact setting, ``t_base = 0``) is
+    kept.  Otherwise ``max(t_base, min(TRUNCATION_MAX, TRUNCATION_KAPPA *
+    e_m))`` with ``e_m`` the smaller of two predictions of the relative loop
+    error of order ``m`` (in units of ``max |C|``, as the order estimate),
+    each carried to order ``m`` by the loops' ``n^-3`` decay (item 29): the
+    exact-vs-Pade tree of order ``n`` times the loops' share of ``max |C|``,
+    and the doubling estimate (``est * (est_ref / m)^3``).  They are
+    predictions, not bounds, and on the benchmarks they OVERestimate (the
+    tree's Pade error decays more slowly than the loops'; the loops fall
+    like ``n^-3.5``): measured 8x on the delayed-alpha demo and 11x on the
+    delayed OU of the tests, so the per-entry bound is ~10 % of the loops'
+    actual Pade error, and the observable moves by a small fraction of the
+    per-entry bound (1.4e-2 on the demo at n = 8: 1.5e-8 of max |C| against
+    a Pade error of ~1.4e-5).  ``None`` predictions (no exact tree, a single
+    order): ``t_base``."""
     if opts['truncation'] != 'auto' or not t_base > 0:
         return t_base
     preds = []
@@ -556,17 +564,14 @@ def _next_truncation(opts, t_base, r, k, n, m, est, ctrl):
         except Exception:
             share = 1.0
         preds.append(float(tvp) * min(share, 1.0) * (n / m) ** 3)
-    if est is not None and np.isfinite(est) and est > 0:
-        preds.append(float(est) * (0.5 * n / m) ** 3)
+    if est is not None and est_ref and np.isfinite(est) and est > 0:
+        preds.append(float(est) * (est_ref / m) ** 3)
     preds = [p for p in preds if p > 0]
     if not preds:
         return t_base
     e_m = min(preds)
     ctrl['loop_error_pred'][m] = e_m
     return max(t_base, min(TRUNCATION_MAX, TRUNCATION_KAPPA * e_m))
-
-
-
 
 
 _INSTABILITY_CODES = ('G2_UNSTABLE_SADDLE', 'G2_MARGINAL_MODE', 'G3_ACAUSAL_POLE')
@@ -694,6 +699,8 @@ def compute_delayed(model: dict, call: dict, delays: dict):
         target_met = False
     if est is None and loops_need_n and not fixed:
         cap = cap or 'a single order was run (no doubling estimate)'
+        if ctrl['stop'].startswith('n_max'):
+            ctrl['stop'] = cap
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
             t_all, ctrl)
@@ -713,8 +720,10 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     t_base = _truncation_tol(opts)
     ctrl = {'cost_by_order': {}, 'predicted_walls_s': {}, 'cost_correction': None,
             'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {}}
-    t_cur = t_base
+    last = None                    # (result, order, its estimate, the order that measures)
     for i, n in enumerate(seq):
+        t_cur = t_base if last is None else _next_truncation(opts, t_base, *_lastargs(last, k, n),
+                                                              ctrl)
         if verbose:
             print(f'[delay] Pade ({n}, {n}) of exp(-i omega d): running the pipeline'
                   + (f' (realizations truncated to {t_cur:.2g})' if t_cur else ''))
@@ -788,14 +797,16 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             ests[n] = e_n
             est = e_n
         runs[n], n_used = r, n
+        last = (r, n, ests.get(n), prev)
         if est is not None and est <= opts['tol']:
             ctrl['stop'] = f'target {opts["tol"]:g} met at n = {n} (estimate {est:.3g})'
             break
         if i + 1 < len(seq):
             nxt = seq[i + 1]
-            t_cur = _next_truncation(opts, t_base, r, k, n, nxt, est, ctrl)
+            t_nxt = _next_truncation(opts, t_base, *_lastargs(last, k, nxt), ctrl)
             grow, how = _predicted_growth(ctx, n, nxt, prev, walls, states_cache, ctrl,
-                                          tols=ctrl['truncation_by_order'] | {nxt: t_cur})
+                                          tols=ctrl['truncation_by_order'] | {nxt: t_nxt},
+                                          r_last=r)
             pred = walls[n] * grow
             ctrl['predicted_walls_s'][nxt] = round(pred, 1)
             if verbose:
@@ -811,15 +822,28 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     return est, cap, n_used, incomplete, ctrl
 
 
-def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None):
+def _lastargs(last, k, m):
+    """``_next_truncation``'s ``(r, k, n, m, est, est_ref)`` for order ``m``
+    from the last successful order ``last = (r, n, est, est_ref)``."""
+    r, n, est, est_ref = last
+    return r, k, n, m, est, est_ref
+
+
+def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None, r_last=None):
     """``(growth, how)``: the predicted wall of order ``nxt`` over the
     measured wall of order ``n``: the ratio of the cost proxies of the two
     orders' (truncated) realizations (``_order_cost``), times the proxy's
     error on the step before when there is one (measured wall ratio of
-    ``prev -> n`` over its proxy ratio, clamped to [0.5, 4]).  Without
-    realizations: the measured growth of the last pair, else ``(nxt / n)^4``
-    (the rule before item 45).  ``tols``: {order: truncation tolerance}
-    (default: the tolerance in effect)."""
+    ``prev -> n`` over its proxy ratio, clamped to [0.5, 4]).  The proxy
+    describes the state-space route's sweep of the linear operator's
+    realization; it is not used (the rule before item 45 is: the larger of
+    ``(nxt / n)^4`` and the measured growth of the last pair) when there is
+    no realization of the next order, when the last run (``r_last``) did
+    not take the state-space route for every subset, or when the proxy does
+    not grow with the order (the delay sits only in a nonlinear term, e.g.
+    ``x * Conv(g, x)`` with a delayed ``g``: the operator does not see it).
+    ``tols``: {order: truncation tolerance} (default: the tolerance in
+    effect)."""
     from api._realization import truncation_tol
     tols = dict(tols or {})
     tol_of = lambda m: tols.get(m, truncation_tol())         # noqa: E731
@@ -828,7 +852,15 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None):
     for m, c in ((n, c_n), (nxt, c_x)):
         if c is not None:
             ctrl['cost_by_order'][m] = {k: round(v, 3) for k, v in c.items()}
-    if c_n and c_x and c_n['proxy'] > 0:
+    eng = (r_last or {}).get('phase_j_engine') or {}
+    ss_all = r_last is None or (eng.get('engine') == 'statespace'
+                                and float(eng.get('statespace_share') or 0.0) >= 1.0)
+    why = None
+    if not ss_all:
+        why = 'the last order did not run entirely on the state-space route'
+    elif c_n and c_x and c_n['proxy'] > 0 and not c_x['proxy'] > c_n['proxy'] * (1 + 1e-9):
+        why = 'the realization does not grow with the order (a delay only in a nonlinear term)'
+    if why is None and c_n and c_x and c_n['proxy'] > 0:
         g = c_x['proxy'] / c_n['proxy']
         corr = 1.0
         if prev is not None and walls.get(prev, 0) > 0:
@@ -840,10 +872,11 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None):
         return g * corr, (f'mean per-entry states {c_n["states"]:.1f} -> {c_x["states"]:.1f}, '
                           f'stiffness {c_n["stiffness"]:.1f} -> {c_x["stiffness"]:.1f}'
                           + (f', x {corr:.2f} from the last step' if corr != 1.0 else ''))
-    if prev is not None and walls.get(prev, 0) > 0:
-        g = max(1.0, walls[n] / walls[prev])
-        return g, 'measured growth of the last two orders'
-    return (nxt / n) ** 4, 'no realization of the next order: the (n_next / n)^4 rule'
+    why = why or 'no realization of the next order'
+    floor = (nxt / n) ** 4
+    if prev is not None and walls.get(prev, 0) > 0 and walls[n] / walls[prev] > floor:
+        return walls[n] / walls[prev], f'{why}: the measured growth of the last two orders'
+    return floor, f'{why}: the (n_next / n)^4 rule'
 
 
 def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,

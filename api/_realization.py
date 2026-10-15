@@ -441,7 +441,8 @@ TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
 # state-space route builds conductance-kernel realizations lazily, possibly
 # in a worker thread of the same run)
 _TRUNC_LOCK = threading.RLock()
-_TRUNC_SCOPE = [None]
+_TRUNC_STACK = []                # [(token, tol)]: the last entry is in effect
+_ENV_WARNED = set()
 
 
 def _env_truncation_tol(environ=None):
@@ -463,10 +464,26 @@ def _env_truncation_tol(environ=None):
 
 def truncation_tol():
     """The relative H-infinity tolerance of the balanced truncation in effect:
-    the innermost ``truncation_scope``, else ``DAEDALUS_REALIZATION_TRUNCATION``,
-    else ``TRUNCATION_TOL_DEFAULT``; ``0`` means exact (no truncation)."""
-    v = _TRUNC_SCOPE[0]
-    return _env_truncation_tol() if v is None else v
+    the innermost open ``truncation_scope`` (``None``: none), else
+    ``DAEDALUS_REALIZATION_TRUNCATION``, else ``TRUNCATION_TOL_DEFAULT``;
+    ``0`` means exact (no truncation).  A malformed environment value warns
+    (once per value) and the default is used: a ``ValueError`` here would be
+    swallowed by the state-space route's refusal handling and silently send
+    every model to the pole route."""
+    with _TRUNC_LOCK:
+        tol = _TRUNC_STACK[-1][1] if _TRUNC_STACK else None
+    if tol is not None:
+        return tol
+    try:
+        return _env_truncation_tol()
+    except ValueError as exc:
+        v = os.environ.get(TRUNCATION_ENV)
+        if v not in _ENV_WARNED:
+            _ENV_WARNED.add(v)
+            import warnings
+            warnings.warn(f'{exc}; using the default {TRUNCATION_TOL_DEFAULT:g}',
+                          UserWarning, stacklevel=2)
+        return TRUNCATION_TOL_DEFAULT
 
 
 def _clear_consumer_caches():
@@ -482,34 +499,42 @@ class truncation_scope:
     """``with truncation_scope(tol):`` -- realizations built inside use the
     relative H-infinity tolerance ``tol`` (``0``: exact; ``None``: the
     environment / default).  Process-wide (the realizations of one run may
-    be built in its worker threads); nested scopes restore the outer value.
-    The state-space route caches realizations by model and parameters, so a
-    change of the tolerance in effect clears that cache (on entry and on
-    exit)."""
+    be built in its worker threads): the innermost open scope is in effect,
+    and a scope's exit removes only its own entry (interleaved exits of
+    scopes opened in different threads leave the others in force).  The
+    state-space route caches realizations by model and parameters, not by
+    tolerance, so a change of the tolerance in effect clears that cache (on
+    entry and on exit); a change of ``DAEDALUS_REALIZATION_TRUNCATION``
+    after realizations were built does not (set it before the run, or clear
+    ``engine.integration.time_domain.statespace._clear_caches()``)."""
 
     def __init__(self, tol):
         self.tol = None if tol is None else float(tol)
         if self.tol is not None and not (self.tol >= 0.0 and np.isfinite(self.tol)):
             raise ValueError(f'truncation tolerance must be finite and >= 0, got {tol!r}')
-        self._prev = None
+        self._token = object()
 
     def __enter__(self):
         with _TRUNC_LOCK:
             before = truncation_tol()
-            self._prev = _TRUNC_SCOPE[0]
-            _TRUNC_SCOPE[0] = self.tol
+            _TRUNC_STACK.append((self._token, self.tol))
             changed = truncation_tol() != before
-        if changed:
-            _clear_consumer_caches()
+            if changed:
+                _clear_consumer_caches()
         return self
 
     def __exit__(self, *exc):
         with _TRUNC_LOCK:
             before = truncation_tol()
-            _TRUNC_SCOPE[0] = self._prev
+            # its own entry (scopes of other threads may have been entered
+            # after it and still be open)
+            for i in range(len(_TRUNC_STACK) - 1, -1, -1):
+                if _TRUNC_STACK[i][0] is self._token:
+                    del _TRUNC_STACK[i]
+                    break
             changed = truncation_tol() != before
-        if changed:
-            _clear_consumer_caches()
+            if changed:
+                _clear_consumer_caches()
         return False
 
 
@@ -644,7 +669,8 @@ def balanced_truncation(a, b, c, tol, *, check=True):
     equal to ``1e-8`` (BT's stability needs a strict gap).  ``check``: the
     error ``|g - g_r|`` is sampled on a frequency grid (``_check_frequencies``,
     a lower bound of the true H-infinity error); a truncation whose sampled
-    error exceeds ``tol * sigma_1`` (rounding: the computed Hankel singular
+    error exceeds ``tol * sigma_1`` (a positive ``tol`` below
+    ``TRUNCATION_TOL_MIN`` is raised to it; rounding: the computed Hankel singular
     values near the cut carry absolute errors ~ eps sigma_1) is retried with
     one more state, at most ``_TRUNC_RETRIES`` times, then rejected.  Returns
     ``(a_r, b_r, c_r, info)`` -- ``info``: ``n``, ``r``, ``hsv``, ``bound``
@@ -655,6 +681,8 @@ def balanced_truncation(a, b, c, tol, *, check=True):
     discarded or the truncation is rejected."""
     a = np.asarray(a)
     n = a.shape[0]
+    if tol > 0:
+        tol = max(float(tol), TRUNCATION_TOL_MIN)
     info = {'n': n, 'r': n, 'tol': float(tol), 'hsv': (), 'bound': 0.0,
             'bound_rel': 0.0, 'sampled_err_rel': None, 'err_rel': 0.0, 'kept': None}
     if n < 2 or not tol > 0:
@@ -676,7 +704,9 @@ def balanced_truncation(a, b, c, tol, *, check=True):
         return a, b, c, info
     real = not (np.iscomplexobj(a) or np.iscomplexobj(b) or np.iscomplexobj(c))
     tail = 2.0 * np.concatenate([np.cumsum(sv[::-1])[::-1], [0.0]])
-    r = max(int(np.argmax(tail <= tol * s1)), 1)
+    # the recorded bound adds the rounding of the computed sigma_i: kept <= tol
+    rnd = 4.0 * n * np.finfo(float).eps * s1
+    r = max(int(np.argmax(tail + rnd <= tol * s1)), 1)
     while r < n and sv[r - 1] - sv[r] <= 1e-8 * sv[r - 1]:
         r += 1
     if r >= n:
@@ -704,13 +734,13 @@ def balanced_truncation(a, b, c, tol, *, check=True):
         err = 0.0
         if check:
             err = float(np.max(np.abs(g - _siso_transfer(ar, br, cr, s)))) / s1
-            if not err <= max(tol, 1e-14) * (1.0 + 1e-9):
+            if not err <= tol * (1.0 + 1e-9):
                 why = f'check_failed (sampled {err:.3g} > tol {tol:.3g})'
                 r += 1
                 continue
         # the computed Hankel singular values carry absolute errors of a few
         # eps sigma_1 (backward-stable SVD of L^H R): added to the bound
-        bound = float(tail[r]) + 4.0 * n * np.finfo(float).eps * s1
+        bound = float(tail[r]) + rnd
         info.update(r=r, bound=bound, bound_rel=bound / s1,
                     sampled_err_rel=err if check else None,
                     err_rel=max(bound / s1, err), kept=None)
@@ -722,6 +752,10 @@ def balanced_truncation(a, b, c, tol, *, check=True):
 
 #: Retries (one more state each) of a truncation that fails its check.
 _TRUNC_RETRIES = 3
+#: Smallest relative tolerance honoured (a smaller positive one is raised to
+#: it): the Hankel singular values, the bound and the sampled check carry
+#: rounding errors of a few eps sigma_1.
+TRUNCATION_TOL_MIN = 1e-13
 
 
 def truncate_entry(ent, tol, *, check=True):
@@ -1471,8 +1505,8 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
                 ent, recs[(p, r_)] = truncate_entry(ent, tol)   # (as is: n < 2, tol 0)
                 entries[(p, r_)] = ent
                 est[p, r_] = ent.n_states
-        prov.append(f'per-entry minimal state counts: max {int(est.max()) if nf else 0}, '
-                    f'total {int(est.sum())}')
+        prov.append(f'per-entry state counts (minimal{", then truncated" if tol > 0 else ""}): '
+                    f'max {int(est.max()) if nf else 0}, total {int(est.sum())}')
         trunc = _truncation_summary(tol, recs)
         if trunc['n_truncated']:
             prov.append(trunc['note'])

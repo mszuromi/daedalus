@@ -155,7 +155,10 @@ non-local noise cumulant); ``offset_row`` / ``offset_slot`` / ``ext_ext_row``
 (rows with constant time offsets or joining two external times on the lag
 axis); ``degenerate_reference``; ``saddle_mismatch`` / ``saddle_unsolved``;
 ``prefactor_mismatch``; ``unbound_symbol``; ``no_reference``;
-``failed_diagram``.  Bad arguments (unknown saddle mode or names, a
+``failed_diagram``; ``truncated_reference`` (a ``result=`` whose
+realization is balanced-truncated, ``api._realization``: it is within the
+truncation tolerance of the exact pipeline, not within ``CHECK_RTOL``; the
+reference computed here runs with exact realizations).  Bad arguments (unknown saddle mode or names, a
 ``result=`` for another request, loop orders not computed, a growing kernel,
 unknown or numeric names in ``evaluate``) raise ``ValueError``; a failed
 reference comparison raises ``AssertionError``.
@@ -1367,6 +1370,7 @@ class _Setup:
                     verbose=verbose, use_cache=False)
         else:
             _check_result_args(result, external_fields, parameters, max_ell)
+            _refuse_truncated_reference(result)
         cfg = result.get('config') or {}
         if 'C_tau_x' in result or cfg.get('spatial'):
             raise SymbolicLoopRefused('spatial', 'spatial models are not '
@@ -1746,6 +1750,32 @@ def _sweep_magnitude(cfn):
         return abs(complex(cfn.ss_prefactor)) * mx * cn ** heads
     except Exception:
         return 0.0
+
+
+def _refuse_truncated_reference(result):
+    """Refuse (``truncated_reference``) a supplied reference whose propagator
+    realization is balanced-truncated under the tolerance in effect (item 45):
+    its numbers are within that tolerance of the exact pipeline, which the
+    1e-12 checks would report as a mismatch."""
+    from api._realization import truncation_tol, try_realize
+    if not truncation_tol() > 0:
+        return
+    prop, nump = result.get('propagator'), result.get('num_params')
+    if prop is None or nump is None:
+        return
+    try:
+        real, _exc = try_realize(prop, nump)
+    except Exception:
+        return
+    tr = getattr(real, 'truncation', None) if real is not None else None
+    if tr and tr.get('n_truncated'):
+        raise SymbolicLoopRefused(
+            'truncated_reference', f'the supplied result= was computed with '
+            f'{tr["n_truncated"]} balanced-truncated propagator entr'
+            f'{"y" if tr["n_truncated"] == 1 else "ies"} (relative tolerance '
+            f'{tr["tol"]:g}); call without result= (the reference then runs '
+            'with exact realizations) or compute it with '
+            'DAEDALUS_REALIZATION_TRUNCATION=0')
 
 
 def _check_result_args(result, external_fields, parameters, max_ell):

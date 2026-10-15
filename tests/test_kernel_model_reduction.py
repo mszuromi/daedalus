@@ -202,12 +202,17 @@ def test_tolerance_default_environment_and_scope(monkeypatch):
                     ('default', 1e-10), ('', 1e-10)):
         monkeypatch.setenv(ENV, v)
         assert RZ.truncation_tol() == want, v
-    monkeypatch.setenv(ENV, 'lots')
-    with pytest.raises(ValueError, match=ENV):
-        RZ.truncation_tol()
-    monkeypatch.setenv(ENV, '-1')
-    with pytest.raises(ValueError, match='finite'):
-        RZ.truncation_tol()
+    # a malformed value warns (once) and the default applies (a ValueError
+    # would be swallowed by the state-space route and send every model to
+    # the pole route silently)
+    for bad, msg in (('lots', ENV), ('-1', 'finite')):
+        monkeypatch.setenv(ENV, bad)
+        with pytest.raises(ValueError, match=msg):
+            RZ._env_truncation_tol()
+        with pytest.warns(UserWarning, match=msg):
+            assert RZ.truncation_tol() == RZ.TRUNCATION_TOL_DEFAULT
+        with RZ.truncation_scope(0):                      # an explicit scope still works
+            assert RZ.truncation_tol() == 0.0
     monkeypatch.setenv(ENV, '1e-9')
     with RZ.truncation_scope(1e-4):
         assert RZ.truncation_tol() == 1e-4
@@ -305,8 +310,11 @@ def test_order_controller_record_and_prediction():
     assert tb[4] == 1e-10 and info['truncation_tol'] == tb[8]
     e8 = info['loop_error_pred_by_order'][8]
     assert tb[8] == pytest.approx(max(1e-10, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
-    # the prediction is conservative: below the measured difference of n = 4 and 8
-    assert e8 < info['est_by_order'][8]
+    # what matters: the truncation moved the n = 8 observable by far less
+    # than the Pade error the controller estimates (exact realizations here)
+    r0 = _cc(m, 1, delay={'order': 8, 'truncation': 0})
+    d = np.max(np.abs(np.real(r['C_tau']) - np.real(r0['C_tau'])))
+    assert d / np.max(np.abs(np.real(r0['C_tau']))) <= 1e-2 * info['est_by_order'][8]
 
 
 def test_stiffness_is_the_taylor_driver():
@@ -343,11 +351,24 @@ def test_prediction_from_the_realizations_and_fallbacks():
     g3, _ = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl,
                                  tols={4: t, 8: 1e-3})
     assert (8, 1e-3) in cache and cache[(8, 1e-3)]['states'] <= c8['states']
-    # no realization (a context without the operator): the old rules
+    # no realization (a context without the operator): the rule before item
+    # 45, the larger of (n_next / n)^4 and the measured growth
     g4, how4 = DL._predicted_growth(None, 4, 8, None, {4: 1.0}, {}, ctrl)
-    assert g4 == 16.0 and 'n_next / n' in how4
+    assert g4 == 16.0 and 'n_next / n' in how4 and 'no realization' in how4
     g5, how5 = DL._predicted_growth(None, 8, 16, 4, {4: 1.0, 8: 6.0}, {}, ctrl)
-    assert g5 == 6.0 and 'measured' in how5
+    assert g5 == 16.0 and 'n_next / n' in how5
+    g6, how6 = DL._predicted_growth(None, 8, 16, 4, {4: 1.0, 8: 20.0}, {}, ctrl)
+    assert g6 == 20.0 and 'measured' in how6
+    # the last run did not take the state-space route everywhere: the old rule
+    r_poles = {'phase_j_engine': {'engine': 'statespace', 'statespace_share': 0.5}}
+    g7, how7 = DL._predicted_growth(ctx, 4, 8, None, {4: 1.0}, cache, ctrl, r_last=r_poles)
+    assert g7 == 16.0 and 'state-space route' in how7
+    # a realization that does not grow with the order (the delay only in a
+    # nonlinear term): the old rule
+    flat = {(4, t): {'states': 3.0, 'stiffness': 1.0, 'proxy': 18.0},
+            (8, t): {'states': 3.0, 'stiffness': 1.0, 'proxy': 18.0}}
+    g8, how8 = DL._predicted_growth(ctx, 4, 8, None, {4: 1.0}, flat, ctrl)
+    assert g8 == 16.0 and 'nonlinear term' in how8
 
 
 # ── structural redundancy: what S1's exact Kalman reduction already removes ─
@@ -382,15 +403,53 @@ def test_next_truncation_rules():
     r = {'C_tau': tot, 'C_tau_by_ell': {0: tot - np.array([0.1, 0.05, 0.0]), 1: np.array([0.1, 0.05, 0.0])},
          'delay_tree_vs_pade': 1e-2}
     # from the tree: 1e-2 * share 0.1 * (4/8)^3; from the estimate: 1e-3 * (2/8)^3
-    t = DL._next_truncation(o, 1e-10, r, 2, 4, 8, 1e-3, ctrl)
+    t = DL._next_truncation(o, 1e-10, r, 2, 4, 8, 1e-3, 2, ctrl)   # est measures n = 2
     e = min(1e-2 * 0.1 / 8, 1e-3 / 64)
     assert ctrl['loop_error_pred'][8] == pytest.approx(e) and t == pytest.approx(1e-2 * e)
     # capped above, floored at the base, untouched when pinned or exact
     assert DL._next_truncation(o, 1e-10, dict(r, delay_tree_vs_pade=10.0), 2, 4, 8, None,
-                               ctrl) == DL.TRUNCATION_MAX
+                               None, ctrl) == DL.TRUNCATION_MAX
     assert DL._next_truncation(o, 1e-10, dict(r, delay_tree_vs_pade=1e-14), 2, 4, 8, None,
-                               ctrl) == 1e-10
-    assert DL._next_truncation(o, 1e-10, {'C_tau': tot}, 2, 4, 8, None, ctrl) == 1e-10
+                               None, ctrl) == 1e-10
+    assert DL._next_truncation(o, 1e-10, {'C_tau': tot}, 2, 4, 8, None, None, ctrl) == 1e-10
+    # after a skipped order the estimate still measures the order it compared
+    # with: order 16 after 4 (8 skipped), the estimate of 4 measuring 2
+    t16 = DL._next_truncation(o, 1e-10, {'C_tau': tot}, 2, 4, 16, 1e-3, 2, ctrl)
+    assert ctrl['loop_error_pred'][16] == pytest.approx(1e-3 * (2 / 16) ** 3)
     assert DL._next_truncation(DL.resolve_options({'truncation': 1e-9}), 1e-9, r, 2, 4, 8,
-                               1e-3, ctrl) == 1e-9
-    assert DL._next_truncation(o, 0.0, r, 2, 4, 8, 1e-3, ctrl) == 0.0
+                               1e-3, 2, ctrl) == 1e-9
+    assert DL._next_truncation(o, 0.0, r, 2, 4, 8, 1e-3, 2, ctrl) == 0.0
+    with pytest.raises(ValueError, match='truncation'):
+        DL.resolve_options({'truncation': None})
+
+
+def test_scope_exits_interleaved_across_threads():
+    """Scopes opened and closed out of order (two threads): each exit removes
+    only its own entry."""
+    a, b = RZ.truncation_scope(0.0), RZ.truncation_scope(1e-6)
+    a.__enter__()
+    b.__enter__()
+    assert RZ.truncation_tol() == 1e-6
+    a.__exit__(None, None, None)                  # A leaves first: B stays in force
+    assert RZ.truncation_tol() == 1e-6
+    b.__exit__(None, None, None)
+    assert RZ.truncation_tol() == RZ.TRUNCATION_TOL_DEFAULT
+
+
+def test_tiny_tolerance_is_floored_and_kept():
+    e = _ent(np.diag([-1.0, -5.0]), [1.0, 1.0], [1.0, 1e-12])
+    e2, info = RZ.truncate_entry(e, 1e-16)
+    assert info['tol'] == RZ.TRUNCATION_TOL_MIN and e2 is e     # 1.8e-13 > 1e-13: kept
+    e2, info = RZ.truncate_entry(e, 1e-12)
+    assert e2.n_states == 1 and info['err_rel'] <= 1e-12
+
+
+def test_symbolic_loop_refuses_a_truncated_reference():
+    from api import symbolic_loop as SL
+    m = _ou_delayed('red45 symbolic ref')        # not a symbolic-route model: only the guard
+    r = _cc(m, 0, delay={'order': 16, 'tree': 'pade', 'truncation': 0})
+    with RZ.truncation_scope(1e-3):
+        with pytest.raises(SL.SymbolicLoopRefused, match='truncated_reference'):
+            SL._refuse_truncated_reference(r)
+    with RZ.truncation_scope(0):
+        SL._refuse_truncated_reference(r)        # exact setting: nothing to refuse
