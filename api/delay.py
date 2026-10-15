@@ -698,6 +698,7 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             break
         if not loops_need_n:
             runs[n], n_used, est = r, n, 0.0
+            ctrl['stop'] = f'no loop needs the approximant (exact tree): n = {n}'
             break
         if prev is not None:
             tot_p, loop_p = _observable(runs[prev], k)

@@ -60,6 +60,30 @@ Construction (all exact, then rounded once)
 5. Rounded once to double precision, then balanced by an exact power-of-two
    diagonal similarity (``scipy.linalg.matrix_balance``, Parlett-Reinsch):
    ``A_bal = T^{-1} A T``, ``B_bal = T^{-1} B``, ``C_bal = C T``.
+6. Model reduction (item 45): every per-entry realization (and every
+   conductance kernel, ``realize_kernel``) is balanced-truncated
+   (``balanced_truncation``) to the fewest states whose H-infinity error
+   bound ``2 sum(discarded Hankel singular values)`` is at most ``tol``
+   times the largest Hankel singular value (itself at most the entry's
+   H-infinity norm), ``tol = truncation_tol()``: ``TRUNCATION_TOL_DEFAULT``
+   (``1e-10``), ``DAEDALUS_REALIZATION_TRUNCATION`` (``0`` / ``off`` /
+   ``exact``: none), or ``truncation_scope(tol)``; ``realize_K(...,
+   truncation=)`` / ``realize_kernel(..., truncation=)`` override it.  An
+   entry with nothing to discard is returned as it was (the same object:
+   minimal, well-conditioned realizations keep every number bit for bit).
+   The Gramian factors are computed directly (Hammarling; an
+   eigendecomposition of a computed Gramian loses the small Hankel singular
+   values of graded Pade entries), and every truncation is checked a
+   posteriori on a frequency grid and retried with more states (then
+   refused) when its sampled error exceeds the tolerance.  Exact Kalman
+   minimality (step 4) removes only states that are exactly uncontrollable
+   or unobservable; the Pade blocks of a delay inside a feedback loop leave
+   many that are numerically negligible (Hankel singular values 1e-11 ..
+   1e-17 of the largest at Pade-16), which is where the state-space route's
+   cost goes.  The global ``A, B, C`` (Hurwitz test, exact delay tree,
+   stationary covariance) are never truncated.  ``Realization.truncation``
+   records the tolerance and, per entry, the states before / after, the
+   Hankel singular values, the bound and the sampled error.
 
 Hurwitz property of ``A`` (reported only, not used for routing): exact
 Routh test on the exact characteristic polynomial (no roots), plus the
@@ -90,8 +114,10 @@ Interface contract (consumed by the state-space subset integrator, S2)
   ``impulse(t)`` returns the smooth part ``C e^{At} B`` for ``t >= 0`` and
   ``0`` for ``t < 0``.
 * ``entries[(p, r)]``: ``EntryRealization`` (``a``, ``b``, ``c``, ``d``,
-  ``n_states``), the minimal SISO realization of ``G[p, r]``, balanced.
-  ``entry_states`` is the nf x nf array of their state counts.
+  ``n_states``), the minimal SISO realization of ``G[p, r]``, balanced,
+  then balanced-truncated to the tolerance in effect (step 6; within that
+  relative H-infinity tolerance of the exact entry).  ``entry_states`` is
+  the nf x nf array of their state counts.
 * ``balance``: the diagonal ``T`` (``x_unbalanced = T x``).
 * ``cls``: ``'A'`` first order (``K1`` invertible), ``'B'`` index-1
   descriptor, ``'C'`` rational kernels (``descriptor`` flags whether the
@@ -103,6 +129,10 @@ Interface contract (consumed by the state-space subset integrator, S2)
   ``C_bal = C_exact T``), for references and later symbolic work; excluded
   from comparisons.  The per-entry realizations carry their own balancing,
   not exposed.
+* ``truncation``: the record of step 6 (``tol``, ``n_truncated``,
+  ``states_before`` / ``states_after``, ``max_bound_rel``, ``note`` and
+  ``entries[(p, r)]``: ``n``, ``r``, ``hsv``, ``bound_rel``,
+  ``sampled_err_rel``, ``err_rel``, ``kept``); excluded from comparisons.
 * ``phys_names`` / ``resp_names`` come from ``ring_gen_names`` (response
   fields first, then physical fields, ``nf`` each); the state basis after the
   Kalman reduction is not tied to fields.

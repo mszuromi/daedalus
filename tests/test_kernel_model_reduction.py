@@ -322,3 +322,28 @@ def test_prediction_refits_the_exponent_and_falls_back():
     assert g3 == 16.0 and 'n_next / n' in how3
     g4, how4 = DL._predicted_growth(None, 8, 16, 4, {4: 1.0, 8: 6.0}, {}, ctrl)
     assert g4 == 6.0 and 'measured' in how4
+
+
+# ── structural redundancy: what S1's exact Kalman reduction already removes ─
+
+
+def test_identical_kernels_and_zero_weights_leave_no_redundant_states():
+    """Field 3 drives fields 1 and 2 through the SAME alpha kernel (two
+    copies in the pencil), and a third kernel enters with weight w0 = 0 at
+    the parameter point.  The duplicate chain is exactly uncontrollable and
+    the zero-weight kernel never becomes a state: the exact Kalman reduction
+    (S1) leaves the minimal counts, so the truncation has nothing structural
+    left to remove (it only removes numerically negligible states)."""
+    W = SR.var('omega')
+    w0 = SR.var('w0')
+    g = 1 / (1 + I * W) ** 2
+    K = matrix(SR, [[I * W + 1, 0, -SR(1) / 2 * g],
+                    [0, I * W + 1, -SR(1) / 2 * g],
+                    [w0 * g, 0, I * W + 2]])
+    real = RZ.realize_K(K, W, {w0: 0.0})
+    # pencil: 3 fields + 2 x 2 kernel states (the w0 entry is 0: no chain)
+    assert real.conditioning['n_kernel_states'] == 4
+    assert real.n_states == 5                        # the duplicate chain is gone
+    es = real.entry_states
+    assert es[0, 2] == es[1, 2] == 4 and es[0, 0] == es[1, 1] == 1 and es[2, 2] == 1
+    assert real.truncation['n_truncated'] == 0
