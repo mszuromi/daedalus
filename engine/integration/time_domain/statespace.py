@@ -1039,6 +1039,9 @@ class _SolveData:
         for ax, e in self.nontriv:
             rt = e.to_basis(rt, ax)
         lam = self.lam - z
+        if np.any(lam == 0):
+            raise ZeroDivisionError(f'the shift z = {z} is an eigenvalue of '
+                                    f'the pattern (singular resolvent)')
         y = -rt / lam
         for _ in range(self.sweeps - 1):
             acc = -rt

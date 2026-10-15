@@ -844,9 +844,10 @@ class Cumulant:
             return 'quad', [], qu
         me = self.me
         if me is None:
-            ex, qu, why = [], None, '; '.join(self._me_reasons
-                                              or ['no triples'])
-            left = None
+            ex, why = [], '; '.join(self._me_reasons or ['no triples'])
+            qu = None if ell is None else (
+                [ell] if np.ndim(ell) == 0 else list(ell))
+            left = qu
         else:
             ells = me.orders if ell is None else (
                 [ell] if np.ndim(ell) == 0 else list(ell))

@@ -198,6 +198,20 @@ def test_structured_resolvent_equals_the_dense_one(cond, monkeypatch):
     assert abs(r2_s - r2_d) <= 1e-13 * abs(r2_d)
 
 
+def test_fallback_without_triples_keeps_the_requested_order(cond):
+    # review: with no triples at all, 'auto' must still pair only ``ell``
+    c = dd.cumulant(cond)
+    c._me, c._me_reasons = None, ['forced: no triples']
+    with pytest.warns(ME.MEFallbackWarning, match=r'loop order\(s\) \[1\]'):
+        p = c.integrate_against(L2, ell=1, contact='exclude')
+    q = c.integrate_against(L2, ell=1, contact='exclude', method='quad')
+    assert p.method == 'quad' and complex(p) == complex(q)
+    assert c.me_fallbacks == {('integrate_against', 1): 1}
+    with pytest.warns(ME.MEFallbackWarning):
+        S = c.spectrum([0.7], ell=1)
+    assert S[0] == c.spectrum([0.7], ell=1, method='quad')[0]
+
+
 def test_alpha_kernel_at_equal_rates_vs_embedding():
     kern = _cc(_conductance('s4b_alpha_kernel', 0.7), DX2)
     emb = _cc(_alpha_embedding('s4b_alpha_embedding'), DX2)

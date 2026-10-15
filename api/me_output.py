@@ -920,7 +920,8 @@ def from_result(result) -> CumulantME:
         ell = int(ell)
         rs = list(global_reasons)
         blocks = {'+': [], '-': []}
-        if pj:
+        exact_tree = ell == 0 and _exact_delay_tree(result)
+        if pj and not exact_tree:
             sk = list(pj.get('skipped_kernel_ids') or [])
             if sk:
                 rs.append(f'{len(sk)} diagram(s) failed in Phase J')
@@ -935,13 +936,12 @@ def from_result(result) -> CumulantME:
                     continue
                 _blocks_of(parts, g.get('kernel_id', gi), blocks, rs,
                            counts, FI)
-        if ell == 0 and _exact_delay_tree(result):
+        if exact_tree:
             # the delay driver replaced the tree by the exact delayed
             # covariance (api.delay); the closures are the Pade copy's
             rs.append('the k = 2 tree is the exact delayed covariance (method '
                       'of steps over the delay: not one matrix exponential; '
                       "delay={'tree': 'pade'} gives the Pade tree's triples)")
-            blocks = {'+': [], '-': []}
         if rs:
             # collapse repeated reasons
             seen = {}
