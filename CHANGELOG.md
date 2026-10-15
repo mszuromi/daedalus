@@ -64,7 +64,9 @@ state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delay
   `loop_error_pred_by_order`.
 - **`api/symbolic_loop.py`.**  The reference run of `symbolic_cumulant` / `symbolic_triple` uses exact realizations
   (its checks are at 1e-12); a `result=` computed with truncated entries is refused by name (`truncated_reference`).
-- **Tests.**  `tests/test_kernel_model_reduction.py` (22 tests, ~15 s).
+- **Tests.**  `tests/test_kernel_model_reduction.py` (22 tests, ~15 s).  The default suite passed with the tolerance
+  at 1e-10 except one test that compares an Erlang-32 OU tree pointwise to 1e-11 (a lag where |C| is 0.003 moved by
+  5e-12); at the 1e-12 default it passes -- one reason for the default.
 
 #### Added: symbolic loop corrections as rational functions (C3)
 
