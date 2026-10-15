@@ -70,8 +70,7 @@ SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
 SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
-SDE_NOISE_TYPES = ('Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
-                   'InverseGaussianProcess', 'Cumulants', 'CGF')
+from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
 
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
                  'spatial_grid', 'points', 'taylor_order')
