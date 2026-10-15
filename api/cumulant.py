@@ -407,6 +407,32 @@ def _bin_index(tau, x):
     return int(order[i]), float(hi[i] - lo[i])
 
 
+
+def _memo_C(fns):
+    """``C(τ) = Σ f(0, τ)`` over the Phase J callables, memoized, for the
+    quadrature routes.  A callable that cannot be evaluated at a large lag
+    (the exact delayed tree of ``api.delay``: its method-of-steps stack is
+    capped) raises :class:`api.me_output.MEUnavailable` naming it, instead
+    of failing inside QUADPACK."""
+    memo = {}
+
+    def C(t):
+        t = float(t)
+        v = memo.get(t)
+        if v is None:
+            try:
+                v = memo[t] = sum(complex(f(0.0, t)) for f in fns)
+            except Exception as exc:
+                if type(exc).__name__ != 'ExactTreeUnavailable':
+                    raise
+                from api.me_output import MEUnavailable
+                raise MEUnavailable(
+                    f'the exact delayed tree cannot be integrated numerically '
+                    f'to infinite lag ({exc}); pair the loop orders alone '
+                    f"(ell=...) or use delay={{'tree': 'pade'}}") from exc
+        return v
+    return C
+
 class Cumulant:
     """A computed cumulant: smooth part per loop order plus δ components.
     Build with :meth:`from_result` (``compute_cumulants`` / ``dd.run``
@@ -433,6 +459,10 @@ class Cumulant:
         self._result = result
         self._me = None
         self._me_reasons = None
+        # loop orders paired / transformed by quadrature because they have
+        # no triples: {(what, ell): count} (``integrate_against``,
+        # ``spectrum``; each also warns, naming the reason)
+        self.me_fallbacks = {}
 
     # ── construction ────────────────────────────────────────────────────
     @classmethod
@@ -723,22 +753,6 @@ class Cumulant:
     def modes(self, value):
         self._modes = value
 
-    def _me_or_reason(self, ell):
-        """``(me, None)`` when the triples cover ``ell``, else ``(None,
-        reason)``."""
-        me = self.me
-        if me is None:
-            return None, '; '.join(self._me_reasons or ['no triples'])
-        ells = me.orders if ell is None else (
-            [ell] if np.ndim(ell) == 0 else list(ell))
-        bad = [f'ell={e}: ' + '; '.join(me.reasons[e]) for e in ells
-               if me.reasons.get(e)]
-        missing = [e for e in ells if e not in me.sides]
-        if missing:
-            raise ValueError(f'loop order(s) {missing} not in the result '
-                             f'(orders: {me.orders})')
-        return (None, '; '.join(bad)) if bad else (me, None)
-
     def _delta_pairing(self, kernel, ell, contact, values):
         """``Σ w L(location)`` over the δ components (k = 2) with the
         contact rule of ``symbolic_out.integrate_against`` at τ = 0."""
@@ -801,36 +815,90 @@ class Cumulant:
         if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
             raise ValueError("contact must be None, 'exclude', 'positive', "
                              "'negative' or 'mid'")
-        method = self._resolve_method(method, ell, 'integrate_against')
-        if method == 'exact':
-            sm = self._me_or_reason(ell)[0].integrate_smooth(kernel, ell,
-                                                             values)
-            err = None
-        else:
-            sm, err = quad_pairing(self._quad_C(ell), kernel, values,
+        method, ex, qu = self._split_method(method, ell, 'integrate_against')
+        sm, err = 0j, None
+        if ex:
+            sm += self.me.integrate_smooth(kernel, ex, values)
+        if qu is not False:
+            s2, err = quad_pairing(self._quad_C(qu), kernel, values,
                                    epsabs, epsrel, limit)
+            sm += s2
         ct = self._delta_pairing(kernel, ell, contact, values)
         return Pairing(sm + ct, sm, ct, method, err)
 
-    def _resolve_method(self, method, ell, what):
+    def _split_method(self, method, ell, what, infinite=True):
+        """``(label, exact_ells, quad_ells)``: the loop orders paired
+        exactly (from the triples) and by quadrature (``None`` = every
+        order the callables have, ``False`` = none).  ``'auto'`` splits per
+        loop order: the orders without triples fall back on quadrature with
+        an :class:`api.me_output.MEFallbackWarning` naming them and their
+        reasons (counted in :attr:`me_fallbacks`); the label is then
+        ``'exact+quad'`` (``'quad'`` when no order has triples)."""
         if method not in ('auto', 'exact', 'quad'):
             raise ValueError(f"method must be 'auto', 'exact' or 'quad', "
                              f"not {method!r}")
         if method == 'quad':
-            return method
-        me, why = self._me_or_reason(ell)
-        if me is not None:
-            return 'exact'
+            qu = None if ell is None else (
+                [ell] if np.ndim(ell) == 0 else list(ell))
+            self._refuse_exact_delay_quad(qu, what, infinite)
+            return 'quad', [], qu
+        me = self.me
+        if me is None:
+            ex, qu, why = [], None, '; '.join(self._me_reasons
+                                              or ['no triples'])
+            left = None
+        else:
+            ells = me.orders if ell is None else (
+                [ell] if np.ndim(ell) == 0 else list(ell))
+            missing = [e for e in ells if e not in me.sides]
+            if missing:
+                raise ValueError(f'loop order(s) {missing} not in the result '
+                                 f'(orders: {me.orders})')
+            ex = [e for e in ells if not me.reasons.get(e)]
+            left = [e for e in ells if me.reasons.get(e)]
+            if not left:
+                return 'exact', ex, False
+            qu = left
+            why = '; '.join(f'ell={e}: ' + '; '.join(me.reasons[e])
+                            for e in left)
         if method == 'exact':
             from api.me_output import MEUnavailable
             raise MEUnavailable(f'{what}: no matrix-exponential triples '
                                 f'({why})')
+        self._refuse_exact_delay_quad(qu, what, infinite, why)
         import warnings
         from api.me_output import MEFallbackWarning
-        warnings.warn(f'{what}: no matrix-exponential triples ({why}); '
-                      f'integrating the Phase J callables numerically',
-                      MEFallbackWarning, stacklevel=3)
-        return 'quad'
+        which = ('every loop order' if left is None
+                 else f'loop order(s) {left}')
+        warnings.warn(f'{what}: no matrix-exponential triples for {which} '
+                      f'({why}); integrating the Phase J callables of '
+                      f'{"those orders" if ex else "the cumulant"} '
+                      f'numerically', MEFallbackWarning, stacklevel=3)
+        for e in (left if left is not None else ['all']):
+            key = (what, e)
+            self.me_fallbacks[key] = self.me_fallbacks.get(key, 0) + 1
+        return ('exact+quad' if ex else 'quad'), ex, qu
+
+    def _refuse_exact_delay_quad(self, qu, what, infinite, why=None):
+        """The exact delayed tree (``api.delay``) has no triple and its
+        callable is a method-of-steps stack capped at a few hundred delay
+        intervals: quadrature to infinite lag cannot finish (QUADPACK would
+        build ever larger stacks first).  Refused up front, by name."""
+        from api.me_output import _exact_delay_tree, MEUnavailable
+        if not infinite or self._result is None or \
+                not _exact_delay_tree(self._result):
+            return
+        if qu is not None and 0 not in qu:
+            return
+        raise MEUnavailable(
+            f'{what}: the k = 2 tree is the exact delayed covariance '
+            f'(method of steps over the delay), which has no triple'
+            + (f' ({why})' if why else '')
+            + ' and cannot be integrated numerically to infinite lag; '
+            f'pair the loop orders alone (ell=...), use '
+            f"delay={{'tree': 'pade'}}"
+            + (", or a finite window (tau_max=...)"
+               if what == 'spectrum' else ''))
 
     def _quad_C(self, ell):
         """``C(τ)`` from the Phase J callables (memoized), for quadrature."""
@@ -839,15 +907,7 @@ class Cumulant:
         fns = [self.smooth_fns[e] for e in ells if e in self.smooth_fns]
         if not fns:
             raise ValueError('no smooth callables (a loaded file)')
-        memo = {}
-
-        def C(t):
-            t = float(t)
-            v = memo.get(t)
-            if v is None:
-                v = memo[t] = sum(complex(f(0.0, t)) for f in fns)
-            return v
-        return C
+        return _memo_C(fns)
 
     # ── spectrum ────────────────────────────────────────────────────────
     def spectrum(self, omega, ell=None, method='auto', tau_max=None,
@@ -889,12 +949,15 @@ class Cumulant:
             elif tau_max is not None and method == 'exact':
                 raise ValueError("tau_max truncates the quadrature: use "
                                  "method='quad'")
-            method = self._resolve_method(method, ell, 'spectrum')
-            if method == 'exact':
-                S = self._me_or_reason(ell)[0].spectrum_smooth(omega, ell)
-            else:
-                S = np.array([self._ft_quad(w, ell, tau_max, epsabs, epsrel,
-                                            limit) for w in omega])
+            method, ex, qu = self._split_method(method, ell, 'spectrum',
+                                                infinite=tau_max is None)
+            S = np.zeros(omega.shape, dtype=complex)
+            if ex:
+                S = S + self.me.spectrum_smooth(omega, ex)
+            if qu is not False:
+                S = S + np.array([self._ft_quad(w, qu, tau_max, epsabs,
+                                                epsrel, limit)
+                                  for w in omega])
         self._warn_incomplete()
         for d in self._deltas_of(ell):
             loc = d.location
@@ -910,14 +973,7 @@ class Cumulant:
         if not fns:
             raise ValueError('no smooth callables (a loaded file): use '
                              "method='grid'")
-        memo = {}
-
-        def C(t):
-            t = float(t)
-            v = memo.get(t)
-            if v is None:
-                v = memo[t] = sum(complex(f(0.0, t)) for f in fns)
-            return v
+        C = _memo_C(fns)
         # the absolute tolerance relative to the size of C
         scale = max(abs(C(-1e-9)), abs(C(1e-9)), 1e-300)
         eabs = max(epsabs, epsrel * scale)
