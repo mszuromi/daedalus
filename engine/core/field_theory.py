@@ -494,17 +494,27 @@ def _probe_point(c, floats_ok: bool = False):
     return vs, val_of
 
 
-def _scale_floats(c, s):
-    """``c`` with every float literal multiplied by the exact ``s``."""
-    op = c.operator()
-    if op is None:
-        if c.is_numeric() and _is_float_literal(c.pyobject()):
-            return c * s
-        return c
-    return op(*[_scale_floats(o, s) for o in c.operands()])
+def _perturb_floats(c, signs, margin):
+    """``c`` with the k-th float literal (in tree order) multiplied by
+    ``1 + signs[k % len(signs)] * margin``."""
+    counter = [0]
+
+    def walk(e):
+        op = e.operator()
+        if op is None:
+            if e.is_numeric() and _is_float_literal(e.pyobject()):
+                sg = signs[counter[0] % len(signs)]
+                counter[0] += 1
+                return e * (1 + sg * margin)
+            return e
+        return op(*[walk(o) for o in e.operands()])
+    return walk(c)
 
 
 _FLOAT_MARGIN = SR(1) / 10 ** 8
+# Perturbation patterns: every float up, every float down, and the two
+# alternating ones (two floats that differ by an ulp are moved apart).
+_FLOAT_PATTERNS = ((1,), (-1,), (1, -1), (-1, 1))
 
 
 def _proved_nonzero(c, floats_ok: bool = False) -> bool:
@@ -514,9 +524,11 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
     proved".
 
     With ``floats_ok`` float literals are read as the exact rationals they
-    are, and the proof is kept only if it survives scaling every float by
-    ``1 +- 1e-8`` (same sign each time), so an expression that cancels to
-    float dust (``0.1*q - q/10``) is not claimed nonzero.
+    are, and the proof is kept only if it survives perturbing the floats by
+    ``1 +- 1e-8`` (all up, all down, alternating; same sign each time), so an
+    expression that cancels to float dust (``exp(-0.3*x)*exp(0.1*x) -
+    exp(-0.2*x)``, floats an ulp apart) is not claimed nonzero: Sage and
+    Maxima call it zero.
     """
     try:
         from sage.ext.fast_callable import fast_callable
@@ -538,8 +550,8 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
         if sg == 0:
             return False
         if floats_ok and not _interval_safe(c, False):
-            for sc in (1 + _FLOAT_MARGIN, 1 - _FLOAT_MARGIN):
-                if sign_of(_scale_floats(c, sc)) != sg:
+            for pat in _FLOAT_PATTERNS:
+                if sign_of(_perturb_floats(c, pat, _FLOAT_MARGIN)) != sg:
                     return False
         return True
     except Exception:

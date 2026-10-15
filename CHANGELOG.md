@@ -17,8 +17,8 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 tier, solved the saddle again for each of them. A coefficient that interval arithmetic (128 bits, at a point that
 satisfies every assumption) shows to be a nonzero function cannot simplify to 0, so `simplify_full` is now skipped
 for it (it still runs to word a failure, so the error text is the same); float literals are read as the exact
-rationals they are and the proof is kept only if it survives scaling every float by 1 +- 1e-8 (an expression that
-cancels to float dust is not claimed nonzero). The saddle is solved once per check. The expansion, the warnings and the
+rationals they are and the proof is kept only if it survives perturbing the floats by 1 +- 1e-8 (all up, all down,
+alternating), so an expression that cancels to float dust, e.g. floats an ulp apart, is not claimed nonzero. The saddle is solved once per check. The expansion, the warnings and the
 errors are identical on all 75 zoo items that expand (dict order, `is_trivially_equal`; in-process A/B against the
 previous source). Whole zoo `expand()` 15.9 s -> 6.4 s; public models, taylor order in brackets, seconds before -> after:
 `ou_quartic_two_dim_color_corr` (2) 0.78 -> 0.36, `dendritic_quad_soma_sigmoid` (4) 0.48 -> 0.16, `coupled_rd_2species_1d`
@@ -31,18 +31,22 @@ previous source). Whole zoo `expand()` 15.9 s -> 6.4 s; public models, taylor or
   (or `define_function`) failed the mean-field self-check: its saddle parameters carry no `indexed_by`, so the
   heterogeneous mean-field solver skipped them and the residual check bound them to 1. They now belong to the model's one
   (auto-injected) population, as in the 1-element population twin; saddle, action and cumulants equal the twin's
-  bit for bit. Mean-field results of all 75 zoo items unchanged.
+  bit for bit. Mean-field results of all 75 zoo items unchanged. One visible difference for a scalar model that
+  already built on main with `set_mf_equation` only: `mf_values` of the result now holds the saddle (it was empty);
+  every cumulant is bit-identical.
 - `SDE._kernel_dc` of `(c*dirac_delta(t) + h(t))*heaviside(t)` returned `c*heaviside(t) + h~(0)`. The delta of a causal
   kernel counts with its full weight (`c + h~(0)`, as for `c*dirac_delta(t) + h(t)*heaviside(t)`); a `t`-dependent factor
   of the delta is evaluated at 0.
 - A numpy overflow in the mean-field DAE residual raised `KeyError('__import__')` once warnings are shown (the
   expression is evaluated with empty `__builtins__`); the evaluation now runs under `np.errstate(all='ignore')` (values
   unchanged: `1/(1 + exp(300*x^2))` saturates to a valid number).
-- A population named `pop` with more members than there are populations had its sums truncated to `range(n_pop)`
-  (`sum(... for i in pop)` silently covered the first member only); it now iterates over its own members, and
-  `SDE.population('pop', size=N)` is accepted. Unchanged when the sizes agree (every existing model).
+- A population named `pop` whose members are not `range(n_pop)` (`n_pop` = number of populations) had `pop` bound to
+  `range(n_pop)`: `sum(... for i in pop)` silently covered the first member only (size 3 beside nothing else), or ran
+  past the last one (size 2 beside two more populations). `pop` now iterates over the population's own members, and
+  `SDE.population('pop', size=N)` is accepted. Unchanged when they agree (every existing model).
 - `SDE` with `interpretation('stratonovich')` and an lhs whose `Dt` coefficient is not constant (`(1 + x^2)*Dt*x`) was
-  read as `a = 1` and got the correction of `Dt*x`; it is refused ("cannot read a constant Dt coefficient").
+  read as `a = 1` and got the correction of `Dt*x`; it is refused ("cannot read a constant Dt coefficient"). A `Dt` of
+  another field in the equation (`Dt*x + Dt*y`) is still read off as before.
 - Checked and not changed: scalar-mode `linear_stability` on `exp(field)` works on main (pinned by a test); actions with
   `D[0](f)(...)` atoms cannot be written in the front end and the legacy `taylor()` leaves such an atom unexpanded when
   its argument is not a bare field (the per-atom route already agrees with it where it expands).

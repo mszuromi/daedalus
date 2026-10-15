@@ -521,10 +521,10 @@ class SDE:
                 L = self._parse(eq['lhs'], f'lhs of {f}').expand()
                 dt_terms = L.coefficient(_DT, 1)
                 a = dt_terms.coefficient(self._sym(f), 1)
-                # the Dt terms must be exactly a*x with a free of the fields: ``(1 + x^2)*Dt*x`` has
+                # the x part of the Dt terms must be exactly a*x with a free of the fields: ``(1 + x^2)*Dt*x`` has
                 # the Dt-coefficient x + x^3, whose x-part alone (1) would be taken for a
                 if (a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}
-                        or not (dt_terms - a * self._sym(f)).expand().is_zero()):
+                        or (dt_terms - a * self._sym(f)).expand().has(self._sym(f))):
                     raise SDEError(f"stratonovich: cannot read a constant Dt "
                                    f"coefficient off lhs={eq['lhs']!r}.")
                 dtcoef[f] = a

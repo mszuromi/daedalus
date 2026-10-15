@@ -677,10 +677,10 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
         nsdict[f'pop_{pname}'] = list(plist)
         if pname not in nsdict:
             nsdict[pname] = list(plist)
-        elif pname == 'pop' and len(plist) > n_pop:
-            # A population named ``pop`` with more members than there are
-            # populations: the legacy ``range(n_pop)`` would silently
-            # truncate ``sum(... for i in pop)``.
+        elif pname == 'pop' and list(plist) != list(range(n_pop)):
+            # A population named ``pop`` whose members are not ``range(n_pop)``
+            # (n_pop counts the populations): the legacy binding would
+            # silently truncate or overrun ``sum(... for i in pop)``.
             nsdict[pname] = list(plist)
 
     # Bind every user-defined function.  In the **action** context all

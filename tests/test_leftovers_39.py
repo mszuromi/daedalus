@@ -117,16 +117,48 @@ def test_proved_nonzero_respects_assumptions():
 
 
 def test_proved_nonzero_float_literals_only_with_a_margin():
-    x, q = var('x q39')
+    x = var('x39')
     c = SR(0.3) * x + SR(0.1)
     assert not F._proved_nonzero(c)                         # floats are excluded by default
     assert F._proved_nonzero(c, floats_ok=True)             # a genuine nonzero function
-    dust = SR(0.1) * q - q / 10                             # cancels to float dust
-    assert not F._proved_nonzero(dust, floats_ok=True)
-    dust2 = SR(0.1) * q - SR(0.1) * q                       # exact zero
-    assert not F._proved_nonzero(dust2, floats_ok=True)
-    # nonzero only through the float: 0.1*q - q/10 + 1e-3*x has a 1e-3 x part, far above the margin
-    assert F._proved_nonzero(dust + SR(1e-3) * x, floats_ok=True)
+    # a small but real float part, far above the 1e-8 margin
+    assert F._proved_nonzero(SR(1e-3) * x + SR(0.5) * x ** 2, floats_ok=True)
+
+
+def test_proved_nonzero_float_dust_is_not_nonzero():
+    """Floats an ulp apart cancel for Sage and Maxima (``exp(-0.19999999999999998*x) - exp(-0.2*x)`` is
+    zero for them); the interval proof on the exact rationals must not call that nonzero."""
+    x = var('x39d')
+    from sage.all import tanh
+    dust = [exp(SR(-0.3) * x) * exp(SR(0.1) * x) - exp(SR(-0.2) * x),
+            tanh(SR(0.30000000000000004) * x) - tanh(SR(0.3) * x)]
+    for c in dust:
+        assert not F._proved_nonzero(c, floats_ok=True), c
+        assert c.simplify_full() == 0, c   # zero for the old path (the verdict the shortcut must not override)
+
+
+def test_mf_check_float_dust_coefficient_passes_silently_as_on_main(monkeypatch):
+    """Drive the check with a sector coefficient that is float dust after the mean-field substitution:
+    the verdict is the old one (zero, no warning), with and without the interval shortcut."""
+    from sage.all import PolynomialRing, tanh
+    a, b = var('a39', 'b39')
+    R = PolynomialRing(SR, 'u,v')
+
+    class NS:
+        pass
+
+    def verdict():
+        by_tp = {(1, 0): R({(1, 0): exp(SR(-0.3) * a) * exp(b) - exp(SR(-0.2) * a)})}
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            try:
+                F._verify_and_zero_mf_sector(by_tp, {b: SR(0.1) * a}, {}, NS(), R, {'parameters': []})
+                return 'pass', [str(x.message) for x in w]
+            except AssertionError as exc:
+                return 'fail', str(exc)[:40]
+    new = verdict()
+    monkeypatch.setattr(F, '_proved_nonzero', lambda *a, **k: False)
+    assert new == verdict() == ('pass', [])
 
 
 def test_sr_nonzero_is_unchanged_by_the_refactor():
@@ -310,9 +342,29 @@ def test_population_named_pop_is_not_truncated():
     _same_run(ra, rb)
 
 
-def test_population_named_pop_of_size_one_or_with_other_populations_is_unchanged():
+def test_population_named_pop_of_size_one_is_unchanged():
     # size 1: the legacy binding and the population's own indices coincide
     assert _expanded(_pop_model('pop', 1), 2) == _expanded(_pop_model('E', 1), 2)
+
+
+def _two_pops(pname):
+    """``pname`` (size 2) beside two populations of size 1: n_pop = 3 exceeds the size of ``pname``."""
+    b = (TemporalModelBuilder('p3').population(pname, size=2).population('F1', size=1).population('F2', size=1)
+         .physical_field('x', population=pname).physical_field('y1', population='F1')
+         .physical_field('y2', population='F2')
+         .parameter('mu', default=[1.0, 1.5], indexed_by=[pname], domain='positive')
+         .parameter('D', default=0.2, domain='positive'))
+    txt = (f'sum(xt[i]*((Dt + mu[i])*x[i]) - D*xt[i]^2 for i in {pname}) + '
+           'sum(y1t[i]*((Dt + 1)*y1[i]) - D*y1t[i]^2 for i in F1) + '
+           'sum(y2t[i]*((Dt + 1)*y2[i]) - D*y2t[i]^2 for i in F2)')
+    return (b.set_action_text(txt).equation(lhs='(Dt + 1)*x[i]', rhs='(1 - mu[i])*x[i]', population=pname)
+            .equation(lhs='(Dt + 1)*y1[i]', rhs='0', population='F1')
+            .equation(lhs='(Dt + 1)*y2[i]', rhs='0', population='F2').build())
+
+
+def test_population_named_pop_beside_other_populations_covers_its_members_only():
+    a, b = _expanded(_two_pops('E'), 2), _expanded(_two_pops('pop'), 2)
+    assert a == b and 'xt2' in a[1] and 'xt3' not in a[1]
 
 
 def test_sde_population_named_pop_accepts_size_above_one():
@@ -349,10 +401,14 @@ def test_scalar_mode_linear_stability_on_exp_of_the_field(rhs):
 
 
 def _strat(lhs):
-    return (SDE('s').parameter('D', default=0.1, domain='positive').field('x')
-            .interpretation('stratonovich')
-            .noise('xi', Gaussian(var='2*D'), couples={'x': '(1 + 0.5*x^2)'})
-            .equation('x', lhs=lhs, rhs='-x'))
+    s = (SDE('s').parameter('D', default=0.1, domain='positive').field('x')
+         .interpretation('stratonovich')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': '(1 + 0.5*x^2)'})
+         .equation('x', lhs=lhs, rhs='-x'))
+    if 'y' in lhs:                          # Dt of another field in the x equation: read off the x part, as on main
+        s = (s.field('y').noise('eta', Gaussian(var='2*D'), couples={'y': 1})
+             .equation('y', lhs='(Dt + 1)*y', rhs='0'))
+    return s
 
 
 @pytest.mark.parametrize('lhs', ['(1+x^2)*Dt*x', 'Dt*x + x*Dt*x', 'x*Dt*x'])
@@ -363,7 +419,29 @@ def test_stratonovich_refuses_a_nonconstant_dt_coefficient(lhs):
         _strat(lhs).equations()
 
 
-@pytest.mark.parametrize('lhs, scale', [('Dt*x', 1), ('2*Dt*x', 2), ('(Dt*x)', 1), ('(Dt + 1)*x', 1)])
+@pytest.mark.parametrize('lhs, scale', [('Dt*x', 1), ('2*Dt*x', 2), ('(Dt*x)', 1), ('(Dt + 1)*x', 1),
+                                         ('Dt*x + Dt*y', 1)])
 def test_stratonovich_constant_dt_coefficient_is_unchanged(lhs, scale):
     eq = _strat(lhs).equations()
     assert eq and 'x[i]^3' in eq[0]['rhs']
+
+
+def test_scalar_mf_equation_model_without_equation_gets_the_saddle_values_in_the_result():
+    """A scalar model with only ``set_mf_equation``: ``mf_values`` was empty on main (the saddle was not
+    recorded), it is the twin's now; the cumulants are the same bit for bit."""
+    def ou(population):
+        b = TemporalModelBuilder('ou mf')
+        kw, ix = {}, ''
+        if population:
+            b.population('E', size=1)
+            kw, ix = dict(population='E'), '[i]'
+        b = (b.physical_field('x', **kw).parameter('m', default=0.7)
+             .parameter('D', default=0.2, domain='positive'))
+        body = f'xt{ix}*((Dt + 1)*x{ix} - m) - D*xt{ix}^2'
+        return b.set_action_text(f'sum({body} for i in E)' if population else body) \
+            .set_mf_equation('xstar', 'm').build()
+    ra, rb = _run(ou(False), [('dx', 1), ('dx', 1)], 1), _run(ou(True), [('dx', 1), ('dx', 1)], 1)
+    for ell in ra['C_tau_by_ell']:
+        assert np.array_equal(np.asarray(ra['C_tau_by_ell'][ell]), np.asarray(rb['C_tau_by_ell'][ell]))
+    assert rb['mf_values'] == {'xstar': [0.7]}
+    assert ra['mf_values'] == rb['mf_values']
