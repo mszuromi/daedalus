@@ -241,10 +241,22 @@ class MEBlock:
 
     # resolvents
     def resolvent(self, z, power=1):
-        """``c (z I − G)^{−power} x0`` (one triangular solve per power)."""
-        T, xt, ct = self.tri()
+        """``c (z I − G)^{−power} x0`` (one triangular solve per power; a
+        block beyond the dense forms without constant rows: forward block
+        substitution on the segment, :meth:`_Segment.resolve`)."""
         if self.constant and z == 0:
             raise ZeroDivisionError('a constant block has no resolvent at 0')
+        if (self.n > MAX_BLOCK and self.seg is not None and not self.rows
+                and self.beta != 0):
+            # G = beta G_seg: (z − beta G_seg)^{-1} = (z/beta − G_seg)^{-1}/beta
+            if self.weight == 0:
+                return 0j
+            zb = complex(z) / self.beta
+            y = np.asarray(self.x0, dtype=complex)
+            for _ in range(int(power)):
+                y = self.seg.resolve(y, zb) / self.beta
+            return complex(self.weight * (np.asarray(self.c) @ y))
+        T, xt, ct = self.tri()
         A = z * np.eye(T.shape[0]) - T
         y = xt
         for _ in range(int(power)):

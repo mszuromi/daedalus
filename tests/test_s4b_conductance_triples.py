@@ -175,6 +175,29 @@ def test_conductance_pairing_and_spectrum_exact(cond):
     assert abs(S[1] - Sq[0]) <= 1e-8 * abs(Sq[0])
 
 
+def test_structured_resolvent_equals_the_dense_one(cond, monkeypatch):
+    """Blocks beyond MAX_BLOCK are paired by forward block substitution on
+    the segment (matrix free): forced on every block here, it equals the
+    dense triangular route (pairing, spectrum, a double power)."""
+    c = dd.cumulant(cond)
+    me = c.me
+    om = [0.0, 0.7, 2.5]
+    p_d = me.integrate_smooth(L2)
+    S_d = me.spectrum_smooth(om)
+    side = me.sides[1]['+']
+    r2_d = side.resolvent(1.3 + 0.4j, 2)
+    blocks = side.blocks
+    monkeypatch.setattr(ME, 'MAX_BLOCK', 0)
+    for b in blocks:
+        b._tri = None
+    p_s = me.integrate_smooth(L2)
+    S_s = me.spectrum_smooth(om)
+    r2_s = side.resolvent(1.3 + 0.4j, 2)
+    assert abs(p_s - p_d) <= 1e-13 * abs(p_d)
+    assert np.max(np.abs(S_s - S_d)) <= 1e-13 * np.max(np.abs(S_d))
+    assert abs(r2_s - r2_d) <= 1e-13 * abs(r2_d)
+
+
 def test_alpha_kernel_at_equal_rates_vs_embedding():
     kern = _cc(_conductance('s4b_alpha_kernel', 0.7), DX2)
     emb = _cc(_alpha_embedding('s4b_alpha_embedding'), DX2)
