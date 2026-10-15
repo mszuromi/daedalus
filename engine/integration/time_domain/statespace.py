@@ -1009,6 +1009,49 @@ class _SolveData:
             y = y.real
         return y
 
+    def solve_shifted(self, r, z):
+        """``y`` with ``(⊕ a_e − z I) y = −r`` for a complex shift ``z``
+        (C0 output: resolvents of blocks beyond the dense forms).  The same
+        two paths as :meth:`solve_neg` with the diagonal shifted: the dense
+        back substitution with ``T − z I``, or the per-edge triangular sweeps
+        (exact: the off-diagonal part is nilpotent) with ``λ − z``; Schur
+        patterns refined as there.  No counters (the run's census is not
+        touched)."""
+        z = complex(z)
+        r = np.asarray(r, dtype=complex)
+        y = self._solve_shifted_once(r, z)
+        if self.unitary:
+            for _ in range(REFINE_STEPS):
+                res = -r - (self.apply_M(y) - z * y)
+                if not np.any(res):
+                    break
+                y = y + self._solve_shifted_once(-res, z)
+        return y
+
+    def _solve_shifted_once(self, r, z):
+        if self.nontriv and self.size <= DENSE_SOLVE_MAX:
+            U, Uh, T, _M = self._dense_ops()
+            y = U @ sl.solve_triangular(T - z * np.eye(T.shape[0]),
+                                        -(Uh @ np.ravel(r)), lower=False,
+                                        check_finite=False)
+            return y.reshape(self.shape)
+        rt = r
+        for ax, e in self.nontriv:
+            rt = e.to_basis(rt, ax)
+        lam = self.lam - z
+        if np.any(lam == 0):
+            raise ZeroDivisionError(f'the shift z = {z} is an eigenvalue of '
+                                    f'the pattern (singular resolvent)')
+        y = -rt / lam
+        for _ in range(self.sweeps - 1):
+            acc = -rt
+            for ax, e in self.nontriv:
+                acc = acc - _mode(y, e.Nup, ax)
+            y = acc / lam
+        for ax, e in self.nontriv:
+            y = e.from_basis(y, ax)
+        return y
+
     def solve_neg(self, r, want_residual=False):
         """``y`` with ``(⊕ a_e) y = -r``, i.e. ``y = (-M)^{-1} r``.  With
         ``want_residual``: ``(y, rho)``, ``rho`` the relative residual
@@ -1239,6 +1282,34 @@ class _Segment:
             oJ, szJ = self.offs[kJ], self.sizes[kJ]
             out[oJ:oJ + szJ] += np.ravel(fire(x))
         return out
+
+    def resolve(self, v, z):
+        """``(z I − G)^{-1} v`` (complex ``z``) by forward substitution over
+        the blocks (``G`` is block lower triangular: a firing goes from a
+        downset to one vertex larger), one shifted Kronecker-sum solve per
+        block (:meth:`_SolveData.solve_shifted`).  Matrix free: no dense
+        form of the segment (C0 output for blocks beyond ``MAX_BLOCK``)."""
+        v = np.asarray(v, dtype=complex)
+        y = np.zeros(self.D, dtype=complex)
+        into = {}
+        for (kI, kJ, fire) in self.trans:
+            into.setdefault(kJ, []).append((kI, fire))
+        order = sorted(range(len(self.blocks)),
+                       key=lambda k: len(self.blocks[k]))
+        done = set()
+        for k in order:
+            o, sz = self.offs[k], self.sizes[k]
+            r = v[o:o + sz].reshape(self.shapes[k]).copy()
+            for kI, fire in into.get(k, ()):
+                if kI not in done:
+                    raise RuntimeError('segment firings are not ordered by '
+                                       'downset size')
+                oI, szI = self.offs[kI], self.sizes[kI]
+                r = r + fire(y[oI:oI + szI].reshape(self.shapes[kI]))
+            # (z − M_k) y_k = r  <=>  (M_k − z) y_k = −r
+            y[o:o + sz] = np.ravel(self._sd[k].solve_shifted(r, z))
+            done.add(k)
+        return y
 
     def graded(self):
         """Exact triangular bases and the slowest diagonal rate below

@@ -241,10 +241,22 @@ class MEBlock:
 
     # resolvents
     def resolvent(self, z, power=1):
-        """``c (z I − G)^{−power} x0`` (one triangular solve per power)."""
-        T, xt, ct = self.tri()
+        """``c (z I − G)^{−power} x0`` (one triangular solve per power; a
+        block beyond the dense forms without constant rows: forward block
+        substitution on the segment, :meth:`_Segment.resolve`)."""
         if self.constant and z == 0:
             raise ZeroDivisionError('a constant block has no resolvent at 0')
+        if (self.n > MAX_BLOCK and self.seg is not None and not self.rows
+                and self.beta != 0):
+            # G = beta G_seg: (z − beta G_seg)^{-1} = (z/beta − G_seg)^{-1}/beta
+            if self.weight == 0:
+                return 0j
+            zb = complex(z) / self.beta
+            y = np.asarray(self.x0, dtype=complex)
+            for _ in range(int(power)):
+                y = self.seg.resolve(y, zb) / self.beta
+            return complex(self.weight * (np.asarray(self.c) @ y))
+        T, xt, ct = self.tri()
         A = z * np.eye(T.shape[0]) - T
         y = xt
         for _ in range(int(power)):
@@ -865,6 +877,13 @@ def _global_reasons(result, FI):
     return out
 
 
+def _exact_delay_tree(result):
+    """True when ``api.delay`` installed the exact delayed tree in place of
+    the Pade tree (k = 2): the tree's closures are then not ``C_tau``'s."""
+    dl = result.get('delay') if isinstance(result, dict) else None
+    return isinstance(dl, dict) and dl.get('tree') == 'exact'
+
+
 def _refuse_switch_on(result):
     """A switch-on result (``t_min``) is a function of the absolute times,
     not of a lag: no triples (its closures would give stationary ones)."""
@@ -901,7 +920,8 @@ def from_result(result) -> CumulantME:
         ell = int(ell)
         rs = list(global_reasons)
         blocks = {'+': [], '-': []}
-        if pj:
+        exact_tree = ell == 0 and _exact_delay_tree(result)
+        if pj and not exact_tree:
             sk = list(pj.get('skipped_kernel_ids') or [])
             if sk:
                 rs.append(f'{len(sk)} diagram(s) failed in Phase J')
@@ -909,13 +929,19 @@ def from_result(result) -> CumulantME:
                 fn = g.get('contribution')
                 if fn is None:
                     continue
-                parts = getattr(fn, 'phase_j_parts', None)
+                parts = _parts_list(fn)
                 if parts is None:
                     rs.append(f'diagram {g.get("kernel_id", gi)}: its '
                               f'contribution exposes no subset structure')
                     continue
                 _blocks_of(parts, g.get('kernel_id', gi), blocks, rs,
                            counts, FI)
+        if exact_tree:
+            # the delay driver replaced the tree by the exact delayed
+            # covariance (api.delay); the closures are the Pade copy's
+            rs.append('the k = 2 tree is the exact delayed covariance (method '
+                      'of steps over the delay: not one matrix exponential; '
+                      "delay={'tree': 'pade'} gives the Pade tree's triples)")
         if rs:
             # collapse repeated reasons
             seen = {}
@@ -927,15 +953,36 @@ def from_result(result) -> CumulantME:
     return CumulantME(2, sides, reasons, counts)
 
 
-def _blocks_of(parts, diagram_index, blocks, rs, counts, FI):
+def _parts_list(fn):
+    """``[(weight, phase_j_parts)]`` of a diagram's contribution, or
+    ``None``: one entry, or one per kernel-slot placement of a diagram with
+    conductance vertices (``_average_conv_placements``: the contribution is
+    the weighted sum of the placements' own contributions)."""
+    parts = getattr(fn, 'phase_j_parts', None)
+    if parts is not None:
+        return [(1.0, parts)]
+    places = getattr(fn, 'phase_j_placements', None)
+    if places is None:
+        return None
+    out = []
+    for w, f in places:
+        sub = _parts_list(f)
+        if sub is None:
+            return None
+        out.extend((w * w2, p) for w2, p in sub)
+    return out
+
+
+def _blocks_of(parts_list, diagram_index, blocks, rs, counts, FI):
     """The k = 2 blocks of one diagram's contribution, both sides."""
-    kk = parts['k']
-    for side, sg in (('+', 1.0), ('-', -1.0)):
-        line = ((0.0, 0.0), (0.0, sg), 0.0, 1.0)   # T(u) = T0 + u e, u > 0
-        _line_blocks(parts, diagram_index, line, blocks[side], rs, counts, FI)
+    for scale, parts in parts_list:
+        for side, sg in (('+', 1.0), ('-', -1.0)):
+            line = ((0.0, 0.0), (0.0, sg), 0.0, 1.0)   # T(u) = T0 + u e
+            _line_blocks(parts, diagram_index, line, blocks[side], rs, counts,
+                         FI, scale)
 
 
-def _line_blocks(parts, diagram_index, line, out, rs, counts, FI):
+def _line_blocks(parts, diagram_index, line, out, rs, counts, FI, scale=1.0):
     """Append the :class:`MEBlock` of every subset and Wick permutation of
     one contribution on the line of caller times ``T(t) = T0 + t * e``,
     chamber containing ``t_ref``, anchored at ``t_anchor`` (``line = (T0, e,
@@ -988,7 +1035,7 @@ def _line_blocks(parts, diagram_index, line, out, rs, counts, FI):
             if ray is None:
                 counts['zero'] += 1
                 continue
-            w = complex(cfn.ss_prefactor) / comp
+            w = scale * complex(cfn.ss_prefactor) / comp
             out.append(MEBlock(ray, w, sub.model.dtype, diagram_index, si,
                                pidx))
             counts['blocks'] += 1
@@ -1123,13 +1170,14 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
                 fn = g.get('contribution')
                 if fn is None:
                     continue
-                parts = getattr(fn, 'phase_j_parts', None)
-                if parts is None:
+                plist = _parts_list(fn)
+                if plist is None:
                     rs.append('a contribution exposes no subset structure')
                     continue
-                _line_blocks(parts, g.get('kernel_id', gi),
-                             (tuple(T0), tuple(e), a, t_ref), blocks, rs,
-                             counts, FI)
+                for scale, parts in plist:
+                    _line_blocks(parts, g.get('kernel_id', gi),
+                                 (tuple(T0), tuple(e), a, t_ref), blocks, rs,
+                                 counts, FI, scale)
             if pj and pj.get('skipped_kernel_ids'):
                 rs.append('diagrams failed in Phase J')
             sides[ell] = SideME(f'({lo:g}, {hi:g})', blocks, ell)
