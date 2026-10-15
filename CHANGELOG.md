@@ -27,7 +27,7 @@ without a delay changes.
   `z = i omega d` (all-pass, exact rational coefficients), and the approximated model runs on the ordinary
   pipeline (state-space route). `delay={'order': 'auto'}` (default) doubles `n` from 4 until the estimated
   relative error of the observable, `max_tau |C_n - C_2n| / max_tau |C_2n|` (conservative), meets `tol`
-  (default `1e-8`), or `n_max` (32), or the predicted wall time of the next order exceeds `wall_max` (900 s); an
+  (default `1e-8`), or `n_max` (16), or the predicted wall time of the next order exceeds `wall_max` (900 s); an
   order the engine cannot finish, or whose difference grows, ends the search at the previous order.
   `delay={'order': n}` fixes it. The result carries `result['delay']` (orders run, walls, the estimate, whether
   the target was met), the finding `G3_DELAY_APPROXIMATED` (a warning when the target is missed, with a
@@ -54,11 +54,15 @@ without a delay changes.
 
 #### Fixed: the state-space route returned wrong numbers for some high-order rational kernels
 
-`api._realization.realize_K` now refuses (`RealizationRefused('ill_conditioned')`) a realization that is exactly
-Hurwitz (Routh) but whose rounded matrices are not numerically (Lyapunov margin <= 0): graded beyond double
-precision. The state-space Phase J route then falls back to the pole route. Seen on a 4-field model with a
-Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e24 .. 1e35): C came out ~1e13 with no warning; it now equals the
-pole engine's value. Models whose realization was accepted before are unchanged.
+`api._realization.realize_K` now checks a strongly graded realization a posteriori (balancing range above 1e6, or a
+Lyapunov margin <= 0 although the exact Routh test says Hurwitz): the rounded matrices' stationary output
+covariance must be positive semidefinite and agree with the frequency-domain integral of the realization's own
+transfer function. A realization that fails is refused (`RealizationRefused('ill_conditioned')`), and the
+state-space Phase J route falls back to the pole route; the run's census counts it
+(`ss_declined_by_reason['realization_ill_conditioned']`) and the analyzer adds the warning `G6_SS_ILL_CONDITIONED`.
+Seen on a 4-field model with a Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e24 .. 1e35): C came out ~1e13 with
+`G6_ACCURACY` reporting no problem; it now equals the pole engine's value. Ordinary models (balancing range within
+[0.125, 8]) are not checked and unchanged; the scalar Padé-24/32 realizations pass the check and stay on the route.
 
 #### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
 

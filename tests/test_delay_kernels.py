@@ -409,23 +409,20 @@ def _hawkes_linear(name, delay_kw):
 
 @pytest.mark.slow
 def test_graded_pade24_realization_falls_back_to_the_pole_route(monkeypatch):
-    """A 4-field model with a Pade-24 kernel on its cycle: the exact
-    realization is right but its rounded form is unusable (the state-space
-    route returned C ~ 1e13 before); it is refused ('ill_conditioned'), the
-    run takes the pole route (same value as the pole engine) and says so."""
-    from api.delay import pade_coefficients
-    c = [str(x) for x in pade_coefficients(24)]
-    z = '(I*omega*dg)'
-    img = ('(' + ' + '.join(f'({ck})*(-1)^{k}*{z}^{k}' for k, ck in enumerate(c)) + ')/('
-           + ' + '.join(f'({ck})*{z}^{k}' for k, ck in enumerate(c)) + ')')
-    m = _hawkes_linear('delay test graded pade24', dict(freq_image=img))
+    """A 4-field model with a Pade-24 kernel on its cycle (the delay route at a
+    fixed order, Pade tree): the exact realization is right but its rounded
+    form is unusable (the state-space route returned C ~ 1e13 before); it is
+    refused ('ill_conditioned'), the run takes the pole route (the pole
+    engine's value) and says so."""
+    m = _hawkes_linear('delay test graded pade24', dict(delay='dg'))
     kw = dict(k=2, max_ell=0, external_fields=[('n', 1), ('n', 2)], tau_grid=np.array([0.5, 5.0]),
-              parallel=False, verbose=False, use_cache=False)
+              parallel=False, verbose=False, use_cache=False, delay={'order': 24, 'tree': 'pade'})
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         r = compute_cumulants(m, **kw)
         monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
         rp = compute_cumulants(m, **kw)
     assert r['analysis'].has('G6_SS_ILL_CONDITIONED')
+    assert 'realization_ill_conditioned' in r['phase_j_engine']['ss_declined_by_reason']
     assert np.allclose(np.real(r['C_tau']), np.real(rp['C_tau']), rtol=1e-12)
     assert np.max(np.abs(r['C_tau'])) < 1.0          # (1e13 before the check)

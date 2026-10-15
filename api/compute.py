@@ -912,7 +912,7 @@ def compute_cumulants(
         a kernel image; see :mod:`api.delay`): ``order`` (``'auto'`` or a
         fixed Pade order ``n``), ``tol`` (target relative accuracy of the
         observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
-        default 4 / 32), ``wall_max`` (cap in s on the predicted wall time of
+        default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
         the next order, default 900), ``tree`` (``'exact'``, default: the
         k = 2 tree from the exact delayed covariance; ``'pade'``).  Ignored
         for models without delays.  The result then carries

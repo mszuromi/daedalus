@@ -49,7 +49,9 @@ Options (``compute_cumulants(..., delay={...})``):
 ``order``    ``'auto'`` (default) or a fixed ``n``;
 ``tol``      target relative accuracy of the observable (default ``1e-8``);
 ``n_start``  first order of the doubling search (default 4);
-``n_max``    largest order (default 32);
+``n_max``    largest order (default 16: one loop beyond it leaves the state-space
+             route's fast range on c976a25, e.g. the scalar delayed OU takes 6 s at
+             n = 16 and more than 30 min at n = 20);
 ``wall_max`` cap (s) on the predicted wall time of the next order (default 900);
 ``tree``     ``'exact'`` (default) or ``'pade'``.
 
@@ -75,7 +77,7 @@ __all__ = ['Kernel', 'pade_coefficients', 'pade_image', 'delay_factors',
            'split_shifted_time_expr', 'compute_delayed', 'DelayOrderWarning',
            'DEFAULTS']
 
-DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=32, wall_max=900.0,
+DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
                 tree='exact')
 
 
@@ -235,8 +237,12 @@ def split_shifted_time_expr(text: str):
     kernel shifted by a delay: it holds ``dirac_delta(t - X)`` or
     ``heaviside(t - X)`` factors with one ``X != 0`` free of ``t`` (then
     ``t -> t + X`` gives the unshifted kernel).  ``None`` otherwise."""
-    from sage.all import SR, var, heaviside, dirac_delta
     import re
+    # text pre-check: no Sage symbol is created for an ordinary kernel (a new
+    # symbol shifts pynac's term order, and with it the rounding of later sums)
+    if not re.search(r'\b(dirac_delta|heaviside|unit_step)\s*\(\s*t\s*[-+]', str(text)):
+        return None
+    from sage.all import SR, var, heaviside, dirac_delta
     names = set(re.findall(r'\b([A-Za-z_]\w*)\b', text)) - {
         'dirac_delta', 'heaviside', 'exp', 'log', 'sqrt', 'sin', 'cos', 'I',
         'pi', 'e', 'unit_step'}
