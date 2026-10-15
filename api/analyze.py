@@ -1797,6 +1797,10 @@ def _g2_kernel(ctx):
         return
     if ctx.t.get('propagator_class') not in ('rational', 'delay'):
         return
+    if ctx.model.get('_delay_pade'):
+        # a Pade copy (api.delay): the true model's G2-K decided already, and
+        # the copy's poles are checked by G3
+        return
     if not _has_kernel_dynamics(ctx.K_ft, ctx.omega):
         return
     from api._kernel_stability import kernel_stability
@@ -1808,9 +1812,10 @@ def _g2_kernel(ctx):
     delay = ctx.t.get('propagator_class') == 'delay'
     if ks is None:
         ctx.t['kernel_stability'] = 'undetermined'
-        ctx.add('G2_STABILITY_UNAVAILABLE',
+        # rational-kernel models keep their (pole-based) checks: info only
+        ctx.add('G2_STABILITY_UNAVAILABLE' if delay else 'G2_KERNEL_STABILITY',
                 f'kernel-aware stability (G2-K) not decided: {why}.',
-                'check the saddle by simulation')
+                'check the saddle by simulation', level=None if delay else 'info')
         return
     ctx.t['kernel_stability'] = ks.status
     ctx.t['kernel_stability_detail'] = ks.as_dict()
@@ -1852,13 +1857,20 @@ def _g2_kernel(ctx):
                     'decided from a bounded contour and the Pade route does not '
                     'apply.', 'write the delayed term without a time derivative')
         else:
-            ctx.add('G2_STABILITY_UNAVAILABLE',
-                    f'kernel-aware stability (G2-K) not decided: {ks.detail}.', '')
+            ctx.add('G2_KERNEL_STABILITY',
+                    f'kernel-aware stability (G2-K) not decided: {ks.detail}.', '',
+                    level='info')
     elif ks.status == 'undetermined':
-        ctx.add('G2_STABILITY_UNAVAILABLE',
+        ctx.add('G2_STABILITY_UNAVAILABLE' if delay else 'G2_KERNEL_STABILITY',
                 f'kernel-aware stability (G2-K) not decided: {ks.detail}.',
-                'check the saddle by simulation')
-    # 'acausal': the G3 gate names it (G3_ACAUSAL_POLE)
+                'check the saddle by simulation', level=None if delay else 'info')
+    elif ks.status == 'acausal' and delay:
+        # (rational models: the G3 pole check names it)
+        ctx.add('G3_ACAUSAL_POLE',
+                f'acausal kernel image: {ks.detail}; a retarded kernel has '
+                'exp(-i omega d) with d > 0 and poles of its image in the left '
+                'half s-plane.',
+                'check the kernel images (a delay d must be positive)')
 
 
 def _g3_propagator(ctx):

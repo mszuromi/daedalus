@@ -407,8 +407,12 @@ class ExactTree:
         return np.array([self.value(t) for t in taus])
 
     def callable(self):
-        def f(*tau):
-            if len(tau) != 1:
-                raise TypeError('the k = 2 tree takes one tau')
-            return self.value(float(np.real(tau[0])))
+        """``f(t0, t1)``: the pipeline's k = 2 callable convention (leg 0 at
+        ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
+        at ``tau = -_ITO_EPS``, the pipeline's Ito left limit)."""
+        from api.compute import _ITO_EPS
+
+        def f(t0, t1):
+            tau = float(np.real(t1)) - float(np.real(t0))
+            return self.value(-_ITO_EPS if abs(tau) <= 1e-12 else tau)
         return f

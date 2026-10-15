@@ -506,12 +506,16 @@ def compute_delayed(model: dict, call: dict, delays: dict):
         walls[n] = time.perf_counter() - t0
         if exact is not None:
             _install_exact_tree(r, exact, call)
-        if not _finite(r, k):
+        bad_tree = (exact is not None and r.get('delay_tree_vs_pade') is not None
+                    and not r['delay_tree_vs_pade'] <= 1.0)
+        if bad_tree or not _finite(r, k):
+            why = ('its Pade tree is %.3g of max|C| away from the exact tree'
+                   % r['delay_tree_vs_pade'] if bad_tree else 'non-finite values')
             if prev is None:
-                raise RuntimeError(f'delay: the Pade ({n}, {n}) run returned '
-                                   'non-finite values')
-            failed[n] = 'non-finite values'
-            cap = f'order n = {n} returned non-finite values'
+                raise RuntimeError(f'delay: the Pade ({n}, {n}) run is not usable '
+                                   f'({why}); lower the order')
+            failed[n] = why
+            cap = f'order n = {n} is not usable ({why})'
             break
         if not loops_need_n:
             runs[n], n_used, est = r, n, 0.0
@@ -598,10 +602,13 @@ def compute_delayed(model: dict, call: dict, delays: dict):
 
 def _install_exact_tree(r, exact, call):
     """Replace the tree level of ``r`` by the exact covariance (k = 2)."""
+    from api.compute import _ITO_EPS
     taus = np.asarray(r.get('tau_grid'), dtype=float)
     by = r.get('C_tau_by_ell') or {}
     pade_tree = by.get(0)
-    c0 = exact.values(taus)
+    # tau = 0 as on the pipeline's grid (and in its loops): the Ito left limit,
+    # evaluated at tau = -_ITO_EPS
+    c0 = exact.values(np.where(np.abs(taus) <= 1e-12, -_ITO_EPS, taus))
     if pade_tree is not None:
         pt = np.asarray(pade_tree, dtype=complex)
         scale = float(np.max(np.abs(c0))) or 1.0
@@ -617,8 +624,8 @@ def _install_exact_tree(r, exact, call):
     r['total_C_by_ell'] = fby
     others = [f for ell, f in fby.items() if ell != 0 and f is not None]
 
-    def total(*tau, _f0=f0, _o=tuple(others)):
-        return _f0(*tau) + sum(f(*tau) for f in _o)
+    def total(*t, _f0=f0, _o=tuple(others)):
+        return _f0(*t) + sum(f(*t) for f in _o)
 
     r['total_C'] = total
 

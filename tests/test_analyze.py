@@ -311,7 +311,8 @@ GALLERY = {
     'undriven field':        (_undriven, 'G1_UNDRIVEN_FIELD', 'dy1'),
     'unstable saddle':       (_unstable, 'G2_UNSTABLE_SADDLE', 'unstable'),
     'explicit time':         (_time_dependent, 'G2_TIME_DEPENDENT', 'sin(t)'),
-    'delay kernel':          (_delay_kernel, 'G3_NONRATIONAL_KERNEL', 'e^(-I*d*omega)'),
+    # a delay is recognised (api.delay: Pade loops, exact tree), not refused
+    'delay kernel':          (_delay_kernel, 'G3_DELAY_KERNEL', "d in ['d']"),
     'sqrt kernel':           (_sqrt_kernel, 'G3_NONRATIONAL_KERNEL', 'sqrt'),
     'missing external field': (_missing_external, 'G0_EXTERNAL_FIELD', "('y', 1) not in phys_idx"),
     'marginal mode':         (_marginal, 'G2_MARGINAL_MODE', 'marginal'),

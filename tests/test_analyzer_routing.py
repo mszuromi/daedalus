@@ -137,8 +137,9 @@ STOPS = {
     'unpaired field':       (lambda: _ou('D2 gallery unpaired', 'xt*((Dt+mu)*x) - D*xt^2 - D*yt^2',
                                          eqs=(('(Dt+mu)*x', '0'), ('mu*y', '0')), fields=('x', 'y'), stab=False),
                              {}, 'G1_UNPAIRED_FIELD', 'expanded'),
-    'delay kernel':         (lambda: _kernel('D2 gallery delay', 'exp(-I*omega*d)/(1 + I*omega*tg)'), {},
-                             'G3_NONRATIONAL_KERNEL', 'propagator'),
+    # an advance exp(+i omega d) is acausal (a delay exp(-i omega d) is routed: api.delay)
+    'advance kernel':       (lambda: _kernel('D2 gallery advance', 'exp(I*omega*d)/(1 + I*omega*tg)'), {},
+                             'G3_ACAUSAL_POLE', 'delay'),
     'sqrt kernel':          (lambda: _kernel('D2 gallery sqrt', '1/sqrt(1 + I*omega*tg)'), {},
                              'G3_NONRATIONAL_KERNEL', 'propagator'),
     'unstable (stab off)':  (lambda: _ou('D2 gallery unstable', 'xt*((Dt - mu)*x) - D*xt^2',
@@ -449,7 +450,7 @@ def test_toy_backend_is_picked_without_editing_old_ones():
 
 
 def test_honest_failure_names_the_failing_trait(no_enumeration):
-    model = _kernel('D2 gallery delay (downgraded)', 'exp(-I*omega*d)/(1 + I*omega*tg)')
+    model = _kernel('D2 gallery sqrt (downgraded)', '1/sqrt(1 + I*omega*tg)')
     with pytest.raises(routing.NoBackendError) as ei:
         _run(model, policy={'downgrade': ['G3_NONRATIONAL_KERNEL']})
     msg = str(ei.value)

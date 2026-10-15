@@ -123,7 +123,9 @@ restores ~1e-15 by residual refinement.
 A model without a realization raises ``RealizationRefused`` with a
 machine-readable ``reason`` (``'non_rational'``, ``'unbound_symbol'``,
 ``'spatial'``, ``'improper_entry'``, ``'singular_pencil'``,
-``'index_gt_1'``, ``'no_kernel'``); the pole engine stays the fallback.
+``'index_gt_1'``, ``'no_kernel'``, ``'ill_conditioned'``: exactly Hurwitz
+but not numerically after rounding, i.e. graded beyond double precision);
+the pole engine stays the fallback.
 ``try_realize`` returns ``(realization, None)`` or ``(None, refusal)``.
 
 ``verify_against_K`` evaluates ``K(s)^{-1}`` independently (Sage
@@ -147,7 +149,7 @@ __all__ = [
 ]
 
 _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
-            'singular_pencil', 'index_gt_1', 'no_kernel',
+            'singular_pencil', 'index_gt_1', 'no_kernel', 'ill_conditioned',
             # realize_kernel (S3)
             'no_kernel_image', 'kernel_not_strictly_proper',
             'kernel_not_hurwitz', 'kernel_shifted_step')
@@ -157,7 +159,8 @@ class RealizationRefused(ValueError):
     """The propagator has no (supported) finite state-space realization.
 
     ``reason`` is one of ``non_rational``, ``unbound_symbol``, ``spatial``,
-    ``improper_entry``, ``singular_pencil``, ``index_gt_1``, ``no_kernel``;
+    ``improper_entry``, ``singular_pencil``, ``index_gt_1``, ``no_kernel``,
+    ``ill_conditioned`` (exactly Hurwitz, not numerically once rounded);
     for a conductance kernel (``realize_kernel``) also ``no_kernel_image``,
     ``kernel_not_strictly_proper``, ``kernel_not_hurwitz``,
     ``kernel_shifted_step``.
@@ -999,6 +1002,20 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
     else:
         sca = np.ones(An.shape[0])
     margin = _lyapunov_margin(An)
+    if hur is True and An.size and not (margin is not None and np.isfinite(margin)
+                                        and margin > 0):
+        # exactly Hurwitz, but the rounded (balanced) matrices are not
+        # numerically: the realization is graded beyond double precision
+        # (high-order rational kernels in a multi-field model, e.g. Pade-24 of
+        # a delay on a 4-field cycle: |B| ~ 1e24, |C| ~ 1e-24).  Its transfer
+        # function is still right, but exponentials and Lyapunov solves are
+        # not: refuse, so the state-space Phase J route falls back to the
+        # pole route instead of returning wrong numbers.
+        raise RealizationRefused(
+            'ill_conditioned',
+            f'the realization is exactly Hurwitz but its rounded form is not '
+            f'(Lyapunov margin {margin}; |B| {float(np.abs(Bn).max()):.3g}, '
+            f'|C| {float(np.abs(Cn).max()):.3g}, N = {An.shape[0]})')
 
     entries = {}
     est = np.zeros((nf, nf), dtype=int)

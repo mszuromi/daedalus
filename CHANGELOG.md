@@ -11,6 +11,55 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: delay kernels (Padé loops with an automatic order, exact tree, kernel-aware stability, delay simulator)
+
+A kernel image with a factor `exp(-I*omega*d)` (`d > 0`) is a delay kernel. Before, the analyzer stopped such a
+model (`G3_NONRATIONAL_KERNEL`); now `compute_cumulants` computes it (`api/delay.py`). No number of a model
+without a delay changes.
+
+- **Front end.** `define_kernel('g', delay='d')` (the hard delay `delta(t - d)`; with `freq_image=` / `time_expr=`
+  a delayed filter), `define_kernel('g', kernel=Kernel.delay('d') * Kernel.exponential('tau'))`
+  (`api.delay.Kernel`: `delay`, `exponential`, `gamma`, `image`, products), a `time_expr` shifted by a delay
+  (`dirac_delta(t - d)`, `heaviside(t - d)*exp(-(t - d)/tau)/tau`), a hand-written `exp(-I*omega*d)` image, and in
+  the SDE front end a delayed field `x(t - d)` in a drift (rewritten as `Conv(delay_d, x)`). Mean field: the
+  delay leaves `g_hat(0)` unchanged (exact).
+- **Loops: Padé (n, n).** Each delay factor is replaced by its diagonal Padé approximant `P_n(-z)/P_n(z)`,
+  `z = i omega d` (all-pass, exact rational coefficients), and the approximated model runs on the ordinary
+  pipeline (state-space route). `delay={'order': 'auto'}` (default) doubles `n` from 4 until the estimated
+  relative error of the observable, `max_tau |C_n - C_2n| / max_tau |C_2n|` (conservative), meets `tol`
+  (default `1e-8`), or `n_max` (32), or the predicted wall time of the next order exceeds `wall_max` (900 s); an
+  order the engine cannot finish, or whose difference grows, ends the search at the previous order.
+  `delay={'order': n}` fixes it. The result carries `result['delay']` (orders run, walls, the estimate, whether
+  the target was met), the finding `G3_DELAY_APPROXIMATED` (a warning when the target is missed, with a
+  `DelayOrderWarning`) and the ledger entry `approximation delay:<kernel>`.
+- **Tree: exact.** For `k = 2` the tree is the exact stationary covariance of the linear delayed system
+  (`api/_delay_exact.py`: `K = K0 + K1 e^{-s d}` realized exactly, a boundary-value problem on `[0, d]` plus the
+  method of steps as one matrix exponential; delayed noise and delta parts included), not its Padé approximation.
+  `delay={'tree': 'pade'}` or `DAEDALUS_DELAY_EXACT_TREE=0` switches it off. One delay value; several delays use
+  the Padé tree (recorded in `result['delay']['tree_note']`).
+- **Stability: G2-K.** The saddle's stability is decided from `det K(s)` with the TRUE kernel images
+  (`api/_kernel_stability.py`): Lambert W for one field with one delay, otherwise the argument principle on a
+  half disc whose radius is certified against the leading term. An unstable delayed saddle is refused by name
+  (`G2_UNSTABLE_SADDLE`, with the roots), a marginal one by `G2_MARGINAL_MODE`, a neutral system by the new
+  `G2_NEUTRAL_DELAY`, an advance (`exp(+i omega d)`) by `G3_ACAUSAL_POLE`. G2-K also runs for every model with a
+  rational kernel (the mean-field linearization replaces each kernel by its integral): `G2_KERNEL_STABILITY`
+  (info) when stable; `G2_KERNEL_UNSTABLE` (warning, never a new error for a model accepted before) when not; a
+  propagator pole below the axis that G3 used to call `G3_ACAUSAL_POLE` is then named `G2_UNSTABLE_SADDLE`.
+  New traits: `delays`, `kernel_stability`, `n_unstable_roots`; `propagator_class` gains `'delay'`
+  (`'delay-rational'` in a result).
+- **Simulator.** `simulations/delay_sde_sim.py`: Euler-Maruyama with a ring-buffer history for delayed SDEs
+  (numpy, vectorised over paths, no processes), an autocovariance estimator with batch-means errors, and the exact
+  stationary autocovariance of the scheme itself for linear scalar models (to separate statistics from the
+  `O(dt)` bias).
+
+#### Fixed: the state-space route returned wrong numbers for some high-order rational kernels
+
+`api._realization.realize_K` now refuses (`RealizationRefused('ill_conditioned')`) a realization that is exactly
+Hurwitz (Routh) but whose rounded matrices are not numerically (Lyapunov margin <= 0): graded beyond double
+precision. The state-space Phase J route then falls back to the pole route. Seen on a 4-field model with a
+Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e24 .. 1e35): C came out ~1e13 with no warning; it now equals the
+pole engine's value. Models whose realization was accepted before are unchanged.
+
 #### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
 
 The state-space subset integrator below is now used for every subset it can take; `DAEDALUS_PHASE_J_ENGINE=poles`
