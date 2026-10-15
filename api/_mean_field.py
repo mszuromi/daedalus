@@ -341,6 +341,10 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
         sname = pspec['name']
         ib    = pspec.get('indexed_by') or []
         pop   = ib[0] if ib else None
+        if pop is None and len(populations) == 1:
+            # A scalar model (no ``indexed_by``) lives in its one (auto-
+            # injected) population, like a 1-element population model.
+            pop = populations[0]['name']
         size  = pop_size.get(pop, 0)
         if size == 0 or not hasattr(ns, sname):
             continue
