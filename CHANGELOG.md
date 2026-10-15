@@ -43,8 +43,11 @@ branch are bit-identical on the tracked zoo, including its alpha-kernel conducta
   - **Alpha kernel at equal rates (exact double pole) against its Markov embedding.**
     - Triples equal the embedding's `C_tau` to 1.3e-15.
     - Pairing and spectrum equal the embedding's to 4e-18.
-  - **Delayed exponential conductance kernel and the delayed-alpha 2-neuron Hawkes network (Padé 4).** Triples equal
-    `C_tau_by_ell` (see the item report).
+  - **Delayed exponential conductance kernel and the delayed-alpha 2-neuron Hawkes network (Padé 4).**
+    - Triples equal `C_tau_by_ell` (Hawkes: tree 1.3e-16, loop 2.4e-15; 262,472 loop states).
+    - Pairing and spectrum equal an independent dense resolvent to 1.2e-13 and 1.7e-14 (2 s and 5 s).
+    - The Phase J callables' quadrature of this model refuses long lags (a stiff segment), so there was no
+      quadrature value to compare with.
 
 #### Fixed: float-literal coupled drifts, partial `parameters=`, NaN lags (round 2, item 49)
 
