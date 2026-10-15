@@ -138,6 +138,14 @@ _PIPELINE_EXPORTS = {
     'inverse_transform':         'api.symbolic_out',
     'pair_with_kernel':          'api.symbolic_out',
     'AssumptionViolation':       'api.symbolic_out',
+    # symbolic loop level (C3): equal-time cumulants, kernel pairings and
+    # matrix-exponential triples as rational functions of the parameters
+    'symbolic_cumulant':         'api.symbolic_loop',
+    'symbolic_triple':           'api.symbolic_loop',
+    'SymbolicCumulant':          'api.symbolic_loop',
+    'SymbolicTriple':            'api.symbolic_loop',
+    'SymbolicLoopRefused':       'api.symbolic_loop',
+    'SaddleWarning':             'api.symbolic_loop',
 }
 
 

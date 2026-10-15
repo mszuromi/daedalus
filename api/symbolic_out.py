@@ -127,7 +127,26 @@ __all__ = [
     # stage C2
     'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
     'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
+    # stage C3 (api.symbolic_loop; resolved lazily, see __getattr__)
+    'symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
+    'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning',
 ]
+
+_C3_NAMES = ('symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
+             'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning')
+
+
+def __getattr__(name):
+    """Stage C3 lives in ``api.symbolic_loop`` (loop level, state-space
+    route); its entry points are reachable from here too."""
+    if name in _C3_NAMES:
+        from api import symbolic_loop
+        return getattr(symbolic_loop, name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_C3_NAMES))
 
 FORMAT_TAG = 'daedalus.symbolic_out/1'
 
