@@ -473,11 +473,36 @@ class truncation_scope:
         return False
 
 
-def _gram_factor(M):
-    """``X`` with ``X X^H = M`` for a numerically Hermitian positive
-    semidefinite ``M`` (rounding-level negative eigenvalues set to zero)."""
-    w, U = np.linalg.eigh(0.5 * (M + M.conj().T))
-    return U * np.sqrt(np.clip(w, 0.0, None))
+def _lyap_factor(a, b):
+    """A real (for real ``a``, ``b``) or complex factor ``Z`` (n x n) with
+    ``Z Z^H = P``, ``a P + P a^H + b b^H = 0`` (``a`` Hurwitz), computed
+    directly (Hammarling 1982, on the complex Schur form) instead of from
+    ``P``: the small singular values of ``Z`` keep their relative accuracy,
+    which an eigendecomposition of a computed ``P`` loses below
+    ``sqrt(eps) ||P||`` (seen: the Pade-16 entries of a two-neuron loop, whose
+    truncation through ``eigh(P)`` failed the a posteriori check by 1e-7).
+    For a real system ``P = Re(Z) Re(Z)^T + Im(Z) Im(Z)^T``, so a real
+    triangular factor comes from the QR decomposition of ``[Re Z, Im Z]^T``."""
+    T, Q = sl.schur(np.asarray(a, dtype=complex), output='complex')
+    n = T.shape[0]
+    bt = Q.conj().T @ np.asarray(b, dtype=complex).reshape(n)
+    U = np.zeros((n, n), dtype=complex)
+    for k in range(n - 1, -1, -1):
+        al, be = T[k, k], bt[k]
+        if be == 0:
+            continue
+        nu = abs(be) / np.sqrt(-2.0 * al.real)
+        U[k, k] = nu
+        if k:
+            rhs = -(T[:k, k] * (nu * nu) + bt[:k] * np.conj(be)) / nu
+            u = sl.solve_triangular(T[:k, :k] + np.conj(al) * np.eye(k), rhs)
+            U[:k, k] = u
+            bt[:k] = bt[:k] - u * (be / nu)
+    Z = Q @ U
+    if np.iscomplexobj(a) or np.iscomplexobj(b):
+        return Z
+    Rq = np.linalg.qr(np.hstack([Z.real, Z.imag]).T, mode='r')
+    return Rq.T
 
 
 def _equalize_bc(b, c):
@@ -490,20 +515,53 @@ def _equalize_bc(b, c):
     return b * sig, c / sig
 
 
+def _prebalance_siso(a, b, c):
+    """A diagonal (power-of-two) similarity of ``(a, b, c)`` that ungrades it
+    before the Gramians: the entry as given, ``a`` balanced alone, and the
+    augmented matrix ``[[a, b], [c, 0]]`` balanced (``scipy.linalg.
+    matrix_balance``), each with ``b`` / ``c`` equalised; the candidate with
+    the smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept (S1's per-entry
+    realizations balance ``a`` alone, which leaves ``b`` and ``c`` graded in
+    opposite directions on Pade entries: |b| ~ 1e12, |c| ~ 1e-12 at n = 16,
+    where the Gramians then lose everything below ~1e-16 relative).  The
+    transfer function is unchanged exactly."""
+    n = a.shape[0]
+    cands = [(a, *_equalize_bc(b, c))]
+    aug = np.zeros((n + 1, n + 1), dtype=np.result_type(a, b, c))
+    aug[:n, :n], aug[:n, n], aug[n, :n] = a, b, c
+    if np.all(np.isfinite(aug)):
+        _x, (sa, _p) = sl.matrix_balance(a, permute=False, separate=True)
+        sa = np.asarray(sa, dtype=float)
+        if not np.all(sa == 1.0):
+            cands.append((a * (sa[None, :] / sa[:, None]), *_equalize_bc(b / sa, c * sa)))
+        _x, (sg, _p) = sl.matrix_balance(aug, permute=False, separate=True)
+        sg = np.asarray(sg, dtype=float)
+        if not np.all(sg == 1.0):
+            S, sn = sg[:n], sg[n]
+            cands.append((a * (S[None, :] / S[:, None]),
+                          *_equalize_bc(b * (sn / S), c * (S / sn))))
+
+    def cost(abc):
+        a_, b_, c_ = abc
+        return max(float(np.abs(a_).sum(axis=0).max()),
+                   float(np.abs(b_).sum()) * float(np.abs(c_).max()))
+    return min(cands, key=cost)
+
+
 def hankel_singular_values(a, b, c):
     """Hankel singular values of the stable SISO ``(a, b, c)``, descending:
-    ``sqrt(eig(P Q))`` from the controllability / observability Gramians
-    (``lyapunov_refined``), as the singular values of ``L^H R``
-    (``P = R R^H``, ``Q = L L^H``), after a power-of-two equalisation of
-    ``b`` and ``c``.  Returns ``(sigma, R, L, U, Vh, b_eq, c_eq)``
-    (``L^H R = U diag(sigma) Vh``; the factors belong to ``(a, b_eq,
-    c_eq)``)."""
-    b, c = _equalize_bc(np.asarray(b).reshape(-1), np.asarray(c).reshape(-1))
-    P = lyapunov_refined(a, np.outer(b, b.conj()))
-    Q = lyapunov_refined(a.conj().T, np.outer(c.conj(), c))
-    Rf, Lf = _gram_factor(P), _gram_factor(Q)
+    ``sqrt(eig(P Q))`` from the controllability / observability Gramians,
+    as the singular values of ``L^H R`` (``P = R R^H``, ``Q = L L^H``, the
+    factors computed directly: ``_lyap_factor``), after a diagonal power-of-two
+    similarity (``_prebalance_siso``).  Returns ``(sigma, R, L, U, Vh, a_s,
+    b_s, c_s)`` (``L^H R = U diag(sigma) Vh``; the factors belong to the
+    similar realization ``(a_s, b_s, c_s)``)."""
+    a, b, c = _prebalance_siso(np.asarray(a), np.asarray(b).reshape(-1),
+                               np.asarray(c).reshape(-1))
+    Rf = _lyap_factor(a, b)
+    Lf = _lyap_factor(a.conj().T, c.conj())
     U, sv, Vh = np.linalg.svd(Lf.conj().T @ Rf)
-    return sv, Rf, Lf, U, Vh, b, c
+    return sv, Rf, Lf, U, Vh, a, b, c
 
 
 def _check_frequencies(lam):
@@ -531,26 +589,34 @@ def _siso_transfer(a, b, c, s):
 
 def balanced_truncation(a, b, c, tol, *, check=True):
     """Balanced truncation of the stable SISO realization ``g(s) = c (sI -
-    a)^{-1} b`` (square-root method; Moore 1981, Tombs & Postlethwaite 1987)
-    to the fewest states ``r`` with the H-infinity error bound
+    a)^{-1} b`` (square-root method on directly computed Gramian factors:
+    Moore 1981, Tombs & Postlethwaite 1987, Hammarling 1982) to the fewest
+    states ``r`` with the H-infinity error bound
 
         || g - g_r ||_inf <= 2 * sum_{i > r} sigma_i <= tol * sigma_1
 
     (``sigma_i`` the Hankel singular values; ``sigma_1 <= ||g||_inf``, so the
-    bound is also relative to the entry's H-infinity norm).  The truncated
+    bound is also relative to the entry's H-infinity norm; the recorded bound
+    adds ``4 n eps sigma_1`` for the rounding of the computed ``sigma_i``).
+    The truncated
     realization is balanced, stable, real for a real ``(a, b, c)``.  States
     are kept (``r`` raised) where two Hankel singular values at the cut are
     equal to ``1e-8`` (BT's stability needs a strict gap).  ``check``: the
     error ``|g - g_r|`` is sampled on a frequency grid (``_check_frequencies``,
-    a lower bound of the true H-infinity error) and the truncation is
-    rejected when it exceeds the bound (a rounding failure; never seen on
-    the benchmarks).  Returns ``(a_r, b_r, c_r, info)``; ``(a, b, c, info)``
-    unchanged (the same arrays) when nothing can be discarded or the
-    truncation is rejected (``info['kept']`` says why)."""
+    a lower bound of the true H-infinity error); a truncation whose sampled
+    error exceeds ``tol * sigma_1`` (rounding: the computed Hankel singular
+    values near the cut carry absolute errors ~ eps sigma_1) is retried with
+    one more state, at most ``_TRUNC_RETRIES`` times, then rejected.  Returns
+    ``(a_r, b_r, c_r, info)`` -- ``info``: ``n``, ``r``, ``hsv``, ``bound``
+    (absolute) and ``bound_rel`` (``2 sum(discarded) / sigma_1``),
+    ``sampled_err_rel``, ``err_rel`` (the larger of the two: the error this
+    truncation is recorded with), ``kept`` (why nothing was discarded) --
+    or ``(a, b, c, info)`` unchanged (the same arrays) when nothing can be
+    discarded or the truncation is rejected."""
     a = np.asarray(a)
     n = a.shape[0]
     info = {'n': n, 'r': n, 'tol': float(tol), 'hsv': (), 'bound': 0.0,
-            'bound_rel': 0.0, 'sampled_err_rel': None, 'kept': None}
+            'bound_rel': 0.0, 'sampled_err_rel': None, 'err_rel': 0.0, 'kept': None}
     if n < 2 or not tol > 0:
         info['kept'] = 'trivial' if n < 2 else 'tol_zero'
         return a, b, c, info
@@ -558,45 +624,64 @@ def balanced_truncation(a, b, c, tol, *, check=True):
     if not np.all(lam.real < 0):
         info['kept'] = 'not_hurwitz'
         return a, b, c, info
-    sv, Rf, Lf, U, Vh, be, ce = hankel_singular_values(a, b, c)
+    try:
+        sv, Rf, Lf, U, Vh, ae, be, ce = hankel_singular_values(a, b, c)
+    except (np.linalg.LinAlgError, ValueError, FloatingPointError) as exc:
+        info['kept'] = f'gramians_failed ({type(exc).__name__})'
+        return a, b, c, info
     info['hsv'] = tuple(float(x) for x in sv)
-    s1 = float(sv[0])
+    s1 = float(sv[0]) if sv.size else 0.0
     if not (s1 > 0 and np.all(np.isfinite(sv))):
         info['kept'] = 'gramians_failed'
         return a, b, c, info
+    real = not (np.iscomplexobj(a) or np.iscomplexobj(b) or np.iscomplexobj(c))
     tail = 2.0 * np.concatenate([np.cumsum(sv[::-1])[::-1], [0.0]])
-    r = int(np.argmax(tail <= tol * s1))
-    while 0 < r < n and sv[r - 1] - sv[r] <= 1e-8 * sv[r - 1]:
+    r = max(int(np.argmax(tail <= tol * s1)), 1)
+    while r < n and sv[r - 1] - sv[r] <= 1e-8 * sv[r - 1]:
         r += 1
-    r = max(r, 1)
     if r >= n:
         info['kept'] = 'no_small_hsv'
         return a, b, c, info
-    srt = np.sqrt(sv[:r])
-    T = (Rf @ Vh[:r].conj().T) / srt
-    W = (Lf @ U[:, :r]) / srt
-    ar = W.conj().T @ a @ T
-    br = W.conj().T @ be
-    cr = ce @ T
-    if not np.iscomplexobj(a) and not np.iscomplexobj(b) and not np.iscomplexobj(c):
-        ar, br, cr = ar.real, br.real, cr.real
-    bound = float(tail[r])
-    info.update(r=r, bound=bound, bound_rel=bound / s1)
-    lam_r = np.linalg.eigvals(ar)
-    if not (np.all(np.isfinite(ar)) and np.all(lam_r.real < 0)):
-        info.update(r=n, kept='truncated_not_hurwitz')
-        return a, b, c, info
+    s = None
     if check:
         w = _check_frequencies(lam)
-        s = 1j * np.concatenate([w, -w[w > 0]]) if np.iscomplexobj(a) or np.iscomplexobj(b) \
-            or np.iscomplexobj(c) else 1j * w
-        err = float(np.max(np.abs(_siso_transfer(a, be, ce, s) - _siso_transfer(ar, br, cr, s))))
-        info['sampled_err_rel'] = err / s1
-        # rounding allowance: the two transfer functions are evaluated in double
-        if not err <= bound * (1.0 + 1e-6) + 1e-13 * s1:
-            info.update(r=n, kept=f'check_failed (sampled {err / s1:.3g} > bound {bound / s1:.3g})')
-            return a, b, c, info
-    return ar, np.ascontiguousarray(br), np.ascontiguousarray(cr), info
+        s = 1j * w if real else 1j * np.concatenate([w, -w[w > 0]])
+        g = _siso_transfer(ae, be, ce, s)
+    why = None
+    for _attempt in range(_TRUNC_RETRIES + 1):
+        if r >= n:
+            break
+        srt = np.sqrt(sv[:r])
+        T = (Rf @ Vh[:r].conj().T) / srt
+        W = (Lf @ U[:, :r]) / srt
+        ar, br, cr = W.conj().T @ ae @ T, W.conj().T @ be, ce @ T
+        if real:
+            ar, br, cr = ar.real, br.real, cr.real
+        if not (np.all(np.isfinite(ar)) and np.all(np.linalg.eigvals(ar).real < 0)):
+            why = 'truncated_not_hurwitz'
+            r += 1
+            continue
+        err = 0.0
+        if check:
+            err = float(np.max(np.abs(g - _siso_transfer(ar, br, cr, s)))) / s1
+            if not err <= max(tol, 1e-14) * (1.0 + 1e-9):
+                why = f'check_failed (sampled {err:.3g} > tol {tol:.3g})'
+                r += 1
+                continue
+        # the computed Hankel singular values carry absolute errors of a few
+        # eps sigma_1 (backward-stable SVD of L^H R): added to the bound
+        bound = float(tail[r]) + 4.0 * n * np.finfo(float).eps * s1
+        info.update(r=r, bound=bound, bound_rel=bound / s1,
+                    sampled_err_rel=err if check else None,
+                    err_rel=max(bound / s1, err), kept=None)
+        return (np.ascontiguousarray(ar), np.ascontiguousarray(br),
+                np.ascontiguousarray(cr), info)
+    info.update(r=n, kept=why or 'no_small_hsv')
+    return a, b, c, info
+
+
+#: Retries (one more state each) of a truncation that fails its check.
+_TRUNC_RETRIES = 3
 
 
 def truncate_entry(ent, tol, *, check=True):
