@@ -46,6 +46,33 @@ No number that was computed before moves: only runs that came back incomplete ta
 - **Limit.** The 2-neuron spike-only one loop exceeds the Phase J memory guard (estimate about 122 GB over 1,446
   diagrams: every leg is a dressed line). Its voltage form runs.
 
+#### Added: noise library, finite-moment Levy sources and samplers (round 2, item 48)
+
+No existing number moves (existing noise tests unchanged, zoo bit-identical).
+
+- **New sources** (`api/noise.py`, each one per-unit-time CGF, parameter domains checked with clear errors):
+  `VarianceGamma`, `NormalInverseGaussian`, `CGMY` (`Y < 2`, `Y` not 0 or 1), `TemperedStableSubordinator`,
+  `Meixner`, `BilateralGamma`, `Skellam`, `NegativeBinomialProcess`, and `SumSource` (`a + b` on sources).
+- **New jump laws** for `CompoundPoisson`: `Geometric`, `PoissonJump`, `NegativeBinomial`, `Logarithmic`,
+  `DoubleExponential` (Kou), `AsymmetricLaplace`, `Hyperexponential`, `PhaseType(alpha, T)` (rational MGF;
+  Erlang / hyperexponential / Coxian), `ChiSquared` (exact gamma), and the moment-series laws `LogNormal`, `Weibull`
+  whose CGF is a **truncated series** to a requested `order`: cumulants or action orders above it are refused.
+- **Composites**: `merton_jump_diffusion`, `kou_jump_diffusion`, `levy_driven_ou`. Telegraph noise and Markov-modulated
+  Poisson are expressible at the action level (state-dependent Poisson) but not usable by the perturbative pipeline;
+  see `docs/noise_library.md`.
+- **Samplers** (`api/noise_samplers.py`): `source.sample(dt, size, rng, values=None)` and `jump.sample(rng, size)`;
+  exact increments for every source except CGMY with `1 < Y < 2` (controlled Gaussian small-jump approximation) and
+  `Meixner` (numerical inversion of the exact density); `simulate_ou_paths` is the Levy-driven OU simulator.
+- Inline `sde:` config blocks accept the new source types.
+
+#### Fixed: a declared parameter named `e` was read as Euler's number (round 2, item 48)
+
+`SDE().parameter('e', ...)` with `Poisson(rate='e', size='e')` printed `exp(1)` in the action while the drift's `e` was
+the parameter, a silently wrong action and saddle. `SDE.parameter / field / define_function / define_kernel / noise(expose=)`
+now refuse the names `e`, `pi`, `I`, the keywords (`sum`, `for`, `in`, `if`, `else`, `range`, `Dt`, `Conv`, `t`, `theta`),
+Python keywords and the elementary-function names with `SDEError` (population labels only refuse `Dt`, `Conv`, `t`,
+`theta` and Python keywords: they are loop-set labels, never symbols; `I` stays a valid population name).
+
 #### Added: matrix-exponential triples for conductance-kernel and delay-kernel models (S4b)
 
 Models with field × Conv (conductance) vertices now have triples, so `integrate_against` and `spectrum` are exact

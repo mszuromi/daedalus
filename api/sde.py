@@ -57,6 +57,7 @@ gives the same model.
 """
 from __future__ import annotations
 
+import keyword
 import re
 from collections import OrderedDict
 from typing import Optional
@@ -76,6 +77,21 @@ class SDEError(NoiseError):
 _KEYWORDS = {'sum', 'for', 'in', 'Dt', 'Conv', 'I', 'pi', 'e',
              'if', 'else', 'range'} | set(_MATH_FUNCS)
 _DT = SR.var('Dt')
+_NO_DECLARE = _KEYWORDS | {'theta', 't'}
+_NO_POPULATION = {'Dt', 'Conv', 'theta', 't'}
+
+
+def _check_declarable(name, kind):
+    """Refuse a declared name that is a built-in constant, keyword or math
+    function.  ``e``, ``pi`` and ``I`` are the Sage constants inside noise
+    parameters, so a declared ``e`` was read as Euler's number there but as
+    the parameter elsewhere (a silently wrong action and saddle)."""
+    bad = (name in _NO_POPULATION or keyword.iskeyword(name)) if kind == 'population' \
+        else (name in _NO_DECLARE or keyword.iskeyword(name))
+    if bad:
+        raise SDEError(
+            f'{kind} name {name!r} is reserved (built-in constant, keyword or '
+            f'function); choose another name (e.g. {name}0).')
 
 
 def _split_top_level(text: str, sep: str = ','):
@@ -122,6 +138,7 @@ class SDE:
 
     # ── declarations (passed through to TemporalModelBuilder) ─────────
     def population(self, name: str, *, size: int = 1, description: str = ''):
+        _check_declarable(name, 'population')
         self._pops.append({'name': name, 'size': max(int(size), 1),
                            'description': description})
         return self
@@ -131,6 +148,7 @@ class SDE:
               latex: str = ''):
         """Declare a physical field (its response field is ``<name>t``)."""
         self._check_new_name(name)
+        _check_declarable(name, 'field')
         self._fields[name] = {'population': population, 'description': description,
                               'domain': domain, 'latex': latex, 'exposed': None}
         return self
@@ -138,8 +156,7 @@ class SDE:
     def parameter(self, name: str, default=None, indexed=False,
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
-        if name == 'theta':
-            raise SDEError("'theta' is reserved for the CGF variable.")
+        _check_declarable(name, 'parameter')
         self._params.append(((name,), dict(default=default, indexed=indexed,
                                            domain=domain, description=description,
                                            indexed_by=indexed_by)))
@@ -149,6 +166,7 @@ class SDE:
     def define_function(self, name: str, args: list, expression: str,
                         latex: Optional[str] = None, description: str = '',
                         population: Optional[str] = None):
+        _check_declarable(name, 'function')
         self._functions.append(((name, list(args), expression),
                                 dict(latex=latex, description=description,
                                      population=population)))
@@ -164,6 +182,7 @@ class SDE:
         ``freq_image``, optionally delayed by ``delay`` (``g(t - d)``; the hard
         delay ``delta(t - d)`` alone), or ``kernel=Kernel.delay('d') *
         Kernel.exponential('tau')`` (:class:`api.delay.Kernel`)."""
+        _check_declarable(name, 'kernel')
         if kernel is not None:
             if time_expr is not None or freq_image is not None or delay is not None:
                 raise SDEError(f'define_kernel({name!r}): give kernel= alone.')
@@ -284,6 +303,7 @@ class SDE:
                            f'or expose=<field name>.')
         if expose is not None:
             self._check_new_name(expose)
+            _check_declarable(expose, 'exposed field')
             self._fields[expose] = {'population': population, 'description':
                                     f'exposed noise source {name}', 'domain': domain,
                                     'latex': '', 'exposed': name}
