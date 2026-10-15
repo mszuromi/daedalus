@@ -125,12 +125,15 @@ proof above holds unchanged on ``(t_min, ∞)``: (a), (b) and (d) are local in
 time, and (c) is simply not used.  As ``t_min -> -inf`` the first segment's
 state tends to the stationary one (every block is damped by a Hurwitz
 Kronecker sum), so the stationary result is the limit.
-``compute_cumulants(t_min=...)`` runs the whole Phase J stage inside
-:func:`switch_on_scope`, which sets ``final_integral.PHASE_J_T_MIN`` and
-makes this route the only one: a subset it declines, and a call-time
-refusal that would fall back to the pole route, raise
-:class:`SwitchOnUnsupported` instead (the pole engine's own finite-lower-
-bound paths are not used for these runs).
+``compute_cumulants(t_min=...)`` runs the whole Phase J stage, and every
+later call of the result's callables, inside :func:`switch_on_scope`: a
+thread-local bound that this route reads in place of
+``final_integral.PHASE_J_T_MIN`` (left untouched), and this route as the
+only one: a subset it declines, and a call-time refusal that would fall
+back to the pole route, raise :class:`SwitchOnUnsupported` instead (the
+pole engine's own finite-lower-bound paths are not used for these runs).
+The stationary states are neither built nor charged against the memory
+budget for these runs.
 
 Numerics
 --------
@@ -319,24 +322,29 @@ class SwitchOnUnsupported(ValueError):
             f'yet; drop t_min for the stationary result.')
 
 
-# switch-on scope (item 44): depth of nested ``switch_on_scope`` blocks
-_SWITCH_ON = {'depth': 0}
-_SWITCH_ON_LOCK = threading.Lock()
+# switch-on scope (item 44): the bound of the current thread (None: none)
+_SO_TL = threading.local()
 
 
 def switch_on_active():
-    """True inside :func:`switch_on_scope`."""
-    return _SWITCH_ON['depth'] > 0
+    """True inside :func:`switch_on_scope` (in this thread)."""
+    return getattr(_SO_TL, 't_min', None) is not None
+
+
+def _switch_on_t_min():
+    """The current thread's switch-on bound, or ``None``."""
+    return getattr(_SO_TL, 't_min', None)
 
 
 class switch_on_scope:
     """``with switch_on_scope(t_min): ...`` -- every Phase J evaluation in
-    the block starts the fluctuations at zero at the absolute time ``t_min``
-    (``final_integral.PHASE_J_T_MIN``) on this route only
-    (:class:`SwitchOnUnsupported` otherwise).  Restores the previous
-    ``PHASE_J_T_MIN`` on exit; nests (the innermost ``t_min`` holds).  The
-    bound and the flag are module state, like ``PHASE_J_T_MIN`` itself: one
-    switch-on run per process at a time (threads inside a run are fine)."""
+    the block, in this thread, starts the fluctuations at zero at the
+    absolute time ``t_min`` on this route only (:class:`SwitchOnUnsupported`
+    otherwise).  The bound is thread-local and read by this route's
+    ``_t_min_frame``; ``final_integral.PHASE_J_T_MIN`` itself is not touched
+    (the pole routes never see the bound, and a stationary evaluation in
+    another thread is unaffected).  Nests with the same ``t_min``; a
+    different ``t_min`` inside an active scope raises ``ValueError``."""
 
     def __init__(self, t_min):
         t = float(t_min)
@@ -350,18 +358,18 @@ class switch_on_scope:
         self._prev = None
 
     def __enter__(self):
-        FI = _FI()
-        with _SWITCH_ON_LOCK:
-            self._prev = FI.PHASE_J_T_MIN
-            FI.PHASE_J_T_MIN = self.t_min
-            _SWITCH_ON['depth'] += 1
+        prev = _switch_on_t_min()
+        if prev is not None and prev != self.t_min:
+            raise ValueError(
+                f'switch_on_scope({self.t_min!r}) inside an active switch-on '
+                f'scope at t_min = {prev!r}: one switch-on time per thread at '
+                f'a time')
+        self._prev = prev
+        _SO_TL.t_min = self.t_min
         return self
 
     def __exit__(self, *exc):
-        FI = _FI()
-        with _SWITCH_ON_LOCK:
-            _SWITCH_ON['depth'] -= 1
-            FI.PHASE_J_T_MIN = self._prev
+        _SO_TL.t_min = self._prev
         return False
 
 
@@ -2122,8 +2130,10 @@ class SubsetSS:
             t_min = float(FI.PHASE_J_T_MIN)
         except (TypeError, ValueError):
             t_min = None
-        if t_min != float('-inf'):
-            raise SSIneligible('finite_t_min', repr(FI.PHASE_J_T_MIN))
+        if t_min != float('-inf') or switch_on_active():
+            raise SSIneligible('finite_t_min', repr(
+                _switch_on_t_min() if switch_on_active()
+                else FI.PHASE_J_T_MIN))
         if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
                 r[4].kind == 'zero' for r in self.const_rows):
             return None
@@ -2470,7 +2480,8 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
     except SSIneligible as exc:
         return _decline(exc.reason)
     try:
-        _charge(sub)
+        if not switch_on_active():  # a switch-on run never builds them
+            _charge(sub)
     except FI.PhaseJResourceError:
         # the stationary states do not fit: the pole route takes the subset
         # when ITS plan would (the running guard then charges it), else the
@@ -2595,11 +2606,14 @@ def _pole_plan_fits(modes):
 
 
 def _t_min_frame(free_vals, tie_ctx):
-    """``final_integral.PHASE_J_T_MIN`` in the frame of one evaluation (as
-    ``final_integral._t_min_frame``, without its box-free-route
-    requirement, which concerns the pole routes only)."""
+    """``final_integral.PHASE_J_T_MIN`` -- or, inside
+    :func:`switch_on_scope`, the thread's switch-on bound -- in the frame of
+    one evaluation (as ``final_integral._t_min_frame``, without its
+    box-free-route requirement, which concerns the pole routes only)."""
     FI = _FI()
-    raw = FI.PHASE_J_T_MIN
+    raw = _switch_on_t_min()
+    if raw is None:
+        raw = FI.PHASE_J_T_MIN
     try:
         t = float(raw)
     except (TypeError, ValueError):

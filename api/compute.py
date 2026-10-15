@@ -766,14 +766,13 @@ def _attach_provenance(result, route, pf):
 # ── switch-on transients (item 44) ─────────────────────────────────────────
 
 def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
-                       initial_mean, *, spatial, grouped, saving):
+                       tau_grid, *, spatial, grouped, saving):
     """Validate the switch-on arguments of ``compute_cumulants`` (before any
     work).  ``None`` for a stationary run (``t_min=None``); otherwise the
-    request ``{'t_min', 'times' (n, k), 'initial_covariance',
-    'initial_mean'}``."""
+    request ``{'t_min', 'times' (n, k), 'initial_covariance'}``."""
     extra = [n for n, v in (('times', times),
-                            ('initial_covariance', initial_covariance),
-                            ('initial_mean', initial_mean)) if v is not None]
+                            ('initial_covariance', initial_covariance))
+             if v is not None]
     if t_min is None:
         if extra:
             raise ValueError(
@@ -801,6 +800,10 @@ def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
         raise ValueError(
             't_min: output_npz / output_csv do not support switch-on results '
             'yet; save result["times"] and result["C_times"] instead')
+    if tau_grid is not None:
+        raise ValueError(
+            't_min: tau_grid is the stationary lag grid; a switch-on run is '
+            'evaluated at the absolute times given by times=')
     if not _ss.engine_requested():
         raise _ss.SwitchOnUnsupported(
             'engine_poles', f'{_ss.ENGINE_ENV}=poles selects the pole engine')
@@ -821,25 +824,41 @@ def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
         raise ValueError(
             f'every time must be >= t_min = {t0!r} (the fluctuations start '
             f'at t_min); the earliest is {float(T.min())!r}')
-    init = {}
-    for name, val, kk in (('initial_covariance', initial_covariance, 2),
-                          ('initial_mean', initial_mean, 1)):
-        if val is None:
-            init[name] = None
-            continue
-        if k != kk:
-            raise ValueError(f'{name} applies to k = {kk} only (got k = {k})')
+    C0 = None
+    if initial_covariance is not None:
+        if k != 2:
+            raise ValueError(f'initial_covariance applies to k = 2 only (got '
+                             f'k = {k})')
         if max_ell != 0:
             raise NotImplementedError(
-                f'{name} with loops (max_ell = {max_ell}) is not implemented: '
-                f'the initial-state term is the tree-level (linear-response) '
-                f'one; pass max_ell=0')
-        a = np.asarray(val, dtype=float)
-        if a.ndim != (2 if kk == 2 else 1) or not np.all(np.isfinite(a)):
-            raise ValueError(f'{name} must be a finite '
-                             f'{"square matrix" if kk == 2 else "vector"}')
-        init[name] = a
-    return {'t_min': t0, 'times': T, **init}
+                f'initial_covariance with loops (max_ell = {max_ell}) is not '
+                f'implemented: the initial-state term is the tree-level one '
+                f'(loops need an initial-state vertex); pass max_ell=0')
+        C0 = np.asarray(initial_covariance, dtype=float)
+        if (C0.ndim != 2 or C0.shape[0] != C0.shape[1]
+                or not np.all(np.isfinite(C0))):
+            raise ValueError('initial_covariance must be a finite square '
+                             'matrix')
+    return {'t_min': t0, 'times': T, 'initial_covariance': C0}
+
+
+def _switch_on_wrap_td(td, t_min):
+    """Wrap the callables a switch-on run stores in ``phase_j_by_ell[ell]``
+    (``total_C``, ``total_C_batch``, each group's ``contribution``) so that
+    they, too, evaluate inside the scope (bare, they would give stationary
+    values)."""
+    if not isinstance(td, dict):
+        return
+    if callable(td.get('total_C')):
+        fn = _switch_on_callable(td['total_C'], t_min)
+        td['total_C'] = fn
+        if 'total_C_batch' in td:
+            td['total_C_batch'] = (
+                lambda tau_points, *a, _fn=fn, **kw:
+                [complex(_fn(*p)) for p in tau_points])
+    for g in td.get('groups') or ():
+        if isinstance(g, dict) and callable(g.get('contribution')):
+            g['contribution'] = _switch_on_callable(g['contribution'], t_min)
 
 
 def _switch_on_callable(fn, t_min):
@@ -857,14 +876,15 @@ def _switch_on_callable(fn, t_min):
 def _initial_state_term(so, propagator_data, num_params, external_fields,
                         phys_idx):
     """``(values at so['times'], callable)`` of the tree-level initial-state
-    term (``initial_covariance``: ``R(t1-t_min) C0 R(t2-t_min)^T``;
-    ``initial_mean``: ``R(t-t_min) m0``), or ``None`` without one.  ``R``:
-    the response from the model's realization (``statespace.
-    realization_for``); it must be the identity at ``0+`` (a first-order
-    model whose response index ``r`` is the equation of physical field
-    ``r``), so that ``C0`` / ``m0`` are the fluctuations themselves."""
-    C0, m0 = so['initial_covariance'], so['initial_mean']
-    if C0 is None and m0 is None:
+    term ``R(t1-t_min) C0 R(t2-t_min)^T`` (``initial_covariance``), or
+    ``None`` without one.  ``R``: the response from the model's realization
+    (``statespace.realization_for``); it must be the identity at ``0+`` (a
+    first-order model whose response index ``r`` is the equation of
+    physical field ``r``), so that ``C0`` is the covariance of the
+    fluctuations themselves.  ``C0`` enters like a noise vertex at
+    ``t_min``, so at k = 2 this is the whole tree term."""
+    C0 = so['initial_covariance']
+    if C0 is None:
         return None
     from engine.integration.time_domain import statespace as _ss
     ops, why = _ss.realization_for(propagator_data, num_params)
@@ -872,13 +892,10 @@ def _initial_state_term(so, propagator_data, num_params, external_fields,
         raise _ss.SwitchOnUnsupported(
             why, 'the initial-state term needs the model realization')
     nf = int(propagator_data['nf'])
-    shape = (nf, nf) if C0 is not None else (nf,)
-    given = C0 if C0 is not None else m0
-    if given.shape != shape:
+    if C0.shape != (nf, nf):
         raise ValueError(
-            f'{"initial_covariance" if C0 is not None else "initial_mean"} '
-            f'must have shape {shape} (the {nf} physical field(s) in their '
-            f'internal order), got {given.shape}')
+            f'initial_covariance must have shape {(nf, nf)} (the {nf} physical '
+            f'field(s) in their internal order), got {C0.shape}')
 
     def R(p, r, t):
         ent = ops.entry(p, r)
@@ -893,7 +910,7 @@ def _initial_state_term(so, propagator_data, num_params, external_fields,
             v = R(p, r, 0.0)
             if abs(v - (1.0 if p == r else 0.0)) > 1e-12:
                 raise ValueError(
-                    'initial_covariance / initial_mean need a first-order '
+                    'initial_covariance needs a first-order '
                     'model whose response at 0+ is the identity (response '
                     f'index r = the equation of physical field r); here '
                     f'R[{p}, {r}](0+) = {v!r}')
@@ -901,12 +918,9 @@ def _initial_state_term(so, propagator_data, num_params, external_fields,
     t0 = so['t_min']
 
     def term(*ext):
-        if C0 is not None:
-            a = np.array([R(legs[0], r, ext[0] - t0) for r in range(nf)])
-            b = np.array([R(legs[1], r, ext[1] - t0) for r in range(nf)])
-            return complex(a @ C0 @ b)
         a = np.array([R(legs[0], r, ext[0] - t0) for r in range(nf)])
-        return complex(a @ m0)
+        b = np.array([R(legs[1], r, ext[1] - t0) for r in range(nf)])
+        return complex(a @ C0 @ b)
 
     vals = np.array([term(*row) for row in so['times']], dtype=complex)
     return vals, term
@@ -930,11 +944,9 @@ def _ledger_switch_on(preflight, so):
         return
     ctx = preflight.ctx
     ctx.ledger[:] = [e for e in ctx.ledger if e.name != 'stationary_state']
-    init = ('the fluctuations at t_min are zero' if (
-        so['initial_covariance'] is None and so['initial_mean'] is None)
-        else 'plus the tree-level initial-state term of '
-        + ('initial_covariance' if so['initial_covariance'] is not None
-           else 'initial_mean'))
+    init = ('the fluctuations at t_min are zero'
+            if so['initial_covariance'] is None else
+            'plus the tree-level term of initial_covariance')
     emb = _embedded_noise_states(preflight.ctx.model)
     ctx.ledger_add('approximation', 'switch_on_state',
                    f'switch-on transient: fluctuations about the selected '
@@ -956,11 +968,12 @@ def _switch_on_check(result, failures, model_name):
                 failures, model_name), result=result, failures=failures)
     for ell, td in (result.get('phase_j_by_ell') or {}).items():
         if td and (td.get('delta_contributions')
-                   or td.get('delta_contributions_multi')):
+                   or td.get('delta_contributions_multi')
+                   or td.get('n_delta_subsets_dropped')):
             raise _ss.SwitchOnUnsupported(
                 'delta_components', f'ell = {ell} has δ(t) components (an '
-                f'instantaneous response); their switch-on weights are not '
-                f'implemented')
+                f'instantaneous response; recorded or dropped shot-noise '
+                f'subsets); their switch-on weights are not implemented')
 
 
 def compute_cumulants(
@@ -999,7 +1012,6 @@ def compute_cumulants(
     t_min: float = None,             # switch-on transients: fluctuations start at 0 at this absolute time
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
-    initial_mean=None,               # with t_min (k=1, tree): mean of the fluctuations at t_min
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1133,19 +1145,19 @@ def compute_cumulants(
         order of ``external_fields``) or ``(n,)`` (every leg at ``t``: the
         equal-time cumulant).  Every time must be ``>= t_min``; equal times
         are exact ties (no Itô nudge: the state-space route applies the
-        tie rule).  Values: ``result['C_times']``.
+        tie rule).  Values: ``result['C_times']``.  ``tau_grid`` (the
+        stationary lag grid) must not be given with ``t_min``.
     initial_covariance : array or None
         With ``t_min``, ``k = 2``, ``max_ell = 0``: an initial covariance
         ``C0`` of the fluctuations at ``t_min`` (square, over the physical
         fields in their internal order, ``result['propagator']['nf']``).
         The tree adds the deterministic term ``R(t1 - t_min) C0
-        R(t2 - t_min)^T`` (``R``: the response); loops with ``C0 != 0`` are
-        not implemented (raises).  Needs a first-order model whose response
-        at ``0+`` is the identity.
-    initial_mean : array or None
-        With ``t_min``, ``k = 1``, ``max_ell = 0``: an initial offset ``m0``
-        of the fluctuations at ``t_min``; the tree adds ``R(t - t_min) m0``
-        (linear response; the saddle is not moved).  Same requirements.
+        R(t2 - t_min)^T`` (``R``: the response), which is the whole tree
+        term of a Gaussian initial state (``C0`` enters like a noise vertex
+        at ``t_min``); loops with ``C0 != 0`` are not implemented (raises).
+        Needs a first-order model whose response at ``0+`` is the identity.
+        (A deterministic initial offset of the mean is not offered: its tree
+        is the full nonlinear relaxation, a time-dependent saddle.)
 
     Returns
     -------
@@ -1273,7 +1285,7 @@ def compute_cumulants(
             f'need tau_step > 0 and tau_max >= 0 (got tau_step={tau_step}, '
             f'tau_max={tau_max}), or pass an explicit tau_grid.')
     switch_on = _switch_on_request(
-        model, k, max_ell, t_min, times, initial_covariance, initial_mean,
+        model, k, max_ell, t_min, times, initial_covariance, tau_grid,
         spatial=(bool(model.get('spatial')) or spatial_grid is not None
                  or spatial_points is not None),
         grouped=use_grouped_phase_j,
@@ -1988,6 +2000,7 @@ def _run_phase_j(state, grouped):
                     C_tau_by_ell[ell] = np.array(
                         [complex(total_C_by_ell[ell](*pt))
                          for pt in so_points], dtype=complex)
+                _switch_on_wrap_td(td_result_ell, switch_on['t_min'])
             elif tau_points is not None:
                 with _phase_j_warning_scope():
                     C_tau_by_ell[ell] = np.array(
@@ -2017,10 +2030,15 @@ def _run_phase_j(state, grouped):
         _so_scope = _ctx.nullcontext()
     with _scope as _mem_scope, _so_scope:
         _bypassed = None
-        if prop.get('pole_deformation') is not None and ss_route[
-                'bypass_deformation']:
+        if prop.get('pole_deformation') is not None and (
+                ss_route['bypass_deformation'] or switch_on is not None):
             _bypassed = _phase_j_ss_bypass(_phase_j_pass, propagator_data,
                                            engine_report)
+            if _bypassed is None and switch_on is not None:
+                # the deformation averages pole-engine passes
+                from engine.integration.time_domain import statespace as _ssd
+                raise _ssd.SwitchOnUnsupported(
+                    'pole_deformation', engine_report.get('bypass_failed'))
         if _bypassed is not None:
             phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _bypassed
         elif prop.get('pole_deformation') is None:
@@ -2075,7 +2093,6 @@ def _run_phase_j(state, grouped):
             # model was built): their states start at zero as well
             'embedded_noise_states': _embedded_noise_states(model),
             'initial_covariance': switch_on['initial_covariance'],
-            'initial_mean': switch_on['initial_mean'],
             'initial_term': None}
         init = _initial_state_term(switch_on, propagator_data, num_params,
                                    external_fields, phys_idx)

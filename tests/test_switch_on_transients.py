@@ -302,6 +302,34 @@ def test_colored_ou_markov_embedded(legs):
         _close(res['C_times_by_ell'][1][p].real, COL_P['eps'] * m[(1,)], 1e-10)
 
 
+def test_repeated_pole_jordan_block():
+    """mu = gam: a repeated pole (Jordan block; the pole engine's deformation is bypassed): still exact."""
+    mu = gam = 0.8
+    D, eps = 0.9, 0.04
+    par = {'mu': mu, 'gam': gam, 'eps': eps, 'D': D}
+
+    def eA(t):
+        e = math.exp(-mu * t)
+        return np.array([[e, t * e], [0.0, e]])
+    syy = D / gam
+    sxy = syy / (mu + gam)
+    Sinf = np.array([[sxy / mu, sxy], [sxy, syy]])
+    T = [[0.5, 0.5], [0.3, 2.0], [2.0, 0.3], [4.0, 4.0]]
+    res = _run(_colored_embedded(), 2, 1, [X, Y], par, 0.0, T)
+    assert res['phase_j_engine']['pole_deformation'] == 'bypassed'
+    sde = im.PolySDE(D=2, n_tags=1)
+    sde.add_linear_drift(np.array([[-mu, 1.0], [0.0, -gam]]))
+    sde.drift.append((0, -1.0, (3, 0), (1,)))
+    sde.add_constant_diffusion(np.diag([0.0, 2 * D]))
+    for p, (t1, t2) in enumerate(T):
+        s_ = min(t1, t2)
+        S = Sinf - eA(s_) @ Sinf @ eA(s_).T
+        want = (S @ eA(t2 - t1).T)[0, 1] if t1 <= t2 else (eA(t1 - t2) @ S)[0, 1]
+        _close(res['C_times_by_ell'][0][p].real, want, 1e-13)
+        m = multi_time_moments(sde, [0, 1], [t1, t2], [(1,)])
+        _close(res['C_times_by_ell'][1][p].real, eps * m[(1,)], 1e-10)
+
+
 def test_coupled_two_field_cross_legs_one_loop():
     tm = 1.0
     T = np.array([[1.5, 1.5], [1.2, 3.0], [3.0, 1.2], [6.0, 6.5]])
@@ -325,16 +353,6 @@ def test_initial_covariance_tree_term():
     assert res['C_times'][0].real == pytest.approx(C0[0, 1], abs=1e-15)
     assert res['nonstationary']['initial_term'] is not None
     assert res['total_C'](0.3, 2.0) == pytest.approx(res['C_times'][2], rel=1e-15)
-
-
-def test_initial_mean_tree_term():
-    mu, gam = COL_P['mu'], COL_P['gam']
-    m0 = np.array([0.7, -0.4])
-    T = [0.0, 0.5, 3.0]
-    res = _run(_colored_embedded(), 1, 0, [X], COL_P, 0.0, T, initial_mean=m0)
-    for t, got in zip(T, res['C_times']):
-        want = math.exp(-mu * t) * m0[0] + (math.exp(-gam * t) - math.exp(-mu * t)) / (mu - gam) * m0[1]
-        _close(got.real, want, 1e-13, 1e-16)
 
 
 # ── B / C: the stationary limit and the stationary path ──────────────────────
@@ -366,15 +384,70 @@ def test_relaxation_to_the_stationary_value_is_monotone():
                                / (OU_P['D'] / OU_P['mu']), np.exp(-2 * OU_P['mu'] * s), rtol=1e-9, atol=2e-15)
 
 
-def test_scope_restores_the_engine_state():
+def test_scope_is_thread_local_and_restores():
     assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
     _run(_ou_cubic(), 2, 0, [X, X], OU_P, 0.0, [[1.0, 1.0]])
     assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='inside'):
         with SS.switch_on_scope(2.0):
-            assert FI.PHASE_J_T_MIN == 2.0 and SS.switch_on_active()
+            # the pole engine's module bound is never touched
+            assert FI.PHASE_J_T_MIN == float('-inf') and SS._switch_on_t_min() == 2.0
+            with SS.switch_on_scope(2.0):            # same bound: nests
+                assert SS._switch_on_t_min() == 2.0
+            assert SS._switch_on_t_min() == 2.0
+            with pytest.raises(ValueError, match='one switch-on time'):
+                with SS.switch_on_scope(3.0):
+                    pass
             raise ValueError('inside')
     assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
+
+
+def test_threads_do_not_leak_the_bound():
+    """Review finding: scopes closing out of order in threads used to leave the bound set, and a later stationary
+    run returned zeros.  Callables of a switch-on result evaluated from 8 threads, while another thread runs a
+    stationary evaluation: the stationary values are untouched and nothing leaks."""
+    from concurrent.futures import ThreadPoolExecutor
+    res = _run(_ou_cubic(), 2, 0, [X, X], OU_P, 0.0, [[1.0, 1.0]])
+    stat = AC.compute_cumulants(_ou_cubic(), k=2, max_ell=0, external_fields=[X, X], parameters=OU_P,
+                                tau_grid=np.array([0.5, 1.0]), use_cache=False, parallel=False, verbose=False)
+    st_fn = stat['total_C_by_ell'][0]
+    want = [complex(st_fn(0.0, 0.5)), complex(st_fn(0.0, 1.0))]
+
+    def job(i):
+        if i % 10 == 0:
+            return ('stat', complex(st_fn(0.0, 0.5)))
+        return ('so', complex(res['total_C'](1.0, 1.0)))
+    with ThreadPoolExecutor(8) as ex:
+        out = list(ex.map(job, range(400)))
+    assert {v for kind, v in out if kind == 'so'} == {res['C_times'][0]}
+    assert {v for kind, v in out if kind == 'stat'} == {want[0]}
+    assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
+    again = AC.compute_cumulants(_ou_cubic(), k=2, max_ell=0, external_fields=[X, X], parameters=OU_P,
+                                 tau_grid=np.array([0.5, 1.0]), use_cache=False, parallel=False, verbose=False)
+    np.testing.assert_array_equal(again['C_tau'], stat['C_tau'])
+    assert again['C_tau'][0].real == pytest.approx(OU_P['D'] / OU_P['mu'] * math.exp(-OU_P['mu'] * 0.5), rel=1e-14)
+
+
+def test_every_stored_callable_is_the_switch_on_one():
+    """Review finding: the closures kept in ``phase_j_by_ell`` used to evaluate the stationary integrals."""
+    from api import me_output
+    from api.save import save_npz
+    T = [[1.0, 1.0], [1.0, 2.0]]
+    res = _run(_ou_cubic(), 2, 1, [X, X], OU_P, 0.0, T)
+    for ell in (0, 1):
+        td = res['phase_j_by_ell'][ell]
+        for p, (t1, t2) in enumerate(T):
+            assert complex(td['total_C'](t1, t2)) == res['C_times_by_ell'][ell][p]
+            assert complex(res['total_C_by_ell'][ell](t1, t2)) == res['C_times_by_ell'][ell][p]
+            assert sum(complex(g['contribution'](t1, t2)) for g in td['groups']) == pytest.approx(
+                res['C_times_by_ell'][ell][p], rel=1e-14, abs=1e-300)
+        assert td['total_C_batch']([(1.0, 2.0)], parallel=True) == [res['C_times_by_ell'][ell][1]]
+    with pytest.raises(me_output.MEUnavailable, match='switch-on'):
+        me_output.from_result(res)
+    with pytest.raises(me_output.MEUnavailable, match='switch-on'):
+        me_output.slice_me(res)
+    with pytest.raises(NotImplementedError, match='C_times'):
+        save_npz(res, 'never_written.npz')
 
 
 # ── refusals: never silent, never the pole engine ─────────────────────────────
@@ -431,7 +504,8 @@ def test_non_markov_noise_kernel_refuses_t_min():
     (dict(t_min=0.0, times=[[1.0, 1.0]], use_grouped_phase_j=True), ValueError, 'grouped'),
     (dict(t_min=0.0, times=[[1.0, 1.0]], output_npz='x.npz'), ValueError, 'output_npz'),
     (dict(t_min=0.0, times=[[1.0, 1.0]], max_ell=1, initial_covariance=np.eye(1)), NotImplementedError, 'loops'),
-    (dict(t_min=0.0, times=[[1.0, 1.0]], initial_mean=np.ones(1)), ValueError, 'k = 1'),
+    (dict(t_min=0.0, times=[[1.0, 1.0]], tau_grid=np.array([0.5])), ValueError, 'tau_grid'),
+    (dict(t_min=0.0, times=[[1.0, 1.0]], initial_covariance=np.ones(2)), ValueError, 'square'),
 ])
 def test_argument_refusals(kw, exc, match):
     kw = dict(kw)
@@ -461,6 +535,10 @@ def test_dd_config_switch_on():
     import daedalus as dd
     with pytest.raises(ValueError, match='need t_min'):
         dd.Config(times=(0.0, 1.0, 3))
+    late = dd.Config(k=2, external_fields=[('x', 1), ('x', 1)], parameters=OU_P)
+    late.times = [[1.0, 1.0]]                     # set after construction: still refused
+    with pytest.raises(ValueError, match='need t_min'):
+        dd.run(_ou_cubic(), late)
     cfg = dd.Config(k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)], parameters=OU_P,
                     t_min=0.0, times=(0.0, 4.0, 5), verbose=False)
     res = dd.run(_ou_cubic(), cfg)

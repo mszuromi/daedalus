@@ -504,12 +504,11 @@ class Config:
     # order of external_fields), or 1-D / an (lo, hi, n) TUPLE (every leg at
     # t: the equal-time cumulant).  Values: result['C_times'] (by loop order:
     # result['C_times_by_ell']).  None (default): the stationary state.
-    # ``initial_covariance`` (k=2) / ``initial_mean`` (k=1), tree level only:
-    # the deterministic initial-state term R C0 R^T / R m0 (compute_cumulants).
+    # ``initial_covariance`` (k=2, tree level only): the covariance C0 of the
+    # fluctuations at t_min, adding R C0 R^T (compute_cumulants).
     t_min: Optional[float] = None
     times: Any = None
     initial_covariance: Any = None
-    initial_mean: Any = None
 
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
@@ -579,12 +578,14 @@ class Config:
         # at Config construction, not deep inside run().
         self.resolved_tau_grid()
         self.resolved_grid()
+        self._check_switch_on()
+
+    def _check_switch_on(self):
         if self.t_min is None and (self.times is not None
-                                   or self.initial_covariance is not None
-                                   or self.initial_mean is not None):
+                                   or self.initial_covariance is not None):
             raise ValueError(
-                'Config: times / initial_covariance / initial_mean need t_min '
-                '(a switch-on transient); without t_min the run is stationary.')
+                'Config: times / initial_covariance need t_min (a switch-on '
+                'transient); without t_min the run is stationary.')
         self.resolved_times()
 
     def resolved_times(self):
@@ -728,7 +729,6 @@ def config_options(spatial=None):
         ('t_min',            'switch-on transient: fluctuations start at 0 at this absolute time (None → stationary)'),
         ('times',            'with t_min: absolute times, (n, k) array, or 1-D / (lo,hi,n) TUPLE (all legs at t) → result["C_times"]'),
         ('initial_covariance', 'with t_min, k=2, tree: covariance C0 of the fluctuations at t_min (adds R C0 Rᵀ)'),
-        ('initial_mean',     'with t_min, k=1, tree: mean m0 of the fluctuations at t_min (adds R m0)'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
         ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ'),
@@ -1195,6 +1195,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['policy'] = cfg.policy
     if cfg.preflight is not None:
         kw['preflight'] = bool(cfg.preflight)
+    cfg._check_switch_on()            # fields may be set after construction
     if cfg.t_min is not None:
         # switch-on transient: absolute times, temporal cumulants only
         if is_spatial(model):
@@ -1210,8 +1211,6 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['times'] = cfg.resolved_times()
         if cfg.initial_covariance is not None:
             kw['initial_covariance'] = cfg.initial_covariance
-        if cfg.initial_mean is not None:
-            kw['initial_mean'] = cfg.initial_mean
 
     _kpoint_grid = None            # set below if a k≥3 spatial grid is built
     if is_spatial(model):
