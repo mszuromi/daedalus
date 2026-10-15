@@ -874,6 +874,8 @@ def _average_conv_placements(choices, kw):
 
     def contribution(*ext_time_values):
         return w * sum(complex(f(*ext_time_values)) for f in fns)
+    # the placements and their weight, for the state-space triples (S4b)
+    contribution.phase_j_placements = tuple((w, f) for f in fns)
 
     first = results[0]
     out = {k: (None if k == 'stripped_integrand' else first[k])
