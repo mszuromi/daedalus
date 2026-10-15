@@ -49,7 +49,8 @@ restores the pole engine everywhere (the dispatch then never imports the module,
   run; G6's accuracy estimate includes the route's a-posteriori estimate (refinement residuals and the Taylor
   tolerance per step on the final contraction's magnitude), so it is no longer 0 or missing on routed runs.
 
-- **Walls** (zoo, warm, default vs `poles`): small models at parity (0.9-1.07x; timed next to other runs);
+- **Walls** (zoo, warm, default vs `poles`, timed alone): small models within 1.05x (0.9-1.03x), except the
+  spike-reset family with hundreds of tiny delta subsets (1.08-1.15x: per-subset overhead of the route);
   `single_population_quad_exp_test` 11.3 s -> 1.1 s, `multipopulation_test` 3.0 s -> 1.2 s (no deformation runs),
   `ou_quartic` k = 4 two loops 6.0 s -> 4.0 s, grouped spike reset 1.8 s -> 1.0 s; a 3-field oscillator with red
   noise, k = 3 one loop, 5.6 s -> 2.4 s. Runs the pole pre-pass refuses now finish at the default budget:
