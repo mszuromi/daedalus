@@ -116,6 +116,25 @@ res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 
 For lower-level access the API layer is importable directly, e.g. `from api import compute_cumulants`.
 
+Models can also be declared line by line, without writing the action (`api/sde.py`): each line
+contributes its own action term (`.drift` / `.equation`, `.noise`, `.point_process`). A spike-only
+exponential Hawkes network whose rates filter the spike trains themselves:
+
+```python
+from api.sde import SDE
+from api.delay import Kernel
+from api import compute_cumulants
+m = (SDE('Hawkes').population('E', size=2)
+     .parameter('a', default=[1.0, 1.0], indexed_by=['E'])
+     .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])
+     .parameter('tau', default=2.0, domain='positive')
+     .parameter('w', default=[[0.4, 0.4], [0.4, 0.4]], indexed_by=['E', 'E'])
+     .define_kernel('r', kernel=Kernel.exponential('tau'))
+     .point_process('n', 'a*exp(Em + sum(w[i,j]*Conv(r, n[j]) for j in E))', population='E'))
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)])
+rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of the same model
+```
+
 ## Running from a config file
 
 The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, which the conda environment has):

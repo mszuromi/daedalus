@@ -288,8 +288,9 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         base[name] = v
     for f in sde._fields:
         base[f] = field_table(f)
-    for k in sde._kernels:
-        base[k] = kernel_table(k)
+    for k, spec in sde._kernels.items():
+        indexed = spec.get('indexed_by') or spec.get('indexed')
+        base[k] = kernel_table(k) if indexed else ('kernel', k, ())
     for (fname, args, expr), _kw in sde._functions:
         base[fname] = func_table(fname, args, expr)
 

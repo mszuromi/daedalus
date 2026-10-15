@@ -698,7 +698,14 @@ class SDE:
             if s.get('pp'):
                 self._check_pp(name, s['pp'])
                 continue
-            s['source'].validate(allowed_src)
+            try:
+                s['source'].validate(allowed_src)
+            except NoiseError as exc:
+                if s['expose'] and 'Conv' in str(exc):
+                    raise SDEError(f'noise({name!r}): {exc} A spike train whose rate filters '
+                                   f'fields (Conv) is declared with point_process({s["expose"]!r}, '
+                                   f'rate=...).') from exc
+                raise
             for f, c in s['couples'].items():
                 if f not in self._fields:
                     raise SDEError(f'noise({name!r}): couples to undeclared field {f!r}.')
