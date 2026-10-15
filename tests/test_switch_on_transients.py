@@ -470,3 +470,5 @@ def test_dd_config_switch_on():
     assert res['C_times'][0] == 0 and 'C_tau_slices' not in res
     with pytest.raises(NotImplementedError, match='C_times'):
         dd.plot_cumulant(res, cfg)
+    with pytest.raises(NotImplementedError, match='C_times'):
+        dd.cumulant(res)

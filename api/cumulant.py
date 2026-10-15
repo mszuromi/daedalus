@@ -451,6 +451,11 @@ class Cumulant:
             raise NotImplementedError(
                 'δ components are defined for temporal results; spatial '
                 'results have no Phase J δ records')
+        if result.get('t_min') is not None:
+            raise NotImplementedError(
+                'a switch-on result (t_min) is a function of the absolute '
+                "times: use result['C_times'] / result['total_C'] (the "
+                'Cumulant object describes stationary lags)')
         grouped = bool(cfg.get('use_grouped_phase_j'))
         source = 'phase_j_grouped' if grouped else 'phase_j_per_diagram'
         deltas, reasons = [], []
