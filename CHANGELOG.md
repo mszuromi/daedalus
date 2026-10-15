@@ -16,7 +16,7 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 Models with field × Conv (conductance) vertices now have triples, so `integrate_against` and `spectrum` are exact
 for them as well (one resolvent solve per block instead of quadrature). No number of `C_tau`, `C_tau_by_ell`, the
 callables or the δ records moves: the only change on the compute path is one attribute on a closure. Main and the
-branch are bit-identical on the tracked zoo, including `quadratic_hawkes_alpha`.
+branch are bit-identical on the tracked zoo, including its alpha-kernel conductance (Hawkes) model.
 
 - **Why they had none.** A conductance diagram whose kernel slots can be filled in several ways is integrated as
   the average of its placements. That averaged contribution did not expose its subsets. It now lists its placements
