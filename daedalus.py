@@ -117,6 +117,27 @@ _PIPELINE_EXPORTS = {
     'cumulant':                  'api.cumulant',
     'Cumulant':                  'api.cumulant',
     'DeltaComponent':            'api.cumulant',
+    'ModeTerm':                  'api.cumulant',
+    # matrix-exponential triples of the smooth part (C0, state-space S4):
+    # dd.cumulant(result).me / .modes / .integrate_against / .spectrum
+    'CumulantME':                'api.me_output',
+    'RationalKernel':            'api.me_output',
+    'MEUnavailable':             'api.me_output',
+    'MEFallbackWarning':         'api.me_output',
+    'MEConditioningWarning':     'api.me_output',
+    'slice_me':                  'api.me_output',
+    # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
+    'tree_covariance':           'api.symbolic_out',
+    'tree_covariance_from_result': 'api.symbolic_out',
+    'TreeCovariance':            'api.symbolic_out',
+    'tree_modes':                'api.symbolic_out',
+    'ModeSum':                   'api.symbolic_out',
+    'Kernel':                    'api.symbolic_out',
+    'KernelIntegral':            'api.symbolic_out',
+    'integrate_against':         'api.symbolic_out',
+    'inverse_transform':         'api.symbolic_out',
+    'pair_with_kernel':          'api.symbolic_out',
+    'AssumptionViolation':       'api.symbolic_out',
 }
 
 

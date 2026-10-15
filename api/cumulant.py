@@ -34,12 +34,27 @@ The spectrum is ``S(ω) = ∫ dτ e^{-iωτ} C(τ)`` with the same τ, so the δ
 weights add the flat floor ``Σ w`` (times ``e^{-iω τ0}`` for a spike off
 τ = 0).
 
-``modes`` is the documented slot for the exponential-mode representation of
-the smooth part (item C0); it is ``None`` until that is computed.  One term is
-a :class:`ModeTerm` ``(coeff, rate, power, side)``: ``coeff · τ**power ·
-exp(rate · τ)`` on ``side`` ('+' for τ > 0, '-' for τ < 0, or an ordering
-label of the external times for k >= 3).  The tree-level symbolic output of
-item 23 uses the same field names.
+C0 output (state-space stage S4, ``api.me_output``).  For a k = 2 result
+computed on the state-space route the smooth part is also held as
+matrix-exponential triples, one per loop order and side, assembled from the
+same subsets, prefactors and Wick permutations as ``C_tau``::
+
+    c.me                             # CumulantME: c.me.sides[ell]['+'].triple()
+    c.me(tau)                        # C(τ) from the triples (any τ, exact τ = 0⁻)
+    c.modes                          # {ell: [ModeTerm, ...]} derived on request
+    c.integrate_against(kernel)      # ∫ L(τ) C(τ) dτ: resolvents + δ contact
+    c.spectrum(omega)                # c (iω − G)^{-1} x0 + mirror + δ floor
+
+One mode term is a :class:`ModeTerm` ``(coeff, rate, power, side)``:
+``coeff · τ**power · exp(rate · τ)`` on ``side`` ('+' for τ > 0, '-' for
+τ < 0).  The tree-level symbolic output of item 23 (``ModeSum``) uses the
+same field names (its sides are spelled 'positive' / 'negative').  Where the
+triples are not available ``c.me_reasons`` says why (``c.me`` is ``None`` for
+a loaded file or k ≠ 2, and lists per-loop-order ``reasons`` when, e.g., a
+subset is on the pole route; k >= 3 slices: ``api.me_output.slice_me``);
+``spectrum`` and
+``integrate_against`` then integrate the Phase J callables numerically and
+say so (:class:`~api.me_output.MEFallbackWarning`).
 """
 
 from __future__ import annotations
@@ -399,7 +414,7 @@ class Cumulant:
 
     def __init__(self, k, tau, smooth_by_ell, deltas, *, smooth_fns=None,
                  complete=True, incomplete_reasons=(), external_fields=None,
-                 modes=None, source=None):
+                 modes=None, source=None, result=None):
         self.k = int(k)
         self.tau = None if tau is None else np.asarray(tau, dtype=float)
         self.smooth_by_ell = {int(e): (None if v is None
@@ -410,10 +425,14 @@ class Cumulant:
         self.complete = bool(complete)
         self.incomplete_reasons = list(incomplete_reasons)
         self.external_fields = external_fields
-        #: exponential-mode sum of the smooth part (item C0): ``None`` until
-        #: computed, then ``{ell: [ModeTerm, ...]}``
-        self.modes = modes
+        # exponential-mode sum of the smooth part (item C0): given, or
+        # derived from the triples on first use (``modes``)
+        self._modes = modes
         self.source = source
+        # the live result the triples are built from (``me``)
+        self._result = result
+        self._me = None
+        self._me_reasons = None
 
     # ── construction ────────────────────────────────────────────────────
     @classmethod
@@ -474,7 +493,7 @@ class Cumulant:
                    complete=not reasons, incomplete_reasons=reasons,
                    external_fields=cfg.get('external_fields_in',
                                            cfg.get('external_fields')),
-                   source=source)
+                   source=source, result=result)
 
     @classmethod
     def from_saved(cls, data):
@@ -638,24 +657,212 @@ class Cumulant:
                           + '; '.join(self.incomplete_reasons),
                           DeltaRecordsIncompleteWarning, stacklevel=3)
 
+    # ── C0: matrix-exponential triples and modes ────────────────────────
+    @property
+    def me(self):
+        """The smooth part as matrix-exponential triples
+        (:class:`api.me_output.CumulantME`), built from the live result on
+        first use; ``None`` when it cannot be built (see :attr:`me_reasons`).
+        Per loop order gaps (a subset on the pole route, ...) are in
+        ``me.reasons``."""
+        if self._me is None and self._me_reasons is None:
+            from api.me_output import from_result, MEUnavailable
+            if self._result is None:
+                self._me_reasons = ['no live result (a loaded file)']
+            else:
+                try:
+                    self._me = from_result(self._result)
+                    self._me_reasons = []
+                except MEUnavailable as exc:
+                    self._me_reasons = [str(exc)]
+        return self._me
+
+    @property
+    def me_reasons(self):
+        """Why :attr:`me` is ``None`` or incomplete: a list of strings (empty
+        when every loop order has its triples)."""
+        me = self.me
+        if me is None:
+            return list(self._me_reasons or [])
+        return [f'ell={e}: {r}' for e, rs in sorted(me.reasons.items())
+                for r in rs]
+
+    @property
+    def modes(self):
+        """``{ell: [ModeTerm, ...]}``: the exponential-mode sum of the smooth
+        part, derived from the triples on first use (eigenvalue clusters of
+        the final generators; ``τ**n`` terms for repeated eigenvalues;
+        :class:`api.me_output.MEConditioningWarning` when ill-conditioned).
+        Loop orders without triples are left out, with an
+        :class:`api.me_output.MEFallbackWarning` naming them
+        (:attr:`me_reasons`); ``None`` when no loop order has triples."""
+        if self._modes is None:
+            me = self.me
+            if me is None:
+                return None
+            ells = [e for e in me.orders if not me.reasons.get(e)]
+            left = [e for e in me.orders if me.reasons.get(e)]
+            if left:
+                import warnings
+                from api.me_output import MEFallbackWarning
+                warnings.warn(f'modes: loop order(s) {left} have no '
+                              f'matrix-exponential triples and are left out ('
+                              + '; '.join(self.me_reasons) + ')',
+                              MEFallbackWarning, stacklevel=2)
+            if not ells:
+                return None
+            self._modes = me.modes(ells)
+        return self._modes
+
+    @modes.setter
+    def modes(self, value):
+        self._modes = value
+
+    def _me_or_reason(self, ell):
+        """``(me, None)`` when the triples cover ``ell``, else ``(None,
+        reason)``."""
+        me = self.me
+        if me is None:
+            return None, '; '.join(self._me_reasons or ['no triples'])
+        ells = me.orders if ell is None else (
+            [ell] if np.ndim(ell) == 0 else list(ell))
+        bad = [f'ell={e}: ' + '; '.join(me.reasons[e]) for e in ells
+               if me.reasons.get(e)]
+        missing = [e for e in ells if e not in me.sides]
+        if missing:
+            raise ValueError(f'loop order(s) {missing} not in the result '
+                             f'(orders: {me.orders})')
+        return (None, '; '.join(bad)) if bad else (me, None)
+
+    def _delta_pairing(self, kernel, ell, contact, values):
+        """``Σ w L(location)`` over the δ components (k = 2) with the
+        contact rule of ``symbolic_out.integrate_against`` at τ = 0."""
+        from api.me_output import kernel_value, kernel_at_zero
+        tot = 0j
+        deltas = self._deltas_of(ell)
+        self._warn_incomplete()
+        for d in deltas:
+            loc = d.location
+            if loc is None:
+                continue
+            w = d.weight
+            if loc != 0.0:
+                tot += w * kernel_value(kernel, loc, values)
+                continue
+            lp, lm = kernel_at_zero(kernel, values)
+            if contact == 'exclude':
+                continue
+            if contact is None:
+                if abs(lp - lm) > 1e-14 * max(1.0, abs(lp), abs(lm)):
+                    raise ValueError(
+                        f'the cumulant has a δ(τ) component (weight {w:.6g}) '
+                        f'and the kernel jumps at 0 (L(0+) = {lp:.6g}, '
+                        f"L(0-) = {lm:.6g}): choose contact='exclude', "
+                        f"'positive', 'negative' or 'mid'")
+                tot += w * lp
+            elif contact == 'positive':
+                tot += w * lp
+            elif contact == 'negative':
+                tot += w * lm
+            elif contact == 'mid':
+                tot += w * 0.5 * (lp + lm)
+            else:
+                raise ValueError("contact must be None, 'exclude', "
+                                 "'positive', 'negative' or 'mid'")
+        return tot
+
+    def integrate_against(self, kernel, ell=None, contact=None, values=None,
+                          method='auto', epsabs=1e-12, epsrel=1e-10,
+                          limit=400):
+        """``∫ L(τ) C(τ) dτ`` (k = 2): the smooth part plus the δ components.
+
+        ``kernel``: a ``symbolic_out.Kernel`` (``Kernel.exponential``,
+        ``Kernel.two_sided_exponential``, sums; polynomial × exponential
+        terms), an :class:`api.me_output.RationalKernel`, or a list of them;
+        ``values`` substitutes the kernel's symbols.  ``method='exact'``: one
+        resolvent solve per triple block, ``q! c (zI − G)^{−q−1} x0`` (a
+        Sylvester solve for a rational kernel): exact, no poles;
+        ``'quad'``: adaptive quadrature of the Phase J callables;
+        ``'auto'`` (default): exact when the triples cover ``ell``, else quad
+        with an :class:`api.me_output.MEFallbackWarning`.  ``contact``: the
+        δ(τ) term at τ = 0 as decided in item 23 (``None`` includes ``w L(0)``
+        when the kernel is continuous at 0 and refuses otherwise;
+        ``'exclude'`` / ``'positive'`` / ``'negative'`` / ``'mid'``); spikes
+        off τ = 0 add ``w L(location)``.  Returns an
+        :class:`api.me_output.Pairing` (``value``, ``smooth``, ``contact``,
+        ``method``; ``complex(p)`` is the value)."""
+        from api.me_output import Pairing, quad_pairing
+        self._need_k2('integrate_against')
+        if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
+            raise ValueError("contact must be None, 'exclude', 'positive', "
+                             "'negative' or 'mid'")
+        method = self._resolve_method(method, ell, 'integrate_against')
+        if method == 'exact':
+            sm = self._me_or_reason(ell)[0].integrate_smooth(kernel, ell,
+                                                             values)
+            err = None
+        else:
+            sm, err = quad_pairing(self._quad_C(ell), kernel, values,
+                                   epsabs, epsrel, limit)
+        ct = self._delta_pairing(kernel, ell, contact, values)
+        return Pairing(sm + ct, sm, ct, method, err)
+
+    def _resolve_method(self, method, ell, what):
+        if method not in ('auto', 'exact', 'quad'):
+            raise ValueError(f"method must be 'auto', 'exact' or 'quad', "
+                             f"not {method!r}")
+        if method == 'quad':
+            return method
+        me, why = self._me_or_reason(ell)
+        if me is not None:
+            return 'exact'
+        if method == 'exact':
+            from api.me_output import MEUnavailable
+            raise MEUnavailable(f'{what}: no matrix-exponential triples '
+                                f'({why})')
+        import warnings
+        from api.me_output import MEFallbackWarning
+        warnings.warn(f'{what}: no matrix-exponential triples ({why}); '
+                      f'integrating the Phase J callables numerically',
+                      MEFallbackWarning, stacklevel=3)
+        return 'quad'
+
+    def _quad_C(self, ell):
+        """``C(τ)`` from the Phase J callables (memoized), for quadrature."""
+        ells = (sorted(self.smooth_fns) if ell is None else
+                ([ell] if np.ndim(ell) == 0 else list(ell)))
+        fns = [self.smooth_fns[e] for e in ells if e in self.smooth_fns]
+        if not fns:
+            raise ValueError('no smooth callables (a loaded file)')
+        memo = {}
+
+        def C(t):
+            t = float(t)
+            v = memo.get(t)
+            if v is None:
+                v = memo[t] = sum(complex(f(0.0, t)) for f in fns)
+            return v
+        return C
+
     # ── spectrum ────────────────────────────────────────────────────────
-    def spectrum(self, omega, ell=None, method='quad', tau_max=None,
+    def spectrum(self, omega, ell=None, method='auto', tau_max=None,
                  epsabs=1e-12, epsrel=1e-10, limit=400):
         """Power spectrum ``S(ω) = ∫ dτ e^{-iωτ} C(τ)`` (k = 2): the Fourier
         transform of the smooth part plus ``Σ w e^{-iω·location}`` (the flat
-        δ floor for spikes at τ = 0).
+        δ floor for spikes at τ = 0).  For a cross-correlation, C(τ) =
+        κ(x_1(0), x_2(τ)), this is ``⟨x̂_1(ω)* x̂_2(ω)⟩`` per unit time with
+        ``x̂(ω) = ∫ e^{-iωt} x(t) dt``.
 
-        ``method='quad'`` integrates the smooth callables on (-∞, 0) and
-        (0, ∞) by the Fourier-weight quadrature of ``scipy.integrate.quad``
-        (QAWF; ``epsabs`` is raised to ``epsrel · |C(0)|``): exact up to its
-        tolerances, and it evaluates the Phase J callables some hundreds to
-        a thousand times per ω (values are cached within one ω).  For a
-        cross-correlation, C(τ) = κ(x_1(0), x_2(τ)), this is
-        ``⟨x̂_1(ω)* x̂_2(ω)⟩`` per unit time with ``x̂(ω) = ∫ e^{-iωt} x(t)
-        dt``.  ``method='grid'``: the
-        trapezoid rule on the stored grid (error O(Δτ²) plus the truncation
-        at the grid ends; for display only).  ``tau_max`` (quad) truncates
-        to a finite window instead of ∞.
+        ``method='exact'`` (C0): ``c (iω − G_+)^{-1} x0 + c (−iω −
+        G_−)^{-1} x0`` from the matrix-exponential triples of the two sides
+        (one triangular resolvent solve per block and ω; no quadrature, no
+        poles).  ``'quad'``: the Fourier-weight quadrature of
+        ``scipy.integrate.quad`` (QAWF) on the Phase J callables on (-∞, 0)
+        and (0, ∞) (``epsabs`` raised to ``epsrel · |C(0)|``; hundreds of
+        callable evaluations per ω); ``tau_max`` truncates it to a finite
+        window.  ``'grid'``: the trapezoid rule on the stored grid (display
+        only).  ``'auto'`` (default): exact when the triples cover ``ell``,
+        else quad with an :class:`api.me_output.MEFallbackWarning`.
         """
         self._need_k2('spectrum')
         omega = np.atleast_1d(np.asarray(omega, dtype=float))
@@ -668,12 +875,21 @@ class Cumulant:
             ph = np.exp(-1j * np.outer(omega, t))
             S = np.trapezoid(ph * c[None, :], t, axis=1) if hasattr(
                 np, 'trapezoid') else np.trapz(ph * c[None, :], t, axis=1)
-        elif method == 'quad':
-            S = np.array([self._ft_quad(w, ell, tau_max, epsabs, epsrel,
-                                        limit) for w in omega])
         else:
-            raise ValueError(f"method must be 'quad' or 'grid', not "
-                             f"{method!r}")
+            if method not in ('auto', 'exact', 'quad'):
+                raise ValueError(f"method must be 'auto', 'exact', 'quad' or "
+                                 f"'grid', not {method!r}")
+            if tau_max is not None and method == 'auto':
+                method = 'quad'
+            elif tau_max is not None and method == 'exact':
+                raise ValueError("tau_max truncates the quadrature: use "
+                                 "method='quad'")
+            method = self._resolve_method(method, ell, 'spectrum')
+            if method == 'exact':
+                S = self._me_or_reason(ell)[0].spectrum_smooth(omega, ell)
+            else:
+                S = np.array([self._ft_quad(w, ell, tau_max, epsabs, epsrel,
+                                            limit) for w in omega])
         self._warn_incomplete()
         for d in self._deltas_of(ell):
             loc = d.location
