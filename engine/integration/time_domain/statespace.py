@@ -71,7 +71,7 @@ the rows among ``I`` and the external times already passed.
    Kronecker sums; with two active edges this is the Lyapunov equation).
    These states do not depend on the external times: computed once per
    subset and cached.  A finite ``final_integral.PHASE_J_T_MIN`` is a finite
-   first segment from ``X = {∅: 1}`` instead.
+   first segment from ``X = {∅: 1}`` instead (switch-on transients, below).
 3. **External time** ``c``: contract the edges whose head is ``c``, open the
    edges whose tail is ``c``, drop the downsets that miss a vertex required
    before ``c``.  Equal external times form one event.
@@ -112,6 +112,25 @@ to be followed by an external time).  Absolute convergence: every open
 direction is damped by an active Hurwitz edge.  (d) At an external time the
 rows with that head/tail change the integrand only by completing/opening
 factors, and a vertex whose window ends there must already be placed.  ∎
+
+Switch-on transients (item 44)
+------------------------------
+A finite ``t_min`` starts the fluctuations about the saddle at zero at
+``t_min``: every internal vertex time is ``> t_min``, so the sweep starts at
+``t_min`` from the empty state ``X = {∅: 1}`` (no vertex placed yet) and its
+first segment, ``t_min`` to the first external time, is a finite
+``exp(G L)`` over the downsets of the vertices that need no external time
+first (``free0``) instead of the resolvents of the stationary start.  The
+proof above holds unchanged on ``(t_min, ∞)``: (a), (b) and (d) are local in
+time, and (c) is simply not used.  As ``t_min -> -inf`` the first segment's
+state tends to the stationary one (every block is damped by a Hurwitz
+Kronecker sum), so the stationary result is the limit.
+``compute_cumulants(t_min=...)`` runs the whole Phase J stage inside
+:func:`switch_on_scope`, which sets ``final_integral.PHASE_J_T_MIN`` and
+makes this route the only one: a subset it declines, and a call-time
+refusal that would fall back to the pole route, raise
+:class:`SwitchOnUnsupported` instead (the pole engine's own finite-lower-
+bound paths are not used for these runs).
 
 Numerics
 --------
@@ -197,7 +216,7 @@ __all__ = [
     'subset_maker', 'SubsetSS', 'realization_for', 'tau_grid_prefetch',
     'SSIneligible', 'SSLateRefusal', 'SSNoPoleFallback', 'model_route',
     'diagram_route',
-    'census',
+    'census', 'switch_on_scope', 'switch_on_active', 'SwitchOnUnsupported',
 ]
 
 ENGINE_ENV = 'DAEDALUS_PHASE_J_ENGINE'
@@ -280,6 +299,70 @@ class SSNoPoleFallback(RuntimeError):
     take it: the subset has none (a kernel only this route realizes), or
     ``compute_cumulants`` skipped the pole-cluster deformation for the run
     (``ss_no_pole_fallback``).  Never silent: it raises."""
+
+
+class SwitchOnUnsupported(ValueError):
+    """A switch-on run (``compute_cumulants(t_min=...)``,
+    :func:`switch_on_scope`) met a subset this route does not take, or one it
+    refused at call time: such runs are computed on the state-space route
+    only (item 44), so it raises instead of using the pole route."""
+
+    def __init__(self, reason, detail=''):
+        self.reason = reason
+        self.detail = detail
+        super().__init__(
+            f'switch-on transients (a finite t_min) are computed on the '
+            f'state-space route only, and it cannot take a subset of this '
+            f'run ({reason}{": " + str(detail) if detail else ""}); the pole '
+            f'engine is not used for them.  Models with noise-kernel sources, '
+            f'non-rational kernels or index > 1 descriptors are not covered '
+            f'yet; drop t_min for the stationary result.')
+
+
+# switch-on scope (item 44): depth of nested ``switch_on_scope`` blocks
+_SWITCH_ON = {'depth': 0}
+_SWITCH_ON_LOCK = threading.Lock()
+
+
+def switch_on_active():
+    """True inside :func:`switch_on_scope`."""
+    return _SWITCH_ON['depth'] > 0
+
+
+class switch_on_scope:
+    """``with switch_on_scope(t_min): ...`` -- every Phase J evaluation in
+    the block starts the fluctuations at zero at the absolute time ``t_min``
+    (``final_integral.PHASE_J_T_MIN``) on this route only
+    (:class:`SwitchOnUnsupported` otherwise).  Restores the previous
+    ``PHASE_J_T_MIN`` on exit; nests (the innermost ``t_min`` holds).  The
+    bound and the flag are module state, like ``PHASE_J_T_MIN`` itself: one
+    switch-on run per process at a time (threads inside a run are fine)."""
+
+    def __init__(self, t_min):
+        t = float(t_min)
+        if not math.isfinite(t):
+            raise ValueError(f'switch_on_scope: t_min must be finite, got '
+                             f'{t_min!r}')
+        if not engine_requested():
+            raise SwitchOnUnsupported(
+                'engine_poles', f'{ENGINE_ENV}=poles selects the pole engine')
+        self.t_min = t
+        self._prev = None
+
+    def __enter__(self):
+        FI = _FI()
+        with _SWITCH_ON_LOCK:
+            self._prev = FI.PHASE_J_T_MIN
+            FI.PHASE_J_T_MIN = self.t_min
+            _SWITCH_ON['depth'] += 1
+        return self
+
+    def __exit__(self, *exc):
+        FI = _FI()
+        with _SWITCH_ON_LOCK:
+            _SWITCH_ON['depth'] -= 1
+            FI.PHASE_J_T_MIN = self._prev
+        return False
 
 
 class _Refused:
@@ -382,6 +465,8 @@ def _count(key, n=1):
 
 
 def _decline(reason):
+    if switch_on_active():
+        raise SwitchOnUnsupported(reason, 'declined by the state-space route')
     C = _counters()
     C['ss_subsets_declined'] = C.get('ss_subsets_declined', 0) + 1
     d = C.setdefault('ss_declined_by_reason', {})
@@ -2352,6 +2437,9 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
     (parallel to ``pi_ri``; ``None``: all plain propagator rows): the
     conductance kernel rows and dressed lines (``_edge_entry``)."""
     if not engine_requested():
+        if switch_on_active():
+            raise SwitchOnUnsupported('engine_poles',
+                                      f'{ENGINE_ENV}=poles')
         return None
     FI = _FI()
     if FI._theta0_legacy():
@@ -2407,6 +2495,9 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
 
         def _pole_route(exc):
             reason = _late_reason(exc)
+            if switch_on_active():
+                raise SwitchOnUnsupported(
+                    reason, f'refused at call time: {exc}') from exc
             with pole_lock:
                 first = not pole
                 if first:

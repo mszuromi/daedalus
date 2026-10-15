@@ -762,6 +762,193 @@ def _attach_provenance(result, route, pf):
         cfg['assumptions'] = rep.ledger_dicts() if rep is not None else None
 
 
+
+# ── switch-on transients (item 44) ─────────────────────────────────────────
+
+def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
+                       initial_mean, *, spatial, grouped, saving):
+    """Validate the switch-on arguments of ``compute_cumulants`` (before any
+    work).  ``None`` for a stationary run (``t_min=None``); otherwise the
+    request ``{'t_min', 'times' (n, k), 'initial_covariance',
+    'initial_mean'}``."""
+    extra = [n for n, v in (('times', times),
+                            ('initial_covariance', initial_covariance),
+                            ('initial_mean', initial_mean)) if v is not None]
+    if t_min is None:
+        if extra:
+            raise ValueError(
+                f'{", ".join(extra)} need t_min (a switch-on transient); '
+                f'without t_min the run is stationary')
+        return None
+    try:
+        t0 = float(t_min)
+    except (TypeError, ValueError):
+        raise ValueError(f't_min must be a finite float, got {t_min!r}') \
+            from None
+    if not math.isfinite(t0):
+        raise ValueError(f't_min must be finite (omit it for the stationary '
+                         f'state), got {t_min!r}')
+    from engine.integration.time_domain import statespace as _ss
+    if spatial:
+        raise NotImplementedError(
+            'switch-on transients (t_min) are implemented for temporal '
+            'models only')
+    if grouped:
+        raise ValueError(
+            't_min: the grouped integrator (use_grouped_phase_j=True) is not '
+            'supported; use the per-diagram path (the default)')
+    if saving:
+        raise ValueError(
+            't_min: output_npz / output_csv do not support switch-on results '
+            'yet; save result["times"] and result["C_times"] instead')
+    if not _ss.engine_requested():
+        raise _ss.SwitchOnUnsupported(
+            'engine_poles', f'{_ss.ENGINE_ENV}=poles selects the pole engine')
+    if times is None:
+        raise ValueError('t_min needs times=: the absolute external times, '
+                         f'shape (n, k={k}) or (n,)')
+    T = np.asarray(times, dtype=float)
+    if T.ndim == 0:
+        T = T.reshape(1)
+    if T.ndim == 1:
+        T = np.repeat(T[:, None], k, axis=1)
+    if T.ndim != 2 or T.shape[1] != k or T.shape[0] == 0:
+        raise ValueError(f'times must have shape (n, k={k}) or (n,), got '
+                         f'{np.shape(times)}')
+    if not np.all(np.isfinite(T)):
+        raise ValueError('times must be finite')
+    if np.any(T < t0):
+        raise ValueError(
+            f'every time must be >= t_min = {t0!r} (the fluctuations start '
+            f'at t_min); the earliest is {float(T.min())!r}')
+    init = {}
+    for name, val, kk in (('initial_covariance', initial_covariance, 2),
+                          ('initial_mean', initial_mean, 1)):
+        if val is None:
+            init[name] = None
+            continue
+        if k != kk:
+            raise ValueError(f'{name} applies to k = {kk} only (got k = {k})')
+        if max_ell != 0:
+            raise NotImplementedError(
+                f'{name} with loops (max_ell = {max_ell}) is not implemented: '
+                f'the initial-state term is the tree-level (linear-response) '
+                f'one; pass max_ell=0')
+        a = np.asarray(val, dtype=float)
+        if a.ndim != (2 if kk == 2 else 1) or not np.all(np.isfinite(a)):
+            raise ValueError(f'{name} must be a finite '
+                             f'{"square matrix" if kk == 2 else "vector"}')
+        init[name] = a
+    return {'t_min': t0, 'times': T, **init}
+
+
+def _switch_on_callable(fn, t_min):
+    """A per-ell (or total) callable of absolute external times, evaluated
+    inside ``statespace.switch_on_scope(t_min)`` (no Itô nudge: the
+    state-space route applies the tie rule to equal times exactly)."""
+    from engine.integration.time_domain import statespace as _ss
+
+    def at(*ext_time_values):
+        with _ss.switch_on_scope(t_min):
+            return fn(*ext_time_values)
+    return at
+
+
+def _initial_state_term(so, propagator_data, num_params, external_fields,
+                        phys_idx):
+    """``(values at so['times'], callable)`` of the tree-level initial-state
+    term (``initial_covariance``: ``R(t1-t_min) C0 R(t2-t_min)^T``;
+    ``initial_mean``: ``R(t-t_min) m0``), or ``None`` without one.  ``R``:
+    the response from the model's realization (``statespace.
+    realization_for``); it must be the identity at ``0+`` (a first-order
+    model whose response index ``r`` is the equation of physical field
+    ``r``), so that ``C0`` / ``m0`` are the fluctuations themselves."""
+    C0, m0 = so['initial_covariance'], so['initial_mean']
+    if C0 is None and m0 is None:
+        return None
+    from engine.integration.time_domain import statespace as _ss
+    ops, why = _ss.realization_for(propagator_data, num_params)
+    if ops is None:
+        raise _ss.SwitchOnUnsupported(
+            why, 'the initial-state term needs the model realization')
+    nf = int(propagator_data['nf'])
+    shape = (nf, nf) if C0 is not None else (nf,)
+    given = C0 if C0 is not None else m0
+    if given.shape != shape:
+        raise ValueError(
+            f'{"initial_covariance" if C0 is not None else "initial_mean"} '
+            f'must have shape {shape} (the {nf} physical field(s) in their '
+            f'internal order), got {given.shape}')
+
+    def R(p, r, t):
+        ent = ops.entry(p, r)
+        if ent is None or ent.n == 0:
+            return 0.0
+        v = ent.impulse(t)
+        return float(np.real(v)) if abs(np.imag(v)) <= 1e-14 * (
+            1 + abs(v)) else complex(v)
+
+    for p in range(nf):
+        for r in range(nf):
+            v = R(p, r, 0.0)
+            if abs(v - (1.0 if p == r else 0.0)) > 1e-12:
+                raise ValueError(
+                    'initial_covariance / initial_mean need a first-order '
+                    'model whose response at 0+ is the identity (response '
+                    f'index r = the equation of physical field r); here '
+                    f'R[{p}, {r}](0+) = {v!r}')
+    legs = [phys_idx[f] for f in external_fields]
+    t0 = so['t_min']
+
+    def term(*ext):
+        if C0 is not None:
+            a = np.array([R(legs[0], r, ext[0] - t0) for r in range(nf)])
+            b = np.array([R(legs[1], r, ext[1] - t0) for r in range(nf)])
+            return complex(a @ C0 @ b)
+        a = np.array([R(legs[0], r, ext[0] - t0) for r in range(nf)])
+        return complex(a @ m0)
+
+    vals = np.array([term(*row) for row in so['times']], dtype=complex)
+    return vals, term
+
+
+def _ledger_switch_on(preflight, so):
+    """The analyzer ledger records the non-stationary question: the
+    stationary-state line is replaced by the switch-on one (the gates
+    themselves are unchanged)."""
+    if preflight is None:
+        return
+    ctx = preflight.ctx
+    ctx.ledger[:] = [e for e in ctx.ledger if e.name != 'stationary_state']
+    init = ('the fluctuations at t_min are zero' if (
+        so['initial_covariance'] is None and so['initial_mean'] is None)
+        else 'plus the tree-level initial-state term of '
+        + ('initial_covariance' if so['initial_covariance'] is not None
+           else 'initial_mean'))
+    ctx.ledger_add('approximation', 'switch_on_state',
+                   f'switch-on transient: fluctuations about the selected '
+                   f'saddle start at t_min = {so["t_min"]!r} ({init}); every '
+                   f'vertex time is > t_min; state-space Phase J route only',
+                   declared=True)
+
+
+def _switch_on_check(result, failures, model_name):
+    """A switch-on run is never partial: an unevaluated diagram, or δ
+    components (whose weights are not yet derived for a transient), raise."""
+    from engine.integration.time_domain import statespace as _ss
+    if failures:
+        raise PhaseJIncompleteError(
+            'switch-on run (t_min): ' + _phase_j_failure_message(
+                failures, model_name), result=result, failures=failures)
+    for ell, td in (result.get('phase_j_by_ell') or {}).items():
+        if td and (td.get('delta_contributions')
+                   or td.get('delta_contributions_multi')):
+            raise _ss.SwitchOnUnsupported(
+                'delta_components', f'ell = {ell} has δ(t) components (an '
+                f'instantaneous response); their switch-on weights are not '
+                f'implemented')
+
+
 def compute_cumulants(
     model: dict,
     k: int,
@@ -795,6 +982,10 @@ def compute_cumulants(
     preflight: bool = None,          # the analyzer gates (default on; DAEDALUS_PREFLIGHT=0 turns them off)
     backend: str = None,             # an explicit backend name (api.routing); None = the router picks
     accuracy: float = None,          # target relative accuracy (G6 threshold; default 1e-10)
+    t_min: float = None,             # switch-on transients: fluctuations start at 0 at this absolute time
+    times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
+    initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
+    initial_mean=None,               # with t_min (k=1, tree): mean of the fluctuations at t_min
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -906,6 +1097,38 @@ def compute_cumulants(
         Target relative accuracy for the G6 total-relative accuracy check
         (``Question.accuracy``; default ``1e-10``, the per-subset acceptance
         of the Phase J routes).
+    t_min : float or None
+        ``None`` (default): the stationary state (time-translation
+        invariant; nothing below applies).  A finite value asks for a
+        **switch-on transient**: the fluctuations about the selected
+        mean-field saddle start at zero at the absolute time ``t_min``
+        (the state is the saddle exactly at ``t_min``), so every vertex-time
+        integral has the lower bound ``t_min`` and the cumulant is a function
+        of the absolute external times.  Computed on the state-space Phase J
+        route only (``engine.integration.time_domain.statespace``: a finite
+        first segment from the empty state); a model or subset it does not
+        take, ``DAEDALUS_PHASE_J_ENGINE=poles``, spatial models, the grouped
+        integrator and ``output_npz``/``output_csv`` raise.  As ``t_min ->
+        -inf`` the result tends to the stationary one.
+    times : array or None
+        Required with ``t_min``: the absolute external times to evaluate,
+        shape ``(n, k)`` (row ``i`` = the times of the ``k`` legs, in the
+        order of ``external_fields``) or ``(n,)`` (every leg at ``t``: the
+        equal-time cumulant).  Every time must be ``>= t_min``; equal times
+        are exact ties (no Itô nudge: the state-space route applies the
+        tie rule).  Values: ``result['C_times']``.
+    initial_covariance : array or None
+        With ``t_min``, ``k = 2``, ``max_ell = 0``: an initial covariance
+        ``C0`` of the fluctuations at ``t_min`` (square, over the physical
+        fields in their internal order, ``result['propagator']['nf']``).
+        The tree adds the deterministic term ``R(t1 - t_min) C0
+        R(t2 - t_min)^T`` (``R``: the response); loops with ``C0 != 0`` are
+        not implemented (raises).  Needs a first-order model whose response
+        at ``0+`` is the identity.
+    initial_mean : array or None
+        With ``t_min``, ``k = 1``, ``max_ell = 0``: an initial offset ``m0``
+        of the fluctuations at ``t_min``; the tree adds ``R(t - t_min) m0``
+        (linear response; the saddle is not moved).  Same requirements.
 
     Returns
     -------
@@ -957,6 +1180,17 @@ def compute_cumulants(
                              with (``api.save`` stamps saved files with
                              it), ``route`` the backend name and
                              ``assumptions`` the ledger (saved too).
+
+    SWITCH-ON (``t_min`` given): ``C_tau`` / ``C_tau_by_ell`` / ``tau_grid``
+    are ``None``; instead
+        'times'           : ndarray ``(n, k)`` of absolute external times
+        'C_times'         : ndarray ``(n,)`` of the cumulant at each row
+        'C_times_by_ell'  : {ell: ndarray (n,)}; ``C_times == sum(values())``
+        't_min'           : the switch-on time
+        'nonstationary'   : the record of the question (protocol, t_min,
+                             initial-state terms and their values)
+    and ``total_C`` / ``total_C_by_ell`` take ABSOLUTE times (each call runs
+    inside :func:`statespace.switch_on_scope`).
 
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
@@ -1021,6 +1255,12 @@ def compute_cumulants(
         raise ValueError(
             f'need tau_step > 0 and tau_max >= 0 (got tau_step={tau_step}, '
             f'tau_max={tau_max}), or pass an explicit tau_grid.')
+    switch_on = _switch_on_request(
+        model, k, max_ell, t_min, times, initial_covariance, initial_mean,
+        spatial=(bool(model.get('spatial')) or spatial_grid is not None
+                 or spatial_points is not None),
+        grouped=use_grouped_phase_j,
+        saving=bool(output_npz or output_csv))
 
     # Auto-pick a Taylor budget that covers every vertex the
     # prediagram enumerator could ask for at the chosen (k, max_ell).
@@ -1190,7 +1430,8 @@ def compute_cumulants(
         has_spatial_grid=spatial_grid is not None,
         has_spatial_points=spatial_points is not None,
         grouped=bool(use_grouped_phase_j),
-        initial_mode=(model.get('initial') or {}).get('mode', 'stationary'),
+        initial_mode=('switch_on' if switch_on is not None else
+                      (model.get('initial') or {}).get('mode', 'stationary')),
         requested=backend,
         traits=_pf.traits_dict() if _pf is not None else {})
     route = _routing.select(_request)
@@ -1209,7 +1450,7 @@ def compute_cumulants(
         verbose=verbose, naming_convention=naming_convention,
         vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
         phase_time=_phase_time, t_phase=_t_phase, preflight=_pf,
-        route=route, evaluated_grid=False)
+        route=route, evaluated_grid=False, switch_on=switch_on)
     _snap = _counter_snapshot()
     try:
         result = route.backend.run(state)
@@ -1227,12 +1468,19 @@ def compute_cumulants(
         result['phase_j_incomplete'] = _failures
         result['status'] = 'incomplete' if _failures else 'ok'
     if _pf is not None:
-        _pf.after_run(result, _counters, complete=_complete,
-                      evaluated=state.evaluated_grid)
+        # G6 sizes its accuracy estimate on ``C_tau``; a switch-on run's
+        # values are ``C_times`` (a read-only view: G6 never writes)
+        _pf.after_run(
+            dict(result, C_tau=result.get('C_times'))
+            if switch_on is not None and isinstance(result, dict)
+            else result, _counters, complete=_complete,
+            evaluated=state.evaluated_grid)
     _attach_provenance(result, route, _pf)
     if isinstance(result, dict) and isinstance(result.get('route'), dict) \
             and result.get('phase_j_engine') is not None:
         result['route']['phase_j_engine'] = result['phase_j_engine']
+    if switch_on is not None and isinstance(result, dict):
+        _switch_on_check(result, _failures, model.get('name', '<unnamed>'))
     if _failures:
         _msg = _phase_j_failure_message(_failures,
                                         model.get('name', '<unnamed>'))
@@ -1502,6 +1750,14 @@ def _run_phase_j(state, grouped):
     # sources, every conductance kernel realizable, a Hurwitz realization)
     ss_route = _ss_route_prediction(
         prop, num_params, list(vtypes or ()) + list(stypes or ()))
+    switch_on = getattr(state, 'switch_on', None)
+    if switch_on is not None:
+        if not ss_route.get('covers_run'):
+            from engine.integration.time_domain import statespace as _ss_so
+            raise _ss_so.SwitchOnUnsupported(
+                ss_route.get('reason') or 'not_covered',
+                'the run-level prediction of the state-space route')
+        _ledger_switch_on(state.preflight, switch_on)
     if state.preflight is not None:
         # G3 pole statistics (api.analyze); informational when the
         # state-space route covers the run
@@ -1620,7 +1876,8 @@ def _run_phase_j(state, grouped):
     mem_estimate = _phase_j_memory_preflight(
         diagram_records, propagator_data, num_params, prop, model, k,
         max_ell, verbose, state.preflight, ss_route=ss_route,
-        n_tau=len(tau_grid) if k <= 2 else 1)
+        n_tau=(len(tau_grid) if k <= 2 else 1) if switch_on is None
+        else len(switch_on['times']))
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
@@ -1639,6 +1896,11 @@ def _run_phase_j(state, grouped):
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation
+    if switch_on is not None:
+        # absolute times (``times``), evaluated below; no τ grid
+        tau_points = None
+        so_points = [tuple(float(x) for x in row)
+                     for row in switch_on['times']]
 
     # Run Phase J once per ell so we get the per-loop-order
     # decomposition the saver / notebook plots need.  Diagrams within
@@ -1660,6 +1922,8 @@ def _run_phase_j(state, grouped):
                 phase_j_by_ell[ell] = None
                 if tau_points is not None:
                     C_tau_by_ell[ell] = np.zeros(len(tau_grid), dtype=complex)
+                elif switch_on is not None:
+                    C_tau_by_ell[ell] = np.zeros(len(so_points), dtype=complex)
                 else:
                     C_tau_by_ell[ell] = None
                 continue
@@ -1694,11 +1958,20 @@ def _run_phase_j(state, grouped):
                     num_params       = num_params,
                     origin_leaf_idx  = origin_leaf_idx,
                 )
-            total_C_by_ell[ell] = _phase_j_scoped(
-                _ito_nudge_callable(td_result_ell['total_C'], k))
+            if switch_on is not None:
+                total_C_by_ell[ell] = _phase_j_scoped(_switch_on_callable(
+                    td_result_ell['total_C'], switch_on['t_min']))
+            else:
+                total_C_by_ell[ell] = _phase_j_scoped(
+                    _ito_nudge_callable(td_result_ell['total_C'], k))
             phase_j_by_ell[ell] = td_result_ell
 
-            if tau_points is not None:
+            if switch_on is not None:
+                with _phase_j_warning_scope():
+                    C_tau_by_ell[ell] = np.array(
+                        [complex(total_C_by_ell[ell](*pt))
+                         for pt in so_points], dtype=complex)
+            elif tau_points is not None:
                 with _phase_j_warning_scope():
                     C_tau_by_ell[ell] = np.array(
                         td_result_ell['total_C_batch'](
@@ -1720,7 +1993,12 @@ def _run_phase_j(state, grouped):
         what=f"{model.get('name', '<unnamed>')} k={k} max_ell={max_ell}")
         if hasattr(_fi_mem, 'phase_j_memory_scope')       # older engine: A/B
         else _ctx.nullcontext())
-    with _scope as _mem_scope:
+    if switch_on is not None:
+        from engine.integration.time_domain import statespace as _ss_so
+        _so_scope = _ss_so.switch_on_scope(switch_on['t_min'])
+    else:
+        _so_scope = _ctx.nullcontext()
+    with _scope as _mem_scope, _so_scope:
         _bypassed = None
         if prop.get('pole_deformation') is not None and ss_route[
                 'bypass_deformation']:
@@ -1767,6 +2045,28 @@ def _run_phase_j(state, grouped):
         C_tau = sum(C_tau_by_ell[ell] for ell in C_tau_by_ell)
     else:
         C_tau = None
+    so_record = None
+    if switch_on is not None:
+        # switch-on: the values at ``times`` (C_tau_by_ell holds them); the
+        # tree-level initial-state term joins ell = 0
+        C_times_by_ell = C_tau_by_ell
+        C_tau_by_ell = {ell: None for ell in C_times_by_ell}
+        so_record = {
+            'protocol': 'switch_on', 't_min': switch_on['t_min'],
+            'engine': 'statespace',
+            'initial_covariance': switch_on['initial_covariance'],
+            'initial_mean': switch_on['initial_mean'],
+            'initial_term': None}
+        init = _initial_state_term(switch_on, propagator_data, num_params,
+                                   external_fields, phys_idx)
+        if init is not None:
+            init_vals, init_fn = init
+            so_record['initial_term'] = init_vals
+            C_times_by_ell[0] = C_times_by_ell.get(0, 0) + init_vals
+            _tree = total_C_by_ell.get(0, lambda *t: 0.0 + 0.0j)
+            total_C_by_ell[0] = (lambda *t, _f=_tree, _g=init_fn:
+                                 complex(_f(*t)) + _g(*t))
+        C_times = sum(C_times_by_ell[ell] for ell in C_times_by_ell)
 
     # ── Adaptive mean-field dict ──────────────────────────────────
     # Discover MF saddle quantities from the model itself.  Two paths:
@@ -1846,7 +2146,7 @@ def _run_phase_j(state, grouped):
         'total_C_by_ell':  total_C_by_ell,
         'C_tau':           C_tau,
         'C_tau_by_ell':    C_tau_by_ell,
-        'tau_grid':        tau_grid,
+        'tau_grid':        tau_grid if switch_on is None else None,
         'mf_values':       mf_values,
         'mf':              MeanField(mf_values,
                                      naming_convention=naming_convention),
@@ -1902,9 +2202,18 @@ def _run_phase_j(state, grouped):
             if verbose:
                 print(f'  [stability] skipped: {type(e).__name__}: {e}')
             result['mf_stability'] = None
+    if switch_on is not None:
+        result['times'] = switch_on['times']
+        result['C_times'] = C_times
+        result['C_times_by_ell'] = C_times_by_ell
+        result['t_min'] = switch_on['t_min']
+        result['nonstationary'] = so_record
+        result['config']['t_min'] = switch_on['t_min']
+        result['config']['times'] = switch_on['times']
     state.all_unique = all_unique
-    state.tau_grid_eval = tau_grid
-    state.evaluated_grid = tau_points is not None
+    state.tau_grid_eval = (tau_grid if switch_on is None
+                           else switch_on['times'][:, 0])
+    state.evaluated_grid = tau_points is not None or switch_on is not None
     return result
 
 
@@ -1929,7 +2238,8 @@ def _standard_tail(state, result, output_npz, output_csv):
     if verbose:
         print(f'\nDone.  k={k}, max_ell={max_ell}, '
               f'{len(all_unique)} unique diagrams, '
-              f'{len(tau_grid)} τ points.')
+              f'{len(tau_grid)} '
+              f'{"τ" if result.get("t_min") is None else "time"} points.')
         if phase_walls:
             total = sum(phase_walls.values())
             print(f'\n  Phase wall summary (Σ = {total:.1f}s):')
