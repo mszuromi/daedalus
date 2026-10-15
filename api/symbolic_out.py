@@ -76,11 +76,11 @@ Not covered (clear errors, never a silently wrong result)
   ...): ``NonRationalPropagatorError`` naming the offending sub-expression.
 * Non-local noise left as a cumulant kernel (not Markov-embedded):
   ``UnsupportedModelError``.
-* The explicit closed forms of ``inverse_transform`` and ``pair_with_kernel``
-  need every irreducible factor of the denominator to have degree <= 2 in
-  omega; higher degrees raise ``ClosedFormUnavailable`` there (and the
-  numeric quadrature fallback is used).  The stage-C2 routes below have no
-  degree limit.
+* ``inverse_transform`` and ``pair_with_kernel`` run on the stage-C2 engine
+  below (item 40): no degree limit, the half-plane split stated as
+  assumptions.  Their pre-C2 routes (every irreducible factor of degree <= 2
+  in omega, split sampled around ``reference``, ``ClosedFormUnavailable``
+  otherwise) remain behind ``legacy=True`` / ``any_degree=False``.
 
 Stage C2: time domain, any degree
 ---------------------------------
@@ -94,8 +94,10 @@ parameters.  Each result lists the ``assumptions`` it needs (Routh/Sturm sign
 conditions, distinct poles) and refuses (``AssumptionViolation``) at values
 that violate them.  ``integrate_against`` with a ``Kernel`` (exponential,
 polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exactly;
-it equals the Fourier route ``pair_with_kernel(C0, L~(-omega),
-any_degree=True)`` on the smooth part.
+it equals the Fourier route ``pair_with_kernel(C0, L~(-omega))`` on the
+smooth part.  The numeric twin for a computed cumulant at any loop order
+(matrix-exponential triples of the state-space route, no poles) is
+``api.me_output`` / ``Cumulant.integrate_against`` (item 40).
 """
 from __future__ import annotations
 
@@ -1300,14 +1302,22 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
                      reference: Optional[dict] = None,
                      simplify: bool = True, fallback: bool = True,
                      epsabs: float = 1e-12, epsrel: float = 1e-10,
-                     any_degree: bool = False) -> KernelPairing:
+                     any_degree: bool = True) -> KernelPairing:
     r"""``int d omega / (2 pi)  conj(L_tilde(omega)) * C0_entry(omega)``.
 
     This is ``int dt L(t) C(-t)`` for a real kernel ``L`` with
     ``L_tilde(omega) = int dt L(t) exp(-i omega t)``.
 
-    Exact route: when ``conj(L_tilde) * C0`` is rational in omega and each
-    irreducible factor of its denominator has degree <= 2, the integral is
+    Default (since item 40, C2 decision (a)): the stage-C2 engine,
+    ``any_degree=True``: residues are taken in K[x]/(p) for every
+    irreducible factor p of the denominator (any degree), summed by traces,
+    and the half-plane split is stated as conditions on the parameters
+    (``assumptions`` of the result) instead of being sampled; ``simplify``
+    applies ``simplify_full`` to the closed form.
+
+    ``any_degree=False`` (the pre-C2 route, kept for comparison): when
+    ``conj(L_tilde) * C0`` is rational in omega and each irreducible factor
+    of its denominator has degree <= 2, the integral is
     ``i * sum_{Im omega_k > 0} Res``.  Which poles lie in the upper half plane
     is decided numerically at ``reference`` and at 12 log-uniform perturbations
     of it (parameters without a reference value are assumed positive); the
@@ -1318,16 +1328,22 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
     ``values``): adaptive quadrature of the same integrand
     (:func:`numeric_pair_with_kernel`) with tolerances ``epsabs``/``epsrel``.
 
-    ``any_degree=True`` (stage C2) removes the degree limit: residues are
-    taken in K[x]/(p) for every irreducible factor p, summed by traces, and
-    the half-plane split is stated as conditions on the parameters
-    (``assumptions`` of the result) instead of being sampled.
+    Both routes: the integrand must decay at least like omega^-2 and have
+    no pole on the real omega axis.
     """
     omega = SR('omega') if omega is None else SR(omega)
     if any_degree:
         try:
-            return _pair_any_degree(C0_entry, L_tilde, omega, values=values,
-                                    reference=reference)
+            out = _generic_retry(
+                lambda ref: _pair_any_degree(C0_entry, L_tilde, omega,
+                                             values=values, reference=ref),
+                [C0_entry, L_tilde], omega, reference)
+            if simplify and out.expression is not None:
+                try:
+                    out.expression = SR(out.expression).simplify_full()
+                except Exception:               # pragma: no cover
+                    pass
+            return out
         except (NonRationalPropagatorError, ClosedFormUnavailable) as exc:
             if not fallback:
                 raise
@@ -1398,9 +1414,147 @@ def _private_symbols(exprs, keep=()):
     return fwd, back
 
 
+def _generic_retry(fn, exprs, omega, reference):
+    """Call ``fn(reference)``.  When it fails with
+    :class:`AssumptionViolation` because poles coincide at the reference
+    point (the pre-C2 routes accepted such a point: they sampled a
+    neighbourhood), retry at a nearby generic point: symbols without a
+    reference value (taken as 1, i.e. assumed positive) at ``1 + (j + 1)
+    sqrt(2) 1e-3``, and, if that is not enough, every reference value
+    scaled by ``1 + (j + 1) sqrt(2) 1e-3``.  The half-plane split is then
+    decided where the poles are distinct, and every sign condition it states
+    must hold at the reference point itself (else ``ClosedFormUnavailable``:
+    the move would have changed the split).  The stated assumptions keep
+    the coincidence conditions: a value
+    that violates them is refused at evaluation (substitute it with
+    ``values=`` to make the repeated pole exact)."""
+    try:
+        return fn(reference)
+    except AssumptionViolation as exc0:
+        ref = dict(_as_name_dict(reference) or {})
+        om = str(omega)
+        names = sorted({str(v) for e in exprs for v in SR(e).variables()}
+                       - {om})
+        orig = dict(ref)
+        orig.update({nm: 1.0 for nm in names if nm not in orig})
+
+        def checked(out):
+            # the split decided at the moved point must be the reference
+            # point's own: every sign condition (not the distinctness ones)
+            # must hold there too (review: a pole 1e-4 from coinciding
+            # could cross under the move)
+            ass = getattr(out, 'assumptions', None)
+            if ass is None and isinstance(out, dict):
+                ass = out.get('assumptions')
+            for a in ass or []:
+                if a.relation == '>' and a.kind != 'distinct':
+                    try:
+                        ok = a.holds(orig)
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        raise ClosedFormUnavailable(
+                            f'poles coincide at the reference point and no '
+                            f'nearby generic point keeps its half-plane '
+                            f'split ({a}); give a reference where the poles '
+                            f'are distinct, or substitute the values with '
+                            f'values=') from exc0
+            return out
+        missing = [nm for nm in names if nm not in ref]
+        if missing:
+            for j, nm in enumerate(missing):
+                ref[nm] = 1.0 + (j + 1) * 2 ** 0.5 * 1e-3
+            try:
+                return checked(fn(ref))
+            except AssumptionViolation:
+                pass
+        for j, nm in enumerate(sorted(ref)):
+            try:
+                ref[nm] = float(ref[nm]) * (1.0 + (j + 1) * 2 ** 0.5 * 1e-3)
+            except (TypeError, ValueError):
+                pass
+        return checked(fn(ref))
+
+
 def inverse_transform(C0_entry, omega=None, tau=None, *,
-                      reference: Optional[dict] = None, simplify: bool = True):
-    """Exact inverse transform by residues; see ``_inverse_transform_impl``. Runs on private, domain-free symbols."""
+                      reference: Optional[dict] = None, simplify: bool = True,
+                      legacy: bool = False):
+    r"""Exact inverse transform ``C(tau) = (1/2 pi) int d omega C0(omega)
+    exp(-i omega tau)`` (any denominator degree).
+
+    Since item 40 this runs on the stage-C2 engine (:func:`tree_modes`): the
+    residues are taken per irreducible factor in ``K[x]/(p)``, roots of
+    factors of degree >= 3 are :class:`RootOf` symbols, and the half-plane
+    split is stated as conditions on the parameters (``'assumptions'``)
+    instead of being sampled around ``reference`` (C2 decision (a)).
+    ``legacy=True`` runs the pre-C2 residue route (denominator factors of
+    degree <= 2, sampled split; kept for comparison).
+
+    Returns a dict with
+      ``'positive'``  the expression for ``tau > 0``,
+      ``'negative'``  the expression for ``tau < 0``,
+      ``'contact'``   ``c_inf``, the weight of ``delta(tau)`` (0 if none),
+      ``'even'``      the expression in ``abs(tau)`` if the two sides are
+                      mirror images (``C(tau) = C(-tau)``), else ``None``,
+      ``'tau'``       the SR lag symbol used (``tau``, or ``tau_lag`` when
+                      ``tau`` is a parameter of ``C0_entry``),
+      ``'modes'``     the :class:`ModeSum`, ``'roots'`` its :class:`RootOf`
+                      symbols, ``'assumptions'`` its conditions.
+    A numeric ``tau`` evaluates the matching branch and returns the dict with
+    those values substituted."""
+    if legacy:
+        return _inverse_transform_legacy(C0_entry, omega, tau,
+                                         reference=reference,
+                                         simplify=simplify)
+    om = SR('omega') if omega is None else SR(omega)
+    ms = _generic_retry(lambda ref: tree_modes(C0_entry, om, reference=ref),
+                        [C0_entry], om, reference)
+    t_sym = ms.tau if tau is None or not hasattr(tau, 'is_symbol') \
+        else SR(tau)
+    pos = ms.expression('positive').subs({ms.tau: t_sym})
+    neg = ms.expression('negative').subs({ms.tau: t_sym})
+    if simplify:
+        try:
+            pos, neg = pos.simplify_full(), neg.simplify_full()
+        except Exception:                       # pragma: no cover
+            pass
+    even = None
+    if ms.roots:
+        # RootOf symbols: decide the mirror symmetry on the modes at the
+        # reference point (both sides are exact there)
+        try:
+            ts = np.array([0.37, 1.3, 4.1])
+            a, b = ms.evaluate(ts), ms.evaluate(-ts)
+            if np.allclose(a, b, rtol=1e-12, atol=1e-300):
+                even = pos.subs({t_sym: _abs(t_sym)})
+        except SymbolicOutError:
+            even = None
+    elif _is_zero(pos - neg.subs({t_sym: -t_sym}), reference):
+        even = pos.subs({t_sym: _abs(t_sym)})
+    out = {'positive': pos, 'negative': neg, 'contact': ms.contact,
+           'even': even, 'tau': t_sym, 'modes': ms, 'roots': ms.roots,
+           'assumptions': ms.assumptions}
+    if tau is not None and not hasattr(tau, 'is_symbol'):
+        t = float(tau)
+        if t == 0:
+            raise SymbolicOutError(
+                'tau = 0 is the join of the two branches; evaluate the '
+                'smooth part as the limit of either side (it is continuous '
+                'for diagonal entries) or use the Ito convention explicitly')
+        branch = (pos if t > 0 else neg).subs({t_sym: t})
+        out['value'] = branch
+        try:
+            out['value_numeric'] = complex(branch.n(digits=20))
+        except (TypeError, ValueError):
+            pass            # free parameters remain
+    return out
+
+
+def _inverse_transform_legacy(C0_entry, omega=None, tau=None, *,
+                              reference: Optional[dict] = None,
+                              simplify: bool = True):
+    """The pre-C2 route (``legacy=True``); see ``_inverse_transform_impl``.
+    Runs on private, domain-free symbols."""
     om = SR('omega') if omega is None else SR(omega)
     fwd, back = _private_symbols([C0_entry], keep=[om])
     fresh_ref = None
@@ -2895,7 +3049,8 @@ def _pair_any_degree(C0_entry, L_tilde, omega, *, values, reference):
     expr_out = (ctx.K_to_sr(total_K) + split_sr).subs(back)
     value = None
     names_needed = {ctx.name_map.get(n, n) for n in bridge.sym_of}
-    if values is not None and names_needed <= set(ref_in):
+    if (values is not None or not names_needed) and names_needed <= set(
+            ref_in):
         pt = ctx.point(ref_in)
         tot = _cc()(0)
         for fam, G, traced in parts:

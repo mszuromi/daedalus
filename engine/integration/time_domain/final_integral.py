@@ -6938,6 +6938,11 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
             )
         return 0.0 + 0.0j
 
+    # C0 output (S4): no subset contributes
+    contribution.phase_j_parts = {
+        'subsets': [], 'perms': [], 'compensation': 1, 'origin_leaf_idx': None,
+        'free_ext_idx': [], 'k': n_ext}
+
     full = []
 
     def _full():
@@ -9517,6 +9522,14 @@ def integrate_diagram(
                 for cfn in subset_contributions:
                     total = total + complex(cfn(free_vals, _ctx, tie_ctx))
         return total / _comp
+
+    # C0 output (S4, ``api.me_output``): how ``contribution`` combines its
+    # subset closures, so the matrix-exponential form of the same sum can be
+    # assembled term by term (read only; nothing above uses it)
+    contribution.phase_j_parts = {
+        'subsets': subset_contributions, 'perms': list(_perms),
+        'compensation': _comp, 'origin_leaf_idx': origin_leaf_idx,
+        'free_ext_idx': list(free_ext_idx), 'k': _k}
 
     # If non-local cumulant kernels were substituted in cp, expose
     # the τ-dependent prefactor (= the substituted, simplified cp,
