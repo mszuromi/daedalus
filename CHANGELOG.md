@@ -11,6 +11,26 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: float-literal coupled drifts, partial `parameters=`, NaN lags (round 2, item 49)
+
+Three input-handling bugs; no number that was computed before moves (the zoo is bit-identical wherever it built).
+
+- **A coupled linear drift written with float (or integer) literals failed the mean-field self-check.**
+  `SDE('m').field('x').field('y').drift('x', '-1.0*x + 0.8*y').drift('y', '-0.3*x - 0.6*y')` raised
+  `AssertionError: mean-field saddle does not satisfy its own equations` at `expand()`; the same model with named
+  parameters built.  A model with no declared parameters got no numerical fallback in the check
+  (`_default_fundamental_point` returned `None` for the empty point), and the symbolic substitution of a coupled
+  implicit saddle (`x* = 0.8 y*`, `y* = -0.5 x*`) is simultaneous, so it cannot verify it alone.  The empty point is now
+  a point; a wrong mean-field equation in a parameter-free model is still rejected (test).  The float and named forms
+  now give bit-identical actions, saddles and tree + one-loop cumulants.
+- **A partial `parameters=` dict raised a bare `NameError` in the mean-field DAE.**  Parameters the caller omits now
+  come from the model's declared `default=` (the given values win); one with no default raises a `ValueError` naming it
+  (`compute_cumulants` and, as a backstop, the mean-field solvers; the caller's dict is not modified).
+- **A NaN lag was evaluated as tau = 0.**  The Ito equal-time nudge made the comparison against NaN pass, so a NaN
+  in `tau_grid` returned the equal-time value without a word.  `compute_cumulants` now raises `ValueError` up front for
+  a NaN / infinite entry of `tau_grid` or a NaN / infinite `tau_step` / `tau_max` (both Phase J engines), and
+  `dd.Config` rejects non-finite `tau_grid`, `chi_grid` and `times` at construction.
+
 #### Added: symbolic loop corrections as rational functions (C3)
 
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time

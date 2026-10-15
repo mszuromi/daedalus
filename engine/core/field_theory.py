@@ -1218,7 +1218,14 @@ def _default_fundamental_point(ns, model):
             n_rows = pop_size_map.get(ib[0], 2)
             n_cols = pop_size_map.get(ib[1], 2)
             fundamental[pname] = [[1.0] * n_cols for _ in range(n_rows)]
-    return fundamental or None
+    # A model that declares no parameters (every coefficient a literal) has
+    # the empty point, which is still a valid point: returning ``None`` here
+    # would switch the numerical fallback off, and a coupled implicit saddle
+    # (``x* = 0.8 y*``, ``y* = -0.5 x*``) is only verifiable through it (the
+    # symbolic substitution above is simultaneous, so it cannot close a loop).
+    if not fundamental and model.get('parameters') is None:
+        return None
+    return fundamental
 
 
 class _MFProxyForSolver:

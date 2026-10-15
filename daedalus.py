@@ -604,7 +604,9 @@ class Config:
             return None
         if isinstance(self.times, tuple):
             return self._resolve_grid(self.times, 'times')
-        return np.asarray(self.times, dtype=float)
+        arr = np.asarray(self.times, dtype=float)
+        self._require_finite(arr, 'times')
+        return arr
 
     def resolved_grid(self):
         """Materialise ``chi_grid`` — the spatial-difference grid χ = x_j − x_k
@@ -631,7 +633,9 @@ class Config:
                 raise ValueError(
                     f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
                     f"{g!r}. For an arbitrary grid pass a list/array instead.")
-            return np.linspace(g[0], g[1], int(g[2]))
+            arr = np.linspace(g[0], g[1], int(g[2]))
+            Config._require_finite(arr, name)
+            return arr
         if (isinstance(g, list) and len(g) == 3
                 and isinstance(g[2], (int, float))
                 and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
@@ -647,7 +651,16 @@ class Config:
             raise ValueError(
                 f"{name} is empty — pass a non-empty grid, or omit it (None) to use "
                 f"the default.")
+        Config._require_finite(arr, name)
         return arr
+
+    @staticmethod
+    def _require_finite(arr, name):
+        bad = ~np.isfinite(arr)
+        if bad.any():
+            raise ValueError(
+                f"{name} must be finite: {int(bad.sum())} of {arr.size} "
+                f"entries are NaN or infinite.")
 
 
 def _meta(mod, key, default=None):

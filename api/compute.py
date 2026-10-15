@@ -1261,32 +1261,31 @@ def compute_cumulants(
         fundamental = parameters
     if chi_grid is not None:
         spatial_grid = chi_grid
-    if not fundamental:
-        # Treat an EMPTY dict like None.  Several models ship
-        # ``DEFAULT_FUNDAMENTAL = {}``, and a caller forwarding that verbatim
-        # would otherwise sail past this fallback and fail much later with a
-        # bare ``NameError`` from inside the mean-field solve.  An empty
-        # parameter set cannot be intentional for a model that declares
-        # parameters.
-        # Fall back to the defaults declared via ``ModelBuilder.parameter(
-        # ..., default=...)``.  Leaving this ``{}`` surfaced as a bare
-        # ``NameError: name 'mu' is not defined`` from inside the Sage
-        # substitution -- naming neither the caller's omission nor which
-        # parameter was missing.  Mean-field parameters (``mean_field=True``,
-        # e.g. ``xstar``/``nstar``) are SOLVED, not supplied, so they are
-        # never required here.
-        _pspecs = model.get('parameters', []) or []
-        fundamental = {p['name']: p['default'] for p in _pspecs
-                       if p.get('default') is not None}
-        _missing = sorted(p['name'] for p in _pspecs
-                          if p.get('default') is None
-                          and not p.get('mean_field'))
-        if _missing:
-            raise ValueError(
-                'compute_cumulants: no ``parameters=`` given, and these model '
-                'parameters declare no default: ' + ', '.join(_missing) + '. '
-                'Pass parameters={...} or declare defaults via '
-                'ModelBuilder.parameter(name, default=...).')
+    # Fall back to the defaults declared via ``ModelBuilder.parameter(...,
+    # default=...)`` for every parameter the caller did not give: an EMPTY
+    # dict (several models ship ``DEFAULT_FUNDAMENTAL = {}``, and a caller
+    # forwarding that verbatim must not sail past this and fail much later
+    # with a bare ``NameError`` from inside the mean-field solve) and a
+    # PARTIAL one alike -- the given values win.  Mean-field parameters
+    # (``mean_field=True``, e.g. ``xstar``/``nstar``) are SOLVED, not
+    # supplied, so they are never required here.
+    _pspecs = model.get('parameters', []) or []
+    _given = dict(fundamental) if fundamental else {}
+    fundamental = {p['name']: p['default'] for p in _pspecs
+                   if p.get('default') is not None}
+    fundamental.update(_given)
+    _missing = sorted(p['name'] for p in _pspecs
+                      if p['name'] not in fundamental
+                      and not p.get('mean_field'))
+    if _missing:
+        raise ValueError(
+            'compute_cumulants: ' +
+            ('no ``parameters=`` given' if not _given else
+             'the ``parameters=`` given omit these') +
+            ', and these model parameters declare no default: ' +
+            ', '.join(_missing) + '. '
+            'Pass parameters={...} or declare defaults via '
+            'ModelBuilder.parameter(name, default=...).')
     if external_fields is None:
         raise ValueError('external_fields is required')
     if len(external_fields) != k:
@@ -1303,10 +1302,24 @@ def compute_cumulants(
             raise ValueError(
                 f'backend={backend!r} is not registered; known: '
                 f'{[b.name for b in _routing_check.backends()]}')
-    if tau_grid is None and not (tau_step > 0 and tau_max >= 0):
+    if tau_grid is None and not (tau_step > 0 and tau_max >= 0
+                                 and np.isfinite(tau_step)
+                                 and np.isfinite(tau_max)):
         raise ValueError(
-            f'need tau_step > 0 and tau_max >= 0 (got tau_step={tau_step}, '
-            f'tau_max={tau_max}), or pass an explicit tau_grid.')
+            f'need finite tau_step > 0 and tau_max >= 0 (got tau_step='
+            f'{tau_step}, tau_max={tau_max}), or pass an explicit tau_grid.')
+    if tau_grid is not None:
+        # A NaN lag is not "no lag": the Ito equal-time nudge turns a
+        # comparison against it into a plain evaluation at tau = 0 and the
+        # result looks like a valid number.  Refuse before any work.
+        _tg = np.asarray(tau_grid, dtype=float)
+        _bad = ~np.isfinite(_tg)
+        if _bad.any():
+            _where = np.flatnonzero(_bad.ravel())[:5].tolist()
+            raise ValueError(
+                f'tau_grid must be finite: {int(_bad.sum())} of {_tg.size} '
+                f'entries are NaN or infinite (flat positions {_where}'
+                f'{"..." if _bad.sum() > 5 else ""}).')
     switch_on = _switch_on_request(
         model, k, max_ell, t_min, times, initial_covariance, tau_grid,
         spatial=(bool(model.get('spatial')) or spatial_grid is not None

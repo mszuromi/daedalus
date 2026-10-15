@@ -202,6 +202,8 @@ def _numpy_params(model: dict, fundamental: dict) -> dict:
     expressions like ``w[i,j]`` (2-D indexing) and ``Em[i]`` (1-D) work
     under plain Python ``eval``.
     """
+    from api._mean_field import complete_parameters
+    fundamental = complete_parameters(model, fundamental, 'mean-field DAE solve')
     out = {}
     for pspec in model.get('parameters', []):
         name = pspec['name']
