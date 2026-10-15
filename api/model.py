@@ -1837,6 +1837,9 @@ class _BaseModelBuilder:
                 from api.delay import wrap_hook_with_delays
                 self._kernel_ft_image = wrap_hook_with_delays(
                     self._kernel_ft_image, _hook_delays, param_names)
+            # the declarations, for api.delay.kernel_delays (a cheap text check
+            # instead of evaluating the hook for models without a delay)
+            self._kernel_ft_image._kernel_specs = [dict(k) for k in self._kernel_specs]
             # Time-domain images — same kernel specs, but evaluated
             # in ``t`` rather than ``omega``.  Used by the Phase J
             # integrator to substitute conductance-vertex kernels at

@@ -432,3 +432,97 @@ def test_graded_pade24_realization_falls_back_to_the_pole_route(monkeypatch):
     assert led and led[0].satisfied is False
     assert np.allclose(np.real(r['C_tau']), np.real(rp['C_tau']), rtol=1e-12)
     assert np.max(np.abs(r['C_tau'])) < 1.0          # (1e13 before the check)
+
+
+# ── review fixes (regressions) ──────────────────────────────────────────
+
+
+def _cond_model(name, **kw):
+    return (SDE(name).parameter('a', default=1.0).parameter('b', default=1.0)
+            .parameter('c', default=0.3).parameter('d', default=0.5, domain='positive')
+            .parameter('tau', default=0.4, domain='positive').parameter('D', default=0.05)
+            .field('x').define_kernel('g', **kw)
+            .drift('x', '-a*x + b - c*x*Conv(g, x)')
+            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+
+
+def test_delayed_kernel_in_a_nonlinear_term_keeps_its_delay():
+    """A shifted time_expr kernel inside a field x Conv vertex: the loops use
+    the Pade image (the unshifted time image never reaches the vertex), equal
+    to the same kernel declared with delay= + freq_image."""
+    kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 0.5, 2.0]),
+              parallel=False, verbose=False, use_cache=False, delay={'order': 4})
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = compute_cumulants(_cond_model('delay cond A', time_expr='heaviside(t - d)*exp(-(t - d)/tau)/tau'), **kw)
+        b = compute_cumulants(_cond_model('delay cond B', delay='d', freq_image='1/(1 + I*omega*tau)'), **kw)
+    assert a['status'] == 'ok' and b['status'] == 'ok'
+    assert np.allclose(np.real(a['C_tau_by_ell'][1]), np.real(b['C_tau_by_ell'][1]), rtol=1e-10, atol=0)
+    assert np.max(np.abs(a['C_tau_by_ell'][1])) > 0
+
+
+def test_hard_delay_in_a_nonlinear_term_is_never_silent():
+    """x * x(t - d): the all-pass image is not strictly proper, Phase J skips
+    those diagrams; the record says so (target not met) and warns."""
+    m = (SDE('delay hard nonlinear').parameter('a', default=1.0).parameter('b', default=1.0)
+         .parameter('c', default=0.3).parameter('d', default=0.5, domain='positive')
+         .parameter('D', default=0.05).field('x').drift('x', '-a*x + b - c*x*x(t - d)')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    from api.delay import DelayOrderWarning
+    with warnings.catch_warnings(record=True) as ws:
+        warnings.simplefilter('always')
+        r = compute_cumulants(m, k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 1.0]),
+                              parallel=False, verbose=False, use_cache=False)
+    assert r['status'] == 'incomplete' and r['delay']['incomplete']
+    assert r['delay']['target_met'] is False and 'strictly proper' in r['delay']['cap']
+    assert any(issubclass(w.category, DelayOrderWarning) for w in ws)
+
+
+def test_long_delay_steps_up_the_order():
+    """A stable oscillator with a long delayed velocity feedback (d = 13): low
+    Pade orders put the tree far from the exact one; the search moves on
+    instead of raising, and the tree is exact."""
+    m = (SDE('delay long feedback').parameter('g', default=0.5).parameter('k', default=0.45)
+         .parameter('d', default=13.0, domain='positive').parameter('D', default=0.05)
+         .parameter('eps', default=0.05)
+         .field('x').field('v').equation('x', lhs='(Dt + 1)*x', rhs='v + x')
+         .drift('v', '-x - g*v - k*v(t - d) - eps*v^3')
+         .noise('xi', Gaussian(var='2*D'), couples={'v': 1}).build())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(m, k=2, max_ell=1, external_fields=[('x', 1)] * 2,
+                              tau_grid=np.array([0.0, 1.0, 2.0]), parallel=False, verbose=False,
+                              use_cache=False)
+    info = r['delay']
+    assert info['tree'] == 'exact' and np.all(np.isfinite(np.real(r['C_tau'])))
+    assert info['n'] >= 8 and (info['orders_skipped_unstable'] or info['orders_run'][0] > 4
+                               or len(info['orders_run']) > 1)
+
+
+def test_output_files_hold_the_final_numbers(tmp_path):
+    from api.save import load_npz
+    p = str(tmp_path / 'delay.npz')
+    r = _cc(_ou('delay npz'), 0, delay={'order': 4}, output_npz=p)
+    d = load_npz(p)
+    tree = [v for k_, v in d.items() if 'tree' in k_.lower() or k_ == 'C_tree']
+    assert tree, list(d)
+    assert np.allclose(np.real(np.asarray(tree[0])), np.real(r['C_tau_by_ell'][0]), rtol=1e-14)
+
+
+def test_indexed_delayed_kernel_and_caret_time_expr():
+    m = (TemporalModelBuilder('delay indexed kernel').population('E', size=2)
+         .physical_field('x', population='E')
+         .parameter('d', default=0.5, domain='positive').parameter('D', default=0.1)
+         .parameter('w', default=[[0.2, -0.3], [0.25, 0.1]], indexed_by=['E', 'E'])
+         .define_kernel('g', delay='d', freq_image='1/(1 + I*omega*0.3)', indexed_by=['E', 'E'])
+         .set_action_text('sum(xt[i]*((Dt + 1)*x[i] - sum(w[i,j]*g[i,j]*x[j] for j in E)) - D*xt[i]^2 for i in E)')
+         .set_mf_equation('xstar', '0').build())
+    rep = analyze(m, Question(k=2, external_fields=(('x', 1), ('x', 2)), max_ell=0))
+    assert rep.traits.propagator_class == 'delay' and not rep.errors, rep.summary()
+    assert split_shifted_time_expr('heaviside(t - d)*(t - d)*exp(-(t - d)/tau)/tau^2')[0] == 'd'
+
+
+def test_spatial_delay_is_refused_by_name():
+    from api.delay import compute_delayed
+    with pytest.raises(ValueError, match='spatial'):
+        compute_delayed({'name': 'x', 'spatial': {'dim': 1}}, {'k': 2}, {'z_g': ['d']})

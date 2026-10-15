@@ -192,17 +192,31 @@ def kernel_delays(model: dict, ns) -> dict:
     hook = model.get('kernel_ft_image')
     if hook is None:
         return {}
+    specs = getattr(hook, '_kernel_specs', None)
+    if specs is not None and not specs_may_delay(specs):
+        return {}                       # a builder hook whose texts carry no delay
     omega = SR.var('omega')
-    try:
-        imgs = hook(ns, omega) or {}
-    except Exception:
-        return {}
+    imgs = hook(ns, omega) or {}
     out = {}
     for key, val in imgs.items():
         ds = delay_factors(SR(val), omega)
         if ds:
             out[str(key)] = ds
     return out
+
+
+_SHIFT_RE = r'\b(dirac_delta|heaviside|unit_step)\s*\(\s*t\s*[-+]'
+
+
+def specs_may_delay(specs) -> bool:
+    """Whether a builder's kernel declarations can produce a delay factor: a
+    ``delay``, an ``exp(`` in a frequency image, or a shifted time image."""
+    import re
+    for k in specs or ():
+        if k.get('delay') or re.search(r'\bexp\s*\(', str(k.get('freq_image') or '')) \
+                or re.search(_SHIFT_RE, str(k.get('time_expr') or '')):
+            return True
+    return False
 
 
 def pade_model(model: dict, n: int) -> dict:
@@ -221,6 +235,18 @@ def pade_model(model: dict, n: int) -> dict:
 
     m = dict(model)
     m['kernel_ft_image'] = hook_n
+    td = model.get('kernel_td_image')
+    if td is not None:
+        # a delayed kernel's time image (the unshifted one for a shifted
+        # time_expr) must not reach a conductance vertex: without it the
+        # vertex takes the (Pade) frequency image, like every other route
+        def td_n(ns, t, _td=td, _hook=hook):
+            out = dict(_td(ns, t) or {})
+            om = SR.var('omega')
+            delayed = {k for k, v in (_hook(ns, om) or {}).items()
+                       if delay_factors(SR(v), om)}
+            return {k: v for k, v in out.items() if k not in delayed}
+        m['kernel_td_image'] = td_n
     base = model.get('name', 'model')
     m['name'] = f'{base} [delay Pade {int(n)}]'
     m['spec_signature'] = f"{model.get('spec_signature', '')}-pade{int(n)}"
@@ -240,7 +266,7 @@ def split_shifted_time_expr(text: str):
     import re
     # text pre-check: no Sage symbol is created for an ordinary kernel (a new
     # symbol shifts pynac's term order, and with it the rounding of later sums)
-    if not re.search(r'\b(dirac_delta|heaviside|unit_step)\s*\(\s*t\s*[-+]', str(text)):
+    if not re.search(_SHIFT_RE, str(text)):
         return None
     from sage.all import SR, var, heaviside, dirac_delta
     names = set(re.findall(r'\b([A-Za-z_]\w*)\b', text)) - {
@@ -249,7 +275,7 @@ def split_shifted_time_expr(text: str):
     loc = {nm: var(nm) for nm in names}
     loc.update(dirac_delta=dirac_delta, heaviside=heaviside, unit_step=heaviside)
     try:
-        e = SR(eval(text, {'__builtins__': {}}, dict(loc, **{
+        e = SR(eval(str(text).replace('^', '**'), {'__builtins__': {}}, dict(loc, **{
             'exp': __import__('sage.all', fromlist=['exp']).exp,
             'sqrt': __import__('sage.all', fromlist=['sqrt']).sqrt,
             'I': __import__('sage.all', fromlist=['I']).I,
@@ -362,11 +388,17 @@ def wrap_hook_with_delays(hook, delayed: dict, param_names=()):
                 continue
             ksym = getattr(ns, kname)
             X = SR(_safe_eval(dtext, env, f'kernel {kname} (delay)'))
-            keys = list(ksym) if isinstance(ksym, (list, tuple)) else [ksym]
-            for key in keys:
+            def flat(x):
+                if isinstance(x, (list, tuple)):
+                    for y in x:
+                        yield from flat(y)
+                else:
+                    yield x
+            for key in flat(ksym):
                 out[key] = exp(-I * omega * X) * SR(out.get(key, SR(1)))
         return out
 
+    hook_d._kernel_specs = getattr(hook, '_kernel_specs', None)
     return hook_d
 
 
@@ -442,6 +474,10 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     max_ell = int(call.get('max_ell') or 0)
     verbose = bool(call.get('verbose', True))
     t_all = time.perf_counter()
+    if model.get('spatial'):
+        raise ValueError(
+            f"model {model.get('name')!r}: delay kernels {sorted(delays)} in a spatial model are "
+            'not supported (the delay route covers temporal models: Pade loops, exact tree)')
 
     # 1. the TRUE model: stability with the true exponential (G2-K), the
     #    inputs of the exact tree; refuses an unstable saddle by name
@@ -461,13 +497,22 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     if pf_on and report_true.errors:
         raise _an.AnalyzerError(_an._format_stop(report_true.errors, 'delay'),
                                 report_true, report_true.errors, 'delay')
+    if report_true.errors:                  # preflight=False: still never silent
+        from api.save import _ensure_warning_shown
+        _ensure_warning_shown(DelayOrderWarning, 'always')
+        warnings.warn('delay: preflight=False, but the analyzer of the delayed model found '
+                      + '; '.join(f'[{f.code}] {f.message}' for f in report_true.errors),
+                      DelayOrderWarning, stacklevel=3)
 
     # 2. the exact tree (k = 2 only), from the linear delayed system
     exact = None
     exact_note = None
     if opts['tree'] == 'exact' and k == 2:
+        tg = call.get('tau_grid')
+        tmax = (float(np.max(np.abs(np.asarray(tg, dtype=float)))) if tg is not None
+                and np.size(tg) else float(call.get('tau_max') or 0.0))
         try:
-            exact = _dx.ExactTree.from_context(ctx, call.get('external_fields'))
+            exact = _dx.ExactTree.from_context(ctx, call.get('external_fields'), tau_max=tmax)
         except _dx.ExactTreeUnavailable as exc:
             exact_note = str(exc)
     elif opts['tree'] == 'exact':
@@ -489,8 +534,9 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     ests = {}
     prev = None
     sub_call = dict(call)
-    sub_call.pop('model', None)
-    sub_call.pop('delay', None)
+    for key in ('model', 'delay', 'output_npz', 'output_csv'):
+        sub_call.pop(key, None)            # the files are written once, from the result
+    incomplete = None
     for i, n in enumerate(seq):
         if verbose:
             print(f'[delay] Pade ({n}, {n}) of exp(-i omega d): running the pipeline')
@@ -516,14 +562,28 @@ def compute_delayed(model: dict, call: dict, delays: dict):
         walls[n] = time.perf_counter() - t0
         if exact is not None:
             _install_exact_tree(r, exact, call)
-        bad_tree = (exact is not None and r.get('delay_tree_vs_pade') is not None
+        if r.get('status') == 'incomplete':
+            # diagrams Phase J could not evaluate (a hard delay inside a
+            # nonlinear term: its all-pass image is not strictly proper, which
+            # the conductance-kernel routes need); no order fixes it
+            runs[n], n_used, incomplete = r, n, r.get('phase_j_incomplete')
+            cap = ('Phase J skipped diagrams (a delay kernel inside a nonlinear term, '
+                   'e.g. x*x(t - d), needs a strictly proper image: write the delay with a '
+                   'filter, Kernel.delay(d) * Kernel.exponential(tau))')
+            est = None
+            break
+        bad_tree = (loops_need_n and exact is not None
+                    and r.get('delay_tree_vs_pade') is not None
                     and not r['delay_tree_vs_pade'] <= 1.0)
         if bad_tree or not _finite(r, k):
             why = ('its Pade tree is %.3g of max|C| away from the exact tree'
                    % r['delay_tree_vs_pade'] if bad_tree else 'non-finite values')
+            if i + 1 < len(seq):
+                skipped[n] = why            # too low for this delay: try the next order
+                continue
             if prev is None:
-                raise RuntimeError(f'delay: the Pade ({n}, {n}) run is not usable '
-                                   f'({why}); lower the order')
+                raise RuntimeError(f'delay: no Pade order up to n = {n} is usable ({why}); '
+                                   "raise delay={'n_max': ...} (a long delay needs a higher order)")
             failed[n] = why
             cap = f'order n = {n} is not usable ({why})'
             break
@@ -539,7 +599,7 @@ def compute_delayed(model: dict, call: dict, delays: dict):
             # growing one (or one above 1) means the higher order lost
             # precision, and the previous pair stands
             last = ests.get(prev)
-            if (last is not None and e_n > last) or e_n > 1.0:
+            if last is not None and e_n > last:
                 failed[n] = (f'the difference to n = {prev} grew to {e_n:.3g} '
                              f'(previous {last if last is not None else float("nan"):.3g})')
                 cap = f'order n = {n} diverged (difference {e_n:.3g})'
@@ -569,6 +629,8 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     fixed = opts['order'] != 'auto'
     target_met = (None if fixed and loops_need_n else
                   (est is not None and est <= opts['tol']) if loops_need_n else True)
+    if incomplete:
+        target_met = False
     if est is None and loops_need_n and not fixed:
         cap = cap or 'a single order was run (no doubling estimate)'
 
@@ -583,6 +645,9 @@ def compute_delayed(model: dict, call: dict, delays: dict):
         'orders_run': sorted(runs),
         'orders_skipped_unstable': skipped,
         'orders_failed': failed,
+        'incomplete': incomplete,
+        'subrun_accuracy_low': bool(getattr(r.get('analysis'), 'has', lambda c: False)(
+            'G6_ACCURACY_LOW')),
         'est_by_order': ests,
         'walls_s': {n: round(w, 3) for n, w in walls.items()},
         'est_rel_error': est,
@@ -599,8 +664,18 @@ def compute_delayed(model: dict, call: dict, delays: dict):
     }
     r['delay'] = info
     r.pop('delay_tree_vs_pade', None)
-    _record_in_report(r, report_true, info)
-    if loops_need_n and target_met is False:
+    cfg = r.get('config')
+    if isinstance(cfg, dict):
+        cfg['delay_pade_model'] = cfg.get('model_name')
+        cfg['model_name'] = model.get('name', cfg.get('model_name'))
+    _record_in_report(r, report_true, info, call.get('policy'))
+    if call.get('output_npz') or call.get('output_csv'):
+        from api.save import save_npz, save_csv
+        if call.get('output_npz'):
+            save_npz(r, call['output_npz'])
+        if call.get('output_csv'):
+            save_csv(r, call['output_csv'])
+    if (loops_need_n or incomplete) and target_met is False:
         msg = (f'delay: the Pade approximation of the loops reached an '
                f'estimated relative error {est if est is not None else float("nan"):.3g} '
                f'at n = {n_used} (target {opts["tol"]:g}); {cap or "n_max reached"}.')
@@ -640,7 +715,7 @@ def _install_exact_tree(r, exact, call):
     r['total_C'] = total
 
 
-def _record_in_report(r, report_true, info):
+def _record_in_report(r, report_true, info, policy=None):
     """The delay record in ``r['analysis']``: the G2-K findings of the true
     model, ``G3_DELAY_APPROXIMATED`` and the ledger's approximation entry."""
     from api import analyze as _an
@@ -675,8 +750,14 @@ def _record_in_report(r, report_true, info):
     keep = [f for f in rep.findings
             if not (f.code.startswith('G2') and f.code in {g.code for g in report_true.findings})]
     g2k = [f for f in report_true.findings if f.code.startswith('G2')]
+    pol = _an._coerce(policy, _an.Policy, 'policy')
+    finding = _an._apply_policy([finding], pol)[0]          # strict: recorded as an error
     findings = tuple(_an._sorted_findings(keep + g2k + [finding]))
-    traits = replace(rep.traits, propagator_class='delay-rational')
+    tt = report_true.traits
+    traits = replace(rep.traits, propagator_class='delay-rational', delays=tt.delays,
+                     kernel_stability=tt.kernel_stability,
+                     n_unstable_roots=tt.n_unstable_roots, stable=tt.stable,
+                     stability_source=tt.stability_source or rep.traits.stability_source)
     r['analysis'] = replace(rep, findings=findings, ledger=tuple(rep.ledger) + (entry,),
                             traits=traits)
     r['analysis_true_model'] = report_true

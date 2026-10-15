@@ -222,6 +222,11 @@ class SDE:
         if not self._fields:
             return text
         names = '|'.join(re.escape(f) for f in sorted(self._fields, key=len, reverse=True))
+        ind = re.search(rf'\b({names})\s*\[[^\]]*\]\s*\(\s*t\b', text)
+        if ind:
+            raise SDEError(f'equation({where!r}): an indexed delayed field '
+                           f'{text[ind.start():ind.end()]}...) is not supported; write '
+                           f"Conv(K, {ind.group(1)}[...]) with define_kernel('K', delay='d').")
         pat = re.compile(rf'\b({names})\s*\(\s*t\s*-\s*')
         out, pos = '', 0
         while True:

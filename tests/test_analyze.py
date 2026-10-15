@@ -395,3 +395,65 @@ def test_analyze_never_writes_the_cache(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)                     # saved_models/ resolves relative to the cwd
     analyze(_tracked('ou_quartic')[0])
     assert not (tmp_path / 'saved_models').exists()
+
+
+# ── G2-K (kernel-aware stability) and delay kernels ─────────────────────────
+
+
+def _erlang2_feedback(J):
+    """OU with Erlang-2 inhibitory feedback: Routh-unstable for J > 8 at
+    mu = tg = 1, while the mean-field linearization (s + mu + J) is stable."""
+    return (TemporalModelBuilder(f'Gallery erlang2 feedback J={J}').physical_field('x')
+            .parameter('mu', default=1.0, domain='positive').parameter('J', default=J)
+            .parameter('D', default=0.1, domain='positive').parameter('tg', default=1.0, domain='positive')
+            .define_kernel('g', freq_image='1/(1 + I*omega*tg)^2')
+            .set_action_text('xt*((Dt + mu)*x + J*g*x) - D*xt^2')
+            .equation(lhs='(Dt + mu)*x', rhs='0').build())
+
+
+def test_g2k_kernel_instability_of_a_rational_kernel_model():
+    q = {'k': 2, 'external_fields': [('x', 1), ('x', 1)], 'max_ell': 0}
+    ok = analyze(_erlang2_feedback(7.9), question=q)
+    assert ok.traits.kernel_stability == 'stable' and ok.has('G2_KERNEL_STABILITY')
+    bad = analyze(_erlang2_feedback(10.0), question=q)
+    assert bad.traits.kernel_stability == 'unstable' and bad.traits.n_unstable_roots == 2
+    warn = [f for f in bad.findings if f.code == 'G2_KERNEL_UNSTABLE']
+    assert warn and warn[0].level == 'warning' and 'integral' in warn[0].message
+    # G3 then names the instability (it used to say G3_ACAUSAL_POLE)
+    assert bad.has('G2_UNSTABLE_SADDLE') and not bad.has('G3_ACAUSAL_POLE')
+
+
+def test_g2k_neutral_delay_is_refused_by_name():
+    m = (TemporalModelBuilder('Gallery neutral delay').physical_field('x')
+         .parameter('d', default=1.0, domain='positive').parameter('D', default=0.1, domain='positive')
+         .define_kernel('g', freq_image='I*omega*exp(-I*omega*d)')
+         .set_action_text('xt*((Dt + 1)*x - 0.5*g*x) - D*xt^2')
+         .equation(lhs='(Dt + 1)*x', rhs='0').build())
+    r = analyze(m, question={'k': 2, 'external_fields': [('x', 1), ('x', 1)], 'max_ell': 0})
+    hit = [f for f in r.findings if f.code == 'G2_NEUTRAL_DELAY']
+    assert hit and hit[0].level == 'error' and r.traits.kernel_stability == 'neutral'
+
+
+def test_delay_approximation_finding_levels():
+    """G3_DELAY_APPROXIMATED: info when the target is met, a warning when not
+    (strict: an error, recorded)."""
+    import numpy as np
+    from api.sde import SDE
+    from api.noise import Gaussian
+    from api import compute_cumulants
+    m = (SDE('Gallery delay approximated').parameter('a', default=1.0).parameter('c', default=-2.0)
+         .parameter('d', default=0.5, domain='positive').parameter('eps', default=0.02)
+         .parameter('D', default=0.1).field('x').drift('x', '-a*x + c*x(t - d) - eps*x^3')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    kw = dict(k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)], tau_grid=np.array([0.0, 1.0]),
+              parallel=False, verbose=False, use_cache=False, taylor_order=4)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        met = compute_cumulants(m, delay={'tol': 1e-5}, **kw)
+        missed = compute_cumulants(m, delay={'tol': 1e-14, 'n_max': 8}, **kw)
+        strict = compute_cumulants(m, delay={'tol': 1e-14, 'n_max': 8},
+                                   policy={'mode': 'strict', 'allow_taylor_truncation': True}, **kw)
+    lv = lambda r: [f.level for f in r['analysis'].findings if f.code == 'G3_DELAY_APPROXIMATED']
+    assert lv(met) == ['info'] and lv(missed) == ['warning'] and lv(strict) == ['error']
+    assert missed['delay']['target_met'] is False and met['delay']['target_met'] is True

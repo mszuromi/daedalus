@@ -151,7 +151,7 @@ FINDING_CODES = {
     'G3_SKIPPED':                ('G3', 'info'),
     # delay kernels (api.delay): exp(-i omega d) factors, approximated by Pade
     'G3_DELAY_KERNEL':           ('G3', 'info'),
-    'G3_DELAY_APPROXIMATED':     ('G3', 'info'),
+    'G3_DELAY_APPROXIMATED':     ('G3', 'warning'),   # info when the target is met
     # G4 noise
     'G4_NO_NOISE':               ('G4', 'warning'),
     'G4_NON_GAUSSIAN':           ('G4', 'info'),

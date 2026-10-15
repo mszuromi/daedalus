@@ -278,8 +278,20 @@ class ExactTree:
         self._ensure(0.0 if tau_max is None else float(tau_max))
 
     @classmethod
-    def from_context(cls, ctx, external_fields):
-        """From the analyzer's state of the TRUE model (``analyze_with_context``)."""
+    def from_context(cls, ctx, external_fields, tau_max=0.0):
+        """From the analyzer's state of the TRUE model (``analyze_with_context``);
+        ``tau_max``: the largest lag needed (the method-of-steps stack is built
+        for it, and refused when too large).  Any failure is an
+        ``ExactTreeUnavailable`` (the Pade tree is used instead)."""
+        try:
+            return cls._from_context(ctx, external_fields, tau_max)
+        except ExactTreeUnavailable:
+            raise
+        except Exception as exc:
+            raise ExactTreeUnavailable(f'{type(exc).__name__}: {str(exc)[:200]}') from exc
+
+    @classmethod
+    def _from_context(cls, ctx, external_fields, tau_max):
         from api.analyze import _noise_matrix
         from api.access import normalize_external_fields
         from engine.diagrams.type_assignment import build_field_index_map
@@ -299,7 +311,7 @@ class ExactTree:
         _, phys_idx = build_field_index_map(ctx.ring_names, ctx.n_tilde)
         ia, ib = phys_idx[tuple(ext[0])], phys_idx[tuple(ext[1])]
         ss = delayed_state_space(ctx.K_ft, ctx.omega, ctx.num_params, N)
-        return cls(ss, ia, ib)
+        return cls(ss, ia, ib, tau_max=tau_max)
 
     # ── the boundary-value problem and the method of steps ──
     def _base_conditions(self, st):
@@ -336,21 +348,42 @@ class ExactTree:
         res = np.linalg.norm(M @ x + r0) / max(np.linalg.norm(r0), 1e-300)
         if not np.isfinite(res) or res > 1e-9:
             raise ExactTreeUnavailable(f'the covariance boundary-value problem has no '
-                                       f'consistent solution (residual {res:.2g}); is the '
-                                       'saddle stable?')
+                                       f'consistent solution (residual {res:.2g}; an unstable '
+                                       'saddle, or a delay too long for double precision: '
+                                       f'|A| d = {np.linalg.norm(A, 2) * d:.3g})')
         sv = np.linalg.svd(M, compute_uv=False)
         if sv[-1] <= 1e-13 * sv[0]:
             raise ExactTreeUnavailable('the covariance boundary-value problem is singular '
-                                       '(marginal mode?)')
+                                       '(a marginal mode, or a delay too long for it: '
+                                       f'|A| d = {np.linalg.norm(A, 2) * d:.3g})')
+        # the shooting over [0, d] amplifies rounding like the condition of
+        # the linear conditions (~ e^{|A| d}); above 1e-8 the "exact" tree is
+        # not trustworthy and the Pade tree is used instead
+        self.cond = float(sv[0] / sv[-1])
+        self.err_est = 2.2e-16 * self.cond
+        if self.err_est > 1e-8:
+            raise ExactTreeUnavailable(
+                f'the covariance boundary-value problem is ill-conditioned (condition '
+                f'{self.cond:.2g}, |A| d = {np.linalg.norm(A, 2) * d:.3g}): estimated error '
+                f'{self.err_est:.1e} > 1e-8')
         U0 = x[:n * n].reshape(n, n)
         V0 = x[n * n:].reshape(n, n)
         self.residual = float(res)
         return np.concatenate([U0.ravel(), V0.ravel(), W1_0.ravel(), W2_0.ravel()])
 
+    #: largest method-of-steps stack (states) the exact tree builds
+    MAX_STACK = 4000
+
     def _ensure(self, tau_max):
         K = max(0, int(math.floor(abs(tau_max) / self.ss.d)))
         if self._stack is not None and K <= self._K:
             return
+        n, m = self.ss.A.shape[0], self.ss.B.shape[1]
+        dim = (2 + K) * (n * n + n * m)
+        if dim > self.MAX_STACK:
+            raise ExactTreeUnavailable(
+                f'tau_max / d = {abs(tau_max) / self.ss.d:.0f} delay intervals need a method-'
+                f'of-steps stack of {dim} states (> {self.MAX_STACK})')
         st = _Stack(self.ss, K)
         base = self._base_conditions(st) if self._Y0 is None else self._Y0[:st.size_upto(0)]
         Y0 = np.zeros(st.dim)
