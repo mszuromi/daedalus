@@ -299,8 +299,14 @@ def _build_residual(model: dict, params_np: dict,
         for k, (lhs_text, rhs_text, i, pop) in enumerate(expanded):
             ns['i'] = i
             try:
-                lhs = eval(lhs_text, ns)
-                rhs = eval(rhs_text, ns)
+                # A saturating expression (``1/(1 + exp(300*x^2))``) overflows
+                # to a valid value; numpy's overflow / invalid warning, issued
+                # from this frame whose ``__builtins__`` is empty, would fail
+                # with ``KeyError('__import__')`` once warnings are shown
+                # (pytest, ``-W``).  Silence it; the values are unchanged.
+                with np.errstate(all='ignore'):
+                    lhs = eval(lhs_text, ns)
+                    rhs = eval(rhs_text, ns)
                 # A scalar (no-population) model evaluates its state as
                 # 1-element arrays; ``float(array)`` is deprecated for
                 # ndim > 0 (NumPy 1.25) and will raise, so unwrap explicitly.

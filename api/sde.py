@@ -255,12 +255,6 @@ class SDE:
 
     def _populations(self) -> list[dict]:
         if self._pops:
-            for p in self._pops:
-                if p['name'] == 'pop' and p['size'] > 1:
-                    raise SDEError(
-                        "population('pop', size>1): the model compiler binds the name "
-                        "'pop' to the legacy population count; name the population "
-                        "differently (or use SDE(name, n_populations=N)).")
             return self._pops
         return [{'name': self._implicit_pop(), 'size': self._n_pop_default,
                  'description': ''}]
@@ -348,6 +342,14 @@ class SDE:
         e = e.subs({dirac_delta(t): dd})
         delta_part = e.coefficient(dd, 1)
         rest = (e - delta_part * dd).simplify_full()
+        delta_raw = delta_part
+        # ``(c*dirac_delta(t) + h(t))*heaviside(t)``: the delta of a causal kernel
+        # sits on the boundary and counts with its full weight c (the kernel's
+        # frequency image is c + h~(omega), as for the same kernel written
+        # ``c*dirac_delta(t) + h(t)*heaviside(t)``), so the step is not carried
+        # into the delta part; a t-dependent factor is evaluated at the delta (t = 0).
+        from sage.all import heaviside as _H
+        delta_part = delta_part.subs({_H(t): SR(1)}).subs({t: SR(0)})
         # assume only what is not assumed already, and forget only that: a
         # parameter that a model builder declared positive keeps its global
         # assumption (forgetting it leaked into every later computation)
@@ -360,7 +362,7 @@ class SDE:
         # with it (the result can be an unevaluated ``cases``), so integrate its t > 0 part over (0, oo) instead.
         from sage.all import heaviside
         lower = -oo
-        causal = e - delta_part * dd            # unsimplified: simplify_full mangles sums of exponentials
+        causal = e - delta_raw * dd             # unsimplified: simplify_full mangles sums of exponentials
         if rest.has(heaviside(t)):
             rest = rest.subs({heaviside(t): SR(1)})
             lower = SR(0)
@@ -517,8 +519,12 @@ class SDE:
             dtcoef = {}
             for f, eq in self._eqs.items():
                 L = self._parse(eq['lhs'], f'lhs of {f}').expand()
-                a = L.coefficient(_DT, 1).coefficient(self._sym(f), 1)
-                if a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}:
+                dt_terms = L.coefficient(_DT, 1)
+                a = dt_terms.coefficient(self._sym(f), 1)
+                # the x part of the Dt terms must be exactly a*x with a free of the fields: ``(1 + x^2)*Dt*x`` has
+                # the Dt-coefficient x + x^3, whose x-part alone (1) would be taken for a
+                if (a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}
+                        or (dt_terms - a * self._sym(f)).expand().has(self._sym(f))):
                     raise SDEError(f"stratonovich: cannot read a constant Dt "
                                    f"coefficient off lhs={eq['lhs']!r}.")
                 dtcoef[f] = a

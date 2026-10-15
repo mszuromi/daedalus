@@ -433,21 +433,32 @@ _NONZERO_PROBE_OPERATORS = frozenset({
 })
 
 
-def _interval_safe(c) -> bool:
+def _is_float_literal(po) -> bool:
+    """A real floating-point constant (Python ``float`` or Sage real number)."""
+    from sage.rings.real_double import RealDoubleElement
+    from sage.rings.real_mpfr import RealNumber
+    return isinstance(po, (float, RealNumber, RealDoubleElement))
+
+
+def _interval_safe(c, floats_ok: bool = False) -> bool:
     """Only rigorous operators and exact constants.  A float literal is
-    excluded: Sage compares floats approximately (``0.1*q - q/10`` is zero
-    for ``bool``), exact interval arithmetic would not."""
+    excluded (unless ``floats_ok``): Sage compares floats approximately
+    (``0.1*q - q/10`` is zero for ``bool``), exact interval arithmetic would
+    not."""
     op = c.operator()
     if op is None:
         if c.is_numeric():
             try:
-                return bool(c.pyobject().parent().is_exact())
+                po = c.pyobject()
+                if _is_float_literal(po):
+                    return floats_ok
+                return bool(po.parent().is_exact())
             except (AttributeError, TypeError, ValueError):
                 return False
         return True
     if _sr_op_name(op) not in _NONZERO_PROBE_OPERATORS:
         return False
-    return all(_interval_safe(o) for o in c.operands())
+    return all(_interval_safe(o, floats_ok) for o in c.operands())
 
 
 def _probe_value(k: int):
@@ -455,6 +466,96 @@ def _probe_value(k: int):
     ratio) sequence, so distinct variables get unrelated values."""
     x = (0.5 + 0.6180339887498949 * (k + 1)) % 1.0
     return 0.2 + 0.6 * x
+
+
+def _probe_point(c, floats_ok: bool = False):
+    """``(vs, val_of)``: the sorted variables of ``c`` and a probe value for
+    each, or ``None`` when ``c`` is not interval-safe or a probe value
+    violates an assumption on one of its variables."""
+    from sage.symbolic.assumptions import assumptions, GenericDeclaration
+    if not _interval_safe(c, floats_ok):
+        return None
+    # Variables are keyed by name: ``==`` between SR variables builds
+    # a relation whose truth test may itself go to Maxima.
+    vs = sorted(c.variables(), key=repr)
+    val_of = {repr(v): _probe_value(k) for k, v in enumerate(vs)}
+    for a in assumptions():
+        if isinstance(a, GenericDeclaration):
+            if (repr(a._var) in val_of
+                    and a._assumption not in _NONZERO_PROBE_DOMAINS):
+                return None
+            continue
+        av = {repr(v): v for v in a.variables()}
+        if any(k in val_of for k in av):
+            if (not all(k in val_of for k in av)
+                    or not bool(a.subs({v: val_of[k]
+                                        for k, v in av.items()}))):
+                return None
+    return vs, val_of
+
+
+def _perturb_floats(c, signs, margin):
+    """``c`` with the k-th float literal (in tree order) multiplied by
+    ``1 + signs[k % len(signs)] * margin``."""
+    counter = [0]
+
+    def walk(e):
+        op = e.operator()
+        if op is None:
+            if e.is_numeric() and _is_float_literal(e.pyobject()):
+                sg = signs[counter[0] % len(signs)]
+                counter[0] += 1
+                return e * (1 + sg * margin)
+            return e
+        return op(*[walk(o) for o in e.operands()])
+    return walk(c)
+
+
+_FLOAT_MARGIN = SR(1) / 10 ** 8
+# Perturbation patterns: every float up, every float down, and the two
+# alternating ones (two floats that differ by an ulp are moved apart).
+_FLOAT_PATTERNS = ((1,), (-1,), (1, -1), (-1, 1))
+
+
+def _proved_nonzero(c, floats_ok: bool = False) -> bool:
+    """True only if ``c`` is shown to be a nonzero function on its
+    assumption domain: interval arithmetic (128 bits) at a probe point that
+    satisfies every assumption excludes 0.  Never raises; False means "not
+    proved".
+
+    With ``floats_ok`` float literals are read as the exact rationals they
+    are, and the proof is kept only if it survives perturbing the floats by
+    ``1 +- 1e-8`` (all up, all down, alternating; same sign each time), so an
+    expression that cancels to float dust (``exp(-0.3*x)*exp(0.1*x) -
+    exp(-0.2*x)``, floats an ulp apart) is not claimed nonzero: Sage and
+    Maxima call it zero.
+    """
+    try:
+        from sage.ext.fast_callable import fast_callable
+        from sage.rings.real_mpfi import RealIntervalField
+        pp = _probe_point(c, floats_ok)
+        if pp is None:
+            return False
+        vs, val_of = pp
+        RIF128 = RealIntervalField(128)
+        args = [RIF128(val_of[repr(v)]) for v in vs]
+
+        def sign_of(expr):
+            val = fast_callable(expr, vars=vs, domain=RIF128)(*args)
+            if val.contains_zero():
+                return 0
+            return 1 if val.lower() > 0 else -1
+
+        sg = sign_of(c)
+        if sg == 0:
+            return False
+        if floats_ok and not _interval_safe(c, False):
+            for pat in _FLOAT_PATTERNS:
+                if sign_of(_perturb_floats(c, pat, _FLOAT_MARGIN)) != sg:
+                    return False
+        return True
+    except Exception:
+        return False
 
 
 def _sr_nonzero(c) -> bool:
@@ -471,39 +572,8 @@ def _sr_nonzero(c) -> bool:
     c = SR(c)
     if c.is_trivial_zero():
         return False
-    try:
-        from sage.ext.fast_callable import fast_callable
-        from sage.rings.real_mpfi import RealIntervalField
-        from sage.symbolic.assumptions import assumptions, GenericDeclaration
-        if not _interval_safe(c):
-            return bool(c)
-        RIF128 = RealIntervalField(128)
-        # Variables are keyed by name: ``==`` between SR variables builds
-        # a relation whose truth test may itself go to Maxima.
-        vs = sorted(c.variables(), key=repr)
-        val_of = {repr(v): _probe_value(k) for k, v in enumerate(vs)}
-        ok = True
-        for a in assumptions():
-            if isinstance(a, GenericDeclaration):
-                if (repr(a._var) in val_of
-                        and a._assumption not in _NONZERO_PROBE_DOMAINS):
-                    ok = False
-                    break
-                continue
-            av = {repr(v): v for v in a.variables()}
-            if any(k in val_of for k in av):
-                if (not all(k in val_of for k in av)
-                        or not bool(a.subs({v: val_of[k]
-                                            for k, v in av.items()}))):
-                    ok = False
-                    break
-        if ok:
-            f = fast_callable(c, vars=vs, domain=RIF128)
-            val = f(*[RIF128(val_of[repr(v)]) for v in vs])
-            if not val.contains_zero():
-                return True
-    except Exception:
-        pass
+    if _proved_nonzero(c):
+        return True
     return bool(c)
 
 
@@ -956,6 +1026,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     """
     failures: list = []
     soft_passes: list = []
+    mf_memo: dict = {}      # the saddle solve is the same for every coefficient
 
     for key in mf_sector_keys:
         sector_poly = by_tp.get(key)
@@ -965,16 +1036,28 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
             c_subbed = SR(coeff).subs(mf_subs)
             if spec_subs:
                 c_subbed = c_subbed.subs(spec_subs)
-            try:
-                c_simpl = c_subbed.simplify_full()
-                if c_simpl == 0:
-                    continue
-            except Exception:
-                c_simpl = c_subbed
-            num_resid = _mf_numerical_residual(c_subbed, ns, model)
+            if _expand_legacy_requested() or not _proved_nonzero(
+                    c_subbed, floats_ok=True):
+                try:
+                    c_simpl = c_subbed.simplify_full()
+                    if c_simpl == 0:
+                        continue
+                except Exception:
+                    c_simpl = c_subbed
+            else:
+                # Shown nonzero at a probe point (interval arithmetic), so
+                # ``simplify_full`` cannot reach 0 and is skipped; it is
+                # only run to word a failure (below).
+                c_simpl = None
+            num_resid = _mf_numerical_residual(c_subbed, ns, model, mf_memo)
             if num_resid is not None and abs(num_resid) < num_tol:
                 soft_passes.append((key, exp_vec, c_simpl, num_resid))
             else:
+                if c_simpl is None:
+                    try:
+                        c_simpl = c_subbed.simplify_full()
+                    except Exception:
+                        c_simpl = c_subbed
                 failures.append((key, exp_vec, c_simpl, num_resid))
 
     if failures:
@@ -1013,7 +1096,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
             by_tp[key] = R.zero()
 
 
-def _mf_numerical_residual(expr, ns, model):
+def _mf_numerical_residual(expr, ns, model, memo=None):
     """Numerical residual of an SR expression at the MF saddle.
 
     Returns the magnitude of ``expr`` after binding every free symbol
@@ -1023,6 +1106,24 @@ def _mf_numerical_residual(expr, ns, model):
     (no MF solver, fundamental incomplete, etc.) — the caller falls
     back to ``failures`` rather than ``soft_passes`` in that case.
     """
+    if memo is not None and 'num_params' in memo:
+        # The solve below does not depend on ``expr`` (deterministic: fixed
+        # seed), so one verification solves once, not once per coefficient.
+        num_params = memo['num_params']
+        if num_params is None:
+            return None
+        return _residual_at(expr, num_params)
+    num_params = _mf_saddle_values(ns, model)
+    if memo is not None:
+        memo['num_params'] = num_params
+    if num_params is None:
+        return None
+    return _residual_at(expr, num_params)
+
+
+def _mf_saddle_values(ns, model):
+    """The numerical saddle (``num_params``) used by the residual check, or
+    ``None`` when none can be built."""
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
     if fundamental is None:
@@ -1057,7 +1158,11 @@ def _mf_numerical_residual(expr, ns, model):
         except Exception:
             return None
 
-    num_subs = dict(mf.get('num_params', {}))
+    return dict(mf.get('num_params', {}))
+
+
+def _residual_at(expr, num_params):
+    num_subs = dict(num_params)
     try:
         bound = SR(expr).subs(num_subs)
         free_syms = list(bound.free_variables())
