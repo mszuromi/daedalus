@@ -11,6 +11,41 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: matrix-exponential triples for conductance-kernel and delay-kernel models (S4b)
+
+Models with field × Conv (conductance) vertices now have triples, so `integrate_against` and `spectrum` are exact
+for them as well (one resolvent solve per block instead of quadrature). No number of `C_tau`, `C_tau_by_ell`, the
+callables or the δ records moves: the only change on the compute path is one attribute on a closure. Main and the
+branch are bit-identical on the tracked zoo, including `quadratic_hawkes_alpha`.
+
+- **Why they had none.** A conductance diagram whose kernel slots can be filled in several ways is integrated as
+  the average of its placements. That averaged contribution did not expose its subsets. It now lists its placements
+  and their weights (`phase_j_placements`). Each placement's dressed lines and kernel edges give ordinary blocks, and
+  the triples are built from them; `slice_me` (k ≥ 3) does the same.
+- **Large blocks.** A block beyond the dense forms (`MAX_BLOCK` = 2000 states; the 2-neuron delayed-alpha Hawkes one
+  loop has 2,772) is paired by forward substitution over the segment's downsets. Each step is one shifted
+  Kronecker-sum solve, and no dense matrix is formed. It equals the dense route to 5e-15 where both apply.
+- **Per loop order.** `method='auto'` now splits by loop order. Orders with triples are exact. The others fall back
+  on quadrature, with an `MEFallbackWarning` that names them and their reasons. Each fallback is counted in
+  `Cumulant.me_fallbacks`, and the pairing's `method` is then `'exact+quad'`. Before, one order without triples
+  sent every order to quadrature.
+- **Delay kernels.** With the exact delayed tree (the default for k = 2), the tree is not one matrix exponential
+  (method of steps), so it has no triple; `me.reasons[0]` says so. Before, `me` silently gave the Padé tree there,
+  which differs from `C_tau`'s exact tree. Pairing or transforming that tree by quadrature to infinite lag is
+  refused up front with `MEUnavailable`, because its method-of-steps stack is capped. The loop orders alone
+  (`ell=1`), `delay={'tree': 'pade'}` or a finite `tau_max` (spectrum) work. With the Padé tree, every order has
+  triples.
+- **Validation** (`tests/test_s4b_conductance_triples.py`):
+  - **Two-rate conductance kernel (tree + one loop).**
+    - Triples equal `C_tau_by_ell` on 201 points: tree 0, loop 4.2e-16.
+    - Pairing equals the quadrature of the Phase J callables to 5.5e-16 (7 ms instead of 11 s).
+    - Spectrum equals QAWF to 8.5e-13 (2 ms instead of 37 s for three ω).
+  - **Alpha kernel at equal rates (exact double pole) against its Markov embedding.**
+    - Triples equal the embedding's `C_tau` to 1.3e-15.
+    - Pairing and spectrum equal the embedding's to 4e-18.
+  - **Delayed exponential conductance kernel and the delayed-alpha 2-neuron Hawkes network (Padé 4).** Triples equal
+    `C_tau_by_ell` (see the item report).
+
 #### Added: symbolic loop corrections as rational functions (C3)
 
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time
