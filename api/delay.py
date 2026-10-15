@@ -32,11 +32,10 @@ realization cannot take it as it is.  This module
   and the reported value is ``C_2n``), meets the target (default ``1e-8``),
   or until ``n_max`` or the predicted wall time of the next order exceeds the
   cap (then a warning says the target was missed).  The prediction is the
-  measured wall of the last order times the growth of the realization's
-  per-entry state counts (the next order's realization is built, balanced-
-  truncated as the run will be, and counted: ``_order_states``) raised to
-  a cost exponent (``COST_EXPONENT``, refitted from the last two orders
-  once there are two);
+  measured wall of the last order times the growth of a cost proxy of the
+  realizations, ``mean(states)^2 * (1 + mean(stiffness))`` per entry (the next
+  order's realization is built and balanced-truncated as the run will be:
+  ``_order_cost``), corrected by the proxy's own error on the step before;
 * runs every order with its per-entry realizations balanced-truncated
   (``api._realization.truncation_scope``; option ``truncation``): the Pade
   blocks' fast, weakly coupled modes are where the state-space route's
@@ -99,14 +98,18 @@ __all__ = ['Kernel', 'pade_coefficients', 'pade_image', 'delay_factors',
 DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
                 tree='exact', truncation='auto')
 
-#: Exponent of the cost model of the order controller: the wall of order
-#: ``m`` scales like (mean per-entry state count)^COST_EXPONENT (the Phase J
-#: sweep's tensors carry one axis per active edge, ~3 at one loop, times
-#: the Taylor step count, which grows with the Pade rates).  Measured on the
-#: delayed-alpha two-neuron demo (exact realizations 14 -> 22 states,
-#: Pade-4 -> 8: walls x10.6, i.e. 5.2); refitted per run from the last two
-#: orders once there are two (clamped to [2, 8]).
-COST_EXPONENT = 5.0
+#: Cost model of the order controller: the wall of order ``m`` scales like
+#: ``S^COST_EXPONENT_STATES * (1 + nu)^COST_EXPONENT_STIFFNESS``, ``S`` the mean
+#: per-entry state count and ``nu`` the mean per-entry Taylor stiffness
+#: ``min_p ||(a - mu)^p||_1^(1/p)`` (``mu`` = trace / n; the state-space
+#: route's Taylor step count is proportional to it, the cost of a step to a
+#: power of the tensor sizes; the 1 is a segment's fixed work, and keeps a
+#: nilpotent Erlang chain, nu = 0, finite).  Least squares on the delayed-alpha two-neuron
+#: demo (Pade-4 and 8, exact and truncated realizations, five runs from 71 s
+#: to 634 s): exponents 2.16 and 0.95, every run within 10 %; the measured
+#: wall ratio of the step before corrects the proxy (``_predicted_growth``).
+COST_EXPONENT_STATES = 2.0
+COST_EXPONENT_STIFFNESS = 1.0
 
 
 class DelayOrderWarning(UserWarning):
@@ -474,12 +477,28 @@ def _truncation_tol(opts) -> float:
     return float(opts['truncation'])
 
 
-def _order_states(ctx, m, cache, tol):
-    """Per-entry state counts (nonzero entries) of the Pade-``m`` realization
-    of the TRUE model's kernel matrix at its saddle, balanced-truncated to
-    ``tol`` (as the run of that order is), or ``None`` when it cannot be
-    built (the controller then falls back to the measured growth).  Cached
-    per (order, tolerance)."""
+def _stiffness(a):
+    """``min_p ||(a - mu I)^p||_1^(1/p)``, ``p = 1 .. 9``, ``mu = tr(a) / n``:
+    the quantity the state-space route's Taylor step count follows."""
+    a = np.asarray(a)
+    n = a.shape[0]
+    if n == 0:
+        return 0.0
+    A = a - (np.trace(a) / n) * np.eye(n)
+    P = np.eye(n, dtype=A.dtype)
+    best = math.inf
+    for p in range(1, 10):
+        P = P @ A
+        best = min(best, float(np.abs(P).sum(axis=0).max()) ** (1.0 / p))
+    return best
+
+
+def _order_cost(ctx, m, cache, tol):
+    """``{'states': S, 'stiffness': nu, 'proxy': S^2 (1 + nu)}`` (means over the
+    nonzero entries) of the Pade-``m`` realization of the TRUE model's kernel
+    matrix at its saddle, balanced-truncated to ``tol`` (as the run of that
+    order is), or ``None`` when it cannot be built (the controller then
+    falls back to the measured growth).  Cached per (order, tolerance)."""
     key = (int(m), float(tol))
     if key in cache:
         return cache[key]
@@ -491,8 +510,13 @@ def _order_states(ctx, m, cache, tol):
             om = ctx.omega
             Km = ctx.K_ft.apply_map(lambda e: pade_substitute(SR(e), om, m))
             real = realize_K(Km, om, ctx.num_params, truncation=tol)
-            out = [int(x) for x in np.asarray(real.entry_states).ravel() if x > 0]
-            out = out or None
+            ents = [e for e in real.entries.values() if e.n_states > 0]
+            if ents:
+                S = float(np.mean([e.n_states for e in ents]))
+                nu = float(np.mean([_stiffness(e.a) for e in ents]))
+                out = {'states': S, 'stiffness': nu,
+                       'proxy': S ** COST_EXPONENT_STATES
+                       * (1.0 + nu) ** COST_EXPONENT_STIFFNESS}
     except Exception:
         out = None
     cache[key] = out
@@ -542,8 +566,7 @@ def _next_truncation(opts, t_base, r, k, n, m, est, ctrl):
     return max(t_base, min(TRUNCATION_MAX, TRUNCATION_KAPPA * e_m))
 
 
-def _mean_states(states):
-    return float(np.mean(states)) if states else None
+
 
 
 _INSTABILITY_CODES = ('G2_UNSTABLE_SADDLE', 'G2_MARGINAL_MODE', 'G3_ACAUSAL_POLE')
@@ -688,7 +711,7 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     est, cap, n_used, incomplete, prev = None, None, None, None, None
     states_cache = {}
     t_base = _truncation_tol(opts)
-    ctrl = {'states_mean': {}, 'predicted_walls_s': {}, 'cost_exponent': COST_EXPONENT,
+    ctrl = {'cost_by_order': {}, 'predicted_walls_s': {}, 'cost_correction': None,
             'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {}}
     t_cur = t_base
     for i, n in enumerate(seq):
@@ -790,35 +813,37 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
 
 def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None):
     """``(growth, how)``: the predicted wall of order ``nxt`` over the
-    measured wall of order ``n``.  From the realizations' mean per-entry state
-    counts (after truncation): ``(S_nxt / S_n)^p`` with ``p = COST_EXPONENT``,
-    or refitted from the measured walls of ``prev`` and ``n``
-    (``log(w_n / w_prev) / log(S_n / S_prev)``, clamped to [2, 8]).  Without
-    state counts: the measured growth of the last pair, else ``(nxt / n)^4``
-    (the rule before item 45).  ``tols``: {order: truncation tolerance} (the
-    state counts are those of the truncated realizations; default: the
-    tolerance in effect)."""
+    measured wall of order ``n``: the ratio of the cost proxies of the two
+    orders' (truncated) realizations (``_order_cost``), times the proxy's
+    error on the step before when there is one (measured wall ratio of
+    ``prev -> n`` over its proxy ratio, clamped to [0.5, 4]).  Without
+    realizations: the measured growth of the last pair, else ``(nxt / n)^4``
+    (the rule before item 45).  ``tols``: {order: truncation tolerance}
+    (default: the tolerance in effect)."""
     from api._realization import truncation_tol
     tols = dict(tols or {})
     tol_of = lambda m: tols.get(m, truncation_tol())         # noqa: E731
-    s_n = _mean_states(_order_states(ctx, n, cache, tol_of(n)))
-    s_x = _mean_states(_order_states(ctx, nxt, cache, tol_of(nxt)))
-    for m, sm in ((n, s_n), (nxt, s_x)):
-        if sm is not None:
-            ctrl['states_mean'][m] = round(sm, 2)
-    p = COST_EXPONENT
-    if prev is not None and walls.get(prev, 0) > 0 and s_n is not None:
-        s_p = _mean_states(_order_states(ctx, prev, cache, tol_of(prev)))
-        if s_p is not None and s_n > s_p * 1.05 and walls[n] > walls[prev]:
-            p = min(8.0, max(2.0, math.log(walls[n] / walls[prev]) / math.log(s_n / s_p)))
-    ctrl['cost_exponent'] = round(p, 3)
-    if s_n and s_x:
-        g = max(1.0, (s_x / s_n) ** p)
-        return g, (f'mean per-entry states {s_n:.1f} -> {s_x:.1f}, cost ~ states^{p:.2f}')
+    c_n = _order_cost(ctx, n, cache, tol_of(n))
+    c_x = _order_cost(ctx, nxt, cache, tol_of(nxt))
+    for m, c in ((n, c_n), (nxt, c_x)):
+        if c is not None:
+            ctrl['cost_by_order'][m] = {k: round(v, 3) for k, v in c.items()}
+    if c_n and c_x and c_n['proxy'] > 0:
+        g = c_x['proxy'] / c_n['proxy']
+        corr = 1.0
+        if prev is not None and walls.get(prev, 0) > 0:
+            c_p = _order_cost(ctx, prev, cache, tol_of(prev))
+            if c_p and c_p['proxy'] > 0:
+                corr = min(4.0, max(0.5, (walls[n] / walls[prev])
+                                    / (c_n['proxy'] / c_p['proxy'])))
+        ctrl['cost_correction'] = round(corr, 3)
+        return g * corr, (f'mean per-entry states {c_n["states"]:.1f} -> {c_x["states"]:.1f}, '
+                          f'stiffness {c_n["stiffness"]:.1f} -> {c_x["stiffness"]:.1f}'
+                          + (f', x {corr:.2f} from the last step' if corr != 1.0 else ''))
     if prev is not None and walls.get(prev, 0) > 0:
         g = max(1.0, walls[n] / walls[prev])
         return g, 'measured growth of the last two orders'
-    return (nxt / n) ** 4, 'no realization state counts: the (n_next / n)^4 rule'
+    return (nxt / n) ** 4, 'no realization of the next order: the (n_next / n)^4 rule'
 
 
 def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
@@ -858,9 +883,9 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'truncation_tol': ctrl['truncation_by_order'].get(n_used),
         'truncation_by_order': ctrl['truncation_by_order'],
         'loop_error_pred_by_order': ctrl['loop_error_pred'],
-        'states_mean_by_order': ctrl['states_mean'],
+        'cost_by_order': ctrl['cost_by_order'],
         'predicted_walls_s': ctrl['predicted_walls_s'],
-        'cost_exponent': ctrl['cost_exponent'],
+        'cost_correction': ctrl['cost_correction'],
         'stop_reason': ctrl['stop'],
     }
     r['delay'] = info

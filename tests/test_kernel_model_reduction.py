@@ -290,11 +290,15 @@ def test_order_controller_record_and_prediction():
     info = r['delay']
     assert info['orders_run'] == [4, 8] and info['target_met'] is True
     assert 'target 1e-06 met at n = 8' in info['stop_reason']
-    # the controller counted the states of n = 4 and n = 8 before running 8
-    sm = info['states_mean_by_order']
-    assert set(sm) == {4, 8} and sm[8] > sm[4] > 0
-    assert set(info['predicted_walls_s']) == {8}
-    assert info['cost_exponent'] == DL.COST_EXPONENT
+    # the controller built the realizations of n = 4 and n = 8 (truncated as
+    # those runs were) before running 8
+    cb = info['cost_by_order']
+    assert set(cb) == {4, 8} and cb[8]['states'] > cb[4]['states'] > 0
+    assert cb[8]['proxy'] == pytest.approx(cb[8]['states'] ** 2 * (1 + cb[8]['stiffness']),
+                                           rel=1e-2)
+    assert set(info['predicted_walls_s']) == {8} and info['cost_correction'] == 1.0
+    want = info['walls_s'][4] * cb[8]['proxy'] / cb[4]['proxy']
+    assert info['predicted_walls_s'][8] == pytest.approx(want, rel=0.02, abs=0.2)
     # the first order at the base tolerance, the second adaptive: 1 % of the
     # loop error predicted for it, between the base and TRUNCATION_MAX
     tb = info['truncation_by_order']
@@ -303,34 +307,47 @@ def test_order_controller_record_and_prediction():
     assert tb[8] == pytest.approx(max(1e-10, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
     # the prediction is conservative: below the measured difference of n = 4 and 8
     assert e8 < info['est_by_order'][8]
-    want = info['walls_s'][4] * (sm[8] / sm[4]) ** DL.COST_EXPONENT
-    assert info['predicted_walls_s'][8] == pytest.approx(want, rel=0.02, abs=0.2)
 
 
-def test_prediction_refits_the_exponent_and_falls_back():
+def test_stiffness_is_the_taylor_driver():
+    # a normal matrix: the spectral spread about the mean
+    assert DL._stiffness(np.diag([-1.0, -3.0])) == pytest.approx(1.0)
+    # a non-normal block: min over p of ||(a - mu)^p||^(1/p), small though
+    # ||a - mu|| = 101 (here (a - mu)^2 = I)
+    assert DL._stiffness(np.array([[-2.0, 100.0], [0.0, -4.0]])) == pytest.approx(1.0)
+    # a Jordan block: the nilpotent part ends the series (as in the Taylor action)
+    assert DL._stiffness(np.array([[-2.0, 100.0], [0.0, -2.0]])) == 0.0
+    assert DL._stiffness(np.zeros((0, 0))) == 0.0
+
+
+def test_prediction_from_the_realizations_and_fallbacks():
     from api import analyze as AN
     m = _ou_delayed('red45 delayed ou ctx')
     _rep, ctx = AN.analyze_with_context(
         m, AN.Question(k=2, external_fields=(('x', 1), ('x', 1)), max_ell=1), None,
         use_cache=False)
-    cache, ctrl = {}, {'states_mean': {}, 'predicted_walls_s': {}, 'cost_exponent': None,
-                       'stop': None}
+    cache = {}
+    ctrl = {'cost_by_order': {}, 'predicted_walls_s': {}, 'cost_correction': None}
     g, how = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl)
     t = RZ.truncation_tol()
-    s4, s8 = DL._mean_states(cache[(4, t)]), DL._mean_states(cache[(8, t)])
-    assert s8 > s4 and g == pytest.approx((s8 / s4) ** DL.COST_EXPONENT)
-    assert 'states' in how and ctrl['cost_exponent'] == DL.COST_EXPONENT
-    # two measured orders: the exponent is refitted from their walls
-    walls = {4: 10.0, 8: 10.0 * (s8 / s4) ** 3.0}
-    g2, _ = DL._predicted_growth(ctx, 8, 16, 4, walls, cache, ctrl)
-    s16 = DL._mean_states(cache[(16, t)])
-    assert ctrl['cost_exponent'] == pytest.approx(3.0, rel=1e-9)
-    assert g2 == pytest.approx((s16 / s8) ** 3.0)
-    # no state counts (a context without the operator): the old rules
-    g3, how3 = DL._predicted_growth(None, 4, 8, None, {4: 1.0}, {}, ctrl)
-    assert g3 == 16.0 and 'n_next / n' in how3
-    g4, how4 = DL._predicted_growth(None, 8, 16, 4, {4: 1.0, 8: 6.0}, {}, ctrl)
-    assert g4 == 6.0 and 'measured' in how4
+    c4, c8 = cache[(4, t)], cache[(8, t)]
+    assert c8['states'] > c4['states'] and g == pytest.approx(c8['proxy'] / c4['proxy'])
+    assert 'states' in how and ctrl['cost_correction'] == 1.0
+    # two measured orders: the proxy is corrected by its error on that step
+    walls = {4: 10.0, 8: 10.0 * 1.5 * c8['proxy'] / c4['proxy']}
+    g2, how2 = DL._predicted_growth(ctx, 8, 16, 4, walls, cache, ctrl)
+    c16 = cache[(16, t)]
+    assert ctrl['cost_correction'] == pytest.approx(1.5, rel=1e-3)
+    assert g2 == pytest.approx(1.5 * c16['proxy'] / c8['proxy']) and 'last step' in how2
+    # per-order tolerances: the next order's realization truncated as it will run
+    g3, _ = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl,
+                                 tols={4: t, 8: 1e-3})
+    assert (8, 1e-3) in cache and cache[(8, 1e-3)]['states'] <= c8['states']
+    # no realization (a context without the operator): the old rules
+    g4, how4 = DL._predicted_growth(None, 4, 8, None, {4: 1.0}, {}, ctrl)
+    assert g4 == 16.0 and 'n_next / n' in how4
+    g5, how5 = DL._predicted_growth(None, 8, 16, 4, {4: 1.0, 8: 6.0}, {}, ctrl)
+    assert g5 == 6.0 and 'measured' in how5
 
 
 # ── structural redundancy: what S1's exact Kalman reduction already removes ─
