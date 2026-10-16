@@ -1386,6 +1386,54 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
     return None
 
 
+def _aposteriori_error(A, B, C):
+    """Item 60 (G6 realization term): the relative disagreement of the
+    rounded realization's stationary output variances (Lyapunov,
+    ``lyapunov_refined``) with the same variances integrated over frequency
+    from its transfer function by adaptive quadrature (``scipy.integrate.
+    quad``, relative tolerance 1e-12; the transfer function stays accurate
+    when the time-domain operations do not): ``max_i |Y_ii - Yf_ii| /
+    max_i |Y_ii|``.  ``None`` when it cannot be computed.  A realization that
+    passes ``_aposteriori_check`` (rtol 1e-2: it refuses broken ones) carries
+    this number into the state-space accuracy estimate (analyzer G6)."""
+    from scipy.integrate import quad
+    n = A.shape[0]
+    if n == 0:
+        return 0.0
+    try:
+        P = lyapunov_refined(A, B @ B.conj().T)
+        yd = np.real(np.diag(C @ P @ C.conj().T))
+    except Exception:
+        return None
+    top = float(np.max(np.abs(yd))) if yd.size else 0.0
+    if not (np.isfinite(top) and top > 0):
+        return None
+    lam = np.linalg.eigvals(A)
+    I_ = np.eye(n)
+    hi = 100.0 * float(np.max(np.abs(lam)))
+    brk = sorted({float(abs(z.imag)) for z in lam if 0 < abs(z.imag) < hi})
+
+    def dens(w, i):
+        tot = 0.0
+        for sgn in (1.0, -1.0):
+            g = C[i] @ np.linalg.solve(1j * sgn * w * I_ - A, B)
+            tot += float(np.real(np.vdot(g, g)))
+        return tot
+
+    err = 0.0
+    try:
+        for i in range(C.shape[0]):
+            v1, _e1 = quad(dens, 0.0, hi, args=(i,), points=brk or None,
+                           epsabs=0.0, epsrel=1e-12, limit=500)
+            v2, _e2 = quad(dens, hi, np.inf, args=(i,), epsabs=0.0,
+                           epsrel=1e-12, limit=200)
+            err = max(err, abs(yd[i] - (v1 + v2) / (2 * np.pi)))
+    except Exception:
+        return None
+    rel = err / top
+    return float(rel) if np.isfinite(rel) else None
+
+
 # ─── main entry points ────────────────────────────────────────────────────
 
 def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
@@ -1471,6 +1519,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
     graded = bool(sca.size) and float(sca.max()) > GRADED_BALANCE_RANGE * float(
         max(sca.min(), np.finfo(float).tiny))
     bad_margin = not (margin is not None and np.isfinite(margin) and margin > 0)
+    aposteriori = {'checked': False, 'err_rel': None}
     if hur is True and An.size and (bad_margin or graded):
         # exactly Hurwitz, but the rounded matrices are strongly graded (high-
         # order rational kernels: Pade-n, long chains) or not even numerically
@@ -1480,6 +1529,9 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         # falls back to the pole route instead of returning wrong numbers
         # (seen: Pade-24 of a delay on a 4-field cycle, |B| ~ 1e24, C ~ 1e13).
         why = _aposteriori_check(An, Bn, Cn)
+        aposteriori = {'checked': True,
+                       'err_rel': None if why is not None
+                       else _aposteriori_error(An, Bn, Cn)}
         if why is not None:
             raise RealizationRefused(
                 'ill_conditioned',
@@ -1524,6 +1576,11 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         'balance_min': float(sca.min()) if sca.size else 1.0,
         'balance_max': float(sca.max()) if sca.size else 1.0,
         'n_pencil': n, 'n_kernel_states': NR, 'n_before_reduction': n_pre,
+        # item 60: the a posteriori check of a graded / not numerically
+        # Hurwitz rounded realization, and its measured relative error
+        'aposteriori_checked': aposteriori['checked'],
+        'aposteriori_err_rel': aposteriori['err_rel'],
+        'graded': graded, 'bad_margin': bad_margin,
     }
     return Realization(
         A=An, B=Bn, C=Cn, D=Dn, cls=cls, descriptor=descr,
