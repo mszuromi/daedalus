@@ -88,30 +88,29 @@ def _rational_text(m, n):
 
 
 def _markov_product_model(name, n):
-    """x*x(t - d) with the Pade (n, n) kernel as n auxiliary linear fields:
-    a balanced realization (A, B, C, c) of the image (exact chain, rounded
-    once), z' = A z + B x, x(t - d) -> c x + C z.  No kernel at all."""
-    from sage.all import SR, I
-    from api._realization import realize_kernel, hankel_singular_values
-    from api.delay import pade_image
-    ent, _f = realize_kernel({'symbol': 'pade_ref',
-                              'kernel_ft_fn': lambda w: pade_image(I * w * (SR(1) / 2), n)},
-                             {}, truncation=0, direct=True)
-    assert _f == 'QQ' and ent.n_states == n and ent.d == (-1) ** n
-    sv, Rf, Lf, U, Vh, ae, be, ce = hankel_singular_values(ent.a, ent.b, ent.c)
-    T, W = (Rf @ Vh.conj().T) / np.sqrt(sv), (Lf @ U) / np.sqrt(sv)
-    A, B, C = (W.conj().T @ ae @ T).real, (W.conj().T @ be).real, (ce @ T).real
+    """x*x(t - d) with the Pade (n, n) kernel as n auxiliary linear fields
+    (no kernel at all): the image c + beta(s)/alpha(s) (monic alpha, exact
+    coefficients) in controllable form, z_i' = z_{i+1}, z_n' = -alpha . z + x,
+    and x(t - d) -> c x + beta . z."""
+    from fractions import Fraction
+    a, b = pade_mn_coefficients(n, n)
+    d = Fraction(1, 2)
+    num = [Fraction(a[k]) * (-d) ** k for k in range(n + 1)]
+    den = [Fraction(b[k]) * d ** k for k in range(n + 1)]
+    num, den = [x / den[n] for x in num], [x / den[n] for x in den]
+    c = num[n]
+    beta = [num[k] - c * den[k] for k in range(n)]
     s = (SDE(name).parameter('a', default=1.0).parameter('b', default=1.0)
          .parameter('c', default=0.5).parameter('D', default=0.1).field('x'))
-    for i in range(n):
+    for i in range(1, n + 1):
         s = s.field(f'z{i}')
-    y = f'({float(ent.d)!r})*x + ' + ' + '.join(f'({float(C[i])!r})*z{i}' for i in range(n))
+    y = f'({float(c)!r})*x + ' + ' + '.join(f'({float(beta[k])!r})*z{k + 1}' for k in range(n))
     s = s.drift('x', f'-a*x + b - c*x*({y})')
-    for i in range(n):
-        # the restoring shift keeps every z on the lhs of its equation
-        s = s.equation(f'z{i}', f'(Dt + 3.25)*z{i}', f'3.25*z{i} + '
-                       + ' + '.join(f'({float(A[i, j])!r})*z{j}' for j in range(n))
-                       + f' + ({float(B[i])!r})*x')
+    for i in range(1, n):
+        # the restoring term on the lhs (the mean-field equation needs it)
+        s = s.equation(f'z{i}', f'(Dt + 1)*z{i}', f'z{i + 1} + z{i}')
+    s = s.drift(f'z{n}', '-' + ' - '.join(f'({float(den[k])!r})*z{k + 1}' for k in range(n))
+                + ' + x')
     return s.noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build()
 
 
@@ -121,30 +120,49 @@ def _counter(name):
 
 
 def test_hard_delay_in_a_product_runs_the_all_pass_approximant():
-    """x * x(t - d) at order n = 4: the (n, n) approximant itself (its direct
-    term dressed into the line), equal (Pade tree and one loop) to the same
-    rational kernel declared without a delay (<= 1e-13) and to its Markov
-    embedding (<= 1e-12), which shares no kernel code."""
+    """x * x(t - d) at orders n = 4 and 8: the (n, n) approximant itself (its
+    direct term dressed into the line), equal (Pade tree and one loop, <=
+    1e-13) to the same rational kernel declared without a delay, which never
+    enters the delay driver."""
+    kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
+              verbose=False, use_cache=False)
+    for n in (4, 8):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            c0 = _counter('conv_lines_dressed_direct')
+            rd = compute_cumulants(_product_model(f'dnl hard product {n}', freq_image='1',
+                                                  delay='d'),
+                                   delay={'order': n, 'tree': 'pade'}, **kw)
+            assert _counter('conv_lines_dressed_direct') > c0
+            rr = compute_cumulants(_product_model(f'dnl rational product {n}',
+                                                  freq_image=_rational_text(n, n)), **kw)
+        assert rd['status'] == rr['status'] == 'ok'
+        assert rd['delay']['approximant'] == 'pade' and rd['delay']['incomplete'] is None
+        for ell in (0, 1):
+            x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
+            y = np.real(np.asarray(rr['C_tau_by_ell'][ell]))
+            assert np.max(np.abs(y)) > 0
+            assert np.max(np.abs(x - y)) <= 1e-13 * np.max(np.abs(y))
+
+
+@pytest.mark.slow
+def test_hard_delay_in_a_product_equals_its_markov_embedding():
+    """(slow, ~25 s) x * x(t - d) at n = 4 on the direct-term route equals the
+    Markov embedding of the same (n, n) kernel (four auxiliary linear fields,
+    no kernel code at all), tree and one loop (measured 1.9e-15)."""
     n = 4
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
               verbose=False, use_cache=False)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        c0 = _counter('conv_lines_dressed_direct')
-        rd = compute_cumulants(_product_model('dnl hard product', freq_image='1', delay='d'),
+        rd = compute_cumulants(_product_model('dnl hard product mk', freq_image='1', delay='d'),
                                delay={'order': n, 'tree': 'pade'}, **kw)
-        assert _counter('conv_lines_dressed_direct') > c0
-        rr = compute_cumulants(_product_model('dnl rational product',
-                                              freq_image=_rational_text(n, n)), **kw)
         rm = compute_cumulants(_markov_product_model('dnl markov product', n), **kw)
-    assert rd['status'] == rr['status'] == rm['status'] == 'ok'
-    assert rd['delay']['approximant'] == 'pade' and rd['delay']['incomplete'] is None
+    assert rd['status'] == rm['status'] == 'ok'
     for ell in (0, 1):
         x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
-        y = np.real(np.asarray(rr['C_tau_by_ell'][ell]))
         z = np.real(np.asarray(rm['C_tau_by_ell'][ell]))
-        assert np.max(np.abs(y)) > 0
-        assert np.max(np.abs(x - y)) <= 1e-13 * np.max(np.abs(y))
+        assert np.max(np.abs(z)) > 0
         assert np.max(np.abs(x - z)) <= 1e-12 * np.max(np.abs(z))
 
 

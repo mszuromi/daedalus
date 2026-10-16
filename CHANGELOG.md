@@ -11,6 +11,35 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
+
+Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
+nonlinearity), which now run the (n, n) Padé approximant instead of item 47's strictly proper `[n-1/n]` rerun: the
+two approximants differ at finite n and converge to the same limit (below). No other model is touched (a strictly
+proper kernel takes exactly the old code paths).
+
+- **Direct terms.** A conductance kernel whose frequency image is `c + (strictly proper)` (`g = c δ + Θ Σ C e^{λt}`:
+  the all-pass (n, n) image of a bare delay) is folded into the dressed line it sits on, `c G + g_smooth ∗ G`, on
+  both Phase J routes: the pole route's dressed mode sum gains `c C_α` at every propagator rate (and the δ part
+  `c D` on a line with one), the state-space route's series connection gains `C = [d₂ c₁, c₂]`
+  (`realize_kernel(..., direct=True)` keeps `d`). A kernel edge (a leg time: a line that cannot be dressed, e.g. a
+  kernel rate equal to a pole of the line) holds only a strictly proper kernel and refuses a direct term by name
+  (`kernel_direct_term`; Phase J status `failed`); the delay driver then still reruns with `[n-1/n]`. Counters
+  `conv_lines_dressed_direct`, `conv_kernel_direct_refused`.
+- **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it acts on a field whose
+  propagator has a δ part (a point-process field; read with every delay factor at its Padé image, both parities)
+  AND sits in a vertex with several physical legs (a spike train inside a nonlinearity). Phase J refuses the same
+  case by name (a direct term on a δ line at a vertex with several physical legs). A bare delay of a continuous
+  field inside `exp` in a spiking model, and a bare delay of a spike train in a linear term, now run (item 47
+  refused any bare delay in a model with point-process lines).
+- **Checks.** `x*x(t - d)`, (n, n) at n = 4 and 8: equal to the same rational kernel declared without a delay (state-space
+  route 3e-16; pole route 1.9e-10 at one loop, its usual precision) and to the Markov embedding of the (n, n) kernel
+  (n auxiliary linear fields from a balanced realization, no kernel code): n = 4 tree 1.3e-15, one loop 7e-15;
+  n = 8 tree 8e-16, one loop 1.1e-14. (n, n) and `[n-1/n]` at n = 8: same limit (loops within 1e-4 of max|C|, as n = 4 vs 8). A bare
+  delay of the voltage inside `exp` equals the same process with the delay moved into the voltage equation (one loop
+  1.3e-15). A linear Hawkes neuron with a bare delay of its own spike train (direct term on a δ line): k = 3 tree vs
+  its Markov embedding 4e-14; its two-point one loop is exactly 0.
+
 #### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
 
 No computed number moves (output side only).
