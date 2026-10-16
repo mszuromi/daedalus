@@ -1695,6 +1695,10 @@ class FieldTheory:
         # Matrix params get a 1D placeholder list; the actual 2D
         # element-naming grid is set later by ``mf_substitutions``,
         # which also knows about ``indexed_by`` for per-pop sizing.
+        # Mean-field saddle names (the expression namespace binds a size-1
+        # saddle as a scalar too: bare ``vstar`` in a scalar model).
+        ns._mf_saddle_names = frozenset(
+            p['name'] for p in m.get('parameters', []) if p.get('mean_field'))
         for pspec in m.get('parameters', []):
             pname   = pspec['name']
             domain  = pspec.get('domain', None)

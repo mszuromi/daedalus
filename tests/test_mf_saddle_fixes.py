@@ -160,3 +160,59 @@ def test_hand_written_model_with_non_unit_kernel_builds():
 def test_kernel_without_finite_integral_is_refused_by_name():
     with pytest.raises(ValueError, match='singular at omega = 0'):
         _run(_builder_pp('1/(I*omega)', 'exp(-1 + 0.1*nstar[i])'), NN, ell=0)
+
+
+# ── 3. scalar model, bare saddle names in set_mf_equation ────────────────────────────────────
+
+def _hawkes(population, mf_v, mf_n, fn=False):
+    """n ~ Poisson(a exp(Em + c v)), (tau Dt + 1) v = w n; the saddle by ``set_mf_equation``."""
+    from api.theory import TemporalTheoryBuilder
+    b = TemporalTheoryBuilder('hawkes52')
+    kw, ix = {}, ''
+    if population:
+        b.population('E', size=1)
+        kw, ix = dict(population='E'), '[i]'
+    b = (b.physical_field('n', **kw).physical_field('v', **kw)
+         .parameter('Em', default=-1.0).parameter('c', default=0.5)
+         .parameter('tau', default=2.0, domain='positive')
+         .parameter('a', default=1.0, domain='positive').parameter('w', default=0.4))
+    if fn:
+        b = b.define_function('phi', args=['v'], expression='a*exp(Em + c*v)', **kw)
+        rate = f'phi(v{ix})'
+    else:
+        rate = f'a*exp(Em + c*v{ix})'
+    body = f'nt{ix}*n{ix} - (exp(nt{ix}) - 1)*{rate} + vt{ix}*((tau*Dt + 1)*v{ix} - w*n{ix})'
+    b = b.set_action_text(f'sum({body} for i in E)' if population else body)
+    return b.set_mf_equation('vstar', mf_v).set_mf_equation('nstar', mf_n).build()
+
+
+def _same_run(a, b):
+    assert a['mf_values'] == b['mf_values']
+    assert set(a['C_tau_by_ell']) == set(b['C_tau_by_ell'])
+    for ell in a['C_tau_by_ell']:
+        assert np.array_equal(np.asarray(a['C_tau_by_ell'][ell]), np.asarray(b['C_tau_by_ell'][ell]))
+
+
+DN = [('dn', 1), ('dn', 1)]
+
+
+@pytest.mark.parametrize('mf_v, mf_n, fn', [
+    ('w*nstar', 'a*exp(Em + c*vstar)', False),           # the form of the open item, both bare
+    ('w*nstar[i]', 'a*exp(Em + c*vstar)', False),        # mixed
+    ('w*nstar', 'phi(vstar)', True),                     # define_function, closure call
+])
+def test_scalar_bare_saddle_names_equal_the_population_twin(mf_v, mf_n, fn):
+    twin_v = mf_v if '[i]' in mf_v else mf_v + '[i]'
+    twin_n = mf_n.replace('vstar)', 'vstar[i])').replace('vstar)', 'vstar[i])')
+    if fn:
+        twin_n = 'phi[i](vstar[i])'
+    _run(_hawkes(False, mf_v, mf_n, fn), DN)                  # discarded warm-up
+    a = _run(_hawkes(False, mf_v, mf_n, fn), DN)
+    b = _run(_hawkes(True, twin_v, twin_n, fn), DN)
+    _same_run(a, b)
+    assert a['mf_values']['nstar'][0] > 0 and np.max(np.abs(np.asarray(a['C_tau_by_ell'][1]))) > 0
+
+
+def test_scalar_bare_saddle_inconsistent_closure_still_fails():
+    with pytest.raises(AssertionError, match='mean-field saddle does not satisfy'):
+        _run(_hawkes(False, 'w*nstar', '2*a*exp(Em + c*vstar)'), DN, ell=0)
