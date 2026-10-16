@@ -252,3 +252,36 @@ def test_bug13_conductance_term_with_a_point_process():
     vstar = brentq(lambda v: v - (-1.5 + (1.0 - v) * 0.4 * np.exp(v)), -5, 1)
     assert abs(r['mf_values']['vstar'][0] - vstar) < 1e-10
     assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-10
+
+
+# ── bug 3: overflow / NaN never accepted by the mean-field solvers ───────────
+
+def test_bug3_dae_residual_penalizes_nan_and_overflow(monkeypatch):
+    """``np.errstate(all='ignore')`` turns an overflow into inf / NaN instead
+    of an exception; the DAE residual now penalizes it (NaN compares False
+    against the acceptance tolerance and could pass as a root)."""
+    import api._mean_field_dae as MD
+    cap = {}
+    orig = MD._build_residual
+
+    def spy(*a, **k):
+        R, ex = orig(*a, **k)
+        cap['R'] = R
+        return R, ex
+    monkeypatch.setattr(MD, '_build_residual', spy)
+    s = (SDE('bug60 dae nan').parameter('D', default=0.1, domain='positive').field('x')
+         .equation('x', lhs='Dt*x + x', rhs='0.5 + 0*exp(800*x)')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+    r = compute_cumulants(s.build(), k=1, max_ell=0, external_fields=[('x', 1)],
+                          tau_grid=np.array([0.0]), **RUN)
+    assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
+    assert cap['R'](np.array([0.5]))[0] == 0.0
+    assert cap['R'](np.array([2.0]))[0] == 1e10              # 0*inf = NaN before
+
+
+def test_bug3_saddle_residual_check():
+    from api._mean_field import _check_saddle_residual
+    _check_saddle_residual('t', [1e-12, -2e-12], [0.3, 1.5])
+    for bad in ([1e-3, 0.0], [float('nan'), 0.0], [1e10, 1e10]):
+        with pytest.raises(RuntimeError, match='did not converge'):
+            _check_saddle_residual('t', bad, [0.3, 1.5])
