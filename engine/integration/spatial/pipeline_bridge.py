@@ -1071,6 +1071,23 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     return ff
 
 
+def _edges_off_field(dd, field_idx, n_fields):
+    """True iff the C-stack descriptor ``dd`` has an edge whose propagator
+    indices (``CEdge.fpairs``) name a field other than ``field_idx`` — or,
+    in a multi-field model, an edge with no indices (field unknown).  The
+    single-field integrators give EVERY edge one (μ, D); such a diagram needs
+    per-edge masses (the coupled spectral-assignment drivers)."""
+    for e in dd.edges:
+        if not e.fpairs:
+            if n_fields > 1:
+                return True
+            continue
+        for pair in e.fpairs:
+            if any(int(ix) != int(field_idx) for ix in pair):
+                return True
+    return False
+
+
 def _prefactor_is_live(pre, num_params, tol=1e-12):
     """True if the diagram's scalar prefactor is nonzero at the saddle/params.
     A topological bubble whose prefactor ``∝ φ*²`` (e.g. the cubic-from-quartic
@@ -1543,6 +1560,16 @@ def compute_spatial_correlator_generic(
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=verbose, certify=True, enum_verbose=False, stage_headers=False)
+    if tree_info.get('bc_mode') == 'periodic':
+        # The loop integrator uses the infinite-domain heat kernel and a
+        # continuous ∫dᵈℓ; on a ring/box that is wrong by O(e^{−L/ξ}) to
+        # O(1) (the tree alone carries the image sum).  Refuse rather than
+        # return C0(periodic) + δC(infinite).
+        raise NotImplementedError(
+            'spatial loop corrections: periodic boundary not supported (the '
+            'loop integral is the infinite-domain one; only the tree carries '
+            'the image sum).  Use max_ell=0, or the infinite domain when the '
+            'box is much larger than the correlation length.')
     if tree_info.get('coupled'):
         # Coupled (matrix-M) model: the tree routed to the spectral-Lyapunov
         # driver; loops go through the spectral-assignment path (Dyson 3c).
@@ -1665,6 +1692,36 @@ def compute_spatial_correlator_generic(
             f'bug worth reporting.)')
     live_td = [(dd, pv, ff, el, td) for dd, pv, ff, el, pn, td in descrs
                if not SR(pn).is_zero()]
+    # Multi-field model with a diagonal kinetic block (e.g. fields mixed
+    # only through the noise sector): a loop edge may carry ANOTHER field's
+    # propagator, whose (μ, D) differ from the external field's.  The
+    # single-field integrator below would give it the external (μ0, D0);
+    # route to the coupled spectral-assignment driver (per-edge masses).
+    _n_fields = int(prop.get('nf') or 1)
+    _ext_f = int(phys_idx[ext_int[0]])
+    if any(_edges_off_field(rec[0], _ext_f, _n_fields) for rec in live_td):
+        if vterms_sym:
+            raise NotImplementedError(
+                'spatial loops: a loop edge carries a field other than the '
+                'external one AND the model has derivative vertices; the '
+                'coupled spectral-assignment driver covers plain vertices '
+                'only.')
+        if verbose:
+            print('        loop edges carry other fields → coupled '
+                  'spectral-assignment driver (per-edge masses)')
+        try:
+            C0c, tinfo_c = compute_coupled_tree_correlator(
+                ft, model, prop, num_params, external_fields, tau_grid,
+                spatial_grid, verbose=verbose)
+        except (NotImplementedError, SpatialPropagatorError) as _e:
+            raise NotImplementedError(
+                'spatial loops: a loop edge carries a field other than the '
+                'external one, so the single-field integrator (one (mu, D) '
+                'for every edge) does not apply, and the coupled driver '
+                f'refused: {type(_e).__name__}: {_e}') from _e
+        return compute_coupled_loop_correlator(
+            ft, model, prop, num_params, external_fields, tau_grid,
+            spatial_grid, C0c, tinfo_c, max_ell=max_ell, verbose=verbose)
     live = [rec[:4] for rec in live_td]
     # k=2 ±τ completion = orbit–stabilizer index of the typed diagram (both
     # leaf→time assignments ÷ comp), the rule of the general-k driver
@@ -1956,6 +2013,11 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             'compute_spatial_kpoint: single-field (one tree mode) only; '
             f'got {len(modes) if modes else 0} modes.  Coupled-field '
             'k>=3 routes through compute_coupled_kpoint.')
+    if tree_info.get('bc_mode') == 'periodic':
+        raise NotImplementedError(
+            'compute_spatial_kpoint: periodic boundary not supported (the '
+            'k-point kinematic uses the infinite-domain heat kernel at every '
+            'loop order, the tree included).')
     mu0, D0, _kap0 = modes[0]
     mu0 = float(_np.real(mu0))
     D0 = float(_np.real(D0))
@@ -1963,6 +2025,23 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
 
     be = build_pipeline_records(ft, model, prop, external_fields,
                                 max_ell=max_ell, k=k, verbose=verbose)
+    # every edge must carry the field of the certified mode (else the
+    # single (mu0, D0) is wrong for it); the message routes the caller to
+    # the coupled k-point driver (api.compute catches 'single-field')
+    from engine.diagrams.type_assignment import build_field_index_map
+    _, _pidx = build_field_index_map(list(ft._ns._ring_var_names),
+                                     ft._n_tilde)
+    _ext = _legs_to_phys_idx(list(external_fields), _pidx)
+    _fi = {int(_pidx[f]) for f in _ext}
+    _n_fields = int(prop.get('nf') or 1)
+    if len(_fi) != 1 or any(
+            _edges_off_field(diagram_to_cstack(td), next(iter(_fi)), _n_fields)
+            for recs in be.values() for td, _p in recs):
+        raise NotImplementedError(
+            'compute_spatial_kpoint: single-field only — an edge or an '
+            'external slot carries a field other than the certified mode '
+            '(one (mu, D) for every edge would be wrong).  Coupled-field '
+            'k>=3 routes through compute_coupled_kpoint.')
     slot_fields = list(external_fields)
     per_ell = {}
     total = _np.zeros(n_pts)
