@@ -19,6 +19,14 @@ from scipy.optimize import fsolve
 SADDLE_RESIDUAL_RTOL = 1e-8
 
 
+def _res_norm(fun, x):
+    try:
+        r = [abs(float(v)) for v in fun(x)]
+    except Exception:
+        return float('inf')
+    return max(r) if r and all(math.isfinite(v) for v in r) else float('inf')
+
+
 def _check_saddle_residual(who, residual, values):
     """Raise ``RuntimeError`` when the residual at the returned saddle is
     not finite or above ``SADDLE_RESIDUAL_RTOL`` (item 60)."""
@@ -233,7 +241,12 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             attempt = fsolve(mf_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        # keep the converged attempt, else the one with the smallest residual
+        # (item 60: the residual is checked below)
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(mf_residual, attempt[0])
+                < _res_norm(mf_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:    # ier == 1  ⇒  converged
             break
 
@@ -542,8 +555,9 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
                 for i, target_expr in enumerate(arr):
                     target = float(SR(target_expr).subs(sub))
                     res.append(float(iter_vals[sname][i]) - target)
-            return res
-        except (ValueError, ZeroDivisionError, TypeError):
+            return [r if math.isfinite(r) else 1e10 for r in res]
+        except (ValueError, ZeroDivisionError, TypeError, OverflowError,
+                FloatingPointError):
             return [1e10] * total_n
 
     # ── fsolve ──────────────────────────────────────────────────
@@ -557,7 +571,10 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             attempt = fsolve(_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(_residual, attempt[0])
+                < _res_norm(_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:
             break
     if sol is None:
@@ -567,7 +584,6 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
 
     # ── Unpack and verify ────────────────────────────────────────
     flat_vals = list(sol[0])
-    import math
     if not all(math.isfinite(x) for x in flat_vals):
         raise RuntimeError(
             f'solve_mean_field (heterogeneous): fsolve returned non-finite '

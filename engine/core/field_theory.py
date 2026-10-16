@@ -281,9 +281,13 @@ class DerivativeAtomTaylorError(Exception):
     silently truncated expansion; not caught by the fall-backs."""
 
 
-def _has_derivative_atom(e) -> bool:
-    """Whether ``e`` contains ``D[...](f)(...)`` of an abstract function."""
+def _has_derivative_atom(e, field_vars=None) -> bool:
+    """Whether ``e`` contains ``D[...](f)(...)`` of an abstract function
+    (with ``field_vars``: one whose arguments depend on a field variable;
+    an atom of parameters only is a constant to ``taylor()``)."""
     from sage.symbolic.operators import FDerivativeOperator
+    names = (None if field_vars is None
+             else {repr(v) for v in field_vars})
     stack = [SR(e)]
     while stack:
         x = stack.pop()
@@ -291,7 +295,9 @@ def _has_derivative_atom(e) -> bool:
         if op is None:
             continue
         if isinstance(op, FDerivativeOperator):
-            return True
+            if names is None or any(repr(u) in names for u in x.variables()):
+                return True
+            continue
         stack.extend(x.operands())
     return False
 
@@ -346,7 +352,7 @@ def _truncated_taylor(expr, field_vars, order: int) -> dict:
         it depends on, read into an exponent dict."""
         names = {repr(u) for u in e.variables()}
         vs = [v for v in fvars if repr(v) in names]
-        if _has_derivative_atom(e):
+        if _has_derivative_atom(e, vs):
             # the multivariate form truncates derivative atoms early; the
             # univariate form is exact (one field variable only)
             if len(vs) != 1:
@@ -438,7 +444,7 @@ def _taylor_action(S_sr, field_vars, order: int):
                         mono = mono * v ** k
                 out = out + c * mono
             return out
-    if _has_derivative_atom(S_sr):
+    if _has_derivative_atom(S_sr, field_vars):
         raise DerivativeAtomTaylorError(
             'the action contains a derivative of an abstract function '
             '(D[...](f)(...)) and the expansion would take the multivariate '

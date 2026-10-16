@@ -720,7 +720,8 @@ def _realization_check(prop, num_params):
     route has no realization of this model."""
     try:
         from engine.integration.time_domain import statespace as _ssr
-        if not _ssr.engine_requested():
+        ok, _why = _ssr.model_route(prop, num_params)   # engine on, Itô rule
+        if not ok:
             return None
         m, _why = _ssr.realization_for(prop, num_params)
     except Exception:

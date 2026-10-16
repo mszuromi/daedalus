@@ -222,7 +222,7 @@ def _as_seed(seed):
                                          np.random.SeedSequence,
                                          np.random.BitGenerator)):
         return seed
-    if hasattr(seed, '__index__'):
+    if hasattr(seed, '__index__') and np.ndim(seed) == 0:
         return int(seed.__index__())
     return seed
 

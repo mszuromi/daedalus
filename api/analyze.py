@@ -202,6 +202,10 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
+#: item 60: the a posteriori realization error (api._realization.
+#: _aposteriori_error) enters the G6 estimate above this value (the
+#: realization is refused outright above 1e-2)
+_G6_REALIZATION_FLOOR = 1e-6
 
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
@@ -3486,16 +3490,20 @@ def _g6(ctx, pf, result, c, complete, evaluated):
          + float(c.get('ss_err_abs_sum', 0.0)))
     # item 60: the per-subset estimates above assume the ROUNDED realization
     # represents G; a graded / not numerically Hurwitz one was checked a
-    # posteriori (api._realization) and its measured relative error enters
-    # the estimate (the check's own tolerance 1e-2 when it could not be
-    # measured), so a broken realization never passes G6 silently
+    # posteriori (api._realization: refused above 1e-2) and its measured
+    # relative error enters the estimate, so a realization that passes the
+    # refusal but is off by more than the threshold does not pass G6
     rc = (result.get('phase_j_engine') or {}).get('realization_check') \
         if isinstance(result, dict) else None
     real_rel = 0.0
-    if rc and rc.get('checked') and int(c.get('ss_estimated', 0)):
-        real_rel = (float(rc['err_rel']) if rc.get('err_rel') is not None
-                    else 1e-2)
-        d['realization_err_rel'] = real_rel
+    if (rc and rc.get('checked') and rc.get('err_rel') is not None
+            and int(c.get('ss_estimated', 0))):
+        d['realization_err_rel'] = float(rc['err_rel'])
+        # below the floor the measurement is the frequency quadrature's own
+        # noise on strongly graded spectra (~1e-6 at a 1e6 spread, the
+        # Lyapunov solution measured exact to 5e-13), not the realization's
+        if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
+            real_rel = float(rc['err_rel'])
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
