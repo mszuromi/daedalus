@@ -195,3 +195,33 @@ def test_bare_delay_inside_exp_of_a_spike_field_is_refused_by_name():
     # the (n, n) pass's own warning is held back, then re-emitted (once)
     inc = [w for w in ws if type(w.message).__name__ == 'PhaseJIncompleteWarning']
     assert len(inc) == 1
+
+
+def test_delay_warnings_are_shown_under_sages_startup_filters(monkeypatch):
+    """The Sage launcher sets PYTHONWARNINGS=ignore and Sage installs
+    message-specific numpy ``ignore`` filters in front of it; the package's
+    own warnings (DelayOrderWarning, PhaseJIncompleteWarning) must still be
+    shown, while the user's category-wide ignore hides them (docket 51)."""
+    import sys
+    m = _hawkes_spike_only(p=0.3, image='1', name='dnl Hawkes bare delay in exp')
+    kw = dict(k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
+              tau_grid=TAU, parallel=False, verbose=False, delay={'order': 4})
+    monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
+
+    def sage_like():
+        warnings.simplefilter('ignore')
+        warnings.filterwarnings('ignore', message='numpy.ndarray size changed',
+                                category=Warning)
+    with warnings.catch_warnings(record=True) as ws:
+        sage_like()
+        r = compute_cumulants(m, **kw)
+    assert r['status'] == 'incomplete'
+    assert {type(w.message).__name__ for w in ws} >= {'DelayOrderWarning',
+                                                      'PhaseJIncompleteWarning'}
+    assert len([w for w in ws if type(w.message).__name__
+                == 'PhaseJIncompleteWarning']) == 1
+    with warnings.catch_warnings(record=True) as ws:
+        sage_like()
+        warnings.filterwarnings('ignore', category=DelayOrderWarning)
+        compute_cumulants(m, **kw)
+    assert not any(issubclass(w.category, DelayOrderWarning) for w in ws)

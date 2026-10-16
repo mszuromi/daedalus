@@ -2463,12 +2463,13 @@ def _warn_outside_run(reason):
     import warnings
     from api.compute import PhaseJEngineFallbackWarning
     from api.save import _ensure_warning_shown
-    _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always')
-    warnings.warn(
-        f'Phase J: the state-space route fell back on the pole route '
-        f'({reason}) while a returned callable was evaluated; the counters '
-        f'ss_fallback_* have the details (warned once per reason)',
-        PhaseJEngineFallbackWarning, stacklevel=4)
+    _msg = (f'Phase J: the state-space route fell back on the pole route '
+            f'({reason}) while a returned callable was evaluated; the '
+            f'counters ss_fallback_* have the details (warned once per '
+            f'reason)')
+    _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always',
+                          message=_msg, stacklevel=4)
+    warnings.warn(_msg, PhaseJEngineFallbackWarning, stacklevel=4)
 
 
 def _late_detail(exc):

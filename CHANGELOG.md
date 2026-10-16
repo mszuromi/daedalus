@@ -31,6 +31,22 @@ No existing number moves (no existing model uses the new paths).
   Gaussian sources, kernels realized exactly as state-space filters (delays by a ring buffer);
   `cross_covariance` and `mean_rate` estimators with batch-means errors.
 
+#### Fixed: package warnings were hidden under `sage -python` and the Sage kernel (item 51)
+
+`DelayOrderWarning`, `PhaseJIncompleteWarning`, `PhaseJEngineFallbackWarning`, `PhaseJDivergenceWarning`,
+`PhaseJNquadFallbackWarning`, `GroupedDeltaRecordsDroppedWarning` and `StaleResultWarning` were never shown in Sage.
+Results still carried their `status` and cap fields. No number moves.
+
+- **Cause.** The Sage launcher sets `PYTHONWARNINGS=ignore`, and the helper `_ensure_warning_shown` is meant to
+  override only that environment ignore. Sage also installs message-specific numpy ignores at startup
+  (`numpy.ndarray size changed`, ...). The helper took the first filter that applies to the category, saw such a
+  targeted filter, took it for a user's decision, and did nothing.
+- **Fix.** The helper now takes the warning's `message` and module (or `stacklevel`), and skips a filter whose message
+  or module pattern does not match. A category-wide `ignore`, a matching message or module filter, `error`, and a
+  line-targeted filter are still respected. The filter it adds is for that one message, so a user's ignore aimed at
+  another message of the same category keeps working. Applies to both copies (`api.save`, `engine`'s
+  `final_integral`) and every call site.
+
 #### Added: delay kernels inside nonlinear terms (round 2, item 47)
 
 A hard delay inside a nonlinear term (`x*x(t - d)`) used to return `status='incomplete'` with a warning. It now runs.
