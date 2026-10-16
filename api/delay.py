@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 import warnings
 from dataclasses import replace
@@ -381,6 +382,7 @@ class Kernel:
 
     ``Kernel.delay(d)``: the hard delay ``delta(t - d)`` (image ``exp(-I omega d)``);
     ``Kernel.exponential(tau)``: ``exp(-t/tau)/tau`` (image ``1/(1 + I omega tau)``);
+    ``Kernel.alpha(tau)``: ``t/tau^2 exp(-t/tau)`` (image ``1/(1 + I omega tau)^2``);
     ``Kernel.gamma(n, mean)``: the Erlang density of order ``n`` and mean
     ``mean`` (image ``(1 + I omega mean/n)^-n``; rational: an exact gamma
     delay, no approximation);
@@ -401,6 +403,13 @@ class Kernel:
         return cls(f'1/(1 + I*omega*({tau}))')
 
     @classmethod
+    def alpha(cls, tau):
+        """The alpha function ``t/tau^2 exp(-t/tau)`` (image ``1/(1 + I omega tau)^2``)."""
+        t = str(tau).strip()
+        t = t if re.fullmatch(r'[\w\[\],\s]*', t) else f'({t})'
+        return cls(f'1/(1 + I*omega*{t})^2')
+
+    @classmethod
     def gamma(cls, n, mean):
         n = int(n)
         if n < 1:
@@ -418,8 +427,8 @@ class Kernel:
             d = f'({self.delay}) + ({other.delay})'
         else:
             d = self.delay or other.delay
-        fi = ('*'.join(f'({x})' for x in (self.freq_image, other.freq_image)
-                       if x != '1') or '1')
+        facs = [x for x in (self.freq_image, other.freq_image) if x != '1']
+        fi = facs[0] if len(facs) == 1 else ('*'.join(f'({x})' for x in facs) or '1')
         return Kernel(fi, delay=d)
 
     __rmul__ = __mul__

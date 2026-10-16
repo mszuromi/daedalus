@@ -42,6 +42,8 @@ The orchestration layer `dd` drives:
   function (Gaussian, Poisson, compound Poisson, gamma and inverse-Gaussian processes, variance-gamma, NIG,
   CGMY / tempered stable, Meixner, bilateral gamma, Skellam, negative-binomial, sums, or a user-given CGF).
   `noise_samplers.py` draws increments of every named source and jump law (`source.sample(dt, n, rng)`).
+  `SDE.point_process` declares spike trains whose rates filter any field (`Conv`); `pp_simulate.py`
+  simulates such models (`SDE.simulate`).
 - `cumulant.py` — `Cumulant`: a computed cumulant as its smooth part per loop order plus the
   shot-noise δ components (the spikes on a hyperplane of the external times), read off the result
   without recomputing. `cumulant_plot.py` draws it (`dd.plot_cumulant(..., show_delta=True)`).

@@ -107,7 +107,8 @@ def parse_expr(value, *, what: str = 'expression'):
             raise NoiseError(
                 f'{what}: population sums are not supported inside a noise '
                 f'parameter ({value!r}); declare a parameter or function '
-                f'for the summed quantity instead.')
+                f'for the summed quantity instead (a spike train whose rate '
+                f'sums or filters fields: SDE.point_process).')
         txt = _flatten_indices(txt)
         called = set(re.findall(r'\b([A-Za-z_]\w*)\s*\(', txt))
         names = set(re.findall(r'\b([A-Za-z_]\w*)\b', txt))
