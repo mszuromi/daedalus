@@ -365,31 +365,36 @@ def periodic_inverse_ft(q_grid, Cq, x, spatial_dim, L, n_cut=None):
     if n_cut is None:
         n_cut = int(math.ceil(k_max / two_pi_L)) + 1
     ns = np.arange(-n_cut, n_cut + 1)
-    if d == 1:
-        n1 = ns.astype(float)
-        nsq = n1 * n1
-    elif d == 2:
-        n1, n2 = np.meshgrid(ns, ns, indexing='ij')
-        n1 = n1.astype(float)
-        nsq = n1 * n1 + n2.astype(float) ** 2
-    elif d == 3:
-        n1, n2, n3 = np.meshgrid(ns, ns, ns, indexing='ij')
-        n1 = n1.astype(float)
-        nsq = n1 * n1 + n2.astype(float) ** 2 + n3.astype(float) ** 2
-    else:
+    if d not in (1, 2, 3):
         raise SpatialPropagatorError(
             f'periodic_inverse_ft supports d=1,2,3; got spatial_dim={d}')
-    k_lat = two_pi_L * np.sqrt(nsq)                    # |k_n| on the lattice
-    flat = k_lat.ravel()
-    Sk = np.interp(flat, q, Cq.real)
-    if cplx:
-        Sk = Sk + 1j * np.interp(flat, q, Cq.imag)
-    Sk = np.where(flat <= k_max, Sk, 0.0).reshape(k_lat.shape)
-    kx = two_pi_L * n1                                 # phase wavenumber on axis 1
+    # The phase depends on n1 only, so the sum factorises:
+    #     C(x) = (1/L^d) Σ_{n1} cos((2π/L) n1 x) · S(n1),
+    #     S(n1) = Σ_{n_⊥} C(|k_n|)   (n_⊥: the other d-1 axes),
+    # built one n1 slab at a time: memory O(n^{d-1}), not O(n^d) (the whole
+    # d=3 lattice was ~9 arrays of (2 n_cut + 1)^3 doubles, 13.6 GB at
+    # n_cut = 288; item 53).  The lattice magnitudes are exact integers
+    # before the square root, so each term is as before; only the order of
+    # the additions changed.
+    n_sq1 = ns.astype(float) ** 2
+    if d == 1:
+        perp = np.zeros(1)
+    elif d == 2:
+        perp = n_sq1
+    else:
+        perp = (n_sq1[:, None] + n_sq1[None, :]).ravel()
+    S = np.empty(len(ns), dtype=complex if cplx else float)
+    for a, m1 in enumerate(n_sq1):
+        flat = two_pi_L * np.sqrt(m1 + perp)           # |k_n| on the slab
+        Sk = np.interp(flat, q, Cq.real)
+        if cplx:
+            Sk = Sk + 1j * np.interp(flat, q, Cq.imag)
+        S[a] = np.sum(np.where(flat <= k_max, Sk, 0.0))
+    kx = two_pi_L * ns.astype(float)                   # phase wavenumber on axis 1
     out = np.empty(xs.shape, dtype=complex if cplx else float)
     pref = 1.0 / L ** d
     for i, xi in enumerate(xs):
-        out[i] = pref * np.sum(np.cos(kx * float(xi)) * Sk)
+        out[i] = pref * np.sum(np.cos(kx * float(xi)) * S)
     if np.ndim(x):
         return out.reshape(np.asarray(x).shape)
     return complex(out[0]) if cplx else float(out[0])
