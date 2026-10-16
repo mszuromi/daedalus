@@ -359,3 +359,22 @@ def test_bug14_split_helper_refuses_a_non_product_prefactor():
     assert isinstance(FI._conv_monomial_split(va, SR('4*D*(c*z_h + 2*ee)')), str)
     vt.coefficient = SR('c*z_h')
     assert FI._conv_monomial_split(va, SR('4*D*c*z_h')) is None
+
+
+def test_bug14_split_vertex_triples_equal_c_tau():
+    """The term-by-term parts are exposed as ``phase_j_placements`` (weight
+    1): the matrix-exponential triples equal C(tau) on a mixed vertex."""
+    import daedalus as dd
+    s = _mixed('bug60 mixed me', None, [('h', '1/(1 + I*omega)')]) \
+        .drift('x', '-a*x + b - ee*x*x - c*x*Conv(h, x)') \
+        .noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+    tt = np.array([-2.0, -0.5, 0.3, 1.0, 3.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(s.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+                              tau_grid=tt, **RUN)
+        me = dd.cumulant(r).me
+    assert me is not None and me.complete
+    for ell in (0, 1):
+        ref = np.asarray(r['C_tau_by_ell'][ell])
+        assert np.max(np.abs(np.asarray(me(tt, ell=ell)) - ref)) <= 1e-13 * np.max(np.abs(ref))
