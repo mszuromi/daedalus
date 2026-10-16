@@ -735,14 +735,18 @@ class Cumulant:
             me = self.me
             if me is None:
                 return None
-            ells = [e for e in me.orders if not me.reasons.get(e)]
-            left = [e for e in me.orders if me.reasons.get(e)]
+            mr = getattr(me, 'mode_reasons', {}) or {}
+            ells = [e for e in me.orders
+                    if not me.reasons.get(e) and not mr.get(e)]
+            left = [e for e in me.orders if e not in ells]
             if left:
                 import warnings
                 from api.me_output import MEFallbackWarning
+                why = self.me_reasons + [f'ell={e}: {r}' for e in left
+                                         for r in mr.get(e, ())]
                 warnings.warn(f'modes: loop order(s) {left} have no '
-                              f'matrix-exponential triples and are left out ('
-                              + '; '.join(self.me_reasons) + ')',
+                              f'finite mode list and are left out ('
+                              + '; '.join(why) + ')',
                               MEFallbackWarning, stacklevel=2)
             if not ells:
                 return None

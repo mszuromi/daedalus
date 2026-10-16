@@ -2306,6 +2306,170 @@ class SubsetSS:
         out.update(seg=seg, beta=float(beta), x0=x0, c=c)
         return out
 
+    def me_chain(self, free_base, free_dir, t_anchor, t_ref, t_end,
+                 tie_ctx=None):
+        """:meth:`me_line` on a FINITE chamber ``t`` between ``t_anchor`` and
+        ``t_end`` (the one containing ``t_ref``) where several segments may
+        move (item 54: a k >= 3 slice whose swept leg lies between two other
+        legs: the segment before it grows while the one after it shrinks)::
+
+            I(s) = const * prod_r g_r(rho0_r + rho1_r s)
+                   * c . e^{G_M L_M(s)} M_{M-1} ... M_1 e^{G_1 L_1(s)} . x0,
+
+            L_j(s) = L0_j + beta_j s,   0 <= s <= s_max = |t_end - t_anchor|.
+
+        ``None`` when the integral vanishes on the chamber; otherwise a dict
+        with ``const`` and ``rows`` as :meth:`me_line` (a moving constant row
+        may shrink here, ``rho1 < 0``, as long as it stays >= 0 on the
+        chamber) and ``chain`` (``None`` when no segment moves) =
+        ``{'segs': [_Segment], 'betas', 'L0s', 'x0'`` (the stacked state
+        entering the first moving segment), ``'maps'`` (dense ``M_j``: the
+        events and fixed segments between two moving segments, from one
+        stacked space to the next), ``'c'`` (the functional of everything
+        after the last moving segment)}.  Nothing here changes a value; the
+        sweep is untouched."""
+        FI = _FI()
+        try:
+            t_min = float(FI.PHASE_J_T_MIN)
+        except (TypeError, ValueError):
+            t_min = None
+        if t_min != float('-inf') or switch_on_active():
+            raise SSIneligible('finite_t_min', repr(
+                _switch_on_t_min() if switch_on_active()
+                else FI.PHASE_J_T_MIN))
+        if self.empty or any(e.kind == 'zero' for e in self.edge_ops) or any(
+                r[4].kind == 'zero' for r in self.const_rows):
+            return None
+        fb = [float(x) for x in free_base]
+        fd = [float(x) for x in free_dir]
+        t_anchor, t_ref, t_end = float(t_anchor), float(t_ref), float(t_end)
+        s_max = abs(t_end - t_anchor)
+        if not math.isfinite(s_max):
+            raise SSIneligible('several_lags', 'me_chain needs a finite '
+                               'chamber')
+        tol = 1e-12 * max(1.0, abs(t_anchor), abs(t_end))
+        sigma = 1.0 if t_ref >= t_anchor else -1.0
+        f_ref = [b + t_ref * d for b, d in zip(fb, fd)]
+        const = 1.0
+        rows = []
+        for (_idx, a_int, a_ext, c0, ent) in self.const_rows:
+            if FI._const_row_verdict(a_int, a_ext, c0, f_ref, 'edge',
+                                     tie_ctx) == 'EMPTY':
+                return None
+            r0 = float(c0) + sum(float(a) * b for a, b in zip(a_ext, fb))
+            r1 = sum(float(a) * d for a, d in zip(a_ext, fd))
+            if r1 == 0.0:
+                const = const * ent.impulse(r0)
+                if const == 0:
+                    return None
+                continue
+            rho0, rho1 = r0 + r1 * t_anchor, r1 * sigma
+            rho_end = rho0 + rho1 * s_max
+            if rho0 <= tol and rho_end <= tol:
+                return None             # retarded on the whole chamber
+            if rho0 < -tol or rho_end < -tol:
+                raise SSIneligible('row_crosses_zero',
+                                   f'rho0={rho0:g}, rho1={rho1:g}, '
+                                   f's_max={s_max:g}')
+            rows.append((max(rho0, 0.0), rho1, ent))
+        out = {'const': const, 'rows': rows, 'chain': None}
+        if self.m == 0:
+            return out
+        v_ref = self._slot_values(f_ref)
+        v_base = self._slot_values(fb)
+        v_dir = []
+        for key in self.slots:
+            v = 0.0
+            for a_, d_ in zip(key[:-1], fd):
+                if a_ != 0.0 and d_ != 0.0:
+                    v = v + a_ * d_
+            v_dir.append(v)
+        pattern, gv = self._pattern(v_ref)
+        if any(v_dir[s_] != v_dir[g[0]] for g in pattern for s_ in g):
+            raise SSIneligible('several_lags', 't_ref is on a chamber '
+                               'boundary (tied slots move apart)')
+        prog = self._checked_program(pattern, False)
+        if prog and prog[-1][0] == 'empty':
+            return None
+        segs = [i for i, (k_, _d) in enumerate(prog) if k_ == 'seg']
+        slope = [v_dir[pattern[j + 1][0]] - v_dir[pattern[j][0]]
+                 for j in range(len(pattern) - 1)]
+        moving = [q for q, sl_ in enumerate(slope) if sl_ != 0.0]
+        if not moving:
+            out['const'] = const * self._run(prog, gv, False, float('-inf'))
+            return out
+        dt = self.model.dtype
+        idx = [segs[q] for q in moving]
+        msegs = [prog[i][1] for i in idx]
+        L0s, betas = [], []
+        for q in moving:
+            L0 = (v_base[pattern[q + 1][0]] - v_base[pattern[q][0]]
+                  + slope[q] * t_anchor)
+            beta = slope[q] * sigma
+            if L0 < -tol or L0 + beta * s_max < -tol:
+                raise SSIneligible('several_lags', 'a moving segment is '
+                                   'negative on the chamber')
+            L0s.append(max(L0, 0.0))
+            betas.append(float(beta))
+        x_before = self._run(prog, gv, False, float('-inf'), upto=idx[0])
+        x0 = msegs[0].stack(x_before, dt)
+        maps = [self._between(prog, gv, idx[j], idx[j + 1], msegs[j],
+                              msegs[j + 1], dt)
+                for j in range(len(idx) - 1)]
+        i, seg = idx[-1], msegs[-1]
+        if i == len(prog) - 2 and prog[-1][0] == 'event':
+            k = seg.index.get(self.full)
+            last = [f for I, f in prog[-1][1] if I == self.full]
+            if k is None or not last:
+                return None
+            f = last[0]
+            if f.starts or f.out:
+                raise SSIneligible('several_lags', 'edges open at the last '
+                                   'time')
+            cten = (np.einsum(*f.args, list(f.act_in)) if f.args
+                    else np.ones((), dtype=dt))
+            c = np.zeros(seg.D, dtype=np.result_type(cten, dt))
+            c[seg.offs[k]:seg.offs[k] + seg.sizes[k]] = np.ravel(cten)
+        else:
+            c = self._downstream(prog, gv, i, seg, dt)
+        out['chain'] = {'segs': msegs, 'betas': betas, 'L0s': L0s,
+                        'x0': x0, 'maps': maps, 'c': c}
+        return out
+
+    def _between(self, prog, gv, i_from, i_to, seg_from, seg_to, dt):
+        """The dense linear map (``seg_to.D x seg_from.D``) of the program
+        steps strictly between steps ``i_from`` and ``i_to`` (events and
+        fixed segments), from ``seg_from``'s stacked space to ``seg_to``'s:
+        one run per basis vector (``me_chain``)."""
+        n_ev = sum(1 for k_, _d in prog[:i_from + 1] if k_ == 'event')
+        M = np.zeros((seg_to.D, seg_from.D), dtype=complex)
+        for qb in range(seg_from.D):
+            e = np.zeros(seg_from.D, dtype=dt)
+            e[qb] = 1.0
+            x = seg_from.unstack(e)
+            j = n_ev
+            prev = gv[j - 1] if j else None
+            for kind, data in prog[i_from + 1:i_to]:
+                if kind == 'seg':
+                    x = data.propagate(x, gv[j] - prev, dt)
+                elif kind == 'event':
+                    nx = {}
+                    for I, f in data:
+                        xI = x.get(I)
+                        if xI is not None:
+                            nx[I] = f(xI)
+                    x = nx
+                    prev = gv[j]
+                    j += 1
+                else:
+                    x = {}
+                    break
+            if x:
+                M[:, qb] = seg_to.stack(x, complex)
+        if np.isrealobj(np.zeros(0, dtype=dt)) and not np.any(M.imag):
+            M = M.real
+        return M
+
     def _downstream(self, prog, gv, i, seg, dt):
         """The linear functional ``state after step i -> value`` of the rest
         of a program (events and fixed segments), on ``seg``'s stacked
