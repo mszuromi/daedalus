@@ -224,3 +224,31 @@ def test_bug11_sage_literals_in_simulators():
                     dt=RealNumber('0.01'), t_max=Integer(2), n_paths=Integer(3),
                     burn_in=Integer(1), seed=Integer(4))
     assert r['x'].shape[2] == 3
+
+
+# ── bug 13: conductance field x Conv(K, spike train) via the SDE front end ───
+
+def test_bug13_conductance_term_with_a_point_process():
+    """``(Es - v)*Conv(g, n)``: the saddle equation of v references v itself;
+    it is solved as a residual equation (it was emitted as an explicit
+    ``vstar = ...`` substitution and failed the engine's saddle check)."""
+    from scipy.optimize import brentq
+    from api.delay import Kernel
+    s = (SDE('bug60 conductance pp').population('E', size=1)
+         .parameter('Em', default=[-1.5], indexed_by=['E'])
+         .parameter('tau', default=[2.0], indexed_by=['E']).parameter('Es', default=1.0)
+         .parameter('w', default=[[0.4]], indexed_by=['E', 'E'])
+         .parameter('a', default=[1.0], indexed_by=['E'])
+         .parameter('taug', default=[[1.0]], indexed_by=['E', 'E'])
+         .define_kernel('g', kernel=Kernel.exponential('taug[i,j]'), indexed_by=['E', 'E'])
+         .point_process('n', 'phi(v)', population='E').field('v', population='E')
+         .define_function('phi', args=['v'], expression='a[i]*exp(v)', population='E')
+         .equation('v', lhs='(tau*Dt + 1)*v',
+                   rhs='Em + (Es - v)*sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)'))
+    assert s._star_equations(s._derive()['equations']) is None
+    r = compute_cumulants(s.build(), k=2, max_ell=0, external_fields=[('n', 1), ('n', 1)],
+                          tau_grid=np.array([1.0]), **RUN)
+    assert r['status'] == 'ok' and np.all(np.isfinite(r['C_tau']))
+    vstar = brentq(lambda v: v - (-1.5 + (1.0 - v) * 0.4 * np.exp(v)), -5, 1)
+    assert abs(r['mf_values']['vstar'][0] - vstar) < 1e-10
+    assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-10
