@@ -1,6 +1,6 @@
 {
  "convention": "prediagrams_v1",
- "note": "Cells too big for git. Upload the files from the release asset directory, then set DAEDALUS_CACHE_URL (or pass base_url=) to its URL; url is a per-file override, empty = base_url/name.",
+ "note": "Cells too big for git, published as assets of the GitHub release v0.2.1. Each entry's url is its download address; fetch_cache downloads only when called and refuses a file whose size, SHA-256, stamp or class count disagrees with this manifest. url empty = base_url/name (pass base_url= or set DAEDALUS_CACHE_URL).",
  "files": [
   {
    "name": "prediagrams_v2_k4_l3.pkl.xz",
@@ -10,7 +10,7 @@
    "size": 15062572,
    "sha256": "aca3b310c4feade5124efeac7a8cb44673b8559675b9b6bad5af6edcee5c8b7a",
    "core": true,
-   "url": "",
+   "url": "https://github.com/mszuromi/daedalus/releases/download/v0.2.1/prediagrams_v2_k4_l3.pkl.xz",
    "cert_backend": "sage"
   },
   {
@@ -21,7 +21,7 @@
    "size": 28965140,
    "sha256": "0c7139748f5388a8cc269beb72bd577dcefb01f76269b139953ea004cd88b3fd",
    "core": false,
-   "url": "",
+   "url": "https://github.com/mszuromi/daedalus/releases/download/v0.2.1/prediagrams_v2_k6_l2.pkl.xz",
    "cert_backend": "sage"
   }
  ]

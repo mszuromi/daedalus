@@ -148,4 +148,5 @@ def test_the_real_fetch_manifest_is_wellformed():
     assert cells.isdisjoint(pdc.SHIPPED_CELLS)             # only cells NOT in git
     for e in man['files']:
         assert len(e['sha256']) == 64 and e['count'] > 0 and e['size'] > 5 * 1024 * 1024
-        assert 'url' in e and e['url'] == ''                # placeholder, base URL decides
+        assert e['url'] == ('https://github.com/mszuromi/daedalus/releases/download/'
+                            'v0.2.1/' + e['name'])           # the published release asset

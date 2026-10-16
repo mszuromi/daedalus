@@ -1,11 +1,36 @@
 # Daedalus
 
-A model-agnostic framework for computing stationary statistics of Itô stochastic
-differential equations. The framework performs automated evaluation of Feynman diagrams
-for perturbative MSR–JD (Martin–Siggia–Rose–Janssen–De Dominicis) field theories, built
-on SageMath. Given an SDE/SPDE written as an MSR–JD action, it computes the mean field,
-multi-point cumulants, and loop corrections (action → diagram enumeration → causal
-integration). The notebook front-end is the `daedalus` module, imported as `dd`.
+Daedalus computes stationary statistics of stochastic dynamical systems by **automated
+perturbation theory**. You write a model as stochastic differential equations (or a stochastic
+PDE, or a point process); Daedalus builds its Martin–Siggia–Rose–Janssen–De Dominicis (MSRJD)
+action, enumerates the Feynman diagrams, and evaluates them, giving the mean field,
+multi-point cumulants and loop corrections as functions of time lag (and space) with no
+hand derivation. It is built on [SageMath](https://www.sagemath.org/), and the notebook
+front-end is the `daedalus` module, imported as `dd`.
+
+What it does:
+
+- **Prediagram enumeration.** All topologically distinct diagrams for a `(k, ell)` question
+  (`k` external legs, `ell` loops), with their combinatorial weights, by a canonical-form
+  graph enumerator. Large cells are cached; two of them are published as downloads
+  (see *Prediagram cache*).
+- **Exact time integrals.** Every diagram's time integral ("Phase J") is evaluated in closed
+  form, by default as matrix computations on the state-space form of the propagator, which
+  stays accurate where decay rates coincide or nearly coincide.
+- **Loop corrections for SDEs,** drift and noise declared line by line (`api.sde.SDE`) or
+  as a hand-written action, around the stable mean-field saddle.
+- **Point processes** with a conditional intensity, including intensities that filter their own
+  spike train.
+- **Delays and kernels:** convolution kernels (exponential, alpha, conductance-type) and
+  hard or distributed delays.
+- **Non-Gaussian noise:** Poisson, compound-Poisson and Lévy-type sources, and custom
+  cumulant generating functions.
+- **Spatial fields** (SPDEs: Allen–Cahn, reaction–diffusion, coupled multi-species) in one to
+  three dimensions.
+- **A model report** before any heavy computation (`--dry-run`): which gates the model passes,
+  an estimate of the loop-expansion parameter, and warnings when a result would be unreliable.
+
+Each result can be compared with an independent simulator; the example notebooks do so.
 
 ---
 
@@ -19,12 +44,47 @@ git clone https://github.com/mszuromi/daedalus.git
 cd daedalus
 conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
 conda activate daedalus
-jupyter lab                             # then open notebooks/model_builder_tutorial.ipynb
 ```
 
 [`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
-that is the entire setup. The sections below explain each step, give a non-conda alternative,
-and list tested versions.
+that is the entire setup. Then, from the repository root, the connected two-point function of
+a nonlinear Ornstein–Uhlenbeck process `dx = (-mu x - eps x^3) dt + sqrt(2D) dW`, tree level
+plus one loop:
+
+```bash
+python - <<'PY'
+from api.sde import SDE
+from api.noise import Gaussian
+from api import compute_cumulants
+
+m = (SDE('OU quartic')
+     .parameter('mu', default=1.0, domain='positive')
+     .parameter('eps', default=0.02, domain='positive')
+     .parameter('D', default=1.0, domain='positive')
+     .field('x')
+     .drift('x', '-mu*x - eps*x^3')
+     .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)], verbose=False)
+tree, loop = res['C_tau_by_ell'][0], res['C_tau_by_ell'][1]       # arrays over the lag grid; index 100 is lag 0
+print(f"C(0): tree {tree[100].real:.5f}, one-loop {loop[100].real:+.5f}, total {res['C_tau'][100].real:.5f}")
+PY
+```
+
+It prints `C(0): tree 1.00000, one-loop -0.06000, total 0.94000` in a few seconds (inside the
+conda environment `python` is Sage's interpreter; with a native Sage install use `sage -python`
+and run from the repository root).
+
+Where to go next:
+
+- [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb): a guided tour.
+- [`notebooks/examples/`](notebooks/examples/): eight examples, one per capability (white and colored noise, a
+  point process, a two-compartment dendritic model, and spatial fields), each with a simulation overlay.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) (how the pieces fit), [`docs/`](docs/) (design notes, e.g. the
+  [noise library](docs/noise_library.md) and the [spatial pipeline](docs/spatial_pipeline.md)),
+  [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- A run from a YAML file instead of Python: *Running from a config file* below.
+
+The sections below explain each step, give a non-conda alternative, and list tested versions.
 
 ## Requirements
 
@@ -258,6 +318,14 @@ The package ships the diagram skeletons for 21 `(k, ell)` cells (up to `k = 6, e
 import daedalus as dd
 dd.build_cache([(3, 4), (4, 3)], dry_run=True)   # what would it cost?
 ```
+
+Two large cells, `(4, 3)` (7.3 million classes, 15 MB compressed) and `(6, 2)` (12.5 million classes,
+29 MB), are too big for git and are published as release assets. Nothing is downloaded unless you ask:
+`dd.fetch_cache(cells='all')` (or `cells=[(4, 3)]`, `cells=[(6, 2)]`) downloads the cells into `saved_prediagrams/` and
+checks size, SHA-256, format stamp and class count against
+[`engine/enumeration/fetch_manifest.json`](engine/enumeration/fetch_manifest.json) before it accepts a file.
+Using such a cell later needs about 11 kB of memory per class (about 80 GB for `(4, 3)`), so fetching is
+mostly for machines that can hold it.
 
 ## Run the notebooks
 

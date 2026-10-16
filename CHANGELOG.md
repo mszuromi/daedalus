@@ -11,6 +11,13 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: the two large prediagram cells are published (item 55)
+
+The cells `(4, 3)` (7,257,435 classes, 15 MB compressed) and `(6, 2)` (12,512,917 classes, 29 MB) are assets
+of the GitHub release v0.2.1. `engine/enumeration/fetch_manifest.json` carries their URLs, sizes and SHA-256
+sums; `dd.fetch_cache(cells='all')` downloads them only when called and rejects any file that disagrees with the
+manifest. No number moves. README: new front page (what Daedalus does, a runnable quick start).
+
 #### Added: point-process front end (round 2, item 46)
 
 No existing number moves (no existing model uses the new paths).
