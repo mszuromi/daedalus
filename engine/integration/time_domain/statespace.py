@@ -3016,95 +3016,290 @@ PREFETCH_BYTES_PER_POINT = 24
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
                      n_tau=1, n_perm=1):
     """Upper bound (bytes) of what the route holds for one diagram (item
-    35's pre-pass, S3): ``(stationary, transient)``.
+    35's pre-pass, S3; item 61): ``(stationary, transient)``.
 
     The diagram DAG (prediagram edges ``u -> v``: ``Δt = t_v - t_u``; the
-    leaves, the external times, are its sinks) bounds every subset's sweep:
-    a δ-subset contracts its δ edges (a downset of the contracted DAG is one
-    of the original containing both ends or neither, and the contracted
-    edge never crosses it) and keeps a subset of the smooth edges.  A state
-    block is indexed by a downset ``I`` of the DAG, its size ``b(I)`` the
-    product of the per-edge state counts ``n_e`` over the edges crossing it
-    (an edge into a conductance vertex counts its largest kernel's states
-    too: a dressed line cascades them; a kernel edge adds a vertex, at most
-    doubling the downsets: a factor 2 per kernel attachment).  The
-    stationary states of one δ-subset are at most ``sum b(I)`` over the
-    downsets without a leaf, held for the run, with the τ batch's
-    ``n_tau x n_perm`` values; the δ-subsets number
-    ``2^(edges with a δ part)``.  Before enumerating, the closed bound
-    ``2^(vertices) x prod n_e`` is taken when small
-    (``PREPASS_CHEAP_BYTES``).  ``transient``: one segment system at a
-    time, at most ``D = sum b(I)`` over all downsets (``6 D`` vectors plus
-    the dense ``2 D^2`` generator, ``D`` capped at ``OP_DENSE_MAX``).
+    leaves, the external times, are its sinks) is rebuilt as Phase J builds
+    it (``_line_layouts``): a line into a conductance vertex's kernel slot
+    is either DRESSED (one edge carrying the cascade's states,
+    ``_ModelOps.dressed_entry``, no δ part, no extra vertex: the kernel has
+    separated modes and dressing is on, ``final_integral`` section 2c) or on
+    the LEG path (one more vertex ``s``: the propagator edge ``u -> s``
+    with its δ part, then the kernel edge ``s -> v``).  Each distinct
+    placement of the kernel slots is built (and held) separately, so the
+    placements add.  Per δ-subset (every subset of the edges with a δ
+    part), the δ edges are contracted (a downset of the contracted DAG is
+    one of the original containing both ends or neither; cycles merged)
+    and a state block indexed by a downset ``I`` has ``b(I)`` = the product
+    of the per-edge state counts ``n_e`` over the smooth edges crossing it;
+    the stationary states of the subset are ``sum b(I)`` over the downsets
+    without a leaf, held for the run, with the τ batch's ``n_tau x n_perm``
+    values.  A subset that keeps an edge without states smooth is never
+    built.  Before enumerating, the closed bound ``2^(edges with δ) x
+    2^(vertices) x prod n_e`` is taken when small (``PREPASS_CHEAP_BYTES``);
+    beyond ``PREPASS_MAX_DELTA_EDGES`` δ edges the subsets are bounded by
+    the uncontracted DAG.  ``transient``: one segment system at a time, at
+    most ``D = sum b(I)`` over all downsets of a subset (``6 D`` vectors
+    plus the dense ``2 D^2`` generator, ``D`` capped at ``OP_DENSE_MAX``).
     ``has_delta(pi, ri)``: whether the entry has a δ part (the pre-pass's
     own test).  ``None`` when the diagram is not covered."""
-    from engine.core.vertices import ConvVertexType
     model, _why = realization_for(propagator_data, num_params)
     if model is None:
         return None
+    layouts = _line_layouts(typed_diagram, model, propagator_data,
+                            num_params, has_delta)
+    if layouts is None:
+        return None
+    item = 8 if model.is_real else 16
+    stat = trans = 0
+    for (nv, leaf_mask, edges) in layouts:
+        s_, t_ = _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm)
+        stat += s_
+        trans = max(trans, t_)
+    return stat, trans
+
+
+#: placements of a diagram's kernel slots enumerated by the pre-pass before
+#: it charges every slot-capable line as a kernel line in one layout
+PREPASS_MAX_PLACEMENTS = 256
+#: δ edges per layout whose subsets the pre-pass contracts one by one
+PREPASS_MAX_DELTA_EDGES = 12
+
+
+def _line_layouts(typed_diagram, model, propagator_data, num_params,
+                  has_delta):
+    """The DAGs Phase J builds for one typed diagram, one per placement of
+    its kernel slots: ``[(nv, leaf_mask, edges)]`` with ``edges`` =
+    ``[(u, v, n_e, delta)]``, or ``None`` when a kernel is not realizable.
+    Mirrors ``final_integral.integrate_diagram`` section 2c (slots per leg
+    from the coefficient's degree in the kernel symbol, placements as
+    permutations, a local-weight kernel leaves the line as it is)."""
+    from engine.core.vertices import ConvVertexType
+    from sage.all import SR
     FI = _FI()
     D_ = typed_diagram.prediagram[0]
     verts = list(D_.vertices())
     index = {v: i for i, v in enumerate(verts)}
-    leaves = set(typed_diagram.prediagram[2])
     leaf_mask = 0
-    for v in leaves:
+    for v in set(typed_diagram.prediagram[2]):
         if v in index:
             leaf_mask |= 1 << index[v]
-    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
-    extra = {}
-    n_att = 0
-    for v, vt in va.items():
-        if isinstance(vt, ConvVertexType):
-            mx = 0
-            for att in vt.kernel_attachments or ():
+    can_dress = (propagator_data.get('C_mats') is not None
+                 and FI._dress_kernels_on())
+    kinfo = {}
+
+    def kernel_info(att):
+        key = _att_key(att)
+        hit = kinfo.get(key)
+        if hit is None:
+            if FI._conv_kernel_local_weight(att, num_params) is not None:
+                hit = ('local',)
+            else:
                 e = model.kernel_entry(att)
-                if not isinstance(e, str):
-                    mx = max(mx, e.n)
-                    n_att += 1
-            extra[v] = mx
-    edges = []
-    n_delta = 0
+                if isinstance(e, str):
+                    hit = ('refused', e)
+                else:
+                    dress = can_dress and (
+                        FI._kernel_modes(att, num_params) is not None)
+                    hit = ('dress' if dress else 'leg', e.n)
+            kinfo[key] = hit
+        return hit
+
+    edge_types = typed_diagram.edge_types
+    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
+    choices = []            # [[{edge_key: att}, ...] per (vertex, leg)]
+    for v, vt in va.items():
+        if not isinstance(vt, ConvVertexType) or not vt.kernel_attachments:
+            continue
+        phys_legs = [tuple(lg) for lg in vt.physical_legs]
+        coeff = SR(vt.coefficient)
+        by_leg = {}
+        for idx, att in enumerate(vt.kernel_attachments):
+            if kernel_info(att)[0] == 'refused':
+                return None
+            try:
+                q = int(coeff.degree(SR(att['symbol'])))
+            except Exception:
+                q = 1
+            by_leg.setdefault(tuple(att['leg']), []).extend([idx] * max(q, 1))
+        for leg, slots in by_leg.items():
+            n_copies = phys_legs.count(leg)
+            hits = sorted(ek for ek in D_.edges() if ek[1] == v
+                          and tuple(edge_types[ek][1]) == leg)
+            if len(slots) > n_copies or len(hits) != n_copies:
+                return None             # Phase J refuses the diagram
+            slots = tuple(slots) + (None,) * (n_copies - len(slots))
+            pls = sorted(set(itertools.permutations(slots)),
+                         key=lambda pl: tuple(-1 if x is None else x
+                                              for x in pl))
+            choices.append([{ek: vt.kernel_attachments[i]
+                             for ek, i in zip(hits, pl) if i is not None}
+                            for pl in pls])
+    n_pl = 1
+    for c in choices:
+        n_pl *= len(c)
+    if n_pl > PREPASS_MAX_PLACEMENTS:
+        # every slot-capable line a kernel line (its largest kernel), in one
+        # layout counted n_pl times
+        merged = {}
+        for c in choices:
+            for pl in c:
+                for ek, att in pl.items():
+                    old = merged.get(ek)
+                    if old is None or kernel_info(att)[1] > kernel_info(old)[1]:
+                        merged[ek] = att
+        placements, mult = [merged], n_pl
+    else:
+        placements, mult = [{}], 1
+        for c in choices:
+            placements = [{**p, **q} for p in placements for q in c]
     pidx = typed_diagram.propagator_indices
+    base = []
     for ek in D_.edges():
         hit = pidx.get(ek)
         ri, pi = hit if hit is not None else FI._lookup_prop_indices(
             typed_diagram, ek)
         e = model.entry(pi, ri)
-        n = (e.n if e is not None else 0) + extra.get(ek[1], 0)
-        if has_delta(pi, ri) and n:
-            n_delta += 1
-        edges.append((index[ek[0]], index[ek[1]], max(n, 1)))
-    nv = len(verts)
-    item = 8 if model.is_real else 16
-    # the closed bound first: sum b(I) <= (number of downsets) x max b(I)
-    # <= 2^(vertices) x prod n_e; the downsets are enumerated only when it
-    # is large (scalar-entry models: a few hundred bytes per diagram)
-    prod_n = 1
-    for (_u, _v, n) in edges:
-        prod_n *= n
+        base.append((ek, pi, ri, e.n if e is not None else 0,
+                     bool(has_delta(pi, ri))))
+    out = []
+    for pl in placements:
+        nv = len(verts)
+        edges = []
+        for (ek, pi, ri, n, dl) in base:
+            u, v = index[ek[0]], index[ek[1]]
+            att = pl.get(ek)
+            info = kernel_info(att) if att is not None else ('none',)
+            if info[0] == 'dress':
+                de = model.dressed_entry(pi, ri, att)
+                nd = de.n if not isinstance(de, str) else n + info[1]
+                edges.append((u, v, nd, False))
+            elif info[0] == 'leg':
+                s_ = nv
+                nv += 1
+                edges.append((u, s_, n, dl))
+                edges.append((s_, v, info[1], False))
+            else:
+                edges.append((u, v, n, dl))
+        out.extend([(nv, leaf_mask, tuple(edges))] * mult)
+    return out
+
+
+def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
+    """``(stationary, transient)`` bytes of one layout over its δ-subsets
+    (``diagram_estimate``)."""
+    ckey = (nv, leaf_mask, edges, item, n_tau, n_perm)
+    hit = _EST_CACHE.get(ckey)
+    if hit is not None:
+        return hit
+    prefetch = PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm)
+    didx = [i for i, (_u, _v, _n, dl) in enumerate(edges) if dl]
     n_int = nv - bin(leaf_mask).count('1')
-    cheap_stat, cheap_full = (2 ** n_int) * prod_n, (2 ** nv) * prod_n
-    if cheap_stat * item <= PREPASS_CHEAP_BYTES:
-        stat_sum, full_sum = cheap_stat, cheap_full
+    prod_n = 1
+    for (_u, _v, n, _dl) in edges:
+        prod_n *= max(n, 1)
+    n_sub = 2 ** len(didx)
+    cheap_stat = (2 ** n_int) * prod_n
+    if (cheap_stat * item <= PREPASS_CHEAP_BYTES
+            or len(didx) > PREPASS_MAX_DELTA_EDGES):
+        if cheap_stat * item <= PREPASS_CHEAP_BYTES:
+            stat_sum, full_sum = cheap_stat, (2 ** nv) * prod_n
+        else:
+            stat_sum, full_sum = _downset_sums(
+                nv, leaf_mask, [(u, v, max(n, 1)) for (u, v, n, _d) in edges])
+        D = full_sum
+        Dd = min(D, OP_DENSE_MAX)
+        out = (n_sub * (stat_sum * item + prefetch),
+               6 * D * item + 2 * Dd * Dd * item)
     else:
-        ckey = (nv, leaf_mask, tuple(edges))
-        hit = _EST_CACHE.get(ckey)
-        if hit is None:
-            hit = _downset_sums(nv, leaf_mask, edges)
-            if len(_EST_CACHE) > 4096:
-                _EST_CACHE.clear()
-            _EST_CACHE[ckey] = hit
-        stat_sum, full_sum = hit
-    n_sub = 2 ** n_delta
-    stat = n_sub * ((2 ** n_att) * stat_sum * item
-                    + PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm))
-    # one segment system at a time: its vectors, and the dense generator of
-    # a system of at most OP_DENSE_MAX states (any system within the bound)
-    D = (2 ** n_att) * full_sum
-    Dd = min(D, OP_DENSE_MAX)
-    trans = 6 * D * item + 2 * Dd * Dd * item
-    return stat, trans
+        stat = 0
+        Dmax = 0
+        for bits in range(n_sub):
+            delta = {didx[j] for j in range(len(didx)) if bits >> j & 1}
+            red = _contract(nv, leaf_mask, edges, delta)
+            if red is None:
+                continue                # a stateless line kept smooth
+            nv2, lm2, e2 = red
+            s_sum, f_sum = _downset_sums(nv2, lm2, e2)
+            stat += s_sum * item + prefetch
+            Dmax = max(Dmax, f_sum)
+        Dd = min(Dmax, OP_DENSE_MAX)
+        out = (stat, 6 * Dmax * item + 2 * Dd * Dd * item)
+    if len(_EST_CACHE) > 4096:
+        _EST_CACHE.clear()
+    _EST_CACHE[ckey] = out
+    return out
+
+
+def _contract(nv, leaf_mask, edges, delta):
+    """The DAG of one δ-subset: the edges in ``delta`` contracted, cycles
+    merged (their vertices share a time), the smooth edges kept:
+    ``(nv, leaf_mask, [(u, v, n)])``, or ``None`` when a smooth edge has no
+    states (the subset is never built)."""
+    parent = list(range(nv))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i in delta:
+        u, v = edges[i][0], edges[i][1]
+        parent[find(u)] = find(v)
+    smooth = []
+    for i, (u, v, n, _dl) in enumerate(edges):
+        if i in delta:
+            continue
+        if n == 0:
+            return None
+        smooth.append((find(u), find(v), n))
+    # merge the strongly connected components (a cycle forces equal times)
+    while True:
+        roots = sorted({find(x) for x in range(nv)})
+        succ = {r: set() for r in roots}
+        for (u, v, _n) in smooth:
+            if find(u) != find(v):
+                succ[find(u)].add(find(v))
+        cyc = _find_cycle(roots, succ)
+        if not cyc:
+            break
+        for r in cyc[1:]:
+            parent[find(r)] = find(cyc[0])
+    roots = sorted({find(x) for x in range(nv)})
+    ren = {r: i for i, r in enumerate(roots)}
+    lm = 0
+    for x in range(nv):
+        if leaf_mask >> x & 1:
+            lm |= 1 << ren[find(x)]
+    e2 = tuple((ren[find(u)], ren[find(v)], n) for (u, v, n) in smooth
+               if find(u) != find(v))
+    return len(roots), lm, e2
+
+
+def _find_cycle(nodes, succ):
+    """One directed cycle (a list of nodes) of the graph, or ``None``."""
+    color = {x: 0 for x in nodes}
+    stack_path = []
+
+    def dfs(x):
+        color[x] = 1
+        stack_path.append(x)
+        for y in succ[x]:
+            if color[y] == 1:
+                return stack_path[stack_path.index(y):]
+            if color[y] == 0:
+                c = dfs(y)
+                if c:
+                    return c
+        stack_path.pop()
+        color[x] = 2
+        return None
+    for x in nodes:
+        if color[x] == 0:
+            c = dfs(x)
+            if c:
+                return c
+    return None
 
 
 def _downset_sums(nv, leaf_mask, edges):
