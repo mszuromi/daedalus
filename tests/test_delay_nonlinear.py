@@ -7,12 +7,17 @@ Delay kernels inside nonlinear terms (``api.delay``).
   (the delay in the linear voltage equation) at tree and one loop, at the
   same Pade order.
 * A bare hard delay inside a product, ``x * x(t - d)``: the all-pass (n, n)
-  image has a direct term the kernel routes do not take, so the driver reruns
-  with the strictly proper ``[n-1/n]`` approximant; its loops equal the same
-  rational kernel declared without a delay, converge with n, and the tree
-  stays exact.
+  image ``(-1)^n + (strictly proper)`` runs as it is (item 56: Phase J folds
+  the direct term into the dressed line, on both routes); it equals the same
+  rational kernel declared without a delay and its Markov embedding (n
+  auxiliary linear fields, no kernel), converges with n to the same limit as
+  the strictly proper ``[n-1/n]`` approximant, and the tree stays exact.  A
+  line Phase J cannot dress falls back on the ``[n-1/n]`` rerun.
 * A bare hard delay inside the exponential of a spike field multiplies delta
-  functions: refused by name (incomplete + warning, never silent).
+  functions: refused by name (incomplete + warning, never silent).  Per line
+  (item 56, D10): a bare delay of a continuous field inside ``exp`` in a
+  spiking model runs (equal to the delay moved into the linear voltage
+  equation), and so does a bare delay of the spike field in a linear term.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from api import compute_cumulants                                      # noqa: E402
 from api.delay import (DelayOrderWarning, pade_coefficients,          # noqa: E402
-                       pade_mn_coefficients)
+                       pade_image, pade_mn_coefficients)
 from api.model import TemporalModelBuilder                             # noqa: E402
 from api.noise import Gaussian                                         # noqa: E402
 from api.sde import SDE                                                # noqa: E402
@@ -82,18 +87,118 @@ def _rational_text(m, n):
     return f'({num})/({den})'
 
 
-def test_hard_delay_in_a_product_equals_its_strictly_proper_rational_kernel():
-    """x * x(t - d) at order n: the strictly proper [n-1/n] approximant, equal
-    (tree with the Pade tree, and one loop) to the same rational kernel
-    declared without a delay, which never enters the delay driver."""
+def _markov_product_model(name, n):
+    """x*x(t - d) with the Pade (n, n) kernel as n auxiliary linear fields
+    (no kernel at all): the image c + beta(s)/alpha(s) (monic alpha, exact
+    coefficients) in controllable form, z_i' = z_{i+1}, z_n' = -alpha . z + x,
+    and x(t - d) -> c x + beta . z."""
+    from fractions import Fraction
+    a, b = pade_mn_coefficients(n, n)
+    d = Fraction(1, 2)
+    num = [Fraction(a[k]) * (-d) ** k for k in range(n + 1)]
+    den = [Fraction(b[k]) * d ** k for k in range(n + 1)]
+    num, den = [x / den[n] for x in num], [x / den[n] for x in den]
+    c = num[n]
+    beta = [num[k] - c * den[k] for k in range(n)]
+    s = (SDE(name).parameter('a', default=1.0).parameter('b', default=1.0)
+         .parameter('c', default=0.5).parameter('D', default=0.1)
+         .field('x'))
+    for i in range(1, n + 1):
+        s = s.field(f'z{i}')
+    y = f'({float(c)!r})*x + ' + ' + '.join(f'({float(beta[k])!r})*z{k + 1}' for k in range(n))
+    s = s.drift('x', f'-a*x + b - c*x*({y})')
+    for i in range(1, n):
+        # the restoring term on the lhs (the mean-field equation needs it)
+        s = s.equation(f'z{i}', f'(Dt + 1)*z{i}', f'z{i + 1} + z{i}')
+    s = s.drift(f'z{n}', '-' + ' - '.join(f'({float(den[k])!r})*z{k + 1}' for k in range(n))
+                + ' + x')
+    return s.noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build()
+
+
+def _counter(name):
+    from engine.integration.time_domain import final_integral as FI
+    return FI._RUNTIME_COUNTERS.get(name, 0)
+
+
+def test_hard_delay_in_a_product_runs_the_all_pass_approximant():
+    """x * x(t - d) at orders n = 4 and 8: the (n, n) approximant itself (its
+    direct term dressed into the line), equal (Pade tree and one loop, <=
+    1e-13) to the same rational kernel declared without a delay, which never
+    enters the delay driver."""
+    kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
+              verbose=False, use_cache=False)
+    for n in (4, 8):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            c0 = _counter('conv_lines_dressed_direct')
+            rd = compute_cumulants(_product_model(f'dnl hard product {n}', freq_image='1',
+                                                  delay='d'),
+                                   delay={'order': n, 'tree': 'pade'}, **kw)
+            assert _counter('conv_lines_dressed_direct') > c0
+            rr = compute_cumulants(_product_model(f'dnl rational product {n}',
+                                                  freq_image=_rational_text(n, n)), **kw)
+        assert rd['status'] == rr['status'] == 'ok'
+        assert rd['delay']['approximant'] == 'pade' and rd['delay']['incomplete'] is None
+        # the state-space route covers the run (no pole tuples charged) and
+        # takes every subset
+        eng = rd['phase_j_engine']
+        assert eng['covers_run'] is True and eng['statespace_share'] == 1.0
+        for ell in (0, 1):
+            x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
+            y = np.real(np.asarray(rr['C_tau_by_ell'][ell]))
+            assert np.max(np.abs(y)) > 0
+            assert np.max(np.abs(x - y)) <= 1e-13 * np.max(np.abs(y))
+
+
+@pytest.mark.parametrize('n', [2, pytest.param(4, marks=pytest.mark.slow)])
+def test_hard_delay_in_a_product_equals_its_markov_embedding(n):
+    """x * x(t - d) at order n on the direct-term route equals the Markov
+    embedding of the same (n, n) kernel (n auxiliary linear fields, no
+    kernel code at all), tree and one loop (n = 4, slow ~25 s: measured
+    1.9e-15)."""
+    kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
+              verbose=False, use_cache=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rd = compute_cumulants(_product_model('dnl hard product mk', freq_image='1', delay='d'),
+                               delay={'order': n, 'tree': 'pade'}, **kw)
+        # the stable saddle x* = sqrt(3) - 1 (the search may list the
+        # unstable root -1 - sqrt(3) first; the analyzer refuses that one)
+        from api.analyze import AnalyzerError
+        rm = None
+        for fpi in (0, 1):
+            try:
+                rm = compute_cumulants(_markov_product_model(f'dnl markov product {n}', n),
+                                       fixed_point_index=fpi, **kw)
+                break
+            except AnalyzerError:
+                continue
+    assert rm is not None
+    assert rd['status'] == rm['status'] == 'ok'
+    for ell in (0, 1):
+        x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
+        z = np.real(np.asarray(rm['C_tau_by_ell'][ell]))
+        assert np.max(np.abs(z)) > 0
+        assert np.max(np.abs(x - z)) <= 1e-12 * np.max(np.abs(z))
+
+
+def test_undressable_line_falls_back_on_the_strictly_proper_approximant(monkeypatch):
+    """With line dressing off, the direct term has no route (a kernel edge
+    holds only a strictly proper kernel): refused by name in Phase J, and the
+    driver reruns with the [n-1/n] approximant, equal to that rational kernel
+    declared without a delay (the item-47 route)."""
+    from engine.integration.time_domain import final_integral as FI
+    monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', False)
     n = 4
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
               verbose=False, use_cache=False)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        rd = compute_cumulants(_product_model('dnl hard product', freq_image='1', delay='d'),
+        c0 = _counter('conv_kernel_direct_refused')
+        rd = compute_cumulants(_product_model('dnl hard product leg', freq_image='1', delay='d'),
                                delay={'order': n, 'tree': 'pade'}, **kw)
-        rr = compute_cumulants(_product_model('dnl rational product',
+        assert _counter('conv_kernel_direct_refused') > c0
+        rr = compute_cumulants(_product_model('dnl rational product leg',
                                               freq_image=_rational_text(n - 1, n)), **kw)
     assert rd['status'] == 'ok' and rr['status'] == 'ok'
     assert rd['delay']['approximant'] == 'pade_proper' and rd['delay']['incomplete'] is None
@@ -104,29 +209,40 @@ def test_hard_delay_in_a_product_equals_its_strictly_proper_rational_kernel():
         np.testing.assert_allclose(x, y, rtol=1e-12, atol=0)
 
 
-def test_hard_delay_in_a_product_drift_form_converges_with_an_exact_tree():
-    """x(t - d) written in the drift: complete (strictly proper retry), the
-    exact tree, loops at n = 4 and 8 within 1e-4 of max|C| (simulation
-    agreement: internal (not distributed) acceptance run, within 0.6 SE)."""
+def test_hard_delay_in_a_product_drift_form_converges_with_an_exact_tree(monkeypatch):
+    """x(t - d) written in the drift: complete with the (n, n) approximant,
+    the exact tree, loops at n = 4 and 8 within 1e-4 of max|C|, and the same
+    limit as the strictly proper [n-1/n] approximant (forced by switching
+    line dressing off) at n = 8 (simulation agreement of the [n-1/n] route:
+    internal (not distributed) acceptance run, within 0.6 SE)."""
+    from engine.integration.time_domain import final_integral as FI
     m = _product_model('dnl hard product drift')
+    kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
+              verbose=False)
     out = {}
     for n in (4, 8):
         with warnings.catch_warnings(record=True) as ws:
             warnings.simplefilter('always')
-            r = compute_cumulants(m, k=2, max_ell=1, external_fields=EXT, tau_grid=TAU,
-                                  parallel=False, verbose=False, delay={'order': n})
+            r = compute_cumulants(m, delay={'order': n}, **kw)
         assert r['status'] == 'ok'
-        assert r['delay']['approximant'] == 'pade_proper' and r['delay']['tree'] == 'exact'
-        # the first (n, n) attempt's incompleteness warning is not shown
+        assert r['delay']['approximant'] == 'pade' and r['delay']['tree'] == 'exact'
         assert not any('could not evaluate' in str(w.message) for w in ws)
         rep = r['analysis']
-        assert any('Pade (%d, %d)' % (n - 1, n) in f.message for f in rep.findings
+        assert any('Pade (%d, %d)' % (n, n) in f.message for f in rep.findings
                    if f.code == 'G3_DELAY_APPROXIMATED')
         out[n] = [np.real(np.asarray(r['C_tau_by_ell'][ell])) for ell in (0, 1)]
+    monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rp = compute_cumulants(m, delay={'order': 8}, **kw)
+    assert rp['delay']['approximant'] == 'pade_proper'
+    proper = [np.real(np.asarray(rp['C_tau_by_ell'][ell])) for ell in (0, 1)]
     np.testing.assert_array_equal(out[4][0], out[8][0])          # exact tree
+    np.testing.assert_array_equal(out[8][0], proper[0])
     scale = np.max(np.abs(out[8][0] + out[8][1]))
     assert np.max(np.abs(out[8][1])) > 1e-3 * scale             # the loop matters
     assert np.max(np.abs(out[8][1] - out[4][1])) < 1e-4 * scale
+    assert np.max(np.abs(out[8][1] - proper[1])) < 1e-4 * scale
 
 
 # ── delayed leg operators inside a rate nonlinearity ────────────────────
@@ -191,10 +307,176 @@ def test_bare_delay_inside_exp_of_a_spike_field_is_refused_by_name():
     assert r['status'] == 'incomplete'
     assert r['delay']['approximant'] == 'pade' and r['delay']['target_met'] is False
     assert r['delay']['cap'].startswith('refused') and 'delta' in r['delay']['cap']
+    assert 'z_r_1_1 (dn1)' in r['delay']['cap']           # per line (D10)
     assert any(issubclass(w.category, DelayOrderWarning) for w in ws)
     # the (n, n) pass's own warning is held back, then re-emitted (once)
     inc = [w for w in ws if type(w.message).__name__ == 'PhaseJIncompleteWarning']
     assert len(inc) == 1
+
+
+# ── D10: the refusal is per line ────────────────────────────────────────
+
+
+def _hawkes_delayed_voltage_leg(p=0.3, name='dnl Hawkes bare delay of v in exp'):
+    """A spiking neuron whose rate reads its voltage through a bare delay,
+    phi(v(t - d)): a bare delay of a CONTINUOUS field inside exp."""
+    return (_hawkes_base(name, p).physical_field('v', population='E')
+            .define_kernel('al', freq_image='1/(1 + I*omega*taug[i,j])^2', indexed_by=['E', 'E'])
+            .define_kernel('g', freq_image='1', indexed_by=['E', 'E'], delay='d')
+            .set_action_text('sum( nt[i]*n[i] - (exp(nt[i])-1)*phi[i](sum(Conv(g[i,j], v[j]) for j in E))'
+                             ' + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] - sum(w[i,j]*Conv(al[i,j], n[j])'
+                             ' for j in E)) for i in E)')
+            .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E))')
+            .set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+
+
+def _hawkes_delayed_voltage_eq(p=0.3, name='dnl Hawkes delayed alpha in v'):
+    """The same process with u(t) = v(t - d) as the field: the delay moves
+    into the linear voltage equation (a delayed alpha filter)."""
+    return (_hawkes_base(name, p).physical_field('v', population='E')
+            .define_kernel('al', freq_image='1/(1 + I*omega*taug[i,j])^2', indexed_by=['E', 'E'],
+                           delay='d')
+            .set_action_text('sum( nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i]'
+                             ' - Em[i] - sum(w[i,j]*Conv(al[i,j], n[j]) for j in E)) for i in E)')
+            .set_mf_equation('vstar', '(Em[i] + sum(w[i, j]*nstar[j] for j in E))')
+            .set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+
+
+def _linear_hawkes_bare_delay(name='dnl linear Hawkes bare delay'):
+    """A linear Hawkes neuron with a bare delay of its own spike train: the
+    delay of a field with a delta part, but only in a linear term."""
+    return (_hawkes_base(name, 0.3)
+            .define_kernel('g', freq_image='1', indexed_by=['E', 'E'], delay='d')
+            .set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*(a[i] + sum(w[i,j]*Conv(g[i,j], n[j])'
+                             ' for j in E)) for i in E)')
+            .set_mf_equation('nstar', 'a[i] + sum(w[i, j]*nstar[j] for j in E)').build())
+
+
+def _spike_times_voltage(name, n_markov=None, n_pade=2):
+    """A spiking neuron whose voltage is driven by its own spike train
+    through a bare delay, multiplied by a voltage factor:
+    ``(tau Dt + 1) v = Em + w n(t - d) (1 + eps v)`` (a delayed spike train
+    times a continuous field: defined).  ``n_markov``: the same model with
+    the Pade (n, n) delay as auxiliary linear fields (``n(t - d) -> c n +
+    C z``, ``z' = A z + B n``; no kernel)."""
+    from sage.all import SR, I
+    from api._realization import realize_kernel
+    b = (TemporalModelBuilder(name).population('E', size=1)
+         .physical_field('n', population='E').physical_field('v', population='E')
+         .parameter('Em', default=[-1.0], indexed_by=['E'])
+         .parameter('tau', default=[1.0], indexed_by=['E'], domain='positive')
+         .parameter('a', default=[1.0], indexed_by=['E'], domain='positive')
+         .parameter('w', default=[[0.3]], indexed_by=['E', 'E'])
+         .parameter('eps', default=[0.2], indexed_by=['E'])
+         .parameter('d', default=0.8, domain='positive')
+         .define_function('phi', args=['u'], expression='a[i]*exp(u)', population='E'))
+    vstar = '(Em[i] + w[i,i]*nstar[i])/(1 - w[i,i]*eps[i]*nstar[i])'
+    if n_markov is None:
+        return (b.define_kernel('g', freq_image='1', indexed_by=['E', 'E'], delay='d')
+                .set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i]'
+                                 ' - Em[i] - sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)*(1 + eps[i]*v[i]))'
+                                 ' for i in E)')
+                .set_mf_equation('vstar', vstar).set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+    ent, _f = realize_kernel({'symbol': 'pade_ref',
+                              'kernel_ft_fn': lambda w_: pade_image(I * w_ * (SR(4) / 5), n_markov)},
+                             {}, truncation=0, direct=True)
+    A, B, C, c = ent.a, ent.b, ent.c, float(ent.d)
+    m = ent.n_states
+    for q in range(m):
+        b = b.physical_field(f'z{q}', population='E')
+    y = f'({c!r})*n[i] + ' + ' + '.join(f'({float(C[q])!r})*z{q}[i]' for q in range(m))
+    act = (f'nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i]'
+           f' - w[i,i]*({y})*(1 + eps[i]*v[i]))')
+    for q in range(m):
+        # the restoring shift keeps every z on the lhs of its equation
+        act += (f' + z{q}t[i]*((Dt + 3.25)*z{q}[i] - 3.25*z{q}[i] - ('
+                + ' + '.join(f'({float(A[q, j])!r})*z{j}[i]' for j in range(m))
+                + f' + ({float(B[q])!r})*n[i]))')
+    b = b.set_action_text(f'sum({act} for i in E)')
+    b = b.set_mf_equation('vstar', vstar).set_mf_equation('nstar', 'phi[i](vstar[i])')
+    zs = -np.linalg.solve(A, B)                    # z* = -A^{-1} B n*
+    for q in range(m):
+        b = b.set_mf_equation(f'z{q}star', f'({float(zs[q])!r})*nstar[i]')
+    return b.build()
+
+
+def test_delayed_spike_train_times_a_continuous_field_runs():
+    """n(t - d) (1 + eps v) in the voltage equation: a bare delay of the spike
+    train in a vertex whose other leg is continuous (defined: not refused,
+    D10).  The direct term dresses the spike line keeping its delta part;
+    equal (tree and one loop) to the Markov embedding of the same Pade (2, 2)
+    delay, which has no kernel."""
+    kw = dict(k=2, max_ell=1, external_fields=[('dv', 1), ('dv', 1)],
+              tau_grid=np.array([0.0, 0.4, 1.5]), parallel=False, verbose=False,
+              use_cache=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = compute_cumulants(_spike_times_voltage('dnl spike x voltage'),
+                              delay={'order': 2, 'tree': 'pade'}, **kw)
+        b = compute_cumulants(_spike_times_voltage('dnl spike x voltage markov', n_markov=2),
+                              **kw)
+    assert a['status'] == b['status'] == 'ok'
+    assert a['delay']['approximant'] == 'pade'
+    for ell in (0, 1):
+        x = np.real(np.asarray(a['C_tau_by_ell'][ell]))
+        y = np.real(np.asarray(b['C_tau_by_ell'][ell]))
+        assert np.max(np.abs(y)) > 0
+        # the embedding's coefficients are the realization rounded once
+        assert np.max(np.abs(x - y)) <= 1e-11 * np.max(np.abs(y))
+
+
+def test_bare_delays_on_delta_lines_is_per_kernel_and_field():
+    from api import analyze as an
+    from api.delay import bare_delays_on_delta_lines, bare_delay_kernels
+    q = an.Question(k=2, max_ell=1, external_fields=(('dn', 1), ('dn', 1)))
+    got = {}
+    for m in (_hawkes_spike_only(p=0.3, image='1', name='dnl d10 spike'),
+              _hawkes_delayed_voltage_leg(name='dnl d10 voltage leg'),
+              _linear_hawkes_bare_delay(name='dnl d10 linear'),
+              _spike_times_voltage('dnl d10 spike x voltage')):
+        rep, ctx = an.analyze_with_context(m, q, None, use_cache=False)
+        bare = bare_delay_kernels(m, ctx.ns)
+        assert bare
+        got[m['name']] = bare_delays_on_delta_lines(ctx, bare)
+    assert got == {'dnl d10 spike': ['z_r_1_1 (dn1)'], 'dnl d10 voltage leg': [],
+                   'dnl d10 linear': [], 'dnl d10 spike x voltage': []}
+
+
+def test_bare_delay_of_a_continuous_field_inside_exp_runs_in_a_spiking_model():
+    """phi(v(t - d)) in a model with point-process lines (the old per-model
+    rule refused it): it runs with the (n, n) approximant and equals the same
+    process written with u = v(t - d) (the delay in the linear voltage
+    equation as a delayed alpha filter), tree and one loop, same order."""
+    kw = dict(k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
+              tau_grid=np.array([-4.0, 0.0, 0.5, 1.5, 6.0]), parallel=False, verbose=False,
+              delay={'order': 4, 'tree': 'pade'})
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = compute_cumulants(_hawkes_delayed_voltage_leg(), **kw)
+        b = compute_cumulants(_hawkes_delayed_voltage_eq(), **kw)
+    assert a['status'] == b['status'] == 'ok'
+    assert a['delay']['approximant'] == b['delay']['approximant'] == 'pade'
+    for ell in (0, 1):
+        x = np.real(np.asarray(a['C_tau_by_ell'][ell]))
+        y = np.real(np.asarray(b['C_tau_by_ell'][ell]))
+        assert np.max(np.abs(y)) > 0
+        assert np.max(np.abs(x - y)) <= 1e-12 * np.max(np.abs(y))
+
+
+def test_bare_delay_of_a_spike_field_in_a_linear_term_runs():
+    """A bare delay of the spike train in the linear Hawkes rate: complete
+    with the (n, n) approximant (its direct term dresses lines with a delta
+    part at single-leg vertices), and the one loop of a linear Hawkes
+    two-point function is exactly zero."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(_linear_hawkes_bare_delay(), k=2, max_ell=1,
+                              external_fields=[('dn', 1), ('dn', 1)], tau_grid=TAU,
+                              parallel=False, verbose=False, delay={'order': 4})
+    assert r['status'] == 'ok' and r['delay']['approximant'] == 'pade'
+    assert r['delay']['cap'] is None or not str(r['delay']['cap']).startswith('refused')
+    assert np.max(np.abs(np.asarray(r['C_tau_by_ell'][0]))) > 0
+    assert np.max(np.abs(np.asarray(r['C_tau_by_ell'][1]))) == 0
 
 
 def test_delay_warnings_are_shown_under_sages_startup_filters(monkeypatch):

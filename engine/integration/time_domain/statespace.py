@@ -824,7 +824,9 @@ class _ModelOps:
             return hit
         from api._realization import realize_kernel, RealizationRefused
         try:
-            ent, fname = realize_kernel(att, self.num_params)
+            # item 56: a direct term (g = d delta + smooth) is realized too;
+            # only a dressed line takes it (kernel_entry refuses it)
+            ent, fname = realize_kernel(att, self.num_params, direct=True)
             out = ((None, 'kernel_complex') if fname != 'QQ' and self.is_real
                    else (ent, None))
         except RealizationRefused as exc:
@@ -845,9 +847,38 @@ class _ModelOps:
         if hit is not None:
             return hit
         ent, why = self._kernel_real(att)
+        if ent is not None and ent.d != 0:
+            # a kernel edge s -> anchor is a smooth row: a direct term
+            # (c delta: s = anchor) has no place in it (item 56: dressed
+            # lines take such kernels)
+            ent, why = None, 'kernel_direct_term'
         out = why if ent is None else _EntryOps(ent, self.dtype)
         if ent is not None:
             _count('ss_kernel_entries')
+        with self._lock:
+            self._extra[key] = out
+        return out
+
+    def kernel_route(self, att):
+        """For the run-level predictions (``run_route``, ``diagram_route``,
+        ``diagram_estimate``): the kernel's ``EntryRealization`` when the
+        route takes it -- a strictly proper kernel as a kernel edge or a
+        dressed line, one with a direct term (item 56) as a dressed line
+        only (Phase J refuses it on a kernel edge by name) -- or a decline
+        reason (str).  A direct term counts only where Phase J dresses it: a
+        frequency image whose strictly proper part has separated modes
+        (``final_integral._kernel_direct_split``); a local ``c delta`` kernel
+        or a time image ``c delta + smooth`` stays declined, as before."""
+        key = ('kernel_route', _att_key(att))
+        with self._lock:
+            hit = self._extra.get(key)
+        if hit is not None:
+            return hit
+        ent, why = self._kernel_real(att)
+        out = why if ent is None else ent
+        if ent is not None and ent.d != 0 and _FI()._kernel_direct_split(
+                att, self.num_params) is None:
+            out = 'kernel_direct_term'
         with self._lock:
             self._extra[key] = out
         return out
@@ -856,10 +887,12 @@ class _ModelOps:
         """The ``_EntryOps`` of a dressed line ``(g * G)(t) = int_0^t
         g(t - x) G(x) dx``: the series connection of the propagator entry
         ``G[pi, ri]`` (``a1, b1, c1``, delta part ``d1``) and the kernel
-        (``a2, b2, c2``), ``A = [[a1, 0], [b2 c1, a2]]``,
-        ``B = [b1; b2 d1]``, ``C = [0, c2]`` (impulse response ``d1 g(t) +
-        (g * G_smooth)(t)``); not reduced (a kernel rate the propagator
-        cancels stays as a stable, unobservable state).  Or a reason."""
+        (``a2, b2, c2``, direct term ``d2``; item 56), ``A = [[a1, 0],
+        [b2 c1, a2]]``, ``B = [b1; b2 d1]``, ``C = [d2 c1, c2]`` (smooth
+        impulse response ``d2 G_smooth(t) + d1 g_smooth(t) + (g_smooth *
+        G_smooth)(t)``; the delta part ``d1 d2`` is the dispatch's, as for
+        every edge); not reduced (a kernel rate the propagator cancels
+        stays as a stable, unobservable state).  Or a reason."""
         key = ('dress', int(pi), int(ri), _att_key(att))
         with self._lock:
             hit = self._extra.get(key)
@@ -881,8 +914,10 @@ class _ModelOps:
             a2 = np.asarray(kre.a, dtype=dt)
             b2 = np.asarray(kre.b, dtype=dt).reshape(-1)
             c2 = np.asarray(kre.c, dtype=dt).reshape(-1)
+            d2 = complex(kre.d) if not self.is_real else float(
+                np.real(kre.d))
             n1, n2 = a1.shape[0], a2.shape[0]
-            if n2 == 0 or (n1 == 0 and d1 == 0):
+            if (n2 == 0 and (d2 == 0 or n1 == 0)) or (n1 == 0 and d1 == 0):
                 A = np.zeros((0, 0), dtype=dt)
                 B = C = np.zeros(0, dtype=dt)
             else:
@@ -891,7 +926,8 @@ class _ModelOps:
                 A[n1:, :n1] = np.outer(b2, c1)
                 A[n1:, n1:] = a2
                 B = np.concatenate([b1, b2 * d1])
-                C = np.concatenate([np.zeros(n1, dtype=dt), c2])
+                C = np.concatenate([d2 * c1 if d2 != 0 else
+                                    np.zeros(n1, dtype=dt), c2])
             import types as _types
             out = _EntryOps(_types.SimpleNamespace(
                 a=A, b=B, c=C, n_states=A.shape[0]), dt)
@@ -2956,7 +2992,7 @@ def diagram_route(typed_diagram, propagator_data, num_params):
             for att in vt.kernel_attachments or ():
                 if _FI()._conv_kernel_local_weight(att, num_params) is not None:
                     continue
-                e = model.kernel_entry(att)
+                e = model.kernel_route(att)
                 if isinstance(e, str):
                     return False, e
     return True, None
@@ -2985,7 +3021,7 @@ def run_route(propagator_data, num_params, vertex_types=()):
                     if _FI()._conv_kernel_local_weight(
                             att, num_params) is not None:
                         continue
-                    e = model.kernel_entry(att)
+                    e = model.kernel_route(att)
                     if isinstance(e, str):
                         ok, why = False, e
                         break
@@ -3051,9 +3087,9 @@ def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
         if isinstance(vt, ConvVertexType):
             mx = 0
             for att in vt.kernel_attachments or ():
-                e = model.kernel_entry(att)
+                e = model.kernel_route(att)
                 if not isinstance(e, str):
-                    mx = max(mx, e.n)
+                    mx = max(mx, int(e.n_states))
                     n_att += 1
             extra[v] = mx
     edges = []

@@ -462,9 +462,10 @@ def test_delayed_kernel_in_a_nonlinear_term_keeps_its_delay():
 
 
 def test_hard_delay_in_a_nonlinear_term_is_never_silent():
-    """x * x(t - d): the all-pass (n, n) image is not strictly proper, Phase J
-    skips those diagrams; the driver reruns with the strictly proper [n-1/n]
-    approximant (item 47) and the run completes, the record says so."""
+    """x * x(t - d): the all-pass (n, n) image is not strictly proper; Phase J
+    dresses the line with its direct term (item 56; before: the driver reran
+    with the strictly proper [n-1/n] approximant, item 47) and the run
+    completes with the (n, n) approximant, the record says so."""
     m = (SDE('delay hard nonlinear').parameter('a', default=1.0).parameter('b', default=1.0)
          .parameter('c', default=0.3).parameter('d', default=0.5, domain='positive')
          .parameter('D', default=0.05).field('x').drift('x', '-a*x + b - c*x*x(t - d)')
@@ -474,7 +475,7 @@ def test_hard_delay_in_a_nonlinear_term_is_never_silent():
         r = compute_cumulants(m, k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 1.0]),
                               parallel=False, verbose=False, use_cache=False, delay={'order': 4})
     assert r['status'] == 'ok' and r['delay']['incomplete'] is None
-    assert r['delay']['approximant'] == 'pade_proper'
+    assert r['delay']['approximant'] == 'pade'
     assert np.max(np.abs(r['C_tau_by_ell'][1])) > 0
 
 
