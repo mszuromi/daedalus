@@ -58,11 +58,18 @@ A delay kernel at a vertex leg (a nonlinear term: ``x*x(t - d)``, a
 delayed leg operator inside a rate nonlinearity) is routed like any other
 conductance kernel when its approximated image is strictly proper (a delayed
 filter, ``Kernel.delay(d) * Kernel.exponential(tau)``).  A bare hard delay
-there has the all-pass (n, n) image ``(-1)^n + (strictly proper)``, whose
-direct term the kernel routes do not take: Phase J skips those diagrams, and
-``compute_delayed`` then reruns the orders with the strictly proper
-``[n-1/n]`` approximant of every delay factor (``pade_model(proper=True)``;
-the record says ``approximant='pade_proper'``).  The tree stays exact.
+there has the all-pass (n, n) image ``(-1)^n + (strictly proper)``: Phase J
+folds its direct term into the line it sits on (a dressed line, ``c G +
+g_smooth * G``, on both routes; item 56), so the (n, n) approximant runs as
+it is.  Only a line that cannot be dressed (a kernel rate equal to a pole of
+the line) is skipped; ``compute_delayed`` then reruns the orders with the
+strictly proper ``[n-1/n]`` approximant of every delay factor
+(``pade_model(proper=True)``; the record says ``approximant='pade_proper'``).
+A bare delay of a field whose propagator has a delta part (a spike train)
+into a vertex with a second delta-carrying leg multiplies delta functions
+and is refused by name (``bare_delays_on_delta_lines``); on a continuous
+field, next to continuous legs only, or in a linear term, it runs.  The tree
+stays exact.
 
 Stability is decided with the TRUE exponential (``api._kernel_stability``,
 the analyzer's G2-K gate), never from the approximant: an unstable delayed
@@ -105,7 +112,7 @@ __all__ = ['Kernel', 'pade_coefficients', 'pade_image', 'delay_factors',
            'pade_substitute', 'kernel_delays', 'pade_model',
            'split_shifted_time_expr', 'compute_delayed', 'DelayOrderWarning',
            'pade_mn_coefficients', 'bare_delay_kernels',
-           'DEFAULTS']
+           'bare_delays_on_delta_lines', 'DEFAULTS']
 
 DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
                 tree='exact', truncation='auto')
@@ -711,6 +718,69 @@ def bare_delay_kernels(model: dict, ns) -> list:
     return sorted(out)
 
 
+def bare_delays_on_delta_lines(ctx, bare, orders=(1, 2), ns=None):
+    """D10 (item 56): the bare delay kernels among ``bare`` (names,
+    ``bare_delay_kernels``) that delay a field whose propagator has a delta
+    part (a point-process field) inside a vertex with a second delta-carrying
+    physical leg (a spike train inside a nonlinearity, e.g. ``exp(w n(t -
+    d))`` or ``n(t) n(t - d)``: a product of delta functions), as sorted
+    ``'kernel (field)'`` strings.  A bare delay of a continuous field, one in
+    a vertex whose other physical legs are continuous (``x(t) n(t - d)``), or
+    one that only enters vertices with a single physical leg (a linear term)
+    is not listed.  ``ctx``: the true model's analyzer context (its vertex
+    sectors: monomials over ``ctx.ring_names`` with their coefficients);
+    ``ns``: the expanded theory's namespace (its kernel attachments; default
+    ``ctx.ns``, which has them only when the analyzer expanded the theory
+    itself).  The delta parts are those of ``G = K^{-1}`` with every delay
+    factor replaced by its Pade (n, n) image for each ``n`` in ``orders``
+    (both parities: the image tends to ``(-1)^n``, so a delayed spike train
+    ``delta(t - d)`` counts too).  Raises when it cannot decide (the caller
+    then falls back to the per-model test)."""
+    from sage.all import SR
+    from api import analyze as _an
+    raw = None
+    for ns_ in (ns, ctx.ns, ctx.pipeline_ns):
+        raw = getattr(ns_, '_kernel_attachments', None) if ns_ is not None else None
+        if raw:
+            break
+    att = {str(k): {str(f) for f in v} for k, v in (raw or {}).items()}
+    if not att or ctx.K_ft is None or ctx.num_params is None:
+        raise ValueError('no kernel attachments / linear operator to read')
+    names = list(ctx.ring_names)
+    nt = int(ctx.n_tilde)
+    delta_fields = set()
+    for n in orders:
+        K = ctx.K_ft.apply_map(
+            lambda e, _n=int(n): pade_substitute(SR(e).subs(ctx.num_params), ctx.omega, _n))
+        res = _an._exact_poles(K, ctx.omega, nt)
+        if res is None:
+            raise ValueError('the propagator inverse did not finish within its budget')
+        delta_fields |= {names[nt + i] for (i, _j) in res[3]}
+    # the kernels in a vertex with at least two delta-carrying physical legs
+    # (the delayed leg included: it is a leg of the field it delays)
+    delta_idx = [j for j, nm in enumerate(names) if nm in delta_fields]
+    in_delta_products = None
+    if ctx.sectors is not None:
+        in_delta_products = set()
+        for (_nr, n_phys), terms in ctx.sectors.items():
+            if n_phys < 2:
+                continue
+            for expo, coeff in terms.items():
+                expo = tuple(expo)
+                if len(expo) != len(names):
+                    raise ValueError(f'a vertex monomial {expo} does not match the ring {names}')
+                if sum(int(expo[j]) for j in delta_idx) >= 2:
+                    in_delta_products |= {str(v) for v in SR(coeff).variables()}
+    out = []
+    for kname in bare:
+        if in_delta_products is not None and kname not in in_delta_products:
+            continue
+        for f in sorted(att.get(kname, ())):
+            if f in delta_fields:
+                out.append(f'{kname} ({f})')
+    return sorted(out)
+
+
 def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     """Run ``compute_cumulants`` for a model with delay kernels (``delays``:
     ``kernel_delays``); ``call``: the arguments of the original call; ``ns``:
@@ -807,25 +877,35 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     # the delta part is read off the (rational) approximated model's analysis
     # (the true model's G3 does not see poles through a delay factor)
     _an_first = (runs.get(n_used) or {}).get('analysis') if n_used is not None else None
-    delta_lines = any(getattr(rep_, 'has', lambda c: False)('G3_DELTA_COMPONENT')
-                      for rep_ in (report_true, _an_first) if rep_ is not None)
-    if incomplete and bare and delta_lines:
-        # a hard delay at a vertex leg in a model with point-process (delta)
-        # lines: the vertex multiplies delta functions (exp of a delayed spike
-        # train), which is not defined; every strictly proper approximant has
-        # a finite value that diverges as n grows, so none is run
-        cap = (f'refused: the hard delay kernel(s) {bare} at a vertex leg in a model whose '
-               'propagator has a delta part (point-process fields): the nonlinear term '
-               'multiplies delta functions and is not defined; give the delay a filter, '
-               'e.g. Kernel.delay(d) * Kernel.exponential(tau)')
+    offenders = []
+    if incomplete and bare:
+        # D10 (item 56): per line, not per model -- only a bare delay of a
+        # field with a delta part into a vertex with a second such leg
+        try:
+            offenders = bare_delays_on_delta_lines(ctx, bare, ns=ns)
+        except Exception as exc:          # undecided: the per-model test
+            why = f'undecided: {type(exc).__name__}: {str(exc)[:120]}'
+            offenders = [f'{b} ({why})' for b in bare] if any(
+                getattr(rep_, 'has', lambda c: False)('G3_DELTA_COMPONENT')
+                for rep_ in (report_true, _an_first) if rep_ is not None) else []
+    if incomplete and offenders:
+        # a hard delay of a point-process (delta) field into a vertex with a
+        # second delta-carrying leg: the vertex multiplies delta functions
+        # (exp of a delayed spike train), which is not defined; every strictly
+        # proper approximant has a finite value that diverges as n grows, so
+        # none is run
+        cap = (f'refused: the hard delay kernel(s) {offenders} delay a field whose '
+               'propagator has a delta part (a point-process field) into a vertex with a '
+               'second such leg: it multiplies delta functions and is not defined; give '
+               'the delay a filter, e.g. Kernel.delay(d) * Kernel.exponential(tau)')
     elif incomplete and bare:
-        # Phase J skipped diagrams: a hard delay at a vertex leg (x*x(t - d),
-        # a bare delay inside a rate nonlinearity): its (n, n) image is
-        # all-pass, (-1)^n + strictly proper, and the conductance-kernel
-        # routes take strictly proper kernels only.  Run the strictly proper
-        # [n-1/n] approximant instead (it also converges to exp(-s d), the
-        # tree stays exact); the first attempt's warnings are dropped when it
-        # completes, re-emitted otherwise.
+        # Phase J skipped diagrams with a bare delay at a vertex leg: its
+        # (n, n) image is all-pass, (-1)^n + strictly proper; Phase J dresses
+        # the line with it (item 56), but a line it cannot dress (a kernel
+        # rate equal to a pole of the line) is skipped.  Run the strictly
+        # proper [n-1/n] approximant instead (it also converges to
+        # exp(-s d), the tree stays exact); the first attempt's warnings are
+        # dropped when it completes, re-emitted otherwise.
         if verbose:
             print('[delay] diagrams skipped with the (n, n) approximant: '
                   'running the strictly proper [n-1/n] approximant')
@@ -918,12 +998,13 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             _install_exact_tree(r, exact, call)
         if r.get('status') == 'incomplete':
             # diagrams Phase J could not evaluate (a hard delay inside a
-            # nonlinear term: its all-pass image is not strictly proper, which
-            # the conductance-kernel routes need); no order fixes it, the
-            # caller (compute_delayed) retries with the [n-1/n] approximant
+            # nonlinear term on a line Phase J cannot dress with its all-pass
+            # image); no order fixes it, the caller (compute_delayed) retries
+            # with the [n-1/n] approximant
             runs[n], n_used, incomplete = r, n, r.get('phase_j_incomplete')
             cap = ('Phase J skipped diagrams (see result["phase_j_incomplete"]; a delay '
-                   'kernel at a vertex leg, e.g. x*x(t - d), needs a strictly proper image)')
+                   'kernel at a vertex leg, e.g. x*x(t - d), on a line that cannot be '
+                   'dressed with its direct term needs a strictly proper image)')
             est = None
             break
         bad_tree = (loops_need_n and exact is not None
