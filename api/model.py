@@ -1137,8 +1137,8 @@ class _BaseModelBuilder:
             contain ``Dt`` (time derivatives belong on the LHS) or
             ``Conv(...)`` operators (we assume stationary MF, so
             kernel convolutions of constants have been pre-collapsed
-            by the user; for a normalized kernel that's just the
-            constant itself).  Example:
+            by the user: the kernel's integral K(omega = 0) times the
+            constant, i.e. the constant itself for a normalized kernel).  Example:
             ``'Em[i] + sum(w[i,j]*n[j] for j in E)'``.
         population : str, optional
             Population name (matching a ``.population(name=...)``
@@ -1185,8 +1185,9 @@ class _BaseModelBuilder:
                     f"ModelBuilder.equation(): Conv(...) found in "
                     f"{side_name}; the DAE assumes stationary MF, so "
                     f"all kernel convolutions of constants must be "
-                    f"pre-collapsed (for normalized kernels: replace "
-                    f"``Conv(g, x)`` with ``x``)."
+                    f"pre-collapsed: replace ``Conv(g, x)`` with "
+                    f"``G*x``, G the kernel's integral g(omega=0) "
+                    f"(``x`` for a normalized kernel)."
                 )
 
         # Reject Dt in rhs — derivatives belong on the LHS.
