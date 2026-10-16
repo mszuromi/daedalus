@@ -115,16 +115,27 @@ _FI_MODULE = 'engine.integration.time_domain.final_integral'
 _FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
 
-def _ensure_warning_shown(category, action='always'):
+def _ensure_warning_shown(category, action='always', message=None,
+                          module=None, stacklevel=None):
     """Show ``category`` also where the ENVIRONMENT ignores warnings: the
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
     ``sage -python`` and the Sage Jupyter kernel.  Only that case is
     overridden: a filter for this category, and every filter set in code or
     by an ``error`` option (e.g. ``-W error``), is left alone -- a filter is
-    added only when the first filter that applies to the category is the
+    added only when the first filter that applies to the warning is the
     environment's own ignore-all.  The action is 'always': callers
     deduplicate their own warnings.  (The engine keeps the
-    same rule in ``final_integral._ensure_warning_shown``.)"""
+    same rule in ``final_integral._ensure_warning_shown``.)
+
+    ``message`` (the text about to be warned) and ``module`` (the module the
+    warning is attributed to; or ``stacklevel`` as in ``warnings.warn``,
+    counted from the caller) let the helper skip filters aimed at OTHER
+    warnings: Sage installs message-specific ``ignore`` filters for numpy at
+    startup, and without the message such a filter was taken for a user's
+    decision and hid the warning.  A filter whose message / module pattern
+    matches, or any category-wide ``ignore``, is still respected; with the
+    message (module) unknown, message- (module-) specific filters are
+    respected."""
     opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
     if not (opts and opts[-1] in ('ignore', 'i')):
         return
@@ -138,13 +149,32 @@ def _ensure_warning_shown(category, action='always'):
            and f[3] is None and not f[4]]
     if not env:
         return
+    if module is None and stacklevel is not None:
+        try:
+            module = sys._getframe(stacklevel).f_globals.get('__name__')
+        except ValueError:
+            module = None
+    text = None if message is None else str(message)
     for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
         if not issubclass(category, cat):
             continue
-        if msg is not None or mod is not None or lineno:
+        if msg is not None:
+            if text is not None and not msg.match(text):
+                continue    # aimed at other warnings: not ours to decide
             return          # a targeted filter set in code: respect it
+        if mod is not None:
+            if module is not None and not mod.match(module):
+                continue
+            return
+        if lineno:
+            return
         if i == env[-1]:
-            warnings.filterwarnings(action, category=category)
+            if text is None:
+                warnings.filterwarnings(action, category=category)
+            else:           # this warning only: later ones get their own turn
+                warnings.filterwarnings(
+                    action, message='(?s)' + re.escape(text),
+                    category=category)
         return              # the first applicable filter decides
 
 
@@ -385,8 +415,7 @@ def _warn_if_stale(version: str | None, convention: str | None,
     if key in _STALE_WARNED:
         return True
     _STALE_WARNED.add(key)
-    _ensure_warning_shown(StaleResultWarning, 'always')   # once per key above
-    warnings.warn(
+    _msg = (
         f'{source}: {reason}.  Daedalus 0.2.0 changed how Phase J decides '
         f'the constant constraint rows left by δ-elimination: a row whose '
         f'value is exactly 0 without depending on the external times is '
@@ -400,8 +429,10 @@ def _warn_if_stale(version: str | None, convention: str | None,
         f'integrates every Phase J region exactly, without an integration '
         f'box, which moves models with slow modes.  Results for models with '
         f'δ (instantaneous) propagator parts or slow modes may be stale and '
-        f'should be recomputed; see CHANGELOG.md (0.2.0).',
-        StaleResultWarning, stacklevel=stacklevel)
+        f'should be recomputed; see CHANGELOG.md (0.2.0).')
+    _ensure_warning_shown(StaleResultWarning, 'always', message=_msg,
+                          stacklevel=stacklevel)   # once per key above
+    warnings.warn(_msg, StaleResultWarning, stacklevel=stacklevel)
     return True
 
 

@@ -175,7 +175,8 @@ def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
         category = FI.PhaseJNquadFallbackWarning
         import inspect
         src = inspect.getsource(FI)
-        assert ('_ensure_warning_shown(PhaseJNquadFallbackWarning)\n'
+        assert ('_ensure_warning_shown(PhaseJNquadFallbackWarning, message=msg,\n'
+                '                              stacklevel=2)\n'
                 '        warnings.warn(msg, PhaseJNquadFallbackWarning') in src
 
         def emit():
@@ -236,3 +237,107 @@ def test_the_visibility_helpers_respect_filters_set_in_code(monkeypatch,
         warnings.simplefilter('ignore')          # the environment's only
         emit()
     assert any(issubclass(x.category, category) for x in w)
+
+
+def _visibility_case(which):
+    """(helper, category, real_emit) for ``api.save`` / the engine copy."""
+    import warnings
+    if which == 'stale':
+        import api.save as S
+        helper, category = S._ensure_warning_shown, S.StaleResultWarning
+    else:
+        pytest.importorskip('sage.all')
+        import engine.integration.time_domain.final_integral as FI
+        helper, category = FI._ensure_warning_shown, FI.PhaseJNquadFallbackWarning
+
+    def emit(msg='probe text'):
+        helper(category, message=msg, stacklevel=1)
+        warnings.warn(msg, category, stacklevel=1)
+    return helper, category, emit
+
+
+def _shown(w, category):
+    return sum(issubclass(x.category, category) for x in w)
+
+
+@pytest.mark.parametrize('which', ['stale', 'nquad'])
+def test_the_visibility_helpers_skip_filters_aimed_at_other_warnings(
+        monkeypatch, which):
+    """Sage installs message-specific ``ignore`` filters for numpy at
+    startup (``numpy.ndarray size changed``, ...).  They are not a user's
+    decision about the package warning: it is shown, exactly once.  A
+    category-wide ignore, or a message / module filter that does match,
+    still hides it (docket item 51)."""
+    import sys
+    import warnings
+    helper, category, emit = _visibility_case(which)
+    monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
+
+    def sage_like():
+        warnings.simplefilter('ignore')                    # env ignore-all
+        warnings.filterwarnings('ignore', message='numpy.ndarray size changed',
+                                category=Warning)          # Sage's, in front
+
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        emit()
+    assert _shown(w, category) == 1
+    # a user ignore aimed at another message does not hide this one either
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        warnings.filterwarnings('ignore', message='other text', category=category)
+        emit()
+        assert _shown(w, category) == 1
+        n = len(warnings.filters)
+        helper(category, message='probe text', stacklevel=1)   # idempotent
+        assert len(warnings.filters) == n
+
+    # the user's own filters still decide
+    cases = {
+        'category-wide ignore': dict(category=category),
+        'matching message': dict(message='probe', category=category),
+        'matching message, any category': dict(message='probe text'),
+        'this module (regex)': dict(module=__name__.replace('.', r'\.'),
+                                    category=category),
+    }
+    for label, kw in cases.items():
+        with warnings.catch_warnings(record=True) as w:
+            sage_like()
+            warnings.filterwarnings('ignore', **kw)
+            emit()
+        assert _shown(w, category) == 0, label
+    # a module filter aimed at another module does not hide it
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        warnings.filterwarnings('ignore', module=r'some\.other\.module',
+                                category=category)
+        emit()
+    assert _shown(w, category) == 1
+    # a filter set in code, or 'error', is respected
+    with warnings.catch_warnings():
+        sage_like()
+        warnings.simplefilter('error', category)
+        with pytest.raises(category):
+            emit()
+    # a user ignore aimed at ANOTHER message of the category keeps working
+    # after this one was let through
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        warnings.filterwarnings('ignore', message='second text', category=category)
+        emit('probe text')
+        emit('second text')
+    assert [str(x.message) for x in w if issubclass(x.category, category)] \
+        == ['probe text']
+    # message unknown (a caller that does not pass it): message-specific
+    # filters are respected, a numpy one included -- the conservative reading
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        helper(category)
+        warnings.warn('probe text', category)
+    assert _shown(w, category) == 0
+    # and with no environment ignore the helper does nothing at all
+    monkeypatch.setattr(sys, 'warnoptions', [])
+    with warnings.catch_warnings(record=True) as w:
+        sage_like()
+        emit()
+    assert _shown(w, category) == 0

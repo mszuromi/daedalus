@@ -61,7 +61,7 @@ class GroupedDeltaRecordsDroppedWarning(UserWarning):
     0), so this is only raised for a result that reports a drop."""
 
 
-def _ensure_shown():
+def _ensure_shown(message=None, stacklevel=None):
     """Show ``GroupedDeltaRecordsDroppedWarning`` (once per run) also where
     the ENVIRONMENT ignores warnings: the Sage launcher exports
     PYTHONWARNINGS=ignore, which would otherwise hide it in `sage -python`
@@ -69,7 +69,8 @@ def _ensure_shown():
     this category, and every filter set in code or by an ``error`` option
     (e.g. ``-W error``), is left alone."""
     from api.save import _ensure_warning_shown
-    _ensure_warning_shown(GroupedDeltaRecordsDroppedWarning, 'always')
+    _ensure_warning_shown(GroupedDeltaRecordsDroppedWarning, 'always',
+                          message=message, stacklevel=stacklevel)
 
 
 def warn_dropped_delta_records(phase_j_by_ell):
@@ -88,15 +89,14 @@ def warn_dropped_delta_records(phase_j_by_ell):
     if total:
         detail = ', '.join(f'ell={ell}: {n}' for ell, n in sorted(
             by_ell.items()))
-        _ensure_shown()
-        warnings.warn(
-            f'use_grouped_phase_j=True dropped {total} shot-noise δ(τ) '
-            f'record(s) ({detail}): the equal-time spike terms that the '
-            f'per-diagram path returns in '
-            f"phase_j_by_ell[ell]['delta_contributions'].  C_tau is the "
-            f'same either way (neither path adds them to it); run with '
-            f'use_grouped_phase_j=False to get the records.',
-            GroupedDeltaRecordsDroppedWarning, stacklevel=3)
+        _msg = (f'use_grouped_phase_j=True dropped {total} shot-noise δ(τ) '
+                f'record(s) ({detail}): the equal-time spike terms that the '
+                f'per-diagram path returns in '
+                f"phase_j_by_ell[ell]['delta_contributions'].  C_tau is the "
+                f'same either way (neither path adds them to it); run with '
+                f'use_grouped_phase_j=False to get the records.')
+        _ensure_shown(_msg, 3)
+        warnings.warn(_msg, GroupedDeltaRecordsDroppedWarning, stacklevel=3)
     return total
 
 

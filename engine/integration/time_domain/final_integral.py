@@ -2096,7 +2096,8 @@ def _divergence_policy(on_divergence=None):
                      f'{_DIVERGENCE_POLICIES}')
 
 
-def _ensure_warning_shown(category, action='always'):
+def _ensure_warning_shown(category, action='always', message=None,
+                           module=None, stacklevel=None):
     """Show ``category`` also where the ENVIRONMENT ignores warnings (the
     Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning
     in ``sage -python`` and the Sage Jupyter kernel).  Only that case is
@@ -2105,7 +2106,12 @@ def _ensure_warning_shown(category, action='always'):
     applies to the category is the environment's own ignore-all is a filter
     for the category added.  The action is 'always': every caller
     deduplicates its own warnings (a 'default' filter would also swallow
-    repeats that a caller's own 'always' filter asked for)."""
+    repeats that a caller's own 'always' filter asked for).
+
+    ``message`` / ``module`` / ``stacklevel``: see ``api.save`` -- filters
+    aimed at OTHER warnings (the numpy 'size changed' ignores Sage installs
+    at startup) are skipped, not mistaken for a user's decision."""
+    import re as _RE
     import sys as _SYS
     import warnings as _WARNINGS
     opts = [o.split(':')[0].strip().lower() for o in _SYS.warnoptions]
@@ -2121,13 +2127,32 @@ def _ensure_warning_shown(category, action='always'):
            and f[3] is None and not f[4]]
     if not env:
         return
+    if module is None and stacklevel is not None:
+        try:
+            module = _SYS._getframe(stacklevel).f_globals.get('__name__')
+        except ValueError:
+            module = None
+    text = None if message is None else str(message)
     for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
         if not issubclass(category, cat):
             continue
-        if msg is not None or mod is not None or lineno:
+        if msg is not None:
+            if text is not None and not msg.match(text):
+                continue    # aimed at other warnings: not ours to decide
             return          # a targeted filter set in code: respect it
+        if mod is not None:
+            if module is not None and not mod.match(module):
+                continue
+            return
+        if lineno:
+            return
         if i == env[-1]:
-            _WARNINGS.filterwarnings(action, category=category)
+            if text is None:
+                _WARNINGS.filterwarnings(action, category=category)
+            else:           # this warning only: later ones get their own turn
+                _WARNINGS.filterwarnings(
+                    action, message='(?s)' + _RE.escape(text),
+                    category=category)
         return              # the first applicable filter decides
 
 
@@ -2155,21 +2180,21 @@ def _divergence_verdict(on_divergence, reason, m, meta, free_vals):
             f'open direction of the integration region does not decay (a '
             f'pole with Re >= 0, or a non-edge row).')
     if policy == 'warn':
-        _ensure_warning_shown(PhaseJDivergenceWarning)
-        _warnings.warn(
-            f'Phase J: divergent subset integral ({reason}) replaced by the '
-            f'boxed fallback: {where}.', PhaseJDivergenceWarning,
-            stacklevel=3)
+        _msg = (f'Phase J: divergent subset integral ({reason}) replaced by '
+                f'the boxed fallback: {where}.')
+        _ensure_warning_shown(PhaseJDivergenceWarning, message=_msg,
+                              stacklevel=3)
+        _warnings.warn(_msg, PhaseJDivergenceWarning, stacklevel=3)
         return
     if not _DIVERGENCE_FALLBACK_WARNED[0]:
         _DIVERGENCE_FALLBACK_WARNED[0] = True
-        _ensure_warning_shown(PhaseJDivergenceWarning)
-        _warnings.warn(
-            'Phase J: a subset integral diverges (an open direction does not '
-            'decay); its boxed fallback value is used (divergence policy '
-            "'fallback'; counter divergent_subsets; on_divergence='warn' "
-            "names every subset, 'raise' stops).", PhaseJDivergenceWarning,
-            stacklevel=3)
+        _msg = ('Phase J: a subset integral diverges (an open direction does '
+                'not decay); its boxed fallback value is used (divergence '
+                "policy 'fallback'; counter divergent_subsets; "
+                "on_divergence='warn' names every subset, 'raise' stops).")
+        _ensure_warning_shown(PhaseJDivergenceWarning, message=_msg,
+                              stacklevel=3)
+        _warnings.warn(_msg, PhaseJDivergenceWarning, stacklevel=3)
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -11416,7 +11441,8 @@ def _nquad_flush():
                 "call is counted in final_integral._RUNTIME_COUNTERS"
                 "['nquad_hardened_quad_flags'].")
         # shown also under the Sage launcher's PYTHONWARNINGS=ignore
-        _ensure_warning_shown(PhaseJNquadFallbackWarning)
+        _ensure_warning_shown(PhaseJNquadFallbackWarning, message=msg,
+                              stacklevel=2)
         warnings.warn(msg, PhaseJNquadFallbackWarning, stacklevel=2)
 
 

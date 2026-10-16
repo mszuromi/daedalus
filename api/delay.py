@@ -644,6 +644,13 @@ def _rel(a, b, scale):
     return float(np.max(np.abs(a - b))) / s
 
 
+def _warn_explicit_module(filename):
+    """The module name ``warnings.warn_explicit`` derives from ``filename``
+    when it is given no ``module``."""
+    module = filename or '<unknown>'
+    return module[:-3] if module[-3:].lower() == '.py' else module
+
+
 def _reemit(recorded):
     """Re-emit warnings held back by ``catch_warnings(record=True)``: each
     distinct one once, the package's own (``api.*`` / ``engine.*``) also where
@@ -657,7 +664,8 @@ def _reemit(recorded):
             continue
         seen.add(key)
         if str(getattr(w.category, '__module__', '')).split('.')[0] in ('api', 'engine'):
-            _ensure_warning_shown(w.category, 'always')
+            _ensure_warning_shown(w.category, 'always', message=w.message,
+                                  module=_warn_explicit_module(w.filename))
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
 
 
@@ -731,10 +739,11 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
                                 report_true, report_true.errors, 'delay')
     if report_true.errors:                  # preflight=False: still never silent
         from api.save import _ensure_warning_shown
-        _ensure_warning_shown(DelayOrderWarning, 'always')
-        warnings.warn('delay: preflight=False, but the analyzer of the delayed model found '
-                      + '; '.join(f'[{f.code}] {f.message}' for f in report_true.errors),
-                      DelayOrderWarning, stacklevel=3)
+        _msg = ('delay: preflight=False, but the analyzer of the delayed model found '
+                + '; '.join(f'[{f.code}] {f.message}' for f in report_true.errors))
+        _ensure_warning_shown(DelayOrderWarning, 'always', message=_msg,
+                              stacklevel=3)
+        warnings.warn(_msg, DelayOrderWarning, stacklevel=3)
 
     # 2. the exact tree (k = 2 only), from the linear delayed system
     exact = None
@@ -1088,7 +1097,8 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
                f'estimated relative error {est if est is not None else float("nan"):.3g} '
                f'at n = {n_used} (target {opts["tol"]:g}); {cap or "n_max reached"}.')
         from api.save import _ensure_warning_shown
-        _ensure_warning_shown(DelayOrderWarning, 'always')
+        _ensure_warning_shown(DelayOrderWarning, 'always', message=msg,
+                              stacklevel=4)
         warnings.warn(msg, DelayOrderWarning, stacklevel=4)
     return r
 

@@ -743,13 +743,13 @@ def _engine_census(result, counters):
         pc['reason'] = pc.get('reason_poles', pc.get('reason'))
     if rep['fallback_evals']:
         from api.save import _ensure_warning_shown
-        _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always')
-        warnings.warn(
-            f'Phase J: the state-space route fell back on the pole route for '
-            f'{rep["fallback_subsets"]} subset(s) ({rep["fallback_evals"]} '
-            f'evaluation(s); reasons {rep["fallback_by_reason"]}); see '
-            f'result["phase_j_engine"]', PhaseJEngineFallbackWarning,
-            stacklevel=3)
+        _msg = (f'Phase J: the state-space route fell back on the pole route '
+                f'for {rep["fallback_subsets"]} subset(s) '
+                f'({rep["fallback_evals"]} evaluation(s); reasons '
+                f'{rep["fallback_by_reason"]}); see result["phase_j_engine"]')
+        _ensure_warning_shown(PhaseJEngineFallbackWarning, 'always',
+                              message=_msg, stacklevel=3)
+        warnings.warn(_msg, PhaseJEngineFallbackWarning, stacklevel=3)
 
 
 def _attach_provenance(result, route, pf):
@@ -1577,7 +1577,8 @@ def compute_cumulants(
         # visible under ``sage -python`` / the Sage kernel too, whose
         # launcher sets PYTHONWARNINGS=ignore
         from api.save import _ensure_warning_shown
-        _ensure_warning_shown(PhaseJIncompleteWarning, 'always')
+        _ensure_warning_shown(PhaseJIncompleteWarning, 'always',
+                              message=_msg, stacklevel=2)
         warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)
