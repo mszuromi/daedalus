@@ -310,3 +310,41 @@ def test_delayed_spike_only_equals_voltage_form():
         a = np.asarray(out[0]['C_tau_by_ell'][ell])
         b = np.asarray(out[1]['C_tau_by_ell'][ell])
         np.testing.assert_allclose(b, a, rtol=1e-12, atol=0)
+
+
+# ── review regressions ────────────────────────────────────────────────
+
+def test_kernel_product_with_swapped_indices():
+    """Conv(h[j]*g[i,j], n[j]): the composite keeps i first (h_g[i,j] with
+    h's index on j); a transposed call of one kernel collapses transposed."""
+    s = (SDE('pp swap').population('E', size=2)
+         .parameter('A', default=[[1.0, 2.0], [3.0, 4.0]], indexed_by=['E', 'E'])
+         .parameter('tau', default=[1.0, 3.0], indexed_by=['E'], domain='positive')
+         .define_kernel('h', freq_image='1/(1+I*omega*tau[i])', indexed_by=['E'])
+         .define_kernel('g', freq_image='A[i,j]/(1+I*omega*tau[j])', indexed_by=['E', 'E'])
+         .point_process('n', 'exp(-2 + 0.1*sum(Conv(h[j]*g[i,j], n[j]) + Conv(g[j,i], n[j]) '
+                             'for j in E))', population='E'))
+    act = s.action_text()
+    assert 'Conv(h_g[i,j], n[j])' in act
+    assert s._kernels['h_g']['freq_image'] == '(1/(1+I*omega*tau[j]))*(A[i,j]/(1+I*omega*tau[j]))'
+    rhs = s.equations()[0]['rhs'].replace(' ', '')
+    assert '((A[i,j]))*(n[j])' in rhs and '((A[j,i]))*(n[j])' in rhs
+
+
+def test_simulator_shared_gaussian_noise_and_refusals():
+    from api.pp_simulate import PPSimulationError
+    s = (SDE('pp corr').parameter('D', default=0.5).field('x').field('y')
+         .equation('x', lhs='Dt*x + x', rhs='0').equation('y', lhs='(2*Dt + 1)*y', rhs='0')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1, 'y': 1}))
+    rec = s.simulate(T=100, dt=0.01, n_paths=200, burn_in=10, bin=0.1, seed=1)
+    x, y = rec['fields']['x'][:, 0, :], rec['fields']['y'][:, 0, :]
+    cov = np.mean(x * y) - x.mean() * y.mean()
+    assert abs(cov - 1 / 3) < 0.03                              # exact 1/3 (one shared dW)
+    bad = (SDE('pp conv expr').field('v').define_kernel('K', freq_image='1/(1+I*omega)')
+           .equation('v', lhs='Dt*v + v', rhs='0').noise('xi', Gaussian(var='1'), couples={'v': 1})
+           .point_process('n', 'exp(-1 + Conv(K, 2*v))'))
+    with pytest.raises(PPSimulationError, match='field element'):
+        bad.simulate(T=1, dt=0.01, n_paths=2)
+    marks = SDE('pp marks sim').parameter('a', default=2.0).point_process('n', 'a', size='0.5')
+    rec = marks.simulate(T=50, dt=0.01, n_paths=50, burn_in=1, bin=0.1, seed=2)
+    assert abs(rec['counts']['n'].sum() / (0.5 * 2.0 * rec['T'] * 50) - 1) < 0.05

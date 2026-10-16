@@ -563,9 +563,11 @@ class SDE:
                 val = expr_to_text(_dc)
                 if m.group(1):
                     idx = [s.strip() for s in m.group(1).split(',')]
-                    for old, new in zip(('i', 'j'), idx):
-                        val = re.sub(rf'\[([^\]]*)\b{old}\b', lambda q: q.group(0)[:-1] + '\0' + new, val)
-                    val = val.replace('\0', '')
+                    mp = dict(zip(('i', 'j'), idx))
+                    # one simultaneous pass inside each [...] (a sequential i->j, j->i
+                    # rename would cancel a swap)
+                    val = re.sub(r'\[([^\]]*)\]', lambda q: '[' + re.sub(
+                        r'\b([ij])\b', lambda r: mp.get(r.group(1), r.group(1)), q.group(1)) + ']', val)
                 return f'({val})'
             text = re.sub(rf'\b{re.escape(name)}\b(?:\s*\[([^\]]*)\])?', rep, text)
         return text
@@ -637,6 +639,8 @@ class SDE:
                 for q in idx:
                     if q not in sites:
                         sites.append(q)
+            # the composite's own index order: the population index i first
+            sites.sort(key=lambda q: {'i': 0, 'j': 1}.get(q, 2))
             if len(sites) > 2:
                 raise SDEError(f'{where}: a kernel product carries at most two indices '
                                f'(got {sites}).')

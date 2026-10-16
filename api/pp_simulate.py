@@ -19,7 +19,9 @@ paths (numpy; no processes):
   spike train in ``rhs`` contributing its count (a jump).
 
 The scheme is first order in ``dt`` (a spike of step ``k`` reaches the
-rates of step ``k + 1`` through ``g(dt)``); halve ``dt`` to see the bias.
+rates of step ``k + 1`` through ``g(dt)``; a delta part of a kernel on a
+continuous input acts one step late); halve ``dt`` to see the bias.  Counts
+are floats (a spike adds its ``size``).
 
 ``simulate(sde, T=..., dt=..., n_paths=...)`` returns binned spike counts
 and sampled continuous fields; ``cross_covariance(rec, ('n', 0), ('n', 1),
@@ -61,7 +63,8 @@ class _Ref(np.ndarray):
     """A field value that remembers which field element it is (for Conv)."""
 
     def __array_finalize__(self, obj):
-        self.ref = getattr(obj, 'ref', None)
+        # not inherited: an expression of a field (2*x, exp(x)) is not the field
+        self.ref = None
 
 
 def _tag(arr, ref):
@@ -89,13 +92,13 @@ def _numeric_text(text, values, idx):
         if name not in values:
             return m.group(0)
         ix = tuple(int(eval(q.strip(), {}, loc)) for q in m.group(2).split(','))
-        return repr(float(np.asarray(values[name])[ix]))
+        return f'({float(np.asarray(values[name])[ix])!r})'
     text = re.sub(r'\b([A-Za-z_]\w*)\s*\[([^\]]*)\]', sub_indexed, str(text))
 
     def sub_bare(m):
         name = m.group(1)
         if name in values and np.ndim(values[name]) == 0:
-            return repr(float(values[name]))
+            return f'({float(values[name])!r})'
         return name
     return re.sub(r'\b([A-Za-z_]\w*)\b', sub_bare, text)
 
@@ -167,6 +170,10 @@ class _Filter:
         self.buf = np.zeros((max(self.lag, 1), n_paths))
         self.bp = 0
         self.direct = np.zeros(n_paths)
+        if spike and D:
+            raise PPSimulationError('a kernel with a delta part acting on a spike train (an '
+                                    'instantaneous rate jump, e.g. a bare hard delay) is not '
+                                    'simulated; give the delayed kernel a smooth image.')
 
     def output(self):
         y = self.C @ self.x if self.m else np.zeros(self.x.shape[1])
@@ -249,7 +256,8 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             raise PPSimulationError(f'Conv: first argument {kref!r} is not a kernel.')
         ref = getattr(x, 'ref', None)
         if ref is None:
-            raise PPSimulationError('Conv(K, x): x must be a field element (x[j]).')
+            raise PPSimulationError('Conv(K, x): x must be a field element (x[j]); filter '
+                                    'an expression by declaring it as a field.')
         key = (kref[1], kref[2], ref)
         if key not in filters:
             if not registering[0]:
@@ -355,7 +363,11 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         if any(a == 0 for a, _ in coef[f]):
             raise PPSimulationError(f'equation({f!r}): zero Dt coefficient.')
 
-    out_counts = {f: np.zeros((nb, size[f], n_paths), dtype=np.int32) for f in spikes}
+    out_counts = {f: np.zeros((nb, size[f], n_paths)) for f in spikes}
+    bad = [f for f in (record or []) if f not in conts]
+    if bad:
+        raise PPSimulationError(f'record={bad}: only continuous fields are sampled (spike '
+                                f'trains are always recorded as counts).')
     out_fields = {f: np.zeros((nb, size[f], n_paths)) for f in (record or conts)}
     rate_sum = {f: np.zeros(size[f]) for f in spikes}
     for k in range(nburn + nsteps):
@@ -374,6 +386,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         for f in spikes:
             counts_now[f] = new[f]
         upd = {}
+        xi = {}                                     # one draw per (source, i): shared by its fields
         for f in conts:
             x = state[f]
             nx = np.empty_like(x)
@@ -381,10 +394,12 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
                 a, b = coef[f][i]
                 r = np.real(ev(drift[f][2], i))
                 dx = (r - b * x[i]) / a * dt
-                for (cc, mean, var, _nm) in drift[f][3]:
+                for (cc, mean, var, nm) in drift[f][3]:
                     cv = np.real(ev(cc, i))
+                    if (nm, i) not in xi:
+                        xi[(nm, i)] = rng.standard_normal(n_paths)
                     dx = dx + cv * (np.real(ev(mean, i)) * dt + np.sqrt(
-                        np.maximum(np.real(ev(var, i)), 0.0) * dt) * rng.standard_normal(n_paths)) / a
+                        np.maximum(np.real(ev(var, i)), 0.0) * dt) * xi[(nm, i)]) / a
                 nx[i] = x[i] + dx
             upd[f] = nx
         # filters take this step's inputs (the field values before the update)
@@ -398,7 +413,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             b = (k - nburn) // bsteps
             if b < nb:
                 for f in spikes:
-                    out_counts[f][b] += new[f].astype(np.int32)
+                    out_counts[f][b] += new[f]
                 if (k - nburn) % bsteps == bsteps - 1:
                     for f in out_fields:
                         out_fields[f][b] = state[f]
