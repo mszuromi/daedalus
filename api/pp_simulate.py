@@ -73,6 +73,22 @@ def _tag(arr, ref):
     return v
 
 
+class _ImagPopulation(complex):
+    """``I`` when a population is named ``I``: the imaginary unit in
+    arithmetic, the population's index range in ``for j in I``."""
+
+    def __new__(cls, n):
+        obj = super().__new__(cls, 0.0, 1.0)
+        obj._n = int(n)
+        return obj
+
+    def __iter__(self):
+        return iter(range(self._n))
+
+    def __len__(self):
+        return self._n
+
+
 class _Table:
     def __init__(self, fn):
         self._fn = fn
@@ -198,6 +214,19 @@ class _Filter:
 
 # ── the simulator ─────────────────────────────────────────────────────
 
+def _as_seed(seed):
+    """A seed for ``np.random.default_rng``: an integral number (also a Sage
+    ``Integer``) as ``int``; ``None``, sequences, ``SeedSequence`` and
+    generators as given."""
+    if seed is None or isinstance(seed, (np.random.Generator,
+                                         np.random.SeedSequence,
+                                         np.random.BitGenerator)):
+        return seed
+    if hasattr(seed, '__index__'):
+        return int(seed.__index__())
+    return seed
+
+
 def _param_values(sde, params):
     vals = {}
     for (name,), kw in sde._params:
@@ -221,7 +250,12 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
     from api.noise import expr_to_text
     from api.sde import SDEError
     sde._derive()                                   # validates; declares composites
-    rng = np.random.default_rng(seed)
+    # Sage-preparsed literals (a notebook's Integer / RealNumber) as Python
+    # numbers: numpy's seeding and round() do not take them
+    T, dt, burn_in = float(T), float(dt), float(burn_in)
+    bin = None if bin is None else float(bin)
+    n_paths = int(n_paths)
+    rng = np.random.default_rng(_as_seed(seed))
     vals = _param_values(sde, params)
     pops = {p['name']: p['size'] for p in sde._populations()}
     nsteps, nburn = int(round(T / dt)), int(round(burn_in / dt))
@@ -290,7 +324,10 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
 
     base = dict(_NP)
     base.update({'Conv': conv, 'sum': sum, 'I': 1j})
-    base.update({p: range(n) for p, n in pops.items()})
+    # a population named I (excitatory / inhibitory networks) must not hide
+    # the imaginary unit: it iterates as the population and computes as 1j
+    base.update({p: (_ImagPopulation(n) if p == 'I' else range(n))
+                 for p, n in pops.items()})
     base['pop'] = range(pops.get('pop', 1))
     for name, v in vals.items():
         base[name] = v

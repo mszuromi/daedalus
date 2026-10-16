@@ -40,6 +40,11 @@ def simulate(drift, delays, B, x0, *, dt, t_max, n_paths, burn_in=20.0,
     ``drift(x, xd)``: ``x`` the current state ``(n_fields, n_paths)``, ``xd`` a
     list of the delayed states (one per entry of ``delays``, same shape);
     returns the drift ``(n_fields, n_paths)``."""
+    # Sage-preparsed literals (Integer / RealNumber) as Python numbers
+    dt, t_max, burn_in = float(dt), float(t_max), float(burn_in)
+    n_paths, record_every = int(n_paths), int(record_every)
+    if seed is not None and hasattr(seed, '__index__'):
+        seed = int(seed.__index__())
     B = np.atleast_2d(np.asarray(B, dtype=float))
     nfld, nnoise = B.shape
     x = np.empty((nfld, n_paths))
