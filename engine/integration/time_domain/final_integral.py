@@ -533,14 +533,20 @@ def _kernel_rates_clustered(modes):
     return False
 
 
-def _modes_from_freq_image(ft_fn, num_params=None):
+def _modes_from_freq_image(ft_fn, num_params=None, direct=False):
     """The exponential modes ``[(C, λ)]`` of a causal kernel given by its
     rational frequency image ``ĝ(ω)`` (``ft_fn(omega)``; the codebase's
     convention ``ĝ(ω) = ∫ g(t) e^{-iωt} dt``, retarded poles in Im ω > 0):
     each simple pole ω_α gives ``λ_α = i ω_α`` and ``C_α = i Res ĝ(ω_α)``.
     ``None`` when the image is not a proper rational function of ω with
     simple poles in the upper half plane (a δ part, a repeated or an
-    acausal pole, a non-rational image)."""
+    acausal pole, a non-rational image).
+
+    ``direct=True`` (item 56): also a kernel with a direct term, ``ĝ = c +
+    (strictly proper)``, i.e. ``g = c δ + Θ Σ C_α e^{λ_α t}`` (the all-pass
+    Pade image of a bare delay); returns ``(c, modes)`` (``c = 0`` for a
+    strictly proper image; the modes as above, of the strictly proper
+    remainder), or ``None``."""
     from sage.all import CDF as _CDF, PolynomialRing as _PR
     w = SR.var('convkernelomegatd')
     try:
@@ -555,6 +561,14 @@ def _modes_from_freq_image(ft_fn, num_params=None):
         den = R(SR(g.denominator()).polynomial(_CDF).list())
     except Exception:
         return None
+    c_dir = 0j
+    if direct and den.degree() >= 1 and num.degree() == den.degree():
+        # the direct term: the constant polynomial part c = lc(num)/lc(den)
+        c_dir = complex(num.leading_coefficient()) / complex(
+            den.leading_coefficient())
+        # the remainder, its (cancelled) top coefficient dropped exactly
+        num = R((num - num.leading_coefficient() / den.leading_coefficient()
+                 * den).list()[:den.degree()])
     if den.degree() < 1 or num.degree() >= den.degree():
         return None                         # δ part or not a pole sum
     roots = den.roots(multiplicities=True)
@@ -571,7 +585,24 @@ def _modes_from_freq_image(ft_fn, num_params=None):
         modes.append((1j * res, 1j * om))
     if not modes or _kernel_rates_clustered(modes):
         return None                         # repeated / near-repeated pole
-    return modes
+    return (c_dir, modes) if direct else modes
+
+
+def _kernel_direct_split(att, num_params=None):
+    """Item 56: ``(c, modes)`` for a conductance kernel attachment whose
+    frequency image has a direct term, ``ĝ = c + (strictly proper)`` with
+    ``c != 0`` (``g = c δ + Θ Σ C_α e^{λ_α t}``: the all-pass Pade (n, n)
+    image of a bare hard delay at a vertex leg), or ``None`` (no frequency
+    image, a time image, no direct term, or not such a pole sum)."""
+    if att.get('kernel_td_fn') is not None:
+        return None
+    ft_fn = att.get('kernel_ft_fn')
+    if ft_fn is None:
+        return None
+    out = _modes_from_freq_image(ft_fn, num_params, direct=True)
+    if out is None or out[0] == 0:
+        return None
+    return out
 
 
 def _kernel_modes(att, num_params=None):
@@ -783,14 +814,19 @@ def _dress_kernels_on():
                      f'True or False')
 
 
-def _dress_edge_modes(ems, kernel_modes):
+def _dress_edge_modes(ems, kernel_modes, direct=0):
     """The ``EdgeModeSum`` of ``(g ∗ G)(Δ) = ∫_0^Δ g(Δ − x) G(x) dx`` for
     ``G = D δ + Θ Σ_α C_α e^{λ_α x}`` (``ems``) and ``g = Θ Σ_k c_k
     e^{μ_k x}``:  ``D g(Δ) + Σ_{α,k} C_α c_k (e^{λ_α Δ} − e^{μ_k Δ}) /
     (λ_α − μ_k)``, no δ part.  Rates are merged when equal.  A λ_α equal
     to a μ_k (``DRESS_RATE_RTOL``) with a rounding-level residue is dropped
     as an exact zero; with a real residue the result is ``None`` (the line
-    then takes the leg-time path)."""
+    then takes the leg-time path).
+
+    ``direct`` (item 56): the kernel's direct term ``c`` (``g = c δ + Θ Σ_k
+    c_k e^{μ_k x}``, ``_kernel_direct_split``) adds ``c G``: ``c C_α`` at
+    every ``λ_α`` and the δ part ``c D`` (nonzero only on a line with a δ
+    part, a point-process field)."""
     acc = {}
 
     def add(C, lam):
@@ -800,6 +836,10 @@ def _dress_edge_modes(ems, kernel_modes):
 
     D_ = complex(ems.delta_coeff)
     scale = sum(abs(complex(C)) for (C, _l) in ems.modes) + abs(D_)
+    direct = complex(direct)
+    if direct != 0:
+        for (C, lam) in ems.modes:
+            add(direct * complex(C), complex(lam))
     for (c, mu) in kernel_modes:
         c, mu = complex(c), complex(mu)
         if D_ != 0:
@@ -827,7 +867,8 @@ def _dress_edge_modes(ems, kernel_modes):
             _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
             continue
         modes.append((C, lam))
-    return EdgeModeSum(ri=ems.ri, pi=ems.pi, delta_coeff=0j,
+    return EdgeModeSum(ri=ems.ri, pi=ems.pi,
+                       delta_coeff=(direct * D_ if direct != 0 else 0j),
                        modes=tuple(modes))
 
 
@@ -1617,6 +1658,10 @@ _RUNTIME_COUNTERS = {
     'conv_lines_dressed': 0,
     'conv_dress_zero_modes_dropped': 0,
     'conv_kernel_leg_edges': 0,
+    # item 56: lines dressed with a kernel that has a direct term (c δ + a
+    # pole sum), and such kernels refused on a kernel edge
+    'conv_lines_dressed_direct': 0,
+    'conv_kernel_direct_refused': 0,
     # item 35: exact-zero residue modes left out of the modesum plans
     # (modes, and the pole tuples of the full product that took one), the
     # plans built pruned, and pruned plans whose group order could not be
@@ -7942,6 +7987,7 @@ def integrate_diagram(
     kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
     conv_dress = {}             # {edge_key: kernel modes}      ('dress')
     conv_dress_att = {}         # {edge_key: the attachment}    ('dress', S3)
+    conv_dress_direct = {}      # {edge_key: c} a direct term c δ (item 56)
     # S3: the state-space route realizes a kernel exactly (equal or close
     # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
     # kernel without separated modes is no longer refused when that route is
@@ -8071,6 +8117,34 @@ def integrate_diagram(
                 att_pairs.append((None, att))
                 continue
             kmodes = _kernel_modes(att, num_params)
+            kdirect = None
+            if kmodes is None:
+                # item 56: a direct term, g = c δ + (a pole sum): the
+                # all-pass Pade (n, n) image of a bare hard delay at a
+                # vertex leg (x*x(t - d)).  Dressed, the line becomes
+                # c G + (g_smooth ∗ G), on both routes; a kernel edge
+                # ('leg') cannot hold it (refused by name below)
+                _split = _kernel_direct_split(att, num_params)
+                if _split is not None:
+                    kdirect, kmodes = _split
+            if (kdirect is not None
+                    and not (_can_dress
+                             and ek not in (_conv_force_leg or ()))):
+                _RUNTIME_COUNTERS['conv_kernel_direct_refused'] += 1
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': (f'conductance vertex {v}: the kernel '
+                               f'{att["symbol"]} has a direct term '
+                               f'({complex(kdirect):.6g} δ next to a pole '
+                               f'sum, e.g. the Pade (n, n) image of a bare '
+                               f'delay) and this line cannot be dressed '
+                               f'with it (a kernel rate equal to a pole of '
+                               f'the line, or no propagator mode data); a '
+                               f'kernel edge holds only a strictly proper '
+                               f'kernel'),
+                }
             if kmodes is None and _ss_realizes_kernel(att):
                 # S3: no separated modes (a repeated / close rate, a
                 # polynomial factor), but the state-space route realizes the
@@ -8094,6 +8168,9 @@ def integrate_diagram(
                     and ek not in (_conv_force_leg or ())):
                 conv_dress[ek] = kmodes
                 conv_dress_att[ek] = att
+                if kdirect is not None:
+                    conv_dress_direct[ek] = kdirect
+                    _RUNTIME_COUNTERS['conv_lines_dressed_direct'] += 1
                 att_pairs.append(('dress', att))
                 continue
             s_sym = SR.var(
@@ -8215,7 +8292,32 @@ def integrate_diagram(
             kmodes = conv_dress.get((ei['u'], ei['v'], ei['lbl']))
             if kmodes is None:
                 continue
-            dressed = _dress_edge_modes(edge_mode_sums[i], kmodes)
+            kdirect = conv_dress_direct.get((ei['u'], ei['v'], ei['lbl']))
+            if (kdirect is not None
+                    and complex(edge_mode_sums[i].delta_coeff) != 0
+                    and len(getattr(vertex_assignments.get(ei['v']),
+                                    'physical_legs', ())) >= 2):
+                # item 56 (D10): the direct term passes this line's δ part
+                # (a spike train) to a vertex with another physical leg: a
+                # product of δ functions at one time (exp of a delayed spike
+                # train), which is not defined
+                _RUNTIME_COUNTERS['conv_kernel_direct_refused'] += 1
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': (f'conductance vertex {ei["v"]}: the kernel '
+                               f'{conv_dress_att[(ei["u"], ei["v"], ei["lbl"])]["symbol"]} '
+                               f'has a direct term (a bare delay) on a line '
+                               f'with a delta part (a point-process field) at '
+                               f'a vertex with several physical legs: it '
+                               f'multiplies delta functions, which is not '
+                               f'defined; give the delay a filter'),
+                }
+            dressed = (_dress_edge_modes(edge_mode_sums[i], kmodes)
+                       if kdirect is None else
+                       _dress_edge_modes(edge_mode_sums[i], kmodes,
+                                         direct=kdirect))
             if dressed is None:
                 return integrate_diagram(
                     typed_diagram, propagator_data, combined_prefactor,
@@ -8237,7 +8339,11 @@ def integrate_diagram(
                 'u': ei['u'], 'v': ei['v'], 'lbl': ei['lbl'],
                 'ri': ei['ri'], 'pi': ei['pi'],
                 'dt_sym': dt,
-                'delta_coeff': 0.0,
+                # item 56: a kernel direct term c on a line with a δ part D
+                # leaves c D δ (zero otherwise, as before)
+                'delta_coeff': (0.0 if kdirect is None
+                                or complex(dressed.delta_coeff) == 0
+                                else complex(dressed.delta_coeff)),
                 'smooth_factor': sf,
             }
             dressed_idx.add(i)
