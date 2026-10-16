@@ -184,10 +184,18 @@ def test_explicit_budget_is_used_as_given(machine, ram_gb):
 def test_process_footprint_is_measured():
     fp = FI.process_footprint_bytes()
     assert fp is not None and 50e6 < fp < 64 * GB
-    big = np.ones(25_000_000)                           # 200 MB, touched
-    fp2 = FI.process_footprint_bytes()
-    assert fp2 - fp > 150e6
-    del big
+    # The growth is measured in a fresh interpreter: inside a long test run
+    # the allocator can serve 200 MB from memory the process already holds
+    # (glibc keeps freed arenas resident), so the footprint need not grow.
+    import subprocess
+    code = ('import numpy as np, engine.integration.time_domain.final_integral '
+            'as FI\nfp = FI.process_footprint_bytes()\n'
+            'big = np.ones(25_000_000)\n'               # 200 MB, touched
+            'print(FI.process_footprint_bytes() - fp)\n')
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+    out = subprocess.run([sys.executable, '-c', code], cwd=root, check=True,
+                         capture_output=True, text=True, timeout=600)
+    assert int(out.stdout.strip().splitlines()[-1]) > 150e6
 
 
 def test_running_guard_names_the_default_rule(machine):
