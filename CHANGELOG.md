@@ -11,6 +11,37 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
+
+- **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).
+  - The exact-zero-prefactor test now also drops diagrams charged the state-space estimate.
+  - A conductance-kernel line is charged as Phase J builds it. Dressed: one edge, the cascade's states, no δ part.
+    Leg path: an extra vertex, the propagator edge with its δ part, then the kernel edge.
+  - Each δ-subset is counted on its contracted DAG. Each placement of the kernel slots counts once.
+  - Against an exact census of the built stationary states the estimate is now within 0.5 %. Examples: delayed-alpha
+    spike-only Hawkes, 1 neuron, 12.89 vs 12.87 MB (was 185 MB); its two loops, 366.09 vs 366.08 GB; 2 neurons with
+    `w_ii = 0`, 0.390 vs 0.389 GB (was refused at ~122 GB; now 4.9 GB at the default budget, under it, and 0.39 GB
+    whenever the zero test runs).
+  - The pre-pass of that run takes 2 s (kernel data cached per model).
+- **Forked τ batches stay within the budget** (`pipeline._workers_within_budget`). Each worker may rebuild the lazily
+  built states, so a run that has charged `used` bytes forks at most `budget / used - 1` workers, or runs serially.
+- **`compute_cumulants(..., discard=False | True | 'auto')`.** Each diagram is evaluated on the τ grid right after it is
+  built, its values are kept, and its plans and stationary states are released and refunded to the budget.
+  - Values are bit-identical.
+  - The pre-pass compares the largest diagram plus one segment working set with the budget, instead of the sum.
+  - `'auto'` is on exactly when the sum is over the budget and that fits.
+  - It needs fixed evaluation points: k <= 2 with a τ grid, no switch-on, not grouped, and a single pass.
+  - The result's callables answer the grid points only. Elsewhere they raise `DiscardedDiagramsError` (exported by
+    `daedalus`).
+  - A diagram with shot-noise δ records keeps its charge.
+- **Minimal dressed lines** (`statespace._ModelOps.dressed_entry`). The cascade propagator entry + kernel is
+  balanced-truncated at the truncation tolerance in effect, with a Hurwitz check and the bound recorded in
+  `Realization.truncation['dressed']`.
+  - When the propagator cancels the kernel's poles, `n_G + n_K` states go down to `n_G`. Example: a 1-population
+    exponential-kernel spike Hawkes at two loops goes from 10.6 to 0.62 MB of states and 71 to 9.7 s, with values
+    moving 1.3e-16.
+  - A rank-1 multi-population network keeps its cascade (nothing cancels).
+
 #### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
 
 No computed number moves (output side only).
