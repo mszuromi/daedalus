@@ -3123,11 +3123,12 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
             leaf_mask |= 1 << index[v]
     can_dress = (propagator_data.get('C_mats') is not None
                  and FI._dress_kernels_on())
-    kinfo = {}
-
     def kernel_info(att):
-        key = _att_key(att)
-        hit = kinfo.get(key)
+        # cached on the model (one parameter point): the mode extraction is
+        # symbolic
+        key = ('est_kernel_info', _att_key(att), can_dress)
+        with model._lock:
+            hit = model._extra.get(key)
         if hit is None:
             if FI._conv_kernel_local_weight(att, num_params) is not None:
                 hit = ('local',)
@@ -3139,7 +3140,8 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
                     dress = can_dress and (
                         FI._kernel_modes(att, num_params) is not None)
                     hit = ('dress' if dress else 'leg', e.n)
-            kinfo[key] = hit
+            with model._lock:
+                model._extra[key] = hit
         return hit
 
     edge_types = typed_diagram.edge_types
