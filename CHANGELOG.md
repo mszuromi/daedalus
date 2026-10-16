@@ -51,6 +51,30 @@ proper kernel takes exactly the old code paths).
   -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
   at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
 
+#### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
+
+- **Residue clip.** The tier-1 (exact-membership, double-precision) residues were zeroed below 1e-12 of the LARGEST
+  entry at their pole. Membership is exact, so every member residue is exactly nonzero and the clip could only drop a
+  genuine one: two fields whose units differ by 1e14 lost their cross propagator. On `x' = -x + 1e-14 z`,
+  `z' = -z/2` the pole engine returned `C_xz = 0`; it now matches the Lyapunov covariance to ~1e-16 (the default
+  state-space engine was already right). The certificate (`_residue_error`) always checked the unclipped values. The
+  numerical cofactor tiers keep their clip (no membership there: the clip removes the noise of non-member entries).
+  **No number moves on the zoo:** none of its 35 entries has a tier-1 residue below 1e-12 of its pole's largest
+  (smallest ratio 1.6e-8), so the stored residues are identical.
+- **Default memory budget.** With `PHASE_J_MEM_BUDGET_GB` / `SPATIAL_MEM_BUDGET_GB` unset the budget is
+  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least `max(0.5 GB, 10 % of RAM)`
+  (`final_integral.default_mem_budget`; the process is measured by its macOS `phys_footprint`, or resident + swap on
+  Linux). Same 6 GB on a machine with >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB
+  held; 6 GB on a 64 GB machine even with 40 GB held. `compute_cumulants` reads it once per run (the pre-pass and the
+  running guard use the same value). Explicit values are unchanged.
+  Every refusal says how its budget was set; the Phase J pre-pass refusal also states the machine's RAM and the
+  estimate; `result['phase_j_memory']['budget_rule']` records the rule.
+- **Periodic lattice sum.** `periodic_inverse_ft` in d=3 built the whole `(2 n_cut + 1)^3` lattice (~9 arrays,
+  13.6 GB at L = 30, k_max = 60: the peak of `tests/test_spatial_correlator.py`, which no guard saw). The sum
+  factorises over the phase axis, so it now runs one n1 slab at a time (0.3 GB peak for the same case). Values move
+  by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
+  the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
+
 #### Fixed: mean-field saddle (round 3, item 52)
 
 - **Kernels whose integral is not 1.** `Conv(K, constant)` at the saddle is now `K(omega = 0)·constant`
