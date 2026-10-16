@@ -1,11 +1,54 @@
 # Daedalus
 
-A model-agnostic framework for computing stationary statistics of Itô stochastic
-differential equations. The framework performs automated evaluation of Feynman diagrams
-for perturbative MSR–JD (Martin–Siggia–Rose–Janssen–De Dominicis) field theories, built
-on SageMath. Given an SDE/SPDE written as an MSR–JD action, it computes the mean field,
-multi-point cumulants, and loop corrections (action → diagram enumeration → causal
-integration). The notebook front-end is the `daedalus` module, imported as `dd`.
+**Automated loop corrections for stochastic dynamics.** Write a model as stochastic differential
+equations, a point process, or a stochastic PDE; Daedalus returns its stationary mean,
+correlation functions and higher cumulants, at tree level and with one, two or more loop
+corrections, as functions of time lag (and space). It builds the Martin–Siggia–Rose–Janssen–De
+Dominicis (MSRJD) action, enumerates the Feynman diagrams and evaluates every diagram's time
+integral exactly, with no hand derivation. It is built on [SageMath](https://www.sagemath.org/).
+
+```python
+m = (SDE('quartic OU')
+     .parameter('mu', default=1.0).parameter('eps', default=0.02).parameter('D', default=1.0)
+     .field('x')
+     .drift('x', '-mu*x - eps*x^3')
+     .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)])
+```
+
+## Why
+
+Linear-noise and Gaussian approximations describe fluctuations about a fixed point by linearizing
+the dynamics. Nonlinearity, non-Gaussian noise (shot noise, jumps, spikes) and their interplay show
+up first in the **loop corrections**: shifted means, changed variances and time scales, and nonzero
+higher cumulants. Computing them by hand means enumerating diagrams and doing nested time integrals
+for each model. Daedalus does both automatically, and the integrals are done in closed form (as
+matrix computations on the state-space form of the propagator), so a result is exact for its loop
+order and can be pushed to two or three loops where the diagrams allow.
+
+## What it does
+
+- **Models from equations.** `SDE(...).field().drift().noise()` derives the action and the
+  mean-field equations from the stochastic equations (Itô or Stratonovich); populations with
+  indexed parameters, named functions, convolution kernels and general linear operators
+  (`(tau*Dt + 1)*v`) are part of the syntax. The action can also be written by hand.
+- **Point processes** with any conditional intensity (`.point_process('n', rate)`), including
+  intensities that filter their own spike train (nonlinear Hawkes processes), mixed with
+  continuous fields, plus a simulator of the same model (`SDE.simulate`).
+- **A noise library** of 15 source types, 20 jump laws and named composites (Gaussian, Poisson,
+  compound Poisson, gamma, inverse-Gaussian, variance-gamma, NIG, CGMY, Meixner, Skellam, ...),
+  each with its cumulant generating function and, for most, an exact sampler.
+- **Delays and kernels:** hard delays `x(t - d)` (exact tree, Padé loops with an automatically
+  chosen order), distributed delays and any rational kernel, also inside nonlinear terms.
+- **Outputs:** cumulants of any order `k`; `C(τ)` at any lag, spectra and kernel integrals in
+  closed form; shot-noise δ components reported separately; loop corrections as exact rational
+  functions of the parameters (`dd.symbolic_cumulant`); switch-on transients.
+- **Spatial fields** (stochastic PDEs such as Allen–Cahn and reaction–diffusion) in one to three
+  dimensions.
+- **A model report** before any heavy computation (`--dry-run`): which checks the model passes,
+  an estimate of the loop-expansion parameter, and warnings when a result would be unreliable.
+
+Every example notebook compares the result with an independent simulation.
 
 ---
 
@@ -19,12 +62,84 @@ git clone https://github.com/mszuromi/daedalus.git
 cd daedalus
 conda env create -f environment.yml     # or:  mamba env create -f environment.yml   (faster)
 conda activate daedalus
-jupyter lab                             # then open notebooks/model_builder_tutorial.ipynb
 ```
 
 [`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
-that is the entire setup. The sections below explain each step, give a non-conda alternative,
-and list tested versions.
+that is the entire setup. Then, from the repository root, the connected two-point function of
+a nonlinear Ornstein–Uhlenbeck process `dx = (-mu x - eps x^3) dt + sqrt(2D) dW`, tree level
+plus one loop:
+
+```bash
+python - <<'PY'
+from api.sde import SDE
+from api.noise import Gaussian
+from api import compute_cumulants
+
+m = (SDE('OU quartic')
+     .parameter('mu', default=1.0, domain='positive')
+     .parameter('eps', default=0.02, domain='positive')
+     .parameter('D', default=1.0, domain='positive')
+     .field('x')
+     .drift('x', '-mu*x - eps*x^3')
+     .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)], verbose=False)
+tree, loop = res['C_tau_by_ell'][0], res['C_tau_by_ell'][1]       # arrays over the lag grid; index 100 is lag 0
+print(f"C(0): tree {tree[100].real:.5f}, one-loop {loop[100].real:+.5f}, total {res['C_tau'][100].real:.5f}")
+PY
+```
+
+It prints `C(0): tree 1.00000, one-loop -0.06000, total 0.94000` in a few seconds: the one-loop
+term is the exact first-order correction `-3 eps D^2 / mu^3` to the stationary variance. (Inside
+the conda environment `python` is Sage's interpreter; with a native Sage install use
+`sage -python` and run from the repository root.)
+
+## Tutorials
+
+The tutorial series in [`notebooks/tutorials/`](notebooks/tutorials/) builds every model with the
+SDE / point-process front end. Each notebook is short, self-contained and ships executed.
+
+| | Tutorial | Covers |
+|---|---|---|
+| 00 | [Quick start](notebooks/tutorials/00_quick_start.ipynb) | one SDE end to end: tree, one and two loops, simulation, exact variance |
+| 01 | [The SDE front end](notebooks/tutorials/01_sde_front_end.ipynb) | fields, populations and indexed parameters, functions, kernels, Itô / Stratonovich, `show()` |
+| 02 | [The noise library](notebooks/tutorials/02_noise_library.ipynb) | every source, jump law and composite in a table; a Lévy-driven OU process vs its exact cumulants and a sampler |
+| 03 | [Point processes](notebooks/tutorials/03_point_processes.ipynb) | linear Hawkes (exact check), nonlinear Hawkes with loops vs `SDE.simulate`, δ components |
+| 04 | [Delays](notebooks/tutorials/04_delays.ipynb) | hard delays (exact tree, Padé loops, automatic order), distributed delays, a delay in a nonlinear term |
+| 05 | [Outputs](notebooks/tutorials/05_outputs.ipynb) | the result dict, `dd.cumulant` (spectra, kernel integrals, modes), `k = 3`, symbolic results, switch-on transients |
+| 06 | [Writing the action by hand](notebooks/tutorials/06_actions_by_hand.ipynb) | `TemporalModelBuilder`, how the SDE builder maps onto it, model files and `dd.run` |
+| 07 | [Spatial models](notebooks/tutorials/07_spatial.ipynb) | stochastic PDEs; pointers to the spatial examples |
+
+[`notebooks/examples/`](notebooks/examples/) holds worked examples, one per capability, each with a
+from-scratch simulation overlay: white, colored and correlated noise, a nonlinear Hawkes process,
+delayed feedback, a delayed product nonlinearity, delayed-kernel point processes, a two-compartment
+neuron model, and spatial fields.
+
+## The noise library at a glance
+
+A noise source is a process with independent stationary increments, given by its cumulant
+generating function per unit time `K(θ)`; it enters the action as `-K(Σ c_x x̃)`. Only infinitely
+divisible laws with finite moments are offered. Full table with parameters and cumulant rates:
+[tutorial 02](notebooks/tutorials/02_noise_library.ipynb) and [`docs/noise_library.md`](docs/noise_library.md).
+
+| Kind | Members (`api.noise`) |
+|---|---|
+| Sources | `Gaussian`, `Poisson`, `CompoundPoisson`, `GammaProcess`, `InverseGaussianProcess`, `VarianceGamma`, `NormalInverseGaussian`, `CGMY`, `TemperedStableSubordinator`, `Meixner`, `BilateralGamma`, `Skellam`, `NegativeBinomialProcess`, `Cumulants` (cumulant rates), `CGF` (any expression in `theta`) |
+| Jump laws (for `CompoundPoisson`) | `Dirac`, `Exponential`, `Gamma`, `GaussianJump`, `Laplace`, `Uniform`, `Bernoulli`, `Binomial`, `FinitePMF`, `Geometric`, `PoissonJump`, `NegativeBinomial`, `Logarithmic`, `DoubleExponential`, `AsymmetricLaplace`, `Hyperexponential`, `PhaseType`, `ChiSquared`, `LogNormal`, `Weibull` (the last two by their moments) |
+| Composites | `a + b` (sum of sources), `merton_jump_diffusion`, `kou_jump_diffusion`, `levy_driven_ou` |
+
+Parameters may depend on fields (state-dependent rates and jump sizes), and `source.sample(dt, n, rng)`
+draws exact increments for all sources except `Cumulants` / `CGF`.
+
+## Capabilities and limits
+
+| | Supported | Limits |
+|---|---|---|
+| Expansion | loop expansion about a stable mean-field fixed point; any number of fields and populations | perturbative: needs a small loop parameter (the model report estimates it); no barrier crossing between wells, no limit cycles |
+| Statistics | stationary cumulants of any order `k`; switch-on transients from a mean-field initial state | the practical size is set by the diagram count: e.g. `k = 2` up to three loops for one white-noise field, `k = 4` at two loops, `k = 6` at one loop |
+| Noise | Gaussian (white, colored, correlated), Poisson / point processes, finite-moment Lévy sources, state-dependent parameters | heavy-tailed (infinite-moment) stable noise; Stratonovich conversion for Gaussian noise only; two-state (telegraph) noise is simulable but not expandable |
+| Time structure | rational kernels, hard and distributed delays (exact tree, Padé loops) | time-independent dynamics: no explicit `t` in the equations |
+| Space | stochastic PDEs in `d = 1..3`, `k = 2`, up to two loops | derivative (transport) vertices such as KPZ or conserved Model B are outside the stationary-saddle cumulants |
+| Outputs | `C(τ)` on any grid or at any lag, spectra, kernel integrals, δ components, symbolic rational results | symbolic results for state-space-representable models only (no conductance kernels, size limits) |
 
 ## Requirements
 
@@ -110,7 +225,7 @@ From a script without installing, see *Using it from a script* below.
 ```python
 import sys; sys.path[:0] = ['/path/to/daedalus', '/path/to/daedalus/notebooks']
 import daedalus as dd
-model, mod = dd.load_model('kpz_1d')
+model, mod = dd.load_model('allen_cahn_1d_subcritical_infinite')
 res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 ```
 
@@ -259,6 +374,14 @@ import daedalus as dd
 dd.build_cache([(3, 4), (4, 3)], dry_run=True)   # what would it cost?
 ```
 
+Two large cells, `(4, 3)` (7.3 million classes, 15 MB compressed) and `(6, 2)` (12.5 million classes,
+29 MB), are too big for git and are published as release assets. Nothing is downloaded unless you ask:
+`dd.fetch_cache(cells='all')` (or `cells=[(4, 3)]`, `cells=[(6, 2)]`) downloads the cells into `saved_prediagrams/` and
+checks size, SHA-256, format stamp and class count against
+[`engine/enumeration/fetch_manifest.json`](engine/enumeration/fetch_manifest.json) before it accepts a file.
+Using such a cell later needs about 11 kB of memory per class (about 80 GB for `(4, 3)`), so fetching is
+mostly for machines that can hold it.
+
 ## Run the notebooks
 
 ```bash
@@ -271,10 +394,11 @@ Then open one of:
 
 | notebook | purpose |
 |---|---|
-| [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) | guided tour — build a temporal model and run it |
+| [`notebooks/tutorials/`](notebooks/tutorials/) | the tutorial series (start with `00_quick_start.ipynb`) |
 | [`notebooks/model_builder.ipynb`](notebooks/model_builder.ipynb) | point-and-click model builder (the `ModelUI` form) |
 | [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `models/*.model.py` |
 | [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
+| [`notebooks/legacy/`](notebooks/legacy/) | the earlier guided tour of the hand-written model builder |
 
 If a notebook reports its kernel (`sagemath-10.8`) is missing — e.g. your Sage registered a
 differently-named kernel — just pick your **SageMath** kernel from Jupyter's kernel menu.
@@ -317,4 +441,19 @@ the change.
 
 ## Citing
 
-If you use this software, please cite it — see [`CITATION.cff`](CITATION.cff).
+If you use Daedalus in your research, please cite the software ([`CITATION.cff`](CITATION.cff);
+GitHub's "Cite this repository" button gives the same in other formats):
+
+```bibtex
+@software{daedalus,
+  author  = {Szuromi, Matthew and Ocker, Gabriel K.},
+  title   = {Daedalus: automated loop corrections for stochastic dynamics (MSRJD field theory framework)},
+  url     = {https://github.com/mszuromi/daedalus},
+  version = {0.2.1},
+  year    = {2026}
+}
+```
+
+## License
+
+BSD 3-Clause; see [`LICENSE`](LICENSE).

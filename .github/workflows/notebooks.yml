@@ -1,6 +1,6 @@
 name: notebooks
 
-# Executes every notebook in notebooks/examples/ end to end under SageMath and reports pass /
+# Executes every notebook in notebooks/tutorials/ and notebooks/examples/ end to end under SageMath and reports pass /
 # fail / wall time per notebook. They take a long time (simulations plus loop integrals), so this
 # runs only on demand and weekly, never on a push or pull request. The notebooks shipped in the
 # repository are not modified: the executed copies go to a temporary directory and are uploaded
@@ -27,9 +27,9 @@ jobs:
     env:
       NB_ONLY: ${{ inputs.only }}        # manual runs: notebook path filter
       NB_TIMEOUT_MINUTES: 45             # per notebook, unless overridden below
-      # Per-notebook overrides, one 'path under notebooks/examples=minutes' per line.
+      # Per-notebook overrides, one 'path under notebooks/=minutes' per line.
       NB_TIMEOUT_OVERRIDES: |
-        SPDE/RD_2_species.ipynb=120
+        examples/SPDE/RD_2_species.ipynb=120
     steps:
       - uses: actions/checkout@v4
 
@@ -62,17 +62,17 @@ jobs:
           jupyter kernelspec list
           jupyter nbconvert --version
 
-      - name: Execute notebooks/examples (outputs to a temporary directory)
+      - name: Execute notebooks/tutorials and notebooks/examples (outputs to a temporary directory)
         run: |
           out="$RUNNER_TEMP/executed"; mkdir -p "$out"
           status=0
           echo '| notebook | result | seconds |' >> "$GITHUB_STEP_SUMMARY"
           echo '|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
           while IFS= read -r nb; do
-            name="$(echo "${nb#notebooks/examples/}" | tr '/' '_')"
+            name="$(echo "${nb#notebooks/}" | tr '/' '_')"
             limit="$NB_TIMEOUT_MINUTES"
             override="$(printf '%s\n' "$NB_TIMEOUT_OVERRIDES" \
-                        | awk -F= -v k="${nb#notebooks/examples/}" '$1 == k {print $2}')"
+                        | awk -F= -v k="${nb#notebooks/}" '$1 == k {print $2}')"
             if [ -n "$override" ]; then limit="$override"; fi
             start=$(date +%s)
             if timeout "${limit}m" jupyter nbconvert --to notebook --execute \
@@ -87,7 +87,7 @@ jobs:
             secs=$(( $(date +%s) - start ))
             echo "$res  $nb  ${secs}s"
             echo "| \`$nb\` | $res | $secs |" >> "$GITHUB_STEP_SUMMARY"
-          done < <(find notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort | grep -F -- "$NB_ONLY")
+          done < <(find notebooks/tutorials notebooks/examples -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | sort | grep -F -- "$NB_ONLY")
           echo "notebooks failed: $status (0 = none)"
           # not 'exit': an explicit exit in this login shell came back as 1 with status 0
           test "$status" -eq 0
