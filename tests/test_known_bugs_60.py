@@ -285,3 +285,20 @@ def test_bug3_saddle_residual_check():
     for bad in ([1e-3, 0.0], [float('nan'), 0.0], [1e10, 1e10]):
         with pytest.raises(RuntimeError, match='did not converge'):
             _check_saddle_residual('t', bad, [0.3, 1.5])
+
+
+# ── bug 9: an invalid DAEDALUS_PHASE_J_ENGINE fails at the API entry ─────────
+
+def test_bug9_invalid_engine_fails_before_any_work(monkeypatch):
+    import api.compute as C
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'statespce')
+    called = []
+    monkeypatch.setattr(C, 'build_propagator',
+                        lambda *a, **k: called.append(1) or (_ for _ in ()).throw(AssertionError))
+    s = (SDE('bug60 engine env').parameter('D', default=0.1, domain='positive').field('x')
+         .equation('x', lhs='Dt*x + x', rhs='0.5 - 0.1*x^2')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+    with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_ENGINE'):
+        compute_cumulants(s.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+                          tau_grid=np.array([0.5]), **RUN)
+    assert not called

@@ -1280,6 +1280,10 @@ def compute_cumulants(
     # the call as given (a model with delay kernels is handed to api.delay,
     # which re-enters compute_cumulants with Pade-approximated copies)
     _delay_call = dict(locals())
+    # item 60: a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
+    # first Phase J subset after the enumeration
+    from engine.integration.time_domain import statespace as _ss_env
+    _ss_env.engine_requested()
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
