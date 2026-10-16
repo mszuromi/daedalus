@@ -2836,10 +2836,7 @@ def _pole_plan_fits(modes):
         return False
     nbytes = n * FI.PLAN_BYTES_PER_TUPLE
     with FI._PLAN_MEM_LOCK:
-        scoped = FI._PLAN_MEM['active'] > 0
-        budget = (FI._PLAN_MEM['budget'] if scoped
-                  else FI.phase_j_mem_budget_bytes())
-        used = FI._PLAN_MEM['used'] if scoped else 0
+        _scoped, budget, _rule, used = FI._budget_now()
     return budget is None or used + nbytes <= budget
 
 
@@ -2879,9 +2876,7 @@ def _check_transient(sub, acts):
     alone would exceed ``PHASE_J_MEM_BUDGET_GB``, before it is built."""
     FI = _FI()
     with FI._PLAN_MEM_LOCK:
-        scoped = FI._PLAN_MEM['active'] > 0
-        budget = (FI._PLAN_MEM['budget'] if scoped
-                  else FI.phase_j_mem_budget_bytes())
+        _scoped, budget, rule, _used = FI._budget_now()
     if budget is None:
         return
     item = 8 if sub.model.is_real else 16
@@ -2896,7 +2891,8 @@ def _check_transient(sub, acts):
         raise FI.PhaseJResourceError(
             f'Phase J memory budget exceeded: one state-space segment system '
             f'has {D:,} states ({len(acts)} downsets), a working set of '
-            f'{FI._fmt_gb(nbytes)} over the budget of {FI._fmt_gb(budget)}.  '
+            f'{FI._fmt_gb(nbytes)} over the budget of '
+            f'{FI._fmt_budget(budget, rule)}.  '
             f'Nothing was allocated for it.  Options: {FI._BUDGET_HOW}.',
             {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
 
@@ -2907,10 +2903,7 @@ def _charge(sub):
     FI = _FI()
     nbytes = sub.state_bytes()
     with FI._PLAN_MEM_LOCK:
-        scoped = FI._PLAN_MEM['active'] > 0
-        budget = (FI._PLAN_MEM['budget'] if scoped
-                  else FI.phase_j_mem_budget_bytes())
-        used = FI._PLAN_MEM['used'] if scoped else 0
+        scoped, budget, rule, used = FI._budget_now()
         if budget is not None and used + nbytes > budget:
             w, b = sub.max_width()
             run = f' of {FI._PLAN_MEM["what"]}' if (
@@ -2921,8 +2914,8 @@ def _charge(sub):
                 f'for one subset ({len(sub._stat_downsets)} downsets, '
                 f'widest cut {w} edges, largest block {b:,} entries) on top '
                 f'of {FI._fmt_gb(used)}, over the budget of '
-                f'{FI._fmt_gb(budget)}.  Nothing was allocated for it.  '
-                f'Options: {FI._BUDGET_HOW}.',
+                f'{FI._fmt_budget(budget, rule)}.  Nothing was allocated '
+                f'for it.  Options: {FI._BUDGET_HOW}.',
                 {'bytes': nbytes, 'bytes_so_far': used,
                  'budget_bytes': budget, 'width': w, 'block': b})
         if scoped:
