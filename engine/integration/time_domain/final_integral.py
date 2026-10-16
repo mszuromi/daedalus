@@ -657,12 +657,17 @@ class PhaseJResourceError(MemoryError):
 # A fixed 6 GB is more than a small machine can give one run on top of the
 # Python + Sage baseline.  With the variable unset the budget is
 #     min(MEM_BUDGET_CAP_GB, MEM_BUDGET_RAM_FRACTION x RAM - this process now)
-# and at least MEM_BUDGET_FLOOR_GB (a refusal, not a crash, is then the
-# usual outcome on a machine already short of memory).  The same rule backs
+# and at least max(MEM_BUDGET_FLOOR_GB, MEM_BUDGET_FLOOR_RAM_FRACTION x RAM)
+# (a refusal, not a crash, is then the usual outcome on a machine already
+# short of memory).  compute_cumulants reads it once per run.  The same rule backs
 # SPATIAL_MEM_BUDGET_GB.  An explicit value is used as given.
 MEM_BUDGET_CAP_GB = 6.0
 MEM_BUDGET_RAM_FRACTION = 0.6
 MEM_BUDGET_FLOOR_GB = 0.5
+#: ... and at least this fraction of RAM (capped at the cap): a large
+#: machine running a large process keeps a usable budget (64 GB with 40 GB
+#: held: 6 GB, not the 0.5 GB floor)
+MEM_BUDGET_FLOOR_RAM_FRACTION = 0.1
 
 
 def _ram_bytes():
@@ -713,13 +718,15 @@ def default_mem_budget(ram=None, footprint=None):
     """``(bytes, rule)``: the default budget of the memory guards and the
     sentence that says how it was set (``ram`` / ``footprint``: bytes, read
     from the machine when ``None``)."""
-    cap, floor = MEM_BUDGET_CAP_GB * 1e9, MEM_BUDGET_FLOOR_GB * 1e9
+    cap = MEM_BUDGET_CAP_GB * 1e9
     ram = _ram_bytes() if ram is None else ram
     if not ram:
         return cap, (f'default {_fmt_gb(cap)} (the machine\'s RAM is '
                      'unknown)')
     footprint = process_footprint_bytes() if footprint is None else footprint
     fp = footprint or 0
+    floor = min(cap, max(MEM_BUDGET_FLOOR_GB * 1e9,
+                         MEM_BUDGET_FLOOR_RAM_FRACTION * ram))
     room = MEM_BUDGET_RAM_FRACTION * ram - fp
     budget = max(floor, min(cap, room))
     rule = (f'default min({_fmt_gb(cap)}, {MEM_BUDGET_RAM_FRACTION:g} x '
@@ -758,14 +765,6 @@ def phase_j_mem_budget_bytes(environ=None):
     return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[0]
 
 
-def phase_j_budget_rule(environ=None):
-    """How the Phase J budget is set, for the refusal messages."""
-    try:
-        return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[1]
-    except Exception:
-        return 'PHASE_J_MEM_BUDGET_GB'
-
-
 _BUDGET_HOW = ('raise the budget with the environment variable '
                'PHASE_J_MEM_BUDGET_GB (in GB; e.g. '
                "os.environ['PHASE_J_MEM_BUDGET_GB'] = '24' before the run, or "
@@ -802,12 +801,14 @@ class phase_j_memory_scope:
     checked on its own against the budget.  Nested scopes share the outer
     total."""
 
-    def __init__(self, budget=None, what='', use_env=True):
-        # ``use_env=False`` with ``budget=None``: no limit
+    def __init__(self, budget=None, what='', use_env=True, rule=None):
+        # ``use_env=False`` with ``budget=None``: no limit; ``rule``: how
+        # the caller's budget was set (for the messages)
         if budget is None and use_env:
             self.budget, self.rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
         else:
-            self.budget, self.rule = budget, 'set by the caller'
+            self.budget = budget
+            self.rule = rule or 'set by the caller'
         self.what = what
         self._outer = False
 

@@ -11,7 +11,7 @@ Item 53: the tier-1 residue clip and the RAM-aware memory guards.
    covariance, ``C_xz(tau) = [S expm(A^T tau)]_xz``.
 
 2. ``PHASE_J_MEM_BUDGET_GB`` / ``SPATIAL_MEM_BUDGET_GB`` unset: the budget is
-   ``min(6 GB, 0.6 x RAM - this process)``, at least 0.5 GB
+   ``min(6 GB, 0.6 x RAM - this process)``, at least max(0.5 GB, 10 % of RAM)
    (``final_integral.default_mem_budget``); explicit values as before.  The
    refusals say how the budget was set and, from the pre-pass, the RAM.
 
@@ -137,11 +137,14 @@ def machine(monkeypatch):
 
 @pytest.mark.parametrize('ram_gb, fp_gb, want_gb', [
     (8, 1.5, 0.6 * 8 - 1.5),        # a small machine: 3.3 GB, not 6
-    (8, 4.6, 0.5),                  # already short of memory: the floor
+    (8, 4.6, 0.8),                  # already short: the floor, 10 % of RAM
+    (4, 2.0, 0.5),                  # ... and never below 0.5 GB
     (16, 1.5, 6.0),                 # 9.6 - 1.5 > 6: the cap
     (16, 5.0, 0.6 * 16 - 5.0),
     (64, 1.5, 6.0),
     (64, 30.0, 6.0),
+    (64, 40.0, 6.0),                # a big process on a big machine: 10 %
+    (16, 12.0, 1.6),
 ])
 def test_default_budget_follows_the_machine(machine, ram_gb, fp_gb, want_gb):
     machine(ram_gb * GB, fp_gb * GB)
@@ -151,7 +154,7 @@ def test_default_budget_follows_the_machine(machine, ram_gb, fp_gb, want_gb):
     assert rule.startswith('default min(6.00 GB, 0.6 x')
     assert f'{ram_gb * GB / 1e9:.2f} GB RAM' in rule
     assert rule.endswith(f'= {want_gb:.2f} GB')
-    assert ('at least 0.50 GB' in rule) == (want_gb == 0.5)
+    assert ('at least' in rule) == (0.6 * ram_gb - fp_gb < want_gb)
 
 
 def test_default_budget_unknown_ram_or_footprint(machine):
@@ -175,23 +178,26 @@ def test_explicit_budget_is_used_as_given(machine, ram_gb):
         f({'PHASE_J_MEM_BUDGET_GB': 'lots'})
 
 
+@pytest.mark.skipif(not (sys.platform == 'darwin'
+                         or sys.platform.startswith('linux')),
+                    reason='footprint measured on macOS and Linux only')
 def test_process_footprint_is_measured():
     fp = FI.process_footprint_bytes()
     assert fp is not None and 50e6 < fp < 64 * GB
-    big = np.ones(50_000_000)                           # 400 MB, touched
+    big = np.ones(25_000_000)                           # 200 MB, touched
     fp2 = FI.process_footprint_bytes()
-    assert fp2 - fp > 300e6
+    assert fp2 - fp > 150e6
     del big
 
 
 def test_running_guard_names_the_default_rule(machine):
-    machine(8 * GB, 4.6 * GB)                            # budget: 0.5 GB floor
+    machine(8 * GB, 4.6 * GB)                            # budget: 0.8 GB floor
     with pytest.raises(FI.PhaseJResourceError) as ei:
         FI._plan_guard(10 ** 6, 10 ** 6, where='a test subset')
     msg = str(ei.value)
     assert 'over the budget of default min(6.00 GB, 0.6 x 8.00 GB RAM' in msg
-    assert 'at least 0.50 GB = 0.50 GB' in msg
-    assert ei.value.estimate['budget_bytes'] == 0.5 * GB
+    assert 'at least 0.80 GB = 0.80 GB' in msg
+    assert ei.value.estimate['budget_bytes'] == pytest.approx(0.8 * GB)
     FI._plan_guard(10 ** 5, 10 ** 5)                    # 0.11 GB: fits
 
 
@@ -233,6 +239,26 @@ def test_default_budget_reaches_the_prepass(machine):
     est = r['phase_j_memory']
     assert est['budget_bytes'] == pytest.approx(3.3 * GB)
     assert est['budget_rule'].startswith('default min(6.00 GB')
+
+
+def test_run_reads_the_budget_once(monkeypatch):
+    """The pre-pass and the running scope use one reading of the default
+    budget, however the process grows in between (reviewer finding)."""
+    monkeypatch.delenv('PHASE_J_MEM_BUDGET_GB', raising=False)
+    monkeypatch.setattr(FI, '_ram_bytes', lambda: 8 * GB)
+    calls = []
+
+    def growing():
+        calls.append(1)
+        return (1.0 + 0.5 * len(calls)) * GB             # +0.5 GB per read
+    monkeypatch.setattr(FI, 'process_footprint_bytes', growing)
+    r = compute_cumulants(_oscillator(), k=2, max_ell=1,
+                          external_fields=[('dT', 1)] * 2, parallel=False,
+                          verbose=False, tau_grid=np.array([0.0, 0.7]))
+    est = r['phase_j_memory']
+    assert est['budget_bytes'] == pytest.approx((4.8 - 1.5) * GB)
+    assert FI._PLAN_MEM['budget'] == est['budget_bytes']
+    assert FI._PLAN_MEM['rule'] == est['budget_rule']
 
 
 def _allen_cahn():

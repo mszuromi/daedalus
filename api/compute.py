@@ -317,7 +317,7 @@ def _combine_phase_j(results, nodes):
 
 def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                               prop, model, k, max_ell, verbose, preflight,
-                              ss_route=None, n_tau=1):
+                              ss_route=None, n_tau=1, run_budget=None):
     """Item 35: the estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
@@ -354,7 +354,9 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     # done only when the bound is over budget)
     runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
         else 1
-    budget, budget_rule = _fi.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    # ``run_budget``: the run's ``(bytes, rule)``, read once (item 53)
+    budget, budget_rule = (run_budget if run_budget is not None
+                           else _fi.mem_budget('PHASE_J_MEM_BUDGET_GB'))
     est = _fi.estimate_modesum_plans(
         [r['typed_diagram'] for r in diagram_records], propagator_data,
         num_params, prefactors=[r['combined_prefactor']
@@ -1966,12 +1968,17 @@ def _run_phase_j(state, grouped):
         'model_name': model.get('name'),
     }
 
-    # Item 35: the memory pre-pass, before any modesum plan is built.
+    # Item 35: the memory pre-pass, before any modesum plan is built.  The
+    # budget is read ONCE for the run (item 53: its default depends on what
+    # the process holds), so the pre-pass and the running guard agree.
+    from engine.integration.time_domain import final_integral as _fi_b
+    _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
+                   if hasattr(_fi_b, 'mem_budget') else None)
     mem_estimate = _phase_j_memory_preflight(
         diagram_records, propagator_data, num_params, prop, model, k,
         max_ell, verbose, state.preflight, ss_route=ss_route,
         n_tau=(len(tau_grid) if k <= 2 else 1) if switch_on is None
-        else len(switch_on['times']))
+        else len(switch_on['times']), run_budget=_run_budget)
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
@@ -2085,7 +2092,9 @@ def _run_phase_j(state, grouped):
     from engine.integration.time_domain import final_integral as _fi_mem
     import contextlib as _ctx
     _scope = (_fi_mem.phase_j_memory_scope(
-        what=f"{model.get('name', '<unnamed>')} k={k} max_ell={max_ell}")
+        what=f"{model.get('name', '<unnamed>')} k={k} max_ell={max_ell}",
+        **({} if _run_budget is None else dict(
+            budget=_run_budget[0], rule=_run_budget[1], use_env=False)))
         if hasattr(_fi_mem, 'phase_j_memory_scope')       # older engine: A/B
         else _ctx.nullcontext())
     if switch_on is not None:
