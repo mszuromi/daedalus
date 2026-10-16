@@ -405,6 +405,69 @@ def _sample_seeds(state_vars, slices, model, fundamental,
     return out
 
 
+def _undeclared_domain_vars(state_vars, model, seed_box):
+    """State variables seeded on the positive box only because their
+    saddle declares no domain (and ``seed_box`` does not set them)."""
+    declared = {p['natural_name']: p.get('domain')
+                for p in model.get('parameters', [])
+                if p.get('mean_field') and p.get('natural_name')}
+    return [var for var, _, _ in state_vars
+            if declared.get(var) is None and var not in (seed_box or {})]
+
+
+def _probe_negative_half_line(R, seeds, roots, state_vars, slices, model,
+                              seed_box, rtol, atol):
+    """Roots the default search cannot reach.  A field with no declared
+    domain is seeded on ``[0, 5s]`` only (widening that box moved existing
+    models' roots, see ``_seed_box_default``), so a root with a negative
+    value there (``x - x^3`` at ``x = -1``) was silently out of reach of
+    ``fixed_point_index``.  Re-run the same seeds with those components
+    negated (no new random draws: the selectable roots are unchanged) and
+    warn, naming the roots found and the remedy.  Returns the new roots."""
+    names = _undeclared_domain_vars(state_vars, model, seed_box)
+    if not names:
+        return []
+    cols = np.concatenate([np.arange(*slices[v]) for v in names])
+    mirrored = np.array(seeds, dtype=float, copy=True)
+    mirrored[:, cols] = -mirrored[:, cols]
+    found = []
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for x0 in mirrored:
+            try:
+                sol = _scipy_root(R, x0, method='hybr')
+            except (ValueError, ZeroDivisionError, OverflowError,
+                    FloatingPointError):
+                continue
+            if (not sol.success or not np.all(np.isfinite(sol.x))
+                    or np.max(np.abs(R(sol.x))) > 1e-7):
+                continue
+            found.append(np.asarray(sol.x, dtype=float))
+    new = []
+    for r in _dedup_roots(found, rtol=rtol, atol=atol):
+        if not np.any(r[cols] < 0):
+            continue
+        if len(_dedup_roots(list(roots) + [r], rtol=rtol,
+                            atol=atol)) > len(roots):
+            new.append(r)
+    if new:
+        new.sort(key=lambda r: float(r[cols[0]]))
+        shown = '; '.join(
+            ', '.join(f'{v}*={r[slices[v][0]:slices[v][1]].tolist()}'
+                      for v in names)
+            for r in new[:4])
+        warnings.warn(
+            f'solve_mean_field_dae: field(s) {", ".join(names)} declare no '
+            f'domain, so the root search covers only their non-negative '
+            f'values; {len(new)} more fixed point(s) exist with negative '
+            f'values ({shown}) and are NOT among the roots '
+            f'fixed_point_index ranges over.  Declare the field with '
+            f"domain='real' (SDE.field(name, domain='real') or "
+            f"physical_field(name, domain='real')), or pass mf_dae_seed_box, "
+            f'to include them.', stacklevel=3)
+    return new
+
+
 # ── Root deduplication ──────────────────────────────────────────────
 
 
@@ -544,6 +607,9 @@ def solve_mean_field_dae(
             print(f"  seed {s:3d}: converged to {sol.x}")
 
     deduped = _dedup_roots(raw_roots, rtol=rtol, atol=atol)
+    unsearched = _probe_negative_half_line(
+        R, seeds, deduped, state_vars, slices, model, seed_box,
+        rtol=rtol, atol=atol)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]
@@ -675,6 +741,9 @@ def solve_mean_field_dae(
         'n_seeds_converged':   n_converged,
         # Diagnostic: was stability classification actually run?
         'stability_analysis':  stab_on,
+        # Roots with a negative value in a field of undeclared domain:
+        # outside the default search, not selectable (see the warning).
+        'mf_unsearched_roots': [_build_root_dict(x) for x in unsearched],
     }
 
 
@@ -1032,6 +1101,68 @@ def linear_stability(
 # ── Compatibility wrapper for compute_cumulants ───────────────────────
 
 
+def _check_selected_root(ft, model, num_params, index_used, mf_values,
+                         rtol=1e-6, atol=1e-9):
+    """Raise ``AssertionError`` when the selected saddle leaves the raw
+    mean-field action sector (``ft._mf_sector_raw``: the (0,0), (1,0), (0,1)
+    coefficients before the saddle substitution) visibly non-zero: a
+    residual above ``max(atol, rtol * sum of |terms|)`` (a wrong equation
+    leaves a residual of the size of its terms; a converged root ~1e-12 of
+    it).  A coefficient with a symbol this run gives no value is skipped.
+    No-op without the raw sector (the proxy used inside ``expand``)."""
+    from sage.all import SR
+    raw = getattr(ft, '_mf_sector_raw', None)
+    if not raw:
+        return
+    from engine.core.field_theory import kernel_dc_gains_of
+    gains = kernel_dc_gains_of(ft._ns, model)
+    subs = dict(num_params)
+    failures = []
+    for key, poly in raw.items():
+        try:
+            items = poly.dict().items()
+        except AttributeError:
+            continue
+        for exp_vec, coeff in items:
+            c = SR(coeff)
+            try:
+                k_subs = gains.subs_dict(c)
+            except ValueError:
+                k_subs = None
+            if k_subs:
+                c = c.subs(k_subs)
+            terms = c.expand()
+            terms = (terms.operands()
+                     if terms.operator() is not None
+                     and 'add' in str(terms.operator()).lower() else [terms])
+            try:
+                vals = [SR(t).subs(subs) for t in terms]
+                if any(v.free_variables() for v in vals):
+                    continue
+                vals = [complex(v) for v in vals]
+            except (TypeError, ValueError, ArithmeticError):
+                continue
+            resid = abs(sum(vals))
+            scale = sum(abs(v) for v in vals)
+            if not np.isfinite(resid) or resid > max(atol, rtol * scale):
+                failures.append((key, exp_vec, coeff, resid, scale))
+    if failures:
+        lines = [
+            "This model's mean-field saddle does not satisfy its own "
+            f"equations at the selected root (fixed_point_index="
+            f"{index_used}: {mf_values}) — the MF action sector is non-zero "
+            "there.  The equations (.equation / .set_mf_equation) do not "
+            "match the action's deterministic drift at this root and these "
+            "parameters.",
+            "Diagnostics (internal):"]
+        for key, exp_vec, coeff, resid, scale in failures:
+            lines.append(f'  bigrade={key}  monomial_exponents={exp_vec}\n'
+                         f'    coefficient: {coeff}\n'
+                         f'    residual at the root: {resid:.3e} '
+                         f'(terms of size {scale:.3e})')
+        raise AssertionError('\n'.join(lines))
+
+
 def solve_mean_field_dae_compat(
         ft,
         model: dict,
@@ -1130,6 +1261,14 @@ def solve_mean_field_dae_compat(
             continue
         for i, v in enumerate(vals):
             num_params[sr_array[i]] = float(v)
+
+    # 3b. The selected root must zero the action's mean-field sector at the
+    # parameters of THIS run.  ``FieldTheory.expand`` checks the sector at
+    # the model's default point and root 0 only (and not at all on an
+    # expand-cache hit), so an equation that shares that root but no other
+    # was accepted at fixed_point_index >= 1.
+    _check_selected_root(ft, model, num_params,
+                         dae_result['mf_index_used'], mf_values)
 
     # 4. Legacy-compatible concatenated saddle vectors.
     nstar_concat = list(mf_values.get('nstar', []))

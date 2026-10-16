@@ -216,3 +216,102 @@ def test_scalar_bare_saddle_names_equal_the_population_twin(mf_v, mf_n, fn):
 def test_scalar_bare_saddle_inconsistent_closure_still_fails():
     with pytest.raises(AssertionError, match='mean-field saddle does not satisfy'):
         _run(_hawkes(False, 'w*nstar', '2*a*exp(Em + c*vstar)'), DN, ell=0)
+
+
+# ── 2. fixed_point_index ─────────────────────────────────────────────────────────────────────
+
+XX = [('x', 1), ('x', 1)]
+
+
+def _bistable(domain=None, rhs=None):
+    sde = (SDE('bist52').field('x', domain=domain).drift('x', 'x - x**3')
+           .noise('xi', Gaussian(var='0.1'), couples={'x': 1}))
+    if rhs is None:
+        return sde.build()
+    b = sde.to_builder()
+    b._equations[0]['rhs_text'] = rhs
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return b.build()
+
+
+def test_selected_root_is_checked_not_only_the_default_one():
+    """The equation ``x - x^3/4`` shares the root 0 (index 0, where the expansion's check runs) with
+    the action's drift ``x - x^3`` but not the root 2 (index 1): that run must stop, not compute at a
+    saddle the action does not have."""
+    m = _bistable(rhs='x - 0.25*x**3')
+    with pytest.raises(AssertionError, match=r'at the selected root \(fixed_point_index=1'):
+        _run(m, XX, ell=0, fixed_point_index=1)
+
+
+def test_consistent_model_passes_the_selected_root_check():
+    r = _run(_bistable(), XX, ell=1, fixed_point_index=1)
+    assert r['mf_values']['xstar'][0] == pytest.approx(1.0, abs=1e-12)
+
+
+def test_negative_root_of_an_undeclared_field_is_named():
+    """Undeclared domain: the search covers x >= 0 (the historical box; widening it moved other
+    models' roots), so -1 is not selectable -- but it is found and named, with the remedy."""
+    from api._mean_field_dae import solve_mean_field_dae
+    with pytest.warns(UserWarning, match=r"x\*=\[-1\.0.*domain='real'"):
+        r = solve_mean_field_dae(_bistable(), {}, fixed_point_index=1)
+    assert [x['values']['xstar'][0] for x in r['mf_all_roots']] == [0.0, 1.0]
+    assert r['mf_unsearched_roots'][0]['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
+
+
+def test_declared_real_domain_reaches_the_negative_root():
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        from api._mean_field_dae import solve_mean_field_dae
+        r = solve_mean_field_dae(_bistable('real'), {}, fixed_point_index=0)
+    assert r['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
+    assert r['mf_unsearched_roots'] == []
+    a = _run(_bistable('real'), XX, ell=1, fixed_point_index=0)
+    b = _run(_bistable('real'), XX, ell=1, fixed_point_index=2)
+    assert a['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
+    # x -> -x symmetry of x - x^3 with additive noise: the two wells have the same C(tau)
+    for ell in (0, 1):
+        assert np.allclose(a['C_tau_by_ell'][ell], b['C_tau_by_ell'][ell], rtol=1e-12)
+
+
+# ── 2c. the analyzer's parameter point ───────────────────────────────────────────────────────
+
+def _linear_hawkes(pin):
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'models', 'linear_hawkes.model.py')
+    spec = importlib.util.spec_from_file_location('lh_mf52', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    m = mod.build()
+    if pin:
+        for p in m['parameters']:
+            if p.get('mean_field') and p['name'] == 'nstar':
+                p['default'] = [5.0, 5.0]
+    return m, dict(mod.DEFAULT_FUNDAMENTAL)
+
+
+def test_analyzer_does_not_merge_a_saddle_default_into_given_parameters():
+    from api.analyze import analyze
+    saddles = []
+    for pin in (False, True):
+        m, params = _linear_hawkes(pin)
+        r = analyze(m, question={'parameters': params, 'k': 2, 'max_ell': 0,
+                                 'external_fields': [('n', 1), ('n', 1)]})
+        saddles.append(dict(r.traits.saddle))
+    assert saddles[0] == saddles[1]
+    assert saddles[0]['nstar'][0] != 5.0
+
+
+def test_analyzer_partial_parameters_wording_matches_compute_cumulants():
+    from api.analyze import analyze
+    m = (SDE('nd52').parameter('a', default=1.0).parameter('D').field('x').drift('x', '-a*x + 0.1')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    r = analyze(m, question={'parameters': {'a': 2.0}})
+    f = [f for f in r.findings if f.code == 'G0_PARAMETERS_MISSING'][0]
+    assert 'the ``parameters=`` given do not include them' in f.message and 'D' in f.message
+    with pytest.raises(ValueError, match='the ``parameters=`` given do not include them'):
+        _run(m, XX, ell=0, parameters={'a': 2.0})
+    r = analyze(m, question={'parameters': {'a': 2.0, 'D': 0.5}})
+    assert 'G0_PARAMETERS_MISSING' not in r.codes
