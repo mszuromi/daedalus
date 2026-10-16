@@ -1132,6 +1132,9 @@ def _install_exact_tree(r, exact, call):
     r['C_tau'] = sum(np.asarray(v) for v in by.values() if v is not None)
     fby = r.get('total_C_by_ell') or {}
     f0 = exact.callable()
+    # the exact tree itself, for its exact pairing and spectrum (item 54,
+    # api.me_output.ExactDelayTreeSide)
+    f0.exact_tree = exact
     fby[0] = f0
     r['total_C_by_ell'] = fby
     others = [f for ell, f in fby.items() if ell != 0 and f is not None]
