@@ -228,29 +228,39 @@ def test_discard_is_bit_identical_and_releases():
     g = b['phase_j_by_ell'][1]['groups'][0]['contribution']
     with pytest.raises(dd.DiscardedDiagramsError, match='released'):
         g(0.0, 0.5)
+    assert getattr(g, 'discarded', False)       # named downstream (ME, report)
 
 
 def test_discard_auto_fires_only_over_budget(monkeypatch):
     """'auto' is decided by the pre-pass: on exactly when the summed
-    estimate is over the budget and the largest diagram (+ one segment
-    working set, left out here: its dense-generator bound is ~30 MB on this
-    model) fits."""
+    estimate is over the budget and the largest diagram (+ the diagrams kept
+    for δ records + one segment working set, left out here: its
+    dense-generator bound exceeds these small models' sums) fits."""
     orig = SS.diagram_estimate
     monkeypatch.setattr(SS, 'diagram_estimate',
                         lambda *a, **k: (lambda e: e and (e[0], 0))(
                             orig(*a, **k)))
-    model = _delay_pp('spike', n_pop=1, w=((0.5,),)).build()
-    kw = dict(k=2, max_ell=1, external_fields=[('n', 1), ('n', 1)],
-              tau_grid=TAU, delay={'order': 4}, discard='auto')
+    # n-n externals of a point process: every diagram keeps its charge for
+    # its shot-noise δ records, so discard cannot lower the peak
+    est = _prepass_only(monkeypatch, _delay_pp('spike', n_pop=1,
+                                               w=((0.5,),)).build(),
+                        k=2, max_ell=1, external_fields=[('n', 1)] * 2,
+                        tau_grid=TAU, delay={'order': 4}, discard='auto')
+    assert est['delta_record_bytes'] == est['bytes']
+    assert est['held_bytes'] == est['bytes']
+    # the CME of the delayed negative feedback: no δ part, no records
+    model = _negative_feedback('erlang')
+    kw = dict(k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+              tau_grid=TAU, discard='auto')
     est = _prepass_only(monkeypatch, model, **kw)
     assert est['discard'] is False and est['held_bytes'] == est['bytes']
-    # a budget below the sum (12.9 MB) but above the largest diagram (6.7 MB)
-    b = (est['bytes'] + est['max_diagram_bytes']) / 2
-    assert est['max_diagram_bytes'] < b < est['bytes']
+    held = est['max_diagram_bytes']
+    assert est['delta_record_bytes'] == 0 and held < est['bytes']
+    b = (est['bytes'] + held) / 2
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', repr(b / 1e9))
     est = _prepass_only(monkeypatch, model, **kw)
     assert est['discard'] is True and not est['above_budget']
-    assert est['held_bytes'] == est['max_diagram_bytes']
+    assert est['held_bytes'] == held
     # below the largest diagram: off, and the refusal suggests nothing
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB',
                        repr(0.5 * est['max_diagram_bytes'] / 1e9))

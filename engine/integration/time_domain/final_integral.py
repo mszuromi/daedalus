@@ -13908,14 +13908,27 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
         return hit
 
     per_diagram = []            # (tuples, tuples_unpruned, per-edge, ss)
+    delta_rec = []              # may give shot-noise δ records (item 61)
     for td in typed_diagrams:
         per = []
         pidx = td.propagator_indices
+        parent = {}
+
+        def find(x):
+            while parent.get(x, x) != x:
+                x = parent[x]
+            return x
         for ek in td.prediagram[0].edges():
             hit = pidx.get(ek)          # the exact key: _lookup's first rule
             ri, pi = (hit if hit is not None
                       else _lookup_prop_indices(td, ek))
             per.append(counts(pi, ri))
+            if per[-1][2]:
+                parent[find(ek[0])] = find(ek[1])
+        # a δ-subset whose δ edges tie two external legs together is a
+        # shot-noise record, which keeps its subsets for later evaluation
+        roots = [find(v) for v in td.prediagram[2]]
+        delta_rec.append(len(set(roots)) < len(roots))
         t = math.prod((1 + n) if dl else n for (n, _a, dl) in per)
         tf = math.prod((1 + a) if dl else a for (_n, a, dl) in per)
         ss = None
@@ -13958,8 +13971,11 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     ss_n = ss_stat = ss_trans = 0
     worst = None
     max_diag = 0
+    delta_bytes = 0
     for i, (t, tf, per, ss) in enumerate(per_diagram):
         max_diag = max(max_diag, _bytes(per_diagram[i]))
+        if delta_rec[i]:
+            delta_bytes += _bytes(per_diagram[i])
         if ss is not None:
             ss_n += 1
             ss_stat += ss[0]
@@ -13976,8 +13992,10 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
            'n_diagrams': len(typed_diagrams), 'worst': worst,
            'pruned': bool(prune), 'prefactors_tested': tested,
            # the largest single diagram (pole plans or stationary states):
-           # what one diagram at a time holds (item 61, ``discard``)
-           'max_diagram_bytes': max_diag}
+           # what one diagram at a time holds (item 61, ``discard``), and
+           # the diagrams that may keep theirs (shot-noise δ records)
+           'max_diagram_bytes': max_diag,
+           'delta_record_bytes': delta_bytes}
     if ss_estimate is not None:
         # the transient term (one segment system at a time) is reported, not
         # added: it is not held across subsets, and each segment is checked

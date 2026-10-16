@@ -3089,9 +3089,9 @@ def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
         return None
     item = 8 if model.is_real else 16
     stat = trans = 0
-    for (nv, leaf_mask, edges) in layouts:
+    for (nv, leaf_mask, edges, mult) in layouts:
         s_, t_ = _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm)
-        stat += s_
+        stat += mult * s_
         trans = max(trans, t_)
     return stat, trans
 
@@ -3106,8 +3106,9 @@ PREPASS_MAX_DELTA_EDGES = 12
 def _line_layouts(typed_diagram, model, propagator_data, num_params,
                   has_delta):
     """The DAGs Phase J builds for one typed diagram, one per placement of
-    its kernel slots: ``[(nv, leaf_mask, edges)]`` with ``edges`` =
-    ``[(u, v, n_e, delta)]``, or ``None`` when a kernel is not realizable.
+    its kernel slots: ``[(nv, leaf_mask, edges, multiplicity)]`` with
+    ``edges`` = ``[(u, v, n_e, delta)]``, or ``None`` when a kernel is not
+    realizable.
     Mirrors ``final_integral.integrate_diagram`` section 2c (slots per leg
     from the coefficient's degree in the kernel symbol, placements as
     permutations, a local-weight kernel leaves the line as it is)."""
@@ -3137,9 +3138,10 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
                 if isinstance(e, str):
                     hit = ('refused', e)
                 else:
-                    dress = can_dress and (
-                        FI._kernel_modes(att, num_params) is not None)
-                    hit = ('dress' if dress else 'leg', e.n)
+                    km = (FI._kernel_modes(att, num_params) if can_dress
+                          else None)
+                    hit = (('dress', e.n, tuple(complex(mu) for (_c, mu) in km))
+                           if km is not None else ('leg', e.n))
             with model._lock:
                 model._extra[key] = hit
         return hit
@@ -3185,11 +3187,14 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
             for pl in c:
                 for ek, att in pl.items():
                     old = merged.get(ek)
-                    if old is None or kernel_info(att)[1] > kernel_info(old)[1]:
+                    n_new = (kernel_info(att) + (0, 0))[1]
+                    if old is None or n_new > (kernel_info(old) + (0, 0))[1]:
                         merged[ek] = att
-        placements, mult = [merged], n_pl
+        # every slot-capable line on the leg path (the largest of a plain,
+        # a dressed and a leg line), in one layout counted n_pl times
+        placements, mult, force_leg = [merged], n_pl, True
     else:
-        placements, mult = [{}], 1
+        placements, mult, force_leg = [{}], 1, False
         for c in choices:
             placements = [{**p, **q} for p in placements for q in c]
     pidx = typed_diagram.propagator_indices
@@ -3201,6 +3206,24 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
         e = model.entry(pi, ri)
         base.append((ek, pi, ri, e.n if e is not None else 0,
                      bool(has_delta(pi, ri))))
+    def coincides(pi, ri, mus):
+        # Phase J dresses a line only when no kernel rate equals one of its
+        # poles (``_dress_edge_modes``; else it reruns the diagram with that
+        # line on the leg path): the poles of a minimal entry realization
+        # all carry a residue
+        key = ('est_entry_poles', int(pi), int(ri))
+        with model._lock:
+            lam = model._extra.get(key)
+        if lam is None:
+            e = model.entry(pi, ri)
+            lam = (tuple(complex(x) for x in np.linalg.eigvals(e.a))
+                   if e is not None and e.n else ())
+            with model._lock:
+                model._extra[key] = lam
+        tol = FI.DRESS_RATE_RTOL
+        return any(abs(la - mu) <= tol * max(abs(la), abs(mu), 1e-300)
+                   for la in lam for mu in mus)
+
     out = []
     for pl in placements:
         nv = len(verts)
@@ -3209,6 +3232,8 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
             u, v = index[ek[0]], index[ek[1]]
             att = pl.get(ek)
             info = kernel_info(att) if att is not None else ('none',)
+            if info[0] == 'dress' and (force_leg or coincides(pi, ri, info[2])):
+                info = ('leg', info[1])
             if info[0] == 'dress':
                 de = model.dressed_entry(pi, ri, att)
                 nd = de.n if not isinstance(de, str) else n + info[1]
@@ -3220,7 +3245,7 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
                 edges.append((s_, v, info[1], False))
             else:
                 edges.append((u, v, n, dl))
-        out.extend([(nv, leaf_mask, tuple(edges))] * mult)
+        out.append((nv, leaf_mask, tuple(edges), mult))
     return out
 
 

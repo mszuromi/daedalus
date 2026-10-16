@@ -393,8 +393,12 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                        if r['ell'] == worst_rec['ell'])
                    if worst_rec else None))
     factor = _fi.PHASE_J_PREPASS_REFUSE_FACTOR
-    held = (est.get('max_diagram_bytes', est['bytes'])
-            + est.get('ss_transient_bytes', 0))
+    # one diagram at a time, plus the diagrams that keep their charge for
+    # their shot-noise δ records, plus one segment working set
+    held = min(est['bytes'] + est.get('ss_transient_bytes', 0),
+               est.get('max_diagram_bytes', est['bytes'])
+               + est.get('delta_record_bytes', 0)
+               + est.get('ss_transient_bytes', 0))
     if discard == 'auto':
         on = bool(discard_ok and runs == 1 and budget is not None
                   and est['bytes'] > budget and held <= budget)
@@ -2200,6 +2204,13 @@ def _run_phase_j(state, grouped):
                 # the bypass did not hold (a subset needed the pole route):
                 # the deformation runs after all
                 pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+            if _discard_on:
+                # several passes are averaged: evaluate-and-discard is off
+                # for them (item 61); the running guard still checks
+                _discard_on = False
+                if mem_estimate is not None:
+                    mem_estimate['discard'] = False
+                    mem_estimate['discard_dropped'] = 'pole_deformation'
             phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
                 _phase_j_pass, propagator_data, prop['pole_deformation'],
                 diagram_records, num_params, tau_points, pole_cluster_report)

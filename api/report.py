@@ -434,6 +434,10 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k, contrib=None,
     ax_contrib = fig.add_subplot(gs[1:, 1])
     if k == 2:
         try:
+            if getattr(contrib, 'discarded', False):
+                raise RuntimeError('released after its grid values were '
+                                   'taken (discard=True); rerun with '
+                                   'discard=False')
             if contrib is not None:
                 tau_grid = np.asarray(result['tau_grid'], dtype=float)
                 C_diag = _diagram_contribution_curve(contrib, tau_grid, k)

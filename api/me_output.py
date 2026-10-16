@@ -1563,6 +1563,11 @@ def from_result(result) -> CumulantME:
                 fn = g.get('contribution')
                 if fn is None:
                     continue
+                if getattr(fn, 'discarded', False):
+                    rs.append(f'diagram {g.get("kernel_id", gi)}: released '
+                              f'after its grid values were taken '
+                              f'(discard=True); rerun with discard=False')
+                    continue
                 parts = _parts_list(fn)
                 if parts is None:
                     rs.append(f'diagram {g.get("kernel_id", gi)}: its '
