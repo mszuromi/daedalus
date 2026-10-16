@@ -21,9 +21,9 @@ All notebooks run on the shared `daedalus` engine (imported as `dd`) — see the
 | 00 | [Quick start](tutorials/00_quick_start.ipynb) | one SDE end to end; simulation and exact variance | < 1 min |
 | 01 | [The SDE front end](tutorials/01_sde_front_end.ipynb) | populations, indexed parameters, functions, kernels, Itô / Stratonovich | < 1 min |
 | 02 | [The noise library](tutorials/02_noise_library.ipynb) | every source, jump law and composite; Lévy-driven OU | < 1 min |
-| 03 | [Point processes](tutorials/03_point_processes.ipynb) | linear and nonlinear Hawkes, `SDE.simulate`, δ components | ~2 min |
-| 04 | [Delays](tutorials/04_delays.ipynb) | hard and distributed delays, Padé loops, a delay in a nonlinear term | ~3 min |
-| 05 | [Outputs](tutorials/05_outputs.ipynb) | `dd.cumulant`, spectra, kernel integrals, `k = 3`, symbolic results, transients | ~3 min |
+| 03 | [Point processes](tutorials/03_point_processes.ipynb) | linear and nonlinear Hawkes, `SDE.simulate`, δ components | < 1 min |
+| 04 | [Delays](tutorials/04_delays.ipynb) | hard and distributed delays, Padé loops, a delay in a nonlinear term | ~1 min |
+| 05 | [Outputs](tutorials/05_outputs.ipynb) | `dd.cumulant`, spectra, kernel integrals, `k = 3`, symbolic results, transients | < 1 min |
 | 06 | [Writing the action by hand](tutorials/06_actions_by_hand.ipynb) | `TemporalModelBuilder`; model files; `dd.Config` / `dd.run` | < 1 min |
 | 07 | [Spatial models](tutorials/07_spatial.ipynb) | stochastic PDEs; pointers to the spatial examples | ~1 min |
 

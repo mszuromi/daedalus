@@ -449,7 +449,7 @@ GitHub's "Cite this repository" button gives the same in other formats):
   author  = {Szuromi, Matthew and Ocker, Gabriel K.},
   title   = {Daedalus: automated loop corrections for stochastic dynamics (MSRJD field theory framework)},
   url     = {https://github.com/mszuromi/daedalus},
-  version = {0.2.1},
+  note    = {version as in CITATION.cff},
   year    = {2026}
 }
 ```
