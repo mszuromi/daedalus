@@ -108,6 +108,8 @@ _PIPELINE_EXPORTS = {
     'PhaseJIncompleteError':     'api.compute',
     # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
     'PhaseJResourceError':       'api.compute',
+    # a discard=True run asked for a point it did not evaluate (item 61)
+    'DiscardedDiagramsError':    'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',

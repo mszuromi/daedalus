@@ -431,7 +431,8 @@ _COUNTER_KEYS = (
     'ss_batch_points', 'ss_prefetch_hits',
     'ss_realizations_built', 'ss_realization_refused',
     'ss_fallback_evals', 'ss_fallback_subsets', 'ss_kernel_entries',
-    'ss_dressed_entries', 'ss_estimated', 'ss_err_abs_sum',
+    'ss_dressed_entries', 'ss_dressed_reduced', 'ss_estimated',
+    'ss_err_abs_sum',
 )
 _COUNTER_DICTS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
@@ -858,9 +859,23 @@ class _ModelOps:
         ``G[pi, ri]`` (``a1, b1, c1``, delta part ``d1``) and the kernel
         (``a2, b2, c2``), ``A = [[a1, 0], [b2 c1, a2]]``,
         ``B = [b1; b2 d1]``, ``C = [0, c2]`` (impulse response ``d1 g(t) +
-        (g * G_smooth)(t)``); not reduced (a kernel rate the propagator
-        cancels stays as a stable, unobservable state).  Or a reason."""
-        key = ('dress', int(pi), int(ri), _att_key(att))
+        (g * G_smooth)(t)``).  Or a reason.
+
+        Item 61: the cascade is reduced by balanced truncation at the
+        truncation tolerance in effect (``api._realization.truncation_tol``;
+        ``0``, the exact setting: not reduced).  When the propagator cancels
+        the kernel's poles (a closed loop through the vertex: one
+        population, or a network whose ``G = (I - Lambda W K)^-1`` vanishes
+        at them) the kernel block is uncontrollable and the minimal line
+        has the entry's states only (n_G + n_K -> n_G); for a rank-1
+        multi-population ``W`` nothing can be discarded and the cascade is
+        returned as built.  The truncated line is stable (Hurwitz, checked)
+        with the H-infinity bound ``2 sum(discarded HSV) <= tol sigma_1``,
+        recorded per line in the realization's truncation record
+        (``Realization.truncation['dressed']``)."""
+        from api._realization import truncation_tol
+        tol = truncation_tol()
+        key = ('dress', int(pi), int(ri), _att_key(att), tol)
         with self._lock:
             hit = self._extra.get(key)
         if hit is not None:
@@ -892,6 +907,8 @@ class _ModelOps:
                 A[n1:, n1:] = a2
                 B = np.concatenate([b1, b2 * d1])
                 C = np.concatenate([np.zeros(n1, dtype=dt), c2])
+                if tol > 0 and A.shape[0] >= 2:
+                    A, B, C = self._reduce_dressed(A, B, C, tol, pi, ri, att)
             import types as _types
             out = _EntryOps(_types.SimpleNamespace(
                 a=A, b=B, c=C, n_states=A.shape[0]), dt)
@@ -899,6 +916,33 @@ class _ModelOps:
         with self._lock:
             self._extra[key] = out
         return out
+
+    def _reduce_dressed(self, A, B, C, tol, pi, ri, att):
+        """The dressed cascade ``(A, B, C)`` balanced-truncated at ``tol``
+        (``dressed_entry``), its record kept in the realization's
+        truncation record; the same arrays when nothing can be
+        discarded."""
+        from api._realization import balanced_truncation
+        ar, br, cr, info = balanced_truncation(A, B, C, tol)
+        rec = {'n': int(info['n']), 'r': int(info['r']),
+               'bound_rel': float(info['bound_rel']),
+               'err_rel': float(info['err_rel']), 'kept': info['kept']}
+        tr = getattr(self.real, 'truncation', None)
+        if isinstance(tr, dict):
+            with self._lock:
+                d = tr.setdefault('dressed', {})
+                d[(int(pi), int(ri), str(att.get('symbol')))] = rec
+                tr['dressed_states'] = (
+                    sum(v['n'] for v in d.values()),
+                    sum(v['r'] for v in d.values()))
+                tr['dressed_max_bound_rel'] = max(
+                    v['bound_rel'] for v in d.values())
+        if info['r'] >= A.shape[0]:
+            return A, B, C
+        _count('ss_dressed_reduced')
+        return (np.asarray(ar, dtype=self.dtype),
+                np.asarray(br, dtype=self.dtype).reshape(-1),
+                np.asarray(cr, dtype=self.dtype).reshape(-1))
 
     def solve_data(self, ents):
         """Resolvent data for a tensor whose axes carry the entries ``ents``
