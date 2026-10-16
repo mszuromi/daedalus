@@ -331,3 +331,24 @@ def test_dressed_line_record_and_rank_one_network():
     assert out[0].shape == (2, 2)
     assert np.all(np.linalg.eigvals(out[0]).real < 0)
     assert real.truncation['dressed'][(0, 1, 'g')]['r'] == 2
+
+
+def test_estimate_bounds_the_census_with_split_vertex_terms(census):
+    """Item 60's split: ``-ee x x - c x Conv(h, x) - c2 x Conv(h2, x)`` has a
+    vertex coefficient ``c z_h + c2 z_h2 + ee``; Phase J integrates each term
+    on its own (a plain term has no kernel slot) and holds all of them."""
+    from api.noise import Gaussian
+    s = (SDE('mixed vertex terms').parameter('a', default=1.0)
+         .parameter('b', default=1.0).parameter('c', default=0.5)
+         .parameter('c2', default=0.3).parameter('ee', default=0.3)
+         .parameter('D', default=0.1).field('x')
+         .define_kernel('h', freq_image='1/(1 + I*omega)')
+         .define_kernel('h2', freq_image='1/(1 + 2*I*omega)')
+         .drift('x', '-a*x + b - ee*x*x - c*x*Conv(h, x) - c2*x*Conv(h2, x)')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+    r = compute_cumulants(s.build(), k=2, max_ell=2,
+                          external_fields=[('x', 1), ('x', 1)],
+                          tau_grid=np.array([0.5]), parallel=False,
+                          verbose=False, use_cache=False)
+    built, est = sum(census), r['phase_j_memory']['ss_bytes']
+    assert 0 < built <= est

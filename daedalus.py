@@ -520,6 +520,13 @@ class Config:
     times: Any = None
     initial_covariance: Any = None
 
+    # ── delay kernels (api.delay) ──
+    # options of the Pade route for models with delays, as
+    # ``compute_cumulants(delay=...)``: e.g. {'order': 8} (fixed order) or
+    # {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}.  None:
+    # the route's defaults (automatic order).
+    delay: Optional[dict] = None
+
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
@@ -1140,6 +1147,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
     from api import compute_cumulants
 
+    # an api.sde.SDE (incl. point-process models) is built here, as by hand
+    if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
+        model = model.build()
     max_ell = (cfg.max_ell if cfg.max_ell is not None
                else (_meta(module, 'ell_default', 0) if module else 0))
     ext = cfg.external_fields
@@ -1222,6 +1232,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
     if cfg.policy is not None:
         kw['policy'] = cfg.policy
+    if getattr(cfg, 'delay', None) is not None:
+        kw['delay'] = dict(cfg.delay)
     if cfg.preflight is not None:
         kw['preflight'] = bool(cfg.preflight)
     cfg._check_switch_on()            # fields may be set after construction

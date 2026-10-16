@@ -3193,55 +3193,101 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
 
     edge_types = typed_diagram.edge_types
     va = getattr(typed_diagram, 'vertex_assignments', None) or {}
-    choices = []            # [[{edge_key: att}, ...] per (vertex, leg)]
-    for v, vt in va.items():
-        if not isinstance(vt, ConvVertexType) or not vt.kernel_attachments:
-            continue
-        phys_legs = [tuple(lg) for lg in vt.physical_legs]
-        coeff = SR(vt.coefficient)
-        by_leg = {}
-        for idx, att in enumerate(vt.kernel_attachments):
+    conv = [(v, vt) for v, vt in va.items()
+            if isinstance(vt, ConvVertexType) and vt.kernel_attachments]
+    for _v, vt in conv:
+        for att in vt.kernel_attachments:
             if kernel_info(att)[0] == 'refused':
                 return None
-            try:
-                q = int(coeff.degree(SR(att['symbol'])))
-            except Exception:
-                q = 1
-            by_leg.setdefault(tuple(att['leg']), []).extend([idx] * max(q, 1))
-        for leg, slots in by_leg.items():
-            n_copies = phys_legs.count(leg)
-            hits = sorted(ek for ek in D_.edges() if ek[1] == v
-                          and tuple(edge_types[ek][1]) == leg)
-            if len(slots) > n_copies or len(hits) != n_copies:
-                return None             # Phase J refuses the diagram
-            slots = tuple(slots) + (None,) * (n_copies - len(slots))
-            pls = sorted(set(itertools.permutations(slots)),
-                         key=lambda pl: tuple(-1 if x is None else x
-                                              for x in pl))
-            choices.append([{ek: vt.kernel_attachments[i]
-                             for ek, i in zip(hits, pl) if i is not None}
-                            for pl in pls])
-    n_pl = 1
-    for c in choices:
-        n_pl *= len(c)
-    if n_pl > PREPASS_MAX_PLACEMENTS:
-        # every slot-capable line a kernel line (its largest kernel), in one
-        # layout counted n_pl times
-        merged = {}
+    # item 60: a coefficient that sums terms with different powers of the
+    # kernel symbols is integrated once per choice of one term (grouped by
+    # those powers) per vertex, each with exactly its power's slots (a plain
+    # term none), and all of them are held (``_conv_monomial_split``)
+    powers = {}
+    for v, vt in conv:
+        syms = []
+        for att in vt.kernel_attachments:
+            if att['symbol'] not in syms:
+                syms.append(att['symbol'])
+        e = SR(vt.coefficient).expand()
+        op = e.operator()
+        terms = (e.operands() if op is not None
+                 and getattr(op, '__name__', '') == 'add_vararg' else [e])
+        try:
+            keys = sorted({tuple(int(t.degree(SR(z))) for z in syms)
+                           for t in terms})
+        except Exception:
+            keys = [None]
+        powers[v] = (syms, keys)
+    split = any(len(k) > 1 for _s, k in powers.values())
+    combos = (list(itertools.product(*[powers[v][1] for v, _vt in conv]))
+              if split else [None])
+    n_combos = len(combos)
+    if n_combos > PREPASS_MAX_PLACEMENTS:
+        combos = [None]               # bounded below: the whole coefficient
+
+    def slot_choices(combo):
+        """Per (vertex, leg): the placements of its kernel slots."""
+        choices = []
+        for ci, (v, vt) in enumerate(conv):
+            phys_legs = [tuple(lg) for lg in vt.physical_legs]
+            key = None if combo is None else combo[ci]
+            syms = powers[v][0]
+            coeff = SR(vt.coefficient)
+            by_leg = {}
+            for idx, att in enumerate(vt.kernel_attachments):
+                if key is not None:
+                    nq = max(key[syms.index(att['symbol'])], 0)
+                else:
+                    try:
+                        q = int(coeff.degree(SR(att['symbol'])))
+                    except Exception:
+                        q = 1
+                    nq = max(q, 1)
+                by_leg.setdefault(tuple(att['leg']), []).extend([idx] * nq)
+            for leg, slots in by_leg.items():
+                n_copies = phys_legs.count(leg)
+                hits = sorted(ek for ek in D_.edges() if ek[1] == v
+                              and tuple(edge_types[ek][1]) == leg)
+                if len(slots) > n_copies or len(hits) != n_copies:
+                    return None         # Phase J refuses the diagram
+                slots = tuple(slots) + (None,) * (n_copies - len(slots))
+                pls = sorted(set(itertools.permutations(slots)),
+                             key=lambda pl: tuple(-1 if x is None else x
+                                                  for x in pl))
+                choices.append([{ek: vt.kernel_attachments[i]
+                                 for ek, i in zip(hits, pl) if i is not None}
+                                for pl in pls])
+        return choices
+
+    plan = []                         # (placements, multiplicity, force_leg)
+    for combo in combos:
+        choices = slot_choices(combo)
+        if choices is None:
+            return None
+        n_pl = 1
         for c in choices:
-            for pl in c:
-                for ek, att in pl.items():
-                    old = merged.get(ek)
-                    n_new = (kernel_info(att) + (0, 0))[1]
-                    if old is None or n_new > (kernel_info(old) + (0, 0))[1]:
-                        merged[ek] = att
-        # every slot-capable line on the leg path (the largest of a plain,
-        # a dressed and a leg line), in one layout counted n_pl times
-        placements, mult, force_leg = [merged], n_pl, True
-    else:
-        placements, mult, force_leg = [{}], 1, False
-        for c in choices:
-            placements = [{**p, **q} for p in placements for q in c]
+            n_pl *= len(c)
+        mult0 = n_combos if (combo is None and split) else 1
+        if n_pl > PREPASS_MAX_PLACEMENTS or (combo is None and split):
+            # every slot-capable line a kernel line (its largest kernel) on
+            # the leg path (the largest of a plain, a dressed and a leg
+            # line), in one layout counted n_pl (x the term choices) times
+            merged = {}
+            for c in choices:
+                for pl in c:
+                    for ek, att in pl.items():
+                        old = merged.get(ek)
+                        n_new = (kernel_info(att) + (0, 0))[1]
+                        if old is None or n_new > (kernel_info(old)
+                                                   + (0, 0))[1]:
+                            merged[ek] = att
+            plan.append(([merged], n_pl * mult0, True))
+        else:
+            placements = [{}]
+            for c in choices:
+                placements = [{**p, **q} for p in placements for q in c]
+            plan.append((placements, 1, False))
     pidx = typed_diagram.propagator_indices
     base = []
     for ek in D_.edges():
@@ -3270,28 +3316,29 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
                    for la in lam for mu in mus)
 
     out = []
-    for pl in placements:
-        nv = len(verts)
-        edges = []
-        for (ek, pi, ri, n, dl) in base:
-            u, v = index[ek[0]], index[ek[1]]
-            att = pl.get(ek)
-            info = kernel_info(att) if att is not None else ('none',)
-            if info[0] == 'dress' and (force_leg or coincides(pi, ri, info[2])):
-                info = ('leg', info[1])
-            if info[0] == 'dress':
-                de = model.dressed_entry(pi, ri, att)
-                nd = de.n if not isinstance(de, str) else n + info[1]
-                # a direct term keeps c x the line's delta part (item 56)
-                edges.append((u, v, nd, dl and info[3]))
-            elif info[0] == 'leg':
-                s_ = nv
-                nv += 1
-                edges.append((u, s_, n, dl))
-                edges.append((s_, v, info[1], False))
-            else:
-                edges.append((u, v, n, dl))
-        out.append((nv, leaf_mask, tuple(edges), mult))
+    for (placements, mult, force_leg) in plan:
+        for pl in placements:
+            nv = len(verts)
+            edges = []
+            for (ek, pi, ri, n, dl) in base:
+                u, v = index[ek[0]], index[ek[1]]
+                att = pl.get(ek)
+                info = kernel_info(att) if att is not None else ('none',)
+                if info[0] == 'dress' and (force_leg or coincides(pi, ri, info[2])):
+                    info = ('leg', info[1])
+                if info[0] == 'dress':
+                    de = model.dressed_entry(pi, ri, att)
+                    nd = de.n if not isinstance(de, str) else n + info[1]
+                    # a direct term keeps c x the line's delta part (item 56)
+                    edges.append((u, v, nd, dl and info[3]))
+                elif info[0] == 'leg':
+                    s_ = nv
+                    nv += 1
+                    edges.append((u, s_, n, dl))
+                    edges.append((s_, v, info[1], False))
+                else:
+                    edges.append((u, v, n, dl))
+            out.append((nv, leaf_mask, tuple(edges), mult))
     return out
 
 

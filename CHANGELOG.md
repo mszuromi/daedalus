@@ -48,6 +48,61 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   - Zoo: only `conductance` (k = 2, one loop) builds dressed lines; its values move by <= 2.0e-16. No other entry
     builds a dressed line.
 
+#### Fixed: known-bugs sweep (item 60)
+
+Numbers move only where they were wrong: a conductance vertex mixing a plain and a kernel term (bug 14, below).
+Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identical except `spike_reset` k = 2
+(1.4e-15 relative, inside main's own process-to-process scatter of 2.6e-14 on that entry) and
+`dendritic_quad_soma_sigmoid` (1.4e-16, main scatters by the same). Every fix has a regression test in
+`tests/test_known_bugs_60.py` (bug 2's are in `tests/test_leftovers_39.py`).
+- **Silent wrong one loop for a conductance vertex mixing a plain and a kernel term (bug 14).** A vertex
+  coefficient such as `c*z_h + ee` (drift `-ee*x*x - c*x*Conv(h, x)`) got its kernel slots counted on the whole
+  coefficient and `z_h -> 1`, so the plain term was convolved too: one loop 0.49 relative off the Markov form (two
+  kernels on one vertex: 0.86; a cubic mixed vertex: 0.64; a point-process model: 0.043). The diagram is now
+  integrated term by term (one kernel monomial per vertex, its own slots and prefactor); all four agree with
+  their Markov forms to <= 6e-14. A prefactor that is not the product of the vertex coefficients is refused by
+  name. Single-monomial vertices are unchanged.
+- **Derivative atoms in the Taylor expansion (bug 2).** Maxima's multivariate `taylor()` stops `k` orders early on a
+  `k`-th derivative of an abstract function: `taylor(x*D[0](f)(x), (x, 0), 3)` has no `x^3` term. The per-atom
+  expansion now takes such an atom of one field variable through the univariate form, which is exact. An atom of
+  several field variables, or the legacy whole-action route (`DAEDALUS_EXPAND_LEGACY`, or an atom without a
+  polynomial expansion) when the action has a derivative atom, raises `DerivativeAtomTaylorError` instead of
+  returning a truncated expansion. No parsed model contains such atoms; a hand-built model dict could.
+- **G6 sees the realization (bug 5).** A graded or not numerically Hurwitz rounded realization was already checked
+  a posteriori and refused when broken (item 41). Its measured relative error (stationary variances by Lyapunov vs
+  the same variances by adaptive frequency quadrature of the transfer function) now enters the state-space
+  accuracy estimate R above 1e-6 (`result['phase_j_engine']['realization_check']`, analyzer
+  `realization_err_rel`; below 1e-6 the frequency quadrature's own noise on strongly graded spectra dominates).
+  A realization that passes the 1e-2 refusal check but is off by more than 1e-6 gives `G6_ACCURACY_LOW`. Graded
+  Pade-8 / 24 realizations measure ~2e-16: R unchanged.
+- **Standalone `analyze()` (bug 7)** makes the state-space route prediction itself, so its G3 pole-cluster
+  findings get the in-run levels (e.g. `G3_POLE_CLUSTER_UNRESOLVED` is info, not warning, when the route covers
+  the run).
+- **Population named `I` in the simulator (bug 8).** `I` iterates as the population and computes as the
+  imaginary unit (before: `range * float` TypeError in an expression using `I`).
+- **`dd.Config(delay=...)` and `question.delay` in config files (bug 10)** pass the delay route's options; `dd.run`
+  accepts an `SDE` object (built on the fly). Point-process models in config files go through a model file
+  (documented).
+- **Sage-preparsed literals in the simulators (bug 11).** `SDE.simulate`, `noise_samplers.simulate_ou_paths`,
+  `simulations.delay_sde_sim.simulate` and the Meixner sampler coerce `Integer` / `RealNumber` arguments
+  (`default_rng(Integer)` / `round(RealNumber)` raised TypeError in a Sage notebook).
+- **Mean-field solvers (bug 3).** A residual that overflows to inf / NaN under `np.errstate(all='ignore')` is
+  penalized (1e10) instead of passed on: NaN compares False against the acceptance tolerance and could pass as a
+  root. After `fsolve`, the legacy and heterogeneous iteration solvers check the residual at the returned point
+  (`SADDLE_RESIDUAL_RTOL = 1e-8` relative) and raise instead of returning a non-converged saddle (the engine's
+  saddle check caught such points later, with a less specific message).
+- **Invalid `DAEDALUS_PHASE_J_ENGINE` (bug 9)** raises at the `compute_cumulants` entry (before: at the first
+  Phase J subset, after the enumeration).
+- **Implicit point-process saddle equation (bug 13).** An SDE model with a point process whose mean-field equation
+  of a continuous field references that field (a conductance term `(Es - v)*Conv(g, n)`) was emitted as an explicit
+  `vstar = ...` substitution and failed the saddle check; it now uses the residual `.equation` route (the saddle
+  equals the exact root to 1e-13; simulation agrees within 2 SE).
+- **`symbolic_loop` (bug 4)** refuses a placement-wrapped contribution (`phase_j_placements`) by name
+  (`kernel_edge`) instead of an AttributeError (not reachable through `symbolic_cumulant`, which refuses
+  conductance vertices first).
+- Checked, already fixed on main: the delta-in-heaviside DC gain (bug 1, #20; end-to-end test added) and the
+  stale `legacy_baseline[multipopulation_test]` slow test (bug 6, refrozen in #20; passes on both engines).
+
 #### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
 
 Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
@@ -87,6 +142,30 @@ proper kernel takes exactly the old code paths).
   at (n, n) is -5.1727e-4 / -5.17376e-4 / -5.17376e-4 at n = 4 / 8 / 16, while `[n-1/n]` gives -3.21e-4 / -4.20e-4 /
   -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
   at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
+
+#### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
+
+- **Residue clip.** The tier-1 (exact-membership, double-precision) residues were zeroed below 1e-12 of the LARGEST
+  entry at their pole. Membership is exact, so every member residue is exactly nonzero and the clip could only drop a
+  genuine one: two fields whose units differ by 1e14 lost their cross propagator. On `x' = -x + 1e-14 z`,
+  `z' = -z/2` the pole engine returned `C_xz = 0`; it now matches the Lyapunov covariance to ~1e-16 (the default
+  state-space engine was already right). The certificate (`_residue_error`) always checked the unclipped values. The
+  numerical cofactor tiers keep their clip (no membership there: the clip removes the noise of non-member entries).
+  **No number moves on the zoo:** none of its 35 entries has a tier-1 residue below 1e-12 of its pole's largest
+  (smallest ratio 1.6e-8), so the stored residues are identical.
+- **Default memory budget.** With `PHASE_J_MEM_BUDGET_GB` / `SPATIAL_MEM_BUDGET_GB` unset the budget is
+  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least `max(0.5 GB, 10 % of RAM)`
+  (`final_integral.default_mem_budget`; the process is measured by its macOS `phys_footprint`, or resident + swap on
+  Linux). Same 6 GB on a machine with >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB
+  held; 6 GB on a 64 GB machine even with 40 GB held. `compute_cumulants` reads it once per run (the pre-pass and the
+  running guard use the same value). Explicit values are unchanged.
+  Every refusal says how its budget was set; the Phase J pre-pass refusal also states the machine's RAM and the
+  estimate; `result['phase_j_memory']['budget_rule']` records the rule.
+- **Periodic lattice sum.** `periodic_inverse_ft` in d=3 built the whole `(2 n_cut + 1)^3` lattice (~9 arrays,
+  13.6 GB at L = 30, k_max = 60: the peak of `tests/test_spatial_correlator.py`, which no guard saw). The sum
+  factorises over the phase axis, so it now runs one n1 slab at a time (0.3 GB peak for the same case). Values move
+  by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
+  the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
 
 #### Fixed: mean-field saddle (round 3, item 52)
 
@@ -138,30 +217,6 @@ No computed number moves (output side only).
   leaves it out with a warning).
 - **Mode merging.** More than 2,000 mode terms are now merged by exact rate first and clustered row by row
   (before: an n x n comparison, 7 GB for the middle chambers). Smaller lists take the old path unchanged.
-
-#### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
-
-- **Residue clip.** The tier-1 (exact-membership, double-precision) residues were zeroed below 1e-12 of the LARGEST
-  entry at their pole. Membership is exact, so every member residue is exactly nonzero and the clip could only drop a
-  genuine one: two fields whose units differ by 1e14 lost their cross propagator. On `x' = -x + 1e-14 z`,
-  `z' = -z/2` the pole engine returned `C_xz = 0`; it now matches the Lyapunov covariance to ~1e-16 (the default
-  state-space engine was already right). The certificate (`_residue_error`) always checked the unclipped values. The
-  numerical cofactor tiers keep their clip (no membership there: the clip removes the noise of non-member entries).
-  **No number moves on the zoo:** none of its 35 entries has a tier-1 residue below 1e-12 of its pole's largest
-  (smallest ratio 1.6e-8), so the stored residues are identical.
-- **Default memory budget.** With `PHASE_J_MEM_BUDGET_GB` / `SPATIAL_MEM_BUDGET_GB` unset the budget is
-  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least `max(0.5 GB, 10 % of RAM)`
-  (`final_integral.default_mem_budget`; the process is measured by its macOS `phys_footprint`, or resident + swap on
-  Linux). Same 6 GB on a machine with >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB
-  held; 6 GB on a 64 GB machine even with 40 GB held. `compute_cumulants` reads it once per run (the pre-pass and the
-  running guard use the same value). Explicit values are unchanged.
-  Every refusal says how its budget was set; the Phase J pre-pass refusal also states the machine's RAM and the
-  estimate; `result['phase_j_memory']['budget_rule']` records the rule.
-- **Periodic lattice sum.** `periodic_inverse_ft` in d=3 built the whole `(2 n_cut + 1)^3` lattice (~9 arrays,
-  13.6 GB at L = 30, k_max = 60: the peak of `tests/test_spatial_correlator.py`, which no guard saw). The sum
-  factorises over the phase axis, so it now runs one n1 slab at a time (0.3 GB peak for the same case). Values move
-  by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
-  the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
 
 #### Added: point-process front end (round 2, item 46)
 

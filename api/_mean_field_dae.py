@@ -23,6 +23,8 @@ from __future__ import annotations
 import warnings
 from typing import Optional
 
+import math
+
 import numpy as np
 from scipy.optimize import root as _scipy_root
 
@@ -319,7 +321,12 @@ def _build_residual(model: dict, params_np: dict,
                         f'residual of equation {k} ({lhs_text!r} = '
                         f'{rhs_text!r}, i={i}) is not a scalar: shape '
                         f'{np.shape(lhs - rhs)}.')
-                out[k] = float(diff[0])
+                val = float(diff[0])
+                # an overflow / invalid operation silenced above gives inf or
+                # NaN, never an exception: penalize it like the exceptions
+                # below, so a NaN residual can never pass as a root (NaN
+                # compares False against every tolerance)
+                out[k] = val if math.isfinite(val) else 1e10
             except NameError as exc:
                 # (still a NameError: the multi-start loop swallows ValueErrors
                 # as "no fixed point from this seed")
@@ -597,7 +604,7 @@ def solve_mean_field_dae(
         # Re-evaluate residual to confirm; scipy sometimes reports
         # success but with a residual above its internal tolerance.
         resid = R(sol.x)
-        if np.max(np.abs(resid)) > 1e-7:
+        if not np.all(np.isfinite(resid)) or np.max(np.abs(resid)) > 1e-7:
             continue
         # Filter complex-or-NaN.
         if not np.all(np.isfinite(sol.x)):

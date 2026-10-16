@@ -8,7 +8,39 @@ substitution dict that the propagator-pole / Phase J machinery needs.
 from __future__ import annotations
 
 from sage.all import SR, diff
+import math
+
 from scipy.optimize import fsolve
+
+
+#: Largest saddle residual |x - F(x)| accepted after ``fsolve``, relative to
+#: ``max(1, |x|)``: a non-converged solve (a 1e10 penalty region, an
+#: overflow, ``ier != 1`` far from a root) is refused instead of handed on.
+SADDLE_RESIDUAL_RTOL = 1e-8
+
+
+def _res_norm(fun, x):
+    try:
+        r = [abs(float(v)) for v in fun(x)]
+    except Exception:
+        return float('inf')
+    return max(r) if r and all(math.isfinite(v) for v in r) else float('inf')
+
+
+def _check_saddle_residual(who, residual, values):
+    """Raise ``RuntimeError`` when the residual at the returned saddle is
+    not finite or above ``SADDLE_RESIDUAL_RTOL`` (item 60)."""
+    res = [float(r) for r in residual]
+    scale = max([1.0] + [abs(float(v)) for v in values])
+    if all(math.isfinite(r) for r in res) and (
+            max([0.0] + [abs(r) for r in res]) <= SADDLE_RESIDUAL_RTOL * scale):
+        return
+    raise RuntimeError(
+        f'{who}: fsolve did not converge to a saddle: the residual at the '
+        f'returned point {list(values)!r} is {res!r} (tolerance '
+        f'{SADDLE_RESIDUAL_RTOL:g} x {scale:g}).  The mean-field equation may '
+        f'have no root in the search region, or a singularity / overflow '
+        f'near it; check the parameter values.')
 
 
 def _kernel_saddle_subs(ns, model, kernel_syms, exprs):
@@ -202,10 +234,13 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     # keep searching rather than aborting the whole solve.
     def mf_residual(nstar_vec):
         try:
-            return [nstar_vec[i] - nstar_target(i, nstar_vec)
-                    for i in ns.pop]
-        except (ValueError, ZeroDivisionError):
+            res = [float(nstar_vec[i] - nstar_target(i, nstar_vec))
+                   for i in ns.pop]
+        except (ValueError, ZeroDivisionError, OverflowError,
+                FloatingPointError, TypeError):
             return [1e10] * len(ns.pop)
+        # an overflow that did not raise (inf / NaN) is a singularity too
+        return [r if math.isfinite(r) else 1e10 for r in res]
 
     npop = len(ns.pop)
 
@@ -228,7 +263,12 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             attempt = fsolve(mf_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        # keep the converged attempt, else the one with the smallest residual
+        # (item 60: the residual is checked below)
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(mf_residual, attempt[0])
+                < _res_norm(mf_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:    # ier == 1  ⇒  converged
             break
 
@@ -249,6 +289,8 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             f'solve_mean_field: fsolve returned non-finite n* = '
             f'{nstar_vals!r}.  The mf_eq probably has a singularity '
             f'within the iteration basin; check parameter values.')
+    _check_saddle_residual('solve_mean_field', mf_residual(nstar_vals),
+                           nstar_vals)
     # Heuristic warning: if ier != 1 we may have a non-converged point.
     sol_ier = sol[2]
     if sol_ier != 1:
@@ -540,8 +582,9 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
                 for i, target_expr in enumerate(arr):
                     target = float(SR(target_expr).subs(sub))
                     res.append(float(iter_vals[sname][i]) - target)
-            return res
-        except (ValueError, ZeroDivisionError, TypeError):
+            return [r if math.isfinite(r) else 1e10 for r in res]
+        except (ValueError, ZeroDivisionError, TypeError, OverflowError,
+                FloatingPointError):
             return [1e10] * total_n
 
     # ── fsolve ──────────────────────────────────────────────────
@@ -555,7 +598,10 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             attempt = fsolve(_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(_residual, attempt[0])
+                < _res_norm(_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:
             break
     if sol is None:
@@ -565,12 +611,13 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
 
     # ── Unpack and verify ────────────────────────────────────────
     flat_vals = list(sol[0])
-    import math
     if not all(math.isfinite(x) for x in flat_vals):
         raise RuntimeError(
             f'solve_mean_field (heterogeneous): fsolve returned non-finite '
             f'iteration-saddle values {flat_vals!r}.')
 
+    _check_saddle_residual('solve_mean_field (heterogeneous)',
+                           _residual(flat_vals), flat_vals)
     iter_vals = _unflatten(flat_vals)
     comp_vals = _eval_compound(iter_vals)
 

@@ -976,6 +976,15 @@ class SDE:
                 return None
             if not (L - self._sym(f)).simplify_full().is_zero():
                 return None
+            if (self._fields[f]['exposed'] is None
+                    and re.search(rf'\b{re.escape(f)}\s*\[', e['rhs'])):
+                # a continuous field with x = F(x, ...) (e.g. a conductance
+                # term (Es - v)*Conv(g, n)): an implicit saddle equation, not
+                # an explicit xstar = ... (which the engine substitutes as
+                # written); the residual ``.equation`` form solves it.  (A
+                # spike train's nstar = F(nstar) is the iteration saddle the
+                # hand-written point-process models use: unchanged.)
+                return None
             out.append((f'{f}star', pat.sub(lambda m: m.group(1) + 'star[', e['rhs'])))
         return out
 

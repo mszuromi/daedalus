@@ -749,6 +749,29 @@ class PhaseJEngineFallbackWarning(UserWarning):
     counts them by reason; the values are the pole route's there)."""
 
 
+def _realization_check(prop, num_params):
+    """Item 60: the state-space realization's a posteriori check
+    (``api._realization``: run when the rounded realization is graded or
+    not numerically Hurwitz) for the analyzer's G6 accuracy estimate:
+    ``{'checked', 'err_rel', 'graded', 'bad_margin'}``, or ``None`` when the
+    route has no realization of this model."""
+    try:
+        from engine.integration.time_domain import statespace as _ssr
+        ok, _why = _ssr.model_route(prop, num_params)   # engine on, Itô rule
+        if not ok:
+            return None
+        m, _why = _ssr.realization_for(prop, num_params)
+    except Exception:
+        return None
+    if m is None:
+        return None
+    cond = getattr(m.real, 'conditioning', None) or {}
+    return {'checked': bool(cond.get('aposteriori_checked')),
+            'err_rel': cond.get('aposteriori_err_rel'),
+            'graded': bool(cond.get('graded')),
+            'bad_margin': bool(cond.get('bad_margin'))}
+
+
 def _engine_census(result, counters):
     """``result['phase_j_engine']`` (S3): the run's prediction (set by the
     Phase J backend) plus the census of the counters: subsets built on the
@@ -1310,6 +1333,10 @@ def compute_cumulants(
     # the call as given (a model with delay kernels is handed to api.delay,
     # which re-enters compute_cumulants with Pade-approximated copies)
     _delay_call = dict(locals())
+    # item 60: a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
+    # first Phase J subset after the enumeration
+    from engine.integration.time_domain import statespace as _ss_env
+    _ss_env.engine_requested()
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
@@ -2168,6 +2195,7 @@ def _run_phase_j(state, grouped):
     engine_report = dict(ss_route, pole_deformation=(
         None if prop.get('pole_deformation') is None
         else 'bypassed' if ss_route['bypass_deformation'] else 'used'))
+    engine_report['realization_check'] = _realization_check(prop, num_params)
     # the running guard: every plan of this run counts against one budget
     from engine.integration.time_domain import final_integral as _fi_mem
     import contextlib as _ctx
