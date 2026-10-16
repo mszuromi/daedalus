@@ -107,8 +107,119 @@ def field_of(expr):
     return expr.operands()[1]
 
 
+class KernelDCGains:
+    """The integral ``ĝ(0) = ∫g(t)dt`` of each declared kernel, read off
+    the model's ``kernel_ft_image`` hook at ``omega = 0`` (so a delay factor
+    ``exp(-I*omega*d)`` counts 1 and a Pade copy of it P(0)/Q(0) = 1).
+
+    Lazy: the hook runs once, on the first request (a ``time_expr`` kernel
+    costs a symbolic Fourier transform), and only kernels actually met at a
+    constant are evaluated.  A kernel without an image (``DeltaKernel``, an
+    opaque symbol) has no gain here (``None``): the caller keeps the
+    normalised rule ``Conv(g, c) = c`` for it.  A gain equal to 1 comes back
+    as the exact ``SR(1)``, so a normalised kernel leaves every expression
+    untouched."""
+
+    def __init__(self, ns, model):
+        self._ns = ns
+        self._hook = (model or {}).get('kernel_ft_image')
+        self._images = None
+        self._omega = None
+        self._sym_cache = {}
+
+    def _load(self):
+        if self._images is not None:
+            return
+        from sage.all import SR as _SR
+        self._images = {}
+        if self._hook is None:
+            return
+        om = _SR.var('_kernel_dc_omega')
+        try:
+            imgs = self._hook(self._ns, om) or {}
+        except Exception:
+            # an image the hook cannot build fails later, where the
+            # propagator needs it, with the hook's own message
+            return
+        self._omega = om
+        self._images = {_SR(k): _SR(v) for k, v in imgs.items()}
+
+    def symbols(self):
+        """The kernel symbols that have an image."""
+        self._load()
+        return list(self._images)
+
+    def symbol_gain(self, ksym):
+        """``ĝ(0)`` of one kernel symbol, or ``None`` without an image.
+        Raises ``ValueError`` when the image is singular at omega = 0 (a
+        kernel with no finite integral, e.g. a pure integrator)."""
+        from sage.all import SR as _SR
+        self._load()
+        ksym = _SR(ksym)
+        if ksym in self._sym_cache:
+            return self._sym_cache[ksym]
+        img = self._images.get(ksym)
+        if img is None:
+            self._sym_cache[ksym] = None
+            return None
+        try:
+            g0 = img.subs({self._omega: 0})
+            txt = str(g0)
+            bad = 'Infinity' in txt or 'infinity' in txt or 'NaN' in txt
+        except Exception:
+            bad = True
+        if bad:
+            raise ValueError(
+                f'kernel {ksym}: its frequency image {img} (omega = '
+                f'{self._omega}) is singular at omega = 0, so the kernel '
+                f'has no finite integral and Conv({ksym}, constant) has no '
+                f'stationary value; the mean-field saddle does not exist.')
+        if not g0.is_trivially_equal(_SR(1)):
+            try:
+                if (g0 - 1).simplify_full().is_zero():
+                    g0 = _SR(1)
+            except Exception:
+                pass
+        else:
+            g0 = _SR(1)
+        self._sym_cache[ksym] = g0
+        return g0
+
+    def gain(self, kexpr):
+        """``ĝ(0)`` of a kernel argument of ``Conv`` (a kernel symbol, or an
+        expression in kernel symbols such as ``2*g``), or ``None`` when it
+        holds no kernel with an image."""
+        from sage.all import SR as _SR
+        self._load()
+        if not self._images:
+            return None
+        try:
+            kexpr = _SR(kexpr)
+            ks = [v for v in kexpr.variables() if v in self._images]
+        except Exception:
+            return None
+        if not ks:
+            return None
+        subs = {v: self.symbol_gain(v) for v in ks}
+        g = kexpr.subs(subs)
+        return _SR(1) if g.is_trivially_equal(_SR(1)) else g
+
+    def subs_dict(self, expr):
+        """``{kernel symbol: ĝ(0)}`` for the kernel symbols with an image
+        that occur in ``expr`` (empty when none do)."""
+        from sage.all import SR as _SR
+        self._load()
+        if not self._images:
+            return {}
+        try:
+            present = [v for v in _SR(expr).variables() if v in self._images]
+        except Exception:
+            return {}
+        return {v: self.symbol_gain(v) for v in present}
+
+
 def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
-                          attachments_out=None):
+                          attachments_out=None, dc_gains=None):
     """Resolve every ``Conv(g, n_arg)`` atom in an action expression,
     applying the physical rules of time-domain convolution.
 
@@ -179,9 +290,11 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
         like ``vstar``, ``nstar`` and external parameters like ``a``,
         ``w``, ``tau`` — is treated as time-constant.
     normalized : bool, default True
-        Assume every kernel has ``ĝ(0) = 1``.  Set ``False`` and
-        supply per-kernel DC gains in a future revision when
-        non-normalised kernels become relevant.
+        Unused (kept for callers); see ``dc_gains``.
+    dc_gains : KernelDCGains, optional
+        The kernels' integrals ``ĝ(0)`` for rule 3.  Without it (or for a
+        kernel it has no image of) every kernel is taken as normalised,
+        ``ĝ(0) = 1``.
     taylor_order : int, optional
         Total-degree truncation for the pre-Taylor step (rule 0).
         Set to ``FieldTheory.taylor_order`` by the caller to keep the
@@ -227,6 +340,15 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
         except (AttributeError, TypeError):
             return False
 
+    def _dc(g, c):
+        """Rule 3: ``Conv(g, c) = ĝ(0)·c``; unchanged for ĝ(0) = 1."""
+        if dc_gains is None or _SR(c).is_trivial_zero():
+            return c
+        gain = dc_gains.gain(g)
+        if gain is None or gain.is_trivially_equal(_SR(1)):
+            return c
+        return gain * c
+
     def _reduce_arg(g, n_arg):
         """Reduce Conv(g, n_arg).  Pre-Taylor (rule 0) first, then
         recurses on sums and products; falls through to the per-atom
@@ -262,7 +384,8 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
 
             if not fluct_factors:
                 # Whole product is constant ⇒ rule 3.
-                return _prod(const_factors) if const_factors else _SR(1)
+                return _dc(g, _prod(const_factors) if const_factors
+                           else _SR(1))
 
             const_part = (_reduce(lambda a, b: a * b, const_factors)
                           if const_factors else _SR(1))
@@ -272,7 +395,7 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
 
         # Leaf — atom or unhandled operator.
         if not _has_fluct(n_arg):
-            return _SR(n_arg)              # rule 3
+            return _dc(g, _SR(n_arg))      # rule 3
         # Rule 4: defer the kernel to the FT pipeline.  Record the
         # (kernel, attached-fluct) association so downstream vertex
         # extraction can recover which leg the kernel goes with.
@@ -350,5 +473,5 @@ def kernel_attachments_in_coefficient(coeff, attachments, kernel_symbols=None):
     return out
 
 
-__all__ = ['Conv', 'is_convolution', 'kernel_of', 'field_of',
+__all__ = ['KernelDCGains', 'Conv', 'is_convolution', 'kernel_of', 'field_of',
            'reduce_conv_in_action', 'kernel_attachments_in_coefficient']

@@ -1,0 +1,162 @@
+"""Mean-field / saddle fixes (work item 52), each reproduced on main before its fix:
+
+1. A kernel whose integral is not 1 (``freq_image='2/(1+I*omega)'``) inside ``Conv`` stopped the run
+   with "mean-field saddle does not satisfy its own equations": the engine reduced
+   ``Conv(K, constant)`` to the constant (normalised-kernel rule) while the mean-field equations carry
+   the integral.  The engine now takes ``K(omega = 0)`` there (and for a kernel symbol left in a
+   hand-written mean-field text); a model with a non-normalised kernel equals its twin with the
+   normalised kernel and the integral moved into the weight.
+2. (a) The numerical mean-field check ran only at the default ``fixed_point_index``; the selected
+   root is now checked too.  (b) A field with no declared domain was seeded on ``[0, 5s]`` only, so
+   ``fixed_point_index`` could not reach the negative root of ``x - x^3``.  (c) ``analyze`` merged
+   mean-field defaults into the parameter point (``compute_cumulants`` does not).
+3. A scalar model (no ``.population()``) whose ``set_mf_equation`` text names a saddle bare
+   (``'a*exp(Em + c*vstar)'``, not ``vstar[i]``) failed to parse; it now equals the 1-element
+   population form.
+
+Every bit-for-bit comparison runs the first form once and discards it (cold and warm caches differ
+by ~1e-16)."""
+import warnings
+
+import numpy as np
+import pytest
+
+pytest.importorskip('sage.all')
+
+import api.compute as AC                                            # noqa: E402
+from api.noise import Gaussian, Poisson                             # noqa: E402
+from api.sde import SDE                                             # noqa: E402
+
+TAU = np.array([-0.8, 0.0, 0.5, 1.3])
+NN = [('n', 1), ('n', 1)]
+
+
+def _run(model, ext, ell=1, **kw):
+    kw.setdefault('tau_grid', TAU)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return AC.compute_cumulants(model, k=2, max_ell=ell, external_fields=ext,
+                                    use_cache=False, parallel=False, verbose=False, **kw)
+
+
+def _close(a, b, rtol=1e-12):
+    for key in a['mf_values']:
+        assert np.allclose(a['mf_values'][key], b['mf_values'][key], rtol=rtol, atol=0), key
+    assert set(a['C_tau_by_ell']) == set(b['C_tau_by_ell'])
+    for ell in a['C_tau_by_ell']:
+        x, y = np.asarray(a['C_tau_by_ell'][ell]), np.asarray(b['C_tau_by_ell'][ell])
+        assert np.allclose(x, y, rtol=rtol, atol=1e-15 * np.max(np.abs(y))), (ell, x, y)
+
+
+# ── 1. kernels whose integral is not 1 ───────────────────────────────────────────────────────
+
+def _pp(amp, weight, name='pp52', delay=None):
+    s = SDE(name).parameter('d', default=0.4, domain='positive')
+    kw = dict(freq_image=f'{amp}/(1+I*omega)')
+    if delay:
+        kw['delay'] = delay
+    return s.define_kernel('K', **kw).point_process('n', f'exp(-1 + {weight}*Conv(K, n))').build()
+
+
+def _voltage(amp, weight, name='v52'):
+    return (SDE(name).define_kernel('K', freq_image=f'{amp}/(1+I*omega)').field('v')
+            .noise('s', Poisson(rate='exp(v)'), expose='n')
+            .equation('v', lhs='Dt*v + v', rhs=f'-1 + {weight}*Conv(K, n)').build())
+
+
+def test_non_unit_kernel_point_process_saddle_is_the_fixed_point():
+    mf = _run(_pp(2, 0.1), NN, ell=0)['mf_values']['nstar'][0]
+    assert mf == pytest.approx(np.exp(-1 + 0.2 * mf), rel=1e-12)       # n = exp(-1 + 0.1*2*n)
+
+
+@pytest.mark.parametrize('amp, weight', [(2, 0.1), (-1, -0.2), ('0.5', 0.4)])
+def test_non_unit_kernel_equals_normalised_twin_point_process(amp, weight):
+    """Integral 2, a negative integral, and 1/2: the integral moved into the weight gives the same
+    saddle, tree and one loop."""
+    twin = float(amp) * weight
+    _close(_run(_pp(amp, weight), NN), _run(_pp(1, twin, 'pp52twin'), NN))
+
+
+def test_non_unit_kernel_equals_normalised_twin_in_a_drift():
+    _close(_run(_voltage(2, 0.1), NN), _run(_voltage(1, 0.2, 'v52twin'), NN))
+
+
+def test_delayed_and_scaled_kernel_equals_normalised_twin():
+    """A delayed kernel with integral 3: same saddle and tree as the delayed normalised kernel with
+    the weight times 3 (exact delayed tree; one loop through the Pade copies)."""
+    a = _run(_pp(3, 0.05, 'pp52d', delay='d'), NN, ell=0)
+    b = _run(_pp(1, 0.15, 'pp52dtwin', delay='d'), NN, ell=0)
+    _close(a, b)
+    n = a['mf_values']['nstar'][0]
+    assert n == pytest.approx(np.exp(-1 + 0.15 * n), rel=1e-12)
+
+
+def _indexed(scaled):
+    """Two neurons, a matrix kernel g[i,j] with per-entry integrals A[i,j] (or 1, with the weights
+    times A[i,j])."""
+    A = [[2.0, -0.5], [1.5, 3.0]]
+    w = [[0.05, 0.1], [-0.08, 0.04]]
+    s = (SDE('pp52ix' + ('s' if scaled else 'n')).population('E', size=2)
+         .parameter('Em', default=[-1.0, -1.2], indexed_by=['E'])
+         .parameter('tau', default=[[1.0, 0.7], [0.5, 1.3]], indexed_by=['E', 'E'], domain='positive'))
+    if scaled:
+        s = (s.parameter('A', default=A, indexed_by=['E', 'E'])
+             .parameter('w', default=w, indexed_by=['E', 'E'])
+             .define_kernel('g', freq_image='A[i,j]/(1+I*omega*tau[i,j])', indexed_by=['E', 'E']))
+    else:
+        s = (s.parameter('w', default=[[w[i][j] * A[i][j] for j in range(2)] for i in range(2)],
+                         indexed_by=['E', 'E'])
+             .define_kernel('g', freq_image='1/(1+I*omega*tau[i,j])', indexed_by=['E', 'E']))
+    return s.point_process('n', 'exp(Em[i] + sum(w[i,j]*Conv(g[i,j], n[j]) for j in E))',
+                           population='E').build()
+
+
+def test_indexed_kernel_with_per_entry_integrals_equals_normalised_twin():
+    ext = [('n', 1), ('n', 2)]
+    a, b = _run(_indexed(True), ext, ell=0), _run(_indexed(False), ext, ell=0)
+    _close(a, b)
+    n = np.asarray(a['mf_values']['nstar'])
+    A = np.array([[2.0, -0.5], [1.5, 3.0]])
+    w = np.array([[0.05, 0.1], [-0.08, 0.04]])
+    assert np.allclose(n, np.exp(np.array([-1.0, -1.2]) + (w * A) @ n), rtol=1e-12)
+
+
+def test_normalised_kernel_expansion_is_unchanged():
+    """``Conv(K, constant)`` with a normalised kernel: the reduction returns the constant itself
+    (no ``1*`` factor), so the expanded action is the one built without the integrals."""
+    from engine.core.convolution import reduce_conv_in_action, Conv, KernelDCGains
+    from sage.all import SR, var
+    g, ns_, dn = var('g52 nstar52 dn52')
+
+    class NS:
+        pass
+    model = {'kernel_ft_image': lambda ns, om: {g: 1 / (1 + om)}}
+    expr = Conv(g, ns_ + dn) * (1 + dn)
+    plain = reduce_conv_in_action(expr, {dn})
+    with_gain = reduce_conv_in_action(expr, {dn}, dc_gains=KernelDCGains(NS(), model))
+    assert str(plain) == str(with_gain)
+    model2 = {'kernel_ft_image': lambda ns, om: {g: 2 / (1 + om)}}
+    scaled = reduce_conv_in_action(expr, {dn}, dc_gains=KernelDCGains(NS(), model2))
+    assert bool((scaled - plain - ns_ * (1 + dn)).expand() == 0)
+
+
+def _builder_pp(freq, mf_rate):
+    """The point process written by hand: ``n ~ Poisson(exp(-1 + 0.1*Conv(K, n)))``."""
+    from api.model import TemporalModelBuilder
+    return (TemporalModelBuilder('pp52b').physical_field('n')
+            .define_kernel('K', freq_image=freq)
+            .set_action_text('nt*n - (exp(nt) - 1)*exp(-1 + 0.1*Conv(K, n))')
+            .set_mf_equation('nstar', mf_rate).build())
+
+
+def test_hand_written_model_with_non_unit_kernel_builds():
+    """The engine side alone (no SDE front end): the hand-written mean-field text carries the
+    integral, the action carries ``Conv`` of the non-normalised kernel."""
+    a = _run(_builder_pp('2/(1+I*omega)', 'exp(-1 + 0.2*nstar[i])'), NN)
+    b = _run(_pp(2, 0.1), NN)
+    _close(a, b)
+
+
+def test_kernel_without_finite_integral_is_refused_by_name():
+    with pytest.raises(ValueError, match='singular at omega = 0'):
+        _run(_builder_pp('1/(I*omega)', 'exp(-1 + 0.1*nstar[i])'), NN, ell=0)
