@@ -371,6 +371,9 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
         # fields, a namespace side effect of ``expand()`` that
         # ``extract_vertex_types`` needs (restored by load_expand).
         'kernel_attachments': _kernel_attachments_to_names(ft._ns),
+        # Written with Conv(g, constant) = ĝ(0)·constant (item 52); a bundle
+        # without it took every kernel as normalised.
+        'kernel_dc_rule':  1,
         'cache_version':   2,
     }
     sage_save(bundle, path.removesuffix('.sobj'))
@@ -442,6 +445,31 @@ def bundle_stale_reason(model: dict, ft, bundle: dict):
             return (f'[expand-cache] the bundle predates stored kernel '
                     f'attachments and the vertex sector carries the kernel '
                     f'symbol {hit} — stale cache (re-expanding).')
+
+    # Kernel integrals.  A bundle written before ``Conv(g, constant)`` took
+    # the kernel's integral ĝ(0) treated every kernel as normalised; it is
+    # stale only for a model with a kernel whose integral is not 1.
+    if 'kernel_dc_rule' not in bundle and model.get('kernel_ft_image'):
+        hit = _non_unit_kernel(model, ft)
+        if hit is not None:
+            return (f'[expand-cache] the bundle predates kernel integrals '
+                    f'and kernel {hit} does not integrate to 1 — stale '
+                    f'cache (re-expanding).')
+    return None
+
+
+def _non_unit_kernel(model, ft):
+    """The first kernel symbol whose integral ĝ(0) is not 1 (or cannot be
+    read), or ``None``."""
+    from engine.core.field_theory import kernel_dc_gains_of
+    gains = kernel_dc_gains_of(ft._ns, model)
+    for ksym in gains.symbols():
+        try:
+            g = gains.symbol_gain(ksym)
+        except ValueError:
+            return ksym
+        if g is not None and not g.is_trivially_equal(SR(1)):
+            return ksym
     return None
 
 

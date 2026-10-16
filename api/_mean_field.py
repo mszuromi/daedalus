@@ -43,6 +43,26 @@ def _check_saddle_residual(who, residual, values):
         f'near it; check the parameter values.')
 
 
+def _kernel_saddle_subs(ns, model, kernel_syms, exprs):
+    """``{kernel symbol: value at the saddle}``: the kernel's integral
+    ``ĝ(0)`` (read off ``kernel_ft_image`` at omega = 0) when the symbol
+    occurs in ``exprs``, else (and for a kernel without an image, or with
+    integral 1) the exact ``SR(1)`` of the normalised rule."""
+    from engine.core.field_theory import kernel_dc_gains_of
+    present = set()
+    for e in exprs:
+        try:
+            present.update(SR(e).variables())
+        except (TypeError, ValueError):
+            continue
+    gains = kernel_dc_gains_of(ns, model)
+    out = {}
+    for sym in kernel_syms:
+        g = gains.symbol_gain(sym) if sym in present else None
+        out[sym] = SR(1) if g is None else g
+    return out
+
+
 def complete_parameters(model, fundamental, who='the mean-field solve',
                         strict=True):
     """``fundamental`` with every omitted parameter filled from the model's
@@ -171,7 +191,9 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
         i: SR(vstar_subs_dict.get(ns.vstar[i], ns.E[i]))
         for i in ns.pop
     }
-    g_to_one = {ns.g: SR(1)}
+    # the kernel at the saddle is its integral (1 for a normalised kernel)
+    g_to_one = _kernel_saddle_subs(ns, model, [ns.g],
+                                   list(vstar_subs_dict.values()))
     vstar_baked = {
         i: SR(vstar_sym[i]).subs(g_to_one).subs(param_subs)
         for i in ns.pop
@@ -462,7 +484,7 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
     # parameter / saddle algebra.  Handles scalar (``ns.g``), vector
     # (``ns.g = [g1, g2]``), and matrix (``ns.g = [[g11, ...]]``)
     # kernels uniformly.
-    kernel_to_one = {}
+    kernel_syms = []
     for kspec in model.get('kernels', []):
         kname = kspec['name']
         if not hasattr(ns, kname):
@@ -472,11 +494,16 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             for row in kval:
                 if isinstance(row, list):
                     for sym in row:
-                        kernel_to_one[sym] = SR(1)
+                        kernel_syms.append(sym)
                 else:
-                    kernel_to_one[row] = SR(1)
+                    kernel_syms.append(row)
         else:
-            kernel_to_one[kval] = SR(1)
+            kernel_syms.append(kval)
+    # ... each kernel at its integral ĝ(0) (1 for a normalised kernel)
+    kernel_to_one = _kernel_saddle_subs(
+        ns, model, kernel_syms,
+        [mf_bg.get(sym, sym) for sname in saddle_info
+         for sym in saddle_info[sname]['sr_array']])
 
     # ── Pre-bake compound-saddle RHS with params + kernels → 1 ───
     compound_rhs = {}

@@ -776,34 +776,33 @@ def analyze_with_context(model: dict, question=None, policy=None, *,
 
 
 def _resolve_parameters(ctx):
-    """The parameter point: the question's, else the declared defaults
-    (``compute_cumulants``' rule, with its error text)."""
+    """The parameter point ``compute_cumulants`` uses: the declared defaults
+    of every parameter the question does not give, the question's values
+    winning (a partial dict is completed); a mean-field parameter's default
+    is never merged (it is solved, not supplied).  Same error text."""
     model, q = ctx.model, ctx.q
     pspecs = model.get('parameters', []) or []
     declared = {p.get('name') for p in pspecs}
-    if q.parameters:
-        unknown = sorted(set(q.parameters) - declared)
-        if unknown:
-            ctx.add('G0_UNKNOWN_PARAMETER',
-                    f'question.parameters names undeclared parameter(s): '
-                    f'{", ".join(unknown)}.',
-                    'check the spelling against the model\'s parameters')
-        fundamental = {p['name']: p['default'] for p in pspecs
-                       if p.get('default') is not None}
-        fundamental.update(q.parameters)
-        missing = sorted(p['name'] for p in pspecs
-                         if p['name'] not in fundamental
-                         and not p.get('mean_field'))
-    else:
-        fundamental = {p['name']: p['default'] for p in pspecs
-                       if p.get('default') is not None}
-        missing = sorted(p['name'] for p in pspecs
-                         if p.get('default') is None
-                         and not p.get('mean_field'))
+    given = dict(q.parameters) if q.parameters else {}
+    unknown = sorted(set(given) - declared)
+    if unknown:
+        ctx.add('G0_UNKNOWN_PARAMETER',
+                f'question.parameters names undeclared parameter(s): '
+                f'{", ".join(unknown)}.',
+                'check the spelling against the model\'s parameters')
+    fundamental = {p['name']: p['default'] for p in pspecs
+                   if p.get('default') is not None and not p.get('mean_field')}
+    fundamental.update(given)
+    missing = sorted(p['name'] for p in pspecs
+                     if p['name'] not in fundamental
+                     and not p.get('mean_field'))
     if missing:
         ctx.add('G0_PARAMETERS_MISSING',
-                'compute_cumulants: no ``parameters=`` given, and these model '
-                'parameters declare no default: ' + ', '.join(missing) + '.',
+                'compute_cumulants: '
+                + ('no ``parameters=`` given' if not given else
+                   'the ``parameters=`` given do not include them')
+                + ', and these model parameters declare no default: '
+                + ', '.join(missing) + '.',
                 'Pass parameters={...} or declare defaults via '
                 'ModelBuilder.parameter(name, default=...).')
         return None
