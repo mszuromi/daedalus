@@ -106,6 +106,14 @@ def test_statespace_kernel_edge_refuses_and_dressed_line_takes_a_direct_term():
     # covered, the pre-pass charges states, not pole tuples
     kr = ops.kernel_route(att)
     assert not isinstance(kr, str) and kr.d == -1.0 and kr.n_states == 1
+    # ... but only where Phase J dresses it: a local c delta kernel (a time
+    # image) and a time image c delta + smooth stay declined, as before
+    from sage.all import SR, dirac_delta, exp
+    from engine.core.vertices import KernelTimeImage
+    t = SR.var('dt56tt')
+    for img in (2 * dirac_delta(t), dirac_delta(t) + exp(-t)):
+        assert ops.kernel_route({'symbol': 'loc', 'kernel_td_fn': KernelTimeImage(img, t)}) \
+            == 'kernel_direct_term'
     dr = ops.dressed_entry(0, 0, att)
     assert not isinstance(dr, str)
     from scipy.linalg import expm

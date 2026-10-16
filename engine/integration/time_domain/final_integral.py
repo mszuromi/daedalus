@@ -818,7 +818,8 @@ def _dress_edge_modes(ems, kernel_modes, direct=0):
     """The ``EdgeModeSum`` of ``(g ∗ G)(Δ) = ∫_0^Δ g(Δ − x) G(x) dx`` for
     ``G = D δ + Θ Σ_α C_α e^{λ_α x}`` (``ems``) and ``g = Θ Σ_k c_k
     e^{μ_k x}``:  ``D g(Δ) + Σ_{α,k} C_α c_k (e^{λ_α Δ} − e^{μ_k Δ}) /
-    (λ_α − μ_k)``, no δ part.  Rates are merged when equal.  A λ_α equal
+    (λ_α − μ_k)``, no δ part (but see ``direct``).  Rates are merged when
+    equal.  A λ_α equal
     to a μ_k (``DRESS_RATE_RTOL``) with a rounding-level residue is dropped
     as an exact zero; with a real residue the result is ``None`` (the line
     then takes the leg-time path).
@@ -7978,7 +7979,9 @@ def integrate_diagram(
     # * 'dress' (the default): a kernel that is a finite exponential sum
     #   (``_extract_exp_modes``) is folded into that line's propagator,
     #   ``(g ∗ G)(Δt)`` with Δt = t − t_tail, again a finite pole sum
-    #   (``_dress_edge_modes``) with no δ part: no extra time, no extra row;
+    #   (``_dress_edge_modes``) with no δ part (item 56: a kernel with a
+    #   direct term c δ keeps c times the line's δ part): no extra time, no
+    #   extra row;
     # * 'leg': otherwise (a kernel that is not an exponential sum, a kernel
     #   rate equal to a propagator pole, no mode data) the attached leg gets
     #   its own integration time ``s`` and the kernel becomes one more
@@ -8277,7 +8280,8 @@ def integrate_diagram(
     # ``edge_mode_sums`` to None and the diagram takes the SR path.
     n_prop_edges = len(edge_info)
     # Dressed lines (section 2c 'dress'): the line's propagator G becomes
-    # (g ∗ G), a pole sum without δ part, at the same times.
+    # (g ∗ G), a pole sum (its δ part c D only for a kernel with a direct
+    # term c, item 56), at the same times.
     dressed_idx = set()
     if conv_dress:
         if edge_mode_sums is None:
@@ -8288,19 +8292,28 @@ def integrate_diagram(
                 'reason': ('conductance kernel: the propagator has no '
                            'mode data to dress a line with'),
             }
+        # item 56 (D10): each line's δ part after its own dressing (a
+        # strictly proper kernel removes it, a direct term c keeps c D)
+        _delta_after = {}
+        if conv_dress_direct:
+            for j, ej in enumerate(edge_info):
+                kj = (ej['u'], ej['v'], ej['lbl'])
+                Dj = complex(edge_mode_sums[j].delta_coeff)
+                _delta_after[j] = (Dj if kj not in conv_dress
+                                   else Dj * complex(conv_dress_direct.get(kj, 0)))
         for i, ei in enumerate(edge_info):
             kmodes = conv_dress.get((ei['u'], ei['v'], ei['lbl']))
             if kmodes is None:
                 continue
             kdirect = conv_dress_direct.get((ei['u'], ei['v'], ei['lbl']))
-            if (kdirect is not None
-                    and complex(edge_mode_sums[i].delta_coeff) != 0
-                    and len(getattr(vertex_assignments.get(ei['v']),
-                                    'physical_legs', ())) >= 2):
+            if (kdirect is not None and abs(_delta_after.get(i, 0)) >= 1e-15
+                    and any(abs(_delta_after.get(j, 0)) >= 1e-15
+                            for j, ej in enumerate(edge_info)
+                            if j != i and ej['v'] == ei['v'])):
                 # item 56 (D10): the direct term passes this line's δ part
-                # (a spike train) to a vertex with another physical leg: a
-                # product of δ functions at one time (exp of a delayed spike
-                # train), which is not defined
+                # (a spike train) to a vertex where another physical line
+                # has one too: a product of δ functions at one time (exp of
+                # a delayed spike train), which is not defined
                 _RUNTIME_COUNTERS['conv_kernel_direct_refused'] += 1
                 return {
                     'status': 'failed',
@@ -8310,7 +8323,7 @@ def integrate_diagram(
                                f'{conv_dress_att[(ei["u"], ei["v"], ei["lbl"])]["symbol"]} '
                                f'has a direct term (a bare delay) on a line '
                                f'with a delta part (a point-process field) at '
-                               f'a vertex with several physical legs: it '
+                               f'a vertex where another line has one too: it '
                                f'multiplies delta functions, which is not '
                                f'defined; give the delay a filter'),
                 }
@@ -8535,7 +8548,9 @@ def integrate_diagram(
         if edge_mode_sums_builder is None and _structural_zeros_on()
         else frozenset())
     if dressed_idx and _forced_delta:
-        # a dressed line has no δ part whatever its propagator entry
+        # a dressed line always has a smooth part (D g + c G + g ∗ G), so it
+        # is never a forced δ edge (item 56: its δ part is c D, zero unless
+        # its kernel has a direct term)
         _forced_delta = frozenset(_forced_delta) - dressed_idx
 
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints

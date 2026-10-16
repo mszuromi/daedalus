@@ -31,19 +31,25 @@ proper kernel takes exactly the old code paths).
   model was predicted "not covered" and every diagram was charged pole tuples: a delayed negative-feedback model
   at k = 1, l = 3 (Padé 4) was estimated at ~3,300 GB of pole tuples and refused before any pass ran (item 47's
   retry never fired); it is now covered, estimated at 13 GB of state-space states.
-- **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it acts on a field whose
+- **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it delays a field whose
   propagator has a δ part (a point-process field; read with every delay factor at its Padé image, both parities)
-  AND sits in a vertex with several physical legs (a spike train inside a nonlinearity). Phase J refuses the same
-  case by name (a direct term on a δ line at a vertex with several physical legs). A bare delay of a continuous
-  field inside `exp` in a spiking model, and a bare delay of a spike train in a linear term, now run (item 47
-  refused any bare delay in a model with point-process lines).
+  into a vertex with a second δ-carrying physical leg (a spike train inside a nonlinearity, `exp(w n(t - d))`,
+  `n(t) n(t - d)`). Phase J refuses the same case by name, per diagram (a direct term on a δ line at a vertex where
+  another line keeps a δ part). Now run (item 47 refused any bare delay in a model with point-process lines): a bare
+  delay of a continuous field inside `exp` in a spiking model; a delayed spike train times a continuous field
+  (`n(t - d) (1 + eps v)`); a bare delay of a spike train in a linear term.
 - **Checks.** `x*x(t - d)`, (n, n) at n = 4 and 8: equal to the same rational kernel declared without a delay (state-space
   route 3e-16; pole route 1.9e-10 at one loop, its usual precision) and to the Markov embedding of the (n, n) kernel
   (n auxiliary linear fields from a balanced realization, no kernel code): n = 4 tree 1.3e-15, one loop 7e-15;
   n = 8 tree 8e-16, one loop 1.1e-14. (n, n) and `[n-1/n]` at n = 8: same limit (loops within 1e-4 of max|C|, as n = 4 vs 8). A bare
   delay of the voltage inside `exp` equals the same process with the delay moved into the voltage equation (one loop
-  1.3e-15). A linear Hawkes neuron with a bare delay of its own spike train (direct term on a δ line): k = 3 tree vs
+  1.3e-15). A delayed spike train times the voltage, Padé (2, 2), vs its Markov embedding: tree and one loop
+  <= 1.4e-12. A linear Hawkes neuron with a bare delay of its own spike train (direct term on a δ line): k = 3 tree vs
   its Markov embedding 4e-14; its two-point one loop is exactly 0.
+- **Convergence.** On a delayed negative-feedback model with the delay 5x the decay time, the l = 1 mean correction
+  at (n, n) is -5.1727e-4 / -5.17376e-4 / -5.17376e-4 at n = 4 / 8 / 16, while `[n-1/n]` gives -3.21e-4 / -4.20e-4 /
+  -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
+  at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
 
 #### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
 

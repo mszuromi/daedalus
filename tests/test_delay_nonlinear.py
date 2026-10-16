@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from api import compute_cumulants                                      # noqa: E402
 from api.delay import (DelayOrderWarning, pade_coefficients,          # noqa: E402
-                       pade_mn_coefficients)
+                       pade_image, pade_mn_coefficients)
 from api.model import TemporalModelBuilder                             # noqa: E402
 from api.noise import Gaussian                                         # noqa: E402
 from api.sde import SDE                                                # noqa: E402
@@ -101,7 +101,8 @@ def _markov_product_model(name, n):
     c = num[n]
     beta = [num[k] - c * den[k] for k in range(n)]
     s = (SDE(name).parameter('a', default=1.0).parameter('b', default=1.0)
-         .parameter('c', default=0.5).parameter('D', default=0.1).field('x'))
+         .parameter('c', default=0.5).parameter('D', default=0.1)
+         .field('x'))
     for i in range(1, n + 1):
         s = s.field(f'z{i}')
     y = f'({float(c)!r})*x + ' + ' + '.join(f'({float(beta[k])!r})*z{k + 1}' for k in range(n))
@@ -149,19 +150,30 @@ def test_hard_delay_in_a_product_runs_the_all_pass_approximant():
             assert np.max(np.abs(x - y)) <= 1e-13 * np.max(np.abs(y))
 
 
-@pytest.mark.slow
-def test_hard_delay_in_a_product_equals_its_markov_embedding():
-    """(slow, ~25 s) x * x(t - d) at n = 4 on the direct-term route equals the
-    Markov embedding of the same (n, n) kernel (four auxiliary linear fields,
-    no kernel code at all), tree and one loop (measured 1.9e-15)."""
-    n = 4
+@pytest.mark.parametrize('n', [2, pytest.param(4, marks=pytest.mark.slow)])
+def test_hard_delay_in_a_product_equals_its_markov_embedding(n):
+    """x * x(t - d) at order n on the direct-term route equals the Markov
+    embedding of the same (n, n) kernel (n auxiliary linear fields, no
+    kernel code at all), tree and one loop (n = 4, slow ~25 s: measured
+    1.9e-15)."""
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
               verbose=False, use_cache=False)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         rd = compute_cumulants(_product_model('dnl hard product mk', freq_image='1', delay='d'),
                                delay={'order': n, 'tree': 'pade'}, **kw)
-        rm = compute_cumulants(_markov_product_model('dnl markov product', n), **kw)
+        # the stable saddle x* = sqrt(3) - 1 (the search may list the
+        # unstable root -1 - sqrt(3) first; the analyzer refuses that one)
+        from api.analyze import AnalyzerError
+        rm = None
+        for fpi in (0, 1):
+            try:
+                rm = compute_cumulants(_markov_product_model(f'dnl markov product {n}', n),
+                                       fixed_point_index=fpi, **kw)
+                break
+            except AnalyzerError:
+                continue
+    assert rm is not None
     assert rd['status'] == rm['status'] == 'ok'
     for ell in (0, 1):
         x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
@@ -340,6 +352,79 @@ def _linear_hawkes_bare_delay(name='dnl linear Hawkes bare delay'):
             .set_mf_equation('nstar', 'a[i] + sum(w[i, j]*nstar[j] for j in E)').build())
 
 
+def _spike_times_voltage(name, n_markov=None, n_pade=2):
+    """A spiking neuron whose voltage is driven by its own spike train
+    through a bare delay, multiplied by a voltage factor:
+    ``(tau Dt + 1) v = Em + w n(t - d) (1 + eps v)`` (a delayed spike train
+    times a continuous field: defined).  ``n_markov``: the same model with
+    the Pade (n, n) delay as auxiliary linear fields (``n(t - d) -> c n +
+    C z``, ``z' = A z + B n``; no kernel)."""
+    from sage.all import SR, I
+    from api._realization import realize_kernel
+    b = (TemporalModelBuilder(name).population('E', size=1)
+         .physical_field('n', population='E').physical_field('v', population='E')
+         .parameter('Em', default=[-1.0], indexed_by=['E'])
+         .parameter('tau', default=[1.0], indexed_by=['E'], domain='positive')
+         .parameter('a', default=[1.0], indexed_by=['E'], domain='positive')
+         .parameter('w', default=[[0.3]], indexed_by=['E', 'E'])
+         .parameter('eps', default=[0.2], indexed_by=['E'])
+         .parameter('d', default=0.8, domain='positive')
+         .define_function('phi', args=['u'], expression='a[i]*exp(u)', population='E'))
+    vstar = '(Em[i] + w[i,i]*nstar[i])/(1 - w[i,i]*eps[i]*nstar[i])'
+    if n_markov is None:
+        return (b.define_kernel('g', freq_image='1', indexed_by=['E', 'E'], delay='d')
+                .set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i]'
+                                 ' - Em[i] - sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)*(1 + eps[i]*v[i]))'
+                                 ' for i in E)')
+                .set_mf_equation('vstar', vstar).set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+    ent, _f = realize_kernel({'symbol': 'pade_ref',
+                              'kernel_ft_fn': lambda w_: pade_image(I * w_ * (SR(4) / 5), n_markov)},
+                             {}, truncation=0, direct=True)
+    A, B, C, c = ent.a, ent.b, ent.c, float(ent.d)
+    m = ent.n_states
+    for q in range(m):
+        b = b.physical_field(f'z{q}', population='E')
+    y = f'({c!r})*n[i] + ' + ' + '.join(f'({float(C[q])!r})*z{q}[i]' for q in range(m))
+    act = (f'nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i]'
+           f' - w[i,i]*({y})*(1 + eps[i]*v[i]))')
+    for q in range(m):
+        # the restoring shift keeps every z on the lhs of its equation
+        act += (f' + z{q}t[i]*((Dt + 3.25)*z{q}[i] - 3.25*z{q}[i] - ('
+                + ' + '.join(f'({float(A[q, j])!r})*z{j}[i]' for j in range(m))
+                + f' + ({float(B[q])!r})*n[i]))')
+    b = b.set_action_text(f'sum({act} for i in E)')
+    b = b.set_mf_equation('vstar', vstar).set_mf_equation('nstar', 'phi[i](vstar[i])')
+    zs = -np.linalg.solve(A, B)                    # z* = -A^{-1} B n*
+    for q in range(m):
+        b = b.set_mf_equation(f'z{q}star', f'({float(zs[q])!r})*nstar[i]')
+    return b.build()
+
+
+def test_delayed_spike_train_times_a_continuous_field_runs():
+    """n(t - d) (1 + eps v) in the voltage equation: a bare delay of the spike
+    train in a vertex whose other leg is continuous (defined: not refused,
+    D10).  The direct term dresses the spike line keeping its delta part;
+    equal (tree and one loop) to the Markov embedding of the same Pade (2, 2)
+    delay, which has no kernel."""
+    kw = dict(k=2, max_ell=1, external_fields=[('dv', 1), ('dv', 1)],
+              tau_grid=np.array([0.0, 0.4, 1.5]), parallel=False, verbose=False,
+              use_cache=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = compute_cumulants(_spike_times_voltage('dnl spike x voltage'),
+                              delay={'order': 2, 'tree': 'pade'}, **kw)
+        b = compute_cumulants(_spike_times_voltage('dnl spike x voltage markov', n_markov=2),
+                              **kw)
+    assert a['status'] == b['status'] == 'ok'
+    assert a['delay']['approximant'] == 'pade'
+    for ell in (0, 1):
+        x = np.real(np.asarray(a['C_tau_by_ell'][ell]))
+        y = np.real(np.asarray(b['C_tau_by_ell'][ell]))
+        assert np.max(np.abs(y)) > 0
+        # the embedding's coefficients are the realization rounded once
+        assert np.max(np.abs(x - y)) <= 1e-11 * np.max(np.abs(y))
+
+
 def test_bare_delays_on_delta_lines_is_per_kernel_and_field():
     from api import analyze as an
     from api.delay import bare_delays_on_delta_lines, bare_delay_kernels
@@ -347,13 +432,14 @@ def test_bare_delays_on_delta_lines_is_per_kernel_and_field():
     got = {}
     for m in (_hawkes_spike_only(p=0.3, image='1', name='dnl d10 spike'),
               _hawkes_delayed_voltage_leg(name='dnl d10 voltage leg'),
-              _linear_hawkes_bare_delay(name='dnl d10 linear')):
+              _linear_hawkes_bare_delay(name='dnl d10 linear'),
+              _spike_times_voltage('dnl d10 spike x voltage')):
         rep, ctx = an.analyze_with_context(m, q, None, use_cache=False)
         bare = bare_delay_kernels(m, ctx.ns)
         assert bare
         got[m['name']] = bare_delays_on_delta_lines(ctx, bare)
     assert got == {'dnl d10 spike': ['z_r_1_1 (dn1)'], 'dnl d10 voltage leg': [],
-                   'dnl d10 linear': []}
+                   'dnl d10 linear': [], 'dnl d10 spike x voltage': []}
 
 
 def test_bare_delay_of_a_continuous_field_inside_exp_runs_in_a_spiking_model():

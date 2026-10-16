@@ -865,9 +865,23 @@ class _ModelOps:
         route takes it -- a strictly proper kernel as a kernel edge or a
         dressed line, one with a direct term (item 56) as a dressed line
         only (Phase J refuses it on a kernel edge by name) -- or a decline
-        reason (str)."""
+        reason (str).  A direct term counts only where Phase J dresses it: a
+        frequency image whose strictly proper part has separated modes
+        (``final_integral._kernel_direct_split``); a local ``c delta`` kernel
+        or a time image ``c delta + smooth`` stays declined, as before."""
+        key = ('kernel_route', _att_key(att))
+        with self._lock:
+            hit = self._extra.get(key)
+        if hit is not None:
+            return hit
         ent, why = self._kernel_real(att)
-        return why if ent is None else ent
+        out = why if ent is None else ent
+        if ent is not None and ent.d != 0 and _FI()._kernel_direct_split(
+                att, self.num_params) is None:
+            out = 'kernel_direct_term'
+        with self._lock:
+            self._extra[key] = out
+        return out
 
     def dressed_entry(self, pi, ri, att):
         """The ``_EntryOps`` of a dressed line ``(g * G)(t) = int_0^t
