@@ -273,6 +273,29 @@ def _expand_legacy_requested() -> bool:
     return v not in ('', '0', 'false', 'no', 'off')
 
 
+class DerivativeAtomTaylorError(Exception):
+    """A derivative of an abstract function (``D[0](f)(x)``) in the action,
+    in a place where Maxima's multivariate ``taylor()`` would truncate it
+    (it stops ``k`` orders early on a ``k``-th derivative atom: ``taylor(
+    x*D[0](f)(x), (x, 0), 3)`` has no ``x^3`` term).  Raised instead of a
+    silently truncated expansion; not caught by the fall-backs."""
+
+
+def _has_derivative_atom(e) -> bool:
+    """Whether ``e`` contains ``D[...](f)(...)`` of an abstract function."""
+    from sage.symbolic.operators import FDerivativeOperator
+    stack = [SR(e)]
+    while stack:
+        x = stack.pop()
+        op = x.operator()
+        if op is None:
+            continue
+        if isinstance(op, FDerivativeOperator):
+            return True
+        stack.extend(x.operands())
+    return False
+
+
 class _TruncatedTaylorUnsupported(Exception):
     """An atom whose ``taylor()`` is not a polynomial in the field variables
     (Laurent / Puiseux terms, or field variables left in a coefficient).
@@ -323,7 +346,17 @@ def _truncated_taylor(expr, field_vars, order: int) -> dict:
         it depends on, read into an exponent dict."""
         names = {repr(u) for u in e.variables()}
         vs = [v for v in fvars if repr(v) in names]
-        T = SR(taylor(e, *[(v, 0) for v in vs], order)).expand()
+        if _has_derivative_atom(e):
+            # the multivariate form truncates derivative atoms early; the
+            # univariate form is exact (one field variable only)
+            if len(vs) != 1:
+                raise DerivativeAtomTaylorError(
+                    f'cannot expand {e}: a derivative of an abstract function '
+                    f'of several field variables ({", ".join(map(str, vs))}); '
+                    f'give the function an expression')
+            T = SR(taylor(e, vs[0], 0, order)).expand()
+        else:
+            T = SR(taylor(e, *[(v, 0) for v in vs], order)).expand()
         opT = T.operator()
         terms = (T.operands() if opT is not None
                  and _sr_op_name(opT) == 'add_vararg' else [T])
@@ -405,6 +438,13 @@ def _taylor_action(S_sr, field_vars, order: int):
                         mono = mono * v ** k
                 out = out + c * mono
             return out
+    if _has_derivative_atom(S_sr):
+        raise DerivativeAtomTaylorError(
+            'the action contains a derivative of an abstract function '
+            '(D[...](f)(...)) and the expansion would take the multivariate '
+            'taylor() route (DAEDALUS_EXPAND_LEGACY, or an atom without a '
+            'polynomial expansion), which truncates such atoms early; give '
+            'the function an expression')
     return taylor(S_sr, *[(v, 0) for v in field_vars], order)
 
 

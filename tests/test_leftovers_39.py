@@ -207,27 +207,45 @@ def test_mf_check_failure_message_is_the_simplified_one(monkeypatch):
 
 # ── 2. D[0](f)(...) atoms ────────────────────────────────────────────────────────────────────
 
-def test_derivative_atoms_per_atom_taylor_equals_legacy_when_legacy_expands():
+def test_derivative_atoms_per_atom_taylor_is_exact_in_one_variable():
+    """Item 60 (bug 2): Maxima's multivariate ``taylor()`` stops ``k`` orders early on a ``k``-th
+    derivative atom (``taylor(x*D[0](f)(x), (x, 0), 3)`` has no ``x^3`` term); the per-atom route
+    expands an atom of ONE field variable with the univariate form, which is exact."""
     f, g = function('f39'), function('g39')
     x, y = var('x39', 'y39')
-    for e in (f(x).diff(x), f(x, y).diff(x), 3 * g(y).diff(y) + 1):
+    for e in (f(x).diff(x), x * f(x).diff(x), 3 * g(y).diff(y) + 1, x ** 2 * g(x).diff(x, 2)):
         got = F._truncated_taylor(e, [x, y], 3)
-        ref = SR(taylor(e, (x, 0), (y, 0), 3)).expand()
+        v = x if e.has(x) else y
+        ref = SR(taylor(e, v, 0, 3)).expand()
         sm = SR(0)
         for ex, c in got.items():
             sm += c * x ** ex[0] * y ** ex[1]
         assert (sm - ref).expand().is_trivial_zero()
+    # the degree-3 term the multivariate form dropped
+    got = F._truncated_taylor(x * f(x).diff(x), [x], 3)
+    assert got[(3,)] != 0
 
 
-def test_derivative_atom_with_a_field_argument_is_left_to_the_legacy_route():
-    """Maxima's ``taylor`` leaves ``D[0](f)(x + y)`` unexpanded too: the per-atom route reports it as
-    unsupported and ``_taylor_action`` returns exactly the legacy result."""
-    f = function('f39b')
+def test_derivative_atom_of_several_field_variables_is_refused_by_name():
+    """A derivative atom the univariate form cannot take (several field variables, or the legacy
+    whole-action route) raises ``DerivativeAtomTaylorError`` instead of a truncated expansion."""
+    f, g = function('f39b'), function('g39b')
     x, y = var('x39b', 'y39b')
-    e = y * f(x + y).diff(x)
-    with pytest.raises(F._TruncatedTaylorUnsupported):
-        F._truncated_taylor(e, [x, y], 3)
-    assert (F._taylor_action(e, [x, y], 3) - SR(taylor(e, (x, 0), (y, 0), 3))).is_trivial_zero()
+    for e in (y * f(x + y).diff(x), g(x, y).diff(x)):
+        with pytest.raises(F.DerivativeAtomTaylorError):
+            F._taylor_action(e, [x, y], 3)
+    import os
+    old = os.environ.get('DAEDALUS_EXPAND_LEGACY')
+    os.environ['DAEDALUS_EXPAND_LEGACY'] = '1'
+    try:
+        with pytest.raises(F.DerivativeAtomTaylorError):
+            F._taylor_action(x * f(x).diff(x), [x], 3)
+        F._taylor_action(x * f(x), [x], 3)            # no derivative atom: legacy as before
+    finally:
+        if old is None:
+            os.environ.pop('DAEDALUS_EXPAND_LEGACY')
+        else:
+            os.environ['DAEDALUS_EXPAND_LEGACY'] = old
 
 
 # ── 3. a delta inside the heaviside product of a causal kernel ───────────────────────────────
