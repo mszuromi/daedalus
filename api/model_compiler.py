@@ -596,6 +596,7 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
                                 if isinstance(val, list) and len(val) == 1
                                 else val)
 
+    saddle_internal_names = set(getattr(ns, '_mf_saddle_names', ()) or ())
     # Parameters — promote 2D lists to MatrixView for w[i,j] access.
     # Saddle parameters are also exposed under their natural names
     # so users can write nstar[i] OR n_star[i].  We expose under the
@@ -606,6 +607,12 @@ def _ns_var_namespace(ns, field_names, param_names, kernel_names,
         val = getattr(ns, pname)
         if isinstance(val, list) and val and isinstance(val[0], list):
             out[pname] = _MatrixView(val)
+        elif (isinstance(val, list) and len(val) == 1
+              and pname in saddle_internal_names):
+            # A saddle of a scalar model (or of a 1-element population):
+            # bare ``vstar`` and ``vstar[i]`` both read the one value,
+            # as for the fields above (``w*nstar`` was a list product).
+            out[pname] = _FieldScalar(val)
         else:
             out[pname] = val
 
@@ -877,7 +884,8 @@ def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
     parsed = preparse(text)
     eval_globals = {**_sage_all.__dict__, **locals_dict}
     try:
-        return eval(parsed, eval_globals)
+        # a bare size-1 wrapper (``vstar`` alone) is its one SR value
+        return _unwrap_field_arg(eval(parsed, eval_globals))
     except Exception as e:
         raise ValueError(
             f'Could not parse {what}:\n  {text!r}\n'

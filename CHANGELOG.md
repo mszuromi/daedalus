@@ -51,6 +51,34 @@ proper kernel takes exactly the old code paths).
   -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
   at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
 
+#### Fixed: mean-field saddle (round 3, item 52)
+
+- **Kernels whose integral is not 1.** `Conv(K, constant)` at the saddle is now `K(omega = 0)·constant`
+  (the kernel's integral, read off its frequency image; a delay factor counts 1). It was the constant
+  itself (a normalised-kernel rule), so a model with `freq_image='2/(1+I*omega)'` (or a negative or
+  per-entry integral, an indexed kernel, a delayed and scaled kernel) stopped with "mean-field saddle
+  does not satisfy its own equations" although its mean-field equations carry the integral. A kernel
+  symbol left in a hand-written mean-field text (`w*g*nstar`) is also taken at its integral by the
+  check and the iteration solver (it was 1). A model now equals its twin with the normalised kernel
+  and the integral moved into the weight (saddle, tree, one loop). A kernel whose image is singular at
+  omega = 0 (no finite integral) is refused by name. Normalised kernels: the expansion is unchanged
+  (no `1*` factor is introduced). Expand-cache bundles written before this change are re-expanded for
+  models with a non-unit kernel only.
+- **The selected root is checked.** The numerical mean-field check inside the expansion runs at the
+  model's default parameters and root 0 (and not at all on an expand-cache hit); the root chosen by
+  `fixed_point_index` at the run's parameters is now checked too, so an equation that shares only
+  the default root with the action stops instead of computing at a saddle the action does not have.
+- **Negative roots of a field with no declared domain.** Such a field is seeded on `[0, 5s]` only (the
+  historical box; widening it moved other models' roots), so `fixed_point_index` could not reach the
+  root -1 of `x - x^3`. The selectable roots are unchanged; the same seeds are re-run on the mirrored
+  half-line and a warning names every root found there with the remedy (`domain='real'` on the
+  field, or `mf_dae_seed_box`); the roots are in `mf_unsearched_roots` of the DAE result.
+- **`analyze` parameter point** = `compute_cumulants`' (declared defaults completed by the question's
+  values, mean-field defaults never merged; same error wording for a partial dict).
+- **Scalar models** (no `.population()`): a `set_mf_equation` text may name a saddle bare
+  (`'a*exp(Em + c*vstar)'`, not only `vstar[i]`); it was a parse error. Results equal the 1-element
+  population form bit for bit.
+
 #### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
 
 No computed number moves (output side only).
