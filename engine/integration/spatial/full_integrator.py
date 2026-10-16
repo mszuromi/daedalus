@@ -1189,28 +1189,69 @@ def diagram_value(descr, prefactor_val, q_vec, external_times, mu, D,
 
 def _is_retarded_type(descr):
     """True iff the diagram's two external legs have DIFFERENT propagator kinds
-    (one ``C``, one ``R``) — a **retarded** self-energy insertion, which dresses
-    both the retarded and advanced sides of the line and so appears as the pair
-    ``Σ_R(τ)+Σ_A(τ) = Γ(τ)+Γ(−τ)``.  A ``{R,R}`` (Keldysh) insertion is its own
-    conjugate ⇒ a single ``Γ(τ)``."""
+    (one ``C``, one ``R``).  DIAGNOSTIC ONLY since Oct 2026: it is NOT the rule
+    for the ±τ completion (see :func:`k2_leaf_time_assignments`).  At two loops
+    there are ``{R,R}``-external diagrams whose leaf swap is not an
+    automorphism; they need ``Γ(τ)+Γ(−τ)`` exactly like the ``{C,R}`` ones."""
     kinds = sorted(e.kind for e in descr.edges if e.external)
     return kinds == ['C', 'R']
 
 
-def diagram_correlator(descr, prefactor_val, q, tau, mu, D, spatial_dim=1, **kw):
-    """One diagram's contribution to ``C(q,τ)``, with the retarded+advanced sum
-    applied: ``Γ(τ)+Γ(−τ)`` for a retarded-type insertion (``{C,R}`` external
-    legs), else ``Γ(τ)``."""
-    et = external_times_2pt(descr, tau)
-    val = diagram_value(descr, prefactor_val, [q], et, mu, D,
-                        spatial_dim=spatial_dim, **kw)
-    if _is_retarded_type(descr) and tau != 0.0:
-        et_m = external_times_2pt(descr, -tau)
-        val += diagram_value(descr, prefactor_val, [q], et_m, mu, D,
+def k2_leaf_time_assignments(descr, tau, comp):
+    """The ±τ completion of a k=2, single-field (``i == j``) diagram:
+    ``(list_of_external_times, weight)`` with the diagram's contribution
+    ``weight · Σ_et Γ(et)``.
+
+    This is the orbit–stabilizer rule of the general-k driver
+    (:func:`diagram_correlator_pts`) specialised to k=2: sum the kinematic over
+    BOTH field-respecting leaf→time assignments (leaf 0 at 0 and leaf 1 at τ,
+    then the swap ≡ leaf 0 at 0 and leaf 1 at −τ by time translation) and divide
+    by ``comp = external_wick_compensation(td)`` ∈ {1, 2}:
+
+    * ``comp == 1`` (the leaf swap is not an automorphism): ``Γ(τ)+Γ(−τ)``
+      (``2Γ(0)`` at τ = 0);
+    * ``comp == 2`` (the swap is an automorphism, so the kinematic is τ-even):
+      ``(Γ(τ)+Γ(−τ))/2 = Γ(τ)``, evaluated once.
+
+    The external-leg kinds do NOT decide it: ``{R,R}`` diagrams with
+    ``comp == 1`` exist from two loops on."""
+    comp = int(comp)
+    if comp not in (1, 2):
+        raise ValueError(f'k=2 external_wick_compensation must be 1 or 2; '
+                         f'got {comp}.')
+    if comp == 2:
+        return [external_times_2pt(descr, tau)], 1.0
+    if tau == 0.0:
+        return [external_times_2pt(descr, 0.0)], 2.0
+    return [external_times_2pt(descr, tau), external_times_2pt(descr, -tau)], 1.0
+
+
+def _resolve_comp(descr, comp):
+    """``comp`` given → itself.  ``None`` → only for hand-built ONE-loop (or
+    tree) descriptors, where the leg-kind rule coincides with the
+    orbit–stabilizer index; at two loops and beyond the caller must pass
+    ``external_wick_compensation(td)``."""
+    if comp is not None:
+        return comp
+    if descr.n_loops >= 2:
+        raise ValueError(
+            'diagram_correlator at >= 2 loops needs comp='
+            'external_wick_compensation(td): the leg-kind rule misses the '
+            '{R,R} diagrams without a leaf-swap automorphism.')
+    return 1 if _is_retarded_type(descr) else 2
+
+
+def diagram_correlator(descr, prefactor_val, q, tau, mu, D, spatial_dim=1,
+                       comp=None, **kw):
+    """One diagram's contribution to ``C(q,τ)`` with the k=2 ±τ completion
+    of :func:`k2_leaf_time_assignments` (``comp`` =
+    ``external_wick_compensation`` of the typed diagram)."""
+    ets, wt = k2_leaf_time_assignments(descr, tau, _resolve_comp(descr, comp))
+    val = 0.0
+    for et in ets:
+        val += diagram_value(descr, prefactor_val, [q], et, mu, D,
                              spatial_dim=spatial_dim, **kw)
-    elif _is_retarded_type(descr):
-        val *= 2.0                                           # τ=0: Γ(0)+Γ(0)
-    return val
+    return wt * val
 
 
 def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
@@ -1244,19 +1285,16 @@ def diagram_value_x(descr, prefactor_val, xs, external_times, mu, D,
     return (2.0 ** (-n_C)) * float(prefactor_val) * kin       # (n_x,) real
 
 
-def diagram_correlator_x(descr, prefactor_val, xs, tau, mu, D, spatial_dim=1, **kw):
+def diagram_correlator_x(descr, prefactor_val, xs, tau, mu, D, spatial_dim=1,
+                         comp=None, **kw):
     """Analytic-IFT analogue of :func:`diagram_correlator` — δC(x,τ) (vector) with
-    the retarded+advanced sum applied per diagram."""
-    et = external_times_2pt(descr, tau)
-    val = diagram_value_x(descr, prefactor_val, xs, et, mu, D,
-                          spatial_dim=spatial_dim, **kw)
-    if _is_retarded_type(descr) and tau != 0.0:
-        et_m = external_times_2pt(descr, -tau)
-        val = val + diagram_value_x(descr, prefactor_val, xs, et_m, mu, D,
+    the k=2 ±τ completion of :func:`k2_leaf_time_assignments`."""
+    ets, wt = k2_leaf_time_assignments(descr, tau, _resolve_comp(descr, comp))
+    val = 0.0
+    for et in ets:
+        val = val + diagram_value_x(descr, prefactor_val, xs, et, mu, D,
                                     spatial_dim=spatial_dim, **kw)
-    elif _is_retarded_type(descr):
-        val = val * 2.0                                       # τ=0: Γ(0)+Γ(0)
-    return val
+    return wt * val
 
 
 def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
