@@ -380,10 +380,8 @@ def test_k3_slices_equal_dd_run(ext):
                 assert _rel(got, ref[ok]) <= 1e-13
                 if base is not None:
                     # a swept leg between two legs: two segments move
-                    t_mid = st[~ok][0]
-                    with pytest.raises(ME.MEUnavailable,
-                                       match='several_lags'):
-                        sm(np.array([t_mid]), ell=ell)
+                    # (item 54: a Kronecker chain triple)
+                    assert _rel(sm(st[~ok], ell=ell), ref[~ok]) <= 1e-13
             md = sm.modes()
             assert all(md[(lo, hi)] for lo, hi, *_ in sm.chambers
                        if (lo, hi) in md)
