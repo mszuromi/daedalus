@@ -11,6 +11,26 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: point-process front end (round 2, item 46)
+
+No existing number moves (no existing model uses the new paths).
+- `SDE.point_process('n', rate, population=..., size=...)` declares a spike train with conditional
+  intensity `rate`: the action gains `nt*n - (exp(size*nt) - 1)*rate`, the mean field `n* = size*rate*`
+  (kernels at omega = 0). Rates may use population sums, declared functions and `Conv(K, x)` of any field,
+  the spike train itself included (spike-only Hawkes); models made only of point processes build. The
+  spike-only exponential Hawkes declared this way equals the hand-written builder model bit for bit
+  (action, saddle, tree and one loop). Models with a point process emit their saddle equations as
+  `set_mf_equation` (the route hand-written point-process models use) when every equation reads
+  `x = rhs` at Dt = 0.
+- A product of declared kernels inside `Conv` (`Conv(h[i]*g[i,j], n[j])`) is their convolution: a kernel
+  `h_g` is declared with the product of the frequency images and the sum of the delays.
+  `Kernel.alpha(tau)` (`t/tau^2 exp(-t/tau)`); a `Kernel` product with one non-trivial factor keeps that
+  factor's image text unchanged.
+- Bare parameters indexed by one population are indexed automatically in SDE texts (`a` -> `a[i]`).
+- `api/pp_simulate.py`, `SDE.simulate(...)`: a time-discretised simulator of point processes, drifts and
+  Gaussian sources, kernels realized exactly as state-space filters (delays by a ring buffer);
+  `cross_covariance` and `mean_rate` estimators with batch-means errors.
+
 #### Fixed: package warnings were hidden under `sage -python` and the Sage kernel (item 51)
 
 `DelayOrderWarning`, `PhaseJIncompleteWarning`, `PhaseJEngineFallbackWarning`, `PhaseJDivergenceWarning`,
