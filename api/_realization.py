@@ -1652,10 +1652,15 @@ def try_realize(prop, num_params, **kw):
         return None, exc
 
 
-def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
+def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
+                   direct=False):
     """Minimal SISO realization of a causal conductance kernel
     ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
+    ``direct=True`` (item 56): also a kernel with a direct term, ``g = d
+    delta + Theta c e^{a t} b`` (image ``d + (strictly proper)``: the
+    all-pass Pade (n, n) image of a bare delay), with ``d`` in the
+    realization; a polynomial part of degree >= 1 is refused as before.
 
     ``att``: a ``ConvVertexType`` kernel attachment (``engine/core/
     vertices.py``) with ``kernel_ft_fn`` (``omega -> g^(omega)``, the
@@ -1730,15 +1735,19 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
             'non_rational', f'kernel {att.get("symbol")}: {str(e)[:120]} is '
             f'not a rational function of s ({type(last).__name__})')
     q, r, d = _split_entry(x, P)
-    if q != 0:
-        raise RealizationRefused(
-            'kernel_not_strictly_proper', f'kernel {att.get("symbol")} has a '
-            'delta or polynomial part')
     cplx = fname != 'QQ'
+    d0 = 0.0
+    if q != 0:
+        if not (direct and q.degree() == 0):
+            raise RealizationRefused(
+                'kernel_not_strictly_proper', f'kernel {att.get("symbol")} '
+                'has a delta or polynomial part')
+        # the direct term, rounded once (exact in F)
+        d0 = _round(q[0]) if cplx else _round(q[0]).real
     if r == 0:
         z = np.zeros((0, 0), dtype=complex if cplx else float)
         return EntryRealization(a=z, b=np.zeros(0, z.dtype),
-                                c=np.zeros(0, z.dtype), d=0.0,
+                                c=np.zeros(0, z.dtype), d=d0,
                                 n_states=0), fname
     A, b, c, _blocks = _realize_proper(r, d, F)
     A, b, c = _kalman_minimal(A, b, c, F)
@@ -1753,7 +1762,7 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
     if balance and an.shape[0]:
         an, bn, cn, _s = _balance(an, bn, cn)
     k = an.shape[0]
-    ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=0.0,
+    ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=d0,
                            n_states=k)
     tol = truncation_tol() if truncation is None else float(truncation)
     if tol > 0 and k >= 2:

@@ -90,6 +90,46 @@ Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identica
   by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
   the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
 
+#### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
+
+Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
+nonlinearity), which now run the (n, n) Padé approximant instead of item 47's strictly proper `[n-1/n]` rerun: the
+two approximants differ at finite n and converge to the same limit (below). No other model is touched (a strictly
+proper kernel takes exactly the old code paths).
+
+- **Direct terms.** A conductance kernel whose frequency image is `c + (strictly proper)` (`g = c δ + Θ Σ C e^{λt}`:
+  the all-pass (n, n) image of a bare delay) is folded into the dressed line it sits on, `c G + g_smooth ∗ G`, on
+  both Phase J routes: the pole route's dressed mode sum gains `c C_α` at every propagator rate (and the δ part
+  `c D` on a line with one), the state-space route's series connection gains `C = [d₂ c₁, c₂]`
+  (`realize_kernel(..., direct=True)` keeps `d`). A kernel edge (a leg time: a line that cannot be dressed, e.g. a
+  kernel rate equal to a pole of the line) holds only a strictly proper kernel and refuses a direct term by name
+  (`kernel_direct_term`; Phase J status `failed`); the delay driver then still reruns with `[n-1/n]`. Counters
+  `conv_lines_dressed_direct`, `conv_kernel_direct_refused`.
+- **Run-level route.** `run_route`, `diagram_route` and the memory pre-pass (`diagram_estimate`) count such a kernel
+  as a dressed line (`_ModelOps.kernel_route`). Before, they asked the kernel-edge realization, so a bare-delay
+  model was predicted "not covered" and every diagram was charged pole tuples: a delayed negative-feedback model
+  at k = 1, l = 3 (Padé 4) was estimated at ~3,300 GB of pole tuples and refused before any pass ran (item 47's
+  retry never fired); it is now covered, estimated at 13 GB of state-space states.
+- **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it delays a field whose
+  propagator has a δ part (a point-process field; read with every delay factor at its Padé image, both parities)
+  into a vertex with a second δ-carrying physical leg (a spike train inside a nonlinearity, `exp(w n(t - d))`,
+  `n(t) n(t - d)`). Phase J refuses the same case by name, per diagram (a direct term on a δ line at a vertex where
+  another line keeps a δ part). Now run (item 47 refused any bare delay in a model with point-process lines): a bare
+  delay of a continuous field inside `exp` in a spiking model; a delayed spike train times a continuous field
+  (`n(t - d) (1 + eps v)`); a bare delay of a spike train in a linear term.
+- **Checks.** `x*x(t - d)`, (n, n) at n = 4 and 8: equal to the same rational kernel declared without a delay (state-space
+  route 3e-16; pole route 1.9e-10 at one loop, its usual precision) and to the Markov embedding of the (n, n) kernel
+  (n auxiliary linear fields from a balanced realization, no kernel code): n = 4 tree 1.3e-15, one loop 7e-15;
+  n = 8 tree 8e-16, one loop 1.1e-14. (n, n) and `[n-1/n]` at n = 8: same limit (loops within 1e-4 of max|C|, as n = 4 vs 8). A bare
+  delay of the voltage inside `exp` equals the same process with the delay moved into the voltage equation (one loop
+  1.3e-15). A delayed spike train times the voltage, Padé (2, 2), vs its Markov embedding: tree and one loop
+  <= 1.4e-12. A linear Hawkes neuron with a bare delay of its own spike train (direct term on a δ line): k = 3 tree vs
+  its Markov embedding 4e-14; its two-point one loop is exactly 0.
+- **Convergence.** On a delayed negative-feedback model with the delay 5x the decay time, the l = 1 mean correction
+  at (n, n) is -5.1727e-4 / -5.17376e-4 / -5.17376e-4 at n = 4 / 8 / 16, while `[n-1/n]` gives -3.21e-4 / -4.20e-4 /
+  -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
+  at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
+
 #### Fixed: mean-field saddle (round 3, item 52)
 
 - **Kernels whose integral is not 1.** `Conv(K, constant)` at the saddle is now `K(omega = 0)·constant`
