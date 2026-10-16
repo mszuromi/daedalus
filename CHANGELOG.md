@@ -22,9 +22,11 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   **No number moves on the zoo:** none of its 35 entries has a tier-1 residue below 1e-12 of its pole's largest
   (smallest ratio 1.6e-8), so the stored residues are identical.
 - **Default memory budget.** With `PHASE_J_MEM_BUDGET_GB` / `SPATIAL_MEM_BUDGET_GB` unset the budget is
-  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least 0.5 GB (`final_integral.default_mem_budget`;
-  the process is measured by its macOS `phys_footprint`, or resident + swap on Linux). Same 6 GB on a machine with
-  >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB held. Explicit values are unchanged.
+  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least `max(0.5 GB, 10 % of RAM)`
+  (`final_integral.default_mem_budget`; the process is measured by its macOS `phys_footprint`, or resident + swap on
+  Linux). Same 6 GB on a machine with >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB
+  held; 6 GB on a 64 GB machine even with 40 GB held. `compute_cumulants` reads it once per run (the pre-pass and the
+  running guard use the same value). Explicit values are unchanged.
   Every refusal says how its budget was set; the Phase J pre-pass refusal also states the machine's RAM and the
   estimate; `result['phase_j_memory']['budget_rule']` records the rule.
 - **Periodic lattice sum.** `periodic_inverse_ft` in d=3 built the whole `(2 n_cut + 1)^3` lattice (~9 arrays,
