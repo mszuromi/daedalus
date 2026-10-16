@@ -180,7 +180,9 @@ moving segment, the state entering it and the functional of everything after
 it.  ``api.me_output`` sums these over subsets, Wick permutations and
 diagrams with the closures' own weights (``_contrib.ss_prefactor``; the
 contribution's ``phase_j_parts``) into ``Cumulant.me``; nothing here changes
-a value.
+a value.  On a finite chamber where several segments move (a k >= 3 slice
+whose swept leg lies between two legs) ``SubsetSS.me_chain`` returns the
+moving segments and the dense maps between them (item 54).
 
 Error estimate (analyzer G6; S3).  Every evaluation adds to the counter
 ``ss_err_abs_sum`` the estimate ``|P s| M (1e-15 (1 + n_steps) + rho)``:

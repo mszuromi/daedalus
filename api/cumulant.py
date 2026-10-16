@@ -51,7 +51,10 @@ One mode term is a :class:`ModeTerm` ``(coeff, rate, power, side)``:
 same field names (its sides are spelled 'positive' / 'negative').  Where the
 triples are not available ``c.me_reasons`` says why (``c.me`` is ``None`` for
 a loaded file or k ≠ 2, and lists per-loop-order ``reasons`` when, e.g., a
-subset is on the pole route; k >= 3 slices: ``api.me_output.slice_me``);
+subset is on the pole route; k >= 3 slices, every chamber: ``c.me_slice(j)``
+= ``api.me_output.slice_me``).  The exact delayed tree of a delay model
+(``api.delay``, k = 2) has exact values, pairings and spectrum but no
+triple and no finite mode list (``c.me.mode_reasons``);
 ``spectrum`` and
 ``integrate_against`` then integrate the Phase J callables numerically and
 say so (:class:`~api.me_output.MEFallbackWarning`).
@@ -711,6 +714,17 @@ class Cumulant:
                 except MEUnavailable as exc:
                     self._me_reasons = [str(exc)]
         return self._me
+
+    def me_slice(self, j=1, base=None):
+        """k >= 3: the matrix-exponential triples of ``dd.run``'s slice
+        ``j`` (leg ``j`` swept, the others at ``base``), every chamber
+        included (:func:`api.me_output.slice_me`)."""
+        from api.me_output import slice_me, MEUnavailable
+        if self.k < 3:
+            raise MEUnavailable('me_slice is for k >= 3 (k = 2: .me)')
+        if self._result is None:
+            raise MEUnavailable('no live result (a loaded file)')
+        return slice_me(self._result, j, base)
 
     @property
     def me_reasons(self):

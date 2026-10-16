@@ -451,6 +451,50 @@ class MEChainBlock:
             self._tri = tri
         return self._tri
 
+    def mode_terms(self, rtol):
+        """``(terms, cond, trunc)`` as ``_block_modes``.  Two moving
+        segments: each segment's own cluster decomposition (cached per
+        segment) combined bilinearly through the fixed map, ``u^{m+n}
+        e^{(β_2 μ_j + β_1 λ_k) u}``, and multiplied by the rows' scalar mode
+        lists; otherwise the Kronecker form's (``_block_modes``)."""
+        ch = self.chain
+        if ch is None or len(ch['segs']) != 2:
+            return _block_modes(self, rtol)
+        s1, s2 = ch['segs']
+        b1, b2 = ch['betas']
+        L1, L2 = ch['L0s']
+        S1, S1i, cl1, cnd1, tr1 = _seg_decomposition(s1, rtol, abs(b1) * self.u_max)
+        S2, S2i, cl2, cnd2, tr2 = _seg_decomposition(s2, rtol, abs(b2) * self.u_max)
+        _T1, P1i, P1 = _seg_basis(s1)
+        _T2, P2i, P2 = _seg_basis(s2)
+        from api._realization import expm_upper_triangular
+        y0 = expm_upper_triangular(_T1, L1) @ (P1i @ ch['x0'])
+        w0 = expm_upper_triangular(_T2, L2).T @ (P2.T @ ch['c'])
+        v = S1i @ y0                     # e^{T1 u} y0 = S1 ⊕ e^{A_k u} v
+        uu = S2.T @ w0                   # w0ᵀ e^{T2 u} = ⊕ uuᵀ e^{A_j u} S2i
+        K = S2i @ (P2i @ ch['maps'][0] @ P1) @ S1
+        terms = []
+        for (q0, q1, mu, N2) in cl2:
+            U = [uu[q0:q1]]
+            for m in range(1, q1 - q0):
+                U.append(U[-1] @ N2 / m)
+            for (r0, r1, lam, N1) in cl1:
+                V = [v[r0:r1]]
+                for n in range(1, r1 - r0):
+                    V.append(N1 @ V[-1] / n)
+                Kjk = K[q0:q1, r0:r1]
+                rate = b2 * mu + b1 * lam
+                for m, Um in enumerate(U):
+                    UK = Um @ Kjk
+                    for n, Vn in enumerate(V):
+                        cf = complex(UK @ Vn) * b2 ** m * b1 ** n
+                        if cf != 0:
+                            terms.append((cf, rate, m + n))
+        for r0_, r1_, ent in self.rows:
+            terms = _mul_terms(terms, _row_terms(ent, r0_, r1_, rtol))
+        terms = [(self.weight * c, lam, n) for c, lam, n in terms]
+        return terms, max(cnd1, cnd2), max(tr1, tr2)
+
     def resolvent(self, z, power=1):
         raise MEUnavailable('a middle chamber is a finite interval of the '
                             'swept time: values and modes only (no Laplace '
@@ -464,6 +508,107 @@ class MEChainBlock:
         return (f'MEChainBlock(diagram={self.diagram_index}, '
                 f'subset={self.subset_index}, perm={self.perm_index}, '
                 f'moving={M}, n={self.n}, weight={self.weight:.6g})')
+
+
+_DECOMP = {}
+
+
+def _seg_decomposition(seg, rtol, horizon):
+    """``(S, Sinv, clusters, cond, trunc)``: ``e^{T u} = S ⊕_k e^{A_k u}
+    Sinv`` for a segment's triangular generator ``T`` (``_Segment.tri``),
+    ``A_k = λ_k I + N_k`` (``clusters = [(r0, r1, λ_k, N_k)]``), by the
+    reordering and Sylvester decoupling of ``_block_modes`` with the
+    transformation kept.  Cached per segment (``trunc`` is recomputed for
+    the ``horizon``)."""
+    from scipy.linalg.lapack import ztrsen, ztrsyl
+    key = (id(seg), rtol)
+    hit = _DECOMP.get(key)
+    if hit is None or hit[0] is not seg:
+        T = np.array(_seg_basis(seg)[0], dtype=complex, copy=True)
+        n = T.shape[0]
+        d = np.diag(T).copy()
+        labels = _clusters(d, rtol)
+        K = int(labels.max()) + 1 if n else 0
+        centers = [d[labels == k].mean() for k in range(K)]
+        Q = np.eye(n, dtype=complex)
+        starts, p = [], 0
+        for k in range(K):
+            starts.append(p)
+            if k == K - 1:
+                break
+            sub = T[p:, p:]
+            lab = np.array([int(np.argmin([abs(x - c) for c in centers]))
+                            for x in np.diag(sub)])
+            sel = (lab == k).astype(np.int32)
+            if not sel.any():
+                continue
+            ts, qs, _w, m, _s, _sep, info = ztrsen(sel, sub, np.eye(
+                sub.shape[0], dtype=complex), job='N')
+            if info != 0:
+                raise MEUnavailable(f'eigenvalue reordering failed '
+                                    f'(info={info})')
+            T[p:, p:] = ts
+            T[:p, p:] = T[:p, p:] @ qs
+            Q[:, p:] = Q[:, p:] @ qs
+            p += int(m)
+        starts.append(n)
+        S = Q.copy()
+        Si = Q.conj().T.copy()
+        cond = 0.0
+        for k in range(K - 1):
+            r0, r1 = starts[k], starts[k + 1]
+            if r1 == r0 or r1 == n:
+                continue
+            A, B, C = T[r0:r1, r0:r1], T[r1:, r1:], T[r0:r1, r1:]
+            X, scale_, info = ztrsyl(A, B, -C, trana='N', tranb='N', isgn=-1)
+            if info < 0:
+                raise MEUnavailable(f'Sylvester decoupling failed '
+                                    f'(info={info})')
+            if info == 1:
+                cond = math.inf
+            X = X / scale_
+            cond = max(cond, float(np.abs(X).sum(axis=1).max(initial=0.0)))
+            Si[r0:r1] = Si[r0:r1] - X @ Si[r1:]
+            S[:, r1:] = S[:, r1:] + S[:, r0:r1] @ X
+            T[r0:r1, r1:] = 0.0
+        cl = []
+        for k in range(K):
+            r0, r1 = starts[k], starts[k + 1]
+            if r1 == r0:
+                continue
+            A = T[r0:r1, r0:r1]
+            lam = complex(np.mean(np.diag(A)))
+            cl.append((r0, r1, lam, A - lam * np.eye(r1 - r0),
+                       float(np.max(np.abs(np.diag(A) - lam)))))
+        if len(_DECOMP) > 256:
+            _DECOMP.clear()
+        hit = _DECOMP[key] = (seg, S, Si, cl, cond)
+    _seg, S, Si, cl, cond = hit
+    trunc = 0.0
+    for r0, r1, lam, _N, delta in cl:
+        if delta > 0:
+            h = min(5.0 / max(abs(lam.real), 1e-300), horizon)
+            trunc = max(trunc, (delta * h) ** (r1 - r0)
+                        / math.factorial(r1 - r0))
+    return S, Si, [c[:4] for c in cl], cond, trunc
+
+
+def _mul_terms(a, b):
+    """The product of two mode lists ``[(coeff, lam, n)]``."""
+    return [(c1 * c2, l1 + l2, n1 + n2)
+            for c1, l1, n1 in a for c2, l2, n2 in b if c1 * c2 != 0]
+
+
+def _row_terms(ent, r0, r1, rtol):
+    """The mode list of a moving constant row ``g(r0 + r1 u)`` in ``u``."""
+    class _Row:
+        u_max = math.inf
+
+        def tri(self_):
+            return (r1 * np.asarray(ent.T, dtype=complex),
+                    np.asarray(_row_start(ent, r0, 'tri'), dtype=complex),
+                    np.asarray(ent.ct, dtype=complex))
+    return _block_modes(_Row(), rtol)[0]
 
 
 def _seg_basis(seg):
@@ -588,7 +733,9 @@ class SideME:
         terms = []
         cond = trunc = 0.0
         for b in self.blocks:
-            t, cnd, tr = _block_modes(b, cluster_rtol)
+            t, cnd, tr = (b.mode_terms(cluster_rtol)
+                          if isinstance(b, MEChainBlock)
+                          else _block_modes(b, cluster_rtol))
             terms.extend(t)
             cond, trunc = max(cond, cnd), max(trunc, tr)
         terms = _merge_terms(terms, merge_rtol)
@@ -707,7 +854,18 @@ def _clusters(d, rtol, atol=0.0):
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
-    if n:
+    if n > _CLUSTER_DENSE_MAX:
+        # row by row (the n x n comparison would not fit: item 54's middle
+        # chambers give tens of thousands of terms)
+        ad = np.abs(d)
+        for i in range(n - 1):
+            hit = np.nonzero(np.abs(d[i + 1:] - d[i])
+                             <= rtol * np.maximum(ad[i + 1:], ad[i]) + atol)[0]
+            for j in hit + i + 1:
+                ri, rj = find(i), find(int(j))
+                if ri != rj:
+                    parent[max(ri, rj)] = min(ri, rj)
+    elif n:
         mag = np.maximum(np.abs(d)[:, None], np.abs(d)[None, :])
         D = np.abs(d[:, None] - d[None, :]) <= rtol * mag + atol
         ii, jj = np.nonzero(np.triu(D, 1))
@@ -722,9 +880,20 @@ def _clusters(d, rtol, atol=0.0):
     return out
 
 
+#: above this many values ``_clusters`` compares row by row (O(n) memory)
+_CLUSTER_DENSE_MAX = 2000
+
+
 def _merge_terms(terms, rtol):
     if not terms:
         return []
+    if len(terms) > _CLUSTER_DENSE_MAX:
+        # identical (rate, power) first: far fewer values to cluster
+        acc0 = {}
+        for c, lam, j in terms:
+            k_ = (complex(lam), j)
+            acc0[k_] = acc0.get(k_, 0j) + c
+        terms = [(c, lam, j) for (lam, j), c in acc0.items()]
     lams = np.array([t[1] for t in terms])
     lab = _clusters(lams, rtol)
     acc = {}
