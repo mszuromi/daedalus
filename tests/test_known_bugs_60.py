@@ -1,0 +1,226 @@
+"""Item 60: known-bugs sweep -- regression tests (public inline models only).
+
+Bug 2 (derivative atoms in ``taylor()``) is pinned in ``tests/test_leftovers_39.py``
+next to the tests it replaced.
+"""
+import os
+import sys
+import warnings
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from api.sde import SDE                                    # noqa: E402
+from api.noise import Gaussian                             # noqa: E402
+from api import compute_cumulants                          # noqa: E402
+
+RUN = dict(parallel=False, verbose=False, use_cache=False)
+
+
+# ── bug 1: a delta inside the heaviside product of a time-domain kernel ──────
+
+def _kernel_model(**kernel):
+    return (SDE('bug60 kernel delta').parameter('c', default=0.3)
+            .parameter('tau', default=2.0, domain='positive')
+            .parameter('D', default=0.2, domain='positive').field('x')
+            .define_kernel('K', **kernel)
+            .equation('x', lhs='Dt*x + 2*x', rhs='0.5 + 0.4*Conv(K, x) - 0.1*x^2')
+            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+
+
+def test_bug1_delta_inside_heaviside_end_to_end():
+    """Three spellings of the same kernel (delta inside / outside the step,
+    frequency image) give the same saddle, tree and one loop (fixed on main by
+    #20; the DC gain is pinned in test_leftovers_39)."""
+    forms = [dict(time_expr='(c*dirac_delta(t) + (1-c)*exp(-t/tau)/tau)*heaviside(t)'),
+             dict(time_expr='c*dirac_delta(t) + (1-c)*exp(-t/tau)/tau*heaviside(t)'),
+             dict(freq_image='c + (1-c)/(1 + I*omega*tau)')]
+    out = []
+    for kw in forms:
+        r = compute_cumulants(_kernel_model(**kw).build(), k=2, max_ell=1,
+                              external_fields=[('x', 1), ('x', 1)],
+                              tau_grid=np.array([0.0, 1.0]), **RUN)
+        out.append([np.asarray(r['C_tau_by_ell'][ell]) for ell in (0, 1)])
+    for o in out[1:]:
+        for ell in (0, 1):
+            np.testing.assert_allclose(o[ell], out[0][ell], rtol=1e-13, atol=0)
+
+
+# ── bug 4: placement-wrapped contributions in the symbolic loop ──────────────
+
+def test_bug4_symbolic_loop_refuses_placement_wrappers_by_name():
+    from api.symbolic_loop import _phase_j_parts_or_refuse, SymbolicLoopRefused
+
+    def placed(*a):
+        return 0.0
+    placed.phase_j_placements = ((0.5, lambda *a: 0.0), (0.5, lambda *a: 0.0))
+    with pytest.raises(SymbolicLoopRefused) as ei:
+        _phase_j_parts_or_refuse(placed)
+    assert 'kernel_edge' in str(ei.value) and 'phase_j_placements' in str(ei.value)
+
+    def plain(*a):
+        return 0.0
+    with pytest.raises(SymbolicLoopRefused, match='no subset structure'):
+        _phase_j_parts_or_refuse(plain)
+    plain.phase_j_parts = {'subsets': []}
+    assert _phase_j_parts_or_refuse(plain) == {'subsets': []}
+
+
+# ── bug 5: G6 sees a broken rounded realization ──────────────────────────────
+
+def _delayed_ou(name):
+    return (SDE(name).parameter('a', default=1.0).parameter('c', default=0.5)
+            .parameter('d', default=1.0, domain='positive')
+            .parameter('D', default=0.1, domain='positive').field('x')
+            .equation('x', lhs='Dt*x + a*x', rhs='c*x(t - d)')
+            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+
+
+def _g6_run(name, order):
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return compute_cumulants(_delayed_ou(name).build(), k=2, max_ell=0,
+                                 external_fields=[('x', 1), ('x', 1)],
+                                 tau_grid=np.array([0.0, 1.0]),
+                                 delay={'order': order, 'tree': 'pade'}, **RUN)
+
+
+def test_bug5_graded_realization_measured_and_harmless():
+    """A graded Pade-8 realization is checked a posteriori; its measured error
+    is at rounding level and G6 stays quiet."""
+    r = _g6_run('bug60 g6 graded', 8)
+    rc = r['phase_j_engine']['realization_check']
+    assert rc['checked'] and rc['graded']
+    assert rc['err_rel'] is not None and rc['err_rel'] < 1e-12
+    assert not r['analysis'].has('G6_ACCURACY_LOW')
+
+
+def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
+    """Synthetic: the rounded Lyapunov solution off by 1e-3 passes the 1e-2
+    refusal check but its measured error now enters G6's estimate."""
+    import api._realization as R
+    from engine.integration.time_domain import statespace as ss
+    orig = R.lyapunov_refined
+    monkeypatch.setattr(R, 'lyapunov_refined',
+                        lambda A, Q, **k: orig(A, Q, **k) * (1 + 1e-3))
+    monkeypatch.setattr(R, 'GRADED_BALANCE_RANGE', 1.0)    # check this small model
+    ss._clear_caches()
+    try:
+        r = _g6_run('bug60 g6 broken', 4)
+    finally:
+        ss._clear_caches()
+    rc = r['phase_j_engine']['realization_check']
+    assert rc['checked'] and abs(rc['err_rel'] - 1e-3) < 1e-4
+    assert r['analysis'].has('G6_ACCURACY_LOW')
+    assert r['analysis'].diagnostics['accuracy_estimate'] >= 1e-3 * 0.9
+
+
+# ── bug 7: standalone analyze() agrees with the in-run verdict ───────────────
+
+def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
+    from api.analyze import analyze, Question
+    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')        # an unresolved cluster
+    s = (SDE('bug60 g3 standalone').parameter('a', default=1.0)
+         .parameter('D', default=0.1, domain='positive').field('x').field('y')
+         .equation('x', lhs='Dt*x + a*x', rhs='0.5*y - 0.1*x^2')
+         .equation('y', lhs='Dt*y + a*y', rhs='0')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+         .noise('eta', Gaussian(var='2*D'), couples={'y': 1}))
+    m = s.build()
+    ext = [('x', 1), ('x', 1)]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(m, k=2, max_ell=1, external_fields=ext,
+                              tau_grid=np.array([0.5]), **RUN)
+    inrun = {f.code: f.level for f in r['analysis'].findings if f.code.startswith('G3')}
+    alone = {f.code: f.level for f in analyze(m, Question(k=2, max_ell=1,
+                                                          external_fields=ext)).findings
+             if f.code.startswith('G3')}
+    assert inrun.get('G3_POLE_CLUSTER_UNRESOLVED') == 'info'
+    assert alone == inrun
+
+
+# ── bug 8: a population named I in the simulator ─────────────────────────────
+
+def _pp_pop(pop):
+    return (SDE('bug60 pop ' + pop).population(pop, size=2)
+            .parameter('w', default=[[0.0, 0.3], [0.3, 0.0]], indexed_by=[pop, pop])
+            .parameter('tau', default=1.0, domain='positive')
+            .define_kernel('g', freq_image='1/(1 + I*omega*tau)')
+            .define_function('amp', args=['u'], expression='abs(1 + exp(I*u))',
+                             population=pop)
+            .point_process('n', f'exp(-1.5 + 0.2*amp(0.7) + sum(w[i,j]*Conv(g, n[j]) '
+                                f'for j in {pop}))', population=pop))
+
+
+def test_bug8_population_named_I_keeps_the_imaginary_unit():
+    kw = dict(T=50, dt=0.01, n_paths=5, burn_in=5, bin=0.1, seed=1)
+    a = _pp_pop('E').simulate(**kw)['counts']['n']
+    b = _pp_pop('I').simulate(**kw)['counts']['n']
+    assert np.array_equal(a, b)
+    from api.pp_simulate import _ImagPopulation
+    z = _ImagPopulation(3)
+    assert list(z) == [0, 1, 2] and z * 2.0 == 2j and abs(np.exp(1j * 0) - 1) == 0
+
+
+# ── bug 10: delay in dd.Config / config files; dd.run takes an SDE ───────────
+
+def test_bug10_config_delay_and_sde_model(tmp_path):
+    import daedalus as dd
+    from api.config_run import run_config, ConfigError
+    s = (SDE('bug60 cfg delayed').parameter('a', default=1.0).parameter('c', default=0.5)
+         .parameter('d', default=1.0, domain='positive')
+         .parameter('D', default=0.1, domain='positive').field('x')
+         .equation('x', lhs='Dt*x + a*x', rhs='0.3 + c*x(t - d) - 0.1*x^3')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+    tau = np.array([0.0, 1.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        direct = compute_cumulants(s.build(), k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)],
+                                   tau_grid=tau, delay={'order': 4}, **RUN)
+        via = dd.run(s, dd.Config(k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)],
+                                  tau_grid=tau, delay={'order': 4}))
+    assert via['delay']['n'] == 4
+    np.testing.assert_array_equal(np.asarray(via['C_tau']), np.asarray(direct['C_tau']))
+    cfg = tmp_path / 'c.yaml'
+    body = '''sde:
+  name: bug60 cfg delayed
+  parameters: {a: 1.0, c: 0.5, d: {default: 1.0, domain: positive}, D: {default: 0.1, domain: positive}}
+  fields: [x]
+  equations: {x: {lhs: "Dt*x + a*x", rhs: "0.3 + c*x(t - d) - 0.1*x^3"}}
+  noise: {xi: {type: Gaussian, var: "2*D", couples: {x: 1}}}
+question: {k: 2, max_ell: 0, external_fields: [[x, 1], [x, 1]], tau_grid: [0.0, 1.0], delay: DELAY}
+policy: {use_cache: false}
+'''
+    cfg.write_text(body.replace('DELAY', '{order: 4}'))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res, resolved = run_config(str(cfg))
+    assert resolved['question']['delay'] == {'order': 4}
+    np.testing.assert_array_equal(np.asarray(res['C_tau']), np.asarray(direct['C_tau']))
+    cfg.write_text(body.replace('DELAY', '{ordr: 4}'))
+    with pytest.raises(ConfigError, match="did you mean 'order'"):
+        run_config(str(cfg), dry_run=True, out=open(os.devnull, 'w'))
+
+
+# ── bug 11: Sage-preparsed literals in the simulators ────────────────────────
+
+def test_bug11_sage_literals_in_simulators():
+    from sage.all import Integer, RealNumber
+    from api import noise_samplers as NS
+    from simulations import delay_sde_sim as DS
+    s = SDE('bug60 sage lits').parameter('a', default=1.0).point_process('n', 'a')
+    rec = s.simulate(T=Integer(20), dt=RealNumber('0.01'), n_paths=Integer(5),
+                     burn_in=Integer(1), bin=RealNumber('0.1'), seed=Integer(3))
+    ref = s.simulate(T=20, dt=0.01, n_paths=5, burn_in=1, bin=0.1, seed=3)
+    assert np.array_equal(rec['counts']['n'], ref['counts']['n'])
+    x = NS.simulate_ou_paths(Gaussian(var='0.2'), RealNumber('1.0'), T=Integer(5),
+                             dt=RealNumber('0.01'), n_paths=Integer(4),
+                             rng=np.random.default_rng(0))
+    assert x.shape == (4, 500)
+    r = DS.simulate(lambda x, xd: -x + 0.3 * xd[0], [RealNumber('0.5')], [[1.0]], [0.0],
+                    dt=RealNumber('0.01'), t_max=Integer(2), n_paths=Integer(3),
+                    burn_in=Integer(1), seed=Integer(4))
+    assert r['x'].shape[2] == 3
