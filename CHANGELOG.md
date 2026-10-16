@@ -11,6 +11,29 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
+
+No computed number moves (output side only).
+
+- **k >= 3 middle chambers.** `slice_me` (and the new `Cumulant.me_slice(j)`) now gives triples on every chamber of a
+  slice, including a swept leg between two other legs, where two segments move (one grows, one shrinks).
+  `SubsetSS.me_chain` returns the moving segments and the fixed maps between them; `MEChainBlock` holds them as one
+  Kronecker triple (the last segment transposed, a middle one as `I ⊗ G`). Values are evaluated segment by segment
+  and equal `total_C_by_ell` / `dd.run`'s slices to <= 4e-16 (oscillator + red noise, k = 3, l <= 1; the double-well
+  OU at mu = -1, k = 3, l <= 1). Mode lists of a middle chamber combine the two segments' own decompositions; they
+  reproduce the values to <= 1.2e-14. A middle chamber is a finite interval: it has values and modes, no Laplace
+  transform.
+- **Exact delayed tree (k = 2).** `Cumulant.me` now holds the exact delayed tree of `api.delay` itself
+  (`ExactDelayTreeSide`): values, Laplace transforms (the history segment on `[0, d]` from the boundary-value
+  stack plus the exact tail through `Δ(z) = zI − A − A_d e^{−zd}`) and the spectrum `H(iω) N H(iω)ᴴ − D0 N D0ᵀ`
+  with the true delayed image. `integrate_against` and `spectrum` with `method='auto'` are now exact for delay
+  models with the exact tree (before: refused). Scalar delayed OU: spectrum vs the closed form 5e-16; Laplace
+  transforms (powers 0-2) vs an independent spectral quadrature <= 6e-14. Explicit `method='quad'` to infinite
+  lag stays refused. The exact tree has no triple and no finite mode list (`me.mode_reasons`; `Cumulant.modes`
+  leaves it out with a warning).
+- **Mode merging.** More than 2,000 mode terms are now merged by exact rate first and clustered row by row
+  (before: an n x n comparison, 7 GB for the middle chambers). Smaller lists take the old path unchanged.
+
 #### Added: point-process front end (round 2, item 46)
 
 No existing number moves (no existing model uses the new paths).
