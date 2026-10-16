@@ -1198,13 +1198,13 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
 
 def _install_exact_tree(r, exact, call):
     """Replace the tree level of ``r`` by the exact covariance (k = 2)."""
-    from api.compute import _ITO_EPS
+    from api.compute import _tau0_lag
     taus = np.asarray(r.get('tau_grid'), dtype=float)
     by = r.get('C_tau_by_ell') or {}
     pade_tree = by.get(0)
     # tau = 0 as on the pipeline's grid (and in its loops): the Ito left limit,
-    # evaluated at tau = -_ITO_EPS
-    c0 = exact.values(np.where(np.abs(taus) <= 1e-12, -_ITO_EPS, taus))
+    # exact (ExactTree.value(0)) or at tau = -_ITO_EPS (DAEDALUS_TAU0=nudge)
+    c0 = exact.values(np.where(np.abs(taus) <= 1e-12, _tau0_lag(), taus))
     if pade_tree is not None:
         pt = np.asarray(pade_tree, dtype=complex)
         scale = float(np.max(np.abs(c0))) or 1.0

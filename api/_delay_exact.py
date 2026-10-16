@@ -261,11 +261,52 @@ class _Stack:
         return L
 
 
+def _balance(L):
+    """``(Lb, sc)`` with ``L = diag(sc) Lb diag(1/sc)`` (power-of-2 diagonal
+    balancing, no permutation: exact).  Fields in very different units give
+    the realization entries of order (unit ratio) and the stacked operator
+    the noise covariance next to O(1) blocks; scipy's ``expm`` does not
+    balance, and its scaling-and-squaring error grows with the norm (audit
+    3B-02)."""
+    if L.size == 0:
+        return L, np.ones(L.shape[0])
+    Lb, (sc, _perm) = sl.matrix_balance(L, permute=False, separate=True)
+    return Lb, sc
+
+
+def _expm(L):
+    """``expm(L)`` through the balanced matrix."""
+    Lb, sc = _balance(L)
+    return (sc[:, None] * sl.expm(Lb)) / sc[None, :]
+
+
 def _expm_apply(L, Y0, s):
+    Lb, sc = _balance(L)
+    Yb = Y0 / sc
     if L.shape[0] <= 600:
-        return sl.expm(L * s) @ Y0
+        return sc * (sl.expm(Lb * s) @ Yb)
     from scipy.sparse.linalg import expm_multiply
-    return expm_multiply(L * s, Y0)
+    return sc * expm_multiply(Lb * s, Yb)
+
+
+def _equilibrate(M, sweeps=8):
+    """``(r, c)`` with ``diag(r) M diag(c)`` Ruiz-equilibrated (row and
+    column inf-norms near 1).  The boundary-value unknowns and residual rows
+    carry products of their fields' units; the solve, its residual and its
+    condition number are taken on the equilibrated matrix so they do not
+    depend on the units (audit 3B-02)."""
+    r = np.ones(M.shape[0])
+    c = np.ones(M.shape[1])
+    A = np.abs(M)
+    for _ in range(sweeps):
+        B = A * r[:, None] * c[None, :]
+        rn = B.max(axis=1)
+        cn = B.max(axis=0)
+        rn[~(rn > 0)] = 1.0
+        cn[~(cn > 0)] = 1.0
+        r = r / np.sqrt(rn)
+        c = c / np.sqrt(cn)
+    return r, c
 
 
 class ExactTree:
@@ -323,8 +364,8 @@ class ExactTree:
         A, Ad, B, Bd, N, d = ss.A, ss.Ad, ss.B, ss.Bd, ss.N, ss.d
         n = st.n
         D0 = st.size_upto(0)
-        Phi = sl.expm(st.L[:D0, :D0] * d)
-        eAd = sl.expm(A * d)
+        Phi = _expm(st.L[:D0, :D0] * d)
+        eAd = _expm(A * d)
         W1_0, W2_0 = eAd @ B, B
 
         def resid(x, affine=True):
@@ -355,15 +396,14 @@ class ExactTree:
             e[i] = 1.0
             M[:, i] = resid(e, affine=False)
             e[i] = 0.0
-        # column equilibration: the unknowns (U0, V0 entries) carry the
-        # products of their fields' units, so the raw columns' norms (and
-        # the condition number below) would depend on the units (3B-02)
-        cn = np.linalg.norm(M, axis=0)
-        cn[~(cn > 0)] = 1.0
-        M = M / cn
+        # equilibrated (``_equilibrate``): solve, residual and condition
+        # number independent of the fields' units (3B-02)
+        req, ceq = _equilibrate(M)
+        M = M * req[:, None] * ceq[None, :]
+        r0 = r0 * req
         xs, *_ = np.linalg.lstsq(M, -r0, rcond=None)
         res = np.linalg.norm(M @ xs + r0) / max(np.linalg.norm(r0), 1e-300)
-        x = xs / cn
+        x = xs * ceq
         if not np.isfinite(res) or res > 1e-9:
             raise ExactTreeUnavailable(f'the covariance boundary-value problem has no '
                                        f'consistent solution (residual {res:.2g}; an unstable '
@@ -391,7 +431,10 @@ class ExactTree:
                 f'estimated error {self.err_est:.1e} > 1e-8')
         U0 = x[:n * n].reshape(n, n)
         V0 = x[n * n:].reshape(n, n)
-        ev = np.linalg.eigvalsh(0.5 * (U0 + U0.T))
+        # positivity on the correlation-normalized matrix (unit free)
+        dg = np.sqrt(np.abs(np.diag(U0)))
+        dg[~(dg > 0)] = 1.0
+        ev = np.linalg.eigvalsh(0.5 * (U0 + U0.T) / np.outer(dg, dg))
         if ev.size and ev[0] < -1e-10 * max(abs(ev[-1]), 1e-300):
             raise ExactTreeUnavailable(
                 f'the equal-time state covariance is not positive (eigenvalue {ev[0]:.3g}): '
@@ -470,10 +513,12 @@ class ExactTree:
     def callable(self):
         """``f(t0, t1)``: the pipeline's k = 2 callable convention (leg 0 at
         ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
-        at ``tau = -_ITO_EPS``, the pipeline's Ito left limit)."""
-        from api.compute import _ITO_EPS
+        at the pipeline's Ito left limit: exactly, or at ``tau = -_ITO_EPS``
+        under DAEDALUS_TAU0=nudge)."""
+        from api.compute import _tau0_lag
+        lag = _tau0_lag()
 
         def f(t0, t1):
             tau = float(np.real(t1)) - float(np.real(t0))
-            return self.value(-_ITO_EPS if abs(tau) <= 1e-12 else tau)
+            return self.value(lag if abs(tau) <= 1e-12 else tau)
         return f
