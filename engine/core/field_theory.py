@@ -1027,6 +1027,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     failures: list = []
     soft_passes: list = []
     mf_memo: dict = {}      # the saddle solve is the same for every coefficient
+    dc_gains = getattr(ns, '_kernel_dc_gains', None)
 
     for key in mf_sector_keys:
         sector_poly = by_tp.get(key)
@@ -1036,6 +1037,13 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
             c_subbed = SR(coeff).subs(mf_subs)
             if spec_subs:
                 c_subbed = c_subbed.subs(spec_subs)
+            # A kernel symbol left at the saddle (a hand-written
+            # mean-field text ``w*g*nstar``, or a legacy ``g*n`` action
+            # term) is the kernel's integral there, as in the solvers.
+            if dc_gains is not None:
+                k_subs = dc_gains.subs_dict(c_subbed)
+                if k_subs:
+                    c_subbed = c_subbed.subs(k_subs)
             if _expand_legacy_requested() or not _proved_nonzero(
                     c_subbed, floats_ok=True):
                 try:
@@ -1094,6 +1102,22 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     for key in mf_sector_keys:
         if key in by_tp:
             by_tp[key] = R.zero()
+
+
+def kernel_dc_gains_of(ns, model):
+    """The model's kernel integrals (:class:`engine.core.convolution.
+    KernelDCGains`), made once per namespace and kept on it as
+    ``ns._kernel_dc_gains`` (the mean-field check and the solvers read the
+    same object)."""
+    from engine.core.convolution import KernelDCGains
+    gains = getattr(ns, '_kernel_dc_gains', None)
+    if gains is None:
+        gains = KernelDCGains(ns, model)
+        try:
+            ns._kernel_dc_gains = gains
+        except AttributeError:
+            pass
+    return gains
 
 
 def _mf_numerical_residual(expr, ns, model, memo=None):
@@ -1297,7 +1321,9 @@ class FieldTheory:
         # convolution rules:
         #   * linearity in arg 2  ⇒  Conv(g, a+b) = Conv(g, a) + Conv(g, b)
         #   * pull constant prefactors out of arg 2
-        #   * Conv(g, constant) = ĝ(0) · constant = constant   (normalised)
+        #   * Conv(g, constant) = ĝ(0) · constant   (ĝ(0) = the kernel's
+        #     integral, read off ``kernel_ft_image`` at omega = 0; a
+        #     normalised kernel leaves the constant untouched)
         #   * Conv(g, fluctuation) → g · fluctuation   (kernel symbol stays
         #     for the FT pipeline to substitute ĝ(ω) later).
         #
@@ -1310,6 +1336,7 @@ class FieldTheory:
         # The naïve ``Conv(g, n) → g·n`` flatten gives the wrong
         # ``g·nstar`` bilinear coefficient on the dv side.
         from engine.core.convolution import reduce_conv_in_action
+        dc_gains = kernel_dc_gains_of(ns, self.model)
         try:
             fluct_vars = set(ns._all_field_sr_vars)
             # Pass taylor_order so nonlinear Conv arguments
@@ -1330,7 +1357,7 @@ class FieldTheory:
             attachments = {}
             S_sr = reduce_conv_in_action(
                 S_sr, fluct_vars, taylor_order=self.taylor_order,
-                attachments_out=attachments,
+                attachments_out=attachments, dc_gains=dc_gains,
             )
             ns._kernel_attachments = attachments
         except (AttributeError, TypeError):
@@ -1668,6 +1695,10 @@ class FieldTheory:
         # Matrix params get a 1D placeholder list; the actual 2D
         # element-naming grid is set later by ``mf_substitutions``,
         # which also knows about ``indexed_by`` for per-pop sizing.
+        # Mean-field saddle names (the expression namespace binds a size-1
+        # saddle as a scalar too: bare ``vstar`` in a scalar model).
+        ns._mf_saddle_names = frozenset(
+            p['name'] for p in m.get('parameters', []) if p.get('mean_field'))
         for pspec in m.get('parameters', []):
             pname   = pspec['name']
             domain  = pspec.get('domain', None)
