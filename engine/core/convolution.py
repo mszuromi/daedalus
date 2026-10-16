@@ -126,6 +126,20 @@ class KernelDCGains:
         self._images = None
         self._omega = None
         self._sym_cache = {}
+        # the kernel symbols on the namespace (no hook call): an expression
+        # without any of them never runs the hook
+        self._ksyms = set()
+        for kspec in (model or {}).get('kernels', []) or []:
+            self._ksyms.update(_flat_symbols(getattr(ns, kspec['name'], None)))
+
+    def _mentions_kernel(self, expr):
+        from sage.all import SR as _SR
+        if not self._ksyms or self._hook is None:
+            return False
+        try:
+            return any(v in self._ksyms for v in _SR(expr).variables())
+        except Exception:
+            return False
 
     def _load(self):
         if self._images is not None:
@@ -137,9 +151,14 @@ class KernelDCGains:
         om = _SR.var('_kernel_dc_omega')
         try:
             imgs = self._hook(self._ns, om) or {}
-        except Exception:
+        except Exception as exc:
             # an image the hook cannot build fails later, where the
-            # propagator needs it, with the hook's own message
+            # propagator needs it, with the hook's own message; say here
+            # that the saddle took the kernels as normalised meanwhile
+            import warnings as _w
+            _w.warn(f'kernel images could not be built ({exc}); the '
+                    f'mean-field saddle takes every kernel as normalised '
+                    f'(integral 1).', stacklevel=3)
             return
         self._omega = om
         self._images = {_SR(k): _SR(v) for k, v in imgs.items()}
@@ -162,12 +181,24 @@ class KernelDCGains:
         if img is None:
             self._sym_cache[ksym] = None
             return None
+        def _finite(x):
+            txt = str(x)
+            return not ('Infinity' in txt or 'infinity' in txt
+                        or 'NaN' in txt or 'und' == txt or 'ind' == txt)
         try:
             g0 = img.subs({self._omega: 0})
-            txt = str(g0)
-            bad = 'Infinity' in txt or 'infinity' in txt or 'NaN' in txt
+            bad = not _finite(g0)
         except Exception:
             bad = True
+        if bad:
+            # a removable singularity (a boxcar (1 - exp(-I*omega*T))/(I*omega*T),
+            # sin(omega*T)/(omega*T)) has a finite limit; a pole does not
+            try:
+                from sage.all import limit as _limit
+                g0 = _SR(_limit(img, **{str(self._omega): 0}))
+                bad = not _finite(g0) or g0.has(self._omega)
+            except Exception:
+                bad = True
         if bad:
             raise ValueError(
                 f'kernel {ksym}: its frequency image {img} (omega = '
@@ -190,6 +221,8 @@ class KernelDCGains:
         expression in kernel symbols such as ``2*g``), or ``None`` when it
         holds no kernel with an image."""
         from sage.all import SR as _SR
+        if not self._mentions_kernel(kexpr):
+            return None
         self._load()
         if not self._images:
             return None
@@ -208,6 +241,8 @@ class KernelDCGains:
         """``{kernel symbol: ĝ(0)}`` for the kernel symbols with an image
         that occur in ``expr`` (empty when none do)."""
         from sage.all import SR as _SR
+        if not self._mentions_kernel(expr):
+            return {}
         self._load()
         if not self._images:
             return {}
@@ -216,6 +251,21 @@ class KernelDCGains:
         except Exception:
             return {}
         return {v: self.symbol_gain(v) for v in present}
+
+
+def _flat_symbols(val):
+    """The SR symbols of a namespace kernel entry (a symbol, a list, or a
+    list of lists of them)."""
+    from sage.all import SR as _SR
+    if isinstance(val, (list, tuple)):
+        for v in val:
+            yield from _flat_symbols(v)
+    elif val is not None:
+        try:
+            if _SR(val).is_symbol():
+                yield _SR(val)
+        except Exception:
+            return
 
 
 def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,

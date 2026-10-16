@@ -445,7 +445,8 @@ def _probe_negative_half_line(R, seeds, roots, state_vars, slices, model,
             found.append(np.asarray(sol.x, dtype=float))
     new = []
     for r in _dedup_roots(found, rtol=rtol, atol=atol):
-        if not np.any(r[cols] < 0):
+        # negative, not a root at 0 the main search reached as -1e-12
+        if not np.any(r[cols] < -1e-8 * max(1.0, float(np.max(np.abs(r))))):
             continue
         if len(_dedup_roots(list(roots) + [r], rtol=rtol,
                             atol=atol)) > len(roots):
@@ -1102,13 +1103,13 @@ def linear_stability(
 
 
 def _check_selected_root(ft, model, num_params, index_used, mf_values,
-                         rtol=1e-6, atol=1e-9):
+                         rtol=1e-6, atol=1e-7):
     """Raise ``AssertionError`` when the selected saddle leaves the raw
     mean-field action sector (``ft._mf_sector_raw``: the (0,0), (1,0), (0,1)
     coefficients before the saddle substitution) visibly non-zero: a
     residual above ``max(atol, rtol * sum of |terms|)`` (a wrong equation
     leaves a residual of the size of its terms; a converged root ~1e-12 of
-    it).  A coefficient with a symbol this run gives no value is skipped.
+    it; ``atol`` is the residual the root search itself accepts).  A coefficient with a symbol this run gives no value is skipped.
     No-op without the raw sector (the proxy used inside ``expand``)."""
     from sage.all import SR
     raw = getattr(ft, '_mf_sector_raw', None)
@@ -1133,8 +1134,8 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
                 c = c.subs(k_subs)
             terms = c.expand()
             terms = (terms.operands()
-                     if terms.operator() is not None
-                     and 'add' in str(terms.operator()).lower() else [terms])
+                     if getattr(terms.operator(), '__name__', '')
+                     == 'add_vararg' else [terms])
             try:
                 vals = [SR(t).subs(subs) for t in terms]
                 if any(v.free_variables() for v in vals):

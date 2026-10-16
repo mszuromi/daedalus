@@ -129,15 +129,42 @@ def test_normalised_kernel_expansion_is_unchanged():
     g, ns_, dn = var('g52 nstar52 dn52')
 
     class NS:
-        pass
-    model = {'kernel_ft_image': lambda ns, om: {g: 1 / (1 + om)}}
+        g52 = g
+    model = {'kernels': [{'name': 'g52'}], 'kernel_ft_image': lambda ns, om: {g: 1 / (1 + om)}}
     expr = Conv(g, ns_ + dn) * (1 + dn)
     plain = reduce_conv_in_action(expr, {dn})
     with_gain = reduce_conv_in_action(expr, {dn}, dc_gains=KernelDCGains(NS(), model))
     assert str(plain) == str(with_gain)
-    model2 = {'kernel_ft_image': lambda ns, om: {g: 2 / (1 + om)}}
+    model2 = {'kernels': [{'name': 'g52'}], 'kernel_ft_image': lambda ns, om: {g: 2 / (1 + om)}}
     scaled = reduce_conv_in_action(expr, {dn}, dc_gains=KernelDCGains(NS(), model2))
     assert bool((scaled - plain - ns_ * (1 + dn)).expand() == 0)
+
+
+def test_kernel_integral_through_a_removable_singularity():
+    """A boxcar ``(1 - exp(-2 I omega))/(2 I omega)`` and ``2 sin(3 omega)/(3 omega)`` are 0/0 at
+    omega = 0 but integrate to 1 and 2; a pole (``1/(I omega)``) is refused.  The hook runs only for
+    an expression that holds a kernel symbol."""
+    from engine.core.convolution import KernelDCGains
+    from sage.all import SR, I, exp, sin, var
+    g, h, k = var('g52b h52b k52b')
+
+    class NS:
+        pass
+    ns = NS()
+    ns.g, ns.h, ns.k = g, h, k
+    calls = []
+
+    def hook(ns_, om):
+        calls.append(1)
+        return {g: (1 - exp(-2 * I * om)) / (2 * I * om), h: 2 * sin(3 * om) / (3 * om),
+                k: 1 / (I * om)}
+    kd = KernelDCGains(ns, {'kernels': [{'name': 'g'}, {'name': 'h'}, {'name': 'k'}],
+                            'kernel_ft_image': hook})
+    assert kd.subs_dict(var('x52b') + 1) == {} and not calls
+    assert kd.symbol_gain(g) == 1 and kd.symbol_gain(h) == 2
+    with pytest.raises(ValueError, match='singular at omega = 0'):
+        kd.symbol_gain(k)
+    assert len(calls) == 1
 
 
 def _builder_pp(freq, mf_rate):
