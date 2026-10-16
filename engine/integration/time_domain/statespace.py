@@ -859,6 +859,16 @@ class _ModelOps:
             self._extra[key] = out
         return out
 
+    def kernel_route(self, att):
+        """For the run-level predictions (``run_route``, ``diagram_route``,
+        ``diagram_estimate``): the kernel's ``EntryRealization`` when the
+        route takes it -- a strictly proper kernel as a kernel edge or a
+        dressed line, one with a direct term (item 56) as a dressed line
+        only (Phase J refuses it on a kernel edge by name) -- or a decline
+        reason (str)."""
+        ent, why = self._kernel_real(att)
+        return why if ent is None else ent
+
     def dressed_entry(self, pi, ri, att):
         """The ``_EntryOps`` of a dressed line ``(g * G)(t) = int_0^t
         g(t - x) G(x) dx``: the series connection of the propagator entry
@@ -2975,7 +2985,7 @@ def diagram_route(typed_diagram, propagator_data, num_params):
             for att in vt.kernel_attachments or ():
                 if _FI()._conv_kernel_local_weight(att, num_params) is not None:
                     continue
-                e = model.kernel_entry(att)
+                e = model.kernel_route(att)
                 if isinstance(e, str):
                     return False, e
     return True, None
@@ -3004,7 +3014,7 @@ def run_route(propagator_data, num_params, vertex_types=()):
                     if _FI()._conv_kernel_local_weight(
                             att, num_params) is not None:
                         continue
-                    e = model.kernel_entry(att)
+                    e = model.kernel_route(att)
                     if isinstance(e, str):
                         ok, why = False, e
                         break
@@ -3070,9 +3080,9 @@ def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
         if isinstance(vt, ConvVertexType):
             mx = 0
             for att in vt.kernel_attachments or ():
-                e = model.kernel_entry(att)
+                e = model.kernel_route(att)
                 if not isinstance(e, str):
-                    mx = max(mx, e.n)
+                    mx = max(mx, int(e.n_states))
                     n_att += 1
             extra[v] = mx
     edges = []

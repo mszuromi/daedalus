@@ -102,6 +102,10 @@ def test_statespace_kernel_edge_refuses_and_dressed_line_takes_a_direct_term():
     ops = SS._ModelOps(real, {})
     att = {'symbol': 'ap', 'kernel_ft_fn': lambda w: (1 - I * w) / (1 + I * w)}
     assert ops.kernel_entry(att) == 'kernel_direct_term'
+    # the run-level predictions count it (as a dressed line): the run is
+    # covered, the pre-pass charges states, not pole tuples
+    kr = ops.kernel_route(att)
+    assert not isinstance(kr, str) and kr.d == -1.0 and kr.n_states == 1
     dr = ops.dressed_entry(0, 0, att)
     assert not isinstance(dr, str)
     from scipy.linalg import expm

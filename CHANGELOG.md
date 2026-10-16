@@ -26,6 +26,11 @@ proper kernel takes exactly the old code paths).
   kernel rate equal to a pole of the line) holds only a strictly proper kernel and refuses a direct term by name
   (`kernel_direct_term`; Phase J status `failed`); the delay driver then still reruns with `[n-1/n]`. Counters
   `conv_lines_dressed_direct`, `conv_kernel_direct_refused`.
+- **Run-level route.** `run_route`, `diagram_route` and the memory pre-pass (`diagram_estimate`) count such a kernel
+  as a dressed line (`_ModelOps.kernel_route`). Before, they asked the kernel-edge realization, so a bare-delay
+  model was predicted "not covered" and every diagram was charged pole tuples: a delayed negative-feedback model
+  at k = 1, l = 3 (Padé 4) was estimated at ~3,300 GB of pole tuples and refused before any pass ran (item 47's
+  retry never fired); it is now covered, estimated at 13 GB of state-space states.
 - **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it acts on a field whose
   propagator has a δ part (a point-process field; read with every delay factor at its Padé image, both parities)
   AND sits in a vertex with several physical legs (a spike train inside a nonlinearity). Phase J refuses the same

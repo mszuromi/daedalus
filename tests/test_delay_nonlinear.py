@@ -138,6 +138,10 @@ def test_hard_delay_in_a_product_runs_the_all_pass_approximant():
                                                   freq_image=_rational_text(n, n)), **kw)
         assert rd['status'] == rr['status'] == 'ok'
         assert rd['delay']['approximant'] == 'pade' and rd['delay']['incomplete'] is None
+        # the state-space route covers the run (no pole tuples charged) and
+        # takes every subset
+        eng = rd['phase_j_engine']
+        assert eng['covers_run'] is True and eng['statespace_share'] == 1.0
         for ell in (0, 1):
             x = np.real(np.asarray(rd['C_tau_by_ell'][ell]))
             y = np.real(np.asarray(rr['C_tau_by_ell'][ell]))
