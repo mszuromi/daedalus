@@ -302,3 +302,60 @@ def test_bug9_invalid_engine_fails_before_any_work(monkeypatch):
         compute_cumulants(s.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
                           tau_grid=np.array([0.5]), **RUN)
     assert not called
+
+
+# ── bug 14: a conductance vertex mixing a plain and a kernel term ────────────
+
+def _mixed(name, drift, kernels):
+    s = (SDE(name).parameter('a', default=1.0).parameter('b', default=1.0)
+         .parameter('c', default=0.5).parameter('c2', default=0.3)
+         .parameter('ee', default=0.3).parameter('D', default=0.1).field('x'))
+    for kname, img in kernels:
+        s = s.define_kernel(kname, freq_image=img)
+    return s
+
+
+@pytest.mark.parametrize('case', ['one_kernel', 'two_kernels'])
+def test_bug14_mixed_conductance_vertex_equals_markov_form(case):
+    """``-ee*x*x - c*x*Conv(h, x)``: the vertex coefficient ``c*z_h + ee``
+    is integrated term by term (the plain term was convolved too: one loop
+    0.49 / 0.86 relative off the Markov form before)."""
+    if case == 'one_kernel':
+        conv = _mixed('bug60 mixed conv', None, [('h', '1/(1 + I*omega)')]) \
+            .drift('x', '-a*x + b - ee*x*x - c*x*Conv(h, x)')
+        markov = _mixed('bug60 mixed markov', None, []).field('y') \
+            .drift('x', '-a*x + b - ee*x*x - c*x*y').drift('y', 'x - y')
+    else:
+        conv = _mixed('bug60 mixed2 conv', None, [('h', '1/(1 + I*omega)'),
+                                                 ('h2', '1/(1 + 2*I*omega)')]) \
+            .drift('x', '-a*x + b - ee*x*x - c*x*Conv(h, x) - c2*x*Conv(h2, x)')
+        markov = _mixed('bug60 mixed2 markov', None, []).field('y').field('y2') \
+            .drift('x', '-a*x + b - ee*x*x - c*x*y - c2*x*y2') \
+            .drift('y', 'x - y').drift('y2', '(x - y2)/2')
+    out = []
+    for s in (conv, markov):
+        s = s.noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = compute_cumulants(s.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+                                  tau_grid=np.array([0.0, 0.5, 2.0]), **RUN)
+        out.append([np.real(np.asarray(r['C_tau_by_ell'][ell])) for ell in (0, 1)])
+    for ell in (0, 1):
+        np.testing.assert_allclose(out[0][ell], out[1][ell], rtol=1e-11,
+                                   atol=1e-12 * np.max(np.abs(out[1][ell])))
+
+
+def test_bug14_split_helper_refuses_a_non_product_prefactor():
+    from sage.all import SR, var
+    from engine.integration.time_domain import final_integral as FI
+    from engine.core.vertices import ConvVertexType
+    z = var('z_h')
+    vt = ConvVertexType.__new__(ConvVertexType)
+    vt.coefficient = SR('c*z_h + ee')
+    vt.kernel_attachments = [{'symbol': z, 'leg': ('dx', 1)}]
+    va = {3: vt}
+    split = FI._conv_monomial_split(va, SR('4*D*(c*z_h + ee)'))
+    assert [str(p) for p, _m in split] == ['4*D*ee', '4*D*c*z_h']
+    assert isinstance(FI._conv_monomial_split(va, SR('4*D*(c*z_h + 2*ee)')), str)
+    vt.coefficient = SR('c*z_h')
+    assert FI._conv_monomial_split(va, SR('4*D*c*z_h')) is None
