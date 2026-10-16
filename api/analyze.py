@@ -202,6 +202,10 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
+#: item 60: the a posteriori realization error (api._realization.
+#: _aposteriori_error) enters the G6 estimate above this value (the
+#: realization is refused outright above 1e-2)
+_G6_REALIZATION_FLOOR = 1e-6
 
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
@@ -1913,7 +1917,31 @@ def _g3_propagator(ctx):
                        declared=ctx.p.allow_numeric_fallback)
         return
     ctx.t['pole_source'] = 'exact'
+    if 'statespace_covers_run' not in ctx.t:
+        _standalone_route_prediction(ctx)
     _g3_pole_findings(ctx, res)
+
+
+def _standalone_route_prediction(ctx):
+    """Item 60: ``analyze()`` outside ``compute_cumulants`` makes the run's
+    state-space route prediction itself (``compute._ss_route_prediction`` on
+    the same operator, parameter point and vertex types), so the G3 pole
+    findings get the levels the in-run analyzer gives them.  Left unset
+    (registered levels, as before) when the prediction cannot be made."""
+    try:
+        from engine.core.vertices import (extract_vertex_types,
+                                          extract_source_types)
+        from api.compute import _ss_route_prediction
+        prop = {'K_ft': ctx.K_ft, 'omega': ctx.omega,
+                'nf': int(ctx.n_tilde),
+                'ring_gen_names': list(ctx.ring_names)}
+        vt = (list(extract_vertex_types(ctx.ft))
+              + list(extract_source_types(ctx.ft)))
+        pred = _ss_route_prediction(prop, ctx.num_params, vt)
+    except Exception:
+        return
+    ctx.t['phase_j_engine'] = pred.get('engine')
+    ctx.t['statespace_covers_run'] = bool(pred.get('covers_run'))
 
 
 def _pc_kappa_max():
@@ -3459,6 +3487,22 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     # routes' sums
     E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
          + float(c.get('ss_err_abs_sum', 0.0)))
+    # item 60: the per-subset estimates above assume the ROUNDED realization
+    # represents G; a graded / not numerically Hurwitz one was checked a
+    # posteriori (api._realization: refused above 1e-2) and its measured
+    # relative error enters the estimate, so a realization that passes the
+    # refusal but is off by more than the threshold does not pass G6
+    rc = (result.get('phase_j_engine') or {}).get('realization_check') \
+        if isinstance(result, dict) else None
+    real_rel = 0.0
+    if (rc and rc.get('checked') and rc.get('err_rel') is not None
+            and int(c.get('ss_estimated', 0))):
+        d['realization_err_rel'] = float(rc['err_rel'])
+        # below the floor the measurement is the frequency quadrature's own
+        # noise on strongly graded spectra (~1e-6 at a 1e6 spread, the
+        # Lyapunov solution measured exact to 5e-13), not the realization's
+        if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
+            real_rel = float(rc['err_rel'])
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
@@ -3479,6 +3523,8 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = E / S
     else:
         R = 0.0 if E == 0 else float('inf')
+    if real_rel and complete and R is not None:
+        R = R + real_rel
     # Near-degenerate / repeated poles (api._pole_clusters): a resolved
     # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
     # the node values); an unresolved one its lost-digit estimate.
@@ -3506,8 +3552,10 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     ctx.add('G6_ACCURACY',
             f'accuracy estimate R = {Rs}: summed error estimates {E:.3g} of '
             f'{n_est} closed-form subset evaluation(s) against '
-            f'sum_tau |C(tau)| = {S:.6g} over the tau grid (threshold '
-            f'{thr:g}, {src}){why}.',
+            f'sum_tau |C(tau)| = {S:.6g} over the tau grid'
+            + (f' plus the realization\'s a posteriori relative error '
+               f'{real_rel:.3g}' if real_rel else '')
+            + f' (threshold {thr:g}, {src}){why}.',
             'pass parallel=False for the accuracy estimate'
             if (R is None and not complete) else '')
     if R is not None and R > thr:

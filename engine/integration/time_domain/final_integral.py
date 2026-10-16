@@ -1010,6 +1010,92 @@ class _ScaledCoeff:
         return self._w * complex(self._f(*args))
 
 
+def _conv_monomial_split(vertex_assignments, combined_prefactor):
+    """Item 60 (bug 14): ``None`` when every conductance vertex's coefficient
+    is a single kernel monomial (the slots follow from it); else the list of
+    ``(prefactor, {vertex: term})`` over every choice of one term (grouped
+    by the powers of the vertex's kernel symbols) per vertex, the prefactor's
+    factor of each vertex replaced by its term; or a refusal reason (str)
+    when the prefactor is not the product of the vertex coefficients times a
+    factor free of kernel symbols."""
+    groups = {}
+    for v, vt in vertex_assignments.items():
+        if not isinstance(vt, ConvVertexType) or not vt.kernel_attachments:
+            continue
+        syms = []
+        for att in vt.kernel_attachments:
+            if att['symbol'] not in syms:
+                syms.append(att['symbol'])
+        coeff = SR(vt.coefficient)
+        e = coeff.expand()
+        op = e.operator()
+        terms = (e.operands() if op is not None
+                 and getattr(op, '__name__', '') == 'add_vararg' else [e])
+        by = {}
+        for t in terms:
+            key = tuple(int(t.degree(SR(z))) for z in syms)
+            by[key] = by.get(key, SR(0)) + t
+        groups[v] = (coeff, [by[k] for k in sorted(by)])
+    if not groups or all(len(ts) == 1 for _c, ts in groups.values()):
+        return None
+    prod = SR(1)
+    for coeff, _ts in groups.values():
+        prod = prod * coeff
+    rest = (SR(combined_prefactor) / prod).simplify_rational()
+    kern = {str(att['symbol']) for vt in vertex_assignments.values()
+            if isinstance(vt, ConvVertexType)
+            for att in (vt.kernel_attachments or ())}
+    if any(str(x) in kern for x in rest.variables()):
+        return ('conductance vertex coefficients mixing plain and kernel '
+                'terms: the diagram prefactor is not their product times a '
+                f'kernel-free factor ({combined_prefactor}); not integrated')
+    verts = list(groups)
+    out = []
+    for combo in itertools.product(*[groups[v][1] for v in verts]):
+        pf = rest
+        for t in combo:
+            pf = pf * t
+        out.append((pf, dict(zip(verts, combo))))
+    return out
+
+
+def _sum_conv_monomials(split, kw):
+    """``integrate_diagram`` as the sum over the coefficient terms of
+    ``_conv_monomial_split`` (each with its own prefactor and kernel slots);
+    the closure carries the parts as ``phase_j_placements`` of weight 1 (the
+    state-space triples, S4b)."""
+    results = []
+    for pf, mono in split:
+        if SR(pf).is_zero():
+            continue
+        r = integrate_diagram(combined_prefactor=pf, _conv_monomial=mono, **kw)
+        if r.get('status') != 'ok':
+            return r
+        results.append(r)
+    if not results:
+        return {'status': 'failed', 'contribution': None,
+                'reason': 'every coefficient term of the conductance '
+                          'vertices is zero'}
+    fns = [r['contribution'] for r in results]
+
+    def contribution(*ext_time_values):
+        return sum(complex(f(*ext_time_values)) for f in fns)
+    contribution.phase_j_placements = tuple((1.0, f) for f in fns)
+    first = results[0]
+    out = {k: (None if k == 'stripped_integrand' else first[k])
+           for k in first.keys()}
+    out['contribution'] = contribution
+    for key in ('delta_contributions', 'delta_contributions_multi'):
+        out[key] = [rec for r in results for rec in (r.get(key) or [])]
+    for key in ('n_subsets_evaluated', 'n_delta_contributions',
+                'n_shotnoise_skipped', 'n_delta_subsets_dropped'):
+        out[key] = sum(int(r.get(key) or 0) for r in results)
+    out['subset_diagnostics'] = [d for r in results
+                                 for d in (r.get('subset_diagnostics') or [])]
+    out['conv_monomials'] = len(results)
+    return out
+
+
 def _average_conv_placements(choices, kw):
     """``integrate_diagram`` for a diagram with a conductance vertex whose
     kernel slots can be filled in several distinct ways (a mixed leg tuple,
@@ -7687,6 +7773,7 @@ def integrate_diagram(
     on_divergence=None,
     _conv_assign=None,
     _conv_force_leg=None,
+    _conv_monomial=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -8146,6 +8233,31 @@ def integrate_diagram(
         _model, _why = _ssk.realization_for(propagator_data, num_params)
         return _model is not None and not isinstance(
             _model.kernel_entry(att), str)
+    # Item 60 (bug 14): a vertex coefficient that is a SUM of terms with
+    # different powers of the kernel symbols (``-ee*x*x - c*x*Conv(h, x)``:
+    # coefficient ``c*z_h + ee`` on one leg tuple) is linear in its terms:
+    # each term has its own slot count (a plain term has no kernel slot).
+    # The diagram is integrated once per choice of one term per such vertex
+    # (``_conv_monomial``) with the prefactor's factor of that vertex
+    # replaced by the term, and the results summed.  Before, the slots were
+    # counted on the whole coefficient and the plain term was convolved too.
+    if _conv_monomial is None:
+        _split = _conv_monomial_split(vertex_assignments, combined_prefactor)
+        if isinstance(_split, str):
+            return {'status': 'failed', 'contribution': None,
+                    'integration_vars': integration_vars, 'reason': _split}
+        if _split is not None:
+            return _sum_conv_monomials(
+                _split,
+                dict(typed_diagram=typed_diagram,
+                     propagator_data=propagator_data,
+                     ext_time_vars=ext_time_vars, num_params=num_params,
+                     origin_leaf_idx=origin_leaf_idx,
+                     external_fields=external_fields,
+                     edge_mode_sums_builder=edge_mode_sums_builder,
+                     prop_td=prop_td, on_divergence=on_divergence,
+                     _conv_assign=_conv_assign,
+                     _conv_force_leg=_conv_force_leg))
     conv_refusal = None
     _conv_choices = []          # [((v, leg), [placement, ...])]
     _conv_slots = {}            # {(v, leg): (in_edges, base placement)}
@@ -8165,15 +8277,18 @@ def integrate_diagram(
                 f"ConvVertexType — these are mutually exclusive."
             )
         phys_legs = [tuple(lg) for lg in vtype.physical_legs]
-        coeff_sr = SR(vtype.coefficient)
+        mono = None if _conv_monomial is None else _conv_monomial.get(v)
+        coeff_sr = SR(vtype.coefficient if mono is None else mono)
         by_leg = {}
         for att_idx, att in enumerate(vtype.kernel_attachments):
             try:
                 q = int(coeff_sr.degree(SR(att['symbol'])))
             except Exception:
                 q = 1
+            # one term of a split coefficient: exactly its power (a plain
+            # term, power 0, fills no kernel slot)
             by_leg.setdefault(tuple(att['leg']), []).extend(
-                [att_idx] * max(q, 1))
+                [att_idx] * (max(q, 1) if mono is None else max(q, 0)))
         for leg, slots in by_leg.items():
             n_copies = phys_legs.count(leg)
             hits = sorted(ek for ek in D.edges() if ek[1] == v
@@ -8211,7 +8326,8 @@ def integrate_diagram(
                  external_fields=external_fields,
                  edge_mode_sums_builder=edge_mode_sums_builder,
                  prop_td=prop_td, on_divergence=on_divergence,
-                 _conv_force_leg=_conv_force_leg))
+                 _conv_force_leg=_conv_force_leg,
+                 _conv_monomial=_conv_monomial))
     _assign = dict(_conv_assign or {})
     _can_dress = (edge_mode_sums_builder is None
                   and propagator_data.get('C_mats') is not None

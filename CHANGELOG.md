@@ -11,6 +11,61 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: known-bugs sweep (item 60)
+
+Numbers move only where they were wrong: a conductance vertex mixing a plain and a kernel term (bug 14, below).
+Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identical except `spike_reset` k = 2
+(1.4e-15 relative, inside main's own process-to-process scatter of 2.6e-14 on that entry) and
+`dendritic_quad_soma_sigmoid` (1.4e-16, main scatters by the same). Every fix has a regression test in
+`tests/test_known_bugs_60.py` (bug 2's are in `tests/test_leftovers_39.py`).
+- **Silent wrong one loop for a conductance vertex mixing a plain and a kernel term (bug 14).** A vertex
+  coefficient such as `c*z_h + ee` (drift `-ee*x*x - c*x*Conv(h, x)`) got its kernel slots counted on the whole
+  coefficient and `z_h -> 1`, so the plain term was convolved too: one loop 0.49 relative off the Markov form (two
+  kernels on one vertex: 0.86; a cubic mixed vertex: 0.64; a point-process model: 0.043). The diagram is now
+  integrated term by term (one kernel monomial per vertex, its own slots and prefactor); all four agree with
+  their Markov forms to <= 6e-14. A prefactor that is not the product of the vertex coefficients is refused by
+  name. Single-monomial vertices are unchanged.
+- **Derivative atoms in the Taylor expansion (bug 2).** Maxima's multivariate `taylor()` stops `k` orders early on a
+  `k`-th derivative of an abstract function: `taylor(x*D[0](f)(x), (x, 0), 3)` has no `x^3` term. The per-atom
+  expansion now takes such an atom of one field variable through the univariate form, which is exact. An atom of
+  several field variables, or the legacy whole-action route (`DAEDALUS_EXPAND_LEGACY`, or an atom without a
+  polynomial expansion) when the action has a derivative atom, raises `DerivativeAtomTaylorError` instead of
+  returning a truncated expansion. No parsed model contains such atoms; a hand-built model dict could.
+- **G6 sees the realization (bug 5).** A graded or not numerically Hurwitz rounded realization was already checked
+  a posteriori and refused when broken (item 41). Its measured relative error (stationary variances by Lyapunov vs
+  the same variances by adaptive frequency quadrature of the transfer function) now enters the state-space
+  accuracy estimate R above 1e-6 (`result['phase_j_engine']['realization_check']`, analyzer
+  `realization_err_rel`; below 1e-6 the frequency quadrature's own noise on strongly graded spectra dominates).
+  A realization that passes the 1e-2 refusal check but is off by more than 1e-6 gives `G6_ACCURACY_LOW`. Graded
+  Pade-8 / 24 realizations measure ~2e-16: R unchanged.
+- **Standalone `analyze()` (bug 7)** makes the state-space route prediction itself, so its G3 pole-cluster
+  findings get the in-run levels (e.g. `G3_POLE_CLUSTER_UNRESOLVED` is info, not warning, when the route covers
+  the run).
+- **Population named `I` in the simulator (bug 8).** `I` iterates as the population and computes as the
+  imaginary unit (before: `range * float` TypeError in an expression using `I`).
+- **`dd.Config(delay=...)` and `question.delay` in config files (bug 10)** pass the delay route's options; `dd.run`
+  accepts an `SDE` object (built on the fly). Point-process models in config files go through a model file
+  (documented).
+- **Sage-preparsed literals in the simulators (bug 11).** `SDE.simulate`, `noise_samplers.simulate_ou_paths`,
+  `simulations.delay_sde_sim.simulate` and the Meixner sampler coerce `Integer` / `RealNumber` arguments
+  (`default_rng(Integer)` / `round(RealNumber)` raised TypeError in a Sage notebook).
+- **Mean-field solvers (bug 3).** A residual that overflows to inf / NaN under `np.errstate(all='ignore')` is
+  penalized (1e10) instead of passed on: NaN compares False against the acceptance tolerance and could pass as a
+  root. After `fsolve`, the legacy and heterogeneous iteration solvers check the residual at the returned point
+  (`SADDLE_RESIDUAL_RTOL = 1e-8` relative) and raise instead of returning a non-converged saddle (the engine's
+  saddle check caught such points later, with a less specific message).
+- **Invalid `DAEDALUS_PHASE_J_ENGINE` (bug 9)** raises at the `compute_cumulants` entry (before: at the first
+  Phase J subset, after the enumeration).
+- **Implicit point-process saddle equation (bug 13).** An SDE model with a point process whose mean-field equation
+  of a continuous field references that field (a conductance term `(Es - v)*Conv(g, n)`) was emitted as an explicit
+  `vstar = ...` substitution and failed the saddle check; it now uses the residual `.equation` route (the saddle
+  equals the exact root to 1e-13; simulation agrees within 2 SE).
+- **`symbolic_loop` (bug 4)** refuses a placement-wrapped contribution (`phase_j_placements`) by name
+  (`kernel_edge`) instead of an AttributeError (not reachable through `symbolic_cumulant`, which refuses
+  conductance vertices first).
+- Checked, already fixed on main: the delta-in-heaviside DC gain (bug 1, #20; end-to-end test added) and the
+  stale `legacy_baseline[multipopulation_test]` slow test (bug 6, refrozen in #20; passes on both engines).
+
 #### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
 
 Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
