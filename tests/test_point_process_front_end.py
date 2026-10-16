@@ -294,16 +294,19 @@ def test_delayed_alpha_network_voltage_form_bit_identical_to_builder():
 
 
 @pytest.mark.slow
-def test_delayed_spike_only_never_silent():
-    """A delayed kernel inside the rate's exponential (spike-only form): with
-    delays inside nonlinear terms supported the run completes; otherwise it
-    is reported 'incomplete' with a warning, never a silent number."""
-    import warnings
-    s = _delay_pp('spike', n_pop=1, w=((0.5,),))
-    with warnings.catch_warnings(record=True) as W:
-        warnings.simplefilter('always')
-        r = _run(s.build(), 2, 1, [('n', 1), ('n', 1)], np.array([0.5, 3.0]))
-    if r['status'] != 'ok':
-        assert r['status'] == 'incomplete'
-        assert any('incomplete' in str(w.message).lower() or 'delay' in str(w.message).lower()
-                   for w in W)
+def test_delayed_spike_only_equals_voltage_form():
+    """~2.5 min: a delayed alpha kernel inside the rate's exponential
+    (spike-only form, h * g composed in Conv) equals the voltage form at the
+    same Pade order of the loops (tree exact)."""
+    ext, tau = [('n', 1), ('n', 1)], np.array([-3.0, 0.5, 3.0])
+    out = []
+    for form in ('voltage', 'spike'):
+        r = compute_cumulants(_delay_pp(form, n_pop=1, w=((0.5,),)).build(), k=2, max_ell=1,
+                              external_fields=ext, tau_grid=tau, parallel=False, verbose=False,
+                              use_cache=False, delay={'order': 8})
+        assert r['status'] == 'ok'
+        out.append(r)
+    for ell in (0, 1):
+        a = np.asarray(out[0]['C_tau_by_ell'][ell])
+        b = np.asarray(out[1]['C_tau_by_ell'][ell])
+        np.testing.assert_allclose(b, a, rtol=1e-12, atol=0)
