@@ -33,14 +33,20 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   - It needs fixed evaluation points: k <= 2 with a τ grid, no switch-on, not grouped, and a single pass.
   - The result's callables answer the grid points only. Elsewhere they raise `DiscardedDiagramsError` (exported by
     `daedalus`).
-  - A diagram with shot-noise δ records keeps its charge.
+  - A diagram with shot-noise δ records keeps its charge (the pre-pass adds those diagrams to the peak).
+  - Example: the Erlang-8 delayed negative feedback CME at k = 2, two loops sums 10.8 GB of stationary states (refused
+    at the default budget); with `discard=True` the largest diagram is 225 MB and the run peaks at 2.8 GB resident.
 - **Minimal dressed lines** (`statespace._ModelOps.dressed_entry`). The cascade propagator entry + kernel is
   balanced-truncated at the truncation tolerance in effect, with a Hurwitz check and the bound recorded in
   `Realization.truncation['dressed']`.
-  - When the propagator cancels the kernel's poles, `n_G + n_K` states go down to `n_G`. Example: a 1-population
-    exponential-kernel spike Hawkes at two loops goes from 10.6 to 0.62 MB of states and 71 to 9.7 s, with values
-    moving 1.3e-16.
+  - When the propagator cancels the kernel's poles, `n_G + n_K` states go down to `n_G`. Examples:
+    - a 1-population exponential-kernel spike Hawkes at two loops goes from 10.6 to 0.62 MB of states and 71 to
+      9.7 s, with values moving 1.3e-16;
+    - the delayed negative feedback CME (hard delay, (n, n) Pade 4, item 56's direct terms) at k = 1, three loops
+      goes from 703 to 27 MB and 557 to 96 s, with values moving <= 8.4e-15 (inside the 1e-12 truncation tolerance).
   - A rank-1 multi-population network keeps its cascade (nothing cancels).
+  - Zoo: only `conductance` (k = 2, one loop) builds dressed lines; its values move by <= 2.0e-16. No other entry
+    builds a dressed line.
 
 #### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
 
