@@ -1973,6 +1973,17 @@ def _run_phase_j(state, grouped):
     noise_structure = model.get(
         'noise_structure', {'temporal_type': 'white', 'amplitude_params': []}
     )
+    # Hard stop (not only the analyzer's G2_NOISE_STRUCTURE, which
+    # preflight=False / a downgrade would skip): Phase J never applies a
+    # temporal noise kernel, so a non-white temporal_type would be computed
+    # as white noise with status 'ok'.
+    _ntype = (noise_structure or {}).get('temporal_type', 'white')
+    if _ntype != 'white':
+        raise ValueError(
+            f"noise_structure temporal_type {_ntype!r} is not supported by "
+            "compute_cumulants (white noise only; the noise kernel would be "
+            "dropped). Write colored noise as a Markov embedding (an extra "
+            "OU-driven field) or a kernel Conv term instead.")
 
     diagram_records = []
     kernel_groups = []

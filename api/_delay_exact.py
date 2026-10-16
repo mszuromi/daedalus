@@ -327,16 +327,23 @@ class ExactTree:
         eAd = sl.expm(A * d)
         W1_0, W2_0 = eAd @ B, B
 
-        def resid(x):
+        def resid(x, affine=True):
+            # affine=False: the linear part only (W blocks and the noise
+            # terms dropped; with W = 0 the noise never enters Phi @ Y0).
+            # The Jacobian below is built from it EXACTLY: as resid(e) -
+            # resid(0) it cancelled the O(N) constant (field scale squared)
+            # and lost 8e-6 relative at a field scale of 1e6 (audit 3B-02)
             U0 = x[:n * n].reshape(n, n)
             V0 = x[n * n:].reshape(n, n)
-            Y0 = np.concatenate([U0.ravel(), V0.ravel(), W1_0.ravel(), W2_0.ravel()])
+            W1, W2 = (W1_0, W2_0) if affine else (0.0 * W1_0, 0.0 * W2_0)
+            Y0 = np.concatenate([U0.ravel(), V0.ravel(), W1.ravel(), W2.ravel()])
             Yd = Phi @ Y0
             Ud = Yd[:n * n].reshape(n, n)
             Vd = Yd[n * n:2 * n * n].reshape(n, n)
-            lyap = (A @ U0 + U0 @ A.T + Ad @ V0 + V0.T @ Ad.T
-                    + Bd @ N @ B.T @ eAd.T + eAd @ B @ N @ Bd.T
-                    + B @ N @ B.T + Bd @ N @ Bd.T)
+            lyap = A @ U0 + U0 @ A.T + Ad @ V0 + V0.T @ Ad.T
+            if affine:
+                lyap = lyap + (Bd @ N @ B.T @ eAd.T + eAd @ B @ N @ Bd.T
+                               + B @ N @ B.T + Bd @ N @ Bd.T)
             return np.concatenate([lyap.ravel(), (Vd - U0).ravel(), (Ud - V0.T).ravel(),
                                    (U0 - U0.T).ravel()])
 
@@ -346,10 +353,17 @@ class ExactTree:
         e = np.zeros(nx)
         for i in range(nx):
             e[i] = 1.0
-            M[:, i] = resid(e) - r0
+            M[:, i] = resid(e, affine=False)
             e[i] = 0.0
-        x, *_ = np.linalg.lstsq(M, -r0, rcond=None)
-        res = np.linalg.norm(M @ x + r0) / max(np.linalg.norm(r0), 1e-300)
+        # column equilibration: the unknowns (U0, V0 entries) carry the
+        # products of their fields' units, so the raw columns' norms (and
+        # the condition number below) would depend on the units (3B-02)
+        cn = np.linalg.norm(M, axis=0)
+        cn[~(cn > 0)] = 1.0
+        M = M / cn
+        xs, *_ = np.linalg.lstsq(M, -r0, rcond=None)
+        res = np.linalg.norm(M @ xs + r0) / max(np.linalg.norm(r0), 1e-300)
+        x = xs / cn
         if not np.isfinite(res) or res > 1e-9:
             raise ExactTreeUnavailable(f'the covariance boundary-value problem has no '
                                        f'consistent solution (residual {res:.2g}; an unstable '
