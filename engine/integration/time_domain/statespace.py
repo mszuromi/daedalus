@@ -431,7 +431,8 @@ _COUNTER_KEYS = (
     'ss_batch_points', 'ss_prefetch_hits',
     'ss_realizations_built', 'ss_realization_refused',
     'ss_fallback_evals', 'ss_fallback_subsets', 'ss_kernel_entries',
-    'ss_dressed_entries', 'ss_estimated', 'ss_err_abs_sum',
+    'ss_dressed_entries', 'ss_dressed_reduced', 'ss_estimated',
+    'ss_err_abs_sum',
 )
 _COUNTER_DICTS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
@@ -891,9 +892,23 @@ class _ModelOps:
         [b2 c1, a2]]``, ``B = [b1; b2 d1]``, ``C = [d2 c1, c2]`` (smooth
         impulse response ``d2 G_smooth(t) + d1 g_smooth(t) + (g_smooth *
         G_smooth)(t)``; the delta part ``d1 d2`` is the dispatch's, as for
-        every edge); not reduced (a kernel rate the propagator cancels
-        stays as a stable, unobservable state).  Or a reason."""
-        key = ('dress', int(pi), int(ri), _att_key(att))
+        every edge).  Or a reason.
+
+        Item 61: the cascade is reduced by balanced truncation at the
+        truncation tolerance in effect (``api._realization.truncation_tol``;
+        ``0``, the exact setting: not reduced).  When the propagator cancels
+        the kernel's poles (a closed loop through the vertex: one
+        population, or a network whose ``G = (I - Lambda W K)^-1`` vanishes
+        at them) the kernel block is uncontrollable and the minimal line
+        has the entry's states only (n_G + n_K -> n_G); for a rank-1
+        multi-population ``W`` nothing can be discarded and the cascade is
+        returned as built.  The truncated line is stable (Hurwitz, checked)
+        with the H-infinity bound ``2 sum(discarded HSV) <= tol sigma_1``,
+        recorded per line in the realization's truncation record
+        (``Realization.truncation['dressed']``)."""
+        from api._realization import truncation_tol
+        tol = truncation_tol()
+        key = ('dress', int(pi), int(ri), _att_key(att), tol)
         with self._lock:
             hit = self._extra.get(key)
         if hit is not None:
@@ -928,6 +943,8 @@ class _ModelOps:
                 B = np.concatenate([b1, b2 * d1])
                 C = np.concatenate([d2 * c1 if d2 != 0 else
                                     np.zeros(n1, dtype=dt), c2])
+                if tol > 0 and A.shape[0] >= 2:
+                    A, B, C = self._reduce_dressed(A, B, C, tol, pi, ri, att)
             import types as _types
             out = _EntryOps(_types.SimpleNamespace(
                 a=A, b=B, c=C, n_states=A.shape[0]), dt)
@@ -935,6 +952,33 @@ class _ModelOps:
         with self._lock:
             self._extra[key] = out
         return out
+
+    def _reduce_dressed(self, A, B, C, tol, pi, ri, att):
+        """The dressed cascade ``(A, B, C)`` balanced-truncated at ``tol``
+        (``dressed_entry``), its record kept in the realization's
+        truncation record; the same arrays when nothing can be
+        discarded."""
+        from api._realization import balanced_truncation
+        ar, br, cr, info = balanced_truncation(A, B, C, tol)
+        rec = {'n': int(info['n']), 'r': int(info['r']),
+               'bound_rel': float(info['bound_rel']),
+               'err_rel': float(info['err_rel']), 'kept': info['kept']}
+        tr = getattr(self.real, 'truncation', None)
+        if isinstance(tr, dict):
+            with self._lock:
+                d = tr.setdefault('dressed', {})
+                d[(int(pi), int(ri), str(att.get('symbol')))] = rec
+                tr['dressed_states'] = (
+                    sum(v['n'] for v in d.values()),
+                    sum(v['r'] for v in d.values()))
+                tr['dressed_max_bound_rel'] = max(
+                    v['bound_rel'] for v in d.values())
+        if info['r'] >= A.shape[0]:
+            return A, B, C
+        _count('ss_dressed_reduced')
+        return (np.asarray(ar, dtype=self.dtype),
+                np.asarray(br, dtype=self.dtype).reshape(-1),
+                np.asarray(cr, dtype=self.dtype).reshape(-1))
 
     def solve_data(self, ents):
         """Resolvent data for a tensor whose axes carry the entries ``ents``
@@ -3045,95 +3089,374 @@ PREFETCH_BYTES_PER_POINT = 24
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
                      n_tau=1, n_perm=1):
     """Upper bound (bytes) of what the route holds for one diagram (item
-    35's pre-pass, S3): ``(stationary, transient)``.
+    35's pre-pass, S3; item 61): ``(stationary, transient)``.
 
     The diagram DAG (prediagram edges ``u -> v``: ``Δt = t_v - t_u``; the
-    leaves, the external times, are its sinks) bounds every subset's sweep:
-    a δ-subset contracts its δ edges (a downset of the contracted DAG is one
-    of the original containing both ends or neither, and the contracted
-    edge never crosses it) and keeps a subset of the smooth edges.  A state
-    block is indexed by a downset ``I`` of the DAG, its size ``b(I)`` the
-    product of the per-edge state counts ``n_e`` over the edges crossing it
-    (an edge into a conductance vertex counts its largest kernel's states
-    too: a dressed line cascades them; a kernel edge adds a vertex, at most
-    doubling the downsets: a factor 2 per kernel attachment).  The
-    stationary states of one δ-subset are at most ``sum b(I)`` over the
-    downsets without a leaf, held for the run, with the τ batch's
-    ``n_tau x n_perm`` values; the δ-subsets number
-    ``2^(edges with a δ part)``.  Before enumerating, the closed bound
-    ``2^(vertices) x prod n_e`` is taken when small
-    (``PREPASS_CHEAP_BYTES``).  ``transient``: one segment system at a
-    time, at most ``D = sum b(I)`` over all downsets (``6 D`` vectors plus
-    the dense ``2 D^2`` generator, ``D`` capped at ``OP_DENSE_MAX``).
+    leaves, the external times, are its sinks) is rebuilt as Phase J builds
+    it (``_line_layouts``): a line into a conductance vertex's kernel slot
+    is either DRESSED (one edge carrying the cascade's states,
+    ``_ModelOps.dressed_entry``, no δ part, no extra vertex: the kernel has
+    separated modes and dressing is on, ``final_integral`` section 2c) or on
+    the LEG path (one more vertex ``s``: the propagator edge ``u -> s``
+    with its δ part, then the kernel edge ``s -> v``).  Each distinct
+    placement of the kernel slots is built (and held) separately, so the
+    placements add.  Per δ-subset (every subset of the edges with a δ
+    part), the δ edges are contracted (a downset of the contracted DAG is
+    one of the original containing both ends or neither; cycles merged)
+    and a state block indexed by a downset ``I`` has ``b(I)`` = the product
+    of the per-edge state counts ``n_e`` over the smooth edges crossing it;
+    the stationary states of the subset are ``sum b(I)`` over the downsets
+    without a leaf, held for the run, with the τ batch's ``n_tau x n_perm``
+    values.  A subset that keeps an edge without states smooth is never
+    built.  Before enumerating, the closed bound ``2^(edges with δ) x
+    2^(vertices) x prod n_e`` is taken when small (``PREPASS_CHEAP_BYTES``);
+    beyond ``PREPASS_MAX_DELTA_EDGES`` δ edges the subsets are bounded by
+    the uncontracted DAG.  ``transient``: one segment system at a time, at
+    most ``D = sum b(I)`` over all downsets of a subset (``6 D`` vectors
+    plus the dense ``2 D^2`` generator, ``D`` capped at ``OP_DENSE_MAX``).
     ``has_delta(pi, ri)``: whether the entry has a δ part (the pre-pass's
     own test).  ``None`` when the diagram is not covered."""
-    from engine.core.vertices import ConvVertexType
     model, _why = realization_for(propagator_data, num_params)
     if model is None:
         return None
+    layouts = _line_layouts(typed_diagram, model, propagator_data,
+                            num_params, has_delta)
+    if layouts is None:
+        return None
+    item = 8 if model.is_real else 16
+    stat = trans = 0
+    for (nv, leaf_mask, edges, mult) in layouts:
+        s_, t_ = _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm)
+        stat += mult * s_
+        trans = max(trans, t_)
+    return stat, trans
+
+
+#: placements of a diagram's kernel slots enumerated by the pre-pass before
+#: it charges every slot-capable line as a kernel line in one layout
+PREPASS_MAX_PLACEMENTS = 256
+#: δ edges per layout whose subsets the pre-pass contracts one by one
+PREPASS_MAX_DELTA_EDGES = 12
+
+
+def _line_layouts(typed_diagram, model, propagator_data, num_params,
+                  has_delta):
+    """The DAGs Phase J builds for one typed diagram, one per placement of
+    its kernel slots: ``[(nv, leaf_mask, edges, multiplicity)]`` with
+    ``edges`` = ``[(u, v, n_e, delta)]``, or ``None`` when a kernel is not
+    realizable.
+    Mirrors ``final_integral.integrate_diagram`` section 2c (slots per leg
+    from the coefficient's degree in the kernel symbol, placements as
+    permutations, a local-weight kernel leaves the line as it is)."""
+    from engine.core.vertices import ConvVertexType
+    from sage.all import SR
     FI = _FI()
     D_ = typed_diagram.prediagram[0]
     verts = list(D_.vertices())
     index = {v: i for i, v in enumerate(verts)}
-    leaves = set(typed_diagram.prediagram[2])
     leaf_mask = 0
-    for v in leaves:
+    for v in set(typed_diagram.prediagram[2]):
         if v in index:
             leaf_mask |= 1 << index[v]
-    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
-    extra = {}
-    n_att = 0
-    for v, vt in va.items():
-        if isinstance(vt, ConvVertexType):
-            mx = 0
-            for att in vt.kernel_attachments or ():
+    can_dress = (propagator_data.get('C_mats') is not None
+                 and FI._dress_kernels_on())
+    def kernel_info(att):
+        # cached on the model (one parameter point): the mode extraction is
+        # symbolic
+        key = ('est_kernel_info', _att_key(att), can_dress)
+        with model._lock:
+            hit = model._extra.get(key)
+        if hit is None:
+            if FI._conv_kernel_local_weight(att, num_params) is not None:
+                hit = ('local',)
+            else:
+                # (item 56: a kernel with a direct term c delta is taken
+                # dressed only; its dressed line keeps c x the line's delta)
                 e = model.kernel_route(att)
-                if not isinstance(e, str):
-                    mx = max(mx, int(e.n_states))
-                    n_att += 1
-            extra[v] = mx
-    edges = []
-    n_delta = 0
+                if isinstance(e, str):
+                    hit = ('refused', e)
+                else:
+                    n_k = int(e.n_states)
+                    km = (FI._kernel_modes(att, num_params) if can_dress
+                          else None)
+                    direct = 0
+                    if km is None and can_dress:
+                        split = FI._kernel_direct_split(att, num_params)
+                        if split is not None:
+                            direct, km = split
+                    hit = (('dress', n_k, tuple(complex(mu) for (_c, mu) in km),
+                            direct != 0)
+                           if km is not None else ('leg', n_k))
+            with model._lock:
+                model._extra[key] = hit
+        return hit
+
+    edge_types = typed_diagram.edge_types
+    va = getattr(typed_diagram, 'vertex_assignments', None) or {}
+    conv = [(v, vt) for v, vt in va.items()
+            if isinstance(vt, ConvVertexType) and vt.kernel_attachments]
+    for _v, vt in conv:
+        for att in vt.kernel_attachments:
+            if kernel_info(att)[0] == 'refused':
+                return None
+    # item 60: a coefficient that sums terms with different powers of the
+    # kernel symbols is integrated once per choice of one term (grouped by
+    # those powers) per vertex, each with exactly its power's slots (a plain
+    # term none), and all of them are held (``_conv_monomial_split``)
+    powers = {}
+    for v, vt in conv:
+        syms = []
+        for att in vt.kernel_attachments:
+            if att['symbol'] not in syms:
+                syms.append(att['symbol'])
+        e = SR(vt.coefficient).expand()
+        op = e.operator()
+        terms = (e.operands() if op is not None
+                 and getattr(op, '__name__', '') == 'add_vararg' else [e])
+        try:
+            keys = sorted({tuple(int(t.degree(SR(z))) for z in syms)
+                           for t in terms})
+        except Exception:
+            keys = [None]
+        powers[v] = (syms, keys)
+    split = any(len(k) > 1 for _s, k in powers.values())
+    combos = (list(itertools.product(*[powers[v][1] for v, _vt in conv]))
+              if split else [None])
+    n_combos = len(combos)
+    if n_combos > PREPASS_MAX_PLACEMENTS:
+        combos = [None]               # bounded below: the whole coefficient
+
+    def slot_choices(combo):
+        """Per (vertex, leg): the placements of its kernel slots."""
+        choices = []
+        for ci, (v, vt) in enumerate(conv):
+            phys_legs = [tuple(lg) for lg in vt.physical_legs]
+            key = None if combo is None else combo[ci]
+            syms = powers[v][0]
+            coeff = SR(vt.coefficient)
+            by_leg = {}
+            for idx, att in enumerate(vt.kernel_attachments):
+                if key is not None:
+                    nq = max(key[syms.index(att['symbol'])], 0)
+                else:
+                    try:
+                        q = int(coeff.degree(SR(att['symbol'])))
+                    except Exception:
+                        q = 1
+                    nq = max(q, 1)
+                by_leg.setdefault(tuple(att['leg']), []).extend([idx] * nq)
+            for leg, slots in by_leg.items():
+                n_copies = phys_legs.count(leg)
+                hits = sorted(ek for ek in D_.edges() if ek[1] == v
+                              and tuple(edge_types[ek][1]) == leg)
+                if len(slots) > n_copies or len(hits) != n_copies:
+                    return None         # Phase J refuses the diagram
+                slots = tuple(slots) + (None,) * (n_copies - len(slots))
+                pls = sorted(set(itertools.permutations(slots)),
+                             key=lambda pl: tuple(-1 if x is None else x
+                                                  for x in pl))
+                choices.append([{ek: vt.kernel_attachments[i]
+                                 for ek, i in zip(hits, pl) if i is not None}
+                                for pl in pls])
+        return choices
+
+    plan = []                         # (placements, multiplicity, force_leg)
+    for combo in combos:
+        choices = slot_choices(combo)
+        if choices is None:
+            return None
+        n_pl = 1
+        for c in choices:
+            n_pl *= len(c)
+        mult0 = n_combos if (combo is None and split) else 1
+        if n_pl > PREPASS_MAX_PLACEMENTS or (combo is None and split):
+            # every slot-capable line a kernel line (its largest kernel) on
+            # the leg path (the largest of a plain, a dressed and a leg
+            # line), in one layout counted n_pl (x the term choices) times
+            merged = {}
+            for c in choices:
+                for pl in c:
+                    for ek, att in pl.items():
+                        old = merged.get(ek)
+                        n_new = (kernel_info(att) + (0, 0))[1]
+                        if old is None or n_new > (kernel_info(old)
+                                                   + (0, 0))[1]:
+                            merged[ek] = att
+            plan.append(([merged], n_pl * mult0, True))
+        else:
+            placements = [{}]
+            for c in choices:
+                placements = [{**p, **q} for p in placements for q in c]
+            plan.append((placements, 1, False))
     pidx = typed_diagram.propagator_indices
+    base = []
     for ek in D_.edges():
         hit = pidx.get(ek)
         ri, pi = hit if hit is not None else FI._lookup_prop_indices(
             typed_diagram, ek)
         e = model.entry(pi, ri)
-        n = (e.n if e is not None else 0) + extra.get(ek[1], 0)
-        if has_delta(pi, ri) and n:
-            n_delta += 1
-        edges.append((index[ek[0]], index[ek[1]], max(n, 1)))
-    nv = len(verts)
-    item = 8 if model.is_real else 16
-    # the closed bound first: sum b(I) <= (number of downsets) x max b(I)
-    # <= 2^(vertices) x prod n_e; the downsets are enumerated only when it
-    # is large (scalar-entry models: a few hundred bytes per diagram)
-    prod_n = 1
-    for (_u, _v, n) in edges:
-        prod_n *= n
+        base.append((ek, pi, ri, e.n if e is not None else 0,
+                     bool(has_delta(pi, ri))))
+    def coincides(pi, ri, mus):
+        # Phase J dresses a line only when no kernel rate equals one of its
+        # poles (``_dress_edge_modes``; else it reruns the diagram with that
+        # line on the leg path): the poles of a minimal entry realization
+        # all carry a residue
+        key = ('est_entry_poles', int(pi), int(ri))
+        with model._lock:
+            lam = model._extra.get(key)
+        if lam is None:
+            e = model.entry(pi, ri)
+            lam = (tuple(complex(x) for x in np.linalg.eigvals(e.a))
+                   if e is not None and e.n else ())
+            with model._lock:
+                model._extra[key] = lam
+        tol = FI.DRESS_RATE_RTOL
+        return any(abs(la - mu) <= tol * max(abs(la), abs(mu), 1e-300)
+                   for la in lam for mu in mus)
+
+    out = []
+    for (placements, mult, force_leg) in plan:
+        for pl in placements:
+            nv = len(verts)
+            edges = []
+            for (ek, pi, ri, n, dl) in base:
+                u, v = index[ek[0]], index[ek[1]]
+                att = pl.get(ek)
+                info = kernel_info(att) if att is not None else ('none',)
+                if info[0] == 'dress' and (force_leg or coincides(pi, ri, info[2])):
+                    info = ('leg', info[1])
+                if info[0] == 'dress':
+                    de = model.dressed_entry(pi, ri, att)
+                    nd = de.n if not isinstance(de, str) else n + info[1]
+                    # a direct term keeps c x the line's delta part (item 56)
+                    edges.append((u, v, nd, dl and info[3]))
+                elif info[0] == 'leg':
+                    s_ = nv
+                    nv += 1
+                    edges.append((u, s_, n, dl))
+                    edges.append((s_, v, info[1], False))
+                else:
+                    edges.append((u, v, n, dl))
+            out.append((nv, leaf_mask, tuple(edges), mult))
+    return out
+
+
+def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
+    """``(stationary, transient)`` bytes of one layout over its δ-subsets
+    (``diagram_estimate``)."""
+    ckey = (nv, leaf_mask, edges, item, n_tau, n_perm)
+    hit = _EST_CACHE.get(ckey)
+    if hit is not None:
+        return hit
+    prefetch = PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm)
+    didx = [i for i, (_u, _v, _n, dl) in enumerate(edges) if dl]
     n_int = nv - bin(leaf_mask).count('1')
-    cheap_stat, cheap_full = (2 ** n_int) * prod_n, (2 ** nv) * prod_n
-    if cheap_stat * item <= PREPASS_CHEAP_BYTES:
-        stat_sum, full_sum = cheap_stat, cheap_full
+    prod_n = 1
+    for (_u, _v, n, _dl) in edges:
+        prod_n *= max(n, 1)
+    n_sub = 2 ** len(didx)
+    cheap_stat = (2 ** n_int) * prod_n
+    if (cheap_stat * item <= PREPASS_CHEAP_BYTES
+            or len(didx) > PREPASS_MAX_DELTA_EDGES):
+        if cheap_stat * item <= PREPASS_CHEAP_BYTES:
+            stat_sum, full_sum = cheap_stat, (2 ** nv) * prod_n
+        else:
+            stat_sum, full_sum = _downset_sums(
+                nv, leaf_mask, [(u, v, max(n, 1)) for (u, v, n, _d) in edges])
+        D = full_sum
+        Dd = min(D, OP_DENSE_MAX)
+        out = (n_sub * (stat_sum * item + prefetch),
+               6 * D * item + 2 * Dd * Dd * item)
     else:
-        ckey = (nv, leaf_mask, tuple(edges))
-        hit = _EST_CACHE.get(ckey)
-        if hit is None:
-            hit = _downset_sums(nv, leaf_mask, edges)
-            if len(_EST_CACHE) > 4096:
-                _EST_CACHE.clear()
-            _EST_CACHE[ckey] = hit
-        stat_sum, full_sum = hit
-    n_sub = 2 ** n_delta
-    stat = n_sub * ((2 ** n_att) * stat_sum * item
-                    + PREFETCH_BYTES_PER_POINT * max(1, n_tau) * max(1, n_perm))
-    # one segment system at a time: its vectors, and the dense generator of
-    # a system of at most OP_DENSE_MAX states (any system within the bound)
-    D = (2 ** n_att) * full_sum
-    Dd = min(D, OP_DENSE_MAX)
-    trans = 6 * D * item + 2 * Dd * Dd * item
-    return stat, trans
+        stat = 0
+        Dmax = 0
+        for bits in range(n_sub):
+            delta = {didx[j] for j in range(len(didx)) if bits >> j & 1}
+            red = _contract(nv, leaf_mask, edges, delta)
+            if red is None:
+                continue                # a stateless line kept smooth
+            nv2, lm2, e2 = red
+            s_sum, f_sum = _downset_sums(nv2, lm2, e2)
+            stat += s_sum * item + prefetch
+            Dmax = max(Dmax, f_sum)
+        Dd = min(Dmax, OP_DENSE_MAX)
+        out = (stat, 6 * Dmax * item + 2 * Dd * Dd * item)
+    if len(_EST_CACHE) > 4096:
+        _EST_CACHE.clear()
+    _EST_CACHE[ckey] = out
+    return out
+
+
+def _contract(nv, leaf_mask, edges, delta):
+    """The DAG of one δ-subset: the edges in ``delta`` contracted, cycles
+    merged (their vertices share a time), the smooth edges kept:
+    ``(nv, leaf_mask, [(u, v, n)])``, or ``None`` when a smooth edge has no
+    states (the subset is never built)."""
+    parent = list(range(nv))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i in delta:
+        u, v = edges[i][0], edges[i][1]
+        parent[find(u)] = find(v)
+    smooth = []
+    for i, (u, v, n, _dl) in enumerate(edges):
+        if i in delta:
+            continue
+        if n == 0:
+            return None
+        smooth.append((find(u), find(v), n))
+    # merge the strongly connected components (a cycle forces equal times)
+    while True:
+        roots = sorted({find(x) for x in range(nv)})
+        succ = {r: set() for r in roots}
+        for (u, v, _n) in smooth:
+            if find(u) != find(v):
+                succ[find(u)].add(find(v))
+        cyc = _find_cycle(roots, succ)
+        if not cyc:
+            break
+        for r in cyc[1:]:
+            parent[find(r)] = find(cyc[0])
+    roots = sorted({find(x) for x in range(nv)})
+    ren = {r: i for i, r in enumerate(roots)}
+    lm = 0
+    for x in range(nv):
+        if leaf_mask >> x & 1:
+            lm |= 1 << ren[find(x)]
+    e2 = tuple((ren[find(u)], ren[find(v)], n) for (u, v, n) in smooth
+               if find(u) != find(v))
+    return len(roots), lm, e2
+
+
+def _find_cycle(nodes, succ):
+    """One directed cycle (a list of nodes) of the graph, or ``None``."""
+    color = {x: 0 for x in nodes}
+    stack_path = []
+
+    def dfs(x):
+        color[x] = 1
+        stack_path.append(x)
+        for y in succ[x]:
+            if color[y] == 1:
+                return stack_path[stack_path.index(y):]
+            if color[y] == 0:
+                c = dfs(y)
+                if c:
+                    return c
+        stack_path.pop()
+        color[x] = 2
+        return None
+    for x in nodes:
+        if color[x] == 0:
+            c = dfs(x)
+            if c:
+                return c
+    return None
 
 
 def _downset_sums(nv, leaf_mask, edges):

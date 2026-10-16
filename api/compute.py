@@ -26,6 +26,7 @@ from engine.diagrams.type_assignment import build_field_index_map
 from engine.diagrams.symmetry import classify_coefficient_factors
 from engine.integration.time_domain.pipeline import (
     compute_correction_td,
+    DiscardedDiagramsError,          # noqa: F401  (re-exported: daedalus)
 )
 
 # Pipeline-package helpers
@@ -317,7 +318,8 @@ def _combine_phase_j(results, nodes):
 
 def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                               prop, model, k, max_ell, verbose, preflight,
-                              ss_route=None, n_tau=1, run_budget=None):
+                              ss_route=None, n_tau=1, run_budget=None,
+                              discard=False, discard_ok=False):
     """Item 35: the estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
@@ -333,7 +335,14 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     the diagrams the state-space route takes are charged its estimate
     (``statespace.diagram_estimate``: stationary states x the τ batch, and
     the largest segment working set) instead of pole tuples, and a run the
-    route covers makes one Phase J pass (no deformation runs)."""
+    route covers makes one Phase J pass (no deformation runs).
+
+    Item 61 (``discard``: the caller's option; ``discard_ok``: the run has
+    fixed evaluation points and one pass): with evaluate-and-discard the
+    run holds one diagram at a time, so the largest diagram plus one
+    segment working set (``held_bytes``) is compared with the budget
+    instead of the sum; ``'auto'`` turns it on exactly when the sum is over
+    the budget and that fits.  ``est['discard']`` says whether it is on."""
     from engine.integration.time_domain import final_integral as _fi
     if not hasattr(_fi, 'estimate_modesum_plans'):
         return None             # an A/B harness running an older engine
@@ -384,8 +393,22 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                        if r['ell'] == worst_rec['ell'])
                    if worst_rec else None))
     factor = _fi.PHASE_J_PREPASS_REFUSE_FACTOR
-    above = budget is not None and est['bytes'] > budget
-    over = budget is not None and est['bytes'] > factor * budget
+    # one diagram at a time, plus the diagrams that keep their charge for
+    # their shot-noise δ records, plus one segment working set
+    held = min(est['bytes'] + est.get('ss_transient_bytes', 0),
+               est.get('max_diagram_bytes', est['bytes'])
+               + est.get('delta_record_bytes', 0)
+               + est.get('ss_transient_bytes', 0))
+    if discard == 'auto':
+        on = bool(discard_ok and runs == 1 and budget is not None
+                  and est['bytes'] > budget and held <= budget)
+    else:
+        on = bool(discard) and discard_ok and runs == 1
+    est['discard'] = on
+    est['held_bytes'] = held if on else est['bytes']
+    charged = est['held_bytes']
+    above = budget is not None and charged > budget
+    over = budget is not None and charged > factor * budget
     est['above_budget'] = above
     detail = (f"modesum plans: <= {est['tuples']:,} pole tuples "
               f"(~{est['bytes'] / 1e9:.2f} GB; "
@@ -398,6 +421,9 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                  f"working set" if est.get('ss_diagrams') else '')
               + (f"; budget {budget / 1e9:.3g} GB ({budget_rule})"
                  if budget is not None else f'; no budget ({budget_rule})')
+              + (f"; evaluate-and-discard: one diagram at a time, <= "
+                 f"{held / 1e9:.3g} GB held (the largest diagram + one "
+                 f"segment working set)" if on else '')
               + ('; above the budget: the plans are checked as they are '
                  'built' if above and not over else ''))
     if preflight is not None:
@@ -409,10 +435,13 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     if over:
         ram = _fi._ram_bytes()
         machine = (f"  This machine has {ram / 1e9:.1f} GB of RAM; the "
-                   f"estimate is {est['bytes'] / 1e9:.2f} GB "
-                   f"({est['bytes'] / ram:.0%} of it)." if ram else
-                   f"  The estimate is {est['bytes'] / 1e9:.2f} GB (this "
+                   f"estimate is {charged / 1e9:.2f} GB "
+                   f"({charged / ram:.0%} of it)." if ram else
+                   f"  The estimate is {charged / 1e9:.2f} GB (this "
                    f"machine's RAM is unknown).")
+        if not on and discard_ok and runs == 1 and held <= budget:
+            machine += ("  The largest diagram alone fits: discard=True "
+                        "(or 'auto') evaluates one diagram at a time.")
         if not w or not w['edges']:
             raise _fi.PhaseJResourceError(
                 f"Phase J memory estimate more than {factor}x over budget "
@@ -1054,6 +1083,7 @@ def compute_cumulants(
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
     delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
+    discard=False,                   # item 61: evaluate each diagram on the grid, then release it (True / 'auto')
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1141,6 +1171,20 @@ def compute_cumulants(
         Worker process count when ``parallel=True``.  ``None`` lets
         each stage pick its own default (``min(os.cpu_count(),
         n_tasks)``).
+    discard : bool or 'auto', default False
+        Evaluate-and-discard (item 61).  ``True``: each diagram is
+        evaluated on the τ grid right after it is built and then
+        released (its pole plans and stationary states are refunded to
+        the memory budget), so Phase J holds one diagram at a time: the
+        pre-pass compares the largest diagram plus one segment working
+        set with the budget instead of the sum.  Needs fixed evaluation
+        points: k = 1 or 2 with a τ grid (no switch-on, not grouped, no
+        pole-cluster deformation pass).  The values are the same; the
+        result's callables (``total_C``, ``total_C_by_ell``, the
+        per-diagram callables) then answer the grid points only and raise
+        ``DiscardedDiagramsError`` elsewhere (rerun with
+        ``discard=False``).  ``'auto'``: on exactly when the summed
+        estimate is over the budget and the largest diagram fits.
     verbose : bool
         Print progress messages.
     policy : api.analyze.Policy, dict or None
@@ -1569,6 +1613,7 @@ def compute_cumulants(
         use_cache=use_cache, parallel=parallel,
         spatial_parallel=spatial_parallel, spatial_n_q=spatial_n_q,
         n_workers=n_workers, use_grouped_phase_j=use_grouped_phase_j,
+        discard=discard,
         verbose=verbose, naming_convention=naming_convention,
         vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
         phase_time=_phase_time, t_phase=_t_phase, preflight=_pf,
@@ -2001,11 +2046,31 @@ def _run_phase_j(state, grouped):
     from engine.integration.time_domain import final_integral as _fi_b
     _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
+    # Item 61: evaluate-and-discard needs fixed evaluation points (k <= 2
+    # on the τ grid) and a single pass
+    discard = getattr(state, 'discard', False)
+    if discard not in (False, True, 'auto'):
+        raise ValueError(f"discard={discard!r}: expected False, True or "
+                         f"'auto'")
+    _discard_why = (
+        'k >= 3 (no fixed evaluation points)' if k > 2 else
+        'switch-on transients (t_min)' if switch_on is not None else
+        'the grouped integrator' if use_grouped_phase_j else
+        'the pole-cluster deformation averages several passes'
+        if (prop.get('pole_deformation') is not None
+            and not ss_route.get('bypass_deformation')) else None)
+    if discard is True and _discard_why is not None:
+        raise ValueError(f'discard=True is not available for this run: '
+                         f'{_discard_why}; use discard=False (or '
+                         f"'auto', which then stays off)")
     mem_estimate = _phase_j_memory_preflight(
         diagram_records, propagator_data, num_params, prop, model, k,
         max_ell, verbose, state.preflight, ss_route=ss_route,
         n_tau=(len(tau_grid) if k <= 2 else 1) if switch_on is None
-        else len(switch_on['times']), run_budget=_run_budget)
+        else len(switch_on['times']), run_budget=_run_budget,
+        discard=discard, discard_ok=_discard_why is None)
+    _discard_on = (bool(mem_estimate.get('discard')) if mem_estimate
+                   else (discard is True))
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
@@ -2074,6 +2139,21 @@ def _run_phase_j(state, grouped):
                     num_params       = num_params,
                     origin_leaf_idx  = origin_leaf_idx,
                 )
+            elif _discard_on:
+                # item 61: each diagram evaluated on the grid, then released
+                with _phase_j_warning_scope():
+                    td_result_ell = compute_correction_td(
+                        typed_diagrams   = [r['typed_diagram']
+                                            for r in records_ell],
+                        prefactors       = [r['combined_prefactor']
+                                            for r in records_ell],
+                        k                = k,
+                        propagator_data  = pdata,
+                        external_fields  = external_fields,
+                        num_params       = num_params,
+                        origin_leaf_idx  = origin_leaf_idx,
+                        discard_points   = tau_points,
+                    )
             else:
                 td_result_ell = compute_correction_td(
                     typed_diagrams   = [r['typed_diagram']
@@ -2152,6 +2232,13 @@ def _run_phase_j(state, grouped):
                 # the bypass did not hold (a subset needed the pole route):
                 # the deformation runs after all
                 pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+            if _discard_on:
+                # several passes are averaged: evaluate-and-discard is off
+                # for them (item 61); the running guard still checks
+                _discard_on = False
+                if mem_estimate is not None:
+                    mem_estimate['discard'] = False
+                    mem_estimate['discard_dropped'] = 'pole_deformation'
             phase_j_by_ell, total_C_by_ell, C_tau_by_ell = _phase_j_deformed(
                 _phase_j_pass, propagator_data, prop['pole_deformation'],
                 diagram_records, num_params, tau_points, pole_cluster_report)
@@ -2159,6 +2246,18 @@ def _run_phase_j(state, grouped):
         mem_estimate['built_tuples'] = _mem_scope.tuples
         mem_estimate['built_bytes'] = _mem_scope.used
         mem_estimate['built_plans'] = _mem_scope.plans
+        _dis = [r.get('discard') for r in phase_j_by_ell.values()
+                if isinstance(r, dict) and r.get('discard')]
+        if _dis:
+            # evaluate-and-discard: what was built over the run, the largest
+            # diagram held at once, and what stays charged (δ records)
+            mem_estimate['built_bytes'] = sum(d['built_bytes'] for d in _dis)
+            mem_estimate['built_max_diagram_bytes'] = max(
+                d['max_diagram_bytes'] for d in _dis)
+            mem_estimate['kept_bytes'] = _mem_scope.used
+            mem_estimate['discard_refunded'] = sum(d['refunded'] for d in _dis)
+            mem_estimate['discard_kept_for_delta'] = sum(
+                d['kept_for_delta'] for d in _dis)
 
     _phase_time('phase_j', _t_phase)
 
