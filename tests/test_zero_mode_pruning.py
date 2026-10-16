@@ -302,7 +302,10 @@ def test_k3_slices_are_the_sum_of_the_per_ell_slices(model):
 # The memory budget
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_budget_parsing():
+def test_budget_parsing(monkeypatch):
+    # unset: min(6 GB, 0.6 x RAM - this process) (item 53); a large machine
+    monkeypatch.setattr(FI, '_ram_bytes', lambda: 64e9)
+    monkeypatch.setattr(FI, 'process_footprint_bytes', lambda: 1e9)
     f = FI.phase_j_mem_budget_bytes
     assert f({}) == 6e9
     assert f({'PHASE_J_MEM_BUDGET_GB': '0.5'}) == 0.5e9
@@ -312,7 +315,10 @@ def test_budget_parsing():
         f({'PHASE_J_MEM_BUDGET_GB': 'lots'})
 
 
-def test_estimate_is_recorded_and_default_budget_passes(model):
+def test_estimate_is_recorded_and_default_budget_passes(monkeypatch, model):
+    monkeypatch.delenv('PHASE_J_MEM_BUDGET_GB', raising=False)
+    monkeypatch.setattr(FI, '_ram_bytes', lambda: 64e9)       # item 53
+    monkeypatch.setattr(FI, 'process_footprint_bytes', lambda: 1e9)
     r, _v = _cumulants(model, k=3)
     est = r['phase_j_memory']
     assert est['tuples'] == 4_374 and est['tuples_unpruned'] == 393_903

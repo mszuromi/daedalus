@@ -1728,7 +1728,17 @@ def compute_spatial_correlator_generic(
     # kernel array alone is tens of GB → an OOM that crashes the kernel AND the OS.
     # Refuse up-front (vs silently thrashing/crashing) with the numbers + the knobs.
     _nx = max(1, len(np.asarray(spatial_grid, dtype=float)))
-    _budget_gb = float(_osg.environ.get('SPATIAL_MEM_BUDGET_GB', '6'))
+    # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
+    # on a small machine: final_integral.default_mem_budget); an explicit
+    # value is used as given
+    if 'SPATIAL_MEM_BUDGET_GB' in _osg.environ:
+        _budget_gb = float(_osg.environ['SPATIAL_MEM_BUDGET_GB'])
+        _budget_rule = f'SPATIAL_MEM_BUDGET_GB={_budget_gb:g}'
+    else:
+        from engine.integration.time_domain.final_integral import (
+            default_mem_budget as _dmb)
+        _b, _budget_rule = _dmb()
+        _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
     for _dd, _pv, _ff, _el, _nt, _ns in live_g:
         _nV = len(_dd.internal_vertices)
@@ -1747,6 +1757,7 @@ def compute_spatial_correlator_generic(
             f'quadrature of P=n_t^{_nV}·n_s^{_nC}={_P:.1e} points at grid '
             f'(n_t={_nt}, n_s={_ns}), × {_nx} output points.  This is the curse of '
             f'dimensionality in the time/σ quadrature (NOT the form factor).  '
+            f'The budget is {_budget_gb:.2f} GB ({_budget_rule}).  '
             f'Options: (1) use a lower max_ell — max_ell=1 is fast + validated; '
             f'(2) SPATIAL_INTEGRATOR=mc — the Monte-Carlo backend (bounded memory, '
             f'O(1/√N); validated <0.1% for PLAIN φⁿ vertices, BIASED for derivative '
