@@ -642,32 +642,128 @@ PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 class PhaseJResourceError(MemoryError):
     r"""Phase J would hold more modesum-plan memory than the budget
-    ``PHASE_J_MEM_BUDGET_GB`` (default 6 GB) allows: raised BEFORE the plan
-    that crosses it is allocated (and, from ``compute_cumulants``, before
-    Phase J starts when its estimate already crosses it), under every
-    analyzer policy.  ``estimate``: the numbers (tuples, bytes, budget, the
-    offending diagram / subset)."""
+    ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
+    BEFORE the plan that crosses it is allocated (and, from
+    ``compute_cumulants``, before Phase J starts when its estimate already
+    crosses it), under every analyzer policy.  ``estimate``: the numbers
+    (tuples, bytes, budget, the offending diagram / subset)."""
 
     def __init__(self, message, estimate=None):
         super().__init__(message)
         self.estimate = estimate
 
 
-def phase_j_mem_budget_bytes(environ=None):
-    """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB`` (default 6); ``None``
-    (no limit) for ``0``, a negative value, ``off``, ``none`` or ``inf``."""
-    env = _os.environ if environ is None else environ
-    raw = str(env.get('PHASE_J_MEM_BUDGET_GB', '6')).strip().lower()
-    if raw in ('off', 'none', 'inf', 'infinity', ''):
+# ── the default memory budget (item 53) ───────────────────────────────────
+# A fixed 6 GB is more than a small machine can give one run on top of the
+# Python + Sage baseline.  With the variable unset the budget is
+#     min(MEM_BUDGET_CAP_GB, MEM_BUDGET_RAM_FRACTION x RAM - this process now)
+# and at least MEM_BUDGET_FLOOR_GB (a refusal, not a crash, is then the
+# usual outcome on a machine already short of memory).  The same rule backs
+# SPATIAL_MEM_BUDGET_GB.  An explicit value is used as given.
+MEM_BUDGET_CAP_GB = 6.0
+MEM_BUDGET_RAM_FRACTION = 0.6
+MEM_BUDGET_FLOOR_GB = 0.5
+
+
+def _ram_bytes():
+    """Physical memory of the machine in bytes, or ``None``."""
+    from engine.enumeration.prediagram_cache import _physical_memory
+    return _physical_memory()
+
+
+@_functools.lru_cache(maxsize=1)
+def _libproc():
+    import ctypes
+    import ctypes.util
+    return ctypes.CDLL(ctypes.util.find_library('proc')
+                       or '/usr/lib/libSystem.B.dylib')
+
+
+def process_footprint_bytes():
+    """What this process holds now, in bytes, or ``None`` when unknown.
+    macOS: ``phys_footprint`` (``proc_pid_rusage``), not the resident size,
+    which leaves out compressed pages (6 GB resident was 18 GB of footprint
+    in one measurement).  Linux: resident + swapped (``/proc/self/status``)."""
+    import sys
+    if sys.platform == 'darwin':
+        try:
+            import ctypes
+            lib = _libproc()
+            buf = ctypes.create_string_buffer(512)   # rusage_info_v2 + room
+            if lib.proc_pid_rusage(_os.getpid(), 2, buf) != 0:
+                return None
+            # rusage_info_v2: 16-byte uuid, then uint64 fields; the 8th
+            # (ri_phys_footprint) follows user/system time, the two wakeup
+            # counts, pageins, wired and resident size
+            return int.from_bytes(buf.raw[16 + 7 * 8:16 + 8 * 8], 'little')
+        except Exception:
+            return None
+    try:
+        total = 0
+        with open('/proc/self/status') as fh:
+            for line in fh:
+                if line.startswith(('VmRSS:', 'VmSwap:')):
+                    total += int(line.split()[1]) * 1024
+        return total or None
+    except (OSError, ValueError, IndexError):
         return None
+
+
+def default_mem_budget(ram=None, footprint=None):
+    """``(bytes, rule)``: the default budget of the memory guards and the
+    sentence that says how it was set (``ram`` / ``footprint``: bytes, read
+    from the machine when ``None``)."""
+    cap, floor = MEM_BUDGET_CAP_GB * 1e9, MEM_BUDGET_FLOOR_GB * 1e9
+    ram = _ram_bytes() if ram is None else ram
+    if not ram:
+        return cap, (f'default {_fmt_gb(cap)} (the machine\'s RAM is '
+                     'unknown)')
+    footprint = process_footprint_bytes() if footprint is None else footprint
+    fp = footprint or 0
+    room = MEM_BUDGET_RAM_FRACTION * ram - fp
+    budget = max(floor, min(cap, room))
+    rule = (f'default min({_fmt_gb(cap)}, {MEM_BUDGET_RAM_FRACTION:g} x '
+            f'{_fmt_gb(ram)} RAM - {_fmt_gb(fp)} already held by this '
+            f'process{"" if footprint else " (unknown, taken as 0)"})'
+            + (f', at least {_fmt_gb(floor)}' if room < floor else '')
+            + f' = {_fmt_gb(budget)}')
+    return budget, rule
+
+
+def mem_budget(var, environ=None):
+    """``(bytes or None, rule)`` of the memory guard read from the
+    environment variable ``var`` (GB; ``None`` = no limit for ``0``, a
+    negative value, ``off``, ``none`` or ``inf``); unset: the default rule
+    (``default_mem_budget``)."""
+    env = _os.environ if environ is None else environ
+    if var not in env:
+        return default_mem_budget()
+    raw = str(env[var]).strip().lower()
+    if raw in ('off', 'none', 'inf', 'infinity', ''):
+        return None, f'{var}={raw}'
     try:
         gb = float(raw)
     except ValueError:
-        raise ValueError(
-            f'PHASE_J_MEM_BUDGET_GB={raw!r} is not a number (GB), or off')
+        raise ValueError(f'{var}={raw!r} is not a number (GB), or off')
     if not gb > 0 or gb == float('inf'):
-        return None
-    return gb * 1e9
+        return None, f'{var}={raw}'
+    return gb * 1e9, f'{var}={raw}'
+
+
+def phase_j_mem_budget_bytes(environ=None):
+    """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB``; unset: the
+    default rule (``default_mem_budget``: at most 6 GB, less on a machine
+    with little RAM); ``None`` (no limit) for ``0``, a negative value,
+    ``off``, ``none`` or ``inf``."""
+    return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[0]
+
+
+def phase_j_budget_rule(environ=None):
+    """How the Phase J budget is set, for the refusal messages."""
+    try:
+        return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[1]
+    except Exception:
+        return 'PHASE_J_MEM_BUDGET_GB'
 
 
 _BUDGET_HOW = ('raise the budget with the environment variable '
@@ -681,12 +777,21 @@ def _fmt_gb(nbytes):
     return f'{nbytes / 1e9:.2f} GB'
 
 
+def _fmt_budget(budget, rule=None):
+    """The budget in a refusal message, with how it was set (``rule``: from
+    the ``mem_budget`` call that set it)."""
+    if rule is None or rule.startswith('default'):
+        # the default rule's sentence already ends in '= <budget>'
+        return rule or _fmt_gb(budget)
+    return f'{_fmt_gb(budget)} ({rule})'
+
+
 import threading as _threading_budget
 
 #: The running total of one Phase J run (``phase_j_memory_scope``): bytes of
 #: the plans built so far, the budget, and what the run is.
 _PLAN_MEM = {'active': 0, 'used': 0, 'tuples': 0, 'plans': 0,
-             'budget': None, 'what': ''}
+             'budget': None, 'rule': None, 'what': ''}
 _PLAN_MEM_LOCK = _threading_budget.Lock()
 
 
@@ -699,8 +804,10 @@ class phase_j_memory_scope:
 
     def __init__(self, budget=None, what='', use_env=True):
         # ``use_env=False`` with ``budget=None``: no limit
-        self.budget = (phase_j_mem_budget_bytes()
-                       if budget is None and use_env else budget)
+        if budget is None and use_env:
+            self.budget, self.rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+        else:
+            self.budget, self.rule = budget, 'set by the caller'
         self.what = what
         self._outer = False
 
@@ -708,7 +815,8 @@ class phase_j_memory_scope:
         with _PLAN_MEM_LOCK:
             if _PLAN_MEM['active'] == 0:
                 _PLAN_MEM.update(used=0, tuples=0, plans=0,
-                                 budget=self.budget, what=self.what)
+                                 budget=self.budget, rule=self.rule,
+                                 what=self.what)
                 self._outer = True
             _PLAN_MEM['active'] += 1
         return self
@@ -722,6 +830,16 @@ class phase_j_memory_scope:
         return False
 
 
+def _budget_now():
+    """``(scoped, budget, rule, used)`` for a charge now: the running
+    scope's, or outside any scope the environment's (``mem_budget``) with
+    nothing used.  The caller holds ``_PLAN_MEM_LOCK``."""
+    if _PLAN_MEM['active'] > 0:
+        return True, _PLAN_MEM['budget'], _PLAN_MEM['rule'], _PLAN_MEM['used']
+    budget, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+    return False, budget, rule, 0
+
+
 def _plan_guard(n_tuples, n_full, where=None):
     """The running guard (item 35): account ``n_tuples`` pole tuples of the
     plan about to be built (``n_full``: before pruning) and raise
@@ -730,10 +848,7 @@ def _plan_guard(n_tuples, n_full, where=None):
     budget."""
     nbytes = n_tuples * PLAN_BYTES_PER_TUPLE
     with _PLAN_MEM_LOCK:
-        scoped = _PLAN_MEM['active'] > 0
-        budget = (_PLAN_MEM['budget'] if scoped
-                  else phase_j_mem_budget_bytes())
-        used = _PLAN_MEM['used'] if scoped else 0
+        scoped, budget, rule, used = _budget_now()
         if budget is not None and used + nbytes > budget:
             est = {'tuples': n_tuples, 'tuples_unpruned': n_full,
                    'bytes': nbytes, 'bytes_so_far': used,
@@ -747,7 +862,8 @@ def _plan_guard(n_tuples, n_full, where=None):
                 f'tuples (~{_fmt_gb(nbytes)}; {n_full:,} before the '
                 f'exact-zero modes were left out) on top of '
                 f'{_fmt_gb(used)} in {est["plans_so_far"]} plans built so '
-                f'far, over the budget of {_fmt_gb(budget)}.  Nothing was '
+                f'far, over the budget of {_fmt_budget(budget, rule)}.  '
+                f'Nothing was '
                 f'allocated for it.  Options: {_BUDGET_HOW}.', est)
         if scoped:
             _PLAN_MEM['used'] += nbytes
@@ -2884,7 +3000,8 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     pole is not a root of the entry's own denominator (the exact tier-1
     membership test over QQ[i], item 31: a driven filter that does not feed
     back makes ``K`` block triangular, and the entries below it miss its
-    poles), and where a residue is below its relative 1e-12 noise clip.  The
+    poles), and, on the numerical cofactor tiers only, where a residue is
+    below the 1e-12 noise clip relative to the largest at its pole.  The
     test here is a plain ``== 0`` on the stored value: whatever is left out
     contributed exactly 0 before.
 

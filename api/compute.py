@@ -354,7 +354,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     # done only when the bound is over budget)
     runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
         else 1
-    budget = _fi.phase_j_mem_budget_bytes()
+    budget, budget_rule = _fi.mem_budget('PHASE_J_MEM_BUDGET_GB')
     est = _fi.estimate_modesum_plans(
         [r['typed_diagram'] for r in diagram_records], propagator_data,
         num_params, prefactors=[r['combined_prefactor']
@@ -375,7 +375,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     est.update(node_runs=runs, bytes=est['bytes'] * runs,
                tuples=est['tuples'] * runs,
                tuples_unpruned=est['tuples_unpruned'] * runs,
-               budget_bytes=budget,
+               budget_bytes=budget, budget_rule=budget_rule,
                worst_ell=worst_rec['ell'] if worst_rec else None,
                worst_index_in_ell=(
                    sum(1 for r in diagram_records[:w['index']]
@@ -394,8 +394,8 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                  f"<= {est['ss_bytes'] / 1e9:.3g} GB of stationary states "
                  f"+ {est['ss_transient_bytes'] / 1e9:.3g} GB of segment "
                  f"working set" if est.get('ss_diagrams') else '')
-              + (f"; budget {budget / 1e9:.3g} GB (PHASE_J_MEM_BUDGET_GB)"
-                 if budget is not None else '; no budget')
+              + (f"; budget {budget / 1e9:.3g} GB ({budget_rule})"
+                 if budget is not None else f'; no budget ({budget_rule})')
               + ('; above the budget: the plans are checked as they are '
                  'built' if above and not over else ''))
     if preflight is not None:
@@ -405,11 +405,17 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     if verbose:
         print(f'  [memory] {detail}')
     if over:
+        ram = _fi._ram_bytes()
+        machine = (f"  This machine has {ram / 1e9:.1f} GB of RAM; the "
+                   f"estimate is {est['bytes'] / 1e9:.2f} GB "
+                   f"({est['bytes'] / ram:.0%} of it)." if ram else
+                   f"  The estimate is {est['bytes'] / 1e9:.2f} GB (this "
+                   f"machine's RAM is unknown).")
         if not w or not w['edges']:
             raise _fi.PhaseJResourceError(
                 f"Phase J memory estimate more than {factor}x over budget "
                 f"for {model.get('name', '<unnamed>')} at k={k}, "
-                f"max_ell={max_ell}: {detail}.  Nothing was built.  "
+                f"max_ell={max_ell}: {detail}.{machine}  Nothing was built.  "
                 f"Options: {_fi._BUDGET_HOW}.", est)
         edges = ', '.join(
             f"{n}{'' if n == a else f'/{a}'}{'+delta' if dl else ''}"
@@ -421,7 +427,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
             f"#{est['worst_index_in_ell']} of that order, {w['tuples']:,} "
             f"tuples ({w['tuples_unpruned']:,} unpruned) over "
             f"{len(w['edges'])} propagator edges with [{edges}] modes "
-            f"(nonzero/all).  Nothing was built.  Options: "
+            f"(nonzero/all).{machine}  Nothing was built.  Options: "
             f"{_fi._BUDGET_HOW}.", est)
     return est
 

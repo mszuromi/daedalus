@@ -349,7 +349,7 @@ def _exact_route_fallback(G_ft_F, Q_poly, nf, tau_max, analysis_out,
 
 def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
     """A posteriori relative error of the tier-1 double-precision residues
-    ``C_mats`` (before the 1e-12 noise clip, which stays as it was):
+    ``C_mats`` (stored unclipped since item 53):
     each pole Newton-refined on the exact Q at ``_CERT_DPS`` digits, each
     nonzero residue ``i P_ij(p) / Q_ij'(p)`` recomputed there, compared
     with the double value; per entry relative to its largest residue.
@@ -632,12 +632,14 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                             'numerically', cluster_out)
                     P_at = complex(P_cdf[i][j](pk))
                     C_entries[i][j] = 1j * P_at / qijp
+            # No noise clip: membership is exact (a non-member entry is an
+            # exact 0 above) and a member residue i P_ij(pk)/Q_ij'(pk) of a
+            # reduced entry is exactly nonzero, so a small value here is a
+            # genuine residue -- the old 1e-12 clip relative to the LARGEST
+            # entry at pk dropped it when the fields have very different
+            # units (item 53).  Its accuracy is what _residue_error certifies.
             C_np = np.array(C_entries)
             C_raw.append(C_np)
-            mx = float(np.max(np.abs(C_np))) if C_np.size else 0.0
-            if mx > 0:
-                atol = 1e-12 * mx
-                C_np = np.where(np.abs(C_np) > atol, C_np, 0)
             C_mats.append(matrix(CDF, C_np.tolist()))
 
         # accuracy certificate of the double-precision poles and residues
