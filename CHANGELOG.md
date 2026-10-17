@@ -42,6 +42,19 @@ Numbers move (silent-wrong before):
   tracked `reaction_diffusion_2d` model at max_ell >= 1 now raises (it has a
   tadpole). Derivative-vertex momentum powers are not in the count.
 - Spatial `total_C` off the grid: the single-field tree is exact at any d.
+- **Unstable / critical masses refuse** (Re mu <= 0 in the diagonal modes and
+  the erf time integral; min Re eig M <= 0 in the coupled tree and
+  `coupled_two_point`); they returned finite numbers behind
+  `DAEDALUS_PREFLIGHT=0` or for direct engine calls.
+- **Dyson loop dressing** (coupled, unequal D): masses are clustered at
+  delta = scale * eps^(1/(n+2)) (cost O(delta^2) by symmetry) instead of a fixed
+  1e-8; near-degenerate gaps lost ~1e-2 at order 2, now <= 1e-8 against a
+  50-digit reference.
+- `SPATIAL_INTEGRATOR=mc` with derivative vertices emits a RuntimeWarning
+  (biased estimator) whatever `verbose`; an unknown `SPATIAL_INTEGRATOR` value
+  raises.
+- The coupled spectral kinematic has a memory guard (it allocated
+  (samples x spectral assignments) arrays unguarded).
 
 
 #### Spatial engine: loop scope guards (audit wave 2, group 2)
