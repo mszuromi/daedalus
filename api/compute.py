@@ -1472,6 +1472,9 @@ def compute_cumulants(
         raise ValueError(
             f'accuracy must be a finite number > 0 (a target relative '
             f'accuracy, e.g. 1e-10) or None; got {accuracy!r}.')
+    if _entry_int('fixed_point_index', fixed_point_index) < 0:
+        raise ValueError(f'fixed_point_index must be >= 0; got '
+                         f'{fixed_point_index!r}.')
     if n_workers is not None and _entry_int('n_workers', n_workers) < 1:
         raise ValueError(f'n_workers must be >= 1 or None; got {n_workers!r}.')
     if isinstance(discard, (bool, np.bool_)):

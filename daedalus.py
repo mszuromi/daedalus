@@ -993,8 +993,10 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     mean of leg i per loop order (``_leg_mean_by_ell``: the saddle at ℓ=0,
     the tadpoles at ℓ≥1), and it shares the loop budget like any block; the
     central moment keeps only the partitions without singletons.  A block of
-    two legs a < b is ``κ_ab(t_b − t_a)`` from a ``k = 2`` run on those two
-    legs over the lags it needs (the order-k run itself when ``k = 2``); a
+    two legs is their cross-cumulant at their lag, from a ``k = 2`` run on
+    those two legs over the lags it needs (the order-k run itself when
+    ``k = 2``; ``_pair_key`` orders the pair so that τ = 0 is read on the
+    slice's side of the tie); a
     block of three or more legs is the ``total_C_by_ell`` callable of a run on
     its legs (the order-k run for the full block).  ``res['moment_means']``
     records the leg means used."""
@@ -1021,17 +1023,25 @@ def _assemble_moment_temporal(model, res, kw, k, central):
         means = _leg_mean_by_ell(model, res, kw, legs, L, compute_cumulants)
         res['moment_means'] = {leg: list(v) for leg, v in means.items()}
 
-    # ── 2-leg blocks: κ_ab at the nominal lag t_b − t_a (leg 1 at τ, the
-    # other legs at 0).  One k = 2 run per ordered pair of distinct legs over
-    # the lags it needs; a pair of identical legs is even in the lag
-    # (stationarity), so for k ≥ 3 it is run over |lag| only.
+    # ── 2-leg blocks: one k = 2 run per ordered pair of legs (key) over the
+    # lags it needs, read as C(τ) = ⟨φ_first(0) φ_second(τ)⟩.  A block with
+    # the swept leg 1 is keyed (other leg, leg 1) at lag τ: at τ = 0 leg 1
+    # sits just BEFORE every other leg on the slice (``_kpoint_slice_times``),
+    # and the k = 2 grid's τ = 0 point is the same side (the second leg
+    # earlier).  A block of two legs at 0 is keyed in leg order at lag 0 (the
+    # anchor is the latest leg; tied pinned legs: the later-listed one counts
+    # as earlier).  A pair of identical legs is even in the lag
+    # (stationarity), so for k ≥ 3 it is run over |τ| only.
     def _pair_key(a, b, ti):
-        lag = ((float(tau[ti]) if b == 1 else 0.0)
-               - (float(tau[ti]) if a == 1 else 0.0))
-        la, lb = legs[a], legs[b]
-        if la == lb and k >= 3:
-            return (la, lb), abs(lag)
-        return (la, lb), lag
+        if b == 1:                        # a == 0
+            key, lag = (legs[a], legs[b]), float(tau[ti])
+        elif a == 1:
+            key, lag = (legs[b], legs[a]), float(tau[ti])
+        else:
+            key, lag = (legs[a], legs[b]), 0.0
+        if key[0] == key[1] and k >= 3:
+            lag = abs(lag)
+        return key, lag
 
     needed = {}
     for part in parts:
@@ -1094,8 +1104,8 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # is evaluated at the same times as slice 1 of κ₃.  The pinned legs sit
     # at 0⁻ = −_ITO_EPS, so they do not coincide with the anchor; for k ≥ 4
     # they coincide with each other, as on the slices.  A block of 2 legs
-    # reads the k = 2 grid at its nominal lag (τ, −τ or 0), whose τ = 0 point
-    # is the k = 2 equal-time value.
+    # reads the k = 2 grid at τ or 0 (``_pair_key``), whose τ = 0 point is
+    # the k = 2 equal-time value on the slice's side of the tie.
     slice_times = None
     if k >= 3:
         from api.compute import _ITO_EPS
@@ -1260,6 +1270,22 @@ def _kpoint_slice_times(base, j, tau, eps):
     return times
 
 
+def _kpoint_incomplete(res, cfg, exc, msg):
+    """Mark a k≥3 result incomplete and report ``msg``: a
+    ``PhaseJIncompleteWarning``, or ``PhaseJIncompleteError`` under
+    ``policy={'mode': 'strict'}``."""
+    import warnings
+    from api.compute import (PhaseJIncompleteError, PhaseJIncompleteWarning,
+                             _policy_is_strict)
+    from api.save import _ensure_warning_shown
+    res['status'] = 'incomplete'
+    if _policy_is_strict(cfg.policy):
+        raise PhaseJIncompleteError(msg, result=res) from exc
+    _ensure_warning_shown(PhaseJIncompleteWarning, 'always', message=msg,
+                          stacklevel=3)
+    warnings.warn(msg, PhaseJIncompleteWarning, stacklevel=3)
+
+
 def run(model: dict, cfg: Config, module=None) -> dict:
     """Resolve the config against the model's defaults and call
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
@@ -1350,6 +1376,12 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     fpi = cfg.fixed_point_index
     if fpi is None and module is not None:
         fpi = _meta(module, 'fixed_point_index_default')
+        if fpi is not None:
+            from api.compute import _entry_int
+            if _entry_int("METADATA['fixed_point_index_default']", fpi) < 0:
+                raise ValueError(
+                    f"METADATA['fixed_point_index_default'] must be >= 0; "
+                    f"got {fpi!r}.")
     if fpi is not None:
         kw['fixed_point_index'] = int(fpi)
     if cfg.mf_dae_n_starts is not None:
@@ -1577,9 +1609,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 f'where leg j meets another leg is the left limit of its '
                 f'slice (times in _kpoint_slice_times)')
 
-            # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).  Downsample
-            # the axis so the total n^{k−1} evaluations stay bounded.
-            if cfg.kpoint_full_grid:
+        except Exception as e:
+            # The slices could not be evaluated: the result keeps the
+            # callables (``total_C``) but has no curve, so it is marked
+            # incomplete and the failure is reported (raised under a strict
+            # policy), never only printed.  (The catch stays broad —
+            # lambdified callables have a wide failure surface.)
+            res['_kpoint_slice_error'] = repr(e)
+            _kpoint_incomplete(
+                res, cfg, e,
+                f'k={k}: evaluating the slices of the k-point cumulant '
+                f'failed ({e!r}); result["C_tau"] is None (no curve). '
+                f'result["total_C"] is the cumulant as a function of the '
+                f'{k} external times.')
+
+        if cfg.kpoint_full_grid and res.get('C_tau') is not None:
+            try:
+                # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).
+                # Downsample the axis so the total n^{k−1} evaluations stay
+                # bounded.
                 import itertools
                 n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
                 gtau = (tau if n >= tau.size else
@@ -1600,34 +1648,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                     res['_kpoint_grid_note'] = (
                         f'τ downsampled to {gtau.size} pts/axis '
                         f'({gtau.size ** (k - 1)} evals) to bound grid cost')
-        except Exception as e:
-            # The slices could not be evaluated: the result keeps the
-            # callables (``total_C``) but has no curve, so it is marked
-            # incomplete and the failure is reported (raised under a strict
-            # policy), never only printed.  (The catch stays broad —
-            # lambdified callables have a wide failure surface.)
-            import warnings
-            from api.compute import (PhaseJIncompleteError,
-                                     PhaseJIncompleteWarning,
-                                     _policy_is_strict)
-            res['_kpoint_slice_error'] = repr(e)
-            res['status'] = 'incomplete'
-            _msg = (f'k={k}: evaluating the slices of the k-point cumulant '
-                    f'failed ({e!r}); result["C_tau"] is None (no curve). '
-                    f'result["total_C"] is the cumulant as a function of the '
-                    f'{k} external times.')
-            if _policy_is_strict(cfg.policy):
-                raise PhaseJIncompleteError(_msg, result=res) from e
-            from api.save import _ensure_warning_shown
-            _ensure_warning_shown(PhaseJIncompleteWarning, 'always',
-                                  message=_msg, stacklevel=2)
-            warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
+            except Exception as e:
+                res['_kpoint_grid_error'] = repr(e)
+                _kpoint_incomplete(
+                    res, cfg, e,
+                    f'k={k}: evaluating the full k-point grid '
+                    f'(kpoint_full_grid) failed ({e!r}); the slices '
+                    f'(result["C_tau"]) are complete, result["C_tau_grid"] '
+                    f'is missing.')
 
     # Optional output conversion: assemble the full / central k-point MOMENT
     # from the cumulants (the set-partition / cluster expansion).
     # compute_cumulants stays pure — this is post-processing on top.
     out_kind = getattr(cfg, 'output', 'cumulant') or 'cumulant'
-    if out_kind in ('moment', 'central_moment'):
+    if out_kind in ('moment', 'central_moment') and res.get(
+            '_kpoint_slice_error') is not None:
+        # the cumulant blocks could not be evaluated (reported above)
+        res['moment'] = None
+        res['output_kind'] = out_kind
+    elif out_kind in ('moment', 'central_moment'):
         central = out_kind == 'central_moment'
         if is_spatial(model):
             if k == 1:                      # M₁ = ⟨φ⟩: the raw first moment
@@ -1640,8 +1679,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             elif k == 2:                    # M(x) = κ₂(x) [+ μ_a μ_b for raw]
                 mu_ab = 0.0
                 if not central:
-                    mu_a = _external_mean(model, res, ext[0])
-                    mu_b = _external_mean(model, res, ext[1])
+                    leg_a, leg_b = (tuple(e) if isinstance(e, (tuple, list))
+                                    else e for e in ext)
+                    mu_a = _external_mean(model, res, leg_a)
+                    mu_b = _external_mean(model, res, leg_b)
                     # The spatial integrator has no 1-point tadpoles, so the
                     # loop corrections of the means are unavailable: with a
                     # loop budget L the raw moment needs μ_a⁽ℓa⁾ μ_b⁽ℓb⁾ for
@@ -1656,7 +1697,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                             f"{mu_a}, {mu_b}).  Use output='central_moment' "
                             f"(= the cumulant at k=2) or max_ell=0.")
                     mu_ab = mu_a * mu_b
-                    res['moment_means'] = {ext[0]: [mu_a], ext[1]: [mu_b]}
+                    res['moment_means'] = {leg_a: [mu_a], leg_b: [mu_b]}
                 res['moment'] = (np.real(np.asarray(res['C_tau_x'])) + mu_ab)
             else:
                 raise NotImplementedError(

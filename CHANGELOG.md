@@ -11,6 +11,64 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: audit wave W3a -- silent wrong numbers on the `dd.run` route
+
+Regression tests: `tests/test_audit_w3a_core.py`. Cumulants do not move (zoo
+A/B bit-identical); the MOMENT outputs below do.
+
+- **`output='moment'` / `'central_moment'` (temporal):** every block of the
+  cluster expansion is now the cumulant of its own legs (field and
+  population) at their own lag. Before, every leg used the first leg's field
+  and population, and 2-leg blocks were folded to `|tau|`: for a 2-field
+  linear SDE (audit model, x* = 2, y* = 3) the raw moment <x(0) y(tau)> was
+  4.07 instead of 6.03, the mean term x*^2 instead of x* y*, and the
+  negative-lag points took the positive-lag cross-cumulant. Population legs
+  now use their own unit's saddle (a two-unit model: mu_1 mu_2 = 7.944, was
+  mu_1^2 = 4.694). Mixed k = 2, 3, 4 raw and central moments match Isserlis +
+  Lyapunov to 1.4e-6 (the Ito nudge).
+- **Loop-level raw moments include the loop corrections of the means** (the
+  1-point tadpoles, one `k = 1` run per distinct leg); a singleton block now
+  shares the loop budget like any block. Before, only the tree saddle
+  entered: <x^2> of dx = (1 - x - 0.2x^2)dt + sqrt(0.5)dW at max_ell = 1 was
+  5.4 % off the exact stationary value (now 6.4e-5, the two-loop remainder).
+  A temporal `k = 1` raw moment at max_ell >= 1 is now the saddle plus the
+  tadpoles (was the saddle alone). `result['moment_means']` records the leg
+  means per loop order. Spatial `k = 2` raw moments use each leg's saddle
+  and refuse max_ell >= 1 with a nonzero saddle, or max_ell >= 2 (the spatial
+  integrator has no tadpoles).
+- **METADATA `fixed_point_index_default` / `seed_box_default`** (written by
+  the model builder UI) are read by `dd.run` (and so by
+  `daedalus run config.yaml`); a `Config` value still wins. Before, root 0
+  was used: the audit double well expanded around -sqrt(10) instead of the
+  model's +sqrt(10). A non-dict `seed_box_default` raises. Every tracked
+  model declares index 0, so tracked results do not move.
+- **External-leg recommendations**: a METADATA leg whose population index is
+  not a population of its field is stale and is replaced by the default legs
+  (it used to pass and stop in the analyzer). The model builder UI column
+  `leaf_index` is now `population` (it was always written as the population
+  index). `linear_diffusion_test` and `edwards_wilkinson_1d` recommend
+  `[('phi', 1), ('phi', 1)]` (was `('phi', 2)` on a 1-unit field; results
+  bit-identical).
+- **`compute_cumulants` entry checks** (shared with `dd.run` / `dd.Config`):
+  unknown parameter names raise (they were ignored and the default value
+  used); a 3-entry tuple / list grid whose last entry is an integer count
+  >= 2 (`(-5, 5, 51)`) raises as ambiguous (it was read as 3 literal points);
+  `accuracy` must be finite and > 0, `n_workers` >= 1, `k` / `max_ell`
+  integers (a clear `TypeError`; numpy and Sage integers accepted), `discard`
+  a bool or `'auto'` (`1` used to skip the not-available refusal). An
+  unsorted `tau_grid` is still taken as given (values aligned with its
+  points). `dd.Config` refuses `k < 1`, `max_ell < 0`, `tau_step <= 0`,
+  `tau_max < 0`, `n_workers < 1`, `fixed_point_index < 0` at construction and
+  again in `dd.run`. `SDE` refuses a parameter, function or kernel named
+  like a field's derived symbol (`xt`, `dx`, `xstar`) and a parameter
+  declared twice, at `build()`.
+- **k >= 3 slices**: a failure evaluating the slices marks the result
+  `status = 'incomplete'` and warns (`PhaseJIncompleteWarning`; raises under
+  `policy={'mode': 'strict'}`); it used to print only with `verbose` and
+  named a fallback that does not exist. A `tau_grid` of more than 41 points
+  replaced by 41 evenly spaced points now warns and is recorded in
+  `result['_kpoint_tau_resampled']`.
+
 #### Spatial engine: loop scope guards (audit wave 2, group 2)
 
 - **Multi-field models with a diagonal kinetic block** (fields mixed only

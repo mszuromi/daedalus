@@ -203,6 +203,14 @@ def test_metadata_fixed_point_index_default_is_used():
     assert r2['mf_index_used'] == 0                # the Config value wins
 
 
+@pytest.mark.parametrize('bad', [-1, 1.7])
+def test_metadata_fixed_point_index_default_is_checked(bad):
+    mod = types.SimpleNamespace(METADATA={'fixed_point_index_default': bad})
+    with pytest.raises((ValueError, TypeError), match='fixed_point_index'):
+        dd.run(_double_well(), dd.Config(k=2, max_ell=0, tau_grid=[0.0],
+                                         external_fields=[('dx', 1)] * 2), mod)
+
+
 def test_metadata_seed_box_must_be_a_dict():
     mod = types.SimpleNamespace(METADATA={'seed_box_default': "{'x': (1, 5"})
     with pytest.raises(ValueError, match='seed_box_default'):
@@ -244,6 +252,7 @@ _KW = dict(k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)])
     (dict(n_workers=0), ValueError, 'n_workers'),
     (dict(discard=1), ValueError, 'discard'),
     (dict(discard='yes'), ValueError, 'discard'),
+    (dict(fixed_point_index=-1), ValueError, 'fixed_point_index'),
 ])
 def test_compute_cumulants_entry_checks(bad, exc, match):
     kw = dict(_KW, tau_grid=[0.0])
@@ -323,6 +332,55 @@ def test_k3_slice_failure_marks_incomplete_and_warns(monkeypatch):
     assert 'slice evaluation failed' in r['_kpoint_slice_error']
     with pytest.raises(PhaseJIncompleteError):
         dd.run(_ou(), dd.Config(policy={'mode': 'strict'}, **cfg))
+
+
+def test_k3_moment_after_a_slice_failure_is_none(monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError('slice evaluation failed')
+    monkeypatch.setattr(dd, '_kpoint_slice_times', boom)
+    with pytest.warns(PhaseJIncompleteWarning, match='slices'):
+        r = dd.run(_ou(), dd.Config(k=3, max_ell=0, tau_grid=[0.0, 1.0],
+                                    external_fields=[('x', 1)] * 3,
+                                    output='moment'))
+    assert r['moment'] is None and r['status'] == 'incomplete'
+
+
+def test_k3_full_grid_failure_keeps_the_slices(monkeypatch):
+    real = dd._kpoint_pinned_time
+
+    def boom(*a, **kw):                 # used by the full grid only
+        raise RuntimeError('grid evaluation failed')
+    monkeypatch.setattr(dd, '_kpoint_pinned_time', boom)
+    monkeypatch.setattr(dd, '_kpoint_slice_times',
+                        lambda base, j, t, eps, _f=dd._kpoint_slice_times:
+                        _with(real, _f, base, j, t, eps))
+    with pytest.warns(PhaseJIncompleteWarning, match='full k-point grid'):
+        r = dd.run(_ou(), dd.Config(k=3, max_ell=0, tau_grid=[0.0, 1.0],
+                                    external_fields=[('x', 1)] * 3,
+                                    kpoint_full_grid=True))
+    assert r['C_tau'] is not None and 'C_tau_grid' not in r
+    assert r['status'] == 'incomplete' and '_kpoint_grid_error' in r
+
+
+def _with(real, f, *args):
+    # run the slice-times helper with the real pinned-time function
+    saved = dd._kpoint_pinned_time
+    dd._kpoint_pinned_time = real
+    try:
+        return f(*args)
+    finally:
+        dd._kpoint_pinned_time = saved
+
+
+def test_spatial_moment_accepts_list_legs():
+    m, mod = dd.load_model('linear_diffusion_test')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = dd.run(m, dd.Config(k=2, max_ell=0, chi_grid=[0.0, 1.0],
+                                tau_max=0.0, tau_step=1.0, output='moment',
+                                external_fields=[['phi', 1], ['phi', 1]]), mod)
+    assert np.allclose(np.real(r['moment']), np.real(r['C_tau_x'])
+                       + r['moment_means'][('phi', 1)][0] ** 2)
 
 
 def test_k3_resampled_grid_warns():
