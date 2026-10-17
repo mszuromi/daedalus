@@ -1853,7 +1853,9 @@ def compute_spatial_correlator_generic(
                                             _nt, _nshort)
                      for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
         _P = (_nt ** _nV) * (_ns ** _nC) * _split
-        _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
+        # one (P, n_x) complex array, ×2.5 for the measured chamber peak
+        # (heat kernel + amplitude + temporaries; audit E-spatial-12)
+        _gb = 2.5 * _P * _nx * 16.0 / 1e9
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
     if _integrator not in ('mc', 'bessel') and _peak_gb > _budget_gb:
