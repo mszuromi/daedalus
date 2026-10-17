@@ -52,12 +52,13 @@ from api.access     import (
 # right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
 
-# The k = 2 τ = 0 convention (audit A3a-1 / 3B-01, Oct 2026).  'exact'
-# (default): the τ = 0 point is evaluated AT equal times; Phase J's exact
-# tie rule (``final_integral._const_row_verdict``: of Θ(t1 − t0) and
-# Θ(t0 − t1) at t1 == t0 exactly the one with leg 1 earlier holds) gives
-# the Itô left limit C(0⁻) exactly, and the exact delayed tree returns its
-# own left limit.  'nudge': the pre-Oct-2026 sample at τ = −_ITO_EPS, whose
+# The k = 2 τ = 0 convention (audit A3a-1 / 3B-01, Oct 2026).  'exact':
+# the τ = 0 point is evaluated AT equal times; Phase J's exact tie rule
+# (``final_integral._const_row_verdict``: of Θ(t1 − t0) and Θ(t0 − t1) at
+# t1 == t0 exactly the one with leg 1 earlier holds) gives the Itô left
+# limit C(0⁻) exactly (<= 3e-14 against independent references on every
+# route), and the exact delayed tree returns its own left limit.  'nudge'
+# (default until the switch is decided): the sample at τ = −_ITO_EPS, whose
 # relative error is (rate × 1e-6) and therefore unit dependent (1e-3 at a
 # rate of 1e3).  Environment variable DAEDALUS_TAU0 = 'exact' | 'nudge',
 # read at call time.  k ≥ 3 slices (``daedalus._kpoint_slice_times``,
@@ -68,7 +69,7 @@ _TAU0_MODES = ('exact', 'nudge')
 
 def _tau0_mode():
     """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
-    m = os.environ.get('DAEDALUS_TAU0', 'exact').strip().lower() or 'exact'
+    m = os.environ.get('DAEDALUS_TAU0', 'nudge').strip().lower() or 'nudge'
     if m not in _TAU0_MODES:
         raise ValueError(f'DAEDALUS_TAU0={m!r}: expected one of {_TAU0_MODES}')
     return m
@@ -2126,9 +2127,9 @@ def _run_phase_j(state, grouped):
         # to 0⁻ keeps the surviving causal chamber and gives the left limit (= the
         # right limit for an even/stationary C; differs only at a genuine τ=0
         # jump, where Itô takes the left).  The grid LABEL stays 0.
-        # (Oct 2026: by default the τ = 0 point is now evaluated AT equal
-        # times, where the engine's exact tie rule gives C(0⁻) exactly; the
-        # −_ITO_EPS sample is DAEDALUS_TAU0=nudge, see ``_tau0_mode``.)
+        # (DAEDALUS_TAU0=exact evaluates the τ = 0 point AT equal times,
+        # where the engine's exact tie rule gives C(0⁻) exactly; see
+        # ``_tau0_mode``.)
         _lag0 = _tau0_lag()
         tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _lag0)
                       for t in tau_grid]

@@ -11,8 +11,8 @@ Inline public models only.
   built by a finite difference that cancelled the O(N) constant);
 * the delay approximant's estimated error enters G6_ACCURACY;
 * a failing gentreeg raises instead of truncating the tree list;
-* the k = 2 tau = 0 point is the exact Ito left limit C(0-) (default), the
-  legacy -1e-6 sample under DAEDALUS_TAU0=nudge.
+* DAEDALUS_TAU0=exact: the k = 2 tau = 0 point is the exact Ito left limit
+  C(0-); the default (nudge) keeps the -1e-6 sample.
 """
 import copy
 import os
@@ -153,13 +153,13 @@ def test_failing_gentreeg_raises(tmp_path, monkeypatch):
 def test_tau0_is_the_exact_left_limit(mu, monkeypatch):
     D = 0.2
     m = _ou(f'aw1 ou tau0 {mu}', mu=mu, D=D)
-    monkeypatch.delenv('DAEDALUS_TAU0', raising=False)
+    monkeypatch.setenv('DAEDALUS_TAU0', 'exact')
     r = _cc(m, [0.0, 1.0 / mu])
     ex = D / mu
     assert abs(np.real(r['C_tau'])[0] / ex - 1) < 1e-13
     assert abs(np.real(r['total_C'](0.0, 0.0)) / ex - 1) < 1e-13
     assert abs(np.real(r['C_tau'])[1] / (ex * np.exp(-1.0)) - 1) < 1e-13
-    monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
+    monkeypatch.delenv('DAEDALUS_TAU0', raising=False)      # default: nudge
     rn = _cc(m, [0.0])
     assert abs(np.real(rn['C_tau'])[0] / ex - 1) == pytest.approx(mu * 1e-6, rel=1e-3)
     monkeypatch.setenv('DAEDALUS_TAU0', 'bogus')
