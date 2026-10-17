@@ -1917,10 +1917,12 @@ def _check_spike(taus, grouped, monkeypatch):
     assert c['nquad_hardened_calls'] == c['nquad_calls'] > 0
     assert c['nquad_hardened_quad_flags'] == 0
     # compute_cumulants names the model in the warnings' key (model,
-    # source, loop order), for the per-diagram and the grouped build alike
+    # source, loop order, then the diagrams and the parameter point), for
+    # the per-diagram and the grouped build alike
     name = H.load_model('single_population_spike_reset_test')['name']
     src = 'grouped' if grouped else 'per_diagram'
-    assert ('fallback', ('model', name), src, 1) in FI._NQUAD_WARNED, sorted(
+    assert any(k[:4] == ('fallback', ('model', name), src, 1)
+               for k in FI._NQUAD_WARNED), sorted(
         map(repr, FI._NQUAD_WARNED))
     assert all(k[1] == ('model', name) and k[2] == src
                for k in FI._NQUAD_WARNED), sorted(map(repr, FI._NQUAD_WARNED))
@@ -2341,7 +2343,8 @@ def test_one_warning_per_model_source_and_loop_order(hardened,
     """The regions of one evaluation (an ``nquad_warning_scope``, which the
     callables of ``compute_cumulants`` open) are aggregated per (model,
     source, loop order) into ONE warning with their counts, issued when the
-    scope ends; each key warns once per process.  (Before: one warning per
+    scope ends; each key warns once per process and per set of diagrams and
+    parameter point (audit ACC-17).  (Before: one warning per
     typed diagram, hundreds for a k = 4 evaluation.)"""
     td1, td2 = _typed(_EDGES_A, _LEGS_A), _typed(_EDGES_A, _LEGS_B)
     with warnings.catch_warnings(record=True) as w:
@@ -2361,8 +2364,8 @@ def test_one_warning_per_model_source_and_loop_order(hardened,
     assert 'First: δ-subset 0b101' in msgs[0]
     assert "external legs ['n1', 'n2']" in msgs[0]
     assert not any('serial' in x for x in msgs)
-    # the same model again (a rebuild: new serial, new TypedDiagram objects,
-    # other parameter values): nothing
+    # the same model again (a rebuild: new serial, new TypedDiagram objects
+    # of the same diagrams, the same parameter point): nothing
     with FI.nquad_warning_scope():
         msgs = _warnings_of([_region_a(_meta(_typed(_EDGES_A, _LEGS_A),
                                              serial=2))])
@@ -2398,7 +2401,8 @@ def test_one_warning_per_model_source_and_loop_order(hardened,
     msgs = [str(x.message) for x in w]
     assert len(msgs) == 1 and '2 integration region(s)' in msgs[0]
     assert "1 without the integrand's exponential modes" in msgs[0]
-    assert ('fallback', ('model', 'm_d'), 'per_diagram', 1) in FI._NQUAD_WARNED
+    assert any(k[:4] == ('fallback', ('model', 'm_d'), 'per_diagram', 1)
+               for k in FI._NQUAD_WARNED)
 
 
 def test_warning_scope_in_a_forked_child_warns_at_once(hardened,
@@ -2522,7 +2526,7 @@ _HARDENED_COUNTERS = (
     'nquad_hardened_quad_flags', 'nquad_hardened_quad_retries',
     'nquad_hardened_reruns', 'nquad_hardened_tail_widened',
     'nquad_hardened_inner_unchecked', 'nquad_hardened_innermost_overflow',
-    'nquad_hardened_floor_limited',
+    'nquad_hardened_floor_limited', 'nquad_hardened_floor_cut',
     'nquad_hardened_innermost_capped')
 
 

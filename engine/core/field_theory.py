@@ -1342,6 +1342,9 @@ class FieldTheory:
         self._S_raw   = None
         self._by_tp   = None
         self._mf_sector_raw = None
+        # Interaction sectors written with per-field kernel aliases (see
+        # ``expand``); ``None`` when no kernel convolves several fields.
+        self._vertex_alias_by_tp = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -1383,6 +1386,8 @@ class FieldTheory:
         # ``g·nstar`` bilinear coefficient on the dv side.
         from engine.core.convolution import reduce_conv_in_action
         dc_gains = kernel_dc_gains_of(ns, self.model)
+        S_alias = None
+        self._vertex_alias_by_tp = None
         try:
             fluct_vars = set(ns._all_field_sr_vars)
             # Pass taylor_order so nonlinear Conv arguments
@@ -1401,11 +1406,31 @@ class FieldTheory:
             # coefficient is attached to — needed for the time-domain
             # Phase J integrator's per-leg τ scaffolding.
             attachments = {}
+            S_conv = S_sr
             S_sr = reduce_conv_in_action(
-                S_sr, fluct_vars, taylor_order=self.taylor_order,
+                S_conv, fluct_vars, taylor_order=self.taylor_order,
                 attachments_out=attachments, dc_gains=dc_gains,
             )
             ns._kernel_attachments = attachments
+            # A kernel convolving several fields (``Conv(g, x)`` and
+            # ``Conv(g, y)``, or a shared ``Conv(r, n[j])`` over a
+            # population) leaves vertex coefficients that cannot say which
+            # leg each factor of ``g`` came from.  Reduce once more with one
+            # alias per (kernel, field) emission; its interaction sectors
+            # (below) feed vertex extraction only, every other consumer
+            # keeps the sectors written with ``g``.
+            shared = [g for g, fs in attachments.items() if len(fs) > 1]
+            if shared:
+                aliases = {}
+                S_alias = reduce_conv_in_action(
+                    S_conv, fluct_vars, taylor_order=self.taylor_order,
+                    dc_gains=dc_gains, alias_kernels=shared,
+                    aliases_out=aliases,
+                )
+                if aliases:
+                    ns._kernel_aliases = aliases
+                else:
+                    S_alias = None
         except (AttributeError, TypeError):
             # No Conv atoms / non-SR action / missing ns attribute —
             # treat as identity transformation.
@@ -1416,50 +1441,15 @@ class FieldTheory:
         # framework appends the non-local cumulant terms here from the
         # declarative spec).  Returns SR(0) when the model has no
         # correlated_noises block, so existing models are untouched.
-        S_sr = S_sr + _build_cumulant_action(ns, self.model)
-
-        # Multivariate Taylor in all field variables around 0 (one-shot).
-        # Truncates at TOTAL degree taylor_order, which matches the
-        # diagrammatic vertex-leg-count interpretation.  Replaces the
-        # previous sequential single-variable loop, which broke for
-        # multi-arg formal functions (chained .taylor() doesn't compose
-        # at non-zero expansion points — the inner-arg substructures
-        # get frozen by the outer call).  For single-arg formal
-        # functions, the result is identical to the old sequential
-        # loop (since each formal call only depends on one fluctuation
-        # variable, multivariate Taylor at total order N produces the
-        # same monomials as per-variable order N).
-        #
-        # ``_taylor_action`` builds that polynomial atom by atom with
-        # truncation at every product (see ``_truncated_taylor``);
-        # ``DAEDALUS_EXPAND_LEGACY=1`` restores the single ``taylor()``.
-        if ns._all_field_sr_vars:
-            S_sr = _taylor_action(
-                S_sr, ns._all_field_sr_vars, self.taylor_order)
-
-        # Rename formal function derivative symbols to clean SR names
-        # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
-        if ns._deriv_rename_subs:
-            S_sr = S_sr.subs(ns._deriv_rename_subs)
-
-        # Apply specializations (e.g. phi0_<i+1> → a*vstar_<i+1>,
-        # phi1_<i+1> → a, quadratic phi, delta g).  These are pure
-        # closure renames and are safe to apply to every sector — they
-        # do not introduce parameter dependence that should be confined
-        # to the saddle-eq sector.
-        if 'specializations' in self.model:
-            S_sr = S_sr.subs(self.model['specializations'](ns))
-
-        # Coerce to polynomial ring and bigrade-classify FIRST, BEFORE
-        # applying MF saddle substitutions.  This is critical: MF subs
-        # of the form ``vstar → (Em + Σwg·nstar)/(1+τ·nstar)`` rewrites
-        # ``vstar`` everywhere it appears, which would otherwise inject
-        # Em-dependence (and other saddle-eq algebra) into the (1,1)
-        # bilinear propagator kernel and the ≥2 interaction vertices,
-        # where ``vstar``/``nstar`` should remain as free symbolic
-        # parameters bound numerically downstream via num_params.
-        S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
-        by_tp = _collect_bigrade(S_poly, n_tilde)
+        S_cum = _build_cumulant_action(ns, self.model)
+        S_sr = S_sr + S_cum
+        by_tp = self._sr_to_bigrade(S_sr, ns, R, n_tilde)
+        if S_alias is not None:
+            self._vertex_alias_by_tp = {
+                key: poly for key, poly in self._sr_to_bigrade(
+                    S_alias + S_cum, ns, R, n_tilde).items()
+                if key[0] + key[1] >= 3 and key[1] >= 1
+                and poly != R.zero()}
 
         # Apply MF background conditions ONLY to the MF sector — the
         # bigrade-≤1-in-each-index slots (0,0), (1,0), (0,1) that hold
@@ -1515,6 +1505,54 @@ class FieldTheory:
         # linearization instead of being rejected.  Check once, here,
         # where the whole action is in hand.
         self.check_first_order_in_dt()
+
+    def _sr_to_bigrade(self, S_sr, ns, R, n_tilde):
+        """Taylor-expand the reduced action ``S_sr`` (Conv atoms resolved,
+        cumulant terms added), rename and specialise, and classify it by
+        bigrade: ``{(n_tilde, n_phys): polynomial}`` (MF sector untouched)."""
+        # Multivariate Taylor in all field variables around 0 (one-shot).
+        # Truncates at TOTAL degree taylor_order, which matches the
+        # diagrammatic vertex-leg-count interpretation.  Replaces the
+        # previous sequential single-variable loop, which broke for
+        # multi-arg formal functions (chained .taylor() doesn't compose
+        # at non-zero expansion points — the inner-arg substructures
+        # get frozen by the outer call).  For single-arg formal
+        # functions, the result is identical to the old sequential
+        # loop (since each formal call only depends on one fluctuation
+        # variable, multivariate Taylor at total order N produces the
+        # same monomials as per-variable order N).
+        #
+        # ``_taylor_action`` builds that polynomial atom by atom with
+        # truncation at every product (see ``_truncated_taylor``);
+        # ``DAEDALUS_EXPAND_LEGACY=1`` restores the single ``taylor()``.
+        if ns._all_field_sr_vars:
+            S_sr = _taylor_action(
+                S_sr, ns._all_field_sr_vars, self.taylor_order)
+
+        # Rename formal function derivative symbols to clean SR names
+        # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
+        if ns._deriv_rename_subs:
+            S_sr = S_sr.subs(ns._deriv_rename_subs)
+
+        # Apply specializations (e.g. phi0_<i+1> → a*vstar_<i+1>,
+        # phi1_<i+1> → a, quadratic phi, delta g).  These are pure
+        # closure renames and are safe to apply to every sector — they
+        # do not introduce parameter dependence that should be confined
+        # to the saddle-eq sector.
+        if 'specializations' in self.model:
+            S_sr = S_sr.subs(self.model['specializations'](ns))
+
+        # Coerce to polynomial ring and bigrade-classify FIRST, BEFORE
+        # applying MF saddle substitutions.  This is critical: MF subs
+        # of the form ``vstar → (Em + Σwg·nstar)/(1+τ·nstar)`` rewrites
+        # ``vstar`` everywhere it appears, which would otherwise inject
+        # Em-dependence (and other saddle-eq algebra) into the (1,1)
+        # bilinear propagator kernel and the ≥2 interaction vertices,
+        # where ``vstar``/``nstar`` should remain as free symbolic
+        # parameters bound numerically downstream via num_params.
+        S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
+        by_tp = _collect_bigrade(S_poly, n_tilde)
+        return by_tp
 
     def check_first_order_in_dt(self) -> None:
         """Reject an action with any term of ``Dt``-degree ≥ 2.

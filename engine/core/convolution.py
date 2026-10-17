@@ -269,7 +269,8 @@ def _flat_symbols(val):
 
 
 def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
-                          attachments_out=None, dc_gains=None):
+                          attachments_out=None, dc_gains=None,
+                          alias_kernels=None, aliases_out=None):
     """Resolve every ``Conv(g, n_arg)`` atom in an action expression,
     applying the physical rules of time-domain convolution.
 
@@ -365,6 +366,16 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
         for disambiguating per-vertex by index when a kernel attaches
         to multiple fields.  The dict is mutated in place; pre-existing
         entries are augmented (set-union), not overwritten.
+    alias_kernels : iterable of SR symbols, optional
+        Kernels whose rule-4 emissions get one alias symbol per attached
+        field, :func:`kernel_alias_symbol` ``(g, f)``, in place of ``g``:
+        ``Conv(g, dx) + Conv(g, dy) -> g__at__dx·dx + g__at__dy·dy``.  The
+        interaction-vertex coefficients then say which field each kernel
+        factor came from, which ``g`` alone cannot (a monomial ``dx·dy``
+        with coefficient ``g`` is ambiguous).  A leaf with several
+        different fluctuation fields keeps ``g``.
+    aliases_out : dict, optional
+        Out-parameter: ``alias -> (g, f)`` for every alias emitted.
 
     Returns
     -------
@@ -378,6 +389,7 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
 
     fluct_set = set(fluct_vars) if not isinstance(fluct_vars, (set, frozenset)) \
                                 else fluct_vars
+    alias_set = set(alias_kernels or ())
     # Pre-build the Taylor expansion-point pairs once, reused for every
     # Conv atom.  Each entry is (var, 0) — i.e. expand around the
     # saddle, which lives at fluctuation = 0 by convention.
@@ -449,19 +461,32 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
         # Rule 4: defer the kernel to the FT pipeline.  Record the
         # (kernel, attached-fluct) association so downstream vertex
         # extraction can recover which leg the kernel goes with.
-        if attachments_out is not None:
-            try:
-                attached_flucts = set(_SR(n_arg).variables()) & fluct_set
-            except (AttributeError, TypeError):
-                attached_flucts = set()
-            if attached_flucts:
-                # Same kernel can pair with several fields across the
-                # action — set-union accumulates them.
-                bucket = attachments_out.setdefault(g, set())
-                bucket.update(attached_flucts)
+        try:
+            attached_flucts = set(_SR(n_arg).variables()) & fluct_set
+        except (AttributeError, TypeError):
+            attached_flucts = set()
+        if attachments_out is not None and attached_flucts:
+            # Same kernel can pair with several fields across the
+            # action — set-union accumulates them.
+            bucket = attachments_out.setdefault(g, set())
+            bucket.update(attached_flucts)
+        if g in alias_set and len(attached_flucts) == 1:
+            f = next(iter(attached_flucts))
+            alias = kernel_alias_symbol(g, f)
+            if aliases_out is not None:
+                aliases_out[alias] = (g, f)
+            return alias * n_arg           # rule 4, per-field alias
         return g * n_arg                   # rule 4
 
     return expr.substitute_function(Conv, _reduce_arg)
+
+
+def kernel_alias_symbol(ksym, fluct):
+    """The alias of kernel symbol ``ksym`` for its emissions on the
+    fluctuation field ``fluct`` (``reduce_conv_in_action(alias_kernels=)``):
+    the SR variable ``<ksym>__at__<fluct>``."""
+    from sage.all import SR as _SR
+    return _SR.var(f'{ksym}__at__{fluct}')
 
 
 def kernel_attachments_in_coefficient(coeff, attachments, kernel_symbols=None):
@@ -524,4 +549,5 @@ def kernel_attachments_in_coefficient(coeff, attachments, kernel_symbols=None):
 
 
 __all__ = ['KernelDCGains', 'Conv', 'is_convolution', 'kernel_of', 'field_of',
-           'reduce_conv_in_action', 'kernel_attachments_in_coefficient']
+           'reduce_conv_in_action', 'kernel_alias_symbol',
+           'kernel_attachments_in_coefficient']
