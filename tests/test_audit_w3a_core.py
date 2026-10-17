@@ -133,8 +133,10 @@ def test_mixed_field_moment_matches_isserlis(fields, output):
              external_fields=[(f, 1) for f in fields], output=output)
     got = np.real(np.asarray(r['moment']))
     want = _isserlis(fields, tau, output == 'central_moment')
-    # tolerance: the Ito equal-time nudge (1e-6) at the coincident points
-    assert np.allclose(got, want, rtol=5e-6, atol=5e-6), (got, want)
+    # k = 2: tau = 0 is the exact tie (no nudge); k >= 3 slices still place
+    # coincident legs 1e-6 apart (``_kpoint_slice_times``)
+    tol = 1e-10 if len(fields) == 2 else 5e-6
+    assert np.allclose(got, want, rtol=tol, atol=tol), (got, want)
 
 
 def test_population_legs_use_their_own_saddle():
