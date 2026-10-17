@@ -941,6 +941,44 @@ def _to_kernel(c, Dt, delta_D, delta_Dp):
     return p0 * delta_D + rest
 
 
+def model_cache_signature(model) -> str:
+    """The key a cached propagator or typed-diagram file must carry to be
+    served for ``model``: the model-text fingerprint (``spec_signature``,
+    ``None`` for a hand-written dict model) together with the members of
+    every index set.  The cache directories are keyed by the model NAME
+    only, and the text fingerprint does not see population sizes, so a
+    population resized under the same name would otherwise be served the
+    old size's diagrams."""
+    import hashlib
+    import json
+    sets = []
+    for name, members in sorted((model.get('index_sets') or {}).items(),
+                                key=lambda kv: str(kv[0])):
+        try:
+            members = [str(x) for x in members]
+        except TypeError:
+            members = str(members)
+        sets.append([str(name), members])
+    blob = json.dumps([model.get('spec_signature'), sets], default=str,
+                      sort_keys=True)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def cache_signature_stale(model, stored) -> str | None:
+    """Why a cache file whose recorded :func:`model_cache_signature` is
+    ``stored`` cannot be served for ``model`` (a message), or ``None``.  A
+    file without one (written before the signature, or by another writer)
+    is stale: rebuilding once is cheap, reusing another model's file is
+    not."""
+    if stored is None:
+        return 'written without a model signature'
+    expect = model_cache_signature(model)
+    if stored != expect:
+        return (f'written for another model text or population sizes '
+                f'(signature {stored}, expected {expect})')
+    return None
+
+
 def build_propagator(ft, model, cache_dir_root='saved_models',
                      use_cache=True, verbose=True, force=False):
     """
@@ -977,18 +1015,16 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             # — otherwise the heat-kernel propagator is silently absent.
             stale_spatial = (bool(model.get('spatial'))
                              and prop.get('G_tx_sym') is None)
-            # Model-text fingerprint (action, equations, KERNEL images ...):
-            # the cache directory is keyed by the model name only, so two
-            # models that differ only in a kernel's image would share it.  A
-            # file written before the fingerprint was stored is accepted.
-            cached_sig = prop.get('spec_signature')
-            stale_spec = (cached_sig is not None
-                          and model.get('spec_signature') is not None
-                          and cached_sig != model.get('spec_signature'))
+            # Model signature (action, equations, KERNEL images, population
+            # sizes): the cache directory is keyed by the model name only,
+            # so two models that differ only in a kernel's image would share
+            # it.  A file without a signature is stale.
+            stale_spec = cache_signature_stale(
+                model, prop.get('cache_signature'))
             if stale_spec:
                 if verbose:
-                    print('[propagator] Cached propagator belongs to another '
-                          'model text (spec_signature); rebuilding.')
+                    print(f'[propagator] Cached propagator {stale_spec}; '
+                          f'rebuilding.')
             elif cached_nf is not None and cached_nf != ft._n_tilde:
                 if verbose:
                     print(f'[propagator] Cached nf={cached_nf} but model '
@@ -1256,6 +1292,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             # SR exprs + plain data; the G_tx callables are attached
             # AFTER the save (closures don't pickle).
             prop['spec_signature'] = model.get('spec_signature')
+            prop['cache_signature'] = model_cache_signature(model)
             cache.save('propagator', prop)
             if verbose:
                 print(f'[propagator] Cached to: '

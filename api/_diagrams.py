@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 
+from api._propagator import cache_signature_stale, model_cache_signature
 from engine.core.cache import PipelineCache
 from engine.core.vertices import ConvVertexType
 from engine.diagrams.causality import filter_causal
@@ -209,13 +210,12 @@ def enumerate_unique_diagrams(
         if use_cache and cache.exists(stage_name, k=k, loop_order=ell):
             try:
                 cached = cache.load(stage_name, k=k, loop_order=ell)
-                sig = cached.get('spec_signature')
-                if (sig is not None and model.get('spec_signature') is not None
-                        and sig != model.get('spec_signature')):
-                    # another model text under the same name (e.g. a
-                    # different kernel image): rebuild
-                    raise ValueError('typed-diagram cache: spec_signature '
-                                     'mismatch')
+                # another model text or population size under the same
+                # name (or a file without a signature): rebuild
+                stale = cache_signature_stale(
+                    model, cached.get('cache_signature'))
+                if stale is not None:
+                    raise ValueError(f'typed-diagram cache {stale}')
                 unique = cached['unique']
                 multiplicities = cached['multiplicities']
                 if verbose:
@@ -264,7 +264,8 @@ def enumerate_unique_diagrams(
                 cache.save(stage_name,
                            {'unique': unique,
                             'multiplicities': multiplicities,
-                            'spec_signature': model.get('spec_signature')},
+                            'spec_signature': model.get('spec_signature'),
+                            'cache_signature': model_cache_signature(model)},
                            k=k, loop_order=ell)
                 if verbose:
                     print(f'             cached to '
