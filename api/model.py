@@ -414,6 +414,27 @@ class _TemporalMethods:
             raise ValueError(
                 f"define_kernel({name!r}): supply at least one of "
                 f"time_expr= or freq_image= (or delay=)")
+        # A re-declaration replaces the earlier define_kernel(name) as a
+        # whole (spec and symbol): keeping the old spec next to the new one
+        # let its delay multiply the new image.
+        if any(k.get('name') == name for k in self._kernel_specs):
+            import warnings
+            warnings.warn(
+                f"define_kernel({name!r}) re-declared: the new declaration "
+                f"replaces the earlier one (its image, delay and indexing).",
+                UserWarning, stacklevel=2)
+            self._kernel_specs = [k for k in self._kernel_specs
+                                  if k.get('name') != name]
+            # the symbol takes the new indexing; its position, a custom
+            # sage name / latex / description and a .kernel() image stay
+            pos = next(i for i, k in enumerate(self.kernels) if k.name == name)
+            old = self.kernels.pop(pos)
+            self.kernel(name, frequency_image=old.frequency_image,
+                        sage_name=sage_name or old.sage_name,
+                        latex_name=latex_name or old.latex_name,
+                        description=description or old.description,
+                        indexed=indexed, indexed_by=indexed_by)
+            self.kernels.insert(pos, self.kernels.pop())
         # Register the kernel symbol with the regular .kernel() call.
         # ``indexed_by`` (when given) takes precedence over ``indexed=``.
         if not any(k.name == name for k in self.kernels):
@@ -502,6 +523,14 @@ class _TemporalMethods:
             ``'dirac_delta(t1)*dirac_delta(t2)'`` (Poisson shot noise
             at κ³).  Defaults to ``None`` which the compiler treats as
             ``∏_k δ(τ_k)`` — fully-local cumulant.
+
+            On a response field with more than one unit (a population),
+            the coefficient / kernel texts must state the unit structure
+            with the 0-based leg indices ``i``, ``j`` (order 2; ``i1 ..
+            in`` at any order): ``kronecker_delta(i, j)`` for independent
+            per-unit noise, ``shared(i, j)`` (= 1) for one noise common to
+            all units, or any expression in them; a row that uses no index
+            is refused there.
         response_legs : list of str OR comma-separated str, keyword-only
             **New / multi-field path.**  Per-leg list of response field
             names, length = ``order``.  Use for cross-field cumulants:
@@ -1600,6 +1629,9 @@ class _BaseModelBuilder:
                           + ((k['delay'],) if k.get('delay') else ())
                           for k in (self._kernel_specs or [])],
             'cgf':       [str(c) for c in (self._cgf_terms or [])],
+            # the CGF rows' meaning changed (no kernel = white, leg indices,
+            # additive embedding): caches of rows read the old way are stale
+            **({'cgf_semantics': 2} if self._cgf_terms else {}),
             'fields':    [(f.name, getattr(f, 'population', None),
                            int(getattr(f, 'spatial_dim', 0) or 0))
                           for f in self.physical_fields],

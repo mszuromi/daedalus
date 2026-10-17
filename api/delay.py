@@ -93,7 +93,15 @@ Options (``compute_cumulants(..., delay={...})``):
 The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
 tree), the analyzer finding ``G3_DELAY_APPROXIMATED`` and an
-``approximation`` entry of the assumptions ledger (``delay:<kernel>``).
+``approximation`` entry of the assumptions ledger (``delay:<kernel>``).  A
+missed target (``n_max`` / ``wall_max`` reached, a higher order the engine
+could not finish, e.g. refused by the memory budget, or a diverging
+difference) sets ``result['status'] = 'target_missed'`` (``'incomplete'``
+when Phase J left diagrams out) next to the ``DelayOrderWarning``.  At
+k >= 3 the controller compares ``total_C`` at sample times in units of the
+longest delay, capped by the slowest local relaxation time
+(``result['delay']['sample_time_scale']``), so its estimate and the order it
+picks do not depend on the time unit.
 """
 from __future__ import annotations
 
@@ -610,7 +618,7 @@ def _next_truncation(opts, t_base, r, k, n, m, est, est_ref, ctrl):
     tvp = r.get('delay_tree_vs_pade')
     if tvp is not None and np.isfinite(tvp) and tvp > 0:
         try:
-            tot, loop = _observable(r, k)
+            tot, loop = _observable(r, k, ctrl.get('sample_time_scale') or 1.0)
             share = float(np.max(np.abs(loop))) / max(float(np.max(np.abs(tot))), 1e-300)
         except Exception:
             share = 1.0
@@ -628,16 +636,48 @@ def _next_truncation(opts, t_base, r, k, n, m, est, est_ref, ctrl):
 _INSTABILITY_CODES = ('G2_UNSTABLE_SADDLE', 'G2_MARGINAL_MODE', 'G3_ACAUSAL_POLE')
 
 
-def _observable(r, k):
+def _delay_time_scale(ctx) -> float:
+    """The time scale of the k >= 3 sample points of ``_observable``, in the
+    model's time unit: the longest delay (numeric), capped by the slowest
+    local relaxation time (``1 / min |Re lambda|`` of the saddle's
+    linearization with every kernel at ``g_hat(0)``, the analyzer's G2
+    eigenvalues), so the points stay inside the correlation window when the
+    delay is long against the relaxation; 1.0 when neither can be read."""
+    det = (getattr(ctx, 't', None) or {}).get('kernel_stability_detail') or {}
+    vals = [abs(float(x)) for x in (det.get('delays') or ())]
+    if not vals:
+        try:
+            from sage.all import SR
+            for e in ctx.K_ft.list():
+                for X in delay_factors(e, ctx.omega):
+                    vals.append(abs(float(SR(X).subs(ctx.num_params))))
+        except Exception:
+            pass
+    vals = [v for v in vals if np.isfinite(v) and v > 0]
+    T = max(vals) if vals else None
+    try:
+        rates = [-complex(z).real for z in ((getattr(ctx, 't', None) or {}).get('eigenvalues')
+                                            or ())]
+    except (TypeError, ValueError):
+        rates = []
+    rates = [x for x in rates if np.isfinite(x) and x > 0]
+    if rates:
+        T = min(T, 1.0 / min(rates)) if T is not None else 1.0 / min(rates)
+    return T if T is not None else 1.0
+
+
+def _observable(r, k, t_scale=1.0):
     """Total and loop part of the observable on the grid (k <= 2), or at a few
-    sample points of ``total_C`` (k >= 3)."""
+    sample points of ``total_C`` (k >= 3), at times in units of ``t_scale``
+    (``_delay_time_scale``: the points, the error estimate and the order the
+    controller picks do not depend on the time unit)."""
     by = r.get('C_tau_by_ell') or {}
     if k <= 2 and r.get('C_tau') is not None:
         tot = np.asarray(r['C_tau'], dtype=complex)
         tree = np.asarray(by.get(0), dtype=complex) if by.get(0) is not None else 0 * tot
         return tot, tot - tree
     # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times
-    pts = [tuple([0.0] + [0.3 * (j + 1) * (i + 1) for i in range(k - 1)])
+    pts = [tuple([0.0] + [0.3 * (j + 1) * (i + 1) * t_scale for i in range(k - 1)])
            for j in range(4)]
     tot = np.array([complex(r['total_C'](*p)) for p in pts])
     f0 = (r.get('total_C_by_ell') or {}).get(0)
@@ -645,9 +685,9 @@ def _observable(r, k):
     return tot, tot - tree
 
 
-def _finite(r, k):
+def _finite(r, k, t_scale=1.0):
     try:
-        tot, _ = _observable(r, k)
+        tot, _ = _observable(r, k, t_scale)
     except Exception:
         return False
     return bool(np.all(np.isfinite(tot)))
@@ -941,6 +981,12 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
                   (est is not None and est <= opts['tol']) if loops_need_n else True)
     if incomplete:
         target_met = False
+    elif target_met is False:
+        # the requested accuracy was not reached (n_max / wall_max, a higher
+        # order the engine could not finish, a diverging difference): the
+        # result is complete but marked, not 'ok' (the record, the report and
+        # a DelayOrderWarning say why)
+        r['status'] = 'target_missed'
     if est is None and loops_need_n and not fixed:
         cap = cap or 'a single order was run (no doubling estimate)'
         if ctrl['stop'].startswith('n_max'):
@@ -963,7 +1009,9 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     states_cache = {}
     t_base = _truncation_tol(opts)
     ctrl = {'cost_by_order': {}, 'predicted_walls_s': {}, 'cost_correction': None,
-            'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {}}
+            'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {},
+            'sample_time_scale': _delay_time_scale(ctx) if k >= 3 else None}
+    t_scale = ctrl['sample_time_scale'] or 1.0
     last = None                    # (result, order, its estimate, the order that measures)
     for i, n in enumerate(seq):
         t_cur = t_base if last is None else _next_truncation(opts, t_base, *_lastargs(last, k, n),
@@ -992,6 +1040,9 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             # the cost cap; the previous order stands
             failed[n] = f'{type(exc).__name__}: {str(exc)[:300]}'
             cap = f'order n = {n} failed ({type(exc).__name__})'
+            if type(exc).__name__ == 'PhaseJResourceError':
+                cap += (': the memory budget refused it (raise PHASE_J_MEM_BUDGET_GB '
+                        'to run it)')
             break
         walls[n] = time.perf_counter() - t0
         if exact is not None:
@@ -1010,7 +1061,7 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
         bad_tree = (loops_need_n and exact is not None
                     and r.get('delay_tree_vs_pade') is not None
                     and not r['delay_tree_vs_pade'] <= 1.0)
-        if bad_tree or not _finite(r, k):
+        if bad_tree or not _finite(r, k, t_scale):
             why = ('its Pade tree is %.3g of max|C| away from the exact tree'
                    % r['delay_tree_vs_pade'] if bad_tree else 'non-finite values')
             if i + 1 < len(seq):
@@ -1027,8 +1078,8 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             ctrl['stop'] = f'no loop needs the approximant (exact tree): n = {n}'
             break
         if prev is not None:
-            tot_p, loop_p = _observable(runs[prev], k)
-            tot_n, loop_n = _observable(r, k)
+            tot_p, loop_p = _observable(runs[prev], k, t_scale)
+            tot_n, loop_n = _observable(r, k, t_scale)
             e_n = (_rel(loop_p, loop_n, tot_n) if exact is not None
                    else _rel(tot_p, tot_n, tot_n))
             # divergence guard: the difference must shrink as n doubles; a
@@ -1168,6 +1219,8 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_correction': ctrl['cost_correction'],
         'stop_reason': ctrl['stop'],
+        # k >= 3: the time unit of the controller's sample points of total_C
+        'sample_time_scale': ctrl.get('sample_time_scale'),
     }
     r['delay'] = info
     r.pop('delay_tree_vs_pade', None)

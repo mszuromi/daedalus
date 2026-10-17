@@ -11,6 +11,45 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
+
+Silent wrong numbers before; models that were not affected keep their numbers bit for bit (zoo A/B below).
+
+- **`declare_cgf_term(kernel=None)` (or an empty kernel) is now the white cumulant `∏_k δ(τ_k)`**, as documented. It
+  used to be a constant-in-τ cumulant: scalar OU, μ = D = 1, gave C(τ) = [2, 2, 2] at τ = 0, 0.5, 1; now
+  [1, 0.6065, 0.3679] = (D/μ)e^{−μτ}.
+- **CGF rows on a multi-unit (population) field see their leg indices.** The coefficient / kernel text can use the
+  0-based indices `i`, `j` (order 2; `i1 … in` at any order), `kronecker_delta(i, j)` (independent per-unit noise)
+  and `shared(i, j)` (= 1, noise common to all units). A row that uses no index on such a field is refused: it used
+  to give every pair of units the auto cumulant (independent noise silently became common noise; cross C(τ) equal to
+  the auto C(τ) where the independent-unit answer is 0). A cross-field row's index expression must be symmetric
+  under exchanging the legs, and an index name shadowed by a declared parameter is refused.
+- **The colored-noise Markovian embedding adds its coupling `- xt*xi` as a separate term** instead of editing the
+  action text. A layout other than `xt*(...)` used to get no coupling (C = 0, e.g. `((Dt+mu)*x + eps*x^3)*xt`) or a
+  wrong one (split operators, an overall factor). Rows on multi-unit fields are no longer embedded (they keep the
+  colored kernel); the auxiliary takes its source field's population, so size-1 populations now embed (they failed
+  to parse before).
+- **Re-declaring a builder kernel replaces the earlier declaration** (with a warning). The old spec used to stay, so
+  an earlier `delay=` multiplied the new image (C(0) 1.0556 instead of 1.1429 in the audit's example).
+- **The model-file round trip (UI save / load) keeps `physical_field(domain=..., auto_response=..., auto_saddle=...)`**
+  and `define_kernel(kernel=Kernel....)` (rebuilt from the syntax tree; nothing in the file is executed); it warns
+  about any builder keyword it cannot carry. Dropping `domain='real'`
+  flipped the double-well saddle from −1 to +1.
+- **Delay route:** at k ≥ 3 the Padé order controller samples `total_C` at times in units of the longest delay,
+  capped by the slowest local relaxation time (`result['delay']['sample_time_scale']`), so its estimate, the order and `target_met` no longer depend on the time
+  unit. A missed accuracy target (`n_max` / `wall_max`, a higher order the engine could not finish, e.g. refused by the
+  memory budget, a diverging difference) now sets `result['status'] = 'target_missed'` (was `'ok'`; `'incomplete'`
+  still wins); the cap text names `PHASE_J_MEM_BUDGET_GB` when the budget refused an order.
+- The expansion caches of models with CGF rows are invalidated once (their spec signature carries the new row
+  semantics).
+
+Numbers that move: only the cases above (they were wrong). Zoo A/B (tracked entries, separate processes, warm-up
+discarded, `use_cache=False`, base main ab19bcb): 23 runnable entries; 5 spatial entries refuse identically on both sides; of the 18 that run, 15 are bit-identical, `dendritic_quad_soma_sigmoid` moves 1.4e−16 and `spike_reset` 1.4e−15 (its known process scatter), and `spike_reset` grouped 2.7e−14, which main shows against itself; analyzer codes unchanged. The two colored-noise models (`ou_quartic_colored`, `ou_quartic_two_dim_color_corr`, embedded) are bit-identical. Delay route A/B (delayed OU and delayed-filter k = 2
+ℓ ≤ 1, delayed quadratic k = 3 with two option sets): values bit-identical except the k = 3 default-options case,
+3.6e−15 relative (its controller estimates change, as intended, and the adaptive truncation tolerance of the next
+order is derived from them); order sequence and chosen order unchanged; `status` is now `'target_missed'` in all
+four (each misses its target, as before, with a `DelayOrderWarning`).
+
 #### Fixed: conductance-kernel legs, cache staleness and unit-dependent thresholds (audit wave 3c)
 
 Numbers move only for the models each item names (silent-wrong or refused before); every other model is
