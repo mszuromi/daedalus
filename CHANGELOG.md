@@ -46,9 +46,67 @@ Silent wrong numbers before; models that were not affected keep their numbers bi
 Numbers that move: only the cases above (they were wrong). Zoo A/B (tracked entries, separate processes, warm-up
 discarded, `use_cache=False`, base main ab19bcb): 23 runnable entries; 5 spatial entries refuse identically on both sides; of the 18 that run, 15 are bit-identical, `dendritic_quad_soma_sigmoid` moves 1.4e−16 and `spike_reset` 1.4e−15 (its known process scatter), and `spike_reset` grouped 2.7e−14, which main shows against itself; analyzer codes unchanged. The two colored-noise models (`ou_quartic_colored`, `ou_quartic_two_dim_color_corr`, embedded) are bit-identical. Delay route A/B (delayed OU and delayed-filter k = 2
 ℓ ≤ 1, delayed quadratic k = 3 with two option sets): values bit-identical except the k = 3 default-options case,
-3.8e−15 relative (its controller estimates change, as intended, and the adaptive truncation tolerance of the next
+3.6e−15 relative (its controller estimates change, as intended, and the adaptive truncation tolerance of the next
 order is derived from them); order sequence and chosen order unchanged; `status` is now `'target_missed'` in all
 four (each misses its target, as before, with a `DelayOrderWarning`).
+
+#### Fixed: audit wave W3a -- silent wrong numbers on the `dd.run` route
+
+Regression tests: `tests/test_audit_w3a_core.py`. Cumulants do not move (zoo
+A/B bit-identical); the MOMENT outputs below do.
+
+- **`output='moment'` / `'central_moment'` (temporal):** every block of the
+  cluster expansion is now the cumulant of its own legs (field and
+  population) at their own lag. Before, every leg used the first leg's field
+  and population, and 2-leg blocks were folded to `|tau|`: for a 2-field
+  linear SDE (audit model, x* = 2, y* = 3) the raw moment <x(0) y(tau)> was
+  4.07 instead of 6.03, the mean term x*^2 instead of x* y*, and the
+  negative-lag points took the positive-lag cross-cumulant. Population legs
+  now use their own unit's saddle (a two-unit model: mu_1 mu_2 = 7.944, was
+  mu_1^2 = 4.694). Mixed k = 2, 3, 4 raw and central moments match Isserlis +
+  Lyapunov to 1.4e-6 (the Ito nudge).
+- **Loop-level raw moments include the loop corrections of the means** (the
+  1-point tadpoles, one `k = 1` run per distinct leg); a singleton block now
+  shares the loop budget like any block. Before, only the tree saddle
+  entered: <x^2> of dx = (1 - x - 0.2x^2)dt + sqrt(0.5)dW at max_ell = 1 was
+  5.4 % off the exact stationary value (now 6.4e-5, the two-loop remainder).
+  A temporal `k = 1` raw moment at max_ell >= 1 is now the saddle plus the
+  tadpoles (was the saddle alone). `result['moment_means']` records the leg
+  means per loop order. Spatial `k = 2` raw moments use each leg's saddle
+  and refuse max_ell >= 1 with a nonzero saddle, or max_ell >= 2 (the spatial
+  integrator has no tadpoles).
+- **METADATA `fixed_point_index_default` / `seed_box_default`** (written by
+  the model builder UI) are read by `dd.run` (and so by
+  `daedalus run config.yaml`); a `Config` value still wins. Before, root 0
+  was used: the audit double well expanded around -sqrt(10) instead of the
+  model's +sqrt(10). A non-dict `seed_box_default` raises. Every tracked
+  model declares index 0, so tracked results do not move.
+- **External-leg recommendations**: a METADATA leg whose population index is
+  not a population of its field is stale and is replaced by the default legs
+  (it used to pass and stop in the analyzer). The model builder UI column
+  `leaf_index` is now `population` (it was always written as the population
+  index). `linear_diffusion_test` and `edwards_wilkinson_1d` recommend
+  `[('phi', 1), ('phi', 1)]` (was `('phi', 2)` on a 1-unit field; results
+  bit-identical).
+- **`compute_cumulants` entry checks** (shared with `dd.run` / `dd.Config`):
+  unknown parameter names raise (they were ignored and the default value
+  used); a 3-entry tuple / list grid whose last entry is an integer count
+  >= 2 (`(-5, 5, 51)`) raises as ambiguous (it was read as 3 literal points);
+  `accuracy` must be finite and > 0, `n_workers` >= 1, `k` / `max_ell`
+  integers (a clear `TypeError`; numpy and Sage integers accepted), `discard`
+  a bool or `'auto'` (`1` used to skip the not-available refusal). An
+  unsorted `tau_grid` is still taken as given (values aligned with its
+  points). `dd.Config` refuses `k < 1`, `max_ell < 0`, `tau_step <= 0`,
+  `tau_max < 0`, `n_workers < 1`, `fixed_point_index < 0` at construction and
+  again in `dd.run`. `SDE` refuses a parameter, function or kernel named
+  like a field's derived symbol (`xt`, `dx`, `xstar`) and a parameter
+  declared twice, at `build()`.
+- **k >= 3 slices**: a failure evaluating the slices marks the result
+  `status = 'incomplete'` and warns (`PhaseJIncompleteWarning`; raises under
+  `policy={'mode': 'strict'}`); it used to print only with `verbose` and
+  named a fallback that does not exist. A `tau_grid` of more than 41 points
+  replaced by 41 evenly spaced points now warns and is recorded in
+  `result['_kpoint_tau_resampled']`.
 
 #### Changed: k = 2 τ = 0 is the exact Itô left limit by default (`DAEDALUS_TAU0=exact`)
 
