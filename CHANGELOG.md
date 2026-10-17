@@ -13,7 +13,11 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 #### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
 
-Every fix has a regression test in `tests/test_audit_wave1.py`.
+Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
+warm-up discarded, `use_cache=False`, base main 4a9e932):
+- 9 entries are bit-identical (values and analyzer codes);
+- `quadratic_hawkes_alpha` moves 2.0e-16 and `spike_reset` k = 2 moves 1.4e-15, both inside main's own scatter on
+  these entries (`spike_reset`: 2.6e-14 between main 4a9e932 and main 147f402, whose difference is spatial-only).
 
 - **New opt-in `DAEDALUS_TAU0=exact`: k = 2 τ = 0 at the exact Itô left limit C(0⁻)** (`api.compute._tau0_mode`).
   The τ = 0 grid point (and `total_C(t, t)`, and the exact delayed tree's τ = 0) is sampled at τ = −1e-6, so its
