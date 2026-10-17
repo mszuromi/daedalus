@@ -1285,9 +1285,9 @@ def _env_truthy(name, environ=None):
 # merged by δ edges, or the edge parallel to a δ edge), i.e. a constraint row
 # with a zero normal: a_int ≡ 0, so the row reads ``c_eff > 0`` with
 # ``c_eff = c0 + Σ_j a_ext_j t_j``.  Its Heaviside is Θ(c_eff).  The package
-# convention is the Itô one, Θ(0) = 0 -- the same convention that evaluates
-# the k=2 τ = 0 grid point at the left limit τ = −``api.compute._ITO_EPS``
-# (memory note ``project_ito_equal_time_tau0``).  ``_const_row_verdict`` is
+# convention is the Itô one, Θ(0) = 0 -- the left limit the k=2 τ = 0 grid
+# point takes (since Oct 2026 by evaluating AT the tie with the rule below;
+# ``api.compute._tau0_mode``).  ``_const_row_verdict`` is
 # the ONE place that applies it; every integrator (m=0, m=1, m=2 polygon,
 # m≥3 poset, scipy.nquad fallback, grouped m0/m1) calls it.
 #
@@ -1312,7 +1312,7 @@ def _env_truthy(name, environ=None):
 #   Θ(t_p − t_q) and Θ(t_q − t_p) exactly one holds at t_p == t_q, and the
 #   value at a tie is the one-sided limit in which the later leg approaches
 #   from below -- for k = 2 exactly the Itô left limit τ = t_1 − t_0 → 0⁻
-#   that the τ grid samples at −_ITO_EPS, and for k ≥ 3 its natural
+#   (the τ grid's τ = 0 point, evaluated here at the tie), and for k ≥ 3 its natural
 #   extension (Θ(0) = 0 on both orientations would drop both and give a
 #   value that is neither limit);
 # * any other constant row with c_eff == 0.0 (no row context, or an

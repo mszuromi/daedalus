@@ -269,7 +269,7 @@ def test_delayed_noise_matches_closed_form():
 def test_pipeline_tree_exact_and_one_loop_vs_hartree():
     r = _cc(_ou('delay pipeline n8'), 1, delay={'order': 8})
     tree = np.real(r['C_tau_by_ell'][0])
-    exact = _exact_ou(np.where(TAUS == 0, -1e-6, TAUS), 0.5)   # tau = 0: the Ito nudge
+    exact = _exact_ou(TAUS, 0.5)          # tau = 0: the exact Ito left limit (both sides)
     assert np.max(np.abs(tree - exact)) <= 1e-12 * np.max(np.abs(exact))
     loop = np.real(r['C_tau_by_ell'][1])
     ref = _hartree(TAUS, 0.5)
@@ -353,7 +353,7 @@ def test_rational_kernel_model_unchanged_and_g2k_info():
         quad(S, 0, np.inf, weight='cos', wvar=t, limlst=200, limit=2000)[0] for t in (0.5, 2.0)]
     got = np.real(r['C_tau_by_ell'][0])
     assert np.allclose(got[1:], ref[1:], rtol=1e-8), (got, ref)
-    assert got[0] == pytest.approx(ref[0], rel=2e-6)          # tau = 0 at -1e-6 (Ito)
+    assert got[0] == pytest.approx(ref[0], rel=1e-8)          # tau = 0: the exact left limit
 
 
 def test_k3_uses_the_pade_tree_and_converges():

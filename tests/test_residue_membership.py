@@ -51,7 +51,7 @@ from api.sde import SDE                                             # noqa: E402
 
 A, C, D, TS = 1.0, -2.0, 0.1, 1.0
 TAU = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
-ITO = 1e-6          # tau = 0 is the Ito left limit
+ITO = 0.0           # tau = 0: the exact Ito left limit (was evaluated at -1e-6 before Oct 2026)
 RTOL = 1e-11
 
 

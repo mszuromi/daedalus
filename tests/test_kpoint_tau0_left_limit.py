@@ -358,9 +358,10 @@ def test_k2_never_reaches_the_slice_code(private_cwd, monkeypatch):
     res = dd.run(model, dd.Config(k=2, max_ell=0, parameters=_P_OU,
                                   tau_grid=np.array([-1.0, 0.0, 1.0])), mod)
     assert '_kpoint_slice_times' not in res and 'C_tau_slices' not in res
-    # the k = 2 grid samples its own tau = 0 point at -_ITO_EPS
+    # the k = 2 grid samples its own tau = 0 point at the exact tie (the Ito
+    # left limit by the engine's tie rule; -_ITO_EPS under DAEDALUS_TAU0=nudge)
     fn = res['phase_j_by_ell'][0]['total_C']
-    assert complex(res['C_tau'][1]) == complex(fn(0.0, -EPS))
+    assert complex(res['C_tau'][1]) == complex(fn(0.0, 0.0))
 
 
 # ═══════════════════════════════════════════════════════════════════════

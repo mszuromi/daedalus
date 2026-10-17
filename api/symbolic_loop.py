@@ -119,8 +119,8 @@ Conventions
 -----------
 * Equal time: the external times coincide; constant rows are decided by
   Phase J's own Θ(0) / tie rule (Itô).  For k = 2 this is the left limit
-  ``C(0⁻)`` (``SymbolicTriple.at_zero(ell, '-')``; ``C_tau``'s τ = 0 sample
-  is taken at ``τ = −_ITO_EPS`` instead).
+  ``C(0⁻)`` (``SymbolicTriple.at_zero(ell, '-')``), as ``C_tau``'s τ = 0
+  point (exact by default; ``τ = −_ITO_EPS`` under DAEDALUS_TAU0=nudge).
 * Fluctuation cumulants of the pipeline: at k = 1 the saddle is not added
   (the ℓ = 0 value is 0; add the saddle for the mean).
 * The SMOOTH part only: δ records of Feature B (shot-noise subsets on a δ

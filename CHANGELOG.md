@@ -11,6 +11,47 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: k = 2 τ = 0 is the exact Itô left limit by default (`DAEDALUS_TAU0=exact`)
+
+**Numbers move:** every k = 2 τ = 0 value moves, and only those. This covers the `C_tau` / `C_tau_by_ell` grid point
+at τ = 0, `total_C(t, t)`, and the exact delayed tree's τ = 0. The point used to be C(−1e−6), whose relative error is
+rate × 1e−6. Phase J's exact tie rule now evaluates it at equal times and gives C(0⁻): ≤ 3.1e−14 against independent
+mpmath references on every route.
+- `DAEDALUS_TAU0=nudge` restores the old sample.
+- The legacy Θ(0) mode (`DAEDALUS_PHASE_J_LEGACY=1` / `THETA0_CONST_ROW_MODE='legacy_clip'`) keeps −1e−6 automatically,
+  because it has no exact tie rule.
+- k ≥ 3 slices keep their −1e−6 placement.
+- τ ≠ 0 values are bit-identical.
+
+Zoo A/B (11 public entries, separate processes, warm-up discarded, `use_cache=False`, base main 43017d3). Before /
+after at τ = 0; τ ≠ 0 bit-identical except `spike_reset` (1.4e−15, its known process scatter); analyzer codes
+unchanged.
+
+| entry | quantity at τ = 0 | before (C(−1e−6)) | after (C(0⁻)) | relative move |
+|---|---|---|---|---|
+| ou_quartic k2 ℓ≤3 | total | 0.9472230000005285 | 0.947224 | 1.06e−6 |
+| | ℓ = 0 | 0.9999990000005 | 1 | 1.00e−6 |
+| | ℓ = 1, 2, 3 | −0.05999999999996999, 0.0095999999999982, −0.002375999999999713 | −0.06, 0.0096, −0.002376 | ≤ 5.0e−13 |
+| ou_quartic_colored k2 ℓ≤1 | total | 1.191111111109813 | 1.191111111111111 | 1.09e−12 |
+| ou_quartic_two_dim_color_corr k2 ℓ≤1 | total | 0.3648480546668812 | 0.3648480546669402 | 1.62e−13 |
+| spike_reset k2 ℓ≤1 | total | 0.5259287797392054 | 0.5259293705602486 | 1.12e−6 |
+| quad_exp k2 ℓ≤1 | total | 0.003686739906493933 | 0.003686736446204866 | 9.39e−7 |
+| linear_hawkes k2 ℓ≤1 | total | 0.03538461403647798 | 0.03538459295985254 | 5.96e−7 |
+| multipopulation_test k2 ℓ≤1 | total | 0.0002178006512350135 | 0.000217799965329298 | 3.15e−6 |
+| linear_delta_spikes k2 ℓ≤1 | total | 0.02536958492780382 | 0.02536958740341157 | 9.76e−8 |
+| quadratic_hawkes_alpha k2 ℓ≤1 | total | 0.00315796460609312 | 0.003157964563966259 | 1.33e−8 |
+| dendritic_quad_soma_sigmoid k2 ℓ≤1 | total | 0.0003725337580002241 | 0.000372534125419284 | 9.86e−7 |
+| ou_quartic k3 ℓ≤2 | (k = 3) | unchanged | unchanged | 0 |
+
+Tests:
+- The frozen fixtures `quad_exp_k2_ell0`, `spike_reset_k2_ell0` and `spike_reset_k2_ell1` were refrozen at their
+  [0, 0] probe only (moves 9.8e−7, 1.12e−6, 1.12e−6). Every other probe was checked unchanged; `legacy/` is
+  untouched.
+- The pre-M0.1 / pre-M1 captures and the legacy baselines are re-run under `nudge`, as they were recorded.
+- About 20 τ = 0 references now use 0 (exact). No tolerance was loosened; one was tightened (2e−6 → 1e−8).
+- Example notebooks: no printed value changes at its shown precision (the τ = 0 values are printed with 2-4
+  significant digits).
+
 #### Spatial engine: quadrature and UV (audit wave 2, group 3)
 
 Numbers move (silent-wrong before):

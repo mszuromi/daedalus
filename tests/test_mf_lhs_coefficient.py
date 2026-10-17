@@ -150,9 +150,8 @@ def test_residual_form_as_entered_in_the_ui():
     mf = res['mf_values']
     assert np.isclose(np.ravel(mf['mstar'])[0], 1.25) and np.isclose(np.ravel(mf['ustar'])[0], 0.375)
     # immigration–death is Poisson: Var = m*, C(tau) = m* exp(-(r+d)|tau|); the
-    # tau=0 grid point is the Ito left limit tau = -_ITO_EPS
-    from api.compute import _ITO_EPS
-    assert np.isclose(float(np.real(res['C_tau'][0])), 1.25 * np.exp(-0.4 * _ITO_EPS), rtol=1e-9)
+    # tau=0 grid point is the exact Ito left limit
+    assert np.isclose(float(np.real(res['C_tau'][0])), 1.25, rtol=1e-12)
     assert np.isclose(float(np.real(res['C_tau'][1])), 1.25 * np.exp(-0.4), rtol=1e-9)
 
 

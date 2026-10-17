@@ -244,6 +244,21 @@ def _theta0_mode(mode):
             setattr(FI, n, v)
 
 
+@contextlib.contextmanager
+def _tau0_nudge():
+    """The captures in ``_BEFORE`` sample τ = 0 at −1e-6 (the pre-Oct-2026
+    convention): reproduce them with DAEDALUS_TAU0=nudge."""
+    saved = os.environ.get('DAEDALUS_TAU0')
+    os.environ['DAEDALUS_TAU0'] = 'nudge'
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop('DAEDALUS_TAU0', None)
+        else:
+            os.environ['DAEDALUS_TAU0'] = saved
+
+
 def _model(spec):
     """A repo model by name, or a builder callable (each built once per
     module); a model dict is returned as is."""
@@ -288,11 +303,11 @@ def _hooked_run(cfg, grouped, **run_kw):
                   parameters=cfg['parameters'], tau_grid=cfg['tau_grid'],
                   use_grouped_phase_j=grouped, keep_live=False, **run_kw)
     assert FI._SUBSET_HOOK is None            # restored on exit
-    from api.compute import _ITO_EPS
+    from api.compute import _tau0_lag
     by_ell = {}
     for (ell, pt), v in run['pipeline'].items():
         by_ell.setdefault(ell, {})[pt] = v
-    arrays = {ell: np.array([d[PSD._grid_point(cfg['k'], t, _ITO_EPS)]
+    arrays = {ell: np.array([d[PSD._grid_point(cfg['k'], t, _tau0_lag())]
                              for t in cfg['tau_grid']], dtype=complex)
               for ell, d in by_ell.items()}
     return run, arrays
@@ -326,11 +341,11 @@ def _pre_m1_runs(key):
     """Like ``_runs`` but in the mode that reproduces the pre-M1 captures
     (``_PRE_M1_MODE``): warm-up, then plain, then hooked, same process."""
     name, grouped = key
-    if _PRE_M1_MODE[name] is None:
-        return _runs(key)
+    # (always its own run, also for the default-mode model: the captures
+    # sample τ = 0 at −1e-6, see ``_tau0_nudge``)
     if key not in _PRE:
         _warm(name)
-        with _theta0_mode(_PRE_M1_MODE[name]):
+        with _theta0_mode(_PRE_M1_MODE[name]), _tau0_nudge():
             plain = _plain_arrays(_compute(_CONFIGS[name], grouped))
             run, hooked = _hooked_run(_CONFIGS[name], grouped)
         _PRE[key] = {'plain': plain, 'run': run, 'hooked': hooked}

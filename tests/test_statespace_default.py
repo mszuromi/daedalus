@@ -196,7 +196,7 @@ def test_default_route_closed_form_census_and_analyzer():
     assert rep['ss_subsets'] > 0 and rep['ss_declined'] == 0
     assert rep['statespace_share'] == 1.0 and rep['fallback_evals'] == 0
     assert res['route']['phase_j_engine'] is rep
-    for t, v0, v1 in zip([-1e-6, 0.5, 2.0], _arr(res, 0), _arr(res, 1)):
+    for t, v0, v1 in zip([0.0, 0.5, 2.0], _arr(res, 0), _arr(res, 1)):
         a = abs(t)
         tree = D / mu * np.exp(-mu * a)
         loop = -3 * eps * D / mu * D / mu ** 2 * (1 + mu * a) * np.exp(-mu * a)
@@ -362,8 +362,7 @@ def test_total_c_batch_batches_the_grid():
     res = _cc(ou_erlang(2), 2, 1, X2, taus=taus)
     assert SS._counters()['ss_prefetch_hits'] > 0
     fn = res['total_C_by_ell'][1]
-    per_point = np.array([complex(fn(0.0, t if t != 0 else -1e-6))
-                          for t in taus])
+    per_point = np.array([complex(fn(0.0, t)) for t in taus])
     b_ = _arr(res, 1)
     assert np.max(np.abs(per_point - b_)) <= 1e-14 * np.max(np.abs(b_))
 

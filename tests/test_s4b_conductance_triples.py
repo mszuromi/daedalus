@@ -34,14 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import daedalus as dd                                                # noqa: E402
 from api import compute_cumulants                                    # noqa: E402
 from api import me_output as ME                                      # noqa: E402
-from api.compute import _ITO_EPS                                     # noqa: E402
 from api.noise import Gaussian                                       # noqa: E402
 from api.sde import SDE                                              # noqa: E402
 from api.symbolic_out import Kernel                                  # noqa: E402
 import engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)
-TT = np.where(TAUS == 0, -_ITO_EPS, TAUS)     # C_tau's τ = 0 sample
+TT = TAUS.copy()     # C_tau's τ = 0 point: the exact Itô left limit (at_zero='-')
 DX2 = [('dx', 1), ('dx', 1)]
 X2 = [('x', 1), ('x', 1)]
 L2 = Kernel.two_sided_exponential(1.0, 0.7, -0.6, 1.3)
