@@ -102,6 +102,7 @@ smooth part.  The numeric twin for a computed cumulant at any loop order
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from collections import namedtuple
 from dataclasses import dataclass, field
@@ -489,10 +490,13 @@ def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
     return mf['num_params']
 
 
-def _clean_float(x: float):
-    """Numbers from the MF solver: snap round-off dust to exactly 0."""
+def _clean_float(x: float, scale: float = 1.0):
+    """Numbers from the MF solver: snap round-off dust to exactly 0,
+    relative to ``scale`` (the magnitude of the solve's numbers; an absolute
+    1e-12 zeroed genuine saddles of small-unit models, audit G1-symbolic 0).
+    User ``values=`` are never snapped."""
     x = float(x)
-    return 0 if abs(x) < 1e-12 else x
+    return 0 if abs(x) < 1e-12 * scale else x
 
 
 def _as_name_dict(d: Optional[dict]) -> dict:
@@ -530,7 +534,9 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
         raise SymbolicOutError(
             f'values= names {unknown} do not occur in G, K or D; known '
             f'symbols: {sorted(free)}')
-    sub = {free[k]: SR(_clean_float(v) if isinstance(v, float) else v)
+    # user values are taken as given (an absolute snap of floats < 1e-12
+    # turned D = 1e-13 into C0 = 0; audit G1-symbolic 0)
+    sub = {free[k]: SR(0 if (isinstance(v, float) and v == 0.0) else v)
            for k, v in vals.items()}
 
     def _s(m):
@@ -671,12 +677,14 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
     elif mean_field is not None:
         raise SymbolicOutError(
             f"mean_field must be None, 'solve' or a dict; got {mean_field!r}")
-    allvals = dict(mf_vals)
-    allvals.update(_as_name_dict(values))
+    uvals = _as_name_dict(values)
+    _check_value_names(uvals, model, prop, D, omega)
+    allvals = _restrict(mf_vals, prop, D, omega)
+    allvals.update(_restrict(uvals, prop, D, omega))
     G = prop.get('G_ft')
     cov = tree_covariance_from_matrices(
         G, D, omega, K=prop['K_ft'], phys_names=phys_names,
-        resp_names=resp_names, values=_restrict(allvals, prop, D, omega),
+        resp_names=resp_names, values=allvals,
         model_name=model.get('name', '<unnamed>'))
     cov.mean_field_values = dict(mf_vals)
     cov._model = model
@@ -686,6 +694,26 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
         cov._mf_inputs = _expand_param_names(
             _model_fundamental(model, parameters))
     return cov
+
+
+def _check_value_names(vals: dict, model, prop, D, omega):
+    """A user ``values=`` name must occur in K / G / D, or be a declared
+    parameter (plain or indexed) or a saddle symbol of the model: anything
+    else is a typo, refused as ``tree_covariance_from_matrices`` refuses it
+    (it was dropped silently; audit G1-symbolic 6)."""
+    import re
+    occurring = {str(v) for m in (prop['K_ft'], D) for e in m.list()
+                 for v in SR(e).variables()}
+    if prop.get('G_ft') is not None:
+        occurring |= {str(v) for e in prop['G_ft'].list() for v in SR(e).variables()}
+    bases = [str(p.get('name')) for p in (model.get('parameters') or [])]
+    bad = sorted(k for k in vals
+                 if k not in occurring and not _is_saddle_symbol(k, model)
+                 and not any(re.fullmatch(re.escape(b) + r'\d*', k) for b in bases))
+    if bad:
+        raise SymbolicOutError(
+            f'values= names {bad} are neither parameters of the model nor '
+            f'symbols of K, G or D; known symbols: {sorted(occurring - {str(omega)})}')
 
 
 def _restrict(vals: dict, prop, D, omega) -> dict:
@@ -746,10 +774,17 @@ def _mf_symbols_only(model: Optional[dict], num_params) -> dict:
     keep the saddle values (:func:`_is_saddle_symbol`) and let the caller's
     ``values=`` handle ordinary parameters."""
     out = {}
+    nums = []
+    for v in num_params.values():
+        try:
+            nums.append(abs(float(v)))
+        except (TypeError, ValueError):
+            pass
+    scale = max([x for x in nums if math.isfinite(x)] or [1.0]) or 1.0
     for k, v in num_params.items():
         name = str(k)
         if _is_saddle_symbol(name, model):
-            out[name] = _clean_float(v)
+            out[name] = _clean_float(v, scale)
     return out
 
 
@@ -1482,6 +1517,21 @@ def _generic_retry(fn, exprs, omega, reference):
                             f'split ({a}); give a reference where the poles '
                             f'are distinct, or substitute the values with '
                             f'values=') from exc0
+            return _at_user_point(out)
+
+        def _at_user_point(out):
+            # never hand back numbers at the MOVED point (audit G1-symbolic
+            # 2): a ModeSum keeps the user's reference (evaluating there is
+            # refused by the coincidence assumptions, loudly), a pairing's
+            # value at the moved point is dropped with the reason
+            if isinstance(out, ModeSum):
+                out.reference = dict(orig)
+            elif isinstance(out, KernelPairing) and out.value is not None:
+                out.value = None
+                out.reason = ('poles coincide at the reference point: the '
+                              'closed form holds where they are distinct; '
+                              'substitute the coinciding values with values= '
+                              'for the repeated-pole value')
             return out
         missing = [nm for nm in names if nm not in ref]
         if missing:
@@ -1546,13 +1596,11 @@ def inverse_transform(C0_entry, omega=None, tau=None, *,
         # RootOf symbols: decide the mirror symmetry on the modes at the
         # reference point (both sides are exact there)
         try:
-            ts = np.array([0.37, 1.3, 4.1])
-            a, b = ms.evaluate(ts), ms.evaluate(-ts)
-            if np.allclose(a, b, rtol=1e-12, atol=1e-300):
+            if _modes_mirror(ms):
                 even = pos.subs({t_sym: _abs(t_sym)})
         except SymbolicOutError:
             even = None
-    elif _is_zero(pos - neg.subs({t_sym: -t_sym}), reference):
+    elif _is_mirror(pos, neg.subs({t_sym: -t_sym}), reference, t_sym):
         even = pos.subs({t_sym: _abs(t_sym)})
     out = {'positive': pos, 'negative': neg, 'contact': ms.contact,
            'even': even, 'tau': t_sym, 'modes': ms, 'roots': ms.roots,
@@ -1585,9 +1633,18 @@ def _inverse_transform_legacy(C0_entry, omega=None, tau=None, *,
         by_name = {str(v): fresh for v, fresh in fwd.items()}
         fresh_ref = {(str(by_name[k]) if k in by_name else k): val for k, val in reference.items()}
     out = _inverse_transform_impl(SR(C0_entry).subs(fwd), om, tau, reference=fresh_ref, simplify=simplify)
+    # a parameter named tau: the lag becomes tau_lag (as on the C2 route), so
+    # the back substitution tau__c1p -> tau does not merge the two (audit
+    # G1-symbolic 1)
+    lag = out.get('tau')
+    ren = {}
+    if (lag is not None and str(lag) == 'tau'
+            and any(str(v) == 'tau' for v in back.values())):
+        ren = {lag: SR.var('tau_lag')}
+        out['tau'] = SR.var('tau_lag')
     for key, val in list(out.items()):
         if hasattr(val, 'subs') and key != 'tau':
-            out[key] = SR(val).subs(back)
+            out[key] = SR(val).subs(ren).subs(back)
     return out
 
 
@@ -1621,7 +1678,7 @@ def _inverse_transform_impl(C0_entry, omega=None, tau=None, *,
     neg = _residue_sum(fp, bridge, weight, True, reference, simplify,
                        prefactor=_I)
     even = None
-    if _is_zero(pos - neg.subs({tau_sym: -tau_sym}), reference):
+    if _is_mirror(pos, neg.subs({tau_sym: -tau_sym}), reference, tau_sym):
         even = pos.subs({tau_sym: _abs(tau_sym)})
     out = {'positive': pos, 'negative': neg, 'contact': c_inf, 'even': even,
            'tau': tau_sym}
@@ -1641,27 +1698,64 @@ def _inverse_transform_impl(C0_entry, omega=None, tau=None, *,
     return out
 
 
-def _is_zero(expr, reference) -> bool:
-    """Symbolic zero test, with a numeric cross-check at sample points when
-    the symbolic simplifier cannot decide."""
-    expr = SR(expr)
+def _is_mirror(a, b, reference, lag) -> bool:
+    """Whether ``a == b`` (the positive side and the mirrored negative
+    side): symbolic zero test of ``a - b``, with a numeric cross-check at
+    sample points when the simplifier cannot decide, RELATIVE to
+    ``|a| + |b|`` there (an absolute 1e-9 called every small-amplitude
+    asymmetric entry even; audit G1-symbolic 3).  20-digit arithmetic:
+    no underflow at fast rates."""
+    a, b = SR(a), SR(b)
+    expr = a - b
     if bool(expr.simplify_full() == 0):
         return True
-    free = {str(v): v for v in expr.variables()}
-    pts = _sample_points([k for k in free if k != 'tau'], reference,
+    lag_name = str(lag)
+    free = {str(v): v for v in (a.variables() + b.variables())}
+    pts = _sample_points([k for k in free if k != lag_name], reference,
                          n_samples=4)
     rng = np.random.default_rng(1)
     for p in pts:
         sub = {free[k]: SR(float(v)) for k, v in p.items() if k in free}
-        if 'tau' in free:
-            sub[free['tau']] = SR(float(rng.uniform(0.2, 2.0)))
+        if lag_name in free:
+            sub[free[lag_name]] = SR(float(rng.uniform(0.2, 2.0)))
         try:
-            val = complex(expr.subs(sub).n(digits=20))
+            va = a.subs(sub).n(digits=30)
+            vb = b.subs(sub).n(digits=30)
+            d, sc = abs(va - vb), abs(va) + abs(vb)
         except Exception:
             return False
-        if abs(val) > 1e-9:
+        if d > 1e-12 * sc or (sc == 0 and d != 0):
             return False
     return True
+
+
+def _modes_mirror(ms) -> bool:
+    """Mirror symmetry ``C(tau) == C(-tau)`` of a mode sum at its reference
+    point, on the 256-bit modes at lags scaled by the slowest and fastest
+    rate (fixed lags 0.37 / 1.3 / 4.1 underflowed to 0 == 0 at rates above
+    ~2e3 and were called even; audit G1-symbolic 4).  Both sides 0 at every
+    lag is undecided: not even."""
+    terms = ms._numeric_hp(None)
+    if not terms:
+        return False
+    CC = _cc()
+    rates = [abs(complex(r).real) or abs(complex(r)) for _c, r, _j, _s in terms]
+    rates = [x for x in rates if x > 0] or [1.0]
+    lags = [f / x for x in (min(rates), max(rates)) for f in (0.37, 1.3)]
+    nonzero = False
+    for tv in lags:
+        T = CC(tv)
+        side = {'positive': CC(0), 'negative': CC(0)}
+        for c, r, j, sd in terms:
+            Ts = T if sd == 'positive' else -T
+            side[sd] += c * Ts ** j * (r * Ts).exp()
+        a, b = side['positive'], side['negative']
+        d, sc = abs(a - b), abs(a) + abs(b)
+        if sc > 0:
+            nonzero = True
+        if d > 1e-12 * sc:
+            return False
+    return nonzero
 
 
 def _field_const(bridge, f):
@@ -2467,6 +2561,11 @@ def _side_sign(side: str) -> int:
     return -1 if side == 'positive' else 1
 
 
+def _near_miss(a: str, b: str) -> bool:
+    """``a`` is ``b`` up to case (and not ``b`` itself)."""
+    return a != b and a.lower() == b.lower()
+
+
 @dataclass
 class ModeSum:
     """Time-domain covariance as a sum of exponential modes plus a contact
@@ -2532,8 +2631,12 @@ class ModeSum:
         """``values`` over the explicitly given reference values (symbols
         that were only defaulted to 1 must be given).  A name that was
         substituted when the modes were built must carry the same value (it
-        is not a parameter of the result any more); an unknown name is an
-        error -- never silently ignored."""
+        is not a parameter of the result any more).  Any other name does not
+        occur in C and cannot change it: it is ignored (callers pass a
+        model's whole parameter dict), unless it equals a name the modes
+        depend on up to case, which is an error (audit G1-symbolic 5:
+        ``{'Mu': 3}`` evaluated at the reference; an edit-distance rule
+        would flag real distinct names such as ``nstar1`` / ``vstar1``)."""
         if values is None:
             return dict(self.reference)
         vals = _as_name_dict(values)
@@ -2554,7 +2657,14 @@ class ModeSum:
                         f'{k!r} entered the construction of these modes '
                         f'({k} = {fixed[k]}: substituted, or used for the '
                         f'mean-field solve); rebuild them to use {k} = {x}')
-            # any other name does not occur in C: it cannot change it
+                continue
+            near = [n for n in set(self.reference) | set(extra_names)
+                    if _near_miss(k, n)]
+            if near:
+                raise SymbolicOutError(
+                    f'unknown name {k!r} (did you mean {sorted(near)}?): the '
+                    f'modes depend on '
+                    f'{sorted(set(self.reference) | set(extra_names))}')
         return out
 
     def numeric_terms(self, values: Optional[dict] = None,
