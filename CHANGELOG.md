@@ -17,16 +17,21 @@ Numbers move (silent-wrong before):
 
 - **Spatial loops at tau != 0** (every spatial loop result at unequal times,
   single-field and coupled, any max_ell and k): the causal-chamber time grid
-  now splits each vertex's interval at the external times inside its leaf
-  bounds -- the kinks of |t_v - t_leaf| (C edge to a leaf) and of the inner
-  vertices' limits min(s_up, t_v), which no chamber boundary covered. The d=1
-  one-loop tadpole at tau = 0.5-2 was 1-3 % off and now agrees with the exact
-  mass shift to ~1e-10; a cubic model's bubbles moved by ~2e-3 and now agree
-  with a 40-node grid to ~4e-7. tau = 0 values are unchanged. The memory guard
-  counts the split grid. Known residual: the coupled driver's tau = 0, x != 0
-  value on a tadpole-type diagram is ~7e-4 off at the default grid (the
-  heat-kernel factor's rise near the vertex bound; converges with
-  SPATIAL_GRID_NT).
+  now splits each vertex's interval at the external times where its integrand
+  kinks -- its own C edges to leaves (|t_v - t_leaf|) and the leaf bounds and
+  kinks of the vertices nested inside it (their limits switch branch) -- none
+  of which was a chamber boundary. The tail segment keeps n_t nodes, the short
+  segments get SPATIAL_SEGMENT_NODES (8). Independent check against the
+  temporal engine (d = 0 limit, cubic + quartic, tau = 0.7): one loop was
+  3.8 % off, now 2.9e-7. The d=1 one-loop tadpole at tau = 0.5-2 was 1-3 %
+  off, now ~1e-10 against the exact mass shift; a cubic model's bubbles moved
+  ~2e-3 and agree with a 40-node grid to ~5e-7. tau = 0 values are unchanged.
+  Cost: the grid grows where kinks lie inside an interval (k=3 general-k
+  tests 1:47 -> ~4:50); the memory guard counts it, so some two-loop runs at
+  tau != 0 that main ran (inaccurately) are now refused at the default budget.
+  Known residual: the coupled driver's tau = 0, x != 0 value on a
+  tadpole-type diagram is ~7e-4 off at the default grid (the heat-kernel
+  factor's rise near the vertex bound; converges with SPATIAL_GRID_NT).
 - **d >= 2 tree** (single-field and coupled, infinite domain): the exact
   heat-kernel time integral (Bessel-K at tau = 0, adaptive quadrature with a
   checked error estimate at tau != 0) replaces the fixed q_cut = 40 /
