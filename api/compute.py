@@ -1789,54 +1789,59 @@ def _run_spatial(state):
     x0_idx = int(_np.argmin(_np.abs(spatial_grid_arr)))
     C_tau = C_tau_x[:, x0_idx].copy()
 
-    sp_d = int(sp_info.get('spatial_dim', 1))
+    # ── Result callables, built from the RETURNED grid ───────────────────
+    # The spatial integrator evaluates C(x,τ) on the requested (tau_grid,
+    # spatial_grid) only; the callables read that grid (the highest loop
+    # order, and the per-order increments for total_C_by_ell), so
+    # total_C(τ, x) == C_tau_x[iτ, ix] at every grid point.  Off the grid
+    # they refuse — except the single-field d=1 TREE, which has an exact
+    # closed form anywhere (free_two_point, erf / image sum).
+    _C_by_order = {int(el): _np.asarray(C) for el, C in
+                   (sp_info.get('C_by_order') or {0: C_tau_x}).items()}
+    _orders = sorted(_C_by_order)
+    _incr = {el: (_C_by_order[el] - _C_by_order[_orders[i - 1]] if i
+                  else _C_by_order[el])
+             for i, el in enumerate(_orders)}
+    _sp_d = int(sp_info.get('spatial_dim', 1))
+    _tree_exact = (_orders == [0] and _sp_d == 1 and not sp_info.get('coupled')
+                   and sp_info.get('modes'))
+    _tau_arr = _np.asarray(tau_grid, dtype=float)
 
-    def total_C(*tau_then_x):
-        """C(τ) at x=0 (1 arg) or C(x, τ) (2 args: τ, x)."""
-        if len(tau_then_x) == 1:
+    def _spatial_callable(table, exact_tree):
+        def fn(*tau_then_x):
+            """C(τ) at x=0 (1 arg) or C(τ, x) (2 args), read from the
+            evaluated (tau_grid, spatial_grid)."""
+            if len(tau_then_x) not in (1, 2):
+                raise TypeError('spatial total_C takes (tau) or (tau, x).')
             tau = float(tau_then_x[0])
-            xq = 0.0
-        else:
-            tau, xq = float(tau_then_x[0]), float(tau_then_x[1])
-        if sp_d == 1:
-            val = 0j
-            for (A, B, N) in sp_info['modes']:
-                val += free_two_point(A, B, N, xq, tau,
-                                      bc_mode=sp_info['bc_mode'],
-                                      L=sp_info['L'])
-            # 1-loop tadpole mass-shift correction δC = Σ·∂C₀/∂A.
-            if sp_info.get('Sigma'):
-                A0, B0, N0 = sp_info['modes'][0]
-                A0 = float(_np.real(A0))
-                h = 1e-4 * max(1.0, abs(A0))
-                fp = free_two_point(A0 + h, B0, N0, xq, tau,
-                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                fm = free_two_point(A0 - h, B0, N0, xq, tau,
-                                    bc_mode=sp_info['bc_mode'], L=sp_info['L'])
-                val += sp_info['Sigma'] * (fp - fm) / (2.0 * h)
-            return val
-        # d≥2: radial q→x transform of the momentum-space correlator
-        # (+ optional tadpole mass-shift via a finite difference in A).
-        from engine.integration.spatial.spatial_correlator import (
-            radial_inverse_ft,
-        )
-        qg = _np.linspace(40.0 / 8000.0, 40.0, 2000)
-        at = abs(tau)
-        Cq = _np.zeros_like(qg)
-        for (A, B, N) in sp_info['modes']:
-            A = float(_np.real(A)); B = float(_np.real(B)); N = float(_np.real(N))
-            m = A + B * qg * qg
-            Cq += (N / m) * _np.exp(-m * at)
-        if sp_info.get('Sigma'):
-            A0, B0, N0 = sp_info['modes'][0]
-            A0 = float(_np.real(A0)); B0 = float(_np.real(B0)); N0 = float(_np.real(N0))
-            h = 1e-4 * max(1.0, abs(A0))
-            mp = (A0 + h) + B0 * qg * qg
-            mm = (A0 - h) + B0 * qg * qg
-            Cq += sp_info['Sigma'] * (
-                (N0 / mp) * _np.exp(-mp * at) - (N0 / mm) * _np.exp(-mm * at)
-            ) / (2.0 * h)
-        return complex(radial_inverse_ft(qg, Cq, abs(xq), sp_d))
+            xq = float(tau_then_x[1]) if len(tau_then_x) == 2 else 0.0
+            if not (_np.isfinite(tau) and _np.isfinite(xq)):
+                raise ValueError(f'spatial total_C: tau and x must be finite '
+                                 f'(got tau={tau}, x={xq}).')
+            it = _np.flatnonzero(_np.abs(_tau_arr - tau)
+                                 <= 1e-12 * (1.0 + abs(tau)))
+            ix = _np.flatnonzero(_np.abs(spatial_grid_arr - xq)
+                                 <= 1e-12 * (1.0 + abs(xq)))
+            if it.size and ix.size:
+                return complex(table[int(it[0]), int(ix[0])])
+            if exact_tree:
+                val = 0j
+                for (A, B, N) in sp_info['modes']:
+                    val += free_two_point(A, B, N, xq, tau,
+                                          bc_mode=sp_info['bc_mode'],
+                                          L=sp_info['L'])
+                return val
+            raise ValueError(
+                f'spatial total_C: (tau={tau}, x={xq}) is not on the '
+                f'evaluated grid.  The spatial integrator computes C(x, tau) '
+                f'only at the requested tau_grid x spatial_grid points; '
+                f'rerun with this point in tau_grid / spatial_grid '
+                f'(or index C_tau_x / C_tau_x_by_order directly).')
+        return fn
+
+    total_C = _spatial_callable(_C_by_order[_orders[-1]], _tree_exact)
+    total_C_by_ell = {el: _spatial_callable(_incr[el], _tree_exact and el == 0)
+                      for el in _orders}
 
     # MF values (for the result dict) — reuse the saddle solve.
     mf_values_sp = {}
@@ -1845,7 +1850,7 @@ def _run_spatial(state):
 
     return {
         'total_C':        total_C,
-        'total_C_by_ell': {0: total_C},
+        'total_C_by_ell': total_C_by_ell,
         'C_tau':          C_tau,
         'C_tau_x':        C_tau_x,
         # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …, max_ell}

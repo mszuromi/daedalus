@@ -36,6 +36,28 @@ Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's 
   - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
 - **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
 
+#### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
+
+Numbers move (silent-wrong before):
+
+- **Two-loop k=2 spatial C(x, tau)**: the +-tau completion now follows the
+  orbit-stabilizer rule (both leaf->time assignments / `external_wick_compensation`),
+  not the external-leg kinds. {R,R} two-loop diagrams without a leaf-swap
+  automorphism were counted once; they now get Gamma(tau)+Gamma(-tau).
+  Before: the ell=2 coefficient of the cubic+quartic d=0 test model was 13 %
+  high (0.153 vs Boltzmann 0.136) and C(+tau) != C(-tau) by 2 %. One loop and
+  tree are unchanged (the two rules coincide there). Applies to the single-field
+  driver and the coupled i==j branch.
+- **Coupled spatial cross-correlators** (`external_fields=[a, b]`, a != b) now
+  return the package convention C_ab(tau) = <a(0) b(tau)> at tree and loop
+  level; before they returned <a(tau) b(0)> (C_ab(+tau) and C_ab(-tau)
+  swapped). Auto-correlators are unchanged.
+- **Spatial `total_C`** now reads the returned (tau_grid, spatial_grid) grid
+  (loops included); `total_C_by_ell` holds the per-order increments. Before it
+  returned the tree only at every max_ell. Off-grid points raise, except the
+  single-field d=1 tree (exact closed form).
+
+
 #### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
 
 - **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).
