@@ -239,3 +239,36 @@ def test_hardened_fallback_warns_per_diagram_and_parameter_point():
     assert len(warns([_meta(101, params=1)])) == 0           # the same again
     assert len(warns([_meta(102, params=1)])) == 2           # another diagram
     assert len(warns([_meta(101, params=2)])) == 2           # other parameters
+
+
+@pytest.mark.parametrize('T', [1.0, 1e-6, 1e5])
+def test_kernel_stability_zero_mode_is_marginal(T):
+    """A conserved system (det K = s (s + 0.4/T)): a zero at s = 0, whatever
+    the time unit."""
+    from api._kernel_stability import count_rhp_roots
+
+    def chi(s):
+        s = np.asarray(s, complex)
+        return (s + 0.1 / T) * (s + 0.3 / T) - 0.03 / T ** 2
+
+    ks = count_rhp_roots(chi)
+    assert ks.status == 'marginal', ks
+
+
+def test_noise_kernel_box_one_sided_and_delta_kernels():
+    from sage.all import SR, exp, heaviside, dirac_delta
+    t = SR.var('tt')
+    hw = FI._noise_kernel_halfwidth([heaviside(t) * exp(-t / 100)], t)
+    assert hw is not None and math.exp(-hw / 100) <= FI.TAU_KERNEL_RTOL
+    hw2 = FI._noise_kernel_halfwidth([dirac_delta(t) + exp(-abs(t) / 100)], t)
+    assert hw2 is not None and math.exp(-hw2 / 100) <= FI.TAU_KERNEL_RTOL
+
+
+def test_dressing_with_an_undamped_kernel_mode_keeps_the_line():
+    from engine.integration.time_domain.final_integral import EdgeModeSum
+    out = FI._dress_edge_modes(EdgeModeSum(0, 0, 0j, ((1, -1),)), [(1, 0)])
+    # (Θ * G)(Δ) = 1 - e^{-Δ}: both modes are kept
+    assert len(out.modes) == 2
+    D = 2.0
+    got = sum(complex(C) * np.exp(complex(l) * D) for (C, l) in out.modes)
+    assert abs(got - (1 - np.exp(-D))) < 1e-15

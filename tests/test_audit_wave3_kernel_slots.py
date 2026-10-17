@@ -140,6 +140,43 @@ def test_single_field_kernel_keeps_one_symbol():
     assert not getattr(ft._ns, '_kernel_aliases', None)
 
 
+def test_shared_kernel_through_the_caches(tmp_path, monkeypatch):
+    """The alias sectors survive the expand cache (warm run, typed-diagram
+    files removed so the vertices are rebuilt from the bundle), and a bundle
+    written before them is stale."""
+    import glob
+    from sage.all import load as sage_load
+    from api import _expand_cache as EC
+    from engine.core.field_theory import FieldTheory
+    monkeypatch.chdir(tmp_path)
+    ext = [('y', 1), ('y', 1)]
+
+    def cached():
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return compute_cumulants(_model3('yx', False), k=2, max_ell=1,
+                                     external_fields=ext, tau_grid=TAU,
+                                     parallel=False, verbose=False,
+                                     use_cache=True)
+
+    cold = np.asarray(cached()['C_tau_by_ell'][1])
+    for f in glob.glob('saved_models/*/unique_typed_*'):
+        os.remove(f)
+    warm = np.asarray(cached()['C_tau_by_ell'][1])
+    ref = np.asarray(_twin3(tuple(ext))['C_tau_by_ell'][1])
+    assert np.max(np.abs(warm - ref) / np.abs(ref)) < 1e-12
+    assert np.array_equal(warm, cold)
+    m = _model3('yx', False)
+    path = glob.glob('saved_models/*/expand_taylor*.sobj')[0]
+    bundle = sage_load(path)
+    assert bundle.get('kernel_aliases')
+    ft = FieldTheory(m, taylor_order=int(bundle['taylor_order']))
+    EC.prepare_for_load(ft)
+    assert EC.bundle_stale_reason(m, ft, bundle) is None
+    del bundle['kernel_aliases']
+    assert 'per-field kernel' in EC.bundle_stale_reason(m, ft, bundle)
+
+
 # --- GEN-09 (the README's Hawkes example) -----------------------------------
 
 def _hawkes(shared, name):

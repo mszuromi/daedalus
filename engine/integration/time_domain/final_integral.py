@@ -921,7 +921,8 @@ def _plan_refund(n_tuples):
 #: the propagator inherits from a kernel image with residue 0; they multiply
 #: the pole-tuple count for nothing); a slow mode with a small residue has a
 #: large weight and is kept.  The other lines of a diagram with a dressed
-#: line drop only their exact zeros.  Every dropped mode is counted
+#: line drop their negligible modes by the same rule.  Every dropped mode is
+#: counted
 #: (``conv_dress_zero_modes_dropped``).
 DRESS_RATE_RTOL = 1e-6
 DRESS_ZERO_RTOL = 1e-12
@@ -945,6 +946,8 @@ def _negligible_mode(C, lam, sup_scale, l1_scale):
     C = complex(C)
     if C == 0:
         return True
+    if not (math.isfinite(sup_scale) and math.isfinite(l1_scale)):
+        return False        # an undamped mode somewhere: exact zeros only
     if abs(C) > DRESS_ZERO_RTOL * sup_scale:
         return False
     return _mode_l1(C, lam) <= DRESS_ZERO_RTOL * l1_scale
@@ -6911,22 +6914,32 @@ def _noise_kernel_halfwidth(kernels, tau_sym):
     unit moves it with the kernel.  ``None`` when a kernel cannot be
     sampled (the caller uses the legacy box)."""
     grid = _TAU_KERNEL_GRID
-    pts = np.concatenate([-grid[::-1], [0.0], grid])
+    # τ = 0 itself is not sampled (heaviside(0), δ(0) have no value; the
+    # smallest |τ| stands for it)
+    pts = np.concatenate([-grid[::-1], grid])
     mags = np.zeros(pts.size)
+    n_ok = 0
     for k in kernels:
         e = SR(k)
+        fk = None
         try:
             from sage.all import fast_callable, CDF
             fk = fast_callable(e, vars=[tau_sym], domain=CDF)
-            vals = np.array([abs(complex(fk(float(t)))) for t in pts])
         except Exception:                                # noqa: BLE001
+            fk = None
+        vals = np.full(pts.size, np.nan)
+        for i, t in enumerate(pts):
             try:
-                vals = np.array([abs(complex(e.subs({tau_sym: float(t)})))
-                                 for t in pts])
+                v = (fk(float(t)) if fk is not None
+                     else e.subs({tau_sym: float(t)}))
+                vals[i] = abs(complex(v))
             except Exception:                            # noqa: BLE001
-                return None
-        vals = np.where(np.isfinite(vals), vals, np.inf)
-        mags = np.maximum(mags, vals)
+                continue                    # a point without a value
+        ok = np.isfinite(vals)
+        n_ok += int(ok.sum())
+        mags = np.maximum(mags, np.where(ok, vals, 0.0))
+    if n_ok == 0:
+        return None
     peak = float(np.max(mags))
     if not math.isfinite(peak) or peak <= 0.0:
         return None
@@ -8468,11 +8481,6 @@ def integrate_diagram(
             kmodes = _kernel_modes(att, num_params)
             kdirect = None
             if kmodes is None:
-                leg_kernel_rates.append(None)
-            else:
-                leg_kernel_rates.extend(-complex(mu).real
-                                        for (_c, mu) in kmodes)
-            if kmodes is None:
                 # item 56: a direct term, g = c δ + (a pole sum): the
                 # all-pass Pade (n, n) image of a bare hard delay at a
                 # vertex leg (x*x(t - d)).  Dressed, the line becomes
@@ -8481,6 +8489,11 @@ def integrate_diagram(
                 _split = _kernel_direct_split(att, num_params)
                 if _split is not None:
                     kdirect, kmodes = _split
+            if kmodes is None:
+                leg_kernel_rates.append(None)
+            else:
+                leg_kernel_rates.extend(-complex(mu).real
+                                        for (_c, mu) in kmodes)
             if (kdirect is not None
                     and not (_can_dress
                              and ek not in (_conv_force_leg or ()))):
@@ -8719,10 +8732,12 @@ def integrate_diagram(
             if i in dressed_idx:
                 continue
             ems_i = edge_mode_sums[i]
-            # an undressed line: its exact zeros only (a small residue at a
-            # slow rate is a real tail of the line)
+            # an undressed line: its negligible modes against its own norms
+            # (a small residue at a slow rate is a real tail and is kept)
+            sup_i = sum(abs(complex(C)) for (C, _l) in ems_i.modes)
+            l1_i = sum(_mode_l1(C, l) for (C, l) in ems_i.modes)
             keep = tuple((C, lam) for (C, lam) in ems_i.modes
-                         if complex(C) != 0)
+                         if not _negligible_mode(C, lam, sup_i, l1_i))
             if len(keep) < len(ems_i.modes):
                 _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += (
                     len(ems_i.modes) - len(keep))

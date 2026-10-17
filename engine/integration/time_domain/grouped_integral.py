@@ -1293,6 +1293,11 @@ def integrate_grouped_diagram(
         # 'noise_box' provenance, for when the guard is lifted
         # (tests/test_phase_j_theta0.py::
         # test_integrate_diagram_labels_every_row checks the guard).
+        # (``TAU_KERNEL_CAP`` is ``None`` by default: the per-diagram path
+        # reads each box off its kernel; this unreachable copy keeps the
+        # legacy absolute box)
+        _GROUPED_TAU_BOX = (50.0 if TAU_KERNEL_CAP is None
+                            else float(TAU_KERNEL_CAP))
         if grouped_extra_tau and remaining_int_vars:
             n_iv = len(remaining_int_vars)
             n_ext = len(free_ext_syms)
@@ -1303,12 +1308,12 @@ def integrate_grouped_diagram(
                 a_up = [0.0] * n_iv
                 a_up[idx] = -1.0
                 subset_constraint_data.append(
-                    (a_up, [0.0] * n_ext, TAU_KERNEL_CAP)
+                    (a_up, [0.0] * n_ext, _GROUPED_TAU_BOX)
                 )
                 a_lo = [0.0] * n_iv
                 a_lo[idx] = +1.0
                 subset_constraint_data.append(
-                    (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
+                    (a_lo, [0.0] * n_ext, _GROUPED_TAU_BOX)
                 )
                 subset_row_kinds.extend(('noise_box', 'noise_box'))
 

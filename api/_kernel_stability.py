@@ -380,7 +380,10 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     ph_ax, vmin_ax, s_min, n1 = _refined_phase(chi, lambda t: 1j * t, R, -R, n_ax, budget)
     ph_arc, _, _, n2 = _refined_phase(chi, lambda t: R * np.exp(1j * t),
                                       -math.pi / 2, math.pi / 2, n_arc, budget)
-    scale = max(abs(complex(chi(np.array([0.0]))[0])), abs(c) * abs(s_min) ** m)
+    # the size of chi near s_min on the model's own scale (R / 1.5: twice the
+    # largest root's modulus, about), so a zero at s = 0 is still marginal
+    scale = max(abs(complex(chi(np.array([0.0]))[0])),
+                abs(c) * max(abs(s_min), R / 1.5) ** m)
     w = (ph_ax + ph_arc) / (2 * math.pi)
     if not math.isfinite(w):
         out = KernelStability('marginal', method='argument_principle', radius=R,
