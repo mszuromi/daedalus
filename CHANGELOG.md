@@ -11,6 +11,30 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Spatial engine: loop scope guards (audit wave 2, group 2)
+
+- **Multi-field models with a diagonal kinetic block** (fields mixed only
+  through the noise, e.g. `-Ta*at^2*(1+c*b^2)`): loop edges that carry another
+  field now go to the coupled spectral-assignment driver (per-edge masses).
+  Before, every edge got the external field's (mu, D): the one-loop C_aa was
+  0.89x / 1.83x the exact value at mub = 1.2 / 5 (audit model). Unequal
+  per-field diffusion there refuses (the coupled driver needs scalar D).
+- **Periodic boundary with loops** (k=2, max_ell >= 1) and the k-point driver
+  on a periodic model now refuse; before, the loops (and the whole k-point
+  value) used the infinite domain while the k=2 tree used the image sum
+  (19-74 % off at L = 2-4). The tracked `allen_cahn_1d_subcritical_pbc` model
+  at max_ell >= 1 now raises.
+- **k-point driver**: legs go through the phys_idx map (labels like
+  `('p', 2)` on a single-population field used to enumerate nothing and
+  return 0); liveness is the exact symbolic zero test (an absolute
+  `|prefactor| < 1e-14` cut returned 0 for small-unit parameters); a
+  foreign-field edge or mixed slot fields raise the 'single-field' error that
+  routes to the coupled k-point driver.
+- **Noise extraction** (`extract_noise_coefficients`, `extract_noise_matrix`):
+  a coefficient that does not reduce to a number (missing parameter or saddle,
+  momentum-dependent noise) raises; it used to become 0 silently.
+
+
 #### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
 
 - **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).

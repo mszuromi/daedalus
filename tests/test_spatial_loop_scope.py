@@ -165,3 +165,24 @@ def test_kpoint_leg_labels_and_unit_scale():
     vs, _ = compute_spatial_kpoint(fts, bs, props, nps, [('p', 1)] * 3, pts,
                                    max_ell=0)
     assert vs[0] == pytest.approx(s * s * v1[0], rel=1e-10)
+
+
+def test_noise_extractors_refuse_unresolved_entries():
+    """A noise coefficient that does not reduce to a number raises in both
+    extractors (it used to be dropped to 0 silently, changing C)."""
+    from api.compute import FieldTheory
+    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from engine.integration.spatial.spatial_correlator import (
+        extract_noise_coefficients, extract_noise_matrix)
+    m = _noise_mixed()
+    ft = FieldTheory(m, taylor_order=4)
+    ft.expand()
+    full = dict(_FUND, astar1=0.0, bstar1=0.0)
+    N = extract_noise_matrix(ft, full)
+    assert np.allclose(N, np.diag([2 * _TA, 2 * _TB]))
+    for drop in ('Tb', 'bstar1'):
+        part = {k_: v for k_, v in full.items() if k_ != drop}
+        with pytest.raises(SpatialPropagatorError, match=drop):
+            extract_noise_matrix(ft, part)
+        with pytest.raises(SpatialPropagatorError, match=drop):
+            extract_noise_coefficients(ft, part)
