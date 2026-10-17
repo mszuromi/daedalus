@@ -11,6 +11,28 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
+
+Regression tests: `tests/test_audit_wave1_estimators.py` and the transposed oracle check in
+`tests/test_coupled_rd_sim.py`. Package numbers do not move. Simulation reference curves that validation compares
+against do.
+- **`cumulant_estimator`: factorial cumulants are now connected.**
+  - **Coincident legs.** m same-population spike legs in one bin are centred with the factorial analogue of
+    ∏(r − μ), Σ_j C(m, j)(−μ)^(m−j) n^(j)/dt^j. The old `n^(m)/dt^m − mean` gave κ3 + 2μ C2 at the default base point.
+    The k = 4 pair subtraction is now consistent with it. The same rule applies to `compute_kpoint_slice_direct`,
+    which is now vectorized and limited to k ≤ 3.
+  - **Coincident sweep lags.** Where the sweep leg meets a fixed leg of its own spike train, the point used to carry
+    the shot noise: rate/dt_bin at k = 2, rate/dt² at k = 3. That point is now recomputed with the sweep leg merged
+    into the factorial group.
+  - **Check.** On a Cox process with a Gaussian OU intensity (κ3 = 0, C2 known):
+    - k = 2 matches C2 at every lag, τ = 0 included. The old τ = 0 point was 50σ² off.
+    - k = 3 is ≤ 0.1 × 2μC2. The old value was ≈ 2μC2.
+- **`cumulant_estimator`: field types.** An unrecognised field type is refused. It used to be treated as spike
+  counts.
+- **`coupled_rd_1d_sim` uses the package leg order** C_ij(x, τ) = ⟨φ_i(x, t) φ_j(x + x_lag, t + τ)⟩, in both the
+  estimator and the oracle. It used the transpose, so off-diagonal entries of a non-symmetric M at τ ≠ 0 were swapped
+  relative to the pipeline.
+
 #### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
 
 Numbers move (silent-wrong before):
