@@ -996,7 +996,14 @@ class SDE:
         return simulate(self, **kw)
 
     def build(self) -> dict:
-        return self.to_builder().build()
+        m = self.to_builder().build()
+        trunc = sorted(n for n, s in self._sources.items()
+                       if not s.get('pp') and not getattr(s['source'], 'regular', True))
+        if trunc:
+            # the action holds these CGFs as Taylor polynomials of this order;
+            # compute_cumulants refuses (k, max_ell) that would need more
+            m['noise_series_order'] = {'order': self._series_order, 'sources': trunc}
+        return m
 
     def show(self) -> str:
         """Print (and return) the derived action and mean-field equations as

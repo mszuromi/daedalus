@@ -1380,6 +1380,18 @@ def compute_cumulants(
         raise ValueError(f'k must be >= 1; got {k}')
     if max_ell < 0:
         raise ValueError(f'max_ell must be >= 0; got {max_ell}')
+    _nso = model.get('noise_series_order') if isinstance(model, dict) else None
+    if _nso and k + 2 * max_ell > int(_nso['order']):
+        # a CGF with a removable singularity at 0 (the uniform jump) enters
+        # the action as its Taylor polynomial: vertices above that order are
+        # absent, and a vertex of any order up to k + 2*max_ell can enter a
+        # k-point max_ell-loop diagram (audit F2-noise 0)
+        raise ValueError(
+            f"noise source(s) {', '.join(_nso.get('sources', []))}: the action "
+            f"carries their CGF as a Taylor polynomial of order {_nso['order']} "
+            f"(SDE.series_order), but k = {k}, max_ell = {max_ell} can use noise "
+            f"vertices up to order k + 2*max_ell = {k + 2 * max_ell}; raise "
+            f"SDE.series_order({k + 2 * max_ell}).")
     if backend is not None:
         from api import routing as _routing_check
         if backend not in {b.name for b in _routing_check.backends()}:
