@@ -121,6 +121,7 @@ FINDING_CODES = {
     'G1_SPATIAL':                ('G1', 'info'),
     # G2 time homogeneity and mean field
     'G2_TIME_DEPENDENT':         ('G2', 'error'),
+    'G2_NOISE_STRUCTURE':        ('G2', 'error'),
     'G2_NO_SADDLE':              ('G2', 'error'),
     'G2_MF_FAILED':              ('G2', 'error'),
     'G2_UNSTABLE_SADDLE':        ('G2', 'error'),
@@ -1152,6 +1153,22 @@ def _g1_structure(ctx):
                 'remove the explicit time dependence (e.g. embed a periodic '
                 'drive as an extra oscillator field) or use a time-dependent '
                 'backend when one exists')
+        ctx.stop_numeric = True
+
+    # legacy dict key noise_structure: only white noise is implemented on
+    # the numeric routes (time-domain Phase J never applies a temporal noise
+    # kernel), so a non-white temporal_type would be computed as white noise
+    nstruct = model.get('noise_structure') or {}
+    ntype = (nstruct.get('temporal_type', 'white')
+             if isinstance(nstruct, dict) else nstruct)
+    if ntype != 'white':
+        ctx.add('G2_NOISE_STRUCTURE',
+                f"noise_structure temporal_type {ntype!r}: the numeric "
+                "routes implement white noise only and would silently drop "
+                "the noise kernel.",
+                'write colored noise as a Markov embedding (an extra '
+                'OU-driven field, as in models/ou_quartic_colored.model.py) '
+                'or a kernel Conv term, and remove noise_structure')
         ctx.stop_numeric = True
 
     # polynomial or not (in the fields)

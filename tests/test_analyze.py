@@ -264,6 +264,12 @@ def _time_dependent():
     return model, None
 
 
+def _colored_noise_structure():
+    model = dict(_tracked('ou_quartic')[0])
+    model['noise_structure'] = {'temporal_type': 'colored', 'amplitude_params': []}
+    return model, None
+
+
 def _kernel_model(name, image):
     return (TemporalModelBuilder(name)
             .population('A', size=1)
@@ -311,6 +317,7 @@ GALLERY = {
     'undriven field':        (_undriven, 'G1_UNDRIVEN_FIELD', 'dy1'),
     'unstable saddle':       (_unstable, 'G2_UNSTABLE_SADDLE', 'unstable'),
     'explicit time':         (_time_dependent, 'G2_TIME_DEPENDENT', 'sin(t)'),
+    'colored noise_structure': (_colored_noise_structure, 'G2_NOISE_STRUCTURE', "'colored'"),
     # a delay is recognised (api.delay: Pade loops, exact tree), not refused
     'delay kernel':          (_delay_kernel, 'G3_DELAY_KERNEL', "d in ['d']"),
     'sqrt kernel':           (_sqrt_kernel, 'G3_NONRATIONAL_KERNEL', 'sqrt'),

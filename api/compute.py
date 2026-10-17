@@ -52,6 +52,34 @@ from api.access     import (
 # right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
 
+# The k = 2 τ = 0 convention (audit A3a-1 / 3B-01, Oct 2026).  'exact':
+# the τ = 0 point is evaluated AT equal times; Phase J's exact tie rule
+# (``final_integral._const_row_verdict``: of Θ(t1 − t0) and Θ(t0 − t1) at
+# t1 == t0 exactly the one with leg 1 earlier holds) gives the Itô left
+# limit C(0⁻) exactly (<= 3e-14 against independent references on every
+# route), and the exact delayed tree returns its own left limit.  'nudge'
+# (default until the switch is decided): the sample at τ = −_ITO_EPS, whose
+# relative error is (rate × 1e-6) and therefore unit dependent (1e-3 at a
+# rate of 1e3).  Environment variable DAEDALUS_TAU0 = 'exact' | 'nudge',
+# read at call time.  k ≥ 3 slices (``daedalus._kpoint_slice_times``,
+# ``me_output.slice_me``) keep the −_ITO_EPS placement: the engine's tie
+# order is the left limit of a slice only for some leg orders.
+_TAU0_MODES = ('exact', 'nudge')
+
+
+def _tau0_mode():
+    """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
+    m = os.environ.get('DAEDALUS_TAU0', 'nudge').strip().lower() or 'nudge'
+    if m not in _TAU0_MODES:
+        raise ValueError(f'DAEDALUS_TAU0={m!r}: expected one of {_TAU0_MODES}')
+    return m
+
+
+def _tau0_lag():
+    """The lag a k = 2 τ = 0 point is evaluated at: 0.0 ('exact') or
+    −_ITO_EPS ('nudge')."""
+    return 0.0 if _tau0_mode() == 'exact' else -_ITO_EPS
+
 
 def _ito_nudge_callable(fn, k):
     """Wrap a user-facing C(τ) callable so its equal-time evaluation matches the
@@ -68,10 +96,13 @@ def _ito_nudge_callable(fn, k):
     """
     if k != 2:
         return fn
+    lag = _tau0_lag()
     # ``not (<=)`` rather than ``>``: a NaN second time compares False both
     # ways and must reach the engine as NaN (which refuses it), never be
-    # moved to the equal-time left limit.
-    return lambda t0, t1: fn(t0, t0 - _ITO_EPS if abs(t1 - t0) <= 1e-12 else t1)
+    # moved to the equal-time left limit.  'exact': a second time within
+    # 1e-12 of the first is moved ONTO it (an exact tie, decided by the
+    # engine's tie rule)
+    return lambda t0, t1: fn(t0, t0 + lag if abs(t1 - t0) <= 1e-12 else t1)
 
 
 def _phase_j_warning_scope():
@@ -1978,6 +2009,17 @@ def _run_phase_j(state, grouped):
     noise_structure = model.get(
         'noise_structure', {'temporal_type': 'white', 'amplitude_params': []}
     )
+    # Hard stop (not only the analyzer's G2_NOISE_STRUCTURE, which
+    # preflight=False / a downgrade would skip): Phase J never applies a
+    # temporal noise kernel, so a non-white temporal_type would be computed
+    # as white noise with status 'ok'.
+    _ntype = (noise_structure or {}).get('temporal_type', 'white')
+    if _ntype != 'white':
+        raise ValueError(
+            f"noise_structure temporal_type {_ntype!r} is not supported by "
+            "compute_cumulants (white noise only; the noise kernel would be "
+            "dropped). Write colored noise as a Markov embedding (an extra "
+            "OU-driven field) or a kernel Conv term instead.")
 
     diagram_records = []
     kernel_groups = []
@@ -2090,7 +2132,11 @@ def _run_phase_j(state, grouped):
         # to 0⁻ keeps the surviving causal chamber and gives the left limit (= the
         # right limit for an even/stationary C; differs only at a genuine τ=0
         # jump, where Itô takes the left).  The grid LABEL stays 0.
-        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else -_ITO_EPS)
+        # (DAEDALUS_TAU0=exact evaluates the τ = 0 point AT equal times,
+        # where the engine's exact tie rule gives C(0⁻) exactly; see
+        # ``_tau0_mode``.)
+        _lag0 = _tau0_lag()
+        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _lag0)
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation

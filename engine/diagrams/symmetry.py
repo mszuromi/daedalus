@@ -816,18 +816,27 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             amp_is_td = len(amp_td_syms) > 0
             can_pull_out = (noise_type == 'white' and not amp_is_td)
 
-            if can_pull_out:
-                scalar_parts.append(coeff)
+            # The constant amplitude is a scalar whatever the temporal type:
+            # a colored kernel's SHAPE belongs to the integrand (consumers
+            # multiply it in), its amplitude does not.  Before Oct 2026 only
+            # the white case pulled it out and the colored amplitude was
+            # parked in 'amplitude', which nothing reads -> the result was
+            # short by the source coefficient (audit A3a-5).  'amplitude' now
+            # holds only the part left INSIDE (1 unless time-dependent), so
+            # nothing is ever counted twice.
+            if amp_td_syms:
+                const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
+                if const_part.is_zero():
+                    const_part = SR(1)
             else:
-                if amp_td_syms:
-                    const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
-                    if not const_part.is_one() and not const_part.is_zero():
-                        scalar_parts.append(const_part)
+                const_part = coeff
+            scalar_parts.append(const_part)
 
             source_time_info[v] = {
                 'n_legs': n_legs,
                 'temporal_type': noise_type,
-                'amplitude': coeff,
+                'amplitude': (coeff / const_part
+                              if not const_part.is_zero() else SR(1)),
                 'amplitude_is_time_dep': amp_is_td,
                 'in_integrand': not can_pull_out,
             }
