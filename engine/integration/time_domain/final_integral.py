@@ -914,13 +914,40 @@ def _plan_refund(n_tuples):
 
 #: Relative gap below which a kernel rate counts as equal to a propagator
 #: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,
-#: unless the line's residue there is below ``DRESS_ZERO_RTOL`` of its
-#: total.  In a diagram with a dressed line, every line's modes below
-#: ``DRESS_ZERO_RTOL`` of its total are dropped (rounding-level residues of
-#: poles the propagator inherits from a kernel image with residue 0; they
-#: multiply the pole-tuple count for nothing).
+#: unless the line's mode there is negligible (``_negligible_mode``: its
+#: residue below ``DRESS_ZERO_RTOL`` of the line's and its integral weight
+#: ``|C| / |Re λ|`` below ``DRESS_ZERO_RTOL`` of the line's L1 norm).  A
+#: dressed line drops its negligible modes (rounding-level residues of poles
+#: the propagator inherits from a kernel image with residue 0; they multiply
+#: the pole-tuple count for nothing); a slow mode with a small residue has a
+#: large weight and is kept.  The other lines of a diagram with a dressed
+#: line drop only their exact zeros.  Every dropped mode is counted
+#: (``conv_dress_zero_modes_dropped``).
 DRESS_RATE_RTOL = 1e-6
 DRESS_ZERO_RTOL = 1e-12
+
+
+def _mode_l1(C, lam):
+    """``∫_0^∞ |C e^{λ t}| dt = |C| / |Re λ|`` (``inf`` for an undamped or
+    growing mode)."""
+    C, lam = complex(C), complex(lam)
+    if C == 0:
+        return 0.0
+    return abs(C) / -lam.real if lam.real < 0 else float('inf')
+
+
+def _negligible_mode(C, lam, sup_scale, l1_scale):
+    """Whether the mode ``C e^{λ t}`` of a line is negligible: its residue at
+    most ``DRESS_ZERO_RTOL`` of ``sup_scale`` (a bound of the line's sup
+    norm) AND its integral weight at most ``DRESS_ZERO_RTOL`` of
+    ``l1_scale`` (a bound of the line's L1 norm).  Both ratios are unchanged
+    by a rescaling of time or of the fields."""
+    C = complex(C)
+    if C == 0:
+        return True
+    if abs(C) > DRESS_ZERO_RTOL * sup_scale:
+        return False
+    return _mode_l1(C, lam) <= DRESS_ZERO_RTOL * l1_scale
 
 
 def _dress_kernels_on():
@@ -953,21 +980,30 @@ def _dress_edge_modes(ems, kernel_modes, direct=0):
         acc[key] = (C0 + C, lam0)
 
     D_ = complex(ems.delta_coeff)
-    scale = sum(abs(complex(C)) for (C, _l) in ems.modes) + abs(D_)
     direct = complex(direct)
+    kernel_modes = [(complex(c), complex(mu)) for (c, mu) in kernel_modes]
+    # sup / L1 norm bounds of G and g (the δ parts count with their weights)
+    G_sup = sum(abs(complex(C)) for (C, _l) in ems.modes)
+    G_l1 = sum(_mode_l1(C, l) for (C, l) in ems.modes) + abs(D_)
+    g_sup = sum(abs(c) for (c, _m) in kernel_modes)
+    g_l1 = sum(_mode_l1(c, m) for (c, m) in kernel_modes) + abs(direct)
+    # a rounding-level mode of the line: an exact zero (e.g. a pole of the
+    # kernel's image that the propagator inherits with residue 0)
+    line_modes = []
+    for (C, lam) in ems.modes:
+        C, lam = complex(C), complex(lam)
+        if C != 0 and _negligible_mode(C, lam, G_sup + abs(D_), G_l1):
+            _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
+            continue
+        line_modes.append((C, lam))
     if direct != 0:
-        for (C, lam) in ems.modes:
-            add(direct * complex(C), complex(lam))
+        for (C, lam) in line_modes:
+            add(direct * C, lam)
     for (c, mu) in kernel_modes:
-        c, mu = complex(c), complex(mu)
         if D_ != 0:
             add(D_ * c, mu)
-        for (C, lam) in ems.modes:
-            C, lam = complex(C), complex(lam)
-            if abs(C) <= DRESS_ZERO_RTOL * scale:
-                # a rounding-level residue: an exact zero of the line (e.g. a
-                # pole of the kernel's image that the propagator inherits
-                # with residue 0)
+        for (C, lam) in line_modes:
+            if C == 0:
                 continue
             if abs(lam - mu) <= DRESS_RATE_RTOL * max(abs(lam), abs(mu),
                                                       1e-300):
@@ -978,11 +1014,16 @@ def _dress_edge_modes(ems, kernel_modes, direct=0):
     # A kernel rate where G has a zero (a pole of the kernel's image is a
     # zero of G = (1 - c ĝ)^{-1}-type propagators) cancels exactly: its
     # coefficient is rounding.  Drop it, as the voltage form never has it.
-    out_scale = sum(abs(C) for (C, _l) in acc.values())
+    # The scales bound g ∗ G itself (sup ≤ ‖g‖₁ sup G + |D| sup g, L1 ≤
+    # ‖g‖₁ ‖G‖₁): the sum of the coefficients is inflated by the pairs
+    # C c / (λ − μ) of a near-coincident rate, which cancel.
+    out_sup = g_l1 * G_sup + abs(D_) * g_sup + abs(direct) * G_sup
+    out_l1 = g_l1 * G_l1
     modes = []
     for (C, lam) in acc.values():
-        if abs(C) <= DRESS_ZERO_RTOL * out_scale:
-            _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
+        if _negligible_mode(C, lam, out_sup, out_l1):
+            if C != 0:
+                _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
             continue
         modes.append((C, lam))
     return EdgeModeSum(ri=ems.ri, pi=ems.pi,
@@ -1782,6 +1823,7 @@ _RUNTIME_COUNTERS = {
     # difference rows that are edges, a failed linear-programming
     # certificate) and the legacy ±200 cap was used:
     'nquad_hardened_uncertified': 0,
+    'nquad_hardened_floor_cut': 0,
     # entries without mode data (epsabs from a pre-sample of the integrand,
     # open sides at the legacy cap, no geometric breakpoints):
     'nquad_hardened_no_modes': 0,
@@ -6846,7 +6888,75 @@ QUAD_OPTS = {
 # kernel has heavy tails:
 #   from engine.integration.time_domain import final_integral
 #   final_integral.TAU_KERNEL_CAP = 200.0
-TAU_KERNEL_CAP = 50.0
+#
+# ACC-15: an absolute ±50 truncates a kernel wider than ~10 time units (and
+# is not invariant under a change of the time unit).  ``None`` (the
+# default): the box of each source is read off its kernel,
+# ``_noise_kernel_halfwidth`` -- the |τ| beyond which |κ| stays below
+# ``TAU_KERNEL_RTOL`` of its peak.  A number restores that absolute box.
+TAU_KERNEL_CAP = None
+TAU_KERNEL_RTOL = 1e-17
+#: The legacy box, for an integrand whose kernel cannot be sampled.
+_TAU_KERNEL_CAP_LEGACY = 50.0
+# |τ| sampled for the kernel's extent: quarter decades over 1e-12 .. 1e12
+_TAU_KERNEL_GRID = 10.0 ** (np.arange(-48, 49) / 4.0)
+
+
+def _noise_kernel_halfwidth(kernels, tau_sym):
+    """The half-width of the τ box of a non-local noise source whose
+    cumulant kernels are the SR expressions ``kernels`` in ``tau_sym``
+    (parameters substituted): the first sampled |τ| (quarter decades) beyond
+    which every |κ(±τ)| stays below ``TAU_KERNEL_RTOL`` of the largest
+    sampled |κ| -- a length of the kernel itself, so a change of the time
+    unit moves it with the kernel.  ``None`` when a kernel cannot be
+    sampled (the caller uses the legacy box)."""
+    grid = _TAU_KERNEL_GRID
+    pts = np.concatenate([-grid[::-1], [0.0], grid])
+    mags = np.zeros(pts.size)
+    for k in kernels:
+        e = SR(k)
+        try:
+            from sage.all import fast_callable, CDF
+            fk = fast_callable(e, vars=[tau_sym], domain=CDF)
+            vals = np.array([abs(complex(fk(float(t)))) for t in pts])
+        except Exception:                                # noqa: BLE001
+            try:
+                vals = np.array([abs(complex(e.subs({tau_sym: float(t)})))
+                                 for t in pts])
+            except Exception:                            # noqa: BLE001
+                return None
+        vals = np.where(np.isfinite(vals), vals, np.inf)
+        mags = np.maximum(mags, vals)
+    peak = float(np.max(mags))
+    if not math.isfinite(peak) or peak <= 0.0:
+        return None
+    big = np.nonzero(mags > TAU_KERNEL_RTOL * peak)[0]
+    reach = float(np.max(np.abs(pts[big])))
+    nxt = grid[grid > reach]
+    return float(nxt[0]) if nxt.size else float(grid[-1])
+
+
+def _line_decay_floor(propagator_data, num_params):
+    """The slowest decay rate of the propagator's lines (the smallest
+    damping ``|Im ω_p|`` of its poles), or ``None`` (no poles, an undamped
+    one, or no value)."""
+    try:
+        poles = propagator_data.get('pole_vals')
+    except AttributeError:
+        return None
+    if not poles:
+        return None
+    rates = []
+    for p in poles:
+        try:
+            z = SR(p)
+            if num_params:
+                z = z.subs(num_params)
+            rates.append(abs(complex(z).imag))
+        except Exception:                                # noqa: BLE001
+            return None
+    r = min(rates)
+    return r if r > 0.0 and math.isfinite(r) else None
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -8077,6 +8187,8 @@ def integrate_diagram(
     noise_source_specs = {}     # {v: list of cumulant_specs dicts}
     conv_vertex_specs  = {}     # {v: list of (tau_sym, att_dict) pairs}
     extra_tau_syms = []         # list of (tau_sym, vertex) pairs
+    noise_tau_box = {}          # {tau_sym: half-width of its box}
+    leg_kernel_rates = []       # decay rates of the conductance kernels
     vertex_assignments = (
         getattr(typed_diagram, 'vertex_assignments', None) or {}
     )
@@ -8356,6 +8468,11 @@ def integrate_diagram(
             kmodes = _kernel_modes(att, num_params)
             kdirect = None
             if kmodes is None:
+                leg_kernel_rates.append(None)
+            else:
+                leg_kernel_rates.extend(-complex(mu).real
+                                        for (_c, mu) in kmodes)
+            if kmodes is None:
                 # item 56: a direct term, g = c δ + (a pole sum): the
                 # all-pass Pade (n, n) image of a bare hard delay at a
                 # vertex leg (x*x(t - d)).  Dressed, the line becomes
@@ -8598,9 +8715,10 @@ def integrate_diagram(
             if i in dressed_idx:
                 continue
             ems_i = edge_mode_sums[i]
-            sc = sum(abs(complex(C)) for (C, _l) in ems_i.modes)
+            # an undressed line: its exact zeros only (a small residue at a
+            # slow rate is a real tail of the line)
             keep = tuple((C, lam) for (C, lam) in ems_i.modes
-                         if abs(complex(C)) > DRESS_ZERO_RTOL * sc)
+                         if complex(C) != 0)
             if len(keep) < len(ems_i.modes):
                 _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += (
                     len(ems_i.modes) - len(keep))
@@ -8699,11 +8817,20 @@ def integrate_diagram(
             )
             if tau_sym_v is None:
                 continue
+            kv = []
             for spec in specs:
                 i_leg, j_leg = spec['legs'][0], spec['legs'][1]
                 kappa_subs[spec['symbol']] = SR(
                     spec['kernel_fn'](i_leg, j_leg, tau_sym_v)
                 )
+                kv.append(kappa_subs[spec['symbol']].subs(num_params)
+                          if num_params else kappa_subs[spec['symbol']])
+            if TAU_KERNEL_CAP is not None:
+                noise_tau_box[tau_sym_v] = float(TAU_KERNEL_CAP)
+            else:
+                hw = _noise_kernel_halfwidth(kv, tau_sym_v)
+                noise_tau_box[tau_sym_v] = (
+                    hw if hw is not None else _TAU_KERNEL_CAP_LEGACY)
         if kappa_subs:
             cp = cp.subs(kappa_subs)
             if num_params:
@@ -8735,6 +8862,21 @@ def integrate_diagram(
         cp = cp.subs(g_subs)
         if num_params:
             cp = cp.subs(num_params)
+
+    # The hardened fallback's decay certificate for an integrand without
+    # mode data: the slowest line and kernel rate (``None``: unknown), and
+    # the parameter point its warnings are keyed by.
+    _kappa_floor = _line_decay_floor(propagator_data, num_params)
+    if _kappa_floor is not None and leg_kernel_rates:
+        if any(r is None or not r > 0.0 for r in leg_kernel_rates):
+            _kappa_floor = None
+        else:
+            _kappa_floor = min(_kappa_floor, min(leg_kernel_rates))
+    try:
+        _params_fp = hash(tuple(sorted(
+            (str(k), repr(v)) for k, v in (num_params or {}).items())))
+    except Exception:                                    # noqa: BLE001
+        _params_fp = None
 
     # ── 4. External-time bookkeeping ─────────────────────────────
     free_ext_idx = [
@@ -9288,16 +9430,17 @@ def integrate_diagram(
                     continue
                 idx = remaining_int_vars.index(tau_s)
                 # Upper cap:  -τ_v + CAP > 0  ⇒  τ_v < CAP
+                cap = noise_tau_box.get(tau_s, _TAU_KERNEL_CAP_LEGACY)
                 a_up  = [0.0] * n_iv
                 a_up[idx] = -1.0
                 subset_constraint_data.append(
-                    (a_up, [0.0] * n_ext, TAU_KERNEL_CAP)
+                    (a_up, [0.0] * n_ext, cap)
                 )
                 # Lower cap:  +τ_v + CAP > 0 (symmetric around 0).
                 a_lo  = [0.0] * n_iv
                 a_lo[idx] = +1.0
                 subset_constraint_data.append(
-                    (a_lo, [0.0] * n_ext, TAU_KERNEL_CAP)
+                    (a_lo, [0.0] * n_ext, cap)
                 )
                 subset_row_kinds.extend(('noise_box', 'noise_box'))
         if constraint_err is not None and _shot_pending is not None:
@@ -9691,6 +9834,10 @@ def integrate_diagram(
             'source': 'per_diagram',
             'diagram_serial': _diag_serial,
             'model': _model_id,
+            # the hardened fallback's decay certificate without mode data
+            # and its warnings' parameter point (ACC-17)
+            'kappa_floor': _kappa_floor,
+            'params': _params_fp,
             'diagram': typed_diagram,
             'loop_number': loop_number,
             'subset_id': branch_bits,
@@ -11522,10 +11669,11 @@ _NQUAD_OSC_MIN = 100
 class PhaseJNquadFallbackWarning(UserWarning):
     """Phase J integrated regions with scipy quadrature (the hardened
     fallback of ``_integrate_polytope``) because no analytic path answered
-    them.  Issued once per model, source (per-diagram or grouped) and loop
-    order per process (``_nquad_note_region``): the model is its name
-    (``_model_identity``), so another ``compute_cumulants`` call or other
-    parameter values do not repeat it, while another model does.  Within
+    them.  Issued once per model, source (per-diagram or grouped), loop
+    order, set of diagrams and parameter point per process
+    (``_nquad_note_region``): the model is its name (``_model_identity``), so
+    repeating the same call does not repeat it, while other diagrams, other
+    parameter values or another model do.  Within
     one evaluation (``nquad_warning_scope``, opened by the callables that
     ``compute_cumulants`` returns and around its own grid evaluation) the
     regions are aggregated, and the warning gives their counts: regions and
@@ -11583,8 +11731,8 @@ def _diagram_identity(diag_meta):
 def _model_identity(propagator_data):
     """The model part of the warnings' key (``_nquad_group_key``) for a
     build with this ``propagator_data``: its ``'model_name'`` (set by
-    ``compute_cumulants`` from the model's ``name``), so that rebuilding the
-    same model with other parameter values does not repeat a warning; for
+    ``compute_cumulants`` from the model's ``name``; the warnings add the
+    diagrams and the parameter point to it, ``_nquad_flush``); for
     an unnamed model or a direct caller, a serial stamped into that
     ``propagator_data`` dict on first use (each call of ``compute_cumulants``
     builds a new one, so it warns again)."""
@@ -11686,7 +11834,7 @@ def _nquad_group_key(diag_meta):
 
 
 def _nquad_note_region(diag_meta, m, *, no_modes=False, uncertified=False,
-                       flag_msgs=()):
+                       floor_cut=False, flag_msgs=()):
     """Record one region served by the hardened fallback (see
     ``nquad_warning_scope``)."""
     key = _nquad_group_key(diag_meta)
@@ -11695,14 +11843,17 @@ def _nquad_note_region(diag_meta, m, *, no_modes=False, uncertified=False,
     with _NQUAD_WARNED_LOCK:
         st = _NQUAD_PENDING.get(key)
         if st is None:
-            st = {'diagrams': set(), 'regions': 0, 'no_modes': 0,
-                  'uncertified': 0, 'flagged': 0, 'flag_calls': 0,
+            st = {'diagrams': set(), 'params': set(), 'regions': 0,
+                  'no_modes': 0, 'uncertified': 0, 'floor_cut': 0,
+                  'flagged': 0, 'flag_calls': 0,
                   'first': (diag_meta, m), 'first_flag': None}
             _NQUAD_PENDING[key] = st
         st['diagrams'].add(ident)
+        st['params'].add((diag_meta or {}).get('params'))
         st['regions'] += 1
         st['no_modes'] += bool(no_modes)
         st['uncertified'] += bool(uncertified)
+        st['floor_cut'] += bool(floor_cut)
         if flag_msgs:
             st['flagged'] += 1
             st['flag_calls'] += len(flag_msgs)
@@ -11746,11 +11897,15 @@ def _nquad_flush():
         _NQUAD_PENDING.clear()
         todo = []
         for key, st in items:
-            kf = ('fallback',) + key
+            # once per model, source, loop order, set of diagrams and
+            # parameter point (another parameter set or other diagrams of
+            # the same model warn again)
+            which = (frozenset(st['diagrams']), frozenset(st['params']))
+            kf = ('fallback',) + key + which
             if kf not in _NQUAD_WARNED:
                 _NQUAD_WARNED.add(kf)
                 todo.append(('fallback', key, st))
-            kq = ('flags',) + key
+            kq = ('flags',) + key + which
             if st['flagged'] and kq not in _NQUAD_WARNED:
                 _NQUAD_WARNED.add(kq)
                 todo.append(('flags', key, st))
@@ -11761,13 +11916,19 @@ def _nquad_flush():
             if st['no_modes']:
                 extra += (f'; {st["no_modes"]} without the integrand\'s '
                           'exponential modes (epsabs from a sample of the '
-                          'integrand, open directions capped at the legacy '
-                          f'{NQUAD_UNCERTIFIED_CAP:g}, no geometric '
-                          'breakpoints)')
+                          'integrand, open directions cut at '
+                          f'{NQUAD_TAIL_K:g}/κ beyond their farthest '
+                          'breakpoint with κ the slowest line or kernel '
+                          'rate of the model, no geometric breakpoints)')
+            if st['floor_cut']:
+                extra += (f'; {st["floor_cut"]} cut by the model\'s slowest '
+                          'rate')
             if st['uncertified']:
                 extra += (f'; {st["uncertified"]} with an open direction '
-                          'without a decay certificate (capped at the '
-                          f'legacy {NQUAD_UNCERTIFIED_CAP:g})')
+                          'without any decay certificate, capped at the '
+                          f'absolute ±{NQUAD_UNCERTIFIED_CAP:g}: their '
+                          'values are truncated wherever the integrand '
+                          'decays more slowly than that')
             dm, m = st['first']
             msg = (
                 f'Phase J: no analytic path answered {st["regions"]} '
@@ -11778,7 +11939,8 @@ def _nquad_flush():
                 f'directions truncated at {NQUAD_TAIL_K:g}/κ beyond their '
                 f'farthest breakpoint{extra}).  First: '
                 f'{_describe_diagram(dm, m)}.  Issued once per model, '
-                'source and loop order and process; every region is '
+                'source, loop order, set of diagrams and parameter point '
+                'in a process; every region is '
                 "counted in final_integral._RUNTIME_COUNTERS"
                 "['nquad_hardened_calls'] (logging at DEBUG names each "
                 'diagram).')
@@ -11792,7 +11954,8 @@ def _nquad_flush():
                 'final passes ended with a QUADPACK warning (first, on '
                 f'{_describe_diagram(dm, m)}: "{first}"); the values are '
                 'used as computed and may be inaccurate.  Issued once per '
-                'model, source and loop order and process; every such '
+                'model, source, loop order, set of diagrams and parameter '
+                'point in a process; every such '
                 "call is counted in final_integral._RUNTIME_COUNTERS"
                 "['nquad_hardened_quad_flags'].")
         # shown also under the Sage launcher's PYTHONWARNINGS=ignore
@@ -13245,10 +13408,18 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                                          if math.isfinite(t)])))
 
     kmin = kfast = None
+    floor_span = None
     if mode_info is not None:
         kmin, kfast = mode_info.decay_rates()
     else:
         ctr['nquad_hardened_no_modes'] += 1
+        kf = (diag_meta or {}).get('kappa_floor')
+        if kf is not None and kf > 0.0 and math.isfinite(kf):
+            a_min = 1.0
+            for (_c, prs) in rows_t:
+                for (_j, a) in prs:
+                    a_min = min(a_min, abs(a))
+            floor_span = NQUAD_TAIL_K / (kf * a_min)
     certified = (kmin is not None and kmin > 0.0 and math.isfinite(kmin))
     span = None
     unit = False
@@ -13352,7 +13523,8 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                      for (c, prs) in rows_t if all(j != 0 for j, _a in prs))
     free_list = list(free_ext_vals)
     f = integrand_callable
-    # [empty intervals, capped (0/1), uncertified (0/1), (unused),
+    # [empty intervals, capped (0/1), uncertified (0/1), cut by the
+    #  model's decay floor (0/1),
     #  closed-form innermost integrals that overflowed (done by quad),
     #  quad calls retried with a larger limit, pass with epsabs from the
     #  result (0/1), pass with a wider truncation (0/1), inner cuts that
@@ -13426,6 +13598,23 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 else:
                     inner_cut[0] = True
             return lo, hi
+        if floor_span is not None:
+            # no certificate from the integrand, but the model's slowest
+            # line / kernel rate bounds its decay (ACC-17): cut at
+            # K / κ_floor beyond the farthest breakpoint
+            far_lo = min((x for x in (L, anchor, ext_pts[0])
+                          if x is not None and math.isfinite(x)),
+                         default=0.0)
+            far_hi = max((x for x in (U, anchor, ext_pts[-1])
+                          if x is not None and math.isfinite(x)),
+                         default=0.0)
+            if count:
+                stats[3] = 1
+            if lo_open and hi_open:
+                return far_lo - floor_span, far_hi + floor_span
+            if lo_open:
+                return min(far_lo, U) - floor_span, U
+            return L, max(far_hi, L) + floor_span
         if count:
             stats[2] = 1
         cap = NQUAD_UNCERTIFIED_CAP
@@ -13876,6 +14065,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         ctr['nquad_hardened_empty_intervals'] += stats[0]
         ctr['nquad_hardened_capped'] += stats[1]
         ctr['nquad_hardened_uncertified'] += stats[2]
+        ctr['nquad_hardened_floor_cut'] += stats[3]
         ctr['nquad_hardened_quad_flags'] += len(pflags)
         ctr['nquad_hardened_innermost_overflow'] += stats[4]
         ctr['nquad_hardened_quad_retries'] += stats[5]
@@ -13892,7 +14082,8 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                       'the region: requested relative accuracy only '
                       f'{floor_limited[0]:.1e}')
     _nquad_note_region(diag_meta, m, no_modes=mode_info is None,
-                       uncertified=bool(stats[2]), flag_msgs=pflags)
+                       uncertified=bool(stats[2]), floor_cut=bool(stats[3]),
+                       flag_msgs=pflags)
     return val
 
 
