@@ -378,6 +378,119 @@ def _gl_on(lower, upper, n):
     return t, w
 
 
+def _gl_on_split(lower, upper, n, breaks, n_short=None):
+    """:func:`_gl_on` on ``[lower, upper]`` split at the fixed ``breaks`` (each
+    clipped into the interval; a segment of zero width gets zero weight), so
+    a kink of the integrand at a break is a segment end, not an interior
+    point.  The lowest segment (the long retarded tail) gets ``n`` nodes, the
+    segments between breaks ``n_short`` (default ``n``).  Returns
+    ``(t_nodes, t_w)`` of shape ``lower.shape + (n + n_short·len(breaks),)``."""
+    if not breaks:
+        return _gl_on(lower, upper, n)
+    n_short = n if n_short is None else int(n_short)
+    cuts = [lower] + [np.clip(np.full_like(lower, b), lower, upper)
+                      for b in sorted(breaks)] + [upper]
+    ts, ws = [], []
+    for i_seg, (lo_, hi_) in enumerate(zip(cuts[:-1], cuts[1:])):
+        t, w = _gl_on(lo_, hi_, n if i_seg == 0 else n_short)
+        ts.append(t)
+        ws.append(w)
+    return np.concatenate(ts, axis=-1), np.concatenate(ws, axis=-1)
+
+
+def _leaf_ties(edges, idx, external_times, n_V):
+    """Per internal vertex: (C-edge leaf times, leaf upper bound or None,
+    static lower bound, static upper bound) from the R/C edges to leaves."""
+    own = [set() for _ in range(n_V)]
+    up = [None] * n_V
+    s_lo = [-math.inf] * n_V
+    s_up = [math.inf] * n_V
+    for e in edges:
+        ui, vi = e.u in idx, e.v in idx
+        if e.kind == 'C' and e.u != e.v:
+            if ui and not vi:
+                own[idx[e.u]].add(float(external_times[e.v]))
+            elif vi and not ui:
+                own[idx[e.v]].add(float(external_times[e.u]))
+        elif e.kind == 'R':
+            if ui and not vi:
+                t = float(external_times[e.v])
+                s_up[idx[e.u]] = min(s_up[idx[e.u]], t)
+                up[idx[e.u]] = s_up[idx[e.u]]
+            elif vi and not ui:
+                s_lo[idx[e.v]] = max(s_lo[idx[e.v]],
+                                     float(external_times[e.u]))
+    return own, up, s_lo, s_up
+
+
+def _chamber_breaks(order, ties):
+    """Per internal vertex (index), for one causal chamber ``order``: the
+    external times where its time integrand can have a kink, inside its
+    static leaf bounds.
+
+    * its own C edges to leaves: ``C(|t_v − t_leaf|)`` kinks at ``t_leaf``;
+    * every vertex integrated INSIDE it (later in ``reversed(order)``):
+      that vertex's leaf bounds (its limit ``min(s_up, t_v)`` switches branch
+      when ``t_v`` crosses ``s_up``; its interval ``[s_lo, t_v]`` opens at
+      ``t_v = s_lo``) and its own kink times.
+
+    None of these is a causal-chamber boundary (chambers order the internal
+    vertices only), so the time grid splits there."""
+    own, up, s_lo, s_up = ties
+    rev = list(reversed(order))
+    out = {}
+    acc = set()
+    for vi in reversed(rev):                      # innermost first
+        bl = set(own[vi]) | acc
+        out[vi] = sorted(b_ for b_ in bl if s_lo[vi] < b_ < s_up[vi])
+        acc |= own[vi]
+        if up[vi] is not None:
+            acc.add(up[vi])
+        if s_lo[vi] > -math.inf:
+            acc.add(s_lo[vi])
+    return out
+
+
+def _spatial_mem_budget():
+    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set, else the RAM-aware
+    default of the Phase J guards."""
+    import os as _os
+    if 'SPATIAL_MEM_BUDGET_GB' in _os.environ:
+        gb = float(_os.environ['SPATIAL_MEM_BUDGET_GB'])
+        return gb * 1e9, f'SPATIAL_MEM_BUDGET_GB={gb:g}'
+    from engine.integration.time_domain.final_integral import default_mem_budget
+    return default_mem_budget()
+
+
+class SpatialMemoryBudgetError(MemoryError):
+    """A spatial chamber evaluation would exceed the memory budget."""
+
+
+def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
+    """How many times larger the causal-chamber time grid is because each
+    vertex interval splits at the external times inside its static leaf
+    bounds (:func:`_chamber_breaks`, worst chamber): ``∏_v (n_t + n_short·#breaks_v)/n_t``
+    (``∏_v (1 + #breaks_v)`` when ``n_t`` is None).  For memory guards (the
+    grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber; an upper bound —
+    zero-width segments are dropped)."""
+    internal = list(descr.internal_vertices)
+    idx = {v: i for i, v in enumerate(internal)}
+    n_V = len(internal)
+    if not n_V:
+        return 1.0
+    internal_R = [(idx[e.u], idx[e.v]) for e in descr.edges
+                  if e.kind == 'R' and e.u in idx and e.v in idx]
+    ties = _leaf_ties(descr.edges, idx, external_times, n_V)
+    worst = 1.0
+    for order in causal_chambers(n_V, internal_R):
+        f = 1.0
+        for vi, bl in _chamber_breaks(order, ties).items():
+            nb = len(bl)
+            f *= (1 + nb) if n_t is None else (n_t + min(n_t, n_short) * nb) / n_t
+        worst = max(worst, f)
+    return worst
+
+
 def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
                        xs, mu, D, spatial_dim, formfactor, N, seed):
     """``method='bessel'`` — the radial-Bessel-K × angular-MC backend for `δC(x)`.
@@ -500,6 +613,76 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     return total / norm
 
 
+class SpatialUVDivergenceError(NotImplementedError):
+    """A loop subgraph is UV-divergent at this spatial dimension: its value
+    would be set by the quadrature grid, not by the model."""
+
+
+def uv_divergent_subgraphs(descr, spatial_dim):
+    """Connected loop subgraphs of ``descr`` that are UV-divergent at
+    ``spatial_dim`` by dynamic power counting (plain vertices).
+
+    Scaling the relative vertex times and the correlation Schwinger
+    parameters of a subgraph ``γ`` as ``λ`` (momenta as ``λ^{−1/2}``) gives
+    ``λ^{ω(γ)}`` with ``ω = (V_γ − 1) + n_C(γ) − (d/2)·L_γ``; ``ω ≤ 0`` is a
+    divergence at the coincident-time corner (``U^{−d/2}`` non-integrable).
+    E.g. the self-loop (tadpole) ``ω = 1 − d/2`` diverges for ``d ≥ 2``, the
+    one-loop bubble ``ω = 2 − d/2`` only for ``d ≥ 4``, the φ⁴ sunset
+    ``ω = 3 − d`` for ``d ≥ 3``.  Only internal (loop-momentum-carrying)
+    edges form subgraphs.  Derivative-vertex form factors add momentum powers
+    this count does not include.  Returns a list of ``(edge_indices, ω)``."""
+    import itertools as _it
+    d = float(spatial_dim)
+    if d <= 0:
+        return []
+    cand = [i for i, e in enumerate(descr.edges)
+            if not e.external and e.couples_loop()]
+    out = []
+    for r in range(1, len(cand) + 1):
+        for sub in _it.combinations(cand, r):
+            es = [descr.edges[i] for i in sub]
+            verts = {e.u for e in es} | {e.v for e in es}
+            # connectivity (union–find over the subgraph's vertices)
+            parent = {v: v for v in verts}
+
+            def _find(v):
+                while parent[v] != v:
+                    parent[v] = parent[parent[v]]
+                    v = parent[v]
+                return v
+            for e in es:
+                parent[_find(e.u)] = _find(e.v)
+            if len({_find(v) for v in verts}) != 1:
+                continue
+            L = len(es) - len(verts) + 1
+            if L < 1:
+                continue
+            n_C = sum(1 for e in es if e.kind == 'C')
+            omega = (len(verts) - 1) + n_C - 0.5 * d * L
+            if omega <= 0:
+                out.append((sub, omega))
+    return out
+
+
+def _refuse_uv_divergent(descr, spatial_dim):
+    if spatial_dim is None or spatial_dim < 2:
+        return
+    bad = uv_divergent_subgraphs(descr, spatial_dim)
+    if bad:
+        sub, om = min(bad, key=lambda t: t[1])
+        kinds = [descr.edges[i].kind + ('(self-loop)' if descr.edges[i].u ==
+                                         descr.edges[i].v else '')
+                 for i in sub]
+        raise SpatialUVDivergenceError(
+            f'spatial loop diagram is UV-divergent at d={spatial_dim}: the '
+            f'subgraph with edges {kinds} has superficial degree '
+            f'omega={om:g} <= 0 (e.g. a tadpole <phi^2>_0 for d>=2).  Its '
+            f'value would be set by the quadrature grid (it grows without '
+            f'limit as SPATIAL_GRID_NS increases), not by the model.  A '
+            f'declared UV cutoff / renormalized mass is not implemented; use '
+            f'd=1, max_ell=0, or a model without this subgraph.')
+
+
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
                       xs=None, method='grid', mc_n=1000000, mc_seed=0):
@@ -513,11 +696,15 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     from :func:`causal_chambers`, nested latest→earliest with each level bounded
     by the next-later time and the external retarded legs), Gauss–Legendre per
     level (√-concentrated at the upper bound); correlation Schwinger params
-    ``σ_e∈[0,∞)`` by Gauss–**Laguerre** (which integrates ``e^{−μσ}`` exactly).
+    ``σ_e∈[0,∞)`` by Gauss–Legendre on ``σ = s_cap·v²`` (nodes concentrated
+    near ``σ = 0``, the ``e^{−μσ}`` folded into the weights).
     The Symanzik reduction is batched over the whole grid.
 
     ``q_vec`` : external momenta (length ``n_ext=k−1``; ``[q]`` for ``k=2``).
-    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber."""
+    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber.
+    Refuses (:class:`SpatialUVDivergenceError`) a diagram with a UV-divergent
+    loop subgraph at ``spatial_dim`` (:func:`uv_divergent_subgraphs`)."""
+    _refuse_uv_divergent(descr, spatial_dim)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)
@@ -549,8 +736,9 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
 
     # Correlation Schwinger param σ_e∈[0,∞): substitute σ = s_cap·v² (v∈[0,1]) so
-    # the nodes CONCENTRATE near σ=0 — that resolves the integrable U^{−d/2}∼σ^{−d/2}
-    # singularity of a self-loop (U=σ) that plain Gauss–Laguerre under-resolves.
+    # the nodes CONCENTRATE near σ=0 — that resolves the U^{−d/2}∼σ^{−d/2}
+    # singularity of a self-loop (U=σ), integrable at d=1 only (d≥2 is refused
+    # above as UV-divergent).
     # The e^{−μσ} weight is folded into ``s_w``; ``mu_resid`` excludes σ.
     s_cap = 32.0 / mu
     xv, wv = np.polynomial.legendre.leggauss(n_s)
@@ -585,6 +773,10 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
+    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     _use_mc = method == 'mc' and (n_V + n_C) > 0
     _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
@@ -611,6 +803,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 tvals[v] = placed[idx[v]]
             sig = [(-np.log(_rng.random(P)) / mu) for _ in range(n_C)]
         else:
+            c_breaks = _chamber_breaks(order, _ties)
             # ── deterministic causal-chamber PRODUCT GRID (the validated path) ──
             # nested internal-time grid (latest→earliest; each level bounded above
             # by the next-later time and its external scalar bound), × the σ-grid.
@@ -622,11 +815,18 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 upper = np.full(Pt, s_up[vi]) if later is None \
                     else np.minimum(s_up[vi], later)
                 lower = np.full(Pt, s_lo[vi])
-                tnode, wnode = _gl_on(lower, upper, n_t)       # (Pt, n_t)
+                upper = np.maximum(upper, lower)      # empty interval → zero weight
+                # split at the kink times (see _chamber_breaks)
+                tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
                 for k in placed:
-                    placed[k] = np.repeat(placed[k], n_t)
+                    placed[k] = np.repeat(placed[k], tnode.shape[-1])
                 placed[vi] = tnode.ravel()
                 wt = (wt[:, None] * wnode).ravel()
+                keep = wt != 0.0                      # zero-width segments
+                if not keep.all():
+                    wt = wt[keep]
+                    for k in placed:
+                        placed[k] = placed[k][keep]
                 later = placed[vi]
             Pt = wt.size
             P = Pt * Ps
@@ -879,6 +1079,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     coupled v1 surface.  The single-field/diagonal path is untouched
     (:func:`diagram_kinematic`); this function is additive.
     """
+    _refuse_uv_divergent(descr, spatial_dim)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)
@@ -968,12 +1169,33 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     Ps = s_wflat.size
 
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
+    # memory guard: per chamber the (P, n_assign) exponent and amplitude plus
+    # the (P, n_x) heat-kernel arrays, P = n_t^{n_V}·split·n_s^{n_C}
+    _P = (n_t ** n_V) * time_grid_split_factor(
+        descr, external_times, n_t,
+        int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))) * Ps
+    _nx = 1 if xs_arr is None else max(1, len(xs_arr))
+    _need = _P * (3 * n_assign + 2 * _nx) * 16.0
+    _bud, _rule = _spatial_mem_budget()
+    if _need > _bud:
+        raise SpatialMemoryBudgetError(
+            f'coupled spectral kinematic would allocate ~{_need / 1e9:.1f} GB per '
+            f'chamber (P={_P:.2e} samples x {n_assign} spectral assignments, '
+            f'{_nx} output points) over the budget {_bud / 1e9:.2f} GB ({_rule}).  '
+            f'Lower max_ell, coarsen SPATIAL_GRID_NT/NS, or raise '
+            f'SPATIAL_MEM_BUDGET_GB if the RAM is there.')
     L = a.shape[1]
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
+    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     for order in chambers:
-        # deterministic causal-chamber product grid (as diagram_kinematic)
+        # deterministic causal-chamber product grid (as diagram_kinematic),
+        # split at the kink times (_chamber_breaks)
+        c_breaks = _chamber_breaks(order, _ties)
         placed = {}
         wt = np.array([1.0])
         later = None
@@ -982,11 +1204,17 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             upper = np.full(Pt, s_up[vi]) if later is None \
                 else np.minimum(s_up[vi], later)
             lower = np.full(Pt, s_lo[vi])
-            tnode, wnode = _gl_on(lower, upper, n_t)
+            upper = np.maximum(upper, lower)          # empty interval → zero weight
+            tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
             for k in placed:
-                placed[k] = np.repeat(placed[k], n_t)
+                placed[k] = np.repeat(placed[k], tnode.shape[-1])
             placed[vi] = tnode.ravel()
             wt = (wt[:, None] * wnode).ravel()
+            keep = wt != 0.0                          # zero-width segments
+            if not keep.all():
+                wt = wt[keep]
+                for k in placed:
+                    placed[k] = placed[k][keep]
             later = placed[vi]
         Pt = wt.size
         P = Pt * Ps
@@ -1263,7 +1491,7 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
     Returns the momentum-space ``C(q,τ)`` (FT to position is done by the caller)."""
     total = 0.0
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total += diagram_correlator(descr, pre, q, tau, mu, D,
                                     spatial_dim=spatial_dim, **kw)
@@ -1303,7 +1531,7 @@ def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
     xs_arr = np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr))
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total = total + diagram_correlator_x(descr, pre, xs_arr, tau, mu, D,
                                              spatial_dim=spatial_dim, **kw)

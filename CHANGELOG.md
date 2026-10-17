@@ -52,6 +52,81 @@ Tests:
 - Example notebooks: no printed value changes at its shown precision (the τ = 0 values are printed with 2-4
   significant digits).
 
+#### Spatial engine: quadrature and UV (audit wave 2, group 3)
+
+Numbers move (silent-wrong before):
+
+- **Spatial loops at tau != 0** (every spatial loop result at unequal times,
+  single-field and coupled, any max_ell and k): the causal-chamber time grid
+  now splits each vertex's interval at the external times where its integrand
+  kinks -- its own C edges to leaves (|t_v - t_leaf|) and the leaf bounds and
+  kinks of the vertices nested inside it (their limits switch branch) -- none
+  of which was a chamber boundary. The tail segment keeps n_t nodes, the short
+  segments get SPATIAL_SEGMENT_NODES (8). Independent check against the
+  temporal engine (d = 0 limit, cubic + quartic, tau = 0.7): one loop was
+  3.8 % off, now 2.9e-7. The d=1 one-loop tadpole at tau = 0.5-2 was 1-3 %
+  off, now ~1e-10 against the exact mass shift; a cubic model's bubbles moved
+  ~2e-3 and agree with a 40-node grid to ~5e-7. tau = 0 values are unchanged.
+  Cost: the grid grows where kinks lie inside an interval (k=3 general-k
+  tests 1:47 -> ~4:50); the memory guard counts it, so some two-loop runs at
+  tau != 0 that main ran (inaccurately) are now refused at the default budget.
+  Known residual: the coupled driver's tau = 0, x != 0 value on a
+  tadpole-type diagram is ~7e-4 off at the default grid (the heat-kernel
+  factor's rise near the vertex bound; converges with SPATIAL_GRID_NT).
+- **d >= 2 tree** (single-field and coupled, infinite domain): the exact
+  heat-kernel time integral (Bessel-K at tau = 0, adaptive quadrature with a
+  checked error estimate at tau != 0) replaces the fixed q_cut = 40 /
+  n_q = 2000 radial transform (1-5 % off at unit parameters, wrong sign for
+  stiff masses). Periodic boxes (d >= 2 single-field; coupled d >= 1, which was
+  a fixed 1201-mode sum, 9 % low at L = 400) are converged image sums that
+  raise rather than truncate. The equal point x = tau = 0 at d >= 2 is
+  UV-divergent and now raises.
+- **UV-divergent loop subgraphs refuse** (`SpatialUVDivergenceError`): dynamic
+  power counting omega = (V-1) + n_C - (d/2) L <= 0, e.g. the tadpole at d >= 2
+  and the phi^4 sunset at d = 3. Their values were set by the smallest
+  Schwinger quadrature node (log / n_s^2 growth with SPATIAL_GRID_NS). The
+  tracked `reaction_diffusion_2d` model at max_ell >= 1 now raises (it has a
+  tadpole). Derivative-vertex momentum powers are not in the count.
+- Spatial `total_C` off the grid: the single-field tree is exact at any d.
+- **Unstable / critical masses refuse** (Re mu <= 0 in the diagonal modes and
+  the erf time integral; min Re eig M <= 0 in the coupled tree and
+  `coupled_two_point`); they returned finite numbers behind
+  `DAEDALUS_PREFLIGHT=0` or for direct engine calls.
+- **Dyson loop dressing** (coupled, unequal D): masses are clustered at
+  delta = scale * eps^(1/(n+2)) (cost O(delta^2) by symmetry) instead of a fixed
+  1e-8; near-degenerate gaps lost ~1e-2 at order 2, now <= 1e-8 against a
+  50-digit reference.
+- `SPATIAL_INTEGRATOR=mc` with derivative vertices emits a RuntimeWarning
+  (biased estimator) whatever `verbose`; an unknown `SPATIAL_INTEGRATOR` value
+  raises.
+- The coupled spectral kinematic has a memory guard (it allocated
+  (samples x spectral assignments) arrays unguarded).
+
+
+#### Spatial engine: loop scope guards (audit wave 2, group 2)
+
+- **Multi-field models with a diagonal kinetic block** (fields mixed only
+  through the noise, e.g. `-Ta*at^2*(1+c*b^2)`): loop edges that carry another
+  field now go to the coupled spectral-assignment driver (per-edge masses).
+  Before, every edge got the external field's (mu, D): the one-loop C_aa was
+  0.89x / 1.83x the exact value at mub = 1.2 / 5 (audit model). Unequal
+  per-field diffusion there refuses (the coupled driver needs scalar D).
+- **Periodic boundary with loops** (k=2, max_ell >= 1) and the k-point driver
+  on a periodic model now refuse; before, the loops (and the whole k-point
+  value) used the infinite domain while the k=2 tree used the image sum
+  (19-74 % off at L = 2-4). The tracked `allen_cahn_1d_subcritical_pbc` model
+  at max_ell >= 1 now raises.
+- **k-point driver**: legs go through the phys_idx map (labels like
+  `('p', 2)` on a single-population field used to enumerate nothing and
+  return 0); liveness is the exact symbolic zero test (an absolute
+  `|prefactor| < 1e-14` cut returned 0 for small-unit parameters); a
+  foreign-field edge or mixed slot fields raise the 'single-field' error that
+  routes to the coupled k-point driver.
+- **Noise extraction** (`extract_noise_coefficients`, `extract_noise_matrix`):
+  a coefficient that does not reduce to a number (missing parameter or saddle,
+  momentum-dependent noise) raises; it used to become 0 silently.
+
+
 #### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
 
 Regression tests: `tests/test_audit_wave1_estimators.py` and the transposed oracle check in
