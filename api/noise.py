@@ -154,6 +154,15 @@ def _require(who, value, name, ok, why):
         raise NoiseError(f'{who}: parameter {name}={x:g} is invalid; {why}.')
 
 
+def _seq(who, what, arg):
+    """``list(arg)``, refusing a string (``list('Dn')`` would silently give
+    the expressions ``D`` and ``n``; audit F2-noise 4)."""
+    if isinstance(arg, (str, bytes)):
+        raise NoiseError(f'{who}: {what} must be a list of expressions, not the '
+                         f'string {arg!r}.')
+    return list(arg)
+
+
 def expr_names(expr) -> set[str]:
     """Bare names (index suffixes stripped) of the free symbols and formal
     functions in ``expr``: ``x__i`` -> ``x``, ``phi__i(...)`` -> ``phi``."""
@@ -425,6 +434,9 @@ class Gaussian(NoiseSource):
     def __init__(self, var, mean=0):
         super().__init__(var=var, mean=mean)
 
+    def _check_domain(self):
+        self._require('var', _nonneg, 'need var >= 0 (a variance per unit time)')
+
     def _cgf(self):
         return self.params['mean'] * THETA + self.params['var'] * THETA ** 2 / 2
 
@@ -437,6 +449,9 @@ class Poisson(NoiseSource):
     def __init__(self, rate, size=1):
         super().__init__(rate=rate, size=size)
 
+    def _check_domain(self):
+        self._require('rate', _nonneg, 'need rate >= 0')
+
     def _cgf(self):
         return self.params['rate'] * (exp(self.params['size'] * THETA) - 1)
 
@@ -447,6 +462,10 @@ class GammaProcess(NoiseSource):
 
     def __init__(self, shape_rate, scale):
         super().__init__(shape_rate=shape_rate, scale=scale)
+
+    def _check_domain(self):
+        # a negative scale is the reflected (negative-jump) subordinator: allowed
+        self._require('shape_rate', _pos, 'need shape_rate > 0')
 
     def _cgf(self):
         return -self.params['shape_rate'] * log(1 - self.params['scale'] * THETA)
@@ -462,6 +481,10 @@ class InverseGaussianProcess(NoiseSource):
     def __init__(self, mean_rate, shape):
         super().__init__(mean_rate=mean_rate, shape=shape)
 
+    def _check_domain(self):
+        self._require('mean_rate', _pos, 'need mean_rate > 0')
+        self._require('shape', _pos, 'need shape > 0')
+
     def _cgf(self):
         mu, lam = self.params['mean_rate'], self.params['shape']
         return (lam / mu) * (1 - sqrt(1 - 2 * mu ** 2 * THETA / lam))
@@ -473,7 +496,7 @@ class Cumulants(NoiseSource):
     ``[kappa2, kappa3, ...]`` (expressions, may depend on the fields)."""
 
     def __init__(self, kappas: Sequence, mean=0):
-        kappas = list(kappas)
+        kappas = _seq('Cumulants', 'kappas', kappas)
         if not kappas:
             raise NoiseError('Cumulants: give at least kappa2.')
         params = {'mean': mean}
@@ -481,6 +504,9 @@ class Cumulants(NoiseSource):
             params[f'kappa{m}'] = k
         self._order = len(kappas) + 1
         super().__init__(**params)
+
+    def _check_domain(self):
+        self._require('kappa2', _nonneg, 'need kappa2 >= 0 (a variance rate)')
 
     def _cgf(self):
         K = self.params['mean'] * THETA
@@ -532,6 +558,13 @@ class JumpDistribution:
     def __init__(self, **params):
         self.params = {k: parse_expr(v, what=f'{type(self).__name__}({k}=...)')
                        for k, v in params.items()}
+        for k, v in self.params.items():
+            # as NoiseSource._check_common (audit F2-noise 2, 6): theta in a
+            # jump parameter would silently make a different CGF
+            if THETA in SR(v).variables():
+                raise NoiseError(
+                    f'{type(self).__name__}: parameter {k} may not contain '
+                    f'theta (reserved for the CGF variable).')
         self._check_domain()
 
     def _check_domain(self):
@@ -583,6 +616,10 @@ class Gamma(JumpDistribution):
     def __init__(self, shape, scale):
         super().__init__(shape=shape, scale=scale)
 
+    def _check_domain(self):
+        # a negative scale is the reflected (negative) jump: allowed
+        self._require('shape', _pos, 'need shape > 0')
+
     def _mgf(self):
         return (1 - self.params['scale'] * THETA) ** (-self.params['shape'])
 
@@ -615,6 +652,13 @@ class Uniform(JumpDistribution):
     def __init__(self, lo, hi):
         super().__init__(lo=lo, hi=hi)
 
+    def _check_domain(self):
+        lo, hi = _numeric(self.params['lo']), _numeric(self.params['hi'])
+        if (lo is not None and hi is not None and lo == hi) or \
+                SR(self.params['hi'] - self.params['lo']).is_trivial_zero():
+            raise NoiseError(f'Uniform: need lo != hi (got lo = hi = '
+                             f'{self.params["lo"]}); a fixed jump is Dirac(a).')
+
     def _mgf(self):
         lo, hi = self.params['lo'], self.params['hi']
         return (exp(hi * THETA) - exp(lo * THETA)) / ((hi - lo) * THETA)
@@ -624,6 +668,9 @@ class Bernoulli(JumpDistribution):
     """Jump 1 with probability ``p`` else 0: ``M = 1 - p + p*exp(theta)``."""
     def __init__(self, p):
         super().__init__(p=p)
+
+    def _check_domain(self):
+        self._require('p', lambda x: 0 <= x <= 1, 'need 0 <= p <= 1')
 
     def _mgf(self):
         p = self.params['p']
@@ -645,7 +692,7 @@ class FinitePMF(JumpDistribution):
     ``M = sum_j probs[j]*exp(values[j]*theta)``."""
 
     def __init__(self, values: Sequence, probs: Sequence):
-        values, probs = list(values), list(probs)
+        values, probs = _seq('FinitePMF', 'values', values), _seq('FinitePMF', 'probs', probs)
         if len(values) != len(probs) or not values:
             raise NoiseError('FinitePMF: values and probs must be non-empty '
                              'and of equal length.')
@@ -655,6 +702,8 @@ class FinitePMF(JumpDistribution):
             params[f'p{j}'] = p
         self._n = len(values)
         super().__init__(**params)
+        for j in range(self._n):
+            self._require(f'p{j}', _nonneg, f'need probs[{j}] >= 0')
         total = sum(self.params[f'p{j}'] for j in range(self._n))
         if total.is_numeric() or not total.variables():
             if not (SR(total) - 1).simplify_full().is_zero():
@@ -1024,7 +1073,8 @@ class Hyperexponential(JumpDistribution):
     ``probs[j]``: ``M = sum_j probs[j]/(1 - means[j]*theta)``."""
 
     def __init__(self, probs: Sequence, means: Sequence):
-        probs, means = list(probs), list(means)
+        probs = _seq('Hyperexponential', 'probs', probs)
+        means = _seq('Hyperexponential', 'means', means)
         if len(probs) != len(means) or not probs:
             raise NoiseError('Hyperexponential: probs and means must be non-empty '
                              'and of equal length.')
@@ -1064,8 +1114,8 @@ class PhaseType(JumpDistribution):
     ``E[X^m] = m! alpha (-T)^(-m) 1``."""
 
     def __init__(self, alpha: Sequence, T: Sequence):
-        alpha = list(alpha)
-        T = [list(r) for r in T]
+        alpha = _seq('PhaseType', 'alpha', alpha)
+        T = [_seq('PhaseType', 'T rows', r) for r in _seq('PhaseType', 'T', T)]
         n = len(alpha)
         if n == 0 or len(T) != n or any(len(r) != n for r in T):
             raise NoiseError('PhaseType: alpha must have length n and T must be n x n.')
