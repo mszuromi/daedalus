@@ -11,6 +11,34 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Spatial engine: quadrature and UV (audit wave 2, group 3)
+
+Numbers move (silent-wrong before):
+
+- **Spatial loops at tau != 0** (every k=2 spatial loop result, single-field and
+  coupled, any max_ell): the causal-chamber time grid now splits each vertex's
+  interval at the times of the external leaves it is joined to by a C edge
+  (the kink of |t_v - t_leaf|, which no chamber boundary covered). The d=1
+  one-loop tadpole at tau = 0.5-2 was 1-3 % off; it now agrees with the exact
+  mass shift to ~1e-10 at the default grid. tau = 0 values are unchanged
+  (~1e-6, quadrature level).
+- **d >= 2 tree** (single-field and coupled, infinite domain): the exact
+  heat-kernel time integral (Bessel-K at tau = 0, adaptive quadrature with a
+  checked error estimate at tau != 0) replaces the fixed q_cut = 40 /
+  n_q = 2000 radial transform (1-5 % off at unit parameters, wrong sign for
+  stiff masses). Periodic boxes (d >= 2 single-field; coupled d >= 1, which was
+  a fixed 1201-mode sum, 9 % low at L = 400) are converged image sums that
+  raise rather than truncate. The equal point x = tau = 0 at d >= 2 is
+  UV-divergent and now raises.
+- **UV-divergent loop subgraphs refuse** (`SpatialUVDivergenceError`): dynamic
+  power counting omega = (V-1) + n_C - (d/2) L <= 0, e.g. the tadpole at d >= 2
+  and the phi^4 sunset at d = 3. Their values were set by the smallest
+  Schwinger quadrature node (log / n_s^2 growth with SPATIAL_GRID_NS). The
+  tracked `reaction_diffusion_2d` model at max_ell >= 1 now raises (it has a
+  tadpole). Derivative-vertex momentum powers are not in the count.
+- Spatial `total_C` off the grid: the single-field tree is exact at any d.
+
+
 #### Spatial engine: loop scope guards (audit wave 2, group 2)
 
 - **Multi-field models with a diagonal kinetic block** (fields mixed only

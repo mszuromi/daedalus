@@ -12,7 +12,10 @@ against an independent reference:
     x = τ = 0 refuses;
   * periodic boxes: converged image sums, checked against a direct mode sum;
   * coupled (scalar-D) tree at d = 2 and on a large d = 1 ring (it was a fixed
-    1201-mode sum, 9 % low at L = 400) against Lyapunov references.
+    1201-mode sum, 9 % low at L = 400) against Lyapunov references;
+  * the d = 1 one loop at τ ≠ 0 (1-3 % off: the chamber time grid did not
+    split at the kink of a C edge to an external leaf) against the exact
+    tadpole mass shift δμ ∂C₀/∂μ.
 
 Run:  sage -python -m pytest tests/test_spatial_tree_exact.py -q
 """
@@ -183,3 +186,35 @@ def test_coupled_tree_large_ring_d1():
     for ix, x in enumerate(xs):
         ref = float(np.sum(np.cos(k * x) * caa)) / L
         assert C[ix] == pytest.approx(ref, rel=1e-9)
+
+
+def test_d1_one_loop_unequal_times_exact():
+    from api import compute_cumulants
+    from engine.integration.spatial.spatial_correlator import free_two_point
+    mu, D, T, lam = 1.6, 0.5, 0.8, 0.03
+    m = (ModelBuilder('ac_ut', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=mu, domain='positive')
+         .parameter('D', default=D, domain='positive')
+         .parameter('T', default=T, domain='positive')
+         .parameter('lam', default=lam)
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi + lam*phi^3', rhs='0')
+         .set_action_text(
+             'phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
+         .boundary('infinite').initial('stationary').build())
+    xs = np.array([0.0, 0.8])
+    taus = np.array([0.4, 1.3])
+    r = compute_cumulants(m, k=2, max_ell=1,
+                          fundamental={'mu': mu, 'D': D, 'T': T, 'lam': lam},
+                          external_fields=[('phi', 1), ('phi', 1)],
+                          spatial_grid=xs, tau_grid=taus, verbose=False,
+                          use_cache=False, parallel=False)
+    Cb = r['spatial_info']['C_by_order']
+    dmu = 3 * lam * T / (2 * math.sqrt(mu * D))
+    for it, tau in enumerate(taus):
+        for ix, x in enumerate(xs):
+            h = 1e-5 * mu
+            der = (free_two_point(mu + h, D, T, x, tau).real
+                   - free_two_point(mu - h, D, T, x, tau).real) / (2 * h)
+            assert Cb[1][it, ix] - Cb[0][it, ix] == pytest.approx(
+                dmu * der, rel=1e-7)
