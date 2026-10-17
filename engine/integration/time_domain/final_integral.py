@@ -8691,6 +8691,10 @@ def integrate_diagram(
                     edge_mode_sums_builder=edge_mode_sums_builder,
                     prop_td=prop_td, on_divergence=on_divergence,
                     _conv_assign=_conv_assign,
+                    # the coefficient term this call integrates (a split
+                    # coefficient, item 60): without it the rerun splits
+                    # the term's own prefactor again and refuses it
+                    _conv_monomial=_conv_monomial,
                     _conv_force_leg=(set(_conv_force_leg or ())
                                      | {(ei['u'], ei['v'], ei['lbl'])}))
             _RUNTIME_COUNTERS['conv_lines_dressed'] += 1
@@ -11916,13 +11920,12 @@ def _nquad_flush():
             if st['no_modes']:
                 extra += (f'; {st["no_modes"]} without the integrand\'s '
                           'exponential modes (epsabs from a sample of the '
-                          'integrand, open directions cut at '
-                          f'{NQUAD_TAIL_K:g}/κ beyond their farthest '
-                          'breakpoint with κ the slowest line or kernel '
-                          'rate of the model, no geometric breakpoints)')
+                          'integrand, no geometric breakpoints)')
             if st['floor_cut']:
-                extra += (f'; {st["floor_cut"]} cut by the model\'s slowest '
-                          'rate')
+                extra += (f'; {st["floor_cut"]} with open directions cut at '
+                          f'{NQUAD_TAIL_K:g}/κ beyond their farthest '
+                          'breakpoint, κ the slowest line or kernel rate of '
+                          'the model')
             if st['uncertified']:
                 extra += (f'; {st["uncertified"]} with an open direction '
                           'without any decay certificate, capped at the '
