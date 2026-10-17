@@ -235,10 +235,16 @@ def _equal(a, b, keys):
         assert np.array_equal(np.asarray(a[key]), np.asarray(b[key])), key
 
 
+#: a d=1 spatial model for the runs (the d=2 model's one loop has a tadpole,
+#: UV-divergent at d>=2, and its tree at x=tau=0 is the UV-divergent equal
+#: point -- both refused since audit wave 2)
+SP1 = "model: reaction_diffusion_quadratic_1d\nquestion:\n  k: 2\n  max_ell: 1\n"
+
+
 def test_c_spatial_k2_with_chi_grid_matches_direct(tmp_path):
-    path = _write(tmp_path, SP + "  tau_grid: [0.0, 0.5]\n  chi_grid: {start: 0, stop: 2, num: 3}\n"
+    path = _write(tmp_path, SP1 + "  tau_grid: [0.0, 0.5]\n  chi_grid: {start: 0, stop: 2, num: 3}\n"
                   "output: out/rd\n")
-    model, mod = dd.load_model('reaction_diffusion_2d')
+    model, mod = dd.load_model('reaction_diffusion_quadratic_1d')
     cfg = dd.Config(k=2, max_ell=1, tau_grid=np.array([0.0, 0.5]), chi_grid=np.array([0.0, 1.0, 2.0]),
                     parallel=False, verbose=False)
     dd.run(model, cfg, mod)                                           # warm
@@ -251,7 +257,7 @@ def test_c_spatial_k2_with_chi_grid_matches_direct(tmp_path):
     info = json.load(open(out / 'rd.run_info.json'))
     assert info['route'] == 'spatial_integrator' and info['resolved']['question']['chi_grid'] == [0.0, 1.0, 2.0]
     # two stems in one directory keep their own provenance files
-    run_config(_write(tmp_path, SP + "  tau_grid: [0.0]\n  chi_grid: [0.0, 1.0]\noutput: out/rd2\n", 'cfg2.yaml'))
+    run_config(_write(tmp_path, SP1 + "  tau_grid: [0.0]\n  chi_grid: [0.0, 1.0]\noutput: out/rd2\n", 'cfg2.yaml'))
     assert 'rd2.run_info.json' in os.listdir(out) and 'rd.run_info.json' in os.listdir(out)
 
 
