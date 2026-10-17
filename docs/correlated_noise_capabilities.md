@@ -50,6 +50,19 @@ shapes:
 | Lagged δ | `dirac_delta(tau - Delta)` | implicitly symmetrized to `½[δ(τ−Δ) + δ(τ+Δ)]` |
 | Any analytic Sage expression | as above | as long as Sage can extract the δ part vs. smooth part |
 
+An empty `kernel` (`None` / `''`) is the white kernel `∏_k δ(τ_k)`.
+
+**Population (multi-unit) fields.**  A CGF row on a response field with
+more than one unit must say how the units' noises are related: its
+coefficient / kernel text sees the 0-based leg indices `i`, `j` (order 2;
+`i1 … in` at any order), `kronecker_delta(i, j)` (independent per-unit
+noise, each unit its own copy, as `-D*xt[i]^2` in the action) and
+`shared(i, j)` (= 1: one noise common to all units).  For example
+`coefficient='2*D*(kronecker_delta(i, j) + rho*(1 - kronecker_delta(i, j)))'`
+gives unit variance `2D` and cross-unit correlation `rho`.  A row whose
+texts use no index is refused on such a field (it used to give every
+pair of units the auto cumulant, i.e. silently common noise).
+
 ### 1.5 Markovian embedding (auto, v1)
 
 For the most common smooth-kernel case — a single Lorentzian
@@ -90,9 +103,16 @@ For each matched row the preprocessor:
 * adds `(Dt + 1/τc) · xi = 0` to the DAE equations;
 * replaces the colored CGF row with a white-noise row on the
   auxiliaries: `coefficient = 2c/τc`, `kernel = dirac_delta(tau)`;
-* appends `- xi` to the original `xt*(...)` block in your action text
-  (encoding `dx/dt = ... + ξ`) and adds the new kinetic term
-  `xit*(Dt + 1/τc)*xi`.
+* adds the coupling `- xt*xi` to your action as a separate term
+  (encoding `dx/dt = ... + ξ`) together with the new kinetic term
+  `xit*(Dt + 1/τc)*xi`; your own action text is kept verbatim.  Because
+  integrating the Gaussian `ξ` out of these terms gives back exactly
+  `-(1/2) xt κ xt`, the embedding is correct for any layout of the
+  action (`xt*(...)`, `(...)*xt`, split operators, an overall factor).
+
+Only single-unit fields are embedded (the auxiliary is one scalar
+process).  A colored row on a population field passes through to the
+colored-kernel route (and `markovianize=True` on such a row raises).
 
 The cross-correlated 2D case (3 CGF rows: Cxx, Cyy, Cxy) becomes
 3 white-noise rows on the auxiliaries (auxXX, auxYY, auxXY), all with

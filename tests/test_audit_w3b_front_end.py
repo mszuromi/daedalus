@@ -192,6 +192,41 @@ def test_markovianize_skips_multi_unit_fields():
         build(True).build()
 
 
+def test_markovianize_single_unit_populations_cross_correlated():
+    """Two size-1 populations with a cross-correlated colored noise: the
+    auxiliaries live in their source fields' populations, and the result is
+    the Lyapunov covariance of the 4-d Markov embedding."""
+    mu, D, rho, tc = 0.7, 0.4, 0.3, 0.9
+    rows = [('Cxx', ['xt', 'xt'], 'D/tauc'), ('Cyy', ['yt', 'yt'], 'D/tauc'),
+            ('Cxy', ['xt', 'yt'], 'rho*D/tauc')]
+    b = (TemporalModelBuilder('two pops colored').population('A', size=1)
+         .population('B', size=1)
+         .physical_field('x', population='A').physical_field('y', population='B')
+         .parameter('mu', default=mu, domain='positive')
+         .parameter('D', default=D, domain='positive')
+         .parameter('rho', default=rho).parameter('tauc', default=tc, domain='positive'))
+    for name, legs, coeff in rows:
+        b = b.declare_cgf_term(name, response_legs=legs, order=2, coefficient=coeff,
+                               kernel='exp(-abs(tau)/tauc)')
+    b = (b.set_action_text('sum(xt[i]*((Dt+mu)*x[i]) for i in pop_A) + '
+                           'sum(yt[i]*((Dt+mu)*y[i]) for i in pop_B)')
+         .equation(lhs='(Dt+mu)*x', rhs='0', population='A')
+         .equation(lhs='(Dt+mu)*y', rhs='0', population='B'))
+    m = b.build()
+    assert b._markovianize_applied['matched_rows'] == ['Cxx', 'Cyy', 'Cxy']
+    c = D / tc
+    A = np.diag([-mu, -mu, -1 / tc, -1 / tc])
+    A[0, 2] = A[1, 3] = 1.0
+    Q = np.zeros((4, 4))
+    Q[2:, 2:] = 2 * c / tc * np.array([[1, rho], [rho, 1]])
+    S = solve_continuous_lyapunov(A, -Q)
+    fund = {'mu': mu, 'D': D, 'rho': rho, 'tauc': tc}
+    for ext, (a, bb) in (([('x', 1), ('x', 1)], (0, 0)), ([('y', 1), ('x', 1)], (1, 0))):
+        got = _real(_cc(m, ext, fund))
+        ref = np.array([(expm(A * t) @ S)[a, bb] for t in TAUS])
+        assert np.max(np.abs(got - ref)) < 1e-12, (ext, got, ref)
+
+
 # ── ACC-13: a re-declared kernel replaces the old one ───────────────────
 
 

@@ -45,9 +45,10 @@ builder in place.  Every matched CGF row is replaced with:
     ``-(1/2) xt kappa xt`` with ``kappa = c*exp(-|tau|/tauc)``, whatever the
     layout of the rest of the action (``xt*(...)``, ``(...)*xt``, split
     operators, an overall factor).
-  * Only models whose fields have a single unit are embedded (the
-    auxiliary is a scalar process); a row on a multi-unit (population)
-    field passes through to the colored-kernel route.
+  * Only rows on single-unit fields are embedded (the auxiliary is a
+    scalar process in the source field's population); a row on a
+    multi-unit (population) field passes through to the colored-kernel
+    route.
 
 The transform is OFF for any row that doesn't cleanly match the
 single-Lorentzian template; those rows pass through untouched and the
@@ -231,10 +232,6 @@ def markovianize_spec(builder) -> None:
         return
 
     declared_params = [p.name for p in builder.parameters]
-    # the embedding adds one scalar auxiliary per source field and a bare
-    # ``xt*xi`` coupling: models whose fields have more than one unit
-    # (populations) are not embedded (their rows keep the colored kernel)
-    multi_unit = _n_units(builder) > 1
 
     # Group matched rows by their τc expression.  Two rows that share
     # the same τc CAN share one auxiliary process per response field;
@@ -256,14 +253,17 @@ def markovianize_spec(builder) -> None:
         if order != 2:
             passthrough_rows.append(term)
             continue
-        if multi_unit:
+        # the embedding adds one scalar auxiliary per source field and a
+        # bare ``xt*xi`` coupling: a row on a field with more than one unit
+        # (a population) is not embedded (it keeps the colored kernel)
+        units = _row_units(builder, term)
+        if units > 1:
             if explicit is True:
                 raise ValueError(
                     f"colored_to_markovian: row {term.get('name')!r} has "
-                    f"markovianize=True but the model's fields have "
-                    f"{_n_units(builder)} units; the Markovian embedding covers "
-                    f"single-unit fields only (pass markovianize=False to keep "
-                    f"the colored kernel).")
+                    f"markovianize=True but sits on a field with {units} units; "
+                    f"the Markovian embedding covers single-unit fields only "
+                    f"(pass markovianize=False to keep the colored kernel).")
             passthrough_rows.append(term)
             continue
         info = detect_lorentzian(
@@ -368,17 +368,23 @@ def markovianize_spec(builder) -> None:
 
     # ── Inject new physical fields ──────────────────────────────────
     for source_nat, aux_nat in aux_natural_by_source.items():
+        src = _field_of(builder, f'{source_nat}t')
+        pop_kw = ({'population': src.population}
+                  if src is not None and src.population else {})
         builder.physical_field(
             aux_nat, indexed=True,
             description=(f'auxiliary OU noise (Markovian embedding of '
                          f'colored CGF on {source_nat})'),
+            **pop_kw,
         )
 
     # ── Inject the aux OU equations  (Dt + 1/τc) * xi = 0 ───────────
     for source_nat, aux_nat in aux_natural_by_source.items():
+        src = _field_of(builder, f'{source_nat}t')
         builder.equation(
             lhs=f'(Dt + 1/{tauc_text}) * {aux_nat}',
             rhs='0',
+            population=(src.population if src is not None else None),
         )
 
     # ── Replace matched CGF rows with their white-noise aux versions ─
@@ -474,14 +480,41 @@ def _pick_aux_field_name(source_nat: str,
         n += 1
 
 
-def _n_units(builder) -> int:
-    """The number of units of the builder's indexed fields (the flat index
-    set the pipeline uses: the summed population sizes, else
-    ``n_populations``)."""
+def _field_of(builder, response_name: str):
+    """The physical field whose auto-response is ``response_name``."""
+    for f in builder.physical_fields:
+        if f'{f.natural_name or f.name}t' == response_name:
+            return f
+    return None
+
+
+def _field_units(builder, f) -> int:
+    """The number of units of physical field ``f``: 1 when not indexed, the
+    size of its population, else the flat index set (the summed population
+    sizes, or ``n_populations``)."""
+    if not f.indexed:
+        return 1
     pops = getattr(builder, 'populations', None) or []
+    for p in pops:
+        if f.population and p.get('name') == f.population:
+            return max(int(p.get('size', 1)), 1)
     if pops:
         return sum(max(int(p.get('size', 1)), 1) for p in pops)
     return max(int(getattr(builder, 'n_populations', 1) or 1), 1)
+
+
+def _row_units(builder, term) -> int:
+    """The largest unit count of the fields a CGF row's legs sit on (1 for a
+    leg without a matching physical field: that row is left alone later)."""
+    legs = term.get('response_legs') or []
+    if not legs and term.get('response_field'):
+        legs = [term['response_field']]
+    units = 1
+    for L in legs:
+        f = _field_of(builder, L)
+        if f is not None:
+            units = max(units, _field_units(builder, f))
+    return units
 
 
 def _sr_to_text(expr) -> str:

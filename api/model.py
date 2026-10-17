@@ -514,6 +514,14 @@ class _TemporalMethods:
             ``'dirac_delta(t1)*dirac_delta(t2)'`` (Poisson shot noise
             at κ³).  Defaults to ``None`` which the compiler treats as
             ``∏_k δ(τ_k)`` — fully-local cumulant.
+
+            On a response field with more than one unit (a population),
+            the coefficient / kernel texts must state the unit structure
+            with the 0-based leg indices ``i``, ``j`` (order 2; ``i1 ..
+            in`` at any order): ``kronecker_delta(i, j)`` for independent
+            per-unit noise, ``shared(i, j)`` (= 1) for one noise common to
+            all units, or any expression in them; a row that uses no index
+            is refused there.
         response_legs : list of str OR comma-separated str, keyword-only
             **New / multi-field path.**  Per-leg list of response field
             names, length = ``order``.  Use for cross-field cumulants:

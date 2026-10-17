@@ -93,7 +93,14 @@ Options (``compute_cumulants(..., delay={...})``):
 The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
 tree), the analyzer finding ``G3_DELAY_APPROXIMATED`` and an
-``approximation`` entry of the assumptions ledger (``delay:<kernel>``).
+``approximation`` entry of the assumptions ledger (``delay:<kernel>``).  A
+missed target (``n_max`` / ``wall_max`` reached, a higher order the engine
+could not finish, e.g. refused by the memory budget, or a diverging
+difference) sets ``result['status'] = 'target_missed'`` (``'incomplete'``
+when Phase J left diagrams out) next to the ``DelayOrderWarning``.  At
+k >= 3 the controller compares ``total_C`` at sample times in units of the
+longest delay (``result['delay']['sample_time_scale']``), so its estimate
+and the order it picks do not depend on the time unit.
 """
 from __future__ import annotations
 
