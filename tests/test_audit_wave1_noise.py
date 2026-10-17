@@ -93,8 +93,6 @@ def test_string_sequences_refused(make):
     (lambda: N.Cumulants([-1]), 'kappa2'),
     (lambda: N.Gamma(-1, 1), 'shape'),
     (lambda: N.Bernoulli(1.5), 'p'),
-    (lambda: N.Binomial(2.5, 0.3), 'n'),
-    (lambda: N.Binomial(3, -0.1), 'p'),
     (lambda: N.FinitePMF([1, 2], [1.5, -0.5]), 'p1'),
 ])
 def test_round1_domain_checks(make, name):

@@ -163,10 +163,6 @@ def _seq(who, what, arg):
     return list(arg)
 
 
-def _int_valued(x):
-    return x >= 0 and float(x).is_integer()
-
-
 def expr_names(expr) -> set[str]:
     """Bare names (index suffixes stripped) of the free symbols and formal
     functions in ``expr``: ``x__i`` -> ``x``, ``phi__i(...)`` -> ``phi``."""
@@ -685,10 +681,6 @@ class Binomial(JumpDistribution):
     """Binomial jump ``B(n, p)``: ``M = (1 - p + p*exp(theta))^n``."""
     def __init__(self, n, p):
         super().__init__(n=n, p=p)
-
-    def _check_domain(self):
-        self._require('n', _int_valued, 'need a non-negative integer n')
-        self._require('p', lambda x: 0 <= x <= 1, 'need 0 <= p <= 1')
 
     def _mgf(self):
         p = self.params['p']

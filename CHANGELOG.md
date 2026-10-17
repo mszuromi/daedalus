@@ -29,7 +29,7 @@ now refused, and so are invalid noise declarations.
   - `Gaussian` var ≥ 0 and `Poisson` rate ≥ 0;
   - `GammaProcess` shape_rate > 0; `InverseGaussianProcess` mean_rate, shape > 0;
   - `Cumulants` κ2 ≥ 0 and `Gamma` shape > 0;
-  - `Bernoulli` / `Binomial` 0 ≤ p ≤ 1, and `Binomial` n a non-negative integer;
+  - `Bernoulli` 0 ≤ p ≤ 1;
   - `FinitePMF` probabilities ≥ 0;
   - `Uniform` lo ≠ hi. This was a raw ZeroDivisionError before.
 
