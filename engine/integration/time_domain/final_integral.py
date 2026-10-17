@@ -11943,7 +11943,7 @@ def _nquad_flush():
                           'the model')
             if st['uncertified']:
                 extra += (f'; {st["uncertified"]} with an open direction '
-                          'without any decay certificate, capped at the '
+                          'without a decay certificate, capped at the '
                           f'absolute ±{NQUAD_UNCERTIFIED_CAP:g}: their '
                           'values are truncated wherever the integrand '
                           'decays more slowly than that')
