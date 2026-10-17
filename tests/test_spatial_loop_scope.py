@@ -70,7 +70,10 @@ def test_loop_edges_of_another_field_get_their_own_mass():
     for it in range(2):
         for ix in range(2):
             c0 = Cb[0][it, ix]
-            assert Cb[1][it, ix] - c0 == pytest.approx(_C * b2 * c0, rel=1e-6)
+            # (τ=0, x=0.7): 7e-4 from the fixed default chamber grid (the
+            # fixed-quadrature item of the same audit; 1e-5 at n_t=n_s=40)
+            tol = 2e-3 if (it, ix) == (0, 1) else 1e-6
+            assert Cb[1][it, ix] - c0 == pytest.approx(_C * b2 * c0, rel=tol)
     # τ=0, x=0 tree: T_a/(2√(μ_a D)) (the tree itself is untouched)
     assert Cb[0][0, 0] == pytest.approx(_TA / (2 * math.sqrt(_MUA * _D)),
                                         rel=1e-10)
@@ -85,8 +88,10 @@ def test_kpoint_refuses_foreign_field_edges_with_routing_message():
     ft.expand()
     prop = build_propagator(ft, m, use_cache=False, verbose=False)
     with pytest.raises(NotImplementedError, match='single-field'):
-        compute_spatial_kpoint(ft, m, prop, _FUND, [('a', 1)] * 3,
-                               np.zeros((1, 2, 2)), max_ell=1)
+        compute_spatial_kpoint(ft, m, prop,
+                               dict(_FUND, astar1=0.0, bstar1=0.0),
+                               [('a', 1)] * 4,
+                               np.zeros((1, 3, 2)), max_ell=1)
 
 
 def test_periodic_loops_refuse():
@@ -118,3 +123,45 @@ def test_periodic_loops_refuse():
     # ring variance: T/(2√(μD)) coth(L√(μ/D)/2)
     assert np.real(r['C_tau_x'][0, 0]) == pytest.approx(
         0.5 / math.tanh(2.0), rel=1e-6)
+
+
+# ── k-point driver: leg labels and liveness ─────────────────────────────────
+
+def _quad_rd(T):
+    from api.compute import FieldTheory
+    from api._propagator import build_propagator
+    b = (ModelBuilder('rd_quad_scope', n_populations=0)
+         .physical_field('p', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('DD', default=1.0, domain='positive')
+         .parameter('g', default=0.1, domain='real')
+         .parameter('T', default=T, domain='positive')
+         .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+         .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    ft = FieldTheory(b, taylor_order=5)
+    ft.expand()
+    prop = build_propagator(ft, b, use_cache=False, verbose=False)
+    return ft, b, prop, {'mu': 1.0, 'DD': 1.0, 'g': 0.1, 'T': T, 'pstar1': 0.0}
+
+
+def test_kpoint_leg_labels_and_unit_scale():
+    """k=3 tree: ('p', 1..3) labels give the same (nonzero) value as
+    ('p', 1)×3 (they used to enumerate nothing → exact 0), and the value
+    scales exactly as T² when T → 1e-8·T (an absolute 1e-14 prefactor cut
+    used to return 0 there)."""
+    from engine.integration.spatial.pipeline_bridge import compute_spatial_kpoint
+    pts = np.array([[[0.3, 0.2], [-0.4, 0.5]]])
+    ft, b, prop, npar = _quad_rd(1.0)
+    v1, _ = compute_spatial_kpoint(ft, b, prop, npar, [('p', 1)] * 3, pts,
+                                   max_ell=0)
+    v2, _ = compute_spatial_kpoint(ft, b, prop, npar,
+                                   [('p', 1), ('p', 2), ('p', 3)], pts,
+                                   max_ell=0)
+    assert abs(v1[0]) > 1e-6
+    assert v2[0] == pytest.approx(v1[0], rel=1e-13)
+    s = 1e-8
+    fts, bs, props, nps = _quad_rd(s)
+    vs, _ = compute_spatial_kpoint(fts, bs, props, nps, [('p', 1)] * 3, pts,
+                                   max_ell=0)
+    assert vs[0] == pytest.approx(s * s * v1[0], rel=1e-10)

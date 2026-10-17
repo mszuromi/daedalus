@@ -2023,15 +2023,17 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     D0 = float(_np.real(D0))
     spatial_dim = int(tree_info.get('spatial_dim', 1))
 
-    be = build_pipeline_records(ft, model, prop, external_fields,
-                                max_ell=max_ell, k=k, verbose=verbose)
-    # every edge must carry the field of the certified mode (else the
-    # single (mu0, D0) is wrong for it); the message routes the caller to
-    # the coupled k-point driver (api.compute catches 'single-field')
+    # legs → phys_idx keys (as every other driver: a label like ('p', 2) on
+    # a single-population field is not a key and would enumerate nothing)
     from engine.diagrams.type_assignment import build_field_index_map
     _, _pidx = build_field_index_map(list(ft._ns._ring_var_names),
                                      ft._n_tilde)
     _ext = _legs_to_phys_idx(list(external_fields), _pidx)
+    be = build_pipeline_records(ft, model, prop, _ext,
+                                max_ell=max_ell, k=k, verbose=verbose)
+    # every edge must carry the field of the certified mode (else the
+    # single (mu0, D0) is wrong for it); the message routes the caller to
+    # the coupled k-point driver (api.compute catches 'single-field')
     _fi = {int(_pidx[f]) for f in _ext}
     _n_fields = int(prop.get('nf') or 1)
     if len(_fi) != 1 or any(
@@ -2042,7 +2044,10 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             'external slot carries a field other than the certified mode '
             '(one (mu, D) for every edge would be wrong).  Coupled-field '
             'k>=3 routes through compute_coupled_kpoint.')
-    slot_fields = list(external_fields)
+    slot_fields = list(_ext)
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items()
+                  if str(kk) != 'Laplacian'}
     per_ell = {}
     total = _np.zeros(n_pts)
     # group evaluation points by tau-configuration (slot 0 at tau=0)
@@ -2054,11 +2059,18 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     for ell in sorted(be):
         acc = _np.zeros(n_pts)
         for td, p in be[ell]:
-            pv = float(_SR(p).subs(num_params))
-            if abs(pv) < 1e-14:
+            # liveness: exact symbolic zero test (an absolute float cut would
+            # drop a whole loop order — or the tree — for small-unit params)
+            pre_num = _SR(p).subs(base_np_sr)
+            if pre_num.is_zero():
                 continue
+            try:
+                pv = float(pre_num)
+            except (TypeError, ValueError):
+                _check_prefactor_resolved(p, base_np_sr, model)
+                raise
             d = diagram_to_cstack(td)
-            leaf_fields = slot_fields  # enumeration emits matching multiset
+            leaf_fields = [td.external_legs[leaf] for leaf in d.external_legs]
             maps = field_respecting_mappings(slot_fields, leaf_fields)
             comp = external_wick_compensation(td)
             n_V = len(d.internal_vertices)
