@@ -1490,7 +1490,7 @@ class _Setup:
                                else [v for kk, v in num_params.items()
                                      if str(kk) == n][0])
                 got = fld.evaluate(x, reference)
-                if abs(got - vref) > 1e-9 * max(1.0, abs(vref)):
+                if abs(got - vref) > 1e-9 * max(abs(vref), _value_floor(num_params)):
                     raise SymbolicLoopRefused(
                         'saddle_mismatch', f'saddle {n} = {expr} gives {got} '
                         f'at the reference, the pipeline solved {vref}')
@@ -1842,11 +1842,27 @@ def _saddle_moves(model, result, sad, sym):
         for n in sad:
             if n not in new:
                 return None
-            if abs(new[n] - ref[n]) > 1e-9 * max(1.0, abs(ref[n])):
+            if abs(new[n] - ref[n]) > 1e-9 * max(abs(ref[n]), _value_floor(ref)):
                 return True
         return False
     except Exception:
         return None
+
+
+def _value_floor(vals) -> float:
+    """Absolute floor of the relative saddle checks: 1e-6 of the largest
+    |value| of the run's numbers (parameters and saddles).  The old floor
+    max(1, |x|) made the checks absolute below 1 in the model's units: a
+    saddle of 1e-6 moving by 1.4 % went unnoticed (audit G1-symbolic 7)."""
+    m = 0.0
+    for v in (vals.values() if isinstance(vals, dict) else vals):
+        try:
+            x = abs(complex(v))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x):
+            m = max(m, x)
+    return 1e-6 * m if m > 0 else 1e-300
 
 
 def _pipeline_values(st, ells, kernel):
@@ -1927,7 +1943,7 @@ def _check_zero_pattern(sp, prop, fld, reference, num_params):
                         f'nearly vanishes at the reference point: choose a '
                         f'generic reference (parameters=)')
                 dsym = fld.evaluate(e.d, reference)
-                if abs(dsym - dref) > CHECK_RTOL * max(1.0, abs(dref)):
+                if abs(dsym - dref) > CHECK_RTOL * abs(dref):     # dref != 0 here
                     raise SymbolicLoopRefused(
                         'prefactor_mismatch', f'δ coefficient G[{p},{r}]: '
                         f'{dsym} vs the pipeline {dref}')
@@ -1995,7 +2011,7 @@ def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):
         # factor: the symbolic one must agree at the reference
         pref = complex(cfn.ss_prefactor)
         dnum = fld.evaluate(dfac, st.reference) if dfac != 0 else 0j
-        if abs(dnum - pref) > CHECK_RTOL * max(1.0, abs(pref)):
+        if abs(dnum - pref) > CHECK_RTOL * max(abs(pref), abs(dnum)):
             raise SymbolicLoopRefused(
                 'prefactor_mismatch', f'subset {si}: symbolic δ factor {dnum} '
                 f'vs the route\'s prefactor {pref}')
