@@ -11,6 +11,31 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: audit fix wave 1 -- outputs (F1 group 3)
+
+Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's reproducer and fails on the old code.
+- **`symbolic_out`:**
+  - **User values are no longer snapped to 0.** `values=` floats below 1e-12 used to be replaced by 0, e.g. D = 1e-13
+    gave C0 = 0.
+  - **Saddle snapping is relative.** Solved saddle values are snapped relative to the run's largest number, not at an
+    absolute 1e-12.
+  - **Legacy route, a parameter named `tau`.** `inverse_transform(..., legacy=True)` now names the lag `tau_lag`, as
+    the C2 route does. The parameter and the lag used to merge into one symbol.
+  - **No values at a moved reference.** When poles coincide at the reference, the retry used to hand back numbers at
+    the point it moved to. A ModeSum now keeps the user's reference, and evaluating at it is refused by the
+    coincidence assumptions. A pairing's value at the moved point is dropped, and `reason` says why.
+  - **`even` is decided relative to |C|.** It used an absolute 1e-9, so a small-amplitude asymmetric entry was called
+    even. With RootOf modes the test now runs on the 256-bit modes, at lags scaled by the slowest and fastest rate.
+    Fixed lags used to underflow to 0 == 0 at rates above ~2e3.
+  - **Unknown names are refused.** A misspelled name is now an error in `ModeSum.evaluate` / `__call__`, as documented,
+    and in `tree_covariance(values=...)`, as `tree_covariance_from_matrices` already did. It used to be dropped.
+- **`symbolic_loop`: relative floors.** The saddle-movement and saddle closed-form checks use a floor of 1e-6 × the
+  run's largest number instead of max(1, |x|). The δ-coefficient and subset-prefactor checks are fully relative.
+- **`me_output`:**
+  - A finite chamber's `SideME` refuses u > u_max. It used to answer with another chamber's leg order.
+  - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
+- **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
+
 #### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
 
 - **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).
