@@ -2561,6 +2561,11 @@ def _side_sign(side: str) -> int:
     return -1 if side == 'positive' else 1
 
 
+def _near_miss(a: str, b: str) -> bool:
+    """``a`` is ``b`` up to case (and not ``b`` itself)."""
+    return a != b and a.lower() == b.lower()
+
+
 @dataclass
 class ModeSum:
     """Time-domain covariance as a sum of exponential modes plus a contact
@@ -2626,8 +2631,12 @@ class ModeSum:
         """``values`` over the explicitly given reference values (symbols
         that were only defaulted to 1 must be given).  A name that was
         substituted when the modes were built must carry the same value (it
-        is not a parameter of the result any more); an unknown name is an
-        error -- never silently ignored."""
+        is not a parameter of the result any more).  Any other name does not
+        occur in C and cannot change it: it is ignored (callers pass a
+        model's whole parameter dict), unless it equals a name the modes
+        depend on up to case, which is an error (audit G1-symbolic 5:
+        ``{'Mu': 3}`` evaluated at the reference; an edit-distance rule
+        would flag real distinct names such as ``nstar1`` / ``vstar1``)."""
         if values is None:
             return dict(self.reference)
         vals = _as_name_dict(values)
@@ -2649,12 +2658,13 @@ class ModeSum:
                         f'({k} = {fixed[k]}: substituted, or used for the '
                         f'mean-field solve); rebuild them to use {k} = {x}')
                 continue
-            # a misspelled name used to be dropped and the result evaluated
-            # at the reference (audit G1-symbolic 5)
-            raise SymbolicOutError(
-                f'unknown name {k!r}: the modes depend on '
-                f'{sorted(set(self.reference) | set(extra_names))}'
-                + (f' (fixed: {sorted(fixed)})' if fixed else ''))
+            near = [n for n in set(self.reference) | set(extra_names)
+                    if _near_miss(k, n)]
+            if near:
+                raise SymbolicOutError(
+                    f'unknown name {k!r} (did you mean {sorted(near)}?): the '
+                    f'modes depend on '
+                    f'{sorted(set(self.reference) | set(extra_names))}')
         return out
 
     def numeric_terms(self, values: Optional[dict] = None,

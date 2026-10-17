@@ -27,8 +27,11 @@ Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's 
   - **`even` is decided relative to |C|.** It used an absolute 1e-9, so a small-amplitude asymmetric entry was called
     even. With RootOf modes the test now runs on the 256-bit modes, at lags scaled by the slowest and fastest rate.
     Fixed lags used to underflow to 0 == 0 at rates above ~2e3.
-  - **Unknown names are refused.** A misspelled name is now an error in `ModeSum.evaluate` / `__call__`, as documented,
-    and in `tree_covariance(values=...)`, as `tree_covariance_from_matrices` already did. It used to be dropped.
+  - **Misspelled names are refused.** A name equal to one the modes depend on up to case is now an error in
+    `ModeSum.evaluate` / `__call__`. Other names absent from C stay
+    ignored, so a model's whole parameter dict can be passed. In `tree_covariance(values=...)` every name that is
+    neither a model parameter nor a symbol of K / G / D is refused, as `tree_covariance_from_matrices` already did.
+    Both used to be dropped silently.
 - **`symbolic_loop`: relative floors.** The saddle-movement and saddle closed-form checks use a floor of 1e-6 × the
   run's largest number instead of max(1, |x|). The δ-coefficient and subset-prefactor checks are fully relative.
 - **`me_output`:**

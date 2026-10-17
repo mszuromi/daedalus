@@ -89,11 +89,15 @@ def test_rootof_even_test_at_fast_rates():
         assert out['roots'] and out['even'] is None
 
 
-def test_modesum_refuses_unknown_names():
-    """G1-symbolic 5: a typo evaluated at the reference."""
+def test_modesum_refuses_misspelled_names():
+    """G1-symbolic 5: a typo evaluated at the reference.  A name that is
+    not a near miss (a model parameter absent from C) stays ignored."""
     ms = so.tree_modes(2 * D / (mu ** 2 + omega ** 2), omega, reference={'mu': 1, 'D': 1})
     with pytest.raises(SymbolicOutError, match="unknown name 'Mu'"):
         ms.evaluate([0.5], {'Mu': 3.0})
+    with pytest.raises(SymbolicOutError, match="did you mean"):
+        ms.evaluate([0.5], {'d': 3.0})
+    assert ms.evaluate([0.5], {'eps': 3.0, 'xstar1': 0.0})[0] == ms.evaluate([0.5])[0]
     assert abs(ms.evaluate([0.5], {'mu': 3.0})[0].real - math.exp(-1.5) / 3) < 1e-14
 
 
