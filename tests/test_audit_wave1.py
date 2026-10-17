@@ -73,26 +73,32 @@ def test_colored_noise_structure_refused_and_amplitude_kept():
 
 # ── exact delayed tree: unit invariance (audit 3B-02) ────────────────────
 
-def _ss(S, N):
+def _ss(S, N, coupled):
     """Two-field delayed system, fields rescaled u -> S u (S diagonal)."""
-    A = np.array([[-1.3, 0.4], [-0.5, -0.9]])
-    Ad = np.array([[0.3, 0.0], [0.6, -0.4]])
-    B = np.eye(2)
+    if coupled:
+        A = np.array([[-1.3, 0.4], [-0.5, -0.9]])
+        Ad = np.array([[0.3, 0.0], [0.6, -0.4]])
+    else:                       # only the correlated noise links the fields
+        A = np.array([[-1.3, 0.0], [0.0, -0.9]])
+        Ad = np.array([[0.3, 0.0], [0.0, -0.4]])
     Si = np.diag(1.0 / np.diag(S))
-    return DelayedStateSpace(S @ A @ Si, S @ Ad @ Si, S @ B, np.zeros((2, 2)),
+    return DelayedStateSpace(S @ A @ Si, S @ Ad @ Si, S, np.zeros((2, 2)),
                              np.eye(2), np.zeros((2, 2)), 0.7, N)
 
 
+@pytest.mark.parametrize('coupled', [True, False])
 @pytest.mark.parametrize('scales', [(1e6, 1e6), (1e6, 1e-3), (1e-5, 3e4)])
-def test_exact_delayed_tree_is_unit_invariant(scales):
+def test_exact_delayed_tree_is_unit_invariant(scales, coupled):
+    # main: 8e-6 off at a uniform 1e6, refused as singular or 4e-6 off at
+    # mixed units; measured now <= 8e-15
     N = np.array([[0.4, 0.1], [0.1, 0.25]])
     taus = [0.0, 0.3, 1.1, 2.0]
-    ref = {(a, b): ExactTree(_ss(np.eye(2), N), a, b).values(taus)
-           for a in range(2) for b in range(2)}
     S = np.diag(scales)
-    for (a, b), v in ref.items():
-        got = ExactTree(_ss(S, N), a, b).values(taus) / (scales[a] * scales[b])
-        assert np.max(np.abs(got - v)) <= 1e-11 * np.max(np.abs(v))   # 6e-13 measured
+    for a in range(2):
+        for b in range(2):
+            v = ExactTree(_ss(np.eye(2), N, coupled), a, b).values(taus)
+            got = ExactTree(_ss(S, N, coupled), a, b).values(taus) / (scales[a] * scales[b])
+            assert np.max(np.abs(got - v)) <= 1e-13 * np.max(np.abs(v))
 
 
 # ── the delay approximant's error in G6 (audit 3B-13) ────────────────────

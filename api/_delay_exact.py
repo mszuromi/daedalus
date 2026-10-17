@@ -261,52 +261,41 @@ class _Stack:
         return L
 
 
-def _balance(L):
-    """``(Lb, sc)`` with ``L = diag(sc) Lb diag(1/sc)`` (power-of-2 diagonal
-    balancing, no permutation: exact).  Fields in very different units give
-    the realization entries of order (unit ratio) and the stacked operator
-    the noise covariance next to O(1) blocks; scipy's ``expm`` does not
-    balance, and its scaling-and-squaring error grows with the norm (audit
-    3B-02)."""
-    if L.size == 0:
-        return L, np.ones(L.shape[0])
-    Lb, (sc, _perm) = sl.matrix_balance(L, permute=False, separate=True)
-    return Lb, sc
-
-
-def _expm(L):
-    """``expm(L)`` through the balanced matrix."""
-    Lb, sc = _balance(L)
-    return (sc[:, None] * sl.expm(Lb)) / sc[None, :]
-
-
 def _expm_apply(L, Y0, s):
-    Lb, sc = _balance(L)
-    Yb = Y0 / sc
     if L.shape[0] <= 600:
-        return sc * (sl.expm(Lb * s) @ Yb)
+        return sl.expm(L * s) @ Y0
     from scipy.sparse.linalg import expm_multiply
-    return sc * expm_multiply(Lb * s, Yb)
+    return expm_multiply(L * s, Y0)
 
 
-def _equilibrate(M, sweeps=8):
-    """``(r, c)`` with ``diag(r) M diag(c)`` Ruiz-equilibrated (row and
-    column inf-norms near 1).  The boundary-value unknowns and residual rows
-    carry products of their fields' units; the solve, its residual and its
-    condition number are taken on the equilibrated matrix so they do not
-    depend on the units (audit 3B-02)."""
-    r = np.ones(M.shape[0])
-    c = np.ones(M.shape[1])
-    A = np.abs(M)
-    for _ in range(sweeps):
-        B = A * r[:, None] * c[None, :]
-        rn = B.max(axis=1)
-        cn = B.max(axis=0)
-        rn[~(rn > 0)] = 1.0
-        cn[~(cn > 0)] = 1.0
-        r = r / np.sqrt(rn)
-        c = c / np.sqrt(cn)
-    return r, c
+def _balanced_state(ss):
+    """The same system in diagonally rescaled state coordinates z = T z'
+    (T: power-of-2 balancing of |A| + |A_d|; an exact similarity, the field
+    covariance ``C_z C C_z^T`` is unchanged).  Fields in very different units
+    make the state covariance entries span the squared unit ratio; in the
+    balanced coordinates the boundary-value problem and the exponentials
+    see O(1) entries (audit 3B-02)."""
+    n = ss.A.shape[0]
+    if n == 0:
+        return ss
+    _, (t, _p) = sl.matrix_balance(np.abs(ss.A) + np.abs(ss.Ad), permute=False,
+                                   separate=True)
+    return _scaled_state(ss, t)
+
+
+def _scaled_state(ss, t):
+    """``ss`` in the coordinates ``z = diag(t) z'`` (``t``: powers of 2)."""
+    if np.all(t == 1.0):
+        return ss
+    ti = 1.0 / t
+    return DelayedStateSpace(ti[:, None] * ss.A * t[None, :], ti[:, None] * ss.Ad * t[None, :],
+                             ti[:, None] * ss.B, ti[:, None] * ss.Bd, ss.Cz * t[None, :],
+                             ss.D0, ss.d, ss.N)
+
+
+#: spread of sqrt(diag U0) (max / min) above which the exact tree re-solves
+#: in noise-scaled state coordinates
+_RESCALE_SPREAD = 16.0
 
 
 class ExactTree:
@@ -315,12 +304,28 @@ class ExactTree:
     method = 'bvp'
 
     def __init__(self, ss, ia, ib, tau_max=None):
-        self.ss = ss
+        self.ss = _balanced_state(ss)
         self.ia, self.ib = int(ia), int(ib)
         self._stack = None
         self._Y0 = None
         self._K = 0
-        self._ensure(0.0 if tau_max is None else float(tau_max))
+        self._ensure(0.0)
+        # second pass: fields driven by noises of very different size (not
+        # coupled through the drift, so the balancing above cannot see it)
+        # leave the small covariance entries at the rounding of the large
+        # ones (4e-6 relative at a 1e9 unit ratio); re-solve with the states
+        # scaled to O(1) variances (powers of 2: exact)
+        n = self.ss.A.shape[0]
+        dg = np.sqrt(np.abs(np.diag(self._Y0[:n * n].reshape(n, n))))
+        pos = dg > 0
+        if pos.any() and dg[pos].max() > _RESCALE_SPREAD * dg[pos].min():
+            t = np.ones(n)
+            t[pos] = 2.0 ** np.round(np.log2(dg[pos] / dg[pos].max()))
+            self.ss = _scaled_state(self.ss, t)
+            self._stack, self._Y0, self._K = None, None, 0
+            self._ensure(0.0)
+        if tau_max:
+            self._ensure(float(tau_max))
 
     @classmethod
     def from_context(cls, ctx, external_fields, tau_max=0.0):
@@ -364,8 +369,8 @@ class ExactTree:
         A, Ad, B, Bd, N, d = ss.A, ss.Ad, ss.B, ss.Bd, ss.N, ss.d
         n = st.n
         D0 = st.size_upto(0)
-        Phi = _expm(st.L[:D0, :D0] * d)
-        eAd = _expm(A * d)
+        Phi = sl.expm(st.L[:D0, :D0] * d)
+        eAd = sl.expm(A * d)
         W1_0, W2_0 = eAd @ B, B
 
         def resid(x, affine=True):
@@ -396,14 +401,8 @@ class ExactTree:
             e[i] = 1.0
             M[:, i] = resid(e, affine=False)
             e[i] = 0.0
-        # equilibrated (``_equilibrate``): solve, residual and condition
-        # number independent of the fields' units (3B-02)
-        req, ceq = _equilibrate(M)
-        M = M * req[:, None] * ceq[None, :]
-        r0 = r0 * req
-        xs, *_ = np.linalg.lstsq(M, -r0, rcond=None)
-        res = np.linalg.norm(M @ xs + r0) / max(np.linalg.norm(r0), 1e-300)
-        x = xs * ceq
+        x, *_ = np.linalg.lstsq(M, -r0, rcond=None)
+        res = np.linalg.norm(M @ x + r0) / max(np.linalg.norm(r0), 1e-300)
         if not np.isfinite(res) or res > 1e-9:
             raise ExactTreeUnavailable(f'the covariance boundary-value problem has no '
                                        f'consistent solution (residual {res:.2g}; an unstable '
