@@ -145,7 +145,12 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     """Simulate the N-species coupled reaction-diffusion Langevin system on
     a periodic 1D grid and estimate the cross-correlation matrix
 
-        C_ij(x_lag, tau_lag) = <phi_i(x + x_lag, t + tau_lag) phi_j(x, t)>
+        C_ij(x_lag, tau_lag) = <phi_i(x, t) phi_j(x + x_lag, t + tau_lag)>
+
+    (the package convention kappa(phi_i(0), phi_j(tau)), as
+    ``api.cumulant``, ``pp_simulate.cross_covariance`` and
+    ``delay_sde_sim.autocovariance``; before Oct 2026 this simulator and its
+    oracle used the transpose, audit I-simulators 5)
 
     averaged over x (periodic translational average via FFT), over time
     after burn-in, and over ``n_rep`` independent replicas.
@@ -265,15 +270,16 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
             ri += 1
 
     # ---- FFT cross-correlation estimator -------------------------------
-    # C_ij(r) = ifft( fft(phi_i) * conj(fft(phi_j)) )[r] / n_x, averaged
-    # over snapshots (pairs t, t+lag) and replicas.
+    # C_ij(r) = ifft( conj(fft(phi_i(t))) * fft(phi_j(t + lag)) )[r] / n_x
+    # = <phi_i(x, t) phi_j(x + r, t + lag)>, averaged over snapshots (pairs
+    # t, t+lag) and replicas.
     F = np.fft.fft(snaps, axis=-1)                    # (n_rec, n_rep, N, n_x)
     n_tau = len(lag_steps)
     C_rep = np.empty((n_rep, n_tau, n_f, n_f, n_x), dtype=np.float64)
     for k, ell in enumerate(lag_steps):
         n_pair = n_rec - ell
-        S = np.einsum('trik,trjk->rijk', F[ell:n_rec],
-                      np.conj(F[:n_pair]))            # (n_rep, N, N, n_x)
+        S = np.einsum('trik,trjk->rijk', np.conj(F[:n_pair]),
+                      F[ell:n_rec])                   # (n_rep, N, N, n_x)
         C_rep[:, k] = np.fft.ifft(S, axis=-1).real / (n_x * n_pair)
 
     # ---- x-lag selection -------------------------------------------------
@@ -308,7 +314,12 @@ def coupled_box_correlator(M, Dvec, Nnoise, L, n_x, taus,
     """Exact stationary two-point matrix of the LINEAR coupled system on the
     periodic box — classical result, no approximation:
 
-        C_ij(x, tau) = (1/L) * sum_q [ expm(-A(q)|tau|) @ Sigma(q) ]_ij e^{iqx},
+        C_ij(x, tau) = (1/L) * sum_q [ Sigma(q) @ expm(-A(q)^T tau) ]_ij e^{iqx}
+
+    for tau >= 0 (``expm(-A|tau|) @ Sigma`` for tau < 0): the package
+    convention <phi_i(x0, 0) phi_j(x0 + x, tau)>, the transpose of the
+    matrix primitives' <x(tau) x(0)^T> (``spectral_propagator.
+    coupled_two_point``),
 
     summed over the box modes q = 2*pi*n/L, |n| <= n_x/2 (the n_x fft
     modes), where A(q) = M + diag(D)*omega(q) and Sigma(q) solves the
@@ -344,14 +355,15 @@ def coupled_box_correlator(M, Dvec, Nnoise, L, n_x, taus,
         raise ValueError(f"dispersion must be 'continuum' or 'lattice'; "
                          f"got {dispersion!r}.")
     taus = np.atleast_1d(np.asarray(taus, dtype=float))
-    # Per-mode C(q, tau) = expm(-A|tau|) @ Sigma  (tau >= 0).
+    # Per-mode C(q, tau) = Sigma @ expm(-A^T tau)  (tau >= 0; package
+    # convention, the transpose of expm(-A tau) @ Sigma).
     Cq = np.empty((len(taus), n_f, n_f, n_x), dtype=np.float64)
     for m in range(n_x):
         A = M + np.diag(Dvec) * omega[m]
         Sigma = solve_continuous_lyapunov(A, Nnoise)
         for k, tau in enumerate(taus):
             G = expm(-A * abs(float(tau)))
-            Cm = G @ Sigma if tau >= 0 else Sigma @ G.T
+            Cm = Sigma @ G.T if tau >= 0 else G @ Sigma
             Cq[k, :, :, m] = Cm
     # C(x_r) = (1/L) sum_n Cq_n e^{i q_n r dx} = (n_x/L) * ifft over modes.
     C = (n_x / L) * np.fft.ifft(Cq, axis=-1).real
