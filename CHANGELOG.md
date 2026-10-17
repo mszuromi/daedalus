@@ -69,6 +69,98 @@ A/B bit-identical); the MOMENT outputs below do.
   replaced by 41 evenly spaced points now warns and is recorded in
   `result['_kpoint_tau_resampled']`.
 
+#### Changed: k = 2 τ = 0 is the exact Itô left limit by default (`DAEDALUS_TAU0=exact`)
+
+**Numbers move:** every k = 2 τ = 0 value moves, and only those. This covers the `C_tau` / `C_tau_by_ell` grid point
+at τ = 0, `total_C(t, t)`, and the exact delayed tree's τ = 0. The point used to be C(−1e−6), whose relative error is
+rate × 1e−6. Phase J's exact tie rule now evaluates it at equal times and gives C(0⁻): ≤ 3.1e−14 against independent
+mpmath references on every route.
+- `DAEDALUS_TAU0=nudge` restores the old sample.
+- The legacy Θ(0) mode (`DAEDALUS_PHASE_J_LEGACY=1` / `THETA0_CONST_ROW_MODE='legacy_clip'`) keeps −1e−6 automatically,
+  because it has no exact tie rule.
+- k ≥ 3 slices keep their −1e−6 placement.
+- τ ≠ 0 values are bit-identical.
+
+Zoo A/B (11 public entries, separate processes, warm-up discarded, `use_cache=False`, base main 43017d3). Before /
+after at τ = 0; τ ≠ 0 bit-identical except `spike_reset` (1.4e−15, its known process scatter); analyzer codes
+unchanged.
+
+| entry | quantity at τ = 0 | before (C(−1e−6)) | after (C(0⁻)) | relative move |
+|---|---|---|---|---|
+| ou_quartic k2 ℓ≤3 | total | 0.9472230000005285 | 0.947224 | 1.06e−6 |
+| | ℓ = 0 | 0.9999990000005 | 1 | 1.00e−6 |
+| | ℓ = 1, 2, 3 | −0.05999999999996999, 0.0095999999999982, −0.002375999999999713 | −0.06, 0.0096, −0.002376 | ≤ 5.0e−13 |
+| ou_quartic_colored k2 ℓ≤1 | total | 1.191111111109813 | 1.191111111111111 | 1.09e−12 |
+| ou_quartic_two_dim_color_corr k2 ℓ≤1 | total | 0.3648480546668812 | 0.3648480546669402 | 1.62e−13 |
+| spike_reset k2 ℓ≤1 | total | 0.5259287797392054 | 0.5259293705602486 | 1.12e−6 |
+| quad_exp k2 ℓ≤1 | total | 0.003686739906493933 | 0.003686736446204866 | 9.39e−7 |
+| linear_hawkes k2 ℓ≤1 | total | 0.03538461403647798 | 0.03538459295985254 | 5.96e−7 |
+| multipopulation_test k2 ℓ≤1 | total | 0.0002178006512350135 | 0.000217799965329298 | 3.15e−6 |
+| linear_delta_spikes k2 ℓ≤1 | total | 0.02536958492780382 | 0.02536958740341157 | 9.76e−8 |
+| quadratic_hawkes_alpha k2 ℓ≤1 | total | 0.00315796460609312 | 0.003157964563966259 | 1.33e−8 |
+| dendritic_quad_soma_sigmoid k2 ℓ≤1 | total | 0.0003725337580002241 | 0.000372534125419284 | 9.86e−7 |
+| ou_quartic k3 ℓ≤2 | (k = 3) | unchanged | unchanged | 0 |
+
+Tests:
+- The frozen fixtures `quad_exp_k2_ell0`, `spike_reset_k2_ell0` and `spike_reset_k2_ell1` were refrozen at their
+  [0, 0] probe only (moves 9.8e−7, 1.12e−6, 1.12e−6). Every other probe was checked unchanged; `legacy/` is
+  untouched.
+- The pre-M0.1 / pre-M1 captures and the legacy baselines are re-run under `nudge`, as they were recorded.
+- About 20 τ = 0 references now use 0 (exact). No tolerance was loosened; one was tightened (2e−6 → 1e−8).
+- Example notebooks: no printed value changes at its shown precision (the τ = 0 values are printed with 2-4
+  significant digits).
+
+#### Spatial engine: quadrature and UV (audit wave 2, group 3)
+
+Numbers move (silent-wrong before):
+
+- **Spatial loops at tau != 0** (every spatial loop result at unequal times,
+  single-field and coupled, any max_ell and k): the causal-chamber time grid
+  now splits each vertex's interval at the external times where its integrand
+  kinks -- its own C edges to leaves (|t_v - t_leaf|) and the leaf bounds and
+  kinks of the vertices nested inside it (their limits switch branch) -- none
+  of which was a chamber boundary. The tail segment keeps n_t nodes, the short
+  segments get SPATIAL_SEGMENT_NODES (8). Independent check against the
+  temporal engine (d = 0 limit, cubic + quartic, tau = 0.7): one loop was
+  3.8 % off, now 2.9e-7. The d=1 one-loop tadpole at tau = 0.5-2 was 1-3 %
+  off, now ~1e-10 against the exact mass shift; a cubic model's bubbles moved
+  ~2e-3 and agree with a 40-node grid to ~5e-7. tau = 0 values are unchanged.
+  Cost: the grid grows where kinks lie inside an interval (k=3 general-k
+  tests 1:47 -> ~4:50); the memory guard counts it, so some two-loop runs at
+  tau != 0 that main ran (inaccurately) are now refused at the default budget.
+  Known residual: the coupled driver's tau = 0, x != 0 value on a
+  tadpole-type diagram is ~7e-4 off at the default grid (the heat-kernel
+  factor's rise near the vertex bound; converges with SPATIAL_GRID_NT).
+- **d >= 2 tree** (single-field and coupled, infinite domain): the exact
+  heat-kernel time integral (Bessel-K at tau = 0, adaptive quadrature with a
+  checked error estimate at tau != 0) replaces the fixed q_cut = 40 /
+  n_q = 2000 radial transform (1-5 % off at unit parameters, wrong sign for
+  stiff masses). Periodic boxes (d >= 2 single-field; coupled d >= 1, which was
+  a fixed 1201-mode sum, 9 % low at L = 400) are converged image sums that
+  raise rather than truncate. The equal point x = tau = 0 at d >= 2 is
+  UV-divergent and now raises.
+- **UV-divergent loop subgraphs refuse** (`SpatialUVDivergenceError`): dynamic
+  power counting omega = (V-1) + n_C - (d/2) L <= 0, e.g. the tadpole at d >= 2
+  and the phi^4 sunset at d = 3. Their values were set by the smallest
+  Schwinger quadrature node (log / n_s^2 growth with SPATIAL_GRID_NS). The
+  tracked `reaction_diffusion_2d` model at max_ell >= 1 now raises (it has a
+  tadpole). Derivative-vertex momentum powers are not in the count.
+- Spatial `total_C` off the grid: the single-field tree is exact at any d.
+- **Unstable / critical masses refuse** (Re mu <= 0 in the diagonal modes and
+  the erf time integral; min Re eig M <= 0 in the coupled tree and
+  `coupled_two_point`); they returned finite numbers behind
+  `DAEDALUS_PREFLIGHT=0` or for direct engine calls.
+- **Dyson loop dressing** (coupled, unequal D): masses are clustered at
+  delta = scale * eps^(1/(n+2)) (cost O(delta^2) by symmetry) instead of a fixed
+  1e-8; near-degenerate gaps lost ~1e-2 at order 2, now <= 1e-8 against a
+  50-digit reference.
+- `SPATIAL_INTEGRATOR=mc` with derivative vertices emits a RuntimeWarning
+  (biased estimator) whatever `verbose`; an unknown `SPATIAL_INTEGRATOR` value
+  raises.
+- The coupled spectral kinematic has a memory guard (it allocated
+  (samples x spectral assignments) arrays unguarded).
+
+
 #### Spatial engine: loop scope guards (audit wave 2, group 2)
 
 - **Multi-field models with a diagonal kinetic block** (fields mixed only
@@ -91,6 +183,7 @@ A/B bit-identical); the MOMENT outputs below do.
 - **Noise extraction** (`extract_noise_coefficients`, `extract_noise_matrix`):
   a coefficient that does not reduce to a number (missing parameter or saddle,
   momentum-dependent noise) raises; it used to become 0 silently.
+
 
 #### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
 

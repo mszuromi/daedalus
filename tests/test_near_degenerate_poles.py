@@ -13,8 +13,8 @@ References are exact: the colored OU (``ou_quartic_colored``: x' = -mu x
 g = 1/tauc) and, its only nonlinearity being eps x^3, the one-loop term
 ``C1 = 3 eps C0(0) dC0/dmu`` (the Hartree tadpole); the three-pole chain
 x <- y <- z likewise (spectral density 2 D / prod (omega^2 + rate^2)).
-The tau = 0 point is compared at tau = 1e-6, the Ito left limit the pipeline
-evaluates.  Before the fix the colored OU's one-loop term was noise of order
+The tau = 0 point is compared at tau = 0, the exact Ito left limit the pipeline
+evaluates (C is even and continuous here).  Before the fix the colored OU's one-loop term was noise of order
 1 at gap 1e-4 and the tree was 1.40625 at gap 1e-7 and -2e15 at gap 0.
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ from api.model import TemporalModelBuilder                          # noqa: E402
 
 MODELS = Path(__file__).resolve().parent.parent / 'models'
 TAU = np.array([0.0, 0.5, 2.0])
-TAU_REF = ['1e-6', '0.5', '2']
+TAU_REF = ['0', '0.5', '2']
 GAPS = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-10, 0.0]
 RTOL = 1e-9
 
@@ -181,7 +181,7 @@ def test_long_tau_grid_keeps_its_accuracy():
     reference to 1e-9 relative up to tau = 50 (C(50) ~ 1e-21)."""
     taus = [0.0, 2.0, 10.0, 30.0, 50.0]
     r = _run(_load('ou_quartic_colored'), _params(1e-6), tau=taus, policy=_MARKOV)
-    tree_ref, loop_ref = _colored_ref(1 / (1 + 1e-6), taus=['1e-6'] + [str(t) for t in taus[1:]])
+    tree_ref, loop_ref = _colored_ref(1 / (1 + 1e-6), taus=['0'] + [str(t) for t in taus[1:]])
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=RTOL, atol=0)
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][1]), loop_ref, rtol=RTOL, atol=0)
     pc = r['pole_clusters']
@@ -225,7 +225,7 @@ def test_decoupled_near_equal_rates_are_exact():
         r = compute_cumulants(model, k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], parallel=False,
                               verbose=False, tau_grid=np.array([0.0, 1.0]),
                               parameters={'mu1': 1.0, 'mu2': 1.0 + g, 'D': 1.0})
-        np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), [np.exp(-1e-6), np.exp(-1.0)], rtol=1e-13)
+        np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), [1.0, np.exp(-1.0)], rtol=1e-13)
         assert r['pole_clusters']['status'] == 'harmless'
 
 

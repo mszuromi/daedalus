@@ -107,6 +107,11 @@ def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
     Verified to machine precision (incl. complex α) in
     ``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
     """
+    if U_hi is None and not complex(alpha).real > 0.0:
+        raise SpatialPropagatorError(
+            f'erf_time_integral: the U -> infinity limit needs Re(alpha) > 0 '
+            f'(a stable mass); got alpha={complex(alpha)} — the stationary '
+            f'correlator does not exist (unstable or critical mode).')
     with mp.workdps(dps):
         a = mp.sqrt(mp.mpc(alpha))
         b = mp.sqrt(mp.mpc(beta))

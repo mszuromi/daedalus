@@ -65,14 +65,15 @@ def test_total_C_callable_matches_C_tau_at_tau0():
     assert np.isclose(complex(total_C(0.0, 0.5)), complex(C_tau[i1]),
                       rtol=0, atol=1e-12)
 
-    # The fix is load-bearing: the RAW (un-nudged) per-ell callables, summed,
-    # would have differed from the grid by ~_ITO_EPS at τ=0.  Confirm the bug
-    # existed and that the wrapped callable closes it.
+    # Since Oct 2026 the τ = 0 point is the exact tie (Phase J's tie rule
+    # gives the Itô left limit there), so the RAW per-ell callables at equal
+    # times now agree with the grid too: the wrapper moves nothing at a tie
+    # (under DAEDALUS_TAU0=nudge it moves the point to −_ITO_EPS, as before).
     raw_at_zero = sum(
         complex(d['total_C'](0.0, 0.0))
         for d in res['phase_j_by_ell'].values() if d is not None)
-    assert abs(raw_at_zero - complex(C_tau[i0])) > 1e-8     # bug was real
-    assert abs(complex(total_C(0.0, 0.0)) - raw_at_zero) > 1e-8  # nudge applied
+    assert abs(raw_at_zero - complex(C_tau[i0])) <= 1e-12
+    assert complex(total_C(0.0, 0.0)) == raw_at_zero
 
 
 # ---------------------------------------------------------------------------

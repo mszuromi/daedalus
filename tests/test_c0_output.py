@@ -37,14 +37,13 @@ import daedalus as dd                                                # noqa: E40
 from api import compute_cumulants                                    # noqa: E402
 from api import me_output as ME                                      # noqa: E402
 from api import symbolic_out as so                                   # noqa: E402
-from api.compute import _ITO_EPS                                     # noqa: E402
 from api.cumulant import Cumulant                                    # noqa: E402
 from api.noise import Gaussian, Poisson                              # noqa: E402
 from api.sde import SDE                                              # noqa: E402
 import engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)
-TT = np.where(TAUS == 0, -_ITO_EPS, TAUS)     # C_tau's τ = 0 sample
+TT = TAUS.copy()     # C_tau's τ = 0 point: the exact Itô left limit (the triple's at_zero='-')
 
 
 def _ss_models():

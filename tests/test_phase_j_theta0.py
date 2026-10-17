@@ -1007,7 +1007,8 @@ def spike1_model(private_cwd):
 def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
     # the engine is part of the key (S3: some tests pin the pole engine)
     key = (k, max_ell, grouped, tuple(tau_grid), mode,
-           os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''))
+           os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''),
+           os.environ.get('DAEDALUS_TAU0', ''))
     if key not in _E2E:
         from api import compute_cumulants
         saved = {n: getattr(FI, n) for n in (
@@ -1060,7 +1061,10 @@ def test_spike1_legacy_reproduces_pre_m1_values(spike1_model, grouped):
 def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
         spike1_model, grouped, monkeypatch):
     """M1 moves the one-loop (Θ(0) rows in the polygon path), not the tree;
-    with the Itô rule every subset is answered analytically."""
+    with the Itô rule every subset is answered analytically.  (Both modes at
+    the same τ = 0 sample: 'legacy_clip' keeps τ = −1e−6, see
+    ``api.compute._tau0_lag``.)"""
+    monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
     if grouped:
         # the grouped evaluator's counters (S3: on the default state-space
         # route the groups are integrated per diagram)
@@ -1369,11 +1373,15 @@ def test_cross_field_tie_depends_on_the_argument_order(ld_k3_orders):
     assert abs(n1_first - n2_first) > 1e-2 * abs(n1_first)
     assert abs(a(0.0, 0.7, 0.7) - n1_first) <= 1e-12 * abs(n1_first)
     assert abs(b(0.0, 0.7, 0.7) - n2_first) <= 1e-12 * abs(n2_first)
-    # k = 2, the τ grid's τ = 0 point (τ = −1e−6), unchanged since 0.1.0:
-    # ⟨n1 n2⟩(0) is n2 just before n1, ⟨n2 n1⟩(0) n1 just before n2
+    # k = 2, the τ grid's τ = 0 point: the exact Itô left limit (the tie,
+    # since Oct 2026; τ = −1e−6 before): ⟨n1 n2⟩(0) is n2 just before n1,
+    # ⟨n2 n1⟩(0) n1 just before n2
     c12 = complex(ld_k3_orders[(1, 2)][1][0]).real
     c21 = complex(ld_k3_orders[(2, 1)][1][0]).real
     f12 = ld_k3_orders[(1, 2)][0]
     assert abs(c12 - c21) > 1e-2 * abs(c12)
-    assert abs(c12 - complex(f12(0.0, -1e-6)).real) == 0
-    assert abs(c21 - complex(f12(0.0, 1e-6)).real) <= 1e-12 * abs(c21)
+    assert abs(c12 - complex(f12(0.0, 0.0)).real) == 0
+    left = _richardson([complex(f12(0.0, -h)).real for h in _H])
+    right = _richardson([complex(f12(0.0, h)).real for h in _H])
+    assert abs(c12 - left) <= 1e-12 * abs(c12)
+    assert abs(c21 - right) <= 1e-12 * abs(c21)

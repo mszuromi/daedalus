@@ -512,8 +512,8 @@ class ExactTree:
     def callable(self):
         """``f(t0, t1)``: the pipeline's k = 2 callable convention (leg 0 at
         ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
-        at the pipeline's Ito left limit: exactly, or at ``tau = -_ITO_EPS``
-        under DAEDALUS_TAU0=nudge)."""
+        at the pipeline's Ito left limit: exactly (default), or at
+        ``tau = -_ITO_EPS`` under DAEDALUS_TAU0=nudge)."""
         from api.compute import _tau0_lag
         lag = _tau0_lag()
 

@@ -45,9 +45,10 @@ from api.access     import (
 
 # Itô equal-time regularizer (magnitude).  Our SDEs use the Itô convention, which
 # is LEFT-continuous (Θ(0)=Θ(0⁻)); the equal-time *observable* is therefore the
-# LEFT limit.  At a τ=0 grid point we evaluate the correlator at −_ITO_EPS
-# (≪ every physical timescale here, O(1)) instead of exactly 0, so a coincident
-# causal chamber survives and the spurious single-point τ=0 dip disappears.  (For
+# LEFT limit.  Before Oct 2026 a τ=0 grid point was evaluated at −_ITO_EPS
+# instead of exactly 0, so a coincident causal chamber survived the Θ(0)=0
+# rule; Phase J's exact tie rule now does that at τ = 0 itself (the default,
+# see ``_tau0_mode``; the −_ITO_EPS sample is DAEDALUS_TAU0=nudge).  (For
 # the stationary/symmetric correlators here C is even, so the left limit equals the
 # right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
@@ -57,8 +58,8 @@ _ITO_EPS = 1e-6
 # (``final_integral._const_row_verdict``: of Θ(t1 − t0) and Θ(t0 − t1) at
 # t1 == t0 exactly the one with leg 1 earlier holds) gives the Itô left
 # limit C(0⁻) exactly (<= 3e-14 against independent references on every
-# route), and the exact delayed tree returns its own left limit.  'nudge'
-# (default until the switch is decided): the sample at τ = −_ITO_EPS, whose
+# route), and the exact delayed tree returns its own left limit.  Default
+# since Oct 2026.  'nudge': the pre-Oct-2026 sample at τ = −_ITO_EPS, whose
 # relative error is (rate × 1e-6) and therefore unit dependent (1e-3 at a
 # rate of 1e3).  Environment variable DAEDALUS_TAU0 = 'exact' | 'nudge',
 # read at call time.  k ≥ 3 slices (``daedalus._kpoint_slice_times``,
@@ -69,7 +70,7 @@ _TAU0_MODES = ('exact', 'nudge')
 
 def _tau0_mode():
     """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
-    m = os.environ.get('DAEDALUS_TAU0', 'nudge').strip().lower() or 'nudge'
+    m = os.environ.get('DAEDALUS_TAU0', 'exact').strip().lower() or 'exact'
     if m not in _TAU0_MODES:
         raise ValueError(f'DAEDALUS_TAU0={m!r}: expected one of {_TAU0_MODES}')
     return m
@@ -77,8 +78,14 @@ def _tau0_mode():
 
 def _tau0_lag():
     """The lag a k = 2 τ = 0 point is evaluated at: 0.0 ('exact') or
-    −_ITO_EPS ('nudge')."""
-    return 0.0 if _tau0_mode() == 'exact' else -_ITO_EPS
+    −_ITO_EPS ('nudge').  'exact' needs Phase J's exact tie rule: under the
+    pre-M1 constant-row mode (``THETA0_CONST_ROW_MODE = 'legacy_clip'``, set
+    by DAEDALUS_PHASE_J_LEGACY=1) a tie drops the coincident chamber, so the
+    legacy runs keep the −_ITO_EPS sample they were defined with."""
+    if _tau0_mode() != 'exact':
+        return -_ITO_EPS
+    from engine.integration.time_domain import final_integral as _fi
+    return -_ITO_EPS if _fi._theta0_legacy() else 0.0
 
 
 def _ito_nudge_callable(fn, k):
@@ -90,9 +97,9 @@ def _ito_nudge_callable(fn, k):
     Only the k=2 single-axis slice has a well-defined "anchor leg" (leg 0); for
     other k the callable is returned unchanged (``daedalus.run`` places the
     k≥3 times itself: ``_kpoint_slice_times`` for the slices,
-    ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid
-    nudge: a second-leg time within 1e-12 of the anchor leg's time is moved
-    to ``anchor − _ITO_EPS``.
+    ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid:
+    a second-leg time within 1e-12 of the anchor leg's time is moved onto it
+    (default, an exact tie) or to ``anchor − _ITO_EPS`` (DAEDALUS_TAU0=nudge).
     """
     if k != 2:
         return fn
@@ -1910,8 +1917,8 @@ def _run_spatial(state):
     # spatial_grid) only; the callables read that grid (the highest loop
     # order, and the per-order increments for total_C_by_ell), so
     # total_C(τ, x) == C_tau_x[iτ, ix] at every grid point.  Off the grid
-    # they refuse — except the single-field d=1 TREE, which has an exact
-    # closed form anywhere (free_two_point, erf / image sum).
+    # they refuse — except the single-field TREE, which is exact anywhere
+    # (free_two_point / free_two_point_d / the periodic image sum).
     _C_by_order = {int(el): _np.asarray(C) for el, C in
                    (sp_info.get('C_by_order') or {0: C_tau_x}).items()}
     _orders = sorted(_C_by_order)
@@ -1919,7 +1926,7 @@ def _run_spatial(state):
                   else _C_by_order[el])
              for i, el in enumerate(_orders)}
     _sp_d = int(sp_info.get('spatial_dim', 1))
-    _tree_exact = (_orders == [0] and _sp_d == 1 and not sp_info.get('coupled')
+    _tree_exact = (_orders == [0] and not sp_info.get('coupled')
                    and sp_info.get('modes'))
     _tau_arr = _np.asarray(tau_grid, dtype=float)
 
@@ -1941,11 +1948,19 @@ def _run_spatial(state):
             if it.size and ix.size:
                 return complex(table[int(it[0]), int(ix[0])])
             if exact_tree:
+                from engine.integration.spatial.spatial_correlator import (
+                    free_two_point_d, free_two_point_box)
                 val = 0j
                 for (A, B, N) in sp_info['modes']:
-                    val += free_two_point(A, B, N, xq, tau,
-                                          bc_mode=sp_info['bc_mode'],
-                                          L=sp_info['L'])
+                    if _sp_d == 1:
+                        val += free_two_point(A, B, N, xq, tau,
+                                              bc_mode=sp_info['bc_mode'],
+                                              L=sp_info['L'])
+                    elif sp_info['bc_mode'] == 'periodic':
+                        val += free_two_point_box(A, B, N, xq, tau, _sp_d,
+                                                  sp_info['L'])
+                    else:
+                        val += free_two_point_d(A, B, N, xq, tau, _sp_d)
                 return val
             raise ValueError(
                 f'spatial total_C: (tau={tau}, x={xq}) is not on the '
@@ -2210,16 +2225,16 @@ def _run_phase_j(state, grouped):
     elif k == 2:
         # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned at 0.
         # Itô LEFT-limit at equal time (Itô ⇒ left-continuous, Θ(0)=Θ(0⁻)): the
-        # τ=0 entry is sampled at t_1 = −_ITO_EPS rather than exactly 0.  The
+        # τ=0 entry was sampled at t_1 = −_ITO_EPS rather than exactly 0.  The
         # propagators are strictly-causal retarded with Θ(0)=0; landing the τ-grid
         # on that measure-zero step discontinuity drops a coincident-ordering
         # contribution and produces a spurious single-point dip at τ=0.  Nudging
         # to 0⁻ keeps the surviving causal chamber and gives the left limit (= the
         # right limit for an even/stationary C; differs only at a genuine τ=0
         # jump, where Itô takes the left).  The grid LABEL stays 0.
-        # (DAEDALUS_TAU0=exact evaluates the τ = 0 point AT equal times,
-        # where the engine's exact tie rule gives C(0⁻) exactly; see
-        # ``_tau0_mode``.)
+        # (Since Oct 2026 the τ = 0 point is evaluated AT equal times by
+        # default, where the engine's exact tie rule gives C(0⁻) exactly;
+        # the −_ITO_EPS sample is DAEDALUS_TAU0=nudge, see ``_tau0_mode``.)
         _lag0 = _tau0_lag()
         tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _lag0)
                       for t in tau_grid]
