@@ -26,6 +26,348 @@ Documentation only; no code or number changes.
   `notebooks/examples/README.md` rewritten around the tutorials. The weekly notebook workflow also executes
   `notebooks/tutorials/` (timeout overrides are now keyed by the path under `notebooks/`).
 
+#### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
+
+Regression tests: `tests/test_audit_wave1_estimators.py` and the transposed oracle check in
+`tests/test_coupled_rd_sim.py`. Package numbers do not move. Simulation reference curves that validation compares
+against do.
+- **`cumulant_estimator`: factorial cumulants are now connected.**
+  - **Coincident legs.** m same-population spike legs in one bin are centred with the factorial analogue of
+    ∏(r − μ), Σ_j C(m, j)(−μ)^(m−j) n^(j)/dt^j. The old `n^(m)/dt^m − mean` gave κ3 + 2μ C2 at the default base point.
+    The k = 4 pair subtraction is now consistent with it. The same rule applies to `compute_kpoint_slice_direct`,
+    which is now vectorized and limited to k ≤ 3.
+  - **Coincident sweep lags.** Where the sweep leg meets a fixed leg of its own spike train, the point used to carry
+    the shot noise: rate/dt_bin at k = 2, rate/dt² at k = 3. That point is now recomputed with the sweep leg merged
+    into the factorial group.
+  - **Check.** On a Cox process with a Gaussian OU intensity (κ3 = 0, C2 known):
+    - k = 2 matches C2 at every lag, τ = 0 included. The old τ = 0 point was 50σ² off.
+    - k = 3 is ≤ 0.1 × 2μC2. The old value was ≈ 2μC2.
+- **`cumulant_estimator`: field types.** An unrecognised field type is refused. It used to be treated as spike
+  counts.
+- **`coupled_rd_1d_sim` uses the package leg order** C_ij(x, τ) = ⟨φ_i(x, t) φ_j(x + x_lag, t + τ)⟩, in both the
+  estimator and the oracle. It used the transpose, so off-diagonal entries of a non-symmetric M at τ ≠ 0 were swapped
+  relative to the pipeline.
+
+#### Fixed: audit fix wave 1 -- outputs (F1 group 3)
+
+Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's reproducer and fails on the old code.
+- **`symbolic_out`:**
+  - **User values are no longer snapped to 0.** `values=` floats below 1e-12 used to be replaced by 0, e.g. D = 1e-13
+    gave C0 = 0.
+  - **Saddle snapping is relative.** Solved saddle values are snapped relative to the run's largest number, not at an
+    absolute 1e-12.
+  - **Legacy route, a parameter named `tau`.** `inverse_transform(..., legacy=True)` now names the lag `tau_lag`, as
+    the C2 route does. The parameter and the lag used to merge into one symbol.
+  - **No values at a moved reference.** When poles coincide at the reference, the retry used to hand back numbers at
+    the point it moved to. A ModeSum now keeps the user's reference, and evaluating at it is refused by the
+    coincidence assumptions. A pairing's value at the moved point is dropped, and `reason` says why.
+  - **`even` is decided relative to |C|.** It used an absolute 1e-9, so a small-amplitude asymmetric entry was called
+    even. With RootOf modes the test now runs on the 256-bit modes, at lags scaled by the slowest and fastest rate.
+    Fixed lags used to underflow to 0 == 0 at rates above ~2e3.
+  - **Misspelled names are refused.** A name equal to one the modes depend on up to case is now an error in
+    `ModeSum.evaluate` / `__call__`. Other names absent from C stay
+    ignored, so a model's whole parameter dict can be passed. In `tree_covariance(values=...)` every name that is
+    neither a model parameter nor a symbol of K / G / D is refused, as `tree_covariance_from_matrices` already did.
+    Both used to be dropped silently.
+- **`symbolic_loop`: relative floors.** The saddle-movement and saddle closed-form checks use a floor of 1e-6 × the
+  run's largest number instead of max(1, |x|). The δ-coefficient and subset-prefactor checks are fully relative.
+- **`me_output`:**
+  - A finite chamber's `SideME` refuses u > u_max. It used to answer with another chamber's leg order.
+  - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
+- **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
+
+#### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
+
+Regression tests: `tests/test_audit_wave1_noise.py`. No computed number moves. A run that was silently wrong is
+now refused, and so are invalid noise declarations.
+- **Uniform jumps: the series order is enforced.** The uniform jump's CGF has a removable singularity, so the action
+  carries its Taylor polynomial (`SDE.series_order`, default 8). Cumulants needing a noise vertex above that order
+  came out without it, silently.
+  - `SDE.build()` now records `model['noise_series_order']`.
+  - `compute_cumulants` refuses `k + 2*max_ell` above it and names the order to set. `k + 2*max_ell` bounds the order
+    of any vertex of a k-point, `max_ell`-loop diagram.
+- **θ in a jump-law parameter is refused**, as in a source parameter. For example, `CompoundPoisson(1, Dirac('theta'))`
+  built a different CGF.
+- **Sequence parameters refuse a string.** This covers `Cumulants`, `FinitePMF`, `Hyperexponential` and `PhaseType`.
+  For example, `Cumulants('Dn')` gave κ2 = D, κ3 = n.
+- **Domain checks for the round-1 laws** (numeric values only):
+  - `Gaussian` var ≥ 0 and `Poisson` rate ≥ 0;
+  - `GammaProcess` shape_rate > 0; `InverseGaussianProcess` mean_rate, shape > 0;
+  - `Cumulants` κ2 ≥ 0 and `Gamma` shape > 0;
+  - `Bernoulli` 0 ≤ p ≤ 1;
+  - `FinitePMF` probabilities ≥ 0;
+  - `Uniform` lo ≠ hi. This was a raw ZeroDivisionError before.
+
+  A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
+  stays valid.
+
+#### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
+
+Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
+warm-up discarded, `use_cache=False`, base main 4a9e932):
+- 9 entries are bit-identical (values and analyzer codes);
+- `quadratic_hawkes_alpha` moves 2.0e-16 and `spike_reset` k = 2 moves 1.4e-15, both inside main's own scatter on
+  these entries (`spike_reset`: 2.6e-14 between main 4a9e932 and main 147f402, whose difference is spatial-only).
+
+- **New opt-in `DAEDALUS_TAU0=exact`: k = 2 τ = 0 at the exact Itô left limit C(0⁻)** (`api.compute._tau0_mode`).
+  The τ = 0 grid point (and `total_C(t, t)`, and the exact delayed tree's τ = 0) is sampled at τ = −1e-6, so its
+  relative error is rate × 1e-6. That is unit dependent: 1e-3 at a rate of 1e3. With `exact` it is evaluated at equal
+  times, where Phase J's exact tie rule (`final_integral._const_row_verdict`) gives the left limit.
+  - Measured against independent mpmath references (the audit's oracle cases, all of ss / poles / grouped, ℓ ≤ 3):
+    τ = 0 error ≤ 3.1e-14 (`nudge`: 4.6e-7 .. 3.0e-6). τ ≠ 0 points are unchanged.
+  - The default stays `nudge`, so no number moves. Making `exact` the default is a pending decision; it moves every
+    k = 2 τ = 0 value by its rate × 1e-6.
+  - k ≥ 3 slices (`daedalus._kpoint_slice_times`, `me_output.slice_me`) keep the −1e-6 placement. The engine's tie
+    order is that slice's left limit only for some leg orders.
+- **Exact delayed tree is unit invariant** (`api._delay_exact`). The boundary-value problem's Jacobian was a finite
+  difference `resid(e) - resid(0)`. It cancelled the O(N) constant (field scale squared): 8e-6 relative off at a field
+  scale of 1e6, with no warning. Now:
+  - the Jacobian is the exact linear part;
+  - the state is solved in balanced coordinates, and re-solved in noise-scaled coordinates when the variances spread by
+    more than 16.
+  - Mixed units up to a 1e9 ratio used to be refused as singular or come out 4e-6 off; they now agree to ≤ 8e-15.
+- **Several delays: the approximant's error is in G6_ACCURACY** (`api.delay._fold_delay_into_g6`). The Padé estimate
+  `est_rel_error` (|C_n − C_2n|) is added to the accuracy estimate R, and G6_ACCURACY_LOW is raised above the threshold.
+  Before, a run with a 6.5e-5 Padé tree error reported R = 2e-14. On a tree-only run, DelayOrderWarning now says "the
+  tree" instead of "the loops".
+- **A non-white `noise_structure` is refused.** Phase J never applies a temporal noise kernel. A legacy dict with
+  `noise_structure={'temporal_type': 'colored', ...}` was computed as white noise *and* without the source amplitude
+  (status ok, off by the factor D). The refusal comes from the analyzer (`G2_NOISE_STRUCTURE`, error) and from a hard
+  stop in `compute_cumulants`. `classify_coefficient_factors` now always puts the constant source amplitude in the
+  scalar prefactor; `source_time_info[v]['amplitude']` holds only what stays in the integrand.
+- **gentreeg's exit status is checked** (`loop_diagram_enumeration._trees_of_order_fast`). A generator that died
+  mid-stream left a silently truncated tree list. Fewer prediagrams were then written to a correctly stamped cache
+  file. It now raises `RuntimeError` with gentreeg's stderr.
+
+#### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
+
+Numbers move (silent-wrong before):
+
+- **Two-loop k=2 spatial C(x, tau)**: the +-tau completion now follows the
+  orbit-stabilizer rule (both leaf->time assignments / `external_wick_compensation`),
+  not the external-leg kinds. {R,R} two-loop diagrams without a leaf-swap
+  automorphism were counted once; they now get Gamma(tau)+Gamma(-tau).
+  Before: the ell=2 coefficient of the cubic+quartic d=0 test model was 13 %
+  high (0.153 vs Boltzmann 0.136) and C(+tau) != C(-tau) by 2 %. One loop and
+  tree are unchanged (the two rules coincide there). Applies to the single-field
+  driver and the coupled i==j branch.
+- **Coupled spatial cross-correlators** (`external_fields=[a, b]`, a != b) now
+  return the package convention C_ab(tau) = <a(0) b(tau)> at tree and loop
+  level; before they returned <a(tau) b(0)> (C_ab(+tau) and C_ab(-tau)
+  swapped). Auto-correlators are unchanged.
+- **Spatial `total_C`** now reads the returned (tau_grid, spatial_grid) grid
+  (loops included); `total_C_by_ell` holds the per-order increments. Before it
+  returned the tree only at every max_ell. Off-grid points raise, except the
+  single-field d=1 tree (exact closed form).
+
+
+#### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
+
+- **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).
+  - The exact-zero-prefactor test now also drops diagrams charged the state-space estimate.
+  - A conductance-kernel line is charged as Phase J builds it. Dressed: one edge, the cascade's states, no δ part.
+    Leg path: an extra vertex, the propagator edge with its δ part, then the kernel edge.
+  - Each δ-subset is counted on its contracted DAG. Each placement of the kernel slots counts once.
+  - Against an exact census of the built stationary states the estimate is now within 0.5 %. Examples: delayed-alpha
+    spike-only Hawkes, 1 neuron, 12.89 vs 12.87 MB (was 185 MB); its two loops, 366.09 vs 366.08 GB; 2 neurons with
+    `w_ii = 0`, 0.390 vs 0.389 GB (was refused at ~122 GB; now 4.9 GB at the default budget, under it, and 0.39 GB
+    whenever the zero test runs).
+  - The pre-pass of that run takes 2 s (kernel data cached per model).
+- **Forked τ batches stay within the budget** (`pipeline._workers_within_budget`). Each worker may rebuild the lazily
+  built states, so a run that has charged `used` bytes forks at most `budget / used - 1` workers, or runs serially.
+- **`compute_cumulants(..., discard=False | True | 'auto')`.** Each diagram is evaluated on the τ grid right after it is
+  built, its values are kept, and its plans and stationary states are released and refunded to the budget.
+  - Values are bit-identical.
+  - The pre-pass compares the largest diagram plus one segment working set with the budget, instead of the sum.
+  - `'auto'` is on exactly when the sum is over the budget and that fits.
+  - It needs fixed evaluation points: k <= 2 with a τ grid, no switch-on, not grouped, and a single pass.
+  - The result's callables answer the grid points only. Elsewhere they raise `DiscardedDiagramsError` (exported by
+    `daedalus`).
+  - A diagram with shot-noise δ records keeps its charge (the pre-pass adds those diagrams to the peak).
+  - Example: the Erlang-8 delayed negative feedback CME at k = 2, two loops sums 10.8 GB of stationary states (refused
+    at the default budget); with `discard=True` the largest diagram is 225 MB and the run peaks at 2.8 GB resident.
+- **Minimal dressed lines** (`statespace._ModelOps.dressed_entry`). The cascade propagator entry + kernel is
+  balanced-truncated at the truncation tolerance in effect, with a Hurwitz check and the bound recorded in
+  `Realization.truncation['dressed']`.
+  - When the propagator cancels the kernel's poles, `n_G + n_K` states go down to `n_G`. Examples:
+    - a 1-population exponential-kernel spike Hawkes at two loops goes from 10.6 to 0.62 MB of states and 71 to
+      9.7 s, with values moving 1.3e-16;
+    - the delayed negative feedback CME (hard delay, (n, n) Pade 4, item 56's direct terms) at k = 1, three loops
+      goes from 703 to 27 MB and 557 to 96 s, with values moving <= 8.4e-15 (inside the 1e-12 truncation tolerance).
+  - A rank-1 multi-population network keeps its cascade (nothing cancels).
+  - Zoo: only `conductance` (k = 2, one loop) builds dressed lines; its values move by <= 2.0e-16. No other entry
+    builds a dressed line.
+
+#### Fixed: known-bugs sweep (item 60)
+
+Numbers move only where they were wrong: a conductance vertex mixing a plain and a kernel term (bug 14, below).
+Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identical except `spike_reset` k = 2
+(1.4e-15 relative, inside main's own process-to-process scatter of 2.6e-14 on that entry) and
+`dendritic_quad_soma_sigmoid` (1.4e-16, main scatters by the same). Every fix has a regression test in
+`tests/test_known_bugs_60.py` (bug 2's are in `tests/test_leftovers_39.py`).
+- **Silent wrong one loop for a conductance vertex mixing a plain and a kernel term (bug 14).** A vertex
+  coefficient such as `c*z_h + ee` (drift `-ee*x*x - c*x*Conv(h, x)`) got its kernel slots counted on the whole
+  coefficient and `z_h -> 1`, so the plain term was convolved too: one loop 0.49 relative off the Markov form (two
+  kernels on one vertex: 0.86; a cubic mixed vertex: 0.64; a point-process model: 0.043). The diagram is now
+  integrated term by term (one kernel monomial per vertex, its own slots and prefactor); all four agree with
+  their Markov forms to <= 6e-14. A prefactor that is not the product of the vertex coefficients is refused by
+  name. Single-monomial vertices are unchanged.
+- **Derivative atoms in the Taylor expansion (bug 2).** Maxima's multivariate `taylor()` stops `k` orders early on a
+  `k`-th derivative of an abstract function: `taylor(x*D[0](f)(x), (x, 0), 3)` has no `x^3` term. The per-atom
+  expansion now takes such an atom of one field variable through the univariate form, which is exact. An atom of
+  several field variables, or the legacy whole-action route (`DAEDALUS_EXPAND_LEGACY`, or an atom without a
+  polynomial expansion) when the action has a derivative atom, raises `DerivativeAtomTaylorError` instead of
+  returning a truncated expansion. No parsed model contains such atoms; a hand-built model dict could.
+- **G6 sees the realization (bug 5).** A graded or not numerically Hurwitz rounded realization was already checked
+  a posteriori and refused when broken (item 41). Its measured relative error (stationary variances by Lyapunov vs
+  the same variances by adaptive frequency quadrature of the transfer function) now enters the state-space
+  accuracy estimate R above 1e-6 (`result['phase_j_engine']['realization_check']`, analyzer
+  `realization_err_rel`; below 1e-6 the frequency quadrature's own noise on strongly graded spectra dominates).
+  A realization that passes the 1e-2 refusal check but is off by more than 1e-6 gives `G6_ACCURACY_LOW`. Graded
+  Pade-8 / 24 realizations measure ~2e-16: R unchanged.
+- **Standalone `analyze()` (bug 7)** makes the state-space route prediction itself, so its G3 pole-cluster
+  findings get the in-run levels (e.g. `G3_POLE_CLUSTER_UNRESOLVED` is info, not warning, when the route covers
+  the run).
+- **Population named `I` in the simulator (bug 8).** `I` iterates as the population and computes as the
+  imaginary unit (before: `range * float` TypeError in an expression using `I`).
+- **`dd.Config(delay=...)` and `question.delay` in config files (bug 10)** pass the delay route's options; `dd.run`
+  accepts an `SDE` object (built on the fly). Point-process models in config files go through a model file
+  (documented).
+- **Sage-preparsed literals in the simulators (bug 11).** `SDE.simulate`, `noise_samplers.simulate_ou_paths`,
+  `simulations.delay_sde_sim.simulate` and the Meixner sampler coerce `Integer` / `RealNumber` arguments
+  (`default_rng(Integer)` / `round(RealNumber)` raised TypeError in a Sage notebook).
+- **Mean-field solvers (bug 3).** A residual that overflows to inf / NaN under `np.errstate(all='ignore')` is
+  penalized (1e10) instead of passed on: NaN compares False against the acceptance tolerance and could pass as a
+  root. After `fsolve`, the legacy and heterogeneous iteration solvers check the residual at the returned point
+  (`SADDLE_RESIDUAL_RTOL = 1e-8` relative) and raise instead of returning a non-converged saddle (the engine's
+  saddle check caught such points later, with a less specific message).
+- **Invalid `DAEDALUS_PHASE_J_ENGINE` (bug 9)** raises at the `compute_cumulants` entry (before: at the first
+  Phase J subset, after the enumeration).
+- **Implicit point-process saddle equation (bug 13).** An SDE model with a point process whose mean-field equation
+  of a continuous field references that field (a conductance term `(Es - v)*Conv(g, n)`) was emitted as an explicit
+  `vstar = ...` substitution and failed the saddle check; it now uses the residual `.equation` route (the saddle
+  equals the exact root to 1e-13; simulation agrees within 2 SE).
+- **`symbolic_loop` (bug 4)** refuses a placement-wrapped contribution (`phase_j_placements`) by name
+  (`kernel_edge`) instead of an AttributeError (not reachable through `symbolic_cumulant`, which refuses
+  conductance vertices first).
+- Checked, already fixed on main: the delta-in-heaviside DC gain (bug 1, #20; end-to-end test added) and the
+  stale `legacy_baseline[multipopulation_test]` slow test (bug 6, refrozen in #20; passes on both engines).
+
+#### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
+
+Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
+nonlinearity), which now run the (n, n) Padé approximant instead of item 47's strictly proper `[n-1/n]` rerun: the
+two approximants differ at finite n and converge to the same limit (below). No other model is touched (a strictly
+proper kernel takes exactly the old code paths).
+
+- **Direct terms.** A conductance kernel whose frequency image is `c + (strictly proper)` (`g = c δ + Θ Σ C e^{λt}`:
+  the all-pass (n, n) image of a bare delay) is folded into the dressed line it sits on, `c G + g_smooth ∗ G`, on
+  both Phase J routes: the pole route's dressed mode sum gains `c C_α` at every propagator rate (and the δ part
+  `c D` on a line with one), the state-space route's series connection gains `C = [d₂ c₁, c₂]`
+  (`realize_kernel(..., direct=True)` keeps `d`). A kernel edge (a leg time: a line that cannot be dressed, e.g. a
+  kernel rate equal to a pole of the line) holds only a strictly proper kernel and refuses a direct term by name
+  (`kernel_direct_term`; Phase J status `failed`); the delay driver then still reruns with `[n-1/n]`. Counters
+  `conv_lines_dressed_direct`, `conv_kernel_direct_refused`.
+- **Run-level route.** `run_route`, `diagram_route` and the memory pre-pass (`diagram_estimate`) count such a kernel
+  as a dressed line (`_ModelOps.kernel_route`). Before, they asked the kernel-edge realization, so a bare-delay
+  model was predicted "not covered" and every diagram was charged pole tuples: a delayed negative-feedback model
+  at k = 1, l = 3 (Padé 4) was estimated at ~3,300 GB of pole tuples and refused before any pass ran (item 47's
+  retry never fired); it is now covered, estimated at 13 GB of state-space states.
+- **Refusal per line (D10).** `bare_delays_on_delta_lines`: a bare delay is refused only when it delays a field whose
+  propagator has a δ part (a point-process field; read with every delay factor at its Padé image, both parities)
+  into a vertex with a second δ-carrying physical leg (a spike train inside a nonlinearity, `exp(w n(t - d))`,
+  `n(t) n(t - d)`). Phase J refuses the same case by name, per diagram (a direct term on a δ line at a vertex where
+  another line keeps a δ part). Now run (item 47 refused any bare delay in a model with point-process lines): a bare
+  delay of a continuous field inside `exp` in a spiking model; a delayed spike train times a continuous field
+  (`n(t - d) (1 + eps v)`); a bare delay of a spike train in a linear term.
+- **Checks.** `x*x(t - d)`, (n, n) at n = 4 and 8: equal to the same rational kernel declared without a delay (state-space
+  route 3e-16; pole route 1.9e-10 at one loop, its usual precision) and to the Markov embedding of the (n, n) kernel
+  (n auxiliary linear fields from a balanced realization, no kernel code): n = 4 tree 1.3e-15, one loop 7e-15;
+  n = 8 tree 8e-16, one loop 1.1e-14. (n, n) and `[n-1/n]` at n = 8: same limit (loops within 1e-4 of max|C|, as n = 4 vs 8). A bare
+  delay of the voltage inside `exp` equals the same process with the delay moved into the voltage equation (one loop
+  1.3e-15). A delayed spike train times the voltage, Padé (2, 2), vs its Markov embedding: tree and one loop
+  <= 1.4e-12. A linear Hawkes neuron with a bare delay of its own spike train (direct term on a δ line): k = 3 tree vs
+  its Markov embedding 4e-14; its two-point one loop is exactly 0.
+- **Convergence.** On a delayed negative-feedback model with the delay 5x the decay time, the l = 1 mean correction
+  at (n, n) is -5.1727e-4 / -5.17376e-4 / -5.17376e-4 at n = 4 / 8 / 16, while `[n-1/n]` gives -3.21e-4 / -4.20e-4 /
+  -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
+  at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
+
+#### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
+
+- **Residue clip.** The tier-1 (exact-membership, double-precision) residues were zeroed below 1e-12 of the LARGEST
+  entry at their pole. Membership is exact, so every member residue is exactly nonzero and the clip could only drop a
+  genuine one: two fields whose units differ by 1e14 lost their cross propagator. On `x' = -x + 1e-14 z`,
+  `z' = -z/2` the pole engine returned `C_xz = 0`; it now matches the Lyapunov covariance to ~1e-16 (the default
+  state-space engine was already right). The certificate (`_residue_error`) always checked the unclipped values. The
+  numerical cofactor tiers keep their clip (no membership there: the clip removes the noise of non-member entries).
+  **No number moves on the zoo:** none of its 35 entries has a tier-1 residue below 1e-12 of its pole's largest
+  (smallest ratio 1.6e-8), so the stored residues are identical.
+- **Default memory budget.** With `PHASE_J_MEM_BUDGET_GB` / `SPATIAL_MEM_BUDGET_GB` unset the budget is
+  `min(6 GB, 0.6 x RAM - what this process already holds)`, at least `max(0.5 GB, 10 % of RAM)`
+  (`final_integral.default_mem_budget`; the process is measured by its macOS `phys_footprint`, or resident + swap on
+  Linux). Same 6 GB on a machine with >= ~13 GB of RAM and a small process; 3.3 GB on an 8 GB machine with 1.5 GB
+  held; 6 GB on a 64 GB machine even with 40 GB held. `compute_cumulants` reads it once per run (the pre-pass and the
+  running guard use the same value). Explicit values are unchanged.
+  Every refusal says how its budget was set; the Phase J pre-pass refusal also states the machine's RAM and the
+  estimate; `result['phase_j_memory']['budget_rule']` records the rule.
+- **Periodic lattice sum.** `periodic_inverse_ft` in d=3 built the whole `(2 n_cut + 1)^3` lattice (~9 arrays,
+  13.6 GB at L = 30, k_max = 60: the peak of `tests/test_spatial_correlator.py`, which no guard saw). The sum
+  factorises over the phase axis, so it now runs one n1 slab at a time (0.3 GB peak for the same case). Values move
+  by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
+  the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
+
+#### Fixed: mean-field saddle (round 3, item 52)
+
+- **Kernels whose integral is not 1.** `Conv(K, constant)` at the saddle is now `K(omega = 0)·constant`
+  (the kernel's integral, read off its frequency image; a delay factor counts 1). It was the constant
+  itself (a normalised-kernel rule), so a model with `freq_image='2/(1+I*omega)'` (or a negative or
+  per-entry integral, an indexed kernel, a delayed and scaled kernel) stopped with "mean-field saddle
+  does not satisfy its own equations" although its mean-field equations carry the integral. A kernel
+  symbol left in a hand-written mean-field text (`w*g*nstar`) is also taken at its integral by the
+  check and the iteration solver (it was 1). A model now equals its twin with the normalised kernel
+  and the integral moved into the weight (saddle, tree, one loop). A kernel whose image is singular at
+  omega = 0 (no finite integral) is refused by name. Normalised kernels: the expansion is unchanged
+  (no `1*` factor is introduced). Expand-cache bundles written before this change are re-expanded for
+  models with a non-unit kernel only.
+- **The selected root is checked.** The numerical mean-field check inside the expansion runs at the
+  model's default parameters and root 0 (and not at all on an expand-cache hit); the root chosen by
+  `fixed_point_index` at the run's parameters is now checked too, so an equation that shares only
+  the default root with the action stops instead of computing at a saddle the action does not have.
+- **Negative roots of a field with no declared domain.** Such a field is seeded on `[0, 5s]` only (the
+  historical box; widening it moved other models' roots), so `fixed_point_index` could not reach the
+  root -1 of `x - x^3`. The selectable roots are unchanged; the same seeds are re-run on the mirrored
+  half-line and a warning names every root found there with the remedy (`domain='real'` on the
+  field, or `mf_dae_seed_box`); the roots are in `mf_unsearched_roots` of the DAE result.
+- **`analyze` parameter point** = `compute_cumulants`' (declared defaults completed by the question's
+  values, mean-field defaults never merged; same error wording for a partial dict).
+- **Scalar models** (no `.population()`): a `set_mf_equation` text may name a saddle bare
+  (`'a*exp(Em + c*vstar)'`, not only `vstar[i]`); it was a parse error. Results equal the 1-element
+  population form bit for bit.
+
+#### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
+
+No computed number moves (output side only).
+
+- **k >= 3 middle chambers.** `slice_me` (and the new `Cumulant.me_slice(j)`) now gives triples on every chamber of a
+  slice, including a swept leg between two other legs, where two segments move (one grows, one shrinks).
+  `SubsetSS.me_chain` returns the moving segments and the fixed maps between them; `MEChainBlock` holds them as one
+  Kronecker triple (the last segment transposed, a middle one as `I ⊗ G`). Values are evaluated segment by segment
+  and equal `total_C_by_ell` / `dd.run`'s slices to <= 4e-16 (oscillator + red noise, k = 3, l <= 1; the double-well
+  OU at mu = -1, k = 3, l <= 1). Mode lists of a middle chamber combine the two segments' own decompositions; they
+  reproduce the values to <= 1.2e-14. A middle chamber is a finite interval: it has values and modes, no Laplace
+  transform.
+- **Exact delayed tree (k = 2).** `Cumulant.me` now holds the exact delayed tree of `api.delay` itself
+  (`ExactDelayTreeSide`): values, Laplace transforms (the history segment on `[0, d]` from the boundary-value
+  stack plus the exact tail through `Δ(z) = zI − A − A_d e^{−zd}`) and the spectrum `H(iω) N H(iω)ᴴ − D0 N D0ᵀ`
+  with the true delayed image. `integrate_against` and `spectrum` with `method='auto'` are now exact for delay
+  models with the exact tree (before: refused). Scalar delayed OU: spectrum vs the closed form 5e-16; Laplace
+  transforms (powers 0-2) vs an independent spectral quadrature <= 6e-14. Explicit `method='quad'` to infinite
+  lag stays refused. The exact tree has no triple and no finite mode list (`me.mode_reasons`; `Cumulant.modes`
+  leaves it out with a warning).
+- **Mode merging.** More than 2,000 mode terms are now merged by exact rate first and clustered row by row
+  (before: an n x n comparison, 7 GB for the middle chambers). Smaller lists take the old path unchanged.
+
 #### Added: point-process front end (round 2, item 46)
 
 No existing number moves (no existing model uses the new paths).

@@ -203,7 +203,7 @@ def _meixner_table(alpha, beta, d):
     on a grid uniform in ``s`` with ``z = d sinh(s)``: resolves the
     Cauchy-like core of width ``d`` (small ``dt``) and the exponential
     tails with the same relative accuracy."""
-    key = (round(beta, 14), round(d, 14))
+    key = (round(float(beta), 14), round(float(d), 14))
     hit = _MEIXNER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -420,6 +420,10 @@ def simulate_ou_paths(source, mu, *, T, dt, n_paths, rng, burn=None, x0=0.0):
     (default ``8/mu``) up to time ``T``.  The Euler discretization is
     exact for the linear recursion ``x' = (1 - mu dt) x + dL``; its
     stationary cumulants are :func:`euler_ou_cumulant`."""
+    # Sage-preparsed literals (Integer / RealNumber) as Python numbers
+    T, dt, mu = float(T), float(dt), float(mu)
+    burn = None if burn is None else float(burn)
+    n_paths = int(n_paths)
     n = int(round(T / dt))
     burn_n = int(round((8.0 / mu if burn is None else burn) / dt))
     x = np.full(n_paths, float(x0))

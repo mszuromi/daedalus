@@ -469,7 +469,8 @@ def compute_coupled_tree_correlator(
     diffusion ``𝒟`` and drift ``V`` (``heat_kernel.reaction_diffusion_matrices``),
     requires scalar ``𝒟`` and ``V=0``, extracts the noise matrix ``N``
     (``spatial_correlator.extract_noise_matrix``), then for the ``(i, j)`` external
-    legs FTs ``C_ij(q,τ) = coupled_two_point(ref, N, q², τ)`` to real space.
+    legs FTs ``C_ij(q,τ) = ⟨φ_i(0)φ_j(τ)⟩ = coupled_two_point(ref, N, q², τ)[j, i]``
+    (the package convention) to real space.
 
     Returns ``(C, info)`` mirroring :func:`compute_spatial_correlator_via_pipeline`
     (``C`` is ``[len(tau_grid), len(spatial_grid)]`` for the external pair).
@@ -585,16 +586,19 @@ def compute_coupled_tree_correlator(
     xs = np.array([float(x) for x in spatial_grid])
     C = np.zeros((len(taus), len(xs)), dtype=np.complex128)
 
+    # ORIENTATION.  The matrix primitives (coupled_two_point, dressed_tree_C)
+    # return ⟨x(τ) x(0)ᵀ⟩ = e^{−A|τ|}Σ for τ ≥ 0; the package convention is
+    # C_ij(τ) = ⟨φ_i(0) φ_j(τ)⟩ = ⟨φ_j(τ) φ_i(0)⟩ = matrix[j, i].
     if dyson_order is not None:
         # dressed (unequal-𝒟) q-space 2-point, truncated at the policy order
         from engine.integration.spatial.dyson_dressing import dressed_tree_C
 
         def _Cq(q, tau):
             return dressed_tree_C(q, tau, M, ref.Dhat, ref.D0, N,
-                                  dyson_order)[i, j]
+                                  dyson_order)[j, i]
     else:
         def _Cq(q, tau):
-            return coupled_two_point(ref, N, q * q, tau)[i, j]
+            return coupled_two_point(ref, N, q * q, tau)[j, i]
 
     if d >= 2:
         # d≥2: q→x transform of the ISOTROPIC coupled C_ij(q,τ).  ``_Cq`` is
@@ -632,7 +636,9 @@ def compute_coupled_tree_correlator(
         # (α,β) term is a single-mode correlator with denominator mass
         # μ_d=(m_α+m_β)/2 and an extra factor e^{−(m_α−μ_d)τ}:
         #   IFT = (P_αNP_βᵀ)_{ij}·e^{−(m_α−μ_d)τ}·free_two_point(μ_d, D₀, ½; x, τ).
-        # τ<0 uses C_ij(−τ)=C_ji(τ).  free_two_point handles complex μ_d (the
+        # That spectral sum is the matrix ⟨x(τ)x(0)ᵀ⟩; the convention
+        # C_ij(τ) = ⟨φ_i(0)φ_j(τ)⟩ reads entry [j, i] at τ ≥ 0 and [i, j] at
+        # τ < 0.  free_two_point handles complex μ_d (the
         # erf/mpmath path); conjugate (α,β)↔(β,α)* pairs make the sum real.
         from engine.integration.spatial.spectral_propagator import (
             spectral_projectors as _spectral_projectors)
@@ -651,7 +657,7 @@ def compute_coupled_tree_correlator(
 
         for it, tau in enumerate(taus):
             at = abs(float(tau))
-            ii, jj = (i, j) if tau >= 0 else (j, i)
+            ii, jj = (j, i) if tau >= 0 else (i, j)
             for ix, x in enumerate(xs):
                 val = 0.0 + 0.0j
                 for a_ in range(nf):
@@ -1196,9 +1202,9 @@ def compute_coupled_loop_correlator(
 
     from engine.diagrams.type_assignment import build_field_index_map
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.diagrams.symmetry import external_wick_compensation
     from engine.integration.spatial.full_integrator import (
-        diagram_kinematic_spectral, spectral_rows, external_times_2pt,
-        _is_retarded_type)
+        diagram_kinematic_spectral, spectral_rows, k2_leaf_time_assignments)
     from engine.integration.spatial.spectral_propagator import spectral_projectors
 
     M = np.asarray(tree_info['M'], dtype=float)
@@ -1439,26 +1445,24 @@ def compute_coupled_loop_correlator(
             nt = int(os.environ.get('SPATIAL_GRID_NT', nt))
             ns = int(os.environ.get('SPATIAL_GRID_NS', ns))
 
-            # ── External-time ORIENTATION (the i≠j fix) ────────────────────
-            # Enumeration sums over leg-to-leaf permutations.  For i==j the
-            # mirror pair DEDUPES to one record and the retarded Γ(τ)+Γ(−τ)
-            # completion restores it.  For i≠j BOTH mirror records survive, so
-            # each record must be evaluated ONCE, at the times matching ITS OWN
-            # leaf field order (C_ij(τ) = ⟨φ_i(t+τ)φ_j(t)⟩, the tree-driver
-            # convention: leg i later for τ>0) — applying the ±τ completion
-            # there would double-count and symmetrize away the genuine
-            # τ-asymmetry of the cross-correlator.
+            # ── External-time ORIENTATION ─────────────────────────────────
+            # Package convention C_ij(τ) = ⟨φ_i(0) φ_j(τ)⟩ (the temporal
+            # pipeline, the single-field spatial path and the k-point
+            # drivers).  For i==j both field-respecting leaf→time
+            # assignments are summed and divided by the orbit–stabilizer
+            # index comp (k2_leaf_time_assignments; the leg kinds do not
+            # decide it).  For i≠j there is ONE field-respecting assignment
+            # (comp = 1): the leaf carrying field i at 0, field j at τ —
+            # the ±τ completion would double-count and symmetrize away the
+            # genuine τ-asymmetry of the cross-correlator.
             ext_i = int(phys_idx[ext_int[0]])
             ext_j = int(phys_idx[ext_int[-1]])
             leaves = list(dd.external_legs)
             if ext_i == ext_j:
-                retd = _is_retarded_type(dd)
+                comp_dd = external_wick_compensation(td)
 
                 def _ets(tau):
-                    return [external_times_2pt(dd, float(tau))] + \
-                        ([external_times_2pt(dd, -float(tau))]
-                         if retd and tau != 0.0 else []), \
-                        (2.0 if retd and tau == 0.0 else 1.0)
+                    return k2_leaf_time_assignments(dd, float(tau), comp_dd)
             else:
                 lf = {leaf: int(phys_idx[fld])
                       for leaf, fld in td.external_legs.items()}
@@ -1471,7 +1475,7 @@ def compute_coupled_loop_correlator(
                     continue
 
                 def _ets(tau):
-                    return [{li: float(tau), lj: 0.0}], 1.0
+                    return [{li: 0.0, lj: float(tau)}], 1.0
 
             for it, tau in enumerate(taus):
                 et_list, fac = _ets(tau)
@@ -1529,6 +1533,7 @@ def compute_spatial_correlator_generic(
     Returns ``(C1_tau_x, info)``.
     """
     from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.diagrams.symmetry import external_wick_compensation
     from engine.integration.spatial.full_integrator import (
         diagram_correlator, diagram_correlator_x)
 
@@ -1661,6 +1666,9 @@ def compute_spatial_correlator_generic(
     live_td = [(dd, pv, ff, el, td) for dd, pv, ff, el, pn, td in descrs
                if not SR(pn).is_zero()]
     live = [rec[:4] for rec in live_td]
+    # k=2 ±τ completion = orbit–stabilizer index of the typed diagram (both
+    # leaf→time assignments ÷ comp), the rule of the general-k driver
+    live_comp = [external_wick_compensation(rec[4]) for rec in live_td]
     if not live:
         raise SpatialPropagatorError('no live loop diagrams at the saddle.')
     if verbose:
@@ -1699,7 +1707,8 @@ def compute_spatial_correlator_generic(
     # δC(q,τ) accumulated PER loop order — ONE integration pass over all diagrams
     # (the ℓ=L run already contains every ℓ<L diagram, so a single call yields the
     # whole cumulative progression; no need to re-run for each order).
-    live_g = [(dd, pv, ff, el) + _grid(dd) for dd, pv, ff, el in live]
+    live_g = [(dd, pv, ff, el) + _grid(dd) + (cp,)
+              for (dd, pv, ff, el), cp in zip(live, live_comp)]
 
     # Integrator backend (switchable): 'grid' (deterministic causal-chamber product
     # quadrature, default, validated) or 'mc' (importance-sampled Monte-Carlo —
@@ -1728,9 +1737,19 @@ def compute_spatial_correlator_generic(
     # kernel array alone is tens of GB → an OOM that crashes the kernel AND the OS.
     # Refuse up-front (vs silently thrashing/crashing) with the numbers + the knobs.
     _nx = max(1, len(np.asarray(spatial_grid, dtype=float)))
-    _budget_gb = float(_osg.environ.get('SPATIAL_MEM_BUDGET_GB', '6'))
+    # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
+    # on a small machine: final_integral.default_mem_budget); an explicit
+    # value is used as given
+    if 'SPATIAL_MEM_BUDGET_GB' in _osg.environ:
+        _budget_gb = float(_osg.environ['SPATIAL_MEM_BUDGET_GB'])
+        _budget_rule = f'SPATIAL_MEM_BUDGET_GB={_budget_gb:g}'
+    else:
+        from engine.integration.time_domain.final_integral import (
+            default_mem_budget as _dmb)
+        _b, _budget_rule = _dmb()
+        _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
-    for _dd, _pv, _ff, _el, _nt, _ns in live_g:
+    for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
         _P = (_nt ** _nV) * (_ns ** _nC)
@@ -1747,6 +1766,7 @@ def compute_spatial_correlator_generic(
             f'quadrature of P=n_t^{_nV}·n_s^{_nC}={_P:.1e} points at grid '
             f'(n_t={_nt}, n_s={_ns}), × {_nx} output points.  This is the curse of '
             f'dimensionality in the time/σ quadrature (NOT the form factor).  '
+            f'The budget is {_budget_gb:.2f} GB ({_budget_rule}).  '
             f'Options: (1) use a lower max_ell — max_ell=1 is fast + validated; '
             f'(2) SPATIAL_INTEGRATOR=mc — the Monte-Carlo backend (bounded memory, '
             f'O(1/√N); validated <0.1% for PLAIN φⁿ vertices, BIASED for derivative '
@@ -1754,7 +1774,7 @@ def compute_spatial_correlator_generic(
             f'(accuracy tradeoff — validate vs the simulator); (4) raise the cap '
             f'via SPATIAL_MEM_BUDGET_GB if you truly have the RAM + time.')
     # ──────────────────────────────────────────────────────────────────────────
-    _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns)
+    _all_plain = all(rec[2] is None for rec in live_g)    # rec=(dd,pv,ff,el,nt,ns,comp)
     # ANALYTIC heat-kernel IFT covers: plain vertices (Phase 1, Case A) AND — at
     # d=1 — derivative-vertex form factors (Phase 2, Cases B/C: joint (ℓ,q)
     # Gaussian → polynomial-fit + closed-form heat-kernel q-moments).  The d≥2
@@ -1787,10 +1807,10 @@ def compute_spatial_correlator_generic(
         # order (grid ignores the seed and never pays for the signature).
         _seeds = ([_mc_class_seed(rec[4]) for rec in live_td]
                   if _integrator in ('mc', 'bessel') else [0] * len(live_g))
-        for _di, (dd, pv, ff, el, nt, ns) in enumerate(live_g):
+        for _di, (dd, pv, ff, el, nt, ns, cp) in enumerate(live_g):
             for it, tau in enumerate(taus):
                 dCx_by_ell[el][it, :] += diagram_correlator_x(
-                    dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
+                    dd, pv, xg, float(tau), mu0, D0, spatial_dim=d, comp=cp,
                     n_t=nt, n_s=ns, formfactor=ff,
                     method=_integrator, mc_n=_mc_n, mc_seed=_seeds[_di])
     else:
@@ -1809,10 +1829,11 @@ def compute_spatial_correlator_generic(
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(task):                           # one diagram's column at one q
-                iq, q, dd, pv, ff, el, nt, ns = task
+                iq, q, dd, pv, ff, el, nt, ns, cp = task
                 col = np.array(
                     [diagram_correlator(dd, pv, q, float(tau), mu0, D0, spatial_dim=d,
-                                        n_t=nt, n_s=ns, formfactor=ff) for tau in taus],
+                                        comp=cp, n_t=nt, n_s=ns, formfactor=ff)
+                     for tau in taus],
                     dtype=complex)
                 return iq, el, col
 
@@ -1827,10 +1848,10 @@ def compute_spatial_correlator_generic(
         else:
             for iq, q in enumerate(qg):
                 for it, tau in enumerate(taus):
-                    for dd, pv, ff, el, nt, ns in live_g:
+                    for dd, pv, ff, el, nt, ns, cp in live_g:
                         dC_by_ell[el][iq, it] += diagram_correlator(
                             dd, pv, float(q), float(tau), mu0, D0, spatial_dim=d,
-                            n_t=nt, n_s=ns, formfactor=ff)
+                            comp=cp, n_t=nt, n_s=ns, formfactor=ff)
 
         def _ft_to_x(dC_qt):                          # (n_q,n_τ) → (n_τ,n_x) real-space δC
             add = np.zeros((len(taus), len(xg)), dtype=complex)

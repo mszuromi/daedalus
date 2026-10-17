@@ -133,7 +133,8 @@ def _builder(**kw):
             .define_kernel('r', indexed_by=['E'], **kw)
             .set_action_text('sum(nt[i]*n[i] - (exp(nt[i]) - 1)*a[i]*exp(v[i]) + vt[i]*('
                              '(Dt + 1)*v[i] - Em[i] - sum(w*Conv(r[i], n[j]) for j in E)) for i in E)')
-            .set_mf_equation('vstar', 'Em[i] + sum(w*nstar[j] for j in E)')
+            # the kernel integrates to 1.3 (0.3 from the delta): the saddle carries it
+            .set_mf_equation('vstar', 'Em[i] + sum(1.3*w*nstar[j] for j in E)')
             .set_mf_equation('nstar', 'a[i]*exp(vstar[i])')
             .build())
 

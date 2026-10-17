@@ -98,7 +98,9 @@ def test_box_oracle_consistent_with_spectral_propagator(case_equal_d):
     q = 2.0 * np.pi * np.fft.fftfreq(N_X, d=DX)
     for k, tau in enumerate(TAUS):
         C0 = sum(coupled_two_point(ref, NNOISE, qn ** 2, tau) for qn in q) / L
-        assert np.max(np.abs(C0 - con['C'][k, :, :, 0])) < 1e-10
+        # the primitive returns <x(tau) x(0)^T>; the oracle the package
+        # convention <x_i(0) x_j(tau)>: its transpose
+        assert np.max(np.abs(C0.T - con['C'][k, :, :, 0])) < 1e-10
 
 
 def test_equal_time_correlator_is_symmetric(case_equal_d):

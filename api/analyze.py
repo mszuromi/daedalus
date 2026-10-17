@@ -121,6 +121,7 @@ FINDING_CODES = {
     'G1_SPATIAL':                ('G1', 'info'),
     # G2 time homogeneity and mean field
     'G2_TIME_DEPENDENT':         ('G2', 'error'),
+    'G2_NOISE_STRUCTURE':        ('G2', 'error'),
     'G2_NO_SADDLE':              ('G2', 'error'),
     'G2_MF_FAILED':              ('G2', 'error'),
     'G2_UNSTABLE_SADDLE':        ('G2', 'error'),
@@ -202,6 +203,10 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
+#: item 60: the a posteriori realization error (api._realization.
+#: _aposteriori_error) enters the G6 estimate above this value (the
+#: realization is refused outright above 1e-2)
+_G6_REALIZATION_FLOOR = 1e-6
 
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
@@ -772,34 +777,33 @@ def analyze_with_context(model: dict, question=None, policy=None, *,
 
 
 def _resolve_parameters(ctx):
-    """The parameter point: the question's, else the declared defaults
-    (``compute_cumulants``' rule, with its error text)."""
+    """The parameter point ``compute_cumulants`` uses: the declared defaults
+    of every parameter the question does not give, the question's values
+    winning (a partial dict is completed); a mean-field parameter's default
+    is never merged (it is solved, not supplied).  Same error text."""
     model, q = ctx.model, ctx.q
     pspecs = model.get('parameters', []) or []
     declared = {p.get('name') for p in pspecs}
-    if q.parameters:
-        unknown = sorted(set(q.parameters) - declared)
-        if unknown:
-            ctx.add('G0_UNKNOWN_PARAMETER',
-                    f'question.parameters names undeclared parameter(s): '
-                    f'{", ".join(unknown)}.',
-                    'check the spelling against the model\'s parameters')
-        fundamental = {p['name']: p['default'] for p in pspecs
-                       if p.get('default') is not None}
-        fundamental.update(q.parameters)
-        missing = sorted(p['name'] for p in pspecs
-                         if p['name'] not in fundamental
-                         and not p.get('mean_field'))
-    else:
-        fundamental = {p['name']: p['default'] for p in pspecs
-                       if p.get('default') is not None}
-        missing = sorted(p['name'] for p in pspecs
-                         if p.get('default') is None
-                         and not p.get('mean_field'))
+    given = dict(q.parameters) if q.parameters else {}
+    unknown = sorted(set(given) - declared)
+    if unknown:
+        ctx.add('G0_UNKNOWN_PARAMETER',
+                f'question.parameters names undeclared parameter(s): '
+                f'{", ".join(unknown)}.',
+                'check the spelling against the model\'s parameters')
+    fundamental = {p['name']: p['default'] for p in pspecs
+                   if p.get('default') is not None and not p.get('mean_field')}
+    fundamental.update(given)
+    missing = sorted(p['name'] for p in pspecs
+                     if p['name'] not in fundamental
+                     and not p.get('mean_field'))
     if missing:
         ctx.add('G0_PARAMETERS_MISSING',
-                'compute_cumulants: no ``parameters=`` given, and these model '
-                'parameters declare no default: ' + ', '.join(missing) + '.',
+                'compute_cumulants: '
+                + ('no ``parameters=`` given' if not given else
+                   'the ``parameters=`` given do not include them')
+                + ', and these model parameters declare no default: '
+                + ', '.join(missing) + '.',
                 'Pass parameters={...} or declare defaults via '
                 'ModelBuilder.parameter(name, default=...).')
         return None
@@ -1149,6 +1153,22 @@ def _g1_structure(ctx):
                 'remove the explicit time dependence (e.g. embed a periodic '
                 'drive as an extra oscillator field) or use a time-dependent '
                 'backend when one exists')
+        ctx.stop_numeric = True
+
+    # legacy dict key noise_structure: only white noise is implemented on
+    # the numeric routes (time-domain Phase J never applies a temporal noise
+    # kernel), so a non-white temporal_type would be computed as white noise
+    nstruct = model.get('noise_structure') or {}
+    ntype = (nstruct.get('temporal_type', 'white')
+             if isinstance(nstruct, dict) else nstruct)
+    if ntype != 'white':
+        ctx.add('G2_NOISE_STRUCTURE',
+                f"noise_structure temporal_type {ntype!r}: the numeric "
+                "routes implement white noise only and would silently drop "
+                "the noise kernel.",
+                'write colored noise as a Markov embedding (an extra '
+                'OU-driven field, as in models/ou_quartic_colored.model.py) '
+                'or a kernel Conv term, and remove noise_structure')
         ctx.stop_numeric = True
 
     # polynomial or not (in the fields)
@@ -1914,7 +1934,31 @@ def _g3_propagator(ctx):
                        declared=ctx.p.allow_numeric_fallback)
         return
     ctx.t['pole_source'] = 'exact'
+    if 'statespace_covers_run' not in ctx.t:
+        _standalone_route_prediction(ctx)
     _g3_pole_findings(ctx, res)
+
+
+def _standalone_route_prediction(ctx):
+    """Item 60: ``analyze()`` outside ``compute_cumulants`` makes the run's
+    state-space route prediction itself (``compute._ss_route_prediction`` on
+    the same operator, parameter point and vertex types), so the G3 pole
+    findings get the levels the in-run analyzer gives them.  Left unset
+    (registered levels, as before) when the prediction cannot be made."""
+    try:
+        from engine.core.vertices import (extract_vertex_types,
+                                          extract_source_types)
+        from api.compute import _ss_route_prediction
+        prop = {'K_ft': ctx.K_ft, 'omega': ctx.omega,
+                'nf': int(ctx.n_tilde),
+                'ring_gen_names': list(ctx.ring_names)}
+        vt = (list(extract_vertex_types(ctx.ft))
+              + list(extract_source_types(ctx.ft)))
+        pred = _ss_route_prediction(prop, ctx.num_params, vt)
+    except Exception:
+        return
+    ctx.t['phase_j_engine'] = pred.get('engine')
+    ctx.t['statespace_covers_run'] = bool(pred.get('covers_run'))
 
 
 def _pc_kappa_max():
@@ -3460,6 +3504,22 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     # routes' sums
     E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
          + float(c.get('ss_err_abs_sum', 0.0)))
+    # item 60: the per-subset estimates above assume the ROUNDED realization
+    # represents G; a graded / not numerically Hurwitz one was checked a
+    # posteriori (api._realization: refused above 1e-2) and its measured
+    # relative error enters the estimate, so a realization that passes the
+    # refusal but is off by more than the threshold does not pass G6
+    rc = (result.get('phase_j_engine') or {}).get('realization_check') \
+        if isinstance(result, dict) else None
+    real_rel = 0.0
+    if (rc and rc.get('checked') and rc.get('err_rel') is not None
+            and int(c.get('ss_estimated', 0))):
+        d['realization_err_rel'] = float(rc['err_rel'])
+        # below the floor the measurement is the frequency quadrature's own
+        # noise on strongly graded spectra (~1e-6 at a 1e6 spread, the
+        # Lyapunov solution measured exact to 5e-13), not the realization's
+        if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
+            real_rel = float(rc['err_rel'])
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
@@ -3480,6 +3540,8 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = E / S
     else:
         R = 0.0 if E == 0 else float('inf')
+    if real_rel and complete and R is not None:
+        R = R + real_rel
     # Near-degenerate / repeated poles (api._pole_clusters): a resolved
     # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
     # the node values); an unresolved one its lost-digit estimate.
@@ -3507,8 +3569,10 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     ctx.add('G6_ACCURACY',
             f'accuracy estimate R = {Rs}: summed error estimates {E:.3g} of '
             f'{n_est} closed-form subset evaluation(s) against '
-            f'sum_tau |C(tau)| = {S:.6g} over the tau grid (threshold '
-            f'{thr:g}, {src}){why}.',
+            f'sum_tau |C(tau)| = {S:.6g} over the tau grid'
+            + (f' plus the realization\'s a posteriori relative error '
+               f'{real_rel:.3g}' if real_rel else '')
+            + f' (threshold {thr:g}, {src}){why}.',
             'pass parallel=False for the accuracy estimate'
             if (R is None and not complete) else '')
     if R is not None and R > thr:

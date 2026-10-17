@@ -19,6 +19,7 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
       tau_grid: {start: -4, stop: 4, num: 17}    # or an explicit list
       points: [...]                              # spatial k >= 3 only
       taylor_order: 4
+      delay: {order: 8}                          # delay models (api.delay options)
     policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false,
              mode: permissive,                   # model analyzer: or strict
              allow_taylor_truncation: true,      # consents (api.analyze.Policy)
@@ -42,6 +43,10 @@ noise and the action are derived exactly as for a Python-built model)::
         xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
       interpretation: ito             # or stratonovich
       stability_analysis: true
+
+A point-process model (``SDE.point_process``, kernels, delays) goes through a
+model file: ``model: path/to/my.model.py`` whose ``build()`` returns
+``SDE(...).build()`` (``dd.run`` also accepts the ``SDE`` object itself).
 
 Every error names the config line it comes from.  Relative paths (model file,
 outputs) resolve against the directory of the config file.  The YAML is
@@ -73,7 +78,7 @@ SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
 
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
-                 'spatial_grid', 'points', 'taylor_order')
+                 'spatial_grid', 'points', 'taylor_order', 'delay')
 POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
                'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
                'allow_numeric_fallback', 'interpretation', 'downgrade')
@@ -379,8 +384,28 @@ class _Parser:
             q['points'] = (self.numeric_tree(items['points'][1],
                                              'question.points'),
                            items['points'][1])
+        if 'delay' in items:
+            q['delay'] = self.delay_options(items['delay'][1])
         q['_lines'] = lines
         return q
+
+    def delay_options(self, node):
+        """``question.delay``: the options of the Pade route for models with
+        delays (``api.delay.DEFAULTS`` names; ``compute_cumulants(delay=)``),
+        validated by ``api.delay.resolve_options``."""
+        from api.delay import DEFAULTS, resolve_options
+        items = self.mapping(node, tuple(DEFAULTS), "'question.delay'")
+        out = {}
+        for key, (_knode, vnode) in items.items():
+            v = vnode.value
+            if isinstance(vnode, self.yaml.ScalarNode) and _DECIMAL.match(str(v)):
+                v = float(v) if any(c in str(v) for c in '.eE') else int(v)
+            out[key] = v
+        try:
+            resolve_options(out)
+        except (TypeError, ValueError) as exc:
+            self.fail(node, f'question.delay: {exc}')
+        return out
 
     def external_fields(self, node):
         if (not isinstance(node, self.yaml.SequenceNode) or not node.value):
@@ -894,6 +919,8 @@ def resolve(raw, model, mod):
         question['points'] = points
     if 'taylor_order' in q:
         question['taylor_order'] = q['taylor_order']
+    if 'delay' in q:
+        question['delay'] = dict(q['delay'])
     outputs = {}
     if raw.get('output'):
         try:
@@ -1054,7 +1081,7 @@ def run_config(path, dry_run=False, out=None):
         verbose=pol['verbose'],
         policy={key: pol[key] for key in ANALYZER_POLICY_KEYS if key in pol}
         or None,
-        preflight=pol.get('preflight'))
+        preflight=pol.get('preflight'), delay=q.get('delay'))
     extra = {}
     if q.get('taylor_order') is not None:
         extra['taylor_order'] = q['taylor_order']

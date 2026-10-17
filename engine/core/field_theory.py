@@ -273,6 +273,35 @@ def _expand_legacy_requested() -> bool:
     return v not in ('', '0', 'false', 'no', 'off')
 
 
+class DerivativeAtomTaylorError(Exception):
+    """A derivative of an abstract function (``D[0](f)(x)``) in the action,
+    in a place where Maxima's multivariate ``taylor()`` would truncate it
+    (it stops ``k`` orders early on a ``k``-th derivative atom: ``taylor(
+    x*D[0](f)(x), (x, 0), 3)`` has no ``x^3`` term).  Raised instead of a
+    silently truncated expansion; not caught by the fall-backs."""
+
+
+def _has_derivative_atom(e, field_vars=None) -> bool:
+    """Whether ``e`` contains ``D[...](f)(...)`` of an abstract function
+    (with ``field_vars``: one whose arguments depend on a field variable;
+    an atom of parameters only is a constant to ``taylor()``)."""
+    from sage.symbolic.operators import FDerivativeOperator
+    names = (None if field_vars is None
+             else {repr(v) for v in field_vars})
+    stack = [SR(e)]
+    while stack:
+        x = stack.pop()
+        op = x.operator()
+        if op is None:
+            continue
+        if isinstance(op, FDerivativeOperator):
+            if names is None or any(repr(u) in names for u in x.variables()):
+                return True
+            continue
+        stack.extend(x.operands())
+    return False
+
+
 class _TruncatedTaylorUnsupported(Exception):
     """An atom whose ``taylor()`` is not a polynomial in the field variables
     (Laurent / Puiseux terms, or field variables left in a coefficient).
@@ -323,7 +352,17 @@ def _truncated_taylor(expr, field_vars, order: int) -> dict:
         it depends on, read into an exponent dict."""
         names = {repr(u) for u in e.variables()}
         vs = [v for v in fvars if repr(v) in names]
-        T = SR(taylor(e, *[(v, 0) for v in vs], order)).expand()
+        if _has_derivative_atom(e, vs):
+            # the multivariate form truncates derivative atoms early; the
+            # univariate form is exact (one field variable only)
+            if len(vs) != 1:
+                raise DerivativeAtomTaylorError(
+                    f'cannot expand {e}: a derivative of an abstract function '
+                    f'of several field variables ({", ".join(map(str, vs))}); '
+                    f'give the function an expression')
+            T = SR(taylor(e, vs[0], 0, order)).expand()
+        else:
+            T = SR(taylor(e, *[(v, 0) for v in vs], order)).expand()
         opT = T.operator()
         terms = (T.operands() if opT is not None
                  and _sr_op_name(opT) == 'add_vararg' else [T])
@@ -405,6 +444,13 @@ def _taylor_action(S_sr, field_vars, order: int):
                         mono = mono * v ** k
                 out = out + c * mono
             return out
+    if _has_derivative_atom(S_sr, field_vars):
+        raise DerivativeAtomTaylorError(
+            'the action contains a derivative of an abstract function '
+            '(D[...](f)(...)) and the expansion would take the multivariate '
+            'taylor() route (DAEDALUS_EXPAND_LEGACY, or an atom without a '
+            'polynomial expansion), which truncates such atoms early; give '
+            'the function an expression')
     return taylor(S_sr, *[(v, 0) for v in field_vars], order)
 
 
@@ -1027,6 +1073,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     failures: list = []
     soft_passes: list = []
     mf_memo: dict = {}      # the saddle solve is the same for every coefficient
+    dc_gains = getattr(ns, '_kernel_dc_gains', None)
 
     for key in mf_sector_keys:
         sector_poly = by_tp.get(key)
@@ -1036,6 +1083,13 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
             c_subbed = SR(coeff).subs(mf_subs)
             if spec_subs:
                 c_subbed = c_subbed.subs(spec_subs)
+            # A kernel symbol left at the saddle (a hand-written
+            # mean-field text ``w*g*nstar``, or a legacy ``g*n`` action
+            # term) is the kernel's integral there, as in the solvers.
+            if dc_gains is not None:
+                k_subs = dc_gains.subs_dict(c_subbed)
+                if k_subs:
+                    c_subbed = c_subbed.subs(k_subs)
             if _expand_legacy_requested() or not _proved_nonzero(
                     c_subbed, floats_ok=True):
                 try:
@@ -1094,6 +1148,22 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     for key in mf_sector_keys:
         if key in by_tp:
             by_tp[key] = R.zero()
+
+
+def kernel_dc_gains_of(ns, model):
+    """The model's kernel integrals (:class:`engine.core.convolution.
+    KernelDCGains`), made once per namespace and kept on it as
+    ``ns._kernel_dc_gains`` (the mean-field check and the solvers read the
+    same object)."""
+    from engine.core.convolution import KernelDCGains
+    gains = getattr(ns, '_kernel_dc_gains', None)
+    if gains is None:
+        gains = KernelDCGains(ns, model)
+        try:
+            ns._kernel_dc_gains = gains
+        except AttributeError:
+            pass
+    return gains
 
 
 def _mf_numerical_residual(expr, ns, model, memo=None):
@@ -1297,7 +1367,9 @@ class FieldTheory:
         # convolution rules:
         #   * linearity in arg 2  ⇒  Conv(g, a+b) = Conv(g, a) + Conv(g, b)
         #   * pull constant prefactors out of arg 2
-        #   * Conv(g, constant) = ĝ(0) · constant = constant   (normalised)
+        #   * Conv(g, constant) = ĝ(0) · constant   (ĝ(0) = the kernel's
+        #     integral, read off ``kernel_ft_image`` at omega = 0; a
+        #     normalised kernel leaves the constant untouched)
         #   * Conv(g, fluctuation) → g · fluctuation   (kernel symbol stays
         #     for the FT pipeline to substitute ĝ(ω) later).
         #
@@ -1310,6 +1382,7 @@ class FieldTheory:
         # The naïve ``Conv(g, n) → g·n`` flatten gives the wrong
         # ``g·nstar`` bilinear coefficient on the dv side.
         from engine.core.convolution import reduce_conv_in_action
+        dc_gains = kernel_dc_gains_of(ns, self.model)
         try:
             fluct_vars = set(ns._all_field_sr_vars)
             # Pass taylor_order so nonlinear Conv arguments
@@ -1330,7 +1403,7 @@ class FieldTheory:
             attachments = {}
             S_sr = reduce_conv_in_action(
                 S_sr, fluct_vars, taylor_order=self.taylor_order,
-                attachments_out=attachments,
+                attachments_out=attachments, dc_gains=dc_gains,
             )
             ns._kernel_attachments = attachments
         except (AttributeError, TypeError):
@@ -1668,6 +1741,10 @@ class FieldTheory:
         # Matrix params get a 1D placeholder list; the actual 2D
         # element-naming grid is set later by ``mf_substitutions``,
         # which also knows about ``indexed_by`` for per-pop sizing.
+        # Mean-field saddle names (the expression namespace binds a size-1
+        # saddle as a scalar too: bare ``vstar`` in a scalar model).
+        ns._mf_saddle_names = frozenset(
+            p['name'] for p in m.get('parameters', []) if p.get('mean_field'))
         for pspec in m.get('parameters', []):
             pname   = pspec['name']
             domain  = pspec.get('domain', None)

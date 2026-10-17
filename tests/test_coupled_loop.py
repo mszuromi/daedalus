@@ -132,7 +132,8 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
         Wgt = np.prod(elems[np.arange(n_rows)[:, None], assign], axis=0)
         mass_table = eig[assign]
         # orientation-resolved external times (the i≠j rule): the i leaf sits
-        # at +τ (C_ij(τ) = ⟨φ_i(t+τ)φ_j(t)⟩); mirror records swap leaves
+        # at 0, the j leaf at +τ (package convention C_ij(τ) = ⟨φ_i(0)φ_j(τ)⟩);
+        # mirror records swap leaves
         leaves = list(dd.external_legs)
         if ei_ == ej_:
             et = external_times_2pt(dd, tau)
@@ -140,15 +141,16 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
             lf = {leaf: int(phys_idx[fld])
                   for leaf, fld in td.external_legs.items()}
             if (lf[leaves[0]], lf[leaves[1]]) == (ei_, ej_):
-                et = {leaves[0]: tau, leaves[1]: 0.0}
-            else:
                 et = {leaves[0]: 0.0, leaves[1]: tau}
+            else:
+                et = {leaves[0]: tau, leaves[1]: 0.0}
         I = diagram_kinematic_spectral(
             dd, [qv], et, mass_table, ref.D0, n_s=40)
         total += pv * (Wgt @ I)
 
     # Lyapunov / fluctuation-regression oracle (3a, sim-validated)
-    expected = coupled_two_point(ref, N, qv * qv, tau)[ei_, ej_]
+    # (the primitive is ⟨x(τ)x(0)ᵀ⟩, so the convention reads entry [j, i])
+    expected = coupled_two_point(ref, N, qv * qv, tau)[ej_, ei_]
     assert abs(total.imag) < 1e-10
     assert total.real == pytest.approx(float(expected.real), rel=2e-5), \
         f'assignment tree {total.real:.8f} vs Lyapunov {expected.real:.8f}'
@@ -239,7 +241,8 @@ def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
     dq = qg[1] - qg[0]
 
     def C_x(Mm, x, tau, i, j):
-        ii, jj = (i, j) if tau >= 0 else (j, i)
+        # C_ij(τ) = ⟨φ_i(0)φ_j(τ)⟩ = [e^{−A|τ|}Σ]_{ji} for τ ≥ 0, [·]_{ij} for τ < 0
+        ii, jj = (j, i) if tau >= 0 else (i, j)
         vals = np.empty(qg.size)
         for iq, q in enumerate(qg):
             A = Mm + _D * q * q * np.eye(2)

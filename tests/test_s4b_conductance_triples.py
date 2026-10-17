@@ -238,33 +238,39 @@ def test_delayed_conductance_pade_tree_triples():
     assert abs(complex(p) - q) <= 1e-12 * abs(q)
 
 
-def test_exact_delayed_tree_is_named_and_split():
+def test_exact_delayed_tree_pairs_exactly():
+    """Item 54: the exact delayed tree (default) has exact values, pairings
+    and spectrum (its own Laplace transform and H N H*), no triple and no
+    mode list; 'auto' no longer falls back, explicit 'quad' to infinite lag
+    stays refused."""
     r = _cc(_delayed_conductance('s4b_delay_exact'), X2, delay={'order': 4})
     assert r['delay']['tree'] == 'exact'
     c = dd.cumulant(r)
-    assert c.me.reasons[1] == []
-    assert any('exact delayed covariance' in s for s in c.me.reasons[0])
-    # the loop's triples are the Pade copy's loop == C_tau's loop
-    assert _rel(c.me(TT, ell=1), r['C_tau_by_ell'][1]) <= 1e-13
-    with pytest.raises(ME.MEUnavailable, match='exact delayed covariance'):
-        c.integrate_against(L2, contact='exclude', method='exact')
-    # the tree's fallback would be quadrature to infinite lag, which the
-    # exact tree (a capped method-of-steps stack) cannot finish: refused up
-    # front by name, for 'auto' and 'quad' alike, and nothing is counted
-    for meth in ('auto', 'quad'):
-        with pytest.raises(ME.MEUnavailable, match='infinite lag'):
-            c.integrate_against(L2, contact='exclude', method=meth)
-        with pytest.raises(ME.MEUnavailable, match='infinite lag'):
-            c.spectrum([0.0, 1.0], method=meth)
-    assert c.me_fallbacks == {}
-    # the loop alone stays exact, silently, and equals its quadrature
+    assert c.me.reasons == {0: [], 1: []}
+    assert 'exact delayed covariance' in c.me.mode_reasons[0][0]
+    assert isinstance(c.me.sides[0]['+'], ME.ExactDelayTreeSide)
+    for ell in (0, 1):
+        assert _rel(c.me(TT, ell=ell), r['C_tau_by_ell'][ell]) <= 1e-13
     with warnings.catch_warnings():
         warnings.simplefilter('error', ME.MEFallbackWarning)
-        p = c.integrate_against(L2, ell=1, contact='exclude')
-        S = c.spectrum([0.0, 1.0], ell=1)
-    assert p.method == 'exact'
-    q = _dense_laplace(c.me, 1, L2_DENSE)
-    assert abs(complex(p) - q) <= 1e-12 * abs(q)
-    # the spectrum at ω = 1: c (iω − G_+)^{-1} x0 + c (−iω − G_−)^{-1} x0
-    S1 = _dense_laplace(c.me, 1, ((1j, 1.0), (-1j, 1.0)))
-    assert abs(S[1] - S1) <= 1e-12 * abs(S1)
+        p = c.integrate_against(L2, contact='exclude')
+        S = c.spectrum([0.0, 1.0])
+    assert p.method == 'exact' and c.me_fallbacks == {}
+    # the tree's pairing: Laplace transforms of the exact tree; the loop's:
+    # the dense triples
+    me = c.me
+    tree = sum(w_ * me.sides[0][s_].laplace(z_)
+               for s_, (z_, w_) in zip(('+', '-'), L2_DENSE))
+    q = _dense_laplace(me, 1, L2_DENSE)
+    assert abs(complex(p) - tree - q) <= 1e-12 * abs(complex(p))
+    # the spectrum's tree part two ways: H N H* and the Laplace transforms
+    Sl = (me.sides[0]['+'].resolvent(1j) + me.sides[0]['-'].resolvent(-1j))
+    S1 = _dense_laplace(me, 1, ((1j, 1.0), (-1j, 1.0)))
+    assert abs(S[1] - Sl - S1) <= 1e-12 * abs(S[1])
+    with pytest.raises(ME.MEUnavailable, match='infinite lag'):
+        c.integrate_against(L2, contact='exclude', method='quad')
+    with pytest.raises(ME.MEUnavailable, match='infinite lag'):
+        c.spectrum([0.0, 1.0], method='quad')
+    with pytest.warns(ME.MEFallbackWarning, match='no finite mode list'):
+        md = c.modes
+    assert sorted(md) == [1]

@@ -8,7 +8,59 @@ substitution dict that the propagator-pole / Phase J machinery needs.
 from __future__ import annotations
 
 from sage.all import SR, diff
+import math
+
 from scipy.optimize import fsolve
+
+
+#: Largest saddle residual |x - F(x)| accepted after ``fsolve``, relative to
+#: ``max(1, |x|)``: a non-converged solve (a 1e10 penalty region, an
+#: overflow, ``ier != 1`` far from a root) is refused instead of handed on.
+SADDLE_RESIDUAL_RTOL = 1e-8
+
+
+def _res_norm(fun, x):
+    try:
+        r = [abs(float(v)) for v in fun(x)]
+    except Exception:
+        return float('inf')
+    return max(r) if r and all(math.isfinite(v) for v in r) else float('inf')
+
+
+def _check_saddle_residual(who, residual, values):
+    """Raise ``RuntimeError`` when the residual at the returned saddle is
+    not finite or above ``SADDLE_RESIDUAL_RTOL`` (item 60)."""
+    res = [float(r) for r in residual]
+    scale = max([1.0] + [abs(float(v)) for v in values])
+    if all(math.isfinite(r) for r in res) and (
+            max([0.0] + [abs(r) for r in res]) <= SADDLE_RESIDUAL_RTOL * scale):
+        return
+    raise RuntimeError(
+        f'{who}: fsolve did not converge to a saddle: the residual at the '
+        f'returned point {list(values)!r} is {res!r} (tolerance '
+        f'{SADDLE_RESIDUAL_RTOL:g} x {scale:g}).  The mean-field equation may '
+        f'have no root in the search region, or a singularity / overflow '
+        f'near it; check the parameter values.')
+
+
+def _kernel_saddle_subs(ns, model, kernel_syms, exprs):
+    """``{kernel symbol: value at the saddle}``: the kernel's integral
+    ``ĝ(0)`` (read off ``kernel_ft_image`` at omega = 0) when the symbol
+    occurs in ``exprs``, else (and for a kernel without an image, or with
+    integral 1) the exact ``SR(1)`` of the normalised rule."""
+    from engine.core.field_theory import kernel_dc_gains_of
+    present = set()
+    for e in exprs:
+        try:
+            present.update(SR(e).variables())
+        except (TypeError, ValueError):
+            continue
+    gains = kernel_dc_gains_of(ns, model)
+    out = {}
+    for sym in kernel_syms:
+        g = gains.symbol_gain(sym) if sym in present else None
+        out[sym] = SR(1) if g is None else g
+    return out
 
 
 def complete_parameters(model, fundamental, who='the mean-field solve',
@@ -139,7 +191,9 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
         i: SR(vstar_subs_dict.get(ns.vstar[i], ns.E[i]))
         for i in ns.pop
     }
-    g_to_one = {ns.g: SR(1)}
+    # the kernel at the saddle is its integral (1 for a normalised kernel)
+    g_to_one = _kernel_saddle_subs(ns, model, [ns.g],
+                                   list(vstar_subs_dict.values()))
     vstar_baked = {
         i: SR(vstar_sym[i]).subs(g_to_one).subs(param_subs)
         for i in ns.pop
@@ -180,10 +234,13 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
     # keep searching rather than aborting the whole solve.
     def mf_residual(nstar_vec):
         try:
-            return [nstar_vec[i] - nstar_target(i, nstar_vec)
-                    for i in ns.pop]
-        except (ValueError, ZeroDivisionError):
+            res = [float(nstar_vec[i] - nstar_target(i, nstar_vec))
+                   for i in ns.pop]
+        except (ValueError, ZeroDivisionError, OverflowError,
+                FloatingPointError, TypeError):
             return [1e10] * len(ns.pop)
+        # an overflow that did not raise (inf / NaN) is a singularity too
+        return [r if math.isfinite(r) else 1e10 for r in res]
 
     npop = len(ns.pop)
 
@@ -206,7 +263,12 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             attempt = fsolve(mf_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        # keep the converged attempt, else the one with the smallest residual
+        # (item 60: the residual is checked below)
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(mf_residual, attempt[0])
+                < _res_norm(mf_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:    # ier == 1  ⇒  converged
             break
 
@@ -227,6 +289,8 @@ def solve_mean_field(ft, model, fundamental, verbose=True):
             f'solve_mean_field: fsolve returned non-finite n* = '
             f'{nstar_vals!r}.  The mf_eq probably has a singularity '
             f'within the iteration basin; check parameter values.')
+    _check_saddle_residual('solve_mean_field', mf_residual(nstar_vals),
+                           nstar_vals)
     # Heuristic warning: if ier != 1 we may have a non-converged point.
     sol_ier = sol[2]
     if sol_ier != 1:
@@ -420,7 +484,7 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
     # parameter / saddle algebra.  Handles scalar (``ns.g``), vector
     # (``ns.g = [g1, g2]``), and matrix (``ns.g = [[g11, ...]]``)
     # kernels uniformly.
-    kernel_to_one = {}
+    kernel_syms = []
     for kspec in model.get('kernels', []):
         kname = kspec['name']
         if not hasattr(ns, kname):
@@ -430,11 +494,16 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             for row in kval:
                 if isinstance(row, list):
                     for sym in row:
-                        kernel_to_one[sym] = SR(1)
+                        kernel_syms.append(sym)
                 else:
-                    kernel_to_one[row] = SR(1)
+                    kernel_syms.append(row)
         else:
-            kernel_to_one[kval] = SR(1)
+            kernel_syms.append(kval)
+    # ... each kernel at its integral ĝ(0) (1 for a normalised kernel)
+    kernel_to_one = _kernel_saddle_subs(
+        ns, model, kernel_syms,
+        [mf_bg.get(sym, sym) for sname in saddle_info
+         for sym in saddle_info[sname]['sr_array']])
 
     # ── Pre-bake compound-saddle RHS with params + kernels → 1 ───
     compound_rhs = {}
@@ -513,8 +582,9 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
                 for i, target_expr in enumerate(arr):
                     target = float(SR(target_expr).subs(sub))
                     res.append(float(iter_vals[sname][i]) - target)
-            return res
-        except (ValueError, ZeroDivisionError, TypeError):
+            return [r if math.isfinite(r) else 1e10 for r in res]
+        except (ValueError, ZeroDivisionError, TypeError, OverflowError,
+                FloatingPointError):
             return [1e10] * total_n
 
     # ── fsolve ──────────────────────────────────────────────────
@@ -528,7 +598,10 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
             attempt = fsolve(_residual, x0, full_output=True)
         except (ValueError, ZeroDivisionError):
             continue
-        sol = attempt
+        if sol is None or attempt[2] == 1 or (
+                sol[2] != 1 and _res_norm(_residual, attempt[0])
+                < _res_norm(_residual, sol[0])):
+            sol = attempt
         if attempt[2] == 1:
             break
     if sol is None:
@@ -538,12 +611,13 @@ def _solve_mean_field_hetero(ft, model, fundamental, verbose=True):
 
     # ── Unpack and verify ────────────────────────────────────────
     flat_vals = list(sol[0])
-    import math
     if not all(math.isfinite(x) for x in flat_vals):
         raise RuntimeError(
             f'solve_mean_field (heterogeneous): fsolve returned non-finite '
             f'iteration-saddle values {flat_vals!r}.')
 
+    _check_saddle_residual('solve_mean_field (heterogeneous)',
+                           _residual(flat_vals), flat_vals)
     iter_vals = _unflatten(flat_vals)
     comp_vals = _eval_compound(iter_vals)
 

@@ -218,6 +218,72 @@ def _ss_grid(points):
     return _ss.tau_grid_prefetch(points)
 
 
+def _workers_within_budget(n_w):
+    """The worker count a forked τ batch may use within the running Phase J
+    memory budget (item 61): a worker builds its own copy of the lazily
+    built stationary states and dirties the plans it reads, so a run that
+    has charged ``used`` bytes holds up to ``(1 + n_w) x used`` with ``n_w``
+    workers.  Outside a ``phase_j_memory_scope``, without a budget or with
+    nothing charged: ``n_w`` unchanged.  ``<= 1``: run serially."""
+    from engine.integration.time_domain import final_integral as _fi
+    lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
+    if lock is None:
+        return n_w
+    with lock:
+        if _fi._PLAN_MEM['active'] <= 0:
+            return n_w
+        budget, used = _fi._PLAN_MEM['budget'], _fi._PLAN_MEM['used']
+    if budget is None or used <= 0:
+        return n_w
+    fit = int(budget // used) - 1
+    if fit < n_w:
+        _fi._RUNTIME_COUNTERS['parallel_workers_capped_by_budget'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_workers_capped_by_budget', 0)
+            + 1)
+    return max(1, min(n_w, fit))
+
+
+class DiscardedDiagramsError(RuntimeError):
+    """A callable of a Phase J run made with ``discard=True`` (item 61) was
+    asked for a point it was not evaluated on, or for a diagram it
+    released."""
+
+
+def _discarded_callable(idx):
+    def released(*_a, **_k):
+        raise DiscardedDiagramsError(
+            f'diagram #{idx} of this Phase J run was released after its '
+            f'values on the requested points were taken (discard=True); '
+            f'rerun compute_cumulants with discard=False to keep the '
+            f'per-diagram callables.')
+    released.discarded = True
+    return released
+
+
+def _mem_mark():
+    """The running budget's charge counters now (``_mem_release``)."""
+    from engine.integration.time_domain import final_integral as _fi
+    with _fi._PLAN_MEM_LOCK:
+        m = _fi._PLAN_MEM
+        return (m['active'] > 0, m['used'], m['tuples'], m['plans'])
+
+
+def _mem_release(mark, refund=True):
+    """The bytes charged since ``mark`` (one diagram's plans and stationary
+    states); with ``refund`` they are taken back from the running total
+    (the diagram's closure has been dropped; item 61)."""
+    from engine.integration.time_domain import final_integral as _fi
+    scoped, used0, tuples0, plans0 = mark
+    with _fi._PLAN_MEM_LOCK:
+        m = _fi._PLAN_MEM
+        if not scoped or m['active'] <= 0:
+            return 0
+        nb = m['used'] - used0
+        if refund:
+            m['used'], m['tuples'], m['plans'] = used0, tuples0, plans0
+        return nb
+
+
 def compute_correction_td(
     typed_diagrams=None,
     prefactors=None,
@@ -233,6 +299,9 @@ def compute_correction_td(
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
+    # item 61: evaluate each diagram on these points right after it is
+    # built, keep the values, release it (``discard``)
+    discard_points=None,
 ):
     r"""
     Time-domain entry point: evaluate typed diagrams by Phase J vertex-time
@@ -265,6 +334,19 @@ def compute_correction_td(
     ext_time_vars : list of SR or None
         External time symbols in canonical order.  Defaults to
         ``[t_1, ..., t_k]``.
+    discard_points : list of tuple or None
+        Item 61, evaluate-and-discard: each diagram is evaluated on these
+        points (``total_C``'s arguments, under the state-space τ batch)
+        right after ``integrate_diagram`` builds it; the values are kept
+        and the diagram's callable, plans and stationary states are
+        released, their memory charge refunded to the running budget
+        (``phase_j_memory_scope``), so the run holds one diagram at a
+        time.  A diagram with shot-noise δ records keeps its charge (the
+        records evaluate its subsets later).  ``total_C`` /
+        ``total_C_batch`` / ``eval_per_diagram_batch`` then answer those
+        points only (the same sums, in the same order) and raise
+        ``DiscardedDiagramsError`` elsewhere; ``result['discard']`` has
+        the bookkeeping.
     origin_leaf_idx : int or None
         Which canonical position to pin to zero.  Default 0.
     external_fields : list of tuple or None
@@ -331,8 +413,16 @@ def compute_correction_td(
     all_delta_contributions_multi = []
     n_delta_subsets_dropped = 0
 
+    if discard_points is not None:
+        discard_points = [tuple(pt) for pt in discard_points]
+    discard_vals = []           # per kept diagram: complex values per point
+    discard_info = {'points': discard_points, 'diagrams': 0, 'refunded': 0,
+                    'kept_for_delta': 0, 'built_bytes': 0,
+                    'max_diagram_bytes': 0}
+
     for idx, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         loop_number = _loop_number_from_graph(td)
+        mark = _mem_mark() if discard_points is not None else None
 
         # ``integrate_diagram`` handles every loop order -- tree and
         # 1-loop share the same vertex-time integration algorithm, and
@@ -361,6 +451,23 @@ def compute_correction_td(
         )
         if result['status'] == 'ok':
             contribution = result['contribution']
+            if discard_points is not None:
+                with _ss_grid(discard_points):
+                    discard_vals.append([complex(contribution(*pt))
+                                         for pt in discard_points])
+                contribution = _discarded_callable(idx)
+                result['contribution'] = contribution
+                has_delta = bool(result.get('delta_contributions')
+                                 or result.get('delta_contributions_multi'))
+                nb = _mem_release(mark, refund=not has_delta)
+                discard_info['diagrams'] += 1
+                discard_info['built_bytes'] += nb
+                discard_info['max_diagram_bytes'] = max(
+                    discard_info['max_diagram_bytes'], nb)
+                if has_delta:
+                    discard_info['kept_for_delta'] += 1
+                else:
+                    discard_info['refunded'] += 1
             tree_callables.append(contribution)
             n_delta_subsets_dropped += result.get(
                 'n_delta_subsets_dropped', 0)
@@ -416,6 +523,47 @@ def compute_correction_td(
                 'contribution': None,
             })
             skipped.append(idx)
+
+    if discard_points is not None:
+        # the same sums as below, from the kept values, in diagram order
+        _at = {}
+        for p_idx, pt in enumerate(discard_points):
+            tot = 0.0 + 0.0j
+            for vals in discard_vals:
+                tot = tot + complex(vals[p_idx])
+            _at.setdefault(pt, (p_idx, tot))
+
+        def _lookup(pt):
+            hit = _at.get(tuple(pt))
+            if hit is None:
+                raise DiscardedDiagramsError(
+                    f'this Phase J run used discard=True: its diagrams were '
+                    f'evaluated on the requested points only and released; '
+                    f'{tuple(pt)} is not one of them.  Rerun '
+                    f'compute_cumulants with discard=False to evaluate '
+                    f'elsewhere.')
+            return hit
+
+        def total_C(*ext_time_values):
+            if not tree_callables:
+                return 0.0 + 0.0j
+            return _lookup(ext_time_values)[1]
+
+        def total_C_batch(tau_points, parallel=True, n_workers=None,
+                          start_method='fork'):
+            return [total_C(*pt) for pt in tau_points]
+
+        def eval_per_diagram_batch(tau_points, parallel=True, n_workers=None,
+                                   start_method='fork'):
+            loop_nums = [g['loop_number'] for g in groups_out
+                         if g.get('contribution') is not None]
+            return ([[vals[_lookup(pt)[0]] for vals in discard_vals]
+                     for pt in tau_points], loop_nums)
+
+        return _td_result(total_C, total_C_batch, eval_per_diagram_batch,
+                          all_delta_contributions, n_delta_subsets_dropped,
+                          all_delta_contributions_multi, groups_out, skipped,
+                          ext_time_vars, discard_info)
 
     def total_C(*ext_time_values):
         if not tree_callables:
@@ -507,14 +655,14 @@ def compute_correction_td(
         if n_diag == 0:
             return [0.0 + 0.0j] * len(tau_list)
 
-        n_w_cap = (n_workers if n_workers is not None
-                   else (os.cpu_count() or 4))
+        n_w_cap = _workers_within_budget(
+            n_workers if n_workers is not None else (os.cpu_count() or 4))
         total_tasks = len(tau_list) * n_diag
 
         # Serial fast path: not enough work to amortise pool setup.
         # A fork+join costs ~50-200 ms on macOS/Linux; require at least
         # a handful of tasks per worker before it pays off.
-        if total_tasks < max(4, 2 * n_w_cap):
+        if n_w_cap <= 1 or total_tasks < max(4, 2 * n_w_cap):
             with _ss_grid(tau_list):
                 return [total_C(*pt) for pt in tau_list]
 
@@ -587,15 +735,17 @@ def compute_correction_td(
             return [[] for _ in tau_list], loop_nums
 
         total_tasks = len(tau_list) * n_diag
-        n_w_cap = (n_workers if n_workers is not None
-                   else (__import__('os').cpu_count() or 4))
+        n_w_cap = _workers_within_budget(
+            n_workers if n_workers is not None
+            else (__import__('os').cpu_count() or 4))
 
         # Fork-in-notebook crash guard (see module header).
         if parallel and _fork_unsafe_in_notebook(start_method):
             _warn_fork_guard_once()
             parallel = False
 
-        if (not parallel) or total_tasks < max(4, 2 * n_w_cap):
+        if (not parallel) or n_w_cap <= 1 or total_tasks < max(
+                4, 2 * n_w_cap):
             # Serial path.  Still honours original diagram order.
             vals = []
             with _ss_grid(tau_list):
@@ -624,7 +774,17 @@ def compute_correction_td(
             vals[p_idx][d_idx] = val
         return vals, loop_nums
 
-    return {
+    return _td_result(total_C, total_C_batch, eval_per_diagram_batch,
+                      all_delta_contributions, n_delta_subsets_dropped,
+                      all_delta_contributions_multi, groups_out, skipped,
+                      ext_time_vars, None)
+
+
+def _td_result(total_C, total_C_batch, eval_per_diagram_batch,
+               all_delta_contributions, n_delta_subsets_dropped,
+               all_delta_contributions_multi, groups_out, skipped,
+               ext_time_vars, discard_info):
+    out = {
         'total_C': total_C,
         'total_C_batch': total_C_batch,
         'eval_per_diagram_batch': eval_per_diagram_batch,
@@ -638,3 +798,6 @@ def compute_correction_td(
         'skipped_kernel_ids': skipped,
         'ext_time_vars': ext_time_vars,
     }
+    if discard_info is not None:
+        out['discard'] = discard_info
+    return out

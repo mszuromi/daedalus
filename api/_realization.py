@@ -1386,6 +1386,88 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
     return None
 
 
+def _aposteriori_error(A, B, C):
+    """Item 60 (G6 realization term): the relative disagreement of the
+    rounded realization's stationary output variances (Lyapunov,
+    ``lyapunov_refined``) with the same variances integrated over frequency
+    from its transfer function by adaptive quadrature in ``ln w``
+    (``scipy.integrate.quad``, relative tolerance 1e-12, breakpoints at every
+    ``|lambda|`` and the resonances; the pieces below ``min|lambda|/100``
+    and above ``100 max|lambda|`` in ``w``; the
+    transfer function stays accurate when the time-domain operations do
+    not): ``max_i |Y_ii - Yf_ii| / max_i |Y_ii|``.  ``None`` when it cannot be
+    measured to 1e-8 (then nothing is added).  A realization that passes
+    ``_aposteriori_check`` (rtol 1e-2: it refuses broken ones) carries this
+    number into the state-space accuracy estimate (analyzer G6)."""
+    import warnings as _w
+    from scipy.integrate import quad
+    n = A.shape[0]
+    if n == 0:
+        return 0.0
+    try:
+        P = lyapunov_refined(A, B @ B.conj().T)
+        yd = np.real(np.diag(C @ P @ C.conj().T))
+    except Exception:
+        return None
+    top = float(np.max(np.abs(yd))) if yd.size else 0.0
+    if not (np.isfinite(top) and top > 0):
+        return None
+    lam = np.linalg.eigvals(A)
+    mags = np.abs(lam)
+    lo = max(float(np.min(np.abs(lam.real))) / 100.0, 1e-300)
+    hi = 100.0 * float(np.max(mags))
+    pts = sorted({float(np.log(x)) for x in np.concatenate([mags, np.abs(lam.imag)])
+                  if lo < x < hi})
+    I_ = np.eye(n)
+
+    def dens(w, i):
+        tot = 0.0
+        for sgn in (1.0, -1.0):
+            g = C[i] @ np.linalg.solve(1j * sgn * w * I_ - A, B)
+            tot += float(np.real(np.vdot(g, g)))
+        return tot
+
+    lin_pts = sorted({float(x) for x in np.concatenate([mags, np.abs(lam.imag)])
+                      if 0.0 < x < hi})
+
+    def variance_log(i):
+        v, e = quad(lambda u: dens(np.exp(u), i) * np.exp(u),
+                    np.log(lo), np.log(hi), points=pts or None,
+                    epsabs=0.0, epsrel=1e-12, limit=1000)
+        v0, e0 = quad(dens, 0.0, lo, args=(i,), epsabs=0.0, epsrel=1e-12,
+                      limit=200)
+        return v + v0, e + e0
+
+    def variance_lin(i):
+        return quad(dens, 0.0, hi, args=(i,), points=lin_pts or None,
+                    epsabs=0.0, epsrel=1e-12, limit=1000)
+
+    # two independently split quadratures: a wrong Lyapunov solution shows
+    # in both; a quadrature that misses a narrow peak (stiff real spectra)
+    # rarely in both, so the smaller discrepancy is the measured error
+    err = 0.0
+    try:
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            for i in range(C.shape[0]):
+                vt, et = quad(dens, hi, np.inf, args=(i,), epsabs=0.0,
+                              epsrel=1e-12, limit=200)
+                best = None
+                for fn in (variance_log, variance_lin):
+                    v, e = fn(i)
+                    v, e = v + vt, e + et
+                    if np.isfinite(v) and e <= 1e-8 * abs(v):
+                        d = abs(yd[i] - v / (2 * np.pi))
+                        best = d if best is None else min(best, d)
+                if best is None:
+                    return None
+                err = max(err, best)
+    except Exception:
+        return None
+    rel = err / top
+    return float(rel) if np.isfinite(rel) else None
+
+
 # ─── main entry points ────────────────────────────────────────────────────
 
 def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
@@ -1471,6 +1553,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
     graded = bool(sca.size) and float(sca.max()) > GRADED_BALANCE_RANGE * float(
         max(sca.min(), np.finfo(float).tiny))
     bad_margin = not (margin is not None and np.isfinite(margin) and margin > 0)
+    aposteriori = {'checked': False, 'err_rel': None}
     if hur is True and An.size and (bad_margin or graded):
         # exactly Hurwitz, but the rounded matrices are strongly graded (high-
         # order rational kernels: Pade-n, long chains) or not even numerically
@@ -1480,6 +1563,9 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         # falls back to the pole route instead of returning wrong numbers
         # (seen: Pade-24 of a delay on a 4-field cycle, |B| ~ 1e24, C ~ 1e13).
         why = _aposteriori_check(An, Bn, Cn)
+        aposteriori = {'checked': True,
+                       'err_rel': None if why is not None
+                       else _aposteriori_error(An, Bn, Cn)}
         if why is not None:
             raise RealizationRefused(
                 'ill_conditioned',
@@ -1524,6 +1610,11 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         'balance_min': float(sca.min()) if sca.size else 1.0,
         'balance_max': float(sca.max()) if sca.size else 1.0,
         'n_pencil': n, 'n_kernel_states': NR, 'n_before_reduction': n_pre,
+        # item 60: the a posteriori check of a graded / not numerically
+        # Hurwitz rounded realization, and its measured relative error
+        'aposteriori_checked': aposteriori['checked'],
+        'aposteriori_err_rel': aposteriori['err_rel'],
+        'graded': graded, 'bad_margin': bad_margin,
     }
     return Realization(
         A=An, B=Bn, C=Cn, D=Dn, cls=cls, descriptor=descr,
@@ -1561,10 +1652,15 @@ def try_realize(prop, num_params, **kw):
         return None, exc
 
 
-def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
+def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
+                   direct=False):
     """Minimal SISO realization of a causal conductance kernel
     ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
+    ``direct=True`` (item 56): also a kernel with a direct term, ``g = d
+    delta + Theta c e^{a t} b`` (image ``d + (strictly proper)``: the
+    all-pass Pade (n, n) image of a bare delay), with ``d`` in the
+    realization; a polynomial part of degree >= 1 is refused as before.
 
     ``att``: a ``ConvVertexType`` kernel attachment (``engine/core/
     vertices.py``) with ``kernel_ft_fn`` (``omega -> g^(omega)``, the
@@ -1639,15 +1735,19 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
             'non_rational', f'kernel {att.get("symbol")}: {str(e)[:120]} is '
             f'not a rational function of s ({type(last).__name__})')
     q, r, d = _split_entry(x, P)
-    if q != 0:
-        raise RealizationRefused(
-            'kernel_not_strictly_proper', f'kernel {att.get("symbol")} has a '
-            'delta or polynomial part')
     cplx = fname != 'QQ'
+    d0 = 0.0
+    if q != 0:
+        if not (direct and q.degree() == 0):
+            raise RealizationRefused(
+                'kernel_not_strictly_proper', f'kernel {att.get("symbol")} '
+                'has a delta or polynomial part')
+        # the direct term, rounded once (exact in F)
+        d0 = _round(q[0]) if cplx else _round(q[0]).real
     if r == 0:
         z = np.zeros((0, 0), dtype=complex if cplx else float)
         return EntryRealization(a=z, b=np.zeros(0, z.dtype),
-                                c=np.zeros(0, z.dtype), d=0.0,
+                                c=np.zeros(0, z.dtype), d=d0,
                                 n_states=0), fname
     A, b, c, _blocks = _realize_proper(r, d, F)
     A, b, c = _kalman_minimal(A, b, c, F)
@@ -1662,7 +1762,7 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None):
     if balance and an.shape[0]:
         an, bn, cn, _s = _balance(an, bn, cn)
     k = an.shape[0]
-    ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=0.0,
+    ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k), d=d0,
                            n_states=k)
     tol = truncation_tol() if truncation is None else float(truncation)
     if tol > 0 and k >= 2:

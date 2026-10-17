@@ -1490,7 +1490,7 @@ class _Setup:
                                else [v for kk, v in num_params.items()
                                      if str(kk) == n][0])
                 got = fld.evaluate(x, reference)
-                if abs(got - vref) > 1e-9 * max(1.0, abs(vref)):
+                if abs(got - vref) > 1e-9 * max(abs(vref), _value_floor(num_params)):
                     raise SymbolicLoopRefused(
                         'saddle_mismatch', f'saddle {n} = {expr} gives {got} '
                         f'at the reference, the pipeline solved {vref}')
@@ -1708,7 +1708,7 @@ def _check_diagram(out, val, cp, st, FI, ell, di):
     |subset terms| or of the sweeps' internal magnitudes
     (:func:`_sweep_magnitude`), whichever is larger.
     Returns that sum times |prefactor| (the loop order's absolute scale)."""
-    parts = out['contribution'].phase_j_parts
+    parts = _phase_j_parts_or_refuse(out['contribution'])
     perms, comp = parts['perms'], parts['compensation']
     org, fidx, kk = parts['origin_leaf_idx'], parts['free_ext_idx'], parts['k']
     num, mag, err = 0j, 0.0, 0.0
@@ -1842,11 +1842,27 @@ def _saddle_moves(model, result, sad, sym):
         for n in sad:
             if n not in new:
                 return None
-            if abs(new[n] - ref[n]) > 1e-9 * max(1.0, abs(ref[n])):
+            if abs(new[n] - ref[n]) > 1e-9 * max(abs(ref[n]), _value_floor(ref)):
                 return True
         return False
     except Exception:
         return None
+
+
+def _value_floor(vals) -> float:
+    """Absolute floor of the relative saddle checks: 1e-6 of the largest
+    |value| of the run's numbers (parameters and saddles).  The old floor
+    max(1, |x|) made the checks absolute below 1 in the model's units: a
+    saddle of 1e-6 moving by 1.4 % went unnoticed (audit G1-symbolic 7)."""
+    m = 0.0
+    for v in (vals.values() if isinstance(vals, dict) else vals):
+        try:
+            x = abs(complex(v))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x):
+            m = max(m, x)
+    return 1e-6 * m if m > 0 else 1e-300
 
 
 def _pipeline_values(st, ells, kernel):
@@ -1927,7 +1943,7 @@ def _check_zero_pattern(sp, prop, fld, reference, num_params):
                         f'nearly vanishes at the reference point: choose a '
                         f'generic reference (parameters=)')
                 dsym = fld.evaluate(e.d, reference)
-                if abs(dsym - dref) > CHECK_RTOL * max(1.0, abs(dref)):
+                if abs(dsym - dref) > CHECK_RTOL * abs(dref):     # dref != 0 here
                     raise SymbolicLoopRefused(
                         'prefactor_mismatch', f'δ coefficient G[{p},{r}]: '
                         f'{dsym} vs the pipeline {dref}')
@@ -1939,6 +1955,24 @@ def _check_zero_pattern(sp, prop, fld, reference, num_params):
                 f'(parameters=)')
 
 
+def _phase_j_parts_or_refuse(contrib):
+    """The contribution's ``phase_j_parts``, or a named refusal: a diagram
+    whose conductance kernel slots have several placements is a weighted sum
+    of placement closures (``phase_j_placements``, item 50) with no subset
+    structure of its own (``_Setup.diagrams`` refuses conductance vertices
+    first; this keeps a supplied result from reaching an AttributeError)."""
+    parts = getattr(contrib, 'phase_j_parts', None)
+    if parts is not None:
+        return parts
+    if getattr(contrib, 'phase_j_placements', None) is not None:
+        raise SymbolicLoopRefused(
+            'kernel_edge', 'a diagram with conductance-kernel slot placements '
+            '(phase_j_placements): conductance vertices have no symbolic '
+            'realization here')
+    raise SymbolicLoopRefused('pole_route_subset', 'the contribution '
+                              'exposes no subset structure')
+
+
 def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):
     """One diagram (unit prefactor): ``Σ_perm Σ_subsets δ · scal · value /
     compensation`` over ``F`` (equal time or pairing), or its triple blocks
@@ -1948,10 +1982,7 @@ def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):
     fld, sp = st.field, st.sp
     F = fld.F
     contrib = out['contribution']
-    parts = getattr(contrib, 'phase_j_parts', None)
-    if parts is None:
-        raise SymbolicLoopRefused('pole_route_subset', 'the contribution '
-                                  'exposes no subset structure')
+    parts = _phase_j_parts_or_refuse(contrib)
     diags = [d for d in out.get('subset_diagnostics') or []
              if isinstance(d, dict) and d.get('status') == 'evaluated']
     subs_ = parts['subsets']
@@ -1980,7 +2011,7 @@ def _diagram_value(out, st, FI, kterms=None, triple_sink=None, weight=None):
         # factor: the symbolic one must agree at the reference
         pref = complex(cfn.ss_prefactor)
         dnum = fld.evaluate(dfac, st.reference) if dfac != 0 else 0j
-        if abs(dnum - pref) > CHECK_RTOL * max(1.0, abs(pref)):
+        if abs(dnum - pref) > CHECK_RTOL * max(abs(pref), abs(dnum)):
             raise SymbolicLoopRefused(
                 'prefactor_mismatch', f'subset {si}: symbolic δ factor {dnum} '
                 f'vs the route\'s prefactor {pref}')

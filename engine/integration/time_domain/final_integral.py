@@ -533,14 +533,20 @@ def _kernel_rates_clustered(modes):
     return False
 
 
-def _modes_from_freq_image(ft_fn, num_params=None):
+def _modes_from_freq_image(ft_fn, num_params=None, direct=False):
     """The exponential modes ``[(C, λ)]`` of a causal kernel given by its
     rational frequency image ``ĝ(ω)`` (``ft_fn(omega)``; the codebase's
     convention ``ĝ(ω) = ∫ g(t) e^{-iωt} dt``, retarded poles in Im ω > 0):
     each simple pole ω_α gives ``λ_α = i ω_α`` and ``C_α = i Res ĝ(ω_α)``.
     ``None`` when the image is not a proper rational function of ω with
     simple poles in the upper half plane (a δ part, a repeated or an
-    acausal pole, a non-rational image)."""
+    acausal pole, a non-rational image).
+
+    ``direct=True`` (item 56): also a kernel with a direct term, ``ĝ = c +
+    (strictly proper)``, i.e. ``g = c δ + Θ Σ C_α e^{λ_α t}`` (the all-pass
+    Pade image of a bare delay); returns ``(c, modes)`` (``c = 0`` for a
+    strictly proper image; the modes as above, of the strictly proper
+    remainder), or ``None``."""
     from sage.all import CDF as _CDF, PolynomialRing as _PR
     w = SR.var('convkernelomegatd')
     try:
@@ -555,6 +561,14 @@ def _modes_from_freq_image(ft_fn, num_params=None):
         den = R(SR(g.denominator()).polynomial(_CDF).list())
     except Exception:
         return None
+    c_dir = 0j
+    if direct and den.degree() >= 1 and num.degree() == den.degree():
+        # the direct term: the constant polynomial part c = lc(num)/lc(den)
+        c_dir = complex(num.leading_coefficient()) / complex(
+            den.leading_coefficient())
+        # the remainder, its (cancelled) top coefficient dropped exactly
+        num = R((num - num.leading_coefficient() / den.leading_coefficient()
+                 * den).list()[:den.degree()])
     if den.degree() < 1 or num.degree() >= den.degree():
         return None                         # δ part or not a pole sum
     roots = den.roots(multiplicities=True)
@@ -571,7 +585,24 @@ def _modes_from_freq_image(ft_fn, num_params=None):
         modes.append((1j * res, 1j * om))
     if not modes or _kernel_rates_clustered(modes):
         return None                         # repeated / near-repeated pole
-    return modes
+    return (c_dir, modes) if direct else modes
+
+
+def _kernel_direct_split(att, num_params=None):
+    """Item 56: ``(c, modes)`` for a conductance kernel attachment whose
+    frequency image has a direct term, ``ĝ = c + (strictly proper)`` with
+    ``c != 0`` (``g = c δ + Θ Σ C_α e^{λ_α t}``: the all-pass Pade (n, n)
+    image of a bare hard delay at a vertex leg), or ``None`` (no frequency
+    image, a time image, no direct term, or not such a pole sum)."""
+    if att.get('kernel_td_fn') is not None:
+        return None
+    ft_fn = att.get('kernel_ft_fn')
+    if ft_fn is None:
+        return None
+    out = _modes_from_freq_image(ft_fn, num_params, direct=True)
+    if out is None or out[0] == 0:
+        return None
+    return out
 
 
 def _kernel_modes(att, num_params=None):
@@ -642,32 +673,127 @@ PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 class PhaseJResourceError(MemoryError):
     r"""Phase J would hold more modesum-plan memory than the budget
-    ``PHASE_J_MEM_BUDGET_GB`` (default 6 GB) allows: raised BEFORE the plan
-    that crosses it is allocated (and, from ``compute_cumulants``, before
-    Phase J starts when its estimate already crosses it), under every
-    analyzer policy.  ``estimate``: the numbers (tuples, bytes, budget, the
-    offending diagram / subset)."""
+    ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
+    BEFORE the plan that crosses it is allocated (and, from
+    ``compute_cumulants``, before Phase J starts when its estimate already
+    crosses it), under every analyzer policy.  ``estimate``: the numbers
+    (tuples, bytes, budget, the offending diagram / subset)."""
 
     def __init__(self, message, estimate=None):
         super().__init__(message)
         self.estimate = estimate
 
 
-def phase_j_mem_budget_bytes(environ=None):
-    """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB`` (default 6); ``None``
-    (no limit) for ``0``, a negative value, ``off``, ``none`` or ``inf``."""
-    env = _os.environ if environ is None else environ
-    raw = str(env.get('PHASE_J_MEM_BUDGET_GB', '6')).strip().lower()
-    if raw in ('off', 'none', 'inf', 'infinity', ''):
+# ── the default memory budget (item 53) ───────────────────────────────────
+# A fixed 6 GB is more than a small machine can give one run on top of the
+# Python + Sage baseline.  With the variable unset the budget is
+#     min(MEM_BUDGET_CAP_GB, MEM_BUDGET_RAM_FRACTION x RAM - this process now)
+# and at least max(MEM_BUDGET_FLOOR_GB, MEM_BUDGET_FLOOR_RAM_FRACTION x RAM)
+# (a refusal, not a crash, is then the usual outcome on a machine already
+# short of memory).  compute_cumulants reads it once per run.  The same rule backs
+# SPATIAL_MEM_BUDGET_GB.  An explicit value is used as given.
+MEM_BUDGET_CAP_GB = 6.0
+MEM_BUDGET_RAM_FRACTION = 0.6
+MEM_BUDGET_FLOOR_GB = 0.5
+#: ... and at least this fraction of RAM (capped at the cap): a large
+#: machine running a large process keeps a usable budget (64 GB with 40 GB
+#: held: 6 GB, not the 0.5 GB floor)
+MEM_BUDGET_FLOOR_RAM_FRACTION = 0.1
+
+
+def _ram_bytes():
+    """Physical memory of the machine in bytes, or ``None``."""
+    from engine.enumeration.prediagram_cache import _physical_memory
+    return _physical_memory()
+
+
+@_functools.lru_cache(maxsize=1)
+def _libproc():
+    import ctypes
+    import ctypes.util
+    return ctypes.CDLL(ctypes.util.find_library('proc')
+                       or '/usr/lib/libSystem.B.dylib')
+
+
+def process_footprint_bytes():
+    """What this process holds now, in bytes, or ``None`` when unknown.
+    macOS: ``phys_footprint`` (``proc_pid_rusage``), not the resident size,
+    which leaves out compressed pages (6 GB resident was 18 GB of footprint
+    in one measurement).  Linux: resident + swapped (``/proc/self/status``)."""
+    import sys
+    if sys.platform == 'darwin':
+        try:
+            import ctypes
+            lib = _libproc()
+            buf = ctypes.create_string_buffer(512)   # rusage_info_v2 + room
+            if lib.proc_pid_rusage(_os.getpid(), 2, buf) != 0:
+                return None
+            # rusage_info_v2: 16-byte uuid, then uint64 fields; the 8th
+            # (ri_phys_footprint) follows user/system time, the two wakeup
+            # counts, pageins, wired and resident size
+            return int.from_bytes(buf.raw[16 + 7 * 8:16 + 8 * 8], 'little')
+        except Exception:
+            return None
+    try:
+        total = 0
+        with open('/proc/self/status') as fh:
+            for line in fh:
+                if line.startswith(('VmRSS:', 'VmSwap:')):
+                    total += int(line.split()[1]) * 1024
+        return total or None
+    except (OSError, ValueError, IndexError):
         return None
+
+
+def default_mem_budget(ram=None, footprint=None):
+    """``(bytes, rule)``: the default budget of the memory guards and the
+    sentence that says how it was set (``ram`` / ``footprint``: bytes, read
+    from the machine when ``None``)."""
+    cap = MEM_BUDGET_CAP_GB * 1e9
+    ram = _ram_bytes() if ram is None else ram
+    if not ram:
+        return cap, (f'default {_fmt_gb(cap)} (the machine\'s RAM is '
+                     'unknown)')
+    footprint = process_footprint_bytes() if footprint is None else footprint
+    fp = footprint or 0
+    floor = min(cap, max(MEM_BUDGET_FLOOR_GB * 1e9,
+                         MEM_BUDGET_FLOOR_RAM_FRACTION * ram))
+    room = MEM_BUDGET_RAM_FRACTION * ram - fp
+    budget = max(floor, min(cap, room))
+    rule = (f'default min({_fmt_gb(cap)}, {MEM_BUDGET_RAM_FRACTION:g} x '
+            f'{_fmt_gb(ram)} RAM - {_fmt_gb(fp)} already held by this '
+            f'process{"" if footprint else " (unknown, taken as 0)"})'
+            + (f', at least {_fmt_gb(floor)}' if room < floor else '')
+            + f' = {_fmt_gb(budget)}')
+    return budget, rule
+
+
+def mem_budget(var, environ=None):
+    """``(bytes or None, rule)`` of the memory guard read from the
+    environment variable ``var`` (GB; ``None`` = no limit for ``0``, a
+    negative value, ``off``, ``none`` or ``inf``); unset: the default rule
+    (``default_mem_budget``)."""
+    env = _os.environ if environ is None else environ
+    if var not in env:
+        return default_mem_budget()
+    raw = str(env[var]).strip().lower()
+    if raw in ('off', 'none', 'inf', 'infinity', ''):
+        return None, f'{var}={raw}'
     try:
         gb = float(raw)
     except ValueError:
-        raise ValueError(
-            f'PHASE_J_MEM_BUDGET_GB={raw!r} is not a number (GB), or off')
+        raise ValueError(f'{var}={raw!r} is not a number (GB), or off')
     if not gb > 0 or gb == float('inf'):
-        return None
-    return gb * 1e9
+        return None, f'{var}={raw}'
+    return gb * 1e9, f'{var}={raw}'
+
+
+def phase_j_mem_budget_bytes(environ=None):
+    """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB``; unset: the
+    default rule (``default_mem_budget``: at most 6 GB, less on a machine
+    with little RAM); ``None`` (no limit) for ``0``, a negative value,
+    ``off``, ``none`` or ``inf``."""
+    return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[0]
 
 
 _BUDGET_HOW = ('raise the budget with the environment variable '
@@ -681,12 +807,21 @@ def _fmt_gb(nbytes):
     return f'{nbytes / 1e9:.2f} GB'
 
 
+def _fmt_budget(budget, rule=None):
+    """The budget in a refusal message, with how it was set (``rule``: from
+    the ``mem_budget`` call that set it)."""
+    if rule is None or rule.startswith('default'):
+        # the default rule's sentence already ends in '= <budget>'
+        return rule or _fmt_gb(budget)
+    return f'{_fmt_gb(budget)} ({rule})'
+
+
 import threading as _threading_budget
 
 #: The running total of one Phase J run (``phase_j_memory_scope``): bytes of
 #: the plans built so far, the budget, and what the run is.
 _PLAN_MEM = {'active': 0, 'used': 0, 'tuples': 0, 'plans': 0,
-             'budget': None, 'what': ''}
+             'budget': None, 'rule': None, 'what': ''}
 _PLAN_MEM_LOCK = _threading_budget.Lock()
 
 
@@ -697,10 +832,14 @@ class phase_j_memory_scope:
     checked on its own against the budget.  Nested scopes share the outer
     total."""
 
-    def __init__(self, budget=None, what='', use_env=True):
-        # ``use_env=False`` with ``budget=None``: no limit
-        self.budget = (phase_j_mem_budget_bytes()
-                       if budget is None and use_env else budget)
+    def __init__(self, budget=None, what='', use_env=True, rule=None):
+        # ``use_env=False`` with ``budget=None``: no limit; ``rule``: how
+        # the caller's budget was set (for the messages)
+        if budget is None and use_env:
+            self.budget, self.rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+        else:
+            self.budget = budget
+            self.rule = rule or 'set by the caller'
         self.what = what
         self._outer = False
 
@@ -708,7 +847,8 @@ class phase_j_memory_scope:
         with _PLAN_MEM_LOCK:
             if _PLAN_MEM['active'] == 0:
                 _PLAN_MEM.update(used=0, tuples=0, plans=0,
-                                 budget=self.budget, what=self.what)
+                                 budget=self.budget, rule=self.rule,
+                                 what=self.what)
                 self._outer = True
             _PLAN_MEM['active'] += 1
         return self
@@ -722,6 +862,16 @@ class phase_j_memory_scope:
         return False
 
 
+def _budget_now():
+    """``(scoped, budget, rule, used)`` for a charge now: the running
+    scope's, or outside any scope the environment's (``mem_budget``) with
+    nothing used.  The caller holds ``_PLAN_MEM_LOCK``."""
+    if _PLAN_MEM['active'] > 0:
+        return True, _PLAN_MEM['budget'], _PLAN_MEM['rule'], _PLAN_MEM['used']
+    budget, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+    return False, budget, rule, 0
+
+
 def _plan_guard(n_tuples, n_full, where=None):
     """The running guard (item 35): account ``n_tuples`` pole tuples of the
     plan about to be built (``n_full``: before pruning) and raise
@@ -730,10 +880,7 @@ def _plan_guard(n_tuples, n_full, where=None):
     budget."""
     nbytes = n_tuples * PLAN_BYTES_PER_TUPLE
     with _PLAN_MEM_LOCK:
-        scoped = _PLAN_MEM['active'] > 0
-        budget = (_PLAN_MEM['budget'] if scoped
-                  else phase_j_mem_budget_bytes())
-        used = _PLAN_MEM['used'] if scoped else 0
+        scoped, budget, rule, used = _budget_now()
         if budget is not None and used + nbytes > budget:
             est = {'tuples': n_tuples, 'tuples_unpruned': n_full,
                    'bytes': nbytes, 'bytes_so_far': used,
@@ -747,7 +894,8 @@ def _plan_guard(n_tuples, n_full, where=None):
                 f'tuples (~{_fmt_gb(nbytes)}; {n_full:,} before the '
                 f'exact-zero modes were left out) on top of '
                 f'{_fmt_gb(used)} in {est["plans_so_far"]} plans built so '
-                f'far, over the budget of {_fmt_gb(budget)}.  Nothing was '
+                f'far, over the budget of {_fmt_budget(budget, rule)}.  '
+                f'Nothing was '
                 f'allocated for it.  Options: {_BUDGET_HOW}.', est)
         if scoped:
             _PLAN_MEM['used'] += nbytes
@@ -783,14 +931,20 @@ def _dress_kernels_on():
                      f'True or False')
 
 
-def _dress_edge_modes(ems, kernel_modes):
+def _dress_edge_modes(ems, kernel_modes, direct=0):
     """The ``EdgeModeSum`` of ``(g ∗ G)(Δ) = ∫_0^Δ g(Δ − x) G(x) dx`` for
     ``G = D δ + Θ Σ_α C_α e^{λ_α x}`` (``ems``) and ``g = Θ Σ_k c_k
     e^{μ_k x}``:  ``D g(Δ) + Σ_{α,k} C_α c_k (e^{λ_α Δ} − e^{μ_k Δ}) /
-    (λ_α − μ_k)``, no δ part.  Rates are merged when equal.  A λ_α equal
+    (λ_α − μ_k)``, no δ part (but see ``direct``).  Rates are merged when
+    equal.  A λ_α equal
     to a μ_k (``DRESS_RATE_RTOL``) with a rounding-level residue is dropped
     as an exact zero; with a real residue the result is ``None`` (the line
-    then takes the leg-time path)."""
+    then takes the leg-time path).
+
+    ``direct`` (item 56): the kernel's direct term ``c`` (``g = c δ + Θ Σ_k
+    c_k e^{μ_k x}``, ``_kernel_direct_split``) adds ``c G``: ``c C_α`` at
+    every ``λ_α`` and the δ part ``c D`` (nonzero only on a line with a δ
+    part, a point-process field)."""
     acc = {}
 
     def add(C, lam):
@@ -800,6 +954,10 @@ def _dress_edge_modes(ems, kernel_modes):
 
     D_ = complex(ems.delta_coeff)
     scale = sum(abs(complex(C)) for (C, _l) in ems.modes) + abs(D_)
+    direct = complex(direct)
+    if direct != 0:
+        for (C, lam) in ems.modes:
+            add(direct * complex(C), complex(lam))
     for (c, mu) in kernel_modes:
         c, mu = complex(c), complex(mu)
         if D_ != 0:
@@ -827,7 +985,8 @@ def _dress_edge_modes(ems, kernel_modes):
             _RUNTIME_COUNTERS['conv_dress_zero_modes_dropped'] += 1
             continue
         modes.append((C, lam))
-    return EdgeModeSum(ri=ems.ri, pi=ems.pi, delta_coeff=0j,
+    return EdgeModeSum(ri=ems.ri, pi=ems.pi,
+                       delta_coeff=(direct * D_ if direct != 0 else 0j),
                        modes=tuple(modes))
 
 
@@ -849,6 +1008,92 @@ class _ScaledCoeff:
 
     def __call__(self, *args):
         return self._w * complex(self._f(*args))
+
+
+def _conv_monomial_split(vertex_assignments, combined_prefactor):
+    """Item 60 (bug 14): ``None`` when every conductance vertex's coefficient
+    is a single kernel monomial (the slots follow from it); else the list of
+    ``(prefactor, {vertex: term})`` over every choice of one term (grouped
+    by the powers of the vertex's kernel symbols) per vertex, the prefactor's
+    factor of each vertex replaced by its term; or a refusal reason (str)
+    when the prefactor is not the product of the vertex coefficients times a
+    factor free of kernel symbols."""
+    groups = {}
+    for v, vt in vertex_assignments.items():
+        if not isinstance(vt, ConvVertexType) or not vt.kernel_attachments:
+            continue
+        syms = []
+        for att in vt.kernel_attachments:
+            if att['symbol'] not in syms:
+                syms.append(att['symbol'])
+        coeff = SR(vt.coefficient)
+        e = coeff.expand()
+        op = e.operator()
+        terms = (e.operands() if op is not None
+                 and getattr(op, '__name__', '') == 'add_vararg' else [e])
+        by = {}
+        for t in terms:
+            key = tuple(int(t.degree(SR(z))) for z in syms)
+            by[key] = by.get(key, SR(0)) + t
+        groups[v] = (coeff, [by[k] for k in sorted(by)])
+    if not groups or all(len(ts) == 1 for _c, ts in groups.values()):
+        return None
+    prod = SR(1)
+    for coeff, _ts in groups.values():
+        prod = prod * coeff
+    rest = (SR(combined_prefactor) / prod).simplify_rational()
+    kern = {str(att['symbol']) for vt in vertex_assignments.values()
+            if isinstance(vt, ConvVertexType)
+            for att in (vt.kernel_attachments or ())}
+    if any(str(x) in kern for x in rest.variables()):
+        return ('conductance vertex coefficients mixing plain and kernel '
+                'terms: the diagram prefactor is not their product times a '
+                f'kernel-free factor ({combined_prefactor}); not integrated')
+    verts = list(groups)
+    out = []
+    for combo in itertools.product(*[groups[v][1] for v in verts]):
+        pf = rest
+        for t in combo:
+            pf = pf * t
+        out.append((pf, dict(zip(verts, combo))))
+    return out
+
+
+def _sum_conv_monomials(split, kw):
+    """``integrate_diagram`` as the sum over the coefficient terms of
+    ``_conv_monomial_split`` (each with its own prefactor and kernel slots);
+    the closure carries the parts as ``phase_j_placements`` of weight 1 (the
+    state-space triples, S4b)."""
+    results = []
+    for pf, mono in split:
+        if SR(pf).is_zero():
+            continue
+        r = integrate_diagram(combined_prefactor=pf, _conv_monomial=mono, **kw)
+        if r.get('status') != 'ok':
+            return r
+        results.append(r)
+    if not results:
+        return {'status': 'failed', 'contribution': None,
+                'reason': 'every coefficient term of the conductance '
+                          'vertices is zero'}
+    fns = [r['contribution'] for r in results]
+
+    def contribution(*ext_time_values):
+        return sum(complex(f(*ext_time_values)) for f in fns)
+    contribution.phase_j_placements = tuple((1.0, f) for f in fns)
+    first = results[0]
+    out = {k: (None if k == 'stripped_integrand' else first[k])
+           for k in first.keys()}
+    out['contribution'] = contribution
+    for key in ('delta_contributions', 'delta_contributions_multi'):
+        out[key] = [rec for r in results for rec in (r.get(key) or [])]
+    for key in ('n_subsets_evaluated', 'n_delta_contributions',
+                'n_shotnoise_skipped', 'n_delta_subsets_dropped'):
+        out[key] = sum(int(r.get(key) or 0) for r in results)
+    out['subset_diagnostics'] = [d for r in results
+                                 for d in (r.get('subset_diagnostics') or [])]
+    out['conv_monomials'] = len(results)
+    return out
 
 
 def _average_conv_placements(choices, kw):
@@ -1617,6 +1862,10 @@ _RUNTIME_COUNTERS = {
     'conv_lines_dressed': 0,
     'conv_dress_zero_modes_dropped': 0,
     'conv_kernel_leg_edges': 0,
+    # item 56: lines dressed with a kernel that has a direct term (c δ + a
+    # pole sum), and such kernels refused on a kernel edge
+    'conv_lines_dressed_direct': 0,
+    'conv_kernel_direct_refused': 0,
     # item 35: exact-zero residue modes left out of the modesum plans
     # (modes, and the pole tuples of the full product that took one), the
     # plans built pruned, and pruned plans whose group order could not be
@@ -2884,7 +3133,8 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     pole is not a root of the entry's own denominator (the exact tier-1
     membership test over QQ[i], item 31: a driven filter that does not feed
     back makes ``K`` block triangular, and the entries below it miss its
-    poles), and where a residue is below its relative 1e-12 noise clip.  The
+    poles), and, on the numerical cofactor tiers only, where a residue is
+    below the 1e-12 noise clip relative to the largest at its pole.  The
     test here is a plain ``== 0`` on the stored value: whatever is left out
     contributed exactly 0 before.
 
@@ -7523,6 +7773,7 @@ def integrate_diagram(
     on_divergence=None,
     _conv_assign=None,
     _conv_force_leg=None,
+    _conv_monomial=None,
 ):
     r"""
     Vertex-time integration for a typed Feynman diagram at ANY loop
@@ -7933,7 +8184,9 @@ def integrate_diagram(
     # * 'dress' (the default): a kernel that is a finite exponential sum
     #   (``_extract_exp_modes``) is folded into that line's propagator,
     #   ``(g ∗ G)(Δt)`` with Δt = t − t_tail, again a finite pole sum
-    #   (``_dress_edge_modes``) with no δ part: no extra time, no extra row;
+    #   (``_dress_edge_modes``) with no δ part (item 56: a kernel with a
+    #   direct term c δ keeps c times the line's δ part): no extra time, no
+    #   extra row;
     # * 'leg': otherwise (a kernel that is not an exponential sum, a kernel
     #   rate equal to a propagator pole, no mode data) the attached leg gets
     #   its own integration time ``s`` and the kernel becomes one more
@@ -7942,6 +8195,7 @@ def integrate_diagram(
     kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
     conv_dress = {}             # {edge_key: kernel modes}      ('dress')
     conv_dress_att = {}         # {edge_key: the attachment}    ('dress', S3)
+    conv_dress_direct = {}      # {edge_key: c} a direct term c δ (item 56)
     # S3: the state-space route realizes a kernel exactly (equal or close
     # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
     # kernel without separated modes is no longer refused when that route is
@@ -7979,6 +8233,31 @@ def integrate_diagram(
         _model, _why = _ssk.realization_for(propagator_data, num_params)
         return _model is not None and not isinstance(
             _model.kernel_entry(att), str)
+    # Item 60 (bug 14): a vertex coefficient that is a SUM of terms with
+    # different powers of the kernel symbols (``-ee*x*x - c*x*Conv(h, x)``:
+    # coefficient ``c*z_h + ee`` on one leg tuple) is linear in its terms:
+    # each term has its own slot count (a plain term has no kernel slot).
+    # The diagram is integrated once per choice of one term per such vertex
+    # (``_conv_monomial``) with the prefactor's factor of that vertex
+    # replaced by the term, and the results summed.  Before, the slots were
+    # counted on the whole coefficient and the plain term was convolved too.
+    if _conv_monomial is None:
+        _split = _conv_monomial_split(vertex_assignments, combined_prefactor)
+        if isinstance(_split, str):
+            return {'status': 'failed', 'contribution': None,
+                    'integration_vars': integration_vars, 'reason': _split}
+        if _split is not None:
+            return _sum_conv_monomials(
+                _split,
+                dict(typed_diagram=typed_diagram,
+                     propagator_data=propagator_data,
+                     ext_time_vars=ext_time_vars, num_params=num_params,
+                     origin_leaf_idx=origin_leaf_idx,
+                     external_fields=external_fields,
+                     edge_mode_sums_builder=edge_mode_sums_builder,
+                     prop_td=prop_td, on_divergence=on_divergence,
+                     _conv_assign=_conv_assign,
+                     _conv_force_leg=_conv_force_leg))
     conv_refusal = None
     _conv_choices = []          # [((v, leg), [placement, ...])]
     _conv_slots = {}            # {(v, leg): (in_edges, base placement)}
@@ -7998,15 +8277,18 @@ def integrate_diagram(
                 f"ConvVertexType — these are mutually exclusive."
             )
         phys_legs = [tuple(lg) for lg in vtype.physical_legs]
-        coeff_sr = SR(vtype.coefficient)
+        mono = None if _conv_monomial is None else _conv_monomial.get(v)
+        coeff_sr = SR(vtype.coefficient if mono is None else mono)
         by_leg = {}
         for att_idx, att in enumerate(vtype.kernel_attachments):
             try:
                 q = int(coeff_sr.degree(SR(att['symbol'])))
             except Exception:
                 q = 1
+            # one term of a split coefficient: exactly its power (a plain
+            # term, power 0, fills no kernel slot)
             by_leg.setdefault(tuple(att['leg']), []).extend(
-                [att_idx] * max(q, 1))
+                [att_idx] * (max(q, 1) if mono is None else max(q, 0)))
         for leg, slots in by_leg.items():
             n_copies = phys_legs.count(leg)
             hits = sorted(ek for ek in D.edges() if ek[1] == v
@@ -8044,7 +8326,8 @@ def integrate_diagram(
                  external_fields=external_fields,
                  edge_mode_sums_builder=edge_mode_sums_builder,
                  prop_td=prop_td, on_divergence=on_divergence,
-                 _conv_force_leg=_conv_force_leg))
+                 _conv_force_leg=_conv_force_leg,
+                 _conv_monomial=_conv_monomial))
     _assign = dict(_conv_assign or {})
     _can_dress = (edge_mode_sums_builder is None
                   and propagator_data.get('C_mats') is not None
@@ -8071,6 +8354,34 @@ def integrate_diagram(
                 att_pairs.append((None, att))
                 continue
             kmodes = _kernel_modes(att, num_params)
+            kdirect = None
+            if kmodes is None:
+                # item 56: a direct term, g = c δ + (a pole sum): the
+                # all-pass Pade (n, n) image of a bare hard delay at a
+                # vertex leg (x*x(t - d)).  Dressed, the line becomes
+                # c G + (g_smooth ∗ G), on both routes; a kernel edge
+                # ('leg') cannot hold it (refused by name below)
+                _split = _kernel_direct_split(att, num_params)
+                if _split is not None:
+                    kdirect, kmodes = _split
+            if (kdirect is not None
+                    and not (_can_dress
+                             and ek not in (_conv_force_leg or ()))):
+                _RUNTIME_COUNTERS['conv_kernel_direct_refused'] += 1
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': (f'conductance vertex {v}: the kernel '
+                               f'{att["symbol"]} has a direct term '
+                               f'({complex(kdirect):.6g} δ next to a pole '
+                               f'sum, e.g. the Pade (n, n) image of a bare '
+                               f'delay) and this line cannot be dressed '
+                               f'with it (a kernel rate equal to a pole of '
+                               f'the line, or no propagator mode data); a '
+                               f'kernel edge holds only a strictly proper '
+                               f'kernel'),
+                }
             if kmodes is None and _ss_realizes_kernel(att):
                 # S3: no separated modes (a repeated / close rate, a
                 # polynomial factor), but the state-space route realizes the
@@ -8094,6 +8405,9 @@ def integrate_diagram(
                     and ek not in (_conv_force_leg or ())):
                 conv_dress[ek] = kmodes
                 conv_dress_att[ek] = att
+                if kdirect is not None:
+                    conv_dress_direct[ek] = kdirect
+                    _RUNTIME_COUNTERS['conv_lines_dressed_direct'] += 1
                 att_pairs.append(('dress', att))
                 continue
             s_sym = SR.var(
@@ -8200,7 +8514,8 @@ def integrate_diagram(
     # ``edge_mode_sums`` to None and the diagram takes the SR path.
     n_prop_edges = len(edge_info)
     # Dressed lines (section 2c 'dress'): the line's propagator G becomes
-    # (g ∗ G), a pole sum without δ part, at the same times.
+    # (g ∗ G), a pole sum (its δ part c D only for a kernel with a direct
+    # term c, item 56), at the same times.
     dressed_idx = set()
     if conv_dress:
         if edge_mode_sums is None:
@@ -8211,11 +8526,45 @@ def integrate_diagram(
                 'reason': ('conductance kernel: the propagator has no '
                            'mode data to dress a line with'),
             }
+        # item 56 (D10): each line's δ part after its own dressing (a
+        # strictly proper kernel removes it, a direct term c keeps c D)
+        _delta_after = {}
+        if conv_dress_direct:
+            for j, ej in enumerate(edge_info):
+                kj = (ej['u'], ej['v'], ej['lbl'])
+                Dj = complex(edge_mode_sums[j].delta_coeff)
+                _delta_after[j] = (Dj if kj not in conv_dress
+                                   else Dj * complex(conv_dress_direct.get(kj, 0)))
         for i, ei in enumerate(edge_info):
             kmodes = conv_dress.get((ei['u'], ei['v'], ei['lbl']))
             if kmodes is None:
                 continue
-            dressed = _dress_edge_modes(edge_mode_sums[i], kmodes)
+            kdirect = conv_dress_direct.get((ei['u'], ei['v'], ei['lbl']))
+            if (kdirect is not None and abs(_delta_after.get(i, 0)) >= 1e-15
+                    and any(abs(_delta_after.get(j, 0)) >= 1e-15
+                            for j, ej in enumerate(edge_info)
+                            if j != i and ej['v'] == ei['v'])):
+                # item 56 (D10): the direct term passes this line's δ part
+                # (a spike train) to a vertex where another physical line
+                # has one too: a product of δ functions at one time (exp of
+                # a delayed spike train), which is not defined
+                _RUNTIME_COUNTERS['conv_kernel_direct_refused'] += 1
+                return {
+                    'status': 'failed',
+                    'contribution': None,
+                    'integration_vars': integration_vars,
+                    'reason': (f'conductance vertex {ei["v"]}: the kernel '
+                               f'{conv_dress_att[(ei["u"], ei["v"], ei["lbl"])]["symbol"]} '
+                               f'has a direct term (a bare delay) on a line '
+                               f'with a delta part (a point-process field) at '
+                               f'a vertex where another line has one too: it '
+                               f'multiplies delta functions, which is not '
+                               f'defined; give the delay a filter'),
+                }
+            dressed = (_dress_edge_modes(edge_mode_sums[i], kmodes)
+                       if kdirect is None else
+                       _dress_edge_modes(edge_mode_sums[i], kmodes,
+                                         direct=kdirect))
             if dressed is None:
                 return integrate_diagram(
                     typed_diagram, propagator_data, combined_prefactor,
@@ -8237,7 +8586,11 @@ def integrate_diagram(
                 'u': ei['u'], 'v': ei['v'], 'lbl': ei['lbl'],
                 'ri': ei['ri'], 'pi': ei['pi'],
                 'dt_sym': dt,
-                'delta_coeff': 0.0,
+                # item 56: a kernel direct term c on a line with a δ part D
+                # leaves c D δ (zero otherwise, as before)
+                'delta_coeff': (0.0 if kdirect is None
+                                or complex(dressed.delta_coeff) == 0
+                                else complex(dressed.delta_coeff)),
                 'smooth_factor': sf,
             }
             dressed_idx.add(i)
@@ -8429,7 +8782,9 @@ def integrate_diagram(
         if edge_mode_sums_builder is None and _structural_zeros_on()
         else frozenset())
     if dressed_idx and _forced_delta:
-        # a dressed line has no δ part whatever its propagator entry
+        # a dressed line always has a smooth part (D g + c G + g ∗ G), so it
+        # is never a forced δ edge (item 56: its δ part is c D, zero unless
+        # its kernel has a direct term)
         _forced_delta = frozenset(_forced_delta) - dressed_idx
 
     # Expose the |S|=0 (all smooth) symbolic integrand and constraints
@@ -13789,40 +14144,54 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
             entries[key] = hit
         return hit
 
-    per_diagram = []
-    ss_n = ss_stat = ss_trans = 0
+    per_diagram = []            # (tuples, tuples_unpruned, per-edge, ss)
+    delta_rec = []              # may give shot-noise δ records (item 61)
     for td in typed_diagrams:
         per = []
         pidx = td.propagator_indices
+        parent = {}
+
+        def find(x):
+            while parent.get(x, x) != x:
+                x = parent[x]
+            return x
         for ek in td.prediagram[0].edges():
             hit = pidx.get(ek)          # the exact key: _lookup's first rule
             ri, pi = (hit if hit is not None
                       else _lookup_prop_indices(td, ek))
             per.append(counts(pi, ri))
-        tup = (math.prod((1 + n) if dl else n for (n, _a, dl) in per),
-               math.prod((1 + a) if dl else a for (_n, a, dl) in per), per)
+            if per[-1][2]:
+                parent[find(ek[0])] = find(ek[1])
+        # a δ-subset whose δ edges tie two external legs together is a
+        # shot-noise record, which keeps its subsets for later evaluation
+        roots = [find(v) for v in td.prediagram[2]]
+        delta_rec.append(len(set(roots)) < len(roots))
+        t = math.prod((1 + n) if dl else n for (n, _a, dl) in per)
+        tf = math.prod((1 + a) if dl else a for (_n, a, dl) in per)
+        ss = None
         if ss_estimate is not None:
             est_ss = ss_estimate(td, lambda pi_, ri_: counts(pi_, ri_)[2])
             # the cheaper engine: a subset whose stationary states do not
             # fit declines to the pole route when its plan does
             # (``statespace._pole_plan_fits``)
             if est_ss is not None and (
-                    est_ss[0] <= tup[0] * PLAN_BYTES_PER_TUPLE):
-                ss_n += 1
-                ss_stat += est_ss[0]
-                ss_trans = max(ss_trans, est_ss[1])
-                per_diagram.append((0, 0, []))
-                continue
-        per_diagram.append(tup)
+                    est_ss[0] <= t * PLAN_BYTES_PER_TUPLE):
+                ss = est_ss
+        per_diagram.append((t, tf, per, ss))
+
+    def _bytes(rec):
+        t, _tf, _per, ss = rec
+        return ss[0] if ss is not None else t * PLAN_BYTES_PER_TUPLE
     tested = False
     if prefactors is not None and (
             budget_bytes is None
-            or sum(t for (t, _f, _p) in per_diagram) * PLAN_BYTES_PER_TUPLE
-            > budget_bytes):
+            or sum(_bytes(r) for r in per_diagram) > budget_bytes):
+        # item 61: the diagrams charged the state-space estimate are tested
+        # too (an exactly-zero diagram builds no subset on either route)
         tested = True
         memo = {}
         for i, cp in enumerate(prefactors):
-            if per_diagram[i][0] == 0 and per_diagram[i][1] == 0:
+            if _bytes(per_diagram[i]) == 0:
                 continue
             try:
                 key = SR(cp)
@@ -13834,10 +14203,22 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
                 if key is not None:
                     memo[key] = zero
             if zero:
-                per_diagram[i] = (0, 0, per_diagram[i][2])
+                per_diagram[i] = (0, 0, per_diagram[i][2], None)
     total = total_full = 0
+    ss_n = ss_stat = ss_trans = 0
     worst = None
-    for i, (t, tf, per) in enumerate(per_diagram):
+    max_diag = 0
+    delta_bytes = 0
+    for i, (t, tf, per, ss) in enumerate(per_diagram):
+        max_diag = max(max_diag, _bytes(per_diagram[i]))
+        if delta_rec[i]:
+            delta_bytes += _bytes(per_diagram[i])
+        if ss is not None:
+            ss_n += 1
+            ss_stat += ss[0]
+            ss_trans = max(ss_trans, ss[1])
+            t = tf = 0
+            per = []
         total += t
         total_full += tf
         if worst is None or t > worst['tuples']:
@@ -13846,7 +14227,12 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     out = {'tuples': total, 'tuples_unpruned': total_full,
            'bytes': total * PLAN_BYTES_PER_TUPLE,
            'n_diagrams': len(typed_diagrams), 'worst': worst,
-           'pruned': bool(prune), 'prefactors_tested': tested}
+           'pruned': bool(prune), 'prefactors_tested': tested,
+           # the largest single diagram (pole plans or stationary states):
+           # what one diagram at a time holds (item 61, ``discard``), and
+           # the diagrams that may keep theirs (shot-noise δ records)
+           'max_diagram_bytes': max_diag,
+           'delta_record_bytes': delta_bytes}
     if ss_estimate is not None:
         # the transient term (one segment system at a time) is reported, not
         # added: it is not held across subsets, and each segment is checked
