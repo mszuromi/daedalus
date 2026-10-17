@@ -218,3 +218,71 @@ def test_d1_one_loop_unequal_times_exact():
                    - free_two_point(mu - h, D, T, x, tau).real) / (2 * h)
             assert Cb[1][it, ix] - Cb[0][it, ix] == pytest.approx(
                 dmu * der, rel=1e-7)
+
+
+@pytest.mark.parametrize('gap', [1e-9, 1e-7, 1e-5, 1e-3, 0.3])
+@pytest.mark.parametrize('n_extra', [1, 2])
+def test_dyson_partial_fractions_near_degenerate(gap, n_extra):
+    """L⁻¹[∏ 1/(s+m_i)](w) from the Dyson labels vs the 50-digit exact sum,
+    for a near-degenerate pair (the fixed 1e-8 clustering lost ~1e-2 at
+    order 2 for gaps just above it)."""
+    import mpmath as mp
+    from engine.integration.spatial.pipeline_bridge import _pf_labels
+    masses = [1.0, 1.0 + gap] + [2.3, 3.1][:n_extra]
+    w = 0.7
+    labels = _pf_labels(masses, 1.0, max(masses))
+    # label (μ, κ, c) = c·w^κ·e^{−μw} (c already carries the 1/κ!)
+    val = sum(c * w ** k * complex(mp.exp(-mu * w)) for mu, k, c in labels)
+    with mp.workdps(60):
+        ms = [mp.mpf(m) for m in masses]
+        ref = sum(mp.exp(-mi * w) / mp.fprod(mj - mi for j, mj in enumerate(ms)
+                                             if j != i)
+                  for i, mi in enumerate(ms))
+    assert abs(val - complex(ref)) <= 1e-8 * abs(complex(ref))
+
+
+def test_unstable_mass_refuses():
+    """Re μ ≤ 0 (no stationary state) raises in the engine primitives and on
+    the coupled route (they returned finite garbage behind DAEDALUS_PREFLIGHT=0)."""
+    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from engine.integration.spatial.spatial_correlator import (
+        free_two_point, free_two_point_d)
+    from engine.integration.spatial.spectral_propagator import (
+        build_reference, coupled_two_point)
+    with pytest.raises(SpatialPropagatorError, match='Re'):
+        free_two_point(-0.3, 1.0, 1.0, 0.5, 0.2)
+    with pytest.raises(SpatialPropagatorError, match='stable'):
+        free_two_point_d(-0.3, 1.0, 1.0, 0.5, 0.2, 2)
+    M = np.array([[-0.2, 0.3], [0.1, 1.0]])
+    with pytest.raises(ValueError, match='not stable'):
+        coupled_two_point(build_reference(M, np.eye(2)), np.eye(2), 0.01, 0.3)
+
+
+def test_mc_backend_warns_on_derivative_vertices(monkeypatch):
+    from api import compute_cumulants
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
+    monkeypatch.setenv('SPATIAL_MC_N', '2000')
+    m = (ModelBuilder('mb_mc', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('c', default=0.2)
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .set_action_text('phit*(Dt(phi)+mu*phi-D*Lap(phi)-c*Lap(phi^2))-T*phit^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    with pytest.warns(RuntimeWarning, match='BIASED'):
+        compute_cumulants(m, k=2, max_ell=1,
+                          fundamental={'mu': 1.0, 'D': 1.0, 'c': 0.2, 'T': 1.0},
+                          external_fields=[('phi', 1), ('phi', 1)],
+                          spatial_grid=np.array([0.5]),
+                          tau_grid=np.array([0.0]), verbose=False,
+                          use_cache=False, parallel=False)
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'gird')
+    with pytest.raises(ValueError, match='SPATIAL_INTEGRATOR'):
+        compute_cumulants(m, k=2, max_ell=1,
+                          fundamental={'mu': 1.0, 'D': 1.0, 'c': 0.2, 'T': 1.0},
+                          external_fields=[('phi', 1), ('phi', 1)],
+                          spatial_grid=np.array([0.5]),
+                          tau_grid=np.array([0.0]), verbose=False,
+                          use_cache=False, parallel=False)
