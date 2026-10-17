@@ -425,16 +425,14 @@ _LADDER_PER_DECADE = 3
 
 
 def _ladder_seeds(state_vars, slices, model, fundamental, seed_box, rng):
-    """Extra initial guesses on boxes of every decade ``10^j``, ``j =
-    -12..12`` (the shape of each variable's default box: ``[0, 5 s]`` or
-    ``[-3 s, 3 s]``), ``_LADDER_PER_DECADE`` per decade.  The default box
-    scales with the LARGEST parameter value, which is not a field scale: in
-    other units (a field in 1e-6 units, a rate in 1e6 units) the roots sit
-    many decades away from it and were missed (G2_NO_SADDLE), or only some
-    were found and ``fixed_point_index`` picked a different one.  The ladder
-    makes the root SET independent of the units over 24 decades.  A variable
-    with an explicit ``seed_box`` keeps its box.  Drawn after the default
-    seeds, so those are unchanged."""
+    """Initial guesses on boxes of every decade ``10^j``, ``j = -12..12``
+    (the shape of each variable's default box: ``[0, 5 s]`` or ``[-3 s,
+    3 s]``), ``_LADDER_PER_DECADE`` per decade: the fallback when the
+    default box finds no root.  That box scales with the LARGEST parameter
+    value, which is not a field scale: in other units (a field in 1e-6
+    units, a rate in 1e6 units) the roots sit many decades away from it and
+    were missed (G2_NO_SADDLE).  A variable with an explicit ``seed_box``
+    keeps its box."""
     unit = _seed_box_default(state_vars, model, {})
     total = sum(size for _, _, size in state_vars)
     blocks = []
@@ -512,60 +510,41 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
             if declared.get(var) is None and var not in (seed_box or {})]
 
 
-def _positive_type_vars(state_vars, model, seed_box):
-    """State variables searched as non-negative by default: domain
-    ``'positive'`` or undeclared, and no explicit ``seed_box``."""
-    declared = {p['natural_name']: p.get('domain')
-                for p in model.get('parameters', [])
-                if p.get('mean_field') and p.get('natural_name')}
-    return [var for var, _, _ in state_vars
-            if declared.get(var) not in ('real', 'symmetric')
-            and var not in (seed_box or {})]
-
-
-def _split_negative_roots(roots, errs, state_vars, slices, model, seed_box):
-    """``(selectable, their errors, set_aside)``.  A field of undeclared
-    (or ``'positive'``) domain is a non-negative quantity by default: when
-    some root is non-negative in every such field, the roots with a
-    negative value there (beyond the value's error estimate) are set aside
-    -- not among the roots ``fixed_point_index`` ranges over -- with a
-    warning naming them and the remedy for an undeclared field; when no
-    root is non-negative there, every root stays selectable (a field with
-    only a negative fixed point, e.g. an OU process with a negative mean).
-
-    The rule depends on signs only, so it does not depend on the units.
-    (It replaces a rule that depended on which seeds a root was reached
-    from: the default box ``[0, 5 s]`` scales with the largest parameter,
-    so whether hybr strayed onto a negative root changed with the units.)"""
-    names = _positive_type_vars(state_vars, model, seed_box)
-    if not names or not roots:
-        return roots, errs, []
+def _negative_roots(R, mirror_points, roots, root_errs, state_vars, slices,
+                    names, rtol, atol):
+    """Roots the default search cannot reach.  A field with no declared
+    domain is seeded on the non-negative half line only (widening that box
+    moved existing models' roots, see ``_seed_box_default``), so a root with
+    a negative value there (``x - x^3`` at ``x = -1``) is out of reach of
+    ``fixed_point_index``.  The same seeds with those components negated
+    (``mirror_points``: where they converged) find them; warn, naming the
+    roots found and the remedy.  Returns the new roots."""
     cols = np.concatenate([np.arange(*slices[v]) for v in names])
-    neg = [bool(np.any(r[cols] < -10.0 * e[cols])) for r, e in
-           zip(roots, errs)]
-    if all(neg):
-        return roots, errs, []
-    keep = [q for q, n in enumerate(neg) if not n]
-    aside = [roots[q] for q, n in enumerate(neg) if n]
-    undeclared = set(_undeclared_domain_vars(state_vars, model, seed_box))
-    warn_names = [v for v in names if v in undeclared and any(
-        np.any(r[slices[v][0]:slices[v][1]] < 0) for r in aside)]
-    if warn_names:
-        aside_w = sorted(aside, key=lambda r: float(r[slices[warn_names[0]][0]]))
+    cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
+    new = []
+    for r, e in zip(cand, cand_e):
+        # negative beyond its own error estimate (a root at 0 snaps to 0)
+        if not np.any(r[cols] < -10.0 * e[cols]):
+            continue
+        if len(_dedup_roots(list(roots) + [r], rtol=rtol, atol=atol,
+                            errs=list(root_errs) + [e])[0]) > len(roots):
+            new.append(r)
+    if new:
+        new.sort(key=lambda r: float(r[cols[0]]))
         shown = '; '.join(
             ', '.join(f'{v}*={r[slices[v][0]:slices[v][1]].tolist()}'
-                      for v in warn_names)
-            for r in aside_w[:4])
+                      for v in names)
+            for r in new[:4])
         warnings.warn(
-            f'solve_mean_field_dae: field(s) {", ".join(warn_names)} declare '
-            f'no domain, so the root search covers only their non-negative '
-            f'values; {len(aside)} more fixed point(s) exist with negative '
+            f'solve_mean_field_dae: field(s) {", ".join(names)} declare no '
+            f'domain, so the root search covers only their non-negative '
+            f'values; {len(new)} more fixed point(s) exist with negative '
             f'values ({shown}) and are NOT among the roots '
             f'fixed_point_index ranges over.  Declare the field with '
             f"domain='real' (SDE.field(name, domain='real') or "
             f"physical_field(name, domain='real')), or pass mf_dae_seed_box, "
             f'to include them.', stacklevel=3)
-    return [roots[q] for q in keep], [errs[q] for q in keep], aside
+    return new
 
 
 # ── Root refinement, acceptance and deduplication ───────────────────
@@ -793,9 +772,11 @@ def solve_mean_field_dae(
         Concrete parameter values keyed by parameter name.
     n_starts : int, default 64
         Number of random initial guesses for multi-start Newton on the
-        default box.  A fixed ladder of ``3 x 24`` more guesses on boxes of
-        every decade ``10^-12 .. 10^12`` follows (``_ladder_seeds``), so the
-        roots found do not depend on the units of the fields or the time.
+        default box.  Then ``n_starts`` more on a box at the scale of each
+        root found far off the default box's scale (``_rescale_seeds``:
+        the box follows the field's units), and, when the default box finds
+        no root at all, a ladder of ``3 x 24`` guesses on boxes of every
+        decade ``10^-12 .. 10^12`` first (``_ladder_seeds``).
     fixed_point_index : int, default 0
         Which sorted root to pick as the primary MF.  Sorted ascending
         by the first declared physical field's first population index.
@@ -861,48 +842,55 @@ def solve_mean_field_dae(
     rng = np.random.default_rng(rng_seed)
     seeds = _sample_seeds(
         state_vars, slices, model, fundamental, n_starts, seed_box, rng)
-    # the unit-free decade ladder (drawn after the default seeds)
-    seeds = np.vstack([seeds, _ladder_seeds(
-        state_vars, slices, model, fundamental, seed_box, rng)])
     undeclared = _undeclared_domain_vars(state_vars, model, seed_box)
     mirror_cols = (np.concatenate([np.arange(*slices[v]) for v in undeclared])
                    if undeclared else None)
 
     def mirrored(block):
-        if mirror_cols is None:
-            return block
         m = np.array(block, dtype=float, copy=True)
         m[:, mirror_cols] = -m[:, mirror_cols]
-        return np.vstack([block, m])
+        return m
 
-    points: list[np.ndarray] = []
+    points: list[np.ndarray] = []          # from the seeds: selectable
+    mirror_points: list[np.ndarray] = []   # from the mirrored seeds
 
-    def run(block):
+    def run(block, out):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             for s, x0 in enumerate(block):
                 x = _hybr_point(R, x0)
                 if x is None:
                     continue
-                points.append(x)
+                out.append(x)
                 if verbose:
                     print(f"  seed {s:3d}: converged to {x}")
 
-    # a field of undeclared domain is also searched on its negative half
-    # line (the same seeds mirrored), see ``_split_negative_roots``
-    run(mirrored(seeds))
+    run(seeds, points)
     deduped, root_errs = _roots_from_points(R, points, rtol, atol)
+    if not deduped:
+        # nothing on the default box (it scales with the largest parameter,
+        # not with the fields): the unit-free decade ladder
+        ladder = _ladder_seeds(state_vars, slices, model, fundamental,
+                               seed_box, rng)
+        run(ladder, points)
+        deduped, root_errs = _roots_from_points(R, points, rtol, atol)
+        seeds = np.vstack([seeds, ladder])
     # second pass: a box at the scale of every root found off the default
     # box's scale (the decade ladder has few seeds per decade, so a narrow
     # basin, e.g. the middle root of a cubic, can be missed there)
     extra = _rescale_seeds(deduped, state_vars, slices, model, fundamental,
                            seed_box, n_starts, rng)
     if len(extra):
-        run(mirrored(extra))
+        run(extra, points)
         deduped, root_errs = _roots_from_points(R, points, rtol, atol)
+        seeds = np.vstack([seeds, extra])
     n_converged = len(points)
-    deduped, root_errs, unsearched = _split_negative_roots(
-        deduped, root_errs, state_vars, slices, model, seed_box)
+    unsearched = []
+    if mirror_cols is not None:
+        run(mirrored(seeds), mirror_points)
+        unsearched = _negative_roots(
+            R, mirror_points, deduped, root_errs, state_vars, slices,
+            undeclared, rtol, atol)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]

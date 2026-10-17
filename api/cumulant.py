@@ -210,8 +210,11 @@ class DeltaComponent:
         """True when ``times`` (length k) satisfies every equality."""
         t = np.asarray(times, dtype=float)
         r = self._M @ t + self._c
-        return bool(np.all(np.abs(r) <= tol * max(1.0, float(np.max(np.abs(
-            t))) if t.size else 1.0)))
+        # relative to the size of the terms (no unit floor: a floor of 1.0
+        # accepted times off the surface when they are measured in small
+        # units)
+        scale = np.abs(self._M) @ np.abs(t) + np.abs(self._c)
+        return bool(np.all(np.abs(r) <= tol * scale))
 
     def weight_at(self, times):
         """Coefficient of ``δ^m(M t + c)`` (the canonical form of
@@ -786,11 +789,14 @@ class Cumulant:
             if loc != 0.0:
                 tot += w * kernel_value(kernel, loc, values)
                 continue
-            lp, lm = kernel_at_zero(kernel, values)
+            lp, lm, kscale = kernel_at_zero(kernel, values, with_scale=True)
             if contact == 'exclude':
                 continue
             if contact is None:
-                if abs(lp - lm) > 1e-14 * max(1.0, abs(lp), abs(lm)):
+                # a jump relative to the kernel's own size at 0 (the former
+                # floor of 1.0 took a jump of a small kernel for round-off
+                # and silently used L(0+): audit GEN-14)
+                if abs(lp - lm) > 1e-14 * kscale:
                     raise ValueError(
                         f'the cumulant has a δ(τ) component (weight {w:.6g}) '
                         f'and the kernel jumps at 0 (L(0+) = {lp:.6g}, '

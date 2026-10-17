@@ -694,7 +694,7 @@ class SideME:
         # (clamped to 0): the value would be another chamber's order of the
         # external times (audit G2-outputs 1).  Rounding slack 1e-12.
         if math.isfinite(self.u_max) and np.any(
-                u > self.u_max + 1e-12 * max(1.0, self.u_max)):
+                u > self.u_max * (1.0 + 1e-12)):
             raise ValueError(
                 f'u = {float(np.max(u)):g} is beyond this side\'s chamber '
                 f'(u_max = {self.u_max:g}); evaluate the slice (SliceME), '
@@ -1046,23 +1046,29 @@ def kernel_value(kernel, s, values=None):
     return tot
 
 
-def kernel_at_zero(kernel, values=None):
-    """``(L(0+), L(0-))``."""
+def kernel_at_zero(kernel, values=None, with_scale=False):
+    """``(L(0+), L(0-))``; with ``with_scale``, ``(L(0+), L(0-), scale)``,
+    ``scale`` the sum of the magnitudes of the terms that make them up (the
+    size against which a jump at 0 is judged)."""
     lp = lm = 0j
+    scale = 0.0
     for k_ in _as_list(kernel):
         if isinstance(k_, RationalKernel):
+            v = k_.at_zero()
+            scale += abs(v)
             if k_.side == '+':
-                lp += k_.at_zero()
+                lp += v
             else:
-                lm += k_.at_zero()
+                lm += v
             continue
         for a, _r, q, side in _kernel_terms(k_, values):
             if q == 0:
+                scale += abs(a)
                 if side == '+':
                     lp += a
                 else:
                     lm += a
-    return lp, lm
+    return (lp, lm, scale) if with_scale else (lp, lm)
 
 
 def quad_pairing(C, kernel, values, epsabs=1e-12, epsrel=1e-10, limit=400):
