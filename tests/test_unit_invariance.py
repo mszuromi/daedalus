@@ -173,7 +173,6 @@ def test_ou_quartic_field_twin(ouq, s):
     _assert_twin(base, twin, s**2, 1e-12)
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize('a', (1e-3, 1e3))
 def test_ou_quartic_colored_time_twin(a):
     """Tracked ``ou_quartic_colored`` (colored noise, Markov embedded):
@@ -185,6 +184,26 @@ def test_ou_quartic_colored_time_twin(a):
     twin = _cc(model, par, ell=1, ext=(('x', 1), ('x', 1)), taus=_TAUS / a)
     assert _codes(twin) == _codes(base)
     _assert_twin(base, twin, 1.0, 1e-11)
+
+
+def _ou_linear(a, s):
+    """x' = -mu (x - m) + noise, rates ``a``, field units ``s``."""
+    return (SDE('w4a_oulin').parameter('mu', default=a).parameter('m', default=0.7 * s)
+            .parameter('D', default=a * s * s).field('x').drift('x', '-mu*(x - m)')
+            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+
+
+@pytest.mark.parametrize('a, s', [(1.0, 1.0), (1e-8, 1.0), (1e9, 1.0), (1.0, 1e-9), (1.0, 1e9),
+                                  (1e-6, 1e6), (1e6, 1e-6)])
+def test_linear_ou_exact_in_any_units(a, s):
+    """Against the closed form (not a twin): saddle 0.7 s, C(tau) = (D/mu)
+    e^{-mu |tau|} = s^2 e^{-a |tau|}, no loop correction."""
+    taus = np.array([0.0, 0.4, 1.3]) / a
+    r = _cc(_ou_linear(a, s), ell=1, taus=taus)
+    assert r['mf_values']['xstar'][0] == pytest.approx(0.7 * s, rel=1e-15)
+    assert np.asarray(r['C_tau_by_ell'][0]).real == pytest.approx(s * s * np.exp(-a * taus),
+                                                                  rel=1e-13)
+    assert np.max(np.abs(r['C_tau_by_ell'][1])) <= 1e-13 * s * s
 
 
 def _spiking(s):
