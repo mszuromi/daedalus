@@ -30,6 +30,12 @@ from scipy.optimize import root as _scipy_root
 
 from engine.core.dt_order import NonlinearDtError
 
+# Residual value where an equation cannot be evaluated (overflow, log of a
+# negative number, ...).  Far above any physical residual in any units (the
+# old 1e10 was below the terms of a model with rates ~1e11), and small enough
+# that MINPACK's scaled norms stay finite.
+_PENALTY = 1e100
+
 
 # Math functions that may appear in user equation text (LHS / RHS of
 # .equation(...), or inside .define_function(...) expressions).
@@ -326,7 +332,7 @@ def _build_residual(model: dict, params_np: dict,
                 # NaN, never an exception: penalize it like the exceptions
                 # below, so a NaN residual can never pass as a root (NaN
                 # compares False against every tolerance)
-                out[k] = val if math.isfinite(val) else 1e10
+                out[k] = val if math.isfinite(val) else _PENALTY
             except NameError as exc:
                 # (still a NameError: the multi-start loop swallows ValueErrors
                 # as "no fixed point from this seed")
@@ -339,7 +345,7 @@ def _build_residual(model: dict, params_np: dict,
             except (ValueError, ZeroDivisionError, OverflowError,
                     FloatingPointError):
                 # Penalize: send the solver away from this region.
-                out[k] = 1e10
+                out[k] = _PENALTY
         return out
 
     return R, expanded
@@ -412,6 +418,90 @@ def _sample_seeds(state_vars, slices, model, fundamental,
     return out
 
 
+#: Decades ``10^j`` (``|j| <= _LADDER_DECADES``) of the unit-free seed ladder
+#: and seeds per decade (see ``_ladder_seeds``).
+_LADDER_DECADES = 12
+_LADDER_PER_DECADE = 3
+
+
+def _ladder_seeds(state_vars, slices, model, fundamental, seed_box, rng):
+    """Extra initial guesses on boxes of every decade ``10^j``, ``j =
+    -12..12`` (the shape of each variable's default box: ``[0, 5 s]`` or
+    ``[-3 s, 3 s]``), ``_LADDER_PER_DECADE`` per decade.  The default box
+    scales with the LARGEST parameter value, which is not a field scale: in
+    other units (a field in 1e-6 units, a rate in 1e6 units) the roots sit
+    many decades away from it and were missed (G2_NO_SADDLE), or only some
+    were found and ``fixed_point_index`` picked a different one.  The ladder
+    makes the root SET independent of the units over 24 decades.  A variable
+    with an explicit ``seed_box`` keeps its box.  Drawn after the default
+    seeds, so those are unchanged."""
+    unit = _seed_box_default(state_vars, model, {})
+    total = sum(size for _, _, size in state_vars)
+    blocks = []
+    for j in range(-_LADDER_DECADES, _LADDER_DECADES + 1):
+        if j == 0:
+            continue
+        out = np.empty((_LADDER_PER_DECADE, total), dtype=float)
+        for var, _, size in state_vars:
+            start, end = slices[var]
+            if seed_box and var in seed_box:
+                lo, hi = seed_box[var]
+            else:
+                lo, hi = (10.0 ** j) * unit[var][0], (10.0 ** j) * unit[var][1]
+            out[:, start:end] = rng.uniform(lo, hi,
+                                            size=(_LADDER_PER_DECADE, size))
+        blocks.append(out)
+    return np.vstack(blocks) if blocks else np.empty((0, total))
+
+
+#: At most this many root scales get their own second-pass seed box.
+_MAX_RESCALE_BOXES = 8
+
+
+def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
+                   n_starts, rng):
+    """Second-pass guesses: ``n_starts`` on the default box shape scaled to
+    each root found whose size (per variable, its largest component) lies
+    below a fifth of the default box (or above it); one box per decade of
+    root size.  Variables with an explicit ``seed_box``, and variables at 0
+    in that root, keep their default box.  Empty when every root is on the
+    default box's scale (the existing models: their seeds are unchanged)."""
+    default = _seed_box_default(state_vars, model, fundamental)
+    if seed_box:
+        default.update(seed_box)
+    unit = _seed_box_default(state_vars, model, {})
+    keys, boxes = set(), []
+    for r in roots:
+        box, key, off = {}, [], False
+        for var, _, _ in state_vars:
+            a, b = slices[var]
+            sv = float(np.max(np.abs(r[a:b]))) if b > a else 0.0
+            lo, hi = default[var]
+            top = max(abs(lo), abs(hi))
+            if sv == 0.0 or (seed_box and var in seed_box) or top == 0.0:
+                box[var] = (lo, hi)
+                key.append(None)
+                continue
+            if not (0.2 * top <= 5.0 * sv <= 5.0 * top):
+                off = True
+            box[var] = (unit[var][0] * sv, unit[var][1] * sv)
+            key.append(int(math.floor(math.log10(sv))))
+        key = tuple(key)
+        if off and key not in keys and len(boxes) < _MAX_RESCALE_BOXES:
+            keys.add(key)
+            boxes.append(box)
+    total = sum(size for _, _, size in state_vars)
+    out = []
+    for box in boxes:
+        blk = np.empty((n_starts, total), dtype=float)
+        for var, _, size in state_vars:
+            a, b = slices[var]
+            blk[:, a:b] = rng.uniform(box[var][0], box[var][1],
+                                      size=(n_starts, size))
+        out.append(blk)
+    return np.vstack(out) if out else np.empty((0, total))
+
+
 def _undeclared_domain_vars(state_vars, model, seed_box):
     """State variables seeded on the positive box only because their
     saddle declares no domain (and ``seed_box`` does not set them)."""
@@ -422,80 +512,257 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
             if declared.get(var) is None and var not in (seed_box or {})]
 
 
-def _probe_negative_half_line(R, seeds, roots, state_vars, slices, model,
-                              seed_box, rtol, atol):
-    """Roots the default search cannot reach.  A field with no declared
-    domain is seeded on ``[0, 5s]`` only (widening that box moved existing
-    models' roots, see ``_seed_box_default``), so a root with a negative
-    value there (``x - x^3`` at ``x = -1``) was silently out of reach of
-    ``fixed_point_index``.  Re-run the same seeds with those components
-    negated (no new random draws: the selectable roots are unchanged) and
-    warn, naming the roots found and the remedy.  Returns the new roots."""
-    names = _undeclared_domain_vars(state_vars, model, seed_box)
-    if not names:
-        return []
+def _positive_type_vars(state_vars, model, seed_box):
+    """State variables searched as non-negative by default: domain
+    ``'positive'`` or undeclared, and no explicit ``seed_box``."""
+    declared = {p['natural_name']: p.get('domain')
+                for p in model.get('parameters', [])
+                if p.get('mean_field') and p.get('natural_name')}
+    return [var for var, _, _ in state_vars
+            if declared.get(var) not in ('real', 'symmetric')
+            and var not in (seed_box or {})]
+
+
+def _split_negative_roots(roots, errs, state_vars, slices, model, seed_box):
+    """``(selectable, their errors, set_aside)``.  A field of undeclared
+    (or ``'positive'``) domain is a non-negative quantity by default: when
+    some root is non-negative in every such field, the roots with a
+    negative value there (beyond the value's error estimate) are set aside
+    -- not among the roots ``fixed_point_index`` ranges over -- with a
+    warning naming them and the remedy for an undeclared field; when no
+    root is non-negative there, every root stays selectable (a field with
+    only a negative fixed point, e.g. an OU process with a negative mean).
+
+    The rule depends on signs only, so it does not depend on the units.
+    (It replaces a rule that depended on which seeds a root was reached
+    from: the default box ``[0, 5 s]`` scales with the largest parameter,
+    so whether hybr strayed onto a negative root changed with the units.)"""
+    names = _positive_type_vars(state_vars, model, seed_box)
+    if not names or not roots:
+        return roots, errs, []
     cols = np.concatenate([np.arange(*slices[v]) for v in names])
-    mirrored = np.array(seeds, dtype=float, copy=True)
-    mirrored[:, cols] = -mirrored[:, cols]
-    found = []
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        for x0 in mirrored:
-            try:
-                sol = _scipy_root(R, x0, method='hybr')
-            except (ValueError, ZeroDivisionError, OverflowError,
-                    FloatingPointError):
-                continue
-            if (not sol.success or not np.all(np.isfinite(sol.x))
-                    or np.max(np.abs(R(sol.x))) > 1e-7):
-                continue
-            found.append(np.asarray(sol.x, dtype=float))
-    new = []
-    for r in _dedup_roots(found, rtol=rtol, atol=atol):
-        # negative, not a root at 0 the main search reached as -1e-12
-        if not np.any(r[cols] < -1e-8 * max(1.0, float(np.max(np.abs(r))))):
-            continue
-        if len(_dedup_roots(list(roots) + [r], rtol=rtol,
-                            atol=atol)) > len(roots):
-            new.append(r)
-    if new:
-        new.sort(key=lambda r: float(r[cols[0]]))
+    neg = [bool(np.any(r[cols] < -10.0 * e[cols])) for r, e in
+           zip(roots, errs)]
+    if all(neg):
+        return roots, errs, []
+    keep = [q for q, n in enumerate(neg) if not n]
+    aside = [roots[q] for q, n in enumerate(neg) if n]
+    undeclared = set(_undeclared_domain_vars(state_vars, model, seed_box))
+    warn_names = [v for v in names if v in undeclared and any(
+        np.any(r[slices[v][0]:slices[v][1]] < 0) for r in aside)]
+    if warn_names:
+        aside_w = sorted(aside, key=lambda r: float(r[slices[warn_names[0]][0]]))
         shown = '; '.join(
             ', '.join(f'{v}*={r[slices[v][0]:slices[v][1]].tolist()}'
-                      for v in names)
-            for r in new[:4])
+                      for v in warn_names)
+            for r in aside_w[:4])
         warnings.warn(
-            f'solve_mean_field_dae: field(s) {", ".join(names)} declare no '
-            f'domain, so the root search covers only their non-negative '
-            f'values; {len(new)} more fixed point(s) exist with negative '
+            f'solve_mean_field_dae: field(s) {", ".join(warn_names)} declare '
+            f'no domain, so the root search covers only their non-negative '
+            f'values; {len(aside)} more fixed point(s) exist with negative '
             f'values ({shown}) and are NOT among the roots '
             f'fixed_point_index ranges over.  Declare the field with '
             f"domain='real' (SDE.field(name, domain='real') or "
             f"physical_field(name, domain='real')), or pass mf_dae_seed_box, "
             f'to include them.', stacklevel=3)
-    return new
+    return [roots[q] for q in keep], [errs[q] for q in keep], aside
 
 
-# ── Root deduplication ──────────────────────────────────────────────
+# ── Root refinement, acceptance and deduplication ───────────────────
+#
+# Every criterion below is relative (to the root, to the row's own linear
+# scale, or to the root's own error estimate): rescaling a field or the time
+# unit rescales the roots and the residual rows but leaves the verdicts, the
+# root set and the selected root unchanged (audit UNIT-02).
+
+#: A converged point is a root when every residual row satisfies
+#: ``|R_k| <= _ROOT_RTOL * sum_j |J_kj| w_j`` (``J``: a finite-difference
+#: Jacobian at the point; ``w_j = max(|x_j|, 1e-8 c_j)``, ``c_j`` the typical
+#: size of variable ``j`` over the converged points): the residual is
+#: negligible against the size of the row's linear terms.  (Was an absolute
+#: ``max|R| <= 1e-7``: large units were rejected, tiny units accepted points
+#: far from the root.)
+_ROOT_RTOL = 1e-7
+#: The scale floor of a component converging to ZERO, relative to ``c_j``
+#: (a zero has no scale of its own).
+_ZERO_FLOOR = 1e-8
+#: Chord-Newton refinement steps after the hybrid solve (hybr stops at a
+#: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only: ACC-21).
+_REFINE_STEPS = 8
+#: Linear stability: ``Re sigma < -_EIG_RTOL * max|sigma|`` for every mode.
+_EIG_RTOL = 1e-9
 
 
-def _dedup_roots(roots: list[np.ndarray], rtol=1e-6, atol=1e-10
-                 ) -> list[np.ndarray]:
-    """Cluster roots within ``rtol/atol``, keep one representative
-    each.  Order of returned list follows discovery order (sorting
-    happens in the outer caller)."""
-    out = []
-    for r in roots:
+def _hybr_point(R, x0):
+    """hybr from ``x0``: the converged point (components far below the seed
+    snapped to an exact 0 when that does not increase any residual row), or
+    ``None``."""
+    try:
+        sol = _scipy_root(R, x0, method='hybr')
+    except (ValueError, ZeroDivisionError, OverflowError,
+            FloatingPointError):
+        return None
+    if not sol.success or not np.all(np.isfinite(sol.x)):
+        return None
+    x = np.asarray(sol.x, dtype=float)
+    f = R(x)
+    if not np.all(np.isfinite(f)):
+        return None
+    return _snap_zeros(R, x, f, (x != 0) & (np.abs(x) <= 1e-8 * np.abs(x0)))[0]
+
+
+def _snap_zeros(R, x, f, mask):
+    """``(x, f)`` with the components ``mask`` set to an exact 0 when that
+    does not increase any residual row (a root at 0 converges to values like
+    1e-20 that no relative test can tell from 0), else unchanged."""
+    if not np.any(mask):
+        return x, f
+    xs = np.where(mask, 0.0, x)
+    fs = R(xs)
+    if np.all(np.isfinite(fs)) and np.all((fs == 0) | (np.abs(fs) <= np.abs(f))):
+        return xs, fs
+    return x, f
+
+
+def _typical_scale(points):
+    """Per component: the median of the nonzero ``|x_j|`` over ``points``
+    (0 where every point is 0 there)."""
+    P = np.abs(np.asarray(points, dtype=float))
+    out = np.zeros(P.shape[1])
+    for j in range(P.shape[1]):
+        nz = P[:, j][P[:, j] > 0]
+        if nz.size:
+            out[j] = float(np.median(nz))
+    return out
+
+
+def _fd_jacobian(R, x, f, c):
+    """Forward-difference Jacobian at ``x`` (``f = R(x)``), steps
+    ``1e-7 max(|x_j|, c_j)`` (relative: no unit enters), ``None`` when a
+    column cannot be formed."""
+    n = len(x)
+    J = np.empty((len(f), n))
+    for j in range(n):
+        h = 1e-7 * max(abs(x[j]), c[j])
+        if h == 0.0:
+            # every point is 0 in this component: probe at the smallest
+            # normal scale of the others (only the column's linear part
+            # matters, and R is evaluated in floating point)
+            h = 1e-7 * (float(np.max(c)) if np.max(c) > 0 else 1.0)
+        e = np.zeros(n)
+        e[j] = h
+        fp = R(x + e)
+        if not np.all(np.isfinite(fp)) or np.max(np.abs(fp)) >= _PENALTY:
+            fp = R(x - e)
+            if not np.all(np.isfinite(fp)) or np.max(np.abs(fp)) >= _PENALTY:
+                return None
+            h = -h
+        J[:, j] = (fp - f) / h
+    return J
+
+
+def _refine_root(R, x, c):
+    """Refine a converged point and decide whether it is a root.
+
+    Chord-Newton steps with a finite-difference Jacobian (kept while the
+    relative residual decreases), a snap of components below their own error
+    estimate to an exact 0 (``_snap_zeros``), then the relative acceptance
+    test (``_ROOT_RTOL``).  Returns ``(x, err)`` (``err``: componentwise
+    error estimate, the size of the last Newton correction) or ``None``
+    when the point is not a root."""
+    x = np.asarray(x, dtype=float)
+    f = R(x)
+    if not (np.all(np.isfinite(x)) and np.all(np.isfinite(f))):
+        return None
+    J = _fd_jacobian(R, x, f, c)
+    if J is None or not np.all(np.isfinite(J)):
+        return None
+    absJ = np.abs(J)
+
+    def rel(f, x):
+        rho = absJ @ np.maximum(np.abs(x), _ZERO_FLOOR * c)
+        return _rel_resid(f, rho), rho
+
+    q, rho = rel(f, x)
+    err = np.zeros(len(x))
+    for _ in range(_REFINE_STEPS):
+        if q == 0.0:
+            break
+        try:
+            d = np.linalg.lstsq(J, f, rcond=None)[0]
+        except (np.linalg.LinAlgError, ValueError):
+            break
+        if not np.all(np.isfinite(d)):
+            break
+        xn = x - d
+        fn = R(xn)
+        if not (np.all(np.isfinite(xn)) and np.all(np.isfinite(fn))):
+            break
+        qn, rn = rel(fn, xn)
+        err = np.abs(d)
+        if not qn < q:
+            break
+        x, f, q, rho = xn, fn, qn, rn
+    small = (x != 0) & (np.abs(x) <= 10.0 * err)
+    xs, fs = _snap_zeros(R, x, f, small)
+    if xs is not x:
+        err = np.where(small, np.maximum(err, np.abs(x)), err)
+        x, f = xs, fs
+        q, rho = rel(f, x)
+    if not np.all((f == 0) | (np.abs(f) <= _ROOT_RTOL * rho)):
+        return None
+    return x, err
+
+
+def _rel_resid(f, rho):
+    """``max_k |f_k| / rho_k`` (``0/0`` counts as 0, ``f/0`` as inf)."""
+    af = np.abs(f)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        q = np.where(af == 0, 0.0, af / rho)
+    return float(np.max(q)) if q.size else 0.0
+
+
+def _roots_from_points(R, points, rtol, atol):
+    """Cluster converged hybr points (agreeing to ``rtol`` relative per
+    component), refine one representative per cluster (``_refine_root``),
+    and return ``(roots, errors)`` of the accepted ones, deduplicated."""
+    if not points:
+        return [], []
+    c = _typical_scale(points)
+    reps = _dedup_roots(points, rtol=rtol, atol=atol)
+    roots, errs = [], []
+    for x in reps:
+        hit = _refine_root(R, x, c)
+        if hit is not None:
+            roots.append(hit[0])
+            errs.append(hit[1])
+    return _dedup_roots(roots, rtol=rtol, atol=atol, errs=errs)
+
+
+def _dedup_roots(roots: list, rtol=1e-6, atol=0.0, errs=None) -> list:
+    """Cluster roots, keep one representative each (discovery order; the
+    caller sorts).  Two roots are one when every component agrees to
+    ``rtol`` relative, ``atol`` absolute (0 by default: an absolute floor
+    merged distinct roots of a field in small units), or within ten times
+    their error estimates ``errs`` (two approximations of the same root).
+    With ``errs`` given, returns ``(roots, errs)``."""
+    out, out_e = [], []
+    if errs is None:
+        errs_in = [np.zeros_like(np.asarray(r, dtype=float)) for r in roots]
+    else:
+        errs_in = errs
+    for r, e in zip(roots, errs_in):
         merged = False
-        for kept in out:
-            diff = np.max(np.abs(r - kept))
-            scale = max(np.max(np.abs(r)), np.max(np.abs(kept)), 1.0)
-            if diff < atol + rtol * scale:
+        for kept, ke in zip(out, out_e):
+            tol = (atol + rtol * np.maximum(np.abs(r), np.abs(kept))
+                   + 10.0 * (e + ke))
+            if np.all(np.abs(r - kept) <= tol):
                 merged = True
                 break
         if not merged:
             out.append(r)
-    return out
+            out_e.append(e)
+    return out if errs is None else (out, out_e)
 
 
 # ── Top-level solver ─────────────────────────────────────────────────
@@ -509,7 +776,7 @@ def solve_mean_field_dae(
         fixed_point_index: int = 0,
         seed_box: Optional[dict[str, tuple[float, float]]] = None,
         rtol: float = 1e-6,
-        atol: float = 1e-10,
+        atol: float = 0.0,
         verbose: bool = False,
         rng_seed: int = 0,
 ) -> dict:
@@ -525,7 +792,10 @@ def solve_mean_field_dae(
     fundamental : dict
         Concrete parameter values keyed by parameter name.
     n_starts : int, default 64
-        Number of random initial guesses for multi-start Newton.
+        Number of random initial guesses for multi-start Newton on the
+        default box.  A fixed ladder of ``3 x 24`` more guesses on boxes of
+        every decade ``10^-12 .. 10^12`` follows (``_ladder_seeds``), so the
+        roots found do not depend on the units of the fields or the time.
     fixed_point_index : int, default 0
         Which sorted root to pick as the primary MF.  Sorted ascending
         by the first declared physical field's first population index.
@@ -536,7 +806,9 @@ def solve_mean_field_dae(
         (``positive`` → ``[0, 5·scale]``; anything else → ``[-3·scale,
         3·scale]``).
     rtol, atol : float
-        Tolerances for clustering converged roots.
+        Tolerances for clustering converged roots (componentwise:
+        ``rtol`` relative, ``atol`` absolute, default 0; two approximations
+        of one root also merge within their error estimates).
     verbose : bool
         Print a one-line summary per seed (for debugging).
     rng_seed : int
@@ -589,40 +861,56 @@ def solve_mean_field_dae(
     rng = np.random.default_rng(rng_seed)
     seeds = _sample_seeds(
         state_vars, slices, model, fundamental, n_starts, seed_box, rng)
+    # the unit-free decade ladder (drawn after the default seeds)
+    seeds = np.vstack([seeds, _ladder_seeds(
+        state_vars, slices, model, fundamental, seed_box, rng)])
+    undeclared = _undeclared_domain_vars(state_vars, model, seed_box)
+    mirror_cols = (np.concatenate([np.arange(*slices[v]) for v in undeclared])
+                   if undeclared else None)
 
-    raw_roots: list[np.ndarray] = []
-    n_converged = 0
-    for s in range(n_starts):
-        x0 = seeds[s]
-        try:
-            sol = _scipy_root(R, x0, method='hybr')
-        except (ValueError, ZeroDivisionError, OverflowError,
-                FloatingPointError):
-            continue
-        if not sol.success:
-            continue
-        # Re-evaluate residual to confirm; scipy sometimes reports
-        # success but with a residual above its internal tolerance.
-        resid = R(sol.x)
-        if not np.all(np.isfinite(resid)) or np.max(np.abs(resid)) > 1e-7:
-            continue
-        # Filter complex-or-NaN.
-        if not np.all(np.isfinite(sol.x)):
-            continue
-        n_converged += 1
-        raw_roots.append(np.asarray(sol.x, dtype=float))
-        if verbose:
-            print(f"  seed {s:3d}: converged to {sol.x}")
+    def mirrored(block):
+        if mirror_cols is None:
+            return block
+        m = np.array(block, dtype=float, copy=True)
+        m[:, mirror_cols] = -m[:, mirror_cols]
+        return np.vstack([block, m])
 
-    deduped = _dedup_roots(raw_roots, rtol=rtol, atol=atol)
-    unsearched = _probe_negative_half_line(
-        R, seeds, deduped, state_vars, slices, model, seed_box,
-        rtol=rtol, atol=atol)
+    points: list[np.ndarray] = []
+
+    def run(block):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            for s, x0 in enumerate(block):
+                x = _hybr_point(R, x0)
+                if x is None:
+                    continue
+                points.append(x)
+                if verbose:
+                    print(f"  seed {s:3d}: converged to {x}")
+
+    # a field of undeclared domain is also searched on its negative half
+    # line (the same seeds mirrored), see ``_split_negative_roots``
+    run(mirrored(seeds))
+    deduped, root_errs = _roots_from_points(R, points, rtol, atol)
+    # second pass: a box at the scale of every root found off the default
+    # box's scale (the decade ladder has few seeds per decade, so a narrow
+    # basin, e.g. the middle root of a cubic, can be missed there)
+    extra = _rescale_seeds(deduped, state_vars, slices, model, fundamental,
+                           seed_box, n_starts, rng)
+    if len(extra):
+        run(mirrored(extra))
+        deduped, root_errs = _roots_from_points(R, points, rtol, atol)
+    n_converged = len(points)
+    deduped, root_errs, unsearched = _split_negative_roots(
+        deduped, root_errs, state_vars, slices, model, seed_box)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]
     first_start = slices[first_var][0]
-    deduped.sort(key=lambda r: float(r[first_start]))
+    order = sorted(range(len(deduped)),
+                   key=lambda q: float(deduped[q][first_start]))
+    deduped = [deduped[q] for q in order]
+    root_errs = [root_errs[q] for q in order]
 
     if not deduped:
         raise ValueError(
@@ -651,8 +939,9 @@ def solve_mean_field_dae(
     stab_on = bool(model.get('stability_analysis', False))
 
     all_root_records = []
+    rec_errs = {}           # id(record) -> its error estimates
     if stab_on:
-        for x in deduped:
+        for x, xe in zip(deduped, root_errs):
             rd = _build_root_dict(x)
             try:
                 stab = linear_stability(model, fundamental, rd, verbose=False)
@@ -677,16 +966,18 @@ def solve_mean_field_dae(
                 'stable':              bool(stab.get('stable', False)),
                 'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
             })
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
     else:
         # Skip stability entirely.  Tag each record with ``stable=None``
         # so callers can distinguish "not classified" from "classified
         # unstable".
-        for x in deduped:
+        for x, xe in zip(deduped, root_errs):
             all_root_records.append({
                 'values':              _build_root_dict(x),
                 'stable':              None,
                 'eigenvalues_finite':  np.array([], dtype=complex),
             })
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
 
     if stab_on:
         # Pre-filter to stable subset.
@@ -725,14 +1016,23 @@ def solve_mean_field_dae(
         fixed_point_index = clamped
 
     selected = selectable_records[fixed_point_index]['values']
+    selected_errs = rec_errs[id(selectable_records[fixed_point_index])]
     pure = _pure_integrator_rows(model, expanded)
     if pure:
         x_sel = np.concatenate([np.asarray(selected[f'{v}star'], dtype=float)
                                 for v, _, _ in state_vars])
-        _check_saddle_determined(R, x_sel, pure, expanded)
+        # finite-difference scale per component: the largest root value,
+        # else (every root 0 there) the typical seed
+        scale = np.max(np.abs(np.array(deduped)), axis=0)
+        seed_med = np.median(np.abs(seeds), axis=0)
+        scale = np.where(scale > 0, scale, seed_med)
+        _check_saddle_determined(R, x_sel, pure, expanded, scale)
 
     return {
         'mf_values':           selected,
+        # Error estimate of each selected value (the last Newton correction;
+        # a value snapped to an exact 0 carries its pre-snap size).
+        'mf_errors':           selected_errs,
         # Full list (sorted, with per-root stability annotation when
         # classified) so callers can introspect every root.
         'mf_all_roots':        all_root_records,
@@ -773,7 +1073,7 @@ def _pure_integrator_rows(model, expanded) -> list:
     return rows if k == len(expanded) else []
 
 
-def _check_saddle_determined(R, x, rows, expanded):
+def _check_saddle_determined(R, x, rows, expanded, scale=None):
     """Raise when the equations do not determine the saddle at ``x``: the
     Jacobian of the residual (central differences) is singular.  Run only
     for models with a pure-integrator equation (``rows``), whose saddle
@@ -782,14 +1082,20 @@ def _check_saddle_determined(R, x, rows, expanded):
     n = len(x)
     J = np.empty((n, n))
     for j in range(n):
-        h = 1e-6 * max(1.0, abs(x[j]))
+        # relative step (the old floor 1.0 stepped far outside a field
+        # measured in small units); ``scale``: the field's own size
+        h = 1e-6 * max(abs(x[j]), float(scale[j]) if scale is not None
+                       else 1.0)
+        if h == 0.0:
+            h = 1e-6
         e = np.zeros(n)
         e[j] = h
         rp, rm = R(x + e), R(x - e)
         # inconclusive: a non-finite value or a penalised point (R returns
-        # 1e10 where an equation fails) in the stencil
+        # _PENALTY where an equation fails) in the stencil
         if not (np.all(np.isfinite(rp)) and np.all(np.isfinite(rm))
-                and np.max(np.abs(rp)) < 1e10 and np.max(np.abs(rm)) < 1e10):
+                and np.max(np.abs(rp)) < _PENALTY
+                and np.max(np.abs(rm)) < _PENALTY):
             return
         J[:, j] = (rp - rm) / (2.0 * h)
     # rank on the equilibrated Jacobian (rows, then columns, scaled to unit
@@ -1081,8 +1387,11 @@ def linear_stability(
 
     # Stability: every finite eigenvalue has strictly negative real part.
     # Use a small tolerance for the real-part comparison so eigenvalues
-    # that are zero to roundoff don't get mis-classified.
-    EIG_TOL = 1e-9
+    # that are zero to roundoff don't get mis-classified -- relative to the
+    # largest eigenvalue (an absolute 1e-9 called a stable model in slow
+    # time units marginal, and a fast one's round-off stable).
+    EIG_TOL = _EIG_RTOL * (float(np.max(np.abs(sigmas_finite)))
+                           if sigmas_finite.size else 0.0)
     stable = bool(
         sigmas_finite.size > 0
         and np.all(np.real(sigmas_finite) < -EIG_TOL)
@@ -1110,19 +1419,23 @@ def linear_stability(
 
 
 def _check_selected_root(ft, model, num_params, index_used, mf_values,
-                         rtol=1e-6, atol=1e-7):
+                         errs=None):
     """Raise ``AssertionError`` when the selected saddle leaves the raw
     mean-field action sector (``ft._mf_sector_raw``: the (0,0), (1,0), (0,1)
-    coefficients before the saddle substitution) visibly non-zero: a
-    residual above ``max(atol, rtol * sum of |terms|)`` (a wrong equation
-    leaves a residual of the size of its terms; a converged root ~1e-12 of
-    it; ``atol`` is the residual the root search itself accepts).  A coefficient with a symbol this run gives no value is skipped.
-    No-op without the raw sector (the proxy used inside ``expand``)."""
-    from sage.all import SR
+    coefficients before the saddle substitution) visibly non-zero, by the
+    relative rule shared with the expand-time check
+    (:func:`engine.core.field_theory.mf_sector_residual`): a residual above
+    ``MF_SECTOR_RTOL * sum of |terms|`` plus the residual the saddle's own
+    error estimates ``errs`` (``{symbol: error}``) explain.  (The former
+    absolute floor ``1e-7`` passed a wrong equation in small units.)  A
+    coefficient with a symbol this run gives no value is skipped.  No-op
+    without the raw sector (the proxy used inside ``expand``)."""
     raw = getattr(ft, '_mf_sector_raw', None)
     if not raw:
         return
-    from engine.core.field_theory import kernel_dc_gains_of
+    from engine.core.field_theory import (kernel_dc_gains_of,
+                                          mf_sector_residual)
+    from sage.all import SR
     gains = kernel_dc_gains_of(ft._ns, model)
     subs = dict(num_params)
     failures = []
@@ -1139,20 +1452,11 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
                 k_subs = None
             if k_subs:
                 c = c.subs(k_subs)
-            terms = c.expand()
-            terms = (terms.operands()
-                     if getattr(terms.operator(), '__name__', '')
-                     == 'add_vararg' else [terms])
-            try:
-                vals = [SR(t).subs(subs) for t in terms]
-                if any(v.free_variables() for v in vals):
-                    continue
-                vals = [complex(v) for v in vals]
-            except (TypeError, ValueError, ArithmeticError):
+            res = mf_sector_residual(c, subs, errs)
+            if res is None:
                 continue
-            resid = abs(sum(vals))
-            scale = sum(abs(v) for v in vals)
-            if not np.isfinite(resid) or resid > max(atol, rtol * scale):
+            resid, tol, scale = res
+            if not np.isfinite(resid) or resid > tol:
                 failures.append((key, exp_vec, coeff, resid, scale))
     if failures:
         lines = [
@@ -1181,7 +1485,7 @@ def solve_mean_field_dae_compat(
         seed_box: Optional[dict[str, tuple[float, float]]] = None,
         verbose: bool = True,
         rtol: float = 1e-6,
-        atol: float = 1e-10,
+        atol: float = 0.0,
 ) -> dict:
     """Drop-in replacement for ``api._mean_field.solve_mean_field``
     when ``model['equations']`` is populated.
@@ -1263,12 +1567,16 @@ def solve_mean_field_dae_compat(
 
     # 3. Bake saddle values into num_params using ft._ns.<saddle_name>.
     num_params = dict(param_subs)
+    num_params_err = {}
+    mf_errs = dae_result.get('mf_errors') or {}
     for saddle_name, vals in mf_values.items():
         sr_array = getattr(ft._ns, saddle_name, None)
         if sr_array is None:
             continue
+        errs = mf_errs.get(saddle_name) or [0.0] * len(vals)
         for i, v in enumerate(vals):
             num_params[sr_array[i]] = float(v)
+            num_params_err[sr_array[i]] = float(errs[i])
 
     # 3b. The selected root must zero the action's mean-field sector at the
     # parameters of THIS run.  ``FieldTheory.expand`` checks the sector at
@@ -1276,7 +1584,8 @@ def solve_mean_field_dae_compat(
     # expand-cache hit), so an equation that shares that root but no other
     # was accepted at fixed_point_index >= 1.
     _check_selected_root(ft, model, num_params,
-                         dae_result['mf_index_used'], mf_values)
+                         dae_result['mf_index_used'], mf_values,
+                         num_params_err)
 
     # 4. Legacy-compatible concatenated saddle vectors.
     nstar_concat = list(mf_values.get('nstar', []))
@@ -1287,6 +1596,9 @@ def solve_mean_field_dae_compat(
         'vstar_vals':         vstar_concat,
         'phi_deriv_vals':     {},
         'num_params':         num_params,
+        # error estimate of each saddle value in num_params (the sector
+        # checks allow the residual these explain)
+        'num_params_err':     num_params_err,
         'param_subs':         param_subs,
         'saddle_values':      dict(mf_values),
         # DAE-specific extras (consumed by compute_cumulants to surface

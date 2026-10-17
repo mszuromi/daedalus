@@ -1044,9 +1044,67 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     return sectors
 
 
+#: Relative tolerance of the mean-field sector checks (expand time, and the
+#: selected root in ``api._mean_field_dae._check_selected_root``): a wrong
+#: equation leaves a residual of the size of its own terms, a converged
+#: saddle ~1e-16 of it.  (Was an absolute 1e-9 at expand time: valid models
+#: in large field units or fast time units were refused -- audit UNIT-01.)
+MF_SECTOR_RTOL = 1e-6
+
+
+def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
+    """``(resid, tol, scale)`` of a mean-field sector coefficient at a
+    numerical point, or ``None`` when it cannot be evaluated.
+
+    ``resid = |sum of the terms|`` and ``scale = sum of |terms|`` (the terms
+    of the expanded coefficient, each evaluated at ``num_subs``);
+    ``tol = MF_SECTOR_RTOL * scale + 10 * sum_v |d expr / d v| err_v`` over
+    the saddle values with an error estimate ``errs = {symbol: err}`` (a
+    root at 0 is known to ~its own size only: its terms vanish with it).
+    Every part scales with the coefficient, so the verdict does not depend
+    on the units.  ``unbound``: the value given to a symbol ``num_subs``
+    does not bind (``None``: such a coefficient is not evaluated)."""
+    c = SR(expr)
+    try:
+        terms = c.expand()
+        ops = (terms.operands()
+               if getattr(terms.operator(), '__name__', '') == 'add_vararg'
+               else [terms])
+        vals = [SR(t).subs(num_subs) for t in ops]
+        free = set()
+        for v in vals:
+            free.update(v.free_variables())
+        if free:
+            if unbound is None:
+                return None
+            fill = {f: unbound for f in free}
+            vals = [v.subs(fill) for v in vals]
+        vals = [complex(v) for v in vals]
+    except (TypeError, ValueError, ArithmeticError, AttributeError):
+        return None
+    resid = abs(sum(vals))
+    scale = sum(abs(v) for v in vals)
+    tol = MF_SECTOR_RTOL * scale
+    if not resid <= tol and errs:
+        sens = 0.0
+        for sym, e in errs.items():
+            if not e:
+                continue
+            try:
+                if not c.has(sym):
+                    continue
+                d = SR(c.diff(sym)).subs(num_subs)
+                if unbound is not None and d.free_variables():
+                    d = d.subs({f: unbound for f in d.free_variables()})
+                sens += abs(complex(d)) * float(e)
+            except (TypeError, ValueError, ArithmeticError, AttributeError):
+                continue
+        tol += 10.0 * sens
+    return resid, tol, scale
+
+
 def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
-                               mf_sector_keys=((0, 0), (1, 0), (0, 1)),
-                               num_tol=1e-9):
+                               mf_sector_keys=((0, 0), (1, 0), (0, 1))):
     """Apply ``mf_subs`` to the saddle-eq (MF) sector and verify it
     vanishes.  After verification each MF sector entry is replaced by
     ``R.zero()`` in-place — at the saddle the sector is zero by
@@ -1059,7 +1117,8 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
          Cheap and complete for closed-form saddles.
       2. **Numerical fallback** (only when symbolic fails): bind every
          remaining free symbol to a numerical saddle from the model's
-         own MF solver and check ``|residual| < num_tol``.  Catches the
+         own MF solver and check the residual RELATIVE to the size of the
+         coefficient's terms (:func:`mf_sector_residual`).  Catches the
          case where the MF equation is solved iteratively rather than
          in closed form, so ``simplify_full`` can't see the
          cancellation but the numerics confirm it.
@@ -1103,8 +1162,9 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 # ``simplify_full`` cannot reach 0 and is skipped; it is
                 # only run to word a failure (below).
                 c_simpl = None
-            num_resid = _mf_numerical_residual(c_subbed, ns, model, mf_memo)
-            if num_resid is not None and abs(num_resid) < num_tol:
+            num = _mf_numerical_residual(c_subbed, ns, model, mf_memo)
+            num_resid = None if num is None else num[0]
+            if num is not None and num[0] <= num[1]:
                 soft_passes.append((key, exp_vec, c_simpl, num_resid))
             else:
                 if c_simpl is None:
@@ -1167,33 +1227,35 @@ def kernel_dc_gains_of(ns, model):
 
 
 def _mf_numerical_residual(expr, ns, model, memo=None):
-    """Numerical residual of an SR expression at the MF saddle.
+    """``(residual, tolerance)`` of an SR expression at the MF saddle
+    (:func:`mf_sector_residual`; a symbol the saddle point does not bind
+    is set to 1.0).
 
-    Returns the magnitude of ``expr`` after binding every free symbol
-    to its numerical value at the saddle for a representative
-    parameter point (``model['fundamental_defaults']`` if provided,
-    else all-ones).  Returns ``None`` if the residual can't be built
-    (no MF solver, fundamental incomplete, etc.) — the caller falls
+    Binds every free symbol to its numerical value at the saddle for a
+    representative parameter point (``model['fundamental_defaults']`` if
+    provided, else all-ones).  Returns ``None`` if the residual can't be
+    built (no MF solver, fundamental incomplete, etc.) — the caller falls
     back to ``failures`` rather than ``soft_passes`` in that case.
     """
     if memo is not None and 'num_params' in memo:
         # The solve below does not depend on ``expr`` (deterministic: fixed
         # seed), so one verification solves once, not once per coefficient.
         num_params = memo['num_params']
-        if num_params is None:
-            return None
-        return _residual_at(expr, num_params)
-    num_params = _mf_saddle_values(ns, model)
-    if memo is not None:
-        memo['num_params'] = num_params
+    else:
+        num_params = _mf_saddle_values(ns, model)
+        if memo is not None:
+            memo['num_params'] = num_params
     if num_params is None:
         return None
-    return _residual_at(expr, num_params)
+    vals, errs = num_params
+    res = mf_sector_residual(expr, vals, errs, unbound=1.0)
+    return None if res is None else (res[0], res[1])
 
 
 def _mf_saddle_values(ns, model):
-    """The numerical saddle (``num_params``) used by the residual check, or
-    ``None`` when none can be built."""
+    """``(num_params, errors)``: the numerical saddle used by the residual
+    check and the error estimates of its values (``{}`` when the solver
+    gives none), or ``None`` when no saddle can be built."""
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
     if fundamental is None:
@@ -1228,32 +1290,7 @@ def _mf_saddle_values(ns, model):
         except Exception:
             return None
 
-    return dict(mf.get('num_params', {}))
-
-
-def _residual_at(expr, num_params):
-    num_subs = dict(num_params)
-    try:
-        bound = SR(expr).subs(num_subs)
-        free_syms = list(bound.free_variables())
-    except Exception:
-        return None
-
-    if free_syms:
-        for sym in free_syms:
-            num_subs[sym] = 1.0
-        try:
-            bound = SR(expr).subs(num_subs)
-        except Exception:
-            return None
-
-    try:
-        return abs(complex(bound))
-    except Exception:
-        try:
-            return abs(float(bound))
-        except Exception:
-            return None
+    return dict(mf.get('num_params', {})), dict(mf.get('num_params_err') or {})
 
 
 def _default_fundamental_point(ns, model):
