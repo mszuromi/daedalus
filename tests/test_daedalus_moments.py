@@ -51,7 +51,8 @@ def test_raw_moment_adds_mean_squared(monkeypatch):
     """k=2 raw moment = κ₂(τ) + ⟨φ⟩²; force a non-zero mean and check the
     constant μ² offset over the whole curve."""
     m, mod = dd.load_model('ou_quartic_double_well')
-    monkeypatch.setattr(dd, '_external_mean', lambda model, res: 2.0)
+    monkeypatch.setattr(dd, '_external_mean',
+                        lambda model, res, leg=None: 2.0)
     rm = dd.run(m, dd.Config(k=2, max_ell=0, output='moment', **_TAU), mod)
     monkeypatch.undo()
     rc = dd.run(m, dd.Config(k=2, max_ell=0, **_TAU), mod)

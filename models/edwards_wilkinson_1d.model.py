@@ -39,7 +39,7 @@ DEFAULT_FUNDAMENTAL = {'mu': 0.5, 'D': 2.0, 'T': 1.0}
 METADATA = {
     'k_default': 2,
     'ell_default': 0,
-    'recommended_external_fields': [('phi', 1), ('phi', 2)],
+    'recommended_external_fields': [('phi', 1), ('phi', 1)],
     'tau_max': 5.0,
     'tau_step': 0.5,
     'spatial_grid': [-6.0, -3.0, 0.0, 3.0, 6.0],

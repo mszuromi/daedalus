@@ -158,6 +158,8 @@ class SDE:
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
         _check_declarable(name, 'parameter')
+        if name in self._param_names:
+            raise SDEError(f'parameter {name!r} is declared twice.')
         self._params.append(((name,), dict(default=default, indexed=indexed,
                                            domain=domain, description=description,
                                            indexed_by=indexed_by)))
@@ -995,7 +997,29 @@ class SDE:
         from api.pp_simulate import simulate
         return simulate(self, **kw)
 
+    def _check_derived_names(self):
+        """Refuse a parameter, function or kernel named like a symbol the
+        compiler derives from a field ``f``: its response field ``ft``, its
+        fluctuation ``df`` or its saddle ``fstar`` (the clash was otherwise
+        found only by the analyzer at run time)."""
+        derived = {}
+        for f in self._fields:
+            for n, what in ((f + 't', 'response field'),
+                            ('d' + f, 'fluctuation'),
+                            (f + 'star', 'mean-field saddle')):
+                derived[n] = (what, f)
+        for kind, names in (('parameter', self._param_names),
+                            ('function', self._function_names),
+                            ('kernel', list(self._kernels))):
+            for n in names:
+                if n in derived:
+                    what, f = derived[n]
+                    raise SDEError(
+                        f'{kind} name {n!r} is the {what} the compiler derives '
+                        f'from field {f!r}; choose another name.')
+
     def build(self) -> dict:
+        self._check_derived_names()
         m = self.to_builder().build()
         trunc = sorted(n for n, s in self._sources.items()
                        if not s.get('pp') and not getattr(s['source'], 'regular', True))
