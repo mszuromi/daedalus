@@ -690,6 +690,15 @@ class SideME:
         u = np.atleast_1d(np.asarray(u, dtype=float))
         if np.any(u < 0) or not np.all(np.isfinite(u)):
             raise ValueError('u = |τ| must be finite and >= 0')
+        # beyond a finite chamber the blocks' segment lengths go negative
+        # (clamped to 0): the value would be another chamber's order of the
+        # external times (audit G2-outputs 1).  Rounding slack 1e-12.
+        if math.isfinite(self.u_max) and np.any(
+                u > self.u_max + 1e-12 * max(1.0, self.u_max)):
+            raise ValueError(
+                f'u = {float(np.max(u)):g} is beyond this side\'s chamber '
+                f'(u_max = {self.u_max:g}); evaluate the slice (SliceME), '
+                'which switches chambers')
         out = np.zeros(u.shape, dtype=complex)
         for b in self.blocks:
             out += b.values(u)
@@ -1800,7 +1809,11 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     base = [float(b) for b in base]
     if len(base) != k - 1:
         raise ValueError(f'base must have k-1 = {k - 1} entries')
-    pinned = {leg: (b if abs(b) > 1e-12 else -eps)
+    if not all(math.isfinite(b) for b in base):
+        # (the inverted comparison below sent a NaN to the left limit;
+        # audit G2-outputs 3)
+        raise ValueError(f'base lags must be finite, got {base}')
+    pinned = {leg: (-eps if abs(b) <= 1e-12 else b)
               for leg, b in zip(range(1, k), base) if leg != j}
     T0 = [0.0] * k
     for leg, t in pinned.items():

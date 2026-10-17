@@ -888,7 +888,9 @@ def save_csv(result: dict, path: str) -> str:
         if len(col_data) > 1 and len(col_data[0]) > 0:
             n_rows = len(col_data[0])
             for i in range(n_rows):
-                row = [f'{col_data[j][i]:.10g}'
+                # round-trip exact (.10g rounded to 5e-11 relative; audit
+                # G2-outputs 2)
+                row = [f'{col_data[j][i]:.17g}'
                        for j in range(len(col_data))]
                 f.write(','.join(row) + '\n')
 

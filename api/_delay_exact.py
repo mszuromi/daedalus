@@ -268,18 +268,64 @@ def _expm_apply(L, Y0, s):
     return expm_multiply(L * s, Y0)
 
 
+def _balanced_state(ss):
+    """The same system in diagonally rescaled state coordinates z = T z'
+    (T: power-of-2 balancing of |A| + |A_d|; an exact similarity, the field
+    covariance ``C_z C C_z^T`` is unchanged).  Fields in very different units
+    make the state covariance entries span the squared unit ratio; in the
+    balanced coordinates the boundary-value problem and the exponentials
+    see O(1) entries (audit 3B-02)."""
+    n = ss.A.shape[0]
+    if n == 0:
+        return ss
+    _, (t, _p) = sl.matrix_balance(np.abs(ss.A) + np.abs(ss.Ad), permute=False,
+                                   separate=True)
+    return _scaled_state(ss, t)
+
+
+def _scaled_state(ss, t):
+    """``ss`` in the coordinates ``z = diag(t) z'`` (``t``: powers of 2)."""
+    if np.all(t == 1.0):
+        return ss
+    ti = 1.0 / t
+    return DelayedStateSpace(ti[:, None] * ss.A * t[None, :], ti[:, None] * ss.Ad * t[None, :],
+                             ti[:, None] * ss.B, ti[:, None] * ss.Bd, ss.Cz * t[None, :],
+                             ss.D0, ss.d, ss.N)
+
+
+#: spread of sqrt(diag U0) (max / min) above which the exact tree re-solves
+#: in noise-scaled state coordinates
+_RESCALE_SPREAD = 16.0
+
+
 class ExactTree:
     """The exact k = 2 tree of a delayed model for one external pair."""
 
     method = 'bvp'
 
     def __init__(self, ss, ia, ib, tau_max=None):
-        self.ss = ss
+        self.ss = _balanced_state(ss)
         self.ia, self.ib = int(ia), int(ib)
         self._stack = None
         self._Y0 = None
         self._K = 0
-        self._ensure(0.0 if tau_max is None else float(tau_max))
+        self._ensure(0.0)
+        # second pass: fields driven by noises of very different size (not
+        # coupled through the drift, so the balancing above cannot see it)
+        # leave the small covariance entries at the rounding of the large
+        # ones (4e-6 relative at a 1e9 unit ratio); re-solve with the states
+        # scaled to O(1) variances (powers of 2: exact)
+        n = self.ss.A.shape[0]
+        dg = np.sqrt(np.abs(np.diag(self._Y0[:n * n].reshape(n, n))))
+        pos = dg > 0
+        if pos.any() and dg[pos].max() > _RESCALE_SPREAD * dg[pos].min():
+            t = np.ones(n)
+            t[pos] = 2.0 ** np.round(np.log2(dg[pos] / dg[pos].max()))
+            self.ss = _scaled_state(self.ss, t)
+            self._stack, self._Y0, self._K = None, None, 0
+            self._ensure(0.0)
+        if tau_max:
+            self._ensure(float(tau_max))
 
     @classmethod
     def from_context(cls, ctx, external_fields, tau_max=0.0):
@@ -327,16 +373,23 @@ class ExactTree:
         eAd = sl.expm(A * d)
         W1_0, W2_0 = eAd @ B, B
 
-        def resid(x):
+        def resid(x, affine=True):
+            # affine=False: the linear part only (W blocks and the noise
+            # terms dropped; with W = 0 the noise never enters Phi @ Y0).
+            # The Jacobian below is built from it EXACTLY: as resid(e) -
+            # resid(0) it cancelled the O(N) constant (field scale squared)
+            # and lost 8e-6 relative at a field scale of 1e6 (audit 3B-02)
             U0 = x[:n * n].reshape(n, n)
             V0 = x[n * n:].reshape(n, n)
-            Y0 = np.concatenate([U0.ravel(), V0.ravel(), W1_0.ravel(), W2_0.ravel()])
+            W1, W2 = (W1_0, W2_0) if affine else (0.0 * W1_0, 0.0 * W2_0)
+            Y0 = np.concatenate([U0.ravel(), V0.ravel(), W1.ravel(), W2.ravel()])
             Yd = Phi @ Y0
             Ud = Yd[:n * n].reshape(n, n)
             Vd = Yd[n * n:2 * n * n].reshape(n, n)
-            lyap = (A @ U0 + U0 @ A.T + Ad @ V0 + V0.T @ Ad.T
-                    + Bd @ N @ B.T @ eAd.T + eAd @ B @ N @ Bd.T
-                    + B @ N @ B.T + Bd @ N @ Bd.T)
+            lyap = A @ U0 + U0 @ A.T + Ad @ V0 + V0.T @ Ad.T
+            if affine:
+                lyap = lyap + (Bd @ N @ B.T @ eAd.T + eAd @ B @ N @ Bd.T
+                               + B @ N @ B.T + Bd @ N @ Bd.T)
             return np.concatenate([lyap.ravel(), (Vd - U0).ravel(), (Ud - V0.T).ravel(),
                                    (U0 - U0.T).ravel()])
 
@@ -346,7 +399,7 @@ class ExactTree:
         e = np.zeros(nx)
         for i in range(nx):
             e[i] = 1.0
-            M[:, i] = resid(e) - r0
+            M[:, i] = resid(e, affine=False)
             e[i] = 0.0
         x, *_ = np.linalg.lstsq(M, -r0, rcond=None)
         res = np.linalg.norm(M @ x + r0) / max(np.linalg.norm(r0), 1e-300)
@@ -377,7 +430,10 @@ class ExactTree:
                 f'estimated error {self.err_est:.1e} > 1e-8')
         U0 = x[:n * n].reshape(n, n)
         V0 = x[n * n:].reshape(n, n)
-        ev = np.linalg.eigvalsh(0.5 * (U0 + U0.T))
+        # positivity on the correlation-normalized matrix (unit free)
+        dg = np.sqrt(np.abs(np.diag(U0)))
+        dg[~(dg > 0)] = 1.0
+        ev = np.linalg.eigvalsh(0.5 * (U0 + U0.T) / np.outer(dg, dg))
         if ev.size and ev[0] < -1e-10 * max(abs(ev[-1]), 1e-300):
             raise ExactTreeUnavailable(
                 f'the equal-time state covariance is not positive (eigenvalue {ev[0]:.3g}): '
@@ -456,10 +512,12 @@ class ExactTree:
     def callable(self):
         """``f(t0, t1)``: the pipeline's k = 2 callable convention (leg 0 at
         ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
-        at ``tau = -_ITO_EPS``, the pipeline's Ito left limit)."""
-        from api.compute import _ITO_EPS
+        at the pipeline's Ito left limit: exactly, or at ``tau = -_ITO_EPS``
+        under DAEDALUS_TAU0=nudge)."""
+        from api.compute import _tau0_lag
+        lag = _tau0_lag()
 
         def f(t0, t1):
             tau = float(np.real(t1)) - float(np.real(t0))
-            return self.value(-_ITO_EPS if abs(tau) <= 1e-12 else tau)
+            return self.value(lag if abs(tau) <= 1e-12 else tau)
         return f
