@@ -240,3 +240,21 @@ def test_uv_divergent_tadpole_refused_and_bubble_converges():
                            n_t=n, n_s=n) for n in (24, 48, 96)]
     assert abs(v[2] - v[1]) < 0.2 * abs(v[1] - v[0])          # converging
     assert v[2] == pytest.approx(v[1], rel=2e-5)
+
+
+def test_coupled_spectral_kinematic_memory_guard(monkeypatch):
+    """The coupled spectral kinematic refuses a chamber over the memory
+    budget (it allocated (P x assignments) arrays unguarded)."""
+    from engine.integration.spatial.full_integrator import (
+        diagram_kinematic_spectral, spectral_rows, SpatialMemoryBudgetError)
+    dd = _bubble()
+    n_rows = len(spectral_rows(dd))
+    mt = np.ones((n_rows, 4), dtype=complex)
+    et = {0: 0.0, 1: 0.3}
+    monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '1e-6')
+    with pytest.raises(SpatialMemoryBudgetError, match='budget'):
+        diagram_kinematic_spectral(dd, [0.0], et, mt, 1.0, xs=np.array([0.0]))
+    monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '4')
+    out = diagram_kinematic_spectral(dd, [0.0], et, mt, 1.0, xs=np.array([0.0]),
+                                     n_t=6, n_s=6)
+    assert out.shape == (4, 1)

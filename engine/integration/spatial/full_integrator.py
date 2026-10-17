@@ -408,6 +408,21 @@ def _c_leaf_breaks(edges, idx, external_times, n_V):
     return [list(ts) for _ in range(n_V)]
 
 
+def _spatial_mem_budget():
+    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set, else the RAM-aware
+    default of the Phase J guards."""
+    import os as _os
+    if 'SPATIAL_MEM_BUDGET_GB' in _os.environ:
+        gb = float(_os.environ['SPATIAL_MEM_BUDGET_GB'])
+        return gb * 1e9, f'SPATIAL_MEM_BUDGET_GB={gb:g}'
+    from engine.integration.time_domain.final_integral import default_mem_budget
+    return default_mem_budget()
+
+
+class SpatialMemoryBudgetError(MemoryError):
+    """A spatial chamber evaluation would exceed the memory budget."""
+
+
 def time_grid_split_factor(descr, external_times):
     """How many times larger the causal-chamber time grid is because each
     vertex interval splits at the external times inside its static leaf
@@ -1100,6 +1115,19 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     Ps = s_wflat.size
 
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
+    # memory guard: per chamber the (P, n_assign) exponent and amplitude plus
+    # the (P, n_x) heat-kernel arrays, P = n_t^{n_V}·split·n_s^{n_C}
+    _P = (n_t ** n_V) * time_grid_split_factor(descr, external_times) * Ps
+    _nx = 1 if xs_arr is None else max(1, len(xs_arr))
+    _need = _P * (3 * n_assign + 2 * _nx) * 16.0
+    _bud, _rule = _spatial_mem_budget()
+    if _need > _bud:
+        raise SpatialMemoryBudgetError(
+            f'coupled spectral kinematic would allocate ~{_need / 1e9:.1f} GB per '
+            f'chamber (P={_P:.2e} samples x {n_assign} spectral assignments, '
+            f'{_nx} output points) over the budget {_bud / 1e9:.2f} GB ({_rule}).  '
+            f'Lower max_ell, coarsen SPATIAL_GRID_NT/NS, or raise '
+            f'SPATIAL_MEM_BUDGET_GB if the RAM is there.')
     L = a.shape[1]
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
