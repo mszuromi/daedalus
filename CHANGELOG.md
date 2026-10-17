@@ -36,6 +36,44 @@ now refused, and so are invalid noise declarations.
   A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
   stays valid.
 
+#### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
+
+Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
+warm-up discarded, `use_cache=False`, base main 4a9e932):
+- 9 entries are bit-identical (values and analyzer codes);
+- `quadratic_hawkes_alpha` moves 2.0e-16 and `spike_reset` k = 2 moves 1.4e-15, both inside main's own scatter on
+  these entries (`spike_reset`: 2.6e-14 between main 4a9e932 and main 147f402, whose difference is spatial-only).
+
+- **New opt-in `DAEDALUS_TAU0=exact`: k = 2 τ = 0 at the exact Itô left limit C(0⁻)** (`api.compute._tau0_mode`).
+  The τ = 0 grid point (and `total_C(t, t)`, and the exact delayed tree's τ = 0) is sampled at τ = −1e-6, so its
+  relative error is rate × 1e-6. That is unit dependent: 1e-3 at a rate of 1e3. With `exact` it is evaluated at equal
+  times, where Phase J's exact tie rule (`final_integral._const_row_verdict`) gives the left limit.
+  - Measured against independent mpmath references (the audit's oracle cases, all of ss / poles / grouped, ℓ ≤ 3):
+    τ = 0 error ≤ 3.1e-14 (`nudge`: 4.6e-7 .. 3.0e-6). τ ≠ 0 points are unchanged.
+  - The default stays `nudge`, so no number moves. Making `exact` the default is a pending decision; it moves every
+    k = 2 τ = 0 value by its rate × 1e-6.
+  - k ≥ 3 slices (`daedalus._kpoint_slice_times`, `me_output.slice_me`) keep the −1e-6 placement. The engine's tie
+    order is that slice's left limit only for some leg orders.
+- **Exact delayed tree is unit invariant** (`api._delay_exact`). The boundary-value problem's Jacobian was a finite
+  difference `resid(e) - resid(0)`. It cancelled the O(N) constant (field scale squared): 8e-6 relative off at a field
+  scale of 1e6, with no warning. Now:
+  - the Jacobian is the exact linear part;
+  - the state is solved in balanced coordinates, and re-solved in noise-scaled coordinates when the variances spread by
+    more than 16.
+  - Mixed units up to a 1e9 ratio used to be refused as singular or come out 4e-6 off; they now agree to ≤ 8e-15.
+- **Several delays: the approximant's error is in G6_ACCURACY** (`api.delay._fold_delay_into_g6`). The Padé estimate
+  `est_rel_error` (|C_n − C_2n|) is added to the accuracy estimate R, and G6_ACCURACY_LOW is raised above the threshold.
+  Before, a run with a 6.5e-5 Padé tree error reported R = 2e-14. On a tree-only run, DelayOrderWarning now says "the
+  tree" instead of "the loops".
+- **A non-white `noise_structure` is refused.** Phase J never applies a temporal noise kernel. A legacy dict with
+  `noise_structure={'temporal_type': 'colored', ...}` was computed as white noise *and* without the source amplitude
+  (status ok, off by the factor D). The refusal comes from the analyzer (`G2_NOISE_STRUCTURE`, error) and from a hard
+  stop in `compute_cumulants`. `classify_coefficient_factors` now always puts the constant source amplitude in the
+  scalar prefactor; `source_time_info[v]['amplitude']` holds only what stays in the integrand.
+- **gentreeg's exit status is checked** (`loop_diagram_enumeration._trees_of_order_fast`). A generator that died
+  mid-stream left a silently truncated tree list. Fewer prediagrams were then written to a correctly stamped cache
+  file. It now raises `RuntimeError` with gentreeg's stderr.
+
 #### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
 
 Numbers move (silent-wrong before):

@@ -1183,7 +1183,10 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         if call.get('output_csv'):
             save_csv(r, call['output_csv'])
     if (loops_need_n or incomplete) and target_met is False:
-        msg = (f'delay: the Pade approximation of the loops reached an '
+        _ml = int(call.get('max_ell') or 0)
+        what = ('the loops' if exact is not None else
+                'the tree and the loops' if _ml >= 1 else 'the tree')
+        msg = (f'delay: the Pade approximation of {what} reached an '
                f'estimated relative error {est if est is not None else float("nan"):.3g} '
                f'at n = {n_used} (target {opts["tol"]:g}); {cap or "n_max reached"}.')
         from api.save import _ensure_warning_shown
@@ -1195,13 +1198,13 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
 
 def _install_exact_tree(r, exact, call):
     """Replace the tree level of ``r`` by the exact covariance (k = 2)."""
-    from api.compute import _ITO_EPS
+    from api.compute import _tau0_lag
     taus = np.asarray(r.get('tau_grid'), dtype=float)
     by = r.get('C_tau_by_ell') or {}
     pade_tree = by.get(0)
     # tau = 0 as on the pipeline's grid (and in its loops): the Ito left limit,
-    # evaluated at tau = -_ITO_EPS
-    c0 = exact.values(np.where(np.abs(taus) <= 1e-12, -_ITO_EPS, taus))
+    # exact (ExactTree.value(0)) or at tau = -_ITO_EPS (DAEDALUS_TAU0=nudge)
+    c0 = exact.values(np.where(np.abs(taus) <= 1e-12, _tau0_lag(), taus))
     if pade_tree is not None:
         pt = np.asarray(pade_tree, dtype=complex)
         scale = float(np.max(np.abs(c0))) or 1.0
@@ -1224,6 +1227,43 @@ def _install_exact_tree(r, exact, call):
         return _f0(*t) + sum(f(*t) for f in _o)
 
     r['total_C'] = total
+
+
+def _fold_delay_into_g6(_an, findings, diag, info, pol):
+    """The sub-run's G6 accuracy estimate covers Phase J of the Pade model
+    only; the approximant's own estimated error (``est_rel_error``,
+    |C_n - C_2n| relative, 0 when the exact tree makes it irrelevant) is part
+    of the result's error too (audit 3B-13: R = 2e-14 reported next to a
+    6.5e-5 Pade tree error).  Adds it to ``accuracy_estimate``, rewrites
+    G6_ACCURACY and adds G6_ACCURACY_LOW when the sum exceeds the threshold."""
+    est = info.get('est_rel_error')
+    if est is None or not est > 0:
+        return findings, diag
+    R0 = diag.get('accuracy_estimate')
+    R = float(est) + (float(R0) if R0 is not None else 0.0)
+    thr = float(diag.get('accuracy_threshold', _an._G6_DEFAULT_RTOL))
+    diag.update(accuracy_estimate=R, accuracy_estimate_phase_j=R0,
+                delay_est_rel_error=float(est))
+    out, had_low = [], False
+    for f in findings:
+        if f.code == 'G6_ACCURACY':
+            f = replace(f, message=(
+                f'accuracy estimate R = {R:.3g}: the delay approximant\'s '
+                f'estimated relative error {est:.3g} (Pade n = {info["n"]}, '
+                f'|C_n - C_2n|) plus Phase J\'s ' + f.message.split(': ', 1)[-1]
+                .replace('accuracy estimate R = ', 'R = ')))
+        had_low = had_low or f.code == 'G6_ACCURACY_LOW'
+        out.append(f)
+    if R > thr and not had_low:
+        low = _an.Finding(
+            code='G6_ACCURACY_LOW', level='warning', gate='G6',
+            message=(f'the accuracy estimate R = {R:.3g} exceeds the threshold '
+                     f'{thr:g}: the delay approximant\'s estimated relative error '
+                     f'is {est:.3g} (Pade n = {info["n"]}).'),
+            remedy=("raise delay={'n_max': ...} / {'wall_max': ...}, or a looser "
+                    'question.accuracy accepts the result'))
+        out.append(_an._apply_policy([low], pol)[0])
+    return out, diag
 
 
 def _record_in_report(r, report_true, info, policy=None):
@@ -1268,6 +1308,7 @@ def _record_in_report(r, report_true, info, policy=None):
     g2k = [f for f in report_true.findings if f.code.startswith('G2')]
     pol = _an._coerce(policy, _an.Policy, 'policy')
     finding = _an._apply_policy([finding], pol)[0]          # strict: recorded as an error
+    keep, diag = _fold_delay_into_g6(_an, keep, dict(rep.diagnostics or {}), info, pol)
     findings = tuple(_an._sorted_findings(keep + g2k + [finding]))
     tt = report_true.traits
     traits = replace(rep.traits, propagator_class='delay-rational', delays=tt.delays,
@@ -1275,5 +1316,5 @@ def _record_in_report(r, report_true, info, policy=None):
                      n_unstable_roots=tt.n_unstable_roots, stable=tt.stable,
                      stability_source=tt.stability_source or rep.traits.stability_source)
     r['analysis'] = replace(rep, findings=findings, ledger=tuple(rep.ledger) + (entry,),
-                            traits=traits)
+                            traits=traits, diagnostics=diag)
     r['analysis_true_model'] = report_true
