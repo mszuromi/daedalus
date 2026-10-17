@@ -11,6 +11,61 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: conductance-kernel legs, cache staleness and unit-dependent thresholds (audit wave 3c)
+
+Numbers move only for the models each item names (silent-wrong or refused before); every other model is
+unchanged (zoo A/B below).
+
+- **A kernel convolving several fields** (`Conv(g, x)` and `Conv(g, y)` with one `g`, or a kernel shared across a
+  population, `w[i,j]*Conv(r, n[j])`): the interaction vertices now know which leg each kernel factor sits on.
+  `FieldTheory.expand` writes the interaction sectors a second time with one alias per (kernel, field) emission
+  (`g__at__dx1`) and vertex extraction reads them; every other sector, and every model whose kernels each convolve
+  one field, is unchanged. Before, the kernel went on the first matching leg: the one-loop result depended on the
+  field declaration order (two-field model: C_yy(0) 0.01189 → 0.01717, the Markov-embedded twin's value, 32 %), and
+  the README's two-population Hawkes example (shared kernel `r`) returned `status='incomplete'` with 924 one-loop
+  diagrams dropped (C(0.5) 0.016667 partial → 0.017211, equal to the indexed-kernel `r[i,j]` model to 1e−15).
+  Expand-cache bundles of such models written before are re-expanded once.
+- **A plain + kernel vertex coefficient with a kernel rate equal to a pole of its line** (e.g. `ee*x*y +
+  c*x*Conv(g, y)` with `1/taug` equal to y's rate): integrated (equal to its Markov twin to 4e−16); before, refused
+  with "coefficients mixing plain and kernel terms" (the rerun on the leg-time path split the term again).
+- **Caches**: the propagator and typed-diagram cache files carry `model_cache_signature` (the model-text fingerprint
+  and every index set's members). A population resized under the same name used to be served the old size's
+  diagrams (size 3 got the size-2 answer bit for bit); a file without a signature (written before this, or before
+  the text fingerprint) used to be accepted (an edited kernel was served the old propagator). Both are rebuilt
+  now; every existing propagator / typed-diagram cache file is rebuilt once.
+- **Prediagram cache**: a local v1/v2 cell whose class count disagrees with the package manifest is not served
+  (a warning; the shipped data or a compute replaces it).
+- **G2-K kernel stability**: the large-`s` law of `det K(s)` is read from the top of a wide range of scales
+  (1e40 down), and the contour radius is searched relative to the model's rate scale. Before, rates above
+  ~2.5e5 in the model's time unit made unstable systems 'stable' (the two-population delayed cycle at T = 1e−6).
+  The reported `radius` changes (e.g. 6.0 → 9.375 for that cycle at T = 1); verdicts, counts and roots do not,
+  for every case that was right before.
+- **Non-local noise sources** (`declare_cgf_term(..., markovianize=False)`): the τ box of each source is read off
+  its kernel (`TAU_KERNEL_CAP = None`, the default: where |κ| stays below `TAU_KERNEL_RTOL = 1e−17` of its peak);
+  a number restores an absolute box. Before, ±50 time units: colored OU with τ_c = 200 gave C(0) 0.345 S instead
+  of 2S/3.
+- **Hardened quadrature fallback without mode data**: open sides are cut at `NQUAD_TAIL_K / κ` beyond the farthest
+  breakpoint, κ the slowest line or conductance-kernel rate of the model; the absolute ±200 is left only for a
+  direct call without that information, and its warning now says the values may be truncated. Before: 1.9 % error
+  at a decay rate 0.02. Its warnings are issued once per set of diagrams and parameter point (before: once per
+  model name and process, so a parameter sweep or another model with the same name got none).
+- **Dressed conductance lines**: a mode is dropped only when its residue and its integral weight |C| / |Re λ| are
+  both negligible (against bounds that the cancelling pairs of a near-coincident rate do not inflate), and every
+  drop is counted; the undressed lines of such a diagram follow the same rule against their own norms, and a line
+  next to an undamped kernel mode drops exact zeros only. Before, a slow mode with a small residue was dropped
+  (−41 % at lag 30, −100 % at lag 300 against the leg-time route).
+
+Zoo A/B (23 public entries that run, separate processes, warm-up discarded, `use_cache=False`, base main 7af2953):
+20 bit-identical; `dendritic_quad_soma_sigmoid`, `multipopulation_test` and `spike_reset` (grouped) differ by
+<= 3.5e-16 relative, inside main's own run-to-run scatter (3.7e-15); analyzer codes and wall times unchanged. Five
+more entries refuse identically on both sides. No zoo entry has a shared kernel, an unmarkovianized colored source,
+a fast delayed instability or a cache-dependent path, so no public zoo number moves; the moved numbers are the
+cases above.
+
+Tests: `tests/test_audit_wave3_kernel_slots.py`, `tests/test_audit_wave3_caches.py`,
+`tests/test_audit_wave3_thresholds.py` (Markov-embedded twins, the indexed-kernel twin, cold-vs-warm caches, the
+manifest, exact time-rescaled twins, closed forms).
+
 #### Fixed: audit wave W3a -- silent wrong numbers on the `dd.run` route
 
 Regression tests: `tests/test_audit_w3a_core.py`. Cumulants do not move (zoo
