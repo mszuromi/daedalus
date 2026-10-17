@@ -11,6 +11,31 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
+
+Regression tests: `tests/test_audit_wave1_noise.py`. No computed number moves. A run that was silently wrong is
+now refused, and so are invalid noise declarations.
+- **Uniform jumps: the series order is enforced.** The uniform jump's CGF has a removable singularity, so the action
+  carries its Taylor polynomial (`SDE.series_order`, default 8). Cumulants needing a noise vertex above that order
+  came out without it, silently.
+  - `SDE.build()` now records `model['noise_series_order']`.
+  - `compute_cumulants` refuses `k + 2*max_ell` above it and names the order to set. `k + 2*max_ell` bounds the order
+    of any vertex of a k-point, `max_ell`-loop diagram.
+- **θ in a jump-law parameter is refused**, as in a source parameter. For example, `CompoundPoisson(1, Dirac('theta'))`
+  built a different CGF.
+- **Sequence parameters refuse a string.** This covers `Cumulants`, `FinitePMF`, `Hyperexponential` and `PhaseType`.
+  For example, `Cumulants('Dn')` gave κ2 = D, κ3 = n.
+- **Domain checks for the round-1 laws** (numeric values only):
+  - `Gaussian` var ≥ 0 and `Poisson` rate ≥ 0;
+  - `GammaProcess` shape_rate > 0; `InverseGaussianProcess` mean_rate, shape > 0;
+  - `Cumulants` κ2 ≥ 0 and `Gamma` shape > 0;
+  - `Bernoulli` 0 ≤ p ≤ 1;
+  - `FinitePMF` probabilities ≥ 0;
+  - `Uniform` lo ≠ hi. This was a raw ZeroDivisionError before.
+
+  A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
+  stays valid.
+
 #### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
 
 Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
