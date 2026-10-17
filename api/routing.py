@@ -285,8 +285,9 @@ def _applies_spatial(req):
             f"spatial_dim>=1): compute_cumulants requires spatial_grid="
             f"... to route to the spatial integrator.  The temporal pole-finder/"
             f"Phase-J path cannot consume the Laplacian operator.  Pass "
-            f"spatial_grid (e.g. the model's METADATA['spatial_grid'], or a "
-            f"numpy array like np.linspace(0.0, 6.0, 25))."),)
+            f"spatial_grid (a numpy array like np.linspace(0.0, 6.0, 25); "
+            f"a model's METADATA['spatial_grid'] (lo, hi, n) range as "
+            f"np.linspace(*METADATA['spatial_grid']))."),)
     k = req.k
     if k != 2 and not req.has_spatial_points:
         return False, (Reason(

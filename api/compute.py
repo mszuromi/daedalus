@@ -244,6 +244,47 @@ def _phase_j_failures(phase_j_by_ell):
     return out
 
 
+def _entry_int(name, v):
+    """``v`` as an ``int``: an int / numpy integer (not a bool); anything
+    else raises a ``TypeError`` naming the argument."""
+    import operator
+    if not isinstance(v, (bool, np.bool_)):
+        try:
+            return operator.index(v)      # int, numpy and Sage integers
+        except TypeError:
+            pass
+    raise TypeError(f'{name} must be an integer; got {v!r} '
+                    f'({type(v).__name__}).')
+
+
+def _is_count(v):
+    import operator
+    if isinstance(v, (bool, np.bool_)):
+        return False
+    try:
+        operator.index(v)
+        return True
+    except TypeError:
+        return False
+
+
+def _check_grid_slip(name, g):
+    """Refuse a 3-entry tuple / list whose last entry is an integer count
+    >= 2 (``(-5, 5, 51)``, ``[-5, 5, 51]``): ``compute_cumulants`` takes its
+    grids literally, so that would be the 3 points {-5, 5, 51}, while
+    ``dd.Config`` reads the tuple as a ``linspace`` range.  Literal grids of
+    floats (``[0.0, 0.5, 2.0]``) and arrays pass."""
+    if (isinstance(g, (tuple, list)) and len(g) == 3
+            and _is_count(g[2]) and g[2] >= 2):
+        lo, hi, n = g
+        raise ValueError(
+            f'{name}={g!r} is ambiguous: compute_cumulants reads a sequence '
+            f'as literal grid points ({{{lo}, {hi}, {n}}}, note the {n}), '
+            f'while dd.Config reads the tuple (lo, hi, n) as a range.  Pass '
+            f'{name}=np.linspace({lo}, {hi}, {n}) for the range of {n} '
+            f'points, or an array / floats for literal points.')
+
+
 def _policy_is_strict(policy):
     mode = (policy.get('mode') if isinstance(policy, dict)
             else getattr(policy, 'mode', None))
@@ -1399,6 +1440,14 @@ def compute_cumulants(
     _missing = sorted(p['name'] for p in _pspecs
                       if p['name'] not in fundamental
                       and not p.get('mean_field'))
+    # A misspelled name would otherwise be ignored and the run would use the
+    # DEFAULT value of the parameter meant (same rule as ``dd.run``).
+    _declared = {str(p['name']) for p in _pspecs}
+    _unknown = sorted(str(n) for n in _given if str(n) not in _declared)
+    if _declared and _unknown:
+        raise ValueError(
+            f'compute_cumulants: unknown parameter name(s) {_unknown}; the '
+            f'model declares {sorted(_declared)}.')
     if _missing:
         raise ValueError(
             'compute_cumulants: ' +
@@ -1408,6 +1457,8 @@ def compute_cumulants(
             ', '.join(_missing) + '. '
             'Pass parameters={...} or declare defaults via '
             'ModelBuilder.parameter(name, default=...).')
+    k = _entry_int('k', k)
+    max_ell = _entry_int('max_ell', max_ell)
     if external_fields is None:
         raise ValueError('external_fields is required')
     if len(external_fields) != k:
@@ -1418,6 +1469,28 @@ def compute_cumulants(
         raise ValueError(f'k must be >= 1; got {k}')
     if max_ell < 0:
         raise ValueError(f'max_ell must be >= 0; got {max_ell}')
+    try:
+        _acc = (None if accuracy is None or isinstance(accuracy, (bool, str))
+                else float(accuracy))
+    except (TypeError, ValueError):
+        _acc = None
+    if accuracy is not None and not (_acc is not None and np.isfinite(_acc)
+                                     and _acc > 0):
+        raise ValueError(
+            f'accuracy must be a finite number > 0 (a target relative '
+            f'accuracy, e.g. 1e-10) or None; got {accuracy!r}.')
+    if _entry_int('fixed_point_index', fixed_point_index) < 0:
+        raise ValueError(f'fixed_point_index must be >= 0; got '
+                         f'{fixed_point_index!r}.')
+    if n_workers is not None and _entry_int('n_workers', n_workers) < 1:
+        raise ValueError(f'n_workers must be >= 1 or None; got {n_workers!r}.')
+    if isinstance(discard, (bool, np.bool_)):
+        discard = bool(discard)
+    elif not (isinstance(discard, str) and discard == 'auto'):
+        raise ValueError(f"discard={discard!r}: expected False, True or "
+                         f"'auto'")
+    _check_grid_slip('tau_grid', tau_grid)
+    _check_grid_slip('spatial_grid', spatial_grid)
     _nso = model.get('noise_series_order') if isinstance(model, dict) else None
     if _nso and k + 2 * max_ell > int(_nso['order']):
         # a CGF with a removable singularity at 0 (the uniform jump) enters
