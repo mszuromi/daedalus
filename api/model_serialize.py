@@ -37,6 +37,7 @@ the operation by importing the file and reconstructing the spec dict
 """
 from __future__ import annotations
 
+import ast
 from typing import Any
 import re
 
@@ -143,6 +144,14 @@ def _emit_field(method: str, f: dict, *, with_natural: bool) -> str:
     # to also emit the ``.spatial_dim(d)`` convenience call.
     if f.get('spatial_dim'):
         pairs.append(('spatial_dim', int(f['spatial_dim'])))
+    if method == 'physical_field':
+        # the saddle's root domain (it shapes the mean-field seed box and
+        # the root selection) and the auto-declaration switches: emitted
+        # only when set, so files without them round-trip unchanged
+        pairs.append(('domain', f.get('domain')))
+        for flag in ('auto_response', 'auto_saddle'):
+            if f.get(flag) is False:
+                pairs.append((flag, False))
     kwargs = _kw_chain(*pairs)
     head = f'.{method}({_py_repr(f["name"])}'
     return head + (', ' + kwargs if kwargs else '') + ')'
@@ -689,6 +698,7 @@ def load_spec_from_file(path: str) -> dict:
         method = call.func.attr
         kw = _kwargs(call)
         args = [_lit(a) for a in call.args]
+        _warn_uncarried(method, call, kw, path)
 
         if method == 'population':
             entry = {'name': args[0] if args else ''}
@@ -700,7 +710,8 @@ def load_spec_from_file(path: str) -> dict:
         elif method == 'physical_field':
             entry = {'name': args[0] if args else ''}
             for k in ('indexed', 'population', 'natural_name',
-                      'latex', 'description', 'spatial_dim'):
+                      'latex', 'description', 'spatial_dim', 'domain',
+                      'auto_response', 'auto_saddle'):
                 if k in kw:
                     entry[k] = kw[k]
             # Inherit a builder-level default set by an EARLIER
@@ -741,6 +752,14 @@ def load_spec_from_file(path: str) -> dict:
                       'delay'):
                 if k in kw:
                     entry[k] = kw[k]
+            knode = next((x.value for x in call.keywords if x.arg == 'kernel'), None)
+            if knode is not None:
+                # ``kernel=Kernel.delay('d') * Kernel.exponential('tau')``:
+                # stored as the image and the delay it stands for
+                kobj = _eval_kernel_node(knode, path)
+                entry['freq_image'] = kobj.freq_image
+                if kobj.delay is not None:
+                    entry['delay'] = str(kobj.delay)
             spec['kernels'].append(entry)
 
         elif method == 'declare_cgf_term':
@@ -897,6 +916,71 @@ def load_spec_from_file(path: str) -> dict:
     if spec['populations']:
         spec['n_populations'] = len(spec['populations'])
     return spec
+
+
+#: The keywords ``load_spec_from_file`` carries into the spec, per builder
+#: method (the others are reported by ``_warn_uncarried``).
+_CARRIED_KWARGS = {
+    'population':       {'size', 'description'},
+    'physical_field':   {'indexed', 'population', 'natural_name', 'latex',
+                         'description', 'spatial_dim', 'domain',
+                         'auto_response', 'auto_saddle'},
+    'response_field':   {'indexed', 'population', 'latex', 'description'},
+    'parameter':        {'default', 'indexed_by', 'indexed', 'domain',
+                         'mean_field', 'natural_name', 'description'},
+    'define_function':  {'args', 'expression', 'population', 'latex',
+                         'description'},
+    'define_kernel':    {'time_expr', 'freq_image', 'latex_name', 'sage_name',
+                         'description', 'indexed_by', 'indexed', 'delay',
+                         'kernel'},
+    'declare_cgf_term': {'name', 'response_field', 'response_legs', 'order',
+                         'coefficient', 'kernel', 'markovianize'},
+    'equation':         {'lhs', 'rhs', 'population'},
+}
+
+
+def _warn_uncarried(method, call, kw, path):
+    """Warn about the keywords of a builder call that the loaded spec does
+    not carry (unknown to the loader, or a value that is not a literal), so
+    a save of the loaded model does not drop them silently."""
+    carried = _CARRIED_KWARGS.get(method)
+    if carried is None:
+        return
+    lost = []
+    for x in call.keywords:
+        if x.arg is None:
+            lost.append('**' + ast.unparse(x.value))
+        elif x.arg not in carried:
+            lost.append(x.arg)
+        elif (kw.get(x.arg) is None and x.arg != 'kernel'
+              and not (isinstance(x.value, ast.Constant) and x.value.value is None)):
+            lost.append(f'{x.arg} (not a literal)')
+    if lost:
+        import warnings
+        warnings.warn(
+            f'load_spec_from_file({path!r}): .{method}(...) keyword(s) {lost} are '
+            f'not carried by the loaded spec; a model saved from it would '
+            f'drop them.', UserWarning, stacklevel=3)
+
+
+def _eval_kernel_node(node, path):
+    """The :class:`api.delay.Kernel` a ``kernel=`` argument of
+    ``define_kernel`` builds (``Kernel.delay('d') * Kernel.exponential(...)``):
+    evaluated with ``Kernel`` as the only name."""
+    from api.delay import Kernel
+    try:
+        obj = eval(compile(ast.Expression(body=node), str(path), 'eval'),
+                   {'__builtins__': {}}, {'Kernel': Kernel})
+    except Exception as exc:
+        raise ValueError(
+            f'load_spec_from_file({path!r}): cannot read the define_kernel '
+            f'kernel= argument {ast.unparse(node)!r} ({type(exc).__name__}: '
+            f'{exc}); write it with Kernel.* calls and literal arguments.') from exc
+    if not isinstance(obj, Kernel):
+        raise ValueError(
+            f'load_spec_from_file({path!r}): the define_kernel kernel= argument '
+            f'{ast.unparse(node)!r} is not an api.delay.Kernel.')
+    return obj
 
 
 def _strip_doc_boilerplate(doc: str) -> str:

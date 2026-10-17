@@ -414,6 +414,18 @@ class _TemporalMethods:
             raise ValueError(
                 f"define_kernel({name!r}): supply at least one of "
                 f"time_expr= or freq_image= (or delay=)")
+        # A re-declaration replaces the earlier define_kernel(name) as a
+        # whole (spec and symbol): keeping the old spec next to the new one
+        # let its delay multiply the new image.
+        if any(k.get('name') == name for k in self._kernel_specs):
+            import warnings
+            warnings.warn(
+                f"define_kernel({name!r}) re-declared: the new declaration "
+                f"replaces the earlier one (its image, delay and indexing).",
+                UserWarning, stacklevel=2)
+            self._kernel_specs = [k for k in self._kernel_specs
+                                  if k.get('name') != name]
+            self.kernels = [k for k in self.kernels if k.name != name]
         # Register the kernel symbol with the regular .kernel() call.
         # ``indexed_by`` (when given) takes precedence over ``indexed=``.
         if not any(k.name == name for k in self.kernels):

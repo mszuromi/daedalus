@@ -37,9 +37,17 @@ builder in place.  Every matched CGF row is replaced with:
     ``[<r2-aux>, <r2-aux>]`` auto rows AND a cross
     ``[<r1-aux>, <r2-aux>]`` row that together recover the desired
     cross-correlation matrix.
-  * An augmented ``action_text`` adding ``- xi`` (i.e. a coupling
-    ``-xt*xi``) to whatever was previously inside ``xt*(...)`` and
-    appending the new auxiliary kinetic term ``xit*(Dt + 1/tauc)*xi``.
+  * An augmented ``action_text``: the user's action, plus the coupling
+    ``- xt*xi`` as a separate additive term, plus the auxiliary kinetic
+    term ``xit*(Dt + 1/tauc)*xi``.  The coupling is added, never edited
+    into the user's text: integrating the Gaussian ``xi`` out of
+    ``-xt*xi + xit*(Dt + 1/tauc)*xi - (c/tauc)*xit^2`` gives back exactly
+    ``-(1/2) xt kappa xt`` with ``kappa = c*exp(-|tau|/tauc)``, whatever the
+    layout of the rest of the action (``xt*(...)``, ``(...)*xt``, split
+    operators, an overall factor).
+  * Only models whose fields have a single unit are embedded (the
+    auxiliary is a scalar process); a row on a multi-unit (population)
+    field passes through to the colored-kernel route.
 
 The transform is OFF for any row that doesn't cleanly match the
 single-Lorentzian template; those rows pass through untouched and the
@@ -223,6 +231,10 @@ def markovianize_spec(builder) -> None:
         return
 
     declared_params = [p.name for p in builder.parameters]
+    # the embedding adds one scalar auxiliary per source field and a bare
+    # ``xt*xi`` coupling: models whose fields have more than one unit
+    # (populations) are not embedded (their rows keep the colored kernel)
+    multi_unit = _n_units(builder) > 1
 
     # Group matched rows by their τc expression.  Two rows that share
     # the same τc CAN share one auxiliary process per response field;
@@ -242,6 +254,16 @@ def markovianize_spec(builder) -> None:
         # when the kernel matches and the row order is 2.
         order = int(term.get('order', 0))
         if order != 2:
+            passthrough_rows.append(term)
+            continue
+        if multi_unit:
+            if explicit is True:
+                raise ValueError(
+                    f"colored_to_markovian: row {term.get('name')!r} has "
+                    f"markovianize=True but the model's fields have "
+                    f"{_n_units(builder)} units; the Markovian embedding covers "
+                    f"single-unit fields only (pass markovianize=False to keep "
+                    f"the colored kernel).")
             passthrough_rows.append(term)
             continue
         info = detect_lorentzian(
@@ -401,26 +423,16 @@ def markovianize_spec(builder) -> None:
     builder._cgf_terms = passthrough_rows + new_cgf_rows
 
     # ── Augment the action text ─────────────────────────────────────
-    # Two changes:
-    #  (1) Inside each "<resp_field>*(...)" block belonging to a
-    #      source field, append "- <aux_field>" to enforce
-    #      dx/dt = ... + xi.
-    #  (2) Append the aux kinetic action "<aux_resp>*(Dt + 1/τc)*<aux>".
-    #
-    # For (1) we do a conservative text edit: find the response field
-    # name as a token immediately before "*(" and insert " - <aux>"
-    # just before the closing parenthesis of that parenthesized block.
-    # This handles the common "<rt>*((Dt+...)*x + ...)" form used by
-    # all the user's models.  If the user's action layout is more
-    # baroque, the user can opt out with ``.markovianize(False)`` and
-    # do the rewrite manually.
-    action_text = builder._action_text or ''
+    # The user's action is kept verbatim (parenthesised) and two terms are
+    # added: the coupling ``- <resp>*<aux>`` (dx/dt = ... + xi) and the
+    # aux kinetic action ``<aux_resp>*((Dt + 1/τc)*<aux>)``.  The coupling
+    # is an additive term, never an edit of the user's text: integrating
+    # the Gaussian auxiliary out reproduces ``-(1/2) xt kappa xt`` exactly
+    # for any layout of the rest of the action.
+    action_text = (builder._action_text or '').strip()
+    action_text = f'({action_text})' if action_text else '0'
     for source_nat, aux_nat in aux_natural_by_source.items():
-        resp_field = f'{source_nat}t'
-        action_text = _inject_aux_coupling(action_text, resp_field, aux_nat)
-
-    # Append the aux kinetic terms.  We tack onto the end with a
-    # leading ``+`` so the user's existing expression stays intact.
+        action_text = f'{action_text} - {source_nat}t*{aux_nat}'
     for source_nat, aux_nat in aux_natural_by_source.items():
         aux_resp = f'{aux_nat}t'
         action_text = (
@@ -462,43 +474,14 @@ def _pick_aux_field_name(source_nat: str,
         n += 1
 
 
-def _inject_aux_coupling(action_text: str,
-                         resp_field: str,
-                         aux_natural: str) -> str:
-    """Inject ``- <aux_natural>`` into the parenthesized block following
-    ``<resp_field>*(...)`` in the action text.
-
-    Conservative rewrite: locate the first opening paren that's part of
-    the ``<resp_field>*(`` pattern, scan to its matching close paren,
-    and insert ``- <aux_natural>`` just before the close.
-
-    If the pattern isn't found, return the text unchanged.  This makes
-    the markovianize transform graceful on actions written in a non-
-    canonical layout; the user can opt out per-builder.
-    """
-    import re
-    # Find ``<resp_field>*(``.  Allow whitespace.
-    pattern = re.compile(
-        rf'\b{re.escape(resp_field)}\s*\*\s*\(', flags=0)
-    m = pattern.search(action_text)
-    if not m:
-        return action_text
-    # Walk parentheses to find the matching close.
-    start = m.end() - 1   # index of '('
-    depth = 0
-    i = start
-    while i < len(action_text):
-        c = action_text[i]
-        if c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-            if depth == 0:
-                # Insert before this close paren.
-                injection = f' - {aux_natural}'
-                return action_text[:i] + injection + action_text[i:]
-        i += 1
-    return action_text
+def _n_units(builder) -> int:
+    """The number of units of the builder's indexed fields (the flat index
+    set the pipeline uses: the summed population sizes, else
+    ``n_populations``)."""
+    pops = getattr(builder, 'populations', None) or []
+    if pops:
+        return sum(max(int(p.get('size', 1)), 1) for p in pops)
+    return max(int(getattr(builder, 'n_populations', 1) or 1), 1)
 
 
 def _sr_to_text(expr) -> str:

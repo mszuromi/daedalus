@@ -35,11 +35,13 @@ where ``pop = range(N_pop)`` is pre-bound in the namespace.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from sage.all import (
     SR, sage_eval, exp, log, sin, cos, tan, sqrt,
     heaviside, dirac_delta, I, pi, function as sr_function, diff, ZZ,
+    kronecker_delta as _kronecker_delta,
 )
 
 
@@ -2190,6 +2192,28 @@ def _parse_response_legs(term: dict, order: int) -> list[str]:
     return list(legs)
 
 
+def _cgf_index_names(order: int) -> tuple:
+    """The names a CGF row's coefficient / kernel text may use for the leg
+    indices at cumulant order ``order``: ``i1 .. i<order>`` always, ``i`` and
+    ``j`` at order 2 (``i`` = ``i1``, ``j`` = ``i2``)."""
+    names = tuple(f'i{k}' for k in range(1, int(order) + 1))
+    return (('i', 'j') + names) if int(order) == 2 else names
+
+
+def _shared_units(*_indices):
+    """``shared(i, j)``: 1 for every leg-index tuple -- a CGF row's explicit
+    statement that its noise is common to all units of a population."""
+    return 1
+
+
+_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+
+
+def _identifiers(text: str) -> set:
+    """The identifier tokens of an expression text."""
+    return set(_IDENT_RE.findall(text or ''))
+
+
 class _CGFKernelCallable:
     """Picklable callable that evaluates a CGF row's
     ``coeff_text * kernel_text`` against a FieldTheory namespace.
@@ -2205,8 +2229,18 @@ class _CGFKernelCallable:
 
     ``ns`` is the FieldTheory namespace (carries parameter SR vars as
     attributes).  ``leg_indices`` is an n-tuple of integer leg positions
-    (ignored by most kernels — they only depend on ``ns`` and τ).
+    (0-based unit indices into each leg's response field, as ``xt[i]`` in
+    the action text).  The texts see them as ``i1 .. in`` (and ``i``,
+    ``j`` at order 2), with ``kronecker_delta`` and ``shared``:
+    ``kronecker_delta(i, j)`` makes the noise independent per unit,
+    ``shared(i, j)`` (= 1) common to all units.  On a response field with
+    more than one unit a row whose texts use no index is refused (it used
+    to give every pair the auto cumulant: common noise where independent
+    per-unit noise was meant).
     ``tau_syms`` is the (order-1)-tuple of relative-time SR variables.
+
+    An empty kernel text is the fully local ``prod_k dirac_delta(tau_k)``
+    (white noise, as ``declare_cgf_term`` documents), not a constant.
     """
     __slots__ = ('_coeff_text', '_kernel_text', '_order')
 
@@ -2218,7 +2252,7 @@ class _CGFKernelCallable:
 
     def __call__(self, ns, *args):
         order = self._order
-        leg_indices = args[:order]    # noqa: F841 — accepted for API uniformity
+        leg_indices = args[:order]
         tau_syms    = args[order:]
         if len(tau_syms) != order - 1:
             raise ValueError(
@@ -2240,8 +2274,34 @@ class _CGFKernelCallable:
         for k, t in enumerate(tau_syms, start=1):
             eval_ns[f't{k}'] = t
 
+        # leg indices (a declared name of the same spelling keeps its meaning)
+        idx_names = _cgf_index_names(order)
+        idx_vals = [int(x) for x in leg_indices]
+        bound = set()
+        for nm in idx_names:
+            if nm in eval_ns:
+                continue
+            pos = {'i': 0, 'j': 1}.get(nm)
+            eval_ns[nm] = ZZ(idx_vals[pos if pos is not None else int(nm[1:]) - 1])
+            bound.add(nm)
+        if any(v != 0 for v in idx_vals):
+            used = _identifiers(self._coeff_text) | _identifiers(self._kernel_text)
+            if not (used & bound):
+                raise ValueError(
+                    f"CGF row (coefficient {self._coeff_text!r}, kernel "
+                    f"{self._kernel_text or None!r}) sits on a response field with "
+                    f"more than one unit but does not say how the units' noises "
+                    f"are related (its texts use no leg index).  Write the unit "
+                    f"structure explicitly: multiply by kronecker_delta(i, j) for "
+                    f"independent per-unit noise (each unit its own copy), or by "
+                    f"shared(i, j) for one noise common to all units; leg indices "
+                    f"are 0-based ({', '.join(sorted(bound))})."
+                )
+
         eval_ns.setdefault('dirac_delta', dirac_delta)
         eval_ns.setdefault('delta_function', dirac_delta)
+        eval_ns.setdefault('kronecker_delta', _kronecker_delta)
+        eval_ns.setdefault('shared', _shared_units)
         eval_ns.setdefault('heaviside', heaviside)
         eval_ns.setdefault('exp', exp)
         eval_ns.setdefault('log', log)
@@ -2254,7 +2314,11 @@ class _CGFKernelCallable:
 
         coeff_val = _safe_eval(self._coeff_text, eval_ns, 'CGF coefficient')
         if not self._kernel_text:
-            return SR(coeff_val)
+            # no kernel: the fully local cumulant prod_k delta(tau_k)
+            kernel_val = SR(1)
+            for t in tau_syms:
+                kernel_val = kernel_val * dirac_delta(t)
+            return SR(coeff_val) * kernel_val
         kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
         return SR(coeff_val) * SR(kernel_val)
 
