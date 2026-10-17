@@ -514,7 +514,10 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     at three points."""
     import cmath
     try:
-        expr = _trig_as_exp(SR(sr_expr)).expand()
+        expr0 = SR(sr_expr)
+        expr = _trig_as_exp(expr0)
+        from_trig = expr is not expr0
+        expr = expr.expand()
     except Exception:
         return None
     try:
@@ -536,6 +539,10 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
         acc[key] = (C0 + C, lam0)
     modes = [(C, lam) for (C, lam) in acc.values() if C != 0]
     if not modes or _kernel_rates_clustered(modes):
+        return None
+    if from_trig and any(lam.real >= 0 for (_C, lam) in modes):
+        # a trig kernel that does not decay (cos(w t), cosh(t)): refused as
+        # before the rewrite (``_trig_as_exp``) existed
         return None
     # probe on every mode's own time scale (ACC-60: fixed times underflow
     # for fast modes and check nothing)
@@ -6913,7 +6920,9 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
             if r is not None:
                 total, mag = r
                 scale = _dd_scale_np(coefs, gammas)
-                rate = float(np.max(np.abs(A))) if A.size else 0.0
+                nz = np.asarray(coefs) != 0      # as the scalar loop below
+                rate = (float(np.max(np.abs(A[nz]))) if A.size and np.any(nz)
+                        else 0.0)
     if total is None:
         terms = list(_modesum_tuples(
             smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,

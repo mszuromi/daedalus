@@ -250,10 +250,35 @@ def test_newton_and_singularity_tests_are_scale_free(scale):
         assert abs(r - r0) <= 1e-13 * abs(r0)
         assert PR._singular_at(det, r, scale)
     assert not PR._singular_at(det, scale * (1 + 1j), scale)
-    kept = PR._refine_retarded_poles([r * (1 + 1e-7) for r in roots] + [roots[0]],
-                                     det, PR._omega_scale(roots))
-    assert len(kept) == 3
+    kept, zeros, w_scale = PR._refine_retarded_poles(
+        [r * (1 + 1e-7) for r in roots] + [roots[0], -scale * 1e3j], det)
+    assert len(kept) == 3 and len(zeros) == 3        # the duplicate merged, the non-root dropped
     assert sorted(abs(k - q) / abs(q) < 1e-12 for k in kept for q in roots).count(True) == 3
+    assert w_scale == pytest.approx(abs(roots[1]), rel=1e-12)
+
+
+@pytest.mark.parametrize('S', [1e5, 1e6, 1e7])
+def test_numerical_tier_scale_ignores_spurious_roots(no_exact_tier, S):
+    """K = [[i w x + 1, i w y], [i w z, i w u + 2]] with x, u, y, z = (0.1,
+    0.7, 0.07, 1) S: num(det K) carries a rounding-noise w^2 coefficient
+    (1e-12 of the largest, just above the trim) at S = 1e5 and 1e7, whose
+    root is ~1e16 times the true pole.  The frequency scale comes from the
+    verified zeros of det K only, so the pole 2 / (0.9 S) i is kept (review
+    finding: the scale of the raw roots put it below the retarded floor and
+    the pole list came back empty)."""
+    om = var('omega')
+    x, u, y, z = 0.1 * S, 0.7 * S, 0.07 * S, 1.0 * S
+    K = matrix(SR, [[I * om * x + 1, I * om * y], [I * om * z, I * om * u + 2]])
+    prop = {'K_ft': K, 'adj_ft': None, 'G_ft': None, 'nf': 2, 'omega': om}
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        PR.compute_poles_and_residues(prop, {}, verbose=False)
+    assert [complex(p) for p in prop['pole_vals']] == pytest.approx([2j / (0.9 * S)], rel=1e-12)
+    # C_00 = i Res G_00 = i (i w u + 2) / (d det / d w) at the pole
+    p = 2j / (0.9 * S)
+    ddet = 1j * (2 * x + u) + 2 * (y * z - x * u) * p
+    c00 = 1j * (1j * p * u + 2) / ddet
+    assert complex(prop['C_mats'][0][0, 0]) == pytest.approx(c00, rel=1e-12)
 
 
 def test_structural_zeros_are_exact():
