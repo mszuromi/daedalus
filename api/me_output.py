@@ -43,8 +43,8 @@ Conventions (k = 2) are those of ``C_tau``: ``C(τ) = κ(x_1(0), x_2(τ))``;
 side ``'+'`` is τ > 0, ``'-'`` is τ < 0; a :class:`~api.cumulant.ModeTerm`
 ``(coeff, rate, power, side)`` is ``coeff · τ**power · exp(rate · τ)`` in the
 signed τ (as item 23's ``ModeSum``).  At τ = 0 the default is the Itô left
-limit (side '-', exactly); ``C_tau``'s τ = 0 point is sampled at
-``τ = −api.compute._ITO_EPS`` instead.
+limit (side '-', exactly), as ``C_tau``'s τ = 0 point (exact by default;
+``τ = −api.compute._ITO_EPS`` under DAEDALUS_TAU0=nudge).
 
 Where the triple is not available the object says why (``reasons``) and
 nothing is guessed: a subset on the pole route (the state-space route

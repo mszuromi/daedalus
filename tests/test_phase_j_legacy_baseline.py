@@ -360,6 +360,9 @@ def _reproduce(baseline, name, mode, monkeypatch):
     s = meta['entries'].get(name)
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')
+    # the pre-M1 baseline samples the k = 2 τ = 0 point at −1e−6 (the
+    # convention until Oct 2026, ``api.compute._tau0_mode``)
+    monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
     if mode == 'legacy':
         # every flag the umbrella sets (since M9 the box-free routes are the
         # default, so the M6/M7 switches must be reset too)

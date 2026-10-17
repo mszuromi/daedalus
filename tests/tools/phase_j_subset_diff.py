@@ -121,9 +121,10 @@ routes (bail reasons, nquad counts) and ulp-level values, so path censuses
 and nquad counts are only comparable between runs with the same sources.
 
 τ convention: the k=2 grid point τ=0 is evaluated by the pipeline at
-t1 = -``api.compute._ITO_EPS`` (Itô left limit).  Records and pipeline totals
-are keyed by the external times actually passed to ``contribution()``, so the
-"τ=0" entries carry -_ITO_EPS.
+t1 = ``api.compute._tau0_lag()``: 0.0 (the exact tie, the default since Oct
+2026) or -``_ITO_EPS`` (DAEDALUS_TAU0=nudge, or the legacy Θ(0) mode).
+Records and pipeline totals are keyed by the external times actually passed
+to ``contribution()``, so the "τ=0" entries carry that lag.
 
 Budget / safety: a model with fast poles at max_ell=2 can spend hours in
 scipy.nquad on unstubbed default code.  Use ``--stub-nquad`` or a hard
@@ -411,12 +412,13 @@ class NquadStub:
             FI._integrate_polytope, GI._integrate_polytope = saved
 
 
-def _grid_point(k, t, ito_eps):
-    """The external-time tuple compute_cumulants evaluates for grid τ=t."""
+def _grid_point(k, t, lag0):
+    """The external-time tuple compute_cumulants evaluates for grid τ=t
+    (``lag0``: its τ = 0 lag, ``api.compute._tau0_lag()``)."""
     t = float(t)
     if k == 1:
         return (t,)
-    return (0.0, t if abs(t) > 1e-12 else -ito_eps)
+    return (0.0, t if abs(t) > 1e-12 else float(lag0))
 
 
 def load_model(model=None, model_file=None):
@@ -495,7 +497,7 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
     replaces (module docstring, item 5).
     """
     from api import compute_cumulants
-    from api.compute import _ITO_EPS
+    from api.compute import _ITO_EPS, _tau0_lag
     FI = _fi()
     rec = SubsetRecorder(keep_live=keep_live)
     stub = NquadStub(stub_level) if stub_nquad else None
@@ -534,7 +536,7 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
                 if arr is None:
                     continue
                 for t, v in zip(np.asarray(tau_grid, dtype=float), arr):
-                    pipeline[(int(ell), _grid_point(k, t, _ITO_EPS))] = (
+                    pipeline[(int(ell), _grid_point(k, t, _tau0_lag()))] = (
                         complex(v))
         for pt in (points or []):
             pt = tuple(float(x) for x in pt)
@@ -556,6 +558,7 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
             'stub_nquad': stub_nquad,
             'stub_level': stub_level if stub_nquad else None,
             'ito_eps': _ITO_EPS,
+            'tau0_lag': _tau0_lag(),
             'aux_tau_grid': [0.0] if aux_grid else None,
             'use_cache': kw.get('use_cache'),
             'cwd': os.getcwd(),
@@ -1362,7 +1365,7 @@ def main(argv=None):
     ap.add_argument('--k', type=int, default=2)
     ap.add_argument('--max-ell', type=int, default=1)
     ap.add_argument('--taus', default=None,
-                    help='comma list; k in {1,2} grid (τ=0 -> -_ITO_EPS); '
+                    help='comma list; k in {1,2} grid (τ=0 -> api.compute._tau0_lag()); '
                          "default '0,0.5' unless --points is given")
     ap.add_argument('--points', default=None,
                     help="explicit k-tuples 'a,b;c,d' (raw per-ell "

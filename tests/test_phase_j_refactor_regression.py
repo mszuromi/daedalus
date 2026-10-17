@@ -70,6 +70,13 @@ from tests.phase_j_refactor_fixtures._runner import (
 # matched the ħ-extrapolated simulation's loop coefficient (per-bin χ² 5.8
 # over 10 bins, p = 0.83).  The other three fixtures did not move (≤ 1.5e-15).
 # Its pre-change values stay in ``legacy/`` (the rollback guard).
+#
+# Oct 2026: the k = 2 τ = 0 probes ([0, 0]) of quad_exp_k2_ell0,
+# spike_reset_k2_ell0 and spike_reset_k2_ell1 were refrozen (only those
+# entries) when the τ = 0 point became the exact Itô left limit
+# (``api.compute._tau0_mode``; they were C(−1e−6)): moves 9.8e-7, 1.12e-6,
+# 1.12e-6 relative.  Every other probe was checked unchanged.  ``legacy/``
+# keeps C(−1e−6): the legacy flags evaluate τ = 0 at −1e−6.
 _MOVED = {}
 
 

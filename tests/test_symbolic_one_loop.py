@@ -36,7 +36,6 @@ import daedalus as dd                                                # noqa: E40
 from sage.all import QQ, SR, factorial, var                          # noqa: E402
 from api import compute_cumulants                                    # noqa: E402
 from api import symbolic_loop as SL                                  # noqa: E402
-from api.compute import _ITO_EPS                                     # noqa: E402
 from api.cumulant import Cumulant                                    # noqa: E402
 from api.noise import Poisson                                        # noqa: E402
 from api.sde import SDE                                              # noqa: E402
@@ -262,7 +261,7 @@ def test_rational_triples_equal_c_tau_and_equal_time():
     res = _cc(m, 2, 1, ext, taus=taus)
     tr = SL.symbolic_triple(m, 1, external_fields=ext, result=res)
     eq = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
-    tt = np.where(taus == 0, -_ITO_EPS, taus)
+    tt = taus       # C_tau's τ = 0 point: the exact Itô left limit (side '-')
     for ell in (0, 1):
         ref = res['C_tau_by_ell'][ell]
         assert np.max(np.abs(tr.C(tt, ell) - ref)) <= 1e-13 * np.max(
@@ -381,7 +380,7 @@ def test_loop_level_modes_through_c2(ouq_model):
     for key, c in want.items():
         assert _sr_equal(got[key], SR(c)), key
     assert all(_sr_equal(abs(SR(mt.rate)), SR('mu')) for mt in ms.terms)
-    tt = np.where(taus == 0, -_ITO_EPS, taus)
+    tt = taus       # C_tau's τ = 0 point: the exact Itô left limit (side '-')
     for ell in (0, 1):
         v = np.array([complex(x) for x in tr.modes(ell).evaluate(tt)])
         ref = res['C_tau_by_ell'][ell]
@@ -403,7 +402,7 @@ def test_mixed_fields_orient_the_lag_axis():
     res = _cc(m, 2, 1, ext, taus=taus)
     tr = SL.symbolic_triple(m, 1, external_fields=ext, result=res)
     eq = SL.symbolic_cumulant(m, 2, 1, external_fields=ext, result=res)
-    tt = np.where(taus == 0, -_ITO_EPS, taus)
+    tt = taus       # C_tau's τ = 0 point: the exact Itô left limit (side '-')
     for ell in (0, 1):
         ref = res['C_tau_by_ell'][ell]
         assert abs(ref[2] - ref[-3]) > 1e-3 * np.max(np.abs(ref))   # odd part

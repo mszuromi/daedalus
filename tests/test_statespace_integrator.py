@@ -211,7 +211,7 @@ def _rel(v, ref):
 
 
 TAUS = [0.0, 0.5, 2.0]
-_TAU_PTS = [-1e-6, 0.5, 2.0]          # compute_cumulants' τ = 0 is the Itô left limit
+_TAU_PTS = [0.0, 0.5, 2.0]          # compute_cumulants' τ = 0: the exact Itô left limit
 
 
 # ── end to end ────────────────────────────────────────────────────────────
@@ -370,7 +370,7 @@ def test_tau_grid_prefetch_matches_per_point(monkeypatch):
     monkeypatch.setenv(ENV, 'statespace')
     taus = np.linspace(0.0, 4.0, 21)
     per_point = _cc(ou_colour(0.5), 2, 1, [('x', 1), ('x', 1)], taus)
-    pts = [(0.0, t if t != 0 else -1e-6) for t in taus]
+    pts = [(0.0, float(t)) for t in taus]
     FI._reset_runtime_counters()
     with SS.tau_grid_prefetch(pts):
         batched = _cc(ou_colour(0.5), 2, 1, [('x', 1), ('x', 1)], taus)
