@@ -208,22 +208,65 @@ def _refined_phase(chi, path, t0, t1, n0, budget):
     return float(dphi.sum()), float(np.abs(v[i])), complex(path(np.array([t[i]]))[0]), n_eval
 
 
-def _leading(chi):
-    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s``: the first scale
-    ``x0`` in 1e3 .. 1e13 where three successive doublings give the same
-    integer power (the rates of the model set where that regime starts)."""
-    for x0 in 10.0 ** np.arange(3, 14):
-        xs = x0 * np.array([1.0, 2.0, 4.0, 8.0])
-        with np.errstate(all='ignore'):
-            v = chi(xs)
+#: Real scales probed for the large-``s`` law of ``chi``, from the top down
+#: (decades; a scale where ``chi`` overflows is skipped).
+_LEAD_DECADES = np.arange(40, -13, -1)
+_LEAD_SLOPE_TOL = 0.02     # local power within 0.02 of an integer
+_LEAD_C_TOL = 0.05         # the same coefficient one decade lower
+
+
+def _power_law_at(chi, x0):
+    """``(c, m)`` when ``chi`` is ``c s^m`` (integer ``m``) at real ``s`` from
+    ``x0`` to ``8 x0`` (three doublings with the same local power), else
+    ``None``."""
+    xs = x0 * np.array([1.0, 2.0, 4.0, 8.0])
+    with np.errstate(all='ignore'):
+        v = chi(xs)
         if not np.all(np.isfinite(v)) or np.any(v == 0):
-            continue
+            return None
         ms = np.log(np.abs(v[1:] / v[:-1])) / math.log(2.0)
         m = int(round(float(ms[-1])))
-        if np.max(np.abs(ms - m)) > 0.02:
+        if np.max(np.abs(ms - m)) > _LEAD_SLOPE_TOL:
+            return None
+        c = complex(v[-1]) / xs[-1] ** m
+    if not (np.isfinite(c.real) and np.isfinite(c.imag)) or c == 0:
+        return None
+    return c, m
+
+
+def _asymptotic(chi):
+    """``(c, m, sigma)`` with ``chi(s) ~ c s^m`` at large real ``s``, or
+    ``None``.  The law is read from the top of a wide range of scales down
+    (the first law that holds at two successive decades), so it is the
+    large-``s`` law whatever the model's time unit: an upward scan from a
+    fixed scale takes the constant regime ``chi ~ chi(0)`` below the model's
+    rates for the leading term (``s - r`` read as ``-r`` for ``r > 2e5``).
+    ``sigma``: the lowest decade where that law still holds (the scale of
+    the model's rates; the contour radius is searched relative to it)."""
+    laws = [(x0, _power_law_at(chi, x0)) for x0 in 10.0 ** _LEAD_DECADES]
+
+    def same(a, b):
+        return (a is not None and b is not None and a[1] == b[1]
+                and abs(b[0] / a[0] - 1.0) <= _LEAD_C_TOL)
+
+    for i in range(len(laws) - 1):
+        x0, law = laws[i]
+        if not same(law, laws[i + 1][1]):
             continue
-        return complex(v[-1]) / xs[-1] ** m, m
+        sigma = laws[i + 1][0]
+        for x1, law1 in laws[i + 2:]:
+            if not same(law, law1):
+                break
+            sigma = x1
+        return law[0], law[1], float(sigma)
     return None
+
+
+def _leading(chi):
+    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s`` (see
+    :func:`_asymptotic`), or ``None``."""
+    a = _asymptotic(chi)
+    return None if a is None else (a[0], a[1])
 
 
 def _ratio_ok(chi, c, m, R):
@@ -265,7 +308,7 @@ def _polish(chi, s0, h):
         c = b - fb * (b - a) / (fb - fa)
         a, fa = b, fb
         b, fb = c, complex(chi(np.array([c]))[0])
-        if abs(b - a) <= 1e-14 * max(1.0, abs(b)):
+        if abs(b - a) <= 1e-14 * abs(b) or b == a:
             break
     return b
 
@@ -280,10 +323,10 @@ def _locate(chi, R, n_expect, budget, max_roots=6):
         if cnt <= 0:
             continue
         w = max(x1 - x0, y1 - y0)
-        if cnt == 1 and w < 1e-2 * max(R, 1.0):
-            roots.append(_polish(chi, complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)), 1e-3 * w + 1e-9))
+        if cnt == 1 and w < 1e-2 * R:
+            roots.append(_polish(chi, complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)), 1e-3 * w))
             continue
-        if w < 1e-9 * max(R, 1.0):
+        if w < 1e-9 * R:
             roots.append(complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
             continue
         # off-centre splits: a real root never sits on a box edge
@@ -307,16 +350,19 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     resolves ``e^{-s d_max}`` (a phase step of 0.3 rad), so the refinement
     cannot alias over whole periods."""
     t0 = time.perf_counter()
-    lead = _leading(chi)
+    lead = _asymptotic(chi)
     if lead is None:
         return KernelStability('undetermined', method='argument_principle',
                                detail='det K(s) has no power-law leading term '
                                       'at large real s', wall_s=time.perf_counter() - t0)
-    c, m = lead
-    R = 1.0
+    c, m, sigma = lead
+    # the radius search runs relative to the model's rate scale ``sigma``
+    # (a fixed start at 1 and a fixed cap would make the answer depend on
+    # the time unit)
+    R = sigma * 2.0 ** -20
     while not _ratio_ok(chi, c, m, R):
         R *= 2.0
-        if R > 1e7:
+        if R > sigma * 1e7:
             return KernelStability(
                 'neutral', method='argument_principle',
                 detail='det K(s)/(c s^m) does not approach 1 along the imaginary '
@@ -334,7 +380,7 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     ph_ax, vmin_ax, s_min, n1 = _refined_phase(chi, lambda t: 1j * t, R, -R, n_ax, budget)
     ph_arc, _, _, n2 = _refined_phase(chi, lambda t: R * np.exp(1j * t),
                                       -math.pi / 2, math.pi / 2, n_arc, budget)
-    scale = max(abs(complex(chi(np.array([0.0]))[0])), abs(c) * max(1.0, abs(s_min)) ** m)
+    scale = max(abs(complex(chi(np.array([0.0]))[0])), abs(c) * abs(s_min) ** m)
     w = (ph_ax + ph_arc) / (2 * math.pi)
     if not math.isfinite(w):
         out = KernelStability('marginal', method='argument_principle', radius=R,

@@ -898,11 +898,19 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
 
     fmt = cache_format()
 
+    # A local cell is served only when its class count matches the
+    # package's manifests (where they know the cell): a stale, truncated or
+    # foreign local file falls through to the shipped data / a compute,
+    # which rewrites the local v2 file.
     if fmt in ('auto', 'v2') and v2_exists(root, k, ell):
-        return records_from_certs(load_v2_certs(root, k, ell)), 'v2'
+        certs = load_v2_certs(root, k, ell)
+        if _local_cell_ok(root, k, ell, len(certs), 'v2'):
+            return records_from_certs(certs), 'v2'
 
     if fmt in ('auto', 'v1') and v1_exists(root, k, ell):
-        return list(sage_load(v1_path(root, k, ell))), 'v1'
+        recs = list(sage_load(v1_path(root, k, ell)))
+        if _local_cell_ok(root, k, ell, len(recs), 'v1'):
+            return recs, 'v1'
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
         certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
@@ -915,6 +923,31 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     if fmt in ('auto', 'v2'):
         save_v2_certs(root, k, ell, certs)
     return records_from_certs(certs), 'computed'
+
+
+_KNOWN_COUNTS = []
+
+
+def _local_cell_ok(root, k, ell, n, fmt):
+    """Whether a local ``fmt`` file of cell ``(k, ell)`` holding ``n``
+    classes may be served: always for a cell no manifest knows, otherwise
+    only when ``n`` is the manifest's count (else a warning, and the caller
+    falls through to the shipped data or a compute)."""
+    if not _KNOWN_COUNTS:
+        try:
+            _KNOWN_COUNTS.append(known_class_counts())
+        except (OSError, ValueError, KeyError):
+            _KNOWN_COUNTS.append({})
+    want = _KNOWN_COUNTS[0].get((int(k), int(ell)))
+    if want is None or int(want) == int(n):
+        return True
+    import warnings
+    warnings.warn(
+        f'prediagram cache: the local {fmt} file of cell (k={k}, ell={ell}) '
+        f'in {root} holds {n} classes, the package manifest {want}; not '
+        f'served (rebuilt from the shipped data or recomputed).',
+        RuntimeWarning, stacklevel=3)
+    return False
 
 
 # ── Building cells: cost estimate, then build ───────────────────────────────
