@@ -325,7 +325,9 @@ def compute_spatial_correlator_via_pipeline(
     ``Σ_α free_two_point(μ_α, D_α, κ_α; x, τ)`` (exact at ``τ = 0``).
 
     Returns ``(C_tau_x, info)`` mirroring the bespoke API; ``info`` adds
-    ``pipeline_certified`` and ``certify_max_rel``.
+    ``pipeline_certified`` and ``certify_max_rel``.  ``q_cut`` / ``n_q`` are
+    unused since the d≥2 tree became the exact heat-kernel time integral
+    (kept for call compatibility).
     """
     if not prop.get('spatial_dim'):
         raise SpatialPropagatorError('propagator has no spatial block.')

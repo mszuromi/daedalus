@@ -378,6 +378,39 @@ def _gl_on(lower, upper, n):
     return t, w
 
 
+def _gl_on_split(lower, upper, n, breaks):
+    """:func:`_gl_on` on ``[lower, upper]`` split at the fixed ``breaks`` (each
+    clipped into the interval; a segment of zero width gets zero weight), so
+    a kink of the integrand at a break is a segment end, not an interior
+    point.  Returns ``(t_nodes, t_w)`` of shape ``lower.shape + (n·(len(breaks)+1),)``."""
+    if not breaks:
+        return _gl_on(lower, upper, n)
+    cuts = [lower] + [np.clip(np.full_like(lower, b), lower, upper)
+                      for b in sorted(breaks)] + [upper]
+    ts, ws = [], []
+    for lo_, hi_ in zip(cuts[:-1], cuts[1:]):
+        t, w = _gl_on(lo_, hi_, n)
+        ts.append(t)
+        ws.append(w)
+    return np.concatenate(ts, axis=-1), np.concatenate(ws, axis=-1)
+
+
+def _c_leaf_breaks(edges, idx, external_times, n_V):
+    """Per internal vertex: the external times of the leaves it is joined to by
+    a ``C`` edge.  ``C(|t_v − t_leaf|)`` has a kink at ``t_v = t_leaf`` that
+    the causal chambers (orderings of the INTERNAL vertices) do not see; the
+    time grid splits there."""
+    brk = [set() for _ in range(n_V)]
+    for e in edges:
+        if e.kind != 'C' or e.u == e.v:
+            continue
+        if e.u in idx and e.v not in idx:
+            brk[idx[e.u]].add(float(external_times[e.v]))
+        elif e.v in idx and e.u not in idx:
+            brk[idx[e.v]].add(float(external_times[e.u]))
+    return [sorted(b) for b in brk]
+
+
 def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
                        xs, mu, D, spatial_dim, formfactor, N, seed):
     """``method='bessel'`` — the radial-Bessel-K × angular-MC backend for `δC(x)`.
@@ -660,6 +693,8 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
+                for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
     _use_mc = method == 'mc' and (n_V + n_C) > 0
     _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
@@ -697,9 +732,10 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 upper = np.full(Pt, s_up[vi]) if later is None \
                     else np.minimum(s_up[vi], later)
                 lower = np.full(Pt, s_lo[vi])
-                tnode, wnode = _gl_on(lower, upper, n_t)       # (Pt, n_t)
+                # split at the C-edge leaf times (kinks of |t_v − t_leaf|)
+                tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
                 for k in placed:
-                    placed[k] = np.repeat(placed[k], n_t)
+                    placed[k] = np.repeat(placed[k], tnode.shape[-1])
                 placed[vi] = tnode.ravel()
                 wt = (wt[:, None] * wnode).ravel()
                 later = placed[vi]
@@ -1048,8 +1084,11 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
+                for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
     for order in chambers:
-        # deterministic causal-chamber product grid (as diagram_kinematic)
+        # deterministic causal-chamber product grid (as diagram_kinematic),
+        # split at the C-edge leaf times
         placed = {}
         wt = np.array([1.0])
         later = None
@@ -1058,9 +1097,9 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             upper = np.full(Pt, s_up[vi]) if later is None \
                 else np.minimum(s_up[vi], later)
             lower = np.full(Pt, s_lo[vi])
-            tnode, wnode = _gl_on(lower, upper, n_t)
+            tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
             for k in placed:
-                placed[k] = np.repeat(placed[k], n_t)
+                placed[k] = np.repeat(placed[k], tnode.shape[-1])
             placed[vi] = tnode.ravel()
             wt = (wt[:, None] * wnode).ravel()
             later = placed[vi]

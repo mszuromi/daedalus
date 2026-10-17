@@ -187,7 +187,7 @@ def free_two_point(mu, D, kap, x, tau, bc_mode='infinite', L=None,
     raise SpatialPropagatorError(f'unknown bc_mode {bc_mode!r}')
 
 
-def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30):
+def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30, abs_tol=0.0):
     """``∫_{t_lo}^∞ s^{−d/2} e^{−μ s − β/s} ds`` (complex ``μ`` with Re μ > 0),
     the time integral behind the free correlator in ``d`` dimensions.
 
@@ -195,7 +195,8 @@ def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30):
     (needs ``β > 0`` for ``d ≥ 2``; at ``β = t_lo = 0`` the integral diverges —
     the equal-point variance is UV-divergent for ``d ≥ 2`` — and this raises).
     ``t_lo > 0``: adaptive mpmath quadrature at ``dps`` digits with its error
-    estimate checked (raises if it is above 1e-12 relative)."""
+    estimate checked (raises if it is above 1e-12 relative and above
+    ``abs_tol``, the absolute accuracy the caller needs)."""
     import mpmath as mp
     d = int(spatial_dim)
     mu = complex(mu)
@@ -218,31 +219,44 @@ def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30):
             val = 2 * (beta / m_) ** (nu / 2) * mp.besselk(nu, 2 * mp.sqrt(m_ * beta))
             return complex(val)
         m_ = mp.mpc(mu)
-        f = lambda s_: s_ ** (-mp.mpf(d) / 2) * mp.exp(-m_ * s_ - beta / s_)
-        scale = 1.0 / max(mu.real, 1e-300)
-        pts = [t_lo, t_lo + scale, t_lo + 10 * scale, mp.inf]
-        val, err = mp.quad(f, pts, error=True, maxdegree=10)
-        if abs(err) > 1e-12 * max(abs(val), mp.mpf('1e-300')):
+        h = mp.mpf(d) / 2
+        # s = t_lo + u, e^{−μ t_lo} factored out; breakpoints at the decay
+        # scale 1/Re μ and around the peak of s^{−d/2} e^{−Re μ s − β/s}
+        mr = mp.mpf(mu.real)
+        s_pk = (-h + mp.sqrt(h * h + 4 * mr * beta)) / (2 * mr)
+        f = lambda u: ((t_lo + u) ** (-h)
+                       * mp.exp(-m_ * u - beta / (t_lo + u)))
+        cuts = sorted({mp.mpf(0)} | {c for c in (
+            s_pk - t_lo, (s_pk - t_lo) * 2, 1 / mr, 10 / mr, 60 / mr)
+            if c > 0})
+        val, err = mp.quad(f, cuts + [mp.inf], error=True, maxdegree=12)
+        if (abs(err) > 1e-12 * abs(val)
+                and abs(err) > max(mp.mpf(abs_tol), mp.mpf('1e-300'))):
             raise SpatialPropagatorError(
                 f'free correlator time integral did not converge (estimate '
                 f'{complex(val)}, error {float(abs(err)):.2e}).')
+        val = val * mp.exp(-m_ * t_lo)
         return complex(val)
 
 
-def free_two_point_d(mu, D, kap, x, tau, spatial_dim):
+def free_two_point_d(mu, D, kap, x, tau, spatial_dim, abs_tol=0.0):
     """Exact infinite-domain free correlator in ``d`` dimensions,
     ``C(x,τ) = κ ∫_{|τ|}^∞ ds e^{−μs} (4πDs)^{−d/2} e^{−|x|²/4Ds}`` — the
     inverse FT of ``κ/(μ+Dq²)·e^{−(μ+Dq²)|τ|}`` with no q-grid or cutoff.
     ``d = 1`` delegates to :func:`free_two_point`; ``d ≥ 2`` refuses the
-    UV-divergent equal point ``x = τ = 0``."""
+    UV-divergent equal point ``x = τ = 0``.  ``abs_tol``: absolute accuracy
+    needed on ``C`` (an image term far below the total needs no 1e-12
+    relative accuracy of its own)."""
     d = int(spatial_dim)
     if d == 1:
         return free_two_point(mu, D, kap, x, tau)
     D = float(D)
     r = float(np.linalg.norm(np.atleast_1d(np.asarray(x, dtype=float))))
     beta = r * r / (4.0 * D)
-    integ = heat_time_integral_d(mu, beta, abs(float(tau)), d)
-    return complex(float(kap) * (4.0 * math.pi * D) ** (-0.5 * d) * integ)
+    pref = float(kap) * (4.0 * math.pi * D) ** (-0.5 * d)
+    integ = heat_time_integral_d(mu, beta, abs(float(tau)), d,
+                                 abs_tol=(abs_tol / abs(pref) if pref else 0.0))
+    return complex(pref * integ)
 
 
 def free_two_point_box(mu, D, kap, x, tau, spatial_dim, L, max_shells=80,
@@ -268,7 +282,7 @@ def free_two_point_box(mu, D, kap, x, tau, spatial_dim, L, max_shells=80,
             if max(abs(c) for c in n) != sh:
                 continue
             add += free_two_point_d(mu, D, kap, e1 + L * np.asarray(n, float),
-                                    tau, d)
+                                    tau, d, abs_tol=1e-3 * rtol * abs(total))
         total += add
         quiet = quiet + 1 if abs(add) <= rtol * abs(total) else 0
         if quiet >= 2:

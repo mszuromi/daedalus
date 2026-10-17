@@ -1794,8 +1794,8 @@ def _run_spatial(state):
     # spatial_grid) only; the callables read that grid (the highest loop
     # order, and the per-order increments for total_C_by_ell), so
     # total_C(τ, x) == C_tau_x[iτ, ix] at every grid point.  Off the grid
-    # they refuse — except the single-field d=1 TREE, which has an exact
-    # closed form anywhere (free_two_point, erf / image sum).
+    # they refuse — except the single-field TREE, which is exact anywhere
+    # (free_two_point / free_two_point_d / the periodic image sum).
     _C_by_order = {int(el): _np.asarray(C) for el, C in
                    (sp_info.get('C_by_order') or {0: C_tau_x}).items()}
     _orders = sorted(_C_by_order)
@@ -1803,7 +1803,7 @@ def _run_spatial(state):
                   else _C_by_order[el])
              for i, el in enumerate(_orders)}
     _sp_d = int(sp_info.get('spatial_dim', 1))
-    _tree_exact = (_orders == [0] and _sp_d == 1 and not sp_info.get('coupled')
+    _tree_exact = (_orders == [0] and not sp_info.get('coupled')
                    and sp_info.get('modes'))
     _tau_arr = _np.asarray(tau_grid, dtype=float)
 
@@ -1825,11 +1825,19 @@ def _run_spatial(state):
             if it.size and ix.size:
                 return complex(table[int(it[0]), int(ix[0])])
             if exact_tree:
+                from engine.integration.spatial.spatial_correlator import (
+                    free_two_point_d, free_two_point_box)
                 val = 0j
                 for (A, B, N) in sp_info['modes']:
-                    val += free_two_point(A, B, N, xq, tau,
-                                          bc_mode=sp_info['bc_mode'],
-                                          L=sp_info['L'])
+                    if _sp_d == 1:
+                        val += free_two_point(A, B, N, xq, tau,
+                                              bc_mode=sp_info['bc_mode'],
+                                              L=sp_info['L'])
+                    elif sp_info['bc_mode'] == 'periodic':
+                        val += free_two_point_box(A, B, N, xq, tau, _sp_d,
+                                                  sp_info['L'])
+                    else:
+                        val += free_two_point_d(A, B, N, xq, tau, _sp_d)
                 return val
             raise ValueError(
                 f'spatial total_C: (tau={tau}, x={xq}) is not on the '
