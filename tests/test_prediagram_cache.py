@@ -459,10 +459,12 @@ def _spatial_run():
 
     from api.compute import compute_cumulants
     import daedalus as dd
-    model, _ = dd.load_model('reaction_diffusion_2d')
+    # d=1: the d=2 model's one loop has a tadpole, UV-divergent at d>=2
+    # (refused since audit wave 2)
+    model, _ = dd.load_model('reaction_diffusion_quadratic_1d')
     compute_cumulants(model, k=2, max_ell=1,
                       external_fields=[('dphi', 1)] * 2,
-                      parameters={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0},
+                      parameters={'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0},
                       tau_grid=np.asarray([0.0]),
                       chi_grid=np.asarray([0.4, 1.0]), use_cache=False,
                       verbose=False, spatial_parallel=False)
