@@ -43,6 +43,24 @@ from engine.integration.spatial.heat_kernel import (
 
 
 # ── Noise extraction ──────────────────────────────────────────────
+def _noise_value(coeff, sub, exp_vec):
+    """Numeric value of one noise-sector coefficient.  Never silent: a
+    coefficient that does not reduce to a number (a missing parameter / saddle
+    value, or a momentum-dependent — e.g. conserved — noise the white-noise
+    extractors cannot represent) raises, naming the leftover symbols; a
+    dropped noise entry would change the correlator with no error."""
+    val = SR(coeff).subs(sub)
+    try:
+        return complex(val)
+    except (TypeError, ValueError):
+        left = sorted(str(v) for v in val.free_variables())
+        raise SpatialPropagatorError(
+            f'noise coefficient {coeff} (monomial exponents {tuple(exp_vec)}) '
+            f'does not reduce to a number: leftover symbol(s) {left}.  Supply '
+            f'every parameter and saddle value; momentum-dependent noise is '
+            f'not supported by the spatial white-noise extractors.')
+
+
 def extract_noise_coefficients(ft, num_params):
     """Return ``{field_index: D_noise}`` — the white-noise spectral
     coefficient per (response) field, read from the action's (2,0)
@@ -80,10 +98,7 @@ def extract_noise_coefficients(ft, num_params):
         nz = [idx for idx in range(n_gens) if exp_vec[idx] != 0]
         if len(nz) == 1 and nz[0] < n_tilde and exp_vec[nz[0]] == 2:
             i = nz[0]
-            try:
-                val = complex(SR(coeff).subs(sub))
-            except Exception:
-                val = 0j
+            val = _noise_value(coeff, sub, exp_vec)
             Dn = -val.real       # action term is - D_noise φ̃²
             if abs(Dn) > 1e-300:
                 out[i] = Dn
@@ -101,8 +116,9 @@ def extract_noise_matrix(ft, num_params):
         N_ii = −2·coeff(φ̃_i²),      N_ij = −coeff(φ̃_i φ̃_j)   (i ≠ j).
 
     So ``N_ii = 2·κ_i`` with ``κ_i`` the value :func:`extract_noise_coefficients`
-    returns.  Reads only the q⁰ (white-noise) part; q²-dependent (conserved /
-    Model-B) noise is skipped (left 0), matching the diagonal extractor's scope.
+    returns.  White noise only: a coefficient that does not reduce to a
+    number (missing parameter, or q-dependent noise) raises (it used to be
+    left 0 silently).
     """
     by_tp = getattr(ft, '_by_tp', None)
     if by_tp is None:
@@ -120,10 +136,7 @@ def extract_noise_matrix(ft, num_params):
         return N
     for exp_vec, coeff in terms:
         nz = [idx for idx in range(n_gens) if exp_vec[idx] != 0]
-        try:
-            c = complex(SR(coeff).subs(sub)).real      # white-noise (q⁰) part
-        except Exception:
-            continue                                   # q-dependent noise → skip
+        c = _noise_value(coeff, sub, exp_vec).real
         if len(nz) == 1 and nz[0] < n_tilde and exp_vec[nz[0]] == 2:
             i = nz[0]
             N[i, i] = -2.0 * c

@@ -1263,7 +1263,7 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
     Returns the momentum-space ``C(q,τ)`` (FT to position is done by the caller)."""
     total = 0.0
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total += diagram_correlator(descr, pre, q, tau, mu, D,
                                     spatial_dim=spatial_dim, **kw)
@@ -1303,7 +1303,7 @@ def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
     xs_arr = np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr))
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total = total + diagram_correlator_x(descr, pre, xs_arr, tau, mu, D,
                                              spatial_dim=spatial_dim, **kw)
