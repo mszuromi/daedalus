@@ -500,6 +500,76 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     return total / norm
 
 
+class SpatialUVDivergenceError(NotImplementedError):
+    """A loop subgraph is UV-divergent at this spatial dimension: its value
+    would be set by the quadrature grid, not by the model."""
+
+
+def uv_divergent_subgraphs(descr, spatial_dim):
+    """Connected loop subgraphs of ``descr`` that are UV-divergent at
+    ``spatial_dim`` by dynamic power counting (plain vertices).
+
+    Scaling the relative vertex times and the correlation Schwinger
+    parameters of a subgraph ``γ`` as ``λ`` (momenta as ``λ^{−1/2}``) gives
+    ``λ^{ω(γ)}`` with ``ω = (V_γ − 1) + n_C(γ) − (d/2)·L_γ``; ``ω ≤ 0`` is a
+    divergence at the coincident-time corner (``U^{−d/2}`` non-integrable).
+    E.g. the self-loop (tadpole) ``ω = 1 − d/2`` diverges for ``d ≥ 2``, the
+    one-loop bubble ``ω = 2 − d/2`` only for ``d ≥ 4``, the φ⁴ sunset
+    ``ω = 3 − d`` for ``d ≥ 3``.  Only internal (loop-momentum-carrying)
+    edges form subgraphs.  Derivative-vertex form factors add momentum powers
+    this count does not include.  Returns a list of ``(edge_indices, ω)``."""
+    import itertools as _it
+    d = float(spatial_dim)
+    if d <= 0:
+        return []
+    cand = [i for i, e in enumerate(descr.edges)
+            if not e.external and e.couples_loop()]
+    out = []
+    for r in range(1, len(cand) + 1):
+        for sub in _it.combinations(cand, r):
+            es = [descr.edges[i] for i in sub]
+            verts = {e.u for e in es} | {e.v for e in es}
+            # connectivity (union–find over the subgraph's vertices)
+            parent = {v: v for v in verts}
+
+            def _find(v):
+                while parent[v] != v:
+                    parent[v] = parent[parent[v]]
+                    v = parent[v]
+                return v
+            for e in es:
+                parent[_find(e.u)] = _find(e.v)
+            if len({_find(v) for v in verts}) != 1:
+                continue
+            L = len(es) - len(verts) + 1
+            if L < 1:
+                continue
+            n_C = sum(1 for e in es if e.kind == 'C')
+            omega = (len(verts) - 1) + n_C - 0.5 * d * L
+            if omega <= 0:
+                out.append((sub, omega))
+    return out
+
+
+def _refuse_uv_divergent(descr, spatial_dim):
+    if spatial_dim is None or spatial_dim < 2:
+        return
+    bad = uv_divergent_subgraphs(descr, spatial_dim)
+    if bad:
+        sub, om = min(bad, key=lambda t: t[1])
+        kinds = [descr.edges[i].kind + ('(self-loop)' if descr.edges[i].u ==
+                                         descr.edges[i].v else '')
+                 for i in sub]
+        raise SpatialUVDivergenceError(
+            f'spatial loop diagram is UV-divergent at d={spatial_dim}: the '
+            f'subgraph with edges {kinds} has superficial degree '
+            f'omega={om:g} <= 0 (e.g. a tadpole <phi^2>_0 for d>=2).  Its '
+            f'value would be set by the quadrature grid (it grows without '
+            f'limit as SPATIAL_GRID_NS increases), not by the model.  A '
+            f'declared UV cutoff / renormalized mass is not implemented; use '
+            f'd=1, max_ell=0, or a model without this subgraph.')
+
+
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
                       xs=None, method='grid', mc_n=1000000, mc_seed=0):
@@ -513,11 +583,15 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     from :func:`causal_chambers`, nested latest→earliest with each level bounded
     by the next-later time and the external retarded legs), Gauss–Legendre per
     level (√-concentrated at the upper bound); correlation Schwinger params
-    ``σ_e∈[0,∞)`` by Gauss–**Laguerre** (which integrates ``e^{−μσ}`` exactly).
+    ``σ_e∈[0,∞)`` by Gauss–Legendre on ``σ = s_cap·v²`` (nodes concentrated
+    near ``σ = 0``, the ``e^{−μσ}`` folded into the weights).
     The Symanzik reduction is batched over the whole grid.
 
     ``q_vec`` : external momenta (length ``n_ext=k−1``; ``[q]`` for ``k=2``).
-    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber."""
+    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber.
+    Refuses (:class:`SpatialUVDivergenceError`) a diagram with a UV-divergent
+    loop subgraph at ``spatial_dim`` (:func:`uv_divergent_subgraphs`)."""
+    _refuse_uv_divergent(descr, spatial_dim)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)
@@ -549,8 +623,9 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
 
     # Correlation Schwinger param σ_e∈[0,∞): substitute σ = s_cap·v² (v∈[0,1]) so
-    # the nodes CONCENTRATE near σ=0 — that resolves the integrable U^{−d/2}∼σ^{−d/2}
-    # singularity of a self-loop (U=σ) that plain Gauss–Laguerre under-resolves.
+    # the nodes CONCENTRATE near σ=0 — that resolves the U^{−d/2}∼σ^{−d/2}
+    # singularity of a self-loop (U=σ), integrable at d=1 only (d≥2 is refused
+    # above as UV-divergent).
     # The e^{−μσ} weight is folded into ``s_w``; ``mu_resid`` excludes σ.
     s_cap = 32.0 / mu
     xv, wv = np.polynomial.legendre.leggauss(n_s)
@@ -879,6 +954,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     coupled v1 surface.  The single-field/diagonal path is untouched
     (:func:`diagram_kinematic`); this function is additive.
     """
+    _refuse_uv_divergent(descr, spatial_dim)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)

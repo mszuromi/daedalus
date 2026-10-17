@@ -187,6 +187,98 @@ def free_two_point(mu, D, kap, x, tau, bc_mode='infinite', L=None,
     raise SpatialPropagatorError(f'unknown bc_mode {bc_mode!r}')
 
 
+def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30):
+    """``∫_{t_lo}^∞ s^{−d/2} e^{−μ s − β/s} ds`` (complex ``μ`` with Re μ > 0),
+    the time integral behind the free correlator in ``d`` dimensions.
+
+    ``t_lo = 0``: the closed form ``2 (β/μ)^{ν/2} K_ν(2√(μβ))``, ``ν = 1 − d/2``
+    (needs ``β > 0`` for ``d ≥ 2``; at ``β = t_lo = 0`` the integral diverges —
+    the equal-point variance is UV-divergent for ``d ≥ 2`` — and this raises).
+    ``t_lo > 0``: adaptive mpmath quadrature at ``dps`` digits with its error
+    estimate checked (raises if it is above 1e-12 relative)."""
+    import mpmath as mp
+    d = int(spatial_dim)
+    mu = complex(mu)
+    beta = float(beta)
+    t_lo = float(t_lo)
+    if not mu.real > 0.0:
+        raise SpatialPropagatorError(
+            f'free correlator needs a stable mass (Re mu > 0); got mu={mu}.')
+    with mp.workdps(dps):
+        if t_lo == 0.0:
+            if beta <= 0.0:
+                if d >= 2:
+                    raise SpatialPropagatorError(
+                        f'equal-point (x=0, tau=0) free correlator is '
+                        f'UV-divergent at d={d} (no continuum value; the '
+                        f'q-grid used to return a cutoff-dependent number).')
+                return complex(mp.gamma(1.0 - 0.5 * d) * mp.mpc(mu) ** (0.5 * d - 1.0))
+            nu = mp.mpf(1) - mp.mpf(d) / 2
+            m_ = mp.mpc(mu)
+            val = 2 * (beta / m_) ** (nu / 2) * mp.besselk(nu, 2 * mp.sqrt(m_ * beta))
+            return complex(val)
+        m_ = mp.mpc(mu)
+        f = lambda s_: s_ ** (-mp.mpf(d) / 2) * mp.exp(-m_ * s_ - beta / s_)
+        scale = 1.0 / max(mu.real, 1e-300)
+        pts = [t_lo, t_lo + scale, t_lo + 10 * scale, mp.inf]
+        val, err = mp.quad(f, pts, error=True, maxdegree=10)
+        if abs(err) > 1e-12 * max(abs(val), mp.mpf('1e-300')):
+            raise SpatialPropagatorError(
+                f'free correlator time integral did not converge (estimate '
+                f'{complex(val)}, error {float(abs(err)):.2e}).')
+        return complex(val)
+
+
+def free_two_point_d(mu, D, kap, x, tau, spatial_dim):
+    """Exact infinite-domain free correlator in ``d`` dimensions,
+    ``C(x,τ) = κ ∫_{|τ|}^∞ ds e^{−μs} (4πDs)^{−d/2} e^{−|x|²/4Ds}`` — the
+    inverse FT of ``κ/(μ+Dq²)·e^{−(μ+Dq²)|τ|}`` with no q-grid or cutoff.
+    ``d = 1`` delegates to :func:`free_two_point`; ``d ≥ 2`` refuses the
+    UV-divergent equal point ``x = τ = 0``."""
+    d = int(spatial_dim)
+    if d == 1:
+        return free_two_point(mu, D, kap, x, tau)
+    D = float(D)
+    r = float(np.linalg.norm(np.atleast_1d(np.asarray(x, dtype=float))))
+    beta = r * r / (4.0 * D)
+    integ = heat_time_integral_d(mu, beta, abs(float(tau)), d)
+    return complex(float(kap) * (4.0 * math.pi * D) ** (-0.5 * d) * integ)
+
+
+def free_two_point_box(mu, D, kap, x, tau, spatial_dim, L, max_shells=80,
+                       rtol=1e-14):
+    """Exact free correlator on a periodic cubic box of period ``L`` (``x``
+    along one axis): the image sum ``Σ_{n∈ℤ^d} C_∞(x·e₁ + nL, τ)`` of
+    :func:`free_two_point_d`, summed in shells ``‖n‖_∞ = s`` until two
+    consecutive shells add less than ``rtol`` of the total.  Raises when that
+    needs more than ``max_shells`` shells (box much smaller than the
+    correlation length) instead of truncating silently."""
+    import itertools as _it
+    d = int(spatial_dim)
+    L = float(L)
+    if d == 1:
+        return free_two_point(mu, D, kap, x, tau, bc_mode='periodic', L=L)
+    e1 = np.zeros(d)
+    e1[0] = float(x)
+    total = free_two_point_d(mu, D, kap, e1, tau, d)
+    quiet = 0
+    for sh in range(1, max_shells + 1):
+        add = 0j
+        for n in _it.product(range(-sh, sh + 1), repeat=d):
+            if max(abs(c) for c in n) != sh:
+                continue
+            add += free_two_point_d(mu, D, kap, e1 + L * np.asarray(n, float),
+                                    tau, d)
+        total += add
+        quiet = quiet + 1 if abs(add) <= rtol * abs(total) else 0
+        if quiet >= 2:
+            return complex(total)
+    raise SpatialPropagatorError(
+        f'periodic image sum did not converge in {max_shells} shells (L={L} '
+        f'is small against the correlation length sqrt(D/mu)); not '
+        f'truncating silently.')
+
+
 # ── Assembly over (τ, x) grid ─────────────────────────────────────
 def compute_spatial_correlator_tree(ft, model, prop, num_params,
                                     external_fields, tau_grid,

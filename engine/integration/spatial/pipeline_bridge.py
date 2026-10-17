@@ -429,26 +429,22 @@ def compute_spatial_correlator_via_pipeline(
                                           bc_mode=bc_mode, L=L)
                 C[it, ix] = val
     else:
-        # d≥2: the radial/Hankel q→x transform of the momentum-space correlator
-        # Σ_modes kap/(mu+Dq²) e^{−(mu+Dq²)|τ|}, truncated at q_cut (Regime 1 — a
-        # physical cutoff; the continuum limit is q_cut→∞ with fine n_q).
+        # d≥2: the EXACT heat-kernel time integral
+        # κ∫_{|τ|}^∞ e^{−μs}(4πDs)^{−d/2}e^{−|x|²/4Ds}ds per mode (Bessel-K
+        # closed form at τ=0, adaptive quadrature with a checked error
+        # estimate at τ≠0) — no q-grid, no cutoff; a periodic box is its
+        # converged image sum.  The equal point x=τ=0 is UV-divergent for d≥2
+        # and refuses.
         from engine.integration.spatial.spatial_correlator import (
-            radial_inverse_ft, periodic_inverse_ft)
-        qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
-        xs = np.array([float(x) for x in spatial_grid])
-        m_modes = [(float(np.real(mu)), float(np.real(D)), float(np.real(kap)))
-                   for (mu, D, kap) in modes]
+            free_two_point_d, free_two_point_box)
         _periodic = bc_mode == 'periodic' and L
         for it, tau in enumerate(tau_grid):
-            at = abs(float(tau))
-            Cq = np.zeros_like(qg)
-            for (mu, D, kap) in m_modes:
-                m = mu + D * qg * qg
-                Cq += (kap / m) * np.exp(-m * at)
-            # periodic cubic box → discrete-momentum lattice sum; else the
-            # continuous radial/Hankel transform (infinite domain).
-            C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
-                        if _periodic else radial_inverse_ft(qg, Cq, xs, d))
+            for ix, x in enumerate(spatial_grid):
+                C[it, ix] = sum(
+                    (free_two_point_box(mu, D, kap, float(x), float(tau), d,
+                                        float(L)) if _periodic else
+                     free_two_point_d(mu, D, kap, float(x), float(tau), d))
+                    for (mu, D, kap) in modes)
 
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
             'spatial_dim': d,
@@ -600,7 +596,9 @@ def compute_coupled_tree_correlator(
         def _Cq(q, tau):
             return coupled_two_point(ref, N, q * q, tau)[j, i]
 
-    if d >= 2:
+    _numerical = (dyson_order is not None
+                  or os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1')
+    if _numerical and d >= 2:
         # d≥2: q→x transform of the ISOTROPIC coupled C_ij(q,τ).  ``_Cq`` is
         # dimension-agnostic (depends on |k|²=q²), so this covers the scalar-𝒟
         # case, the Dyson-dressed case, and any external (i,j).  Infinite domain
@@ -614,14 +612,14 @@ def compute_coupled_tree_correlator(
             Cq = np.array([_Cq(q, tau) for q in qg], dtype=complex)
             C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
                         if _periodic else radial_inverse_ft(qg, Cq, xs, d))
-    elif bc_mode == 'periodic' and L:
+    elif _numerical and bc_mode == 'periodic' and L:
         Lf = float(L)
         qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
         for it, tau in enumerate(taus):
             Cq = np.array([_Cq(q, tau) for q in qs])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
-    elif dyson_order is not None or os.environ.get('SPATIAL_FORCE_NUMERICAL_FT'):
+    elif _numerical:
         # dressed (unequal-𝒟) path, or the cross-check escape hatch: brute
         # cosine-FT on a finite q-grid (q_cut truncation ~ N_ij/(π·D₀·q_cut))
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
@@ -647,12 +645,19 @@ def compute_coupled_tree_correlator(
         PNP = {(a_, b_): proj[a_] @ np.asarray(N, float) @ proj[b_].T
                for a_ in range(nf) for b_ in range(nf)}
         _f2p_cache = {}
+        from engine.integration.spatial.spatial_correlator import (
+            free_two_point_d, free_two_point_box)
+        _per = bc_mode == 'periodic' and L
 
         def _f2p(mu_d, x, at):
+            # exact single-mode correlator: any d, infinite domain or the
+            # converged periodic image sum (no q-grid, no mode truncation)
             key = (complex(mu_d), float(x), float(at))
             if key not in _f2p_cache:
-                _f2p_cache[key] = free_two_point(mu_d, ref.D0, 0.5,
-                                                 float(x), float(at))
+                _f2p_cache[key] = (
+                    free_two_point_box(mu_d, ref.D0, 0.5, float(x), float(at),
+                                       d, float(L)) if _per else
+                    free_two_point_d(mu_d, ref.D0, 0.5, float(x), float(at), d))
             return _f2p_cache[key]
 
         for it, tau in enumerate(taus):

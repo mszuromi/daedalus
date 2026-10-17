@@ -186,3 +186,57 @@ def test_noise_extractors_refuse_unresolved_entries():
             extract_noise_matrix(ft, part)
         with pytest.raises(SpatialPropagatorError, match=drop):
             extract_noise_coefficients(ft, part)
+
+
+# ── UV power counting (d >= 2) ──────────────────────────────────────────────
+
+def _cs(edges, internal, n_loops):
+    from engine.integration.spatial.diagram_descriptor import (
+        CEdge, CStackDiagram)
+    return CStackDiagram(internal_vertices=tuple(internal),
+                         external_legs=(0, 1),
+                         edges=tuple(CEdge(*e) for e in edges),
+                         n_loops=n_loops)
+
+
+def _tadpole():
+    return _cs([((0,), (1,), 'R', 0, 10, True), ((0,), (1,), 'R', 10, 1, True),
+                ((1,), (0,), 'C', 10, 10, False)], [10], 1)
+
+
+def _bubble():
+    return _cs([((0,), (1,), 'R', 0, 10, True), ((1,), (0,), 'R', 10, 11, False),
+                ((1,), (-1,), 'C', 10, 11, False), ((0,), (1,), 'R', 11, 1, True)],
+               [10, 11], 1)
+
+
+def _sunset():
+    return _cs([((0, 0), (1,), 'R', 0, 10, True),
+                ((1, 0), (0,), 'R', 10, 11, False),
+                ((0, 1), (0,), 'C', 10, 11, False),
+                ((1, 1), (-1,), 'C', 10, 11, False),
+                ((0, 0), (1,), 'R', 11, 1, True)], [10, 11], 2)
+
+
+def test_uv_power_counting():
+    from engine.integration.spatial.full_integrator import uv_divergent_subgraphs
+    for dd, d_min in ((_tadpole(), 2), (_bubble(), 4), (_sunset(), 3)):
+        for d in (1, 2, 3, 4):
+            assert bool(uv_divergent_subgraphs(dd, d)) == (d >= d_min), (dd, d)
+
+
+def test_uv_divergent_tadpole_refused_and_bubble_converges():
+    """The refused case really has no continuum limit (the tadpole value grows
+    with n_s at d=2, the old silent behaviour reproduced by the bare rule) and
+    the kept case converges (the d=2 bubble is stable under n_s doubling)."""
+    from engine.integration.spatial.full_integrator import (
+        diagram_kinematic, SpatialUVDivergenceError)
+    et = {0: 0.0, 1: 0.0}
+    for d in (2, 3):
+        with pytest.raises(SpatialUVDivergenceError):
+            diagram_kinematic(_tadpole(), [0.3], et, 1.0, 1.0, spatial_dim=d)
+    diagram_kinematic(_tadpole(), [0.3], et, 1.0, 1.0, spatial_dim=1)
+    v = [diagram_kinematic(_bubble(), [0.3], et, 1.0, 1.0, spatial_dim=2,
+                           n_t=n, n_s=n) for n in (24, 48, 96)]
+    assert abs(v[2] - v[1]) < 0.2 * abs(v[1] - v[0])          # converging
+    assert v[2] == pytest.approx(v[1], rel=2e-5)
