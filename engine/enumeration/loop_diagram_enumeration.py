@@ -333,15 +333,36 @@ def _trees_of_order_fast(n, res, mod, k, ell, spec):
     nmin = [spec[j][3] if j in spec else 0 for j in range(jmax + 1)]
     nmax = [spec[j][4] if j in spec else 0 for j in range(jmax + 1)]
     cmd = [_gentreeg_path(), '-q', str(n)] + ([f'{res}/{mod}'] if mod > 1 else [])
+    import tempfile
     out = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    for line in proc.stdout:
-        rec = _fe.tree_filter_sparse6(line.rstrip(b'\n'), k, ell, valid, v3max, v2max, nmin, nmax)
-        if rec is None:
-            continue
-        j, num_leaves, nn, edges = rec
-        out.append((pack_cert(_fe.cert(nn, edges, False)), j, num_leaves))
-    proc.wait()
+    # the exit status is checked: a generator that dies mid-stream (OOM,
+    # signal, broken install) would otherwise leave a silently truncated
+    # tree list, hence missing prediagrams in a correctly stamped cache file
+    # (audit B1).  stderr goes to a file (a pipe could fill and block).
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        try:
+            for line in proc.stdout:
+                rec = _fe.tree_filter_sparse6(line.rstrip(b'\n'), k, ell, valid, v3max,
+                                              v2max, nmin, nmax)
+                if rec is None:
+                    continue
+                j, num_leaves, nn, edges = rec
+                out.append((pack_cert(_fe.cert(nn, edges, False)), j, num_leaves))
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        rc = proc.wait()
+        if rc != 0:
+            err.seek(0)
+            msg = err.read()[-2000:].decode('utf-8', 'replace').strip()
+            raise RuntimeError(
+                f'gentreeg {" ".join(cmd[1:])} exited with status {rc} after '
+                f'{len(out)} accepted tree(s); the tree list would be incomplete'
+                + (f': {msg}' if msg else ''))
     return out
 
 
