@@ -25,7 +25,7 @@ They are split into [`SDE/`](SDE) (temporal — SDEs / point processes) and [`SP
 | [`Hawkes_quadratic_alpha`](SDE/Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
 | [`Dendritic_nonlinear`](SDE/Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
 | [`Delayed_OU`](SDE/Delayed_OU.ipynb) | A **hard delay** in the drift, `x(t - d)`: exact tree, Padé loops with the automatic order. |
-| [`Delayed_product`](SDE/Delayed_product.ipynb) | A delay **inside a nonlinear term**, `x*x(t - d)`: strictly proper Padé loops; mean and `C(τ)`. |
+| [`Delayed_product`](SDE/Delayed_product.ipynb) | A delay **inside a nonlinear term**, `x*x(t - d)`: (n, n) Padé loops with a direct term at the delayed leg; mean and `C(τ)`. |
 | [`Hawkes_delayed_alpha`](SDE/Hawkes_delayed_alpha.ipynb) | Two **point processes** coupled through **delayed alpha kernels** (`Kernel.delay(d) * Kernel.alpha(τ)`); cross-covariance. |
 
 ## Spatial (SPDE)

@@ -233,22 +233,43 @@ For lower-level access the API layer is importable directly, e.g. `from api impo
 
 Models can also be declared line by line, without writing the action (`api/sde.py`): each line
 contributes its own action term (`.drift` / `.equation`, `.noise`, `.point_process`). A spike-only
-exponential Hawkes network whose rates filter the spike trains themselves:
+exponential Hawkes network whose rates filter the spike trains themselves (one kernel per
+connection, `r[i,j]`), with a simulation of the same model:
 
 ```python
+import numpy as np
 from api.sde import SDE
 from api.delay import Kernel
 from api import compute_cumulants
+from api.pp_simulate import cross_covariance
 m = (SDE('Hawkes').population('E', size=2)
      .parameter('a', default=[1.0, 1.0], indexed_by=['E'])
      .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])
-     .parameter('tau', default=2.0, domain='positive')
+     .parameter('tau', default=[[2.0, 2.0], [2.0, 2.0]], indexed_by=['E', 'E'], domain='positive')
      .parameter('w', default=[[0.4, 0.4], [0.4, 0.4]], indexed_by=['E', 'E'])
-     .define_kernel('r', kernel=Kernel.exponential('tau'))
-     .point_process('n', 'a*exp(Em + sum(w[i,j]*Conv(r, n[j]) for j in E))', population='E'))
-res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)])
-rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of the same model
+     .define_kernel('r', kernel=Kernel.exponential('tau[i,j]'), indexed_by=['E', 'E'])
+     .point_process('n', 'a*exp(Em + sum(w[i,j]*Conv(r[i,j], n[j]) for j in E))', population='E'))
+lags = np.array([2, 4, 8])                                     # in bins of 0.25
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
+                        tau_grid=lags * 0.25, parallel=False, verbose=False)
+C = np.real(res['C_tau_by_ell'][0] + res['C_tau_by_ell'][1])  # tree + one loop
+rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25, seed=1)  # a simulator of the same model
+cov, se = cross_covariance(rec, ('n', 0), ('n', 1), lags)
+print(res['status'], ' tau:', lags * 0.25)
+print('theory    ', np.round(C, 4))
+print('simulation', np.round(cov, 4), '+-', np.round(se, 4))
 ```
+
+prints (about a minute, most of it the simulation)
+
+```
+ok  tau: [0.5 1.  2. ]
+theory     [0.0172 0.0141 0.0095]
+simulation [0.0207 0.0128 0.0089] +- [0.0021 0.0014 0.0018]
+```
+
+Check `res['status']` after a run: `'incomplete'` means some diagrams could not be evaluated and
+the result is missing those terms (the run also warns).
 
 ## Running from a config file
 
