@@ -33,6 +33,59 @@ against do.
   estimator and the oracle. It used the transpose, so off-diagonal entries of a non-symmetric M at τ ≠ 0 were swapped
   relative to the pipeline.
 
+#### Fixed: audit fix wave 1 -- outputs (F1 group 3)
+
+Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's reproducer and fails on the old code.
+- **`symbolic_out`:**
+  - **User values are no longer snapped to 0.** `values=` floats below 1e-12 used to be replaced by 0, e.g. D = 1e-13
+    gave C0 = 0.
+  - **Saddle snapping is relative.** Solved saddle values are snapped relative to the run's largest number, not at an
+    absolute 1e-12.
+  - **Legacy route, a parameter named `tau`.** `inverse_transform(..., legacy=True)` now names the lag `tau_lag`, as
+    the C2 route does. The parameter and the lag used to merge into one symbol.
+  - **No values at a moved reference.** When poles coincide at the reference, the retry used to hand back numbers at
+    the point it moved to. A ModeSum now keeps the user's reference, and evaluating at it is refused by the
+    coincidence assumptions. A pairing's value at the moved point is dropped, and `reason` says why.
+  - **`even` is decided relative to |C|.** It used an absolute 1e-9, so a small-amplitude asymmetric entry was called
+    even. With RootOf modes the test now runs on the 256-bit modes, at lags scaled by the slowest and fastest rate.
+    Fixed lags used to underflow to 0 == 0 at rates above ~2e3.
+  - **Misspelled names are refused.** A name equal to one the modes depend on up to case is now an error in
+    `ModeSum.evaluate` / `__call__`. Other names absent from C stay
+    ignored, so a model's whole parameter dict can be passed. In `tree_covariance(values=...)` every name that is
+    neither a model parameter nor a symbol of K / G / D is refused, as `tree_covariance_from_matrices` already did.
+    Both used to be dropped silently.
+- **`symbolic_loop`: relative floors.** The saddle-movement and saddle closed-form checks use a floor of 1e-6 × the
+  run's largest number instead of max(1, |x|). The δ-coefficient and subset-prefactor checks are fully relative.
+- **`me_output`:**
+  - A finite chamber's `SideME` refuses u > u_max. It used to answer with another chamber's leg order.
+  - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
+- **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
+
+#### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
+
+Regression tests: `tests/test_audit_wave1_noise.py`. No computed number moves. A run that was silently wrong is
+now refused, and so are invalid noise declarations.
+- **Uniform jumps: the series order is enforced.** The uniform jump's CGF has a removable singularity, so the action
+  carries its Taylor polynomial (`SDE.series_order`, default 8). Cumulants needing a noise vertex above that order
+  came out without it, silently.
+  - `SDE.build()` now records `model['noise_series_order']`.
+  - `compute_cumulants` refuses `k + 2*max_ell` above it and names the order to set. `k + 2*max_ell` bounds the order
+    of any vertex of a k-point, `max_ell`-loop diagram.
+- **θ in a jump-law parameter is refused**, as in a source parameter. For example, `CompoundPoisson(1, Dirac('theta'))`
+  built a different CGF.
+- **Sequence parameters refuse a string.** This covers `Cumulants`, `FinitePMF`, `Hyperexponential` and `PhaseType`.
+  For example, `Cumulants('Dn')` gave κ2 = D, κ3 = n.
+- **Domain checks for the round-1 laws** (numeric values only):
+  - `Gaussian` var ≥ 0 and `Poisson` rate ≥ 0;
+  - `GammaProcess` shape_rate > 0; `InverseGaussianProcess` mean_rate, shape > 0;
+  - `Cumulants` κ2 ≥ 0 and `Gamma` shape > 0;
+  - `Bernoulli` 0 ≤ p ≤ 1;
+  - `FinitePMF` probabilities ≥ 0;
+  - `Uniform` lo ≠ hi. This was a raw ZeroDivisionError before.
+
+  A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
+  stays valid.
+
 #### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
 
 Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
