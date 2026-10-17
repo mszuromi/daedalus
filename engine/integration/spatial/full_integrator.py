@@ -396,19 +396,39 @@ def _gl_on_split(lower, upper, n, breaks):
 
 
 def _c_leaf_breaks(edges, idx, external_times, n_V):
-    """Per internal vertex: the external times of the leaves it is joined to by
-    a ``C`` edge.  ``C(|t_v − t_leaf|)`` has a kink at ``t_v = t_leaf`` that
-    the causal chambers (orderings of the INTERNAL vertices) do not see; the
-    time grid splits there."""
-    brk = [set() for _ in range(n_V)]
-    for e in edges:
-        if e.kind != 'C' or e.u == e.v:
+    """Per internal vertex: the external times where its time integrand can
+    have a kink — ALL distinct external times.  ``C(|t_v − t_leaf|)`` kinks at
+    ``t_v = t_leaf``; and when ``t_v`` crosses a leaf time that bounds a vertex
+    integrated inside it (``upper = min(s_up, t_v)``, or one of that vertex's
+    own breaks), the inner integral's limits switch branch.  Neither is a
+    causal-chamber boundary (the chambers order the INTERNAL vertices only);
+    the time grid splits there.  The caller keeps the ones inside the vertex's
+    static bounds."""
+    ts = sorted({float(t) for t in external_times.values()})
+    return [list(ts) for _ in range(n_V)]
+
+
+def time_grid_split_factor(descr, external_times):
+    """How many times larger the causal-chamber time grid is because each
+    vertex interval splits at the external times inside its static leaf
+    bounds (:func:`_c_leaf_breaks`): ``∏_v (1 + #breaks_v)``.  For memory
+    guards (the grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber)."""
+    internal = list(descr.internal_vertices)
+    idx = {v: i for i, v in enumerate(internal)}
+    s_up = [math.inf] * len(internal)
+    s_lo = [-math.inf] * len(internal)
+    for e in descr.edges:
+        if e.kind != 'R':
             continue
         if e.u in idx and e.v not in idx:
-            brk[idx[e.u]].add(float(external_times[e.v]))
+            s_up[idx[e.u]] = min(s_up[idx[e.u]], external_times[e.v])
         elif e.v in idx and e.u not in idx:
-            brk[idx[e.v]].add(float(external_times[e.u]))
-    return [sorted(b) for b in brk]
+            s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
+    f = 1
+    for i, bl in enumerate(_c_leaf_breaks(descr.edges, idx, external_times,
+                                          len(internal))):
+        f *= 1 + sum(1 for b in bl if s_lo[i] < b < s_up[i])
+    return f
 
 
 def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,

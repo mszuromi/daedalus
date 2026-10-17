@@ -1840,10 +1840,17 @@ def compute_spatial_correlator_generic(
         _b, _budget_rule = _dmb()
         _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
+    from engine.integration.spatial.full_integrator import (
+        time_grid_split_factor, external_times_2pt)
+    _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
-        _P = (_nt ** _nV) * (_ns ** _nC)
+        # the time grid splits at the external times inside each vertex's
+        # leaf bounds (worst lag sign of the largest |tau|)
+        _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_))
+                     for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
+        _P = (_nt ** _nV) * (_ns ** _nC) * _split
         _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
