@@ -236,10 +236,23 @@ def test_uv_divergent_tadpole_refused_and_bubble_converges():
         with pytest.raises(SpatialUVDivergenceError):
             diagram_kinematic(_tadpole(), [0.3], et, 1.0, 1.0, spatial_dim=d)
     diagram_kinematic(_tadpole(), [0.3], et, 1.0, 1.0, spatial_dim=1)
+    et = {0: 0.0, 1: 1.0}                # leaf 0 → bubble → leaf 1 (causal)
     v = [diagram_kinematic(_bubble(), [0.3], et, 1.0, 1.0, spatial_dim=2,
                            n_t=n, n_s=n) for n in (24, 48, 96)]
-    assert abs(v[2] - v[1]) < 0.2 * abs(v[1] - v[0])          # converging
+    assert v[1] != 0.0
+    assert abs(v[2] - v[1]) <= 0.2 * abs(v[1] - v[0]) + 1e-15 * abs(v[1])
     assert v[2] == pytest.approx(v[1], rel=2e-5)
+
+
+def test_empty_causal_interval_contributes_zero():
+    """A vertex whose leaf bounds leave no room (after leaf 0, before a later
+    vertex that must precede leaf 1 at the same time) contributes exactly 0;
+    the old grid integrated the empty interval with a negative span."""
+    from engine.integration.spatial.full_integrator import diagram_kinematic
+    assert diagram_kinematic(_bubble(), [0.3], {0: 0.0, 1: 0.0}, 1.0, 1.0,
+                             spatial_dim=1) == 0.0
+    assert diagram_kinematic(_bubble(), [0.3], {0: 0.0, 1: -0.5}, 1.0, 1.0,
+                             spatial_dim=1) == 0.0
 
 
 def test_coupled_spectral_kinematic_memory_guard(monkeypatch):

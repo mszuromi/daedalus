@@ -767,12 +767,18 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 upper = np.full(Pt, s_up[vi]) if later is None \
                     else np.minimum(s_up[vi], later)
                 lower = np.full(Pt, s_lo[vi])
-                # split at the C-edge leaf times (kinks of |t_v − t_leaf|)
+                upper = np.maximum(upper, lower)      # empty interval → zero weight
+                # split at the external times (kinks; see _c_leaf_breaks)
                 tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
                 for k in placed:
                     placed[k] = np.repeat(placed[k], tnode.shape[-1])
                 placed[vi] = tnode.ravel()
                 wt = (wt[:, None] * wnode).ravel()
+                keep = wt != 0.0                      # zero-width segments
+                if not keep.all():
+                    wt = wt[keep]
+                    for k in placed:
+                        placed[k] = placed[k][keep]
                 later = placed[vi]
             Pt = wt.size
             P = Pt * Ps
@@ -1145,11 +1151,17 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             upper = np.full(Pt, s_up[vi]) if later is None \
                 else np.minimum(s_up[vi], later)
             lower = np.full(Pt, s_lo[vi])
+            upper = np.maximum(upper, lower)          # empty interval → zero weight
             tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
             for k in placed:
                 placed[k] = np.repeat(placed[k], tnode.shape[-1])
             placed[vi] = tnode.ravel()
             wt = (wt[:, None] * wnode).ravel()
+            keep = wt != 0.0                          # zero-width segments
+            if not keep.all():
+                wt = wt[keep]
+                for k in placed:
+                    placed[k] = placed[k][keep]
             later = placed[vi]
         Pt = wt.size
         P = Pt * Ps
