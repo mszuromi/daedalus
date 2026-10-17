@@ -99,8 +99,9 @@ could not finish, e.g. refused by the memory budget, or a diverging
 difference) sets ``result['status'] = 'target_missed'`` (``'incomplete'``
 when Phase J left diagrams out) next to the ``DelayOrderWarning``.  At
 k >= 3 the controller compares ``total_C`` at sample times in units of the
-longest delay (``result['delay']['sample_time_scale']``), so its estimate
-and the order it picks do not depend on the time unit.
+longest delay, capped by the slowest local relaxation time
+(``result['delay']['sample_time_scale']``), so its estimate and the order it
+picks do not depend on the time unit.
 """
 from __future__ import annotations
 
@@ -636,9 +637,12 @@ _INSTABILITY_CODES = ('G2_UNSTABLE_SADDLE', 'G2_MARGINAL_MODE', 'G3_ACAUSAL_POLE
 
 
 def _delay_time_scale(ctx) -> float:
-    """The longest delay of the model (numeric, in the model's time unit),
-    the time scale of the k >= 3 sample points of ``_observable``; 1.0 when
-    no delay value can be read."""
+    """The time scale of the k >= 3 sample points of ``_observable``, in the
+    model's time unit: the longest delay (numeric), capped by the slowest
+    local relaxation time (``1 / min |Re lambda|`` of the saddle's
+    linearization with every kernel at ``g_hat(0)``, the analyzer's G2
+    eigenvalues), so the points stay inside the correlation window when the
+    delay is long against the relaxation; 1.0 when neither can be read."""
     det = (getattr(ctx, 't', None) or {}).get('kernel_stability_detail') or {}
     vals = [abs(float(x)) for x in (det.get('delays') or ())]
     if not vals:
@@ -648,16 +652,25 @@ def _delay_time_scale(ctx) -> float:
                 for X in delay_factors(e, ctx.omega):
                     vals.append(abs(float(SR(X).subs(ctx.num_params))))
         except Exception:
-            vals = []
+            pass
     vals = [v for v in vals if np.isfinite(v) and v > 0]
-    return max(vals) if vals else 1.0
+    T = max(vals) if vals else None
+    try:
+        rates = [-complex(z).real for z in ((getattr(ctx, 't', None) or {}).get('eigenvalues')
+                                            or ())]
+    except (TypeError, ValueError):
+        rates = []
+    rates = [x for x in rates if np.isfinite(x) and x > 0]
+    if rates:
+        T = min(T, 1.0 / min(rates)) if T is not None else 1.0 / min(rates)
+    return T if T is not None else 1.0
 
 
 def _observable(r, k, t_scale=1.0):
     """Total and loop part of the observable on the grid (k <= 2), or at a few
     sample points of ``total_C`` (k >= 3), at times in units of ``t_scale``
-    (the longest delay, ``_delay_time_scale``: the points, the error estimate
-    and the order the controller picks do not depend on the time unit)."""
+    (``_delay_time_scale``: the points, the error estimate and the order the
+    controller picks do not depend on the time unit)."""
     by = r.get('C_tau_by_ell') or {}
     if k <= 2 and r.get('C_tau') is not None:
         tot = np.asarray(r['C_tau'], dtype=complex)

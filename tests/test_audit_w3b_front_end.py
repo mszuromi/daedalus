@@ -19,9 +19,9 @@ Inline public models only.
 * the model-file round trip keeps ``physical_field(domain=...)`` (the saddle
   selection) and the other field switches, and reports keywords it cannot
   carry;
-* the delay order controller samples k >= 3 cumulants at the model's delay
-  time scale (unit invariant) and marks a missed accuracy target in
-  ``result['status']``.
+* the delay order controller samples k >= 3 cumulants at the model's own
+  time scale (the delay, capped by the local relaxation time: unit
+  invariant) and marks a missed accuracy target in ``result['status']``.
 """
 import os
 import sys
@@ -392,6 +392,46 @@ def test_loader_reports_keywords_it_cannot_carry(tmp_path):
     assert 'future_option' in msgs and 'default (not a literal)' in msgs
 
 
+def test_loader_never_executes_kernel_expressions(tmp_path):
+    from api.model_serialize import load_spec_from_file
+    marker = tmp_path / 'executed.txt'
+    src = tmp_path / 'esc.model.py'
+    payload = ("Kernel.image(Kernel.__init__.__globals__['__builtins__']['open']"
+               f"({str(marker)!r}, 'w').write('x') or '1')")
+    src.write_text(
+        'from api.model import TemporalModelBuilder\n'
+        'from api.delay import Kernel\n\n\n'
+        'def build():\n'
+        '    return (\n'
+        "        TemporalModelBuilder('esc', n_populations=1)\n"
+        "        .physical_field('x')\n"
+        f"        .define_kernel('g', kernel={payload})\n"
+        "        .set_action_text('xt*((Dt+1)*x)')\n"
+        '        .build()\n'
+        '    )\n')
+    with pytest.raises(ValueError, match='literal arguments'):
+        load_spec_from_file(str(src))
+    assert not marker.exists()
+
+
+def test_loader_warns_on_a_non_literal_cgf_kernel(tmp_path):
+    from api.model_serialize import load_spec_from_file
+    src = tmp_path / 'cgf.model.py'
+    src.write_text(
+        'from api.model import TemporalModelBuilder\n'
+        "KSTR = 'exp(-abs(tau))'\n\n\n"
+        'def build():\n'
+        '    return (\n'
+        "        TemporalModelBuilder('cgf', n_populations=1)\n"
+        "        .physical_field('x')\n"
+        "        .declare_cgf_term('C', 'xt', order=2, coefficient='1', kernel=KSTR)\n"
+        "        .set_action_text('xt*((Dt+1)*x)')\n"
+        '        .build()\n'
+        '    )\n')
+    with pytest.warns(UserWarning, match=r'kernel \(not a literal\)'):
+        load_spec_from_file(str(src))
+
+
 # ── ACC-14 / ACC-22: the delay order controller ─────────────────────────
 
 
@@ -412,7 +452,8 @@ def test_delay_controller_k3_is_unit_invariant():
                                   parallel=False, verbose=False, use_cache=False,
                                   delay={'n_start': 2, 'n_max': 8, 'tol': 1e-4})
         recs[s] = r['delay']
-        assert r['delay']['sample_time_scale'] == pytest.approx(0.8 / s, rel=1e-12)
+        # min(longest delay 0.8, slowest local relaxation 1/|-a + c| = 1/2.7), in units s
+        assert r['delay']['sample_time_scale'] == pytest.approx(min(0.8, 1 / 2.7) / s, rel=1e-9)
     a, b = recs[1.0], recs[0.25]
     assert a['n'] == b['n'] and a['target_met'] == b['target_met']
     assert sorted(a['est_by_order']) == sorted(b['est_by_order'])

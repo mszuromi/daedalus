@@ -952,7 +952,8 @@ def _warn_uncarried(method, call, kw, path):
             lost.append('**' + ast.unparse(x.value))
         elif x.arg not in carried:
             lost.append(x.arg)
-        elif (kw.get(x.arg) is None and x.arg != 'kernel'
+        elif (kw.get(x.arg) is None
+              and not (method == 'define_kernel' and x.arg == 'kernel')
               and not (isinstance(x.value, ast.Constant) and x.value.value is None)):
             lost.append(f'{x.arg} (not a literal)')
     if lost:
@@ -963,24 +964,37 @@ def _warn_uncarried(method, call, kw, path):
             f'drop them.', UserWarning, stacklevel=3)
 
 
+_KERNEL_BUILDERS = ('delay', 'exponential', 'alpha', 'gamma', 'image')
+
+
 def _eval_kernel_node(node, path):
     """The :class:`api.delay.Kernel` a ``kernel=`` argument of
-    ``define_kernel`` builds (``Kernel.delay('d') * Kernel.exponential(...)``):
-    evaluated with ``Kernel`` as the only name."""
+    ``define_kernel`` builds (``Kernel.delay('d') * Kernel.exponential(...)``),
+    rebuilt from the syntax tree -- nothing in the file is executed: only
+    ``Kernel.<delay|exponential|alpha|gamma|image>(<literals>)`` calls joined
+    by ``*`` are accepted."""
     from api.delay import Kernel
+
+    def build(n):
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mult):
+            return build(n.left) * build(n.right)
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and isinstance(n.func.value, ast.Name) and n.func.value.id == 'Kernel'
+                and n.func.attr in _KERNEL_BUILDERS and not n.keywords):
+            args = [ast.literal_eval(a) for a in n.args]
+            if not all(isinstance(a, (str, int, float)) for a in args):
+                raise ValueError('arguments must be strings or numbers')
+            return getattr(Kernel, n.func.attr)(*args)
+        raise ValueError(f'{ast.unparse(n)!r} is not a Kernel.{"/".join(_KERNEL_BUILDERS)} '
+                         f'call with literal arguments')
+
     try:
-        obj = eval(compile(ast.Expression(body=node), str(path), 'eval'),
-                   {'__builtins__': {}}, {'Kernel': Kernel})
+        return build(node)
     except Exception as exc:
         raise ValueError(
             f'load_spec_from_file({path!r}): cannot read the define_kernel '
-            f'kernel= argument {ast.unparse(node)!r} ({type(exc).__name__}: '
-            f'{exc}); write it with Kernel.* calls and literal arguments.') from exc
-    if not isinstance(obj, Kernel):
-        raise ValueError(
-            f'load_spec_from_file({path!r}): the define_kernel kernel= argument '
-            f'{ast.unparse(node)!r} is not an api.delay.Kernel.')
-    return obj
+            f'kernel= argument {ast.unparse(node)!r} ({exc}); write it with '
+            f'Kernel.* calls with literal arguments joined by *.') from exc
 
 
 def _strip_doc_boilerplate(doc: str) -> str:
