@@ -341,8 +341,8 @@ def _pre_m1_runs(key):
     """Like ``_runs`` but in the mode that reproduces the pre-M1 captures
     (``_PRE_M1_MODE``): warm-up, then plain, then hooked, same process."""
     name, grouped = key
-    if _PRE_M1_MODE[name] is None:
-        return _runs(key)
+    # (always its own run, also for the default-mode model: the captures
+    # sample τ = 0 at −1e-6, see ``_tau0_nudge``)
     if key not in _PRE:
         _warm(name)
         with _theta0_mode(_PRE_M1_MODE[name]), _tau0_nudge():
