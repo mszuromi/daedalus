@@ -564,6 +564,24 @@ def extract_vertex_types(ft):
     attachments = getattr(ns, '_kernel_attachments', None) or {}
     kernel_symbols = (_flatten_kernel_symbols(ns, model)
                       if attachments else [])
+    # A kernel convolving several fields: ``expand`` wrote the interaction
+    # sectors a second time with one alias per (kernel, field) emission
+    # (``reduce_conv_in_action(alias_kernels=)``).  Those sectors say which
+    # leg every kernel factor sits on; read the vertices from them, each
+    # alias attached to its one field and imaged by its kernel's image.
+    aliases = getattr(ns, '_kernel_aliases', None) or {}
+    alias_sectors = getattr(ft, '_vertex_alias_by_tp', None)
+    base_of = {}
+    if aliases and alias_sectors is not None:
+        attachments = dict(attachments)
+        kernel_symbols = list(kernel_symbols)
+        for alias, (ksym, fluct) in aliases.items():
+            attachments[alias] = {fluct}
+            kernel_symbols.append(alias)
+            base_of[alias] = ksym
+        sectors = alias_sectors
+    else:
+        sectors = ft.vertices()
     kernel_td_image_lambda = model.get('kernel_td_image')
 
     # Pre-build the {ksym: SR_in_tau} dict once per call so each
@@ -586,6 +604,7 @@ def extract_vertex_types(ft):
             ph = _SR.var('_conv_tau_placeholder')
             _td_cell.append((kernel_td_image_lambda(ns, ph), ph))
         td_map, ph = _td_cell[0]
+        ksym = base_of.get(ksym, ksym)
         return (td_map.get(ksym) if ksym in td_map else None), ph
     # The frequency image too: a kernel declared only by ``freq_image`` has
     # no time-domain image; the integrator reads its modes from this one.
@@ -605,10 +624,10 @@ def extract_vertex_types(ft):
             except Exception:
                 _ft_cell.append(({}, om))
         ft_map, om = _ft_cell[0]
-        return ft_map.get(ksym), om
+        return ft_map.get(base_of.get(ksym, ksym)), om
 
     vtypes = []
-    for (n_t, n_p), poly in ft.vertices().items():
+    for (n_t, n_p), poly in sectors.items():
         # vertices() returns sectors with total degree >= 3
         # Some may be pure noise-kernel (n_p == 0) — skip those
         if n_p == 0:
