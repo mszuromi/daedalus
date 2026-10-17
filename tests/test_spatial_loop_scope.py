@@ -246,8 +246,8 @@ def test_uv_divergent_tadpole_refused_and_bubble_converges():
 
 def test_empty_causal_interval_contributes_zero():
     """A vertex whose leaf bounds leave no room (after leaf 0, before a later
-    vertex that must precede leaf 1 at the same time) contributes exactly 0;
-    the old grid integrated the empty interval with a negative span."""
+    vertex that must precede leaf 1 at the same time) contributes exactly 0
+    (pins the empty-interval clamp of the split time grid)."""
     from engine.integration.spatial.full_integrator import diagram_kinematic
     assert diagram_kinematic(_bubble(), [0.3], {0: 0.0, 1: 0.0}, 1.0, 1.0,
                              spatial_dim=1) == 0.0
