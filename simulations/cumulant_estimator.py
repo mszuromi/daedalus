@@ -81,6 +81,26 @@ def falling_factorial_array(n_arr, m):
     return result
 
 
+def factorial_centered(n_arr, m, mean_count, dt_bin):
+    """The factorial analogue of ``prod (r - mu)`` for ``m`` coincident legs
+    of one spike train (``r = n / dt``, ``mu = mean_count / dt``):
+
+        sum_{j=0}^{m} C(m, j) (-mu)^(m-j) n^(j) / dt^j
+
+    (``n^(j)`` the falling factorial).  Its products with linearly centred
+    other legs have the factorial CENTRAL moments as expectations, so for
+    k <= 3 their mean is the factorial cumulant and for k = 4 the pair
+    subtraction is exact.  (Oct 2026 audit I-simulators 0/2: the previous
+    ``n^(m)/dt^m - mean`` gave kappa_3 + 2 mu C_2 at a coincident pair.)"""
+    from math import comb
+    mu = mean_count / dt_bin
+    out = np.zeros_like(np.asarray(n_arr, dtype=float))
+    for j in range(m + 1):
+        ff = falling_factorial_array(n_arr, j) if j else 1.0
+        out = out + comb(m, j) * (-mu) ** (m - j) * ff / dt_bin ** j
+    return out
+
+
 def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                          max_lag_bins, n_fft=None,
                          field_types=None, voltage_bins=None,
@@ -187,9 +207,11 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             return 'dn'
         if ft in ('dn', 'dv', 'dm'):
             return ft
-        # Strip any single-letter prefix that already matches ('dn' etc.)
-        # handled above; otherwise peel off any trailing population
-        # suffix and map by the first letter ('nE' → 'n', 'vI' → 'v').
+        # Natural names: peel off any trailing population suffix and map
+        # by the first letter ('nE' → 'n', 'vI' → 'v').  Anything else is
+        # refused: it used to fall through to the spike treatment AND the
+        # spike-count array (a continuous field 'x' read from binned_counts;
+        # audit I-simulators 4).
         first = ft[0]
         if first == 'n':
             return 'dn'
@@ -197,7 +219,11 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             return 'dv'
         if first == 'm':
             return 'dm'
-        return 'dn'
+        raise ValueError(
+            f'field type {ft!r} is not recognised: use dn (spike counts, '
+            f'binned_counts), dv (continuous, voltage_bins) or dm (external '
+            f'counts, ext_binned_counts), or a natural name starting with '
+            f'n / v / m')
 
     field_types = [_normalize_ft(ft) for ft in field_types]
 
@@ -292,10 +318,9 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
                 if m > 1:
                     factor = factor ** m
             else:
-                # Spike-counting field (dn or dm), m >= 2: factorial
-                # correction to remove same-bin shot-noise multiplets.
-                raw = falling_factorial_array(n_arr, m) / denom**m
-                factor = raw - raw.mean()
+                # Spike-counting field (dn or dm), m >= 2: factorially
+                # centred (removes same-bin shot-noise multiplets)
+                factor = factorial_centered(n_arr, m, mean_n, dt_bin)
 
             product *= factor
 
@@ -331,6 +356,34 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
             continue
         C_slice[idx_lag] = raw_xcorr[(-lag) % n_fft] / n_overlap
 
+    # ── Sweep lags where the sweep leg meets a fixed leg of its own spike
+    # train in the same bin: the FFT product holds n * n there (the shot
+    # noise rate/dt_bin at k = 2, rate/dt^2 at k = 3).  Recompute those
+    # points with the sweep leg merged into that bin's factorial group
+    # (audit I-simulators 3).
+    if _is_spike_ft(sweep_ft):
+        for lag_val, leg_indices in lag_to_legs.items():
+            if abs(lag_val) > max_lag_bins or not any(
+                    (pop_indices[i], field_types[i]) == (sweep_pop, sweep_ft)
+                    for i in leg_indices):
+                continue
+            prod_c = np.ones(n_valid, dtype=float)
+            for lv, li in lag_to_legs.items():
+                offset = valid_start + lv
+                mult = Counter((pop_indices[i], field_types[i]) for i in li)
+                if lv == lag_val:
+                    mult[(sweep_pop, sweep_ft)] += 1
+                for (pop, ft), m in mult.items():
+                    data = _data_for_ft(ft)
+                    n_arr = data[pop, offset:offset + n_valid].astype(float)
+                    mean_n = mean_by_pop_ft[(pop, ft)]
+                    if m == 1 or ft == 'dv':
+                        f = (n_arr - mean_n) / (dt_bin if _is_spike_ft(ft) else 1.0)
+                        prod_c *= f ** m
+                    else:
+                        prod_c *= factorial_centered(n_arr, m, mean_n, dt_bin)
+            C_slice[lag_val + max_lag_bins] = float(prod_c.mean())
+
     # ── Cumulant subtraction for k >= 4 ──────────────────────────
     # For k=4, the connected cumulant is
     #   κ_4(X1, X2, X3, X4) = m_4 - m_2(1,2)m_2(3,4)
@@ -340,8 +393,8 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     # gave us m_4(t) at each sweep lag.  We must subtract the three
     # disconnected pair products.
     #
-    # For k <= 3, the cumulant equals the central moment; nothing to
-    # subtract.  For k > 4, additional partition-based subtractions
+    # For k <= 3, the cumulant equals the (factorial) central moment;
+    # nothing to subtract.  For k > 4, additional partition-based subtractions
     # are needed (not implemented here).
     if k == 4:
         # Identify all pair contractions.  The 6 pairs for 4 legs:
@@ -486,90 +539,43 @@ def estimate_kpoint_slices(dt_bin, pop_indices, field_types, base_bins,
 def compute_kpoint_slice_direct(binned_counts, dt_bin, pop_indices, lag_bins,
                                 max_lag_bins):
     """
-    Direct (non-FFT) k-point factorial cumulant density estimator.
+    Direct (non-FFT) k-point factorial cumulant density estimator, spike
+    legs only (``'dn'``), k <= 3.
 
-    Same interface and output as ``compute_kpoint_slice`` but uses an
-    explicit double loop over time bins and sweep lags. Slower for large
-    datasets (O(n_bins × n_lags) vs O(n_bins log n_bins) for FFT) but
-    free of any FFT-related issues (circular wrap, zero-padding
-    artifacts, spectral leakage). Use this to cross-check the FFT
-    estimator.
-
-    Parameters / Returns: same as ``compute_kpoint_slice``.
+    Same interface and output as ``compute_kpoint_slice`` but evaluates
+    every sweep lag on its own, grouping ALL legs (the sweep leg included)
+    that fall in one bin of one spike train into a factorially centred
+    factor (:func:`factorial_centered`).  O(n_bins x n_lags); free of any
+    FFT-related issue.  Use it to cross-check the FFT estimator.
     """
     k = len(pop_indices)
     assert len(lag_bins) == k
     sweep_idx = [i for i, lb in enumerate(lag_bins) if lb is None]
     assert len(sweep_idx) == 1
     sweep_idx = sweep_idx[0]
+    if k > 3:
+        raise ValueError('compute_kpoint_slice_direct: k <= 3 (no partition '
+                         'subtraction); use compute_kpoint_slice')
 
     npop, n_bins = binned_counts.shape
-    sweep_pop = pop_indices[sweep_idx]
-
-    # Fixed legs and their lags
-    fixed_legs = [(i, lag_bins[i]) for i in range(k) if i != sweep_idx]
-    sweep_lag_of = lag_bins  # will use None for sweep
-
-    # Group fixed legs by (lag, population) for factorial correction
-    lag_to_legs = {}
-    for (i, lag) in fixed_legs:
-        lag_to_legs.setdefault(lag, []).append(i)
-
-    # Mean counts (full array)
     mean_counts = binned_counts.mean(axis=1)  # (npop,)
 
     tau_grid = np.arange(-max_lag_bins, max_lag_bins + 1) * dt_bin
     C_slice = np.zeros(2 * max_lag_bins + 1)
 
     for idx_lag, sweep_lag in enumerate(range(-max_lag_bins, max_lag_bins + 1)):
-        # For each reference time t, ALL fields must be within [0, n_bins).
-        # Determine the valid range of t.
         all_lags = [lag_bins[i] if i != sweep_idx else sweep_lag
                     for i in range(k)]
-        min_lag = min(all_lags)
-        max_lag_val = max(all_lags)
-        t_start = max(0, -min_lag)
-        t_end = n_bins - max(0, max_lag_val)
+        t_start = max(0, -min(all_lags))
+        t_end = n_bins - max(0, max(all_lags))
         n_overlap = t_end - t_start
-
         if n_overlap <= 0:
-            C_slice[idx_lag] = 0.0
             continue
-
-        # Build the product for each valid t
-        accumulator = 0.0
-        for t in range(t_start, t_end):
-            val = 1.0
-
-            # Fixed-leg groups (with factorial correction for same-bin same-pop)
-            for lag_val, leg_indices in lag_to_legs.items():
-                bin_idx = t + lag_val
-                pop_mults = Counter(pop_indices[i] for i in leg_indices)
-                for pop, m in pop_mults.items():
-                    n = binned_counts[pop, bin_idx]
-                    mean_n = mean_counts[pop]
-                    if m == 1:
-                        val *= (n - mean_n) / dt_bin
-                    else:
-                        # Factorial: n(n-1)...(n-m+1) / dt^m, centered
-                        ff = 1.0
-                        for j in range(m):
-                            ff *= (n - j)
-                        ff /= dt_bin**m
-                        # Subtract the population mean of the factorial product
-                        # (approximated by the full-array mean for efficiency)
-                        ff_mean = falling_factorial_array(
-                            binned_counts[pop], m
-                        ).mean() / dt_bin**m
-                        val *= (ff - ff_mean)
-
-            # Sweep leg
-            sweep_bin = t + sweep_lag
-            n_s = binned_counts[sweep_pop, sweep_bin]
-            val *= (n_s - mean_counts[sweep_pop]) / dt_bin
-
-            accumulator += val
-
-        C_slice[idx_lag] = accumulator / n_overlap
+        groups = Counter((all_lags[i], pop_indices[i]) for i in range(k))
+        val = np.ones(n_overlap)
+        for (lag, pop), m in groups.items():
+            n = binned_counts[pop, t_start + lag:t_end + lag].astype(float)
+            val *= factorial_centered(n, m, mean_counts[pop], dt_bin)
+        C_slice[idx_lag] = float(val.mean())
 
     return tau_grid, C_slice
